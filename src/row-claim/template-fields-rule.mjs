@@ -16,10 +16,10 @@
 // A MISSING FIELD IS REFUSED BY NAME, never folded into one generic "template incomplete" message -- the
 // same reason `owned-path-signoff.mjs` (#603) names each unstated fact rather than saying "sign-off
 // missing": a reader fixing the row needs to know WHICH of the three to add, not that something is wrong.
-import { REPO } from "../project-identity.mjs";
+import { REPO } from "../project-identity.ts";
 import { gh, lookup } from "../merge-guard/lookups.mjs";
-import { hasTemplateField } from "../region-paths.mjs";
-import { extractAcceptanceSection, runsTheWholeSuite } from "../acceptance-commands.mjs";
+import { hasTemplateField } from "../region-paths.ts";
+import { extractAcceptanceSection, runsTheWholeSuite } from "../acceptance-commands.ts";
 
 /** The three fields the issue template requires, in the order they appear in the form. */
 export const REQUIRED_FIELDS = ["Region", "Acceptance", "Open-check"];

@@ -19,7 +19,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { commitLiveness, EXIT } from "../workflow-run-liveness.mjs";
+import { commitLiveness, EXIT } from "../workflow-run-liveness.ts";
 import { LIVE_SHAPE } from "./check-run-fixtures.ts";
 
 const SHA = "a1b2c3d4e5f6789012345678901234567890abcd";

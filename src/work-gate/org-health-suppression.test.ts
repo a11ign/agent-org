@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, test } from "node:test";
-import { SIGNALS } from "../org-health.mjs";
+import { SIGNALS } from "../org-health.ts";
 import { CHURN_BOUND, DIGEST_EVERY_MS, ORG_HEALTH_CLASSES, SWITCH_ENV, WINDOW_MS, classAndKeyOf, quietOrgHealth, suppressionPaths } from "./org-health-suppression.mjs";
 
 const T0 = Date.parse("2026-10-09T00:00:00Z");

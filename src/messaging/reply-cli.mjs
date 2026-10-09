@@ -170,7 +170,7 @@ function report(result, { out, err }) {
  * @param {{ home: string, env: Record<string, string | undefined> }} where @returns {Promise<string>}
  */
 async function hostWakeLedgerPath({ home, env }) {
-  const { stateEntryPath } = await import("../host-config.mjs");
+  const { stateEntryPath } = await import("../host-config.ts");
   return stateEntryPath("wake-ledger", { home, env });
 }
 

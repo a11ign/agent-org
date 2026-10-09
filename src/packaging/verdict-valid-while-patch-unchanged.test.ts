@@ -18,9 +18,9 @@ import { mkdtempSync, appendFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { decide, withPatchIds, GH_READS } from "../work-gate.mjs";
-import { patchIdOfDiff } from "../review-verdict.mjs";
-import { readLedger, undelivered, endedRuns, ledgerLine, RESET, WAKE_TTL_MS } from "../wake.mjs";
+import { decide, withPatchIds, GH_READS } from "../work-gate.ts";
+import { patchIdOfDiff } from "../review-verdict.ts";
+import { readLedger, undelivered, endedRuns, ledgerLine, RESET, WAKE_TTL_MS } from "../wake.ts";
 
 const GREEN = [{ name: "ci", status: "COMPLETED", conclusion: "SUCCESS" }];
 const PENDING = [{ name: "ci", status: "IN_PROGRESS", conclusion: null }];

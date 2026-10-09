@@ -10,7 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { LIVE_SESSIONS, RETIRED_SESSIONS, isLiveSession } from "../arm-pr.mjs";
+import { LIVE_SESSIONS, RETIRED_SESSIONS, isLiveSession } from "../arm-pr.ts";
 
 // #2403: a spare-family label (`session:worker-9`) is CREATED by `row-claim` when the spawn path allocates the
 // address, and no list names it -- so coverage asks `isLiveSession`, the same reader arm-pr asks. The MISSING

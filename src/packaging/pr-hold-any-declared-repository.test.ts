@@ -18,14 +18,14 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { WAIT_MARKER, waitItemOf, staleWaits, liftableHolds, referencesOf } from "../wait-condition.mjs";
-import { homeProjectDeclaration, HOME_CHECKOUT, PROJECT_DECLARATION_PATH } from "../project-config.mjs";
+import { WAIT_MARKER, waitItemOf, staleWaits, liftableHolds, referencesOf } from "../wait-condition.ts";
+import { homeProjectDeclaration, HOME_CHECKOUT, PROJECT_DECLARATION_PATH } from "../project-config.ts";
 import { liftResolvedHolds, readRefFacts, releaseHoldViaModule } from "../work-gate/org-health.mjs";
 
 const EXECUTABLE = 0o755;
 const FIRST = "a11ign/a11ign";
 const KEYED = "a11ign/agent-org";
-const CLI = fileURLToPath(new URL("../pr-hold.mjs", import.meta.url));
+const CLI = fileURLToPath(new URL("../pr-hold.ts", import.meta.url));
 const PR = "149";
 
 // --- the CLI, against a fake `gh` that keeps one pull request PER REPOSITORY under the same number ---------------------------------

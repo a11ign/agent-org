@@ -48,15 +48,15 @@ const HOST = (() => {
 // The tool's modules resolve their project when IMPORTED, so the host is named BEFORE they are, and only when the caller named none.
 if (!process.env.AGENT_ORG_HOST) process.env.AGENT_ORG_HOST = HOST;
 const { pruneWorktrees, formatReport, CLOSED_ROW_RELEASE_AGE_MS, ACTIVITY_WINDOW_MS, MAX_REMOVALS_PER_RUN, PAUSE_BETWEEN_REMOVALS_MS } =
-  await import("./prune-worktrees.mjs");
-const { stampWorktree } = await import("./worktree-owner.mjs");
-const { REMOVAL_LOG_ENV } = await import("./worktree-removal.mjs");
+  await import("./prune-worktrees.ts");
+const { stampWorktree } = await import("./worktree-owner.ts");
+const { REMOVAL_LOG_ENV } = await import("./worktree-removal.ts");
 const { sandboxGitEnv } = await import("./lib/git-env.mjs");
 
 // #2782: every removal writes a line, and a fixture must not write the host's log.
 process.env[REMOVAL_LOG_ENV] = join(BASE, "worktree-removals");
 
-const PRUNE_CLI = fileURLToPath(new URL("./prune-worktrees.mjs", import.meta.url));
+const PRUNE_CLI = fileURLToPath(new URL("./prune-worktrees.ts", import.meta.url));
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, env: sandboxGitEnv(), encoding: "utf8" });
 const NOBODY_CLAIMS = () => ({ refused: false as const });
 const CLOSED = () => ({ closed: true as const });

@@ -14,10 +14,10 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { queueOrLose, deepQueueRefusal, DEEP_QUEUE, DECISION_FLAG, FYI_FLAG, NEEDS_DECISION_FLAG, STANCE,
-  parseStance, stanceNote, EXIT, attributed } from "../prompt-session.mjs";
+  parseStance, stanceNote, EXIT, attributed } from "../prompt-session.ts";
 import { handoffId, readHandoffs, queueHandoff, handoffOrder, handoffBacklog, backlogReport,
   handoffBatches, addressed, declaresDecision, decisionHeader, MAX_LISTED_DECISIONS, PROMPT_ARG_MAX,
-  HANDOFF_BATCH_BYTES } from "../wake.mjs";
+  HANDOFF_BATCH_BYTES } from "../wake.ts";
 
 const HANDOFF = { id: handoffId("reviewer", "Draft #1963"), session: "reviewer",
   prompt: "Draft #1963", queuedAt: 1_000 };
@@ -163,7 +163,7 @@ test("END TO END: the real command records --decision on the queue and strips it
   // that writes the entry we are reading back.
   inTempDir((dir) => {
     const run = (...args: string[]) => spawnSync(process.execPath,
-      [fileURLToPath(new URL("../prompt-session.mjs", import.meta.url)),
+      [fileURLToPath(new URL("../prompt-session.ts", import.meta.url)),
         `--ledger=${join(dir, "wake-ledger")}`, ...args],
       { encoding: "utf8", env: { ...process.env, PATH: dir }, timeout: 30_000 });
     const asked = run("ceo", "Ratify", "64", "KiB?", DECISION_FLAG);

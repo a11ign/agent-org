@@ -10,10 +10,10 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { homeProjectDeclaration } from "./project-config.mjs";
-import { PRIMARY_TRUNK, readTrunkRed, trunkOfCodeRepository, trunkRedOrders } from "./trunk-red.mjs";
-import { readLanes, readScopeTrunkRed, scopesOf, scopeTick } from "./work-gate.mjs";
-import { stuckRowOf } from "./wake.mjs";
+import { homeProjectDeclaration } from "./project-config.ts";
+import { PRIMARY_TRUNK, readTrunkRed, trunkOfCodeRepository, trunkRedOrders } from "./trunk-red.ts";
+import { readLanes, readScopeTrunkRed, scopesOf, scopeTick } from "./work-gate.ts";
+import { stuckRowOf } from "./wake.ts";
 
 const REPO = "a11ign/agent-org";
 const BAD = "f02ecda0e5a1b2c3d4e5f60718293a4b5c6d7e8f";

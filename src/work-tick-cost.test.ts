@@ -14,12 +14,12 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { EXIT, TICK_COST_BYTES, TICK_COST_FILE, appendTickCost, childrenCpuMs, createMeter, tickCostPath } from "./work-tick.mjs";
+import { EXIT, TICK_COST_BYTES, TICK_COST_FILE, appendTickCost, childrenCpuMs, createMeter, tickCostPath } from "./work-tick.ts";
 import { CENSUS_ENV, currentCensusPhase, describeSpawn, summariseCensus } from "./lib/spawn-census.mjs";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
-import { readElsewherePrs } from "./work-gate.mjs";
-import { claimRow } from "./row-claim.mjs";
-import { instanceCacheRead } from "./wake.mjs";
+import { readElsewherePrs } from "./work-gate.ts";
+import { claimRow } from "./row-claim.ts";
+import { instanceCacheRead } from "./wake.ts";
 import { LIVE_TRANSCRIPT_HORIZON_MS, liveClaudeTurns } from "./work-gate/row-call-count-orders.mjs";
 
 const SRC = fileURLToPath(new URL(".", import.meta.url));

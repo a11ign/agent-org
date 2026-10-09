@@ -15,8 +15,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { CI_BODY_REPORTS, runCiBodyReports, mutationRecordReport, measuredSectionReport }
-  from "../acceptance-commands.mjs";
-import { checkBody, main, EXIT_NOTHING_SENT } from "../pr-open.mjs";
+  from "../acceptance-commands.ts";
+import { checkBody, main, EXIT_NOTHING_SENT } from "../pr-open.ts";
 import { COMMANDS, FIXED_ARGS } from "../commands.mjs";
 
 const ACCEPTANCE = 'Acceptance: node -e "process.exit(0)"';
@@ -95,12 +95,12 @@ test("#3209 (3): neither `checkBody` nor the CLI entry spells its own list of re
   const { readFileSync } = await import("node:fs");
   const strip = (file: string) => readFileSync(new URL(file, import.meta.url), "utf8")
     .split("\n").filter((line) => !/^\s*(?:\/\/|\*|\/\*\*)/.test(line)).join("\n");
-  const prOpen = strip("../pr-open.mjs");
+  const prOpen = strip("../pr-open.ts");
   const reports = ["acceptanceReport", "closesDeclarationReport", "mutationRecordReport", "measuredSectionReport", "defectClassReport"];
   for (const name of reports) {
     assert.ok(!prOpen.includes(`${name}(`), `pr-open.mjs calls ${name} itself, a second spelling of the list`);
   }
-  const acceptance = strip("../acceptance-commands.mjs");
+  const acceptance = strip("../acceptance-commands.ts");
   const main = acceptance.slice(acceptance.indexOf("\nfunction main() {"));
   for (const name of reports) {
     assert.ok(!main.includes(`${name}(`), `acceptance-commands.mjs's main() calls ${name} itself, a second spelling`);

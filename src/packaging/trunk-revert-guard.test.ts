@@ -37,11 +37,11 @@ import { buildSandbox } from "../lib/sandbox-exhaustion.ts";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
 import {
   unexplainedDeletions, mergeParents, deletedPaths, branchTouchedPaths, EXIT,
-} from "../trunk-revert-guard.mjs";
-import { trunkRedOrders } from "../trunk-red.mjs";
+} from "../trunk-revert-guard.ts";
+import { trunkRedOrders } from "../trunk-red.ts";
 
 // The tool's own script, found from this file.
-const SCRIPT = fileURLToPath(new URL("../trunk-revert-guard.mjs", import.meta.url));
+const SCRIPT = fileURLToPath(new URL("../trunk-revert-guard.ts", import.meta.url));
 
 /** Run `git` in `cwd`, `GIT_*` scrubbed and identity passed per command, so nothing can write config anywhere. */
 function git(cwd: string, ...args: string[]): string {

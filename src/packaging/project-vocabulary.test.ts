@@ -41,11 +41,11 @@ import {
   FLEET_QUESTION, LANES_FILE_PATH, LANE_ANY_LABEL, LANE_PREFIX, NEEDS_CHAIRMAN_LABEL, OUT_OF_RELEASE_LABEL,
   OUT_OF_RELEASE_MILESTONE, READY_LABEL, RESOURCES, ROAD_TO_VERSION_ONE_MILESTONE, SESSION_PREFIX,
   STARTED_LABEL, WAS_READY_LABEL, parseVocabulary,
-} from "../project-vocabulary.mjs";
-import { HOME_CHECKOUT, ProjectDeclarationRefusal } from "../project-config.mjs";
-import { labelsOutOfRelease, saysOutOfRelease } from "../row-file.mjs";
+} from "../project-vocabulary.ts";
+import { HOME_CHECKOUT, ProjectDeclarationRefusal } from "../project-config.ts";
+import { labelsOutOfRelease, saysOutOfRelease } from "../row-file.ts";
 import { laneReason } from "../row-claim/runner-rule.mjs";
-import { resourcePatternsFrom } from "../acceptance-commands.mjs";
+import { resourcePatternsFrom } from "../acceptance-commands.ts";
 import { NEEDS_CHAIRMAN } from "../messaging/sources/requests.mjs";
 import {
   IN_PROGRESS_LABEL as SUMMARY_IN_PROGRESS, NEEDS_CHAIRMAN_LABEL as SUMMARY_NEEDS_CHAIRMAN, READY_LABEL as SUMMARY_READY,

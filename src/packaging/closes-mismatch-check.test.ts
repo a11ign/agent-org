@@ -20,8 +20,8 @@ import { join } from "node:path";
 import {
   closesMismatchReport, findClosingPhrase, isRepoWideResolutionFault, recentClosesSiblings, refusal,
   mismatchVerdict, REPO_WIDE_WARNING,
-} from "../closes-mismatch-check.mjs";
-import type { ClosesDeclaration } from "../acceptance-commands.mjs";
+} from "../closes-mismatch-check.ts";
+import type { ClosesDeclaration } from "../acceptance-commands.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 
 const NONE: ClosesDeclaration = { kind: "none", reason: "docs-only change" };
@@ -237,7 +237,7 @@ test("#2822 DONE-WHEN 2 POSITIVE CONTROLS: every other mismatch keeps exit 1 and
 
 // --- the whole CLI against a fake `gh`, so the exit code is read from a real process ---
 
-const CHECK_CLI = fileURLToPath(new URL("../closes-mismatch-check.mjs", import.meta.url));
+const CHECK_CLI = fileURLToPath(new URL("../closes-mismatch-check.ts", import.meta.url));
 
 function runCheck(ghAnswers: { own: number[]; open: unknown[] | "fail" }, body = "Closes #2810") {
   const dir = tmpDir("closes-check-");

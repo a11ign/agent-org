@@ -37,9 +37,9 @@ import { shippedUnits, unitState, unitDrift, driftReport, hostUnitsInstall, syst
   programCandidates, hostIdentityDrift, hostIdentityNotes, hostIdentityInstall, ownedIdentityFiles, reviewerDoorInstall, compileCacheNotes,
   WORKERS_README, HUMAN_ACCOUNT_ALLOWED, compileCacheDrift, declaredCompileCache, PROJECT_UNITS_DIR, shippedUnitText,
   shippedScriptText, leadsListText, modelEffortDrift, sessionModelDrift, sessionModelNotes, lastModelIn,
-  liveClaudeSessions, codexTrustDrift, codexTrustedProjects, OPTIONAL_UNITS, TOOL_ENTRIES, toolForm, LONG_RUNNING_TEMPLATES, unclassifiedEntries, declaredProjectKeys, windowEnd, windowEndNotes, workTickToolForm } from "../host-units.mjs";
-import { DECLARED_CLAUDE_MODELS, PROFILES, CLAUDE_EFFORTS } from "../worker-profile.mjs";
-import { HostConfigRefusal, homeHostConfig, parseBeforeTick, parseHostConfig, readUnitsDeclaration, renderTemplate, renderedName, templateValues } from "../host-config.mjs";
+  liveClaudeSessions, codexTrustDrift, codexTrustedProjects, OPTIONAL_UNITS, TOOL_ENTRIES, toolForm, LONG_RUNNING_TEMPLATES, unclassifiedEntries, declaredProjectKeys, windowEnd, windowEndNotes, workTickToolForm } from "../host-units.ts";
+import { DECLARED_CLAUDE_MODELS, PROFILES, CLAUDE_EFFORTS } from "../worker-profile.ts";
+import { HostConfigRefusal, homeHostConfig, parseBeforeTick, parseHostConfig, readUnitsDeclaration, renderTemplate, renderedName, templateValues } from "../host-config.ts";
 import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
 
 /**
@@ -948,7 +948,7 @@ test("#1974: the `npm run` edge inside CODE is followed -- an import walk alone 
   assert.ok(hit, "the nightly reaches a `gh` spawn");
   assert.match(String(hit), /release\.mjs$/,
     "through the script it SPAWNS, which no import of its own names");
-  assert.equal(ghSpawnReachedFrom(join(TOOL_ROOT, "src/worktree-owner.mjs")), null,
+  assert.equal(ghSpawnReachedFrom(join(TOOL_ROOT, "src/worktree-owner.ts")), null,
     "POSITIVE CONTROL: a unit entry point that does NOT touch `gh` is not charged for one");
 });
 
@@ -1157,7 +1157,7 @@ test("#2000: the unit passes `--apply`, or the clock runs a REPORT and the backl
   const service = shippedText("a11ign-worktree-prune.service");
   assert.match(service, /^ExecStart=%h\/\.local\/bin\/pnpm run worktrees:prune -- --apply$/m);
   assert.deepEqual(entriesFromCommand(execCommands(service)[0]),
-    [join(TOOL_ROOT, "src/prune-worktrees.mjs")],
+    [join(TOOL_ROOT, "src/prune-worktrees.ts")],
     "and the command resolves through package.json to the script itself -- a renamed npm script leaves "
     + "the unit syntactically perfect and starting nothing");
   assert.ok(hasLine(service, `WorkingDirectory=${PROJECT_ROOT}`),
@@ -1176,10 +1176,10 @@ test("#2782: the prune's API spend is ONE claim read per removable tree, declare
   // fact that could have stopped it is the `session:` label on the row, which is on GitHub. The second half stands -- no model
   // turn, no judgment -- and that is the half that puts it on a clock. This test is the collision the previous version of
   // itself predicted ("THIS ASSERTION IS MEANT TO COLLIDE"), resolved by reading what the spend IS instead of deleting the check.
-  const entry = join(TOOL_ROOT, "src/prune-worktrees.mjs");
+  const entry = join(TOOL_ROOT, "src/prune-worktrees.ts");
   // THE POSITIVE CONTROL, and it is the whole reason a non-null below means anything: the same function, on a file known not
   // to reach `gh`, answers null -- so the walk can tell the two apart.
-  assert.equal(ghSpawnReachedFrom(join(TOOL_ROOT, "src/worktree-owner.mjs")), null,
+  assert.equal(ghSpawnReachedFrom(join(TOOL_ROOT, "src/worktree-owner.ts")), null,
     "control: the import walk answers null for a closure that is clean, so the answer below is a reading");
   assert.match(String(ghSpawnReachedFrom(entry)), /worktree-removal\.mjs$/,
     "the spend is in the ONE file every remover asks, so it is a single, nameable read rather than a scatter of `gh` calls");
@@ -1555,7 +1555,7 @@ test("#2174: a unit whose program IS there is not reported -- the matched pair",
 
 test("#2174: it is a SEPARATE finding from STALE, and the shared remedy says it cannot fix it", () => {
   const [finding] = missingUnitPrograms({
-    ...installedStub({ "a11ign-work-tick.service": UNIT_WITH("src/work-tick.mjs") }),
+    ...installedStub({ "a11ign-work-tick.service": UNIT_WITH("src/work-tick.ts") }),
     exists: () => false,
   });
   const report = driftReport([finding]);
@@ -2166,7 +2166,7 @@ test("#2332: END TO END -- `host:install` then `host:check --json` on a temp HOM
       projects: [{ id: declared.primary, checkout: PROJECT_ROOT }],
       gh: { ...declared.gh, workers: join(home, "workers"), leads: join(home, "leads") } }));
     const env = { PATH: `${bin}:${process.env.PATH}`, HOME: home, AGENT_ORG_HOST: hostFile };
-    const entry = join(TOOL_ROOT, "src/host-units.mjs");
+    const entry = join(TOOL_ROOT, "src/host-units.ts");
     const run = (...args: string[]) => {
       const done = spawnSync(process.execPath, [entry, ...args], { encoding: "utf8", env });
       assert.notEqual(done.stdout, "", `host-units.mjs ${args.join(" ")} wrote nothing; stderr: ${done.stderr}`);

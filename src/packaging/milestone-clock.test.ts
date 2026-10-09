@@ -14,8 +14,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { orgHealthNow } from "../work-gate.mjs";
-import * as health from "../org-health.mjs";
+import { orgHealthNow } from "../work-gate.ts";
+import * as health from "../org-health.ts";
 
 const MINUTE_MS = 60_000;
 const NOW = Date.parse("2026-10-08T22:00:00Z");

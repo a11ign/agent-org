@@ -14,10 +14,10 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { splitRefusals, refusalReport, deferralAges, BUSY_SEAT_DEFERRAL_MS } from "../wake.mjs";
+import { splitRefusals, refusalReport, deferralAges, BUSY_SEAT_DEFERRAL_MS } from "../wake.ts";
 
 const MINUTE = 60_000;
-const WAKE = fileURLToPath(new URL("../wake.mjs", import.meta.url));
+const WAKE = fileURLToPath(new URL("../wake.ts", import.meta.url));
 
 const BUSY = (key = "handoff/ceo/07ed9f53", seat = "ceo") => `${key}: "${seat}" is working`;
 const REFUSED_TO_START = "reviewer-agent-org-16/pr-review-due/pr-16/0a1b2c3d: herdr refused to start \"reviewer-agent-org-16\" (the workspace it opened was closed)";

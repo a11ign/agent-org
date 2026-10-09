@@ -14,8 +14,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { runDrill } from "../reconstitution-drill.mjs";
-import { HOME_CHECKOUT } from "../project-config.mjs";
+import { runDrill } from "../reconstitution-drill.ts";
+import { HOME_CHECKOUT } from "../project-config.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 
 // THE PROJECT THE TOOL SERVES, not the working directory: the roster, the first messages and the memory index live in the project's

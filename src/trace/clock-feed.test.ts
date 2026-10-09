@@ -37,11 +37,11 @@ process.env.AGENT_ORG_HOST = HOST_FILE;
 execFileSync("git", ["init", "--quiet"], { cwd: PROJECT, env: sandboxGitEnv() });
 process.chdir(PROJECT);
 
-const { overdueReading } = await import("../org-health.mjs");
+const { overdueReading } = await import("../org-health.ts");
 const { overdueFacts } = await import("../work-gate/org-health.mjs");
-const { claimRecordComment } = await import("../row-claim.mjs");
-const { mergedStats, median } = await import("../org-retro.mjs");
-const { agedBacklogOrders } = await import("../work-gate.mjs");
+const { claimRecordComment } = await import("../row-claim.ts");
+const { mergedStats, median } = await import("../org-retro.ts");
+const { agedBacklogOrders } = await import("../work-gate.ts");
 
 const REPO = "a11ign/a11ign";
 const MINUTE_MS = 60_000;

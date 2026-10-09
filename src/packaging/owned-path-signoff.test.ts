@@ -21,8 +21,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { signoffVerdict, isOwned, loadFacts } from "../owned-path-signoff.mjs";
-import { HOME_CHECKOUT } from "../project-config.mjs";
+import { signoffVerdict, isOwned, loadFacts } from "../owned-path-signoff.ts";
+import { HOME_CHECKOUT } from "../project-config.ts";
 
 const FACTS = {
   owned: ["packages/nvda-worker/", "packages/scorer/models/"],

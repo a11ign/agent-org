@@ -18,7 +18,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { claimRow } from "./row-claim.mjs";
+import { claimRow } from "./row-claim.ts";
 
 type Call = { args: string[], repo: string | undefined };
 type Answer = { stdout: string } | { failed: true, stdout: string, stderr: string, status: number | null, code?: string };

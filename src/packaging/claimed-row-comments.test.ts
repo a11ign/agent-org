@@ -13,9 +13,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { claimRecordComment } from "../row-claim.mjs";
-import { claimFactsFrom, readClaim, claimStalledOrders } from "../claim-stall.mjs";
-import { readClaimedRowComments, ISSUE_LIST_COMMENT_CAP } from "../work-gate.mjs";
+import { claimRecordComment } from "../row-claim.ts";
+import { claimFactsFrom, readClaim, claimStalledOrders } from "../claim-stall.ts";
+import { readClaimedRowComments, ISSUE_LIST_COMMENT_CAP } from "../work-gate.ts";
 
 const ROW = 3566;
 const SESSION = "worker-3566";

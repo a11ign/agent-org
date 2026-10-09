@@ -21,15 +21,15 @@ import {
   closedRowsToSettle, settleBoardRows, boardReadRefusal, shortReadRefusal,
   // #2719: the floor's population read, replaced end to end -- a cursor walk, never a capped search.
   closedRowsPageQuery, closedRowsPageFromRead, floorReadRefusal, CLOSED_ROWS_QUERY,
-} from "../settle-closed-status.mjs";
+} from "../settle-closed-status.ts";
 // The Project this repo actually has, from the one module that declares it -- so the query below is
 // pinned against the real identity rather than against a literal retyped in the assertion.
 // Both are pure of `gh`, which is why a test whose Acceptance runs in a token-less job may import them.
-import { PROJECT_NUMBER } from "../board-snapshot-scope.mjs";
-import { REPO } from "../project-identity.mjs";
+import { PROJECT_NUMBER } from "../board-snapshot-scope.ts";
+import { REPO } from "../project-identity.ts";
 // #1996: the resting state's single copy. Imported from the pure module that owns it, so this file's
 // closure still needs no token and the row's Acceptance stays runnable where Acceptance runs.
-import { RESTING_STATUS } from "../board-status-health.mjs";
+import { RESTING_STATUS } from "../board-status-health.ts";
 
 /** CAPTURED, not composed: the reason `moveProjectStatus` gave for #1299 in trunk run 34769927592 (`02ae7420`). */
 const CAPTURED_PROJECT_UNREADABLE = "could not move #1299's Status to \"Done\" -- board-snapshot: could not read "
@@ -497,7 +497,7 @@ test("#2081/#2719 the floor refuses every response shape it would otherwise have
 });
 
 test("#2719 THE ACCEPTANCE CASE: a population larger than any single page is read completely, paged rather than truncated or refused", async () => {
-  const { closedRowsOnProject } = await import("../settle-closed-rows.mjs");
+  const { closedRowsOnProject } = await import("../settle-closed-rows.ts");
   // Three pages, 40 rows each -- bigger than the old FLOOR_LIMIT would have needed to fail at, and nothing
   // here is a page the connection itself would ever cap: `repository.issues` pages until `hasNextPage` is
   // false, however large the real population grows.
@@ -513,7 +513,7 @@ test("#2719 THE ACCEPTANCE CASE: a population larger than any single page is rea
 });
 
 test("#2719 a cursor that does not move REFUSES rather than reading the same page forever", async () => {
-  const { closedRowsOnProject } = await import("../settle-closed-rows.mjs");
+  const { closedRowsOnProject } = await import("../settle-closed-rows.ts");
   const stuckPage = closedRowsPage([{ number: 1 }], { hasNextPage: true, endCursor: "same-cursor" });
   assert.throws(() => closedRowsOnProject(() => stuckPage),
     /gave no cursor to advance to -- refusing to guess/,
@@ -522,7 +522,7 @@ test("#2719 a cursor that does not move REFUSES rather than reading the same pag
 });
 
 test("#2719 a population that never finishes paging REFUSES rather than looping forever", async () => {
-  const { closedRowsOnProject } = await import("../settle-closed-rows.mjs");
+  const { closedRowsOnProject } = await import("../settle-closed-rows.ts");
   let call = 0;
   // The cursor genuinely advances every call -- this is not the stuck-cursor case above -- and
   // `hasNextPage` never turns false, so this is what a page-count safety valve exists to catch.

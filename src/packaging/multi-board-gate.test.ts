@@ -18,12 +18,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { decide, scopesOf, readLanes, scopeTick, unreadLanes, greenUnarmedOrders, performActions }
-  from "../work-gate.mjs";
+  from "../work-gate.ts";
 import { ledgerLine, readLedger, readLedgerDeliveries, reviewerMismatch, orderPullRequest, orderPullRequestRef, noReviewCheckoutFor,
   stuckRowOf, rowOfOrder, isReviewerOrder, liveReviewers, isPerRowInstance, codeRepositoryOf }
-  from "../wake.mjs";
+  from "../wake.ts";
 import { parityOwner, reviewerSeat, reviewerInstance, reviewerInstanceNumber, seatName, subjectRef, subjectMention }
-  from "../review-attribution.mjs";
+  from "../review-attribution.ts";
 
 const GREEN = [{ name: "ci", status: "COMPLETED", conclusion: "SUCCESS" }];
 const RED = [{ name: "ci", status: "COMPLETED", conclusion: "FAILURE" }];

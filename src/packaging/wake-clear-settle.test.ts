@@ -24,8 +24,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deliver, deliverHandoffs, CLEAR_SETTLE_MS, COMPACT_THRESHOLD_TOKENS } from "../wake.mjs";
-import { clearThenPrompt } from "../prompt-session.mjs";
+import { deliver, deliverHandoffs, CLEAR_SETTLE_MS, COMPACT_THRESHOLD_TOKENS } from "../wake.ts";
+import { clearThenPrompt } from "../prompt-session.ts";
 
 const ROSTER = ["ceo", "product-manager", "orchestrator", "worker-capture", "worker-judge", "worker-tooling"];
 const agents = (labels: string[]) => labels.map((label) => ({ label, status: "idle" }));

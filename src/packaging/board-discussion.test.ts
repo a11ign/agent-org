@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   categoryIdFor, editionDay, editionFor, editionTitle, publishEdition, todaysEditionExists, EDITION_CATEGORY_SLUG,
-} from "../board-discussion.mjs";
+} from "../board-discussion.ts";
 
 /** The TOOL's own `src`, one up from here: the edition scripts are the tool's, and the project's `packages/agent-org` is the frozen old copy. */
 const TOOL_SRC = fileURLToPath(new URL("..", import.meta.url));

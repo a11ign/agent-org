@@ -22,8 +22,8 @@
 //   head_moved    `at` is the COMMIT's date, not the push's: the timeline carries no push event, only each commit and each force-push.
 //   outcome       a queue exit within `MERGE_REMOVAL_WINDOW_MS` of the pull request's `merged` event is `"merged"`; any other exit is `"unmerged"` (an ejection, or a
 //                 person taking it out). GitHub writes `removed_from_merge_queue` for both.
-import { CLAIM_RECORD_MARKER } from "../claim-labels.mjs";
-import { ANSWER_PREFIX } from "../project-vocabulary.mjs";
+import { CLAIM_RECORD_MARKER } from "../claim-labels.ts";
+import { ANSWER_PREFIX } from "../project-vocabulary.ts";
 
 const PAGE = 100;
 const MAX_PAGES = 30;

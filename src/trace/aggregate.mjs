@@ -13,7 +13,7 @@
 //   NEVER AVERAGED OPEN. A row with no merge is listed apart and is in no percentile.
 import { costOf, eventsForRow, repriceEvents, subjectOf, subjectsOf } from "./store.mjs";
 import { BETWEEN, PHASES, waterfall } from "./waterfall.mjs";
-import { mergedRows, reviewerTarget, rowsClosedBy } from "../wakes-per-row.mjs";
+import { mergedRows, reviewerTarget, rowsClosedBy } from "../wakes-per-row.ts";
 
 export const DEFINITIONS = [
   "WEEK: Monday 00:00:00 UTC to the next Monday (UTC is the org's clock). A merged row is in the week of its MERGE time (the last merge of the pull requests that close it). The spend figures (overhead, cache-read share, repeat waste) are by the time of the turn or event, in the same week.",
@@ -151,7 +151,7 @@ function place(turn, keys) {
 }
 
 /**
- * @param {import("../wakes-per-row.mjs").PullRequest[]} pulls @param {string} rowRepo
+ * @param {import("../wakes-per-row.ts").PullRequest[]} pulls @param {string} rowRepo
  * @returns {Map<string, number[]>} pull request key -> the rows its body closes (a pull request that closes none is not in it)
  */
 function prRowsOf(pulls, rowRepo) {
@@ -562,7 +562,7 @@ function repeatTotal(classes) {
 /**
  * How many wakes of each row's own worker and reviewer sessions the store holds, by wakes-per-row's placement rule (a reviewer's wake counts only inside its pull request's
  * open-to-merge window). The standing leads' wakes naming the row are the store's alone and are not in this count.
- * @param {{ events: TraceEvent[], keys: Keys, pulls: import("../wakes-per-row.mjs").PullRequest[] }} input
+ * @param {{ events: TraceEvent[], keys: Keys, pulls: import("../wakes-per-row.ts").PullRequest[] }} input
  * @returns {Map<number, number>}
  */
 function storeWakeCounts({ events, keys, pulls }) {
@@ -581,7 +581,7 @@ function storeWakeCounts({ events, keys, pulls }) {
 /**
  * Why the store's count of a row's wakes and wakes-per-row's differ, from what is known of the two: a row wakes-per-row could not measure, a row claimed before the store's
  * ingest window (its first transcripts are not here), else UNEXPLAINED, which is printed as such and counted.
- * @param {{ reading: import("../wakes-per-row.mjs").RowReading | undefined, claimedAt: number | null, heldFrom: number | null, store: number }} facts
+ * @param {{ reading: import("../wakes-per-row.ts").RowReading | undefined, claimedAt: number | null, heldFrom: number | null, store: number }} facts
  */
 function whyDifferent({ reading, claimedAt, heldFrom, store }) {
   if (!reading) return "wakes-per-row has no reading for this row (it is not among the rows merged in its window)";
@@ -591,7 +591,7 @@ function whyDifferent({ reading, claimedAt, heldFrom, store }) {
 }
 
 /**
- * @param {{ merged: MergedRow[], readings: import("../wakes-per-row.mjs").RowReading[] | null, wakeCounts: Map<number, number>, claims: Map<number, number>,
+ * @param {{ merged: MergedRow[], readings: import("../wakes-per-row.ts").RowReading[] | null, wakeCounts: Map<number, number>, claims: Map<number, number>,
  *   heldFrom: number | null }} input
  */
 function compareWakes({ merged, readings, wakeCounts, claims, heldFrom }) {
@@ -763,8 +763,8 @@ function partialReason({ start, now, held, unread }) {
  * The report. `readings` is wakes-per-row's `measure` result for each week by its start (`null` for a week it was not run for).
  * `moves` are the packages that left the primary repository (`MOVES`, each with its closing time) and `pullPaths` the paths each pull request of the primary repository changed, by `<repo>#<number>`.
  * `openRows` are the rows GitHub says are open at the reading (`null` when not asked: none is then called open). `unreadRows` are the merged rows whose GitHub events the run did not get to: a week holding one is PARTIAL.
- * @param {{ events: TraceEvent[], pulls: import("../wakes-per-row.mjs").PullRequest[], rowRepo: string, now: number, since: number, held: { from: number | null, basis: string },
- *   readings?: Map<number, import("../wakes-per-row.mjs").RowReading[]>, unreadable?: string[], unreadRows?: number[], openRows?: number[] | null, moves?: Move[], pullPaths?: Map<string, string[]> }} input
+ * @param {{ events: TraceEvent[], pulls: import("../wakes-per-row.ts").PullRequest[], rowRepo: string, now: number, since: number, held: { from: number | null, basis: string },
+ *   readings?: Map<number, import("../wakes-per-row.ts").RowReading[]>, unreadable?: string[], unreadRows?: number[], openRows?: number[] | null, moves?: Move[], pullPaths?: Map<string, string[]> }} input
  */
 export function aggregate({ events: stored, pulls, rowRepo, now, since, held, readings = new Map(), unreadable = [], unreadRows = [], openRows = null, moves = [], pullPaths = new Map() }) {
   const events = repriceEvents(stored); // every dollar below, the waterfalls' included, is at PRICES now and not at the price the turn was stored with (#3638)

@@ -47,12 +47,12 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { join, relative } from "node:path";
-import { declaredGhAccount } from "../gh-identity.mjs";
-import { homeHostConfig } from "../host-config.mjs";
+import { declaredGhAccount } from "../gh-identity.ts";
+import { homeHostConfig } from "../host-config.ts";
 import { localImports, stripComments } from "../lib/local-import-closure.mjs";
-import { SPAWNS_GH } from "../acceptance-commands.mjs";
+import { SPAWNS_GH } from "../acceptance-commands.ts";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
-import { HOME_CHECKOUT } from "../project-config.mjs";
+import { HOME_CHECKOUT } from "../project-config.ts";
 import { tmpDirForFile } from "../lib/tmp-fixture.ts";
 
 const REPO = HOME_CHECKOUT;

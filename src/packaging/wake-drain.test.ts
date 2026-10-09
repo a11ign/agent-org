@@ -40,13 +40,13 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: FIXTURE_DIR, binDir: 
   gh: { workers: join(FIXTURE_DIR, "workers"), leads: join(FIXTURE_DIR, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
-const { homeProjectDeclaration } = await import("../project-config.mjs");
+const { homeProjectDeclaration } = await import("../project-config.ts");
 const { copyToolAndProject, importClosure, toolFile } = await import("./copied-tool-fixture.ts");
 const { deliver: settlingDeliver, route, withSpareInstances, engineerRoles, engineerEligibility, spawnableRole, EXIT,
   activeDrain, drainedRoles, drainInForce, cyclesReport, spawnClaimability, rowOfOrder, DRAINED_SEEN,
-  CLEAN_CYCLES_TARGET, readSpareCycles, sparePathsFrom, spareRoles } = await import("../wake.mjs");
+  CLEAN_CYCLES_TARGET, readSpareCycles, sparePathsFrom, spareRoles } = await import("../wake.ts");
 const { drainReason } = await import("../row-claim/runner-rule.mjs");
-const { claimRow } = await import("../row-claim.mjs");
+const { claimRow } = await import("../row-claim.ts");
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
 const noSettle = () => {};
 const deliver: typeof settlingDeliver = (orders, agents, roster, deps) => settlingDeliver(orders, agents, roster, { ...deps, sleep: noSettle });
@@ -55,7 +55,7 @@ const deliver: typeof settlingDeliver = (orders, agents, roster, deps) => settli
 const agents = (spec: Record<string, string>) =>
   Object.entries(spec).map(([label, status]) => ({ label, status }));
 const STANDING = ["worker-capture", "worker-judge", "worker-tooling"];
-const WAKE_ENTRY = fileURLToPath(new URL("../wake.mjs", import.meta.url));
+const WAKE_ENTRY = fileURLToPath(new URL("../wake.ts", import.meta.url));
 const ALL_IDLE = agents(Object.fromEntries(STANDING.map((r) => [r, "idle"])));
 
 /** A `herdr` that records every call and answers `workspace create` as the live org did on 2026-09-23. */
@@ -524,7 +524,7 @@ test("#2324 (3) POSITIVE CONTROLS through `claimRow`: a spare claims, an empty d
 // there. It would have gone red locally the day `main` moved a rule file, too. The copy is of the WORKING TREE
 // (so a mutation made there is the one under test), is its own one-commit repo, and its `origin/main` is that
 // commit -- a truthful "up to date", made in a directory nothing else reads.
-const ROW_CLAIM_ENTRY = fileURLToPath(new URL("../row-claim.mjs", import.meta.url));
+const ROW_CLAIM_ENTRY = fileURLToPath(new URL("../row-claim.ts", import.meta.url));
 const GH_READY_ROW = `#!/bin/sh
 case "$*" in
   *number,title,labels,state*) printf '%s' '{"number":2324,"title":"A row","state":"OPEN","labels":[{"name":"ready"}]}' ;;

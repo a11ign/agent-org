@@ -4,7 +4,7 @@
 // vocabulary under test is the one `gh pr list --json statusCheckRollup` returns (upper case).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { newestConclusion, newestRun, normaliseConclusion, SUCCESS } from "../newest-check-run.mjs";
+import { newestConclusion, newestRun, normaliseConclusion, SUCCESS } from "../newest-check-run.ts";
 
 // --- #498: a superseded check run stays attached to the head for ever ---
 //

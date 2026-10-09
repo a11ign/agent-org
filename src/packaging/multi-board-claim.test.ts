@@ -14,16 +14,16 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseProjectDeclaration } from "../project-config.mjs";
+import { parseProjectDeclaration } from "../project-config.ts";
 import {
   b4Lines, claimNames, reportB4, sessionEligibilityReason, trackerClaimRefusal, trackerFor,
-} from "../row-claim.mjs";
+} from "../row-claim.ts";
 import {
   declaredClosedRows, fileOverlapReason, lookupMyRegionFiles, lookupOpenPrFiles,
 } from "../row-claim/file-overlap-rule.mjs";
-import { declaredRegionFiles, regionCoversIn, splitRegionEntry } from "../region-paths.mjs";
-import { closesDeclarationReport, closesReferences, extractClosesDeclaration } from "../acceptance-commands.mjs";
-import { checkBody, checkRegion, main } from "../pr-open.mjs";
+import { declaredRegionFiles, regionCoversIn, splitRegionEntry } from "../region-paths.ts";
+import { closesDeclarationReport, closesReferences, extractClosesDeclaration } from "../acceptance-commands.ts";
+import { checkBody, checkRegion, main } from "../pr-open.ts";
 
 const FIRST = { key: "", repo: "a11ign/a11ign" };
 const SECOND = { key: "nvda-worker", repo: "a11ign/nvda-worker" };

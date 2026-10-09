@@ -14,7 +14,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { callerScript, parseLedger, parseRollup, perHour, renderPerHour, rollupPathOf, spenderPhrase, topSpender } from "../gh-ledger.mjs";
+import { callerScript, parseLedger, parseRollup, perHour, renderPerHour, rollupPathOf, spenderPhrase, topSpender } from "../gh-ledger.ts";
 import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
 
 // THE PROJECT THIS FILE RUNS AGAINST IS A RECORDED ONE (`org-health-auto-off-refusal.test.ts` says why): `org-health.mjs` resolves the checkout it serves when it is imported, and with no
@@ -27,7 +27,7 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
   projects: [{ id: "fixture", checkout: PROJECT }],
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
-const { poolLowReading } = await import("../org-health.mjs");
+const { poolLowReading } = await import("../org-health.ts");
 
 const WORKERS = "a11ign-ai-workers";
 const LEADS = "a11ign-ai-leads";
@@ -115,7 +115,7 @@ test("#4148: the CLI prints the per-hour reading from a ledger and its rollup", 
   const ledger = join(dir, "gh-calls.tsv");
   writeFileSync(ledger, `${line("2026-10-08T14:00:00Z")}\n`);
   writeFileSync(rollupPathOf(ledger), `2026-10-08T13\t${WORKERS}\tgraphql\t2026\t0\t2026\n`);
-  const cli = fileURLToPath(new URL("../gh-ledger.mjs", import.meta.url));
+  const cli = fileURLToPath(new URL("../gh-ledger.ts", import.meta.url));
   const r = spawnSync(process.execPath, [cli, ledger, "--per-hour", "--account", WORKERS, "--resource", "graphql"], { encoding: "utf8" });
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /^2026-10-08T13Z +2026 calls +0 points read +2026 floor points$/m, "the 13:00Z baseline is reproduced from the rollup");
@@ -138,7 +138,7 @@ test("#4148: topSpender names the script with the most points in the last hour, 
 });
 
 test("#4148: the gate's batch worker NAMES ITSELF to the ledger (the 852 calls that read /usr/bin/node)", () => {
-  const gate = readFileSync(fileURLToPath(new URL("../work-gate.mjs", import.meta.url)), "utf8");
+  const gate = readFileSync(fileURLToPath(new URL("../work-gate.ts", import.meta.url)), "utf8");
   const worker = gate.match(/const BATCH_WORKER = `([\s\S]*?)`;/)?.[1];
   assert.ok(worker, "POSITIVE CONTROL: the worker text was found");
   const cmdline = `/usr/bin/node -e ${worker.replace(/\s+/g, " ")}`.slice(0, 160); // the ledger keeps 160 characters of the caller

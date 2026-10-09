@@ -16,8 +16,8 @@ import { test } from "node:test";
 import { } from "node:fs";
 import { join } from "node:path";
 import assert from "node:assert/strict";
-import * as retro from "./org-retro.mjs";
-import { parseProjectDeclaration } from "./project-config.mjs";
+import * as retro from "./org-retro.ts";
+import { parseProjectDeclaration } from "./project-config.ts";
 import { tmpDir } from "./lib/tmp-fixture.ts";
 
 const NOW = Date.parse("2026-10-05T00:22:00Z");

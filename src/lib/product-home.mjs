@@ -28,7 +28,7 @@
 // duplicate.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { HOME_CHECKOUT } from "../project-config.mjs";
+import { HOME_CHECKOUT } from "../project-config.ts";
 
 // The product's manifest is the PROJECT's file. This used to be `src/lib` up four, which is the monorepo's root and is the HOME directory in this repository (#3074).
 const REPO_ROOT = HOME_CHECKOUT;

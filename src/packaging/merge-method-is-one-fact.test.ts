@@ -82,7 +82,7 @@ test("every call site that ARMS or MERGES names --merge explicitly, rather than 
 
 test("--disable-auto is exempt, and deliberately so -- it names no method because it removes one", () => {
   const disarms = realSites().filter(isDisarm);
-  assert.deepEqual(disarms.map((d) => d.file), ["src/pr-hold.mjs"], "pr-hold.mjs holds the only disarm");
+  assert.deepEqual(disarms.map((d) => d.file), ["src/pr-hold.ts"], "pr-hold.mjs holds the only disarm");
   assert.ok(!/"--merge"|"--squash"/.test(disarms[0].args),
     "a disarm takes no merge method; requiring one here would be the guard firing on the honest use");
 });
@@ -90,7 +90,7 @@ test("--disable-auto is exempt, and deliberately so -- it names no method becaus
 // ---- POSITIVE CONTROL: a planted fixture through the SAME sweep and predicates the real tree goes through -------------------------
 
 const PLANTED = [
-  { path: "src/arm-pr.mjs", text: 'gh(["pr", "merge", "--auto", "--merge", number, "--repo", repo], run);' },
+  { path: "src/arm-pr.ts", text: 'gh(["pr", "merge", "--auto", "--merge", number, "--repo", repo], run);' },
   // The exact shape of the command that left #706 unarmed.
   { path: "src/squashes.mjs", text: 'gh(["pr", "merge", "--auto", "--squash", String(number)]);' },
   { path: "src/rebases.mjs", text: 'io.gh(["pr", "merge", String(pr.number), "--rebase"]);' },

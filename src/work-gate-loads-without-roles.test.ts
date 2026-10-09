@@ -22,9 +22,9 @@ import { copyToolAndProject, importClosure, toolFile } from "./packaging/copied-
 
 /** Imports the gate from a fresh copy of the tool, with the roles directory written only when `roster` is given. */
 function loadGate({ roster }: { roster?: object }) {
-  const entry = toolFile("src/work-gate.mjs");
+  const entry = toolFile("src/work-gate.ts");
   const closure = importClosure(entry);
-  assert.ok(closure.size > 10 && closure.has(toolFile("src/waiting-condition.mjs")),
+  assert.ok(closure.size > 10 && closure.has(toolFile("src/waiting-condition.ts")),
     `the control: the closure must really be the gate's, got ${closure.size} file(s)`);
   const root = realpathSync(mkdtempSync(join(tmpdir(), "agent-org-roles-")));
   try {

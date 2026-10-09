@@ -19,8 +19,8 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, symlinkSync, realpath
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { diffOrders, shadowRun, simulateCutover, stateSnapshot, refuseLiveStateDir, LIVE_STATE_DIR }
-  from "../shadow-gate.mjs";
-import { VOIDED, ledgerLine, handoffId, queueHandoff, readHandoffs, HANDOFF_QUEUE_FILE } from "../wake.mjs";
+  from "../shadow-gate.ts";
+import { VOIDED, ledgerLine, handoffId, queueHandoff, readHandoffs, HANDOFF_QUEUE_FILE } from "../wake.ts";
 
 /** A fresh, empty directory nothing else uses -- never the live `~/.cache/a11ign`. */
 function copyDir(): string {

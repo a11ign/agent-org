@@ -17,8 +17,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { perPullRequestOrders, reviewBlockedOrders } from "./work-gate/pr-orders.mjs";
-import { reviewBlocked, reviewStateOf, REVIEW_STATE } from "./work-gate.mjs";
-import { deliver } from "./wake.mjs";
+import { reviewBlocked, reviewStateOf, REVIEW_STATE } from "./work-gate.ts";
+import { deliver } from "./wake.ts";
 import { startedPanes } from "./packaging/started-pane.ts";
 
 type Order = { session: string, cause: string, causeKey: string };

@@ -1,6 +1,6 @@
 // no-token: gh -- importing `work-gate.mjs` reaches `defaultRun`, and this file never lets it run: `rulingOrdersNow` is handed a fake `run`.
 /**
- * `src/ruling-check.mjs`, `src/ruling-record.mjs` and their wiring in `work-gate.mjs`, #2997: A RULING CARRIES ITS OWN CHECK THAT IT TOOK EFFECT, AND THE TICK
+ * `src/ruling-check.ts`, `src/ruling-record.ts` and their wiring in `work-gate.mjs`, #2997: A RULING CARRIES ITS OWN CHECK THAT IT TOOK EFFECT, AND THE TICK
  * RE-READS IT UNTIL IT DOES.
  *
  * THE INCIDENT, REPLAYED (the chairman, 2026-10-02): `ceo` ruled the freeze over at 06:50Z, and at 10:40Z three rows still carried a `Not-before: 2026-10-03T18:2x`
@@ -16,12 +16,12 @@ import { appendFileSync, mkdtempSync, readFileSync, rmSync, existsSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { waitItemOf } from "../wait-condition.mjs";
-import { parseCheck, evaluateCheck, evaluateChecks, settleRulings, DEFAULT_GRACE_MINUTES } from "../ruling-check.mjs";
-import { recordRuling, readRulings, rulingTick, main as recordMain, RULINGS_FILE } from "../ruling-record.mjs";
-import { rulingOrdersNow } from "../work-gate.mjs";
+import { waitItemOf } from "../wait-condition.ts";
+import { parseCheck, evaluateCheck, evaluateChecks, settleRulings, DEFAULT_GRACE_MINUTES } from "../ruling-check.ts";
+import { recordRuling, readRulings, rulingTick, main as recordMain, RULINGS_FILE } from "../ruling-record.ts";
+import { rulingOrdersNow } from "../work-gate.ts";
 
-const RECORD_CLI = fileURLToPath(new URL("../ruling-record.mjs", import.meta.url));
+const RECORD_CLI = fileURLToPath(new URL("../ruling-record.ts", import.meta.url));
 const ROW_CHECK = 'no-open-row-body-matches "Not-before: 2026-10-03T18:2"';
 const PR_CHECK = "no-open-pr-label hold:ceo";
 const RULED_AT = "2026-10-02T10:40:00Z";

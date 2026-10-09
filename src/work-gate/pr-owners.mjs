@@ -12,9 +12,9 @@
 // imported binding at load time. THE `git worktree` READ STAYED (`readWorktreeStamps`, `stampLookup`): a function that
 // reads git or gh stays in the shim (`pr-orders.mjs`'s boundary), and `git-spawn-classification.test.ts` refuses a file
 // that spawns git without the scrubbing helper `defaultSpawn` already carries. `work-gate.mjs` re-exports every name this file exports that it exported before.
-import { labelsOf, sessionOf, liveWorkspaceLabels, endedSessionLabels } from "../work-gate.mjs";
-import { CLAIM_LABEL } from "../claim-labels.mjs";
-import { SESSION_PREFIX } from "../project-vocabulary.mjs";
+import { labelsOf, sessionOf, liveWorkspaceLabels, endedSessionLabels } from "../work-gate.ts";
+import { CLAIM_LABEL } from "../claim-labels.ts";
+import { SESSION_PREFIX } from "../project-vocabulary.ts";
 
 /**
  * #2882: THE SESSION A PULL REQUEST'S OWN ROW NAMES, for a pull request that carries no `session:` label.

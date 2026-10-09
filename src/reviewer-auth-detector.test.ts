@@ -25,12 +25,12 @@ import {
   CAUSES, JUDGMENT_CAUSES, START_CAUSES, CODEX_AUTH_FAILURE_TEXT, CODEX_LOGGED_OUT_SCREEN, REVIEWER_SILENCE_MS, REVIEWER_REGISTRY_FILE,
   REVIEWER_REFRESH_LEDGER_FILE, authFailureShownIn, readLastRefresh, readReviewerRegistry, reviewerAuthFailures,
   reviewerAuthOrders, reviewerAuthTick, refreshLedgerLines, herdrPaneReader, sessionsOwingVerdict,
-} from "./work-gate.mjs";
-import { profileFor } from "./worker-profile.mjs";
+} from "./work-gate.ts";
+import { profileFor } from "./worker-profile.ts";
 
 const T0 = Date.UTC(2026, 8, 24, 12, 0, 0);
 const MIN = 60_000;
-const GATE_ENTRY = fileURLToPath(new URL("./work-gate.mjs", import.meta.url));
+const GATE_ENTRY = fileURLToPath(new URL("./work-gate.ts", import.meta.url));
 const STUB_MODE = 0o755;
 const noPane = () => null;
 /** One ledger line, as the tests read it back. */

@@ -32,12 +32,12 @@ import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
 import { refuseUnknownFlags, flagValue } from "../lib/cli-flags.mjs";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
-import { agentArgs, profileFor } from "../worker-profile.mjs";
-import { addressed, PRIMARY_CHECKOUT } from "../wake.mjs";
-import { extractAcceptanceSection, declaredFleetAnswer } from "../acceptance-commands.mjs";
-import { extractLabeledSection } from "../region-paths.mjs";
-import { REPO } from "../project-identity.mjs";
-import { SESSION_PREFIX } from "../project-vocabulary.mjs";
+import { agentArgs, profileFor } from "../worker-profile.ts";
+import { addressed, PRIMARY_CHECKOUT } from "../wake.ts";
+import { extractAcceptanceSection, declaredFleetAnswer } from "../acceptance-commands.ts";
+import { extractLabeledSection } from "../region-paths.ts";
+import { REPO } from "../project-identity.ts";
+import { SESSION_PREFIX } from "../project-vocabulary.ts";
 import { eventsOfTranscript, repriceEvents } from "./store.mjs";
 
 /** The cause whose profile a per-row engineer is spawned with (`SPAWN_CAUSES` in wake.mjs). */

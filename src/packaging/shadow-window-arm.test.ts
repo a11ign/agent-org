@@ -24,13 +24,13 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { SHIPPED_DIR, TOOL_ENTRIES, hostUnitsInstall, shippedUnitText as real_shippedUnitText, shippedUnits } from "../host-units.mjs";
-import { HARD_STOP_MS, WINDOW_TICKS, armWindow, readRecordRows, readWindowMarker, ticksRecorded, windowTick } from "../shadow-window.mjs";
-import { SHADOW_WINDOW_MARKER, tapShadowReads } from "../shadow-reads.mjs";
-import { homeHostConfig } from "../host-config.mjs";
+import { SHIPPED_DIR, TOOL_ENTRIES, hostUnitsInstall, shippedUnitText as real_shippedUnitText, shippedUnits } from "../host-units.ts";
+import { HARD_STOP_MS, WINDOW_TICKS, armWindow, readRecordRows, readWindowMarker, ticksRecorded, windowTick } from "../shadow-window.ts";
+import { SHADOW_WINDOW_MARKER, tapShadowReads } from "../shadow-reads.ts";
+import { homeHostConfig } from "../host-config.ts";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
 
-const RUNNER = fileURLToPath(new URL("../shadow-window.mjs", import.meta.url));
+const RUNNER = fileURLToPath(new URL("../shadow-window.ts", import.meta.url));
 const REPO_SRC = fileURLToPath(new URL("..", import.meta.url));
 const MINUTE = 60_000;
 const TICK = 2 * MINUTE;

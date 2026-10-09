@@ -28,12 +28,12 @@ import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { join, dirname, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { shippedUnits } from "../host-units.mjs";
-import { HOME_CHECKOUT } from "../project-config.mjs";
+import { shippedUnits } from "../host-units.ts";
+import { HOME_CHECKOUT } from "../project-config.ts";
 import { TOOL_ROOT, copyToolAndProject, importClosure, toolFile } from "./copied-tool-fixture.ts";
 import { judgePin, type Declaration } from "../lib/pin-ratchet.ts";
-import { deriveClosureRequirements, createClosureMemo } from "../acceptance-commands.mjs";
-import { patchIdOfDiff } from "../review-verdict.mjs";
+import { deriveClosureRequirements, createClosureMemo } from "../acceptance-commands.ts";
+import { patchIdOfDiff } from "../review-verdict.ts";
 import { MAX_ROW_ORDERS_PER_TICK, readCommitShas, readPatchId, withPatchIds, decide, checksSettledGreen, readPrs, OPEN_PRS_FIRST_PAGE, OPEN_PRS_LIMIT, readReadyRows, EXIT, CAUSES,
   comparablePrFiles, START_CAUSES, draining, DRAIN_MARKER, stalledOrder, performActions,
   blockingChecks, anyChecksRed, requiredCheckNames, readBaseTip, baseTipWhenRed, ownerOf, NOT_PICKABLE, NOT_STARTABLE,
@@ -57,22 +57,22 @@ import { MAX_ROW_ORDERS_PER_TICK, readCommitShas, readPatchId, withPatchIds, dec
   readRowsOffBoard, rowsOffBoard, rowOffBoardOrders, rowsOffBoardOrSay, ROW_OFF_BOARD_GRACE_MS,
   refusedReadCount, SHARED_OUTAGE_READS, sharedReadOutage, markOutageReads,
   pipelineCodeownerReviewMissing, bareAnswerLabelOrders, readRowTimeline }
-  from "../work-gate.mjs";
-import { SESSION_PREFIX } from "../project-vocabulary.mjs";
+  from "../work-gate.ts";
+import { SESSION_PREFIX } from "../project-vocabulary.ts";
 // #2182: the SHIPPED reader that decides whether a delivered cause is still live, imported so this file
 // can assert what the membership BUYS rather than only that the name is in the list. `wake.mjs` runs
 // nothing on import (its `main()` is behind an `import.meta.url` guard) and these three are pure, so this
 // costs the `no-token` promise at the top of this file nothing.
 import { readLedger, undelivered, addressed, WAKE_TTL_MS, JUDGMENT_TTL_MS, deliver, escalateStuck,
-  MAX_DELIVERIES, deliveryCounts } from "../wake.mjs";
+  MAX_DELIVERIES, deliveryCounts } from "../wake.ts";
 // #2237: the decider that REFUSES a launch, so the order's named launch directory is checked against it
 // rather than read by a reviewer. Pure over an injected filesystem.
 import { primaryLaunchRefusal, launchCheckoutOf }
-  from "../board-snapshot-scope.mjs";
+  from "../board-snapshot-scope.ts";
 
 // Each check carries a NAME because the caller narrows with newestPerName, which keys on it -- a fixture
 // without one is dropped, and the gate would read every PR as having no checks at all.
-import { closesUnresolvedOrders, closesUnresolvedPrs, primaryStaleOrders, withStalePrimaryNotice } from "../work-gate.mjs";
+import { closesUnresolvedOrders, closesUnresolvedPrs, primaryStaleOrders, withStalePrimaryNotice } from "../work-gate.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 const GREEN = [{ name: "ci", status: "COMPLETED", conclusion: "SUCCESS" }];
 const RED = [{ name: "ci", status: "COMPLETED", conclusion: "FAILURE" }];
@@ -2220,7 +2220,7 @@ test("a REFUSED open-rows read reaches the switch as null, and the switch says i
  * would not match, which is the mistake this row was filed to prevent.
  */
 test("main hands the switch the UN-COALESCED read, not the `?? []` one", () => {
-  const source = readFileSync(new URL("../work-gate.mjs", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../work-gate.ts", import.meta.url), "utf8");
   // EVERY `deadMansSwitch({...})` IN THE FILE, then the one that names `openRows` -- the declaration
   // spells the same parameter and would otherwise match first and report nothing.
   const calls = [...source.matchAll(/deadMansSwitch\(\{[^}]*\}\)/g)].map(([text]) => text);
@@ -3381,7 +3381,7 @@ test("#2161: decide() hands the cause the pull requests it already read", () => 
 
 test("#2161: the narrowing spends no `gh` call -- it reads what `draftOrder` already has", () => {
   assert.equal(GH_READS.unconditional.length, 13, "#2161 adds no unconditional read (8 since #2202, 9 since #2075, 10 since #2641, 11 since #2936, 12 since #4001, 13 since #4126)");
-  const gate = readFileSync(new URL("../work-gate.mjs", import.meta.url), "utf8");
+  const gate = readFileSync(new URL("../work-gate.ts", import.meta.url), "utf8");
   const body = gate.slice(gate.indexOf("function rowsWithOpenPr"), gate.indexOf("export function blockerClearedOrders"));
   assert.ok(body.length > 0 && !/\brun\(|spawnSync|defaultRun/.test(body),
     "the helper is pure: no seam, no subprocess, so no binary for a budget to be charged against");
@@ -4096,7 +4096,7 @@ test("#2110: the claimed-row read is ONE call, filtered server-side, and refuses
 });
 
 test("#2110: main pays for it only when something is actually claimed", () => {
-  const gate = readFileSync(fileURLToPath(new URL("../work-gate.mjs", import.meta.url)),
+  const gate = readFileSync(fileURLToPath(new URL("../work-gate.ts", import.meta.url)),
     "utf8");
   // The `decide` jsdoc spells the same call shape when it says where `claimedComments` comes from, so
   // prose is excluded by its backtick rather than by counting matches -- `cannotAskReport`'s own pin one
@@ -4275,7 +4275,7 @@ test("#2003: an unreadable probe reports UNREADABLE and never invents a pool", (
 });
 
 test("#2003: the pool reading has ONE definition, and the gate pays for it only when refusing", () => {
-  const gate = readFileSync(new URL("../work-gate.mjs", import.meta.url), "utf8");
+  const gate = readFileSync(new URL("../work-gate.ts", import.meta.url), "utf8");
 
   // THE COST IS ON THE REFUSAL PATH OR IT IS NOT FREE. `cannotAskReport` is the only caller of
   // `poolDiagnosis`, and its own only call site must sit inside the both-lanes-refused branch -- otherwise
@@ -4383,7 +4383,7 @@ test("#2005: the OFFER path and the PROMOTION path now answer from one reader, s
 
   // THE LOCAL FILTER IS GONE, and this is the assertion that keeps it gone: a second spelling of the
   // prefix inside `readPromotableRows` is how the two paths drifted, so the source must not hold one.
-  const gate = readFileSync(fileURLToPath(new URL("../work-gate.mjs", import.meta.url)), "utf8");
+  const gate = readFileSync(fileURLToPath(new URL("../work-gate.ts", import.meta.url)), "utf8");
   const body = /export function readPromotableRows\([\s\S]*?\n\}/.exec(gate)?.[0] ?? "";
   assert.ok(body.length > 0, "readPromotableRows must still be found, or this guard reads nothing");
   assert.ok(!/withAnswerLabel|ANSWER_PREFIX/.test(body),
@@ -4881,12 +4881,12 @@ test("#3549: the memoised scan flags a file that joins the history population, a
  * chain, mirroring `pre-commit-hook.test.ts`'s own technique for the identical bind.
  */
 test("#2174: work-gate.mjs loads in a tree with NO node_modules, host-units edge included", () => {
-  const entry = toolFile("src/work-gate.mjs");
+  const entry = toolFile("src/work-gate.ts");
   const closure = importClosure(entry);
   // THE CONTROL IS THE GATE ITSELF, not the host-units edge -- there is deliberately no such edge (see
   // the capability test above). What must hold is that the closure copied here is really the gate's:
   // an empty or truncated one would make the import below pass by having nothing to resolve.
-  assert.ok(closure.size > 10 && closure.has(toolFile("src/waiting-condition.mjs")),
+  assert.ok(closure.size > 10 && closure.has(toolFile("src/waiting-condition.ts")),
     `the control: the closure must really be the gate's, got ${closure.size} file(s)`);
   const root = realpathSync(tmpDir("a11y-work-gate-no-modules-"));
   // THE COPY LIST BEYOND THE STATIC CLOSURE IS GENERATED, never hand-listed (#3232): the project's `.agent-org/` and the tool's `host/` go in WHOLE,
@@ -5632,7 +5632,7 @@ test("#2202: readClosedAnswerRows refuses rather than reporting nobody owes anyt
 });
 
 test("#2202: main feeds the closed-row read into `answerOwed` beside the open one, through the helper that SAYS a refusal", () => {
-  const source = readFileSync(new URL("../work-gate.mjs", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../work-gate.ts", import.meta.url), "utf8");
   assert.match(source, /answerOwed: rowsOwingAnswers\(\{ openRows: allOpen, openPrs, closedRows: closedAnswerRows\(closedRows\) \}\)/,
     "a closed row owing an answer must reach `decide` -- the open read alone is the defect");
   assert.match(source, /closedRows: readClosedAnswerRows\(read\),/, "the closed-row read is still made, as one of the follow-ups asked together (#3566)");
@@ -5711,7 +5711,7 @@ test("#2609: `endedSessionLabels` reads a teardown's record, and a label that ST
 });
 
 test("#2609: `closedAnswerRows` runs the ended-session filter on what `readClosedAnswerRows` returned", () => {
-  const source = readFileSync(new URL("../work-gate.mjs", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../work-gate.ts", import.meta.url), "utf8");
   assert.match(source, /function closedAnswerRows\(rows\) \{[^]*?return withoutEndedAnswerSessions\(rows\);/);
 });
 
@@ -5766,7 +5766,7 @@ test("#3093: a caller that names no source is not answered by this host -- withP
 });
 
 test("#3093: `main` hands withPrOwners the LIVE herdr and ledger readers", () => {
-  const source = readFileSync(new URL("../work-gate.mjs", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../work-gate.ts", import.meta.url), "utf8");
   assert.match(source, /withPrOwners\([^\n]*stampLookup\(\), \{ agents: liveWorkspaceLabels, ended: endedSessionLabels \}\)/);
 });
 
@@ -6165,7 +6165,7 @@ test("#2781 done-when 2: every other order is headed with the stale sha and the 
 });
 
 test("#2781 the tick READS the primary and WIRES it: main() reads it once, feeds decide, and banners the decided orders", () => {
-  const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../work-gate.mjs"), "utf8");
+  const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../work-gate.ts"), "utf8");
   assert.match(source, /primaryDrift = readPrimaryDriftNow\(\)/);
   // #2849: the argument object is NAMED so the shadow tap can record it, and `decide` is reached through `decideAndTap`.
   assert.match(source, /const decideArgs = \{ primaryDrift,/);

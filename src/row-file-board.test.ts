@@ -14,9 +14,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { boardArgvRefusal, boardFromArgv, boardRow, createIssue, fetchIssueBoardStatus, moveTrackerStatus, unverifiedFilingFields } from "./row-file.mjs";
-import { PROJECT_NUMBER } from "./board-snapshot-scope.mjs";
-import { CLAIM_LABEL } from "./claim-labels.mjs";
+import { boardArgvRefusal, boardFromArgv, boardRow, createIssue, fetchIssueBoardStatus, moveTrackerStatus, unverifiedFilingFields } from "./row-file.ts";
+import { PROJECT_NUMBER } from "./board-snapshot-scope.ts";
+import { CLAIM_LABEL } from "./claim-labels.ts";
 
 /** Region says the deliverable is not a commit, so the body passes the filing rule in any checkout. */
 const CLAIMABLE_BODY = "## Region\n\nits deliverable is not a commit\n\n"
@@ -223,7 +223,7 @@ const ONE_TRACKER = { tracker: [HOME_TRACKER], code: CODE, dora: DORA };
 
 const rowBody = (region: string) => `## Region\n\n\`\`\`\n${region}\n\`\`\`\n\n## Acceptance\n\n\`\`\`\nnode --test src/x.test.mjs\n\`\`\`\n\n`
   + "## Open-check\n\n```\ngh issue view 735 --json state\n```\n";
-const ORG_ROW = rowBody("agent-org:src/row-tracker.mjs");
+const ORG_ROW = rowBody("agent-org:src/row-tracker.ts");
 const PRODUCT_ROW = rowBody("packages/cli/src/index.ts");
 const OUT_OF_RELEASE_FLAGS = ["--label", "out-of-release"];
 const CI_RESET = ["--milestone", "CI reset"];
@@ -330,7 +330,7 @@ test("#4078 ACCEPTANCE: an ORG row (a Region of only agent-org paths) is filed i
 
 test("#4078 ACCEPTANCE: a PRODUCT row (one entry under a product releasable path, the others agent-org's) is filed in the product tracker, "
   + "and gh is not told a repository -- the home tracker runs as it always did", () => {
-  const r = fileRow(filing(rowBody("agent-org:src/row-file.mjs\npackages/cli/src/index.ts"), ...CI_RESET), TWO_TRACKERS);
+  const r = fileRow(filing(rowBody("agent-org:src/row-file.ts\npackages/cli/src/index.ts"), ...CI_RESET), TWO_TRACKERS);
   assert.equal(r.code, 0, r.err);
   assert.ok(!r.gh.spawned[0].includes("--repo"));
   assert.match(r.out, /a11ign\/a11ign\/issues\/900/);
@@ -427,7 +427,7 @@ test("#4078 ACCEPTANCE: a Region that could not be read goes to the org tracker 
 });
 
 test("#4078 ACCEPTANCE: with ONE declared tracker every Region files exactly as before -- the home repository, board 1, no `--repo`, a milestone read", () => {
-  for (const region of ["agent-org:src/row-tracker.mjs", "packages/cli/src/index.ts"]) {
+  for (const region of ["agent-org:src/row-tracker.ts", "packages/cli/src/index.ts"]) {
     const r = fileRow(filing(rowBody(region), ...OUT_OF_RELEASE_FLAGS), ONE_TRACKER);
     assert.equal(r.code, 0, `${region}: ${r.err}`);
     assert.ok(!r.gh.spawned[0].includes("--repo"), region);

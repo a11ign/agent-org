@@ -1,6 +1,6 @@
 // no-token: pure -- the verdicts are a function of values handed in, and the fact reader is given a fake `gh` and a fake registry; nothing here calls `gh`, curl, ssh or the fleet.
 /**
- * `src/release-behind-main.mjs` and `src/org-health.mjs`, #4128: A REPOSITORY WHOSE `main` HOLDS A SHIPPED-PATH COMMIT NO RELEASE CARRIES, FOR OVER 24 HOURS, IS RAISED within a tick
+ * `src/release-behind-main.ts` and `src/org-health.ts`, #4128: A REPOSITORY WHOSE `main` HOLDS A SHIPPED-PATH COMMIT NO RELEASE CARRIES, FOR OVER 24 HOURS, IS RAISED within a tick
  * (class fix for a11ign/a11ign#4084: screenreader-worker#25 and #26 merged `src/` commits with no changeset).
  *
  * THE FIXTURE IS `ceo`'s REPLAY, with the release corrected: screenreader-worker at `@a11ign/screenreader-worker@0.3.0` (npm time 2026-10-06T05:28:37Z) against `main` with the three
@@ -29,8 +29,8 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
-const { SIGNALS, releaseBehindReadings, orgHealthReadings, orgHealthOrders, orgHealthTick } = await import("./org-health.mjs");
-const { BEHIND_AFTER_MS, CACHE_FILE, READ_INTERVAL_MS, cachedReleaseBehind, isShipped, noReleaseReason, readReleaseBehind, readRepoFact } = await import("./release-behind-main.mjs");
+const { SIGNALS, releaseBehindReadings, orgHealthReadings, orgHealthOrders, orgHealthTick } = await import("./org-health.ts");
+const { BEHIND_AFTER_MS, CACHE_FILE, READ_INTERVAL_MS, cachedReleaseBehind, isShipped, noReleaseReason, readReleaseBehind, readRepoFact } = await import("./release-behind-main.ts");
 const { orgHealthNow } = await import("./work-gate/org-health.mjs");
 
 const SIGNAL = "release-behind-main";
@@ -354,7 +354,7 @@ test("the gate's own path carries it: orgHealthNow with the fact orders it, and 
 });
 
 test("the gate's call site passes the real, cached reader through the identity the tick reads as (#2980's lesson)", () => {
-  const gate = readFileSync(fileURLToPath(new URL("./work-gate.mjs", import.meta.url)), "utf8");
+  const gate = readFileSync(fileURLToPath(new URL("./work-gate.ts", import.meta.url)), "utf8");
   assert.match(gate, /readReleaseBehind: releaseBehindNow/);
   assert.match(gate, /cachedReleaseBehind\(\{ stateDir, now: Date\.now\(\), read: \(\) => readReleaseBehind\(\{ gh: defaultRun, registry: npmRegistryRead, repositories \}\) \}\)/);
   assert.ok(!/releaseBehind[^\n]*GH_CONFIG_DIR/.test(gate), "it never picks another account's config (.claude/rules/gh-api-budget.md)");

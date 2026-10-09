@@ -20,12 +20,12 @@ import { fileURLToPath } from "node:url";
 import {
   WAIT_FIELDS, WAIT_STATES, WAIT_MARKER, MANUAL_WAIT_HOURS, STALE_WAIT_GRACE_MINUTES, parseWaits, conditionHolds, waitItemOf, waitFieldsOf, staleWaits, bareWaits,
   manualWaits, setterOf,
-} from "../wait-condition.mjs";
-import { holdReasonOf, holdExcused } from "../pr-hold-state.mjs";
-import { SIGNALS, redPrReading, staleWaitReading, waitWithoutReasonReading, orgHealthReadings, orgHealthOrders } from "../org-health.mjs";
-import { decide, withPrOwners, redPrFacts, staleWaitOrders, waitTickFacts, refFactOf, readWaitFacts, orgHealthNow } from "../work-gate.mjs";
+} from "../wait-condition.ts";
+import { holdReasonOf, holdExcused } from "../pr-hold-state.ts";
+import { SIGNALS, redPrReading, staleWaitReading, waitWithoutReasonReading, orgHealthReadings, orgHealthOrders } from "../org-health.ts";
+import { decide, withPrOwners, redPrFacts, staleWaitOrders, waitTickFacts, refFactOf, readWaitFacts, orgHealthNow } from "../work-gate.ts";
 
-const HOLD_ENTRY = fileURLToPath(new URL("../pr-hold.mjs", import.meta.url));
+const HOLD_ENTRY = fileURLToPath(new URL("../pr-hold.ts", import.meta.url));
 const MINUTE_MS = 60_000;
 const HOUR_MS = 3_600_000;
 const NOW = Date.parse("2026-10-02T11:00:00Z");

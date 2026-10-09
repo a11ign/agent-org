@@ -22,11 +22,11 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GROUPS, CauseDeclarationRefusal, declareCause, declaredCauses, causesOf, judgmentCausesOf,
-  startCausesOf, profilesOf } from "../cause-shape.mjs";
+  startCausesOf, profilesOf } from "../cause-shape.ts";
 import { CAUSES, JUDGMENT_CAUSES, START_CAUSES, PROFILES, TOOL_CAUSE_DECLARATIONS, parseProjectCauseModule }
-  from "../cause-declaration.mjs";
-import { HOME_CHECKOUT, ProjectDeclarationRefusal } from "../project-config.mjs";
-import { parseRolesDir, homeRolesDir, roleBriefPath } from "../project-roles.mjs";
+  from "../cause-declaration.ts";
+import { HOME_CHECKOUT, ProjectDeclarationRefusal } from "../project-config.ts";
+import { parseRolesDir, homeRolesDir, roleBriefPath } from "../project-roles.ts";
 
 // A mutation reaches into a shape the fixture's own type would otherwise pretend is optional, the same
 // tradeoff `project-config.test.ts` accepts for the identical reason.

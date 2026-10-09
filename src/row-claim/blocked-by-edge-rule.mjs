@@ -2,7 +2,7 @@
 // @ts-check
 // RULE: DOES THE ROW BEING CLAIMED CARRY ITS OWN OPEN `blockedBy` EDGE? -- #1886.
 //
-// `waitingOn` (`../waiting-condition.mjs`) is already the one reader of "is this row waiting on
+// `waitingOn` (`../waiting-condition.ts`) is already the one reader of "is this row waiting on
 // something" -- the gate's own wake computation reads it before a row is ever offered as
 // `ready-row-unclaimed`. `row-claim.mjs`'s `sessionEligibilityReason` composed B2 (own-pr-health) and B4
 // (file-overlap) and nothing else, so a row the gate correctly shelves could still be claimed directly by
@@ -21,9 +21,9 @@
 // against. A `blockedBy` edge is GitHub-native state; it is lifted the way it was added
 // (`gh issue edit --remove-blocked-by`), which is also the one place the removal is visible to every other
 // reader of the row -- a bypass flag here would just be a second, unrecorded way to the same effect.
-import { waitingOn, todayIso } from "../waiting-condition.mjs";
+import { waitingOn, todayIso } from "../waiting-condition.ts";
 import { lookup, gh } from "../merge-guard/lookups.mjs";
-import { REPO } from "../project-identity.mjs";
+import { REPO } from "../project-identity.ts";
 
 /**
  * #2617: `repo` is the TRACKER the row lives in -- the one the project's declaration names for it (default: the first).

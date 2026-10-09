@@ -24,8 +24,8 @@ import { fileURLToPath } from "node:url";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
 import { PROJECT_ROOT, TOOL_ROOT } from "./host-units-project.ts"; // FIRST of the tool imports: it makes a fixture project the tool's before `host-units.mjs` resolves one (#3233)
 
-const { hostIdentityDrift, hostIdentityInstall, hostUnitDrift, ownedIdentityFiles, shippedScriptText } = await import("../host-units.mjs");
-const { homeHostConfig } = await import("../host-config.mjs");
+const { hostIdentityDrift, hostIdentityInstall, hostUnitDrift, ownedIdentityFiles, shippedScriptText } = await import("../host-units.ts");
+const { homeHostConfig } = await import("../host-config.ts");
 
 const HOST_VARIABLE = "AGENT_ORG_HOST";
 const NO_SYSTEMD_USER_LINES = "LANG=C\n";

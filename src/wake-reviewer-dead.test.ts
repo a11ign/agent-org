@@ -22,11 +22,11 @@ import {
   spawnableReviewer, endFinishedReviewers, reviewerPathsFrom, listingIsComplete, observeOpenReviewer,
   REVIEWER_DEAD_AFTER_TICKS,
   SETTLE_TEST_CLOCK_ENV,
-} from "./wake.mjs";
-import { readReviewerRegistry } from "./work-gate.mjs";
+} from "./wake.ts";
+import { readReviewerRegistry } from "./work-gate.ts";
 
 const STUB_MODE = 0o755;
-const TICK_ENTRY = fileURLToPath(new URL("./work-tick.mjs", import.meta.url));
+const TICK_ENTRY = fileURLToPath(new URL("./work-tick.ts", import.meta.url));
 const T0 = 1_790_298_923_494;
 const DEAD = "reviewer-2453";
 

@@ -1,0 +1,442 @@
+#!/usr/bin/env node
+// @ts-check
+// command: name the armed, green PRs that can never merge because they are behind and conflicting
+// #361: AN ARMED, GREEN, CONFLICTING PR SITS FOREVER, AND NOTHING SAYS WHY.
+//
+// Measured 2026-09-07 12:40Z, two of the eight open PRs:
+//
+//   #232  armed, gate=SUCCESS, standing since 04:45 (8 hours)    -- 6 files CONFLICT against origin/main
+//   #281  armed, gate=SUCCESS, standing since 08:00 (4.5 hours)  -- 2 files CONFLICT against origin/main
+//
+// Twelve and a half PR-hours of two workers' finished work, invisible -- neither author was told, both
+// found by hand. This is the gap `auto-arm-sweep.mjs` (#344) closed at the OTHER end: that sweep reports
+// every PR it will not arm, with a reason. It says nothing about a PR it DID arm, because from its side
+// arming succeeded -- GitHub then declines to complete the merge and tells nobody. Same hole, one step
+// further along the queue.
+//
+// ## `mergeable` is not the instrument -- `git merge-tree` is
+//
+// GitHub computes `mergeable` LAZILY and it read `UNKNOWN` on both PRs at the moment of measurement, so a
+// check keyed on `mergeable == "CONFLICTING"` would have reported neither. `git merge-tree --write-tree
+// --name-only <base> <head>` answers directly and locally: exit 0 with a single tree-oid line on stdout
+// means a clean merge is possible; exit 1 means real content conflicts, and stdout's first paragraph (up
+// to the first blank line, after the tree-oid line) names exactly the conflicting paths. Verified against
+// the real queue before writing this: PRs #232/#281/#181/#172 conflicted, #367/#371/#381 (this session's
+// own, clean against `origin/main`) did not -- exit 0, stdout one line, no trailer.
+//
+// ## Three things this must get right, each with a wrong answer that looks correct
+//
+// 1. REPORT, NEVER ACT. No rebase, no branch update, no close. #258's collision -- `gh pr update-branch`
+//    run on a PR its author was mid-rebase inside, reverted real work, and only `--force-with-lease`
+//    stopped it -- is exactly the failure mode of "helpfully" resolving a conflict this script only names.
+// 2. "WAITING FOR A CHECK" AND "CANNOT EVER MERGE" MUST NEVER PRINT THE SAME THING. A PR armed ten seconds
+//    ago with `gate` still running is healthy. The signal is a conflict on an ALREADY-GREEN PR, not the
+//    mere absence of a completed merge -- `stalledVerdict` below refuses to call anything stalled until
+//    `gate` has actually concluded SUCCESS.
+// 3. REACHABLE WITHOUT A SCHEDULE. GitHub disables scheduled workflows after 60 days of inactivity
+//    (`board-liveness.test.ts`), and a stall reporter that fails by going quiet has the disease it
+//    watches for. Rides the same `pull_request` trigger `auto-arm-sweep.mjs` does, plus (#1633) the
+//    `workflow_run` (`ci` completed) event, so a PR only revealed as stalled by a gate concluding is
+//    named without waiting for the queue's next unrelated `pull_request` or `push`.
+//
+// A THRESHOLD, NOT AN INSTANT REPORT, on the conflict itself too: a PR whose `gate` concluded seconds ago
+// may not yet reflect a `main` that just moved underneath it, and a conflict computed against a stale
+// local view of `origin/main` is a false alarm waiting to happen. `DEFAULT_STALL_THRESHOLD_MS` (30
+// minutes) is the same shape as `auto-arm-sweep.mjs`'s own "REPORT, never silently skip" -- except here
+// the risk runs the other way, so the guard is against reporting TOO EARLY rather than not at all.
+//
+// Exit codes are the contract:
+//   0  the queue was examined -- zero or more stalled PRs were named (STALLED alone is not a failure;
+//      see the workflow step for what treats it as one)
+//   2  a lookup failed. INCONCLUSIVE, never "fine".
+import { execFileSync } from "node:child_process";
+import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { sandboxGitEnv } from "./lib/git-env.mjs";
+import { realpathSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+import { newestConclusion, newestRun, normaliseConclusion, SUCCESS, workflowRunIdOf } from "./newest-check-run.ts";
+// #1100: SUCCESS IS IMPORTED, NOT SPELLED. `newestConclusion` normalises every conclusion to one
+// vocabulary at its own edge (`gh` spells the same verdict `SUCCESS` on `statusCheckRollup` and `success`
+// on the REST check-runs API), so a literal here is a copy of a fact this file learns from that one --
+// and it read `"SUCCESS"` in three places while the function had started returning `"success"`, which
+// made every green armed pull request report as "has not concluded SUCCESS".
+
+export const EXIT = { EXAMINED: 0, CANNOT_ASK: 2 };
+export const DEFAULT_STALL_THRESHOLD_MS = 30 * 60 * 1000;
+
+// #1810: A PULL REQUEST GITHUB NEVER SCHEDULED A RUN FOR IS INVISIBLE TO EVERY OTHER WATCHER -- no red
+// check, no pending check, nothing. #1808 sat 51 minutes with `gh api .../actions/runs?head_sha=...`
+// returning a flat 0, found only by the chairman asking why it was still open; #1809, opened 18 minutes
+// later, ran normally. Every existing watcher keys on something HAVING HAPPENED (an armed PR, a
+// settled-red or settled-green rollup), so an empty rollup reads as "not yet", forever.
+//
+// **THE THRESHOLD IS BOUNDED BY A SAMPLE, NOT GUESSED.** Measured 2026-09-20 over the 25 most recently
+// closed PRs, each one's actual push (the head commit's own committer date) against the `created_at` of
+// the first workflow run GitHub scheduled for that exact sha: 5s to 128s, most in the 20-50s band. Five
+// minutes is roughly double the observed maximum and three orders of magnitude below #1808's real 51
+// minutes -- the same "headroom over a measured sample, not tuned against a queue" reasoning
+// `STOPPED_AFTER_LAG_HOURS` in `org-watch.mjs` uses for its own bound.
+export const DEFAULT_NEVER_SCHEDULED_THRESHOLD_MS = 5 * 60 * 1000;
+
+/**
+ * PURE-ish (injectable git). Exactly how many commits on `base` are not yet on `headSha` -- the real
+ * count `gh pr list` does not expose, computed locally the same way `mergeTreeConflict` computes
+ * conflicts rather than trusting GitHub's lazily-computed `mergeable`/`mergeStateStatus`.
+ *
+ * @param {string} base
+ * @param {string} headSha
+ * @param {(args: string[]) => { status: number, stdout: string }} runGit
+ * @returns {number}
+ */
+export function behindByCount(base: string, headSha: string, runGit: (args: string[]) => { status: number; stdout: string; }): number {
+  const { status, stdout } = runGit(["rev-list", "--count", `${headSha}..${base}`]);
+  if (status !== 0) return 0;
+  const n = Number.parseInt(stdout.trim(), 10);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/**
+ * PURE. Does this PR need reporting, and why? Never decides to act -- only to speak.
+ *
+ * @param {{ armed: boolean, gateConclusion: string | null, conflict: boolean, ageMs: number,
+ *   thresholdMs?: number }} input
+ * @returns {{ stalled: boolean, code: string, reason: string }}
+ */
+export function stalledVerdict({ armed, gateConclusion: rawConclusion, conflict, ageMs,
+  thresholdMs = DEFAULT_STALL_THRESHOLD_MS }: {
+        armed: boolean; gateConclusion: string | null; conflict: boolean; ageMs: number;
+        thresholdMs?: number;
+    }): { stalled: boolean; code: string; reason: string; } {
+  const gateConclusion = normaliseConclusion(rawConclusion);
+  if (!armed) {
+    return { stalled: false, code: "NOT_ARMED", reason: "not armed for auto-merge -- not this check's concern" };
+  }
+  if (gateConclusion !== SUCCESS) {
+    return {
+      stalled: false, code: "WAITING",
+      reason: `gate has not concluded SUCCESS (${gateConclusion ?? "no conclusion yet"}) -- healthy, still `
+        + "running or not yet checked",
+    };
+  }
+  if (!conflict) {
+    return { stalled: false, code: "HEALTHY", reason: "armed, green, no conflict -- waiting its turn" };
+  }
+  if (ageMs < thresholdMs) {
+    return {
+      stalled: false, code: "TOO_RECENT",
+      reason: `conflict detected but only armed ${Math.round(ageMs / 60000)}m ago -- below the `
+        + `${Math.round(thresholdMs / 60000)}m floor against a stale local view of origin/main`,
+    };
+  }
+  return {
+    stalled: true, code: "CONFLICTING",
+    reason: "armed and green, but cannot ever merge as-is -- content conflicts against origin/main",
+  };
+}
+
+/**
+ * Runs the real `git merge-tree`, never re-implements its logic. `runGit` is injectable so the parsing
+ * below is tested against captured, real output rather than a guessed shape.
+ *
+ * @param {string} base
+ * @param {string} headSha
+ * @param {(args: string[]) => { status: number, stdout: string }} runGit
+ * @returns {{ conflict: boolean, files: string[] }}
+ */
+export function mergeTreeConflict(base: string, headSha: string, runGit: (args: string[]) => { status: number; stdout: string; }): { conflict: boolean; files: string[]; } {
+  const { status, stdout } = runGit(["merge-tree", "--write-tree", "--name-only", base, headSha]);
+  if (status === 0) return { conflict: false, files: [] };
+  // stdout's first paragraph is the tree-oid line followed by one conflicting path per line; the second
+  // paragraph (Auto-merging.../CONFLICT (content): ... trailer) is not parsed -- the file list already
+  // names what matters, and the trailer's wording is not a contract git makes.
+  const [fileSection = ""] = stdout.split("\n\n");
+  const files = fileSection.split("\n").slice(1).filter(Boolean);
+  return { conflict: true, files };
+}
+
+/**
+ * When THIS COMMIT landed, read from git -- or `null` when git could not answer (the sha not fetched
+ * locally, or `git log` failed some other way). The COMMITTER date (`%cI`), not GitHub's `pr.createdAt`.
+ *
+ * #1814: `examinePr` used to read `pr.createdAt` for `prAgeMs` -- when GitHub OPENED the pull request,
+ * which never moves. A PR force-pushed to a fresh head keeps its old `createdAt` but lands with
+ * `checkRunCount: 0` (GitHub zeroes `statusCheckRollup` on synchronize), so an old PR with a brand-new
+ * head was flagged `NEVER_SCHEDULED` before GitHub had any chance to schedule a run for that head -- the
+ * PR's age, not the head's. Reading `headRefOid`'s own committer date instead answers the question this
+ * check actually asks: how long has GITHUB HAD THIS COMMIT, not how long has the pull request existed.
+ *
+ * @param {string} headSha
+ * @param {(args: string[]) => { status: number, stdout?: string }} runGit
+ * @returns {string | null}
+ */
+export function headCommittedAt(headSha: string, runGit: (args: string[]) => { status: number; stdout?: string; }): string | null {
+  const result = runGit(["log", "-1", "--format=%cI", headSha]);
+  if (result.status !== 0) return null;
+  const value = (result.stdout ?? "").trim();
+  return value === "" ? null : value;
+}
+
+/** @param {string[]} args */
+function runGitForReal(args: string[]) {
+  try {
+    const stdout = execFileSync("git", args,
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: sandboxGitEnv() });
+    return { status: 0, stdout };
+  } catch (cause) {
+    const err = /** @type {{ status?: number, stdout?: string }} */ (cause);
+    return { status: err.status ?? 1, stdout: err.stdout ?? "" };
+  }
+}
+
+/** @param {string[]} args */
+const gh = (args: string[]) => execFileSync("gh", args, { encoding: "utf8" }).trim();
+
+/**
+ * @typedef {{ name?: string, conclusion?: string | null, completedAt?: string | null,
+ *   startedAt?: string | null, detailsUrl?: string | null }} CheckRun
+ * @typedef {{ number: number, headRefOid: string, autoMergeRequest?: { enabledAt: string } | null,
+ *   statusCheckRollup?: CheckRun[], isDraft?: boolean }} QueuedPr
+ */
+
+/**
+ * #1623: AN ARMED PR HELD BY A SUPERSEDING GATE THAT DID NOT SUCCEED, while an older run's gate at its head did.
+ *
+ * #1617, 2026-09-14: green, reviewed and armed at `84f684dd`, and BLOCKED with nothing for its author to fix. Two
+ * `ci` runs started at that head within 2 s. The OLDER one's `gate` succeeded; the NEWER one was cancelled 6 s after
+ * it was created, and GitHub held the PR on it. Nothing re-runs a cancelled run; the since-retired update-branch sweep acted only on a PR
+ * that was behind, so the PR was unstuck only because main moved.
+ *
+ * "Newest" is `newestRun`, which orders by WORKFLOW RUN when the entries name one (#1623's comparator in
+ * newest-check-run.mjs). Every entry in a PR's rollup is on its current head, so "the same head" is the rollup itself.
+ *
+ * REPORTS, NEVER ACTS: it names both runs and the one action that clears it. A still-running newest gate is not this
+ * (the run may yet succeed), and a red gate with no success anywhere on the head is an ordinary red, not this shape.
+ *
+ * ONLY WORKFLOW-RUN ORDER CAN SAY IT (#1631's review). Without two DISTINCT run ids -- both entries id-free, one
+ * missing, or one run holding both -- "newest" is `newestRun`'s completion-time fallback, the very guess that read
+ * #1617 backwards. Such a pair is UNORDERED: not reported, and never a re-run instruction naming a run nobody can name.
+ *
+ * @param {{ armed: boolean, runs: CheckRun[] | null | undefined }} input
+ * @returns {{ code: "NOT_ARMED" | "NO_GATE" | "RUNNING" | "GREEN" | "RED" | "UNORDERED" | "SUPERSEDED", reason: string }}
+ */
+export function supersedingGateVerdict({ armed, runs }: { armed: boolean; runs: CheckRun[] | null | undefined; }): { code: "NOT_ARMED" | "NO_GATE" | "RUNNING" | "GREEN" | "RED" | "UNORDERED" | "SUPERSEDED"; reason: string; } {
+  if (!armed) return { code: "NOT_ARMED", reason: "not armed -- not this check's concern" };
+  const newest = newestRun(runs, "gate");
+  if (!newest) return { code: "NO_GATE", reason: "no gate run on this head" };
+  const conclusion = normaliseConclusion(newest.conclusion);
+  if (conclusion === null) return { code: "RUNNING", reason: "the newest gate has not concluded -- it may yet succeed" };
+  if (conclusion === SUCCESS) return { code: "GREEN", reason: "the newest gate succeeded" };
+  const succeeded = (runs ?? []).find((run) => run !== newest && run?.name === "gate"
+    && normaliseConclusion(run.conclusion) === SUCCESS);
+  if (!succeeded) {
+    return { code: "RED", reason: `the newest gate concluded ${conclusion} and no gate on this head succeeded -- an `
+      + "ordinary red, not a superseded one" };
+  }
+  const [newestId, succeededId] = [workflowRunIdOf(newest), workflowRunIdOf(succeeded)];
+  if (newestId === null || succeededId === null || newestId <= succeededId) {
+    return { code: "UNORDERED", reason: `the newest gate by time concluded ${conclusion} after a gate on this head `
+      + "succeeded, but the two do not carry distinct workflow run ids, so which attempt GitHub counts cannot be read "
+      + "-- not reported" };
+  }
+  return { code: "SUPERSEDED", reason: `blocked by a superseding ${conclusion} gate: workflow run ${newestId}'s gate `
+    + `${conclusion} after run ${succeededId}'s gate succeeded at this head -- re-run workflow run ${newestId} to clear it` };
+}
+
+/**
+ * The one summary line for #1623's check, stated whether or not anything was found.
+ * @param {number[]} blocked PR numbers
+ * @returns {string}
+ */
+export function supersededLine(blocked: number[]): string {
+  return blocked.length === 0
+    ? "QUEUE: nothing blocked by a superseding gate -- no armed PR's newest gate failed after an older one succeeded."
+    : `QUEUE: ${blocked.length} blocked by a superseding gate: ${blocked.join(" ")}`;
+}
+
+/**
+ * PURE. #1810: is this PR one GitHub never scheduled a run for -- a check-runs population of zero, not a
+ * check-runs population that has not settled yet?
+ *
+ * UNLIKE every other predicate in this file, this one does not require `armed` -- #1808 was never armed
+ * (nothing arms a PR with no green gate), and the whole point is to name a PR before it gets anywhere
+ * near arming. It looks at the open PR itself: is it a draft, how old is it, and does its head carry even
+ * one check run of any kind.
+ *
+ * A DRAFT IS NEVER FLAGGED, REGARDLESS OF AGE. Not because CI skips drafts (`ci.yml`'s `pull_request`
+ * trigger carries no draft filter, so one ordinarily still runs) but because a draft is a PR its own
+ * author has not yet asked anyone -- human or workflow -- to look at; `merge-queue.mjs`'s own
+ * `pr.isDraft` short-circuit reads the same population the same way.
+ *
+ * `checkRunCount > 0` clears this predicate NO MATTER THE CONCLUSION -- a run that failed, is still
+ * running, or even one that was cancelled is proof GitHub scheduled *something* for this commit, which is
+ * the one fact this predicate exists to test for. Whether that run is healthy is every other predicate's
+ * question, not this one's.
+ *
+ * @param {{ isDraft: boolean, ageMs: number, checkRunCount: number, thresholdMs?: number }} input
+ * @returns {{ stalled: boolean, code: string, reason: string }}
+ */
+export function neverScheduledVerdict({
+  isDraft, ageMs, checkRunCount, thresholdMs = DEFAULT_NEVER_SCHEDULED_THRESHOLD_MS,
+}: { isDraft: boolean; ageMs: number; checkRunCount: number; thresholdMs?: number; }): { stalled: boolean; code: string; reason: string; } {
+  if (isDraft) {
+    return { stalled: false, code: "DRAFT", reason: "draft -- not yet asking for a run" };
+  }
+  if (checkRunCount > 0) {
+    return {
+      stalled: false, code: "HAS_RUNS",
+      reason: `${checkRunCount} check run(s) on this head -- GitHub scheduled something, whatever it concluded`,
+    };
+  }
+  if (ageMs < thresholdMs) {
+    return {
+      stalled: false, code: "TOO_RECENT",
+      reason: `no check runs yet, but only ${Math.round(ageMs / 1000)}s old -- below the `
+        + `${Math.round(thresholdMs / 60000)}m floor for ordinary Actions scheduling latency`,
+    };
+  }
+  return {
+    stalled: true, code: "NEVER_SCHEDULED",
+    reason: `open, not draft, ${Math.round(ageMs / 60000)}m old with zero check runs on its head -- `
+      + "GitHub did not schedule anything for this commit",
+  };
+}
+
+/**
+ * The one summary line for #1810's check, stated whether or not anything was found -- the same "an empty
+ * rollup is indistinguishable from a rollup that has not filled yet" gap this predicate exists to close
+ * must not reappear in its own silence.
+ *
+ * @param {number[]} flagged PR numbers
+ * @returns {string}
+ */
+export function neverScheduledLine(flagged: number[]): string {
+  return flagged.length === 0
+    ? "QUEUE: nothing open with zero scheduled runs -- every open, non-draft PR past the scheduling-jitter "
+      + "floor has at least one check run."
+    : `QUEUE: ${flagged.length} GitHub never scheduled a run for: ${flagged.join(" ")}`;
+}
+
+/**
+ * The whole per-PR examination `main()`'s loop used to inline, pulled out to keep the caller's complexity
+ * under this repo's ceiling.
+ *
+ * @param {QueuedPr} pr
+ * @param {number} now
+ * @param {(args: string[]) => { status: number, stdout: string }} runGit injectable so tests can supply a
+ *   fake git reader instead of depending on real commit objects being present in the checkout. Defaults to the real git binary.
+ * @returns {{ conflicting?: { number: number, reason: string, files: string[] },
+ *   superseded?: { number: number, reason: string },
+ *   neverScheduled?: { number: number, reason: string }, examined: boolean }}
+ */
+export function examinePr(pr: QueuedPr, now: number, runGit: (args: string[]) => { status: number; stdout: string; } = runGitForReal): {
+    conflicting?: { number: number; reason: string; files: string[]; };
+    superseded?: { number: number; reason: string; };
+    neverScheduled?: { number: number; reason: string; }; examined: boolean;
+} {
+  const armed = pr.autoMergeRequest != null;
+  // #498's own bug: the FIRST matching run in the rollup, not the newest by timestamp. One imported function,
+  // not a hand-rolled `.find()` that can drift from it.
+  const gateConclusion = newestConclusion(pr.statusCheckRollup, "gate");
+  const ageMs = armed && pr.autoMergeRequest ? now - Date.parse(pr.autoMergeRequest.enabledAt) : 0;
+  const green = armed && normaliseConclusion(gateConclusion) === SUCCESS;
+  // #1623: a PR that is not green can still be one nothing will ever unstick -- reported by name, never acted on.
+  // eslint-disable-next-line local/bounded-window-reads -- #1623: the superseded-gate verdict must see the older runs; the newest is still chosen by newestRun
+  const blocking = supersedingGateVerdict({ armed, runs: pr.statusCheckRollup });
+  const superseded = blocking.code === "SUPERSEDED" ? { number: pr.number, reason: blocking.reason } : undefined;
+
+  // #1810: NOT gated on `armed`/`green` -- #1808 was never armed, so a check that only ran once a PR
+  // reached the same precondition as the conflict check below would never have found it.
+  // #1814: the HEAD COMMIT's own age, not `pr.createdAt` -- see `headCommittedAt`. An unreadable head
+  // (not fetched, or some other git failure) falls back to 0, the same "unknown reads as too recent, not
+  // as stalled" choice `pr.createdAt` missing used to make, so a read failure here can never manufacture
+  // a false NEVER_SCHEDULED.
+  const headCommitAt = headCommittedAt(pr.headRefOid, runGit);
+  const prAgeMs = headCommitAt ? now - Date.parse(headCommitAt) : 0;
+  // #1810: the RAW population, not the newest-per-name reading `newestConclusion`/`newestRun` give the
+  // checks above -- even a superseded or duplicate run proves GitHub scheduled SOMETHING at this head,
+  // which is exactly what this predicate asks, unlike those checks' question of what the newest one says.
+  // eslint-disable-next-line local/bounded-window-reads -- #1810: the count itself is the signal; see above
+  const checkRunCount = (pr.statusCheckRollup ?? []).length;
+  const scheduleVerdict = neverScheduledVerdict({ isDraft: Boolean(pr.isDraft), ageMs: prAgeMs, checkRunCount });
+  const neverScheduled = scheduleVerdict.stalled ? { number: pr.number, reason: scheduleVerdict.reason } : undefined;
+
+  if (!green) return { superseded, neverScheduled, examined: false };
+
+  const { conflict, files } = mergeTreeConflict("origin/main", pr.headRefOid, runGit);
+  const verdict = stalledVerdict({ armed, gateConclusion, conflict, ageMs });
+  const conflicting = verdict.stalled ? { number: pr.number, reason: verdict.reason, files } : undefined;
+
+  return { conflicting, neverScheduled, examined: true };
+}
+
+/**
+ * The per-PR console lines and array pushes `main()`'s loop used to inline -- pulled out for the same
+ * reason `examinePr` was: this file keeps adding one more independent check per PR
+ * (#1810 is the fourth), and inlining each one's report step in the loop is what pushes `main()` back over
+ * this repo's own complexity ceiling.
+ *
+ * @param {ReturnType<typeof examinePr>} result
+ * @param {{ stalled: number[], superseded: number[], neverScheduled: number[] }} sinks
+ */
+function reportExaminedPr(result: ReturnType<typeof examinePr>, sinks: { stalled: number[]; superseded: number[]; neverScheduled: number[]; }) {
+  if (result.superseded) {
+    console.log(`#${result.superseded.number} BLOCKED -- ${result.superseded.reason}`);
+    sinks.superseded.push(result.superseded.number);
+  }
+  if (result.neverScheduled) {
+    console.log(`#${result.neverScheduled.number} NEVER_SCHEDULED -- ${result.neverScheduled.reason}`);
+    sinks.neverScheduled.push(result.neverScheduled.number);
+  }
+  if (result.conflicting) {
+    console.log(`#${result.conflicting.number} STALLED -- ${result.conflicting.reason}`);
+    console.log(`  conflicting: ${result.conflicting.files.join(", ")}`);
+    sinks.stalled.push(result.conflicting.number);
+  }
+}
+
+function main() {
+  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/queue-stalled.mjs" });
+
+  const repo = process.env.GITHUB_REPOSITORY;
+  if (!repo) {
+    console.error("CANNOT ASK: GITHUB_REPOSITORY is unset, so there is no repo to examine.");
+    process.exit(EXIT.CANNOT_ASK);
+  }
+
+  let prs;
+  try {
+    prs = JSON.parse(gh(["pr", "list", "--repo", repo, "--state", "open", "--base", "main", "--limit", "100",
+      "--json", "number,headRefOid,autoMergeRequest,statusCheckRollup,isDraft"]));
+  } catch (cause) {
+    console.error(`CANNOT ASK: listing open PRs failed -- ${cause instanceof Error ? cause.message : cause}`);
+    process.exit(EXIT.CANNOT_ASK);
+  }
+
+  // Fetch every branch tip once, up front -- `actions/checkout@v4` only brings the triggering PR's own
+  // head, and `git merge-tree` needs every OTHER open PR's head object present locally too.
+  try {
+    execFileSync("git", ["fetch", "origin", "--quiet", "+refs/heads/*:refs/remotes/origin/*"],
+      { stdio: "pipe", env: sandboxGitEnv() });
+  } catch (cause) {
+    console.error(`CANNOT ASK: fetching branch tips failed -- ${cause instanceof Error ? cause.message : cause}`);
+    process.exit(EXIT.CANNOT_ASK);
+  }
+
+  const now = Date.now();
+  const sinks = { stalled: [], superseded: [], neverScheduled: [] };
+  for (const pr of prs) reportExaminedPr(examinePr(pr, now), sinks);
+
+  if (sinks.stalled.length === 0) {
+    console.log("QUEUE: nothing stalled -- every armed, green PR merges cleanly against origin/main.");
+  } else {
+    console.log(`QUEUE: ${sinks.stalled.length} stalled: ${sinks.stalled.join(" ")}`);
+  }
+  console.log(supersededLine(sinks.superseded));
+  console.log(neverScheduledLine(sinks.neverScheduled));
+  process.exit(EXIT.EXAMINED);
+}
+
+// The same entry guard `merge-guard.mjs`/`auto-arm-sweep.mjs` use: a bare `file://` + argv[1] comparison
+// misreads a path with a space in it and a symlinked checkout, and reports the module as "imported, not
+// run".
+if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) main();

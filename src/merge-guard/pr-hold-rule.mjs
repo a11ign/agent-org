@@ -40,7 +40,7 @@
 // a row you do not hold cannot be taken from its owner, so confirming and passing a flag is the only
 // route. A PR hold CAN be handed over -- `pnpm run pr:release` then `pr:hold` -- so a flag here would be a
 // silent bypass standing in for an action that leaves a record. The escape hatch is taking the hold.
-import { holdersOf, HOLD_PREFIX } from "../pr-hold-state.mjs";
+import { holdersOf, HOLD_PREFIX } from "../pr-hold-state.ts";
 
 /**
  * @param {{number: number}} pr

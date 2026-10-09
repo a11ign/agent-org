@@ -18,9 +18,9 @@ import { delimiter, join } from "node:path";
 import {
   fetchPushedBranches, fetchAllPRHeadRefs, fetchOpenPRs, branchesWithNoPR, aheadCount, strandedCandidates,
   PR_LIST_LIMIT, PR_PAGE_SIZE, MAX_PR_PAGES, decideForPR, staleClosureComment, sweepPullRequests, prForDecision,
-  EXIT, main as strandedMain } from "../stranded-branches.mjs";
+  EXIT, main as strandedMain } from "../stranded-branches.ts";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
-import { REPO } from "../project-identity.mjs";
+import { REPO } from "../project-identity.ts";
 
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, env: sandboxGitEnv(), encoding: "utf8" });
 
@@ -359,7 +359,7 @@ test("THE TWO-STAGE FILTER: a squash-merged branch is excluded by stage 1, befor
 // its refusals are driven through an injected `run` above; the live read is the audit itself,
 // `npm run branches:stranded`, which no local test runs.
 
-const SCRIPT = fileURLToPath(new URL("../stranded-branches.mjs", import.meta.url));
+const SCRIPT = fileURLToPath(new URL("../stranded-branches.ts", import.meta.url));
 const PAGE_ONE = `api repos/${REPO}/pulls?state=all&per_page=${PR_PAGE_SIZE}&sort=created&direction=asc&page=1 `
   + "--jq [.[] | {ref: .head.ref}]";
 

@@ -267,10 +267,10 @@ describe("done-when 4: the trigger is a pure function", () => {
     assert.equal(selftestDue({ ...base, current: "v0.49.1", changedFiles: ["src/messaging/converse.mjs"] }).run, false);
   });
   test("tag moved with a messaging change: run", () => {
-    for (const file of ["src/messaging/converse.mjs", "src/prompt-session.mjs", "src/wake.mjs", "src/herdr-agents.mjs", "src/project-roles.mjs"]) assert.equal(selftestDue({ ...base, changedFiles: [file, "README.md"] }).run, true, file);
+    for (const file of ["src/messaging/converse.mjs", "src/prompt-session.ts", "src/wake.ts", "src/herdr-agents.ts", "src/project-roles.ts"]) assert.equal(selftestDue({ ...base, changedFiles: [file, "README.md"] }).run, true, file);
   });
   test("tag moved with none, or with only a messaging TEST: no run", () => {
-    assert.equal(selftestDue({ ...base, changedFiles: ["src/work-gate.mjs", "README.md"] }).run, false);
+    assert.equal(selftestDue({ ...base, changedFiles: ["src/work-gate.ts", "README.md"] }).run, false);
     assert.equal(selftestDue({ ...base, changedFiles: ["src/messaging/converse.test.ts", "src/messaging/fake-provider.ts"] }).run, true, "fake-provider.ts is a .ts under messaging/ and is a shipped path");
     assert.equal(selftestDue({ ...base, changedFiles: ["src/messaging/converse.test.ts"] }).run, false);
   });
@@ -291,7 +291,7 @@ describe("done-when 4: the trigger is a pure function", () => {
   });
   test("the path list: positive control for the matcher, and what it deliberately leaves out", () => {
     assert.ok(touchesMessaging(["src/messaging/listen.mjs"]));
-    assert.ok(!touchesMessaging(["src/work-gate.mjs", "docs/messaging.md", "src/messaging/listen.test.ts"]));
+    assert.ok(!touchesMessaging(["src/work-gate.ts", "docs/messaging.md", "src/messaging/listen.test.ts"]));
     assert.ok(!touchesMessaging(["src/messaging", "src/wake.mjs.bak", "lib/src/wake.mjs", "src/prompt-session.mts"]), "the pattern is anchored: a near miss is not a messaging path");
   });
 });
@@ -387,7 +387,7 @@ describe("the command", () => {
 // THE TICK STEP in `wake.mjs`: it is the one place a report can reach `ceo`'s queue, because `src/messaging/` may not name the queue.
 // `wake.mjs` reads the project's declaration at import, so it loads where `AGENT_ORG_HOST` finds one; elsewhere these cases are SKIPPED WITH THE REFUSAL AS THE REASON,
 // and the "wake.mjs loaded" test says which of the two this run was (a skip that fires always is a check that never runs).
-const wake = await import("../wake.mjs").then((module) => ({ module }), (error) => ({ reason: String(error.message).split("\n")[0] }));
+const wake = await import("../wake.ts").then((module) => ({ module }), (error) => ({ reason: String(error.message).split("\n")[0] }));
 const skipUnlessLoaded = "reason" in wake ? `wake.mjs cannot load here: ${wake.reason}` : false;
 
 describe("the tick step queues a report for ceo and for nobody else", () => {
@@ -462,7 +462,7 @@ describe("a quiet tick starts no process and asks no model", () => {
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------
 // THE ENTRY, RUN AS THE TICK STARTS IT (a11ign/a11ign#3701). `wake.mjs`'s `checkChairmanPath` spawns this file as a process, and the cases above call `main` with an injected queue, which skips
-// `realQueue()`: the one call that does `import("../wake.mjs")`, and `wake.mjs` imports `selftest.mjs`. When the entry held a top-level `await` that import closed a cycle on a module still waiting on
+// `realQueue()`: the one call that does `import("../wake.ts")`, and `wake.mjs` imports `selftest.mjs`. When the entry held a top-level `await` that import closed a cycle on a module still waiting on
 // its own `await`, so Node drained the loop and exited 13 every time a run was due. NOTHING HERE QUEUES AN ORDER: the state file says a run is already waiting, so the tick goes straight to
 // `settlePending` (`realQueue()`, then a READ of the queue file) and the only files it writes are the self-test's own, under the isolated `HOME`.
 const ENTRY = fileURLToPath(new URL("./selftest.mjs", import.meta.url));

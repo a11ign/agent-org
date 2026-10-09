@@ -22,8 +22,8 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, write
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { HOME_CHECKOUT, HOST_ENV, resolveHomeCheckout } from "../project-config.mjs";
-import { HOST_CONFIG_ENV } from "../host-config.mjs";
+import { HOME_CHECKOUT, HOST_ENV, resolveHomeCheckout } from "../project-config.ts";
+import { HOST_CONFIG_ENV } from "../host-config.ts";
 
 // The PROJECT's checkout (its declaration is what the labels are read from), and the TOOL's own `src`, which are two trees (the tool is not
 // inside the project here), so neither is found by counting directories up from this file.

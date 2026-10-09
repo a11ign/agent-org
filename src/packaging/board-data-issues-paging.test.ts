@@ -11,7 +11,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { issues } from "../board-data.mjs";
+import { issues } from "../board-data.ts";
 
 const PAGE = 100;
 const OLD_LIMIT = 1000; // the `--limit` the read used to refuse at

@@ -16,7 +16,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { readOpenRowFollowUps, readTrackerLanes } from "./work-gate.mjs";
+import { readOpenRowFollowUps, readTrackerLanes } from "./work-gate.ts";
 
 type Call = { args: string[], repo: string | undefined };
 type Answer = { stdout: string } | { failed: true, stdout: string, stderr: string, status: number | null, code?: string };
@@ -138,7 +138,7 @@ test("a refusal in wave 3 is that read's null, beside the others' answers", () =
 });
 
 test("THE WIRING: main reads the tracker lanes and the follow-ups through the two waves, and no longer one by one", () => {
-  const source = readFileSync(new URL("./work-gate.mjs", import.meta.url), "utf8");
+  const source = readFileSync(new URL("./work-gate.ts", import.meta.url), "utf8");
   const main = source.slice(source.indexOf("\nfunction main()"));
   assert.match(main, /readLanesAfterOutageCheck\(\)/); // slice 6: the tracker lanes ride the one wave with the other repositories' lists
   assert.match(main, /readOpenRowFollowUps\(allOpen\)/);

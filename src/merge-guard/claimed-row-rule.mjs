@@ -37,7 +37,7 @@
 // sessions, read fresh off GitHub the same way `session` is. A name that does not match any actual
 // claimant on the row being closed leaves that reason refused -- turning "I confirmed" from an honor
 // system into a claim this tool can verify against the same labels `decideClaim` already reads.
-import { claimStatus, decideClaim } from "../row-claim.mjs";
+import { claimStatus, decideClaim } from "../row-claim.ts";
 import { reasonKind } from "./reason-kind.mjs";
 
 // `--allow-claimed-close=<name>`'s OWN argv PARSING stays in `merge-guard.mjs`, not here, deliberately.

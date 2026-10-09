@@ -13,7 +13,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decide, withPrOwners, waitTickFacts, orgHealthNow } from "./work-gate.mjs";
+import { decide, withPrOwners, waitTickFacts, orgHealthNow } from "./work-gate.ts";
 
 const NOW = Date.parse("2026-10-07T17:20:00Z");
 const ISO = (ms: number) => new Date(ms).toISOString();

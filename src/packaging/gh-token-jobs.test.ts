@@ -24,7 +24,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { localImports } from "../lib/local-import-closure.mjs";
-import { SPAWNS_GH } from "../acceptance-commands.mjs";
+import { SPAWNS_GH } from "../acceptance-commands.ts";
 
 /** Can a `gh` spawn be reached from this file, through any depth of local imports? */
 function reachesGh(entry: string, seen = new Set<string>()): boolean {

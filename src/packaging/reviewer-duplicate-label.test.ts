@@ -10,7 +10,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { endFinishedReviewers } from "../wake.mjs";
+import { endFinishedReviewers } from "../wake.ts";
 
 const LABEL = "reviewer-9001";
 const T0 = 1_790_298_923_494;

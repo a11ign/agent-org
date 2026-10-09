@@ -41,8 +41,8 @@ import {
   ACTIVITY_WINDOW_MS, REVIEW_PREFIXES, SCRATCHPAD_ROOT,
   classifyEntry, familyOf, formatReport, heldEntries, newestMtimeMs, openPullRequests,
   processStrings, pruneTmp as pruneTmpWithClaims, removePath, selfSessions, sweepablePaths,
-} from "../prune-tmp.mjs";
-import { claimRefusal, recordRemoval, REMOVAL_LOG_ENV } from "../worktree-removal.mjs";
+} from "../prune-tmp.ts";
+import { claimRefusal, recordRemoval, REMOVAL_LOG_ENV } from "../worktree-removal.ts";
 import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
 
 // #2782: EVERY REMOVAL WRITES A LINE AND READS THE ROW'S CLAIM, and a fixture must do neither to the host. The tests that ARE about
@@ -51,7 +51,7 @@ process.env[REMOVAL_LOG_ENV] = join(tmpDirForFile("removal-log-"), "worktree-rem
 const pruneTmp = (root: string, deps: NonNullable<Parameters<typeof pruneTmpWithClaims>[1]> = {}) =>
   pruneTmpWithClaims(root, { claim: () => ({ refused: false }), ...deps });
 
-const CLI = fileURLToPath(new URL("../prune-tmp.mjs", import.meta.url));
+const CLI = fileURLToPath(new URL("../prune-tmp.ts", import.meta.url));
 
 const LIVE_SESSION = "5913388d-3a80-4a63-9453-b4c7583486f6";
 const DEAD_SESSION = "0b472b7e-ba86-4a9d-9f77-6793dc60461a";

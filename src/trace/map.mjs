@@ -9,7 +9,7 @@
 // NEVER A NODE FROM NOTHING. `boarded` is a node of the chairman's ten, and the store holds no event for it (a board status change is a GraphQL project field, and the store is
 // REST only), so it is drawn marked `not held` with no edge and no figure. A row whose GitHub events were not read has only its merge, and is counted apart.
 // NEVER ZERO FOR UNKNOWN. A phase with no priced turn prints `n/a`, a figure with an unpriced turn in it is a FLOOR (`>=`), and a row with no turn in the store has no dollars.
-import { mergedRows, rowsClosedBy } from "../wakes-per-row.mjs";
+import { mergedRows, rowsClosedBy } from "../wakes-per-row.ts";
 import { nearestRank, weekStart } from "./aggregate.mjs";
 import { costOf } from "./store.mjs";
 
@@ -61,7 +61,7 @@ export const LOOPS = [
 /** @param {Keys} keys @param {string | null} repo @param {number} number */
 const prKey = (keys, repo, number) => `${repo === null ? keys.rowRepo : `${keys.org}/${repo}`}#${number}`;
 
-/** @param {import("../wakes-per-row.mjs").PullRequest[]} pulls @param {string} rowRepo @returns {Keys} */
+/** @param {import("../wakes-per-row.ts").PullRequest[]} pulls @param {string} rowRepo @returns {Keys} */
 function keysOf(pulls, rowRepo) {
   /** @type {Map<string, number[]>} */
   const prRows = new Map();
@@ -235,7 +235,7 @@ const median = (values) => nearestRank(values, MEDIAN);
 
 /**
  * The model of the map: nodes, edges and loops over the rows the filters keep.
- * @param {{ events: TraceEvent[], pulls: import("../wakes-per-row.mjs").PullRequest[], rowRepo: string, window: { from: number, to: number }, filter?: MapFilter }} input
+ * @param {{ events: TraceEvent[], pulls: import("../wakes-per-row.ts").PullRequest[], rowRepo: string, window: { from: number, to: number }, filter?: MapFilter }} input
  */
 export function processMap({ events, pulls, rowRepo, window, filter = {} }) {
   const keys = keysOf(pulls, rowRepo);

@@ -110,7 +110,7 @@ function runPnpm({ args, input, cwd, env }: Invocation): Ran {
 
 /** @returns {Promise<ParseWaits>} the gate's own parser: imported when asked, as `correct.mjs` does the vocabulary, so this file loads outside a configured host */
 async function gateParser(): Promise<ParseWaits> {
-  return (await import("../wait-condition.mjs")).parseWaits;
+  return (await import("../wait-condition.ts")).parseWaits;
 }
 
 /** @param {string[]} argv @param {Partial<Parameters<typeof runCommand>[0]["deps"]> & {parseWaits?: ParseWaits, run?: (invocation: Invocation) => Ran}} [deps] @returns {Promise<number>} the exit code */

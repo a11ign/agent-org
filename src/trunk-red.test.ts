@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFixRow } from "./messaging/sources/readers.mjs";
-import { trunkRedOrders } from "./trunk-red.mjs";
+import { trunkRedOrders } from "./trunk-red.ts";
 
 /**
  * #3449: THE TRUNK-RED ORDER NAMES WHAT `readFixRow` LOOKS FOR.

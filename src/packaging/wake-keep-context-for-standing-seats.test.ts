@@ -14,8 +14,8 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { deliver, deliverHandoffs, clearBeforeOrder, prepareContext, orderClockIn, keepsContext, CONTEXT_ACTION,
-  KEEP_WITHIN_MS, KEEP_FILL_TOKENS, COMPACT_THRESHOLD_TOKENS } from "../wake.mjs";
-import { clearThenPrompt, promptWithContext, promptOrQueue, queueOrLose } from "../prompt-session.mjs";
+  KEEP_WITHIN_MS, KEEP_FILL_TOKENS, COMPACT_THRESHOLD_TOKENS } from "../wake.ts";
+import { clearThenPrompt, promptWithContext, promptOrQueue, queueOrLose } from "../prompt-session.ts";
 import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
 
 const noSettle = () => {};

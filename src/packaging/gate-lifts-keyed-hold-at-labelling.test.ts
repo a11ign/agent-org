@@ -13,9 +13,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { WAIT_MARKER } from "../wait-condition.mjs";
-import { decide, withPrOwners, waitTickFacts, orgHealthNow } from "../work-gate.mjs";
-import { homeProjectDeclaration } from "../project-config.mjs";
+import { WAIT_MARKER } from "../wait-condition.ts";
+import { decide, withPrOwners, waitTickFacts, orgHealthNow } from "../work-gate.ts";
+import { homeProjectDeclaration } from "../project-config.ts";
 
 const MINUTE_MS = 60_000;
 const NOW = Date.parse("2026-10-08T18:00:00Z");
@@ -136,7 +136,7 @@ test("a keyed lift that FAILS falls back to the order, so a silent skip cannot r
 });
 
 test("THE CALL SITE: the gate hands `orgHealthNow` the declared repositories' pull requests as `keyedPrsRead`, not merged into the first repository's `prsRead`", () => {
-  const gate = readFileSync(new URL("../work-gate.mjs", import.meta.url), "utf8");
+  const gate = readFileSync(new URL("../work-gate.ts", import.meta.url), "utf8");
   assert.match(gate, /orgHealthNow\(\{ prsRead: prs, keyedPrsRead: pullRequestsOfOthers\(otherScopes\),/, "a call that omits it never reads a keyed hold: that is #4189");
   const health = readFileSync(new URL("../work-gate/org-health.mjs", import.meta.url), "utf8");
   assert.match(health, /readWaits\(\{ prsRead: prsRead === null \? null : \[\.\.\.prsRead, \.\.\.keyedPrsRead\], openRowsRead, now \}\)/, "and only the wait read sees them");

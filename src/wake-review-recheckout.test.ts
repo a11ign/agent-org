@@ -17,8 +17,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deliver, deliverHandoffs, handoffId, repointedForReviewer } from "./wake.mjs";
-import { promptOrQueue, STANCE, EXIT } from "./prompt-session.mjs";
+import { deliver, deliverHandoffs, handoffId, repointedForReviewer } from "./wake.ts";
+import { promptOrQueue, STANCE, EXIT } from "./prompt-session.ts";
 import { startedPanes } from "./packaging/started-pane.ts";
 
 const REVIEW_ROOT = "/reviews-root";

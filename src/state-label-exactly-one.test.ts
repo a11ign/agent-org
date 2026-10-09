@@ -29,13 +29,13 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
-const { STATE_LABELS, FILING_GRACE_MS, stateLabelFindings, rowsBeingFiled } = await import("./claim-labels.mjs");
-const { declineRow, claimRecordComment } = await import("./row-claim.mjs");
-const { BACKLOG_LABEL, BLOCKED_LABEL } = await import("./project-vocabulary.mjs");
-const { PARKED_LABEL } = await import("./work-gate.mjs");
-const { reportStateLabels, CHECKS, invisibleRows } = await import("./ready-label-audit.mjs");
-const { SIGNALS, stateLabelReading, orgHealthReadings, orgHealthOrders } = await import("./org-health.mjs");
-const { labelRefusal, boardingFor } = await import("./row-file.mjs");
+const { STATE_LABELS, FILING_GRACE_MS, stateLabelFindings, rowsBeingFiled } = await import("./claim-labels.ts");
+const { declineRow, claimRecordComment } = await import("./row-claim.ts");
+const { BACKLOG_LABEL, BLOCKED_LABEL } = await import("./project-vocabulary.ts");
+const { PARKED_LABEL } = await import("./work-gate.ts");
+const { reportStateLabels, CHECKS, invisibleRows } = await import("./ready-label-audit.ts");
+const { SIGNALS, stateLabelReading, orgHealthReadings, orgHealthOrders } = await import("./org-health.ts");
+const { labelRefusal, boardingFor } = await import("./row-file.ts");
 
 const row = (number: number, labels: string[], state?: string) => ({ number, labels, ...(state ? { state } : {}) });
 

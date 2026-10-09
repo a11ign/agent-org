@@ -7,7 +7,7 @@
 // The flagged cases are the controls for every "not flagged" below: the same audit, the same comment, flagged when the fact is absent.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { PROSE_QUESTIONS, boardTruthAudit, postDaysTable, proseAudit, readProseFacts } from "../board-truth-audit.mjs";
+import { PROSE_QUESTIONS, boardTruthAudit, postDaysTable, proseAudit, readProseFacts } from "../board-truth-audit.ts";
 
 const MINUTE = 60_000;
 const AT = Date.parse("2026-10-08T10:22:00Z");

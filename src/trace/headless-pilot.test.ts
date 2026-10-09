@@ -10,8 +10,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
-import { agentArgs, profileFor } from "../worker-profile.mjs";
-import { addressed } from "../wake.mjs";
+import { agentArgs, profileFor } from "../worker-profile.ts";
+import { addressed } from "../wake.ts";
 import {
   MEASUREMENT_TAIL, assertGhRead, earlyRefusal, fleetAnswerOf, launchArgs, normalizeArgv, pilotRowsOf, runPilot, successOf, userTurn,
 } from "./headless-pilot.mjs";

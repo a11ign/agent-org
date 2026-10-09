@@ -24,14 +24,14 @@ import {
   scopedStatusOf,
   withScopedSnapshot,
   writeScopedSnapshot,
-} from "../board-snapshot-scope.mjs";
-import { refusalCause, PROJECT_UNREADABLE, settleClosedStatus } from "../settle-closed-status.mjs";
-import { closureRequirementMessage, deriveClosureRequirements } from "../acceptance-commands.mjs";
+} from "../board-snapshot-scope.ts";
+import { refusalCause, PROJECT_UNREADABLE, settleClosedStatus } from "../settle-closed-status.ts";
+import { closureRequirementMessage, deriveClosureRequirements } from "../acceptance-commands.ts";
 
 // Resolved from this file, never a path typed from the project's root: the tool sits at `packages/agent-org/` in the project and at the
 // root of its own checkout, and a typed path that names no file makes `deriveClosureRequirements` answer `[]` -- a clean reading of nothing.
 const THIS_FILE = fileURLToPath(import.meta.url);
-const SNAPSHOT_SCRIPT = fileURLToPath(new URL("../board-snapshot.mjs", import.meta.url));
+const SNAPSHOT_SCRIPT = fileURLToPath(new URL("../board-snapshot.ts", import.meta.url));
 
 /**
  * Captured LIVE 2026-09-18 against the ORG board: #1452, on `a11ign/projects/1` at "Ready".
@@ -101,7 +101,7 @@ test("#1275: this file imports NOTHING from board-snapshot.mjs -- the import tha
   // ceo's condition: not even a constant. Read from this file's own import statements, not from a list typed here.
   const source = readFileSync(new URL(import.meta.url), "utf8");
   const specifiers = [...source.matchAll(/^(?:import\s[^;]*?|\}\s*)from\s+"([^"]+)";/gm)].map((match) => match[1]);
-  assert.ok(specifiers.includes("../board-snapshot-scope.mjs"),
+  assert.ok(specifiers.includes("../board-snapshot-scope.ts"),
     "CONTROL: the reader finds this file's real imports, so an empty list cannot pass for a clean one");
   assert.deepEqual(specifiers.filter((specifier) => /(^|\/)board-snapshot\.mjs$/.test(specifier)), []);
 });

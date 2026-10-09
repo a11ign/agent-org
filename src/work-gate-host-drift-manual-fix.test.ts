@@ -1,7 +1,7 @@
 // no-token: gh -- pure: `hostDriftOrders` over in-memory findings; nothing reaches `gh`, `git`, `herdr` or the network
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { hostDriftOrders } from "./work-gate.mjs";
+import { hostDriftOrders } from "./work-gate.ts";
 
 /**
  * #3703: A HOST DRIFT SET WHOSE FINDINGS ARE ALL `manualFix` IS NOT OFFERED TO `orchestrator`. The order's only remedy is `host:install`, which

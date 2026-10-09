@@ -18,11 +18,11 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { REPEAT_TICKS, normaliseLine, parseTicks, parseAllowlist, loadAllowlist, repeatingLines, repeatingLineOrders,
-  repeatingLinesTick } from "../repeating-lines.mjs";
-import { refusalReport } from "../wake.mjs";
-import { CAUSES, JUDGMENT_CAUSES, START_CAUSES, AGED_BACKLOG_MS, agedBacklogOrders, decide, readPromotableRows } from "../work-gate.mjs";
+  repeatingLinesTick } from "../repeating-lines.ts";
+import { refusalReport } from "../wake.ts";
+import { CAUSES, JUDGMENT_CAUSES, START_CAUSES, AGED_BACKLOG_MS, agedBacklogOrders, decide, readPromotableRows } from "../work-gate.ts";
 
-const GATE_ENTRY = fileURLToPath(new URL("../work-gate.mjs", import.meta.url));
+const GATE_ENTRY = fileURLToPath(new URL("../work-gate.ts", import.meta.url));
 const STUB_MODE = 0o755;
 const TICK_MINUTES = 2;
 const HOUR_MS = 3_600_000;

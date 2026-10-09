@@ -18,9 +18,9 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { inRepo, readCommitShas, readFailingChecks, withPatchIds } from "./work-gate.mjs";
+import { inRepo, readCommitShas, readFailingChecks, withPatchIds } from "./work-gate.ts";
 
-const GATE = fileURLToPath(new URL("./work-gate.mjs", import.meta.url));
+const GATE = fileURLToPath(new URL("./work-gate.ts", import.meta.url));
 const HEAD = "a".repeat(40);
 const STALE = "c8fe8f58";
 const ALSO_STALE = "b".repeat(8);

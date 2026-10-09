@@ -30,7 +30,7 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
-const { linkKeyedDependencies } = await import("../wake.mjs");
+const { linkKeyedDependencies } = await import("../wake.ts");
 
 /** pnpm's POSIX shim shape: `basedir` from `$0` as written, so a symlinked `.bin` resolves relative to the symlink's own directory. */
 const SHIM = `#!/bin/sh

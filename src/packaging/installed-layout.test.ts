@@ -131,7 +131,7 @@ if (process.env[HOST_VARIABLE] === undefined || process.env[HOST_VARIABLE] === "
   writeFileSync(hostFile, JSON.stringify({ schema: 1, primary: "p", projects: [{ id: "p", checkout: seeded }] }));
   process.env[HOST_VARIABLE] = hostFile;
 }
-const { ProjectDeclarationRefusal, resolveHomeCheckout } = await import("../project-config.mjs");
+const { ProjectDeclarationRefusal, resolveHomeCheckout } = await import("../project-config.ts");
 
 const installed = installedProject({ withTypescript: true });
 const toolDir = (project: string) => join(project, "node_modules", "agent-org");

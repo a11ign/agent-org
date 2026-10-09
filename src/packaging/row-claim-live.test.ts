@@ -19,7 +19,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fetchLabels, filedByLine } from "../row-claim.mjs";
+import { fetchLabels, filedByLine } from "../row-claim.ts";
 
 const REPO = "a11ign/a11ign";
 

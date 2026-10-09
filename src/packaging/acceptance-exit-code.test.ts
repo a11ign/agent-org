@@ -34,7 +34,7 @@ import { join } from "node:path";
 
 import {
   extractAcceptanceSection, extractRefutationSection, acceptanceReport, classifyCommand,
-} from "../acceptance-commands.mjs";
+} from "../acceptance-commands.ts";
 
 // --- extractRefutationSection: same parser, a different field name ---
 
@@ -256,7 +256,7 @@ function inProjectWithTestScript<T>(body: () => T): T {
 }
 
 test("pr:open refuses a whole-suite acceptance line at open time, through the SAME report CI runs", async () => {
-  const { checkBody } = await import("../pr-open.mjs");
+  const { checkBody } = await import("../pr-open.ts");
   const refused = inProjectWithTestScript(() => checkBody("Acceptance: npm test\n\nCloses: none — a reason", { run: () => 0 }));
   assert.equal(refused.ok, false);
   assert.match(refused.lines.join("\n"), /Name the files this change is verified by/);

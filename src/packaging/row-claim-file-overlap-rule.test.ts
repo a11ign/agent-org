@@ -42,7 +42,7 @@ execFileSync("git", ["add", "-A"], { cwd: PROJECT, env: sandboxGitEnv() });
 process.chdir(PROJECT);
 
 const { declaredClosedRows, fileOverlapReason, lookupBlockersOf, lookupMyRegionFiles, lookupOpenPrFiles } = await import("../row-claim/file-overlap-rule.mjs");
-const { declaredRegionFiles } = await import("../region-paths.mjs");
+const { declaredRegionFiles } = await import("../region-paths.ts");
 
 /** An open PR whose list is COMPLETE: its count is its list's length (#1419 compares the two). */
 const pr = (number: number, files: string[]) => ({ number, files, changedFiles: files.length });

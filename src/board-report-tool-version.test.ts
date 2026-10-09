@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { render, flowReadings, readToolVersionLine } from "./board-report.mjs";
+import { render, flowReadings, readToolVersionLine } from "./board-report.ts";
 
 const NOW = new Date("2026-10-04T12:00:00Z");
 const SINCE = "2026-10-03T00:00:00.000Z";

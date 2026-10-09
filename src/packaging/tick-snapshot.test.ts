@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { cpSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { MAX_UNCHANGED_SECONDS, parseAnswer, probeOnce, probePaths, refreshTickSnapshot, slugOf } from "../tick-snapshot.mjs";
+import { MAX_UNCHANGED_SECONDS, parseAnswer, probeOnce, probePaths, refreshTickSnapshot, slugOf } from "../tick-snapshot.ts";
 import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
 
 // THE PROJECT THIS FILE RUNS AGAINST IS A RECORDED ONE: see `org-health-auto-off-refusal.test.ts`. `work-tick.mjs` resolves the checkout it serves when it is imported.
@@ -21,7 +21,7 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
   projects: [{ id: "fixture", checkout: PROJECT }],
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
-const { refreshSnapshotOrSay } = await import("../work-tick.mjs");
+const { refreshSnapshotOrSay } = await import("../work-tick.ts");
 
 const T0 = Date.parse("2026-10-08T15:00:00Z");
 const SEC = 1000;

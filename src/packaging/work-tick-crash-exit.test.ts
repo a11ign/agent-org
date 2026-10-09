@@ -17,9 +17,9 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFile
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { SHIPPED_DIR, TOOL_UPDATE_EXEC, programCandidates, toolForm } from "../host-units.mjs";
-import { renderTemplate, templateValues, parseHostConfig } from "../host-config.mjs";
-import { EXIT, GATE, afterGate } from "../work-tick.mjs";
+import { SHIPPED_DIR, TOOL_UPDATE_EXEC, programCandidates, toolForm } from "../host-units.ts";
+import { renderTemplate, templateValues, parseHostConfig } from "../host-config.ts";
+import { EXIT, GATE, afterGate } from "../work-tick.ts";
 
 const SRC = fileURLToPath(new URL("..", import.meta.url));
 const PRELOAD = join(SRC, "lib", "crash-exit.mjs");
@@ -83,7 +83,7 @@ test("#3038 layers 1 and 3: the tick and the update step both run under the prel
   const { shipped, tool } = renderedUnits();
   assert.deepEqual(directive(shipped, "ExecStart"),
     ["ExecStart=/usr/bin/node --import=./packages/agent-org/src/lib/crash-exit.mjs packages/agent-org/src/work-tick.mjs"]);
-  assert.deepEqual(directive(tool, "ExecStart"), ["ExecStart=/usr/bin/node --import=./src/lib/crash-exit.mjs src/work-tick.mjs"]);
+  assert.deepEqual(directive(tool, "ExecStart"), ["ExecStart=/usr/bin/node --import=./src/lib/crash-exit.mjs src/work-tick.ts"]);
   assert.deepEqual(directive(tool, "ExecStartPre")[0], `ExecStartPre=-${TOOL_UPDATE_EXEC}`,
     "the `-` stays: a failed update is still not a reason to stop the org");
   assert.match(TOOL_UPDATE_EXEC, /--import=\.\/src\/lib\/crash-exit\.mjs src\/update-tool\.mjs$/);
@@ -91,10 +91,10 @@ test("#3038 layers 1 and 3: the tick and the update step both run under the prel
 });
 
 test("#3038: a unit's script is still found behind node's own leading options, and `bash -c` is still read as nothing", () => {
-  const found = programCandidates("/usr/bin/node --import=./src/lib/crash-exit.mjs src/work-tick.mjs", { repoRoot: "/r", scripts: {} });
+  const found = programCandidates("/usr/bin/node --import=./src/lib/crash-exit.mjs src/work-tick.ts", { repoRoot: "/r", scripts: {} });
   assert.deepEqual(found, ["/r/src/work-tick.mjs"], "without this the unit leaves `unitsSpendingGh`'s population, silently");
   assert.deepEqual(programCandidates("/usr/bin/bash -c 'echo hi'", { repoRoot: "/r", scripts: {} }), []);
-  assert.deepEqual(programCandidates("/usr/bin/node src/update-tool.mjs", { repoRoot: "/r", scripts: {} }), ["/r/src/update-tool.mjs"]);
+  assert.deepEqual(programCandidates("/usr/bin/node src/update-tool.ts", { repoRoot: "/r", scripts: {} }), ["/r/src/update-tool.mjs"]);
 });
 
 /**

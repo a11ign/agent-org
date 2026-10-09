@@ -51,9 +51,9 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
 const { SHIPPED_DIR, TOOL_ENTRIES, HOST_DATA_ENTRIES, hostUnitDrift, identityDrift, leadsListText, ownedIdentityFiles, shippedScriptText, shippedUnitText, shippedUnits,
-  unclassifiedEntries } = await import("../host-units.mjs");
+  unclassifiedEntries } = await import("../host-units.ts");
 const { HostConfigRefusal, hostConfigPath, leadsWorkspacesText, parseHostConfig, parseUnitsDeclaration, readUnitsDeclaration, renderTemplate, renderedName, templateValues } =
-  await import("../host-config.mjs");
+  await import("../host-config.ts");
 
 /** a11ign's host values, RECORDED: what the templates are rendered from, with no `tool` (the cut, #2974): the tool form is asserted in `host-tool-install.test.ts`. */
 const A11IGN_TEXT = readFileSync(join(FIXTURES, "a11ign-host.json"), "utf8");

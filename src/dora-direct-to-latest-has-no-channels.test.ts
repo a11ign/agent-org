@@ -1,6 +1,6 @@
 // no-token: gh -- `dora.mjs` reaches `gh` and the npm registry only through the readers this file injects; nothing imported here reaches the network (#4040)
 /**
- * `src/dora.mjs`, a11ign/a11ign#4040: A REPOSITORY THAT PUBLISHES STRAIGHT TO `latest` HAS NO CHANNEL METRICS TO READ, AND SAYS SO.
+ * `src/dora.ts`, a11ign/a11ign#4040: A REPOSITORY THAT PUBLISHES STRAIGHT TO `latest` HAS NO CHANNEL METRICS TO READ, AND SAYS SO.
  *
  * The 2026-10-08 retrospective read `Lead time, next to latest` and `Versions qualified` as `unknown` for four of the five npm repositories, for a promotion record
  * that cannot exist: their registry dist-tags are `{reserved, latest}` and nothing else, so there is no `next` to wait on. `unknown` there is permanent, which hides a real
@@ -13,8 +13,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { dora, measureRepository, renderDora } from "./dora.mjs";
-import { homeProjectDeclaration } from "./project-config.mjs";
+import { dora, measureRepository, renderDora } from "./dora.ts";
+import { homeProjectDeclaration } from "./project-config.ts";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Any = any;

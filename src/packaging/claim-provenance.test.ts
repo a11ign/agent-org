@@ -17,7 +17,7 @@ import {
   claimsFromEvents, describeClaims, unattributableClosedRows, parseEventLines, labelEventsByIssue,
   parseClosedRows, claimsWithNoEvent, fetchClosedRowEvents, PROVENANCE_REQUIRED_FROM,
   reportableUnattributable, attributionFor, closingPrFromResponse, ARM_LABELS_FROM,
-} from "../claim-provenance.mjs";
+} from "../claim-provenance.ts";
 
 const row = (number: number, closedAt: string, events: unknown[] = []) =>
   ({ number, title: `row ${number}`, closedAt, events }) as never;

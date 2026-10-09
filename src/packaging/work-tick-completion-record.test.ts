@@ -17,7 +17,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { EXIT } from "../work-tick.mjs";
+import { EXIT } from "../work-tick.ts";
 import { COMPLETION_FILE, completionPath, readCompletion, writeCompletion } from "../lib/tick-completion.mjs";
 import { DEFAULT_INCIDENT_CONFIG, gateCrashEvents } from "../messaging/sources/incidents.mjs";
 import { TICK_INTERVAL_MS } from "../messaging/sources/stall.mjs";

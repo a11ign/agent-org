@@ -26,8 +26,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { homeHostConfig, stateEntryPath } from "../host-config.mjs";
-import { HOME_CHECKOUT, HOST_ENV } from "../project-config.mjs";
+import { homeHostConfig, stateEntryPath } from "../host-config.ts";
+import { HOME_CHECKOUT, HOST_ENV } from "../project-config.ts";
 
 const SRC = fileURLToPath(new URL("../", import.meta.url));
 const FIXTURE_HOME = "/home/fixture";

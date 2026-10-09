@@ -29,9 +29,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { attributionOf, failingTestsFromJobLog, newestVerdictRun, readTrunkRed, recheckFromAnnotations,
   trunkRedOrders, RED_TRUNK_POLICY, RECHECK_JOB, RECHECK_ANNOTATION_TITLE }
-  from "../trunk-red.mjs";
-import { decide, CAUSES, JUDGMENT_CAUSES, START_CAUSES } from "../work-gate.mjs";
-import { routeWithFallback } from "../wake.mjs";
+  from "../trunk-red.ts";
+import { decide, CAUSES, JUDGMENT_CAUSES, START_CAUSES } from "../work-gate.ts";
+import { routeWithFallback } from "../wake.ts";
 
 const TOOL_SRC = fileURLToPath(new URL("..", import.meta.url));
 

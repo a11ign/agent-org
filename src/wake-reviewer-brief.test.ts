@@ -11,7 +11,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { addressed } from "./wake.mjs";
+import { addressed } from "./wake.ts";
 
 const CLAIM_SENTENCE = /cannot claim the row/;
 const reviewerOrder = { session: "reviewer-2584", cause: "draft-awaiting-verdict", prompt: "x" };

@@ -14,8 +14,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { statedWritingTime } from "../board-summary-check.mjs";
-import { requireSummaryIsFresh } from "../board-document.mjs";
+import { statedWritingTime } from "../board-summary-check.ts";
+import { requireSummaryIsFresh } from "../board-document.ts";
 
 test("#1345 ACCEPTANCE: written at 23:50 on 13 September and read at 00:30 London on the 14th is 40 minutes old", () => {
   // 2026-09-13T23:30Z is 00:30 BST on 14 September.

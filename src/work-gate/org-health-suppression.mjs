@@ -16,7 +16,7 @@
 // A LEAF: it imports only the host's state-path helper, so `work-gate.mjs` can import it. It NEVER THROWS -- an unreadable or unwritable state lets every order through (the old behaviour) and says so on stderr.
 import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { stateEntryPath } from "../host-config.mjs";
+import { stateEntryPath } from "../host-config.ts";
 
 const HOUR_MS = 3_600_000;
 /** How long a (class, key) that was let through is not let through again. */

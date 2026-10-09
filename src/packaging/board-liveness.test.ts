@@ -36,7 +36,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { EXIT, daysSince, livenessVerdict, newestEditionDay }
-  from "../board-schedule-liveness.mjs";
+  from "../board-schedule-liveness.ts";
 
 const NOW = new Date("2026-09-20T09:00:00Z");
 
@@ -118,9 +118,9 @@ test("daysSince counts whole days, so 'today' is 0 and does not read as stale", 
 // stopped running for nineteen hours, nothing said so, and the first anyone knew was the next morning,
 // when the missing summary turned main's own tip red and blocked every PR in the repository.
 // ---------------------------------------------------------------------------------------------------
-import { missedTodaysWindow } from "../board-schedule-liveness.mjs";
+import { missedTodaysWindow } from "../board-schedule-liveness.ts";
 import { hostWorkflowFile, hoursSincePreviousRun, watchdogSilenceLine }
-  from "../board-schedule-liveness.mjs";
+  from "../board-schedule-liveness.ts";
 
 // #929: THIS GUARD READS ONLY `.agent-org`, so a diff that cannot reach it need not run this file.
 // (#3233: it read `docs` and `.github/workflows` too, to pin trunk.yml's triggers; those pins are the project's now.)

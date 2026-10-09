@@ -17,11 +17,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { declaredRegionFiles } from "../region-paths.mjs";
+import { declaredRegionFiles } from "../region-paths.ts";
 import { main, checkRegion, outsideRegionDeclarations, standingAgainstRegion, REGION_EXEMPT, EXIT_NOTHING_SENT }
-  from "../pr-open.mjs";
+  from "../pr-open.ts";
 
-const PR_OPEN_SOURCE = readFileSync(fileURLToPath(new URL("../pr-open.mjs", import.meta.url)), "utf8");
+const PR_OPEN_SOURCE = readFileSync(fileURLToPath(new URL("../pr-open.ts", import.meta.url)), "utf8");
 const NO_ROOT_FILES = new Set<string>();
 const EM = "—";
 
@@ -275,7 +275,7 @@ test("#2417 WIRING: the shipped entry hands `main` the real row reader, and `mai
 // --- #3083: a row that STATES its repository is read in that repository's tree -------------------------------------
 
 /** The row #3078 and #3083 were filed as: the Region spelled bare, and a sentence saying whose root the paths are relative to. */
-const AGENT_ORG_ROW_PATHS = ["src/pr-open.mjs", "src/packaging/pr-open-region.test.ts"];
+const AGENT_ORG_ROW_PATHS = ["src/pr-open.ts", "src/packaging/pr-open-region.test.ts"];
 const agentOrgRow = (stated: string) => `The repository is **\`${stated}\`**; paths are relative to its root.\n\n${regionBody(AGENT_ORG_ROW_PATHS)}`;
 const CLOSES_3083 = prBody("Closes a11ign/a11ign#3083");
 const inAgentOrg = (body: string) => ["create", "--draft", "--repo", "a11ign/agent-org", "--body", body];
@@ -287,7 +287,7 @@ test("#3083 done-when 1: a PR opened in agent-org whose diff is exactly the path
 });
 
 test("#3083 done-when 1: a path the row does NOT name is still refused, and it is the only one", () => {
-  const r = drive(inAgentOrg(CLOSES_3083), { rows: { 3083: agentOrgRow("a11ign/agent-org") }, changed: [...AGENT_ORG_ROW_PATHS, "src/wake.mjs"] });
+  const r = drive(inAgentOrg(CLOSES_3083), { rows: { 3083: agentOrgRow("a11ign/agent-org") }, changed: [...AGENT_ORG_ROW_PATHS, "src/wake.ts"] });
   assert.equal(r.code, EXIT_NOTHING_SENT);
   assert.match(r.err, /^ {2}src\/wake\.mjs$/m);
   assert.doesNotMatch(r.err, /^ {2}src\/pr-open\.mjs$/m, "a path the row names is not listed as an offender");
@@ -322,10 +322,10 @@ test("#3083 WIRING: the sentence is read by the one `statedRepository` in row-fi
 // --- #3149: the refusal names `--repo` when this checkout is another repository of the project, and `(new)` is a note ----------------
 
 const AGENT_ORG_ORIGINS = ["https://github.com/a11ign/agent-org", "https://github.com/a11ign/agent-org.git", "git@github.com:a11ign/agent-org.git\n"];
-const PREFIXED_PATHS = ["agent-org:src/pr-open.mjs", "agent-org:src/packaging/pr-open-region.test.ts"];
+const PREFIXED_PATHS = ["agent-org:src/pr-open.ts", "agent-org:src/packaging/pr-open-region.test.ts"];
 const PREFIXED_ROW = regionBody(PREFIXED_PATHS);
 const CLOSES_3149 = prBody("Closes a11ign/a11ign#3149");
-const FILE_PATHS = ["src/pr-open.mjs", "src/packaging/pr-open-region.test.ts"];
+const FILE_PATHS = ["src/pr-open.ts", "src/packaging/pr-open-region.test.ts"];
 
 for (const origin of AGENT_ORG_ORIGINS) {
   test(`#3149 done-when 1: from an agent-org checkout (origin ${JSON.stringify(origin)}) WITHOUT --repo, the refusal names \`--repo a11ign/agent-org\``, () => {
@@ -339,7 +339,7 @@ for (const origin of AGENT_ORG_ORIGINS) {
 test("#3149 done-when 1: the hint is for a checkout that LEFT THE FLAG OFF -- with --repo passed, the same diff passes and prints none", () => {
   const r = drive(inAgentOrg(prBody("Closes a11ign/a11ign#3149")), { rows: { 3149: PREFIXED_ROW }, changed: FILE_PATHS, origin: AGENT_ORG_ORIGINS[0] });
   assert.equal(r.code, 0, r.err);
-  const refused = drive(inAgentOrg(CLOSES_3149), { rows: { 3149: PREFIXED_ROW }, changed: [...FILE_PATHS, "src/wake.mjs"], origin: AGENT_ORG_ORIGINS[0] });
+  const refused = drive(inAgentOrg(CLOSES_3149), { rows: { 3149: PREFIXED_ROW }, changed: [...FILE_PATHS, "src/wake.ts"], origin: AGENT_ORG_ORIGINS[0] });
   assert.equal(refused.code, EXIT_NOTHING_SENT);
   assert.doesNotMatch(refused.err, /--repo was not passed|`--repo` was not passed/, "the flag WAS passed, so it is not claimed missing");
 });

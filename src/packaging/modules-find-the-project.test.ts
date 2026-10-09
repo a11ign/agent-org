@@ -18,8 +18,8 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, sym
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { HOME_CHECKOUT } from "../project-config.mjs";
-import { hostConfigPath } from "../host-config.mjs";
+import { HOME_CHECKOUT } from "../project-config.ts";
+import { hostConfigPath } from "../host-config.ts";
 
 const MARKER = "https://scratch-project.example/marker";
 const HERE = dirname(fileURLToPath(import.meta.url));

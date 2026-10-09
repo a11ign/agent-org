@@ -11,7 +11,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { perPullRequestOrders, reviewBlockedOrders, CHECKLESS_QUIET_MINUTES } from "./work-gate/pr-orders.mjs";
-import { decide, reviewBlocked } from "./work-gate.mjs";
+import { decide, reviewBlocked } from "./work-gate.ts";
 
 type Order = { session: string, fallback?: string, fallbackPrompt?: string, cause: string, causeKey: string, discriminator: string, prompt: string };
 type Pr = Record<string, unknown>;

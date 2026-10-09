@@ -141,13 +141,13 @@ test("#1014: MUTATION TARGET -- comparing the checkout against ITSELF must stop 
 // --- the file list: derived from THIS repository, and what happens when the derivation fails ---
 
 test("#1014: the rule-file list is DERIVED from row-claim's own import closure, not typed", () => {
-  const derived = ruleFiles(resolve(TOOL_ROOT, "src/row-claim.mjs"), REPO);
-  assert.ok(derived.includes(at("src/row-claim.mjs")), "the entry itself");
+  const derived = ruleFiles(resolve(TOOL_ROOT, "src/row-claim.ts"), REPO);
+  assert.ok(derived.includes(at("src/row-claim.ts")), "the entry itself");
   assert.ok(derived.includes(at("src/row-claim/own-pr-health-rule.mjs")),
     "and the module whose replacement by #989/#1012 produced half the refusal this row was filed for");
   assert.ok(derived.length >= 5,
     `expected the rule modules beside row-claim.mjs, got ${derived.length}: ${derived.join(", ")}`);
-  assert.ok(derived.every((f) => f === at("src/row-claim.mjs") || f.startsWith(at("src/row-claim/"))),
+  assert.ok(derived.every((f) => f === at("src/row-claim.ts") || f.startsWith(at("src/row-claim/"))),
     "and NOTHING else -- the closure reaches merge-guard.mjs and board-snapshot.mjs, real dependencies of "
     + "the TOOL whose movement says nothing about whether the RULE changed. Folding those in would make "
     + "this the blanket staleness refusal the row rules out");
@@ -159,8 +159,8 @@ test("#1014: a BLINDED closure walker still refuses -- the one tree this guard i
   // `stripComments`: `localImports("packages/agent-org/src/row-claim.mjs")` returned 0 there, so the derivation produced
   // ONLY the entry and five rule modules were invisible. The error runs toward NOT refusing, which is this
   // row's own defect arriving inside this row's own fix.
-  const blinded = rulePathspec(resolve(TOOL_ROOT, "src/row-claim.mjs"), REPO, { imports: () => [] });
-  assert.deepEqual(blinded, [at("src/row-claim.mjs"), at("src/row-claim/")],
+  const blinded = rulePathspec(resolve(TOOL_ROOT, "src/row-claim.ts"), REPO, { imports: () => [] });
+  assert.deepEqual(blinded, [at("src/row-claim.ts"), at("src/row-claim/")],
     "the derivation collapses to the entry, and the RULE DIRECTORY is what is left holding it");
 
   const { root, commit } = syntheticRepo();
@@ -299,7 +299,7 @@ async function guardInstalled(dir: string = PNPM_DIR(SHA)) {
   const files = { "src/row-claim/stale-rule-guard.mjs": source("src/row-claim/stale-rule-guard.mjs"),
     "src/lib/local-import-closure.mjs": source("src/lib/local-import-closure.mjs"), "src/lib/git-env.mjs": source("src/lib/git-env.mjs"),
     "src/row-claim/own-pr-health-rule.mjs": "export const inBuildReason = () => null;\n",
-    "src/row-claim.mjs": 'import { inBuildReason } from "./row-claim/own-pr-health-rule.mjs";\nexport { inBuildReason };\n' };
+    "src/row-claim.ts": 'import { inBuildReason } from "./row-claim/own-pr-health-rule.mjs";\nexport { inBuildReason };\n' };
   for (const [rel, text] of Object.entries(files)) {
     mkdirSync(dirname(join(root, dir, rel)), { recursive: true });
     writeFileSync(join(root, dir, rel), text);
@@ -328,7 +328,7 @@ test("#3188: the installed layout names the install and never answers 'matches n
 test("#3188: POSITIVE CONTROL -- an installed pin BEHIND main on a rule file is REFUSED as stale, naming the file and the commit", async () => {
   const { root, guard } = await guardInstalled();
   try {
-    const reason = guard.staleRuleReason({ compare: () => ({ status: "ahead", files: [RULE, "src/dora.mjs"] }) });
+    const reason = guard.staleRuleReason({ compare: () => ({ status: "ahead", files: [RULE, "src/dora.ts"] }) });
     assert.ok(reason, "a pin behind main on a rule module must not produce a verdict");
     assert.match(reason, /INSTALLED COPY OF THE RULE/);
     assert.match(reason, new RegExp(SHA.slice(0, 12)));
@@ -340,9 +340,9 @@ test("#3188: POSITIVE CONTROL -- an installed pin BEHIND main on a rule file is 
 test("#3188: an installed pin behind main on UNRELATED files is current -- not a blanket refusal", async () => {
   const { root, guard } = await guardInstalled();
   try {
-    assert.equal(guard.staleRuleReason({ compare: () => ({ status: "ahead", files: ["src/dora.mjs", "README.md"] }) }), null);
+    assert.equal(guard.staleRuleReason({ compare: () => ({ status: "ahead", files: ["src/dora.ts", "README.md"] }) }), null);
     assert.equal(guard.staleRuleReason({ compare: () => ({ status: "behind", files: [] }) }), null, "an install AHEAD of main is not stale");
-    assert.ok(guard.staleRuleReason({ compare: () => ({ status: "ahead", files: ["src/row-claim.mjs"] }) }), "the entry file itself is a rule file");
+    assert.ok(guard.staleRuleReason({ compare: () => ({ status: "ahead", files: ["src/row-claim.ts"] }) }), "the entry file itself is a rule file");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

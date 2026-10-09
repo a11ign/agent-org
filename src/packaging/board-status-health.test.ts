@@ -26,7 +26,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { statusContradictions, statusCensus, vocabularyDrift, RESTING_STATUS, WRITTEN_STATUSES }
-  from "../board-status-health.mjs";
+  from "../board-status-health.ts";
 import { readFileSync } from "node:fs";
 
 /** The shape the real query returns, with the numbers this row measured. */
@@ -102,7 +102,7 @@ test("#1219: the Status vocabulary is INJECTED, so a renamed column fails loudly
  * tonight.
  */
 test("#1219: the board query REQUESTS state -- fixtures cannot witness what the query asks for", () => {
-  const source = readFileSync(new URL("../board-snapshot.mjs", import.meta.url), "utf8")
+  const source = readFileSync(new URL("../board-snapshot.ts", import.meta.url), "utf8")
     .replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
   const selection = /content\s*\{[^}]*on Issue\s*\{([^}]*)\}/.exec(source);
   assert.ok(selection, "the Issue selection set moved or was renamed -- update this to find it, not to pass");
@@ -158,8 +158,8 @@ test("#1228: the third list is EMPTY rather than absent when there is nothing to
  */
 test("#1996: the resting status has exactly one copy, and the settle path spells no second one", () => {
   const src = (p: string) => readFileSync(new URL(p, import.meta.url), "utf8");
-  const health = src("../board-status-health.mjs");
-  const settle = src("../settle-closed-status.mjs");
+  const health = src("../board-status-health.ts");
+  const settle = src("../settle-closed-status.ts");
   // DERIVED, not asserted from a list I typed: count the literal in the code rather than in the prose.
   const codeLines = (s: string) => s.split("\n").filter((l) => !/^\s*(\*|\/\/)/.test(l));
   assert.equal(codeLines(health).filter((l) => l.includes('"Done"')).length, 1,
@@ -183,7 +183,7 @@ test("#1996: WRITTEN_STATUSES is the set the writers actually send, derived from
   }
   // `row-file.mjs` sends `boarding.status`, a variable, so its two names come from `boardingFor`'s own
   // return type -- the one place they are written down.
-  const rowFile = readFileSync(new URL("../row-file.mjs", import.meta.url), "utf8");
+  const rowFile = readFileSync(new URL("../row-file.ts", import.meta.url), "utf8");
   for (const m of rowFile.matchAll(/status:\s*"(Backlog|Ready)"/g)) sent.add(m[1]);
   sent.add(RESTING_STATUS); // settle-closed-status sends the imported constant, not a literal.
   assert.deepEqual([...sent].sort(), [...WRITTEN_STATUSES].sort(),

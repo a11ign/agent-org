@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { agentArgs, PROFILES, profileFor, PER_ROW_DISALLOWED_TOOLS, WORKER_SETTINGS_PATH, AUTOCOMPACT_WINDOW_TOKENS }
-  from "./worker-profile.mjs";
+  from "./worker-profile.ts";
 
 const CLAUDE = { kind: "claude", model: "sonnet", effort: "high" };
 const CAPS = { maxTurns: 40, maxBudgetUsd: 2.5 };

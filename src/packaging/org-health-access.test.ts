@@ -1,6 +1,6 @@
 // no-token: gh -- pure: the reading is a function of values handed in, `readTeamAccess` is given a fake `run` and a fake `read`, and `orgHealthNow` is given a `teamAccess` seam; nothing here reaches the real `gh`
 /**
- * `src/org-health.mjs`, a11ign/a11ign#3634: THE `bots` TEAM'S LEVEL ON EVERY REPOSITORY IT REACHES IS READ AGAINST THE PROJECT'S DECLARATION, and a read that cannot run is UNKNOWN, never clear.
+ * `src/org-health.ts`, a11ign/a11ign#3634: THE `bots` TEAM'S LEVEL ON EVERY REPOSITORY IT REACHES IS READ AGAINST THE PROJECT'S DECLARATION, and a read that cannot run is UNKNOWN, never clear.
  *
  * POSITIVE CONTROL: the 2026-10-05 reading as the row recorded it, `a11ign/auth-capture-check` at `admin` for `bots` while six declared repositories are `push`. It trips and names
  * that repository; every "clear" and every "unknown" below is only worth anything because it does, and each is run beside the same listing with one field changed.
@@ -23,7 +23,7 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
-const { SIGNALS, teamAccessReading, readTeamAccess, parseTeamListing, orgHealthReadings } = await import("../org-health.mjs");
+const { SIGNALS, teamAccessReading, readTeamAccess, parseTeamListing, orgHealthReadings } = await import("../org-health.ts");
 const { orgHealthNow } = await import("../work-gate/org-health.mjs");
 
 const DECLARED = ["a11ign/a11ign", "a11ign/agent-org", "a11ign/screenreader-worker"];

@@ -18,9 +18,9 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { escalateStuck, escalatedKeys, deliveryCounts, ledgerKeyOf, ESCALATED, RESET, MAX_DELIVERIES }
-  from "../wake.mjs";
+  from "../wake.ts";
 
-const WAKE_ENTRY = fileURLToPath(new URL("../wake.mjs", import.meta.url));
+const WAKE_ENTRY = fileURLToPath(new URL("../wake.ts", import.meta.url));
 const STUB_MODE = 0o755;
 const MINUTE = 60_000;
 const DELIVERY_GAP = 20 * MINUTE;

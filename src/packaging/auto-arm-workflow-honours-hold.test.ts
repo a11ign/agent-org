@@ -4,7 +4,7 @@
 /**
  * #3867: THE PER-PR ARM JOB MUST NOT ARM A PULL REQUEST THAT CARRIES A `hold:` LABEL.
  *
- * `auto-arm-sweep.mjs` and `arm-pr.mjs` both read `armabilityOf` (src/pr-hold-state.mjs) and refuse a held PR; the workflow's `arm` job, the path that
+ * `auto-arm-sweep.mjs` and `arm-pr.mjs` both read `armabilityOf` (src/pr-hold-state.ts) and refuse a held PR; the workflow's `arm` job, the path that
  * fires first, ran `gh pr merge --auto` on the event alone (measured on a11ign/agent-org#311: armed eight seconds after `ready_for_review`, hold on).
  *
  * The job runs on `actions/checkout` alone and must stay that way (`arm-pr.mjs`'s header), so it cannot import the predicate and mirrors its prefix in
@@ -19,7 +19,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { parse as parseYaml } from "yaml";
 import { fileURLToPath } from "node:url";
-import { HOLD_PREFIX } from "../pr-hold-state.mjs";
+import { HOLD_PREFIX } from "../pr-hold-state.ts";
 
 // This repository's own workflow, found from this file: `HOME_CHECKOUT` refuses outside a declared project, and the workflow under test is the tool's.
 const WORKFLOW = fileURLToPath(new URL("../../.github/workflows/auto-arm.yml", import.meta.url));
@@ -105,7 +105,7 @@ test("a label name is data, never shell: a hostile hold: label neither runs nor 
 
 test("DRIFT: the workflow's prefix IS HOLD_PREFIX, and the labels come in through env, not the script text", () => {
   const step = armStep();
-  assert.equal(step.env?.HOLD_PREFIX, HOLD_PREFIX, "auto-arm.yml's HOLD_PREFIX must equal src/pr-hold-state.mjs's");
+  assert.equal(step.env?.HOLD_PREFIX, HOLD_PREFIX, "auto-arm.yml's HOLD_PREFIX must equal src/pr-hold-state.ts's");
   assert.equal(step.env?.PR_LABELS, "${{ toJSON(github.event.pull_request.labels.*.name) }}");
   assert.ok(!(step.run ?? "").includes("${{"), "`${{ }}` inside run: is pasted into the shell as text; route it through env:");
 });

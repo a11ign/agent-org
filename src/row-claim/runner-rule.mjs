@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // @ts-check
-import { LIVE_SESSIONS, isLiveSession } from "../arm-pr.mjs";
-import { ROUTED_TO } from "../work-gate.mjs";
+import { LIVE_SESSIONS, isLiveSession } from "../arm-pr.ts";
+import { ROUTED_TO } from "../work-gate.ts";
 // #2619 (child 3d of #69): the `lane:` prefix and the `lane:any` sentinel, moved to the project's
 // declared vocabulary.
-import { LANE_PREFIX } from "../project-vocabulary.mjs";
+import { LANE_PREFIX } from "../project-vocabulary.ts";
 
 // RULE: IS THIS ROW RESERVED FOR A SPECIFIC SESSION? -- #444.
 //

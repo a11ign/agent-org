@@ -16,7 +16,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { orgHealthNow, fleetWaitingFacts, dispatchedLabJobsOrSay } from "../work-gate.mjs";
+import { orgHealthNow, fleetWaitingFacts, dispatchedLabJobsOrSay } from "../work-gate.ts";
 import { dispatchedJobNames, readDispatchedLabJobs } from "../work-gate/lab-job-orders.mjs";
 
 const HOUR_MS = 3_600_000;

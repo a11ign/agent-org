@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { offeredByShare, SHARE_LINE_FILE, SHARE_LINE_REMINDER_MS } from "../work-gate.mjs";
+import { offeredByShare, SHARE_LINE_FILE, SHARE_LINE_REMINDER_MS } from "../work-gate.ts";
 
 const DECLARATION = {
   code: [{ key: "", repo: "a11ign/a11ign" }, { key: "agent-org", repo: "a11ign/agent-org" }],

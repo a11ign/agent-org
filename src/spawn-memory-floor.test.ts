@@ -19,9 +19,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   holdForMemory, parseMemAvailableKb, readMemAvailable, spawnMemoryGate, SPAWN_MEMORY_FLOOR_KB, MEMINFO_PATH, MEMINFO_ENV,
-} from "./spawn-memory-floor.mjs";
+} from "./spawn-memory-floor.ts";
 import { DEFAULT_MEMORY_MAX } from "./lib/test-memory-cap.mjs";
-import { deliver } from "./wake.mjs";
+import { deliver } from "./wake.ts";
 import { startedPanes, STUB_STARTED_PANE } from "./packaging/started-pane.ts";
 
 const KB_PER_MB = 1024;
@@ -32,7 +32,7 @@ const RUNAWAY_KB = 351 * KB_PER_MB;
 const IDLE_HOST_KB = 23_830_268;
 const FLOOR_KB = SPAWN_MEMORY_FLOOR_KB;
 const STUB_MODE = 0o755;
-const WAKE_ENTRY = fileURLToPath(new URL("./wake.mjs", import.meta.url));
+const WAKE_ENTRY = fileURLToPath(new URL("./wake.ts", import.meta.url));
 
 /** The text `/proc/meminfo` carries around the one line that matters, as the kernel prints it. */
 const meminfo = (availableKb: number) =>

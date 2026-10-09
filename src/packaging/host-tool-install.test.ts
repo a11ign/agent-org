@@ -26,11 +26,11 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { REPO_ROOT, SHIPPED_DIR, TOOL_UPDATE_EXEC, identityDrift, shippedUnitText, unitsSpendingGh, workTickToolForm } from "../host-units.mjs";
+import { REPO_ROOT, SHIPPED_DIR, TOOL_UPDATE_EXEC, identityDrift, shippedUnitText, unitsSpendingGh, workTickToolForm } from "../host-units.ts";
 import { HostConfigRefusal, homeHostConfig, parseBeforeTick, parseHostConfig, renderTemplate, stateFilePath, templateValues }
-  from "../host-config.mjs";
-import { handoffQueuePath, keptClaimsPath, ledgerPathFrom, reviewerPathsFrom, sparePathsFrom } from "../wake.mjs";
-import { updateTool } from "../update-tool.mjs";
+  from "../host-config.ts";
+import { handoffQueuePath, keptClaimsPath, ledgerPathFrom, reviewerPathsFrom, sparePathsFrom } from "../wake.ts";
+import { updateTool } from "../update-tool.ts";
 import { sandboxGitEnv, withGitSandbox } from "../lib/git-sandbox.ts";
 
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -174,7 +174,7 @@ test("#2793 + #2974: with `tool` set, THREE lines are decision 3's, ONE is the h
       `Environment=AGENT_ORG_HOST=${dirs.widgets}/.agent-org/host.json`,
       "ExecStartPre=-" + TOOL_UPDATE_EXEC,
       `ExecStartPre=-/usr/bin/env -C ${dirs.widgets} npm run widgets:update`,
-      "ExecStart=/usr/bin/node --import=./src/lib/crash-exit.mjs src/work-tick.mjs",
+      "ExecStart=/usr/bin/node --import=./src/lib/crash-exit.mjs src/work-tick.ts",
     ], "the tool's path, then the tool update and THEN the declared beforeTick, then the shorter ExecStart");
     const order = installed.split("\n").filter((line) => line.startsWith("ExecStartPre="));
     assert.deepEqual(order, ["ExecStartPre=-" + TOOL_UPDATE_EXEC, `ExecStartPre=-/usr/bin/env -C ${dirs.widgets} npm run widgets:update`],
@@ -184,7 +184,7 @@ test("#2793 + #2974: with `tool` set, THREE lines are decision 3's, ONE is the h
 
 test("#2793: the tool update the rendered ExecStartPre names EXISTS, at the path it names relative to the tool's `src/`", () => {
   const script = /node --import=\.\/src\/lib\/crash-exit\.mjs (src\/update-tool\.mjs)$/.exec(TOOL_UPDATE_EXEC)?.[1];
-  assert.equal(script, "src/update-tool.mjs", "POSITIVE CONTROL: the command names a script, so the existence check below is of something");
+  assert.equal(script, "src/update-tool.ts", "POSITIVE CONTROL: the command names a script, so the existence check below is of something");
   assert.ok(existsSync(join(SHIPPED_DIR, "..", script ?? "")), "the monorepo keeps the tool's `src/` at packages/agent-org/src");
 });
 
@@ -306,7 +306,7 @@ test("#2974: a11ign's own declaration puts `GH_REPO=a11ign/a11ign` on all four s
 });
 
 test("#2974: the gh-identity check still SEES a unit in tool form -- the population does not lose its work-tick", () => {
-  // `unitEntryPoints` resolved `node src/work-tick.mjs` against the project and found nothing, so the unit that spends the most rate limit
+  // `unitEntryPoints` resolved `node src/work-tick.ts` against the project and found nothing, so the unit that spends the most rate limit
   // dropped out of `unitsSpendingGh` without a failure. a11ign's real host with a `tool` injected, so this holds before and after its host.json says one.
   // Its project is THIS run's checkout, not the host's absolute path, which a CI runner does not have: the tool form reads each project's `beforeTick`.
   const toolHost = { ...homeHostConfig(), projects: [{ id: homeHostConfig().primary, checkout: REPO_ROOT.replace(/\/$/, "") }], tool: "/home/agent/repos/agent-org" } as never;

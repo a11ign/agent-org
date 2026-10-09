@@ -10,9 +10,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { rowCallCountSignals, ROW_CALL_COUNT_SPLIT_THRESHOLD } from "../work-gate.mjs";
+import { rowCallCountSignals, ROW_CALL_COUNT_SPLIT_THRESHOLD } from "../work-gate.ts";
 import { readWaitClearedAt, rowDeclaresWait } from "../work-gate/row-call-count-orders.mjs";
-import { CLAIM_RECORD_MARKER } from "../claim-labels.mjs";
+import { CLAIM_RECORD_MARKER } from "../claim-labels.ts";
 
 const SESSION = "orchestrator";
 const CLAIMED_AT = Date.parse("2026-10-03T05:00:00Z");
@@ -136,7 +136,7 @@ test("an EXPIRED Fleet-hold-until is a clearing too: calls made during the hold 
 });
 
 test("the tick's own call passes `readWaitClearedAt`, because the default reads nothing", () => {
-  const source = readFileSync(new URL("../work-gate.mjs", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../work-gate.ts", import.meta.url), "utf8");
   assert.match(source, /rowCallCountSignals\(allOpen, liveClaudeTurns\(\), claimedComments, \{ waitClearedAt: readWaitClearedAt \}\)/);
   assert.deepEqual(rowCallCountSignals([claimedRow(1)], turnsFrom(CLAIMED_AT + 1, MANY), [claimRecord(1)]),
     [{ row: 1, session: SESSION, calls: MANY }], "positive control: called without it, the whole window from the claim counts");

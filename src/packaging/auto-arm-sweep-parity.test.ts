@@ -7,8 +7,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { sweepDecision } from "../auto-arm-sweep.mjs";
-import { PARITY, parityOwner } from "../review-attribution.mjs";
+import { sweepDecision } from "../auto-arm-sweep.ts";
+import { PARITY, parityOwner } from "../review-attribution.ts";
 
 const pr = (over: Partial<{ labels: string[]; checkRunCount: number }> = {}) =>
   ({ labels: [], checkRunCount: 9, ...over });

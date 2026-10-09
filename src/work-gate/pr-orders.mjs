@@ -17,22 +17,22 @@
 //
 // `work-gate.mjs` re-exports every name this file exports that it exported before, so a caller of the gate
 // is unchanged. Imports below are relative and leaf-shaped, the property the gate's own header states.
-import { newestPerName } from "../newest-check-run.mjs";
-import { reviewerSeat, subjectMention, subjectRef } from "../review-attribution.mjs";
+import { newestPerName } from "../newest-check-run.ts";
+import { reviewerSeat, subjectMention, subjectRef } from "../review-attribution.ts";
 import { NO_VERDICT } from "../merge-guard/checks-rule.mjs";
-import { armabilityOf } from "../pr-hold-state.mjs";
-import { isHeldRed } from "../red-pr.mjs";
+import { armabilityOf } from "../pr-hold-state.ts";
+import { isHeldRed } from "../red-pr.ts";
 import { sharedFileOrders } from "./shared-file-orders.mjs";
-import { REPO } from "../project-identity.mjs";
-import { VERIFY_STATE } from "../verify-stamp.mjs";
-import { equivalentHeads } from "../review-verdict.mjs";
+import { REPO } from "../project-identity.ts";
+import { VERIFY_STATE } from "../verify-stamp.ts";
+import { equivalentHeads } from "../review-verdict.ts";
 // #2619 (child 3d of #69): the `session:` prefix and the `blocked` label, moved to the project's
 // declared vocabulary. (The `"ready"` action `kind` a few lines below is `gh pr ready`'s draft-status
 // flip -- a built-in GitHub PR field, not this project's `ready` row label -- so it stays a literal.)
-import { SESSION_PREFIX, BLOCKED_LABEL } from "../project-vocabulary.mjs";
+import { SESSION_PREFIX, BLOCKED_LABEL } from "../project-vocabulary.ts";
 import { labelsOf, sessionOf, conflictStateOf, CONFLICT_STATE, reviewStateOf, BLOCKING_REVIEW_STATES, checksSettledGreen, conclusionOf, stillRunning, anyChecksRed, requiredCheckNames,
   blockingChecks, reviewableHead, reviewWait, verdictAmong, awaitingEvidence, AWAITING_EVIDENCE_LABEL,
-  AWAITING_EVIDENCE_QUIET_HOURS, AWAITING_EVIDENCE_QUIET_MS, HOUR_MS, REVIEW_STATE } from "../work-gate.mjs";
+  AWAITING_EVIDENCE_QUIET_HOURS, AWAITING_EVIDENCE_QUIET_MS, HOUR_MS, REVIEW_STATE } from "../work-gate.ts";
 
 /**
  * The verdict door as an order must spell it (#3316): `~/reviewer/bin` is on no PATH, so the bare name was `command not found`. Not

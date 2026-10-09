@@ -15,7 +15,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { decide, rowKind, productRegionsOf, productShare, offeredByShare, recordEngineerStarts, PRODUCT_SHARE_WINDOW,
-  PRODUCT_SHARE_FLOOR, ENGINEER_STARTS_FILE } from "../work-gate.mjs";
+  PRODUCT_SHARE_FLOOR, ENGINEER_STARTS_FILE } from "../work-gate.ts";
 
 const DECLARATION = {
   code: [{ key: "", repo: "a11ign/a11ign" }, { key: "agent-org", repo: "a11ign/agent-org" }, { key: "lab", repo: "a11ign/lab" }],
@@ -57,7 +57,7 @@ test("(a) a Region under packages/judge/ is a product row", () => {
 
 test("(b) a Region under packages/guards/ only is an org row", () => {
   assert.equal(rowKind(["packages/guards/src/rule.ts"], PRODUCT_REGIONS).kind, "org");
-  assert.equal(rowKind(["agent-org:src/work-gate.mjs"], PRODUCT_REGIONS).kind, "org", "agent-org's src/ is releasable and still not product");
+  assert.equal(rowKind(["agent-org:src/work-gate.ts"], PRODUCT_REGIONS).kind, "org", "agent-org's src/ is releasable and still not product");
   assert.equal(rowKind(["packages/judgement/x.ts"], PRODUCT_REGIONS).kind, "org", "a prefix is a directory, not a spelling");
   assert.equal(rowKind(["lab:packages/lab/src/x.ts"], PRODUCT_REGIONS).kind, "product", "a keyed entry reads against ITS repository's paths");
   assert.equal(rowKind(["packages/lab/src/x.ts"], PRODUCT_REGIONS).kind, "org", "and a bare one against the first repository's, which does not release packages/lab/");

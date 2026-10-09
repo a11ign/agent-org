@@ -8,13 +8,13 @@
 // THE BOUNDARY, as `work-gate/pr-orders.mjs` states it: what only this family uses lives here; what a family that
 // stayed behind also uses is IMPORTED from `work-gate.mjs`, the cycle that module documents, safe while nothing here
 // reads an imported binding at load time. `work-gate.mjs` re-exports every name this file exports that it exported before.
-import { labelsOf, holderWaitingOn, defaultRun, repoNow, PARKED_LABEL } from "../work-gate.mjs";
-import { claimRecordOf } from "../claim-stall.mjs";
-import { holdersOf, HOLD_PREFIX } from "../pr-hold-state.mjs";
-import { notBeforeDate, notBeforeIso, fleetHoldUntil, todayIso, ANSWER_PREFIX } from "../waiting-condition.mjs";
-import { SESSION_PREFIX, BLOCKED_LABEL, NEEDS_CHAIRMAN_LABEL } from "../project-vocabulary.mjs";
-import { subjectMention } from "../review-attribution.mjs";
-import { transcriptFiles, claudeTurns } from "../token-audit.mjs";
+import { labelsOf, holderWaitingOn, defaultRun, repoNow, PARKED_LABEL } from "../work-gate.ts";
+import { claimRecordOf } from "../claim-stall.ts";
+import { holdersOf, HOLD_PREFIX } from "../pr-hold-state.ts";
+import { notBeforeDate, notBeforeIso, fleetHoldUntil, todayIso, ANSWER_PREFIX } from "../waiting-condition.ts";
+import { SESSION_PREFIX, BLOCKED_LABEL, NEEDS_CHAIRMAN_LABEL } from "../project-vocabulary.ts";
+import { subjectMention } from "../review-attribution.ts";
+import { transcriptFiles, claudeTurns } from "../token-audit.ts";
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
@@ -154,7 +154,7 @@ function callsAfterWait(anchor, { count, threshold, waitClearedAt }) {
  * reports the count and stops there. A row at or under the threshold is left out entirely -- this names
  * split CANDIDATES, not every claimed row.
  *
- * @param {any[]} openRows @param {import("../token-audit.mjs").Turn[]} turns every live turn, any session
+ * @param {any[]} openRows @param {import("../token-audit.ts").Turn[]} turns every live turn, any session
  * @param {any[] | null} [claimedComments] the comments on every claimed row (`readClaimedRowComments`'s
  *   own shape, `{ number, comments }[]`), read once by the caller and reused rather than re-fetched here
  * @param {{ threshold?: number, now?: number, waitClearedAt?: (row: any) => number | null }} [options]

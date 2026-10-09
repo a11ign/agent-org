@@ -17,9 +17,9 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
 import { oneRowReason } from "../row-claim/runner-rule.mjs";
-import { claimRow } from "../row-claim.mjs";
-import { sparePathsFrom } from "../wake.mjs";
-import { HOME_CHECKOUT } from "../project-config.mjs";
+import { claimRow } from "../row-claim.ts";
+import { sparePathsFrom } from "../wake.ts";
+import { HOME_CHECKOUT } from "../project-config.ts";
 import { copyToolAndProject, importClosure, toolFile } from "./copied-tool-fixture.ts";
 
 const ROW = 2407;
@@ -91,7 +91,7 @@ test("#2407 (3) POSITIVE CONTROLS through `claimRow`: a fresh spare claims, a st
 // In a COPY OF ITS OWN CLOSURE, as `wake-drain.test.ts` does and for its reason (#2394): the CLI refuses first of all
 // when it cannot ask whether its rule is current, and the acceptance job's clone has no `origin/main`. The copy is of
 // the WORKING TREE, so a mutation made there is the one under test.
-const ROW_CLAIM_ENTRY = fileURLToPath(new URL("../row-claim.mjs", import.meta.url));
+const ROW_CLAIM_ENTRY = fileURLToPath(new URL("../row-claim.ts", import.meta.url));
 const SESSIONS_JSON = ".agent-org/roles/sessions.json";
 // `HELD_ROWS` is what `gh issue list --label session:<me>` answers: the rows the instance holds NOW.
 const GH_READY_ROW = `#!/bin/sh

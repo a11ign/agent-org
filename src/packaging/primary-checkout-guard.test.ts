@@ -32,9 +32,9 @@ import { writeFileSync, rmSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { withGitSandbox, sandboxGitEnv } from "../lib/git-sandbox.ts";
 import type { GitSandbox } from "../lib/git-sandbox.ts";
-import { updatePrimary } from "../update-primary.mjs";
+import { updatePrimary } from "../update-primary.ts";
 import { UPDATE_PRIMARY_ARGV } from "./update-primary-argv.ts";
-import { HOME_CHECKOUT } from "../project-config.mjs";
+import { HOME_CHECKOUT } from "../project-config.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 
 const PRE_COMMIT = join(HOME_CHECKOUT, "scripts/git-hooks/pre-commit");

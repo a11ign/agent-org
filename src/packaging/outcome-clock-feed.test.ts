@@ -34,10 +34,10 @@ process.env.AGENT_ORG_HOST = HOST_FILE;
 execFileSync("git", ["init", "--quiet"], { cwd: PROJECT, env: sandboxGitEnv() });
 process.chdir(PROJECT);
 
-const { SIGNALS } = await import("../org-health.mjs");
-const { claimRecordComment } = await import("../row-claim.mjs");
+const { SIGNALS } = await import("../org-health.ts");
+const { claimRecordComment } = await import("../row-claim.ts");
 
-const GATE_ENTRY = fileURLToPath(new URL("../work-gate.mjs", import.meta.url));
+const GATE_ENTRY = fileURLToPath(new URL("../work-gate.ts", import.meta.url));
 const STUB_MODE = 0o755;
 const MINUTE_MS = 60_000;
 const OVER_ROW_BOUND_MS = 137 * MINUTE_MS;
@@ -121,7 +121,7 @@ test("A CLAIMED ROW IS CLOCKED WHILE A PR IS TOO: the one order names both, the 
 });
 
 test("THE CLEANUP: nothing in `src` reads a head commit for the clock any more (`readHeadCommittedAt` and its `GH_READS` entry are deleted, not left beside it)", async () => {
-  const gateModule = await import("../work-gate.mjs");
+  const gateModule = await import("../work-gate.ts");
   const orgHealthModule = await import("../work-gate/org-health.mjs");
   assert.equal("readHeadCommittedAt" in gateModule, false);
   assert.equal("readHeadCommittedAt" in orgHealthModule, false);

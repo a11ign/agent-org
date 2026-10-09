@@ -17,8 +17,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 // A plain `.mjs`, and `scripts/**` IS in the typecheck program (#189), so this resolves and is checked.
-import { extractAcceptanceSection, acceptanceReport } from "../acceptance-commands.mjs";
-import { HOME_CHECKOUT } from "../project-config.mjs";
+import { extractAcceptanceSection, acceptanceReport } from "../acceptance-commands.ts";
+import { HOME_CHECKOUT } from "../project-config.ts";
 
 // #929: THIS GUARD READS ONLY `scripts`, `.github/PULL_REQUEST_TEMPLATE.md`, so a diff that cannot reach it need not run this file.
 // Undeclared means unbounded, which is why the selector runs 173 always-run guards on every pull

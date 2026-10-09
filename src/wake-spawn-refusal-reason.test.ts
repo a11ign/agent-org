@@ -15,7 +15,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { deliver } from "./wake.mjs";
+import { deliver } from "./wake.ts";
 
 const REASON = "unknown model \"gpt-5.6-luna\" for kind codex";
 const agents = (spec: Record<string, string>) => Object.entries(spec).map(([label, status]) => ({ label, status }));

@@ -14,7 +14,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { render, flowReadings, filedAndClosedPerDay, mergeFlowRows } from "../board-report.mjs";
+import { render, flowReadings, filedAndClosedPerDay, mergeFlowRows } from "../board-report.ts";
 
 const MINIMAL_FACTS = {
   since: "2026-09-05T00:00:00.000Z",

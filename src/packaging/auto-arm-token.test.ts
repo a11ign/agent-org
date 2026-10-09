@@ -21,11 +21,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { HOME_CHECKOUT } from "../project-config.mjs";
+import { HOME_CHECKOUT } from "../project-config.ts";
 import { parse as parseYaml } from "yaml";
-import { runArmPr, EXIT, looksPoolRefused, refusalScope } from "../arm-pr.mjs";
+import { runArmPr, EXIT, looksPoolRefused, refusalScope } from "../arm-pr.ts";
 import { shouldBeMerging, readUnarmed, greenUnarmedOrders, CAUSES }
-  from "../work-gate.mjs";
+  from "../work-gate.ts";
 
 const WORKFLOWS = join(HOME_CHECKOUT, ".github/workflows");
 const WORKFLOW = join(WORKFLOWS, "auto-arm.yml");

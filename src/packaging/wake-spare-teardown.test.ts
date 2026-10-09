@@ -15,10 +15,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
 import { deliver as settlingDeliver, engineerRoles }
-  from "../wake.mjs";
+  from "../wake.ts";
 import { spareRoles, spareInstances, spareDecision, cycleVerdict, consecutiveClean, endFinishedSpares, spawnEnvironment,
   readSpareCycles, sparePathsFrom, registerSpawn, spareWorktrees, SPARE_CLAIM_BOUND_MS, WORKERS_GH_CONFIG_DIR }
-  from "../wake.mjs";
+  from "../wake.ts";
 import { startedPanes, STUB_STARTED_PANE } from "./started-pane.ts";
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
 const noSettle = () => {};
@@ -28,7 +28,7 @@ const deliver: typeof settlingDeliver = (orders, agents, roster, deps) => settli
 const agents = (spec: Record<string, string>) =>
   Object.entries(spec).map(([label, status]) => ({ label, status }));
 const ROSTER = ["worker-capture", "worker-judge", "worker-tooling"];
-const WAKE_ENTRY = fileURLToPath(new URL("../wake.mjs", import.meta.url));
+const WAKE_ENTRY = fileURLToPath(new URL("../wake.ts", import.meta.url));
 const STUB_MODE = 0o755; // the tick invokes `herdr` and `gh` as commands, so the stubs have to be runnable
 
 /** A `herdr` that records every call and answers `workspace create` as the live org did on 2026-09-23. */
@@ -286,7 +286,7 @@ test("#2323: registering a spawn over a live entry writes the FAILED cycle the m
 
 // THE WIRING, AS PROCESSES. `work-tick` must call the teardown on a QUIET gate (`wake` is never run on one), and
 // `wake` must register what it spawns -- neither is reachable by a test that injects the seam.
-const TICK_ENTRY = fileURLToPath(new URL("../work-tick.mjs", import.meta.url));
+const TICK_ENTRY = fileURLToPath(new URL("../work-tick.ts", import.meta.url));
 
 test("#2323 THE TICK: a QUIET gate still ends a finished spare -- work-tick calls the teardown, not just wake", () => {
   const dir = mkdtempSync(join(tmpdir(), "wake-tick-spare-"));

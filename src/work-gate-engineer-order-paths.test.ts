@@ -16,11 +16,11 @@ import { readFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { decide, LAUNCH_PLACEHOLDER, CAUSES, JUDGMENT_CAUSES, START_CAUSES, UNCLAIMABLE_AFTER_TICKS, claimRefusalOf,
-  claimRefusalStreaksNow, nextRefusalStreaks, unclaimableRowOrders } from "./work-gate.mjs";
-import { profileFor } from "./worker-profile.mjs";
-import { worktreeTargetReason } from "./row-claim.mjs";
-import { addressed, engineerRoles, launchAdvice, HOST_REPOS, PRIMARY_CHECKOUT } from "./wake.mjs";
-import { SPARE_FAMILIES } from "./arm-pr.mjs";
+  claimRefusalStreaksNow, nextRefusalStreaks, unclaimableRowOrders } from "./work-gate.ts";
+import { profileFor } from "./worker-profile.ts";
+import { worktreeTargetReason } from "./row-claim.ts";
+import { addressed, engineerRoles, launchAdvice, HOST_REPOS, PRIMARY_CHECKOUT } from "./wake.ts";
+import { SPARE_FAMILIES } from "./arm-pr.ts";
 
 const PATH_RE = /\/home\/agent\/repos\/[^\s`),;]+/g;
 

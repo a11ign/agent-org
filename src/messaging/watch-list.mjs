@@ -202,7 +202,7 @@ function guardedRunner(file, assertRead) {
 export async function hostFiles({ root, err }) {
   const fleet = { statePath: join(root, "runs", "fleet-watch-state.json"), capturesPath: join(root, "runs", "fleet-captures-state.json") };
   try {
-    const { stateEntryPath } = await import("../host-config.mjs");
+    const { stateEntryPath } = await import("../host-config.ts");
     return { fleet, gateRecordPath: completionPath(stateEntryPath("wake-ledger")) };
   } catch (error) {
     err(`this host could not name the work-tick completion record, so {{gate.*}} will refuse: ${describeError(error)}`);

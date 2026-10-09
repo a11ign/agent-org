@@ -16,7 +16,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { fileOverlapReason } from "../row-claim/file-overlap-rule.mjs";
-import { declaredRegionFiles } from "../region-paths.mjs";
+import { declaredRegionFiles } from "../region-paths.ts";
 
 const MODULE = "packages/agent-org/src/work-gate/pr-orders.mjs";
 const SHIM = "packages/agent-org/src/work-gate.mjs";

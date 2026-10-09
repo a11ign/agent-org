@@ -49,9 +49,9 @@ import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { fetchOpenIssuesChecked, fetchReportedOpenIssueNumbers, labellessRows, openRowsAbsentFromBoard }
-  from "../ready-label-audit.mjs";
+  from "../ready-label-audit.ts";
 import { fetchRemoteBranchesChecked, branchPrefixCensus, renderBranchPrefixes }
-  from "../queue-table.mjs";
+  from "../queue-table.ts";
 
 /**
  * THIS FILE'S OWN VACUITY GUARD: every mechanism the table above cites, for a key this row calls FIXED or

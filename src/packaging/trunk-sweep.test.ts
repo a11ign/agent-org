@@ -10,10 +10,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { needsGateSweep, EXIT } from "../trunk-sweep.mjs";
+import { needsGateSweep, EXIT } from "../trunk-sweep.ts";
 
 // The tool's own script, `src` up one.
-const SCRIPT = fileURLToPath(new URL("../trunk-sweep.mjs", import.meta.url));
+const SCRIPT = fileURLToPath(new URL("../trunk-sweep.ts", import.meta.url));
 
 // --- needsGateSweep: the pure decision ---
 

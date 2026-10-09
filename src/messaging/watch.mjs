@@ -60,11 +60,11 @@ import { observeSummary } from "./sources/summary.mjs";
 import { parseRequestKey, readRequests } from "./sources/requests.mjs";
 import { createWatchReaders, hostFiles } from "./watch-list.mjs";
 import { walkPosition } from "./walk.mjs";
-import { readUnitsDeclaration, stateEntryPath } from "../host-config.mjs";
-import { HOME_CHECKOUT } from "../project-config.mjs";
-import { readAgents } from "../herdr-agents.mjs";
+import { readUnitsDeclaration, stateEntryPath } from "../host-config.ts";
+import { HOME_CHECKOUT } from "../project-config.ts";
+import { readAgents } from "../herdr-agents.ts";
 import { completionPath } from "../lib/tick-completion.mjs";
-import { isBrokenRed } from "../red-pr.mjs";
+import { isBrokenRed } from "../red-pr.ts";
 
 const execFileAsync = promisify(execFile);
 const GH_TIMEOUT_MS = 60_000;

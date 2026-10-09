@@ -11,7 +11,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { CLEAR_SETTLE_MS, deliver as settlingDeliver, MAX_SPAWNS_PER_TICK, hostLoadRefusal } from "./wake.mjs";
+import { CLEAR_SETTLE_MS, deliver as settlingDeliver, MAX_SPAWNS_PER_TICK, hostLoadRefusal } from "./wake.ts";
 import { startedPanes } from "./packaging/started-pane.ts";
 
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */

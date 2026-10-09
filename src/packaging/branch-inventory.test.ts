@@ -23,8 +23,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { rowNumberFromBranch, sessionFromLabels, sessionFromTimeline, ownerOfBranch, branchFacts,
-  reconcile, groupByOwner, renderInventory } from "../branch-inventory.mjs";
-import { branchesWithTips, inventory } from "../branch-inventory-report.mjs";
+  reconcile, groupByOwner, renderInventory } from "../branch-inventory.ts";
+import { branchesWithTips, inventory } from "../branch-inventory-report.ts";
 
 const tip = { sha: "abc1234", at: "2026-09-09T08:35:00Z" };
 

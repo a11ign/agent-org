@@ -25,7 +25,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { scheduleNeverFired } from "../board-schedule-liveness.mjs";
+import { scheduleNeverFired } from "../board-schedule-liveness.ts";
 
 const NOW = new Date("2026-09-08T08:00:00Z");
 const CREATED_YESTERDAY = "2026-09-06T16:23:01.000+01:00"; // ~40h before NOW

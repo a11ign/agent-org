@@ -12,7 +12,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { comparablePrFiles, pipelineCodeownerReviewMissing } from "./work-gate.mjs";
+import { comparablePrFiles, pipelineCodeownerReviewMissing } from "./work-gate.ts";
 
 const WORKFLOW = ".github/workflows/release-per-merge.yml";
 const DEPENDENCY_BUMP = "packages/lab/package.json";

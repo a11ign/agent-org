@@ -376,14 +376,14 @@ test("#1401 POPULATION CONTROL: named seams from the enumeration are classified 
   const { live, seams } = liveSeamFindings(realTree());
   const isLive = (file: string, fn: string) => live.some((s) => s.file === file && s.fn === fn);
   const expectedLive: Array<[string, string, string]> = [
-    ["src/stranded-branches.mjs", "sweepPullRequests", "a destructured run the function calls with gh"],
-    ["src/stranded-branches.mjs", "fetchAllPRHeadRefs", "live only through the undefaulted fetchPRHeadRefPage"],
-    ["src/row-claim.mjs", "fetchLabels", "a destructured run, #1406's seam"],
-    ["src/arm-pr.mjs", "gh", "a positional default"],
-    ["src/arm-pr.mjs", "armMerge", "a body default handed positionally to gh"],
-    ["src/ready-label-audit.mjs", "reportReleaseDrift", "a non-injectable alias"],
+    ["src/stranded-branches.ts", "sweepPullRequests", "a destructured run the function calls with gh"],
+    ["src/stranded-branches.ts", "fetchAllPRHeadRefs", "live only through the undefaulted fetchPRHeadRefPage"],
+    ["src/row-claim.ts", "fetchLabels", "a destructured run, #1406's seam"],
+    ["src/arm-pr.ts", "gh", "a positional default"],
+    ["src/arm-pr.ts", "armMerge", "a body default handed positionally to gh"],
+    ["src/ready-label-audit.ts", "reportReleaseDrift", "a non-injectable alias"],
   ];
   for (const [file, fn, why] of expectedLive) assert.ok(isLive(file, fn), `${file} ${fn} should be live: ${why}`);
-  assert.ok(seams.some((s) => s.file === "src/prune-worktrees.mjs" && s.fn === "pruneWorktrees" && !s.live),
+  assert.ok(seams.some((s) => s.file === "src/prune-worktrees.ts" && s.fn === "pruneWorktrees" && !s.live),
     "and a seam that spawns only git is collected but not live");
 });

@@ -29,7 +29,7 @@ import {
   SUPPORTED_SCHEMA,
   parseProjectDeclaration,
   readProjectDeclaration,
-} from "../project-config.mjs";
+} from "../project-config.ts";
 import { judgePin, type Declaration } from "../lib/pin-ratchet.ts";
 import { TOOL_ROOT } from "./copied-tool-fixture.ts";
 

@@ -24,8 +24,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { flagValue, refuseUnknownFlags } from "../lib/cli-flags.mjs";
-import { sessionOf, transcriptFiles } from "../token-audit.mjs";
-import { isWake } from "../wakes-per-row.mjs";
+import { sessionOf, transcriptFiles } from "../token-audit.ts";
+import { isWake } from "../wakes-per-row.ts";
 import { readRecords, tokensOf } from "./store.mjs";
 
 export const DEFINITIONS = [

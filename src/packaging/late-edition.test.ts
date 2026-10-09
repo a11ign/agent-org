@@ -19,8 +19,8 @@ import assert from "node:assert/strict";
 import {
   lateEditionRefusal, minutesOfDay, document,
   LATE_EDITION_EARLIEST, LATE_EDITION_CUTOFF,
-} from "../board-document.mjs";
-import { foundByChairman } from "../found-by-chairman.mjs";
+} from "../board-document.ts";
+import { foundByChairman } from "../found-by-chairman.ts";
 
 const ok = {
   summary: { text: "Written at 08:05 on 9 September.\n\nSomething happened." },

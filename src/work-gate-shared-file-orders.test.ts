@@ -28,12 +28,12 @@ const PR_149 = [CHANGESET("incident-says-what-is-being-done"), "docs/messaging.m
   "src/messaging/sources/readers.mjs", "src/messaging/sources/readers.test.ts", "src/messaging/sources/stall.mjs", "src/messaging/sources/stall.test.ts", "src/messaging/watch.mjs"];
 const PR_150 = [CHANGESET("a-milestone-moving-is-told"), "src/messaging/check.ts", "src/messaging/config.mjs", "src/messaging/config.test.ts", "src/messaging/core.mjs",
   "src/messaging/event.mjs", "src/messaging/sources/milestones.mjs", "src/messaging/sources/milestones.test.ts", "src/messaging/watch.mjs"];
-const PR_151 = [CHANGESET("host-runs-one-tool-version"), "src/host-config.mjs", "src/host-units.mjs", "src/lib/release-tag.mjs", "src/lib/tool-version.mjs",
-  "src/packaging/host-tool-install.test.ts", "src/packaging/host-units.test.ts", "src/packaging/work-tick-crash-exit.test.ts", "src/update-tool.mjs", "src/update-tool.test.mjs",
-  "src/work-tick.mjs"];
-const PR_152 = [CHANGESET("deferred-order-is-a-stall"), "src/api-pool.mjs", "src/org-health.mjs", "src/packaging/deferred-order-is-a-stall.test.ts",
+const PR_151 = [CHANGESET("host-runs-one-tool-version"), "src/host-config.ts", "src/host-units.ts", "src/lib/release-tag.mjs", "src/lib/tool-version.mjs",
+  "src/packaging/host-tool-install.test.ts", "src/packaging/host-units.test.ts", "src/packaging/work-tick-crash-exit.test.ts", "src/update-tool.ts", "src/update-tool.test.ts",
+  "src/work-tick.ts"];
+const PR_152 = [CHANGESET("deferred-order-is-a-stall"), "src/api-pool.ts", "src/org-health.ts", "src/packaging/deferred-order-is-a-stall.test.ts",
   "src/packaging/graphql-pool-health.test.ts", "src/packaging/ready-flip-on-green-checks.test.ts", "src/packaging/repeating-lines.test.ts",
-  "src/packaging/wake-busy-seat-deferral.test.ts", "src/packaging/wake-capacity-deferral.test.ts", "src/wake.mjs", "src/work-gate.mjs", "src/work-gate/org-health.mjs",
+  "src/packaging/wake-busy-seat-deferral.test.ts", "src/packaging/wake-capacity-deferral.test.ts", "src/wake.ts", "src/work-gate.ts", "src/work-gate/org-health.mjs",
   "src/work-gate/pr-orders.mjs"];
 
 const prOf = (number: number, paths: string[], over: Partial<Pr> & { session?: string | null } = {}): Pr => {

@@ -29,12 +29,12 @@ import {
   cleanliness, ignoredByAuthority,
   strandedWork, formatStranded, trackedChanges, unverifiedRecords, formatReport,
   heldByOwner, deliveredOwnCommit, mainLineCommits, hasOwnBranch,
-} from "../prune-worktrees.mjs";
-import { stampWorktree } from "../worktree-owner.mjs";
+} from "../prune-worktrees.ts";
+import { stampWorktree } from "../worktree-owner.ts";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
 import {
   claimRefusal, nestedWorktrees, recordRemoval, removalLogPath, REMOVAL_LOG_ENV, rowCandidates, rowsClosed, worktreeBranch,
-} from "../worktree-removal.mjs";
+} from "../worktree-removal.ts";
 import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
 
 // #2782: EVERY REMOVAL WRITES A LINE AND READS THE ROW'S CLAIM, and a fixture must do neither to the host: a fixture branch
@@ -47,7 +47,7 @@ const pruneWorktrees = (root: string, deps: NonNullable<Parameters<typeof pruneW
 
 // The CLI is spawned as a real process below, so the argv path -- the only place `dryRun` is
 // decided -- is exercised rather than reasoned about.
-const PRUNE_CLI = new URL("../prune-worktrees.mjs", import.meta.url).pathname;
+const PRUNE_CLI = new URL("../prune-worktrees.ts", import.meta.url).pathname;
 
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, env: sandboxGitEnv(), encoding: "utf8" });
 

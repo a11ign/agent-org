@@ -32,8 +32,8 @@ import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { toolVersionLine } from "../lib/tool-version.mjs";
-import { HOME_CHECKOUT } from "../project-config.mjs";
-import { ANSWER_PREFIX } from "../project-vocabulary.mjs";
+import { HOME_CHECKOUT } from "../project-config.ts";
+import { ANSWER_PREFIX } from "../project-vocabulary.ts";
 import { createAnswers } from "./answers.mjs";
 import { MessagingConfigRefusal, readMessagingConfig } from "./config.mjs";
 import { createConverse, notReached } from "./converse.mjs";

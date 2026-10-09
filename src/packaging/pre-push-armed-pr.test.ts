@@ -30,7 +30,7 @@
 // calls from this file, against 1 before.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { racesAnArmedMerge, lookupArmedPrStatus } from "../merge-guard.mjs";
+import { racesAnArmedMerge, lookupArmedPrStatus } from "../merge-guard.ts";
 
 test("no PR yet is ALLOWED -- the first push is how a PR gets opened", () => {
   assert.equal(racesAnArmedMerge({ armed: false, green: false }), false);

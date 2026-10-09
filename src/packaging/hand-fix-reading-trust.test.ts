@@ -15,8 +15,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   UNREAD_SHARE_BOUND, assertBaseIsLive, gatherChanges, ledgerLine, readLedger,
-} from "../hand-fix-ledger.mjs";
-import { buildReport, compareReadings, readingNumbers } from "../org-retro.mjs";
+} from "../hand-fix-ledger.ts";
+import { buildReport, compareReadings, readingNumbers } from "../org-retro.ts";
 
 const NOW = new Date("2026-10-03T00:02:46Z");
 const DAY = "2026-10-02T12:00:00Z";

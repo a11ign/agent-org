@@ -34,7 +34,7 @@ const WITHOUT_CLEARS = QUESTION.replace(`\n${CLEARS}`, "");
 /** @type {import("./ask-ceo.ts").Invocation[]} */
 let seen: import("./ask-ceo.ts").Invocation[] = [];
 /** @type {{parseWaits: import("./ask-ceo.ts").ParseWaits} | {reason: string}} */
-const gate: { parseWaits: import("./ask-ceo.ts").ParseWaits; } | { reason: string; } = await import("../wait-condition.mjs").then((module) => ({ parseWaits: module.parseWaits }), (error) => ({ reason: describeError(error) }));
+const gate: { parseWaits: import("./ask-ceo.ts").ParseWaits; } | { reason: string; } = await import("../wait-condition.ts").then((module) => ({ parseWaits: module.parseWaits }), (error) => ({ reason: describeError(error) }));
 const skip = "reason" in gate ? gate.reason : false;
 /** rstest's shim refuses a `describe()` option (a dropped `{ skip }` would RUN what node:test skips), so the skip is on each test it covers. */
 const hosted = (/** @type {string} */ name: string, /** @type {() => void | Promise<void>} */ body: () => void | Promise<void>) => test(name, { skip }, body);

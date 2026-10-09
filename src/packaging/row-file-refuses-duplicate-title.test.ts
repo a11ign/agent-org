@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendFiledBy, createIssue, duplicateTitleRefusal, promoteRow, titleFromArgv } from "../row-file.mjs";
+import { appendFiledBy, createIssue, duplicateTitleRefusal, promoteRow, titleFromArgv } from "../row-file.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SESSION = "product-manager";

@@ -12,7 +12,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { sessionEligibilityReason, claimRow, CLAIM_LABEL } from "../row-claim.mjs";
+import { sessionEligibilityReason, claimRow, CLAIM_LABEL } from "../row-claim.ts";
 
 /**
  * ONE `run` MOCK ROUTING BY SUBCOMMAND SHAPE, since `sessionEligibilityReason` makes several distinct

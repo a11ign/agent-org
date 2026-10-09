@@ -54,7 +54,7 @@ fi
 #
 # One TAB-separated line per call, appended to `$GH_CONFIG_DIR/gh-calls.tsv` (the account's own config dir, so a
 # ledger is never mixed across accounts): time, account, resource, cost, exit status, `argv[1] argv[2]`, workspace,
-# the CALLING process's command line and, LAST, the id of the session that made the call. `src/gh-ledger.mjs` reads and reports it.
+# the CALLING process's command line and, LAST, the id of the session that made the call. `src/gh-ledger.ts` reads and reports it.
 #
 #   - THE SESSION ID is `CLAUDE_CODE_SESSION_ID` (a Claude Code session's environment; it is the file name of its transcript,
 #     `~/.claude/projects/<dir>/<id>.jsonl`), else `CODEX_THREAD_ID` (a Codex session's; measured 2026-10-05 in `~/.codex/sessions` rollouts: a value a tool

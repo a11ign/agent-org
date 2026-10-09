@@ -40,7 +40,7 @@ import { fileURLToPath } from "node:url";
 import {
   ATTRIBUTION_CONTEXT_PREFIX, PARITY, PER_PR_REVIEWERS_FROM, RETIRED_REVIEWERS, attributionContext, attributedSession, parityOfReview,
   parityOwner, parityViolationsOnCommit, reviewingSession,
-} from "../review-attribution.mjs";
+} from "../review-attribution.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 
 // The tool's OWN script (this file sits in src/packaging), not the project's copy of it.

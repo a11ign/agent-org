@@ -24,24 +24,24 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { bareKeyedRegionReason, regionRefusalReason, declaresRelease, outOfReleaseArgv, labelsOutOfRelease, OUT_OF_RELEASE, OUT_OF_RELEASE_MILESTONE }
-  from "../row-file.mjs";
-import { declaredRegionFiles, NOT_A_COMMIT } from "../region-paths.mjs";
-import { startability, subjectAndRegionFacts } from "../row-reachability.mjs";
-import { declarationDisagreement, extractAcceptanceSection, fleetOrLabAcceptance, untrimmedFleetMention } from "../acceptance-commands.mjs";
+  from "../row-file.ts";
+import { declaredRegionFiles, NOT_A_COMMIT } from "../region-paths.ts";
+import { startability, subjectAndRegionFacts } from "../row-reachability.ts";
+import { declarationDisagreement, extractAcceptanceSection, fleetOrLabAcceptance, untrimmedFleetMention } from "../acceptance-commands.ts";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendFiledBy, boardAndVerify, boardingFor, bodyFromArgv, createIssue, directoryRegionWarning, fetchIssueBoardStatus, acceptanceShapeRefusal, fileRefusalReason, issueNumberFromUrl, labelRefusal, labelValuesFromArgv, laneLabelsFor, milestoneRefusal, withAcceptanceLane, openCheckTranscriptRefusal, sessionFromArgv, slashlessDirectoryWarning, unrecognisedRegionWarning, unverifiedFilingFields, withFiledBy, withoutLabels } from "../row-file.mjs";
+import { appendFiledBy, boardAndVerify, boardingFor, bodyFromArgv, createIssue, directoryRegionWarning, fetchIssueBoardStatus, acceptanceShapeRefusal, fileRefusalReason, issueNumberFromUrl, labelRefusal, labelValuesFromArgv, laneLabelsFor, milestoneRefusal, withAcceptanceLane, openCheckTranscriptRefusal, sessionFromArgv, slashlessDirectoryWarning, unrecognisedRegionWarning, unverifiedFilingFields, withFiledBy, withoutLabels } from "../row-file.ts";
 import { labelSetForPromotion, promoteArgvRefusal, promoteFromArgv, promoteRefusalReason, promoteRow,
-  promotionLabelsSettled, unverifiedPromotionFields } from "../row-file.mjs";
+  promotionLabelsSettled, unverifiedPromotionFields } from "../row-file.ts";
 import { filingWarnings, malformedAcceptanceCommandWarning, quotedTestCountWarning, regionClosureWarning }
-  from "../row-file.mjs";
-import { CLAIM_LABEL } from "../claim-labels.mjs";
-import { filedByLine } from "../row-claim.mjs";
-import { REPO } from "../project-identity.mjs";
+  from "../row-file.ts";
+import { CLAIM_LABEL } from "../claim-labels.ts";
+import { filedByLine } from "../row-claim.ts";
+import { REPO } from "../project-identity.ts";
 import { withGitSandbox } from "../lib/git-sandbox.ts";
 
-const CLI = fileURLToPath(new URL("../row-file.mjs", import.meta.url));
+const CLI = fileURLToPath(new URL("../row-file.ts", import.meta.url));
 /**
  * #1352: row-file refuses when launched outside a linked worktree, and CI runs these tests in a plain clone. The REAL CLI
  * tests below launch it with the printed override, so each still reaches the check it was written to test.
@@ -902,7 +902,7 @@ test("#1117: the declaration's vocabulary is #989's, so the clock and the filer 
   // #989's in-build rule reads `declaresPaths: false` as "its deliverable is not a commit" — a settings
   // change, a ruling, a measurement posted on the row. Two tools reading one tracker must not describe
   // that category in two spellings; keyed on the sentence rather than on a keyword nobody would guess.
-  const source = readFileSync(new URL("../row-file.mjs", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../row-file.ts", import.meta.url), "utf8");
   const claimSide = readFileSync(
     new URL("./row-claim-own-pr-health-rule.test.ts", import.meta.url), "utf8");
   const PHRASE = "its deliverable is not a commit";

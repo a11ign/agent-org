@@ -12,7 +12,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { KEEP_TICKS, SHADOW_READS_DIR, SHADOW_WINDOW_MARKER, encodeShadowValue, parseShadowRecord, pruneShadowReads, reviveShadowValue, tapShadowReads }
-  from "../shadow-reads.mjs";
+  from "../shadow-reads.ts";
 
 const FIRST_TICK = 1_790_000_000_000;
 const TWO_MINUTES = 120_000;

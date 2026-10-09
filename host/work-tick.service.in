@@ -1,5 +1,5 @@
 [Unit]
-# ONE TICK OF THE ORG -- #912. See src/work-tick.mjs in the tool's checkout for why this exists at all.
+# ONE TICK OF THE ORG -- #912. See src/work-tick.ts in the tool's checkout for why this exists at all.
 #
 # The tick costs two `gh` calls and NO model turn. That is the whole point: the six sessions this
 # replaces each held a standing cron that woke a MODEL every 10-30 minutes to ask a question a script

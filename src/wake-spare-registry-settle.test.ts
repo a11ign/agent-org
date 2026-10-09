@@ -10,7 +10,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { endFinishedSpares, spareInstances } from "./wake.mjs";
+import { endFinishedSpares, spareInstances } from "./wake.ts";
 
 const NOW = Date.UTC(2026, 9, 1, 12, 0, 0);
 const HOUR = 3_600_000;

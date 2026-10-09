@@ -76,7 +76,7 @@ import { refuseUnknownFlags } from "./cli-flags.mjs";
 // STAYS npm for the consumer half (`no-npm-spawn.test.ts` pins this file by name; the header's "Two package managers, on purpose" says why):
 // the tarballs are installed as `npm install a11ign` would, outside any workspace.
 import { npmCliInvocation, pnpmCliInvocation } from "./npm-cli-executable.mjs";
-import { HOME_CHECKOUT } from "../project-config.mjs";
+import { HOME_CHECKOUT } from "../project-config.ts";
 
 export const SMOKE = "isolation-smoke.mjs";
 

@@ -43,12 +43,12 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
-const { homeProjectDeclaration } = await import("../project-config.mjs");
-const { scopesOf, readLanes, scopeTick } = await import("../work-gate.mjs");
+const { homeProjectDeclaration } = await import("../project-config.ts");
+const { scopesOf, readLanes, scopeTick } = await import("../work-gate.ts");
 const { ownerOfPr } = await import("../work-gate/pr-orders.mjs");
 const { lookupOpenPrFiles } = await import("../row-claim/file-overlap-rule.mjs");
 const { deliver, noReviewCheckoutFor, prepareReviewCheckout, removeReviewCheckout, reviewCloneOf, reviewerEnvironment,
-  linkKeyedDependencies, withReviewCheckout, repointedForReviewer, REPO_ROOT } = await import("../wake.mjs");
+  linkKeyedDependencies, withReviewCheckout, repointedForReviewer, REPO_ROOT } = await import("../wake.ts");
 
 const SESSION = "reviewer-agent-org-6";
 /** The refusal of a `{ clone } | { refusal }` answer, or `undefined` when it was a clone. */

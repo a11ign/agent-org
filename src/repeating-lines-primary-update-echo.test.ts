@@ -10,7 +10,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { normaliseLine, parseTicks, loadAllowlist, repeatingLines } from "./repeating-lines.mjs";
+import { normaliseLine, parseTicks, loadAllowlist, repeatingLines } from "./repeating-lines.ts";
 
 const TICKS = 40;
 const TICK_MINUTES = 2;

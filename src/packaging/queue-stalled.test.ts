@@ -16,8 +16,8 @@ import { dirname, resolve } from "node:path";
 import {
   stalledVerdict, mergeTreeConflict, DEFAULT_STALL_THRESHOLD_MS,
   behindByCount, supersedingGateVerdict, supersededLine, examinePr,
-  neverScheduledVerdict, neverScheduledLine, DEFAULT_NEVER_SCHEDULED_THRESHOLD_MS, headCommittedAt } from "../queue-stalled.mjs";
-import { newestConclusion } from "../newest-check-run.mjs";
+  neverScheduledVerdict, neverScheduledLine, DEFAULT_NEVER_SCHEDULED_THRESHOLD_MS, headCommittedAt } from "../queue-stalled.ts";
+import { newestConclusion } from "../newest-check-run.ts";
 
 // ---------------------------------------------------------------------------------------------------
 // #1100: THIS FILE'S SUBJECT HAS A SECOND VOCABULARY, and it arrived through a shared function.
@@ -32,10 +32,10 @@ import { newestConclusion } from "../newest-check-run.mjs";
 // ---------------------------------------------------------------------------------------------------
 
 import { sandboxGitEnv } from "../lib/git-env.mjs";
-import { queueEjectionOf, ejectionQueryArgs, armedFromApi } from "../pr-armed-state.mjs";
-import { readEjections, decide, stallReasonOf, greenUnarmedOrders, STALL_REASON } from "../work-gate.mjs";
+import { queueEjectionOf, ejectionQueryArgs, armedFromApi } from "../pr-armed-state.ts";
+import { readEjections, decide, stallReasonOf, greenUnarmedOrders, STALL_REASON } from "../work-gate.ts";
 
-const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), "../queue-stalled.mjs");
+const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), "../queue-stalled.ts");
 
 // --- stalledVerdict: the pure decision ---
 

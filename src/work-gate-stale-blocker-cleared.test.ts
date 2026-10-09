@@ -13,8 +13,8 @@
 import { rs } from "@rstest/core";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { blockerClearedOrders, blockerClearedReading, claimStallTick, decide, readRecentlyClosed, BLOCKER_CLEARED_DROP_REASONS } from "./work-gate.mjs";
-import { claimRecordComment } from "./row-claim.mjs";
+import { blockerClearedOrders, blockerClearedReading, claimStallTick, decide, readRecentlyClosed, BLOCKER_CLEARED_DROP_REASONS } from "./work-gate.ts";
+import { claimRecordComment } from "./row-claim.ts";
 
 const T = (hms: string) => Date.parse(`2026-10-04T${hms}Z`);
 const CLEARED = T("10:35:57");

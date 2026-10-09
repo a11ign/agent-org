@@ -25,7 +25,7 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
 const lib = await import("../lib/tool-version-agreement.mjs");
-const { SIGNALS, toolVersionReading, readToolAgreement } = await import("../org-health.mjs");
+const { SIGNALS, toolVersionReading, readToolAgreement } = await import("../org-health.ts");
 const { agreement, agreementReport, releaseCycleMs, shippedReleaseCycleMs, readWorktree, readLastCiRun, memoFile, mainDeclaresAgentOrg, RESOLVER_LINE, lockedCommit } = lib;
 
 const MINUTE = 60_000;
@@ -149,7 +149,7 @@ test("(6) host:check and org-health print the same reading for the same facts --
   writeFileSync(script, `const { toolVersionFindings, toolVersionNotes } = await import(process.argv[2]);
 const reading = JSON.parse(process.argv[3]);
 process.stdout.write(JSON.stringify({ findings: toolVersionFindings(reading), notes: toolVersionNotes(reading) }));`);
-  const asHost = (r: typeof result) => JSON.parse(spawnSync(process.execPath, [script, pathToFileURL(fileURLToPath(new URL("../host-units.mjs", import.meta.url))).href, JSON.stringify({ now: NOW, result: r })],
+  const asHost = (r: typeof result) => JSON.parse(spawnSync(process.execPath, [script, pathToFileURL(fileURLToPath(new URL("../host-units.ts", import.meta.url))).href, JSON.stringify({ now: NOW, result: r })],
     { env: { AGENT_ORG_HOST: HOST_FILE }, encoding: "utf8", timeout: 60_000 }).stdout);
   const host = asHost(result);
   assert.equal(host.findings.length, 1);

@@ -1,6 +1,6 @@
 // no-token: gh -- `dora.mjs` reaches `gh` and the npm registry only through `githubReaders`; every test here injects its readers, so nothing imported reaches the real ones
 /**
- * `src/dora.mjs`, a11ign/a11ign#3135: THE FOUR DORA METRICS, PER REPOSITORY, FROM THE REGISTRY AND GITHUB, and their place in the daily retrospective.
+ * `src/dora.ts`, a11ign/a11ign#3135: THE FOUR DORA METRICS, PER REPOSITORY, FROM THE REGISTRY AND GITHUB, and their place in the daily retrospective.
  *
  * EVERY NUMBER IS CHECKED BY HAND AGAINST A FIXTURE WORLD, written out as literals: a test built from the module's own constants moves with them.
  * The world is two repositories (one npm, one tag-only) with a LINEAR git history, so `contains` is "comes no later in the list" and a release cut from
@@ -11,13 +11,13 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { dora, measureRepository, renderDora, doraNumbers, doraDeclarations, metricState, DORA_METRICS, LOOKBACK_DAYS, MIN_RELEASES_FOR_A_RATE, UNKNOWN, NEVER_PUBLISHED } from "../dora.mjs";
-import { buildReport, renderReport, compareReadings, cachedDora, DORA_CACHE_FILE } from "../org-retro.mjs";
+import { dora, measureRepository, renderDora, doraNumbers, doraDeclarations, metricState, DORA_METRICS, LOOKBACK_DAYS, MIN_RELEASES_FOR_A_RATE, UNKNOWN, NEVER_PUBLISHED } from "../dora.ts";
+import { buildReport, renderReport, compareReadings, cachedDora, DORA_CACHE_FILE } from "../org-retro.ts";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { COMMANDS } from "../commands.mjs";
-import { parseProjectDeclaration, ProjectDeclarationRefusal } from "../project-config.mjs";
+import { parseProjectDeclaration, ProjectDeclarationRefusal } from "../project-config.ts";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Any = any;

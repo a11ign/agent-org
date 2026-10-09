@@ -14,7 +14,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { callerScript, SESSION_SHELL, parseLedger, parseLine, renderReport, topCallers } from "../gh-ledger.mjs";
+import { callerScript, SESSION_SHELL, parseLedger, parseLine, renderReport, topCallers } from "../gh-ledger.ts";
 import { tmpDirForFile } from "../lib/tmp-fixture.ts";
 
 const STUB_EXIT = 7; // a status nothing else here returns, so it can only have come from the stub
@@ -232,7 +232,7 @@ test("#3466: the report ranks callers by points, floors an unread graphql call a
 test("#3590: callerScript names the UNIT behind a preload, and a session's shell for what it is, on lines copied from the ledger", () => {
   const cases: Array<[string, string, string]> = [
     ["--import file:// form", "/usr/bin/node --import file:///home/agent/repos/agent-org/src/lib/crash-exit.mjs /home/agent/repos/agent-org/src/work-gate.mjs", "work-gate.mjs"],
-    ["--import= form", "/usr/bin/node --import=./src/lib/crash-exit.mjs src/work-tick.mjs", "work-tick.mjs"],
+    ["--import= form", "/usr/bin/node --import=./src/lib/crash-exit.mjs src/work-tick.ts", "work-tick.mjs"],
     ["a shell snapshot", "/usr/bin/zsh -c source /home/agent/.claude/shell-snapshots/snapshot-zsh-1791159858645-879xil.sh 2>/dev/null || true && setopt NO_EXTENDED_GLOB NO_BARE_GLOB_QUAL", SESSION_SHELL],
     ["two preloads, the second named like a script", "/usr/bin/node --import x.mjs --import=y.mjs z.mjs", "z.mjs"],
     ["no preload, the unchanged case", "node /x/src/work-gate.mjs --json", "work-gate.mjs"],

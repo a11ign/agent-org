@@ -121,7 +121,7 @@ const VERB_DONE = Object.freeze({ withdraw: "Withdrawn", reroute: "Rerouted", "r
 
 /** @returns {Promise<string>} the label that wakes the product manager, from the vocabulary: imported when asked, as `reply-cli.mjs` does `host-config.mjs`, so this file loads outside a configured host */
 async function vocabularyRerouteLabel(): Promise<string> {
-  const { ANSWER_PREFIX } = await import("../project-vocabulary.mjs");
+  const { ANSWER_PREFIX } = await import("../project-vocabulary.ts");
   return `${ANSWER_PREFIX}${REROUTE_TO}`;
 }
 

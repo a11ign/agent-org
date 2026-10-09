@@ -16,8 +16,8 @@ import { join } from "node:path";
 import { promptable, clearThenPrompt as settlingClearThenPrompt, queueable, queueOrLose, queueDepthNote, queueDepth,
   deepQueueRefusal, DEEP_QUEUE, NEEDS_DECISION_FLAG, EXIT, senderName, resolveSender, attributed,
   deliveredText }
-  from "../prompt-session.mjs";
-import { readHandoffs, handoffOrder, addressed } from "../wake.mjs";
+  from "../prompt-session.ts";
+import { readHandoffs, handoffOrder, addressed } from "../wake.ts";
 
 import { readLoadedRules } from "./rules-files.ts";
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
@@ -416,7 +416,7 @@ test("the flag the rules file tells an author to type is the flag this command a
   // same shape as a refusal quoting a rule nobody wrote, which is why the row asks for both halves.
   assert.equal(NEEDS_DECISION_FLAG, "--needs-decision");
   const source = readFileSync(
-    new URL("../prompt-session.mjs", import.meta.url), "utf8");
+    new URL("../prompt-session.ts", import.meta.url), "utf8");
   assert.match(source,
     /refuseUnknownFlags\(\["--ledger", DECISION_FLAG, FYI_FLAG, NEEDS_DECISION_FLAG\]/,
     "the flag is declared to the unknown-flag guard, or typing it is refused before it is read");

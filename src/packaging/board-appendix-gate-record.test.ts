@@ -11,7 +11,7 @@ import { declareWalkScope } from "../lib/walk-scope.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { isConformanceGate, reported, worstVerdict } from "../board-data.mjs";
+import { isConformanceGate, reported, worstVerdict } from "../board-data.ts";
 
 // #929: THIS GUARD READS ONLY `docs`, so a diff that cannot reach it need not run this file.
 // Undeclared means unbounded, which is why the selector runs 173 always-run guards on every pull

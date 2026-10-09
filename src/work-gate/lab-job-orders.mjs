@@ -17,9 +17,9 @@
 // runs from a raw checkout). `lab-job.test.ts` pins the field names this file reads against that playbook's text.
 import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
-import { CLAIM_LABEL } from "../claim-labels.mjs";
-import { subjectMention, subjectRef } from "../review-attribution.mjs";
-import { labelsOf, sessionOf } from "../work-gate.mjs";
+import { CLAIM_LABEL } from "../claim-labels.ts";
+import { subjectMention, subjectRef } from "../review-attribution.ts";
+import { labelsOf, sessionOf } from "../work-gate.ts";
 
 /** Where `run-job.yml` writes, beside the gate's other host state (`REVIEWER_STATE_DIR`). */
 export const RECORD_DIR = `${process.env.HOME}/.cache/a11ign/lab-jobs`;

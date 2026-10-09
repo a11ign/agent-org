@@ -55,14 +55,14 @@ if (!process.env.AGENT_ORG_HOST) process.env.AGENT_ORG_HOST = HOST;
 const {
   DOOMED_PREFIX, FIXTURE_PREFIXES, FIXTURE_WINDOW_MS, MAX_REMOVALS_PER_RUN, PAUSE_BETWEEN_REMOVALS_MS,
   classifyEntry, doomedPaths, familyOf, fixturePaths, formatReport, pruneTmp: pruneTmpWithClaims, removeFromLeaves,
-} = await import("./prune-tmp.mjs");
-const { installTmpfiles, toolForm } = await import("./host-units.mjs");
-const { REMOVAL_LOG_ENV } = await import("./worktree-removal.mjs");
+} = await import("./prune-tmp.ts");
+const { installTmpfiles, toolForm } = await import("./host-units.ts");
+const { REMOVAL_LOG_ENV } = await import("./worktree-removal.ts");
 
 // #2782: every removal writes a line, and a fixture must not write the host's log.
 process.env[REMOVAL_LOG_ENV] = join(BASE, "worktree-removals");
 
-const CLI = fileURLToPath(new URL("./prune-tmp.mjs", import.meta.url));
+const CLI = fileURLToPath(new URL("./prune-tmp.ts", import.meta.url));
 const SHIPPED = fileURLToPath(new URL("../host/", import.meta.url));
 const HOUR_MS = 3_600_000;
 const NOW = Date.UTC(2026, 9, 6, 18, 0, 0);

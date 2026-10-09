@@ -146,18 +146,18 @@
 // one fact this whole fleet can rely on is which issue a PR's own `Closes #N` resolves, because GitHub
 // computes it server-side. So: find the OTHER issues `mySession` currently holds (`in-progress` +
 // `session:<name>`, excluding the row being claimed right now), and ask GitHub which PR would close each.
-import { REPO } from "../project-identity.mjs";
+import { REPO } from "../project-identity.ts";
 import { gh, lookup } from "../merge-guard/lookups.mjs";
-import { declaredRegionFiles, regionCovers } from "../region-paths.mjs";
+import { declaredRegionFiles, regionCovers } from "../region-paths.ts";
 // #2126: the reviewer NAME is parsed by the tree's own verdict parser, never a second reading of the
 // `, by <name>:` convention -- #1245/#1259 exist because six sessions each retyped one and two disagreed.
-import { headMatches, reviewVerdict } from "../review-verdict.mjs";
+import { headMatches, reviewVerdict } from "../review-verdict.ts";
 // #2126: `answer:<session>` is the org's own spelling for "somebody owes this row an answer", and
 // removing the label IS the act of answering -- so the escalation needs nothing else to remember it.
-import { ANSWER_PREFIX, todayIso, waitingOn } from "../waiting-condition.mjs";
+import { ANSWER_PREFIX, todayIso, waitingOn } from "../waiting-condition.ts";
 // #2619 (child 3d of #69): the claim-lifecycle label and the `session:` prefix `lookupOtherHeldIssues`
 // searches by, moved to the project's declared vocabulary.
-import { CLAIM_LABEL, SESSION_PREFIX } from "../project-vocabulary.mjs";
+import { CLAIM_LABEL, SESSION_PREFIX } from "../project-vocabulary.ts";
 
 // NO `git` SPAWN HERE, deliberately -- every lookup in this file goes through `gh` (issue/PR/GraphQL
 // reads), which needs no `sandboxGitEnv()` scrub: that helper exists for `execFileSync("git", ...)`

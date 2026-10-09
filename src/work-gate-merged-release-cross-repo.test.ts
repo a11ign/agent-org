@@ -11,11 +11,11 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { claimRecordComment } from "./row-claim.mjs";
-import { performRelease } from "./wake.mjs";
+import { claimRecordComment } from "./row-claim.ts";
+import { performRelease } from "./wake.ts";
 import {
   claimFactsFrom, readClaim, claimStalledOrders, holderWorkAtRisk, workAtRiskInPrRepo, cloneOfKey,
-} from "./claim-stall.mjs";
+} from "./claim-stall.ts";
 
 const CLAIMED_AT = Date.parse("2026-10-04T10:37:40Z");
 const MERGED_AT = "2026-10-04T11:19:39Z";
@@ -71,7 +71,7 @@ function host(world: World = {}) {
 }
 
 const NO_AGENTS = null;
-const readingOf = (world: World = {}, input: { open?: object[]; elsewhereOpen?: object[]; merged?: import("./claim-stall.mjs").MergedPr[] } = {}) => {
+const readingOf = (world: World = {}, input: { open?: object[]; elsewhereOpen?: object[]; merged?: import("./claim-stall.ts").MergedPr[] } = {}) => {
   const h = host(world);
   const facts = claimFactsFrom({ row: 3390, session: "worker-3390", waiting: null, blockedBy: [], comments: [comment], openPrs: input.open ?? [],
     mergedPrs: [], elsewhere: { open: input.elsewhereOpen ?? [], merged: input.merged ?? [PR_134] }, repo: REPO, trackerRepo: "a11ign/a11ign", sessionRows: 1 }, h.io);

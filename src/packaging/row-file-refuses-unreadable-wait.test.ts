@@ -10,8 +10,8 @@
 // "everything with a Waiting-for line is refused"); case 3 pairs a body with no line and one with the line inside a fence, both accepted.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fileRefusalReason, promoteRefusalReason } from "../row-file.mjs";
-import { WAIT_STATES, parseWaits } from "../wait-condition.mjs";
+import { fileRefusalReason, promoteRefusalReason } from "../row-file.ts";
+import { WAIT_STATES, parseWaits } from "../wait-condition.ts";
 
 const COMPLETE_BODY = "## Region\n\npackages/lab/src/packaging/foo.ts\n\n"
   + "## Acceptance\n\n```\nnpx tsx --test x\n```\n\n"

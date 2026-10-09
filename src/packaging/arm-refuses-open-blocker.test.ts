@@ -24,8 +24,8 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import * as armPr from "../arm-pr.mjs";
-import { refusalBeforeArming, SWEEP_WAIT_ENV } from "../auto-arm-sweep.mjs";
+import * as armPr from "../arm-pr.ts";
+import { refusalBeforeArming, SWEEP_WAIT_ENV } from "../auto-arm-sweep.ts";
 
 const { runArmPr, EXIT } = armPr;
 const REPO = "a11ign/a11ign";
@@ -230,7 +230,7 @@ test("#3544 sweep: `refusalBeforeArming` -- blocked is refused, a closed blocker
     "a body the sweep could not read");
 });
 
-const SWEEP = fileURLToPath(new URL("../auto-arm-sweep.mjs", import.meta.url));
+const SWEEP = fileURLToPath(new URL("../auto-arm-sweep.ts", import.meta.url));
 
 /** The real sweep over ONE open PR (#3507), a fake `gh` answering from its arguments. `rows` is the edge list per row, or "fail". */
 function driveSweep({ rows, body = BODY, existingComment = "" }: { rows: Record<number, unknown | "fail">; body?: string; existingComment?: string }) {

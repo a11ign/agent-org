@@ -15,25 +15,25 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
 import assert from "node:assert/strict";
-import { decide, claimStallTick, claimStallsNow, readElsewherePrs, CAUSES, START_CAUSES, JUDGMENT_CAUSES, GH_READS } from "./work-gate.mjs";
-import { profileFor } from "./worker-profile.mjs";
+import { decide, claimStallTick, claimStallsNow, readElsewherePrs, CAUSES, START_CAUSES, JUDGMENT_CAUSES, GH_READS } from "./work-gate.ts";
+import { profileFor } from "./worker-profile.ts";
 import {
   WAKE_TTL_MS, MAX_DELIVERIES, performRelease, spawnClaimer, spawnedPrompt, deliver, consecutiveClean, drainInForce, isReleaseLine,
   cyclesReport, readLedger, deliveryCounts, readLedgerDeliveries, readDeliveredHandoffs, recoverInterruptedWork, recoverableWork,
   queueHandoff, readHandoffs, handoffBatches, recentlyVoidedKeys, sessionMoved, VOIDED, keptClaimsPath, ledgerLine, thrashEscalationPrompt,
   pruneGoneKeptClaims, readKeptClaims, writeKeptClaims, PRIMARY_CHECKOUT,
-} from "./wake.mjs";
+} from "./wake.ts";
 import {
   claimRecordComment, claimRow, declineRow, claimWithWorktree, worktreeTargetReason, worktreeFlagsReason,
   implicitAdoptSession, worktreeCleanliness, predecessorLivenessUnknown, predecessorGoneReading, recordPredecessorGone, adoptFor, ROW_CLAIM_FLAGS,
-} from "./row-claim.mjs";
+} from "./row-claim.ts";
 import { unknownFlags } from "./lib/cli-flags.mjs";
-import { CLAIM_RECORD_MARKER } from "./claim-labels.mjs";
+import { CLAIM_RECORD_MARKER } from "./claim-labels.ts";
 import {
   CLAIM_STALLED, STALL_INTERVAL_MS, STALL_UNTOLD_RELEASE_MS, INTERRUPTED_SETTLE_MS, GONE_CONFIRM_MS, nudgeKey, nudgeDeliveredAt, claimRecordOf, commentMove, workAtRisk, fileMove, claimReading,
   claimFactsFrom, readClaim, nextStallState, claimStalledOrders, paneInterrupted, paneThrashed, killedDeliveries, readHerdrRestart,
   RESTART_RESEND_WINDOW_MS, INTERRUPTED_TEXT, THRASH_TEXT, gitRun, gitInvocation, newestOwnCommit, statMtime, pathExists,
-} from "./claim-stall.mjs";
+} from "./claim-stall.ts";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -115,7 +115,7 @@ type Agent = { label: string; status: string };
 function tickWith(world: World, comments: Comment[], { rows = [row(2407)], memory = {} as Record<string, unknown>, prs = [] as object[],
   merged = null as object[] | null, restartAt = null as number | null, now = NOW, blockedBy = [] as number[], ledger = "",
   // #3075: the OTHER tracked code repository's lists. Absent is a project with ONE code repository, which is every test above this line.
-  elsewhere = undefined as import("./claim-stall.mjs").ElsewherePrs | undefined,
+  elsewhere = undefined as import("./claim-stall.ts").ElsewherePrs | undefined,
   // `null` by default, same as `restartAt`: the gate is asked about the row's SESSION only when a test gives a listing,
   // never against the real `herdr` on whatever host runs the suite (`agentsFor`'s own doc says why -- CI must not depend on it).
   agents = null as Agent[] | null } = {}) {
@@ -1695,7 +1695,7 @@ test("#2470 the git argv is VALID for real git: `--no-optional-locks` is a GLOBA
 
 // --- the tick, driven through its ENTRY: a release that does not land is not a quiet tick --------------------------------------------------
 
-const WAKE_ENTRY = fileURLToPath(new URL("./wake.mjs", import.meta.url));
+const WAKE_ENTRY = fileURLToPath(new URL("./wake.ts", import.meta.url));
 
 test("#2470 the wake ENTRY performs the gate's release order, and one that does NOT land is an ATTENTION exit with a line, never a quiet tick", () => {
   const dir = mkdtempSync(join(tmpdir(), "claim-stall-tick-"));
@@ -1798,7 +1798,7 @@ test("#2470 (9) a pane interrupted for LESS than the settle time is left alone (
   assert.deepEqual(seen(NOW - INTERRUPTED_SETTLE_MS + 1), [], "one millisecond short");
   assert.deepEqual(seen(NOW - INTERRUPTED_SETTLE_MS), ["worker-7"], "settled: resumed");
   assert.deepEqual(seen(null), [], "a session whose last activity cannot be established is left alone");
-  assert.match(readFileSync(new URL("./wake.mjs", import.meta.url), "utf8"), /if you were stopped on purpose, say so on the row and stop/,
+  assert.match(readFileSync(new URL("./wake.ts", import.meta.url), "utf8"), /if you were stopped on purpose, say so on the row and stop/,
     "and the prompt itself tells a deliberately stopped session what to do");
 });
 

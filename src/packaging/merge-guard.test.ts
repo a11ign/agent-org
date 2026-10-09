@@ -17,7 +17,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-import { mergeReadiness, mergeSafetyVerdict } from "../merge-guard.mjs";
+import { mergeReadiness, mergeSafetyVerdict } from "../merge-guard.ts";
 import { reasonKind } from "../merge-guard/reason-kind.mjs";
 import { LIVE_SHAPE } from "./check-run-fixtures.ts";
 
@@ -251,7 +251,7 @@ test("mergeSafetyVerdict: THE #262 REGRESSION -- closing a row THIS PR's own aut
  */
 test("no file in the merge-guard tree reads mergeStateStatus, not even to cross-check", () => {
   const files = [
-    "../merge-guard.mjs",
+    "../merge-guard.ts",
     "../merge-guard/base-rule.mjs",
     "../merge-guard/head-tip-rule.mjs",
     "../merge-guard/checks-rule.mjs",
@@ -286,7 +286,7 @@ test("no file in the merge-guard tree reads mergeStateStatus, not even to cross-
  * both are scanned rather than trusting that fixing one fixes both.
  */
 test("both real behindBy fetches are oriented main...head, never the reverse (#188)", () => {
-  for (const file of ["../merge-guard.mjs", "../merge-guard/armed-race-rule.mjs"]) {
+  for (const file of ["../merge-guard.ts", "../merge-guard/armed-race-rule.mjs"]) {
     const src = readFileSync(new URL(file, import.meta.url), "utf8");
     assert.match(src, /compare\/main\.\.\.\$\{pr\.headRefOid\}/,
       `${file}: must ask GitHub how far main is ahead of this head, not the reverse`);

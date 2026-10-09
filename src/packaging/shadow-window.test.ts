@@ -17,10 +17,10 @@ import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, real
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { shadowTick, gapBetween, COPY_MARKER, READS_DIR } from "../shadow-window.mjs";
-import { encodeShadowValue } from "../shadow-reads.mjs";
+import { shadowTick, gapBetween, COPY_MARKER, READS_DIR } from "../shadow-window.ts";
+import { encodeShadowValue } from "../shadow-reads.ts";
 
-const RUNNER = fileURLToPath(new URL("../shadow-window.mjs", import.meta.url));
+const RUNNER = fileURLToPath(new URL("../shadow-window.ts", import.meta.url));
 
 /** The order `decide` makes for a row in these fixtures; the candidate fixtures below make the same one. */
 const orderFor = (row: string) => ({ causeKey: `row:${row}`, cause: "ready-row", session: "s", subject: row, discriminator: "d", prompt: "p" });

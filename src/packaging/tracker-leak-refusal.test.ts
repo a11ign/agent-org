@@ -40,10 +40,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { GENERIC_LEAK_PATTERNS, allLeaksIn, leakPatterns, leakRefusalReason } from "../lib/leak-patterns.mjs";
-import { homeProjectDeclaration } from "../project-config.mjs";
-import { fileRefusalReason, createIssue } from "../row-file.mjs";
-import { checkBody } from "../pr-open.mjs";
-import { editRefusal, editComment, digest } from "../tracker-comment.mjs";
+import { homeProjectDeclaration } from "../project-config.ts";
+import { fileRefusalReason, createIssue } from "../row-file.ts";
+import { checkBody } from "../pr-open.ts";
+import { editRefusal, editComment, digest } from "../tracker-comment.ts";
 
 const NEVER_RUN = () => { throw new Error("must never RUN a command for a body this test expects refused"); };
 

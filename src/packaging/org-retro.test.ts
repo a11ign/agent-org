@@ -18,12 +18,12 @@ import { join } from "node:path";
 import { buildReport, renderReport, retrospectiveDue, retrospectiveOrder, retrospectiveKey, retrospectiveTick, ledgerEntries, ledgerStats,
   idleStats, journalLines, releaseStats, redPrStats, mergedStats, tokenStats, CLASS_FIX_INSTRUCTION, RETRO_CAUSE, RETRO_DESTINATION, UNKNOWN,
   utcDate, NUMBERS, READINGS_FILE, compareReadings, previousReading, parseReadings, readReadings, recordReading, undeclaredDirections,
-  verdictFor } from "../org-retro.mjs";
-import { isBrokenRed, isHeldRed, HOLD_OWN_JOBS } from "../red-pr.mjs";
-import { readLedger as readHandFixLedger, ledgerLine as handFixLine } from "../hand-fix-ledger.mjs";
-import { CAUSES, JUDGMENT_CAUSES, START_CAUSES, HOLD_RED_JOBS } from "../work-gate.mjs";
-import { PROFILES } from "../worker-profile.mjs";
-import { HOME_CHECKOUT, HOST_ENV } from "../project-config.mjs";
+  verdictFor } from "../org-retro.ts";
+import { isBrokenRed, isHeldRed, HOLD_OWN_JOBS } from "../red-pr.ts";
+import { readLedger as readHandFixLedger, ledgerLine as handFixLine } from "../hand-fix-ledger.ts";
+import { CAUSES, JUDGMENT_CAUSES, START_CAUSES, HOLD_RED_JOBS } from "../work-gate.ts";
+import { PROFILES } from "../worker-profile.ts";
+import { HOME_CHECKOUT, HOST_ENV } from "../project-config.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 
 const HOUR_MS = 3_600_000;
@@ -508,7 +508,7 @@ test("a manual run of the CLI reads the previous line and writes nothing", () =>
   // PATH is empty so `gh`, `journalctl` and `git` cannot be found: every read is refused, which is `unknown`, and nothing real is reached.
   // The child finds the project the way this file does: through the host file, which a stripped environment would otherwise lose.
   const host = process.env[HOST_ENV] === undefined ? {} : { [HOST_ENV]: process.env[HOST_ENV] };
-  const out = execFileSync(process.execPath, [new URL("../org-retro.mjs", import.meta.url).pathname, "--now=2026-10-02T00:00:00Z"],
+  const out = execFileSync(process.execPath, [new URL("../org-retro.ts", import.meta.url).pathname, "--now=2026-10-02T00:00:00Z"],
     { encoding: "utf8", env: { HOME: home, PATH: "", ...host } });
   assert.match(out, /Against the previous reading, 2026-10-01:/, "it compared against the line");
   assert.equal(readFileSync(path, "utf8"), readingsText(YESTERDAY), "and wrote nothing");

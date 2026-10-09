@@ -20,15 +20,15 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { diskHeadroom, lowResources, readFilesystems, MIN_FREE_FRACTION, WATCHED_MOUNTS } from "./disk-headroom.mjs";
-import { CAUSES, JUDGMENT_CAUSES, START_CAUSES, diskHeadroomOrders, diskHeadroomTick } from "./work-gate.mjs";
-import { profileFor } from "./worker-profile.mjs";
+import { diskHeadroom, lowResources, readFilesystems, MIN_FREE_FRACTION, WATCHED_MOUNTS } from "./disk-headroom.ts";
+import { CAUSES, JUDGMENT_CAUSES, START_CAUSES, diskHeadroomOrders, diskHeadroomTick } from "./work-gate.ts";
+import { profileFor } from "./worker-profile.ts";
 
 const BLOCK = 4096;
 const TOTAL = 1000;
-const GATE_ENTRY = fileURLToPath(new URL("./work-gate.mjs", import.meta.url));
-import { SETTLE_TEST_CLOCK_ENV } from "./wake.mjs";
-const WAKE_ENTRY = fileURLToPath(new URL("./wake.mjs", import.meta.url));
+const GATE_ENTRY = fileURLToPath(new URL("./work-gate.ts", import.meta.url));
+import { SETTLE_TEST_CLOCK_ENV } from "./wake.ts";
+const WAKE_ENTRY = fileURLToPath(new URL("./wake.ts", import.meta.url));
 const STUB_MODE = 0o755;
 const READ_ONLY = 0o444;
 

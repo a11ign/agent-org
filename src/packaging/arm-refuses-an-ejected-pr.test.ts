@@ -24,9 +24,9 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runArmPr, EXIT } from "../arm-pr.mjs";
-import { refusalBeforeArming, SWEEP_WAIT_ENV } from "../auto-arm-sweep.mjs";
-import { ejectionVerdict, queueEjectionOf } from "../pr-armed-state.mjs";
+import { runArmPr, EXIT } from "../arm-pr.ts";
+import { refusalBeforeArming, SWEEP_WAIT_ENV } from "../auto-arm-sweep.ts";
+import { ejectionVerdict, queueEjectionOf } from "../pr-armed-state.ts";
 
 const COMMIT = { __typename: "PullRequestCommit" };
 const added = (createdAt: string) => ({ __typename: "AddedToMergeQueueEvent", createdAt });
@@ -144,7 +144,7 @@ test("#3487 sweep: `refusalBeforeArming` -- ejected is refused, a push since is 
   assert.equal(ask(() => { throw new Error("HTTP 502"); }).kind, "cannot-ask");
 });
 
-const SWEEP = fileURLToPath(new URL("../auto-arm-sweep.mjs", import.meta.url));
+const SWEEP = fileURLToPath(new URL("../auto-arm-sweep.ts", import.meta.url));
 
 /** The real sweep over ONE open PR (#3460), a fake `gh` answering from its arguments; `ejection` is the queue read, or "fail". */
 function driveSweep(ejection: unknown | "fail") {

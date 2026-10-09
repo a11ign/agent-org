@@ -17,7 +17,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chairmanAskOrders, chairmanAskRefusal, askOf, withoutDeclaration, MARKER, postedBrief } from "../work-gate/chairman-ask-orders.mjs";
-import { parseWaits, conditionHolds, versionAtLeast, waitItemOf } from "../wait-condition.mjs";
+import { parseWaits, conditionHolds, versionAtLeast, waitItemOf } from "../wait-condition.ts";
 import { requestEvent } from "../messaging/sources/requests.mjs";
 import { readFileSync } from "node:fs";
 
@@ -208,12 +208,12 @@ test("row-file refuses a declaration that could never ask him, and files a sound
   assert.match(chairmanAskRefusal(body("manual", LINES.slice(1))) ?? "", /no "Ask:"|Ask/);
   assert.equal(chairmanAskRefusal(body(`published ${FLEET}@latest`)), null);
   assert.equal(chairmanAskRefusal("## Why\n\nNothing declared.\n"), null);
-  const source = readFileSync(new URL("../row-file.mjs", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../row-file.ts", import.meta.url), "utf8");
   assert.match(source, /blockedByRefusal\([^\n]*\) \?\? chairmanAskRefusal\(/, "the filing path calls the refusal");
 });
 
 test("the gate's tick calls the ask step with the open rows it read", () => {
-  const source = readFileSync(new URL("../work-gate.mjs", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../work-gate.ts", import.meta.url), "utf8");
   assert.match(source, /\.\.\.chairmanAsksNow\(openRowsRead\)/);
   assert.match(source, /chairmanAskOrders\(\{ rows: openRowsRead, now: Date\.now\(\) \},\s*\{ run: defaultRun, repo: repoNow, readItemFacts: readWaitFacts/);
 });

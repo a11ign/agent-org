@@ -30,7 +30,7 @@
 // BEFORE FILING, against the flags THIS invocation is about to send -- a row cannot yet have a
 // `blockedBy` edge of its own at filing time, so what stands in for it here is whether `argv` declares
 // one. The two check different moments and cannot share an implementation, only the same vocabulary.
-import { notBeforeDate } from "../waiting-condition.mjs";
+import { notBeforeDate } from "../waiting-condition.ts";
 
 /**
  * `ceo`'s three named patterns, case-insensitive, illustrative wording rather than a required exact

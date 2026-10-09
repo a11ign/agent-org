@@ -21,7 +21,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { acceptancePathsReason, cdIntoCheckout, primaryCheckoutCdReason } from "./acceptance-commands.mjs";
+import { acceptancePathsReason, cdIntoCheckout, primaryCheckoutCdReason } from "./acceptance-commands.ts";
 
 const PRIMARY = "/home/agent/repos/a11y-witness";
 const OTHER_REPO = "/home/agent/repos/agent-org";

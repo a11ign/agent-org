@@ -13,11 +13,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { claimStallsNow, claimStallTick, closedClaimsNow, closedClaimsWhenWorkerListed, readOpenRowFollowUps, GH_READS,
-  closedClaimLabelsWhenListed, closedClaimDebris, stripClosedClaims } from "../work-gate.mjs";
-import { labelsToStrip as labelsToStripOfLeaf, stripClaimLabelsVia } from "../claim-label-strip.mjs";
-import { labelsToStrip as labelsToStripOfCloser } from "../close-rows-for-merged-pr.mjs";
-import { performRelease } from "../wake.mjs";
-import { claimRecordComment } from "../row-claim.mjs";
+  closedClaimLabelsWhenListed, closedClaimDebris, stripClosedClaims } from "../work-gate.ts";
+import { labelsToStrip as labelsToStripOfLeaf, stripClaimLabelsVia } from "../claim-label-strip.ts";
+import { labelsToStrip as labelsToStripOfCloser } from "../close-rows-for-merged-pr.ts";
+import { performRelease } from "../wake.ts";
+import { claimRecordComment } from "../row-claim.ts";
 
 type Agent = { label: string; status: string };
 type Order = { session: string; cause: string; causeKey: string; release?: { row: number; session: string; why: string; interrupt?: boolean;
@@ -264,7 +264,7 @@ test("#3535 (5) the read is counted in GH_READS as conditional on a listed worke
 });
 
 test("#3535 the gate's `main` hands the follow-ups' closed claims to the orders: the read is not dropped between the wave and `decide`", () => {
-  const main = readFileSync(new URL("../work-gate.mjs", import.meta.url), "utf8");
+  const main = readFileSync(new URL("../work-gate.ts", import.meta.url), "utf8");
   assert.match(main, /const \{[^}]*\bclosedClaims\b[^}]*\} = readOpenRowFollowUps\(allOpen\)/, "read in the follow-ups' wave");
   assert.match(main, /withClosedClaims\(claimStallsWithFacts\(openRowsRead, claimedComments, prs, otherScopes\), closedClaims\)/, "and handed to the orders");
   assert.match(main, /\.\.\.closedClaimsNow\(closedClaims, \{ trackerRepo: repoNow\(\) \}\)/, "which turns them into orders beside the open claims' own");
@@ -394,7 +394,7 @@ test("#3883 (8) ONE COPY: the gate strips through the leaf, the close path re-ex
   assert.equal(stripClaimLabelsVia(1, ["answer:x", "was-ready"], "r/r", { gh: () => { throw new Error("must not be called"); }, say: (l) => { said.push(l); } }), "nothing");
   assert.equal(stripClaimLabelsVia(1, ["in-progress"], "r/r", { gh: () => "", say: (l) => { said.push(l); }, logPrefix: "SWEEP" }), "stripped");
   assert.match(said[0], /^SWEEP: #1 stripped in-progress\.$/);
-  const gate = readFileSync(new URL("../work-gate.mjs", import.meta.url), "utf8");
+  const gate = readFileSync(new URL("../work-gate.ts", import.meta.url), "utf8");
   assert.doesNotMatch(gate, /from "\.\/close-rows-for-merged-pr\.mjs"/, "its import closure must stay loadable with no roles dir (#2174)");
   assert.match(gate, /import \{ stripClaimLabelsVia \} from "\.\/claim-label-strip\.mjs"/);
   assert.match(gate, /const strippedClosedClaims = stripClosedClaims\(closedClaimLabels\)/, "and main acts on what the wave read");

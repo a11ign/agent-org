@@ -72,13 +72,13 @@
 // as the pull request, because `#7` alone would name two different pull requests.
 // A REPOSITORY THAT CANNOT BE READ MAKES THE WHOLE READ `null`, which every caller already reads as INCONCLUSIVE and never as "no
 // overlap": a second repository that fails must not become a quiet pass on the strength of the first one answering. It says WHICH one.
-import { REPO } from "../project-identity.mjs";
-import { homeProjectDeclaration } from "../project-config.mjs";
-import { extractClosesDeclaration, closesReferences } from "../acceptance-commands.mjs";
+import { REPO } from "../project-identity.ts";
+import { homeProjectDeclaration } from "../project-config.ts";
+import { extractClosesDeclaration, closesReferences } from "../acceptance-commands.ts";
 import { gh, lookup } from "../merge-guard/lookups.mjs";
-import { holdersOf } from "../pr-hold-state.mjs";
-import { declaredRegionFiles, extractRegionSection, regionCovers, regionCoversIn, splitRegionEntry } from "../region-paths.mjs";
-import { CLAIM_LABEL } from "../claim-labels.mjs";
+import { holdersOf } from "../pr-hold-state.ts";
+import { declaredRegionFiles, extractRegionSection, regionCovers, regionCoversIn, splitRegionEntry } from "../region-paths.ts";
+import { CLAIM_LABEL } from "../claim-labels.ts";
 import { lookupBlockedByEdge } from "./blocked-by-edge-rule.mjs";
 
 /** @type {(path: string) => boolean} */

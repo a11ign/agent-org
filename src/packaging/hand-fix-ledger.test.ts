@@ -15,8 +15,8 @@ import assert from "node:assert/strict";
 import {
   ORG_LOGINS, AUTOMATION_LOGINS, buildLedger, classifyLogin, declarationsIn, declarationRefusal, gatherChanges,
   judgeChange, ledgerLine, readLedger, trendOf, HAND_FIX_FORMAT,
-} from "../hand-fix-ledger.mjs";
-import { main as prOpen, EXIT_NOTHING_SENT } from "../pr-open.mjs";
+} from "../hand-fix-ledger.ts";
+import { main as prOpen, EXIT_NOTHING_SENT } from "../pr-open.ts";
 
 const EM = "—";
 const NOW = new Date("2026-10-01T22:00:00Z");

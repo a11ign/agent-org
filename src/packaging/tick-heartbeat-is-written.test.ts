@@ -17,8 +17,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { homeProjectDeclaration } from "../project-config.mjs";
-import { EXIT, HEARTBEAT_COMMENT_ID, HEARTBEAT_COMMENT_MARKER, HEARTBEAT_VARIABLE, heartbeatCommentBody, writeHeartbeat } from "../work-tick.mjs";
+import { homeProjectDeclaration } from "../project-config.ts";
+import { EXIT, HEARTBEAT_COMMENT_ID, HEARTBEAT_COMMENT_MARKER, HEARTBEAT_VARIABLE, heartbeatCommentBody, writeHeartbeat } from "../work-tick.ts";
 import { completionPath, readCompletion } from "../lib/tick-completion.mjs";
 
 const SRC = fileURLToPath(new URL("..", import.meta.url));

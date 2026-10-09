@@ -384,7 +384,7 @@ export function runPublisher({ out, repos, trackerRepo, recent, rows, ask, rende
 
 async function main() {
   const { out, maxAgeMs, recent, rows, calls } = parseArgs(process.argv.slice(2));
-  const { homeProjectDeclaration } = await import("../project-config.mjs");
+  const { homeProjectDeclaration } = await import("../project-config.ts");
   const declaration = homeProjectDeclaration();
   const repos = [...new Set(declaration.code.map((/** @type {{ repo: string }} */ entry) => entry.repo))];
   const now = Date.now();

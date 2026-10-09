@@ -66,12 +66,12 @@ if (process.env[HOST_VARIABLE] === undefined) {
   writeFileSync(hostFile, JSON.stringify({ schema: 1, primary: "p", projects: [{ id: "p", checkout }] }));
   process.env[HOST_VARIABLE] = hostFile;
 }
-const { ProjectDeclarationRefusal, resolveHomeCheckout } = await import("../project-config.mjs");
-const { hostUnitDrift, hostUnitsInstall, hostVariableAsRun, unitsWithoutHostVariable } = await import("../host-units.mjs");
-const { parseHostConfig } = await import("../host-config.mjs");
+const { ProjectDeclarationRefusal, resolveHomeCheckout } = await import("../project-config.ts");
+const { hostUnitDrift, hostUnitsInstall, hostVariableAsRun, unitsWithoutHostVariable } = await import("../host-units.ts");
+const { parseHostConfig } = await import("../host-config.ts");
 
 test("the variable's name here is the one the tool reads", async () => {
-  const { HOST_ENV } = await import("../project-config.mjs");
+  const { HOST_ENV } = await import("../project-config.ts");
   assert.equal(HOST_ENV, HOST_VARIABLE);
 });
 

@@ -10,9 +10,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { mergedPrsInWindow, DEFAULT_WINDOW_MINUTES, closeOnePr, sweepExit, EXIT } from "../close-rows-sweep.mjs";
-import { closurePlan } from "../close-rows-for-merged-pr.mjs";
-import { refusalCause } from "../settle-closed-status.mjs";
+import { mergedPrsInWindow, DEFAULT_WINDOW_MINUTES, closeOnePr, sweepExit, EXIT } from "../close-rows-sweep.ts";
+import { closurePlan } from "../close-rows-for-merged-pr.ts";
+import { refusalCause } from "../settle-closed-status.ts";
 
 /** CAPTURED, not composed: the reason `moveProjectStatus` gave for #1299 in trunk run 34769927592 (`02ae7420`). */
 const CAPTURED_PROJECT_UNREADABLE = "could not move #1299's Status to \"Done\" -- board-snapshot: could not read "
@@ -25,7 +25,7 @@ const refuseOnly = (row: number, message: string) => (n: number) =>
   (n === row ? { settled: false, refused: [refusal(n, message)] } : { settled: true, refused: [] });
 
 // The script is the TOOL's own, `src` up one.
-const SCRIPT = fileURLToPath(new URL("../close-rows-sweep.mjs", import.meta.url));
+const SCRIPT = fileURLToPath(new URL("../close-rows-sweep.ts", import.meta.url));
 
 // --- mergedPrsInWindow: the query, driven with an injected gh ---
 

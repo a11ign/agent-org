@@ -21,18 +21,18 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HOME_CHECKOUT } from "./project-config.mjs";
+import { HOME_CHECKOUT } from "./project-config.ts";
 import {
   deliver, route, spawnableRole, SPAWN_CAUSES,
   REVIEWER_CAUSES, REVIEWER_GH_CONFIG_DIR, reviewerEnvironment, spawnableReviewer, isReviewerOrder,
   liveReviewers, endFinishedReviewers, registerReviewer, reviewerPathsFrom, sparePathsFrom, spawnEnvironment,
   MAX_SPAWNS_PER_TICK, orderPullRequest, reviewerMismatch, prepareReviewCheckout, removeReviewCheckout,
   reviewCheckoutPath, withReviewCheckout, linkReviewDependencies,
-} from "./wake.mjs";
-import { readReviewerRegistry, REVIEWER_REGISTRY_FILE } from "./work-gate.mjs";
-import { parityOwner } from "./review-attribution.mjs";
+} from "./wake.ts";
+import { readReviewerRegistry, REVIEWER_REGISTRY_FILE } from "./work-gate.ts";
+import { parityOwner } from "./review-attribution.ts";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
-import { REMOVAL_LOG_ENV } from "./worktree-removal.mjs";
+import { REMOVAL_LOG_ENV } from "./worktree-removal.ts";
 import { startedPanes, STUB_STARTED_PANE } from "./packaging/started-pane.ts";
 import { tmpDirForFile } from "./lib/tmp-fixture.ts";
 
@@ -56,7 +56,7 @@ const agents = (spec: Record<string, string>) =>
 /** `engineerRoles()` since #2505: the three standing engineers are retired and the spares are a FAMILY, so no address is listed. */
 const ROSTER: string[] = [];
 const STUB_MODE = 0o755; // the tick invokes `herdr` and `gh` as commands, so the stubs have to be runnable
-const TICK_ENTRY = fileURLToPath(new URL("./work-tick.mjs", import.meta.url));
+const TICK_ENTRY = fileURLToPath(new URL("./work-tick.ts", import.meta.url));
 
 /** The order the gate emits for PR `n`: addressed to `reviewer-<n>`, the name `parityOwner` returns. */
 const reviewOrder = (n: number, cause = "draft-awaiting-verdict") => ({
@@ -667,7 +667,7 @@ test("#2498 (2a): `A11Y_REVIEWER_SESSION` reaches the pane by EVERY path the tic
 });
 
 test("#2498 (2b): the tick has exactly ONE way to open a reviewer's pane and ONE to start its agent -- and neither is a resume", () => {
-  const source = readFileSync(fileURLToPath(new URL("./wake.mjs", import.meta.url)), "utf8");
+  const source = readFileSync(fileURLToPath(new URL("./wake.ts", import.meta.url)), "utf8");
   // Measured 2026-09-25: `herdr.service` restarted at 12:01:57Z and `reviewer-2485`'s live codex was `codex resume <uuid>` from 12:01:58Z, with four
   // `claude --resume` in the same two seconds: herdr's own restore, which keeps none of the `--env` given to `workspace create`. This file has no
   // path that resumes a PROCESS (its `resume` is a plain PROMPT to a pane that exists, #2470), so a pane with no `A11Y_REVIEWER_SESSION` is one

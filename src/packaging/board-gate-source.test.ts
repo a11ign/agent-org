@@ -15,8 +15,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { HOME_CHECKOUT } from "../project-config.mjs";
-import { gateVerdicts, isConformanceGate, latestVerdictGate, worstVerdict } from "../board-gates.mjs";
+import { HOME_CHECKOUT } from "../project-config.ts";
+import { gateVerdicts, isConformanceGate, latestVerdictGate, worstVerdict } from "../board-gates.ts";
 
 type Gate = { command: string; at: string; output: string; reportedBy?: string };
 const GATES = join(HOME_CHECKOUT, "docs/board/reported/gates");

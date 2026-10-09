@@ -13,8 +13,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ORDER_STALL_MINUTES, SIGNALS, orderStallReading } from "../org-health.mjs";
-import { BUSY_SEAT_DEFERRAL_MS, CAPACITY_WAIT_LIMIT_MS, refusalReport, deferralAges, handoffBacklog, stalledOrdersOf, orderStallOrdersNow } from "../wake.mjs";
+import { ORDER_STALL_MINUTES, SIGNALS, orderStallReading } from "../org-health.ts";
+import { BUSY_SEAT_DEFERRAL_MS, CAPACITY_WAIT_LIMIT_MS, refusalReport, deferralAges, handoffBacklog, stalledOrdersOf, orderStallOrdersNow } from "../wake.ts";
 
 const MINUTE = 60_000;
 const T0 = 1_000_000_000_000;

@@ -18,12 +18,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { route, deliver, withSpareInstances, engineerRoles, engineerEligibility, spawnClaimer, spentSeen, isSpareRole,
   cycleVerdict, consecutiveClean, cyclesReport, endFinishedSpares, readSpareCycles, sparePathsFrom, registerSpawn,
-  settleAbsentInstance, drainInForce, spareInstances } from "../wake.mjs";
+  settleAbsentInstance, drainInForce, spareInstances } from "../wake.ts";
 import { startedPanes, STUB_STARTED_PANE } from "./started-pane.ts";
 
 const T0 = Date.UTC(2026, 8, 25, 0, 0, 0);
 const STUB_MODE = 0o755;
-const WAKE_ENTRY = fileURLToPath(new URL("../wake.mjs", import.meta.url));
+const WAKE_ENTRY = fileURLToPath(new URL("../wake.ts", import.meta.url));
 const agents = (spec: Record<string, string>) => Object.entries(spec).map(([label, status]) => ({ label, status }));
 const STANDING = ["worker-capture", "worker-judge", "worker-tooling"];
 const POOL = "engineers";

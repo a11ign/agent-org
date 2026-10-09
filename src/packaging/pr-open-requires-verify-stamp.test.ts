@@ -18,9 +18,9 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { EXIT_NOTHING_SENT, main } from "../pr-open.mjs";
-import { decide, performActions } from "../work-gate.mjs";
-import { VERIFY_STATE, readVerifyStamp, verifyDeclaration, withVerifyStamps, worktreeAtHead } from "../verify-stamp.mjs";
+import { EXIT_NOTHING_SENT, main } from "../pr-open.ts";
+import { decide, performActions } from "../work-gate.ts";
+import { VERIFY_STATE, readVerifyStamp, verifyDeclaration, withVerifyStamps, worktreeAtHead } from "../verify-stamp.ts";
 
 const STEPS = ["changed", "ts", "agentOrg"];
 const ACCEPTANCE = 'Acceptance: node -e "process.exit(0)"';

@@ -22,7 +22,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { COMPACT_THRESHOLD_TOKENS, limitResetAt, sessionAllowance, unavailableReason, deliver as settlingDeliver, deliverHandoffs as settlingDeliverHandoffs, escalateStuck, deliveryCounts,
   poolEngineerReason, MAX_DELIVERIES, LIMIT_UNREADABLE_HOLD_MS, SETTLE_TEST_CLOCK_ENV }
-  from "../wake.mjs";
+  from "../wake.ts";
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
 const noSettle = () => {};
 /** A transcript root that holds nothing. A per-row instance's order reads the instance's own transcripts to decide `/compact` (#2688), and the default root
@@ -318,7 +318,7 @@ test("a stuck cause addressed to the POOL is not asked about", () => {
 
 // --- THE TICK ITSELF, RUN AS A PROCESS ----------------------------------------------------------------------------
 
-const WAKE_ENTRY = fileURLToPath(new URL("../wake.mjs", import.meta.url));
+const WAKE_ENTRY = fileURLToPath(new URL("../wake.ts", import.meta.url));
 const STUB_MODE = 0o755;
 
 /** `herdr` on a PATH that holds nothing else: lists `worker-capture` idle, answers `agent get`, logs every prompt. */

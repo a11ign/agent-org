@@ -42,12 +42,12 @@ process.chdir(PROJECT);
 
 const { NO_MERGE_HOURS, RED_PR_MINUTES, REFUSED_TICKS, PRIMARY_STALE_MINUTES, SIGNALS, noMergeReading, redPrReading, refusedRowReading,
   primaryReading, primaryStandingSince, readLastMergedAt, readLatestMerge, orgHealthReadings,
-  orgHealthOrders, orgHealthTick } = await import("../org-health.mjs");
+  orgHealthOrders, orgHealthTick } = await import("../org-health.ts");
 const { CAUSES, JUDGMENT_CAUSES, START_CAUSES, GH_READS, UNCLAIMABLE_AFTER_TICKS, decide, withPrOwners, redPrFacts } =
-  await import("../work-gate.mjs");
-const { profileFor } = await import("../worker-profile.mjs");
+  await import("../work-gate.ts");
+const { profileFor } = await import("../worker-profile.ts");
 
-const GATE_ENTRY = fileURLToPath(new URL("../work-gate.mjs", import.meta.url));
+const GATE_ENTRY = fileURLToPath(new URL("../work-gate.ts", import.meta.url));
 const STUB_MODE = 0o755;
 const MINUTE_MS = 60_000;
 const HOUR_MS = 3_600_000;

@@ -15,9 +15,9 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { HEARTBEAT_COMMENT_ID, writeHeartbeat } from "./work-tick.mjs";
+import { HEARTBEAT_COMMENT_ID, writeHeartbeat } from "./work-tick.ts";
 import { TICK_KILLED, TICK_MARKER_FILE, TICK_OVERRAN, TICK_SLOW, TICK_SLOW_SECONDS, clearOwnMarker, deliverTickOrders, killedTickOrders, readKilledTick,
-  readMarker, slowThresholdSeconds, slowTickOrders, tickMarkerPath, writeStartMarker } from "./work-tick-health.mjs";
+  readMarker, slowThresholdSeconds, slowTickOrders, tickMarkerPath, writeStartMarker } from "./work-tick-health.ts";
 
 const SRC = fileURLToPath(new URL(".", import.meta.url));
 const PRELOAD = join(SRC, "lib", "crash-exit.mjs");

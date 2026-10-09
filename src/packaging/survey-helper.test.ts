@@ -19,11 +19,11 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { survey, render, DEFAULT_READ_LIMIT } from "../survey.mjs";
+import { survey, render, DEFAULT_READ_LIMIT } from "../survey.ts";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
 
 // The tool's own CLI, found from this file and not through the project's checkout, where `packages/agent-org` is the old frozen copy.
-const SURVEY_CLI = fileURLToPath(new URL("../survey.mjs", import.meta.url));
+const SURVEY_CLI = fileURLToPath(new URL("../survey.ts", import.meta.url));
 
 /**
  * A real, throwaway git WORKING TREE -- `git grep` (no `--cached`) reads the working tree, so nothing here

@@ -32,7 +32,7 @@ const HOST_FILE = join(SCRATCH, "host.json");
 writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join(SCRATCH, "bin"), primary: "fixture", projects: [{ id: "fixture", checkout: PROJECT }],
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
-const { linkKeyedDependencies } = await import("../wake.mjs");
+const { linkKeyedDependencies } = await import("../wake.ts");
 
 const DECLARED = { eslint: "9.0.0", tsx: "4.0.0" };
 let made = 0;

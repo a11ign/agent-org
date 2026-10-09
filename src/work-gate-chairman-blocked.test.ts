@@ -11,8 +11,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   decide, chairmanReminderWindow, CHAIRMAN_REMINDER_PERIOD_MS, PROMOTION_ASK_WINDOW_MS,
-} from "./work-gate.mjs";
-import { JUDGMENT_TTL_MS, MAX_DELIVERIES, stuckRowOf } from "./wake.mjs";
+} from "./work-gate.ts";
+import { JUDGMENT_TTL_MS, MAX_DELIVERIES, stuckRowOf } from "./wake.ts";
 
 const DAY = CHAIRMAN_REMINDER_PERIOD_MS;
 const MIN = 60_000;

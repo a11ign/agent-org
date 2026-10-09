@@ -11,9 +11,9 @@ import { join } from "node:path";
 import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { IONICE_CLASS, NICE_LEVEL, SLOT_COUNT, SLOT_DIR_ENV, SLOT_ENV, SuiteSlotRefusal, WAITS_LOG, WAIT_REPORT_MS, findOnPath, insideSlot, runUnderSlot, slotDirectory } from "../suite-slots.mjs";
+import { IONICE_CLASS, NICE_LEVEL, SLOT_COUNT, SLOT_DIR_ENV, SLOT_ENV, SuiteSlotRefusal, WAITS_LOG, WAIT_REPORT_MS, findOnPath, insideSlot, runUnderSlot, slotDirectory } from "../suite-slots.ts";
 
-const SELF = fileURLToPath(new URL("../suite-slots.mjs", import.meta.url));
+const SELF = fileURLToPath(new URL("../suite-slots.ts", import.meta.url));
 const scratch = mkdtempSync(join(tmpdir(), "suite-slots-"));
 after(() => rmSync(scratch, { recursive: true, force: true }));
 let counter = 0;

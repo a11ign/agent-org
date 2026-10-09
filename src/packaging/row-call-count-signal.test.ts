@@ -17,10 +17,10 @@
 // nothing to check cannot pass (the emptiness's positive control).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { claudeTurns } from "../token-audit.mjs";
+import { claudeTurns } from "../token-audit.ts";
 import { claimedRowSession, rowCallCountSignals, rowCallCountOrders, ROW_CALL_COUNT_SPLIT_THRESHOLD,
-  ROW_CALL_COUNT_ASSESSED_MARKER, formatRowCallCountAssessment, rowCallCountAssessedCalls } from "../work-gate.mjs";
-import { CLAIM_RECORD_MARKER } from "../claim-labels.mjs";
+  ROW_CALL_COUNT_ASSESSED_MARKER, formatRowCallCountAssessment, rowCallCountAssessedCalls } from "../work-gate.ts";
+import { CLAIM_RECORD_MARKER } from "../claim-labels.ts";
 
 /** One usage line, with a unique `id` so `claudeTurns`'s dedup (`message.id`) counts it once. */
 function callLine(id: string, ts: string) {

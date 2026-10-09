@@ -74,7 +74,7 @@ test("the ratchet RUNS: the baseline sits at the repository root and the tree it
   const result = checkMjsRatchet({ from: JUDGED });
   assert.ok(result.count > 0, "the check counted no file at all");
   assert.ok(result.baselineCount > 0, "the committed baseline lists no file at all");
-  assert.ok(scriptFilesIn(root).some((path) => path === "src/work-gate.mjs"), "the listing no longer finds a source file that is known to be there");
+  assert.ok(scriptFilesIn(root).some((path) => path === "src/work-gate.ts"), "the listing no longer finds a source file that is known to be there");
 });
 
 test("a baseline with one name removed FAILS and names the file", () => {
@@ -106,9 +106,9 @@ test("a tree that holds FEWER files than the baseline passes and says the baseli
 test("an exception with no `why` FAILS", () => {
   const files = scriptFilesIn(findBaselineRoot(JUDGED));
   const baseline = baselineAt(findBaselineRoot(JUDGED));
-  const withWhy = judgeScratch({ files, baseline: { ...baseline, exceptions: [{ path: "src/work-gate.mjs", why: "a tool that reads only this name" }] } });
+  const withWhy = judgeScratch({ files, baseline: { ...baseline, exceptions: [{ path: "src/work-gate.ts", why: "a tool that reads only this name" }] } });
   assert.doesNotMatch(withWhy.message, /has no `why`/, "an exception with a reason is not refused for lacking one");
-  const withoutWhy = judgeScratch({ files, baseline: { ...baseline, exceptions: [{ path: "src/work-gate.mjs", why: "" }] } });
+  const withoutWhy = judgeScratch({ files, baseline: { ...baseline, exceptions: [{ path: "src/work-gate.ts", why: "" }] } });
   assert.equal(withoutWhy.ok, false);
   assert.match(withoutWhy.message, /has no `why`/);
 });

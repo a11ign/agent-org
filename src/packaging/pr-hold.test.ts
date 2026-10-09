@@ -22,8 +22,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { holdDecision } from "../pr-hold.mjs";
-import { armVerdict, disarmVerdict, REARM_LABEL } from "../pr-hold-state.mjs";
+import { holdDecision } from "../pr-hold.ts";
+import { armVerdict, disarmVerdict, REARM_LABEL } from "../pr-hold-state.ts";
 
 test("an unheld PR is taken, and says it was unheld", () => {
   const d = holdDecision({ holders: [], session: "worker-capture", steal: false });
@@ -209,7 +209,7 @@ test("CONTROL: the ordinary readings are untouched -- null is disarmed, non-null
 test("#822's two writes are verified the SAME WAY -- the source proves the marker is read back, not "
   + "trusted to `gh pr edit`'s exit code", () => {
   const src = readFileSync(
-    fileURLToPath(new URL("../pr-hold.mjs", import.meta.url)), "utf8");
+    fileURLToPath(new URL("../pr-hold.ts", import.meta.url)), "utf8");
   const marker = src.slice(src.indexOf("function markForRearm"));
   const body = marker.slice(0, marker.indexOf("\n}"));
   assert.match(body, /prLabels\(pr\.number, pr\.repo\)/,
@@ -230,7 +230,7 @@ test("#822's two writes are verified the SAME WAY -- the source proves the marke
 // session's hold and then failed to add its own exited 1 -- REFUSED, "nothing done" -- measured at 8244cf0f.
 // The stub keeps the PR's labels in a state file, so each test reads what actually LANDED, not what was said. ---
 
-const PR_HOLD_CLI = fileURLToPath(new URL("../pr-hold.mjs", import.meta.url));
+const PR_HOLD_CLI = fileURLToPath(new URL("../pr-hold.ts", import.meta.url));
 const EXECUTABLE = 0o755;
 // The exit code pr-hold.mjs header documents for DISPLACED_NOT_HELD.
 const DISPLACED_NOT_HELD_EXIT = 3;

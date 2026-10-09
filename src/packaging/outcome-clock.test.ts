@@ -40,14 +40,14 @@ process.env.AGENT_ORG_HOST = HOST_FILE;
 execFileSync("git", ["init", "--quiet"], { cwd: PROJECT, env: sandboxGitEnv() });
 process.chdir(PROJECT);
 
-const orgHealth = await import("../org-health.mjs");
+const orgHealth = await import("../org-health.ts");
 const { OVERDUE_PR_MINUTES, OVERDUE_ROW_MINUTES, SIGNALS, overdueReading, orgHealthTick } = orgHealth;
-const { stallReasonOf, STALL_REASON } = await import("../work-gate.mjs");
-const { WAIT_FIELDS } = await import("../idle-claimant.mjs");
+const { stallReasonOf, STALL_REASON } = await import("../work-gate.ts");
+const { WAIT_FIELDS } = await import("../idle-claimant.ts");
 const { overdueFacts, claimedRowFacts, orgHealthNow, needsHolderAgents, OVERDUE_IDLE_CLAIM_MINUTES, IDLE_CLAIM_REASON } = await import("../work-gate/org-health.mjs");
-const { claimRecordComment } = await import("../row-claim.mjs");
+const { claimRecordComment } = await import("../row-claim.ts");
 
-const GATE_ENTRY = fileURLToPath(new URL("../work-gate.mjs", import.meta.url));
+const GATE_ENTRY = fileURLToPath(new URL("../work-gate.ts", import.meta.url));
 const STUB_MODE = 0o755;
 const MINUTE_MS = 60_000;
 const NOW = Date.parse("2026-10-04T16:00:00Z");

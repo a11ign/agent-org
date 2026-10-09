@@ -13,7 +13,7 @@ import { readLoadedRules } from "./rules-files.ts";
 import { PROFILES, EFFORTS, MODELS, profileFor, agentArgs, AUTOCOMPACT_WINDOW_TOKENS,
   AUTO_COMPACT_TRIGGER_MARGIN_TOKENS, MEASURED_FRESH_WORKER_BASE_TOKENS, PER_ROW_DISALLOWED_TOOLS,
   WORKER_SETTINGS_PATH }
-  from "../worker-profile.mjs";
+  from "../worker-profile.ts";
 
 /** A `why` shorter than this is a label, not an argument. */
 const MIN_WHY_CHARS = 40;

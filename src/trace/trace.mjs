@@ -19,9 +19,9 @@ import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, r
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { DEFERRAL_LOG_FILE, parseDeferralLog } from "../deferral-log.mjs";
+import { DEFERRAL_LOG_FILE, parseDeferralLog } from "../deferral-log.ts";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
-import { measure, mergedRows, parseLedger, readInstances, readTranscripts, rowsClosedBy } from "../wakes-per-row.mjs";
+import { measure, mergedRows, parseLedger, readInstances, readTranscripts, rowsClosedBy } from "../wakes-per-row.ts";
 import { aggregate, claimsOf, MOVES, renderAggregate, weekStart } from "./aggregate.mjs";
 import { buildMap } from "./map.mjs";
 import { swimlane } from "./swimlane.mjs";
@@ -230,7 +230,7 @@ const READERS = {
 /**
  * Read one transcript from where the state says to, and say what the state becomes: `null` when nothing is to be read. A transcript the state cannot be trusted for
  * is read from byte 0 and `reread` says why.
- * @param {{ file: string, kind: keyof typeof READERS, stat: { size: number, mtimeMs: number }, entry: FileState | undefined, ledger: import("../wakes-per-row.mjs").LedgerEntry[],
+ * @param {{ file: string, kind: keyof typeof READERS, stat: { size: number, mtimeMs: number }, entry: FileState | undefined, ledger: import("../wakes-per-row.ts").LedgerEntry[],
  *   rowRepo: string, now: number }} input @param {{ bytes: number }} meter
  */
 function readTranscript({ file, kind, stat, entry, ledger, rowRepo, now }, meter) {
@@ -259,7 +259,7 @@ function readTranscript({ file, kind, stat, entry, ledger, rowRepo, now }, meter
  * Ingest the transcripts modified since `since` that gained bytes since the state last saw them. Their events are appended to the open store as ONE batch, and the
  * state returned is to be saved AFTER that append: a run killed in between leaves a state older than the store, which costs a re-read and no more. A file that cannot
  * be read is listed, never skipped quietly.
- * @param {{ root: string, codexRoot?: string | null, since: number, ledger: import("../wakes-per-row.mjs").LedgerEntry[], rowRepo: string, store: ReturnType<typeof openStore>,
+ * @param {{ root: string, codexRoot?: string | null, since: number, ledger: import("../wakes-per-row.ts").LedgerEntry[], rowRepo: string, store: ReturnType<typeof openStore>,
  *   state: IngestState, coldStart?: string | null, now?: number }} input
  * @returns {IngestReport & { state: IngestState }}
  */
@@ -300,7 +300,7 @@ export function ingest({ root, codexRoot = null, since, ledger, rowRepo, store, 
 /**
  * One run's ingest half: open the store (the one read of it), load the state, ingest the transcripts and then the `gh` call ledgers (whose calls are keyed to the turns just read), and save the
  * state once the events are in. The state is saved even when a file failed, because the files that did not fail were read.
- * @param {{ root: string, codexRoot?: string | null, since: number, ledger: import("../wakes-per-row.mjs").LedgerEntry[], rowRepo: string, storePath: string, ghLedgers?: string[], deferralLogs?: string[], now?: number }} input
+ * @param {{ root: string, codexRoot?: string | null, since: number, ledger: import("../wakes-per-row.ts").LedgerEntry[], rowRepo: string, storePath: string, ghLedgers?: string[], deferralLogs?: string[], now?: number }} input
  * @param {(path: string) => import("./store.mjs").TraceEvent[]} [readEvents] a parameter so a test can count the reads of the store
  */
 export function ingestTranscripts({ root, codexRoot = null, since, ledger, rowRepo, storePath, ghLedgers = [], deferralLogs = [], now = Date.now() }, readEvents = readStore) {
@@ -752,7 +752,7 @@ function pagedList({ gh, path, params = [], done = () => false }) {
  * (30 calls a minute per user, 1,000 results at most) is not used. A list that is not finished in LIST_MAX_PAGES is REFUSED, not cut short, because a week missing its pull requests
  * prints as a smaller week: `--since` is narrowed instead.
  * @param {{ repo: string, window: { from: number, to: number }, gh: (args: string[]) => any }} input
- * @returns {import("../wakes-per-row.mjs").PullRequest[]}
+ * @returns {import("../wakes-per-row.ts").PullRequest[]}
  */
 export function listMergedPulls({ repo, window, gh }) {
   const { items, reached } = pagedList({ gh, path: `repos/${repo}/pulls`, params: ["state=closed", "sort=updated", "direction=desc"], done: (page) => page.some((pull) => Date.parse(pull.updated_at) < window.from) });
@@ -812,7 +812,7 @@ function pullEventsOf({ pull, rowRepo, gh }) {
 /**
  * Read what `pending` names of one pull request and the rows it closes, until the budget is spent. A subject whose reading the budget cut off is NOT stored (its events come back only
  * from a whole reading); what finished before it is. Returns what is still pending, which is non-empty only when the budget stopped it.
- * @param {{ pull: import("../wakes-per-row.mjs").PullRequest, pending: { pull: boolean, rows: number[] }, rowRepo: string, gh: (args: string[]) => any }} input
+ * @param {{ pull: import("../wakes-per-row.ts").PullRequest, pending: { pull: boolean, rows: number[] }, rowRepo: string, gh: (args: string[]) => any }} input
  */
 function readPull({ pull, pending, rowRepo, gh }) {
   /** @type {import("./store.mjs").TraceEvent[]} */
@@ -838,7 +838,7 @@ function readPull({ pull, pending, rowRepo, gh }) {
  * FIRST, and it STOPS when `gh` (budgeted: see `budgetedGh`) refuses a call: a backfill of three weeks is about nine thousand REST calls, and the pool is the whole org's. A merged pull
  * request and a closed row do not change, so what the store already holds of one is not read again: a second run continues where the first stopped. What was not read is
  * returned, so a week that depends on it is marked PARTIAL.
- * @param {{ pulls: import("../wakes-per-row.mjs").PullRequest[], rowRepo: string, held: import("./store.mjs").TraceEvent[], gh: (args: string[]) => any }} input
+ * @param {{ pulls: import("../wakes-per-row.ts").PullRequest[], rowRepo: string, held: import("./store.mjs").TraceEvent[], gh: (args: string[]) => any }} input
  */
 export function githubEventsOfMerged({ pulls, rowRepo, held, gh }) {
   const merged = new Set(held.filter((event) => event.kind === "merged" && event.pr !== null).map((event) => `${event.repo ?? "primary"}#${event.pr}`));
@@ -953,7 +953,7 @@ export function githubEventsOfNamed({ held, since, rowRepo, gh, validators = NO_
   return { events, unread, failed };
 }
 
-/** wakes-per-row's reading of each week, from the same pulls, so its counts are the ones the aggregate compares its own with. @param {{ starts: number[], pulls: import("../wakes-per-row.mjs").PullRequest[], rowRepo: string, claims: Map<number, number>, ledger: import("../wakes-per-row.mjs").LedgerEntry[], cache: string }} input */
+/** wakes-per-row's reading of each week, from the same pulls, so its counts are the ones the aggregate compares its own with. @param {{ starts: number[], pulls: import("../wakes-per-row.ts").PullRequest[], rowRepo: string, claims: Map<number, number>, ledger: import("../wakes-per-row.ts").LedgerEntry[], cache: string }} input */
 function wakesPerRowByWeek({ starts, pulls, rowRepo, claims, ledger, cache }) {
   const transcripts = readTranscripts(join(homedir(), ".claude", "projects"), starts[0]);
   const instances = readInstances(cache);
@@ -995,7 +995,7 @@ export function githubSummary({ github, budget, unread }) {
  */
 async function readSources({ since, storePath, budget, log }) {
   log(budgetLine({ budget }));
-  const { homeProjectDeclaration } = await import("../project-config.mjs");
+  const { homeProjectDeclaration } = await import("../project-config.ts");
   const declaration = homeProjectDeclaration();
   const rowRepo = declaration.tracker[0].repo;
   const cache = join(homedir(), ".cache", "a11ign");
@@ -1024,7 +1024,7 @@ async function mainAggregate() {
   const starts = Array.from({ length: Math.floor((weekStart(now) - since) / (WEEK_DAYS * MS_PER_DAY)) + 1 }, (_, week) => since + week * WEEK_DAYS * MS_PER_DAY);
   const { readings, unreadable } = wakesPerRowByWeek({ starts, pulls, rowRepo, claims: claimsOf(store.events), ledger, cache });
   const held = { from: ingested.firstRunSince, basis: `the ingest state's first run, ${new Date(ingested.firstRunAt).toISOString()}, over transcripts modified after that time` };
-  const { HOME_CHECKOUT } = await import("../project-config.mjs");
+  const { HOME_CHECKOUT } = await import("../project-config.ts");
   const { paths: pullPaths, note } = readMergePaths({ checkout: HOME_CHECKOUT, rowRepo, since });
   const result = aggregate({ events: store.events, pulls, rowRepo, now, since, held, readings, unreadable: [...new Set([...ingested.failed, ...unreadable])], unreadRows, openRows, moves, pullPaths });
   console.log(json ? JSON.stringify(result, null, 2) : renderAggregate(result, { ingestFooter: ["", ...ingestLines(ingested), githubSummary({ github, budget, unread: unreadRows.length }), ...(note ? [note] : []), NOT_HELD] }));
@@ -1111,7 +1111,7 @@ export function writeSwimlanes({ out, subjects, now, github }) {
 
 async function mainWakeCache() {
   const { since, until, store: storePath, json } = parseWakeCacheArgs(process.argv.slice(2));
-  const { homeProjectDeclaration } = await import("../project-config.mjs");
+  const { homeProjectDeclaration } = await import("../project-config.ts");
   const rowRepo = homeProjectDeclaration().tracker[0].repo;
   const now = Date.now();
   const ledger = parseLedger(readFileSync(join(homedir(), ".cache", "a11ign", "wake-ledger"), "utf8"));
@@ -1125,7 +1125,7 @@ async function main() {
   if (isWakeCache(process.argv.slice(2))) return mainWakeCache();
   if (isMap(process.argv.slice(2))) return mainMap();
   const { number, since, store: storePath, json, html, out } = parseArgs(process.argv.slice(2));
-  const { homeProjectDeclaration } = await import("../project-config.mjs");
+  const { homeProjectDeclaration } = await import("../project-config.ts");
   const rowRepo = homeProjectDeclaration().tracker[0].repo;
   const cache = join(homedir(), ".cache", "a11ign");
   const { store, report: ingested } = ingestTranscripts({ root: join(homedir(), ".claude", "projects"), codexRoot: join(homedir(), ".codex", "sessions"), since, ledger: parseLedger(readFileSync(join(cache, "wake-ledger"), "utf8")), rowRepo, storePath, ghLedgers: ghLedgerFiles(), deferralLogs: [join(cache, DEFERRAL_LOG_FILE)] });

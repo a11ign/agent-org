@@ -28,9 +28,9 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { COPY_MARKER, READS_DIR, STATE_DIR_ENV, shadowTick } from "../shadow-window.mjs";
-import { SHADOW_COPY_MARKER, SHADOW_STATE_DIR_ENV } from "../host-config.mjs";
-import { HOME_CHECKOUT } from "../project-config.mjs";
+import { COPY_MARKER, READS_DIR, STATE_DIR_ENV, shadowTick } from "../shadow-window.ts";
+import { SHADOW_COPY_MARKER, SHADOW_STATE_DIR_ENV } from "../host-config.ts";
+import { HOME_CHECKOUT } from "../project-config.ts";
 
 const SRC = fileURLToPath(new URL("../", import.meta.url));
 const FIXTURE_HOME = "/home/fixture";

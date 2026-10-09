@@ -29,26 +29,26 @@ import { join, dirname } from "node:path";
 import { route, undelivered, parseOrders, readLedger, deliver as settlingDeliver, readAgents, WAKEABLE, EXIT,
   WAKE_TTL_MS, JUDGMENT_TTL_MS, MAX_DELIVERIES, deliveryCounts, endedRuns, RESET,
   blockedSessions }
-  from "../wake.mjs";
-import { HOME_CHECKOUT } from "../project-config.mjs";
+  from "../wake.ts";
+import { HOME_CHECKOUT } from "../project-config.ts";
 import { copyToolAndProject, importClosure } from "./copied-tool-fixture.ts";
-import { isLiveSession } from "../arm-pr.mjs";
-import { afterGate, GATE, EXIT as TICK_EXIT } from "../work-tick.mjs";
+import { isLiveSession } from "../arm-pr.ts";
+import { afterGate, GATE, EXIT as TICK_EXIT } from "../work-tick.ts";
 import { spawnInvocation, addressed, clearContext, CLEAR_TIMEOUT_MS, CLEAR_SETTLE_MS,
   RUN_IDLE_RESET_MS, stuckRowOf, escalateStuck, SETTLE_TEST_CLOCK_ENV, settleWaitMs }
-  from "../wake.mjs";
+  from "../wake.ts";
 import { spawnableRole, isPilotOrder, SPAWN_CAUSES, MAX_SPAWNS_PER_TICK, engineerRoles, rosterFrom }
-  from "../wake.mjs";
+  from "../wake.ts";
 import { handoffId, handoffQueuePath, ledgerPathFrom, readHandoffs, queueHandoff, dropHandoffs,
   deliverHandoffs as settlingDeliverHandoffs, handoffOrder, staleHandoffs, nothingToDeliver, HANDOFF_STALE_MS, HANDOFF_QUEUE_FILE }
-  from "../wake.mjs";
-import { engineerEligibility, b2Verdict, ledgerKeyOf, ledgerLine } from "../wake.mjs";
+  from "../wake.ts";
+import { engineerEligibility, b2Verdict, ledgerKeyOf, ledgerLine } from "../wake.ts";
 import { AUTOCOMPACT_WINDOW_TOKENS, PER_ROW_DISALLOWED_TOOLS, WORKER_SETTINGS_PATH }
-  from "../worker-profile.mjs";
-import { sparePathsFrom } from "../wake.mjs";
+  from "../worker-profile.ts";
+import { sparePathsFrom } from "../wake.ts";
 import { handoffBacklog, backlogReport, handoffBatches, fitBatch, waitedFor, staleReport,
   PROMPT_ARG_MAX, HANDOFF_BATCH_BYTES, BATCH_WRAPPER_BYTES, targetLabelBytes }
-  from "../wake.mjs";
+  from "../wake.ts";
 import { startedPanes } from "./started-pane.ts";
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
 const noSettle = () => {};
@@ -1827,7 +1827,7 @@ test("stale lines survive for what the delivery did NOT carry", () => {
 // for the deletion. This file's own header says these tests never stand up a running org, and that
 // still holds: nothing here starts an agent, and the stub answers one question with one literal.
 
-const WAKE_ENTRY = fileURLToPath(new URL("../wake.mjs", import.meta.url));
+const WAKE_ENTRY = fileURLToPath(new URL("../wake.ts", import.meta.url));
 const STUB_MODE = 0o755; // the tick invokes `herdr` as a command, so the stub has to be runnable
 
 /** herdr answering with one session in `status`, or refusing outright when `status` is null. */
@@ -2144,7 +2144,7 @@ test("#3769 (1): the settle waits what it always did unless a test clock is set 
 });
 
 test("#3769 (2): in a PROCESS, the clock reaches the real blocking sleep: `clearContext` with no injected sleep returns at once", () => {
-  const wake = fileURLToPath(new URL("../wake.mjs", import.meta.url));
+  const wake = fileURLToPath(new URL("../wake.ts", import.meta.url));
   const probe = `import(${JSON.stringify(wake)}).then(({ clearContext, CLEAR_SETTLE_MS }) => {`
     + " const at = Date.now(); const refused = clearContext(() => '', 'probe');"
     + " console.log(JSON.stringify({ refused, ms: Date.now() - at, real: CLEAR_SETTLE_MS })); });";

@@ -18,11 +18,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { FYI_STALE_MS, foldFyis, handoffQueuePath, holdsAsFyi, isLeadSeat, readHandoffs, retireRiddenFyis, ridingGateOrders, SETTLE_TEST_CLOCK_ENV } from "../wake.mjs";
-import { EXIT, STANCE, directRecordPath, promptOrQueue } from "../prompt-session.mjs";
+import { FYI_STALE_MS, foldFyis, handoffQueuePath, holdsAsFyi, isLeadSeat, readHandoffs, retireRiddenFyis, ridingGateOrders, SETTLE_TEST_CLOCK_ENV } from "../wake.ts";
+import { EXIT, STANCE, directRecordPath, promptOrQueue } from "../prompt-session.ts";
 import { startedPanes } from "./started-pane.ts";
 
-const WAKE_ENTRY = fileURLToPath(new URL("../wake.mjs", import.meta.url));
+const WAKE_ENTRY = fileURLToPath(new URL("../wake.ts", import.meta.url));
 const STUB_MODE = 0o755;
 const HOUR = 3_600_000;
 const FYI_TEXT = "the liaison cleared for ceo: no decision owed; I will say when it has merged";

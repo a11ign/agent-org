@@ -23,16 +23,16 @@ import {
   PROJECT_OWNER,
   PROJECT_NUMBER,
   SNAPSHOT_DIR,
-} from "../board-snapshot.mjs";
+} from "../board-snapshot.ts";
 import { touchedItemRequest, commonGitDirOf, snapshotDirFor, launchCheckoutOf, primaryLaunchRefusal, PRIMARY_MARK_KEY,
   primaryLaunchDecision, POLICY_LAUNCH_REASON_ENV, launchGate }
-  from "../board-snapshot-scope.mjs";
+  from "../board-snapshot-scope.ts";
 import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, mkdtempSync, mkdirSync as mkdirOnDisk, realpathSync, rmSync, writeFileSync as writeOnDisk } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname as dirOf, join as joinPath } from "node:path";
 import { fileURLToPath as pathOf } from "node:url";
-import { HOME_CHECKOUT } from "../project-config.mjs";
+import { HOME_CHECKOUT } from "../project-config.ts";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
 
 /** One page of a real `gh api graphql` response, shaped exactly like the live schema returns it. */

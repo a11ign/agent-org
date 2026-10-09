@@ -57,13 +57,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { armabilityOf, holdersOf, disarmVerdict, HOLD_PREFIX } from "../pr-hold-state.mjs";
-import { mergeSafetyVerdict } from "../merge-guard.mjs";
+import { armabilityOf, holdersOf, disarmVerdict, HOLD_PREFIX } from "../pr-hold-state.ts";
+import { mergeSafetyVerdict } from "../merge-guard.ts";
 
 /** A head sha that matches its branch tip -- the clean #294 case, so these tests isolate the hold. */
 const HEAD = "1c81c2076c750203a1b49b152736e1fa57269b68";
-import { sweepDecision } from "../auto-arm-sweep.mjs";
-import { armDecision } from "../arm-pr.mjs";
+import { sweepDecision } from "../auto-arm-sweep.ts";
+import { armDecision } from "../arm-pr.ts";
 
 /** A file of the TOOL's own tree, `src` up one from here. */
 const readTool = (file: string) => readFileSync(fileURLToPath(new URL(`../${file}`, import.meta.url)), "utf8");

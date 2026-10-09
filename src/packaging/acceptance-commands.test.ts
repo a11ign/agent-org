@@ -32,7 +32,7 @@ import {
   testFilesAmong, mutationRecordReport, changedFilesOfThisPullRequest, measuredSectionReport,
   acceptancePathsReason, declaredNewFiles, unresolvedAcceptancePaths,
   declaredFleetAnswer,
-} from "../acceptance-commands.mjs";
+} from "../acceptance-commands.ts";
 import { withGitSandbox, sandboxGitEnv } from "../lib/git-sandbox.ts";
 
 // THE PROJECT THE CLASSIFIER READS IS BUILT BELOW, NOT BORROWED (#3233). Every command here is classified against the cwd's
@@ -3551,7 +3551,7 @@ test("#2305: `main()` is WIRED -- a missing record is PRINTED and exits 0 (a11ig
   withGitSandbox(({ dir, run, commit }) => {
     mergedPullRequest(dir, run, commit);
     const job = (body: string) => spawnSync("node",
-      [new URL("../acceptance-commands.mjs", import.meta.url).pathname],
+      [new URL("../acceptance-commands.ts", import.meta.url).pathname],
       { cwd: dir, encoding: "utf8", env: sandboxGitEnv({ PR_BODY: body }) });
     const base = "Acceptance: none \u2014 the test is the check\n\nCloses: none \u2014 test\n";
     const missing = job(base);

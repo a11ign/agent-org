@@ -11,7 +11,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { deliver, deliverHandoffs, reviewerMismatch, handoffId } from "./wake.mjs";
+import { deliver, deliverHandoffs, reviewerMismatch, handoffId } from "./wake.ts";
 
 const agents = (spec: Record<string, string>) => Object.entries(spec).map(([label, status]) => ({ label, status }));
 

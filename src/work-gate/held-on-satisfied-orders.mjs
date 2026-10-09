@@ -11,9 +11,9 @@
 // THEY READ MACHINE-READABLE TRUTH ONLY (registry, remote, labels, state, the edge), never prose, and cost API calls, not a model turn.
 // A LEAF OF THE GATE: it imports no binding from `work-gate.mjs` (`org-health.mjs` does, and is a cycle), so the order cap and the `gh` runner arrive as arguments.
 import { spawnSync } from "node:child_process";
-import { READY_LABEL } from "../claim-labels.mjs";
-import { subjectMention, subjectRef } from "../review-attribution.mjs";
-import { releaseReferencesOf, umbrellaEdge } from "../wait-condition.mjs";
+import { READY_LABEL } from "../claim-labels.ts";
+import { subjectMention, subjectRef } from "../review-attribution.ts";
+import { releaseReferencesOf, umbrellaEdge } from "../wait-condition.ts";
 
 /** How many distinct release facts one tick reads. A BOUND ON THE SPEND, NOT A TARGET: a few waits cite the same one or two packages and tags. */
 export const MAX_RELEASE_READS = 8;
@@ -60,7 +60,7 @@ export function remoteTagExists(tag, { run, repo }) {
 
 /**
  * THE RELEASE FACTS THE ITEMS' WAITS NAME, each read once. A reference past `limit` is left OUT, which is an unknown and never "not published".
- * @param {{ items: import("../wait-condition.mjs").WaitItem[], readers: ReleaseReaders, limit?: number }} input
+ * @param {{ items: import("../wait-condition.ts").WaitItem[], readers: ReleaseReaders, limit?: number }} input
  * @returns {Record<string, Record<string, string> | boolean>}
  */
 export function readReleaseFacts({ items, readers, limit = MAX_RELEASE_READS }) {
@@ -73,14 +73,14 @@ export function readReleaseFacts({ items, readers, limit = MAX_RELEASE_READS }) 
   return releases;
 }
 
-/** @param {import("../wait-condition.mjs").StaleWait} stale @returns {boolean} a release-state wait holding a `ready` row: the shape this row reports */
+/** @param {import("../wait-condition.ts").StaleWait} stale @returns {boolean} a release-state wait holding a `ready` row: the shape this row reports */
 const isHeldReadyRow = ({ item, wait }) => item.kind === "row" && item.labels.includes(READY_LABEL)
   && (wait.state === "published" || wait.state === "latest-next" || wait.state === "tagged");
 
 /**
  * THE STALE WAITS THIS MODULE OWNS, and the rest, which keep `staleWaitOrders`'s text: a release wait on a `ready` row is reported as what it is.
- * @param {import("../wait-condition.mjs").StaleWait[]} stale
- * @returns {{ held: import("../wait-condition.mjs").StaleWait[], rest: import("../wait-condition.mjs").StaleWait[] }}
+ * @param {import("../wait-condition.ts").StaleWait[]} stale
+ * @returns {{ held: import("../wait-condition.ts").StaleWait[], rest: import("../wait-condition.ts").StaleWait[] }}
  */
 export function splitHeldOnSatisfied(stale) {
   return { held: stale.filter(isHeldReadyRow), rest: stale.filter((s) => !isHeldReadyRow(s)) };
@@ -88,7 +88,7 @@ export function splitHeldOnSatisfied(stale) {
 
 /**
  * ONE ORDER PER ROW HELD ON A SATISFIED CONDITION, to `product-manager`: the row, the condition now true, and the fields to remove.
- * @param {import("../wait-condition.mjs").StaleWait[]} held @param {{ limit: number }} cap @returns {any[]}
+ * @param {import("../wait-condition.ts").StaleWait[]} held @param {{ limit: number }} cap @returns {any[]}
  */
 export function heldOnSatisfiedOrders(held, { limit }) {
   return held.slice(0, limit).map(({ item, wait, remove }) => {
@@ -102,14 +102,14 @@ export function heldOnSatisfiedOrders(held, { limit }) {
 }
 
 /**
- * @typedef {{ item: import("../wait-condition.mjs").WaitItem, blocker: number, doneWhens: number }} UmbrellaEdge
+ * @typedef {{ item: import("../wait-condition.ts").WaitItem, blocker: number, doneWhens: number }} UmbrellaEdge
  * A `ready` row held by a native edge onto an open row of `doneWhens` (more than one) done-whens, naming no condition.
  */
 
 /**
  * EVERY UMBRELLA EDGE AMONG THE ITEMS. A blocker that is not among the open rows the tick read is not judged (its done-whens are not known, and an unknown is not an
  * umbrella); a row of one done-when has nothing to choose between. Only the first repository's rows: a `repoKey` row's edge names a row of another tracker.
- * @param {{ items: import("../wait-condition.mjs").WaitItem[] }} input @returns {UmbrellaEdge[]}
+ * @param {{ items: import("../wait-condition.ts").WaitItem[] }} input @returns {UmbrellaEdge[]}
  */
 export function umbrellaEdges({ items }) {
   const rows = items.filter((item) => item.kind === "row" && item.repoKey === undefined);

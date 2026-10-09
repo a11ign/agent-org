@@ -29,8 +29,8 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { startability, subjectAndRegionFacts, symbolOnMain, refsCarryingSymbol, proveOriginMainReadable, onMain,
-  heldRefsSummary } from "../row-reachability.mjs";
-import { declaredRegionFiles, declaresNoCommit, regionPathsFromBody } from "../region-paths.mjs";
+  heldRefsSummary } from "../row-reachability.ts";
+import { declaredRegionFiles, declaresNoCommit, regionPathsFromBody } from "../region-paths.ts";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, realpathSync, chmodSync, existsSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { tmpdir } from "node:os";

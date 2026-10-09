@@ -6,7 +6,7 @@
 // the tick uses, so "offered as before" is the real cause and not a restatement of it.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { NOT_STARTABLE, unclaimedBlockerClearedOrders, unclaimedClearings } from "../work-gate.mjs";
+import { NOT_STARTABLE, unclaimedBlockerClearedOrders, unclaimedClearings } from "../work-gate.ts";
 import { PROMOTED_REASON, declaresReadyWhenUnblocked, promoteReadyWhenUnblocked, reportReadyWhenUnblocked } from "./ready-when-unblocked.mjs";
 
 const NOW = Date.parse("2026-10-11T00:05:00Z");

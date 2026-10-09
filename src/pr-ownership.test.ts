@@ -10,9 +10,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ownsPr, RUNGS } from "./pr-ownership.mjs";
-import { claimFactsFrom, readClaim } from "./claim-stall.mjs";
-import { claimRecordComment } from "./row-claim.mjs";
+import { ownsPr, RUNGS } from "./pr-ownership.ts";
+import { claimFactsFrom, readClaim } from "./claim-stall.ts";
+import { claimRecordComment } from "./row-claim.ts";
 
 const ROW = 3390;
 const SESSION = "worker-3390";

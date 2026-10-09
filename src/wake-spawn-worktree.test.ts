@@ -17,7 +17,7 @@ import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deliver, spawnClaimer, spawnedPrompt, slugOf, registerSpawn, sparePathsFrom, readSpareCycles,
-  WORKERS_GH_CONFIG_DIR, HOST_REPOS, PRIMARY_CHECKOUT } from "./wake.mjs";
+  WORKERS_GH_CONFIG_DIR, HOST_REPOS, PRIMARY_CHECKOUT } from "./wake.ts";
 import { startedPanes } from "./packaging/started-pane.ts";
 
 const ROW = 2405;

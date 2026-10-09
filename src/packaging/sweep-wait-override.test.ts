@@ -19,8 +19,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { confirmArmed, mergedMeanwhile, waitBetweenReads, SWEEP_WAIT_ENV, CONFIRM_ARMED_READS, CONFIRM_ARMED_WAIT_MS,
-  MERGED_MEANWHILE_READS, MERGED_MEANWHILE_WAIT_MS } from "../auto-arm-sweep.mjs";
-import { HOME_CHECKOUT } from "../project-config.mjs";
+  MERGED_MEANWHILE_READS, MERGED_MEANWHILE_WAIT_MS } from "../auto-arm-sweep.ts";
+import { HOME_CHECKOUT } from "../project-config.ts";
 
 const SRC = fileURLToPath(new URL("../", import.meta.url));
 /** Read from the paths, not through `host-units.mjs`, which wants git history that the acceptance job does not have. */

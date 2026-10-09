@@ -30,11 +30,11 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { SWEEP_WAIT_ENV } from "../auto-arm-sweep.mjs";
-import { laneLabelsFor } from "../row-file.mjs";
-import { laneAuthorshipRefusal, ownsReviewOnlyLane, reviewOnlyPathsIn, authorshipVerdict, ROLE_LOGIN } from "../lane-ownership.mjs";
-import { runArmPr, EXIT } from "../arm-pr.mjs";
-import { main, EXIT_NOTHING_SENT } from "../pr-open.mjs";
+import { SWEEP_WAIT_ENV } from "../auto-arm-sweep.ts";
+import { laneLabelsFor } from "../row-file.ts";
+import { laneAuthorshipRefusal, ownsReviewOnlyLane, reviewOnlyPathsIn, authorshipVerdict, ROLE_LOGIN } from "../lane-ownership.ts";
+import { runArmPr, EXIT } from "../arm-pr.ts";
+import { main, EXIT_NOTHING_SENT } from "../pr-open.ts";
 
 const LEADS = "a11ign-ai-leads";
 const WORKERS = "a11ign-ai-workers";
@@ -238,7 +238,7 @@ test("#3254: a login pr-open cannot read REFUSES a pipeline diff -- unreadable i
 
 // --- the sweep: the same predicate, or arm-pr's refusal is undone one job later ---
 
-const SWEEP = fileURLToPath(new URL("../auto-arm-sweep.mjs", import.meta.url));
+const SWEEP = fileURLToPath(new URL("../auto-arm-sweep.ts", import.meta.url));
 const FIXTURE_PROJECT = fileURLToPath(new URL("./fixtures/host-project-paths/project", import.meta.url));
 
 /**

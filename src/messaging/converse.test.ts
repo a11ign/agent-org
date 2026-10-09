@@ -49,7 +49,7 @@ let nextDir = 0;
 /** @returns {Promise<{ port: any } | { reason: string }>} the real queue's pieces, or why it would not load here */
 async function loadReal(): Promise<{ port: any; } | { reason: string; }> {
   try {
-    const [session, wake] = await Promise.all([import("../prompt-session.mjs"), import("../wake.mjs")]);
+    const [session, wake] = await Promise.all([import("../prompt-session.ts"), import("../wake.ts")]);
     return { port: { session, wake } };
   } catch (error) {
     return { reason: `the real queue cannot load here: ${String(/** @type {Error} */ (error).message).split("\n")[0]}` };
@@ -611,7 +611,7 @@ describe("done-when 1: no queue entry is ever addressed to anyone but the liaiso
     mkdirSync(fixture, { recursive: true });
     copyFileSync(join(MESSAGING, "converse.mjs"), join(fixture, "converse.mjs"));
     assert.deepEqual(queueCallersIn(fixture), ["converse.mjs"], "without the second caller the copy passes, so the next failure is the fixture's");
-    writeFileSync(join(fixture, "second-caller.mjs"), 'import { queueOrLose } from "../prompt-session.mjs";\nqueueOrLose({ label: "ceo", text: "x" });\n');
+    writeFileSync(join(fixture, "second-caller.mjs"), 'import { queueOrLose } from "../prompt-session.ts";\nqueueOrLose({ label: "ceo", text: "x" });\n');
     assert.deepEqual(queueCallersIn(fixture), ["converse.mjs", "second-caller.mjs"]);
     assert.notDeepEqual(queueCallersIn(fixture), ["converse.mjs"], "the assertion above would fail on this directory");
   });

@@ -19,7 +19,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { refusalLifted } from "../review-verdict.mjs";
+import { refusalLifted } from "../review-verdict.ts";
 
 const DOOR = fileURLToPath(new URL("../reviewer/pr-review-verdict.sh", import.meta.url));
 

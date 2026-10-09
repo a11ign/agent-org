@@ -36,8 +36,8 @@ execFileSync("git", ["init", "--quiet"], { cwd: PROJECT, env: sandboxGitEnv() })
 execFileSync("git", ["add", "-A"], { cwd: PROJECT, env: sandboxGitEnv() });
 process.chdir(PROJECT);
 
-const { partitionUnclaimed, rowBranchOrders, readBranchPrs, readBranchPrsOfUnclaimed, branchesToReplace, decide } = await import("./work-gate.mjs");
-const { spawnClaimer, spawnableRole, spawnedPrompt } = await import("./wake.mjs");
+const { partitionUnclaimed, rowBranchOrders, readBranchPrs, readBranchPrsOfUnclaimed, branchesToReplace, decide } = await import("./work-gate.ts");
+const { spawnClaimer, spawnableRole, spawnedPrompt } = await import("./wake.ts");
 const { writeFileSync: stamp } = await import("node:fs");
 
 const ROW = 3505;

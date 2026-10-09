@@ -345,7 +345,7 @@ export async function readFixRow({ github, repo, key }) {
  * vocabulary's, imported when asked (as `correct.mjs` does) so this file still loads outside a configured host, and `project-vocabulary.test.ts` refuses a copy in code.
  */
 async function holderOf(issue) {
-  const { SESSION_PREFIX } = await import("../../project-vocabulary.mjs");
+  const { SESSION_PREFIX } = await import("../../project-vocabulary.ts");
   const labels = Array.isArray(issue.labels) ? issue.labels : [];
   const names = labels.map((label) => String(label?.name ?? "")).filter((name) => name.startsWith(SESSION_PREFIX) && name.length > SESSION_PREFIX.length);
   return names.length === 0 ? undefined : names[0].slice(SESSION_PREFIX.length);

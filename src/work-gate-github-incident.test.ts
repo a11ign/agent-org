@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   decide, holdForGithubIncident, githubIncidentOf, githubIncidentOrder, startGithubStatus, GITHUB_STATUS_TIMEOUT_MS,
-} from "./work-gate.mjs";
+} from "./work-gate.ts";
 
 type Incident = ReturnType<typeof githubIncidentOf>;
 type Order = { session: string, cause: string, subject: string, discriminator: string, causeKey: string, prompt: string };
@@ -254,7 +254,7 @@ test("a reading left by an EARLIER tick is never this tick's: the file is matche
 });
 
 test("main starts the fetch before its first read, and settles it only after the orders are decided", () => {
-  const source = readFileSync(new URL("./work-gate.mjs", import.meta.url), "utf8");
+  const source = readFileSync(new URL("./work-gate.ts", import.meta.url), "utf8");
   const main = source.slice(source.indexOf("\nfunction main() {"));
   const started = main.indexOf("startGithubStatus(");
   assert.ok(started > 0, "main must start the fetch");
