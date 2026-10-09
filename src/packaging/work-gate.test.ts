@@ -31,7 +31,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { shippedUnits } from "../host-units.mjs";
 import { HOME_CHECKOUT } from "../project-config.mjs";
 import { TOOL_ROOT, copyToolAndProject, importClosure, toolFile } from "./copied-tool-fixture.ts";
-import { judgePin, type Declaration } from "../lib/pin-ratchet.mjs";
+import { judgePin, type Declaration } from "../lib/pin-ratchet.ts";
 import { deriveClosureRequirements, createClosureMemo } from "../acceptance-commands.mjs";
 import { patchIdOfDiff } from "../review-verdict.mjs";
 import { MAX_ROW_ORDERS_PER_TICK, readCommitShas, readPatchId, withPatchIds, decide, checksSettledGreen, readPrs, OPEN_PRS_FIRST_PAGE, OPEN_PRS_LIMIT, readReadyRows, EXIT, CAUSES,

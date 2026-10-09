@@ -30,7 +30,7 @@ import {
   parseProjectDeclaration,
   readProjectDeclaration,
 } from "../project-config.mjs";
-import { judgePin, type Declaration } from "../lib/pin-ratchet.mjs";
+import { judgePin, type Declaration } from "../lib/pin-ratchet.ts";
 import { TOOL_ROOT } from "./copied-tool-fixture.ts";
 
 const A11IGN_LITERAL = "a11ign/a11ign";

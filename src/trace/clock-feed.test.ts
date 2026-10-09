@@ -21,7 +21,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, test } from "node:test";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
-import { clockFeedOf, openMsOf } from "./clock-feed.mjs";
+import { clockFeedOf, openMsOf } from "./clock-feed.ts";
 import { readGithubEvents } from "./github-events.mjs";
 
 // The project this file runs against is the recorded one `org-health.test.ts` explains (#3233): the host file is set FIRST and the tool imported AFTER it.
@@ -112,7 +112,7 @@ function same(clockMs, storeMs, what) {
 }
 
 /** The "open ..." figure the clock states for an item in its reading. @returns {string | undefined} */
-const statedOpen = (reading, number) => new RegExp(`#${number} \\((?:PR|row), [^,]+, open ([^,]+),`).exec(reading.detail ?? "")?.[1];
+const statedOpen = (reading, number): string | undefined => new RegExp(`#${number} \\((?:PR|row), [^,]+, open ([^,]+),`).exec(reading.detail ?? "")?.[1];
 
 test("the clock's `since` is the store's, for every item on the clock -- a pull request's opening and a row's NEWEST claim -- and an unknown is unknown in both", () => {
   const facts = gateFacts();

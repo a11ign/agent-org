@@ -23,7 +23,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { changedSince, judgePin, resolveBase, TOOL_REPO_ENV, type Declaration } from "../lib/pin-ratchet.mjs";
+import { changedSince, judgePin, resolveBase, TOOL_REPO_ENV, type Declaration } from "../lib/pin-ratchet.ts";
 import { withGitSandbox, type GitSandbox } from "../lib/git-sandbox.ts";
 import { TOOL_ROOT } from "./copied-tool-fixture.ts";
 

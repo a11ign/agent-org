@@ -34,7 +34,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { stripComments } from "../lib/local-import-closure.mjs";
-import { judgePin, type Declaration } from "../lib/pin-ratchet.mjs";
+import { judgePin, type Declaration } from "../lib/pin-ratchet.ts";
 import { TOOL_ROOT } from "./copied-tool-fixture.ts";
 import {
   ACCEPTANCE_FIELD, ANSWER_PREFIX, BACKLOG_LABEL, BLOCKED_LABEL, CLAIM_LABEL, CLOSES_FIELD, FLEET_FIELD,
