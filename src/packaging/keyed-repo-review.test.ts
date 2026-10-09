@@ -19,7 +19,7 @@
  */
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -227,6 +227,100 @@ test("(2) `prepareReviewCheckout` hands a keyed reviewer no tree when the clone 
     base.trees.clear();
     const made = prepareReviewCheckout({ pr: 6, session: SESSION, ...base.seams, git, root: join(dir, "reviews"), repoRoot: clone, link: undefined });
     assert.deepEqual(made, { path: join(dir, "reviews", SESSION), head: HEAD });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- (#4321) A DECLARED PACKAGE NO REGISTRY HOLDS IS NOT A REASON TO LEAVE THE PULL REQUEST UNREVIEWED ---------------------------------
+//
+// `a11ign/lab#38`'s reviewer was `UNDELIVERED` for 30 ticks: lab declares `@a11ign/control`, which is published nowhere, so `pnpm install` in its tree can
+// never succeed. THREE CONTROLS, each a different install: one that 404s on a declared package STARTS (with the note), one that fails any other way REFUSES,
+// one that succeeds is UNCHANGED (no note, the old sentence).
+
+/** pnpm's real answer for an unpublished direct dependency, measured 2026-10-09: the verdict is on STDOUT and stderr is empty. */
+const PNPM_404 = Object.assign(new Error("Command failed: pnpm install --no-lockfile --ignore-scripts"), { stderr: "", stdout:
+  " ERR_PNPM_FETCH_404  GET https://registry.npmjs.org/@a11ign%2Fcontrol: Not Found - 404\n\nThis error happened while installing a direct dependency of /t\n\n"
+  + "@a11ign/control is not in the npm registry, or you have no permission to fetch it.\n\nNo authorization header was set for the request.\n" });
+
+/** A keyed review of #6 whose head declares `@a11ign/control` and `yaml`, the clone holding `yaml`, with `install` as the tree's install. */
+function reviewWithInstall(install: () => void) {
+  const dir = mkdtempSync(join(tmpdir(), "keyed-404-"));
+  try {
+    const clone = join(dir, "clone");
+    mkdirSync(join(clone, "node_modules", "yaml"), { recursive: true });
+    const base = fakeGit();
+    const git = (cmd: string, args: string[]) => {
+      if (args.join(" ").includes("worktree add")) {
+        mkdirSync(args[args.length - 2], { recursive: true });
+        writeFileSync(join(args[args.length - 2], "package.json"), JSON.stringify({ dependencies: { "@a11ign/control": "0.1.0", yaml: "^2.9.0" } }));
+      }
+      return base.seams.git(cmd, args);
+    };
+    const link = (args: { path: string; repoRoot: string }) => linkKeyedDependencies({ ...args, install });
+    const root = join(dir, "reviews");
+    const checkout = prepareReviewCheckout({ pr: 6, session: SESSION, ...base.seams, git, root, repoRoot: clone, link });
+    const linkedYaml = existsSync(join(root, SESSION, "node_modules", "yaml"));
+    return { checkout, linkedYaml };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("#4321 (positive) an install that 404s on a declared package STARTS the reviewer, with the line that says to judge from `checks`", () => {
+  const { checkout, linkedYaml } = reviewWithInstall(() => { throw PNPM_404; });
+  assert.ok(!("refusal" in checkout), `a refusal here is the defect: ${JSON.stringify(checkout)}`);
+  const { note } = checkout as { note: string };
+  assert.match(note, /`@a11ign\/control` is declared .* not published/);
+  assert.doesNotMatch(note, /`yaml`/, "and only what the registry answered 404 for");
+  assert.match(note, /judge the Acceptance from the repository's `checks` run on the pull request's head/);
+  assert.match(note, /SAY SO in the verdict/);
+  assert.ok(linkedYaml, "what the clone has is still linked");
+  // The note reaches the order, in place of the sentence that says the Acceptance runs there as written.
+  const order = withReviewCheckout({ session: SESSION, prompt: "p" }, checkout as never, 6).prompt;
+  assert.match(order, /Dependencies were NOT installed in this checkout/);
+  assert.doesNotMatch(order, /Acceptance runs there as written/);
+});
+
+test("#4321 (negative) an install that fails any OTHER way still REFUSES, however the failure is spelled", () => {
+  const withOutput = (stdout: string) => () => { throw Object.assign(new Error("Command failed: pnpm install"), { stderr: "", stdout }); };
+  const refusals = [
+    withOutput(" ERR_PNPM_FETCH_ERROR  GET https://registry.npmjs.org/yaml: request to registry.npmjs.org failed, reason: getaddrinfo ENOTFOUND"),
+    withOutput(" ERR_PNPM_OUTDATED_LOCKFILE  Cannot install with \"frozen-lockfile\""),
+    withOutput(" ERR_PNPM_NO_MATCHING_VERSION  No matching version found for @a11ign/control@0.1.0"),
+    // A 404 for a package the tree does NOT declare is a transitive one: not the case this row opens.
+    withOutput(" ERR_PNPM_FETCH_404  GET https://registry.npmjs.org/left-pad: Not Found - 404\n\nleft-pad is not in the npm registry"),
+    // A 404 AND another failure is not "only unpublished".
+    withOutput(`${PNPM_404.stdout} ERR_PNPM_FETCH_ERROR  GET https://registry.npmjs.org/yaml: socket hang up`),
+    () => { throw new Error("registry unreachable"); },
+  ];
+  for (const install of refusals) {
+    const { checkout } = reviewWithInstall(install);
+    assert.match(String((checkout as { refusal?: string }).refusal), /no review dependencies for PR #6 .*`@a11ign\/control`/);
+  }
+});
+
+test("#4321 (control) an install that SUCCEEDS is unchanged: a tree with no note and the sentence that the Acceptance runs there", () => {
+  const dir = mkdtempSync(join(tmpdir(), "keyed-ok-"));
+  try {
+    const clone = join(dir, "clone");
+    mkdirSync(join(clone, "node_modules", "yaml"), { recursive: true });
+    const base = fakeGit();
+    const git = (cmd: string, args: string[]) => {
+      if (args.join(" ").includes("worktree add")) {
+        mkdirSync(args[args.length - 2], { recursive: true });
+        writeFileSync(join(args[args.length - 2], "package.json"), JSON.stringify({ dependencies: { "@a11ign/control": "0.1.0", yaml: "^2.9.0" } }));
+      }
+      return base.seams.git(cmd, args);
+    };
+    // The install "succeeds" by writing EVERY declared package into the tree, as pnpm would.
+    const install = ({ cwd }: { cwd: string }) => { for (const name of ["@a11ign/control", "yaml"]) mkdirSync(join(cwd, "node_modules", name), { recursive: true }); };
+    const link = (args: { path: string; repoRoot: string }) => linkKeyedDependencies({ ...args, install });
+    const made = prepareReviewCheckout({ pr: 6, session: SESSION, ...base.seams, git, root: join(dir, "reviews"), repoRoot: clone, link });
+    assert.deepEqual(made, { path: join(dir, "reviews", SESSION), head: HEAD }, "no `note` key at all");
+    const order = withReviewCheckout({ session: SESSION, prompt: "p" }, made as never, 6).prompt;
+    assert.match(order, /Acceptance runs there as written/);
+    assert.doesNotMatch(order, /NOT installed/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
