@@ -12,7 +12,7 @@ Adds an `owner-gone` rung to `ownerOfPr`, between `dependency-bot` and `ceo`: a 
 
 **Edge, named:** `rowsNamedBy` reads a branch's trailing number as a row (existing convention), so a dead owner's PR on `agent/worker-99` with no `Closes` is `owner-gone` when #99 is not open. The grid pins it (`sessionRetired`).
 
-Mutation: the rung never fires (4 of 23 fail), fires without `closingRowsClosed` (4 of 23), the empty-read guard removed (1 of 23), the `named.length > 0` guard removed (3 of 23); the shared-file wording flag forced false fails its one new test. Each file restored byte-identical (`diff` against a copy). Dropping `labelEnded` from the rung survived as an equivalent mutant (`closingRowsClosed` is only ever set on a `labelEnded` PR), so the redundant condition was removed rather than kept.
+Mutation checks, in prose: the rung never fires (4 of 23 fail), fires without `closingRowsClosed` (4 of 23), the empty-read guard removed (1 of 23), the `named.length > 0` guard removed (3 of 23); the shared-file wording flag forced false fails its one new test. Each file restored byte-identical (`diff` against a copy). Dropping `labelEnded` from the rung survived as an equivalent mutant (`closingRowsClosed` is only ever set on a `labelEnded` PR), so the redundant condition was removed rather than kept.
 
 Measured: `VERDICT pass: 35 tests in 3 files` (the two Acceptance files plus `work-gate-shared-file-orders.test.ts`); the 28 test files that call `ownerOfPr`, `withPrOwners`, `decide(` or the recorders pass (`VERDICT pass` x4, 874 tests in batches of seven). NOT run: the full suite.
 
