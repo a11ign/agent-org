@@ -11,6 +11,18 @@
   "bin": {
     "agent-org": "src/bin.mjs"
   },
+  "exports": {
+    "./acceptance-commands": "./src/acceptance-commands.ts",
+    "./board-data": "./src/board-data.ts",
+    "./board-document": "./src/board-document.ts",
+    "./leak-patterns": "./src/lib/leak-patterns.mjs",
+    "./merge-guard-lookups": "./src/merge-guard/lookups.mjs",
+    "./newest-check-run": "./src/newest-check-run.ts",
+    "./pr-open": "./src/pr-open.ts",
+    "./project-config": "./src/project-config.ts",
+    "./tree-wide-guard": "./src/lib/tree-wide-guard.mjs",
+    "./package.json": "./package.json"
+  },
   "engines": {
     "node": ">=22"
   },
