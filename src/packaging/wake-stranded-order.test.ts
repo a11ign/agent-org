@@ -12,6 +12,7 @@
  *   MUST be resolved:  "an order to an ENDED session ..." (the drop) and "... is re-addressed ..."
  *   MUST NOT be:       "ABSENT IS NOT ENDED ..." (never started) and "A HERDR THAT DOES NOT ANSWER ..." (blind)
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync, chmodSync, existsSync } from "node:fs";
@@ -242,7 +243,7 @@ function tick(present: string[] | null, queued: object[], { teardown = true } = 
     }
     const before = readFileSync(queue, "utf8");
     // PATH is the stub's directory ALONE: no `gh` exists to be reached.
-    const ran = spawnSync(process.execPath, [WAKE_ENTRY, `--ledger=${ledger}`], {
+    const ran = spawnSync(process.execPath, [...TSX_IMPORT, WAKE_ENTRY, `--ledger=${ledger}`], {
       input: "", encoding: "utf8",
       // The host declaration is found through $AGENT_ORG_HOST, and HOME is a scratch dir with none beside it.
       env: { HOME: dir, PATH: dir, AGENT_ORG_HOST: process.env.AGENT_ORG_HOST } });

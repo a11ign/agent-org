@@ -8,6 +8,7 @@
  * against real, captured output rather than a guessed shape. See queue-stalled.ts's own header for the
  * incident (#232/#281, 12.5 PR-hours invisible) and why `mergeable` is not the instrument.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -351,7 +352,7 @@ test("headCommittedAt: empty stdout on a successful exit is also `null`, not an 
 test("queue-stalled.ts refuses an unknown flag rather than silently ignoring it", () => {
   let threw = false;
   try {
-    execFileSync("node", [SCRIPT, "--bogus"], { encoding: "utf8", stdio: "pipe" });
+    execFileSync("node", [...TSX_IMPORT, SCRIPT, "--bogus"], { encoding: "utf8", stdio: "pipe" });
   } catch (cause) {
     threw = true;
     const err = cause as { status?: number, stderr?: string };
@@ -366,7 +367,7 @@ test("queue-stalled.ts refuses to run without GITHUB_REPOSITORY -- CANNOT ASK, n
   try {
     const env = { ...process.env };
     delete env.GITHUB_REPOSITORY;
-    execFileSync("node", [SCRIPT], { encoding: "utf8", stdio: "pipe", env });
+    execFileSync("node", [...TSX_IMPORT, SCRIPT], { encoding: "utf8", stdio: "pipe", env });
   } catch (cause) {
     threw = true;
     const err = cause as { status?: number, stderr?: string };

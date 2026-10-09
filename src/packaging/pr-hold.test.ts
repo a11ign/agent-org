@@ -14,6 +14,7 @@
 // tests call it: `takeHold` and `releaseHold`, the two functions that do, appear in this file only
 // inside an assertion message. The declaration is verified against the entry's own code, so a wrong one
 // is refused as its own state rather than trusted.
+import { TSX_IMPORT } from "../tsx-import.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -288,7 +289,7 @@ function withStubbedHold(state: HoldStubState, ...argv: string[]) {
     writeFileSync(join(dir, "state.json"), JSON.stringify(state));
     writeFileSync(join(dir, "gh"), STUB_GH);
     chmodSync(join(dir, "gh"), EXECUTABLE);
-    const r = spawnSync(process.execPath, [PR_HOLD_CLI, PR, ...argv],
+    const r = spawnSync(process.execPath, [...TSX_IMPORT, PR_HOLD_CLI, PR, ...argv],
       { encoding: "utf8", env: { PATH: `${dir}:${process.env.PATH ?? ""}`, HOME: process.env.HOME ?? "",
         // Without the host's declaration the CLI refuses before it ever calls `gh`, so the stub's argv.log is never written: a tool checkout has no project beside it.
         ...(process.env.AGENT_ORG_HOST && { AGENT_ORG_HOST: process.env.AGENT_ORG_HOST }) } });

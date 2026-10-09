@@ -17,6 +17,7 @@
  * arm #3507. The doors' tests below fail there on BEHAVIOUR (a merge call is made), the decider's on its absence; the run is
  * pasted on the row.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -259,7 +260,7 @@ ${issueCases}
 esac
 `);
     chmodSync(join(dir, "bin", "gh"), 0o755);
-    const run = spawnSync(process.execPath, [SWEEP], { encoding: "utf8", env: { ...process.env,
+    const run = spawnSync(process.execPath, [...TSX_IMPORT, SWEEP], { encoding: "utf8", env: { ...process.env,
       GITHUB_REPOSITORY: REPO, [SWEEP_WAIT_ENV]: "0", PATH: `${join(dir, "bin")}:${process.env.PATH}` } });
     const calls = readFileSync(join(dir, "calls"), "utf8").split("\n").filter(Boolean);
     return { said: run.stdout + run.stderr, status: run.status, merged: calls.some((c) => c.startsWith("pr merge")),

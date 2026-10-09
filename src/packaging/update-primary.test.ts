@@ -3,6 +3,7 @@
  * `primary:update` is the ONE sanctioned way to move the primary checkout (#126), which makes it the only
  * place a rebuild can live and be reached every time.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
@@ -386,12 +387,12 @@ test("#2781 UNASKABLE is null, never a clean reading: a linked worktree, and a r
 
 test("#2781 the CLI `--drift` only READS: from a worktree it answers asked:false and moves nothing", () => {
   const entry = fileURLToPath(new URL("../update-primary.ts", import.meta.url));
-  const run = spawnSync(process.execPath, [entry, "--drift"], { encoding: "utf8" });
+  const run = spawnSync(process.execPath, [...TSX_IMPORT, entry, "--drift"], { encoding: "utf8" });
   assert.equal(run.status, 0, run.stderr);
   const parsed = JSON.parse(run.stdout);
   assert.equal(typeof parsed.asked, "boolean");
   assert.equal(parsed.asked, parsed.drift !== null, "asked and the reading agree");
-  const refused = spawnSync(process.execPath, [entry, "--nonsense"], { encoding: "utf8" });
+  const refused = spawnSync(process.execPath, [...TSX_IMPORT, entry, "--nonsense"], { encoding: "utf8" });
   assert.notEqual(refused.status, 0, "an unknown flag is still refused (#164)");
 });
 

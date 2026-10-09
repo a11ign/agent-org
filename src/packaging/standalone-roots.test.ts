@@ -22,6 +22,7 @@
  * only that one spelled it), and a child proves its git calls run in the fixture checkout: `filesChangedAgainstOrigin()` answers with
  * a file committed there, which a `cwd` of `packages/` or the directory above `tool` cannot.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -201,7 +202,7 @@ function readIn(src: string, module: Module, host: string | undefined): unknown 
   delete env[HOST_ENV];
   if (host !== undefined) env[HOST_ENV] = host;
   const program = `const m = await import(${JSON.stringify(join(src, module.file))}); console.log(JSON.stringify(${module.answer}));`;
-  const child = spawnSync(process.execPath, ["--input-type=module", "-e", program], { env, encoding: "utf8", timeout: CHILD_TIMEOUT_MS });
+  const child = spawnSync(process.execPath, [...TSX_IMPORT, "--input-type=module", "-e", program], { env, encoding: "utf8", timeout: CHILD_TIMEOUT_MS });
   assert.equal(child.status, 0, `${module.name}: the child failed:\n${child.stderr}`);
   return JSON.parse(child.stdout.trim().split("\n").at(-1) as string);
 }

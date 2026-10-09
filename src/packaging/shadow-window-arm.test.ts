@@ -16,6 +16,7 @@
  * record with one gap holds a gap row AND still counts every tick, the closure check names a file that differs and then stops complaining once it is
  * restored, and the same exit status 2 is a SUCCESS for the live unit and a FAILURE for the shadow one.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -455,7 +456,7 @@ test("an ordinary windowed tick leaves the live directory's bytes alone, apart f
 
 /** The runner inherits `AGENT_ORG_HOST`: blanking it made the child resolve its project by counting directories up from `src`, which standalone is the home directory (#3098). */
 function cli(r: Rig, ...flags: string[]) {
-  return spawnSync(process.execPath, [RUNNER, `--live-dir=${r.live}`, `--copy-dir=${r.copy}`, `--record=${r.record}`, `--candidate=${r.candidate}`, ...flags],
+  return spawnSync(process.execPath, [...TSX_IMPORT, RUNNER, `--live-dir=${r.live}`, `--copy-dir=${r.copy}`, `--record=${r.record}`, `--candidate=${r.candidate}`, ...flags],
     { encoding: "utf8" });
 }
 
@@ -484,7 +485,7 @@ test("the command line: --arm over the REAL gate's closure prints T0, T-end, the
     git("init", "-q");
     git("commit", "-q", "--allow-empty", "-m", "snapshot");
     const gate = join(tool, "src", "work-gate.ts");
-    const armCli = () => spawnSync(process.execPath, [RUNNER, "--arm", `--live-dir=${r.live}`, `--copy-dir=${r.copy}`, `--record=${r.record}`, `--candidate=${gate}`, `--window-timer=${TIMER}`],
+    const armCli = () => spawnSync(process.execPath, [...TSX_IMPORT, RUNNER, "--arm", `--live-dir=${r.live}`, `--copy-dir=${r.copy}`, `--record=${r.record}`, `--candidate=${gate}`, `--window-timer=${TIMER}`],
       { encoding: "utf8" });
     const shared = join(tool, "src", "host-config.ts");
     const original = readFileSync(shared, "utf8");

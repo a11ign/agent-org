@@ -11,6 +11,7 @@
  *
  * A clear costs five seconds (`CLEAR_SETTLE_MS`), so the control tests hold the file's runtime.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, chmodSync, readFileSync, existsSync, utimesSync } from "node:fs";
@@ -176,7 +177,7 @@ function cli(label: string) {
     const git = join(dir, "git");
     writeFileSync(git, "#!/bin/sh\nexit 1\n");
     chmodSync(git, STUB_MODE);
-    const res = spawnSync(process.execPath, [PROMPT_SESSION, label, "the check failed", "--ledger", join(dir, "ledger")], {
+    const res = spawnSync(process.execPath, [...TSX_IMPORT, PROMPT_SESSION, label, "the check failed", "--ledger", join(dir, "ledger")], {
       // The host declaration is found through $AGENT_ORG_HOST, and HOME is a scratch dir with none beside it: without it the
       // child dies on a ProjectDeclarationRefusal before it reaches herdr, and this test asserts on herdr's calls.
       encoding: "utf8", env: { PATH: `${dir}:${process.env.PATH}`, HOME: dir, AGENT_ORG_HOST: process.env.AGENT_ORG_HOST },

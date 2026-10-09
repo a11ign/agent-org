@@ -9,6 +9,7 @@
  * test that handed the router a literal list would pass with the mark deleted from the file. Every refusal has the
  * same fixture with ONE thing changed as its control, so what flipped the outcome is named by the test.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
@@ -254,7 +255,7 @@ function tickWith(registry: Record<string, unknown> | null, listed: string) {
     writeFileSync(join(dir, "node"), `#!/bin/sh\ncat '${sparePathsFrom(ledger).registry}' >> '${seen}' 2>/dev/null\nmkdir -p ../wt-2407\necho 'STARTED -- #2407 fixture'\n`);
     for (const name of ["herdr", "gh", "git", "node"]) chmodSync(join(dir, name), STUB_MODE);
     if (registry !== null) writeFileSync(sparePathsFrom(ledger).registry, `${JSON.stringify(registry)}\n`);
-    const ran = spawnSync(process.execPath, [WAKE_ENTRY, `--ledger=${ledger}`, `--worktrees-dir=${join(dir, "repos")}`], {
+    const ran = spawnSync(process.execPath, [...TSX_IMPORT, WAKE_ENTRY, `--ledger=${ledger}`, `--worktrees-dir=${join(dir, "repos")}`], {
       input: `${JSON.stringify(ROW_ORDER)}\n`, encoding: "utf8",
       env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}`, A11Y_HOST_LOAD: "0" } });
     const read = (path: string) => { try { return readFileSync(path, "utf8"); } catch { return ""; } };

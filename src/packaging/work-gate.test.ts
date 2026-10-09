@@ -20,6 +20,7 @@
  * AND THE POSITIVES ARE NOT OPTIONAL, for `review-verdict.test.ts`'s reason one level up: a `decide` that
  * returned `[]` for everything satisfies every "no order" case perfectly and would wake nobody, ever.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, mkdtempSync, realpathSync,
@@ -4898,7 +4899,7 @@ test("#2174: work-gate.ts loads in a tree with NO node_modules, host-units edge 
   assert.ok(existsSync(join(root, "packages/agent-org/host/work-tick.service.in")) && existsSync(join(root, ".agent-org/project.json")),
     "the control: both directories really came across whole");
   assert.ok(!existsSync(join(root, "node_modules")), "the tree really has none -- the premise");
-  const run = spawnSync(process.execPath, ["--input-type=module", "-e",
+  const run = spawnSync(process.execPath, [...TSX_IMPORT, "--input-type=module", "-e",
     `import(${JSON.stringify(pathToFileURL(copy.entry).href)})`
     + ".then(m => { if (!m.CAUSES.includes('host-units-stale')) throw new Error('cause missing'); })"],
   { encoding: "utf8", cwd: root, env: { ...process.env, ...copy.env } });

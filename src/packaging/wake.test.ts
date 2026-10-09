@@ -19,6 +19,7 @@
  * does not is the 2026-09-08 shape the lead-orchestrator brief records, where "every session went idle at
  * 20:52Z and nothing woke anyone for ten" hours.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, chmodSync, readdirSync } from "node:fs";
@@ -1848,7 +1849,7 @@ function runTick({ queued, stdin = "", herdr = "working" as string | null }:
     writeFileSync(stub, herdrStub(herdr));
     chmodSync(stub, STUB_MODE);
     writeFileSync(handoffQueuePath(ledger), queued.map((h) => JSON.stringify(h)).join("\n") + "\n");
-    return spawnSync(process.execPath, [WAKE_ENTRY, `--ledger=${ledger}`], {
+    return spawnSync(process.execPath, [...TSX_IMPORT, WAKE_ENTRY, `--ledger=${ledger}`], {
       input: stdin, encoding: "utf8",
       env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}`, [SETTLE_TEST_CLOCK_ENV]: "0" },
     });
@@ -2089,7 +2090,7 @@ function runPoolTick(ghStub: string | null, { cycles = FAILED_CYCLE as string | 
     chmodSync(join(dir, "herdr"), STUB_MODE);
     chmodSync(join(dir, "gh"), STUB_MODE);
     const order = JSON.stringify({ ...ROW_ORDER, session: "engineers" });
-    const ran = spawnSync(process.execPath, [entry, `--ledger=${ledger}`, "--roster=worker-judge"], {
+    const ran = spawnSync(process.execPath, [...TSX_IMPORT, entry, `--ledger=${ledger}`, "--roster=worker-judge"], {
       input: `${order}\n`, encoding: "utf8",
       env: { ...process.env, ...copyEnv, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}`, [SETTLE_TEST_CLOCK_ENV]: "0" },
     });
@@ -2148,7 +2149,7 @@ test("#3769 (2): in a PROCESS, the clock reaches the real blocking sleep: `clear
   const probe = `import(${JSON.stringify(wake)}).then(({ clearContext, CLEAR_SETTLE_MS }) => {`
     + " const at = Date.now(); const refused = clearContext(() => '', 'probe');"
     + " console.log(JSON.stringify({ refused, ms: Date.now() - at, real: CLEAR_SETTLE_MS })); });";
-  const ran = spawnSync(process.execPath, ["-e", probe], { encoding: "utf8", env: { ...process.env, [SETTLE_TEST_CLOCK_ENV]: "0" } });
+  const ran = spawnSync(process.execPath, [...TSX_IMPORT, "-e", probe], { encoding: "utf8", env: { ...process.env, [SETTLE_TEST_CLOCK_ENV]: "0" } });
   const { refused, ms, real } = JSON.parse(ran.stdout);
   assert.equal(refused, null, `the command landed; got ${ran.stderr}`);
   assert.ok(ms < real / 2, `with the clock at 0 the settle took ${ms} ms against a real ${real}`);

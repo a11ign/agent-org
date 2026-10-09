@@ -6,6 +6,7 @@
  * actually executed, exit code is the verdict), REFUSED (needs the fleet/lab/runs/, named, never gates),
  * MISSING (no acceptance line at all -- must FAIL, never read as a pass).
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { after, test } from "node:test";
 import { execFileSync, spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
@@ -1490,7 +1491,7 @@ test("#3103 deriveClosureRequirements: a RELATIVE entry importing a tool module 
     writeFileSync(join(dir, "sub", "x.test.mjs"), `import { q } from "${"agent-org" + "/src/nobody-installed.mjs"}";\nexport const x = q;\n`);
     const script = `import { deriveClosureRequirements } from ${JSON.stringify(new URL("../acceptance-commands.ts", import.meta.url).href)};`
       + ` console.log(JSON.stringify(deriveClosureRequirements("sub/x.test.mjs")));`;
-    const out = execFileSync(process.execPath, ["--input-type=module", "-e", script], { cwd: dir, timeout: 30_000, encoding: "utf8" });
+    const out = execFileSync(process.execPath, [...TSX_IMPORT, "--input-type=module", "-e", script], { cwd: dir, timeout: 30_000, encoding: "utf8" });
     assert.deepEqual(JSON.parse(out), []);
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -3551,7 +3552,7 @@ test("#2305: `main()` is WIRED -- a missing record is PRINTED and exits 0 (a11ig
   withGitSandbox(({ dir, run, commit }) => {
     mergedPullRequest(dir, run, commit);
     const job = (body: string) => spawnSync("node",
-      [new URL("../acceptance-commands.ts", import.meta.url).pathname],
+      [...TSX_IMPORT, new URL("../acceptance-commands.ts", import.meta.url).pathname],
       { cwd: dir, encoding: "utf8", env: sandboxGitEnv({ PR_BODY: body }) });
     const base = "Acceptance: none \u2014 the test is the check\n\nCloses: none \u2014 test\n";
     const missing = job(base);
@@ -3624,7 +3625,7 @@ test("#2308: two `## Measured` sections fail rather than pick one", () => {
 });
 
 test("#2308: the CLI reads the verdict -- a malformed section exits 1 and prints its line", () => {
-  const run = (body: string) => spawnSync(process.execPath, [join(TOOL_SRC, "acceptance-commands.ts")],
+  const run = (body: string) => spawnSync(process.execPath, [...TSX_IMPORT, join(TOOL_SRC, "acceptance-commands.ts")],
     { encoding: "utf8", env: { ...process.env, PR_BODY: body } });
   const bad = run(`Closes #1\n\nAcceptance: none \u2014 nothing to run\n\n${measuredBody("$ git ls-files | wc -l")}`);
   assert.match(bad.stdout, /MEASURED: MALFORMED/);

@@ -3,6 +3,7 @@
 //
 // THE POSITIVE CONTROL for every "writes nothing" below is the first test: the SAME harness (`world`, `run`) un-parks a row there, so an empty `calls` is a reading of a wired pass and not of
 // a pass that cannot write. Each "untouched" case differs from a transitioning one by ONE fact.
+import { TSX_IMPORT } from "./tsx-import.ts";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -297,7 +298,7 @@ function promoteFromPrimary(fx: { primary: string; fakeBin: string; }, deps?: { 
 test("(#4202) CONTROL: row-file launched from a checkout whose .git is a directory is refused -- the guard stays, and the refusal is what the tick met", () => {
   const fx = fixture();
   try {
-    const ran = (() => { try { execFileSync(process.execPath, [new URL("./row-file.ts", import.meta.url).pathname, "--promote=1", "--session=work-gate"], { cwd: fx.primary, encoding: "utf8", stdio: "pipe" }); return ""; } catch (error) { return String((error as any).stderr); } })();
+    const ran = (() => { try { execFileSync(process.execPath, [...TSX_IMPORT, new URL("./row-file.ts", import.meta.url).pathname, "--promote=1", "--session=work-gate"], { cwd: fx.primary, encoding: "utf8", stdio: "pipe" }); return ""; } catch (error) { return String((error as any).stderr); } })();
     assert.match(ran, /REFUSED -- launched from .*which is not a linked worktree: its \.git is a directory/, "the primary-checkout fixture is the real refused shape");
   } finally { rmSync(fx.root, { recursive: true, force: true }); }
 });

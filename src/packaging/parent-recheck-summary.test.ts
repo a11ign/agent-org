@@ -13,6 +13,7 @@
  * already the safe answer this function needed to be ABLE to give; it just could not, because `tail -40`
  * never told it "I don't know", it told it "fail" with the wrong evidence attached.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -107,7 +108,7 @@ function withTempLog(content: string, fn: (path: string) => void) {
 
 test("CLI: a real failing log prints the not-ok lines, the fail count, and RECHECK_RESULT=fail", () => {
   withTempLog(tapLogWithEarlyFailure(), (logPath) => {
-    const out = execFileSync("node", [realpathSync(CLI), logPath],
+    const out = execFileSync("node", [...TSX_IMPORT, realpathSync(CLI), logPath],
       { encoding: "utf8" });
     assert.match(out, /^# fail 1$/m);
     assert.match(out, /not ok 7 - the summary states WHEN it was written/);
@@ -117,7 +118,7 @@ test("CLI: a real failing log prints the not-ok lines, the fail count, and RECHE
 
 test("CLI: an undeterminable log prints UNKNOWN and RECHECK_RESULT=unknown, never RECHECK_RESULT=fail", () => {
   withTempLog("a crash with no TAP shape at all\n", (logPath) => {
-    const out = execFileSync("node", [realpathSync(CLI), logPath],
+    const out = execFileSync("node", [...TSX_IMPORT, realpathSync(CLI), logPath],
       { encoding: "utf8" });
     assert.match(out, /^UNKNOWN:/m);
     assert.match(out, /^RECHECK_RESULT=unknown$/m);

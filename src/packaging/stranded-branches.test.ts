@@ -8,6 +8,7 @@
  * (`agent/ssh-key-defaults`, a finished security fix, pushed and invisible for eleven hours) and why the
  * obvious `git rev-list --count` check is defeated by squash merges on the wider population.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, execFileSync as rawExecFileSync, spawnSync } from "node:child_process";
@@ -371,7 +372,7 @@ function runCliWithStubGh(cwd: string, answer: { json: string } | { fail: string
   writeFileSync(join(stubDir, "gh"), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\n${reply}\n`);
   chmodSync(join(stubDir, "gh"), 0o755);
   try {
-    const result = spawnSync(process.execPath, [SCRIPT], { cwd, encoding: "utf8",
+    const result = spawnSync(process.execPath, [...TSX_IMPORT, SCRIPT], { cwd, encoding: "utf8",
       env: { ...process.env, PATH: `${stubDir}${delimiter}${process.env.PATH ?? ""}` } });
     const calls = existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean) : [];
     return { status: result.status, stdout: result.stdout, stderr: result.stderr, calls };

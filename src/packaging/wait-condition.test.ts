@@ -13,6 +13,7 @@
  * control, the exemption's trip, the end-to-end tick, the truth table and the per-kind cases that need a true condition -- and `the SAME fixture ... OPEN` stays green; ALWAYS TRUE turns
  * 10 red, the "unresolved is excused" ones among them. Each direction breaks the tests that assert its own half and no wiring test that does not read a condition.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -338,9 +339,9 @@ test("refFactOf: merged_at tells a merge from a close, and a state it does not k
 // --- pr:hold --until ---------------------------------------------------------------------------------------------------------
 
 test("pr:hold refuses an --until outside the grammar BEFORE it reads or writes anything", () => {
-  const run = spawnSync("node", [HOLD_ENTRY, "2988", "--session=ceo", "--until=soon"], { encoding: "utf8", timeout: 20_000 });
+  const run = spawnSync("node", [...TSX_IMPORT, HOLD_ENTRY, "2988", "--session=ceo", "--until=soon"], { encoding: "utf8", timeout: 20_000 });
   assert.equal(run.status, 2, run.stderr);
   assert.match(run.stderr, /REFUSING --until="soon": it is not a condition the gate can read/);
-  const unknownFlag = spawnSync("node", [HOLD_ENTRY, "2988", "--session=ceo", "--untill=closed #1"], { encoding: "utf8", timeout: 20_000 });
+  const unknownFlag = spawnSync("node", [...TSX_IMPORT, HOLD_ENTRY, "2988", "--session=ceo", "--untill=closed #1"], { encoding: "utf8", timeout: 20_000 });
   assert.notEqual(unknownFlag.status, 0, "a mistyped flag is still refused as unknown");
 });

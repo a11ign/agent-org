@@ -13,6 +13,7 @@
  * `refused` is derived from the check, and `POPULATION` is asserted non-empty and of the size the transcript gives, so an emptiness
  * assertion has its positive control in this file (guards-and-assertions.md).
  */
+import { TSX_IMPORT } from "./tsx-import.ts";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -142,7 +143,7 @@ function underHost(script: (checkout: string) => string): { status: number | nul
     schema: 1, home: "/home/agent", binDir: "/home/agent/.local/bin", primary: "proj",
     projects: [{ id: "proj", checkout }], gh: { workers: "/home/agent/workers", leads: "/home/agent/leads", leadsHeader: [], leadsWorkspaces: [] },
   }));
-  const run = spawnSync(process.execPath, ["--input-type=module", "-e", script(checkout)], {
+  const run = spawnSync(process.execPath, [...TSX_IMPORT, "--input-type=module", "-e", script(checkout)], {
     cwd: HERE, encoding: "utf8", env: { ...process.env, AGENT_ORG_HOST: hostFile },
   });
   return { status: run.status, out: `${run.stdout}${run.stderr}` };

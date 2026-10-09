@@ -13,6 +13,7 @@
  * (a) and (b) are what stop (c) being a detector that never fires; (c) and (d) are what stop (a) and (b) being one
  * that always does.
  */
+import { TSX_IMPORT } from "./tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
@@ -203,7 +204,7 @@ function gateProcess({ ghWorks }: { ghWorks: boolean }) {
       : "#!/bin/sh\nexit 1\n");
     chmodSync(join(dir, "gh"), STUB_MODE);
     writeFileSync(join(dir, "preload.cjs"), PRELOAD);
-    const ran = spawnSync(process.execPath, ["--require", join(dir, "preload.cjs"), GATE_ENTRY], { encoding: "utf8",
+    const ran = spawnSync(process.execPath, [...TSX_IMPORT, "--require", join(dir, "preload.cjs"), GATE_ENTRY], { encoding: "utf8",
       env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` } });
     const orders = ran.stdout.split("\n").filter(Boolean).map((l) => JSON.parse(l) as { cause: string });
     return { ran, orders };
@@ -251,7 +252,7 @@ function wakeProcess(lock: "none" | "wake-emitted" | "wake-ledger") {
       chmodSync(join(dir, lock), READ_ONLY);
     }
     writeFileSync(herdrLog, "");
-    const ran = spawnSync(process.execPath, [WAKE_ENTRY, `--ledger=${join(dir, "wake-ledger")}`], { encoding: "utf8",
+    const ran = spawnSync(process.execPath, [...TSX_IMPORT, WAKE_ENTRY, `--ledger=${join(dir, "wake-ledger")}`], { encoding: "utf8",
       input: `${JSON.stringify(ORDER)}\n`, env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}`, [SETTLE_TEST_CLOCK_ENV]: "0" } });
     const prompts = readFileSync(herdrLog, "utf8").split("\n").filter((l) => l.includes("agent prompt ceo") && !l.includes("/clear"));
     return { ran, prompts: prompts.length };

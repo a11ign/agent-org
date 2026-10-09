@@ -9,6 +9,7 @@
  *
  * MUTATION, run by hand and recorded on the row: `evaluateCheck` returning `pass` for a non-empty population turns the 06:50Z test red.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -206,11 +207,11 @@ test("#2997 THE GATE: a rulings.jsonl it cannot read is SAID (through `rulingOrd
 test("#2997 THE CLI: `--on 2988 --check ...` records; no check is refused with exit 1 and nothing written", () => scratch((home) => {
   const env = { PATH: process.env.PATH ?? "", HOME: home, ...(process.env.AGENT_ORG_HOST && { AGENT_ORG_HOST: process.env.AGENT_ORG_HOST }) };
   const state = join(home, ".cache", "a11ign");
-  const refused = spawnSync(process.execPath, [RECORD_CLI, "--session=ceo", "--on", "2988"], { encoding: "utf8", env });
+  const refused = spawnSync(process.execPath, [...TSX_IMPORT, RECORD_CLI, "--session=ceo", "--on", "2988"], { encoding: "utf8", env });
   assert.equal(refused.status, 1);
   assert.match(refused.stderr, /name the state/);
   assert.equal(existsSync(join(state, RULINGS_FILE)), false);
-  const out = execFileSync(process.execPath, [RECORD_CLI, "--session=ceo", "--on", "2988", "--check", PR_CHECK, "--check=closed #2867", "--at=2026-10-02T06:50:00Z"], { encoding: "utf8", env });
+  const out = execFileSync(process.execPath, [...TSX_IMPORT, RECORD_CLI, "--session=ceo", "--on", "2988", "--check", PR_CHECK, "--check=closed #2867", "--at=2026-10-02T06:50:00Z"], { encoding: "utf8", env });
   assert.match(out, /^RECORDED r2988-/);
   const [only] = readRulings(state).rulings;
   assert.deepEqual([only.on, only.by, only.checks, only.grace], [2988, "ceo", [PR_CHECK, "closed #2867"], 20]);

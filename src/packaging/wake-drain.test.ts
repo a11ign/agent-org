@@ -6,6 +6,7 @@
  * acceptance job refused it and verified nothing. Every fact read here -- herdr, GitHub, the two ledgers -- is
  * injected or stubbed on PATH, so the row's Acceptance is a command the job can RUN.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync, chmodSync, readdirSync, cpSync } from "node:fs";
@@ -435,7 +436,7 @@ test("#2324 (6): a non-empty ledger prints the run length, the last line and the
   assert.match(broken.stdout, /drain: LIFTED/);
 });
 
-const spawnCycles = (dir: string) => spawnSync(process.execPath, [WAKE_ENTRY, "--cycles", `--ledger=${join(dir, "wake-ledger")}`],
+const spawnCycles = (dir: string) => spawnSync(process.execPath, [...TSX_IMPORT, WAKE_ENTRY, "--cycles", `--ledger=${join(dir, "wake-ledger")}`],
   { encoding: "utf8", env: { ...process.env, HOME: dir } });
 
 test("#2324 (6): THE COMMAND -- `wake.ts --cycles` on an empty ledger exits non-zero, and reads the ledger the teardown writes", () => {
@@ -584,7 +585,7 @@ function claimProcess(session: string, ledger: string | null) {
       writeFileSync(path, ledger);
     }
     const { entry, env } = copyClosureAsRepo(join(dir, "checkout"));
-    return spawnSync(process.execPath, [entry, "claim", "2324", `--session=${session}`], {
+    return spawnSync(process.execPath, [...TSX_IMPORT, entry, "claim", "2324", `--session=${session}`], {
       encoding: "utf8",
       env: { ...sandboxGitEnv(), ...env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}`, A11Y_POLICY_LAUNCH_REASON: "#2324 drives the CLI" },
     });
@@ -613,7 +614,7 @@ test("#2606 POSITIVE CONTROL: teardown completes while a writer is still creatin
   const dir = mkdtempSync(join(tmpdir(), "row-claim-drain-"));
   const objects = join(dir, "checkout/.git/objects");
   mkdirSync(objects, { recursive: true });
-  const writer = spawn(process.execPath, ["-e", GIT_WRITER, objects], { stdio: "ignore" });
+  const writer = spawn(process.execPath, [...TSX_IMPORT, "-e", GIT_WRITER, objects], { stdio: "ignore" });
   try {
     for (const deadline = Date.now() + 5000; readdirSync(objects).length === 0; ) {
       assert.ok(Date.now() < deadline, "the writer never started, so this control would prove nothing");

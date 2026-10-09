@@ -13,6 +13,7 @@
  * and the engineer path -- `spawnableRole`, `SPAWN_CAUSES`, `registerSpawn`, the `spare-cycles` ledger -- reads
  * exactly as it did.
  */
+import { TSX_IMPORT } from "./tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, chmodSync, existsSync, mkdirSync, symlinkSync, readdirSync,
@@ -936,7 +937,7 @@ test("#2401 THE TICK: a QUIET gate still ends a finished reviewer instance, and 
     const tree = join(dir, "reviews", "reviewer-9001");
     mkdirSync(tree, { recursive: true });
     writeFileSync(reviewerPathsFrom(ledger).registry, JSON.stringify({ "reviewer-9001": { spawnedAt: T0 } }));
-    const ran = spawnSync(process.execPath, [TICK_ENTRY, `--ledger=${ledger}`], { encoding: "utf8",
+    const ran = spawnSync(process.execPath, [...TSX_IMPORT, TICK_ENTRY, `--ledger=${ledger}`], { encoding: "utf8",
       env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` } });
 
     const calls = readFileSync(log, "utf8");
@@ -973,7 +974,7 @@ test("#2401 THE WAKE ENTRY: a started reviewer instance is REGISTERED with its s
     chmodSync(join(dir, "gh"), STUB_MODE);
     writeGitStub(dir);
     const before = Date.now();
-    const ran = spawnSync(process.execPath, [TICK_ENTRY.replace("work-tick.ts", "wake.ts"), `--ledger=${ledger}`,
+    const ran = spawnSync(process.execPath, [...TSX_IMPORT, TICK_ENTRY.replace("work-tick.ts", "wake.ts"), `--ledger=${ledger}`,
       "--roster=worker-4"], { input: `${JSON.stringify(reviewOrder(2398))}\n`, encoding: "utf8",
       // The memory gate (#2508) reads the HOST unless told a file: this test is about the registry, so it is handed an idle host.
       env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}`, A11Y_MEMINFO_PATH: idleMeminfo(dir) } });

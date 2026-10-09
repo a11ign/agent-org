@@ -8,6 +8,7 @@
  * with the roster they mean and read no host. The CLI reads it (`instanceNow`), which is what the last two tests drive as
  * a PROCESS: an injected seam is exactly what a deleted call goes around.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync, chmodSync, readdirSync, copyFileSync } from "node:fs";
@@ -153,7 +154,7 @@ function claimProcess(session: string, { registry = null, held = [] }: { registr
       writeFileSync(sparePathsFrom(join(dir, ".cache/a11ign/wake-ledger")).registry, `${JSON.stringify(registry)}\n`);
     }
     const { entry, env } = copyClosureAsRepo(join(dir, "checkout"));
-    return spawnSync(process.execPath, [entry, "claim", String(ROW), `--session=${session}`], {
+    return spawnSync(process.execPath, [...TSX_IMPORT, entry, "claim", String(ROW), `--session=${session}`], {
       encoding: "utf8",
       env: { ...sandboxGitEnv(), ...env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}`, A11Y_POLICY_LAUNCH_REASON: "#2407 drives the CLI",
         HELD_ROWS: JSON.stringify(held.map((number) => ({ number }))) },
@@ -183,7 +184,7 @@ test("#2606 POSITIVE CONTROL: teardown completes while a writer is still creatin
   const dir = mkdtempSync(join(tmpdir(), "row-claim-one-row-"));
   const objects = join(dir, "checkout/.git/objects");
   mkdirSync(objects, { recursive: true });
-  const writer = spawn(process.execPath, ["-e", GIT_WRITER, objects], { stdio: "ignore" });
+  const writer = spawn(process.execPath, [...TSX_IMPORT, "-e", GIT_WRITER, objects], { stdio: "ignore" });
   try {
     for (const deadline = Date.now() + 5000; readdirSync(objects).length === 0; ) {
       assert.ok(Date.now() < deadline, "the writer never started, so this control would prove nothing");

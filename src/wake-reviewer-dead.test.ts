@@ -11,6 +11,7 @@
  * Its own file, and not a block in `wake-reviewer-instance.test.ts`, because the Region of the row names this one.
  * Every fact read here is an injected seam or a stub on PATH.
  */
+import { TSX_IMPORT } from "./tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, chmodSync, existsSync, mkdirSync } from "node:fs";
@@ -143,7 +144,7 @@ test("#2465 THE TICK: a registered reviewer under an OPEN pr that herdr stops li
     const tick = (labels: string[]) => {
       writeFileSync(join(dir, "herdr"), `#!/bin/sh\ncase "$*" in\n  *'workspace list') printf '%s' '${workspaces(labels)}' ;;\n  *) : ;;\nesac\n`);
       chmodSync(join(dir, "herdr"), STUB_MODE);
-      return spawnSync(process.execPath, [TICK_ENTRY, `--ledger=${ledger}`], { encoding: "utf8",
+      return spawnSync(process.execPath, [...TSX_IMPORT, TICK_ENTRY, `--ledger=${ledger}`], { encoding: "utf8",
         env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}`, [SETTLE_TEST_CLOCK_ENV]: "0" } });
     };
 

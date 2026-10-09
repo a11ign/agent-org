@@ -21,6 +21,7 @@
  * `a11ign-corpus-snapshot.timer` failed the same hour in the quieter way: installed, `enabled`, and
  * `inactive` on a host up for nine days -- `enable` without `--now`, and nothing ever said so.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, mkdirSync, realpathSync, rmSync, writeFileSync, statSync,
@@ -2168,7 +2169,7 @@ test("#2332: END TO END -- `host:install` then `host:check --json` on a temp HOM
     const env = { PATH: `${bin}:${process.env.PATH}`, HOME: home, AGENT_ORG_HOST: hostFile };
     const entry = join(TOOL_ROOT, "src/host-units.ts");
     const run = (...args: string[]) => {
-      const done = spawnSync(process.execPath, [entry, ...args], { encoding: "utf8", env });
+      const done = spawnSync(process.execPath, [...TSX_IMPORT, entry, ...args], { encoding: "utf8", env });
       assert.notEqual(done.stdout, "", `host-units.ts ${args.join(" ")} wrote nothing; stderr: ${done.stderr}`);
       return done;
     };

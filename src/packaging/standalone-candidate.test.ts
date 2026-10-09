@@ -15,6 +15,7 @@
  * nobody wrote -- the failure is reachable, not described), and a host file whose primary IS a11ign's checkout gives a11ign's labels from that tree (the green path is not a
  * fixture agreeing with itself).
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -86,7 +87,7 @@ function readIn(src: string, host: string | undefined): Reading {
   const env = { ...process.env };
   delete env[HOST_ENV];
   if (host !== undefined) env[HOST_ENV] = host;
-  const child = spawnSync(process.execPath, ["--input-type=module", "-e", PRINT_LABELS, src], { env, cwd: scratch(), encoding: "utf8", timeout: CHILD_TIMEOUT_MS });
+  const child = spawnSync(process.execPath, [...TSX_IMPORT, "--input-type=module", "-e", PRINT_LABELS, src], { env, cwd: scratch(), encoding: "utf8", timeout: CHILD_TIMEOUT_MS });
   return { status: child.status, stdout: child.stdout, stderr: child.stderr };
 }
 

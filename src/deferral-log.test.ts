@@ -2,6 +2,7 @@
 //
 // POSITIVE CONTROLS: every "appends nothing" assertion below has a twin that DOES append (`endedDeferrals` is not vacuous), and a leaf that appended on every tick rather than on the end is
 // RED in "a key still deferred yields no line" and in "the same tick run twice" (measured by mutation, pasted in the pull request).
+import { TSX_IMPORT } from "./tsx-import.ts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -130,7 +131,7 @@ test("the QUIET tick (nothing offered, nothing queued) ends a deferral that went
     const wake = join(dirname(fileURLToPath(import.meta.url)), "wake.ts");
     writeFileSync(join(dir, "wake-deferred"), `${KEY}\t${T0}\n`);
     // No herdr is asked: the quiet exit comes before the roster is read, so this is the whole entry run for real against a scratch ledger directory.
-    const ran = spawnSync(process.execPath, [wake, `--ledger=${join(dir, "wake-ledger")}`], { input: "", encoding: "utf8", env: { ...process.env, HOME: dir } });
+    const ran = spawnSync(process.execPath, [...TSX_IMPORT, wake, `--ledger=${join(dir, "wake-ledger")}`], { input: "", encoding: "utf8", env: { ...process.env, HOME: dir } });
     assert.equal(ran.status, 0, ran.stderr);
     const [span, ...rest] = parseDeferralLog(logOf(dir));
     assert.deepEqual([span.key, span.startMs, span.how, rest.length], [KEY, T0, "gone", 0]);

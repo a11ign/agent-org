@@ -8,6 +8,7 @@
  *
  * Every tree is a real git worktree under one disposable base made here and removed in `after`; none of them can reach this checkout.
  */
+import { TSX_IMPORT } from "./tsx-import.ts";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -209,7 +210,7 @@ test("#3850: THE CLI is the run -- `--apply` removes MAX_REMOVALS_PER_RUN, pause
     for (const file of ["index", "HEAD", "logs/HEAD"]) execFileSync("touch", ["-d", ago(2), join(gitdir, file)]);
   }
   const started = Date.now();
-  const stdout = execFileSync(process.execPath, [PRUNE_CLI, primary.root, "--apply"],
+  const stdout = execFileSync(process.execPath, [...TSX_IMPORT, PRUNE_CLI, primary.root, "--apply"],
     { env: { ...sandboxGitEnv(), AGENT_ORG_HOST: process.env.AGENT_ORG_HOST }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   const elapsed = Date.now() - started;
   assert.match(stdout, new RegExp(`^removed ${MAX_REMOVALS_PER_RUN} worktree\\(s\\):`));

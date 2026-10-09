@@ -15,6 +15,7 @@
  * its reason, and a file that stops carrying it passes. Claims 1 and the constants test read a FIXTURE declaration, never the live one, which
  * gains a repository whenever the project does (a11ign#2990 landed between one pull request's green run and its queue run).
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -107,7 +108,7 @@ test("a declaration shaped like a11ign's, read through the reader, gives exactly
 test("the constants every importer reads are the declaration's values, read at import from the project the host file names", () => {
   withFixtureProject(SECOND_PROJECT, ({ hostPath }) => {
     // A child process, because the constants are read ONCE at import from the process's own project: a different project is a different process.
-    const read = spawnSync(process.execPath, ["--input-type=module", "-e",
+    const read = spawnSync(process.execPath, [...TSX_IMPORT, "--input-type=module", "-e",
       `const { REPO } = await import(${JSON.stringify(new URL("../project-identity.ts", import.meta.url).href)});`
       + `const { PROJECT_OWNER, PROJECT_NUMBER } = await import(${JSON.stringify(new URL("../board-snapshot-scope.ts", import.meta.url).href)});`
       + "console.log(JSON.stringify({ REPO, PROJECT_OWNER, PROJECT_NUMBER }));"],

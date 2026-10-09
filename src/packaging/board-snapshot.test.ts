@@ -7,6 +7,7 @@
  * deliberate: the mutation runs ONLY after a real snapshot has been written, never on the strength of one
  * that "would have existed anyway".
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -959,14 +960,14 @@ test("#1352 DONE-WHEN 1: each policy script, launched from a plain checkout, ref
     delete env.GH_TOKEN;
     delete env.GITHUB_TOKEN;
     for (const [script, code] of [["row-claim.ts", 2], ["row-file.ts", 1], ["pr-open.ts", 1]] as const) {
-      const fromPlain = spawnSync("node", [joinPath(scripts, script)], { cwd: plain, encoding: "utf8", env });
+      const fromPlain = spawnSync("node", [...TSX_IMPORT, joinPath(scripts, script)], { cwd: plain, encoding: "utf8", env });
       assert.equal(fromPlain.status, code, `${script} from a plain checkout: ${fromPlain.stderr}`);
       assert.match(fromPlain.stderr, new RegExp(`REFUSED -- launched from ${plain.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}, which is not a linked worktree`),
         `${script} names the checkout and the reason`);
-      const fromLinked = spawnSync("node", [joinPath(scripts, script)], { cwd: linked, encoding: "utf8", env });
+      const fromLinked = spawnSync("node", [...TSX_IMPORT, joinPath(scripts, script)], { cwd: linked, encoding: "utf8", env });
       assert.doesNotMatch(`${fromLinked.stdout}${fromLinked.stderr}`, /which is not a linked worktree/,
         `${script} from a linked worktree must not be refused for where it was launched`);
-      const overridden = spawnSync("node", [joinPath(scripts, script)], { cwd: plain, encoding: "utf8",
+      const overridden = spawnSync("node", [...TSX_IMPORT, joinPath(scripts, script)], { cwd: plain, encoding: "utf8",
         env: { ...env, [POLICY_LAUNCH_REASON_ENV]: "the override's own test" } });
       assert.doesNotMatch(overridden.stderr, /which is not a linked worktree/, `${script} with a reason is not refused`);
       assert.match(overridden.stderr, /proceeding anyway -- A11Y_POLICY_LAUNCH_REASON="the override's own test"/,

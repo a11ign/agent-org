@@ -10,6 +10,7 @@
  * a11ign/a11ign#3896: the same completion is also written to one standing COMMENT, because the control plane's token has no scopes and GitHub refuses it the
  * variable; the comment's `updated_at` is what a tokenless reader takes.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -59,7 +60,7 @@ function runTick({ gate, wakeExit = 0, ghFails = false as Fails, recordIsADirect
     const log = join(dir, "gh.log");
     writeFileSync(join(bin, "gh"), ghStub(log, record, ghFails));
     chmodSync(join(bin, "gh"), 0o755);
-    const ran = spawnSync(process.execPath, [`--import=${PRELOAD}`, join(src, "work-tick.ts"), `--ledger=${ledger}`], {
+    const ran = spawnSync(process.execPath, [...TSX_IMPORT, `--import=${PRELOAD}`, join(src, "work-tick.ts"), `--ledger=${ledger}`], {
       // (#4148) NO GH_CONFIG_DIR: with one the tick's snapshot refresh makes its own (read-only) `gh` probes and writes under that account's config, and this test counts the tick's WRITES.
       encoding: "utf8", cwd: dir, env: { ...process.env, PATH: bin, GH_CONFIG_DIR: "" },
     });

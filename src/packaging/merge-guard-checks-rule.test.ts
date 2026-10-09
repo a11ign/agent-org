@@ -3,6 +3,7 @@
  * `packages/agent-org/src/row-claim/checks-rule.mjs`. Four distinct states -- empty, missing, still running, failing --
  * each needing a different sentence and a different fix.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -368,7 +369,7 @@ test("#1101: this file's reported test count equals what it declares", () => {
   const { NODE_TEST_CONTEXT, ...env } = process.env;
   void NODE_TEST_CONTEXT;
   const run = spawnSync(process.execPath,
-    [join(dirname(createRequire(import.meta.url).resolve("tsx")), "cli.mjs"), "--test", "--test-reporter=tap", file],
+    [...TSX_IMPORT, join(dirname(createRequire(import.meta.url).resolve("tsx")), "cli.mjs"), "--test", "--test-reporter=tap", file],
     { encoding: "utf8", env });
   const reported = /^# tests (\d+)$/m.exec(`${run.stdout}${run.stderr}`);
   assert.ok(reported, `could not read a TAP test count from the run:\n${run.stdout.slice(0, 300)}${run.stderr.slice(0, 300)}`);

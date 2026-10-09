@@ -14,6 +14,7 @@
  *     rehearsed;
  *   - the import of the batch helper from the gate runs nothing and makes no cycle (condition 4 of the Region).
  */
+import { TSX_IMPORT } from "./tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -197,7 +198,7 @@ test("THE IMPORT: the batch helper's module is already in the claim's closure, l
   visit(resolve(here, "work-gate.ts"));
   assert.ok(closure.size > 10, "the closure walk found the gate's imports (positive control for the emptiness below)");
   assert.equal(closure.has(resolve(here, "row-claim.ts")), false, "the gate's closure never imports the claim: no cycle");
-  const loaded = spawnSync(process.execPath, ["--input-type=module", "-e",
+  const loaded = spawnSync(process.execPath, [...TSX_IMPORT, "--input-type=module", "-e",
     `const gate = await import(${JSON.stringify(resolve(here, "work-gate.ts"))}); process.stdout.write(typeof gate.readWithFirstWaveTogether + typeof gate.runBatch);`],
   { encoding: "utf8", timeout: 60_000, env: { ...process.env, GH_REPO: "", GH_TOKEN: "" } });
   assert.equal(loaded.status, 0, loaded.stderr);

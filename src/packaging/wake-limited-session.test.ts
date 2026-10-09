@@ -13,6 +13,7 @@
  *   escalation for a healthy session DOES go to gh ("... a healthy session's stuck cause"), and the tick DOES wake
  *   a healthy session and write its ledger line ("THE TICK ... a healthy").
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync, appendFileSync } from "node:fs";
@@ -340,7 +341,7 @@ function tick(transcript: string[], seed: Array<[number, string]> = []) {
     homeWith(dir, transcript);
     const ledger = join(dir, "wake-ledger");
     if (seed.length > 0) writeFileSync(ledger, seed.map(([t, k]) => `${t}\t${k}\n`).join(""));
-    const ran = spawnSync(process.execPath, [WAKE_ENTRY, `--ledger=${ledger}`], {
+    const ran = spawnSync(process.execPath, [...TSX_IMPORT, WAKE_ENTRY, `--ledger=${ledger}`], {
       input: `${JSON.stringify(orderTo("worker-capture"))}\n`, encoding: "utf8",
       // The host declaration is found through $AGENT_ORG_HOST, and HOME is a scratch dir with none beside it.
       env: { HOME: dir, PATH: dir, AGENT_ORG_HOST: process.env.AGENT_ORG_HOST, [SETTLE_TEST_CLOCK_ENV]: "0" } });

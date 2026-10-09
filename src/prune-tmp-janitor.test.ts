@@ -11,6 +11,7 @@
  * Every fixture lives under ONE base directory made at the top and removed in `after`, so this file leaves `/tmp` as it found it (#3848). No
  * test reads or writes the real `/tmp`; the one that needs `/proc` builds a fake `proc` directory, which is the shape `processStrings` reads.
  */
+import { TSX_IMPORT } from "./tsx-import.ts";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -222,7 +223,7 @@ test("#3868: the CLI prints the count on its first line", () => {
   fixture(root, "watch-cli-cnt1", { hoursOld: 6 });
   mkdirSync(join(root, "other"));
   const env = { ...process.env, AGENT_ORG_HOST: HOST };
-  const listed = spawnSync(process.execPath, [CLI, `--tmp=${root}`, "--fixtures-only"], { encoding: "utf8", env });
+  const listed = spawnSync(process.execPath, [...TSX_IMPORT, CLI, `--tmp=${root}`, "--fixtures-only"], { encoding: "utf8", env });
   assert.equal(listed.status, 0, listed.stderr);
   assert.equal(listed.stdout.split("\n")[0], "tmp-entries: 2");
 });
@@ -315,11 +316,11 @@ test("#3849: the CLI over a fixture root, dry by default and removing under --ap
   const root = fresh("cli");
   const dir = fixture(root, "watch-cli-cli1", { hoursOld: 6 });
   const env = { ...process.env, AGENT_ORG_HOST: HOST };
-  const listed = spawnSync(process.execPath, [CLI, `--tmp=${root}`, "--fixtures-only"], { encoding: "utf8", env });
+  const listed = spawnSync(process.execPath, [...TSX_IMPORT, CLI, `--tmp=${root}`, "--fixtures-only"], { encoding: "utf8", env });
   assert.equal(listed.status, 0, listed.stderr);
   assert.match(listed.stdout, /WOULD REMOVE 1 of 1/);
   assert.ok(existsSync(dir));
-  const applied = spawnSync(process.execPath, [CLI, `--tmp=${root}`, "--fixtures-only", "--apply"], { encoding: "utf8", env });
+  const applied = spawnSync(process.execPath, [...TSX_IMPORT, CLI, `--tmp=${root}`, "--fixtures-only", "--apply"], { encoding: "utf8", env });
   assert.equal(applied.status, 0, applied.stderr);
   assert.match(applied.stdout, /removed 1 of 1/);
   assert.equal(existsSync(dir), false);

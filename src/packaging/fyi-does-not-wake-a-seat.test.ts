@@ -11,6 +11,7 @@
  * every "does not wake" test below), a `reviewer-<n>` still gets an undeclared re-review request at once, and the same FYI that is held with
  * nothing to ride DOES arrive when a real order comes.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, chmodSync, existsSync } from "node:fs";
@@ -207,7 +208,7 @@ function tick({ queued, stdin = "" }: { queued: Queued[]; stdin?: string }) {
     writeFileSync(stub, HERDR);
     chmodSync(stub, STUB_MODE);
     writeFileSync(handoffQueuePath(ledger), queued.map((h) => JSON.stringify(h)).join("\n") + (queued.length ? "\n" : ""));
-    const ran = spawnSync(process.execPath, [WAKE_ENTRY, `--ledger=${ledger}`], { input: stdin, encoding: "utf8",
+    const ran = spawnSync(process.execPath, [...TSX_IMPORT, WAKE_ENTRY, `--ledger=${ledger}`], { input: stdin, encoding: "utf8",
       env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}`, [SETTLE_TEST_CLOCK_ENV]: "0" } });
     const log = existsSync(`${stub}.log`) ? readFileSync(`${stub}.log`, "utf8") : "";
     const calls = log.split("\x1e").filter(Boolean).map((record) => record.split("\x1f").filter((word, at, all) => at < all.length - 1 || word !== ""));

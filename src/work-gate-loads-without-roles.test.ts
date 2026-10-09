@@ -11,6 +11,7 @@
  * Direction one leaves the roles directory out and expects the `roles.dir` refusal; direction two is the SAME copy plus the smallest `sessions.json` `arm-pr.ts` accepts and
  * expects a clean load, which is the control for the first: a copy that failed for any other reason would fail here too.
  */
+import { TSX_IMPORT } from "./tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -35,7 +36,7 @@ function loadGate({ roster }: { roster?: object }) {
       mkdirSync(join(root, ".agent-org/roles"), { recursive: true });
       writeFileSync(join(root, ".agent-org/roles/sessions.json"), JSON.stringify(roster));
     }
-    const run = spawnSync(process.execPath, ["--input-type=module", "-e",
+    const run = spawnSync(process.execPath, [...TSX_IMPORT, "--input-type=module", "-e",
       `import(${JSON.stringify(pathToFileURL(copy.entry).href)}).then(m => { if (typeof m.decide !== 'function') throw new Error('decide missing'); })`],
     { encoding: "utf8", cwd: root, env: { ...process.env, ...copy.env } });
     return { status: run.status, stderr: run.stderr };

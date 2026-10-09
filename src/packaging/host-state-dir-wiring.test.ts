@@ -19,6 +19,7 @@
  * THE FOUR ARE READ BY IMPORTING THEM in a child process whose `AGENT_ORG_HOST` names a fixture, because three of them are constants
  * computed at import and a test that re-derived them would be reading its own copy of the derivation.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -71,7 +72,7 @@ function readFourUnder(hostJson: string | null) {
       writeFileSync(file, hostJson.replace(FIXTURE_CHECKOUT, REAL_CHECKOUT));
       env.AGENT_ORG_HOST = file;
     }
-    return spawnSync(process.execPath, ["--input-type=module", "-e", READER], { env: env as NodeJS.ProcessEnv, encoding: "utf8" });
+    return spawnSync(process.execPath, [...TSX_IMPORT, "--input-type=module", "-e", READER], { env: env as NodeJS.ProcessEnv, encoding: "utf8" });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

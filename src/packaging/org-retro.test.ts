@@ -10,6 +10,7 @@
  * counted from `a11ign-work-tick.service`'s journal in #2845). It must report a stall AND a non-zero idle-minute figure; every "not offered / not counted"
  * below is only worth anything because that window IS read as a stall through the same entry.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -508,7 +509,7 @@ test("a manual run of the CLI reads the previous line and writes nothing", () =>
   // PATH is empty so `gh`, `journalctl` and `git` cannot be found: every read is refused, which is `unknown`, and nothing real is reached.
   // The child finds the project the way this file does: through the host file, which a stripped environment would otherwise lose.
   const host = process.env[HOST_ENV] === undefined ? {} : { [HOST_ENV]: process.env[HOST_ENV] };
-  const out = execFileSync(process.execPath, [new URL("../org-retro.ts", import.meta.url).pathname, "--now=2026-10-02T00:00:00Z"],
+  const out = execFileSync(process.execPath, [...TSX_IMPORT, new URL("../org-retro.ts", import.meta.url).pathname, "--now=2026-10-02T00:00:00Z"],
     { encoding: "utf8", env: { HOME: home, PATH: "", ...host } });
   assert.match(out, /Against the previous reading, 2026-10-01:/, "it compared against the line");
   assert.equal(readFileSync(path, "utf8"), readingsText(YESTERDAY), "and wrote nothing");

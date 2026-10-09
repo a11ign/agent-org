@@ -31,6 +31,7 @@
  * total, and the two that do count (the `rv-*` blind-spot control) compare two sets over the SAME fixture
  * in the same moment.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
@@ -198,7 +199,7 @@ test("REFUSED: a path a REAL running process holds open, read through the REAL /
   const other = scratchpad(root, "1284648c-2242-4e93-b448-b33d52294c79");
   const file = join(held, "scratchpad", "notes.txt");
   const child = spawn(process.execPath,
-    ["-e", `const fs=require("node:fs");fs.openSync(${JSON.stringify(file)},"r");setTimeout(()=>{},60000)`],
+    [...TSX_IMPORT, "-e", `const fs=require("node:fs");fs.openSync(${JSON.stringify(file)},"r");setTimeout(()=>{},60000)`],
     { stdio: "ignore" });
   try {
     waitFor(() => heldEntries([held], processStrings()) !== "unknown"
@@ -451,13 +452,13 @@ test("the CLI defaults to the listing, and only --apply removes -- the argv path
   for (const path of [dead, open]) age(path, 100);
   const env = { ...process.env, PATH: `${fakeGh(root, '[{"number":2049}]')}:${process.env.PATH}` };
 
-  const listed = spawnSync(process.execPath, [CLI, `--tmp=${root}`], { encoding: "utf8", env });
+  const listed = spawnSync(process.execPath, [...TSX_IMPORT, CLI, `--tmp=${root}`], { encoding: "utf8", env });
   assert.equal(listed.status, 0, listed.stderr);
   assert.match(listed.stdout, /WOULD REMOVE 1 of 2 classified path\(s\)/);
   assert.match(listed.stdout, new RegExp(`${open}\\s+\\[review\\] -- pull request #2049 is OPEN`));
   assert.ok(existsSync(dead), "the default run must not have removed anything");
 
-  const removed = spawnSync(process.execPath, [CLI, `--tmp=${root}`, "--apply"], { encoding: "utf8", env });
+  const removed = spawnSync(process.execPath, [...TSX_IMPORT, CLI, `--tmp=${root}`, "--apply"], { encoding: "utf8", env });
   assert.equal(removed.status, 0, removed.stderr);
   assert.match(removed.stdout, /removed 1 of 2 classified path\(s\)/);
   assert.equal(existsSync(dead), false);
@@ -466,10 +467,10 @@ test("the CLI defaults to the listing, and only --apply removes -- the argv path
 
 test("the CLI refuses a flag it does not read, and a --tmp that is not there", () => {
   const root = makeRoot();
-  const typo = spawnSync(process.execPath, [CLI, `--tmp=${root}`, "--dry-run"], { encoding: "utf8" });
+  const typo = spawnSync(process.execPath, [...TSX_IMPORT, CLI, `--tmp=${root}`, "--dry-run"], { encoding: "utf8" });
   assert.notEqual(typo.status, 0, "a flag this command ignores must not run the default and report success");
   assert.match(typo.stderr + typo.stdout, /--dry-run/);
-  const missing = spawnSync(process.execPath, [CLI, `--tmp=${join(root, "nope")}`], { encoding: "utf8" });
+  const missing = spawnSync(process.execPath, [...TSX_IMPORT, CLI, `--tmp=${join(root, "nope")}`], { encoding: "utf8" });
   assert.notEqual(missing.status, 0);
   assert.match(missing.stderr, /does not exist -- nothing was read or written/);
 });
@@ -479,7 +480,7 @@ function waitFor(ready: () => boolean, timeoutMs = 10_000): void {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (ready()) return;
-    spawnSync(process.execPath, ["-e", "setTimeout(()=>{},50)"]);
+    spawnSync(process.execPath, [...TSX_IMPORT, "-e", "setTimeout(()=>{},50)"]);
   }
   assert.fail("the child process never appeared in /proc holding its fd");
 }

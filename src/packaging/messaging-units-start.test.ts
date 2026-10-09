@@ -13,6 +13,7 @@
  *
  * `toolForm` is rendered in a child (see `RENDER`) so this file does not import `host-units.ts`, which would charge it with a `history` requirement it has no use for.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -98,7 +99,7 @@ function renderedToolForm(name: string, host: Scratch, tool: string): string {
   // A script FILE and not `-e`: the tool's modules guard their CLI half on `process.argv[1]` being a path, which under `-e` is the first argument.
   const script = join(dirname(host.project), "render.mjs");
   writeFileSync(script, RENDER);
-  const run = spawnSync(process.execPath, [script, ...modules, name, host.hostFile, host.project, tool],
+  const run = spawnSync(process.execPath, [...TSX_IMPORT, script, ...modules, name, host.hostFile, host.project, tool],
     { env: { AGENT_ORG_HOST: host.hostFile }, encoding: "utf8", timeout: CHILD_TIMEOUT_MS });
   assert.equal(run.status, 0, `rendering ${name} in tool form failed: ${run.stderr}`);
   return run.stdout;

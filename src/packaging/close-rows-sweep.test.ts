@@ -6,6 +6,7 @@
  * close-rows-for-merged-pr.ts, never re-derived) already has its own tests -- this file does not repeat
  * them, only proves the sweep wires to the real thing rather than a copy.
  */
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -90,7 +91,7 @@ test("ACCEPTANCE (#394, criterion 2): the sweep is idempotent -- a second closur
 test("close-rows-sweep.ts refuses an unknown flag rather than silently ignoring it", () => {
   let threw = false;
   try {
-    execFileSync("node", [SCRIPT, "--bogus"], { encoding: "utf8", stdio: "pipe" });
+    execFileSync("node", [...TSX_IMPORT, SCRIPT, "--bogus"], { encoding: "utf8", stdio: "pipe" });
   } catch (cause) {
     threw = true;
     const err = cause as { status?: number, stderr?: string };
@@ -105,7 +106,7 @@ test("close-rows-sweep.ts refuses to run without GITHUB_REPOSITORY -- CANNOT ASK
   try {
     const env = { ...process.env };
     delete env.GITHUB_REPOSITORY;
-    execFileSync("node", [SCRIPT], { encoding: "utf8", stdio: "pipe", env });
+    execFileSync("node", [...TSX_IMPORT, SCRIPT], { encoding: "utf8", stdio: "pipe", env });
   } catch (cause) {
     threw = true;
     const err = cause as { status?: number, stderr?: string };

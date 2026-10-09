@@ -5,6 +5,7 @@
 // Cases (1)-(4) inject git and read the recorded calls, so a mutant of the selection is killed by the list it is given; (7) is the one real-git case, because a
 // fake answers any argv and a flag git rejects (exit 129) would pass a suite that never ran it. The unit-template cases (5) and (6) are in
 // `packaging/host-units.test.ts`, which is where the rendered units are already compared byte for byte.
+import { TSX_IMPORT } from "./tsx-import.ts";
 import { PROJECT_ROOT } from "./packaging/host-units-project.ts"; // FIRST: makes the tool a project, which `update-tool.ts` resolves at import.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -172,7 +173,7 @@ test("#3443 (7): a release commit that is NOT an ancestor of the branch, tagged,
 
 test("#3443: the listener's journal opens with the agent-org version it loaded, and a project with no `messaging` key still prints its OFF line after it", () => {
   const listener = fileURLToPath(new URL("./messaging/listen.mjs", import.meta.url));
-  const ran = spawnSync(process.execPath, [listener], { encoding: "utf8", cwd: PROJECT_ROOT, env: { ...process.env, HOME: realpathSync(tmpdir()) } });
+  const ran = spawnSync(process.execPath, [...TSX_IMPORT, listener], { encoding: "utf8", cwd: PROJECT_ROOT, env: { ...process.env, HOME: realpathSync(tmpdir()) } });
   assert.equal(ran.status, 0, `${ran.stdout}${ran.stderr}`);
   const [first, second] = ran.stdout.split("\n");
   assert.match(first, /^agent-org (v\d+\.\d+\.\d+|\(at no release tag: \w+\)|\(version unreadable: .+\))$/, "the version is the first line");

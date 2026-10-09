@@ -40,6 +40,7 @@
 // Wiring each of the ~30 files to name the account on ITS OWN error path (question 1's "report on the
 // refusal path" answer, already done for `work-gate.ts`'s `CANNOT ASK`) is real, sizeable follow-up work
 // this row does not attempt, and is reported as such rather than claimed done.
+import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -294,7 +295,7 @@ test("#1984: an unreadable host declaration degrades to UNKNOWN rather than cras
     const hostFile = join(dir, "host.json");
     // A primary the project reader accepts and none of the fields (`home`, `gh`, ...) the host reader requires.
     writeFileSync(hostFile, JSON.stringify({ schema: 1, primary: "a11ign", projects: [{ id: "a11ign", checkout: REPO }] }));
-    const out = execFileSync(process.execPath, ["--input-type=module", "-e", script], {
+    const out = execFileSync(process.execPath, [...TSX_IMPORT, "--input-type=module", "-e", script], {
       encoding: "utf8",
       env: { ...process.env, AGENT_ORG_HOST: hostFile },
     });
