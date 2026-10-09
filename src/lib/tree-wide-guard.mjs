@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// COPIED FROM `packages/guards/src/tree-wide-guard.mjs` at 598e883cc (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
+// COPIED FROM `packages/guards/src/tree-wide-guard.ts` at 598e883cc (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
 // its package. The product keeps its original and the two can drift, with no cross-repository pin: `agent-org-outward-edges.test.ts` compares them.
-// CHANGED FROM THE ORIGINAL: NOTHING but this header.
+// CHANGED FROM THE ORIGINAL, 9 NAMED LINES: the original is TypeScript since a11ign/a11ign#4273 and this copy stays plain JS under `// @ts-check`, so each of the nine is a TYPE the original writes inline and this copy writes as JSDoc or leaves to inference: `tsModule`'s declaration (1); `typescriptModule`'s signature (1) and its return cast (1); `declareTreeWideGuard`'s signature (1); `lsFilesCache`'s declaration (1); `defaultGitLsFiles`'s declaration (1); the `WalkedFile` type, an exported `type` in the original and a `@typedef` here (1); `walkTree`'s signature (1); and `scriptKindOf`'s declaration (1).
 // ==== end of copy header ====
 // @ts-check
 // THE TREE-WIDE-GUARD MARKER -- #716/#704, ceo's ruling 2026-09-09.
