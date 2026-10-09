@@ -37,6 +37,8 @@ import { readdirSync, readFileSync, mkdirSync, rmSync, existsSync, realpathSync,
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
+import { LATEST } from "./lib/release-tag.mjs";
+import { installPendingFindings } from "./update-tool.ts";
 import { localImports, stripComments } from "./lib/local-import-closure.mjs";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { agreement, agreementReport, memoFile, readFacts } from "./lib/tool-version-agreement.mjs";
@@ -2187,6 +2189,19 @@ export function missingUnitPrograms(deps: ShippedDeps & {
 }
 
 /**
+ * THE INSTALL THE HELD CHECKOUT IS WAITING FOR (a11ign/a11ign#4392): `host-install-pending`, one finding per installed unit (or the launcher) that runs a program the release
+ * `update-tool` would move to lacks. The question lives in `update-tool.ts`, which asks it before every move, so the hold and this report cannot disagree; it is in `hostUnitDrift`
+ * so the gate's `hostDriftOrders` wakes `orchestrator` with the unit names from a tick that still runs. A host naming no `tool` has no checkout to hold, and reports nothing.
+ * @param {ShippedDeps & { installedDir?: string, run?: (args: string[]) => string }} [deps] @returns {Finding[]}
+ */
+export function hostInstallPending(deps: ShippedDeps & { installedDir?: string; run?: (args: string[]) => string } = {}): Finding[] {
+  const host = deps.host ?? homeHostConfig();
+  if (host.tool === undefined) return [];
+  return installPendingFindings({ tool: host.tool, toolVersion: host.toolVersion ?? LATEST, binDir: host.binDir, prefix: unitPrefix(deps),
+    installedDir: deps.installedDir ?? INSTALLED_DIR, read: deps.read, readDir: deps.readDir, run: deps.run });
+}
+
+/**
  * THREE STATES AND NOT A BOOLEAN, for the same reason `unitState.current` is nullable: "differs from the
  * repository" and "the repository does not ship this at all" are different facts with different remedies,
  * and an orphan answering `false` to "does it match?" would print the stale sentence at a unit that has
@@ -2447,7 +2462,7 @@ Parameters<typeof hostIdentityDrift>[0] & Parameters<typeof identityDrift>[0] & 
   // posture is nobody's business either -- and a laptop told "ORG IS IN AUTO MODE" teaches its owner to
   // ignore this command, which would lose the timer finding along with it.
   return [...unclassifiedInLiveTree(deps), ...unitDrift(shippedUnitNames(deps).map((u) => unitState(u, deps))),
-    ...orphanedUnits(deps), ...supersededHostScripts(deps), ...missingUnitPrograms(deps), ...unitsWithoutHostVariable(deps),
+    ...orphanedUnits(deps), ...supersededHostScripts(deps), ...missingUnitPrograms(deps), ...hostInstallPending(deps), ...unitsWithoutHostVariable(deps),
     ...hostIdentityDrift(deps), ...reviewerDoorDrift(deps), ...identityDrift(deps), ...humanLoginOnHost(deps), ...codexTrustDrift(deps), ...permissionModeDrift(deps), ...modelEffortDrift(deps), ...pnpmDrift({ repoRoot: REPO_ROOT, ...deps.pnpm })];
 }
 

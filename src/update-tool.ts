@@ -34,11 +34,19 @@
 // (`LONG_RUNNING_TEMPLATES`: the chairman listener) with `systemctl --user try-restart`, which does nothing to a unit that is not running. It is done HERE, in the
 // work-tick's `ExecStartPre`, because that is the one place that knows the checkout moved; a path unit would have been a unit class of its own.
 //
+// A MOVE THAT WOULD DELETE A PROGRAM AN INSTALLED UNIT RUNS IS HELD, NOT MADE (a11ign/a11ign#4392). On 2026-10-09 agent-org#435 renamed `work-tick.mjs` and `update-tool.mjs`;
+// this command moved the checkout under the INSTALLED `a11ign-work-tick.service`, which still named them, and the tick crashed (exit 70). The tick is the only thing that
+// wakes `orchestrator`, whose job is to run `host:install`, so the break kept the one session that could mend it asleep. The programs are read off the installed units
+// and the installed `agent-org` launcher (a copy that `exec`s `src/bin.mjs`: a rename of THAT breaks the command for every agent, not one unit); a tracked file at HEAD
+// that the release tag does not have is "lost by the move". With any lost the checkout STAYS, `host-units.ts` reports `host-install-pending` for the holders (the
+// gate's `hostDriftOrders` wakes `orchestrator` with their names), and once the install has rewritten them to name programs the tag HAS the same check passes and the
+// checkout advances. A program already missing at HEAD is not "lost": the move cannot make it worse, and holding for it would hold for ever.
+//
 // NO INSTALL AND NO BUILD, unlike `primary:update`: the tool imports no third-party module (ADR 0040, decision 1) and its `.mjs` files
 // run as they are, so there is nothing to install and nothing to compile.
 import { execFileSync } from "node:child_process";
-import { realpathSync } from "node:fs";
-import { dirname } from "node:path";
+import { readdirSync, readFileSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { refuseUnknownFlags } from "./lib/cli-flags.mjs";
 import { LATEST, chooseReleaseTag, isReleaseTag } from "./lib/release-tag.mjs";
@@ -59,6 +67,44 @@ function dirtyPaths(run: (args: string[]) => string): string[] {
 /** @param {(args: string[]) => string} run @returns {string[]} */
 const tagNames = (run: (args: string[]) => string): string[] => run(["tag", "--list"]).split("\n").filter((name) => name !== "");
 
+/** @param {LostPrograms} lost @param {{ tag: string, tool: string }} where @returns {{ unit: string, problem: string, detail: string }} */
+function hostInstallPendingFinding({ holder, programs }: LostPrograms, { tag, tool }: { tag: string; tool: string }): { unit: string; problem: string; detail: string } {
+  const fresh = `${tool}-install-${tag}`;
+  const loader = `${tool}/node_modules/tsx/dist/loader.mjs`;
+  return { unit: holder, problem: "host-install-pending",
+    detail: `it runs ${programs.join(", ")}, which release ${tag} deletes or renames, so \`update-tool\` HOLDS the tool's checkout (${tool}) where it is and the unit still works. `
+      + "THE CHECKOUT MAY NOT BE ADVANCED FIRST: that is the tick crash of 2026-10-09. Install from a fresh tree at the release, then advance, as ONE command line: "
+      + `\`git -C ${tool} worktree add --detach ${fresh} refs/tags/${tag} && (cd ${fresh} && node --import ${loader} src/host-units.ts --install) && (cd ${tool} && node --import tsx src/update-tool.ts)\`, `
+      + `then \`git -C ${tool} worktree remove --force ${fresh}\`. Post whether a REMOVED line appeared. This finding clears when the installed units and launcher name programs the release has.` };
+}
+
+/**
+ * THE INSTALL THE HELD CHECKOUT IS WAITING FOR, as `host:check` findings (`host-units.ts` adds them to `hostUnitDrift`, so the gate's `hostDriftOrders` wakes `orchestrator` with the
+ * unit names from a tick that still runs). The SAME `programsLostByMove` the move asks, of the release it would pick, so the hold and the report cannot disagree. It clears itself:
+ * once the install has rewritten the holders to name programs the release HAS, nothing is lost and the next update advances.
+ *
+ * THE REMEDY NAMES A FRESH TREE AT THE RELEASE because the installer must render from the NEW units and the checkout is the OLD tree; advancing first is the incident. The install and the
+ * advance are ONE command line, the second only if the first succeeded, to keep the window in which the units name programs the old tree lacks to seconds with a session awake.
+ *
+ * `[]` ALSO WHEN IT COULD NOT LOOK (a checkout git cannot read), SAID on stderr: this finding is raised on evidence, and its absence is not a clean reading.
+ * @param {{ tool: string, toolVersion: string, binDir: string, prefix: string, installedDir: string, read?: typeof readFileSync, readDir?: typeof readdirSync, run?: (args: string[]) => string }} where
+ * @returns {{ unit: string, problem: string, detail: string }[]}
+ */
+export function installPendingFindings({ tool, toolVersion, binDir, prefix, installedDir, read, readDir, run = gitIn(tool) }: {
+  tool: string; toolVersion: string; binDir: string; prefix: string; installedDir: string;
+  read?: typeof readFileSync; readDir?: typeof readdirSync; run?: (args: string[]) => string;
+}): { unit: string; problem: string; detail: string }[] {
+  try {
+    const tag = chooseReleaseTag(tagNames(run), toolVersion);
+    if (tag === null) return [];
+    const holders = readProgramHolders({ installedDir, prefix, launcher: join(binDir, "agent-org") }, { read, readDir });
+    return programsLostByMove({ tag, holders, root: tool, run }).map((lost) => hostInstallPendingFinding(lost, { tag, tool }));
+  } catch (err) {
+    process.stderr.write(`CANNOT TELL whether a host install is pending (${String((err as any)?.message ?? err).split("\n")[0]}).\n`);
+    return [];
+  }
+}
+
 /**
  * WHY NO TAG WAS CHOSEN, naming the pin or the missing release, and saying that nothing moved and that `origin/main` was not used instead.
  * @param {string} root @param {string} toolVersion @param {string[]} tags
@@ -70,14 +116,82 @@ function noTagRefusal(root: string, toolVersion: string, tags: string[]) {
   return new Error(`${root} was NOT moved: ${why}. It stays where it is and does NOT fall back to origin/main: the host runs a release, or the last one it ran.`);
 }
 
+/** A file a command line can run: what the installed units and the launcher name. */
+const PROGRAM_FILE = /\.(?:[cm]?[jt]s|sh)$/;
+
+/** Where a relative path in a unit resolves when the unit names no `WorkingDirectory`: nowhere under a checkout. */
+const NO_DIRECTORY = "/";
+
+/** A unit file or the launcher, with the text the service manager or the shell will read. */
+export type ProgramHolder = { holder: string; text: string };
+
+/**
+ * The tracked files, relative to `root`, that a unit's `Exec*=` lines or the launcher's `exec` line name. Read by SHAPE (a token ending in a source extension, resolved against
+ * the unit's last `WorkingDirectory=`), because this file must not import `host-units.ts` (see `longRunningUnits`); `node_modules/...` and the like are named by the same
+ * tokens and are dropped later by `programsLostByMove`, which asks git rather than the disk.
+ * @param {string} text @param {string} root @returns {string[]}
+ */
+export function programsNamedBy(text: string, root: string): string[] {
+  const directory = [...text.matchAll(/^WorkingDirectory=-?(.*)$/gm)].map((m) => m[1].trim()).at(-1) || NO_DIRECTORY;
+  const commands = [...text.matchAll(/^(?:Exec[A-Za-z]*=|exec\s)(.*)$/gm)].map((m) => m[1]);
+  const named = commands.flatMap((command) => command.split(/[\s=]+/))
+    .map((token) => token.replace(/^["']|["']$/g, ""))
+    .filter((token) => PROGRAM_FILE.test(token))
+    .map((token) => relative(root, resolve(directory, token)));
+  return [...new Set(named.filter((path) => path !== "" && !path.startsWith("..") && !isAbsolute(path)))];
+}
+
+/**
+ * Every installed service of the project's prefix and the installed launcher, as text. A launcher that is not there is skipped (a host without one has nothing to break);
+ * any other read failure is thrown, so the caller says it could not look rather than reading "no holders" as "nothing at risk".
+ * @param {{ installedDir: string, prefix: string, launcher: string }} where
+ * @param {{ read?: typeof readFileSync, readDir?: typeof readdirSync }} [deps] @returns {ProgramHolder[]}
+ */
+export function readProgramHolders({ installedDir, prefix, launcher }: { installedDir: string; prefix: string; launcher: string },
+  { read = readFileSync, readDir = readdirSync }: { read?: typeof readFileSync; readDir?: typeof readdirSync } = {}): ProgramHolder[] {
+  const units = (readDir(installedDir) as string[]).map(String).filter((name) => name.startsWith(prefix) && name.endsWith(".service"))
+    .map((name) => ({ holder: name, text: String(read(join(installedDir, name), "utf8")) }));
+  try {
+    return [...units, { holder: "the agent-org launcher", text: String(read(launcher, "utf8")) }];
+  } catch (err) {
+    if ((err as any)?.code === "ENOENT") return units;
+    throw new Error(`cannot read the installed launcher ${launcher}`, { cause: err });
+  }
+}
+
+/** What a move to `tag` would take from one holder: the programs it runs that HEAD has and the tag does not. */
+export type LostPrograms = { holder: string; programs: string[] };
+
+/**
+ * The programs the holders run that the tracked tree has at HEAD and `tag` lacks. Git's tree, not the disk: an untracked `node_modules/tsx/...` is named by the same unit
+ * line and is not the release's to keep. Empty when the move takes nothing a holder runs, which includes a program that is already absent (nothing left to lose).
+ * @param {{ tag: string, holders: ProgramHolder[], root: string, run: (args: string[]) => string }} move @returns {LostPrograms[]}
+ */
+export function programsLostByMove({ tag, holders, root, run }: { tag: string; holders: ProgramHolder[]; root: string; run: (args: string[]) => string }): LostPrograms[] {
+  const filesAt = (ref: string) => new Set(run(["ls-tree", "-r", "--name-only", ref]).split("\n"));
+  const [now, then] = [filesAt("HEAD"), filesAt(`refs/tags/${tag}`)];
+  return holders
+    .map(({ holder, text }) => ({ holder, programs: programsNamedBy(text, root).filter((path) => now.has(path) && !then.has(path)) }))
+    .filter(({ programs }) => programs.length > 0);
+}
+
+/** @param {string} tag @param {string} sha @param {LostPrograms[]} lost @returns {string} */
+function heldRefusal(tag: string, sha: string, lost: LostPrograms[]): string {
+  const holders = lost.map(({ holder, programs }) => `${holder} runs ${programs.join(", ")}`).join("; ");
+  return `agent-org HELD at ${sha}, NOT moved to ${tag} (host-install-pending): the move deletes or renames programs the installed units run -- ${holders}. `
+    + "`host:check` reports host-install-pending and the gate wakes the installer; the checkout advances on the next update once the install has run.";
+}
+
 /**
  * Move the tool's checkout to the release `toolVersion` names, and say which: `agent-org vX.Y.Z (<sha>)`.
  * @param {string} [root] the tool's checkout; the one holding this file when left to default
  * @param {(args: string[]) => string} [run] git, run in `root`
  * @param {string} [toolVersion] `"latest"`, or the release tag to hold the host at (`host.json`)
+ * @param {(tag: string) => LostPrograms[]} [lostByMove] what moving to `tag` would take from the installed units; none by default, so a caller that cannot read them moves as before
  * @returns {string}
  */
-export function updateTool(root: string = gitIn(HERE)(["rev-parse", "--show-toplevel"]).trim(), run: (args: string[]) => string = gitIn(root), toolVersion: string = LATEST): string {
+export function updateTool(root: string = gitIn(HERE)(["rev-parse", "--show-toplevel"]).trim(), run: (args: string[]) => string = gitIn(root), toolVersion: string = LATEST,
+  lostByMove: (tag: string) => LostPrograms[] = () => []): string {
   if (!isPrimaryWorktree(root)) {
     throw new Error(`${root} is not a primary checkout (its .git is a linked worktree's, not a real directory) -- the tool's `
       + "checkout is a plain clone, and detaching a linked worktree would take it off the branch it is for.");
@@ -93,6 +207,8 @@ export function updateTool(root: string = gitIn(HERE)(["rev-parse", "--show-topl
   const tags = tagNames(run);
   const tag = chooseReleaseTag(tags, toolVersion);
   if (tag === null) throw noTagRefusal(root, toolVersion, tags);
+  const lost = lostByMove(tag);
+  if (lost.length > 0) return heldRefusal(tag, run(["rev-parse", "HEAD"]).trim(), lost);
   run(["checkout", "--detach", `refs/tags/${tag}`, "--quiet"]);
   return `agent-org ${tag} (${run(["rev-parse", "HEAD"]).trim()})`;
 }
@@ -110,6 +226,21 @@ async function longRunningUnits(): Promise<string[]> {
     return LONG_RUNNING_TEMPLATES.map((template) => renderedName(template, prefix));
   } catch (err) {
     console.error(`CANNOT NAME THE LONG-RUNNING UNITS (${String((err as any)?.message ?? err).split("\n")[0]}): none will be restarted if the checkout moves.`);
+    return [];
+  }
+}
+
+/**
+ * The installed units and launcher, read BEFORE the checkout moves (for `longRunningUnits`' reason). A host that cannot name them is TOLD so and moves as it always did:
+ * holding on a read that failed would hold for ever.
+ * @returns {Promise<ProgramHolder[]>}
+ */
+async function installedProgramHolders(): Promise<ProgramHolder[]> {
+  try {
+    const { homeHostConfig, readUnitsDeclaration } = await import("./host-config.ts");
+    return readProgramHolders({ installedDir: `${process.env.HOME ?? ""}/.config/systemd/user`, prefix: readUnitsDeclaration().prefix, launcher: join(homeHostConfig().binDir, "agent-org") });
+  } catch (err) {
+    console.error(`CANNOT NAME THE INSTALLED PROGRAMS (${String((err as any)?.message ?? err).split("\n")[0]}): the checkout moves without checking them.`);
     return [];
   }
 }
@@ -145,6 +276,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
   const before = run(["rev-parse", "HEAD"]).trim();
   const { homeHostConfig } = await import("./host-config.ts");
   const restartable = await longRunningUnits();
-  console.log(updateTool(root, run, homeHostConfig().toolVersion));
+  const holders = await installedProgramHolders();
+  console.log(updateTool(root, run, homeHostConfig().toolVersion, (tag) => programsLostByMove({ tag, holders, root, run })));
   if (run(["rev-parse", "HEAD"]).trim() !== before) restartLongRunning(restartable);
 }
