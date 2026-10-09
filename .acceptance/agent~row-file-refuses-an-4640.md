@@ -2,7 +2,9 @@
 
 Evidence (measured on this branch): the six tests pass. Mutations, each breaking only its own tests: the classifier never fires (cases 1 and 6 fail), data never excuses a wait (case 2 fails), a bare `#n` counts as a row's outcome (case 3 fails), and the call removed from `createIssue` (case 6 fails); each file restored byte-identical. `row-file` run for real on three fixture bodies refused each with the split offered (exit 1, nothing filed), and on the split version filed a11ign/a11ign#4643 as `backlog` with `out-of-release`, closed straight after as not planned. The 9 failures in `src/packaging/row-file*.test.ts` read the same on an unmodified checkout.
 
-Acceptance: `cd ~/repos/agent-org && npx rstest run --config scripts/rstest/rstest.config.ts src/unsplit-done-when.test.ts`
+Acceptance: `npx rstest run --config scripts/rstest/rstest.config.ts src/unsplit-done-when.test.ts`
+
+Mutation: the classifier never fires (cases 1 and 6 red), data never excuses a wait (case 2 red), a bare `#n` counts as another row's outcome (case 3 red), the call removed from `createIssue` (case 6 red); each restored byte-identical and the six green again.
 
 Closes a11ign/a11ign#4640
 
