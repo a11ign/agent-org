@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { updatePrimary, lockfileMoved, readPrimaryDrift } from "../update-primary.mjs";
 import { changedFiles } from "../lib/changed-files.mjs";
 import { withGitSandbox } from "../lib/git-sandbox.ts";
-import { UPDATE_PRIMARY_VERBS } from "./update-primary-argv.mjs";
+import { UPDATE_PRIMARY_VERBS } from "./update-primary-argv.ts";
 
 /**
  * MOVING THE PRIMARY MOVES EVERY WORKTREE'S `dist`, AND NOTHING ELSE DOES.

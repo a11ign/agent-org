@@ -19,7 +19,7 @@ const dirs = /** @type {string[]} */ ([]);
 afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
 
 /** @param {string} cls @param {string} key @param {string} [session] */
-const order = (cls, key, session = "ceo") => ({ session, cause: "org-health", subject: cls, discriminator: key, prompt: `ORG HEALTH: ${cls}`, causeKey: `${session}/org-health/${cls}@${key}` });
+const order = (cls: string, key: string, session: string = "ceo") => ({ session, cause: "org-health", subject: cls, discriminator: key, prompt: `ORG HEALTH: ${cls}`, causeKey: `${session}/org-health/${cls}@${key}` });
 const other = (session = "ceo") => ({ session, cause: "pr-green", subject: "x", discriminator: "1", prompt: "a green PR", causeKey: `${session}/pr-green/1` });
 
 /** A temp state directory and a clock; `tick(orders, atMs)` is what the gate calls, with what it wrote on stderr kept. */
@@ -28,7 +28,7 @@ function harness() {
   dirs.push(dir);
   const said = /** @type {string[]} */ ([]);
   const paths = suppressionPaths(dir);
-  const tick = (/** @type {any[]} */ orders, /** @type {number} */ now) => quietOrgHealth(orders, { now, dir, log: (line) => said.push(line) });
+  const tick = (/** @type {any[]} */ orders: any[], /** @type {number} */ now: number) => quietOrgHealth(orders, { now, dir, log: (line) => said.push(line) });
   const logLines = () => (existsSync(paths.log) ? readFileSync(paths.log, "utf8").trim().split("\n").map((l) => JSON.parse(l)) : []);
   return { dir, said, paths, tick, logLines };
 }
@@ -101,8 +101,8 @@ test("the digest rides at most once per DIGEST_EVERY, and what is gathered meanw
 
 test("a digest class whose churn passes the bound is delivered ONCE at the crossing, and again only after it has fallen and crossed again", () => {
   const { tick } = harness();
-  const keys = (/** @type {number} */ n, /** @type {string} */ p) => Array.from({ length: n }, (_, i) => `${p}${i}`);
-  const woke = (/** @type {string} */ key, /** @type {number} */ at) => tick([order("overdue", key)], at).length;
+  const keys = (/** @type {number} */ n: number, /** @type {string} */ p: string) => Array.from({ length: n }, (_, i) => `${p}${i}`);
+  const woke = (/** @type {string} */ key: string, /** @type {number} */ at: number) => tick([order("overdue", key)], at).length;
   for (const [i, k] of keys(CHURN_BOUND, "a").entries()) assert.equal(woke(k, T0 + i * 1000), 0, `key ${i + 1} of ${CHURN_BOUND}: at the bound, not past it`);
   assert.equal(woke("a-cross", T0 + 20_000), 1, "POSITIVE: the key that takes the class past the bound wakes");
   assert.equal(woke("a-after", T0 + 21_000), 0, "NEGATIVE: not again while it stays above");
@@ -170,7 +170,7 @@ const OBSERVED_CLASSES = ["overdue", "runner-behind-newest-release", "order-defe
   "fleet-auto-off-refusing", "github-incident"];
 
 /** @param {string} dir @returns {string[]} every non-test `.mjs` under `dir` */
-function sourcesUnder(dir) {
+function sourcesUnder(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
     const path = join(dir, name);
     if (statSync(path).isDirectory()) return name === "node_modules" || name === "fixtures" ? [] : sourcesUnder(path);

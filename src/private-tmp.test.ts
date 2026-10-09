@@ -191,7 +191,7 @@ test("BY DEFAULT a leaking run is red, names the leaker, and still removes the r
  * and not failed (a11ign/a11ign#3872); the wiring is still read by every `rstest run` of this repository, which is the run that matters.
  */
 function liveSkipReason(input: { config: unknown; env: NodeJS.ProcessEnv }): string | undefined {
-  if (input.config === undefined) return "scripts/rstest/rstest.config.mjs is not laid out beside this file (ci.yml's agentOrg job copies no scripts/)";
+  if (input.config === undefined) return "scripts/rstest/rstest.config.ts is not laid out beside this file (ci.yml's agentOrg job copies no scripts/)";
   if (!input.env[RUN_ROOT_ENV]) return `${RUN_ROOT_ENV} is unset: this run is not agent-org's own rstest config, whose globalSetup publishes it`;
   return undefined;
 }

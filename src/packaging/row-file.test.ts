@@ -1246,7 +1246,7 @@ test("#1241: a clause below the first line is still read", () => {
  */
 // #1911's Acceptance as filed, verbatim (`gh issue view 1911`, 2026-09-22).
 const ROW_1911_ACCEPTANCE = "## Acceptance\n\n```bash\n"
-  + "npx rstest run --config scripts/rstest/rstest.config.mjs \\\n"
+  + "npx rstest run --config scripts/rstest/rstest.config.ts \\\n"
   + "  --include packages/lab/src/gates/corpus-release-nightly.test.ts \\\n"
   + "  --include packages/lab/src/packaging/host-units.test.ts\n```\n\n"
   + "The run passes, and it includes at least two new tests:\n"

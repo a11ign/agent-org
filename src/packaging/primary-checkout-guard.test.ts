@@ -33,7 +33,7 @@ import { join } from "node:path";
 import { withGitSandbox, sandboxGitEnv } from "../lib/git-sandbox.ts";
 import type { GitSandbox } from "../lib/git-sandbox.ts";
 import { updatePrimary } from "../update-primary.mjs";
-import { UPDATE_PRIMARY_ARGV } from "./update-primary-argv.mjs";
+import { UPDATE_PRIMARY_ARGV } from "./update-primary-argv.ts";
 import { HOME_CHECKOUT } from "../project-config.mjs";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 

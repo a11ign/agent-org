@@ -105,14 +105,14 @@ jobs:
           git -C project add --force --intent-to-add packages/agent-org # in-project
       - name: pnpm, which `packaging/installed-layout.test.ts` installs the tool through as a project would (a runner image carries npm, not pnpm)
         run: npm install --global pnpm@10.34.5
-      # THE RUNNER IS RSTEST (a11ign/a11ign#3738, ADR 0043 Decision 3, #3549 item 3). `scripts/rstest/rstest.config.mjs` is a thin call into `@a11ign/toolchain`'s shared config, run from the
+      # THE RUNNER IS RSTEST (a11ign/a11ign#3738, ADR 0043 Decision 3, #3549 item 3). `scripts/rstest/rstest.config.ts` is a thin call into `@a11ign/toolchain`'s shared config, run from the
       # project's root as the `node --test` line was, with the config named by its laid-out path. The build cache is on in CI only (the package's `isCi`), keyed on this repository's two inputs
       # (there is no lockfile here: the install above is by name) and printed HIT or MISS; rstest writes it under the config's root, which is the tool's directory in the project, in `node_modules/.cache/rstest-*`.
       - uses: actions/cache@v6
         id: rstest-build-cache
         with:
           path: project/packages/agent-org/node_modules/.cache/rstest-*
-          key: rstest-build-${{ runner.os }}-${{ hashFiles('package.json', 'scripts/rstest/rstest.config.mjs') }}
+          key: rstest-build-${{ runner.os }}-${{ hashFiles('package.json', 'scripts/rstest/rstest.config.ts') }}
       - name: rstest build cache HIT or MISS, printed so the run log can be quoted
         run: |
           echo "rstest build cache: ${{ steps.rstest-build-cache.outputs.cache-hit == 'true' && 'HIT' || 'MISS' }}"

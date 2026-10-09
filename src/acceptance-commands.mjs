@@ -2292,7 +2292,7 @@ const NAMED_TEST_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
  * `tsx --test` takes every non-flag token, as it always did -- that arm is the regression control (#2221's
  * ceo amendment) and a fixture there need not be called `*.test.ts`. Any other command is read for tokens
  * that LOOK like a test file, because its other arguments are also real paths -- `--config
- * scripts/rstest/rstest.config.mjs` names a file that exists and is no test -- and a flag's `=value`
+ * scripts/rstest/rstest.config.ts` names a file that exists and is no test -- and a flag's `=value`
  * (`--include=<file>`) is a file the runner is given, so it is read too. A token that is no file falls
  * out later on `existsSync`, so `rstest`, `run` and the flags need no list here.
  * @param {string} command

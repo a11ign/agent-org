@@ -28,7 +28,7 @@
  *
  * @type {readonly (readonly string[])[]}
  */
-export const UPDATE_PRIMARY_ARGV = Object.freeze([
+export const UPDATE_PRIMARY_ARGV: readonly (readonly string[])[] = Object.freeze([
   Object.freeze(["fetch", "origin"]),
   Object.freeze(["rev-parse", "HEAD"]),
   Object.freeze(["checkout", "--detach", "origin/main", "--quiet"]),
