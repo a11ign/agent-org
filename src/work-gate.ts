@@ -116,6 +116,9 @@ import { PROJECT_NUMBER } from "./board-snapshot-scope.ts";
 // #2356: A RED `main` WAKES A FIXER. Imports only `node:*`, `parent-recheck-summary.ts` and the repo identity,
 // so the gate keeps the property its own header states -- it runs before any `pnpm install` or build.
 import { readTrunkRed, trunkOfCodeRepository, trunkRedOrders } from "./trunk-red.ts";
+import { FAILURE_LEDGER_FILE, mainRedEvents, recordFailures } from "./failure-ledger.ts";
+import { recordHandReroutes } from "./hand-fix-ledger.ts";
+import { unresolvedOwnerEvents } from "./pr-ownership.ts";
 // #2163: FREE BYTES AND FREE INODES. Imports only `node:*`, so the gate keeps the property its own header states.
 import { diskHeadroom, MIN_FREE_FRACTION } from "./disk-headroom.ts";
 // #2470: A CLAIM THAT DOES NOT MOVE. A leaf, like every import above, so the gate keeps the property its own header states.
@@ -7240,6 +7243,18 @@ function homeRowsOf(rows: any[]): HomeRows | undefined {
   return repo === undefined ? undefined : { rows, repo, io: { agents: liveWorkspaceLabels, ended: endedSessionLabels } };
 }
 
+/**
+ * #4450 (move 1a of #4437): THE EVENTS OF THIS TICK THAT NEVER BECOME A CLOSED ROW, appended to `failure-ledger` beside `wake-deferral-log` -- a red `main`, a pull request nobody
+ * could be named the owner of, and (once a day) the hand fixes. A recorder reports a refusal and never throws, so the ledger can only ever be missing an event, never stop a tick.
+ * Only the primary project's `main` is recorded here: a keyed scope's `trunkRed` stays inside `scopeTick`.
+ * @param {{ trunkRed: ReturnType<typeof readTrunkRed>, prs: any[] }} seen
+ */
+export function recordTickFailures({ trunkRed, prs, stateDir = REVIEWER_STATE_DIR, now = Date.now() }: { trunkRed: ReturnType<typeof readTrunkRed>; prs: any[]; stateDir?: string; now?: number; }): void {
+  const logPath = `${stateDir}/${FAILURE_LEDGER_FILE}`;
+  recordFailures({ logPath, events: [...mainRedEvents(trunkRed), ...unresolvedOwnerEvents(prs, ownerOfPr, REPO)], now });
+  recordHandReroutes({ logPath, markerPath: `${stateDir}/${FAILURE_LEDGER_FILE}-hand-read`, now });
+}
+
 /** Where the pull requests already reported as resolver defects are remembered between ticks: each tick is a fresh process. */
 const RESOLVER_DEFECTS_STATE = "resolver-defects.json";
 
@@ -7949,6 +7964,7 @@ function main() {
     // #2691's `callCountSignals` is beside it, costing no `GH_READS`; `claimedComments` (#2710's window anchor) is the SAME read made above.
     offBoard, callCountSignals: rowCallCountSignals(allOpen, liveClaudeTurns(), claimedComments, { waitClearedAt: readWaitClearedAt }), bareAnswerLabels: bareAnswerLabelOrders(withAnswerLabel([...allOpen, ...openPrs]), defaultRun, Date.now()), answerGiven: answerGivenOrders(allOpen), labJobs: labJobRecordsOrSay(), ...engineerShareReads(allOpen) }; const decided = withStalePrimaryNotice(decideAndTap(decideArgs), primaryDrift); // #2711, #2729, #3632; `main` is at its 90-line limit
   const others = otherScopeTicks(drain, otherScopes, openPrs, homeRowsOf(allOpen)); // #4386: `homeRowsOf` -- so an agent-org pull request is owned by the worker its branch names. #2618: the OTHER declared repositories -- none for one project, whose orders are what they were
+  recordTickFailures({ trunkRed: decideArgs.trunkRed, prs: decideArgs.prs });
   fileResolverDefects([...resolverDefectsOf(decideArgs.prs, allOpen), ...others.flatMap((tick) => tick.defects)]); // #4386: a fallback order for a PR that named a live claimant files its own defect, once per PR
   const outageNow = outageThisTick({ prs, readyRows, promotableRows, chairmanBlocked, openRows: openRowsRead, claimedComments, offBoard, others });
   const incident = holdForIncidentNow(githubStatus, [...decided, ...others.flatMap((tick) => tick.orders)], { prs: [...openPrs, ...pullRequestsOfOthers(otherScopes)], required });

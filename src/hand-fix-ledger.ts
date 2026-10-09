@@ -25,8 +25,9 @@
 // ABSENCE IS NOT ZERO (`.agent-org/roles/engineer.md`). A read that is refused gives `count: null`, "unknown", and a
 // change whose only actor GitHub could not resolve to an account is `unread`, never counted and never clean.
 import { execFileSync } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { recordFailures, type FailureEvent } from "./failure-ledger.ts";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { HOME_CHECKOUT } from "./project-config.ts";
 import { REPO } from "./project-identity.ts";
@@ -425,6 +426,46 @@ export function gatherChanges({ checkout = HOME_CHECKOUT, git = gitIn(checkout),
     }
     return [...changes.values()];
   };
+}
+
+/**
+ * `hand-reroute` events (#4450): one per counted hand fix, REFED BY THE CHANGE and DATED BY IT, so a change read on two days is one event.
+ * @param {ReturnType<typeof readLedger>} reading `unknown` gives none: an unread window is not a quiet one
+ */
+export function handRerouteEvents(reading: ReturnType<typeof readLedger>): FailureEvent[] {
+  return (reading.current?.entries ?? []).map((entry) => ({ classKey: "hand-reroute", ref: entry.key, at: Date.parse(entry.at) })).filter((event) => !Number.isNaN(event.at));
+}
+
+/** The hand-fix read is a git walk and a page of `gh` calls, so the tick makes it at most this often. */
+export const HAND_REROUTE_READ_EVERY_MS = DAY_MS;
+
+/**
+ * Record the hand fixes of the window into the failure ledger, at most once per `HAND_REROUTE_READ_EVERY_MS` (`markerPath` holds when it last ran, and is written even when the read was refused, so a refusal is not retried on every tick).
+ * NEVER THROWS INTO THE TICK: a refused read or write is reported through `report`.
+ * @param {{ logPath: string, markerPath: string, now: number, read?: ReturnType<typeof gatherChanges>, report?: (line: string) => void }} tick
+ * @returns {number} how many events were appended
+ */
+export function recordHandReroutes({ logPath, markerPath, now, read = gatherChanges(), report = (line) => process.stderr.write(`${line}\n`) }: { logPath: string; markerPath: string; now: number; read?: ReturnType<typeof gatherChanges>; report?: (line: string) => void; }): number {
+  try {
+    if (now - lastRun(markerPath) < HAND_REROUTE_READ_EVERY_MS) return 0;
+    writeFileSync(markerPath, String(now));
+    const reading = readLedger({ read, now: new Date(now) });
+    if (reading.status !== "read") report(`failure-ledger: hand fixes not read (${reading.why})`);
+    return recordFailures({ logPath, events: handRerouteEvents(reading), now, report }).appended;
+  } catch (cause) {
+    report(`failure-ledger: hand-reroute recorder failed: ${String((cause as Error)?.message ?? cause).split("\n")[0]}`);
+    return 0;
+  }
+}
+
+/** When the marker says the recorder last ran; a missing or unreadable marker is "never". */
+function lastRun(markerPath: string): number {
+  try {
+    return Number(readFileSync(markerPath, "utf8")) || 0;
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException)?.code === "ENOENT") return 0;
+    throw cause;
+  }
 }
 
 /**
