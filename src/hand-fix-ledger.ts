@@ -25,9 +25,9 @@
 // ABSENCE IS NOT ZERO (`.agent-org/roles/engineer.md`). A read that is refused gives `count: null`, "unknown", and a
 // change whose only actor GitHub could not resolve to an account is `unread`, never counted and never clean.
 import { execFileSync } from "node:child_process";
-import { readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { recordFailures, type FailureEvent } from "./failure-ledger.ts";
+import { lastRun, markRun, recordFailures, type FailureEvent } from "./failure-ledger.ts";
 import { sandboxGitEnv } from "./lib/git-env.mjs";
 import { HOME_CHECKOUT } from "./project-config.ts";
 import { REPO } from "./project-identity.ts";
@@ -448,23 +448,13 @@ export const HAND_REROUTE_READ_EVERY_MS = DAY_MS;
 export function recordHandReroutes({ logPath, markerPath, now, read = gatherChanges(), report = (line) => process.stderr.write(`${line}\n`) }: { logPath: string; markerPath: string; now: number; read?: ReturnType<typeof gatherChanges>; report?: (line: string) => void; }): number {
   try {
     if (now - lastRun(markerPath) < HAND_REROUTE_READ_EVERY_MS) return 0;
-    writeFileSync(markerPath, String(now));
+    markRun(markerPath, now);
     const reading = readLedger({ read, now: new Date(now) });
     if (reading.status !== "read") report(`failure-ledger: hand fixes not read (${reading.why})`);
     return recordFailures({ logPath, events: handRerouteEvents(reading), now, report }).appended;
   } catch (cause) {
     report(`failure-ledger: hand-reroute recorder failed: ${String((cause as Error)?.message ?? cause).split("\n")[0]}`);
     return 0;
-  }
-}
-
-/** When the marker says the recorder last ran; a missing or unreadable marker is "never". */
-function lastRun(markerPath: string): number {
-  try {
-    return Number(readFileSync(markerPath, "utf8")) || 0;
-  } catch (cause) {
-    if ((cause as NodeJS.ErrnoException)?.code === "ENOENT") return 0;
-    throw cause;
   }
 }
 

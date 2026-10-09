@@ -116,9 +116,7 @@ import { PROJECT_NUMBER } from "./board-snapshot-scope.ts";
 // #2356: A RED `main` WAKES A FIXER. Imports only `node:*`, `parent-recheck-summary.ts` and the repo identity,
 // so the gate keeps the property its own header states -- it runs before any `pnpm install` or build.
 import { readTrunkRed, trunkOfCodeRepository, trunkRedOrders } from "./trunk-red.ts";
-import { FAILURE_LEDGER_FILE, mainRedEvents, recordFailures } from "./failure-ledger.ts";
-import { recordHandReroutes } from "./hand-fix-ledger.ts";
-import { unresolvedOwnerEvents } from "./pr-ownership.ts";
+import { recordTickFailures as recordFailuresOf } from "./failure-recorders.ts";
 // #2163: FREE BYTES AND FREE INODES. Imports only `node:*`, so the gate keeps the property its own header states.
 import { diskHeadroom, MIN_FREE_FRACTION } from "./disk-headroom.ts";
 // #2470: A CLAIM THAT DOES NOT MOVE. A leaf, like every import above, so the gate keeps the property its own header states.
@@ -7244,15 +7242,11 @@ function homeRowsOf(rows: any[]): HomeRows | undefined {
 }
 
 /**
- * #4450 (move 1a of #4437): THE EVENTS OF THIS TICK THAT NEVER BECOME A CLOSED ROW, appended to `failure-ledger` beside `wake-deferral-log` -- a red `main`, a pull request nobody
- * could be named the owner of, and (once a day) the hand fixes. A recorder reports a refusal and never throws, so the ledger can only ever be missing an event, never stop a tick.
- * Only the primary project's `main` is recorded here: a keyed scope's `trunkRed` stays inside `scopeTick`.
+ * #4450 (move 1a of #4437): the tick's failure events go to `failure-ledger` (`failure-recorders.ts`). Only the primary project's `main` is recorded here: a keyed scope's `trunkRed` stays inside `scopeTick`.
  * @param {{ trunkRed: ReturnType<typeof readTrunkRed>, prs: any[] }} seen
  */
 export function recordTickFailures({ trunkRed, prs, stateDir = REVIEWER_STATE_DIR, now = Date.now() }: { trunkRed: ReturnType<typeof readTrunkRed>; prs: any[]; stateDir?: string; now?: number; }): void {
-  const logPath = `${stateDir}/${FAILURE_LEDGER_FILE}`;
-  recordFailures({ logPath, events: [...mainRedEvents(trunkRed), ...unresolvedOwnerEvents(prs, ownerOfPr, REPO)], now });
-  recordHandReroutes({ logPath, markerPath: `${stateDir}/${FAILURE_LEDGER_FILE}-hand-read`, now });
+  recordFailuresOf({ trunkRed, prs, stateDir, now, ownerOf: ownerOfPr, homeRepo: REPO });
 }
 
 /** Where the pull requests already reported as resolver defects are remembered between ticks: each tick is a fresh process. */

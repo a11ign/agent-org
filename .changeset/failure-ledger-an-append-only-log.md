@@ -1,0 +1,5 @@
+---
+"agent-org": minor
+---
+
+A failure ledger: `failure-ledger` in the state directory, an append-only log of EVENTS that never become a closed row, one `<classKey>\t<ts ms>\t<ref>` line each, beside `wake-deferral-log` (a11ign/a11ign#4450, move 1a of #4437). `src/failure-ledger.ts` is a leaf with `recordFailure`, `recordFailures` (an event already logged under the same key and ref is not written again, so a red `main` seen by every tick is one line), `parseFailureLedger` (throws on a malformed line) and `repeatsIn` (class keys seen with two or more DISTINCT refs in a window). The work gate's primary tick now records three kinds: `main-red` (the red run, from the `readTrunkRed` reading the tick already makes), `owner-unresolved` (an open pull request `ownerOfPr` could name no one for) and `hand-reroute` (the hand-fix ledger's entries, read at most once a day). A recorder never throws into the tick; a refused append is reported on stderr as `failure-ledger: NOT RECORDED …`. The red `main` of a keyed scope is not recorded yet, and `pr-red`, `worker-excluded` and `chairman-correction` are seeded kinds with no recorder.

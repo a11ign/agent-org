@@ -11,7 +11,7 @@
 //
 // A LEAF: it imports no org-health or work-gate name, so a recorder in any module can call it. A RECORDER NEVER THROWS INTO THE TICK: a refused append is REPORTED through
 // `report` (stderr by default) and returned, never swallowed.
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 /** The log's file name, beside `wake-deferral-log`. */
@@ -124,4 +124,19 @@ export function recordFailures({ logPath, events, now, append = appendFileSync, 
 export function mainRedEvents(trunkRed: { url?: string, runId?: number, repo?: string } | null | undefined): FailureEvent[] {
   const ref = trunkRed?.url ?? (trunkRed?.runId === undefined ? undefined : `${trunkRed.repo ?? "primary"}/runs/${trunkRed.runId}`);
   return ref === undefined ? [] : [{ classKey: "main-red", ref }];
+}
+
+/** When a recorder's marker file says it last ran; a missing marker is "never" (0), an unreadable one throws. Here and not beside the recorder: a source that writes a file is read as ITS writer (`org-retro.test.ts`). */
+export function lastRun(markerPath: string): number {
+  try {
+    return Number(readFileSync(markerPath, "utf8")) || 0;
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException)?.code === "ENOENT") return 0;
+    throw cause;
+  }
+}
+
+/** Stamp the marker with the time of this run. */
+export function markRun(markerPath: string, now: number): void {
+  writeFileSync(markerPath, String(now));
 }
