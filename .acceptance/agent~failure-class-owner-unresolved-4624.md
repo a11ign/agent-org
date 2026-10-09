@@ -11,3 +11,5 @@ Closes a11ign/a11ign#4624
 platform: n/a (a rung in the owner ladder; GitHub names the author, which is what the rung reads)
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+Rework (reviewer-agent-org-542, not convinced at `1c68ffdc`): `shared-file-orders.ts` `ownerSentence` told ceo "its session label, or the row it closes, names you" for a dependency-bot PR. It now says a dependency bot opened it. Regression test in `src/work-gate-shared-file-orders.test.ts`; with both files `VERDICT pass: 21 tests in 2 files`. Mutation (restored byte-identical): `byBot = false` fails the new test only; `byBot = true` fails only the existing no-owner test (8). Other `ownerOfPr` consumers checked: `ownershipOf` and `ownershipSentence` (via `stalledPrOrders`, `failingChecksPrompt`, conflict, checkless, unordered, draft-convinced orders) and `notConvincedBasis` already carry a `dependency-bot` sentence; `deadOwnerPrompt` fires only for a dead owner.
