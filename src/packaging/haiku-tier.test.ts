@@ -42,7 +42,7 @@ test("the shipped switch is ON, and a tier:haiku row gets a claude-haiku-5-5 lau
   const window = Number(args[args.indexOf("--autocompact") + 1]);
   assert.equal(window, HAIKU_AUTOCOMPACT_WINDOW_TOKENS);
   assert.ok(window - AUTO_COMPACT_TRIGGER_MARGIN_TOKENS <= HAIKU_PROMPT_CEILING_TOKENS, `trigger ${window - AUTO_COMPACT_TRIGGER_MARGIN_TOKENS} is past the ceiling`);
-  assert.equal(args[args.indexOf("--effort") + 1], "low");
+  assert.equal(args[args.indexOf("--effort") + 1], "high");
 });
 
 test("the same row WITHOUT the label carries the ordinary Sonnet profile byte for byte, and says nothing", () => {
