@@ -44,6 +44,7 @@
 
 // #2619 (child 3d of #69): the `answer:` prefix, moved to the project's declared vocabulary.
 import { ANSWER_PREFIX, SESSION_PREFIX } from "./project-vocabulary.ts";
+import { nextNotBefore, readingsDeclared, roundTripsUtc } from "./reading-schedule.ts";
 
 /**
  * The label prefix that says which session owes an answer on a row.
@@ -236,28 +237,6 @@ export const notBeforeIso = (declared: string) =>
   declared.length === DATE_ONLY_LENGTH ? `${declared}T00:00:00Z` : declared;
 
 /**
- * Whether a digit-shaped UTC timestamp is a date the calendar actually has.
- *
- * `Date.parse` SILENTLY ROLLS OVER a date that does not exist rather than refusing it --
- * `2026-02-31T04:00:00Z` parses to 2026-03-03, three days later than typed (#1841's reviewer finding on
- * `Fleet-hold-until:`). So the matched text is round-tripped through `Date` and compared back against
- * itself; a date `Date` had to repair is refused rather than silently accepted with a different meaning
- * than its author typed.
- *
- * SHARED BY BOTH FIELDS RATHER THAN COPIED ONTO THE SECOND ONE (#2113). `Not-before:` did not need this
- * while it compared strings -- a lexical comparison cannot roll a date over, because it never parses one.
- * The moment that comparison became a parsed one the trap arrived with it, so the rule is borrowed from
- * `fleetHoldUntil` here rather than re-derived beside it.
- *
- * @param {string} iso
- */
-function roundTripsUtc(iso: string) {
-  const parsed = new Date(iso);
-  if (Number.isNaN(parsed.getTime())) return false;
-  return parsed.toISOString().slice(0, 19) === iso.slice(0, 19);
-}
-
-/**
  * The `Not-before:` value, or `null` -- a `YYYY-MM-DD` date, or a `YYYY-MM-DDTHH:MM:SSZ` instant.
  *
  * A BODY FIELD RATHER THAN A LABEL, deliberately. GitHub has no native "wait until a date", so this one
@@ -304,6 +283,21 @@ export function notBeforeDate(body: string | null | undefined): string | null {
 }
 
 /**
+ * The date a row is held until: its reading schedule's next reading when the row declares one AND the caller supplied its comments, else
+ * its `Not-before:` line (#4638).
+ *
+ * `Reading: <n> at T` lines supersede `Not-before:` because the schedule is the whole truth and the older line is what the last taker
+ * left behind. WITHOUT THE COMMENTS THE SCHEDULE CANNOT BE READ -- the receipts are comments -- so a caller that never fetched them gets
+ * today's `Not-before:` answer, unchanged, rather than a wait on a reading that was posted yesterday. A row with no `Reading:` line takes
+ * the old path whatever the caller holds.
+ */
+function declaredNotBefore(row: { body?: string; comments?: { body?: string }[] } | undefined): string | null {
+  const body = row?.body;
+  if (!Array.isArray(row?.comments) || readingsDeclared(body).length === 0) return notBeforeDate(body);
+  return nextNotBefore({ body, comments: row.comments });
+}
+
+/**
  * Whether a declared `Not-before:` value is still in the future -- PARSED TIME, never a string compare.
  *
  * TWO INSTANTS RATHER THAN ONE, and the field's own granularity chooses between them. A date-only value
@@ -345,7 +339,7 @@ function notBeforeIsFuture(declared: string, today: string, nowMs: number) {
  * answer for a row that was previously reported as waiting on NOTHING -- which is the whole defect and
  * nothing else.
  *
- * @param {{blockedBy?: {nodes?: {number?: number, state?: string}[]}, body?: string,
+ * @param {{blockedBy?: {nodes?: {number?: number, state?: string}[]}, body?: string, comments?: {body?: string}[],
  *   labels?: ({name?: string} | string)[]}} row
  * @param {string} [today] an ISO `YYYY-MM-DD`
  * @param {number} [nowMs] the caller's clock, injected the way `fleetWaitingOn` already injects one --
@@ -355,13 +349,13 @@ function notBeforeIsFuture(declared: string, today: string, nowMs: number) {
  *   | {kind: "answer", session: string} | null}
  */
 export function waitingOn(row: {
-        blockedBy?: { nodes?: { number?: number; state?: string; }[]; }; body?: string;
+        blockedBy?: { nodes?: { number?: number; state?: string; }[]; }; body?: string; comments?: { body?: string; }[];
         labels?: ({ name?: string; } | string)[];
     }, today: string = todayIso(), nowMs: number = Date.now()): { kind: "row"; numbers: number[]; } | { kind: "date"; date: string; } |
 { kind: "answer"; session: string; } | null {
   const open = (row?.blockedBy?.nodes ?? []).filter((n) => String(n?.state ?? "OPEN").toUpperCase() === "OPEN");
   if (open.length > 0) return { kind: "row", numbers: open.map((n) => Number(n.number)) };
-  const date = notBeforeDate(row?.body);
+  const date = declaredNotBefore(row);
   if (date !== null && notBeforeIsFuture(date, today, nowMs)) return { kind: "date", date };
   const session = answerOwedBy(row ?? {});
   if (session !== null) return { kind: "answer", session };
