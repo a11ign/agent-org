@@ -5027,13 +5027,15 @@ export const SHARE_LINE_REMINDER_MS = 24 * 60 * 60 * 1000;
 const TOOL_REPO = "a11ign/agent-org";
 
 /**
- * The `{ key, paths }` a Region entry is judged against: each `dora` repository but the tool's, under the key `code` gives it.
+ * The `{ key, paths }` a Region entry is judged against: each `dora` repository but the tool's and those declared `adopterFacing: false`, under the key `code` gives it.
+ * THE ONE PLACE `adopterFacing` IS READ FOR THE SHARE (#4399, `ceo` on #4378): a repository whose releasable change reaches no outside adopter contributes no product path, so a row whose every Region
+ * entry sits under one reads `org`, while ONE entry under an adopter-facing repository keeps it `product` (`rowKind` reads `some`). An entry that omits the key is adopter-facing, as before.
  * A `dora` repository `code` does not declare has no key a Region entry could carry, so it is left out rather than guessed.
- * @param {{ code: { key: string, repo: string }[], dora: { repo: string, releasablePaths: string[] }[] }} declaration
+ * @param {{ code: { key: string, repo: string }[], dora: { repo: string, releasablePaths: string[], adopterFacing?: boolean }[] }} declaration
  * @returns {{ key: string, paths: string[] }[]}
  */
-export function productRegionsOf({ code, dora }: { code: { key: string; repo: string; }[]; dora: { repo: string; releasablePaths: string[]; }[]; }): { key: string; paths: string[]; }[] {
-  return dora.filter((entry) => entry.repo !== TOOL_REPO).flatMap((entry) => {
+export function productRegionsOf({ code, dora }: { code: { key: string; repo: string; }[]; dora: { repo: string; releasablePaths: string[]; adopterFacing?: boolean; }[]; }): { key: string; paths: string[]; }[] {
+  return dora.filter((entry) => entry.repo !== TOOL_REPO && entry.adopterFacing !== false).flatMap((entry) => {
     const key = code.find((repository) => repository.repo === entry.repo)?.key;
     return key === undefined ? [] : [{ key, paths: entry.releasablePaths }];
   });

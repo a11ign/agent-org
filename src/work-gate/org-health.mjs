@@ -698,7 +698,7 @@ export function boardTruthNow({ openRowsRead, claimedComments, waitFacts, now },
   const read = readBoardFacts(repo, { run, agents, now, openRows, waitFacts });
   const audit = boardTruthAudit(commentsComplete ? read : { ...read, liveSessions: null });
   try {
-    post({ audit, day: editionDay(new Date(now)), repo, run, readProse: readProseAndOrder({ repo, log }) });
+    post({ audit, day: editionDay(new Date(now)), repo, run, now, readProse: readProseAndOrder({ repo, log }) });
   } catch (error) {
     log(`board-truth: the day's table was not posted (${error instanceof Error ? error.message.split("\n")[0] : error}); the next tick asks again`);
   }
@@ -815,15 +815,14 @@ function orgEntryReason(entry, declaration) {
 }
 
 /**
- * #4378: IS THIS ROW ADOPTER-FACING -- #3820's `rowKind` over only the `dora` repositories not declared `adopterFacing: false`, said back as `adopter` or `org` with the entry that made it org. `unreadable` is
- * `rowKind`'s own word for a Region it found no entries in: such a row is `org` here and the CALLER decides what that means (`row-file` refuses it, the clock counts it unknown). The #3820 product share
- * keeps calling `rowKind` with every `dora` repository and is NOT changed by this.
+ * #4378: IS THIS ROW ADOPTER-FACING -- #3820's `rowKind`, said back as `adopter` or `org` with the entry that made it org. `unreadable` is
+ * `rowKind`'s own word for a Region it found no entries in: such a row is `org` here and the CALLER decides what that means (`row-file` refuses it, the clock counts it unknown). WHICH repositories are
+ * adopter-facing is decided in ONE place, `productRegionsOf`, which the #3820 product share reads too (#4399), so the two cannot disagree.
  * @param {string[] | null} entries what `declaredRegionFiles` read @param {{ code: { key: string, repo: string }[], dora: { repo: string, releasablePaths: string[], adopterFacing?: boolean }[] }} declaration
  * @returns {{ kind: "adopter" | "org", unreadable: boolean, because: string | null }}
  */
 export function adopterRowKind(entries, declaration) {
-  const adopterDora = declaration.dora.filter((entry) => entry.adopterFacing !== false);
-  const { kind, unreadable } = rowKind(entries, productRegionsOf({ code: declaration.code, dora: adopterDora }));
+  const { kind, unreadable } = rowKind(entries, productRegionsOf(declaration));
   if (kind === "product") return { kind: "adopter", unreadable, because: null };
   if (unreadable) return { kind: "org", unreadable, because: "its Region names no path, so it cannot be read as adopter-facing" };
   const reasons = (entries ?? []).map((entry) => orgEntryReason(entry, declaration));
