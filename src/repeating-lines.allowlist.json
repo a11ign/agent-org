@@ -7,8 +7,8 @@
       "reason": "wake.ts's report of an order whose seat is mid-turn (#3029): the queue waiting for a turn to end, which it exists to do. It is written until the seat is idle and carries its own age; past one hour (BUSY_SEAT_DEFERRAL_MS) the order is written as UNDELIVERED with the `nowhere to go` summary instead, and neither of those is allowlisted."
     },
     {
-      "pattern": "^SHELVED row #N: ",
-      "reason": "work the gate can see and is deliberately not offering (a declared blockedBy, Not-before, answer: or a file overlap with an open pull request). The line itself says it clears itself; 972 per day measured on 2026-10-01 and each is a row waiting on a field."
+      "pattern": "^SHELVED row ([\\w./-]+)?#N: ",
+      "reason": "work the gate can see and is deliberately not offering (a declared blockedBy, Not-before, answer: or a file overlap with an open pull request); a row in a keyed repository is printed with its key (`agent-org#460`), the same state. The line itself says it clears itself; 972 per day measured on 2026-10-01 and each is a row waiting on a field."
     },
     {
       "pattern": "^tool checkout detached at origin/main \\(H\\)$",
