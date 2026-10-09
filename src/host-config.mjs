@@ -39,7 +39,10 @@ export const TEMPLATE_SUFFIX = ".in";
  * @typedef {{ workers: string, leads: string, leadsHeader: string[], leadsWorkspaces: LeadsWorkspace[] }} GhDirectories
  * @typedef {{ id: string, checkout: string }} HostProject
  * @typedef {{ schema: number, home: string, binDir: string, primary: string, projects: HostProject[], gh: GhDirectories,
- *   tool?: string, toolVersion?: string, stateDir?: string, clones?: Readonly<Record<string, string>> }} HostConfig
+ *   tool?: string, toolVersion?: string, stateDir?: string, clones?: Readonly<Record<string, string>>, triage?: Readonly<TriageDeclaration> }} HostConfig
+ * @typedef {{ provider: "none" } | { provider: "jev", keyPath: string, minConfidence: number }} TriageDeclaration
+ * `triage` is the one key that `parseHostConfig` ALWAYS sets (a hand-built `HostConfig` in a test may leave it out, hence the `?`), `{ provider: "none" }` when the declaration has none, because "no triage" is a value the
+ * wake path reads and not a question it asks of the shape (a later row routes on it; this one routes nothing).
  * `tool`, `stateDir` and `clones` are ABSENT (the key is not there, never `undefined`) on a host that has not moved to decision 3's installed
  * form, and a11ign's `host.json` is exactly that host until #2623 cuts over.
  * @typedef {{ prefix: string, boardReportWorkflow: string, own: string[] }} UnitsDeclaration
@@ -193,7 +196,49 @@ export function parseHostConfig(text, source = HOST_DECLARATION_PATH) {
     ...(tool === undefined ? {} : { tool, toolVersion }),
     ...(stateDir === undefined ? {} : { stateDir }),
     ...(clones === undefined ? {} : { clones }),
+    triage: readTriage(host, source),
   });
+}
+
+/** @type {Readonly<TriageDeclaration>} */
+const NONE = Object.freeze({ provider: "none" });
+
+/** The providers `triage.provider` may name. `haiku` is refused by name below, not folded into "unknown", so the refusal says where it went. */
+const TRIAGE_PROVIDERS = Object.freeze(["jev", "none"]);
+/** The confidence a `jev` provider needs before its label routes an order: the bar #4187 declared, used when `minConfidence` is left out. */
+export const DEFAULT_TRIAGE_MIN_CONFIDENCE = 0.9;
+
+/**
+ * OPTIONAL JEV TRIAGE (#4384): who, if anybody, reads a wake order's cause and says wake, digest or drop. Absent is `{ provider: "none" }` and so is `"none"`, and
+ * both are today's behaviour exactly. A `jev` provider names the file its key is in (`keyPath`, a path and never the key) and the floor under which its answer
+ * is ignored. Refused by key name, like `toolVersion`: `haiku` (not built; row B's), any other provider, a `minConfidence` outside 0..1, a `keyPath` that is not a path.
+ * @param {Record<string, unknown>} host @param {string} source @returns {Readonly<TriageDeclaration>}
+ */
+function readTriage(host, source) {
+  if (!Object.hasOwn(host, "triage")) return NONE;
+  const triage = requiredObject(host.triage, "triage", source);
+  const provider = requiredString(triage, "provider", "triage.", source);
+  if (provider === "haiku") {
+    throw new HostConfigRefusal("triage.provider", "`haiku` is not built; the Haiku triage is row B's, if #4187 says it earns one", source);
+  }
+  if (!TRIAGE_PROVIDERS.includes(provider)) {
+    throw new HostConfigRefusal("triage.provider", `it must be one of ${TRIAGE_PROVIDERS.join(", ")}, not ${JSON.stringify(provider)}`, source);
+  }
+  const keyPath = optionalPath(triage, "keyPath", "triage.", source);
+  const minConfidence = readMinConfidence(triage, source);
+  if (provider === "none") return NONE;
+  if (keyPath === undefined) throw new HostConfigRefusal("triage.keyPath", "it is missing; a `jev` provider needs the file its key is in", source);
+  return Object.freeze({ provider: "jev", keyPath, minConfidence });
+}
+
+/** @param {Record<string, unknown>} triage @param {string} source @returns {number} */
+function readMinConfidence(triage, source) {
+  if (!Object.hasOwn(triage, "minConfidence")) return DEFAULT_TRIAGE_MIN_CONFIDENCE;
+  const value = triage.minConfidence;
+  if (typeof value !== "number" || !(value >= 0 && value <= 1)) {
+    throw new HostConfigRefusal("triage.minConfidence", `it must be a number from 0 to 1, not ${JSON.stringify(value)}`, source);
+  }
+  return value;
 }
 
 /**
