@@ -443,3 +443,38 @@ test("#4078: `unverifiedFilingFields` names the board the filing asked, and the 
   assert.deepEqual(unverifiedFilingFields(after, { ...expected, projectNumber: 7 }), ["Project 7 membership"]);
   assert.deepEqual(unverifiedFilingFields(after, expected), [`Project ${PROJECT_NUMBER} membership`]);
 });
+
+// #4456: an epic is never claimable (no Region, Acceptance or Open-check), so the claimability refusal can never let it board.
+const EPIC_BODY = "A tracking row: children carry the Region and the Acceptance.\n";
+
+test("#4456 ACCEPTANCE: `--board=` on an `epic` with no Region/Acceptance/Open-check boards it at Backlog -- item-add, Status Backlog, `backlog` + lane, and NO `ready`", () => {
+  const { row, deps } = fakeRow({ labels: ["epic", "out-of-release"], body: EPIC_BODY });
+  const r = board(["--board=3329", "--lane=any"], deps);
+  assert.equal(r.code, 0, r.err);
+  assert.deepEqual(row.writes, ["item-add", "status:Backlog", "labels"]);
+  assert.equal(row.status, "Backlog");
+  assert.deepEqual(row.labels, ["epic", "out-of-release", "backlog", "lane:any"]);
+  assert.ok(!row.labels.includes("ready"), "an epic is never claimable, so never `ready`");
+  assert.match(r.out, /#3329 boarded: .*Status "Backlog"/);
+});
+
+const REFUSED_EPICS: [string, Parameters<typeof fakeRow>[0]][] = [
+  ["a CLOSED epic", { labels: ["epic"], state: "CLOSED", body: EPIC_BODY }],
+  ["a CLAIMED epic", { labels: ["epic", CLAIM_LABEL], body: EPIC_BODY }],
+];
+for (const [name, options] of REFUSED_EPICS) {
+  test(`#4456: ${name} is still refused -- the exemption is the body check only`, () => {
+    const { row, deps } = fakeRow(options);
+    const r = board(["--board=3329", "--lane=any"], deps);
+    assert.equal(r.code, 1);
+    assert.deepEqual(row.writes, []);
+  });
+}
+
+test("#4456: the same body WITHOUT the `epic` label is still refused -- the exemption belongs to the label", () => {
+  const { row, deps } = fakeRow({ labels: ["regression", "out-of-release"], body: EPIC_BODY });
+  const r = board(["--board=3329", "--lane=any"], deps);
+  assert.equal(r.code, 1);
+  assert.deepEqual(row.writes, []);
+  assert.match(r.err, /missing Region, Acceptance, Open-check/);
+});
