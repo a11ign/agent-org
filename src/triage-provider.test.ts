@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { parseHostConfig } from "./host-config.mjs";
-import { freshState, triageOrder } from "./triage-provider.mjs";
+import { freshState, triageOrder } from "./triage-provider.ts";
 
 const FAKE_KEY = "tsk-FAKE-0123456789-do-not-print";
 const KEY_PATH = "/fake/typesafe/key";

@@ -1,4 +1,3 @@
-// @ts-check
 // #4384: THE TRIAGE SEAM. Jev (TypeSafe's System One model) is an OPTIONAL reader of a wake order: agent-org is a project-agnostic tool (ADR 0040), and a host
 // that does not want a third-party model reading its orders declares `triage: { provider: "none" }` or no `triage` at all, and gets today's behaviour exactly.
 //
@@ -28,29 +27,33 @@ export const CRITERIA = Object.freeze({
 });
 const INSTRUCTIONS = "A manager session of an AI agent organisation is about to be woken by this order, which costs a model turn. Which label is it?";
 
-/**
- * @typedef {{ cause?: string, causeKey?: string, session?: string, cost?: string }} TriageOrder what a labeller saw; the store holds no order text, so there is none
- * @typedef {{ route: "wake" | "digest" | "drop", via: "jev" | "none", confidence?: number, reason: string }} Triage
- * @typedef {{ key?: string, keyFailed: boolean }} TriageState what is true of THIS process; a test passes a fresh one
- * @typedef {{ host: { triage?: Readonly<{ provider: string, keyPath?: string, minConfidence?: number }> }, fetch?: typeof fetch, readKey?: (path: string) => string,
- *   diagnostic?: (line: string) => void, state?: TriageState, timeoutMs?: number }} TriageDeps
- */
+export type Label = "wake" | "digest" | "drop";
+/** What a labeller saw; the store holds no order text, so there is none. */
+export type TriageOrder = { cause?: string; causeKey?: string; session?: string; cost?: string };
+export type Triage = { route: Label; via: "jev" | "none"; confidence?: number; reason: string };
+/** What is true of THIS process; a test passes a fresh one. */
+export type TriageState = { key?: string; keyFailed: boolean };
+export type TriageDeps = {
+  host: { triage?: Readonly<{ provider: string; keyPath?: string; minConfidence?: number }> };
+  fetch?: typeof fetch;
+  readKey?: (path: string) => string;
+  diagnostic?: (line: string) => void;
+  state?: TriageState;
+  timeoutMs?: number;
+};
+type Asked = { answer: unknown } | { failed: string };
 
-/** @returns {TriageState} */
-export const freshState = () => ({ keyFailed: false });
+export const freshState = (): TriageState => ({ keyFailed: false });
 const processState = freshState();
 
-/** @param {string} path @returns {string} */
-const readKeyFile = (path) => readFileSync(path, "utf8").trim();
+const readKeyFile = (path: string): string => readFileSync(path, "utf8").trim();
 
-/** @param {"none" | "jev"} via @param {string} reason @returns {Triage} */
-const wake = (via, reason) => ({ route: "wake", via, reason });
+const wake = (via: Triage["via"], reason: string): Triage => ({ route: "wake", via, reason });
 
 /**
  * The key, or `undefined` once it cannot be had. The attempt is made ONCE per process, a failure included (`keyFailed` is what makes the diagnostic one line and not one per order), and that line says only that triage is unavailable.
- * @param {string} keyPath @param {Required<Pick<TriageDeps, "readKey" | "diagnostic" | "state">>} deps @returns {string | undefined}
  */
-function keyFor(keyPath, { readKey, diagnostic, state }) {
+function keyFor(keyPath: string, { readKey, diagnostic, state }: Required<Pick<TriageDeps, "readKey" | "diagnostic" | "state">>): string | undefined {
   if (state.key !== undefined) return state.key;
   if (state.keyFailed) return undefined;
   try {
@@ -66,11 +69,9 @@ function keyFor(keyPath, { readKey, diagnostic, state }) {
   }
 }
 
-/** @param {TriageOrder} order */
-const hasCause = (order) => typeof order.cause === "string" && order.cause !== "" && order.cause !== NO_CAUSE;
+const hasCause = (order: TriageOrder): boolean => typeof order.cause === "string" && order.cause !== "" && order.cause !== NO_CAUSE;
 
-/** @param {TriageOrder} order */
-function requestBody(order) {
+function requestBody(order: TriageOrder) {
   const { cause, causeKey, session, cost } = order;
   return {
     state: { cause, causeKey, session, cost },
@@ -81,15 +82,12 @@ function requestBody(order) {
 
 /**
  * One `POST`, or a reason it failed. Never throws: a timeout, a refusal and a body that is not JSON all come back as `{ failed }`.
- * @param {TriageOrder} order @param {string} key @param {typeof fetch} fetchFn @param {number} timeoutMs
- * @returns {Promise<{ answer: unknown } | { failed: string }>}
  */
-async function ask(order, key, fetchFn, timeoutMs) {
+async function ask(order: TriageOrder, key: string, fetchFn: typeof fetch, timeoutMs: number): Promise<Asked> {
   const controller = new AbortController();
-  /** @type {ReturnType<typeof setTimeout> | undefined} */
-  let timer;
-  const timedOut = new Promise((resolve) => { timer = setTimeout(() => { controller.abort(); resolve({ failed: "the API timed out" }); }, timeoutMs); });
-  const call = (async () => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<Asked>((resolve) => { timer = setTimeout(() => { controller.abort(); resolve({ failed: "the API timed out" }); }, timeoutMs); });
+  const call = (async (): Promise<Asked> => {
     const response = await fetchFn(JEV_URL, {
       method: "POST",
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
@@ -97,32 +95,28 @@ async function ask(order, key, fetchFn, timeoutMs) {
       signal: controller.signal,
     });
     if (!response.ok) return { failed: `the API answered HTTP ${response.status}` };
-    const body = /** @type {any} */ (await response.json());
+    const body = (await response.json()) as { answers?: Record<string, unknown> } | null;
     return { answer: body?.answers?.[QUESTION] };
-  })().catch(() => ({ failed: "the API call failed" }));
+  })().catch((): Asked => ({ failed: "the API call failed" }));
   try {
-    return /** @type {any} */ (await Promise.race([call, timedOut]));
+    return await Promise.race([call, timedOut]);
   } finally {
     clearTimeout(timer);
   }
 }
 
-/** @param {unknown} answer @returns {{ label: "wake" | "digest" | "drop", confidence: number } | undefined} */
-function readAnswer(answer) {
-  const { choice, confidence } = /** @type {any} */ (answer ?? {});
+function readAnswer(answer: unknown): { label: Label; confidence: number } | undefined {
+  const { choice, confidence } = (answer ?? {}) as { choice?: unknown; confidence?: unknown };
   if (typeof choice !== "string" || !Object.hasOwn(CRITERIA, choice)) return undefined;
   if (typeof confidence !== "number" || !(confidence >= 0 && confidence <= 1)) return undefined;
-  return { label: /** @type {"wake" | "digest" | "drop"} */ (choice), confidence };
+  return { label: choice as Label, confidence };
 }
 
 /**
  * Where should this order go, according to the host's declared triage provider?
- * @param {TriageOrder} order
- * @param {TriageDeps} deps
- * @returns {Promise<Triage>}
  */
-export async function triageOrder(order, deps) {
-  const { host, fetch: fetchFn = fetch, readKey = readKeyFile, diagnostic = (line) => console.error(line), state = processState, timeoutMs = TIMEOUT_MS } = deps;
+export async function triageOrder(order: TriageOrder, deps: TriageDeps): Promise<Triage> {
+  const { host, fetch: fetchFn = fetch, readKey = readKeyFile, diagnostic = (line: string) => console.error(line), state = processState, timeoutMs = TIMEOUT_MS } = deps;
   const { provider, keyPath, minConfidence = 1 } = host.triage ?? { provider: "none" };
   if (provider !== "jev" || keyPath === undefined) return wake("none", "no triage provider is declared");
   if (!hasCause(order)) return wake("none", "the order has no cause, and an order that cannot be read is never routed");
