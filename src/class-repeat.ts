@@ -13,6 +13,8 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { FAILURE_LEDGER_FILE, UNCLASSIFIED_KIND, UNIDENTIFIED_CALLER_KIND, parseFailureLedger, repeatsIn } from "./failure-ledger.ts";
+import type { DecisionDeps } from "./decision-provider.ts";
+import { matchFailureClass, type ClassMatch, type Incident } from "./class-match.ts";
 import { stateEntryPath } from "./host-config.ts";
 import { HOME_CHECKOUT } from "./project-config.ts";
 
@@ -35,7 +37,7 @@ const MAX_REASON_CHARS = 160;
 /** What `gh` is asked to keep of each row: the raw `issues` listing carries every body, which this never reads. */
 const ROW_PROJECTION = "[.[] | {number, state, closed_at, pull_request: (.pull_request != null), labels: [.labels[].name]}]";
 
-export type FailureClass = { id: string, name: string, guard: string | null, guardNote: string | null };
+export type FailureClass = { id: string, name: string, guard: string | null, guardNote: string | null, kinds?: string[] };
 /** a CLOSED row and the class ids its `class:` labels name; `closedAt` is epoch ms */
 export type ClassRow = { number: number, closedAt: number | null, classes: string[] };
 /** a ledger kind seen with two or more DISTINCT refs (`repeatsIn`), `refs` oldest first, and when the newest of them was recorded (epoch ms) */
@@ -51,6 +53,10 @@ export type ClassRepeatFact = { index: FailureClass[], rows: ClassRow[], ledger?
 /** @param {unknown} err @returns {string} */
 const firstLine = (err: unknown): string => String((err as any)?.message ?? err).split("\n")[0].slice(0, MAX_REASON_CHARS);
 
+/** An entry's optional `kinds` (#4633): the event kinds, beyond its `id`, that name the class. Absent when none are declared, so an entry without them parses as it always did. */
+const declaredKinds = (kinds: unknown): { kinds?: string[] } =>
+  Array.isArray(kinds) && kinds.some((k) => typeof k === "string" && k !== "") ? { kinds: kinds.filter((k): k is string => typeof k === "string" && k !== "") } : {};
+
 /**
  * THE INDEX, parsed. `null` is text that is not an index (a bad parse, no `classes` list, an entry without a string `id`): a stated gap, since an index
  * read as empty would call every class label an unknown class.
@@ -61,7 +67,7 @@ export function parseFailureClasses(text: string): FailureClass[] | null {
     const classes = JSON.parse(text)?.classes;
     if (!Array.isArray(classes) || !classes.every((c) => typeof c?.id === "string" && c.id !== "")) return null;
     return classes.map((c) => ({ id: c.id, name: String(c.name ?? ""), guard: typeof c.guard === "string" ? c.guard : null,
-      guardNote: typeof c.guardNote === "string" ? c.guardNote : null }));
+      guardNote: typeof c.guardNote === "string" ? c.guardNote : null, ...declaredKinds(c.kinds) }));
   } catch {
     return null;
   }
@@ -188,6 +194,15 @@ export function groupByClass(index: FailureClass[], rows: ClassRow[], ledger: Le
     const seen = ledger.find((repeat) => repeat.classKey === id);
     return { id, entry: index.find((c) => c.id === id) ?? null, rows: [...group].sort(newestFirst), events: seen?.refs ?? [], eventsNewestAt: seen?.newestAt ?? null };
   });
+}
+
+/**
+ * WHICH CLASS IS A NEW INCIDENT, AS THE LABEL TO APPLY (#4633). `label` is `class:<id>` when the incident matched a known class and `null` when it is none-of-these, in which case NO label is
+ * written: this only names it, and the gate applies it. The matching, its provider and its deterministic rule (exact kind) are `class-match.ts`.
+ */
+export async function classifyIncident(incident: Incident, index: FailureClass[], deps: DecisionDeps): Promise<ClassMatch & { label: string | null }> {
+  const match = await matchFailureClass(incident, index, deps);
+  return { ...match, label: match.classId === null ? null : `${CLASS_LABEL_PREFIX}${match.classId}` };
 }
 
 /** How many occurrences a group holds: its closed rows and its distinct ledger refs. */
