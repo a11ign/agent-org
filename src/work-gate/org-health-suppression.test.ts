@@ -15,20 +15,20 @@ import { CHURN_BOUND, DIGEST_EVERY_MS, ORG_HEALTH_CLASSES, SWITCH_ENV, WINDOW_MS
 
 const T0 = Date.parse("2026-10-09T00:00:00Z");
 const HOUR = 3_600_000;
-const dirs = /** @type {string[]} */ ([]);
+const dirs: string[] = [];
 afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
 
 /** @param {string} cls @param {string} key @param {string} [session] */
-const order = (cls, key, session = "ceo") => ({ session, cause: "org-health", subject: cls, discriminator: key, prompt: `ORG HEALTH: ${cls}`, causeKey: `${session}/org-health/${cls}@${key}` });
+const order = (cls: string, key: string, session: string = "ceo") => ({ session, cause: "org-health", subject: cls, discriminator: key, prompt: `ORG HEALTH: ${cls}`, causeKey: `${session}/org-health/${cls}@${key}` });
 const other = (session = "ceo") => ({ session, cause: "pr-green", subject: "x", discriminator: "1", prompt: "a green PR", causeKey: `${session}/pr-green/1` });
 
 /** A temp state directory and a clock; `tick(orders, atMs)` is what the gate calls, with what it wrote on stderr kept. */
 function harness() {
   const dir = mkdtempSync(join(tmpdir(), "org-health-suppression-"));
   dirs.push(dir);
-  const said = /** @type {string[]} */ ([]);
+  const said: string[] = [];
   const paths = suppressionPaths(dir);
-  const tick = (/** @type {any[]} */ orders, /** @type {number} */ now) => quietOrgHealth(orders, { now, dir, log: (line) => said.push(line) });
+  const tick = (/** @type {any[]} */ orders: any[], /** @type {number} */ now: number) => quietOrgHealth(orders, { now, dir, log: (line) => said.push(line) });
   const logLines = () => (existsSync(paths.log) ? readFileSync(paths.log, "utf8").trim().split("\n").map((l) => JSON.parse(l)) : []);
   return { dir, said, paths, tick, logLines };
 }
@@ -101,8 +101,8 @@ test("the digest rides at most once per DIGEST_EVERY, and what is gathered meanw
 
 test("a digest class whose churn passes the bound is delivered ONCE at the crossing, and again only after it has fallen and crossed again", () => {
   const { tick } = harness();
-  const keys = (/** @type {number} */ n, /** @type {string} */ p) => Array.from({ length: n }, (_, i) => `${p}${i}`);
-  const woke = (/** @type {string} */ key, /** @type {number} */ at) => tick([order("overdue", key)], at).length;
+  const keys = (/** @type {number} */ n: number, /** @type {string} */ p: string) => Array.from({ length: n }, (_, i) => `${p}${i}`);
+  const woke = (/** @type {string} */ key: string, /** @type {number} */ at: number) => tick([order("overdue", key)], at).length;
   for (const [i, k] of keys(CHURN_BOUND, "a").entries()) assert.equal(woke(k, T0 + i * 1000), 0, `key ${i + 1} of ${CHURN_BOUND}: at the bound, not past it`);
   assert.equal(woke("a-cross", T0 + 20_000), 1, "POSITIVE: the key that takes the class past the bound wakes");
   assert.equal(woke("a-after", T0 + 21_000), 0, "NEGATIVE: not again while it stays above");
@@ -126,7 +126,7 @@ test("a class in no table is delivered (a new detector is loud), and the failure
   const { tick } = harness();
   assert.equal(tick([order("a-detector-nobody-declared", "x")], T0).length, 1);
   assert.equal(tick([order("a-detector-nobody-declared", "x")], T0 + 1000).length, 0, "it is quieted like a page class once seen");
-  const said = /** @type {string[]} */ ([]);
+  const said: string[] = [];
   const blocked = mkdtempSync(join(tmpdir(), "org-health-suppression-"));
   dirs.push(blocked);
   mkdirSync(join(blocked, "org-health-suppression.json"));
@@ -170,7 +170,7 @@ const OBSERVED_CLASSES = ["overdue", "runner-behind-newest-release", "order-defe
   "fleet-auto-off-refusing", "github-incident"];
 
 /** @param {string} dir @returns {string[]} every non-test `.mjs` under `dir` */
-function sourcesUnder(dir) {
+function sourcesUnder(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
     const path = join(dir, name);
     if (statSync(path).isDirectory()) return name === "node_modules" || name === "fixtures" ? [] : sourcesUnder(path);
@@ -181,14 +181,14 @@ function sourcesUnder(dir) {
 /** Every `org-health/<class>` a source spells as a literal causeKey: the three order sources that do not go through `SIGNALS`. */
 const literalClasses = () => {
   const src = fileURLToPath(new URL("..", import.meta.url));
-  const found = new Set(/** @type {string[]} */ ([]));
+  const found = new Set<string>();
   for (const file of sourcesUnder(src)) for (const m of readFileSync(file, "utf8").matchAll(/org-health\/([a-z][a-z-]*[a-z])(?=[@/:`"'$])/g)) found.add(m[1]);
   return found;
 };
 
 test("EVERY class an org-health order can carry is declared in the table, so a new detector cannot page (or stay silent) by accident", () => {
   const declared = new Set(Object.keys(ORG_HEALTH_CLASSES));
-  const wanted = new Map([...Object.values(SIGNALS).map((c) => [c, "SIGNALS"]), ...OBSERVED_CLASSES.map((c) => [c, "the trace store's 18"]), ...[...literalClasses()].map((c) => [c, "a literal causeKey"])]);
+  const wanted = new Map<string, string>([...Object.values(SIGNALS).map((c): [string, string] => [c, "SIGNALS"]), ...OBSERVED_CLASSES.map((c): [string, string] => [c, "the trace store's 18"]), ...[...literalClasses()].map((c): [string, string] => [c, "a literal causeKey"])]);
   assert.deepEqual([...wanted].filter(([cls]) => !declared.has(cls)), [], "a class missing from ORG_HEALTH_CLASSES");
   for (const [cls, rule] of Object.entries(ORG_HEALTH_CLASSES)) assert.ok(rule.severity === "page" || (rule.severity === "digest" && rule.bound > 0), `${cls} has a severity`);
 });

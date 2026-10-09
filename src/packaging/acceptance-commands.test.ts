@@ -132,7 +132,7 @@ function fixtureProjectFiles(): Record<string, string> {
     "packages/beta/src/plain.test.ts": "export {};\n",
     "packages/gamma/src/needs-token.test.ts": "// requires: token\nexport {};\n",
     "packages/guards/src/assert-glob-not-empty.mjs": "export {};\n",
-    "scripts/rstest/rstest.config.mjs": "// requires: history\nexport default {};\n",
+    "scripts/rstest/rstest.config.ts": "// requires: history\nexport default {};\n",
     ...labFixtureFiles(),
     ...boardFixtureFiles(),
   };
@@ -267,7 +267,7 @@ test("classifyCommand: #1860 a genuine corpus-backup invocation is still refused
 test("classifyCommand: #1860 a test file merely NAMED after corpus-backup is still runnable -- the exact "
   + "false positive that refused #1860's own acceptance command on `corpus-backup.test.ts`", () => {
   assert.deepEqual(
-    classifyCommand("npx rstest run --config scripts/rstest/rstest.config.mjs "
+    classifyCommand("npx rstest run --config scripts/rstest/rstest.config.ts "
       + "--include packages/lab/src/packaging/corpus-backup.test.ts"),
     { verdict: "runnable" });
 });
@@ -3104,7 +3104,7 @@ test("#2099: #2084's REAL Acceptance -- the live correct-row case -- files clean
   // named `rstest --include` command, so a row this job could not honestly run read as one it could. The
   // gate reads it now and refuses it, so this control uses a file that needs nothing -- the point of the
   // control is the hand-run split, not which test the command names.
-  const real = "## Acceptance\n\n```\nnpx rstest run --config scripts/rstest/rstest.config.mjs "
+  const real = "## Acceptance\n\n```\nnpx rstest run --config scripts/rstest/rstest.config.ts "
     + `--include ${REAL_FILE}\n\`\`\`\n\n`
     + "**What remains, run by hand and quoted into the PR body:**\n\n```\n$ " + HAND_RUN_GH + "\n```\n";
   assert.equal(handRunAcceptanceReason(real, "row-file"), null);
@@ -3203,7 +3203,7 @@ test("#2118 CONTROL, THE ONE THAT DECIDES WHETHER THIS ROW HELPED: #2084's REAL 
   // named `rstest --include` command, so a row this job could not honestly run read as one it could. The
   // gate reads it now and refuses it, so this control uses a file that needs nothing -- the point of the
   // control is the hand-run split, not which test the command names.
-  const real = "## Acceptance\n\n```\nnpx rstest run --config scripts/rstest/rstest.config.mjs "
+  const real = "## Acceptance\n\n```\nnpx rstest run --config scripts/rstest/rstest.config.ts "
     + `--include ${REAL_FILE}\n\`\`\`\n\n`
     + "**What remains, run by hand and quoted into the PR body:**\n\n```\n$ " + HAND_RUN_GH + "\n```\n";
   const report = acceptanceReport(real, () => 0);
@@ -3344,7 +3344,7 @@ test("#2118: the evidence is NOT overridable through `deps` -- it is the field t
 
 /** The fixture project's file that reaches the corpus and declares nothing: the shape the row's own probe used, and it exists, so `existsSync` holds. */
 const CORPUS_FILE = "packages/alpha/src/reads-corpus.test.ts";
-const RSTEST = "npx rstest run --config scripts/rstest/rstest.config.mjs";
+const RSTEST = "npx rstest run --config scripts/rstest/rstest.config.ts";
 /** Every spelling of "run this one file" that this repo's rows, scripts and CI use. */
 const NAMING_SPELLINGS: Record<string, (file: string) => string> = {
   "rstest --include": (file) => `${RSTEST} --include ${file}`,

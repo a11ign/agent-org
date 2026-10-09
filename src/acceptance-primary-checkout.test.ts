@@ -37,7 +37,7 @@ function rowBody(lines: string[], extra = ""): string {
 // the third being the `bash -c '...'` spelling. Copied from the row's pasted transcript, not retyped from memory.
 const FOUND_ON_4220 = [
   "cd /home/agent/repos/a11y-witness && node scripts/pnpm.mjs install --frozen-lockfile",
-  "cd /home/agent/repos/a11y-witness && npx rstest run --config scripts/rstest/rstest.config.mjs --include packages/nvda-speech/x.test.ts",
+  "cd /home/agent/repos/a11y-witness && npx rstest run --config scripts/rstest/rstest.config.ts --include packages/nvda-speech/x.test.ts",
   "bash -c 'cd /home/agent/repos/a11y-witness && test \"$(grep -c releasablePaths.*packages/nvda-speech/ .agent-org/project.json)\" = 1'",
 ];
 

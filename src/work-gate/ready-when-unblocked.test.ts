@@ -19,22 +19,22 @@ const COMPLETE = `## What it is\n\nthe work\n\n## Region\n\n\`\`\`\nsrc/thing.mj
 const WITHOUT_OPEN_CHECK = `${COMPLETE.split("## Open-check")[0]}${LINE}\n`;
 
 /** @param {number} number @param {Record<string, any>} [more] a row as the tick's open-row read gives it: backlog, one edge, closed */
-const tickRow = (number, more = {}) => ({ number, title: `row ${number}`, labels: [{ name: "backlog" }], body: COMPLETE, blockedBy: { nodes: [{ number: 1, state: "CLOSED" }] }, ...more });
+const tickRow = (number: number, more: Record<string, any> = {}) => ({ number, title: `row ${number}`, labels: [{ name: "backlog" }], body: COMPLETE, blockedBy: { nodes: [{ number: 1, state: "CLOSED" }] }, ...more });
 
 /**
  * A GitHub in memory. `live` is what a fresh read of each row says (labels, body), defaulting to the tick's own; `calls` logs every call; `refuse` makes the promotion refuse; `fail` makes a call throw.
  * @param {{ rows: any[], live?: Record<number, { labels?: string[], body?: string, state?: string, blockedBy?: any }>, merged?: Record<number, { number: number, mergedAt: string }>, refuse?: Record<number, string>, fail?: string[] }} setup
  */
-function world({ rows, live = {}, merged = {}, refuse = {}, fail = [] }) {
+function world({ rows, live = {}, merged = {}, refuse = {}, fail = [] }: { rows: any[]; live?: Record<number, { labels?: string[]; body?: string; state?: string; blockedBy?: any; }>; merged?: Record<number, { number: number; mergedAt: string; }>; refuse?: Record<number, string>; fail?: string[]; }) {
   /** @type {string[]} */
-  const calls = [];
+  const calls: string[] = [];
   /** @type {import("./ready-when-unblocked.mjs").ReadyIo} */
-  const io = {
+  const io: import("./ready-when-unblocked.mjs").ReadyIo = {
     read: (n) => {
       calls.push(`read ${n}`);
       if (fail.includes("read")) throw new Error(`HTTP 502 on read #${n}`);
       const row = rows.find((r) => r.number === n);
-      return { labels: live[n]?.labels ?? row.labels.map((/** @type {any} */ l) => l.name), state: live[n]?.state ?? "OPEN", body: live[n]?.body ?? row.body, blockedBy: live[n]?.blockedBy ?? row.blockedBy };
+      return { labels: live[n]?.labels ?? row.labels.map((/** @type {any} */ l: any) => l.name), state: live[n]?.state ?? "OPEN", body: live[n]?.body ?? row.body, blockedBy: live[n]?.blockedBy ?? row.blockedBy };
     },
     mergedClosers: (n) => { calls.push(`mergedClosers ${n}`); return merged[n] ? [merged[n]] : []; },
     promote: (n) => { calls.push(`promote ${n}`); return refuse[n] ? { ok: false, refusal: refuse[n] } : { ok: true }; },
@@ -43,12 +43,12 @@ function world({ rows, live = {}, merged = {}, refuse = {}, fail = [] }) {
 }
 
 /** The tick's two steps in the tick's order: promote what is declared, then ask the order cause about whatever is left. */
-function tick(/** @type {Parameters<typeof world>[0]} */ setup) {
+function tick(/** @type {Parameters<typeof world>[0]} */ setup: Parameters<typeof world>[0]) {
   const { io, calls } = world(setup);
   const clearings = unclaimedClearings(setup.rows, TODAY, NOW).filter(({ row }) => declaresReadyWhenUnblocked(row.body));
   const result = promoteReadyWhenUnblocked({ clearings, notStartable: NOT_STARTABLE, now: NOW }, io);
   /** @type {string[]} */
-  const log = [];
+  const log: string[] = [];
   reportReadyWhenUnblocked(result, (line) => log.push(line));
   const asked = unclaimedBlockerClearedOrders(setup.rows, TODAY, { now: NOW }).map((o) => o.subject);
   return { result, calls, log, asked };

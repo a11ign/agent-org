@@ -27,7 +27,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "rstest run --config scripts/rstest/rstest.config.mjs",
+    "test": "rstest run --config scripts/rstest/rstest.config.ts",
     "changeset": "pnpm dlx @changesets/cli@3.0.1",
     "messaging:listen": "node src/messaging/listen.mjs",
     "messaging:watch": "node src/messaging/watch.mjs",
