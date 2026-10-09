@@ -145,9 +145,12 @@ export function drainReason(mySession, drained) {
  * reads. The row being claimed is never counted against itself, so RESUMING the instance's own row is not a second
  * one and never reaches the refusal (`writeRowLabels` asks only when the claim is not already this session's).
  *
- * THE HONEST RESIDUAL: the interval between a row closing and the next tick observing it, when the label is gone and
- * the registry has not yet recorded the row. That window is what the failed-cycle ledger line exists to catch
- * (`cycleVerdict` writes `clean: false` for an instance that ends with two rows).
+ * THE CLAIM RECORDS ITSELF (#4387): `row-claim` writes the row into the registry when the claim lands, so a row
+ * claimed and then released or closed before a tick still counts (`worker-4069` held #4069 and #4274 on that gap).
+ *
+ * THE HONEST RESIDUAL: a registry that could not be written (the claim says so on stderr), and a claim recorded inside
+ * the teardown's own pass, which rewrites the file it read. That window is what the failed-cycle ledger line exists to
+ * catch (`cycleVerdict` writes `clean: false` for an instance that ends with two rows).
  *
  * @param {string} mySession
  * @param {number} issueNumber the row being claimed

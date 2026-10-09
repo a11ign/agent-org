@@ -60,7 +60,7 @@
 import { TSX_IMPORT } from "./tsx-import.ts";
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
-import { existsSync, realpathSync, readFileSync } from "node:fs";
+import { existsSync, realpathSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 // RELATIVE, NOT the `@a11ign/screenreader-fleet/cli-flags` package specifier: that export map
@@ -2604,6 +2604,35 @@ function instanceNow(mySession: string, issueNumber: number): { spare: boolean; 
 }
 
 /**
+ * #4387: A SPARE'S CLAIM IS RECORDED IN THE REGISTRY WHEN IT IS MADE, not when a tick next looks. {@link instanceNow}
+ * reads the registry and the open `session:<name>` labels, and the registry was written only by `wake.mjs`'s teardown, so
+ * a row claimed and RELEASED before a tick left neither: `worker-4069` claimed #4069, released it ninety seconds later,
+ * and claimed #4274, and the rule that was written to stop exactly that saw an instance that had held nothing. The row
+ * stays in the registry after the release, which is the point: the instance HELD it.
+ *
+ * Idempotent, so resuming a row records nothing new. FAILS OPEN AND SAYS SO, like {@link instanceNow}: the claim has
+ * landed by now, and a guard that un-claims or crashes a claim over a state file gets bypassed. The write is a rename, so
+ * the tick reading the registry never sees half of one. THE RESIDUAL: the teardown rewrites the whole file from what it read
+ * at the start of its pass, so a claim recorded inside that pass is lost to it; the labels cover a row still held.
+ * @param {string} mySession @param {number} issueNumber
+ */
+function recordHeldRow(mySession: string, issueNumber: number): void {
+  try {
+    if (!isSpareRole(mySession)) return;
+    const path = sparePathsFrom(ledgerPathFrom([])).registry;
+    const registry = readSpareRegistry(path);
+    const before = registry[mySession] ?? { spawnedAt: Date.now(), rows: [] };
+    registry[mySession] = { ...before, rows: [...new Set([...(before.rows ?? []), issueNumber])] };
+    const staged = `${path}.${process.pid}.tmp`;
+    writeFileSync(staged, `${JSON.stringify(registry)}\n`);
+    renameSync(staged, path);
+  } catch (error) {
+    process.stderr.write(`row-claim: could not record #${issueNumber} as a row ${mySession} holds (${String((error as any)?.message ?? error)
+      .split("\n")[0]}) -- the claim stands, but a release before the next tick will not count it (#4387).\n`);
+  }
+}
+
+/**
  * #2617: `decline` and `conflict`, BEFORE EITHER READS A THING -- a second tracker's row of this number must never be acted on as the first's.
  * @param {"decline" | "conflict"} mode @param {number} issueNumber @param {string[]} rest
  */
@@ -2688,6 +2717,9 @@ function runDispatchOrClaim(mode: "dispatch" | "claim", issueNumber: number, res
   try {
     const result = claimOrDispatch(mode, issueNumber, mySession, { branch, worktree, blockedBy, adopt });
     if (result.claimed) {
+      // #4387: only a CLAIM is a row the instance holds. A dispatch is an offer ("DISPATCHED (not started)") the worker may decline, and
+      // recording it would leave an entry no release removes, refusing the worker's later legitimate claim.
+      if (mode === "claim") recordHeldRow(mySession, issueNumber);
       const claimLine = claimLineFor(mode, issueNumber, mySession, { branch, worktree, adopt,
         replacedTip: (result as { replacedTip?: string }).replacedTip });
       if (result.statusMoved) {
