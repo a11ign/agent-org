@@ -6,7 +6,8 @@
  * for each cell rather than for the three the author thought of.
  *
  * THE ORDER (`ownerOfPr`): label, the live session holding the row it closes, the live session holding the row its branch suffix
- * names, a live session the head ref names, a live session that stamped its worktree, else `ceo`. The ORACLE below is written
+ * names, a live session the head ref names, a live session that stamped its worktree, else -- #4644 -- `product-manager` for a PR whose
+ * label names an ENDED session and whose every row is closed (`owner-gone`), else `ceo`. The ORACLE below is written
  * out here, from that sentence, and not derived from the implementation -- a grid compared with the code it tests agrees by
  * construction.
  *
@@ -44,8 +45,8 @@ const prOf = (head: string, over: Fixture = {}) => ({
   closingIssuesReferences: [], ...over,
 });
 
-const LABELS = { none: [], own: ["session:worker-7"] } as const;
-const CLOSING = { none: [], live: [11], split: [11, 12] } as const;
+const LABELS = { none: [], own: ["session:worker-7"], ended: ["session:worker-8"] } as const;
+const CLOSING = { none: [], live: [11], split: [11, 12], closed: [13] } as const; // 13 is in no open row: its claim is gone
 const BRANCHES = {
   plain: "agent/some-slug", suffixLive: "agent/some-slug-14", suffixReleased: "agent/some-slug-15",
   sessionLive: "agent/worker-21", sessionRetired: "agent/worker-99",
@@ -58,14 +59,30 @@ type Cell = { label: keyof typeof LABELS, closing: keyof typeof CLOSING, branch:
 const CELLS: Cell[] = Object.keys(LABELS).flatMap((label) => Object.keys(CLOSING).flatMap((closing) =>
   Object.keys(BRANCHES).flatMap((branch) => Object.keys(STAMPS).map((stamp) => ({ label, closing, branch, stamp }))))) as Cell[];
 
-/** The declared order, written out. A split is a question, so it skips the two row rungs and the order goes on below them. */
+/** What `main` hands `withPrOwners`: worker-8 is absent from herdr AND recorded by a teardown, so its label is dead (#3093); worker-7's stands. */
+const ENDED = { agents: () => [] as string[], ended: () => new Map([["worker-8", 1]]), say: () => {} };
+
+/**
+ * The declared order, written out. A split is a question, so it skips the two row rungs and the order goes on below them. A DEAD label is no label
+ * (#3093). #4644: every row the PR names closed -- `13`, and a branch suffix that is not a released-but-open row (`15` is in the open rows) -- makes
+ * the dead owner's PR `product-manager`'s, below every rung that can name a live session.
+ */
 function expectedOwner({ label, closing, branch, stamp }: Cell): string {
   if (label === "own") return "worker-7";
   if (closing === "live") return "worker-11";
   if (closing !== "split" && branch === "suffixLive") return "worker-14";
   if (branch === "sessionLive") return "worker-21";
   if (stamp === "live") return "worker-31";
-  return "ceo";
+  return deadOwnersPr({ label, closing, branch }) ? "product-manager" : "ceo";
+}
+
+/**
+ * Every row the PR NAMES is closed (#4644): the closing row `13`, or -- when it closes none -- the number a branch ends in, which `rowsNamedBy` reads as a
+ * row whether or not the branch was a row's (`agent/worker-99` names row 99). A branch ending in `15` names a row that is OPEN, so it is not closed.
+ */
+function deadOwnersPr({ label, closing, branch }: Pick<Cell, "label" | "closing" | "branch">): boolean {
+  if (label !== "ended" || branch === "suffixReleased") return false;
+  return closing === "closed" || (closing === "none" && branch === "sessionRetired");
 }
 
 const pullRequestFor = (cell: Cell, over: Fixture = {}) => prOf(BRANCHES[cell.branch], {
@@ -75,7 +92,7 @@ const pullRequestFor = (cell: Cell, over: Fixture = {}) => prOf(BRANCHES[cell.br
 
 /** The orders a tick builds for this PR, through the SAME wiring `main` uses (`withPrOwners`). */
 function ordersFor(pr: Fixture, stamp: string | null = null): Order[] {
-  return decide({ prs: withPrOwners([pr], ROWS, () => stamp), readyRows: [], openRows: ROWS });
+  return decide({ prs: withPrOwners([pr], ROWS, () => stamp, ENDED), readyRows: [], openRows: ROWS });
 }
 
 test("POSITIVE CONTROL: #2921's shape, a LABELLED DRAFT, goes to the session its label names", () => {
@@ -95,8 +112,8 @@ test("POSITIVE CONTROL: no label, no row and an `agent/` branch naming a live se
   assert.equal(empty.causeKey, "ceo/pr-checks-failing/pr-2880/24b0e94f");
 });
 
-test("the grid: ownerOfPr names a session for EVERY cell, never product-manager, and the one the order says", () => {
-  assert.equal(CELLS.length, 2 * 3 * 5 * 3, "the grid is the product of its dimensions: a shrunken one is red, not green");
+test("the grid: ownerOfPr names a session for EVERY cell, product-manager only for a dead owner's PR with every row closed, and the one the order says", () => {
+  assert.equal(CELLS.length, 3 * 4 * 5 * 3, "the grid is the product of its dimensions: a shrunken one is red, not green");
   assert.equal(new Set(CELLS.map((c) => JSON.stringify(c))).size, CELLS.length, "and no cell is a duplicate");
   const reached = new Set<string>();
   for (const cell of CELLS) {
@@ -105,12 +122,12 @@ test("the grid: ownerOfPr names a session for EVERY cell, never product-manager,
     assert.equal(rest.length, 0, `${where}: exactly one failing-checks order`);
     assert.equal(order.cause, "pr-checks-failing", where);
     assert.equal(order.session, expectedOwner(cell), where);
-    assert.notEqual(order.session, "product-manager", `${where}: no branch of the order returns product-manager for a red check`);
+    if (order.session === "product-manager") assert.equal(cell.label, "ended", `${where}: product-manager answers a dead owner's PR and nothing else (#4644)`);
     assert.equal(order.causeKey.startsWith(`${order.session}/pr-checks-failing/`), true, `${where}: the dedupe key moves with the session`);
     reached.add(order.session);
   }
   // THE POSITIVE CONTROL OF THE EMPTINESS ABOVE: every rung's session was actually answered by some cell.
-  assert.deepEqual([...reached].sort(), ["ceo", "worker-11", "worker-14", "worker-21", "worker-31", "worker-7"]);
+  assert.deepEqual([...reached].sort(), ["ceo", "product-manager", "worker-11", "worker-14", "worker-21", "worker-31", "worker-7"]);
 });
 
 test("the same grid for the NOT CONVINCED order: it has an owner in every cell too, and the same one", () => {
@@ -139,7 +156,7 @@ test("each rung SERVES a cell of its own: strip the rungs one at a time and the 
   for (const [source, pr, session] of steps) {
     const [order] = ordersFor(pr, source === "ceo" ? null : "worker-31");
     assert.equal(order.session, session, source);
-    assert.equal(ownerOfPr(withPrOwners([pr], ROWS, () => (source === "ceo" ? null : "worker-31"))[0]).source, source);
+    assert.equal(ownerOfPr(withPrOwners([pr], ROWS, () => (source === "ceo" ? null : "worker-31"), ENDED)[0]).source, source);
   }
 });
 

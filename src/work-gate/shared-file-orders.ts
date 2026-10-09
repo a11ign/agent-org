@@ -28,7 +28,7 @@ import { holdersOf } from "../pr-hold-state.ts";
 import { SESSION_PREFIX } from "../project-vocabulary.ts";
 import { isAcceptancePath } from "../acceptance-file.ts";
 import { waitItemOf, declaredWaitsOf } from "../wait-condition.ts";
-import { labelsOf } from "../work-gate.ts";
+import { labelsOf, sessionOf } from "../work-gate.ts";
 import { ownerOfPr, DEAD_OWNER_FALLBACK } from "./pr-orders.ts";
 
 /** Where an order goes when nobody can be named as the later pull request's owner (the row's ruling; `ownerOfPr`'s own last rung is `ceo`). */
@@ -95,12 +95,13 @@ function orderFor(pr: any, overlaps: Overlap[]) {
   const { session: labelled, source } = ownerOfPr(pr);
   const unowned = source === "ceo";
   const byBot = source === "dependency-bot";
+  const ownerGone = source === "owner-gone";
   const session = unowned ? NO_OWNER_SESSION : labelled;
   const ref = `pr-${subjectRef(pr.repoKey, pr.number)}`;
   const digest = createHash("sha1").update(overlaps.map(keyPart).join(";")).digest("hex").slice(0, HASH_LENGTH);
   const what = whatItSays(pr, overlaps);
   const holder = unowned ? "<its-owner>" : session; // an ownerless pull request is held by the session that takes it, not by the reader of this order
-  const prompt = `${what}${ownerSentence(pr, { unowned, byBot })} ${remedy(pr, overlaps, holder)}`;
+  const prompt = `${what}${ownerSentence(pr, { unowned, byBot, ownerGone })} ${remedy(pr, overlaps, holder)}`;
   return {
     session,
     ...(session === DEAD_OWNER_FALLBACK ? {}
@@ -123,8 +124,9 @@ function whatItSays(pr: any, overlaps: Overlap[]) {
     + "Whichever merges second conflicts with the first, and today nothing says so until GitHub reports `DIRTY`, after the first has merged. ";
 }
 
-function ownerSentence(pr: any, { unowned, byBot }: { unowned: boolean; byBot: boolean; }) {
+function ownerSentence(pr: any, { unowned, byBot, ownerGone }: { unowned: boolean; byBot: boolean; ownerGone: boolean; }) {
   if (byBot) return "A dependency bot opened it and no session works such a pull request, so the sequencing is yours (#4624).";
+  if (ownerGone) return `Its \`${SESSION_PREFIX}\` label names \`${sessionOf(pr)}\`, which has ENDED, and the row it closed is closed, so the sequencing is yours to route: re-lane it (\`${SESSION_PREFIX}<name>\` on the PR), or close it (#4644).`;
   if (!unowned) return "It is yours (its session label, or the row it closes, names you), so the sequencing is yours.";
   return `IT HAS NO OWNER: no \`${SESSION_PREFIX}\` label of a live session, no live session holding a row it closes or its branch \`${pr.headRefName}\` names, and no live session stamped its worktree. `
     + `You are the first reader for process, so put the label of a session that can act on it (\`${SESSION_PREFIX}<name>\`), then take the remedy below.`;

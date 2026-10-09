@@ -376,6 +376,7 @@ function ownershipOf(pr: any, source: string, task: string) {
   }
   if (source === "label") return `It carries your session label, so the ${task} is yours.`;
   if (source === "dependency-bot") return `A dependency bot opened it and no session works such a pull request, so the ${task} is yours to route: re-lane it (\`${SESSION_PREFIX}<name>\` on the PR), or close it.`;
+  if (source === "owner-gone") return `Its \`${SESSION_PREFIX}\` label names \`${sessionOf(pr)}\`, which has ENDED, and the row it closed is closed, so the ${task} is yours to route: re-lane it (\`${SESSION_PREFIX}<name>\` on the PR), or close it.`;
   return `The ${task} is yours: ${notConvincedBasis(pr, source)}.`;
 }
 
@@ -717,17 +718,24 @@ export const DEAD_OWNER_FALLBACK = "product-manager";
  *                     by construction and it used to fall to rung 7 as "nobody could be named": #4470, #4471 and #4472, an hour after #4386
  *                     closed the same class for agent-org's own pull requests. Its owner is `ceo` (the seat that rules on a dependency bump
  *                     and holds the publish order), and the ladder SAYS so, which is what keeps it out of `owner-unresolved`.
- *   7. `ceo`          nobody could be named. Never `product-manager`.
+ *   7. `owner-gone`   a pull request whose label names an ENDED session AND whose closing rows are all CLOSED (#4644). Rungs 2-5 each need a LIVE
+ *                     session holding an OPEN claimed row, so a closed row made all four fail and a11ign#4626 (label `session:worker-4624`, row #4624
+ *                     closed while it stayed open) landed on rung 8 as "nobody could be named" when somebody could: the owner is known, and gone.
+ *                     `product-manager` owns it (`DEAD_OWNER_FALLBACK`): the way out is process -- re-label it to a session that can act, or close it --
+ *                     and the ladder SAYS so, which keeps it out of `owner-unresolved`. `withClosingRowOwners` sets `closingRowsClosed` ONLY on a PR carrying
+ *                     `labelEnded`, so a label that stands, an open row or no label at all is unchanged.
+ *   8. `ceo`          nobody could be named. Never `product-manager` for a PR with no dead owner to name.
  * "Live" in rungs 2-5 is the same test #2912 made: the session still HOLDS A CLAIM on an open row. `isLiveSession`
  * is not asked, so a live session holding NO claim is answered by `ceo`, which can act.
  */
-export function ownerOfPr(pr: any): { session: string; source: "label" | "closing-row" | "branch-row" | "branch-name" | "stamp" | "dependency-bot" | "ceo"; } {
+export function ownerOfPr(pr: any): { session: string; source: "label" | "closing-row" | "branch-row" | "branch-name" | "stamp" | "dependency-bot" | "owner-gone" | "ceo"; } {
   const label = sessionOf(pr);
   if (label && !pr?.labelEnded) return { session: label, source: "label" };
   if (pr?.rowOwner) return { session: pr.rowOwner.session, source: pr.rowOwner.source === "branch" ? "branch-row" : "closing-row" };
   if (pr?.branchOwner) return { session: pr.branchOwner.session, source: "branch-name" };
   if (pr?.stampOwner) return { session: pr.stampOwner.session, source: "stamp" };
   if (isDependencyBotPr(pr)) return { session: UNOWNED_PR_SESSION, source: "dependency-bot" };
+  if (pr?.closingRowsClosed) return { session: DEAD_OWNER_FALLBACK, source: "owner-gone" };
   return { session: UNOWNED_PR_SESSION, source: "ceo" };
 }
 
@@ -753,6 +761,7 @@ function ownershipSentence(pr: any, { blocking, nowMs }: { blocking: any[]; nowM
     "branch-name": `It carries no session label and closes no row you hold, but its branch ${branch} names you, so it is yours to fix.`,
     stamp: `It carries no session label and closes no row you hold, but the worktree its branch ${branch} is checked out in was stamped by you, so it is yours to fix.`,
     "dependency-bot": "A dependency bot opened it and no session works such a pull request, so it is yours to route: re-lane it to a session that should fix it, or close it.",
+    "owner-gone": `Its \`${SESSION_PREFIX}\` label names \`${sessionOf(pr)}\`, which has ENDED, and the row it closed is closed, so it is yours to route: re-lane it (\`${SESSION_PREFIX}<name>\` on the PR) to a session that can fix it, or close it.`,
     ceo: unownedSentence(pr, { blocking, nowMs }),
   };
   return sentences[source];
@@ -954,6 +963,7 @@ function notConvincedBasis(pr: any, source: string) {
   if (source === "branch-row") return `its branch \`${pr.headRefName}\` was claimed for row #${pr?.rowOwner?.row}, which is held by you`;
   if (source === "branch-name") return `its branch \`${pr.headRefName}\` names you`;
   if (source === "dependency-bot") return "a dependency bot opened it and no session works such a pull request";
+  if (source === "owner-gone") return `its \`${SESSION_PREFIX}\` label names \`${sessionOf(pr)}\`, which has ENDED, and the row it closed is closed`;
   return `the worktree its branch \`${pr.headRefName}\` is checked out in was stamped by you`;
 }
 
