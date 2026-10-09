@@ -27,7 +27,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { HOME_CHECKOUT, HOST_ENV } from "../project-config.ts";
 import { sandboxGitEnv } from "../lib/git-env.ts";
@@ -113,8 +113,10 @@ function fixtureProject(): string {
   // `cause-declaration.ts` requires the plugin the declaration names at import. a11ign's imports the product's `src` by relative
   // path, which a second project does not have, so the fixture project brings a plugin of its own, declaring no causes.
   cpSync(join(REPO, ".agent-org/roles"), join(checkout, ".agent-org/roles"), { recursive: true }); // `project-roles.ts` refuses a project without its role briefs
-  mkdirSync(join(checkout, ".agent-org/plugins"), { recursive: true });
-  writeFileSync(join(checkout, ".agent-org/plugins/causes.ts"), "export const causeDeclarations = [];\n");
+  // The plugin goes where the copied declaration names it: CI pins the project at a ref that may still say `causes.mjs`.
+  const pluginPath = join(checkout, ".agent-org", JSON.parse(readFileSync(join(checkout, ".agent-org/project.json"), "utf8")).causes.module);
+  mkdirSync(dirname(pluginPath), { recursive: true });
+  writeFileSync(pluginPath, "export const causeDeclarations = [];\n");
   writeFileSync(join(checkout, "docs/lane-ownership.json"), JSON.stringify(FIXTURE_LANES));
   writeFileSync(join(checkout, "docs/owned-path-facts.json"), JSON.stringify(FIXTURE_FACTS));
   writeFileSync(join(checkout, FIXTURE_ROOT_FILE), "x\n");
