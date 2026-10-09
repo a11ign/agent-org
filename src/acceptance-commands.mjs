@@ -76,6 +76,7 @@ import { localImports, importedNamesFor, stripComments } from "./lib/local-impor
 import { toolImports } from "./lib/installed-tool-imports.mjs";
 import { resolveTypescript } from "./lib/resolve-typescript.mjs";
 import { defectClassReport } from "./defect-class-line.mjs"; // #4123
+import { HostConfigRefusal, homeHostConfig } from "./host-config.mjs"; // #4322
 // #2619 (child 3d of #69): the shared-resource ban and the template's field/question names -- a
 // project's own values, moved out of this file's `FLEET_LAB_PATTERNS`/`FLEET_QUESTION`.
 import { RESOURCES, FLEET_QUESTION, ACCEPTANCE_FIELD, CLOSES_FIELD } from "./project-vocabulary.mjs";
@@ -1759,10 +1760,13 @@ export function declaredNewFiles(body) {
  * there are exactly two, because the rule itself has exactly two arms -- for the Region-vouched shape
  * (#2192) they are the same two arms with different wording, so each half names both.
  * @param {string} body @param {string} tool the CLI to name in the refusal
- * @param {{ exists?: (path: string) => boolean, trackedDirs?: string[], regionEntries?: string[], trackedFiles?: string[] }} [deps]
+ * @param {{ exists?: (path: string) => boolean, trackedDirs?: string[], regionEntries?: string[], trackedFiles?: string[],
+ *   primaryCheckout?: string | null }} [deps] `primaryCheckout` is #4322's, see `primaryCheckoutCdReason`
  * @returns {string | null}
  */
 export function acceptancePathsReason(body, tool, deps = {}) {
+  const primary = primaryCheckoutCdReason(body, tool, deps);
+  if (primary) return primary;
   const unresolved = unresolvedAcceptancePaths(body, deps);
   if (unresolved.length === 0) return null;
   const halves = [
@@ -1770,6 +1774,68 @@ export function acceptancePathsReason(body, tool, deps = {}) {
     vouchedPathsRefusal(unresolved.filter((hit) => hit.twins), tool),
   ];
   return halves.filter(Boolean).join("\n");
+}
+
+// #4322: `cd <dir>` AT A COMMAND'S OWN POSITION -- the start of the line, after `&&` `||` `;` `|` `(`, or opening a `bash -c '...'` string.
+// A `cd` inside an `echo "cd /x"` is prose and sits after none of those, so it is not matched. Not anchored to the START the way
+// `LEADING_CD` is: the second spelling #4220 carries hides the `cd` one quote deep.
+const CD_AT_COMMAND_POSITION = /(?:^|&&|\|\||[;|(]|\b(?:ba|z)?sh\s+-\w*c\s+['"])\s*cd\s+(?:"([^"]*)"|'([^']*)'|([^\s&;|'")]+))/g;
+
+/**
+ * The directory inside `checkout` that `command` `cd`s into, or null. A subdirectory counts: it is the same checkout.
+ * Only the two spellings #4220 carries (a bare `cd <path> && cmd`, and the same inside `bash -c '...'`) are claimed; `--prefix` and `-C`
+ * are not (#4322, done-when 2).
+ * @param {string} command @param {string} checkout the project's own primary checkout
+ * @returns {string | null}
+ */
+export function cdIntoCheckout(command, checkout) {
+  const root = checkout.replace(/\/+$/, "");
+  for (const match of command.matchAll(CD_AT_COMMAND_POSITION)) {
+    const target = (match[1] ?? match[2] ?? match[3]).replace(/\/+$/, "");
+    if (target === root || target.startsWith(`${root}/`)) return target;
+  }
+  return null;
+}
+
+/**
+ * The project's own primary checkout, READ FROM THE HOST'S DECLARATION and not typed here (#4322 done-when 4): a project checked out
+ * elsewhere is protected the same way. `null` is "cannot tell" -- no declaration is readable, as on a CI runner -- and never "there is
+ * none", so the callers skip the check rather than pass it.
+ * @returns {string | null}
+ */
+function primaryCheckoutOfHost() {
+  try {
+    const host = homeHostConfig();
+    return host.projects.find((project) => project.id === host.primary)?.checkout ?? null;
+  } catch (cause) {
+    if (cause instanceof HostConfigRefusal) return null;
+    throw cause;
+  }
+}
+
+/**
+ * #4322: AN ACCEPTANCE THAT `cd`s INTO THIS PROJECT'S OWN PRIMARY CHECKOUT IS REFUSED. CI has no such path (#4318 died three times on
+ * `cd: /home/agent/repos/a11y-witness: No such file or directory`), and on the host it reads the PRIMARY checkout, which carries the change
+ * only after the merge, so the line passes or fails for the wrong tree. The runner's working directory already is the repository.
+ *
+ * A `cd` into ANOTHER repository's checkout is not this check's business (the `Hand-run:` convention, unchanged), and a body that
+ * DECLARES `Hand-run:` keeps that declaration's meaning: a human runs it and chose the directory. The refusal is for the undeclared line.
+ *
+ * @param {string} body @param {string} tool the CLI to name in the refusal
+ * @param {{ primaryCheckout?: string | null }} [deps] a test names the checkout; `null` is "cannot tell" and skips the check
+ * @returns {string | null}
+ */
+export function primaryCheckoutCdReason(body, tool, { primaryCheckout = primaryCheckoutOfHost() } = {}) {
+  const section = extractAcceptanceSection(body);
+  if (primaryCheckout === null || section.kind !== "commands" || handRunDeclaration(body) !== null) return null;
+  const hits = section.commands.filter((command) => cdIntoCheckout(command, primaryCheckout) !== null);
+  if (hits.length === 0) return null;
+  return `${tool}: REFUSING -- the Acceptance \`cd\`s into this project's own primary checkout (${primaryCheckout}): `
+    + `${hits.map((command) => `\`${command}\``).join(", ")}. CI has no such path, so the \`acceptance\` job dies on `
+    + "`No such file or directory` (#4318 did, three times), and on the host the line reads the PRIMARY checkout, which "
+    + "carries the change only after the merge -- it would pass or fail for the wrong tree. Drop the `cd` and run the "
+    + "command from the repository root, the way every row that works does. A `cd` into ANOTHER repository's checkout is not "
+    + "refused here, and a command a human is meant to run takes a `Hand-run: <who runs it and why>` line.";
 }
 
 /** @param {{ path: string, command: string }[]} absent @param {string} tool */
@@ -3708,6 +3774,9 @@ export function wholeSuiteNote(commands) {
  */
 export const CI_BODY_REPORTS = [
   { name: "acceptance", report: ({ body, run }) => {
+    // #4322: BEFORE the command runs, because running it is the harm on the host -- it would read the primary checkout.
+    const primary = primaryCheckoutCdReason(body, "ACCEPTANCE");
+    if (primary) return { ok: false, lines: [primary] };
     const report = acceptanceReport(body, run);
     const declared = extractAcceptanceSection(body);
     const notes = declared.kind === "commands" ? wholeSuiteNote(declared.commands) : [];
