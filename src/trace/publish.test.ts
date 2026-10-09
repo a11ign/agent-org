@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync as rmSyncOf, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { CLOSED_ROWS_MAX_PAGES, conditionalReader, DEFAULT_MAX_AGE_MINUTES, indexPage, MAP_PAGE, pageStillHolds, parseArgs, parseReply, publish, readStamp, readValidators, recentClosedRows, ROW_PAGE_MAX_AGE_MS, runPublisher, saveValidators, STAMP_FILE, VALIDATORS_FILE, whyRun } from "./publish.mjs";
+import { CLOSED_ROWS_MAX_PAGES, conditionalReader, DEFAULT_MAX_AGE_MINUTES, indexPage, MAP_PAGE, pageStillHolds, parseArgs, parseReply, publish, readStamp, readValidators, recentClosedRows, ROW_PAGE_MAX_AGE_MS, runPublisher, saveValidators, Stamp, STAMP_FILE, VALIDATORS_FILE, WantedRow, whyRun } from "./publish.mjs";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 
 const MINUTE = 60 * 1000;
@@ -16,16 +16,16 @@ const repos = ["a11ign/a11ign", "a11ign/agent-org"];
 const scratch = () => tmpDir("trace-publish-");
 /** A renderer that writes a recognisable page and counts its calls, so "does nothing" is a count and not an inference. */
 function renderer() {
-  const calls = [];
+  const calls: string[] = [];
   const render = ({ kind, row, out }) => {
     calls.push(kind === "map" ? "map" : `row ${row}`);
     writeFileSync(out, `<!doctype html><title>${kind === "map" ? "Across-rows process map" : `Swimlane row #${row}`}</title>`);
   };
   return { render, calls };
 }
-const heads = (a, b) => (repo) => (repo === repos[0] ? a : b);
+const heads = (a: string, b: string) => (repo: string) => (repo === repos[0] ? a : b);
 const wantedRows = [{ row: 3406, input: "2026-10-04T00:00:00Z" }, { row: 3512, input: "2026-10-05T00:00:00Z" }];
-const run = (out, over = {}) => publish({ out, repos, rows: () => wantedRows, readHead: heads("aaa111111", "bbb222222"), render: renderer().render, now: T0, maxAgeMs: HOUR, ...over });
+const run = (out: string, over = {}) => publish({ out, repos, rows: () => wantedRows, readHead: heads("aaa111111", "bbb222222"), render: renderer().render, now: T0, maxAgeMs: HOUR, ...over });
 
 test("a run into an empty directory leaves both pages, an index that links them, and the stamp (#3515)", () => {
   const out = join(scratch(), "pages");
@@ -79,7 +79,7 @@ test("a failure to write is an error, not an empty directory (#3515)", () => {
 test("one failed row does not hold back the others, and the run still fails and does not stamp (#3515)", () => {
   const out = join(scratch(), "pages");
   const { render } = renderer();
-  const flaky = (page) => (page.row === 3512 ? (() => { throw new Error("trace exited 1: gh: HTTP 403"); })() : render(page));
+  const flaky = (page: { row: any; kind?: any; out?: any; }) => (page.row === 3512 ? (() => { throw new Error("trace exited 1: gh: HTTP 403"); })() : render(page));
   assert.throws(() => run(out, { render: flaky }), /1 of 3 pages were not regenerated[\s\S]*row-3512\.html: trace exited 1: gh: HTTP 403/);
   assert.ok(existsSync(join(out, MAP_PAGE)) && existsSync(join(out, "row-3406.html")), "the pages that rendered are published");
   assert.equal(existsSync(join(out, "row-3512.html")), false);
@@ -118,14 +118,14 @@ test("an unreadable stamp regenerates, and an index escapes what it prints (#351
 });
 
 /** `read` as the publisher gives it, over a fake that answers every path with `reply(path)` and records the paths. */
-const reading = (reply) => {
-  const asked = [];
-  return { asked, read: (path, reduce) => (asked.push(path), reduce(reply(path))) };
+const reading = (reply: { (): { number: any; closed_at: any; updated_at: string; }[]; (path: any): { number: any; updated_at: string; closed_at: string; }[]; (path: any): { number: any; updated_at: string; closed_at: string; }[]; (path: any): { pull_request?: {}|undefined; number: number; closed_at: string; updated_at: string; }[]; (path: any): { number: any; closed_at: string; updated_at: string; }[]; (): { number: any; closed_at: string; updated_at: string; }[]; (): { items: never[]; }; (arg0: any): any; }) => {
+  const asked: any[] = [];
+  return { asked, read: (path: any, reduce: (arg0: any) => any) => (asked.push(path), reduce(reply(path))) };
 };
 
 test("recentClosedRows reads the issues LIST for rows closed in the window, newest closing first, drops pull requests and a row only commented on; --recent 0 asks nothing (#3515, #3695)", () => {
   const since = Date.parse("2026-09-28T12:00:00Z");
-  const item = (number, closed_at, extra = {}) => ({ number, closed_at, updated_at: `${closed_at.slice(0, 10)}T09:00:00Z`, ...extra });
+  const item = (number: number, closed_at: string|any[], extra = {}) => ({ number, closed_at, updated_at: `${closed_at.slice(0, 10)}T09:00:00Z`, ...extra });
   // #6 is the record issue: closed a month ago, commented on all day, so the list `since` (by update) returns it and only `closed_at` keeps it out.
   const { asked, read } = reading(() => [item(7, "2026-10-02T00:00:00Z"), item(9, "2026-10-04T00:00:00Z", { pull_request: {} }), item(8, "2026-10-03T00:00:00Z"), item(6, "2026-09-12T04:42:49Z", { updated_at: "2026-10-05T11:59:00Z" }), item(5, "2026-10-01T00:00:00Z")]);
   assert.deepEqual(recentClosedRows("a11ign/a11ign", 4, since, read), [{ row: 8, input: "2026-10-03T09:00:00Z" }, { row: 7, input: "2026-10-02T09:00:00Z" }, { row: 5, input: "2026-10-01T09:00:00Z" }], "newest closing first, each with its updated_at; #9 is a pull request and #6, closed long before `since` and commented on all day, is not returned");
@@ -140,15 +140,15 @@ test("recentClosedRows reads the issues LIST for rows closed in the window, newe
 
 test("recentClosedRows reads newest-UPDATED first and stops once nothing unread can displace the answer; it reads on when something could (#4077)", () => {
   const since = Date.parse("2026-09-28T12:00:00Z");
-  const hours = (n) => new Date(Date.parse("2026-10-05T12:00:00Z") - n * 60 * MINUTE).toISOString();
+  const hours = (n: number) => new Date(Date.parse("2026-10-05T12:00:00Z") - n * 60 * MINUTE).toISOString();
   // A page of 100 issues, updated newest first, one hour apart; row n is closed 10 minutes before it was last updated.
-  const page = (first) => Array.from({ length: 100 }, (_, index) => ({ number: first + index, updated_at: hours(first + index - 1000), closed_at: hours(first + index - 1000 + 1 / 6) }));
-  const first = reading((path) => (path.endsWith("page=1") ? page(1000) : page(1100)));
+  const page = (first: number) => Array.from({ length: 100 }, (_, index) => ({ number: first + index, updated_at: hours(first + index - 1000), closed_at: hours(first + index - 1000 + 1 / 6) }));
+  const first = reading((path: string) => (path.endsWith("page=1") ? page(1000) : page(1100)));
   const rows = recentClosedRows("a11ign/a11ign", 3, since, first.read).map(({ row }) => row);
   assert.deepEqual(rows, [1000, 1001, 1002]);
   assert.equal(first.asked.length, 1, "three rows are in hand and the page ends on an issue updated long before the third closing: nothing further down can be newer, so one page");
   assert.ok(first.asked[0].includes("sort=updated") && first.asked[0].includes("direction=desc"));
-  const more = reading((path) => (path.endsWith("page=1") ? page(1000) : [{ number: 5, updated_at: hours(2000), closed_at: hours(2000) }]));
+  const more = reading((path: string) => (path.endsWith("page=1") ? page(1000) : [{ number: 5, updated_at: hours(2000), closed_at: hours(2000) }]));
   recentClosedRows("a11ign/a11ign", 100, since, more.read);
   assert.equal(more.asked.length, 2, "NEGATIVE CONTROL: asking for 100 rows, the page's last issue is not older than the 100th closing, so the next page is read");
 });
@@ -169,7 +169,7 @@ test("the early stop returns exactly what reading the whole list would, over man
     issues.push({ number: 0, closed_at: "2026-09-12T04:42:49Z", updated_at: new Date(since + 90 * 24 * 60 * MINUTE).toISOString() }); // the record issue: old closing, updated after everything
     const served = [...issues].sort((one, other) => Date.parse(other.updated_at) - Date.parse(one.updated_at));
     for (const count of [1, 3, 6, 40]) {
-      const { asked, read } = reading((path) => { const at = Number(path.split("&page=")[1]); return served.slice((at - 1) * 100, at * 100); });
+      const { asked, read } = reading((path: string) => { const at = Number(path.split("&page=")[1]); return served.slice((at - 1) * 100, at * 100); });
       const got = recentClosedRows("a11ign/a11ign", count, since, read).map(({ row }) => row);
       const whole = issues.filter((one) => !one.pull_request && Date.parse(one.closed_at) >= since).sort((one, other) => Date.parse(other.closed_at) - Date.parse(one.closed_at)).slice(0, count).map(({ number }) => number);
       assert.deepEqual(got, whole, `trial ${trial}, count ${count}`);
@@ -182,8 +182,8 @@ test("the early stop returns exactly what reading the whole list would, over man
 
 test("recentClosedRows pages the list until a short page, and REFUSES a list it cannot finish rather than cutting it short (#3695)", () => {
   const since = Date.parse("2026-09-28T12:00:00Z");
-  const full = (from) => Array.from({ length: 100 }, (_, index) => ({ number: from + index, closed_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z" }));
-  const twoPages = reading((path) => (path.endsWith("page=1") ? full(1000) : [{ number: 2000, closed_at: "2026-10-04T00:00:00Z", updated_at: "2026-10-04T00:00:00Z" }]));
+  const full = (from: number) => Array.from({ length: 100 }, (_, index) => ({ number: from + index, closed_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z" }));
+  const twoPages = reading((path: string) => (path.endsWith("page=1") ? full(1000) : [{ number: 2000, closed_at: "2026-10-04T00:00:00Z", updated_at: "2026-10-04T00:00:00Z" }]));
   assert.deepEqual(recentClosedRows("a11ign/a11ign", 2, since, twoPages.read).map(({ row }) => row), [2000, 1000], "a row on the second page is found, and ties keep list order");
   assert.deepEqual(twoPages.asked.map((path) => path.split("&").pop()), ["page=1", "page=2"]);
   const endless = reading(() => full(1));
@@ -197,16 +197,16 @@ test("recentClosedRows pages the list until a short page, and REFUSES a list it 
  * The issues list is served as pages of 100 from `closed[repo]`, whatever `since` says (the publisher filters by the exact time itself).
  */
 function github({ heads: held, closed }) {
-  const log = [];
-  const etagOf = (body) => `W/"${createHash("sha1").update(JSON.stringify(body)).digest("hex")}"`;
-  const bodyOf = (path) => {
+  const log: { path: any; sent: any; status: number; }[] = [];
+  const etagOf = (body: any[]|{ commit: { sha: any; extra: string; }; }) => `W/"${createHash("sha1").update(JSON.stringify(body)).digest("hex")}"`;
+  const bodyOf = (path: string) => {
     const head = /^repos\/(.+)\/branches\/main$/.exec(path);
     if (head) return { commit: { sha: held[head[1]], extra: "not kept" } };
     const list = /^repos\/(.+)\/issues\?.*page=(\d+)$/.exec(path);
     if (list) return [...(closed[list[1]] ?? [])].sort((one, other) => Date.parse(other.updated_at) - Date.parse(one.updated_at)).slice((Number(list[2]) - 1) * 100, Number(list[2]) * 100);
     throw new Error(`gh api ${path}: HTTP 404`);
   };
-  const ask = (path, sent) => {
+  const ask = (path: any, sent: string) => {
     const body = bodyOf(path);
     const current = etagOf(body);
     const status = sent === current ? 304 : 200;
@@ -216,19 +216,19 @@ function github({ heads: held, closed }) {
   return { ask, log, heads: held, closed };
 }
 
-const issue = (number, closedAt, updatedAt = closedAt) => ({ number, closed_at: closedAt, updated_at: updatedAt, title: "x".repeat(400), body: "not kept" });
+const issue = (number: number, closedAt: string, updatedAt = closedAt) => ({ number, closed_at: closedAt, updated_at: updatedAt, title: "x".repeat(400), body: "not kept" });
 const fixture = () => github({ heads: { [repos[0]]: "aaa111111", [repos[1]]: "bbb222222" }, closed: { [repos[0]]: [issue(3406, "2026-10-03T00:00:00Z"), issue(3512, "2026-10-04T00:00:00Z")] } });
 /** A renderer whose pages carry the number of the render that made them, so "was not rewritten" is a page that still says the OLD number. */
 function numbered() {
-  const calls = [];
+  const calls: string[] = [];
   const render = ({ kind, row, out }) => {
     calls.push(kind === "map" ? "map" : `row ${row}`);
     writeFileSync(out, `<title>${kind} ${row ?? ""}</title><!-- render ${calls.length} -->`);
   };
   return { render, calls };
 }
-const go = (out, gh, { render }, at = T0, over = {}) => runPublisher({ out, repos, trackerRepo: repos[0], recent: 6, rows: [], ask: gh.ask, render, now: at, maxAgeMs: HOUR, ...over });
-const page = (out, file) => readFileSync(join(out, file), "utf8");
+const go = (out: string, gh: { ask: any; log?: any[]; heads?: any; closed?: any; }, { render }: { render: (({ kind,row,out }: { kind: any; row: any; out: any; }) => void)|(() => never); calls?: any[]; }, at = T0, over = {}) => runPublisher({ out, repos, trackerRepo: repos[0], recent: 6, rows: [], ask: gh.ask, render, now: at, maxAgeMs: HOUR, ...over });
+const page = (out: string, file: string) => readFileSync(join(out, file), "utf8");
 
 test("a second run over unchanged responses sends the stored validators and, on a 304, rewrites no page (#4077)", () => {
   const out = join(scratch(), "pages");
@@ -345,7 +345,7 @@ test("pageStillHolds: the same input, a young page and a file on disk, and nothi
   mkdirSync(out, { recursive: true });
   writeFileSync(join(out, "row-7.html"), "<title>7</title>");
   const stamp = { at: T0, heads: {}, rows: { 7: { input: "u1", at: T0 } } };
-  const holds = (over) => pageStillHolds({ wanted: { row: 7, input: "u1" }, stamp, out, now: T0 + HOUR, ...over });
+  const holds = (over: { wanted?: WantedRow|{ row: number; input: string; }|{ row: number; input: null; }|{ row: number; input: string; }; now?: number; stamp?: Stamp|null; out?: string; }) => pageStillHolds({ wanted: { row: 7, input: "u1" }, stamp, out, now: T0 + HOUR, ...over });
   assert.equal(holds({}), true);
   assert.equal(holds({ wanted: { row: 7, input: "u2" } }), false, "a moved input");
   assert.equal(holds({ wanted: { row: 7, input: null } }), false, "an unknown input");

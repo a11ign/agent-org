@@ -9,19 +9,19 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { aggregate, compareWeeks, DEFINITIONS, MOVES, dearestPhase, nearestRank, NOT_DERIVABLE, NOT_HELD, phaseShares, renderAggregate, weekStart } from "./aggregate.mjs";
+import { aggregate, compareWeeks, DEFINITIONS, MOVES, dearestPhase, nearestRank, NOT_DERIVABLE, NOT_HELD, phaseShares, renderAggregate, weekStart, Move } from "./aggregate.mjs";
 import { sandboxGitEnv } from "../lib/git-env.mjs";
-import { eventsOfTranscript, PRICES } from "./store.mjs";
+import { eventsOfTranscript, PRICES, TraceEvent } from "./store.mjs";
 import { parseMergePaths, readMergePaths, readMoves } from "./trace.mjs";
 import { waterfall } from "./waterfall.mjs";
 
 const ROW_REPO = "a11ign/a11ign";
-const at = (iso) => Date.parse(iso);
+const at = (iso: string) => Date.parse(iso);
 const WEEK_A = at("2026-09-21T00:00:00Z");
 const WEEK_B = at("2026-09-28T00:00:00Z");
 const NOW = at("2026-10-06T00:00:00Z");
 const HELD_FROM = at("2026-09-21T00:00:00Z"); // the store's first transcripts: the start of week A, so both weeks are complete
-const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-9, `${actual} is not ${expected}`);
+const near = (actual: unknown, expected: number) => assert.ok(Math.abs(actual - expected) < 1e-9, `${actual} is not ${expected}`);
 
 const SONNET = "claude-sonnet-5-5";
 let serial = 0;
@@ -40,13 +40,13 @@ const turn = ({ when, session, row = null, cost, tokens = [1, 1, 1, 0], model, .
     tokens: { input: tokens[0], output: tokens[1], cacheRead: tokens[2], cacheWrite5m: 0, cacheWrite1h: tokens[3] }, costUsd: cost, wallClockMs: 1000, sidechain: false, ...rest,
   };
 };
-const wake = (id, when, session, causeKey, extra = {}) => ({
+const wake = (id: string, when: string, session: string, causeKey: string, extra = {}) => ({
   id, kind: "wake", source: "wake-ledger", at: at(when), session, row: null, pr: null, repo: null, cause: "x", causeKey, wakeId: id, ...extra,
 });
-const github = (kind, when, extra) => ({
+const github = (kind: string, when: string, extra: { row?: any; claimant?: string; pr?: any; state?: string; actor?: string; outcome?: string; name?: string; startedAt?: number; completedAt?: number; headSha?: string; }) => ({
   id: `gh:${(serial += 1)}`, kind, source: "github", at: at(when), session: "github", row: null, pr: null, repo: null, cause: null, causeKey: null, wakeId: null, ...extra,
 });
-const pull = (number, row, openedIso, mergedIso) => ({ repo: ROW_REPO, number, createdAt: openedIso, mergedAt: mergedIso, body: `Closes #${row}` });
+const pull = (number: number, row: number, openedIso: string, mergedIso: string) => ({ repo: ROW_REPO, number, createdAt: openedIso, mergedAt: mergedIso, body: `Closes #${row}` });
 
 const PULLS = [
   pull(1101, 101, "2026-09-22T08:00:00Z", "2026-09-23T10:00:00Z"), pull(1102, 102, "2026-09-22T09:00:00Z", "2026-09-24T10:00:00Z"),
@@ -112,7 +112,7 @@ const READINGS = new Map([
 const report = (overrides = {}) => aggregate({
   events: EVENTS, pulls: PULLS, rowRepo: ROW_REPO, now: NOW, since: WEEK_A, held: { from: HELD_FROM, basis: "test fixture" }, readings: READINGS, unreadable: ["/x/broken.jsonl"], openRows: [301], ...overrides,
 });
-const weekOf = (result, start) => result.weeks.find((week) => week.start === start);
+const weekOf = (result: { held?: { from: number|null; basis: string; }; since?: number; now?: number; moves?: Move[]; open?: { row: number; status: "open"|"outside"; turns: number; tokens: number; dollars: number|null; floor: boolean; }[]; outside?: { row: number; status: "open"|"outside"; turns: number; tokens: number; dollars: number|null; floor: boolean; }[]; openKnown?: boolean; weeks: any; }, start: number) => result.weeks.find((week: { start: any; }) => week.start === start);
 
 test("WEEKS: Monday 00:00 UTC, and the two weeks of the fixture are the two the test names", () => {
   assert.equal(weekStart(at("2026-09-27T23:59:59Z")), WEEK_A);
@@ -152,9 +152,9 @@ test("OPEN ROW: in its own list and in NO average (positive control: row 301 is 
 
 test("FLOOR: a row with an unpriced turn is marked and its dollars are the priced part; a row with no priced turn has NO dollar figure", () => {
   const rows = weekOf(report(), WEEK_A).rows;
-  const flagged = rows.find((row) => row.row === 102);
+  const flagged = rows.find((row: { row: number; }) => row.row === 102);
   assert.deepEqual([flagged.dollars, flagged.floor, flagged.unpriced], [5, true, 1]);
-  assert.equal(rows.find((row) => row.row === 101).floor, false);
+  assert.equal(rows.find((row: { row: number; }) => row.row === 101).floor, false);
   const onlyUnpriced = aggregate({
     events: [turn({ when: "2026-09-22T10:00:00Z", session: "worker-9", row: 9, cost: null, model: "<synthetic>" })], pulls: [pull(1, 9, "2026-09-21T10:00:00Z", "2026-09-23T10:00:00Z")],
     rowRepo: ROW_REPO, now: NOW, since: WEEK_A, held: { from: HELD_FROM, basis: "t" },
@@ -172,7 +172,7 @@ test("NO TURN HELD: a merged row with no turn in the store has no figure (never 
 
 test("WALL-CLOCK: first claim to merge, per row; a row with no claim record has none and is counted", () => {
   const a = weekOf(report(), WEEK_A);
-  assert.equal(a.rows.find((row) => row.row === 101).wallClockMs, at("2026-09-23T10:00:00Z") - at("2026-09-22T08:00:00Z"));
+  assert.equal(a.rows.find((row: { row: number; }) => row.row === 101).wallClockMs, at("2026-09-23T10:00:00Z") - at("2026-09-22T08:00:00Z"));
   const hour = 60 * 60 * 1000;
   assert.deepEqual([a.perRow.wallClock.n, a.perRow.noClaim, a.perRow.wallClock.p50 / hour], [2, 0, 26]);
   const unclaimed = weekOf(report({ events: EVENTS.filter((event) => !(event.kind === "claimed" && event.row === 101)) }), WEEK_A);
@@ -186,14 +186,14 @@ test("OVERHEAD: turns naming no row, with each standing session on its own line;
   assert.equal(overhead.tokens, 1340);
   near(/** @type {number} */ (overhead.share.dollars), 6 / 15.5);
   near(/** @type {number} */ (overhead.share.tokens), 1340 / 4090);
-  assert.deepEqual(overhead.bySession.map((own) => [own.session, own.turns, own.dollars, own.onRows.turns, own.onRows.dollars]), [["ceo", 1, 4, 0, 0], ["product-manager", 1, 2, 1, 0.5]]);
+  assert.deepEqual(overhead.bySession.map((own: { session: any; turns: any; dollars: any; onRows: { turns: any; dollars: any; }; }) => [own.session, own.turns, own.dollars, own.onRows.turns, own.onRows.dollars]), [["ceo", 1, 4, 0, 0], ["product-manager", 1, 2, 1, 0.5]]);
 });
 
 test("UNMEASURED: a session no order named, and a transcript that could not be read, are NOT overhead (positive control: the overhead above is 6, not 7)", () => {
   const { spend } = weekOf(report(), WEEK_A);
   assert.deepEqual([spend.unmeasured.turns, spend.unmeasured.dollars], [1, 1]);
   assert.deepEqual(spend.unmeasured.unreadableTranscripts, ["/x/broken.jsonl"]);
-  assert.ok(!spend.overhead.bySession.some((own) => own.session.startsWith("unnamed:")));
+  assert.ok(!spend.overhead.bySession.some((own: { session: string; }) => own.session.startsWith("unnamed:")));
 });
 
 test("CACHE-READ SHARE: cacheRead over the input side, against a hand-computed value", () => {
@@ -205,7 +205,7 @@ test("CACHE-READ SHARE: cacheRead over the input side, against a hand-computed v
 
 test("REPEAT CLASSES: each class's count and dollars, each turn priced once, and the two that have no dollars say why", () => {
   const { classes, total } = weekOf(report(), WEEK_B).repeats;
-  const byId = Object.fromEntries(classes.map((entry) => [entry.id, entry]));
+  const byId = Object.fromEntries(classes.map((entry: { id: any; }) => [entry.id, entry]));
   // wake:pm:2 repeats wake:pm:1's key: 1 re-delivery, priced as the whole turn it started (0.5). It is also a later wake of its session, but its turn is taken.
   assert.deepEqual([byId.redelivered.count, byId.redelivered.dollars], [1, 0.5]);
   // Three wakes are not their session's first: PM's 2 and 3, and worker-202's second (which started no turn, so it costs nothing measured). Wake 3's first turn re-reads
@@ -223,7 +223,7 @@ test("REPEAT CLASSES: each class's count and dollars, each turn priced once, and
   assert.deepEqual([byId["ci-rerun"].count, byId["ci-rerun"].dollars, byId["ci-rerun"].ms], [1, NOT_DERIVABLE, 15 * 60 * 1000]);
   assert.deepEqual([byId.deferred.count, byId.deferred.dollars], [0, NOT_HELD]);
   near(total.dollars, 0.5 + 0.012 + 0.3 + 0.4 + 0.006);
-  assert.equal(total.tokens, classes.reduce((sum, entry) => sum + entry.tokens, 0), "the headline's tokens are every class's, the not-derivable ones too");
+  assert.equal(total.tokens, classes.reduce((sum: any, entry: { tokens: any; }) => sum + entry.tokens, 0), "the headline's tokens are every class's, the not-derivable ones too");
   assert.equal(total.floor, false);
 });
 
@@ -233,17 +233,17 @@ test("REPEAT CLASSES: a class whose turns are all unpriced is not derivable (nev
   // The class's only turn is unpriced: its dollars are NOT 0, they are not derivable, and the class says how many turns it could not price.
   assert.deepEqual([classes[0].dollars, classes[0].floor, classes[0].unpriced, classes[0].count], [NOT_DERIVABLE, true, 1, 1]);
   assert.equal(total.floor, true);
-  assert.equal(weekOf(report(), WEEK_A).repeats.classes.find((entry) => entry.id === "redelivered").count, 0);
+  assert.equal(weekOf(report(), WEEK_A).repeats.classes.find((entry: { id: string; }) => entry.id === "redelivered").count, 0);
 });
 
 test("TOP TEN: the ten dearest rows of a week, ties broken the same way twice and whatever order the rows arrive in", () => {
   const rows = Array.from({ length: 12 }, (_, index) => 500 + index);
-  const eventsFor = (order) => order.map((row) => turn({ when: "2026-09-22T10:00:00Z", session: `worker-${row}`, row, cost: row === 511 ? 9 : 1, tokens: [1, 1, 1, 0] }));
-  const run = (order) => aggregate({
-    events: eventsFor(order), pulls: order.map((row) => pull(row + 1000, row, "2026-09-21T10:00:00Z", "2026-09-23T10:00:00Z")), rowRepo: ROW_REPO, now: NOW, since: WEEK_A, held: { from: HELD_FROM, basis: "t" },
+  const eventsFor = (order: any[]) => order.map((row: number) => turn({ when: "2026-09-22T10:00:00Z", session: `worker-${row}`, row, cost: row === 511 ? 9 : 1, tokens: [1, 1, 1, 0] }));
+  const run = (order: any[]) => aggregate({
+    events: eventsFor(order), pulls: order.map((row: number) => pull(row + 1000, row, "2026-09-21T10:00:00Z", "2026-09-23T10:00:00Z")), rowRepo: ROW_REPO, now: NOW, since: WEEK_A, held: { from: HELD_FROM, basis: "t" },
   });
-  const first = weekOf(run(rows), WEEK_A).dearest.map((row) => row.row);
-  const second = weekOf(run([...rows].reverse()), WEEK_A).dearest.map((row) => row.row);
+  const first = weekOf(run(rows), WEEK_A).dearest.map((row: { row: any; }) => row.row);
+  const second = weekOf(run([...rows].reverse()), WEEK_A).dearest.map((row: { row: any; }) => row.row);
   assert.deepEqual(first, [511, 500, 501, 502, 503, 504, 505, 506, 507, 508]);
   assert.deepEqual(second, first);
 });
@@ -252,10 +252,10 @@ test("WAKES: the rows the store and wakes-per-row agree on, and a reason for eac
   const a = weekOf(report(), WEEK_A).wakes;
   // Row 101: 2 worker wakes in the store (the ceo's wake naming it is the store's alone) and 2 in wakes-per-row. Row 102: 2 against 3, claimed before the store's window.
   assert.deepEqual([a.rows, a.agree], [2, 1]);
-  assert.deepEqual(a.differ.map((entry) => [entry.row, entry.store, entry.wakesPerRow]), [[102, 2, 3]]);
+  assert.deepEqual(a.differ.map((entry: { row: any; store: any; wakesPerRow: any; }) => [entry.row, entry.store, entry.wakesPerRow]), [[102, 2, 3]]);
   assert.match(a.differ[0].reason, /^the store starts at its ingest window/);
   const b = weekOf(report(), WEEK_B).wakes;
-  assert.deepEqual(b.differ.map((entry) => [entry.row, entry.wakesPerRow]), [[201, null], [202, 1]]);
+  assert.deepEqual(b.differ.map((entry: { row: any; wakesPerRow: any; }) => [entry.row, entry.wakesPerRow]), [[201, null], [202, 1]]);
   assert.match(b.differ[0].reason, /UNMEASURED \(worker-201: a transcript is unreadable\)/);
   assert.match(b.differ[1].reason, /^UNEXPLAINED: the store holds 2 wakes and wakes-per-row 1/);
   for (const week of [a, b]) for (const entry of week.differ) assert.ok(entry.reason.length > 0, `row ${entry.row} differs with no explanation`);
@@ -312,7 +312,7 @@ test("RENDER: the definitions are printed once at the top, and a class with no d
 });
 
 // BY GATE CAUSE (#3626). A fixture of its own, in week B: a key delivered once in week A and again in B, `pr-checks-failing` re-sent three times at 20-minute gaps, a deferral retry and a one-off.
-const causeEvents = (extra) => [
+const causeEvents = (extra: never[]) => [
   turn({ when: "2026-09-29T08:05:00Z", session: "worker-9", cost: 1, wakeId: "wake:c:2" }), turn({ when: "2026-09-29T08:25:00Z", session: "worker-9", cost: 2, wakeId: "wake:c:3" }),
   turn({ when: "2026-09-29T08:45:00Z", session: "worker-9", cost: 4, wakeId: "wake:c:4" }), turn({ when: "2026-09-29T09:05:00Z", session: "worker-9", cost: null, wakeId: "wake:c:5", model: "<synthetic>" }),
   wake("wake:c:0", "2026-09-22T08:00:00Z", "worker-9", "worker-9/answer-owed/row-9", { cause: "answer-owed" }), // week A: the earlier delivery
@@ -323,7 +323,7 @@ const causeEvents = (extra) => [
   wake("wake:c:5", "2026-09-29T10:00:00Z", "worker-9", "worker-9/answer-owed/row-9", { cause: "answer-owed" }),
   ...extra,
 ];
-const causesOf = (events) => weekOf(report({ events }), WEEK_B).repeats.classes.find((entry) => entry.id === "redelivered");
+const causesOf = (events: any[]) => weekOf(report({ events }), WEEK_B).repeats.classes.find((entry: { id: string; }) => entry.id === "redelivered");
 
 test("BY GATE CAUSE: repeats, distinct keys, median gap and dollars per cause, the DEAREST first (not the most repeats), and a deferral retry its own row", () => {
   const redelivered = causesOf(causeEvents([]));
@@ -331,10 +331,10 @@ test("BY GATE CAUSE: repeats, distinct keys, median gap and dollars per cause, t
   // answer-owed: wake 5 repeats the week-A delivery, so its gap is 7 days + 2 hours (the previous delivery counts whenever it was).
   // The two rankings DISAGREE here (the chairman's order is in dollars): by repeats pr-checks-failing leads (2 against 1), by dollars its `@deferred` retry does ($4 against $3), and the cause with no derivable dollars is last.
   assert.deepEqual(redelivered.causes.map(({ cause, deferred, count, keys }) => [cause, deferred, count, keys]), [["pr-checks-failing", true, 1, 1], ["pr-checks-failing", false, 2, 1], ["answer-owed", false, 1, 1]]);
-  assert.deepEqual(redelivered.causes.map((own) => own.medianGapMs), [20 * 60 * 1000, 20 * 60 * 1000, (7 * 24 + 2) * 60 * 60 * 1000]);
+  assert.deepEqual(redelivered.causes.map((own: { medianGapMs: any; }) => own.medianGapMs), [20 * 60 * 1000, 20 * 60 * 1000, (7 * 24 + 2) * 60 * 60 * 1000]);
   // Wake 2's turn costs 1 and wake 3's costs 2; wake 4's costs 4 (the retry); wake 5's turn is unpriced, so answer-owed is not derivable (never 0) and a floor.
-  assert.deepEqual(redelivered.causes.map((own) => [own.dollars, own.floor]), [[4, false], [3, false], [NOT_DERIVABLE, true]]);
-  assert.equal(redelivered.count, redelivered.causes.reduce((sum, own) => sum + own.count, 0), "the rows add up to the class");
+  assert.deepEqual(redelivered.causes.map((own: { dollars: any; floor: any; }) => [own.dollars, own.floor]), [[4, false], [3, false], [NOT_DERIVABLE, true]]);
+  assert.equal(redelivered.count, redelivered.causes.reduce((sum: any, own: { count: any; }) => sum + own.count, 0), "the rows add up to the class");
   near(/** @type {number} */ (redelivered.dollars), 7);
 });
 
@@ -370,12 +370,12 @@ const SPLIT_ROW = [
   wake("wake:s:3", "2026-09-29T10:00:00Z", "worker-11", ROW_KEY, { cause: "ready-row-unclaimed" }),
   turn({ when: "2026-09-29T09:05:00Z", session: "worker-11", cost: 3, wakeId: "wake:s:2" }), turn({ when: "2026-09-29T10:05:00Z", session: "worker-11", cost: 5, wakeId: "wake:s:3" }),
 ];
-const causeOf = (entry, name) => entry.causes.find((own) => own.cause === name);
-const figures = (share) => [share.count, share.dollars];
+const causeOf = (entry: { causes: any[]; }, name: string) => entry.causes.find((own: { cause: any; }) => own.cause === name);
+const figures = (share: { count: any; dollars: any; }) => [share.count, share.dollars];
 /** The positive control: the three parts of a cause add up to its repeats and its dollars, and a breakdown that does not is RED. */
-function assertAddsUp(own) {
+function assertAddsUp(own: { split: ArrayLike<unknown>|{ [s: string]: unknown; }; count: any; cause: any; dollars: any; }) {
   const parts = Object.values(own.split);
-  const priced = (value) => (typeof value === "number" ? value : 0);
+  const priced = (value: any) => (typeof value === "number" ? value : 0);
   assert.equal(parts.reduce((sum, part) => sum + part.count, 0), own.count, `${own.cause}: after a change + unchanged + unexplained must be the cause's repeats`);
   near(parts.reduce((sum, part) => sum + priced(part.dollars), 0), priced(own.dollars));
 }
@@ -401,7 +401,7 @@ test("SPLIT: a repeat whose row has no GitHub events, and one whose key names no
 test("SPLIT: a key that carries a head reads after a change when the head moved to a DIFFERENT one; the same head, a CI run, a review, and a head moved on a key with no head are not", () => {
   const key = "worker-21/pr-checks-failing/pr-21/abcdef12";
   const bare = "worker-22/pr-review-blocked/pr-22";
-  const wakes = (session, causeKey, cause) => [0, 20, 40].map((minute, index) => wake(`wake:h:${session}:${index}`, `2026-09-29T08:${String(minute).padStart(2, "0")}:00Z`, session, causeKey, { cause }));
+  const wakes = (session: string, causeKey: string, cause: string) => [0, 20, 40].map((minute, index) => wake(`wake:h:${session}:${index}`, `2026-09-29T08:${String(minute).padStart(2, "0")}:00Z`, session, causeKey, { cause }));
   const own = causeOf(causesOf([
     github("opened", "2026-09-29T07:00:00Z", { pr: 21 }), github("head_moved", "2026-09-29T08:10:00Z", { pr: 21, headSha: "ffffffff00112233" }), // before repeat 1: a different head
     github("head_moved", "2026-09-29T08:30:00Z", { pr: 21, headSha: "abcdef1234567890" }), github("ci_run", "2026-09-29T08:35:00Z", { pr: 21, headSha: "abcdef1234567890" }), // before repeat 2: the same head, and a CI run
@@ -455,7 +455,7 @@ const MIN = 60 * 1000;
  * ($6), opened 11:50, ready 12:00, an UNPRICED turn at 12:05, reviewed 12:10, queued 12:20, merged and closed 12:30 = 90 min. A review round holds the phase to itself while it is open, so
  * `verify` has nothing exclusive here; the 10 minutes between the review and the queue entry are in no phase.
  */
-const phased = (row, pr, day, times, turns) => [
+const phased = (row: number, pr: number, day: string, times: { filed: any; claimed: any; opened: any; ready: any; reviewed: any; queued: any; closed: any; }, turns: { id: string; kind: string; source: string; at: number; session: any; row: null; pr: null; repo: null; cause: null; causeKey: null; wakeId: null; model: any; tokens: { input: number; output: number; cacheRead: number; cacheWrite5m: number; cacheWrite1h: number; }; costUsd: any; wallClockMs: number; sidechain: boolean; }[]) => [
   github("filed", `${day}T${times.filed}:00Z`, { row }), github("claimed", `${day}T${times.claimed}:00Z`, { row, claimant: `worker-${row}` }),
   github("opened", `${day}T${times.opened}:00Z`, { pr }), github("ready_for_review", `${day}T${times.ready}:00Z`, { pr }), github("reviewed", `${day}T${times.reviewed}:00Z`, { pr, state: "APPROVED", headSha: "aaaaaaa" }),
   github("added_to_merge_queue", `${day}T${times.queued}:00Z`, { pr }), github("merged", `${day}T${times.closed}:00Z`, { pr }), github("closed", `${day}T${times.closed}:00Z`, { pr }), github("closed", `${day}T${times.closed}:00Z`, { row }),
@@ -478,7 +478,7 @@ test("PHASE SHARE: each phase's share of the week's wall-clock and dollars, from
   assert.deepEqual([phases.rows, phases.noRecord], [2, 1], "row 603 has a turn and no GitHub record: counted apart, in no share");
   assert.equal(phases.wallClockMs, 210 * MIN, "120 + 90");
   near(phases.dollars, 11);
-  const share = (name) => phases.shares.find((one) => one.phase === name);
+  const share = (name: string) => phases.shares.find((one: { phase: any; }) => one.phase === name);
   const minutes = { spec: 15, claim: 15, build: 80, verify: 0, review: 50, CI: 0, queue: 30, merge: 0, between: 20 };
   for (const [name, expected] of Object.entries(minutes)) {
     assert.equal(share(name).exclusiveMs, expected * MIN, `${name}: exclusive minutes`);
@@ -487,12 +487,12 @@ test("PHASE SHARE: each phase's share of the week's wall-clock and dollars, from
   near(share("build").dollarShare, 10 / 11);
   near(share("review").dollarShare, 1 / 11);
   assert.equal(share("review").unpriced, 1, "the unpriced turn is counted apart in its phase, and is not zero dollars");
-  near(phases.shares.reduce((sum, one) => sum + one.wallShare, 0), 1);
-  near(phases.shares.reduce((sum, one) => sum + one.dollarShare, 0), 1);
+  near(phases.shares.reduce((sum: any, one: { wallShare: any; }) => sum + one.wallShare, 0), 1);
+  near(phases.shares.reduce((sum: any, one: { dollarShare: any; }) => sum + one.dollarShare, 0), 1);
 });
 
 test("PHASE SHARE POSITIVE CONTROL: a share that does not sum to the whole is RED, and a table that leaves a part out is never printed", () => {
-  const rowEvents = (row) => PHASED_EVENTS.filter((event) => event.row === row || event.pr === row + 1000 || (event.pr === null && event.row === row));
+  const rowEvents = (row: number) => PHASED_EVENTS.filter((event) => event.row === row || event.pr === row + 1000 || (event.pr === null && event.row === row));
   const real = [601, 602].map((row) => waterfall({ events: rowEvents(row), now: NOW }));
   near(phaseShares(real).shares.reduce((sum, one) => sum + one.wallShare, 0), 1);
   const dropped = structuredClone(real);
@@ -506,7 +506,7 @@ test("PHASE SHARE POSITIVE CONTROL: a share that does not sum to the whole is RE
 
 test("DEAREST PHASE: each of the dearest rows names the phase that cost most and the phase with the most wall-clock to itself", () => {
   const dearest = phasedWeek().dearest;
-  assert.deepEqual(dearest.map((row) => row.row), [602, 601, 603]);
+  assert.deepEqual(dearest.map((row: { row: any; }) => row.row), [602, 601, 603]);
   assert.deepEqual([dearest[0].phase.costliest.phase, dearest[0].phase.costliest.share, dearest[0].phase.costliest.floor], ["build", 1, true], "row 602: all $6 are build, and its unpriced turn makes that a floor");
   assert.deepEqual([dearest[1].phase.costliest.phase, dearest[1].phase.costliest.share, dearest[1].phase.costliest.floor], ["build", 0.8, false], "row 601: $4 of $5");
   assert.deepEqual([dearest[1].phase.longest.phase, dearest[1].phase.longest.ms], ["build", 40 * MIN]);
@@ -526,8 +526,8 @@ test("PHASE SHARE RENDER: the table, the dearest phase beside each dear row, and
 
 // STORED BEFORE ITS PRICE (#3638). The store keeps the cost a turn had when it was INGESTED, and an unchanged transcript is not read again, so a price added later reached none of the
 // turns stored before it. A report prices from `PRICES` as it stands and ignores the stored figure.
-const storedAt = (when, model, costUsd, extra = {}) => turn({ when, session: "worker-9", row: 9, cost: costUsd, model, tokens: [1000, 500, 0, 0], ...extra });
-const oneRow = (events) => aggregate({
+const storedAt = (when: string, model: string, costUsd: number|null, extra = {}) => turn({ when, session: "worker-9", row: 9, cost: costUsd, model, tokens: [1000, 500, 0, 0], ...extra });
+const oneRow = (events: { id: string; kind: string; source: string; at: number; session: any; row: null; pr: null; repo: null; cause: null; causeKey: null; wakeId: null; model: any; tokens: { input: number; output: number; cacheRead: number; cacheWrite5m: number; cacheWrite1h: number; }; costUsd: any; wallClockMs: number; sidechain: boolean; }[]) => aggregate({
   events, pulls: [pull(1, 9, "2026-09-21T10:00:00Z", "2026-09-23T10:00:00Z")], rowRepo: ROW_REPO, now: NOW, since: WEEK_A, held: { from: HELD_FROM, basis: "t" },
 });
 
@@ -541,7 +541,7 @@ test("REPRICED: a stored turn of a model priced SINCE (claude-sonnet-5, stored n
 });
 
 test("CODEX UNPRICED (#4057): the report prints the Codex turns it could not price as a line of their own, with their count and tokens, and not inside a total", () => {
-  const codex = (when, tokens) => storedAt(when, "gpt-5.6-terra", null, { harness: "codex", tokens });
+  const codex = (when: string, tokens: number[]) => storedAt(when, "gpt-5.6-terra", null, { harness: "codex", tokens });
   const events = [storedAt("2026-09-22T10:00:00Z", "claude-sonnet-5", null), codex("2026-09-22T11:00:00Z", [10, 0, 990, 0]), codex("2026-09-22T12:00:00Z", [20, 5, 1475, 0])];
   const week = weekOf(oneRow(events), WEEK_A);
   assert.deepEqual(week.spend.unpricedCodex, { turns: 2, tokens: 2500 }, "1000 + 1500 tokens over the two Codex turns, the Claude turn's 1500 not among them");
@@ -586,8 +586,8 @@ test("REPRICED: a changed price in PRICES moves a turn that was stored at the ol
 // #3967: by repository, before and after the move, the first turn and the tokens read through tools
 
 const AGENT_ORG = "a11ign/agent-org";
-const inRepo = (repo, number, row, openedIso, mergedIso) => ({ repo, number, createdAt: openedIso, mergedAt: mergedIso, body: `Closes ${ROW_REPO}#${row}` });
-const SIZES = (...windows) => windows.map((window) => [window, 0, 0, 0]); // [input, output, cacheRead, cacheWrite1h]: a first turn whose whole window is `window`
+const inRepo = (repo: string, number: number, row: number, openedIso: string, mergedIso: string) => ({ repo, number, createdAt: openedIso, mergedAt: mergedIso, body: `Closes ${ROW_REPO}#${row}` });
+const SIZES = (...windows: any[]) => windows.map((window) => [window, 0, 0, 0]); // [input, output, cacheRead, cacheWrite1h]: a first turn whose whole window is `window`
 
 test("BY REPOSITORY: a row is in the repository of its LAST merged pull request, each repository has its own rows, and one with no merged row prints nothing", () => {
   const pulls = [
@@ -626,7 +626,7 @@ test("FIRST-TURN SIZE: the first turn of each per-row transcript, never a standi
 });
 
 test("TOOL-READ TOKENS: summed per row and per tool, mixed in the total and in no tool, and a turn with no field or no tokens makes the row's figure a floor", () => {
-  const read = (tool, tokens) => ({ tool, tokens });
+  const read = (tool: string, tokens: number|null) => ({ tool, tokens });
   const events = [
     turn({ when: "2026-09-22T10:00:00Z", session: "worker-101", row: 101, cost: 1, tokens: [10, 0, 990, 0], toolRead: read("Read", 400) }),
     turn({ when: "2026-09-22T10:10:00Z", session: "worker-101", row: 101, cost: 1, tokens: [10, 0, 990, 0], toolRead: read("Grep", 100) }),
@@ -704,8 +704,8 @@ test("parseMergePaths: a merge commit repeated once per parent keeps its FIRST s
 test("readMergePaths: the command as run, on a real merge whose first parent holds an unrelated change, reads the pull request's own paths and not the first parent's other work", () => {
   const checkout = mkdtempSync(join(tmpdir(), "merge-paths-"));
   try {
-    const git = (...args) => execFileSync("git", ["-C", checkout, "-c", "user.email=a@b", "-c", "user.name=n", "-c", "commit.gpgsign=false", ...args], { env: sandboxGitEnv(), stdio: ["ignore", "pipe", "pipe"] });
-    const commitFile = (path, message) => { mkdirSync(join(checkout, path, ".."), { recursive: true }); writeFileSync(join(checkout, path), message); git("add", "."); git("commit", "-qm", message); };
+    const git = (...args: string[]) => execFileSync("git", ["-C", checkout, "-c", "user.email=a@b", "-c", "user.name=n", "-c", "commit.gpgsign=false", ...args], { env: sandboxGitEnv(), stdio: ["ignore", "pipe", "pipe"] });
+    const commitFile = (path: string, message: string|NodeJS.ArrayBufferView<ArrayBufferLike>) => { mkdirSync(join(checkout, path, ".."), { recursive: true }); writeFileSync(join(checkout, path), message); git("add", "."); git("commit", "-qm", message); };
     git("init", "-q", "-b", "main");
     commitFile("README", "base");
     git("checkout", "-qb", "pr");
@@ -722,13 +722,13 @@ test("readMergePaths: the command as run, on a real merge whose first parent hol
 });
 
 // THE DERIVATION: one transcript whose window growth is known by hand.
-const order = (timestamp, session) => JSON.stringify({ type: "user", timestamp, message: { role: "user", content: `\n\n<pasted_content id="1">\nYou are \`${session}\` -- an order.\n</pasted_content>` } });
-const result = (timestamp) => JSON.stringify({ type: "user", timestamp, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t", content: "ok" }] } });
-const message = (timestamp, id, tools, [input, output, cacheRead, cacheWrite]) => JSON.stringify({
-  type: "assistant", timestamp, message: { id, model: "claude-sonnet-5-5", role: "assistant", content: tools.map((name) => ({ type: "tool_use", id: `${id}-${name}`, name, input: {} })),
+const order = (timestamp: string, session: string) => JSON.stringify({ type: "user", timestamp, message: { role: "user", content: `\n\n<pasted_content id="1">\nYou are \`${session}\` -- an order.\n</pasted_content>` } });
+const result = (timestamp: string) => JSON.stringify({ type: "user", timestamp, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t", content: "ok" }] } });
+const message = (timestamp: string, id: string, tools: any[], [input, output, cacheRead, cacheWrite]: [number,number,number,number]) => JSON.stringify({
+  type: "assistant", timestamp, message: { id, model: "claude-sonnet-5-5", role: "assistant", content: tools.map((name: any) => ({ type: "tool_use", id: `${id}-${name}`, name, input: {} })),
     usage: { input_tokens: input, output_tokens: output, cache_read_input_tokens: cacheRead, cache_creation_input_tokens: cacheWrite, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: cacheWrite } } },
 });
-const T = (minute) => `2026-10-04T10:${String(minute).padStart(2, "0")}:00.000Z`;
+const T = (minute: number) => `2026-10-04T10:${String(minute).padStart(2, "0")}:00.000Z`;
 const READS = [
   order(T(0), "worker-9001"),
   message(T(1), "m1", ["Read"], [2, 40, 1000, 500]), // window 1502, output 40
@@ -741,8 +741,8 @@ const READS = [
   order(T(8), "worker-9001"), // an order between m4 and m5: the window grew by more than a result
   message(T(9), "m5", ["Bash"], [1, 5, 3200, 700]),
 ].join("\n");
-const readsOf = (events) => Object.fromEntries(events.filter((event) => event.kind === "turn").map((event) => [event.id.replace("turn:", ""), event.toolRead]));
-const readTranscript = (text, carry = null) => eventsOfTranscript({ text, file: "t.jsonl", ledger: [], rowRepo: ROW_REPO, carry });
+const readsOf = (events: TraceEvent[]) => Object.fromEntries(events.filter((event: { kind: string; }) => event.kind === "turn").map((event: { id: string; toolRead: any; }) => [event.id.replace("turn:", ""), event.toolRead]));
+const readTranscript = (text: string, carry = null) => eventsOfTranscript({ text, file: "t.jsonl", ledger: [], rowRepo: ROW_REPO, carry });
 
 test("TOOL READ derivation: the window's growth less the previous output, the tool or mixed, nothing after a tool that is not read, null tokens after an order", () => {
   const reads = readsOf(readTranscript(READS).events);

@@ -25,9 +25,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sandboxGitEnv } from "./git-env.mjs";
 
-/** @typedef {{ name: string, reason: string }} Declaration */
-/** @typedef {{ ref: string } | { unreadable: string }} Base */
-/** @typedef {(root: string, base: { changed: Set<string> | null }) => string[]} Scan */
+export type Declaration = { name: string; reason: string };
+export type Base = { ref: string } | { unreadable: string };
+export type Scan = (root: string, base: { changed: Set<string> | null }) => string[];
 
 const MERGE_GROUP = "merge_group";
 /** The checkout a laid-out copy of the tool came from, for the one reader that needs a repository (`judgePin`). */

@@ -26,6 +26,20 @@
     "src/packaging/merge-guard-checks-rule.test.ts",
     "src/packaging/merge-guard.test.ts",
     "src/packaging/tracker-leak-refusal.test.ts",
-    "src/packaging/workflow-run-liveness.test.ts"
+    "src/packaging/workflow-run-liveness.test.ts",
+    // NEVER TYPECHECKED BEFORE, CONVERTED BY `js-to-ts` (a11ign/a11ign#4269): these trace tests were `.mjs` with no `// @ts-check`, so strict mode has never read them. The script renamed them and
+    // TypeScript's `inferFromUsage` typed what it could; what is left is fixture shapes the inference fitted to the first call (`null` where a later call passes a number, an object literal
+    // missing a field the next one has) and the `possibly undefined` reads a test makes on purpose. Measured 2026-10-09 with `tsc --noEmit`: 591 errors in these 11 files. Fix a file, delete its line.
+    "src/trace/aggregate.test.ts",
+    "src/trace/clock-feed.test.ts",
+    "src/trace/github-events.test.ts",
+    "src/trace/growth.test.ts",
+    "src/trace/otel-receiver.test.ts",
+    "src/trace/publish.test.ts",
+    "src/trace/swimlane.test.ts",
+    "src/trace/trace.test.ts",
+    "src/trace/triage-sample.test.ts",
+    "src/trace/wake-cache.test.ts",
+    "src/trace/waterfall.test.ts"
   ]
 }

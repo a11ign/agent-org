@@ -14,20 +14,20 @@ import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { DEFINITIONS, MIXED, NOT_DERIVABLE, PROMPT, SEVERAL_COMMANDS, START_OF_WINDOW, UNPARSED, commandName, commandOf, messagesOf, parseArgs, readGrowth, renderGrowth, requestsOf, sessionOfTranscript, summarise } from "./growth.mjs";
+import { DEFINITIONS, MIXED, NOT_DERIVABLE, PROMPT, Request, SEVERAL_COMMANDS, START_OF_WINDOW, UNPARSED, commandName, commandOf, messagesOf, parseArgs, readGrowth, renderGrowth, requestsOf, sessionOfTranscript, summarise } from "./growth.mjs";
 
 const T0 = Date.parse("2026-10-05T00:00:00Z");
-const stamp = (n) => new Date(T0 + n * 1000).toISOString();
-const lines = (records) => `${records.map((record) => JSON.stringify(record)).join("\n")}\n`;
+const stamp = (n: number) => new Date(T0 + n * 1000).toISOString();
+const lines = (records: any[]) => `${records.map((record: any) => JSON.stringify(record)).join("\n")}\n`;
 
-const order = (n, session = "worker-9") => ({ type: "user", timestamp: stamp(n), message: { role: "user", content: `<pasted_content id="a">You are \`${session}\`. Row #9.</pasted_content id="a">` } });
-const prompt = (n) => ({ type: "user", timestamp: stamp(n), message: { role: "user", content: "carry on" } });
-const results = (n, sidechain = false) => ({ type: "user", timestamp: stamp(n), isSidechain: sidechain, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t", content: "ok" }] } });
-const compaction = (n) => ({ type: "user", timestamp: stamp(n), isCompactSummary: true, message: { role: "user", content: "summary of the work so far" } });
-const cleared = (n) => ({ type: "user", timestamp: stamp(n), isMeta: true, message: { role: "user", content: "<command-name>/clear</command-name>" } });
-const boundary = (n) => ({ type: "system", subtype: "compact_boundary", timestamp: stamp(n) });
+const order = (n: number, session = "worker-9") => ({ type: "user", timestamp: stamp(n), message: { role: "user", content: `<pasted_content id="a">You are \`${session}\`. Row #9.</pasted_content id="a">` } });
+const prompt = (n: number) => ({ type: "user", timestamp: stamp(n), message: { role: "user", content: "carry on" } });
+const results = (n: number, sidechain = false) => ({ type: "user", timestamp: stamp(n), isSidechain: sidechain, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t", content: "ok" }] } });
+const compaction = (n: number) => ({ type: "user", timestamp: stamp(n), isCompactSummary: true, message: { role: "user", content: "summary of the work so far" } });
+const cleared = (n: number) => ({ type: "user", timestamp: stamp(n), isMeta: true, message: { role: "user", content: "<command-name>/clear</command-name>" } });
+const boundary = (n: number) => ({ type: "system", subtype: "compact_boundary", timestamp: stamp(n) });
 /** One API message; `blocks` > 1 writes it once per content block, as the harness does. `usage.cache_read_input_tokens` is what the fixture is about. */
-const message = (n, { id, read, tools = [], commands = [], output = 5, sidechain = false, blocks = 1 }) => Array.from({ length: blocks }, (_, block) => ({
+const message = (n: number, { id, read, tools = [], commands = [], output = 5, sidechain = false, blocks = 1 }: { id: string; read: number; tools: string[]; blocks?: number; }) => Array.from({ length: blocks }, (_, block) => ({
   type: "assistant", timestamp: stamp(n + block / 10), isSidechain: sidechain,
   message: {
     id, model: "claude-sonnet-5-5", role: "assistant",
@@ -36,7 +36,7 @@ const message = (n, { id, read, tools = [], commands = [], output = 5, sidechain
   },
 }));
 /** A message and the result of its tool calls, which is what separates two requests in an ordinary run. */
-const step = (n, spec) => [...message(n, spec), ...(spec.tools?.length ? [results(n + 0.5, spec.sidechain)] : [])];
+const step = (n: number, spec: { id?: any; read?: any; tools?: any; sidechain?: any; commands?: any; output?: any; blocks?: any; }) => [...message(n, spec), ...(spec.tools?.length ? [results(n + 0.5, spec.sidechain)] : [])];
 
 const WORKER = lines([
   order(0),
@@ -46,7 +46,7 @@ const WORKER = lines([
   ...step(4, { id: "m3", read: 400, tools: ["Bash", "Read"] }),
   ...step(5, { id: "m4", read: 410 }),
 ]);
-const byId = (requests) => Object.fromEntries(requests.map((request) => [request.id, request]));
+const byId = (requests: Request[]) => Object.fromEntries(requests.map((request: { id: any; }) => [request.id, request]));
 
 test("a request's growth is the difference of consecutive cache reads, attributed to the tool before the request that wrote it", () => {
   const m = byId(requestsOf(WORKER, "worker-9"));
@@ -194,8 +194,8 @@ test("the report names its window, its population and what it could not read", (
 });
 
 test("a marker resets the window of the thread it is written in: a subagent's own compaction or clear is not derivable, and neither thread's is the other's", () => {
-  const side = (marker) => ({ ...marker, isSidechain: true });
-  const run = (marker) => byId(requestsOf(lines([
+  const side = (marker: string|{ type: string; timestamp: string; isCompactSummary: boolean; message: { role: string; content: string; }; }|{ type: string; timestamp: string; isMeta: boolean; message: { role: string; content: string; }; }|{ type: string; subtype: string; timestamp: string; }) => ({ ...marker, isSidechain: true });
+  const run = (marker: string|{ type: string; timestamp: string; isCompactSummary: boolean; message: { role: string; content: string; }; }|{ type: string; timestamp: string; isMeta: boolean; message: { role: string; content: string; }; }|{ type: string; subtype: string; timestamp: string; }) => byId(requestsOf(lines([
     order(0),
     ...step(1, { id: "m0", read: 0, tools: ["Agent"] }),
     ...step(1.2, { id: "s0", read: 100, tools: ["Read"], sidechain: true }),
@@ -243,7 +243,7 @@ test("the first command of a Bash call names it: `gh` and `git` by their first s
 });
 
 test("parallel Bash calls of different commands are `(several commands)`, and the same command twice is that command", () => {
-  const request = (commands) => ({ commands });
+  const request = (commands: string[]) => ({ commands });
   assert.equal(commandOf(request(["git status", "gh pr list"])), SEVERAL_COMMANDS);
   assert.equal(commandOf(request(["git status", "git status -s"])), "git status");
   assert.equal(commandOf(request([])), UNPARSED);
@@ -253,7 +253,7 @@ test("--by-command splits the Bash row, and its rows SUM to the Bash line of the
   const requests = requestsOf(SHELL, "worker-9");
   const summary = summarise(requests);
   const bash = summary.byTool.find((row) => row.name === "Bash");
-  const sum = (rows, field) => rows.reduce((total, row) => total + row[field], 0);
+  const sum = (rows: any[], field: string) => rows.reduce((total: any, row: { [x: string]: any; }) => total + row[field], 0);
   assert.equal(sum(summary.byCommand, "tokens"), bash.tokens);
   assert.equal(sum(summary.byCommand, "requests"), bash.requests);
   assert.equal(summary.bashTokens, bash.tokens);
@@ -283,7 +283,7 @@ test("the command refuses a flag it does not know and names --by-command as one 
   try {
     mkdirSync(join(root, "p"));
     writeFileSync(join(root, "p", "s.jsonl"), SHELL);
-    const run = (...flags) => spawnSync(process.execPath, [new URL("./growth.mjs", import.meta.url).pathname, `--from=${stamp(0)}`, `--to=${stamp(100)}`, `--root=${root}`, ...flags], { encoding: "utf8" });
+    const run = (...flags: (string|undefined)[]) => spawnSync(process.execPath, [new URL("./growth.mjs", import.meta.url).pathname, `--from=${stamp(0)}`, `--to=${stamp(100)}`, `--root=${root}`, ...flags], { encoding: "utf8" });
     const split = run("--by-command");
     assert.equal(split.status, 0, split.stderr);
     assert.match(split.stdout, /\| git status \| 2 \|/);

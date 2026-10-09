@@ -9,27 +9,27 @@ const REPO_ROW = 9001;
 const PR = 9100;
 const H1 = "1111111aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const H2 = "2222222bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-const at = (hhmmss) => Date.parse(`2026-10-04T${hhmmss}Z`);
+const at = (hhmmss: string) => Date.parse(`2026-10-04T${hhmmss}Z`);
 const MINUTE = 60 * 1000;
 const NOW = at("13:30:00");
 const ORDER_KEY = "engineers/ready-row-unclaimed/9001";
 const DRAFT_KEY = "orchestrator/draft-convinced-not-ready/pr-9100/caf5b440";
 
 const base = { repo: null, cause: null, causeKey: null, wakeId: null };
-const ghRecord = (kind, time, extra = {}, subject = { pr: PR }) => ({ id: `gh:a11ign/a11ign#${subject.pr ?? REPO_ROW}:${kind}:${time}`, kind, source: "github", session: "github", at: at(time),
+const ghRecord = (kind: string, time: string, extra = {}, subject = { pr: PR }) => ({ id: `gh:a11ign/a11ign#${subject.pr ?? REPO_ROW}:${kind}:${time}`, kind, source: "github", session: "github", at: at(time),
   row: subject.pr ? null : REPO_ROW, pr: subject.pr ?? null, ...base, actor: "worker-9001", ...extra });
-const rowEvent = (kind, time, extra = {}) => ghRecord(kind, time, extra, { pr: null });
-const review = (id, time, headSha, state = "APPROVED") => ghRecord("reviewed", time, { id: `gh:a11ign/a11ign#${PR}:reviewed:${id}:${headSha}`, state, headSha, actor: "external-reviewer" });
-const run = (id, name, started, completed, headSha, conclusion = "success") => ghRecord("ci_run", completed ?? started, {
+const rowEvent = (kind: string, time: string, extra = {}) => ghRecord(kind, time, extra, { pr: null });
+const review = (id: number, time: string, headSha: string, state = "APPROVED") => ghRecord("reviewed", time, { id: `gh:a11ign/a11ign#${PR}:reviewed:${id}:${headSha}`, state, headSha, actor: "external-reviewer" });
+const run = (id: number, name: string, started: string, completed: string, headSha: string, conclusion = "success") => ghRecord("ci_run", completed ?? started, {
   id: `gh:a11ign/a11ign#${PR}:ci_run:${id}:${completed ? "completed" : "in_progress"}`, name, status: completed ? "completed" : "in_progress", state: completed ? conclusion : null,
   startedAt: at(started), completedAt: completed ? at(completed) : null, headSha });
 const tokens = { input: 10, output: 20, cacheRead: 1000, cacheWrite5m: 0, cacheWrite1h: 0 };
-const turn = (session, start, end, costUsd, extra = {}) => ({ id: `turn:${session}:${end}`, kind: "turn", source: "transcript", at: at(end), session, row: REPO_ROW, pr: null, ...base,
+const turn = (session: string, start: string, end: string, costUsd: number|null, extra = {}) => ({ id: `turn:${session}:${end}`, kind: "turn", source: "transcript", at: at(end), session, row: REPO_ROW, pr: null, ...base,
   model: costUsd === null ? "mystery-model" : "claude-sonnet-5-5", tokens, costUsd, wallClockMs: at(end) - at(start), ...extra });
-const wake = (time, session, causeKey, extra = {}) => ({ id: `wake:${session}:${time}`, kind: "wake", source: "wake-ledger", at: at(time), session, row: null, pr: null, ...base, causeKey, deliveryLagMs: null, ...extra });
+const wake = (time: string, session: string, causeKey: string, extra = {}) => ({ id: `wake:${session}:${time}`, kind: "wake", source: "wake-ledger", at: at(time), session, row: null, pr: null, ...base, causeKey, deliveryLagMs: null, ...extra });
 
 /**
- * waterfall.test.mjs's ordinary row, with what a swimlane needs added: the turns carry their cause, the orchestrator's order is deferred for a busy seat 11:32-11:41 and delivered AGAIN (a repeat),
+ * waterfall.test.ts's ordinary row, with what a swimlane needs added: the turns carry their cause, the orchestrator's order is deferred for a busy seat 11:32-11:41 and delivered AGAIN (a repeat),
  * the draft is approved 11:30 and marked ready 11:50 (the INFERRED wait, on the orchestrator the orders went to), a second review at one head, a re-queue at one head, a CI re-run, a compaction,
  * and a turn by a session with no lane.
  */
@@ -72,13 +72,13 @@ const page = swimlane({ events: ROW, now: NOW, title: "row #9001" });
 const wf = waterfall({ events: ROW, now: NOW });
 
 // A page is parsed by the shapes this renderer writes: every element the assertions read carries a `class` or a `data-` attribute the renderer sets, and the parser is two regexes.
-const groups = (html, className) => [...html.matchAll(new RegExp(`<g class="${className}[^"]*"[^>]*>.*?</g>`, "gs"))].map((match) => match[0]);
-const attr = (element, name) => new RegExp(`${name}="([^"]*)"`).exec(element)?.[1];
-const title = (element) => /<title>(.*?)<\/title>/s.exec(element)?.[1].replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
-const width = (element) => Number(/<rect [^>]*width="([\d.]+)"/.exec(element)?.[1]);
-const laneNames = (html) => [...html.matchAll(/<g class="lane" data-lane="([^"]*)"/g)].map((match) => match[1]);
-const bars = (html) => groups(html, "bar");
-const waits = (html) => groups(html, "wait");
+const groups = (html: string, className: string) => [...html.matchAll(new RegExp(`<g class="${className}[^"]*"[^>]*>.*?</g>`, "gs"))].map((match) => match[0]);
+const attr = (element: string, name: string) => new RegExp(`${name}="([^"]*)"`).exec(element)?.[1];
+const title = (element: string) => /<title>(.*?)<\/title>/s.exec(element)?.[1].replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+const width = (element: string) => Number(/<rect [^>]*width="([\d.]+)"/.exec(element)?.[1]);
+const laneNames = (html: string) => [...html.matchAll(/<g class="lane" data-lane="([^"]*)"/g)].map((match) => match[1]);
+const bars = (html: string) => groups(html, "bar");
+const waits = (html: string) => groups(html, "wait");
 
 test("LANES: one per actor the chairman named, and no other: a session with no lane is counted, never given one", () => {
   assert.deepEqual(laneNames(page), ["gate", "product-manager", "ceo", "orchestrator", "worker-9001", "reviewer-9100", "CI", "merge queue"]);

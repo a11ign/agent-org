@@ -1,5 +1,5 @@
 /**
- * (#3232) THE RATCHET (`lib/pin-ratchet.mjs`) SHOWN ON THE FAILURE IT EXISTS FOR: two pull requests that each add ONE entry to a pinned
+ * (#3232) THE RATCHET (`lib/pin-ratchet.ts`) SHOWN ON THE FAILURE IT EXISTS FOR: two pull requests that each add ONE entry to a pinned
  * population are each green against their own base and must still be green merged, in EITHER order.
  *
  * A throwaway repository holds a population (`pop/<name>`), its declarations (`declared.txt`, one `name: reason` per line, sorted, so two

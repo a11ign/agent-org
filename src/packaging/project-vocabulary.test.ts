@@ -13,7 +13,7 @@
  *      convention (`local-import-closure.mjs`'s `stripComments`): a comment MENTIONING a word is not the
  *      same defect as CODE reading it. The collisions that are not vocabulary are declared below with
  *      their reasons, and since #3232 the invariant is judged against the base the change merges into:
- *      a hit this change ADDS must be declared, and one it removes passes (`lib/pin-ratchet.mjs`).
+ *      a hit this change ADDS must be declared, and one it removes passes (`lib/pin-ratchet.ts`).
  *   3. a SECOND project's vocabulary, run through the same reader, changes what `row-file.mjs` refuses (a
  *      milestone it does not have, a label outside its set), what `row-claim/runner-rule.mjs`'s lane rule
  *      reads, and, with an empty `resources` list, what `acceptance-commands.mjs` would let an Acceptance

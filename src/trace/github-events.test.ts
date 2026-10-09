@@ -8,13 +8,13 @@ import { } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { countingGh, eventsOfCheckRuns, eventsOfTimeline, GITHUB_KINDS, readGithubEvents } from "./github-events.mjs";
-import { appendEvents, eventsForRow, readStore } from "./store.mjs";
+import { appendEvents, eventsForRow, readStore, TraceEvent } from "./store.mjs";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 
 const REPO = "a11ign/a11ign";
 const HEAD = "0fde4737ea065e2d794cfab07b39373e715fede4";
 const FORCED = "9999999999999999999999999999999999999999"; // constructed
-const at = (iso) => Date.parse(iso);
+const at = (iso: string) => Date.parse(iso);
 
 const PR_TIMELINE = [
   { event: "committed", sha: HEAD, committer: { date: "2026-10-04T11:43:42Z" }, author: { date: "2026-10-04T11:43:42Z" } },
@@ -31,7 +31,7 @@ const PR_TIMELINE = [
   { id: 32447042712, event: "head_ref_deleted", created_at: "2026-10-04T14:20:03Z", commit_id: null, actor: { login: "a11ign-ci" } },
   { id: 9, event: "cross-referenced", created_at: "2026-10-04T15:00:00Z", actor: { login: "someone" } },
 ];
-const run = (id, name, status, conclusion, started, completed, sha = HEAD) => ({ id, name, status, conclusion, started_at: started, completed_at: completed, head_sha: sha });
+const run = (id: number, name: string, status: string, conclusion: string|null, started: string, completed: string|null, sha = HEAD) => ({ id, name, status, conclusion, started_at: started, completed_at: completed, head_sha: sha });
 const RUNS = {
   [HEAD]: [
     run(111453737726, "comment", "completed", "success", "2026-10-04T14:10:13Z", "2026-10-04T14:10:18Z"),
@@ -59,8 +59,8 @@ const ISSUES = {
 
 /** A `gh api` answering from the table, as gh does: a path it does not know FAILS. `seen` is every path asked. */
 const fakeGh = ({ runs = RUNS, pull = PR_TIMELINE, draft } = {}) => {
-  const seen = [];
-  const gh = (args) => {
+  const seen: any[] = [];
+  const gh = (args: string[]) => {
     seen.push(args[0]);
     const path = args[0].split("?")[0];
     const issue = /issues\/(\d+)$/.exec(path);
@@ -77,17 +77,17 @@ const fakeGh = ({ runs = RUNS, pull = PR_TIMELINE, draft } = {}) => {
 };
 
 const read = (gh = fakeGh()) => readGithubEvents({ rows: [3508], prs: [3406], repo: REPO, gh });
-const pullKinds = (events) => events.filter((event) => event.pr === 3406).sort((a, b) => a.at - b.at || a.id.localeCompare(b.id)).map((event) => event.kind);
-const rowKinds = (events) => events.filter((event) => event.row === 3508).sort((a, b) => a.at - b.at).map((event) => event.kind);
+const pullKinds = (events: any[]) => events.filter((event: { pr: number; }) => event.pr === 3406).sort((a: { at: number; id: string; }, b: { at: number; id: any; }) => a.at - b.at || a.id.localeCompare(b.id)).map((event: { kind: any; }) => event.kind);
+const rowKinds = (events: any[]) => events.filter((event: { row: number; }) => event.row === 3508).sort((a: { at: number; }, b: { at: number; }) => a.at - b.at).map((event: { kind: any; }) => event.kind);
 
 /** What the reader MUST find in the fixture. Every positive control below runs a reader that lacks one source through THIS and expects it to fail. */
-function assertComplete(events) {
+function assertComplete(events: TraceEvent[]) {
   assert.deepEqual(rowKinds(events), ["filed", "labeled", "claimed", "unlabeled", "released"]);
   const kinds = pullKinds(events);
   assert.deepEqual([...new Set(kinds)].sort(), ["added_to_merge_queue", "ci_run", "closed", "head_moved", "labeled", "merged", "opened", "ready_for_review", "removed_from_merge_queue",
     "reviewed", "unlabeled"]);
-  assert.equal(kinds.filter((kind) => kind === "ci_run").length, 5, "four runs of the first head and one of the second");
-  assert.equal(kinds.filter((kind) => kind === "head_moved").length, 2, "the commit, and the force-push");
+  assert.equal(kinds.filter((kind: string) => kind === "ci_run").length, 5, "four runs of the first head and one of the second");
+  assert.equal(kinds.filter((kind: string) => kind === "head_moved").length, 2, "the commit, and the force-push");
 }
 
 test("READ: the fixture yields every record kind of done-when 1, each with source github and an id", () => {
@@ -139,7 +139,7 @@ test("POSITIVE CONTROL: the same fixture through a reader that drops the check-r
 });
 
 test("ID: a `reviewed` event at another head is another record; the same read twice is the same ids", () => {
-  const review = (commit) => eventsOfTimeline({ subject: { number: 3406, isPull: true }, repo: REPO,
+  const review = (commit: string) => eventsOfTimeline({ subject: { number: 3406, isPull: true }, repo: REPO,
     timeline: PR_TIMELINE.filter((raw) => raw.event === "reviewed").map((raw) => ({ ...raw, commit_id: commit })) })[0];
   assert.notEqual(review(HEAD).id, review(FORCED).id);
   assert.equal(review(HEAD).id, review(HEAD).id);
@@ -180,7 +180,7 @@ test("CALLS: only `gh api` REST paths, counted; the commits asked for are the he
 });
 
 test("FAILURE: a call that fails THROWS; an empty answer would have printed a trace without the reviews", () => {
-  const failing = (needle) => (args) => {
+  const failing = (needle: string) => (args: (string|any[])[]) => {
     if (args[0].includes(needle)) throw Object.assign(new Error("HTTP 403 rate limit"), { stderr: "HTTP 403" });
     return fakeGh()(args);
   };
@@ -194,14 +194,14 @@ test("FAILURE: a call that fails THROWS; an empty answer would have printed a tr
 
 test("PAGES: a list longer than a page is read whole, and one that never ends throws instead of printing half", () => {
   const many = Array.from({ length: 130 }, (_, index) => ({ id: 1000 + index, event: "labeled", created_at: "2026-10-04T10:00:00Z", label: { name: "hold:ceo" }, actor: { login: "x" } }));
-  const paged = (args) => {
+  const paged = (args: string[]) => {
     const page = Number(/&page=(\d+)/.exec(args[0])?.[1]);
     if (/timeline/.test(args[0])) return many.slice((page - 1) * 100, page * 100);
     return ISSUES[3508];
   };
   const events = readGithubEvents({ rows: [3508], prs: [], repo: REPO, gh: paged });
   assert.equal(events.filter((event) => event.kind === "labeled").length, 130, "both pages");
-  const endless = (args) => (/timeline/.test(args[0]) ? many.slice(0, 100) : ISSUES[3508]);
+  const endless = (args: string[]) => (/timeline/.test(args[0]) ? many.slice(0, 100) : ISSUES[3508]);
   assert.throws(() => readGithubEvents({ rows: [3508], prs: [], repo: REPO, gh: endless }), /refusing to print a trace that stops part way/);
 });
 
@@ -212,8 +212,8 @@ test("A PULL REQUEST IS OPENED AT ITS OWN `created_at` (`pulls/{n}`), not its is
   assert.equal(read().find((event) => event.kind === "filed" && event.row === 3508).at, at("2026-10-04T17:54:45Z"), "a row has no pull record and is read from its issue");
 });
 
-const openedOf = (options) => read(fakeGh(options)).find((event) => event.kind === "opened" && event.pr === 3406);
-const stamp = (event, id, created_at) => ({ id, event, created_at, commit_id: null, actor: { login: "a11ign-ai-workers" } });
+const openedOf = (options: { runs?: { "0fde4737ea065e2d794cfab07b39373e715fede4": { id: any; name: any; status: any; conclusion: any; started_at: any; completed_at: any; head_sha: string; }[]; "9999999999999999999999999999999999999999": { id: any; name: any; status: any; conclusion: any; started_at: any; completed_at: any; head_sha: string; }[]; }|undefined; pull?: ({ event: string; sha: string; committer: { date: string; }; author: { date: string; }; id?: undefined; created_at?: undefined; commit_id?: undefined; label?: undefined; actor?: undefined; submitted_at?: undefined; state?: undefined; user?: undefined; }|{ id: number; event: string; created_at: string; commit_id: null; label: { name: string; }; actor: { login: string; }; sha?: undefined; committer?: undefined; author?: undefined; submitted_at?: undefined; state?: undefined; user?: undefined; }|{ id: number; event: string; created_at: string; label: { name: string; }; actor: { login: string; }; sha?: undefined; committer?: undefined; author?: undefined; commit_id?: undefined; submitted_at?: undefined; state?: undefined; user?: undefined; }|{ id: number; event: string; submitted_at: string; commit_id: string; state: string; user: { login: string; }; sha?: undefined; committer?: undefined; author?: undefined; created_at?: undefined; label?: undefined; actor?: undefined; }|{ id: number; event: string; created_at: string; commit_id: string; actor: { login: string; }; sha?: undefined; committer?: undefined; author?: undefined; label?: undefined; submitted_at?: undefined; state?: undefined; user?: undefined; }|{ id: number; event: string; created_at: string; commit_id: null; actor: { login: string; }; sha?: undefined; committer?: undefined; author?: undefined; label?: undefined; submitted_at?: undefined; state?: undefined; user?: undefined; }|{ id: number; event: string; created_at: string; actor: { login: string; }; sha?: undefined; committer?: undefined; author?: undefined; commit_id?: undefined; label?: undefined; submitted_at?: undefined; state?: undefined; user?: undefined; })[]|undefined; }|undefined) => read(fakeGh(options)).find((event) => event.kind === "opened" && event.pr === 3406);
+const stamp = (event: string, id: number, created_at: string) => ({ id, event, created_at, commit_id: null, actor: { login: "a11ign-ai-workers" } });
 const NO_SWITCH = PR_TIMELINE.filter((raw) => raw.event !== "ready_for_review");
 
 test("OPENED CARRIES `draft`: true for a draft, false for one opened ready, null when the pull object was not read -- and null is never false (#3670)", () => {

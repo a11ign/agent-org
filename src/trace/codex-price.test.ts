@@ -7,26 +7,26 @@ import { eventsOfCodexSession } from "./codex-turns.mjs";
 import { costOf, PRICES } from "./store.mjs";
 
 const ROW_REPO = "a11ign/a11ign";
-const tokens = (input, output, cacheRead = 0) => ({ input, output, cacheRead, cacheWrite5m: 0, cacheWrite1h: 0 });
+const tokens = (input: number, output: number, cacheRead = 0) => ({ input, output, cacheRead, cacheWrite5m: 0, cacheWrite1h: 0 });
 /** `costOf` rounds to 8 places to remove float noise, so an expected figure is rounded the same way. */
-const rounded = (dollars) => Math.round(dollars * 1e8) / 1e8;
+const rounded = (dollars: number) => Math.round(dollars * 1e8) / 1e8;
 const SHORT_PROMPT = 200_000; // under the 272K tier, so the base rates apply
 const SESSION_DOLLARS = rounded((3043 * 0.2 + 213 * 1.2 + 9984 * 0.02) / 1e6);
 
 /** The rows that are not Claude's: the ones whose rate must be quoted from somewhere. */
-const nonClaude = (rows) => rows.filter((row) => !(typeof row.prefix === "string" && row.prefix.startsWith("claude-")));
+const nonClaude = (rows: any[]) => rows.filter((row: { prefix: string; }) => !(typeof row.prefix === "string" && row.prefix.startsWith("claude-")));
 /** What a row owes: the URL it was quoted from and the day it was fetched. Returns the problems, empty when it is sourced. */
-const unsourced = (row) => [
+const unsourced = (row: Record<string, string | undefined>) => [
   ...(/^https:\/\/\S+$/.test(row.source ?? "") ? [] : ["source URL"]),
-  ...(/^\d{4}-\d{2}-\d{2}$/.test(row.fetched ?? "") && !Number.isNaN(Date.parse(row.fetched)) ? [] : ["fetched date"]),
+  ...(/^\d{4}-\d{2}-\d{2}$/.test(row.fetched ?? "") && !Number.isNaN(Date.parse(row.fetched ?? "")) ? [] : ["fetched date"]),
 ];
 
 test("SOURCED: every non-Claude PRICES row carries a source URL and a fetched date; the same row with its source removed turns the check red", () => {
   const rows = nonClaude(PRICES);
   // POSITIVE CONTROL for the emptiness below: the population is not empty, and it holds the Codex model the reviewers run.
-  assert.ok(rows.some((row) => row.model === "gpt-5.6-luna"), "the gpt-5.6-luna row is among the rows checked");
-  assert.deepEqual(rows.flatMap((row) => unsourced(row).map((problem) => `${row.model ?? row.prefix}: ${problem}`)), []);
-  const luna = rows.find((row) => row.model === "gpt-5.6-luna");
+  assert.ok(rows.some((row: { model: string; }) => row.model === "gpt-5.6-luna"), "the gpt-5.6-luna row is among the rows checked");
+  assert.deepEqual(rows.flatMap((row: Record<string, string | undefined>) => unsourced(row).map((problem) => `${row.model ?? row.prefix}: ${problem}`)), []);
+  const luna = rows.find((row: { model: string; }) => row.model === "gpt-5.6-luna");
   const { source: _source, ...withoutSource } = luna;
   const { fetched: _fetched, ...withoutDate } = luna;
   assert.deepEqual(unsourced(withoutSource), ["source URL"], "negative control: no source, red");
@@ -56,12 +56,12 @@ test("EXACT NAME: only the name the entry carries is priced; a neighbour (gpt-5.
   assert.notEqual(costOf("gpt-5.6-luna", tokens(1000, 1000, 1000)), null);
 });
 
-const session = (model) => [
+const session = (model: any) => [
   { timestamp: "2026-10-04T20:09:10.032Z", type: "session_meta", payload: { id: "s", cwd: "/home/agent/reviews/reviewer-9100" } },
   { timestamp: "2026-10-04T20:09:10.355Z", type: "turn_context", payload: { model } },
   { timestamp: "2026-10-04T20:09:13.069Z", type: "token_usage_record", payload: { response_id: "r1", usage: { input_tokens: 13027, cached_input_tokens: 9984, output_tokens: 213 } } },
 ].map((line) => JSON.stringify(line)).join("\n") + "\n";
-const turnsOf = (model) => eventsOfCodexSession({ text: session(model), file: "rollout-2026-10-04T20-09-10-00000000-0000-0000-0000-000000000000.jsonl", rowRepo: ROW_REPO }).events;
+const turnsOf = (model: string) => eventsOfCodexSession({ text: session(model), file: "rollout-2026-10-04T20-09-10-00000000-0000-0000-0000-000000000000.jsonl", rowRepo: ROW_REPO }).events;
 
 test("INGEST: a Codex turn is priced from the entry for its model, and the same session under another Codex model is stored null", () => {
   assert.equal(turnsOf("gpt-5.6-luna")[0].costUsd, SESSION_DOLLARS);

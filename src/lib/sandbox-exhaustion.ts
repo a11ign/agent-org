@@ -82,7 +82,7 @@ const BYTES_PER_GIB = BYTES_PER_MIB * BYTES_PER_KIB;
  * @returns {string | null} the errno name, or null
  */
 export function exhaustionCause(error: unknown): string | null {
-  const failure = /** @type {{ code?: unknown, message?: unknown, stderr?: unknown }} */ (error ?? {});
+  const failure = (error ?? {}) as { code?: unknown; message?: unknown; stderr?: unknown };
   const code = typeof failure.code === "string" ? failure.code : "";
   if (code in EXHAUSTION_CODES) return code;
   const text = `${asText(failure.message)}\n${asText(failure.stderr)}`;
@@ -106,7 +106,7 @@ export function exhaustionCause(error: unknown): string | null {
  */
 export function describeSandboxExhaustion(error: unknown, { root, cause, statfs = statfsSync }: { root: string; cause: string; statfs?: (path: string) => { bsize: number; blocks: number; bavail: number; }; }): string {
   const meaning = EXHAUSTION_CODES[cause] ?? `${cause} while building the sandbox`;
-  const original = firstLine(asText(/** @type {{ message?: unknown }} */ (error ?? {}).message))
+  const original = firstLine(asText(((error ?? {}) as { message?: unknown }).message))
     ?? "the setup threw with no message";
   return `${EXHAUSTION_MARKER}: ${cause} building the test sandbox ${root} -- ${meaning}. ${freeSpace(root, statfs)}. `
     + `Free space on that filesystem and re-run; this run proved nothing about the code under test. `
@@ -205,7 +205,7 @@ function freeSpace(root: string, statfs: (path: string) => { bsize: number; bloc
     return `${humanBytes(bavail * bsize)} free of ${humanBytes(blocks * bsize)} on the filesystem holding ${measured}`;
   } catch (error) {
     return `its filesystem free space could not be read at ${measured} (${firstLine(asText(
-      /** @type {{ message?: unknown }} */ (error ?? {}).message)) ?? "no message"})`;
+      ((error ?? {}) as { message?: unknown }).message)) ?? "no message"})`;
   }
 }
 

@@ -2,31 +2,31 @@
 // no-token: gh -- every event is a fixture; `waterfall` is a pure function and calls nothing
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { eventsOfTranscript } from "./store.mjs";
-import { BETWEEN, duration, PHASES, renderWaterfall, waterfall } from "./waterfall.mjs";
+import { eventsOfTranscript, ToolRead, Tokens } from "./store.mjs";
+import { BETWEEN, duration, Phase, PHASES, renderWaterfall, Spend, Repeat, waterfall } from "./waterfall.mjs";
 
 const REPO_ROW = 9001;
 const PR = 9100;
 const H1 = "1111111aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const H2 = "2222222bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-const at = (hhmmss) => Date.parse(`2026-10-04T${hhmmss}Z`);
+const at = (hhmmss: string) => Date.parse(`2026-10-04T${hhmmss}Z`);
 const MINUTE = 60 * 1000;
 const NOW = at("13:30:00");
 
 const base = { repo: null, cause: null, causeKey: null, wakeId: null };
 /** A GitHub record, as `github-events.mjs` makes it: `session: "github"`, a stable id, the row or the pull request. */
-const ghRecord = (kind, time, extra = {}, subject = { pr: PR }) => ({ id: `gh:a11ign/a11ign#${subject.pr ?? REPO_ROW}:${kind}:${time}`, kind, source: "github", session: "github", at: at(time),
+const ghRecord = (kind: string, time: string, extra = {}, subject = { pr: PR }) => ({ id: `gh:a11ign/a11ign#${subject.pr ?? REPO_ROW}:${kind}:${time}`, kind, source: "github", session: "github", at: at(time),
   row: subject.pr ? null : REPO_ROW, pr: subject.pr ?? null, ...base, actor: "worker-9001", ...extra });
-const rowEvent = (kind, time, extra = {}) => ghRecord(kind, time, extra, { pr: null });
-const review = (id, time, headSha, state = "APPROVED") => ghRecord("reviewed", time, { id: `gh:a11ign/a11ign#${PR}:reviewed:${id}:${headSha}`, state, headSha, actor: "external-reviewer" });
-const run = (id, name, started, completed, headSha, conclusion = "success") => ghRecord("ci_run", completed ?? started, {
+const rowEvent = (kind: string, time: string, extra = {}) => ghRecord(kind, time, extra, { pr: null });
+const review = (id: number, time: string, headSha: string, state = "APPROVED") => ghRecord("reviewed", time, { id: `gh:a11ign/a11ign#${PR}:reviewed:${id}:${headSha}`, state, headSha, actor: "external-reviewer" });
+const run = (id: number, name: string, started: string, completed: string, headSha: string, conclusion = "success") => ghRecord("ci_run", completed ?? started, {
   id: `gh:a11ign/a11ign#${PR}:ci_run:${id}:${completed ? "completed" : "in_progress"}`, name, status: completed ? "completed" : "in_progress", state: completed ? conclusion : null,
   startedAt: at(started), completedAt: completed ? at(completed) : null, headSha });
 const tokens = { input: 10, output: 20, cacheRead: 1000, cacheWrite5m: 0, cacheWrite1h: 0 };
 /** A model turn that ran from `start` to `end`, on the row (or, for a standing seat, on the pull request it was woken about). */
-const turn = (session, start, end, costUsd, extra = {}) => ({ id: `turn:${session}:${end}`, kind: "turn", source: "transcript", at: at(end), session, row: REPO_ROW, pr: null, ...base,
+const turn = (session: string, start: string, end: string, costUsd: number|null, extra = {}) => ({ id: `turn:${session}:${end}`, kind: "turn", source: "transcript", at: at(end), session, row: REPO_ROW, pr: null, ...base,
   model: costUsd === null ? "mystery-model" : "claude-sonnet-5-5", tokens, costUsd, wallClockMs: at(end) - at(start), ...extra });
-const wake = (time, session, causeKey, extra = {}) => ({ id: `wake:${session}:${time}`, kind: "wake", source: "wake-ledger", at: at(time), session, row: null, pr: null, ...base, causeKey, deliveryLagMs: null, ...extra });
+const wake = (time: string, session: string, causeKey: string, extra = {}) => ({ id: `wake:${session}:${time}`, kind: "wake", source: "wake-ledger", at: at(time), session, row: null, pr: null, ...base, causeKey, deliveryLagMs: null, ...extra });
 
 /**
  * One ordinary row: filed 10:00, claimed 10:30 by worker-9001, a PR opened 11:20 as a draft, approved 11:30 and marked ready 11:50, pushed again 12:00, reviewed 12:20 and AGAIN 12:25
@@ -64,10 +64,10 @@ const ROW = [
   rowEvent("closed", "12:50:05"),
 ];
 
-const phaseOf = (wf, name) => wf.phases.find((phase) => phase.phase === name);
-const iso = (ms) => new Date(ms).toISOString().slice(11, 19);
-const bounds = (phase) => phase.runs.map((one) => `${iso(one.from)}-${iso(one.end)}`);
-const waitingMs = (one) => one.wallClockMs - one.workingMs - one.unexplainedMs;
+const phaseOf = (wf: { start?: number|null; end?: number|null; open?: boolean; whole?: { wallClockMs: number; workingMs: number; waits: Wait[]; unexplainedMs: number; }; phases: any; between?: Phase; spend?: Spend&{ bySession: Record<string,Spend>; }; repeats?: Repeat[]; rows?: number[]; }, name: string) => wf.phases.find((phase: { phase: any; }) => phase.phase === name);
+const iso = (ms: string|number|Date) => new Date(ms).toISOString().slice(11, 19);
+const bounds = (phase: { runs: any[]; }) => phase.runs.map((one: { from: any; end: any; }) => `${iso(one.from)}-${iso(one.end)}`);
+const waitingMs = (one: { wallClockMs: number; workingMs: number; unexplainedMs: number; }) => one.wallClockMs - one.workingMs - one.unexplainedMs;
 
 test("PHASES: the eight, in order, each bounded by the records the definition names", () => {
   const wf = waterfall({ events: ROW, now: NOW });
@@ -99,7 +99,7 @@ test("WORKING + WAITING + unexplained is the wall-clock of every run, of every p
 test("CLAIM: a deferral span and an order's delivery lag are each named WAITING, and what neither covers is unexplained", () => {
   const claim = phaseOf(waterfall({ events: ROW, now: NOW }), "claim");
   assert.equal(claim.workingMs, 0);
-  assert.deepEqual(claim.waits.map((wait) => [wait.source, wait.ms]), [["deferral-log", 5 * MINUTE], ["wake-ledger", 2 * MINUTE]]);
+  assert.deepEqual(claim.waits.map((wait: { source: any; ms: any; }) => [wait.source, wait.ms]), [["deferral-log", 5 * MINUTE], ["wake-ledger", 2 * MINUTE]]);
   assert.match(claim.waits[1].label, /1 order to worker-9001 delivered after being typed \(longest 2m00s\)/);
   assert.match(claim.waits[0].label, /order engineers\/ready-row-unclaimed\/9001 deferred for busy worker-9001 \(delivered\)/);
   assert.equal(claim.unexplainedMs, 3 * MINUTE, "10:35:00 to 10:38:00: nothing was recorded");
@@ -126,10 +126,10 @@ const LONG_TOOL_TRANSCRIPT = [
 test("TOOL (#3669): a long tool call is a WAITING source named from the turn's own `toolMs`, and the same turns without the field print it as unexplained", () => {
   const { events: fromTranscript } = eventsOfTranscript({ text: LONG_TOOL_TRANSCRIPT, file: "w.jsonl", ledger: [], rowRepo: "a11ign/a11ign" });
   const row = [rowEvent("filed", "09:50:00"), rowEvent("claimed", "10:00:00", { claimant: "worker-9001" }), ghRecord("opened", "10:07:00")];
-  const build = (events) => phaseOf(waterfall({ events: [...row, ...events], now: NOW }), "build");
+  const build = (events: { id: string; kind: "turn"|"wake"|"compaction"|"gh_call"|"deferral"|import("./github-events.mjs").GithubKind; source: "transcript"|"wake-ledger"|"github"|"gh-ledger"|"deferral-log"; at: number; session: string; row: number|null; pr: number|null; repo: string|null; cause: string|null; causeKey: string|null; wakeId: string|null; model?: string; tokens?: Tokens; costUsd?: number|null; toolRead?: ToolRead|null; transcript?: string; wallClockMs?: number|null; deliveryLagMs?: number|null; bytes?: number; sidechain?: boolean; harness?: "codex"; rows?: number[]; prs?: number[]; touchedRows?: number[]; touchedPrs?: number[]; actor?: string|null; seq?: number; claimant?: string; name?: string; state?: string|null; status?: string; headSha?: string; mergeSha?: string; startedAt?: number; completedAt?: number|null; how?: "delivered"|"gone"; outcome?: "merged"|"unmerged"; account?: string; resource?: string; cost?: number|null; exit?: number; command?: string; workspace?: string; script?: string; sessionId?: string; keyedBy?: "session"|"time"|null; unkeyed?: "script"|"no-turn"; }[]) => phaseOf(waterfall({ events: [...row, ...events], now: NOW }), "build");
   const named = build(fromTranscript);
   assert.deepEqual(fromTranscript.filter((event) => event.kind === "turn").map((event) => event.toolMs), [null, 6 * MINUTE], "POSITIVE CONTROL: the fixture's second turn follows the 6-minute call");
-  assert.deepEqual(named.waits.map((wait) => [wait.source, wait.ms]), [["tool", 6 * MINUTE]]);
+  assert.deepEqual(named.waits.map((wait: { source: any; ms: any; }) => [wait.source, wait.ms]), [["tool", 6 * MINUTE]]);
   assert.match(named.waits[0].label, /^tool running \(worker-9001, 1 call\)$/);
   assert.equal(named.workingMs, 10 * 1000, "the two turns' own seconds");
   assert.equal(named.unexplainedMs, 7 * MINUTE - 10 * 1000 - 6 * MINUTE, "10:00:05-:07 and 10:06:12-10:07:00, the harness's seconds around the call");
@@ -144,7 +144,7 @@ test("TOOL (#3669): a turn whose `toolMs` is null or 0 claims nothing, and a rec
   const during = { id: "deferral:worker-9001:9", kind: "deferral", source: "deferral-log", at: at("10:44:00"), session: "worker-9001", row: REPO_ROW, pr: null, ...base, causeKey: "k",
     startedAt: at("10:36:00"), completedAt: at("10:44:00"), how: "delivered" };
   const turns = [turn("worker-9001", "10:30:00", "10:31:00", 0.1, { toolMs: null }), turn("worker-9001", "10:45:00", "10:46:00", 0.1, { toolMs: 10 * MINUTE }), turn("worker-9001", "10:48:00", "10:49:00", 0.1, { toolMs: 0 })];
-  const waits = Object.fromEntries(phaseOf(waterfall({ events: [...row, during, ...turns], now: NOW }), "build").waits.map((wait) => [wait.source, wait.ms]));
+  const waits = Object.fromEntries(phaseOf(waterfall({ events: [...row, during, ...turns], now: NOW }), "build").waits.map((wait: { source: any; ms: any; }) => [wait.source, wait.ms]));
   assert.equal(waits["deferral-log"], 8 * MINUTE, "the deferral keeps 10:36-10:44 although the tool's interval 10:35-10:45 covers it");
   assert.equal(waits.tool, 2 * MINUTE, "and the tool is named only for what the deferral did not claim: 10:35-10:36 and 10:44-10:45");
   assert.equal(Object.keys(waits).length, 2, "null and 0 add no source");
@@ -163,21 +163,21 @@ test("A GAP WITH NO RECORD is unexplained and never WORKING (the acceptance's po
 test("WAITING names its source: a hold label, CI running, a review not yet posted, a queue entry, an ejection", () => {
   const wf = waterfall({ events: ROW, now: NOW });
   const verify = phaseOf(wf, "verify");
-  const named = (phase, source) => phase.waits.filter((wait) => wait.source === source);
+  const named = (phase: { waits: any[]; }, source: string) => phase.waits.filter((wait: { source: any; }) => wait.source === source);
   assert.equal(named(verify, "label")[0].ms, 2 * MINUTE);
   assert.match(named(verify, "label")[0].label, /label pr:hold \(held; put on by worker-9001\)/);
   assert.equal(named(verify, "CI")[0].ms, 5.5 * MINUTE, "the check-runs ran 7m30s and the hold label claimed 2 minutes of it first");
   assert.match(named(verify, "review")[0].label, /review not yet posted \(opened\)/);
   const queue = phaseOf(wf, "queue");
-  assert.deepEqual(queue.waits.map((wait) => [wait.source, wait.ms]).sort(), [["merge-queue", 5 * MINUTE], ["merge-queue", 10 * MINUTE], ["merge-queue", 5 * MINUTE]].sort());
-  assert.ok(queue.waits.some((wait) => /ejected from the merge queue, awaiting re-entry/.test(wait.label)));
+  assert.deepEqual(queue.waits.map((wait: { source: any; ms: any; }) => [wait.source, wait.ms]).sort(), [["merge-queue", 5 * MINUTE], ["merge-queue", 10 * MINUTE], ["merge-queue", 5 * MINUTE]].sort());
+  assert.ok(queue.waits.some((wait: { label: string; }) => /ejected from the merge queue, awaiting re-entry/.test(wait.label)));
   assert.equal(queue.unexplainedMs, 0);
   for (const wait of wf.phases.flatMap((phase) => phase.waits)) assert.ok(wait.source && wait.label, "every wait carries its source");
 });
 
 test("INFERRED: an approved draft waiting to be marked ready is named from the review, the order delivered and the seat's turns, and is marked inferred", () => {
   const verify = phaseOf(waterfall({ events: ROW, now: NOW }), "verify");
-  const wait = verify.waits.find((one) => one.source === "approved-draft");
+  const wait = verify.waits.find((one: { source: string; }) => one.source === "approved-draft");
   assert.equal(wait.inferred, true);
   assert.equal(wait.ms, 18 * MINUTE, "11:30:00 to 11:50:00, less the 2 minutes the orchestrator was working in it");
   assert.match(wait.label, /approved draft #9100 not yet marked ready, waiting on orchestrator/);
@@ -186,21 +186,21 @@ test("INFERRED: an approved draft waiting to be marked ready is named from the r
   assert.match(wait.evidence[1], /order orchestrator\/draft-convinced-not-ready\/pr-9100\/caf5b440 delivered to orchestrator at 2026-10-04 11:31:00/, "record 2: the ledger's delivery");
   assert.equal(wait.evidence.at(-1), "orchestrator: 2 turns in the gap", "record 3: the seat's own turns");
   assert.equal(verify.workingMs, 2 * MINUTE, "and those turns are WORKING, not part of the wait");
-  assert.deepEqual(verify.waits.filter((one) => one.source !== "approved-draft").map((one) => one.inferred), [false, false, false], "every other wait is a record");
+  assert.deepEqual(verify.waits.filter((one: { source: string; }) => one.source !== "approved-draft").map((one: { inferred: any; }) => one.inferred), [false, false, false], "every other wait is a record");
 });
 
 test("REPEATS: each of the chairman's five is flagged in the phase it happened in, with its evidence", () => {
   const wf = waterfall({ events: ROW, now: NOW });
-  const flagged = (name) => phaseOf(wf, name).repeats;
-  assert.deepEqual(flagged("review").map((repeat) => repeat.kind), ["second review at the same head"]);
+  const flagged = (name: string) => phaseOf(wf, name).repeats;
+  assert.deepEqual(flagged("review").map((repeat: { kind: any; }) => repeat.kind), ["second review at the same head"]);
   assert.match(flagged("review")[0].summary, /review 5003 at head 2222222 after review 5002/);
-  assert.deepEqual(flagged("review")[0].evidence.map((line) => line.replace(/ at 2026.*/, "")), ["review 5002 APPROVED by external-reviewer", "review 5003 APPROVED by external-reviewer"], "the two review ids");
-  assert.deepEqual(flagged("queue").map((repeat) => repeat.kind), ["re-queue at the same head"]);
-  assert.deepEqual(flagged("queue")[0].evidence.map((line) => line.replace(/ at 2026.*/, "")), ["queue entry gh:a11ign/a11ign#9100:added_to_merge_queue:q1", "queue entry gh:a11ign/a11ign#9100:added_to_merge_queue:q2"], "the two entries");
-  assert.deepEqual(flagged("verify").map((repeat) => repeat.kind), ["re-wake with the same cause key"]);
+  assert.deepEqual(flagged("review")[0].evidence.map((line: string) => line.replace(/ at 2026.*/, "")), ["review 5002 APPROVED by external-reviewer", "review 5003 APPROVED by external-reviewer"], "the two review ids");
+  assert.deepEqual(flagged("queue").map((repeat: { kind: any; }) => repeat.kind), ["re-queue at the same head"]);
+  assert.deepEqual(flagged("queue")[0].evidence.map((line: string) => line.replace(/ at 2026.*/, "")), ["queue entry gh:a11ign/a11ign#9100:added_to_merge_queue:q1", "queue entry gh:a11ign/a11ign#9100:added_to_merge_queue:q2"], "the two entries");
+  assert.deepEqual(flagged("verify").map((repeat: { kind: any; }) => repeat.kind), ["re-wake with the same cause key"]);
   assert.match(flagged("verify")[0].evidence[1], /delivered again 2026-10-04 11:41:00 .* 10m00s later/);
-  assert.deepEqual(flagged("CI").map((repeat) => repeat.kind).sort(), ["CI re-run at the same head", "compaction"]);
-  const rerun = flagged("CI").find((repeat) => repeat.kind === "CI re-run at the same head");
+  assert.deepEqual(flagged("CI").map((repeat: { kind: any; }) => repeat.kind).sort(), ["CI re-run at the same head", "compaction"]);
+  const rerun = flagged("CI").find((repeat: { kind: string; }) => repeat.kind === "CI re-run at the same head");
   assert.equal(rerun.summary, "#9100: 1 check run again at head 2222222 (wave 2: lint)");
   assert.deepEqual(rerun.evidence, ["before: 1 check-runs from 2026-10-04 12:00:30 (lint)", "again: 1 check-runs from 2026-10-04 12:16:30 (lint)"], "only lint ran before; test, and the duplicate trigger of it in wave 1, are not re-runs");
   for (const name of ["spec", "claim", "build", "merge"]) assert.deepEqual(flagged(name), [], `${name}: no repeat happened in it`);
@@ -209,7 +209,7 @@ test("REPEATS: each of the chairman's five is flagged in the phase it happened i
 
 test("CI WAVES: two triggers of one check are one wave, and a later wave of checks no earlier wave ran is not a re-run (measured on #3406)", () => {
   const duplicate = [run(1, "arm", "11:00:00", "11:00:10", H1), run(2, "arm", "11:00:03", "11:00:12", H1)];
-  const only = (events) => waterfall({ events: [ghRecord("opened", "10:59:00"), ...events], now: NOW });
+  const only = (events: { actor: string; repo: null; cause: null; causeKey: null; wakeId: null; id: string; kind: any; source: string; session: string; at: number; row: number|null; pr: number; }[]) => waterfall({ events: [ghRecord("opened", "10:59:00"), ...events], now: NOW });
   assert.deepEqual(only(duplicate).repeats, [], "arm twice within one wave, overlapping");
   const fresh = only([...duplicate, run(3, "mutate", "12:00:00", "12:00:20", H1)]);
   assert.deepEqual(bounds(phaseOf(fresh, "CI")), ["10:59:00-11:00:12", "12:00:00-12:00:20"], "two waves, each its own CI run");

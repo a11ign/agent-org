@@ -13,11 +13,11 @@
 import { eventsForRow } from "./store.mjs";
 
 /**
- * @typedef {{ repo: string, kind: "pr" | "row", number: number }} ClockSubject
- * @typedef {{ bornAt: number | null, since: number | null, stoppedAt: number | null }} RowClock
  * `bornAt` is when the row was FILED or the pull request OPENED; `since` is when the outcome clock starts (the same instant for a pull request, the newest claim for a
  * row) and `null` when the store holds nothing that dates it (an unknown, never an age); `stoppedAt` is when a merge or a close stopped it, `null` while it runs.
  */
+export type RowClock = { bornAt: number | null; since: number | null; stoppedAt: number | null };
+export type ClockSubject = { repo: string; kind: "pr" | "row"; number: number };
 
 /**
  * The store's github records of ONE item, in the order GitHub wrote them. The id prefix names the repository: `eventsForRow` finds a number in any repository, and a

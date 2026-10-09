@@ -12,20 +12,20 @@ import { tmpDir } from "../lib/tmp-fixture.ts";
 
 const ROW_REPO = "a11ign/a11ign";
 
-const record = (timestamp, ordinal, type, payload) => JSON.stringify({ timestamp, ordinal, type, payload });
-const meta = (cwd) => record("2026-10-04T20:09:10.032Z", 0, "session_meta", { id: "sess-1", cwd, originator: "codex-tui" });
-const started = (timestamp) => record(timestamp, 1, "event_msg", { type: "task_started", turn_id: "turn-1" });
-const context = (timestamp, model) => record(timestamp, 2, "turn_context", { turn_id: "turn-1", cwd: "/x", model });
-const order = (timestamp, role = "user") => record(timestamp, 3, "response_item", { type: "message", role, content: [{ type: "input_text", text: "review it" }] });
-const toolOutput = (timestamp) => record(timestamp, 4, "response_item", { type: "custom_tool_call_output", call_id: "c", output: "ok" });
-const reasoning = (timestamp) => record(timestamp, 5, "response_item", { type: "reasoning", summary: [] });
+const record = (timestamp: string, ordinal: number, type: string, payload: { id?: string; cwd?: any; originator?: string; type?: string; turn_id?: string; model?: any; role?: string; content?: { type: string; text: string; }[]; call_id?: string; output?: string; summary?: never[]; thread_id?: string; response_id?: any; usage?: { input_tokens: any; cached_input_tokens: any; cache_write_input_tokens: number; output_tokens: any; reasoning_output_tokens: number; total_tokens: any; }; turn_token_usage?: { input_tokens: any; cached_input_tokens: any; cache_write_input_tokens: number; output_tokens: any; reasoning_output_tokens: number; total_tokens: any; }; info?: { total_token_usage: { input_tokens: any; output_tokens: any; }; }; }) => JSON.stringify({ timestamp, ordinal, type, payload });
+const meta = (cwd: string) => record("2026-10-04T20:09:10.032Z", 0, "session_meta", { id: "sess-1", cwd, originator: "codex-tui" });
+const started = (timestamp: string) => record(timestamp, 1, "event_msg", { type: "task_started", turn_id: "turn-1" });
+const context = (timestamp: string, model: string) => record(timestamp, 2, "turn_context", { turn_id: "turn-1", cwd: "/x", model });
+const order = (timestamp: string, role = "user") => record(timestamp, 3, "response_item", { type: "message", role, content: [{ type: "input_text", text: "review it" }] });
+const toolOutput = (timestamp: string) => record(timestamp, 4, "response_item", { type: "custom_tool_call_output", call_id: "c", output: "ok" });
+const reasoning = (timestamp: string) => record(timestamp, 5, "response_item", { type: "reasoning", summary: [] });
 /** One model request: Codex counts cached tokens INSIDE `input_tokens`, and `output_tokens` includes the reasoning. */
-const request = (timestamp, response, { input, cached, output, reasoningTokens = 0 }) => {
+const request = (timestamp: string, response: string, { input, cached, output, reasoningTokens = 0 }: { input: number; cached: number; output: number; reasoningTokens?: number; }) => {
   const usage = { input_tokens: input, cached_input_tokens: cached, cache_write_input_tokens: 0, output_tokens: output, reasoning_output_tokens: reasoningTokens, total_tokens: input + output };
   return record(timestamp, 6, "token_usage_record", { thread_id: "sess-1", turn_id: "turn-1", response_id: response, usage, turn_token_usage: usage });
 };
 /** The running total Codex ALSO writes after each request: reading it as well would count every request twice. */
-const running = (timestamp, input, output) => record(timestamp, 7, "event_msg", { type: "token_count", info: { total_token_usage: { input_tokens: input, output_tokens: output } } });
+const running = (timestamp: string, input: number, output: number) => record(timestamp, 7, "event_msg", { type: "token_count", info: { total_token_usage: { input_tokens: input, output_tokens: output } } });
 
 /** A reviewer on pull request 9100: its order, a request, a tool call and its output, a second request, and the final message. */
 const REVIEWER = [
@@ -42,7 +42,7 @@ const REVIEWER = [
   running("2026-10-04T20:09:17.473Z", 31221, 398),
 ];
 
-const read = (lines, file = "rollout-a.jsonl", extra = {}) => eventsOfCodexSession({ text: `${lines.join("\n")}\n`, file, rowRepo: ROW_REPO, ...extra });
+const read = (lines: any[], file = "rollout-a.jsonl", extra = {}) => eventsOfCodexSession({ text: `${lines.join("\n")}\n`, file, rowRepo: ROW_REPO, ...extra });
 
 test("TRANSCRIPT ID (#3589): a turn carries the uuid ending its rollout's file name, which `CODEX_THREAD_ID` holds in the shell that session started; a file with no uuid carries none", () => {
   const id = "01a109e5-898a-7183-9545-94bb9ea0c2b3";
@@ -88,7 +88,7 @@ test("RESUME: a read from the offset, with the carry, gives the events of one re
 });
 
 /** A tree in the shape Codex keeps: `<root>/<year>/<month>/<day>/rollout-*.jsonl`. */
-function sessionsTree(lines) {
+function sessionsTree(lines: any[]) {
   const dir = tmpDir("codex-turns-");
   const day = join(dir, "sessions", "2026", "10", "04");
   mkdirSync(day, { recursive: true });
@@ -99,7 +99,7 @@ function sessionsTree(lines) {
 
 test("INGEST: the Codex directory is walked, its turns reach the store and the pull request's trace; skipping the directory loses them (positive control)", () => {
   const tree = sessionsTree(REVIEWER);
-  const run = (codexRoot) => ingestTranscripts({ root: tree.claude, codexRoot, since: 0, ledger: [], rowRepo: ROW_REPO, storePath: tree.store, now: Date.parse("2026-10-05T00:00:00Z") });
+  const run = (codexRoot: string|null) => ingestTranscripts({ root: tree.claude, codexRoot, since: 0, ledger: [], rowRepo: ROW_REPO, storePath: tree.store, now: Date.parse("2026-10-05T00:00:00Z") });
   const withoutCodex = run(null);
   assert.equal(withoutCodex.report.codexRead, 0);
   assert.equal(eventsForRow(readStore(tree.store), { rows: [], prs: [9100] }).length, 0, "positive control: with no Codex directory the store holds no reviewer turn, so the assertion below can fail");

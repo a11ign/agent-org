@@ -8,7 +8,7 @@
  *
  * WHAT THIS PROVES AND WHAT IT DOES NOT: that the two code paths read the same GitHub fields for the same records, so the day one of them reads another (a createdAt
  * that moves to the head's date, a claim record read as the oldest instead of the newest) this goes RED naming both numbers. It does not prove the clock READS the
- * store at run time; it does not, and `clock-feed.mjs` says why.
+ * store at run time; it does not, and `clock-feed.ts` says why.
  *
  * POSITIVE CONTROLS, each below and each RED against its mutation: `same` is RED with both numbers when they differ; a feed that read its own timestamps (a decoy a
  * second off the store's) is caught by it; and the feed ignores everything but the store's records, so a decoy beside them moves nothing.
@@ -46,13 +46,13 @@ const { agedBacklogOrders } = await import("../work-gate.mjs");
 const REPO = "a11ign/a11ign";
 const MINUTE_MS = 60_000;
 const NOW = Date.parse("2026-10-04T16:00:00Z");
-const iso = (ms) => new Date(ms).toISOString();
-const ago = (minutes) => NOW - minutes * MINUTE_MS;
+const iso = (ms: string|number|Date|undefined) => new Date(ms).toISOString();
+const ago = (minutes: number) => NOW - minutes * MINUTE_MS;
 const WORKER = "a11ign-ai-workers";
-const label = (...names) => names.map((name) => ({ name }));
+const label = (...names: string[]) => names.map((name) => ({ name }));
 
 /** A claim record at `at`: `released` is the release a holder writes on its way out. */
-const claim = (session, at, released = false) => ({ at, released, session });
+const claim = (session: string, at: number, released = false) => ({ at, released, session });
 
 /**
  * Every item, once. `claims` oldest first; `closedAt` is a merge for a pull request and a close for a row. The open ones are past the clock's bound (100 min a pull
@@ -69,20 +69,20 @@ const ITEMS = [
   { kind: "row", number: 9103, createdAt: ago(30 * 60), claims: [claim("worker-9103", ago(200)), claim("worker-9103", ago(150), true)] },
   { kind: "row", number: 9104, createdAt: ago(30 * 60), claims: [claim("worker-9104", ago(100))], closedAt: ago(10) },
 ];
-const open = (item) => item.closedAt === undefined;
+const open = (item: { kind: string; number: number; createdAt: number; closedAt?: undefined; claims?: undefined; }|{ kind: string; number: number; createdAt: number; closedAt: number; claims?: undefined; }|{ kind: string; number: number; createdAt: number; claims: { at: any; released: boolean; session: any; }[]; closedAt?: undefined; }|{ kind: string; number: number; createdAt: number; claims: { at: any; released: boolean; session: any; }[]; closedAt: number; }) => item.closedAt === undefined;
 
 const bodyOf = ({ session, released }) => claimRecordComment({ session, branch: `agent/x-${session}`, worktree: `../wt-${session}`, nothing: null, released });
 
 /** The REST answers the store's reader asks for, one item at a time. */
-function ghFor(items) {
-  return (args) => {
+function ghFor(items: any[]) {
+  return (args: (string|string[])[]) => {
     const [, number, rest] = /^repos\/[^/]+\/[^/]+\/(?:issues|pulls)\/(\d+)(\/timeline)?/.exec(args[0]) ?? [];
-    const item = items.find((candidate) => String(candidate.number) === number);
+    const item = items.find((candidate: { number: any; }) => String(candidate.number) === number);
     assert.ok(item, `a fixture read for an item this test does not hold: ${args[0]}`);
     // A pull request's ISSUE record reads a second after its own, as #3575's did (measured 2026-10-04): the store must ask `pulls/{n}`, which is what `pr list` reads.
     const lateIssueRecord = item.kind === "pr" && args[0].includes("/issues/") ? 1000 : 0;
     if (!rest) return { created_at: iso(item.createdAt + lateIssueRecord), user: { login: WORKER } };
-    const comments = (item.claims ?? []).map((record, index) => ({ id: item.number * 100 + index, event: "commented", created_at: iso(record.at), body: bodyOf(record),
+    const comments = (item.claims ?? []).map((record: string|any[], index: number) => ({ id: item.number * 100 + index, event: "commented", created_at: iso(record.at), body: bodyOf(record),
       user: { login: WORKER } }));
     const closing = item.closedAt === undefined ? [] : [{ id: item.number * 100 + 50, event: item.kind === "pr" ? "merged" : "closed", created_at: iso(item.closedAt),
       actor: { login: WORKER } }];
@@ -93,7 +93,7 @@ function ghFor(items) {
 /** What the store holds for every item: the real reader, over the REST fixtures. */
 const STORE = readGithubEvents({ rows: ITEMS.filter((i) => i.kind === "row").map((i) => i.number), prs: ITEMS.filter((i) => i.kind === "pr").map((i) => i.number),
   repo: REPO, gh: ghFor(ITEMS) });
-const storeClock = (item) => clockFeedOf(STORE, { repo: REPO, kind: item.kind, number: item.number });
+const storeClock = (item: { kind: string; number: number; createdAt: number; closedAt?: undefined; claims?: undefined; }|{ kind: string; number: number; createdAt: number; closedAt: number; claims?: undefined; }|{ kind: string; number: number; createdAt: number; claims: { at: any; released: boolean; session: any; }[]; closedAt?: undefined; }|{ kind: string; number: number; createdAt: number; claims: { at: any; released: boolean; session: any; }[]; closedAt: number; }|undefined) => clockFeedOf(STORE, { repo: REPO, kind: item.kind, number: item.number });
 
 /** What the gate hands the clock for the open items, in `gh pr list` / `gh issue list --json` shape. */
 function gateFacts() {
@@ -107,12 +107,12 @@ function gateFacts() {
 }
 
 /** The comparison this file exists for: RED with BOTH numbers named when the clock's figure is not the store's. */
-function same(clockMs, storeMs, what) {
+function same(clockMs: number|null, storeMs: number|null, what: string) {
   if (clockMs !== storeMs) throw new Error(`${what}: the outcome clock says ${clockMs} and the trace store says ${storeMs}`);
 }
 
 /** The "open ..." figure the clock states for an item in its reading. @returns {string | undefined} */
-const statedOpen = (reading, number): string | undefined => new RegExp(`#${number} \\((?:PR|row), [^,]+, open ([^,]+),`).exec(reading.detail ?? "")?.[1];
+const statedOpen = (reading: { signal?: string; status?: "tripped"|"clear"|"unknown"; detail: any; firstTrippedAt?: number|null|undefined; discriminator?: string|undefined; prompt?: string|undefined; }, number: number): string | undefined => new RegExp(`#${number} \\((?:PR|row), [^,]+, open ([^,]+),`).exec(reading.detail ?? "")?.[1];
 
 test("the clock's `since` is the store's, for every item on the clock -- a pull request's opening and a row's NEWEST claim -- and an unknown is unknown in both", () => {
   const facts = gateFacts();

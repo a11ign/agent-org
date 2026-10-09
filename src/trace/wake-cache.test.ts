@@ -9,17 +9,17 @@ import { test } from "node:test";
 import { ACTION, DEFINITIONS, GAP, isCold, NOT_DERIVABLE, renderWakeCache, wakeCache } from "./wake-cache.mjs";
 
 const T0 = Date.parse("2026-10-05T00:00:00Z");
-const minute = (n) => T0 + n * 60_000;
-const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-9, `${actual} is not ${expected}`);
+const minute = (n: number) => T0 + n * 60_000;
+const near = (actual: number, expected: number) => assert.ok(Math.abs(actual - expected) < 1e-9, `${actual} is not ${expected}`);
 const WINDOW = { from: minute(0), to: minute(500) };
 
-const wake = (id, session, at) => ({ id, kind: "wake", source: "wake-ledger", at: minute(at), session, row: null, pr: null, repo: null, cause: "x", causeKey: null, wakeId: id });
+const wake = (id: string, session: string, at: number) => ({ id, kind: "wake", source: "wake-ledger", at: minute(at), session, row: null, pr: null, repo: null, cause: "x", causeKey: null, wakeId: id });
 /** `write` is the 1-hour cache write and `write5m` the 5-minute one; `input` is the uncached input; `cost` null is an unpriced turn. */
 const turn = ({ id, session = "ceo", wakeId, at, transcript, write, write5m = 0, input = 2, read = 0, cost, sidechain = false, harness }) => ({
   id: `turn:${id}`, kind: "turn", source: "transcript", at: minute(at), session, row: null, pr: null, repo: null, cause: null, causeKey: null, wakeId, ...(transcript ? { transcript } : {}),
   model: "claude-fable-5-1", tokens: { input, output: 10, cacheRead: read, cacheWrite5m: write5m, cacheWrite1h: write }, costUsd: cost, sidechain, ...(harness ? { harness } : {}),
 });
-const compaction = (at) => ({ id: `compaction:ceo:${at}`, kind: "compaction", source: "transcript", at: minute(at), session: "ceo", row: null, pr: null, repo: null, cause: null, causeKey: null, wakeId: null });
+const compaction = (at: number) => ({ id: `compaction:ceo:${at}`, kind: "compaction", source: "transcript", at: minute(at), session: "ceo", row: null, pr: null, repo: null, cause: null, causeKey: null, wakeId: null });
 
 const CEO = [
   // w0 is BEFORE the window: it is w1's previous turn and no figure of its own.
@@ -72,9 +72,9 @@ const CODEX = [
 
 const EVENTS = [...CEO, ...PRODUCT_MANAGER, ...ORCHESTRATOR, ...LIAISON, ...CODEX];
 const report = wakeCache({ events: EVENTS, window: WINDOW });
-const seat = (name, from = report) => from.seats.find((candidate) => candidate.seat === name);
-const action = (name, which) => seat(name).actions.find((candidate) => candidate.action === which);
-const gap = (name, which, bucket) => action(name, which).byGap.find((candidate) => candidate.gap === bucket);
+const seat = (name: string, from = report) => from.seats.find((candidate) => candidate.seat === name);
+const action = (name: string, which: string) => seat(name).actions.find((candidate) => candidate.action === which);
+const gap = (name: string, which: string, bucket: string) => action(name, which).byGap.find((candidate) => candidate.gap === bucket);
 
 test("the first turn after each wake is counted once per wake, never every turn (positive control: counting every turn is RED)", () => {
   const ceo = seat("ceo");
@@ -202,7 +202,7 @@ test("a first request is cold when its write is MORE than half of input + read +
 test("the cold rate is printed per window action, and a kept wake after a gap over 5 minutes is not cold unless the 1-hour cache lapsed too", () => {
   // first requests: w1 30,000 write of 53,713 (cold), w2 1,000 of 56,002 (not), w3 2,000 of 58,002 (not), w4 29,000 of 52,713 (cold), w5 31,000 of 31,002 (cold),
   // w6 33,000 of 56,713 (cold), w8 500 of 502 (cold: 500 is over 251)
-  const rate = (which, bucket) => (bucket ? gap("ceo", which, bucket) : action("ceo", which)).cold;
+  const rate = (which: string, bucket: string|undefined) => (bucket ? gap("ceo", which, bucket) : action("ceo", which)).cold;
   assert.deepEqual([rate(ACTION.KEPT).cold, rate(ACTION.KEPT).wakes], [1, 3]); // only w5
   near(rate(ACTION.KEPT).rate, 1 / 3);
   assert.deepEqual([rate(ACTION.COMPACTED).cold, rate(ACTION.COMPACTED).wakes], [1, 1]);

@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { DEFERRAL_LOG_FILE, deferralLogText } from "../deferral-log.mjs";
 import { parseLedger } from "../wakes-per-row.mjs";
-import { appendEvents, appendToStore, costOf, eventsForRow, eventsOfDeferrals, eventsOfTranscript, openStore, PRICES, readStore, repriceEvents, subjectOf, subjectsOf, tokensOf, touchesOf } from "./store.mjs";
+import { appendEvents, appendToStore, costOf, eventsForRow, eventsOfDeferrals, eventsOfTranscript, openStore, PRICES, readStore, repriceEvents, subjectOf, subjectsOf, tokensOf, touchesOf, TraceEvent, TraceEvent } from "./store.mjs";
 import { aggregate, weekStart } from "./aggregate.mjs";
 import { ACTION, wakeCache } from "./wake-cache.mjs";
 import { budgetedGh, budgetLine, githubEventsOfMerged, githubEventsOfNamed, githubSummary, httpStatusOf, ingestDeferrals, ingestTranscripts, isAggregate, isMap, isWakeCache, listMergedPulls, listOpenRows, meteredGhApi, NOT_HELD, parseAggregateArgs, parseArgs, parseMapArgs, parseWakeCacheArgs, parseWeek, readListings, render, resolveSubject, splitHttp, waterfallsOf, writeSwimlanes } from "./trace.mjs";
@@ -17,19 +17,19 @@ import { tmpDir } from "../lib/tmp-fixture.ts";
 import { readValidators, saveValidators } from "./publish.mjs";
 
 const ROW_REPO = "a11ign/a11ign";
-const at = (iso) => Date.parse(iso);
+const at = (iso: string) => Date.parse(iso);
 
-const wake = (timestamp, session, body = "an order.") => JSON.stringify({
+const wake = (timestamp: string, session: string, body = "an order.") => JSON.stringify({
   type: "user", timestamp, message: { role: "user", content: `\n\n<pasted_content id="1">\nYou are \`${session}\` -- ${body}\n</pasted_content>` },
 });
-const toolResult = (timestamp) => JSON.stringify({ type: "user", timestamp, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t", content: "ok" }] } });
-const compactSummary = (timestamp) => JSON.stringify({ type: "user", timestamp, isCompactSummary: true, message: { role: "user", content: "This session is being continued" } });
-const usage = (input, output, read, write1h) => ({
+const toolResult = (timestamp: string) => JSON.stringify({ type: "user", timestamp, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t", content: "ok" }] } });
+const compactSummary = (timestamp: string) => JSON.stringify({ type: "user", timestamp, isCompactSummary: true, message: { role: "user", content: "This session is being continued" } });
+const usage = (input: number, output: number, read: number, write1h: number) => ({
   input_tokens: input, output_tokens: output, cache_read_input_tokens: read, cache_creation_input_tokens: write1h,
   cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: write1h },
 });
 /** One block of an API message: the harness writes the message once per block, each with the SAME id and the usage as it stood. */
-const block = (timestamp, id, model, tokens, extra = {}) => JSON.stringify({
+const block = (timestamp: string, id: string, model: string, tokens: { input_tokens: any; output_tokens: any; cache_read_input_tokens: any; cache_creation_input_tokens: any; cache_creation: { ephemeral_5m_input_tokens: number; ephemeral_1h_input_tokens: any; }; }, extra = {}) => JSON.stringify({
   type: "assistant", timestamp, requestId: `req_${id}`, message: { id, model, role: "assistant", content: [{ type: "text", text: "x" }], usage: tokens }, ...extra,
 });
 
@@ -61,20 +61,20 @@ const ORCHESTRATOR = [
   block("2026-10-04T10:40:12.000Z", "msg_o2", "claude-opus-5-5", usage(5, 100, 40000, 0)),
 ].join("\n");
 
-const read = (text, file) => eventsOfTranscript({ text, file, ledger: LEDGER, rowRepo: ROW_REPO });
+const read = (text: string, file: string) => eventsOfTranscript({ text, file, ledger: LEDGER, rowRepo: ROW_REPO });
 const worker = () => read(WORKER, "w.jsonl");
 const orchestrator = () => read(ORCHESTRATOR, "o.jsonl");
-const turns = (events) => events.filter((event) => event.kind === "turn");
+const turns = (events: any[]) => events.filter((event: { kind: string; }) => event.kind === "turn");
 
 /** A follow-up order as #4068 types it: no identity sentence, the session in the header. */
-const followUp = (timestamp, session, body = "a follow-up order.") => JSON.stringify({
+const followUp = (timestamp: string, session: string, body = "a follow-up order.") => JSON.stringify({
   type: "user", timestamp, message: { role: "user", content: `\n\n<pasted_content id="2">\n[order:wake:${session}:${at(timestamp)} session:${session} cause:blocker-cleared]\n\n${body}\n</pasted_content>` },
 });
-const nameless = (timestamp) => JSON.stringify({ type: "user", timestamp, message: { role: "user", content: '\n\n<pasted_content id="3">\nan order that names nobody.\n</pasted_content>' } });
+const nameless = (timestamp: string) => JSON.stringify({ type: "user", timestamp, message: { role: "user", content: '\n\n<pasted_content id="3">\nan order that names nobody.\n</pasted_content>' } });
 const NAMING_BLOCK = block("2026-10-04T10:00:04.000Z", "msg_n", "claude-sonnet-5-5", usage(2, 20, 6448, 20554));
 
 test("#4083 NAMING: a transcript whose only wake is a follow-up header belongs to that session, as one on the old phrase does; one with neither is unnamed", () => {
-  const sessionOfText = (text, file) => read(text, file).session;
+  const sessionOfText = (text: string, file: string) => read(text, file).session;
   assert.equal(sessionOfText([followUp("2026-10-04T10:00:00.000Z", "worker-9001"), NAMING_BLOCK].join("\n"), "f.jsonl"), "worker-9001", "the new header");
   assert.equal(sessionOfText([wake("2026-10-04T10:00:00.000Z", "worker-9001"), NAMING_BLOCK].join("\n"), "o.jsonl"), "worker-9001", "CONTROL: the old phrase");
   assert.equal(sessionOfText([nameless("2026-10-04T10:00:00.000Z"), NAMING_BLOCK].join("\n"), "n.jsonl"), "unnamed:n.jsonl", "CONTROL: neither form");
@@ -133,7 +133,7 @@ test("COST (#4057): Fable 5.1 reads at $0.25 and Fable 5 at $1 (the page lists t
   assert.ok(prefixes.indexOf("claude-fable-5-1") >= 0 && prefixes.indexOf("claude-fable-5-1") < prefixes.indexOf("claude-fable-5"), "5.1 stands before 5");
   const without = PRICES.filter((price) => price.prefix !== "claude-fable-5-1");
   assert.equal(without.length, PRICES.length - 1, "the table holds exactly one row to delete");
-  const priceOf = (table, model) => table.find((entry) => model.startsWith(entry.prefix));
+  const priceOf = (table: any[], model: string) => table.find((entry: { prefix: any; }) => model.startsWith(entry.prefix));
   assert.equal(priceOf(PRICES, "claude-fable-5-1").cacheRead, 0.25);
   assert.equal(priceOf(without, "claude-fable-5-1").cacheRead, 1, "without its own row a 5.1 turn is priced as Fable 5");
 });
@@ -142,7 +142,7 @@ test("COST (#3582): POSITIVE CONTROL: with the two rows deleted the same turns a
   const tokens = tokensOf(usage(10, 20, 30, 40));
   const without = PRICES.filter((price) => price.prefix !== "claude-opus-5" && price.prefix !== "claude-sonnet-5");
   assert.equal(without.length, PRICES.length - 2, "the table holds exactly those two rows to delete");
-  const priced = (table, model) => table.find((entry) => model.startsWith(entry.prefix)) ?? null;
+  const priced = (table: any[], model: string) => table.find((entry: { prefix: any; }) => model.startsWith(entry.prefix)) ?? null;
   assert.equal(priced(without, "claude-opus-5"), null);
   assert.equal(priced(without, "claude-sonnet-5"), null);
   assert.ok(priced(PRICES, "claude-opus-5") && priced(PRICES, "claude-sonnet-5") && costOf("claude-opus-5", tokens) !== null);
@@ -165,20 +165,20 @@ test("TRANSCRIPT ID (#3589): a turn carries the file name of its transcript with
 test("TURNS: one per message id, from its LAST block (a transcript writes a message once per block)", () => {
   const found = turns(worker().events);
   assert.equal(found.length, 3, "3 message ids, not 6 assistant records"); // positive control for the emptiness checks below
-  const first = found.find((turn) => turn.id === "turn:msg_1");
+  const first = found.find((turn: { id: string; }) => turn.id === "turn:msg_1");
   assert.equal(first?.tokens?.output, 246, "the final block's output_tokens, not the first's 20");
   assert.equal(first?.wallClockMs, 8000, "from the order at :00 to the last block at :08");
-  assert.equal(found.find((turn) => turn.id === "turn:msg_2")?.wallClockMs, 10000, "from the tool result at :20 to the block at :30");
+  assert.equal(found.find((turn: { id: string; }) => turn.id === "turn:msg_2")?.wallClockMs, 10000, "from the tool result at :20 to the block at :30");
   assert.equal(first?.costUsd, costOf("claude-sonnet-5-5", first.tokens));
-  assert.equal(found.find((turn) => turn.id === "turn:msg_3")?.costUsd, null);
+  assert.equal(found.find((turn: { id: string; }) => turn.id === "turn:msg_3")?.costUsd, null);
 });
 
 /** An assistant record whose one block is a tool call, as the harness writes it. */
-const toolUse = (timestamp, id, toolId) => JSON.stringify({
+const toolUse = (timestamp: string, id: string, toolId: string) => JSON.stringify({
   type: "assistant", timestamp, requestId: `req_${id}`, message: { id, model: "claude-sonnet-5-5", role: "assistant", content: [{ type: "tool_use", id: toolId, name: "Bash", input: { command: "pnpm test" } }], usage: usage(1, 30, 100, 0) },
 });
-const attachment = (timestamp) => JSON.stringify({ type: "attachment", timestamp, attachment: { type: "hook_success" } });
-const toolResultFor = (timestamp, toolId) => JSON.stringify({ type: "user", timestamp, message: { role: "user", content: [{ type: "tool_result", tool_use_id: toolId, content: "ok" }] } });
+const attachment = (timestamp: string) => JSON.stringify({ type: "attachment", timestamp, attachment: { type: "hook_success" } });
+const toolResultFor = (timestamp: string, toolId: string) => JSON.stringify({ type: "user", timestamp, message: { role: "user", content: [{ type: "tool_result", tool_use_id: toolId, content: "ok" }] } });
 
 /** worker-9001 runs a 6-minute `pnpm test`: the call at 10:00:05, its result at 10:06:05, an attachment 2 s later, the next message at 10:06:12. */
 const LONG_TOOL = [
@@ -192,10 +192,10 @@ const LONG_TOOL = [
 test("TOOL TIME (#3669): a message that follows a 6-minute tool call carries it as `toolMs`, and its `wallClockMs` is only the model's own seconds", () => {
   const found = turns(read(LONG_TOOL.join("\n"), "t.jsonl").events);
   assert.equal(found.length, 2, "POSITIVE CONTROL: both messages are turns");
-  const after = found.find((turn) => turn.id === "turn:msg_t2");
+  const after = found.find((turn: { id: string; }) => turn.id === "turn:msg_t2");
   assert.equal(after?.toolMs, 6 * 60 * 1000, "from the call's last block at 10:00:05 to its result at 10:06:05");
   assert.equal(after?.wallClockMs, 5000, "from the attachment at 10:06:07 to the block at 10:06:12: `store.mjs` once said this included the tool, and it does not");
-  assert.equal(found.find((turn) => turn.id === "turn:msg_t1")?.toolMs, null, "it follows an order, not a tool call: null, never 0");
+  assert.equal(found.find((turn: { id: string; }) => turn.id === "turn:msg_t1")?.toolMs, null, "it follows an order, not a tool call: null, never 0");
 });
 
 test("TOOL TIME (#3669): a read that resumes between the call and its result still measures it, from the carried time of the last record", () => {
@@ -204,7 +204,7 @@ test("TOOL TIME (#3669): a read that resumes between the call and its result sti
   const first = eventsOfTranscript({ text: head, file: "t.jsonl", ledger: LEDGER, rowRepo: ROW_REPO });
   const resumed = eventsOfTranscript({ text: LONG_TOOL.slice(2).join("\n"), file: "t.jsonl", ledger: LEDGER, rowRepo: ROW_REPO, carry: first.carry });
   assert.equal(turns(resumed.events).length, 1, "POSITIVE CONTROL: the second read holds the message after the call");
-  assert.equal(whole.find((turn) => turn.id === "turn:msg_t2")?.toolMs, 6 * 60 * 1000, "POSITIVE CONTROL: a whole read measures it, so equality below is not null equal to null");
+  assert.equal(whole.find((turn: { id: string; }) => turn.id === "turn:msg_t2")?.toolMs, 6 * 60 * 1000, "POSITIVE CONTROL: a whole read measures it, so equality below is not null equal to null");
   assert.equal(turns(resumed.events)[0].toolMs, 6 * 60 * 1000);
   const cold = eventsOfTranscript({ text: LONG_TOOL.slice(2).join("\n"), file: "t.jsonl", ledger: LEDGER, rowRepo: ROW_REPO });
   assert.equal(turns(cold.events)[0].toolMs, null, "with nothing carried nobody can say when the call began: null, never a guess");
@@ -212,9 +212,9 @@ test("TOOL TIME (#3669): a read that resumes between the call and its result sti
 
 test("TOOL TIME (#3669): an order or a prompt between two messages means no tool ran before the second, whatever the gap", () => {
   const afterOrder = [LONG_TOOL[1], wake("2026-10-04T10:30:00.000Z", "worker-9001", "a second order."), block("2026-10-04T10:30:09.000Z", "msg_t3", "claude-sonnet-5-5", usage(2, 40, 200, 0))];
-  assert.equal(turns(read(afterOrder.join("\n"), "t2.jsonl").events).find((turn) => turn.id === "turn:msg_t3")?.toolMs, null);
+  assert.equal(turns(read(afterOrder.join("\n"), "t2.jsonl").events).find((turn: { id: string; }) => turn.id === "turn:msg_t3")?.toolMs, null);
   const promptAfterResult = [...LONG_TOOL.slice(0, 3), wake("2026-10-04T10:30:00.000Z", "worker-9001", "typed after the result."), block("2026-10-04T10:30:09.000Z", "msg_t3", "claude-sonnet-5-5", usage(2, 40, 200, 0))];
-  assert.equal(turns(read(promptAfterResult.join("\n"), "t3.jsonl").events).find((turn) => turn.id === "turn:msg_t3")?.toolMs, null, "the gap before the message is the prompt's wait, not the tool's, even with a result before it");
+  assert.equal(turns(read(promptAfterResult.join("\n"), "t3.jsonl").events).find((turn: { id: string; }) => turn.id === "turn:msg_t3")?.toolMs, null, "the gap before the message is the prompt's wait, not the tool's, even with a result before it");
 });
 
 test("WAKES: the ledger line pairs with the delivery, names the row, and its typing lag is measured", () => {
@@ -229,12 +229,12 @@ test("WAKES: the ledger line pairs with the delivery, names the row, and its typ
 
 test("ATTRIBUTION: a turn belongs to the wake before it; the compaction too; a standing lead's turn is keyed by the order's pull request", () => {
   const events = worker().events;
-  assert.deepEqual(turns(events).map((turn) => [turn.id, turn.wakeId === `wake:worker-9001:${at("2026-10-04T11:00:00Z")}` ? "second" : "first"]),
+  assert.deepEqual(turns(events).map((turn: { id: any; wakeId: string; }) => [turn.id, turn.wakeId === `wake:worker-9001:${at("2026-10-04T11:00:00Z")}` ? "second" : "first"]),
     [["turn:msg_1", "first"], ["turn:msg_2", "first"], ["turn:msg_3", "second"]]);
   const compaction = events.find((event) => event.kind === "compaction");
   assert.equal(compaction?.row, 9001);
   const lead = turns(orchestrator().events);
-  assert.deepEqual(lead.map((turn) => [turn.row, turn.pr, turn.cause]), [[null, 9100, "draft-convinced-not-ready"], [9050, null, "ready-row-unclaimed"]]);
+  assert.deepEqual(lead.map((turn: { row: any; pr: any; cause: any; }) => [turn.row, turn.pr, turn.cause]), [[null, 9100, "draft-convinced-not-ready"], [9050, null, "ready-row-unclaimed"]]);
 });
 
 test("SUBJECT: what a cause key names, and the cases it must NOT guess", () => {
@@ -288,7 +288,7 @@ test("REPORT: events in order with tokens and wall-clock, a priced total that ex
 });
 
 test("REPORT: GitHub events print between the turns, the footer says how many calls were made, and NOT_HELD no longer lists GitHub", () => {
-  const github = (kind, iso, extra) => ({ id: `gh:${kind}:${iso}`, kind, source: "github", session: "github", at: at(iso), row: null, pr: 9100, repo: null, cause: null, causeKey: null,
+  const github = (kind: string, iso: string, extra: { state?: string; headSha?: string; outcome?: string; }|undefined) => ({ id: `gh:${kind}:${iso}`, kind, source: "github", session: "github", at: at(iso), row: null, pr: 9100, repo: null, cause: null, causeKey: null,
     wakeId: null, actor: "a11ign-bot", ...extra });
   const events = [...eventsForRow([...worker().events, ...orchestrator().events], { rows: [9001], prs: [9100] }),
     github("reviewed", "2026-10-04T10:35:00Z", { state: "APPROVED", headSha: "0fde4737ea065e2d794cfab07b39373e715fede4" }),
@@ -309,11 +309,11 @@ test("REPORT: GitHub events print between the turns, the footer says how many ca
 });
 
 test("WATERFALL (#3511): the report prints the eight phases above the events, one waterfall per row a pull request closes, and a pull request closing none is its own", () => {
-  const github = (kind, iso, extra = {}) => ({ id: `gh:${kind}:${iso}:${extra.row ?? extra.pr}`, kind, source: "github", session: "github", at: at(iso), row: null, pr: null, repo: null, cause: null,
+  const github = (kind: string, iso: string, extra = {}) => ({ id: `gh:${kind}:${iso}:${extra.row ?? extra.pr}`, kind, source: "github", session: "github", at: at(iso), row: null, pr: null, repo: null, cause: null,
     causeKey: null, wakeId: null, actor: "a11ign-bot", ...extra });
   const pullEvents = [github("opened", "2026-10-04T10:20:00Z", { pr: 9100 }), github("reviewed", "2026-10-04T10:35:00Z", { pr: 9100, state: "APPROVED", headSha: "0fde4737ea065e2d794cfab07b39373e715fede4" }),
     github("merged", "2026-10-04T10:50:00Z", { pr: 9100 }), github("closed", "2026-10-04T10:50:00Z", { pr: 9100 })];
-  const rowEvents = (row) => [github("filed", "2026-10-04T09:00:00Z", { row }), github("claimed", "2026-10-04T09:30:00Z", { row, claimant: "worker-9001" }), github("closed", "2026-10-04T10:50:05Z", { row })];
+  const rowEvents = (row: number) => [github("filed", "2026-10-04T09:00:00Z", { row }), github("claimed", "2026-10-04T09:30:00Z", { row, claimant: "worker-9001" }), github("closed", "2026-10-04T10:50:05Z", { row })];
   const events = eventsForRow([...worker().events, ...orchestrator().events, ...pullEvents, ...rowEvents(9001), ...rowEvents(9002)], { rows: [9001, 9002], prs: [9100] });
   const now = at("2026-10-04T12:00:00Z");
   const drawn = waterfallsOf({ rows: [9001, 9002], prs: [9100], number: 9100, events, now });
@@ -347,9 +347,9 @@ test("ARGS --html: the flag takes no value, needs --out, and leaves the other fl
 
 test("--html writes the swimlane to the path, one file per row when a number names several, and prints where (#3512)", () => {
   const dir = tmpDir("trace-swimlane-");
-  const subject = (title) => ({ title, found: [{ id: "gh:a:filed", kind: "filed", source: "github", session: "github", at: at("2026-10-04T10:00:00Z"), row: 9001, pr: null, repo: null, cause: null, causeKey: null, wakeId: null, actor: "product-manager" }] });
+  const subject = (title: string) => ({ title, found: [{ id: "gh:a:filed", kind: "filed", source: "github", session: "github", at: at("2026-10-04T10:00:00Z"), row: 9001, pr: null, repo: null, cause: null, causeKey: null, wakeId: null, actor: "product-manager" }] });
   const now = at("2026-10-04T12:00:00Z");
-  const lines = [];
+  const lines: any[] = [];
   const log = console.log;
   console.log = (line) => lines.push(line);
   try {
@@ -412,7 +412,7 @@ test("WAKE-CACHE reads what the ingest writes: a second transcript file for the 
   const afterClear = [wake("2026-10-04T10:20:00.000Z", "ceo"), block("2026-10-04T10:20:05.000Z", "msg_c3", "claude-sonnet-5-5", usage(2, 20, 23711, 29000))].join("\n");
   const events = [...read(first, "/p/aaaa.jsonl").events, ...read(afterClear, "/p/bbbb.jsonl").events];
   const ceo = wakeCache({ events, window: { from: at("2026-10-04T00:00:00Z"), to: at("2026-10-05T00:00:00Z") } }).seats.find((seat) => seat.seat === "ceo");
-  const by = (name) => ceo.actions.find((entry) => entry.action === name);
+  const by = (name: string) => ceo.actions.find((entry) => entry.action === name);
   assert.equal(by(ACTION.UNKNOWN).wakes, 1, "the seat's first wake has no previous turn");
   assert.equal(by(ACTION.KEPT).wakes, 1);
   assert.equal(by(ACTION.KEPT).write.p50, 900);
@@ -435,7 +435,7 @@ test("ARGS --week: an ISO week, a bare week number of this year, or any day in t
 });
 
 /** A `gh api` that answers from a table and fails like gh does for anything else: a pull request, or the timeline of a row (the cross-references a pull request naming it leaves there). */
-const fakeGh = ({ pulls, timelines }) => (args) => {
+const fakeGh = ({ pulls, timelines }) => (args: any[]) => {
   const path = args[0] === "-X" ? args[2] : args[0];
   const pull = /pulls\/(\d+)$/.exec(path);
   if (pull) {
@@ -446,7 +446,7 @@ const fakeGh = ({ pulls, timelines }) => (args) => {
   if (timeline) return timelines[timeline[1]] ?? [];
   throw new Error(`unexpected gh call ${args.join(" ")}`);
 };
-const mention = (number, body, { repo = ROW_REPO, pull = true } = {}) => ({ event: "cross-referenced", source: { type: "issue", issue: { number, body, repository_url: `https://api.github.com/repos/${repo}`, ...(pull ? { pull_request: {} } : {}) } } });
+const mention = (number: number, body: string, { repo = ROW_REPO, pull = true } = {}) => ({ event: "cross-referenced", source: { type: "issue", issue: { number, body, repository_url: `https://api.github.com/repos/${repo}`, ...(pull ? { pull_request: {} } : {}) } } });
 
 test("SUBJECT OF A NUMBER: a pull request resolves to the rows it closes, a row to the pull requests that close it", () => {
   const timelines = { 9001: [mention(9100, "Closes #9001\n"), mention(9200, "Closes: none -- 9001 mentioned"), mention(9300, "Closes a11ign/other#9001"), mention(9400, "Closes #9001", { repo: "a11ign/agent-org" }), mention(9500, "Closes #9001", { pull: false }), { event: "labeled" }] };
@@ -456,9 +456,9 @@ test("SUBJECT OF A NUMBER: a pull request resolves to the rows it closes, a row 
 });
 
 test("SUBJECT OF A NUMBER (#3644): a row's pull requests are read from its timeline, page by page, and no call is a search", () => {
-  const seen = [];
+  const seen: any[] = [];
   const full = Array.from({ length: 100 }, () => ({ event: "labeled" }));
-  const timeline = (args) => { seen.push(args.join(" ")); return /page=1$/.test(args.join(" ")) ? full : [mention(9100, "Closes #9001")]; };
+  const timeline = (args: any[]) => { seen.push(args.join(" ")); return /page=1$/.test(args.join(" ")) ? full : [mention(9100, "Closes #9001")]; };
   const found = resolveSubject(9001, ROW_REPO, (args) => (/pulls\//.test(args[0]) ? (() => { throw Object.assign(new Error("Not Found"), { stderr: "HTTP 404" }); })() : timeline(args)));
   assert.deepEqual(found, { rows: [9001], prs: [9100] }, "the pull request is on page 2 of the timeline");
   assert.equal(seen.length, 2);
@@ -466,7 +466,7 @@ test("SUBJECT OF A NUMBER (#3644): a row's pull requests are read from its timel
 });
 
 test("SUBJECT OF A NUMBER: only a 404 means 'this is a row'; any other failure throws rather than printing a trace without the leads' turns", () => {
-  const broken = (args) => { if (/pulls\//.test(args[0])) throw Object.assign(new Error("HTTP 403 rate limit"), { stderr: "HTTP 403 rate limit" }); return []; };
+  const broken = (args: string[]) => { if (/pulls\//.test(args[0])) throw Object.assign(new Error("HTTP 403 rate limit"), { stderr: "HTTP 403 rate limit" }); return []; };
   assert.throws(() => resolveSubject(9001, ROW_REPO, broken), /403/);
 });
 
@@ -476,7 +476,7 @@ test("SUBJECT OF A NUMBER: only a 404 means 'this is a row'; any other failure t
 // the list is a guess), a wake with no ledger line at all (an order typed by `prompt:session`) in which the seat nonetheless acts on a row, and a read of a row.
 
 /** One block of an API message that calls a tool, whose command is `command`. */
-const toolBlock = (timestamp, id, command) => JSON.stringify({
+const toolBlock = (timestamp: string, id: string, command: string) => JSON.stringify({
   type: "assistant", timestamp, requestId: `req_${id}`,
   message: { id, model: "claude-opus-5-5", role: "assistant", content: [{ type: "tool_use", id: `tu_${id}`, name: "Bash", input: { command } }], usage: usage(5, 50, 1000, 0) },
 });
@@ -494,7 +494,7 @@ const PRODUCT_MANAGER = [
   toolBlock("2026-10-04T13:00:40.000Z", "pm_6", "gh pr review 9100 --approve"),
 ].join("\n");
 const readPm = () => eventsOfTranscript({ text: PRODUCT_MANAGER, file: "pm.jsonl", ledger: PM_LEDGER, rowRepo: ROW_REPO });
-const turnsAbout = (events, subject) => eventsForRow(events, subject).filter((event) => event.kind === "turn").map((event) => event.id);
+const turnsAbout = (events: TraceEvent[], subject: { rows: number[]|number[]|never[]; prs: number[]|number[]|never[]; }) => eventsForRow(events, subject).filter((event) => event.kind === "turn").map((event) => event.id);
 
 test("PRODUCT-MANAGER: a key that names several rows puts the wake and its turns on EACH of them, and keeps row null", () => {
   assert.deepEqual(subjectsOf("product-manager/row-call-count-signal/9001,9002"), { rows: [9001, 9002] });
@@ -555,7 +555,7 @@ test("REPORT: the totals are per actor, a Codex reviewer is its own actor, and t
 });
 
 // STORED BEFORE ITS PRICE (#3638): the per-row and per-pull-request totals and the repricing function the readers share.
-const storedTurn = (id, model, costUsd, extra = {}) => ({ id, kind: "turn", source: "transcript", at: at("2026-10-04T11:00:00Z"), session: "reviewer-9100", row: null, pr: 9100, repo: null, cause: null, causeKey: null,
+const storedTurn = (id: string, model: string, costUsd: number|null, extra = {}) => ({ id, kind: "turn", source: "transcript", at: at("2026-10-04T11:00:00Z"), session: "reviewer-9100", row: null, pr: 9100, repo: null, cause: null, causeKey: null,
   wakeId: null, model, tokens: { input: 1000, output: 500, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0 }, costUsd, wallClockMs: null, ...extra });
 
 test("REPRICED: repriceEvents prices from PRICES now, never from the line, and leaves a model with no price null and every other event alone", () => {
@@ -606,21 +606,21 @@ test("REPRICED: the waterfall's dollars are at PRICES too (a turn stored null of
 
 /** A `gh api` that counts what reaches it, and answers the closed-pull-requests list (newest update first), the open-issue list, an issue and an empty timeline the way GitHub does. A search is refused outright. */
 function listingGh({ merged = [], open = [] } = {}) {
-  const seen = [];
-  const gh = (args) => {
+  const seen: any[] = [];
+  const gh = (args: any[]) => {
     seen.push(args.join(" "));
-    assert.ok(!args.some((arg) => /search/.test(arg)), `the search API is not read: ${args.join(" ")}`);
-    const field = (name) => args.find((arg) => arg.startsWith(`${name}=`))?.slice(name.length + 1);
+    assert.ok(!args.some((arg: string) => /search/.test(arg)), `the search API is not read: ${args.join(" ")}`);
+    const field = (name: string|any[]) => args.find((arg: string) => arg.startsWith(`${name}=`))?.slice(name.length + 1);
     const page = Number(field("page") ?? 1);
-    const slice = (list) => list.slice((page - 1) * 100, page * 100);
-    if (args.some((arg) => /\/pulls$/.test(arg))) return slice([...merged].sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at)));
-    if (args.some((arg) => /\/issues$/.test(arg))) return slice(open);
+    const slice = (list: string|any[]) => list.slice((page - 1) * 100, page * 100);
+    if (args.some((arg: string) => /\/pulls$/.test(arg))) return slice([...merged].sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at)));
+    if (args.some((arg: string) => /\/issues$/.test(arg))) return slice(open);
     if (/\/timeline\?/.test(args[0])) return [];
     return { created_at: "2026-09-29T10:00:00Z", user: { login: "someone" } };
   };
   return Object.assign(gh, { seen, rate: { remaining: 4000, resource: "core" } }); // a real reply names its pool; a fake that does not is refused (see POOL)
 }
-const mergedItem = (number, body = "", { mergedAt = "2026-09-29T11:00:00Z", updatedAt = mergedAt } = {}) => ({ number, created_at: "2026-09-29T09:00:00Z", updated_at: updatedAt, merged_at: mergedAt, body });
+const mergedItem = (number: number, body = "", { mergedAt = "2026-09-29T11:00:00Z", updatedAt = mergedAt } = {}) => ({ number, created_at: "2026-09-29T09:00:00Z", updated_at: updatedAt, merged_at: mergedAt, body });
 
 test("BUDGET: the (budget+1)th call is refused BEFORE it is made, every call is counted, and the refusal says why", () => {
   const underlying = listingGh();
@@ -674,7 +674,7 @@ test("BUDGET (#3644): the merged list reads newest update first and STOPS at the
   const shuffled = [mergedItem(7, "", { mergedAt: "2026-09-30T00:00:00Z" }), mergedItem(9, "", { mergedAt: "2026-09-29T00:00:00Z" }), mergedItem(8, "", { mergedAt: "2026-09-29T00:00:00Z", updatedAt: "2026-10-01T00:00:00Z" })];
   assert.deepEqual(listMergedPulls({ repo: "a11ign/a11ign", window, gh: listingGh({ merged: shuffled }) }).map((pull) => pull.number), [8, 9, 7], "in order of merge, then number, whatever order of update the list came in");
   assert.equal(world.seen.length, 2, "the second page reaches the first pull request updated before the window and the list stops there: 422 closed pull requests, three pages never read");
-  const endless = (args) => (args.some((arg) => /per_page/.test(arg)) ? Array.from({ length: 100 }, (_, index) => mergedItem(index + 1)) : []);
+  const endless = (args: any[]) => (args.some((arg: string) => /per_page/.test(arg)) ? Array.from({ length: 100 }, (_, index) => mergedItem(index + 1)) : []);
   assert.throws(() => listMergedPulls({ repo: "a11ign/a11ign", window, gh: endless }), /more than 3000 closed pull requests updated since 2026-09-14T00:00:00.000Z.*narrow --since/);
   const one = listingGh({ open: [{ number: 3 }] });
   assert.deepEqual(listOpenRows({ rowRepo: "a11ign/a11ign", gh: one }), [3]);
@@ -682,7 +682,7 @@ test("BUDGET (#3644): the merged list reads newest update first and STOPS at the
 });
 
 test("BUDGET: a pull request costs several calls, and the budget is checked per CALL: it is never overshot, and what it cut off is named unread", () => {
-  const pull = (repo, number, row, mergedAt) => ({ repo, number, createdAt: "2026-09-29T09:00:00Z", mergedAt, body: `Closes a11ign/a11ign#${row}` });
+  const pull = (repo: string, number: number, row: number, mergedAt: string) => ({ repo, number, createdAt: "2026-09-29T09:00:00Z", mergedAt, body: `Closes a11ign/a11ign#${row}` });
   const pulls = [pull("a11ign/a11ign", 30, 3, "2026-09-29T13:00:00Z"), pull("a11ign/agent-org", 10, 1, "2026-09-29T11:00:00Z"), pull("a11ign/a11ign", 20, 2, "2026-09-29T12:00:00Z")];
   const underlying = listingGh();
   const gh = budgetedGh({ gh: underlying, budget: 5 });
@@ -709,13 +709,13 @@ test("BUDGET: a failure that is not the budget is not swallowed, and a pull requ
 // pull request MERGED IN THE WINDOW closed: a wake naming any other subject was `unexplained` for want of a record to read.
 const NAMED_WEEK = at("2026-09-28T00:00:00Z");
 const NAMED_ROW_REPO = "a11ign/a11ign";
-const namedWake = (id, when, key) => ({ id, kind: "wake", source: "wake-ledger", at: at(when), session: key.split("/")[0], row: null, pr: null, repo: null, cause: "x", causeKey: key, wakeId: id });
+const namedWake = (id: string, when: string, key: string) => ({ id, kind: "wake", source: "wake-ledger", at: at(when), session: key.split("/")[0], row: null, pr: null, repo: null, cause: "x", causeKey: key, wakeId: id });
 /** A repeat: the same key delivered twice, at 11:00 and 11:30 of the 29th unless the times are given. */
-const repeated = (key, first = "2026-09-29T11:00:00Z", second = "2026-09-29T11:30:00Z") => [namedWake(`wake:${key}:1`, first, key), namedWake(`wake:${key}:2`, second, key)];
+const repeated = (key: string, first = "2026-09-29T11:00:00Z", second = "2026-09-29T11:30:00Z") => [namedWake(`wake:${key}:1`, first, key), namedWake(`wake:${key}:2`, second, key)];
 /** A `gh` that answers an issue or pull request (created 10:00 on the 29th) and a timeline per subject; a path containing a fragment of `broken` answers with an HTTP error. */
 function namedGh({ timelines = {}, broken = [] } = {}) {
-  const seen = [];
-  const gh = (args) => {
+  const seen: any[] = [];
+  const gh = (args: string[]) => {
     seen.push(args[0]);
     const path = args[0].split("?")[0];
     if (broken.some((fragment) => path.includes(fragment))) throw new Error(`HTTP 404 ${path}`);
@@ -724,10 +724,10 @@ function namedGh({ timelines = {}, broken = [] } = {}) {
   };
   return Object.assign(gh, { seen, rate: { remaining: 4000, resource: "core" } });
 }
-const blockedAt = (when) => ({ event: "labeled", id: 1, created_at: when, actor: { login: "someone" }, label: { name: "blocked" } });
+const blockedAt = (when: string) => ({ event: "labeled", id: 1, created_at: when, actor: { login: "someone" }, label: { name: "blocked" } });
 const readNamed = ({ held, gh, since = NAMED_WEEK }) => githubEventsOfNamed({ held, since, rowRepo: NAMED_ROW_REPO, gh });
 /** The re-delivered class's repeats of the week of the 28th, as [after a change, unchanged, unexplained]. */
-function splitOf(events) {
+function splitOf(events: (TraceEvent|{ id: any; kind: string; source: string; at: number; session: any; row: null; pr: null; repo: null; cause: string; causeKey: any; wakeId: any; })[]) {
   const week = aggregate({ events, pulls: [], rowRepo: NAMED_ROW_REPO, now: at("2026-10-06T00:00:00Z"), since: NAMED_WEEK, held: { from: NAMED_WEEK, basis: "test fixture" } }).weeks.find((one) => one.start === NAMED_WEEK);
   const { afterChange, unchanged, unexplained } = week.repeats.classes.find((entry) => entry.id === "redelivered").split;
   return [afterChange.count, unchanged.count, unexplained.count];
@@ -786,12 +786,12 @@ test("NAMED (#3688): a subject GitHub refuses is named with the reason and the n
 // CONDITIONAL READS (#4097). One map render spent 105 of its 123 calls re-reading the open rows and unmerged pull requests the wakes name; the ETag of a row's own record and of a head's check-runs
 // was measured to hold, and the timeline's and a list's was not (see VALIDATED_READS).
 /** A GitHub that answers `pages` (path before the `?` -> `{ etag, body }`) and a 304 to a request carrying the ETag it holds; `asked` is every argument list that reached it. */
-function fakeGithub(pages) {
-  const asked = [];
-  const run = (args) => {
+function fakeGithub(pages: { [x: string]: any; "repos/a11ign/a11ign/issues/12"?: { etag: string; body: { created_at: string; user: { login: string; }; }; }; "repos/a11ign/a11ign/issues/12/timeline"?: { etag: string; body: never[]; }; "repos/a11ign/a11ign/pulls"?: { etag: string; body: never[]; }; "repos/a11ign/a11ign/issues/14"?: { etag: string; body: { created_at: string; user: { login: string; }; }; }; "repos/a11ign/a11ign/issues/14/timeline"?: { etag: string; body: never[]; }; "repos/a11ign/agent-org/pulls/5"?: { etag: string; body: { created_at: string; user: { login: string; }; }; }|{ etag: string; body: { created_at: string; user: { login: string; }; }; }; "repos/a11ign/agent-org/issues/5/timeline"?: { etag: string; body: never[]; }; }) {
+  const asked: any[] = [];
+  const run = (args: any[]) => {
     asked.push(args);
     const sent = args[0] === "-H" ? args[1].replace("If-None-Match: ", "") : null;
-    const page = pages[args.find((arg) => arg.startsWith("repos/")).split("?")[0]];
+    const page = pages[args.find((arg: string) => arg.startsWith("repos/")).split("?")[0]];
     if (!page) throw Object.assign(new Error("Command failed: gh api\ngh: Not Found (HTTP 404)"), { status: 1, stdout: "HTTP/2.0 404 Not Found\n\n", stderr: "gh: Not Found (HTTP 404)\n" });
     const rate = "X-Ratelimit-Remaining: 4000\nX-Ratelimit-Resource: core";
     return sent === page.etag ? `HTTP/2.0 304 Not Modified\n${rate}\n\n` : `HTTP/2.0 200 OK\nEtag: ${page.etag}\n${rate}\n\n${JSON.stringify(page.body)}`;
@@ -821,7 +821,7 @@ test("VALIDATED (#4097): a row's own record is asked with the ETag it was given,
 test("VALIDATED (#4097): a timeline and a list are never sent a validator, even when one is held for the path", () => {
   const github = fakeGithub({ ...rowPages(), "repos/a11ign/a11ign/pulls": { etag: 'W/"l"', body: [] } });
   const timeline = `${ROW_12}/timeline?per_page=100&page=1`;
-  const stale = (etag) => ({ etag, value: ["stale"], used: 1 });
+  const stale = (etag: string) => ({ etag, value: ["stale"], used: 1 });
   const held = { [timeline]: stale('W/"t"'), "repos/a11ign/a11ign/pulls": stale('W/"l"'), [ROW_12]: stale('W/"a"') };
   const reader = meteredGhApi({ held, now: 2, run: github.run });
   assert.deepEqual(reader([timeline]), [], "the timeline came whole, not the stale copy");
@@ -835,7 +835,7 @@ test("VALIDATED (#4097): a missing or corrupt store of validators asks for every
   const dir = tmpDir("validators-");
   assert.deepEqual(readValidators(dir), {}, "no file: no validators");
   writeFileSync(join(dir, ".validators.json"), "{not json");
-  const said = [];
+  const said: any[] = [];
   const original = console.error;
   console.error = (line) => said.push(line);
   try {
@@ -924,10 +924,10 @@ function meteredFake({ start, resource = "core" }) {
 }
 
 /** The error `execFileSync` throws for a `gh api` that exits 1: `gh` says the status on stderr, and the message carries it after the command. */
-const ghFailure = (status, text = "Error") => Object.assign(new Error(`Command failed: gh api repos/a11ign/a11ign/commits/b79830d/check-runs\ngh: ${text} (HTTP ${status})`), { status: 1, stderr: `gh: ${text} (HTTP ${status})\n`, stdout: `HTTP/2.0 ${status} ${text}\r\n\r\n{}` });
+const ghFailure = (status: number, text = "Error") => Object.assign(new Error(`Command failed: gh api repos/a11ign/a11ign/commits/b79830d/check-runs\ngh: ${text} (HTTP ${status})`), { status: 1, stderr: `gh: ${text} (HTTP ${status})\n`, stdout: `HTTP/2.0 ${status} ${text}\r\n\r\n{}` });
 
 /** A `gh` whose calls throw `failures` in order and then answer; `made` is every call that reached it. */
-function flakyGh(failures, { rate = { remaining: 4000, resource: "core" } } = {}) {
+function flakyGh(failures: string|any[], { rate = { remaining: 4000, resource: "core" } } = {}) {
   const gh = () => {
     gh.made += 1;
     if (gh.made <= failures.length) throw failures[gh.made - 1];
@@ -945,7 +945,7 @@ test("RETRY (#3700): the status of a failed gh call is read off its stderr, its 
 });
 
 test("RETRY (#3700): a 500 that the next call clears is survived, every try is a COUNTED call, and the pause before each grows", () => {
-  const waits = [];
+  const waits: unknown = [];
   const underlying = flakyGh([ghFailure(500), ghFailure(500)]);
   const bounded = budgetedGh({ gh: underlying, budget: 10, pause: (ms) => waits.push(ms) });
   assert.deepEqual(bounded(["repos/a11ign/a11ign/pulls"]), { ok: true });
@@ -966,7 +966,7 @@ test("RETRY (#3700): each of 500, 502, 503 and 504 is retried", () => {
 
 test("RETRY (#3700): a 4xx is an ANSWER and is NOT retried: 404, 403 and 422 each reach the caller as they came, after one call and no pause", () => {
   for (const status of [404, 403, 422]) {
-    const waits = [];
+    const waits: unknown = [];
     const failure = ghFailure(status);
     const underlying = flakyGh([failure, failure, failure]);
     const bounded = budgetedGh({ gh: underlying, budget: 10, pause: (ms) => waits.push(ms) });
@@ -995,7 +995,7 @@ test("RETRY (#3700): the tries are the BUDGET's and the PACE's: a budget that en
   assert.throws(() => bounded(["x"]), { reason: "budget", message: /--calls 2 is spent/ });
   assert.equal(tight.made, 2, "the third try was refused BEFORE it was made");
   let now = 0;
-  const waits = [];
+  const waits: unknown = [];
   const slow = budgetedGh({ gh: flakyGh([ghFailure(503)]), budget: 10, gapMs: 3000, clock: () => now, pause: (ms) => { waits.push(ms); now += ms; } });
   slow(["x"]);
   assert.deepEqual(waits, [2000, 1000], "the retry pause (2000) and then the 1000 ms the 3000 ms gap still lacked");
@@ -1004,10 +1004,10 @@ test("RETRY (#3700): the tries are the BUDGET's and the PACE's: a budget that en
 });
 
 test("RETRY (#3700): a pull request whose reading a 500 stopped is unread, what was read before it is kept, and the summary says the run stopped at the url", () => {
-  const pull = (number, row, mergedAt) => ({ repo: "a11ign/a11ign", number, createdAt: "2026-09-29T09:00:00Z", mergedAt, body: `Closes a11ign/a11ign#${row}` });
+  const pull = (number: number, row: number, mergedAt: string) => ({ repo: "a11ign/a11ign", number, createdAt: "2026-09-29T09:00:00Z", mergedAt, body: `Closes a11ign/a11ign#${row}` });
   const pulls = [pull(20, 2, "2026-09-29T12:00:00Z"), pull(10, 1, "2026-09-29T11:00:00Z")];
   const underlying = listingGh();
-  const gh = budgetedGh({ gh: Object.assign((args) => { if (args.join(" ").includes("pulls/20")) throw ghFailure(500); return underlying(args); }, { rate: underlying.rate }), budget: 50, pause: () => {} });
+  const gh = budgetedGh({ gh: Object.assign((args: any[]) => { if (args.join(" ").includes("pulls/20")) throw ghFailure(500); return underlying(args); }, { rate: underlying.rate }), budget: 50, pause: () => {} });
   const { events, unreadRows } = githubEventsOfMerged({ pulls, rowRepo: "a11ign/a11ign", held: [], gh });
   assert.deepEqual(events.map((event) => event.id), ["gh:a11ign/a11ign#10:opened:once", "gh:a11ign/a11ign#1:filed:once"], "the older merge was read whole and kept");
   assert.deepEqual(unreadRows, [2], "the pull request the 500 stopped is named unread");
@@ -1024,7 +1024,7 @@ test("RETRY (#3700): a 500 that stops the LISTING is an error that names the url
 
 test("PACE (#3644): a call waits until the gap since the last one ended, the first and a late one wait for nothing, and the budget refusal comes before any wait", () => {
   let now = 1000;
-  const waits = [];
+  const waits: unknown = [];
   const bounded = budgetedGh({ gh: Object.assign(() => ({}), { rate: { remaining: 4000, resource: "core" } }), budget: 3, gapMs: 250, clock: () => now, pause: (ms) => { waits.push(ms); now += ms; } });
   bounded(["a"]);
   bounded(["b"]);
@@ -1058,7 +1058,7 @@ test("FLOOR (#3644): at the floor the listings are an ERROR that says so, and a 
   assert.throws(() => readListings({ repos: ["a11ign/a11ign"], rowRepo: "a11ign/a11ign", window, gh: empty, budget: 50 }), /stopped at the floor: X-Ratelimit-Remaining is 3, under the floor of 10 to list the merged pull requests \(0 made\).*wait for the pool to refill/);
   const pulls = ["2026-09-29T11:00:00Z", "2026-09-29T12:00:00Z"].map((mergedAt, index) => ({ repo: "a11ign/a11ign", number: 20 + index, createdAt: "2026-09-29T09:00:00Z", mergedAt, body: `Closes a11ign/a11ign#${2 + index}` }));
   const reads = listingGh();
-  const falling = Object.assign((args) => { const reply = reads(args); falling.rate = { remaining: 12 - reads.seen.length, resource: "core" }; return reply; }, { rate: null });
+  const falling = Object.assign((args: any) => { const reply = reads(args); falling.rate = { remaining: 12 - reads.seen.length, resource: "core" }; return reply; }, { rate: null });
   const gh = budgetedGh({ gh: falling, budget: 100, floor: 10 });
   const { unreadRows } = githubEventsOfMerged({ pulls, rowRepo: "a11ign/a11ign", held: [], gh });
   assert.equal(gh.calls, 3, "the reply that left 10 (AT the floor) is allowed its next call; the one that left 9 (under it) is not");
@@ -1073,7 +1073,7 @@ test("POOL (#3644): a reply from any pool but core is refused, so a search that 
 });
 
 test("POOL (#3644): a reply that names NO pool is refused too: a pool that is not named cannot be known not to be the search API", () => {
-  const unnamed = (rate) => budgetedGh({ gh: Object.assign(() => ({}), { rate }), budget: 5 });
+  const unnamed = (rate: { remaining: number; resource: string|null; }|null) => budgetedGh({ gh: Object.assign(() => ({}), { rate }), budget: 5 });
   assert.throws(() => unnamed({ remaining: 4000, resource: null })(["x"]), /no named pool \(X-Ratelimit-Resource is absent\), not "core"/, "the remaining header came back and the resource header did not");
   assert.throws(() => unnamed(null)(["x"]), /no named pool/, "no rate-limit header at all");
   assert.throws(() => budgetedGh({ gh: () => ({}), budget: 5 })(["x"]), /no named pool/, "a gh that reports no rate at all");
@@ -1103,7 +1103,7 @@ test("BUDGET LINE (#3644): what a run may spend, on which pool, how paced and wh
 
 // SELF: this file names `search/issues` in order to look for it, so the scan below is of the sources only and never of a test.
 const TRACE_DIR = dirname(fileURLToPath(import.meta.url));
-const callsSearchApi = (text) => /search\/issues/.test(text);
+const callsSearchApi = (text: string) => /search\/issues/.test(text);
 test("NO SEARCH (#3644): no source of src/trace/ reads the search API; the scan finds one where there is one", () => {
   const sources = readdirSync(TRACE_DIR).filter((name) => /\.mjs$/.test(name) && !/\.test\./.test(name));
   assert.ok(sources.includes("trace.mjs"), "the scan reads the file the row is about");
@@ -1117,7 +1117,7 @@ test("GH LEDGER (#3516): the run reads the gh ledgers after the transcripts, key
   writeFileSync(join(dir, "projects", "p", "worker-9001.jsonl"), WORKER);
   const shell = "/usr/bin/zsh -c source /home/agent/.claude/shell-snapshots/snapshot-zsh-1791154712872-8w57yj.sh 2>/dev/null || true";
   // The id on a line is the transcript's file name (`CLAUDE_CODE_SESSION_ID`), here `worker-9001`; a line with no id is a unit's or one of before the wrapper wrote it.
-  const call = (time, resource, cost, id = "worker-9001") => ["2026-10-04T" + time + "Z", "a11ign-ai-workers", resource, cost, 0, "issue view", "w1AX", shell, ...(id ? [id] : [])].join("\t");
+  const call = (time: string, resource: string, cost: string|number, id = "worker-9001") => ["2026-10-04T" + time + "Z", "a11ign-ai-workers", resource, cost, 0, "issue view", "w1AX", shell, ...(id ? [id] : [])].join("\t");
   const ledgerFile = join(dir, "gh-calls.tsv");
   // msg_1 ended 10:00:08 and msg_2 at 10:00:30: both calls after the first and before the second name the session. The third is after every turn (the last, msg_3, is at 11:00:09), and the id-less one is never joined by time.
   writeFileSync(ledgerFile, `${[call("10:00:15", "graphql", 3), call("10:00:15", "graphql?", ""), call("11:30:00", "core", ""), call("10:00:15", "graphql", "", null)].join("\n")}\n`);
