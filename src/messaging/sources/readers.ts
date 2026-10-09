@@ -1,4 +1,4 @@
-// THE REAL READS FOR THE STALL AND INCIDENT SOURCES (a11ign/a11ign#3008, row 5b of 13; design #2899). `stall.mjs` and `incidents.mjs` take every read
+// THE REAL READS FOR THE STALL AND INCIDENT SOURCES (a11ign/a11ign#3008, row 5b of 13; design #2899). `stall.ts` and `incidents.ts` take every read
 // INJECTED and say so; this file is what the host injects. Seven readers, each returning what its source's own typedef names, and each a
 // read that THROWS on failure: the source turns the throw into `cannot-ask`, never into "all clear" and never into an event.
 //
@@ -8,18 +8,18 @@
 //   readGateUnit    the work-tick unit's failed state, and when its last run ended       -> incident:gate-crash
 //   readFleetState  the state file `fleet-watch` writes, and when it was written         -> incident:fleet-down
 //
-// AND TWO MORE FOR THE LIAISON'S CHECKED FACTS (a11ign/a11ign#3420), which `placeholders.mjs` calls rather than a source:
+// AND TWO MORE FOR THE LIAISON'S CHECKED FACTS (a11ign/a11ign#3420), which `placeholders.ts` calls rather than a source:
 //   readFleetRoster who `fleet-watch` last saw answer, and who it did not                 -> {{fleet.workers-up}}, {{fleet.workers-down}}
 //   readLastTick    when the gate last COMPLETED a tick, from the same record as above     -> {{gate.last-tick.age}}
 //   readTicks       THIS WATCHER'S OWN SAMPLES, newest first                             -> stall:all-idle
 //   readFixRow      the open row that holds the fix for an event, and the org's newest word on it -> the `Being done` line of every incident and stall
 //   readEpisodeStart when the chairman was told of the open episode, from the ledger     -> the `Lasted` line of every cleared incident and stall
 //
-// A LEAF: node's own modules only (and `lib/tick-completion.mjs` and `../ledger.ts`, which are the same). Everything that reaches outside the process is a dependency a test replaces (`github.api`, `systemctl`,
+// A LEAF: node's own modules only (and `lib/tick-completion.ts` and `../ledger.ts`, which are the same). Everything that reaches outside the process is a dependency a test replaces (`github.api`, `systemctl`,
 // `readSeats`), and the files it keeps are under a directory the caller names, so a test gives it a temporary one.
 //
 // **THE GATE'S LAST COMPLETED TICK IS A RECORD THE TICK WRITES (#3040), NOT THE UNIT'S TIMESTAMP.** `InactiveEnterTimestamp` answers "did the unit run" and a tick
-// that died at import moves it as surely as a good one (2026-10-02: 63 crashed ticks). `work-tick.ts` writes `lib/tick-completion.mjs`'s record only when
+// that died at import moves it as surely as a good one (2026-10-02: 63 crashed ticks). `work-tick.ts` writes `lib/tick-completion.ts`'s record only when
 // it reaches the end of `main()`; `readGateUnit` takes `lastRecordAt` from it and keeps the unit's timestamp as `lastRunAt`, so the incident can say the ticks
 // are still starting and not finishing. `failed` is the unit's `ActiveState`.
 //
@@ -56,12 +56,12 @@ const MS_PER_MINUTE = 60_000;
 const NOT_WAITING = /^(blocked|hold(:.*)?|answer:.*)$/;
 /** `fleet-watch` stamps every answering worker with the poll's own clock and writes the file just after, so a worker that answered the last poll is within this of the write. */
 const POLL_SLACK_MS = 2 * MS_PER_MINUTE;
-/** `fleet-watch` runs hourly (`OnCalendar=*:47`): two missed firings and a margin is what a stopped watcher looks like (`watch.mjs`'s `FLEET_STATE_MAX_AGE_MS`, the same figure). */
+/** `fleet-watch` runs hourly (`OnCalendar=*:47`): two missed firings and a margin is what a stopped watcher looks like (`watch.ts`'s `FLEET_STATE_MAX_AGE_MS`, the same figure). */
 export const FLEET_READING_MAX_AGE_MS = 130 * MS_PER_MINUTE;
-/** The events a fix row can be named for: the keys `incidents.mjs` and `stall.mjs` emit, and the only ones whose message carries a `Doing` line. */
+/** The events a fix row can be named for: the keys `incidents.ts` and `stall.ts` emit, and the only ones whose message carries a `Doing` line. */
 const FIX_ROW_KEY = /^(incident|stall):[a-z][a-z-]*$/;
 const SAMPLES_FILE = "samples.jsonl";
-/** The delivery ledger beside the samples (`defaultLedgerPath`'s own file name, in the directory `watch.mjs` passes as `stateDir`). */
+/** The delivery ledger beside the samples (`defaultLedgerPath`'s own file name, in the directory `watch.ts` passes as `stateDir`). */
 const LEDGER_FILE = "ledger.jsonl";
 const ANNOTATIONS_FILE = "ci-annotations.json";
 export const SYSTEMD_PROPERTIES = "ActiveState,StateChangeTimestamp,InactiveEnterTimestamp";
@@ -369,7 +369,7 @@ function readSampleLines(path: string): string[] {
 }
 
 /**
- * The newest `limit` samples, NEWEST FIRST, as `stall.mjs` reads them. A line that is not JSON is dropped and `log` says how many: it is a torn append or a
+ * The newest `limit` samples, NEWEST FIRST, as `stall.ts` reads them. A line that is not JSON is dropped and `log` says how many: it is a torn append or a
  * hand edit, and one bad line must not blind the source for as long as the file holds it.
  */
 export function readTicks({ stateDir, log = () => {}, limit = SAMPLE_LIMIT }: { stateDir: string; log?: (line: string) => void; limit?: number; }): import("./stall.ts").TickRecord[] {

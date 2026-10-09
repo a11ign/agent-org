@@ -20,7 +20,7 @@ const at = (iso: string): number => Date.parse(iso);
 const WORKERS = "a11ign-ai-workers";
 const LEADS = "a11ign-ai-leads";
 const SHELL = "/usr/bin/zsh -c source /home/agent/.claude/shell-snapshots/snapshot-zsh-1791154712872-8w57yj.sh 2>/dev/null || true && setopt NO_EXTENDED_GLOB NO_BARE_GLOB_QUAL";
-const UNIT = "/usr/bin/node --import file:///home/agent/repos/agent-org/src/lib/crash-exit.mjs /home/agent/repos/agent-org/src/work-gate.ts --json";
+const UNIT = "/usr/bin/node --import file:///home/agent/repos/agent-org/src/lib/crash-exit.ts /home/agent/repos/agent-org/src/work-gate.ts --json";
 /** The transcripts' ids: a Claude Code session's `CLAUDE_CODE_SESSION_ID` is the file name of its transcript. */
 const T9001 = "0b5e7f10-9001-4a00-8000-000000000001";
 const T9002 = "0b5e7f10-9002-4a00-8000-000000000002";
@@ -92,7 +92,7 @@ test("KEYED: a call with no id is `script`, never keyed by time, even in a sessi
   const old = find(all, "2026-10-04T10:25:00Z");
   assert.deepEqual([old.row, old.unkeyed, old.script, "sessionId" in old], [null, "script", "(a session's shell)", false], "an 8-field line has no id, so it is not keyed: a shell is named for what it is, not for its snapshot file");
   assert.equal(find(all, "2026-10-04T10:00:30Z", "graphql").script, "(a session's shell)");
-  const preloaded = callsOfLedgerText(`${line({ time: "2026-10-04T10:00:00Z", caller: "/usr/bin/node --import=./src/lib/crash-exit.mjs src/work-tick.ts" })}\n`).calls[0];
+  const preloaded = callsOfLedgerText(`${line({ time: "2026-10-04T10:00:00Z", caller: "/usr/bin/node --import=./src/lib/crash-exit.ts src/work-tick.ts" })}\n`).calls[0];
   assert.equal(preloaded.script, "work-tick.ts", "the `--import=` form of the preload is stripped too");
 });
 

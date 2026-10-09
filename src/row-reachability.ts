@@ -53,7 +53,7 @@ const git: (args: string[]) => string = (args): string => execFileSync("git", ar
 const gh: (args: string[]) => string = (args): string => execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 
 // PATH extraction moved to `./region-paths.ts` (#462, B4) -- a leaf module with no further imports, so
-// `row-claim/file-overlap-rule.mjs` can read the SAME extraction this file uses without dragging this
+// `row-claim/file-overlap-rule.ts` can read the SAME extraction this file uses without dragging this
 // file's own `@a11ign/screenreader-fleet/cli-flags` import (fine for THIS file's `main()`, fatal before
 // `pnpm install`/`pnpm run build` if reached from a pre-install entry) into its import graph.
 

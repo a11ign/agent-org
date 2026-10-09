@@ -11,10 +11,10 @@
 // `main` refuses to start rather than spend them.
 //
 // **A SOURCE THAT FAILS IS SKIPPED FOR THE TICK, AND THE OTHERS RUN.** Its events are not partly emitted: a request source that could not
-// read the labelled rows must emit no "resolved" event (see requests.mjs), and a summary that could read nothing sends nothing. The
+// read the labelled rows must emit no "resolved" event (see requests.ts), and a summary that could read nothing sends nothing. The
 // failure is logged and the exit code is 1, so the unit shows failed; the next tick starts clean.
 //
-// **THE STALL AND INCIDENT SOURCES RUN HERE TOO (a11ign/a11ign#3008)**, over the readers in `sources/readers.mjs`: `main` builds them for a real host (GitHub on
+// **THE STALL AND INCIDENT SOURCES RUN HERE TOO (a11ign/a11ign#3008)**, over the readers in `sources/readers.ts`: `main` builds them for a real host (GitHub on
 // the core pool through `gh api`, systemd, herdr and the fleet-watch state file) and `runWatch` asks them after the two label sources. The `gh api` calls a
 // run makes are listed in `docs/messaging.md`; the allowlist admits only a GET of the REST paths they use.
 //
@@ -24,7 +24,7 @@
 // cannot be BUILT (a token file at the wrong mode, an unpaired chairman) ends the run with a line naming the file and exit 1, never a stack trace.
 //
 // **THE RELEASES SOURCE READS EVERY DECLARED CODE REPOSITORY'S RELEASES (a11ign/a11ign#3413)**, through `github.api`, and is asked only for a real host (`main` with
-// no injected `github`), as the host sources are: a test's fixture reader has no `api` and must not be asked. `sources/releases.mjs` holds the rules; what is
+// no injected `github`), as the host sources are: a test's fixture reader has no `api` and must not be asked. `sources/releases.ts` holds the rules; what is
 // HERE is the wiring, and the memory (`history`): its first-run baseline is ledger `source-note` lines, which `recordNotes` already writes once each.
 //
 // **THE MILESTONES SOURCE READS THE PROJECT'S OWN DECLARATION (a11ign/a11ign#3414)**: `messaging.milestones` names the file, the source is constructed only when it is
@@ -32,7 +32,7 @@
 // first-run baseline is ledger `source-note` lines, which `recordNotes` already writes once each. It reads one issue, one pull request or the releases of a repository, each admitted by `READ_API_PATH` or `MILESTONE_API_PATH`.
 //
 // **THE WATCHED SOURCE IS THE CHAIRMAN'S "KEEP ME POSTED" (a11ign/a11ign#3418)**: `chairman:watch add` records a thing in the ledger, and each tick reads every active watch through
-// the placeholder vocabulary's readers (`watchReaders`, built for a real host only) and offers `watch:<thing>` when its state is not the one last told. `watch-list.mjs` holds
+// the placeholder vocabulary's readers (`watchReaders`, built for a real host only) and offers `watch:<thing>` when its state is not the one last told. `watch-list.ts` holds
 // the rules; a watch ends when its final state has been TOLD, which the ledger shows, so nothing here removes anything.
 
 import { execFile } from "node:child_process";
@@ -79,7 +79,7 @@ export const READ_METHODS = Object.freeze(["issuesLabelled", "issueComments", "m
 
 const ALLOWED_VERBS = new Set(["issue list", "issue view", "pr list"]);
 const ALLOWED_FLAGS = new Set(["-R", "--label", "--state", "--search", "--json", "--limit"]);
-/** The REST paths `gh api` may be given, after `repos/<owner>/<name>/`: the ones `sources/readers.mjs` reads, each a listing or a lookup. */
+/** The REST paths `gh api` may be given, after `repos/<owner>/<name>/`: the ones `sources/readers.ts` reads, each a listing or a lookup. */
 const READ_API_PATH = /^repos\/[\w.-]+\/[\w.-]+\/(pulls|issues|issues\/\d+\/comments|actions\/runs|actions\/workflows\/[\w.-]+\/runs|actions\/runs\/\d+\/jobs|releases|check-runs\/\d+\/annotations)(\?[\w=&.,%:-]*)?$/;
 /** The two lookups the milestones source makes beyond `READ_API_PATH`, after `repos/<owner>/<name>/`: one issue, one pull request. A NUMBER, never a search. */
 const MILESTONE_API_PATH = /^repos\/[\w.-]+\/[\w.-]+\/(issues|pulls)\/\d+$/;
@@ -132,7 +132,7 @@ export function createGhReader({ run = runGh }: { run?: (argv: readonly string[]
       const fields = comments ? "number,title,url,updatedAt,comments" : "number,title,url,updatedAt";
       return list(["issue", "list", "-R", repo, "--label", label, "--state", "open", "--json", fields, "--limit", String(limit)]);
     },
-    /** All of one row's comments: the list returns only the oldest hundred (see requests.mjs). */
+    /** All of one row's comments: the list returns only the oldest hundred (see requests.ts). */
     async issueComments({ repo, number }: { repo: string; number: number; }) {
       const row = await view(["issue", "view", String(number), "-R", repo, "--json", "comments"]);
       return Array.isArray(row?.comments) ? row.comments : [];
@@ -190,9 +190,9 @@ function withButtons(events: Record<string, unknown>[], { options, walks, acts }
 const REQUESTS: Source = {
   name: "requests",
   async observe({ github, repo, now, openKeys, history }) {
-    // A walk's first message and its reminders show the step the LEDGER says it is on (`walk.mjs`), so the watcher hands the source that one question.
+    // A walk's first message and its reminders show the step the LEDGER says it is on (`walk.ts`), so the watcher hands the source that one question.
     const { events, options, walks, acts, problems } = await readRequests({ github, repo, openKeys, now, positionOf: (key) => walkPosition(history, key) });
-    // Each problem names itself (`requests.mjs`): a refused alert is not an options-block problem, and a prefix added here would say it was.
+    // Each problem names itself (`requests.ts`): a refused alert is not an options-block problem, and a prefix added here would say it was.
     return { events: withButtons(events, { options, walks, acts }), notes: problems };
   },
 };
@@ -207,7 +207,7 @@ const SUMMARY: Source = {
 };
 
 /**
- * `fleet-watch` runs hourly (`OnCalendar=*:47`), so its state file is up to an hour old on a healthy host. `incidents.mjs`'s 30-minute default would read
+ * `fleet-watch` runs hourly (`OnCalendar=*:47`), so its state file is up to an hour old on a healthy host. `incidents.ts`'s 30-minute default would read
  * half of every hour as "the watcher stopped"; two missed firings and a margin is what a stopped watcher looks like.
  */
 const FLEET_STATE_MAX_AGE_MS = 130 * 60_000;
@@ -363,7 +363,7 @@ async function gather(context: SourceContext, sources: readonly Source[]): Promi
  * One pass: observe, then tell. Everything it touches comes in as an argument, so a test owns the clock, the ledger, the reader and the
  * provider.
  *
- * `readers` is what the stall and incident sources read through (`sources/readers.mjs`). Given, they are asked after the label sources; absent, they are
+ * `readers` is what the stall and incident sources read through (`sources/readers.ts`). Given, they are asked after the label sources; absent, they are
  * NOT asked, which is a caller that has no host to read (a test's), never a production run: `main` always hands them over.
  */
 export async function runWatch({
@@ -450,7 +450,7 @@ function hostReaders({ root, home, now, err, github }: { root: string; home: str
 
 /**
  * The Telegram provider for a `messaging` key that is on: the token and the chairman's chat id are read HERE, at the moment of building, so a file that has gone
- * wrong since `messaging:check` is refused on the run that needed it. `listen.mjs` reads the same two files the same way.
+ * wrong since `messaging:check` is refused on the run that needed it. `listen.ts` reads the same two files the same way.
  */
 function telegramProvider(config: MessagingOn, { fetch: fetchImpl, log }: { fetch: typeof fetch; log: (line: string) => void; }) {
   const token = readSecretFile(config.tokenFile);

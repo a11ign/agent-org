@@ -228,7 +228,7 @@ export function fileOverlapReason(myFiles: string[], otherPrFiles: {
  *
  * `fileOverlapReason` compares a Region with open pull requests' files and with nothing else, so a row that is claimed and has no
  * pull request yet holds no file at all, and the window is the whole of the work between claim and first push. Measured 2026-10-04:
- * `worker-3423` claimed #3423 at 13:02:04Z with `watch.mjs`, `event.mjs` and `core.mjs` in its Region; `worker-3414` claimed #3414 at
+ * `worker-3423` claimed #3423 at 13:02:04Z with `watch.ts`, `event.ts` and `core.ts` in its Region; `worker-3414` claimed #3414 at
  * 13:29:55Z with the same three; no pull request existed to compare with (#148 opened at 13:34:33Z, 4m38s after the second claim), so B4
  * passed on an empty list, truthfully, and the two rows ran into three conflicting pull requests.
  *

@@ -1,7 +1,7 @@
-// THE `GithubWriter` ANSWERS NEEDS (a11ign/a11ign#3062, row 9b): the four calls `answers.mjs` makes on a row, over `gh`. The only module of
-// `src/messaging/` that WRITES to GitHub, which is why `watch.mjs`'s read-only allowlist stays as it was and this file has an allowlist of its own.
+// THE `GithubWriter` ANSWERS NEEDS (a11ign/a11ign#3062, row 9b): the four calls `answers.ts` makes on a row, over `gh`. The only module of
+// `src/messaging/` that WRITES to GitHub, which is why `watch.ts`'s read-only allowlist stays as it was and this file has an allowlist of its own.
 //
-// **THE ACCOUNT IS THE UNIT'S, NEVER THE PERSON'S (#1967).** `gh` takes its account from the process's environment, and `listen.mjs` refuses to
+// **THE ACCOUNT IS THE UNIT'S, NEVER THE PERSON'S (#1967).** `gh` takes its account from the process's environment, and `listen.ts` refuses to
 // start where none is declared. Nothing here chooses one.
 //
 // **ONE REST SHAPE FOR ALL FOUR, ON THE CORE POOL.** `gh api` is the platform's own paging (`--paginate`) and its own escaping (`-f` sends a
@@ -11,7 +11,7 @@
 // would be answered against a stale brief; `--paginate` follows the `Link` header to the end.
 //
 // **`removeLabel` RESOLVES WHEN THE LABEL IS ALREADY ABSENT** (a resumed answer repeats it): GitHub says `Label does not exist` with a 404, and
-// ONLY that message is taken as done. Any other failure, a 404 for a missing ROW included, is thrown for `answers.mjs` to record and tell the chairman.
+// ONLY that message is taken as done. Any other failure, a 404 for a missing ROW included, is thrown for `answers.ts` to record and tell the chairman.
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";

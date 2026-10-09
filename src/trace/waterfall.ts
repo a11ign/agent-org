@@ -1,14 +1,14 @@
 // a11ign/a11ign#3511 (slice 4 of #3494): THE WATERFALL -- `trace -- <row>` prints a row's eight phases: where the wall-clock went, how much of it a session was WORKING and how much
 // it was WAITING (and on what), what each phase cost, and every repeat, in the phase it happened in.
 //
-// A PURE FUNCTION from one row's events (what `eventsForRow` returns) to phases. It opens no file and calls no `gh`; `trace.mjs` hands it the events and the time of the reading.
+// A PURE FUNCTION from one row's events (what `eventsForRow` returns) to phases. It opens no file and calls no `gh`; `trace.ts` hands it the events and the time of the reading.
 //
 // THE PHASES, and what bounds each (`product-manager`'s definition on #3511):
 //   spec    row filed -> row claimed             claim   claimed -> the claimant's first turn on it    build  that turn -> the pull request opened
 //   verify  opened -> ready_for_review           review  each push or ready -> the review that follows it
 //   CI      each head, and each WAVE of checks started again at it -> its last check-run done   queue   first added_to_merge_queue -> merged (an ejection is a repeat, not an end)   merge  merged -> closed
 // They OVERLAP (CI runs while a review waits; a draft is approved before it is marked ready), so the phase wall-clocks add to more than the row's. EXCLUSIVE counts each moment once, in
-// the phase that began last and is still running, so the exclusive times, and the dollars of the turns that ended in each phase, add up to the whole -- which `aggregate.mjs` relies on.
+// the phase that began last and is still running, so the exclusive times, and the dollars of the turns that ended in each phase, add up to the whole -- which `aggregate.ts` relies on.
 //
 // EVERY MOMENT OF A RUN IS ONE OF THREE THINGS, and never two:
 //   WORKING      a model turn was running (the union of the turns' spans: two sessions at once are one stretch of wall-clock). A span is the turn's `wallClockMs` before its end, which the store

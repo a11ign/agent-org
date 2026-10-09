@@ -154,7 +154,7 @@ function cloneAt(ref: string): string {
 const isTest = (path: string): boolean => /\.test\.(ts|mjs)$/.test(path);
 
 /**
- * Leaves a project of the pair imports by their `.mjs` name. `FIRST_REF`'s `.agent-org/plugins/causes.mjs` imports `cause-shape.mjs`; a11ign/a11ign#4272
+ * Leaves a project of the pair imports by their `.mjs` name. `FIRST_REF`'s `.agent-org/plugins/causes.ts` imports `cause-shape.mjs`; a11ign/a11ign#4272
  * renamed the leaf to `.ts`, so the laid-out copy keeps the old name as a re-export, and the pair still reads what a11ign held at each commit.
  */
 const RENAMED_LEAVES: readonly string[] = ["cause-shape"];

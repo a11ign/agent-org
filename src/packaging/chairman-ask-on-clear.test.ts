@@ -11,7 +11,7 @@
  * release"). THE GRAMMAR NOW HAS A FLOOR (`published <pkg>@<dist-tag> >= x.y.z`), so the judgement can be written down; WHICH floor #2885 would have declared is its declarer's call and
  * cannot be derived, so the test pins the capability on both sides of a floor and does not claim #2885's floor.
  *
- * RED/GREEN: on `origin/main` this file does not import (`work-gate/chairman-ask-orders.mjs` does not exist), and its predecessor reading, `splitHeldOnSatisfied` on a PARKED row, held 0 and
+ * RED/GREEN: on `origin/main` this file does not import (`work-gate/chairman-ask-orders.ts` does not exist), and its predecessor reading, `splitHeldOnSatisfied` on a PARKED row, held 0 and
  * sent the wait to the generic stale-wait order (#4020's Open-check). MUTATIONS are recorded in the pull request, one per guard and in both directions.
  */
 import { test } from "node:test";

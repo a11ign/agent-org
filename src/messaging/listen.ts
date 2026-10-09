@@ -1,6 +1,6 @@
 // `messaging:listen` (a11ign/a11ign#2907): THE LONG-RUNNING PROGRAM THE `chairman-listen` UNIT RUNS. It reads the chairman's ids and the bot
 // token from their files, takes the single-instance lock, and hands Telegram's updates to the inbound core until it is told to stop.
-// `poll.mjs` is the loop; this file is everything that has to be true BEFORE the loop starts, and the exit code after it.
+// `poll.ts` is the loop; this file is everything that has to be true BEFORE the loop starts, and the exit code after it.
 //
 // **ONE LISTENER, AND TWO THINGS ENFORCE IT.** The lock file here refuses a second instance on this host, naming the pid that holds it; a
 // `409 Conflict` from Telegram refuses one anywhere else (another host with the same token, a `messaging:pair` still running). Neither is
@@ -10,16 +10,16 @@
 // (`Restart=on-failure` restarts the unit with the old file still there) or a reboot that gave the pid to somebody else, the lock is
 // recognised as stale and taken over.
 //
-// **NOTHING IS SENT TO A WORKER FROM HERE.** `handle` says `forward` for an accepted message and `createForwarder` hands it to `answers.mjs`
+// **NOTHING IS SENT TO A WORKER FROM HERE.** `handle` says `forward` for an accepted message and `createForwarder` hands it to `answers.ts`
 // (#2908), which checks it with `isAccepted` and writes the chairman-attributed comment and the labels; the chairman is told what happened.
 // What is NOT an answer (a message that replies to nothing the organisation asked) goes to row 10's `converse`, which queues it for the `liaison` and nobody else.
 //
-// **THE QUEUE LOADS ON THE FIRST MESSAGE, AND ONLY `converse.mjs` NAMES IT.** `prompt-session.ts` and `wake.ts` read the project's declaration when they are
+// **THE QUEUE LOADS ON THE FIRST MESSAGE, AND ONLY `converse.ts` NAMES IT.** `prompt-session.ts` and `wake.ts` read the project's declaration when they are
 // imported and REFUSE without it (the `chairman-listen` unit sets `$AGENT_ORG_HOST`, #3064). A message `converse` could not queue for that reason is TOLD to the
 // chairman (a send) and ledgered `refused` by `tellingWhenUndelivered`, never dropped.
 //
 // **THE GITHUB WRITES ARE THE UNIT'S ACCOUNT, NEVER THE PERSON'S (#1967).** This is the one program here that writes to GitHub, so it refuses to
-// start where no account is declared, as `watch.mjs` does for its reads.
+// start where no account is declared, as `watch.ts` does for its reads.
 //
 // EXIT CODES: 0 stopped when told to (or messaging is off), 1 failed while running, 2 REFUSED to start or told to stop by Telegram (config,
 // secrets, no chairman paired yet, the lock, a 409). The unit does not restart a 2: a refusal does not mend itself, and restarting one
@@ -150,7 +150,7 @@ export function stateDirectory(home: string): string {
 }
 
 /**
- * What a caller may leave out. A spread and not parameter defaults, as `watch.mjs` does. `root` is `HOME_CHECKOUT` and NOT `process.cwd()` (#3485): the unit in
+ * What a caller may leave out. A spread and not parameter defaults, as `watch.ts` does. `root` is `HOME_CHECKOUT` and NOT `process.cwd()` (#3485): the unit in
  * tool form runs from the TOOL's checkout, which holds no `.agent-org/`, so a cwd root exited 2 on the project declaration; `$AGENT_ORG_HOST` names the project there,
  * and where it is unset the installed layout still answers the directory the command ran in.
  */
@@ -249,7 +249,7 @@ export function createForwarder({ answers, send, converse, log, clearKeyboard }:
 /**
  * The walk-through's `Verify:` reads: the watcher's own, over read-only `gh` and `systemctl`, for the project's tracker. A caller that injected its own `github` is a test's and has none unless it brings them.
  * **A WALK IS AN OPTIONAL CAPABILITY OF A LISTENER THAT ANSWERS REQUESTS, SO IT DOES NOT TAKE THE LISTENER DOWN:** a project with no readable tracker is told on the journal, and a procedure is then refused
- * on its first press (`answers.mjs`: no readers, nothing written) while every other request is answered as it was.
+ * on its first press (`answers.ts`: no readers, nothing written) while every other request is answered as it was.
  *
  * `{{fleet.*}}` and `{{gate.*}}` read the files `hostFiles` names, so a `Verify:` over a worker power-on can be read (#3646).
  */
@@ -275,7 +275,7 @@ async function listen(deps: Parameters<typeof main>[0], config: { tokenFile: str
     const send = (message: { text: string; replyTo?: string; }) => provider.send(message);
     // The queue is `prompt:session`'s own, at the path it and the gate resolve from no `--ledger`: a message for the liaison lands where the liaison's next wake reads it.
     const conversation = createConverse({ chairman, ledger, send, now });
-    // `explain` and `stuck` order the liaison through the one module that queues (`converse.mjs`); nothing else here can.
+    // `explain` and `stuck` order the liaison through the one module that queues (`converse.ts`); nothing else here can.
     const verifying = readers ?? (github === undefined ? await verifyingReaders({ root, now, err }) : undefined);
     const answers = createAnswers({ ledger, github: github ?? createGithubWriter(), chairman, answerLabel: ANSWER_LABEL, now, readers: verifying, orders: { liaison: (order) => conversation.orderLiaison(order) } });
     await runListener({

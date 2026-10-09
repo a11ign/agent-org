@@ -21,7 +21,7 @@
 // modules beside it. A sixth rule module added tomorrow is covered without anyone remembering to list it,
 // which is the property a hand-typed list cannot have.
 //
-// A LEAF MODULE: its only import is `local-import-closure.mjs`, which imports nothing but `node:` builtins.
+// A LEAF MODULE: its only import is `local-import-closure.ts`, which imports nothing but `node:` builtins.
 // `row-claim.ts` is reachable from a pre-install entry, so a package specifier here would die with
 // ERR_MODULE_NOT_FOUND before `pnpm install` -- `pre-install-import-graph.test.ts` is what proves it.
 import { execFileSync } from "node:child_process";
@@ -105,7 +105,7 @@ export function ruleFiles(entry: string, repoRoot: string, deps?: { imports?: (f
  *     localImports("packages/agent-org/src/row-claim.ts")  ->  0     (the pre-#1019 `stripComments` defect)
  *     ruleFiles(...)                         ->  ["packages/agent-org/src/row-claim.ts"]
  *
- * Five rule modules missing, and the error runs toward NOT refusing: had only `own-pr-health-rule.mjs`
+ * Five rule modules missing, and the error runs toward NOT refusing: had only `own-pr-health-rule.ts`
  * moved, that checkout would have answered "up to date" with a retired rule in its hands -- this row's own
  * defect, inside this row's own fix.
  *

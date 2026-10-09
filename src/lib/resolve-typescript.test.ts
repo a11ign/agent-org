@@ -38,8 +38,8 @@ function directoryHolding(version: string, entry: string): string {
 
 async function resolverIn(toolTree: string) {
   mkdirSync(join(toolTree, "lib"), { recursive: true });
-  cpSync(RESOLVER, join(toolTree, "lib", "resolve-typescript.mjs"));
-  const module = await import(pathToFileURL(join(toolTree, "lib", "resolve-typescript.mjs")).href);
+  cpSync(RESOLVER, join(toolTree, "lib", "resolve-typescript.ts"));
+  const module = await import(pathToFileURL(join(toolTree, "lib", "resolve-typescript.ts")).href);
   return module.resolveTypescript as (where?: { from?: string }) => { version: string };
 }
 

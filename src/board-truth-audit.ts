@@ -29,9 +29,9 @@
 // ABSENCE IS NOT PROOF: a fact that could not be read is `null`, and its question is listed as UNREAD, never counted as agreeing. The
 // table says `0 disagree` only for a board every question read and found true, so silence cannot be read as health.
 //
-// THE TICK SUPPLIES IT (#4045): `work-gate/org-health.mjs` passes `boardTruth` to `org-health` from the rows the tick already read, and `postDaysTable` (below) comments
+// THE TICK SUPPLIES IT (#4045): `work-gate/org-health.ts` passes `boardTruth` to `org-health` from the rows the tick already read, and `postDaysTable` (below) comments
 // the day's table on #928 once per edition day.
-// A LEAF, as `org-health.mjs` (which imports it) is: relative imports of leaves only, never `close-rows-for-merged-pr.ts`, `row-claim.ts` or anything that reaches `wake.ts`.
+// A LEAF, as `org-health.ts` (which imports it) is: relative imports of leaves only, never `close-rows-for-merged-pr.ts`, `row-claim.ts` or anything that reaches `wake.ts`.
 import { execFileSync } from "node:child_process";
 import { STATE_LABELS, CLAIM_LABEL, CLAIM_RECORD_MARKER, STARTED_LABEL, stateLabelFindings, rowsBeingFiled } from "./claim-labels.ts";
 import { conditionHolds, declaredWaitsOf, waitItemOf } from "./wait-condition.ts";
@@ -119,7 +119,7 @@ function epicsDone({ openRows }: BoardFacts): Finding[] {
 
 /**
  * THE ROWS A PULL REQUEST BODY CLOSES: `close-rows-for-merged-pr.ts`'s `declaredRowsFromBody`, COPIED because that module's graph reaches `wake.ts`, which imports
- * `org-health.mjs`, which imports this: a cycle that left 51 test files unable to load (`Cannot access 'ORDER_STALL_MINUTES' before initialization`). The test pins the
+ * `org-health.ts`, which imports this: a cycle that left 51 test files unable to load (`Cannot access 'ORDER_STALL_MINUTES' before initialization`). The test pins the
  * two equal on the same fixtures. @param {string | null | undefined} body @returns {number[]}
  */
 export function closesOf(body: string | null | undefined): number[] {

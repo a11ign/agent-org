@@ -213,7 +213,7 @@ test("#1384 ACCEPTANCE: a move that changed the lockfile runs pnpm install, BEFO
   assert.deepEqual(asked, [{ range: ["old111", "new222"], pathspec: ["pnpm-lock.yaml"] }],
     "the question is asked of the commit the checkout LEFT and the one it ARRIVED at, for the root lockfile");
   assert.equal(git.some((argv) => argv[0] === "diff"), false,
-    "#939: the paths come from packages/guards/src/changed-files.mjs, never from a second spelling of the diff");
+    "#939: the paths come from packages/guards/src/changed-files.ts, never from a second spelling of the diff");
   assert.deepEqual(npmCalls, [["pnpm", "install", "--frozen-lockfile"], ["pnpm", "run", "build"]],
     "install first: a build before it compiles the new source against the old node_modules");
 });
@@ -292,7 +292,7 @@ test("#1384 lockfileMoved through the REAL changed-files helper: the root lockfi
     assert.equal(lockfileMoved(changed, first, lockfile), true, "a fast-forward spanning several commits, the real shape");
     assert.equal(lockfileMoved(changed, lockfile, movedAway), true,
       "a lockfile moved AWAY is a lockfile move. NOT a pin on #939's --no-renames: measured, this stays true with "
-      + "the flag removed from changed-files.mjs, because the pathspec excludes the destination. What keeps this "
+      + "the flag removed from changed-files.ts, because the pathspec excludes the destination. What keeps this "
       + "read on the helper is changed-files-renames.test.ts and the ACCEPTANCE test's no-diff-through-run line");
   });
 });

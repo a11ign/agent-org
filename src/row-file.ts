@@ -77,7 +77,7 @@
 //   written."
 //
 // NOT A SECOND IMPLEMENTATION. `missingTemplateFields` is #707's own pure function, imported from
-// `row-claim/template-fields-rule.mjs` unchanged -- the identical rule row-claim already enforces at
+// `row-claim/template-fields-rule.ts` unchanged -- the identical rule row-claim already enforces at
 // claim time, asked here one step earlier. A body that would pass this refuses nothing later, and a body
 // that would fail `row-claim claim` cannot be filed in the first place.
 //
@@ -2039,7 +2039,7 @@ const PROMOTE_FLAG = "--promote=";
 
 /**
  * The row this invocation promotes, or `null` when `--promote=` is absent, empty, or names something
- * that is not a positive integer. Read through `flagValue`, the shared extractor `cli-flags.mjs` owns,
+ * that is not a positive integer. Read through `flagValue`, the shared extractor `cli-flags.ts` owns,
  * rather than a sixteenth hand-rolled copy of the same three lines -- that file's own header records
  * what the one copy that drifted did.
  *

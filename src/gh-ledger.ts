@@ -20,7 +20,7 @@ const HOUR_CHARS = "2026-10-08T13".length;
 const HOUR_MS = 3_600_000;
 const PERCENT = 100;
 const SCRIPT_NAME = /([^/\s]+\.(?:mjs|cjs|js|ts|sh|py))\b/;
-/** A unit's node is started with a preload (`--import file:///.../crash-exit.mjs /.../work-gate.ts`, or `--import=./src/lib/crash-exit.mjs src/work-tick.ts`): its argument is a module, never the unit, and was 2,756 of one ledger's 7,510 calls (#3590). */
+/** A unit's node is started with a preload (`--import file:///.../crash-exit.ts /.../work-gate.ts`, or `--import=./src/lib/crash-exit.ts src/work-tick.ts`): its argument is a module, never the unit, and was 2,756 of one ledger's 7,510 calls (#3590). */
 const PRELOAD = /--import(?:=|\s+)\S+/g;
 /** The shell Claude Code runs a Bash tool call in: `zsh -c source ~/.claude/shell-snapshots/snapshot-zsh-<ms>-<id>.sh ...`. */
 const HARNESS_SHELL = /\/shell-snapshots\/snapshot-/;

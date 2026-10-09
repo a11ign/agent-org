@@ -1,6 +1,6 @@
 /**
  * RULE: DOES GITHUB'S RECORDED HEAD MATCH THE BRANCH'S REAL TIP? -- #294/#195, #455's split into
- * `packages/agent-org/src/merge-guard/head-tip-rule.mjs`.
+ * `packages/agent-org/src/merge-guard/head-tip-rule.ts`.
  *
  * THE #195 INCIDENT: `git ls-remote origin lead/prune-orphan-captures` -> 7c2e16fc, the branch's real tip.
  * `gh api .../pulls/195 --jq .head.sha` -> ac306fe9, GitHub's recorded head -- the tip's PARENT. Every

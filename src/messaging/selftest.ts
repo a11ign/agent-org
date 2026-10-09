@@ -10,8 +10,8 @@
 // **IT NEVER REACHES THE CHAT, AND NOTHING IN HERE CAN.** This file imports no provider and no `fetch`; the only `send` the converse module is given is `createRecorder().send`, which
 // appends to an array. A caller that hands `runSelftest` a provider (under any name) is ignored, and `selftest.test.mjs` shows it with a provider that fails on any send.
 // **IT NEVER TOUCHES THE CHAIRMAN'S LEDGER.** Its lines go to `selftest-ledger.jsonl` beside it, so `measure.mjs` (which reads `ledger.jsonl` only) never counts a check as a message.
-// **IT NEVER QUEUES ANYTHING ITSELF.** `converse.mjs` is the one file under `src/messaging/` that may name the queue (its scan test pins that), so the order goes through
-// `createConverse` and the queue port is `converse.mjs`'s own `realQueue`. A red result is delivered to `ceo` by the TICK STEP in `wake.ts`, which owns the queue's writers.
+// **IT NEVER QUEUES ANYTHING ITSELF.** `converse.ts` is the one file under `src/messaging/` that may name the queue (its scan test pins that), so the order goes through
+// `createConverse` and the queue port is `converse.ts`'s own `realQueue`. A red result is delivered to `ceo` by the TICK STEP in `wake.ts`, which owns the queue's writers.
 //
 // THE FOUR STAGES, in the order a message meets them, and a red names the FIRST that failed:
 //   listen -- `createInbound(...).handle` said "forward" for an update shaped as the provider's;

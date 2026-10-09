@@ -199,7 +199,7 @@ test("the declaration names the workflow and the issue beside each tracker's rep
 });
 
 // ---- the pin against the project's own script --------------------------------------------------------------------------------------
-// The heading rule is DERIVED from `scripts/ci-health.mjs`, so a change to it there must not leave this module looking for a heading
+// The heading rule is DERIVED from `scripts/ci-health.ts`, so a change to it there must not leave this module looking for a heading
 // nobody writes. Read as TEXT (importing it would need that project's node_modules). A host naming no checkout with the script is a
 // skip that says so; the second test asserts the skip is not the ordinary case.
 
@@ -207,23 +207,23 @@ const SCRIPT = (() => {
   try {
     const host = homeHostConfig();
     const checkout = host.projects.find((p) => p.id === host.primary)?.checkout;
-    const path = checkout ? join(checkout, "scripts", "ci-health.mjs") : null;
+    const path = checkout ? join(checkout, "scripts", "ci-health.ts") : null;
     return path !== null && existsSync(path) ? { path, text: readFileSync(path, "utf8") } : null;
   } catch {
     return null;
   }
 })();
 
-test("the heading, the seven-day window and the already-posted rule are still the script's", { skip: SCRIPT === null ? "the host names no primary checkout with scripts/ci-health.mjs" : false }, () => {
+test("the heading, the seven-day window and the already-posted rule are still the script's", { skip: SCRIPT === null ? "the host names no primary checkout with scripts/ci-health.ts" : false }, () => {
   assert.ok(SCRIPT);
-  assert.match(SCRIPT.text, /commentHeading = \(\{ date \}\) => `## CI health, week of \$\{date\}`/);
+  assert.match(SCRIPT.text, /commentHeading = \(\{ date \}(?:: \{[^}]*\})?\) => `## CI health, week of \$\{date\}`/);
   assert.match(SCRIPT.text, /const WINDOW_DAYS = 7;/);
-  assert.match(SCRIPT.text, /alreadyPosted = \(commentBodies, heading\) => commentBodies\.some\(\(body\) => body\.startsWith\(heading\)\)/);
+  assert.match(SCRIPT.text, /alreadyPosted = \(commentBodies(?:: [^,)]+)?, heading(?:: string)?\) => commentBodies\.some\(\(body\) => body\.startsWith\(heading\)\)/);
   assert.match(SCRIPT.text, /const date = window\.since\.slice\(0, "YYYY-MM-DD"\.length\);/);
 });
 
 test("the script pin RAN: under the acceptance command's AGENT_ORG_HOST the project's script is found", { skip: process.env.AGENT_ORG_HOST ? false : "AGENT_ORG_HOST is unset, so the pin above may legitimately skip" }, () => {
-  assert.ok(SCRIPT, "AGENT_ORG_HOST is set but its primary checkout has no scripts/ci-health.mjs: the pin above skipped");
+  assert.ok(SCRIPT, "AGENT_ORG_HOST is set but its primary checkout has no scripts/ci-health.ts: the pin above skipped");
 });
 
 // ---- #4080: every declared tracker is read, not the first -----------------------------------------------------------------------------------

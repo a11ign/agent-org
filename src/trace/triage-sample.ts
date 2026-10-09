@@ -349,7 +349,7 @@ async function main() {
     if (args.prompt) process.stdout.write(renderPrompt(loadLabels()));
     else process.stdout.write(args.score === null ? sampled(args) : scored(args.score, args.json));
   } catch (error) {
-    process.stderr.write(`triage-sample: ${error instanceof Error ? error.message : String(error)}\nusage: node src/trace/triage-sample.mjs --seed <text> [--size 100] [--from <iso>] [--to <iso>] [--store <path>] [--json]\n       node src/trace/triage-sample.mjs --score <predictions.json> [--json]   (the frozen #4074 labels; never draws)\n       node src/trace/triage-sample.mjs --prompt   (what a model is shown)\n`);
+    process.stderr.write(`triage-sample: ${error instanceof Error ? error.message : String(error)}\nusage: node src/trace/triage-sample.ts --seed <text> [--size 100] [--from <iso>] [--to <iso>] [--store <path>] [--json]\n       node src/trace/triage-sample.ts --score <predictions.json> [--json]   (the frozen #4074 labels; never draws)\n       node src/trace/triage-sample.ts --prompt   (what a model is shown)\n`);
     process.exitCode = 1;
   }
 }

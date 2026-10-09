@@ -8,10 +8,10 @@
 // against the COMMIT DATE of `main`'s tip rather than against a run of `main`, because what matters is
 // whether this head was ever tested alongside the code it is about to join.
 //
-// KEPT SEPARATE FROM `ancestry-rule.mjs`, deliberately -- a run can finish AFTER `main`'s tip was committed
+// KEPT SEPARATE FROM `ancestry-rule.ts`, deliberately -- a run can finish AFTER `main`'s tip was committed
 // while the branch still does not CONTAIN that commit (ordinary concurrent merging), so a clock comparison
 // and a graph comparison can disagree and need to be reported as the two distinct faults they are. See
-// `ancestry-rule.mjs`'s own comment for the incident (#182) that separating them exists to fix.
+// `ancestry-rule.ts`'s own comment for the incident (#182) that separating them exists to fix.
 
 /**
  * @param {{completedAt: string | null}[]} runs

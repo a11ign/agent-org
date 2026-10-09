@@ -411,7 +411,7 @@ export function armedState(pr: { number: number; auto_merge?: unknown; }, queue:
  *                                         UNEXAMINED. Not a one-line swap: `ageMs` reads
  *                                         `autoMergeRequest.enabledAt`, which a queued PR does not have, and
  *                                         whether the queue owns "behind" for a queued PR is a ruling.
- *   merge-guard/armed-race-rule.mjs       a queued PR does not race -> a push to its branch is allowed. FAILS
+ *   merge-guard/armed-race-rule.ts       a queued PR does not race -> a push to its branch is allowed. FAILS
  *                                         OPEN, by that file's own design ("a convenience guard is not a
  *                                         correctness gate"), so it is a decision to revisit rather than a
  *                                         defect to fix.

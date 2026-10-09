@@ -11,7 +11,7 @@
  *
  * GIT_* SCRUBBED on every spawn, including this file's own fixture-building `git()` helper: if `GIT_DIR`
  * happened to be set (this hook exports it into a hook environment, which is exactly why
- * `packages/guards/src/git-env.mjs` exists), an unscrubbed git call in a fixture helper would redirect onto whatever
+ * `packages/guards/src/git-env.ts` exists), an unscrubbed git call in a fixture helper would redirect onto whatever
  * `GIT_DIR` names instead of the intended disposable `/tmp` repo -- the identical class of defect closed
  * elsewhere today, caught here by `git-spawn-classification.test.ts`'s own discovery before this file
  * ever shipped.

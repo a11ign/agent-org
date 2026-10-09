@@ -22,7 +22,7 @@ import { EXIT, HEARTBEAT_COMMENT_ID, HEARTBEAT_COMMENT_MARKER, HEARTBEAT_VARIABL
 import { completionPath, readCompletion } from "../lib/tick-completion.ts";
 
 const SRC = fileURLToPath(new URL("..", import.meta.url));
-const PRELOAD = join(SRC, "lib", "crash-exit.mjs");
+const PRELOAD = join(SRC, "lib", "crash-exit.ts");
 const TRACKER = homeProjectDeclaration().tracker[0].repo;
 const GATE_THROWS = 'throw new Error("gate blew up");\n';
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// COPIED FROM `packages/guards/src/walk-scope.mjs` at 598e883cc (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
+// COPIED FROM `packages/guards/src/walk-scope.ts` at 598e883cc (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
 // its package. The product keeps its original and the two can drift, with no cross-repository pin: `agent-org-outward-edges.test.ts` compares them.
 // CHANGED FROM THE ORIGINAL, 3 NAMED LINES:
-// - its dynamic import of ci-changed.mjs, now the tool's own copy beside it
+// - its dynamic import of ci-changed.ts, now the tool's own copy beside it
 // - its REPO_ROOT computation, now the project's checkout (`HOME_CHECKOUT`) and not a count of directories up from `src` (#3074)
 // ==== end of copy header ====
 // A TREE-WALKING GUARD DECLARES THE SUBTREE IT WALKS, AND ITS OWN RUN PROVES IT -- #929.
@@ -253,7 +253,7 @@ function pointsHere(value: string, where: string) {
 /**
  * A git run from OUTSIDE this checkout that is pointed back at it anyway: by `--git-dir`/`--work-tree`, by a
  * `GIT_*` variable in the environment it runs with -- git exports `GIT_DIR` into every hook, per
- * `packages/guards/src/git-env.mjs` -- or by an operand, as a clone source is.
+ * `packages/guards/src/git-env.ts` -- or by an operand, as a clone source is.
  */
 function pointedBackHere({ where, redirects, rest }: { where: string; redirects: string[]; rest: string[]; }, options: { env?: unknown; } | undefined) {
   const env = ((options?.env ?? process.env) as Record<string, unknown>);

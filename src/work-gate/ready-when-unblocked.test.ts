@@ -1,4 +1,4 @@
-// no-token: gh -- `ready-when-unblocked.mjs` reaches GitHub only through the `ReadyIo` it is given; every one this file builds is a fake over an in-memory world, so nothing here writes a row (a11ign/a11ign#4064)
+// no-token: gh -- `ready-when-unblocked.ts` reaches GitHub only through the `ReadyIo` it is given; every one this file builds is a fake over an in-memory world, so nothing here writes a row (a11ign/a11ign#4064)
 // a11ign/a11ign#4064: a cleared row whose filer declared `Ready-when-unblocked: yes` is promoted by the gate; every other cleared row is offered to `product-manager` exactly as before.
 //
 // THE POSITIVE CONTROL for every "not promoted" below is the first test: the SAME harness (`world`, `tick`) promotes a row there, so an empty `calls` is a reading of a wired pass and not of one

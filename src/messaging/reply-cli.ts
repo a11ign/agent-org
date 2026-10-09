@@ -1,4 +1,4 @@
-// `chairman:reply` (a11ign/a11ign#3071, row 11b): THE ONLY WAY AN AGENT SPEAKS TO THE CHAIRMAN (design #2899 decision 2(e)). `reply.mjs` checks a reply as a library;
+// `chairman:reply` (a11ign/a11ign#3071, row 11b): THE ONLY WAY AN AGENT SPEAKS TO THE CHAIRMAN (design #2899 decision 2(e)). `reply.ts` checks a reply as a library;
 // this is the command that builds its four inputs from the host and calls it, so `ceo`'s brief (#2911) names a command that exists.
 //
 //   pnpm run chairman:reply -- "Row {{issue:3071.state}}" --to 4172     (or the text on stdin)
@@ -16,7 +16,7 @@
 // **OFF IS A REFUSAL HERE, NOT A SILENT SUCCESS.** `messaging:listen` exits 0 when messaging is off because nothing was expected of it; a caller of THIS
 // command believes it is speaking to the chairman, so exit 0 would be a lie. It sends nothing, says so, and exits 2.
 //
-// **A REFUSAL FOR A `#N` PRINTS THE FIX, WITH THE ROW'S OWN VALUES IN IT (#3565).** `reply.mjs` reads the row, so a text that says `#3542 is closed` is refused with
+// **A REFUSAL FOR A `#N` PRINTS THE FIX, WITH THE ROW'S OWN VALUES IN IT (#3565).** `reply.ts` reads the row, so a text that says `#3542 is closed` is refused with
 // `#{{issue:3542.number}}` and `{{issue:3542.state}}` named and, when only those stood in the way, the corrected text on a `corrected, send this instead:` line.
 // Pasting it is the second and last attempt. `--dry-run` prints the same lines, so a probe shows the road too.
 //
@@ -155,8 +155,8 @@ function report(result: Awaited<ReturnType<ReturnType<typeof createReply>["send"
 }
 
 /**
- * Where the tick writes its completion record, resolved the way `watch.mjs` does (`stateEntryPath("wake-ledger")`). IMPORTED WHEN ASKED, not at the top:
- * `host-config.ts` resolves the checkout at import, and this command is a leaf that loads outside a configured host (`state.mjs`), so a host that cannot answer
+ * Where the tick writes its completion record, resolved the way `watch.ts` does (`stateEntryPath("wake-ledger")`). IMPORTED WHEN ASKED, not at the top:
+ * `host-config.ts` resolves the checkout at import, and this command is a leaf that loads outside a configured host (`state.ts`), so a host that cannot answer
  * must cost `{{gate.*}}` and nothing else.
  */
 async function hostWakeLedgerPath({ home, env }: { home: string; env: Record<string, string | undefined>; }): Promise<string> {
@@ -165,7 +165,7 @@ async function hostWakeLedgerPath({ home, env }: { home: string; env: Record<str
 }
 
 /**
- * The files `{{fleet.*}}` and `{{gate.*}}` read, named the way `watch.mjs`'s `hostReaders` names them for the watcher: the two files `fleet-watch` writes under the
+ * The files `{{fleet.*}}` and `{{gate.*}}` read, named the way `watch.ts`'s `hostReaders` names them for the watcher: the two files `fleet-watch` writes under the
  * project's `runs/`, and the tick's completion record beside the wake ledger. Without them those placeholders refuse ("this host named no fleet-watch state files").
  * Returns no `gateRecordPath` when the host could not name one, said on `err`
  */
@@ -179,7 +179,7 @@ async function hostFiles({ root, wakeLedger, err }: { root: string; wakeLedger: 
   }
 }
 
-/** What a caller may leave out. A spread and not parameter defaults, as `watch.mjs` does. */
+/** What a caller may leave out. A spread and not parameter defaults, as `watch.ts` does. */
 const DEFAULT_DEPS = () => ({
   root: process.cwd(), env: process.env as Record<string, string | undefined>, home: homedir(), now: Date.now, fetch: globalThis.fetch,
   providers: PROVIDERS, readStdin, wakeLedgerPath: hostWakeLedgerPath, gh: guardedRunner("gh", assertReadOnlyGh), systemctl: guardedRunner("systemctl", assertReadOnlySystemctl),

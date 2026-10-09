@@ -418,7 +418,7 @@ describe("done-when 4: the command reaches no provider but the configured one, a
     const problems = imports.filter((specifier) => !ALLOWED_IMPORTS.has(specifier)).map((specifier) => `imports ${specifier}`);
     const code = source.split("\n").filter((line) => !line.trimStart().startsWith("//") && !line.trimStart().startsWith("*") && !line.trimStart().startsWith("/**")).join("\n");
     for (const name of SHARED_HELPERS) {
-      if (new RegExp(`\\bfunction ${name}\\b`).test(code)) problems.push(`defines ${name} itself, which state.mjs owns`);
+      if (new RegExp(`\\bfunction ${name}\\b`).test(code)) problems.push(`defines ${name} itself, which state.ts owns`);
     }
     if (!/createGhReaders\(\{ gh, systemctl, repo:/.test(code)) problems.push("does not build its readers with createGhReaders");
     if (/\bcreateGhReader\b/.test(code) || /\bcreateReaders\b/.test(code)) problems.push("builds a reader that is not createGhReaders");
@@ -441,7 +441,7 @@ describe("done-when 4: the command reaches no provider but the configured one, a
     /** @type {[string, string, RegExp][]} */
     const mutations: [string, string, RegExp][] = [
       ["another provider", `import { createFakeProvider } from "./fake-provider.ts";\n${real}`, /imports \.\/fake-provider\.ts/],
-      ["another reader", `import { createGhReader } from "./watch.mjs";\n${real}`, /imports \.\/watch\.mjs/],
+      ["another reader", `import { createGhReader } from "./watch.ts";\n${real}`, /imports \.\/watch\.ts/],
       ["the watcher's reader", real.replace("createGhReaders({ gh,", "createGhReader({ gh,"), /does not build its readers with createGhReaders/],
       ["a local copy of a shared helper", `${real}\nfunction trackerRepo(root) { return root; }\n`, /defines trackerRepo itself/],
       ["its own network call", `${real}\nawait fetch("https://example.com");\n`, /calls the network itself/],
@@ -468,7 +468,7 @@ describe("done-when 4: the command reaches no provider but the configured one, a
   });
 });
 
-describe("state.mjs is a leaf: nothing it loads resolves the checkout or reads the project declaration", () => {
+describe("state.ts is a leaf: nothing it loads resolves the checkout or reads the project declaration", () => {
   const FORBIDDEN = /(?:^|\/)(?:host-config|project-config)\.ts$/;
 
   /** @param {string} file @param {Set<string>} seen @returns {string[]} every module reachable from `file` through relative imports that is forbidden */
@@ -485,7 +485,7 @@ describe("state.mjs is a leaf: nothing it loads resolves the checkout or reads t
 
   const STATE = fileURLToPath(new URL("./state.ts", import.meta.url));
 
-  test("state.mjs reaches neither host-config.ts nor project-config.ts", () => {
+  test("state.ts reaches neither host-config.ts nor project-config.ts", () => {
     assert.deepEqual(forbiddenReachableFrom(STATE), []);
   });
 

@@ -23,7 +23,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync, renameSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-// EVERY `git` SPAWN IN THIS REPO STRIPS `GIT_*` THROUGH ONE FUNCTION (`git-env.mjs`'s own header records the incident).
+// EVERY `git` SPAWN IN THIS REPO STRIPS `GIT_*` THROUGH ONE FUNCTION (`git-env.ts`'s own header records the incident).
 import { sandboxGitEnv } from "./lib/git-env.ts";
 import { CLAIM_RECORD_MARKER } from "./claim-labels.ts";
 import { ANSWER_PREFIX, SESSION_PREFIX } from "./project-vocabulary.ts";

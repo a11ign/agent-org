@@ -261,6 +261,8 @@ function fixtures() {
  * a11ign/a11ign#4272 RE-DERIVED the entries whose prompt names a script of the tool: `row-claim.mjs` became `row-claim.ts`, and a `.ts` is run as
  * `node --import tsx <file>` (ADR 0043, decision 8), so the claim sentence gained `--import tsx ` and lost a byte for the extension. Re-run against
  * the new code, and the sentence itself is pinned by name below.
+ * a11ign/a11ign#4389 RE-DERIVED the same entries again: Node 24 strips the types itself, so the claim sentence lost `--import tsx ` and is
+ * `node <file>.ts` (ADR 0043 trap (b) is gone). Re-run against the new code, not restated by hand.
  */
 const RECORDED_BUSY = [
   { session: "ceo", cause: "answer-owed", subject: "row-301", discriminator: "301", causeKey: "ceo/answer-owed/row-301", promptSha256: "b420fd28ac165d27c42ec3d38c43c6de9bb80d173925247446f1711ca6bc445e", promptLength: 512 },
@@ -269,11 +271,11 @@ const RECORDED_BUSY = [
   { session: "worker-x", cause: "pr-checks-failing", subject: "pr-102", discriminator: "abc12345", causeKey: "worker-x/pr-checks-failing/pr-102/abc12345", promptSha256: "4b867314bbbbbb5b63129a0cd85357157ec328118500592a7819f0da60438313", promptLength: 668 },
   { session: "reviewer-104", cause: "draft-awaiting-verdict", subject: "pr-104", discriminator: "abc12345", causeKey: "reviewer-104/draft-awaiting-verdict/pr-104/abc12345", promptSha256: "2cfd74cea471f3a9b8bba72b2b1c1376558a142580a3522f139fad2f59d7aa8c", promptLength: 180 },
   { session: "reviewer-105", cause: "draft-awaiting-verdict", subject: "pr-105", discriminator: "abc12345", causeKey: "reviewer-105/draft-awaiting-verdict/pr-105/abc12345", promptSha256: "4c1bb79eb40777da555e29a8e29dad386c7567bc5c73b94bc6e29e231da78b86", promptLength: 180 },
-  { session: "engineers", cause: "ready-row-unclaimed", subject: "row-202", discriminator: "202", causeKey: "engineers/ready-row-unclaimed/202", title: "row 202", promptSha256: "f01764c9703cd267874ded982c7f265dace2b2d4cdb200856854ca2b85aa695d", promptLength: 351 },
-  { session: "engineers", cause: "ready-row-unclaimed", subject: "row-201", discriminator: "201", causeKey: "engineers/ready-row-unclaimed/201", title: "row 201", promptSha256: "d35290c39c397cace7fe7261aa4e588ee907611048efaebe4ea0d199ef930b31", promptLength: 351 },
-  { session: "ceo", cause: "ready-row-unclaimed", subject: "row-203", discriminator: "203", causeKey: "ceo/ready-row-unclaimed/203", title: "row 203", promptSha256: "c08e7415bb41c4aaf3d188ed123a09cd285fce7df79a4f08313625100f662854", promptLength: 351 },
+  { session: "engineers", cause: "ready-row-unclaimed", subject: "row-202", discriminator: "202", causeKey: "engineers/ready-row-unclaimed/202", title: "row 202", promptSha256: "47297d2bffa624be4eafbf4cbb33195c32e36a3aac6359cf0e4270294eda256e", promptLength: 338 },
+  { session: "engineers", cause: "ready-row-unclaimed", subject: "row-201", discriminator: "201", causeKey: "engineers/ready-row-unclaimed/201", title: "row 201", promptSha256: "ed2392f01a433c31887740a7fca9cec47de321faaa0e9fe23cddb5322bba26e8", promptLength: 338 },
+  { session: "ceo", cause: "ready-row-unclaimed", subject: "row-203", discriminator: "203", causeKey: "ceo/ready-row-unclaimed/203", title: "row 203", promptSha256: "cd6738e9a7e3bd2cdb32db28363d67a4c29527a8a7880bf8b6ad648a81889402", promptLength: 338 },
   { session: "orchestrator", cause: "fleet-batch-due", subject: "fleet-batch", discriminator: "501", causeKey: "orchestrator/fleet-batch-due/501", promptSha256: "5d73451b5f55e4ab401c5bd6199d4a4e8283a0860dcf5218e4e869f20646560d", promptLength: 834 },
-  { session: "product-manager", cause: "pr-green-unarmed", subject: "pr-green-unarmed", discriminator: "105", causeKey: "product-manager/pr-green-unarmed/105", promptSha256: "3eb56a029668d346c6884ca2335e7a1283d8ee44a4acbb3bdcce251ef6ac1c7c", promptLength: 1457 },
+  { session: "product-manager", cause: "pr-green-unarmed", subject: "pr-green-unarmed", discriminator: "105", causeKey: "product-manager/pr-green-unarmed/105", promptSha256: "ee4992788f3cce037af6fa3f383c0d117afce0d058887f53a669d29aa10cfe28", promptLength: 1444 },
   { session: "product-manager", cause: "pr-review-blocked", subject: "pr-review-blocked", discriminator: "104:REFUSED", causeKey: "product-manager/pr-review-blocked/104:REFUSED", promptSha256: "fcc31282ac6a2d11b9f2f9edefd564b8bb53be5c7e6e1ef5bc6fada92f64a50e", promptLength: 1120 },
   { session: "worker-y", cause: "pr-merge-conflict", subject: "pr-103", discriminator: "abc12345", causeKey: "worker-y/pr-merge-conflict/pr-103/abc12345", promptSha256: "654252ef8ac3bb01c40ab6095427a52505798302cc9efadd4fd154b14dd0fbc0", promptLength: 553 },
 ];
@@ -343,7 +345,7 @@ test("a row in another tracker is offered WITHOUT a command that would claim the
   const rows = [row(7, { title: "mine" })];
   const [mine] = asOrders(decide({ prs: [], readyRows: rows }));
   const [theirs] = asOrders(decide({ prs: [], readyRows: rows.map((r) => ({ ...r, repoKey: "other", repo: "acme/other" })), key: "other", repo: "acme/other" }));
-  assert.match(mine.prompt, /Claim it with `node --import tsx packages\/agent-org\/src\/row-claim\.ts claim 7 --session=<you> --branch=agent\/<slug>-7 --worktree=\.\.\/wt-7` and build it there\./);
+  assert.match(mine.prompt, /Claim it with `node packages\/agent-org\/src\/row-claim\.ts claim 7 --session=<you> --branch=agent\/<slug>-7 --worktree=\.\.\/wt-7` and build it there\./);
   assert.doesNotMatch(theirs.prompt, /Claim it with/, "the keyed offer hands over no runnable claim");
   assert.match(theirs.prompt, /would claim the PRIMARY's row 7, so do NOT run it/);
   assert.match(theirs.prompt, /agent\/<slug>-other-7`, `\.\.\/wt-other-7` and `session:<you>`/, "and states the names ADR 0040 decision 2 gives, for 3b's command to agree with");

@@ -1,6 +1,6 @@
 // THE REQUEST SOURCE (a11ign/a11ign#2903, done-whens 1 and 2): A ROW GAINS `needs:chairman` -> ONE REQUEST EVENT; IT LOSES THE LABEL -> ONE
 // RESOLVED EVENT. A LEAF module: it imports nothing from the tool, and it reads GitHub only through an injected reader whose methods are
-// all reads (`watch.mjs` builds the real one and refuses a write).
+// all reads (`watch.ts` builds the real one and refuses a write).
 //
 // **THE SOURCE KEEPS NO STATE, AND DEDUPE IS THE CORE'S.** A tick that sees a labelled row emits its request event every time with the
 // same key, and the core's ledger turns the second sight into nothing (`planNotification`: `duplicate`). So "ONE event however many
@@ -20,7 +20,7 @@
 // re-brief, so its `state` would never change and the core would never send the update: silent, the failure this file exists to prevent. A
 // row whose list is AT the window has its comments read in full (`issueComments`, `gh issue view`); if that read fails, the source throws.
 
-// **A BRIEF WITH A `Steps:` LIST IS A PROCEDURE, AND IS WALKED (a11ign/a11ign#3425, chairman point 3).** Its numbered items are sent one at a time (`walk.mjs`), each optionally followed by
+// **A BRIEF WITH A `Steps:` LIST IS A PROCEDURE, AND IS WALKED (a11ign/a11ign#3425, chairman point 3).** Its numbered items are sent one at a time (`walk.ts`), each optionally followed by
 // `Verify: {{placeholder}} is|contains <value>`, the read that decides whether the step happened. This file only READS the list: the first message carries the brief and the step the ledger says
 // is current (`position`, which the watcher reads from the ledger and this leaf is handed), and the position is NOT in the event's `state`, so a step advancing is never an "update" of the ask.
 
@@ -235,7 +235,7 @@ function readBriefLines(body: string, labels: string[]): { lines: string[]; miss
 }
 
 /**
- * **THE STATE OF A REQUEST IS WHAT IT ASKS, NOT HOW IT IS LABELLED.** `event.mjs` suggests "a request's labels", and that would send the
+ * **THE STATE OF A REQUEST IS WHAT IT ASKS, NOT HOW IT IS LABELLED.** `event.ts` suggests "a request's labels", and that would send the
  * chairman an update each time a session adds `in-progress` or `was-ready` to a row that is waiting on them, which is the defect the
  * reminder rule exists to end. A re-briefed ask (a new first line or new options) IS a change worth telling them; a label is not.
  *
@@ -255,7 +255,7 @@ function refusalReason(brief: RowComment | null, missing: string[]): string {
 }
 
 /**
- * **NO EVENT IS A REFUSAL, AND THE REASON GOES THROUGH `problem`**, the channel the options block already uses: `watch.mjs` writes it to the
+ * **NO EVENT IS A REFUSAL, AND THE REASON GOES THROUGH `problem`**, the channel the options block already uses: `watch.ts` writes it to the
  * ledger once per distinct reason and logs it, so a refused alert is on the record and not silent. The row is still labelled, so the caller
  * must not read the missing event as the label going. **A problem NAMES ITSELF**: a refusal begins `alert not sent:` and an options-block problem
  * begins `chairman-options:`, because the watcher adds no prefix and a grep for either finds only its own kind (#3344).

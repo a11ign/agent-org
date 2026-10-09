@@ -5,14 +5,14 @@
 //   pnpm run chairman:correct -- --row=3333 --message=45 --as=re-ask                              (the NEW BRIEF on stdin)
 //
 //   * `withdraw` takes `needs:chairman` off, with a comment giving the reason (`stale`, `wrongly-labelled` or `already-done`) and his words quoted: the row is no longer
-//     asking him. Comment first, label last, so a failed comment leaves the row still asking and never withdrawn-and-silent (`answers.mjs`'s order).
+//     asking him. Comment first, label last, so a failed comment leaves the row still asking and never withdrawn-and-silent (`answers.ts`'s order).
 //   * `reroute` sets `answer:product-manager` and no other label. A wrong label, scope or done-when is the product manager's to fix, and **a waiting condition is data,
 //     not a comment**: the comment is the reasoning, the label is what moves the org. `needs:chairman` stays, because whether the ask still stands is that ruling.
 //   * `re-ask` writes a NEW brief, which `latestBrief` reads as the newest, so the watcher sees the ask change and tells the chairman. It is held to the same lines the
 //     watcher requires (`requestEvent`): a brief that would send no alert is refused here, before it is written, and not found out at the next tick.
 //
 // **ANYTHING ELSE IS REFUSED, AND NOTHING IS WRITTEN.** Editing a row's body, Region or Done-when is not a verb: it is `reroute`. There is no verb that closes a row,
-// answers for the chairman or removes any label but `needs:chairman`. Every other rule is `record.mjs`'s: the `--message` ref must be an accepted inbound line, his
+// answers for the chairman or removes any label but `needs:chairman`. Every other rule is `record.ts`'s: the `--message` ref must be an accepted inbound line, his
 // words must be the ones the ledger hashed (a `re-ask`'s stdin is a brief, so only its ref is checked), the comment says it was written by the liaison, and a
 // failure between two steps is resumed by the next call and not repeated.
 //
@@ -74,7 +74,7 @@ function briefProblem({ row, brief, now }: { row: RowRef; brief: string; now: nu
 }
 
 /**
- * `rerouteLabel` is the label that wakes the product manager: the vocabulary's answer prefix and `REROUTE_TO`, an INPUT and not a literal here, as `answers.mjs`'s
+ * `rerouteLabel` is the label that wakes the product manager: the vocabulary's answer prefix and `REROUTE_TO`, an INPUT and not a literal here, as `answers.ts`'s
  *   `answerLabel` is, because `project-vocabulary.test.ts` refuses a copy in code.
  */
 export function createCorrector({ ledger, github, now, rerouteLabel }: { ledger: Ledger; github: GithubWriter; now: () => number; rerouteLabel: string; }) {
@@ -111,7 +111,7 @@ export function createCorrector({ ledger, github, now, rerouteLabel }: { ledger:
 /** What each verb is called once it is done, in the words of its comment's first line. */
 const VERB_DONE = Object.freeze({ withdraw: "Withdrawn", reroute: "Rerouted", "re-ask": "Re-asked" } as Record<string, string>);
 
-/** The label that wakes the product manager, from the vocabulary: imported when asked, as `reply-cli.mjs` does `host-config.ts`, so this file loads outside a configured host */
+/** The label that wakes the product manager, from the vocabulary: imported when asked, as `reply-cli.ts` does `host-config.ts`, so this file loads outside a configured host */
 async function vocabularyRerouteLabel(): Promise<string> {
   const { ANSWER_PREFIX } = await import("../project-vocabulary.ts");
   return `${ANSWER_PREFIX}${REROUTE_TO}`;

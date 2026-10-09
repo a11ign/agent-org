@@ -4,7 +4,7 @@
 //
 // It is `prompt:session ceo --needs-decision` with two refusals in front, and nothing else. Both are checked BEFORE anything is sent, so a refusal queues nothing:
 //
-//   1. **The `--message` ref must be an accepted inbound line** (`record.mjs`'s `checkMessage`, ref only): the liaison asks because the chairman said something, and a ref the
+//   1. **The `--message` ref must be an accepted inbound line** (`record.ts`'s `checkMessage`, ref only): the liaison asks because the chairman said something, and a ref the
 //      ledger does not hold is a question about nothing. The question's words are the LIAISON'S, so they are not hashed against the chairman's.
 //   2. **THE TEXT MUST NAME WHAT CLEARS IT, AS DATA THE GATE READS.** A waiting condition is data, not a sentence: a ruling asked as prose stalls, because nothing in the org reads
 //      prose. The predicate is `clearingWait`: the text carries a `Waiting-for:` line that `parseWaits` (`wait-condition.ts`, the parser the gate itself runs) reads as a

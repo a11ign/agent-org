@@ -1,5 +1,5 @@
 // IDLE IS A SIGNAL (#3943): no engineer holds a row, and open rows exist that are not waiting on a date. A PURE LEAF over rows the tick already read: it
-// makes no call, so `org-health.mjs` can import it and the test can hand it fixtures. WHAT COUNTS AS A REASON is each row's own declared field, read by
+// makes no call, so `org-health.ts` can import it and the test can hand it fixtures. WHAT COUNTS AS A REASON is each row's own declared field, read by
 // the readers the gate reads them with (`waitingOn`, `parseWaits`, `STATE_LABELS`), never by a second regex of this file's own.
 import { CLAIM_LABEL, STATE_LABELS } from "./claim-labels.ts";
 import { SESSION_PREFIX, LANE_PREFIX } from "./project-vocabulary.ts";

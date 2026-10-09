@@ -10,7 +10,7 @@
  *   - RECOGNISERS: a pattern that must still accept what an older PR body, unit or acceptance says (`LOOKS_LIKE_A_COMMAND` and friends).
  *   - RECORDS: a sentence about what happened (`#2376: "npx failed before execution"`) and a message that names `npm ci` as the one NOT to run.
  *   - DECLARED COPIES: a file whose header says `COPIED FROM` an a11ign original. Its wording is the original's, and a line edited here is a
- *     line `org-health.mjs`'s copy-drift signal then reports as drift; the wording changes in a11ign and is carried here.
+ *     line `org-health.ts`'s copy-drift signal then reports as drift; the wording changes in a11ign and is carried here.
  *
  * The first two are listed BY FILE with a reason and PINNED BY COUNT, so a new npm remedy cannot hide in a file that already has one, and a
  * record that is later rewritten (the pin is now too high) is noticed rather than left as a stale exemption. `host/` is pinned the same way

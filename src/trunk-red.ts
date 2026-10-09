@@ -391,7 +391,7 @@ const RULING_PARAGRAPH = "THE RULING (chairman, 2026-09-24): the org always fixe
   + "than the re-land.\n";
 
 /**
- * What makes the fix findable by `readFixRow` (`messaging/sources/readers.mjs`), which lists open items labelled `incident` and matches an `Incident: <key>` body
+ * What makes the fix findable by `readFixRow` (`messaging/sources/readers.ts`), which lists open items labelled `incident` and matches an `Incident: <key>` body
  * line. Without this sentence the fix is invisible and the chairman's message says nobody has picked the incident up while a pull request is open (#3449).
  */
 const FIX_MARKER = "Mark it so the chairman's messages can find it: label it `incident` (`gh label create incident` first if `gh` says it does not exist) "

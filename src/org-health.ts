@@ -793,7 +793,7 @@ export type CopyPair = { original: string, copy: string, allowedLines: number | 
 
 /**
  * SIGNAL (#3533): A RUNNER OF `agent-org` THAT IS NOT ON THE NEWEST RELEASE FOR LONGER THAN ONE RELEASE CYCLE, whichever of the three kinds it is (the tool checkout, a worktree's resolved
- * copy, the last `ci.yml` run on `main`). The comparison is `lib/tool-version-agreement.mjs`'s, which `host:check` calls too; THIS only turns its result into a reading. `agreement` is `undefined`
+ * copy, the last `ci.yml` run on `main`). The comparison is `lib/tool-version-agreement.ts`'s, which `host:check` calls too; THIS only turns its result into a reading. `agreement` is `undefined`
  * when the caller does not ask (a host that declares no tool), `null` when the read was refused, else what the child read returned (`{ result }`). Keyed on the newest tag: one release, one signal,
  * and the next release is a new one. A runner the read could not say anything about is an `unknown` and never a clear.
  */
@@ -814,7 +814,7 @@ export function toolVersionReading({ agreement }: { agreement: { result: ToolAgr
 }
 
 /**
- * THE READ, in a CHILD: `lib/tool-version-agreement.mjs --json` asks the tool's remote for its tags, each worktree for its resolved copy and GitHub for the last CI run, and a gate that imported
+ * THE READ, in a CHILD: `lib/tool-version-agreement.ts --json` asks the tool's remote for its tags, each worktree for its resolved copy and GitHub for the last CI run, and a gate that imported
  * those readers would carry the history readers into every test that reaches the tick (`host-units.ts`'s `jsonReport` is the precedent for the fence). `undefined` is "not asked" (a host that
  * declares no tool); `null` is a read that failed, which the reading says. NEVER THROWS.
  */
@@ -1016,7 +1016,7 @@ function linesWithoutCounterpart(lines: string[], against: string[]): number {
  * sits above a copy with lines the original lacks. THE HEADER'S COUNT IS THE ALLOWANCE, which is what lets the pair list be discovered
  * rather than declared a second time -- and its price is stated here: a one-byte change ON a line the header already names is inside
  * the allowance, and so are the copy's own extra lines once the header names any change, because the header counts the original's
- * lines it changed and ONE of them can become several (`changed-packages.mjs`'s `REPO` became four lines under "3 NAMED LINES", #2884). `agent-org-outward-edges.test.ts` applies each sanctioned edit exactly and
+ * lines it changed and ONE of them can become several (`changed-packages.ts`'s `REPO` became four lines under "3 NAMED LINES", #2884). `agent-org-outward-edges.test.ts` applies each sanctioned edit exactly and
  * is the exact check; this is the cheap one that runs on every tick.
  */
 function judgePair(pair: CopyPair): { verdict: "same" | "drifted" | "unknown"; why: string; } {
@@ -1033,8 +1033,8 @@ function judgePair(pair: CopyPair): { verdict: "same" | "drifted" | "unknown"; w
 }
 
 /**
- * SIGNAL 6: A DECLARED COPY NO LONGER MATCHES ITS ORIGINAL (#2937). `packages/guards/src/isolation-gate.mjs` and
- * `packages/agent-org/src/lib/isolation-gate.mjs` were edited identically BY HAND in #2921: a drift waiting to happen unless a question
+ * SIGNAL 6: A DECLARED COPY NO LONGER MATCHES ITS ORIGINAL (#2937). `packages/guards/src/isolation-gate.ts` and
+ * `packages/agent-org/src/lib/isolation-gate.ts` were edited identically BY HAND in #2921: a drift waiting to happen unless a question
  * reads it. `pairs` is `null` for a read that could not run; an EMPTY list is stated as unknown too, because a discovery that finds
  * no copy in a tree that holds nineteen has not found a clean tree.
  */

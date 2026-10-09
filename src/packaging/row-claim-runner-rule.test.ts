@@ -1,6 +1,6 @@
 /**
  * RULE: IS THIS ROW RESERVED FOR A SPECIFIC SESSION? -- #444, wired into `decideClaim` one clause ahead
- * of the claim check. See `packages/agent-org/src/row-claim/runner-rule.mjs` for the full account (#324's own shape:
+ * of the claim check. See `packages/agent-org/src/row-claim/runner-rule.ts` for the full account (#324's own shape:
  * a row needing a genuinely fresh agent, reserved by a comment nothing enforced).
  */
 // no-token: LIVE_SESSIONS

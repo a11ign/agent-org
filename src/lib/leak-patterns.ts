@@ -1,5 +1,5 @@
 // @ts-check
-// THE TOOL'S LEAK POLICY (#2658, child 3g of #69; ADR 0040, decision 4). SPLIT from `packages/lab/src/packaging/leak-patterns.mjs` at cd4bdb7dc,
+// THE TOOL'S LEAK POLICY (#2658, child 3g of #69; ADR 0040, decision 4). SPLIT from `packages/lab/src/packaging/leak-patterns.ts` at cd4bdb7dc,
 // which the product keeps whole: this is NOT a byte copy, and `agent-org-outward-edges.test.ts` pins what it is instead.
 //
 //   - the TWO GENERIC patterns stay here, because they are true of any public repository: a private LAN IPv4 address and a named SSH private

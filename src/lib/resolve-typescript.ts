@@ -1,7 +1,7 @@
 // #3068: WHERE THE TOOL FINDS `typescript`. It is a PEER dependency: the tool parses the PROJECT's code, so it must read the project's own
 // version of the compiler, and the project already has one. Resolution is from the project's directory FIRST and the tool's own tree second.
 // A candidate is accepted only if it has the JS compiler API (TypeScript 7 does not, #3729), else the next place is tried. The second is what a project that did not install it gets from pnpm's auto-installed peer, and what the tool's own checkout and CI (which
-// install it beside the tool) rely on. `acceptance-commands.mjs` reads it through here. `lib/tree-wide-guard.mjs` still says
+// install it beside the tool) rely on. `acceptance-commands.mjs` reads it through here. `lib/tree-wide-guard.ts` still says
 // `createRequire(import.meta.url)("typescript")`: it is a declared COPY of a product file whose drift is checked, so it is not edited here, and in an
 // installed tree pnpm links the peer beside the tool, which that call finds (measured 2026-10-02, pnpm 10.34.5). The row named four modules; only
 // these two load `typescript` (the other two use `createRequire` for something else).

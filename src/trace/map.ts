@@ -1,7 +1,7 @@
 // a11ign/a11ign#3514 (slice 7 of #3494): `trace --map` -- THE ACROSS-ROWS PROCESS MAP. A directly-follows graph of the merged rows' phases, as ONE self-contained HTML page:
 // the picture of #3513's numbers.
 //
-// A PURE FUNCTION over what the store holds, like `aggregate.mjs`: it opens no file and calls no `gh`. `processMap` builds the model from the store's events and the merged pull
+// A PURE FUNCTION over what the store holds, like `aggregate.ts`: it opens no file and calls no `gh`. `processMap` builds the model from the store's events and the merged pull
 // requests; `renderMap` writes the page; `buildMap` is both. The page has no script, no stylesheet link and no URL: the SVG is inline, and the table under it says everything the
 // picture does, so a reader who cannot see the colours loses nothing.
 //
@@ -21,7 +21,7 @@ export const MAP_DEFINITIONS = [
   "EDGE WIDTH and the number on an edge: how many rows took that step. A row is counted once per edge.",
   "NODE WAIT: the median, over the rows that were in the phase, of the time from entering it to entering the next step (nearest-rank, no interpolation). `merged` has none.",
   "NODE COLOUR and the dollars on a node: the median, over the rows in the phase that have any turn in the store, of the priced dollars of the turns of the row between entering it and the next step. A turn before a row's first step or after its merge is in no node. A phase with no such row is `n/a`; `>=` marks a median in which a row had an unpriced turn.",
-  "LOOPS are red, dashed and named, and are drawn beside the steps because a row goes round them as well. review -> rework -> review: a review after an earlier one on the same row; the dollars are the row's turns from each review to the next (the rework and the re-review). queue -> eject -> queue: an exit from the merge queue that did not merge, followed by an entry; the dollars are the row's turns between them. wake -> compaction: a compaction of a session on the row; the dollars are the INPUT side of the first turn after it, which re-reads the window (aggregate.mjs's rule). The count is every traversal; the dollars are the priced turns of the rows that have any, and a loop of a row with none is counted and not priced (`>=`).",
+  "LOOPS are red, dashed and named, and are drawn beside the steps because a row goes round them as well. review -> rework -> review: a review after an earlier one on the same row; the dollars are the row's turns from each review to the next (the rework and the re-review). queue -> eject -> queue: an exit from the merge queue that did not merge, followed by an entry; the dollars are the row's turns between them. wake -> compaction: a compaction of a session on the row; the dollars are the INPUT side of the first turn after it, which re-reads the window (aggregate.ts's rule). The count is every traversal; the dollars are the priced turns of the rows that have any, and a loop of a row with none is counted and not priced (`>=`).",
   "FILTERS: --repo is the repository of the pull request that merged the row; --week is the Monday-first UTC week of the merge; --cause keeps the rows with at least one wake of that cause (the ledger's cause, the middle part of the key). Every figure on the page is of the rows the filters keep, and the page says which.",
 ];
 
@@ -53,7 +53,7 @@ export const LOOPS = [
 ];
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------
-// Keys and placement: which rows an event is about. This repeats `aggregate.mjs`'s placement, which is not exported; the test pins the two to the same dollars per row.
+// Keys and placement: which rows an event is about. This repeats `aggregate.ts`'s placement, which is not exported; the test pins the two to the same dollars per row.
 
 const prKey = (keys: Keys, repo: string | null, number: number) => `${repo === null ? keys.rowRepo : `${keys.org}/${repo}`}#${number}`;
 

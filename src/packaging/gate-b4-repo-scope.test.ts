@@ -1,4 +1,4 @@
-// no-token: gh -- imports `work-gate.ts` and `row-claim/file-overlap-rule.mjs`, whose default readers spawn `gh`; every read here is handed an injected `run` and every per-tick read a stub, so nothing is spawned (#3095)
+// no-token: gh -- imports `work-gate.ts` and `row-claim/file-overlap-rule.ts`, whose default readers spawn `gh`; every read here is handed an injected `run` and every per-tick read a stub, so nothing is spawned (#3095)
 /**
  * #3095: THE GATE'S B4 PRE-FILTER COMPARES A ROW WITH THE OPEN PULL REQUESTS OF EVERY DECLARED CODE REPOSITORY, AS THE CLAIM DOES.
  *

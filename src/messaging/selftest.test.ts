@@ -237,11 +237,11 @@ describe("done-when 3: it never reaches the chat, and its line is not a message"
 
   test("the source imports no provider and never calls fetch (the positive control is that it DOES import the converse module it drives)", () => {
     const source = readFileSync(fileURLToPath(new URL("./selftest.ts", import.meta.url)), "utf8").split("\n").filter((line) => !/^\s*(\/\/|\/?\*)/.test(line)).join("\n");
-    assert.match(source, /from "\.\/converse\.mjs"/);
+    assert.match(source, /from "\.\/converse\.ts"/);
     assert.doesNotMatch(source, /providers\/|\bfetch\s*\(|telegram/i);
   });
 
-  test("the synthetic line is absent from measure.mjs's count for a window containing it, and would not be if it had landed in the chairman's ledger", async () => {
+  test("the synthetic line is absent from measure.ts's count for a window containing it, and would not be if it had landed in the chairman's ledger", async () => {
     const h = harness({ roster: IDLE });
     const chairmanPath = defaultLedgerPath(h.home);
     mkdirSync(dirname(chairmanPath), { recursive: true });
@@ -462,7 +462,7 @@ describe("a quiet tick starts no process and asks no model", () => {
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------
 // THE ENTRY, RUN AS THE TICK STARTS IT (a11ign/a11ign#3701). `wake.ts`'s `checkChairmanPath` spawns this file as a process, and the cases above call `main` with an injected queue, which skips
-// `realQueue()`: the one call that does `import("../wake.ts")`, and `wake.ts` imports `selftest.mjs`. When the entry held a top-level `await` that import closed a cycle on a module still waiting on
+// `realQueue()`: the one call that does `import("../wake.ts")`, and `wake.ts` imports `selftest.ts`. When the entry held a top-level `await` that import closed a cycle on a module still waiting on
 // its own `await`, so Node drained the loop and exited 13 every time a run was due. NOTHING HERE QUEUES AN ORDER: the state file says a run is already waiting, so the tick goes straight to
 // `settlePending` (`realQueue()`, then a READ of the queue file) and the only files it writes are the self-test's own, under the isolated `HOME`.
 const ENTRY = fileURLToPath(new URL("./selftest.ts", import.meta.url));

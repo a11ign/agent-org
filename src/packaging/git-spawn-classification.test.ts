@@ -61,7 +61,7 @@
  * function names that a new wrapper could slip past.
  *
  * CLASSIFICATION, not a bare pass/fail: a discovered file is SAFE only if it imports one of the three
- * canonical scrubbing helpers (`packages/guards/src/git-env.mjs`, `scripts/test-support/git-sandbox.ts`, or
+ * canonical scrubbing helpers (`packages/guards/src/git-env.ts`, `scripts/test-support/git-sandbox.ts`, or
  * `packages/worker-fleet/src/git-safe-env.mjs` -- the last one a DELIBERATE, disclosed duplicate forced
  * by worker-fleet's publish boundary, see that file's own header) AND actually calls it, not merely
  * imports it unused. A twelfth git-shelling file that imports nothing fails this test by name until
@@ -78,10 +78,10 @@ import { toolSources, toolTests, type ToolFile } from "./tool-source.ts";
 
 /**
  * The two modules a git-shelling file may import to be classified SAFE, matched by BASENAME rather than full path -- every real call site
- * imports one of these by a RELATIVE specifier (`./lib/git-env.mjs`, `../lib/git-sandbox.ts`), so matching the full path would miss every
+ * imports one of these by a RELATIVE specifier (`./lib/git-env.ts`, `../lib/git-sandbox.ts`), so matching the full path would miss every
  * real import. (The product's third, `git-safe-env.mjs`, is worker-fleet's and never reaches this tool.)
  */
-const CANONICAL_HELPER_BASENAMES = ["git-env.mjs", "git-sandbox.ts"];
+const CANONICAL_HELPER_BASENAMES = ["git-env.ts", "git-sandbox.ts"];
 const CANONICAL_HELPERS = ["src/lib/git-env.ts", "src/lib/git-sandbox.ts"];
 
 /**

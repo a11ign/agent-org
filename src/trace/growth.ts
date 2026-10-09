@@ -98,7 +98,7 @@ function breakBetween(records: Rec[], { from, to, side }: { from: number; to: nu
 
 /**
  * Whether the records of one thread between two messages hold only tool results (a prompt, an order or a summary there means the window grew by more than a tool's result).
- * Kept beside its twin in `store.mjs` because that one is private to it.
+ * Kept beside its twin in `store.ts` because that one is private to it.
  */
 function onlyToolResults(records: Rec[], { from, to, side }: { from: number; to: number; side: boolean; }) {
   return records.slice(from + 1, to).every(({ record }) => record?.type !== "user" || (record.isSidechain === true) !== side
@@ -226,7 +226,7 @@ function subcommandOf(args: string[]): string | null {
 function nameOfSegment(words: string[]): string {
   const [name, ...args] = words.map(unquote);
   const command = baseName(name).replace(/\)+$/, "");
-  // `node` has no subcommand: what it runs is its first argument, a flag (`node -e`, `node --test`) or a script (`node growth.mjs`).
+  // `node` has no subcommand: what it runs is its first argument, a flag (`node -e`, `node --test`) or a script (`node growth.ts`).
   const next = command === "node" ? args[0] : SUBCOMMAND_TOOLS.has(command) ? subcommandOf(args) : null;
   return next === null || next === undefined ? command : `${command} ${baseName(next)}`;
 }

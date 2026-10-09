@@ -8,7 +8,7 @@
 // project for what a dependency does; the tool is the one package whose code reaches those readers by design. Any other bare specifier stays out
 // of scope, as `localImports` documents.
 //
-// NOT a change to `local-import-closure.mjs`: that file is a pinned copy of the project's, and one walk of the identical shape is enough, so this
+// NOT a change to `local-import-closure.ts`: that file is a pinned copy of the project's, and one walk of the identical shape is enough, so this
 // module adds the one edge kind it does not have and leaves its resolution of relative specifiers to it.
 import { readFileSync, statSync } from "node:fs";
 import { dirname, join, parse, resolve } from "node:path";

@@ -1,7 +1,7 @@
 // no-token: gh
 /**
  * RULE: DOES THIS ROW'S OWN REGION OVERLAP AN OPEN PR'S ACTUAL FILES? -- B4, #462. See
- * `packages/agent-org/src/row-claim/file-overlap-rule.mjs` for the full account -- it found its first real collision
+ * `packages/agent-org/src/row-claim/file-overlap-rule.ts` for the full account -- it found its first real collision
  * before it was built (two sessions independently avoiding `.github/workflows/auto-arm.yml`), and the
  * gate is usually silent (4 open PRs, 23 files, ZERO pairwise overlap, measured 2026-09-08T04:48:51Z), so
  * ITS OWN ACCEPTANCE MUST BE A CONSTRUCTED OVERLAP -- passing by never firing proves nothing.
@@ -269,7 +269,7 @@ test("#1419 THE LOOKUP PAGES A SHORT LIST through REST, once and only for that P
     if (args[0] === "pr") {
       return JSON.stringify([
         { number: 1412, changedFiles: 113, files: CHANGESETS_100.map((path) => ({ path })) },
-        { number: 1426, changedFiles: 2, files: [{ path: "packages/guards/src/walk-scope.mjs" }, { path: "packages/lab/src/packaging/declared-walk-scope.test.ts" }] },
+        { number: 1426, changedFiles: 2, files: [{ path: "packages/guards/src/walk-scope.ts" }, { path: "packages/lab/src/packaging/declared-walk-scope.test.ts" }] },
       ]);
     }
     return [...CHANGESETS_100, ...REAL_13].join("\n") + "\n";

@@ -496,8 +496,8 @@ describe("keys", () => {
   });
 });
 
-// ---- `watch.mjs` (done-when 5) ------------------------------------------------------------------------------------------------------
-// These live here because the row's Region names two test files and the acceptance command runs exactly those two; `watch.test.mjs` would
+// ---- `watch.ts` (done-when 5) ------------------------------------------------------------------------------------------------------
+// These live here because the row's Region names two test files and the acceptance command runs exactly those two; `watch.test.ts` would
 // be their natural home.
 
 const LONDON = { at: "08:00", timezone: "Europe/London" };

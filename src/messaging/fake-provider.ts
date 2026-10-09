@@ -4,7 +4,7 @@
 // It can fail on demand (`failNext`) because the core's handling of a provider that throws, with a token in the message, is the
 // behaviour most worth testing and the one a real provider makes hard to provoke.
 //
-// TypeScript since a11ign/a11ign#3556: only tests import it, so it runs under `tsx`. A file a shipped command imports cannot be `.ts` yet (README, "Source is TypeScript").
+// TypeScript since a11ign/a11ign#3556: only tests import it, and node strips the types itself (README, "Source is TypeScript").
 
 const DEFAULT_MAX_TEXT = 4096;
 

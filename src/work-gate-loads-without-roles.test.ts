@@ -3,7 +3,7 @@
  * #3675: THE WORK GATE REQUIRES THE PROJECT'S ROSTER, AND SAYS SO WHEN IT IS ABSENT.
  *
  * #2174 once wanted the gate to load with no `.agent-org/roles`. It no longer can, and the ruling on #3675 is that it need not: `work-gate.ts` reaches
- * `arm-pr.ts` through `auto-arm-sweep.ts` and `work-gate/org-health.mjs`, and `arm-pr.ts` reads `sessions.json` at import. `project-roles.ts` refuses a missing
+ * `arm-pr.ts` through `auto-arm-sweep.ts` and `work-gate/org-health.ts`, and `arm-pr.ts` reads `sessions.json` at import. `project-roles.ts` refuses a missing
  * roles directory on purpose (#2621: nothing is defaulted to another project's value). What matters is that the refusal is the NAMED one, so this pins the
  * outcome rather than leaving it to three comments.
  *

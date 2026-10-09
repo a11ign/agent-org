@@ -12,7 +12,7 @@
 // **A BUTTON'S DATA IS A CLOSED VOCABULARY (a11ign/a11ign#3423).** `ans:<option id>` for an option a brief offers, and `act:<name>` for one of the
 // fixed words in `BUTTON_ACTIONS`. Anything else is a DROP with its own reason and a hash of the data, never forwarded: the data is read back from
 // Telegram, so it is the chat's and not the organisation's, and a press the organisation never drew must reach nothing. What each word MEANS is
-// `answers.mjs`'s; this module only says which words exist.
+// `answers.ts`'s; this module only says which words exist.
 //
 // **THE ACCEPTED VALUE IS BRANDED, AND ONLY `handle` MINTS ONE.** (b): "there is no code path from a chat message to a worker", and the
 // function that writes a chairman-attributed row comment (row 9) accepts only what `isAccepted(value, chairman)` says this module minted
@@ -53,7 +53,7 @@ export const DROP_REASON = Object.freeze({
 
 const OPTION_PREFIX = "ans:";
 const ACTION_PREFIX = "act:";
-/** The same shape `parseChairmanOptions` accepts for an option id (`sources/requests.mjs` `OPTION_ID`); `inbound.test.mjs` pins the two together, because this module is a leaf and does not import it. */
+/** The same shape `parseChairmanOptions` accepts for an option id (`sources/requests.ts` `OPTION_ID`); `inbound.test.mjs` pins the two together, because this module is a leaf and does not import it. */
 const OPTION_ID_SHAPE = /^[A-Za-z0-9_-]{1,16}$/;
 /** The fixed words a button may carry beside an option id: the closed set of the chairman's point 5 (Approve, Done, Stuck, Later, Explain more, Do it for me). */
 export const BUTTON_ACTIONS = Object.freeze(["approve", "done", "stuck", "later", "explain", "forme"]);

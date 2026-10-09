@@ -1,7 +1,7 @@
 // no-token: gh
 //
 // #827's check charges a command the WHOLE import closure of what it imports, and this file imports
-// `own-pr-health-rule.mjs`, whose closure reaches `lookups.mjs`, which spawns `gh`. That is true of the
+// `own-pr-health-rule.ts`, whose closure reaches `lookups.ts`, which spawns `gh`. That is true of the
 // IMPORT and false of the CALL: every function driven here is pure or takes its `run` injected, and no
 // test below lets a real spawn happen.
 //
@@ -10,7 +10,7 @@
 
 /**
  * RULE: DOES THE CLAIMING SESSION ALREADY HOLD A ROW IN BUILD? -- B2, #476, rewritten by #989. See
- * `packages/agent-org/src/row-claim/own-pr-health-rule.mjs` for the full account.
+ * `packages/agent-org/src/row-claim/own-pr-health-rule.ts` for the full account.
  *
  * The predicate it replaces asked whether the session's own PR was OPEN AT ALL, so a PR that was green and
  * waiting only on its reviewer blocked its author from starting anything -- #988 was green from 07:46Z and
@@ -161,7 +161,7 @@ test("#989: the Region reading DELEGATES to the tree's own parser -- it is not a
   const shapeFor = (region: string) => lookupRowShape(989, {
     run: (args) => (args[0] === "issue" ? body(region) : "[]"),
   });
-  assert.equal(shapeFor("```\nscripts/row-claim/own-pr-health-rule.mjs\n```")?.declaresPaths, true);
+  assert.equal(shapeFor("```\nscripts/row-claim/own-pr-health-rule.ts\n```")?.declaresPaths, true);
   assert.equal(shapeFor("```\nscripts/git-hooks/pre-push\n```")?.declaresPaths, true, "#999's fenced "
     + "extensionless path -- #911's own Region, which declared nothing before PR #1005 merged");
   assert.equal(shapeFor("packages/control/ansible/")?.declaresPaths, true, "#941's directory item");

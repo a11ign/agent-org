@@ -5,7 +5,7 @@
 // (#2691), the assessed-calls marker a session leaves after judging, the order text, and the helpers only they use.
 // Measured on #2898: six rows waited behind ONE pull request (#2819), and it edited nothing but these definitions.
 //
-// THE BOUNDARY, as `work-gate/pr-orders.mjs` states it: what only this family uses lives here; what a family that
+// THE BOUNDARY, as `work-gate/pr-orders.ts` states it: what only this family uses lives here; what a family that
 // stayed behind also uses is IMPORTED from `work-gate.ts`, the cycle that module documents, safe while nothing here
 // reads an imported binding at load time. `work-gate.ts` re-exports every name this file exports that it exported before.
 import { labelsOf, holderWaitingOn, defaultRun, repoNow, PARKED_LABEL } from "../work-gate.ts";

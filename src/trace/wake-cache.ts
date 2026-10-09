@@ -8,7 +8,7 @@
 // overwrites it. A /clear starts a new transcript file (measured on the live host: every transcript that carries a `/clear` record carries it as its first command), and a
 // compaction is its own event in the store, so both are visible to a reader that compares a wake's first turn with the turn before it.
 //
-// NEVER ZERO FOR UNKNOWN (`aggregate.mjs`'s rule, the same word): a class no wake could be placed in prints `not derivable`, a seat's share with nothing written prints
+// NEVER ZERO FOR UNKNOWN (`aggregate.ts`'s rule, the same word): a class no wake could be placed in prints `not derivable`, a seat's share with nothing written prints
 // `not derivable`, a first turn with no price makes its dollars a FLOOR and a group of only unpriced turns prints `not derivable`.
 //
 // a11ign/a11ign#4062 (token efficiency v2, #4055 move 3): the same report also prints the 5-minute and 1-hour cache-write totals of each seat and the COLD-WAKE RATE, whole and by window
@@ -28,7 +28,7 @@ const REVIEWER_SESSION = /^reviewer-\d+$/;
 const MS_PER_MINUTE = 60_000;
 const MINUTES_IN_HOUR = 60;
 const SHORT_CACHE_MINUTES = 5;
-/** The 5-minute cache's lifetime and the 1-hour cache's. Every transcript read so far writes the 1-hour kind (`store.mjs`, COST), so the second is the one that decides, and the first is the gap below which no cache could have lapsed. */
+/** The 5-minute cache's lifetime and the 1-hour cache's. Every transcript read so far writes the 1-hour kind (`store.ts`, COST), so the second is the one that decides, and the first is the gap below which no cache could have lapsed. */
 export const SHORT_CACHE_MS = SHORT_CACHE_MINUTES * MS_PER_MINUTE;
 export const LONG_CACHE_MS = MINUTES_IN_HOUR * MS_PER_MINUTE;
 const MEDIAN = 50;
@@ -46,7 +46,7 @@ const ACTIONS = [ACTION.KEPT, ACTION.COMPACTED, ACTION.CLEARED, ACTION.UNKNOWN];
 const GAPS = [GAP.SHORT, GAP.LONG, GAP.LAPSED, GAP.UNKNOWN];
 
 export const DEFINITIONS = [
-  "WAKE: a `wake` event of the store, a delivery that started a model turn (`store.mjs`). A wake is counted when its time falls in the window.",
+  "WAKE: a `wake` event of the store, a delivery that started a model turn (`store.ts`). A wake is counted when its time falls in the window.",
   "FIRST TURN: the earliest turn of the wake's session that carries the wake's id, the session's own turns only (a subagent's `sidechain` turns are not its window). Ties in time break by the event's id, so a re-run reads the same turn. A wake with no such turn is counted apart (`no turn`), never as a wake that wrote nothing.",
   "CACHE WRITE of a turn: `cacheWrite5m` + `cacheWrite1h`. CACHE READ: `cacheRead`. Both are the API's own `usage` for the message (MEASURED); the window action and the gap below are DERIVED, and said to be.",
   "GAP: the wake's time minus the time the session's PREVIOUS turn ended (a turn's time is its last block), so it is measured to the ORDER and not to the first turn's end; an order that arrived while that turn still ran has a negative gap and is in the shortest class. `gap up to 5 min` is inside both caches' lifetimes; `gap over 5 min, up to 1 h` is past the 5-minute one only; `gap over 1 h` is past both. A first turn with no previous turn in the store has no gap: `not derivable`.",
@@ -57,7 +57,7 @@ export const DEFINITIONS = [
   "DOLLARS: the first turns' `costUsd`, summed over the priced turns; a group with an unpriced turn is a FLOOR (marked), one with only unpriced turns is `not derivable`. P50 and P90 are nearest-rank (the value at rank ceil(p x n)), no interpolation.",
   "CACHE WRITES BY TTL: the seat's own turns in the window, `cacheWrite5m` and `cacheWrite1h` summed apart (MEASURED, the API's own `usage`). A seat with no turn in the window prints `not derivable` for both, never 0; a seat whose every write is the 1-hour kind prints `5m 0`, which is a reading and not an absence.",
   "COLD-WAKE RATE (#4055, move 3): \"the share of first requests after an order whose `cache_creation_input_tokens` exceed half the context\". Here a first request is the wake's FIRST TURN, its `cache_creation_input_tokens` are the CACHE WRITE above, and the context is input + cache read + cache write. A first request is cold when its write is MORE than half: exactly half is not. The rate is printed over every first request of the seat, per window action and per gap; a seat or class with no first request prints `not derivable`, never 0%. COLD IS NOT LAPSED: a cold first request after a `cleared` or `compacted` wake is a window the gate emptied, and only a cold one after a `kept` wake at a gap over 5 minutes is a cache that ran out.",
-  `REVIEWERS (\`${REVIEWERS}\`) are every Claude-run \`reviewer-<n>\` session pooled as one class (the pooling is of seats, never of classes). A Codex reviewer's request carries no cache-write field (\`codex-turns.mjs\`: 0 in every record, Codex has no write TTL), so its first-turn write is \`not derivable\`, never 0: the count of Codex requests is printed and none enters a figure. A reviewer's first wake in the store has no previous turn, so it is \`not derivable\` by definition: it is a launch, not a re-wake.`,
+  `REVIEWERS (\`${REVIEWERS}\`) are every Claude-run \`reviewer-<n>\` session pooled as one class (the pooling is of seats, never of classes). A Codex reviewer's request carries no cache-write field (\`codex-turns.ts\`: 0 in every record, Codex has no write TTL), so its first-turn write is \`not derivable\`, never 0: the count of Codex requests is printed and none enters a figure. A reviewer's first wake in the store has no previous turn, so it is \`not derivable\` by definition: it is a launch, not a re-wake.`,
 ];
 
 export const writeOf = (turn: TraceEvent) => (turn.tokens?.cacheWrite5m ?? 0) + (turn.tokens?.cacheWrite1h ?? 0);

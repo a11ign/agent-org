@@ -9,7 +9,7 @@
 //   * the same press twice writes once, and a button pressed after the row was answered gets "already answered", not a second comment;
 //   * a failure BETWEEN steps is resumed by the next press, which does only the steps the ledger lacks. Without that, a failure after (2)
 //     leaves a row with neither label, and the next press would see "label gone" and write nothing: answered, silent, and nobody woken.
-// The lines carry NO `key` field, so the fold in ledger.mjs (which skips lines without a string `key`) never mistakes one for a
+// The lines carry NO `key` field, so the fold in ledger.ts (which skips lines without a string `key`) never mistakes one for a
 // notification, and no text of the chairman's: ids, a step, the option id.
 //
 // **WHICH ROW: THE LEDGER, NEVER THE MESSAGE.** The bot message the press sits under (or the reply points at) is looked up among the
@@ -20,26 +20,26 @@
 // done), not an answer to the new ask. A reply to the CLEARED or a reminder message of a request that is asking again does answer the
 // new ask: those messages name the row, and the row is what is asking.
 //
-// **THE BUTTONS, AND WHAT EACH ONE MEANS (a11ign/a11ign#3423).** The vocabulary is closed and `inbound.mjs`'s (an unknown `callback_data` never reaches
+// **THE BUTTONS, AND WHAT EACH ONE MEANS (a11ign/a11ign#3423).** The vocabulary is closed and `inbound.ts`'s (an unknown `callback_data` never reaches
 // here); the meaning is this module's, and it is routed by the ledger-known message the press sits under, never by the data:
 //   * an option id, `approve` or `done` RESOLVES the request: the three writes above, unchanged. (`done` outside a walk-through is the answers path;
 //     the walk-through's step advance is C2's and is not here.)
 //   * `later` SNOOZES the request's reminders for 24 hours: one ledger line, the label stays, so it is NOT an answer (`snoozedUntil` is what the watcher reads).
-//   * `explain` and `stuck` each send the LIAISON one order, through a port (`orders`): this module queues nothing itself, and the one file that may queue is `converse.mjs`.
-//     When the liaison's queue refuses, `converse.mjs` queues it for `ceo` (the chairman's order, a11ign/a11ign#3538) and the press is told so in plain words (`told`); when neither
+//   * `explain` and `stuck` each send the LIAISON one order, through a port (`orders`): this module queues nothing itself, and the one file that may queue is `converse.ts`.
+//     When the liaison's queue refuses, `converse.ts` queues it for `ceo` (the chairman's order, a11ign/a11ign#3538) and the press is told so in plain words (`told`); when neither
 //     takes it the press is told nothing was sent. **The chairman never reads a queue's refusal or an error's text here:** they go to the ledger (`error`), which is where they are kept.
 //   * `forme` ("Do it for me") writes ONE ledger line, `{direction: "answer", step: FORME_STEP, via: "button", messageRef}`, which is the chairman's OK as `chairman:queue add` verifies it
 //     (`verifyApproval`, ./session-queue.ts). It is NOT an answer: the label stays and `ceo` is not woken, because a press asks for a thing to be done and the request is still asking. The ASK itself is
 //     still the liaison's `chairman:queue add`. The press is told, in plain words, that it is queued for his session, and never what the queue holds. A second press on the same message writes nothing.
 // A press on a message whose request is answered (or no longer asking) is told so, and its keyboard is taken off (`clearKeyboard`): a second press cannot happen.
 //
-// **A REQUEST WHOSE BRIEF HAS A `Steps:` LIST IS WALKED (a11ign/a11ign#3425), AND ITS PRESSES GO TO `walk.mjs`.** `done` there is not the answer: it reads the step's `Verify:` and moves the walk on, and only
+// **A REQUEST WHOSE BRIEF HAS A `Steps:` LIST IS WALKED (a11ign/a11ign#3425), AND ITS PRESSES GO TO `walk.ts`.** `done` there is not the answer: it reads the step's `Verify:` and moves the walk on, and only
 // the last verified step makes the three writes above. `stuck` orders the liaison ONCE PER STEP (not once per message, since a step that was not seen is sent again under a new one), `later` and `explain`
 // are as they are, and a TYPED REPLY under a walk is conversation and never the answer (it goes to the liaison, B3): a sentence must not finish a procedure. Without a `readers` to verify with, a
 // procedure is refused and nothing is written, because a Done that resolved the request unread would be the echo the walk exists to prevent.
 //
 // WHAT THIS DOES NOT DO: send anything. It returns what the caller (the listener) must send, as `inbound.handle` does, and it is handed
-// a GitHub writer rather than reaching for `gh`. THE REPLY TARGET IS IN THE BRANDED VALUE (`replyToMessageId`, minted by `inbound.mjs`), so
+// a GitHub writer rather than reaching for `gh`. THE REPLY TARGET IS IN THE BRANDED VALUE (`replyToMessageId`, minted by `inbound.ts`), so
 // there is no unbranded input: it can only choose WHICH ledger-known request the chairman's verified text lands on, never widen what a
 // verified answer may do.
 //
@@ -149,7 +149,7 @@ export type GithubWriter = {
 };
 
 /**
- * The one thing a press may ask the organisation for: an order to the liaison. `converse.mjs` is the only module that queues, so it builds this.
+ * The one thing a press may ask the organisation for: an order to the liaison. `converse.ts` is the only module that queues, so it builds this.
  * `say` is the queue's own words, for the LEDGER only; `taker` is who holds the order (the fallback when the liaison's queue refused) and `told` is what the chairman is told when it
  * went to the fallback.
  */
@@ -362,7 +362,7 @@ export function createAnswers({ ledger, github, chairman, answerLabel, now, orde
   return {
     /**
      * `accepted` is what `createInbound(...).handle` minted for THIS chairman; anything else is refused.
-     * @throws {TypeError} for a value `inbound.mjs` did not mint for this chairman
+     * @throws {TypeError} for a value `inbound.ts` did not mint for this chairman
      */
     answer(accepted: unknown): Promise<Answered> {
       if (!isAccepted(accepted, chairman)) throw new TypeError("only a value minted by createInbound for this chairman may write to a row");

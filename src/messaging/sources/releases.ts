@@ -2,7 +2,7 @@
 // package, version, what changed -- with the release page last. `release:<repo>@<tag>` is the key, so a release is told once however many
 // ticks see it, and the core's ledger is the memory that says it was.
 //
-// A LEAF and INJECTED, as `stall.mjs` is: it imports nothing from the tool but that file's own helpers, and it reads GitHub only through `listReleases`.
+// A LEAF and INJECTED, as `stall.ts` is: it imports nothing from the tool but that file's own helpers, and it reads GitHub only through `listReleases`.
 //
 // **THE FIRST RUN ANNOUNCES NO HISTORY (done-when 4).** A repository this source has never read has releases from before anyone asked, and telling
 // the chairman five of them at once is the burst this row exists to avoid. So the first successful read of a repository records every release it

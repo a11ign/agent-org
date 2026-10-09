@@ -149,7 +149,7 @@ const STALE_WAIT = [{ item: { number: 5, title: "t" }, wait: { key: "closed #1",
 const BRANCH = { branch: "agent/worktree-prune-unit-2000", head: "1f4e9c7a3b5d8e2016243c5f7a9b0d1e2f3a4b5c", row: 2000 };
 const TOO_MANY_ROWS = Array.from({ length: 52 }, (_, i) => ({ number: 900 + i, labels: [{ name: "backlog" }] }));
 
-/** Every cause whose order text once carried a dated incident (`work-gate.ts` 13, `idle-claimant.ts`, `org-health.mjs`, `wake.ts` 2), by builder. */
+/** Every cause whose order text once carried a dated incident (`work-gate.ts` 13, `idle-claimant.ts`, `org-health.ts`, `wake.ts` 2), by builder. */
 const RENDERED: Record<string, Order[]> = {
   "primary-stale": primaryStaleOrders(PRIMARY),
   "blocked-unexaminable": blockedReferentOrders([{ number: 1, title: "row 1", labels: [{ name: "backlog" }, { name: "blocked" }] }], [], TODAY),

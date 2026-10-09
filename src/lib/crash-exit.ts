@@ -1,5 +1,5 @@
 // @ts-check
-// A PRELOAD (`node --import=./src/lib/crash-exit.mjs <entry>`): an uncaught exception ends the process with `CRASH_EXIT`, not `1` (#3038).
+// A PRELOAD (`node --import=./src/lib/crash-exit.ts <entry>`): an uncaught exception ends the process with `CRASH_EXIT`, not `1` (#3038).
 //
 // WHY A CODE OF ITS OWN. `node` exits `1` on ANY uncaught exception, and `1` is a code the org's own contracts use: `work-tick` and `wake`
 // exit `1` for ATTENTION and `work-gate` exits `1` for "found work". The unit declares `SuccessExitStatus=0 1 2`, so a tick that died on

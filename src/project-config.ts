@@ -150,7 +150,7 @@ function readTracker(entry: Record<string, unknown>, at: string, source: string)
 
 /**
  * The project's OWN leak patterns (#2658, child 3g): what its tracked prose and its tracker bodies must never carry, ON TOP OF the two the
- * tool holds itself (`lib/leak-patterns.mjs`: a private LAN address, a named SSH key file). A declaration that names none is a project
+ * tool holds itself (`lib/leak-patterns.ts`: a private LAN address, a named SSH key file). A declaration that names none is a project
  * with none of its own, so an ABSENT field reads as an empty list -- and that is the one field here that does, because it adds to a floor the
  * tool already enforces rather than answering a question about WHICH project this is. A present field is held to the same rule as every
  * other: each entry needs a non-empty `name` and a `pattern` that compiles, and it is REFUSED naming the entry when it does not.

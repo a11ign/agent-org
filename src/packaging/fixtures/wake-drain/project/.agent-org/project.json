@@ -22,7 +22,7 @@
     }
   ],
   "causes": {
-    "module": "plugins/causes.mjs"
+    "module": "plugins/causes.ts"
   },
   "roles": {
     "dir": ".agent-org/roles"

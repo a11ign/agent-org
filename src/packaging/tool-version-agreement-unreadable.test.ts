@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// The host file is set FIRST and the tool imported AFTER it, as `tool-version-agreement.test.ts` does (`org-health.mjs` resolves its project at import, #3233).
+// The host file is set FIRST and the tool imported AFTER it, as `tool-version-agreement.test.ts` does (`org-health.ts` resolves its project at import, #3233).
 const SCRATCH = mkdtempSync(join(tmpdir(), "tool-version-unreadable-"));
 after(() => rmSync(SCRATCH, { recursive: true, force: true }));
 const PROJECT = join(SCRATCH, "project");

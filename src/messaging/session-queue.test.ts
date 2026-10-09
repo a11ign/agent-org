@@ -216,16 +216,16 @@ describe("(6) the file is created 0600", () => {
 
 const MESSAGING = fileURLToPath(new URL(".", import.meta.url));
 /** What reaches the queue file: its name, or the module that owns it. */
-const TOUCHES_QUEUE = /chairman-session-queue|session-queue\.mjs|\bQUEUE_FILE\b|\bdefaultQueuePath\b/;
+const TOUCHES_QUEUE = /chairman-session-queue|session-queue\.ts|\bQUEUE_FILE\b|\bdefaultQueuePath\b/;
 /** What spawns a process, or runs code the module did not contain: every way into one that Node offers. */
 const SPAWNS = /\b(?:node:)?child_process\b|\b(?:spawn|spawnSync|exec|execSync|execFile|execFileSync|fork)\s*\(|\bworker_threads\b|\bprocess\.binding\b|\bnew Worker\b/;
 
-/** @param {string} dir @param {string} [base] @returns {string[]} every non-test `.mjs` under `dir`, relative to `base` */
+/** @param {string} dir @param {string} [base] @returns {string[]} every non-test `.ts` under `dir`, relative to `base` */
 function sourceFiles(dir: string, base: string = dir): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const path = join(dir, entry.name);
     if (entry.isDirectory()) return sourceFiles(path, base);
-    return entry.name.endsWith(".mjs") && !entry.name.includes(".test.") ? [relative(base, path)] : [];
+    return entry.name.endsWith(".ts") && !entry.name.includes(".test.") ? [relative(base, path)] : [];
   });
 }
 
@@ -243,7 +243,7 @@ function scan(dir: string): { touching: string[]; executors: string[]; } {
 describe("(7) no executor: nothing under src/messaging/ that touches the queue file spawns a process", () => {
   test("the scan finds the module it is meant to find (its positive control), and the matcher notices each way to spawn", () => {
     assert.ok(sourceFiles(MESSAGING).length > 10, "the walk reached the messaging sources");
-    assert.ok(scan(MESSAGING).touching.includes("session-queue.mjs"), "session-queue.mjs is the module the scan exists to bound");
+    assert.ok(scan(MESSAGING).touching.includes("session-queue.ts"), "session-queue.ts is the module the scan exists to bound");
     for (const sample of ["import { execFile } from 'node:child_process';", "spawn('claude', [])", "execSync(`gh api`)", "import { Worker } from 'node:worker_threads'", "const w = new Worker(file)"]) {
       assert.ok(SPAWNS.test(sample), `the matcher notices ${sample}`);
     }
@@ -257,14 +257,14 @@ describe("(7) no executor: nothing under src/messaging/ that touches the queue f
   test("THE CONTROL THE SCAN CAN FAIL: a copy of the module with a fixture that touches the queue AND spawns is refused, and without the fixture the copy passes", () => {
     const fixture = join(scratch, "scan-fixture");
     mkdirSync(fixture, { recursive: true });
-    copyFileSync(join(MESSAGING, "session-queue.mjs"), join(fixture, "session-queue.mjs"));
-    assert.deepEqual(scan(fixture), { touching: ["session-queue.mjs"], executors: [] }, "without the fixture the copy passes, so the next failure is the fixture's");
-    writeFileSync(join(fixture, "executor.mjs"), 'import { execFile } from "node:child_process";\nimport { readAsks } from "./session-queue.ts";\nfor (const ask of readAsks(p)) execFile("claude", ["-p", ask.what]);\n');
-    assert.deepEqual(scan(fixture).executors, ["executor.mjs"]);
+    copyFileSync(join(MESSAGING, "session-queue.ts"), join(fixture, "session-queue.ts"));
+    assert.deepEqual(scan(fixture), { touching: ["session-queue.ts"], executors: [] }, "without the fixture the copy passes, so the next failure is the fixture's");
+    writeFileSync(join(fixture, "executor.ts"), 'import { execFile } from "node:child_process";\nimport { readAsks } from "./session-queue.ts";\nfor (const ask of readAsks(p)) execFile("claude", ["-p", ask.what]);\n');
+    assert.deepEqual(scan(fixture).executors, ["executor.ts"]);
   });
 
   test("the module names no directory a credential lives in", () => {
-    assert.doesNotMatch(withoutComments(readFileSync(join(MESSAGING, "session-queue.mjs"), "utf8")), /\.config|agent-org\/(?:secrets|credentials)|token|chairman\.json/i);
+    assert.doesNotMatch(withoutComments(readFileSync(join(MESSAGING, "session-queue.ts"), "utf8")), /\.config|agent-org\/(?:secrets|credentials)|token|chairman\.json/i);
   });
 });
 

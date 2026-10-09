@@ -1,7 +1,7 @@
 /**
  * RULE: DOES THIS ROW'S BODY WAIT IN PROSE WHILE DECLARING NO NATIVE `blocked-by`/`blocking` LINK? --
  * #1832, follow-up implementation for `ceo`'s ruling on #1734 (2026-09-19T11:32:02Z, "Adopt C"). See
- * `packages/agent-org/src/row-claim/waiting-language-rule.mjs` for the full account: a warning, never a
+ * `packages/agent-org/src/row-claim/waiting-language-rule.ts` for the full account: a warning, never a
  * refusal, printed by `row-file.ts` alongside `directoryRegionWarning` and `unrecognisedRegionWarning`.
  */
 import { declareWalkScope } from "../lib/walk-scope.ts";

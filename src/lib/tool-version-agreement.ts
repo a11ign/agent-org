@@ -10,7 +10,7 @@
 //   ci         the version the last completed `ci.yml` run on `main` ran: the lockfile's at that run's commit, else the line the resolver step printed.
 //
 // PURE FIRST: {@link agreement} takes every fact INJECTED (the tag list, the clock, each runner's version) so the test states the cases, and BOTH `host:check`
-// (`host-units.mjs`) and the org-health tick (`org-health.mjs`) print {@link agreementReport} of ONE result, which is what keeps them from disagreeing.
+// (`host-units.mjs`) and the org-health tick (`org-health.ts`) print {@link agreementReport} of ONE result, which is what keeps them from disagreeing.
 //
 // THE SIGNAL IS STATELESS: it fires when a reading differs from the newest tag AND the newest tag is older than one release cycle ({@link releaseCycleMs}), so a
 // runner waiting for its next tick is never a signal, and a runner that was unreadable is NAMED as unread, never counted as agreeing.

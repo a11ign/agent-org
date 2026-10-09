@@ -162,7 +162,7 @@ test("the command prints a sheet from a store file, the same twice, and refuses 
   made.push(dir);
   const store = join(dir, "events.ndjson");
   writeFileSync(store, `${EVENTS.map((event) => JSON.stringify(event)).join("\n")}\n`);
-  const script = join(dirname(fileURLToPath(import.meta.url)), "triage-sample.mjs");
+  const script = join(dirname(fileURLToPath(import.meta.url)), "triage-sample.ts");
   const run = (...args: (string|undefined)[]) => spawnSync(process.execPath, [script, "--store", store, "--from", new Date(FROM).toISOString(), "--to", new Date(TO).toISOString(), "--size", "20", ...args], { encoding: "utf8" });
   const first = run("--seed", "4074");
   assert.equal(first.status, 0, first.stderr);
@@ -290,7 +290,7 @@ test("--score reads the frozen labels and the predictions file, and never the st
   writeFileSync(store, "this is not json\n");
   writeFileSync(good, JSON.stringify(answering(A_WAKE.position, "digest")));
   writeFileSync(bad, JSON.stringify(asPredictions().slice(1)));
-  const script = join(dirname(fileURLToPath(import.meta.url)), "triage-sample.mjs");
+  const script = join(dirname(fileURLToPath(import.meta.url)), "triage-sample.ts");
   const run = (...args: string[]) => spawnSync(process.execPath, [script, ...args], { encoding: "utf8" });
   const sampler = run("--seed", "4074", "--store", store);
   assert.equal(sampler.status, 1, "positive control: the sampler DOES read this store, and it cannot");

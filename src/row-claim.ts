@@ -615,7 +615,7 @@ export function moveProjectStatus(issueNumber: number, statusName: string,
  *
  * #989: THE CHECK-STATE DEPS ARE GONE. B2 used to read the session's own PR colour and this paragraph
  * explained why `requiredContexts`/`checkRuns` were injected separately from `run` -- they reach `gh`
- * through `merge-guard/lookups.mjs`'s own helper, so a fixture injecting `run` alone placed a real network
+ * through `merge-guard/lookups.ts`'s own helper, so a fixture injecting `run` alone placed a real network
  * call. B2 now asks whether a ROW is in build and reads no check state at all, so the deps have no
  * subject; callers still passing them are simply ignored, which is why no test had to change for it.
  * #2617: `repo` is the TRACKER the row lives in (default the first), and every read below that is about a ROW -- B2's held rows, the
@@ -721,7 +721,7 @@ function claimedRegionsVerdict(myFiles: string[], claimed: { number: number; fil
  * `ineligible` string apart -- that function returns one string for B2, B4 and #1886's `blockedBy`-edge
  * check alike, and the override must never apply to the other two (a file-overlap refusal, or a refusal
  * from the ROW'S OWN `blockedBy` edge, has nothing to do with the claimant's own PR being unhealthy -- see
- * `blocked-by-edge-rule.mjs`'s own header for why that one gets no override at all). The `blockedBy`
+ * `blocked-by-edge-rule.ts`'s own header for why that one gets no override at all). The `blockedBy`
  * PARAMETER here is the raw `--blocked-by=#N` FLAG VALUE, unrelated to the row's own GitHub `blockedBy`
  * edge despite the shared name -- one is an override argument a session types, the other is state GitHub
  * records on the issue. A flag value present while the refusal is NOT a B2 one, or absent entirely, is a
@@ -1200,7 +1200,7 @@ export function dispatchRow(issueNumber: number, mySession: string, deps: { run?
  *
  * `blockedBy` (#741) is the raw `--blocked-by=#N` flag value -- releases B2 ONLY, and only when the
  * claimant's own open PR already carries a qualifying measurement comment and `#N` is confirmed open;
- * see `blocked-by-rule.mjs`. Absent, B2 behaves exactly as it always has.
+ * see `blocked-by-rule.ts`. Absent, B2 behaves exactly as it always has.
  *
  * @param {number} issueNumber
  * @param {string} mySession

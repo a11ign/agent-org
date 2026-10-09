@@ -5,7 +5,7 @@
 /**
  * #3068: `agent-org <command>` -- THE COMMAND TABLE AND THE BIN'S REFUSALS.
  *
- * `commands.mjs` is the ONE table from a command name to the program under `src/` that runs it, read by `bin.mjs` to dispatch and by
+ * `commands.ts` is the ONE table from a command name to the program under `src/` that runs it, read by `bin.ts` to dispatch and by
  * `acceptance-commands.ts` (#3063) to resolve a project script `agent-org <command>`. Pinned here:
  *   (c) an unknown name, and no name at all, REFUSE (exit 2) and list the commands -- there is no default command -- and they do it in a
  *       directory that holds no project, because refusing needs none;
@@ -24,7 +24,7 @@ import { planInvocation } from "../bin.ts";
 import { COMMANDS, FIXED_ARGS, INTERNAL } from "../commands.ts";
 
 const SRC = fileURLToPath(new URL("..", import.meta.url));
-const BIN = join(SRC, "bin.mjs");
+const BIN = join(SRC, "bin.ts");
 const REFUSED = 2;
 const HEADER = /^\/\/ command:/m;
 const NOT_A_COMMAND = "(not a command)";
@@ -78,7 +78,7 @@ test("every COMMANDS entry names a program that exists under src/, none climbs o
 });
 
 test("the table's keys are written once each: an object literal silently keeps the LAST of a duplicated key", () => {
-  const source = readFileSync(join(SRC, "commands.mjs"), "utf8");
+  const source = readFileSync(join(SRC, "commands.ts"), "utf8");
   const block = source.slice(source.indexOf("export const COMMANDS"), source.indexOf("export const FIXED_ARGS"));
   const written = [...block.matchAll(/^ {2}"([^"]+)":/gm)].map((match) => match[1]);
   assert.equal(written.length, Object.keys(COMMANDS).length, "a key is written twice");

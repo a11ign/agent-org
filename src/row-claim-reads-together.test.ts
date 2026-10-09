@@ -192,7 +192,7 @@ test("THE IMPORT: the batch helper's module is already in the claim's closure, l
     closure.add(file);
     const source = readFileSync(file, "utf8");
     sources.set(file, source);
-    for (const [, from] of source.matchAll(/(?:^|\n)\s*(?:import|export)\b[^"'\n;]*?from\s+"(\.{1,2}\/[^"]+\.mjs)"/g)) visit(resolve(dirname(file), from));
+    for (const [, from] of source.matchAll(/(?:^|\n)\s*(?:import|export)\b[^"'\n;]*?from\s+"(\.{1,2}\/[^"]+\.ts)"/g)) visit(resolve(dirname(file), from));
   };
   visit(resolve(here, "work-gate.ts"));
   assert.ok(closure.size > 10, "the closure walk found the gate's imports (positive control for the emptiness below)");

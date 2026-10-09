@@ -12,7 +12,7 @@
  * #735: the FILING-side twin of #707's claim-side gate -- `packages/agent-org/src/row-file.ts` refuses to run
  * `gh issue create` when the body it would file is missing Region, Acceptance or Open-check, using the
  * SAME rule `row-claim` already enforces at claim time (`missingTemplateFields`, imported unchanged from
- * `row-claim/template-fields-rule.mjs`), asked one step earlier so the cost lands on whoever holds the
+ * `row-claim/template-fields-rule.ts`), asked one step earlier so the cost lands on whoever holds the
  * context rather than whoever claims the row later.
  *
  * #771: it also REQUIRES `--session=<name>` (the same flag `row-claim.ts` uses) and writes

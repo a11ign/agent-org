@@ -5,7 +5,7 @@
  *
  * The package manager is `pnpm`. A script that runs `npm run x` inside node is the same defect as one in a brief, and the one nobody sees by
  * reading a manifest, so the programs this tool ships are held to it by a walk of their source. This asks whether a spawn should be of npm at
- * all; whether it is safe on Windows is `lib/npm-cli-executable.mjs`'s question.
+ * all; whether it is safe on Windows is `lib/npm-cli-executable.ts`'s question.
  *
  * ONE NAMED FILE, `ALLOWED`, `src/lib/isolation-gate.ts`: the CONSUMER half of the isolation gate installs the packed tarballs with npm into a
  * directory that is not a workspace, because that is the install a user gets. npm is the point. It carries a one-line `STAYS npm` comment,

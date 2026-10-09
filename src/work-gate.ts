@@ -54,7 +54,7 @@ import { claimedRegionOverlapReason, claimedRegionsOf, declaredClosedRows, fileO
 import { loadLanes, inLane } from "./lane-ownership.ts";
 // #2031, AND IMPORTED FOR THE SAME REASON THE TWO LINES ABOVE ARE. The trailing-`-<n>` rule is #2014's,
 // already exercised through `row-claim.ts`'s own refusal; a second copy here is the drift that row's
-// filing named in so many words. `row-branch-rule.mjs` imports NOTHING, and `git-env.mjs` imports nothing
+// filing named in so many words. `row-branch-rule.ts` imports NOTHING, and `git-env.ts` imports nothing
 // either, so the gate keeps the property its own header states -- it runs before any `pnpm install` or build.
 import { LS_REMOTE_ARGS, rowBranchesInListing } from "./row-claim/row-branch-rule.ts";
 // #2791: THE RULE `row-claim.ts` REFUSES A CLAIM ON, imported unchanged as `row-file` already does -- a second
@@ -64,7 +64,7 @@ import { missingTemplateFields } from "./row-claim/template-fields-rule.ts";
 // CI step must call the same condition "repo-wide", or a PR the check passes with a warning is one the gate never reports.
 import { isRepoWideResolutionFault, recentClosesSiblings } from "./closes-mismatch-check.ts";
 import { extractClosesDeclaration } from "./acceptance-commands.ts";
-// EVERY `git` SPAWN IN THIS REPO STRIPS `GIT_*` THROUGH ONE FUNCTION (`git-env.mjs`'s own header records
+// EVERY `git` SPAWN IN THIS REPO STRIPS `GIT_*` THROUGH ONE FUNCTION (`git-env.ts`'s own header records
 // the 2026-09-06 incident where an inherited `GIT_DIR` landed fifteen commits in the wrong checkout).
 // This tick runs under systemd, where the environment is not the one a person typed.
 import { sandboxGitEnv } from "./lib/git-env.ts";
@@ -90,7 +90,7 @@ import { tapShadowReads } from "./shadow-reads.ts"; // #2849
 // correctly armed pull request (#1729/#1727, and #2004 for the read that fed it). `ceo`'s ruling names
 // that reuse as a constraint: "the predicate is NOT `autoMergeRequest == null` -- a queued PR reads null".
 // `openPullRequestsQueryArgs` is the same file's read, split out so this asks the identical question.
-// Both are leaf-shaped: `auto-arm-sweep.ts` imports only `node:*`, `cli-flags.mjs` (already here) and
+// Both are leaf-shaped: `auto-arm-sweep.ts` imports only `node:*`, `cli-flags.ts` (already here) and
 // `pr-hold-state.ts` (no imports at all), so the gate keeps the property its own header states.
 import { armedFromApi, openPullRequestsQueryArgs } from "./auto-arm-sweep.ts";
 import { armabilityOf, holdersOf } from "./pr-hold-state.ts";
@@ -102,7 +102,7 @@ import { REPO } from "./project-identity.ts";
 import { HOME_CHECKOUT, homeProjectDeclaration } from "./project-config.ts";
 import { verifyCheckoutOf, withVerifyStamps } from "./verify-stamp.ts"; // #3215
 import { CAUSES, JUDGMENT_CAUSES, START_CAUSES } from "./cause-declaration.ts";
-// #3390: the first line of the comment `answers.mjs` writes when the chairman answers, so a half-finished answer can be recognised by what it says.
+// #3390: the first line of the comment `answers.ts` writes when the chairman answers, so a half-finished answer can be recognised by what it says.
 import { PROVENANCE as CHAIRMAN_ANSWER_PROVENANCE } from "./messaging/answers.ts";
 // #2619 (child 3d of #69): the rest of this file's vocabulary -- `backlog`, `needs:chairman`,
 // `out-of-release`, `blocked`, the `lane:`/`session:` prefixes and `lane:any`.
@@ -122,7 +122,7 @@ import { KEPT_CLAIMS_FILE, readJsonObject, writeJsonObject } from "./claim-stall
 // #2845: WHO STAMPED A WORKTREE -- the reading a refused claim names. Imports only `node:*` and `lib/`, like the rest.
 import { worktreeOwner } from "./worktree-owner.ts";
 // #2542: THE PULL-REQUEST ORDERS -- the orders that ask a session to act on a pull request's state -- live in
-// `work-gate/pr-orders.mjs`, which imports the shared PR facts BACK from this file. The cycle is safe because
+// `work-gate/pr-orders.ts`, which imports the shared PR facts BACK from this file. The cycle is safe because
 // nothing there reads an import at load time (only inside a function), and this file stays the entry point:
 // every name that module exported is re-exported here, so no caller of `work-gate.ts` changes.
 import { requiredWhenNeeded, perPullRequestOrders, greenUnarmedOrders, reviewBlockedOrders,
@@ -131,7 +131,7 @@ export { redOnlyBySupersededRun, mergeConflictOrders, greenUnarmedOrders, review
   stallReasonOf, stallOrderOf, stalledPrOrders, STALL_REASON, STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr,
   awaitingEvidenceStaleOrders } from "./work-gate/pr-orders.ts";
 import { labJobFinishedOrders, readLabJobRecords, readDispatchedLabJobs } from "./work-gate/lab-job-orders.ts";
-// #2898: THE ORG-HEALTH FACTS AND ORDERS live in `work-gate/org-health.mjs`, which imports the shared reads BACK from this file (the cycle `pr-orders.mjs` above describes);
+// #2898: THE ORG-HEALTH FACTS AND ORDERS live in `work-gate/org-health.ts`, which imports the shared reads BACK from this file (the cycle `pr-orders.ts` above describes);
 // every name it exported is re-exported here, so no caller of `work-gate.ts` changes.
 import { orgHealthNow, rulingOrdersNow, readWaitFacts, boardTruthNow, waitTickFacts } from "./work-gate/org-health.ts";
 import { quietOrgHealth } from "./work-gate/org-health-suppression.ts"; // #4065
@@ -139,14 +139,14 @@ import { unparkingWaits } from "./unpark-satisfied.ts"; // #4050: a parked row w
 import { declaresReadyWhenUnblocked, githubReadyIo, promoteReadyWhenUnblocked, reportReadyWhenUnblocked } from "./work-gate/ready-when-unblocked.ts"; // #4064: a cleared row whose filer declared it ready-when-unblocked is promoted without waking anyone
 // #4020: A DECLARED ASK (`Then-ask-chairman:`) IS RAISED WHEN ITS `Waiting-for:` CONDITIONS ARE TRUE; a leaf, handed the `gh` runner and the fact reader below.
 import { chairmanAskOrders } from "./work-gate/chairman-ask-orders.ts";
-// #2898: WHO OWNS A PULL REQUEST lives in `work-gate/pr-owners.mjs`, which imports the shared session reads BACK from this file (the cycle `pr-orders.mjs` above describes);
+// #2898: WHO OWNS A PULL REQUEST lives in `work-gate/pr-owners.ts`, which imports the shared session reads BACK from this file (the cycle `pr-orders.ts` above describes);
 // every name it exported is re-exported here, so no caller of `work-gate.ts` changes.
 import { withPrOwners, withScopedPrOwners, resolverDefectsOf, resolverDefectKey, resolverDefectText, RESOLVER_DEFECT_LABEL } from "./work-gate/pr-owners.ts";
 import type { ResolverDefect } from "./work-gate/pr-owners.ts";
-// #2898: THE ROW-CALL-COUNT ORDERS live in `work-gate/row-call-count-orders.mjs`, which imports the shared claim reads BACK from this file (the cycle `pr-orders.mjs` above describes);
+// #2898: THE ROW-CALL-COUNT ORDERS live in `work-gate/row-call-count-orders.ts`, which imports the shared claim reads BACK from this file (the cycle `pr-orders.ts` above describes);
 // every name it exported is re-exported here, so no caller of `work-gate.ts` changes.
 import { rowCallCountOrders, rowCallCountSignals, liveClaudeTurns, readWaitClearedAt } from "./work-gate/row-call-count-orders.ts";
-// #2898: THE CLAIM-STALL TICK lives in `work-gate/claim-stall-tick.mjs`, which imports the shared claim reads BACK from this file (the cycle `pr-orders.mjs` above describes);
+// #2898: THE CLAIM-STALL TICK lives in `work-gate/claim-stall-tick.ts`, which imports the shared claim reads BACK from this file (the cycle `pr-orders.ts` above describes);
 // every name it exported is re-exported here, so no caller of `work-gate.ts` changes.
 import { stallOrdersOrNone, claimStallsNow, closedClaimsNow } from "./work-gate/claim-stall-tick.ts";
 import { readAgents, listingIsComplete } from "./herdr-agents.ts";
@@ -401,7 +401,7 @@ function openPrsArgs(limit: number): string[] {
       "number,isDraft,headRefOid,baseRefName,statusCheckRollup,author,comments,labels,files,changedFiles,body,"
       // #2084: `reviewDecision` IS WHAT GITHUB ITSELF MERGES ON, AND NO QUEUE READ HERE TOUCHED IT.
       // Measured at `468a74f1b`: `git grep -l reviewDecision -- '*.mjs'` returns exactly ONE file, and it
-      // is not a queue read -- `row-claim/own-pr-health-rule.mjs` (#2126, merged the same day #2084 was
+      // is not a queue read -- `row-claim/own-pr-health-rule.ts` (#2126, merged the same day #2084 was
       // filed) reads it to answer "may this session claim ANOTHER ROW". That refusal emits no order, wakes
       // nobody, fires only on `CHANGES_REQUESTED`, and only for the session holding that row. Nothing that
       // reads the QUEUE touched the field: not this file, not `queue-table.ts`, not `merge-guard.ts`,
@@ -464,7 +464,7 @@ const PAGED_FILES_KEPT = 20;
 /**
  * #3365: A PULL REQUEST OF MORE THAN 100 FILES IS COMPARED BY ALL OF ITS FILES, NOT DROPPED. `gh pr list --json files` returns the first 100 and
  * never says so; `comparablePrFiles` rightly refuses a list shorter than `changedFiles`, so the gate could not shelve a row against such a PR
- * while the claim and the spawn check (`pagedPrFiles`, `file-overlap-rule.mjs`) paged REST and refused it. The release workflow's version PR is
+ * while the claim and the spawn check (`pagedPrFiles`, `file-overlap-rule.ts`) paged REST and refused it. The release workflow's version PR is
  * 146 files and open nearly all the time: a row naming a `package.json` was offered 30 ticks running and refused at the spawn every time.
  *
  * ONLY a truncated PR is paged, and a complete list costs no call and no disk read. The paged list is cached by PR number + head sha, so a
@@ -704,7 +704,7 @@ export const GIT_READS = Object.freeze({
 
 /**
  * Every `git` spawn in this file, stripped of the `GIT_*` redirects git exports into a hook environment.
- * `git-env.mjs`'s header records the incident: fifteen commits landed in the wrong checkout because an
+ * `git-env.ts`'s header records the incident: fifteen commits landed in the wrong checkout because an
  * inherited `GIT_DIR` beat `cwd`. This tick runs under systemd, where the environment is not one a
  * person typed and is therefore not one anybody has looked at.
  */
@@ -899,7 +899,7 @@ export function laneOwnerOf(row: any) {
  * ROUTING -- or `null` for the engineer pool.
  *
  * LANE WINS, and the precedence is not arbitrary: a `lane:` label REFUSES every other session
- * unconditionally at claim time (`row-claim/runner-rule.mjs`), so it is access control. A routing label
+ * unconditionally at claim time (`row-claim/runner-rule.ts`), so it is access control. A routing label
  * only says whose hands the acceptance needs. A `fleet-gated` row carrying `lane:ceo` is `ceo`'s, and
  * telling `orchestrator` about it would be telling them about a row they cannot take.
  *
@@ -1016,7 +1016,7 @@ function readChairmanLabelledAt(number: number, run: (args: string[]) => string)
 }
 
 /**
- * When the chairman last acted on the row: a comment by the chairman's own login, or the answer comment `answers.mjs` writes (a bot's
+ * When the chairman last acted on the row: a comment by the chairman's own login, or the answer comment `answers.ts` writes (a bot's
  * account carrying `PROVENANCE` as its FIRST words -- a line quoted further down is somebody repeating it, not the chairman answering).
  * `null` when there is none. The body is cut in the projection: the provenance line is the first line and nothing else is read.
  */
@@ -3203,7 +3203,7 @@ function hasConstraintHeading(body: string) {
  * discovered by the next reader, because one of the three cannot answer it at all:
  *
  *   `comment`    ANSWERED EXACTLY -- its position after the newest claim record, see above.
- *   `blocked-by` ANSWERED BY A RULE ELSEWHERE. `blocked-by-edge-rule.mjs` (#1886, closed 2026-09-22)
+ *   `blocked-by` ANSWERED BY A RULE ELSEWHERE. `blocked-by-edge-rule.ts` (#1886, closed 2026-09-22)
  *                REFUSES a claim on a row carrying an open `blockedBy`, so an open edge on a row that IS
  *                claimed can only have arrived after the claim. That is exactly #1918: claimed while
  *                clean, blocked by #2100 afterwards, where no claim-time rule can ever reach it.
@@ -3343,7 +3343,7 @@ function amendedOrder({ row, session, markers }: { row: any; session: string; ma
       + `\`gh issue edit ${row.number} --add-blocked-by <n>\` for a row you must wait on, a `
       + "`Not-before: YYYY-MM-DD` line for a date. Each clears itself.\n"
       + "IF IT IS AN OPEN `blockedBy` EDGE: you were not refused at claim time because the edge did not "
-      + "exist then (`blocked-by-edge-rule.mjs` would have refused you) -- it arrived while you held the "
+      + "exist then (`blocked-by-edge-rule.ts` would have refused you) -- it arrived while you held the "
       + "row, which is exactly what happened to #1918 on #2100.",
     causeKey: `${session}/claimed-row-amended/row-${subjectRef(row.repoKey, row.number)}/${key}`,
   };
@@ -4436,7 +4436,7 @@ const MAX_EJECTION_SUBTESTS = 5;
 
 /**
  * Is this pull request's red made ONLY of the hold's own manufactured jobs? A `hold:` label reddens
- * exactly `HOLD_RED_JOBS` on purpose (`work-gate/pr-orders.mjs`'s own header), and the REVIEW question
+ * exactly `HOLD_RED_JOBS` on purpose (`work-gate/pr-orders.ts`'s own header), and the REVIEW question
  * does not care who placed the hold -- unlike `redOnlyFromHoldOf`, which asks whether a hold answers a
  * SPECIFIC session and is used to decide whether that session gets a "fix your build" order. Here the
  * question is only "is this red manufactured or real", so any `hold:` label counts.
@@ -6759,7 +6759,7 @@ export function cannotAskReport({ run, identity }: { run: (args: string[]) => st
  *
  * WHAT THE WEIGHT MEASUREMENT MISSES IS THE CAPABILITY CLOSURE, and that is what decided this.
  * `host-units.ts` calls `git log --all` (`addedOnSomeRef`), so importing it here puts a `history`
- * requirement into `work-gate.ts` -- and this file is reached by `row-claim/runner-rule.mjs`, which most
+ * requirement into `work-gate.ts` -- and this file is reached by `row-claim/runner-rule.ts`, which most
  * of the packaging suite imports. MEASURED with `deriveClosureRequirements` over
  * `packages/lab/src/packaging/*.test.ts`, at `518de0e32` and again with the import added: **4 files
  * derive a `history` requirement, and 28 do with it.** Twenty-four test files that will never call this
@@ -7278,7 +7278,7 @@ function withClosedClaims(stalls: ReturnType<typeof claimStallsWithFacts>, close
 
 /**
  * The open pull requests whose required check has settled red AND which `pr-checks-failing` is already ordering this tick, as
- * `org-health.mjs` reads them. THE ORDERS ARE CONSUMED RATHER THAN THE PREDICATE REPEATED: `failingChecksOrder` also excuses a
+ * `org-health.ts` reads them. THE ORDERS ARE CONSUMED RATHER THAN THE PREDICATE REPEATED: `failingChecksOrder` also excuses a
  * red made only of a superseded run, and a second copy of those exclusions is how a PR is called red by one cause and healthy by
  * another (`mergeCandidates`' argument). BUT THE HOLD'S EXCUSE IS THE ORDER'S AND IS ADDRESSEE-RELATIVE (#2400), so a PR a worker owns
  * and `ceo` holds is still ordered; WHETHER IT IS RED AT ALL is `red-pr.ts`'s `isBrokenRed`, asked here too (#2956), and `redSince`

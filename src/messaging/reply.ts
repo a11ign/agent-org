@@ -2,7 +2,7 @@
 // only function that turns an agent's words into a message to the chairman, and it sends nothing it has not checked. The third of the design's three
 // layers against what the chairman's chat could be made to carry (the classifier on the way in, `ceo`'s brief, and this).
 //
-// **A CLAIM ABOUT THE ORGANISATION CAN ONLY ARRIVE AS A PLACEHOLDER** (`placeholders.mjs`), and a placeholder is RE-READ from its source at send time, so
+// **A CLAIM ABOUT THE ORGANISATION CAN ONLY ARRIVE AS A PLACEHOLDER** (`placeholders.ts`), and a placeholder is RE-READ from its source at send time, so
 // the chairman reads a fact as of a minute, stamped on the message (`as of 14:05Z`), and never an agent's memory of it. Everything outside a
 // placeholder is judged as free text, and is REFUSED when it carries a claim in a form a placeholder exists for:
 //   * a `#<number>`: a row or pull request is cited by `#{{pr:N.number}}`, which is also a read that it exists;

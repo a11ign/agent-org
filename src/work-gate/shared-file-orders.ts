@@ -3,7 +3,7 @@
  * #3480: TWO OPEN PULL REQUESTS THAT CHANGE ONE FILE ARE REPORTED TO THE OWNER OF THE LATER ONE, while both are open and before either
  * conflicts. Nothing on the tick compared open pull requests WITH EACH OTHER: B4 compares a ROW's Region with the pull requests' files at
  * claim time, and `perPullRequestOrders` reads each pull request alone, so a pair was first reported by the second one's `DIRTY`, after the
- * first had merged. Measured on a11ign/agent-org, 2026-10-04: #148, #149 and #150 shared `watch.mjs` from 13:41:48Z and the first signal any
+ * first had merged. Measured on a11ign/agent-org, 2026-10-04: #148, #149 and #150 shared `watch.ts` from 13:41:48Z and the first signal any
  * of them gave was `DIRTY`. It is also the control for a Region that is too narrow, because it reads what the pull requests CHANGED, not
  * what any row declared.
  *
@@ -33,7 +33,7 @@ import { ownerOfPr, DEAD_OWNER_FALLBACK } from "./pr-orders.ts";
 
 /** Where an order goes when nobody can be named as the later pull request's owner (the row's ruling; `ownerOfPr`'s own last rung is `ceo`). */
 const NO_OWNER_SESSION = "product-manager";
-/** Changeset files are excluded on both sides, as B4 excludes them (`file-overlap-rule.mjs`): every pull request adds its own, and a shared NAME is no shared change. */
+/** Changeset files are excluded on both sides, as B4 excludes them (`file-overlap-rule.ts`): every pull request adds its own, and a shared NAME is no shared change. */
 const isChangeset = (path: string) => path.startsWith(".changeset/") || isAcceptancePath(path); // ADR 0044: each pull request adds its own `.acceptance/` file
 const HASH_LENGTH = 10;
 

@@ -23,7 +23,7 @@ import { DEFAULT_INCIDENT_CONFIG, gateCrashEvents } from "../messaging/sources/i
 import { TICK_INTERVAL_MS } from "../messaging/sources/stall.ts";
 
 const SRC = fileURLToPath(new URL("..", import.meta.url));
-const PRELOAD = join(SRC, "lib", "crash-exit.mjs");
+const PRELOAD = join(SRC, "lib", "crash-exit.ts");
 const TICKS = 63;
 
 type Tick = { gate: string; wake?: string; tickPrefix?: string; recordIsADirectory?: boolean };

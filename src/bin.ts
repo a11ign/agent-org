@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// #3068: `agent-org <command> [args]` -- the ONE bin. It takes a command name from `commands.mjs`'s table and runs the program the table names,
+// #3068: `agent-org <command> [args]` -- the ONE bin. It takes a command name from `commands.ts`'s table and runs the program the table names,
 // with the caller's arguments after the table's own, exactly as `node packages/agent-org/src/<program>.mjs <args>` did.
 //
 // THE PROGRAM IS RUN AS A CHILD PROCESS, NOT IMPORTED. Every program decides whether it is being run by comparing its own URL with

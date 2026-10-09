@@ -127,11 +127,13 @@ test("unitNodeBinaries reads node from any Exec line, expands %h, and leaves bas
   assert.deepEqual(found.map((f) => f.binary).sort(), ["/home/agent/.local/bin/node", "/usr/bin/node"]);
 });
 
-test("POSITIVE CONTROL for the discovery: the shipped templates are rendered and do name /usr/bin/node", () => {
+test("POSITIVE CONTROL for the discovery: the shipped templates are rendered, and the six that run a `.ts` name the host's own node, never /usr/bin/node (#4389)", () => {
   const units = renderedUnits();
   assert.ok(units.length > 0, "the shipped units were found");
   const named = unitNodeBinaries(units);
-  assert.ok(named.some((n) => n.binary === "/usr/bin/node" && n.callers.some((c) => c.endsWith("work-tick.service"))), `work-tick names /usr/bin/node; found ${JSON.stringify(named)}`);
+  const hostNode = named.find((n) => n.binary.endsWith("/.local/bin/node"));
+  assert.ok(hostNode?.callers.some((c) => c.endsWith("work-tick.service")), `work-tick names %h/.local/bin/node; found ${JSON.stringify(named)}`);
+  assert.ok(!named.some((n) => n.binary === "/usr/bin/node"), `no shipped unit names the distro node, which cannot strip types: ${JSON.stringify(named)}`);
 });
 
 test("an unread fact is unknown and never clear", () => {

@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 // command: trace -- every model turn, wake and GitHub event of one row, in order (a11ign/a11ign#3494, first and second slices).
 //
-// `agent-org trace -- <row-or-pr> [--since <ISO>] [--store <path>] [--json 1]`, and `agent-org trace -- <row-or-pr> --html --out <path>` (the swimlane, `swimlane.mjs`, #3512), and `agent-org trace -- --aggregate [--since <ISO>] [--calls <n>] [--store <path>] [--json 1]` (`aggregate.mjs`, #3513), and `agent-org trace -- --map --out <path> [--repo <r>] [--week <n>] [--cause <c>] [--since <ISO>] [--calls <n>] [--store <path>]` (`map.mjs`, #3514)
+// `agent-org trace -- <row-or-pr> [--since <ISO>] [--store <path>] [--json 1]`, and `agent-org trace -- <row-or-pr> --html --out <path>` (the swimlane, `swimlane.ts`, #3512), and `agent-org trace -- --aggregate [--since <ISO>] [--calls <n>] [--store <path>] [--json 1]` (`aggregate.ts`, #3513), and `agent-org trace -- --map --out <path> [--repo <r>] [--week <n>] [--cause <c>] [--since <ISO>] [--calls <n>] [--store <path>]` (`map.ts`, #3514)
 //
-// THE WATERFALL (`waterfall.mjs`, #3511) is printed first, above the events: the row's eight phases, WORKING versus WAITING with what it waited on, tokens and dollars per phase, every repeat flagged.
+// THE WATERFALL (`waterfall.ts`, #3511) is printed first, above the events: the row's eight phases, WORKING versus WAITING with what it waited on, tokens and dollars per phase, every repeat flagged.
 //
-// It does three things in order: INGEST the Claude transcripts, the Codex reviewers' sessions and the wake ledger, INGEST what GitHub saw of the row and its pull requests (`github-events.mjs`),
+// It does three things in order: INGEST the Claude transcripts, the Codex reviewers' sessions and the wake ledger, INGEST what GitHub saw of the row and its pull requests (`github-events.ts`),
 // then PRINT the events about the row. Each ingest appends only the events the store does not have, so running it twice, or for two rows, adds nothing the first did
 // not. What the store does NOT hold is named in the footer of every report so the absence is not read as "nothing happened": the deferral spans from before the gate's log began,
-// and from when each kind of actor's transcripts and each account's `gh` calls are held. The `gh` call ledgers are ingested beside the transcripts (`gh-calls.mjs`, #3516), and so is the gate's log of ended deferrals (`wake-deferral-log`, #3510).
+// and from when each kind of actor's transcripts and each account's `gh` calls are held. The `gh` call ledgers are ingested beside the transcripts (`gh-calls.ts`, #3516), and so is the gate's log of ended deferrals (`wake-deferral-log`, #3510).
 //
 // GITHUB IS READ THROUGH `gh api` ONLY, ON THE REST `core` POOL AND NEVER THE SEARCH API (30 calls a minute per user: a 1,500-call pass spent a person's limit on 2026-10-05, #3644), to learn which rows
 // a pull request closes and which pull requests close a row (the row's timeline, the pull requests list), and then for the events themselves. The aggregate SAYS what it may spend before its first call,
@@ -418,7 +418,7 @@ function runGhApiAnswering(args: string[]) {
 
 /**
  * `gh api` that also remembers the rate-limit headers of the last reply (`.rate`) and of the first (`.first`), so a run can pace itself, stop at a floor, and say what it spent.
- * A read in VALIDATED_READS sends the ETag it was last given (`held`, the kept validators: see `publish.mjs`) and answers a 304 from the body kept with it, which costs no point of the pool. THE `-H` COMES
+ * A read in VALIDATED_READS sends the ETag it was last given (`held`, the kept validators: see `publish.ts`) and answers a 304 from the body kept with it, which costs no point of the pool. THE `-H` COMES
  * FIRST on that call because the `gh` ledger keeps the first two words of a command (`api -H`), which is how the conditional reads are counted apart from the others (`api -i`). `validators.unchanged(path)` says
  * whether this run got a 304 for it; `validators.forget(path)` drops a validator whose subject was not read to the end, so the next run asks for it whole.
  * `run` is a parameter so a test can hand it a fixture.
@@ -802,7 +802,7 @@ type Named = { number: number; isPull: boolean; repo: string | null; };
 /** Which row or pull request, as one string: the form `githubEventsOfMerged` keeps its `merged` set in. */
 const nameOf = ({ number, isPull, repo }: Named) => (isPull ? `${repo ?? "primary"}#${number}` : `row ${number}`);
 
-/** The rows and pull requests ONE ledger key names, the way `aggregate.mjs` reads it, so what is read here is what a repeat is judged by. A key naming none (`ready-queue-empty`) names none. */
+/** The rows and pull requests ONE ledger key names, the way `aggregate.ts` reads it, so what is read here is what a repeat is judged by. A key naming none (`ready-queue-empty`) names none. */
 function namedByKey(key: string): Named[] {
   const named = { ...subjectOf(key), ...subjectsOfKey(key) };
   const numbers = (list: unknown[]) => list.filter((number) => typeof number === "number");

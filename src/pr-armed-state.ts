@@ -22,7 +22,7 @@
  * `work-gate.ts` reads it from there and the gate's own header reasons about the shape of that import
  * graph; the re-export is a second SPELLING of one definition, never a second copy of the rule.
  *
- * LEAF-SHAPED ON PURPOSE. This module imports nothing -- not `node:*`, not `cli-flags.mjs`. Both
+ * LEAF-SHAPED ON PURPOSE. This module imports nothing -- not `node:*`, not `cli-flags.ts`. Both
  * callers state as a property of themselves that they run under a bare `actions/checkout` with no
  * `pnpm install` and no build (`auto-arm-sweep.ts`'s header records what the circular bootstrap cost in
  * #330/#331), and a shared predicate must not be the thing that takes that property away.

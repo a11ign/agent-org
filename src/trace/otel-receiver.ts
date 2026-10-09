@@ -46,7 +46,7 @@ const NANOS_PER_MS = 1_000_000n;
 const API_REQUEST = "claude_code.api_request";
 const HTTP = { ok: 200, badRequest: 400, notFound: 404, methodNotAllowed: 405, tooLarge: 413, unsupported: 415, failed: 500 };
 
-/** `trace.mjs`'s own default, restated because importing that file would run the whole ingest's imports in a long-running service. */
+/** `trace.ts`'s own default, restated because importing that file would run the whole ingest's imports in a long-running service. */
 export const defaultStore = () => join(homedir(), ".cache", "a11ign", "trace", "events.ndjson");
 
 export type OtelEvent = {
@@ -206,7 +206,7 @@ function parseExport(text: string): ReturnType<typeof eventsOfOtlpLogs> {
 export function parseArgs(argv: string[]): { port: number; store: string; } {
   const flags = new Map(argv.map((arg) => [arg, /^--(port|store)=(.*)$/.exec(arg)]).map(([arg, match]) => {
     // an unknown flag is refused, not ignored: there is deliberately no `--host`, and `--host=0.0.0.0` must not look accepted
-    if (match === null) throw new Error(`unknown argument ${arg}: node src/trace/otel-receiver.mjs [--port=<n>] [--store=<path>]`);
+    if (match === null) throw new Error(`unknown argument ${arg}: node src/trace/otel-receiver.ts [--port=<n>] [--store=<path>]`);
     return [match[1], match[2]];
   }));
   const port = flags.has("port") ? Number(flags.get("port")) : DEFAULT_PORT;

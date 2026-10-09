@@ -430,7 +430,7 @@ describe("createGhReaders: the real reads, over a fake gh and a fake systemctl",
     assert.deepEqual(await readers.pr(2), { number: 2, state: "open", review: "none" });
   });
 
-  test("run: the status and the conclusion; a run still going has a null conclusion, which `{{run:N.conclusion}}` refuses to render (placeholders.test.mjs)", async () => {
+  test("run: the status and the conclusion; a run still going has a null conclusion, which `{{run:N.conclusion}}` refuses to render (placeholders.test.ts)", async () => {
     const { gh } = ghFor({
       [API(`repos/${REPO}/actions/runs/5`)]: { conclusion: "success", status: "completed" },
       [API(`repos/${REPO}/actions/runs/6`)]: { conclusion: null, status: "in_progress" },

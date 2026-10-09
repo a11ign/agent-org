@@ -1,6 +1,6 @@
 // THE CLOSED VOCABULARY OF CHECKED FACTS (a11ign/a11ign#2910, row 11 of 13; design #2899 decision 2(e)). What a reply to the chairman may SAY
 // about the organisation is whatever one of these placeholders resolves to: each is RE-READ from its source at the moment of sending, so the
-// words are a reading and never a memory. `reply.mjs` is the sender; this file is the vocabulary, the parser and the reads.
+// words are a reading and never a memory. `reply.ts` is the sender; this file is the vocabulary, the parser and the reads.
 //
 //   {{issue:N.number|state|labels}}   {{pr:N.number|state|review}}   {{run:ID.status|conclusion}}   {{ready.count}}   {{open.count}}   {{last-merge.age}}
 //   {{unit:NAME.state}}               {{comment:ID.quote}}           {{unchecked:<any of the above>}}

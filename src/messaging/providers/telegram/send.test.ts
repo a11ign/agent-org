@@ -76,7 +76,7 @@ test("done-when 1: the provider passes runProviderConformance, and the checks it
   for (const check of ["send-returns-message-ref", "message-refs-are-distinct", "silent-is-honoured", "max-text-is-enforced", "max-text-is-accepted-at-the-limit", "reply-to-is-accepted", "actions-are-accepted"]) {
     assert.ok(passed.includes(check), `${check} did not run: ${JSON.stringify({ passed, skipped })}`);
   }
-  // `poll` is the polling provider's (poll.mjs), so it is skipped here WITH its reason, never silently passed. Buttons are drawn here (#3423): that check RUNS.
+  // `poll` is the polling provider's (poll.ts), so it is skipped here WITH its reason, never silently passed. Buttons are drawn here (#3423): that check RUNS.
   assert.deepEqual(skipped.map((entry) => entry.check).sort(), ["poll-returns-updates-and-honours-abort"]);
   assert.equal(provider.capabilities.buttons, true, "and the provider says so");
 });

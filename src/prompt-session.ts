@@ -51,7 +51,7 @@ import { FAILURE_LEDGER_FILE, UNCLASSIFIED_KIND, UNIDENTIFIED_CALLER_KIND, recor
  */
 export const EXIT = { OK: 0, REFUSED: 1, QUEUED: 2 };
 
-/** herdr, one call, as `prompt:session` runs it. Exported so `converse.mjs` can hand `promptOrQueue` the same runner without spawning anything itself (the no-executor scan bounds that). */
+/** herdr, one call, as `prompt:session` runs it. Exported so `converse.ts` can hand `promptOrQueue` the same runner without spawning anything itself (the no-executor scan bounds that). */
 export const defaultRun = (args: string[]) => execFileSync("herdr", args, { encoding: "utf8", timeout: 30_000 });
 
 /**
@@ -422,7 +422,7 @@ export const NEEDS_DECISION_FLAG = "--needs-decision";
 export type Stance = "decision" | "fyi" | "undeclared" | "order";
 /**
  * `ORDER` (#3562) IS FOR A PROGRAMMATIC CALLER ONLY, with no flag: a real order that asks for no answer. It wakes its seat as a decision does, but it is
- * not exempt from the deep-queue refusal, which `converse.mjs` relies on to reroute the chairman's message when the liaison's inbox is full. A CLI
+ * not exempt from the deep-queue refusal, which `converse.ts` relies on to reroute the chairman's message when the liaison's inbox is full. A CLI
  * author who types no flag is UNDECLARED, which reads as an FYI.
  * @type {{DECISION: "decision", FYI: "fyi", UNDECLARED: "undeclared", ORDER: "order"}}
  */

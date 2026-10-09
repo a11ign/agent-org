@@ -12,7 +12,7 @@
 // ALLOW, loudly, never refuse (see `racesAnArmedMerge`'s own comment).
 //
 // GREEN IS ANSWERED THE SAME WAY `merge-guard.ts`'s `facts()`/`mergeReadiness` ANSWER IT --
-// `lookupRequiredContexts()` + `lookupCheckRuns()` fed to `checkReasons()` (`checks-rule.mjs`), empty
+// `lookupRequiredContexts()` + `lookupCheckRuns()` fed to `checkReasons()` (`checks-rule.ts`), empty
 // reasons meaning nothing is missing, unfinished or failing -- never a second, independently-invented
 // reading of "green" off `statusCheckRollup`. That field is GitHub's own rolled-up combined-status object,
 // a different aggregation from the check-runs this file already reads and already distrusts
@@ -29,7 +29,7 @@
 // under strict branch protection (restored 02:15Z) a merge cannot fire while the head is behind `main`'s
 // tip -- so a PR that is armed, green AND behind is not a race, it is the FROZEN state #442 exists to
 // unfreeze. Read via `repos/.../compare/main...<oid>`'s `behind_by`, the identical ancestry fact
-// `ancestry-rule.mjs` already reads for -- never `mergeStateStatus`, for the reason at the top of
+// `ancestry-rule.ts` already reads for -- never `mergeStateStatus`, for the reason at the top of
 // `merge-guard.ts`. Only asked when green: an armed-but-not-green PR never races (see `racesAnArmedMerge`
 // below), so a behind-by lookup there would be a round trip for a value nothing reads. `null` (could not
 // determine) folds into "does not race" the same fail-open direction as everything else here.

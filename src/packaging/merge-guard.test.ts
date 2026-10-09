@@ -281,7 +281,7 @@ test("no file in the merge-guard tree reads mergeStateStatus, not even to cross-
  * THE ORIENTATION SEAM (#188): every `behindBy` in this file's own fixtures above is INJECTED, so a
  * reversed `compare/<head>...main` in either real fetch would leave every one of them green while
  * production read the wrong number. There are now TWO live call sites -- `merge-guard.ts`'s own
- * `facts()` (the ancestry rule's input) and `armed-race-rule.mjs`'s `lookupArmedPrStatus` (#442's
+ * `facts()` (the ancestry rule's input) and `armed-race-rule.ts`'s `lookupArmedPrStatus` (#442's
  * behind-by check) -- and #455's split makes it possible for one to be fixed and the other missed, so
  * both are scanned rather than trusting that fixing one fixes both.
  */

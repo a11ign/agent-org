@@ -36,7 +36,7 @@ import { sandboxGitEnv, withGitSandbox } from "../lib/git-sandbox.ts";
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 
 /** The digest of the `work-tick` unit the host runs today: the one `host-project-paths.test.ts` pins as `TODAYS_TEXT`, restated so this file's claim is checkable alone. */
-const TODAYS_WORK_TICK_SHA = "348a00639a198e4d800beb3c8eee663eb589d8c7566e7cda8299c61486abbec3";
+const TODAYS_WORK_TICK_SHA = "6f128077955f11e824ec1956fc377ed1944f85590a70e387672c7756c56c68b9";
 
 /**
  * a11ign's host with its `tool` taken out. #2974 (cut-over 3 of 6) SET `tool` in a11ign's `host.json`, so the real host now renders the tool
@@ -167,14 +167,14 @@ test("#2793 + #2974: with `tool` set, THREE lines are decision 3's, ONE is the h
     assert.deepEqual(linesOnlyIn(plain, installed), [
       "WorkingDirectory=" + dirs.widgets,
       "ExecStartPre=-%h/.local/bin/pnpm run primary:update",
-      "ExecStart=/usr/bin/node --import=./packages/agent-org/src/lib/crash-exit.mjs --import tsx packages/agent-org/src/work-tick.ts",
+      "ExecStart=%h/.local/bin/node --import=./packages/agent-org/src/lib/crash-exit.ts packages/agent-org/src/work-tick.ts",
     ], "the three lines that leave");
     assert.deepEqual(linesOnlyIn(installed, plain), [
       "WorkingDirectory=" + dirs.tool,
       `Environment=AGENT_ORG_HOST=${dirs.widgets}/.agent-org/host.json`,
       "ExecStartPre=-" + TOOL_UPDATE_EXEC,
       `ExecStartPre=-/usr/bin/env -C ${dirs.widgets} npm run widgets:update`,
-      "ExecStart=/usr/bin/node --import=./src/lib/crash-exit.mjs --import tsx src/work-tick.ts",
+      "ExecStart=%h/.local/bin/node --import=./src/lib/crash-exit.ts src/work-tick.ts",
     ], "the tool's path, then the tool update and THEN the declared beforeTick, then the shorter ExecStart");
     const order = installed.split("\n").filter((line) => line.startsWith("ExecStartPre="));
     assert.deepEqual(order, ["ExecStartPre=-" + TOOL_UPDATE_EXEC, `ExecStartPre=-/usr/bin/env -C ${dirs.widgets} npm run widgets:update`],
@@ -183,7 +183,7 @@ test("#2793 + #2974: with `tool` set, THREE lines are decision 3's, ONE is the h
 });
 
 test("#2793: the tool update the rendered ExecStartPre names EXISTS, at the path it names relative to the tool's `src/`", () => {
-  const script = /node --import=\.\/src\/lib\/crash-exit\.mjs --import tsx (src\/update-tool\.ts)$/.exec(TOOL_UPDATE_EXEC)?.[1];
+  const script = /node --import=\.\/src\/lib\/crash-exit\.ts (src\/update-tool\.ts)$/.exec(TOOL_UPDATE_EXEC)?.[1];
   assert.equal(script, "src/update-tool.ts", "POSITIVE CONTROL: the command names a script, so the existence check below is of something");
   assert.ok(existsSync(join(SHIPPED_DIR, "..", script ?? "")), "the monorepo keeps the tool's `src/` at packages/agent-org/src");
 });
@@ -212,7 +212,7 @@ test("#2793: a project whose declaration cannot be read, or holds a bad beforeTi
 test("#3464: a tool command in a beforeTick is for the host's PRIMARY project only, since the tool resolves its project from the host, not from where it runs", () => {
   withProjects((dirs) => {
     writeFileSync(join(dirs.widgets, ".agent-org/project.json"), JSON.stringify({ schema: 1, beforeTick: "agent-org primary:update" }));
-    assert.match(workTickOf(hostAt(dirs, { tool: dirs.tool })), new RegExp(`^ExecStartPre=-/usr/bin/env -C ${dirs.widgets} /usr/bin/node --import ${dirs.tool}/node_modules/tsx/dist/loader\\.mjs ${dirs.tool}/src/update-primary\\.ts$`, "m"),
+    assert.match(workTickOf(hostAt(dirs, { tool: dirs.tool })), new RegExp(`^ExecStartPre=-/usr/bin/env -C ${dirs.widgets} %h/\\.local/bin/node ${dirs.tool}/src/update-primary\\.ts$`, "m"),
       "POSITIVE CONTROL: the primary (widgets) may declare one, and it renders");
     writeFileSync(join(dirs.gadgets, ".agent-org/project.json"), JSON.stringify({ schema: 1, beforeTick: "agent-org primary:update" }));
     assert.equal((refusal(() => workTickOf(hostAt(dirs, { tool: dirs.tool }))) as any).field, "beforeTick", "a second project would have the PRIMARY moved instead of itself");
@@ -252,7 +252,7 @@ test("#2974: the prune and the board report take their project from the checkout
   withProjects((dirs) => {
     const toolHost = hostAt(dirs, { tool: dirs.tool });
     const prune = nonComment(serviceOf(toolHost, "worktree-prune"));
-    assert.ok(prune.includes(`ExecStart=/usr/bin/node --import tsx src/prune-worktrees.ts --apply ${dirs.widgets}`),
+    assert.ok(prune.includes(`ExecStart=%h/.local/bin/node src/prune-worktrees.ts --apply ${dirs.widgets}`),
       `the prune is handed the repository it prunes (its cwd is the tool's now): ${prune.join(" | ")}`);
     const report = nonComment(serviceOf(toolHost, "board-report"));
     assert.ok(report.includes("ExecStart=/usr/bin/bash host/board-report-dispatch.sh"));

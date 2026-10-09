@@ -424,7 +424,7 @@ export function routeWithFallback(order: { session: string; fallback?: string; f
  * #3465: A FINISHING ORDER DEFERRED PAST {@link BUSY_SEAT_DEFERRAL_MS} (OR ADDRESSED TO A SEAT THAT HAS ENDED) GOES TO A FREE ENGINEER, WHERE ITS CAUSE ALLOWS. PURE; the clock and the roster are inputs.
  *
  * #3448 bounded the wait and REPORTED it, so an order a busy `product-manager` could not take was told to `ceo`, who re-laned it by hand. Re-laning is safe only for
- * an order any session can carry out, so the CAUSE declares it (`mayRelane` on the order, `pr-orders.mjs`: a ready-flip of a verdict somebody else wrote) and
+ * an order any session can carry out, so the CAUSE declares it (`mayRelane` on the order, `pr-orders.ts`: a ready-flip of a verdict somebody else wrote) and
  * nothing is inferred: a decision only the owner can make (`docs/lane-ownership.json`'s `_claimVsAuthorRuling`) stays queued and is raised as before.
  *
  * ONLY A KEY THE WAKER HAS SEEN DEFERRED CAN BE OLD (`deferredSince`), so an order refused for another reason (no such workspace, a blocked seat) is `null`
@@ -3822,7 +3822,7 @@ export function endedRuns(emitted: string[], path: string, { read = readFileSync
 /**
  * HOW LONG A BUSY SEAT MAY KEEP AN ORDER WAITING BEFORE THE ORDER IS "NOWHERE TO GO" AFTER ALL: {@link ORDER_STALL_MINUTES}, FIFTEEN (#3448; it was an hour, #3029).
  *
- * THE NUMBER AND ITS MEASUREMENT LIVE WITH THE SIGNAL THAT SHARES THEM (`org-health.mjs`), so a deferred order and a standing seat's queue cannot be given two
+ * THE NUMBER AND ITS MEASUREMENT LIVE WITH THE SIGNAL THAT SHARES THEM (`org-health.ts`), so a deferred order and a standing seat's queue cannot be given two
  * bounds. The hour was the first round number above the standing seats' longest delivered wait (50 min, 2026-10-02) and was right for "is this order lost"; it
  * was wrong for "is this work stalled", which #3406 answered by sitting green and approved for forty minutes. The row-working seats run longer
  * (`worker-capture` 103 min, 3 of 308 runs over an hour) and their orders are reported after the same bound, which for a seat `working` that long is the
@@ -5752,7 +5752,7 @@ const SELFTEST_STEP_TIMEOUT_MS = 120_000;
 
 /**
  * THE TICK'S STEP FOR THE CHAIRMAN'S PATH (#3540): after a release that touched the messaging code, the queue or the roster's readers, send ONE synthetic inbound through it and read
- * the result. `messaging/selftest.mjs --tick` DECIDES (a pure function of two tags and a file list, so a quiet tick costs one `git` call and no turn), runs, and prints one JSON line;
+ * the result. `messaging/selftest.ts --tick` DECIDES (a pure function of two tags and a file list, so a quiet tick costs one `git` call and no turn), runs, and prints one JSON line;
  * this step only delivers what that line says is owed to `ceo`. It is the queue's writer because `src/messaging/` may not name the queue, and a RED goes to `ceo`'s queue and NEVER to the chairman.
  *
  * Run as a CHILD so a self-test that throws or hangs costs this step and not the tick. A line that cannot be read says so on every tick, as a seat that cannot be started does.

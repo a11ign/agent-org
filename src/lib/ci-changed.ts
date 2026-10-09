@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-// COPIED FROM `scripts/ci-changed.mjs` at 598e883cc (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
+// COPIED FROM `scripts/ci-changed.ts` at 598e883cc (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
 // its package. The product keeps its original and the two can drift, with no cross-repository pin: `agent-org-outward-edges.test.ts` compares them.
 // CHANGED FROM THE ORIGINAL, 100 NAMED LINES:
-// - its import of changed-files.mjs, now the tool's own copy beside it
-// - its import of cli-flags.mjs, now the tool's own copy beside it
-// - its import of git-env.mjs, now the tool's own copy beside it
-// - its import of changed-packages.mjs, now the tool's own copy beside it
-// - its import of isolation-gate.mjs, now the tool's own copy beside it
+// - its import of changed-files.ts, now the tool's own copy beside it
+// - its import of cli-flags.ts, now the tool's own copy beside it
+// - its import of git-env.ts, now the tool's own copy beside it
+// - its import of changed-packages.ts, now the tool's own copy beside it
+// - its import of isolation-gate.ts, now the tool's own copy beside it
 // - node:fs import, adding realpathSync (#1086: the entry guard below needs it)
 // - its entry guard, now realpath'd (#1086: the plain form is a known-bad ratchet baseline; a NEW file
 //   must not add to it, so this copy does not inherit the original's still-grandfathered form)
@@ -59,7 +59,7 @@ import { changedPackages } from "./changed-packages.ts";
 // REUSED FOR REAL THIS TIME. The comment on `packedFiles` below has claimed this reuse since #132 while
 // the function beneath it carried its own, second `npm pack --dry-run --json` call -- two derivations of
 // "what does a package actually ship" guarding the identical promise, the exact fact-stated-twice shape
-// this file's own header opens with. `isolation-gate.mjs` is this repo's other, older answer to the same
+// this file's own header opens with. `isolation-gate.ts` is this repo's other, older answer to the same
 // question (does a consumer's install actually work), so it is the one authority now.
 import { packedFiles as packedFilesForDir } from "./isolation-gate.ts";
 
@@ -71,7 +71,7 @@ export function knownPackages(repoRoot: string) {
   // `ci-changed.test.ts` asserts that shape holds against the real package.json, so a future second
   // workspace glob fails a unit test rather than silently only ever seeing the first entry.
   if (patterns.length !== 1 || patterns[0] !== "packages/*") {
-    throw new Error(`ci-changed.mjs assumes a single "packages/*" workspace glob; package.json now says `
+    throw new Error(`ci-changed.ts assumes a single "packages/*" workspace glob; package.json now says `
       + `${JSON.stringify(patterns)} — update knownPackages() before trusting this script's output`);
   }
   return execFileSync("git", ["ls-files", "packages"], { cwd: repoRoot, env: sandboxGitEnv(), encoding: "utf8" })
@@ -365,7 +365,7 @@ export function classify(files: string[], allPackages: string[],
   const rootScriptsChanged = files.some((f) => /^scripts\/.*\.mjs$/.test(f));
   // A root config file (tsconfig, eslint config, the workspace's own package.json) OR a `scripts/*.mjs`
   // file can change what EVERY package lints, typechecks or tests as — dozens of packaging tests import
-  // `packages/guards/src/git-env.mjs`, `scripts/cli-flags.mjs` and their siblings directly, so a change there is not
+  // `packages/guards/src/git-env.ts`, `scripts/cli-flags.ts` and their siblings directly, so a change there is not
   // scoped to any one package. Both are treated as touching every package rather than none, matching the
   // pre-push hook's own rule: an EMPTY touched-package result must read as "run everything", never as
   // "run nothing" (`scripts/git-hooks/pre-push`'s FAST/FULL split header states this for the identical
@@ -470,7 +470,7 @@ async function main() {
 
   // `--event` stays a required, explicit flag rather than being dropped outright: a caller that types
   // `--event=push` today gets a clear refusal naming why, instead of silently falling through some
-  // default — the same "an ignored flag runs the default and reports success" defect `cli-flags.mjs`
+  // default — the same "an ignored flag runs the default and reports success" defect `cli-flags.ts`
   // exists to prevent, one value along. `merge_group` added for #156; the value itself is not otherwise
   // read below -- it exists only so a mistyped or reverted trigger is refused here rather than silently
   // classifying under the wrong event's assumptions.

@@ -24,7 +24,7 @@ const REFUSED_TO_START = "reviewer-agent-org-16/pr-review-due/pr-16/0a1b2c3d: he
 const NO_TAKER = "handoff/reviewer-3013/0f2761c3: \"reviewer-3013\" reviews PR #3013 and nothing else, and this order is about no pull request";
 const at = (minutes: number) => (keys: string[]) => new Map(keys.map((k) => [k, minutes * MINUTE]));
 
-test("#3448: the limit is fifteen minutes (it was one hour, #3029), and the measurement behind it is in `org-health.mjs` beside the signal that shares it", () => {
+test("#3448: the limit is fifteen minutes (it was one hour, #3029), and the measurement behind it is in `org-health.ts` beside the signal that shares it", () => {
   assert.equal(BUSY_SEAT_DEFERRAL_MS, 15 * MINUTE);
 });
 

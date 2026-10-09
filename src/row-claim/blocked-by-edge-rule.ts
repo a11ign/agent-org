@@ -14,7 +14,7 @@
 // claim should refuse on that too is a different question this row's own Region/Acceptance never asks,
 // and answering it here would be exactly the unstated-scope creep this repo's own retros keep finding.
 //
-// NO OVERRIDE FLAG. `--blocked-by=#N` (`blocked-by-rule.mjs`) already exists and releases B2 ONLY, on
+// NO OVERRIDE FLAG. `--blocked-by=#N` (`blocked-by-rule.ts`) already exists and releases B2 ONLY, on
 // proof (a measurement comment) that a SPECIFIC PR's own red build is unrelated to a named blocker -- a
 // claim about a claimant's own build, not about whether the row itself should be started at all. Reusing
 // it here would let one override silently excuse two different questions, which #1886's own Region warns

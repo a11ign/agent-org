@@ -1,6 +1,6 @@
 // no-token: gh -- pure: the four readings are functions of values handed in, `readLastMergedAt` is given a fake `run`, and the one process test below puts a stub `gh` on PATH under a scratch HOME; nothing here reaches the real one
 /**
- * `packages/agent-org/src/org-health.mjs` and its wiring in `work-gate.ts`, #2936: THE GATE ASKS HOW THE ORG IS DOING, AND WAKES `ceo` WITH THE EVIDENCE
+ * `packages/agent-org/src/org-health.ts` and its wiring in `work-gate.ts`, #2936: THE GATE ASKS HOW THE ORG IS DOING, AND WAKES `ceo` WITH THE EVIDENCE
  * WHEN NOTHING LANDS OR A RED PR AGES.
  *
  * THE THRESHOLDS ARE WRITTEN OUT AS 3 HOURS, 120 MINUTES, 75 TICKS AND 60 MINUTES HERE, NEVER AS THE EXPORTED CONSTANTS: a test built from the constant moves
@@ -431,7 +431,7 @@ const SELF = "red-pr.ts";
 const EXEMPT: Record<string, string> = {
   "merge-queue.ts": "decides whether ONE queued PR may merge from its required checks; counts and ages nothing",
   "queue-stalled.ts": "reads the gate verdict of an ARMED PR to tell a stalled queue from a slow one",
-  "work-gate/pr-orders.mjs": "the order logic (`redOnlyFromAHold` asks `isHeldRed`, #2993; the rest is who is asked, not how many are red), `HOLD_RED_JOBS` pinned equal to red-pr.ts's in org-retro.test.ts",
+  "work-gate/pr-orders.ts": "the order logic (`redOnlyFromAHold` asks `isHeldRed`, #2993; the rest is who is asked, not how many are red), `HOLD_RED_JOBS` pinned equal to red-pr.ts's in org-retro.test.ts",
 };
 const EXEMPT_CEILING = 3;
 

@@ -10,7 +10,7 @@
  * at import time or in a `before`, which every test in the file shares: `afterEach` would take it from under the second test, so it goes in `after`.
  *
  * `afterEach` and `after` come from `node:test` as an ESM import, deliberately: under rstest the resolve hook redirects an ESM `node:test` to
- * rstest's hooks and does not redirect `require` (`walk-scope.mjs` measured an `after` from `require("node:test")` never firing).
+ * rstest's hooks and does not redirect `require` (`walk-scope.ts` measured an `after` from `require("node:test")` never firing).
  *
  * NOT FOR A TEST THAT RUNS ITS CASES CONCURRENTLY: `afterEach` would remove a directory a sibling case is still using. No file here does; a
  * file that must takes its own `t.after`.

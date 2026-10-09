@@ -605,7 +605,7 @@ describe("what one run costs and what `main` does with the readers", () => {
     ]);
   });
 
-  test("fleet-watch runs HOURLY, so a state file 59 minutes old is a reading and one 3 hours old is cannot-ask (the margin lives in watch.mjs)", async () => {
+  test("fleet-watch runs HOURLY, so a state file 59 minutes old is a reading and one 3 hours old is cannot-ask (the margin lives in watch.ts)", async () => {
     for (const [ageMinutes, expectedCannotAsk] of [[59, 0], [180, 1]]) {
       const path = join(freshDirectory(), "fleet-watch-state.json");
       writeFileSync(path, "{}\n");

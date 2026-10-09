@@ -1,6 +1,6 @@
 // @ts-check
 // A LEAF (`pr-hold-state.ts` imports only the leaf `wait-condition.ts`, and `newest-check-run.ts` nothing): `org-retro.ts` is a leaf `work-gate.ts` imports before any
-// build, so this file may not reach `work-gate/pr-orders.mjs`, which imports `work-gate.ts` back.
+// build, so this file may not reach `work-gate/pr-orders.ts`, which imports `work-gate.ts` back.
 //
 // IS THIS PULL REQUEST BROKEN, OR RED ON PURPOSE? (#2954, ceo's retrospective of 2026-10-02). `deliberateRefusals` fails BY DESIGN on a PR
 // carrying `hold:*` (`merge-guard.ts --ci-gate`: "a hold is a decision somebody made by hand"), and the rolled-up `gate` fails with it, so
@@ -16,7 +16,7 @@ export const RED_CONCLUSIONS = new Set(["FAILURE", "TIMED_OUT", "STARTUP_FAILURE
 
 /**
  * The two jobs a `hold:` label turns red and nothing else does: `deliberateRefusals` (the job that runs `merge-guard.ts --ci-gate`) and
- * `gate`, which is red only because it `needs` it. THE SAME LIST AS `work-gate/pr-orders.mjs`'s `HOLD_RED_JOBS`, copied because that file
+ * `gate`, which is red only because it `needs` it. THE SAME LIST AS `work-gate/pr-orders.ts`'s `HOLD_RED_JOBS`, copied because that file
  * cannot be imported from a leaf; `org-retro.test.ts` pins the two equal AND pins both to the jobs `ci.yml` defines.
  */
 export const HOLD_OWN_JOBS = Object.freeze(["deliberateRefusals", "gate"]);
@@ -49,7 +49,7 @@ export function redChecks(pr: { statusCheckRollup?: any[]; }): { name: string; f
  * #549's `Closes` mismatch, and that is a broken PR.
  *
  * `holdStands` IS WHETHER THE HOLD STILL EXCUSES (#2996). Its default is the label alone, which is what every caller before #2996
- * got and what `org-retro.ts` and `queue-table.ts` still ask; `org-health.mjs`'s reading passes `holdExcused`, so a hold whose
+ * got and what `org-retro.ts` and `queue-table.ts` still ask; `org-health.ts`'s reading passes `holdExcused`, so a hold whose
  * reason is gone stops hiding the red it caused.
  * @param {{ labels?: any[], statusCheckRollup?: any[] }} pr
  * @param {{ holdStands?: (pr: any) => boolean }} [options]

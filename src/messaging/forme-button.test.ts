@@ -1,5 +1,5 @@
 // @ts-check
-// THE "DO IT FOR ME" BUTTON IS DRAWN (a11ign/a11ign#3982, the gap under #3431 Done-when 3). `answers.mjs` handled a `forme` press and no keyboard carried
+// THE "DO IT FOR ME" BUTTON IS DRAWN (a11ign/a11ign#3982, the gap under #3431 Done-when 3). `answers.ts` handled a `forme` press and no keyboard carried
 // one, so no brief could ask for it. A brief that NAMES the act it would do (`Do it for me: <the act>`) now draws a fourth button; a brief that names none draws
 // none, because a press would then OK an unnamed act and D1 (#3427) is that the OK is for a stated act.
 //

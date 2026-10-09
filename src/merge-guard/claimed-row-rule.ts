@@ -9,7 +9,7 @@
 // time.
 //
 // So this rule asks GitHub what a PR would close (`closingIssuesReferences` -- resolved server-side, never
-// a `Closes #N` regex over the PR body, see `lookups.mjs`) and reuses `row-claim.ts`'s own claim
+// a `Closes #N` regex over the PR body, see `lookups.ts`) and reuses `row-claim.ts`'s own claim
 // predicate, `decideClaim`, rather than re-deriving "is this row somebody else's" a second time.
 // `decideClaim` already draws the one line this needs: resuming your OWN claimed row is not a collision,
 // which is why `session` exists here -- the identity of whoever is running this check, compared against

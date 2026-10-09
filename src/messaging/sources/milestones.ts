@@ -8,9 +8,9 @@
 // A `when` is exactly ONE of `{ row: N, closed: true }`, `{ pr: N, merged: true }` or `{ release: "<tag>" }`, each with an optional `repo`
 // (`owner/name`, default the tracker's). `milestone:<key>` is the event's key, so a moment is told once however many ticks see it.
 //
-// A LEAF and INJECTED, as `stall.mjs` is: it imports siblings and node's own, and reads GitHub only through the three `readers`.
+// A LEAF and INJECTED, as `stall.ts` is: it imports siblings and node's own, and reads GitHub only through the three `readers`.
 //
-// **THE FIRST RUN TELLS NO HISTORY (as `releases.mjs` does).** A moment already true the first time anyone read the file happened before the chairman
+// **THE FIRST RUN TELLS NO HISTORY (as `releases.ts` does).** A moment already true the first time anyone read the file happened before the chairman
 // asked, and telling him all of them at once is the burst this avoids. So the first complete read records each as SEEN, tells none, and records a
 // baseline marker. **The marker is what says "not the first run", and a count of recorded moments could not:** a file whose moments are all still
 // open records none, and its first moment to come true would then look like history. Both are ledger `source-note` lines the watcher already knows

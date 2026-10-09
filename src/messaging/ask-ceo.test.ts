@@ -47,7 +47,7 @@ let nextCase = 0;
 const sha256Of = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
 
 /**
- * The command with everything injected, as `record.test.mjs` does. `ran` is what `prompt:session` is made to return; every invocation is kept in `seen`.
+ * The command with everything injected, as `record.test.ts` does. `ran` is what `prompt:session` is made to return; every invocation is kept in `seen`.
  * @param {string[]} argv @param {{messaging?: boolean, env?: Record<string, string | undefined>, stdin?: string, inbound?: boolean, ran?: Partial<import("./ask-ceo.ts").Ran>}} [options]
  */
 async function run(argv: string[], { messaging = true, env = GH_ACCOUNT, stdin = QUESTION, inbound = true, ran = { status: 2, stderr: "QUEUED handoff/ceo/abc12345 -- the next work:tick delivers it.\n", stdout: "" } }: { messaging?: boolean; env?: Record<string, string | undefined>; stdin?: string; inbound?: boolean; ran?: Partial<import("./ask-ceo.ts").Ran>; } = {}) {
@@ -185,7 +185,7 @@ describe("chairman:ask-ceo, its target and what `prompt:session` answers", () =>
 
   hosted("6. package.json carries chairman:ask-ceo, and the verb set of chairman:correct is unchanged", () => {
     const scripts = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).scripts;
-    assert.equal(scripts["chairman:ask-ceo"], "node --import tsx src/messaging/ask-ceo.ts");
+    assert.equal(scripts["chairman:ask-ceo"], "node src/messaging/ask-ceo.ts");
     assert.deepEqual(VERBS, ["withdraw", "reroute", "re-ask"]);
     assert.equal(VERBS.length, VERB_COUNT, "VERBS is still three: ask-ceo is a command of its own and not a fourth correction");
   });

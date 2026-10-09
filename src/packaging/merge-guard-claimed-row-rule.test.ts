@@ -1,6 +1,6 @@
 /**
  * RULE: WOULD ARMING THIS PR CLOSE A ROW SOMEBODY ELSE IS INSIDE? -- #249, #455's split into
- * `packages/agent-org/src/merge-guard/claimed-row-rule.mjs`. Reuses `row-claim.ts`'s own `decideClaim` rather than
+ * `packages/agent-org/src/merge-guard/claimed-row-rule.ts`. Reuses `row-claim.ts`'s own `decideClaim` rather than
  * re-deriving "is this row somebody else's" a second time.
  */
 import { test } from "node:test";

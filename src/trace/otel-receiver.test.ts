@@ -23,7 +23,7 @@ const REQUEST_ID = "req_011CfpSK96NthX9vPNsW9X2b";
 const made: string[] = [];
 const tmpDir = (prefix: string) => { const dir = mkdtempSync(join(tmpdir(), prefix)); made.push(dir); return dir; };
 after(() => { for (const dir of made) rmSync(dir, { recursive: true, force: true }); });
-const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "otel-receiver.mjs");
+const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "otel-receiver.ts");
 
 /** A copy of an export with every attribute named in `drop` removed, on the resource and on each log record. */
 function withoutAttributes(payload: { resourceLogs: { resource: { attributes: { key: string; value: { stringValue: string; }; }[]; droppedAttributesCount: number; }; scopeLogs: { scope: { name: string; version: string; }; logRecords: ({ timeUnixNano: string; observedTimeUnixNano: string; body: { stringValue: string; }; attributes: ({ key: string; value: { stringValue: string; intValue?: undefined; doubleValue?: undefined; }; }|{ key: string; value: { intValue: number; stringValue?: undefined; doubleValue?: undefined; }; }|{ key: string; value: { doubleValue: number; stringValue?: undefined; intValue?: undefined; }; })[]; droppedAttributesCount: number; }|{ timeUnixNano: string; observedTimeUnixNano: string; body: { stringValue: string; }; attributes: ({ key: string; value: { stringValue: string; intValue?: undefined; boolValue?: undefined; }; }|{ key: string; value: { intValue: number; stringValue?: undefined; boolValue?: undefined; }; }|{ key: string; value: { boolValue: boolean; stringValue?: undefined; intValue?: undefined; }; })[]; droppedAttributesCount: number; })[]; }[]; }[]; }, drop: string|any[]) {

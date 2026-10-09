@@ -3,21 +3,21 @@
 //
 //   pnpm run chairman:record -- --row=3333 --message=45        (the chairman's words, exactly as he wrote them, on stdin)
 //
-// **ONLY THE LISTENER MAY WRITE THE CHAIRMAN'S PROVENANCE LINE (`PROVENANCE`, answers.mjs), AND THIS FILE NEVER DOES.** That line says `isAccepted` vouched for a
+// **ONLY THE LISTENER MAY WRITE THE CHAIRMAN'S PROVENANCE LINE (`PROVENANCE`, answers.ts), AND THIS FILE NEVER DOES.** That line says `isAccepted` vouched for a
 // button or a reply; this command can vouch for nothing but a ledger line, so its comment says so: `Recorded by liaison from the chairman's message <ref>; not
 // written by the chairman`. A reader of the row can tell which of the two wrote it, and `record.test.mjs` fails if the first ever appears here.
 //
 // **A `--message` REF MUST BE AN ACCEPTED INBOUND LINE, AND THE WORDS MUST BE HIS.** The ledger holds a ref and a `sha256` of each accepted message, never its text
-// (`inbound.mjs`). So the ref is looked up (`converse.mjs`'s line) and the text on stdin is hashed and compared with the receipt's: a ref the ledger lacks, or words
+// (`inbound.ts`). So the ref is looked up (`converse.ts`'s line) and the text on stdin is hashed and compared with the receipt's: a ref the ledger lacks, or words
 // that are not the ones it hashed, write NOTHING. **HONEST LIMIT:** an agent with a shell can still write any comment with `gh`. This makes a recorded answer
 // DETECTABLE against the chairman's own chat, and nothing here makes it impossible (decision 2 of the design says the same).
 //
-// **THE LEDGER IS THE MEMORY, AS IN `answers.mjs`.** Each completed step is a `direction: <verb>` line carrying the row's request key and the message ref, and no
+// **THE LEDGER IS THE MEMORY, AS IN `answers.ts`.** Each completed step is a `direction: <verb>` line carrying the row's request key and the message ref, and no
 // `key`, so `foldLedger` never takes it for a notification. A step that failed is a `failed` line; the next call does only the steps the ledger lacks, so a failure
 // between two writes is resumed and the first is not written twice.
 //
 // **THE CHAIRMAN'S TEXT IS QUOTED, NEVER PASTED:** row comments are read by line-anchored parsers (`Not-before:`, `Acceptance:`) and by a regex for the
-// `chairman-options` HTML comment, so it is a blockquote with its comment markers escaped. (`answers.mjs` has the same function and does not export it.)
+// `chairman-options` HTML comment, so it is a blockquote with its comment markers escaped. (`answers.ts` has the same function and does not export it.)
 //
 // EXIT CODES, as `chairman:reply`'s: 0 recorded (or already), 2 refused (usage, config, no account, a ref or words the ledger does not hold; NOTHING was written),
 // 1 a GitHub write failed (the ledger holds the `failed` line; calling again resumes).
@@ -151,7 +151,7 @@ export function createRecorder({ ledger, github }: { ledger: Ledger; github: Git
   };
 }
 
-/** What a caller may leave out. A spread and not parameter defaults, as `reply-cli.mjs` does. */
+/** What a caller may leave out. A spread and not parameter defaults, as `reply-cli.ts` does. */
 const DEFAULT_DEPS = () => ({
   root: process.cwd(), env: process.env as Record<string, string | undefined>, home: homedir(), now: Date.now,
   stdin: readStdin, github: undefined as GithubWriter | undefined,

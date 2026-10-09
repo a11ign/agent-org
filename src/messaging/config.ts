@@ -8,11 +8,11 @@
 // For the same reason an unknown key refuses (an underscore-prefixed one is prose, as everywhere in this file) and `null` is not absent.
 //
 // **THE PATHS ARE REFERENCES.** `tokenFile` and `chairmanFile` name files under `~/.config/agent-org/` and are returned resolved; the
-// content is `secret.mjs`'s business and is never read here. A path that climbs out of that directory is refused, so the key cannot be
+// content is `secret.ts`'s business and is never read here. A path that climbs out of that directory is refused, so the key cannot be
 // pointed at `/etc/shadow` and have the secret reader's error describe it.
 //
 // **`milestones` IS A PATH TOO, BUT TO A FILE THE PROJECT OWNS (a11ign/a11ign#3414):** relative to the project root, returned resolved, and refused if it
-// climbs out of the root. Absent is `null` and constructs no milestone source, as an absent `summary` does. The file's content is `sources/milestones.mjs`'s
+// climbs out of the root. Absent is `null` and constructs no milestone source, as an absent `summary` does. The file's content is `sources/milestones.ts`'s
 // business and `messaging:check` validates it; this module never opens it.
 
 import { readFileSync } from "node:fs";

@@ -17,7 +17,7 @@
  * three modules take `HOME_CHECKOUT`. `host-units`'s `REPO_ROOT` is the PROJECT's checkout and not the tool's: what it reads there (`.agent-org/units`,
  * `package.json` scripts, git history) is the project's, and `SHIPPED_DIR` is the tool's own location and stays `import.meta.url`-relative.
  *
- * #2884 (child 5d-5): `lib/changed-packages.mjs` spelled the same thing from `src/lib`, where up three is `packages/` and not even the
+ * #2884 (child 5d-5): `lib/changed-packages.ts` spelled the same thing from `src/lib`, where up three is `packages/` and not even the
  * checkout; it works only because git walks up. The scan now reads `src/lib` too (every file there is a copy of a product file, and
  * only that one spelled it), and a child proves its git calls run in the fixture checkout: `filesChangedAgainstOrigin()` answers with
  * a file committed there, which a `cwd` of `packages/` or the directory above `tool` cannot.
@@ -54,7 +54,7 @@ function upThreeSpellings(source: string): boolean {
 
 /**
  * Non-test `.mjs` and `.ts` under `src` AND `src/lib`, as paths relative to `src`. `lib/` holds the tool's copies of product files (#2623), and a copy
- * keeps the product's spelling of the root unless its header names an edit: `changed-packages.mjs` did, and from `src/lib` that is
+ * keeps the product's spelling of the root unless its header names an edit: `changed-packages.ts` did, and from `src/lib` that is
  * `packages/`, not the checkout (#2884). None of the other `lib/` files spells it, so no `lib/` file needs an exemption.
  */
 const nonTestModules = (): string[] =>
@@ -79,7 +79,7 @@ test("the scan reads a real population, and it contains SELF (so SELF's exemptio
   assert.ok(modules.length > 50, `only ${modules.length} modules scanned`);
   assert.ok(modules.includes(SELF.file));
   assert.equal(upThreeSpellings(readFileSync(join(SRC, SELF.file), "utf8")), true, `SELF no longer spells it: ${SELF.reason}`);
-  assert.ok(modules.includes(join("lib", "changed-packages.mjs")), "the scan reaches lib/");
+  assert.ok(modules.includes(join("lib", "changed-packages.ts")), "the scan reaches lib/");
   assert.ok(modules.some((name) => name.startsWith("lib/")) && modules.some((name) => !name.startsWith("lib/")), "both directories are read");
 });
 
@@ -114,7 +114,7 @@ function fixtureProject(): string {
   // path, which a second project does not have, so the fixture project brings a plugin of its own, declaring no causes.
   cpSync(join(REPO, ".agent-org/roles"), join(checkout, ".agent-org/roles"), { recursive: true }); // `project-roles.ts` refuses a project without its role briefs
   mkdirSync(join(checkout, ".agent-org/plugins"), { recursive: true });
-  writeFileSync(join(checkout, ".agent-org/plugins/causes.mjs"), "export const causeDeclarations = [];\n");
+  writeFileSync(join(checkout, ".agent-org/plugins/causes.ts"), "export const causeDeclarations = [];\n");
   writeFileSync(join(checkout, "docs/lane-ownership.json"), JSON.stringify(FIXTURE_LANES));
   writeFileSync(join(checkout, "docs/owned-path-facts.json"), JSON.stringify(FIXTURE_FACTS));
   writeFileSync(join(checkout, FIXTURE_ROOT_FILE), "x\n");
@@ -192,7 +192,7 @@ const MODULES: Module[] = [
     expectedInFixture: (checkout) => checkout, expectedInTree: REPO },
   { name: "update-primary PRIMARY_CHECKOUT", file: "update-primary.ts", answer: "m.PRIMARY_CHECKOUT",
     expectedInFixture: (checkout) => checkout, expectedInTree: REPO },
-  { name: "lib/changed-packages filesChangedAgainstOrigin()", file: "lib/changed-packages.mjs", answer: "m.filesChangedAgainstOrigin()",
+  { name: "lib/changed-packages filesChangedAgainstOrigin()", file: "lib/changed-packages.ts", answer: "m.filesChangedAgainstOrigin()",
     prepare: commitPastOriginMain, expectedInFixture: () => [FIXTURE_CHANGED_FILE], expectedInTree: inTreeChangedAgainstOrigin() },
 ];
 

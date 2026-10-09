@@ -149,7 +149,7 @@ test("B2 is checked BEFORE B4 -- a row IN BUILD is reported without even asking 
 });
 
 // --- #1886: the ROW BEING CLAIMED may itself carry an open `blockedBy` edge -- see
-// `row-claim-blocked-by-edge-rule.test.ts` for the pure-function coverage of `blocked-by-edge-rule.mjs`
+// `row-claim-blocked-by-edge-rule.test.ts` for the pure-function coverage of `blocked-by-edge-rule.ts`
 // itself; these prove the WIRING into `sessionEligibilityReason`, end to end. ---
 
 // #1852 is the real reproduction (see #1886's own Region), but this file's `routedRun` fixture treats
@@ -332,7 +332,7 @@ test("RESUMING a row this session already holds still refuses on the row's own o
 /**
  * #741: `--blocked-by=#N` END TO END THROUGH `claimRow` -- releases B2 only with a measurement comment
  * already on the claimant's own open PR, and only while `#N` is confirmed open. See
- * `row-claim-blocked-by-rule.test.ts` for the pure-function coverage of `blocked-by-rule.mjs` itself; this
+ * `row-claim-blocked-by-rule.test.ts` for the pure-function coverage of `blocked-by-rule.ts` itself; this
  * proves the WIRING in `writeRowLabels` (the comment is posted on the RIGHT row, the label write still
  * happens, and a losing race never posts one).
  */

@@ -207,7 +207,7 @@ const leftIn = (dir: string) => readdirSync(dir).filter((name) => !TSX_CACHE.tes
 
 /**
  * The environment the fixed files run in. They import tool modules that REFUSE at import when `AGENT_ORG_HOST` names no project (#3233), so a checkout
- * whose caller exports none -- a reviewer's, or the bare Acceptance command -- failed the live reading on `ingest-state.test.mjs` and not on a leak.
+ * whose caller exports none -- a reviewer's, or the bare Acceptance command -- failed the live reading on `ingest-state.test.ts` and not on a leak.
  * The caller's own declaration wins; otherwise the recorded org-health project (the one `clock-feed.test.mjs` runs against) is declared in `scratch`.
  */
 function envWithHost(scratch: string, own: string): NodeJS.ProcessEnv {

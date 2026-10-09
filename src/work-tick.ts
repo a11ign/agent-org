@@ -247,7 +247,7 @@ export type Run = { recordPath: string, costPath: string, censusPath: string, ma
  */
 function startRun(ledgerPath: string, wakeArgs: string[]): Run {
   const censusPath = join(dirname(ledgerPath), `tick-census.${process.pid}.jsonl`);
-  const preload = `--import=${new URL("./lib/spawn-census.mjs", import.meta.url).href}`;
+  const preload = `--import=${new URL("./lib/spawn-census.ts", import.meta.url).href}`;
   process.env[CENSUS_ENV] = censusPath;
   process.env.NODE_OPTIONS = [process.env.NODE_OPTIONS, preload].filter(Boolean).join(" ");
   installSpawnCensus(censusPath);

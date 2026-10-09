@@ -14,7 +14,7 @@ const MINUTE = 60 * 1000;
 const NOW = at("13:30:00");
 
 const base = { repo: null, cause: null, causeKey: null, wakeId: null };
-/** A GitHub record, as `github-events.mjs` makes it: `session: "github"`, a stable id, the row or the pull request. */
+/** A GitHub record, as `github-events.ts` makes it: `session: "github"`, a stable id, the row or the pull request. */
 const ghRecord = (kind: string, time: string, extra = {}, subject = { pr: PR }) => ({ id: `gh:a11ign/a11ign#${subject.pr ?? REPO_ROW}:${kind}:${time}`, kind, source: "github", session: "github", at: at(time),
   row: subject.pr ? null : REPO_ROW, pr: subject.pr ?? null, ...base, actor: "worker-9001", ...extra });
 const rowEvent = (kind: string, time: string, extra = {}) => ghRecord(kind, time, extra, { pr: null });

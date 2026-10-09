@@ -1,16 +1,16 @@
 // @ts-check
-// COPIED FROM `packages/guards/src/walk-scope-declaration.mjs` at 598e883cc (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
+// COPIED FROM `packages/guards/src/walk-scope-declaration.ts` at 598e883cc (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
 // its package. The product keeps its original and the two can drift, with no cross-repository pin: `agent-org-outward-edges.test.ts` compares them.
 // CHANGED FROM THE ORIGINAL, ONE LINE: its one outward import, which was `@a11ign/evidence/source-text` and is now the tool's own copy beside it.
 // ==== end of copy header ====
 // A GUARD'S WALK_SCOPE DECLARATION, READ STATICALLY -- #929.
 //
-// Split out of `walk-scope.mjs` so that reading a declaration does not install the observer. The selector
-// parses every always-run guard, and it used to import `walk-scope.mjs` to do it -- which wrapped `fs`,
+// Split out of `walk-scope.ts` so that reading a declaration does not install the observer. The selector
+// parses every always-run guard, and it used to import `walk-scope.ts` to do it -- which wrapped `fs`,
 // `child_process`, `process` and `node:test` in the CI selector's own process, for nothing. A declaring guard
-// still imports `walk-scope.mjs`, which re-exports these.
+// still imports `walk-scope.ts`, which re-exports these.
 //
-// THE STRING-AWARE `stripComments`, which `select-changed-tests.mjs` already uses. `local-import-closure.mjs`
+// THE STRING-AWARE `stripComments`, which `select-changed-tests.mjs` already uses. `local-import-closure.ts`
 // has its own, a regex that does not know about strings -- so a `//` inside one (any URL) blanks the rest of
 // its line. The first version imported that one, and a guard whose first import named a `file://` URL read as
 // declaring nothing. Two copies of one function; this uses the right one.

@@ -1,14 +1,14 @@
-// COPIED FROM `packages/guards/src/isolation-gate.mjs` at d8d9a02fc (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
+// COPIED FROM `packages/guards/src/isolation-gate.ts` at d8d9a02fc (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
 // its package. The product keeps its original and the two can drift, with no cross-repository pin: `agent-org-outward-edges.test.ts` compares them.
 // CHANGED FROM THE ORIGINAL, 3 NAMED LINES:
-// - its import of cli-flags.mjs, now the tool's own copy beside it
-// - its import of npm-cli-executable.mjs, now the tool's own copy beside it
+// - its import of cli-flags.ts, now the tool's own copy beside it
+// - its import of npm-cli-executable.ts, now the tool's own copy beside it
 // - `REPO_ROOT`, now the project's checkout (`HOME_CHECKOUT`) and not `src/lib` up three, which is `packages/` from here (#3830)
 // ==== end of copy header ====
 // command: prove a published package installs and works standalone, by actually installing and running it
 // Can a consumer install this package and use it? Answered by doing it.
 //
-//   node packages/guards/src/isolation-gate.mjs packages/evidence [more...]
+//   node packages/guards/src/isolation-gate.ts packages/evidence [more...]
 //   npm run gate:isolation
 //
 // ## Why a workspace cannot answer this
@@ -68,7 +68,7 @@ import { existsSync, mkdtempSync, copyFileSync, readFileSync, rmSync, readdirSyn
 import { tmpdir } from "node:os";
 import { join, resolve, basename, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-// RELATIVE, for `ci-changed.mjs`'s documented reason: this file is in that script's import graph, and
+// RELATIVE, for `ci-changed.ts`'s documented reason: this file is in that script's import graph, and
 // `ci.yml`'s `changed` job runs no `npm ci` — it decides whether anything else installs at all. A package
 // specifier here dies before the workflow starts.
 import { refuseUnknownFlags } from "./cli-flags.ts";
@@ -288,7 +288,7 @@ export function missingBinShims(consumer: string, manifest: { name?: string; bin
 /**
  * What `pnpm pack --dry-run` actually ships for one package, as a `Set` of paths relative to the package
  * root. This is this repo's one real answer to "can a consumer install this" / "does this reach a
- * consumer", and `scripts/ci-changed.mjs`'s changeset gate imports it directly rather than carrying a
+ * consumer", and `scripts/ci-changed.ts`'s changeset gate imports it directly rather than carrying a
  * second copy — two derivations of what ships, guarding the same promise, is exactly the fact-stated-
  * twice shape this file's own header names for `referenced-scripts.test.ts`.
  *
@@ -298,11 +298,11 @@ export function packedFiles(dir: string): Set<string> {
   // `--json` gives the file list without unpacking; `--dry-run` so nothing is written. `sandboxGitEnv()`
   // even though this spawns `pnpm`, not `git` — a pack walks the package looking for a `.git` to
   // decide what "untracked" means for its own purposes, so an inherited `GIT_DIR` is the identical
-  // redirection risk `git-env.mjs`'s own header names, one process removed.
+  // redirection risk `git-env.ts`'s own header names, one process removed.
   //
   // PACKED BY pnpm SINCE #2301, because the release publishes with `pnpm publish`, which packs with the same
   // code: a file list derived by a DIFFERENT tool would answer "what would npm ship" about a tarball
-  // nobody publishes. (Every other place that asks what ships -- `ci-changed.mjs`'s changeset gate -- asks
+  // nobody publishes. (Every other place that asks what ships -- `ci-changed.ts`'s changeset gate -- asks
   // this function, so the move reaches all of them at once.)
   const listing = packJson(runPnpm(["pack", "--dry-run", "--json"], dir, sandboxGitEnv()));
   return new Set((listing.files ?? []).map((f) => f.path));
@@ -586,15 +586,15 @@ function countPrivatePackages() {
 // entry-points.test.ts's own "the guard is the exact comparison" test polices this idiom, but its
 // discovery only matched packages/*.mjs|.ts until this file's own drift widened it to scripts/ too.
 // realpathSync'd for the same reason every published bin needed it this session: harmless for a plain
-// `node packages/guards/src/isolation-gate.mjs` invocation, but this file is ALSO imported by test files under
+// `node packages/guards/src/isolation-gate.ts` invocation, but this file is ALSO imported by test files under
 // packages/, so the same guard idiom this repo now uses everywhere is worth using here too.
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {
   // Guarded per #164: --all, plus positional package dirs; npm flags go onward.
-  refuseUnknownFlags(["--all"], { entry: import.meta.url, command: "node packages/guards/src/isolation-gate.mjs" });
+  refuseUnknownFlags(["--all"], { entry: import.meta.url, command: "node packages/guards/src/isolation-gate.ts" });
   const args = process.argv.slice(2);
   const targets = args.length === 0 || args[0] === "--all" ? allPackages() : args;
   if (args.length > 0 && args[0] !== "--all" && targets.length === 0) {
-    process.stderr.write("usage: node packages/guards/src/isolation-gate.mjs [--all | <package-dir>...]\n");
+    process.stderr.write("usage: node packages/guards/src/isolation-gate.ts [--all | <package-dir>...]\n");
     process.exit(2);
   }
   const privateCount = args.length === 0 || args[0] === "--all" ? countPrivatePackages() : 0;

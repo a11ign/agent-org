@@ -1,6 +1,6 @@
-// The four small reads `watch.mjs`, `listen.mjs` and `reply-cli.mjs` share (a11ign/a11ign#3080): where the delivery log lives, whether a GitHub account is
+// The four small reads `watch.ts`, `listen.ts` and `reply-cli.ts` share (a11ign/a11ign#3080): where the delivery log lives, whether a GitHub account is
 // declared, which repository holds the rows, and who the chairman is. A LEAF: it imports nothing that resolves the checkout or reads the project's
-// declaration at import (`host-config.ts`, `project-config.ts`), so a command that imports it loads outside a configured host. `reply-cli.mjs` once
+// declaration at import (`host-config.ts`, `project-config.ts`), so a command that imports it loads outside a configured host. `reply-cli.ts` once
 // carried its own copies for that reason, pinned against the originals by source-text tests; `reply-cli.test.mjs` now pins THIS file's imports instead.
 
 import { readFileSync } from "node:fs";

@@ -1,6 +1,6 @@
-// a11ign/a11ign#3517 (#3494's done-when 5): THE TRACE STORE IS THE ONE SOURCE FOR "HOW LONG" ON A ROW OR PULL REQUEST. The outcome clock (#3486, `org-health.mjs`) and
+// a11ign/a11ign#3517 (#3494's done-when 5): THE TRACE STORE IS THE ONE SOURCE FOR "HOW LONG" ON A ROW OR PULL REQUEST. The outcome clock (#3486, `org-health.ts`) and
 // the store each date an item from GitHub, by separate paths: the clock from `pr list`'s `createdAt` and from the newest claim-record comment, the store from
-// `issues/{n}.created_at` and the same comment (`github-events.mjs`). Left alone they are two stopwatches that happen to start together, and nothing says so the day
+// `issues/{n}.created_at` and the same comment (`github-events.ts`). Left alone they are two stopwatches that happen to start together, and nothing says so the day
 // one of them moves.
 //
 // THIS IS A PURE READ OF THE STORE'S RECORDS: no `gh`, no clock, no file. It is what a figure about a row's time is taken from, and the test beside it holds the outcome

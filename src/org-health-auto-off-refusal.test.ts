@@ -24,7 +24,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// THE PROJECT THIS FILE RUNS AGAINST IS A RECORDED ONE (`org-health.test.ts`'s #3233 rule, in short): `org-health.mjs` resolves the checkout it serves when it is imported, and with no
+// THE PROJECT THIS FILE RUNS AGAINST IS A RECORDED ONE (`org-health.test.ts`'s #3233 rule, in short): `org-health.ts` resolves the checkout it serves when it is imported, and with no
 // `$AGENT_ORG_HOST` that is wherever the suite happens to be run from, which refuses. The host file is set FIRST and the tool imported AFTER it, dynamically.
 const SCRATCH = mkdtempSync(join(tmpdir(), "org-health-auto-off-"));
 after(() => rmSync(SCRATCH, { recursive: true, force: true }));

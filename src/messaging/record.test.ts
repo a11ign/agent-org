@@ -40,7 +40,7 @@ function freshLedger(): import("./record.ts").Ledger {
 }
 
 /**
- * What `inbound.mjs` writes for a message (the receipt, with a hash and no words) and `converse.mjs` after it (the ref).
+ * What `inbound.ts` writes for a message (the receipt, with a hash and no words) and `converse.ts` after it (the ref).
  * @param {import("./record.ts").Ledger} ledger @param {{ref?: string, updateId?: number, words?: string, sha256?: string | null}} [message]
  */
 function takeIn(ledger: import("./record.ts").Ledger, { ref = REF, updateId = 11, words = WORDS, sha256 = sha256Of(words) }: { ref?: string; updateId?: number; words?: string; sha256?: string | null; } = {}) {
@@ -237,9 +237,9 @@ describe("chairman:record as a command", () => {
     assert.deepEqual(result.lines().map((line) => line.step), ["failed"]);
   });
 
-  test("record.mjs never names the chairman's provenance line outside a comment and never reaches GitHub but through the writer it is handed", () => {
+  test("record.ts never names the chairman's provenance line outside a comment and never reaches GitHub but through the writer it is handed", () => {
     const source = readFileSync(new URL("./record.ts", import.meta.url), "utf8");
-    assert.equal(/PROVENANCE|Chairman answered via Telegram/.test(source.replace(/^\/\/.*$/gm, "")), false, "record.mjs never names the chairman's provenance line outside a comment");
+    assert.equal(/PROVENANCE|Chairman answered via Telegram/.test(source.replace(/^\/\/.*$/gm, "")), false, "record.ts never names the chairman's provenance line outside a comment");
     assert.equal(/execFile|child_process|fetch\(/.test(source), false);
   });
 });

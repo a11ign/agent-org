@@ -4,7 +4,7 @@
 // claim evaluation it runs, the declared-wait reading that excuses a quiet claim, and the helpers only they use.
 // Measured on #2898: a row waited behind three pull requests in a day for edits to exactly these definitions.
 //
-// THE BOUNDARY, as `work-gate/pr-orders.mjs` states it: what only this family uses lives here; what a family that
+// THE BOUNDARY, as `work-gate/pr-orders.ts` states it: what only this family uses lives here; what a family that
 // stayed behind also uses (`readPrs`, `readClaimedRowComments`, `readMergedPrs`, `gitRun`) is IMPORTED from
 // `work-gate.ts`, the cycle that module documents, safe while nothing here reads an imported binding at load time.
 // `withChecksPending` STAYED: it reads the PR rollup, and `org-health.test.ts`'s #2956 guard enlists any file that does.

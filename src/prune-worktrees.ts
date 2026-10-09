@@ -79,7 +79,7 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { sandboxGitEnv } from "./lib/git-env.ts";
-// RELATIVE for the same reason as `cli-flags.mjs` below (#1373): `row-claim.ts` imports this file before
+// RELATIVE for the same reason as `cli-flags.ts` below (#1373): `row-claim.ts` imports this file before
 // `pnpm install`, where a package specifier dies.
 import { worktreeOwner } from "./worktree-owner.ts";
 import { claimRefusal, recordRemoval, rowsClosed } from "./worktree-removal.ts";

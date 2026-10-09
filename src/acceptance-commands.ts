@@ -799,7 +799,7 @@ function writeDeclarationHolds(codeOnly: string, writesPath: string) {
 // the fourth instance in two days of the identical shape #382 already named: "an opt-in declaration
 // cannot catch the file whose author did not know there was something to declare, which is the whole
 // population that matters." So this job's capability check no longer trusts the header alone; it walks
-// the SAME local-import closure `gh-token-jobs.test.ts` already walks (`packages/guards/src/local-import-closure.mjs`,
+// the SAME local-import closure `gh-token-jobs.test.ts` already walks (`packages/guards/src/local-import-closure.ts`,
 // shared rather than reimplemented -- see that module's header) and asks each file in it a factual
 // question about what it DOES, never about what it merely mentions.
 //
@@ -1006,7 +1006,7 @@ const DECLARED_SPAWNS = [...CHARGED_SPAWNS, "npmCliInvocation"];
  * #1449: A `gh` SPAWN, NOT THE TWO LETTERS -- one of `CHARGED_SPAWNS` with `gh` as its whole quoted first argument.
  * The ONE copy: the token charge below uses it, and `gh-token-jobs.test.ts` imports it, so the spawns that make a
  * test need a token and the spawns that make a CI job need GH_TOKEN cannot drift apart. `execFile` joined it on #1449;
- * `npmCliInvocation` did not, because it runs only npm's own CLIs (`npm-cli-executable.mjs`), never `gh`.
+ * `npmCliInvocation` did not, because it runs only npm's own CLIs (`npm-cli-executable.ts`), never `gh`.
  */
 export const SPAWNS_GH = new RegExp(`(?:${CHARGED_SPAWNS.join("|")})\\s*\\(\\s*(['"\`])gh\\1`);
 
@@ -2095,7 +2095,7 @@ function commandTable(): CommandTable | null {
     loaded = createRequire(import.meta.url)("./commands.ts");
   } catch (cause) {
     const absent = (cause as { code?: string, message?: string }).code === "MODULE_NOT_FOUND"
-      && String((cause as Error).message).includes("commands.mjs");
+      && String((cause as Error).message).includes("commands.ts");
     if (absent) return null;
     throw cause;
   }

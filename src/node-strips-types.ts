@@ -93,7 +93,7 @@ const execCommandsOf = (unitText: string): string[] =>
 /** `host-units.ts` beside this file: RESOLVED, never imported (see `execCommandsOf`). */
 const HOST_UNITS_URL = new URL("./host-units.ts", import.meta.url).href;
 
-/** The child's whole job (the module comes by environment: `changed-files.mjs` reads `process.argv[1]` as a path): print the rendered units as JSON. A unit that will not render is left out (`host:check` names that defect, not this read). */
+/** The child's whole job (the module comes by environment: `changed-files.ts` reads `process.argv[1]` as a path): print the rendered units as JSON. A unit that will not render is left out (`host:check` names that defect, not this read). */
 const LIST_UNITS_SCRIPT = `
 const { shippedUnits, shippedUnitText } = await import(process.env.HOST_UNITS_MODULE);
 const units = shippedUnits().flatMap((name) => {

@@ -369,7 +369,7 @@ function fixtureRepo(): string {
   const root = mkdtempSync(join(tmpdir(), "gh-population-"));
   const files: Record<string, string> = {
     "packages/cli/src/action/post-comment.ts": SPAWN,
-    "packages/control/src/corpus-release.mjs": SPAWN,
+    "packages/control/src/corpus-release.ts": SPAWN,
     "packages/lab/src/lab-spawn.mjs": SPAWN,
     "scripts/direct.mjs": SPAWN,
     "scripts/via-import.mjs": 'import "./helper.mjs";\n',
@@ -404,7 +404,7 @@ test("#1984: the gh-spawning population is real -- a walk that matched nothing m
   // finds fewer (or more -- the comment and the test file are the negative controls) and says which.
   assert.deepEqual(population.map((p) => p.file).sort(), [
     "packages/cli/src/action/post-comment.ts",
-    "packages/control/src/corpus-release.mjs",
+    "packages/control/src/corpus-release.ts",
     "packages/lab/src/lab-spawn.mjs",
     "scripts/direct.mjs",
     "scripts/helper.mjs",
@@ -414,7 +414,7 @@ test("#1984: the gh-spawning population is real -- a walk that matched nothing m
 
   const environments = Object.fromEntries(population.map((p) => [p.file, p.environment]));
   assert.equal(environments["packages/cli/src/action/post-comment.ts"], "github-actions");
-  assert.equal(environments["packages/control/src/corpus-release.mjs"], "control-plane");
+  assert.equal(environments["packages/control/src/corpus-release.ts"], "control-plane");
   assert.equal(environments["packages/lab/src/lab-spawn.mjs"], "lab");
   assert.equal(environments["scripts/direct.mjs"], "agent-host",
     "the environments already excluded must not have swallowed the whole population -- if they did, the "

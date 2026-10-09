@@ -139,7 +139,7 @@ test("isBrokenRed: a hold's own two red jobs are HELD, not red; a real red besid
 
 test("the hold's two jobs are the jobs ci.yml defines, and the same two the gate's own exemption uses", () => {
   const ci = readFileSync(join(HOME_CHECKOUT, ".github/workflows/ci.yml"), "utf8");
-  assert.deepEqual([...HOLD_OWN_JOBS], [...HOLD_RED_JOBS], "red-pr.ts is a leaf and cannot import pr-orders.mjs, so the copy is pinned here");
+  assert.deepEqual([...HOLD_OWN_JOBS], [...HOLD_RED_JOBS], "red-pr.ts is a leaf and cannot import pr-orders.ts, so the copy is pinned here");
   for (const job of HOLD_OWN_JOBS) assert.match(ci, new RegExp(`\\n {2}${job}:\\n`), `${job} is a job in ci.yml`);
   const from = ci.indexOf("\n  deliberateRefusals:\n");
   const next = ci.slice(from + 1).search(/\n {2}[\w-]+:\n/);

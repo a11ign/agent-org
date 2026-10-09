@@ -3,7 +3,7 @@
 //
 // **BUTTONS ARE DRAWN HERE (a11ign/a11ign#3423).** `actions` become `reply_markup.inline_keyboard`, one button per row, on the FIRST part of a split
 // message only: the first part's id is the `messageRef` the ledger keeps, and a press is routed by the message it sits under. The provider draws
-// what it is handed and decides nothing about which presses mean what; the closed vocabulary is `inbound.mjs`'s, where a press is received.
+// what it is handed and decides nothing about which presses mean what; the closed vocabulary is `inbound.ts`'s, where a press is received.
 //
 // **PLAIN TEXT, NO `parse_mode`.** A message body is quoted from a row title or a comment, which anybody may have written. Under
 // Markdown or HTML a stray `_` or `<` makes Telegram refuse the whole message (a corrupted alert), and a crafted one injects markup

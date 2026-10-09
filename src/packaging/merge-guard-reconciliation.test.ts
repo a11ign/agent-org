@@ -1,6 +1,6 @@
 /**
  * #188: A GUARD WHOSE WRONG ANSWERS ARE ABSORBED BY ANOTHER MECHANISM HAS NO FAILURE SIGNAL.
- * #455's split into `packages/agent-org/src/merge-guard/reconciliation.mjs`.
+ * #455's split into `packages/agent-org/src/merge-guard/reconciliation.ts`.
  *
  * #182 was caught only because strict branch protection refused what the guard passed -- its own
  * wrongness was invisible until somebody happened to run `gh pr update-branch` right after. This records

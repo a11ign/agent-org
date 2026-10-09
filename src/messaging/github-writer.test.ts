@@ -1,6 +1,6 @@
 // @ts-check
 // THE GITHUB WRITER AND THE WIRING (a11ign/a11ign#3062 done-whens 2 and 3): `createGithubWriter` against a fixture `gh` that records its argv, and
-// a stream of updates through the REAL inbound core, the real answers, the real writer and `listen.mjs`'s forwarder, with a fake Telegram.
+// a stream of updates through the REAL inbound core, the real answers, the real writer and `listen.ts`'s forwarder, with a fake Telegram.
 // Nothing here reaches a network or runs `gh`.
 //
 // POSITIVE CONTROLS: "resolves when the label is absent" is also what a writer that swallows every failure reports, so the same call with a

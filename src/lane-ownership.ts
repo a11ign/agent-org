@@ -10,7 +10,7 @@
 // agent org.
 //
 // THE LANE DATA OUTLIVES THE CHECK. `row-file.ts` derives a row's `lane:<owner>` label through these two
-// functions, and `row-claim/runner-rule.mjs` reasons about the same file -- so the reader stays and the
+// functions, and `row-claim/runner-rule.ts` reasons about the same file -- so the reader stays and the
 // refusal goes. A lane is still a recorded fact about who owns a path; it is no longer a wall in CI.
 
 import { readFileSync } from "node:fs";

@@ -1,5 +1,5 @@
 /**
- * EVERY NETWORK/PROCESS LOOKUP THE RULES READ -- #455's split into `packages/agent-org/src/merge-guard/lookups.mjs`.
+ * EVERY NETWORK/PROCESS LOOKUP THE RULES READ -- #455's split into `packages/agent-org/src/merge-guard/lookups.ts`.
  * `null` on failure, never an empty answer -- most of these need a live `gh`/`git` to exercise fully, so
  * only the offline-testable parsing is driven here; each rule's own test covers what the LOOKUP feeds it.
  */

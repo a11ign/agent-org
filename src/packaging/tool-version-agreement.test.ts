@@ -14,7 +14,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// `org-health.mjs` resolves the project it serves at import, so the host file is set FIRST and the tool imported AFTER it (the recorded fixture project `org-health.test.ts` explains, #3233).
+// `org-health.ts` resolves the project it serves at import, so the host file is set FIRST and the tool imported AFTER it (the recorded fixture project `org-health.test.ts` explains, #3233).
 const SCRATCH = mkdtempSync(join(tmpdir(), "tool-version-agreement-"));
 after(() => rmSync(SCRATCH, { recursive: true, force: true }));
 const PROJECT = join(SCRATCH, "project");

@@ -2,7 +2,7 @@
 // @ts-check
 // THE LISTENER'S `onForward` (a11ign/a11ign#3064 done-whens 1 to 4): an accepted MESSAGE that is not an answer reaches `converse`, a BUTTON PRESS and a
 // REPLY TO A REQUEST reach `answers` and never `converse`; a queue that cannot load is TOLD to the chairman and ledgered; the unit sets `AGENT_ORG_HOST`;
-// and the "no consumer yet" line is gone. (`github-writer.test.mjs` drives the real `answers` through the same forwarder against a fixture `gh`.)
+// and the "no consumer yet" line is gone. (`github-writer.test.ts` drives the real `answers` through the same forwarder against a fixture `gh`.)
 //
 // EVERY ACCEPTED VALUE IS MINTED by the real `createInbound` over a real ledger file (never built by hand), and the consumers are recorders: the real
 // `converse` is its own file's test and queues to the host's real queue, which a test must not do. What is NOT stubbed is this file's own choice:
@@ -341,7 +341,7 @@ describe("the unit and the source", () => {
   });
 
   test("the default onForward no longer says nothing consumes the update (done-when 4)", () => {
-    assert.ok(!/has no consumer yet/.test(SOURCE), "listen.mjs went back to dropping accepted updates with a log line");
+    assert.ok(!/has no consumer yet/.test(SOURCE), "listen.ts went back to dropping accepted updates with a log line");
     assert.match(SOURCE, /onForward \?\? createForwarder\(/, "the default onForward is no longer the forwarder, so this test would pass on a listener that forwards nothing");
     assert.match(SOURCE, /converse: tellingWhenUndelivered\(/, "the converse path is no longer wrapped, so a queue that will not load is dropped again");
   });

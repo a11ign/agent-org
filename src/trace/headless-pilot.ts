@@ -21,7 +21,7 @@
 // request, a label and a comment; and the process starts with `remote.origin.pushurl` pointed at nothing (`GIT_CONFIG_*`, which scopes to that process rather than to the shared
 // repository config), so `git push` fails. A comment or label by the worker is a risk the pilot's second row should check for in its transcripts.
 //
-// DOLLARS ARE THE TRACE STORE'S, NOT THE CLI'S: the transcript the run wrote is read by `eventsOfTranscript` (store.mjs), repriced from `PRICES`, and the turns' `costUsd` summed
+// DOLLARS ARE THE TRACE STORE'S, NOT THE CLI'S: the transcript the run wrote is read by `eventsOfTranscript` (store.ts), repriced from `PRICES`, and the turns' `costUsd` summed
 // (`traceCostUsd`). The CLI's `total_cost_usd` is recorded BESIDE it and never used: it is computed at the old $0.20 cache-read rate (+5.2% on Sonnet 5.5, #4075). A turn whose model has
 // no price makes the sum a FLOOR (`unpricedTurns` > 0), and a transcript that cannot be found makes it `null`: never 0.
 import { execFileSync, spawnSync } from "node:child_process";

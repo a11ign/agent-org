@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// COPIED FROM `packages/guards/src/test-memory-cap.mjs` at 134087803 (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
+// COPIED FROM `packages/guards/src/test-memory-cap.ts` at 134087803 (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
 // its package. The product keeps its original and the two can drift, with no cross-repository pin: `agent-org-outward-edges.test.ts` compares them.
-// CHANGED FROM THE ORIGINAL, ONE LINE: its one sibling import, which was `../../../scripts/npm-cli-executable.mjs` and is now the tool's own copy beside it.
+// CHANGED FROM THE ORIGINAL, ONE LINE: its one sibling import, which was `../../../scripts/npm-cli-executable.ts` and is now the tool's own copy beside it.
 // ==== end of copy header ====
 // command: run a test runner under a per-process memory cap (systemd-run MemoryMax) and say what the cap did
 //
-//   node packages/guards/src/test-memory-cap.mjs run <name> -- <command> [args...]
+//   node packages/guards/src/test-memory-cap.ts run <name> -- <command> [args...]
 //
 // WHY (#2507). Three kernel OOM kills on 2026-09-25 (12:01:53Z, 14:13:56 BST, 14:14:52 BST) each took ONE `node`
 // process of 25.7 / 27.4 / 26.0 GB, read from `journalctl -k` by `ceo`; the next-largest entry at 12:01Z was about
@@ -238,7 +238,7 @@ async function main() {
   const [subcommand, ...rest] = process.argv.slice(2);
   const { before, after } = splitAtDoubleDash(rest);
   if (after.length === 0 || before.length === 0 || (subcommand !== "run" && subcommand !== "supervise")) {
-    process.stderr.write("usage: node packages/guards/src/test-memory-cap.mjs run <name> -- <command> [args...]\n");
+    process.stderr.write("usage: node packages/guards/src/test-memory-cap.ts run <name> -- <command> [args...]\n");
     process.exitCode = 2;
     return;
   }

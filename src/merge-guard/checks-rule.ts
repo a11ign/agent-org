@@ -5,7 +5,7 @@
 // different states this repo has repeatedly conflated into one bare "not green"; each needs its own
 // sentence because each sends the reader to a different fix.
 //
-// Also the lookup `armed-race-rule.mjs`'s `lookupArmedPrStatus` reuses to decide GREEN, rather than
+// Also the lookup `armed-race-rule.ts`'s `lookupArmedPrStatus` reuses to decide GREEN, rather than
 // inventing a second reading of "is this PR green" off `statusCheckRollup` -- see that module's own
 // comment for the incident that made a second reading dangerous.
 
@@ -41,7 +41,7 @@ export const SATISFIED = new Set(["success", "skipped", "neutral"]);
  */
 // EXPORTED for #1100, when the since-retired update-branch sweep read the same conclusion and had to mean the
 // same thing by it. Two predicates disagreeing about the literal string `cancelled` is the fact-stated-twice
-// shape, and `work-gate/pr-orders.mjs` still imports it.
+// shape, and `work-gate/pr-orders.ts` still imports it.
 export const NO_VERDICT = "cancelled";
 
 /**
@@ -124,7 +124,7 @@ export function checkReasons(pr: { headRefOid: string; }, required: string[], ru
   // JOINED TO `STILL RUNNING` WITH ITS OWN ANNOTATION RATHER THAN GIVEN A NEW SENTENCE, which is
   // #1007's shape in this same function one line up: a cancelled context reports under the wait it
   // shares a remedy with, annotated so nobody mistakes it for a job in flight. A new prefix would also
-  // need a new entry in `reason-kind.mjs`, whose miss is SILENT -- an unmatched reason reads
+  // need a new entry in `reason-kind.ts`, whose miss is SILENT -- an unmatched reason reads
   // `UNCLASSIFIED` -- so the sentence and its classification would be a second copy with nothing
   // comparing them. That file's own header says so.
   const waiting = unfinishedElsewhere(inFlight, superseded)

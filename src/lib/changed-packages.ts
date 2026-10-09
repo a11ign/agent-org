@@ -1,7 +1,7 @@
-// COPIED FROM `packages/guards/src/changed-packages.mjs` at 598e883cc (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
+// COPIED FROM `packages/guards/src/changed-packages.ts` at 598e883cc (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
 // its package. The product keeps its original and the two can drift, with no cross-repository pin: `agent-org-outward-edges.test.ts` compares them.
 // CHANGED FROM THE ORIGINAL, 3 NAMED LINES:
-// - its import of cli-flags.mjs, now the tool's own copy beside it
+// - its import of cli-flags.ts, now the tool's own copy beside it
 // - `REPO`, now the project's checkout (`HOME_CHECKOUT`) and not `src/lib` up three, which is `packages/` from here (#2884)
 // - its import of `fileURLToPath`, which `REPO` was the only user of
 // ==== end of copy header ====
@@ -24,7 +24,7 @@
 //
 // CI RUNS ON THE PR, NOT ON THE BRANCH PUSH -- changed 2026-09-06 alongside `.github/workflows/ci.yml`
 // (which replaced the widened `lint.yml`). This function is also reused there, by
-// `scripts/ci-changed.mjs`, for the identical reason it exists here: one place that answers "which
+// `scripts/ci-changed.ts`, for the identical reason it exists here: one place that answers "which
 // packages did this diff touch", never a second copy re-deriving it inline in YAML.
 //
 // A diff touching nothing under `packages/` (docs, top-level scripts, .github/, package.json, tsconfig)
@@ -36,7 +36,7 @@ import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
 import { sandboxGitEnv } from "./git-env.ts";
 import { changedFiles } from "./changed-files.ts";
-// RELATIVE, NOT `@a11ign/screenreader-fleet/cli-flags`, for the reason `ci-changed.mjs` already records
+// RELATIVE, NOT `@a11ign/screenreader-fleet/cli-flags`, for the reason `ci-changed.ts` already records
 // above its own copy of this import: `ci.yml`'s `changed` job runs `checkout` and `setup-node` and NO
 // `npm ci`, because its whole job is to decide whether anything else installs or builds at all. This file
 // is imported by that script, so a package specifier here dies before the workflow starts —
@@ -96,6 +96,6 @@ export function changedPackagesAgainstOrigin() {
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {
   // Guarded per #164: takes no flags; `--name-only` is passed onward to git.
-  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/guards/src/changed-packages.mjs" });
+  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/guards/src/changed-packages.ts" });
   process.stdout.write(changedPackagesAgainstOrigin().join(" "));
 }

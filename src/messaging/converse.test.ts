@@ -14,7 +14,7 @@
 //   * `real`: `prompt-session.ts`'s own `promptOrQueue` (and its `queueOrLose`) over a real queue file and a recording herdr, run when the host's declaration can be found (`AGENT_ORG_HOST`, else
 //     the primary checkout's `host.json` where this host keeps it). When it cannot load, the `real` cases are SKIPPED WITH THE REFUSAL AS THE REASON,
 //     and the "real queue loaded" test below says which of the two this run was: a skip that fires always would be a check that never runs.
-// The fixtures that look like secrets are not needed here: the classifier is `inbound.mjs`'s and `inbound.test.mjs`'s.
+// The fixtures that look like secrets are not needed here: the classifier is `inbound.ts`'s and `inbound.test.ts`'s.
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -243,7 +243,7 @@ function cases(queue: Record<string, any>, label: string, skip: string | false) 
   });
 
   /** What a chairman must never read in what he is told: the queue's vocabulary, a handoff, a path, an error class, or a session he does not know by name. */
-  const INTERNAL = /NOT PROMPTED|NOT QUEUED|queue|handoff|\.mjs|[/\\]|Error|\b(worker|reviewer)-\d+|\bwork:tick\b|prompt:session/i;
+  const INTERNAL = /NOT PROMPTED|NOT QUEUED|queue|handoff|\.ts|[/\\]|Error|\b(worker|reviewer)-\d+|\bwork:tick\b|prompt:session/i;
   /** @param {string} text */
   const plain = (text: string) => {
     assert.ok(!INTERNAL.test(text), `plain words, no internal text: ${JSON.stringify(text)}`);
@@ -572,12 +572,12 @@ const MESSAGING = fileURLToPath(new URL(".", import.meta.url));
 /** What reaches an order to a session: the queue's writers and the two modules that own them. `herdr ... agent prompt` is the direct path. */
 const QUEUE_CALLERS = /\b(queueOrLose|queueHandoff|promptOrQueue|clearThenPrompt)\b|prompt-session\.ts|\/wake\.ts|["']agent["']\s*,\s*["']prompt["']/;
 
-/** @param {string} dir @param {string} [base] @returns {string[]} every non-test `.mjs` under `dir`, as paths relative to `base` (`dir` itself unless a caller walks a subdirectory) */
+/** @param {string} dir @param {string} [base] @returns {string[]} every non-test `.ts` under `dir`, as paths relative to `base` (`dir` itself unless a caller walks a subdirectory) */
 function sourceFiles(dir: string, base: string = dir): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const path = join(dir, entry.name);
     if (entry.isDirectory()) return sourceFiles(path, base);
-    return entry.name.endsWith(".mjs") && !entry.name.includes(".test.") ? [relative(base, path)] : [];
+    return entry.name.endsWith(".ts") && !entry.name.includes(".test.") ? [relative(base, path)] : [];
   });
 }
 
@@ -596,34 +596,34 @@ describe("done-when 1: no queue entry is ever addressed to anyone but the liaiso
 
   test("the scan finds the caller it is meant to find (its positive control), and the matcher notices each way to queue", () => {
     assert.ok(sourceFiles(MESSAGING).length > 10, "the walk reached the messaging sources");
-    assert.ok(callers.includes("converse.mjs"), "converse.mjs is the caller the scan exists to bound");
+    assert.ok(callers.includes("converse.ts"), "converse.ts is the caller the scan exists to bound");
     for (const sample of ["queueHandoff(path, { session: 'worker-1' })", "queueOrLose({})", "promptOrQueue(x)", "import './prompt-session.ts'", "run(['agent', 'prompt', 'worker-1'])"]) {
       assert.ok(QUEUE_CALLERS.test(sample), `the matcher notices ${sample}`);
     }
   });
 
-  test("converse.mjs is the ONLY file under src/messaging/ that queues or prompts", () => {
-    assert.deepEqual(callers, ["converse.mjs"]);
+  test("converse.ts is the ONLY file under src/messaging/ that queues or prompts", () => {
+    assert.deepEqual(callers, ["converse.ts"]);
   });
 
-  test("THE CONTROL THE SCAN CAN FAIL: a directory holding converse.mjs and a fixture with a second caller is refused (two callers, not one)", () => {
+  test("THE CONTROL THE SCAN CAN FAIL: a directory holding converse.ts and a fixture with a second caller is refused (two callers, not one)", () => {
     const fixture = join(scratch, "scan-fixture");
     mkdirSync(fixture, { recursive: true });
-    copyFileSync(join(MESSAGING, "converse.mjs"), join(fixture, "converse.mjs"));
-    assert.deepEqual(queueCallersIn(fixture), ["converse.mjs"], "without the second caller the copy passes, so the next failure is the fixture's");
-    writeFileSync(join(fixture, "second-caller.mjs"), 'import { queueOrLose } from "../prompt-session.ts";\nqueueOrLose({ label: "ceo", text: "x" });\n');
-    assert.deepEqual(queueCallersIn(fixture), ["converse.mjs", "second-caller.mjs"]);
-    assert.notDeepEqual(queueCallersIn(fixture), ["converse.mjs"], "the assertion above would fail on this directory");
+    copyFileSync(join(MESSAGING, "converse.ts"), join(fixture, "converse.ts"));
+    assert.deepEqual(queueCallersIn(fixture), ["converse.ts"], "without the second caller the copy passes, so the next failure is the fixture's");
+    writeFileSync(join(fixture, "second-caller.ts"), 'import { queueOrLose } from "../prompt-session.ts";\nqueueOrLose({ label: "ceo", text: "x" });\n');
+    assert.deepEqual(queueCallersIn(fixture), ["converse.ts", "second-caller.ts"]);
+    assert.notDeepEqual(queueCallersIn(fixture), ["converse.ts"], "the assertion above would fail on this directory");
   });
 
   test("its one call names the recipient by a constant: the liaison first, ceo only as the fallback, each written once and no other label anywhere in its code", () => {
-    const code = withoutComments(readFileSync(join(MESSAGING, "converse.mjs"), "utf8"));
+    const code = withoutComments(readFileSync(join(MESSAGING, "converse.ts"), "utf8"));
     assert.equal(RECIPIENT, "liaison");
     assert.equal(FALLBACK_RECIPIENT, "ceo");
     assert.match(code, /export const RECIPIENT = "liaison";/);
     assert.match(code, /export const FALLBACK_RECIPIENT = "ceo";/);
     assert.equal((code.match(/\.promptOrQueue\(/g) ?? []).length, 1, "one call to the queue: `promptOrQueue`, which delivers to an idle seat and queues for a busy one");
-    assert.deepEqual(code.match(/\blabel: [^,]+,/g), ["label: recipient,"], "the call's label is a parameter; no other `label:` is passed anywhere");
+    assert.deepEqual(code.match(/\blabel: [^,;]+,/g), ["label: recipient,"], "the call's label is a parameter; no other `label:` is passed anywhere");
     assert.equal([...code.matchAll(/(?<!function )\bdispatch\(q, recipient, /g)].length, 1, "dispatch is reached only through attempt");
     const attempts = [...code.matchAll(/(?<!function )\battempt\(q, (\w+), /g)].map((match) => match[1]);
     assert.deepEqual(attempts, ["RECIPIENT", "FALLBACK_RECIPIENT"], "attempt is reached twice, the liaison first and the fallback second, by the constants");

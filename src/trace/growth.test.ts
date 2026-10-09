@@ -1,4 +1,4 @@
-// a11ign/a11ign#4073: `trace/growth.mjs`. Fixtures only: nothing here reads `~/.claude`, `~/.cache/a11ign` or GitHub (the one directory tree read is built under the temporary directory).
+// a11ign/a11ign#4073: `trace/growth.ts`. Fixtures only: nothing here reads `~/.claude`, `~/.cache/a11ign` or GitHub (the one directory tree read is built under the temporary directory).
 // no-token: gh -- every transcript below is a fixture; `requestsOf` and `summarise` are pure and call no `gh`
 //
 // THE FIXTURE `WORKER` is one seat's main thread, and the hand-computed figures are in the comments beside the assertion that uses them. Its cache reads are 0, 100, 150, 400, 410:
@@ -216,7 +216,7 @@ test("a marker resets the window of the thread it is written in: a subagent's ow
 });
 
 // THE BY-COMMAND FIXTURE `SHELL`: every request's writer is a Bash call with a command of its own, one per kind the row names. Cache reads rise by 10 each request, so each request's growth is 10 and
-// the command that wrote it is the one called two requests before. Request k is therefore blamed on the command of request k-2 (see the attribution comment at the top of `growth.mjs`).
+// the command that wrote it is the one called two requests before. Request k is therefore blamed on the command of request k-2 (see the attribution comment at the top of `growth.ts`).
 const COMMANDS = ["git status", "gh issue view 12 --json title", "gh pr list --state open", "grep -rn foo src | head -20", "cd /tmp/x && git log -3", "S=/tmp/y; sed -n '1,5p' f", "echo \"unclosed", "git status", "git diff", "ls", "ls"];
 const SHELL = lines([
   order(0),

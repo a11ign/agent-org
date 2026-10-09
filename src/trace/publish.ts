@@ -53,7 +53,7 @@ const HTTP_NOT_MODIFIED = 304;
 const HTTP_ERROR_FROM = 400;
 export const MAP_PAGE = "map.html";
 const ROW_PAGE = /^row-(\d+)\.html$/;
-const TRACE = join(dirname(fileURLToPath(import.meta.url)), "trace.mjs");
+const TRACE = join(dirname(fileURLToPath(import.meta.url)), "trace.ts");
 
 /** The directory the host serves: beside the store (`~/.cache/a11ign/trace/`), under the home the unit declares. */
 export const defaultOut = () => join(homedir(), ".cache", "a11ign", "trace-pages");
@@ -226,7 +226,7 @@ export function parseReply({ stdout, stderr, path, sent }: { stdout: string; std
 
 /**
  * `gh api -i <path>`, with `If-None-Match` when `etag` is given. THE `-H` COMES FIRST on a conditional call because the `gh` ledger keeps the first two words of a command (`api -H`), which is what lets the trace store
- * count the conditional reads apart from the unconditional ones (`api -i`, and the ledger's `script` says `publish.mjs`).
+ * count the conditional reads apart from the unconditional ones (`api -i`, and the ledger's `script` says `publish.ts`).
  */
 export function ghAsk(path: string, etag: string | null): Reply {
   const ran = spawnSync("gh", ["api", ...(etag === null ? [] : ["-H", `If-None-Match: ${etag}`]), "-i", path], { encoding: "utf8", maxBuffer: GH_MAX_BUFFER });

@@ -246,7 +246,7 @@ export function createConverse({ chairman, queuePath, ledger, send, maxText = 40
   return {
     /**
      * An order for the liaison, from a button the answers path vetted; if the liaison's seat refuses it, it goes to `ceo` the same way a message does. `queued` is "somebody took it" (typed into an idle seat, or queued for a busy one), the answers path's own word for it. Nothing is sent to the chairman and
-     * nothing is written to the ledger here: the caller (`answers.mjs`) records the outcome and tells the chairman. `say` is for the ledger (the queue's words, never the chairman's); `told`
+     * nothing is written to the ledger here: the caller (`answers.ts`) records the outcome and tells the chairman. `say` is for the ledger (the queue's words, never the chairman's); `told`
      * is what the chairman may be told when the order went to `ceo`, and null otherwise.
      */
     async orderLiaison(order: { text: string; messageRef: string; }): Promise<{ queued: boolean; say: string; handoff: string | null; taker: string | null; told: string | null; }> {
@@ -267,7 +267,7 @@ export function createConverse({ chairman, queuePath, ledger, send, maxText = 40
       const told = toldOf(verdict);
       const failure = told === null ? { ref: null, error: null } : await tell(told, String(accepted.messageId));
       const error = ack.error ?? failure.error;
-      // The line holds refs and a verdict, never the words (as `inbound.mjs`'s do not): the chain is message -> handoff -> acknowledgement (no handoff when it was delivered). `delivery` is `delivered` or `queued`. `ackAt` is when
+      // The line holds refs and a verdict, never the words (as `inbound.ts`'s do not): the chain is message -> handoff -> acknowledgement (no handoff when it was delivered). `delivery` is `delivered` or `queued`. `ackAt` is when
       // the acknowledgement was sent, so the time to acknowledge is `ackAt` less the inbound line's `ts`. `taker` is who holds the message (null when nobody does) and `refusals` is what each
       // queue that refused said, first line only: the one place the queue's own words are kept now that the chairman is not shown them.
       ledger.append({

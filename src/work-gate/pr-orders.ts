@@ -42,7 +42,7 @@ const REVIEWER_DOOR = "$HOME/reviewer/bin/pr-review-verdict";
 /**
  * PURE. Is every red among these blocking checks a CANCELLED one, while something else on the head still runs?
  *
- * #1916, #1007's shape a second time. `checks-rule.mjs` ruled in #1007 that a cancelled run is NO VERDICT -- the
+ * #1916, #1007's shape a second time. `checks-rule.ts` ruled in #1007 that a cancelled run is NO VERDICT -- the
  * replacement is already going -- and this file kept its own copy of the predicate without that ruling. Measured
  * on #1914 at `63b11ecc` and #1924 at `c0864658`, 2026-09-22: two `ci` runs fired on one head a second apart,
  * `cancel-in-progress` killed the first, and the required `gate` existed ONLY in the cancelled run while the live

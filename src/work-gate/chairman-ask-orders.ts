@@ -7,7 +7,7 @@
 //
 //     Waiting-for: published @a11ign/screenreader-fleet@latest >= 0.5.0
 //     Then-ask-chairman:
-//     What is happening: ...                   (the lines `sources/requests.mjs` requires of a brief, plus `Declared: YYYY-MM-DD`)
+//     What is happening: ...                   (the lines `sources/requests.ts` requires of a brief, plus `Declared: YYYY-MM-DD`)
 //     Ask: ...
 //
 // WHEN EVERY `Waiting-for:` THE ROW DECLARES IS TRUE, the tick posts the declared brief as a comment (opening `BRIEF for the chairman`), labels the row `needs:chairman`, removes the
@@ -203,7 +203,7 @@ function brokenOrder(ask: Ask): any {
 }
 
 /**
- * `readItemFacts` is `readWaitFacts` (it lives in `org-health.mjs`, which is a cycle with the gate); `repo` names the remote a `tagged` wait reads; `limit` caps raises and orders per tick.
+ * `readItemFacts` is `readWaitFacts` (it lives in `org-health.ts`, which is a cycle with the gate); `repo` names the remote a `tagged` wait reads; `limit` caps raises and orders per tick.
  */
 export type AskIo = { run: (args: string[]) => string, repo: () => string, readItemFacts: (input: { items: import("../wait-condition.ts").WaitItem[], open: any[], run: (args: string[]) => string }) => import("../wait-condition.ts").WaitFacts,
              limit: number, readers?: import("./held-on-satisfied-orders.ts").ReleaseReaders, log?: (line: string) => void };

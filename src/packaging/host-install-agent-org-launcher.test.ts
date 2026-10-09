@@ -108,7 +108,7 @@ test("2. the launcher, RUN from a scratch directory, executes the tool the host 
   assert.equal(refused.status, UNKNOWN_COMMAND_EXIT, "an exit of 2 for an unknown command stays 2");
 });
 
-test("2. the control: a launcher that execs a DIFFERENT checkout's bin.mjs is told apart by the same reading", () => {
+test("2. the control: a launcher that execs a DIFFERENT checkout's bin.ts is told apart by the same reading", () => {
   const { launcher: ofB } = installInto(stubTool("tool-b"));
   const ranTool = (launcher: string) => JSON.parse(runFromElsewhere(launcher, ["row-claim"]).stdout).tool;
   assert.equal(ranTool(ofB), "tool-b");
@@ -138,12 +138,12 @@ test("3. an absent launcher is NOT INSTALLED, an edited one DIVERGED, an install
 
 /**
  * A preload for every node process of the command: it records which project the tool resolved (or that it refused) and ends the process BEFORE the
- * program runs, so the command asked about is never executed. `bin.mjs` itself is skipped because the program it starts is the one that resolves.
+ * program runs, so the command asked about is never executed. `bin.ts` itself is skipped because the program it starts is the one that resolves.
  */
 const PROBE = `import { appendFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 const program = process.argv[1] ?? "";
-if (!program.endsWith("bin.mjs")) {
+if (!program.endsWith("bin.ts")) {
   const config = pathToFileURL(program.slice(0, program.lastIndexOf("/src/") + "/src/".length) + "project-config.ts").href;
   let line;
   try { line = "ROOT " + (await import(config)).HOME_CHECKOUT; } catch (cause) { line = "REFUSED " + cause.name; }
@@ -177,10 +177,11 @@ function projectWithLinkedWorktree() {
   git(main, "worktree", "add", "-q", "-b", "agent/x", linked);
   const probe = join(root, "probe.mjs");
   writeFileSync(probe, PROBE);
-  const installed = join(linked, "node_modules/agent-org");
+  // Outside node_modules: Node 24 refuses to strip the types of a `.ts` under it (#4389), so the project's own copy of the tool is run from a directory that is none.
+  const installed = join(root, "own-copy/agent-org");
   cpSync(join(TOOL_ROOT, "src"), join(installed, "src"), { recursive: true });
   cpSync(join(TOOL_ROOT, "package.json"), join(installed, "package.json"));
-  // `bin.mjs` resolves `tsx` beside itself, so a copy of the tool needs the `node_modules` an install would have given it.
+  // A copy of the tool is given the `node_modules` an install would have given it.
   symlinkSync(toolNodeModules(), join(installed, "node_modules"));
   symlinkSync(toolNodeModules(), join(standalone, "node_modules"));
   return { root, main, linked, standalone, hostFile, probe, ownBin: join(installed, "src/bin.ts") };

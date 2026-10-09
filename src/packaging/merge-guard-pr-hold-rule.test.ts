@@ -1,7 +1,7 @@
 /**
  * RULE: IS SOMEBODY ELSE HOLDING THIS PR? -- #266/#258, #455's split into
- * `packages/agent-org/src/merge-guard/pr-hold-rule.mjs`. Reads `session:*` off the PR's own labels -- distinct from
- * `claimed-row-rule.mjs`, which reads the same label shape off a ROW this PR would CLOSE.
+ * `packages/agent-org/src/merge-guard/pr-hold-rule.ts`. Reads `session:*` off the PR's own labels -- distinct from
+ * `claimed-row-rule.ts`, which reads the same label shape off a ROW this PR would CLOSE.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";

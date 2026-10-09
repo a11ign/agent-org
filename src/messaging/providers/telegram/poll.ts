@@ -1,11 +1,11 @@
 // THE TELEGRAM PROVIDER'S LONG POLL AND THE LOOP THAT RUNS IT (a11ign/a11ign#2907; docs/messaging.md decision 1, "Long polling"). The
-// provider of send.mjs plus `poll`, so it is a provider by the same single definition (`runProviderConformance`, now with its `poll`
+// provider of send.ts plus `poll`, so it is a provider by the same single definition (`runProviderConformance`, now with its `poll`
 // section RUN because `capabilities.conversation` is declared). **No inbound port: the listener asks Telegram, Telegram never calls it.**
 //
 // THE ORDER OF ONE BATCH, AND WHY EACH STEP SITS WHERE IT DOES:
 //   1. `getUpdates(offset)` -- long poll, `message` and `callback_query` only;
 //   2. every update goes through `inbound.handle`, which writes ITS LEDGER LINE before it answers, so a crash after that point loses one
-//      message and never repeats one (the core's rule, inbound.mjs);
+//      message and never repeats one (the core's rule, inbound.ts);
 //   3. THE OFFSET IS PERSISTED AFTER THE BATCH, never before: a crash between 2 and 3 re-asks for the same updates, and the core's
 //      dedupe by update id turns that replay into `replayed`, which does nothing. The offset is the optimisation and the ledger is the memory.
 //

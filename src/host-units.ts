@@ -66,7 +66,7 @@ export const SHIPPED_DIR = fileURLToPath(new URL("../host/", import.meta.url));
  * beside the project it serves only when `$AGENT_ORG_HOST` says so (#2879).
  */
 export const REPO_ROOT = HOME_CHECKOUT;
-// The tool's own `src/`, where `commands.mjs`'s programs live: known from where this module runs, never from the project's layout.
+// The tool's own `src/`, where `commands.ts`'s programs live: known from where this module runs, never from the project's layout.
 const TOOL_SRC = dirname(fileURLToPath(import.meta.url));
 
 /**
@@ -113,7 +113,7 @@ export const TOOL_ENTRIES = Object.freeze([
  * TEMPLATES THAT SHIP ONLY FOR A PROJECT THAT ASKS FOR THEM (#2901; docs/messaging.md decision 1, "Optional and off by default"): template -> the
  * top-level key of `.agent-org/project.json` whose PRESENCE turns it on. Absent, the unit is not in `shippedUnits`, so `host:check` neither lists
  * nor misses it, `host:install` does not write it, and an installed copy is an orphan that the install removes -- deleting the key is the off switch.
- * Presence only: whether the key is VALID is `messaging/config.mjs`'s refusal, and an invalid one still installs the clock, which then refuses.
+ * Presence only: whether the key is VALID is `messaging/config.ts`'s refusal, and an invalid one still installs the clock, which then refuses.
  */
 export const OPTIONAL_UNITS = (Object.freeze({
   "chairman-watch.service.in": "messaging", "chairman-watch.timer.in": "messaging",
@@ -246,7 +246,7 @@ function beforeTicksOf(host: HostConfig, read: typeof readFileSync): BeforeTick[
   });
 }
 
-/** How a `beforeTick` names one of the TOOL's own commands (`bin.mjs`'s table) instead of a program of the project's. */
+/** How a `beforeTick` names one of the TOOL's own commands (`bin.ts`'s table) instead of a program of the project's. */
 const TOOL_COMMAND_WORD = "agent-org";
 
 /**
@@ -262,7 +262,7 @@ const namesToolCommand = (command: string): boolean => commandWords(command)[0] 
 
 /**
  * A `beforeTick` AS THE UNIT RUNS IT. One that names a tool command (`agent-org primary:update`) runs that command's program from the
- * tool checkout, through the same table `bin.mjs` reads, and not through the project's `node_modules`: a project's `pnpm run primary:update`
+ * tool checkout, through the same table `bin.ts` reads, and not through the project's `node_modules`: a project's `pnpm run primary:update`
  * is `agent-org primary:update` from the copy its lockfile pins, a second version of the tool running on every tick (#3464). Any other
  * command is the project's own and is run as written. An unknown tool command REFUSES, since a unit that quietly ran nothing would leave
  * the checkout it was declared to move stale. The program is named by absolute path, and `node` is the host Node that strips types (#4388), because the command runs in the PROJECT's checkout (`env -C`), not the tool's.
@@ -1823,7 +1823,7 @@ function zshenvNote(unit: string, why: string): Finding {
 /**
  * #3533: WHICH `agent-org` RELEASE EVERY RUNNER RUNS, read from the machine: the tool checkout, each worktree's resolved copy and the last `ci.yml` run, against the newest release tag of the
  * tool's remote. `null` is a host that declares no tool (nothing to compare). It is NOT part of `--json`: that is the gate's instrument and the org-health tick reads the same comparison itself
- * (`readToolAgreement`), so a finding here would wake a session twice for one fact. Both call `lib/tool-version-agreement.mjs`, so the two print one reading.
+ * (`readToolAgreement`), so a finding here would wake a session twice for one fact. Both call `lib/tool-version-agreement.ts`, so the two print one reading.
  * @param {{ host?: HostConfig, now?: number, facts?: ReturnType<typeof readFacts> }} [deps] @returns {{ now: number, result: ReturnType<typeof agreement> } | null}
  */
 export function readToolVersionAgreement({ host = homeHostConfig(), now = Date.now(), facts }: { host?: HostConfig; now?: number; facts?: ReturnType<typeof readFacts>; } = {}): { now: number; result: ReturnType<typeof agreement>; } | null {
@@ -2971,7 +2971,7 @@ function remedy(drift: Finding[]): string {
  * THE GATE SPAWNS THIS RATHER THAN IMPORTING IT, and the reason is measured rather than stylistic. A
  * direct `import { hostUnitDrift }` in `work-gate.ts` costs nothing at load -- +1 file on a closure of
  * 21, 39.3ms against 39.4ms -- but it drags this file's `git log --all` (`addedOnSomeRef`) into the
- * gate's CAPABILITY closure, and the gate is imported by `row-claim/runner-rule.mjs`, which most of the
+ * gate's CAPABILITY closure, and the gate is imported by `row-claim/runner-rule.ts`, which most of the
  * packaging suite reaches. MEASURED with `deriveClosureRequirements` over
  * `packages/lab/src/packaging/*.test.ts`: the files deriving a `history` requirement go from **4 to 28**.
  * That is a standing `History: full` tax on 24 test files that will never call this code, levied on

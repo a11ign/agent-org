@@ -2,7 +2,7 @@
 /**
  * #3475: B4 COMPARES A ROW'S REGION WITH THE REGIONS OF THE ROWS ALREADY CLAIMED, not only with open pull requests' files.
  *
- * The defect: `worker-3423` claimed #3423 at 13:02:04Z with `watch.mjs`, `event.mjs` and `core.mjs` in its Region; `worker-3414`
+ * The defect: `worker-3423` claimed #3423 at 13:02:04Z with `watch.ts`, `event.ts` and `core.ts` in its Region; `worker-3414`
  * claimed #3414 at 13:29:55Z with the same three; no pull request existed to compare with (#148 opened at 13:34:33Z), so B4 passed on
  * an empty list, truthfully, and the two rows ran into three conflicting pull requests. The Regions below are those two rows' real ones.
  *
@@ -289,7 +289,7 @@ test("the Regions in this file are read by the tree's own parser as the rules re
 
 /** #3418's Region as it stood at 18:38Z (`userContentEdits`, measured 2026-10-04): one fenced entry, then the narrowing paragraph that NAMES `package.json`. */
 const NARROWING_3418 = "**Narrowed by `product-manager` 2026-10-04T18:45Z: done-when 1's code merged as agent-org#180 (`5617bff`), so the first Region "
-  + "(`watch-list.mjs`, its test, `sources/watched.mjs` and its test, `watch.mjs`, `package.json`, `event.mjs`, `core.mjs`) outlived its commit. "
+  + "(`watch-list.ts`, its test, `sources/watched.ts` and its test, `watch.ts`, `package.json`, `event.ts`, `core.ts`) outlived its commit. "
   + "What is left is a LIVE watch and three ledger readings, which edit nothing.**";
 const BODY_3418 = (fence: string[]) => `## Region\n\n\`\`\`\n${fence.join("\n")}\n\`\`\`\n\n${NARROWING_3418}\n\n`
   + "The repository is **`a11ign/agent-org`**; paths are relative to its root.\n";

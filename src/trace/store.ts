@@ -1,8 +1,8 @@
 // a11ign/a11ign#3494, first slice: THE TRACE STORE -- one append-only record per event, keyed by row (and pull request, and repository).
 //
-// FOUR SOURCES TODAY, and each record says which: `source: "gh-ledger"` for one `gh` call (`gh-calls.mjs`, #3516), `source: "transcript"` for a model turn (`message.usage` of a Claude transcript, or a request of a Codex reviewer session,
-// `codex-turns.mjs`, #3519, marked `harness: "codex"`), `source: "wake-ledger"` for the
-// order the gate delivered, `source: "github"` for what GitHub saw of a row and its pull requests (`github-events.mjs`, #3508). The platform-first reading (posted on #3494) found Claude Code's OpenTelemetry carries tokens, `cost_usd` and per-request duration, but
+// FOUR SOURCES TODAY, and each record says which: `source: "gh-ledger"` for one `gh` call (`gh-calls.ts`, #3516), `source: "transcript"` for a model turn (`message.usage` of a Claude transcript, or a request of a Codex reviewer session,
+// `codex-turns.ts`, #3519, marked `harness: "codex"`), `source: "wake-ledger"` for the
+// order the gate delivered, `source: "github"` for what GitHub saw of a row and its pull requests (`github-events.ts`, #3508). The platform-first reading (posted on #3494) found Claude Code's OpenTelemetry carries tokens, `cost_usd` and per-request duration, but
 // it has no file exporter, needs a receiver the host does not run, and cannot reach a standing seat that is already running. So the transcript is the source and
 // OTel records can be added later under another `source` without changing a reader.
 //

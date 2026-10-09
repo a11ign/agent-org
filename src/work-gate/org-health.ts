@@ -1,11 +1,11 @@
 // module: the org-health facts and orders -- what the tick reads and says about whether the org is landing work (#2898)
 //
 // MOVED OUT OF `work-gate.ts`, NOT REWRITTEN (#2898, the second split of #928's lever 2a, after #2542): the readings
-// `orgHealthNow` hands to `org-health.mjs` (red pull requests, the fleet's captures, the wait facts and the rulings
+// `orgHealthNow` hands to `org-health.ts` (red pull requests, the fleet's captures, the wait facts and the rulings
 // the tick re-reads) and the orders built from them. Measured on #2898 over the pairs of pull requests that waited
 // on B4: six rows waited behind fixes to exactly these definitions and nothing else in the file.
 //
-// THE BOUNDARY, as `work-gate/pr-orders.mjs` states it: what only this family uses lives here, and what a family
+// THE BOUNDARY, as `work-gate/pr-orders.ts` states it: what only this family uses lives here, and what a family
 // that stayed behind also uses (`readPrs`, `shouldBeMerging`, `partitionUnclaimed`, `holdExcused`'s callers) stays in
 // `work-gate.ts` and is IMPORTED from it. That import is a cycle with the entry point, safe only while nothing
 // here reads an imported binding at load time; the one top-level `const` here (`MAX_WAIT_READS`) is a literal.
@@ -126,7 +126,7 @@ export function stalledPrFacts(prs: any[], required: string[] | null, { now }: {
  *               request OPENING, for comparison: 26.7 / 43.8 / 62.9 / 103.4 / 133.6 (`IDLE_CLAIMANT_MINUTES`'s own 27-42 reading agrees).
  *   RESULT      77.0 is the p95, plus one tick (about 2 minutes) of margin, rounded to 80.
  * WHAT THIS DOES NOT PROVE: that 33 rows are the distribution (the thinnest of this file's three readings), nor that a holder was `idle` throughout
- * (`herdr` keeps no history). **IT IS BELOW `OVERDUE_ROW_MINUTES` (135) AND THE CLOCK DOES NOT YET READ IT AS A BOUND**: `boundOf` is in `org-health.mjs`,
+ * (`herdr` keeps no history). **IT IS BELOW `OVERDUE_ROW_MINUTES` (135) AND THE CLOCK DOES NOT YET READ IT AS A BOUND**: `boundOf` is in `org-health.ts`,
  * a file #3533 declares, so today it only decides whether a row the 135-minute clock raises is NAMED for the shape. #3495's 100 minutes is therefore
  * NOT raised by it (`outcome-clock.test.ts` says so), and the follow-up is `boundOf` reading a per-item bound.
  */
@@ -148,7 +148,7 @@ export type Holders = { moves: Map<number, ClaimMoves> | null, agents: {label: s
 export type ClaimMoves = import("./claim-stall-tick.ts").ClaimMoves;
 
 /**
- * The wait kinds a claimed row DECLARES as fields, which `idleClaimantReading` counts: `claim-stall-tick.mjs`'s `declaredWaitOf` plus its open `blockedBy`
+ * The wait kinds a claimed row DECLARES as fields, which `idleClaimantReading` counts: `claim-stall-tick.ts`'s `declaredWaitOf` plus its open `blockedBy`
  * edges, restated because that function is not exported and the file is not this row's Region. `answer:<the holder>` is not the holder's wait.
  * THE TICK'S `now` DECIDES WHETHER A `Not-before:` HOLDS, never the wall clock (`waitingOn` defaults to it), or a clock handed a time reads another day's wait.
  */

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// COPIED FROM `packages/guards/src/changed-files.mjs` at cd4bdb7dc (#2658, child 3g of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
+// COPIED FROM `packages/guards/src/changed-files.ts` at cd4bdb7dc (#2658, child 3g of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
 // its package. The product keeps its original and the two can drift, with no cross-repository pin: `agent-org-outward-edges.test.ts` compares them.
-// CHANGED FROM THE ORIGINAL, ONE LINE: its one sibling import, which was `../../worker-fleet/src/cli-flags.mjs` and is now the tool's own copy beside it.
+// CHANGED FROM THE ORIGINAL, ONE LINE: its one sibling import, which was `../../worker-fleet/src/cli-flags.ts` and is now the tool's own copy beside it.
 // ==== end of copy header ====
 // @ts-check
 // command: list the paths a range changed, BOTH SIDES OF A RENAME
@@ -19,8 +19,8 @@
 // a bypass: a pull request moving a file OUT of another session's lane was not seen by the check that owns
 // that lane. Nine readers asked the question and each spelled it itself; #938 fixed one of them.
 //
-// A LEAF MODULE, like `region-paths.mjs`: its only import is `git-env.mjs`, which imports nothing, so
-// `ci-changed.mjs` -- an entry that runs before `npm ci` -- can use it without gaining a package specifier.
+// A LEAF MODULE, like `region-paths.mjs`: its only import is `git-env.ts`, which imports nothing, so
+// `ci-changed.ts` -- an entry that runs before `npm ci` -- can use it without gaining a package specifier.
 // `select-changed-tests.mjs` re-exports it rather than keeping the copy #938 wrote there.
 //
 // A FLAG ADDED AT NINE CALL SITES IS NINE COPIES OF A PREDICATE, and a tenth reader would write its own.
@@ -31,9 +31,9 @@ import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 import { sandboxGitEnv } from "./git-env.ts";
-// RELATIVE, NOT `@a11ign/screenreader-fleet/cli-flags`, for the reason `ci-changed.mjs` records above its own:
+// RELATIVE, NOT `@a11ign/screenreader-fleet/cli-flags`, for the reason `ci-changed.ts` records above its own:
 // this module is reachable from a pre-install entry, and a package specifier there dies with
-// ERR_MODULE_NOT_FOUND before `npm ci` finishes. `cli-flags.mjs` imports only `node:` builtins, so the
+// ERR_MODULE_NOT_FOUND before `npm ci` finishes. `cli-flags.ts` imports only `node:` builtins, so the
 // leaf property above survives the import -- `pre-install-import-graph.test.ts` is what checks that, and
 // it walks relative imports rather than taking this comment's word for it.
 import { refuseUnknownFlags } from "./cli-flags.ts";
@@ -52,7 +52,7 @@ export function changedFiles(range: string[], { repoRoot = process.cwd(), pathsp
     .split("\n").filter(Boolean);
 }
 
-// The CLI half, for the workflow steps that cannot import: `node packages/guards/src/changed-files.mjs origin/main...HEAD`
+// The CLI half, for the workflow steps that cannot import: `node packages/guards/src/changed-files.ts origin/main...HEAD`
 // prints one path per line, which is what `> /tmp/lane-changed.txt` wants.
 //
 // `realpathSync` on argv[1], because without it the guard below silently does not fire through a symlink
@@ -67,10 +67,10 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
   refuseUnknownFlags([], {
     entry: import.meta.url,
     argv: at === -1 ? argv : argv.slice(0, at),
-    command: "node packages/guards/src/changed-files.mjs",
+    command: "node packages/guards/src/changed-files.ts",
   });
   if (argv.length === 0) {
-    console.error("usage: node packages/guards/src/changed-files.mjs <range...> [-- <pathspec...>]");
+    console.error("usage: node packages/guards/src/changed-files.ts <range...> [-- <pathspec...>]");
     process.exit(2);
   }
   const pathspec = at === -1 ? [] : argv.slice(at + 1);

@@ -4,7 +4,7 @@
 // A CLASS is a way the org fails that has happened more than once; its definition (`id`, `name`, `guard`) is a row of the project's
 // `.agent-org/failure-classes.json`, and an INSTANCE is a CLOSED row carrying the label `class:<id>`. The gate COUNTS labels, so no
 // model judges membership, and a defect pull request never edits the index. A second closed row under one class is a repeat, and a
-// repeat means the guard failed. `org-health.mjs` turns what this file reads into the `class-repeat` signal.
+// repeat means the guard failed. `org-health.ts` turns what this file reads into the `class-repeat` signal.
 //
 // A LEAF: it imports no org-health or work-gate name (the signal's name and the order text live there), so both can import it.
 import { execFileSync } from "node:child_process";

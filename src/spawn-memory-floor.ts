@@ -32,7 +32,7 @@ const KB_PER_GB = 1024 * 1024;
  *   - ABOVE the runaway's 351 MB, which is the reading to stay above and not a floor to copy (`ceo`, 2026-09-25);
  *   - WELL BELOW the idle host, 23.8 GB when the row was filed and 27356 MB read by `free -m` when it was claimed, so it does not bite
  *     an ordinary tick;
- *   - NOT SMALLER than M1's cap plus one instance: `DEFAULT_MEMORY_MAX` (`test-memory-cap.mjs`) is 4G and an instance is
+ *   - NOT SMALLER than M1's cap plus one instance: `DEFAULT_MEMORY_MAX` (`test-memory-cap.ts`) is 4G and an instance is
  *     about 200 MB, so 4.2 GB is the least at which a spawn that starts a capped run does not begin with the cap already
  *     out of reach. 5 GiB leaves that with about 0.8 GB over.
  * A measured value replaces it in a later PR with no other change.

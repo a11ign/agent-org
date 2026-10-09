@@ -142,13 +142,13 @@ function runFixture(name: string, files: Record<string, string>, extraEnv: NodeJ
   mkdirSync(base, { recursive: true });
   for (const [file, body] of Object.entries(files)) writeFileSync(join(dir, file), body);
   writeFileSync(
-    join(dir, "rstest.config.mjs"),
+    join(dir, "rstest.config.ts"),
     `export default { root: ${JSON.stringify(dir)}, include: ["*.fixture.test.js"], globals: true, pool: { type: "forks" },
        globalSetup: [${JSON.stringify(SETUP)}], setupFiles: [${JSON.stringify(FILE_SETUP)}] };`,
   );
   const env: NodeJS.ProcessEnv = { ...process.env, ...extraEnv, [BASE_ENV]: base, RSTEST_NO_AGENT: "1" };
   delete env[RUN_ROOT_ENV];
-  const result = spawnSync(RSTEST, ["run", "--config", join(dir, "rstest.config.mjs")], { cwd: dir, env, encoding: "utf8" });
+  const result = spawnSync(RSTEST, ["run", "--config", join(dir, "rstest.config.ts")], { cwd: dir, env, encoding: "utf8" });
   assert.equal(result.error, undefined, `the child rstest did not start: ${result.error?.message}`);
   return { status: result.status, output: `${result.stdout}${result.stderr}`, base, runs: readdirSync(base) };
 }

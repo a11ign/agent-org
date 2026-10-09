@@ -25,7 +25,7 @@ const near = (actual: unknown, expected: number) => assert.ok(Math.abs(actual - 
 
 const SONNET = "claude-sonnet-5-5";
 let serial = 0;
-const WRITE_1H_FACTOR = 2; // store.mjs's own: a 1-hour cache write costs twice the input rate
+const WRITE_1H_FACTOR = 2; // store.ts's own: a 1-hour cache write costs twice the input rate
 /**
  * A turn event in the store's shape. `tokens` is [input, output, cacheRead, cacheWrite1h]; `cost` null is an unpriced turn.
  * A report prices a turn from `PRICES` and ignores the cost on its line (#3638), so a fixture that wants a turn to cost `cost` dollars gives it a model of its own with a flat rate

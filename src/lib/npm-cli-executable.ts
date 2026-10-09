@@ -1,4 +1,4 @@
-// COPIED FROM `scripts/npm-cli-executable.mjs` at cd4bdb7dc (#2658, child 3g of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
+// COPIED FROM `scripts/npm-cli-executable.ts` at cd4bdb7dc (#2658, child 3g of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
 // its package. The product keeps its original and the two can drift, with no cross-repository pin: `agent-org-outward-edges.test.ts` compares them.
 // CHANGED FROM THE ORIGINAL: NOTHING but this header.
 // ==== end of copy header ====

@@ -1,5 +1,5 @@
 // THE WATCHED SOURCE (a11ign/a11ign#3418, A5; chairman point 2 of #3409): a thing the chairman asked to be kept posted on is read each tick, and when its state is not the
-// one he was last given the source offers `watch:<thing>` with the text `<what it is>: now <state>`. `watch-list.mjs` holds what is watched and why it ends; this file
+// one he was last given the source offers `watch:<thing>` with the text `<what it is>: now <state>`. `watch-list.ts` holds what is watched and why it ends; this file
 // only asks.
 //
 // **"LAST GIVEN" IS THE LEDGER'S, NOT THIS FILE'S.** The state to compare with is the last `watch:<thing>` delivery the core recorded as told, or the state read when the watch
@@ -9,7 +9,7 @@
 // **A THING THAT CANNOT BE READ IS `cannot-ask`**, never "unchanged" and never "ended": the watch stays, the others are read, and the reason is logged. A thing that has
 // reached its final state is offered ONCE like any other change; it stops being asked after that because `activeWatches` no longer lists it once the core has told it.
 //
-// A LEAF and INJECTED, as `milestones.mjs` is: it imports siblings and node's own, and reads only through the placeholder `readers` it is handed.
+// A LEAF and INJECTED, as `milestones.ts` is: it imports siblings and node's own, and reads only through the placeholder `readers` it is handed.
 
 import { stateFingerprint } from "../event.ts";
 import type { Readers } from "../placeholders.ts";

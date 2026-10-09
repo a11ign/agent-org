@@ -96,7 +96,7 @@ import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 // RELATIVE, never `@a11y-witness/worker-fleet/cli-flags`: this job runs with `actions/checkout` and
 // nothing else -- no `pnpm install`, no build -- so the package specifier would resolve to a `dist/` that does
-// not exist there. #330 and #331 are what that circular bootstrap costs. `cli-flags.mjs` imports only
+// not exist there. #330 and #331 are what that circular bootstrap costs. `cli-flags.ts` imports only
 // `node:path`, `node:fs` and `node:url`.
 import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 // #804: A LEAF IMPORT, safe under the identical no-`pnpm install`/no-build constraint the rest of this header
@@ -116,7 +116,7 @@ import { answersOwedBy, ANSWER_PREFIX } from "./waiting-condition.ts";
 // report -- and `tracker-writer-population.test.ts` refuses a body-sending script that does not reach this
 // module through its import closure. Guarded in `gh` rather than at the one call site, the way
 // `row-claim.ts`, `carry-branch.ts` and `stranded-branches.ts` do it, so every call added tomorrow is
-// covered too. IMPORT-SAFE under this header's no-`pnpm install`/no-build constraint: `leak-patterns.mjs`
+// covered too. IMPORT-SAFE under this header's no-`pnpm install`/no-build constraint: `leak-patterns.ts`
 // imports nothing at all, so it cannot be part of a cycle -- the identical argument `claim-labels.ts`
 // carries above.
 import { assertNoLeakInArgv } from "./lib/leak-patterns.ts";
@@ -314,7 +314,7 @@ export function orphanedRowReport({ row, prNumber, sha, branch, declaration }: {
  * of one that does.
  *
  * The real parser is also a heavier import than this path should carry: `acceptance-commands.ts` pulls
- * `region-paths.ts`, `local-import-closure.mjs` and `cli-flags.mjs` behind it, and this job runs with
+ * `region-paths.ts`, `local-import-closure.ts` and `cli-flags.ts` behind it, and this job runs with
  * `actions/checkout` and nothing else (see this file's own header on why that matters).
  *
  * @param {string} body @returns {string} the declaration as written, or a stated absence -- never a guess

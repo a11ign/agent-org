@@ -93,7 +93,7 @@ export const AUTOCOMPACT_WINDOW_TOKENS =
 // --- THE HAIKU TIER, A TRIAL (a11ign/a11ign#4382, the chairman's spend direction of 2026-10-09, part 2) ---
 //
 // A row labelled `tier:haiku` gets a `claude-haiku-5-5` worker. THE ONE DESIGN FACT: Haiku 5.5 takes a prompt of at most
-// 100,000 tokens (`PRICES` in `trace/store.mjs`: a request above it costs `null`, and the model refuses it), while the Sonnet
+// 100,000 tokens (`PRICES` in `trace/store.ts`: a request above it costs `null`, and the model refuses it), while the Sonnet
 // window above is 200,000. `--autocompact` compacts about AUTO_COMPACT_TRIGGER_MARGIN_TOKENS below its window, so the Haiku
 // window is the ceiling less a little headroom, PLUS that margin: the trigger lands at 95,000, inside the ceiling. A fresh
 // worker's own base is MEASURED_FRESH_WORKER_BASE_TOKENS, which leaves about 30,000 of working room -- the shape of #2717's

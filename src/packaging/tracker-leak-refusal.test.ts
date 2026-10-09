@@ -19,7 +19,7 @@
  * first.
  *
  * Every writer wrapper -- `row-file` (`fileRefusalReason`), `pr-open`/`pr-edit` (`checkBody`),
- * `tracker-comment` (`editRefusal`) -- now calls `leakRefusalReason` (in `leak-patterns.mjs`, beside
+ * `tracker-comment` (`editRefusal`) -- now calls `leakRefusalReason` (in `leak-patterns.ts`, beside
  * `allLeaksIn`) BEFORE its own `gh` call. This file proves the wiring, not a second copy of the
  * predicate.
  *

@@ -1,4 +1,4 @@
-// no-token: prepareContext -- the orders port, the readers and the GitHub writer are injected fixtures and nothing here calls it; `listen.mjs` only carries it in through the `converse.mjs` import (#3581)
+// no-token: prepareContext -- the orders port, the readers and the GitHub writer are injected fixtures and nothing here calls it; `listen.ts` only carries it in through the `converse.ts` import (#3581)
 // @ts-check
 // THE WALK-THROUGH (a11ign/a11ign#3425, chairman point 3), through the real path: the real watcher sends the brief's first step, the real `createInbound` mints each press, the real `createAnswers`
 // routes it, and the real `createForwarder` sends what comes back and tells the ledger the new message's ref. The fixtures are the provider, the GitHub writer, the liaison's queue and the readers.

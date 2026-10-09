@@ -13,7 +13,7 @@
 // `stateHash` is a terminal state's. A final telling that FAILED or was deferred leaves the watch listed, and the next tick offers it again; a line written at observation
 // time could not do that. The same fold gives the second tick nothing to tell, which is why removal-on-terminal needs no separate "ended" line.
 //
-// **THE STATE IS READ THROUGH THE PLACEHOLDER VOCABULARY (`placeholders.mjs`)**, so "the state of a pull request" means here exactly what it means in a reply to the chairman,
+// **THE STATE IS READ THROUGH THE PLACEHOLDER VOCABULARY (`placeholders.ts`)**, so "the state of a pull request" means here exactly what it means in a reply to the chairman,
 // and a thing the vocabulary cannot read is refused at `add` and not at the first tick. A run is read by `{{run:ID.status}}`, which is the run's status while it
 // runs and its conclusion once it has one, so a run in progress can be watched and a run that has concluded is refused at `add` like any other thing already final.
 //
@@ -39,7 +39,7 @@ import { checkMessage } from "./record.ts";
 import { accountIsDeclared, defaultLedgerPath, trackerRepo } from "./state.ts";
 
 export const EXIT = Object.freeze({ ok: 0, failed: 1, refused: 2 });
-/** The ledger `direction` of `add` and `remove`, and the event `kind` the watcher tells (`event.mjs`). */
+/** The ledger `direction` of `add` and `remove`, and the event `kind` the watcher tells (`event.ts`). */
 export const WATCH_DIRECTION = "watch";
 export const WATCH_KIND = "watch";
 const KEY_PREFIX = "watch:";
@@ -178,9 +178,9 @@ function guardedRunner(file: string, assertRead: (argv: readonly string[]) => vo
 }
 
 /**
- * The files `{{fleet.*}}` and `{{gate.*}}` read, named the way `watch.mjs` names them for the watcher: the two files `fleet-watch` writes under the project's `runs/`,
+ * The files `{{fleet.*}}` and `{{gate.*}}` read, named the way `watch.ts` names them for the watcher: the two files `fleet-watch` writes under the project's `runs/`,
  * and the tick's completion record beside the wake ledger. WITHOUT THEM those placeholders refuse ("this host named no fleet-watch state files"), which is the right
- * failure and, for a `Verify:` over a worker power-on, a procedure that never advances (#3646). `host-config.ts` is imported WHEN ASKED, as `reply-cli.mjs` does:
+ * failure and, for a `Verify:` over a worker power-on, a procedure that never advances (#3646). `host-config.ts` is imported WHEN ASKED, as `reply-cli.ts` does:
  * it resolves the host at import, and a host that cannot name the record must cost `{{gate.*}}` and nothing else.
  * Returns no `gateRecordPath` when the host could not name one, said on `err`
  */
@@ -203,7 +203,7 @@ export function createWatchReaders(repo: string, now: () => number = Date.now, f
   return createGhReaders({ gh: guardedRunner("gh", assertReadOnlyGh), systemctl: guardedRunner("systemctl", assertReadOnlySystemctl), repo, now, ...files });
 }
 
-/** What a caller may leave out. A spread and not parameter defaults, as `record.mjs` does. */
+/** What a caller may leave out. A spread and not parameter defaults, as `record.ts` does. */
 const DEFAULT_DEPS = () => ({
   root: process.cwd(), env: process.env as Record<string, string | undefined>, home: homedir(), now: Date.now,
   readers: undefined as Readers | undefined,

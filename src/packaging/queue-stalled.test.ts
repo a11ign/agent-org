@@ -135,8 +135,8 @@ test("mergeTreeConflict: MUTATION TARGET -- real captured conflict output (PR #2
     "packages/agent-org/src/board-document.ts",
     "scripts/board-only-check.mjs",
     "packages/agent-org/src/board-report.ts",
-    "scripts/ci-changed.mjs",
-    "packages/guards/src/isolation-gate.mjs",
+    "scripts/ci-changed.ts",
+    "packages/guards/src/isolation-gate.ts",
     "",
     "Auto-merging packages/agent-org/src/board-data.ts",
     "CONFLICT (content): Merge conflict in packages/agent-org/src/board-data.ts",
@@ -148,7 +148,7 @@ test("mergeTreeConflict: MUTATION TARGET -- real captured conflict output (PR #2
   assert.equal(result.conflict, true);
   assert.deepEqual(result.files, [
     "packages/agent-org/src/board-data.ts", "packages/agent-org/src/board-document.ts", "scripts/board-only-check.mjs",
-    "packages/agent-org/src/board-report.ts", "scripts/ci-changed.mjs", "packages/guards/src/isolation-gate.mjs",
+    "packages/agent-org/src/board-report.ts", "scripts/ci-changed.ts", "packages/guards/src/isolation-gate.ts",
   ]);
 });
 

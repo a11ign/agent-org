@@ -82,7 +82,7 @@ export const LOCKFILE = "pnpm-lock.yaml";
  * A HEAD that did not move asks nothing: there is no range, and a `git diff` of a commit against itself
  * would be a question whose answer is empty by construction.
  *
- * ASKED THROUGH `packages/guards/src/changed-files.mjs`, the one place this repository asks git which paths a range
+ * ASKED THROUGH `packages/guards/src/changed-files.ts`, the one place this repository asks git which paths a range
  * touched (#939), so a lockfile moved away is listed under the path it left. `changed` is that helper,
  * injected so a test can answer for git.
  *

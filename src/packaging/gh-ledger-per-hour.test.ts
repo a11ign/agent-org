@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import { callerScript, parseLedger, parseRollup, perHour, renderPerHour, rollupPathOf, spenderPhrase, topSpender } from "../gh-ledger.ts";
 import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
 
-// THE PROJECT THIS FILE RUNS AGAINST IS A RECORDED ONE (`org-health-auto-off-refusal.test.ts` says why): `org-health.mjs` resolves the checkout it serves when it is imported, and with no
+// THE PROJECT THIS FILE RUNS AGAINST IS A RECORDED ONE (`org-health-auto-off-refusal.test.ts` says why): `org-health.ts` resolves the checkout it serves when it is imported, and with no
 // `$AGENT_ORG_HOST` that is wherever the suite happens to be run from, which refuses. The host file is set FIRST and the tool imported AFTER it, so the acceptance command as written runs.
 const SCRATCH = tmpDirForFile("gh-per-hour-project-");
 const PROJECT = join(SCRATCH, "project");

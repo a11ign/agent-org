@@ -20,7 +20,7 @@ import { TICK_KILLED, TICK_MARKER_FILE, TICK_OVERRAN, TICK_SLOW, TICK_SLOW_SECON
   readMarker, slowThresholdSeconds, slowTickOrders, tickMarkerPath, writeStartMarker } from "./work-tick-health.ts";
 
 const SRC = fileURLToPath(new URL(".", import.meta.url));
-const PRELOAD = join(SRC, "lib", "crash-exit.mjs");
+const PRELOAD = join(SRC, "lib", "crash-exit.ts");
 const COST_PATH = "/state/agent-org/tick-cost.jsonl";
 const START = Date.parse("2026-10-04T21:40:04Z");
 

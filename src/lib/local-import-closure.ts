@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// COPIED FROM `packages/guards/src/local-import-closure.mjs` at cd4bdb7dc (#2658, child 3g of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
+// COPIED FROM `packages/guards/src/local-import-closure.ts` at cd4bdb7dc (#2658, child 3g of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
 // its package. The product keeps its original and the two can drift, with no cross-repository pin: `agent-org-outward-edges.test.ts` compares them.
 // CHANGED FROM THE ORIGINAL: NOTHING but this header.
 // ==== end of copy header ====
@@ -48,7 +48,7 @@ export function stripComments(text: string): string {
   // `@a11ign/*` -- opened a block-comment match that closed at the next `*/` ANYWHERE LATER IN THE FILE,
   // blanking every line between, real code included. Measured across the tree the night this was found:
   // 10 of 89 `scripts/*.mjs` with relative imports derived NONE, `packages/agent-org/src/row-claim.mjs` among them --
-  // twelve real imports, zero visible -- and with them `select-changed-tests.mjs` and `ci-changed.mjs`,
+  // twelve real imports, zero visible -- and with them `select-changed-tests.mjs` and `ci-changed.ts`,
   // which decide what CI runs.
   //
   // IT NEEDED BOTH HALVES, which is why it survived a test written for exactly this class (#725): the

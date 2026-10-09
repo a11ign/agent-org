@@ -1,4 +1,4 @@
-// THE RECORD OF A TICK THAT COMPLETED (a11ign/a11ign#3040). `work-tick.mjs` writes it, `messaging/sources/readers.mjs` reads it, and nothing else does.
+// THE RECORD OF A TICK THAT COMPLETED (a11ign/a11ign#3040). `work-tick.mjs` writes it, `messaging/sources/readers.ts` reads it, and nothing else does.
 //
 // WHY A FILE AND NOT THE UNIT'S OWN TIMESTAMP. On 2026-10-02 the work-tick unit ran 63 ticks that each died at import, 15:23Z to about 17:40Z, and
 // `InactiveEnterTimestamp` moved on every one exactly as it does on a good tick: it answers "did the unit RUN", and `incident:gate-crash` needs "did

@@ -34,26 +34,26 @@
 //
 // Three changes to this one file in one night produced two conflicts and a deadlock between rules nobody
 // read together (#442, the armed-race rule and the ancestry rule interacting under strict protection --
-// see `packages/agent-org/src/merge-guard/armed-race-rule.mjs` for the full account). Each check now lives in its own
+// see `packages/agent-org/src/merge-guard/armed-race-rule.ts` for the full account). Each check now lives in its own
 // file under `packages/agent-org/src/merge-guard/`, with its own test, so a rule can be read, changed and
 // mutation-checked without touching the seven others:
 //
-//   packages/agent-org/src/merge-guard/base-rule.mjs          is the PR based on `main`?               (#148)
-//   packages/agent-org/src/merge-guard/head-tip-rule.mjs       does GitHub's recorded head match the tip? (#294/#195)
-//   packages/agent-org/src/merge-guard/checks-rule.mjs         did every required context run and conclude? (#148)
-//   packages/agent-org/src/merge-guard/staleness-rule.mjs      did every run finish after main's CURRENT tip? (#100/#135)
-//   packages/agent-org/src/merge-guard/ancestry-rule.mjs       does this head CONTAIN main's tip?        (#182/#165)
-//   packages/agent-org/src/merge-guard/claimed-row-rule.mjs    would arming close a row someone else holds? (#249)
-//   packages/agent-org/src/merge-guard/pr-hold-rule.mjs        is somebody else actively working this PR?  (#266/#258)
-//   packages/agent-org/src/merge-guard/armed-race-rule.mjs     would a push race an already-armed merge?    (#386/#442)
+//   packages/agent-org/src/merge-guard/base-rule.ts          is the PR based on `main`?               (#148)
+//   packages/agent-org/src/merge-guard/head-tip-rule.ts       does GitHub's recorded head match the tip? (#294/#195)
+//   packages/agent-org/src/merge-guard/checks-rule.ts         did every required context run and conclude? (#148)
+//   packages/agent-org/src/merge-guard/staleness-rule.ts      did every run finish after main's CURRENT tip? (#100/#135)
+//   packages/agent-org/src/merge-guard/ancestry-rule.ts       does this head CONTAIN main's tip?        (#182/#165)
+//   packages/agent-org/src/merge-guard/claimed-row-rule.ts    would arming close a row someone else holds? (#249)
+//   packages/agent-org/src/merge-guard/pr-hold-rule.ts        is somebody else actively working this PR?  (#266/#258)
+//   packages/agent-org/src/merge-guard/armed-race-rule.ts     would a push race an already-armed merge?    (#386/#442)
 //
 // Two more modules hold shared machinery that is not itself a refusal rule, so splitting it per-rule
 // would recreate the fact-stated-twice shape rather than fix it:
 //
-//   packages/agent-org/src/merge-guard/reason-kind.mjs         classifies a reason string -- read by every rule's own
+//   packages/agent-org/src/merge-guard/reason-kind.ts         classifies a reason string -- read by every rule's own
 //                                                test AND by the reconciliation log below
-//   packages/agent-org/src/merge-guard/lookups.mjs             the network/process calls every rule's facts come from
-//   packages/agent-org/src/merge-guard/reconciliation.mjs      #188's verdict log and its `--reconcile` comparison
+//   packages/agent-org/src/merge-guard/lookups.ts             the network/process calls every rule's facts come from
+//   packages/agent-org/src/merge-guard/reconciliation.ts      #188's verdict log and its `--reconcile` comparison
 //
 // This file composes them (`mergeReadiness`, the full composition; `mergeSafetyVerdict`, the narrower
 // self-reference-safe one), re-exports every name a rule module owns (so the five existing importers --
@@ -113,11 +113,11 @@ const EXIT = { READY: 0, REFUSED: 1, CANNOT_ASK: 2 };
  * permanently rather than only the unsafe ones. `gate` already answers "did CI pass" by construction
  * (branch protection requires it, and it is `if: always()` over every sibling's `result`) — this answers
  * the one question `strict=false` (#277) left nobody answering that does not depend on whether CI has
- * finished: does this head match what the platform thinks it is (`head-tip-rule.mjs`, #294).
+ * finished: does this head match what the platform thinks it is (`head-tip-rule.ts`, #294).
  *
  * TWO RULES ARE DELIBERATELY NOT COMPOSED HERE, and both cost a live near-miss to find before they
  * shipped — `dispatcher` drove this function against the real, moving queue and measured both refusing
- * the NORMAL case. See `ancestry-rule.mjs` and `claimed-row-rule.mjs` for the full account of each; in
+ * the NORMAL case. See `ancestry-rule.ts` and `claimed-row-rule.ts` for the full account of each; in
  * short, ancestry refuses almost every open PR under `strict=false`'s normal throughput, and the claimed-
  * row rule needs a `session` identity a CI job does not have and would otherwise refuse its own PR's
  * merge as "closing a stranger's row".
@@ -392,7 +392,7 @@ function armedCheckCommand(branch: string) {
  * `--allow-claimed-close=<name>`'s value, refusing (never silently) a bare boolean -- #249's follow-up,
  * 2026-09-07: it must be a CHECKABLE claim naming who was confirmed with, not an honor system.
  *
- * KEPT HERE, not in `claimed-row-rule.mjs`, deliberately -- #455: this is the one place in that rule's
+ * KEPT HERE, not in `claimed-row-rule.ts`, deliberately -- #455: this is the one place in that rule's
  * whole surface that touches `process.argv` directly, and this file already reads argv and already calls
  * `refuseUnknownFlags` for the entire command. Moving it into the rule module would make that module a
  * second, untracked CLI entry point -- `cli-flags.test.ts`'s argv-reading census discovers exactly this

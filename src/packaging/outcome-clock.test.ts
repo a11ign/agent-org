@@ -1,7 +1,7 @@
 // no-token: gh -- pure: the clock is a function of facts handed in, and the one process test puts a stub `gh` on PATH under a scratch HOME; nothing here reaches the real one
 /**
- * THE OUTCOME CLOCK (#3486, the chairman's "how do we make sure nothing happens again?", 2026-10-04): `overdueReading` in `org-health.mjs` and its facts in
- * `work-gate/org-health.mjs`. EVERY OPEN PR AND EVERY CLAIMED ROW HAS AN AGE SINCE IT OPENED; ONLY A MERGE OR A CLOSE STOPS IT; NO STATE EXEMPTS IT.
+ * THE OUTCOME CLOCK (#3486, the chairman's "how do we make sure nothing happens again?", 2026-10-04): `overdueReading` in `org-health.ts` and its facts in
+ * `work-gate/org-health.ts`. EVERY OPEN PR AND EVERY CLAIMED ROW HAS AN AGE SINCE IT OPENED; ONLY A MERGE OR A CLOSE STOPS IT; NO STATE EXEMPTS IT.
  *
  * THE BOUNDS ARE WRITTEN OUT AS 100 AND 135 MINUTES HERE, NEVER AS THE EXPORTED CONSTANTS, for the reason `org-health.test.ts` gives for its own: a test
  * built from the constant moves with it. `the bounds are the measurement's` pins the literals to the exports in ONE place, with the measurement beside them.

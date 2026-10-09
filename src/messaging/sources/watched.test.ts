@@ -19,7 +19,7 @@ import { WATCHED, runWatch } from "../watch.ts";
 import { activeWatches, createWatchList } from "../watch-list.ts";
 import { observeWatched } from "./watched.ts";
 
-// THE FIXTURE (the same in `sources/watched.test.mjs`, kept in each file so neither imports a test file nor widens this row's Region): a world whose things the test moves
+// THE FIXTURE (the same in `sources/watched.test.ts`, kept in each file so neither imports a test file nor widens this row's Region): a world whose things the test moves
 // between ticks, answering as the placeholder vocabulary's `Readers`, and a ledger that already holds the chairman's message.
 const TRACKER = "a11ign/a11ign";
 /** The ref of a message the ledger took in from the chairman. */

@@ -50,10 +50,10 @@ test("(1) the 13:41:48Z fixture: the owners of #149 and #150 are told, #148 -- f
   const orders = ordersOf(INCIDENT());
   assert.deepEqual(orders.map((o) => o.session), ["worker-3419", "worker-3414"], "one order per LATER pull request, in number order -- and none for #148");
   const [to149, to150] = orders;
-  assert.match(to149.prompt, /#148, which is ahead of it \(opened first\), on `docs\/messaging\.md`, `src\/messaging\/watch\.mjs`/);
-  assert.doesNotMatch(to149.prompt, /core\.mjs/, "#149 shares nothing but those two with #148");
-  assert.match(to150.prompt, /#148, which is ahead of it \(opened first\), on `src\/messaging\/core\.mjs`, `src\/messaging\/event\.mjs`, `src\/messaging\/watch\.mjs`/);
-  assert.match(to150.prompt, /#149, which is ahead of it \(opened first\), on `src\/messaging\/watch\.mjs`/);
+  assert.match(to149.prompt, /#148, which is ahead of it \(opened first\), on `docs\/messaging\.md`, `src\/messaging\/watch\.ts`/);
+  assert.doesNotMatch(to149.prompt, /core\.ts/, "#149 shares nothing but those two with #148");
+  assert.match(to150.prompt, /#148, which is ahead of it \(opened first\), on `src\/messaging\/core\.ts`, `src\/messaging\/event\.ts`, `src\/messaging\/watch\.ts`/);
+  assert.match(to150.prompt, /#149, which is ahead of it \(opened first\), on `src\/messaging\/watch\.ts`/);
   assert.doesNotMatch(to150.prompt, /buttons-are-drawn|\.changeset/, "a changeset is never named as a shared file");
   for (const o of orders) {
     assert.equal(o.cause, "pr-merge-conflict", "filed under an existing cause, not a new one");
@@ -107,7 +107,7 @@ test("(4) a pull request waiting on only SOME of those ahead is still told about
   const [order, ...rest] = ordersOf(prs).filter((o) => o.session === "worker-3414");
   assert.equal(rest.length, 0);
   assert.doesNotMatch(order.prompt, /#148, which is ahead/);
-  assert.match(order.prompt, /#149, which is ahead of it \(opened first\), on `src\/messaging\/watch\.mjs`/);
+  assert.match(order.prompt, /#149, which is ahead of it \(opened first\), on `src\/messaging\/watch\.ts`/);
 });
 
 test("(5) the same fixture next tick is the same `causeKey`; a file the later pull request adds changes it", () => {
@@ -117,8 +117,8 @@ test("(5) the same fixture next tick is the same `causeKey`; a file the later pu
   const grown = INCIDENT();
   grown[1] = prOf(149, [...PR_149, "src/messaging/core.ts"], { session: "worker-3419" });
   const [key149, key150] = ordersOf(grown).map((o) => o.causeKey);
-  assert.notEqual(key149, first[0], "#149 now also shares core.mjs with #148");
-  assert.notEqual(key150, first[1], "and #150 now shares core.mjs with #149 as well");
+  assert.notEqual(key149, first[0], "#149 now also shares core.ts with #148");
+  assert.notEqual(key150, first[1], "and #150 now shares core.ts with #149 as well");
   const [other] = ordersOf([prOf(148, PR_148), prOf(149, [...PR_149, "src/messaging/not-shared.mjs"], { session: "worker-3419" })]);
   assert.equal(other.causeKey, first[0], "a file the later one adds that nobody shares does not move the key");
 });

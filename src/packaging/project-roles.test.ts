@@ -161,7 +161,7 @@ test("POSITIVE CONTROL: the a11ign cause list is asserted to contain `fleet-batc
 
 test("parseProjectCauseModule reads `causes.module`, ABSENT reads as none, and refuses a malformed one", () => {
   assert.equal(parseProjectCauseModule({ schema: 1 }), undefined, "no `causes` field: no plugin, no project cause");
-  assert.equal(parseProjectCauseModule({ causes: { module: "plugins/causes.mjs" } }), "plugins/causes.mjs");
+  assert.equal(parseProjectCauseModule({ causes: { module: "plugins/causes.ts" } }), "plugins/causes.ts");
   for (const bad of [{ causes: {} }, { causes: { module: "" } }, { causes: { module: 7 } }, { causes: [] }] as Loose[]) {
     assert.throws(() => parseProjectCauseModule(bad), (error: unknown) => {
       assert.ok(error instanceof ProjectDeclarationRefusal, `expected a ProjectDeclarationRefusal, got ${String(error)}`);

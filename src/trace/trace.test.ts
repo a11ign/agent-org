@@ -194,7 +194,7 @@ test("TOOL TIME (#3669): a message that follows a 6-minute tool call carries it 
   assert.equal(found.length, 2, "POSITIVE CONTROL: both messages are turns");
   const after = found.find((turn: { id: string; }) => turn.id === "turn:msg_t2");
   assert.equal(after?.toolMs, 6 * 60 * 1000, "from the call's last block at 10:00:05 to its result at 10:06:05");
-  assert.equal(after?.wallClockMs, 5000, "from the attachment at 10:06:07 to the block at 10:06:12: `store.mjs` once said this included the tool, and it does not");
+  assert.equal(after?.wallClockMs, 5000, "from the attachment at 10:06:07 to the block at 10:06:12: `store.ts` once said this included the tool, and it does not");
   assert.equal(found.find((turn: { id: string; }) => turn.id === "turn:msg_t1")?.toolMs, null, "it follows an order, not a tool call: null, never 0");
 });
 
@@ -1105,8 +1105,8 @@ test("BUDGET LINE (#3644): what a run may spend, on which pool, how paced and wh
 const TRACE_DIR = dirname(fileURLToPath(import.meta.url));
 const callsSearchApi = (text: string) => /search\/issues/.test(text);
 test("NO SEARCH (#3644): no source of src/trace/ reads the search API; the scan finds one where there is one", () => {
-  const sources = readdirSync(TRACE_DIR).filter((name) => /\.mjs$/.test(name) && !/\.test\./.test(name));
-  assert.ok(sources.includes("trace.mjs"), "the scan reads the file the row is about");
+  const sources = readdirSync(TRACE_DIR).filter((name) => /\.ts$/.test(name) && !/\.test\./.test(name));
+  assert.ok(sources.includes("trace.ts"), "the scan reads the file the row is about");
   assert.deepEqual(sources.filter((name) => callsSearchApi(readFileSync(join(TRACE_DIR, name), "utf8"))), []);
   assert.equal(callsSearchApi('ghApi(["-X", "GET", "search/issues", "-f", "q=repo:a/b is:pr"])'), true, "POSITIVE CONTROL: the marker notices the call it is looking for, so the empty list above is the sources and not a scan that finds nothing");
 });

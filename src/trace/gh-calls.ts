@@ -3,7 +3,7 @@
 // GraphQL points beside its tokens and dollars. The ledger files are READ, never written.
 //
 // WHY THE STORE MUST READ IT, AND NOT ONLY WHEN A REPORT WANTS IT: the ledger is bounded (2 MiB, the newest half kept past it), so a call older than the bound is GONE. The ingest reads each
-// file incrementally through `ingest-state.mjs` (#3526), and a trim reads as a shrink, which is read again from byte 0 and SAID: safe, because a record's id is made of the line and not of
+// file incrementally through `ingest-state.ts` (#3526), and a trim reads as a shrink, which is read again from byte 0 and SAID: safe, because a record's id is made of the line and not of
 // where it sits, so a line already held is the same record.
 //
 // THE KEY IS THE SESSION ID ON THE LINE (#3589). `host/gh` writes `CLAUDE_CODE_SESSION_ID` (a Codex session's `CODEX_THREAD_ID`) as the last field of each line, and that is the file name of the session's transcript, which

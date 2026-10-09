@@ -23,15 +23,15 @@ const PRACTICES = readLoadedRules();
 // `work-gate.ts` imports it, so a scan of the gate alone would report `trunk-red` as a profile for a cause
 // nothing emits. Both are read, and the positive control below asserts the second one was actually found.
 // #2470: AND `claim-stall.ts` BUILDS THE `claim-stalled` ORDERS, for the same reason.
-// #2542: AND `work-gate/pr-orders.mjs` BUILDS THE PULL-REQUEST ORDERS (draft, failing checks, verdicts, unarmed,
+// #2542: AND `work-gate/pr-orders.ts` BUILDS THE PULL-REQUEST ORDERS (draft, failing checks, verdicts, unarmed,
 // review-blocked, merge conflict, awaiting-evidence). Left off this list the scan reads nine causes fewer than the
 // gate emits and this test goes RED -- the loud direction; the quiet one is a guard that greps the old file for text
 // now in the new module and passes by absence, which is why the control below names a cause that lives ONLY there.
-const GATE = ["work-gate.ts", "work-gate/pr-orders.mjs", "work-gate/lab-job-orders.mjs", "trunk-red.ts", "claim-stall.ts",
+const GATE = ["work-gate.ts", "work-gate/pr-orders.ts", "work-gate/lab-job-orders.ts", "trunk-red.ts", "claim-stall.ts",
   "repeating-lines.ts", // #2848: the repeating-line order is built beside the journal reading, not in the gate
   "org-health.ts", // #2936: the org-health order beside its four readings
   "org-retro.ts", // #2938: and the daily retrospective's beside the numbers it carries
-  "work-gate/row-call-count-orders.mjs", // #2898: and `row-call-count-signal`'s order, moved out of the gate with its readings
+  "work-gate/row-call-count-orders.ts", // #2898: and `row-call-count-signal`'s order, moved out of the gate with its readings
   "work-tick-health.ts"] // #3567: and `tick-overran`'s, which the TICK builds about itself and no gate ever sees
   .map((f) => readFileSync(new URL(`../${f}`, import.meta.url), "utf8")).join("\n");
 
@@ -57,8 +57,8 @@ test("every cause work-gate can actually emit has a profile, and nothing else do
   assert.ok(emitted.length > 0, "read no causes out of work-gate.ts -- this guard cannot see its population");
   assert.ok(emitted.includes("trunk-red"), "and it must have read the second emitter, `trunk-red.ts`, too");
   assert.ok(emitted.includes("claim-stalled"), "and the third, `claim-stall.ts` (#2470), whose orders are built beside its reading");
-  assert.ok(emitted.includes("pr-checks-failing"), "and the fourth, `work-gate/pr-orders.mjs` (#2542), which now holds every pull-request order");
-  assert.ok(emitted.includes("lab-job-finished"), "and the fifth, `work-gate/lab-job-orders.mjs` (#2729), whose cause is declared by a11ign's plugin");
+  assert.ok(emitted.includes("pr-checks-failing"), "and the fourth, `work-gate/pr-orders.ts` (#2542), which now holds every pull-request order");
+  assert.ok(emitted.includes("lab-job-finished"), "and the fifth, `work-gate/lab-job-orders.ts` (#2729), whose cause is declared by a11ign's plugin");
   assert.ok(emitted.includes("org-retrospective"), "and the sixth, `org-retro.ts` (#2938), whose order is built beside the numbers it carries");
   assert.ok(emitted.includes("tick-overran"), "and the seventh, `work-tick-health.ts` (#3567), built by the tick and not the gate");
   assert.deepEqual(Object.keys(PROFILES).sort(), [...new Set(emitted)].sort(),

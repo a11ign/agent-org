@@ -1,6 +1,6 @@
 /**
  * WHICH reason a refusal is, not just that there was one -- #455's split into
- * `packages/agent-org/src/merge-guard/reason-kind.mjs`. Kept as ONE list rather than distributed per rule: "the guard
+ * `packages/agent-org/src/merge-guard/reason-kind.ts`. Kept as ONE list rather than distributed per rule: "the guard
  * refused for ancestry and GitHub merged it" and "the guard refused for a missing check and GitHub merged
  * it" are different bugs, and #188's reconciliation log needs to tell them apart from a bare verdict.
  */

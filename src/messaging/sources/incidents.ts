@@ -1,4 +1,4 @@
-// THE INCIDENT SOURCES (a11ign/a11ign#2904, row 5 of 13; design #2899): what has BROKEN, as opposed to what has stopped (`stall.mjs`).
+// THE INCIDENT SOURCES (a11ign/a11ign#2904, row 5 of 13; design #2899): what has BROKEN, as opposed to what has stopped (`stall.ts`).
 //
 //   incident:trunk-red       the newest verdict on `main` (trunk.yml) is a failure
 //   incident:gate-crash      the work-tick unit failed, or no tick has COMPLETED for 3 intervals (the tick's own completion record, #3040)
@@ -11,7 +11,7 @@
 // would restart the 30 minutes on every tick, and nothing would ever be sent. Going green returns the same key with `resolved: true`,
 // which is what lets the core send its ONE "cleared" and no more.
 //
-// A LEAF AND INJECTED, as `stall.mjs` is, and the same rule about a failed read: `cannot-ask`, no event, never a false clear.
+// A LEAF AND INJECTED, as `stall.ts` is, and the same rule about a failed read: `cannot-ask`, no event, never a false clear.
 
 import { TICK_INTERVAL_MS, instant, observe, requireReader, span, withMeaning } from "./stall.ts";
 import type { FixRowReader, Observation } from "./stall.ts";

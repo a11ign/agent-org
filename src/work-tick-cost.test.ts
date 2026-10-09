@@ -23,7 +23,7 @@ import { instanceCacheRead } from "./wake.ts";
 import { LIVE_TRANSCRIPT_HORIZON_MS, liveClaudeTurns } from "./work-gate/row-call-count-orders.ts";
 
 const SRC = fileURLToPath(new URL(".", import.meta.url));
-const PRELOAD = join(SRC, "lib", "crash-exit.mjs");
+const PRELOAD = join(SRC, "lib", "crash-exit.ts");
 
 /**
  * A `node -e` script that runs until the CHILD has used `ms` of its own CPU. Looping on `Date.now()` times the wall clock, and a child descheduled on a
@@ -188,7 +188,7 @@ test("#3566: the census records each synchronous spawn's CPU, so a busy child an
       `spawnSync(process.execPath, ["-e", ${JSON.stringify(burnCpu(400))}]);`,
       `spawnSync(process.execPath, ["-e", "setTimeout(() => {}, 400);"]);`,
     ].join("\n"));
-    const ran = spawnSync(process.execPath, [`--import=${new URL("./lib/spawn-census.mjs", import.meta.url).href}`, driver],
+    const ran = spawnSync(process.execPath, [`--import=${new URL("./lib/spawn-census.ts", import.meta.url).href}`, driver],
       { env: { ...process.env, [CENSUS_ENV]: census }, encoding: "utf8" });
     assert.equal(ran.status, 0, ran.stderr);
     const records = readFileSync(census, "utf8").trim().split("\n").map((line) => JSON.parse(line));
@@ -316,7 +316,7 @@ test("#3566: a REAL git spawn through the preload leaves a record with its subco
     const census = join(dir, "census.jsonl");
     const driver = join(dir, "driver.mjs");
     writeFileSync(driver, `import { spawnSync } from "node:child_process";\nspawnSync("git", ["-C", ${JSON.stringify(dir)}, "rev-parse", "HEAD"]);\n`);
-    const ran = spawnSync(process.execPath, [`--import=${new URL("./lib/spawn-census.mjs", import.meta.url).href}`, driver],
+    const ran = spawnSync(process.execPath, [`--import=${new URL("./lib/spawn-census.ts", import.meta.url).href}`, driver],
       { env: sandboxGitEnv({ [CENSUS_ENV]: census }), encoding: "utf8" });
     assert.equal(ran.status, 0, ran.stderr);
     const records = readFileSync(census, "utf8").trim().split("\n").map((line) => JSON.parse(line));
@@ -375,7 +375,7 @@ test("#3566: the census preload keeps `promisify(execFile)` and `promisify(exec)
       'Promise.all([promisify(cp.execFile)("echo", ["file"]), promisify(cp.exec)("echo shell")])',
       '  .then(([a, b]) => console.log(JSON.stringify([a, b]))).catch((e) => { console.error(e); process.exit(1); });',
     ].join("\n");
-    const run = spawnSync(process.execPath, ["--import", join(SRC, "lib", "spawn-census.mjs"), "-e", script], {
+    const run = spawnSync(process.execPath, ["--import", join(SRC, "lib", "spawn-census.ts"), "-e", script], {
       encoding: "utf8", env: { ...process.env, [CENSUS_ENV]: census },
     });
     assert.equal(run.status, 0, run.stderr);

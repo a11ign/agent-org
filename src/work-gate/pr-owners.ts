@@ -5,11 +5,11 @@
 // before them, and the `git worktree` read the last one needs. Measured on #2898: five rows waited behind two pull
 // requests whose only edits were to exactly these definitions.
 //
-// THE BOUNDARY, as `work-gate/pr-orders.mjs` states it: what only the owner rungs use lives here; the session
+// THE BOUNDARY, as `work-gate/pr-orders.ts` states it: what only the owner rungs use lives here; the session
 // vocabulary shared with the answer and claim families (`liveWorkspaceLabels`, `endedSessionLabels`, `defaultSpawn`)
 // stays in `work-gate.ts` and is IMPORTED from it, the cycle that module documents, safe while nothing here reads an
 // imported binding at load time. THE `git worktree` READ STAYED (`readWorktreeStamps`, `stampLookup`): a function that
-// reads git or gh stays in the shim (`pr-orders.mjs`'s boundary), and `git-spawn-classification.test.ts` refuses a file
+// reads git or gh stays in the shim (`pr-orders.ts`'s boundary), and `git-spawn-classification.test.ts` refuses a file
 // that spawns git without the scrubbing helper `defaultSpawn` already carries. `work-gate.ts` re-exports every name this file exports that it exported before.
 import { labelsOf, sessionOf, liveWorkspaceLabels, endedSessionLabels } from "../work-gate.ts";
 import { CLAIM_LABEL } from "../claim-labels.ts";

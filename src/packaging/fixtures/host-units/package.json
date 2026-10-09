@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "worktrees:prune": "agent-org worktrees:prune",
-    "corpus:release-nightly": "node scripts/release-nightly.mjs",
-    "corpus:release": "node scripts/release.mjs"
+    "corpus:release-nightly": "node scripts/release-nightly.ts",
+    "corpus:release": "node scripts/release.ts"
   }
 }

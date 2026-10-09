@@ -2,7 +2,7 @@
 // @ts-check
 // RULE: DOES THIS HEAD CONTAIN `main`'s TIP? -- an ANCESTRY fact, and the clock cannot answer it (#182).
 //
-// `staleness-rule.mjs` compares the newest run's completion time against `main`'s tip commit DATE, and
+// `staleness-rule.ts` compares the newest run's completion time against `main`'s tip commit DATE, and
 // that was a proxy standing in for this question. **A run can finish AFTER `main`'s tip was committed
 // while the branch still does not contain that commit** -- which is not a corner case, it is what ordinary
 // concurrent merging produces. Measured 2026-09-07 on #165: `main` tipped 01:31:03Z with #147, #165's run

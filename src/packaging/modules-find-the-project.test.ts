@@ -5,7 +5,7 @@
 /**
  * #3074: THE THREE MODULES THAT ONCE COUNTED DIRECTORIES UP FROM `src` FIND THE PROJECT THROUGH `HOME_CHECKOUT`.
  *
- * `lib/product-home.mjs`, `lib/walk-scope.mjs` and `ready-label-audit.ts` each reached a project file (the product's manifest, the tree a
+ * `lib/product-home.ts`, `lib/walk-scope.ts` and `ready-label-audit.ts` each reached a project file (the product's manifest, the tree a
  * declared scope is relative to, `docs/row-filing.md`) by `src` up three or four, which is `packages/agent-org/src`'s root in the monorepo and
  * the HOME directory in this repository. A test that reads the project the host file names cannot tell the two apart when the tool also sits
  * in that project, so each child here runs against a SCRATCH project, one whose files are the only ones carrying the marker below: a module
@@ -62,12 +62,12 @@ function inChild(hostFile: string, expression: string): unknown {
 
 test("product-home reads the PROJECT's manifest: the scratch project's homepage, not the file at some depth above the tool", () => {
   const { hostFile } = scratchProject();
-  assert.equal(inChild(hostFile, `import(${JSON.stringify(`${SRC}/lib/product-home.mjs`)}).then((m) => m.productHome())`), MARKER);
+  assert.equal(inChild(hostFile, `import(${JSON.stringify(`${SRC}/lib/product-home.ts`)}).then((m) => m.productHome())`), MARKER);
 });
 
 test("walk-scope's REPO_ROOT is the PROJECT's checkout, the tree every declared scope is relative to", () => {
   const { checkout, hostFile } = scratchProject();
-  assert.equal(inChild(hostFile, `import(${JSON.stringify(`${SRC}/lib/walk-scope.mjs`)}).then((m) => m.REPO_ROOT)`), realpathSync(checkout));
+  assert.equal(inChild(hostFile, `import(${JSON.stringify(`${SRC}/lib/walk-scope.ts`)}).then((m) => m.REPO_ROOT)`), realpathSync(checkout));
 });
 
 test("ready-label-audit reads the PROJECT's docs/row-filing.md, the guidance a filer reads", () => {
@@ -79,7 +79,7 @@ test("POSITIVE CONTROL: a project that lacks the file makes the module FAIL nami
   const { checkout, hostFile } = scratchProject();
   rmSync(join(checkout, "packages/cli/package.json"));
   const result = spawnSync(process.execPath, ["--input-type=module", "-e",
-    `(await import(${JSON.stringify(`${SRC}/lib/product-home.mjs`)})).productHome()`],
+    `(await import(${JSON.stringify(`${SRC}/lib/product-home.ts`)})).productHome()`],
   { cwd: HERE, encoding: "utf8", env: { ...process.env, AGENT_ORG_HOST: hostFile } });
   assert.notEqual(result.status, 0, "productHome answered with the project's manifest gone");
   assert.ok(result.stderr.includes(join(checkout, "packages/cli/package.json")), `the missing file is not named:\n${result.stderr}`);

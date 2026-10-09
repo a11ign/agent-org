@@ -162,7 +162,7 @@ import { CLAIM_LABEL, SESSION_PREFIX } from "../project-vocabulary.ts";
 // reads), which needs no `sandboxGitEnv()` scrub: that helper exists for `execFileSync("git", ...)`
 // specifically (a leaked `GIT_DIR` redirects a spawned GIT call onto the wrong repository), and
 // `git-spawn-classification.test.ts` discovers files spawning `git`, not `gh`. #455 found the real gap
-// this shape can hide in `packages/agent-org/src/merge-guard/lookups.mjs`; this file has no such call to have one in.
+// this shape can hide in `packages/agent-org/src/merge-guard/lookups.ts`; this file has no such call to have one in.
 
 // #989: `colourFor` AND THE CHECK-STATE READ ARE GONE WITH THE VERDICT THAT USED THEM. B2 no longer asks
 // whether a PR is red -- it asks whether a row is in build -- so a PR's colour answers a question nobody

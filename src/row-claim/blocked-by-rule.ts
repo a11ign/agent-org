@@ -2,7 +2,7 @@
 // @ts-check
 // RULE: WHEN MAY `--blocked-by=#N` RELEASE B2? -- #741.
 //
-// B2 (`own-pr-health-rule.mjs`) refuses a new claim while the claiming session's own open PR is still
+// B2 (`own-pr-health-rule.ts`) refuses a new claim while the claiming session's own open PR is still
 // open -- right for a worker abandoning a broken PR, wrong for a PR that cannot go green until somebody
 // ELSE's row lands (worker-capture's #722, red only on three assertions from #718's merge, none in its
 // own diff). ceo ruled B2 does not hold in that case, but the tool had no path to express the ruling.
@@ -15,7 +15,7 @@
 // measurement, and a tool that tried to re-derive it would be re-implementing the failing test's own
 // semantics, wrong the first time a check failed for two reasons at once.
 //
-// FAILS CLOSED, THE OPPOSITE OF `own-pr-health-rule.mjs`'s OWN "fail open on a lookup failure" convention
+// FAILS CLOSED, THE OPPOSITE OF `own-pr-health-rule.ts`'s OWN "fail open on a lookup failure" convention
 // -- deliberately. That file's fail-open protects a session's ability to claim ANYTHING when `gh` is down;
 // this is the override path itself, and an override that can be reached by a failed lookup is an override
 // that fires on assertion alone, which is exactly what this row exists to prevent.

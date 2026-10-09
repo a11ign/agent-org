@@ -1,12 +1,12 @@
-// THE WALK-THROUGH (a11ign/a11ign#3425, chairman point 3): A PHYSICAL OR ACCOUNT ASK IS WALKED, ONE STEP AT A TIME. A brief with a `Steps:` list (`sources/requests.mjs` reads it) is sent as the first step with
+// THE WALK-THROUGH (a11ign/a11ign#3425, chairman point 3): A PHYSICAL OR ACCOUNT ASK IS WALKED, ONE STEP AT A TIME. A brief with a `Steps:` list (`sources/requests.ts` reads it) is sent as the first step with
 // Done / Stuck / Explain more under it; on Done the step's `Verify:` is READ through the checked-facts vocabulary, and only a read that shows it moves the walk on. After the last verified step the
-// request is answered on its row, through the answers path, and the closing message says what it unblocked. This module is the walk's rules and its memory; `answers.mjs` routes the presses to it.
+// request is answered on its row, through the answers path, and the closing message says what it unblocked. This module is the walk's rules and its memory; `answers.ts` routes the presses to it.
 //
 // **VERIFICATION IS A READ AND NEVER AN ECHO OF DONE.** `judge` re-reads the step's placeholder at the moment of the press (`prepareReply`, so the words carry the `as of` stamp the replies carry) and
 // compares what it says with what the brief said it should. A read that fails, or that says something else, does NOT advance the walk: the chairman is told plainly that it is not seen, with Done
 // again, Stuck and Later under it. A step with no `Verify:` is confirmed on Done alone, and the message says "I can't check that one from here": the chairman is never told a thing was checked that was not.
 //
-// **STATE IS THE LEDGER.** One line per step transition, `direction: "walk"`, carrying `walk: "walk:<request key>"` and NO `key` (the fold in ledger.mjs would take a line with one for a notification):
+// **STATE IS THE LEDGER.** One line per step transition, `direction: "walk"`, carrying `walk: "walk:<request key>"` and NO `key` (the fold in ledger.ts would take a line with one for a notification):
 //   * `confirmed` (step n): Done was pressed and the step was shown to be so (or cannot be checked). The walk's position is the highest confirmed step plus one.
 //   * `unseen` (step n): Done was pressed and the read did not show it. The walk stays where it is.
 //   * `shown` (step n, message ref, the step's text): a step message that was sent, so a press under it is known to be about that step, and a restart finds the walk where it was.
@@ -14,7 +14,7 @@
 // **THE LAST STEP'S `confirmed` LINE IS WRITTEN AFTER THE ROW IS ANSWERED**, so a failed label write leaves the walk on its last step and the next Done finishes it (the answers path's own resume).
 //
 // WHAT THIS DOES NOT DO: send anything or touch the row. It returns what the listener must send (`text`, `buttons`, and `recordSent`, which writes the `shown` line once the message has a ref), and
-// it is handed the row-answering step (`finish`) as a function. Stuck, Explain more and Later are not here: they are the liaison orders and the snooze `answers.mjs` already has.
+// it is handed the row-answering step (`finish`) as a function. Stuck, Explain more and Later are not here: they are the liaison orders and the snooze `answers.ts` already has.
 
 import type { Readers } from "./placeholders.ts";
 import { prepareReply } from "./reply.ts";
@@ -28,7 +28,7 @@ const SEEN = "That shows, thanks.";
 const NOT_SEEN = "I can't see it yet.";
 const NOT_READ = "I can't see it: I couldn't read it just now.";
 
-/** The buttons a step message carries, by word (`answers.mjs` draws them): the first time, and after a read that did not show it. */
+/** The buttons a step message carries, by word (`answers.ts` draws them): the first time, and after a read that did not show it. */
 export const STEP_BUTTONS = Object.freeze(["done", "stuck", "explain"]);
 export const RETRY_BUTTONS = Object.freeze(["done", "stuck", "later"]);
 
@@ -69,7 +69,7 @@ export function walkPosition(lines: Record<string, any>[], request: string): num
 }
 
 /**
- * The request a step message belongs to, for a message the core did not send: the walk's later steps are sent by the listener, so `answers.mjs` finds them here.
+ * The request a step message belongs to, for a message the core did not send: the walk's later steps are sent by the listener, so `answers.ts` finds them here.
  * The result is shaped like the core's sent line, as far as a press needs it.
  */
 export function stepMessageOf(lines: Record<string, any>[], ref: string): { key: string; text: string; } | null {
