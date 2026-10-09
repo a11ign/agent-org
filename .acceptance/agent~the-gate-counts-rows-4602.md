@@ -12,7 +12,7 @@ Acceptance:
 npx rstest run --config scripts/rstest/rstest.config.ts src/blocking-impact.test.ts
 ```
 
-Closes: none -- a11ign/a11ign#4602's Done-when 2 (one live tick printing each holder's count) is read from the host after this merges; the pre-merge reading is below.
+Closes: a11ign/a11ign#4602
 
 Verified (measured in this worktree, `AGENT_ORG_HOST=/home/agent/repos/wt-4602/.agent-org/host.json`): `blocking-impact.test.ts` 20 pass; with `src/org-retro*`, `src/work-gate*`, `src/failure*`, `src/cause*` 498 tests in 37 files pass. The full `rstest run` reads 34 failing of 7596 before the last fix and 33 after; the same 33 fail on a clean `origin/main` worktree (`src/packaging/*` and `src/board-truth-audit.test.ts`, run there and compared by file). `tsc --noEmit`: only the two existing `src/packaging/mjs-ratchet.test.ts` errors. agent-org has no lint script.
 
