@@ -1604,8 +1604,12 @@ export function readOpenRows(run: (args: string[]) => string = defaultRun): any[
  */
 export function readClosedAnswerRows(run: (args: string[]) => string = defaultRun): any[] | null {
   try {
-    const labels = JSON.parse(run(["label", "list", "--search", ANSWER_PREFIX, "--limit", "100",
-      "--json", "name"]));
+    // `gh label list --json` prints ZERO BYTES, not `[]`, when nothing matches (#472): a repository with no `answer:`
+    // label -- agent-org, since it became a declared tracker -- is "nobody owes anything", not a refusal. Only the
+    // EMPTY stdout is read so; text that does not parse, a non-array and a thrown `gh` stay `null` below.
+    const labelsText = run(["label", "list", "--search", ANSWER_PREFIX, "--limit", "100", "--json", "name"]);
+    if (labelsText.trim() === "") return [];
+    const labels = JSON.parse(labelsText);
     if (!Array.isArray(labels)) return null;
     const names = labels.map((l) => l?.name).filter((n) => typeof n === "string" && n.startsWith(ANSWER_PREFIX));
     if (names.length === 0) return [];

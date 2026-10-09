@@ -113,6 +113,19 @@ test("#2641 DONE-WHEN 3b: a merged PR carrying NO answer: label is NOT ordered -
   assert.equal(nothing.calls.length, 1, "and only the label list was asked");
 });
 
+test("#472: `gh label list` printing ZERO BYTES (a repository with no answer: label) is 'none', and a refusal is still null", () => {
+  const calls: string[][] = [];
+  const empty = (args: string[]) => { calls.push(args); return ""; };
+  assert.deepEqual(readClosedAnswerRows(empty), [], "an empty stdout is no labels, not a refusal");
+  assert.equal(calls.length, 1, "and nothing further is asked");
+  assert.equal(readClosedAnswerRows(() => "not json"), null, "text that does not parse is still a refusal");
+  assert.equal(readClosedAnswerRows(() => "{}"), null, "a non-array is still a refusal");
+  assert.equal(readClosedAnswerRows(() => { throw new Error("HTTP 502"); }), null, "a thrown gh is still a refusal");
+  const populated = fakeGitHub([issue(7, "CLOSED", "answer:ceo")]);
+  assert.deepEqual((readClosedAnswerRows(populated.run) as Row[]).map((r) => r.number), [7],
+    "POSITIVE CONTROL: the same reader still returns a row when the label list is populated");
+});
+
 test("#2641: an OPEN pull request carrying the label is not this read's -- `readPrs` has it, and it would otherwise be ordered twice", () => {
   const { run } = fakeGitHub([pr(2376, "OPEN", "answer:worker-tooling"), pr(2640, "MERGED", "answer:ceo")]);
   assert.deepEqual((readClosedAnswerRows(run) as Row[]).map((r) => r.number), [2640]);
