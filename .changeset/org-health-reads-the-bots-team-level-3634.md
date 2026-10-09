@@ -1,5 +1,0 @@
----
-"agent-org": minor
----
-
-`org-health` reads each org team's level on every repository it reaches and trips `team-access-drifted` when a team holds `admin` anywhere, or a level other than the declared one on a declared repository (a11ign/a11ign#3634, the class gap of #3587: the `bots` team held `admin` on two repositories and no tick read it). A project opts in with `teamAccess.declaration` in `.agent-org/project.json`, a path inside the project to a file whose `teams.<slug>.layer` gives each team's level and whose `repositories` keys name the declared repositories (their common owner is the org); a project with no such key makes no call and gets no reading. The read is one paginated `orgs/<org>/teams/<slug>/repos` call per declared team on the core pool each tick (30 an hour per team at the 2-minute tick, 0.6% of 5,000), and the discriminator names `team:repository`, so a second repository is a new trip. A read that cannot run is `unknown` with its reason and never clear: a 404 (a token that cannot see the team), an empty listing, a partial line, an unreadable declaration and a malformed `teamAccess` key each say CANNOT_TELL.
