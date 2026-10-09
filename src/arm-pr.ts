@@ -410,6 +410,20 @@ export function sessionLabelsForArm(rowLabelLists: string[][]): string[] {
 }
 
 /**
+ * #4426: THE LABELS OF ONE CLOSED ROW, READ FROM THE REPOSITORY THE ROW LIVES IN. `closedRowReferences` already names that
+ * repository (`Closes a11ign/a11ign#4386` on an agent-org PR is a row in the project's tracker), and reading it from the PR's
+ * own repo answered "Could not resolve to an issue" and left the PR without the row's session label (found arming agent-org#444).
+ * Throws when the read fails; each caller decides what an unreadable row means.
+ * @param {{ repo: string, number: number }} row
+ * @param {typeof defaultRun} run
+ * @returns {string[]}
+ */
+function readRowLabels(row: { repo: string; number: number; }, run: typeof defaultRun): string[] {
+  return JSON.parse(gh(["issue", "view", String(row.number), "--repo", row.repo, "--json", "labels"], run))
+    .labels.map((l: { name: string; }) => l.name);
+}
+
+/**
  * IMPURE: reads the label set of every row this PR closes and, in the SAME act as arming, puts each
  * row's `session:*` label(s) on the PR. `--add-label` is idempotent (`row-claim.ts`'s own convention:
  * this needs no special case for a label already present), so re-arming an already-labelled PR calls
@@ -423,14 +437,13 @@ export function sessionLabelsForArm(rowLabelLists: string[][]): string[] {
  * @returns {{ refused: boolean }} `refused` when a RETIRED session label stopped the arm (#1000)
  */
 export function labelArmedPr({ number, repo, prBody, run = defaultRun }: { number: string; repo: string; prBody: string | null | undefined; run?: typeof defaultRun; }): { refused: boolean; } {
-  const rows = closedRowNumbers(prBody);
+  const rows = closedRowReferences(prBody, repo);
   if (rows.length === 0) return { refused: false };
-  const rowLabelLists = rows.map((rowNumber) => {
+  const rowLabelLists = rows.map((row) => {
     try {
-      return JSON.parse(gh(["issue", "view", String(rowNumber), "--repo", repo, "--json", "labels"], run))
-        .labels.map((l: { name: string; }) => l.name);
+      return readRowLabels(row, run);
     } catch (cause) {
-      console.error(`arm-pr: could not read row #${rowNumber}'s labels -- leaving the PR unlabelled `
+      console.error(`arm-pr: could not read row #${row.number}'s labels -- leaving the PR unlabelled `
         + `for it: ${(cause as Error).message}`);
       return [];
     }
@@ -458,7 +471,7 @@ export function labelArmedPr({ number, repo, prBody, run = defaultRun }: { numbe
     return { refused: true };
   }
   gh(["pr", "edit", number, "--repo", repo, ...sessionLabels.flatMap((l) => ["--add-label", l])], run);
-  console.log(`arm-pr: labelled #${number} with ${sessionLabels.join(", ")} from row #${rows.join(", #")}`);
+  console.log(`arm-pr: labelled #${number} with ${sessionLabels.join(", ")} from row #${rows.map((row) => row.number).join(", #")}`);
   return { refused: false };
 }
 
@@ -981,10 +994,9 @@ function labelAfterArm({ number, repo, prBody, run, error }: {
  * @param {{ repo: string, prBody: string | null, run: typeof defaultRun }} args
  * @returns {{ labels: string[], text: string }}
  */
-function labelsWanted({ repo, prBody, run }: { repo: string; prBody: string | null; run: typeof defaultRun; }): { labels: string[]; text: string; } {
+export function labelsWanted({ repo, prBody, run }: { repo: string; prBody: string | null; run: typeof defaultRun; }): { labels: string[]; text: string; } {
   try {
-    const lists = closedRowNumbers(prBody).map((rowNumber) => JSON.parse(
-      gh(["issue", "view", String(rowNumber), "--repo", repo, "--json", "labels"], run)).labels.map((l: { name: string; }) => l.name));
+    const lists = closedRowReferences(prBody, repo).map((row) => readRowLabels(row, run));
     const labels = sessionLabelsForArm(lists);
     return { labels, text: labels.length > 0 ? labels.join(", ") : "(none were wanted)" };
   } catch (cause) {
