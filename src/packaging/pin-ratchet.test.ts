@@ -1,5 +1,5 @@
 /**
- * (#3232) THE RATCHET (`lib/pin-ratchet.mjs`) SHOWN ON THE FAILURE IT EXISTS FOR: two pull requests that each add ONE entry to a pinned
+ * (#3232) THE RATCHET (`lib/pin-ratchet.ts`) SHOWN ON THE FAILURE IT EXISTS FOR: two pull requests that each add ONE entry to a pinned
  * population are each green against their own base and must still be green merged, in EITHER order.
  *
  * A throwaway repository holds a population (`pop/<name>`), its declarations (`declared.txt`, one `name: reason` per line, sorted, so two
@@ -23,7 +23,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { changedSince, judgePin, resolveBase, TOOL_REPO_ENV, type Declaration } from "../lib/pin-ratchet.mjs";
+import { changedSince, judgePin, resolveBase, TOOL_REPO_ENV, type Declaration } from "../lib/pin-ratchet.ts";
 import { withGitSandbox, type GitSandbox } from "../lib/git-sandbox.ts";
 import { TOOL_ROOT } from "./copied-tool-fixture.ts";
 

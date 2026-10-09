@@ -25,9 +25,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sandboxGitEnv } from "./git-env.mjs";
 
-/** @typedef {{ name: string, reason: string }} Declaration */
-/** @typedef {{ ref: string } | { unreadable: string }} Base */
-/** @typedef {(root: string, base: { changed: Set<string> | null }) => string[]} Scan */
+export type Declaration = { name: string; reason: string };
+export type Base = { ref: string } | { unreadable: string };
+export type Scan = (root: string, base: { changed: Set<string> | null }) => string[];
 
 const MERGE_GROUP = "merge_group";
 /** The checkout a laid-out copy of the tool came from, for the one reader that needs a repository (`judgePin`). */
@@ -36,7 +36,7 @@ export const TOOL_REPO_ENV = "AGENT_ORG_TOOL_REPO";
 const ARCHIVE_BUFFER_BYTES = 256 * 1024 * 1024;
 
 /** @param {string} repo @param {string[]} args @returns {string} */
-function git(repo, args) {
+function git(repo: string, args: string[]): string {
   return execFileSync("git", args, { cwd: repo, encoding: "utf8", env: sandboxGitEnv(), stdio: ["ignore", "pipe", "pipe"] }).trim();
 }
 
@@ -47,7 +47,7 @@ function git(repo, args) {
  * @param {NodeJS.ProcessEnv} [env]
  * @returns {Base}
  */
-export function resolveBase(repo, env = process.env) {
+export function resolveBase(repo: string, env: NodeJS.ProcessEnv = process.env): Base {
   try {
     const top = realpathSync(git(repo, ["rev-parse", "--show-toplevel"]));
     if (top !== realpathSync(repo)) return { unreadable: `\`${repo}\` is inside the repository at \`${top}\`, not a repository of its own` };
@@ -66,7 +66,7 @@ export function resolveBase(repo, env = process.env) {
  * @param {string} repo @param {string} ref
  * @returns {Set<string> | null}
  */
-export function changedSince(repo, ref) {
+export function changedSince(repo: string, ref: string): Set<string> | null {
   try {
     const rows = git(repo, ["diff", "--name-status", "--no-renames", ref]).split("\n").filter(Boolean);
     if (rows.some((row) => row.startsWith("D"))) return null;
@@ -83,7 +83,7 @@ export function changedSince(repo, ref) {
  * @param {{ repo: string, ref: string, paths: string[], scan: Scan, changed?: Set<string> | null }} at
  * @returns {string[]}
  */
-export function scanAtBase({ repo, ref, paths, scan, changed = null }) {
+export function scanAtBase({ repo, ref, paths, scan, changed = null }: { repo: string; ref: string; paths: string[]; scan: Scan; changed?: Set<string> | null; }): string[] {
   const root = mkdtempSync(join(tmpdir(), "pin-ratchet-"));
   try {
     const archive = execFileSync("git", ["archive", ref, ...paths], { cwd: repo, env: sandboxGitEnv(), maxBuffer: ARCHIVE_BUFFER_BYTES });
@@ -99,7 +99,7 @@ export function scanAtBase({ repo, ref, paths, scan, changed = null }) {
  * @param {{ current: string[], base: string[] | null, declared: Declaration[] }} population
  * @returns {string[]}
  */
-export function undeclaredGrowth({ current, base, declared }) {
+export function undeclaredGrowth({ current, base, declared }: { current: string[]; base: string[] | null; declared: Declaration[]; }): string[] {
   const held = new Set(base ?? []);
   const reasoned = new Set(declared.filter((entry) => entry.reason.trim() !== "").map((entry) => entry.name));
   return current.filter((name) => !held.has(name) && !reasoned.has(name)).sort();
@@ -113,7 +113,7 @@ export function undeclaredGrowth({ current, base, declared }) {
  *   the tool's directory; `env[TOOL_REPO_ENV]`, where set, replaces it as the repository the base is read from.
  * @returns {{ undeclared: string[], judged: string }} `judged` says WHICH form ran, for the assertion message
  */
-export function judgePin({ repo, paths, scan, current, declared, env = process.env }) {
+export function judgePin({ repo, paths, scan, current, declared, env = process.env }: { repo: string; paths: string[]; scan: Scan; current: string[]; declared: Declaration[]; env?: NodeJS.ProcessEnv; }): { undeclared: string[]; judged: string; } {
   const repository = env[TOOL_REPO_ENV] || repo;
   const base = resolveBase(repository, env);
   if ("unreadable" in base) return { undeclared: undeclaredGrowth({ current, base: null, declared }), judged: `strictly, with nothing grandfathered (${base.unreadable})` };

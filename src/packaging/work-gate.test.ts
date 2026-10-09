@@ -31,7 +31,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { shippedUnits } from "../host-units.mjs";
 import { HOME_CHECKOUT } from "../project-config.mjs";
 import { TOOL_ROOT, copyToolAndProject, importClosure, toolFile } from "./copied-tool-fixture.ts";
-import { judgePin, type Declaration } from "../lib/pin-ratchet.mjs";
+import { judgePin, type Declaration } from "../lib/pin-ratchet.ts";
 import { deriveClosureRequirements, createClosureMemo } from "../acceptance-commands.mjs";
 import { patchIdOfDiff } from "../review-verdict.mjs";
 import { MAX_ROW_ORDERS_PER_TICK, readCommitShas, readPatchId, withPatchIds, decide, checksSettledGreen, readPrs, OPEN_PRS_FIRST_PAGE, OPEN_PRS_LIMIT, readReadyRows, EXIT, CAUSES,
@@ -4771,7 +4771,7 @@ test("#2174: the gate does NOT import host-units.mjs -- the spawn is the fence, 
 });
 
 /**
- * The test files charged with a `history` requirement, as a RATCHET against the base the change merges into (#3232, `lib/pin-ratchet.mjs`). The
+ * The test files charged with a `history` requirement, as a RATCHET against the base the change merges into (#3232, `lib/pin-ratchet.ts`). The
  * reason the population is policed stays (a file JOINING it is taxed with `History: full`, #497); what changed is HOW: a file this change ADDS to
  * it is declared below with its reason, so two changes that each add one are each judged against their own base, and a file that leaves passes.
  */

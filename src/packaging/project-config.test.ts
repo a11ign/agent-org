@@ -11,7 +11,7 @@
  *      pass (the positive control: a base that was itself invalid would make every refusal below true for the wrong reason).
  *
  * The non-test files of the tool's `src` that still carry the repository's name literally are a RATCHET against the base the change merges
- * into (#3232, `lib/pin-ratchet.mjs`): each is a surface a later row of #69 moves, so a file this change ADDS to them must be declared with
+ * into (#3232, `lib/pin-ratchet.ts`): each is a surface a later row of #69 moves, so a file this change ADDS to them must be declared with
  * its reason, and a file that stops carrying it passes. Claims 1 and the constants test read a FIXTURE declaration, never the live one, which
  * gains a repository whenever the project does (a11ign#2990 landed between one pull request's green run and its queue run).
  */
@@ -30,7 +30,7 @@ import {
   parseProjectDeclaration,
   readProjectDeclaration,
 } from "../project-config.mjs";
-import { judgePin, type Declaration } from "../lib/pin-ratchet.mjs";
+import { judgePin, type Declaration } from "../lib/pin-ratchet.ts";
 import { TOOL_ROOT } from "./copied-tool-fixture.ts";
 
 const A11IGN_LITERAL = "a11ign/a11ign";

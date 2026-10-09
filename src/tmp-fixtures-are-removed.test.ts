@@ -239,7 +239,7 @@ const FIXED_FILES = [
   "src/packaging/closes-mismatch-check.test.ts",
   "src/packaging/review-attribution.test.ts",
   "src/packaging/trace-weekly-post.test.ts",
-  "src/trace/ingest-state.test.mjs",
+  "src/trace/ingest-state.test.ts",
   "src/packaging/prune-tmp.test.ts",
   "src/packaging/host-units.test.ts",
 ];

@@ -7,20 +7,20 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { parseLedger } from "../wakes-per-row.mjs";
 import { emptyState, fingerprint, HEAD_BYTES, loadState, planRead, saveState, STATE_VERSION, stateFileFor } from "./ingest-state.mjs";
-import { openStore, QUIET_MS, readStore } from "./store.mjs";
+import { openStore, QUIET_MS, readStore, TraceEvent } from "./store.mjs";
 import { ingestTranscripts, render } from "./trace.mjs";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 
 const ROW_REPO = "a11ign/a11ign";
-const at = (iso) => Date.parse(iso);
+const at = (iso: string) => Date.parse(iso);
 const NOW = at("2026-10-05T00:00:00Z"); // long after every record below: nothing is young, so nothing is held back unless a test says so
 
-const wake = (timestamp, session, body = "an order.") => JSON.stringify({
+const wake = (timestamp: string, session: string, body = "an order.") => JSON.stringify({
   type: "user", timestamp, message: { role: "user", content: `\n\n<pasted_content id="1">\nYou are \`${session}\` -- ${body}\n</pasted_content>` },
 });
-const toolResult = (timestamp) => JSON.stringify({ type: "user", timestamp, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t", content: "ok" }] } });
-const usage = (output) => ({ input_tokens: 2, output_tokens: output, cache_read_input_tokens: 6448, cache_creation_input_tokens: 100, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 100 } });
-const block = (timestamp, id, output = 50) => JSON.stringify({
+const toolResult = (timestamp: string) => JSON.stringify({ type: "user", timestamp, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t", content: "ok" }] } });
+const usage = (output: number) => ({ input_tokens: 2, output_tokens: output, cache_read_input_tokens: 6448, cache_creation_input_tokens: 100, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 100 } });
+const block = (timestamp: string, id: string, output = 50) => JSON.stringify({
   type: "assistant", timestamp, requestId: `req_${id}`, message: { id, model: "claude-sonnet-5-5", role: "assistant", content: [{ type: "text", text: "x" }], usage: usage(output) },
 });
 
@@ -41,14 +41,14 @@ function world() {
   const root = join(dir, "projects");
   mkdirSync(join(root, "-proj"), { recursive: true });
   const storePath = join(dir, "events.ndjson");
-  const file = (name) => join(root, "-proj", `${name}.jsonl`);
-  const write = (name, lines) => writeFileSync(file(name), `${lines.join("\n")}\n`);
-  const append = (name, lines) => appendFileSync(file(name), `${lines.join("\n")}\n`);
+  const file = (name: any) => join(root, "-proj", `${name}.jsonl`);
+  const write = (name: any, lines: any[]) => writeFileSync(file(name), `${lines.join("\n")}\n`);
+  const append = (name: any, lines: any[]) => appendFileSync(file(name), `${lines.join("\n")}\n`);
   const run = (now = NOW, ledger = LEDGER) => ingestTranscripts({ root, since: 0, ledger, rowRepo: ROW_REPO, storePath, now }).report;
   return { dir, root, storePath, file, write, append, run, statePath: stateFileFor(storePath), stored: () => readStore(storePath) };
 }
-const byId = (events) => [...events].sort((a, b) => a.id.localeCompare(b.id));
-const size = (lines) => Buffer.byteLength(`${lines.join("\n")}\n`);
+const byId = (events: TraceEvent[]) => [...events].sort((a, b) => a.id.localeCompare(b.id));
+const size = (lines: any[]) => Buffer.byteLength(`${lines.join("\n")}\n`);
 
 test("(1) a second run over unchanged files reads ZERO bytes of them and adds zero events", () => {
   const w = world();
@@ -221,19 +221,19 @@ test("(6) a missing, unparseable, foreign-version or store-replaced state is a f
   const w = world();
   w.write("lead", LEAD_1);
   const first = w.run();
-  assert.match(first.coldStart, /no state file/);
+  assert.match(first.coldStart ?? "", /no state file/);
   assert.equal(w.run().coldStart, null, "positive control: a good state is trusted, and says so by being silent");
   const idsBefore = byId(w.stored());
   writeFileSync(w.statePath, "{ not json");
   const garbled = w.run();
-  assert.match(garbled.coldStart, /state file unreadable/);
+  assert.match(garbled.coldStart ?? "", /state file unreadable/);
   assert.equal(garbled.read, 1, "every transcript read again");
   writeFileSync(w.statePath, JSON.stringify({ version: 99, files: {} }));
-  assert.match(w.run().coldStart, new RegExp(`not version ${STATE_VERSION}`));
+  assert.match(w.run().coldStart ?? "", new RegExp(`not version ${STATE_VERSION}`));
   assert.deepEqual(byId(w.stored()), idsBefore, "a cold start adds nothing the store had: the ids are idempotent");
   rmSync(w.storePath);
   const replaced = w.run();
-  assert.match(replaced.coldStart, /store is smaller/);
+  assert.match(replaced.coldStart ?? "", /store is smaller/);
   assert.deepEqual(byId(w.stored()), idsBefore, "a deleted store is rebuilt from the transcripts, not left empty beside a state that says they were read");
   assert.match(render({ number: 9001, rows: [], prs: [], events: [], ingest: replaced }), /COLD START .*store is smaller/);
 });
@@ -243,7 +243,7 @@ const TOOL_USE = JSON.stringify({
   type: "assistant", timestamp: "2026-10-04T10:00:05.000Z", requestId: "req_tu", message: { id: "msg_tu", model: "claude-sonnet-5-5", role: "assistant", content: [{ type: "tool_use", id: "tu1", name: "Bash", input: { command: "pnpm test" } }], usage: usage(30) },
 });
 const AFTER_TOOL = [WORKER[0], TOOL_USE, toolResult("2026-10-04T10:06:05.000Z"), block("2026-10-04T10:06:12.000Z", "msg_after", 40)];
-const afterTool = (events) => events.find((event) => event.id === "turn:msg_after");
+const afterTool = (events: any[]) => events.find((event: { id: string; }) => event.id === "turn:msg_after");
 
 test("(6b) a state written at the PREVIOUS version is a cold start naming the version, and the turn stored without `toolMs` is superseded by the re-read copy that has it (#3680)", () => {
   const PREVIOUS = 2;
@@ -256,7 +256,7 @@ test("(6b) a state written at the PREVIOUS version is a cold start naming the ve
   writeFileSync(w.statePath, JSON.stringify({ ...state, version: PREVIOUS, storeBytes: statSync(w.storePath).size }));
   assert.equal("toolMs" in afterTool(w.stored()), false, "POSITIVE CONTROL: the store now holds the turn as it was stored before the field existed");
   const rerun = w.run();
-  assert.match(rerun.coldStart, new RegExp(`not version ${STATE_VERSION}`), "the old state is distrusted, and says which version it is not");
+  assert.match(rerun.coldStart ?? "", new RegExp(`not version ${STATE_VERSION}`), "the old state is distrusted, and says which version it is not");
   assert.equal(rerun.read, 1, "the transcript is read again from byte 0 although its size and mtime are unchanged");
   assert.equal(afterTool(w.stored())?.toolMs, 6 * 60 * 1000, "the stored turn is superseded by the copy that carries it");
   assert.equal(w.run().coldStart, null, "and the next run trusts the state again: a version moves ONCE");
@@ -292,7 +292,7 @@ test("STATE: written atomically beside the store, round-trips, and planRead skip
   assert.deepEqual(loadState({ statePath: w.statePath, storePath: w.storePath, now: 9, since: 9 }), { state, coldStart: null });
   assert.equal(w.statePath, `${w.storePath}.ingest-state.json`);
   const entry = { offset: 10, size: 10, mtimeMs: 100, headBytes: 3, headHash: fingerprint(Buffer.from("abc")), firstReadAt: 1, settleAt: null, carry: { session: "s", owner: null, lastAt: null, used: [] } };
-  const plan = (stat, headMatches = () => true, now = 0) => planRead({ entry, stat, now, headMatches });
+  const plan = (stat: { size: number; mtimeMs: number; }, headMatches = () => true, now = 0) => planRead({ entry, stat, now, headMatches });
   assert.equal(plan({ size: 10, mtimeMs: 100 }).action, "skip");
   assert.equal(plan({ size: 12, mtimeMs: 100 }).action, "resume", "same mtime, more bytes");
   assert.equal(plan({ size: 10, mtimeMs: 101 }).action, "resume", "same size, newer mtime");

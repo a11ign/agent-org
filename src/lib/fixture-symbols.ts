@@ -32,7 +32,7 @@
  * @param {...string} parts
  * @returns {string}
  */
-export function fixtureSymbol(...parts) {
+export function fixtureSymbol(...parts: string[]): string {
   return parts.join("");
 }
 
@@ -44,7 +44,7 @@ export function fixtureSymbol(...parts) {
  * -- and what makes "zero violations" distinguishable from "zero declarations".
  * @type {Readonly<Record<string, string>>}
  */
-export const ABSENT_FIXTURE_SYMBOLS = Object.freeze({
+export const ABSENT_FIXTURE_SYMBOLS: Readonly<Record<string, string>> = Object.freeze({
   "row-reachability.test.ts #719: the carrier fixture's symbol":
     fixtureSymbol("RowReachabilityFixtureSy", "mbol719"),
   "row-reachability.test.ts #772 CONTROL: the symbol no tree holds":

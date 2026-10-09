@@ -11,14 +11,14 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { allocate, COST, drawTriageSample, MANAGERS, NO_CAUSE, parseArgs, renderProvenance, renderSheet, SHOWN } from "./triage-sample.mjs";
+import { allocate, COST, drawTriageSample, Figures, MANAGERS, NO_CAUSE, parseArgs, renderProvenance, renderSheet, SHOWN } from "./triage-sample.mjs";
 
 const FROM = Date.parse("2026-10-07T00:00:00Z");
 const TO = Date.parse("2026-10-08T00:00:00Z");
 const SPAN = TO - FROM;
 const MINUTE = 60_000;
 
-const made = [];
+const made: string[] = [];
 after(() => { for (const dir of made) rmSync(dir, { recursive: true, force: true }); });
 
 let serial = 0;
@@ -35,14 +35,14 @@ const turn = ({ of, cost, sidechain = false, session = of.session, n = 0 }) => (
 
 const SESSIONS = ["ceo", "product-manager", "orchestrator"];
 /** `count` wakes of one cause, spread over the day and over the three managers. */
-const wakesOf = (cause, count) => Array.from({ length: count }, (_, i) => wake({ cause, session: SESSIONS[i % SESSIONS.length], at: Math.floor((i * SPAN) / (count + 1)) + MINUTE }));
+const wakesOf = (cause: string|null, count: number) => Array.from({ length: count }, (_, i) => wake({ cause, session: SESSIONS[i % SESSIONS.length], at: Math.floor((i * SPAN) / (count + 1)) + MINUTE }));
 
 const WAKES = [...wakesOf("answer-owed", 120), ...wakesOf("org-health", 60), ...wakesOf("pr-checks-failing", 30), ...wakesOf("trunk-red", 1), ...wakesOf("chairman-blocked", 2), ...wakesOf(null, 3)];
 const TURNS = WAKES.map((one, i) => turn({ of: one, cost: 0.01 * ((i % 7) + 1) }));
 const EVENTS = [...WAKES, ...TURNS];
 const BASE = { events: EVENTS, from: FROM, to: TO, size: 20 };
-const idsOf = (sample) => sample.rows.map((row) => row.wakeId);
-const countBy = (sample) => sample.rows.reduce((by, row) => by.set(row.cause, (by.get(row.cause) ?? 0) + 1), new Map());
+const idsOf = (sample: { rows: any; strata?: { cause: string; wakes: number; drawn: number; }[]; population?: number; }) => sample.rows.map((row: { wakeId: any; }) => row.wakeId);
+const countBy = (sample: { rows: any; strata?: { cause: string; wakes: number; drawn: number; }[]; population?: number; }) => sample.rows.reduce((by: { set: (arg0: any,arg1: any) => any; get: (arg0: any) => any; }, row: { cause: any; }) => by.set(row.cause, (by.get(row.cause) ?? 0) + 1), new Map());
 
 test("the same seed over the same store draws the same sample, whatever order the store is read in", () => {
   const first = drawTriageSample({ ...BASE, seed: "4074" });
@@ -74,7 +74,7 @@ test("a cause with fewer wakes than its share contributes all of them, and never
   // Size 151: 145 spare over 216. Pass 1: the three rare causes' shares (0.67, 1.34, 2.01) are at least their spare room (0, 1, 2), so each gives ALL it has: 1, 2, 3 places and 3 spare used.
   // Pass 2: 142 over weight 210: 81.14, 40.57, 20.29; floors 141; the last place to the largest remainder (.57, org-health). So 82, 42, 21, 1, 2, 3 = 151.
   assert.deepEqual([...countBy(sample)].toSorted(), [["answer-owed", 82], ["chairman-blocked", 2], ["org-health", 42], ["pr-checks-failing", 21], ["trunk-red", 1], [NO_CAUSE, 3]].toSorted());
-  const all = (cause) => WAKES.filter((one) => (one.cause ?? NO_CAUSE) === cause).map((one) => one.id).toSorted();
+  const all = (cause: string) => WAKES.filter((one) => (one.cause ?? NO_CAUSE) === cause).map((one) => one.id).toSorted();
   for (const cause of ["trunk-red", "chairman-blocked", NO_CAUSE]) {
     assert.deepEqual(sample.rows.filter((row) => row.cause === cause).map((row) => row.wakeId).toSorted(), all(cause), `${cause}: every wake is drawn`);
   }
@@ -84,7 +84,7 @@ test("a cause with fewer wakes than its share contributes all of them, and never
 
 test("allocate: places are conserved, capped at what a cause has, and the same counts give the same places", () => {
   const counts = new Map([["a", 500], ["b", 40], ["c", 1], ["d", 2]]);
-  const sum = (quota) => [...quota.values()].reduce((total, n) => total + n, 0);
+  const sum = (quota: any[]|Map<string,number>) => [...quota.values()].reduce((total, n) => total + n, 0);
   // Size 100: 96 spare over 543. c is capped (0 room). The others over 542: a 88.45, b 7.08, d 0.35; floors 88+7+0 = 95, the last place to a (.45). So a 90, b 8, c 1, d 1.
   const quota = allocate(counts, 100);
   assert.deepEqual([...quota].toSorted(), [["a", 90], ["b", 8], ["c", 1], ["d", 1]]);
@@ -163,7 +163,7 @@ test("the command prints a sheet from a store file, the same twice, and refuses 
   const store = join(dir, "events.ndjson");
   writeFileSync(store, `${EVENTS.map((event) => JSON.stringify(event)).join("\n")}\n`);
   const script = join(dirname(fileURLToPath(import.meta.url)), "triage-sample.mjs");
-  const run = (...args) => spawnSync(process.execPath, [script, "--store", store, "--from", new Date(FROM).toISOString(), "--to", new Date(TO).toISOString(), "--size", "20", ...args], { encoding: "utf8" });
+  const run = (...args: (string|undefined)[]) => spawnSync(process.execPath, [script, "--store", store, "--from", new Date(FROM).toISOString(), "--to", new Date(TO).toISOString(), "--size", "20", ...args], { encoding: "utf8" });
   const first = run("--seed", "4074");
   assert.equal(first.status, 0, first.stderr);
   assert.equal(run("--seed", "4074").stdout, first.stdout, "reproducible through the command");
@@ -183,9 +183,9 @@ const { rows: SHEET, definitions: DEFINITIONS } = loadLabels();
 const UNREADABLE = [3, 44, 45, 57, 88, 98];
 const asPredictions = (rows = SHEET) => rows.map((row) => ({ position: row.position, label: row.label }));
 /** The predictions with `position` answered `label`. */
-const answering = (position, label) => asPredictions().map((one) => (one.position === position ? { ...one, label } : one));
-const tally = (rows, key) => rows.reduce((counts, row) => ({ ...counts, [row[key]]: (counts[row[key]] ?? 0) + 1 }), {});
-const classOf = (score, cause) => score.classes.find((one) => one.cause === cause);
+const answering = (position: number, label: string|undefined) => asPredictions().map((one) => (one.position === position ? { ...one, label } : one));
+const tally = (rows: any[], key: string) => rows.reduce((counts: { [x: string]: any; }, row: { [x: string]: string|number; }) => ({ ...counts, [row[key]]: (counts[row[key]] ?? 0) + 1 }), {});
+const classOf = (score: { withExcluded?: Figures; withoutExcluded?: Figures; excluded?: { positions: number[]; predicted: { position: number; label: string; predicted: string|undefined; }[]; }; classes: any; bar?: Readonly<{ minRows: 5; }>; }, cause: string) => score.classes.find((one: { cause: any; }) => one.cause === cause);
 /** A readable `wake` row of a class that passes the bar when nothing is missed: `answer-owed` has 14 of them. */
 const A_WAKE = SHEET.find((row) => row.cause === "answer-owed" && row.label === "wake" && !row.excluded);
 
@@ -235,7 +235,7 @@ test("an OVER-wake is not a miss: a digest row predicted wake changes the agreem
 test("the bar: five readable rows and no miss; a class under five fails and says why; no wake row is a pass that says it is untested", () => {
   const score = scoreTriage(SHEET, asPredictions());
   assert.equal(BAR.minRows, 5);
-  const readable = (cause) => SHEET.filter((row) => row.cause === cause && !row.excluded).length;
+  const readable = (cause: string) => SHEET.filter((row) => row.cause === cause && !row.excluded).length;
   assert.deepEqual([readable("pr-codeowner-review-missing"), readable("row-call-count-signal")], [5, 4], "the two sides of the boundary exist in the fixture");
   assert.equal(classOf(score, "row-call-count-signal").bar.verdict, "fail: fewer than 5 readable rows");
   assert.match(classOf(score, "pr-codeowner-review-missing").bar.verdict, /^candidate \(no wake row in the class/);
@@ -291,7 +291,7 @@ test("--score reads the frozen labels and the predictions file, and never the st
   writeFileSync(good, JSON.stringify(answering(A_WAKE.position, "digest")));
   writeFileSync(bad, JSON.stringify(asPredictions().slice(1)));
   const script = join(dirname(fileURLToPath(import.meta.url)), "triage-sample.mjs");
-  const run = (...args) => spawnSync(process.execPath, [script, ...args], { encoding: "utf8" });
+  const run = (...args: string[]) => spawnSync(process.execPath, [script, ...args], { encoding: "utf8" });
   const sampler = run("--seed", "4074", "--store", store);
   assert.equal(sampler.status, 1, "positive control: the sampler DOES read this store, and it cannot");
   assert.match(sampler.stderr, /JSON/);

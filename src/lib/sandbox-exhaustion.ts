@@ -48,7 +48,7 @@ export const EXHAUSTION_MARKER = "SANDBOX EXHAUSTED -- THE HOST, NOT THE CODE UN
  * The three errno codes #2158 names, each with what it means for the person reading the failure.
  * @type {Readonly<Record<string, string>>}
  */
-export const EXHAUSTION_CODES = Object.freeze({
+export const EXHAUSTION_CODES: Readonly<Record<string, string>> = Object.freeze({
   ENOSPC: "the filesystem holding the sandbox root is full",
   EDQUOT: "this user's disk quota on that filesystem is exhausted",
   EACCES: "the sandbox root could not be written to",
@@ -64,7 +64,7 @@ export const EXHAUSTION_CODES = Object.freeze({
  * sets `error.code`, which is the shape #2158 actually measured.
  * @type {Readonly<Record<string, string>>}
  */
-const CAPACITY_PHRASES = Object.freeze({
+const CAPACITY_PHRASES: Readonly<Record<string, string>> = Object.freeze({
   ENOSPC: "No space left on device",
   EDQUOT: "Disk quota exceeded",
 });
@@ -81,8 +81,8 @@ const BYTES_PER_GIB = BYTES_PER_MIB * BYTES_PER_KIB;
  * @param {unknown} error what a `catch` around the sandbox setup received
  * @returns {string | null} the errno name, or null
  */
-export function exhaustionCause(error) {
-  const failure = /** @type {{ code?: unknown, message?: unknown, stderr?: unknown }} */ (error ?? {});
+export function exhaustionCause(error: unknown): string | null {
+  const failure = (error ?? {}) as { code?: unknown; message?: unknown; stderr?: unknown };
   const code = typeof failure.code === "string" ? failure.code : "";
   if (code in EXHAUSTION_CODES) return code;
   const text = `${asText(failure.message)}\n${asText(failure.stderr)}`;
@@ -104,9 +104,9 @@ export function exhaustionCause(error) {
  * @param {{ root: string, cause: string, statfs?: (path: string) => { bsize: number, blocks: number, bavail: number } }} where
  * @returns {string}
  */
-export function describeSandboxExhaustion(error, { root, cause, statfs = statfsSync }) {
+export function describeSandboxExhaustion(error: unknown, { root, cause, statfs = statfsSync }: { root: string; cause: string; statfs?: (path: string) => { bsize: number; blocks: number; bavail: number; }; }): string {
   const meaning = EXHAUSTION_CODES[cause] ?? `${cause} while building the sandbox`;
-  const original = firstLine(asText(/** @type {{ message?: unknown }} */ (error ?? {}).message))
+  const original = firstLine(asText(((error ?? {}) as { message?: unknown }).message))
     ?? "the setup threw with no message";
   return `${EXHAUSTION_MARKER}: ${cause} building the test sandbox ${root} -- ${meaning}. ${freeSpace(root, statfs)}. `
     + `Free space on that filesystem and re-run; this run proved nothing about the code under test. `
@@ -120,7 +120,7 @@ export function describeSandboxExhaustion(error, { root, cause, statfs = statfsS
  * @param {string} root the sandbox root the setup was building
  * @returns {Error | null}
  */
-export function sandboxExhaustionError(error, root) {
+export function sandboxExhaustionError(error: unknown, root: string): Error | null {
   const cause = exhaustionCause(error);
   if (cause === null) return null;
   const described = new Error(describeSandboxExhaustion(error, { root, cause }), { cause: error });
@@ -143,7 +143,7 @@ export function sandboxExhaustionError(error, root) {
  * @param {(root: string) => T} body
  * @returns {T}
  */
-export function withSandbox({ prefix, base = tmpdir() }, body) {
+export function withSandbox<T>({ prefix, base = tmpdir() }: { prefix: string; base?: string; }, body: (root: string) => T): T {
   const intended = join(base, prefix);
   let root = "";
   try {
@@ -173,7 +173,7 @@ export function withSandbox({ prefix, base = tmpdir() }, body) {
  * @param {(root: string) => void} populate
  * @returns {string} the real path of the populated sandbox; the caller removes it
  */
-export function buildSandbox({ prefix, base = tmpdir() }, populate) {
+export function buildSandbox({ prefix, base = tmpdir() }: { prefix: string; base?: string; }, populate: (root: string) => void): string {
   const intended = join(base, prefix);
   let root = "";
   try {
@@ -198,14 +198,14 @@ export function buildSandbox({ prefix, base = tmpdir() }, populate) {
  * @param {(path: string) => { bsize: number, blocks: number, bavail: number }} statfs
  * @returns {string}
  */
-function freeSpace(root, statfs) {
+function freeSpace(root: string, statfs: (path: string) => { bsize: number; blocks: number; bavail: number; }): string {
   const measured = existingAncestor(root);
   try {
     const { bsize, blocks, bavail } = statfs(measured);
     return `${humanBytes(bavail * bsize)} free of ${humanBytes(blocks * bsize)} on the filesystem holding ${measured}`;
   } catch (error) {
     return `its filesystem free space could not be read at ${measured} (${firstLine(asText(
-      /** @type {{ message?: unknown }} */ (error ?? {}).message)) ?? "no message"})`;
+      ((error ?? {}) as { message?: unknown }).message)) ?? "no message"})`;
   }
 }
 
@@ -216,7 +216,7 @@ function freeSpace(root, statfs) {
  * @param {string} path
  * @returns {string}
  */
-function existingAncestor(path) {
+function existingAncestor(path: string): string {
   let current = path;
   for (;;) {
     if (existsSync(current)) return current;
@@ -227,7 +227,7 @@ function existingAncestor(path) {
 }
 
 /** @param {number} bytes @returns {string} */
-function humanBytes(bytes) {
+function humanBytes(bytes: number): string {
   if (bytes >= BYTES_PER_GIB) return `${(bytes / BYTES_PER_GIB).toFixed(1)} GiB`;
   if (bytes >= BYTES_PER_MIB) return `${(bytes / BYTES_PER_MIB).toFixed(1)} MiB`;
   return `${bytes} B`;
@@ -235,14 +235,14 @@ function humanBytes(bytes) {
 
 /** Whatever a field held, as text -- `stderr` is a Buffer on a piped spawn and a string on an inherited one. */
 /** @param {unknown} value @returns {string} */
-function asText(value) {
+function asText(value: unknown): string {
   if (value === null || value === undefined) return "";
   return typeof value === "string" ? value : String(value);
 }
 
 /** The argv line of a spawn failure, or the whole of a one-line errno message -- never the child's stderr again. */
 /** @param {string} text @returns {string | null} */
-function firstLine(text) {
+function firstLine(text: string): string | null {
   const line = text.split("\n")[0].trim();
   return line === "" ? null : line;
 }
