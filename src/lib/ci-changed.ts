@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// COPIED FROM `scripts/ci-changed.ts` at 598e883cc (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
+// COPIED FROM `scripts/ci-changed.ts` at eb33d3c98 (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
 // its package. The product keeps its original and the two can drift, with no cross-repository pin: `agent-org-outward-edges.test.ts` compares them.
-// CHANGED FROM THE ORIGINAL, 100 NAMED LINES:
+// CHANGED FROM THE ORIGINAL, 143 NAMED LINES:
 // - its import of changed-files.ts, now the tool's own copy beside it
 // - its import of cli-flags.ts, now the tool's own copy beside it
 // - its import of git-env.ts, now the tool's own copy beside it
@@ -12,8 +12,8 @@
 //   must not add to it, so this copy does not inherit the original's still-grandfathered form)
 // - the #3573 CUT, 93 lines: `readWorkspaceDependencyGraph`, `dependentsOf`, `classify`'s `dependencyGraph` parameter and its `testPackages`
 //   result and output, and the comments that explained them (the PR job runs the whole suite and nothing selects tests any more). The original
-//   makes the same edit in the final pull request of a11ign/a11ign#3573; until then this copy is the one that has it, which is why the count
-//   is 100 and not 7. The count is a ceiling, so it stays true after the original catches up.
+//   makes the same edit in the final pull request of a11ign/a11ign#3573; until then this copy is the one that has it, which is why the count is 143 and not 50 (7 + the annotations below). The count is a ceiling, so it stays true after the original catches up.
+// - the original's JSDoc type annotations (`@param`, `@returns`, `@type`, `@typedef`, a shebang and `// @ts-check`), which this copy writes as TypeScript syntax or drops (the `js-to-ts` sweep, agent-org#431). The count is the reader's own, 143 lines of the original with no counterpart here, and a ceiling.
 // ==== end of copy header ====
 // command: classify what a PR's diff touches, so CI's conditional jobs know whether to run
 // WHAT CHANGED, CLASSIFIED — the one place `ci.yml`'s conditional jobs read to decide whether they run.

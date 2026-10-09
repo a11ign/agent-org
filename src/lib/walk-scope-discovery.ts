@@ -1,6 +1,7 @@
-// COPIED FROM `packages/guards/src/walk-scope-discovery.ts` at aaa3793977 (a11ign/a11ign#3573; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
+// COPIED FROM `packages/guards/src/walk-scope-discovery.ts` at f3b5c5f59 (a11ign/a11ign#3573; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
 // its package. The product keeps its original and the two can drift, with no cross-repository pin: `agent-org-wiring.test.ts` compares them.
-// CHANGED FROM THE ORIGINAL: NOTHING but this header.
+// CHANGED FROM THE ORIGINAL, 24 NAMED LINES:
+// - the original's JSDoc type annotations (`@param`, `@returns`, `@type`, `@typedef`), which this copy writes as TypeScript syntax or drops (the `js-to-ts` sweep, agent-org#431). The count is the reader's own, 24 lines of the original with no counterpart here, and a ceiling.
 // ==== end of copy header ====
 // THE WORKSPACE IMPORT CLOSURE, for `walk-scope.ts` -- #3573.
 //

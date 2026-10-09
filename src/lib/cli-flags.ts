@@ -1,8 +1,12 @@
-// COPIED FROM `packages/worker-fleet/src/cli-flags.ts` at cd4bdb7dc (#2658, child 3g of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
+// COPIED FROM `scripts/cli-flags.ts` at f3b5c5f59 (#2658, child 3g of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
 // its package. The product keeps its original and the two can drift, with no cross-repository pin: `agent-org-outward-edges.test.ts` compares them.
 // CHANGED FROM THE ORIGINAL: NOTHING but this header.
 // ==== end of copy header ====
 // @ts-check
+// A COPY, ON PURPOSE: this is `a11ign/screenreader-fleet`'s `src/cli-flags.ts` (published as `@a11ign/screenreader-fleet/cli-flags`), kept here
+// because the root scripts that run BEFORE `node_modules` exists (`preinstall`, `prepare`, the tool-only CI jobs) cannot import a package. They
+// used to reach it by a relative path into `packages/worker-fleet/`, which left the workspace with #3504. It imports `node:` built-ins only. The ONE edit to the text: a comment spelled out
+// the entry-guard comparison, which `generate-commands-doc.ts` reads as "this file is a command" and asks for a `// command:` header.
 /**
  * Refuse a flag this command does not read.
  *
@@ -161,7 +165,7 @@ export function refuseUnknownFlags(known: string[], { entry, argv = process.argv
   // REALPATH'D, and without it this guard silently does not fire through a symlink — #237.
   //
   // An entry guard in the realpath'd form reads
-  // `import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href`, and
+  // `import.meta.url` compared against `pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href`, and
   // this comparison had no `realpathSync`. So when `argv[1]` reaches such a script through a symlink — npm's
   // own `.bin` links are symlinks, which is why those call sites resolve — the OUTER condition is true and
   // this one is FALSE. `main()` runs; the flag guard returns early and inspects nothing.
@@ -172,10 +176,10 @@ export function refuseUnknownFlags(known: string[], { entry, argv = process.argv
   // `entry-points.test.ts` (#1086), a ratchet that may shrink and may not grow. It is the list of record, so no
   // count is repeated here.
   //
-  // Measured on `piped-exit-status-guard.mjs`, same file, same flag:
+  // Measured on `piped-exit-status-guard.ts`, same file, same flag:
   //
   //   node scripts/tmp-symlink-probe.mjs --bogus 'echo hi'   -> ran, exit 0, flag IGNORED
-  //   node packages/guards/src/piped-exit-status-guard.mjs --bogus '...'  -> refused, exit 2
+  //   node packages/guards/src/piped-exit-status-guard.ts --bogus '...'  -> refused, exit 2
   //
   // Through the symlink the mistyped flag is ignored and the command reports success — which is the
   // sentence this refusal itself prints as the reason it exists.

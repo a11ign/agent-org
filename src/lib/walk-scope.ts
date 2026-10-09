@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-// COPIED FROM `packages/guards/src/walk-scope.ts` at 598e883cc (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
+// COPIED FROM `packages/guards/src/walk-scope.ts` at 57bb9154a (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
 // its package. The product keeps its original and the two can drift, with no cross-repository pin: `agent-org-outward-edges.test.ts` compares them.
-// CHANGED FROM THE ORIGINAL, 3 NAMED LINES:
+// CHANGED FROM THE ORIGINAL, 67 NAMED LINES:
 // - its dynamic import of ci-changed.ts, now the tool's own copy beside it
 // - its REPO_ROOT computation, now the project's checkout (`HOME_CHECKOUT`) and not a count of directories up from `src` (#3074)
+// - the original's JSDoc type annotations (`@param`, `@returns`, `@type`, `@typedef`), which this copy writes as TypeScript syntax or drops (the `js-to-ts` sweep, agent-org#431). The count is the reader's own, 67 lines of the original with no counterpart here, and a ceiling.
 // ==== end of copy header ====
 // A TREE-WALKING GUARD DECLARES THE SUBTREE IT WALKS, AND ITS OWN RUN PROVES IT -- #929.
 //

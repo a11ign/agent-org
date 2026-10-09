@@ -1,7 +1,9 @@
 #!/usr/bin/env node
-// COPIED FROM `packages/guards/src/test-memory-cap.ts` at 134087803 (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
+// COPIED FROM `packages/guards/src/test-memory-cap.ts` at 57bb9154a (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
 // its package. The product keeps its original and the two can drift, with no cross-repository pin: `agent-org-outward-edges.test.ts` compares them.
-// CHANGED FROM THE ORIGINAL, ONE LINE: its one sibling import, which was `../../../scripts/npm-cli-executable.ts` and is now the tool's own copy beside it.
+// CHANGED FROM THE ORIGINAL, 32 NAMED LINES:
+// - its one sibling import, which was `../../../scripts/npm-cli-executable.ts` and is now the tool's own copy beside it.
+// - the original's JSDoc type annotations (`@param`, `@returns`, `@type`, `@typedef`, a shebang and `// @ts-check`), which this copy writes as TypeScript syntax or drops (the `js-to-ts` sweep, agent-org#431). The count is the reader's own, 32 lines of the original with no counterpart here, and a ceiling.
 // ==== end of copy header ====
 // command: run a test runner under a per-process memory cap (systemd-run MemoryMax) and say what the cap did
 //

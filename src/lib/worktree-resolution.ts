@@ -1,6 +1,6 @@
-// COPIED FROM `packages/guards/src/worktree-resolution.ts` at cd4bdb7dc (#2658, child 3g of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
+// COPIED FROM `packages/guards/src/worktree-resolution.ts` at f3b5c5f59 (#2658, child 3g of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
 // its package. The product keeps its original and the two can drift, with no cross-repository pin: `agent-org-outward-edges.test.ts` compares them.
-// CHANGED FROM THE ORIGINAL: NOTHING but this header.
+// CHANGED FROM THE ORIGINAL, ONE LINE: its comment naming `assert-glob-not-empty.mjs`, which the original now spells `assert-glob-not-empty.ts` (renamed by the `js-to-ts` sweep).
 // ==== end of copy header ====
 // @ts-check
 // #2181: WHERE DO THIS TREE'S `@a11ign/*` ACTUALLY RESOLVE? The question a green suite cannot answer.
