@@ -1183,6 +1183,10 @@ const sameLabel = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 /** The Project Status option a promoted row must end on -- the same name as its label, by #844's rule. */
 const READY_STATUS = "Ready";
 
+/** #4456: an `epic` is never claimable (no Region, Acceptance or Open-check), so `--board=` boards it at Backlog and never `ready`. */
+const EPIC_LABEL = "epic";
+const BACKLOG_STATUS = "Backlog";
+
 /** The two board labels, which `boardAndVerify` applies after the Status move (#844) and nothing else may. */
 const BOARD_LABELS = Object.freeze([BACKLOG_LABEL, READY_LABEL]);
 
@@ -2194,23 +2198,35 @@ export function unverifiedPromotionFields(after: { labels: string[]; boardStatus
  * write, because a set write computed from a read this old could erase a label added since (#2111 rework).
  * @returns {{ refusal: string | null }}
  */
-function promoteGate(issueNumber: number, { run, fetchLabels }: { run: typeof defaultRun; fetchLabels: typeof fetchIssueLabels; }): { refusal: string | null; } {
+function promoteGate(issueNumber: number, deps: { run: typeof defaultRun; fetchLabels: typeof fetchIssueLabels; }): { refusal: string | null; } {
+  const state = openUnclaimedGate(issueNumber, deps);
+  return state.refusal === null ? { refusal: claimableBodyRefusal(issueNumber, deps.run) } : { refusal: state.refusal };
+}
+
+/**
+ * #4456: the half of `promoteGate` that is about the ROW'S STATE (readable, open, not claimed), split out so `--board=` can apply it to an
+ * `epic` without the claimability body check an epic can never pass. `labels` is what the read saw, for the caller that routes on it.
+ * @param {number} issueNumber
+ * @param {{ run: typeof defaultRun, fetchLabels: typeof fetchIssueLabels }} deps
+ * @returns {{ refusal: string | null, labels: string[] }}
+ */
+function openUnclaimedGate(issueNumber: number, { run, fetchLabels }: { run: typeof defaultRun; fetchLabels: typeof fetchIssueLabels; }): { refusal: string | null; labels: string[]; } {
   let before: { labels: string[]; state?: string; };
   try {
     before = fetchLabels(issueNumber, { run });
   } catch (error) {
-    return { refusal: `row-file: REFUSING to promote -- #${issueNumber}'s labels could not be read, and a `
+    return { labels: [], refusal: `row-file: REFUSING to promote -- #${issueNumber}'s labels could not be read, and a `
       + `promotion that cannot see what the row already carries cannot know what to write. `
       + `${(error as Error).message}` };
   }
   // `state` is OPTIONAL on `fetchLabels`' own contract (#752) -- absent reads as "not verified closed",
   // never as closed, so a caller's fixture that omits it behaves exactly as an open row does.
   if (before.state === "CLOSED") {
-    return { refusal: `row-file: REFUSING to promote -- #${issueNumber} is CLOSED. Ready means a session `
+    return { labels: before.labels, refusal: `row-file: REFUSING to promote -- #${issueNumber} is CLOSED. Ready means a session `
       + "may pick it up now, and nothing may pick up a closed row. Reopen it first if it is still work." };
   }
   if (before.labels.includes(CLAIM_LABEL)) {
-    return { refusal: `row-file: REFUSING to promote -- #${issueNumber} is already claimed (\`${CLAIM_LABEL}\`). `
+    return { labels: before.labels, refusal: `row-file: REFUSING to promote -- #${issueNumber} is already claimed (\`${CLAIM_LABEL}\`). `
       + `Promoting it would leave \`${READY_LABEL}\` beside \`${CLAIM_LABEL}\`, which \`ready-label-audit\` `
       + "reports as a HAND CLAIM: a claim made outside `row-claim.ts`. That reading is strong evidence "
       + `rather than proof -- the claim path removes \`${READY_LABEL}\` in a SECOND call (#749), so a claim whose `
@@ -2219,15 +2235,19 @@ function promoteGate(issueNumber: number, { run, fetchLabels }: { run: typeof de
       + "(`row-claim.ts decline "
       + `${issueNumber} --session=<whoever holds it>\`), which restores \`${READY_LABEL}\` by itself.` };
   }
+  return { refusal: null, labels: before.labels };
+}
+
+/** #4456: the other half of `promoteGate` -- is the row's body one a session could claim? `null` is yes. */
+function claimableBodyRefusal(issueNumber: number, run: typeof defaultRun): string | null {
   let body: string;
   try {
     body = run("gh", ["issue", "view", String(issueNumber), "--repo", REPO, "--json", "body", "--jq", ".body"]);
   } catch (error) {
-    return { refusal: `row-file: REFUSING to promote -- #${issueNumber}'s body could not be read, so the `
-      + `claimability check below could not be asked. ${(error as Error).message}` };
+    return `row-file: REFUSING to promote -- #${issueNumber}'s body could not be read, so the `
+      + `claimability check below could not be asked. ${(error as Error).message}`;
   }
-  const reason = promoteRefusalReason(body, issueNumber);
-  return { refusal: reason };
+  return promoteRefusalReason(body, issueNumber);
 }
 
 /**
@@ -2502,7 +2522,7 @@ function boardLane(argv: string[], loadLanesConfig: typeof loadLanes): { label: 
  * on it in ANY Status (Backlog, Ready, In progress) costs one request and no write -- the sweep calls this
  * for every open `regression` row on every fire. An unreadable board REFUSES: absent and unreadable are
  * different states, and boarding on a guess could move a row that was already in flight.
- * Then `promoteGate`'s claimability rules, then `boardAndVerify` (additive labels, never the full-set PUT:
+ * Then `promoteGate`'s claimability rules (an `epic` skips the body half, #4456, and boards Backlog), then `boardAndVerify` (additive labels, never the full-set PUT:
  * this row is not being promoted from `backlog` and keeps `regression`, `out-of-release` and the rest).
  * @param {string[]} argv
  * @param {{ run: typeof defaultRun, fetchBoardStatus: typeof fetchIssueBoardStatus,
@@ -2534,17 +2554,20 @@ function boardExisting(argv: string[], deps: {
     return { ok: true, message: `#${issueNumber} is already boarded on Project ${PROJECT_NUMBER} `
       + `(Status "${status}"): left alone, nothing written.` };
   }
-  const gate = promoteGate(issueNumber, deps);
-  if (gate.refusal !== null) {
+  const state = openUnclaimedGate(issueNumber, deps);
+  const isEpic = state.labels.includes(EPIC_LABEL);
+  const gate = state.refusal ?? (isEpic ? null : claimableBodyRefusal(issueNumber, deps.run));
+  if (gate !== null) {
     return { ok: false, code: 1, message: `row-file: \`${BOARD_FLAG}${issueNumber}\` is refused by the same `
-      + `claimability rules as \`${PROMOTE_FLAG}\`:\n${gate.refusal}` };
+      + `claimability rules as \`${PROMOTE_FLAG}\`:\n${gate}` };
   }
+  const boarding = isEpic ? { label: BACKLOG_LABEL, status: BACKLOG_STATUS } : { label: READY_LABEL, status: READY_STATUS };
   const result = boardAndVerify({ issueNumber, url: `https://github.com/${REPO}/issues/${issueNumber}`,
-    boarding: { label: READY_LABEL, status: READY_STATUS }, session: null, laneLabels: [lane.label],
+    boarding, session: null, laneLabels: [lane.label],
     milestone: null, lead: `Row #${issueNumber} (filed by somebody else)` }, deps);
   if (!result.ok) return { ok: false, code: 2, message: `row-file: ${result.message}` };
   return { ok: true, message: `#${issueNumber} boarded: Project ${PROJECT_NUMBER} item, Status `
-    + `"${READY_STATUS}", \`${READY_LABEL}\` + \`${lane.label}\` added beside its other labels.` };
+    + `"${boarding.status}", \`${boarding.label}\` + \`${lane.label}\` added beside its other labels.` };
 }
 
 /**

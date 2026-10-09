@@ -1957,7 +1957,8 @@ export function rowOffBoardOrders(facts: BoardFacts[] | null | undefined, nowMs:
       + `${ROW_OFF_BOARD_GRACE_MS / 60_000} minutes.\n`
       + `For each: add it to Project 1 at the Status its label says (\`${READY_LABEL}\` -> Ready, \`${BACKLOG_LABEL}\` -> Backlog, \`${CLAIM_LABEL}\` -> `
       + `In progress), and give it a release declaration (a milestone or \`${OUT_OF_RELEASE_LABEL}\`) if it has none -- \`row-file\` would have `
-      + "refused a filing without one. THIS ORDER DOES NOT BOARD THE ROW FOR YOU: the Status is a judgment and it is yours.\n"
+      + "refused a filing without one. An `epic` cannot be claimed, so it is boarded with `row-file --board=<n> --lane=any`, which puts it at Backlog "
+      + "(#4456) -- never raw `gh project item-add`. THIS ORDER DOES NOT BOARD THE ROW FOR YOU: the Status is a judgment and it is yours.\n"
       + "THIS ARRIVES WHEN THE SET CHANGES. A row you leave off stays in the set and this order returns unchanged.",
     causeKey: `product-manager/row-off-board/${key}`,
   }];
