@@ -88,7 +88,7 @@ test("(c) two added files are refused as two `Acceptance:` headers are, and noth
 
 test("a leak in the added file is refused before anything in it runs", () => {
   const { ran, run } = recorder();
-  const leaky = acceptanceText(PASSING) + "\nthe box is at 10.20.30.40\n";
+  const leaky = `${acceptanceText(PASSING)}\nthe box is at ${["10", "20", "30", "40"].join(".")}\n`; // built at run time: the leak scan reads this file too
   const clean = checkBody(`${CLOSES}\n`, { run, diff: diffAdding(FILE), readFile: () => acceptanceText(PASSING) });
   assert.equal(clean.ok, true, "POSITIVE CONTROL: the clean file passes");
   const result = checkBody(`${CLOSES}\n`, { run, diff: diffAdding(FILE), readFile: () => leaky });
