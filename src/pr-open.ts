@@ -280,16 +280,28 @@ function treeKeyOf(rest: string[], code: readonly { key: string; repo: string; }
  */
 function repoFlagHint(rest: string[], prRepo: string, { git, code = homeProjectDeclaration().code }: { git: (args: string[]) => string; code?: readonly { key: string; repo: string; }[]; }): string {
   if (flagAfter(rest, "--repo") !== null) return "";
+  const remote = originRepoOf(git, code);
+  if (remote === undefined || remote === prRepo) return "";
+  return `\nThis checkout's origin is ${remote}, a repository of the project, and \`--repo\` was not passed, so these paths were read as ${prRepo}'s tree. `
+    + `If the PR is for ${remote}, pass \`--repo ${remote}\` BEFORE writing any Outside-Region line (#3149).`;
+}
+
+/**
+ * #3149/#4469: THE DECLARED REPOSITORY THIS CHECKOUT'S `origin` IS, or undefined when `origin` cannot be read or is no repository the project
+ * declares. Shared by the `--repo` hint and by the bare `Closes #N` test, which must not fall back to the tracker for a PR opened from
+ * another repository's checkout (lab#39: `Closes: #4305, #4372` accepted, #4372 shelved by B4 for 71 ticks).
+ * @param {(args: string[]) => string} git @param {readonly { key: string, repo: string }[]} code the project's code repositories
+ * @returns {string | undefined}
+ */
+function originRepoOf(git: (args: string[]) => string, code: readonly { key: string; repo: string; }[]): string | undefined {
   let remote;
   try {
     remote = /github\.com[:/]([^/\s]+\/[^/\s]+?)(?:\.git)?\s*$/.exec(git(["remote", "get-url", "origin"]))?.[1];
   } catch (error) {
-    void error; // no origin to read is "cannot say", and a hint is the only thing lost
-    return "";
+    void error; // no origin to read is "cannot say", and the callers lose only a hint or a refusal they could not have made
+    return undefined;
   }
-  if (remote === undefined || remote === prRepo || !code.some((entry) => entry.repo === remote)) return "";
-  return `\nThis checkout's origin is ${remote}, a repository of the project, and \`--repo\` was not passed, so these paths were read as ${prRepo}'s tree. `
-    + `If the PR is for ${remote}, pass \`--repo ${remote}\` BEFORE writing any Outside-Region line (#3149).`;
+  return code.some((entry) => entry.repo === remote) ? remote : undefined;
 }
 
 /**
@@ -317,9 +329,12 @@ export function checkRegion(body: string, rest: string[], { git = defaultGit, ro
   }
   if (closes.kind !== "closes") return { refusal: null, note: null };
   const references = closesReferences(closes);
-  const prRepo = flagAfter(rest, "--repo") ?? REPO; // #2995: a bare `Closes #N` in another repository's PR names THAT repository's issue
-  const bare = prRepo === REPO ? undefined : references.find((reference) => reference.repo === null);
-  if (bare) return { refusal: `pr-open: REFUSED -- \`Closes #${bare.number}\` names an issue of ${prRepo}, not a row of ${REPO}. Write \`Closes ${REPO}#${bare.number}\`. Nothing was sent (#2995).`, note: null };
+  const prRepo = flagAfter(rest, "--repo") ?? REPO;
+  // #2995: a bare `Closes #N` in another repository's PR names THAT repository's issue. #4469: which repository that is falls back to the
+  // checkout's `origin` when `--repo` is absent, FOR THIS TEST ONLY -- `prRepo` above still picks the tree, as it did (#3149 keeps it a thing the caller says).
+  const bareRepo = flagAfter(rest, "--repo") ?? originRepoOf(git, code ?? homeProjectDeclaration().code) ?? REPO;
+  const bare = bareRepo === REPO ? undefined : references.find((reference) => reference.repo === null);
+  if (bare) return { refusal: `pr-open: REFUSED -- \`Closes #${bare.number}\` names an issue of ${bareRepo}, not a row of ${REPO}. Write \`Closes ${REPO}#${bare.number}\`. Nothing was sent (#2995).`, note: null };
   const rows = references.map(referenceName).join(", ");
   const treeKey = treeKeyOf(rest, code);
   const read = readRegions(references, { rowBody, rootFiles, tree: { key: treeKey, repo: prRepo } });
