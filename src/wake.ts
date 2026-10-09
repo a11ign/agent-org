@@ -40,6 +40,8 @@ import { createHash } from "node:crypto";
 // `work-gate.ts` and `org-watch.ts` state at their own imports.
 import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
 import { pnpmCliInvocation } from "./lib/npm-cli-executable.ts"; // #3386: a bare `pnpm` spawn is `pnpm.cmd` on Windows, which CVE-2024-27980 refuses
+import { blastTail, readBlockingRecord } from "./blast-tail.ts";
+import type { BlockingRecord } from "./blocking-impact.ts";
 import { profileFor, agentArgs, haikuTierProfile, type TierProfile, armOf, ARM, CALM_FINISH_PARAGRAPH, tripsArmOf, TRIPS_ARM, ROUND_TRIPS_PARAGRAPH } from "./worker-profile.ts";
 import { JUDGMENT_CAUSES, ANSWER_PREFIX, LAUNCH_PLACEHOLDER, REVIEWER_REGISTRY_FILE, readReviewerRegistry, scopesOf,
   readWithFirstWaveTogether, runBatch }
@@ -3548,11 +3550,12 @@ const ENGINEER_BRIEF_SENTENCE = `Before you start, read \`${ENGINEER_BRIEF}\`: t
  *
  *
  * @param label the concrete session this went to
+ * `blocking` (#4605) is the gate's last count of shelved rows, which `blastTail` turns into the spawned order's `your claim blocks N rows` line; absent, no line, so a caller that does not read it is never the one that invents one.
  * `orderId` (#4068) is the wake id the follow-up header names and the ledger line for this delivery records; see {@link FOLLOW_UP_HEADER}.
  */
 export function addressed(order: { session: string; prompt: string; title?: string; causeKey?: string; cause?: string; }, label: string,
-  { spawned, followUp = false, context, orderId, engineers = engineerRoles(), families = SPARE_FAMILIES, ...launch }: LaunchFacts & {
-      spawned?: ClaimedRow; followUp?: boolean; context?: string; orderId?: string; engineers?: string[];
+  { spawned, followUp = false, context, orderId, blocking = null, now = Date.now(), engineers = engineerRoles(), families = SPARE_FAMILIES, ...launch }: LaunchFacts & {
+      spawned?: ClaimedRow; followUp?: boolean; context?: string; orderId?: string; engineers?: string[]; blocking?: BlockingRecord | null; now?: number;
       families?: readonly import("./arm-pr.ts").SpareFamily[];
   } = {}) {
   // `<you>` SUBSTITUTED, not merely explained: the order's own command text carries the placeholder, and
@@ -3564,7 +3567,7 @@ export function addressed(order: { session: string; prompt: string; title?: stri
   if (followUp && !spawned) return `${FOLLOW_UP_HEADER(label, { orderId, cause: order.cause })}${staleReadingsClause(label, context)}\n\n${prompt}`;
   const identity = `You are \`${label}\`, an org session in this repository. Use that name wherever a command `
     + `asks which session you are (\`--session=${label}\`).\n\n`;
-  if (spawned) return `${identity}${prompt}\n\n${ENGINEER_BRIEF_SENTENCE}${calmTail(spawned.row)}${tripsTail(spawned.row)}`;
+  if (spawned) return `${identity}${prompt}\n\n${ENGINEER_BRIEF_SENTENCE}${calmTail(spawned.row)}${tripsTail(spawned.row)}${blastTail(spawned.row, blocking, now)}`;
   return `${identity}${prompt}\n\n${engineerBriefLine(label, engineers, families)}${autonomyParagraphs(order, label)}`;
 }
 
@@ -5108,9 +5111,9 @@ function recordCapped({ stuck, outaged }: { stuck: string[]; outaged: string[]; 
  * @param how `orderId` is the wake id the follow-up header names (#4068)
  * @returns why the order is UNDELIVERED, or `null` when it landed
  */
-function promptTarget(order: { causeKey: string; session: string; prompt: string; }, target: { label: string; profile?: object; claimed?: ClaimedRow; workspace?: string; order?: { prompt: string; }; }, { run, sleep = sleepSync, launch, context, claimer, env, orderId }: {
+function promptTarget(order: { causeKey: string; session: string; prompt: string; }, target: { label: string; profile?: object; claimed?: ClaimedRow; workspace?: string; order?: { prompt: string; }; }, { run, sleep = sleepSync, launch, context, claimer, env, orderId, blocking = () => readBlockingRecord(stateEntryPath("")) }: {
         run: (args: string[]) => string; sleep?: (ms: number) => void; launch?: LaunchFacts; context: string;
-        claimer?: SpawnClaimer; env?: Record<string, string>; orderId?: string;
+        claimer?: SpawnClaimer; env?: Record<string, string>; orderId?: string; blocking?: () => BlockingRecord | null;
     }): string | null {
   const started = target.profile !== undefined;
   const notReady = started ? notReadyWhy(run, target.label, sleep) : null;
@@ -5118,7 +5121,7 @@ function promptTarget(order: { causeKey: string; session: string; prompt: string
   try {
     run(["--session", "org", "agent", "prompt", target.label,
       addressed(carriedOrder(order, target), target.label,
-        { ...launch, spawned: target.claimed, followUp: isFollowUp(target, context), context, orderId })]);
+        { ...launch, spawned: target.claimed, followUp: isFollowUp(target, context), context, orderId, blocking: blocking() })]);
   } catch (err) {
     // A STARTED PROCESS IS LEFT RUNNING HERE, and the causeKey is NOT recorded. It is a healthy, idle
     // session under a roster label, so the next tick's `route` offers it this same order by the ordinary

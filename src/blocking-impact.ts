@@ -35,7 +35,8 @@ export type Holding = { rows: number[]; heldRows: number[] };
 export type Episode = { since: number; rows: number[]; heldRows: number[]; fired: boolean };
 /** `minutes` is the time since the previous tick that this sample stands for, so a sample's row-minutes are `rows * minutes`. */
 export type Sample = { at: number; holder: string; row: number | null; rows: number; minutes: number };
-export type BlockingRecord = { at: number; episodes: Record<string, Episode>; samples: Sample[] };
+/** `holdings` is the LAST tick's count for every holder, below the incident threshold too, so a wake can say what a claim blocks (#4605); absent in a record written before that. */
+export type BlockingRecord = { at: number; episodes: Record<string, Episode>; samples: Sample[]; holdings?: Record<string, Holding> };
 export type Incident = { holder: string; since: number; minutes: number; rows: number[]; heldRows: number[] };
 export type TopBlocker = { holder: string; row: number | null; rows: number; minutes: number; rowMinutes: number };
 
@@ -116,7 +117,7 @@ export function advance(previous: BlockingRecord | null, { now, holdings }: { no
   const minutes = previous !== null && continuous ? (now - previous.at) / MS_PER_MINUTE : 0;
   const fresh: Sample[] = minutes === 0 ? [] : [...holdings].map(([holder, holding]) => ({ at: now, holder, row: holding.heldRows[0] ?? null, rows: holding.rows.length, minutes }));
   const kept = (previous?.samples ?? []).filter((sample) => sample.at > now - DAY_MS);
-  return { record: { at: now, episodes, samples: [...kept, ...fresh] }, incidents };
+  return { record: { at: now, episodes, samples: [...kept, ...fresh], holdings: Object.fromEntries(holdings) }, incidents };
 }
 
 /**
