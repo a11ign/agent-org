@@ -178,7 +178,7 @@ const REFERENCE = /(?:([\w.-]+\/[\w.-]+))?#(\d+)/g;
  * claim's own convention, whatever repository the pull request is in. With `rowsRepo`, a reference counts only when it names that
  * repository; a bare one counts only for a pull request of that repository itself (see `withClosingRowOwners`).
  */
-function rowsNamedBy(pr: any, rowsRepo?: string): { row: number; via: "closing" | "stated" | "branch"; }[] {
+export function rowsNamedBy(pr: any, rowsRepo?: string): { row: number; via: "closing" | "stated" | "branch"; }[] {
   const closing = (Array.isArray(pr?.closingIssuesReferences) ? pr.closingIssuesReferences : [])
     .filter((ref: any) => rowsRepo === undefined || (repoOfReference(ref) ?? pr?.repo) === rowsRepo)
     .map((ref: any) => ({ row: Number(ref?.number), via: ("closing" as const) }));
