@@ -123,7 +123,8 @@ const TODAYS_TEXT = {
 // #3642 MOVED IT AGAIN, deliberately: a call with no workspace id and no GH_CONFIG_DIR refuses instead of acting as the human account. Same staleness, same remedy.
 // a11ign/a11ign#4148 MOVED IT AGAIN, deliberately: the wrapper answers an identical repeated READ from a cache (20 s, 30 at most), serves the tick's own processes from the generation `tick-snapshot.ts` keeps, and counts what the ledger trim drops into `<ledger>.hourly`. Same staleness, same remedy.
 // a11ign/a11ign#4397 MOVED IT AGAIN, deliberately: `gh pr create` is refused unless `A11Y_PR_OPEN` is set (only `pr:open` sets it). Same staleness, same remedy.
-const TODAYS_GH_WRAPPER = "c58101a347d8f5881540712c1eefc78a3a4ce36721a7315272b504be0b476f86";
+// a11ign/a11ign#4148 part 6 MOVED IT AGAIN, deliberately: `auth git-credential` and an `api` call naming GET no longer drop the read cache, and a write drops only its own repository's entries. Same staleness, same remedy.
+const TODAYS_GH_WRAPPER = "bdf3cbc21b5553f354713b5e7efc295f8d37f5cea709b2316fd5c0b095ae4ebf";
 // #2896 MOVED THIS ONE, deliberately: the recorded host's header says `pnpm run host:install` / `pnpm run host:check` where it said `npm run`.
 const TODAYS_LEADS_LIST = "dbca070c4bb7934ff1e9cdc9505f9edee638d98fcff10963b18d5d3a743770a2";
 

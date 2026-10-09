@@ -89,7 +89,7 @@ test("#4148: ANY write by this account drops the cache: the read after it goes t
   h.call({}, "issue", "edit", "7", "--add-label", "x");
   const after = h.call({}, "issue", "view", "7");
   assert.equal(after.stdout, `${HIT}3\n`, "the read after the write is a new call");
-  for (const write of [["pr", "merge", "1"], ["api", "-X", "PATCH", "repos/o/r/issues/1"], ["api", "repos/o/r/issues", "-f", "title=x"], ["auth", "git-credential", "get"], ["some-unknown-verb"]]) {
+  for (const write of [["pr", "merge", "1"], ["api", "-X", "PATCH", "repos/o/r/issues/1"], ["api", "repos/o/r/issues", "-f", "title=x"], ["auth", "login"], ["some-unknown-verb"]]) {
     h.call({}, "issue", "view", "7"); // fill
     const before = h.calls().length;
     h.call({}, ...write);
@@ -173,4 +173,73 @@ test("#4148: the generation decides: unchanged is served, moved is read again, a
   other.call({ ...tick, GH_REPO: "a11ign/lab" }, "pr", "list");
   other.age(200);
   assert.equal(other.call({ ...tick, GH_REPO: "a11ign/lab" }, "pr", "list").stdout, `${HIT}2\n`, "no generation file for the repository: no snapshot, only the 20 s");
+});
+
+// #4148 part 6: a11ign#4616 measured 561 store-dropping calls in 41.9 minutes, a median of 1 s apart, so the cache the tick's snapshot vouches for was empty when the next reader arrived.
+// Two causes are pinned here: calls CLASSED as writes that write nothing, and a write that dropped every repository's entries. The first test is the classification, the second the scope.
+
+const readOf = (h: ReturnType<typeof host>, repo: string) => h.call({}, "issue", "view", "7", "-R", repo);
+const countOf = (h: ReturnType<typeof host>, repo: string) => h.calls().filter((c) => c === `issue view 7 -R ${repo}`).length;
+
+test("#4148 part 6: a call that writes nothing to GitHub does not drop the cache: git-credential, and `api` with a named GET method", () => {
+  const notWrites: Array<{ name: string; args: string[] }> = [
+    { name: "auth git-credential get (the helper behind every git fetch and push)", args: ["auth", "git-credential", "get"] },
+    { name: "api --method GET -f k=v", args: ["api", "--method", "GET", "-f", "k=v", "repos/o/x/issues"] },
+    { name: "api -X GET", args: ["api", "-X", "GET", "repos/o/x/issues"] },
+    { name: "api -XGET and a lower-case method", args: ["api", "-XGET", "--method=get", "repos/o/x/issues"] },
+    { name: "api --method GET -F k=v", args: ["api", "repos/o/x/issues", "--method", "GET", "-F", "per_page=5"] },
+  ];
+  for (const { name, args } of notWrites) {
+    const h = host();
+    readOf(h, "o/x");
+    h.call({}, ...args);
+    assert.equal(readOf(h, "o/x").stdout, `${HIT}1\n`, `${name}: the second identical read is a cache hit`);
+    assert.equal(countOf(h, "o/x"), 1, `${name}: the read reached the stub once`);
+  }
+  // THE CONTROL, pointed the other way: a method that is not GET, or a body flag with no method (gh sends a POST), is still a write.
+  const stillWrites = [["api", "-X", "PATCH", "repos/o/x/issues/1"], ["api", "--method", "POST", "-f", "k=v", "repos/o/x/issues"], ["api", "repos/o/x/issues", "-f", "k=v"],
+    ["api", "-X", "GET", "--input", "-", "repos/o/x/issues"], ["auth", "login"]];
+  for (const args of stillWrites) {
+    const h = host();
+    readOf(h, "o/x");
+    h.call({}, ...args);
+    readOf(h, "o/x");
+    assert.equal(countOf(h, "o/x"), 2, `${args.join(" ")}: a write, and the read after it went to GitHub`);
+  }
+});
+
+test("#4148 part 6: a write to repository X drops X's reads and leaves Y's; a write that names no repository drops both", () => {
+  const writes: Array<{ name: string; env: Record<string, string>; args: string[] }> = [
+    { name: "issue edit -R o/x", env: {}, args: ["issue", "edit", "7", "-R", "o/x", "--add-label", "l"] },
+    { name: "issue edit with GH_REPO=o/x", env: { GH_REPO: "o/x" }, args: ["issue", "edit", "7", "--add-label", "l"] },
+    { name: "api -X PATCH repos/o/x/...", env: {}, args: ["api", "-X", "PATCH", "repos/o/x/issues/1", "-f", "state=closed"] },
+    { name: "api -X PATCH /repos/O/X/... (a leading slash, and GitHub's names are case-insensitive)", env: {}, args: ["api", "-X", "PATCH", "/repos/O/X/issues/1"] },
+    { name: "a graphql mutation with GH_REPO=o/x", env: { GH_REPO: "o/x" }, args: ["api", "graphql", "-f", "query=mutation { addLabelsToLabelable }"] },
+  ];
+  for (const { name, env, args } of writes) {
+    const h = host();
+    readOf(h, "o/x");
+    readOf(h, "o/y");
+    h.call(env, ...args);
+    assert.equal(readOf(h, "o/y").stdout.startsWith(HIT), true);
+    assert.equal(countOf(h, "o/y"), 1, `${name}: repository Y's cached read is still a hit`);
+    readOf(h, "o/x");
+    assert.equal(countOf(h, "o/x"), 2, `${name}: repository X's read was dropped and went to GitHub`);
+  }
+  // A read that named no repository could be X's (gh takes it from the directory's remote), so a write to X drops it too.
+  const unknown = host();
+  unknown.call({}, "issue", "view", "7");
+  unknown.call({}, "issue", "edit", "7", "-R", "o/x", "--add-label", "l");
+  unknown.call({}, "issue", "view", "7");
+  assert.equal(unknown.calls().filter((c) => c === "issue view 7").length, 2, "a read naming no repository is dropped by a write to a named one");
+  // THE CONTROL (the fail-safe): a write that names no repository may have changed any of them.
+  for (const args of [["issue", "edit", "7", "--add-label", "l"], ["api", "-X", "PATCH", "user"], ["api", "graphql", "-f", "query=mutation { x }"], ["some-unknown-verb"]]) {
+    const h = host();
+    readOf(h, "o/x");
+    readOf(h, "o/y");
+    h.call({}, ...args);
+    readOf(h, "o/x");
+    readOf(h, "o/y");
+    assert.equal(countOf(h, "o/x") + countOf(h, "o/y"), 4, `${args.join(" ")}: names no repository, so both X and Y were read again`);
+  }
 });

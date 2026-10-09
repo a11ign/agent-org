@@ -155,8 +155,11 @@ rollup_dropped() { # ledger-file dropped-bytes
 # WHAT IS CACHED is a READ that exited 0: `pr|issue|label|repo|run|release` list/view/status/checks/diff, and a plain `gh api <path>` GET.
 # NEVER cached: a `--web`/`--watch` call, `gh api` with `-i`/`--include` or `-H` (the `X-Ratelimit-*` headers, and every ETag probe,
 # are an answer about NOW: #1967, #1275) or `rate_limit`, and `gh api graphql` (a POST). WHAT DROPS THE CACHE: any call that is not a read and not
-# known to be neutral, by this account (`pr merge`, `issue edit`, a `git push` through the credential helper, an unknown verb): the whole
-# store, at once. A write by another account, or a person, is not seen here: that is what the 20 s and the tick's generation bound.
+# known to be neutral, by this account (`pr merge`, `issue edit`, an unknown verb), and only the REPOSITORY it names (`-R`, $GH_REPO, or the
+# `repos/<owner>/<repo>` of an `api` path) plus the reads that named none; a write naming no repository drops the whole store. NOT a write:
+# `auth git-credential` (the helper behind every `git fetch` and `git push`, which writes nothing to GitHub) and an `api` call whose named
+# method is GET (`-f` is then a query parameter): a11ign#4616 measured these emptying the store about every 5 seconds. A write by another
+# account, or a person, is not seen here: that is what the 20 s and the tick's generation bound.
 # `A11Y_GH_READ_CACHE=off` skips all of it. A hit is recorded in the ledger as resource `cache`: it spends no point, and the ledger can show the hit rate.
 
 # Sets `class` to read | write | neutral for the arguments given.
@@ -165,7 +168,7 @@ call_class() {
   case "$1" in
     pr|issue|label|repo|run|release) case "$2" in list|view|checks|status|diff) ;; *) class=write; return 0 ;; esac ;;
     api) ;;
-    auth) case "$2" in status|token) class=neutral ;; *) class=write ;; esac; return 0 ;;
+    auth) case "$2" in status|token|git-credential) class=neutral ;; *) class=write ;; esac; return 0 ;;
     ""|--version|version|help) class=neutral; return 0 ;;
     *) class=write; return 0 ;;
   esac
@@ -175,12 +178,30 @@ call_class() {
       for a; do case "$a" in *mutation*) class=write ;; esac; done
       return 0
     fi
+    api_method=; api_body=0; api_input=0; api_neutral=0; prev=
     for a; do
+      case "$prev" in -X|--method) api_method=$a ;; esac
       case "$a" in
-        -X*|--method|--method=*|-f|-F|-f*|-F*|--field|--field=*|--raw-field|--raw-field=*|--input|--input=*) class=write; return 0 ;;
-        -i|--include|-H|--header|--header=*|--cache|--cache=*|rate_limit|*/rate_limit) class=neutral ;;
+        -X?*) api_method=${a#-X} ;;
+        --method=*) api_method=${a#--method=} ;;
+        --input|--input=*) api_body=1; api_input=1 ;;
+        -f|-F|-f*|-F*|--field|--field=*|--raw-field|--raw-field=*) api_body=1 ;;
+        -i|--include|-H|--header|--header=*|--cache|--cache=*|rate_limit|*/rate_limit) api_neutral=1 ;;
       esac
+      prev=$a
     done
+    # The METHOD decides, not the flags: `-f`/`-F` make gh send a POST only when no method is named, and with `--method GET` they
+    # are query parameters of a read. A named GET is a read; any other named method is a write; none named is a write if a body flag
+    # is present. `--input` sends a body, so it stays a write whatever the method says.
+    api_method=$(printf %s "$api_method" | tr 'a-z' 'A-Z')
+    if [ "$api_input" = 1 ]; then
+      class=write
+    elif [ -n "$api_method" ]; then
+      [ "$api_method" = GET ] || class=write
+    elif [ "$api_body" = 1 ]; then
+      class=write
+    fi
+    [ "$class" = read ] && [ "$api_neutral" = 1 ] && class=neutral
     return 0
   fi
   for a; do case "$a" in -w|--web|--watch|-h|--help|-i|--include) class=neutral ;; esac; done
@@ -196,6 +217,36 @@ read_repo_slug() {
     prev=$a
   done
   repo_slug=$(printf %s "${r:-default}" | tr -c 'A-Za-z0-9._-' '_')
+}
+
+# Sets `repo_slug` for a WRITE: as `read_repo_slug`, except that `gh api repos/<owner>/<repo>/...` names its repository in the path, which
+# outranks $GH_REPO. A path with a `{owner}` placeholder is resolved by gh from elsewhere, so it names nothing here.
+write_repo_slug() {
+  read_repo_slug "$@"
+  for a; do
+    case "$a" in
+      *\{*) ;;
+      repos/*/*|/repos/*/*) p=${a#/}; p=${p#repos/}; rest=${p#*/}
+        repo_slug=$(printf %s "${p%%/*}/${rest%%/*}" | tr -c 'A-Za-z0-9._-' '_'); return 0 ;;
+    esac
+  done
+}
+
+# Entries are named `<repository>~<key>` (the repository lower-cased, GitHub's names being case-insensitive; `~` is not in the slug's
+# alphabet, so the prefix is exact), so that a write can drop ONE repository's reads.
+entry_prefix() { printf %s "$1" | tr 'A-Z' 'a-z'; }
+
+# A write to repository X drops X's entries and those of `default` (a read that named no repository is the one whose repository this
+# wrapper cannot know: gh takes it from the directory's remote), and leaves every other repository's. A write that names no repository
+# drops the whole store: the fail-safe, since it may have changed any of them.
+drop_read_cache() {
+  write_repo_slug "$@"
+  if [ "$repo_slug" = default ]; then
+    rm -f "${RC:?}"/e/* 2>/dev/null
+  else
+    prefix=$(entry_prefix "$repo_slug")
+    rm -f "${RC:?}/e/${prefix:?}~"* "${RC:?}/e/default~"* 2>/dev/null
+  fi
 }
 
 # Succeeds when `$entry` may answer this call. `entry_gen` is the generation the entry was stored under.
@@ -225,7 +276,7 @@ if [ "$class" = read ] && [ "${A11Y_GH_READ_CACHE:-}" != off ] && [ ! -t 1 ]; th
   [ "$ttl" -gt 30 ] && ttl=30
   read_repo_slug "$@"
   key=$({ for a; do printf '%s\0' "$a"; done; printf '%s\0%s\0%s' "${GH_REPO:-}" "$PWD" "$(git symbolic-ref -q HEAD 2>/dev/null)"; } | sha1sum | cut -c1-40)
-  entry=$RC/e/$key
+  entry=$RC/e/$(entry_prefix "$repo_slug")~$key
   gen0=
   [ -n "${A11Y_TICK_SNAPSHOT:-}" ] && { IFS=' ' read -r gen0 _ 2>/dev/null < "$RC/gen/$repo_slug" || gen0=; }
   if read_cache_fresh; then
@@ -257,6 +308,6 @@ trap - TERM INT HUP
 [ -n "$copy" ] && cat "$copy"
 ledger_record "$status" "$copy" "$1" "$2" 2>/dev/null || :
 [ "$cache_on" = 1 ] && [ -n "$copy" ] && [ "$status" -eq 0 ] && read_cache_store "$gen0" "$copy"
-[ "$class" = write ] && [ "${A11Y_GH_READ_CACHE:-}" != off ] && rm -f "${RC:?}"/e/* 2>/dev/null
+[ "$class" = write ] && [ "${A11Y_GH_READ_CACHE:-}" != off ] && drop_read_cache "$@"
 [ -n "$copy" ] && rm -f "${copy:?}"
 exit "$status"
