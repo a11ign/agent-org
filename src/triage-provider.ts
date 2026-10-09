@@ -17,7 +17,7 @@ export const JEV_MODEL = "jev-latest";
 export const TRIAGE_UNAVAILABLE = "triage-unavailable";
 const QUESTION = "q";
 const TIMEOUT_MS = 10_000;
-/** The sampler prints this for an order whose ledger line is gone (`triage-sample.ts`); it is no cause, like an absent one. */
+/** The sampler prints this for an order whose ledger line is gone (`triage-sample.mjs`); it is no cause, like an absent one. */
 const NO_CAUSE = "(no cause)";
 
 /** The three labels of the #4074 fixture (`trace/triage-labels-4074.json`, `definitions`), which are Jev's `criteria`. */
