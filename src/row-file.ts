@@ -114,6 +114,7 @@ import { adopterFacingDeclared, adopterRowKind } from "./work-gate/org-health.ts
 import { PRIMARY_MILESTONE_LINE } from "./org-health.ts"; // #4378
 import { parseWaits, umbrellaEdge } from "./wait-condition.ts";
 import { chairmanAskRefusal } from "./work-gate/chairman-ask-orders.ts"; // #4020
+import { unsplitDoneWhenRefusal } from "./unsplit-done-when.ts"; // #4640
 import { loadLanes, inLane } from "./lane-ownership.ts";
 import { blastRadiusGate, ghBlastReads, type BlastVerdict } from "./blast-radius.ts"; // #4601
 import { sweepFilingAtFiling } from "./sweep-window.ts"; // #4603
@@ -1768,7 +1769,8 @@ export function createIssue(argv: string[], deps: {
   // different questions about one body and a body can trip several: all are printed, never chosen between.
   // #2035: the acceptance-side three (`regionClosureWarning`, `quotedTestCountWarning`,
   // `malformedAcceptanceCommandWarning`) join the four Region/waiting ones in `filingWarnings`.
-  const umbrella = blockedByRefusal((body as string), argv, { read: (number) => readBlocker(number, run, tracker.repo) }) ?? chairmanAskRefusal((body as string)); // #4020: a declared ask that could never raise one
+  const umbrella = blockedByRefusal((body as string), argv, { read: (number) => readBlocker(number, run, tracker.repo) }) ?? chairmanAskRefusal((body as string)) // #4020: a declared ask that could never raise one
+    ?? unsplitDoneWhenRefusal((body as string), { declared: { blockedBy: blockedByNumbers(argv), labels: labelValuesFromArgv(argv) } }); // #4640: a Done-when no engineer can finish
   if (umbrella) {
     process.stderr.write(`${umbrella}\n`);
     return 1;
