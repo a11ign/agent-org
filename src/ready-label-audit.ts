@@ -954,7 +954,7 @@ function reportBothBoardLabels() {
   process.stderr.write(`\n${rows.length} row(s) were promoted without the \`${BACKLOG_LABEL}\` label being `
     + `removed. Remove \`${BACKLOG_LABEL}\` -- never \`${READY_LABEL}\`: the promotion is the later, `
     + `deliberate act. Then promote through the one act that writes all three together, which cannot leave `
-    + `this state: \`node --import tsx packages/agent-org/src/row-file.ts --promote=<n> --session=<you>\`.\n`);
+    + `this state: \`node packages/agent-org/src/row-file.ts --promote=<n> --session=<you>\`.\n`);
   return rows.length;
 }
 
@@ -1371,7 +1371,7 @@ function reportClosedDebris() {
   process.stderr.write(`\n${debris.length} closed row(s) still carry a pickable/claimed label -- nobody `
     + `will act on these, but a Ready count taken by label rather than by state is wrong by `
     + `${readyOnClosed} because of them. Stale bookkeeping, not a contradiction: ${claimedDebris.length} `
-    + `still carry \`${CLAIM_LABEL}\` and can be cleared with \`node --import tsx packages/agent-org/src/row-claim.ts decline <n> `
+    + `still carry \`${CLAIM_LABEL}\` and can be cleared with \`node packages/agent-org/src/row-claim.ts decline <n> `
     + `--session=<whoever holds it>\` (safe here -- a closed row is never returned to \`${READY_LABEL}\`); the `
     + `rest carry only \`${READY_LABEL}\` or a stray \`${SESSION_PREFIX}\`/\`runner:\` label, which decline has no claim to `
     + `release and the tracker owner clears by hand.\n`);

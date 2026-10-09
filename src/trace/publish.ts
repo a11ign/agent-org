@@ -26,7 +26,6 @@
 // A FAILURE IS AN ERROR, NEVER AN EMPTY DIRECTORY. Every page is rendered into a staging directory first and checked to exist and to be non-empty; what succeeded is moved into
 // place, what failed is listed, the stamp is NOT written (so the next tick retries), and the process exits non-zero, so the unit shows FAILED. Nothing here catches a write error
 // and carries on: the one `catch` that does carry on collects a renderer's failure so the other pages still publish, and it rethrows them all at the end.
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -339,7 +338,7 @@ const newestFirst = (issues: any[]) => [...issues].sort((one, other) => Date.par
 export const traceRenderer = ({ calls, now }: { calls: number; now: number; }) => ({ kind, row, out }: Page) => {
   const since = new Date(now - MAP_WINDOW_DAYS * MS_PER_DAY).toISOString();
   const args = kind === "map" ? ["--", "--map", "--out", out, "--since", since, "--calls", String(calls)] : ["--", String(row), "--html", "--out", out, "--since", since];
-  const ran = spawnSync(process.execPath, [...TSX_IMPORT, TRACE, ...args], { encoding: "utf8", timeout: RENDER_TIMEOUT_MS, maxBuffer: GH_MAX_BUFFER });
+  const ran = spawnSync(process.execPath, [TRACE, ...args], { encoding: "utf8", timeout: RENDER_TIMEOUT_MS, maxBuffer: GH_MAX_BUFFER });
   if (ran.status !== 0) throw new Error(`trace ${args.slice(1, 2).join("")} exited ${ran.status ?? ran.signal}: ${(ran.stderr || ran.error?.message || "").trim().split("\n").pop()}`);
 };
 

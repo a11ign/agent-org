@@ -6,7 +6,6 @@
 // at import, and a bare checkout of the tool has none beside it, so this points `AGENT_ORG_HOST` at the host file the project carries
 // (`A11IGN_CHECKOUT`, the primary checkout on this host by default) BEFORE importing them. Inside the project's own tree there is
 // nothing to point at and nothing is set.
-import { TSX_IMPORT } from "./tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -127,7 +126,7 @@ console.error("NOT_FOUND (a11ign.projectV2): Could not resolve to a ProjectV2 wi
 `);
   chmodSync(join(dir, "bin/gh"), 0o755);
   spawnSync("git", ["init", "-q", dir], { env: sandboxGitEnv() });
-  const run = spawnSync(process.execPath, [...TSX_IMPORT, join(SRC, "close-rows-for-merged-pr.ts"), "17"], { cwd: dir, encoding: "utf8",
+  const run = spawnSync(process.execPath, [join(SRC, "close-rows-for-merged-pr.ts"), "17"], { cwd: dir, encoding: "utf8",
     env: { ...process.env, PATH: `${join(dir, "bin")}:${process.env.PATH}`, GITHUB_REPOSITORY: LAYER } });
   const log = existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").map((line) => JSON.parse(line)) : [];
   return { run, issueCalls: log.filter((args) => args[0] === "issue") };

@@ -22,7 +22,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sandboxGitEnv } from "../lib/git-env.ts";
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { toolNodeModules } from "./tool-node-modules.ts";
 import { PROJECT_ROOT, TOOL_ROOT } from "./host-units-project.ts"; // FIRST of the tool imports: it makes a fixture project the tool's before `host-units.ts` resolves one (#3233)
 
@@ -147,7 +146,7 @@ const program = process.argv[1] ?? "";
 if (!program.endsWith("bin.mjs")) {
   const config = pathToFileURL(program.slice(0, program.lastIndexOf("/src/") + "/src/".length) + "project-config.ts").href;
   let line;
-  try { await import(${JSON.stringify(TSX_IMPORT[1])}); line = "ROOT " + (await import(config)).HOME_CHECKOUT; } catch (cause) { line = "REFUSED " + cause.name; }
+  try { line = "ROOT " + (await import(config)).HOME_CHECKOUT; } catch (cause) { line = "REFUSED " + cause.name; }
   appendFileSync(process.env.PROBE_OUT, line + "\\n");
   process.exit(0);
 }

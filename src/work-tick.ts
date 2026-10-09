@@ -20,7 +20,6 @@
 // ... AND "CHEAP" IS A CLAIM THE TICK NOW CARRIES THE EVIDENCE FOR (a11ign/a11ign#3566). Two to ten minutes of wall clock was measured on 2026-10-04
 // and nobody could say whether it was the host or the children, so every tick appends one `tick-cost` line: wall and CPU per phase, children's CPU
 // included, and the commands started, by name.
-import { TSX_IMPORT } from "./tsx-import.ts";
 import { execFileSync, spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { appendFileSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -61,7 +60,7 @@ export const EXIT = { QUIET: 0, ATTENTION: 1, CANNOT_ASK: 2, CRASH: 70 };
  * gate that threw would be read as a busy org whose orders were handed to `wake` with nothing on stdin, and `wake` exits `1` for ATTENTION.
  * The unit's own `--import` covers the tick itself and cannot reach a child, so the tick passes it down.
  */
-const CRASH_PRELOAD = ["--import", new URL("./lib/crash-exit.ts", import.meta.url).href, ...TSX_IMPORT];
+const CRASH_PRELOAD = ["--import", new URL("./lib/crash-exit.ts", import.meta.url).href];
 
 /** work-gate's own contract, named here so the mapping below reads as a mapping and not as magic numbers. */
 export const GATE = { QUIET: 0, WORK: 1, CANNOT_ASK: 2, PARTIAL: 3 };
@@ -474,7 +473,7 @@ export function refreshSnapshotOrSay({ declaration = homeProjectDeclaration, con
 
 function main() {
   refuseUnknownFlags(["--ledger", "--roster"], {
-    entry: import.meta.url, command: "node --import tsx packages/agent-org/src/work-tick.ts",
+    entry: import.meta.url, command: "node packages/agent-org/src/work-tick.ts",
   });
   const passthrough = process.argv.slice(2);
   const ledgerPath = ledgerPathFrom(passthrough);

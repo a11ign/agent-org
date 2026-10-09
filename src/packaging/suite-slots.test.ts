@@ -3,7 +3,6 @@
 //
 // EVERY CASE RUNS THE REAL `flock`, `nice` AND `ionice`, in a temp directory: a fake lock would prove the wrapper and not the limit. The CONTROL COMES FIRST in each pair (with one
 // slot held the third contender starts at once), because "the third waits" is true of a limit that blocks everything.
-import { TSX_IMPORT } from "../tsx-import.ts";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -306,7 +305,7 @@ describe("the entry points", () => {
 
   test("`run -- <command>` takes a slot and returns the command's status; the CLI refuses what it does not know", () => {
     const dir = fresh("cli");
-    const run = (...args: string[]) => spawnSync(process.execPath, [...TSX_IMPORT, SELF, ...args], { env: env({ [SLOT_DIR_ENV]: dir }), encoding: "utf8" });
+    const run = (...args: string[]) => spawnSync(process.execPath, [SELF, ...args], { env: env({ [SLOT_DIR_ENV]: dir }), encoding: "utf8" });
     assert.equal(run("run", "--", "sh", "-c", "exit 3").status, 3);
     assert.equal(run("run", "--bogus", "--", "true").status, 2);
     assert.equal(run("nothing").status, 2);

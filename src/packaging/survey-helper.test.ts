@@ -11,7 +11,6 @@
  * call/subprocess count -- the CLI-level test below counts real process spawns on both sides of that claim
  * rather than asserting it in prose.
  */
-import { TSX_IMPORT } from "../tsx-import.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -157,7 +156,7 @@ test("#2690: ONE `survey` CLI call answers what several separate CLI calls would
 
     let batchedSpawns = 0;
     batchedSpawns += 1;
-    const batched = spawnSync(process.execPath, [...TSX_IMPORT, SURVEY_CLI, `--tasks=${tasksFile}`, `--repo=${root}`], { encoding: "utf8" });
+    const batched = spawnSync(process.execPath, [SURVEY_CLI, `--tasks=${tasksFile}`, `--repo=${root}`], { encoding: "utf8" });
     assert.equal(batched.status, 0, batched.stderr);
     assert.match(batched.stdout, /TARGET here/);
     assert.match(batched.stdout, /1\tline 1/);
@@ -169,7 +168,7 @@ test("#2690: ONE `survey` CLI call answers what several separate CLI calls would
     unbatchedSpawns += 1;
     const r1 = spawnSync("git", ["grep", "-n", "-e", "TARGET", "--", "a.txt"], { cwd: root, encoding: "utf8" });
     unbatchedSpawns += 1;
-    const r2 = spawnSync(process.execPath, [...TSX_IMPORT, "-e",
+    const r2 = spawnSync(process.execPath, ["-e",
       `process.stdout.write(require("fs").readFileSync(${JSON.stringify(join(root, "b.txt"))}, "utf8").split("\\n").slice(0, 2).join("\\n"))`],
       { encoding: "utf8" });
     unbatchedSpawns += 1;

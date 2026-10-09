@@ -8,7 +8,6 @@
  * start marker it left. Neither is noise: the control comes first (a 60 s tick says nothing), then 181 s says it ONCE, then a dead tick's marker says it
  * once and is cleared.
  */
-import { TSX_IMPORT } from "./tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -79,7 +78,7 @@ test("#3567: the limit is overridable only by a positive number, and a bad one f
 
 /** A pid that belonged to a process that has ended. */
 function deadPid(): number {
-  const ran = spawnSync(process.execPath, [...TSX_IMPORT, "-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" });
+  const ran = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" });
   return Number(ran.stdout);
 }
 
@@ -175,7 +174,7 @@ function tickIn(dir: string, gate = "process.exit(0);") {
     delete base.INVOCATION_ID;
     return base;
   };
-  const args = [...TSX_IMPORT, `--import=${PRELOAD}`, join(src, "work-tick.ts"), `--ledger=${ledger}`];
+  const args = [`--import=${PRELOAD}`, join(src, "work-tick.ts"), `--ledger=${ledger}`];
   return {
     marker: tickMarkerPath(ledger),
     run: (extra?: NodeJS.ProcessEnv) => spawnSync(process.execPath, args, { encoding: "utf8", cwd: dir, env: env(extra) }),

@@ -9,7 +9,6 @@
  * yields no order only because the row with the SAME clock and NO commit yields one; and a second reading with a move after the nudge
  * releases nothing only because the same second reading with none releases. Nothing here is asserted against an empty population.
  */
-import { TSX_IMPORT, afterTsx } from "./tsx-import.ts";
 import { test } from "node:test";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, chmodSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -1128,7 +1127,7 @@ function releaseHost(o: { world?: World; spare?: boolean; agents?: { label: stri
     return "";
   };
   const exec = (cmd: string, rawArgs: string[], opts: { cwd: string }) => {
-    const args = afterTsx(rawArgs);
+    const args = rawArgs;
     execs.push({ cmd, args, cwd: opts.cwd });
     if (ROW_CLAIM_MJS.test(args[0] ?? "") && args[1] === "decline") {
       const status = o.declineStatus ?? 0;
@@ -1313,7 +1312,7 @@ function spawnHost(o: { kept?: typeof KEPT | null; claimStatus?: number; treeGon
   const fs = new Set<string>(o.kept && !o.treeGone ? [o.kept.worktree] : []);
   const forgotten: number[] = [];
   const exec = (cmd: string, rawArgs: string[], { cwd }: { cwd: string }) => {
-    const args = afterTsx(rawArgs);
+    const args = rawArgs;
     execs.push({ args: cmd === "git" ? ["git", ...args] : args, cwd });
     if (cmd === "git" && args[0] === "worktree") fs.add(args[3]);
     if (cmd === "node" && args[1] === "claim") {
@@ -1721,7 +1720,7 @@ echo '{"labels":[{"name":"in-progress"},{"name":"session:worker-7"}]}'
     const release = { session: "worker-7", cause: "claim-stalled", subject: "row-2407", discriminator: "release-stalled", prompt: "RELEASE",
       causeKey: "worker-7/claim-stalled/row-2407/release-stalled",
       release: { row: 2407, session: "worker-7", why: "stalled", branch: null, worktree: null, idleMinutes: 250, nudgedAt: 1 } };
-    const tick = (stdin: string) => spawnSync(process.execPath, [...TSX_IMPORT, WAKE_ENTRY, `--ledger=${join(dir, "wake-ledger")}`, `--worktrees-dir=${dir}`], {
+    const tick = (stdin: string) => spawnSync(process.execPath, [WAKE_ENTRY, `--ledger=${join(dir, "wake-ledger")}`, `--worktrees-dir=${dir}`], {
       input: stdin, encoding: "utf8", env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` } });
     const ran = tick(`${JSON.stringify(release)}\n`);
     assert.match(ran.stdout, /NOT RELEASED worker-7's workspace could not be closed/, ran.stdout + ran.stderr);
@@ -1913,7 +1912,7 @@ test("#2864 the wake ENTRY prunes a gone tree's kept record on a QUIET tick -- e
     execFileSync("mkdir", [live]);
     const record = (branch: string, worktree: string) => ({ worktree, branch, from: "worker-1", at: NOW, why: "merged", dirty: 0, unpushed: 0 });
     writeFileSync(join(dir, "kept-claims.json"), JSON.stringify({ 9: record("agent/merged-9", join(dir, "gone")), 7: record("agent/live-7", live) }));
-    const tick = () => spawnSync(process.execPath, [...TSX_IMPORT, WAKE_ENTRY, `--ledger=${join(dir, "wake-ledger")}`, `--worktrees-dir=${dir}`], {
+    const tick = () => spawnSync(process.execPath, [WAKE_ENTRY, `--ledger=${join(dir, "wake-ledger")}`, `--worktrees-dir=${dir}`], {
       input: "", encoding: "utf8", env: { ...process.env, HOME: dir, PATH: process.env.PATH ?? "" } });
     const ran = tick();
     assert.equal(ran.status, 0, ran.stdout + ran.stderr);

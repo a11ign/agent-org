@@ -8,7 +8,6 @@
 //   m3 cr 400  calls Bash + Read     growth 400-150 = 250, written by m2, caused by the tool m1 called: Bash
 //   m4 cr 410  calls nothing         growth 410-400 = 10, written by m3, caused by m2's tool: Grep
 // A reading that blamed the tool called by the request BEFORE the one measured would call m3's 250 `Grep`; the assertions on it are the negative control of the attribution.
-import { TSX_IMPORT } from "../tsx-import.ts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
@@ -284,7 +283,7 @@ test("the command refuses a flag it does not know and names --by-command as one 
   try {
     mkdirSync(join(root, "p"));
     writeFileSync(join(root, "p", "s.jsonl"), SHELL);
-    const run = (...flags: (string|undefined)[]) => spawnSync(process.execPath, [...TSX_IMPORT, new URL("./growth.ts", import.meta.url).pathname, `--from=${stamp(0)}`, `--to=${stamp(100)}`, `--root=${root}`, ...flags], { encoding: "utf8" });
+    const run = (...flags: (string|undefined)[]) => spawnSync(process.execPath, [new URL("./growth.ts", import.meta.url).pathname, `--from=${stamp(0)}`, `--to=${stamp(100)}`, `--root=${root}`, ...flags], { encoding: "utf8" });
     const split = run("--by-command");
     assert.equal(split.status, 0, split.stderr);
     assert.match(split.stdout, /\| git status \| 2 \|/);

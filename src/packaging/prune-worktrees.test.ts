@@ -17,7 +17,6 @@
  * ever shipped.
  */
 // no-token: gh -- every `pruneWorktrees` call passes its own `claim`, and the tests of `claimRefusal` hand it a stub `gh`; proven by running this file with `gh` shimmed to exit 4.
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -498,7 +497,7 @@ test("the primary is NEVER passed to remove(), even if (hypothetically) it looke
  */
 const runCli = (repoRoot: string, ...args: string[]) => {
   try {
-    const stdout = execFileSync(process.execPath, [...TSX_IMPORT, PRUNE_CLI, repoRoot, ...args],
+    const stdout = execFileSync(process.execPath, [PRUNE_CLI, repoRoot, ...args],
       { env: sandboxGitEnv(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
     return { status: 0, stdout, stderr: "" };
   } catch (err) {

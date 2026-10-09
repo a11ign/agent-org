@@ -36,7 +36,6 @@
 // The other children the tick starts (`update-primary --drift`, `host-units --json`) carry no launch guard and need none; `unpark-satisfied.test.ts` pins that list from the source.
 //
 // A LEAF AT LOAD TIME: no import of `work-gate.ts` (which imports this), so the gate's `run` is passed in.
-import { TSX_IMPORT } from "./tsx-import.ts";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -304,7 +303,7 @@ export function promoteViaModule(number: number, worktree: () => TickWorktree = 
   const launch = worktree();
   if ("refusal" in launch) return { ok: false, refusal: `the tick has no linked worktree to run \`row-file --promote=${number}\` from: ${launch.refusal}` };
   process.stderr.write(`unpark-satisfied: row-file --promote=${number} runs from the tick's worktree ${launch.dir}\n`);
-  const result = spawnSync(process.execPath, [...TSX_IMPORT, ROW_FILE_ENTRY, `--promote=${number}`, `--session=${SESSION}`], { encoding: "utf8", cwd: launch.dir });
+  const result = spawnSync(process.execPath, [ROW_FILE_ENTRY, `--promote=${number}`, `--session=${SESSION}`], { encoding: "utf8", cwd: launch.dir });
   if (result.status === 0) return { ok: true };
   const said = String(result.stderr).trim();
   if (result.status === ROW_FILE_REFUSED) return { ok: false, refusal: said.replace(/^row-file: REFUSING to promote -- /, "") };

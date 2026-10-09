@@ -213,7 +213,7 @@ const readIfThere = (path: string): string => (existsSync(path) ? readFileSync(p
 if (import.meta.url === `file://${process.argv[1]}`) {
   const { file, perHour: hourly, ...where } = cliOptions(process.argv.slice(2));
   if (file === undefined) {
-    console.error("usage: node --import tsx src/gh-ledger.ts <path to gh-calls.tsv> [--account <login>] [--resource graphql|core] [--top <n>] [--per-hour]");
+    console.error("usage: node src/gh-ledger.ts <path to gh-calls.tsv> [--account <login>] [--resource graphql|core] [--top <n>] [--per-hour]");
     process.exit(2);
   }
   const entries = parseLedger(readFileSync(file, "utf8"));

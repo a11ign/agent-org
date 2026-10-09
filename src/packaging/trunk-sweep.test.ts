@@ -6,7 +6,6 @@
  * this file does not repeat those. How the project's `nightly.yml`/`trunk.yml` schedule and trigger the
  * two halves is the project's to assert, and left this file with #3233.
  */
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -32,7 +31,7 @@ test("needsGateSweep: MUTATION TARGET -- any check run at all means no sweep is 
 test("trunk-sweep.ts refuses an unknown flag rather than silently ignoring it", () => {
   let threw = false;
   try {
-    execFileSync("node", [...TSX_IMPORT, SCRIPT, "--bogus"], { encoding: "utf8", stdio: "pipe" });
+    execFileSync("node", [SCRIPT, "--bogus"], { encoding: "utf8", stdio: "pipe" });
   } catch (cause) {
     threw = true;
     const err = cause as { status?: number, stderr?: string };
@@ -47,7 +46,7 @@ test("trunk-sweep.ts refuses to run without GITHUB_REPOSITORY -- CANNOT ASK, nev
   try {
     const env = { ...process.env };
     delete env.GITHUB_REPOSITORY;
-    execFileSync("node", [...TSX_IMPORT, SCRIPT], { encoding: "utf8", stdio: "pipe", env });
+    execFileSync("node", [SCRIPT], { encoding: "utf8", stdio: "pipe", env });
   } catch (cause) {
     threw = true;
     const err = cause as { status?: number, stderr?: string };

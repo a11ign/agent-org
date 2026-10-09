@@ -8,7 +8,6 @@
 // THE POSITIVE CONTROL for "the rollup survives the trim" is the ledger ALONE: after the trim it holds fewer lines than were written, so a rollup that counted nothing
 // would show up as a total short of what the wrapper was called.
 
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -117,7 +116,7 @@ test("#4148: the CLI prints the per-hour reading from a ledger and its rollup", 
   writeFileSync(ledger, `${line("2026-10-08T14:00:00Z")}\n`);
   writeFileSync(rollupPathOf(ledger), `2026-10-08T13\t${WORKERS}\tgraphql\t2026\t0\t2026\n`);
   const cli = fileURLToPath(new URL("../gh-ledger.ts", import.meta.url));
-  const r = spawnSync(process.execPath, [...TSX_IMPORT, cli, ledger, "--per-hour", "--account", WORKERS, "--resource", "graphql"], { encoding: "utf8" });
+  const r = spawnSync(process.execPath, [cli, ledger, "--per-hour", "--account", WORKERS, "--resource", "graphql"], { encoding: "utf8" });
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /^2026-10-08T13Z +2026 calls +0 points read +2026 floor points$/m, "the 13:00Z baseline is reproduced from the rollup");
   assert.match(r.stdout, /^2026-10-08T14Z +1 calls/m);

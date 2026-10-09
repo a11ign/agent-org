@@ -47,7 +47,6 @@
 // unknown says why on stderr -- a line that repeats for a persistent refusal and is therefore offered by `repeating-lines.ts`.
 //
 // A LEAF, RELATIVE IMPORTS ONLY, like `repeating-lines.ts`: `work-gate.ts` imports this, and it runs before any `pnpm install`/build.
-import { TSX_IMPORT } from "./tsx-import.ts";
 import { canStrip, describeBad, type NodeStripFact } from "./node-strips-types.ts";
 import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync, statSync } from "node:fs";
@@ -819,7 +818,7 @@ export function toolVersionReading({ agreement }: { agreement: { result: ToolAgr
  * those readers would carry the history readers into every test that reaches the tick (`host-units.ts`'s `jsonReport` is the precedent for the fence). `undefined` is "not asked" (a host that
  * declares no tool); `null` is a read that failed, which the reading says. NEVER THROWS.
  */
-export function readToolAgreement(run: (args: string[]) => string = (args) => execFileSync(process.execPath, [...TSX_IMPORT, ...args], { encoding: "utf8", timeout: AGREEMENT_READ_MS, stdio: ["ignore", "pipe", "pipe"], env: process.env })): { now: number; result: ToolAgreement; } | null | undefined {
+export function readToolAgreement(run: (args: string[]) => string = (args) => execFileSync(process.execPath, [...args], { encoding: "utf8", timeout: AGREEMENT_READ_MS, stdio: ["ignore", "pipe", "pipe"], env: process.env })): { now: number; result: ToolAgreement; } | null | undefined {
   try {
     const parsed = JSON.parse(run([resolve(TOOL_ROOT, "src/lib/tool-version-agreement.ts"), "--json"]));
     return parsed.asked === false ? undefined : parsed;

@@ -1,9 +1,9 @@
 // command: mark or query whether this checkout is the fleet-driving primary, which the hooks read
 // MARK THIS CHECKOUT AS THE FLEET-DRIVING ONE — the opt-in the hooks read.
 //
-//   node --import tsx packages/agent-org/src/mark-primary-checkout.ts           # is it marked?
-//   node --import tsx packages/agent-org/src/mark-primary-checkout.ts --set     # mark it
-//   node --import tsx packages/agent-org/src/mark-primary-checkout.ts --unset   # stop treating this checkout as the primary
+//   node packages/agent-org/src/mark-primary-checkout.ts           # is it marked?
+//   node packages/agent-org/src/mark-primary-checkout.ts --set     # mark it
+//   node packages/agent-org/src/mark-primary-checkout.ts --unset   # stop treating this checkout as the primary
 //
 // `pre-commit` and `post-checkout` guard the checkout the fleet is driven from: nothing may be committed
 // there and it may only sit detached at `origin/main`, because `assertFleetRunsThisCheckout` hashes the

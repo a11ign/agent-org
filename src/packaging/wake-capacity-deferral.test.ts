@@ -7,7 +7,6 @@
  * claimed within minutes. The fixtures below are that journal's own lines. THE LIMIT IS WRITTEN OUT AS 30 MINUTES, never as the constant: a test
  * built from `CAPACITY_WAIT_LIMIT_MS` moves with it, so changing the limit would leave it green.
  */
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -162,7 +161,7 @@ function tick(dir: string, gateRefused: string[]) {
   const code = `import { finishTick } from ${JSON.stringify(WAKE)};
     finishTick({ handed: { sent: [], refused: [], ids: [], busied: new Set() }, sent: [],
       gateRefused: ${JSON.stringify(gateRefused)}, stuck: [], outaged: [], ledgerPath: ${JSON.stringify(join(dir, "wake-ledger"))}, unavailable: () => null });`;
-  const ran = spawnSync(process.execPath, [...TSX_IMPORT, "--input-type=module", "-e", code], { encoding: "utf8" });
+  const ran = spawnSync(process.execPath, ["--input-type=module", "-e", code], { encoding: "utf8" });
   return { status: ran.status, stderr: ran.stderr };
 }
 

@@ -90,7 +90,7 @@ function runForReal(command: string): number {
  * create, and with no shim a tracker-reaching test ran against the real `gh` inside pr-open, where nothing could
  * count its calls (#1576). `A11Y_ACCEPTANCE_PATH` is prepended to the CHILD's `PATH` alone:
  *
- *     A11Y_ACCEPTANCE_PATH="$SHIM_DIR" node --import tsx packages/agent-org/src/pr-open.ts create --draft --body-file body.md ...
+ *     A11Y_ACCEPTANCE_PATH="$SHIM_DIR" node packages/agent-org/src/pr-open.ts create --draft --body-file body.md ...
  *
  * runs the Acceptance against the shim's `gh` while pr-open's own calls keep the real one. Unset or empty, the
  * child's environment is the process's, unchanged.
@@ -466,8 +466,8 @@ export function bodyFromArgs(args: readonly string[]): string | null {
 
 function usage() {
   return "Usage:\n"
-    + "  node --import tsx packages/agent-org/src/pr-open.ts create <gh pr create args...>   (checks --body/--body-file first)\n"
-    + "  node --import tsx packages/agent-org/src/pr-open.ts edit <pr-number> <gh pr edit args...>   (same check, same refusal)\n";
+    + "  node packages/agent-org/src/pr-open.ts create <gh pr create args...>   (checks --body/--body-file first)\n"
+    + "  node packages/agent-org/src/pr-open.ts edit <pr-number> <gh pr edit args...>   (same check, same refusal)\n";
 }
 
 /**

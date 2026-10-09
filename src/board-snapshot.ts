@@ -730,7 +730,7 @@ export function forgetProcessSnapshot() {
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {
   // Guarded per #164, and takes no flags at all -- this entry point only ever takes a snapshot, it never
   // mutates, so there is nothing for a flag to configure.
-  refuseUnknownFlags([], { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/board-snapshot.ts" });
+  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/board-snapshot.ts" });
   try {
     const path = writeBoardSnapshot();
     process.stdout.write(`wrote ${path}\n`);

@@ -10,7 +10,6 @@ import { execFileSync } from "node:child_process";
 import { accessSync, constants } from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, join } from "node:path";
-import { TSX_IMPORT } from "./tsx-import.ts";
 
 /** The two readings of `process.features.typescript` under which a `.ts` file runs: `strip` (Node 22.18+, 24) and `transform` (`--experimental-transform-types`). */
 export const STRIPPING_READINGS = Object.freeze(["strip", "transform"]);
@@ -104,7 +103,7 @@ process.stdout.write(JSON.stringify(units));`;
 
 /** The rendered units of the tool and the project, as they would be installed, listed in a CHILD (the fence above). THROWS when the units cannot be listed at all. */
 export function renderedUnits(): Unit[] {
-  const out = execFileSync(process.execPath, [...TSX_IMPORT, "--input-type=module", "-e", LIST_UNITS_SCRIPT],
+  const out = execFileSync(process.execPath, ["--input-type=module", "-e", LIST_UNITS_SCRIPT],
     { encoding: "utf8", timeout: LIST_TIMEOUT_MS, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, HOST_UNITS_MODULE: HOST_UNITS_URL } });
   return JSON.parse(out) as Unit[];
 }

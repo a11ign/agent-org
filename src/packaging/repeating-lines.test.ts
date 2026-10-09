@@ -10,7 +10,6 @@
  * THE THRESHOLD IS WRITTEN OUT AS 30 AND 29 HERE, NEVER AS `REPEAT_TICKS` AND `REPEAT_TICKS - 1`: a test built from the constant moves with it, so
  * raising K by one would leave it green. The literal is what makes the row's mutation (K + 1, K - 1) go red.
  */
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, chmodSync } from "node:fs";
@@ -267,7 +266,7 @@ function gateWithJournal(journalText: string) {
     writeFileSync(join(dir, "journalctl"), `#!/bin/sh\ncat "${join(dir, "journal.txt")}"\n`);
     chmodSync(join(dir, "gh"), STUB_MODE);
     chmodSync(join(dir, "journalctl"), STUB_MODE);
-    const ran = spawnSync(process.execPath, [...TSX_IMPORT, GATE_ENTRY], { encoding: "utf8", env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` } });
+    const ran = spawnSync(process.execPath, [GATE_ENTRY], { encoding: "utf8", env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` } });
     const orders = ran.stdout.split("\n").filter(Boolean).map((l) => JSON.parse(l) as { cause: string; session: string; prompt: string });
     return { ran, orders };
   } finally {

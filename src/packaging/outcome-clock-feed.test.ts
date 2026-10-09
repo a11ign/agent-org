@@ -12,7 +12,6 @@
  * POSITIVE CONTROL: "a claimed row past the bound is named" is the non-empty case that "just under is not named" and "nothing is claimed" are read against, and
  * the first is RED against the call as it stood (the mutation is in the PR).
  */
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, chmodSync, cpSync } from "node:fs";
@@ -72,7 +71,7 @@ function gate({ prs = [], rows = [], claimed = [] }: { prs?: Record<string, unkn
     writeFileSync(join(dir, "journalctl"), "#!/bin/sh\nexit 1\n");
     chmodSync(join(dir, "gh"), STUB_MODE);
     chmodSync(join(dir, "journalctl"), STUB_MODE);
-    const ran = spawnSync(process.execPath, [...TSX_IMPORT, GATE_ENTRY], { encoding: "utf8", env: { ...process.env, A11IGN_ORG_HEALTH_SUPPRESSION: "off", HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` } });
+    const ran = spawnSync(process.execPath, [GATE_ENTRY], { encoding: "utf8", env: { ...process.env, A11IGN_ORG_HEALTH_SUPPRESSION: "off", HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}` } });
     const orders = ran.stdout.split("\n").filter(Boolean).map((line) => JSON.parse(line) as Order);
     return { clock: orders.filter((o) => o.cause === "org-health" && o.subject === SIGNALS.OVERDUE), stderr: ran.stderr };
   } finally {

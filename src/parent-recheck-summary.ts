@@ -60,10 +60,10 @@ export function testIdentity(notOkLine: string): string {
 }
 
 function main() {
-  refuseUnknownFlags([], { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/parent-recheck-summary.ts <log-file>" });
+  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/parent-recheck-summary.ts <log-file>" });
   const path = process.argv[2];
   if (!path) {
-    process.stderr.write("usage: node --import tsx packages/agent-org/src/parent-recheck-summary.ts <log-file>\n");
+    process.stderr.write("usage: node packages/agent-org/src/parent-recheck-summary.ts <log-file>\n");
     process.exitCode = 2;
     return;
   }

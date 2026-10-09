@@ -17,7 +17,6 @@ import { claimStallsNow, claimStallTick, closedClaimsNow, closedClaimsWhenWorker
 import { labelsToStrip as labelsToStripOfLeaf, stripClaimLabelsVia } from "../claim-label-strip.ts";
 import { labelsToStrip as labelsToStripOfCloser } from "../close-rows-for-merged-pr.ts";
 import { performRelease } from "../wake.ts";
-import { afterTsx } from "../tsx-import.ts";
 import { claimRecordComment } from "../row-claim.ts";
 
 type Agent = { label: string; status: string };
@@ -166,7 +165,7 @@ test("#3535 (2) the performer STOPS a working instance with Escape and no prompt
   assert.deepEqual(r.runs.filter((a) => a.includes("send-keys")), [["--session", "org", "agent", "send-keys", "worker-3535", "esc"]]);
   assert.equal(r.runs.some((a) => a.includes("prompt")), false, "no prompt: a prompt is a wake");
   assert.equal(r.runs.some((a) => a.includes("close")), false, "the workspace is left for `spareDecision`, which ends an instance holding no open row");
-  const decline = r.execs.map(afterTsx).find((a) => a[1] === "decline")!;
+  const decline = r.execs.find((a) => a[1] === "decline")!;
   assert.deepEqual(decline.slice(1), ["decline", "3535", "--session=worker-3535", "--keep-worktree"], "the work in the tree is kept: a closed row's holder is not refused for holding some");
   assert.match(r.comments[0], /Claim released by the gate.*CLOSED.*interrupted.*NOT back in the pool/s);
   assert.deepEqual(r.cycles.map((c) => [c.role, c.released]), [["worker-3535", "closed"]], "ONE spare-ledger line, with the release reason `closed`");

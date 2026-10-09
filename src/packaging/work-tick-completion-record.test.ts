@@ -10,7 +10,6 @@
  * On 2026-10-02 the work-tick unit ran 63 ticks that each died at import (15:23Z to about 17:40Z) and `InactiveEnterTimestamp` advanced on every one
  * exactly as on a good tick. The tick therefore writes a record of its own, and ONLY when it reaches the end of `main()`; the incident reads that.
  */
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -52,7 +51,7 @@ function runTick({ gate, wake = "process.exit(0);", tickPrefix = "", recordIsADi
     const record = completionPath(ledger);
     if (recordIsADirectory) mkdirSync(record);
     const before = Date.now();
-    const ran = spawnSync(process.execPath, [...TSX_IMPORT, `--import=${PRELOAD}`, join(src, "work-tick.ts"), `--ledger=${ledger}`], {
+    const ran = spawnSync(process.execPath, [`--import=${PRELOAD}`, join(src, "work-tick.ts"), `--ledger=${ledger}`], {
       encoding: "utf8", cwd: dir, env: { ...process.env, PATH: join(dir, "empty"), GH_CONFIG_DIR: "" }, // (#4148) none: a tick given an account directory probes GitHub and writes a read-cache under it; these tests must do neither
 
     });

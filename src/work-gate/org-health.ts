@@ -12,7 +12,6 @@
 // `redPrFacts` STAYED in `work-gate.ts`: it is the one place the gate asks `red-pr.ts`'s `isBrokenRed`, and
 // `org-health.test.ts`'s #2956 guard accepts a file that reads the rollup only if it imports that decider, so the
 // import and its one caller stay together. `work-gate.ts` re-exports every name this file exports that it exported before.
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { REPO_CHECKOUT, HOUR_MS, fleetBatchRows, defaultRun, repoNow, MAX_ROW_ORDERS_PER_TICK,
   shouldBeMerging, scopesOf, labelsOf, sessionOf, REVIEWER_STATE_DIR, dispatchedLabJobsOrSay, redPrFacts, partitionUnclaimed, openBlockers, rowKind, productRegionsOf } from "../work-gate.ts";
 import { declaredRegionFiles, regionCovers, splitRegionEntry } from "../region-paths.ts";
@@ -370,7 +369,7 @@ const PR_HOLD_ENTRY = fileURLToPath(new URL("../pr-hold.ts", import.meta.url));
  */
 export function releaseHoldViaModule(number: number, session: string, repoKey?: string): boolean {
   const aim = repoKey ? [`--repo-key=${repoKey}`] : [];
-  const result = spawnSync(process.execPath, [...TSX_IMPORT, PR_HOLD_ENTRY, String(number), `--session=${session}`, "--release", ...aim], { encoding: "utf8" });
+  const result = spawnSync(process.execPath, [PR_HOLD_ENTRY, String(number), `--session=${session}`, "--release", ...aim], { encoding: "utf8" });
   if (result.status !== 0) process.stderr.write(`COULD NOT lift hold:${session} on pr-${subjectRef(repoKey, number)} (exit ${result.status}): ${String(result.stderr).trim()}\n`);
   return result.status === 0;
 }

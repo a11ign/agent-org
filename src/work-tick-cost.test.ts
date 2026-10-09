@@ -7,7 +7,6 @@
  * a11ign/a11ign#3566: every tick appends ONE `tick-cost` line, so that "the tick takes 2 to 10 minutes" is a reading from a file and not from a
  * journal, and says where the minutes went: per phase, wall AND CPU (children included), and per command the tick started.
  */
-import { TSX_IMPORT } from "./tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -57,7 +56,7 @@ function runTick({ gate, wake = "process.exit(0);", costIsADirectory = false, ti
     const env: NodeJS.ProcessEnv = { ...process.env, PATH: join(dir, "empty") };
     delete env.INVOCATION_ID; // a test run under systemd would otherwise ask systemd about ITS unit
     delete env.GH_CONFIG_DIR; // (#4148) the tick's snapshot refresh probes GitHub and writes under the account's config: with none, it says SNAPSHOT OFF and starts nothing, which is what these tests count
-    const run = () => spawnSync(process.execPath, [...TSX_IMPORT, `--import=${PRELOAD}`, join(src, "work-tick.ts"), `--ledger=${ledger}`], { encoding: "utf8", cwd: dir, env });
+    const run = () => spawnSync(process.execPath, [`--import=${PRELOAD}`, join(src, "work-tick.ts"), `--ledger=${ledger}`], { encoding: "utf8", cwd: dir, env });
     let ran = run();
     for (let tick = 1; tick < ticks; tick += 1) ran = run();
     const lines = !costIsADirectory && existsSync(cost) ? readFileSync(cost, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
@@ -167,7 +166,7 @@ test("#3566: children's CPU is read from /proc/self/stat past a command name wit
 test("#3566: the census names a command by its basename, cuts an argument to its tail, and keeps the slowest 5 by wall", () => {
   assert.deepEqual(describeSpawn("/home/agent/.local/bin/gh", ["pr", "list"]), { cmd: "gh", line: "gh pr list", sub: "pr list" });
   assert.equal(describeSpawn("git status --short", undefined).line, "git status --short", "an execSync string is split, not taken as one name");
-  const long = describeSpawn("node", [...TSX_IMPORT, `/very/long/${"d/".repeat(40)}work-gate.ts`]);
+  const long = describeSpawn("node", [`/very/long/${"d/".repeat(40)}work-gate.ts`]);
   assert.match(long.line, /work-gate\.ts$/);
   const records = [
     { cmd: "gh", line: "gh a", ms: 5 }, { cmd: "gh", line: "gh b", ms: 900 }, { cmd: "git", line: "git c", ms: 70 },
@@ -189,7 +188,7 @@ test("#3566: the census records each synchronous spawn's CPU, so a busy child an
       `spawnSync(process.execPath, ["-e", ${JSON.stringify(burnCpu(400))}]);`,
       `spawnSync(process.execPath, ["-e", "setTimeout(() => {}, 400);"]);`,
     ].join("\n"));
-    const ran = spawnSync(process.execPath, [...TSX_IMPORT, `--import=${new URL("./lib/spawn-census.mjs", import.meta.url).href}`, driver],
+    const ran = spawnSync(process.execPath, [`--import=${new URL("./lib/spawn-census.mjs", import.meta.url).href}`, driver],
       { env: { ...process.env, [CENSUS_ENV]: census }, encoding: "utf8" });
     assert.equal(ran.status, 0, ran.stderr);
     const records = readFileSync(census, "utf8").trim().split("\n").map((line) => JSON.parse(line));
@@ -233,7 +232,7 @@ test("#3566: a gh, git or herdr call is named by its SUBCOMMAND, with the number
   assert.equal(sub("git", ["-C", "/home/agent/repos/x", "-c", "core.quotepath=off", "rev-parse", "HEAD"]), "rev-parse", "git's -C and -c take a value");
   assert.equal(sub("herdr", ["agent", "list", "--json"]), "agent list");
   assert.equal(describeSpawn("git rev-list --count HEAD", undefined).sub, "rev-list", "an execSync string is split like an argv");
-  assert.equal("sub" in describeSpawn("node", [...TSX_IMPORT, "work-gate.ts"]), false, "the control: a node is named by its script in `slowest`, and has no subcommand");
+  assert.equal("sub" in describeSpawn("node", ["work-gate.ts"]), false, "the control: a node is named by its script in `slowest`, and has no subcommand");
   assert.equal("sub" in describeSpawn("gh", ["--version"]), false, "a call with only flags names no subcommand, rather than an empty one");
 });
 
@@ -294,7 +293,7 @@ test("#3566 slice 7: a REAL in-process spawn is recorded with the phase set when
     const module = new URL("./lib/spawn-census.ts", import.meta.url).href;
     writeFileSync(driver, `import { spawnSync } from "node:child_process";\nimport { installSpawnCensus, setCensusPhase } from ${JSON.stringify(module)};\n`
       + `installSpawnCensus(${JSON.stringify(census)});\nsetCensusPhase("tearDownSpares");\nspawnSync("git", ["--version"]);\nsetCensusPhase(undefined);\nspawnSync("git", ["--version"]);\n`);
-    const ran = spawnSync(process.execPath, [...TSX_IMPORT, driver], { env: sandboxGitEnv({}), encoding: "utf8" });
+    const ran = spawnSync(process.execPath, [driver], { env: sandboxGitEnv({}), encoding: "utf8" });
     assert.equal(ran.status, 0, ran.stderr);
     const records = readFileSync(census, "utf8").trim().split("\n").map((line) => JSON.parse(line));
     assert.deepEqual(records.map((record: { phase?: string }) => record.phase), ["tearDownSpares", undefined]);
@@ -317,7 +316,7 @@ test("#3566: a REAL git spawn through the preload leaves a record with its subco
     const census = join(dir, "census.jsonl");
     const driver = join(dir, "driver.mjs");
     writeFileSync(driver, `import { spawnSync } from "node:child_process";\nspawnSync("git", ["-C", ${JSON.stringify(dir)}, "rev-parse", "HEAD"]);\n`);
-    const ran = spawnSync(process.execPath, [...TSX_IMPORT, `--import=${new URL("./lib/spawn-census.mjs", import.meta.url).href}`, driver],
+    const ran = spawnSync(process.execPath, [`--import=${new URL("./lib/spawn-census.mjs", import.meta.url).href}`, driver],
       { env: sandboxGitEnv({ [CENSUS_ENV]: census }), encoding: "utf8" });
     assert.equal(ran.status, 0, ran.stderr);
     const records = readFileSync(census, "utf8").trim().split("\n").map((line) => JSON.parse(line));

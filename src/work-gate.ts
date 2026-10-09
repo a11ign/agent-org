@@ -26,7 +26,6 @@
 // that needs `herdr agent list`'s `agent_status`, and putting it here would make the gate untestable
 // without a running org and unrunnable from CI. `wake.ts` owns that half; `row-claim.ts` remains the
 // authority on whether a row is actually yours.
-import { TSX_IMPORT } from "./tsx-import.ts";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { pathToFileURL, fileURLToPath } from "node:url";
@@ -2087,7 +2086,7 @@ export function withStalePrimaryNotice<T extends { cause?: string; prompt: strin
  * unparseable output, `asked: false`), which is silence and never a clean primary.
  */
 function readPrimaryDriftNow(): import("./update-primary.ts").PrimaryDrift | null {
-  const run = spawnSync(process.execPath, [...TSX_IMPORT, fileURLToPath(new URL("./update-primary.ts", import.meta.url)), "--drift"], { encoding: "utf8" });
+  const run = spawnSync(process.execPath, [fileURLToPath(new URL("./update-primary.ts", import.meta.url)), "--drift"], { encoding: "utf8" });
   if (run.status !== 0 || typeof run.stdout !== "string") return null;
   try {
     const parsed = JSON.parse(run.stdout);
@@ -4804,7 +4803,7 @@ const exemptFromFloor = (row: any, chairmanRows: ReadonlySet<number> | undefined
 function claimSentence(row: { number: number; repoKey?: string; repo?: string; }) {
   if (row.repoKey === undefined || row.repoKey === "") {
     return "Claim it with "
-      + `\`node --import tsx packages/agent-org/src/row-claim.ts claim ${row.number} --session=<you> `
+      + `\`node packages/agent-org/src/row-claim.ts claim ${row.number} --session=<you> `
       + `--branch=agent/<slug>-${row.number} --worktree=../wt-${row.number}\` and build it there.`;
   }
   return `It is row ${row.number} of \`${row.repo}\` (key \`${row.repoKey}\`), and \`row-claim.ts claim ${row.number}\` would claim the PRIMARY's row ${row.number}, `
@@ -4994,7 +4993,7 @@ function replacementSentence(row: { number: number; repoKey?: string; repo?: str
   return `ITS BRANCH IS FINISHED WORK WHOSE PULL REQUEST WAS CLOSED UNMERGED, and a replacement has to be opened from your own workspace: origin holds ${named}. `
     + `DO NOT delete or rename it, and read on the row why the pull request was closed before you build.\n`
     + `A plain claim is refused for as long as the branch is on \`origin\` (#2014), so take the previous holder's worktree in place, from your own linked worktree: `
-    + `\`node --import tsx packages/agent-org/src/row-claim.ts claim ${row.number} --session=<you> --branch=${branches[0].branch} `
+    + `\`node packages/agent-org/src/row-claim.ts claim ${row.number} --session=<you> --branch=${branches[0].branch} `
     + "--worktree=<its path, from `git worktree list`> --adopt=<the session in its `.a11y-owner`>`, then open the pull request with `agent-org pr:open`."
     + (row.repoKey === undefined || row.repoKey === "" ? "" : `\n${claimSentence(row)}`);
 }
@@ -6778,7 +6777,7 @@ export function cannotAskReport({ run, identity }: { run: (args: string[]) => st
  * `hostDriftOrders` keeps them apart, and `driftReport` keeps them apart for the CLI's reader.
  */
 function readHostDrift(): { unit: string; problem: string; detail: string; }[] | null {
-  const run = spawnSync(process.execPath, [...TSX_IMPORT, hostUnitsEntry(), "--json"], { encoding: "utf8" });
+  const run = spawnSync(process.execPath, [hostUnitsEntry(), "--json"], { encoding: "utf8" });
   if (run.status !== 0 || typeof run.stdout !== "string") return null;
   try {
     const parsed = JSON.parse(run.stdout);
@@ -7604,7 +7603,7 @@ function offerHierarchyNow(rows: any[]): OfferHierarchy {
 }
 
 function main() {
-  refuseUnknownFlags([], { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/work-gate.ts" });
+  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/work-gate.ts" });
   const githubStatus = startGithubStatus(); // #3723: FIRST, so its wall overlaps the reads below and never adds to them
   // READ BEFORE ANY GITHUB CALL (#2163), because it is the one reading a `CANNOT_ASK` exit must not hide: a tick
   // that cannot reach GitHub delivers nothing, so on that path the stderr line is the only thing that says the

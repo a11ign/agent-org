@@ -391,7 +391,7 @@ function reportExaminedPr(result: ReturnType<typeof examinePr>, sinks: { stalled
 }
 
 function main() {
-  refuseUnknownFlags([], { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/queue-stalled.ts" });
+  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/queue-stalled.ts" });
 
   const repo = process.env.GITHUB_REPOSITORY;
   if (!repo) {

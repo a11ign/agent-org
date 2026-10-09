@@ -6,7 +6,6 @@
  * reads -- herdr, GitHub, git -- is injected or stubbed on PATH here, so the row's declared Acceptance is a
  * command the job can RUN.
  */
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
@@ -302,7 +301,7 @@ test("#2323 THE TICK: a QUIET gate still ends a finished spare -- work-tick call
     chmodSync(join(dir, "herdr"), STUB_MODE);
     chmodSync(join(dir, "gh"), STUB_MODE);
     writeFileSync(sparePathsFrom(ledger).registry, JSON.stringify({ "worker-4": { spawnedAt: T0, rows: [4242424] } }));
-    const ran = spawnSync(process.execPath, [...TSX_IMPORT, TICK_ENTRY, `--ledger=${ledger}`], { encoding: "utf8",
+    const ran = spawnSync(process.execPath, [TICK_ENTRY, `--ledger=${ledger}`], { encoding: "utf8",
       env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}`, A11Y_HOST_LOAD: "0", GH_CONFIG_DIR: "" } });
 
     assert.match(readFileSync(log, "utf8"), /workspace close wD/, `the tick closed the finished spare; got ${ran.stderr}`);
@@ -335,7 +334,7 @@ test("#2323 THE WAKE ENTRY: a spawn is REGISTERED, so the teardown can tell a fi
     writeFileSync(join(dir, "node"), "#!/bin/sh\nmkdir -p ../wt-2131\necho 'STARTED -- #2131 fixture'\n");
     chmodSync(join(dir, "git"), STUB_MODE);
     chmodSync(join(dir, "node"), STUB_MODE);
-    const ran = spawnSync(process.execPath, [...TSX_IMPORT, WAKE_ENTRY, `--ledger=${ledger}`, "--roster=worker-4",
+    const ran = spawnSync(process.execPath, [WAKE_ENTRY, `--ledger=${ledger}`, "--roster=worker-4",
       `--worktrees-dir=${join(dir, "repos")}`], {
       input: `${JSON.stringify(ROW_ORDER)}\n`, encoding: "utf8",
       env: { ...process.env, HOME: dir, PATH: `${dir}:${process.env.PATH ?? ""}`, A11Y_HOST_LOAD: "0", GH_CONFIG_DIR: "" } });

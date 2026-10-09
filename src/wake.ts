@@ -27,7 +27,6 @@
 // prompt into a bare shell. But declining SILENTLY is the defect the org already had once: the
 // lead-orchestrator brief records 2026-09-08, when "every session went idle at 20:52Z and nothing woke
 // anyone for ten" hours. So an order with nowhere to go exits ATTENTION and names the session, every time.
-import { TSX_IMPORT } from "./tsx-import.ts";
 import { homeHostConfig } from "./host-config.ts";
 import { carriedKeys, digestDue, digestPathFrom, flushOrders, readDigest, ridingDigest, routeOrders, settleRidden } from "./triage-route.ts";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -5771,7 +5770,7 @@ export function checkChairmanPath({ spawn = spawnSync, program = fileURLToPath(n
     return [`MESSAGING SELFTEST NOT RUN: it could not be asked whether a run is due (${herdrReason(err)})`];
   }
   if (!asked.spawn) return asked.line === null ? [] : [asked.line];
-  const child = spawn(process.execPath, [...TSX_IMPORT, program, "--tick"], { encoding: "utf8", timeout: SELFTEST_STEP_TIMEOUT_MS });
+  const child = spawn(process.execPath, [program, "--tick"], { encoding: "utf8", timeout: SELFTEST_STEP_TIMEOUT_MS });
   const lastLine = String(child.stdout ?? "").trim().split("\n").at(-1) ?? "";
   let answer: { lines?: string[]; report?: string | null; } | null = null;
   try {
@@ -6019,11 +6018,11 @@ const CLAIM_NOT_LANDED = Object.freeze([1, 2]);
  */
 function releaseClaim(claimed: ClaimedRow, role: string, env: Record<string, string>, exec: Exec): string {
   // AN ADOPTED TREE IS NEVER REMOVED BY THE UNDO (#2470): unlike one this call just made, it holds another instance's work.
-  const ran = exec("node", [...TSX_IMPORT, ROW_CLAIM, "decline", String(claimed.row), `--session=${role}`,
+  const ran = exec("node", [ROW_CLAIM, "decline", String(claimed.row), `--session=${role}`,
     ...(claimed.adopted ? ["--keep-worktree"] : [])], { cwd: claimed.launchDir, env });
   if (ran.status === 0) return ` -- the claim on #${claimed.row} was released`;
   return ` -- AND the claim on #${claimed.row} could NOT be released (${verdictLine(ran.output)}): the row is held by `
-    + `"${role}" with no process, which nothing reads as a fault -- run \`node --import tsx packages/agent-org/src/row-claim.ts `
+    + `"${role}" with no process, which nothing reads as a fault -- run \`node packages/agent-org/src/row-claim.ts `
     + `decline ${claimed.row} --session=${role}\` from a linked worktree`;
 }
 
@@ -6053,7 +6052,7 @@ export function spawnClaimer({ exec = defaultExec, exists = existsSync, worktree
       if ("refusal" in launch) return launch;
       const left = settleGoneKept(kept(row) ?? treeOfClosedPrBranch(order, { exec, primary, env }), { exists, exec, primary, env, forget: () => { forget(row); } }).left;
       const { claimed, args } = claimTarget({ row, order, role, launchDir: launch.dir, worktreesDir, left, exists });
-      const ran = exec("node", [...TSX_IMPORT, ROW_CLAIM, ...args], { cwd: launch.dir, env });
+      const ran = exec("node", [ROW_CLAIM, ...args], { cwd: launch.dir, env });
       const landed = /^STARTED/m.test(ran.output) && CLAIM_LANDED.includes(Number(ran.status));
       if (landed && exists(claimed.worktree)) {
         if (claimed.adopted !== undefined) forget(row);
@@ -6664,7 +6663,7 @@ export function performRelease(request: ReleaseRequest, deps: ReleaseDeps): { re
   const launch = launchWorktree(request.session, { exec: deps.exec, exists: deps.host.exists,
     worktreesDir: deps.host.worktreesDir, primary: deps.host.primary });
   if ("refusal" in launch) return { released: false, why: `no launch worktree for ${request.session} (${launch.refusal})` };
-  const ran = deps.exec("node", [...TSX_IMPORT, ROW_CLAIM, "decline", String(request.row), `--session=${request.session}`,
+  const ran = deps.exec("node", [ROW_CLAIM, "decline", String(request.row), `--session=${request.session}`,
     ...(plan.keep ? ["--keep-worktree"] : []), ...(plan.keep && confirmedGone ? ["--predecessor-gone"] : []),
     ...(request.answer === undefined ? [] : [`--answer=${request.answer}`])],
   { cwd: launch.dir, env: deps.env });
@@ -7365,7 +7364,7 @@ export function finishTick({ handed, sent, gateRefused, stuck, outaged, ledgerPa
 
 async function main() {
   refuseUnknownFlags(["--ledger", "--roster", "--cycles", "--worktrees-dir"], {
-    entry: import.meta.url, command: "node --import tsx packages/agent-org/src/wake.ts",
+    entry: import.meta.url, command: "node packages/agent-org/src/wake.ts",
   });
   const ledgerPath = ledgerPathFrom(process.argv);
   if (process.argv.includes("--cycles")) printCycles(ledgerPath);

@@ -16,7 +16,7 @@
 // document published into the wrong category looks exactly like success, which is the failure this row was
 // filed to remove, one level down.
 //
-//   node --import tsx packages/agent-org/src/board-discussion.ts --exists     the workflow's republish precondition
+//   node packages/agent-org/src/board-discussion.ts --exists     the workflow's republish precondition
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { refuseUnknownFlags } from "./lib/cli-flags.ts";
@@ -151,9 +151,9 @@ const EXIT_ABSENT = 1;
 const EXIT_CANNOT_ASK = 2;
 
 function main() {
-  refuseUnknownFlags(["--exists"], { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/board-discussion.ts" });
+  refuseUnknownFlags(["--exists"], { entry: import.meta.url, command: "node packages/agent-org/src/board-discussion.ts" });
   if (!process.argv.includes("--exists")) {
-    console.error("usage: node --import tsx packages/agent-org/src/board-discussion.ts --exists");
+    console.error("usage: node packages/agent-org/src/board-discussion.ts --exists");
     process.exit(EXIT_CANNOT_ASK);
   }
   const day = editionDay();

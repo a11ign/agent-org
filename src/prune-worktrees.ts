@@ -1211,7 +1211,7 @@ export function formatStranded({ examined, stranded, unreadable = [] }: ReturnTy
 async function main() {
   // Guarded per #164: positional repo root; git flags go onward.
   refuseUnknownFlags(["--apply"],
-    { entry: import.meta.url, command: "node --import tsx packages/agent-org/src/prune-worktrees.ts" });
+    { entry: import.meta.url, command: "node packages/agent-org/src/prune-worktrees.ts" });
   // THE DEFAULT IS THE LISTING, AND IT IS THE WRONG WAY ROUND UNTIL IT IS NOT. Measured 2026-09-09: a
   // session ran `pnpm run worktrees:prune` to READ its breakdown before writing a row about worktree
   // accounting, and it removed three worktrees belonging to three other sessions. No work was lost -- the

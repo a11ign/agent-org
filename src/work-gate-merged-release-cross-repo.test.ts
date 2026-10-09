@@ -13,7 +13,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { claimRecordComment } from "./row-claim.ts";
 import { performRelease } from "./wake.ts";
-import { afterTsx } from "./tsx-import.ts";
 import {
   claimFactsFrom, readClaim, claimStalledOrders, holderWorkAtRisk, workAtRiskInPrRepo, cloneOfKey,
 } from "./claim-stall.ts";
@@ -92,7 +91,7 @@ function releaseHost(world: World, { spare = true } = {}) {
     return "";
   };
   const exec = (_cmd: string, rawArgs: string[], opts: { cwd: string }) => {
-    const args = afterTsx(rawArgs);
+    const args = rawArgs;
     if (/row-claim\.ts$/.test(args[0] ?? "") && args[1] === "decline") {
       trace.push("decline");
       execs.push({ args, cwd: opts.cwd });

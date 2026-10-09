@@ -21,7 +21,6 @@
  * The last test runs the runner end to end with the REAL `work-gate.ts` imported by the candidate, because the first three read the seam and
  * only this one reads the seam as the runner arranges it.
  */
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -73,7 +72,7 @@ function readFour(root: string, shadowDir: string | undefined, hostStateDir?: st
     gh: { workers: "/srv/acme/workers", leads: "/srv/acme/leads", leadsHeader: ["acme leads"], leadsWorkspaces: [{ id: "w1", role: "lead" }] },
   }));
   env.AGENT_ORG_HOST = file;
-  return spawnSync(process.execPath, [...TSX_IMPORT, "--input-type=module", "-e", READER], { env: env as NodeJS.ProcessEnv, encoding: "utf8" });
+  return spawnSync(process.execPath, ["--input-type=module", "-e", READER], { env: env as NodeJS.ProcessEnv, encoding: "utf8" });
 }
 
 test("the runner and the gate agree on the variable's name and the marker's", () => {

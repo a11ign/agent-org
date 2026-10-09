@@ -19,7 +19,6 @@
  * refuses `--help` as an unknown flag on purpose (`lib/cli-flags.mjs`: "an ignored flag runs the default and reports success"), so no command
  * answers `--help` with exit 0. `worktrees:prune` is a dry run that imports `project-config.ts`, so it exits 0 exactly when the project resolved.
  */
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -148,7 +147,7 @@ const toolDir = (project: string) => join(project, "node_modules", "agent-org");
 const binOf = (project: string) => join(toolDir(project), "src", "bin.mjs");
 
 function runInstalled(cwd: string, ...args: string[]) {
-  return spawnSync(process.execPath, [...TSX_IMPORT, binOf(installed.project), ...args], { cwd, encoding: "utf8", env: cleanEnv() });
+  return spawnSync(process.execPath, [binOf(installed.project), ...args], { cwd, encoding: "utf8", env: cleanEnv() });
 }
 
 test("(a) the tool installs through `pnpm add -D` as a git dependency pinned by `#semver:`", () => {
@@ -171,7 +170,7 @@ test("(a) a subdirectory of the project is the same project: the repository, not
 
 test("(a) `typescript` resolves to the PROJECT's, through the installed tool, with no NODE_PATH", () => {
   const url = pathToFileURL(join(toolDir(installed.project), "src", "lib", "resolve-typescript.mjs")).href;
-  const run = spawnSync(process.execPath, [...TSX_IMPORT, "--input-type=module", "-e", `const { resolveTypescript } = await import(${JSON.stringify(url)}); console.log(resolveTypescript().version);`],
+  const run = spawnSync(process.execPath, ["--input-type=module", "-e", `const { resolveTypescript } = await import(${JSON.stringify(url)}); console.log(resolveTypescript().version);`],
     { cwd: installed.project, encoding: "utf8", env: cleanEnv() });
   assert.equal(run.status, 0, run.stderr);
   assert.equal(run.stdout.trim(), FIXTURE_TYPESCRIPT);

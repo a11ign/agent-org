@@ -4,7 +4,6 @@
 // and `organization.id` are replaced by "REDACTED" (they identify a person, and nothing here reads them). Nothing in them is invented: change a value and you are no longer testing the exporter.
 // no-token: gh -- no `gh` call is made; the receiver listens on loopback with port 0 and a temp store.
 // THE UNIT'S HOST-UNIT ASSERTIONS ARE NOT HERE: `host-units.ts` reads git history, which CI's acceptance job does not have, and a command that imports it is REFUSED there (a11ign/a11ign#4071); they are in `src/packaging/host-units.test.ts`.
-import { TSX_IMPORT } from "../tsx-import.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -196,7 +195,7 @@ test("THE PROGRAM, STARTED AS THE UNIT STARTS IT, receives a post and appends it
   const port = await new Promise((resolve) => {
     const probe = createNetServer().listen(0, LOOPBACK, () => { const { port: free } = probe.address(); probe.close(() => resolve(free)); });
   });
-  const child = spawn(process.execPath, [...TSX_IMPORT, SCRIPT, `--port=${port}`, `--store=${storePath}`], { stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, [SCRIPT, `--port=${port}`, `--store=${storePath}`], { stdio: ["ignore", "pipe", "pipe"] });
   try {
     await new Promise((resolve, reject) => {
       child.once("error", reject);

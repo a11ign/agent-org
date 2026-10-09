@@ -10,7 +10,6 @@
  * `Finished`: node exits `1` on any uncaught exception, and `1` is the contract's ATTENTION, which the unit declares a success
  * (`SuccessExitStatus=0 1 2`). The same collision lives in the gate child (`GATE.WORK` is `1`) and in the `ExecStartPre=-` update step.
  */
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -31,7 +30,7 @@ function runEntry(body: string, { preload }: { preload: boolean }) {
   try {
     const entry = join(dir, "entry.mjs");
     writeFileSync(entry, body);
-    return spawnSync(process.execPath, [...TSX_IMPORT, ...(preload ? [`--import=${PRELOAD}`] : []), entry], { encoding: "utf8" });
+    return spawnSync(process.execPath, [...(preload ? [`--import=${PRELOAD}`] : []), entry], { encoding: "utf8" });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -120,7 +119,7 @@ function tickWith({ gate, wake }: { gate: string; wake: string }) {
       + `if (process.argv[1] === fileURLToPath(import.meta.url)) {\n  writeFileSync(${JSON.stringify(marker)}, "ran");\n  ${wake}\n}\n`);
     mkdirSync(join(dir, "empty"));
     // `--ledger=<path>` (the `=` form is the only one `flagValue` reads) puts the handoff queue beside it, so a real queued order cannot make a quiet tick deliver.
-    const ran = spawnSync(process.execPath, [...TSX_IMPORT, join(src, "work-tick.ts"), `--ledger=${join(dir, "ledger.jsonl")}`], {
+    const ran = spawnSync(process.execPath, [join(src, "work-tick.ts"), `--ledger=${join(dir, "ledger.jsonl")}`], {
       encoding: "utf8", cwd: dir, env: { ...process.env, PATH: join(dir, "empty"), GH_CONFIG_DIR: "" }, // (#4148) none: a tick given an account directory probes GitHub and writes a read-cache under it; these tests must do neither
 
     });

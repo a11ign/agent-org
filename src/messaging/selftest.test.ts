@@ -6,7 +6,6 @@
 // prints the same kind of refusal as `prompt-session.ts` (the real port cannot be driven to "the inbox is full" without filling a real inbox), the ROSTER is a list, and the PROVIDER is the self-test's own recorder.
 // The live reading, with the real queue and herdr's real roster, is done-when 5 and is on the row.
 
-import { TSX_IMPORT } from "../tsx-import.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
@@ -477,7 +476,7 @@ describe("the entry run as a process, which is how the tick starts it", () => {
     mkdirSync(dirname(state), { recursive: true });
     const pending = { version: "v0.0.1", handoff: "handoff/liaison/00000000", taker: "liaison", queuedAt: START, updateId: 1, degraded: false };
     writeFileSync(state, `${JSON.stringify({ lastPassed: null, decidedFor: null, lastAttemptAt: null, lastRed: null, lastReported: null, pending })}\n`);
-    return spawnSync(process.execPath, [...TSX_IMPORT, ENTRY, "--tick"], { env: { ...process.env, HOME: home }, encoding: "utf8", timeout: 60_000 });
+    return spawnSync(process.execPath, [ENTRY, "--tick"], { env: { ...process.env, HOME: home }, encoding: "utf8", timeout: 60_000 });
   }
 
   test("--tick settles a waiting run through the real queue port: it does not exit 13, and its last stdout line is JSON", { skip: skipUnlessLoaded }, () => {
@@ -490,7 +489,7 @@ describe("the entry run as a process, which is how the tick starts it", () => {
   });
 
   test("the entry still SETS the exit code now that it does not await: a flag it refuses exits 2", () => {
-    const child = spawnSync(process.execPath, [...TSX_IMPORT, ENTRY, "--send-to-chat"], { env: { ...process.env, HOME: join(scratch, `entry-home-${nextDir++}`) }, encoding: "utf8", timeout: 60_000 });
+    const child = spawnSync(process.execPath, [ENTRY, "--send-to-chat"], { env: { ...process.env, HOME: join(scratch, `entry-home-${nextDir++}`) }, encoding: "utf8", timeout: 60_000 });
     assert.equal(child.status, 2, child.stderr);
     assert.match(child.stderr, /^messaging:selftest: /);
   });

@@ -681,7 +681,7 @@ function main() {
   // definition both use. Accepting it is what lets a test, or an operator on a second org, point both
   // halves of the queue at the same place.
   refuseUnknownFlags(["--ledger", DECISION_FLAG, FYI_FLAG, NEEDS_DECISION_FLAG], {
-    entry: import.meta.url, command: "node --import tsx packages/agent-org/src/prompt-session.ts" });
+    entry: import.meta.url, command: "node packages/agent-org/src/prompt-session.ts" });
   // NO FLAG IS PART OF THE PROMPT -- `parseStance` strips them, and its comment carries why.
   const parsed = parseStance(process.argv.slice(2));
   if ("refusal" in parsed && parsed.refusal) {

@@ -9,7 +9,6 @@
  * would test the string handling while leaving the thing that failed — a real tree with no owner
  * recorded — untouched.
  */
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -88,7 +87,7 @@ test("#1128: an empty stamp file is UNSTAMPED, not an owner named the empty stri
 
 /** The CLI, run the way a session runs it -- argv and env, never the exported functions. */
 function cli(args: string[], env: Record<string, string | undefined>) {
-  const result = spawnSync(process.execPath, [...TSX_IMPORT, fileURLToPath(new URL("../worktree-owner.ts", import.meta.url)), ...args],
+  const result = spawnSync(process.execPath, [fileURLToPath(new URL("../worktree-owner.ts", import.meta.url)), ...args],
     { encoding: "utf8", env: { ...process.env, ...sandboxGitEnv(), ...env } });
   return { status: result.status, out: result.stdout, err: result.stderr };
 }

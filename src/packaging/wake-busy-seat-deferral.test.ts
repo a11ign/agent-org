@@ -7,7 +7,6 @@
  * and a busy-seat order under the limit yields neither. THE LIMIT IS WRITTEN OUT AS 15 MINUTES (it was 60 until #3448), never as `BUSY_SEAT_DEFERRAL_MS`: a test built
  * from the constant moves with it, so changing the limit would leave it green.
  */
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
@@ -111,7 +110,7 @@ function tick(dir: string, { handedRefused = [] as string[], gateRefused = [] as
   const code = `import { finishTick } from ${JSON.stringify(WAKE)};
     finishTick({ handed: { sent: [], refused: ${JSON.stringify(handedRefused)}, ids: [], busied: new Set() }, sent: [],
       gateRefused: ${JSON.stringify(gateRefused)}, stuck: [], outaged: [], ledgerPath: ${JSON.stringify(join(dir, "wake-ledger"))}, unavailable: () => null });`;
-  const ran = spawnSync(process.execPath, [...TSX_IMPORT, "--input-type=module", "-e", code], { encoding: "utf8" });
+  const ran = spawnSync(process.execPath, ["--input-type=module", "-e", code], { encoding: "utf8" });
   return { status: ran.status, stderr: ran.stderr };
 }
 

@@ -9,7 +9,6 @@
  * THE POSITIVE CONTROL FOR EVERY "NOTHING NAMED / NO WRITE" ASSERTION IS THE ABSENT CASE, which names the seat and writes. The control against
  * over-reading is the non-persistent role absent from the same listing, which is named by nothing and started by nothing.
  */
-import { TSX_IMPORT } from "../tsx-import.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -157,7 +156,7 @@ function seatHost(labels: string[], broken = false) {
   return { PATH: `${bin}:${process.env.PATH}`, HOME: home, AGENT_ORG_HOST: hostFile };
 }
 function hostCheck(env: ReturnType<typeof seatHost>, ...flags: string[]) {
-  const done = spawnSync(process.execPath, [...TSX_IMPORT, join(TOOL_ROOT, "src/host-units.ts"), ...flags], { encoding: "utf8", env });
+  const done = spawnSync(process.execPath, [join(TOOL_ROOT, "src/host-units.ts"), ...flags], { encoding: "utf8", env });
   assert.notEqual(done.stdout, "", `host-units.ts ${flags.join(" ")} wrote nothing (exit ${done.status}); stderr: ${done.stderr}`);
   return done;
 }

@@ -10,7 +10,7 @@
 // whole of a rollback), and a fix goes forward in the next tag. `release.yml` tags the merge that carries a changeset about nine minutes after it lands (measured
 // from the tag history, #3443), so a shipped-code merge is live then; a merge with NO changeset is never tagged and never live, which is the point.
 //
-//   node --import tsx src/update-tool.ts
+//   node src/update-tool.ts
 //
 // A RELEASE TAG IS NOT AN ANCESTOR OF `main`: the release workflow commits the version bump on top of the merge and pushes that commit as the tag alone, so it is
 // reachable from no branch, and a plain `git fetch origin` does not bring it down. The fetch here NAMES TAGS (`--tags`), and the checkout is of the tag.
@@ -70,11 +70,10 @@ const tagNames = (run: (args: string[]) => string): string[] => run(["tag", "--l
 /** @param {LostPrograms} lost @param {{ tag: string, tool: string }} where @returns {{ unit: string, problem: string, detail: string }} */
 function hostInstallPendingFinding({ holder, programs }: LostPrograms, { tag, tool }: { tag: string; tool: string }): { unit: string; problem: string; detail: string } {
   const fresh = `${tool}-install-${tag}`;
-  const loader = `${tool}/node_modules/tsx/dist/loader.mjs`;
   return { unit: holder, problem: "host-install-pending",
     detail: `it runs ${programs.join(", ")}, which release ${tag} deletes or renames, so \`update-tool\` HOLDS the tool's checkout (${tool}) where it is and the unit still works. `
       + "THE CHECKOUT MAY NOT BE ADVANCED FIRST: that is the tick crash of 2026-10-09. Install from a fresh tree at the release, then advance, as ONE command line: "
-      + `\`git -C ${tool} worktree add --detach ${fresh} refs/tags/${tag} && (cd ${fresh} && node --import ${loader} src/host-units.ts --install) && (cd ${tool} && node --import tsx src/update-tool.ts)\`, `
+      + `\`git -C ${tool} worktree add --detach ${fresh} refs/tags/${tag} && (cd ${fresh} && node src/host-units.ts --install) && (cd ${tool} && node src/update-tool.ts)\`, `
       + `then \`git -C ${tool} worktree remove --force ${fresh}\`. Post whether a REMOVED line appeared. This finding clears when the installed units and launcher name programs the release has.` };
 }
 
@@ -270,7 +269,7 @@ export function restartLongRunning(units: string[], { exec = execFileSync, out =
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {
   // Guarded per #164: takes no flags -- a root argument is exactly what this command must not accept.
-  refuseUnknownFlags([], { entry: import.meta.url, command: "node --import tsx src/update-tool.ts" });
+  refuseUnknownFlags([], { entry: import.meta.url, command: "node src/update-tool.ts" });
   const root = gitIn(HERE)(["rev-parse", "--show-toplevel"]).trim();
   const run = gitIn(root);
   const before = run(["rev-parse", "HEAD"]).trim();
