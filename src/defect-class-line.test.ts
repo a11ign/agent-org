@@ -31,7 +31,7 @@ function openPr(body: any, deps = { rowLabels }) {
   const out: any[] = [];
   const code = prOpen(["create", "--draft", "--body", body], {
     run: (a) => { sent.push(a); }, git: () => "x", prHead: () => ({ ref: "x", oid: "x" }),
-    runAcceptance: () => 0, runMutation: () => 0, owner: () => null, out: (l) => { out.push(l); }, err: (l) => { err.push(l); },
+    runAcceptance: () => 0, runMutation: () => 0, owner: () => "ceo", out: (l) => { out.push(l); }, err: (l) => { err.push(l); },
     ...deps,
   });
   return { code, sent, said: [...out, ...err].join("") };

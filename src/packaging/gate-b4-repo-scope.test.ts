@@ -159,7 +159,7 @@ test("the PRIMARY's own tick (`main`, which `scopeTick` does not run) reads the 
   const main = source.slice(source.indexOf("\nfunction main()"));
   assert.ok(main.length > 0, "POSITIVE CONTROL: `main` was found, so the two matches below are searches of it");
   assert.match(main, /comparablePrFiles\(\[\.\.\.openPrs, \.\.\.pullRequestsOfOthers\(otherScopes\)\]\)/, "main's B4 list holds the other repositories' pull requests");
-  assert.match(main, /otherScopeTicks\(drain, otherScopes, openPrs\)/, "and the other scopes are ticked from the lanes it already read");
+  assert.match(main, /otherScopeTicks\(drain, otherScopes, openPrs, homeRowsOf\(allOpen\)\)/, "and the other scopes are ticked from the lanes it already read");
   // #3566 slice 6: they are read through the one wave that also reads the tracker lanes, so "once" is that call, and `readOtherScopes` is not asked beside it.
   assert.equal((main.match(/readLanesAfterOutageCheck\(/g) ?? []).length, 1, "which are read exactly once");
   assert.doesNotMatch(main, /readOtherScopes\(/, "and not a second time on their own");

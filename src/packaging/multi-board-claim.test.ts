@@ -298,7 +298,7 @@ test("#2617 done-when 2: `pr-open` reads the Region of a qualified row from THAT
     rowBody: (number: number, repo?: string) => { asked.push([number, repo]); return rows[number]; },
     rootFiles: NO_ROOT_FILES,
     code: BOTH,
-    owner: () => null,
+    owner: () => "ceo",
     out: (line: string) => { out.push(line); },
     err: () => {},
   });

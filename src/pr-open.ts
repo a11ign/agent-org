@@ -869,7 +869,29 @@ export function main(argv: string[] = process.argv.slice(2),
   if (unverified !== null) return unverified;
   // #2307: only for a body that will be SENT, and never a reason not to send it.
   printMutationReport(body, runMutation, out);
-  return sendToGitHub(mode, rest, { run, git, err, labelExists, owner: ownerOfPr({ owner, rowLabels }, { mode, body, rest, err }) });
+  const stamped = ownerOfPr({ owner, rowLabels }, { mode, body, rest, err })();
+  const unstamped = unstampableRefusal(mode, stamped);
+  if (unstamped !== null) {
+    err(`${unstamped}\n`);
+    return EXIT_NOTHING_SENT;
+  }
+  return sendToGitHub(mode, rest, { run, git, err, labelExists, owner: () => stamped });
+}
+
+/**
+ * #4386: A CREATE THAT CANNOT NAME ITS OWNER IS REFUSED, BEFORE IT SENDS. `labelAfterCreate` skipped silently for a tree nobody stamped and
+ * a row that named no session, and for an owner `isLiveSession` does not know -- and an unlabelled pull request of another repository has no
+ * owner the gate can name, so every order about it (agent-org#436: a red check, then a review verdict) went to `ceo` to be routed by hand.
+ * The two ways to be stamped: the tree's `.a11y-owner`, or a `Closes <owner/repo>#<n>` line naming a row that carries `session:<name>`.
+ * An edit never creates a label, so it is not asked. `null` when the owner is a live session.
+ * @param {string} mode @param {string | null} owner
+ */
+export function unstampableRefusal(mode: string, owner: string | null): string | null {
+  if (mode !== "create" || (owner !== null && isLiveSession(owner))) return null;
+  const why = owner === null ? "no session could be named as its owner" : `\`${owner}\` is not a live session`;
+  return `pr-open: REFUSED -- ${why}, so the pull request would carry no \`${SESSION_PREFIX}*\` label and every order about it would go to \`ceo\` `
+    + "(#4386). Either stamp this worktree (`.a11y-owner`, which `row-claim claim` writes) or put `Closes <owner/repo>#<n>` in the body, "
+    + `naming a row that carries \`${SESSION_PREFIX}<you>\`. Nothing was sent to GitHub.`;
 }
 
 /**

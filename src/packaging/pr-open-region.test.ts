@@ -50,13 +50,14 @@ function drive(argv: string[], { rows, changed, rowBody, origin }: { rows?: Reco
   const out: string[] = [];
   const err: string[] = [];
   const code = main(argv, {
-    run: (args: string[]) => { sent.push(args); },
+    // The stamped owner's `--add-label` follow-up (#4386) is not what this suite is about: it asks what the region step let through.
+    run: (args: string[]) => { if (!args.includes("--add-label")) sent.push(args); },
     git: gitFor(changed, origin),
     prHead: () => ({ ref: "agent/x", oid: "deadbeef" }),
     runAcceptance: () => { acceptance += 1; return 0; },
     rowBody: rowBody ?? ((n: number) => { if (rows?.[n] === undefined) throw new Error(`no row ${n}`); return rows[n]; }),
     rootFiles: NO_ROOT_FILES,
-    owner: () => null,
+    owner: () => "ceo",
     // The login is named, never read from `gh api user`: a project whose lanes file marks a lane `reviewOnly` (#3254) asks it
     // for any diff touching that lane, and this suite must not answer by whichever account the machine happens to hold.
     login: () => "a11ign-ai-workers",
