@@ -1,29 +1,36 @@
 // no-token: gh -- `gh` is never reached: every call is handed a fake `run` over an in-memory pair of repositories.
 /**
- * agent-org#575: A `claim` AND A `decline` IN A DECLARED KEYED TRACKER WRITE THAT TRACKER, never the first tracker's same-numbered issue.
+ * agent-org#575, a11ign/a11ign#4737: A `claim`, `dispatch`, `decline` AND `conflict` IN A DECLARED KEYED TRACKER WRITE THAT TRACKER, never the first
+ * tracker's same-numbered issue.
  *
  * Before this row a claim in another tracker was refused at `trackerClaimRefusal` for lack of a write path, and the one-line fix (return `null`)
  * would have been worse than the refusal: `claimOrDispatch` and `declineRow` were never told a tracker, so the claim would have gone on to label
  * the FIRST tracker's issue of that number. So the two halves are tested together, over two repositories that BOTH hold a row 575:
- *   - the refusal: the correctly named claim and decline are not refused; the same claim with the first tracker's `--worktree=../wt-575` (or
- *     `worker-575`) is, an undeclared key is refused by name, and `dispatch`/`conflict` still say they are not built;
- *   - the write: `claimRow` and `declineRow` given the tracker read, label, comment on and move the card of THE TRACKER'S issue and board, and the
- *     first tracker's issue of the same number is byte for byte what it was (the control that the claim is not merely writing everywhere);
+ *   - the refusal: the correctly named claim, dispatch, decline and conflict are not refused; the same claim with the first tracker's
+ *     `--worktree=../wt-575` (or `worker-575`) is, and an undeclared key is refused by name;
+ *   - the write: `claimRow`, `dispatchRow` and `declineRow` given the tracker read, label, comment on and move the card of THE TRACKER'S issue and
+ *     board, and the first tracker's issue of the same number is byte for byte what it was (the control that the claim is not merely writing everywhere);
  *   - the control: the same claim with NO tracker is the first tracker's, and asks its Status move with no tracker at all, as it always did;
- *   - the board move is the one `item-edit` on the tracker's board and no snapshot (`moveProjectStatus`'s own header says why);
- *   - the wiring the CLI adds on top (`--tracker=` to the deps, `<key>#<n>` in the printed line).
+ *   - the board move is the one `item-edit` on the tracker's board and no snapshot (`moveProjectStatus`'s own header says why); a tracker that
+ *     declares NO board moves nothing, says `no board declared for tracker <key>`, and never falls back to the first tracker's card;
+ *   - the worktree is made from the tracker's clone, and a claim that stops half-way is undone in the same call;
+ *   - the wiring the CLI adds on top (`--tracker=` to the deps, `<key>#<n>` in the printed line, the clone, the conflict log's key).
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 import { parseProjectDeclaration } from "./project-config.ts";
 import { REPO } from "./project-identity.ts";
 import { PROJECT_NUMBER, PROJECT_OWNER } from "./board-snapshot.ts";
 import { CLAIM_RECORD_MARKER } from "./claim-labels.ts";
 import {
-  claimLineFor, claimRecordComment, claimRow, declineRow, moveProjectStatus, trackerClaimRefusal, type Tracker,
+  NO_BOARD_DECLARED, claimCloneFor, claimLineFor, claimRecordComment, claimRow, claimWithWorktree, declineRow, dispatchRow, latestCheckFor,
+  moveProjectStatus, recordCheck, recordConflict, trackerClaimRefusal, type Tracker,
 } from "./row-claim.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -52,9 +59,11 @@ test("POSITIVE: a claim and a decline in a declared keyed tracker, named as ADR 
   assert.equal(trackerClaimRefusal({ mode: "claim", key: "agent-org", number: ROW, session: SESSION, worktree: "/home/agent/repos/wt-agent-org-575/" }, TWO_TRACKERS), null,
     "a trailing slash and an absolute path name the same directory");
   assert.equal(trackerClaimRefusal({ mode: "decline", key: "agent-org", number: ROW, session: SESSION }, TWO_TRACKERS), null);
+  assert.equal(trackerClaimRefusal({ mode: "dispatch", key: "agent-org", number: ROW, session: SESSION }, TWO_TRACKERS), null, "a dispatch is the same write without `started`");
+  assert.equal(trackerClaimRefusal({ mode: "conflict", key: "agent-org", number: ROW }, TWO_TRACKERS), null, "a conflict is logged under the tracker's key");
 });
 
-test("NEGATIVE CONTROLS: the first tracker's names, an undeclared key and the modes with no keyed write are still refused, each for its own reason", () => {
+test("NEGATIVE CONTROLS: the first tracker's names and an undeclared key are still refused, each for its own reason, in every mode", () => {
   const worktree = trackerClaimRefusal({ mode: "claim", key: "agent-org", number: ROW, session: SESSION, worktree: "../wt-575" }, TWO_TRACKERS) ?? "";
   assert.match(worktree, /names its worktree `wt-agent-org-575`, not `\.\.\/wt-575`/, "`--worktree=../wt-575` is the first tracker's row 575's directory");
   const session = trackerClaimRefusal({ mode: "claim", key: "agent-org", number: ROW, session: "worker-575", worktree: "../wt-agent-org-575" }, TWO_TRACKERS) ?? "";
@@ -62,10 +71,12 @@ test("NEGATIVE CONTROLS: the first tracker's names, an undeclared key and the mo
   const undeclared = trackerClaimRefusal({ mode: "claim", key: "nope", number: ROW, session: "worker-nope-575", worktree: "../wt-nope-575" }, TWO_TRACKERS) ?? "";
   assert.match(undeclared, /no tracker with key `nope`/, "refused by name, listing what IS declared");
   assert.match(trackerClaimRefusal({ mode: "decline", key: "nope", number: ROW, session: "worker-nope-575" }, TWO_TRACKERS) ?? "", /no tracker with key `nope`/);
-  for (const mode of ["dispatch", "conflict"] as const) {
-    const edge = trackerClaimRefusal({ mode, key: "agent-org", number: ROW, session: SESSION }, TWO_TRACKERS) ?? "";
-    assert.match(edge, new RegExp(`\`${mode}\` in tracker \`agent-org\` is not built for a second tracker yet.*Nothing was written\\.`), mode);
+  for (const mode of ["dispatch", "claim", "decline", "conflict"] as const) {
+    assert.match(trackerClaimRefusal({ mode, key: "agent-org", number: ROW, session: "worker-575" }, TWO_TRACKERS) ?? "", /`worker-575` is the name of the session that holds the FIRST/, mode);
+    assert.match(trackerClaimRefusal({ mode, key: "nope", number: ROW }, TWO_TRACKERS) ?? "", /no tracker with key `nope`/, mode);
   }
+  assert.doesNotMatch(trackerClaimRefusal({ mode: "claim", key: "agent-org", number: ROW, session: "worker-575" }, TWO_TRACKERS) ?? "", /not built for a second tracker/,
+    "and the stale \"not built yet\" reason is gone, never given for a name that is right");
 });
 
 test("the first tracker's claim is never refused for its names -- every claim written before this row is the same claim", () => {
@@ -288,4 +299,167 @@ test("THE WIRING: `--tracker=` reaches the write through `claimOrDispatch` and `
   assert.match(between("function runDispatchOrClaim(", "\n/**"), /tracker: trackerOfKey\(key\)/);
   assert.match(between("function runDecline(", "\n/**"), /declineRow\(issueNumber, mySession, \{[^}]*\.\.\.\(tracker \? \{ tracker \} : \{\}\)/);
   assert.match(between("function trackerOfKey(", "\n}\n"), /if \(key === ""\) return undefined/, "the empty key is no tracker, so a first-tracker call is unchanged");
+  // a11ign/a11ign#4737: the clone reaches the tree-making claim, and the conflict log is told the key.
+  assert.match(between("function runDispatchOrClaim(", "\n/**"), /claimCloneFor\(key, \{ branch, worktree \}\)[\s\S]*clone: cloned\.clone/);
+  assert.match(claim, /claimWithWorktree\(issueNumber, mySession, \{[^}]*claimDeps[^}]*\.\.\.\(clone === undefined \? \{\} : \{ clone \}\)/);
+  assert.match(between("function runDeclineOrConflict(", "\n/**"), /runConflict\(issueNumber, rest, trackerKeyOf\(rest\)\)/);
+});
+
+// --- 6. a11ign/a11ign#4737: dispatch, a tracker with no board, the conflict log, the clone, and the rollback ------------------------
+
+test("`dispatch` in a keyed tracker writes `in-progress` and `session:` on THAT tracker's issue and not `started`; the first tracker's issue is untouched", () => {
+  const gh = fakeGithub();
+  const result = dispatchRow(ROW, SESSION, { run: gh.run, tracker: TRACKER });
+  assert.equal(result.claimed, true);
+  assert.deepEqual([...gh.second().labels].sort(), ["in-progress", `session:${SESSION}`, "was-ready"].sort(), "dispatched, not started");
+  assert.deepEqual(gh.first().labels, ["ready"]);
+  assert.deepEqual(issueWrites(gh.writes).filter((call) => call.repo !== SECOND_REPO), [], "no write named the first tracker's repository");
+});
+
+test("a tracker that declares NO board is claimed with its labels alone: no `gh project` call, the note says so, and the FIRST tracker's card is never moved", () => {
+  const gh = fakeGithub();
+  const noBoard = { key: "agent-org", repo: SECOND_REPO } as Tracker;
+  const said: string[] = [];
+  const result = claimRow(ROW, SESSION, { run: gh.run, tracker: noBoard, ...CLAIM_DEPS,
+    moveStatus: (n: number, status: string, opts?: object) => moveProjectStatus(n, status, { ...(opts ?? {}), log: (line) => said.push(line) }) });
+  assert.equal(result.claimed, true, "the labels are the claim, and they landed");
+  assert.equal((result as { statusMoved: boolean }).statusMoved, false);
+  assert.equal((result as { notOnBoard: boolean }).notOnBoard, true, "a known, permitted gap: the CLI exits clean on it");
+  assert.match((result as { statusReason: string }).statusReason, new RegExp(`^${NO_BOARD_DECLARED} \`agent-org\``));
+  assert.ok(gh.second().labels.includes("in-progress") && gh.second().labels.includes(`session:${SESSION}`));
+  assert.deepEqual(gh.calls.filter((call) => call.args[0] === "project" || call.args.includes("graphql")), [], "no board call of any kind, so no board of the first tracker's either");
+  assert.deepEqual(gh.first().labels, ["ready"]);
+  assert.ok(said.some((line) => new RegExp(NO_BOARD_DECLARED).test(line)), "and it is said aloud, not only returned");
+});
+
+test("the conflict log keeps a keyed row's `check` and `conflict` under the tracker's key, so row 575 of two trackers is two rows -- and the first tracker's line is the line it was", () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "row-claim-log-"));
+  const log = resolve(dir, "log.jsonl");
+  try {
+    recordCheck(log, { issueNumber: ROW, claimed: false, started: false, sessions: [], reachability: null });
+    recordCheck(log, { issueNumber: ROW, tracker: "agent-org", claimed: true, started: true, sessions: [SESSION], reachability: null });
+    assert.deepEqual(latestCheckFor(log, ROW, "agent-org")?.sessions, [SESSION], "the keyed row's own verdict");
+    assert.deepEqual(latestCheckFor(log, ROW)?.sessions, [], "CONTROL: the first tracker's row of that number reads the first tracker's verdict");
+    assert.equal(latestCheckFor(log, ROW, "other"), null, "a tracker nothing was checked in has none");
+    recordConflict(log, { issueNumber: ROW, tracker: "agent-org", recordedVerdict: latestCheckFor(log, ROW, "agent-org"), found: "x" });
+    recordConflict(log, { issueNumber: ROW, recordedVerdict: null, found: "y" });
+    const lines = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(lines[2].tracker, "agent-org");
+    assert.equal("tracker" in lines[3], false, "the first tracker's conflict line carries no tracker key, as before");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- the clone: a keyed claim's worktree is made from THAT repository's clone, whatever directory the process runs in --------------
+
+const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", env: sandboxGitEnv(), stdio: ["ignore", "pipe", "pipe"] });
+
+/** Two repositories, each with its own bare origin holding `main`: the keyed one (`agent-org`) and the first tracker's checkout the process runs in. */
+function twoCheckouts() {
+  const dir = mkdtempSync(resolve(tmpdir(), "row-claim-clone-"));
+  const make = (name: string, extraBranch?: string) => {
+    const origin = resolve(dir, `${name}-origin.git`);
+    const checkout = resolve(dir, name);
+    git(dir, "init", "--quiet", "--bare", "--initial-branch=main", origin);
+    git(dir, "clone", "--quiet", origin, checkout);
+    for (const [key, value] of [["user.name", "probe"], ["user.email", "probe@example.invalid"], ["commit.gpgsign", "false"], ["gc.auto", "0"]]) git(checkout, "config", key, value);
+    writeFileSync(resolve(checkout, "f.txt"), `${name}\n`);
+    git(checkout, "add", "f.txt");
+    git(checkout, "commit", "--quiet", "-m", name);
+    git(checkout, "push", "--quiet", "origin", "main");
+    if (extraBranch) git(checkout, "push", "--quiet", "origin", `main:refs/heads/${extraBranch}`);
+    return checkout;
+  };
+  // The FIRST tracker's origin already holds a branch ending `-575` -- another repository's row 575, which #2014's rule must not read as this row's.
+  return { dir, keyed: make("agent-org"), primary: make("a11y-witness", "agent/someone-elses-575") };
+}
+
+test("a keyed claim's worktree is made FROM THE TRACKER'S CLONE, not from the directory the process runs in, and #2014's row-branch rule asks THAT origin", () => {
+  const fx = twoCheckouts();
+  try {
+    const inPrimary = (cmd: string, args: string[]) => {
+      if (cmd !== "git") throw new Error(`no ${cmd} here`);
+      return execFileSync("git", args, { cwd: fx.primary, encoding: "utf8", env: sandboxGitEnv(), stdio: ["ignore", "pipe", "pipe"] });
+    };
+    const claim = ((_n: number, _s: string, deps: { worktree?: string }) => ({ claimed: true, statusMoved: true, seen: deps.worktree })) as never;
+    const stamp = () => {};
+
+    // CONTROL: with no clone the process's cwd decides, and the first tracker's origin refuses row 575 for its own, unrelated branch.
+    const control = claimWithWorktree(ROW, SESSION, { branch: "agent/x-agent-org-575", worktree: "../wt-agent-org-575", run: inPrimary, claim, stamp,
+      exists: () => false });
+    assert.equal(control.claimed, false);
+    assert.match((control as { reason: string }).reason, /origin already holds a branch for row #?575|someone-elses-575/, "the control is refused by the OTHER repository's branch");
+
+    const tree = resolve(fx.dir, "wt-agent-org-575");
+    const result = claimWithWorktree(ROW, SESSION, { branch: "agent/x-agent-org-575", worktree: "../wt-agent-org-575", run: inPrimary, claim, stamp,
+      claimDeps: { tracker: TRACKER }, clone: fx.keyed });
+    assert.equal(result.claimed, true, `the keyed claim is not refused by the first tracker's branch: ${JSON.stringify(result)}`);
+    assert.equal((result as { seen?: string }).seen, tree, "the claim is handed (and records) the absolute path the tree was made at");
+    assert.match(git(fx.keyed, "worktree", "list", "--porcelain"), new RegExp(`worktree ${tree}\\n`), "the tree is a worktree of the KEYED clone");
+    assert.match(git(fx.keyed, "branch", "--list", "agent/x-agent-org-575"), /agent\/x-agent-org-575/);
+    assert.doesNotMatch(git(fx.primary, "worktree", "list", "--porcelain"), /wt-agent-org-575/, "and not of the checkout the process ran in");
+    assert.equal(git(fx.primary, "branch", "--list", "agent/x-agent-org-575").trim(), "", "whose branch list never saw the name");
+  } finally {
+    rmSync(fx.dir, { recursive: true, force: true });
+  }
+});
+
+test("`claimCloneFor`: a keyed claim that makes a tree needs `clones.<key>` and is REFUSED BEFORE ANY WRITE without it; the first tracker and a tree-less claim need none", () => {
+  const cloneOf = (key: string) => (key === "agent-org" ? { clone: "/home/agent/repos/agent-org" } : { refusal: `/host.json declares no absolute \`clones.${key}\` path` });
+  assert.deepEqual(claimCloneFor("agent-org", { branch: "b", worktree: "../wt-agent-org-575" }, { cloneOf }), { clone: "/home/agent/repos/agent-org" });
+  const none = claimCloneFor("lab", { branch: "b", worktree: "../wt-lab-1" }, { cloneOf }) as { refusal: string };
+  assert.match(none.refusal, /clones\.lab/);
+  assert.match(none.refusal, /Nothing was written/);
+  assert.equal(claimCloneFor("", { branch: "b", worktree: "../wt-575" }, { cloneOf }), null, "the first tracker keeps the process's own checkout");
+  assert.equal(claimCloneFor("agent-org", {}, { cloneOf }), null, "a claim that creates no worktree has no clone to name");
+});
+
+// --- the rollback --------------------------------------------------------------------------------------------------------------
+
+test("a keyed claim that throws AFTER its labels landed is undone in the same call: the labels taken back, the tree and branch removed, and the error says so", () => {
+  const fx = twoCheckouts();
+  try {
+    const gh = fakeGithub();
+    const run = (cmd: string, args: string[]) => (cmd === "git" ? git(fx.keyed, ...args.filter((a, at) => !(a === "-C" || args[at - 1] === "-C"))) : gh.run(cmd, args));
+    // The claim writes its labels through the fake, then fails at the claim record -- the half-way the row names.
+    const claim = ((n: number, s: string, deps: object) => {
+      const out = claimRow(n, s, { ...deps, ...CLAIM_DEPS, run: (cmd: string, args: string[]) => {
+        if (cmd === "gh" && args[0] === "issue" && args[1] === "comment") throw new Error("HTTP 502 posting the claim record");
+        return gh.run(cmd, args);
+      } } as never);
+      return out;
+    }) as never;
+    let thrown: Error | null = null;
+    try {
+      claimWithWorktree(ROW, SESSION, { branch: "agent/x-agent-org-575", worktree: "../wt-agent-org-575", run, claim, stamp: () => {},
+        claimDeps: { tracker: TRACKER }, clone: fx.keyed });
+    } catch (error) {
+      thrown = error as Error;
+    }
+    assert.ok(thrown, "the failure is still raised");
+    assert.match(thrown.message, /HTTP 502 posting the claim record/, "the original failure is kept");
+    assert.match(thrown.message, /UNDONE IN THE SAME CALL/);
+    assert.match(thrown.message, new RegExp(`labels in ${SECOND_REPO} were taken back`));
+    assert.match(thrown.message, /it had just created were removed/);
+    assert.deepEqual(gh.second().labels, ["ready"], "the tracker's row is `ready` again");
+    assert.deepEqual(gh.first().labels, ["ready"], "and the first tracker's was never touched");
+    assert.equal(git(fx.keyed, "branch", "--list", "agent/x-agent-org-575").trim(), "", "the branch is gone");
+    assert.doesNotMatch(git(fx.keyed, "worktree", "list", "--porcelain"), /wt-agent-org-575/, "and so is the tree");
+  } finally {
+    rmSync(fx.dir, { recursive: true, force: true });
+  }
+});
+
+test("CONTROL: the first tracker's claim that throws leaves what it made for `decline`, exactly as before -- the rollback is the keyed claim's alone", () => {
+  const fx = twoCheckouts();
+  try {
+    const run = (cmd: string, args: string[]) => git(fx.keyed, ...(cmd === "git" ? args : []));
+    const claim = (() => { throw Object.assign(new Error("boom"), { landed: ["labels"] }); }) as never;
+    assert.throws(() => claimWithWorktree(ROW, "worker-575", { branch: "agent/x-575", worktree: resolve(fx.dir, "wt-575"), run: run as never, claim, stamp: () => {} }),
+      (error: Error) => /boom/.test(error.message) && !/UNDONE/.test(error.message));
+    assert.match(git(fx.keyed, "worktree", "list", "--porcelain"), /wt-575/, "the tree is still there");
+  } finally {
+    rmSync(fx.dir, { recursive: true, force: true });
+  }
 });

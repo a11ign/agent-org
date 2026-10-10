@@ -60,7 +60,7 @@
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { existsSync, realpathSync, readFileSync, writeFileSync, renameSync } from "node:fs";
-import { basename, dirname } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 // RELATIVE, NOT the `@a11ign/screenreader-fleet/cli-flags` package specifier: that export map
 // points at `dist/`, so it needs both `node_modules` AND a completed build. This file is reachable
@@ -75,7 +75,7 @@ import { withBoardSnapshot, PROJECT_OWNER, PROJECT_NUMBER } from "./board-snapsh
 import { runnerReason, laneReason, drainReason, oneRowReason } from "./row-claim/runner-rule.ts";
 import { activeDrain, sparePathsFrom, ledgerPathFrom, isSpareRole, isPersistentRole, readSpareRegistry } from "./wake.ts";
 import { readWithFirstWaveTogether, runBatch } from "./work-gate.ts"; // #3566, slice 4: `wake.ts` above already loads it, and it never loads this file
-import { readJsonObject, writeJsonObject } from "./claim-stall.ts";
+import { readJsonObject, writeJsonObject, cloneOfKey } from "./claim-stall.ts";
 import { inBuildReason, lookupHeldRows, lookupOtherHeldIssues } from "./row-claim/own-pr-health-rule.ts";
 import { resolveBlockedByOverride, blockedByExceptionNote } from "./row-claim/blocked-by-rule.ts";
 import { blockedByEdgeReason, lookupBlockedByEdge } from "./row-claim/blocked-by-edge-rule.ts";
@@ -504,6 +504,9 @@ export function decideClaim(labelsBefore: string[], mySession: string): { procee
   return { proceed: false, reason: `issue is already claimed by ${by}` };
 }
 
+/** The words a claim in a tracker that declares no board says instead of a move, and `runDispatchOrClaim` reads them back to print the line. */
+export const NO_BOARD_DECLARED = "no board declared for tracker";
+
 /**
  * Moves an issue's Project Status field -- the VIEW -- to match the label that is the RECORD. #400: a
  * claim writing the label and leaving Status behind is what let 45 stale Status values regenerate at the
@@ -554,6 +557,13 @@ export function decideClaim(labelsBefore: string[], mySession: string): { procee
 export function moveProjectStatus(issueNumber: number, statusName: string,
   { run = defaultRun, log = (line) => process.stderr.write(`${line}\n`), snapshot = withBoardSnapshot, tracker }: { run?: typeof defaultRun; log?: (line: string) => void; snapshot?: typeof withBoardSnapshot; tracker?: Tracker; } = {}): { moved: true; } | { moved: false; reason: string; notOnBoard: boolean; } {
   const url = `https://github.com/${tracker?.repo ?? REPO}/issues/${issueNumber}`;
+  // a11ign/a11ign#4737: A TRACKER THAT DECLARES NO BOARD HAS NO CARD TO MOVE, and the FIRST tracker's board is never the fallback -- a card moved
+  // there would be the same-numbered row's, the confusion `trackerClaimRefusal` exists to prevent. The labels stand and the claim says so.
+  if (tracker !== undefined && tracker.board === undefined) {
+    const reason = `${NO_BOARD_DECLARED} \`${tracker.key}\` -- the labels are the whole of the claim and there is no card to move`;
+    log(`row-claim: ${reason}`);
+    return { moved: false, reason, notOnBoard: true };
+  }
   const board = tracker?.board ?? { owner: PROJECT_OWNER, number: PROJECT_NUMBER };
   const edit = () => run("gh", ["project", "item-edit", String(board.number), "--owner", board.owner,
     "--url", url, "--field", "Status", "--value", statusName]);
@@ -660,7 +670,7 @@ export function sessionEligibilityReason(issueNumber: number, mySession: string,
   // Open-check), and its own contract -- "is THIS row startable at all right now" -- is not truthfully
   // answered without it.
   const blockedRow = lookupBlockedByEdge(issueNumber, { run: ghRun, repo });
-  const blocked = blockedByEdgeReason(blockedRow);
+  const blocked = blockedByEdgeReason(blockedRow, repo === REPO ? {} : { repo });
   if (blocked) return blocked;
 
   const myFiles = lookupMyRegionFiles(issueNumber, { run: ghRun, repo });
@@ -1002,7 +1012,7 @@ function preWriteChecks({ issueNumber, mySession, before, drained, instance, ado
   // directly -- this one is what makes the row-owned property actually hold on every attempt, resumed or
   // not.
   const blockedRow = lookupBlockedByEdge(issueNumber, { run: ghRunForBody, repo });
-  const blockedReason = blockedByEdgeReason(blockedRow);
+  const blockedReason = blockedByEdgeReason(blockedRow, repo === REPO ? {} : { repo });
   if (blockedReason) return { refusal: { claimed: false, reason: blockedReason }, blockedByNote: null };
 
   // B2 (#476) + B4 (#462): SESSION ELIGIBILITY, not row ownership -- `decideClaim` above already answered
@@ -1247,13 +1257,18 @@ export function claimRow(issueNumber: number, mySession: string, deps: {
 // A NAME IS `<role>-<key>-<n>` FOR A NON-EMPTY KEY AND `<role>-<n>` FOR THE EMPTY ONE, which is what keeps `worker-7` and
 // `worker-agent-org-7` two sessions and `../wt-7` and `../wt-agent-org-7` two directories. `claimNames` is that grammar in ONE place.
 //
-// WHAT A CLAIM IN ANOTHER TRACKER CAN DO TODAY: `check` reads it in full, and (agent-org#575) `claim` and `decline` WRITE it -- in THAT
-// tracker's repository, never the first's same-numbered issue: the row is read there, its labels made and set there, its claim and
-// release comments posted there, and its card moved on THAT tracker's board. `dispatch` and `conflict` there are still REFUSED BEFORE ANY
-// WRITE, and say why (`conflict` keeps its log by bare row number, which two trackers share). The board move is the one `item-edit` and no
-// snapshot -- see `moveProjectStatus`. A refusal that names its owner is the honest edge of this row, not a claim that the write is handled.
+// WHAT A CLAIM IN ANOTHER TRACKER CAN DO (agent-org#575, a11ign/a11ign#4737): `check` reads it in full, and `claim`, `dispatch`, `decline` and
+// `conflict` WRITE it -- in THAT tracker's repository, never the first's same-numbered issue: the row is read there, its labels made and set
+// there, its claim and release comments posted there, and its card moved on THAT tracker's board (or, for a tracker that declares none, left
+// alone and SAID to be: `no board declared for tracker <key>`). A claim that creates its worktree creates it from THAT tracker's clone and
+// takes the worktree and the labels back, in the same call, when it stops half-way. The board move is the one `item-edit` and no snapshot --
+// see `moveProjectStatus`. `conflict` logs under the tracker's key, so two trackers' row 7 are two rows in the log.
 
-export type Tracker = { key: string, repo: string, board: { owner: string, number: number } };
+/**
+ * `board` is READ AS POSSIBLY ABSENT here although `project-config.ts` requires it of a declaration: a tracker with no board is a tracker whose card
+ * is nobody's to move, and `moveProjectStatus` says so rather than moving the FIRST tracker's card in its place (a11ign/a11ign#4737, item 2).
+ */
+export type Tracker = { key: string, repo: string, board?: { owner: string, number: number } };
 
 /**
  * The tracker a key names, or a refusal that lists what IS declared -- never a fallback to the first, which is how a row number in the
@@ -1282,15 +1297,14 @@ export function claimNames({ key, number }: { key: string; number: number; }): {
 }
 
 /**
- * Pure: is a claim in tracker `key` named the way decision 2 says, and may it write at all? `null` for the empty key -- every claim
- * written before this row -- and otherwise the FIRST thing wrong, in the order a person fixes them: an undeclared key, a worktree
- * whose directory name would be shared with the same-numbered row of another tracker, a session named as though it held that row in
- * the first tracker, and last the edge above.
+ * Pure: is a claim in tracker `key` named the way decision 2 says? `null` for the empty key -- every claim written before this row --
+ * and otherwise the FIRST thing wrong, in the order a person fixes them: an undeclared key, a worktree whose directory name would be
+ * shared with the same-numbered row of another tracker, or a session named as though it held that row in the first tracker.
  *
- * agent-org#575: `claim` and `decline` in a declared tracker are NOT refused once they are named the way decision 2 says -- they are the writes the
- * tracker's own worker makes, and the write path takes the tracker (`claimRow`/`declineRow`'s `tracker`). `dispatch` and `conflict` are, with a
- * reason that names what each lacks. WITHOUT THE THREADING A `null` HERE WOULD CLAIM THE FIRST TRACKER'S SAME-NUMBERED ISSUE, which is why the
- * two are one change.
+ * agent-org#575, a11ign/a11ign#4737: NO MODE IS REFUSED FOR BEING IN A SECOND TRACKER any more -- `claim`, `dispatch` and `decline` write the
+ * tracker's own repository and board (`claimRow`/`dispatchRow`/`declineRow`'s `tracker`), and `conflict` logs under the tracker's key.
+ * WITHOUT THAT THREADING A `null` HERE WOULD CLAIM THE FIRST TRACKER'S SAME-NUMBERED ISSUE, which is why the refusal and the write path are one
+ * change. `mode` stays in the argument: the callers name it, and a mode that needs its own rule has the place to say so.
  *
  * ONLY THE ONE COLLIDING SESSION SHAPE IS REFUSED (`worker-<n>` for a row that is not the first tracker's): a standing seat is named by
  * its seat (`worker-5`) and claims whatever row it is handed, so the rule is that the row's number is never the only thing telling two
@@ -1299,7 +1313,7 @@ export function claimNames({ key, number }: { key: string; number: number; }): {
  * @param {{ tracker: readonly Tracker[] }} [declaration]
  * @returns {string | null}
  */
-export function trackerClaimRefusal({ mode, key, number, session, worktree }: { mode: "dispatch" | "claim" | "decline" | "conflict"; key: string; number: number; session?: string; worktree?: string; }, declaration: { tracker: readonly Tracker[]; } = homeProjectDeclaration()): string | null {
+export function trackerClaimRefusal({ key, number, session, worktree }: { mode: "dispatch" | "claim" | "decline" | "conflict"; key: string; number: number; session?: string; worktree?: string; }, declaration: { tracker: readonly Tracker[]; } = homeProjectDeclaration()): string | null {
   if (key === "") return null;
   const found = trackerFor(key, declaration);
   if (!found.ok) return found.reason;
@@ -1312,11 +1326,9 @@ export function trackerClaimRefusal({ mode, key, number, session, worktree }: { 
     return `\`${session}\` is the name of the session that holds the FIRST tracker's row ${number}; a worker on tracker \`${key}\`'s row ${number} is `
       + `\`${names.session}\` (ADR 0040, decision 2), or its \`${SESSION_PREFIX}\` label would name two rows`;
   }
-  // agent-org#575: `claim` and `decline` are the two a keyed tracker's worker makes, and they write THAT tracker's repository and board.
-  if (mode === "claim" || mode === "decline") return null;
-  return `\`${mode}\` in tracker \`${key}\` is not built for a second tracker yet: only \`claim\` and \`decline\` are (agent-org#575). `
-    + `${mode === "dispatch" ? "A dispatch would mark the row in the first tracker's repository" : "A conflict is logged by bare row number, which two trackers share"}. `
-    + `\`check --tracker=${key}\` reads the row in full. Nothing was written.`;
+  // agent-org#575, a11ign/a11ign#4737: ALL FOUR WRITES of a keyed tracker's worker are built -- `claim`, `dispatch` and `decline` write THAT
+  // tracker's repository and board (`tracker` is threaded through them), and `conflict` logs under the tracker's key.
+  return null;
 }
 
 // --- #1432: `claim` OWNS THE WORKTREE --------------------------------------------------------------------------------
@@ -1781,35 +1793,85 @@ function undoCreatedWorktree({ branch, worktree }: { branch: string; worktree: s
  * branch exists, or (#2014) if origin already holds a branch for THIS ROW; fetch; `git worktree add -b <b> <p>
  * origin/main`; stamp it; claim. A claim that is refused or loses
  * its race removes what this created. A failure after the worktree landed carries it in #1399's landed list.
+ *
+ * a11ign/a11ign#4737: `clone` is the checkout of the repository a ROW OF ANOTHER TRACKER's work is in (`host.json`'s `clones.<key>`), and given it every
+ * `git` call of this claim -- the target's checks, the fetch, the `worktree add`, the removal -- runs IN it, and a relative `--worktree` is the path
+ * from it. Without it the process's cwd decided WHICH REPOSITORY's `origin/main` the tree was made from, and a claim run from the first tracker's
+ * checkout made a keyed row a tree of the wrong repository. Absent, nothing changes. And for a claim given a `tracker`, a claim that THROWS after the
+ * tree was made is undone in the same call -- the row's labels taken back where any landed, the tree and branch removed -- and the error says what was
+ * and was not undone; the first tracker's claim leaves them for `decline`, as it always did.
  * @param {number} issueNumber
  * @param {string} mySession
  * @param {{ branch: string, worktree: string, adopt?: string, run?: typeof defaultRun, exists?: (path: string) => boolean,
  *   owner?: (worktree: string) => string | null, stamp?: (worktree: string, session: string) => void,
- *   claim?: typeof claimRow, claimDeps?: Parameters<typeof claimRow>[2] }} args
+ *   claim?: typeof claimRow, claimDeps?: Parameters<typeof claimRow>[2], clone?: string, release?: typeof declineRow }} args
  *   `adopt` (#2470) claims the EXISTING tree of the session it names, in place -- see {@link adoptionReason}
  * @returns {ReturnType<typeof claimRow>}
  */
-export function claimWithWorktree(issueNumber: number, mySession: string, { branch, worktree, adopt, run = defaultRun, exists = existsSync,
-  owner = worktreeOwner, stamp = stampWorktree, claim = claimRow, claimDeps = {} }: {
+export function claimWithWorktree(issueNumber: number, mySession: string, { branch, worktree, adopt, run: ranIn = defaultRun, exists = existsSync,
+  owner = worktreeOwner, stamp = stampWorktree, claim = claimRow, claimDeps = {}, clone, release = declineRow }: {
         branch: string; worktree: string; adopt?: string; run?: typeof defaultRun; exists?: (path: string) => boolean;
         owner?: (worktree: string) => string | null; stamp?: (worktree: string, session: string) => void;
-        claim?: typeof claimRow; claimDeps?: Parameters<typeof claimRow>[2];
+        claim?: typeof claimRow; claimDeps?: Parameters<typeof claimRow>[2]; clone?: string; release?: typeof declineRow;
     }): ReturnType<typeof claimRow> {
-  const refusal = worktreeTargetReason({ branch, worktree, issueNumber, adopt, mySession }, { run, exists, owner });
+  // The keyed claim's git calls name their checkout (`-C`), as `git-reads-name-their-checkout.test.ts` asks of every read; `gh` is untouched.
+  const run: typeof defaultRun = clone === undefined ? ranIn : (cmd, args) => ranIn(cmd, cmd === "git" ? ["-C", clone, ...args] : args);
+  const tree = clone === undefined ? worktree : resolve(clone, worktree);
+  const refusal = worktreeTargetReason({ branch, worktree: tree, issueNumber, adopt, mySession }, { run, exists, owner });
   if (refusal) return { claimed: false, reason: refusal };
-  if (adopt !== undefined) return adoptWorktree(issueNumber, mySession, { branch, worktree, adopt, run, stamp, claim, claimDeps });
+  if (adopt !== undefined) return adoptWorktree(issueNumber, mySession, { branch, worktree: tree, adopt, run: ranIn, stamp, claim, claimDeps });
   const landed: string[] = [];
   return withLandedWrites(issueNumber, landed, () => {
     run("git", ["fetch", "--quiet", "origin"]);
     const replaced = replacedMergedTip(branch, run);
-    run("git", ["worktree", "add", replaced ? "-B" : "-b", branch, worktree, "origin/main"]);
-    landed.push(`created worktree ${worktree} on ${replaced ? "recreated" : "new"} branch ${branch} from origin/main`);
-    stamp(worktree, mySession);
-    landed.push(`stamped ${worktree} as ${mySession}'s`);
-    const result = claim(issueNumber, mySession, { run, ...claimDeps, branch, worktree });
+    run("git", ["worktree", "add", replaced ? "-B" : "-b", branch, tree, "origin/main"]);
+    landed.push(`created worktree ${tree} on ${replaced ? "recreated" : "new"} branch ${branch} from origin/main`);
+    stamp(tree, mySession);
+    landed.push(`stamped ${tree} as ${mySession}'s`);
+    let result: ReturnType<typeof claimRow>;
+    try {
+      // `ranIn`, not the `-C` wrapper: the claim speaks `gh` alone, and `run === defaultRun` is what makes its reads and creates the real batch.
+      result = claim(issueNumber, mySession, { run: ranIn, ...claimDeps, branch, worktree: tree });
+    } catch (cause) {
+      if (claimDeps.tracker === undefined) throw cause;
+      throw takenBack(cause, { issueNumber, mySession, branch, worktree: tree, run, tracker: claimDeps.tracker, release, landed });
+    }
     if (result.claimed) return replaced ? { ...result, replacedTip: replaced } : result;
-    return { claimed: false, reason: `${result.reason} -- and ${undoCreatedWorktree({ branch, worktree }, run)}` };
+    return { claimed: false, reason: `${result.reason} -- and ${undoCreatedWorktree({ branch, worktree: tree }, run)}` };
   });
+}
+
+/**
+ * a11ign/a11ign#4737: THE KEYED CLAIM THAT STOPPED HALF-WAY, UNDONE IN THE SAME CALL. A claim that threw after its tree was made left the tree, the
+ * branch and -- when a label landed -- a row that said it was held; the spawner's `releaseClaim` was the only thing that would take them back, and it
+ * runs only from the spawner. Here the labels are taken back by the tool's own release (`declineRow`, keeping the tree, which this call is about to
+ * remove with the remover that does not ask the row's claim), and the error that comes out says which of the two happened. A step that cannot be
+ * undone is SAID, never dropped: the caller reads the row before it retries.
+ * @param {unknown} cause
+ * @param {{ issueNumber: number, mySession: string, branch: string, worktree: string, run: typeof defaultRun, tracker: Tracker,
+ *   release: typeof declineRow, landed: string[] }} what
+ * @returns {Error}
+ */
+function takenBack(cause: unknown, { issueNumber, mySession, branch, worktree, run, tracker, release, landed }: {
+        issueNumber: number; mySession: string; branch: string; worktree: string; run: typeof defaultRun; tracker: Tracker;
+        release: typeof declineRow; landed: string[];
+    }): Error {
+  const written = landedWritesOf(cause);
+  landed.push(...(written ?? []));
+  const notes: string[] = [];
+  if (written !== null) {
+    try {
+      const released = release(issueNumber, mySession, { run, tracker, keepWorktree: true });
+      notes.push(released.declined
+        ? `the row's labels in ${tracker.repo} were taken back (released as ${mySession})`
+        : `the row's labels in ${tracker.repo} could NOT be taken back: ${released.reason}`);
+    } catch (releaseCause) {
+      notes.push(`the row's labels in ${tracker.repo} could NOT be taken back: ${(releaseCause as Error).message}`);
+    }
+  }
+  notes.push(undoCreatedWorktree({ branch, worktree }, run));
+  landed.push(`UNDONE in the same call: ${notes.join("; ")}`);
+  return new Error(`${(cause as Error).message} -- UNDONE IN THE SAME CALL: ${notes.join("; ")}`, { cause });
 }
 
 /**
@@ -2224,10 +2286,13 @@ export function recordCheck(logPath: string, entry: {
  * -- `null` when nobody ever ran `check` on this issue first, which is itself worth keeping rather than
  * inventing a verdict that was never given.
  *
+ * a11ign/a11ign#4737: `tracker` is the key of the tracker the row is in, present ONLY for a non-empty key, as `recordCheck`'s is -- so a first-tracker
+ * entry is the line it always was, and a conflict found on another tracker's row 7 cannot be counted against the first tracker's `check 7`.
+ *
  * @param {string} logPath
- * @param {{ issueNumber: number, recordedVerdict: object | null, found: string }} entry
+ * @param {{ issueNumber: number, tracker?: string, recordedVerdict: object | null, found: string }} entry
  */
-export function recordConflict(logPath: string, entry: { issueNumber: number; recordedVerdict: object | null; found: string; }) {
+export function recordConflict(logPath: string, entry: { issueNumber: number; tracker?: string; recordedVerdict: object | null; found: string; }) {
   appendJsonl(logPath, { kind: "conflict", at: new Date().toISOString(), ...entry });
 }
 
@@ -2237,9 +2302,10 @@ export function recordConflict(logPath: string, entry: { issueNumber: number; re
  *
  * @param {string} logPath
  * @param {number} issueNumber
+ * @param {string} [key] the tracker the row is in; absent is the first's, whose entries carry no `tracker` (a11ign/a11ign#4737)
  * @returns {Record<string, any> | null}
  */
-export function latestCheckFor(logPath: string, issueNumber: number): Record<string, any> | null {
+export function latestCheckFor(logPath: string, issueNumber: number, key: string = ""): Record<string, any> | null {
   let text: string;
   try {
     text = readFileSync(logPath, "utf8");
@@ -2248,8 +2314,8 @@ export function latestCheckFor(logPath: string, issueNumber: number): Record<str
     throw error;
   }
   const entries = text.split("\n").filter(Boolean).map((line) => JSON.parse(line))
-    // #2617: `conflict` is the first tracker's alone, so a `check` of ANOTHER tracker's row of this number is not its verdict.
-    .filter((entry) => entry.kind === "check" && entry.issueNumber === issueNumber && (entry.tracker ?? "") === "");
+    // #2617: a `check` of ANOTHER tracker's row of this number is not this row's verdict (a11ign/a11ign#4737: and `key` says which tracker this row is in).
+    .filter((entry) => entry.kind === "check" && entry.issueNumber === issueNumber && (entry.tracker ?? "") === key);
   return entries.length > 0 ? entries[entries.length - 1] : null;
 }
 
@@ -2272,7 +2338,7 @@ function recordCheckSafely(entry: Parameters<typeof recordCheck>[1]) {
 function usage() {
   return "Usage:\n"
     + "  node packages/agent-org/src/row-claim.ts --row=<issue-number>                       (status: three states)\n"
-    + "  node packages/agent-org/src/row-claim.ts check <issue-number> [--tracker=<key>]     (alias of --row=; #2617: --tracker= reads a row of that tracker of `.agent-org/project.json`, and claim/dispatch/decline/conflict there are refused before any write)\n"
+    + "  node packages/agent-org/src/row-claim.ts check <issue-number> [--tracker=<key>]     (alias of --row=; #2617: --tracker= reads a row of that tracker of `.agent-org/project.json`, and claim/dispatch/decline/conflict there write THAT tracker's repository and board, a claim's worktree is made from its clone (host.json `clones.<key>`), and an undeclared key, a `wt-<n>` worktree or a `worker-<n>` session is refused before any write; a11ign/a11ign#4737)\n"
     + "  node packages/agent-org/src/row-claim.ts dispatch <issue-number> --session=<name>   (mark taken at dispatch)\n"
     + "  node packages/agent-org/src/row-claim.ts claim <issue-number> --session=<name> [--branch=<name>] "
     + "[--worktree=<path>] [--adopt=<session>] [--blocked-by=#N]  (mark started; #2470: --adopt claims that session's EXISTING tree in place instead of creating one; #2748: omitting --adopt still does this when the target is your OWN --session's already-stamped tree and your predecessor instance is independently confirmed gone, never merely quiet; #1432: given both, CREATES the worktree at <path> on new branch <name> from origin/main, refusing first if either exists; #656/#665: records the branch and worktree "
@@ -2562,14 +2628,14 @@ export function claimLineFor(mode: "dispatch" | "claim", issueNumber: number, my
 /**
  * #1432: which write a `dispatch`/`claim` CLI makes -- a claim given a branch and worktree creates them first.
  * @param {"dispatch" | "claim"} mode @param {number} issueNumber @param {string} mySession
- * @param {{ branch?: string, worktree?: string, blockedBy?: string, adopt?: string, tracker?: Tracker }} flags `tracker` (agent-org#575) is the declared
- *   tracker the row is in when it is not the first; absent adds nothing to a call
+ * @param {{ branch?: string, worktree?: string, blockedBy?: string, adopt?: string, tracker?: Tracker, clone?: string }} flags `tracker` (agent-org#575) is the declared
+ *   tracker the row is in when it is not the first; absent adds nothing to a call. `clone` (a11ign/a11ign#4737) is that tracker's clone, which the worktree is made from
  */
-function claimOrDispatch(mode: "dispatch" | "claim", issueNumber: number, mySession: string, { branch, worktree, blockedBy, adopt, tracker }: { branch?: string; worktree?: string; blockedBy?: string; adopt?: string; tracker?: Tracker; }) {
+function claimOrDispatch(mode: "dispatch" | "claim", issueNumber: number, mySession: string, { branch, worktree, blockedBy, adopt, tracker, clone }: { branch?: string; worktree?: string; blockedBy?: string; adopt?: string; tracker?: Tracker; clone?: string; }) {
   if (mode === "dispatch") return dispatchRow(issueNumber, mySession, tracker ? { tracker } : {});
   const claimDeps = { blockedBy, drained: drainedNow(), instance: instanceNow(mySession, issueNumber), persistent: persistentNow(mySession),
     ...(tracker ? { tracker } : {}) };
-  if (branch && worktree) return claimWithWorktree(issueNumber, mySession, { branch, worktree, adopt, claimDeps });
+  if (branch && worktree) return claimWithWorktree(issueNumber, mySession, { branch, worktree, adopt, claimDeps, ...(clone === undefined ? {} : { clone }) });
   return claimRow(issueNumber, mySession, claimDeps);
 }
 
@@ -2681,7 +2747,7 @@ function runDeclineOrConflict(mode: "decline" | "conflict", issueNumber: number,
     return;
   }
   if (mode === "decline") runDecline(issueNumber, rest);
-  else runConflict(issueNumber, rest);
+  else runConflict(issueNumber, rest, trackerKeyOf(rest));
 }
 
 /**
@@ -2704,6 +2770,24 @@ function trackerOfKey(key: string): Tracker | undefined {
   if (key === "") return undefined;
   const found = trackerFor(key);
   return found.ok ? found.tracker : undefined;
+}
+
+/**
+ * a11ign/a11ign#4737: WHERE A KEYED CLAIM'S WORKTREE IS MADE FROM -- `host.json`'s `clones.<key>` (#2969; the spawner's `cloneOf` reads the same), or why there
+ * is none. `null` for the first tracker (the process's own checkout, as it always was) and for a claim that creates no tree. A key with no clone is a
+ * REFUSAL BEFORE ANY WRITE and never the primary's checkout, whose `origin` is the first tracker's repository.
+ * @param {string} key @param {{ branch?: string, worktree?: string }} flags
+ * @param {{ cloneOf?: typeof cloneOfKey }} [deps]
+ * @returns {{ clone: string } | { refusal: string } | null}
+ */
+export function claimCloneFor(key: string, { branch, worktree }: { branch?: string; worktree?: string; }, { cloneOf = cloneOfKey }: { cloneOf?: typeof cloneOfKey; } = {}): { clone: string; } | { refusal: string; } | null {
+  if (key === "" || !branch || !worktree) return null;
+  const found = cloneOf(key);
+  if ("refusal" in found) {
+    return { refusal: `a claim in tracker \`${key}\` creates its worktree from that repository's clone, and ${found.refusal}; `
+      + "the process's own checkout is not defaulted to, because its `origin` is another repository's. Nothing was written." };
+  }
+  return { clone: found.clone };
 }
 
 /**
@@ -2757,7 +2841,7 @@ function runDispatchOrClaim(mode: "dispatch" | "claim", issueNumber: number, res
     process.exitCode = 2;
     return;
   }
-  // #2617: A ROW OF ANOTHER TRACKER is named per decision 2 and refused before any write unless it is a `claim` or `decline` (agent-org#575).
+  // #2617: A ROW OF ANOTHER TRACKER is named per decision 2 and refused before any write when it is not (agent-org#575, a11ign/a11ign#4737).
   const trackerRefusal = trackerClaimRefusal({ mode, key: trackerKeyOf(rest), number: issueNumber, session: mySession, worktree });
   if (trackerRefusal) {
     process.stdout.write(`NOT CLAIMED: ${trackerRefusal}\n`);
@@ -2765,8 +2849,15 @@ function runDispatchOrClaim(mode: "dispatch" | "claim", issueNumber: number, res
     return;
   }
   const key = trackerKeyOf(rest);
+  const cloned = claimCloneFor(key, { branch, worktree });
+  if (cloned !== null && "refusal" in cloned) {
+    process.stdout.write(`NOT CLAIMED: ${cloned.refusal}\n`);
+    process.exitCode = 1;
+    return;
+  }
   try {
-    const result = claimOrDispatch(mode, issueNumber, mySession, { branch, worktree, blockedBy, adopt, tracker: trackerOfKey(key) });
+    const result = claimOrDispatch(mode, issueNumber, mySession, { branch, worktree, blockedBy, adopt, tracker: trackerOfKey(key),
+      ...(cloned === null ? {} : { clone: cloned.clone }) });
     if (result.claimed) {
       // #4387: only a CLAIM is a row the instance holds. A dispatch is an offer ("DISPATCHED (not started)") the worker may decline, and
       // recording it would leave an entry no release removes, refusing the worker's later legitimate claim.
@@ -2779,7 +2870,9 @@ function runDispatchOrClaim(mode: "dispatch" | "claim", issueNumber: number, res
       } else if (result.notOnBoard) {
         // #400's own acceptance case: a row with no Project item at all is a known, permitted gap, not a
         // failure -- the claim (the record) stands and this exits clean.
-        process.stdout.write(`${claimLine} (not on the Project board -- Status view not applicable)\n`);
+        // a11ign/a11ign#4737: a tracker that declares no board says so, in the claim's own line, rather than the generic note.
+        const note = result.statusReason.startsWith(NO_BOARD_DECLARED) ? result.statusReason : "not on the Project board -- Status view not applicable";
+        process.stdout.write(`${claimLine} (${note})\n`);
         process.exitCode = 0;
       } else {
         // ceo's ruling: a half-applied claim -- the label (the record) is written, but the board Status
@@ -2889,7 +2982,7 @@ function runDecline(issueNumber: number, rest: string[]) {
  * @param {number} issueNumber
  * @param {string[]} rest
  */
-function runConflict(issueNumber: number, rest: string[]) {
+function runConflict(issueNumber: number, rest: string[], key: string = "") {
   const foundFlag = rest.find((a) => a.startsWith("--found="));
   const found = foundFlag?.slice("--found=".length);
   if (!found) {
@@ -2898,13 +2991,13 @@ function runConflict(issueNumber: number, rest: string[]) {
     return;
   }
   try {
-    const recordedVerdict = latestCheckFor(checkLogPath(), issueNumber);
-    recordConflict(checkLogPath(), { issueNumber, recordedVerdict, found });
+    const recordedVerdict = latestCheckFor(checkLogPath(), issueNumber, key);
+    recordConflict(checkLogPath(), { issueNumber, ...(key === "" ? {} : { tracker: key }), recordedVerdict, found });
     const against = recordedVerdict
       ? `against the check recorded at ${recordedVerdict.at}`
       : "-- no prior `check` was ever recorded for this issue, so there is nothing to pair it against, "
         + "and that absence is itself recorded";
-    process.stdout.write(`RECORDED -- #${issueNumber} conflict logged ${against}\n`);
+    process.stdout.write(`RECORDED -- ${key}#${issueNumber} conflict logged ${against}\n`);
     process.exitCode = 0;
   } catch (error) {
     process.stderr.write(`COULD NOT RECORD: ${(error as Error).message}\n`);

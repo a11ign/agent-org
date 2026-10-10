@@ -18,7 +18,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { claimRow } from "./row-claim.ts";
+import { claimRow, claimWithWorktree, moveProjectStatus } from "./row-claim.ts";
 
 type Call = { args: string[], repo: string | undefined };
 type Answer = { stdout: string } | { failed: true, stdout: string, stderr: string, status: number | null, code?: string };
@@ -136,3 +136,135 @@ test("THE WIRING: the real batch is the default only when `run` is the real `gh`
   assert.match(apply, /ensureLabelsExist\([^)]*batch: labelBatch/, "`applyClaimLabels` hands the batch to the creates");
   assert.ok(apply.indexOf("ensureLabelsExist(") < apply.indexOf("fetchLabels(issueNumber"), "and they are still made BEFORE the fresh label read");
 });
+
+// --- a11ign/a11ign#4737: the same claim in a KEYED tracker, over two repositories that both hold row 481 --------------------------------------
+
+const PRIMARY_REPO = "a11ign/a11ign";
+const KEYED_REPO = "a11ign/agent-org";
+const KEYED = { key: "agent-org", repo: KEYED_REPO, board: { owner: "a11ign", number: 9 } };
+const KEYED_SESSION = "worker-agent-org-481";
+const KEYED_FOUR = ["in-progress", `session:${KEYED_SESSION}`, "started", "was-ready"];
+
+/** Two repositories, each holding a `ready` row 481; every call is recorded with the repository it names (`--repo`, or the `repos/<r>/issues` path of the PUT). */
+function twoRepos() {
+  const labels = new Map<string, string[]>([[`${PRIMARY_REPO}#481`, ["ready"]], [`${KEYED_REPO}#481`, ["ready"]]]);
+  const comments = new Map<string, string[]>();
+  const calls: Call[] = [];
+  const repoOf = (args: string[]) => {
+    const flag = args.indexOf("--repo");
+    if (flag >= 0) return args[flag + 1];
+    return /^repos\/([^/]+\/[^/]+)\//.exec(args[args.indexOf("PUT") + 1] ?? "")?.[1];
+  };
+  const answer = (args: string[]): string => {
+    const repo = repoOf(args);
+    calls.push({ args, repo });
+    if (args[0] === "issue" && args[1] === "view") {
+      if (fieldsOf(args) === "blockedBy") return JSON.stringify({ blockedBy: { nodes: [] } });
+      if (fieldsOf(args) === "body") return JSON.stringify({ body: BODY });
+      if (fieldsOf(args) === "comments") return JSON.stringify({ comments: (comments.get(`${repo}#481`) ?? []).map((body) => ({ body })) });
+      return JSON.stringify({ number: 481, title: "A row", labels: (labels.get(`${repo}#481`) ?? []).map((name) => ({ name })), state: "OPEN" });
+    }
+    if (isPut(args)) labels.set(`${repo}#481`, args.filter((a) => a.startsWith("labels[]=")).map((a) => a.slice("labels[]=".length)));
+    if (args[0] === "issue" && args[1] === "edit") {
+      let held = labels.get(`${repo}#481`) ?? [];
+      args.forEach((a, at) => {
+        if (a === "--remove-label") held = held.filter((l) => l !== args[at + 1]);
+        if (a === "--add-label" && !held.includes(args[at + 1])) held = [...held, args[at + 1]];
+      });
+      labels.set(`${repo}#481`, held);
+    }
+    if (args[0] === "issue" && args[1] === "comment") comments.set(`${repo}#481`, [...(comments.get(`${repo}#481`) ?? []), args[args.indexOf("--body") + 1]]);
+    if (isCreate(args) || isPut(args) || args[0] === "issue" || args[0] === "project") return "";
+    return "[]";
+  };
+  const run = (_cmd: string, args: string[]) => answer(args);
+  const batch = (batches: Call[][]) => (batched: Call[]): Answer[] => { batches.push(batched); return batched.map((c) => ({ stdout: answer(c.args) })); };
+  const writes = () => calls.filter((c) => isCreate(c.args) || isPut(c.args) || (c.args[0] === "issue" && c.args[1] !== "view" && c.args[1] !== "list") || c.args[0] === "project");
+  return { run, batch, calls, labels, writes };
+}
+
+const keyedClaim = (deps: Record<string, unknown>) =>
+  claimRow(481, KEYED_SESSION, { tracker: KEYED, drained: [], instance: { spare: false, rows: [] }, persistent: false, ...deps } as never);
+
+test("a11ign/a11ign#4737: a keyed claim writes `a11ign/agent-org` and NOT `a11ign/a11ign` -- the fake gh records the `--repo` of every write", () => {
+  const fake = twoRepos();
+  const result = keyedClaim({ run: fake.run });
+  assert.equal(result.claimed, true);
+  const writes = fake.writes();
+  assert.ok(writes.length >= 6, `the creates, the PUT, the claim record and the card move are all writes: ${writes.length}`);
+  for (const write of writes.filter((c) => c.args[0] !== "project")) assert.equal(write.repo, KEYED_REPO, `write ${write.args.slice(0, 3).join(" ")}`);
+  assert.deepEqual(writes.filter((c) => c.repo === PRIMARY_REPO), [], "no write named the first tracker's repository");
+  assert.deepEqual(writes.filter(isCreateCall).map(labelOf), KEYED_FOUR, "the four lifecycle labels are created in the keyed repository");
+  assert.deepEqual(fake.calls.filter((c) => c.repo === PRIMARY_REPO && c.args[0] !== "pr").map((c) => c.args), [],
+    "nor was its row read: the one call that names it is B4's read of the open pull requests of every declared CODE repository, which is not a row's");
+});
+
+test("a11ign/a11ign#4737: the same number as a primary row (481) is untouched -- its labels, its comments and its card", () => {
+  const fake = twoRepos();
+  keyedClaim({ run: fake.run });
+  assert.deepEqual(fake.labels.get(`${PRIMARY_REPO}#481`), ["ready"], "the first tracker's 481 is exactly `ready` as it was");
+  assert.ok((fake.labels.get(`${KEYED_REPO}#481`) ?? []).includes("in-progress"), "control: the keyed 481 is the one that was claimed");
+  const cards = fake.calls.filter((c) => c.args[0] === "project");
+  assert.deepEqual(cards.map((c) => c.args.find((a) => a.startsWith("https://"))), [`https://github.com/${KEYED_REPO}/issues/481`]);
+});
+
+test("a11ign/a11ign#4737: the batched creates of a keyed claim name the keyed repository too, and nothing the batch holds is the first tracker's", () => {
+  const fake = twoRepos();
+  const batches: Call[][] = [];
+  const result = keyedClaim({ run: fake.run, labelBatch: fake.batch(batches) });
+  assert.equal(result.claimed, true);
+  assert.equal(batches.length, 1);
+  assert.deepEqual(batches[0].map((c) => c.args[2]), KEYED_FOUR);
+  assert.deepEqual([...new Set(batches[0].map((c) => c.args[c.args.indexOf("--repo") + 1]))], [KEYED_REPO]);
+});
+
+test("a11ign/a11ign#4737: a DECLARED board moves THAT board's card (its own owner and number); a tracker with NONE claims with labels alone and says so", () => {
+  const declared = twoRepos();
+  keyedClaim({ run: declared.run });
+  const move = declared.calls.find((c) => c.args[0] === "project") as Call;
+  assert.deepEqual(move.args.slice(0, 5), ["project", "item-edit", "9", "--owner", "a11ign"], "the declared board's number, not the first tracker's");
+
+  const none = twoRepos();
+  const said: string[] = [];
+  const result = claimRow(481, KEYED_SESSION, { tracker: { key: "agent-org", repo: KEYED_REPO } as never, run: none.run, drained: [], instance: { spare: false, rows: [] },
+    persistent: false, moveStatus: (n: number, status: string, opts?: object) => moveProjectStatus(n, status, { ...(opts ?? {}), log: (line: string) => said.push(line) }) } as never);
+  assert.equal(result.claimed, true, "the labels are the claim");
+  assert.deepEqual(none.calls.filter((c) => c.args[0] === "project" || c.args.includes("graphql")), [], "no board of any kind is touched, the first tracker's included");
+  assert.match((result as { statusReason: string }).statusReason, /^no board declared for tracker `agent-org`/);
+  assert.ok((none.labels.get(`${KEYED_REPO}#481`) ?? []).includes("in-progress"));
+  assert.deepEqual(none.labels.get(`${PRIMARY_REPO}#481`), ["ready"]);
+});
+
+test("a11ign/a11ign#4737: a half-finished keyed claim (labels written, then the worktree or record failed) is ROLLED BACK in the same call, and says so", () => {
+  const fake = twoRepos();
+  const git: string[][] = [];
+  const failingClaim = ((n: number, s: string, deps: object) =>
+    claimRow(n, s, { ...deps, drained: [], instance: { spare: false, rows: [] }, persistent: false, run: (cmd: string, args: string[]) => {
+      if (args[0] === "issue" && args[1] === "comment") throw new Error("HTTP 502 posting the claim record");
+      return fake.run(cmd, args);
+    } } as never)) as never;
+  // A clone that holds no such branch: `rev-parse --verify` fails, `ls-remote --exit-code` exits 2, and every other git call answers nothing.
+  const missing = (status: number) => Object.assign(new Error(`Command failed: git (exit ${status})`), { status, stdout: "", stderr: "" });
+  const run = (cmd: string, args: string[]) => {
+    if (cmd !== "git") return fake.run(cmd, args);
+    git.push(args);
+    if (args.includes("rev-parse")) throw missing(1);
+    if (args.includes("ls-remote") && args.includes("--exit-code")) throw missing(2);
+    return "";
+  };
+  let thrown: Error | undefined;
+  let direct: unknown;
+  try {
+    direct = claimWithWorktree(481, KEYED_SESSION, { branch: "agent/x-agent-org-481", worktree: "../wt-agent-org-481", run: run as never, claim: failingClaim,
+      stamp: () => {}, exists: () => false, claimDeps: { tracker: KEYED }, clone: "/clones/agent-org" });
+  } catch (error) { thrown = error as Error; }
+  assert.ok(thrown, `the original failure is still raised: ${JSON.stringify(direct)} ${JSON.stringify(git)}`);
+  assert.match(thrown.message, /HTTP 502 posting the claim record/);
+  assert.match(thrown.message, /UNDONE IN THE SAME CALL/);
+  assert.deepEqual(fake.labels.get(`${KEYED_REPO}#481`), ["ready"], "the keyed row is `ready` again: the labels were written and then taken back");
+  assert.deepEqual(fake.labels.get(`${PRIMARY_REPO}#481`), ["ready"]);
+  assert.ok(git.some((args) => args.includes("worktree") && args.includes("remove")), "and the tree this call made is removed");
+  assert.ok(git.every((args) => args[0] === "-C" && args[1] === "/clones/agent-org"), "every git call of the keyed claim names the keyed clone");
+});
+
+function isCreateCall(call: Call) { return isCreate(call.args); }
