@@ -826,7 +826,7 @@ export function withFiledBy(argv: string[], session: string, body: string): stri
     const arg = argv[i];
     if (arg === "--body" || arg === "--body-file" || arg === "--session") { i += 1; continue; }
     if (arg.startsWith("--body=") || arg.startsWith("--body-file=") || arg.startsWith("--session=")
-      || arg.startsWith(TRACKER_FLAG) || arg.startsWith(DISTINCT_FROM_FLAG) || arg === READY_FLAG || arg === ALLOW_SAME_TITLE_FLAG) continue;
+      || arg.startsWith(TRACKER_FLAG) || arg.startsWith(ROADMAP_FLAG) || arg.startsWith(DISTINCT_FROM_FLAG) || arg === READY_FLAG || arg === ALLOW_SAME_TITLE_FLAG) continue;
     kept.push(arg);
   }
   kept.push("--body", appendFiledBy(body, session));
@@ -851,6 +851,12 @@ const KIND_LABELS = Object.freeze({ defect: DEFECT_LABEL });
 // #4294: THE FOURTH FLAG THIS FILE OWNS. A filing run launched twice filed three layout rows twice, 18 s apart (#4223 = #4222, #4225 = #4224, #4228 = #4227),
 // and nothing here asked whether an OPEN row already had the title. `--allow-same-title` is the one override; stripped before `gh` sees it, as `--ready` is.
 const ALLOW_SAME_TITLE_FLAG = "--allow-same-title";
+
+// #516: THE FIFTH FLAG THIS FILE OWNS. `--roadmap=<option>` names the `Roadmap` value a row filed under a roadmap epic is boarded with; stripped
+// before `gh` sees it, as `--tracker=` is. It is the epic's value that decides whether it is required (`roadmapPlan`), never a list in this file.
+const ROADMAP_FLAG = "--roadmap=";
+/** The name of the cross-repository single-select field on the org projects (a11ign#928). Its OPTIONS are read from the project, never copied here. */
+const ROADMAP_FIELD = "Roadmap";
 
 /**
  * The title this invocation would file, in every spelling `gh issue create` takes: `--title X`, `--title=X`, `-t X`, `-t=X`, `-tX`. The last one
@@ -1479,6 +1485,164 @@ function isBoardOf(tracker: Tracker, project: { number?: unknown; owner?: { logi
 }
 
 /**
+ * #516: THE ROADMAP VALUE, which the chairman's direction (a11ign#928, 2026-10-09) makes `row-file`'s to enforce: every row filed under a roadmap
+ * epic is linked to it AND given the epic's `Roadmap` value on the project it is boarded to, in any repository. `--parent=` was passed straight
+ * to `gh issue create` and no project field was read or written, so the next row filed under an epic landed with no value.
+ *
+ * EVERY READ GOES THROUGH `run` (or the injected `roadmapItems` / `roadmapField`), so a test needs no token. A read that FAILS is a refusal, never
+ * "the epic has no value": absence is not proof, and a filing that guessed would file the row without the value this exists to give it.
+ */
+export type RoadmapItem = { id: string; number: number; owner: string; value: string | null };
+export type RoadmapField = { projectId: string; fieldId: string; options: { id: string; name: string }[] };
+
+/** @param {string} parent a `--parent` value: `516`, `#516`, a GitHub issue URL or `owner/repo#516` @param {string} repo the tracker the row is filed in @returns {{ repo: string, number: number } | null} */
+export function parentRef(parent: string, repo: string): { repo: string; number: number } | null {
+  const value = parent.trim();
+  const bare = /^#?(\d+)$/.exec(value);
+  if (bare) return { repo, number: Number(bare[1]) };
+  const url = /^https?:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/issues\/(\d+)\/?$/.exec(value);
+  if (url) return { repo: url[1], number: Number(url[2]) };
+  const qualified = /^([\w.-]+\/[\w.-]+)#(\d+)$/.exec(value);
+  return qualified ? { repo: qualified[1], number: Number(qualified[2]) } : null;
+}
+
+/** The `--parent` value in either spelling `gh` takes (`--parent=X`, `--parent X`), or `null`; the last one given wins, as `gh` takes it. @param {string[]} argv @returns {string | null} */
+export function parentFromArgv(argv: string[]): string | null {
+  let found: string | null = null;
+  argv.forEach((arg, i) => {
+    if (arg.startsWith("--parent=")) found = arg.slice("--parent=".length);
+    else if (arg === "--parent") found = argv[i + 1] ?? "";
+  });
+  return found;
+}
+
+/** @param {string[]} argv @returns {string | null} the `--roadmap=` value, `null` when the flag is absent */
+export function roadmapFromArgv(argv: string[]): string | null {
+  return flagValue(argv, "roadmap") ?? null;
+}
+
+/**
+ * Every project item of one issue with its `Roadmap` value, paged. THROWS on a failed call or an unexpected shape.
+ * @param {{ repo: string, number: number }} issue @param {typeof defaultRun} run @returns {RoadmapItem[]}
+ */
+export function roadmapItemsOf(issue: { repo: string; number: number }, run: typeof defaultRun): RoadmapItem[] {
+  const [owner, name] = issue.repo.split("/");
+  const items: RoadmapItem[] = [];
+  let cursor: string | null = null;
+  do {
+    const after = cursor === null ? "" : `, after: "${cursor}"`;
+    const query = `query { repository(owner: "${owner}", name: "${name}") { issue(number: ${issue.number}) `
+      + `{ projectItems(first: ${PROJECT_ITEMS_PAGE}${after}) { pageInfo { hasNextPage endCursor } `
+      + `nodes { id project { number owner { ... on Organization { login } ... on User { login } } } fieldValueByName(name: "${ROADMAP_FIELD}") `
+      + `{ ... on ProjectV2ItemFieldSingleSelectValue { name } } } } } } }`;
+    const page: any = JSON.parse(run("gh", ["api", "graphql", "-f", `query=${query}`]))?.data?.repository?.issue?.projectItems;
+    if (!Array.isArray(page?.nodes)) throw new Error(`gh's Project-membership response for ${issue.repo}#${issue.number} did not have the expected shape (is the issue there?)`);
+    for (const node of page.nodes) {
+      items.push({ id: String(node?.id ?? ""), number: Number(node?.project?.number), owner: String(node?.project?.owner?.login ?? ""),
+        value: typeof node?.fieldValueByName?.name === "string" ? node.fieldValueByName.name : null });
+    }
+    cursor = page.pageInfo?.hasNextPage === true ? (page.pageInfo.endCursor ?? null) : null;
+  } while (cursor !== null);
+  return items;
+}
+
+/**
+ * The `Roadmap` field of a tracker's board, with the ids a write needs and the OPTIONS the project holds now (`ceo` adds options, so none is
+ * copied into this file). `null` when the board has no such single-select field; THROWS when the board cannot be read.
+ * @param {Tracker} tracker @param {typeof defaultRun} run @returns {RoadmapField | null}
+ */
+export function roadmapFieldOf(tracker: Tracker, run: typeof defaultRun): RoadmapField | null {
+  const project = `projectV2(number: ${tracker.board.number}) { id field(name: "${ROADMAP_FIELD}") { ... on ProjectV2SingleSelectField { id options { id name } } } }`;
+  const query = `query { repositoryOwner(login: "${tracker.board.owner}") { ... on Organization { ${project} } ... on User { ${project} } } }`;
+  const board: any = JSON.parse(run("gh", ["api", "graphql", "-f", `query=${query}`]))?.data?.repositoryOwner?.projectV2;
+  if (typeof board?.id !== "string") throw new Error(`could not read ${tracker.board.owner}/projects/${tracker.board.number}`);
+  const { id, options } = board.field ?? {};
+  if (typeof id !== "string" || !Array.isArray(options)) return null;
+  return { projectId: board.id, fieldId: id, options: options.map((o: any) => ({ id: String(o.id), name: String(o.name) })) };
+}
+
+/** The epic's value: the one on the row's own board when it has one, else the first value on any project it is boarded to. @param {RoadmapItem[]} items @param {Tracker} tracker @returns {string | null} */
+export function epicRoadmapValue(items: RoadmapItem[], tracker: Tracker): string | null {
+  const own = items.find((item) => item.number === tracker.board.number && item.owner.toLowerCase() === tracker.board.owner.toLowerCase());
+  return own?.value ?? items.find((item) => item.value !== null)?.value ?? null;
+}
+
+type RoadmapPlan = { refusal: string } | { set: { field: RoadmapField; option: { id: string; name: string } } | null; warning: string | null };
+
+/** `--roadmap=` with no `--parent=` is refused: the value comes from the epic. Pure, so it is asked before anything is read. @param {string[]} argv @returns {string | null} */
+export function roadmapWithoutParentRefusal(argv: string[]): string | null {
+  if (roadmapFromArgv(argv) === null || parentFromArgv(argv) !== null) return null;
+  return `row-file: REFUSING to file -- \`${ROADMAP_FLAG}\` is given with no \`--parent=\`. The Roadmap value comes from the epic a row is filed under, so a row with no `
+    + "epic has nothing to take it from. Pass `--parent=<epic>`, or drop the flag. Nothing was filed.";
+}
+
+/**
+ * #516: WHAT THE FILING OWES THE BOARD'S `Roadmap` FIELD, decided BEFORE anything is filed so a refusal leaves nothing behind.
+ * No `--parent=` and no flag: nothing. A parent whose epic has a value: `--roadmap=` must name one of the board's options, and is refused with
+ * the list when absent or unknown. A parent whose epic has NO value: nothing changes (a `--roadmap=` given anyway is still checked and set,
+ * since an ignored flag that reports success is the defect `refuseUnknownFlags` exists to prevent).
+ * @param {string[]} argv @param {Tracker} tracker
+ * @param {{ run: typeof defaultRun, roadmapItems: typeof roadmapItemsOf, roadmapField: typeof roadmapFieldOf }} deps
+ * @returns {RoadmapPlan}
+ */
+export function roadmapPlan(argv: string[], tracker: Tracker, deps: { run: typeof defaultRun; roadmapItems: typeof roadmapItemsOf; roadmapField: typeof roadmapFieldOf }): RoadmapPlan {
+  const parent = parentFromArgv(argv);
+  const given = roadmapFromArgv(argv);
+  if (parent === null) return { set: null, warning: null };
+  const ref = parentRef(parent, tracker.repo);
+  if (ref === null) return { refusal: `row-file: REFUSING to file -- \`--parent=${parent}\` is not a row number, an issue URL or \`owner/repo#n\`, so its Roadmap value cannot be read. Nothing was filed.` };
+  let epicValue: string | null;
+  try {
+    epicValue = epicRoadmapValue(deps.roadmapItems(ref, deps.run), tracker);
+  } catch (error) {
+    return { refusal: `row-file: REFUSING to file -- could not read the Roadmap value of ${ref.repo}#${ref.number}, so whether this row owes one is unknown: ${(error as Error).message}. Nothing was filed.` };
+  }
+  if (epicValue === null && given === null) return { set: null, warning: null };
+  let field: RoadmapField | null;
+  try {
+    field = deps.roadmapField(tracker, deps.run);
+  } catch (error) {
+    return { refusal: `row-file: REFUSING to file -- could not read the \`${ROADMAP_FIELD}\` field of ${tracker.board.owner}/projects/${tracker.board.number}: ${(error as Error).message}. Nothing was filed.` };
+  }
+  if (field === null) {
+    return { refusal: `row-file: REFUSING to file -- ${tracker.board.owner}/projects/${tracker.board.number} has no \`${ROADMAP_FIELD}\` field, so a row filed under ${ref.repo}#${ref.number} (${epicValue === null ? "no value" : `\`${epicValue}\``}) cannot be given one. Nothing was filed.` };
+  }
+  const names = field.options.map((option) => `\`${option.name}\``).join(", ");
+  const option = given === null ? undefined : field.options.find((o) => o.name === given.trim())
+    ?? field.options.find((o) => o.name.toLowerCase() === given.trim().toLowerCase());
+  if (option === undefined) {
+    const said = given === null ? `its epic ${ref.repo}#${ref.number} carries \`${ROADMAP_FIELD}\` = \`${epicValue}\`, and \`${ROADMAP_FLAG}<option>\` is absent`
+      : `\`${ROADMAP_FLAG}${given}\` names no option of the project`;
+    return { refusal: `row-file: REFUSING to file -- ${said}. Every row filed under a roadmap epic is given its value (a11ign#928); name one of: ${names}. Nothing was filed.` };
+  }
+  const warning = epicValue !== null && epicValue !== option.name
+    ? `row-file: WARNING -- \`${ROADMAP_FLAG}${option.name}\` differs from ${ref.repo}#${ref.number}'s \`${ROADMAP_FIELD}\` (\`${epicValue}\`); the row is given the one you named.` : null;
+  return { set: { field, option }, warning };
+}
+
+/**
+ * #516: SET THE VALUE ON THE ROW'S ITEM ON THE BOARD IT WAS BOARDED TO, and read it back. A failed set, or a read-back that disagrees, is a
+ * failure the caller reports and exits non-zero on; it is never a warning. `null` is success.
+ * @param {number} issueNumber @param {Tracker} tracker @param {{ field: RoadmapField, option: { id: string, name: string } }} set
+ * @param {{ run: typeof defaultRun, roadmapItems: typeof roadmapItemsOf }} deps
+ * @returns {string | null}
+ */
+export function setRoadmapValue(issueNumber: number, tracker: Tracker, set: { field: RoadmapField; option: { id: string; name: string } }, deps: { run: typeof defaultRun; roadmapItems: typeof roadmapItemsOf }): string | null {
+  const issue = { repo: tracker.repo, number: issueNumber };
+  const onBoard = (item: RoadmapItem) => item.number === tracker.board.number && item.owner.toLowerCase() === tracker.board.owner.toLowerCase();
+  try {
+    const item = deps.roadmapItems(issue, deps.run).find(onBoard);
+    if (item === undefined) return `#${issueNumber} is not an item of ${tracker.board.owner}/projects/${tracker.board.number}`;
+    deps.run("gh", ["project", "item-edit", "--id", item.id, "--project-id", set.field.projectId, "--field-id", set.field.fieldId,
+      "--single-select-option-id", set.option.id]);
+    const after = deps.roadmapItems(issue, deps.run).find(onBoard)?.value ?? null;
+    return after === set.option.name ? null : `the read-back shows \`${ROADMAP_FIELD}\` = ${after === null ? "no value" : `\`${after}\``}, not \`${set.option.name}\``;
+  } catch (error) {
+    return (error as Error).message;
+  }
+}
+
+/**
  * Every argument, unchanged, straight to the real `gh issue create`. Captures stdout (the created issue's
  * URL) instead of inheriting the terminal -- #844: this file now reports its OWN verdict after boarding
  * and reading it back, not `gh`'s raw output, and needs the URL to do either.
@@ -1726,6 +1890,7 @@ export function createIssue(argv: string[], deps: {
     fetchBoardStatus?: typeof fetchIssueBoardStatus; fetchLabels?: typeof fetchIssueLabels;
     moveStatus?: typeof moveTrackerStatus; ensureLabels?: typeof ensureLabelsOn;
     loadLanesConfig?: typeof loadLanes; declaration?: Parameters<typeof rowTracker>[1] & { tracker: Tracker[]; };
+    roadmapItems?: typeof roadmapItemsOf; roadmapField?: typeof roadmapFieldOf; // #516
 } = {}): number {
   // A single spread merge, not seven per-property default values -- each `x = defaultX` in a destructured
   // parameter is its own branch for this repo's complexity gate, and `createIssue` already carries the
@@ -1734,10 +1899,11 @@ export function createIssue(argv: string[], deps: {
   // board-add call, the Status move, and the read-back -- without spawning a real `gh`, reaching GitHub,
   // or reading a real `docs/lane-ownership.json`.
   const { spawnGh, run, fetchBoardStatus, fetchLabels, moveStatus, ensureLabels, loadLanesConfig,
-    milestones, primaryMilestones, declaration } = {
+    milestones, primaryMilestones, declaration, roadmapItems, roadmapField } = {
     spawnGh: spawnGhIssueCreate, run: defaultRun, fetchBoardStatus: fetchIssueBoardStatus,
     fetchLabels: fetchIssueLabels, moveStatus: moveTrackerStatus, ensureLabels: ensureLabelsOn,
-    loadLanesConfig: loadLanes, milestones: openMilestones, primaryMilestones: primaryMilestoneTitles, declaration: homeProjectDeclaration(), ...deps,
+    loadLanesConfig: loadLanes, milestones: openMilestones, primaryMilestones: primaryMilestoneTitles, declaration: homeProjectDeclaration(),
+    roadmapItems: roadmapItemsOf, roadmapField: roadmapFieldOf, ...deps,
   };
   const session = sessionFromArgv(argv);
   const unknownKind = kindRefusal(argv);
@@ -1751,7 +1917,7 @@ export function createIssue(argv: string[], deps: {
     return 1;
   }
   const body = bodyFromArgv(argv);
-  const reason = fileRefusalReason(body);
+  const reason = fileRefusalReason(body) ?? roadmapWithoutParentRefusal(argv); // #516
   if (reason) {
     process.stderr.write(`${reason}\n`);
     return 1;
@@ -1813,6 +1979,13 @@ export function createIssue(argv: string[], deps: {
     process.stderr.write(`${sweepHeld}\n`);
     return 1;
   }
+  // #516: the epic's value is read and the flag judged BEFORE the create call, so a refusal leaves nothing behind.
+  const roadmap = roadmapPlan(argv, tracker, { run, roadmapItems, roadmapField });
+  if ("refusal" in roadmap) {
+    process.stderr.write(`${roadmap.refusal}\n`);
+    return 1;
+  }
+  if (roadmap.warning !== null) process.stderr.write(`${roadmap.warning}\n`);
   const boarding = boardingFor(argv);
   // #844: THE BOARD LABEL IS NOT ADDED HERE -- see `boardAndVerify`'s own header for why it has to wait
   // until AFTER the Project Status is set, not merely after the issue exists. The lane label(s) travel
@@ -1845,6 +2018,15 @@ export function createIssue(argv: string[], deps: {
   if (!result.ok) {
     process.stderr.write(`row-file: ${result.message}\n`);
     return 2;
+  }
+  if (roadmap.set !== null) {
+    const failed = setRoadmapValue(issueNumber, tracker, roadmap.set, { run, roadmapItems });
+    if (failed !== null) {
+      process.stderr.write(`row-file: FILED as #${issueNumber} and boarded, but its \`${ROADMAP_FIELD}\` could not be set to \`${roadmap.set.option.name}\` -- ${failed}. `
+        + `Set it by hand: gh project item-edit --id <item> --project-id ${roadmap.set.field.projectId} --field-id ${roadmap.set.field.fieldId} `
+        + `--single-select-option-id ${roadmap.set.option.id}\n`); // #516: a failed set is a failure, not a warning
+      return 2;
+    }
   }
   if (blast.note) process.stderr.write(`${blast.note}\n`);
   process.stdout.write(`https://github.com/${tracker.repo}/issues/${issueNumber}\n`);
@@ -2649,7 +2831,7 @@ async function semanticDuplicateExit(argv: string[]): Promise<number | null> {
 }
 
 async function main() {
-  refuseUnknownFlags([...KNOWN_GH_ISSUE_CREATE_FLAGS, "--session=", READY_FLAG, PROMOTE_FLAG, BOARD_FLAG, "--lane=", TRACKER_FLAG, KIND_FLAG, `${KIND_FLAG}=`, ALLOW_SAME_TITLE_FLAG, DISTINCT_FROM_FLAG],
+  refuseUnknownFlags([...KNOWN_GH_ISSUE_CREATE_FLAGS, "--session=", READY_FLAG, PROMOTE_FLAG, BOARD_FLAG, "--lane=", TRACKER_FLAG, ROADMAP_FLAG, KIND_FLAG, `${KIND_FLAG}=`, ALLOW_SAME_TITLE_FLAG, DISTINCT_FROM_FLAG],
     { entry: import.meta.url, command: "pnpm run row-file" });
   // #1352: from the primary checkout or a plain clone, refuse before filing anything -- exit 1, createIssue's own
   // "refused, nothing filed" code.
