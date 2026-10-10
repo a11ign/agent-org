@@ -76,6 +76,41 @@ test("#2939 a bot is the org's: `a11ign-bot` is not a hand fix, and neither is t
   assert.equal(buildLedger([change({ author: "a11ign-bot", actors: ["a11ign-ci", "claude"] })]).count, 0);
 });
 
+// --- a dependency bot is automation, in both spellings, and nothing that merely looks like one is (a11ign/agent-org#560) -----
+
+const BUMP = "chore(deps): bump left-pad from 1.3.0 to 1.3.1";
+
+test("#560 a pull request a dependency bot opened is CLEAN: `app/dependabot` as author, `dependabot[bot]` as commit, and Renovate", () => {
+  for (const [author, commit] of [["app/dependabot", "dependabot[bot]"], ["app/renovate", "renovate[bot]"], ["dependabot", "dependabot"]]) {
+    assert.equal(classifyLogin(author), "automation", author);
+    assert.equal(classifyLogin(commit), "automation", commit);
+    assert.deepEqual(judgeChange(change({ author, actors: [commit, commit], title: BUMP })), { verdict: "clean" }, `${author} / ${commit}`);
+  }
+  const ledger = buildLedger([change({ number: 7, author: "app/dependabot", actors: ["dependabot[bot]"], title: BUMP })]);
+  assert.equal(ledger.count, 0, "not counted");
+  assert.equal(ledger.unread.length, 0, "and not unread either: the bot's login resolves");
+});
+
+test("#560 CONTROLS: the same bump by a person is still counted, a declared Hand-fix is still counted, a lookalike login is still human", () => {
+  const person = judgeChange(change({ author: "DanBeckDev", actors: ["DanBeckDev"], title: BUMP }));
+  assert.equal(person.verdict, "counted");
+  assert.equal(person.verdict === "counted" && person.entry.via, "derived");
+  const declared = judgeChange(change({ author: "a11ign-ai-workers", actors: ["a11ign-ai-workers"], title: BUMP,
+    body: `Hand-fix: the bump was merged by hand ${EM} the merge queue would have taken it` }));
+  assert.equal(declared.verdict, "counted");
+  assert.equal(declared.verdict === "counted" && declared.entry.via, "declared");
+  for (const login of ["not-dependabot-user", "dependabot-fan", "my-renovate", "dependabot[bot]-2", "dependabot-preview-user"]) {
+    assert.equal(classifyLogin(login), "human", login);
+  }
+  assert.equal(judgeChange(change({ author: "not-dependabot-user", actors: ["not-dependabot-user"], title: BUMP })).verdict, "counted");
+});
+
+test("#560 a person's commit on a bot's pull request is still a hand fix: the bot does not launder the actor beside it", () => {
+  const verdict = judgeChange(change({ author: "app/dependabot", actors: ["dependabot[bot]", "DanBeckDev"], title: BUMP }));
+  assert.equal(verdict.verdict, "counted");
+  assert.deepEqual(verdict.verdict === "counted" && verdict.entry.humans, ["DanBeckDev"]);
+});
+
 test("#2939 an author GitHub could not resolve is UNREAD, which is neither counted nor clean; `web-flow` names nobody", () => {
   assert.equal(classifyLogin(null), "unknown");
   assert.equal(classifyLogin("web-flow"), "unknown");
