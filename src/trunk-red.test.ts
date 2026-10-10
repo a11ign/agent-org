@@ -1,8 +1,13 @@
-// no-token: gh -- `readFixRow` answers from an injected `github` seam, `trunkRedOrders` takes a fixture reading and `readTrunkRed` an injected `run`; no `gh` is spawned
-import { test } from "node:test";
+// no-token: gh -- `readFixRow` answers from an injected `github` seam, `trunkRedOrders` takes a fixture reading and `readTrunkRed` an injected `run`; no real `gh` is spawned (one test puts a shim named `gh` first on a child's PATH)
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { readFixRow } from "./messaging/sources/readers.ts";
-import { PRIMARY_TRUNK, readTrunkRed, trunkOfCodeRepository, trunkRedOrders } from "./trunk-red.ts";
+import { NO_WORKFLOW_RECHECK_EVERY_MS, PRIMARY_TRUNK, readTrunkRed, trunkOfCodeRepository, trunkRedOrders } from "./trunk-red.ts";
 
 /**
  * #3449: THE TRUNK-RED ORDER NAMES WHAT `readFixRow` LOOKS FOR.
@@ -179,4 +184,139 @@ test("a repository whose ci.yml has no cross-repo job is read as before, and a j
   const red = readTrunkRed(fakeGh({ push: [runOf(61, "push", "failure", "2026-10-10T09:00:00Z")], jobs: { 61: [job("gate", "failure")] } }).run, LAB);
   assert.ok(red);
   assert.deepEqual(Object.keys(red), ["runId", "url", "sha", "failedJobs", "failingTests", "recheck", "parentFailingTests", "originPr", "repo", "repoKey"]);
+});
+
+/**
+ * agent-org#693: A DECLARED CODE REPOSITORY WITH NO `ci.yml` (a11ign/.github) IS "NO TRUNK WORKFLOW HERE", NOT A REFUSED READ, AND IS SAID ONCE A DAY.
+ *
+ * The error is the shape `gh` throws for the call that measured it on 2026-10-10 (`gh api --method GET repos/a11ign/.github/actions/workflows/ci.yml/runs ...`
+ * answers `gh: Not Found (HTTP 404)` on stderr, exit 1). Each case has its negative control beside it: the same read answering 403, 5xx or a timeout is still refused.
+ */
+const DOT_GITHUB = trunkOfCodeRepository("dot-github", "a11ign/.github");
+const NOT_FOUND = () => Object.assign(new Error("Command failed: gh api --method GET repos/a11ign/.github/actions/workflows/ci.yml/runs\ngh: Not Found (HTTP 404)\n"),
+  { status: 1, stderr: "gh: Not Found (HTTP 404)\n" });
+const refusing = (error: Error) => {
+  const calls: string[][] = [];
+  return { calls, run: (args: string[]) => { calls.push(args); throw error; } };
+};
+const NOW = Date.parse("2026-10-10T16:00:00Z");
+const told = () => {
+  const lines: string[] = [];
+  return { lines, report: (line: string) => { lines.push(line); } };
+};
+const NO_WORKFLOW_LINE = "a11ign/.github: no ci.yml on main, so its trunk is not read";
+/** One directory under the private TMPDIR, removed once the file is done; each call gives a state directory of its own. */
+const SCRATCH = mkdtempSync(join(tmpdir(), "trunk-red-693-"));
+after(() => rmSync(SCRATCH, { recursive: true, force: true }));
+let scratchCount = 0;
+const freshState = () => {
+  const dir = join(SCRATCH, String(scratchCount++));
+  mkdirSync(dir);
+  return dir;
+};
+
+test("no trunk workflow: a 404 on the runs read of a repository that never had runs is null and said once, and any other refusal is still undefined", () => {
+  const said = told();
+  const gh = refusing(NOT_FOUND());
+  assert.equal(readTrunkRed(gh.run, DOT_GITHUB, { stateDir: freshState(), now: NOW, report: said.report }), null, "nothing to be red: null, not the `undefined` of a refused read");
+  assert.deepEqual(said.lines, [NO_WORKFLOW_LINE]);
+  assert.equal(gh.calls.length, 1, "the second event filter would answer the same 404, so it is not asked");
+  // NEGATIVE CONTROLS (done-when b): a 403, a 5xx and a timeout are NOT "no workflow", and a fault that says nothing of a 404 is not one either.
+  const refusals: [string, Error][] = [
+    ["403", Object.assign(new Error("gh: Forbidden (HTTP 403)"), { stderr: "gh: Forbidden (HTTP 403)\n" })],
+    ["502", Object.assign(new Error("gh: Bad Gateway (HTTP 502)"), { stderr: "gh: Bad Gateway (HTTP 502)\n" })],
+    ["timeout", Object.assign(new Error("spawnSync gh ETIMEDOUT"), { code: "ETIMEDOUT" })],
+    ["a bare message", new Error("HTTP 403")],
+  ];
+  for (const [name, error] of refusals) {
+    const quiet = told();
+    assert.equal(readTrunkRed(refusing(error).run, DOT_GITHUB, { stateDir: freshState(), now: NOW, report: quiet.report }), undefined, `${name}: refused, not "no workflow"`);
+    assert.deepEqual(quiet.lines, [], `${name}: this file says nothing of it either, as before`);
+  }
+});
+
+test("no trunk workflow: the second read inside a day makes no call and prints no line, and a read a day later asks and says it again", () => {
+  const stateDir = freshState();
+  const first = told();
+  const gh = refusing(NOT_FOUND());
+  assert.equal(readTrunkRed(gh.run, DOT_GITHUB, { stateDir, now: NOW, report: first.report }), null);
+  assert.deepEqual([gh.calls.length, first.lines], [1, [NO_WORKFLOW_LINE]], "POSITIVE CONTROL: the first read paid its call and said its line");
+  const again = told();
+  for (const later of [2 * 60_000, 60 * 60_000, NO_WORKFLOW_RECHECK_EVERY_MS - 1]) {
+    assert.equal(readTrunkRed(gh.run, DOT_GITHUB, { stateDir, now: NOW + later, report: again.report }), null, "still null");
+  }
+  assert.deepEqual([gh.calls.length, again.lines], [1, []], "no call and no line inside the day");
+  // NEGATIVE CONTROL: the marker expires, and the line is then once per day, not once ever.
+  const nextDay = told();
+  assert.equal(readTrunkRed(gh.run, DOT_GITHUB, { stateDir, now: NOW + NO_WORKFLOW_RECHECK_EVERY_MS, report: nextDay.report }), null);
+  assert.deepEqual([gh.calls.length, nextDay.lines], [2, [NO_WORKFLOW_LINE]]);
+});
+
+test("no trunk workflow: a repository the marker knows had the workflow, now 404, is unread and says so every tick", () => {
+  const stateDir = freshState();
+  const push = [runOf(80, "push", "success", "2026-10-10T09:00:00Z")];
+  const had = told();
+  assert.equal(readTrunkRed(fakeGh({ push, jobs: { 80: jobsOf("success") } }).run, DOT_GITHUB, { stateDir, now: NOW, report: had.report }), null, "POSITIVE CONTROL: it answered 200 and was green");
+  assert.deepEqual(had.lines, []);
+  const gh = refusing(NOT_FOUND());
+  for (const minutes of [2, 4, 6]) {
+    const said = told();
+    assert.equal(readTrunkRed(gh.run, DOT_GITHUB, { stateDir, now: NOW + minutes * 60_000, report: said.report }), undefined,
+      "unread, not green: the failure ledger must not end a standing red on a workflow that went missing");
+    assert.deepEqual(said.lines, ["a11ign/.github: ci.yml on main answered 404 though it had runs before, so its trunk is not read"], `tick +${minutes}m says it again`);
+  }
+  assert.equal(gh.calls.length, 3, "and asks again every tick: it is not the quiet case");
+  // NEGATIVE CONTROL: a repository with no marker at all, read at the same instants, is the quiet once-a-day case.
+  const never = told();
+  const neverAsked = refusing(NOT_FOUND());
+  for (const minutes of [2, 4, 6]) readTrunkRed(neverAsked.run, DOT_GITHUB, { stateDir: freshState(), now: NOW + minutes * 60_000, report: never.report });
+  assert.equal(neverAsked.calls.length, 3, "three states, three first reads");
+  const quiet = told();
+  const sharedDir = freshState();
+  for (const minutes of [2, 4, 6]) readTrunkRed(neverAsked.run, DOT_GITHUB, { stateDir: sharedDir, now: NOW + minutes * 60_000, report: quiet.report });
+  assert.deepEqual([neverAsked.calls.length, quiet.lines], [4, [NO_WORKFLOW_LINE]], "one state directory: one call and one line for three ticks");
+});
+
+test("no trunk workflow: a workflow that appears after a 404 is read again, and a 404 after that is the loud case", () => {
+  const stateDir = freshState();
+  assert.equal(readTrunkRed(refusing(NOT_FOUND()).run, DOT_GITHUB, { stateDir, now: NOW, report: told().report }), null);
+  const push = [runOf(81, "push", "failure", "2026-10-10T09:00:00Z")];
+  const red = readTrunkRed(fakeGh({ push, jobs: { 81: jobsOf("success", "failure", "failure") } }).run, DOT_GITHUB, { stateDir, now: NOW + NO_WORKFLOW_RECHECK_EVERY_MS, report: told().report });
+  assert.equal(red?.runId, 81, "a day later the workflow exists, and its red is read");
+  const said = told();
+  assert.equal(readTrunkRed(refusing(NOT_FOUND()).run, DOT_GITHUB, { stateDir, now: NOW + NO_WORKFLOW_RECHECK_EVERY_MS + 120_000, report: said.report }), undefined);
+  assert.match(said.lines[0], /answered 404 though it had runs before/);
+});
+
+test("no trunk workflow: a state directory that cannot be written is said and never thrown into the tick", () => {
+  const notADirectory = join(freshState(), "a-file");
+  writeFileSync(notADirectory, "");
+  const said = told();
+  assert.equal(readTrunkRed(refusing(NOT_FOUND()).run, DOT_GITHUB, { stateDir: notADirectory, now: NOW, report: said.report }), null);
+  assert.equal(said.lines.length, 2);
+  assert.match(said.lines[0], /was not written/);
+  assert.equal(said.lines[1], NO_WORKFLOW_LINE);
+});
+
+test("no trunk workflow: `gh`'s own stderr line is captured in the call, not filtered after it, and a refusal that is not a 404 is still heard", () => {
+  const run = (answer: string) => {
+    const binDir = freshState();
+    writeFileSync(join(binDir, "gh"), `#!/bin/sh\necho '${answer}' >&2\nexit 1\n`);
+    chmodSync(join(binDir, "gh"), 0o755);
+    const script = `const m = await import(${JSON.stringify(new URL("./trunk-red.ts", import.meta.url).href)});
+      const said = [];
+      const answer = m.readTrunkRed(undefined, m.trunkOfCodeRepository("dot-github", "a11ign/.github"), { stateDir: process.argv[1], report: (l) => said.push(l) });
+      process.stdout.write(JSON.stringify({ answer: answer === undefined ? "undefined" : answer, said }));`;
+    const child = spawnSync(process.execPath, ["--input-type=module", "-e", script, freshState()],
+      { encoding: "utf8", env: { ...process.env, PATH: `${binDir}:${process.env.PATH}` }, cwd: fileURLToPath(new URL("..", import.meta.url)) });
+    assert.equal(child.status, 0, child.stderr);
+    return { stderr: child.stderr, ...JSON.parse(child.stdout) };
+  };
+  const notFound = run("gh: Not Found (HTTP 404)");
+  assert.deepEqual([notFound.answer, notFound.said], [null, [NO_WORKFLOW_LINE]]);
+  assert.equal(notFound.stderr, "", "nothing of `gh`'s own line reaches the tick's stderr");
+  // NEGATIVE CONTROL: the same shim answering 403 is refused, and `gh`'s line is still the tick's to hear.
+  const forbidden = run("gh: Forbidden (HTTP 403)");
+  assert.deepEqual([forbidden.answer, forbidden.said], ["undefined", []]);
+  assert.match(forbidden.stderr, /gh: Forbidden \(HTTP 403\)/);
 });
