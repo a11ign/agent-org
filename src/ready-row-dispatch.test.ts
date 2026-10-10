@@ -205,6 +205,9 @@ test("#459 (change 3): a ready `tier:haiku` row is offered in the same circumsta
 });
 
 test("#459: spareLabelForRow is what 'its own row' means: the family's prefix and the row's number", () => {
-  assert.equal(spareLabelForRow({ row: 4466 }), "worker-4466");
-  assert.equal(spareLabelForRow({ row: 481, key: "agent-org" }), "worker-agent-org-481");
+  // The family is passed, not read from the host: the project this runs in declares its own, and the point is the shape of the name. (A
+  // cross-tracker spare, `worker-agent-org-481`, needs the host's declared tracker keys, so it is not asserted here.)
+  const families = [{ prefix: "worker-", from: 4 }];
+  assert.equal(spareLabelForRow({ row: 4466, families }), "worker-4466");
+  assert.equal(spareLabelForRow({ row: 3, families }), null, "below the family's `from`, so no name a router would recognise");
 });

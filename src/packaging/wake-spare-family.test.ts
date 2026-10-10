@@ -126,15 +126,22 @@ test("#2403: ONE spawn per tick still holds, and an instance that exists is OFFE
   assert.equal(h.said("agent start").length, 1, "MAX_SPAWNS_PER_TICK is untouched");
   assert.deepEqual(got.sent, ["worker-2403 <- engineers/ready-row-unclaimed/2403 (STARTED sonnet/high)"]);
 
-  // An idle worker-12 (a spawn whose prompt was refused, left running) is a roster member for `route`, so the
-  // next order goes to it rather than starting worker-4.
+  // An idle worker-12 is a roster member for `route`, so `route` itself offers it the order rather than starting worker-4.
   const idle = agents({ ...Object.fromEntries(STANDING.map((r) => [r, "working"])), "worker-12": "idle" });
   assert.deepEqual(withSpareInstances(REAL_ROSTER, idle), [...REAL_ROSTER, "worker-12"]);
   assert.deepEqual(route("engineers", idle, withSpareInstances(REAL_ROSTER, idle)), { label: "worker-12" });
+  // THROUGH `deliver`, the instance offered the order is the one NAMED FOR ITS ROW (agent-org#459, "one instance, one row"): a spawn for #2403
+  // whose prompt was refused, left running, is `worker-2403`, and it is typed #2403 again rather than another instance being started. A
+  // `worker-12` is for no row, so it is not typed #2403; a fresh `worker-2403` is started (the spawn path), and `worker-12` is untouched.
+  const refused = agents({ ...Object.fromEntries(STANDING.map((r) => [r, "working"])), "worker-2403": "idle" });
   const offered = recordingHerdr();
-  assert.deepEqual(deliver([ROW_ORDER], idle, REAL_ROSTER, { run: offered.run }).sent,
-    ["worker-12 <- engineers/ready-row-unclaimed/2403 (no clear)"]);
+  assert.deepEqual(deliver([ROW_ORDER], refused, REAL_ROSTER, { run: offered.run }).sent,
+    ["worker-2403 <- engineers/ready-row-unclaimed/2403 (no clear)"]);
   assert.deepEqual(offered.said("workspace create"), []);
+  const notNamedForIt = recordingHerdr();
+  assert.deepEqual(deliver([ROW_ORDER], idle, REAL_ROSTER, { run: notNamedForIt.run }).sent,
+    ["worker-2403 <- engineers/ready-row-unclaimed/2403 (STARTED sonnet/high)"]);
+  assert.deepEqual(notNamedForIt.said("worker-12"), [], "and nothing was said to the instance that is for no row");
   // Numeric, not lexical, order: worker-9 comes before worker-10.
   assert.deepEqual(withSpareInstances([], agents({ "worker-10": "idle", "worker-9": "idle", ceo: "idle" })),
     ["worker-9", "worker-10"]);
@@ -312,12 +319,12 @@ test("#2403 (3) POSITIVE CONTROL: a standing engineer and a number below the fam
   }
 });
 
-/** #3549: a transcript under `$HOME/.claude/projects` that says `worker-12`'s last turn read more than the compact threshold. */
+/** #3549: a transcript under `$HOME/.claude/projects` that says `worker-2403`'s last turn read more than the compact threshold. */
 function overThresholdHome(): string {
   const home = mkdtempSync(join(tmpdir(), "a11y-3549-home-"));
   mkdirSync(join(home, ".claude", "projects", "p"), { recursive: true });
   writeFileSync(join(home, ".claude", "projects", "p", "t.jsonl"), `${[
-    JSON.stringify({ type: "user", message: { role: "user", content: "You are `worker-12`, an org session in this repository." } }),
+    JSON.stringify({ type: "user", message: { role: "user", content: "You are `worker-2403`, an org session in this repository." } }),
     JSON.stringify({ type: "assistant", message: { id: "m1", model: "claude-sonnet-5",
       usage: { input_tokens: 5, cache_read_input_tokens: COMPACT_THRESHOLD_TOKENS + 1, cache_creation_input_tokens: 0, output_tokens: 12 } } }),
   ].join("\n")}\n`);
@@ -341,7 +348,7 @@ function compactsFromHostTranscript(deliverTo: (run: (args: string[]) => string)
 
 
 test("#3549 THE WRAPPER DOES NOT READ THE HOST'S TRANSCRIPTS: an over-threshold transcript under $HOME is not acted on, and IS through the default", () => {
-  assert.equal(compactsFromHostTranscript((run) => deliver([ROW_ORDER], agents({ ...Object.fromEntries(STANDING.map((r) => [r, "working"])), "worker-12": "idle" }), REAL_ROSTER, { run })), false, "the wrapper's empty root: nothing to compact");
-  assert.equal(compactsFromHostTranscript((run) => settlingDeliver([ROW_ORDER], agents({ ...Object.fromEntries(STANDING.map((r) => [r, "working"])), "worker-12": "idle" }), REAL_ROSTER, { run, sleep: noSettle })), true,
+  assert.equal(compactsFromHostTranscript((run) => deliver([ROW_ORDER], agents({ ...Object.fromEntries(STANDING.map((r) => [r, "working"])), "worker-2403": "idle" }), REAL_ROSTER, { run })), false, "the wrapper's empty root: nothing to compact");
+  assert.equal(compactsFromHostTranscript((run) => settlingDeliver([ROW_ORDER], agents({ ...Object.fromEntries(STANDING.map((r) => [r, "working"])), "worker-2403": "idle" }), REAL_ROSTER, { run, sleep: noSettle })), true,
     "POSITIVE CONTROL: the default root WOULD have read it, so the line above is the wrapper's doing and not an unreadable fixture");
 });

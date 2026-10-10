@@ -266,14 +266,20 @@ function tickWith(registry: Record<string, unknown> | null, listed: string) {
   }
 }
 const IDLE_WORKER_4 = '{"label":"worker-4","workspace_id":"wD","agent_status":"idle"}';
+const IDLE_WORKER_2407 = '{"label":"worker-2407","workspace_id":"wD","agent_status":"idle"}';
 
 test("#2407 THE WAKE ENTRY (router): an idle spare with a recorded row is skipped and the row's own address is started", () => {
   const spent = tickWith({ "worker-4": { spawnedAt: 1, rows: [2378] } }, IDLE_WORKER_4);
   assert.match(spent.ran.stdout, /WOKE worker-2407 <- engineers\/ready-row-unclaimed\/2407 \(STARTED/, spent.ran.stderr);
   assert.ok(!/WOKE worker-4/.test(spent.ran.stdout), "the spent instance is not woken for a new row");
-  const control = tickWith({ "worker-4": { spawnedAt: 1, rows: [] } }, IDLE_WORKER_4);
-  assert.match(control.ran.stdout, /WOKE worker-4 <- engineers\/ready-row-unclaimed\/2407 \(no clear\)\n/,
+  // The control is the spare NAMED FOR THE ROW (agent-org#459: a spare is typed only its own row), nothing recorded and nothing held.
+  const control = tickWith({ "worker-2407": { spawnedAt: 1, rows: [] } }, IDLE_WORKER_2407);
+  assert.match(control.ran.stdout, /WOKE worker-2407 <- engineers\/ready-row-unclaimed\/2407 \(no clear\)\n/,
     `the control: nothing recorded and nothing held, so the idle spare takes the row; got ${control.ran.stderr}`);
+  // And an idle spare named for ANOTHER row, with nothing recorded, is not typed this one: the row starts its own address.
+  const other = tickWith({ "worker-4": { spawnedAt: 1, rows: [] } }, IDLE_WORKER_4);
+  assert.match(other.ran.stdout, /WOKE worker-2407 <- engineers\/ready-row-unclaimed\/2407 \(STARTED/, other.ran.stderr);
+  assert.ok(!/WOKE worker-4 /.test(other.ran.stdout), "the idle spare that is for no row is not typed the row");
 });
 
 test("#2407 THE WAKE ENTRY (settle): a leftover entry is gone before the next instance's claim, and its failure is recorded", () => {
