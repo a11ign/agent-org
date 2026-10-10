@@ -21,7 +21,11 @@ $ node_modules/.bin/tsc --noEmit -p tsconfig.json   # no error in the touched fi
 
 Positive control (a row naming `src/x.ts` with `no-code-left` asks for no files), negative control (the same row without the label asks for `src/x.ts`; an answer with no `labels` is unlabelled, not failed), failed lookup `null`, the exact label name only, "the row's body and its edge, once each" still two `issue view`s, and the new test that the two lookups' argv are equal.
 
-Acceptance: `node --import tsx --test src/packaging/row-claim-file-overlap-rule.test.ts src/row-claim.test.ts src/row-claim-reads-together.test.ts src/packaging/row-claim-session-eligibility.test.ts src/packaging/multi-board-claim.test.ts src/packaging/row-claim-one-row.test.ts src/packaging/row-claim-live.test.ts`
+Acceptance: `node --import tsx --test src/packaging/row-claim-file-overlap-rule.test.ts src/row-claim-reads-together.test.ts src/row-claim.test.ts`
+
+Mutation: 4 mutants, each killed by a named test. The label never read (`#727 positive control` and `#727 ACCEPTANCE, END TO END` red); the label always clearing (`#727 negative control`, `#710` no-Region, `#462`, `#2769` red); the template check's body read asking `body` alone (`#732 ... ONE argv`, `the pre-write reads go out in ONE batch` and `RESUMING a row` red); the label matched by prefix (`#727: the label is an exact name` red). Sources restored with `cp`, `git status` clean.
+
+The Acceptance above is the three of the row's seven files that the CI job can run: it has no token, and `row-claim-session-eligibility.test.ts` (which needs `token` through `sessionEligibilityReason`) is refused there. The row's whole seven-file command passes locally (182 of 182).
 
 ## Anything a reviewer should be sceptical of
 
