@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-The gate asks the tracker's lanes and the other repositories' lists as one wave instead of two. `readTrackerLanes` (three `gh issue list`/`label list` calls) and `readOtherScopes` (one `gh pr list` per other declared code repository) each made their first reads together but one after the other, and neither needs the other's answer: in a gate run with its spawns traced the first was one batch of 1.7 s and the second the next of 1.3 s. `readLanesAfterOutageCheck` rehearses both once, sends the calls of both as one batch (`readWithFirstWaveTogether`, the seam slices 2 to 5 use), and replays each reader its own answers, so the commands, their parsing and every verdict are the readers' own and only when the waiting happens moves. It is asked where the tracker lanes already were, after the check that both of `readPrs` and `readReadyRows` were refused, so an outage tick asks no more refused questions than before, and those two reads stay outside it. What a rehearsal cannot foresee (a chairman row's events, read once the list is in hand) still runs on its own. a11ign/a11ign#3566, slice 6 of the tick's cost.
