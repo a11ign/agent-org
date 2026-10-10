@@ -1,6 +1,6 @@
 `releaseStats` (`src/org-retro.ts`) counts as a voiding only the reasons that are a claim that stopped moving (`stalled`, `gone`), and reports `closed`, `blocked` and `wait` beside them as `otherReleases`; `merged` stays unreported. `RELEASE_REASON_KINDS` classifies every reason, and the test parses the `why` union of `ReleaseRequest` so an unclassified new reason fails.
 
-Acceptance: `bash -c 'cd /home/agent/repos/agent-org-wt-4689 && AGENT_ORG_HOST=/home/agent/repos/wt-4689/.agent-org/host.json node --import tsx --test src/org-retro-release-reasons.test.ts'`
+Acceptance: `node --import tsx --test src/org-retro-release-reasons.test.ts`
 
 Mutation: `stalled` classified `released` failed 2 of 4 tests (the one-line-per-reason fixture and the stalled-counts-1); `closed` and `blocked` classified `voiding` failed those two plus the retro report tests in `org-retro.test.ts`; `wait` removed from the classification failed the union-coverage test plus those two. `org-retro.ts` restored byte-identical each time (`diff` against a copy).
 
