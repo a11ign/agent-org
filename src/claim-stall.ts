@@ -1193,14 +1193,23 @@ export function claimStalledOrders(readings: { facts: ClaimFacts; reading: Readi
 export const CLAIMED_WORKER_STALLED = "claimed-worker-stalled";
 
 /**
- * ONE EVENT PER FRESH NUDGE, `<session>/#<row>/<nudge time>` (the nudge time in epoch ms, the spelling `nudgeKey` and the wake ledger carry, so a line
- * in one finds its line in the other). A `nudged` reading is the same episode offered again and is NOT an event, and neither is a release: a second
- * row's nudge is a different ref, which is what `repeatsIn` counts as a repeat of the class.
+ * ONE EVENT PER UNANSWERED NUDGE, `<session>/#<row>/<nudge time>` (the nudge time in epoch ms, the spelling `nudgeKey` and the wake ledger carry, so a line
+ * in one finds its line in the other). THE CLASS IS A NUDGE THE HOLDER DID NOT ANSWER, and the observable is the second reading's verdict
+ * ({@link secondReading}): a `release` with `why: "stalled"` and a `nudgedAt`, i.e. nothing on the row moved after the nudge either. A FRESH nudge is
+ * NOT an event (#4826): it is the guard working, and `repeatsIn` read each firing of it as a repeat of the class, so four nudges that all brought the
+ * holder back (3 of the 4 rows closed within minutes) tripped `class-repeat` for a guard that had not failed. The fresh nudge stays recorded where it
+ * already was, the wake ledger (`nudgeKey`).
+ *
+ * THE REF CARRIES `nudgedAt`, NOT `now`: the release is read on the tick it happens, long after the nudge, and a ref that moved with the tick would make
+ * one episode two lines. A `nudged` reading is the same episode still inside its grace and is NOT an event. NOT SEEN, AND SAID HERE SO IT IS NOT A SURPRISE:
+ * a holder that is never released (a `Claimed-nothing:` claim, #3407; an open pull request of its own, #2999) reads `nudged` for good, so an unanswered
+ * nudge to one is in the wake ledger only. A second row's unanswered nudge is a different ref, which is what `repeatsIn` counts as a repeat of the class.
  * @param {{ facts: ClaimFacts, reading: Reading }[] | undefined} readings @param {number} now @returns {FailureEvent[]}
  */
 export function stalledNudgeEvents(readings: { facts: ClaimFacts; reading: Reading; }[] | undefined, now: number): FailureEvent[] {
-  return (readings ?? []).filter(({ reading }) => reading.kind === "nudge")
-    .map(({ facts }) => ({ classKey: CLAIMED_WORKER_STALLED, ref: `${facts.session}/#${facts.row}/${now}`, at: now }));
+  return (readings ?? []).flatMap(({ facts, reading }) => reading.kind === "release" && reading.why === "stalled" && reading.nudgedAt !== null
+    ? [{ classKey: CLAIMED_WORKER_STALLED, ref: `${facts.session}/#${facts.row}/${reading.nudgedAt}`, at: now }]
+    : []);
 }
 
 /**
