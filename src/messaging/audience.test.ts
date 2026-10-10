@@ -254,7 +254,7 @@ describe("messaging.announcementsFile is the second destination, optional, and a
   });
 
   test("a path outside the secret directory, an empty string and a non-string are each a named refusal", () => {
-    for (const bad of ["/etc/shadow", "~/.ssh/id_ed25519", "", 7, null]) {
+    for (const bad of ["/etc/shadow", "~/.config/elsewhere/announcements.json", "", 7, null]) {
       assert.throws(() => parse({ announcementsFile: bad }), (error: unknown) => error instanceof MessagingConfigRefusal && error.field === "messaging.announcementsFile", String(bad));
     }
   });
