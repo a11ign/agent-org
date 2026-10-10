@@ -16,9 +16,8 @@ What changes, by the row's four items:
 Known edge, from the code and not from a run: a turn is held back until its message is `QUIET_MS` (five minutes) old, so in a healthy store the newest turn reads about five minutes old right after an ingest. A single tool call longer than ten minutes that is the only thing running can still read as stale; that is one incident per episode, never one per run.
 
 Acceptance: `cd /home/agent/repos/wt-agent-org-498 && npx rstest run --config scripts/rstest/rstest.config.* src/trace/freshness.test.ts src/packaging/host-units.test.ts`
-Acceptance: `cd /home/agent/repos/wt-agent-org-498 && npx rstest run --config scripts/rstest/rstest.config.* src/trace/freshness.test.ts`
 
-(The first line is the row's own command. `host-units.test.ts` reads the git history through `shippedUnits`, which the acceptance job does not have, so it is refused there and passes in the worktree; the second line is the half of it that job can run.)
+History: full
 
 Closes a11ign/agent-org#498
 
