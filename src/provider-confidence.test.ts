@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { confidenceReading, formatConfidenceReading, parseWindow, type ConfidenceReading } from "./provider-confidence.ts";
+import { confidenceReading, formatConfidenceReading, MAX_WINDOW_MS, parseWindow, type ConfidenceReading } from "./provider-confidence.ts";
 import { tmpDirForFile } from "./lib/tmp-fixture.ts";
 
 const HOUR = 3_600_000;
@@ -149,8 +149,15 @@ test("a window is a number and m, h or d, and anything else is refused rather th
   for (const bad of ["", "24", "h", "0h", "1.5h", "24 h", "-1h", "1w"]) assert.equal(parseWindow(bad), undefined, JSON.stringify(bad));
 });
 
+test("a window past what a Date can start is refused, and the widest one that can is accepted (#595)", () => {
+  assert.equal(parseWindow("100000000d"), MAX_WINDOW_MS, "the boundary is inside");
+  for (const over of ["100000001d", "2400000001h", `${"9".repeat(60)}d`, `${"9".repeat(400)}h`]) assert.equal(parseWindow(over), undefined, over.slice(0, 20));
+  assert.equal(readingOf([], { windowMs: MAX_WINDOW_MS }).rows.length, 0, "the widest window still has a start to print");
+  assert.match(formatConfidenceReading(readingOf([], { windowMs: MAX_WINDOW_MS })), /^Provider confidence, -\d+-/);
+});
+
 test("a window that is not a positive number is a programming error, not an empty reading", () => {
-  for (const windowMs of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) assert.throws(() => readingOf([], { windowMs }), RangeError);
+  for (const windowMs of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, MAX_WINDOW_MS + 1e3]) assert.throws(() => readingOf([], { windowMs }), RangeError);
 });
 
 test("the CLI prints the reading of a log file, takes `--since 24h` as the row spells it, and refuses a window it cannot read", () => {
@@ -170,5 +177,9 @@ test("the CLI prints the reading of a log file, takes `--since 24h` as the row s
   const bad = run("--since", "yesterday", `--log=${log}`);
   assert.equal(bad.status, 2);
   assert.match(bad.stderr, /CANNOT ASK: --since takes a number and m, h or d/);
+  const overflow = run(`--since=${"9".repeat(60)}d`, `--log=${log}`);
+  assert.equal(overflow.status, 2, `an overflowing window is refused like any other bad one: ${overflow.stderr}`);
+  assert.match(overflow.stderr, /CANNOT ASK: --since takes a number/);
+  assert.equal(run("--since=100000000d", `--log=${log}`).status, 0, "the widest window the CLI takes still runs");
   assert.equal(run("--sinse", "24h", `--log=${log}`).status, 2, "an unknown flag is refused, not run on the default");
 });

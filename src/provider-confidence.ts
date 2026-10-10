@@ -17,6 +17,8 @@ import { flagValue, refuseUnknownFlags } from "./lib/cli-flags.ts";
 const MS_PER_MINUTE = 60_000;
 const MS_PER_HOUR = 60 * MS_PER_MINUTE;
 const MS_PER_DAY = 24 * MS_PER_HOUR;
+/** The widest window a `Date` can start: 100,000,000 days, the range of JavaScript's time value. A wider one has no start to print, so it is refused and not turned into a `RangeError` at the end of the CLI. */
+export const MAX_WINDOW_MS = 8.64e15;
 /** The reading is DAILY, so a bare `node src/provider-confidence.ts` asks for the last day. */
 export const DEFAULT_WINDOW_MS = MS_PER_DAY;
 /** The line numbers a formatted reading names before it says how many more there were. */
@@ -164,7 +166,7 @@ export type ReadingOptions = {
  * line, and one from the future of `now`, is not counted. Rows come back ordered by use and then question.
  */
 export function confidenceReading(lines: readonly unknown[], { now, windowMs, declaredFloor }: ReadingOptions): ConfidenceReading {
-  if (!(windowMs > 0) || !Number.isFinite(windowMs)) throw new RangeError(`the window must be a positive number of milliseconds, not ${String(windowMs)}`);
+  if (!(windowMs > 0 && windowMs <= MAX_WINDOW_MS)) throw new RangeError(`the window must be from 1 to ${MAX_WINDOW_MS} milliseconds, not ${String(windowMs)}`);
   const since = now - windowMs;
   const tallies = new Map<string, Tally>();
   const unreadable: number[] = [];
@@ -220,12 +222,13 @@ export function formatConfidenceReading(reading: ConfidenceReading): string {
 
 const WINDOW_UNITS: Readonly<Record<string, number>> = { m: MS_PER_MINUTE, h: MS_PER_HOUR, d: MS_PER_DAY };
 
-/** `30m`, `24h` or `7d` as milliseconds; anything else is `undefined`, because a window guessed at would be a reading of some other span. */
+/** `30m`, `24h` or `7d` as milliseconds; anything else, or a span past {@link MAX_WINDOW_MS}, is `undefined`, because a window guessed at would be a reading of some other span. */
 export function parseWindow(text: string): number | undefined {
   const match = /^(\d+)([mhd])$/.exec(text);
   const unit = match?.[2] === undefined ? undefined : WINDOW_UNITS[match[2]];
   const count = match?.[1] === undefined ? 0 : Number(match[1]);
-  return unit === undefined || count === 0 ? undefined : count * unit;
+  const span = unit === undefined ? 0 : count * unit;
+  return span > 0 && span <= MAX_WINDOW_MS ? span : undefined;
 }
 
 /** `--since 24h` and `--since=24h` are the same request: the row spells the first, the repository's other commands the second. */

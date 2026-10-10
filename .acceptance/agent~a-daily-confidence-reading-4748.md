@@ -18,7 +18,7 @@ platform: n/a (nothing in GitHub, systemd or git counts a provider's confidence;
 
 ```
 $ npx rstest run --config scripts/rstest/rstest.config.ts src/provider-confidence.test.ts      # AGENT_ORG_HOST unset
-VERDICT pass: 13 tests in 1 file
+VERDICT pass: 14 tests in 1 file
 $ npx tsc --noEmit -p tsconfig.json     # no error in provider-confidence*; only the pre-existing mjs-ratchet.test.ts missing-module errors
 ```
 
@@ -39,7 +39,7 @@ model-routing  subsystems  88     9            10%    70              18        
 
 Acceptance: `npx rstest run --config scripts/rstest/rstest.config.* src/provider-confidence.test.ts`
 
-Mutation: every fall-back counted as under the floor -> 3 red (the 422 split, the question that only 422s, the table); nothing ever under the floor -> 4 red; no lower window edge -> 2 red; no upper window edge -> 1 red; an unreadable line dropped silently -> 3 red; the median taken as the mean -> 1 red; an outcome line read as unreadable -> 1 red. Each restored byte-identical (`diff`).
+Mutation: every fall-back counted as under the floor -> 3 red (the 422 split, the question that only 422s, the table); nothing ever under the floor -> 4 red; no lower window edge -> 2 red; no upper window edge -> 1 red; an unreadable line dropped silently -> 3 red; the median taken as the mean -> 1 red; an outcome line read as unreadable -> 1 red. A window past what a Date can start (`parseWindow` unbounded, reviewer-agent-org-595's `--since=9999…d` repro, which exited 1 with `RangeError`) -> 2 red; the bound set too tight -> 3 red. Each restored byte-identical (`diff`).
 
 ## Anything a reviewer should be sceptical of
 
