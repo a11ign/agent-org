@@ -36,10 +36,11 @@
 // ONE npm PACKAGE PER REPOSITORY IS READ (`release.package`), and `renderDora` says which: a release of another package in the same repository is not a
 // deployment in this reading. a11ign publishes four together in one version pull request, so it declares the command.
 //
-// A LEAF: it imports nothing from the tool, so `org-retro.ts` can import it and the test can run it with injected readers and no network.
+// A LEAF: it imports nothing from the tool but `release-behind-main.ts` (itself a leaf: what a releasable change is, #4688), so `org-retro.ts` can import it and the test can run it with injected readers and no network.
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { isShipped, noReleaseReason } from "./release-behind-main.ts";
 
 /** What an unreadable source prints. Never `0`. */
 export const UNKNOWN = "unknown";
@@ -96,8 +97,8 @@ export type Repository = { repo: string, release: { kind: "npm", package: string
  * `commit` is null when it could not be resolved, and for a release older than the window, which no change in it can be in
  */
 export type Release = { id: string, publishedAt: string, commit: string | null, deprecated: boolean };
-/** `paths` null: the file list was truncated */
-export type MergedPr = { number: number, mergedAt: string, mergeCommit: string | null, paths: string[] | null };
+/** `paths` null: the file list was truncated; `body` is the pull request's description, absent when the reader did not read it */
+export type MergedPr = { number: number, mergedAt: string, mergeCommit: string | null, paths: string[] | null, body?: string | null };
 /** `fixCommit`: the merge commit of the pull request that closed it, merged at `fixMergedAt` */
 export type Regression = { number: number, openedAt: string, closedAt: string | null, fixCommit: string | null, fixMergedAt: string | null };
 /**
@@ -139,8 +140,15 @@ function attempt<T>(read: () => T | null): T | null {
   }
 }
 
-/** @param {MergedPr} pr @param {Repository} repository @returns {boolean} a truncated file list cannot show the change was NOT releasable, so it counts */
-const isReleasable = (pr: MergedPr, repository: Repository): boolean => pr.paths === null || pr.paths.length >= FILES_PAGE || pr.paths.some((path) => repository.releasablePaths.some((prefix) => path.startsWith(prefix)));
+/**
+ * The same definition `release-behind-main.ts` uses (`isShipped`, imported and not copied): a test file or a changeset under a releasable path is not a releasable change, and a
+ * `no-release:` reason in the body (when the reader supplied it) says nothing was owed. A truncated file list cannot show the change was NOT releasable, so it counts.
+ * @param {MergedPr} pr @param {Repository} repository @returns {boolean}
+ */
+const isReleasable = (pr: MergedPr, repository: Repository): boolean => {
+  if (pr.body && noReleaseReason(pr.body) !== null) return false;
+  return pr.paths === null || pr.paths.length >= FILES_PAGE || pr.paths.some((path) => isShipped(path, repository.releasablePaths));
+};
 
 /**
  * Releases ordered by publish time, or `null` when any release has no readable time (an order cannot be trusted).
@@ -950,8 +958,8 @@ function regressionRows(repo: string, since: string): Regression[] {
 export const githubReaders: Readers = {
   releases: (repository, window) => (repository.release.kind === "npm" ? npmReleases((repository as any), window) : tagReleases(repository, window)),
   mergedPrs: (repository, { since }) => ghJson(["pr", "list", "-R", repository.repo, "--state", "merged", ...(since === null ? [] : ["--search", `merged:>=${since}`]),
-    "--limit", "1000", "--json", "number,mergedAt,mergeCommit,files"]).map((pr: any) => ({
-    number: pr.number, mergedAt: pr.mergedAt, mergeCommit: pr.mergeCommit?.oid ?? null, paths: Array.isArray(pr.files) ? pr.files.map((f: any) => f.path) : null,
+    "--limit", "1000", "--json", "number,mergedAt,mergeCommit,files,body"]).map((pr: any) => ({
+    number: pr.number, mergedAt: pr.mergedAt, mergeCommit: pr.mergeCommit?.oid ?? null, paths: Array.isArray(pr.files) ? pr.files.map((f: any) => f.path) : null, body: pr.body ?? null,
   })),
   regressions: (repository, { since }) => regressionRows(repository.repo, since),
   promotions: (repository) => (repository.release.kind === "npm" ? promotionRecords((repository as any)) : null),
