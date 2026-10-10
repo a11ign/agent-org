@@ -99,6 +99,8 @@ export type TraceEvent = {
   rows?: number[]; prs?: number[]; touchedRows?: number[]; touchedPrs?: number[]; actor?: string | null; seq?: number; claimant?: string; name?: string; state?: string | null; status?: string; headSha?: string; mergeSha?: string; startedAt?: number;
   completedAt?: number | null; how?: "delivered" | "gone"; outcome?: "merged" | "unmerged"; account?: string; resource?: string; cost?: number | null; exit?: number; command?: string; workspace?: string;
   script?: string; sessionId?: string; keyedBy?: "session" | "time" | null; unkeyed?: "script" | "no-turn";
+  /** a turn's reasoning effort as Claude Code wrote it on the transcript record; ABSENT when the record carried none, which is not `low` (agent-org#469) */
+  effort?: string;
 };
 
 export type ToolRead = { tool: "Read" | "Grep" | "Glob" | "mixed"; tokens: number | null };
@@ -391,10 +393,19 @@ function turnsOf({ records, groups, session, transcript, owner, priorAt, rowRepo
       id: `turn:${messageId}`, kind: "turn", source: "transcript", at: endedAt, session, transcript, row: own.row, pr: own.pr, repo: own.repo, ...listedBy(own), cause: own.cause,
       causeKey: own.causeKey, wakeId: own.id, model: record.message.model, tokens, costUsd: costOf(record.message.model, tokens), toolRead: reads.get(messageId) ?? null,
       wallClockMs: previous !== null && !Number.isNaN(endedAt) ? Math.max(0, endedAt - previous) : null, toolMs: toolMsBefore(records, first, assistantAt[first]),
-      sidechain: record.isSidechain === true,
+      sidechain: record.isSidechain === true, ...effortOf(record),
       ...touchesOf(records.slice(first, last + 1).filter(({ record: block }) => block?.message?.id === messageId), rowRepo),
     };
   });
+}
+
+/**
+ * The effort a turn ran at, as the transcript record names it: `perTurnEffort` (the turn's own) before `effort` (the session's). MEASURED on Claude Code 2.1.296, where the two agree on
+ * every one of 43,000+ assistant records and neither is on a record an older client wrote. Present only when the record carried one: an absent effort is unknown, never `low`.
+ */
+export function effortOf(record: any): { effort?: string } {
+  const named = [record?.perTurnEffort, record?.effort].find((value) => typeof value === "string" && value !== "");
+  return named === undefined ? {} : { effort: named };
 }
 
 /** The tools whose results the report calls READ tokens. */

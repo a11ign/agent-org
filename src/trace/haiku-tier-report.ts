@@ -2,7 +2,7 @@
 //
 // `node src/trace/haiku-tier-report.ts [--store <events.ndjson>]` reads the closed rows and their pull requests from `gh` (one `issue list`) and the turns, compactions and
 // reviews from the trace store, and prints for `tier:haiku` rows and for the other rows closed in the same window: first-pass merge, review rejections per pull request,
-// compactions, and cost per closed row (turns per row beside them, which is NOT a stop condition). `ceo` reads it once, at 8 closed Haiku rows or 72 hours after the first
+// compactions, and cost per closed row (turns per row beside them, which is NOT a stop condition), and each row's effort with the arm split by it (agent-org#469). `ceo` reads it once, at 8 closed Haiku rows or 72 hours after the first
 // Haiku worker starts, and applies (a)-(e) below.
 //
 // WHAT IS MEASURED AND WHAT IS DEFINED, because the two wear the same clothes in a report:
@@ -12,6 +12,8 @@
 //   refused for length INFERRED: a Haiku turn whose prompt is over the ceiling is priced `null` (`costOf`, `maxPrompt`), and a refused request leaves no turn at all, so this counts
 //                      the turns the store DID record above the ceiling and is a floor on the refusals.
 //   cost per row       MEASURED turns, PRICED from `PRICES` now (`repriceEvents`); a row with an unpriced turn is a FLOOR and says so.
+//   effort             MEASURED: the `effort` the transcript names on each turn (`store.ts` `effortOf`), per row: the one value its turns ran at, `mixed` where they differ, `unknown`
+//                      where none names one. A turn that names none is left out of the comparison and an unknown row is NEVER counted as `low`. It splits an arm; it is no stop condition.
 // A rate over fewer than MIN_RATE_ROWS rows is printed "n=<k>, not a rate" and decides nothing.
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
@@ -33,7 +35,10 @@ const MS_PER_HOUR = 3_600_000;
 const PERCENT = 100;
 
 export type ClosedRow = { number: number; haiku: boolean; closedAt: number; pr: { repo: string; number: number } | null };
-export type RowMeasures = { number: number; haiku: boolean; merged: boolean; rejections: number; compactions: number; oversize: number; turns: number; costUsd: number; unpriced: number };
+export type RowMeasures = { number: number; haiku: boolean; merged: boolean; rejections: number; compactions: number; oversize: number; turns: number; costUsd: number; unpriced: number; effort: string };
+
+export const EFFORT_MIXED = "mixed";
+export const EFFORT_UNKNOWN = "unknown";
 
 export function median(values: number[]): number | null {
   if (values.length === 0) return null;
@@ -60,6 +65,13 @@ function spend(turns: TraceEvent[]): { costUsd: number; unpriced: number } {
   return { costUsd: priced.reduce((sum, turn) => sum + (turn.costUsd as number), 0), unpriced: turns.length - priced.length };
 }
 
+/** The effort a row's turns ran at: their one value, `mixed` when they differ, `unknown` when none names one (a turn that names none is not a vote for any value). */
+export function effortOfTurns(turns: TraceEvent[]): string {
+  const named = new Set(turns.map((turn) => turn.effort).filter((effort): effort is string => typeof effort === "string" && effort !== ""));
+  if (named.size === 0) return EFFORT_UNKNOWN;
+  return named.size === 1 ? [...named][0] : EFFORT_MIXED;
+}
+
 /** One closed row's figures. `events` must already be repriced. */
 export function measuresOf(row: ClosedRow, events: TraceEvent[]): RowMeasures {
   const about = eventsForRow(events, { rows: [row.number], prs: [] });
@@ -68,7 +80,7 @@ export function measuresOf(row: ClosedRow, events: TraceEvent[]): RowMeasures {
   const oversize = turns.filter((turn) => turn.model?.startsWith(HAIKU_MODEL_ID) && turn.costUsd === null).length;
   return { number: row.number, haiku: row.haiku, merged: pull.some((event) => event.kind === "merged"),
     rejections: pull.filter((event) => event.kind === "reviewed" && event.state === "CHANGES_REQUESTED").length,
-    compactions: mostCompactions(about), oversize, turns: turns.length, ...spend(turns) };
+    compactions: mostCompactions(about), oversize, turns: turns.length, ...spend(turns), effort: effortOfTurns(turns) };
 }
 
 export function summarise(rows: RowMeasures[]) {
@@ -150,6 +162,34 @@ function groupLines(s: Summary): string[] {
     `  turns per row, median (not a stop condition): ${s.medianTurns ?? "no rows"} (n=${s.n})`];
 }
 
+const EFFORT_ORDER = ["minimal", "low", "medium", "high", "xhigh", "max"];
+
+/** `low` before `high`, an effort this report has no place for after them (alphabetically), then `mixed` and `unknown` last. */
+function byEffortOrder(a: string, b: string): number {
+  const rank = (effort: string): number => {
+    if (effort === EFFORT_UNKNOWN) return EFFORT_ORDER.length + 2;
+    if (effort === EFFORT_MIXED) return EFFORT_ORDER.length + 1;
+    const known = EFFORT_ORDER.indexOf(effort);
+    return known >= 0 ? known : EFFORT_ORDER.length;
+  };
+  return rank(a) - rank(b) || a.localeCompare(b);
+}
+
+/** One line per effort the arm's rows ran at (its own figures, so "at low" and "at high" read apart), and each row's effort beside its number. */
+function effortLines(rows: RowMeasures[]): string[] {
+  if (rows.length === 0) return ["  effort: no rows"];
+  const efforts = [...new Set(rows.map((row) => row.effort))].sort(byEffortOrder);
+  const groups = efforts.map((effort) => {
+    const group = rows.filter((row) => row.effort === effort);
+    const s = summarise(group);
+    return `  at ${effort}: ${group.length} rows; first-pass merge ${s.firstPassRate === null ? "none merged" : rateText(s.nMerged, s.firstPassRate)}; `
+      + `review rejections per PR ${s.meanRejections === null ? "none merged" : `${s.meanRejections.toFixed(2)} (n=${s.nMerged})`}; `
+      + `cost per row, median ${s.medianCostUsd === null ? "no turns held" : `$${s.medianCostUsd.toFixed(2)} (n=${s.nCost})`}`;
+  });
+  return ["  effort of each row's turns (a row whose turns name none is `unknown`, not `low`):", ...groups,
+    `  per row: ${[...rows].sort((a, b) => a.number - b.number).map((row) => `#${row.number} ${row.effort}`).join(", ")}`];
+}
+
 /** The whole report as lines. `closed` is every closed row in the window, `events` the store (repriced here). */
 export function reportLines({ closed, events, now }: { closed: ClosedRow[]; events: TraceEvent[]; now: number }): string[] {
   const priced = repriceEvents(events);
@@ -161,7 +201,8 @@ export function reportLines({ closed, events, now }: { closed: ClosedRow[]; even
   const verdicts = stopRule({ haiku, other, closedInWindow: haiku.length, started, now });
   const verdictText = (v: Verdict): string => `${v.tripped === null ? "UNREADABLE" : v.tripped ? "STOP" : "ok"}  ${v.line}`;
   return [`${HAIKU_TIER_LABEL} trial report (a11ign/a11ign#4382), window from ${started === null ? "no Haiku worker yet" : new Date(started).toISOString()} to ${new Date(now).toISOString()}`,
-    `${HAIKU_TIER_LABEL} rows:`, ...groupLines(summarise(haiku)), "other rows closed in the same window:", ...groupLines(summarise(other)),
+    `${HAIKU_TIER_LABEL} rows:`, ...groupLines(summarise(haiku)), ...effortLines(haiku),
+    "other rows closed in the same window:", ...groupLines(summarise(other)), ...effortLines(other),
     "stop rule (STOP: set enabled to false in src/haiku-tier.json; UNREADABLE decides nothing):", ...verdicts.map(verdictText)];
 }
 

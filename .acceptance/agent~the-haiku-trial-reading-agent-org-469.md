@@ -1,0 +1,19 @@
+The Haiku trial reading says what effort each row's worker ran at, so rows started at `low` before the change to `high` are told apart from the rest (agent-org#469, chairman direction on a11ign#928).
+
+**Step 1, said as asked: the store did NOT keep effort on a turn, and the receiver's records are not where the report reads it.** Measured, `git grep -n -i effort` over `store.ts`, `otel-receiver.ts` and `haiku-tier-report.ts` printed nothing at `origin/main`. The report reads `kind: "turn"` events, which are built from Claude Code's transcripts (`turnsOf`), not from the receiver's `api_request` records (`row: null`, one in the whole 558 MB host store, so nearly no worker is launched under the exporter). The transcript's assistant records already name the effort: `perTurnEffort` and `effort` agree on all 43,470 assistant records of the 300 newest transcripts on this host (low 387, medium 1,308, high 41,775), and 7 records written by Claude Code 2.1.295 carry neither. So the turn event gains `effort` there (`effortOf` in `store.ts`, `perTurnEffort` first, then `effort`, and absent when the record names none). The receiver's `api_request` record gains the same `effort` attribute (its probe event carries `medium`), a small addition the Region named, though nothing reads it yet.
+
+**What changes.** `RowMeasures.effort` is the one effort a row's turns ran at, `mixed` where they differ, `unknown` where none names one (a turn that names none is not a vote, and an unknown row is never counted as `low`). `reportLines` prints, for each arm, a line per effort (`at low: 2 rows; first-pass merge ...; review rejections per PR ...; cost per row, median ...`, using the arm's own `summarise`) and `per row: #1000 low, #1001 high`. The stop rule is untouched: the same figures, the same five verdict lines.
+
+**Why `STATE_VERSION` moves to 5.** A transcript that has not changed is not read again, so every turn already stored would read `unknown`, and that is every row of the trial so far. The ingest state's own rule is that a version moves when a fix to what a turn carries must reach turns already stored: the next `trace -- --ingest` is a cold start, reads every transcript from byte 0 once, and `appendToStore` supersedes each stored turn with its copy that now carries the effort (as versions 3 and 4 did for `toolMs` and `toolRead`). That is a one-time cost on the host at the next ingest.
+
+**Not done here: Done-when 2 (the report run once on the host and its effort lines quoted on a11ign/a11ign#928).** `node src/trace/haiku-tier-report.ts` was run at this head and stopped at its one `gh issue list` with `GraphQL: API rate limit already exceeded` (the shared pool, #4148), so no live effort line is quoted, and the effort of the trial's stored turns is only known after the version-5 re-read above. The live reading is for the seat that runs the end-of-day reading after the merge and the next ingest, not a reason to hold this claim.
+
+Acceptance: `cd /home/agent/repos/wt-agent-org-469 && AGENT_ORG_HOST=/home/agent/repos/a11y-witness/.agent-org/host.json npx rstest run --config scripts/rstest/rstest.config.ts src/packaging/haiku-tier-report.test.ts`
+
+Mutation: five, each turning its own test red and nothing else, each restore from a copy in the scratchpad: `mixed` never fires (2 red); an unknown row counted as `low` (2); the session's `effort` read before the turn's own `perTurnEffort` (1); an absent effort stored as `low` (1); the receiver dropping `effort` (1, in `otel-receiver.test.ts`).
+
+Measured: `haiku-tier-report.test.ts` passes 4 of 4, and `src/trace` plus `src/packaging/haiku-tier.test.ts` with it pass, 364 tests in 20 files (the receiver, the ingest state and the trace store among them). `tsc --noEmit` reports only the two `mjs-ratchet.test.ts` errors `main` has.
+
+Closes a11ign/agent-org#469
+
+platform: n/a (a field read off the transcript record that already holds it)
