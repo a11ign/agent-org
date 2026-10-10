@@ -1,0 +1,5 @@
+---
+"agent-org": minor
+---
+
+`node src/route-guard.ts` reads the engineer starts by route over a trailing window (`--since=7d`): each route's share of the starts the provider decided, with the fallback, refused and override starts counted apart so the parts sum to the starts read, and, beside it, the first-pass merge rate of Haiku/high, Sonnet/medium and Sonnet/high over the rows the provider routed (a pull request merged with no `CHANGES_REQUESTED` review, joined to the decision log by the row id; a tier under `MIN_RATE_ROWS` merged rows is "not readable" and shows no rate). `--record` files ONE failure-ledger incident per lower tier more than 5 points under Sonnet/high's, naming the tier and the constants in `engineer-route.ts` to change; it never edits them, and a second day's reading files none, because the ledger already holds that (class, ref) pair. `--post` tells the day's reading once as an announcement (nothing asked), through the messenger or the epic comment, and nothing without a declared provider. A first-pass read that failed prints `NOT READ`, files nothing and exits 2 (a11ign/agent-org#724, #4875 item 4).

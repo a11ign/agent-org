@@ -73,14 +73,22 @@ export function effortOfTurns(turns: TraceEvent[]): string {
   return named.size === 1 ? [...named][0] : EFFORT_MIXED;
 }
 
+/**
+ * What a pull request's store events say of its merge: whether it merged, and how many `CHANGES_REQUESTED` reviews it took. This is the whole of "first-pass merge" (merged, and no
+ * rejection), kept here once so the other readings of it (`route-guard.ts`, agent-org#724) use this definition and not a copy. `null` is a row with no pull request, which has not merged.
+ */
+export function pullOutcome(events: TraceEvent[], pr: { repo: string; number: number } | null): { merged: boolean; rejections: number } {
+  const pull = pr === null ? [] : pullEvents(events, pr);
+  return { merged: pull.some((event) => event.kind === "merged"),
+    rejections: pull.filter((event) => event.kind === "reviewed" && event.state === "CHANGES_REQUESTED").length };
+}
+
 /** One closed row's figures. `events` must already be repriced. */
 export function measuresOf(row: ClosedRow, events: TraceEvent[]): RowMeasures {
   const about = eventsForRow(events, { rows: [row.number], prs: [] });
   const turns = about.filter((event) => event.kind === "turn");
-  const pull = row.pr === null ? [] : pullEvents(events, row.pr);
   const oversize = turns.filter((turn) => turn.model?.startsWith(HAIKU_MODEL_ID) && turn.costUsd === null).length;
-  return { number: row.number, haiku: row.haiku, merged: pull.some((event) => event.kind === "merged"),
-    rejections: pull.filter((event) => event.kind === "reviewed" && event.state === "CHANGES_REQUESTED").length,
+  return { number: row.number, haiku: row.haiku, ...pullOutcome(events, row.pr),
     compactions: mostCompactions(about), oversize, turns: turns.length, ...spend(turns), effort: effortOfTurns(turns) };
 }
 
