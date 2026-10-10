@@ -112,7 +112,9 @@ function planResolution(record: KeyRecord | undefined, open: boolean): Plan {
   return record?.pending ? { action: "withdraw" } : { action: "send", kind: "cleared" };
 }
 
-function planReminder(record: KeyRecord | undefined, policy: { remind: boolean; }, nowMs: number, config: Config): Plan {
+function planReminder(record: KeyRecord | undefined, policy: { remind: boolean; audience?: string; }, nowMs: number, config: Config): Plan {
+  // A kept ask is LISTED in the pinned message, which is the only reminder it has (#4745): a second message per day would be the growth the list replaces.
+  if (config.asksKept === true && policy.audience === AUDIENCE.ask) return { action: "none", why: "listed" };
   if (!record || !policy.remind || record.reminders >= config.reminders.max) return { action: "none", why: "duplicate" };
   if (nowMs - record.lastNotifiedAt < config.reminders.everyMs) return { action: "none", why: "duplicate" };
   return { action: "send", kind: "reminder", reminder: record.reminders + 1 };
