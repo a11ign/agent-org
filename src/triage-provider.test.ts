@@ -3,7 +3,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { parseHostConfig } from "./host-config.ts";
-import { compose, freshState, QUESTIONS, REPEAT_WINDOW_MINUTES, triageOrder, type QuestionName } from "./triage-provider.ts";
+import { readFileSync } from "node:fs";
+import { compose, freshState, LABELLED_DIGEST, LABELLED_WAKE, QUESTIONS, REPEAT_WINDOW_MINUTES, triageOrder, type QuestionName } from "./triage-provider.ts";
 
 const FAKE_KEY = "tsk-FAKE-0123456789-do-not-print";
 const KEY_PATH = "/fake/typesafe/key";
@@ -277,4 +278,61 @@ test("the use switched off: a host with a provider and a key asks nobody and wak
   const off = await triageOrder(ORDER, { ...deps, switches: { "wake-triage": false } });
   assert.deepEqual([off.route, off.via, off.reason, net.calls.length, lines], ["wake", "none", "the use is switched off", 0, []]);
   assert.equal((await triageOrder(ORDER, deps)).route, "digest", "CONTROL: the same host with no switch is on, because its declaration is the opt-in");
+});
+
+// #4878: the two questions the provider was unsure of carry the one set of orders whose answer is known, and every number they quote is re-counted from it here.
+type SheetRow = { cause: string; session: string; label: string; excluded: boolean };
+const SHEET = (JSON.parse(readFileSync(new URL("./trace/triage-labels-4074.json", import.meta.url), "utf8")) as { rows: SheetRow[] }).rows.filter((row) => !row.excluded);
+
+/** The pairs the sheet labels one way and only one way, `wake` or `digest`, at least twice: what the module's two lists must be. */
+function unanimousPairs(label: "wake" | "digest") {
+  const pairs = new Map<string, SheetRow[]>();
+  for (const row of SHEET) pairs.set(`${row.cause}\t${row.session}`, [...(pairs.get(`${row.cause}\t${row.session}`) ?? []), row]);
+  return [...pairs.values()]
+    .map((rows) => ({ cause: rows[0].cause, seat: rows[0].session, wake: rows.filter((r) => r.label === "wake").length, digest: rows.filter((r) => r.label === "digest").length, of: rows.length }))
+    .filter((p) => p.wake + p.digest >= 2 && (p.wake === 0 || p.digest === 0) && p[label] > 0)
+    .map((p) => ({ cause: p.cause, seat: p.seat, label, n: p[label], of: p.of }))
+    .sort((a, b) => a.cause.localeCompare(b.cause) || a.seat.localeCompare(b.seat));
+}
+const sorted = (list: readonly object[]) => [...list].sort((a: any, b: any) => a.cause.localeCompare(b.cause) || a.seat.localeCompare(b.seat));
+
+test("the labelled examples are the sheet's own: every unanimous pair, with its counts, and no pair the sheet does not hold", () => {
+  assert.deepEqual(sorted(LABELLED_WAKE), unanimousPairs("wake"));
+  assert.deepEqual(sorted(LABELLED_DIGEST), unanimousPairs("digest"));
+  assert.ok(LABELLED_WAKE.length > 0 && LABELLED_DIGEST.length > 0, "POSITIVE CONTROL: the sheet yields pairs of each label, so the equalities above are not two empty lists");
+  // the seat is part of the answer: one cause is a wake at one seat and a digest at another
+  assert.ok(LABELLED_WAKE.some((e) => e.cause === "pr-checks-failing") && LABELLED_DIGEST.some((e) => e.cause === "pr-checks-failing"));
+});
+
+test("asks-this-seat and informational-only are sent as structured options with the sheet's examples, the other three as before, and no floor moves", async () => {
+  const { deps, net } = rig(JEV, { body: answered({}) });
+  await triageOrder(ORDER, deps);
+  const sent = JSON.parse(net.calls[0].init.body).questions;
+  for (const name of ["asks-this-seat", "informational-only"]) {
+    const { yes, no } = sent[name].criteria;
+    for (const option of [yes, no]) {
+      assert.equal(typeof option.what, "string");
+      assert.equal(typeof option.not_for, "string");
+      assert.ok(option.examples.length > 0 && option.examples.every((e: string) => e.includes("a11ign#4074")));
+    }
+  }
+  assert.equal(sent["asks-this-seat"].criteria.yes.examples.length, LABELLED_WAKE.length);
+  assert.equal(sent["asks-this-seat"].criteria.no.examples.length, LABELLED_DIGEST.length);
+  assert.equal(sent["informational-only"].criteria.yes.examples.length, LABELLED_DIGEST.length, "informational-only reads the same digests the other question calls not-asking");
+  for (const name of ["repeat", "names-red-main", "names-chairman-direction"]) {
+    assert.deepEqual(typeof sent[name].criteria.yes, "string", `${name} is unchanged: plain text`);
+  }
+  assert.equal(Object.values<any>(QUESTIONS).some((q) => "minConfidence" in q), false, "no question carries a floor of its own: the host's declared floor still decides");
+});
+
+test("the result carries what was said of each question, an answer under the floor included, and nothing for a question it did not answer", async () => {
+  const body = answered({ "informational-only": "yes" }, 0.95);
+  (body.answers as any)["informational-only"].confidence = 0.5;
+  delete (body.answers as any).repeat;
+  const { deps } = rig(JEV, { body });
+  const out = await triageOrder(ORDER, deps);
+  assert.deepEqual(out.readings?.["informational-only"], { said: "yes", confidence: 0.5 });
+  assert.equal(out.answers?.["informational-only"], "no", "the value used is the fallback");
+  assert.equal(out.readings?.repeat, undefined);
+  assert.deepEqual(Object.keys(out.readings ?? {}).sort(), ["asks-this-seat", "informational-only", "names-chairman-direction", "names-red-main"]);
 });

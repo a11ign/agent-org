@@ -28,21 +28,69 @@ const NO_CAUSE = "(no cause)";
 export const REPEAT_WINDOW_MINUTES = 60;
 const ALWAYS_WAKES = "main is red or a chairman direction is attached, so it wakes whatever the provider would say";
 
-const yesNo = (instructions: string, fallback: "yes" | "no"): Question => ({
+/** TypeSafe's Choice option shape (`what`, `not_for`, `examples`; docs.typesafe.ai/primitives/advanced, "Structured Choice options"), as `wire()` sends it. `examples` is left off when there is none. */
+type Option = { what: string; notFor: string; examples?: readonly string[] };
+const optionOf = ({ what, notFor, examples = [] }: Option) => ({ what, not_for: notFor, ...(examples.length === 0 ? {} : { examples: [...examples] }) });
+
+const PLAIN = { yes: "the statement is true of this event.", no: "the statement is not true of this event." };
+const yesNo = (instructions: string, fallback: "yes" | "no", options?: Record<"yes" | "no", Option>): Question => ({
   type: "choice", instructions, fallback,
-  criteria: { yes: "the statement is true of this event.", no: "the statement is not true of this event." },
+  criteria: options === undefined ? PLAIN : { yes: optionOf(options.yes), no: optionOf(options.no) },
 });
+
+// THE TWO QUESTIONS THE PROVIDER WAS UNSURE OF (#4878). Measured 2026-10-10 over 30 recent orders asked with the plain criteria above: `repeat`, `names-red-main` and
+// `names-chairman-direction` answered at 1.0 and never fell back, while `asks-this-seat` fell under the 0.7 floor on 16 of 30 (mean 0.49) and `informational-only` on 21 of 30 (mean 0.41).
+// THE FLOOR IS NOT WHAT MOVED. These two questions are given the one set of orders whose answer is KNOWN: the frozen sheet of #4074 (`trace/triage-labels-4074.json`, 94 orders the
+// product-manager labelled `wake`, `digest` or `drop` on 2026-10-08), as what/not_for/examples in the shape TypeSafe reads (agent-org#564, #4752). `triage-provider.test.ts` re-counts every
+// example against the sheet, so a number here that the sheet does not hold fails there. The label is a JUDGMENT of a seat's reader and not an outcome of action: the four `needed-action`
+// lines of the digest log say only that a cause STOOD (their own `proxy` line), and `host-units-stale` is both labelled digest and offered again, so they are not used as examples.
+/** `n` rows of the sheet carry `label` for this cause at this seat, of `of` rows the sheet holds for the pair (the rest are `drop`). */
+type Labelled = { cause: string; seat: string; label: "wake" | "digest"; n: number; of: number };
+const exampleOf = ({ cause, seat, label, n, of }: Labelled): string => `${cause} to ${seat}: labelled ${label} ${n} of ${of} (product-manager, a11ign#4074)`;
+const pair = (label: Labelled["label"], rows: readonly (readonly [string, string, number, number])[]): readonly Labelled[] =>
+  Object.freeze(rows.map(([cause, seat, n, of]) => ({ cause, seat, label, n, of })));
+// EVERY (cause, seat) the sheet labels one way and only one way, `wake` or `digest`, at least twice: `triage-provider.test.ts` re-derives both lists from the sheet and fails on a
+// pair added, dropped or miscounted. A pair the sheet splits (`org-health` to ceo is 6 digest to 3 wake) is not an example of either, and one seen once is not a pattern.
+// `pr-checks-failing` is `wake` at product-manager and `digest` at ceo, where product-manager is the first reader: the seat is part of the answer.
+/** Orders the sheet labels `wake`: a judgment or a row write nobody else makes. */
+export const LABELLED_WAKE = pair("wake", [
+  ["answer-owed", "orchestrator", 2, 2], ["answer-owed", "product-manager", 12, 14], ["blocker-cleared", "orchestrator", 2, 2], ["fleet-batch-due", "orchestrator", 2, 2],
+  ["pr-checks-failing", "product-manager", 2, 2], ["pr-green-unarmed", "product-manager", 2, 2], ["pr-merge-conflict", "product-manager", 2, 2],
+  ["ready-queue-empty", "product-manager", 2, 3], ["ready-row-incomplete", "product-manager", 2, 2], ["row-branch-unshipped", "product-manager", 2, 2],
+  ["row-off-board", "product-manager", 2, 2], ["unclaimed-blocker-cleared", "product-manager", 4, 4],
+]);
+/** Orders the sheet labels `digest`: true but not urgent, or one of the repeating detectors read in one batch. */
+export const LABELLED_DIGEST = pair("digest", [
+  ["pr-checks-failing", "ceo", 4, 4], ["pr-codeowner-review-missing", "ceo", 5, 5], ["pr-review-blocked", "product-manager", 4, 4], ["ready-row-unclaimed", "orchestrator", 2, 2],
+  ["repeating-log-line", "orchestrator", 2, 2], ["row-call-count-signal", "product-manager", 4, 4], ["verdict-not-convinced", "ceo", 2, 2],
+]);
+const ASKS_THIS_SEAT: Record<"yes" | "no", Option> = {
+  yes: { what: "the event asks for a judgment or a row write that nobody else will make: this seat is the first reader and the one who must rule, label, promote or answer",
+    notFor: "a detector's list this seat reads in one batch, or an event another seat reads first and this seat is told of afterwards",
+    examples: LABELLED_WAKE.map(exampleOf) },
+  no: { what: "another seat is the first reader of this event, or it is one of the repeating detectors whose list is read in one batch, and nothing in it is this seat's to answer today",
+    notFor: "a reading that names a row to promote, tier, rule on or answer, which is this seat's whatever the cause is called, and an event that says something finished when this seat is to read it and answer",
+    examples: LABELLED_DIGEST.map(exampleOf) },
+};
+const INFORMATIONAL_ONLY: Record<"yes" | "no", Option> = {
+  yes: { what: "true but not urgent: a repeating detector's list, or a reading the same seat can take in one batch with its next order",
+    notFor: "an event that names a judgment or a row write only this seat can make, or that says something finished which this seat is to read and answer",
+    examples: LABELLED_DIGEST.map(exampleOf) },
+  no: { what: "the event asks for a judgment or a row write now",
+    notFor: "a repeating detector's list",
+    examples: LABELLED_WAKE.map(exampleOf) },
+};
 
 /**
  * The five questions, each atomic. The `fallback` of each is the answer that WAKES: a question the provider did not answer at or over the floor must never be the
  * reason an order is held, so the two that can only hold an order when answered `yes` fall back to `no`, and the three that can only force a wake fall back to `yes`.
  */
 export const QUESTIONS = Object.freeze({
-  "asks-this-seat": yesNo("Does this event ask something only the seat named in `session` can answer, or a row write nobody else will make?", "yes"),
+  "asks-this-seat": yesNo("Does this event ask something only the seat named in `session` can answer, or a row write nobody else will make?", "yes", ASKS_THIS_SEAT),
   "repeat": yesNo("Is this event a repeat of one already delivered to this same seat within the last 60 minutes? `lastDeliveredMinutesAgo` is the minutes since this same `causeKey` was last delivered to `session`, and is null or absent when no such delivery is known.", "no"),
-  "names-red-main": yesNo("Does this event name a red main, a failing build of the trunk? `mainRed` says whether the trunk is red at this moment, and absent means not known.", "yes"),
+  "names-red-main": yesNo("Does this event name a red main, a failing build of the trunk? `mainRed` is true when the trunk is red and this event is the one that reports it, and absent means not known.", "yes"),
   "names-chairman-direction": yesNo("Does this event carry a direction from the chairman? `chairmanDirection` says whether one is attached.", "yes"),
-  "informational-only": yesNo("Is this event informational only: true, but asking nobody to do or decide anything?", "no"),
+  "informational-only": yesNo("Is this event informational only: true, but asking nobody to do or decide anything?", "no", INFORMATIONAL_ONLY),
 } satisfies Record<string, Question>);
 export type QuestionName = keyof typeof QUESTIONS;
 const QUESTION_NAMES = Object.keys(QUESTIONS) as QuestionName[];
@@ -57,8 +105,13 @@ export type TriageOrder = {
   cause?: string; causeKey?: string; session?: string;
   lastDeliveredMinutesAgo?: number | null; mainRed?: boolean; chairmanDirection?: boolean;
 };
-/** `answers` are the five yes/no values composed into `route`, so a held order's log line says WHY it was held. */
-export type Triage = { route: Label; via: "jev" | "none"; confidence?: number; reason: string; answers?: Record<string, string> };
+/** What the provider said of one question, under the floor or not: its choice and its confidence. Absent for a question it did not answer (a malformed answer has no confidence). */
+export type Reading = { said: string; confidence: number };
+/**
+ * `answers` are the five yes/no values composed into `route`, so a held order's log line says WHY it was held. `readings` are what the provider SAID of each question it answered,
+ * so a floor can be read question by question: `answers` is the value used (a fallback when the reading is under the floor), `confidence` only the weakest of them (#4878).
+ */
+export type Triage = { route: Label; via: "jev" | "none"; confidence?: number; reason: string; answers?: Record<string, string>; readings?: Record<string, Reading> };
 /** The only fields of an order that are ever sent: a whitelist, so a field added to {@link TriageOrder} later is not sent by accident. */
 const STATE_FIELDS = ["cause", "causeKey", "session", "lastDeliveredMinutesAgo", "mainRed", "chairmanDirection"] as const;
 /** What is true of THIS process; a test passes a fresh one. */
@@ -164,6 +217,12 @@ export async function askProvider(request: ProviderRequest, deps: TriageDeps): P
 const valuesOf = (decision: Decision): Record<QuestionName, string> =>
   Object.fromEntries(QUESTION_NAMES.map((name) => [name, String(decision.answers[name].value)])) as Record<QuestionName, string>;
 
+/** Each question the provider answered, as it answered it: an answer held back by the floor shows its own choice here and its fallback in `answers`. */
+function readingsOf(decision: Decision): Record<string, Reading> {
+  const given = Object.entries(decision.answers).flatMap(([name, a]) => (a.confidence === undefined ? [] : [[name, { said: String(a.asked ?? a.value), confidence: a.confidence }] as const]));
+  return Object.fromEntries(given);
+}
+
 /** The lowest confidence among the answers the provider gave (an answer under the floor included), or `undefined` when it gave none. */
 function weakest(decision: Decision): number | undefined {
   const given = Object.values(decision.answers).flatMap((a) => (a.confidence === undefined ? [] : [a.confidence]));
@@ -202,5 +261,5 @@ export async function triageOrder(order: TriageOrder, deps: TriageDeps): Promise
   if (decision.via === "none") return wake("none", decision.reason ?? NO_PROVIDER);
   const answers = valuesOf(decision);
   const { route, reason } = compose(answers, order.lastDeliveredMinutesAgo);
-  return { route, via: "jev", confidence: weakest(decision), reason: `jev: ${reason}`, answers };
+  return { route, via: "jev", confidence: weakest(decision), reason: `jev: ${reason}`, answers, readings: readingsOf(decision) };
 }

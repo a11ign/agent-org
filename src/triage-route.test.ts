@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { parseHostConfig } from "./host-config.ts";
 import { DIGEST_FLUSH_MS, NEEDED_ACTION_PROXY, OUTCOME_WINDOW_MS, carriedKeys, digestDue, flushOrders, namesRedMain, readDigest, ridingDigest, routeOrders, routable, settleRidden, type GateOrder, type RouteDeps } from "./triage-route.ts";
-import { freshState, type Triage } from "./triage-provider.ts";
+import { freshState, QUESTIONS, type Triage } from "./triage-provider.ts";
 
 const T0 = 1_000_000_000_000;
 const MINUTE = 60_000;
@@ -57,6 +57,8 @@ function realProvider(reply: () => unknown) {
 }
 const ok = (body: unknown) => ({ ok: true, status: 200, json: async () => body });
 const INFORMATIONAL = { "informational-only": "yes" };
+/** The order a red main produces (`trunk-red.ts`), here for the manager that was told of it first on 2026-10-10. */
+const RED_MAIN_ORDER: GateOrder = { session: "product-manager", causeKey: "product-manager/trunk-red/pr-lab#61/019a00ad", cause: "trunk-red", prompt: "MAIN IS RED IN `lab`" };
 
 test("the real provider's floor decides: 0.9 digests and 0.89 delivers, and a provider error delivers", async () => {
   const run = async (reply: () => unknown) => {
@@ -106,8 +108,9 @@ test("each case the row names, composed in code over a fake provider, with its n
     return { route: out.deliver.length === 1 ? "wake" : "digest", asked: real.bodies.length };
   };
   const repeatedAt = (minutesAgo: number) => ({ facts: { deliveries: [{ at: T0 - minutesAgo * MINUTE, key: order(1).causeKey, session: "product-manager" }] } });
-  // a red main always wakes, and asks nobody
-  assert.deepEqual(await route(INFORMATIONAL, { facts: { mainRed: true } }), { route: "wake", asked: 0 });
+  // the order that IS a red main's wakes, and asks nobody; another order of a tick that read a red main is asked as on a green one (#4878)
+  assert.deepEqual(await route(INFORMATIONAL, { facts: { mainRed: true } }, RED_MAIN_ORDER), { route: "wake", asked: 0 });
+  assert.deepEqual(await route(INFORMATIONAL, { facts: { mainRed: true } }), { route: "digest", asked: 1 }, "an order that does not name the red main is asked, red main or not");
   assert.deepEqual(await route(INFORMATIONAL, { facts: { mainRed: false } }), { route: "digest", asked: 1 }, "CONTROL: the same order with main green digests");
   // a chairman direction always wakes, and asks nobody
   assert.deepEqual(await route(INFORMATIONAL, {}, { ...order(1), startFresh: true }), { route: "wake", asked: 0 });
@@ -140,6 +143,52 @@ test("with the use switched off, the key unreadable or no provider declared, eve
   const control = realProvider(() => ok(answersFor(INFORMATIONAL, 0.99)));
   const on = await routeOrders(fixture, deps(digestFile(), { triage: undefined, triageDeps: control.triageDeps }));
   assert.deepEqual([on.deliver.length, on.held.length, control.bodies.length], [0, 3, 3], "CONTROL: the same host with a readable key and the use on holds all three");
+});
+
+test("a red main in the tick wakes the order that names it and not the others: the 197 orders of 2026-10-10 are asked, and the red order is not (#4878)", async () => {
+  const real = realProvider(() => ok(answersFor(INFORMATIONAL, 0.95)));
+  const tick = [RED_MAIN_ORDER, order(1), order(2, "ceo"), order(3, "orchestrator")];
+  const path = digestFile();
+  const out = await routeOrders(tick, deps(path, { triage: undefined, triageDeps: real.triageDeps, facts: { mainRed: true } }));
+  assert.deepEqual(keys(out.deliver), [RED_MAIN_ORDER.causeKey], "the red main's own order is delivered");
+  assert.deepEqual(readDigest(path).map((h) => h.causeKey), [order(1).causeKey, order(2, "ceo").causeKey, order(3, "orchestrator").causeKey], "the other three are held, not woken");
+  assert.equal(real.bodies.length, 3, "and the provider was asked about each of them: the red order is not sent");
+  assert.deepEqual(real.bodies.map((b) => b.state.mainRed), [false, false, false]);
+  // CONTROL: before this change `mainRed` reached every order, so the same tick asked nobody and woke all four.
+  const named = await routeOrders([RED_MAIN_ORDER], deps(digestFile(), { triage: undefined, triageDeps: realProvider(() => ok(answersFor(INFORMATIONAL, 0.95))).triageDeps, facts: { mainRed: true } }));
+  assert.deepEqual(keys(named.deliver), [RED_MAIN_ORDER.causeKey]);
+});
+
+test("all five questions at the floor and informational-only yes digests; ONE answer under the floor wakes, and the floor itself is unchanged (#4878)", async () => {
+  const at = (floor: number, confidences: Record<string, number> = {}) => ({
+    answers: Object.fromEntries(QUESTION_NAMES.map((name) => [name, { type: "choice", choice: INFORMATIONAL[name as "informational-only"] ?? "no", probabilities: {}, confidence: confidences[name] ?? floor }])),
+  });
+  const run = async (reply: unknown) => {
+    const path = digestFile();
+    const out = await routeOrders([order(1)], deps(path, { triage: undefined, triageDeps: realProvider(() => ok(reply)).triageDeps }));
+    return { delivered: keys(out.deliver), held: readDigest(path).map((h) => h.causeKey) };
+  };
+  const FLOOR = JEV.minConfidence;
+  assert.deepEqual(await run(at(FLOOR)), { delivered: [], held: [order(1).causeKey] }, "POSITIVE: every answer at the floor, informational yes, routes to digest");
+  for (const name of QUESTION_NAMES) {
+    // An answer under the floor takes its question's fallback. `repeat` falls back to the very "no" it was answered, so it is the one question whose floor cannot change this route.
+    const fallsBackToWhatWasSaid = QUESTIONS[name as keyof typeof QUESTIONS].fallback === (INFORMATIONAL[name as "informational-only"] ?? "no");
+    const expected = fallsBackToWhatWasSaid ? { delivered: [], held: [order(1).causeKey] } : { delivered: [order(1).causeKey], held: [] };
+    assert.deepEqual(await run(at(FLOOR, { [name]: FLOOR - 0.01 })), expected, `${name} one hundredth under the floor ${fallsBackToWhatWasSaid ? "changes nothing: its fallback is the answer it gave" : "wakes"}`);
+  }
+  assert.deepEqual(QUESTION_NAMES.filter((name) => QUESTIONS[name as keyof typeof QUESTIONS].fallback === (INFORMATIONAL[name as "informational-only"] ?? "no")), ["repeat"], "CONTROL: only repeat is such a question");
+});
+
+test("an asked line carries what the provider SAID of each question and at what confidence, so a floor can be read question by question (#4878)", async () => {
+  const path = digestFile();
+  const reply = answersFor({ "asks-this-seat": "no", "informational-only": "yes" }, 0.95);
+  (reply.answers["informational-only"] as { confidence: number }).confidence = 0.3;
+  await routeOrders([order(1)], deps(path, { triage: undefined, triageDeps: realProvider(() => ok(reply)).triageDeps }));
+  const { asked } = JSON.parse(readFileSync(path, "utf8").trim().split("\n")[0]);
+  assert.deepEqual(asked.readings["informational-only"], { said: "yes", confidence: 0.3 }, "the choice the floor held back is on the line");
+  assert.equal(asked.answers["informational-only"], "no", "while the value used is the question's fallback");
+  assert.deepEqual(Object.keys(asked.readings).sort(), [...QUESTION_NAMES].sort());
+  assert.equal(asked.triage.confidence, 0.3, "and the line's one confidence is still the weakest");
 });
 
 test("a red main is read off the order a red main produces, by cause or by key", () => {

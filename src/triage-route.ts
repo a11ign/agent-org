@@ -10,8 +10,8 @@
 // JEV NEVER ACTS. The route is a decision about delivery. Nothing here labels, comments, edits or sends because of an answer: the order's text is agent-written state and
 // the provider is a third party.
 //
-// THE STATE THE PROVIDER SEES IS FACTS (#4631): the cause, its key, the seat, the age of the last delivery of the same key to the same seat, whether main is red and whether a
-// chairman direction is attached. The order's text is not among them, and `triage-provider.ts` whitelists the fields so it cannot become one by accident.
+// THE STATE THE PROVIDER SEES IS FACTS (#4631): the cause, its key, the seat, the age of the last delivery of the same key to the same seat, whether THIS order is the one a red main
+// produced (#4878) and whether a chairman direction is attached. The order's text is not among them, and `triage-provider.ts` whitelists the fields so it cannot become one by accident.
 //
 // A HELD ORDER'S OUTCOME IS NOW READABLE (#4631). When the same cause is offered again to the same seat within a day of a held order's delivery, one `outcome` line says
 // `needed-action: true`. It is a PROXY, and the line says so: the gate emitting a cause again shows it still stands, not that anybody acted on the digest.
@@ -44,7 +44,7 @@ export type Routing = { route: Label; via: Triage["via"]; confidence?: number };
 /** An order held for the digest: all that is needed to deliver it later, and what the provider said. */
 export type Held = { at: number; causeKey: string; session: string; prompt: string; triage: Routing };
 /** Every asked order, held or not -- the list the measurement reads. */
-export type Asked = { at: number; causeKey: string; session: string; triage: Routing; held: boolean; answers?: Record<string, string> };
+export type Asked = { at: number; causeKey: string; session: string; triage: Routing; held: boolean; answers?: Record<string, string>; readings?: Triage["readings"] };
 /** What came of a held order: it was offered again after its delivery. `proxy` says what that does and does not show. */
 export type Outcome = { at: number; causeKey: string; session: string; deliveredAt: number; "needed-action": true; proxy: string };
 type DigestLine = { asked: Asked; prompt?: string } | { delivered: string[]; at: number; carrier: string } | { outcome: Outcome };
@@ -108,21 +108,30 @@ const appendLine = (path: string, line: DigestLine): void => {
   appendFileSync(path, `${JSON.stringify(line)}\n`);
 };
 
-/** What the tick knows that an order does not say. A part left out is NOT KNOWN, and the provider's state then omits the field rather than saying "no". */
+/**
+ * What the tick knows that an order does not say. A part left out is NOT KNOWN, and the provider's state then omits the field rather than saying "no".
+ * `mainRed` is whether the tick read a red trunk at all, in ANY repository; an order is told it only when it is the order that names that red (see {@link stateOf}).
+ */
 export type TickFacts = { mainRed?: boolean; deliveries?: readonly { at: number; key: string; session: string }[] };
 export type RouteDeps = {
   host: TriageDeps["host"]; digestPath: string; now?: () => number; triage?: typeof triageOrder;
   triageDeps?: Omit<TriageDeps, "host">; exclude?: ReadonlySet<string>; facts?: TickFacts;
 };
 
-/** The facts of one order that the provider is asked about. Its text is not among them. */
+/**
+ * The facts of one order that the provider is asked about. Its text is not among them.
+ *
+ * A RED MAIN IS A FACT ABOUT THE ORDER THAT NAMES IT (#4878). The tick's `mainRed` says some trunk is red; handed to every order it woke the whole seat set, unasked, for as long as ANY
+ * repository's main stayed red with a fixer already dispatched: 197 manager orders between 12:35Z and 16:51Z on 2026-10-10 (one red `lab` main), against one digest in the six hours.
+ * `names-red-main` is "does THIS event name a red main", so the order that is the red main's own (`trunk-red`) is told it, and the others are asked as they would be on a green one.
+ */
 function stateOf(order: GateOrder, facts: TickFacts, now: number): TriageOrder {
   const deliveries = facts.deliveries?.filter((d) => d.key === order.causeKey && d.session === order.session);
   const last = deliveries === undefined ? undefined : deliveries.length === 0 ? null : Math.max(...deliveries.map((d) => d.at));
   return {
     cause: causeOf(order), causeKey: order.causeKey, session: order.session,
     ...(last === undefined ? {} : { lastDeliveredMinutesAgo: last === null ? null : Math.max(0, Math.round((now - last) / MS_PER_MINUTE)) }),
-    ...(facts.mainRed === undefined ? {} : { mainRed: facts.mainRed }),
+    ...(facts.mainRed === undefined ? {} : { mainRed: facts.mainRed && namesRedMain(order) }),
     chairmanDirection: order.startFresh === true || CHAIRMAN.test(order.causeKey),
   };
 }
@@ -175,7 +184,8 @@ export async function routeOrders<T extends GateOrder>(orders: readonly T[], dep
     if (answer === undefined) { deliver.push(order); continue; }
     const { causeKey, session, prompt } = order;
     const keep = answer.route !== "wake";
-    const asked: Asked = { at, causeKey, session, triage: routing(answer), held: keep, ...(answer.answers === undefined ? {} : { answers: answer.answers }) };
+    const asked: Asked = { at, causeKey, session, triage: routing(answer), held: keep, ...(answer.answers === undefined ? {} : { answers: answer.answers }),
+      ...(answer.readings === undefined ? {} : { readings: answer.readings }) };
     appendLine(deps.digestPath, { asked, ...(keep ? { prompt } : {}) });
     if (keep) held.push({ at, causeKey, session, prompt, triage: routing(answer) }); else deliver.push(order);
   }
