@@ -61,7 +61,8 @@ import { REPO } from "./project-identity.ts";
 import { roleBriefPath } from "./project-roles.ts";
 // #2619 (child 3d of #69): `session:`/`ready` -- `answer:` already arrives via `work-gate.ts`'s
 // re-export of `waiting-condition.ts`'s own field, so it is not re-imported here.
-import { SESSION_PREFIX, READY_LABEL } from "./project-vocabulary.ts";
+import { SESSION_PREFIX, READY_LABEL, OUT_OF_RELEASE_LABEL } from "./project-vocabulary.ts";
+import { PARKED_LABEL } from "./wait-condition.ts"; // #4727: the state a filed stuck-cause row is born in
 import { inBuildReason, isInBuild, unansweredRefusal, lookupHeldRows, lookupOtherHeldIssues }
   from "./row-claim/own-pr-health-rule.ts";
 import { parseWorktreeList, isPrimaryWorktree, isWorkingTreeClean, mergeStatus, detachedMergeStatus }
@@ -4210,14 +4211,14 @@ export const ESCALATION_LABEL = `${ANSWER_PREFIX}ceo`;
  * AND A CLEARED CAUSE IS ASKED AGAIN, ONCE ({@link reaskCleared}): an `ALREADY ESCALATED` key whose label was removed an hour ago and is still true.
  */
 export function escalateStuck(stuck: string[], run: (args: string[]) => string = guardedGh, log: (line: string) => void = (l) => process.stderr.write(l),
-  { escalated = new Set(), record = () => {}, unavailable = () => null, repoOf = codeRepositoryOf, ask = null }: {
+  { escalated = new Set(), record = () => {}, unavailable = () => null, repoOf = codeRepositoryOf, ask = null, boardOf = primaryBoard }: {
       escalated?: Set<string>; record?: (key: string) => void; unavailable?: (label: string) => string | null; repoOf?: (repoKey: string) => string | null;
-      ask?: Asker | null;
+      ask?: Asker | null; boardOf?: () => Board | null;
   } = {}) {
   const labelled = [];
   for (const line of stuck ?? []) {
     const key = String(line).split(":")[0];
-    const target = escalationTargetOf(key, repoOf);
+    const target = escalationTargetOf(key, { repoOf, boardOf });
     if (target === null) {
       log(`STUCK ${line} -- names no row of a repository this project declares, so it cannot be escalated; read the key\n`);
       continue;
@@ -4255,7 +4256,7 @@ export function escalateStuck(stuck: string[], run: (args: string[]) => string =
  *
  * `row` is the primary's row number when the escalation is a LABEL on it, and `null` when it is a filed row (which carries its own body).
  */
-function escalationTargetOf(key: string, repoOf: (repoKey: string) => string | null): { ref: string; row: number | null; place: (run: (args: string[]) => string) => number | null; } | null {
+function escalationTargetOf(key: string, { repoOf, boardOf }: { repoOf: (repoKey: string) => string | null; boardOf: () => Board | null; }): { ref: string; row: number | null; place: (run: (args: string[]) => string) => number | null; } | null {
   const subject = stuckSubjectOf(key);
   if (subject === null) return null;
   if (subject.repoKey === "") {
@@ -4267,7 +4268,7 @@ function escalationTargetOf(key: string, repoOf: (repoKey: string) => string | n
   const repo = repoOf(subject.repoKey);
   if (repo === null) return null;
   const ref = subject.number === null ? `${subject.repoKey}@${subject.sha8}` : subjectMention({ repoKey: subject.repoKey, number: subject.number });
-  return { ref, row: null, place: (run) => fileRepositoryRow({ ref, repo, key }, run) };
+  return { ref, row: null, place: (run) => fileRepositoryRow({ ref, repo, key, board: boardOf() }, run) };
 }
 
 /** The cause kind a key carries: `<session>/<cause>/<subject>/...`, the segment `stuckSubjectOf` splits around. */
@@ -4303,20 +4304,60 @@ function stuckRowWording({ ref, repo, key }: { ref: string; repo: string; key: s
   };
 }
 
+/** A Project board a row is put on: `gh project item-add <number> --owner <owner>`. */
+type Board = { owner: string; number: number; };
+
+/** The board of the tracker `gh issue create` files into (the primary's, #4727), or `null` when the declaration lists none for it. */
+const primaryBoard = (): Board | null => homeProjectDeclaration().tracker.find((tracker) => tracker.repo === REPO)?.board ?? null;
+
+/** The Status a filed stuck-cause row sits at: `parked` is decided-not-to-do-now, which the board reads as Backlog (`row-file`'s `boardingFor`). */
+const FILED_STATUS = "Backlog";
+
+/**
+ * The labels a stuck-cause row is BORN with (#4727), in one `issue create` so no reader sees it between states: the wait (`answer:ceo`, which
+ * removing is the answer), the one state label (`parked`: the org counts a row in exactly one state, #3942) and the release declaration
+ * (`out-of-release`: the primary has no milestone for a row the tick files, and a row with neither is the state `board-data` forbids).
+ */
+const FILED_STUCK_ROW_LABELS = [ESCALATION_LABEL, PARKED_LABEL, OUT_OF_RELEASE_LABEL];
+
+/**
+ * Put a filed row on the board at {@link FILED_STATUS}: the add, then the Status, the order `row-file`'s `boardAndVerify` keeps (an item with no
+ * Status is a card nobody can place). It throws, naming the row FIRST because `escalateStuck` cuts the line it logs at 90 characters, because a row
+ * filed and left off the board is the defect this exists to end and the next tick's title dedupe will find it and write nothing: the failure is
+ * read once, here, in the tick log.
+ */
+function boardFiledRow({ url, number }: { url: string; number: number; }, board: Board | null, run: (args: string[]) => string): void {
+  if (board === null) throw new Error(`#${number} filed but OFF THE BOARD: no board declared`);
+  const on = ["--owner", board.owner, "--url", url];
+  try {
+    run(["project", "item-add", String(board.number), ...on]);
+    run(["project", "item-edit", String(board.number), ...on, "--field", "Status", "--value", FILED_STATUS]);
+  } catch (err: any) {
+    throw new Error(`#${number} filed but OFF THE BOARD: ${firstLine(err, 120)}`, { cause: err });
+  }
+}
+
 /**
  * File the row `ceo` reads for a stuck cause in another repository, once: an OPEN `answer:ceo` issue already titled for `ref` is the
- * row (the ledger could not be written, or another tick got there first), so a second is not filed.
+ * row (the ledger could not be written, or another tick got there first), so a second is not filed and nothing is written to it.
  *
- * @returns the row's number, or `null` when `gh` printed none
+ * THE ROW IS BORN IN A STATE (#4727): {@link FILED_STUCK_ROW_LABELS} in the create, and the board add as part of filing rather than a repair
+ * after it. Born with only `answer:ceo` it had no state label, no declaration and no board item, so `row-off-board` and
+ * `row-without-exactly-one-state` fired on it within 20 minutes (#4716) and cost `product-manager` two wakes.
+ *
+ * @returns the row's number, or `null` when `gh` printed none (so nothing could be boarded)
  */
-function fileRepositoryRow({ ref, repo, key }: { ref: string; repo: string; key: string; }, run: (args: string[]) => string): number | null {
+function fileRepositoryRow({ ref, repo, key, board }: { ref: string; repo: string; key: string; board: Board | null; }, run: (args: string[]) => string): number | null {
   const { title, body } = stuckRowWording({ ref, repo, key });
   const open = JSON.parse(run(["issue", "list", "--state", "open", "--label", ESCALATION_LABEL, "--limit", "100", "--json", "number,title"]));
   const existing = open.find((row: { title: string; }) => row.title === title);
   if (existing !== undefined) return existing.number;
-  const made = run(["issue", "create", "--title", title, "--body", body, "--label", ESCALATION_LABEL]);
-  const number = /\/issues\/(\d+)\s*$/.exec(made);
-  return number === null ? null : Number(number[1]);
+  const made = run(["issue", "create", "--title", title, "--body", body, ...FILED_STUCK_ROW_LABELS.flatMap((label) => ["--label", label])]);
+  const filed = /(\S+\/issues\/(\d+))\s*$/.exec(made);
+  if (filed === null) return null;
+  const number = Number(filed[2]);
+  boardFiledRow({ url: filed[1], number }, board, run);
+  return number;
 }
 
 /**
