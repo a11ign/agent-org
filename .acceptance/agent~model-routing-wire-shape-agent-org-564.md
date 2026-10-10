@@ -21,7 +21,7 @@ Net lines: positive, almost all of it tests; the production change is a field, o
 
 ## How you verified it
 
-The tests need `AGENT_ORG_HOST` pointing at a checkout that holds `.agent-org/project.json` (this worktree has none, and the Acceptance command as written refuses without it, on `main` too); I ran with it set to the a11ign checkout's `host.json`.
+The tests need `AGENT_ORG_HOST` pointing at a checkout that holds `.agent-org/project.json` (this worktree has none, and the Acceptance command as written refuses without it, on `main` too); I ran with it set to the a11ign checkout's `host.json`. The Acceptance line is the row's command without its `cd` into the primary checkout: that path holds `main`, which carries this change only after the merge, so a run there says nothing about the diff (it passed there too, before the change was in it).
 
 ```
 $ node --import tsx --test src/decision-provider.test.ts src/engineer-route.test.ts
@@ -33,7 +33,9 @@ $ npx tsc --noEmit -p .     # only the pre-existing mjs-ratchet.test.ts missing-
 
 Two mutations, each turning named tests red and restoring green: the score's `criteria` left off the wire (3 red, among them the new wire test and its recorded-200 sibling), and truncating the score instead of rounding (1 red, the rounding table). The wire test's fake answers HTTP 422 for a body the API's schema would refuse and 200 with the recorded reply (`jev-1.13.0`, score `0.04`, 2026-10-09T23:10Z) otherwise, so a fake that accepts any body is no longer the only control.
 
-Acceptance: `cd /home/agent/repos/agent-org && node --import tsx --test src/decision-provider.test.ts src/engineer-route.test.ts`
+Acceptance: `node --import tsx --test src/decision-provider.test.ts src/engineer-route.test.ts`
+
+Mutation: the score's `criteria` left off `wire()` -> 3 tests red (the new wire test, its recorded-200 sibling, the request-shape test); `Math.trunc` for `Math.round` in `readAnswer` -> the rounding table red; both restored green.
 
 ## Anything a reviewer should be sceptical of
 
