@@ -12,8 +12,12 @@
 // THE SWITCHES are `.agent-org/decisions.json`: `{ "<use>": true }`, one boolean per use, absent meaning off. A malformed file turns every use off and says which file, never what
 // it held. The provider and its key are the host declaration's `triage` block (#4384), not this file's business.
 //
-// THE LOG is append-only JSON lines beside the wake ledger. A line is written when the provider was ASKED (a use that is off, or a host with no key, asked nobody and writes
-// nothing), and `recordOutcome` appends what came of a decision later, so a floor is tuned from results and not from a guess.
+// THE LOG is append-only JSON lines beside the wake ledger, and a routing is TWO lines of two shapes, both with an `outcome` (agent-org: a11ign#4754):
+//   REQUEST  `{ use, id?, fields, questions, answers, via, fellBack, reason?, outcome: "asked", at }`   written by `decide` when the provider was ASKED (a use that is off, or a host
+//            with no key, asked nobody and writes nothing). `"asked"` is its outcome: nothing has come of it yet. Before #4754 the line had no `outcome` and a reader saw None.
+//   OUTCOME  `{ use, id, outcome, reason?, at }`   appended by `recordOutcome` when something came of it, so a floor is tuned from results and not from a guess. It has no `answers`.
+// It is NOT folded into one line written at outcome time: `class-match` records a human's keep or removal days later in another process, and a decision that never got an outcome
+// would then leave nothing. {@link decisionsIn} is the one reading that counts a routing once, over the old shape (a request with no `outcome`) and the new alike.
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DEFAULT_TRIAGE_MIN_CONFIDENCE } from "./host-config.ts";
@@ -27,6 +31,8 @@ export const MAX_STATE_BYTES = 4096;
 const SWITCHES_FILE = join(".agent-org", "decisions.json");
 /** A `score` has this many levels, level 1 first; the API reads them by position from zero and answers on that scale (agent-org#564). */
 export const SCORE_LEVELS = 5;
+/** The `outcome` of a REQUEST line: the provider was asked and nothing has come of it. An OUTCOME line's is the caller's label, and a still-open decision reads as this one. */
+export const OUTCOME_ASKED = "asked";
 const MIN_SCORE = 1;
 const MAX_SCORE = MIN_SCORE + SCORE_LEVELS - 1;
 
@@ -145,6 +151,7 @@ const logged = (decision: Decision, state: Readonly<Record<string, unknown>>, de
   via: decision.via,
   fellBack: decision.fellBack,
   ...(decision.reason === undefined ? {} : { reason: decision.reason }),
+  outcome: OUTCOME_ASKED,
   at,
 });
 
@@ -196,4 +203,39 @@ export async function decide(use: DecisionUse, state: Readonly<Record<string, un
 export function recordOutcome(use: DecisionUse, id: string, outcome: string, deps: Pick<DecisionDeps, "logPath" | "now" | "diagnostic">, reason?: string): void {
   if (deps.logPath === undefined) return;
   writeLine(deps.logPath, { use, id, outcome, ...(reason === undefined ? {} : { reason }), at: (deps.now ?? Date.now)() }, deps.diagnostic ?? printDiagnostic);
+}
+
+/** One routing as the log reads: `at` is the REQUEST's when there was one, `asked` says whether the provider was ever asked, and `outcome` is {@link OUTCOME_ASKED} while none has come. */
+export type LoggedDecision = { use: string; id?: string; at: number; asked: boolean; outcome: string; reason?: string };
+
+const isLine = (value: unknown): value is Record<string, unknown> & { use: string; at: number } =>
+  isRecord(value) && typeof value.use === "string" && typeof value.at === "number";
+
+/**
+ * ONE ENTRY PER ROUTING, whichever shape wrote its lines. A request line (it has `answers`, with or without the `outcome: "asked"` it has carried since #4754) opens an entry, and the
+ * next outcome line of the same `use` and `id` closes it; an outcome line with nothing open is a routing nobody asked the provider about (an override, a fallback with the use off)
+ * and is an entry of its own; a request never closed stays `asked`. Pairing is by `use`, `id` and file order, which is time order because the log is only ever appended. Lines
+ * that are not a use and a time are skipped, so a half-written tail does not stop the count.
+ */
+export function decisionsIn(lines: readonly unknown[]): LoggedDecision[] {
+  const decisions: LoggedDecision[] = [];
+  const open = new Map<string, LoggedDecision[]>();
+  for (const line of lines) {
+    if (!isLine(line)) continue;
+    const id = typeof line.id === "string" ? line.id : undefined;
+    const key = `${line.use}\u0000${id ?? ""}`;
+    if (isRecord(line.answers)) {
+      const request: LoggedDecision = { use: line.use, ...(id === undefined ? {} : { id }), at: line.at, asked: true, outcome: OUTCOME_ASKED };
+      decisions.push(request);
+      if (id !== undefined) open.set(key, [...(open.get(key) ?? []), request]);
+      continue;
+    }
+    const outcome = typeof line.outcome === "string" ? line.outcome : undefined;
+    if (outcome === undefined) continue;
+    const reason = typeof line.reason === "string" ? { reason: line.reason } : {};
+    const request = id === undefined ? undefined : open.get(key)?.shift();
+    if (request !== undefined) Object.assign(request, { outcome, ...reason });
+    else decisions.push({ use: line.use, ...(id === undefined ? {} : { id }), at: line.at, asked: false, outcome, ...reason });
+  }
+  return decisions;
 }
