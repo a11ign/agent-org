@@ -42,6 +42,9 @@
 // WHAT THIS DOES NOT DO: escalate a stuck agent-org red to `answer:ceo`. `stuckRowOf` reads a `pr-<n>` subject as a row of the PRIMARY, and
 // labelling a11ign's #56 for agent-org's would be wrong, so a keyed subject (`pr-agent-org#56`) names no row and is reported, not labelled.
 import { execFileSync } from "node:child_process";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { stateEntryPath } from "./host-config.ts";
 import { summarizeTestLog, testIdentity } from "./parent-recheck-summary.ts";
 import { READY_LABEL } from "./claim-labels.ts";
 import { REPO } from "./project-identity.ts";
@@ -96,8 +99,64 @@ export function trunkOfCodeRepository(repoKey: string, repo: string): TrunkSourc
 /** The most parent failures the recheck records: an annotation is bounded, and a parent this broken is named by its first few. */
 export const MAX_RECORDED_PARENT_FAILURES = 30;
 
-const defaultRun = (args: string[]) =>
-  execFileSync("gh", args, { encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
+/** The HTTP status `gh` printed (`gh: Not Found (HTTP 404)`) on the error it threw, or `null` when it printed none (a timeout, a missing binary, a fixture's bare `Error`). */
+function refusalStatus(error: any): number | null {
+  const found = /\(HTTP (\d{3})\)/.exec(`${error?.stderr ?? ""}\n${error?.message ?? ""}`);
+  return found ? Number(found[1]) : null;
+}
+
+/**
+ * `gh`, with ITS STDERR CAPTURED (agent-org#693): inherited, its own `gh: Not Found (HTTP 404)` reached the tick's journal for a call whose answer this file
+ * handles. A refusal that is not a 404 still writes what `gh` said, so a 403 or a 5xx is as audible as it was; the 404 is the caller's to say, once.
+ */
+const defaultRun = (args: string[]) => {
+  try {
+    return execFileSync("gh", args, { encoding: "utf8", maxBuffer: 32 * 1024 * 1024, stdio: "pipe" });
+  } catch (error: any) {
+    if (refusalStatus(error) !== 404 && error?.stderr) process.stderr.write(String(error.stderr));
+    throw error;
+  }
+};
+
+/** How long a repository found to have NO such workflow is not asked again, and how often it is said (agent-org#693). */
+export const NO_WORKFLOW_RECHECK_EVERY_MS = 86_400_000;
+
+/** What a source's marker file holds: `present` once its runs read answered 200 (the workflow exists), `absent` once it answered 404, and when. */
+type WorkflowMarker = { state: "present" | "absent", at: number };
+
+/** Where the markers live, and the seams a test moves: the state directory, the clock and the line's destination. */
+export type TrunkReadOptions = { stateDir?: string, now?: number, report?: (line: string) => void };
+
+/** @returns where the source's marker is, or `null` when the state directory cannot be resolved: the read is then made and said every tick, never thrown into the tick */
+function markerPathOf(source: TrunkSource, stateDir: string | undefined): string | null {
+  try {
+    return join(stateDir ?? stateEntryPath(""), `trunk-workflow-${`${source.repo}-${source.workflow}`.replace(/[^A-Za-z0-9._-]/g, "-")}`);
+  } catch {
+    return null;
+  }
+}
+
+/** @returns the marker, or `null` when there is none or it cannot be read (an unreadable marker is no marker: the read is made and the line said) */
+function readMarker(path: string | null): WorkflowMarker | null {
+  if (path === null) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    return (parsed?.state === "present" || parsed?.state === "absent") && Number.isFinite(parsed.at) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/** NEVER THROWS INTO THE TICK: a marker that could not be written is said, and the next tick asks again. */
+function writeMarker(path: string | null, marker: WorkflowMarker, report: (line: string) => void): void {
+  if (path === null) return;
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify(marker));
+  } catch (cause) {
+    report(`trunk-red: the marker ${path} was not written (${String((cause as Error)?.message ?? cause).split("\n")[0]}), so the read is made again next tick`);
+  }
+}
 
 /**
  * The newest COMPLETED run that said `success` or `failure` -- or `null` when there is none, and `null`
@@ -194,7 +253,8 @@ export function failingTestsFromJobLog(logFailedOutput: string, jobName: string)
  * the question could not be answered. A refused read reports nothing, which is what the gate does for every lane
  * it cannot read (#1286), and the tick's PARTIAL exit is unchanged by it. THE TWO EMPTY ANSWERS ARE NOT ONE (agent-org#674):
  * the order is the same for both (`!red`), but the failure ledger ends a standing red on `null` and must not on `undefined`,
- * so an API blip is never counted as a green. `undefined` is: a runs read that was refused, no completed verdict run among the newest
+ * so an API blip is never counted as a green. A 404 on the runs read is a third thing (agent-org#693): the repository has NO such workflow, so there is no `main` to
+ * be red there and it reads `null` -- unless a marker says it HAD the workflow, when it is `undefined`, unread. `undefined` is: a runs read that was refused (a 403, a 5xx, a timeout), no completed verdict run among the newest
  * (all in flight or cancelled, which says nothing about `main`), and a green run whose jobs could not be read (a red `continue-on-error`
  * leg lives only there, so its absence is not a green).
  *
@@ -210,22 +270,39 @@ export function failingTestsFromJobLog(logFailedOutput: string, jobName: string)
  *
  * @param {(args: string[]) => string} [run]
  * @param {TrunkSource} [source] omitted for the primary project, whose calls are then exactly what they were
+ * @param {TrunkReadOptions} [options] where the markers live, and the clock and the line's destination
  * @returns {{ runId: number, url: string, sha: string, failedJobs: string[], failingTests: string[] | null,
  *   recheck: "pass" | "fail" | "unknown", parentFailingTests: string[] | null,
  *   originPr: { number: number, title: string, session: string | null } | null,
  *   repo?: string, repoKey?: string, event?: string, leg?: string } | null | undefined}
  */
-export function readTrunkRed(run: (args: string[]) => string = defaultRun, source: TrunkSource = PRIMARY_TRUNK): {
+export function readTrunkRed(run: (args: string[]) => string = defaultRun, source: TrunkSource = PRIMARY_TRUNK, options: TrunkReadOptions = {}): {
     runId: number; url: string; sha: string; failedJobs: string[]; failingTests: string[] | null;
     recheck: "pass" | "fail" | "unknown"; parentFailingTests: string[] | null;
     originPr: { number: number; title: string; session: string | null; } | null;
     repo?: string; repoKey?: string; event?: string; leg?: string;
 } | null | undefined {
   const { repo } = source;
+  const { now = Date.now(), report = (line) => process.stderr.write(`${line}\n`) } = options;
+  const markerPath = markerPathOf(source, options.stateDir);
+  const marker = readMarker(markerPath);
+  // A REPOSITORY FOUND TO HAVE NO SUCH WORKFLOW IS NOT ASKED AGAIN UNTIL THE MARKER IS A DAY OLD: the call can never succeed, and nothing is said either (agent-org#693).
+  if (marker?.state === "absent" && now - marker.at < NO_WORKFLOW_RECHECK_EVERY_MS) return null;
   const filters = source.eventFilters.length === 0 ? [null] : source.eventFilters;
-  const answers = filters.map((filter) => tryParse(() => run(["api", "--method", "GET", `repos/${repo}/actions/workflows/${source.workflow}/runs`,
-    "-f", "branch=main", ...(filter === null ? [] : ["-f", filter]), "-f", "per_page=10"])));
-  if (answers.some((a) => a === null)) return undefined;
+  const answers: any[] = [];
+  for (const filter of filters) {
+    try {
+      answers.push(JSON.parse(run(["api", "--method", "GET", `repos/${repo}/actions/workflows/${source.workflow}/runs`,
+        "-f", "branch=main", ...(filter === null ? [] : ["-f", filter]), "-f", "per_page=10"])));
+    } catch (error) {
+      // A 404 on the RUNS read says the repository has no such workflow; every other failure (403, 5xx, a timeout, a body that does not parse) is a refused read.
+      return refusalStatus(error) === 404 ? noSuchWorkflow(source, marker, { markerPath, now, report }) : undefined;
+    }
+    // The other filters would answer the same 404, and a refused read is refused whole.
+    if (answers[answers.length - 1] === null) return undefined;
+  }
+  // A body that carries `workflow_runs` is the workflow existing, runs or none: that is what a later 404 is told from.
+  if (marker?.state !== "present" && answers.some((a) => Array.isArray(a?.workflow_runs))) writeMarker(markerPath, { state: "present", at: now }, report);
   const newest = newestVerdictRun({ workflow_runs: answers.flatMap((a) => a?.workflow_runs ?? []) });
   if (newest === null) return undefined;
   const runRed = newest.conclusion === "failure";
@@ -246,6 +323,23 @@ export function readTrunkRed(run: (args: string[]) => string = defaultRun, sourc
   // The primary's facts carry no `repo`/`repoKey`, so they stay what they were. Nor does a push's `event`, so a push run read red is the fact it was.
   return source.repoKey === "" ? facts : { ...facts, repo, repoKey: source.repoKey,
     ...(newest.event === "schedule" ? { event: newest.event } : {}), ...(leg === undefined ? {} : { leg }) };
+}
+
+/**
+ * A 404 on the runs read (agent-org#693). THE TWO CASES ARE TOLD APART BY THE MARKER, and neither is the `undefined` of a refused read for the first:
+ *   - NEVER HAD IT (no marker, or `absent`): `null`, nothing to be red, said once per repository per day.
+ *   - HAD IT (`present`): the workflow was renamed or deleted, or the read lost its access (GitHub answers an unreadable repository 404 too), so `main` is
+ *     UNREAD and not green (`undefined`, which the failure ledger does not end a standing red on), and it is said every tick, as `gh`'s own line was.
+ * @returns {null | undefined}
+ */
+function noSuchWorkflow(source: TrunkSource, marker: WorkflowMarker | null, { markerPath, now, report }: { markerPath: string | null, now: number, report: (line: string) => void }): null | undefined {
+  if (marker?.state === "present") {
+    report(`${source.repo}: ${source.workflow} on main answered 404 though it had runs before, so its trunk is not read`);
+    return undefined;
+  }
+  writeMarker(markerPath, { state: "absent", at: now }, report);
+  report(`${source.repo}: no ${source.workflow} on main, so its trunk is not read`);
+  return null;
 }
 
 /** @param {(args: string[]) => string} run @param {TrunkSource} source @param {any[]} jobs */
