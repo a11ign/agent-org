@@ -6,6 +6,10 @@
 // each answers the DETERMINISTIC FALLBACK the caller supplied with the question, and none of them throws or nags. Nothing here merges, approves, grants or acts: the provider only
 // routes and classifies, and a caller turns an answer into an action in its own code.
 //
+// THE FLOOR IS A DEFAULT, AND A CALLER MAY DECIDE ON PROBABILITIES INSTEAD (#4875). A floor on `confidence` is one number for every action, and for a binary choice it is a demand
+// of `p >= 0.5 + floor / 2` (0.9 asks for 0.95). So every answer keeps the provider's whole `probabilities`, even when the floor replaced its value, and `model-routing`
+// composes on them against thresholds scaled to what a wrong answer costs. The `value` and `fellBack` of an answer are unchanged for every caller that does not read them.
+//
 // QUESTIONS ARE ATOMIC AND THE STATE IS TRIMMED. A caller composes small `choice` or `score` questions over a structured `state` of a few fields, never an agent-written body;
 // `decide` refuses to send a state over {@link MAX_STATE_BYTES}, and the log keeps the state's field NAMES and never its values.
 //
@@ -44,8 +48,12 @@ export type Question = (
   | { type: "score"; instructions: string; levels: ScoreLevels; fallback: number }
 ) & { minConfidence?: number };
 export type Value = string | number;
-/** `asked` is what the provider said when `fellBack` replaced it (an answer under the floor); `reason` says why it was replaced. */
-export type Answer = { value: Value; confidence?: number; fellBack: boolean; reason?: string; asked?: Value };
+/**
+ * `asked` is what the provider said when `fellBack` replaced it (an answer under the floor); `reason` says why it was replaced. `probabilities` is the provider's WHOLE distribution
+ * (#4875), kept whether or not the floor replaced the value: keyed by choice for a `choice` and by the 1..5 level for a `score` (the scale `value` is on). It is absent when the
+ * answer carried none that could be read, and a caller that decides on probabilities must treat absent as "not given", never as zero.
+ */
+export type Answer = { value: Value; confidence?: number; probabilities?: Readonly<Record<string, number>>; fellBack: boolean; reason?: string; asked?: Value };
 /** `via` is `jev` when at least one answer came from the provider, else `none` with the `reason`. The answers are always there: the fallback is a value, not an absence. */
 export type Decision = { use: DecisionUse; via: "jev" | "none"; fellBack: boolean; reason?: string; answers: Record<string, Answer> };
 export type DecisionDeps = TriageDeps & {
@@ -115,21 +123,51 @@ const unasked = (use: DecisionUse, questions: Readonly<Record<string, Question>>
  * The provider's reading of one answer, or `undefined` when it is not a value this question allows with a confidence from 0 to 1. A score comes back ZERO-BASED and FRACTIONAL (the
  * level's position, `0.04` for level 0, agent-org#564), so it is ROUNDED to the nearest level and moved onto the 1..5 scale the callers use; one that rounds outside the levels is malformed.
  */
-function readAnswer(question: Question, raw: unknown): { value: Value; confidence: number } | undefined {
-  const { choice, score, confidence } = (isRecord(raw) ? raw : {}) as { choice?: unknown; score?: unknown; confidence?: unknown };
+function readAnswer(question: Question, raw: unknown): { value: Value; confidence: number; probabilities?: Record<string, number> } | undefined {
+  const { choice, score, confidence, probabilities } = (isRecord(raw) ? raw : {}) as { choice?: unknown; score?: unknown; confidence?: unknown; probabilities?: unknown };
   if (typeof confidence !== "number" || !(confidence >= 0 && confidence <= 1)) return undefined;
-  if (question.type === "choice") return typeof choice === "string" && Object.hasOwn(question.criteria, choice) ? { value: choice, confidence } : undefined;
+  const distribution = readProbabilities(question, probabilities);
+  const kept = distribution === undefined ? {} : { probabilities: distribution };
+  if (question.type === "choice") return typeof choice === "string" && Object.hasOwn(question.criteria, choice) ? { value: choice, confidence, ...kept } : undefined;
   if (typeof score !== "number" || !Number.isFinite(score)) return undefined;
   const level = Math.round(score) + MIN_SCORE;
-  return level >= MIN_SCORE && level <= MAX_SCORE ? { value: level, confidence } : undefined;
+  return level >= MIN_SCORE && level <= MAX_SCORE ? { value: level, confidence, ...kept } : undefined;
+}
+
+/** A rounded distribution may sum a little over 1 and no more: more is not a distribution, and an inflated probability is the one error that lowers a route wrongly. */
+const PROBABILITY_SLACK = 0.05;
+
+/** The key a probability is kept under: a choice's own name, or a score's zero-based position moved onto the 1..5 scale. `undefined` is a key the question does not have. */
+function probabilityKey(question: Question, key: string): string | undefined {
+  if (question.type === "choice") return Object.hasOwn(question.criteria, key) ? key : undefined;
+  const level = Number(key) + MIN_SCORE;
+  return /^\d+$/.test(key) && level >= MIN_SCORE && level <= MAX_SCORE ? String(level) : undefined;
+}
+
+/**
+ * THE PROVIDER'S DISTRIBUTION (#4875), or `undefined` when it is not one this question could have: every key one of its options or levels, every value from 0 to 1, the total at
+ * most 1 (plus {@link PROBABILITY_SLACK}). An EMPTY record is "none given" and not a distribution of zeros: other uses' replies and fixtures carry `{}`. A distribution that is
+ * wrong anywhere is dropped whole, because a partial one would read as a smaller probability than the provider gave.
+ */
+function readProbabilities(question: Question, raw: unknown): Record<string, number> | undefined {
+  const entries = isRecord(raw) ? Object.entries(raw) : [];
+  if (entries.length === 0) return undefined;
+  const kept: Record<string, number> = {};
+  for (const [key, p] of entries) {
+    const at = probabilityKey(question, key);
+    if (at === undefined || typeof p !== "number" || !(p >= 0 && p <= 1)) return undefined;
+    kept[at] = p;
+  }
+  return Object.values(kept).reduce((sum, p) => sum + p, 0) > 1 + PROBABILITY_SLACK ? undefined : kept;
 }
 
 function settle(question: Question, raw: unknown, floorDefault: number): Answer {
   const read = readAnswer(question, raw);
   if (read === undefined) return { value: question.fallback, fellBack: true, reason: `the API's answer was not ${question.type === "choice" ? "a choice" : "a score from 1 to 5"} with a confidence` };
   const floor = question.minConfidence ?? floorDefault;
-  if (read.confidence < floor) return { value: question.fallback, confidence: read.confidence, fellBack: true, asked: read.value, reason: `${read.value} at ${read.confidence}, under the floor ${floor}` };
-  return { value: read.value, confidence: read.confidence, fellBack: false };
+  const kept = read.probabilities === undefined ? {} : { probabilities: read.probabilities };
+  if (read.confidence < floor) return { value: question.fallback, confidence: read.confidence, ...kept, fellBack: true, asked: read.value, reason: `${read.value} at ${read.confidence}, under the floor ${floor}` };
+  return { value: read.value, confidence: read.confidence, ...kept, fellBack: false };
 }
 
 function writeLine(path: string, line: object, diagnostic: (line: string) => void): void {

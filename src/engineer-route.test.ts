@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { decide, decisionLogPathFrom, decisionSwitchesPath, MAX_STATE_BYTES, type DecisionDeps } from "./decision-provider.ts";
 import {
-  composeRoute, fallbackRoute, fallbackWindow, GUARD_DECISIONS, isWindowTooSmall, LARGE_ROW_FILES, LARGEST_ROW_FILES, recordRouteOutcome, recordWindowTooSmall, regionSize, routeCostEvents,
+  composeRoute, HAIKU_MIN_P_MECHANICAL, HAIKU_MIN_P_SCORE, MEDIUM_MAX_P_SUBSYSTEMS, MEDIUM_MIN_P_SCORE, scoreAtMost, type Readings, fallbackRoute, fallbackWindow, GUARD_DECISIONS, isWindowTooSmall, LARGE_ROW_FILES, LARGEST_ROW_FILES, recordRouteOutcome, recordWindowTooSmall, regionSize, routeCostEvents,
   MECHANICAL_DATA, DEBUGGING_DATA, routeCostReading, ROUTE_COSTLIER_THAN_FALLBACK, routeEngineer, routeState, SCORE_LEVEL_DATA, SMALL_ROW_FILES, SUBSYSTEMS_DATA, windowOf, windowReadings, windowReportLines, QUESTIONS,
   type Answers, type Route, type RouteRow,
 } from "./engineer-route.ts";
@@ -29,16 +29,39 @@ const bodyOf = ({ region = ["src/a.ts", "src/a.test.ts"], acceptance = "pnpm tes
   `${extra}## Region\n\n\`\`\`\n${region.join("\n")}\n\`\`\`\n\n## Acceptance\n\n${acceptance === null ? "Acceptance: none -- a docs row" : `\`\`\`bash\n${acceptance}\n\`\`\``}\n\n## Done-when\n\n${doneWhen.join("\n")}\n`;
 const rowOf = (over: Partial<RouteRow> = {}): RouteRow => ({ number: 4999, title: "Rename a helper", labels: ["ready"], body: bodyOf(), ...over });
 
-type Given = Partial<Record<keyof Answers, string | number>> & { confidence?: number; low?: keyof Answers };
+/** The probabilities a test sets directly (#4875): P(yes) for a yes/no question and P(level) for the score, keyed by its 1-based level. */
+type Distribution = { mechanical?: number; subsystems?: number; debugging?: number; score?: Record<number, number> };
+type Given = Partial<Record<keyof Answers, string | number>> & { confidence?: number; low?: keyof Answers; p?: Distribution };
 const CLEAN_HAIKU = { mechanical: "yes", subsystems: "no", debugging: "no", score: 2 };
 /** The API's score is the level's POSITION from zero and fractional (agent-org#564): level 2 comes back `1.04`, not `2`. `score` in a {@link Given} is the 1-based level. */
 const positionOf = (level: number): number => level - 1 + 0.04;
-/** The provider's reply for a set of answers; `low` names the one question answered under the floor. */
+const SCORE_LEVELS = [1, 2, 3, 4, 5];
+/** TypeSafe's own formula, `confidence = (p_max - 1/n) / (1 - 1/n)` (docs.typesafe.ai/confidence): what a reply's confidence is of the distribution it carries. */
+const confidenceOf = (pMax: number, n: number): number => (pMax - 1 / n) / (1 - 1 / n);
+
+/** A yes/no reply: the chosen answer at `confidence` (its probability follows from the formula), or P(yes) set outright, in which case the confidence follows from IT. */
+function choiceReply(chosen: string, confidence: number, pYes?: number) {
+  if (pYes !== undefined) return { type: "choice", choice: pYes >= 0.5 ? "yes" : "no", confidence: confidenceOf(Math.max(pYes, 1 - pYes), 2), probabilities: { yes: pYes, no: 1 - pYes } };
+  const pChosen = 0.5 + confidence / 2;
+  return { type: "choice", choice: chosen, confidence, probabilities: { [chosen]: pChosen, [chosen === "yes" ? "no" : "yes"]: 1 - pChosen } };
+}
+
+/** A score reply, its probabilities keyed by zero-based position as the API's are: the level at `confidence` with the rest spread evenly, or the levels set outright. */
+function scoreReply(level: number, confidence: number, levels?: Record<number, number>) {
+  const pMax = levels === undefined ? 0.2 + 0.8 * confidence : Math.max(...Object.values(levels));
+  const by = Object.fromEntries(SCORE_LEVELS.map((at) => [at, levels === undefined ? (at === level ? pMax : (1 - pMax) / (SCORE_LEVELS.length - 1)) : levels[at] ?? 0]));
+  const top = Number(Object.entries(by).sort(([, a], [, b]) => b - a)[0][0]);
+  const probabilities = Object.fromEntries(Object.entries(by).map(([at, p]) => [String(Number(at) - 1), p]));
+  return { type: "score", score: positionOf(top), confidence: levels === undefined ? confidence : confidenceOf(pMax, SCORE_LEVELS.length), probabilities };
+}
+
+/** The provider's reply for a set of answers; `low` names the one question answered under the floor, and `p` sets a question's probabilities outright. */
 function reply(given: Given) {
   const base = { ...CLEAN_HAIKU, ...given };
   const answers = Object.fromEntries((Object.keys(QUESTIONS) as (keyof Answers)[]).map((name) => {
     const confidence = name === given.low ? 0.5 : given.confidence ?? 0.95;
-    return [name, name === "score" ? { type: "score", score: positionOf(base.score as number), confidence, probabilities: {} } : { type: "choice", choice: base[name], probabilities: {}, confidence }];
+    if (name === "score") return [name, scoreReply(base.score as number, confidence, given.p?.score)];
+    return [name, choiceReply(base[name] as string, confidence, given.p?.[name])];
   }));
   return { answers };
 }
@@ -118,20 +141,53 @@ function rig(opts: { triage?: unknown; switches?: string; body?: unknown; haikuS
 }
 const ON = JSON.stringify({ "model-routing": true });
 
-// --- composeRoute: pure (#4764) ---
+// --- composeRoute: pure, on the provider's probabilities (#4875 on #4764) ---
 
-const CLEAN: Answers = { mechanical: true, subsystems: false, debugging: false, score: 2 };
+/** A distribution over the five levels with `level` holding `p` and the rest spread evenly: a score of that level, as sure as `p`. */
+const atLevel = (level: number, p: number): Record<string, number> =>
+  Object.fromEntries(SCORE_LEVELS.map((at) => [String(at), at === level ? p : (1 - p) / (SCORE_LEVELS.length - 1)]));
+/** P(level) for the levels given; the rest of the distribution is the remainder spread over the levels not named, so the total is 1. */
+const levelsOf = (given: Record<number, number>): Record<string, number> => {
+  const unnamed = SCORE_LEVELS.filter((at) => !(at in given));
+  const rest = (1 - Object.values(given).reduce((a, b) => a + b, 0)) / unnamed.length;
+  return Object.fromEntries(SCORE_LEVELS.map((at) => [String(at), at in given ? given[at] : rest]));
+};
+const CLEAN: Readings = { mechanical: 0.95, subsystems: 0.05, debugging: 0.05, score: atLevel(2, 0.9) };
 const SMALL = { regionFiles: 2 };
 const MANY = { regionFiles: 4 };
 
-test("composeRoute: mechanical and a score of at most 2 is Haiku/high; the answers one step away are not, and each lands where its own rule says", () => {
+test("composeRoute: mechanical and a score probably at most 2 is Haiku/high; the readings one step away are not, and each lands where its own rule says", () => {
   assert.equal(composeRoute(CLEAN, SMALL), "haiku/high");
-  assert.equal(composeRoute({ ...CLEAN, score: 1 }, SMALL), "haiku/high");
-  assert.equal(composeRoute({ ...CLEAN, score: 3 }, SMALL), "sonnet/medium", "score 3 is not a Haiku row, but it is a medium one");
-  assert.equal(composeRoute({ ...CLEAN, score: 4 }, SMALL), "sonnet/high");
-  assert.equal(composeRoute({ ...CLEAN, mechanical: false }, SMALL), "sonnet/medium", "a non-mechanical score 2 is the medium rule's row, not Haiku's");
+  assert.equal(composeRoute({ ...CLEAN, score: atLevel(1, 0.9) }, SMALL), "haiku/high");
+  assert.equal(composeRoute({ ...CLEAN, score: atLevel(3, 0.9) }, SMALL), "sonnet/medium", "score 3 is not a Haiku row, but it is a medium one");
+  assert.equal(composeRoute({ ...CLEAN, score: atLevel(4, 0.9) }, SMALL), "sonnet/high");
+  assert.equal(composeRoute({ ...CLEAN, mechanical: 0.05 }, SMALL), "sonnet/medium", "a non-mechanical score 2 is the medium rule's row, not Haiku's");
   assert.equal(composeRoute({ ...CLEAN, mechanical: null }, SMALL), "sonnet/medium", "mechanical not given is not a yes");
-  assert.equal(composeRoute({ ...CLEAN, debugging: true }, SMALL), "sonnet/high", "debugging an unknown failure holds every rung");
+  assert.equal(composeRoute({ ...CLEAN, debugging: 0.95 }, SMALL), "sonnet/high", "debugging an unknown failure holds every rung");
+});
+
+test("composeRoute DONE-WHEN 1: each threshold is a boundary, held to its own side, and none is the old confidence floor (a yes/no at 0.65 has a confidence of 0.3)", () => {
+  assert.deepEqual([HAIKU_MIN_P_MECHANICAL, HAIKU_MIN_P_SCORE, MEDIUM_MIN_P_SCORE, MEDIUM_MAX_P_SUBSYSTEMS], [0.65, 0.6, 0.6, 0.5], "the chairman's starting values (#4875)");
+  const at = (over: Partial<Readings>) => composeRoute({ ...CLEAN, ...over }, SMALL);
+  assert.equal(at({ mechanical: 0.65 }), "haiku/high", "P(mechanical) AT the threshold qualifies");
+  assert.equal(at({ mechanical: 0.64 }), "sonnet/medium", "just under it is the medium rule's row, not Haiku's");
+  assert.equal(at({ score: levelsOf({ 1: 0.3, 2: 0.3 }) }), "haiku/high", "P(score <= 2) of exactly 0.6, summed over TWO levels, qualifies");
+  assert.equal(at({ score: levelsOf({ 1: 0.3, 2: 0.29, 3: 0.3 }) }), "sonnet/medium", "0.59 is under it, and P(score <= 3) of 0.89 is a medium row");
+  assert.equal(at({ mechanical: 0.05, score: levelsOf({ 1: 0.3, 2: 0.3 }) }), "sonnet/medium");
+  assert.equal(at({ mechanical: 0.05, score: levelsOf({ 1: 0.2, 2: 0.2, 3: 0.2 }) }), "sonnet/medium", "P(score <= 3) of 0.6 qualifies");
+  assert.equal(at({ mechanical: 0.05, score: levelsOf({ 1: 0.2, 2: 0.2, 3: 0.19 }) }), "sonnet/high", "0.59 does not");
+  assert.equal(at({ mechanical: 0.05, subsystems: 0.49 }), "sonnet/medium", "P(subsystems) under 0.5 passes");
+  assert.equal(at({ mechanical: 0.05, subsystems: 0.5 }), "sonnet/high", "and AT 0.5 does not: the bound is strict");
+  assert.equal(at({ debugging: 0.49 }), "haiku/high");
+  assert.equal(at({ debugging: 0.5 }), "sonnet/high", "P(debugging) at 0.5 holds the row at the top");
+});
+
+test("composeRoute DONE-WHEN 1: a score split across ADJACENT levels is read as the sum, so 0.45 at level 2 and 0.4 at level 3 is a Sonnet/medium row though no level is likely", () => {
+  const split = levelsOf({ 2: 0.45, 3: 0.4 });
+  assert.deepEqual([scoreAtMost(split, 2), scoreAtMost(split, 3)], [0.5, 0.9], "P(<=2) is level 1's 0.05 of the remainder plus level 2's 0.45; P(<=3) adds level 3's 0.4");
+  assert.equal(composeRoute({ ...CLEAN, score: split }, SMALL), "sonnet/medium", "the row is mechanical, and still not Haiku: P(score <= 2) is under 0.6");
+  assert.equal(composeRoute({ ...CLEAN, mechanical: 0.05, score: split }, SMALL), "sonnet/medium");
+  assert.equal(composeRoute({ ...CLEAN, mechanical: 0.05, score: levelsOf({ 2: 0.3, 3: 0.25, 4: 0.4 }) }, SMALL), "sonnet/high", "the control: the same shape with 0.4 above level 3 is P(score <= 3) of 0.575");
 });
 
 test("composeRoute: mechanical with the score NOT GIVEN is Haiku/high only when the Region names at most 3 files; a non-mechanical row with no score never lowers", () => {
@@ -140,18 +196,18 @@ test("composeRoute: mechanical with the score NOT GIVEN is Haiku/high only when 
   assert.equal(composeRoute(unscored, { regionFiles: 1 }), "haiku/high");
   assert.equal(composeRoute(unscored, MANY), "sonnet/high", "a fourth file (or a directory, which counts as four) is not a small Region");
   assert.equal(composeRoute(unscored, { regionFiles: 0 }), "sonnet/high", "a Region that names nothing is not small, it is unread");
-  for (const answers of [{ ...unscored, mechanical: false }, { ...unscored, mechanical: null }]) {
-    assert.equal(composeRoute(answers, SMALL), "sonnet/high", JSON.stringify(answers));
+  for (const readings of [{ ...unscored, mechanical: 0.05 }, { ...unscored, mechanical: null }]) {
+    assert.equal(composeRoute(readings, SMALL), "sonnet/high", JSON.stringify(readings));
   }
 });
 
-test("composeRoute: a score of at most 3 with subsystems NOT answered yes is Sonnet/medium; yes, a higher score and no score are Sonnet/high", () => {
-  const medium: Answers = { mechanical: false, subsystems: false, debugging: false, score: 3 };
+test("composeRoute: a score probably at most 3 with subsystems NOT probably yes is Sonnet/medium; a probable yes, a higher score and no score are Sonnet/high", () => {
+  const medium: Readings = { mechanical: 0.05, subsystems: 0.05, debugging: 0.05, score: atLevel(3, 0.9) };
   assert.equal(composeRoute(medium, SMALL), "sonnet/medium");
-  assert.equal(composeRoute({ ...medium, subsystems: null }, SMALL), "sonnet/medium", "subsystems not given passes: `!= yes`");
-  assert.equal(composeRoute({ ...medium, debugging: null }, SMALL), "sonnet/medium", "only a debugging YES holds a row");
-  assert.equal(composeRoute({ ...medium, score: 1 }, MANY), "sonnet/medium", "the Region's size is Haiku's concern, not the medium rule's");
-  for (const flipped of [{ subsystems: true }, { debugging: true }, { score: 4 }, { score: 5 }, { score: null }]) {
+  assert.equal(composeRoute({ ...medium, subsystems: null }, SMALL), "sonnet/medium", "subsystems not given passes");
+  assert.equal(composeRoute({ ...medium, debugging: null }, SMALL), "sonnet/medium", "only a probable debugging YES holds a row");
+  assert.equal(composeRoute({ ...medium, score: atLevel(1, 0.9) }, MANY), "sonnet/medium", "the Region's size is Haiku's concern, not the medium rule's");
+  for (const flipped of [{ subsystems: 0.9 }, { debugging: 0.9 }, { score: atLevel(4, 0.9) }, { score: atLevel(5, 0.9) }, { score: null }]) {
     assert.equal(composeRoute({ ...medium, ...flipped }, SMALL), "sonnet/high", JSON.stringify(flipped));
   }
 });
@@ -247,24 +303,38 @@ test("#4764 DONE-WHEN 1: a small single-subsystem row (two files, a command, sub
   const given = { mechanical: "no", subsystems: "no", score: 3 };
   const medium = await routeEngineer(rowOf(), rig({ triage: JEV, switches: ON, body: reply(given) }).deps);
   assert.deepEqual([medium.route, medium.via, medium.profile?.model, medium.profile?.effort], ["sonnet/medium", "jev", "sonnet", "medium"]);
-  // The answers the provider was NOT sure of (live: `subsystems` 28 of 49, `score` 31 of 49) are the reason the route was pinned; subsystems not given is not a yes.
+  // The answers the provider was NOT sure of (live: `subsystems` 28 of 49, `score` 31 of 49) are why the route was pinned. At a confidence of 0.5 a `no` is still P(yes) = 0.25 and a level 3
+  // still P(score <= 3) = 0.8, so neither is discarded any more (#4875), and the reason says nothing was missing.
   const unsure = await routeEngineer(rowOf(), rig({ triage: JEV, switches: ON, body: reply({ ...given, low: "subsystems" }) }).deps);
-  assert.equal(unsure.route, "sonnet/medium", "subsystems under the floor passes `!= yes`");
-  assert.match(unsure.reason!, /^answers not given \(subsystems: no at 0\.5, under the floor/);
+  assert.deepEqual([unsure.route, unsure.reason], ["sonnet/medium", undefined]);
+  assert.equal((await routeEngineer(rowOf(), rig({ triage: JEV, switches: ON, body: reply({ ...given, low: "score" }) }).deps)).route, "sonnet/medium");
   assert.equal((await routeEngineer(rowOf(), rig({ triage: JEV, switches: ON, body: reply({ ...given, subsystems: "yes" }) }).deps)).route, "sonnet/high", "the control: subsystems yes");
-  assert.equal((await routeEngineer(rowOf(), rig({ triage: JEV, switches: ON, body: reply({ ...given, low: "score" }) }).deps)).route, "sonnet/high", "the control: no score, not mechanical");
+  const noScore = await routeEngineer(rowOf(), rig({ triage: JEV, switches: ON, body: withoutProbabilities(reply(given), "score") }).deps);
+  assert.equal(noScore.route, "sonnet/high", "the control: no score, not mechanical");
+  assert.match(noScore.reason!, /^probabilities not given \(score: the answer carried no readable probabilities\)$/);
 });
 
-test("provider ON with ONE answer under the floor: each question's absence composes what its own rule says, and the same row with a fourth file is the control for score", async () => {
+test("provider ON with ONE distribution not given: each question's absence composes what its own rule says, and the same row with a fourth file is the control for score", async () => {
   const expected: Record<keyof Answers, Route> = { mechanical: "sonnet/medium", subsystems: "haiku/high", debugging: "haiku/high", score: "haiku/high" };
-  for (const low of Object.keys(QUESTIONS) as (keyof Answers)[]) {
-    const routed = await routeEngineer(rowOf(), rig({ triage: JEV, switches: ON, body: reply({ low }) }).deps);
-    assert.equal(routed.route, expected[low], low);
+  for (const name of Object.keys(QUESTIONS) as (keyof Answers)[]) {
+    const routed = await routeEngineer(rowOf(), rig({ triage: JEV, switches: ON, body: withoutProbabilities(reply({}), name) }).deps);
+    assert.equal(routed.route, expected[name], name);
     assert.equal(routed.via, "jev");
+    assert.match(routed.reason!, new RegExp(`^probabilities not given \\(${name}: `));
   }
   const four = rowOf({ body: bodyOf({ region: ["a.ts", "b.ts", "c.ts", "d.ts"] }) });
-  const noScore = await routeEngineer(four, rig({ triage: JEV, switches: ON, body: reply({ low: "score" }) }).deps);
+  const noScore = await routeEngineer(four, rig({ triage: JEV, switches: ON, body: withoutProbabilities(reply({}), "score") }).deps);
   assert.deepEqual([noScore.route, noScore.profile], ["sonnet/high", null], "mechanical with no score and a Region of four is not small");
+});
+
+test("#4875 DONE-WHEN 1: an answer UNDER THE CONFIDENCE FLOOR is not discarded -- every question at confidence 0.5 (under the floor of 0.9) composes the same route as every one at 0.95, and the log keeps what the floor replaced", async () => {
+  const sure = rig({ triage: JEV, switches: ON, body: reply({}) });
+  const unsure = rig({ triage: JEV, switches: ON, body: reply({ confidence: 0.5 }) });
+  const [a, b] = [await routeEngineer(rowOf(), sure.deps), await routeEngineer(rowOf(), unsure.deps)];
+  assert.deepEqual([a.route, b.route, b.via, b.reason], ["haiku/high", "haiku/high", "jev", undefined]);
+  const line = unsure.log().find((l) => l.answers !== undefined);
+  assert.deepEqual(Object.values(line.answers as Record<string, { fellBack: boolean }>).map((x) => x.fellBack), [true, true, true, true], "the floor still replaced every VALUE: the window and every other reader see what they saw");
+  assert.deepEqual(line.answers.mechanical.probabilities, { yes: 0.75, no: 0.25 }, "and the distribution it replaced is on the record");
 });
 
 test("a composed Haiku is still refused by the Haiku switch: switch off gives Sonnet/high and says why; the same row with the switch on gets Haiku", async () => {
@@ -281,7 +351,9 @@ const RECORDED_SCORE = { type: "score", score: 0.04, confidence: 0.97,
   legend: { 0: "one stated edit in one file", 1: "a few independent edits", 2: "a new small unit with a test", 3: "several subsystems", 4: "a design with open questions" },
   probabilities: { 0: 0.98, 1: 0.01, 2: 0.01, 3: 0.0, 4: 0.0 } };
 const RECORDED_MECHANICAL = { type: "choice", choice: "yes", confidence: 0.44, probabilities: { yes: 0.72, no: 0.28 } };
-const choice = (value: string) => ({ type: "choice", choice: value, confidence: 0.95, probabilities: {} });
+const choice = (value: string) => ({ type: "choice", choice: value, confidence: 0.95, probabilities: { [value]: 0.975, [value === "yes" ? "no" : "yes"]: 0.025 } });
+/** A reply with one question's distribution emptied: an answer that was well formed and carried no probabilities, which is "not given" and never a probability of zero (#4875). */
+const withoutProbabilities = (body: { answers: Record<string, object> }, name: string) => ({ ...body, answers: { ...body.answers, [name]: { ...body.answers[name], probabilities: {} } } });
 const RECORDED_200 = { model: "jev-1.13.0", usage: { input_tokens: 426, output_tokens: 46 },
   answers: { mechanical: RECORDED_MECHANICAL, subsystems: choice("no"), debugging: choice("no"), covered: choice("yes"), score: RECORDED_SCORE } };
 
@@ -295,13 +367,16 @@ test("the routing request validates against the API's shape: the score carries `
   assert.ok(Array.isArray(questions.score.criteria) && questions.score.criteria.length === 5, "the score's criteria is an array of five");
   assert.deepEqual(questions.score.criteria, QUESTIONS.score.type === "score" ? QUESTIONS.score.levels : null, "in the order the levels are scored, level 1 first");
   for (const name of ["mechanical", "subsystems", "debugging"]) assert.ok(!Array.isArray(questions[name].criteria), `${name}'s criteria is an object`);
-  // The provider answered: a zero-based 0.04 is level 1, and the row is NOT a fallback. The choice at 0.44 is under the 0.9 floor and is the one answer not given.
+  // The provider answered: a zero-based 0.04 is level 1, and the row is NOT a fallback. The mechanical answer at 0.44 is under the 0.9 floor, so its VALUE was replaced -- but its
+  // distribution, 72% yes, is what the route reads (#4875): this recorded 200 was a Sonnet/medium row under the floor and is a Haiku one on its probabilities.
   assert.equal(routed.via, "jev");
   const line = r.log().find((l) => l.answers !== undefined);
   assert.deepEqual([line.via, line.answers.score.value, line.answers.score.fellBack, line.answers.mechanical.fellBack], ["jev", 1, false, true]);
   assert.match(line.answers.mechanical.reason, /yes at 0\.44, under the floor 0\.9/);
-  assert.equal(routed.route, "sonnet/medium", "mechanical not given, score 1 and subsystems no is the medium rule's row (#4764)");
-  assert.match(routed.reason!, /^answers not given \(mechanical: yes at 0\.44, under the floor 0\.9\)$/);
+  assert.deepEqual(line.answers.mechanical.probabilities, { yes: 0.72, no: 0.28 }, "the full distribution of a choice is in the decision record");
+  assert.deepEqual(line.answers.score.probabilities, { 1: 0.98, 2: 0.01, 3: 0.01, 4: 0, 5: 0 }, "and a score's, keyed by the 1-based level its `value` is on");
+  assert.equal(routed.route, "haiku/high", "P(mechanical) 0.72 clears 0.65 and P(score <= 2) is 0.99");
+  assert.equal(routed.reason, undefined, "every distribution was read, so nothing was not given");
 });
 
 test("CONTROL: the same request with the score's `criteria` left off is the API's HTTP 422, every question falls back with it, and the log says so", async () => {
@@ -318,6 +393,89 @@ test("the recorded 200 with every answer over the floor composes a route the way
   const body = { ...RECORDED_200, answers: { ...RECORDED_200.answers, mechanical: { ...RECORDED_MECHANICAL, confidence: 0.95 } } };
   const routed = await routeEngineer(rowOf(), rig({ triage: JEV, switches: ON, body, validates: true }).deps);
   assert.deepEqual([routed.route, routed.via, routed.reason], ["haiku/high", "jev", undefined]);
+});
+
+// --- #4875 DONE-WHEN 1, end to end: the provider's probabilities through `routeEngineer`, at a confidence the old floor discarded ---
+
+/** The three rows the chairman named, as replies: every question is under the floor of 0.9, so on the old rule none of them was a given answer at all. */
+const ROUTED = {
+  "0.8 mechanical, P(score <= 2) 0.7": { mechanical: "yes", p: { mechanical: 0.8, subsystems: 0.1, debugging: 0.05, score: { 1: 0.3, 2: 0.4, 3: 0.2, 4: 0.1 } } },
+  "score split 0.45 at 2 and 0.4 at 3": { mechanical: "yes", p: { mechanical: 0.9, subsystems: 0.1, debugging: 0.05, score: { 2: 0.45, 3: 0.4, 4: 0.15 } } },
+  "0.5 mechanical": { mechanical: "yes", p: { mechanical: 0.5, subsystems: 0.1, debugging: 0.05, score: { 1: 0.5, 2: 0.4, 3: 0.1 } } },
+} as const;
+
+test("#4875 DONE-WHEN 1: a row the provider rates 0.8 mechanical with P(score <= 2) of 0.7 routes to Haiku/high -- under a confidence floor of 0.9 it was discarded", async () => {
+  const body = reply(ROUTED["0.8 mechanical, P(score <= 2) 0.7"]);
+  assert.equal(body.answers.mechanical.confidence, 0.6000000000000001, "the control: a confidence of 0.6, which the old floor read as 'not given'");
+  const routed = await routeEngineer(rowOf(), rig({ triage: JEV, switches: ON, body }).deps);
+  assert.deepEqual([routed.route, routed.via, routed.profile?.model], ["haiku/high", "jev", HAIKU_MODEL_ID]);
+  assert.match(routed.why, /P\(mechanical=yes\)=0\.800, .*P\(score<=2\)=0\.700, P\(score<=3\)=0\.900/);
+});
+
+test("#4875 DONE-WHEN 1: a score split 0.45 at level 2 and 0.4 at level 3 routes to Sonnet/medium, and a mechanical row of it is NOT Haiku", async () => {
+  const split = ROUTED["score split 0.45 at 2 and 0.4 at 3"];
+  const mechanical = await routeEngineer(rowOf(), rig({ triage: JEV, switches: ON, body: reply(split) }).deps);
+  assert.deepEqual([mechanical.route, mechanical.profile?.effort], ["sonnet/medium", "medium"], "P(score <= 2) is 0.45: under Haiku's 0.6, over medium's with level 3 added");
+  const notMechanical = await routeEngineer(rowOf(), rig({ triage: JEV, switches: ON, body: reply({ ...split, p: { ...split.p, mechanical: 0.1 } }) }).deps);
+  assert.equal(notMechanical.route, "sonnet/medium");
+  const scattered = { ...split, p: { ...split.p, score: { 2: 0.3, 3: 0.25, 4: 0.3, 5: 0.15 } } };
+  assert.equal((await routeEngineer(rowOf(), rig({ triage: JEV, switches: ON, body: reply(scattered) }).deps)).route, "sonnet/high", "the control: P(score <= 3) of 0.55 is under 0.6");
+});
+
+test("#4875 DONE-WHEN 1: a row with P(mechanical) = 0.5 does not route to Haiku, though its score is low and the provider is evenly split", async () => {
+  const routed = await routeEngineer(rowOf(), rig({ triage: JEV, switches: ON, body: reply(ROUTED["0.5 mechanical"]) }).deps);
+  assert.deepEqual([routed.route, routed.via], ["sonnet/medium", "jev"], "0.5 is under 0.65, and its score still makes it a medium row");
+  const above = { ...ROUTED["0.5 mechanical"], p: { ...ROUTED["0.5 mechanical"].p, mechanical: 0.66 } };
+  assert.equal((await routeEngineer(rowOf(), rig({ triage: JEV, switches: ON, body: reply(above) }).deps)).route, "haiku/high", "the control: the same row at 0.66");
+});
+
+test("#4875 DONE-WHEN 1: the absolute refusals hold at ANY probability -- lane:ceo, needs:chairman, a workflows Region and no Acceptance command are never asked, however sure", async () => {
+  const sure = reply({ p: { mechanical: 1, subsystems: 0, debugging: 0, score: { 1: 1 } } });
+  const refused: [string, RouteRow][] = [
+    ["lane:ceo", rowOf({ labels: ["ready", "lane:ceo"] })],
+    ["needs:chairman", rowOf({ labels: ["ready", "needs:chairman"] })],
+    ["a workflows Region", rowOf({ body: bodyOf({ region: [".github/workflows/ci.yml"] }) })],
+    ["no Acceptance command", rowOf({ body: bodyOf({ acceptance: null }) })],
+  ];
+  for (const [why, row] of refused) {
+    const r = rig({ triage: JEV, switches: ON, body: sure });
+    const routed = await routeEngineer(row, r.deps);
+    assert.deepEqual([routed.route, routed.via, routed.profile, r.calls()], ["sonnet/high", "refused", null, 0], why);
+  }
+  assert.equal((await routeEngineer(rowOf(), rig({ triage: JEV, switches: ON, body: sure }).deps)).route, "haiku/high", "the control: the same reply, on a row nothing refuses");
+});
+
+test("#4875 DONE-WHEN 1: the decision record keeps every question's FULL probabilities -- a choice's by option, the score's by 1-based level -- whether or not the floor replaced the value", async () => {
+  const r = rig({ triage: JEV, switches: ON, body: reply(ROUTED["0.8 mechanical, P(score <= 2) 0.7"]) });
+  await routeEngineer(rowOf(), r.deps);
+  const { answers } = r.log().find((l) => l.answers !== undefined);
+  assert.deepEqual(answers.mechanical.probabilities, { yes: 0.8, no: 0.19999999999999996 });
+  assert.deepEqual(Object.keys(answers.score.probabilities), ["1", "2", "3", "4", "5"], "a score's keys are the levels its `value` is on, not the API's zero-based positions");
+  assert.deepEqual(Object.values(answers.score.probabilities), [0.3, 0.4, 0.2, 0.1, 0]);
+  assert.deepEqual((Object.values(answers) as { fellBack: boolean }[]).map((a) => a.fellBack), [true, true, true, true], "the control: the floor replaced every value, and the probabilities are there anyway");
+});
+
+test("#4875 `decide` keeps a distribution only when it is one this question could have: unknown keys, a value over 1 or a total well over 1 drop it whole, and an empty record is not given", async () => {
+  const ask = async (mechanical: unknown, score: unknown) => {
+    const r = rig({ triage: JEV, switches: ON, body: { answers: { ...reply({}).answers, mechanical, score } } });
+    return (await decide("model-routing", routeState(rowOf()), QUESTIONS, r.deps)).answers;
+  };
+  const choiceWith = (probabilities: unknown) => ({ type: "choice", choice: "yes", confidence: 0.95, probabilities });
+  const scoreWith = (probabilities: unknown) => ({ type: "score", score: 1.04, confidence: 0.95, probabilities });
+  const good = await ask(choiceWith({ yes: 0.8, no: 0.2 }), scoreWith({ 0: 0.1, 1: 0.7, 2: 0.2, 3: 0, 4: 0 }));
+  assert.deepEqual(good.mechanical.probabilities, { yes: 0.8, no: 0.2 }, "the control: a distribution that is one is kept");
+  assert.deepEqual(good.score.probabilities, { 1: 0.1, 2: 0.7, 3: 0.2, 4: 0, 5: 0 }, "and a score's zero-based positions move onto the 1..5 levels `value` is on");
+  assert.deepEqual([good.mechanical.value, good.score.value], ["yes", 2], "the value is read as it always was");
+  for (const [what, probabilities] of [["an option the question does not have", { yes: 0.5, maybe: 0.5 }], ["a probability over 1", { yes: 1.2, no: 0 }], ["a negative one", { yes: 1.1, no: -0.1 }],
+    ["a total well over 1", { yes: 0.9, no: 0.9 }], ["a non-number", { yes: "0.8", no: 0.2 }], ["an empty record", {}], ["an array", [0.8, 0.2]], ["nothing", undefined]] as const) {
+    const answer = (await ask(choiceWith(probabilities), scoreWith({}))).mechanical;
+    assert.deepEqual([what, answer.probabilities, answer.value], [what, undefined, "yes"], "the answer is still read; only its distribution is not given");
+  }
+  for (const [what, probabilities] of [["a sixth position", { 0: 0.5, 5: 0.5 }], ["a key that is not a position", { first: 1 }], ["a negative position", { "-1": 0.5, 0: 0.5 }], ["a fractional one", { 0.5: 1 }]] as const) {
+    assert.equal((await ask(choiceWith({ yes: 0.8, no: 0.2 }), scoreWith(probabilities))).score.probabilities, undefined, what);
+  }
+  const rounded = await ask(choiceWith({ yes: 0.51, no: 0.51 }), scoreWith({}));
+  assert.deepEqual(rounded.mechanical.probabilities, { yes: 0.51, no: 0.51 }, "a total a little over 1 is a rounded distribution and is kept");
 });
 
 // --- overrides win ---
@@ -369,7 +527,7 @@ test("every route is a decision-log line, in the fallback, override, refused and
   await routeEngineer(rowOf({ number: 4 }), off.deps);
   const routes = (lines: { id?: string; outcome?: string }[]) => lines.filter(isOutcomeLine).map((l) => [l.id, l.outcome]);
   assert.deepEqual(routes(r.log()), [
-    ["row-1", "route haiku/high window 130k via jev (the provider answered: mechanical=yes, subsystems=no, debugging=no, score=2) [fallback would be sonnet/medium]"],
+    ["row-1", "route haiku/high window 130k via jev (the provider's probabilities: P(mechanical=yes)=0.975, P(subsystems=yes)=0.025, P(debugging=yes)=0.025, P(score<=2)=0.970, P(score<=3)=0.980) [fallback would be sonnet/medium]"],
     ["row-2", "route haiku/high window 130k via override (tier:haiku)"],
     ["row-3", "route sonnet/high window 200k via refused (the row carries lane:ceo)"]]);
   assert.deepEqual(routes(off.log()), [["row-4", "route sonnet/medium window 200k via fallback (no triage provider is declared)"]]);
@@ -416,11 +574,11 @@ test("the outcome line reads `route <route> via <via> (<why>)`, and what <why> s
   // jev, every answer given: the answers that composed the route.
   const given = rig({ triage: JEV, switches: ON });
   assert.equal((await routeEngineer(rowOf(), given.deps)).via, "jev");
-  assert.equal(outcomeOf(given), "route haiku/high window 130k via jev (the provider answered: mechanical=yes, subsystems=no, debugging=no, score=2) [fallback would be sonnet/medium]");
-  // jev, one answer not given: the line names it and why, and the route is what the rest compose (Sonnet/medium: not mechanical, score 2, subsystems no).
-  const held = rig({ triage: JEV, switches: ON, body: reply({ low: "mechanical" }) });
+  assert.equal(outcomeOf(given), "route haiku/high window 130k via jev (the provider's probabilities: P(mechanical=yes)=0.975, P(subsystems=yes)=0.025, P(debugging=yes)=0.025, P(score<=2)=0.970, P(score<=3)=0.980) [fallback would be sonnet/medium]");
+  // jev, one distribution not given: the line names it and why, and the route is what the rest compose (Sonnet/medium: not mechanical, score 2, subsystems no).
+  const held = rig({ triage: JEV, switches: ON, body: withoutProbabilities(reply({}), "mechanical") });
   assert.equal((await routeEngineer(rowOf(), held.deps)).route, "sonnet/medium");
-  assert.match(outcomeOf(held), /^route sonnet\/medium window 200k via jev \(the provider answered: mechanical=not given \(yes at [0-9.]+, under the floor 0\.9\), subsystems=no, .*\) \[fallback would be sonnet\/medium\]$/);
+  assert.match(outcomeOf(held), /^route sonnet\/medium window 200k via jev \(the provider's probabilities: P\(mechanical=yes\)=not given \(the answer carried no readable probabilities\), P\(subsystems=yes\)=0\.025, .*\) \[fallback would be sonnet\/medium\]$/);
   // fallback: the provider's failure, never the fallback rule's own "a small row".
   const failed = rig({ triage: JEV, switches: ON });
   failed.deps.fetch = (async () => ({ ok: false, status: 422, json: async () => ({}) })) as unknown as typeof fetch;
