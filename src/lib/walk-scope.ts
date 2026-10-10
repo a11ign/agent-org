@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// COPIED FROM `packages/guards/src/walk-scope.ts` at bb8dfa7fb (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
+// COPIED FROM `packages/guards/src/walk-scope.ts` at 42cfb887d (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
 // its package. The product keeps its original and the two can drift, with no cross-repository pin: `agent-org-outward-edges.test.ts` compares them.
 // CHANGED FROM THE ORIGINAL, 68 NAMED LINES:
 // - its dynamic import of ci-changed.ts, now the tool's own copy beside it
@@ -432,8 +432,12 @@ export const NOT_WRAPPED = Object.freeze({
     ChildProcess: "UNSEEN when constructed by hand and started with `.spawn()` -- refused in a declarer instead",
     _forkChild: "Node's own IPC setup inside a forked child; no guard calls it",
   }),
-  test: Object.freeze(Object.fromEntries(["after", "afterEach", "before", "beforeEach", "describe", "it", "only",
-    "skip", "suite", "test", "todo"].map((name) => [name, "registers a test or a hook; reads nothing"]))),
+  test: Object.freeze({
+    ...Object.fromEntries(["after", "afterEach", "before", "beforeEach", "describe", "it", "only",
+      "skip", "suite", "test", "todo"].map((name) => [name, "registers a test or a hook; reads nothing"])),
+    expectFailure: "registers a test that is expected to fail, as `skip` and `todo` register theirs; reads nothing",
+    getTestContext: "returns the running test's context object (or undefined outside a test); reads nothing",
+  }),
   module: Object.freeze({
     Module: "a module record; loading one resolves through `_resolveFilename` and reads through `fs`, both wrapped",
     SourceMap: "parses a source map it is handed", _debug: "a debug logger",
