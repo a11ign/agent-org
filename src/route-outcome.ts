@@ -20,7 +20,7 @@ import type { DecisionDeps } from "./decision-provider.ts";
 import { readSwitches } from "./decision-provider.ts";
 import { recordRouteOutcome, windowReadings } from "./engineer-route.ts";
 import { printDiagnostic, processState } from "./triage-provider.ts";
-import { summarise } from "./trace/haiku-tier-report.ts";
+import { EFFORT_UNKNOWN, summarise } from "./trace/haiku-tier-report.ts";
 
 export const ROUTE_OUTCOMES = Object.freeze(["merged-first-pass", "not-first-pass", "escalated", "closed-without-merge"] as const);
 export type RouteOutcome = (typeof ROUTE_OUTCOMES)[number];
@@ -44,7 +44,7 @@ export function routeOutcomeOf({ mergedPr, rejectedReviews, escalated, compactio
     throw new RangeError(`route-outcome: rejectedReviews (${String(rejectedReviews)}) and compactions (${String(compactions)}) must each be a count`);
   }
   if (escalated) return "escalated";
-  const { firstPassRate } = summarise([{ number: 0, haiku: false, merged: mergedPr, rejections: rejectedReviews, compactions, oversize: 0, turns: 0, costUsd: 0, unpriced: 0 }]);
+  const { firstPassRate } = summarise([{ number: 0, haiku: false, merged: mergedPr, rejections: rejectedReviews, compactions, oversize: 0, turns: 0, costUsd: 0, unpriced: 0, effort: EFFORT_UNKNOWN }]);
   if (firstPassRate === null) return "closed-without-merge";
   return firstPassRate === 1 ? "merged-first-pass" : "not-first-pass";
 }

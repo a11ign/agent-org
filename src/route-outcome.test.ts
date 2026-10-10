@@ -10,7 +10,7 @@ import { decisionSwitchesPath, recordOutcome } from "./decision-provider.ts";
 import { routeEngineer, windowReadings, type RouteRow } from "./engineer-route.ts";
 import { tmpDir } from "./lib/tmp-fixture.ts";
 import { recordClosedRow, ROUTE_OUTCOMES, routeOutcomeOf, type RouteOutcome, type RouteOutcomeFacts } from "./route-outcome.ts";
-import { summarise } from "./trace/haiku-tier-report.ts";
+import { EFFORT_UNKNOWN, summarise } from "./trace/haiku-tier-report.ts";
 
 const BODY = "## Region\n\n```\nsrc/a.ts\nsrc/a.test.ts\n```\n\n## Acceptance\n\n```bash\npnpm test\n```\n\n## Done-when\n\n1. The Acceptance passes.\n";
 const rowOf = (number: number): RouteRow => ({ number, title: "Rename a helper", labels: ["ready"], body: BODY });
@@ -49,7 +49,7 @@ test("routeOutcomeOf: each string of the vocabulary comes from its facts, and on
 
 test("routeOutcomeOf: first pass is the report's own definition, so a row is first-pass exactly when `summarise` says its rate is 1", () => {
   for (const rejections of [0, 1, 2]) {
-    const rate = summarise([{ number: 1, haiku: false, merged: true, rejections, compactions: 0, oversize: 0, turns: 0, costUsd: 0, unpriced: 0 }]).firstPassRate;
+    const rate = summarise([{ number: 1, haiku: false, merged: true, rejections, compactions: 0, oversize: 0, turns: 0, costUsd: 0, unpriced: 0, effort: EFFORT_UNKNOWN }]).firstPassRate;
     assert.equal(routeOutcomeOf({ ...MERGED_CLEAN, rejectedReviews: rejections }) === "merged-first-pass", rate === 1, `rejections ${rejections}`);
   }
 });

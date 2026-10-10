@@ -1,4 +1,4 @@
-`src/route-outcome.ts` names a closed routed row's outcome from a fixed vocabulary (`routeOutcomeOf`) and appends it once per row, only for a row the decision log routed with the `model-routing` use on (`recordClosedRow`), so a floor has results to be tuned from (a11ign/a11ign#4627 use 4, agent-org#687). **This is the row's items 1 and 2. Item 3, the call from `close-rows-for-merged-pr.ts`, is NOT made, and the row's Done-when 2 cannot be met by this pull request alone**: see the last section.
+`src/route-outcome.ts` names a closed routed row's outcome from a fixed vocabulary (`routeOutcomeOf`) and appends it once per row, only for a row the decision log routed with the `model-routing` use on (`recordClosedRow`), so a floor has results to be tuned from (a11ign/a11ign#4627 use 4, agent-org#687). **This is the row's items 1 and 2, which is all the row asks for since `product-manager`'s ruling (b) of 2026-10-10T20:00Z. The caller is a host-side pass and its own row (a11ign#4759), and the live count of outcome lines is that row's Done-when, not this one's**: see the last section.
 
 Acceptance:
 ```bash
@@ -23,11 +23,15 @@ Typecheck: `npx tsc --noEmit -p tsconfig.json` reports no error in either file; 
 
 Whole suite in this tree (`rstest run`, `AGENT_ORG_HOST` as above): `VERDICT fail: 32 of 8729 tests failed in 486 files`, all in 11 files under `src/packaging` (milestone-clock, row-file, public-claim, auto-arm-token and others, which read the ambient project's tracker and workflows). Each of the 11 was run on its own with and without these two files and gave the same verdict (7+4+8+5+2+2+1+1+1+1 = 32, and `mjs-ratchet`'s file that does not load), so none is caused by this change. They are not fixed here: they are not in this row's Region.
 
-## What this does not do, and why (measured, and also on the row)
+## What this does not do, and why (measured; the row's Change 3 and Done-when 2 now say the same)
 
-Change 3 says `close-rows-for-merged-pr.ts` calls the writer when it closes a row. It cannot put a line in the live log, for two reasons, both read from the tree:
+The row first said `close-rows-for-merged-pr.ts` calls the writer when it closes a row. It cannot put a line in the live log, for two reasons, both read from the tree:
 
 1. **It runs where the log is not.** The only automated invocation is `closeRows` in the tracker's `.github/workflows/trunk.yml`, `runs-on: ubuntu-latest`. The decision log is `~/.cache/a11ign/decisions` on the host. On the runner that path does not exist, so the writer finds no route line and writes nothing, quietly, as the provider-optional ruling requires.
 2. **It is not the path that runs.** That job runs `agent-org close-rows-sweep --window=60`, whose `closeOnePr` has its own close loop and never calls `applyClosurePlan`; `close-rows-for-merged-pr.ts`'s `main()` runs only on a `workflow_dispatch` with a `pr` input.
 
-A hook there would be a function with a caller that cannot fire, which is `recordRouteOutcome`'s own defect over again. The caller has to be host-side, where the log, the trace store and the closed row are all readable (the gate, which already acts on rows that have left the open population, is the candidate). That file is outside this row's Region, so it is named on agent-org#687 for `product-manager` to amend the row or file it with an edge to this one. Until it exists the live log keeps 0 outcome lines of this kind (measured 2026-10-10: 417 lines with an `outcome`, 0 of `merged-first-pass`/`not-first-pass`), and a11ign#4756's wait still ends in an empty join.
+So that file is not touched here, and `recordClosedRow` has no caller in this pull request. That is the row as amended (ruling (b), on the row): the caller is host-side, where the log, the trace store and the closed row are all readable, and it is filed as its own row with an edge to this one (a11ign#4759). Until it lands the live log keeps 0 outcome lines of this kind (measured 2026-10-10: 417 lines with an `outcome`, 0 of `merged-first-pass`/`not-first-pass`), and a11ign#4756's wait still ends in an empty join; this pull request does not claim otherwise.
+
+## Rebased onto `cf26deec`
+
+`RowMeasures` gained a required `effort` (agent-org#469) after this was first written. The one-row summary passed to `summarise` names the report's own `EFFORT_UNKNOWN` (no turns were read, and `effort` only groups rows in the report; first pass does not read it). The 11 tests pass again and the typecheck is back to the two `mjs-ratchet` errors above.
