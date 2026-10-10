@@ -16,7 +16,7 @@ import { after, describe, test } from "node:test";
 import { pathToFileURL } from "node:url";
 
 import { createLedger, readLedgerLines } from "./ledger.ts";
-import { acceptUpdate, actionData, BUTTON_ACTIONS, createInbound, DROP_REASON, isAccepted, optionData, parseButtonData } from "./inbound.ts";
+import { acceptUpdate, actionData, BUTTON_ACTIONS, chatsSeen, createInbound, DROP_REASON, isAccepted, optionData, parseButtonData } from "./inbound.ts";
 import { parseChairmanOptions } from "./sources/requests.ts";
 
 // The scan of the module graph below imports modules that reach the project's declaration when they load, so it must be findable: the same fallback
@@ -122,14 +122,19 @@ describe("identity (done-when 1)", () => {
     assert.equal(reasons.size, FIVE.length, "five distinct reasons");
   });
 
+  // A channel post is not here: through `handle` it is a chat notice, recorded and acted on never (the describe below, #4743), and `acceptUpdate`
+  // above still refuses it as a message with its own reason.
+  const DROPPED_THROUGH_HANDLE = FIVE.filter(([, , reason]) => reason !== DROP_REASON.channelPost);
+
   test("through `handle`, each is ignored (nothing forwarded, nothing said to a stranger) and leaves one line with its reason", () => {
     const run = harness();
-    for (const [name, input, expected] of FIVE) {
+    for (const [name, input, expected] of DROPPED_THROUGH_HANDLE) {
       const handled = run.handle(input);
       assert.equal(handled.action, "ignore", name);
       assert.equal(handled.action === "ignore" && handled.reason, expected, name);
     }
-    assert.deepEqual(run.lines().map((line) => line.reason), FIVE.map(([, , reason]) => reason));
+    assert.equal(DROPPED_THROUGH_HANDLE.length, FIVE.length - 1, "the control: only the channel post was set aside");
+    assert.deepEqual(run.lines().map((line) => line.reason), DROPPED_THROUGH_HANDLE.map(([, , reason]) => reason));
     assert.ok(run.lines().every((line) => line.verdict === "drop" && line.direction === "in"));
   });
 
@@ -173,6 +178,130 @@ describe("identity (done-when 1)", () => {
       assert.throws(() => acceptUpdate(sendersWithoutId, { chairman: /** @type {any} */ (chairman) }), TypeError);
       assert.throws(() => createInbound({ ledger: createLedger({ path: join(scratch, "unused.jsonl"), now: Date.now }), chairman: /** @type {any} */ (chairman) }), TypeError);
     }
+  });
+});
+
+describe("a chat notice is recorded once and never acted on (a11ign/a11ign#4743)", () => {
+  // The wire name is spelled out, so a rename of the line's `direction` is a change to this test and not a silent one.
+  const CHAT_SEEN = "chat-seen";
+  const ANNOUNCEMENTS = "a11ign announcements";
+  const OTHER_CHANNEL_ID = -1009999;
+  const BOT = { id: 77, is_bot: true };
+
+  /** @param {number} id @param {Record<string, any>} [more] the bot made an administrator of the chairman's channel, by the chairman */
+  function addedToChannel(id: number, more: Record<string, any> = {}) {
+    return {
+      update_id: id,
+      my_chat_member: {
+        chat: { id: CHANNEL_ID, type: "channel", title: ANNOUNCEMENTS }, from: { id: CHAIRMAN.userId, is_bot: false }, date: 1,
+        old_chat_member: { status: "left", user: BOT }, new_chat_member: { status: "administrator", user: BOT }, ...more,
+      },
+    };
+  }
+
+  /** @param {number} id @param {Record<string, any>} [more] a post in that channel: no `from`, which is how Telegram sends one */
+  function channelPost(id: number, more: Record<string, any> = {}) {
+    return { update_id: id, channel_post: { message_id: 3, chat: { id: CHANNEL_ID, type: "channel", title: ANNOUNCEMENTS }, date: 1, text: "done", ...more } };
+  }
+
+  /** @param {ReturnType<typeof harness>} run @returns {Record<string, any>[]} */
+  const inboundLines = (run: ReturnType<typeof harness>): Record<string, any>[] => run.lines().filter((line) => line.direction === "in");
+
+  test("a my_chat_member for a channel writes one chat-seen line, and no inbound message", () => {
+    const run = harness();
+    const handled = run.handle(addedToChannel(100));
+    assert.deepEqual(handled, { action: "noted", chatId: CHANNEL_ID, recorded: true });
+    assert.equal(run.lines().length, 1);
+    assert.deepEqual({ ...run.lines()[0], ts: undefined }, { direction: CHAT_SEEN, chatId: CHANNEL_ID, type: "channel", title: ANNOUNCEMENTS, ts: undefined });
+    assert.equal(inboundLines(run).length, 0, "nothing the ledger counts as a message was written");
+    assert.deepEqual(chatsSeen(run.lines()), [{ chatId: CHANNEL_ID, type: "channel", title: ANNOUNCEMENTS }]);
+  });
+
+  test("a second update for the same chat writes none, across a post, a repeat and a restart; a different chat writes its own: the positive control", () => {
+    const run = harness();
+    run.handle(addedToChannel(101));
+    assert.deepEqual(run.handle(channelPost(102)), { action: "noted", chatId: CHANNEL_ID, recorded: false });
+    assert.equal(run.handle(addedToChannel(101)).action, "noted", "the same update id again is a notice, not a replayed message");
+    run.restart();
+    assert.deepEqual(run.handle(channelPost(103)), { action: "noted", chatId: CHANNEL_ID, recorded: false });
+    assert.equal(run.lines().length, 1, "one chat, one line");
+    assert.deepEqual(run.handle(channelPost(104, { chat: { id: OTHER_CHANNEL_ID, type: "channel", title: "another" } })), { action: "noted", chatId: OTHER_CHANNEL_ID, recorded: true });
+    assert.deepEqual(chatsSeen(run.lines()).map((chat) => chat.chatId), [CHANNEL_ID, OTHER_CHANNEL_ID]);
+  });
+
+  test("a channel_post is never routed as a command, a message or a reply, and what it says is never read", () => {
+    const texts = ["/stop", "approve", "ans:A", PASSWORD_LINE, GITHUB_TOKEN];
+    for (const [index, text] of texts.entries()) {
+      const run = harness();
+      const handled = run.handle(channelPost(110 + index, { text }));
+      assert.equal(handled.action, "noted", text);
+      assert.equal(inboundLines(run).length, 0, `${text}: no verdict was reached about it`);
+      const written = JSON.stringify(run.lines());
+      assert.ok(!written.includes(text), `${text}: the ledger holds none of it`);
+      assert.ok(!written.includes("sha256"), "and no hash of it");
+    }
+    const control = harness().handle(update(120, { text: "approve" }));
+    assert.equal(control.action, "forward", "control: the same words from the chairman as a message ARE forwarded, so 'noted' is not what every update gets");
+  });
+
+  test("a channel_post that carries the chairman's whole identity is still not a message: the update's type decides, not its fields", () => {
+    // Telegram sends no such thing; it is what a classifier that treated a post as a message would have forwarded, so the test can fail.
+    const forged = { update_id: 130, channel_post: message({ text: "approve", chat: { id: CHAIRMAN.chatId, type: "private" } }) };
+    const run = harness();
+    const handled = run.handle(forged);
+    assert.equal(handled.action === "ignore" && handled.reason, DROP_REASON.channelPost);
+    assert.equal(acceptUpdate(forged, { chairman: CHAIRMAN }).ok, false);
+    assert.equal(run.lines().some((line) => line.verdict === "forward"), false);
+    assert.equal(chatsSeen(run.lines()).length, 0);
+  });
+
+  test("a notice is `noted` and carries no chat type, so nothing downstream can mistake it for a chat to leave", () => {
+    const handled = harness().handle(addedToChannel(140));
+    assert.equal(handled.action, "noted");
+    assert.equal("chatType" in handled, false);
+    assert.equal("reason" in handled, false);
+  });
+
+  test("what is not a chat the bot was put in is dropped with the reason it always had, and writes no chat-seen line", () => {
+    const left = addedToChannel(150, { new_chat_member: { status: "left", user: BOT } });
+    const kicked = addedToChannel(151, { new_chat_member: { status: "kicked", user: BOT } });
+    const privateChat = addedToChannel(152, { chat: { id: STRANGER_ID, type: "private" } });
+    const chairmansOwn = addedToChannel(153, { chat: { id: CHAIRMAN.chatId, type: "group", title: "x" } });
+    const edited = { update_id: 154, edited_channel_post: { message_id: 3, chat: { id: CHANNEL_ID, type: "channel" }, text: "x" } };
+    const cases = /** @type {[string, unknown, string][]} */ ([
+      ["the bot left", left, DROP_REASON.unsupportedType], ["the bot was removed", kicked, DROP_REASON.unsupportedType],
+      ["a private chat", privateChat, DROP_REASON.unsupportedType], ["the chairman's own chat called a group", chairmansOwn, DROP_REASON.unsupportedType],
+      ["an edited channel post", edited, DROP_REASON.channelPost], ["no chat at all", { update_id: 155, my_chat_member: {} }, DROP_REASON.unsupportedType],
+      ["a chat id that is not an integer", addedToChannel(156, { chat: { id: "-100", type: "channel" } }), DROP_REASON.unsupportedType],
+      ["a chat type nobody sends", addedToChannel(157, { chat: { id: CHANNEL_ID, type: "forum" } }), DROP_REASON.unsupportedType],
+    ]);
+    const run = harness();
+    for (const [name, input, reason] of cases) {
+      const handled = run.handle(input);
+      assert.equal(handled.action === "ignore" && handled.reason, reason, name);
+    }
+    assert.equal(chatsSeen(run.lines()).length, 0, "none of them was remembered as a chat");
+    assert.equal(run.handle(addedToChannel(158)).action, "noted", "control: the clean notice, one field changed in each case above, is recorded");
+  });
+
+  test("a title is a stranger's text: control characters go, the length is Telegram's, and a non-string is null", () => {
+    const titles = /** @type {[unknown, string | null][]} */ ([
+      ["line one\nline two\u001b[31m", "line one line two [31m"], ["x".repeat(500), "x".repeat(128)], [42, null], [{ evil: 1 }, null], ["   ", null], [undefined, null],
+    ]);
+    for (const [index, [title, expected]] of titles.entries()) {
+      const run = harness();
+      run.handle(addedToChannel(160 + index, { chat: { id: CHANNEL_ID, type: "channel", title } }));
+      assert.equal(chatsSeen(run.lines())[0].title, expected, JSON.stringify(title)?.slice(0, 40));
+    }
+  });
+
+  test("chatsSeen reads only its own lines, the first sighting of each chat, and skips a line that is not one", () => {
+    const lines = [
+      { direction: "in", chatId: 1, type: "private" }, { direction: CHAT_SEEN, chatId: CHANNEL_ID, type: "channel", title: "first" },
+      { direction: CHAT_SEEN, chatId: CHANNEL_ID, type: "channel", title: "renamed" }, { direction: CHAT_SEEN, chatId: "-100", type: "channel" },
+      { direction: CHAT_SEEN, chatId: GROUP_ID }, { key: "row:1", status: "sent" },
+    ];
+    assert.deepEqual(chatsSeen(lines), [{ chatId: CHANNEL_ID, type: "channel", title: "first" }]);
   });
 });
 
@@ -359,7 +488,7 @@ describe("no other module can produce the branded value (done-when 5)", () => {
       }
     }
     assert.deepEqual(mintersByModule, { "inbound.ts": ["createInbound"] });
-    assert.deepEqual(Object.keys(native).sort(), ["BUTTON_ACTIONS", "DROP_REASON", "acceptUpdate", "actionData", "createInbound", "isAccepted", "optionData", "parseButtonData"], "a new export of inbound.ts is a decision, and this list is where it is made");
+    assert.deepEqual(Object.keys(native).sort(), ["BUTTON_ACTIONS", "DROP_REASON", "acceptUpdate", "actionData", "chatsSeen", "createInbound", "isAccepted", "optionData", "parseButtonData"], "a new export of inbound.ts is a decision, and this list is where it is made");
   });
 
   test("only inbound.ts names the brand: no other source can mint, or even spell, it", () => {
