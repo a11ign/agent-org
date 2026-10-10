@@ -196,18 +196,36 @@ export function idleStats(lines: { at: number; message: string; }[]): { ticksWit
 }
 
 /**
- * Claims taken back from their holder, by reason, from the journal's `RELEASED #N (session, reason)` lines. Those that ended
- * `merged` are a row finishing; every other reason is a claim that stopped moving, which is what a `claim-stall` voiding is.
- * @param {{ at: number, message: string }[]} lines
- * @returns {{ voided: number, byReason: Record<string, number> }}
+ * What a `RELEASED #N (session, reason)` line's reason means for the retro (#4689). Keyed by `ReleaseRequest["why"]` in `claim-stall.ts`,
+ * whose union `org-retro-release-reasons.test.ts` parses, so a reason added there without a classification here fails.
+ * `voiding` is a claim that stopped moving (the holder went quiet, or its session vanished); the rest are releases that are not stalls:
+ * a row finishing (`merged`), a row closed under the holder (`closed`), and a holder who declared a native edge or a date (`blocked`, `wait`).
  */
-export function releaseStats(lines: { at: number; message: string; }[]): { voided: number; byReason: Record<string, number>; } {
-  const byReason: Record<string, number> = {};
+export const RELEASE_REASON_KINDS: Record<string, "voiding" | "released"> = {
+  stalled: "voiding", gone: "voiding", merged: "released", closed: "released", blocked: "released", wait: "released",
+};
+
+/**
+ * Claims taken back from their holder, by reason, from the journal's `RELEASED #N (session, reason)` lines. Only the reasons
+ * {@link RELEASE_REASON_KINDS} calls `voiding` are `voided` (and listed in `byReason`); every other reason except `merged`, which is a row
+ * finishing and is not reported, is counted beside them in `otherReleases` so a declared wait does not move the headline number.
+ * An unclassified reason is a voiding: a release nobody has explained is worth a reader's attention.
+ * @param {{ at: number, message: string }[]} lines
+ * @returns {{ voided: number, byReason: Record<string, number>, otherReleases: Record<string, number> }}
+ */
+export function releaseStats(lines: { at: number; message: string; }[]): { voided: number; byReason: Record<string, number>; otherReleases: Record<string, number>; } {
+  // Maps, not plain objects: a journal reason is data, and `constructor` or `__proto__` must count as a reason, not as an inherited property.
+  const byReason = new Map<string, number>();
+  const otherReleases = new Map<string, number>();
   for (const { message } of lines) {
     const match = RELEASE.exec(message);
-    if (match !== null && match[3] !== "merged") byReason[match[3]] = (byReason[match[3]] ?? 0) + 1;
+    if (match === null || match[3] === "merged") continue;
+    const known = Object.hasOwn(RELEASE_REASON_KINDS, match[3]);
+    const into = !known || RELEASE_REASON_KINDS[match[3]] === "voiding" ? byReason : otherReleases;
+    into.set(match[3], (into.get(match[3]) ?? 0) + 1);
   }
-  return { voided: Object.values(byReason).reduce((sum, n) => sum + n, 0), byReason };
+  const voided = [...byReason.values()].reduce((sum, n) => sum + n, 0);
+  return { voided, byReason: Object.fromEntries(byReason), otherReleases: Object.fromEntries(otherReleases) };
 }
 
 /**
@@ -573,8 +591,8 @@ function journalDerivedLines(report: ReturnType<typeof buildReport>): string[] {
     idle === null ? `- Idle minutes while a claimable row existed: ${unreadJournal}`
       : `- Idle minutes while a claimable row existed: ${idle.idleMinutes} (${idle.ticksWithIdleOffer} of ${idle.ticks} ticks offered a Ready row nobody could take; inferred from the journal at ${TICK_MINUTES} min a tick, a floor)`,
     stalls === null ? `- Stalls (org-stalled wakes): ${unreadLedger}` : `- Stalls (org-stalled wakes): ${stalls.orgStalled}; claim-stalled wakes: ${stalls.claimStalled}`,
-    releases === null ? `- Claim-stall voidings (claims released for a reason other than merged): ${unreadJournal}`
-      : `- Claim-stall voidings (claims released for a reason other than merged): ${releases.voided} (${counted(releases.byReason)})`,
+    releases === null ? `- Claim-stall voidings (claims that stopped moving: stalled, gone): ${unreadJournal}`
+      : `- Claim-stall voidings (claims that stopped moving: stalled, gone): ${releases.voided} (${counted(releases.byReason)}); other releases, not voidings: ${counted(releases.otherReleases)}`,
     stalls === null ? `- org-health offers by signal: ${unreadLedger}` : `- org-health offers by signal: ${counted(stalls.healthBySignal)}`,
   ];
 }
