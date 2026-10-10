@@ -26,10 +26,10 @@ export type DeclaredState = (typeof DECLARED_STATES)[number];
 export type PrRef = { number: number; repoKey?: string };
 
 /** One declaration: who, what, about which pull request or row, and when. `at` is epoch milliseconds, the CLI's own clock. */
-export type Declaration = { session: string; state: DeclaredState; at: number; pr?: PrRef; row?: number; reason?: string; to?: string };
+export type Declaration = { session: string; state: DeclaredState; at: number; pr?: PrRef; row?: number; reason?: string; to?: string; rowKey?: string; repo?: string };
 
 /** A refusal is NAMED, so the worker (and the test) can tell "no pull request" from "no reason" from "no such state". */
-export type Refusal = { refused: "no-state" | "unknown-state" | "missing-pr" | "bad-pr" | "missing-row" | "bad-row" | "missing-reason" | "unexpected-argument" | "no-session" | "owed-to-self"; why: string };
+export type Refusal = { refused: "no-state" | "unknown-state" | "missing-pr" | "bad-pr" | "missing-row" | "bad-row" | "missing-reason" | "unexpected-argument" | "no-session" | "owed-to-self" | "unknown-tracker" | "no-such-row" | "ambiguous-row" | "row-closed" | "unreadable-row"; why: string };
 
 /** The directory, under the host's state directory, holding one `<session>.json` per worker. One file per session, so two workers never race a write. */
 export const WORKER_STATE_DIR = "worker-state";
@@ -42,7 +42,8 @@ export const BLOCKED_TOLD_FILE = "blocked-told.json";
 
 const SESSION_NAME_SHAPE = /^[a-z][a-z0-9-]*$/;
 const PR_SHAPE = /^(?:([a-z][a-z0-9-]*))?#?(\d+)$/;
-const ROW_SHAPE = /^#?(\d+)$/;
+/** A row: `460`, `#460`, or the tracker spelled in front, by its key or its `owner/name`: `agent-org#460`, `a11ign/agent-org#460`. */
+const ROW_SHAPE = /^(?:([A-Za-z0-9._/-]+)?#)?(\d+)$/;
 
 const USAGE = "usage: agent-org worker:state waiting-ci <pr> | waiting-review <pr> | done | blocked <row> <reason...> [--session=<you>] [--to=<session that owes the answer>]";
 
@@ -77,12 +78,12 @@ export function parseDeclaration(words: string[], { session, now, to = null }: {
   // blocked <row> <reason...>
   if (rest.length === 0) return refuse("missing-row", "`blocked` needs the row it is blocked on: `blocked <row> <reason>`");
   const row = ROW_SHAPE.exec(rest[0]);
-  if (row === null || Number(row[1]) <= 0) return refuse("bad-row", `\`${rest[0]}\` is not a row number (\`460\` or \`#460\`)`);
+  if (row === null || Number(row[2]) <= 0) return refuse("bad-row", `\`${rest[0]}\` is not a row (\`460\`, \`#460\` or \`<tracker key>#460\`)`);
   const reason = rest.slice(1).join(" ").trim();
   if (reason === "") return refuse("missing-reason", "`blocked` needs the reason, because it is posted on the row and is the question the answerer reads");
   if (to !== null && !SESSION_NAME_SHAPE.test(to)) return refuse("no-session", `--to=${to} is not a session name`);
   if (to === session) return refuse("owed-to-self", `--to=${to} is you: your own answer label means the row waits on YOU, so it could never excuse a block on someone else`);
-  return { declaration: { ...base, row: Number(row[1]), reason, to: to ?? DEFAULT_ANSWERER } };
+  return { declaration: { ...base, row: Number(row[2]), ...(row[1] === undefined ? {} : { rowKey: row[1] }), reason, to: to ?? DEFAULT_ANSWERER } };
 }
 
 // --- THE STORE ------------------------------------------------------------------------------------------------------
@@ -163,7 +164,7 @@ export type PrFact = { number?: number; repoKey?: string; reviewDecision?: strin
  * the claim; `answersOwed` are the sessions an `answer:` label on the row names OTHER than the holder (`answer:<holder>` is the row waiting on the
  * holder, never the holder's wait); `turnStartedAt` is {@link lastDeliveredTo} or `null`.
  */
-export type ClaimContext = { row: number; claimedAt: number; turnStartedAt: number | null; ownPrs: PrFact[]; mergedPr: { number: number } | null; answersOwed: string[]; rowClosed?: boolean };
+export type ClaimContext = { row: number; claimedAt: number; turnStartedAt: number | null; ownPrs: PrFact[]; mergedPr: { number: number } | null; answersOwed: string[]; rowClosed?: boolean; repo?: string };
 
 /**
  * `none`: nothing declared. `stale`: declared, but before this turn began, so it describes an earlier turn. `excused`: fresh, and what it names
@@ -201,6 +202,9 @@ export function declarationReading(declaration: Declaration | null | undefined, 
   }
   if (state === "blocked") {
     if (declaration.row !== ctx.row) return lapsed(`it names #${declaration.row}, and the row you hold is #${ctx.row}`);
+    if (declaration.repo !== undefined && ctx.repo !== undefined && declaration.repo !== ctx.repo) {
+      return lapsed(`it names #${declaration.row} of ${declaration.repo}, and the row you hold is #${ctx.row} of ${ctx.repo}`);
+    }
     const owed = declaration.to ?? DEFAULT_ANSWERER;
     return ctx.answersOwed.includes(owed)
       ? excused(`#${ctx.row} is waiting on an answer from ${owed}`)
@@ -288,6 +292,73 @@ export function tellBlocked({ roster, path, send, report = () => {} }: { roster:
 /** The `gh` calls `blocked` makes, as a seam: a test records them and runs nothing. */
 export type Gh = (args: string[]) => string;
 
+/** What `blocked` needs to know of a row it may name: whether it is open, and which labels it carries. */
+export type RowFact = { state: "OPEN" | "CLOSED"; labels: string[] };
+
+/** Reads one row of one repository, or `null` when that repository has no such row. A read that could not be made THROWS: it is not "no such row". */
+export type RowLook = (repo: string, number: number) => RowFact | null;
+
+/**
+ * THE ROW A `blocked` DECLARATION IS ABOUT, RESOLVED AND NEVER DEFAULTED (a11ign/a11ign#460 was labelled by the unmodified command, which
+ * wrote the FIRST tracker's row of that number, a row closed a month earlier). The tracker is, in this order: the one the reference
+ * NAMES (`agent-org#460`, by key or `owner/name`); else the only declared tracker that has a row of that number; else, where several do, the
+ * one whose row carries the claim's own session label; else a refusal naming every candidate, because a number alone is not an address.
+ * A CLOSED row is refused by state: the label would wake a reader who cannot act, and the declaration it makes can only be a mistake.
+ * @param {Declaration} declaration from {@link parseDeclaration}, `blocked` only
+ * @param {{ trackers: readonly { key: string, repo: string }[], look: RowLook, sessionLabel: string }} deps
+ */
+export function resolveBlockedRow(declaration: Declaration, { trackers, look, sessionLabel }: { trackers: readonly { key: string; repo: string }[]; look: RowLook; sessionLabel: string }): { declaration: Declaration } | { refused: Refusal } {
+  const refuse = (refused: Refusal["refused"], why: string): { refused: Refusal } => ({ refused: { refused, why } });
+  const number = declaration.row as number;
+  const spell = (tracker: { key: string; repo: string }): string => `${tracker.key === "" ? tracker.repo : tracker.key}#${number}`;
+  const declared = trackers.map((tracker) => `${tracker.key === "" ? "the empty key" : `\`${tracker.key}\``} (${tracker.repo})`).join(", ");
+  let candidates = [...trackers];
+  if (declaration.rowKey !== undefined) {
+    const named = trackers.find((tracker) => tracker.key === declaration.rowKey || tracker.repo === declaration.rowKey);
+    if (named === undefined) return refuse("unknown-tracker", `\`${declaration.rowKey}#${number}\` names no declared tracker (declared: ${declared}); nothing is defaulted to another tracker's row of that number`);
+    candidates = [named];
+  }
+  const found: { tracker: { key: string; repo: string }; row: RowFact }[] = [];
+  for (const tracker of candidates) {
+    let row: RowFact | null;
+    try {
+      row = look(tracker.repo, number);
+    } catch (err: any) {
+      return refuse("unreadable-row", `could not read #${number} of ${tracker.repo} (${String(err?.stderr ?? err?.message ?? err).split("\n")[0]}), so nothing was labelled or written`);
+    }
+    if (row !== null) found.push({ tracker, row });
+  }
+  if (found.length === 0) return refuse("no-such-row", `no row #${number} in ${candidates.map((tracker) => tracker.repo).join(" or ")}; name it as \`<tracker key>#${number}\` if it is in another tracker`);
+  let chosen = found[0];
+  if (found.length > 1) {
+    const held = found.filter((one) => one.row.labels.includes(sessionLabel));
+    if (held.length !== 1) {
+      return refuse("ambiguous-row", `#${number} is a row in more than one tracker (${found.map((one) => `${spell(one.tracker)} ${one.row.state}`).join(" and ")}) and neither is the one your claim label \`${sessionLabel}\` names alone: say which, as \`${found.map((one) => spell(one.tracker)).join("\` or \`")}\``);
+    }
+    chosen = held[0];
+  }
+  if (chosen.row.state !== "OPEN") {
+    return refuse("row-closed", `${spell(chosen.tracker)} is ${chosen.row.state}: a \`blocked\` declaration on a closed row labels a reader who cannot act. If it is the row you hold it has to be REOPENED first (\`gh issue reopen ${number} --repo ${chosen.tracker.repo}\`, by a person); if you meant another row, name it as \`<tracker key>#${number}\``);
+  }
+  const { rowKey: _typed, ...rest } = declaration;
+  return { declaration: { ...rest, repo: chosen.tracker.repo } };
+}
+
+/** The real {@link RowLook}: `gh issue view`, where "no such issue" is `null` and any other failure throws. @param {Gh} gh */
+export function ghRowLook(gh: Gh): RowLook {
+  return (repo, number) => {
+    let out: string;
+    try {
+      out = gh(["issue", "view", String(number), "--repo", repo, "--json", "state,labels"]);
+    } catch (err: any) {
+      if (/Could not resolve to an? (?:Issue|issue)|not found|no issue/i.test(String(err?.stderr ?? err?.message ?? ""))) return null;
+      throw err;
+    }
+    const parsed = JSON.parse(out) as { state: string; labels?: { name: string }[] };
+    return { state: parsed.state === "OPEN" ? "OPEN" : "CLOSED", labels: (parsed.labels ?? []).map((label) => label.name) };
+  };
+}
+
 /**
  * `blocked` APPLIES THE LABEL ITSELF, AND POSTS THE REASON: the worker never has to remember the `answer:` spelling, the label is created where a
  * repository does not have it yet (`gh issue edit --add-label` refuses an unknown label, #3862), and the comment is what keeps a bare label from
@@ -301,7 +372,7 @@ export function applyBlocked(declaration: Declaration, { gh, tracker, answerPref
   gh(["issue", "edit", row, "--repo", tracker, "--add-label", label]);
   gh(["issue", "comment", row, "--repo", tracker, "--body",
     `BLOCKED (\`${declaration.session}\`, declared with \`worker:state\`): ${declaration.reason}\n\nOwed by \`${declaration.to ?? DEFAULT_ANSWERER}\`; the row carries \`${label}\`.`]);
-  return [`labelled #${row} \`${label}\` and posted the reason`];
+  return [`labelled #${row} of ${tracker} \`${label}\` and posted the reason`];
 }
 
 /** `--name=value` or `--name value` out of the flags, and the positionals left over. The command takes two flags and no others. */
@@ -351,20 +422,27 @@ export async function main(argv: string[] = process.argv.slice(2), env: NodeJS.P
   const { stateEntryPath } = await import("./host-config.ts");
   const dir = `${stateEntryPath("")}/${WORKER_STATE_DIR}`;
   const lines: string[] = [];
+  let written = declaration;
   if (declaration.state === "blocked") {
     const { execFileSync } = await import("node:child_process");
     const { homeProjectDeclaration } = await import("./project-config.ts");
-    const { ANSWER_PREFIX } = await import("./project-vocabulary.ts");
+    const { ANSWER_PREFIX, SESSION_PREFIX } = await import("./project-vocabulary.ts");
     const gh: Gh = (args) => execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    const resolved = resolveBlockedRow(declaration, { trackers: homeProjectDeclaration().tracker, look: ghRowLook(gh), sessionLabel: `${SESSION_PREFIX}${declaration.session}` });
+    if ("refused" in resolved) {
+      process.stderr.write(`REFUSED ${resolved.refused.refused}: ${resolved.refused.why}\n`);
+      return resolved.refused.refused === "unreadable-row" ? 2 : 1;
+    }
+    written = resolved.declaration;
     try {
-      lines.push(...applyBlocked(declaration, { gh, tracker: homeProjectDeclaration().tracker[0].repo, answerPrefix: ANSWER_PREFIX }));
+      lines.push(...applyBlocked(written, { gh, tracker: written.repo as string, answerPrefix: ANSWER_PREFIX }));
     } catch (err: any) {
-      process.stderr.write(`NOT DECLARED: could not label #${declaration.row} (${String(err?.stderr ?? err?.message ?? err).split("\n")[0]}). Nothing was written.\n`);
+      process.stderr.write(`NOT DECLARED: could not label #${declaration.row} of ${written.repo} (${String(err?.stderr ?? err?.message ?? err).split("\n")[0]}). Nothing was written.\n`);
       return 2;
     }
   }
-  const path = writeDeclaration(dir, declaration);
-  process.stdout.write(`${[`DECLARED ${declaration.session}: ${declaration.state}${declaration.pr ? ` #${declaration.pr.number}` : ""}${declaration.row ? ` #${declaration.row}` : ""}`,
+  const path = writeDeclaration(dir, written);
+  process.stdout.write(`${[`DECLARED ${declaration.session}: ${declaration.state}${declaration.pr ? ` #${declaration.pr.number}` : ""}${written.row ? ` ${written.repo === undefined ? "" : written.repo}#${written.row}` : ""}`,
     ...lines, `wrote ${path}`].join("\n")}\n`);
   return 0;
 }

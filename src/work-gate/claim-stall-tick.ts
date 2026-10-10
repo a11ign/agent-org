@@ -259,7 +259,7 @@ function readClaims({ held, byRow, openPrs, mergedPrs, elsewhere, io, repo, now,
     // #460: the declaration, read against THIS claim. A claim that names no branch (`nothing`) is idle at its prompt by design and has none to make.
     const facts = declarations === null || built.nothing === true ? built : { ...built, declared: declarationReading(declarations.byClaimant.get(session), {
       row: built.row, claimedAt: built.claimedAt, turnStartedAt: lastDeliveredTo(ledger(), session), ownPrs: built.ownPrs ?? [], mergedPr: built.mergedPr,
-      answersOwed: answersOwedBy(row).filter((owed) => owed !== session) }) };
+      answersOwed: answersOwedBy(row).filter((owed) => owed !== session), repo: homeProjectDeclaration().tracker[0].repo }) };
     const reading = readClaim(facts, { now, restartAt: restart, agents, ...rememberedFor({ entry: before[facts.row], session, row: facts.row, ledger }) });
     // A HOLDER THAT HAS WORK AND A BLOCKER is the EXPECTED hold and is not said every tick; only a read that could not be made is.
     if (reading.kind === "holding" && reading.expected !== true) {
