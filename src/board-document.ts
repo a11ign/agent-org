@@ -30,6 +30,7 @@ import { foundByChairmanLine } from "./found-by-chairman.ts";
 import { toHtml } from "./board-markdown.ts";
 import { editionDay, publishEdition, todaysEditionExists } from "./board-discussion.ts";
 import { productHome, PRODUCT_HOME_SOURCE } from "@a11ign/toolchain/lib/product-home";
+import { HOME_CHECKOUT } from "./project-config.ts";
 
 // Module scope, not inside main(): `section5` reads it, and `document()` is exported for the renderer
 // test, which builds a real document without ever calling main().
@@ -352,7 +353,7 @@ function section5(d: any) {
   //
   // Editing the literal would have closed that on one day and rebuilt the trap for whoever changes the
   // value next -- which, with the transfer on the 15th and the domain unbought, is plausibly this week.
-  const home = productHome();
+  const home = productHome(HOME_CHECKOUT);
   if (home === null) {
     throw new Error(`board-document: ${PRODUCT_HOME_SOURCE} states no \`homepage\`, so this document `
       + "cannot say where the product lives. REFUSING to render rather than inventing one or dropping the "

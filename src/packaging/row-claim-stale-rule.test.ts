@@ -13,6 +13,7 @@ import ts from "typescript";
 import { staleRuleReason, ruleFiles, rulePathspec, ruleDirOf, workTreeOf, installedLayoutOf }
   from "../row-claim/stale-rule-guard.ts";
 import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
+import { linkToolchain } from "./copied-tool-fixture.ts";
 
 /**
  * THE TOOL'S ROOT AND ITS REPOSITORY, found from this file's own location and git, never by counting directories (#3041). `src/packaging/..` is
@@ -200,7 +201,8 @@ function importFresh(path: string, query: string) {
 async function guardInTool(prefix: string) {
   const { root, commit } = syntheticRepo();
   const source = (rel: string) => readFileSync(join(TOOL_ROOT, rel), "utf8");
-  for (const rel of ["src/row-claim/stale-rule-guard.ts", "src/lib/local-import-closure.ts", "src/lib/git-env.ts"]) commit(`${prefix}${rel}`, source(rel));
+  commit(`${prefix}src/row-claim/stale-rule-guard.ts`, source("src/row-claim/stale-rule-guard.ts"));
+  linkToolchain(join(root, prefix)); // the guard's two leaf modules are the toolchain's now (a11ign/agent-org#522): the tool's one declared dependency, where the tool's `src` resolves it
   commit(`${prefix}src/row-claim/own-pr-health-rule.ts`, "export const inBuildReason = () => null;\n");
   const base = commit(`${prefix}src/row-claim.ts`, 'import { inBuildReason } from "./row-claim/own-pr-health-rule.ts";\nexport { inBuildReason };\n');
   setRef(root, "refs/remotes/origin/main", base);
@@ -297,18 +299,18 @@ async function guardInstalled(dir: string = PNPM_DIR(SHA)) {
   const { root, commit } = syntheticRepo();
   setRef(root, "refs/remotes/origin/main", commit("package.json", "{}\n"));
   const source = (rel: string) => readFileSync(join(TOOL_ROOT, rel), "utf8");
-  // The three modules IMPORTED are written as the JavaScript a build would ship: Node 24 will not strip the types of a `.ts` under node_modules (#4389), which is
+  // The module IMPORTED is written as the JavaScript a build would ship: Node 24 will not strip the types of a `.ts` under node_modules (#4389), which is
   // the measured reason the tool runs from a checkout now. The guard READS `row-claim.ts` and the rule file as text, so those two stay the TypeScript they are.
   const built = (rel: string) => ts.transpileModule(source(rel), { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022, rewriteRelativeImportExtensions: true } }).outputText;
   const files = { "package.json": '{"type":"module"}\n',
     "src/row-claim/stale-rule-guard.js": built("src/row-claim/stale-rule-guard.ts"),
-    "src/lib/local-import-closure.js": built("src/lib/local-import-closure.ts"), "src/lib/git-env.js": built("src/lib/git-env.ts"),
     "src/row-claim/own-pr-health-rule.ts": "export const inBuildReason = () => null;\n",
     "src/row-claim.ts": 'import { inBuildReason } from "./row-claim/own-pr-health-rule.ts";\nexport { inBuildReason };\n' };
   for (const [rel, text] of Object.entries(files)) {
     mkdirSync(dirname(join(root, dir, rel)), { recursive: true });
     writeFileSync(join(root, dir, rel), text);
   }
+  linkToolchain(join(root, dir)); // the guard's leaf modules are the toolchain's (a11ign/agent-org#522), found from the install as pnpm lays a dependency beside it
   const guard = await importFresh(join(root, dir, "src/row-claim/stale-rule-guard.js"), `installed=${encodeURIComponent(root)}`);
   return { root, guard };
 }

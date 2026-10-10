@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import { SHIPPED_DIR, TOOL_UPDATE_EXEC, programCandidates, toolForm } from "../host-units.ts";
 import { renderTemplate, templateValues, parseHostConfig } from "../host-config.ts";
 import { EXIT, GATE, afterGate } from "../work-tick.ts";
+import { linkToolchain } from "./copied-tool-fixture.ts";
 
 const SRC = fileURLToPath(new URL("..", import.meta.url));
 const PRELOAD = join(SRC, "lib", "crash-exit.ts");
@@ -110,6 +111,7 @@ function tickWith({ gate, wake }: { gate: string; wake: string }) {
     writeFileSync(join(src, "package.json"), '{"type":"module"}'); // tsx reads a loose .ts as CommonJS without it, and a .mjs it reaches then fails on its top-level await
     const own = new Set(["work-tick.ts", "work-gate.ts", "wake.ts"]);
     for (const name of readdirSync(SRC).filter((entry) => !own.has(entry))) symlinkSync(join(SRC, name), join(src, name));
+    linkToolchain(dir); // the tick imports `@a11ign/toolchain/lib/*` (a11ign/agent-org#522): the one dependency a staged tick tree holds
     copyFileSync(join(SRC, "work-tick.ts"), join(src, "work-tick.ts"));
     writeFileSync(join(src, "work-gate.ts"), gate);
     const marker = join(dir, "wake-ran");

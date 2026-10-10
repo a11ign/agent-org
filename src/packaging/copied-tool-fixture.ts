@@ -7,7 +7,8 @@
  * So the tool's files land under `<copyRoot>/packages/agent-org/`, the project's under `<copyRoot>/`, and the copied tool is told the
  * copy is its project by a `host.json` of its own (`AGENT_ORG_HOST`), the one way it learns where a project is.
  */
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { localImports } from "@a11ign/toolchain/lib/local-import-closure";
@@ -46,6 +47,18 @@ export function importClosure(entry: string, also: string[] = []): Set<string> {
   return files;
 }
 
+/**
+ * The tool's one declared dependency (`@a11ign/toolchain`, a11ign/agent-org#522), linked where a bare specifier in a copy under `root` finds it.
+ * It is ALL a copy gets: the closure copied above follows relative imports only, so a copy is still a tree with no other `node_modules`.
+ */
+export function linkToolchain(root: string): void {
+  const link = join(root, "node_modules/@a11ign/toolchain");
+  if (existsSync(link)) return;
+  const installed = realpathSync(join(dirname(createRequire(import.meta.url).resolve("@a11ign/toolchain/lib/git-env")), "..", ".."));
+  mkdirSync(dirname(link), { recursive: true });
+  symlinkSync(installed, link);
+}
+
 function copyInto(target: string, source: string): void {
   mkdirSync(dirname(target), { recursive: true });
   copyFileSync(source, target);
@@ -64,5 +77,6 @@ export function copyToolAndProject(entry: string, files: Iterable<string>, copyR
   const host = JSON.parse(readFileSync(hostSource, "utf8")) as { primary: string };
   const hostPath = join(copyRoot, ".agent-org/host.json");
   writeFileSync(hostPath, JSON.stringify({ ...host, projects: [{ id: host.primary, checkout: copyRoot }] }));
+  linkToolchain(copyRoot);
   return { entry: join(copyRoot, TOOL_DIR, relative(TOOL_ROOT, entry)), env: { [HOST_ENV]: hostPath } };
 }

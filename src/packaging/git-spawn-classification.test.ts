@@ -77,20 +77,19 @@ import { stripComments } from "@a11ign/toolchain/lib/source-text";
 import { toolSources, toolTests, type ToolFile } from "./tool-source.ts";
 
 /**
- * The two modules a git-shelling file may import to be classified SAFE, matched by BASENAME rather than full path -- every real call site
- * imports one of these by a RELATIVE specifier (`./lib/git-env.ts`, `@a11ign/toolchain/lib/git-sandbox`), so matching the full path would miss every
- * real import. (The product's third, `git-safe-env.mjs`, is worker-fleet's and never reaches this tool.)
+ * The two modules a git-shelling file may import to be classified SAFE, matched by the specifier's LAST SEGMENT rather than its full path: every
+ * real call site imports one of these as `@a11ign/toolchain/lib/git-env` or `@a11ign/toolchain/lib/git-sandbox` (a11ign/agent-org#522; the tool held
+ * its own copies at `./lib/git-env.ts` until then), and a spelling with the `.ts` is still one. (The product's third, `git-safe-env.mjs`, is
+ * worker-fleet's and never reaches this tool.)
  */
-const CANONICAL_HELPER_BASENAMES = ["git-env.ts", "git-sandbox.ts"];
-const CANONICAL_HELPERS = ["src/lib/git-env.ts", "src/lib/git-sandbox.ts"];
+const CANONICAL_HELPER_IMPORT = /\b(?:from\s+|import\s*\(\s*)["'][^"']*\/(?:git-env|git-sandbox)(?:\.ts)?["']/;
 
 /**
  * Every `.ts`/`.mjs` file in the tool's `src/`: its source AND its tests, a test that spawns git being the original motive. The canonical
- * helpers and their OWN tests are exempt from needing to import themselves -- they either ARE the sanitizer or exist to prove it.
+ * helpers are not in this tree to be set aside: they are the toolchain's, and carry their own tests there.
  */
 function trackedSourceFiles(): ToolFile[] {
-  return [...toolSources(), ...toolTests()]
-    .filter((f) => !CANONICAL_HELPERS.includes(f.path) && !/\/git-(env|sandbox)\.test\.(ts|mjs)$/.test(f.path));
+  return [...toolSources(), ...toolTests()];
 }
 
 /**
@@ -196,10 +195,9 @@ function spawnsGit(executable: string): boolean {
   return SPAWNS_GIT_DIRECTLY.test(executable) || /\bwithGitSandbox\(/.test(executable);
 }
 
-/** Imports one of the canonical helpers (by basename, since real imports are relative) AND actually calls it. */
+/** Imports one of the canonical helpers (by the specifier's last segment, so the package's and a relative one both count) AND actually calls it. */
 function usesCanonicalHelper(executable: string): boolean {
-  const importsHelper = CANONICAL_HELPER_BASENAMES.some((basename) => executable.includes(basename));
-  if (!importsHelper) return false;
+  if (!CANONICAL_HELPER_IMPORT.test(executable)) return false;
   return /\bsandboxGitEnv\(/.test(executable) || /\bwithGitSandbox\(/.test(executable);
 }
 

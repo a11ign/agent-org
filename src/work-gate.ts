@@ -31,8 +31,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { realpathSync, existsSync, readFileSync, appendFileSync, mkdirSync, writeFileSync, renameSync } from "node:fs";
 import { dirname, join } from "node:path";
-// RELATIVE, not the package specifier -- this must run before any `pnpm install`/build, the same constraint
-// `org-watch.ts` and `build-packages.mjs` state at their own imports.
+// The one import that is not relative (a11ign/agent-org#522): the tool's declared dependency, `@a11ign/toolchain`, by its package specifier. The
+// gate still runs before any build, but no longer before any install -- the checkout it runs from must hold the version `package.json` declares.
 import { refuseUnknownFlags } from "@a11ign/toolchain/lib/cli-flags";
 import { READY_LABEL, CLAIM_LABEL, CLAIM_RECORD_MARKER } from "./claim-labels.ts";
 import { verdictAmong, patchIdOfDiff, evidenceHeads, refusalHeads, refusalLiftedAt } from "./review-verdict.ts";

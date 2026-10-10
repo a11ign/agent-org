@@ -43,7 +43,6 @@ const SELF = "src/tmp-fixtures-are-removed.test.ts";
 /** Non-test modules that make a fixture directory for a test, and so are held to the same rule. */
 const SUPPORT_FILES = [
   "src/lib/tmp-fixture.ts",
-  "src/lib/git-sandbox.ts",
   "src/packaging/host-units-project.ts",
 ];
 

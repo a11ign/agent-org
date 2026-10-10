@@ -32,6 +32,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
+import { linkToolchain } from "./copied-tool-fixture.ts";
 
 const TOOL_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const PNPM_TIMEOUT_MS = 120_000;
@@ -145,6 +146,7 @@ const toolDir = (project: string) => join(project, "node_modules", "agent-org");
 function outsideNodeModules(project: string): string {
   const copy = join(scratch(), "agent-org");
   cpSync(realpathSync(toolDir(project)), copy, { recursive: true });
+  linkToolchain(copy); // the package alone is copied, not the project's `node_modules` its dependency sits in (a11ign/agent-org#522)
   return copy;
 }
 const standaloneCopy = installed.added.status === 0 ? outsideNodeModules(installed.project) : "";

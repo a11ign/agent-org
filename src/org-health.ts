@@ -21,7 +21,7 @@
 //   fleet-idle-while-work-waits  24 h        zero captures for a day while a `fleet-gated` row or a lab job waits for the fleet. THE
 //                                            24 h IS THE CHAIRMAN'S, not a percentile: the 2026-09 incidents of a worker unable to
 //                                            capture ran 4.9 days and were found by a human reading a terminal.
-// `copies-drifted` IS RETIRED (a11ign/agent-org#522, #4425 phase 3): the tool holds no copy any more, it imports `@a11ign/toolchain/lib/*`
+// `copies-drifted` IS RETIRED (a11ign/agent-org#522, #4425 phase 3): the tool holds no copy any more, it imports `@a11ign/toolchain/lib/<stem>`
 // at the version `package.json` declares, so there is no pair left to compare.
 // THE SEVENTH, #2970, REPLACED BY THE OUTCOME CLOCK (#3486, the chairman, 2026-10-04: "how do we make sure nothing happens again?"):
 //   overdue                      3 x median  an open PR, or a claimed row, that has not MERGED or CLOSED within three times the median it takes.
@@ -46,7 +46,8 @@
 // A READ THAT WAS REFUSED IS A STATED UNKNOWN, NEVER A CLEAR (#1286). Each reading is `tripped`, `clear` or `unknown`, and an
 // unknown says why on stderr -- a line that repeats for a persistent refusal and is therefore offered by `repeating-lines.ts`.
 //
-// A LEAF, RELATIVE IMPORTS ONLY, like `repeating-lines.ts`: `work-gate.ts` imports this, and it runs before any `pnpm install`/build.
+// A LEAF, RELATIVE IMPORTS ONLY but for `@a11ign/toolchain/lib/git-env` (the tool's declared dependency, not a copy), like `repeating-lines.ts`:
+// `work-gate.ts` imports this, and it runs before any build.
 import { canStrip, describeBad, type NodeStripFact } from "./node-strips-types.ts";
 import { execFileSync } from "node:child_process";
 import { readFileSync, statSync } from "node:fs";
