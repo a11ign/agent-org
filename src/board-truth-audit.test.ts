@@ -3,7 +3,7 @@
 //
 // POSITIVE AND NEGATIVE CONTROL PER QUESTION: each `disagrees` test has an `agrees` twin that differs by ONE fact, so a question that always fires is red in the twin and one that
 // never fires is red in the first. The chairman's two cases are fixtures: #2899 (an epic, 13 of 13 children closed, open) and the #3425 shape (`ready` carrying `no-code-left`).
-// `emptiness` is the control for every `[]` here: the same audit finds each of the eight rows in `BOARD` below, so an empty result is a reading and not an unwired reader.
+// `emptiness` is the control for every `[]` here: the same audit finds each of the eight rows in `BOARD` below (and a ninth, #517, for `roadmap-value`), so an empty result is a reading and not an unwired reader.
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
