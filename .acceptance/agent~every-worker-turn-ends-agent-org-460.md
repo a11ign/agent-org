@@ -15,7 +15,7 @@ Mutation: ten, each turning at least one test red and each restore byte-identica
 
 Evidence: `src/worker-state.test.ts` passes, 20 of 20, with the Acceptance's five cases named: all four states accepted with their arguments and each malformed call refused by name; the NEGATIVE CONTROL (an idle worker with a fresh `waiting-ci` for an open pull request is not nudged, the same declaration with the pull request gone or its checks finished is nudged at M, a merge is released); no declaration and a declaration older than the last turn both nudged at M, and the one declared after that turn is not; `blocked` applying `answer:product-manager` through a recording `gh` with the excuse ending when the label is removed; a `blocked` herdr session told once and a second tick sending none, told again after it worked. The three rewritten files pass (169 tests). `tsc --noEmit` reports only the two `mjs-ratchet.test.ts` errors `main` has. The whole suite: 34 of 8243 fail, in the same eight files that fail on a clean `main` (`mjs-ratchet`, `board-truth-audit`, `failure-ledger`, `auto-arm-token`, `milestone-clock`, `milestone-clock-exact-start`, `pr-template-acceptance`, `public-claim`), and none imports a file this change touches beyond what it rewrote.
 
-Acceptance: `npx rstest run --config scripts/rstest/rstest.config.ts src/worker-state.test.ts`
+Acceptance: `AGENT_ORG_HOST=/home/agent/repos/a11y-witness/.agent-org/host.json npx rstest run --config scripts/rstest/rstest.config.ts src/worker-state.test.ts`
 
 Closes: none
 
