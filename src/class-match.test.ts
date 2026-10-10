@@ -343,7 +343,9 @@ test("a caller that gives no match io reads no listing and asks nobody, so a hos
 
 test("a refused or malformed listing is logged, nothing is remembered and nothing is asked", () => {
   const t = tick([{ number: 10 }], { match: {} });
-  const bad = readClassRepeat((args) => { if (args.some((a) => String(a).includes("title"))) throw new Error("HTTP 403 rate limited"); return "[]"; }, "o/r", {
+  // the match listing is the one that projects a title and no close time: the closed-row listing projects both (#570), so "title" alone no longer names it
+  const matchListing = (args: string[]) => args.some((a) => String(a).includes("title") && !String(a).includes("closed_at"));
+  const bad = readClassRepeat((args) => { if (matchListing(args)) throw new Error("HTTP 403 rate limited"); return "[]"; }, "o/r", {
     root: "/nowhere", read: () => CLASS_INDEX, match: { statePath: t.statePath, ask: () => assert.fail("asked"), outcome: () => {} }, log: (l) => t.logs.push(l),
   });
   assert.ok("index" in bad);
