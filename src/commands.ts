@@ -12,6 +12,7 @@
 
 /** Command name -> the program under `src/` it runs. */
 export const COMMANDS = {
+  "agent-tool:update": "agent-tool-update.ts",
   "board:document": "board-document.ts",
   "board:liveness": "board-schedule-liveness.ts",
   "board:record": "board-record.ts",
