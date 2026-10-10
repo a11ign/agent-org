@@ -1,27 +1,27 @@
 {
   "generatedBy": "src/packaging/gh-call-inventory.ts",
   "summary": {
-    "files": 91,
-    "spawns": 130,
-    "calls": 370,
+    "files": 92,
+    "spawns": 133,
+    "calls": 380,
     "shapes": {
       "api rest": 131,
-      "issue list": 40,
-      "api graphql": 33,
+      "issue list": 41,
+      "api graphql": 37,
       "issue view": 33,
       "pr list": 29,
-      "issue comment": 25,
+      "issue comment": 26,
       "pr view": 17,
-      "issue edit": 12,
+      "issue edit": 13,
       "label create": 10,
       "pr merge": 6,
+      "project item-edit": 5,
       "issue create": 4,
       "pr comment": 4,
       "run list": 4,
       "run view": 4,
+      "issue close": 3,
       "pr edit": 3,
-      "project item-edit": 3,
-      "issue close": 2,
       "project item-add": 2,
       "label list": 1,
       "pr close": 1,
@@ -175,6 +175,7 @@
     "src/board-truth-audit.ts": {
       "spawns": 1,
       "calls": {
+        "api graphql": 1,
         "api rest": 2,
         "issue comment": 1,
         "issue list": 4,
@@ -500,6 +501,7 @@
       },
       "labels": [
         "$CLAIM_LABEL",
+        "$HAIKU_TIER_LABEL",
         "$READY_LABEL",
         "$SESSION_PREFIX"
       ],
@@ -713,9 +715,9 @@
       "parsesCloses": false
     },
     "src/row-file.ts": {
-      "spawns": 15,
+      "spawns": 18,
       "calls": {
-        "api graphql": 1,
+        "api graphql": 3,
         "api rest": 3,
         "issue create": 1,
         "issue edit": 1,
@@ -723,7 +725,7 @@
         "issue view": 4,
         "label create": 1,
         "project item-add": 1,
-        "project item-edit": 1
+        "project item-edit": 2
       },
       "labels": [
         "$ANSWER_PREFIX",
@@ -805,6 +807,27 @@
         "api rest": 1
       },
       "labels": [],
+      "parsesCloses": false
+    },
+    "src/ticket-port/github-adapter.ts": {
+      "spawns": 0,
+      "calls": {
+        "api graphql": 2,
+        "issue comment": 1,
+        "issue edit": 1,
+        "project item-edit": 1
+      },
+      "labels": [
+        "$ANSWER_PREFIX",
+        "$BACKLOG_LABEL",
+        "$CHAIRMAN_PRIORITY_LABEL",
+        "$CLAIM_LABEL",
+        "$LANE_PREFIX",
+        "$OUT_OF_RELEASE_LABEL",
+        "$READY_LABEL",
+        "$STATE_LABEL",
+        "$STATE_OF_LABEL"
+      ],
       "parsesCloses": false
     },
     "src/trace/freshness.ts": {
@@ -937,10 +960,11 @@
       "calls": {
         "api graphql": 1,
         "api rest": 4,
+        "issue close": 1,
         "issue comment": 4,
         "issue create": 1,
         "issue edit": 2,
-        "issue list": 1,
+        "issue list": 2,
         "issue view": 4,
         "project item-add": 1,
         "project item-edit": 1
@@ -967,7 +991,7 @@
     "src/work-gate.ts": {
       "spawns": 1,
       "calls": {
-        "api graphql": 3,
+        "api graphql": 2,
         "api rest": 15,
         "issue comment": 2,
         "issue create": 1,
@@ -1340,6 +1364,12 @@
       "group": "JUDGMENT",
       "namedIn": [
         "src/work-gate.ts"
+      ]
+    },
+    "ready-rows-untiered": {
+      "group": "JUDGMENT",
+      "namedIn": [
+        "src/org-retro.ts"
       ]
     },
     "org-health": {
