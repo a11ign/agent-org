@@ -30,7 +30,7 @@ import { PROJECT_NUMBER, PROJECT_OWNER } from "./board-snapshot.ts";
 import { CLAIM_RECORD_MARKER } from "./claim-labels.ts";
 import {
   NO_BOARD_DECLARED, claimCloneFor, claimLineFor, claimRecordComment, claimRow, claimWithWorktree, declineRow, dispatchRow, latestCheckFor,
-  moveProjectStatus, recordCheck, recordConflict, trackerClaimRefusal, type Tracker,
+  moveProjectStatus, recordCheck, recordConflict, scopeHash, claimRecordFrom, trackerClaimRefusal, type Tracker,
 } from "./row-claim.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -91,10 +91,10 @@ type Issue = { labels: string[], state: string, body: string, comments: string[]
 type Call = { args: string[], repo: string | null };
 
 /** Two repositories that BOTH have an issue 575, so a write that went to the wrong one is a write to a real, wrong issue. */
-function fakeGithub(seed: { first?: string[], second?: string[] } = {}) {
+function fakeGithub(seed: { first?: string[], second?: string[], bodies?: { first?: string, second?: string } } = {}) {
   const issues = new Map<string, Issue>([
-    [`${FIRST_REPO}#${ROW}`, { labels: seed.first ?? ["ready"], state: "OPEN", body: BODY, comments: [] }],
-    [`${SECOND_REPO}#${ROW}`, { labels: seed.second ?? ["ready"], state: "OPEN", body: BODY, comments: [] }],
+    [`${FIRST_REPO}#${ROW}`, { labels: seed.first ?? ["ready"], state: "OPEN", body: seed.bodies?.first ?? BODY, comments: [] }],
+    [`${SECOND_REPO}#${ROW}`, { labels: seed.second ?? ["ready"], state: "OPEN", body: seed.bodies?.second ?? BODY, comments: [] }],
   ]);
   const calls: Call[] = [];
   const writes: Call[] = [];
@@ -462,4 +462,118 @@ test("CONTROL: the first tracker's claim that throws leaves what it made for `de
   } finally {
     rmSync(fx.dir, { recursive: true, force: true });
   }
+});
+
+// --- 3. the claim record remembers the scope it was claimed with (#4739, class `row-not-finishable`, #4627) ----------------------
+
+/** A row the way the template writes one: prose, a fenced Region, an Acceptance command, and sections the hash must never read. */
+const SCOPED = [
+  "## What it is", "", "Prose the hash does not read.", "",
+  "## Region", "", "```", "agent-org:src/row-claim.ts", "agent-org:src/row-claim.test.ts", "```", "",
+  "## Acceptance", "", "```bash", "npx rstest run src/row-claim.test.ts", "```", "",
+  "## Done-when", "", "1. merged", "",
+  "## Open-check", "", "```", "true", "```", "",
+].join("\n");
+const withReplaced = (from: string, to: string, body = SCOPED) => {
+  assert.ok(body.includes(from), `the fixture carries ${JSON.stringify(from)}`);
+  return body.replace(from, to);
+};
+
+test("`scopeHash`: the same two sections give the same hash, however the whitespace and line endings fall -- the positive control for the rest", () => {
+  const hash = scopeHash(SCOPED);
+  assert.match(hash, /^[0-9a-f]{12}$/, "a short hex hash");
+  assert.equal(scopeHash(SCOPED), hash, "and it is deterministic");
+  assert.equal(scopeHash(SCOPED.replace(/\n/g, "\r\n")), hash, "CRLF is the same row");
+  assert.equal(scopeHash(withReplaced("npx rstest run src/row-claim.test.ts", "  npx   rstest  run  src/row-claim.test.ts  ")), hash, "runs of spaces are the same Acceptance");
+  assert.equal(scopeHash(SCOPED.replace(/\n\n/g, "\n\n\n")), hash, "blank lines are not scope");
+});
+
+test("`scopeHash`: a Region that gained a path is a different hash, and so is an Acceptance that changed", () => {
+  const hash = scopeHash(SCOPED);
+  const widened = withReplaced("agent-org:src/row-claim.test.ts\n", "agent-org:src/row-claim.test.ts\nagent-org:src/work-gate.ts\n");
+  assert.notEqual(scopeHash(widened), hash, "a path added to the Region");
+  assert.notEqual(scopeHash(withReplaced("npx rstest run src/row-claim.test.ts", "npx rstest run src/row-claim.test.ts src/work-gate.test.ts")), hash, "an Acceptance that changed");
+  assert.notEqual(scopeHash(withReplaced("```bash\nnpx", "```bash\ncd /home/agent/repos/agent-org && npx")), hash, "an Acceptance that gained a command prefix");
+});
+
+test("`scopeHash`: prose outside the two sections is not scope -- the same hash", () => {
+  const hash = scopeHash(SCOPED);
+  assert.equal(scopeHash(withReplaced("Prose the hash does not read.", "A different paragraph entirely.")), hash, "the introduction");
+  assert.equal(scopeHash(withReplaced("1. merged", "1. merged, and the board edition re-read")), hash, "Done-when");
+  assert.equal(scopeHash(`${SCOPED}\n## Tier\n\nRouter decides.\n\nFiled-by: product-manager\n`), hash, "a section added after the two");
+  assert.equal(scopeHash(withReplaced("```\ntrue\n```", "```\nfalse\n```")), hash, "Open-check, which is not Acceptance");
+});
+
+test("`scopeHash`: a NARROWING is a different hash too -- it reports the change and does not say which way it went", () => {
+  const widened = withReplaced("agent-org:src/row-claim.test.ts\n", "agent-org:src/row-claim.test.ts\nagent-org:src/work-gate.ts\n");
+  const narrowed = withReplaced("agent-org:src/row-claim.test.ts\n", "");
+  assert.notEqual(scopeHash(narrowed), scopeHash(SCOPED), "a path taken out of the Region");
+  assert.notEqual(scopeHash(narrowed), scopeHash(widened), "and the two directions are not one hash");
+});
+
+test("`scopeHash`: a section that is ABSENT is not an empty one", () => {
+  const withoutAcceptance = SCOPED.replace(/## Acceptance[\s\S]*?(?=## Done-when)/, "");
+  const emptyAcceptance = SCOPED.replace(/## Acceptance[\s\S]*?(?=## Done-when)/, "## Acceptance\n\n");
+  assert.ok(!/## Acceptance/.test(withoutAcceptance) && /## Acceptance/.test(emptyAcceptance), "the fixtures are what they say");
+  assert.notEqual(scopeHash(withoutAcceptance), scopeHash(emptyAcceptance));
+  assert.notEqual(scopeHash(withoutAcceptance), scopeHash(SCOPED));
+});
+
+test("the claim comment carries `Claimed-scope:` and `claimRecordFrom` reads it back; a release carries none", () => {
+  const hash = scopeHash(SCOPED);
+  const claim = claimRecordComment({ session: "worker-1", branch: "agent/x-1", worktree: "../wt-1", scope: hash });
+  assert.match(claim, new RegExp(`^Claimed-scope: ${hash}$`, "m"));
+  assert.deepEqual(claimRecordFrom([claim]), { branch: "agent/x-1", worktree: "../wt-1", recorded: true, scope: hash });
+  const release = claimRecordComment({ session: "worker-1", released: true, scope: hash });
+  assert.doesNotMatch(release, /Claimed-scope/, "a release writes the marker with no field lines");
+  assert.equal(claimRecordFrom([claim, release]).scope, null, "NEWEST wins, so a released row has no remembered scope");
+  assert.match(claimRecordComment({ session: "worker-1", scope: hash }), /No branch or worktree is recorded/, "the scope line is not mistaken for a recorded git object");
+});
+
+test("a record with no `Claimed-scope:` line -- every one written before this row -- reads `scope: null` and its other fields are what they were", () => {
+  const legacy = [CLAIM_RECORD_MARKER, "**Claim record** -- claimed by `worker-4739`.", "", "Claimed-branch: agent/scope-added-to-a-4739", "Claimed-worktree: ../wt-4739", "",
+    "The branch and worktree live here rather than in a `branch:`/`worktree:` label because GitHub caps a label name at 50 characters and an ordinary absolute path does not fit (#987)."].join("\n");
+  assert.deepEqual(claimRecordFrom([legacy]), { branch: "agent/scope-added-to-a-4739", worktree: "../wt-4739", recorded: true, scope: null });
+  assert.deepEqual(claimRecordFrom([]), { branch: null, worktree: null, recorded: false, scope: null });
+  assert.equal(claimRecordComment({ session: "worker-1", branch: "agent/x-1", worktree: "../wt-1" }), claimRecordComment({ session: "worker-1", branch: "agent/x-1", worktree: "../wt-1", scope: null }),
+    "a caller that passes no scope writes the comment it always wrote");
+});
+
+test("`claim` posts the hash of the row it just READ: the same body and a changed body read back as the same hash and a different one", () => {
+  const claimed = (body: string) => {
+    const gh = fakeGithub({ bodies: { first: body } });
+    const result = claimRow(ROW, "worker-575", { run: gh.run, ...CLAIM_DEPS, branch: "agent/x-575", worktree: "../wt-575", moveStatus: () => ({ moved: true as const }) });
+    assert.equal(result.claimed, true);
+    assert.equal(gh.first().comments.length, 1);
+    return claimRecordFrom(gh.first().comments);
+  };
+  const body = `${BODY}\n## Tier\n\nRouter decides.\n`;
+  const first = claimed(BODY);
+  assert.equal(first.scope, scopeHash(BODY), "the record carries the hash of the row's own body");
+  assert.equal(claimed(body).scope, first.scope, "prose after the sections is the same claim");
+  assert.notEqual(claimed(BODY.replace("No file declared here.", "No file declared here, or here.")).scope, first.scope, "a Region that read differently is another");
+  assert.equal(first.branch, "agent/x-575", "and the branch is still recorded beside it");
+});
+
+test("a KEYED tracker's claim hashes the TRACKER'S row, not the first tracker's issue of the same number", () => {
+  const trackerBody = BODY.replace("No file declared here.", "No file declared here, said the other tracker.");
+  const gh = fakeGithub({ bodies: { second: trackerBody } });
+  const result = claimRow(ROW, SESSION, { run: gh.run, tracker: TRACKER, ...CLAIM_DEPS, branch: "agent/x-agent-org-575", worktree: "../wt-agent-org-575" });
+  assert.equal(result.claimed, true);
+  assert.equal(claimRecordFrom(gh.second().comments).scope, scopeHash(trackerBody));
+  assert.notEqual(scopeHash(trackerBody), scopeHash(BODY), "PRECONDITION: the two trackers' bodies hash differently, so the assertion above can tell them apart");
+  assert.deepEqual(gh.first().comments, [], "and the first tracker's issue is untouched");
+});
+
+test("a body that cannot be read leaves the line OUT rather than hashing nothing, and the claim goes on as it did", () => {
+  const gh = fakeGithub();
+  const run = (cmd: string, args: string[]) => {
+    if (args.includes("body")) throw Object.assign(new Error("Command failed: gh issue view -- HTTP 502"), { status: 1, stdout: "", stderr: "502" });
+    return gh.run(cmd, args);
+  };
+  const result = claimRow(ROW, "worker-575", { run, ...CLAIM_DEPS, branch: "agent/x-575", worktree: "../wt-575", moveStatus: () => ({ moved: true as const }) });
+  assert.equal(result.claimed, true);
+  const record = gh.first().comments[0];
+  assert.doesNotMatch(record, /Claimed-scope/);
+  assert.equal(claimRecordFrom([record]).scope, null, "`null` is could-not-read, never a hash of an empty body");
 });
