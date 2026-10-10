@@ -18,8 +18,8 @@
  * `package.json` scripts, git history) is the project's, and `SHIPPED_DIR` is the tool's own location and stays `import.meta.url`-relative.
  *
  * #2884 (child 5d-5): `lib/changed-packages.ts` spelled the same thing from `src/lib`, where up three was `packages/`. It was one of the tool's
- * declared copies and is gone with them (a11ign/agent-org#522): `src/lib` holds one file now, the `tree-wide-guard.ts` re-export, and the scan
- * still reads it. The toolchain's `changed-packages` is not read here: nothing in the tool imports it, and its root is its own install's.
+ * declared copies and is gone with them (a11ign/agent-org#522): `src/lib` holds the six the gate's closure reaches, `walk-scope.ts` and the
+ * `tree-wide-guard.ts` re-export now, and the scan still reads them. The toolchain's `changed-packages` is not read here: nothing in the tool imports it, and its root is its own install's.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -29,7 +29,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { HOME_CHECKOUT, HOST_ENV } from "../project-config.ts";
-import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 import { linkToolchain } from "./copied-tool-fixture.ts";
 import { snapshotDirFor } from "../board-snapshot-scope.ts";
 

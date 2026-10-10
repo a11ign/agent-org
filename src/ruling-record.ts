@@ -10,7 +10,7 @@ import { appendFileSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { stateEntryPath } from "./host-config.ts";
-import { refuseUnknownFlags } from "@a11ign/toolchain/lib/cli-flags";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { DEFAULT_GRACE_MINUTES, parseCheck, settleRulings, rulingOrder } from "./ruling-check.ts";
 
 export const RULINGS_FILE = "rulings.jsonl";

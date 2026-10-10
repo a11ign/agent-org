@@ -25,8 +25,8 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { flagValue, refuseUnknownFlags } from "@a11ign/toolchain/lib/cli-flags";
-import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
+import { flagValue, refuseUnknownFlags } from "./lib/cli-flags.ts";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 
 /** The confidence buckets' inner edges: under 0.4, 0.4 to 0.55, 0.55 to 0.7, 0.7 and over. The last is the floor the host runs at (`minConfidence`), so "under 0.7 against 0.7 and over" is the floor's own question. */
 export const BUCKET_EDGES = Object.freeze([0.4, 0.55, 0.7]);

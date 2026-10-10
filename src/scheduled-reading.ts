@@ -22,7 +22,7 @@ import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 import { readingsDeclared, readingsPosted } from "./reading-schedule.ts";
 
 const execFileAsync = promisify(execFile);

@@ -68,10 +68,10 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { existsSync, globSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { refuseUnknownFlags } from "@a11ign/toolchain/lib/cli-flags";
-import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
-import { changedFiles } from "@a11ign/toolchain/lib/changed-files";
-import { localImports, importedNamesFor, stripComments } from "@a11ign/toolchain/lib/local-import-closure";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
+import { sandboxGitEnv } from "./lib/git-env.ts";
+import { changedFiles } from "./lib/changed-files.ts";
+import { localImports, importedNamesFor, stripComments } from "./lib/local-import-closure.ts";
 import { toolImports } from "./lib/installed-tool-imports.ts";
 import { resolveTypescript } from "./lib/resolve-typescript.ts";
 import { defectClassReport } from "./defect-class-line.ts"; // #4123

@@ -20,7 +20,6 @@ import { fileURLToPath } from "node:url";
 import { homeProjectDeclaration } from "../project-config.ts";
 import { EXIT, HEARTBEAT_COMMENT_ID, HEARTBEAT_COMMENT_MARKER, HEARTBEAT_VARIABLE, heartbeatCommentBody, writeHeartbeat } from "../work-tick.ts";
 import { completionPath, readCompletion } from "../lib/tick-completion.ts";
-import { linkToolchain } from "./copied-tool-fixture.ts";
 
 const SRC = fileURLToPath(new URL("..", import.meta.url));
 const PRELOAD = join(SRC, "lib", "crash-exit.ts");
@@ -49,7 +48,6 @@ function runTick({ gate, wakeExit = 0, ghFails = false as Fails, recordIsADirect
     mkdirSync(bin);
     const own = new Set(["work-tick.ts", "work-gate.ts", "wake.ts"]);
     for (const name of readdirSync(SRC).filter((entry) => !own.has(entry))) symlinkSync(join(SRC, name), join(src, name));
-    linkToolchain(dir); // the tick imports `@a11ign/toolchain/lib/*` (a11ign/agent-org#522): the one dependency a staged tick tree holds
     writeFileSync(join(src, "work-tick.ts"), tickSource(readFileSync(join(SRC, "work-tick.ts"), "utf8")));
     writeFileSync(join(src, "work-gate.ts"), gate);
     writeFileSync(join(src, "wake.ts"),

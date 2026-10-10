@@ -32,10 +32,10 @@ import { dirname, join, relative, resolve, isAbsolute, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { diffOrders, refuseLiveStateDir, LIVE_STATE_DIR } from "./shadow-gate.ts";
 import { SHADOW_WINDOW_MARKER, parseShadowRecord } from "./shadow-reads.ts";
-import { localImports } from "@a11ign/toolchain/lib/local-import-closure";
-import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
+import { localImports } from "./lib/local-import-closure.ts";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 import { SHADOW_COPY_MARKER, SHADOW_STATE_DIR_ENV } from "./host-config.ts";
-import { flagValue, refuseUnknownFlags } from "@a11ign/toolchain/lib/cli-flags";
+import { flagValue, refuseUnknownFlags } from "./lib/cli-flags.ts";
 
 /** `0` a tick was recorded, or there was none to record; `2` a path was refused or an input could not be read. */
 export const EXIT = { OK: 0, REFUSED: 2 };

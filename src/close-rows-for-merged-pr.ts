@@ -98,7 +98,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 // nothing else -- no `pnpm install`, no build -- so the package specifier would resolve to a `dist/` that does
 // not exist there. #330 and #331 are what that circular bootstrap costs. `cli-flags.ts` imports only
 // `node:path`, `node:fs` and `node:url`.
-import { refuseUnknownFlags } from "@a11ign/toolchain/lib/cli-flags";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 // #804: A LEAF IMPORT, safe under the identical no-`pnpm install`/no-build constraint the rest of this header
 // names -- `claim-labels.ts` imports nothing at all, so it cannot be part of a cycle. This replaced two
 // rounds of "duplicate the constant locally instead" (#754 for CLAIM_LABEL/STARTED_LABEL, #782 for

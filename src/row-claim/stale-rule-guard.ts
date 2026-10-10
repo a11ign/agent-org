@@ -28,8 +28,8 @@ import { execFileSync } from "node:child_process";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { localImports } from "@a11ign/toolchain/lib/local-import-closure";
-import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
+import { localImports } from "../lib/local-import-closure.ts";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 
 /**
  * Every git spawn here scrubs `GIT_*`. A hook or a parent process exports `GIT_DIR`/`GIT_INDEX_FILE`, and

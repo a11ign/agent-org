@@ -15,7 +15,7 @@ import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rm
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 
 // THE PROJECT THIS RUNS AGAINST IS A RECORDED ONE, as `row-claim-chairman-yield.test.ts` does it: the host file first, the tool imported after it.
 const SCRATCH = mkdtempSync(join(tmpdir(), "row-claim-check-chairman-yield-"));

@@ -97,7 +97,7 @@ import {
 } from "./acceptance-commands.ts";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { flagValue, refuseUnknownFlags } from "@a11ign/toolchain/lib/cli-flags";
+import { flagValue, refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { leakRefusalReason } from "./lib/leak-patterns.ts";
 import { missingTemplateFields, templateFieldsReason, wholeSuiteAcceptanceReason }
   from "./row-claim/template-fields-rule.ts";

@@ -11,7 +11,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, symlin
 import { createRequire } from "node:module";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { localImports } from "@a11ign/toolchain/lib/local-import-closure";
+import { localImports } from "../lib/local-import-closure.ts";
 import { HOME_CHECKOUT, HOST_ENV } from "../project-config.ts";
 
 /** This checkout: the tool is its own tree, so `src/packaging` up two is a place the tool owns, not a project file. */
@@ -69,7 +69,8 @@ function copyInto(target: string, source: string): void {
  * @returns the copy of `entry`, and the environment that makes the copy its own project
  */
 export function copyToolAndProject(entry: string, files: Iterable<string>, copyRoot: string): { entry: string; env: Record<string, string> } {
-  for (const file of files) copyInto(join(copyRoot, TOOL_DIR, relative(TOOL_ROOT, file)), file);
+  const copied = [...files];
+  for (const file of copied) copyInto(join(copyRoot, TOOL_DIR, relative(TOOL_ROOT, file)), file);
   // The tool's own package.json says "type": "module"; without it the copy's `.ts` files load as CommonJS under node.
   writeFileSync(join(copyRoot, TOOL_DIR, "package.json"), '{"type":"module"}');
   for (const file of projectFiles()) copyInto(join(copyRoot, file), join(HOME_CHECKOUT, file));
@@ -77,6 +78,8 @@ export function copyToolAndProject(entry: string, files: Iterable<string>, copyR
   const host = JSON.parse(readFileSync(hostSource, "utf8")) as { primary: string };
   const hostPath = join(copyRoot, ".agent-org/host.json");
   writeFileSync(hostPath, JSON.stringify({ ...host, projects: [{ id: host.primary, checkout: copyRoot }] }));
-  linkToolchain(copyRoot);
+  // DERIVED, never assumed: a closure that imports nothing from the toolchain (the gate's, #2174) is copied into a tree with NO `node_modules`, which is
+  // the premise of its test; one that does gets the one dependency and nothing else.
+  if (copied.some((file) => /\b(?:from|import)\s*\(?\s*["']@a11ign\/toolchain\//.test(readFileSync(file, "utf8")))) linkToolchain(copyRoot);
   return { entry: join(copyRoot, TOOL_DIR, relative(TOOL_ROOT, entry)), env: { [HOST_ENV]: hostPath } };
 }

@@ -12,7 +12,7 @@
 // module adds the one edge kind it does not have and leaves its resolution of relative specifiers to it.
 import { readFileSync, statSync } from "node:fs";
 import { dirname, join, parse, resolve } from "node:path";
-import { stripComments } from "@a11ign/toolchain/lib/local-import-closure";
+import { stripComments } from "./local-import-closure.ts";
 
 const TOOL_PACKAGE = "agent-org";
 const TOOL_IMPORT = new RegExp(String.raw`import\s+(?:([^;]*?)\s+from\s+)?['"](${TOOL_PACKAGE}/[^'"]+)['"]`

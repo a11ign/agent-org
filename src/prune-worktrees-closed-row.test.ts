@@ -51,7 +51,7 @@ const { pruneWorktrees, formatReport, CLOSED_ROW_RELEASE_AGE_MS, ACTIVITY_WINDOW
   await import("./prune-worktrees.ts");
 const { stampWorktree } = await import("./worktree-owner.ts");
 const { REMOVAL_LOG_ENV } = await import("./worktree-removal.ts");
-const { sandboxGitEnv } = await import("@a11ign/toolchain/lib/git-env");
+const { sandboxGitEnv } = await import("./lib/git-env.ts");
 
 // #2782: every removal writes a line, and a fixture must not write the host's log.
 process.env[REMOVAL_LOG_ENV] = join(BASE, "worktree-removals");

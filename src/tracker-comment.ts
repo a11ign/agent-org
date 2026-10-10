@@ -29,7 +29,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
-import { refuseUnknownFlags } from "@a11ign/toolchain/lib/cli-flags";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { leakRefusalReason } from "./lib/leak-patterns.ts";
 import { REPO } from "./project-identity.ts";
 

@@ -32,7 +32,7 @@ import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { FAILURE_LEDGER_FILE, recordFailures, type FailureEvent, type RecordResult } from "./failure-ledger.ts";
 import { readAgents } from "./herdr-agents.ts";
-import { flagValue, refuseUnknownFlags } from "@a11ign/toolchain/lib/cli-flags";
+import { flagValue, refuseUnknownFlags } from "./lib/cli-flags.ts";
 
 /** The incident's kind, the epic's class. Not seeded in `FAILURE_KINDS`, which a test pins at the six first-move kinds; `repeatsIn` reads any key. */
 export const TOOL_DRIFT_KIND = "tool-drift-interactive-prompt";

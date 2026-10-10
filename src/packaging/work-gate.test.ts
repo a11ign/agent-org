@@ -4899,8 +4899,7 @@ test("#2174: work-gate.ts loads in a tree with NO node_modules, host-units edge 
   const copy = copyToolAndProject(entry, closure, root);
   assert.ok(existsSync(join(root, "packages/agent-org/host/work-tick.service.in")) && existsSync(join(root, ".agent-org/project.json")),
     "the control: both directories really came across whole");
-  assert.deepEqual(readdirSync(join(root, "node_modules")), ["@a11ign"], "the tree holds the tool's declared dependency and nothing else -- the premise");
-  assert.deepEqual(readdirSync(join(root, "node_modules/@a11ign")), ["toolchain"]);
+  assert.ok(!existsSync(join(root, "node_modules")), "the tree really has none -- the premise");
   const run = spawnSync(process.execPath, ["--input-type=module", "-e",
     `import(${JSON.stringify(pathToFileURL(copy.entry).href)})`
     + ".then(m => { if (!m.CAUSES.includes('host-units-stale')) throw new Error('cause missing'); })"],

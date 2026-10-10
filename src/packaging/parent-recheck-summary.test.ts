@@ -21,7 +21,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { summarizeTestLog } from "../parent-recheck-summary.ts";
-import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 
 // The tool's OWN script (this file sits in src/packaging), not the project's copy of it.
 const CLI = fileURLToPath(new URL("../parent-recheck-summary.ts", import.meta.url));

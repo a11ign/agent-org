@@ -7,7 +7,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 import { readingsPosted } from "./reading-schedule.ts";
 import { ALLOWED_COMMANDS, judgeExpectation, takeDueReading, type RunCommand, type ScheduledRow } from "./scheduled-reading.ts";
 

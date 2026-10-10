@@ -31,7 +31,7 @@ import {
   heldByOwner, deliveredOwnCommit, mainLineCommits, hasOwnBranch,
 } from "../prune-worktrees.ts";
 import { stampWorktree } from "../worktree-owner.ts";
-import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 import {
   claimRefusal, nestedWorktrees, recordRemoval, removalLogPath, REMOVAL_LOG_ENV, rowCandidates, rowsClosed, worktreeBranch,
 } from "../worktree-removal.ts";

@@ -49,9 +49,9 @@ import { fileURLToPath } from "node:url";
 import { join, relative } from "node:path";
 import { declaredGhAccount } from "../gh-identity.ts";
 import { homeHostConfig } from "../host-config.ts";
-import { localImports, stripComments } from "@a11ign/toolchain/lib/local-import-closure";
+import { localImports, stripComments } from "../lib/local-import-closure.ts";
 import { SPAWNS_GH } from "../acceptance-commands.ts";
-import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 import { tmpDirForFile } from "../lib/tmp-fixture.ts";
 

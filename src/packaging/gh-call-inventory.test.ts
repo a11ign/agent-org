@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { stripComments } from "@a11ign/toolchain/lib/local-import-closure";
+import { stripComments } from "../lib/local-import-closure.ts";
 import { TOOL_REPO_ENV } from "../lib/pin-ratchet.ts";
 import { buildInventory, judgedRoot, render, sourceFiles, INVENTORY_PATH, REPO_ROOT, type Inventory } from "./gh-call-inventory.ts";
 

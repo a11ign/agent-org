@@ -21,7 +21,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { pathToFileURL } from "node:url";
-import { flagValue, refuseUnknownFlags } from "@a11ign/toolchain/lib/cli-flags";
+import { flagValue, refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { createMessenger } from "./messaging/core.ts";
 import type { MessagingOn } from "./messaging/config.ts";
 import { createLedger } from "./messaging/ledger.ts";

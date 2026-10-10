@@ -58,7 +58,7 @@ import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 // RELATIVE, never the package specifier -- this job runs with `actions/checkout` and nothing else, the
 // identical reason close-rows-for-merged-pr.ts's own header gives (#330/#331).
-import { refuseUnknownFlags, flagValue } from "@a11ign/toolchain/lib/cli-flags";
+import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
 // #1227: `settleClosedStatus` is imported rather than re-derived, for the reason this file's own header
 // gives about `stripClaimLabels`: a second copy of that decision is the "fact stated twice" shape.
 import { closurePlan, stripClaimLabels, closeRowsExit, LIVE_SETTLE_DEPS, logRateLimit }

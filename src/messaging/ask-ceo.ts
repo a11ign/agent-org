@@ -22,7 +22,7 @@
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
-import { pnpmCliInvocation } from "@a11ign/toolchain/lib/npm-cli-executable";
+import { pnpmCliInvocation } from "../lib/npm-cli-executable.ts";
 import type { RowRef } from "./answers.ts";
 import { checkMessage, runCommand } from "./record.ts";
 import type { Ledger, Outcome } from "./record.ts";

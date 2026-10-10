@@ -24,7 +24,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { homeHostConfig } from "./host-config.ts";
-import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 import { HOME_CHECKOUT } from "./project-config.ts";
 
 export const VERIFY_STATE = Object.freeze({ GREEN: "green", RED: "red", NO_VERIFY: "no-verify" });

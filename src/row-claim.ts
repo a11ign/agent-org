@@ -66,7 +66,7 @@ import { fileURLToPath } from "node:url";
 // points at `dist/`, so it needs both `node_modules` AND a completed build. This file is reachable
 // from a pre-install entry (see `pre-install-import-graph.test.ts`, which derives that population
 // rather than naming it), and there it dies on startup with ERR_MODULE_NOT_FOUND.
-import { refuseUnknownFlags } from "@a11ign/toolchain/lib/cli-flags";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { REPO } from "./project-identity.ts";
 import { homeProjectDeclaration, PROJECT_DECLARATION_PATH } from "./project-config.ts";
 import { READY_LABEL, WAS_READY_LABEL } from "./ready-label-audit.ts";
@@ -91,7 +91,7 @@ import { staleRuleReason } from "./row-claim/stale-rule-guard.ts";
 // `rowBranchesOnOrigin` is the tested spelling". The FAILURE POLICY stayed here -- see `rowBranchesOnOrigin`
 // below, which still throws -- because the gate's is deliberately different.
 import { LS_REMOTE_ARGS, branchesForRow } from "./row-claim/row-branch-rule.ts";
-import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 import { primaryWorktreeOf, unverifiedRecords } from "./prune-worktrees.ts";
 import { claimRefusal, recordRemoval } from "./worktree-removal.ts";
 

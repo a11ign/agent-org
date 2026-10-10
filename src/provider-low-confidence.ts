@@ -15,7 +15,7 @@
 // first thing `fileLowConfidence` does is return. No Jev-specific code lives here beyond the declared provider's name, which `provider-confidence.ts` reads the same way.
 import { readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { flagValue, refuseUnknownFlags } from "@a11ign/toolchain/lib/cli-flags";
+import { flagValue, refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { confidenceReading, DEFAULT_WINDOW_MS, formatConfidenceReading, parseWindow, type ConfidenceReading, type ConfidenceRow } from "./provider-confidence.ts";
 
 /** The least decisions a question must have been asked in the window before its share means anything. */

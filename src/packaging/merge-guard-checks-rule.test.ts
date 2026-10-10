@@ -11,7 +11,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 import { reasonKind } from "../merge-guard/reason-kind.ts";
 
 // THE TOOL'S OWN ROOT, not `HOME_CHECKOUT`: that is the PROJECT's checkout (the product's tree), which holds no

@@ -34,7 +34,7 @@ import { declaredRegionFiles, declaresNoCommit, regionPathsFromBody } from "../r
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, realpathSync, chmodSync, existsSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { tmpdir } from "node:os";
-import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 import { ABSENT_FIXTURE_SYMBOLS } from "@a11ign/toolchain/lib/fixture-symbols";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 

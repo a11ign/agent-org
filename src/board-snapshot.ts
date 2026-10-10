@@ -52,7 +52,7 @@ import { statusContradictions, statusCensus, vocabularyDrift } from "./board-sta
 import { mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { refuseUnknownFlags } from "@a11ign/toolchain/lib/cli-flags";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { REPO } from "./project-identity.ts";
 import { READY_LABEL } from "./claim-labels.ts";
 // #1275: the scoped half, PURE OF `gh` -- see that file's header. The constants live there and are re-exported above,

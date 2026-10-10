@@ -67,6 +67,7 @@ export const COMMANDS = {
   "board-discussion": "board-discussion.ts",
   "board-snapshot": "board-snapshot.ts",
   "carry-branch": "carry-branch.ts",
+  "changed-files": "lib/changed-files.ts",
   "close-rows-for-merged-pr": "close-rows-for-merged-pr.ts",
   "close-rows-sweep": "close-rows-sweep.ts",
   "closes-mismatch-check": "closes-mismatch-check.ts",

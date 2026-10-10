@@ -23,7 +23,7 @@ import { pathToFileURL } from "node:url";
 import { statedWritingTime } from "./board-summary-check.ts";
 import { execFileSync, spawnSync } from "node:child_process";
 import path from "node:path";
-import { refuseUnknownFlags } from "@a11ign/toolchain/lib/cli-flags";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { collect, readSetIsNotMain, ROOT, REPO, MILESTONE, HOURS_MS, issues, outOfRelease, unclassified, achievementsWhoseWorldMoved,
   realPageCaptureAge, worstVerdict } from "./board-data.ts";
 import { foundByChairmanLine } from "./found-by-chairman.ts";

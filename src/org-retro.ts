@@ -31,7 +31,7 @@ import { brokenChecks, redChecks as redChecksOf, isBrokenRed, isHeldRed, holdsOn
 // THE SIBLING ROW'S MODULE (#2939): it DERIVES the count from git and gh and writes no file, so the report calls it rather than reading a path.
 import { gatherChanges, readLedger as readHandFixLedger, ledgerLine as handFixLine } from "./hand-fix-ledger.ts";
 import { claudeTurns, codexTurns, transcriptFiles } from "./token-audit.ts";
-import { refuseUnknownFlags, flagValue } from "@a11ign/toolchain/lib/cli-flags";
+import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
 // THE DORA BLOCK (a11ign/a11ign#3135): measured from the registry and GitHub, per declared repository, by its own leaf module.
 import { FAILURE_LEDGER_FILE, parseFailureLedger, recordFailures, type FailureEntry } from "./failure-ledger.ts";
 // THE IDLE-CLAIM INCIDENTS (#4642): the pure detector, and the two things its live read borrows -- the gate's idle memory and the herdr listing.

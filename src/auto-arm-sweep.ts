@@ -75,7 +75,7 @@
 //   1  at least one PR could not be armed. NAMED, never counted.
 //   2  a lookup failed. INCONCLUSIVE, never "fine".
 import { execFileSync } from "node:child_process";
-import { refuseUnknownFlags } from "@a11ign/toolchain/lib/cli-flags";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { armabilityOf, HOLD_PREFIX } from "./pr-hold-state.ts";

@@ -46,7 +46,7 @@ import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 
-import { refuseUnknownFlags, flagValue } from "@a11ign/toolchain/lib/cli-flags";
+import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
 import { HOME_CHECKOUT } from "./project-config.ts";
 import { isAcceptancePath } from "./acceptance-file.ts";
 

@@ -31,7 +31,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, 
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 import { linkToolchain } from "./copied-tool-fixture.ts";
 
 const TOOL_ROOT = fileURLToPath(new URL("../..", import.meta.url));

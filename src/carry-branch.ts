@@ -51,14 +51,14 @@ import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 import { REPO } from "./project-identity.ts";
 import { parseWorktreeList } from "./prune-worktrees.ts";
 import { stampWorktree } from "./worktree-owner.ts";
 import { recordRemoval } from "./worktree-removal.ts"; // #2827
 // RELATIVE, not the `@a11ign/screenreader-fleet/cli-flags` package specifier -- see `row-claim.ts`'s own
 // header for why: this needs `node_modules` and a completed build, and this file has neither guarantee.
-import { refuseUnknownFlags } from "@a11ign/toolchain/lib/cli-flags";
+import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { assertNoLeakInArgv } from "./lib/leak-patterns.ts";
 
 const defaultRun: (cmd: string, args: string[], opts?: { cwd?: string; }) => string = (cmd, args, opts = {}): string => {

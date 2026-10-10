@@ -62,7 +62,7 @@ import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-import { refuseUnknownFlags, flagValue } from "@a11ign/toolchain/lib/cli-flags";
+import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
 import { disarmVerdict, armVerdict, holdTargetIdleReason, REARM_LABEL, HOLD_PREFIX, holdersOf } from "./pr-hold-state.ts";
 import type { PullRequestRef, RefFact } from "./pr-hold-state.ts";
 import { parseWaits, WAIT_MARKER, MANUAL_WAIT_HOURS } from "./wait-condition.ts";

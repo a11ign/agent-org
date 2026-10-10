@@ -49,7 +49,7 @@ import { declaredRegionFiles, regionCovers, regionCoversIn, splitRegionEntry } f
 import { homeProjectDeclaration } from "./project-config.ts";
 import { statedRepository } from "./row-file.ts";
 import { leakRefusalReason } from "./lib/leak-patterns.ts";
-import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 import { REPO } from "./project-identity.ts";
 import { SESSION_PREFIX } from "./project-vocabulary.ts";
 import { launchGate } from "./board-snapshot-scope.ts";
