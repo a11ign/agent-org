@@ -138,7 +138,8 @@ import { labJobFinishedOrders, readLabJobRecords, readDispatchedLabJobs } from "
 // #2898: THE ORG-HEALTH FACTS AND ORDERS live in `work-gate/org-health.ts`, which imports the shared reads BACK from this file (the cycle `pr-orders.ts` above describes);
 // every name it exported is re-exported here, so no caller of `work-gate.ts` changes.
 import { orgHealthNow, rulingOrdersNow, readWaitFacts, boardTruthNow, waitTickFacts } from "./work-gate/org-health.ts";
-import { quietOrgHealth } from "./work-gate/org-health-suppression.ts"; // #4065
+import { quietOrgHealth, classAndKeyOf as orgHealthClassAndKey } from "./work-gate/org-health-suppression.ts"; // #4065
+import { TABLE_ROW as STANDING_ROW } from "./board-truth-audit.ts"; // agent-org#491: the row every org-health prompt already says to write on (#928)
 import { unparkingWaits } from "./unpark-satisfied.ts"; // #4050: a parked row whose every condition is true is un-parked where the tick reads the waits
 import { declaresReadyWhenUnblocked, githubReadyIo, promoteReadyWhenUnblocked, reportReadyWhenUnblocked } from "./work-gate/ready-when-unblocked.ts"; // #4064: a cleared row whose filer declared it ready-when-unblocked is promoted without waking anyone
 // #4020: A DECLARED ASK (`Then-ask-chairman:`) IS RAISED WHEN ITS `Waiting-for:` CONDITIONS ARE TRUE; a leaf, handed the `gh` runner and the fact reader below.
@@ -683,6 +684,8 @@ export const GH_READS = Object.freeze({
   // agent-org#492: ONE GRAPHQL CALL (`issue(number:)` through the ticket port's `readItem`) PER REPEATING LINE AN OPEN ROW CITES, at most three candidates for a line,
   // and one more `issue comment` write at a count milestone. A tick with no repeating line, or with one no row cites, pays none (`settleCitedRepeatingLines`).
   conditionalOnCitedRepeatingLine: "api graphql repository.issue(number) (settleCitedRepeatingLines -- repeating-log-line, through the ticket port)",
+  // agent-org#491: ONE `issue comment` WRITE (the ticket port's `postDecision`) PER CHANGE OF THE `overdue` LIST, and no read at all. A tick whose list is what it was at the last write pays none.
+  conditionalOnOverdueList: "issue comment (settleOverdueLists -- org-health's overdue list, through the ticket port)",
 });
 
 /**
@@ -7750,6 +7753,75 @@ export function settleCitedRepeatingLines(groups: RepeatingGroup[], { openRows, 
 /** The ticket port of the repository `scope` names, through the gate's own `gh`. */
 const portOf = (scope: string): TicketPort => githubTicketAdapter({ run: defaultRun, scope });
 
+/**
+ * agent-org#491 (Phase 1 of a11ign/a11ign#4505): THE `overdue` LIST IS RECORDED AS DATA, AND A MANAGER IS WOKEN ONLY FOR A STUCK-LINK NUMBER.
+ *
+ * `org-health` hands `ceo` three numbers that say something is not happening (`no-merge-while-work-exists`, `red-pr-unattended`, `ready-row-refused`) and the work is
+ * diagnosis. The `overdue` signal is not one of them: it is a LIST the gate has already built (each item named, its kind, its reason, how long it has been open), and
+ * #4065 already classes it a digest, so `ceo` is woken for it only on a churn storm or as a digest riding another order. The list is what it is whether or not a seat reads it.
+ *
+ * THE LIST IS WRITTEN, ONCE PER CHANGE, ON THE STANDING ROW (`STANDING_ROW`, #928: the row every `org-health` prompt already says to write on) as one `postDecision` through the
+ * ticket port, and the order is dropped. WHAT "A CHANGE" IS is the key the order already carries (`overdue@<kind#n:reason,...>`, sorted: `normalisedKey`), so a merge, a close or a
+ * new item moves it and a clock that only ticks does not. THE LAST KEY WRITTEN is the whole state (`OVERDUE_LAST_WRITTEN_FILE`); a list that clears and returns unchanged is the
+ * same list and is not written again.
+ *
+ * EVERY DOUBT IS A WAKE, AS TODAY: a write that fails keeps the order and records nothing, so the next tick tries again and the list is never lost between the two. An order whose
+ * key cannot be read is left alone. The three stuck-link orders, and every other `org-health` class, are not touched here: their text and their route are what they were.
+ *
+ * WHERE: AFTER `deadMansSwitch` and BEFORE `quietOrgHealth`, so a stuck org that found an overdue item is still not a quiet org to the dead man's switch (#4065's own reason).
+ *
+ * THE SWITCH: `A11IGN_OVERDUE_LIST_AS_DATA=off` in the tick's environment restores the order, with no write. The one-line revert in code is the call site in `main`:
+ * `quietOrgHealth(settleOverdueLists(orders, ...), ...)` back to `quietOrgHealth(orders, ...)`.
+ */
+export const OVERDUE_LIST_SWITCH_ENV = "A11IGN_OVERDUE_LIST_AS_DATA";
+/** Where the last key written is kept, beside the other state entries. */
+export const OVERDUE_LAST_WRITTEN_FILE = "org-health-overdue-written.json";
+/** How many of the list's members one comment names; the key of a long list is the whole set and a comment is read by a person. */
+const OVERDUE_MEMBERS_SHOWN = 60;
+
+/** @returns the key of an `org-health` order of class `overdue`, or `null` for any other order */
+const overdueKeyOf = (order: any): string | null => {
+  if (order?.cause !== "org-health") return null;
+  const id = orgHealthClassAndKey(String(order.causeKey ?? ""));
+  return id !== null && id.class === "overdue" ? id.key : null;
+};
+
+/**
+ * @param orders the tick's orders, as `quietOrgHealth` would be given them
+ * @param portFor the ticket port of one tracker, by `owner/name`: the only way this function reaches a tracker
+ * @returns the orders to deliver: every one that is not an `overdue` list, and an `overdue` one only when its list could not be written
+ */
+export function settleOverdueLists(orders: any[], { portFor, dir = REVIEWER_STATE_DIR, env = process.env, log = (line) => process.stderr.write(line), now = Date.now(), scope = repoNow() }: {
+  portFor: (scope: string) => TicketPort; dir?: string; env?: Record<string, string | undefined>; log?: (line: string) => void; now?: number; scope?: string;
+}): any[] {
+  if (env[OVERDUE_LIST_SWITCH_ENV] === "off") return orders;
+  const lists = orders.filter((order) => overdueKeyOf(order) !== null);
+  if (lists.length === 0) return orders;
+  const path = join(dir, OVERDUE_LAST_WRITTEN_FILE);
+  const kept = new Set<any>();
+  let last: unknown = readJsonObject(path).key;
+  for (const order of lists) {
+    const key = overdueKeyOf(order) as string;
+    if (key === last) continue; // NOT SAID: a line written every tick for a standing list is offered by `repeatingLinesTick` as a fault of its own
+    try {
+      const members = key.split(",").filter((member) => member !== "");
+      const shown = members.slice(0, OVERDUE_MEMBERS_SHOWN).join(", ") + (members.length > OVERDUE_MEMBERS_SHOWN ? `, and ${members.length - OVERDUE_MEMBERS_SHOWN} more` : "");
+      const detail = String(order.prompt ?? "").split("\n")[0].replace(/^ORG HEALTH: `overdue` HAS TRIPPED\. /, "");
+      // THE COMMENT FIRST, THE KEY AFTER: a key kept for a comment that did not land would swallow the list.
+      portFor(scope).postDecision({ tracker: TRACKER, scope, id: Number(STANDING_ROW) }, { role: "work-gate", runId: `tick-${now}`, kind: "overdue-list", text:
+        `**work-gate, org-health \`overdue\`:** the list changed at ${new Date(now).toISOString()}. It is recorded here and woke nobody (agent-org#491); the stuck-link numbers still do.\n\n`
+        + `${detail}\n\nAll ${members.length}: ${shown}` });
+      writeJsonObject(path, { key });
+      last = key;
+      log(`org-health: overdue list changed (${members.length} item(s)) -- written to #${STANDING_ROW}, no order.\n`);
+    } catch (err) {
+      kept.add(order);
+      log(`org-health: COULD NOT WRITE the overdue list to #${STANDING_ROW} (${String((err as any)?.message ?? err).split("\n")[0].slice(0, 120)}) -- the order stands this tick.\n`);
+    }
+  }
+  return orders.filter((order) => overdueKeyOf(order) === null || kept.has(order));
+}
+
 function main() {
   refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/work-gate.ts" });
   const githubStatus = startGithubStatus(); // #3723: FIRST, so its wall overlaps the reads below and never adds to them
@@ -7841,7 +7913,7 @@ function main() {
   orders.unshift(...diskOrders);
   orders.push(...deadMansSwitch({ orders, drain, performed, openRows: openRowsRead, agents: herdrListing }), ...retrospectiveTick()); // #2938: AFTER the switch, which reads `orders` -- a once-a-day offer must not mask a stall
   // #4065: LAST, and AFTER the switch above: a stuck org that found something is not a quiet org, even when `ceo` is not woken for it. Only the `org-health` orders to `ceo` are held, and the digest rides the first order `ceo` still gets.
-  const emitted = quietOrgHealth(orders, { dir: REVIEWER_STATE_DIR });
+  const emitted = quietOrgHealth(settleOverdueLists(orders, { portFor: portOf }), { dir: REVIEWER_STATE_DIR }); // agent-org#491: the `overdue` list is a row write, not an order
   for (const order of emitted) process.stdout.write(`${JSON.stringify(order)}\n`);
 
   // BOTH SHELVES ON ONE LINE-SHAPE. The engineer pool's B4/declared-wait shelvings and the fleet batch's
