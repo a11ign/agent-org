@@ -145,7 +145,7 @@ test("with the use switched off, the key unreadable or no provider declared, eve
   assert.deepEqual([on.deliver.length, on.held.length, control.bodies.length], [0, 3, 3], "CONTROL: the same host with a readable key and the use on holds all three");
 });
 
-test("a red main in the tick wakes the order that names it and not the others: the 197 orders of 2026-10-10 are asked, and the red order is not (#4878)", async () => {
+test("a red main in the tick wakes the order that names it and not the others: the 200 orders of 2026-10-10 are asked, and the red order is not (#4878)", async () => {
   const real = realProvider(() => ok(answersFor(INFORMATIONAL, 0.95)));
   const tick = [RED_MAIN_ORDER, order(1), order(2, "ceo"), order(3, "orchestrator")];
   const path = digestFile();

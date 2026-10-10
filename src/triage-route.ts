@@ -122,7 +122,7 @@ export type RouteDeps = {
  * The facts of one order that the provider is asked about. Its text is not among them.
  *
  * A RED MAIN IS A FACT ABOUT THE ORDER THAT NAMES IT (#4878). The tick's `mainRed` says some trunk is red; handed to every order it woke the whole seat set, unasked, for as long as ANY
- * repository's main stayed red with a fixer already dispatched: 197 manager orders between 12:35Z and 16:51Z on 2026-10-10 (one red `lab` main), against one digest in the six hours.
+ * repository's main stayed red with a fixer already dispatched: 200 manager orders between 12:35Z and 16:51Z on 2026-10-10 (one red `lab` main), against one digest in the six hours.
  * `names-red-main` is "does THIS event name a red main", so the order that is the red main's own (`trunk-red`) is told it, and the others are asked as they would be on a green one.
  */
 function stateOf(order: GateOrder, facts: TickFacts, now: number): TriageOrder {
