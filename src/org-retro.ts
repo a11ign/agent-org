@@ -50,6 +50,7 @@ import { readDora, readRepository, doraReport, READ_TIMEOUT_MS, renderDora, dora
 import { homeProjectDeclaration } from "./project-config.ts";
 // THE STOCK-ROW READING (#4175): its own leaf, because it asks the tracker per row and a refused read there names the row.
 import { unwaitedStockRows, unwaitedLines, ghTrackerReader } from "./unwaited-stock-rows.ts";
+import { untieredReadyRows, untieredLines, ghReadyReader } from "./untiered-ready-rows.ts";
 
 /** The cause this file feeds (`cause-declaration.ts` declares it), addressed to `ceo`. */
 export const RETRO_CAUSE = "org-retrospective";
@@ -327,10 +328,12 @@ function parsedFailureLedger(text: string | null | undefined): FailureEntry[] | 
  * computed here is pure and a test drives it with a fixture window whose answers are checked by hand.
  * @param {{ merged: any[] | null, mergedRepositories?: ReturnType<typeof readMerged> | null, openPrs: any[] | null, journal: string | null, ledger: string | null,
  *   turns: any[] | null, handFixes: ReturnType<typeof readHandFixLedger> | null, readings?: Readings, dora?: ReturnType<typeof readDora> | null,
- *   unwaited?: ReturnType<typeof unwaitedStockRows> | null, failureLedger?: string | null, blockingRecord?: string | null }} reads
+ *   unwaited?: ReturnType<typeof unwaitedStockRows> | null, untiered?: ReturnType<typeof untieredReadyRows> | null, failureLedger?: string | null, blockingRecord?: string | null }} reads
  * `blockingRecord` absent or `null` is a record nobody read or that could not be parsed: the top-blocker line says `unknown`, never "nothing was shelved".
  * `failureLedger` absent or `null` is a ledger nobody read or that could not be read (a line that does not parse included): the corrections line says `unknown`, never `0`.
  * `unwaited` absent or `null` is a stock-row read nobody made or that was refused: `unknown`, never 0.
+ * `untiered` absent or `null` is a ready-row read nobody made or that was refused (a tracker that could not be listed included): `unknown`, never 0.
+ * IT IS PRINTED AND NOT YET IN `NUMBERS`: `packaging/org-retro.test.ts` requires a bound for every `NUMBERS` id in `ceo.md`'s retrospective section, which is `ceo`'s to word, so the trend waits for that line.
  * `idleClaims` absent or `null` is a read nobody made or that was refused (no listing, no open-PR list): `unknown`, never 0 (#4642).
  * `mergedRowOpen` absent or `null` is a read nobody made or that was refused (a tracker or repository could not be listed): `unknown`, never 0 (#4769).
  * `dora` absent is a read nobody asked for (no block); `dora: null` is one that was REFUSED, which prints `unknown`.
@@ -341,7 +344,7 @@ function parsedFailureLedger(text: string | null | undefined): FailureEntry[] | 
 export function buildReport(reads: {
         merged: any[] | null; mergedRepositories?: ReturnType<typeof readMerged> | null; openPrs: any[] | null; journal: string | null; ledger: string | null;
         turns: any[] | null; handFixes: ReturnType<typeof readHandFixLedger> | null; readings?: Readings; dora?: ReturnType<typeof readDora> | null;
-        unwaited?: ReturnType<typeof unwaitedStockRows> | null; failureLedger?: string | null; blockingRecord?: string | null; idleClaims?: IdleClaimIncident[] | null; mergedRowOpen?: MergedRowOpenIncident[] | null;
+        unwaited?: ReturnType<typeof unwaitedStockRows> | null; untiered?: ReturnType<typeof untieredReadyRows> | null; failureLedger?: string | null; blockingRecord?: string | null; idleClaims?: IdleClaimIncident[] | null; mergedRowOpen?: MergedRowOpenIncident[] | null;
     }, now: number) {
   const window = { since: now - WINDOW_MS, until: now };
   const lines = reads.journal === null ? null : journalLines(reads.journal, window);
@@ -360,6 +363,7 @@ export function buildReport(reads: {
     handFixes: reads.handFixes,
     corrections: correctionsPerDay(parsedFailureLedger(reads.failureLedger), new Date(now)),
     unwaited: reads.unwaited ?? null,
+    untiered: reads.untiered ?? null,
     blocking: topBlockerOf(reads.blockingRecord, now),
     idleClaims: incidentSummary(reads.idleClaims),
     mergedRowOpen: mergedRowOpenSummary(reads.mergedRowOpen),
@@ -662,7 +666,7 @@ export function renderReport(report: ReturnType<typeof buildReport>): string {
   const from = new Date(report.window.since).toISOString();
   const to = new Date(report.window.until).toISOString();
   return [`ORG RETROSPECTIVE ${report.date} -- the 24 hours ${from} to ${to}`, "",
-    ...mergedLines(report), ...stallLines(report), ...journalDerivedLines(report), ...redLines(report.red), ...blockingLines(report.blocking), ...idleClaimLines(report.idleClaims), ...mergedRowOpenLines(report.mergedRowOpen), ...spendLines(report), ...unwaitedLines(report.unwaited), ...doraLines(report.dora), ...trendLines(report), ""].join("\n");
+    ...mergedLines(report), ...stallLines(report), ...journalDerivedLines(report), ...redLines(report.red), ...blockingLines(report.blocking), ...idleClaimLines(report.idleClaims), ...mergedRowOpenLines(report.mergedRowOpen), ...spendLines(report), ...unwaitedLines(report.unwaited), ...untieredLines(report.untiered), ...doraLines(report.dora), ...trendLines(report), ""].join("\n");
 }
 
 /**
@@ -941,16 +945,17 @@ export function readMergedRowOpen({ now, declaration = homeProjectDeclaration(),
  * THE ROWS-LEFT-OPEN READ (#4769) is {@link readMergedRowOpen}, through `readOpenRowIncidents`, its seam.
  * THE DORA READ IS THE DECLARATION'S (`dora.ts`): the repositories `.agent-org/project.json` lists, read from the registry and GitHub. `readDoraReport` is its seam.
  * @param {{ now: number, stateDir: string, unit?: string, readHandFixes?: (now: number) => ReturnType<typeof readHandFixLedger>,
- *   readDoraReport?: (now: number) => ReturnType<typeof readDora> | null, readUnwaited?: (now: number) => ReturnType<typeof unwaitedStockRows>, readMergedRepositories?: (now: number) => ReturnType<typeof readMerged> }} where
+ *   readDoraReport?: (now: number) => ReturnType<typeof readDora> | null, readUnwaited?: (now: number) => ReturnType<typeof unwaitedStockRows>, readUntiered?: () => ReturnType<typeof untieredReadyRows>, readMergedRepositories?: (now: number) => ReturnType<typeof readMerged> }} where
  * MERGED PRS ARE READ FROM EVERY DECLARED REPOSITORY (`readMerged`, #3593), each named with `-R`; `merged` stays the PRIMARY's list, the definition the count had before.
  */
 export function readAll({ now, stateDir, unit = "a11ign-work-tick.service",
   readMergedRepositories = (at) => readMerged({ declaration: homeProjectDeclaration(), since: at - WINDOW_MS }),
   readHandFixes = (at) => readHandFixLedger({ read: gatherChanges(), now: new Date(at) }),
   readUnwaited = (at) => unwaitedStockRows({ reader: ghTrackerReader(homeProjectDeclaration().repo), now: at }),
+  readUntiered = () => untieredReadyRows({ trackers: homeProjectDeclaration().tracker.map((tracker) => ghReadyReader(tracker)) }),
   readDoraReport = readDeclaredDora, readAgentListing = () => readAgents(), readOpenRowIncidents = (at) => attemptDora(() => readMergedRowOpen({ now: at })) }: {
         now: number; stateDir: string; unit?: string; readHandFixes?: (now: number) => ReturnType<typeof readHandFixLedger>;
-        readDoraReport?: (now: number) => ReturnType<typeof readDora> | null; readUnwaited?: (now: number) => ReturnType<typeof unwaitedStockRows>; readMergedRepositories?: (now: number) => ReturnType<typeof readMerged>;
+        readDoraReport?: (now: number) => ReturnType<typeof readDora> | null; readUnwaited?: (now: number) => ReturnType<typeof unwaitedStockRows>; readUntiered?: () => ReturnType<typeof untieredReadyRows>; readMergedRepositories?: (now: number) => ReturnType<typeof readMerged>;
         readAgentListing?: () => Agent[] | null; readOpenRowIncidents?: (now: number) => MergedRowOpenIncident[] | null;
     }) {
   const since = now - WINDOW_MS;
@@ -970,6 +975,7 @@ export function readAll({ now, stateDir, unit = "a11ign-work-tick.service",
     readings: readReadings(join(stateDir, READINGS_FILE)),
     handFixes: readHandFixes(now), // a refused read is a reading that says so (`status: "unknown"`), never a throw and never a 0
     unwaited: attemptDora(() => readUnwaited(now)), // a declaration that will not parse is a refused read, like the DORA one
+    untiered: attemptDora(() => readUntiered()),
     dora: attemptDora(() => readDoraReport(now)),
   };
 }
