@@ -71,7 +71,7 @@ import { recordRemoval } from "./worktree-removal.ts"; // #2827
 import { spawnMemoryGate } from "./spawn-memory-floor.ts";
 // THE FAMILY IS THE ROSTER'S, READ BY ONE MODULE (#2403): `worker-<n>` for n from 4 is a spare engineer role, and
 // `arm-pr.ts` is where every other reader of a `session:<name>` label already asks whether a name is one.
-import { SPARE_FAMILIES, familyNumber } from "./arm-pr.ts";
+import { SPARE_FAMILIES, familyMember } from "./arm-pr.ts";
 // THE CLAIM'S OWN CHECKS, called rather than restated (#2324): a spawn is refused for the reasons the claim
 // would refuse the row, and a copy of either rule here would go stale the next time the rule changed.
 import { lookupBlockedByEdge, blockedByEdgeReason } from "./row-claim/blocked-by-edge-rule.ts";
@@ -749,8 +749,8 @@ export function spawnableRole(order: { session: string; causeKey: string; cause?
   const listed = roster.find((label) => !agents.some((a) => a.label === label) && !drained.includes(label));
   if (listed !== undefined) return { role: listed };
   const seen = roster.map((label) => `${label}=${agents.find((a) => a.label === label)?.status}`).join(", ");
-  const row = rowOfOrder(order);
-  const label = spareLabelForRow({ row });
+  const ref = rowRefOfOrder(order);
+  const label = ref === null ? null : spareLabelForRow({ row: ref.number, key: ref.key });
   if (label === null) {
     return { refusal: `no spawn: all ${roster.length} engineer roles hold a process (${seen}) and this order names `
       + "no row a spare could be named for, or `sessions.json` declares no spare family to name it in (#2469). A "
@@ -758,7 +758,7 @@ export function spawnableRole(order: { session: string; causeKey: string; cause?
   }
   const holder = agents.find((a) => a.label === label);
   if (holder !== undefined || drained.includes(label)) {
-    return { refusal: `no spawn: "${label}" is the address row #${row} would be named, and it `
+    return { refusal: `no spawn: "${label}" is the address row ${ref === null ? "" : rowMention(ref)} would be named, and it `
       + `${holder === undefined ? "is drained" : `already holds a process (${holder.status})`} -- a second process `
       + "under one address would share one B2 budget, so the row waits for that process to end (#2469)" };
   }
@@ -770,16 +770,24 @@ export function spawnableRole(order: { session: string; causeKey: string; cause?
  * row #2469 -- or `null` when there is no row to name it for, the roster declares no family, or the number falls
  * below the family's `from` (a name {@link familyNumber} would not recognise, so nothing could route to it) (#2469).
  *
+ * A ROW OF ANOTHER TRACKER IS NAMED WITH ITS KEY (#4685): `worker-agent-org-481` for agent-org#481, the name `row-claim`'s `claimNames`
+ * gives it, because `worker-481` already means the first tracker's row 481 and one name for two rows is one `session:` label on two
+ * issues (and one B2 budget). The key is the repository's, so the name is a pure function of (key, row) and never equals a first-tracker
+ * row's. The family's `from` floors the first tracker's numbers only ({@link familyMember}). A name that {@link familyMember} would not
+ * read back as the same (key, row) is `null`, so no spare is named that the roster, `withSpareInstances` and the teardown could not see.
+ *
  * NAMED FOR THE ROW, NEVER COUNTED (`ceo`'s ruling on #2407, section 2). A counter name was reused across unrelated
  * rows (`worker-4` held six), so nobody reading the ledger or a herdr list could tell which row a name meant; a
  * spare holds ONE row (#2407), so the row is the name and it stays true. A pure function of the row: whether the
  * address is already held is {@link spawnableRole}'s to answer, because that needs the agents and this does not.
  * ONE family is declared, and the first is the one named from.
  */
-export function spareLabelForRow({ row, families = SPARE_FAMILIES }: { row: number | null; families?: readonly { prefix: string; from: number; }[]; }): string | null {
+export function spareLabelForRow({ row, key = "", families = SPARE_FAMILIES }: { row: number | null; key?: string; families?: readonly { prefix: string; from: number; }[]; }): string | null {
   const family = families[0];
-  if (family === undefined || row === null || row < family.from) return null;
-  return `${family.prefix}${row}`;
+  if (family === undefined || row === null) return null;
+  const label = `${family.prefix}${key === "" ? "" : `${key}-`}${row}`;
+  const member = familyMember(label, families);
+  return member !== null && member.key === key && member.number === row ? label : null;
 }
 
 /**
@@ -793,9 +801,12 @@ export function spareLabelForRow({ row, families = SPARE_FAMILIES }: { row: numb
  */
 export function withSpareInstances(roster: string[], agents: { label: string; }[], families: readonly { prefix: string; from: number; }[] = SPARE_FAMILIES): string[] {
   const numbered = agents
-    .map((a) => ({ label: a.label, n: familyNumber(a.label, families) }))
-    .filter((a) => a.n !== null && !roster.includes(a.label));
-  return [...roster, ...numbered.sort((a, b) => Number(a.n) - Number(b.n)).map((a) => a.label)];
+    .map((a) => ({ label: a.label, member: familyMember(a.label, families) }))
+    .filter((a) => a.member !== null && !roster.includes(a.label));
+  // THE FIRST TRACKER'S INSTANCES FIRST, then each other tracker's by key, so a keyed spare (`worker-agent-org-481`, #4685) is offered work too
+  // and the order stays the one a tick has always had for the primary's.
+  const ordered = numbered.sort((a, b) => (a.member?.key ?? "").localeCompare(b.member?.key ?? "") || Number(a.member?.number) - Number(b.member?.number));
+  return [...roster, ...ordered.map((a) => a.label)];
 }
 
 
@@ -3523,7 +3534,7 @@ export const ENGINEER_BRIEF = roleBriefPath("engineer.md").relative;
  * engineer never told to read the brief. The family is read from the same file, so it is a rule and not a name test.
  */
 function engineerBriefLine(label: string, engineers: string[], families: readonly import("./arm-pr.ts").SpareFamily[]) {
-  if (!engineers.includes(label) && familyNumber(label, families) === null) return "";
+  if (!engineers.includes(label) && familyMember(label, families) === null) return "";
   return `${ENGINEER_BRIEF_SENTENCE}\n\n`;
 }
 
@@ -4702,7 +4713,7 @@ function namesAnotherSession(file: string, label: string, reader: { readHead: (f
  * share the `worker-` prefix and answer `null` on both, so they stay standing seats and keep the clear.
  */
 export function isPerRowInstance(label: string) {
-  return familyNumber(label) !== null || reviewerInstance(label) !== null;
+  return familyMember(label) !== null || reviewerInstance(label) !== null;
 }
 
 /**
@@ -5236,8 +5247,8 @@ export function claimOrdersIn(path: string, { read = readFileSync, append = appe
  */
 function claimOfOrder(order: { session: string; cause?: string; subject?: string; }, live: { label: string; }[], roster: string[]): string | null {
   if (!CONTINUATION_CAUSES.includes(String(order.cause)) || !live.some((a) => a.label === order.session)) return null;
-  const row = familyNumber(order.session, SPARE_FAMILIES);
-  if (row !== null) return `row-${row}`;
+  const member = familyMember(order.session, SPARE_FAMILIES);
+  if (member !== null) return `row-${member.key === "" ? "" : `${member.key}#`}${member.number}`;
   return roster.includes(order.session) ? `${order.session}/${order.subject ?? order.cause}` : null;
 }
 
@@ -5289,7 +5300,7 @@ function noteClaimOrders(claimOrders: ClaimOrders | undefined, { gateOrder, targ
   }
   if (target.profile !== undefined && target.claimed !== undefined) {
     // `model` (#4630) is what the worker STARTED on, so the escalation reads it from the record and never from the row's label, which a restart does not change.
-    claimOrders.append({ kind: "arm", at, session: target.label, row: target.claimed.row, arm: armOf(target.claimed.row),
+    claimOrders.append({ kind: "arm", at, session: target.label, row: target.claimed.row, ...(target.claimed.key ? { key: target.claimed.key } : {}), arm: armOf(target.claimed.row),
       tripsArm: tripsArmOf(target.claimed.row), model: target.profile.model });
   }
 }
@@ -5520,7 +5531,7 @@ function spareEntries(path: string | URL): { addresses: string[]; families: { pr
 export function spareInstances(agents: { label: string; }[], path: string | URL = roleBriefPath("sessions.json").absolute): string[] {
   const { addresses, families } = spareEntries(path);
   const labels = agents.map((a) => a.label);
-  return [...new Set([...addresses, ...labels.filter((l) => familyNumber(l, families) !== null)])];
+  return [...new Set([...addresses, ...labels.filter((l) => familyMember(l, families) !== null)])];
 }
 
 /**
@@ -5533,7 +5544,7 @@ export function spareInstances(agents: { label: string; }[], path: string | URL 
  */
 export function isSpareRole(label: string, path: string | URL = roleBriefPath("sessions.json").absolute): boolean {
   const { addresses, families } = spareEntries(path);
-  return addresses.includes(label) || familyNumber(label, families) !== null;
+  return addresses.includes(label) || familyMember(label, families) !== null;
 }
 
 /**
@@ -5910,12 +5921,41 @@ export function cyclesReport(ledger: SpareCycle[], drained: string[]): { exit: n
     + `drain: ${held}\n` };
 }
 
+/** A row and the tracker it lives in: `key` is the tracker's (`""` for the first, the project's own). */
+export type RowRef = { key: string; number: number; };
+
 /**
- * The row an order is about, from its `causeKey` (`engineers/ready-row-unclaimed/<row>`), or `null`.
+ * The row an order is about AND THE TRACKER IT IS IN, from its `causeKey`: `engineers/ready-row-unclaimed/<row>` for the first tracker
+ * (key `""`) and `engineers/ready-row-unclaimed/<key>#<row>` for another's (#4685), or `null`. A key is read as written and is NOT
+ * checked against the declaration here: an undeclared one is {@link trackerRepositoryOf}'s `null`, which every reader says as "cannot
+ * tell", and never the first tracker's.
+ */
+export function rowRefOfOrder(order: { causeKey: string; }): RowRef | null {
+  const found = /\/ready-row-unclaimed\/(?:([a-z0-9-]+)#)?(\d+)$/.exec(order.causeKey);
+  return found ? { key: found[1] ?? "", number: Number(found[2]) } : null;
+}
+
+/**
+ * The FIRST tracker's row an order is about, or `null` -- for another tracker's row too, deliberately: its number alone names the wrong
+ * row (`multi-board-gate.test.ts` pins `other#7` is not row 7). A caller that can act on a keyed row asks {@link rowRefOfOrder}.
  */
 export function rowOfOrder(order: { causeKey: string; }): number | null {
-  const found = /\/ready-row-unclaimed\/(\d+)$/.exec(order.causeKey);
-  return found ? Number(found[1]) : null;
+  const ref = rowRefOfOrder(order);
+  return ref !== null && ref.key === "" ? ref.number : null;
+}
+
+/** `#481` for the first tracker's row and `agent-org#481` for another's -- the spelling a refusal and a row's prompt use for it. */
+function rowMention({ key, number }: RowRef): string {
+  return key === "" ? `#${number}` : `${key}#${number}`;
+}
+
+/**
+ * The repository a tracker KEY names in the project's declaration, or `null` for a key it does not declare -- which the caller reads as
+ * "cannot tell", never as the first tracker's repository (#4685). The row lives in the TRACKER, which is not always the code repository
+ * ({@link codeRepositoryOf}), so the tracker list answers.
+ */
+function trackerRepositoryOf(key: string): string | null {
+  return homeProjectDeclaration().tracker.find((tracker) => tracker.key === key)?.repo ?? null;
 }
 
 /**
@@ -5947,18 +5987,28 @@ export function rowOfOrder(order: { causeKey: string; }): number | null {
 export function spawnClaimability({ run = defaultGh, post = guardedGh, repos,
   warn = (line) => { process.stderr.write(`${line}\n`); } }: { run?: (args: string[]) => string; post?: (args: string[]) => string; warn?: (line: string) => void;
     repos?: readonly { key: string; repo: string; }[]; } = {}): (order: { causeKey: string; startFresh?: boolean; }) => string | null {
-  let openPrs: ReturnType<typeof lookupOpenPrFiles> | undefined;
-  const readOpenPrs = () => {
-    openPrs ??= (readWithFirstWaveTogether((r) => lookupOpenPrFiles({ run: r, log: warn, repos }), run, run === defaultGh ? runBatch : undefined) as ReturnType<typeof lookupOpenPrFiles>);
-    return openPrs;
+  // ONE READ PER TRACKER, because `closes` in each pull request is read against the tracker the ROW lives in (`trackerRepo`): `Closes #7` in
+  // a pull request is the first tracker's row 7 and not agent-org's, which is the read B4 makes for a keyed row (#4685).
+  const openPrsOf = new Map<string, ReturnType<typeof lookupOpenPrFiles>>();
+  const readOpenPrs = (trackerRepo?: string) => {
+    const at = trackerRepo ?? "";
+    if (!openPrsOf.has(at)) {
+      const read = (r: typeof run) => lookupOpenPrFiles({ run: r, log: warn, repos, ...(trackerRepo === undefined ? {} : { trackerRepo }) });
+      openPrsOf.set(at, readWithFirstWaveTogether(read, run, run === defaultGh ? runBatch : undefined) as ReturnType<typeof lookupOpenPrFiles>);
+    }
+    return openPrsOf.get(at) as ReturnType<typeof lookupOpenPrFiles>;
   };
   return (order) => {
-    const row = rowOfOrder(order);
-    if (row === null) return `cannot tell which row "${order.causeKey}" is about, so cannot ask the claim's checks`;
-    const chairman = order.startFresh === true;
-    const hold = claimHold(row, { run, warn, readOpenPrs, chairman, repos });
+    const ref = rowRefOfOrder(order);
+    if (ref === null) return `cannot tell which row "${order.causeKey}" is about, so cannot ask the claim's checks`;
+    const repo = ref.key === "" ? undefined : trackerRepositoryOf(ref.key);
+    if (repo === null) return `cannot tell which tracker "${ref.key}" is in "${order.causeKey}": the project declares no tracker with that key, so cannot ask the claim's checks (#4685)`;
+    // A KEYED CHAIRMAN ROW IS NOT WRITTEN ON: `sayOnChairmanRow` and the merge-queue read name the first tracker's issue, and a comment on the
+    // wrong repository's row is worse than the journal line it would replace. The refusal is still said, in the journal.
+    const chairman = order.startFresh === true && ref.key === "";
+    const hold = claimHold(ref, { run, warn, readOpenPrs, chairman, repos, repo });
     if (hold === null) return null;
-    if (chairman) sayOnChairmanRow(row, hold, { run, post, warn });
+    if (chairman) sayOnChairmanRow(ref.number, hold, { run, post, warn });
     return hold.reason;
   };
 }
@@ -5970,17 +6020,21 @@ type ClaimHold = { reason: string; key: string; waits: boolean; };
  * The claim's own checks for a row, in the claim's order: #1886's `blockedBy` edge, then B4. `null` when neither would refuse, or could not ask
  * (both fail open, as the claim does). `chairman` is asked for the one read a plain row does not pay: whether the PR in B4's way is in the merge queue.
  */
-function claimHold(row: number, { run, warn, readOpenPrs, chairman, repos }: { run: (args: string[]) => string; warn: (line: string) => void; readOpenPrs: () => ReturnType<typeof lookupOpenPrFiles>; chairman: boolean; repos?: readonly { key: string; repo: string; }[]; }): ClaimHold | null {
-  const blocked = blockedByEdgeReason(lookupBlockedByEdge(row, { run }));
+function claimHold(ref: RowRef, { run, warn, readOpenPrs, chairman, repos, repo }: { run: (args: string[]) => string; warn: (line: string) => void; readOpenPrs: (trackerRepo?: string) => ReturnType<typeof lookupOpenPrFiles>; chairman: boolean; repos?: readonly { key: string; repo: string; }[]; repo?: string; }): ClaimHold | null {
+  const row = ref.number;
+  const name = rowMention(ref);
+  // A KEYED ROW IS READ IN ITS OWN TRACKER, and the refusal says which (#4685): the same number in the first tracker is another row, whose edge and Region are not this one's.
+  const where = repo === undefined ? {} : { repo };
+  const blocked = blockedByEdgeReason(lookupBlockedByEdge(row, { run, ...where }));
   if (blocked) {
-    return { reason: `#${row} would be refused at the claim by the \`blockedBy\` check (#1886): ${blocked}`, waits: false,
+    return { reason: `${name}${repo === undefined ? "" : ` in ${repo}`} would be refused at the claim by the \`blockedBy\` check (#1886): ${blocked}`, waits: false,
       key: `blockedBy:${createHash("sha256").update(blocked).digest("hex").slice(0, 8)}` };
   }
-  const mine = lookupMyRegionFiles(row, { run });
+  const mine = lookupMyRegionFiles(row, { run, ...where });
   if (mine === null || mine.length === 0) return null;
-  const openPrs = readOpenPrs();
+  const openPrs = readOpenPrs(repo);
   if (openPrs === null) {
-    warn(`wake: could not read the open pull requests -- offering #${row} a spawn anyway (B4 fails open).`);
+    warn(`wake: could not read the open pull requests -- offering ${name} a spawn anyway (B4 fails open).`);
     return null;
   }
   const overlap = firstOverlap(mine, openPrs, row);
@@ -5988,9 +6042,9 @@ function claimHold(row: number, { run, warn, readOpenPrs, chairman, repos }: { r
   const named = prLabel(overlap.pr);
   if (chairman && inMergeQueue(overlap.pr, { run, warn, repos })) {
     return { key: `queue:${named}`, waits: true,
-      reason: `#${row} waits for ${named}, ${MERGE_QUEUE_WAIT_PHRASE}: B4 (no two open pull requests touch the same file) clears when it merges, and the next tick starts a fresh engineer for it` };
+      reason: `${name} waits for ${named}, ${MERGE_QUEUE_WAIT_PHRASE}: B4 (no two open pull requests touch the same file) clears when it merges, and the next tick starts a fresh engineer for it` };
   }
-  return { reason: `#${row} would be refused at the claim by the file-overlap check (B4): ${overlap.reason}`, key: `B4:${named}`, waits: false };
+  return { reason: `${name} would be refused at the claim by the file-overlap check (B4): ${overlap.reason}`, key: `B4:${named}`, waits: false };
 }
 
 /**
@@ -6087,7 +6141,9 @@ export type LaunchFacts = { exists?: (path: string) => boolean, worktreesDir?: s
 /**
  * A row claimed for a spawn, and where. `adopted` (#2470) says the worktree was a RELEASED holder's, with its work still in it.
  */
-export type ClaimedRow = { row: number, branch: string, worktree: string, launchDir: string, adopted?: { from: string, dirty: number, unpushed: number, replaces?: boolean },
+export type ClaimedRow = { row: number, branch: string, worktree: string, launchDir: string,
+  /** #4685: the tracker the row is in, absent for the first's. `row` alone is then the WRONG row's number, so a reader that acts on it asks this. */
+  key?: string, adopted?: { from: string, dirty: number, unpushed: number, replaces?: boolean },
   /** #4630: this start REPLACES a Haiku worker that was ended for `reason`; its brief says so. The claim is the existing one. */
   restart?: { from: string, reason: string } };
 
@@ -6165,12 +6221,14 @@ const CLAIM_NOT_LANDED = Object.freeze([1, 2]);
  */
 function releaseClaim(claimed: ClaimedRow, role: string, env: Record<string, string>, exec: Exec): string {
   // AN ADOPTED TREE IS NEVER REMOVED BY THE UNDO (#2470): unlike one this call just made, it holds another instance's work.
-  const ran = exec("node", [ROW_CLAIM, "decline", String(claimed.row), `--session=${role}`,
+  const name = rowMention({ key: claimed.key ?? "", number: claimed.row });
+  const tracker = claimed.key === undefined || claimed.key === "" ? [] : [`--tracker=${claimed.key}`];
+  const ran = exec("node", [ROW_CLAIM, "decline", String(claimed.row), `--session=${role}`, ...tracker,
     ...(claimed.adopted ? ["--keep-worktree"] : [])], { cwd: claimed.launchDir, env });
-  if (ran.status === 0) return ` -- the claim on #${claimed.row} was released`;
-  return ` -- AND the claim on #${claimed.row} could NOT be released (${verdictLine(ran.output)}): the row is held by `
+  if (ran.status === 0) return ` -- the claim on ${name} was released`;
+  return ` -- AND the claim on ${name} could NOT be released (${verdictLine(ran.output)}): the row is held by `
     + `"${role}" with no process, which nothing reads as a fault -- run \`node packages/agent-org/src/row-claim.ts `
-    + `decline ${claimed.row} --session=${role}\` from a linked worktree`;
+    + `decline ${claimed.row} --session=${role}${tracker.map((flag) => ` ${flag}`).join("")}\` from a linked worktree`;
 }
 
 /**
@@ -6179,39 +6237,48 @@ function releaseClaim(claimed: ClaimedRow, role: string, env: Record<string, str
  * claim writes labels and comments and must be attributed to the account the agent acts as (#916).
  *
  *
- *   every one a seam, so the claim is testable without a host: the defaults are the tick's own. `settle` drops a
+ *   every one a seam, so the claim is testable without a host: the defaults are the tick's own. `cloneOf` answers "where is the clone of
+ *   this tracker key's repository" for a keyed row (#4685), by default `host.json`'s `clones`. `settle` drops a
  *   leftover registry entry for the role BEFORE the claim (see {@link settleAbsentInstance}, #2407). `kept` answers "did a release leave a
  *   worktree for this row" (#2470): the claim then ADOPTS it -- `--adopt=<the released holder>` on the recorded branch and path, creating
  *   nothing -- and `forget` drops the record once it has
  */
 export function spawnClaimer({ exec = defaultExec, exists = existsSync, worktreesDir = HOST_REPOS,
-  primary = PRIMARY_CHECKOUT, settle = () => {}, kept = () => null, forget = () => {}, readRow = readRowForTier, switchPath, routes }: {
-        exec?: Exec; exists?: (path: string) => boolean; worktreesDir?: string; primary?: string;
+  primary = PRIMARY_CHECKOUT, cloneOf = keyedClone, settle = () => {}, kept = () => null, forget = () => {}, readRow = readRowForTier, switchPath, routes }: {
+        exec?: Exec; exists?: (path: string) => boolean; worktreesDir?: string; primary?: string; cloneOf?: (key: string) => { clone: string; } | { refusal: string; };
         settle?: (role: string) => void; kept?: (row: number) => KeptClaim | null; forget?: (row: number) => void;
         readRow?: (row: number) => RowForTier; switchPath?: string; routes?: ReadonlyMap<number, Routed>;
     } = {}): SpawnClaimer {
   return {
     claim(order, role, env) {
-      const row = rowOfOrder(order);
-      if (row === null) return { refusal: `cannot tell which row "${order.causeKey}" is about, so cannot claim it` };
+      const ref = rowRefOfOrder(order);
+      if (ref === null) return { refusal: `cannot tell which row "${order.causeKey}" is about, so cannot claim it` };
+      const { key, number: row } = ref;
+      // A KEYED ROW IS CLAIMED FROM ITS OWN CLONE (#4685): the launch tree, the fetch and the worktree the claim creates are of the repository the
+      // row's work is in, as `reviewRepoRootOf` does for a keyed reviewer. The first tracker's primary would make a worktree of the wrong repository.
+      const home = key === "" ? { clone: primary } : cloneOf(key);
+      if ("refusal" in home) return { refusal: `cannot claim ${rowMention(ref)}: ${home.refusal}` };
       settle(role);
-      const launch = launchWorktree(role, { exec, exists, worktreesDir, primary });
+      const launch = launchWorktree(role, { exec, exists, worktreesDir, primary: home.clone });
       if ("refusal" in launch) return launch;
-      const left = settleGoneKept(kept(row) ?? treeOfClosedPrBranch(order, { exec, primary, env }), { exists, exec, primary, env, forget: () => { forget(row); } }).left;
-      const { claimed, args } = claimTarget({ row, order, role, launchDir: launch.dir, worktreesDir, left, exists });
+      // The kept-tree ledger is keyed by the FIRST tracker's row number, so a keyed row neither reads it nor writes it.
+      const record = key === "" ? kept(row) : null;
+      const left = settleGoneKept(record ?? treeOfClosedPrBranch(order, { exec, primary: home.clone, env }), { exists, exec, primary: home.clone, env, forget: () => { if (key === "") forget(row); } }).left;
+      const { claimed, args } = claimTarget({ ref, order, role, launchDir: launch.dir, worktreesDir, left, exists });
       const ran = exec("node", [ROW_CLAIM, ...args], { cwd: launch.dir, env });
       const landed = /^STARTED/m.test(ran.output) && CLAIM_LANDED.includes(Number(ran.status));
       if (landed && exists(claimed.worktree)) {
-        if (claimed.adopted !== undefined) forget(row);
+        if (claimed.adopted !== undefined && key === "") forget(row);
         return claimed;
       }
       const why = landed ? `${claimed.worktree} was not created` : verdictLine(ran.output);
       const undone = landed || !CLAIM_NOT_LANDED.includes(Number(ran.status))
         ? releaseClaim(claimed, role, env, exec) : "";
-      return { refusal: `the claim of #${row} as ${role} did not hold (${why})${undone}` };
+      return { refusal: `the claim of ${rowMention(ref)} as ${role} did not hold (${why})${undone}` };
     },
     release: (claimed, role, env) => releaseClaim(claimed, role, env, exec),
-    tier: (claimed) => tierOfRow(claimed.row, { readRow, switchPath, routes }),
+    // The tier label and the route are read from the FIRST tracker's row of that number: for a keyed row that is another row's, so it gets the ordinary profile.
+    tier: (claimed) => (claimed.key === undefined || claimed.key === "" ? tierOfRow(claimed.row, { readRow, switchPath, routes }) : null),
   };
 }
 
@@ -6340,16 +6407,29 @@ export function pruneGoneKeptClaims(keptPath: string, { exists = existsSync, exe
  *
  * @returns `args` are `row-claim`'s
  */
-function claimTarget({ row, order, role, launchDir, worktreesDir, left, exists }: {
-        row: number; order: { title?: string; }; role: string; launchDir: string; worktreesDir: string; left: KeptClaim | null;
+function claimTarget({ ref, order, role, launchDir, worktreesDir, left, exists }: {
+        ref: RowRef; order: { title?: string; }; role: string; launchDir: string; worktreesDir: string; left: KeptClaim | null;
         exists: (path: string) => boolean;
     }): { claimed: ClaimedRow; args: string[]; } {
+  const { key, number: row } = ref;
+  // `wt-<key>-<n>` and `...-<key>-<n>`, the names `row-claim`'s `claimNames` writes: a claim in another tracker that named its worktree `wt-<n>`
+  // is refused for sharing the first tracker's row's directory (ADR 0040, decision 2), and `--tracker` is how the claim is told whose row it is.
+  const qualified = key === "" ? `${row}` : `${key}-${row}`;
   const adopting = left !== null && exists(left.worktree) ? left : null;
-  const branch = adopting?.branch ?? `agent/${slugOf(order.title)}-${row}`;
-  const claimed = { row, branch, launchDir, worktree: adopting?.worktree ?? join(worktreesDir, `wt-${row}`),
+  const branch = adopting?.branch ?? `agent/${slugOf(order.title)}-${qualified}`;
+  const claimed = { row, ...(key === "" ? {} : { key }), branch, launchDir, worktree: adopting?.worktree ?? join(worktreesDir, `wt-${qualified}`),
     ...(adopting === null ? {} : { adopted: { from: adopting.from, dirty: adopting.dirty, unpushed: adopting.unpushed, replaces: adopting.replaces } }) };
-  return { claimed, args: ["claim", String(row), `--session=${role}`, `--branch=${branch}`,
-    `--worktree=${adopting?.worktree ?? `../wt-${row}`}`, ...(adopting === null ? [] : [`--adopt=${adopting.from}`])] };
+  return { claimed, args: ["claim", String(row), ...(key === "" ? [] : [`--tracker=${key}`]), `--session=${role}`, `--branch=${branch}`,
+    `--worktree=${adopting?.worktree ?? `../wt-${qualified}`}`, ...(adopting === null ? [] : [`--adopt=${adopting.from}`])] };
+}
+
+/**
+ * The host's clone of the repository a tracker KEY names, or why there is none: `host.json`'s `clones` (#2969, {@link reviewCloneOf}), for a key
+ * the project DECLARES. A key it does not declare is a refusal and never the primary's checkout, whose `origin` is the wrong repository's.
+ */
+function keyedClone(key: string): { clone: string; } | { refusal: string; } {
+  if (trackerRepositoryOf(key) === null) return { refusal: `the project declares no tracker with key \`${key}\`` };
+  return reviewCloneOf(key);
 }
 
 /**
@@ -6374,10 +6454,15 @@ export function launchAdvice(label: string, { exists = existsSync, worktreesDir 
  * sends the engineer straight to building.
  */
 export function spawnedPrompt(order: { title?: string; }, claimed: ClaimedRow): string {
-  return `Row #${claimed.row}${order.title ? `: ${order.title}` : ""} has been claimed for you, and you are in its `
+  const key = claimed.key ?? "";
+  const repo = key === "" ? null : trackerRepositoryOf(key);
+  // A KEYED ROW SAYS WHERE IT LIVES (#4685): `#481` alone reads as this repository's row 481. The worktree is of the keyed clone, so `gh issue view`
+  // with no `--repo` would read the wrong repository's issue, which is the mistake the sentence exists to prevent.
+  const where = key === "" ? "" : ` It is a row of the \`${key}\` tracker${repo === null ? "" : ` (\`${repo}\`)`}, not of this repository's: read it with \`gh issue view ${claimed.row} --repo ${repo ?? `<${key}'s repository>`}\`, and the worktree is of that repository's clone.`;
+  return `Row ${rowMention({ key, number: claimed.row })}${order.title ? `: ${order.title}` : ""} has been claimed for you, and you are in its `
     + `worktree \`${claimed.worktree}\` on branch \`${claimed.branch}\`. Build it here: read the row, then do the work `
     + "in this directory. The claim was made before your process started, as your own session, so there is nothing "
-    + `left to claim.${adoptedNote(claimed)}${claimed.restart === undefined ? "" : `\n\n${escalationNote({ session: claimed.restart.from, reason: claimed.restart.reason })}`}`;
+    + `left to claim.${where}${adoptedNote(claimed)}${claimed.restart === undefined ? "" : `\n\n${escalationNote({ session: claimed.restart.from, reason: claimed.restart.reason })}`}`;
 }
 
 /**
@@ -6450,7 +6535,9 @@ const defaultGit = (cmd: string, args: string[], opts?: object) =>
 /**
  * The facts `endFinishedSpares` reads through, every one injected so the tick's teardown is tested without a host. `heldRows` and `rowState` answer `null` when GitHub could not be asked -- never `[]`, never a state.
  */
-export type TeardownDeps = { spares: string[], registry: Record<string, SpareInstance>, now: number, run: (args: string[]) => string, heldRows: (role: string) => number[] | null, rowState: (row: number) => string | null, worktrees: (role: string, rows: number[]) => SpareWorktree[], record: (cycle: SpareCycle) => void, warn: (line: string) => void, };
+export type TeardownDeps = { spares: string[], registry: Record<string, SpareInstance>, now: number, run: (args: string[]) => string, heldRows: (role: string) => number[] | null,
+  /** `role` is who held the row: a keyed spare's row numbers are its OWN tracker's, so the number alone asks the wrong repository (#4685). */
+  rowState: (row: number, role: string) => string | null, worktrees: (role: string, rows: number[]) => SpareWorktree[], record: (cycle: SpareCycle) => void, warn: (line: string) => void, };
 
 /**
  * END EVERY SPARE INSTANCE WHOSE ROW HAS CLOSED, and write one ledger line for each ending. The tick's
@@ -6514,7 +6601,7 @@ function settleGoneInstances(agents: { label: string; status: string; }[], regis
   const settled: SpareCycle[] = [];
   for (const [role, instance] of Object.entries(registry)) {
     if (agents.some((a) => a.label === role)) continue;
-    if (instance.rows.length === 0 || !instance.rows.every((row) => deps.rowState(row) === "CLOSED")) continue;
+    if (instance.rows.length === 0 || !instance.rows.every((row) => deps.rowState(row, role) === "CLOSED")) continue;
     const cycle = absentInstanceCycle(role, instance, deps.now);
     deps.record(cycle);
     settled.push(cycle);
@@ -6548,7 +6635,7 @@ function closeInstance(role: string, instance: SpareInstance, failed: string | u
 }
 
 function readVerdict(role: string, instance: SpareInstance, deps: TeardownDeps): { clean: boolean; why: string; } {
-  const rows = instance.rows.map((number) => ({ number, state: deps.rowState(number) ?? "UNREADABLE" }));
+  const rows = instance.rows.map((number) => ({ number, state: deps.rowState(number, role) ?? "UNREADABLE" }));
   return cycleVerdict({ role, rows, held: [], worktrees: deps.worktrees(role, instance.rows) });
 }
 
@@ -6597,6 +6684,30 @@ function appendSpareCycle(path: string, cycle: SpareCycle) {
 }
 
 /**
+ * THE TRACKER A SPARE'S ROW LIVES IN (#4685): `{}` for the first tracker's (`worker-481`), `{ repo }` for another's (`worker-agent-org-481`), and `null` when the
+ * name carries a key the project does not declare -- which the teardown reads as "cannot ask", never as the first tracker's.
+ */
+function trackerOfSpare(role: string): string | null | undefined {
+  const key = familyMember(role)?.key ?? "";
+  return key === "" ? undefined : trackerRepositoryOf(key);
+}
+
+/** The rows `role` holds, read in ITS tracker: `null` when that cannot be asked, so the teardown leaves the instance running (#4685). */
+function heldRowsOfSpare(role: string): number[] | null {
+  const repo = trackerOfSpare(role);
+  return repo === null ? null : lookupOtherHeldIssues(role, 0, repo === undefined ? {} : { repo });
+}
+
+/** The repository root `role`'s worktrees are listed in: the tick's checkout, or the declared clone of its tracker's repository (#4685). THROWS when there is none, so no worktree reads as clean for want of a clone. */
+function repoRootOfSpare(role: string): string {
+  const key = familyMember(role)?.key ?? "";
+  if (key === "") return HOME_CHECKOUT;
+  const found = keyedClone(key);
+  if ("refusal" in found) throw new Error(`no clone of \`${key}\` to read ${role}'s worktrees in (${found.refusal})`);
+  return found.clone;
+}
+
+/**
  * The tick's teardown step with its real dependencies, called by `work-tick` on every tick. It reports and
  * never throws: a broken teardown must not stop the tick that delivers work, and a swallowed one is the defect
  * this file exists to refuse -- so the failure is a line on stderr naming what to look at.
@@ -6608,12 +6719,11 @@ export function tearDownSpares(agents: { label: string; status: string; }[], led
   try {
     const paths = sparePathsFrom(ledgerPath);
     mkdirSync(dirname(ledgerPath), { recursive: true });
-    const repoRoot = HOME_CHECKOUT;
     const { ended, registry } = endFinishedSpares(agents, {
       spares: spareInstances(agents), registry: readSpareRegistry(paths.registry), now: Date.now(), run: defaultRun,
-      heldRows: (role) => lookupOtherHeldIssues(role, 0),
-      rowState: (row) => rowStateOf(row),
-      worktrees: (role, rows) => spareWorktrees({ role, rows, repoRoot }),
+      heldRows: (role) => heldRowsOfSpare(role),
+      rowState: (row, role) => { const repo = trackerOfSpare(role); return repo === null ? null : rowStateOf(row, repo); },
+      worktrees: (role, rows) => spareWorktrees({ role, rows, repoRoot: repoRootOfSpare(role) }),
       record: (cycle) => appendSpareCycle(paths.cycles, cycle),
       warn: (line) => say(`${line}\n`),
     });
@@ -7272,9 +7382,9 @@ function instancesNow(registryPath: string): Record<string, SpareInstance> {
   }
 }
 
-function rowStateOf(row: number): string | null {
+function rowStateOf(row: number, repo?: string): string | null {
   try {
-    return String(JSON.parse(defaultGh(["issue", "view", String(row), "--json", "state"])).state);
+    return String(JSON.parse(defaultGh(["issue", "view", String(row), ...(repo === undefined ? [] : ["--repo", repo]), "--json", "state"])).state);
   } catch {
     return null;
   }
