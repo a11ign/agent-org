@@ -14,7 +14,7 @@ import { labelsOf, REPO_CHECKOUT, REVIEWER_STATE_DIR, systemctlRun, openBlockers
 import { familyNumber } from "../arm-pr.ts";
 import { CLAIM_LABEL } from "../claim-labels.ts";
 import { gitRun, pathExists, statMtime, readStallState, writeStallState, STALL_STATE_FILE, nextStallState,
-  claimStalledOrders, readHerdrRestart, claimFactsFrom, readClaim, nudgeDeliveredAt, nudgeKey, closedClaimOrders,
+  claimStalledOrders, readHerdrRestart, claimFactsFrom, readClaim, readLabelEvents, nudgeDeliveredAt, nudgeKey, closedClaimOrders,
   restartNotices, recordStalledNudges, AGENT_SESSIONS_FILE } from "../claim-stall.ts";
 import { FAILURE_LEDGER_FILE } from "../failure-ledger.ts";
 import { readAgents, readAgentSessions } from "../herdr-agents.ts";
@@ -22,6 +22,13 @@ import { NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL, SESSION_PREFIX } from "../proje
 import { waitingOn, fleetWaitingOn, describeWaiting } from "../waiting-condition.ts";
 import { homeProjectDeclaration } from "../project-config.ts";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+
+/**
+ * What the live tick reads the host with. `labelEvents` (#4789) is the tracker's row history, so a merge counts only from when THIS session's label
+ * was added; without it a hand-started engineer inherits the previous holder's merged pull request.
+ */
+export const LIVE_HOST_READS: import("../claim-stall.ts").HostReads = { git: gitRun, exists: pathExists, mtime: statMtime,
+  labelEvents: (row: number) => readLabelEvents(row, homeProjectDeclaration().tracker[0].repo) };
 
 /**
  * What a row DECLARES it is waiting on, as a phrase, or `null`. Only the waits that are DATA the org already reads -- a
@@ -100,7 +107,7 @@ function movesOf(facts: import("../claim-stall.ts").ClaimFacts): ClaimMoves {
  * `agents` (#2747) is herdr's own workspace listing, read the same way `restartAt` is: the caller's reading when given, else a live one --
  * and only when some row is claimed. `null` (herdr could not be asked) never releases a claim as "gone"; see `goneReading`'s own doc.
  */
-export function claimStallTick({ io = { git: gitRun, exists: pathExists, mtime: statMtime }, repo = REPO_CHECKOUT, now = Date.now(),
+export function claimStallTick({ io = LIVE_HOST_READS, repo = REPO_CHECKOUT, now = Date.now(),
   stateDir = REVIEWER_STATE_DIR, log = (line) => process.stderr.write(line), read = readStallState, write = writeStallState, ...inputs }: {
         rows: any[]; claimedComments: any[] | null; openPrs: any[]; mergedPrs: any[] | null;
         elsewhere?: import("../claim-stall.ts").ElsewherePrs; io?: import("../claim-stall.ts").HostReads; repo?: string; now?: number; restartAt?: number | null;
