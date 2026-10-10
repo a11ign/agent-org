@@ -13,10 +13,18 @@
 // `send` refuse anything over `maxText`. Declaring `maxText` as a few whole messages' worth lets the core's shortening still bound a
 // runaway body while this module cuts what it is given into messages Telegram will take, on a line boundary where one exists.
 //
+// **ONE CHAT ID PER AUDIENCE (a11ign/a11ign#4742).** `ask` goes to `chatId`, the chairman's conversation; `announcement` goes to
+// `announcementsChatId` when there is one, and to `chatId` when there is not, exactly as every message did before the channel existed. The
+// channel is ONE-WAY, so an announcement carrying `actions` is refused before anything is sent (no kind that is an announcement draws any, so
+// that refusal changes nothing today), and so is one carrying `replyTo` INTO THE CHANNEL. With no channel an announcement is in the chairman's
+// chat as it always was, where an incident's "cleared" threads under the original, so `replyTo` is accepted there: refusing it would fail
+// every such notice, and the row says that case is exactly as before.
+//
 // **THE TOKEN IS IN THE URL (`/bot<token>/`), SO EVERY `fetch` GOES THROUGH `redactingFetch`** and every line this module logs or
 // throws is scrubbed again by the secret's own value. A failure the HTTP layer reports is described by its status and Telegram's own
 // `description`, which is Telegram's text and not the request's.
 
+import { AUDIENCE, AUDIENCES } from "../../provider-contract.ts";
 import { redactingFetch } from "../../secret.ts";
 
 export const TELEGRAM_API = "https://api.telegram.org";
@@ -109,12 +117,16 @@ function retryAfterOf(body: Record<string, any>, response: Response | Record<str
 }
 
 /** `deadline` is the request's clock, injected like `sleep` */
-export function createTelegramProvider({ token, chatId, fetch: fetchImpl = globalThis.fetch, sleep = defaultSleep, log = defaultLog, apiBase = TELEGRAM_API, deadline = AbortSignal.timeout }: {
-        token: import("../../secret.ts").Secret; chatId: number | string; fetch?: typeof fetch; sleep?: (ms: number) => Promise<void>;
+export function createTelegramProvider({ token, chatId, announcementsChatId, fetch: fetchImpl = globalThis.fetch, sleep = defaultSleep, log = defaultLog, apiBase = TELEGRAM_API, deadline = AbortSignal.timeout }: {
+        token: import("../../secret.ts").Secret; chatId: number | string; announcementsChatId?: number | string; fetch?: typeof fetch; sleep?: (ms: number) => Promise<void>;
         log?: (line: string) => void; apiBase?: string; deadline?: (ms: number) => AbortSignal;
     }) {
   if (typeof token?.reveal !== "function") throw new TypeError("createTelegramProvider: token must be a Secret (createSecret / readSecretFile)");
   if (chatId === undefined || chatId === null || chatId === "") throw new TypeError("createTelegramProvider: chatId is required");
+  if (announcementsChatId === null || announcementsChatId === "") throw new TypeError("createTelegramProvider: announcementsChatId, when given, must be a chat id");
+  const chatFor: Record<string, number | string> = { [AUDIENCE.ask]: chatId, [AUDIENCE.announcement]: announcementsChatId ?? chatId };
+  const destinations = new Set(Object.values(chatFor).map(String)).size;
+  const hasChannel = destinations === AUDIENCES.length;
   const guardedFetch = redactingFetch(fetchImpl, token);
   // Every string that reaches `log` is either a number-only line or a `TelegramSendError` message, scrubbed where it is built (`attempt`).
   const note = log;
@@ -194,25 +206,40 @@ export function createTelegramProvider({ token, chatId, fetch: fetchImpl = globa
     id: "telegram",
     capabilities: Object.freeze({
       silent: true, buttons: true, replies: true, conversation: false,
-      maxText: TELEGRAM_MAX_MESSAGE * MAX_PARTS, ratePerSecond: 1,
+      maxText: TELEGRAM_MAX_MESSAGE * MAX_PARTS, ratePerSecond: 1, destinations,
     }),
     clearKeyboard,
-    async send(message: { text: string; silent?: boolean; actions?: unknown[]; replyTo?: string; }): Promise<{ messageRef: string; silent: boolean; messageRefs: string[]; }> {
+    async send(message: { text: string; silent?: boolean; actions?: unknown[]; replyTo?: string; audience?: string; }): Promise<{ messageRef: string; silent: boolean; messageRefs: string[]; audience: string; }> {
       const parts = partsOf(message?.text);
+      const audience = audienceOf(message, { hasChannel });
       const keyboard = keyboardOf(message.actions);
       const silent = message.silent === true;
+      const chat = chatFor[audience];
       const messageRefs: string[] = [];
       for (const [index, part] of parts.entries()) {
         if (index > 0) await sleep(PART_SPACING_MS);
         try {
-          messageRefs.push(await sendPart(payloadFor({ chatId, text: part, silent, replyTo: index === 0 ? message.replyTo : undefined, keyboard: index === 0 ? keyboard : undefined })));
+          messageRefs.push(await sendPart(payloadFor({ chatId: chat, text: part, silent, replyTo: index === 0 ? message.replyTo : undefined, keyboard: index === 0 ? keyboard : undefined })));
         } catch (error) {
           throw partial(error, { index, total: parts.length });
         }
       }
-      return { messageRef: messageRefs[0], silent, messageRefs };
+      return { messageRef: messageRefs[0], silent, messageRefs, audience };
     },
   };
+}
+
+/**
+ * Returns where the message is for. An absent audience is `ask`, the only destination there was; an unknown one is refused, and so is an
+ * announcement that asks for an answer, before any part is sent.
+ */
+function audienceOf(message: { audience?: string; actions?: unknown[]; replyTo?: string; }, { hasChannel }: { hasChannel: boolean; }): string {
+  const audience = message.audience ?? AUDIENCE.ask;
+  if (!AUDIENCES.includes(audience)) throw new RangeError(`telegram: audience ${JSON.stringify(audience)} is not one of ${AUDIENCES.join(", ")}`);
+  if (audience !== AUDIENCE.announcement) return audience;
+  if ((message.actions?.length ?? 0) > 0) throw new RangeError("telegram: an announcement is one-way and carries no actions (a message that needs an answer is an ask)");
+  if (hasChannel && message.replyTo !== undefined) throw new RangeError("telegram: an announcement in the channel is one-way and carries no replyTo");
+  return audience;
 }
 
 /** Returns the parts, or a refusal: a provider rejects what it cannot deliver whole rather than cutting it silently */

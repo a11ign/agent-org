@@ -7,9 +7,13 @@
 // a chairman who typed `"tokenfile"` and was told nothing is a chairman who believes the summary is coming at 08:00 and it never does.
 // For the same reason an unknown key refuses (an underscore-prefixed one is prose, as everywhere in this file) and `null` is not absent.
 //
-// **THE PATHS ARE REFERENCES.** `tokenFile` and `chairmanFile` name files under `~/.config/agent-org/` and are returned resolved; the
+// **THE PATHS ARE REFERENCES.** `tokenFile`, `chairmanFile` and `announcementsFile` name files under `~/.config/agent-org/` and are returned resolved; the
 // content is `secret.ts`'s business and is never read here. A path that climbs out of that directory is refused, so the key cannot be
 // pointed at `/etc/shadow` and have the secret reader's error describe it.
+//
+// **`announcementsFile` IS THE SECOND DESTINATION (a11ign/a11ign#4742) AND IS OPTIONAL.** It holds the chat id of the one-way announcements
+// channel. Absent is `null`, and then both audiences go to the chairman chat exactly as before; present, announcements go to the channel.
+// It is a reference like `chairmanFile`, so there is no id in `project.json` and none anywhere else the tool reads.
 //
 // **`milestones` IS A PATH TOO, BUT TO A FILE THE PROJECT OWNS (a11ign/a11ign#3414):** relative to the project root, returned resolved, and refused if it
 // climbs out of the root. Absent is `null` and constructs no milestone source, as an absent `summary` does. The file's content is `sources/milestones.ts`'s
@@ -27,7 +31,7 @@ export const KNOWN_PROVIDERS = Object.freeze(["telegram"]);
 /** The field defaults of a summary that is DECLARED. It is not what an absent `summary` key means: that is no summary at all. */
 export const DEFAULT_SUMMARY = Object.freeze({ at: "08:00", timezone: "Europe/London" });
 
-const ALLOWED_KEYS = new Set(["provider", "tokenFile", "chairmanFile", "summary", "milestones"]);
+const ALLOWED_KEYS = new Set(["provider", "tokenFile", "chairmanFile", "announcementsFile", "summary", "milestones"]);
 const ALLOWED_SUMMARY_KEYS = new Set(["at", "timezone"]);
 const TIME_OF_DAY = /^([01]\d|2[0-3]):[0-5]\d$/;
 
@@ -82,6 +86,11 @@ function readSecretReference(value: unknown, field: string, home: string, source
   return resolved;
 }
 
+/** OPT-IN: an absent key is `null` and there is one destination. A present one is held to the same confinement as `chairmanFile`. */
+function readOptionalSecretReference(value: unknown, field: string, home: string, source: string): string | null {
+  return value === undefined ? null : readSecretReference(value, field, home, source);
+}
+
 function readSummaryTime(at: unknown, source: string): string {
   if (typeof at !== "string" || !TIME_OF_DAY.test(at)) {
     throw new MessagingConfigRefusal("messaging.summary.at", `${JSON.stringify(at)} is not a 24-hour HH:MM time`, source);
@@ -134,7 +143,7 @@ function readMilestonesPath(value: unknown, root: string, source: string): strin
 }
 
 export type MessagingOff = { enabled: false };
-export type MessagingOn = { enabled: true; provider: string; tokenFile: string; chairmanFile: string; summary: { at: string; timezone: string } | null; milestones: string | null };
+export type MessagingOn = { enabled: true; provider: string; tokenFile: string; chairmanFile: string; announcementsFile: string | null; summary: { at: string; timezone: string } | null; milestones: string | null };
 
 /**
  * PURE: a test drives every refusal with a plain object. `parsed` is the whole parsed `project.json`;
@@ -153,6 +162,7 @@ export function parseMessagingConfig(parsed: unknown, { home = homedir(), source
     provider: readProvider(holder.provider, source),
     tokenFile: readSecretReference(holder.tokenFile, "messaging.tokenFile", home, source),
     chairmanFile: readSecretReference(holder.chairmanFile, "messaging.chairmanFile", home, source),
+    announcementsFile: readOptionalSecretReference(holder.announcementsFile, "messaging.announcementsFile", home, source),
     summary: readSummary(holder.summary, source),
     milestones: readMilestonesPath(holder.milestones, root, source),
   };

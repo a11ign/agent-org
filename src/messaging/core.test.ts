@@ -417,7 +417,7 @@ describe("the planner and the composers", () => {
 
   test("planNotification is pure: the same inputs give the same plan and touch nothing", () => {
     const first = planNotification(event, undefined, START, config);
-    assert.deepEqual(first, { action: "send", kind: "first" });
+    assert.deepEqual(first, { action: "send", kind: "first", audience: "ask" }, "a request is an ask (a11ign/a11ign#4742)");
     assert.deepEqual(planNotification(event, undefined, START, config), first);
   });
 
