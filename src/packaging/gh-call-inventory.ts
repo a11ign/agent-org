@@ -22,15 +22,27 @@
 // SCOPE: every non-test `.ts` and `.mjs` under `src/`, except `fixtures/` (test data some tests copy into a temporary tree; one spawns `gh` on purpose,
 // and a port is not cut against it). Shell scripts are outside it, and `host-units.ts`'s `shellSpawnsGh` is the reader for them.
 //
+// WHICH TREE IS SCANNED: this repository's own. The gate lays the tool under a project and then rsyncs the project's helpers INTO `src/packaging/`
+// (`ci.yml`, `--ignore-existing`), so a walk of the laid-out copy counts files that are not this repository's and the committed file would differ
+// between a checkout and the gate. `AGENT_ORG_TOOL_REPO` names the checkout the copy came from (`mjs-ratchet.test.ts` judges it for the same reason),
+// and `judgedRoot` is that tree where it is set. It is NOT a list of names to skip: the helpers' set moves with the pinned layer.
+//
 // THE DETECTOR THAT FILES A ROW WHEN A NEW DIRECT CALL APPEARS OUTSIDE THE ADAPTER IS NOT HERE: "outside the adapter" needs the adapter (D1b).
 import { readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
+import { TOOL_REPO_ENV } from "../lib/pin-ratchet.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+/** The tree this file sits in: a checkout, or the gate's laid-out copy of one. */
 export const REPO_ROOT = join(HERE, "..", "..");
 export const INVENTORY_PATH = "docs/gh-call-inventory.json";
+
+/** The tree the inventory describes: the checkout `env[TOOL_REPO_ENV]` names where the gate set it, else the tree this file sits in. */
+export function judgedRoot(env: NodeJS.ProcessEnv = process.env): string {
+  return env[TOOL_REPO_ENV] || REPO_ROOT;
+}
 
 /** Directories the scan does not enter. `fixtures` is test data, not a call the product makes. */
 const SKIPPED_DIRECTORIES: ReadonlySet<string> = new Set(["node_modules", "fixtures"]);
@@ -274,6 +286,7 @@ export function render(inventory: Inventory): string {
   return `${JSON.stringify(inventory, null, 2)}\n`;
 }
 
+/** Rewrites the committed file from the tree this file sits in: a developer's action, in a checkout, so `AGENT_ORG_TOOL_REPO` is not read. */
 function main(): void {
   const inventory = buildInventory(REPO_ROOT);
   writeFileSync(join(REPO_ROOT, INVENTORY_PATH), render(inventory));

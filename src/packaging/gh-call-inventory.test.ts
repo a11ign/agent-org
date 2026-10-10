@@ -14,7 +14,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { stripComments } from "../lib/local-import-closure.ts";
-import { buildInventory, render, sourceFiles, INVENTORY_PATH, REPO_ROOT, type Inventory } from "./gh-call-inventory.ts";
+import { TOOL_REPO_ENV } from "../lib/pin-ratchet.ts";
+import { buildInventory, judgedRoot, render, sourceFiles, INVENTORY_PATH, REPO_ROOT, type Inventory } from "./gh-call-inventory.ts";
 
 const COMMAND = "gh";
 
@@ -43,16 +44,18 @@ function tree(files: Record<string, string>): { root: string; done: () => void }
 }
 
 test("the committed inventory equals the regenerated one", () => {
-  const committed = readFileSync(join(REPO_ROOT, INVENTORY_PATH), "utf8");
-  assert.equal(committed, render(buildInventory(REPO_ROOT)),
+  const root = judgedRoot();
+  const committed = readFileSync(join(root, INVENTORY_PATH), "utf8");
+  assert.equal(committed, render(buildInventory(root)),
     `${INVENTORY_PATH} is stale: run \`node --import tsx src/packaging/gh-call-inventory.ts\` and commit the result`);
 });
 
 test("every non-test file that spawns the command is listed, and the reading is not vacuous", () => {
-  const inventory = buildInventory(REPO_ROOT);
-  const found = filesSpawningGh(REPO_ROOT);
+  const root = judgedRoot();
+  const inventory = buildInventory(root);
+  const found = filesSpawningGh(root);
   assert.ok(found.length > 20, `the independent reader found ${found.length} files: a reader that finds none proves nothing`);
-  assert.deepEqual(missingFromInventory(REPO_ROOT, inventory), []);
+  assert.deepEqual(missingFromInventory(root, inventory), []);
   // The other direction, so the inventory cannot quietly grow files the independent reader would not call spawners: a file that is listed with
   // spawn sites must be one it found too. (Shape-only files, `spawns: 0`, call through an injected runner and are not in this population.)
   const spawners = Object.entries(inventory.files).filter(([, entry]) => entry.spawns > 0).map(([file]) => file);
@@ -88,7 +91,7 @@ test("test files are not listed, and neither are fixtures", () => {
   } finally {
     done();
   }
-  const listed = Object.keys(buildInventory(REPO_ROOT).files);
+  const listed = Object.keys(buildInventory(judgedRoot()).files);
   assert.deepEqual(listed.filter((file) => /\.test\.(?:ts|mjs)$/.test(file) || file.includes("/fixtures/")), []);
 });
 
@@ -127,6 +130,30 @@ test("what a file's entry says: shapes, spawns, labels and a Closes parse; a com
   }
 });
 
+test("a file a layout overlays beside the tool is not in the inventory: the judged tree is the checkout the gate names, not the copy it walks", () => {
+  // The gate's laid-out copy is the checkout's `src/` plus the project's helpers rsynced into `src/packaging/` (one of which spawns `gh`).
+  const own = { "src/a.ts": spawn("execFileSync", ["issue", "list"]), "src/lib/b.ts": spawn("spawnSync", ["pr", "view"]) };
+  const checkout = tree(own);
+  const laidOut = tree({ ...own, "src/packaging/zz-overlay.mjs": spawn("execFileSync", ["release", "download"]) });
+  try {
+    const env = { [TOOL_REPO_ENV]: checkout.root };
+    assert.equal(judgedRoot(env), checkout.root);
+    const committed = render(buildInventory(checkout.root));
+    // Judged through the variable, the laid-out copy reads as the checkout does, byte for byte, and says nothing of the helper...
+    assert.equal(render(buildInventory(judgedRoot(env))), committed);
+    assert.deepEqual(Object.keys(JSON.parse(committed).files), ["src/a.ts", "src/lib/b.ts"], "positive control: the files the scan SHOULD count still are");
+    // ...and a walk of the copy, which is what the committed file would have been checked against, does differ: the overlay is real and the variable is what removes it.
+    assert.notEqual(render(buildInventory(laidOut.root)), committed);
+    assert.deepEqual(Object.keys(buildInventory(laidOut.root).files), ["src/a.ts", "src/lib/b.ts", "src/packaging/zz-overlay.mjs"]);
+    // Not set, or set to nothing: the tree the generator sits in, as in a checkout.
+    assert.equal(judgedRoot({}), REPO_ROOT);
+    assert.equal(judgedRoot({ [TOOL_REPO_ENV]: "" }), REPO_ROOT);
+  } finally {
+    checkout.done();
+    laidOut.done();
+  }
+});
+
 test("a cause is looked up through the files that name it", () => {
   const { root, done } = tree({
     "src/cause-declaration.ts": [
@@ -146,6 +173,6 @@ test("a cause is looked up through the files that name it", () => {
   } finally {
     done();
   }
-  const real = buildInventory(REPO_ROOT).causes;
+  const real = buildInventory(judgedRoot()).causes;
   assert.ok(Object.keys(real).length >= 30, `src/cause-declaration.ts declares ${Object.keys(real).length} causes; the header counts 30`);
 });
