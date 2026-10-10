@@ -74,10 +74,15 @@ export type TriageDeps = {
   switches?: Readonly<Partial<Record<DecisionUse, boolean>>>;
 };
 /**
+ * What the API accepts as one description in a question's `criteria` (its OpenAPI schema: `string`, `object` or `array`, #4752): text, or JSON structure the model is trained to read,
+ * such as a Choice option's `what`, `not_for` and `examples` or a Score level's `summary` and `signals`. Passed through as given, never interpreted here.
+ */
+export type Described = string | Readonly<Record<string, unknown>> | readonly unknown[];
+/**
  * One question in the provider's own vocabulary (#4628): `choice` among `criteria` (an object of descriptions by choice), or a `score` over `criteria` (an ORDERED ARRAY of level
  * descriptions: the API scores a level by its position, from zero, and rejects a `score` question without it with HTTP 422, agent-org#564).
  */
-export type ProviderQuestion = { type: "choice"; instructions: string; criteria: Readonly<Record<string, string>> } | { type: "score"; instructions: string; criteria: readonly string[] };
+export type ProviderQuestion = { type: "choice"; instructions: string; criteria: Readonly<Record<string, Described>> } | { type: "score"; instructions: string; criteria: readonly Described[] };
 /** What goes to the provider: a trimmed structured `state` and the atomic questions asked of it. */
 export type ProviderRequest = { state: Readonly<Record<string, unknown>>; questions: Readonly<Record<string, ProviderQuestion>> };
 /** The provider's raw `answers` by question name, or why none came back. Never thrown. */

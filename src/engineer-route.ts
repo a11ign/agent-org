@@ -53,76 +53,105 @@ const DONE_WHEN_ITEMS = 8;
 const DONE_WHEN_CHARS = 200;
 const ID_PREFIX = "row-";
 
-const YES_NO = { yes: "true of this row", no: "not true of this row" } as const;
-
-// --- the criteria: what each answer means, with rows whose outcome is known (#4764 change 3, the method of #4627's 07:45Z direction) ---
+// --- the criteria: what each answer means, with rows whose outcome is known (#4764 change 3 and #4752, the method of #4627's 07:45Z direction) ---
 //
 // THE PROVIDER WAS UNSURE BECAUSE IT WAS TOLD LITTLE: `score` came back under the floor on 34 of 55 provider decisions and `subsystems` on 30 (the decision log, 2026-10-10),
-// from five bare level phrases and two bare yes/no glosses. A Choice option now carries `what`, `not_for` and `examples`, a score level a `summary` and its `signals`, and every example
-// is a row of ours: its number and the merged diff that settled the answer (`git diff --numstat` of the merge commit: files and lines). "Outcome known" is MERGED and what it
-// changed; first-pass CI is not in any log this module can read.
+// from five bare level phrases and two bare yes/no glosses. TypeSafe's own guidance (docs.typesafe.ai/primitives/advanced, /confidence, /primitives/choice, /primitives/score) is a
+// Choice option with `what`, `not_for` and `examples`, a Score level with a `summary` and its `signals`, and examples taken from real cases whose answer is known. Every example
+// here is a row of ours: its number and the merge that settled the answer.
 //
-// THE STRUCTURE IS RENDERED INTO THE ONE STRING THE API TAKES PER OPTION, which `wire()` sends unchanged (`criteria` is an object of strings, a score's an array of five). A
-// structured object per option is #4752's (it changes `wire()`, which is `decision-provider.ts`'s), and a shape the API refused would be an HTTP 422 for every question at once.
+// THE STRUCTURE IS SENT AS STRUCTURE (#4752): the API's schema takes a string, an object or an array for each option and level, and `wire()` passes what it is given. #4764 had to
+// render the same data into one string per option because `wire()` typed them as text; `Described` (triage-provider.ts) is the widening, and the shape is TypeSafe's own.
+// "Outcome known" is MERGED and what it changed: `merged` is `git diff --numstat <merge>^1 <merge>` less the `.acceptance/` and `.changeset/` files, as "<n> files, +<added> -<removed>".
+// First-pass CI is not in any log this module can read.
 type Example = { row: string; what: string; merged: string };
 type Level = { summary: string; signals: readonly string[]; examples: readonly Example[] };
 type Option = { what: string; notFor: string; examples: readonly Example[] };
+type YesNo = Readonly<Record<"yes" | "no", Option>>;
 
 /** The five levels of a `score`, level 1 first: a level's position IS its score (agent-org#564). */
 export const SCORE_LEVEL_DATA: readonly [Level, Level, Level, Level, Level] = Object.freeze([
   { summary: "one stated edit in one file",
     signals: ["the Region names one source file (and its test)", "the Done-when is one assertion", "the row quotes the text or the value to change"],
-    examples: [{ row: "a11ign#4522", what: "the Haiku tier's effort constant", merged: "1 file, +3 -3" },
-      { row: "a11ign#4618", what: "a counter no longer read as an unknown failure class", merged: "1 file, +15 -3" }] },
+    examples: [{ row: "a11ign#4522", what: "the Haiku tier's effort constant", merged: "2 files, +3 -3" },
+      { row: "a11ign#4618", what: "a counter no longer read as an unknown failure class", merged: "2 files, +15 -3" }] },
   { summary: "a few stated edits, each independent",
     signals: ["the Region names 2 to 8 files and the edit is the same kind in each", "each edit is stated by the row and none needs another"],
     examples: [{ row: "a11ign#4557", what: "renamed paths and headers in two copies", merged: "2 files, +11 -11" },
       { row: "a11ign#4582", what: "thirteen copies naming originals that moved", merged: "8 files, +28 -19" }] },
   { summary: "a new small unit with a test, in one subsystem",
     signals: ["one new module and its test, or one module grown", "the Region stays inside one directory or one concern", "the Acceptance runs that module's own test"],
-    examples: [{ row: "a11ign#4748", what: "a new reading over the decision log", merged: "1 source file, +478 with its test" },
-      { row: "a11ign#4635", what: "a new review-depth module", merged: "1 source file, +187 with its test" }] },
+    examples: [{ row: "a11ign#4748", what: "a new reading over the decision log", merged: "2 files, +478 -0" },
+      { row: "a11ign#4635", what: "a new review-depth module", merged: "2 files, +187 -0" }] },
   { summary: "a change that touches how two modules agree",
     signals: ["the Region names a module and its caller, or a wire, a type or a log format that both read", "a test of one module is not enough: the other must be run against it"],
-    examples: [{ row: "a11ign#4629", what: "the route module and its wiring into the spawn path", merged: "2 source files, +476 -20" },
-      { row: "a11ign#4630", what: "the escalation module and the tick that calls it", merged: "2 source files, +737 -17" }] },
+    examples: [{ row: "a11ign#4629", what: "the route module and its wiring into the spawn path", merged: "3 files, +476 -20" },
+      { row: "a11ign#4630", what: "the escalation module and the tick that calls it", merged: "5 files, +737 -17" }] },
   { summary: "a new seam, a migration or anything whose shape the row does not state",
     signals: ["the Region is a directory, or the row says migrate, replace or every", "the Done-when leaves a design or a reading open", "files in more than one area (source, host scripts, package.json, workflows)"],
-    examples: [{ row: "a11ign#4418", what: "a new place the Acceptance is read from", merged: "7 source files and package.json, +404 -31" },
+    examples: [{ row: "a11ign#4418", what: "a new place the Acceptance is read from", merged: "11 files, +404 -31" },
       { row: "a11ign#4389", what: "110 .mjs files become .ts", merged: "473 files, +6132 -9492" }] },
 ]);
 
-/** The `subsystems` question's two options. `yes` is the one that holds a row at Sonnet/high only when the other rules would have lowered it. */
-export const SUBSYSTEMS_DATA: Readonly<Record<"yes" | "no", Option>> = Object.freeze({
-  yes: { what: "the Region spans modules that interact, so a change in one must be understood against the other (a producer and the consumer of one format, a module and the tick that calls it)",
-    notFor: "the same edit repeated across files that do not interact, or one module and its own test",
-    examples: [{ row: "a11ign#4629", what: "the route module and the spawn path that calls it", merged: "2 source files" },
-      { row: "a11ign#4630", what: "the escalation module and the tick", merged: "2 source files" },
-      { row: "agent-org#564", what: "one request shape agreed by the route, the provider client and the triage client", merged: "3 source files" }] },
-  no: { what: "the Region is one module and its test, or the same edit in several files that do not interact",
-    notFor: "a module and its caller, or two modules that read one format",
-    examples: [{ row: "a11ign#4748", what: "one new reading module", merged: "1 source file" },
-      { row: "a11ign#4639", what: "one scheduled-measurement module", merged: "1 source file" },
-      { row: "a11ign#4582", what: "the same path fix in thirteen copies", merged: "8 files, none reading another" }] },
+/** The `mechanical` question's two options. `yes` is the one that can send a row to Haiku, so its `not_for` names what looks small and is not. */
+export const MECHANICAL_DATA: YesNo = Object.freeze({
+  yes: { what: "every edit is stated by the row itself (a rename, a move, a sweep, a one-line fix) and nothing is left to design",
+    notFor: "a new module, a new rule or a wire the row describes but does not spell out, however small the diff turns out to be",
+    examples: [{ row: "a11ign#4522", what: "one constant's value, quoted by the row", merged: "2 files, +3 -3" },
+      { row: "a11ign#4557", what: "renamed paths and headers in two copies, each listed", merged: "2 files, +11 -11" },
+      { row: "a11ign#4613", what: "one path in a unit file, the row naming the old and the new", merged: "1 file, +1 -1" }] },
+  no: { what: "the row leaves something to design: a new module, a new reading, a rule or a wire it describes without spelling every edit out",
+    notFor: "a rename or a sweep whose every edit the row lists",
+    examples: [{ row: "a11ign#4748", what: "a new reading over the decision log", merged: "2 files, +478 -0" },
+      { row: "a11ign#4629", what: "the route module and its wiring into the spawn path", merged: "3 files, +476 -20" },
+      { row: "a11ign#4639", what: "a new scheduled-measurement module", merged: "2 files, +394 -0" }] },
 });
 
-const exampleText = ({ row, what, merged }: Example): string => `${row} (${what}; merged: ${merged})`;
-const examplesText = (examples: readonly Example[]): string => `Examples, from rows whose outcome is known: ${examples.map(exampleText).join("; ")}.`;
-const levelText = ({ summary, signals, examples }: Level): string => `${summary}. Signals: ${signals.join("; ")}. ${examplesText(examples)}`;
-const optionText = ({ what, notFor, examples }: Option): string => `${what}. Not for: ${notFor}. ${examplesText(examples)}`;
+/** The `subsystems` question's two options. `yes` is the one that holds a row at Sonnet/high only when the other rules would have lowered it. */
+export const SUBSYSTEMS_DATA: YesNo = Object.freeze({
+  yes: { what: "the Region spans modules that interact, so a change in one must be understood against the other (a producer and the consumer of one format, a module and the tick that calls it)",
+    notFor: "the same edit repeated across files that do not interact, or one module and its own test",
+    examples: [{ row: "a11ign#4629", what: "the route module and the spawn path that calls it", merged: "3 files, +476 -20" },
+      { row: "a11ign#4630", what: "the escalation module and the tick", merged: "5 files, +737 -17" },
+      { row: "agent-org#564", what: "one request shape agreed by the route, the provider client and the triage client", merged: "5 files, +180 -36" }] },
+  no: { what: "the Region is one module and its test, or the same edit in several files that do not interact",
+    notFor: "a module and its caller, or two modules that read one format",
+    examples: [{ row: "a11ign#4748", what: "one new reading module", merged: "2 files, +478 -0" },
+      { row: "a11ign#4639", what: "one scheduled-measurement module", merged: "2 files, +394 -0" },
+      { row: "a11ign#4582", what: "the same path fix in thirteen copies, none reading another", merged: "8 files, +28 -19" }] },
+});
+
+/** The `debugging` question's two options. `yes` holds a row at Sonnet/high whatever else is said, so it is the one a row that states its cause must not reach. */
+export const DEBUGGING_DATA: YesNo = Object.freeze({
+  yes: { what: "the cause is not stated in the row: it names a symptom, perhaps with hypotheses and the check that would tell them apart, and the cause has to be found before anything is fixed",
+    notFor: "a row that names the defect and the change, even when finding it was hard for whoever filed it",
+    examples: [{ row: "a11ign#3228", what: "two workers do not wake at their reserved addresses and \"the cause is unread\"", merged: "no diff of its own: the cause was read on the box and filed as #3241 and #3250" },
+      { row: "a11ign#1105", what: "a navigating submit intermittently records \"unknown\", 2 of 170, with no cause named", merged: "12 files, +400 -19" }] },
+  no: { what: "the row names the defect and the change that fixes it; what is left is making that change and proving it",
+    notFor: "a symptom with hypotheses and no named cause",
+    examples: [{ row: "a11ign#4613", what: "a unit runs a file the rename removed, and the row names the new path", merged: "1 file, +1 -1" },
+      { row: "a11ign#4574", what: "the decider counts a NO VERDICT status as a failed run, and the row names the function", merged: "2 files, +30 -3" }] },
+});
+
+const exampleText = ({ row, what, merged }: Example): string => `${row}: ${what} (merged: ${merged})`;
+/** TypeSafe's Choice option shape: `what`, `not_for` and `examples` (docs.typesafe.ai/primitives/advanced, "Structured Choice options"). */
+const optionOf = ({ what, notFor, examples }: Option) => ({ what, not_for: notFor, examples: examples.map(exampleText) });
+/** TypeSafe's Score level shape: a `summary` and its `signals` (docs.typesafe.ai/primitives/advanced, "Structured Score levels"), with the examples that settled it. */
+const levelOf = ({ summary, signals, examples }: Level) => ({ summary, signals: [...signals], examples: examples.map(exampleText) });
+const optionsOf = ({ yes, no }: YesNo) => ({ yes: optionOf(yes), no: optionOf(no) });
 
 function scoreLevels(): ScoreLevels {
   const [one, two, three, four, five] = SCORE_LEVEL_DATA;
-  return [levelText(one), levelText(two), levelText(three), levelText(four), levelText(five)];
+  return [levelOf(one), levelOf(two), levelOf(three), levelOf(four), levelOf(five)];
 }
 
 /** The four atomic questions. Every fallback is the answer that does NOT lower the route; {@link fallbackRoute} decides what a fallback row gets. */
 export const QUESTIONS: Readonly<Record<keyof Answers, Question>> = Object.freeze({
-  mechanical: { type: "choice", criteria: YES_NO, fallback: "no",
+  mechanical: { type: "choice", criteria: optionsOf(MECHANICAL_DATA), fallback: "no",
     instructions: "Is this row MECHANICAL: a rename, a move, a sweep or a one-line fix where every edit is stated by the row itself and nothing is left to design?" },
-  subsystems: { type: "choice", criteria: { yes: optionText(SUBSYSTEMS_DATA.yes), no: optionText(SUBSYSTEMS_DATA.no) }, fallback: "yes",
+  subsystems: { type: "choice", criteria: optionsOf(SUBSYSTEMS_DATA), fallback: "yes",
     instructions: "Does this row need reasoning ACROSS SUBSYSTEMS: its Region spans modules that interact, so a change in one must be understood against another?" },
-  debugging: { type: "choice", criteria: YES_NO, fallback: "yes",
+  debugging: { type: "choice", criteria: optionsOf(DEBUGGING_DATA), fallback: "yes",
     instructions: "Does this row require DEBUGGING AN UNKNOWN FAILURE: the cause is not stated in the row and has to be found before anything is fixed?" },
   // The provider scores a level by its POSITION in `levels` (from zero); `decide` hands the callers the 1-based level, so `fallback: 5` is the last description.
   score: { type: "score", fallback: 5, levels: scoreLevels(),

@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { decide, decisionLogPathFrom, decisionSwitchesPath, MAX_STATE_BYTES, type DecisionDeps } from "./decision-provider.ts";
 import {
   composeRoute, fallbackRoute, fallbackWindow, GUARD_DECISIONS, isWindowTooSmall, LARGE_ROW_FILES, LARGEST_ROW_FILES, recordRouteOutcome, recordWindowTooSmall, regionSize, routeCostEvents,
-  routeCostReading, ROUTE_COSTLIER_THAN_FALLBACK, routeEngineer, routeState, SCORE_LEVEL_DATA, SMALL_ROW_FILES, SUBSYSTEMS_DATA, windowOf, windowReadings, windowReportLines, QUESTIONS,
+  MECHANICAL_DATA, DEBUGGING_DATA, routeCostReading, ROUTE_COSTLIER_THAN_FALLBACK, routeEngineer, routeState, SCORE_LEVEL_DATA, SMALL_ROW_FILES, SUBSYSTEMS_DATA, windowOf, windowReadings, windowReportLines, QUESTIONS,
   type Answers, type Route, type RouteRow,
 } from "./engineer-route.ts";
 import { parseHostConfig } from "./host-config.ts";
@@ -44,17 +44,47 @@ function reply(given: Given) {
 }
 
 /**
- * What the API's OpenAPI document (`components.schemas`, 2026-10-09) requires of a request: a `score` question carries `criteria`, an ORDERED ARRAY of level descriptions, and a
- * `choice` question carries `criteria`, an OBJECT of descriptions by choice. One invalid question rejects the whole request, so this returns the first violation, or `null`.
+ * WHAT THE API'S OPENAPI DOCUMENT REQUIRES OF A QUESTION, copied from `components.schemas.ChoiceQuestion` and `ScoreQuestion` of https://api.typesafe.ai/openapi.json (read 2026-10-10,
+ * version 0.2.0), the parts a request can break: `criteria` is required; a choice's is an OBJECT of descriptions by choice, a score's an ORDERED ARRAY of at least one level; a
+ * description is a string, an object or an array (a choice's may also be null); `type` is the constant. One invalid question rejects the whole request, so {@link violation}
+ * returns the first, or `null`.
  */
+type Schema = { type?: string; const?: unknown; anyOf?: Schema[]; properties?: Record<string, Schema>; required?: string[]; items?: Schema; additionalProperties?: Schema | boolean; minItems?: number };
+const TEXT_OBJECT_OR_ARRAY: Schema[] = [{ type: "string" }, { type: "object", additionalProperties: true }, { type: "array", items: {} }];
+const OPENAPI_QUESTIONS: Readonly<Record<"choice" | "score", Schema>> = {
+  choice: { type: "object", required: ["criteria", "type"], properties: { type: { type: "string", const: "choice" }, instructions: { anyOf: [...TEXT_OBJECT_OR_ARRAY, { type: "null" }] },
+    criteria: { type: "object", additionalProperties: { anyOf: [...TEXT_OBJECT_OR_ARRAY, { type: "null" }] } } } },
+  score: { type: "object", required: ["criteria", "type"], properties: { type: { type: "string", const: "score" }, instructions: { anyOf: [...TEXT_OBJECT_OR_ARRAY, { type: "null" }] },
+    criteria: { type: "array", minItems: 1, items: { anyOf: TEXT_OBJECT_OR_ARRAY } } } },
+};
+
+const kindOf = (value: unknown): string => (value === null ? "null" : Array.isArray(value) ? "array" : typeof value);
+
+/** The first way `value` is not what `schema` says, or `null`: the subset of JSON Schema the two question schemas use, nothing more. */
+function mismatch(value: unknown, schema: Schema, at: string): string | null {
+  if (schema.anyOf !== undefined) return schema.anyOf.some((alternative) => mismatch(value, alternative, at) === null) ? null : `${at}: ${kindOf(value)} is none of ${schema.anyOf.map((a) => a.type).join(", ")}`;
+  if (schema.type !== undefined && kindOf(value) !== schema.type) return `${at}: ${kindOf(value)} is not ${schema.type}`;
+  if ("const" in schema && value !== schema.const) return `${at}: not ${JSON.stringify(schema.const)}`;
+  if (Array.isArray(value)) {
+    if (value.length < (schema.minItems ?? 0)) return `${at}: needs at least ${schema.minItems} items`;
+    return value.map((item, i) => mismatch(item, schema.items ?? {}, `${at}[${i}]`)).find((found) => found !== null) ?? null;
+  }
+  if (typeof value !== "object" || value === null) return null;
+  const record = value as Record<string, unknown>;
+  const missing = (schema.required ?? []).find((name) => record[name] === undefined);
+  if (missing !== undefined) return `${at}.${missing}: required`;
+  const each = typeof schema.additionalProperties === "object" ? schema.additionalProperties : undefined;
+  return Object.entries(record).map(([name, v]) => { const sub = schema.properties?.[name] ?? each; return sub === undefined ? null : mismatch(v, sub, `${at}.${name}`); }).find((found) => found !== null) ?? null;
+}
+
 function violation(sent: unknown): string | null {
-  const questions = (sent as { questions?: Record<string, { type?: string; instructions?: unknown; criteria?: unknown }> } | null)?.questions;
+  const questions = (sent as { questions?: Record<string, { type?: string; instructions?: unknown }> } | null)?.questions;
   if (typeof questions !== "object" || questions === null) return "questions: required";
   for (const [name, q] of Object.entries(questions)) {
     if (typeof q?.instructions !== "string") return `${name}.instructions: required`;
-    if (q.type === "score" && !(Array.isArray(q.criteria) && q.criteria.length === 5 && q.criteria.every((l) => typeof l === "string" && l !== ""))) return `${name}.criteria: a score needs an array of five level descriptions`;
-    if (q.type === "choice" && !(typeof q.criteria === "object" && q.criteria !== null && !Array.isArray(q.criteria) && Object.values(q.criteria).length >= 2)) return `${name}.criteria: a choice needs an object`;
     if (q.type !== "score" && q.type !== "choice") return `${name}.type: not a question type`;
+    const found = mismatch(q, OPENAPI_QUESTIONS[q.type], name);
+    if (found !== null) return found;
   }
   return null;
 }
@@ -159,6 +189,20 @@ test("provider ABSENT: the fallback route, the provider asked zero times, no key
   assert.deepEqual([big.route, big.via, big.profile], ["sonnet/high", "fallback", null]);
   assert.equal(r.calls(), 0);
   assert.deepEqual(r.reads, []);
+});
+
+/** What a provider-ABSENT route is, recorded from `origin/main` at 5f4b499 BEFORE the criteria became structured (#4752): the route, its profile, and the one log line it wrote. */
+const ABSENT_SNAPSHOT = "[{\"region\":[\"src/a.ts\",\"src/a.test.ts\"],\"routed\":{\"route\":\"sonnet/medium\",\"via\":\"fallback\",\"why\":\"no triage provider is declared\",\"profile\":{\"kind\":\"claude\",\"model\":\"sonnet\",\"effort\":\"medium\",\"autocompactWindow\":200000,\"why\":\"a small row with a command Acceptance (a11ign/a11ign#4629): medium effort is enough to build it\"},\"reason\":\"no triage provider is declared\"},\"log\":[{\"use\":\"model-routing\",\"id\":\"row-4999\",\"outcome\":\"route sonnet/medium window 200k via fallback (no triage provider is declared)\",\"reason\":\"no triage provider is declared\",\"at\":1000}],\"calls\":0,\"reads\":[]},{\"region\":[\"src/\"],\"routed\":{\"route\":\"sonnet/high\",\"via\":\"fallback\",\"why\":\"no triage provider is declared\",\"profile\":null,\"reason\":\"no triage provider is declared\"},\"log\":[{\"use\":\"model-routing\",\"id\":\"row-4999\",\"outcome\":\"route sonnet/high window 200k via fallback (no triage provider is declared)\",\"reason\":\"no triage provider is declared\",\"at\":1000}],\"calls\":0,\"reads\":[]},{\"region\":[\"a\",\"b\",\"c\",\"d\"],\"routed\":{\"route\":\"sonnet/high\",\"via\":\"fallback\",\"why\":\"no triage provider is declared\",\"profile\":null,\"reason\":\"no triage provider is declared\"},\"log\":[{\"use\":\"model-routing\",\"id\":\"row-4999\",\"outcome\":\"route sonnet/high window 200k via fallback (no triage provider is declared)\",\"reason\":\"no triage provider is declared\",\"at\":1000}],\"calls\":0,\"reads\":[]}]";
+
+test("provider ABSENT: the route, its profile and its log line are byte-for-byte what they were before the criteria were structured (#4752)", async () => {
+  const shapes = [["src/a.ts", "src/a.test.ts"], ["src/"], ["a", "b", "c", "d"]];
+  const seen = [];
+  for (const region of shapes) {
+    const r = rig({ switches: ON });
+    const routed = await routeEngineer(rowOf({ body: bodyOf({ region }) }), r.deps);
+    seen.push({ region, routed, log: r.log(), calls: r.calls(), reads: r.reads });
+  }
+  assert.equal(JSON.stringify(seen), ABSENT_SNAPSHOT);
 });
 
 test("provider on but KEY MISSING, USE OFF, REFUSING or TIMING OUT: each takes the fallback and none throws", async () => {
@@ -522,51 +566,76 @@ test("the guard's control: twenty provider routes that cost what the fallback wo
   assert.ok(said.some((l) => /route-cost guard could not read the decision log \(EIO\)/.test(l)), said.join("|"));
 });
 
-// --- #4764 change 3: the criteria carry summaries, signals and examples from rows whose outcome is known ---
+// --- #4764 change 3 and #4752: the criteria are STRUCTURE, with examples from rows whose outcome is known ---
 
 const ROW_REF = /^(a11ign|agent-org)#\d+$/;
+/** What an example says it merged: `git diff --numstat` of the merge less its acceptance and changeset files, or that there was no diff of its own. */
+const MERGED = /^(\d+ files?, \+\d+ -\d+|no diff of its own: .+)$/;
+type SentQuestion = { type: string; instructions: string; criteria: any };
 
-test("every score level carries a summary, signals and examples, and every example names a row of ours with what merged; the five stay in order and the wire shape is unchanged", () => {
+async function postedQuestions(row: RouteRow = rowOf()): Promise<{ questions: Record<string, SentQuestion>; sent: unknown }> {
+  const r = rig({ triage: JEV, switches: ON, validates: true });
+  await routeEngineer(row, r.deps);
+  assert.equal(r.calls(), 1);
+  assert.equal(violation(r.sent[0]), null, "the API would take this request");
+  return { questions: (r.sent[0] as { questions: Record<string, SentQuestion> }).questions, sent: r.sent[0] };
+}
+
+test("every score level is POSTED as an object -- a summary, its signals and examples -- the five in the order scored, and every example names a row of ours with what merged (#4752)", async () => {
   assert.equal(SCORE_LEVEL_DATA.length, 5);
-  const levels = QUESTIONS.score.type === "score" ? QUESTIONS.score.levels : [];
+  const { questions } = await postedQuestions();
+  const levels: Record<string, unknown>[] = questions.score.criteria;
   assert.equal(levels.length, 5);
   SCORE_LEVEL_DATA.forEach((level, i) => {
     assert.ok(level.summary !== "" && level.signals.length >= 2 && level.examples.length >= 2, `level ${i + 1} has a summary, signals and examples`);
-    assert.ok(levels[i].startsWith(level.summary), `level ${i + 1} is where its position says`);
-    assert.ok(levels[i].includes("Signals: ") && level.signals.every((s) => levels[i].includes(s)), `level ${i + 1} sends its signals`);
-    for (const example of level.examples) {
+    assert.deepEqual(Object.keys(levels[i]), ["summary", "signals", "examples"], `level ${i + 1} is structure, not a sentence`);
+    assert.equal(levels[i].summary, level.summary, `level ${i + 1} is where its position says`);
+    assert.deepEqual(levels[i].signals, level.signals);
+    assert.equal((levels[i].examples as string[]).length, level.examples.length);
+    level.examples.forEach((example, j) => {
       assert.match(example.row, ROW_REF);
-      assert.ok(example.what !== "" && /\d/.test(example.merged), `${example.row} says what it changed and how big the merged diff was`);
-      assert.ok(levels[i].includes(example.row), `${example.row} is sent`);
-    }
+      assert.match(example.merged, MERGED, `${example.row} says how big the merge that settled it was`);
+      assert.ok(example.what !== "" && (levels[i].examples as string[])[j].startsWith(`${example.row}: ${example.what}`), `${example.row} is sent, with what it changed`);
+    });
   });
-  assert.ok(levels.every((l) => typeof l === "string" && l !== ""), "an array of five non-empty strings: what the API's score accepts");
 });
 
-test("the subsystems options are `what`, `not for` and examples, keyed yes and no as before, and no row is the example of both answers", () => {
-  const q = QUESTIONS.subsystems;
-  assert.equal(q.type, "choice");
-  const criteria = q.type === "choice" ? q.criteria : {};
-  assert.deepEqual(Object.keys(criteria), ["yes", "no"], "the answer words are what `decide` checks a choice against");
-  for (const name of ["yes", "no"] as const) {
-    const option = SUBSYSTEMS_DATA[name];
-    assert.ok(criteria[name].startsWith(option.what) && criteria[name].includes("Not for: ") && option.examples.length >= 2, name);
-    for (const example of option.examples) assert.match(example.row, ROW_REF);
+test("each choice is POSTED as options keyed yes and no, every option an object of `what`, `not_for` and examples, and no row is the example of both answers (#4752)", async () => {
+  const { questions } = await postedQuestions();
+  const data = { mechanical: MECHANICAL_DATA, subsystems: SUBSYSTEMS_DATA, debugging: DEBUGGING_DATA };
+  for (const [name, options] of Object.entries(data)) {
+    const criteria = questions[name].criteria;
+    assert.deepEqual(Object.keys(criteria), ["yes", "no"], `${name}: the answer words are what \`decide\` checks a choice against`);
+    for (const answer of ["yes", "no"] as const) {
+      const option = options[answer];
+      assert.deepEqual(Object.keys(criteria[answer]), ["what", "not_for", "examples"], `${name}.${answer}`);
+      assert.deepEqual([criteria[answer].what, criteria[answer].not_for], [option.what, option.notFor]);
+      assert.ok(option.what !== "" && option.notFor !== "" && option.examples.length >= 2, `${name}.${answer} says what it is, what it is not for, and gives examples`);
+      assert.deepEqual(criteria[answer].examples.map((e: string) => e.split(":")[0]), option.examples.map((e) => e.row));
+      for (const example of option.examples) {
+        assert.match(example.row, ROW_REF);
+        assert.match(example.merged, MERGED);
+      }
+    }
+    const yes = options.yes.examples.map((e) => e.row);
+    assert.deepEqual(options.no.examples.map((e) => e.row).filter((row) => yes.includes(row)), [], `${name}: a row is not a yes and a no`);
   }
-  const yes = SUBSYSTEMS_DATA.yes.examples.map((e) => e.row);
-  assert.deepEqual(SUBSYSTEMS_DATA.no.examples.map((e) => e.row).filter((row) => yes.includes(row)), [], "a row is not a yes and a no");
-  // The control: a rendered option that dropped its examples would read as a bare gloss again.
-  assert.ok(Object.values(criteria).every((text) => /Examples, from rows whose outcome is known: /.test(text)));
 });
 
-test("the criteria are sent and the request still validates: the same score array of five and choice objects the API's schema asks for", async () => {
-  const r = rig({ triage: JEV, switches: ON, validates: true });
-  await routeEngineer(rowOf(), r.deps);
-  assert.equal(r.calls(), 1);
-  assert.equal(violation(r.sent[0]), null);
-  const { questions } = r.sent[0] as { questions: Record<string, { criteria: unknown }> };
-  assert.match(JSON.stringify(questions.score.criteria), /Signals: .*a11ign#4748/);
-  assert.match(JSON.stringify(questions.subsystems.criteria), /Not for: .*a11ign#4629/);
+test("CONTROLS for the schema check: a description that is a number, or a score level that is null, is the API's refusal -- so passing it is not vacuous (#4752)", () => {
+  const ask = (type: string, criteria: unknown) => violation({ questions: { q: { type, instructions: "?", criteria } } });
+  assert.equal(ask("choice", { yes: { what: "x", not_for: "y", examples: ["z"] }, no: null }), null, "structure, and a choice's null, are what the API takes");
+  assert.equal(ask("score", [{ summary: "a", signals: ["b"] }, "c"]), null);
+  assert.match(ask("choice", { yes: 3, no: "n" })!, /^q\.criteria\.yes: number is none of string, object, array, null$/);
+  assert.match(ask("score", [{ summary: "a" }, null])!, /^q\.criteria\[1\]: null is none of string, object, array$/);
+  assert.match(ask("score", [])!, /^q\.criteria: needs at least 1 items$/);
+  assert.match(ask("score", { a: "b" })!, /^q\.criteria: object is not array$/);
+});
+
+test("the state is the row's four structured fields and never its body, beside the structured criteria (#4752)", async () => {
+  const { sent } = await postedQuestions(rowOf({ body: bodyOf({ extra: `${SECRET_BODY_TEXT}\n\n` }) }));
+  assert.deepEqual(Object.keys((sent as { state: object }).state), ["title", "region", "acceptance", "doneWhen"]);
+  assert.ok(!JSON.stringify(sent).includes(SECRET_BODY_TEXT));
 });
 
 // --- #4738: the window the route sets ---
