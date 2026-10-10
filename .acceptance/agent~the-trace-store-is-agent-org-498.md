@@ -1,0 +1,50 @@
+The trace store now has a five-minute clock of its own, and a stale store raises one incident per episode. Before this, the transcripts, the `gh` ledgers and the deferral logs reached the store only as a side effect of a `trace` command that reads it, and the one unit that ran one on a clock regenerated only when a head of `main` moved or an hour had passed.
+
+**One premise of the row did not hold, and it is fixed here.** The row's outage reading was "nothing broke, nobody ingested". The store is also unreadable: `events.ndjson` is 537,274,044 bytes and V8's longest string is 536,870,888, so `readFileSync(path, "utf8")` in `readStore` throws `ERR_STRING_TOO_LONG` and every `trace` mode and the publisher fail before they ingest anything. A clock over a reader that throws would have been a unit that failed every five minutes. `readStore` is now a chunked reader (8 MiB reads, split on the newline byte, the last copy of an id winning, as before). Measured read-only against the live store: before, `ERR_STRING_TOO_LONG`; after, 1,260,607 lines, 863,038 unique events, 4.2 s, about 735 MB resident. That memory is per run and the run is every five minutes: it is what the next row (store compaction, below) is for.
+
+What changes, by the row's four items:
+
+1. **`trace -- --ingest [--since <ISO>] [--store <path>]`** (`src/trace/trace.ts`, `ingestHome`, `ingestSummary`): the transcripts of Claude Code and Codex, the wake ledger, the `gh` call ledgers and the deferral log, with the roots and ledgers the other modes name and a three-day `--since`; it saves the state, prints `ingest: <n> transcripts read, <n> unchanged, <n> events added, <n> failed` (and a `COLD START` line on a first run), renders nothing, calls no GitHub, and exits 1 only when a file failed. The existing three call sites are not rewritten to use `ingestHome`: that would be a refactor of every reading command inside a row about a clock.
+2. **`host/trace-ingest.service.in` and `.timer.in`**, declared in `src/host-units.ts` like `trace-publish`: `Type=oneshot`, the workers' `GH_CONFIG_DIR`, the compile cache under the home, `TimeoutStartSec=2400`, no `[Install]`; the timer is `OnBootSec=2min`, `OnUnitActiveSec=5min`, `Requires=` the service (so `host:install` runs it once; the ingest is idempotent).
+3. **`src/trace/freshness.ts`**: `storeFreshness({ storePath, now, working })` returns `{ newestTurnAt, ageMs, working, stale }`. The newest `turn` is read from the TAIL (1 MiB, doubling to 32 MiB only when the tail holds no turn), newest by `at` and not by position, and a half-written last line is skipped. "Working" is a `.jsonl` under `~/.claude/projects/*/` or `~/.codex/sessions/*/*/*/` modified inside the ten-minute window, which needs no GitHub call; a root that cannot be read throws, so "could not tell" is never "nobody is working". `trace -- --freshness` prints the line and exits 1 when stale.
+4. **The incident.** The unit's program is `freshness.ts`: it runs `trace -- --ingest` in a child (so a failing ingest cannot stop the check after it), then checks.
+
+**How the publisher and the ingest are kept apart (the row asks).** They share the store and nothing else. Measured from the code: both append whole lines with one `appendFileSync` each, a line that lands twice reads as one (the last copy of an id wins), and the ingest state is written to a sibling and renamed, so the worst overlap of the two is a transcript read twice, never a half-written file. The row suggested the new unit "takes the same lock the publisher takes": the publisher takes none, so there is no lock to share and none was added. This unit cannot overlap itself (`Type=oneshot`; a timer does not start a unit that is still running), and a lock was left out on purpose: a held lock that outlives a killed run would stop the clock the row exists to start. Not measured: two real processes appending to one 537 MB store at the same moment. The cases pin the reader's side of it (a duplicate line reads as one copy).
+
+**Which path posts the incident (the row asks).** The ingest unit's own process (`freshness.ts`), not the work gate and not `trace-publish`. On the first stale check of an episode it posts one comment on #928 in the declared tracker (`gh issue comment 928 --repo <tracker> --body-file -`, through the routed `gh` under `GH_CONFIG_DIR` the unit declares) AND one `prompt:session` to `orchestrator` (`promptOrQueue`, `STANCE.ORDER`, sender `a11ign-trace-ingest.service`, first line `Class: metrics-outage`; exit 0 delivered and 2 queued both count as sent). The episode record is `<store>.freshness-episode.json`; an episode ends only when a `turn` is inside the window again, so a quiet hour in the middle of an outage is one incident, not two. Each of the two effects is remembered separately, and a refused one is tried again next run without sending the other twice. The episode is written before the effects: a run killed between them raises again rather than losing the incident.
+
+Known edge, from the code and not from a run: a turn is held back until its message is `QUIET_MS` (five minutes) old, so in a healthy store the newest turn reads about five minutes old right after an ingest. A single tool call longer than ten minutes that is the only thing running can still read as stale; that is one incident per episode, never one per run.
+
+Acceptance: `cd /home/agent/repos/wt-agent-org-498 && npx rstest run --config scripts/rstest/rstest.config.* src/trace/freshness.test.ts src/packaging/host-units.test.ts`
+
+History: full
+
+Closes a11ign/agent-org#498
+
+Outside-Region: src/trace/store.ts — `readStore` is the reader that throws `ERR_STRING_TOO_LONG` on the live store; without the chunked reader no mode of `trace` runs, so the clock would only fail every five minutes.
+Outside-Region: src/packaging/host-project-paths.test.ts — its enumeration of the tool's host entries (27 now, the two units named, `acme-trace-ingest.service` in the prefixed list) is the guard that fails when a unit is added.
+Outside-Region: src/no-loader.test.ts — `trace-ingest` joins the units that run node on a `.ts` with the host's own node (`SIX_UNITS`).
+Outside-Region: src/trace/trace.ts — the Region names `trace.mjs`, which is `trace.ts` in this tree since #4389; likewise `freshness.ts` for `freshness.mjs`.
+Outside-Region: src/trace/freshness.ts — see the line above: the Region's `freshness.mjs`.
+
+platform: n/a (no GitHub, pnpm, systemd or git feature is named beyond `gh issue comment`, `Type=oneshot`, `OnUnitActiveSec` and `Requires=`, which `trace-publish` already uses)
+
+Evidence (this branch, `/home/agent/repos/wt-agent-org-498`):
+- the Acceptance command passes, 167 tests in 2 files, with the row's cases named: fresh (3 minutes) and stale (11 minutes, transcript modified 2 minutes ago); NEGATIVE CONTROL (11 minutes, every transcript untouched for an hour, NOT stale); `--ingest` adds the turn, a second run adds nothing and the store is byte-identical, and the recording `gh` on `PATH` was never called; `--freshness` exits 1 on the stale fixture, 0 on the fresh one and 0 on the negative control; the units pinned (account, compile cache, five-minute `OnUnitActiveSec`, each with a control that the pattern refuses the unit with that line altered); the incident once over three consecutive checks and again after a recovery.
+- `src/trace` passes in full, 348 tests in 18 files (with `AGENT_ORG_HOST` set, as `headless-pilot.test.ts` says). `src/packaging/host-units.test.ts`, `host-project-paths.test.ts` and `no-loader.test.ts` pass, 171.
+- `tsc --noEmit` reports only the two `mjs-ratchet.test.ts` errors that `main` has.
+- the whole suite: 34 of 8064 fail, all in eight files (`mjs-ratchet`, `board-truth-audit`, `failure-ledger`, `auto-arm-token`, `milestone-clock`, `milestone-clock-exact-start`, `pr-template-acceptance`, `public-claim`), and the same eight files fail the same way on a clean detached `HEAD` of this branch; none imports a file this change touches.
+- mutations, each turning at least one named case red and restored green: the check ignoring "working" (4 cases), an episode never remembered (4), a turn inside the window not closing the episode (2), the newest turn taken as the last line (1).
+- read-only against the live store: `trace -- --freshness` prints `trace store: newest turn 2026-10-09T19:05:07.927Z (13h 9m ago); a session is working (...): STALE`, exit 1. That is the outage the row describes, seen by the new check.
+
+Review rework (reviewer-agent-org-601, at `85d3c00b`): `--ingest` counted and exited on the transcripts' `failed` only, so an unreadable `gh` ledger or deferral log printed `0 failed` and exited 0. `ingestFailures` now gathers the three sources' `failed` lists for both the report line and the exit code; the case `--ingest counts and exits on a failure of ANY source` fails (1 of 15) with that one line reverted and passes with it, and its control (absent ledger and log: `0 failed`, exit 0) passes both ways.
+
+Mutation: the freshness check ignoring "working" turned 4 cases red; an episode never remembered, 4; a turn inside the window not closing the episode, 2; the newest turn taken as the last line, 1; each restored green (`src/trace/freshness.test.ts`). The units' pins each carry a control that the pattern refuses the unit with that one line altered.
+
+Left open, not done by this pull request (host acts and a follow-up):
+- the row's Done-when 2 and 3: `host:install` from the merged tag, the `list-timers` line naming `a11ign-trace-ingest.timer`, and the `--freshness` output an hour after no head moved. The first ingest on the live host will also be the cold catch-up of everything since 2026-10-09T19:05Z.
+- the store is not compacted: 31% of the 1.26 million lines are superseded copies of an id and the reader's memory scales with the file. The chunked reader makes it readable, not cheap; a compaction row should be filed.
+
+Net lines: positive: a new module and its tests, a streaming reader in place of one `readFileSync`; no function was added where an existing one could take the case.
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)

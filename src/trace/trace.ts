@@ -30,6 +30,7 @@ import { renderWakeCache, wakeCache } from "./wake-cache.ts";
 import { eventsOfCodexSession } from "./codex-turns.ts";
 import { ghCallLines, ghIngestLines, ingestGhCalls } from "./gh-calls.ts";
 import { countingGh, readGithubEvents } from "./github-events.ts";
+import { freshnessLine, sessionsWorking, STALE_AFTER_MS, storeFreshness, transcriptRoots } from "./freshness.ts";
 import { fingerprint, HEAD_BYTES, loadState, planRead, saveState, stateFileFor } from "./ingest-state.ts";
 import type { Carry, FileState, IngestState } from "./ingest-state.ts";
 import type { GhCallsReport } from "./gh-calls.ts";
@@ -58,6 +59,8 @@ const MAP_FLAG = "--map";
 const HTML_FLAG = "--html";
 const USAGE = "usage: trace -- <row-or-pr number> [--since <ISO>] [--store <path>] [--json 1] [--html --out <path>]";
 const WAKE_CACHE_FLAG = "--wake-cache";
+const INGEST_FLAG = "--ingest";
+const FRESHNESS_FLAG = "--freshness";
 const DEFAULT_WAKE_CACHE_DAYS = 7; // a week of wakes: enough that each standing seat has a hundred or more first turns, and the store holds little older
 const ISO_WEEK_ONE_DAY = 4; // 4 January is always in ISO week 1
 const MAX_ISO_WEEK = 53;
@@ -108,6 +111,23 @@ export const isMap = (argv: string[]) => argv.includes(MAP_FLAG);
 
 export const isWakeCache = (argv: string[]) => argv.includes(WAKE_CACHE_FLAG);
 
+export const isIngest = (argv: string[]) => argv.includes(INGEST_FLAG);
+
+export const isFreshness = (argv: string[]) => argv.includes(FRESHNESS_FLAG);
+
+/**
+ * `trace -- --ingest [--since <ISO>] [--store <path>]` and `trace -- --freshness [--store <path>]` (agent-org#498). `--since` is the window of transcripts looked at, as in the other
+ * modes (the last three days); a transcript the state has already read costs a `stat`, so it is not what the run costs.
+ */
+export function parseIngestArgs(argv: string[], now: number = Date.now()) {
+  const rest = (argv[0] === "--" ? argv.slice(1) : argv).filter((word) => word !== INGEST_FLAG && word !== FRESHNESS_FLAG);
+  const flags: Record<string, string> = {};
+  for (let index = 0; index < rest.length; index += 2) flags[rest[index].replace(/^--/, "")] = rest[index + 1];
+  const since = flags.since ? Date.parse(flags.since) : now - DEFAULT_SINCE_DAYS * MS_PER_DAY;
+  if (Number.isNaN(since)) throw new Error(`--since must be an ISO time (got ${flags.since})`);
+  return { since, store: flags.store ?? defaultStore() };
+}
+
 /**
  * `trace -- --wake-cache [--since <ISO>] [--until <ISO>] [--store <path>] [--json 1]`: the cache write of the first turn after each wake, per seat (#3563). `--since` is the start of the window and
  * is NOT rounded to a Monday; without it the window is the last seven days. `--until` ends it (default: now), so a before and an after of a change are two runs of one instrument.
@@ -157,7 +177,7 @@ export function parseMapArgs(argv: string[], now: number = Date.now()) {
 }
 
 /** The `gh` call ledgers `host/gh` writes (#3466): one per account, in the config directory the wrapper routes that account to. An account that never called has none, and the ingest says so. */
-const ghLedgerFiles = () => [join(homedir(), "workers", "gh"), join(homedir(), "leads", "gh"), join(homedir(), ".config", "gh")].map((dir) => join(dir, "gh-calls.tsv"));
+const ghLedgerFiles = (home: string = homedir()) => [join(home, "workers", "gh"), join(home, "leads", "gh"), join(home, ".config", "gh")].map((dir) => join(dir, "gh-calls.tsv"));
 
 const defaultStore = () => join(homedir(), ".cache", "a11ign", "trace", "events.ndjson");
 
@@ -292,6 +312,35 @@ export function ingestTranscripts({ root, codexRoot = null, since, ledger, rowRe
   const deferrals = deferralLogs.length > 0 ? ingestDeferrals({ logs: deferralLogs, rowRepo, store, state: calls?.state ?? afterTranscripts, now }) : null;
   saveState(statePath, { ...(deferrals?.state ?? calls?.state ?? afterTranscripts), storeBytes: existsSync(storePath) ? statSync(storePath).size : 0 });
   return { store, report: { ...report, ...(calls ? { ghCalls: calls.report } : {}), ...(deferrals ? { deferrals: deferrals.report } : {}) } };
+}
+
+/**
+ * THE INGEST OF A HOST'S HOME as `--ingest` runs it: the transcripts of Claude Code and Codex, the wake ledger, the `gh` call ledgers and the deferral log, with the same roots and ledgers
+ * `trace -- <row>` and `--aggregate` name, so the store a clock-driven `--ingest` fills is the store a reading command would have filled. It reaches no GitHub.
+ */
+export function ingestHome({ home = homedir(), since, storePath, rowRepo, ledger, now = Date.now() }: { home?: string; since: number; storePath: string; rowRepo: string; ledger?: LedgerEntry[]; now?: number; }) {
+  const cache = join(home, ".cache", "a11ign");
+  return ingestTranscripts({
+    root: join(home, ".claude", "projects"), codexRoot: join(home, ".codex", "sessions"), since, ledger: ledger ?? parseLedger(readFileSync(join(cache, "wake-ledger"), "utf8")), rowRepo, storePath,
+    ghLedgers: ghLedgerFiles(home), deferralLogs: [join(cache, DEFERRAL_LOG_FILE)], now,
+  });
+}
+
+/**
+ * Every file the run could not read, across the three sources it ingests: the transcripts, the `gh` call ledgers and the deferral logs each report their own `failed`, and a clock that
+ * counted only the first would stay green over a ledger it was not ingesting. A file that is merely absent is not a failure (a host with no Codex, no deferral log yet).
+ */
+export function ingestFailures(ingested: IngestReport): string[] {
+  return [...ingested.failed, ...(ingested.ghCalls?.failed ?? []), ...(ingested.deferrals?.failed ?? [])];
+}
+
+/** What `--ingest` prints: one line (read, unchanged, added, failed), the failed files under it, and a cold start said as one. `added` is every kind of event the run appended. */
+export function ingestSummary(ingested: IngestReport): string[] {
+  const added = ingested.added + (ingested.ghCalls?.added ?? 0) + (ingested.deferrals?.added ?? 0);
+  const failures = ingestFailures(ingested);
+  return [`ingest: ${ingested.read} transcripts read, ${ingested.unchanged} unchanged, ${added} events added, ${failures.length} failed`
+    + `${ingested.heldBack > 0 ? `, ${ingested.heldBack} messages held back (written in the last 5 minutes)` : ""}`,
+  ...failures.map((failure) => `  failed: ${failure}`), ...(ingested.coldStart ? [`  COLD START: ${ingested.coldStart}`] : [])];
 }
 
 type DeferralsReport = { read: number; unchanged: number; absent: string[]; failed: string[]; spans: number; reread: string[]; added: number; };
@@ -1029,6 +1078,28 @@ export function writeSwimlanes({ out, subjects, now, github }: { out: string; su
   }
 }
 
+/**
+ * `--ingest`: the store's clock (agent-org#498). Ingest and save the state, print the one-line report, render nothing and call no GitHub: the reading commands decide what is shown, and the
+ * publisher's pull-request and row listings are not what keeps the store fresh.
+ */
+async function mainIngest() {
+  const { since, store: storePath } = parseIngestArgs(process.argv.slice(2));
+  const { homeProjectDeclaration } = await import("../project-config.ts");
+  const { report } = ingestHome({ since, storePath, rowRepo: homeProjectDeclaration().tracker[0].repo });
+  for (const line of ingestSummary(report)) console.log(line);
+  if (ingestFailures(report).length > 0) process.exitCode = 1;
+}
+
+/** `--freshness`: the store's newest turn against the clock, read from its tail; exit 1 when it is stale, so a unit or a person can act on the code. */
+function mainFreshness() {
+  const { store: storePath } = parseIngestArgs(process.argv.slice(2));
+  const now = Date.now();
+  const working = sessionsWorking({ roots: transcriptRoots(homedir()), now, windowMs: STALE_AFTER_MS });
+  const reading = storeFreshness({ storePath, now, working });
+  console.log(freshnessLine(reading));
+  if (reading.stale) process.exitCode = 1;
+}
+
 async function mainWakeCache() {
   const { since, until, store: storePath, json } = parseWakeCacheArgs(process.argv.slice(2));
   const { homeProjectDeclaration } = await import("../project-config.ts");
@@ -1041,6 +1112,8 @@ async function mainWakeCache() {
 }
 
 async function main() {
+  if (isIngest(process.argv.slice(2))) return mainIngest();
+  if (isFreshness(process.argv.slice(2))) return mainFreshness();
   if (isAggregate(process.argv.slice(2))) return mainAggregate();
   if (isWakeCache(process.argv.slice(2))) return mainWakeCache();
   if (isMap(process.argv.slice(2))) return mainMap();
