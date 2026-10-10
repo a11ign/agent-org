@@ -107,8 +107,8 @@ const issue = (number: number, repo: string, items: { project: number, value?: a
   projectItems: { totalCount: items.length, nodes: items.map(({ project, value }) => ({ project: { number: project, owner: { login: "a11ign" } }, value: value ?? null })) },
 });
 const answerFor = (nodes: Record<string, any>) => JSON.stringify({ data: { repository: nodes } });
-/** a `gh` that answers the rows list, the closed and merged reads empty, and the aliased query with `graphql` */
-const gh = (rows: number[], graphql: (query: string) => string) => (args: string[]) => {
+/** a fake `run` that answers the rows list, the closed and merged reads empty, and the aliased query with `graphql` */
+const answers = (rows: number[], graphql: (query: string) => string) => (args: string[]) => {
   if (args[0] === "api") return graphql(args.find((a) => a.startsWith("query=")) ?? "");
   if (args.includes("open")) return JSON.stringify(rows.map((number) => ({ number, title: `row ${number}`, labels: [{ name: "ready" }] })));
   return "[]";
@@ -116,7 +116,7 @@ const gh = (rows: number[], graphql: (query: string) => string) => (args: string
 const read = (run: (args: string[]) => string) => readBoardFacts("a11ign/agent-org", { run, agents: () => null, now: NOW, trackers: [] });
 
 test("readBoardFacts: the rows' values and their parents' are read, a parent in another repository is named whole, and a text value is read", () => {
-  const run = gh([1, 2, 3], () => answerFor({
+  const run = answers([1, 2, 3], () => answerFor({
     r1: issue(1, "a11ign/agent-org", [{ project: 2 }], issue(4437, "a11ign/a11ign", [{ project: 2, value: { name: SELF_HEALING } }])),
     r2: issue(2, "a11ign/agent-org", [{ project: 2, value: { name: SPEND } }], issue(4437, "a11ign/a11ign", [{ project: 2, value: { name: SELF_HEALING } }])),
     r3: issue(3, "a11ign/agent-org", [{ project: 1, value: { text: "free text" } }]),
@@ -132,7 +132,7 @@ test("readBoardFacts: the rows' values and their parents' are read, a parent in 
 test("readBoardFacts: the rows are asked 50 to a request, by alias, and the request names the field", () => {
   const queries: string[] = [];
   const rows = Array.from({ length: 120 }, (_, i) => i + 1);
-  const run = gh(rows, (query) => {
+  const run = answers(rows, (query) => {
     queries.push(query);
     return answerFor(Object.fromEntries([...query.matchAll(/\br(\d+): issue/g)].map((m) => [`r${m[1]}`, issue(Number(m[1]), "a11ign/agent-org", [])])));
   });
@@ -144,15 +144,15 @@ test("readBoardFacts: the rows are asked 50 to a request, by alias, and the requ
 });
 
 test("readBoardFacts: a refused, misshapen or cut-short read is UNREAD (null), never an empty map that every row agrees with", () => {
-  const refused = read(gh([1], () => { throw new Error("HTTP 502"); }));
+  const refused = read(answers([1], () => { throw new Error("HTTP 502"); }));
   assert.equal(refused.roadmaps, null);
   assert.deepEqual(boardTruthAudit({ ...refused, closedRows: [], mergedPrs: [], liveSessions: [], waitFacts: { items: {} } }).unread, [QUESTIONS.ROADMAP]);
-  assert.equal(read(gh([1], () => "[]")).roadmaps, null, "no `data.repository` in the answer");
-  assert.equal(read(gh([1], () => JSON.stringify({ data: { repository: null } }))).roadmaps, null);
+  assert.equal(read(answers([1], () => "[]")).roadmaps, null, "no `data.repository` in the answer");
+  assert.equal(read(answers([1], () => JSON.stringify({ data: { repository: null } }))).roadmaps, null);
   const cut = issue(1, "a11ign/agent-org", [{ project: 2 }]);
   cut.projectItems.totalCount = 21;
-  assert.equal(read(gh([1], () => answerFor({ r1: cut }))).roadmaps, null, "items beyond the page are not read as absent");
-  const unknownRow = read(gh([1, 2], () => answerFor({ r1: issue(1, "a11ign/agent-org", []), r2: null })));
+  assert.equal(read(answers([1], () => answerFor({ r1: cut }))).roadmaps, null, "items beyond the page are not read as absent");
+  const unknownRow = read(answers([1, 2], () => answerFor({ r1: issue(1, "a11ign/agent-org", []), r2: null })));
   assert.deepEqual(Object.keys(unknownRow.roadmaps ?? {}), ["1"], "a row the answer does not hold has no entry");
   assert.deepEqual(boardTruthAudit({ ...unknownRow, closedRows: [], mergedPrs: [], liveSessions: [], waitFacts: { items: {} } }).unread, [QUESTIONS.ROADMAP]);
 });
