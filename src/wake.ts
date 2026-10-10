@@ -959,11 +959,11 @@ function whyNoSpawn(order: { causeKey: string; startFresh?: boolean; }, { memory
  *   `claimer` claims the row for the role about to start -- see {@link spawnClaimer}. With none, the pane opens
  *   in herdr's default directory and nothing is claimed (the pre-#2405 spawn, kept for a caller that has no claim)
  */
-function spawnWorker(order: { session: string; causeKey: string; cause?: string; title?: string; replaces?: { branch: string; }[]; as?: string; }, agents: { label: string; status: string; }[], roster: string[], { run = defaultRun, env = spawnEnvironment(), drained = [],
-  claimable, claimer, memory }: {
+function spawnWorker(order: { session: string; causeKey: string; cause?: string; title?: string; replaces?: { branch: string; }[]; as?: string; startFresh?: boolean; }, agents: { label: string; status: string; }[], roster: string[], { run = defaultRun, env = spawnEnvironment(), drained = [],
+  claimable, claimer, memory, claimRefused }: {
         run?: (args: string[]) => string; env?: Record<string, string>; drained?: readonly string[];
         claimable?: (order: { causeKey: string; startFresh?: boolean; }) => string | null; claimer?: SpawnClaimer;
-        memory?: () => string | null;
+        memory?: () => string | null; claimRefused?: ClaimRefused;
     } = {}): {
     label: string; workspace: string; profile: { kind: string; model: string; effort: string; };
     claimed?: ClaimedRow;
@@ -976,7 +976,11 @@ function spawnWorker(order: { session: string; causeKey: string; cause?: string;
   const unspawnable = whyNoSpawn(order, { memory, claimable });
   if (unspawnable !== null) return { refusal: `no spawn: ${unspawnable}` };
   const claimed = claimer?.claim(order, role.role, env);
-  if (claimed !== undefined && "refusal" in claimed) return { refusal: `no spawn: ${claimed.refusal}` };
+  if (claimed !== undefined && "refusal" in claimed) {
+    // THE PRECHECK ABOVE READS OPEN PULL REQUESTS ONLY; THE CLAIM ALSO REFUSES FOR A ROW ALREADY `in-progress` (#4524, third reopening), which only it can say.
+    claimRefused?.(order, claimed.refusal);
+    return { refusal: `no spawn: ${claimed.refusal}` };
+  }
   /** @param [workspace] a workspace this call opened, to close with it */
   const unwound = (refusal: string, workspace?: string) => `${refusal}${workspace ? closedNote(run, workspace) : ""}`
     + `${claimed && claimer ? claimer.release(claimed, role.role, env) : ""}`;
@@ -4977,6 +4981,7 @@ function targetFor(order: {
         relane?: { deferredSince: Map<string, number>; now: number; }; goneSeats?: ReadonlyMap<string, string>;
         env?: Record<string, string>; registerSpawn?: (role: string) => void; drained?: readonly string[];
         claimable?: (order: { causeKey: string; startFresh?: boolean; }) => string | null; claimer?: SpawnClaimer; hostLoad?: () => HostLoad;
+        claimRefused?: ClaimRefused;
     } & ReviewerDeps): {
     label: string; profile?: { kind: string; model: string; effort: string; }; claimed?: ClaimedRow;
     workspace?: string; reviewer?: true; order?: { prompt: string; };
@@ -5011,7 +5016,7 @@ function targetFor(order: {
   if (overloaded !== null) return { refusal: `${routed.refusal}; ${overloaded}` };
   const spawn = spawnWorker(order, live, roster,
     { run: deps.run, env: deps.env, drained: deps.drained, claimable: deps.claimable, claimer: deps.claimer,
-      memory: deps.memory });
+      memory: deps.memory, claimRefused: deps.claimRefused });
   if ("refusal" in spawn) return { refusal: `${routed.refusal}; ${spawn.refusal}` };
   // REGISTERED BEFORE THE PROMPT, because a refused prompt leaves the process running (see `deliver`).
   deps.registerSpawn?.(spawn.label);
@@ -5376,13 +5381,13 @@ function noteClaimOrders(claimOrders: ClaimOrders | undefined, { gateOrder, targ
  *   in the same run share ONE reason and must not each reach `escalateStuck` as if they were N unrelated stuck rows.
  */
 export function deliver(orders: { session: string; causeKey: string; prompt: string; cause?: string; title?: string; replaces?: { branch: string; }[]; resume?: boolean; outageNow?: boolean; startFresh?: boolean; }[], agents: { label: string; status: string; }[], roster: string[],
-  { run = defaultRun, record, counts, ineligibleReason, env, registerSpawn, drained, claimable, claimer, memory, hostLoad,
+  { run = defaultRun, record, counts, ineligibleReason, env, registerSpawn, drained, claimable, claimer, memory, hostLoad, claimRefused,
     launch, reviewerEnv, registerReviewer, checkout, registry, unavailable, sleep, contextRoot, codexConfig, clock, relane, goneSeats, claimOrders,
     now = Date.now }: {
           run?: (args: string[]) => string; record?: (key: string, recipient?: string, noClear?: boolean, at?: number) => void;
           counts?: Map<string, number>; ineligibleReason?: (label: string) => string | null;
           env?: Record<string, string>; registerSpawn?: (role: string) => void; drained?: readonly string[];
-          claimable?: (order: { causeKey: string; startFresh?: boolean; }) => string | null; claimer?: SpawnClaimer;
+          claimable?: (order: { causeKey: string; startFresh?: boolean; }) => string | null; claimer?: SpawnClaimer; claimRefused?: ClaimRefused;
           memory?: () => string | null; hostLoad?: () => HostLoad; launch?: LaunchFacts; unavailable?: (label: string) => string | null;
           sleep?: (ms: number) => void; contextRoot?: string; clock?: OrderClock;
           relane?: { deferredSince: Map<string, number>; now: number; }; goneSeats?: ReadonlyMap<string, string>; now?: () => number;
@@ -5411,7 +5416,7 @@ export function deliver(orders: { session: string; causeKey: string; prompt: str
       continue;
     }
     const target = targetFor(order, live, roster, { run, spawned, ineligibleReason, env, registerSpawn, drained,
-      claimable, claimer, memory, hostLoad, reviewerEnv, registerReviewer, checkout, registry, codexConfig, relane, goneSeats: gone });
+      claimable, claimer, memory, hostLoad, claimRefused, reviewerEnv, registerReviewer, checkout, registry, codexConfig, relane, goneSeats: gone });
     if ("refusal" in target) {
       const left = endedSeatLine(order, gone);
       if (left === null) refused.push(`${order.causeKey}: ${target.refusal}`); else settled.push(left);
@@ -6149,6 +6154,27 @@ function sayOnChairmanRow(row: number, hold: ClaimHold, { run, post, warn }: { r
   } catch (err) {
     warn(`wake: could not write #${row}'s claim ${hold.waits ? "wait" : "refusal"} on the row (${firstLine(err)}) -- the journal line stands and the next tick tries again.`);
   }
+}
+
+/** What `spawnWorker` tells when the CLAIM itself refused a chairman row's start: the order, and the claim's own words ({@link sayClaimRefusal}). */
+export type ClaimRefused = (order: { causeKey: string; startFresh?: boolean; }, refusal: string) => void;
+
+/**
+ * A CHAIRMAN ROW THE CLAIM REFUSES, AFTER THE PRECHECK PASSED, IS WRITTEN ON THE ROW TOO (#4524, third reopening). Measured 2026-10-10 08:16-08:26Z:
+ * #4764 carried `priority:chairman` and five ticks said `UNDELIVERED ... no spawn: the claim of #4764 as worker-4764 did not hold (NOT CLAIMED: overlaps the Region of
+ * #4738, a row already claimed ...)`. {@link spawnClaimability} reads OPEN PULL REQUESTS, so it passed; the refusal was the claim's own (B4's second half, a row
+ * already `in-progress`), made inside the spawn, and no one was told but the journal. It is not the tick's allowance and not the pool: `startFresh` lifted both.
+ * Written ONCE per cause by {@link sayOnChairmanRow}; B4 is not bypassed, the row is only no longer silent.
+ */
+export function sayClaimRefusal({ run = defaultGh, post = guardedGh, warn = (line) => { process.stderr.write(`${line}\n`); } }: {
+  run?: (args: string[]) => string; post?: (args: string[]) => string; warn?: (line: string) => void; } = {}): ClaimRefused {
+  return (order, refusal) => {
+    const ref = rowRefOfOrder(order);
+    // A KEYED ROW IS NOT WRITTEN ON, for the reason {@link spawnClaimability} gives: the first tracker's issue of that number is another row.
+    if (order.startFresh !== true || ref === null || ref.key !== "") return;
+    const key = `claim:${createHash("sha256").update(refusal).digest("hex").slice(0, 8)}`;
+    sayOnChairmanRow(ref.number, { reason: refusal, waits: false, key }, { run, post, warn });
+  };
 }
 
 // --- #2405: A SPAWNED ENGINEER STARTS IN ITS ROW'S WORKTREE, BECAUSE THE SPAWNER CLAIMED THE ROW FIRST ---
@@ -7965,7 +7991,7 @@ async function main() {
     goneSeats: handed.goneSeats,
     claimOrders: claimOrdersIn(claimOrdersPath(ledgerPath)),
     counts: deliveryCounts(ledgerPath), ineligibleReason: poolEngineerReason(poolEligibility(spares, drained), unavailable),
-    registerSpawn: (role) => registerSpawn(spares, role), drained, claimable: spawnClaimability(),
+    registerSpawn: (role) => registerSpawn(spares, role), drained, claimable: spawnClaimability(), claimRefused: sayClaimRefusal(),
     memory: spawnMemoryGate(), hostLoad: readHostLoad, claimer: claimerFor(spares, ledgerPath, hostLayout, escalatedRoutes(claimOrdersText(ledgerPath), routes)), launch: hostLayout,
     registerReviewer: (session) => registerReviewer(reviewerPathsFrom(ledgerPath), session),
     registry: () => readReviewerRegistry(reviewerPathsFrom(ledgerPath).registry) });
