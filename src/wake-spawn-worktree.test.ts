@@ -17,7 +17,11 @@ import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deliver, spawnClaimer, spawnedPrompt, slugOf, registerSpawn, sparePathsFrom, readSpareCycles,
+  spawnableRole, spareLabelForRow, withSpareInstances, spawnClaimability, rowRefOfOrder, isSpareRole, spareInstances, endFinishedSpares,
   WORKERS_GH_CONFIG_DIR, HOST_REPOS, PRIMARY_CHECKOUT } from "./wake.ts";
+import { familyMember, isLiveSession } from "./arm-pr.ts";
+import { claimNames } from "./row-claim.ts";
+import { homeProjectDeclaration } from "./project-config.ts";
 import { startedPanes } from "./packaging/started-pane.ts";
 
 const ROW = 2405;
@@ -40,7 +44,8 @@ type Call = { command: string; args: string[]; cwd: string; env: Record<string, 
  * `decline` gives it back. Everything the claimer does goes through `exec`, so a change of command line is red here.
  */
 function fakeHost(over: { claimExit?: number; claimOutput?: string; existing?: string[]; declineExit?: number;
-  gitFails?: string; branchOf?: Record<string, boolean>; dirty?: boolean; makeRowDir?: boolean } = {}) {
+  gitFails?: string; branchOf?: Record<string, boolean>; dirty?: boolean; makeRowDir?: boolean; rowDir?: string } = {}) {
+  const rowDir = over.rowDir ?? ROW_DIR;
   const events: string[] = [];
   const calls: Call[] = [];
   const fs = new Set<string>(over.existing ?? []);
@@ -57,14 +62,14 @@ function fakeHost(over: { claimExit?: number; claimOutput?: string; existing?: s
     const exit = over.claimExit ?? 0;
     const held = exit === 0 || exit === 3;
     if (held || exit === 4) board.held = true;
-    if (held && over.makeRowDir !== false) fs.add(ROW_DIR);
+    if (held && over.makeRowDir !== false) fs.add(rowDir);
     const refused = `board-snapshot: wrote x\nNOT CLAIMED: #${ROW} is held by worker-5\n`;
     return { status: exit, output: over.claimOutput ?? (exit === 0 ? `STARTED -- #${ROW} is now in-progress\n` : refused) };
   };
   const decline = () => {
     if (over.declineExit) return { status: over.declineExit, output: "NOT DECLINED: the row is dirty\n" };
     board.held = false;
-    fs.delete(ROW_DIR);
+    fs.delete(rowDir);
     return { status: 0, output: `DECLINED -- #${ROW} is unclaimed again\n` };
   };
   const exec = (command: string, rawArgs: string[], { cwd, env }: { cwd: string; env: Record<string, string> }) => {
@@ -290,4 +295,155 @@ test("#2405 slugOf: a few words of the title, and `row` for a title with none", 
   assert.equal(slugOf("!!!"), "row");
   assert.equal(slugOf(undefined), "row");
   assert.ok(slugOf("x".repeat(200)).length <= 40);
+});
+
+// --- #4685: A ROW OF ANOTHER TRACKER GETS ITS OWN SPARE, NAMED FOR (KEY, ROW) --------------------------------------------------------
+//
+// agent-org#515's mirror. The pool order for an `a11ign/agent-org` row is `engineers/ready-row-unclaimed/agent-org#481`; `rowOfOrder` read
+// only a bare number, so the order "named no row" and no engineer was ever started for the tracker the machinery's own rows are in.
+
+const KEYED = { session: "engineers", cause: "ready-row-unclaimed", causeKey: "engineers/ready-row-unclaimed/agent-org#481",
+  title: "A row of the machinery tracker", prompt: "Ready row agent-org#481 is unclaimed." };
+const PRIMARY_ORDER = { ...KEYED, causeKey: "engineers/ready-row-unclaimed/4568", title: "A row of the first tracker" };
+const STANDING = ["worker-capture", "worker-judge", "worker-tooling"];
+const heldBy = (labels: string[]) => labels.map((label) => ({ label, status: "working" }));
+const AGENT_ORG_REPO = homeProjectDeclaration().tracker.find((t) => t.key === "agent-org")?.repo ?? "";
+const KEYED_DIR = `${HOST_REPOS}/wt-agent-org-481`;
+const KEYED_ROLE = "worker-agent-org-481";
+const CLONE = "/clones/agent-org";
+
+test("#4685 (a) ACCEPTANCE: with every roster address held, an agent-org#481 order is given a spare named for the KEYED row", () => {
+  const got = spawnableRole(KEYED, heldBy(STANDING), STANDING);
+  assert.deepEqual(got, { role: KEYED_ROLE });
+  assert.equal(AGENT_ORG_REPO, "a11ign/agent-org", "the fixture reads the declaration it claims to: the key IS declared");
+  assert.deepEqual(rowRefOfOrder(KEYED), { key: "agent-org", number: 481 });
+});
+
+test("#4685 (b) the first tracker's order still yields the same spare name it always did", () => {
+  assert.deepEqual(spawnableRole(PRIMARY_ORDER, heldBy(STANDING), STANDING), { role: "worker-4568" });
+  assert.equal(spareLabelForRow({ row: 4568 }), "worker-4568");
+  assert.deepEqual(rowRefOfOrder(PRIMARY_ORDER), { key: "", number: 4568 });
+});
+
+test("#4685 (c) NEGATIVE CONTROL: agent-org#481 and the first tracker's #481 are two names, and the name is a pure function of (key, row)", () => {
+  const keyed = spareLabelForRow({ row: 481, key: "agent-org" });
+  const primary = spareLabelForRow({ row: 481 });
+  assert.equal(primary, "worker-481", "POSITIVE CONTROL: the first tracker's row 481 is named, so the inequality below compares two real names");
+  assert.notEqual(keyed, primary);
+  assert.equal(keyed, spareLabelForRow({ row: 481, key: "agent-org" }), "pure: the same input names the same address");
+  assert.equal(keyed, claimNames({ key: "agent-org", number: 481 }).session, "and it is the name `row-claim` gives the same claim, so the session label agrees");
+  // A key the project does not declare names nothing, and so cannot be read back as a seat.
+  assert.equal(spareLabelForRow({ row: 481, key: "capture" }), null);
+});
+
+test("#4685 (d) ACCEPTANCE: a keyed row is checked against ITS tracker's blockedBy edge, and the refusal names that repository", () => {
+  const edges: Record<string, string> = {};
+  const calls: string[] = [];
+  const run = (args: string[]): string => {
+    const repo = args[args.indexOf("--repo") + 1];
+    calls.push(`${args[0]} ${args[1]} ${args[2]} ${repo}`);
+    if (args[0] === "issue" && args[args.indexOf("--json") + 1] === "blockedBy") {
+      const edge = edges[`${repo}#${args[2]}`];
+      return JSON.stringify({ blockedBy: { nodes: edge === undefined ? [] : [{ number: 600, state: edge }] } });
+    }
+    if (args[0] === "issue") return JSON.stringify({ body: "no region here\n" });
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
+  const check = spawnClaimability({ run, warn: () => {} });
+  const FIRST = homeProjectDeclaration().tracker.find((t) => t.key === "")?.repo ?? "";
+  assert.notEqual(FIRST, AGENT_ORG_REPO, "POSITIVE CONTROL: the two trackers are two repositories, or the cases below could not tell them apart");
+
+  edges[`${AGENT_ORG_REPO}#481`] = "OPEN";
+  const refused = check({ causeKey: KEYED.causeKey });
+  assert.match(String(refused), /agent-org#481 in a11ign\/agent-org would be refused at the claim by the `blockedBy` check \(#1886\): blocked by still-open #600/);
+  assert.ok(calls.includes(`issue view 481 ${AGENT_ORG_REPO}`), calls.join(" | "));
+  assert.equal(calls.includes(`issue view 481 ${FIRST}`), false, "the first tracker's row 481 was never read for the keyed order");
+
+  // The first tracker's row 481 has an open edge and agent-org's has none: the keyed order is NOT refused for it.
+  delete edges[`${AGENT_ORG_REPO}#481`];
+  edges[`${FIRST}#481`] = "OPEN";
+  assert.equal(check({ causeKey: KEYED.causeKey }), null);
+  assert.match(String(check({ causeKey: PRIMARY_ORDER.causeKey.replace("4568", "481") })), /#481 would be refused at the claim by the `blockedBy` check/,
+    "and the same twin DOES refuse the first tracker's own order, so the reading above was not a check that never fires");
+});
+
+test("#4685 an order naming a key the project does not declare is refused by name, never read as the first tracker's row", () => {
+  const read: string[] = [];
+  const check = spawnClaimability({ run: (args) => { read.push(args.join(" ")); return "{}"; }, warn: () => {} });
+  const why = check({ causeKey: "engineers/ready-row-unclaimed/nowhere#481" });
+  assert.match(String(why), /declares no tracker with that key/);
+  assert.deepEqual(read, [], "nothing was asked of any repository");
+  const named = spawnableRole({ ...KEYED, causeKey: "engineers/ready-row-unclaimed/nowhere#481" }, heldBy(STANDING), STANDING);
+  assert.match((named as { refusal: string }).refusal, /names no row a spare could be named for/);
+});
+
+test("#4685 (e) ACCEPTANCE: withSpareInstances offers a RUNNING keyed spare, after the roster and the first tracker's spares", () => {
+  const agents = [...heldBy(STANDING), { label: KEYED_ROLE, status: "idle" }, { label: "worker-9", status: "idle" },
+    { label: "worker-capture-481", status: "idle" }];
+  assert.deepEqual(withSpareInstances(STANDING, agents), [...STANDING, "worker-9", KEYED_ROLE]);
+  // The readers a spare's life depends on agree that it is one, and refuse the undeclared key's look-alike.
+  assert.deepEqual(familyMember(KEYED_ROLE), { key: "agent-org", number: 481 });
+  assert.equal(isSpareRole(KEYED_ROLE), true);
+  assert.equal(isLiveSession(KEYED_ROLE), true);
+  assert.equal(familyMember("worker-capture-481"), null);
+  assert.equal(isLiveSession("worker-capture-481"), false);
+});
+
+test("#4685 SPAWN: a keyed row is claimed from ITS clone with --tracker, in a keyed worktree, and the engineer is told which repository it is in", () => {
+  const host = fakeHost({ rowDir: KEYED_DIR });
+  const herdr = fakeHerdr(host.events);
+  const registered: string[] = [];
+  const got = deliver([KEYED], heldBy([ROLE]), [ROLE], { run: herdr.run,
+    claimer: spawnClaimer({ exec: host.exec, exists: host.exists, cloneOf: (key) => (key === "agent-org" ? { clone: CLONE } : { refusal: `no clone for ${key}` }) }),
+    registerSpawn: (role: string) => { registered.push(role); }, record: () => {} });
+
+  assert.deepEqual(got.sent, [`${KEYED_ROLE} <- ${KEYED.causeKey} (STARTED sonnet/high)`], JSON.stringify(got));
+  const claim = host.calls.find((c) => c.command === "node" && c.args[1] === "claim");
+  assert.ok(claim !== undefined);
+  const names = claimNames({ key: "agent-org", number: 481 });
+  assert.deepEqual(claim.args.slice(1), ["claim", "481", "--tracker=agent-org", `--session=${names.session}`,
+    `--branch=agent/${slugOf(KEYED.title)}-agent-org-481`, `--worktree=../${names.worktree}`]);
+  assert.equal(claim.cwd, `${HOST_REPOS}/role-${KEYED_ROLE}`);
+  const add = host.calls.find((c) => c.args[0] === "worktree");
+  assert.equal(add?.cwd, CLONE, "the launch tree is made from the KEYED repository's clone, not the first tracker's checkout");
+  const [create] = herdr.said("workspace create");
+  assert.match(create, new RegExp(`--cwd ${KEYED_DIR}( |$)`));
+  const prompt = herdr.calls.find((c) => c[2] === "agent" && c[3] === "prompt")?.at(-1) ?? "";
+  assert.ok(prompt.includes(`row of the \`agent-org\` tracker (\`${AGENT_ORG_REPO}\`)`), prompt);
+  assert.ok(prompt.includes(`gh issue view 481 --repo ${AGENT_ORG_REPO}`), prompt);
+  assert.match(prompt, /agent-org#481/);
+  assert.deepEqual(registered, [KEYED_ROLE]);
+  assert.equal(host.board.held, true, "POSITIVE CONTROL: the keyed row IS held after the spawn");
+});
+
+test("#4685 SPAWN: a keyed row with no clone on the host is refused by name, before any claim is made", () => {
+  const host = fakeHost({ rowDir: KEYED_DIR });
+  const herdr = fakeHerdr(host.events);
+  const got = deliver([KEYED], heldBy([ROLE]), [ROLE], { run: herdr.run,
+    claimer: spawnClaimer({ exec: host.exec, exists: host.exists, cloneOf: () => ({ refusal: "host.json names no clone for agent-org" }) }),
+    registerSpawn: () => {}, record: () => {} });
+  assert.deepEqual(got.sent, []);
+  assert.match(got.refused.join("\n"), /cannot claim agent-org#481: host.json names no clone for agent-org/);
+  assert.equal(host.calls.some((c) => c.command === "node"), false, "no row-claim ran");
+  assert.deepEqual(herdr.calls, []);
+});
+
+test("#4685 TEARDOWN: a keyed spare is a spare, and it is ended when its row closes in ITS tracker -- the state is asked of that tracker, by role", () => {
+  const listed = [{ label: "worker-tooling", status: "idle" }, { label: KEYED_ROLE, status: "idle" }, { label: "worker-capture-481", status: "idle" }];
+  assert.deepEqual(spareInstances(listed), [KEYED_ROLE], "the keyed spare is a candidate; the undeclared key's look-alike is not");
+  const asked: string[] = [];
+  const closed: string[] = [];
+  const run = (args: string[]) => {
+    const said = args.join(" ");
+    if (said.endsWith("workspace list")) return JSON.stringify({ result: { workspaces: [{ label: KEYED_ROLE, workspace_id: "wK", agent_status: "idle" }] } });
+    if (said.includes("workspace close")) closed.push(said);
+    return "{}";
+  };
+  const got = endFinishedSpares(listed, { spares: spareInstances(listed), registry: { [KEYED_ROLE]: { spawnedAt: 0, rows: [481] } }, now: 5 * 3_600_000,
+    run, heldRows: () => [], rowState: (row, role) => { asked.push(`${role}:${row}`); return "CLOSED"; }, worktrees: () => [],
+    record: () => {}, warn: () => {} });
+  assert.deepEqual(closed, ["--session org workspace close wK"]);
+  assert.deepEqual(asked, [`${KEYED_ROLE}:481`], "the role travels with the number, so the reader can ask agent-org's #481 and not the first tracker's");
+  assert.deepEqual(got.ended.map((c) => c.role), [KEYED_ROLE]);
+  assert.equal(got.registry[KEYED_ROLE], undefined);
 });

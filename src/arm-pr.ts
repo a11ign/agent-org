@@ -21,6 +21,7 @@ import { armabilityOf } from "./pr-hold-state.ts";
 import { authorshipVerdict } from "./lane-ownership.ts";
 import { SESSION_PREFIX } from "./project-vocabulary.ts";
 import { roleBriefPath } from "./project-roles.ts";
+import { homeProjectDeclaration } from "./project-config.ts";
 // #2046: THE ARMED PREDICATE, IMPORTED RATHER THAN RE-DECIDED -- the mirror of the `pr-hold-state.ts`
 // line above, and for the reason this file's own header already gives about that one. Leaf-shaped:
 // `pr-armed-state.ts` imports nothing at all, so the `actions/checkout`-only property holds.
@@ -345,21 +346,56 @@ export type SpareFamily = { prefix: string, from: number };
 export const SPARE_FAMILIES: SpareFamily[] = SESSIONS.live.flatMap((s) => (s.family === undefined ? [] : [s.family]));
 
 /**
+ * The keys of the SECOND-and-later trackers the project declares, which are the only keys a keyed seat can carry. A name whose key is
+ * declared nowhere (`worker-capture-2407`) is no member of the family: it is not a seat for any row, and a `session:` label spelling it is
+ * a typo `unknownSessionLabels` must go on reporting (#4685).
+ * @returns {readonly string[]}
+ */
+function declaredTrackerKeys(): readonly string[] {
+  return homeProjectDeclaration().tracker.map((tracker) => tracker.key).filter((key) => key !== "");
+}
+
+/**
+ * Pure: the repository key and ROW number a spare-family address carries, or `null` when it is not a member (#4685). A name is
+ * `<prefix><n>` for the first tracker (key `""`, byte for byte what the family has always named) and `<prefix><key>-<n>` for another
+ * tracker's row (`worker-agent-org-481`, decision 2's grammar, the one `row-claim`'s `claimNames` writes), so `worker-481` and
+ * `worker-agent-org-481` are two seats for two different rows.
+ *
+ * The key is read FROM THE RIGHT, as `reviewerInstance` reads it: a key never ends in `-<digits>` (`project-config.ts` refuses one where
+ * a key enters), so a name cannot parse two ways. The family's `from` floors the FIRST tracker's numbers only, because it exists to keep
+ * the roster's standing seats (`worker-1` to `worker-3`) out of the family, and a keyed name collides with none of them.
+ * @param {string} name @param {readonly SpareFamily[]} [families]
+ * @returns {{ key: string, number: number } | null}
+ */
+export function familyMember(name: string, families: readonly SpareFamily[] = SPARE_FAMILIES, keys: () => readonly string[] = declaredTrackerKeys): { key: string; number: number; } | null {
+  for (const { prefix, from } of families) {
+    const found = name.startsWith(prefix) ? /^(?:([a-z0-9-]+)-)?([1-9]\d*)$/.exec(name.slice(prefix.length)) : null;
+    if (found === null) continue;
+    const key = found[1] ?? "";
+    const n = Number(found[2]);
+    if (!Number.isSafeInteger(n) || (key === "" && n < from) || /-\d+$/.test(key)) continue;
+    if (key !== "" && !keys().includes(key)) continue;
+    return { key, number: n };
+  }
+  return null;
+}
+
+/**
  * Pure: which number does this address carry in a family, or `null` when it is not a member?
  *
  * CANONICAL DIGITS ONLY, and the reason is that a label is compared as a string everywhere else: `worker-09`
  * would be a second spelling of `worker-9`, a second address `row-claim`'s B2 would count separately, so it is
  * not a member. A number below `from` is not one either -- `worker-3` names no roster entry and stays refused.
+ *
+ * THE FIRST TRACKER'S ROW NUMBER ONLY (#4685): `worker-agent-org-481` is a member ({@link familyMember}) and answers `null` HERE, because
+ * 481 alone would name the first tracker's row 481 -- the wrong row, as `reviewerInstanceNumber` refuses for the same reason. A caller that
+ * asks "is this an instance" asks {@link familyMember}; one that acts on the number asks this.
  * @param {string} name @param {readonly SpareFamily[]} [families]
  * @returns {number | null}
  */
 export function familyNumber(name: string, families: readonly SpareFamily[] = SPARE_FAMILIES): number | null {
-  for (const { prefix, from } of families) {
-    const digits = name.startsWith(prefix) ? name.slice(prefix.length) : "";
-    const n = /^[1-9]\d*$/.test(digits) ? Number(digits) : NaN;
-    if (Number.isSafeInteger(n) && n >= from) return n;
-  }
-  return null;
+  const member = familyMember(name, families);
+  return member !== null && member.key === "" ? member.number : null;
 }
 
 /**
@@ -371,7 +407,7 @@ export function familyNumber(name: string, families: readonly SpareFamily[] = SP
  * @returns {boolean}
  */
 export function isLiveSession(name: string, live: readonly string[] = LIVE_SESSIONS, families: readonly SpareFamily[] = SPARE_FAMILIES): boolean {
-  return live.includes(name) || familyNumber(name, families) !== null;
+  return live.includes(name) || familyMember(name, families) !== null;
 }
 
 /** Retired 2026-09-10 by the Org Reset (#913), kept as labels because merged PRs carry them. Read from the same file. */
