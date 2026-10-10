@@ -43,7 +43,8 @@ function fakeRow(options: {
       if (args[0] === "project" && args[1] === "item-add") { row.writes.push("item-add"); row.onBoard = true; return ""; }
       if (args[0] === "issue" && args[1] === "edit") {
         row.writes.push("labels");
-        row.labels.push(...args.flatMap((a, i) => (args[i - 1] === "--add-label" ? [a] : [])));
+        const added = args.flatMap((a, i) => (args[i - 1] === "--add-label" ? [a] : []));
+        row.labels.push(...added.filter((label) => !row.labels.includes(label))); // adding a label the row has is a no-op, as on GitHub
         return "";
       }
       if (args[0] === "api" && args.includes("PUT")) { row.writes.push("label-set"); return ""; }
@@ -448,15 +449,16 @@ test("#4078: `unverifiedFilingFields` names the board the filing asked, and the 
 // #4456: an epic is never claimable (no Region, Acceptance or Open-check), so the claimability refusal can never let it board.
 const EPIC_BODY = "A tracking row: children carry the Region and the Acceptance.\n";
 
-test("#4456 ACCEPTANCE: `--board=` on an `epic` with no Region/Acceptance/Open-check boards it at Backlog -- item-add, Status Backlog, `backlog` + lane, and NO `ready`", () => {
+test("#4456 ACCEPTANCE: `--board=` on an `epic` with no Region/Acceptance/Open-check boards it at Backlog -- item-add, Status Backlog, `epic` + lane as its only state label, and NO `backlog` and NO `ready`", () => {
   const { row, deps } = fakeRow({ labels: ["epic", "out-of-release"], body: EPIC_BODY });
   const r = board(["--board=3329", "--lane=any"], deps);
   assert.equal(r.code, 0, r.err);
   assert.deepEqual(row.writes, ["item-add", "status:Backlog", "labels"]);
   assert.equal(row.status, "Backlog");
-  assert.deepEqual(row.labels, ["epic", "out-of-release", "backlog", "lane:any"]);
+  assert.deepEqual(row.labels, ["epic", "out-of-release", "lane:any"]);
+  assert.ok(!row.labels.includes("backlog"), "`epic` REPLACES `backlog` (#3942): the board check reads both as disagreeing");
   assert.ok(!row.labels.includes("ready"), "an epic is never claimable, so never `ready`");
-  assert.match(r.out, /#3329 boarded: .*Status "Backlog"/);
+  assert.match(r.out, /#3329 boarded: .*Status "Backlog", `epic` \+ `lane:any`/);
 });
 
 const REFUSED_EPICS: [string, Parameters<typeof fakeRow>[0]][] = [
