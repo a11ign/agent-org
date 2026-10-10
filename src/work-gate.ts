@@ -1886,6 +1886,8 @@ export function rowsOffBoard(facts: BoardFacts[], nowMs: number = Date.now()): {
  *
  * agent-org#490 NARROWED WHAT REACHES IT, NOT WHAT IT DOES: `settleOffBoardRows` boards a row whose label names a Status before this is
  * called, so the facts it is given are the rows that did not have one (and a row the gate boarded that declares no release, `boardedAs`).
+ * THE TWO ARE TWO ORDERS, each keyed on its own set: the rows still off the board keep the key they always had, so they are not asked again when only
+ * the boarded rows left the facts (the review of #685); the boarded ones that need a release declaration are one order, once, under `.../boarded/<set>`.
  *
  * @param facts `readRowsOffBoard`'s result, as `settleOffBoardRows` left it; OMITTED AND `null` MEAN "NOT ASKED"
  */
@@ -1895,12 +1897,15 @@ export function rowOffBoardOrders(facts: BoardFacts[] | null | undefined, nowMs:
 }[] {
   const absent = rowsOffBoard(facts ?? [], nowMs);
   if (absent.length === 0) return [];
-  const key = absent.map((r) => subjectRef(r.repoKey, r.number)).join(".");
   const boardedAs = new Map((facts ?? []).filter((f) => f.boardedAs !== undefined).map((f) => [f.number, f.boardedAs as string]));
   const unboarded = absent.filter((r) => !boardedAs.has(r.number));
   const boarded = absent.filter((r) => boardedAs.has(r.number));
-  const prompts: string[] = [];
-  if (unboarded.length > 0) prompts.push(`${unboarded.length} open row(s) have NO item on Project ${PROJECT_NUMBER}, so they are invisible in every Status view:\n`
+  const keyOf = (rows: typeof absent) => rows.map((r) => subjectRef(r.repoKey, r.number)).join(".");
+  const orders: ReturnType<typeof rowOffBoardOrders> = [];
+  // agent-org#490, THE REVIEW OF #685: THE KEY IS THE UNBOARDED SET ALONE. A row the gate boarded is gone from `readRowsOffBoard` on the next tick, so a key
+  // built from both would change when only the boarded rows left, and the unchanged remainder would be asked again. Its own order, its own key, once.
+  if (unboarded.length > 0) orders.push({ session: "product-manager", cause: "row-off-board", subject: "project-1", discriminator: keyOf(unboarded),
+    causeKey: `product-manager/row-off-board/${keyOf(unboarded)}`, prompt: `${unboarded.length} open row(s) have NO item on Project ${PROJECT_NUMBER}, so they are invisible in every Status view:\n`
       + unboarded.map((r) => `  ${subjectMention(r)} ${r.title}`).join("\n") + "\n"
       + "A row filed with a bare `gh issue create` never reaches the board: only `row-file` boards one, and a board label applied "
       + `AT CREATION (\`${READY_LABEL}\` or \`${BACKLOG_LABEL}\` one second after the row exists) is the fingerprint of that path. Each was read from `
@@ -1910,22 +1915,16 @@ export function rowOffBoardOrders(facts: BoardFacts[] | null | undefined, nowMs:
       + `In progress), and give it a release declaration (a milestone or \`${OUT_OF_RELEASE_LABEL}\`) if it has none -- \`row-file\` would have `
       + "refused a filing without one. An `epic` cannot be claimed, so it is boarded with `row-file --board=<n> --lane=any`, which puts it at Backlog "
       + "(#4456) -- never raw `gh project item-add`. THIS ORDER DOES NOT BOARD THE ROW FOR YOU: the Status is a judgment and it is yours.\n"
-      + "THIS ARRIVES WHEN THE SET CHANGES. A row you leave off stays in the set and this order returns unchanged.");
+      + "THIS ARRIVES WHEN THE SET CHANGES. A row you leave off stays in the set and this order returns unchanged." });
   // agent-org#490: the gate boarded these itself, and the order names them for the one thing it does not do.
-  if (boarded.length > 0) prompts.push(`${boarded.length} open row(s) were off Project ${PROJECT_NUMBER} and the gate BOARDED them this tick, each at the Status its label says, `
+  if (boarded.length > 0) orders.push({ session: "product-manager", cause: "row-off-board", subject: "project-1-release", discriminator: `boarded.${keyOf(boarded)}`,
+    causeKey: `product-manager/row-off-board/boarded/${keyOf(boarded)}`, prompt: `${boarded.length} open row(s) were off Project ${PROJECT_NUMBER} and the gate BOARDED them this tick, each at the Status its label says, `
       + "but each declares no release:\n"
       + boarded.map((r) => `  ${subjectMention(r)} ${r.title} (boarded at ${boardedAs.get(r.number)})`).join("\n") + "\n"
       + `Give each a release declaration (a milestone or \`${OUT_OF_RELEASE_LABEL}\`) -- \`row-file\` would have refused a filing without one. `
       + "The gate does not choose one: which release a row belongs to is a judgment, and the ticket port has no milestone write. "
-      + "THEY ARE ON THE BOARD NOW, so this order does not return for them.");
-  return [{
-    session: "product-manager",
-    cause: "row-off-board",
-    subject: "project-1",
-    discriminator: key,
-    prompt: prompts.join("\n\n"),
-    causeKey: `product-manager/row-off-board/${key}`,
-  }];
+      + "THEY ARE ON THE BOARD NOW, so this order does not return for them." });
+  return orders;
 }
 
 /**

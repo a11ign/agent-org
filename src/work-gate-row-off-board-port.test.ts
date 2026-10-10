@@ -167,7 +167,7 @@ test("a row on the board, and a board that could not be read, are not touched", 
   assert.equal(tick(null, rows).settled, null, "a refused read stays null: it is not a clean board and not an empty list");
 });
 
-test("a boarded row that declares no release is asked for the declaration only, and the gate declares none", () => {
+test("a boarded row that declares no release is asked for the declaration only, in an order of its own, and the gate declares none", () => {
   const facts = [offBoard(4001), offBoard(4002), offBoard(4003, "no label")];
   const rows = [openRow(4001, ["ready"], null), openRow(4002, ["backlog", "out-of-release"], null), openRow(4003, ["lane:any"])];
   const { orders, changes, comments } = tick(facts, rows);
@@ -175,17 +175,34 @@ test("a boarded row that declares no release is asked for the declaration only, 
   assert.ok(changes.every((c) => c.change.addFlags === undefined && c.change.removeFlags === undefined), "and no flag, so no release label, is written: it is not a lookup");
   assert.match(comments[0].decision.text, /declares none, and `product-manager` is asked for it/);
   assert.match(comments[1].decision.text, /already declares one/, "`out-of-release` is a declaration");
-  assert.equal(orders.length, 1, "one order for the two kinds of remainder");
-  assert.match(orders[0].prompt, /^1 open row\(s\) have NO item on Project/);
-  assert.match(orders[0].prompt, /#4003 no label/);
-  assert.match(orders[0].prompt, /1 open row\(s\) were off Project \d+ and the gate BOARDED them this tick/);
-  assert.match(orders[0].prompt, /#4001 row 4001 \(boarded at Ready\)/);
-  assert.doesNotMatch(orders[0].prompt, /#4002/, "the one that declares a release is not named");
+  assert.equal(orders.length, 2, "one order for the rows still off the board and one for the boarded row that needs a release");
+  const [off, release] = orders;
+  assert.match(off.prompt, /^1 open row\(s\) have NO item on Project/);
+  assert.match(off.prompt, /#4003 no label/);
+  assert.doesNotMatch(off.prompt, /#4001|#4002|BOARDED them/, "the unlabelled order says nothing of the boarded rows");
+  assert.match(release.prompt, /^1 open row\(s\) were off Project \d+ and the gate BOARDED them this tick/);
+  assert.match(release.prompt, /#4001 row 4001 \(boarded at Ready\)/);
+  assert.doesNotMatch(release.prompt, /#4002|#4003|have NO item on Project/, "the one that declares a release is not named, nor the unlabelled one");
+  assert.equal(release.causeKey, "product-manager/row-off-board/boarded/4001");
   // alone, the release-less boarded row is the whole order, and it does not say the row is off the board.
   const alone = tick([offBoard(4001)], [openRow(4001, ["ready"], null)]);
   assert.equal(alone.orders.length, 1);
   assert.doesNotMatch(alone.orders[0].prompt, /have NO item on Project/);
   assert.match(alone.orders[0].prompt, /THEY ARE ON THE BOARD NOW/);
+});
+
+test("the unlabelled remainder keeps its cause key when the rows boarded beside it leave the facts (the review of #685)", () => {
+  const unlabelled = offBoard(4002, "no label");
+  const rows = [openRow(4001, ["ready"], null), openRow(4002, ["lane:any"])];
+  // tick 1: #4001 is boarded (and declares no release) beside the unlabelled #4002.
+  const first = tick([offBoard(4001), unlabelled], rows);
+  // tick 2: #4001 is on the board, so `readRowsOffBoard` no longer returns it. Only #4002 is left.
+  const second = tick([unlabelled], rows);
+  const keyOfOff = (orders: { causeKey: string; prompt: string; }[]) => orders.filter((o) => /have NO item on Project/.test(o.prompt)).map((o) => o.causeKey);
+  assert.deepEqual(keyOfOff(first.orders), ["product-manager/row-off-board/4002"], "keyed on the rows still off the board, not on the ones just boarded");
+  assert.deepEqual(keyOfOff(second.orders), keyOfOff(first.orders), "the same key, so the wake ledger's dedupe does not ask again");
+  assert.equal(second.orders.length, 1, "and the next tick has no order for the boarded row");
+  assert.equal(first.orders.length, 2);
 });
 
 test("with nothing off the board there is no order and no port asked", () => {
