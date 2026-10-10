@@ -10,7 +10,7 @@ Closes a11ign/a11ign#4745
 
 ## Judgement calls
 
-- **Kept only where the provider can edit AND pin.** With neither, the old lifecycle is unchanged (a "Cleared:" message, reminders), because an ask that is neither ticked nor listed is visible only through its reminders. Five existing test files declare `edit: false, pin: false` for that reason: the fake provider declares both since #4744, and their assertions count messages on the wire.
+- **Kept only where the provider can edit AND pin.** With neither, the old lifecycle is unchanged (a "Cleared:" message, reminders), because an ask that is neither ticked nor listed is visible only through its reminders. Six existing test files declare `edit: false, pin: false` for that reason: the fake provider declares both since #4744, and their assertions count messages on the wire.
 - **The tick line is `sent` + `edited: true`, not a status of its own.** `readEpisodeStart`, `snoozedUntil` and `askCycles` all look for `status === "sent" && kind === "cleared"`; a new status would have made every ticked ask read as never cleared.
 - **Every message of an ask is ticked,** not the latest: a changed brief is a message of its own, and an unticked one would read as open for ever.
 - **A failed edit falls back to the old "Cleared:" send** once and writes a `failed` line, rather than retrying a deleted message every tick.
@@ -25,7 +25,7 @@ Closes a11ign/a11ign#4745
 
 ## Files outside the row's Region
 
-The five test files below changed only to declare `edit: false, pin: false` on their provider (and, in `audience.test.ts`, to give a request's key a row): `audience.test.ts`, `core.test.ts`, `sources/requests.test.ts`, `sources/stall.test.ts`, `watch-buttons.test.ts`. They could not stay green otherwise.
+The five test files below changed only to declare `edit: false, pin: false` on their provider (and, in `audience.test.ts`, to give a request's key a row): `audience.test.ts`, `core.test.ts`, `sources/requests.test.ts`, `sources/stall.test.ts`, `watch-buttons.test.ts`, and, found by the merge queue's run against a newer `main`, `decision-confidence-post.test.ts` (#4755's control declares the `summary` kind an ask, which now needs a `rowLess` reason, and runs without the asks' record so its request count is the reading's alone). They could not stay green otherwise.
 
 ## How you verified it
 
