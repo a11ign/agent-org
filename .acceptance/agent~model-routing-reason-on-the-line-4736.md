@@ -6,6 +6,8 @@ Closes a11ign/a11ign#4736, a11ign/agent-org#564
 
 a11ign/a11ign#4627 stays open. The mirror's Done-when 2 (the first live `"via":"jev"` record after a release, quoted with its row and its outcome line) is still owed there, by product-manager; this PR makes that record possible and cannot show it.
 
+Outside-Region: src/triage-provider.ts — #588's change, shown here until it merges: `ProviderQuestion`'s score variant gains `criteria`, the type `wire()` returns, so the type matches the wire (a type only).
+
 ## What changes, and why
 
 - **The wire (mirror item 1).** `wire()` sent a `score` question as `{type, instructions}`; the API's `ScoreQuestion` requires `criteria`, an ordered array of level descriptions, and one invalid question rejects the whole request (the four valid `choice` questions fell back with it). `Question` (type `score`) now carries `levels`, five descriptions with level 1 first, taken from the text the instructions already held in `src/engineer-route.ts`; `wire()` sends them as `criteria`. No other `type: "score"` question exists in `src/` (grepped: `engineer-route.ts` is the only one). `ProviderQuestion` in `src/triage-provider.ts` (outside the Region, a type only) gains the array so the type matches the wire.
