@@ -1,5 +1,0 @@
----
-"agent-org": minor
----
-
-A second occurrence of a failure class files the class row by itself (a11ign/a11ign#4451, move 1b of #4437). `readClassRepeat` now also reads the `failure-ledger` (a class key with two DISTINCT refs is a repeat, the same ref twice is one standing event) and counts those events beside the closed `class:<id>` rows. A class with `guard: null`, or whose newest occurrence is inside `CLASS_REPEAT_WINDOW_MS`, is filed ONCE as a `--kind defect` row through `row-file` (milestone "Self-healing org", label `class:<id>`, every occurrence listed, an Acceptance and an Open-check the row-file validators accept); the filing is remembered in `class-repeat-filed.json` in the state directory, written only after `row-file` landed, so a failed filing is retried and a filed one is not repeated. `org-health`'s `class-repeat` order is kept for `ceo` but now says whether the class row was filed (`was filed as #N`) or REFUSED and why (`THE CLASS ROW WAS NOT FILED: row-file refused (…)`). Filing and the ledger read are opt-in through `ClassRepeatIo`; the work gate passes `liveClassRepeatIo()`.
