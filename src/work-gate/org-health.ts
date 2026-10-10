@@ -782,12 +782,17 @@ function orgEntryReason(entry: string, declaration: { code: { key: string; repo:
  * #4378: IS THIS ROW ADOPTER-FACING -- #3820's `rowKind`, said back as `adopter` or `org` with the entry that made it org. `unreadable` is
  * `rowKind`'s own word for a Region it found no entries in: such a row is `org` here and the CALLER decides what that means (`row-file` refuses it, the clock counts it unknown). WHICH repositories are
  * adopter-facing is decided in ONE place, `productRegionsOf`, which the #3820 product share reads too (#4399), so the two cannot disagree.
+ * a11ign/a11ign#4084: ONE entry under an `adopterDocs` prefix of an adopter-facing repository makes the row `adopter` as well. The prefixes go through the SAME `productRegionsOf` (as that repository's
+ * paths), so a repository the share leaves out (the tool's, one declared `adopterFacing: false`) contributes none here either. THIS IS THE ONLY READER OF `adopterDocs`: the releasable-change
+ * decision and the share (`productRegionsOf` over `releasablePaths`) never see it, by `ceo`'s ruling.
  * @param entries what `declaredRegionFiles` read
  */
-export function adopterRowKind(entries: string[] | null, declaration: { code: { key: string; repo: string; }[]; dora: { repo: string; releasablePaths: string[]; adopterFacing?: boolean; }[]; }): { kind: "adopter" | "org"; unreadable: boolean; because: string | null; } {
+export function adopterRowKind(entries: string[] | null, declaration: { code: { key: string; repo: string; }[]; dora: { repo: string; releasablePaths: string[]; adopterFacing?: boolean; adopterDocs?: string[]; }[]; }): { kind: "adopter" | "org"; unreadable: boolean; because: string | null; } {
   const { kind, unreadable } = rowKind(entries, productRegionsOf(declaration));
   if (kind === "product") return { kind: "adopter", unreadable, because: null };
   if (unreadable) return { kind: "org", unreadable, because: "its Region names no path, so it cannot be read as adopter-facing" };
+  const docs = productRegionsOf({ code: declaration.code, dora: declaration.dora.map((entry) => ({ ...entry, releasablePaths: entry.adopterDocs ?? [] })) });
+  if (rowKind(entries, docs).kind === "product") return { kind: "adopter", unreadable, because: null };
   const reasons = (entries ?? []).map((entry) => orgEntryReason(entry, declaration));
   return { kind: "org", unreadable, because: reasons.find((reason) => reason.includes("adopterFacing: false")) ?? reasons[0] };
 }

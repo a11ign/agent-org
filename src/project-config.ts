@@ -44,8 +44,10 @@ export type DoraRelease = { kind: "npm", package: string } | { kind: "tag" };
 /**
  * one repository the daily DORA reading covers (`dora.ts`). `adopterFacing` (#4378) is `false` for a repository whose releasable change reaches no outside adopter (the org's own
  * tooling): the PRIMARY milestone's rule reads it, and nothing else does. ABSENT means `true` and is not filled in, so a declaration that never names it reads exactly as before.
+ * `adopterDocs` (a11ign/a11ign#4084) lists path prefixes an outside adopter READS but that ship no code (`README.md`, `docs/try-it.md`): they count as adopter-facing for the PRIMARY milestone and for
+ * nothing else. It is NOT a second `releasablePaths`: the releasable-change decision (`dora.ts`, `release-behind-main.ts`) and the 60% product share never read it. ABSENT stays absent.
  */
-export type DoraRepository = { repo: string, release: DoraRelease, releasablePaths: string[], adopterFacing?: boolean };
+export type DoraRepository = { repo: string, release: DoraRelease, releasablePaths: string[], adopterFacing?: boolean, adopterDocs?: string[] };
 export type ProjectDeclaration = { schema: number, tracker: Tracker[], code: CodeRepository[], leakPatterns: LeakPattern[], dora: DoraRepository[], offerMilestones: string[], repo: string, boardOwner: string, boardNumber: number };
 
 /** A refusal that carries the field it is about, so a caller (and a test) can tell WHICH rule fired and not merely that one did. */
@@ -209,6 +211,23 @@ function readAdopterFacing(entry: Record<string, unknown>, at: string, source: s
 }
 
 /**
+ * a11ign/a11ign#4084: `adopterDocs` when the entry names it: a non-empty list of non-empty path prefixes, refused on an entry declared `adopterFacing: false` (a tooling repository's documents reach no
+ * outside adopter, so naming them is a contradiction and not an override). Absent stays absent, so nothing that does not name it changes.
+ * @param {Record<string, unknown>} entry @param {string} at @param {string} source @returns {{ adopterDocs?: string[] }}
+ */
+function readAdopterDocs(entry: Record<string, unknown>, at: string, source: string): { adopterDocs?: string[]; } {
+  if (!Object.hasOwn(entry, "adopterDocs")) return {};
+  const paths = entry.adopterDocs;
+  if (!Array.isArray(paths) || paths.length === 0 || paths.some((path) => typeof path !== "string" || path === "")) {
+    throw new ProjectDeclarationRefusal(`${at}.adopterDocs`, "it must be a non-empty list of path prefixes an outside adopter reads", source);
+  }
+  if (entry.adopterFacing === false) {
+    throw new ProjectDeclarationRefusal(`${at}.adopterDocs`, "the repository is declared `adopterFacing: false`, so its documents reach no outside adopter and cannot be declared as ones an adopter reads", source);
+  }
+  return { adopterDocs: paths };
+}
+
+/**
  * The repositories the daily DORA reading covers (`dora.ts`), and where each one's releases are read. `agent-org` names no project, so which
  * repositories and where is DECLARED here. An ABSENT field reads as an empty list, for the reason `leakPatterns` does: it adds a report and answers
  * no question about WHICH project this is. A PRESENT entry is held to the same rule as every other, and a repository declared twice is refused.
@@ -227,7 +246,7 @@ function readDora(declaration: Record<string, unknown>, source: string): DoraRep
     checkRepo(`${at}.repo`, repo, source);
     if (seen.has(repo)) throw new ProjectDeclarationRefusal(`${at}.repo`, `\`${repo}\` is declared twice in \`dora\``, source);
     seen.add(repo);
-    return { repo, release: readDoraRelease(entry, at, source), releasablePaths: readReleasablePaths(entry, at, source), ...readAdopterFacing(entry, at, source) };
+    return { repo, release: readDoraRelease(entry, at, source), releasablePaths: readReleasablePaths(entry, at, source), ...readAdopterFacing(entry, at, source), ...readAdopterDocs(entry, at, source) };
   });
 }
 
