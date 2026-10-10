@@ -62,7 +62,7 @@ function row(number: number, more: Record<string, unknown> = {}) {
 function world() {
   let at = START;
   const path = join(scratch, `ledger-${nextLedger += 1}.jsonl`);
-  const provider = createFakeProvider();
+  const provider = createFakeProvider({ capabilities: { edit: false, pin: false } });
   const ledger = () => createLedger({ path, now: () => at });
   let messenger = createMessenger({ provider, ledger: ledger(), now: () => at });
   return {
@@ -526,7 +526,7 @@ const goodReads = () => ({
 function watched({ github, startIso = "2026-10-02T09:00:00Z" }: { github: any; startIso?: string; }) {
   let now = Date.parse(startIso);
   const path = join(scratch, `watch-${nextLedger += 1}.jsonl`);
-  const provider = createFakeProvider();
+  const provider = createFakeProvider({ capabilities: { edit: false, pin: false } });
   const logged: string[] = /** @type {string[]} */ ([]);
   const pass = () => runWatch({ github, provider, ledger: createLedger({ path, now: () => now }), now: () => now, repo: REPO, summary: LONDON, log: (line) => logged.push(line) });
   return { provider, logged, path, pass, advance: (/** @type {number} */ ms: number) => { now += ms; } };
@@ -698,7 +698,7 @@ describe("main", () => {
 
   test("on, with a provider and a declared summary, it sends through the ledger under the home and exits 0", async () => {
     const { root, home } = checkout(ON_WITH_SUMMARY);
-    const provider = createFakeProvider();
+    const provider = createFakeProvider({ capabilities: { edit: false, pin: false } });
     const sink = quiet();
     const code = await main({ root, home, env: { GH_CONFIG_DIR: "/x/gh" }, github: readOnlyFixture(goodReads()).github, providers: { telegram: () => provider },
       now: () => Date.parse("2026-10-02T09:00:00Z"), out: (l) => sink.out.push(l), err: (l) => sink.err.push(l) });
@@ -711,10 +711,10 @@ describe("main", () => {
   test("with no account declared it refuses to start (#1967): a person's credentials are never the fallback", async () => {
     const { root, home } = checkout(ON);
     const sink = quiet();
-    const code = await main({ root, home, env: {}, providers: { telegram: () => createFakeProvider() }, out: (l) => sink.out.push(l), err: (l) => sink.err.push(l) });
+    const code = await main({ root, home, env: {}, providers: { telegram: () => createFakeProvider({ capabilities: { edit: false, pin: false } }) }, out: (l) => sink.out.push(l), err: (l) => sink.err.push(l) });
     assert.equal(code, 2);
     assert.match(sink.err.join("\n"), /no GitHub account is declared/);
-    assert.equal(await main({ root, home, env: { HERDR_WORKSPACE_ID: "w9" }, github: readOnlyFixture(goodReads()).github, providers: { telegram: () => createFakeProvider() },
+    assert.equal(await main({ root, home, env: { HERDR_WORKSPACE_ID: "w9" }, github: readOnlyFixture(goodReads()).github, providers: { telegram: () => createFakeProvider({ capabilities: { edit: false, pin: false } }) },
       now: () => Date.parse("2026-10-02T09:00:00Z"), out: () => {}, err: () => {} }), 0, "POSITIVE CONTROL: an agent workspace's routed account is a declared one");
   });
 
@@ -736,14 +736,14 @@ describe("main", () => {
   test("a source that fails exits 1 so the unit shows failed", async () => {
     const { root, home } = checkout(ON);
     const down = readOnlyFixture({ ...goodReads(), issuesLabelled: async () => { throw new Error("HTTP 502"); } }).github;
-    const code = await main({ root, home, env: { GH_CONFIG_DIR: "/x/gh" }, github: down, providers: { telegram: () => createFakeProvider() },
+    const code = await main({ root, home, env: { GH_CONFIG_DIR: "/x/gh" }, github: down, providers: { telegram: () => createFakeProvider({ capabilities: { edit: false, pin: false } }) },
       now: () => Date.parse("2026-10-02T09:00:00Z"), out: () => {}, err: () => {} });
     assert.equal(code, 1);
   });
 
   test("a failed send exits 1 so the unit shows failed", async () => {
     const { root, home } = checkout(ON);
-    const provider = createFakeProvider();
+    const provider = createFakeProvider({ capabilities: { edit: false, pin: false } });
     provider.failNext(new Error("telegram is down"));
     const code = await main({ root, home, env: { GH_CONFIG_DIR: "/x/gh" }, github: readOnlyFixture(goodReads()).github, providers: { telegram: () => provider },
       now: () => Date.parse("2026-10-02T09:00:00Z"), out: () => {}, err: () => {} });

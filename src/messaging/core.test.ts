@@ -29,7 +29,7 @@ function harness({ config, capabilities } = /** @type {{config?: any, capabiliti
   let at = START;
   const clock = { now: () => at, advance: (/** @type {number} */ ms: number) => { at += ms; }, set: (/** @type {number} */ ms: number) => { at = ms; } };
   const path = join(scratch, `ledger-${nextLedger += 1}.jsonl`);
-  const provider = createFakeProvider({ capabilities });
+  const provider = createFakeProvider({ capabilities: { edit: false, pin: false, ...capabilities } });
   const build = () => createMessenger({ provider, ledger: createLedger({ path, now: clock.now }), now: clock.now, config });
   const lines = () => readLedgerLines(path);
   let messenger = build();

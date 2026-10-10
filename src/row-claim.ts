@@ -58,7 +58,6 @@
 // "I could not tell you whether it is claimed" and "I could not log that I told you" are different
 // failures, and conflating them would make a full disk read as an unreadable board.
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { existsSync, realpathSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
@@ -83,7 +82,7 @@ import { blockedByEdgeReason, lookupBlockedByEdge } from "./row-claim/blocked-by
 import { claimedRegionOverlapReason, fileOverlapReason, lookupClaimedRegions, lookupMyRegionFiles, lookupOpenPrFiles } from "./row-claim/file-overlap-rule.ts";
 import { readSweepWindows, sweepFreezeAtClaim, sweepFreezeOf, type SweepRow } from "./sweep-window.ts"; // #4603: a declared sweep freezes its Region for its window
 import { templateFieldsReason, lookupIssueBody } from "./row-claim/template-fields-rule.ts";
-import { extractLabeledSection } from "./region-paths.ts"; // the section reader `templateFieldsReason` already uses, so the hash and the template check read one Region
+import { scopeHash, claimedScopeOf, CLAIM_RECORD_SCOPE } from "./claim-scope.ts"; // #4759: the leaf the tick compares the record with the live row from
 import { staleRuleReason } from "./row-claim/stale-rule-guard.ts";
 // #2031 EXTRACTED THE RULE THIS FILE DEFINED, and the extraction is the whole of this file's change.
 // `work-gate.ts` now asks the same question of every Ready row, and #2031's own filing names the reason
@@ -174,27 +173,9 @@ const NOTHING_REASON = "the claim named no branch and no worktree";
 // #4739 (class `row-not-finishable`, #4627): WHAT THE ROW PROMISED WHEN IT WAS CLAIMED. A claim record named who holds a row and which git
 // objects, and nothing named the scope the holder agreed to -- so a Region or Acceptance widened UNDER a holder was indistinguishable from one the
 // row always carried (a11ign#4737 was folded into a claimed row and the worker compacted mid-edit). The hash is the record of the scope as it
-// stood; comparing it with the live row is a later row's act (a11ign#4759), and this one only remembers.
-const CLAIM_RECORD_SCOPE = "Claimed-scope:";
-const SCOPE_SECTIONS = ["Region", "Acceptance"] as const;
-const SCOPE_HASH_LENGTH = 12;
-
-/**
- * Pure: a short hash of the row's `## Region` and `## Acceptance` sections and of nothing else, whitespace-normalised.
- *
- * Both sections are read by `extractLabeledSection`, the reader the template-fields check runs over this same body, so the hash cannot disagree
- * with the claim about what the Region is. Prose outside the two sections gives the same hash; a path added to, removed from or changed in either gives
- * another. A SECTION THAT IS ABSENT hashes as absent (`null`), which is not the empty string, so a row that gains a Region section reads as a change.
- *
- * It reports a change and does not say which way it went: a narrowing hashes differently from the original exactly as a widening does, and
- * what to do about each is the comparing row's decision.
- * @param {string} body the row's issue body
- * @returns {string} hex, `SCOPE_HASH_LENGTH` characters
- */
-export function scopeHash(body: string): string {
-  const sections = SCOPE_SECTIONS.map((field) => extractLabeledSection(body, field)?.replace(/\s+/g, " ").trim() ?? null);
-  return createHash("sha256").update(JSON.stringify(sections)).digest("hex").slice(0, SCOPE_HASH_LENGTH);
-}
+// stood. THE HASH, ITS TWO SECTIONS AND THE READER OF THE LINE LIVE IN `claim-scope.ts` (a11ign#4759): the tick compares the record with the live row
+// and cannot import this file, so `scopeHash` is re-exported here and every call site and `row-claim.test.ts` are unchanged.
+export { scopeHash };
 
 /**
  * Pure: the claim-record comment for a claim (or, with both fields absent, for a RELEASE).
@@ -249,7 +230,7 @@ export function claimRecordFrom(comments: string[]): { branch: string | null; wo
     const match = new RegExp(`^${key}\\s*(.+)$`, "m").exec(newest);
     return match ? match[1].trim() : null;
   };
-  return { branch: read(CLAIM_RECORD_BRANCH), worktree: read(CLAIM_RECORD_WORKTREE), recorded: true, scope: read(CLAIM_RECORD_SCOPE),
+  return { branch: read(CLAIM_RECORD_BRANCH), worktree: read(CLAIM_RECORD_WORKTREE), recorded: true, scope: claimedScopeOf(comments),
     ...(read(CLAIM_RECORD_NOTHING) === null ? {} : { nothing: true }) };
 }
 

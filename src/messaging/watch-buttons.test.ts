@@ -55,7 +55,7 @@ function reader(rows: Record<string, unknown>[]): any {
 
 /** The in-memory provider, with message ids a Telegram chat would give (a press names its message by an integer). */
 function numericProvider() {
-  const inner = createFakeProvider();
+  const inner = createFakeProvider({ capabilities: { edit: false, pin: false } });
   let next = 500;
   return { ...inner, async send(message: any) { await inner.send(message); next += 1; return { messageRef: String(next), silent: false }; } };
 }
@@ -174,7 +174,9 @@ describe("the whole loop, over the real Telegram provider: drawn, pressed, answe
       wire.push({ url, body: JSON.parse(init.body) });
       return { ok: true, status: 200, json: async () => ({ ok: true, result: { message_id: 700 } }), headers: { get: () => null } };
     }));
-    const provider = createTelegramProvider({ token: createSecret("123456789:AAFk3x9Q-test_token_value_ZZ"), chatId: CHAIRMAN.chatId, fetch: fetchImpl, log: () => {}, sleep: async () => {} });
+    const real = createTelegramProvider({ token: createSecret("123456789:AAFk3x9Q-test_token_value_ZZ"), chatId: CHAIRMAN.chatId, fetch: fetchImpl, log: () => {}, sleep: async () => {} });
+    // One request on the wire is what this test counts, so it runs without the asks' record: its pinned list is a message of its own (a11ign/a11ign#4745).
+    const provider = { ...real, capabilities: { ...real.capabilities, edit: false, pin: false } };
     const w = watcher({ rows: [row(true)], provider });
     await w.pass();
     assert.equal(wire.length, 1);

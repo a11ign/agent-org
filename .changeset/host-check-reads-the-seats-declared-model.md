@@ -1,0 +1,5 @@
+---
+"agent-org": patch
+---
+
+`host:check` judges a persistent seat against the `model` its roster entry DECLARES (#4740), not only against the org's Sonnet. `expectedModels` read every session that was not a `tier:haiku` worker against `DECLARED_CLAUDE_MODELS` alone, so the liaison, on exactly the `claude-haiku-5-5` its entry names (a11ign/a11ign#4760), was reported as `SESSION ON AN UNDECLARED MODEL` with a `/model <alias>` remedy that would have switched it off the declared model. A seat whose entry declares a `model` is now expected on that model alone, and the finding says `its roster entry declares …` and names the declared model in its `/model` remedy. A declared alias is resolved to the id the org itself names (`haiku` is `HAIKU_MODEL_ID`, `sonnet` is `DECLARED_CLAUDE_MODELS`'s), a context suffix such as `[1m]` is dropped before comparing, and an alias this file knows no id for (`opus`, `fable`) is NOT a finding: those seats are not checked until the table names an id. A seat that declares nothing, every worker, and an unreadable roster are judged as before. `SessionModelDeps` gains `seatModels`, the roster read injectable for a test. a11ign/a11ign#4762.

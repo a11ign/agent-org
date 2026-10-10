@@ -41,6 +41,7 @@ import type { DeclarationReading } from "./worker-state.ts";
 import { recordFailures, type FailureEvent, type RecordResult } from "./failure-ledger.ts";
 // #3445: WHETHER A PULL REQUEST IS THE CLAIMANT'S, for the open lookup and the merged one alike: a sibling leaf, so this file stays one.
 import { ownsPr } from "./pr-ownership.ts";
+import type { LabelEvent } from "./claim-provenance.ts";
 // #3453: where a keyed repository's clone lives (`host.json`'s `clones`), for the read of the worktrees a merged pull request's work was in. A leaf too.
 import { hostConfigPath, readHostConfig } from "./host-config.ts";
 
@@ -237,9 +238,12 @@ export function commentMove(comments: RowComment[], record: ClaimRecord): number
 export type GitRun = (dir: string, args: string[]) => { status: number | null, out: string };
 export type CloneAnswer = { clone: string } | { refusal: string };
 /**
- * `cloneOf` (#3453) is the seam for WHERE A KEYED REPOSITORY'S CLONE LIVES; absent, it is `host.json`'s declaration ({@link cloneOfKey})
+ * `cloneOf` (#3453) is the seam for WHERE A KEYED REPOSITORY'S CLONE LIVES; absent, it is `host.json`'s declaration ({@link cloneOfKey}).
+ * `labelEvents` (#4789) is the row's `labeled`/`unlabeled` history, `null` for a read that could not be made; absent, the caller does not
+ * date the session label and a merge counts from the claim record alone, as it did before.
  */
-export type HostReads = { git: GitRun, exists: (path: string) => boolean, mtime: (path: string) => number | null, cloneOf?: (key: string) => CloneAnswer };
+export type HostReads = { git: GitRun, exists: (path: string) => boolean, mtime: (path: string) => number | null, cloneOf?: (key: string) => CloneAnswer,
+  labelEvents?: (row: number) => LabelEvent[] | null };
 
 /** A read that could not be made. NEVER an absence: "no commit" is `null`, "could not ask git" is this. */
 export class Unreadable extends Error {}
@@ -446,7 +450,7 @@ export function holderWorkAtRisk(io: HostReads, { merged, ...home }: {
 /**
  * Everything the reading knows about ONE claimed row. The two costly facts are THUNKS, so a row that is plainly moving (a comment or a commit inside N) costs no `git status`, and a tick pays for a worktree only when the cheap signals already say it has been quiet. `nothing` (#3407): the claim names no git object on purpose, so it can be nudged and never released
  */
-export type ClaimFacts = { row: number, title?: string, session: string, claimedAt: number, branch: string | null, worktree: string | null, comment: number | null, commit: number | null, push: number | null, file: () => number | null, work: () => ReturnType<typeof workAtRisk>, openPrs: number, mergedPr: { number: number, mergedAt: number, repoKey?: string, head?: string } | null, waiting: string | null, blockedBy: number[], waitKind?: string | null, ownPrs?: import("./idle-claimant.ts").IdlePr[], nothing?: boolean, declared?: DeclarationReading, };
+export type ClaimFacts = { row: number, title?: string, session: string, claimedAt: number, branch: string | null, worktree: string | null, comment: number | null, commit: number | null, push: number | null, file: () => number | null, work: () => ReturnType<typeof workAtRisk>, openPrs: number, mergedPr: { number: number, mergedAt: number, repoKey?: string, head?: string } | null, waiting: string | null, blockedBy: number[], waitKind?: string | null, ownPrs?: import("./idle-claimant.ts").IdlePr[], nothing?: boolean, declared?: DeclarationReading, mergedHeld?: string, };
 export type Reading = { kind: "moving", lastMoveAt: number } | { kind: "pr-owned" } | { kind: "waiting", waiting: string } | { kind: "nudge", lastMoveAt: number, idleMs: number, idle?: boolean } | { kind: "nudged", nudgedAt: number, deliveredAt: number | null, lastMoveAt: number, idle?: boolean } | { kind: "idle-watch", since: number } | { kind: "vacating", since: number } | { kind: "release", why: "stalled" | "blocked" | "merged" | "gone" | "closed" | "wait", lastMoveAt: number | null, idleMs: number | null, nudgedAt: number | null, edges?: number[], waiting?: string, mergedPr?: number, mergedPrRepoKey?: string, mergedPrHead?: string, openPrs?: number[], openPrRepoKeys?: (string | undefined)[], since?: number, idle?: boolean, interrupt?: boolean } | { kind: "holding", why: string, expected?: boolean };
 
 /** @param {(number | null)[]} times @returns {number | null} */
@@ -636,10 +640,13 @@ function treesRead(work: { trees?: string[]; }): string {
 
 /**
  * (10) A merged pull request on the claimed branch, no open one, nothing at risk: the work LANDED and the row stayed open
- * (`Closes: none`), so the instance is done and the ruling about the row is `product-manager`'s.
+ * (`Closes: none`), so the instance is done and the ruling about the row is `product-manager`'s. A merge that WOULD count from the claim record but whose
+ * session label could not be dated is `holding` and says why (#4789): a release is the act that closes a workspace, so the read that could not be made
+ * never takes it.
  * @param {ClaimFacts} facts @returns {Reading | null}
  */
 function mergedReading(facts: ClaimFacts): Reading | null {
+  if (facts.mergedHeld !== undefined) return { kind: "holding", why: facts.mergedHeld };
   if (facts.mergedPr === null) return null;
   const work = facts.work();
   if (work.state !== "none") {
@@ -790,7 +797,7 @@ export function claimFactsFrom(input: ClaimInput, io: HostReads): ClaimFacts | {
     const claimant = { row: input.row, branch, session: input.session, soleHolder: input.sessionRows === 1,
       ...(input.trackerRepo === undefined ? {} : { trackerRepo: input.trackerRepo }) };
     const ownPrs = prs.open.filter((p) => ownsPr(claimant, p) !== null);
-    const merged = newestMergedAfter(prs.merged ?? [], claimant, record.at);
+    const { merged, held } = landedWork({ merged: prs.merged ?? [], claimant, record, io });
     return { row: input.row, session: input.session, claimedAt: record.at, branch, worktree,
       ...(input.title === undefined ? {} : { title: input.title }),
       comment: commentMove(input.comments, record),
@@ -804,10 +811,69 @@ export function claimFactsFrom(input: ClaimInput, io: HostReads): ClaimFacts | {
         ...(merged.headRefName ? { head: merged.headRefName } : {}) },
       waiting: input.waiting, blockedBy: input.blockedBy,
       ...(input.waitKind === undefined ? {} : { waitKind: input.waitKind }),
-      ownPrs, ...(record.nothing ? { nothing: true } : {}) };
+      ownPrs, ...(record.nothing ? { nothing: true } : {}), ...(held === null ? {} : { mergedHeld: held }) };
   } catch (err) {
     if (err instanceof Unreadable) return { skip: `#${input.row}: ${err.message}` };
     throw err;
+  }
+}
+
+/**
+ * (#4789) THE MERGED PULL REQUEST THAT COUNTS AS THIS HOLDER'S LANDED WORK, anchored to when THIS session took the row and not only to the newest claim
+ * record. A hand-started engineer writes no record, so the newest one is the PREVIOUS holder's, and a pull request that merged for that holder read as
+ * the new one's work: a11ign#4524's `worker-4524` was released four minutes after its start for agent-org#562, merged ten hours before it.
+ *
+ * A merge counts only if it is after the record AND after the newest `labeled` event of `session:<session>`. The record is applied first (`fromRecord`), and
+ * since that is the older anchor whenever a claim was made by `row-claim`, the label is only ever the stricter of the two for a hand start. A caller that
+ * gives no `labelEvents` seam keeps the record alone; a seam that cannot answer, or an answer with no such event, gives `held`: the reason a merge that
+ * counts from the record is NOT taken, which fails toward not releasing -- a release closes the holder's workspace, and the work is kept either way.
+ * @param {{ merged: MergedPr[], claimant: import("./pr-ownership.ts").Claim, record: ClaimRecord, io: HostReads }} args
+ * @returns {{ merged: ReturnType<typeof newestMergedAfter>, held: string | null }}
+ */
+function landedWork({ merged, claimant, record, io }: { merged: (MergedPr & { repoKey?: string; })[]; claimant: import("./pr-ownership.ts").Claim; record: ClaimRecord; io: HostReads; }): { merged: ReturnType<typeof newestMergedAfter>; held: string | null; } {
+  const fromRecord = newestMergedAfter(merged, claimant, record.at);
+  if (fromRecord === null || io.labelEvents === undefined) return { merged: fromRecord, held: null };
+  const labelledAt = sessionLabelAddedAt(io.labelEvents(claimant.row), claimant.session);
+  if (labelledAt === null) {
+    return { merged: null, held: `${prMention(fromRecord.number, fromRecord.repoKey)} merged after the claim record, but when ${SESSION_PREFIX}${claimant.session} was added to #${claimant.row} could not be read, so it is not taken as this holder's landed work` };
+  }
+  return { merged: newestMergedAfter(merged, claimant, labelledAt), held: null };
+}
+
+/**
+ * When `session:<session>` was last ADDED to a row, from its label events, or `null` when that cannot be said: a read that was refused, or a history
+ * with no such `labeled` event (never "the beginning of time", which would count every earlier merge). The newest wins, so a label taken off and put
+ * back dates the holder who has it now.
+ * @param {LabelEvent[] | null} events @param {string} session @returns {number | null}
+ */
+export function sessionLabelAddedAt(events: LabelEvent[] | null, session: string): number | null {
+  if (events === null) return null;
+  const label = `${SESSION_PREFIX}${session}`;
+  const times = events.filter((e) => e.event === "labeled" && e.label === label).map((e) => Date.parse(e.at)).filter(Number.isFinite);
+  return times.length === 0 ? null : Math.max(...times);
+}
+
+/** `gh <args>`, never throwing: a spawn failure or a timeout is `status: null`, which {@link readLabelEvents} turns into `null` and never into "no events". */
+export type GhRun = (args: string[]) => { status: number | null, out: string };
+const ghRun: GhRun = (args) => {
+  const ran = spawnSync("gh", args, { encoding: "utf8", timeout: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER });
+  return { status: ran.status, out: ran.stdout ?? "" };
+};
+
+/**
+ * A row's label events through `gh api`, or `null` for any read that did not answer in full. One REST call, made only for a claim with a merged pull
+ * request of its own after the record, so a quiet org spends none (and the REST core pool, not GraphQL's).
+ * @param {number} row @param {string} repo `owner/repo` of the tracker, whose issue numbers the row is @param {GhRun} [run]
+ * @returns {LabelEvent[] | null}
+ */
+export function readLabelEvents(row: number, repo: string, run: GhRun = ghRun): LabelEvent[] | null {
+  const ran = run(["api", "--paginate", `repos/${repo}/issues/${row}/events`, "--jq",
+    '.[] | select(.event == "labeled" or .event == "unlabeled") | {event: .event, label: .label.name, at: .created_at}']);
+  if (ran.status !== 0) return null;
+  try {
+    return ran.out.split("\n").filter((l) => l.trim() !== "").map((l) => JSON.parse(l) as LabelEvent);
+  } catch {
+    return null;
   }
 }
 
