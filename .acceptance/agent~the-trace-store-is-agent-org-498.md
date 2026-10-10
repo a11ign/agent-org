@@ -16,6 +16,9 @@ What changes, by the row's four items:
 Known edge, from the code and not from a run: a turn is held back until its message is `QUIET_MS` (five minutes) old, so in a healthy store the newest turn reads about five minutes old right after an ingest. A single tool call longer than ten minutes that is the only thing running can still read as stale; that is one incident per episode, never one per run.
 
 Acceptance: `cd /home/agent/repos/wt-agent-org-498 && npx rstest run --config scripts/rstest/rstest.config.* src/trace/freshness.test.ts src/packaging/host-units.test.ts`
+Acceptance: `cd /home/agent/repos/wt-agent-org-498 && npx rstest run --config scripts/rstest/rstest.config.* src/trace/freshness.test.ts`
+
+(The first line is the row's own command. `host-units.test.ts` reads the git history through `shippedUnits`, which the acceptance job does not have, so it is refused there and passes in the worktree; the second line is the half of it that job can run.)
 
 Closes a11ign/agent-org#498
 
@@ -34,6 +37,8 @@ Evidence (this branch, `/home/agent/repos/wt-agent-org-498`):
 - the whole suite: 34 of 8064 fail, all in eight files (`mjs-ratchet`, `board-truth-audit`, `failure-ledger`, `auto-arm-token`, `milestone-clock`, `milestone-clock-exact-start`, `pr-template-acceptance`, `public-claim`), and the same eight files fail the same way on a clean detached `HEAD` of this branch; none imports a file this change touches.
 - mutations, each turning at least one named case red and restored green: the check ignoring "working" (4 cases), an episode never remembered (4), a turn inside the window not closing the episode (2), the newest turn taken as the last line (1).
 - read-only against the live store: `trace -- --freshness` prints `trace store: newest turn 2026-10-09T19:05:07.927Z (13h 9m ago); a session is working (...): STALE`, exit 1. That is the outage the row describes, seen by the new check.
+
+Mutation: the freshness check ignoring "working" turned 4 cases red; an episode never remembered, 4; a turn inside the window not closing the episode, 2; the newest turn taken as the last line, 1; each restored green (`src/trace/freshness.test.ts`). The units' pins each carry a control that the pattern refuses the unit with that one line altered.
 
 Left open, not done by this pull request (host acts and a follow-up):
 - the row's Done-when 2 and 3: `host:install` from the merged tag, the `list-timers` line naming `a11ign-trace-ingest.timer`, and the `--freshness` output an hour after no head moved. The first ingest on the live host will also be the cold catch-up of everything since 2026-10-09T19:05Z.
