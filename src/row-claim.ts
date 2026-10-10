@@ -74,7 +74,8 @@ import { gitCommonDir, appendJsonl } from "./merge-guard.ts";
 import { withBoardSnapshot, PROJECT_OWNER, PROJECT_NUMBER } from "./board-snapshot.ts";
 import { runnerReason, laneReason, drainReason, oneRowReason } from "./row-claim/runner-rule.ts";
 import { activeDrain, sparePathsFrom, ledgerPathFrom, isSpareRole, isPersistentRole, readSpareRegistry } from "./wake.ts";
-import { readWithFirstWaveTogether, runBatch } from "./work-gate.ts"; // #3566, slice 4: `wake.ts` above already loads it, and it never loads this file
+import { readWithFirstWaveTogether, runBatch, readChairmanPriority, CHAIRMAN_PRIORITY_LABEL } from "./work-gate.ts"; // #3566, slice 4: `wake.ts` above already loads it, and it never loads this file. #4793: and the gate's own reading of whose a chairman row is
+import { lookup } from "./merge-guard/lookups.ts";
 import { readJsonObject, writeJsonObject, cloneOfKey } from "./claim-stall.ts";
 import { inBuildReason, lookupHeldRows, lookupOtherHeldIssues } from "./row-claim/own-pr-health-rule.ts";
 import { resolveBlockedByOverride, blockedByExceptionNote } from "./row-claim/blocked-by-rule.ts";
@@ -660,17 +661,32 @@ export function moveProjectStatus(issueNumber: number, statusName: string,
  *   the branch `--adopt` is re-stamping, so the open PR from it is the row's own work under B4 even if it declares `Closes: none`
  * @returns {string | null}
  */
-export function sessionEligibilityReason(issueNumber: number, mySession: string, { run = defaultRun, repo = REPO, repos, adoptedBranch }: {
+export function sessionEligibilityReason(issueNumber: number, mySession: string, deps: {
     run?: typeof defaultRun; repo?: string; repos?: readonly { key: string; repo: string; }[]; adoptedBranch?: string;
 } = {}): string | null {
+  return sessionEligibility(issueNumber, mySession, deps).reason;
+}
+
+/** #4793: a holder B4 would have refused over and a `priority:chairman` row was let past -- `repo` is a pull request of a repository other than the first's. */
+export type WalkedPast = { kind: "row" | "pr"; number: number; repo?: string; };
+
+/**
+ * #4793: {@link sessionEligibilityReason}'s verdict AND the holders a chairman row was let past, so the claim can say whose rebase it has ordered. `walked` is
+ * empty for every row that is not a verified chairman row and for every claim that overlapped nothing.
+ * @returns {{ reason: string | null, walked: WalkedPast[] }}
+ */
+export function sessionEligibility(issueNumber: number, mySession: string, { run = defaultRun, repo = REPO, repos, adoptedBranch }: {
+    run?: typeof defaultRun; repo?: string; repos?: readonly { key: string; repo: string; }[]; adoptedBranch?: string;
+} = {}): { reason: string | null; walked: WalkedPast[]; } {
   const ghRun = (args: string[]) => run("gh", args);
+  const refused = (reason: string) => ({ reason, walked: [] });
 
   // #989: B2 asks whether a ROW is in build, not whether a PR is open. `null` from the lookup is
   // INCONCLUSIVE and returns no refusal, exactly as the PR-shaped version did -- a failed lookup must
   // never invent a block any more than it may invent a clearance.
   const heldRows = lookupHeldRows(mySession, issueNumber, { run: ghRun, repo });
   const inBuild = heldRows === null ? null : inBuildReason(heldRows, Date.now(), { repo });
-  if (inBuild) return inBuild;
+  if (inBuild) return refused(inBuild);
 
   // #1886: THE ROW BEING CLAIMED may itself carry an open `blockedBy` edge -- a declared wait GitHub
   // already records, and the gate's own wake computation already reads before ever offering this row.
@@ -683,22 +699,110 @@ export function sessionEligibilityReason(issueNumber: number, mySession: string,
   // answered without it.
   const blockedRow = lookupBlockedByEdge(issueNumber, { run: ghRun, repo });
   const blocked = blockedByEdgeReason(blockedRow, repo === REPO ? {} : { repo });
-  if (blocked) return blocked;
+  if (blocked) return refused(blocked);
 
-  const myFiles = lookupMyRegionFiles(issueNumber, { run: ghRun, repo });
-  const otherPrFiles = lookupOpenPrFiles({ run: ghRun, trackerRepo: repo, repos });
-  if (myFiles !== null && otherPrFiles !== null) {
+  const ask: B4Ask = { myFiles: lookupMyRegionFiles(issueNumber, { run: ghRun, repo }),
+    otherPrFiles: lookupOpenPrFiles({ run: ghRun, trackerRepo: repo, repos }), issueNumber, adoptedBranch, run: ghRun, repo, repos };
+  const refusal = b4Refusal(ask);
+  return refusal === null ? { reason: null, walked: [] } : chairmanYield(ask, refusal);
+}
+
+type B4Ask = {
+  myFiles: string[] | null; otherPrFiles: (NonNullable<ReturnType<typeof lookupOpenPrFiles>>[number] & { repo?: string; })[] | null; issueNumber: number; adoptedBranch?: string;
+  run: (args: string[]) => string; repo: string; repos?: readonly { key: string; repo: string; }[];
+};
+
+/** The rows a listed pull request declares it closes, which `closes` may carry bare (as the hand-run fixtures write it). */
+const closedByPr = (pr: { closes?: number[] | number | null; }): number[] => (Array.isArray(pr.closes) ? pr.closes : Number.isInteger(pr.closes) ? [Number(pr.closes)] : []);
+
+/**
+ * B4's two halves over every holder, or -- with `only` (#4793) -- over the holders that are those rows' own: a pull request declaring `Closes` on one, a claimed
+ * row that is one. The comparison, its exclusions and its refusals are the same code either way, which is what makes "the holders that remain" the gate's
+ * `overlapVerdict` and not a second reading of it.
+ */
+function b4Refusal(ask: B4Ask, only?: ReadonlySet<number>): string | null {
+  const { myFiles, otherPrFiles, issueNumber, adoptedBranch } = ask;
+  if (myFiles === null) return null;
+  const prs = otherPrFiles === null || only === undefined ? otherPrFiles : otherPrFiles.filter((pr) => closedByPr(pr).some((n) => only.has(n)));
+  if (prs !== null) {
     // #2101: the row's OWN pull request is not a competitor for its files. Without this number B4
     // refuses a row whose PR was opened before its claim -- against the very work that would finish it.
-    const { reason, emptyOtherPrs } = fileOverlapReason(myFiles, otherPrFiles, { rowNumber: issueNumber, adoptedBranch });
-    for (const prNumber of emptyOtherPrs) {
+    const { reason, emptyOtherPrs } = fileOverlapReason(myFiles, prs, { rowNumber: issueNumber, adoptedBranch });
+    for (const prNumber of only === undefined ? emptyOtherPrs : []) {
       process.stderr.write(`row-claim: ${prLabel(prNumber)} is open and reports ZERO changed files -- not folded `
         + "into \"no overlap\", just nothing to compare against right now. Worth a look if that surprises "
         + "you (B4, #462).\n");
     }
     if (reason) return reason;
   }
-  return myFiles === null ? null : claimedRegionsReason(myFiles, { issueNumber, openPrs: otherPrFiles ?? [], run: ghRun, repo, repos });
+  return claimedRegionsReason(myFiles, { issueNumber, openPrs: prs ?? [], run: ask.run, repo: ask.repo, repos: ask.repos, only });
+}
+
+/**
+ * #4793 (chairman direction on a11ign#4524, 2026-10-09; `ceo` agreed): "B4 overlap does NOT shelve a `priority:chairman` row when the overlapping holder is not
+ * itself a chairman row. The chairman row proceeds, and the holder rebases onto it when it lands. Every other eligibility check still applies." The gate offered
+ * the row (`overlapVerdict`) and this refused it, for the same overlap, every tick: the offer and the claim must give one answer for one set of inputs.
+ *
+ * ONLY A B4 REFUSAL IS RELAXED, and only for a row the CHAIRMAN labelled -- {@link lookupChairmanRows} reads the labeller from the tracker's history exactly as the
+ * gate does, so a label somebody else added buys nothing and an unreadable history fails CLOSED to today's refusal. TWO CHAIRMAN ROWS STILL EXCLUDE EACH OTHER: B4 is
+ * asked again over the chairman holders alone, and a refusal from that is the answer. A sweep's freeze, a Region that could not be read and every check
+ * before B4 are inside or ahead of the same two halves and are untouched.
+ */
+function chairmanYield(ask: B4Ask, refusal: string): { reason: string | null; walked: WalkedPast[]; } {
+  const chairmanRows = lookupChairmanRows({ run: ask.run, repo: ask.repo });
+  if (chairmanRows === null || !chairmanRows.has(ask.issueNumber)) return { reason: refusal, walked: [] };
+  const remaining = b4Refusal(ask, chairmanRows);
+  if (remaining !== null) return { reason: remaining, walked: [] };
+  const walked = holdersWalkedPast(ask);
+  process.stderr.write(`row-claim: #${ask.issueNumber} is a chairman row, so B4 yields (#4793): claiming over ${walkedNames(walked)}. They rebase onto it when it lands.\n`);
+  return { reason: null, walked };
+}
+
+/** Every holder that would have refused this row alone: the claimed rows and the pull requests, in the order B4's halves are read. */
+function holdersWalkedPast(ask: B4Ask): WalkedPast[] {
+  const { myFiles, otherPrFiles, issueNumber, adoptedBranch } = ask;
+  if (myFiles === null) return [];
+  const openPrs = otherPrFiles ?? [];
+  const prs = openPrs.filter((pr) => fileOverlapReason(myFiles, [pr], { rowNumber: issueNumber, adoptedBranch }).reason !== null)
+    .map((pr): WalkedPast => ({ kind: "pr", number: pr.number, ...(pr.repo === undefined ? {} : { repo: pr.repo }) }));
+  const claimed = lookupClaimedRegions({ run: ask.run, repo: ask.repo }) ?? [];
+  // Each holder beside the asker alone, so the verdict is that holder's and the "lower number proceeds" rule sees the same two rows it saw.
+  const rows = claimed.filter((holder) => holder.number !== issueNumber
+    && claimedRegionsVerdict(myFiles, claimed.filter((row) => row.number === holder.number || row.number === issueNumber), { issueNumber, openPrs }) !== null)
+    .map((holder): WalkedPast => ({ kind: "row", number: holder.number }));
+  return [...rows, ...prs];
+}
+
+const walkedNames = (walked: WalkedPast[]): string => walked
+  .map((holder) => (holder.kind === "row" ? `row #${holder.number}` : `pull request #${holder.number}${holder.repo === undefined ? "" : ` in ${holder.repo}`}`)).join(", ");
+
+/** The comment a claim that went ahead over holders leaves on the row, so the rebase order has something to read. `null` when it walked past nobody. */
+export function walkedPastNote(issueNumber: number, walked: WalkedPast[]): string | null {
+  if (walked.length === 0) return null;
+  return `**B4 yielded to the chairman's row (#4793).** #${issueNumber} carries \`${CHAIRMAN_PRIORITY_LABEL}\`, added by the chairman's own login, and overlaps `
+    + `${walkedNames(walked)}, none of which is itself a chairman row. The claim went ahead; each of those REBASES ONTO THIS ROW when it lands. `
+    + "Two chairman rows still exclude each other, and every other check stood.";
+}
+
+const CHAIRMAN_ROWS_LIMIT = 100;
+
+/**
+ * The open rows the CHAIRMAN labelled `priority:chairman`, or `null` when that could not be read (which every caller reads as NOT a chairman row). It is the
+ * gate's `readChairmanPriority` over the tracker's own list, so the claim and the offer cannot disagree about whose a row is: the same logins, the same newest
+ * `labeled` event. Asked only AFTER B4 has refused, so a claim that overlaps nothing pays nothing for it.
+ *
+ * `readChairmanPriority` asks for `repos/{owner}/{repo}/issues/<n>/events`, and `gh` fills that placeholder from the directory it runs in -- the gate's own
+ * checkout. The claim's tracker is a parameter and its working directory is a worktree, possibly of another repository, so the placeholder is filled here.
+ */
+function lookupChairmanRows({ run, repo }: { run: (args: string[]) => string; repo: string; }): ReadonlySet<number> | null {
+  return lookup(() => {
+    const listed = JSON.parse(run(["issue", "list", "--repo", repo, "--state", "open", "--label", CHAIRMAN_PRIORITY_LABEL,
+      "--limit", String(CHAIRMAN_ROWS_LIMIT), "--json", "number,labels"]));
+    // A FULL PAGE MAY BE A CUT-SHORT ONE, and a chairman row missing from it would read as not the chairman's.
+    if (!Array.isArray(listed) || listed.length >= CHAIRMAN_ROWS_LIMIT) throw new Error("the chairman's rows could not be listed whole");
+    const inThisTracker = (args: string[]) => run(args.map((arg) => arg.replace("repos/{owner}/{repo}/", `repos/${repo}/`)));
+    return readChairmanPriority(listed, inThisTracker).chairmanRows;
+  });
 }
 
 /**
@@ -713,14 +817,16 @@ export function sessionEligibilityReason(issueNumber: number, mySession: string,
  *   `openPrs` is what the pull-request comparison was given, so a claimed row with a pull request is counted once, by its files
  * @returns {string | null}
  */
-function claimedRegionsReason(myFiles: string[], { issueNumber, openPrs, run, repo, repos }: { issueNumber: number; openPrs: { closes?: number[] | number | null; }[]; run: (args: string[]) => string; repo: string; repos?: readonly { key: string; repo: string; }[]; }): string | null {
+function claimedRegionsReason(myFiles: string[], { issueNumber, openPrs, run, repo, repos, only }: { issueNumber: number; openPrs: { closes?: number[] | number | null; }[]; run: (args: string[]) => string; repo: string; repos?: readonly { key: string; repo: string; }[]; only?: ReadonlySet<number>; }): string | null {
   if (myFiles.length === 0) return null;
   const claimed = lookupClaimedRegions({ run, repo });
   if (claimed === null) return claimedRowsUnread("retry the claim (the gate offers the row again by itself).");
   // #4603: A DECLARED SWEEP'S FREEZE BEFORE THE VERDICT -- it holds its whole Region for its window, pull request or none, and its refusal names the minutes left.
   const frozen = sweepFreezeAtClaim({ myFiles, issueNumber, reads: { run, repo, ...(repos === undefined ? {} : { repos }) } });
   if (frozen) return frozen;
-  return claimedRegionsVerdict(myFiles, claimed, { issueNumber, openPrs });
+  // #4793: `only` is a chairman row's yield -- the holders that are chairman rows themselves, and the asker, whose own place in the list decides who proceeds.
+  const holders = only === undefined ? claimed : claimed.filter((row) => only.has(row.number) || row.number === issueNumber);
+  return claimedRegionsVerdict(myFiles, holders, { issueNumber, openPrs });
 }
 
 /** @param {string} then what happens next, which differs between the claim and `check` @returns {string} */
@@ -1045,7 +1151,9 @@ function preWriteChecks({ issueNumber, mySession, before, drained, instance, ado
     // #2407: ONE INSTANCE, ONE ROW -- the same "new row only" placement, for a spare that holds or has held another.
     const oneRow = oneRowReason(mySession, issueNumber, instance);
     if (oneRow) return { refusal: { claimed: false, reason: oneRow }, blockedByNote: null, scope: null };
-    const ineligible = sessionEligibilityReason(issueNumber, mySession, { run: preWrite, adoptedBranch, repo });
+    const { reason: ineligible, walked } = sessionEligibility(issueNumber, mySession, { run: preWrite, adoptedBranch, repo });
+    // #4793: a chairman row that B4 let past holders SAYS SO on the row, through the note a `--blocked-by` exception already leaves.
+    blockedByNote = walkedPastNote(issueNumber, walked);
     if (ineligible) {
       const eligibility = eligibilityWithBlockedBy({ issueNumber, mySession, ineligible, blockedBy },
         { ghRun: ghRunForBody, repo });
@@ -1156,7 +1264,7 @@ function completeClaim(issueNumber: number,
   // then lost (the block above already returned), so a losing session's attempted override leaves no
   // comment behind naming an exception it never actually exercised.
   postBlockedByNoteIfAny(issueNumber, blockedByNote, run, repo);
-  if (blockedByNote) landed.push("posted the --blocked-by exception note");
+  if (blockedByNote) landed.push("posted the exception note (--blocked-by, or the chairman row's B4 yield)");
   // #987: THE BRANCH AND WORKTREE GO ON THE RECORD HERE, for the identical reason #741's note above does
   // -- after the race is known to be won, so a losing session never leaves a record naming a worktree it
   // did not get to keep. `branch`/`worktree` are the values this claim was GIVEN, not values read back:
