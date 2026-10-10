@@ -73,16 +73,13 @@ test("the tool's real tree passes against the committed baseline", (t) => {
   assert.ok(result.ok, result.message);
 });
 
-/** The two workflow helpers #4389 leaves: `.github/` is outside that row's Region, so a row of its own carries them (the baseline lists exactly these, and nothing under `src/`). */
-const LEFT_IN_GITHUB = [".github/scripts/leak-scan.mjs", ".github/scripts/workflow-paths.mjs"];
-
-test("THE END STATE: nothing under `src/` is a script source, and the baseline lists only the workflow helpers outside it", () => {
+test("THE END STATE: no script source is left anywhere in the tree, and the baseline is empty", () => {
   const root = findBaselineRoot(JUDGED);
   // In the gate's copy this file has no baseline above it (that is why JUDGED is the named checkout), so the walk from itself is only asked where it is meant to work.
   if (!process.env[TOOL_REPO_ENV]) assert.equal(root, findBaselineRoot(dirname(HERE)), "walking up from this file and from its directory find one root");
-  assert.deepEqual(baselineAt(root), listing(LEFT_IN_GITHUB));
+  assert.deepEqual(baselineAt(root), listing([]));
   assert.deepEqual(scriptFilesIn(root).filter((path) => path.startsWith("src/")), []);
-  if (!process.env[TOOL_REPO_ENV]) assert.deepEqual(scriptFilesIn(root), LEFT_IN_GITHUB);
+  if (!process.env[TOOL_REPO_ENV]) assert.deepEqual(scriptFilesIn(root), []);
 });
 
 test("POSITIVE CONTROL for that emptiness of `src/`: the check SEES a script source and refuses it against the empty baseline, naming it", () => {

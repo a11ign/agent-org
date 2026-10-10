@@ -24,11 +24,11 @@ name: ci
 # modules and fixtures that were not extracted. a11ign/a11ign deleted that package (#3505) and takes a11ign/lab as a pinned tag, so the job lays the lab at the tag the project's
 # `layers.json` pins AT `PROJECT_REF` (the project's own `project/scripts/lay-layer.mjs`) and copies those siblings (never a test) beside the tests, without overwriting anything this repository has.
 #
-# NODE IS PINNED TO 24.21.0, NOT `24`, and it must be 24: Node 24 strips types itself, and a `.ts` run by a plain `node` (every ExecStart, every package script, `leak-scan.mjs`'s import) needs it
-# (a11ign/a11ign#4389; the distro 22 cannot). The pin was 22.22.1 because on 22.23.3 the suite's tree-walking observer saw tsx probe `<name>.mts` beside every import: tsx is gone, so that
+# NODE IS PINNED TO 24.21.0, NOT `24`, and it must be 24: Node 24 strips types itself, and a `.ts` run by a plain `node` (every ExecStart, every package script, `leak-scan.ts`'s import) needs it
+# (a11ign/a11ign#4389; the distro 22 cannot). The pin was 22.22.1 because on 22.23.3 the suite's tree-walking observer saw the old loader probe `<name>.mts` beside every import: the loader is gone, so that
 # cause is too. Move the pin only by re-running the suite on the new version (24.21.0: 7583 tests, the 33 failures all fail on main too).
 #
-# NAMING A PATH THAT LIVES IN THE PROJECT: `workflow-paths.mjs` refuses a workflow path (`packages/...`, `scripts/...`) that is not in THIS
+# NAMING A PATH THAT LIVES IN THE PROJECT: `workflow-paths.ts` refuses a workflow path (`packages/...`, `scripts/...`) that is not in THIS
 # repository, so a path in the project is written with the `project/` prefix, or carries the marker `# in-project` at the end of its line.
 #
 # EVERY TEST THE SUITE HOLDS RUNS, UNDER ONE RUNNER, RSTEST (a11ign/a11ign#3738, #3958): a step compares the files rstest lists with the files on disk, so a test file its `include` does not reach fails the job.
@@ -68,9 +68,9 @@ jobs:
         with:
           node-version: 24.21.0
       - name: Every path a workflow names exists in this repository
-        run: node .github/scripts/workflow-paths.mjs
+        run: node .github/scripts/workflow-paths.ts
       - name: Leak scan -- refuses a private LAN IPv4 address or a named SSH key file anywhere in the tree
-        run: node .github/scripts/leak-scan.mjs
+        run: node .github/scripts/leak-scan.ts
       - name: The project under test -- a11ign/a11ign at PROJECT_REF, read-only, no token beyond the job's own read-only one
         uses: actions/checkout@v7
         with:
@@ -85,13 +85,13 @@ jobs:
       - name: The lab at the tag the project pins, laid at project/packages/lab
         working-directory: project
         run: node scripts/lay-layer.mjs lab # in-project
-      # `tsx`, `yaml` and `typescript` are the tool's own; `@rstest/core` and `@a11ign/toolchain` are the runner (a11ign/a11ign#3738). The ranges repeat `package.json`'s devDependencies,
+      # `yaml` and `typescript` are the tool's own; `@rstest/core` and `@a11ign/toolchain` are the runner (a11ign/a11ign#3738). The ranges repeat `package.json`'s devDependencies,
       # because this job installs by name and not from it: move them together.
       # `@a11ign/toolchain` is EXACT, not a range (a11ign/a11ign#4308): 0.1.6 was published with no `dist/`, so the `^0.1.2` install resolved it and every `merge_group` run failed with
       # `Cannot find module '.../@a11ign/toolchain/dist/rstest-config.mjs'`. 0.1.5 is the last version that ships `dist/`; move this pin deliberately, to a release that does.
       - name: Install the tool's dependencies where the project's root would hold them
         run: |
-          npm install --no-save --no-package-lock "tsx@^4.22.4" "yaml@^2.9.0" "typescript@^6.0.3" "@rstest/core@^0.12.3" "@a11ign/toolchain@0.1.5"
+          npm install --no-save --no-package-lock "yaml@^2.9.0" "typescript@^6.0.3" "@rstest/core@^0.12.3" "@a11ign/toolchain@0.1.5"
           mv node_modules project/node_modules
       - name: Put this checkout's tool where the tool lives in a project, and the tests' siblings beside the tests
         run: |
@@ -171,7 +171,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24.21.0
-      - name: Install the dev dependencies the program imports types from (typescript, @types/node, yaml, tsx)
+      - name: Install the dev dependencies the program imports types from (typescript, @types/node, yaml)
         # The toolchain is named EXACT beside `package.json`'s `^0.1.5` for the same reason as in `suite` (a11ign/a11ign#4308): the range resolved 0.1.6, which has no `dist/`.
         run: npm install --no-package-lock --no-save "@a11ign/toolchain@0.1.5"
       - name: tsc --noEmit over tsconfig.json

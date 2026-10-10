@@ -1,7 +1,4 @@
 {
-  "files": [
-    "leak-scan.mjs",
-    "workflow-paths.mjs"
-  ],
+  "files": [],
   "exceptions": []
 }
