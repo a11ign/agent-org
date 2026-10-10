@@ -45,6 +45,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 import { isShipped, noReleaseReason } from "./release-behind-main.ts";
 
 /** What an unreadable source prints. Never `0`. */
@@ -184,10 +185,13 @@ function declaredClones(env: Record<string, string | undefined> = process.env): 
   }
 }
 
+/** `git` with every inherited `GIT_*` variable scrubbed, so a leaked `GIT_DIR` cannot redirect a read of the clone onto another repository. */
+const runGit = (args: string[]): string => run("git", args, sandboxGitEnv());
+
 /** @param {string} clone @param {string[]} args @returns {boolean} whether `git -C clone <args>` exits 0; exit 1 is the answer "no", any other failure throws */
 function gitHolds(clone: string, args: string[]): boolean {
   try {
-    run("git", ["-C", clone, ...args]);
+    runGit(["-C", clone, ...args]);
     return true;
   } catch (err: any) {
     if (err?.status === 1) return false;
@@ -211,7 +215,7 @@ function cloneReader({ repository, clones }: { repository: Repository; clones: D
     if (fetched) return;
     fetched = true;
     try {
-      run("git", ["-C", path as string, "fetch", "--quiet", "--tags", "origin"]);
+      runGit(["-C", path as string, "fetch", "--quiet", "--tags", "origin"]);
     } catch (err: any) {
       fetchFailure = ` and the fetch of its tags failed (${String(err?.message ?? err).split("\n")[0]})`;
     }
@@ -234,7 +238,7 @@ function cloneReader({ repository, clones }: { repository: Repository; clones: D
     if (!answers([base, head])) return null;
     const ahead = gitHolds(path as string, ["merge-base", "--is-ancestor", base, head]);
     const status = ahead ? (base === head ? "identical" : "ahead") : gitHolds(path as string, ["merge-base", "--is-ancestor", head, base]) ? "behind" : "diverged";
-    const commits = run("git", ["-C", path as string, "rev-list", "--reverse", "--topo-order", `${base}..${head}`]).split("\n").filter((line) => line !== "");
+    const commits = runGit(["-C", path as string, "rev-list", "--reverse", "--topo-order", `${base}..${head}`]).split("\n").filter((line) => line !== "");
     tally.clone += 1;
     return { status, commits };
   };
@@ -249,7 +253,7 @@ function cloneReader({ repository, clones }: { repository: Repository; clones: D
     },
     parentOf: (commit: string): string | null => {
       if (path === null || !has(commit)) return null;
-      const [, ...parents] = run("git", ["-C", path, "rev-list", "--parents", "-n", "1", commit]).trim().split(" ");
+      const [, ...parents] = runGit(["-C", path, "rev-list", "--parents", "-n", "1", commit]).trim().split(" ");
       return parents.length === 1 ? parents[0] : null;
     },
     fellBack: <T>(read: () => T): T => {
@@ -847,7 +851,7 @@ function repositoryLines(reading: RepositoryReading): string[] {
   const age = reading.oldestUnreleasedMinutes === null ? "" : `; oldest unreleased merge is ${duration(reading.oldestUnreleasedMinutes)} old`;
   const lines = [reading.status === "no release yet" ? `- ${reading.repo}: no release yet${age}` : `- ${reading.repo}:`];
   const ancestry: string | null | undefined = (reading as { ancestry?: string | null }).ancestry;
-  if (typeof ancestry === "string" && ancestry.startsWith("github compare")) lines.push(`    Ancestry read from ${ancestry}`);
+  if (typeof ancestry === "string" && ancestry.startsWith("github compare")) lines.push(`  Ancestry read from ${ancestry}`);
   for (const metric of PRINTED) {
     const state = metricState(reading, metric);
     const body = state.state === "value" ? metric.text((reading as any)[metric.block]) : `${state.state} -- ${state.reason}`;
@@ -904,11 +908,11 @@ function startable(call: string): number {
 }
 
 /** @param {string} command @param {string[]} args @returns {string} */
-function run(command: string, args: string[]): string {
+function run(command: string, args: string[], env?: Record<string, string | undefined>): string {
   const call = callName(command, args);
   const timeout = Math.min(readLimits.timeoutMs, startable(call));
   try {
-    return execFileSync(command, args, { encoding: "utf8", maxBuffer: MAX_BUFFER, stdio: ["ignore", "pipe", "ignore"], timeout });
+    return execFileSync(command, args, { encoding: "utf8", maxBuffer: MAX_BUFFER, stdio: ["ignore", "pipe", "ignore"], timeout, ...(env === undefined ? {} : { env }) });
   } catch (err: any) {
     if (err?.code !== "ETIMEDOUT") throw err;
     readLimits.timedOut.push(call);

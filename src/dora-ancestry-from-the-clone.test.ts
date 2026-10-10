@@ -15,6 +15,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 import { readRepository, renderDora } from "./dora.ts";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -32,12 +33,12 @@ const REPOSITORY = { repo: "a11ign/frequent", release: { kind: "tag" as const },
 const scratch = mkdtempSync(join(tmpdir(), "dora-clone-"));
 after(() => rmSync(scratch, { recursive: true, force: true }));
 
-const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" } }).trim();
+const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", env: sandboxGitEnv({ GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" }) }).trim();
 
 /** A linear history of `commits` empty commits, returned oldest first. */
 function buildClone(name: string, commits: number): string[] {
   const dir = join(scratch, name);
-  execFileSync("git", ["init", "-q", dir]);
+  execFileSync("git", ["init", "-q", dir], { env: sandboxGitEnv() });
   git(dir, "config", "user.email", "t@example.invalid");
   git(dir, "config", "user.name", "t");
   const shas: string[] = [];
@@ -53,7 +54,7 @@ const cloneDir = join(scratch, "full");
 /** A clone holding the history but for the newest commit: fetched from the full one by sha, with no `origin` to fetch the rest from. */
 const shortDir = (() => {
   const dir = join(scratch, "short");
-  execFileSync("git", ["init", "-q", dir]);
+  execFileSync("git", ["init", "-q", dir], { env: sandboxGitEnv() });
   git(dir, "fetch", "-q", cloneDir, chain[RELEASES - 2]);
   return dir;
 })();
