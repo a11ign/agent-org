@@ -29,7 +29,8 @@ ACCEPTANCE-SOURCE: none (this pull request adds no file under .acceptance/ and i
 ACCEPTANCE: MISSING
 ```
 
-Mutation (each applied to `src/acceptance-file.ts`, run over `acceptance-file.test.ts` and `acceptance-commands.test.ts`, restored from a copy and `cmp` showed it byte-identical; baseline 33 tests green):
+Mutation:
+Each applied to `src/acceptance-file.ts` and run over `acceptance-file.test.ts` and `acceptance-commands.test.ts` (baseline 33 tests green), restored from a copy, and `cmp` showed it byte-identical:
 - `isBodyExemptAuthor` always false: 12 of 33 red. Always true: 13 red.
 - Exemption keyed on the body text naming `dependabot[bot]`, not the author: 2 red (3b and the CLI test).
 - Substring match instead of whole: 1 red. Case-insensitive match: 1 red. `app/dependabot` spelling dropped: 2 red. A third author added: 1 red.
