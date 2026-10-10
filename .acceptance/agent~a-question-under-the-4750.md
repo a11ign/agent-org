@@ -41,12 +41,12 @@ WOULD FILE: Raise the provider's confidence on model-routing/subsystems (28 of 4
 
 **What it shows:** the 24h and 7d windows hold 70 decisions answered entirely with HTTP 422 before 2026-10-10 07:26Z, which dilute every share, so they say nothing to file until those age out. The window since the fix says `score` and `subsystems` WOULD file; `mechanical`, `debugging` and `covered` would not.
 
-Acceptance: `cd ~/repos/agent-org && npx rstest run --config scripts/rstest/rstest.config.* src/provider-low-confidence.test.ts`
+Acceptance: `npx rstest run --config scripts/rstest/rstest.config.* src/provider-low-confidence.test.ts`
 
 Mutation: no question ever qualifies -> 18 red; the decisions edge dropped -> 2 red; the share edge dropped -> 6 red; the share edge inclusive (`>=`) -> 2 red; the decisions edge exclusive (`>`) -> 6 red; the open-row check ignored -> 1 red; the closed-in-window hold ignored -> 1 red; the provider's switched-on uses not consulted -> 2 red; an unreadable tracker read as none open -> 1 red; a listing that filled its limit read as whole -> 1 red; the median dropped from the body -> 1 red; `--question` settled without enough decisions -> 2 red. Each restored byte-identical (`diff`).
 
 ## Anything a reviewer should be sceptical of
 
-- The row's command is `cd ~/repos/agent-org && ...`; that path holds a release older than this change, so the command here is run from the worktree.
+- The row spells the command `cd ~/repos/agent-org && npx rstest run ...`; that checkout holds a release older than this change and has no such test file (the body check ran it there: `REFUSED: 0 tests run`), so the Acceptance line runs from the PR's own tree, as #4748's did.
 - The share is `underFloor / asked` as `provider-confidence.ts` defines it, with `asked` counting every decision in the window including those whose answers were 422; the live 2h figures above are a reading at a moment of a log that grows.
 - Filing needs `provider-low-confidence` in the project's `failure-classes.json`; without it `--file` is refused by `row-file`, and the refusal is reported per question, not swallowed.
