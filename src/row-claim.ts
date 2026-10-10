@@ -707,9 +707,16 @@ export function sessionEligibility(issueNumber: number, mySession: string, { run
   return refusal === null ? { reason: null, walked: [] } : chairmanYield(ask, refusal);
 }
 
+type ClaimedRows = { number: number; files: string[]; blockedBy: number[]; }[];
+
 type B4Ask = {
-  myFiles: string[] | null; otherPrFiles: (NonNullable<ReturnType<typeof lookupOpenPrFiles>>[number] & { repo?: string; })[] | null; issueNumber: number; adoptedBranch?: string;
+  myFiles: string[] | null; otherPrFiles: Parameters<typeof fileOverlapReason>[1] | null; issueNumber: number; adoptedBranch?: string;
   run: (args: string[]) => string; repo: string; repos?: readonly { key: string; repo: string; }[];
+  /**
+   * #4799: THE READS `check` HAS ALREADY MADE, and the one thing it must not do that the claim does. Absent for the claim, which reads its own and posts the sweep windows'
+   * row writes; present for `check`, which asks the same questions of what it read and writes nothing. `chairmanRows` is lazy because it is asked only after a refusal.
+   */
+  made?: { claimed: ClaimedRows | null; sweepFreeze: (myFiles: string[]) => string | null; chairmanRows: () => ReadonlySet<number> | null; };
 };
 
 /** The rows a listed pull request declares it closes, which `closes` may carry bare (as the hand-run fixtures write it). */
@@ -728,14 +735,14 @@ function b4Refusal(ask: B4Ask, only?: ReadonlySet<number>): string | null {
     // #2101: the row's OWN pull request is not a competitor for its files. Without this number B4
     // refuses a row whose PR was opened before its claim -- against the very work that would finish it.
     const { reason, emptyOtherPrs } = fileOverlapReason(myFiles, prs, { rowNumber: issueNumber, adoptedBranch });
-    for (const prNumber of only === undefined ? emptyOtherPrs : []) {
+    for (const prNumber of only === undefined && ask.made === undefined ? emptyOtherPrs : []) {
       process.stderr.write(`row-claim: ${prLabel(prNumber)} is open and reports ZERO changed files -- not folded `
         + "into \"no overlap\", just nothing to compare against right now. Worth a look if that surprises "
         + "you (B4, #462).\n");
     }
     if (reason) return reason;
   }
-  return claimedRegionsReason(myFiles, { issueNumber, openPrs: prs ?? [], run: ask.run, repo: ask.repo, repos: ask.repos, only });
+  return claimedRegionsReason(myFiles, { issueNumber, openPrs: prs ?? [], run: ask.run, repo: ask.repo, repos: ask.repos, only, made: ask.made });
 }
 
 /**
@@ -749,13 +756,23 @@ function b4Refusal(ask: B4Ask, only?: ReadonlySet<number>): string | null {
  * before B4 are inside or ahead of the same two halves and are untouched.
  */
 function chairmanYield(ask: B4Ask, refusal: string): { reason: string | null; walked: WalkedPast[]; } {
-  const chairmanRows = lookupChairmanRows({ run: ask.run, repo: ask.repo });
+  const verdict = chairmanYieldVerdict(ask, refusal);
+  if (verdict.reason === null) {
+    process.stderr.write(`row-claim: #${ask.issueNumber} is a chairman row, so B4 yields (#4793): claiming over ${walkedNames(verdict.walked)}. They rebase onto it when it lands.\n`);
+  }
+  return verdict;
+}
+
+/**
+ * #4799: THE DECISION, WITHOUT THE WORDS: what the claim does with a B4 refusal, and what `check` predicts of it from the reads it made. Both call this, so a
+ * `check` that says "yields" says it by the same code that lets the claim past, and the two cannot be taught different rules for whose a row is.
+ */
+function chairmanYieldVerdict(ask: B4Ask, refusal: string): { reason: string | null; walked: WalkedPast[]; } {
+  const chairmanRows = ask.made === undefined ? lookupChairmanRows({ run: ask.run, repo: ask.repo }) : ask.made.chairmanRows();
   if (chairmanRows === null || !chairmanRows.has(ask.issueNumber)) return { reason: refusal, walked: [] };
   const remaining = b4Refusal(ask, chairmanRows);
   if (remaining !== null) return { reason: remaining, walked: [] };
-  const walked = holdersWalkedPast(ask);
-  process.stderr.write(`row-claim: #${ask.issueNumber} is a chairman row, so B4 yields (#4793): claiming over ${walkedNames(walked)}. They rebase onto it when it lands.\n`);
-  return { reason: null, walked };
+  return { reason: null, walked: holdersWalkedPast(ask) };
 }
 
 /** Every holder that would have refused this row alone: the claimed rows and the pull requests, in the order B4's halves are read. */
@@ -765,7 +782,7 @@ function holdersWalkedPast(ask: B4Ask): WalkedPast[] {
   const openPrs = otherPrFiles ?? [];
   const prs = openPrs.filter((pr) => fileOverlapReason(myFiles, [pr], { rowNumber: issueNumber, adoptedBranch }).reason !== null)
     .map((pr): WalkedPast => ({ kind: "pr", number: pr.number, ...(pr.repo === undefined ? {} : { repo: pr.repo }) }));
-  const claimed = lookupClaimedRegions({ run: ask.run, repo: ask.repo }) ?? [];
+  const claimed = (ask.made === undefined ? lookupClaimedRegions({ run: ask.run, repo: ask.repo }) : ask.made.claimed) ?? [];
   // Each holder beside the asker alone, so the verdict is that holder's and the "lower number proceeds" rule sees the same two rows it saw.
   const rows = claimed.filter((holder) => holder.number !== issueNumber
     && claimedRegionsVerdict(myFiles, claimed.filter((row) => row.number === holder.number || row.number === issueNumber), { issueNumber, openPrs }) !== null)
@@ -817,12 +834,13 @@ function lookupChairmanRows({ run, repo }: { run: (args: string[]) => string; re
  *   `openPrs` is what the pull-request comparison was given, so a claimed row with a pull request is counted once, by its files
  * @returns {string | null}
  */
-function claimedRegionsReason(myFiles: string[], { issueNumber, openPrs, run, repo, repos, only }: { issueNumber: number; openPrs: { closes?: number[] | number | null; }[]; run: (args: string[]) => string; repo: string; repos?: readonly { key: string; repo: string; }[]; only?: ReadonlySet<number>; }): string | null {
+function claimedRegionsReason(myFiles: string[], { issueNumber, openPrs, run, repo, repos, only, made }: { issueNumber: number; openPrs: { closes?: number[] | number | null; }[]; run: (args: string[]) => string; repo: string; repos?: readonly { key: string; repo: string; }[]; only?: ReadonlySet<number>; made?: B4Ask["made"]; }): string | null {
   if (myFiles.length === 0) return null;
-  const claimed = lookupClaimedRegions({ run, repo });
+  const claimed = made === undefined ? lookupClaimedRegions({ run, repo }) : made.claimed;
   if (claimed === null) return claimedRowsUnread("retry the claim (the gate offers the row again by itself).");
   // #4603: A DECLARED SWEEP'S FREEZE BEFORE THE VERDICT -- it holds its whole Region for its window, pull request or none, and its refusal names the minutes left.
-  const frozen = sweepFreezeAtClaim({ myFiles, issueNumber, reads: { run, repo, ...(repos === undefined ? {} : { repos }) } });
+  // #4799: `check` asks the same freeze over the windows it read and writes nothing; the claim's half posts the stalled and overrun notices.
+  const frozen = made === undefined ? sweepFreezeAtClaim({ myFiles, issueNumber, reads: { run, repo, ...(repos === undefined ? {} : { repos }) } }) : made.sweepFreeze(myFiles);
   if (frozen) return frozen;
   // #4793: `only` is a chairman row's yield -- the holders that are chairman rows themselves, and the asker, whose own place in the list decides who proceeds.
   const holders = only === undefined ? claimed : claimed.filter((row) => only.has(row.number) || row.number === issueNumber);
@@ -2625,6 +2643,7 @@ export function reportB4(issueNumber: number, deps: {
     others?: (where?: { trackerRepo?: string; }) => { number: number; files: string[]; changedFiles: number; closes?: number[]; }[] | null;
     claimed?: (where?: { repo?: string; }) => { number: number; files: string[]; blockedBy: number[]; }[] | null;
     sweeps?: (where?: { repo?: string; }) => SweepRow[] | null;
+    chairmanRows?: (where?: { repo?: string; }) => ReadonlySet<number> | null;
 } = {}) {
   const write = deps.write ?? ((text: string) => process.stdout.write(text));
   const mine = deps.mine ?? lookupMyRegionFiles;
@@ -2637,22 +2656,65 @@ export function reportB4(issueNumber: number, deps: {
   const otherPrs = others({ trackerRepo: deps.repo });
   const lines = b4Lines(myFiles, otherPrs, issueNumber);
   // #3475: THE CLAIMED-ROW HALF, only when the first half could be asked -- a failed read there has already said INCONCLUSIVE.
-  if (myFiles !== null && otherPrs !== null) lines.push(claimedB4Line(myFiles, issueNumber, otherPrs, deps));
+  if (myFiles !== null && otherPrs !== null) {
+    const reads = readClaimedHalf(deps);
+    const yielded = chairmanYieldLine({ myFiles, issueNumber, openPrs: otherPrs, reads, repo: deps.repo, chairmanRows: chairmanRowsOf(deps) });
+    // #4799: A YIELD REPLACES THE VERDICT, NOT THE NOTES: `lines[0]` is `b4Lines`'s verdict, always, and what follows it is the empty-file-list note, which is true either way.
+    if (yielded === null) lines.push(claimedB4Line(myFiles, issueNumber, otherPrs, reads));
+    else lines.splice(0, 1, yielded);
+  }
   write(`${lines.join("\n")}\n`);
+}
+
+/**
+ * #4799: the reads of B4's claimed-row half, made once and handed to both the sentence and the yield, so `check` asks the tracker one question and the two
+ * agree on its answer. `sweeps` is read only for a list that was readable: an unread one has already said INCONCLUSIVE before a freeze is asked.
+ */
+function readClaimedHalf(deps: { repo?: string; claimed?: (where?: { repo?: string; }) => ClaimedRows | null; sweeps?: (where?: { repo?: string; }) => SweepRow[] | null; }): { claimed: ClaimedRows | null; sweeps: SweepRow[] | null; } {
+  const claimed = (deps.claimed ?? lookupClaimedRegions)({ repo: deps.repo });
+  if (claimed === null) return { claimed, sweeps: null };
+  // #4603: A caller that injects `claimed` supplies every read, so it reads no sweep unless it injects `sweeps` too -- as the pull-request reads beside it behave, and so a test of this line never reaches `gh`.
+  const sweeps = (deps.sweeps ?? (deps.claimed === undefined ? readSweepWindows : () => []))({ repo: deps.repo });
+  return { claimed, sweeps };
+}
+
+/**
+ * #4799: whose rows are the chairman's, as `check` asks it -- lazily, and only after a refusal. A caller that injects any other read supplies them all, and one that
+ * injects nothing here has declared no history to read: that is today's refusal, which is also what an unreadable history gives the claim.
+ */
+function chairmanRowsOf(deps: { repo?: string; mine?: unknown; others?: unknown; claimed?: unknown; chairmanRows?: (where?: { repo?: string; }) => ReadonlySet<number> | null; }): () => ReadonlySet<number> | null {
+  const { repo, chairmanRows } = deps;
+  if (chairmanRows !== undefined) return () => chairmanRows({ repo });
+  const readsLive = deps.mine === undefined && deps.others === undefined && deps.claimed === undefined;
+  return readsLive ? () => lookupChairmanRows({ run: (args) => defaultRun("gh", args), repo: repo ?? REPO }) : () => null;
+}
+
+/**
+ * #4799: `check`'s sentence for a CHAIRMAN row that B4 would refuse and the claim now lets past (a11ign#4793), or `null` when the claim would refuse it too, or
+ * there is nothing to refuse. It is the claim's own decision ({@link chairmanYieldVerdict}) over the reads `check` made, so what is printed is what the claim does:
+ * a label somebody else added, an unreadable history and a second chairman row all come back as `null`, and the lines are then exactly what they were.
+ */
+function chairmanYieldLine({ myFiles, issueNumber, openPrs, reads, repo, chairmanRows }: { myFiles: string[]; issueNumber: number; openPrs: NonNullable<B4Ask["otherPrFiles"]>; reads: { claimed: ClaimedRows | null; sweeps: SweepRow[] | null; }; repo?: string; chairmanRows: () => ReadonlySet<number> | null; }): string | null {
+  // An unread claimed list refuses the claim before a yield is asked (and the chairman history is not worth a round trip to learn nothing).
+  if (reads.claimed === null) return null;
+  const made = { claimed: reads.claimed, chairmanRows, sweepFreeze: (files: string[]) => sweepFreezeOf({ myFiles: files, issueNumber, sweeps: reads.sweeps }) };
+  const ask: B4Ask = { myFiles, otherPrFiles: openPrs, issueNumber, run: (args) => defaultRun("gh", args), repo: repo ?? REPO, made };
+  const refusal = b4Refusal(ask);
+  if (refusal === null) return null;
+  const { reason, walked } = chairmanYieldVerdict(ask, refusal);
+  return reason === null ? `B4: yields to the chairman's row (a11ign#4793); would walk past ${walkedNames(walked)}` : null;
 }
 
 /**
  * #3475: `check`'s sentence for the claimed-row half of B4: refused, could-not-ask, or clear -- the claim's own verdict, read-only.
  * The asking row's own `blockedBy` edge is not read: the claim refuses on an open one before it gets to B4, so it never reaches here.
  * @param {string[]} myFiles @param {number} issueNumber @param {{ closes?: number[] | number | null }[]} openPrs
- * @param {{ repo?: string, claimed?: (where?: { repo?: string }) => { number: number, files: string[], blockedBy: number[] }[] | null }} deps
+ * @param {{ claimed: { number: number, files: string[], blockedBy: number[] }[] | null, sweeps: SweepRow[] | null }} reads made once by {@link readClaimedHalf} (#4799)
  * @returns {string}
  */
-function claimedB4Line(myFiles: string[], issueNumber: number, openPrs: { closes?: number[] | number | null; }[], deps: { repo?: string; claimed?: (where?: { repo?: string; }) => { number: number; files: string[]; blockedBy: number[]; }[] | null; sweeps?: (where?: { repo?: string; }) => SweepRow[] | null; }): string {
-  const claimed = (deps.claimed ?? lookupClaimedRegions)({ repo: deps.repo });
-  if (claimed === null) return claimedRowsUnread("`row-claim claim` refuses on it.");
-  // #4603: A caller that injects `claimed` supplies every read, so it reads no sweep unless it injects `sweeps` too -- as the pull-request reads beside it behave, and so a test of this line never reaches `gh`.
-  const sweeps = (deps.sweeps ?? (deps.claimed === undefined ? readSweepWindows : () => []))({ repo: deps.repo });
+function claimedB4Line(myFiles: string[], issueNumber: number, openPrs: { closes?: number[] | number | null; }[], reads: { claimed: ClaimedRows | null; sweeps: SweepRow[] | null; }): string {
+  if (reads.claimed === null) return claimedRowsUnread("`row-claim claim` refuses on it.");
+  const { claimed, sweeps } = reads;
   const reason = myFiles.length === 0 ? null : sweepFreezeOf({ myFiles, issueNumber, sweeps }) ?? claimedRegionsVerdict(myFiles, claimed, { issueNumber, openPrs });
   return reason ? `B4 REFUSES THIS CLAIM: ${reason}` : "B4: no row already claimed holds any file in this row's Region.";
 }
