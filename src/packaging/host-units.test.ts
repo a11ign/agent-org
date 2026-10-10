@@ -2306,7 +2306,12 @@ test("#2332: END TO END -- `host:install` then `host:check --json` on a temp HOM
       gh: { ...declared.gh, workers: join(home, "workers"), leads: join(home, "leads") } }));
     // a11ign#4823: the seat wrapper installs into `<home>/.opencode/bin`, and `host:check` NOTES a pane whose PATH does not lead with it, so this
     // PATH does, as the real `~/.zshenv` does; before the install that directory holds no `claude`, so the control below reads the note.
-    const env = { PATH: `${home}/.opencode/bin:${bin}:${process.env.PATH}`, HOME: home, AGENT_ORG_HOST: hostFile };
+    // THE RESOLUTION IS STUBBED, NOT ASKED OF THE MACHINE: `host:check` runs `zsh -c 'command -v claude'`, and a runner without zsh (or without
+    // a `claude`) reads `null` BEFORE and AFTER the install, which made the after-reading fail where the control passed for the wrong reason.
+    // So `zsh` here is `sh` on the PATH this test set, and a `claude` after the wrapper's directory gives the control a real "elsewhere".
+    writeFileSync(join(bin, "zsh"), '#!/bin/sh\n[ "$1" = -c ] && exec /bin/sh -c "$2"\nexit 2\n', { mode: 0o755 });
+    writeFileSync(join(bin, "claude"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const env ={ PATH: `${home}/.opencode/bin:${bin}:${process.env.PATH}`, HOME: home, AGENT_ORG_HOST: hostFile };
     const entry = join(TOOL_ROOT, "src/host-units.ts");
     const run = (...args: string[]) => {
       const done = spawnSync(process.execPath, [entry, ...args], { encoding: "utf8", env });
@@ -2324,6 +2329,13 @@ test("#2332: END TO END -- `host:install` then `host:check --json` on a temp HOM
     const after = JSON.parse(run("--json").stdout);
     assert.deepEqual(identityFindings(JSON.stringify(after)), [], "after the install every identity file matches");
     assert.equal(shadowNote(JSON.stringify(after)), false, "after the install the pane's shell resolves `claude` to the wrapper, so there is no note");
+    // "COULD NOT BE ASKED" IS ITS OWN READING (and never a clean one): a shell that cannot answer leaves the note up, saying so, even with the wrapper installed.
+    const detailOf = (out: string) => JSON.parse(out).notes.find((n: { problem: string }) => /SEAT WRAPPER/.test(n.problem))?.detail ?? "";
+    const goodZsh = readFileSync(join(bin, "zsh"), "utf8");
+    writeFileSync(join(bin, "zsh"), "#!/bin/sh\nexit 127\n", { mode: 0o755 });
+    assert.match(detailOf(run("--json").stdout), /could not be asked what `claude` resolves to/);
+    writeFileSync(join(bin, "zsh"), goodZsh, { mode: 0o755 });
+    assert.match(detailOf(before), /resolves `claude` to .*\/stub-bin\/claude/, "and the control read a real `claude` elsewhere, not a failure to ask");
     // #3539: THE TEMP PROJECT HOLDS NO ROSTER AND THE TEMP HOME NO HERDR, so `host:check` adds its own `persistent seats: UNKNOWN` note; this test is about the identity files
     // and the compile cache, so the seat note is set aside here and read by `persistent-seat-running.test.ts`.
     const notSeats = <N extends { unit: string }>(notes: N[]) => notes.filter((n) => n.unit !== "persistent seats");
