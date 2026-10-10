@@ -50,8 +50,8 @@ export type Readings = { mechanical: number | null; subsystems: number | null; d
 
 /** The Region's largest size that is still "a small row" (the row's own number). */
 export const SMALL_ROW_FILES = 3;
-/** The complexity `score` a Haiku row may be at most, and the one a Sonnet/medium row is. */
-export const HAIKU_MAX_SCORE = 2;
+/** The complexity `score` a Haiku row may be at most (3 since a11ign#4877, the chairman's direction on the trial report, a11ign#4627), and the one a Sonnet/medium row is. */
+export const HAIKU_MAX_SCORE = 3;
 export const MEDIUM_SCORE = 3;
 // THE ROUTING THRESHOLDS (#4875, the chairman's starting values, to be calibrated from the probabilities the decision log now keeps). Each is a probability, and each is LOW on purpose:
 // a row sent down a tier wrongly is caught by the escalation (a Haiku start costs about $0.10 and a restart; a Sonnet/high row's median cost is $1.01), so the price of being wrong
@@ -511,7 +511,7 @@ function readingLines(answers: Record<string, Answer>): string[] {
   const { mechanical, subsystems, debugging, score } = readingsOf(answers);
   const yes = (name: "mechanical" | "subsystems" | "debugging", p: number | null): string => `P(${name}=yes)=${p === null ? `not given (${whyUnread(answers[name])})` : showP(p)}`;
   const levels = (upTo: number): string => `P(score<=${upTo})=${score === null ? `not given (${whyUnread(answers.score)})` : showP(scoreAtMost(score, upTo))}`;
-  return [yes("mechanical", mechanical), yes("subsystems", subsystems), yes("debugging", debugging), levels(HAIKU_MAX_SCORE), levels(MEDIUM_SCORE)];
+  return [yes("mechanical", mechanical), yes("subsystems", subsystems), yes("debugging", debugging), ...[...new Set([HAIKU_MAX_SCORE, MEDIUM_SCORE])].map(levels)];
 }
 
 /** THE WINDOW'S ANSWERS (unchanged by #4875): the values given at or over the floor, and why each one that was not given was not. */
