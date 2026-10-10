@@ -4,9 +4,20 @@
 // are one question with one answer, and a provider that fails it cannot be wired in.
 //
 // THE INTERFACE:
-//   { id, capabilities: { silent, buttons, replies, conversation, maxText, ratePerSecond?, destinations? },
+//   { id, capabilities: { silent, buttons, replies, conversation, maxText, ratePerSecond?, destinations?, edit?, pin? },
 //     send({ text, silent, actions, replyTo, audience }) -> { messageRef, silent, audience },
-//     poll?(cursor, signal) -> { updates, cursor } }
+//     poll?(cursor, signal) -> { updates, cursor },
+//     edit?({ messageRef, text, audience? }) -> { messageRef, unchanged },
+//     pin?({ messageRef, audience? }) -> { messageRef } }
+//
+// **EDIT AND PIN ARE OPT-IN (a11ign/a11ign#4744).** The asks list ticks a resolved ask in place (`edit`) and keeps one message of what is open
+// pinned (`pin`), and a provider that cannot do either says nothing: `capabilities.edit` and `capabilities.pin` are booleans when declared and
+// absent means false, so a provider written before them is still a provider, and its two checks are `skipped` WITH the reason, never a pass.
+// `edit` writes new text over a sent message and reports `unchanged: true` when the text already was that (a success: the state asked
+// for), `unchanged: false` when it changed it (this suite asks for the second only: the first needs the provider's own wire answer,
+// "message is not modified" for Telegram, which is the provider's own test to pin, as `disable_notification` is); it refuses empty text
+// and text over `maxText` as `send` does, and a provider that cannot split an edit across messages may refuse sooner. `pin` is silent by contract: bookkeeping must not ring. Both take the `audience` the
+// message was sent to (absent means `ask`), because a message ref means something only inside its own chat.
 //
 // **THE AUDIENCE IS WHICH DESTINATION (a11ign/a11ign#4742).** `ask` is the chairman's conversation: what needs him, one message per ask, and
 // the only place a button or a reply belongs. `announcement` is a one-way channel: nothing there may require a reply, so a provider REFUSES
@@ -31,6 +42,8 @@
 const CONTRACT_TEXT = "conformance probe";
 const POLL_DEADLINE_MS = 1000;
 const BOOLEAN_CAPABILITIES = Object.freeze(["silent", "buttons", "replies", "conversation"]);
+/** Declared only by a provider that can do them: absent is false, so these are checked WHEN present and asked for only when `true`. */
+const OPTIONAL_BOOLEAN_CAPABILITIES = Object.freeze(["edit", "pin"]);
 
 /** Who a message is for. `ask` needs the chairman; `announcement` is told to him and asks nothing. The only two there are. */
 export const AUDIENCE = Object.freeze({ ask: "ask", announcement: "announcement" });
@@ -85,6 +98,9 @@ const ALWAYS: Record<string, (provider: any) => Promise<void> | void> = {
     const caps = provider.capabilities;
     expect(caps !== null && typeof caps === "object", "capabilities must be an object");
     for (const name of BOOLEAN_CAPABILITIES) expect(typeof caps[name] === "boolean", `capabilities.${name} must be a boolean`);
+    for (const name of OPTIONAL_BOOLEAN_CAPABILITIES) {
+      expect(caps[name] === undefined || typeof caps[name] === "boolean", `capabilities.${name}, when declared, must be a boolean`);
+    }
     expect(Number.isInteger(caps.maxText) && caps.maxText > 0, "capabilities.maxText must be a positive integer");
     expect(caps.ratePerSecond === undefined || (Number.isFinite(caps.ratePerSecond) && caps.ratePerSecond > 0),
       "capabilities.ratePerSecond, when declared, must be a positive number");
@@ -168,6 +184,37 @@ const CONDITIONAL: Record<string, { applies: (provider: any) => boolean; reason:
       } else {
         await sendOk(provider, reply);
       }
+    },
+  },
+  "edit-changes-a-sent-message": {
+    applies: (provider) => provider.capabilities.edit === true,
+    reason: "capabilities.edit is not declared",
+    async run(provider) {
+      expect(typeof provider.edit === "function", "capabilities.edit is declared and edit is not a function");
+      const original = await sendOk(provider, { text: CONTRACT_TEXT });
+      const changed = await provider.edit({ messageRef: original.messageRef, text: `${CONTRACT_TEXT} edited` });
+      expect(changed?.messageRef === original.messageRef, `edit reported messageRef ${JSON.stringify(changed?.messageRef)} for ${original.messageRef}`);
+      expect(changed.unchanged === false, `an edit that changed the text reported unchanged=${JSON.stringify(changed.unchanged)}`);
+    },
+  },
+  "edit-refuses-empty-and-overlong-text": {
+    applies: (provider) => provider.capabilities.edit === true,
+    reason: "capabilities.edit is not declared",
+    async run(provider) {
+      const original = await sendOk(provider, { text: CONTRACT_TEXT });
+      expect(await rejects(() => provider.edit({ messageRef: original.messageRef, text: "" })), "an edit to empty text was accepted");
+      const overlong = "x".repeat(provider.capabilities.maxText + 1);
+      expect(await rejects(() => provider.edit({ messageRef: original.messageRef, text: overlong })), `an edit to a text of maxText+1 (${overlong.length}) characters was accepted`);
+    },
+  },
+  "pin-is-accepted": {
+    applies: (provider) => provider.capabilities.pin === true,
+    reason: "capabilities.pin is not declared",
+    async run(provider) {
+      expect(typeof provider.pin === "function", "capabilities.pin is declared and pin is not a function");
+      const original = await sendOk(provider, { text: CONTRACT_TEXT });
+      const pinned = await provider.pin({ messageRef: original.messageRef });
+      expect(pinned?.messageRef === original.messageRef, `pin reported messageRef ${JSON.stringify(pinned?.messageRef)} for ${original.messageRef}`);
     },
   },
   "poll-returns-updates-and-honours-abort": {

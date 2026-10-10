@@ -19,6 +19,8 @@ const CHAT_ID = 4242;
 const RETRY_AFTER_SECONDS = 7;
 const MS = 1000;
 
+const NOT_MODIFIED_BODY = { ok: false, error_code: 400, description: "Bad Request: message is not modified: specified new message content and reply markup are exactly the same" };
+
 /** @typedef {{ url: string, body: Record<string, any> }} Request */
 /** @typedef {{ status?: number, body?: Record<string, any>, headers?: Record<string, string> } | Error | "hang"} Reply `"hang"` never answers, and rejects only when the request's own signal aborts, as a real fetch does */
 
@@ -73,12 +75,13 @@ async function rejection(action: () => Promise<unknown>): Promise<any> {
 test("done-when 1: the provider passes runProviderConformance, and the checks it names actually RAN", async () => {
   const { provider } = harness();
   const { passed, skipped } = await runProviderConformance(provider);
-  for (const check of ["send-returns-message-ref", "message-refs-are-distinct", "silent-is-honoured", "max-text-is-enforced", "max-text-is-accepted-at-the-limit", "reply-to-is-accepted", "actions-are-accepted"]) {
+  for (const check of ["send-returns-message-ref", "message-refs-are-distinct", "silent-is-honoured", "max-text-is-enforced", "max-text-is-accepted-at-the-limit", "reply-to-is-accepted", "actions-are-accepted", "edit-changes-a-sent-message", "edit-refuses-empty-and-overlong-text", "pin-is-accepted"]) {
     assert.ok(passed.includes(check), `${check} did not run: ${JSON.stringify({ passed, skipped })}`);
   }
   // `poll` is the polling provider's (poll.ts), so it is skipped here WITH its reason, never silently passed. Buttons are drawn here (#3423): that check RUNS.
   assert.deepEqual(skipped.map((entry) => entry.check).sort(), ["poll-returns-updates-and-honours-abort"]);
   assert.equal(provider.capabilities.buttons, true, "and the provider says so");
+  assert.deepEqual([provider.capabilities.edit, provider.capabilities.pin], [true, true], "and it says it edits and pins, which is what asked those four checks");
 });
 
 test("done-when 2: a silent message carries disable_notification: true on the wire, an ordinary one carries no such key", async () => {
@@ -358,4 +361,72 @@ test("clearKeyboard: a message with no keyboard left is fine; any other refusal 
   const none = harness();
   for (const ref of ["abc", "", "5.5", "0", "-3", " 7"]) assert.ok((await rejection(() => none.provider.clearKeyboard(ref))) instanceof TypeError, ref);
   assert.equal(none.requests.length, 0);
+});
+
+const CHANNEL_CHAT_ID = -1001234567890;
+
+/** A provider with an announcements channel of its own, on the same scripted fetch as `harness`. */
+function withChannel() {
+  const telegram = fakeTelegram();
+  const provider = createTelegramProvider({ token: createSecret(TOKEN), chatId: CHAT_ID, announcementsChatId: CHANNEL_CHAT_ID, fetch: telegram.fetch, sleep: async () => {}, log: () => {} });
+  return { provider, requests: telegram.requests };
+}
+
+test("edit calls editMessageText with the chat, the message id and the text, plain, and reports the same ref as changed", async () => {
+  const { provider, requests } = harness();
+  const result = await provider.edit({ messageRef: "501", text: "✅ publish the release — published *now* <b>" });
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, `https://api.telegram.org/bot${TOKEN}/editMessageText`);
+  assert.deepEqual(requests[0].body, { chat_id: CHAT_ID, message_id: 501, text: "✅ publish the release — published *now* <b>" });
+  assert.deepEqual(result, { messageRef: "501", unchanged: false });
+});
+
+test("edit: 'message is not modified' is a success that reports unchanged, and is not logged as a refusal", async () => {
+  const h = harness({ script: [{ status: 400, body: NOT_MODIFIED_BODY }] });
+  assert.deepEqual(await h.provider.edit({ messageRef: "501", text: "the same" }), { messageRef: "501", unchanged: true });
+  assert.equal(h.requests.length, 1, "and it is not retried");
+  assert.deepEqual(h.logged, []);
+  // The control: any OTHER 400 is still a failure, named by its method, and is logged as one.
+  const gone = harness({ script: [{ status: 400, body: { ok: false, error_code: 400, description: "Bad Request: message to edit not found" } }] });
+  const error = await rejection(() => gone.provider.edit({ messageRef: "501", text: "x" }));
+  assert.ok(error instanceof TelegramSendError);
+  assert.match(error.message, /editMessageText failed: 400 .*not found/);
+  assert.equal(gone.logged.length, 1);
+});
+
+test("edit refuses empty text, text past one message, and a ref that is not an id, all before any request", async () => {
+  const { provider, requests } = harness();
+  for (const text of ["", undefined]) assert.ok((await rejection(() => provider.edit({ messageRef: "501", text: text as any }))) instanceof RangeError, String(text));
+  assert.ok((await rejection(() => provider.edit({ messageRef: "501", text: "x".repeat(TELEGRAM_MAX_MESSAGE + 1) }))) instanceof RangeError);
+  for (const ref of ["abc", "", "0", "-3"]) assert.ok((await rejection(() => provider.edit({ messageRef: ref, text: "x" }))) instanceof TypeError, ref);
+  assert.ok((await rejection(() => provider.edit({ messageRef: "501", text: "x", audience: "everyone" }))) instanceof RangeError);
+  assert.equal(requests.length, 0);
+  await provider.edit({ messageRef: "501", text: "x".repeat(TELEGRAM_MAX_MESSAGE) });
+  assert.equal(requests.length, 1, "one message's worth exactly is accepted");
+});
+
+test("pin calls pinChatMessage with disable_notification: true, and reports the same ref", async () => {
+  const { provider, requests } = harness();
+  const result = await provider.pin({ messageRef: "501" });
+  assert.equal(requests[0].url, `https://api.telegram.org/bot${TOKEN}/pinChatMessage`);
+  assert.deepEqual(requests[0].body, { chat_id: CHAT_ID, message_id: 501, disable_notification: true });
+  assert.deepEqual(result, { messageRef: "501" });
+});
+
+test("pin: a refusal is thrown with its method, and a ref that is not an id is refused before a request", async () => {
+  const denied = harness({ script: [{ status: 400, body: { ok: false, error_code: 400, description: "Bad Request: message to pin not found" } }] });
+  const error = await rejection(() => denied.provider.pin({ messageRef: "501" }));
+  assert.match(error.message, /pinChatMessage failed: 400 .*not found/);
+  const none = harness();
+  for (const ref of ["abc", "", "0"]) assert.ok((await rejection(() => none.provider.pin({ messageRef: ref }))) instanceof TypeError, ref);
+  assert.equal(none.requests.length, 0);
+});
+
+test("edit and pin go to the chat the message is in: the ask chat unless the announcement channel is named", async () => {
+  const { provider, requests } = withChannel();
+  await provider.edit({ messageRef: "7", text: "an ask" });
+  await provider.edit({ messageRef: "7", text: "an announcement", audience: "announcement" });
+  await provider.pin({ messageRef: "7", audience: "ask" });
+  await provider.pin({ messageRef: "7", audience: "announcement" });
+  assert.deepEqual(requests.map((request) => request.body.chat_id), [CHAT_ID, CHANNEL_CHAT_ID, CHAT_ID, CHANNEL_CHAT_ID]);
 });
