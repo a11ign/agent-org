@@ -11,7 +11,9 @@ Not built here, and refused with a reason: `dispatch` and `conflict` in a keyed 
 
 Evidence (this branch, agent-org worktree): `src/row-claim.test.ts` 16/16 pass; `src/packaging/multi-board-claim.test.ts`, `src/row-claim-writes.test.ts`, `src/row-claim-reads-together.test.ts` and the other 48 test files that import `row-claim` (`work-gate-claim-stalled`, `wake-spawn-worktree`, `row-claim-session-eligibility`, `spare-claim-recorded-at-claim`, ...) pass unchanged, except `src/packaging/row-file.test.ts`, which fails the same 8 of 184 tests at `origin/main` in this checkout (its fixtures assume the first tracker's repository); `tsc --noEmit` reports only the pre-existing `mjs-ratchet.test.ts` missing-module errors. Seventeen mutations each turn at least one named case red and restore green: the claim's first read, fresh read, re-read, body read, `blockedBy` read and B2/B4 read, the label PUT, the label creates, the claim comment, and the decline's first read, verify re-read, label write and release comment each pointed at the first tracker; the card move dropping the tracker on claim and on decline; a snapshot taken on another board; and the refusal not returning `null` for `claim`.
 
-Acceptance: `cd /home/agent/repos/agent-org && npx rstest run --config scripts/rstest/rstest.config.* src/row-claim.test.ts`
+Acceptance: `bash -c 'cd /home/agent/repos/wt-agent-org-575 && AGENT_ORG_HOST=/home/agent/repos/a11y-witness/.agent-org/host.json npx rstest run --config scripts/rstest/rstest.config.ts src/row-claim.test.ts'`
+
+(The row's own line is `cd /home/agent/repos/agent-org && npx rstest run --config scripts/rstest/rstest.config.* src/row-claim.test.ts`; the file it names is new in this pull request, so it can only run from this worktree, and the host variable is the one every run of the suite needs.)
 
 Closes a11ign/agent-org#575
 
