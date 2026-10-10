@@ -25,6 +25,9 @@ import { sharedFileOrders } from "./shared-file-orders.ts";
 import { REPO } from "../project-identity.ts";
 import { VERIFY_STATE } from "../verify-stamp.ts";
 import { equivalentHeads } from "../review-verdict.ts";
+// #705: the definition moved to a leaf the hand-fix ledger can also import; re-exported so a reader of it from here is unchanged.
+import { DEPENDENCY_BOT_LOGIN } from "../dependency-bot-login.ts";
+export { DEPENDENCY_BOT_LOGIN } from "../dependency-bot-login.ts";
 // #2619 (child 3d of #69): the `session:` prefix and the `blocked` label, moved to the project's
 // declared vocabulary. (The `"ready"` action `kind` a few lines below is `gh pr ready`'s draft-status
 // flip -- a built-in GitHub PR field, not this project's `ready` row label -- so it stays a literal.)
@@ -708,13 +711,6 @@ const MS_PER_MINUTE = 60_000;
  * does not fix code, so every order that fell back to it was a turn spent finding out whose the PR was.
  */
 export const UNOWNED_PR_SESSION = "ceo";
-
-/**
- * THE LOGIN A DEPENDENCY BOT OPENS A PULL REQUEST AS (#4624). `gh pr list --json author` spells Dependabot `app/dependabot` (measured on
- * a11ign/a11ign#4470), the REST API `dependabot[bot]`, and a GraphQL `Bot` node plain `dependabot`: all three are the same author. Renovate is
- * named too, because ADR 0041 keeps it as the fallback and the day it is switched on must not reopen this class.
- */
-export const DEPENDENCY_BOT_LOGIN = /^(?:app\/)?(?:dependabot|renovate)(?:\[bot\])?$/i;
 
 /** Whether a bot that updates dependencies opened `pr`. No session works such a pull request, so no claim, label or branch can name one. */
 export function isDependencyBotPr(pr: any): boolean {
