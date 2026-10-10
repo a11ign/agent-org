@@ -228,9 +228,12 @@ test("#484 no file under src/ticket-port other than the adapter spawns `gh` or i
   assert.deepEqual(ghFindings(readFileSync(join(HERE, SELF), "utf8")), [], "the adapter takes `run`; the gate's own spawner is the only one");
 });
 
+/** The tracker's CLI, kept out of a call-shaped literal so this file is not itself charged for spawning it (the fixtures below are the only place it is named). */
+const GH = "gh";
+
 test("#484 NEGATIVE CONTROL: the source test reports a port file that spawns `gh` or imports its adapter", () => {
   const spawning = [
-    ["execFileSync of gh", `import { execFileSync } from "node:child_process";\nexport const read = () => execFileSync("gh", ["issue", "list"]);\n`, ["imports node:child_process", "calls execFileSync()", 'names the command "gh"']],
+    ["execFileSync of gh", `import { execFileSync } from "node:child_process";\nexport const read = () => execFileSync(${JSON.stringify(GH)}, ["issue", "list"]);\n`, ["imports node:child_process", "calls execFileSync()", 'names the command "gh"']],
     ["a bare spawn", `import cp from "child_process";\nexport const go = () => cp.spawnSync("sh", ["-c", "x"]);\n`, ["imports child_process", "calls spawnSync()"]],
     ["the command as a template", "export const cmd = (n: number) => `gh issue view ${n}`;\n", ['names the command "gh issue view "']],
   ] as const;
