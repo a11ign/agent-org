@@ -59,14 +59,15 @@ const ok = (body: unknown) => ({ ok: true, status: 200, json: async () => body }
 /** Informational only, and asking nothing of this seat. */
 const INFORMATIONAL = { "informational-only": "yes", "asks-this-seat": "no" };
 
-test("the real provider's floor decides: 0.9 digests and 0.89 delivers, and a provider error delivers", async () => {
+test("the real provider's PROBABILITIES decide: 0.9 and 0.89 both digest, an unsure informational reading delivers, and a provider error delivers", async () => {
   const run = async (reply: () => unknown) => {
     const path = digestFile();
     const out = await routeOrders([order(1)], deps(path, { triage: undefined, triageDeps: realProvider(reply).triageDeps }));
     return { delivered: keys(out.deliver), held: readDigest(path).length };
   };
   assert.deepEqual(await run(() => ok(answersFor(INFORMATIONAL, 0.9))), { delivered: [], held: 1 });
-  assert.deepEqual(await run(() => ok(answersFor(INFORMATIONAL, 0.89))), { delivered: ["product-manager/org-health/1"], held: 0 });
+  assert.deepEqual(await run(() => ok(answersFor(INFORMATIONAL, 0.89))), { delivered: [], held: 1 }, "the host's floor no longer decides (#4889)");
+  assert.deepEqual(await run(() => ok(answersFor(INFORMATIONAL, 0.2))), { delivered: ["product-manager/org-health/1"], held: 0 }, "p(informational) 0.6 is under 0.65");
   assert.deepEqual(await run(() => { throw new Error("down"); }), { delivered: ["product-manager/org-health/1"], held: 0 });
   assert.deepEqual(await run(() => ({ ok: false, status: 503 })), { delivered: ["product-manager/org-health/1"], held: 0 });
 });
@@ -120,8 +121,8 @@ test("each case the row names, composed in code over a fake provider, with its n
   assert.deepEqual(await route(INFORMATIONAL), { route: "digest", asked: 1 });
   assert.deepEqual(await route({ ...INFORMATIONAL, "asks-this-seat": "yes" }), { route: "wake", asked: 1 });
   assert.deepEqual(await route({ "asks-this-seat": "yes" }), { route: "wake", asked: 1 });
-  // ONE confident answer that it asks nothing of this seat digests (a11ign#4627 item 2); five quiet answers do not
-  assert.deepEqual(await route({ "asks-this-seat": "no" }), { route: "digest", asked: 1 });
+  // composed on P(informational only) (#4889): "asks nothing of this seat" alone no longer holds an order, and five quiet answers do not
+  assert.deepEqual(await route({ "asks-this-seat": "no" }), { route: "wake", asked: 1 }, "p(informational) is 0.025");
   assert.deepEqual(await route({}), { route: "wake", asked: 1 }, "CONTROL: it asks something of this seat, and nothing says it can wait");
   // the provider's own reading of a red main or a chairman direction wins over the rest
   assert.deepEqual(await route({ ...INFORMATIONAL, "names-red-main": "yes" }), { route: "wake", asked: 1 });
