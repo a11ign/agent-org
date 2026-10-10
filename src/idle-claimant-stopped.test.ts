@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { claimStallTick } from "./work-gate.ts";
 import { claimRecordComment } from "./row-claim.ts";
-import { CLAIMED_WORKER_STALLED, STALL_INTERVAL_MS, recordStalledNudges, stalledNudgeEvents } from "./claim-stall.ts";
+import { CLAIMED_WORKER_STALLED, STALL_INTERVAL_MS, STALL_UNTOLD_RELEASE_MS, recordStalledNudges, stalledNudgeEvents } from "./claim-stall.ts";
 import { FAILURE_LEDGER_FILE, parseFailureLedger, repeatsIn } from "./failure-ledger.ts";
 import { WORKER_STATE_DIR, writeDeclaration, type Declaration } from "./worker-state.ts";
 import { IDLE_CLAIMANT_MINUTES, STOPPED_CLAIMANT_MINUTES, WAIT_FIELDS, isStoppedHolder, stoppedNudgePrompt } from "./idle-claimant.ts";
@@ -43,14 +43,15 @@ type Fixture = { rows?: ReturnType<typeof rowOf>[]; comments?: ReturnType<typeof
 const fixture = (over: Fixture = {}): Required<Pick<Fixture, "rows" | "comments" | "prs" | "workers" | "stateDir">> & Fixture => ({
   rows: [rowOf(4001, "worker-9")], comments: [claimed(4001, "worker-9")], prs: [], workers: { "worker-9": "idle" }, stateDir: "/state", ...over });
 
-/** A tick at `minutes` after T0 over the fixture, with the nudge memory in `memory`, which survives between calls as the state file does. */
-function tickAt(minutes: number, f: ReturnType<typeof fixture>, memory: Record<string, unknown>): Order[] {
-  const orders = claimStallTick({ rows: f.rows, claimedComments: f.comments, openPrs: f.prs, mergedPrs: null, io: noGit, repo: "/repo",
+/** A tick at `minutes` after T0 over the fixture, with the nudge memory in `memory`, which survives between calls as the state file does: EVERY order, a release's too. */
+function rawTickAt(minutes: number, f: ReturnType<typeof fixture>, memory: Record<string, unknown>): Order[] {
+  return claimStallTick({ rows: f.rows, claimedComments: f.comments, openPrs: f.prs, mergedPrs: null, io: noGit, repo: "/repo",
     now: T0 + minutes * MIN, restartAt: null, agents: listing(f.workers), stateDir: f.stateDir, ledger: () => "", log: (line: string) => f.log?.push(line),
     read: () => JSON.parse(JSON.stringify(memory)), write: (_path: string, state: object) => { for (const k of Object.keys(memory)) delete memory[k]; Object.assign(memory, state); },
     ...(f.record === undefined ? {} : { record: f.record }) } as never) as unknown as Order[];
-  return orders.filter((o) => o.release === undefined);
 }
+/** {@link rawTickAt} without the release orders: the nudges, which is what the cases about WHEN a holder is nudged count. */
+const tickAt = (minutes: number, f: ReturnType<typeof fixture>, memory: Record<string, unknown>): Order[] => rawTickAt(minutes, f, memory).filter((o) => o.release === undefined);
 /** The minutes, one per tick a minute apart from 0 to `until`, at which this fixture nudges. */
 function nudgedAt(f: ReturnType<typeof fixture>, until = 60): number[] {
   const memory: Record<string, unknown> = {};
@@ -170,66 +171,80 @@ test("the order is told apart by its facts: isStoppedHolder is the one definitio
   assert.doesNotMatch(stoppedNudgePrompt({ row: 4001, branch: null, idleMinutes: 10, releaseMinutes: 45, canRelease: false }), /RELEASED/);
 });
 
-// --- the failure ledger: ONE `claimed-worker-stalled` line per nudge ---------------------------------------------------------------
+// --- the failure ledger: ONE `claimed-worker-stalled` line per UNANSWERED nudge (#4826) ----------------------------------------------
+// The line is written by the RELEASE that follows a nudge nothing answered, never by the nudge: a nudge that brought the holder back is the guard working.
+// The ledger's own twin of every case below is `claimed-worker-stalled-ledger.test.ts`, which runs the same writer over answered and unanswered nudges.
+
+/** The minutes after a nudge at which an UNDELIVERED one (the `ledger: () => ""` of this fixture) releases its claim, which is the unanswered nudge's event. */
+const UNTOLD_RELEASE_MINUTES = STALL_UNTOLD_RELEASE_MS / MIN;
 
 function withDir<T>(body: (dir: string) => T): T {
   const dir = mkdtempSync(join(tmpdir(), "idle-claimant-stopped-"));
   try { return body(dir); } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 const ledgerOf = (dir: string) => parseFailureLedger(readFileSync(join(dir, FAILURE_LEDGER_FILE), "utf8"));
+const noLedger = (dir: string) => assert.throws(() => readFileSync(join(dir, FAILURE_LEDGER_FILE), "utf8"), /ENOENT/);
 
-test("each nudge appends one `claimed-worker-stalled` line, ref `<session>/#<row>/<nudge time>`; the same episode seen again appends none", () => withDir((dir) => {
+test("a fresh nudge appends NOTHING; the release after it appends one `claimed-worker-stalled` line, ref `<session>/#<row>/<nudge time>`, and the ticks after it none", () => withDir((dir) => {
   const f = fixture({ stateDir: dir });
   const memory: Record<string, unknown> = {};
   for (let m = 0; m < M; m++) tickAt(m, f, memory);
-  assert.throws(() => readFileSync(join(dir, FAILURE_LEDGER_FILE), "utf8"), /ENOENT/, "nothing before the nudge: no event for a worker that is only idle");
-  assert.equal(tickAt(M, f, memory).length, 1);
-  assert.deepEqual(ledgerOf(dir), [{ classKey: CLAIMED_WORKER_STALLED, at: T0 + M * MIN, ref: `worker-9/#4001/${T0 + M * MIN}` }]);
+  assert.equal(tickAt(M, f, memory).length, 1, "the nudge is sent");
+  noLedger(dir);
   tickAt(M + 1, f, memory);
-  tickAt(M + 2, f, memory);
-  assert.equal(ledgerOf(dir).length, 1, "the following ticks read `nudged`: the same episode is not a second event");
+  tickAt(M + UNTOLD_RELEASE_MINUTES - 1, f, memory);
+  noLedger(dir);
+  assert.equal(rawTickAt(M + UNTOLD_RELEASE_MINUTES, f, memory).filter((o) => o.release !== undefined).length, 1, "the claim is released: nothing moved after the nudge");
+  assert.deepEqual(ledgerOf(dir), [{ classKey: CLAIMED_WORKER_STALLED, at: T0 + (M + UNTOLD_RELEASE_MINUTES) * MIN, ref: `worker-9/#4001/${T0 + M * MIN}` }],
+    "the ref names the NUDGE's time, which is the wake ledger's key, and not the tick the release was read on");
+  tickAt(M + UNTOLD_RELEASE_MINUTES + 1, f, memory);
+  assert.equal(ledgerOf(dir).length, 1, "the following ticks are not a second event");
 }));
 
-test("two nudges for different rows read back as ONE repeat of the class through `repeatsIn`; one nudge alone is not (twin)", () => withDir((dir) => {
+test("two unanswered nudges for different rows read back as ONE repeat of the class through `repeatsIn`; one alone is not (twin)", () => withDir((dir) => {
   const two = fixture({ stateDir: dir, rows: [rowOf(4001, "worker-9"), rowOf(4002, "worker-10")], comments: [claimed(4001, "worker-9"), claimed(4002, "worker-10")],
     workers: { "worker-9": "idle", "worker-10": "idle" } });
   const memory: Record<string, unknown> = {};
-  for (let m = 0; m <= M; m++) tickAt(m, two, memory);
+  for (let m = 0; m <= M + UNTOLD_RELEASE_MINUTES; m++) tickAt(m, two, memory);
   const entries = ledgerOf(dir);
   assert.equal(entries.length, 2);
   assert.deepEqual(entries.map((e) => e.ref).sort(), [`worker-10/#4002/${T0 + M * MIN}`, `worker-9/#4001/${T0 + M * MIN}`]);
   assert.deepEqual(repeatsIn(entries, { windowMs: 24 * 60 * MIN }).map((r) => [r.classKey, r.refs.length]), [[CLAIMED_WORKER_STALLED, 2]]);
-  assert.deepEqual(repeatsIn(entries.slice(0, 1), { windowMs: 24 * 60 * MIN }), [], "the control: one nudge is an event and not a repeat");
+  assert.deepEqual(repeatsIn(entries.slice(0, 1), { windowMs: 24 * 60 * MIN }), [], "the control: one unanswered nudge is an event and not a repeat");
 }));
 
-test("a nudge of the 45-minute clock (a PR holder) is a stall nudge too and is recorded; a release and a `working` tick are not", () => withDir((dir) => {
+test("a holder with an open pull request is nudged by the 45-minute clock and NEVER released (#2999), so it is no event; a `working` worker is not nudged at all", () => withDir((dir) => {
   const memory: Record<string, unknown> = {};
   const pr = fixture({ stateDir: dir, prs: [prOf(4001)] });
-  for (let m = 0; m <= IDLE_CLAIMANT_MINUTES; m++) tickAt(m, pr, memory);
-  assert.equal(ledgerOf(dir).length, 1);
+  const nudges = new Set<string>(); // one episode is one `causeKey`, offered again on every tick of its window
+  for (let m = 0; m <= IDLE_CLAIMANT_MINUTES + UNTOLD_RELEASE_MINUTES; m++) tickAt(m, pr, memory).forEach((o) => nudges.add(o.causeKey));
+  assert.equal(nudges.size, 1, "the control: the nudge IS sent, so the empty ledger below is not a ledger of a holder nobody nudged");
+  noLedger(dir);
   withDir((other) => {
     const working = fixture({ stateDir: other, workers: { "worker-9": "working" } });
     const mem: Record<string, unknown> = {};
     for (let m = 0; m <= M + 5; m++) tickAt(m, working, mem);
-    assert.throws(() => readFileSync(join(other, FAILURE_LEDGER_FILE), "utf8"), /ENOENT/);
+    noLedger(other);
   });
 }));
 
 // --- a recorder never throws into the tick, and a refused append is reported -------------------------------------------------------
 
-test("a refused append is REPORTED and does not throw out of the tick: the nudge is still ordered", () => withDir((dir) => {
+test("a refused append is REPORTED and does not throw out of the tick: the release is still ordered", () => withDir((dir) => {
   mkdirSync(join(dir, FAILURE_LEDGER_FILE)); // a directory where the file should be: the append (and the read of what is logged) is refused
   const reported: string[] = [];
   const f = fixture({ stateDir: dir, log: [], record: (tick) => recordStalledNudges({ ...tick, report: (line) => reported.push(line) }) });
   const memory: Record<string, unknown> = {};
-  for (let m = 0; m < M; m++) tickAt(m, f, memory);
-  const orders = tickAt(M, f, memory);
-  assert.equal(orders.length, 1, "the order the tick exists to send is not lost to the recorder");
+  for (let m = 0; m <= M; m++) tickAt(m, f, memory);
+  const orders = rawTickAt(M + UNTOLD_RELEASE_MINUTES, f, memory);
+  assert.equal(orders.filter((o) => o.release !== undefined).length, 1, "the order the tick exists to send is not lost to the recorder");
   assert.ok(reported.some((line) => line.includes("NOT RECORDED") && line.includes(`worker-9/#4001/${T0 + M * MIN}`)), `the refusal is said: ${JSON.stringify(reported)}`);
 }));
 
+const UNANSWERED = { kind: "release", why: "stalled", nudgedAt: T0 - 30 * MIN };
+
 test("a recorder that itself throws is caught by recordStalledNudges and said (the twin is the same call with a working recorder)", () => {
-  const readings = [{ facts: { session: "worker-9", row: 4001 }, reading: { kind: "nudge" } }] as never;
+  const readings = [{ facts: { session: "worker-9", row: 4001 }, reading: UNANSWERED }] as never;
   const said: string[] = [];
   const result = recordStalledNudges({ readings, now: T0, logPath: "/nowhere/x", report: (line) => said.push(line), record: () => { throw new Error("disk is on fire\nsecond line"); } });
   assert.deepEqual({ appended: result.appended, refused: result.refused }, { appended: 0, refused: "disk is on fire" });
@@ -239,13 +254,15 @@ test("a recorder that itself throws is caught by recordStalledNudges and said (t
   const fine = recordStalledNudges({ readings, now: T0, logPath: "/nowhere/x", report: () => undefined,
     record: ({ events }) => { appended.push(...events.map((e) => e.ref)); return { appended: events.length, skipped: 0, refused: null }; } });
   assert.equal(fine.appended, 1);
-  assert.deepEqual(appended, [`worker-9/#4001/${T0}`]);
+  assert.deepEqual(appended, [`worker-9/#4001/${T0 - 30 * MIN}`]);
 });
 
-test("only a FRESH nudge is an event: `nudged`, `release`, `moving` and `idle-watch` readings make none", () => {
+test("only an UNANSWERED nudge is an event: a stalled release that names its nudge; `nudge`, `nudged`, `moving`, `idle-watch`, another release and a nudge-less one make none", () => {
   const facts = { session: "worker-9", row: 4001 };
-  const kinds = [{ kind: "nudge" }, { kind: "nudged" }, { kind: "release" }, { kind: "moving" }, { kind: "idle-watch" }, { kind: "pr-owned" }, { kind: "waiting" }];
-  const events = stalledNudgeEvents(kinds.map((reading) => ({ facts, reading })) as never, T0);
-  assert.deepEqual(events, [{ classKey: CLAIMED_WORKER_STALLED, ref: `worker-9/#4001/${T0}`, at: T0 }]);
+  const kinds = [{ kind: "nudge" }, { kind: "nudged", nudgedAt: T0 - 30 * MIN }, { kind: "release", why: "merged", nudgedAt: null }, { kind: "release", why: "stalled", nudgedAt: null },
+    { kind: "moving" }, { kind: "idle-watch" }, { kind: "pr-owned" }, { kind: "waiting" }];
+  assert.deepEqual(stalledNudgeEvents(kinds.map((reading) => ({ facts, reading })) as never, T0), [], "the control's twin is the line below: the same fixture, one more reading");
+  const events = stalledNudgeEvents([...kinds, UNANSWERED].map((reading) => ({ facts, reading })) as never, T0);
+  assert.deepEqual(events, [{ classKey: CLAIMED_WORKER_STALLED, ref: `worker-9/#4001/${T0 - 30 * MIN}`, at: T0 }]);
   assert.deepEqual(stalledNudgeEvents(undefined, T0), []);
 });
