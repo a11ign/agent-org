@@ -12,6 +12,10 @@
 // a `--blocked-by` edge, an `answer:<session>` or `needs:chairman` label), because the gate, not the engineer, holds that wait; and a row, a seat or a date that
 // is only CITED (`see #4437`, `routing: ceo's comments`, `before 2026-10-20`, a deadline being a bound on the work and no wait for it).
 //
+// A FOURTH KIND IS NOT A REFUSAL (a11ign/agent-org#719): `live-check`, an item that names a READING of the live system after the merge (a quoted record on a row, a switch read on,
+// a log line after the merge, a published version). `row-file` does not refuse it and `unfinishableItems` does not return it; `liveCheckItems` is its own reader, which
+// `verify-row.ts` files as the verify row. A seat's act stays `seat-act` and another row's outcome stays `row-outcome`: neither is a reading a verify row could take.
+//
 // A LEAF: pure, no network and no `gh`. `row-file.ts` owns the call and the exit code; the clock and the label list arrive as arguments.
 import { parseWaits, namedDoneWhens } from "./wait-condition.ts";
 import { notBeforeDate } from "./waiting-condition.ts";
@@ -19,6 +23,8 @@ import { ANSWER_PREFIX, NEEDS_CHAIRMAN_LABEL } from "./project-vocabulary.ts";
 
 export type UnfinishableClass = "future-time" | "seat-act" | "row-outcome";
 export type UnfinishableItem = { text: string; kind: UnfinishableClass; evidence: string; rows: number[]; };
+/** A Done-when item that names a reading of the live system after the merge; `evidence` is the phrase that said so, `rows` is always empty (the shape of {@link UnfinishableItem}). */
+export type LiveCheckItem = { text: string; kind: "live-check"; evidence: string; rows: number[]; };
 /** What the row already carries as data. `blockedBy` and `labels` are the filing's own arguments, which the body cannot hold. */
 export type RowDeclarations = { blockedBy?: readonly number[]; labels?: readonly string[]; };
 
@@ -82,6 +88,23 @@ export function doneWhenItems(body: string | null | undefined): string[] {
   return items;
 }
 
+// A LIVE CHECK, each pattern a reading nobody can take before the merge. Deliberately NARROW: a false negative is caught by the reopen rule (a build closed without its
+// live quote), a false positive files a row nobody can finish. So a bare `live` or `quoted` is not enough, and `live reading` alone is not a pattern: a build row that
+// DESCRIBES its verify row ("the live reading is its own row") would file one for the sentence.
+const WITHIN = "(?:[^.]|\\.(?=\\d))*?"; // up to the end of the sentence: a dot inside `1.4.2` is not one
+const ROW_QUOTED_ON = "(?:on|in|to)\\s+(?:the\\s+)?(?:row\\s+|issue\\s+)?(?:[\\w.-]+/[\\w.-]+)?#(\\d+)";
+const LIVE_CHECK: readonly RegExp[] = [
+  new RegExp(`\\bquot(?:e|es|ed|ing)\\b${WITHIN}\\b${ROW_QUOTED_ON}`, "i"),
+  new RegExp(`\\b(?:switch|flag|toggle|setting|gate)\\b${WITHIN}\\b(?:reads?|reported|shows?|showing|reading)\\s+(?:as\\s+)?(?:on|live|enabled)\\b`, "i"),
+  /\b(?:is|are|goes|went|is now|are now)\s+live\b/i,
+  /\b(?:after|following|post)[- ](?:the\s+|this\s+)?(?:merge|deploy|deployment|release|rollout)\b/i,
+  /\bpublished\s+(?:version|release|package|build)\b/i,
+  new RegExp(`\\b(?:version|release|package)\\b${WITHIN}\\b(?:is|are|was)\\s+(?:published|released|live)\\b`, "i"),
+  /\bin production\b/i,
+];
+/** What an item QUOTES or names in code is a reference to a reading, not the ask: `a test whose Done-when reads "quoted on #4627"` is not itself a live check. */
+const QUOTED_SPAN = /"[^"]*"|\u201c[^\u201d]*\u201d|`[^`]*`/g;
+
 /** The first instant in an item that is LATER than `now` and is not a deadline (`before`, `by`), as written; `null` when none. A date-only value is midnight UTC. */
 function laterInstant(item: string, now: Date): string | null {
   for (const m of item.matchAll(ISO_INSTANT)) {
@@ -112,6 +135,29 @@ function classify(item: string, now: Date): Omit<UnfinishableItem, "text"> | nul
   const row = firstMatch(ROW_OUTCOME, item);
   if (row) return { kind: "row-outcome", evidence: row[0], rows: [Number(row[1])] };
   return null;
+}
+
+function liveCheckEvidence(item: string, self: number | undefined): string | null {
+  const bare = item.replace(QUOTED_SPAN, " ");
+  for (const pattern of LIVE_CHECK) {
+    const found = pattern.exec(bare);
+    if (!found) continue;
+    if (self !== undefined && found[1] !== undefined && Number(found[1]) === self) continue; // a record quoted on the build's OWN row is the engineer's completion, not a live reading
+    return found[0];
+  }
+  return null;
+}
+
+/**
+ * The Done-when items that name a LIVE CHECK: a reading that exists only after the merge. An item that is `future-time`, `seat-act` or `row-outcome` is not returned
+ * (the first is a reading already, the others are what a verify row cannot take). `self` is the build's own number.
+ */
+export function liveCheckItems(body: string, { now = new Date(), self }: { now?: Date; self?: number; } = {}): LiveCheckItem[] {
+  return doneWhenItems(body).flatMap((text) => {
+    if (classify(text, now) !== null) return [];
+    const evidence = liveCheckEvidence(text, self);
+    return evidence === null ? [] : [{ text, kind: "live-check" as const, evidence, rows: [] }];
+  });
 }
 
 /** Is the wait this item names ALREADY DATA on the row, so the gate holds it and the engineer never does? */

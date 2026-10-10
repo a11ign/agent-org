@@ -6,8 +6,9 @@
 // files `Verify <build title>` carrying ONLY the live Done-when item, behind a `Not-before:` and a blocked-by edge on the build, as a sub-issue of the build's epic,
 // so the epic's `subIssuesSummary` counts the build done when the verify row closes and not before.
 //
-// WHAT COUNTS AS A LIVE READING: the classifier #4640 wrote (`unfinishableItems`), the `future-time` class only. A `seat-act` or `row-outcome` item is not a
-// reading, `row-file` already refuses a body carrying one, and a verify row filed for it would be unfinishable by an engineer all over again.
+// WHAT COUNTS AS A LIVE READING: a `future-time` item (the classifier #4640 wrote, `unfinishableItems`) and a `live-check` item (a quoted record on a row, a switch read
+// on, a log line after the merge, a published version: `liveCheckItems`, a11ign/agent-org#719). A `seat-act` or `row-outcome` item is not a reading, `row-file`
+// already refuses a body carrying one, and a verify row filed for it would be unfinishable by an engineer all over again; the outcome NAMES such an item as declined.
 //
 // IDEMPOTENT: the body carries `<!-- verify-row: build #N -->`, and a build that already has a row with that marker files nothing. A search that CANNOT be read
 // files nothing either and says so, because "could not look" is not "there is none" and a duplicate is harder to undo than a retry (the job exits 1 and the next
@@ -19,11 +20,18 @@
 //
 // A LEAF over its effects: every read and write arrives as an argument, so the tests reach no network.
 import { BACKLOG_LABEL, LANE_PREFIX, OUT_OF_RELEASE_LABEL } from "./project-vocabulary.ts";
-import { doneWhenItems, unfinishableItems, type UnfinishableItem } from "./unsplit-done-when.ts";
+import { doneWhenItems, liveCheckItems, unfinishableItems, type LiveCheckItem, type UnfinishableItem } from "./unsplit-done-when.ts";
+
+/** An item a verify row takes: a `future-time` item or a `live-check` one. */
+export type ReadingItem = LiveCheckItem | (UnfinishableItem & { kind: "future-time"; });
+/** An item that reads like a reading but is not one a verify row can take: a seat's act or another row's outcome. */
+export type DeclinedItem = { text: string; kind: "seat-act" | "row-outcome"; evidence: string; };
 
 export type BuildRow = { number: number; title: string; body: string; labels: string[]; milestone: string | null; parent: number | null; };
 export type VerifyPlan = {
-  title: string; body: string; labels: string[]; milestone: string | null; blockedBy: number; parent: number | null; notBefore: string; item: UnfinishableItem;
+  title: string; body: string; labels: string[]; milestone: string | null; blockedBy: number; parent: number | null; notBefore: string;
+  /** The first reading; `items` is every one the row carries. */
+  item: ReadingItem; items: ReadingItem[];
 };
 export type VerifyEffects = {
   /** The verify row already filed for this build, `null` when the search ANSWERED none; throws when it could not be read. */
@@ -35,9 +43,9 @@ export type VerifyEffects = {
   board: (child: number) => string | null;
 };
 export type VerifyOutcome =
-  | { kind: "none" }
+  | { kind: "none"; declined?: DeclinedItem[] }
   | { kind: "already"; number: number }
-  | { kind: "filed"; number: number; plan: VerifyPlan; problems: string[] }
+  | { kind: "filed"; number: number; plan: VerifyPlan; problems: string[]; declined?: DeclinedItem[] }
   | { kind: "failed"; reason: string };
 
 const MS = { minute: 60_000, hour: 3_600_000, day: 86_400_000, week: 604_800_000, month: 30 * 86_400_000 } as const;
@@ -51,10 +59,22 @@ const FALLBACK_WAIT_MS = MS.day;
 export const verifyMarker = (build: number) => `<!-- verify-row: build #${build} -->`;
 export const verifyTitle = (build: BuildRow) => `Verify ${build.title}`;
 
-/** The `future-time` Done-when items of a build row. They are read as if no wait were already data, because on a build row a `Not-before:` gates its START, not this reading. */
-export function liveReadingItems(body: string, now: Date): UnfinishableItem[] {
-  const alone = `## Done-when\n\n${doneWhenItems(body).map((item) => `- ${item}`).join("\n")}\n`;
-  return unfinishableItems(alone, { now }).filter((item) => item.kind === "future-time");
+/** A build's Done-when alone: the items are read as if no wait were already data, because on a build row a `Not-before:` gates its START, not this reading. */
+const doneWhenAlone = (body: string) => `## Done-when\n\n${doneWhenItems(body).map((item) => `- ${item}`).join("\n")}\n`;
+
+/** The Done-when items of a build row a verify row takes (`future-time` and `live-check`), in the order the row wrote them. `self` is the build's own number. */
+export function liveReadingItems(body: string, now: Date, self?: number): ReadingItem[] {
+  const alone = doneWhenAlone(body);
+  const future = unfinishableItems(alone, { now }).flatMap((item): ReadingItem[] => (item.kind === "future-time" ? [{ ...item, kind: "future-time" }] : []));
+  const live = liveCheckItems(alone, { now, self });
+  const order = doneWhenItems(alone);
+  return [...future, ...live].sort((a, b) => order.indexOf(a.text) - order.indexOf(b.text));
+}
+
+/** The items that read like a reading and are not one a verify row can take, so the close can say why it filed none for them. */
+export function declinedItems(body: string, now: Date): DeclinedItem[] {
+  return unfinishableItems(doneWhenAlone(body), { now }).flatMap((item) => (item.kind === "seat-act" || item.kind === "row-outcome"
+    ? [{ text: item.text, kind: item.kind, evidence: item.evidence }] : []));
 }
 
 function unitMs(unit: string): number | undefined { return MS[unit.replace(/s$/, "").toLowerCase() as keyof typeof MS]; }
@@ -83,27 +103,31 @@ function placed(evidence: string, mergedAt: number): number | null {
 }
 
 /** The `Not-before:` stamp for a reading, and whether it was PLACED from the item's own words or fell back to a day after the merge. */
-export function notBeforeFor(item: UnfinishableItem, mergedAt: string): { stamp: string; placed: boolean; } {
+export function notBeforeFor(item: ReadingItem | UnfinishableItem, mergedAt: string): { stamp: string; placed: boolean; } {
   const at = Date.parse(mergedAt);
   const found = placed(item.evidence, at);
   return found === null ? { stamp: STAMP(at + FALLBACK_WAIT_MS), placed: false } : { stamp: STAMP(found), placed: true };
 }
 
-function verifyBody(build: BuildRow, { item, notBefore, wasPlaced, pr }: { item: UnfinishableItem; notBefore: string; wasPlaced: boolean; pr: string; }): string {
-  const fallback = wasPlaced ? "" : `\nThe item names no time this could place (\`${item.evidence}\`), so \`Not-before:\` is a day after the merge: \`product-manager\` adjusts it.\n`;
+function verifyBody(build: BuildRow, { items, notBefore, unplaced, pr }: { items: ReadingItem[]; notBefore: string; unplaced: ReadingItem | null; pr: string; }): string {
+  const fallback = unplaced === null ? "" : `\nThe item names no time this could place (\`${unplaced.evidence}\`), so \`Not-before:\` is a day after the merge: \`product-manager\` adjusts it.\n`;
   return `## What it is\n\nThe live reading of #${build.number} (\`${build.title}\`), taken separately because the build closed on its merge (${pr}). `
     + `Filed by the pipeline the moment it closed (#4641): the build is done for the epic only when this row passes.\n${fallback}\n`
-    + `## Done-when\n\n1. ${item.text}\n\nNot-before: ${notBefore}\nVerifies: #${build.number}\n\n${verifyMarker(build.number)}\n`;
+    + `## Done-when\n\n${items.map((item, i) => `${i + 1}. ${item.text}`).join("\n")}\n\nNot-before: ${notBefore}\nVerifies: #${build.number}\n\n${verifyMarker(build.number)}\n`;
 }
 
 /** The verify row a build would file, `null` when its Done-when names no live reading. PURE: the control for "a row with no live reading files nothing". */
 export function planVerifyRow(build: BuildRow, { pr, mergedAt, now = new Date(mergedAt) }: { pr: string; mergedAt: string; now?: Date; }): VerifyPlan | null {
-  const [item] = liveReadingItems(build.body, now);
+  const items = liveReadingItems(build.body, now, build.number);
+  const [item] = items;
   if (!item) return null;
-  const { stamp, placed: wasPlaced } = notBeforeFor(item, mergedAt);
+  // One row carries every reading, so it is not readable before the LATEST of their waits.
+  const waits = items.map((reading) => ({ reading, ...notBeforeFor(reading, mergedAt) }));
+  const latest = waits.reduce((last, wait) => (Date.parse(wait.stamp) > Date.parse(last.stamp) ? wait : last));
+  const stamp = latest.stamp;
   const carried = build.labels.filter((label) => label.startsWith(LANE_PREFIX) || label === OUT_OF_RELEASE_LABEL);
-  return { title: verifyTitle(build), body: verifyBody(build, { item, notBefore: stamp, wasPlaced, pr }), labels: [BACKLOG_LABEL, ...carried],
-    milestone: build.milestone, blockedBy: build.number, parent: build.parent, notBefore: stamp, item };
+  return { title: verifyTitle(build), body: verifyBody(build, { items, notBefore: stamp, unplaced: latest.placed ? null : latest.reading, pr }), labels: [BACKLOG_LABEL, ...carried],
+    milestone: build.milestone, blockedBy: build.number, parent: build.parent, notBefore: stamp, item, items };
 }
 
 function attempt(problems: string[], what: string, step: () => string | null | void): void {
@@ -118,7 +142,9 @@ function attempt(problems: string[], what: string, step: () => string | null | v
 /** THE WHOLE ACT for one closed build row: plan, look for the first filing, file, then link. A link that fails is REPORTED beside the row (it exists and is findable). */
 export function fileVerifyRow(build: BuildRow, ctx: { pr: string; mergedAt: string; }, effects: VerifyEffects): VerifyOutcome {
   const plan = planVerifyRow(build, ctx);
-  if (!plan) return { kind: "none" };
+  const declined = declinedItems(build.body, new Date(ctx.mergedAt));
+  const said = declined.length ? { declined } : {};
+  if (!plan) return { kind: "none", ...said };
   let existing: number | null;
   try {
     existing = effects.findExisting(build);
@@ -136,5 +162,5 @@ export function fileVerifyRow(build: BuildRow, ctx: { pr: string; mergedAt: stri
   attempt(problems, "blocked-by edge", () => effects.blockBy(child, plan.blockedBy));
   if (plan.parent !== null) attempt(problems, `sub-issue of #${plan.parent}`, () => effects.addSubIssue(child, plan.parent as number));
   attempt(problems, "board", () => effects.board(child));
-  return { kind: "filed", number: child, plan, problems };
+  return { kind: "filed", number: child, plan, problems, ...said };
 }
