@@ -7623,7 +7623,7 @@ export function readOpenRowFollowUps(allOpen: any[], run: (args: string[], repo?
  */
 export function readChairmanPriorityOfOffer(rows: any[], openRows: any[] = [], run?: (args: string[]) => string) {
   const readyNumbers = new Set(rows.map((row) => Number(row.number)));
-  const claimedRows = openRows.filter((row) => labelsOf(row).includes("in-progress") && !readyNumbers.has(Number(row.number)));
+  const claimedRows = openRows.filter((row) => labelsOf(row).includes(CLAIM_LABEL) && !readyNumbers.has(Number(row.number)));
   return run === undefined ? readChairmanPriority([...rows, ...claimedRows]) : readChairmanPriority([...rows, ...claimedRows], run);
 }
 
