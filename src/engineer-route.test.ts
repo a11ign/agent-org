@@ -6,12 +6,13 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { decide, decisionLogPathFrom, decisionSwitchesPath, MAX_STATE_BYTES, type DecisionDeps } from "./decision-provider.ts";
-import { composeRoute, fallbackRoute, recordRouteOutcome, routeEngineer, routeState, QUESTIONS, type Answers, type RouteRow } from "./engineer-route.ts";
+import { composeRoute, fallbackRoute, fallbackWindow, isWindowTooSmall, LARGE_ROW_FILES, LARGEST_ROW_FILES, recordRouteOutcome, recordWindowTooSmall, regionSize, routeEngineer, routeState, SMALL_ROW_FILES, windowOf,
+  windowReadings, windowReportLines, QUESTIONS, type Answers, type RouteRow } from "./engineer-route.ts";
 import { parseHostConfig } from "./host-config.ts";
 import { tmpDir } from "./lib/tmp-fixture.ts";
 import { freshState } from "./triage-provider.ts";
 import { ROUTE_AHEAD, routesForStarts, spawnClaimer } from "./wake.ts";
-import { AUTOCOMPACT_WINDOW_TOKENS, HAIKU_AUTOCOMPACT_WINDOW_TOKENS, HAIKU_MODEL_ID } from "./worker-profile.ts";
+import { AUTOCOMPACT_WINDOW_TOKENS, HAIKU_AUTOCOMPACT_WINDOW_TOKENS, HAIKU_MODEL_ID, LARGE_WINDOW_TOKENS, LARGEST_WINDOW_TOKENS } from "./worker-profile.ts";
 
 const SECRET_BODY_TEXT = "SECRET-BODY-TEXT-never-sent";
 const HOST = JSON.stringify({
@@ -283,10 +284,10 @@ test("every route is a decision-log line, in the fallback, override, refused and
   await routeEngineer(rowOf({ number: 4 }), off.deps);
   const routes = (lines: { id?: string; outcome?: string }[]) => lines.filter(isOutcomeLine).map((l) => [l.id, l.outcome]);
   assert.deepEqual(routes(r.log()), [
-    ["row-1", "route haiku/high via jev (the provider answered: mechanical=yes, subsystems=no, debugging=no, covered=yes, score=2)"],
-    ["row-2", "route haiku/high via override (tier:haiku)"],
-    ["row-3", "route sonnet/high via refused (the row carries lane:ceo)"]]);
-  assert.deepEqual(routes(off.log()), [["row-4", "route sonnet/medium via fallback (no triage provider is declared)"]]);
+    ["row-1", "route haiku/high window 130k via jev (the provider answered: mechanical=yes, subsystems=no, debugging=no, covered=yes, score=2)"],
+    ["row-2", "route haiku/high window 130k via override (tier:haiku)"],
+    ["row-3", "route sonnet/high window 200k via refused (the row carries lane:ceo)"]]);
+  assert.deepEqual(routes(off.log()), [["row-4", "route sonnet/medium window 200k via fallback (no triage provider is declared)"]]);
   // A route the provider did not decide carries WHY on its outcome line: a refused row says what refused it, a fallback says why the provider did not decide.
   const reasons = (lines: { outcome?: string; reason?: string }[]) => lines.filter(isOutcomeLine).map((l) => l.reason);
   assert.deepEqual(reasons(r.log()), [undefined, undefined, "the row carries lane:ceo"]);
@@ -330,28 +331,28 @@ test("the outcome line reads `route <route> via <via> (<why>)`, and what <why> s
   // jev, every answer given: the answers that composed the route.
   const given = rig({ triage: JEV, switches: ON });
   assert.equal((await routeEngineer(rowOf(), given.deps)).via, "jev");
-  assert.equal(outcomeOf(given), "route haiku/high via jev (the provider answered: mechanical=yes, subsystems=no, debugging=no, covered=yes, score=2)");
+  assert.equal(outcomeOf(given), "route haiku/high window 130k via jev (the provider answered: mechanical=yes, subsystems=no, debugging=no, covered=yes, score=2)");
   // jev, one answer not given: the line names it and why, and the route is Sonnet/high.
   const held = rig({ triage: JEV, switches: ON, body: reply({ low: "mechanical" }) });
   assert.equal((await routeEngineer(rowOf(), held.deps)).route, "sonnet/high");
-  assert.match(outcomeOf(held), /^route sonnet\/high via jev \(the provider answered: mechanical=not given \(yes at [0-9.]+, under the floor 0\.9\), subsystems=no, /);
+  assert.match(outcomeOf(held), /^route sonnet\/high window 200k via jev \(the provider answered: mechanical=not given \(yes at [0-9.]+, under the floor 0\.9\), subsystems=no, /);
   // fallback: the provider's failure, never the fallback rule's own "a small row".
   const failed = rig({ triage: JEV, switches: ON });
   failed.deps.fetch = (async () => ({ ok: false, status: 422, json: async () => ({}) })) as unknown as typeof fetch;
   const fell = await routeEngineer(rowOf(), failed.deps);
   assert.deepEqual([fell.route, fell.via], ["sonnet/medium", "fallback"]);
-  assert.equal(outcomeOf(failed), "route sonnet/medium via fallback (the API answered HTTP 422)");
+  assert.equal(outcomeOf(failed), "route sonnet/medium window 200k via fallback (the API answered HTTP 422)");
   // refused: what refused it.
   const refused = rig({ triage: JEV, switches: ON });
   await routeEngineer(rowOf({ body: bodyOf({ acceptance: null }) }), refused.deps);
-  assert.equal(outcomeOf(refused), "route sonnet/high via refused (it has no Acceptance command)");
+  assert.equal(outcomeOf(refused), "route sonnet/high window 200k via refused (it has no Acceptance command)");
   // override: the label, and the refusal when Haiku was refused.
   const label = rig({ triage: JEV, switches: ON });
   await routeEngineer(rowOf({ labels: ["tier:haiku"] }), label.deps);
-  assert.equal(outcomeOf(label), "route haiku/high via override (tier:haiku)");
+  assert.equal(outcomeOf(label), "route haiku/high window 130k via override (tier:haiku)");
   const barred = rig({ triage: JEV, switches: ON });
   await routeEngineer(rowOf({ labels: ["tier:haiku", "lane:ceo"] }), barred.deps);
-  assert.match(outcomeOf(barred), /^route sonnet\/high via override \(tier:haiku was refused: .*lane:ceo/);
+  assert.match(outcomeOf(barred), /^route sonnet\/high window 200k via override \(tier:haiku was refused: .*lane:ceo/);
 });
 
 test("a route the provider did not decide: the work tick's journal line prints the same text the outcome line does", async () => {
@@ -364,7 +365,7 @@ test("a route the provider did not decide: the work tick's journal line prints t
     spawnClaimer({ routes: new Map([[10, routed]]), switchPath: undefined, readRow: () => ({ labels: ["ready"], body: bodyOf() }) }).tier?.({ row: 10, branch: "b", worktree: "w", launchDir: "l" });
   } finally { process.stderr.write = write; }
   assert.deepEqual(written, [`wake: #10 routed sonnet/medium via fallback (the use is switched off).\n`]);
-  assert.equal(outcomeOf(r), "route sonnet/medium via fallback (the use is switched off)");
+  assert.equal(outcomeOf(r), "route sonnet/medium window 200k via fallback (the use is switched off)");
 });
 
 
@@ -387,8 +388,99 @@ test("every way the provider does not decide a route puts its reason on the outc
     assert.equal(routed.reason, reason, label);
     assert.equal(outcome.reason, reason, `${label}: the outcome line carries it`);
     assert.equal(routed.why, reason, `${label}: the journal's why is the same text`);
-    assert.equal(outcome.outcome, `route ${routed.route} via fallback (${reason})`, `${label}: and so is the outcome line a person reads`);
+    assert.equal(outcome.outcome, `route ${routed.route} window ${label === "a state too large" ? "400k (the Region names files=12 repositories=1)" : "200k"} via fallback (${reason})`, `${label}: and so is the outcome line a person reads`);
     assert.doesNotMatch(outcome.outcome, /a small row/, `${label}: the reason is the failure's, not the fallback rule's gloss`);
   }
   assert.equal(cases[4][1].calls(), 0, "the state over the cap was never sent: the outcome line is the only line that can say why");
+});
+
+// --- #4738: the window the route sets ---
+
+const WINDOW_ON = JSON.stringify({ "model-routing": true, "model-routing-window": true });
+const files = (n: number, repo = ""): string[] => Array.from({ length: n }, (_, i) => `${repo}src/f${i}.ts`);
+const sizedBy = (region: string[]) => fallbackWindow(bodyOf({ region })).tokens;
+
+test("fallbackWindow, one case per cut-off: files under LARGE_ROW_FILES keep 200k, LARGE_ROW_FILES takes 400k, LARGEST_ROW_FILES takes 600k", () => {
+  assert.equal(sizedBy(files(LARGE_ROW_FILES - 1)), AUTOCOMPACT_WINDOW_TOKENS);
+  assert.equal(sizedBy(files(LARGE_ROW_FILES)), LARGE_WINDOW_TOKENS);
+  assert.equal(sizedBy(files(LARGEST_ROW_FILES - 1)), LARGE_WINDOW_TOKENS);
+  assert.equal(sizedBy(files(LARGEST_ROW_FILES)), LARGEST_WINDOW_TOKENS);
+  assert.equal(sizedBy(["src/"]), AUTOCOMPACT_WINDOW_TOKENS, "one directory counts as four files, under the cut-off");
+  assert.equal(sizedBy(["src/", "lib/"]), LARGE_WINDOW_TOKENS, "two directories count as eight");
+});
+
+test("fallbackWindow, one case per repository cut-off: one repository keeps its size, two take 400k, three take 600k, and a bare path is the first repository", () => {
+  assert.equal(sizedBy(["agent-org:src/a.ts", "agent-org:src/b.ts"]), AUTOCOMPACT_WINDOW_TOKENS);
+  assert.equal(sizedBy(["src/a.ts", "agent-org:src/b.ts"]), LARGE_WINDOW_TOKENS);
+  assert.equal(sizedBy(["src/a.ts", "agent-org:src/b.ts", "nvda-worker:src/c.ts"]), LARGEST_WINDOW_TOKENS);
+  assert.equal(regionSize(bodyOf({ region: ["src/a.ts", "agent-org:src/b.ts"] })).repositories, 2);
+});
+
+test("provider ABSENT: a large Region still gets its window, the route's profile carries it, and the outcome line says how it was sized", async () => {
+  const r = rig();
+  const routed = await routeEngineer(rowOf({ body: bodyOf({ region: files(LARGE_ROW_FILES) }) }), r.deps);
+  assert.deepEqual([routed.route, windowOf(routed), routed.profile?.autocompactWindow, routed.profile?.model], ["sonnet/high", LARGE_WINDOW_TOKENS, LARGE_WINDOW_TOKENS, "sonnet"]);
+  assert.equal(outcomeOf(r), `route sonnet/high window 400k (the Region names files=${LARGE_ROW_FILES} repositories=1) via fallback (no triage provider is declared)`);
+  const medium = await routeEngineer(rowOf({ body: bodyOf({ region: files(SMALL_ROW_FILES) }) }), rig().deps);
+  assert.deepEqual([medium.route, windowOf(medium)], ["sonnet/medium", AUTOCOMPACT_WINDOW_TOKENS], "the control: a small row keeps today's window");
+  const ordinaryRow = await routeEngineer(rowOf({ body: bodyOf({ region: files(SMALL_ROW_FILES + 1) }) }), rig().deps);
+  assert.deepEqual([ordinaryRow.route, ordinaryRow.profile], ["sonnet/high", null], "and a sonnet/high row at the ordinary window is still no profile at all");
+});
+
+test("a provider answer moves the window ONLY at or over the floor, and only with its own switch on", async () => {
+  const body = bodyOf({ region: files(LARGE_ROW_FILES) });
+  const withSwitch = async (switches: string, given: Given) => routeEngineer(rowOf({ body }), rig({ triage: JEV, switches, body: reply({ mechanical: "no", ...given }) }).deps);
+  const up = await withSwitch(WINDOW_ON, { subsystems: "yes" });
+  assert.equal(windowOf(up), LARGEST_WINDOW_TOKENS, "subsystems answered yes at 0.95 raises 400k one rung");
+  assert.match(up.windowWhy ?? "", /raised it from 400k/);
+  // The negative control: the same answer, under the floor, is a fallback value of `yes` that must NOT count.
+  const low = await withSwitch(WINDOW_ON, { subsystems: "yes", low: "subsystems" });
+  assert.equal(windowOf(low), LARGE_WINDOW_TOKENS);
+  assert.match(low.windowWhy ?? "", /kept it at 400k \(not given, so left out: subsystems: .*under the floor/);
+  // The same answer with the window's switch off: the routing is asked, the window is the Region's.
+  assert.equal(windowOf(await withSwitch(ON, { subsystems: "yes" })), LARGE_WINDOW_TOKENS);
+  // Down needs BOTH answers: a small score alone does not, the two together do, and never below the ordinary window.
+  assert.equal(windowOf(await withSwitch(WINDOW_ON, { subsystems: "no", score: 3 })), LARGE_WINDOW_TOKENS);
+  assert.equal(windowOf(await withSwitch(WINDOW_ON, { subsystems: "no", score: 2 })), AUTOCOMPACT_WINDOW_TOKENS);
+  const small = await routeEngineer(rowOf(), rig({ triage: JEV, switches: WINDOW_ON, body: reply({ mechanical: "no", subsystems: "no", score: 1 }) }).deps);
+  assert.equal(windowOf(small), AUTOCOMPACT_WINDOW_TOKENS, "a small row is never taken below today's window");
+  // A failed provider leaves the Region's window and says it is the provider's failure.
+  const failed = rig({ triage: JEV, switches: WINDOW_ON });
+  failed.deps.fetch = (async () => ({ ok: false, status: 422, json: async () => ({}) })) as unknown as typeof fetch;
+  const fell = await routeEngineer(rowOf({ body }), failed.deps);
+  assert.deepEqual([fell.via, windowOf(fell), fell.reason], ["fallback", LARGE_WINDOW_TOKENS, "the API answered HTTP 422"]);
+});
+
+test("a Haiku route is clamped to its ceiling whatever the Region's size or the provider says", async () => {
+  const wide = bodyOf({ region: files(LARGEST_ROW_FILES) });
+  const label = await routeEngineer(rowOf({ labels: ["tier:haiku"], body: wide }), rig({ triage: JEV, switches: WINDOW_ON }).deps);
+  assert.deepEqual([label.route, windowOf(label)], ["haiku/high", HAIKU_AUTOCOMPACT_WINDOW_TOKENS]);
+  assert.match(label.windowWhy ?? "", /held to the ceiling of claude-haiku-5-5/);
+  const composed = await routeEngineer(rowOf({ body: wide }), rig({ triage: JEV, switches: WINDOW_ON, body: reply({}) }).deps);
+  assert.deepEqual([composed.route, windowOf(composed)], ["haiku/high", HAIKU_AUTOCOMPACT_WINDOW_TOKENS]);
+  const small = await routeEngineer(rowOf({ labels: ["tier:haiku"] }), rig().deps);
+  assert.equal(small.windowWhy, undefined, "the control: a Haiku row at its own window has nothing to explain");
+});
+
+test("windowReadings and windowReportLines: the last route line per row, its verdict and outcome, grouped by route and window against the store's compactions", () => {
+  const at = 1;
+  const line = (id: string, outcome: string) => ({ use: "model-routing", id, outcome, at });
+  const lines = [line("row-1", "route sonnet/high window 200k via fallback (x)"), line("row-1", "route sonnet/high window 400k (the Region names files=9 repositories=1) via jev (y)"),
+    line("row-2", "route sonnet/high window 400k via jev (y)"), line("row-2", "merged-first-pass"), line("row-3", "route haiku/high window 130k via override (tier:haiku)"),
+    line("row-3", "window too small: 3 compactions at 130k"), { use: "wake-triage", id: "row-9", outcome: "route sonnet/high window 200k via jev (z)", at }, { garbage: true }];
+  const readings = windowReadings(lines);
+  assert.deepEqual(readings.map((r) => [r.row, r.route, r.windowK, r.outcome, r.tooSmall]),
+    [[1, "sonnet/high", 400, null, false], [2, "sonnet/high", 400, "merged-first-pass", false], [3, "haiku/high", 130, null, true]]);
+  const facts = new Map([[1, { compactions: 3, costUsd: 4 }], [2, { compactions: 0, costUsd: 1.5 }]]);
+  assert.deepEqual(windowReportLines(readings, facts), [
+    "haiku/high window 130k: 1 rows (0 in the store), compactions 0 (most in one row 0), cost $0.00, too small 1, outcomes no outcome recorded 1",
+    "sonnet/high window 400k: 2 rows (2 in the store), compactions 3 (most in one row 3), cost $5.50, too small 1, outcomes no outcome recorded 1, merged-first-pass 1"]);
+  assert.deepEqual([isWindowTooSmall({ compactions: 2, costUsd: 0 }), isWindowTooSmall({ compactions: 3, costUsd: 0 }), isWindowTooSmall(undefined)], [false, true, false]);
+});
+
+test("recordWindowTooSmall appends one outcome line beside the route's, which windowReadings then reads as the verdict", async () => {
+  const r = rig();
+  await routeEngineer(rowOf({ number: 77, body: bodyOf({ region: files(LARGE_ROW_FILES) }) }), r.deps);
+  recordWindowTooSmall(77, { window: "400k", compactions: 3 }, r.deps);
+  assert.deepEqual(windowReadings(r.log()).map((x) => [x.row, x.windowK, x.tooSmall]), [[77, 400, true]]);
 });
