@@ -66,6 +66,7 @@ export const ORG_HEALTH_CLASSES: Readonly<Record<string, { severity: "page"; } |
   "stale-wait-order": DIGEST,
   "held-on-satisfied-order": DIGEST,
   "umbrella-edge-order": DIGEST,
+  "scope-added-mid-row": DIGEST,
   "idle-with-open-rows": DIGEST,
   "row-shelved-against-the-pr-that-waits-on-it": DIGEST,
   "row-without-exactly-one-state": DIGEST,
