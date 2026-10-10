@@ -5,12 +5,16 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import {
   criteriaOf, formatRouteAccuracy, MECHANICAL_MAX_FILES, MECHANICAL_MAX_LINES, mergesOf, MIN_SAMPLE, rowOfMergeSubject, routeAccuracy, routingDecisionsIn, truthMechanical, truthScore,
   type AccuracyReading, type Criteria, type MergedDiff, type RoutingDecision,
 } from "./route-accuracy.ts";
 import { tmpDirForFile } from "./lib/tmp-fixture.ts";
+
+// The CLI as a process: by absolute path, because the suite is run from the project's root and not from this package.
+const CLI = fileURLToPath(new URL("./route-accuracy.ts", import.meta.url));
 
 // The criteria's own examples, as sizes: level 1 first (the numbers `SCORE_LEVEL_DATA` carries, "2 files, +3 -3" being 2 files and 6 lines).
 const CRITERIA: Criteria = {
@@ -254,10 +258,10 @@ test("the CLI with no provider decisions says so, and a log it cannot read is no
   const dir = tmpDirForFile("route-accuracy-");
   const empty = join(dir, "empty-decisions");
   writeFileSync(empty, "");
-  const ran = spawnSync(process.execPath, ["src/route-accuracy.ts", `--log=${empty}`], { encoding: "utf8", env: { ...process.env, AGENT_ORG_HOST: "" } });
+  const ran = spawnSync(process.execPath, [CLI, `--log=${empty}`], { encoding: "utf8", env: { ...process.env, AGENT_ORG_HOST: "" } });
   assert.equal(ran.status, 0, ran.stderr);
   assert.equal(ran.stdout.trim(), "no provider decisions in the log");
-  const unreadable = spawnSync(process.execPath, ["src/route-accuracy.ts", `--log=${dir}`], { encoding: "utf8" });
+  const unreadable = spawnSync(process.execPath, [CLI, `--log=${dir}`], { encoding: "utf8" });
   assert.equal(unreadable.status, 2);
   assert.match(unreadable.stderr, /CANNOT READ: the decision log could not be read/);
 });

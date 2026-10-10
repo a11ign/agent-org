@@ -26,6 +26,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { flagValue, refuseUnknownFlags } from "./lib/cli-flags.ts";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 
 /** The confidence buckets' inner edges: under 0.4, 0.4 to 0.55, 0.55 to 0.7, 0.7 and over. The last is the floor the host runs at (`minConfidence`), so "under 0.7 against 0.7 and over" is the floor's own question. */
 export const BUCKET_EDGES = Object.freeze([0.4, 0.55, 0.7]);
@@ -279,7 +280,7 @@ export function rowOfMergeSubject(subject: string): number | undefined {
 }
 
 type Run = (repo: string, args: string[]) => string;
-const gitIn: Run = (repo, args) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", maxBuffer: 1 << 28, stdio: ["ignore", "pipe", "pipe"] });
+const gitIn: Run = (repo, args) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", env: sandboxGitEnv(), maxBuffer: 1 << 28, stdio: ["ignore", "pipe", "pipe"] });
 
 /** `git diff --numstat <merge>^1 <merge>` less `.acceptance/` and `.changeset/`: the paths and the lines added plus removed of each (a binary file is 0 lines). */
 function numstat(repo: string, merge: string, run: Run): { path: string; lines: number }[] {
