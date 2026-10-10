@@ -64,6 +64,23 @@ export function saveState(statePath: string, state: IngestState) {
 }
 
 /**
+ * After a rewrite that made the store smaller: the state's `storeBytes` becomes the file's size, so the store is not read as "deleted or replaced" and the next run does not start cold.
+ * Nothing else of the state moves, and a store with no state, or a state that cannot be read (already a cold start), is left as it is.
+ */
+export function restampStoreBytes(storePath: string) {
+  const statePath = stateFileFor(storePath);
+  if (!existsSync(statePath)) return;
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(statePath, "utf8"));
+  } catch {
+    return;
+  }
+  if (typeof parsed?.storeBytes !== "number") return;
+  saveState(statePath, { ...parsed, storeBytes: statSync(storePath).size });
+}
+
+/**
  * What to do with one transcript. `headMatches` is a thunk because checking it costs a read, which a skipped file must not pay.
  * `settleAt` is when a message held back as possibly still being written has been quiet long enough: a file whose stat has not changed is read again from then.
  */

@@ -1,0 +1,5 @@
+---
+"agent-org": minor
+---
+
+The trace store keeps one line per event id. A corrected copy of an event (a turn re-read after a fix to its attribution) used to be appended behind the stored one, so the file held both and a sum over its lines overstated: the chairman's session read $1,525 for a day whose de-duplicated figure is $381. `appendToStore` now rewrites the file (a temp file in the same directory, renamed over it) with each id once, at the position of its last copy, and a batch of only new ids is still a plain append. A line the receiver (`otel-receiver.ts`) appends while a rewrite runs is read back from the file the rewrite held open and kept; the receiver is unchanged. `node src/trace/trace.ts compact-store [--store <path>] [--dry-run]` does the one-off for a store written before this: it prints lines, distinct ids and the lines it would remove by kind, writes `<store>.bak-<UTC date>`, rewrites, and leaves the ingest state's `storeBytes` valid for the new size. `readStore` returns the same events in the same order. a11ign/agent-org#475.

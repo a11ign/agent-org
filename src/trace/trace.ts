@@ -34,7 +34,7 @@ import { freshnessLine, sessionsWorking, STALE_AFTER_MS, storeFreshness, transcr
 import { fingerprint, HEAD_BYTES, loadState, planRead, saveState, stateFileFor } from "./ingest-state.ts";
 import type { Carry, FileState, IngestState } from "./ingest-state.ts";
 import type { GhCallsReport } from "./gh-calls.ts";
-import { appendToStore, DEFINITIONS, eventsForRow, eventsOfDeferrals, eventsOfTranscript, openStore, readStore, repriceEvents, subjectOf, subjectsOf as subjectsOfKey } from "./store.ts";
+import { appendToStore, compactStore, DEFINITIONS, eventsForRow, eventsOfDeferrals, eventsOfTranscript, openStore, readStore, repriceEvents, subjectOf, subjectsOf as subjectsOfKey } from "./store.ts";
 import { DEFINITIONS as WATERFALL_DEFINITIONS, renderWaterfall, waterfall } from "./waterfall.ts";
 import type { Stats } from "node:fs";
 import type { LedgerEntry, PullRequest } from "../wakes-per-row.ts";
@@ -61,6 +61,8 @@ const USAGE = "usage: trace -- <row-or-pr number> [--since <ISO>] [--store <path
 const WAKE_CACHE_FLAG = "--wake-cache";
 const INGEST_FLAG = "--ingest";
 const FRESHNESS_FLAG = "--freshness";
+const COMPACT_STORE_WORD = "compact-store";
+const DRY_RUN_FLAG = "--dry-run";
 const DEFAULT_WAKE_CACHE_DAYS = 7; // a week of wakes: enough that each standing seat has a hundred or more first turns, and the store holds little older
 const ISO_WEEK_ONE_DAY = 4; // 4 January is always in ISO week 1
 const MAX_ISO_WEEK = 53;
@@ -114,6 +116,18 @@ export const isWakeCache = (argv: string[]) => argv.includes(WAKE_CACHE_FLAG);
 export const isIngest = (argv: string[]) => argv.includes(INGEST_FLAG);
 
 export const isFreshness = (argv: string[]) => argv.includes(FRESHNESS_FLAG);
+
+export const isCompactStore = (argv: string[]) => argv.includes(COMPACT_STORE_WORD);
+
+/** `trace compact-store [--store <path>] [--dry-run]`: any other argument is refused, because a misspelt `--dry-run` would rewrite the store. */
+export function parseCompactStoreArgs(argv: string[]) {
+  const rest = (argv[0] === "--" ? argv.slice(1) : argv).filter((word) => word !== COMPACT_STORE_WORD);
+  const dryRun = rest.includes(DRY_RUN_FLAG);
+  const given = rest.filter((word) => word !== DRY_RUN_FLAG);
+  const [flag, value, ...extra] = given;
+  if (given.length > 0 && (flag !== "--store" || !value || extra.length > 0)) throw new Error(`unknown argument ${given.join(" ")}: trace compact-store [--store <path>] [--dry-run]`);
+  return { store: value ?? defaultStore(), dryRun };
+}
 
 /**
  * `trace -- --ingest [--since <ISO>] [--store <path>]` and `trace -- --freshness [--store <path>]` (agent-org#498). `--since` is the window of transcripts looked at, as in the other
@@ -1112,6 +1126,7 @@ async function mainWakeCache() {
 }
 
 async function main() {
+  if (isCompactStore(process.argv.slice(2))) return void compactStore(parseCompactStoreArgs(process.argv.slice(2))).forEach((line) => console.log(line));
   if (isIngest(process.argv.slice(2))) return mainIngest();
   if (isFreshness(process.argv.slice(2))) return mainFreshness();
   if (isAggregate(process.argv.slice(2))) return mainAggregate();
