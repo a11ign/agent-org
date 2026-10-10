@@ -206,12 +206,21 @@ export function reportLines({ closed, events, now }: { closed: ClosedRow[]; even
     "stop rule (STOP: set enabled to false in src/haiku-tier.json; UNREADABLE decides nothing):", ...verdicts.map(verdictText)];
 }
 
-type GhIssue = { number: number; labels?: { name: string }[]; closedAt: string; closedByPullRequestsReferences?: { number: number; repository?: { nameWithOwner?: string; name?: string } }[] };
+/** `repository` as `gh issue list --json closedByPullRequestsReferences` returns it: `{id, name, owner: {id, login}}`, with NO `nameWithOwner` (measured 2026-10-09, agent-org#530). */
+type GhRepository = { nameWithOwner?: string; name?: string; owner?: { login?: string } };
+type GhIssue = { number: number; labels?: { name: string }[]; closedAt: string; closedByPullRequestsReferences?: { number: number; repository?: GhRepository }[] };
 
-function closedRowOf(issue: GhIssue): ClosedRow {
+/** `owner/name`, the form the store's `gh:<repo>#<n>:` event ids carry. An unreadable repository throws: `null` here would read as "no pull request" for every row at once, the silent zero this replaces. */
+function repoOf(row: number, repository: GhRepository | undefined): string {
+  if (repository?.nameWithOwner) return repository.nameWithOwner;
+  if (repository?.owner?.login && repository.name) return `${repository.owner.login}/${repository.name}`;
+  throw new Error(`#${row}: its closing pull request names no repository the report can read (keys: ${Object.keys(repository ?? {}).join(",") || "none"})`);
+}
+
+export function closedRowOf(issue: GhIssue): ClosedRow {
   const closer = (issue.closedByPullRequestsReferences ?? [])[0];
   return { number: issue.number, haiku: (issue.labels ?? []).some((l) => l.name === HAIKU_TIER_LABEL),
-    closedAt: Date.parse(issue.closedAt), pr: closer ? { repo: (closer.repository?.nameWithOwner ?? closer.repository?.name) as string, number: closer.number } : null };
+    closedAt: Date.parse(issue.closedAt), pr: closer ? { repo: repoOf(issue.number, closer.repository), number: closer.number } : null };
 }
 
 /** The closed rows with their labels and closing pull request: ONE `gh issue list`, newest first. */
