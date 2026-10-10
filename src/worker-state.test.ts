@@ -466,12 +466,12 @@ test("no row of that number, and a row that could not be read, are REFUSED by na
 });
 
 test("`ghRowLook`: an issue read as its state and labels, no such issue as null, and any other failure thrown", () => {
-  const gh = (reply: string | Error) => (): string => { if (reply instanceof Error) throw reply; return reply; };
-  assert.deepEqual(ghRowLook(gh('{"state":"CLOSED","labels":[{"name":"x"}]}'))("a11ign/a11ign", 460), { state: "CLOSED", labels: ["x"] });
-  assert.deepEqual(ghRowLook(gh('{"state":"OPEN","labels":[]}'))("a11ign/a11ign", 460), { state: "OPEN", labels: [] });
+  const answering = (reply: string | Error) => (): string => { if (reply instanceof Error) throw reply; return reply; };
+  assert.deepEqual(ghRowLook(answering('{"state":"CLOSED","labels":[{"name":"x"}]}'))("a11ign/a11ign", 460), { state: "CLOSED", labels: ["x"] });
+  assert.deepEqual(ghRowLook(answering('{"state":"OPEN","labels":[]}'))("a11ign/a11ign", 460), { state: "OPEN", labels: [] });
   const missing = Object.assign(new Error("gh failed"), { stderr: "GraphQL: Could not resolve to an Issue with the number of 9999." });
-  assert.equal(ghRowLook(gh(missing))("a11ign/a11ign", 9999), null);
-  assert.throws(() => ghRowLook(gh(Object.assign(new Error("gh failed"), { stderr: "HTTP 502" })))("a11ign/a11ign", 460), /gh failed/);
+  assert.equal(ghRowLook(answering(missing))("a11ign/a11ign", 9999), null);
+  assert.throws(() => ghRowLook(answering(Object.assign(new Error("gh failed"), { stderr: "HTTP 502" })))("a11ign/a11ign", 460), /gh failed/);
 });
 
 test("a `blocked` declaration for the row of ANOTHER repository does not excuse this claim (twin: its own repository does)", () => {

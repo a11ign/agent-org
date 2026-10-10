@@ -6,7 +6,7 @@
 - *The declaration records the resolved repository* (`repo`), and the gate reads a `blocked` declaration for another repository's row of the same number as `lapsed`, not as an excuse. A declaration written before this has no `repo` and is read as before.
 - The tests use `gh` as a recording fixture; no live tracker is read or written.
 
-Mutation, five, each red and each restore byte-identical (copy in the scratchpad and `diff`): the first tracker winning where several have the row (3 red); the claim label not breaking the tie (2); a closed row accepted (1); an undeclared key defaulting (1); the repository ignored by the excuse (1).
+Mutation: five, each red and each restore byte-identical (copy in the scratchpad and `diff`): the first tracker winning where several have the row (3 red); the claim label not breaking the tie (2); a closed row accepted (1); an undeclared key defaulting (1); the repository ignored by the excuse (1).
 
 Evidence: `src/worker-state.test.ts` 28 of 28 (the original 20 and eight new: the incident resolved to `a11ign/agent-org`, the POSITIVE CONTROL that the replaced call targeted `a11ign/a11ign`, ambiguous refused naming both with the keyed spelling resolving, unknown tracker, closed refused with the reopening, no such row and unreadable row, `ghRowLook`, another repository's declaration lapsed). The four related files pass (214 together with this one). `tsc --noEmit` reports only the two `mjs-ratchet.test.ts` errors `main` has. The whole suite: 36 of 8682 fail; 35 are in files that fail identically on a clean `origin/main` (13 files, measured there for the six that were not in the older baseline), and the one that was mine, `gh-call-inventory`, is regenerated and passes.
 
@@ -14,7 +14,7 @@ Not done: Done-when 2 and 3 of #460 are live items for a seat the `worker:*` res
 
 Acceptance: `AGENT_ORG_HOST=/home/agent/repos/a11y-witness/.agent-org/host.json npx rstest run --config scripts/rstest/rstest.config.ts src/worker-state.test.ts`
 
-Closes: none
+Closes: none -- #460's Done-when 2 and 3 are live runs of `worker:state` (and a live tick or the 2026-10-09 replay) that this seat's resource ban does not allow it to make; the row stays open for a seat that can.
 
 Outside-Region: src/work-gate/claim-stall-tick.ts — the gate hands the claim's repository to `declarationReading`, which is where the declaration is read against the claim.
 Outside-Region: docs/gh-call-inventory.json — the committed inventory of `gh` call shapes; the one new `issue view` (the row's state and labels) is in it, regenerated with the generator.
