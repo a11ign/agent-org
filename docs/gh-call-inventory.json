@@ -3,12 +3,12 @@
   "summary": {
     "files": 92,
     "spawns": 133,
-    "calls": 381,
+    "calls": 382,
     "shapes": {
       "api rest": 131,
       "issue list": 42,
       "api graphql": 37,
-      "issue view": 33,
+      "issue view": 34,
       "pr list": 29,
       "issue comment": 26,
       "pr view": 17,
@@ -1102,10 +1102,12 @@
       "calls": {
         "issue comment": 1,
         "issue edit": 1,
+        "issue view": 1,
         "label create": 1
       },
       "labels": [
-        "$ANSWER_PREFIX"
+        "$ANSWER_PREFIX",
+        "$SESSION_PREFIX"
       ],
       "parsesCloses": false
     },

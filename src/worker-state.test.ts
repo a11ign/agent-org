@@ -15,12 +15,13 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { claimStallTick } from "./work-gate.ts";
 import { claimRecordComment } from "./row-claim.ts";
-import { ANSWER_PREFIX } from "./project-vocabulary.ts";
+import { ANSWER_PREFIX, SESSION_PREFIX } from "./project-vocabulary.ts";
 import { COMMANDS } from "./commands.ts";
 import { STOPPED_CLAIMANT_MINUTES } from "./idle-claimant.ts";
 import {
   BLOCKED_TOLD_FILE, DECLARED_STATES, DEFAULT_ANSWERER, WORKER_STATE_DIR, applyBlocked, blockedInstruction, blockedToTell, declarationReading,
-  lastDeliveredTo, main, parseDeclaration, readDeclarations, splitArgs, tellBlocked, writeDeclaration, type ClaimContext, type Declaration,
+  ghRowLook, lastDeliveredTo, main, parseDeclaration, readDeclarations, resolveBlockedRow, splitArgs, tellBlocked, writeDeclaration, type ClaimContext,
+  type Declaration, type RowFact, type RowLook,
 } from "./worker-state.ts";
 
 const MIN = 60_000;
@@ -389,4 +390,93 @@ test("`blockedToTell` is pure: who is due and who is remembered, both from the l
   const roster = [{ label: "worker-1", status: "blocked" }, { label: "worker-2", status: "blocked" }, { label: "worker-3", status: "idle" }, { label: "ceo", status: "blocked" }];
   assert.deepEqual(blockedToTell(roster, ["worker-2", "worker-3"]), { send: ["worker-1"], told: ["worker-2"] });
   assert.deepEqual(blockedToTell(roster, []), { send: ["worker-1", "worker-2"], told: [] });
+});
+
+// --- 5. WHICH TRACKER'S ROW (a11ign/a11ign#460 was labelled by this command's first version) ----------------------------------------------
+//
+// The command took the HOME tracker's repository for every number. A worker on `a11ign/agent-org#460` declared `blocked 460`, and the label and
+// the comment went to `a11ign/a11ign#460`, a row closed a month before, whose reader was woken for nothing. The tests below run it against two
+// declared trackers that both have a row 460, with `gh` as a fixture, never a live tracker.
+const TRACKERS = [{ key: "", repo: "a11ign/a11ign" }, { key: "agent-org", repo: "a11ign/agent-org" }];
+const CLAIM_LABEL = `${SESSION_PREFIX}worker-agent-org-460`;
+const rowsOf = (table: Record<string, RowFact>): RowLook => (repo) => table[repo] ?? null;
+const BOTH: Record<string, RowFact> = {
+  "a11ign/a11ign": { state: "CLOSED", labels: [] },
+  "a11ign/agent-org": { state: "OPEN", labels: [CLAIM_LABEL, "in-progress"] },
+};
+const blockedOn = (ref: string) => {
+  const parsed = parseDeclaration(["blocked", ref, "which", "tracker?"], { session: "worker-agent-org-460", now: T0 });
+  assert.ok("declaration" in parsed, JSON.stringify(parsed));
+  return parsed.declaration;
+};
+const resolve = (ref: string, table: Record<string, RowFact>) => resolveBlockedRow(blockedOn(ref), { trackers: TRACKERS, look: rowsOf(table), sessionLabel: CLAIM_LABEL });
+const refusalNamed = (result: ReturnType<typeof resolve>): { refused: string; why: string } | null => ("refused" in result ? result.refused : null);
+
+test("a bare number that is a row in two trackers is read from the CLAIM: the one carrying this session's label, never the first tracker's", () => {
+  const result = resolve("460", BOTH);
+  assert.ok("declaration" in result, JSON.stringify(result));
+  assert.equal(result.declaration.repo, "a11ign/agent-org");
+  assert.equal(result.declaration.rowKey, undefined, "the typed key is resolved away, so the file holds the repository and not the spelling");
+});
+
+test("POSITIVE CONTROL: the version this replaces wrote the first tracker's row, closed, which is the row the product-manager was woken on", () => {
+  const calls: string[][] = [];
+  applyBlocked(blockedOn("460"), { gh: (args) => (calls.push(args), ""), tracker: TRACKERS[0].repo, answerPrefix: ANSWER_PREFIX });
+  assert.ok(calls.some((args) => args[0] === "issue" && args.includes("a11ign/a11ign")), "the old call targeted a11ign/a11ign#460");
+  const calls2: string[][] = [];
+  const result = resolve("460", BOTH);
+  assert.ok("declaration" in result);
+  applyBlocked(result.declaration, { gh: (args) => (calls2.push(args), ""), tracker: result.declaration.repo as string, answerPrefix: ANSWER_PREFIX });
+  assert.ok(calls2.length === 3 && calls2.every((args) => args.includes("a11ign/agent-org") && !args.includes("a11ign/a11ign")), JSON.stringify(calls2));
+});
+
+test("a bare number in two trackers with NEITHER carrying the claim label is REFUSED, naming both (twin: the keyed spelling resolves)", () => {
+  const unclaimed = { ...BOTH, "a11ign/agent-org": { state: "OPEN" as const, labels: [] } };
+  const refusal = refusalNamed(resolve("460", unclaimed));
+  assert.equal(refusal?.refused, "ambiguous-row");
+  assert.ok(refusal?.why.includes("a11ign/a11ign#460") && refusal.why.includes("agent-org#460"), refusal?.why);
+  const keyed = resolve("agent-org#460", unclaimed);
+  assert.ok("declaration" in keyed && keyed.declaration.repo === "a11ign/agent-org");
+  const byRepo = resolve("a11ign/agent-org#460", unclaimed);
+  assert.ok("declaration" in byRepo && byRepo.declaration.repo === "a11ign/agent-org", "a tracker is also named by its owner/name, which is how the first one is spelt");
+});
+
+test("a keyed reference names its tracker, and an undeclared key is REFUSED by name, listing the declared ones", () => {
+  const refusal = refusalNamed(resolve("lab#460", BOTH));
+  assert.equal(refusal?.refused, "unknown-tracker");
+  assert.ok(refusal?.why.includes("agent-org") && refusal.why.includes("a11ign/a11ign"), refusal?.why);
+});
+
+test("`blocked` on a CLOSED row is REFUSED, naming the state and the reopening (twin: the same row open is accepted)", () => {
+  const closedKeyed = refusalNamed(resolve("a11ign/a11ign#460", BOTH));
+  assert.equal(closedKeyed?.refused, "row-closed");
+  assert.ok(closedKeyed?.why.includes("CLOSED") && closedKeyed.why.includes("gh issue reopen 460 --repo a11ign/a11ign"), closedKeyed?.why);
+  const onlyClosed = refusalNamed(resolve("460", { "a11ign/a11ign": { state: "CLOSED", labels: [] } }));
+  assert.equal(onlyClosed?.refused, "row-closed", "the one row of that number is closed, so a bare number does not label it either");
+  const open = resolve("460", { "a11ign/a11ign": { state: "OPEN", labels: [] } });
+  assert.ok("declaration" in open && open.declaration.repo === "a11ign/a11ign", "an open row in the one tracker that has it is accepted");
+});
+
+test("no row of that number, and a row that could not be read, are REFUSED by name and neither is read as `closed` or `absent` for the other", () => {
+  assert.equal(refusalNamed(resolve("999", {}))?.refused, "no-such-row");
+  const throwing = resolveBlockedRow(blockedOn("460"), { trackers: TRACKERS, look: () => { throw new Error("HTTP 502"); }, sessionLabel: CLAIM_LABEL });
+  const refusal = refusalNamed(throwing);
+  assert.equal(refusal?.refused, "unreadable-row");
+  assert.ok(refusal?.why.includes("HTTP 502"), refusal?.why);
+});
+
+test("`ghRowLook`: an issue read as its state and labels, no such issue as null, and any other failure thrown", () => {
+  const answering = (reply: string | Error) => (): string => { if (reply instanceof Error) throw reply; return reply; };
+  assert.deepEqual(ghRowLook(answering('{"state":"CLOSED","labels":[{"name":"x"}]}'))("a11ign/a11ign", 460), { state: "CLOSED", labels: ["x"] });
+  assert.deepEqual(ghRowLook(answering('{"state":"OPEN","labels":[]}'))("a11ign/a11ign", 460), { state: "OPEN", labels: [] });
+  const missing = Object.assign(new Error("gh failed"), { stderr: "GraphQL: Could not resolve to an Issue with the number of 9999." });
+  assert.equal(ghRowLook(answering(missing))("a11ign/a11ign", 9999), null);
+  assert.throws(() => ghRowLook(answering(Object.assign(new Error("gh failed"), { stderr: "HTTP 502" })))("a11ign/a11ign", 460), /gh failed/);
+});
+
+test("a `blocked` declaration for the row of ANOTHER repository does not excuse this claim (twin: its own repository does)", () => {
+  const own = { ...decl({ state: "blocked", pr: undefined, row: 460, to: DEFAULT_ANSWERER }), repo: "a11ign/agent-org" };
+  assert.equal(declarationReading(own, ctx({ answersOwed: [DEFAULT_ANSWERER], repo: "a11ign/agent-org" })).kind, "excused");
+  assert.equal(declarationReading(own, ctx({ answersOwed: [DEFAULT_ANSWERER], repo: "a11ign/a11ign" })).kind, "lapsed", "row 460 of a11ign/a11ign is another row");
+  assert.equal(declarationReading({ ...own, repo: undefined }, ctx({ answersOwed: [DEFAULT_ANSWERER], repo: "a11ign/a11ign" })).kind, "excused", "a declaration written before the repository was recorded is read as before");
 });
