@@ -7,7 +7,7 @@ A pull request that is a claimed row's deliverable cannot declare a `none` Close
 
 **Evidence.** Both test files pass, 29 of 29. Positive control: a `none` body on a branch a claim record of the OTHER tracker names is refused by the check (exit 1, from a real process against a fake `gh`) and by `pr:open` (nothing sent, Acceptance not run). Negative control: a branch no claim names, and a pull request that finishes no row, are accepted. The neighbouring suites (`pr-open*`, `acceptance-commands`, `closes-mismatch-check` in `src/packaging`, `close-rows-*`) pass, 433 together. `tsc --noEmit` reports only the two `mjs-ratchet.test.ts` errors that `main` has.
 
-Mutation: four, each red in its own tests and each restore byte-identical (copy in the scratchpad and `diff`): the `pr:open` step never firing (3 red); the step refusing every `none` (1 red); only the first tracker read (3 red); an unreadable tracker dropped instead of named (4 red).
+Hand mutations: four, each red in its own tests and each restore byte-identical (copy in the scratchpad and `diff`): the `pr:open` step never firing (3 red); the step refusing every `none` (1 red); only the first tracker read (3 red); an unreadable tracker dropped instead of named (4 red).
 
 Acceptance: `AGENT_ORG_HOST=/home/agent/repos/a11y-witness/.agent-org/host.json node --import tsx --test src/closes-mismatch-check.test.ts src/packaging/pr-open-closes-none.test.ts`
 
