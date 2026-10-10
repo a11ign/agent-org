@@ -23,7 +23,7 @@ The row's Acceptance names `cd /home/agent/repos/agent-org`, the primary checkou
 
 Acceptance: `grep -q 'toolchain/lib/git-sandbox' src/lib/git-env.ts && ! grep -q 'at cd4bdb7dc' src/lib/git-env.ts && grep -q '"pkg", "set", "type=module"' src/lib/isolation-gate.ts && ! grep -q 'at f3b5c5f59' src/lib/isolation-gate.ts && grep -q 'toolchain/lib/source-text' src/lib/local-import-closure.ts && ! grep -q 'at cd4bdb7dc' src/lib/local-import-closure.ts && ! grep -q 'at 57bb9154a' src/lib/walk-scope.ts && grep -q 'walk-scope-declaration' src/lib/walk-scope.ts`
 
-Closes #565
+Closes a11ign/agent-org#565
 
 platform: n/a (header text and comments in declared copies; one `npm pkg set` call carried from the original)
 
