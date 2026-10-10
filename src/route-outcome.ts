@@ -15,7 +15,7 @@
 //
 // WHERE THIS IS CALLED FROM IS NOT THIS FILE'S DECISION, and is NOT `close-rows-for-merged-pr.ts` today: that script runs on a GitHub-hosted runner that cannot see the host's log
 // (agent-org#687, the row's comment). `recordClosedRow` is written to be called by whatever host-side process sees a row leave the open population.
-import { readFileSync } from "node:fs";
+import { closeSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
 import type { DecisionDeps } from "./decision-provider.ts";
 import { readSwitches } from "./decision-provider.ts";
 import { recordRouteOutcome, windowReadings } from "./engineer-route.ts";
@@ -68,13 +68,36 @@ function hasOutcome(lines: readonly unknown[], row: number): boolean {
   });
 }
 
+/** The log's lines as values, or `null` when the log could not be read (an absent one is quiet, any other fault goes to the diagnostic). */
+function readLog(logPath: string, read: NonNullable<ClosedRowDeps["read"]>, diagnostic: (line: string) => void): unknown[] | null {
+  try {
+    return String(read(logPath, "utf8")).split("\n").filter((line) => line !== "").map(parsed);
+  } catch (err) {
+    if ((err as { code?: string })?.code !== "ENOENT") diagnostic("agent-org: route-outcome: the decision log could not be read, so no outcome was written");
+    return null;
+  }
+}
+
+/** Whether the log routed the row and holds no outcome of the vocabulary for it yet: the whole of "this row is owed a line". */
+const owed = (lines: readonly unknown[], row: number): boolean => windowReadings(lines).some((reading) => reading.row === row) && !hasOutcome(lines, row);
+
+/** The row's lock file, beside the log (the directory the log is already in, so no directory is made for it). */
+export const rowLockPath = (logPath: string, row: number): string => `${logPath}.outcome-${row}.lock`;
+
 /**
- * WRITE THE OUTCOME OF A CLOSED ROW, ONCE, AND ONLY FOR A ROW THE LOG ROUTED. Returns the outcome it wrote, or `null` when it wrote nothing; it never throws. The two reasons it
- * wrote nothing that are faults (a log that could not be read, facts that are not counts) go to the diagnostic; the four that are by design (no log, the use off, no route line,
- * a second close-out) are quiet.
+ * WRITE THE OUTCOME OF A CLOSED ROW, ONCE, AND ONLY FOR A ROW THE LOG ROUTED. Returns the outcome it wrote, or `null` when it wrote nothing; it never throws. The reasons it
+ * wrote nothing that are faults (a log that could not be read, facts that are not counts, a lock it could not take) go to the diagnostic; the four that are by design (no log, the
+ * use off, no route line, a second close-out) are quiet.
  *
- * Reads the log before it writes, so a missing log is left missing: `recordRouteOutcome` creates the file, and a host with the provider absent must stay byte-identical. The check
- * and the append are not one step, so two close-outs of the same row at the same instant can both write; the report reads the last outcome of a row, and the two would agree.
+ * ONCE PER ROW HOLDS UNDER TWO CLOSE-OUTS AT THE SAME INSTANT, because the report keeps the LAST outcome of a row and two appends of different facts would leave it the one that
+ * happened to land second. Reading the log and appending are two steps of `recordRouteOutcome` (a plain append, and not this file's to change), so the pair is made one by an
+ * exclusive per-row lock file: created with `wx`, held across the re-read and the append, removed in a `finally`. A close-out that finds the lock held writes NOTHING and says so; it
+ * does not wait, because the holder is writing the same row's outcome and a second reading of it is exactly what is not wanted. The cost is that a process killed inside that window
+ * (a read and an append, microseconds) leaves the lock, and the row gets no outcome until it is removed: LOUD (the diagnostic names the file), and the fail-closed side, where the
+ * other choice was a wrong outcome that is tuned from. Nothing steals a lock for its age: a steal is itself a race, and one that ends in two writers.
+ *
+ * The read before the lock is only so that a row owed nothing (no log, the use off, no route line, an outcome already there) touches nothing on disk: the log is not created and
+ * no lock file is made for it. The read INSIDE the lock is the one the append is decided on.
  */
 export function recordClosedRow(row: number, facts: RouteOutcomeFacts, deps: ClosedRowDeps): RouteOutcome | null {
   const { logPath, diagnostic = printDiagnostic } = deps;
@@ -83,15 +106,8 @@ export function recordClosedRow(row: number, facts: RouteOutcomeFacts, deps: Clo
   // The rule `decide` applies: anything but an explicit `true` is off, a file that could not be used included.
   const switches = deps.switches ?? (deps.switchesPath === undefined ? {} : readSwitches(deps.switchesPath, { diagnostic, state: processState, read }));
   if (switches[USE] !== true) return null;
-  let lines: unknown[];
-  try {
-    lines = String(read(logPath, "utf8")).split("\n").filter((line) => line !== "").map(parsed);
-  } catch (err) {
-    if ((err as { code?: string })?.code !== "ENOENT") diagnostic("agent-org: route-outcome: the decision log could not be read, so no outcome was written");
-    return null;
-  }
-  if (!windowReadings(lines).some((reading) => reading.row === row)) return null;
-  if (hasOutcome(lines, row)) return null;
+  const before = readLog(logPath, read, diagnostic);
+  if (before === null || !owed(before, row)) return null;
   let outcome: RouteOutcome;
   try {
     outcome = routeOutcomeOf(facts);
@@ -99,6 +115,27 @@ export function recordClosedRow(row: number, facts: RouteOutcomeFacts, deps: Clo
     diagnostic(`agent-org: route-outcome: row ${row} has no outcome written: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
-  recordRouteOutcome(row, outcome, deps);
-  return outcome;
+  const lockPath = rowLockPath(logPath, row);
+  let lock: number;
+  try {
+    lock = openSync(lockPath, "wx");
+  } catch (err) {
+    const held = (err as { code?: string })?.code === "EEXIST";
+    diagnostic(`agent-org: route-outcome: row ${row} has no outcome written by this close-out: ${held ? `another close-out holds ${lockPath} (remove it if none is running)` : `${lockPath} could not be taken`}`);
+    return null;
+  }
+  try {
+    writeSync(lock, `${process.pid}\n`);
+    const inside = readLog(logPath, read, diagnostic);
+    if (inside === null || !owed(inside, row)) return null;
+    recordRouteOutcome(row, outcome, deps);
+    return outcome;
+  } finally {
+    closeSync(lock);
+    try {
+      unlinkSync(lockPath);
+    } catch {
+      diagnostic(`agent-org: route-outcome: ${lockPath} could not be removed; the row's outcome is written, and a later close-out of it will find the lock held`);
+    }
+  }
 }

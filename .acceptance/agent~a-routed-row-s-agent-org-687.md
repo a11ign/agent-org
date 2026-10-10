@@ -5,19 +5,23 @@ Acceptance:
 bash -c 'cd /home/agent/repos/wt-agent-org-687 && grep -q "second close-out of the row writes nothing" src/route-outcome.test.ts && npx rstest run --config scripts/rstest/rstest.config.ts src/route-outcome.test.ts'
 ```
 
-Run in this branch's tree with `AGENT_ORG_HOST` set to a11y-witness's `.agent-org/host.json` (without it the report module this one imports refuses at the project declaration, as it does for every test that reaches `project-identity`). Printed: `VERDICT pass: 11 tests in 1 file`. The test pins: each vocabulary string from its facts and its neighbour one fact away; a row with no route line writing nothing, log byte-identical; a second close-out writing nothing; the provider absent (no log, no log path, a log with no route for the row) leaving the log byte-identical and not creating it; the use switched off (three ways) writing nothing; and the line written being the one `windowReadings` reads as the row's outcome.
+Run in this branch's tree with `AGENT_ORG_HOST` set to a11y-witness's `.agent-org/host.json` (without it the report module this one imports refuses at the project declaration, as it does for every test that reaches `project-identity`). Printed: `VERDICT pass: 15 tests in 1 file`. The test pins: each vocabulary string from its facts and its neighbour one fact away; a row with no route line writing nothing, log byte-identical; a second close-out writing nothing; the provider absent (no log, no log path, a log with no route for the row) leaving the log byte-identical and not creating it; the use switched off (three ways) writing nothing; and the line written being the one `windowReadings` reads as the row's outcome; and two close-outs of one row at the same instant leaving ONE outcome (the first test lands the rival between the holder's read and its append, the second lands it before the lock), a lock left behind stopping that row loudly and no other, and no lock left in the log's directory.
 
 The routed rows in the test are routed by the real `routeEngineer`, so the route line the writer looks for is the one production writes.
 
-Mutation (measured on the final files, each restored with `cp` from a copy and `cmp` identical afterwards):
-- the route-line requirement removed: 3 of 11 red, the three that pin "no route line writes nothing" / "another row's line is not this row's" / "the provider absent".
-- the once-check removed: 1 of 11 red, the second-close-out test alone.
-- the switch check removed, so the use is never off: 1 of 11 red, the switched-off test alone.
-- the switch check replaced by `return null`, so it never writes: 7 of 11 red, every test that expects a line.
-- an absent log reported as a fault on the diagnostic: 1 of 11 red, the provider-absent test alone. (The first form of this mutant, "an absent log proceeds to write", was EQUIVALENT: the route-line requirement already leaves an absent log uncreated, so that branch carries only the quietness, which the second form pins.)
-- unreadable counts read as zero: 2 of 11 red, the count test and the unreadable-facts test.
-- `escalated` ignored: 2 of 11 red, the vocabulary test and the each-string-is-written test.
-- first pass copied and wrong (`rejectedReviews <= 1`): 3 of 11 red, those two and the "first pass is the report's definition" test.
+Mutation (measured on the final files, 15 tests, each restored with `cp` from a copy and `cmp` identical afterwards):
+- the route-line requirement removed: 4 of 15 red (no route line writes nothing; another row's line is not this row's; the provider absent; and the directory-untouched test, because the unrouted row would then write).
+- the once-check removed: 3 of 15 red (the second-close-out test, the rival-landed-before-the-lock test, the directory test).
+- the switch check removed, so the use is never off: 1 of 15 red, the switched-off test alone.
+- the switch check replaced by `return null`, so it never writes: 11 of 15 red, every test that expects a line.
+- an absent log reported as a fault on the diagnostic: 1 of 15 red, the provider-absent test alone. (The first form of this mutant, "an absent log proceeds to write", was EQUIVALENT: the route-line requirement already leaves an absent log uncreated, so that branch carries only the quietness, which the second form pins.)
+- unreadable counts accepted: 2 of 15 red, the count test and the unreadable-facts test.
+- `escalated` ignored: 2 of 15 red, the vocabulary test and the each-string-is-written test.
+- first pass copied and wrong (`rejectedReviews <= 1`): 3 of 15 red, those two and the "first pass is the report's definition" test.
+- the lock not exclusive (`"wx"` to `"w"`): 2 of 15 red, the rival-while-held test and the lock-left-behind test.
+- no re-check inside the lock: 1 of 15 red, the rival-landed-before-the-lock test alone.
+- the read inside the lock reusing the first read: 2 of 15 red, both rival tests.
+- the lock never removed: 2 of 15 red, the rival-while-held test and the no-lock-left test.
 
 Typecheck: `npx tsc --noEmit -p tsconfig.json` reports no error in either file; its only two errors are in `src/packaging/mjs-ratchet.test.ts` (`@a11ign/toolchain/mjs-ratchet` is not resolvable in this tree), untouched here.
 
@@ -34,4 +38,10 @@ So that file is not touched here, and `recordClosedRow` has no caller in this pu
 
 ## Rebased onto `cf26deec`
 
-`RowMeasures` gained a required `effort` (agent-org#469) after this was first written. The one-row summary passed to `summarise` names the report's own `EFFORT_UNKNOWN` (no turns were read, and `effort` only groups rows in the report; first pass does not read it). The 11 tests pass again and the typecheck is back to the two `mjs-ratchet` errors above.
+`RowMeasures` gained a required `effort` (agent-org#469) after this was first written. The one-row summary passed to `summarise` names the report's own `EFFORT_UNKNOWN` (no turns were read, and `effort` only groups rows in the report; first pass does not read it). The tests passed again at that point and the typecheck is back to the two `mjs-ratchet` errors above.
+
+## Review of `7c3a3522` (reviewer-agent-org-740, NOT CONVINCED): the once-per-row write was not atomic
+
+True, and my comment claiming "the two would agree" was wrong: two close-outs holding different facts would have appended different outcomes, and the report keeps the LAST one of a row. `recordRouteOutcome` is a plain append and outside this row's Region, so the pair of read and append is made one step in `recordClosedRow`: an exclusive per-row lock file (`<log>.outcome-<row>.lock`, `wx`), held across a second read and the append, released in a `finally`. A close-out that finds it held writes nothing and says so.
+
+Its limit, stated: a process killed between taking the lock and releasing it leaves the file, and that row gets no outcome until it is removed (the diagnostic names it). That is the fail-closed side, chosen over a lock that is stolen by age, because a steal is itself a race that ends in two writers. A different caller that appends to the log through `recordRouteOutcome` directly, not through `recordClosedRow`, is not guarded by this lock; there is none today.

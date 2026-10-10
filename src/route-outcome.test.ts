@@ -3,13 +3,13 @@
 // The routed rows are routed by the REAL `routeEngineer`, so the route line this module looks for is the one production writes, not a copy of its format.
 // no-token: gh -- nothing here calls `gh`; every dependency is injected
 import assert from "node:assert/strict";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { decisionSwitchesPath, recordOutcome } from "./decision-provider.ts";
 import { routeEngineer, windowReadings, type RouteRow } from "./engineer-route.ts";
 import { tmpDir } from "./lib/tmp-fixture.ts";
-import { recordClosedRow, ROUTE_OUTCOMES, routeOutcomeOf, type RouteOutcome, type RouteOutcomeFacts } from "./route-outcome.ts";
+import { recordClosedRow, ROUTE_OUTCOMES, routeOutcomeOf, rowLockPath, type RouteOutcome, type RouteOutcomeFacts } from "./route-outcome.ts";
 import { EFFORT_UNKNOWN, summarise } from "./trace/haiku-tier-report.ts";
 
 const BODY = "## Region\n\n```\nsrc/a.ts\nsrc/a.test.ts\n```\n\n## Acceptance\n\n```bash\npnpm test\n```\n\n## Done-when\n\n1. The Acceptance passes.\n";
@@ -156,4 +156,66 @@ test("recordClosedRow: a half-written tail does not stop the read, and facts nob
   assert.equal(r.text(), before);
   assert.equal(r.said.length, 1);
   assert.match(r.said[0], /row 5001 has no outcome written/);
+});
+
+// --- two close-outs of one row at the same instant: the report keeps the LAST outcome, so the pair must not both write ---
+
+const REJECTED_TWICE: RouteOutcomeFacts = { ...MERGED_CLEAN, rejectedReviews: 2 };
+
+/** A `read` that runs `rival` at the `nth` read of the log, the way a second process's whole close-out lands between this one's steps. `stale` hands back what the log said BEFORE it. */
+function readWithRival(logPath: string, nth: number, rival: () => void, { stale }: { stale: boolean }) {
+  let calls = 0;
+  return ((path: string, encoding: "utf8") => {
+    calls += 1;
+    const before = readFileSync(path, encoding);
+    if (calls === nth) rival();
+    return stale && calls === nth ? before : readFileSync(path, encoding);
+  }) as NonNullable<Parameters<typeof recordClosedRow>[2]["read"]>;
+}
+
+test("recordClosedRow: a rival close-out that arrives while this one holds the row writes nothing, so the row has one outcome (control: this one's)", async () => {
+  const r = await rig([31]);
+  let rivalSaid: RouteOutcome | null | undefined;
+  // The SECOND read of the log is the one inside the lock, so the rival lands exactly where the check and the append meet.
+  const read = readWithRival(r.logPath, 2, () => { rivalSaid = recordClosedRow(31, REJECTED_TWICE, r.deps); }, { stale: false });
+  assert.equal(recordClosedRow(31, MERGED_CLEAN, { ...r.deps, read }), "merged-first-pass");
+  assert.equal(rivalSaid, null, "the rival found the row held");
+  assert.deepEqual(r.outcomesOf(31), ["merged-first-pass"], "one outcome, and it is the holder's: the report is not left to whichever append landed second");
+  assert.equal(r.said.filter((line) => line.includes(rowLockPath(r.logPath, 31))).length, 1, "the rival said which lock it found");
+  assert.equal(existsSync(rowLockPath(r.logPath, 31)), false, "and the holder let it go");
+});
+
+test("recordClosedRow: a rival that landed between the first read and the lock is found by the read inside it (control: without it the row would take two)", async () => {
+  const r = await rig([32]);
+  let rivalSaid: RouteOutcome | null | undefined;
+  // The FIRST read returns what the log said before the rival wrote, so this close-out believes the row is owed.
+  const read = readWithRival(r.logPath, 1, () => { rivalSaid = recordClosedRow(32, REJECTED_TWICE, r.deps); }, { stale: true });
+  assert.equal(recordClosedRow(32, MERGED_CLEAN, { ...r.deps, read }), null, "the row already had its outcome by the time this one held it");
+  assert.equal(rivalSaid, "not-first-pass");
+  assert.deepEqual(r.outcomesOf(32), ["not-first-pass"]);
+});
+
+test("recordClosedRow: a lock left behind stops that row's outcome loudly and no other row's (control: removed, it writes)", async () => {
+  const r = await rig([21, 22]);
+  const held = rowLockPath(r.logPath, 21);
+  writeFileSync(held, "999\n");
+  const before = r.text();
+  assert.equal(recordClosedRow(21, MERGED_CLEAN, r.deps), null);
+  assert.equal(r.text(), before, "nothing was appended behind a lock");
+  assert.equal(r.said.length, 1);
+  assert.ok(r.said[0].includes(held), "the diagnostic names the file to remove");
+  assert.equal(existsSync(held), true, "and the lock is not this close-out's to remove");
+  assert.equal(recordClosedRow(22, MERGED_CLEAN, r.deps), "merged-first-pass", "the lock is the row's, not the log's");
+  unlinkSync(held);
+  assert.equal(recordClosedRow(21, MERGED_CLEAN, r.deps), "merged-first-pass", "the control: the same call with the lock gone");
+});
+
+test("recordClosedRow: no lock is left in the log's directory after a write, and a row owed nothing touches nothing", async () => {
+  const r = await rig([41]);
+  assert.equal(recordClosedRow(5000, MERGED_CLEAN, r.deps), null, "never routed");
+  assert.deepEqual(readdirSync(r.dir), ["decisions"]);
+  assert.equal(recordClosedRow(41, MERGED_CLEAN, r.deps), "merged-first-pass");
+  assert.deepEqual(readdirSync(r.dir), ["decisions"], "the lock was taken and let go");
+  assert.equal(recordClosedRow(41, MERGED_CLEAN, r.deps), null);
+  assert.deepEqual(readdirSync(r.dir), ["decisions"]);
 });
