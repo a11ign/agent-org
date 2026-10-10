@@ -2,6 +2,8 @@ The day's board edition no longer judges the comments of a CLOSED row, so a hand
 
 Closes a11ign/agent-org#573
 
+Class: answer-label-without-question — the closed-row case of an `answer:<route>` order reaching a seat with nothing to answer; guard: `answerLabelRefusal` at the label writer (a11ign/a11ign#4679) and, from this change, `commentsToJudge` never judging a closed row, so it is no finding to label.
+
 Acceptance:
 ```bash
 npx rstest run --config scripts/rstest/rstest.config.ts --include src/packaging/board-prose-skips-closed-rows.test.ts
