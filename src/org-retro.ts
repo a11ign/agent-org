@@ -26,7 +26,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { stateEntryPath } from "./host-config.ts";
 // A LEAF (`claim-labels.ts` imports nothing): the label is read from where it is declared, `repeating-lines.ts`'s own reason.
-import { READY_LABEL } from "./claim-labels.ts";
+import { CLAIM_LABEL, CLAIM_RECORD_MARKER, READY_LABEL } from "./claim-labels.ts";
 import { brokenChecks, redChecks as redChecksOf, isBrokenRed, isHeldRed, holdsOn } from "./red-pr.ts";
 // THE SIBLING ROW'S MODULE (#2939): it DERIVES the count from git and gh and writes no file, so the report calls it rather than reading a path.
 import { gatherChanges, readLedger as readHandFixLedger, ledgerLine as handFixLine } from "./hand-fix-ledger.ts";
@@ -37,6 +37,8 @@ import { FAILURE_LEDGER_FILE, parseFailureLedger, recordFailures, type FailureEn
 // THE IDLE-CLAIM INCIDENTS (#4642): the pure detector, and the two things its live read borrows -- the gate's idle memory and the herdr listing.
 import { IDLE_CLAIM_INCIDENT_MINUTES, idleClaimIncidents, incidentEvents, incidentSummary, type IdleClaim, type IdleClaimIncident } from "./idle-claim-incident.ts";
 import { IDLE_CLAIMANT_MS, type Agent, type IdlePr } from "./idle-claimant.ts";
+// THE ROWS LEFT OPEN AFTER THEIR DELIVERABLE MERGED (#4769): the pure detector, and the claim-record marker its live read borrows.
+import { MERGED_ROW_OPEN_MINUTES, mergedRowOpenEvents, mergedRowOpenIncidents, mergedRowOpenSummary, type MergedRowOpenIncident, type NamingPr, type OpenRow } from "./merged-row-open-incident.ts";
 import { readJsonObject, STALL_STATE_FILE, type StallState } from "./claim-stall.ts";
 import { readAgents } from "./herdr-agents.ts";
 import { newestPerName } from "./newest-check-run.ts";
@@ -330,6 +332,7 @@ function parsedFailureLedger(text: string | null | undefined): FailureEntry[] | 
  * `failureLedger` absent or `null` is a ledger nobody read or that could not be read (a line that does not parse included): the corrections line says `unknown`, never `0`.
  * `unwaited` absent or `null` is a stock-row read nobody made or that was refused: `unknown`, never 0.
  * `idleClaims` absent or `null` is a read nobody made or that was refused (no listing, no open-PR list): `unknown`, never 0 (#4642).
+ * `mergedRowOpen` absent or `null` is a read nobody made or that was refused (a tracker or repository could not be listed): `unknown`, never 0 (#4769).
  * `dora` absent is a read nobody asked for (no block); `dora: null` is one that was REFUSED, which prints `unknown`.
  * `merged` is the PRIMARY repository's list alone, the count's definition before #3593, and `mergedRepositories` is every declared one: absent is a project read
  * the old way (the total IS `merged`), `null` is a declaration that could not be read.
@@ -338,7 +341,7 @@ function parsedFailureLedger(text: string | null | undefined): FailureEntry[] | 
 export function buildReport(reads: {
         merged: any[] | null; mergedRepositories?: ReturnType<typeof readMerged> | null; openPrs: any[] | null; journal: string | null; ledger: string | null;
         turns: any[] | null; handFixes: ReturnType<typeof readHandFixLedger> | null; readings?: Readings; dora?: ReturnType<typeof readDora> | null;
-        unwaited?: ReturnType<typeof unwaitedStockRows> | null; failureLedger?: string | null; blockingRecord?: string | null; idleClaims?: IdleClaimIncident[] | null;
+        unwaited?: ReturnType<typeof unwaitedStockRows> | null; failureLedger?: string | null; blockingRecord?: string | null; idleClaims?: IdleClaimIncident[] | null; mergedRowOpen?: MergedRowOpenIncident[] | null;
     }, now: number) {
   const window = { since: now - WINDOW_MS, until: now };
   const lines = reads.journal === null ? null : journalLines(reads.journal, window);
@@ -359,6 +362,7 @@ export function buildReport(reads: {
     unwaited: reads.unwaited ?? null,
     blocking: topBlockerOf(reads.blockingRecord, now),
     idleClaims: incidentSummary(reads.idleClaims),
+    mergedRowOpen: mergedRowOpenSummary(reads.mergedRowOpen),
     dora: reads.dora,
   };
   // `readings` absent is a read nobody made, which says `unknown` and never `no baseline`: only a read that found no file may say that.
@@ -640,6 +644,17 @@ function idleClaimLines(summary: ReturnType<typeof incidentSummary>): string[] {
 }
 
 /**
+ * THE ROWS LEFT OPEN AFTER THEIR DELIVERABLE MERGED (#4769, class `row-not-finishable`): the count and the first three refs. `null` is a population nobody could read.
+ * @param {ReturnType<typeof mergedRowOpenSummary>} summary @returns {string[]}
+ */
+function mergedRowOpenLines(summary: ReturnType<typeof mergedRowOpenSummary>): string[] {
+  const label = `- Rows still open more than ${MERGED_ROW_OPEN_MINUTES} minutes after their deliverable merged`;
+  if (summary === null) return [`${label}: ${UNKNOWN} (an open-row or pull-request list of a declared repository could not be read)`];
+  const first = summary.count === 0 ? "" : `; first: ${summary.first.join(", ")}`;
+  return [`${label}: ${summary.count}${first}`];
+}
+
+/**
  * The report as the text `ceo` is handed and posts on #928.
  * @param {ReturnType<typeof buildReport>} report @returns {string}
  */
@@ -647,7 +662,7 @@ export function renderReport(report: ReturnType<typeof buildReport>): string {
   const from = new Date(report.window.since).toISOString();
   const to = new Date(report.window.until).toISOString();
   return [`ORG RETROSPECTIVE ${report.date} -- the 24 hours ${from} to ${to}`, "",
-    ...mergedLines(report), ...stallLines(report), ...journalDerivedLines(report), ...redLines(report.red), ...blockingLines(report.blocking), ...idleClaimLines(report.idleClaims), ...spendLines(report), ...unwaitedLines(report.unwaited), ...doraLines(report.dora), ...trendLines(report), ""].join("\n");
+    ...mergedLines(report), ...stallLines(report), ...journalDerivedLines(report), ...redLines(report.red), ...blockingLines(report.blocking), ...idleClaimLines(report.idleClaims), ...mergedRowOpenLines(report.mergedRowOpen), ...spendLines(report), ...unwaitedLines(report.unwaited), ...doraLines(report.dora), ...trendLines(report), ""].join("\n");
 }
 
 /**
@@ -870,10 +885,60 @@ export function readIdleClaims({ now, stateDir, openPrs, agents }: { now: number
   return idleClaimIncidents({ claims, agents, now });
 }
 
+/** How far back the merged pull requests are read (#4769): wider than the report's 24 hours, because a merge is not yet an incident when the pass that sees it first runs. */
+export const MERGED_ROW_OPEN_LOOKBACK_MS = 7 * WINDOW_MS;
+/** One list's ceiling: a list this long may have stopped short, so it is a refused read and never a count quietly too low (as `MERGED_READ_LIMIT`). */
+const LIST_LIMIT = 1000;
+const CLAIMED_BRANCH = /^Claimed-branch:\s*(.+)$/m;
+
+/** @param {(args: string[]) => any[] | null} read @param {string[]} args @returns {any[] | null} `null` for a refused list, a list at its ceiling included */
+const listRead = (read: (args: string[]) => any[] | null, args: string[]): any[] | null => {
+  const list = read(args);
+  return list === null || list.length >= LIST_LIMIT ? null : list;
+};
+
+/** The branch the NEWEST claim-record comment names, or `null`: a row's record is re-written by a re-claim and the last one is who holds it. */
+function claimedBranchOf(comments: { body?: string }[]): string | null {
+  const bodies = comments.map((comment) => comment.body ?? "").filter((body) => body.includes(CLAIM_RECORD_MARKER));
+  return bodies.reduce<string | null>((branch, body) => CLAIMED_BRANCH.exec(body)?.[1].trim() ?? branch, null);
+}
+
+/** One tracker's open rows, each with its claim record's branch. `null` when either list was refused. */
+function readOpenRows({ repo, read }: { repo: string; read: (args: string[]) => any[] | null; }): OpenRow[] | null {
+  const open = listRead(read, ["issue", "list", "-R", repo, "--state", "open", "--limit", String(LIST_LIMIT), "--json", "number,labels"]);
+  const claimed = listRead(read, ["issue", "list", "-R", repo, "--state", "open", "--label", CLAIM_LABEL, "--limit", String(LIST_LIMIT), "--json", "number,comments"]);
+  if (open === null || claimed === null) return null;
+  const branches = new Map<number, string | null>(claimed.map((row) => [row.number, claimedBranchOf(row.comments ?? [])]));
+  return open.map((row) => ({ repo, number: row.number, labels: (row.labels ?? []).map((l: any) => (typeof l === "string" ? l : l?.name)), claimedBranch: branches.get(row.number) ?? null }));
+}
+
+/** One code repository's merged (since the look-back) and open pull requests, tagged with the repository. `null` when either list was refused. */
+function readNamingPrs({ repo, since, read }: { repo: string; since: number; read: (args: string[]) => any[] | null; }): { merged: NamingPr[]; open: NamingPr[]; } | null {
+  const merged = listRead(read, ["pr", "list", "-R", repo, "--state", "merged", "--search", `merged:>=${new Date(since).toISOString()}`, "--limit", String(LIST_LIMIT), "--json", "number,body,headRefName,mergedAt"]);
+  const open = listRead(read, ["pr", "list", "-R", repo, "--state", "open", "--limit", String(LIST_LIMIT), "--json", "number,body,headRefName"]);
+  if (merged === null || open === null) return null;
+  return { merged: merged.map((pr) => ({ ...pr, repo })), open: open.map((pr) => ({ ...pr, repo })) };
+}
+
+/**
+ * THE LIVE READ OF THE ROWS LEFT OPEN AFTER THEIR DELIVERABLE MERGED (#4769): every declared tracker's open rows against every declared code repository's merged and open
+ * pull requests. `null` when ANY of those lists was refused (`unknown` in the report, never 0): a repository that could not be listed is a deliverable nobody could see.
+ * The pure decision is `merged-row-open-incident.ts`'s. `read` is the seam (`ghJson` by default).
+ * @param {{ now: number, declaration?: ReturnType<typeof homeProjectDeclaration>, read?: (args: string[]) => any[] | null }} reads
+ */
+export function readMergedRowOpen({ now, declaration = homeProjectDeclaration(), read = ghJson }: { now: number; declaration?: ReturnType<typeof homeProjectDeclaration>; read?: (args: string[]) => any[] | null; }): MergedRowOpenIncident[] | null {
+  const rowLists = declaration.tracker.map(({ repo }) => readOpenRows({ repo, read }));
+  const prLists = declaration.code.map(({ repo }) => readNamingPrs({ repo, since: now - MERGED_ROW_OPEN_LOOKBACK_MS, read }));
+  if (rowLists.includes(null) || prLists.includes(null)) return null;
+  const prs = prLists as { merged: NamingPr[]; open: NamingPr[]; }[];
+  return mergedRowOpenIncidents({ rows: (rowLists as OpenRow[][]).flat(), mergedPrs: prs.flatMap((p) => p.merged), openPrs: prs.flatMap((p) => p.open), now });
+}
+
 /**
  * Every read the report wants, once. `stateDir` holds the wake ledger. THE HAND-FIX COUNT IS NOT A FILE IN IT: `hand-fix-ledger.ts` derives
  * it from git and gh (#2939), and this line read a path nothing wrote for as long as the report existed (#2954). `readHandFixes` is the seam.
  * THE IDLE-CLAIM READ (#4642) is {@link readIdleClaims}: the gate's own idle memory, the herdr listing (`readAgentListing` is its seam) and the open-PR list already read here.
+ * THE ROWS-LEFT-OPEN READ (#4769) is {@link readMergedRowOpen}, through `readOpenRowIncidents`, its seam.
  * THE DORA READ IS THE DECLARATION'S (`dora.ts`): the repositories `.agent-org/project.json` lists, read from the registry and GitHub. `readDoraReport` is its seam.
  * @param {{ now: number, stateDir: string, unit?: string, readHandFixes?: (now: number) => ReturnType<typeof readHandFixLedger>,
  *   readDoraReport?: (now: number) => ReturnType<typeof readDora> | null, readUnwaited?: (now: number) => ReturnType<typeof unwaitedStockRows>, readMergedRepositories?: (now: number) => ReturnType<typeof readMerged> }} where
@@ -883,10 +948,10 @@ export function readAll({ now, stateDir, unit = "a11ign-work-tick.service",
   readMergedRepositories = (at) => readMerged({ declaration: homeProjectDeclaration(), since: at - WINDOW_MS }),
   readHandFixes = (at) => readHandFixLedger({ read: gatherChanges(), now: new Date(at) }),
   readUnwaited = (at) => unwaitedStockRows({ reader: ghTrackerReader(homeProjectDeclaration().repo), now: at }),
-  readDoraReport = readDeclaredDora, readAgentListing = () => readAgents() }: {
+  readDoraReport = readDeclaredDora, readAgentListing = () => readAgents(), readOpenRowIncidents = (at) => attemptDora(() => readMergedRowOpen({ now: at })) }: {
         now: number; stateDir: string; unit?: string; readHandFixes?: (now: number) => ReturnType<typeof readHandFixLedger>;
         readDoraReport?: (now: number) => ReturnType<typeof readDora> | null; readUnwaited?: (now: number) => ReturnType<typeof unwaitedStockRows>; readMergedRepositories?: (now: number) => ReturnType<typeof readMerged>;
-        readAgentListing?: () => Agent[] | null;
+        readAgentListing?: () => Agent[] | null; readOpenRowIncidents?: (now: number) => MergedRowOpenIncident[] | null;
     }) {
   const since = now - WINDOW_MS;
   const mergedRepositories = attemptDora(() => readMergedRepositories(now));
@@ -896,6 +961,7 @@ export function readAll({ now, stateDir, unit = "a11ign-work-tick.service",
     mergedRepositories,
     openPrs,
     idleClaims: readIdleClaims({ now, stateDir, openPrs, agents: readAgentListing() }),
+    mergedRowOpen: readOpenRowIncidents(now),
     journal: readJournal(unit),
     ledger: readText(`${stateDir}/wake-ledger`),
     failureLedger: readText(`${stateDir}/${FAILURE_LEDGER_FILE}`),
@@ -965,6 +1031,7 @@ export function retrospectiveTick({ now = Date.now(), stateDir = stateEntryPath(
     const text = renderReport(report);
     // `recordFailures` never throws and skips an event already logged, so an episode the daily pass sees on two dates is one line (#4642).
     recordFailures({ logPath: join(stateDir, FAILURE_LEDGER_FILE), events: incidentEvents(inputs.idleClaims ?? []), now, report: (line) => log(`${line}\n`) });
+    recordFailures({ logPath: join(stateDir, FAILURE_LEDGER_FILE), events: mergedRowOpenEvents(inputs.mergedRowOpen ?? []), now, report: (line) => log(`${line}\n`) });
     keepReading(record, { stateDir, date, numbers: report.numbers, mergedRepositories: report.mergedRepositories?.map((r) => r.repo) }, log);
     return [retrospectiveOrder(date, text)];
   } catch (err: any) {
