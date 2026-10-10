@@ -49,7 +49,7 @@ import { HOME_CHECKOUT, PROJECT_DECLARATION_PATH } from "./project-config.ts";
 import { CLAUDE_EFFORTS, DECLARED_CLAUDE_MODELS, HAIKU_MODEL_ID, HAIKU_TIER_LABEL } from "./worker-profile.ts";
 import { REPO } from "./project-identity.ts";
 import { readAgents, absentSeats } from "./herdr-agents.ts";
-import { persistentRoles } from "./project-roles.ts";
+import { persistentEntries, persistentRoles } from "./project-roles.ts";
 import { kernelFindings, kernelNotes } from "./host-kernel.ts";
 import { HostConfigRefusal, LONG_RUNNING_TEMPLATES, TEMPLATE_SUFFIX, homeHostConfig, leadsWorkspacesText, readBeforeTick, readUnitsDeclaration,
   renderTemplate, renderedName, stateEntryPath, templateValues } from "./host-config.ts";
@@ -2740,7 +2740,7 @@ export function liveClaudeSessions(run: (args: string[]) => string = (args) => e
   }
 }
 
-export type SessionModelDeps = { sessions?: ReturnType<typeof liveClaudeSessions>, projectsDir?: string, tail?: (path: string) => string, declared?: Record<string, { id: string }>, rowLabels?: (row: number) => readonly string[] | null };
+export type SessionModelDeps = { sessions?: ReturnType<typeof liveClaudeSessions>, projectsDir?: string, tail?: (path: string) => string, declared?: Record<string, { id: string }>, rowLabels?: (row: number) => readonly string[] | null, seatModels?: () => Readonly<Record<string, string>> | null };
 /**
  * A RESUMED SESSION KEEPS ITS SAVED MODEL (#2783). 2026-09-29: the chairman moved the org to Sonnet 5.5 and the three
  * standing sessions, restarted with `--resume`, came back on Sonnet 5 -- `settings.json`'s `model` is read for a FRESH
@@ -2788,30 +2788,85 @@ function readRowLabels(row: number): string[] | null {
 }
 
 /**
- * THE MODEL A SESSION IS EXPECTED TO RUN (#4457). A `tier:haiku` row gets a `claude-haiku-5-5` worker BY DESIGN (`HAIKU_TIER_LABEL`), so judging
- * that worker against Sonnet alone called the intended state drift, and its remedy (`/model sonnet`) would have undone the saving the tier is for.
- * A worker is named for its row, so the row's labels decide; every other session, and a worker whose row could not be read, is judged against
- * the declared models as before.
- * @param {string} name @param {SessionModelDeps} deps
- * @returns {{ ids: string[], haikuRow: number | null }}
+ * The `model` each persistent seat's roster entry DECLARES (#4740), by seat name, or `null` when the roster would not be read. A seat that declares
+ * none is absent from the table, and a malformed one is too: the launcher refuses it (`SEAT NOT STARTED`) and says so itself.
+ * @returns {Record<string, string> | null}
  */
-function expectedModels(name: string, { declared = DECLARED_CLAUDE_MODELS, rowLabels = readRowLabels }: SessionModelDeps): { ids: string[]; haikuRow: number | null; } {
-  const ids = Object.values(declared).map((m) => m.id);
+function readSeatModels(): Record<string, string> | null {
+  try {
+    return Object.fromEntries(persistentEntries().flatMap(({ name, model, refusal }) => model === undefined || refusal !== undefined ? [] : [[name, model]]));
+  } catch {
+    return null;  // unreadable is not "declares nothing": the caller judges the seat against the org's models as before, and `persistentSeatNotes` names the roster
+  }
+}
+
+/**
+ * The model id a roster `model` stands for, or `null` when this file knows no id for it. The launcher passes the value to `--model` UNCHANGED
+ * (`seatStartFlags`, wake.ts) and the `claude` CLI resolves it, so what can be resolved here is what the org itself names: a full id as written,
+ * `haiku` as `HAIKU_MODEL_ID`, and the aliases `declared` is keyed by. A context suffix (`opus[1m]`) names a window, not a model, so it is dropped before comparing (not checked against a live transcript).
+ * @param {string} model @param {Record<string, { id: string }>} declared
+ * @returns {string | null}
+ */
+function declaredModelId(model: string, declared: Record<string, { id: string }>): string | null {
+  const base = model.replace(/\[[^\]]*\]$/, "");
+  if (base.includes("-")) return base;  // a full id, as `profileFor` reads one
+  if (base === "haiku") return HAIKU_MODEL_ID;
+  return declared[base]?.id ?? null;
+}
+
+type ExpectedModels =
+  | { ids: string[]; source: "org" }
+  | { ids: string[]; source: "tier"; row: number }
+  | { ids: string[]; source: "roster"; declaredAs: string };
+
+/**
+ * THE MODEL A SESSION IS EXPECTED TO RUN. Three things decide it, the most specific first:
+ *
+ * - **Its roster entry (#4762).** A persistent seat whose entry declares a `model` is expected on THAT model alone (#4740: a11ign#4760 declared the
+ *   liaison on Haiku, and judging it against Sonnet called the declared state drift, with a remedy that would have undone the declaration). A declared
+ *   alias this file cannot resolve ({@link declaredModelId}) yields `null`: nothing to judge it against, so not a finding -- the other answer is a guess.
+ * - **Its row's tier (#4457).** A `tier:haiku` row gets a `claude-haiku-5-5` worker BY DESIGN (`HAIKU_TIER_LABEL`), so judging that worker against
+ *   Sonnet alone called the intended state drift, and its remedy (`/model sonnet`) would have undone the saving the tier is for. A worker is named
+ *   for its row, so the row's labels decide.
+ * - **The org's declared models.** Every other session, a seat declaring nothing, and a worker whose row could not be read.
+ * @param {string} name @param {SessionModelDeps} deps @param {Record<string, string> | null} seatModels {@link readSeatModels}, read once per check
+ * @returns {ExpectedModels | null}
+ */
+function expectedModels(name: string, { declared = DECLARED_CLAUDE_MODELS, rowLabels = readRowLabels }: SessionModelDeps, seatModels: Readonly<Record<string, string>> | null): ExpectedModels | null {
+  const seatModel = seatModels?.[name];
+  if (seatModel !== undefined) {
+    const id = declaredModelId(seatModel, declared);
+    return id === null ? null : { ids: [id], source: "roster", declaredAs: seatModel };
+  }
   const worker = /^worker-([1-9][0-9]*)$/.exec(name);
   const row = worker === null ? null : Number(worker[1]);
-  return row !== null && rowLabels(row)?.includes(HAIKU_TIER_LABEL) ? { ids: [HAIKU_MODEL_ID], haikuRow: row } : { ids, haikuRow: null };
+  if (row !== null && rowLabels(row)?.includes(HAIKU_TIER_LABEL)) return { ids: [HAIKU_MODEL_ID], source: "tier", row };
+  return { ids: Object.values(declared).map((m) => m.id), source: "org" };
+}
+
+/** What the finding says about where the expectation came from and what, if anything, the reader can do. */
+function modelDriftDetail(model: string, expected: ExpectedModels): string {
+  const ids = expected.ids.map((i) => `\`${i}\``).join(", ");
+  const found = `its last answer came from \`${model}\``;
+  switch (expected.source) {
+    case "roster":
+      return `${found}; its roster entry declares \`${expected.declaredAs}\`${expected.declaredAs === expected.ids[0] ? "" : ` (${ids})`}. A resumed session keeps its saved model, not the roster's. `
+        + `Run \`/model ${expected.declaredAs}\` in that session: this check reads and cannot switch it.`;
+    case "tier":
+      return `${found}; row #${expected.row} carries \`${HAIKU_TIER_LABEL}\`, so the tier expects ${ids}. The tier was not applied to this worker; this check reads and cannot switch it.`;
+    default:
+      return `${found}; the org declares ${ids}. A resumed session keeps its saved model, not settings.json's. Run \`/model <alias>\` in that session: this check reads and cannot switch it.`;
+  }
 }
 
 /** @param {SessionModelDeps} [deps] @returns {Finding[]} */
 export function sessionModelDrift(deps: SessionModelDeps = {}): Finding[] {
-  return readSessionModels(deps).flatMap(({ name, model }) => {
-    const { ids, haikuRow } = expectedModels(name, deps);
-    if (model === null || ids.includes(model)) return [];
-    const expected = ids.map((i) => `\`${i}\``).join(", ");
-    return [{ unit: `session ${name}`, problem: "SESSION ON AN UNDECLARED MODEL",
-      detail: `its last answer came from \`${model}\`; ${haikuRow === null ? "the org declares" : `row #${haikuRow} carries \`${HAIKU_TIER_LABEL}\`, so the tier expects`} ${expected}. `
-        + (haikuRow === null ? "A resumed session keeps its saved model, not settings.json's. Run `/model <alias>` in that session: this check reads and cannot switch it."
-          : "The tier was not applied to this worker; this check reads and cannot switch it.") }];
+  const sessions = readSessionModels(deps);
+  const seatModels = sessions.length === 0 ? null : (deps.seatModels ?? readSeatModels)();
+  return sessions.flatMap(({ name, model }) => {
+    const expected = expectedModels(name, deps, seatModels);
+    if (model === null || expected === null || expected.ids.includes(model)) return [];
+    return [{ unit: `session ${name}`, problem: "SESSION ON AN UNDECLARED MODEL", detail: modelDriftDetail(model, expected) }];
   });
 }
 

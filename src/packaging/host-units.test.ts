@@ -335,6 +335,9 @@ test("#2783: lastModelIn reads the LAST assistant answer, ignores <synthetic>, a
   assert.equal(lastModelIn('{"type":"user"}\n'), null, "no answer is null, never a guess");
 });
 
+/** The roster `sessionModelDrift` reads, handed in: left to default it would read whatever project this runs from, and a seat that project declares would change a test's answer. */
+const rosterSeats = (declared: Record<string, string> | null) => () => declared;
+
 const sessionsDir = (files: Record<string, string>) => {
   const root = tmpDir("host-units-2783-");
   for (const [rel, text] of Object.entries(files)) {
@@ -356,7 +359,7 @@ test("#2783: a session on the declared model is clean; one still on the OLD mode
       { name: "product-manager", cwd: "/home/agent/repos/a11y-witness", sessionId: "bbb" },
       { name: "worker-2783", cwd: "/home/agent/repos/wt-2783", sessionId: "ccc" },
     ];
-    const drift = sessionModelDrift({ sessions, projectsDir, rowLabels: () => [] });
+    const drift = sessionModelDrift({ sessions, projectsDir, seatModels: rosterSeats({}), rowLabels: () => [] });
     assert.deepEqual(drift.map((d) => d.unit), ["session product-manager"],
       "only the resumed one; the transcript directory is the cwd with `/` and `.` turned into `-`");
     assert.equal(drift[0].problem, "SESSION ON AN UNDECLARED MODEL");
@@ -377,7 +380,7 @@ test("#4457: a worker on a tier:haiku row is expected on Haiku -- Haiku is clean
     const sessions = [{ name: "worker-1", cwd: "/wt-1", sessionId: "h" },
       { name: "worker-2", cwd: "/wt-2", sessionId: "s" }];
     const rowLabels = tierRows({ 1: [HAIKU_TIER_LABEL], 2: [HAIKU_TIER_LABEL] });
-    const drift = sessionModelDrift({ sessions, projectsDir, rowLabels });
+    const drift = sessionModelDrift({ sessions, projectsDir, seatModels: rosterSeats({}), rowLabels });
     assert.deepEqual(drift.map((d) => d.unit), ["session worker-2"], "Haiku on a Haiku row raises nothing; Sonnet on it does");
     assert.match(drift[0].detail, /row #2/, "it names the row");
     assert.match(drift[0].detail, /`claude-sonnet-5-5`/, "and what it found");
@@ -395,7 +398,7 @@ test("#4457: Haiku on an UNLABELLED row is still the finding, and so is a row th
   try {
     const sessions = [{ name: "worker-3", cwd: "/wt-3", sessionId: "a" }, { name: "worker-4", cwd: "/wt-4", sessionId: "b" },
       { name: "worker-5", cwd: "/wt-5", sessionId: "c" }];
-    const drift = sessionModelDrift({ sessions, projectsDir, rowLabels: tierRows({ 3: ["in-progress"], 4: null, 5: ["in-progress"] }) });
+    const drift = sessionModelDrift({ sessions, projectsDir, seatModels: rosterSeats({}), rowLabels: tierRows({ 3: ["in-progress"], 4: null, 5: ["in-progress"] }) });
     assert.deepEqual(drift.map((d) => d.unit), ["session worker-3", "session worker-4"],
       "Haiku on a plain row and on an unreadable one are findings; Sonnet on a plain row is clean");
     assert.match(drift[0].detail, /\/model <alias>/, "the plain-row finding keeps its remedy");
@@ -406,10 +409,64 @@ test("#4457: a session that is not a worker is never looked up, whatever the loo
   const projectsDir = sessionsDir({ "-x/ceo.jsonl": `${answered(HAIKU_MODEL_ID)}\n` });
   try {
     const asked: number[] = [];
-    const drift = sessionModelDrift({ sessions: [{ name: "ceo", cwd: "/x", sessionId: "ceo" }], projectsDir,
+    const drift = sessionModelDrift({ sessions: [{ name: "ceo", cwd: "/x", sessionId: "ceo" }], projectsDir, seatModels: rosterSeats({}),
       rowLabels: (row) => { asked.push(row); return [HAIKU_TIER_LABEL]; } });
     assert.deepEqual(drift.map((d) => d.unit), ["session ceo"], "a standing seat on Haiku is drift");
     assert.deepEqual(asked, [], "no row was read for it");
+  } finally { rmSync(projectsDir, { recursive: true, force: true }); }
+});
+
+test("#4762: a seat on the model its roster entry declares is clean; one on another is the finding, naming the roster and a remedy that keeps the declaration", () => {
+  const projectsDir = sessionsDir({
+    "-x/lh.jsonl": `${answered(HAIKU_MODEL_ID)}\n`,
+    "-x/ls.jsonl": `${answered("claude-sonnet-5-5")}\n`,
+  });
+  try {
+    const seatModels = rosterSeats({ liaison: HAIKU_MODEL_ID, scribe: HAIKU_MODEL_ID });
+    const onHaiku = sessionModelDrift({ sessions: [{ name: "liaison", cwd: "/x", sessionId: "lh" }], projectsDir, seatModels });
+    assert.deepEqual(onHaiku, [], "POSITIVE CONTROL: the declared model, which is NOT the org's Sonnet, raises nothing");
+    const onSonnet = sessionModelDrift({ sessions: [{ name: "scribe", cwd: "/x", sessionId: "ls" }], projectsDir, seatModels });
+    assert.deepEqual(onSonnet.map((d) => d.unit), ["session scribe"]);
+    assert.match(onSonnet[0].detail, /its roster entry declares `claude-haiku-5-5`/, "it names the roster as the source");
+    assert.match(onSonnet[0].detail, /`claude-sonnet-5-5`/, "and what it found");
+    assert.match(onSonnet[0].detail, new RegExp(`/model ${HAIKU_MODEL_ID}`), "the remedy names the DECLARED model");
+    assert.doesNotMatch(onSonnet[0].detail, /\/model (<alias>|sonnet)/, "and never Sonnet or a bare placeholder");
+    assert.doesNotMatch(onSonnet[0].detail, /the org declares/, "the org's table is not the source for this seat");
+  } finally { rmSync(projectsDir, { recursive: true, force: true }); }
+});
+
+test("#4762: a seat declaring nothing, a worker and an unreadable roster are judged as before", () => {
+  const projectsDir = sessionsDir({
+    "-x/c.jsonl": `${answered(HAIKU_MODEL_ID)}\n`,
+    "-x/w.jsonl": `${answered(HAIKU_MODEL_ID)}\n`,
+    "-x/o.jsonl": `${answered("claude-sonnet-5-5")}\n`,
+  });
+  try {
+    const sessions = [{ name: "ceo", cwd: "/x", sessionId: "c" }, { name: "worker-7", cwd: "/x", sessionId: "w" }, { name: "liaison", cwd: "/x", sessionId: "o" }];
+    const rowLabels = tierRows({ 7: [HAIKU_TIER_LABEL] });
+    const declares = sessionModelDrift({ sessions, projectsDir, rowLabels, seatModels: rosterSeats({ liaison: HAIKU_MODEL_ID }) });
+    assert.deepEqual(declares.map((d) => d.unit), ["session ceo", "session liaison"],
+      "ceo declares nothing so Haiku is drift; the tier worker is still expected on Haiku; liaison declared Haiku and is on Sonnet");
+    assert.match(declares[0].detail, /\/model <alias>/, "the undeclared seat keeps the org remedy");
+    const unreadable = sessionModelDrift({ sessions, projectsDir, rowLabels, seatModels: rosterSeats(null) });
+    assert.deepEqual(unreadable.map((d) => d.unit), ["session ceo"], "an unreadable roster declares nothing: Sonnet is clean, as before");
+  } finally { rmSync(projectsDir, { recursive: true, force: true }); }
+});
+
+test("#4762: a declared ALIAS resolves to the id the org names for it, a context suffix is dropped, and one it cannot resolve is not a finding", () => {
+  const projectsDir = sessionsDir({
+    "-x/a.jsonl": `${answered("claude-sonnet-5-5")}\n`,
+    "-x/b.jsonl": `${answered(HAIKU_MODEL_ID)}\n`,
+    "-x/c.jsonl": `${answered("claude-opus-5-5")}\n`,
+  });
+  try {
+    const sessions = [{ name: "a", cwd: "/x", sessionId: "a" }, { name: "b", cwd: "/x", sessionId: "b" }, { name: "c", cwd: "/x", sessionId: "c" }];
+    const clean = sessionModelDrift({ sessions, projectsDir, seatModels: rosterSeats({ a: "sonnet[1m]", b: "haiku", c: "opus[1m]" }) });
+    assert.deepEqual(clean, [], "sonnet[1m] -> claude-sonnet-5-5 and haiku -> HAIKU_MODEL_ID match; opus has no id here, so it is not judged");
+    const withSuffixed = [...sessions, { name: "d", cwd: "/x", sessionId: "b" }];  // on Haiku, declared `sonnet[1m]`: a finding only if the suffix is dropped
+    const drifted = sessionModelDrift({ sessions: withSuffixed, projectsDir, seatModels: rosterSeats({ a: "haiku", b: "sonnet", c: "opus", d: "sonnet[1m]" }) });
+    assert.deepEqual(drifted.map((d) => d.unit), ["session a", "session b", "session d"], "an alias is checked against ITS id, in both directions, suffixed or not");
+    assert.match(drifted[0].detail, /declares `haiku` \(`claude-haiku-5-5`\)[\s\S]*\/model haiku/, "the alias is shown with the id it stands for, and is the remedy");
   } finally { rmSync(projectsDir, { recursive: true, force: true }); }
 });
 
@@ -418,7 +475,7 @@ test("#2783: a session with no answer yet is a NOTE, never a finding and never s
   try {
     const sessions = [{ name: "orchestrator", cwd: "/home/agent/repos/a11y-witness", sessionId: "fresh" },
       { name: "no-file", cwd: "/home/agent/repos/a11y-witness", sessionId: "missing" }];
-    assert.deepEqual(sessionModelDrift({ sessions, projectsDir }), [],
+    assert.deepEqual(sessionModelDrift({ sessions, projectsDir, seatModels: rosterSeats({}) }), [],
       "the gate wakes a session on any finding, and 'has not answered yet' is nothing to wake anybody for");
     assert.deepEqual(sessionModelNotes({ sessions, projectsDir }).map((n) => [n.unit, n.problem]),
       [["session orchestrator", "MODEL UNKNOWN"], ["session no-file", "MODEL UNKNOWN"]]);
@@ -432,7 +489,7 @@ test("#2783: only the TAIL of a transcript is read, so a multi-megabyte one cost
   });
   try {
     const sessions = [{ name: "ceo", cwd: "/home/agent/repos/a11y-witness", sessionId: "big" }];
-    assert.deepEqual(sessionModelDrift({ sessions, projectsDir }), [], "the newest answer wins across the real file read");
+    assert.deepEqual(sessionModelDrift({ sessions, projectsDir, seatModels: rosterSeats({}) }), [], "the newest answer wins across the real file read");
   } finally { rmSync(projectsDir, { recursive: true, force: true }); }
 });
 
