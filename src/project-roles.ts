@@ -15,6 +15,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { HOME_CHECKOUT, ProjectDeclarationRefusal } from "./project-config.ts";
+import { CLAUDE_EFFORTS } from "./worker-profile.ts";
 
 const SOURCE = ".agent-org/project.json";
 
@@ -90,12 +91,55 @@ export function persistentRoles(path: string | URL = roleBriefPath("sessions.jso
   return persistentEntries(path).map((s) => s.name);
 }
 
+/** A persistent seat's roster entry: its name and brief, the launch fields it MAY declare (#4740), and why one of them was refused. */
+export type PersistentEntry = {
+  name: string;
+  brief?: string;
+  /** a model id or alias, passed to `--model` */
+  model?: string;
+  /** one of {@link CLAUDE_EFFORTS}, passed to `--effort` */
+  effort?: string;
+  /** the WINDOW `--autocompact` takes, which compacts about `AUTO_COMPACT_TRIGGER_MARGIN_TOKENS` below it, NOT the trigger itself */
+  autocompact?: number;
+  /** set when a declared field is malformed: it names the entry and the field, and the seat is not started with a default in its place */
+  refusal?: string;
+};
+
+/** A model id or alias as `--model` takes one (`sonnet`, `claude-haiku-5-5`, `opus[1m]`): no whitespace, and never a leading `-`, which would be read as a flag. */
+const MODEL_VALUE = /^[A-Za-z0-9][A-Za-z0-9._[\]:-]*$/;
+
+/** Why a declared launch field is malformed, or `null` when it is absent or well-formed. An absent field is the seat's default and never a refusal. */
+function launchFieldRefusal(entry: { name: string; model?: unknown; effort?: unknown; autocompact?: unknown }): string | null {
+  const where = `roster entry \`${entry.name}\``;
+  const { model, effort, autocompact } = entry;
+  if (model !== undefined && !(typeof model === "string" && MODEL_VALUE.test(model))) {
+    return `${where}: \`model\` must be a model id such as \`claude-haiku-5-5\`, not ${JSON.stringify(model)}.`;
+  }
+  if (effort !== undefined && !(typeof effort === "string" && CLAUDE_EFFORTS.includes(effort))) {
+    return `${where}: \`effort\` must be one of ${CLAUDE_EFFORTS.join(", ")}, not ${JSON.stringify(effort)}.`;
+  }
+  if (autocompact !== undefined && !(typeof autocompact === "number" && Number.isInteger(autocompact) && autocompact > 0)) {
+    return `${where}: \`autocompact\` must be a positive whole number of tokens (the window \`--autocompact\` takes), not ${JSON.stringify(autocompact)}.`;
+  }
+  return null;
+}
+
 /**
- * The persistent entries with the brief each names, for the step that STARTS a seat from it.
+ * The persistent entries with the brief each names and the launch fields each declares, for the step that STARTS a seat from it.
+ *
+ * `model`, `effort` and `autocompact` are OPTIONAL (#4740), and a seat that declares none starts as it always did. A MALFORMED one is NOT a default
+ * and NOT a throw: the entry comes back with `refusal` naming it, so the start step prints `SEAT NOT STARTED` for that seat alone and the other
+ * seats are still looked for. (A throw would read as an unreadable roster and stop every seat.) The seat still counts as persistent
+ * ({@link persistentRoles}), so `host:check` goes on naming it absent.
  * @param {string | URL} [path] the roster file
- * @returns {{ name: string, brief?: string }[]}
  */
-export function persistentEntries(path: string | URL = roleBriefPath("sessions.json").absolute): { name: string; brief?: string; }[] {
-  const { live } = (JSON.parse(readFileSync(path, "utf8")) as { live: { name: string, persistent?: boolean, brief?: string }[] });
-  return live.filter((s) => s.persistent === true).map(({ name, brief }) => ({ name, brief }));
+export function persistentEntries(path: string | URL = roleBriefPath("sessions.json").absolute): PersistentEntry[] {
+  const { live } = (JSON.parse(readFileSync(path, "utf8")) as { live: { name: string, persistent?: boolean, brief?: string, model?: unknown, effort?: unknown, autocompact?: unknown }[] });
+  return live.filter((s) => s.persistent === true).map((entry) => {
+    const { name, brief } = entry;
+    const refusal = launchFieldRefusal(entry);
+    if (refusal !== null) return { name, brief, refusal };
+    const { model, effort, autocompact } = entry as { model?: string; effort?: string; autocompact?: number };
+    return { name, brief, ...(model !== undefined && { model }), ...(effort !== undefined && { effort }), ...(autocompact !== undefined && { autocompact }) };
+  });
 }

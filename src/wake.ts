@@ -91,7 +91,7 @@ import { holderWorkAtRisk, workAtRisk, cloneOfKey, gitRun, pathExists, statMtime
 // too, without importing this file (which already imports `claim-stall.ts` and would cycle). Re-exported below so
 // every existing importer of `readAgents`/`listingIsComplete` from "./wake.ts" is unchanged.
 import { readAgents, listingIsComplete, absentSeats } from "./herdr-agents.ts";
-import { persistentRoles, persistentEntries } from "./project-roles.ts";
+import { persistentRoles, persistentEntries, type PersistentEntry } from "./project-roles.ts";
 import { liveToolVersion } from "./lib/tool-version.ts";
 import { readState as readSelftestState, selftestPaths, worthAChild } from "./messaging/selftest.ts"; // #3540: the question of whether to start the self-test at all
 import { DEFERRAL_LOG_FILE, recordEndedDeferrals } from "./deferral-log.ts";
@@ -5737,7 +5737,8 @@ export function isPersistentRole(label: string, path: string | URL = SESSIONS_FI
 /**
  * THE FLAGS A PERSISTENT SEAT IS STARTED WITH (#3539): the values `ceo` hand-started the `liaison` with on 2026-10-04, and the STARTING
  * values, not a finding. MODEL AND EFFORT ARE A CHOICE AND NOT A MEASUREMENT -- nobody has run the seat on another tier and recorded it
- * failing, which is `agent-practices.md`'s bar for raising one. Moving them to the roster entry is a later row's.
+ * failing, which is `agent-practices.md`'s bar for raising one. THESE ARE THE DEFAULTS: a roster entry's own `model`, `effort` and `autocompact` replace
+ * them for that seat ({@link seatStartFlags}, #4740).
  *
  * `--dangerously-skip-permissions` and the removed `AskUserQuestion` are the spawned engineer's reasoning ({@link agentArgs}): nobody is at the
  * terminal, so a seat that stops to ask is a seat that hangs `blocked` and takes no order. THE PROMPT GOES BEFORE THESE FLAGS, never after:
@@ -5745,6 +5746,21 @@ export function isPersistentRole(label: string, path: string | URL = SESSIONS_FI
  */
 export const SEAT_START_FLAGS = Object.freeze(["--model", "sonnet", "--effort", "medium", "--dangerously-skip-permissions",
   "--disallowedTools", "AskUserQuestion"]);
+
+/**
+ * THE FLAGS ONE SEAT IS STARTED WITH (#4740): {@link SEAT_START_FLAGS}, with `--model` and `--effort` taken from the roster entry's `model` and `effort`
+ * when it declares them, and `--autocompact <window>` added ONLY when it declares `autocompact`. A seat declaring none gets {@link SEAT_START_FLAGS}
+ * byte for byte, which is what keeps the tool project-agnostic.
+ *
+ * `autocompact` is the WINDOW the flag takes, and Claude Code compacts about `AUTO_COMPACT_TRIGGER_MARGIN_TOKENS` BELOW it (`worker-profile.ts`), so a
+ * "compact at ~90k" is declared as `HAIKU_AUTOCOMPACT_WINDOW_TOKENS`, not 90,000 (which would trigger at 55,000). It goes BEFORE
+ * `--dangerously-skip-permissions` so `--disallowedTools`, a list, stays the last flag and can never be followed by one it would swallow.
+ */
+export function seatStartFlags({ model, effort, autocompact }: { model?: string; effort?: string; autocompact?: number } = {}): string[] {
+  const [modelFlag, defaultModel, effortFlag, defaultEffort, ...rest] = SEAT_START_FLAGS;
+  const compact = autocompact === undefined ? [] : ["--autocompact", String(autocompact)];
+  return [modelFlag, model ?? defaultModel, effortFlag, effort ?? defaultEffort, ...compact, ...rest];
+}
 
 /**
  * What a seat is told when the organisation starts it: who it is, and the brief to read. Nothing else, because the brief says what the seat
@@ -5766,7 +5782,8 @@ export function seatFirstPrompt(name: string, brief: string) {
  *
  * @returns the line the tick prints
  */
-function startSeat(run: (args: string[]) => string, { name, brief }: { name: string; brief?: string; }, { env, checkout }: { env: Record<string, string>; checkout: string; }): string {
+function startSeat(run: (args: string[]) => string, { name, brief, refusal, ...launch }: PersistentEntry, { env, checkout }: { env: Record<string, string>; checkout: string; }): string {
+  if (refusal !== undefined) return `SEAT NOT STARTED ${name}: ${refusal}`;
   if (brief === undefined) return `SEAT NOT STARTED ${name}: its roster entry names no brief, and a seat is started from its brief.`;
   // A SECOND READING AT THE WRITE: one complete-looking listing finding a label absent is never enough ({@link listingIsComplete}), and a
   // second seat under one name is the failure. It narrows the window to the instant between this read and the create; it does not close it.
@@ -5776,7 +5793,7 @@ function startSeat(run: (args: string[]) => string, { name, brief }: { name: str
   const pane = openPane(run, name, env, checkout);
   if ("refusal" in pane) return `SEAT NOT STARTED ${name}: ${pane.refusal}`;
   try {
-    run(agentStartArgs(name, "claude", pane.pane, [seatFirstPrompt(name, brief), ...SEAT_START_FLAGS]));
+    run(agentStartArgs(name, "claude", pane.pane, [seatFirstPrompt(name, brief), ...seatStartFlags(launch)]));
   } catch (err) {
     return `SEAT NOT STARTED ${name}: herdr refused to start it (${herdrReason(err)})${closedNote(run, pane.workspace)}`;
   }
