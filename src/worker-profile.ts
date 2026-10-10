@@ -126,6 +126,33 @@ function ordinaryWorkerEffort(): string {
 
 export type TierProfile = { kind: "claude"; model: string; effort: string; why: string; autocompactWindow: number };
 
+// --- THE WINDOW A ROUTE SETS (a11ign/a11ign#4738, the chairman's "use 1b" on #4627) ---
+//
+// A row that touches many files compacted mid-edit in the ordinary window (worker-agent-org-575), so the route sizes the `--autocompact` window as well as the model and effort.
+// The ordinary window stays the FLOOR of every Sonnet route: a window below it is #2717's thrash (MIN_WORKING_ROOM_TOKENS is the least a row needs), so a reading may only
+// keep it or raise it. The two larger rungs are added working room above that floor, to be tuned from the per-route compaction log, not a measurement.
+export const LARGE_WINDOW_TOKENS = AUTOCOMPACT_WINDOW_TOKENS + 200_000;
+export const LARGEST_WINDOW_TOKENS = AUTOCOMPACT_WINDOW_TOKENS + 400_000;
+/** The Sonnet windows a route may take, smallest first; a reading moves a row one rung and never off either end. */
+export const SONNET_WINDOW_RUNGS: readonly number[] = Object.freeze([AUTOCOMPACT_WINDOW_TOKENS, LARGE_WINDOW_TOKENS, LARGEST_WINDOW_TOKENS]);
+
+/** The most window a model may be given: a Haiku worker's is its prompt ceiling (see the Haiku tier above), whatever a provider says about the row. */
+export function windowCeiling(model: string): number {
+  return /haiku/i.test(model) ? HAIKU_AUTOCOMPACT_WINDOW_TOKENS : LARGEST_WINDOW_TOKENS;
+}
+
+/** `tokens`, held to {@link windowCeiling}. The one place a route's window is bounded, so no caller restates the Haiku ceiling. */
+export function clampWindow(model: string, tokens: number): number {
+  return Math.min(tokens, windowCeiling(model));
+}
+
+/** The ordinary Sonnet worker's model and effort at a window of the route's choosing: how a Sonnet/high row takes a non-ordinary window without changing what it is. */
+export function ordinaryTierProfile({ autocompactWindow, why }: { autocompactWindow: number; why: string }): TierProfile {
+  const ordinary = profileFor(ORDINARY_WORKER_CAUSE);
+  if ("refusal" in ordinary) throw new Error(`worker-profile: the ordinary profile is read from "${ORDINARY_WORKER_CAUSE}" and that profile is refused: ${ordinary.refusal}`);
+  return { kind: "claude", model: ordinary.model, effort: ordinary.effort, autocompactWindow: clampWindow(ordinary.model, autocompactWindow), why };
+}
+
 /**
  * The switch, read. A MISSING OR MALFORMED FILE IS `enabled: false`, with the reason: the tier fails SAFE to the ordinary (Sonnet) profile,
  * and the caller logs the reason so a deleted file is seen rather than silently turning a spend experiment off.
