@@ -10,9 +10,10 @@
 //
 // THE ORDER, and why each step is where it is:
 //   1. READ the three installed versions and one target per tool. A tool that cannot be read or has no target is NAMED and left alone: absence is not "at target".
-//   2. REFUSE while a seat is mid-turn (`working` in herdr's listing). Moving the daemon interrupts a reviewer's turn, and a worker's tool is replaced under it. A seat is let
-//      finish ONLY when the caller names it in `--let-finish`, and then the move WAITS for it, bounded; one that is mid-turn and not named refuses at once. `--session` is the caller
-//      itself, which is always mid-turn and never held on.
+//   2. REFUSE while a seat that runs a tool THIS RUN IS ABOUT TO MOVE is mid-turn (`working` in herdr's listing). Moving the daemon interrupts a reviewer's turn, and a worker's
+//      tool is replaced under it; a move of `codex-cli` and `codex-daemon` does not touch a Claude seat, nor a move of `claude-code` a reviewer (#665, {@link productOfSeat}). A seat
+//      is let finish ONLY when the caller names it in `--let-finish`, and then the move WAITS for it, bounded; one that is held and not named refuses at once. `--session` is the
+//      caller itself, which is always mid-turn and never held on. A seat whose product is not known is held for every tool being moved: unknown is not idle.
 //   3. SWITCH OFF the daemon's own update loop (`settings.json`'s `updater.autoUpdateEnabled`), so no second program moves a version. What was measured is in the PR.
 //   4. MOVE, tool by tool, then READ BACK: an installer that exits 0 and leaves the old version is a failed move, not a kept one.
 //   5. SMOKE START a Codex reviewer and a Claude worker in a scratch pane: each must reach its first prompt with no dialog on the screen, and is stopped.
@@ -113,6 +114,26 @@ export function judgeSmoke(kind: SmokeKind, raw: SmokeRaw, dialogOf: (screen: st
   return { kind, status: "prompt", pane, detail: "reached its first prompt with no dialog" };
 }
 
+/**
+ * WHICH PRODUCT A SEAT RUNS, from its herdr label (agent-org#665). This is the ONE place a label becomes a product, so a third product is one edit here and a line in
+ * {@link SMOKES}. A reviewer is Codex; the seats the org runs on Claude Code are the persistent `ceo`, `orchestrator` and `product-manager` and every `worker-…`. Anything else
+ * (a scratch `smoke-…` pane, a role added later) is `null`: its product is NOT KNOWN, and {@link toolsHeldBy} holds it for every tool being moved rather than guess it idle.
+ * @returns the product the seat runs, or `null` when the label names neither rule.
+ */
+export function productOfSeat(label: string): "codex" | "claude" | null {
+  if (label === "reviewer" || label.startsWith("reviewer-")) return "codex";
+  if (["ceo", "orchestrator", "product-manager"].includes(label) || label.startsWith("worker-")) return "claude";
+  return null;
+}
+
+/** @returns the tools in `toMove` that a mid-turn `label` runs, so the ones this run would disturb under it; every one of them when its product is not known. */
+export function toolsHeldBy(label: string, toMove: readonly Tool[]): Tool[] {
+  const product = productOfSeat(label);
+  if (product === null) return [...toMove];
+  const run = SMOKES.filter((s) => s.product === product).flatMap((s) => s.tools);
+  return toMove.filter((t) => run.includes(t));
+}
+
 const failed = (smoke: SmokeResult): boolean => smoke.status === "dialog" || smoke.status === "not-ready";
 const describe = (cause: unknown): string => String((cause as Error)?.message ?? cause).split("\n")[0].slice(0, 160);
 const pairs = (tools: readonly Tool[], from: Versions, to: Versions): string => tools.map((t) => `${t} ${from[t]}->${to[t]}`).join(", ");
@@ -157,15 +178,21 @@ export function updateAgentTools(deps: Deps, options: Options = {}): Result {
     return out("at-target", `already at target, nothing moved: ${TOOLS.map((t) => `${t} ${before[t]}`).join(", ")}. Daemon update loop: ${pinned}.`, pinned.startsWith("NOT SWITCHED OFF") ? 1 : 0);
   }
 
-  // A MID-TURN SEAT HOLDS THE MOVE: unnamed refuses at once, named is waited for (bounded).
+  // A MID-TURN SEAT THAT RUNS A TOOL TO BE MOVED HOLDS THE MOVE (#665): unnamed refuses at once, named is waited for (bounded). A seat outside `toMove`'s products is neither
+  // named in the refusal nor waited for.
+  const holds = (name: string): string => {
+    const tools = toolsHeldBy(name, toMove).join(", ");
+    const product = productOfSeat(name);
+    return product === null ? `${name} (product unknown, so held for ${tools})` : `${name} (runs ${product}, held for ${tools})`;
+  };
   const deadline = deps.now() + waitMs;
   for (;;) {
     const seen = deps.working();
     if (seen === null) return out("busy", "NOT READ: herdr's seat listing, so whether a reviewer or worker is mid-turn is unknown and nothing was moved.", 1);
-    const mid = seen.filter((name) => name !== session);
+    const mid = seen.filter((name) => name !== session && toolsHeldBy(name, toMove).length > 0);
     const unnamed = mid.filter((name) => !letFinish.includes(name));
     if (unnamed.length > 0) {
-      return out("busy", `REFUSED: ${unnamed.join(", ")} ${unnamed.length === 1 ? "is" : "are"} mid-turn and ${unnamed.length === 1 ? "was" : "were"} not named in --let-finish; nothing was moved. `
+      return out("busy", `REFUSED: ${unnamed.map(holds).join(", ")} ${unnamed.length === 1 ? "is" : "are"} mid-turn and ${unnamed.length === 1 ? "was" : "were"} not named in --let-finish; nothing was moved. `
         + "Name a seat to let it finish first, or run again when it is idle.", 1);
     }
     if (mid.length === 0) break;
