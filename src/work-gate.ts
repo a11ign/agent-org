@@ -7125,11 +7125,12 @@ function writeFiledDefects(path: string, filed: Record<string, string>, log: (li
 /**
  * #4602: THE ONE PLACE THE GATE CALLS THE SHELVED-ROWS COUNT. A holder is resolved from the `session:` label on the row or pull request the reason names; the row write on a held row goes
  * through `gh issue comment`, the wake through the order returned. Never throws (`blockingImpactTick` reports and returns nothing).
- * @param {{ shelved: { number: number, reason: string }[], openRows: any[], prs: any[], stateDir: string }} tick
+ * A keyed tracker's shelving carries its `repo`, and `trackers` holds each keyed tracker's open rows by repository, so a bare `#N` in its reason is looked for among THAT tracker's rows.
+ * @param {{ shelved: { number: number, reason: string, repo?: string }[], openRows: any[], trackers: Record<string, any[]>, prs: any[], stateDir: string }} tick
  */
-function blockingImpactOrders({ shelved, openRows, prs, stateDir }: { shelved: { number: number; reason: string; }[]; openRows: any[]; prs: any[]; stateDir: string; }) {
-  const resolve = resolverOf({ rows: openRows, prs, sessionOf, closesOf: (pr) => comparablePrFiles([pr])[0]?.closes ?? [] });
-  return blockingImpactTick({ blocked: shelved, resolve, stateDir, now: Date.now(), comment: (row, body) => { defaultRun(["issue", "comment", String(row), "--body", body]); } });
+function blockingImpactOrders({ shelved, openRows, trackers, prs, stateDir }: { shelved: { number: number; reason: string; repo?: string; }[]; openRows: any[]; trackers: Record<string, any[]>; prs: any[]; stateDir: string; }) {
+  const resolve = resolverOf({ rows: openRows, prs, trackers, sessionOf, closesOf: (pr) => comparablePrFiles([pr])[0]?.closes ?? [] });
+  return blockingImpactTick({ blocked: shelved, resolve, stateDir, now: Date.now(), comment: (row, body, repo) => { defaultRun(["issue", "comment", String(row), "--body", body], repo); } });
 }
 
 /** One defect onto the class row: a comment on the open one, or a new row when there is none. `false` when `gh` refused, and says so. */
@@ -8140,7 +8141,9 @@ function main() {
   orders.push(...incident.signal);
   // #4602: THE SAME `blocked` THE TICK REPORTS AS WITHHELD (below), counted per holder and over time -- computed once, so the count and the report cannot disagree.
   const shelvedHere = partitionUnclaimed(rows, prFiles, { rowBranches, branchPrs, openRows: allOpen, chairmanRows: offerHierarchy.chairmanRows }).blocked;
-  orders.push(...blockingImpactOrders({ shelved: [...shelvedHere, ...others.flatMap((tick) => tick.blocked)], openRows: allOpen, prs: [...openPrs, ...pullRequestsOfOthers(otherScopes)], stateDir: REVIEWER_STATE_DIR }));
+  const keyedTrackers = otherScopes.flatMap(({ scope, read }) => (scope.tracker === null ? [] : [[scope.tracker.repo, read.openRows ?? []] as const])); // agent-org#695: each keyed tracker's rows by repository, which its shelvings' bare numbers are among
+  const shelvedElsewhere = others.flatMap((tick, at) => tick.blocked.map((row) => ({ ...row, repo: otherScopes[at].scope.tracker?.repo })));
+  orders.push(...blockingImpactOrders({ shelved: [...shelvedHere, ...shelvedElsewhere], openRows: allOpen, trackers: Object.fromEntries(keyedTrackers), prs: [...openPrs, ...pullRequestsOfOthers(otherScopes)], stateDir: REVIEWER_STATE_DIR }));
   orders.push(...reviewerAuthTick({ orders }), ...repeatingLinesTick({ settle: (groups) => settleCitedRepeatingLines(groups, { openRows: [...(openRowsRead ?? []), ...otherScopes.flatMap(({ read }) => read.openRows ?? [])], portFor: portOf }) }), ...orgHealthNow({ prsRead: prs, keyedPrsRead: pullRequestsOfOthers(otherScopes), readyRead: readyRows, openRowsRead, claimedComments: claimedCommentsForClock(allOpen, claimedComments), decideArgs, decided, held: incident.held, pools }, { readToolAgreement, readNodeStrips, readReleaseRuns: () => readReleaseRuns(defaultRun, repoNow()), readClassRepeat: () => readClassRepeat(defaultRun, repoNow(), liveClassRepeatIo()), readReleaseBehind: releaseBehindNow, readBoardTruth: boardTruthNow, readWaits: unparkingWaits(waitTickFacts, { run: defaultRun }) }),
     ...rulingOrdersNow({ prsRead: prs, openRowsRead, now: Date.now() }), ...chairmanAsksNow(openRowsRead)); // #2848, #2936, #2997, #4020: before the dead man's switch -- a repeating line, a stuck org: something found
   // FIRST OF ALL, AND ON PURPOSE (#2163): `wake` delivers in this order and records each delivery with a write, so

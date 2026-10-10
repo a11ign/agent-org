@@ -1,0 +1,5 @@
+---
+"agent-org": patch
+---
+
+A shelving of a keyed tracker's row is attributed to the holder its reason names (a11ign/agent-org#695). The tick counted agent-org#475, #522, #530 and #689, shelved behind the claimed agent-org#469 and #521, as `B4 shelvings name a row or pull request nobody is known to hold` for hours: `Shelved` carried no repository, so the bare `#469` in `overlaps the Region of #469` was looked up among the home tracker's rows and found a11ign#469, a merged pull request. `Shelved` now carries `repo` (the tracker its row is in; the gate fills it from each other scope), and `resolverOf` is handed each tracker's open rows by repository (`trackers`): a bare number in a keyed shelving's Region text is that tracker's row first, then that repository's pull request. A home shelving resolves exactly as before. The same repository keys the deadlock walk (a tracker's `blockedBy` edges are never another's) and the row write on a held row, which goes to the keyed repository and is not made when one holder's held rows are in two trackers.
