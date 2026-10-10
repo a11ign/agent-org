@@ -7,7 +7,8 @@
 //     <classKey>\t<ts, ms>\t<ref>
 //
 // THE CLASS KEYS ARE EVENT KINDS (`FAILURE_KINDS`), not the ids of `.agent-org/failure-classes.json`'s row-defect classes. A REPEAT is one kind seen with two or more DISTINCT
-// refs: the same ref twice is one event still standing (a red `main` stays red for many ticks), so it is not one.
+// refs: the same ref twice is one event still standing (a red `main` stays red for many ticks), so it is not one. A `main-red` ref is the run that OPENED a red, and a red that no push
+// can fix, red on every push, is one ref and not one per run (`mainRedEvents`, agent-org#674).
 //
 // A LEAF: it imports no org-health or work-gate name, so a recorder in any module can call it. A RECORDER NEVER THROWS INTO THE TICK: a refused append is REPORTED through
 // `report` (stderr by default) and returned, never swallowed.
@@ -129,14 +130,93 @@ export function recordFailures({ logPath, events, now, append = appendFileSync, 
   return result;
 }
 
+/** What `trunk-red.ts`'s `readTrunkRed` says of a red, as far as the ledger reads it. */
+export type TrunkRedFacts = { url?: string, runId?: number, repo?: string, failedJobs?: string[], leg?: string };
 /**
- * `main-red` from the reading the tick already makes (`readTrunkRed`, `null` for a green or an unreadable `main`). THE REF IS THE RED RUN: a later red is a different run, a standing red is the same one.
- * (The row named `org-watch.ts`'s `mainColour`; the tick does not call that, it calls `readTrunkRed`, so this takes the reading the tick has.)
- * @param {{ url?: string, runId?: number, repo?: string } | null | undefined} trunkRed
+ * `readTrunkRed`'s three answers, which the ledger must keep apart: the red itself; `null`, `main` READ and not red (a green, which ends a standing red); and `undefined`, NOT READ
+ * (a refused call, no completed verdict run yet, a green run whose jobs could not be read, or a scope with no code repository), which says nothing and so changes nothing.
  */
-export function mainRedEvents(trunkRed: { url?: string, runId?: number, repo?: string } | null | undefined): FailureEvent[] {
-  const ref = trunkRed?.url ?? (trunkRed?.runId === undefined ? undefined : `${trunkRed.repo ?? "primary"}/runs/${trunkRed.runId}`);
-  return ref === undefined ? [] : [{ classKey: "main-red", ref }];
+export type TrunkReading = TrunkRedFacts | null | undefined;
+/** One repository's STANDING red: the run that opened it (the ref its ledger line points at) and the failed jobs it is made of, sorted. */
+export type MainRedEpisode = { ref: string, jobs: string[] };
+
+/** The ledger's name for the run a red reading names; `undefined` for a red that names none. */
+const refOfRed = (red: TrunkRedFacts): string | undefined => red.url ?? (red.runId === undefined ? undefined : `${red.repo ?? "primary"}/runs/${red.runId}`);
+/** The jobs a red is made of: the run's failed jobs, and the cross-repo leg's name where a green run is red only by it. Sorted and distinct, so a set compares as an array. */
+const jobsOfRed = (red: TrunkRedFacts): string[] => [...new Set([...(red.failedJobs ?? []), ...(red.leg === undefined ? [] : [red.leg])])].sort();
+
+/**
+ * `main-red` from the reading the tick already makes (`readTrunkRed`), given the red already standing for that repository (`open`, `null` for none).
+ * THE REF IS THE RUN THAT OPENED THE RED, and A STANDING RED IS COUNTED ONCE, NOT ONCE PER RUN (agent-org#674): a red `checks (cross-repo)` leg on lab is red on every push and
+ * each push is a new run, so a ref per run made one red that no push can fix trip `class-repeat` on every push. What continues a red and what does not:
+ *   - a red read while one is `open` for the repository CONTINUES it, and records nothing, when it names no failed job the standing red did not: the same set, or fewer (something got
+ *     fixed, and the red now says only what is still red, so the open one SHRINKS to that and a job that fails again later is new). A reading with no job names, or an open one with none
+ *     (the jobs read was refused), cannot show a different job and continues too: a blip must not be a second red.
+ *   - a red naming a job the standing red did not -- a DIFFERENT failed job while the first is still red -- is a new red and a new ref, so a standing red cannot hide a second one.
+ *   - a GREEN (`null`) ends it: a later red is a new ref, even for the same job.
+ *   - NOT READ (`undefined`) changes nothing: it is not a green, and counting it as one would reopen the same noise after every API blip. `readTrunkRed` tells the two apart; read
+ *     its header for what is "not read".
+ * A red that names no run (no `url`, no `runId`) is no event and leaves the open one as it was.
+ * (The row named `org-watch.ts`'s `mainColour`; the tick does not call that, it calls `readTrunkRed`, so this takes the reading the tick has.)
+ * @returns the events to record, and the red standing after this reading (`null` for none)
+ */
+export function mainRedEvents(reading: TrunkReading, open: MainRedEpisode | null = null): { events: FailureEvent[], open: MainRedEpisode | null } {
+  if (reading === undefined) return { events: [], open };
+  if (reading === null) return { events: [], open: null };
+  const ref = refOfRed(reading);
+  if (ref === undefined) return { events: [], open };
+  const jobs = jobsOfRed(reading);
+  if (open === null) return { events: [{ classKey: "main-red", ref }], open: { ref, jobs } };
+  const unknown = jobs.length === 0 || open.jobs.length === 0;
+  if (unknown || jobs.every((job) => open.jobs.includes(job))) return { events: [], open: { ref: open.ref, jobs: jobs.length === 0 ? open.jobs : jobs } };
+  return { events: [{ classKey: "main-red", ref }], open: { ref, jobs } };
+}
+
+/** Where the standing reds are kept between ticks (each is a fresh process), beside the ledger. Its own file: the ledger's format is `<classKey>\t<ts>\t<ref>` and has no room for a state. */
+export const mainRedEpisodesPath = (logPath: string): string => `${logPath}-main-red`;
+
+/** The standing reds by repository; a file that is missing is none, one that cannot be read is REPORTED and read as none (the red is recorded again, which `recordFailures` skips when the ref is the same). */
+function readMainRedEpisodes(path: string, { read, report }: Required<Pick<Io, "read" | "report">>): Record<string, MainRedEpisode> {
+  try {
+    const parsed = JSON.parse(read(path));
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object of repositories");
+    return Object.fromEntries(Object.entries(parsed).filter(([, episode]) => {
+      const { ref, jobs } = (episode ?? {}) as Partial<MainRedEpisode>;
+      return typeof ref === "string" && ref !== "" && Array.isArray(jobs) && jobs.every((job) => typeof job === "string");
+    })) as Record<string, MainRedEpisode>;
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException)?.code !== "ENOENT") report(`failure-ledger: could not read ${path} (${firstLine(cause)}); reading no red as standing`);
+    return {};
+  }
+}
+
+/**
+ * Read what each repository's `main` said this tick against the reds already standing. `repo` names the repository a reading is of: a green carries no repository of its own, so the
+ * caller says which one it ended. A reading with no `repo` (a scope with no code repository) is skipped.
+ * @returns `events` for `recordFailures`; `commit` to call once they are written, so a ledger line that was refused is retried and not forgotten (never throws)
+ */
+export function readMainRedReadings({ episodesPath, readings, read = (path) => readFileSync(path, "utf8"), write = writeFileSync, report = reportToStderr }: { episodesPath: string, readings: { repo: string | undefined, red: TrunkReading }[] }
+  & Pick<Io, "read" | "report"> & { write?: typeof writeFileSync }): { events: FailureEvent[], commit: () => void } {
+  const before = readMainRedEpisodes(episodesPath, { read, report });
+  const after = { ...before };
+  const events: FailureEvent[] = [];
+  for (const { repo, red } of readings) {
+    if (repo === undefined) continue;
+    const seen = mainRedEvents(red, after[repo] ?? null);
+    events.push(...seen.events);
+    if (seen.open === null) delete after[repo];
+    else after[repo] = seen.open;
+  }
+  const commit = () => {
+    if (JSON.stringify(after) === JSON.stringify(before)) return;
+    try {
+      mkdirSync(dirname(episodesPath), { recursive: true });
+      write(episodesPath, `${JSON.stringify(after)}\n`);
+    } catch (cause) {
+      report(`failure-ledger: NOT RECORDED the standing red of ${episodesPath}: ${firstLine(cause)}`);
+    }
+  };
+  return { events, commit };
 }
 
 /** When a recorder's marker file says it last ran; a missing marker is "never" (0), an unreadable one throws. Here and not beside the recorder: a source that writes a file is read as ITS writer (`org-retro.test.ts`). */

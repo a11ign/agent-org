@@ -126,9 +126,32 @@ test("the newest run of either event decides: a green nightly clears a red push,
 test("a refused runs read refuses the read: a nightly is not reported red without the push that came after it", () => {
   const gh = fakeGh({ push: [runOf(41, "push", "success", "2026-10-10T09:00:00Z")], schedule: [runOf(40, "schedule", "success", "2026-10-10T04:17:00Z")],
     jobs: { 40: jobsOf("failure"), 41: jobsOf("success") }, refuse: "event=push" });
-  assert.equal(readTrunkRed(gh.run, LAB), null);
+  assert.equal(readTrunkRed(gh.run, LAB), undefined, "NOT READ, which is not the `null` of a green (agent-org#674)");
   assert.ok(readTrunkRed(fakeGh({ push: [], schedule: [runOf(40, "schedule", "success", "2026-10-10T04:17:00Z")], jobs: { 40: jobsOf("failure") } }).run, LAB),
     "POSITIVE CONTROL: unrefused, and with no push after it, the same nightly is red");
+});
+
+/**
+ * agent-org#674: `null` IS A GREEN AND `undefined` IS NOT READ. The failure ledger ends a standing red on a green and must not on a refused read, so the reading says which.
+ * Each case has its positive control: the same shape, read, says what it always said.
+ */
+test("a read that could not be made is undefined, and only a read that found main not red is null", () => {
+  const push = [runOf(70, "push", "success", "2026-10-10T10:15:38Z")];
+  const green = fakeGh({ push, jobs: { 70: jobsOf("success") } });
+  assert.equal(readTrunkRed(green.run, LAB), null, "POSITIVE CONTROL: read, and green");
+  assert.equal(readTrunkRed(fakeGh({ push, jobs: { 70: jobsOf("success") }, refuse: "/actions/workflows/" }).run, LAB), undefined, "the runs read refused");
+  assert.equal(readTrunkRed(fakeGh({ push: [], jobs: {} }).run, LAB), undefined, "no completed verdict run says nothing about main");
+  const inFlight = [{ ...runOf(71, "push", "failure", "2026-10-10T10:15:38Z"), status: "in_progress", conclusion: null }];
+  assert.equal(readTrunkRed(fakeGh({ push: inFlight, jobs: {} }).run, LAB), undefined, "a run still in flight is not a verdict");
+});
+
+test("a green run whose jobs could not be read is not read as green: the red leg is visible only there", () => {
+  const push = [runOf(72, "push", "success", "2026-10-10T10:15:38Z")];
+  assert.equal(readTrunkRed(fakeGh({ push, jobs: { 72: jobsOf("failure") } }).run, LAB)?.leg, LEG, "POSITIVE CONTROL: the jobs read, the leg is red");
+  assert.equal(readTrunkRed(fakeGh({ push, jobs: { 72: jobsOf("failure") }, refuse: "/jobs" }).run, LAB), undefined, "the jobs read refused: unknown, not green");
+  const redRun = [runOf(73, "push", "failure", "2026-10-10T10:15:38Z")];
+  const red = readTrunkRed(fakeGh({ push: redRun, jobs: { 73: jobsOf("failure") }, refuse: "/jobs" }).run, LAB);
+  assert.deepEqual([red?.runId, red?.failedJobs], [73, []], "a red run whose jobs were not read is still red, with no job named");
 });
 
 test("the primary is read exactly as before: one call, no event, no jobs read for a green run, and a red carries no new fact", () => {

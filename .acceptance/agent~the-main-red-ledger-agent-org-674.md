@@ -1,0 +1,23 @@
+The `main-red` ledger counts a standing red once, not once per run (a11ign/agent-org#674). `mainRedEvents` (`src/failure-ledger.ts`) now takes the repository's open red and returns the events and the red standing after the reading: a red that names no failed job the open one did not CONTINUES it and records nothing (the ledger line keeps the run that opened it); a green (`null`) ends it; a further failed job is a new ref; `undefined` (not read) changes nothing. The open reds live in `failure-ledger-main-red` beside the ledger (`src/failure-recorders.ts` saves them only after the ledger took its lines), so the ledger's own `<classKey>\t<ts>\t<ref>` format is as it was.
+
+The row's own words call the unreadable reading `null`; at the ledger's boundary it is `undefined` and `null` is the green. `readTrunkRed` answered `null` for both, which is why the two could not be told apart, so it now answers `undefined` for a refused runs read, no completed verdict run, and a green run whose jobs could not be read (a red `continue-on-error` leg is visible only there). Its orders are unchanged (`!red` for both).
+
+Acceptance: `bash -c 'cd /home/agent/repos/wt-agent-org-674 && AGENT_ORG_HOST=/home/agent/repos/a11y-witness/.agent-org/host.json grep -q "a standing red" src/failure-ledger.test.ts && AGENT_ORG_HOST=/home/agent/repos/a11y-witness/.agent-org/host.json pnpm exec rstest run --config scripts/rstest/rstest.config.ts src/failure-ledger.test.ts src/trunk-red.test.ts'`
+
+Mutation: (each restored with `cp` from a copy, `diff` clean) in `src/failure-ledger.ts` never a continuation (the old per-run ref) failed 6 of 22; a green not ending the red failed 3; an unread reading ending the red like a green failed 1 (the unreadable case, alone); a different job ignored failed 1 (the second-red case, alone); a shrunk job set read as a new red failed 1; the continuation moving the stored ref to the newer run SURVIVED the first set of tests and failed 1 once the state file's ref was asserted after a continuation. In `src/trunk-red.ts` the jobs of a green run not read as green failed 1, a refused runs read as green failed 2, no verdict run as green failed 1.
+
+Measured: `VERDICT pass: 33 tests in 2 files` for the command above (`failure-ledger.test.ts` 22, `trunk-red.test.ts` 11); `src/packaging/trunk-revert.test.ts` and `src/work-gate-trunk-red-agent-org.test.ts` each had one assertion of `null` for a read that could not be made and now say `undefined`; every test file that names the touched modules (36) passes. The full suite on this branch (`pnpm exec rstest run --config scripts/rstest/rstest.config.ts`): `VERDICT fail: 34 of 8679 tests failed in 483 files`. None is in a file this change edited. All 34 fail the same way on a detached checkout of the branch's base commit (798041b3): `board-truth-audit`, `auto-arm-token`, `milestone-clock`, `milestone-clock-exact-start`, `row-file` and `row-file-refuses-duplicate-title` fail 24 of 293 there, and `live-tree-independence`, `mjs-ratchet`, `pr-template-acceptance`, `public-claim`, `tick-heartbeat-is-written` and `wake-engineer-brief` fail 10 of 56 there.
+
+The live ledger, measured 2026-10-10 on a copy of `~/.cache/a11ign/failure-ledger` with one real read of lab's `main` (the real file was not written): before, 5 `main-red` refs (the nightly of 10:38Z, the pushes of lab#62, #63, #64 and the newest, 38058948605), all the one failed job `checks (cross-repo)`; after one tick of this branch, 5, and `failure-ledger-main-red` holds `a11ign/lab` at `38058948605` with `["checks (cross-repo)"]`. A further red push of the same job (synthetic run id) after it: 5. A red naming a second job (synthetic): 6. The same read on the merged tool, on the real ledger, is the after-merge reading the row's Done-when 3 names.
+
+Outside-Region: src/trunk-red.ts — the ledger cannot tell a green from an unreadable reading unless the reading says which, and `readTrunkRed` is where it is made; 3 returns changed, no new call.
+Outside-Region: src/work-gate.ts — `scopeTick` returns the repository it read, so a green keyed reading (which carries no repository) can end that repository's red, and the call site hands the ledger `{ repo, red }`; 4 lines.
+Outside-Region: src/trunk-red.test.ts — the cases for the three `undefined` answers, with positive controls.
+Outside-Region: src/packaging/trunk-revert.test.ts — one assertion of `null` for a refused read, now `undefined`.
+Outside-Region: src/work-gate-trunk-red-agent-org.test.ts — one assertion of `null` for no verdict run, now `undefined`.
+
+Closes a11ign/agent-org#674
+
+platform: n/a (an episode kept beside the ledger; nothing GitHub or systemd does holds a ledger's state)
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
