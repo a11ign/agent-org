@@ -117,8 +117,12 @@ test("with no messaging configured, it is one comment on the epic, carrying the 
 });
 
 test("CONTROL: the destination assertion fails when the kind is declared ask", async () => {
-  const declaredAsk = { kinds: { [POST_KIND]: { audience: AUDIENCE.ask } } };
-  const { provider, requests } = telegram({ channel: true });
+  // An ask names a row or declares why it has none (a11ign/a11ign#4745): without `rowLess` the core refuses it before the destination is ever in question.
+  const declaredAsk = { kinds: { [POST_KIND]: { audience: AUDIENCE.ask, rowLess: "a daily reading belongs to no one row" } } };
+  const wired = telegram({ channel: true });
+  const { requests } = wired;
+  // Without the asks' record: a kept ask also sends a pinned list, which is two more requests, and this control is about WHERE the reading went.
+  const provider = { ...wired.provider, capabilities: { ...wired.provider.capabilities, edit: false, pin: false } };
   const result = posted(await post(messenger(provider, declaredAsk)));
   assert.throws(() => assertWentToTheChannel(requests), /not sent to the announcements channel/);
   assert.equal(requests[0]?.body.chat_id, ASK_CHAT, "declared ask, it lands in the chairman's chat even with the channel configured");

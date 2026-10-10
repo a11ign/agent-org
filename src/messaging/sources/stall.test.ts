@@ -28,7 +28,7 @@ let ledgers = 0;
 /** A messenger on a test-owned clock, over a real ledger file. */
 function messenger() {
   let at = NOW;
-  const provider = createFakeProvider();
+  const provider = createFakeProvider({ capabilities: { edit: false, pin: false } });
   const ledger = createLedger({ path: join(scratch, `ledger-${ledgers += 1}.jsonl`), now: () => at });
   const core = createMessenger({ provider, ledger, now: () => at });
   return { provider, tick: (/** @type {unknown[]} */ events: unknown[]) => core.tick(events), set: (/** @type {number} */ ms: number) => { at = ms; } };
