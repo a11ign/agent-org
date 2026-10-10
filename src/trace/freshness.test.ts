@@ -11,7 +11,7 @@ import { after, test } from "node:test";
 import { DEFERRAL_LOG_FILE } from "../deferral-log.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import {
-  advance, checkAndRaise, episodeFileFor, freshnessLine, INCIDENT_CLASS, INCIDENT_ROW, incidentOrder, NO_EPISODE, newestTurnAt, sessionsWorking, STALE_AFTER_MS, storeFreshness, transcriptRoots,
+  advance, checkAndRaise, episodeFileFor, freshnessLine, INCIDENT_CLASS, INCIDENT_ROW, incidentOrder, NO_EPISODE, newestMessageAt, newestTurnAt, sessionsWorking, STALE_AFTER_MS, storeFreshness, transcriptRoots,
 } from "./freshness.ts";
 import type { Effects } from "./freshness.ts";
 import { readStore } from "./store.ts";
@@ -21,8 +21,13 @@ const NOW = Date.parse("2026-10-10T12:00:00Z");
 const turn = (id: string, at: number) => JSON.stringify({ id, kind: "turn", at });
 const other = (id: string, at: number) => JSON.stringify({ id, kind: "gh_call", at });
 const writeStore = (path: string, lines: string[]) => writeFileSync(path, `${lines.join("\n")}\n`);
+/** The lines a transcript holds: a message has its own timestamp; `last-prompt` and `cost-state` have none and are rewritten after the last message (a11ign/a11ign#928). */
+const message = (type: "assistant" | "user", at: number) => JSON.stringify({ type, timestamp: new Date(at).toISOString(), uuid: `u${at}`, message: { role: type, content: "x" } });
+const attachment = (at: number) => JSON.stringify({ type: "attachment", timestamp: new Date(at).toISOString(), attachment: { type: "total_tokens_reminder" } });
+const bookkeeping = () => [JSON.stringify({ type: "last-prompt", lastPrompt: "x", sessionId: "s" }), JSON.stringify({ type: "cost-state", sessionId: "s", totalCostUSD: 1 })];
+const setMtime = (path: string, at: number) => utimesSync(path, new Date(at), new Date(at));
 
-/** A scratch home with one transcript, its mtime set, and a store beside the cache directory the tool names. */
+/** A scratch home with one transcript, its newest message and mtime set, and a store beside the cache directory the tool names. */
 function home() {
   const dir = tmpDir("freshness-");
   const claude = join(dir, ".claude", "projects", "-proj");
@@ -30,11 +35,11 @@ function home() {
   const transcript = join(claude, "session.jsonl");
   const storePath = join(dir, "store", "events.ndjson");
   mkdirSync(join(dir, "store"), { recursive: true });
-  const touch = (ageMs: number, now = NOW) => { writeFileSync(transcript, "{}\n"); utimesSync(transcript, new Date(now - ageMs), new Date(now - ageMs)); };
-  return { dir, transcript, storePath, touch, working: (now = NOW) => sessionsWorking({ roots: transcriptRoots(dir), now }) };
+  const touch = (ageMs: number, now = NOW) => { writeFileSync(transcript, `${[message("user", now - ageMs - 1000), message("assistant", now - ageMs)].join("\n")}\n`); setMtime(transcript, now - ageMs); };
+  return { dir, claude, transcript, storePath, touch, working: (now = NOW) => sessionsWorking({ roots: transcriptRoots(dir), now }) };
 }
 
-test("FRESH: the newest turn is 3 minutes old and a transcript changed 2 minutes ago -- not stale", () => {
+test("FRESH: the newest turn is 3 minutes old and a message was written 2 minutes ago -- not stale", () => {
   const h = home();
   writeStore(h.storePath, [turn("t1", NOW - 3 * MINUTE)]);
   h.touch(2 * MINUTE);
@@ -44,7 +49,7 @@ test("FRESH: the newest turn is 3 minutes old and a transcript changed 2 minutes
   assert.equal(reading.stale, false);
 });
 
-test("STALE: the newest turn is 11 minutes old and a transcript changed 2 minutes ago", () => {
+test("STALE: the newest turn is 11 minutes old and a message was written 2 minutes ago", () => {
   const h = home();
   writeStore(h.storePath, [turn("t1", NOW - 11 * MINUTE)]);
   h.touch(2 * MINUTE);
@@ -74,6 +79,71 @@ test("the boundary is the chairman's ten minutes, and a store with no turn at al
   const absent = storeFreshness({ storePath: join(h.dir, "no-such.ndjson"), now: NOW, working: true });
   assert.deepEqual([absent.newestTurnAt, absent.ageMs, absent.stale], [null, null, true]);
   assert.equal(storeFreshness({ storePath: join(h.dir, "no-such.ndjson"), now: NOW, working: false }).stale, false);
+});
+
+test("a TOUCHED transcript is not a working session: mtime inside the window, newest message older than it, only bookkeeping lines after it (the shape of a11ign/a11ign#928's three false incidents)", () => {
+  const h = home();
+  writeStore(h.storePath, [turn("t1", NOW - 11 * MINUTE)]);
+  writeFileSync(h.transcript, `${[message("user", NOW - 40 * MINUTE), message("assistant", NOW - 30 * MINUTE), attachment(NOW - 29 * MINUTE), ...bookkeeping()].join("\n")}\n`);
+  setMtime(h.transcript, NOW - MINUTE);
+  assert.ok(NOW - statSync(h.transcript).mtimeMs < STALE_AFTER_MS, "the file's mtime is inside the window");
+  assert.equal(h.working(), false, "NEGATIVE CONTROL: nothing was written inside the window");
+  const reading = storeFreshness({ storePath: h.storePath, now: NOW, working: h.working() });
+  assert.equal(reading.stale, false, "an 11-minute-old store is not stale when nobody has produced a turn");
+  assert.match(freshnessLine(reading), /no session is working/);
+
+  // POSITIVE CONTROL: the same file, the same mtime, with one message inside the window ahead of the same bookkeeping lines.
+  writeFileSync(h.transcript, `${[message("user", NOW - 40 * MINUTE), message("assistant", NOW - 4 * MINUTE), ...bookkeeping()].join("\n")}\n`);
+  setMtime(h.transcript, NOW - MINUTE);
+  assert.equal(h.working(), true);
+  const stale = storeFreshness({ storePath: h.storePath, now: NOW, working: h.working() });
+  assert.equal(stale.stale, true);
+  assert.match(freshnessLine(stale), /a message was written in the last 10 minutes.*STALE/);
+  assert.doesNotMatch(freshnessLine(stale), /transcript changed/);
+
+  // the window's edge is the message's own time, and an attachment's timestamp is not a message's.
+  writeFileSync(h.transcript, `${[message("assistant", NOW - STALE_AFTER_MS - 1), attachment(NOW - MINUTE)].join("\n")}\n`);
+  setMtime(h.transcript, NOW);
+  assert.equal(h.working(), false);
+  writeFileSync(h.transcript, `${message("assistant", NOW - STALE_AFTER_MS)}\n`);
+  setMtime(h.transcript, NOW);
+  assert.equal(h.working(), true);
+});
+
+test("a transcript untouched for the window is not opened: a message line inside the window in a file whose mtime is older is not read", () => {
+  const h = home();
+  writeFileSync(h.transcript, `${message("assistant", NOW - MINUTE)}\n`);
+  setMtime(h.transcript, NOW - 60 * MINUTE);
+  assert.equal(h.working(), false, "the mtime is the filter in front of the read (a file not modified since before the window cannot hold a message in it)");
+});
+
+test("the message is found from the tail: past one huge line, in a file longer than the first window, and with a half-written last line", () => {
+  const h = home();
+  const big = JSON.stringify({ type: "user", timestamp: new Date(NOW - 60 * MINUTE).toISOString(), message: { content: "y".repeat(600_000) } });
+  const lines = [message("user", NOW - 90 * MINUTE), message("assistant", NOW - 2 * MINUTE), big, ...bookkeeping()];
+  writeFileSync(h.transcript, `${lines.join("\n")}\n`);
+  setMtime(h.transcript, NOW);
+  assert.ok(statSync(h.transcript).size > 512 * 1024, "POSITIVE CONTROL: the huge line is longer than the first tail window");
+  assert.equal(newestMessageAt(h.transcript), NOW - 2 * MINUTE, "the first window ends inside the huge line and holds only bookkeeping, so the window grew to the message behind it");
+  assert.equal(h.working(), true);
+  appendFileSync(h.transcript, `${message("assistant", NOW - MINUTE)}\n{"type":"assistant","timestamp":"${new Date(NOW).toISOString()}","mess`); // a writer in the middle of a line
+  assert.equal(newestMessageAt(h.transcript), NOW - MINUTE, "an unparseable last line is not a message");
+  assert.equal(h.working(), true);
+});
+
+test("a Codex rollout counts by its `response_item` lines, and its `token_count` events are not messages", () => {
+  const dir = tmpDir("freshness-codex-");
+  const day = join(dir, ".codex", "sessions", "2026", "10", "10");
+  mkdirSync(day, { recursive: true });
+  mkdirSync(join(dir, ".claude", "projects"), { recursive: true });
+  const rollout = join(day, "rollout-2026-10-10T11-00-00-01a1083e-a702-7921-b986-5102f84a4453.jsonl");
+  const item = (type: string, payload: object, at: number) => JSON.stringify({ timestamp: new Date(at).toISOString(), type, payload });
+  const working = () => sessionsWorking({ roots: transcriptRoots(dir), now: NOW });
+  writeFileSync(rollout, `${[item("response_item", { type: "message", role: "assistant" }, NOW - 30 * MINUTE), item("event_msg", { type: "token_count" }, NOW - MINUTE)].join("\n")}\n`);
+  setMtime(rollout, NOW - MINUTE);
+  assert.equal(working(), false, "NEGATIVE CONTROL: only a token_count event is inside the window");
+  appendFileSync(rollout, `${item("response_item", { type: "function_call_output" }, NOW - 2 * MINUTE)}\n`);
+  assert.equal(working(), true);
 });
 
 test("a transcript root that cannot be read throws: not knowing whether anyone works is never 'nobody works'", () => {
@@ -268,7 +338,7 @@ test("`--ingest` counts and exits on a failure of ANY source: an unreadable `gh`
 test("`--freshness` exits 1 for a stale store and 0 for a fresh one, and 0 for an old store nobody is working on", () => {
   const h = cliHome();
   const now = Date.now();
-  const touch = (ageMs: number) => utimesSync(h.transcript, new Date(now - ageMs), new Date(now - ageMs));
+  const touch = (ageMs: number) => { writeFileSync(h.transcript, `${message("assistant", now - ageMs)}\n`); setMtime(h.transcript, now - ageMs); };
   writeStore(h.storePath, [turn("t1", now - 3 * MINUTE)]);
   touch(2 * MINUTE);
   const fresh = h.run("--freshness");
