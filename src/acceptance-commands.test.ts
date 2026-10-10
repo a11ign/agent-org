@@ -5,7 +5,8 @@
  * agent-org#519 builds a narrow exemption keyed on the author (a11ign#4811) and needs the value at the reader; this row only carries it through
  * (`PR_AUTHOR` -> `main()` -> `BodyReportInput.author` -> `resolveAcceptanceSource`), so two things are pinned, each beside its control:
  *   (a) an unset or empty `PR_AUTHOR` is `undefined` and a set one is itself, read from the environment alone;
- *   (b) every existing verdict is the same with an author, with an empty one and with none: the body fallback still reads, the added file still wins.
+ *   (b) every existing verdict is the same with an author, with an empty one and with none: the body fallback still reads, the added file still wins;
+ *   (c) the author REACHES the reader at every link, seen through the `resolveSource` seam, because (b) cannot see it: the reader ignores it.
  */
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -14,7 +15,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { acceptanceSourceOf, acceptanceSourceOfThisPullRequest, prAuthorFromEnv, runCiBodyReports } from "./acceptance-commands.ts";
+import { acceptanceSourceOf, acceptanceSourceOfThisPullRequest, ciInputOf, prAuthorFromEnv, runCiBodyReports, thisPullRequestInput } from "./acceptance-commands.ts";
 import { resolveAcceptanceSource } from "./acceptance-file.ts";
 import { sandboxGitEnv } from "./lib/git-env.ts";
 
@@ -92,5 +93,47 @@ test("(b) the CLI entry: PR_AUTHOR set, empty or unset prints the same lines and
       assert.equal(withAuthor.status, without.status, `PR_AUTHOR=${JSON.stringify(PR_AUTHOR)}: ${withAuthor.stdout}${withAuthor.stderr}`);
       assert.equal(withAuthor.stdout, without.stdout);
     }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+/** A reader that answers as the real one does and records the input it was handed. */
+const spyReader = () => {
+  const seen: Parameters<typeof resolveAcceptanceSource>[0][] = [];
+  const resolveSource: typeof resolveAcceptanceSource = (input) => { seen.push(input); return resolveAcceptanceSource(input); };
+  return { seen, resolveSource };
+};
+const NO_FILE = { ok: true as const, files: ["src/x.ts"], added: ["src/x.ts"] };
+
+test("(c) acceptanceSourceOf hands the reader the author it was given, and `undefined` when it was given none", () => {
+  const given = spyReader();
+  acceptanceSourceOf({ body: BODY, run: () => 0, diff: NO_FILE, readFile: read, author: "dependabot[bot]", resolveSource: given.resolveSource });
+  assert.deepEqual(given.seen.map((input) => input.author), ["dependabot[bot]"]);
+  const none = spyReader();
+  acceptanceSourceOf({ body: BODY, run: () => 0, diff: NO_FILE, readFile: read, resolveSource: none.resolveSource });
+  assert.equal(none.seen.length, 1, "CONTROL: the reader was called, so `undefined` below is what it was handed and not a call that never happened");
+  assert.equal(none.seen[0].author, undefined);
+});
+
+test("(c) runCiBodyReports reads the source once and the reader is handed the author", () => {
+  const spy = spyReader();
+  runCiBodyReports({ body: BODY, run: () => 0, diff: NO_FILE, readFile: read, author: "a-person", resolveSource: spy.resolveSource });
+  assert.ok(spy.seen.length >= 1, "the reader ran");
+  assert.ok(spy.seen.every((input) => input.author === "a-person"), JSON.stringify(spy.seen.map((input) => input.author)));
+});
+
+test("(c) acceptanceSourceOfThisPullRequest and the CLI's own input carry the author: from the third argument, from PR_AUTHOR alone", () => {
+  const dir = mkdtempSync(join(tmpdir(), "acceptance-author-input-"));
+  try {
+    const viaArgument = spyReader();
+    acceptanceSourceOfThisPullRequest(BODY, dir, "dependabot[bot]", { resolveSource: viaArgument.resolveSource });
+    assert.deepEqual(viaArgument.seen.map((input) => input.author), ["dependabot[bot]"]);
+    assert.equal(thisPullRequestInput(BODY, dir, "a-person").author, "a-person");
+
+    const fromEnv = ciInputOf({ PR_BODY: BODY, PR_AUTHOR: "dependabot[bot]" }, dir);
+    assert.equal(fromEnv.author, "dependabot[bot]");
+    assert.equal(fromEnv.body, BODY, "CONTROL: it is the CLI's input, with the body from PR_BODY");
+    assert.equal(ciInputOf({ PR_BODY: BODY }, dir).author, undefined, "unset reaches the reader as undefined");
+    assert.equal(ciInputOf({ PR_BODY: BODY, PR_AUTHOR: "" }, dir).author, undefined, "empty reaches the reader as undefined, not as \"\"");
+    assert.equal(ciInputOf({ PR_BODY: `Author: dependabot[bot]\n${BODY}`, GITHUB_ACTOR: "dependabot[bot]" }, dir).author, undefined, "never the body or the actor");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
