@@ -157,14 +157,18 @@ test("the path is read from the host's declaration: a project checked out ELSEWH
   assert.equal(result.out.trim().split("\n").pop(), "[true,false]");
 });
 
+// agent-org#519: the body is no longer an acceptance source, so the child hands `checkBody` the body as the file its diff adds under `.acceptance/`.
+const ACCEPTANCE_FILE_DIFF_SOURCE = `const ACCEPTANCE_FILE_DIFF = (body) => ({ diff: { ok: true, files: [".acceptance/agent~example-1.md"], added: [".acceptance/agent~example-1.md"] }, readFile: () => body });`;
+
 // `pr-open`'s own `checkBody` is called here, in a child, with an injected `run` -- the entry point `pr:open` and the gate use, not the list under it, so
 // a `checkBody` that stops reaching the `acceptance` report fails this test. The import is dynamic and in the child: `pr-open.ts`'s `defaultGh` spawns
 // `gh`, a path nothing here takes (the `// no-token: gh` line at the top).
 test("`pr-open`'s `checkBody` refuses an Acceptance that cds into the primary checkout before the command runs, naming the same remedy", () => {
   const result = underHost((checkout) => `import { checkBody } from "./pr-open.ts";
+    ${ACCEPTANCE_FILE_DIFF_SOURCE}
     let ran = 0;
     const body = "Acceptance: cd " + ${JSON.stringify(checkout)} + " && ls\\n\\nCloses: none -- test\\n";
-    const verdict = checkBody(body, { run: () => { ran++; return 0; }, diff: { ok: false, why: "none" } });
+    const verdict = checkBody(body, { run: () => { ran++; return 0; }, ...ACCEPTANCE_FILE_DIFF(body) });
     console.log(JSON.stringify({ ok: verdict.ok, ran, line: verdict.lines.join(" ") }));`);
   assert.equal(result.status, 0, result.out);
   const verdict = JSON.parse(result.out.trim().split("\n").pop() ?? "{}");
@@ -175,9 +179,10 @@ test("`pr-open`'s `checkBody` refuses an Acceptance that cds into the primary ch
 
 test("`pr-open`'s `checkBody` still lets a Hand-run-declared `cd` into the primary checkout through to the command", () => {
   const result = underHost((checkout) => `import { checkBody } from "./pr-open.ts";
+    ${ACCEPTANCE_FILE_DIFF_SOURCE}
     let ran = 0;
     const body = "Acceptance: cd " + ${JSON.stringify(checkout)} + " && ls\\n\\nHand-run: the host reads the primary checkout\\n\\nCloses: none -- test\\n";
-    const verdict = checkBody(body, { run: () => { ran++; return 0; }, diff: { ok: false, why: "none" } });
+    const verdict = checkBody(body, { run: () => { ran++; return 0; }, ...ACCEPTANCE_FILE_DIFF(body) });
     console.log(JSON.stringify({ ran, line: verdict.lines.join(" ") }));`);
   assert.equal(result.status, 0, result.out);
   assert.equal(JSON.parse(result.out.trim().split("\n").pop() ?? "{}").line.includes("Drop the `cd`"), false);

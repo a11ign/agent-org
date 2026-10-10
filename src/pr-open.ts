@@ -787,8 +787,8 @@ function printMutationReport(body: string, runMutation: (command: string) => num
 
 /**
  * ADR 0044: A PULL REQUEST ADDS ITS ACCEPTANCE FILE, AND `pr-open` IS WHERE THE AUTHOR LEARNS IT IS MISSING. CI reads the Acceptance from the file
- * the pull request adds under `.acceptance/`; a diff that adds none would fall back to the body, the path being retired, so it is refused here
- * with the file's exact name. WHEN THE BODY ALREADY CARRIES AN `Acceptance:` it WRITES that file, because the file's grammar is the body's own:
+ * the pull request adds under `.acceptance/`; a diff that adds none is refused there (the body is read only for Dependabot, agent-org#519, and
+ * a `pr:open` author is never that), so it is refused here with the file's exact name. WHEN THE BODY ALREADY CARRIES AN `Acceptance:` it WRITES that file, because the file's grammar is the body's own:
  * the same parser reads either, so the text moves unchanged and nothing is re-derived. It does not commit: the file must be in the head
  * the reviewer reads, and committing for the author is a decision about their history. An unreadable diff is not accused (`checkBody` says
  * `UNCHECKED` for it), and `null` is "go on". OFF when no `write` is wired, which is every direct caller of `main` and none of the shipped CLI

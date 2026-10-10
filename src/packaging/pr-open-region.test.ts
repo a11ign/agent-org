@@ -31,9 +31,13 @@ const regionBody = (paths: string[]) => `## What it is\n\nx\n\n## Region\n\n\`\`
 const prBody = (closes: string, extra = "") =>
   `## Acceptance\n\nnode -e "process.exit(0)"\n\n${closes}\nMutation: none -- these tests drive the Region check\n${extra}`;
 
+// agent-org#519: the body is no longer an acceptance source, so the Acceptance these drivers run must come from a file the diff ADDS. Only the
+// `--diff-filter=A` read names it, so the Region's own diff (and its counts: "N changed path(s)", "M exempt") are exactly what they were.
+const ACCEPTANCE_FILE = ".acceptance/agent~x-1.md";
+
 /** A `git` that answers only what pr-open asks: the diff, and the head reads `edit` makes. */
 const gitFor = (changed: string[], origin = "deadbeef") => (args: string[]) => {
-  if (args[0] === "diff") return changed.join("\0");
+  if (args[0] === "diff") return (args.includes("--diff-filter=A") ? [ACCEPTANCE_FILE] : changed).join("\0");
   if (args[0] === "remote") return origin;
   if (args.includes("--abbrev-ref")) return "agent/x";
   if (args.includes("--short")) return "abc1234";
@@ -55,6 +59,8 @@ function drive(argv: string[], { rows, changed, rowBody, origin }: { rows?: Reco
     git: gitFor(changed, origin),
     prHead: () => ({ ref: "agent/x", oid: "deadbeef" }),
     runAcceptance: () => { acceptance += 1; return 0; },
+    // the file's text is the body the test handed, as the Acceptance it meant (agent-org#519)
+    readFile: () => argv[argv.indexOf("--body") + 1],
     rowBody: rowBody ?? ((n: number) => { if (rows?.[n] === undefined) throw new Error(`no row ${n}`); return rows[n]; }),
     rootFiles: NO_ROOT_FILES,
     owner: () => "ceo",

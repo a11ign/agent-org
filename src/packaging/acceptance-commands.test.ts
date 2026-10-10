@@ -3515,12 +3515,15 @@ test("#2305: a diff this job could not read is UNCHECKED -- loud, and not a fail
 });
 
 /** A base with one commit, a PR branch adding a test, base moving on, then the merge commit `checkout` builds. */
-function mergedPullRequest(dir: string, run: (args: string[]) => string, commit: (message: string) => string) {
-  const write = (name: string) => { mkdirSync(join(dir, "src"), { recursive: true }); writeFileSync(join(dir, name), name); };
+function mergedPullRequest(dir: string, run: (args: string[]) => string, commit: (message: string) => string,
+  { acceptanceFile }: { acceptanceFile?: string } = {}) {
+  const write = (name: string) => { mkdirSync(dirname(join(dir, name)), { recursive: true }); writeFileSync(join(dir, name), name); };
   write("base.txt"); run(["add", "-A"]); commit("base");
   run(["branch", "-M", "main"]);
   run(["checkout", "-q", "-b", "pr"]);
-  write("src/x.test.ts"); write("src/x.mjs"); run(["add", "-A"]); commit("pr work");
+  write("src/x.test.ts"); write("src/x.mjs");
+  if (acceptanceFile) write(acceptanceFile); // agent-org#519: the body is no longer an acceptance source, so a caller that needs one has the PR ADD its file
+  run(["add", "-A"]); commit("pr work");
   run(["checkout", "-q", "main"]);
   write("base-moved-on.test.ts"); run(["add", "-A"]); commit("base moves on");
   run(["checkout", "-q", "-b", "merge-ref"]);
@@ -3550,10 +3553,16 @@ test("#2305: a HEAD that is not a merge commit is UNREADABLE, never a diff of on
 
 test("#2305: `main()` is WIRED -- a missing record is PRINTED and exits 0 (a11ign/a11ign#3282), a duplicate exits 1", () => {
   withGitSandbox(({ dir, run, commit }) => {
-    mergedPullRequest(dir, run, commit);
-    const job = (body: string) => spawnSync("node",
-      [new URL("../acceptance-commands.ts", import.meta.url).pathname],
-      { cwd: dir, encoding: "utf8", env: sandboxGitEnv({ PR_BODY: body }) });
+    // agent-org#519: the body is no longer an acceptance source. The PR adds `.acceptance/agent~pr.md` (so the diff names it), and each job
+    // writes the text this test means the Acceptance to be (the body it already used) over it in the working tree, which is where the reader reads.
+    const acceptanceFile = ".acceptance/agent~pr.md";
+    mergedPullRequest(dir, run, commit, { acceptanceFile });
+    const job = (body: string) => {
+      writeFileSync(join(dir, acceptanceFile), body);
+      return spawnSync("node",
+        [new URL("../acceptance-commands.ts", import.meta.url).pathname],
+        { cwd: dir, encoding: "utf8", env: sandboxGitEnv({ PR_BODY: body }) });
+    };
     const base = "Acceptance: none \u2014 the test is the check\n\nCloses: none \u2014 test\n";
     const missing = job(base);
     assert.equal(missing.status, 0, missing.stdout + missing.stderr);

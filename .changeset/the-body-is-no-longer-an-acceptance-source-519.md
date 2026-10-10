@@ -1,0 +1,5 @@
+---
+"agent-org": minor
+---
+
+The body fallback is removed from the acceptance reader (a11ign/a11ign ADR 0044, row 3; agent-org#519). A pull request that adds no file under `.acceptance/` is REFUSED: `ACCEPTANCE-SOURCE: none (...)` and `ACCEPTANCE: MISSING`, and nothing in the body is run, so `ACCEPTANCE-SOURCE: body (deprecated)` is no longer printed. The one exemption is the body of a pull request authored by `dependabot[bot]` (or `app/dependabot`, as `gh` prints it), keyed on the author alone (`PR_AUTHOR`, `BODY_EXEMPT_AUTHORS` in `acceptance-file.ts`), never on the body, a label or a branch name; its commands go through the same classifier and allowlist as a file's, and its source line reads `ACCEPTANCE-SOURCE: body (exempt author dependabot[bot]; this pull request adds no file under .acceptance/; agent-org#519)`. `AcceptanceSource` gains `refused` and `body` carries its `author`; a refused source's section text is `""`, never the body. A workflow that calls `acceptanceSourceOfThisPullRequest` must pass the author (a11ign#4834 does for the core).

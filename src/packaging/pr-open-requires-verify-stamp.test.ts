@@ -27,6 +27,8 @@ const ACCEPTANCE = 'Acceptance: node -e "process.exit(0)"';
 const CLOSES = "Closes: none — a reason";
 const BODY = [ACCEPTANCE, CLOSES, "Mutation: none -- the fixture changes no test"].join("\n\n");
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
+// agent-org#519: the body is no longer an acceptance source, so the open's diff ADDS this file and `readFile` hands back the body's text as its content.
+const ACCEPTANCE_FILE = ".acceptance/agent~x.md";
 
 /** The project's `verify --check`: the contract `verify-stamp.ts` reads, in a script of its own so the spawn is the real one. */
 const VERIFY_MJS = `
@@ -88,7 +90,8 @@ function open(project: ReturnType<typeof fixture>, { draft, body = BODY, accepta
   const head = git(project.author, "rev-parse", "HEAD");
   const code = main(["create", ...(draft ? ["--draft"] : []), "--head", "agent/x", "--body-file", "body.md", "--body", body], {
     run: (args) => { sent.push(args); },
-    git: (args) => (args[0] === "diff" ? "work.txt" : args.includes("--abbrev-ref") ? "agent/x" : head),
+    git: (args) => (args[0] === "diff" ? (args.includes("--diff-filter=A") ? ACCEPTANCE_FILE : `work.txt\0${ACCEPTANCE_FILE}`) : args.includes("--abbrev-ref") ? "agent/x" : head),
+    readFile: () => body,
     prHead: () => ({ ref: "agent/x", oid: head }),
     runAcceptance: () => acceptance,
     runMutation: () => 0,

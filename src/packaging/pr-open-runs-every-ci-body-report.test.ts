@@ -24,7 +24,11 @@ const CLOSES = "Closes: none — a reason";
 const withTest = { ok: true as const, files: ["src/packaging/example.test.ts"] };
 const noTests = { ok: true as const, files: ["src/example.mjs"] };
 const body = (...extra: string[]) => [ACCEPTANCE, CLOSES, ...extra].join("\n\n");
-const check = (text: string, diff: typeof withTest) => checkBody(text, { run: () => 0, diff });
+// agent-org#519: the body is no longer an acceptance source, so the diff ADDS this file and `readFile` hands back the text the test meant (its body).
+const ACCEPTANCE_FILE = ".acceptance/agent~example-1.md";
+const viaFile = (text: string, diff: typeof withTest) =>
+  ({ run: () => 0, diff: { ...diff, files: [...diff.files, ACCEPTANCE_FILE], added: [ACCEPTANCE_FILE] }, readFile: () => text });
+const check = (text: string, diff: typeof withTest) => checkBody(text, viaFile(text, diff));
 
 test("#3209 (1), as amended by a11ign/a11ign#3282: a body with no `Mutation:` record over a diff that changes a test prints CI's own line and OPENS", () => {
   const diff = withTest;
@@ -50,9 +54,16 @@ test("#3209 (1): a diff with no test file owes no record, so the ordinary case s
 });
 
 test("#3209 (1): a diff that could not be read is UNCHECKED and not a refusal, as in CI", () => {
-  const result = checkBody(body(), { run: () => 0, diff: { ok: false, why: "git said: boom" } });
-  assert.equal(result.ok, true);
+  // agent-org#519: an unreadable diff finds no acceptance file, and the body is not a source for this author, so `checkBody` refuses for ACCEPTANCE; the
+  // mutation line is what this test pins, and it is still UNCHECKED and still not the refusal. An exempt author (the body IS its source) shows `ok`.
+  const unreadable = { ok: false as const, why: "git said: boom" };
+  const result = checkBody(body(), { run: () => 0, diff: unreadable });
   assert.ok(result.lines.some((line) => line.startsWith("MUTATION: UNCHECKED")));
+  assert.ok(result.lines.some((line) => line.startsWith("ACCEPTANCE: MISSING")), "the refusal is the acceptance's");
+  assert.equal(mutationRecordReport({ body: body(), diff: unreadable }).ok, true, "and the mutation report is not what refused");
+  const exempt = runCiBodyReports({ body: body(), run: () => 0, diff: unreadable, author: "dependabot[bot]" });
+  assert.equal(exempt.ok, true, exempt.lines.join("\n"));
+  assert.ok(exempt.lines.some((line) => line.startsWith("MUTATION: UNCHECKED")));
   const none = checkBody(body(), { run: () => 0 });
   assert.ok(none.lines.some((line) => line.startsWith("MUTATION: UNCHECKED")), "a caller handing no diff is told so");
 });
@@ -83,7 +94,7 @@ test("#3209 (3): a report added to the list is run by `checkBody` with no second
     const result = check(body(), noTests);
     assert.equal(result.ok, false);
     assert.ok(result.lines.includes("SIXTH: REFUSED -- added to the one list"));
-    assert.deepEqual(runCiBodyReports({ body: body(), run: () => 0, diff: noTests }), result,
+    assert.deepEqual(runCiBodyReports({ body: body(), ...viaFile(body(), noTests) }), result,
       "the function the CLI entry calls gives the same answer as the one `pr:open` calls");
   } finally {
     CI_BODY_REPORTS.splice(CI_BODY_REPORTS.indexOf(added), 1);
@@ -120,7 +131,8 @@ test("#3209 (4): `pr:edit` is `pr-open.ts edit`, and `main` runs the same `check
     const err: string[] = [];
     const code = main([mode, ...(mode === "edit" ? ["7"] : ["--head", "agent/x"]), "--body", text], {
       run: (args) => { sent.push(args); },
-      git: (args) => (args[0] === "diff" ? withTest.files.join("\0") : args.includes("--abbrev-ref") ? "agent/x" : "deadbeef"),
+      git: (args) => (args[0] === "diff" ? (args.includes("--diff-filter=A") ? [ACCEPTANCE_FILE] : [...withTest.files, ACCEPTANCE_FILE]).join("\0") : args.includes("--abbrev-ref") ? "agent/x" : "deadbeef"),
+      readFile: () => text,
       prHead: () => ({ ref: "agent/x", oid: "deadbeef" }),
       runAcceptance: () => 0,
       runMutation: () => 0,
