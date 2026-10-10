@@ -119,7 +119,7 @@ import { githubTicketAdapter, TRACKER } from "./ticket-port/github-adapter.ts";
 // #2356: A RED `main` WAKES A FIXER. Imports only `node:*`, `parent-recheck-summary.ts` and the repo identity,
 // so the gate keeps the property its own header states -- it runs before any `pnpm install` or build.
 import { readTrunkRed, trunkOfCodeRepository, trunkRedOrders } from "./trunk-red.ts";
-import { recordTickFailures as recordFailuresOf } from "./failure-recorders.ts";
+import { recordIgnoredChairmanLabels, recordTickFailures as recordFailuresOf } from "./failure-recorders.ts";
 // #2163: FREE BYTES AND FREE INODES. Imports only `node:*`, so the gate keeps the property its own header states.
 import { diskHeadroom, MIN_FREE_FRACTION } from "./disk-headroom.ts";
 // #2470: A CLAIM THAT DOES NOT MOVE. A leaf, like every import above, so the gate keeps the property its own header states.
@@ -4801,7 +4801,8 @@ export const CHAIRMAN_PRIORITY_LABEL = "priority:chairman";
 /** What the offer hierarchy needs beyond the rows: who the chairman's rows are, whose label was refused, and the milestone ranking. EVERY FIELD IS OPTIONAL: absent is not asked. */
 export type OfferHierarchy = {
   chairmanRows?: ReadonlySet<number>;
-  ignored?: { number: number; actor: string | null; }[];
+  /** `recorded` (#730): the gate wrote this label's ledger line, or found it written. Absent is not recorded: the order then asks `ceo` to type it. */
+  ignored?: { number: number; actor: string | null; recorded?: boolean; }[];
   milestoneRanking?: readonly string[];
 };
 
@@ -4855,7 +4856,8 @@ export function readChairmanPriority(rows: any[], run: (args: string[]) => strin
 function newestLabeller(number: number, run: (args: string[]) => string): string | null {
   const out = run(["api", `repos/{owner}/{repo}/issues/${number}/events`, "--paginate", "--jq",
     `.[] | select(.event == "labeled" and .label.name == "${CHAIRMAN_PRIORITY_LABEL}") | .actor.login`]);
-  return out.split("\n").map((line) => line.trim()).filter((line) => line !== "").at(-1) ?? null;
+  const newest = out.split("\n").map((line) => line.trim()).filter((line) => line !== "").at(-1) ?? null;
+  return newest === "null" ? null : newest; // jq prints `null` for an event whose actor is gone: the newest labeller is then UNKNOWN, not an older one's
 }
 
 /** #4524: a row the offer may not hold to the product-share floor -- the chairman's, or `priority`'s. @param {any} row @param {ReadonlySet<number> | undefined} chairmanRows */
@@ -5174,13 +5176,15 @@ function chairmanRefusedOrder({ number, reason }: { number: number; reason: stri
     causeKey: `ceo/chairman-row-refused/${discriminator}` };
 }
 
-/** @param {{ number: number, actor: string | null }} ignored */
-function ignoredLabelOrder({ number, actor }: { number: number; actor: string | null; }): HierarchyOrder {
+/** @param {{ number: number, actor: string | null, recorded?: boolean }} ignored */
+function ignoredLabelOrder({ number, actor, recorded }: { number: number; actor: string | null; recorded?: boolean; }): HierarchyOrder {
   const discriminator = `${number}-${actor ?? "unknown"}`;
   return { session: "ceo", cause: "ready-row-unclaimable", subject: `row-${number}`, discriminator,
     prompt: `\`${CHAIRMAN_PRIORITY_LABEL}\` ON #${number} WAS NOT PUT THERE BY THE CHAIRMAN (${actor === null ? "no event in the row's history shows who added it" : `${actor} added it`}). `
       + "The gate IGNORES it: the row is offered as its other labels say, and nothing is started for it. A label only the chairman's login may add, added by anyone else, "
-      + "is a ledger incident (#4437): record it as one, and take the label off if it should not stand.",
+      + (recorded === true
+        ? "is a ledger incident (#4437), and the gate has ALREADY RECORDED it (class `chairman-label-not-chairman`, once for this row and actor): do not type a ledger line. Take the label off if it should not stand."
+        : "is a ledger incident (#4437): record it as one, and take the label off if it should not stand."),
     causeKey: `ceo/chairman-label-ignored/${discriminator}` };
 }
 
@@ -7691,9 +7695,10 @@ export function readChairmanPriorityOfOffer(rows: any[], openRows: any[] = [], r
 }
 
 /** #4524: `main`'s one call for the hierarchy -- the verified chairman rows (a read per labelled row, none when no row is) and the project's declared ranking. @param {any[]} rows @param {any[]} openRows #4800: the claimed rows are read too */
-function offerHierarchyNow(rows: any[], openRows: any[]): OfferHierarchy {
-  const { chairmanRows, ignored } = readChairmanPriorityOfOffer(rows, openRows);
-  return { chairmanRows, ignored, milestoneRanking: homeProjectDeclaration().offerMilestones };
+export function offerHierarchyNow(rows: any[], openRows: any[], { run, stateDir = REVIEWER_STATE_DIR, now = Date.now() }: { run?: (args: string[]) => string; stateDir?: string; now?: number; } = {}): OfferHierarchy {
+  const { chairmanRows, ignored } = readChairmanPriorityOfOffer(rows, openRows, run);
+  // #730: a label the chairman did not add is a ledger incident, written HERE, where the tick builds `ignored`, and not in `readChairmanPriority`, which the claim reads too
+  return { chairmanRows, ignored: recordIgnoredChairmanLabels({ ignored, repo: REPO, stateDir, now }), milestoneRanking: homeProjectDeclaration().offerMilestones };
 }
 
 /**
