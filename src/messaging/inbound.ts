@@ -28,6 +28,12 @@
 // and a refused one may have been a secret the classifier half-recognised. For a SECRET verdict (a drop, or a message withheld as one nobody is sure of) the sha256 is also left out (null): a
 // hash of a bare password is a dictionary away from the password, and the length and the update id already say everything a reader
 // needs about a message that was thrown away.
+//
+// **A CHAT NOTICE IS RECORDED, NEVER ACTED ON (a11ign/a11ign#4743).** `my_chat_member` (the bot was added to a chat) and `channel_post` (one posted
+// in it) are not the chairman speaking, and they must never reach the classifier, a command or the forward path. `handle` takes the ONE fact
+// they carry, which chat exists, and writes it once as a `chat-seen` line (`chatsSeen` reads it back, so `messaging:chats` prints the id with
+// no token in sight). The post's text is not read at all. And the answer is its own action, `noted`, never `ignore`: an `ignore` that named a
+// channel would have the listener LEAVE it (`chatToLeave`), which is the one thing the chairman's announcements channel must never see.
 
 import { createHash } from "node:crypto";
 import { classifyText, VERDICT } from "./classify.ts";
@@ -85,6 +91,16 @@ const KNOWN_CHAT_TYPES = new Set(["private", "group", "supergroup", "channel"]);
 const FORWARD_FIELDS = ["forward_origin", "forward_date", "forward_from", "forward_from_chat", "forward_sender_name", "forward_from_message_id"];
 const EDIT_TYPES = new Set(["edited_message"]);
 const CHANNEL_TYPES = new Set(["channel_post", "edited_channel_post"]);
+/** The updates that say a CHAT exists and carry nothing anybody said in it for this module to act on. */
+const CHAT_NOTICE_TYPES = new Set(["my_chat_member", "channel_post"]);
+/** A private chat is the chairman's or a stranger's, and `acceptUpdate` judges it; only a place the bot was put is worth remembering. */
+const NOTICED_CHAT_TYPES = new Set(["group", "supergroup", "channel"]);
+/** What `my_chat_member.new_chat_member.status` says when the bot is no longer in the chat: a chat it left is not one to post to. */
+const GONE_STATUSES = new Set(["left", "kicked"]);
+/** Telegram's own limit on a chat title; a longer one did not come from Telegram. */
+const TITLE_LIMIT = 128;
+/** The ledger line's `direction`. Not `in`: it is no message, so nothing that counts or dedupes inbound messages sees it. */
+const CHAT_SEEN = "chat-seen";
 
 /** An id only when it is a safe integer; anything else is attacker text and is not recorded. */
 function safeId(value: unknown): number | null {
@@ -133,6 +149,47 @@ function locatePayload(update: unknown): { drop: string; } | { kind: "message" |
 function chatDrop(chat: Record<string, any>, chairman: { userId: number; chatId: number; }): string | null {
   if (chat.type !== "private") return DROP_REASON.notPrivateChat;
   return chat.id === chairman.chatId ? null : DROP_REASON.wrongChat;
+}
+
+/** A chat the bot was put in, as the ledger holds it. `title` is the chat's name, which is not a secret, and null when there is none. */
+export type ChatSeen = { chatId: number; type: string; title: string | null };
+
+/** A title as text a terminal can show: a string, without control characters, and no longer than Telegram allows. It is a stranger's to choose. */
+function safeTitle(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const text = value.replace(/\p{Cc}/gu, " ").trim().slice(0, TITLE_LIMIT);
+  return text === "" ? null : text;
+}
+
+/**
+ * The chat a notice names, or null when the update is not a notice or names nothing worth remembering. PURE, and it reads the chat and
+ * nothing else: not the post's text, not who sent it. Null is not a verdict: it hands the update to `acceptUpdate`, whose reasons
+ * (`channel-post`, `unsupported-type`, `malformed`) are exactly what they were before a notice was recognised.
+ */
+function chatNotice(update: unknown, { chatId: chairmanChatId }: { chatId: number; }): ChatSeen | null {
+  if (!isObject(update) || safeId(update.update_id) === null) return null;
+  const types = Object.keys(update).filter((key) => key !== "update_id");
+  if (types.length !== 1 || !CHAT_NOTICE_TYPES.has(types[0])) return null;
+  const notice = update[types[0]];
+  if (!isObject(notice) || !isObject(notice.chat) || !NOTICED_CHAT_TYPES.has(notice.chat.type)) return null;
+  if (isObject(notice.new_chat_member) && GONE_STATUSES.has(notice.new_chat_member.status)) return null;
+  const chatId = safeId(notice.chat.id);
+  // The chairman's own chat is `acceptUpdate`'s, whatever an update calls it (as `chatToLeave` refuses to leave it).
+  if (chatId === null || chatId === chairmanChatId) return null;
+  return { chatId, type: notice.chat.type, title: safeTitle(notice.chat.title) };
+}
+
+/**
+ * The chats the ledger has recorded, in the order they were first seen. THE ONE READER of the `chat-seen` line, beside its one writer
+ * (`createInbound`), so `messaging:chats` and the dedupe below cannot disagree about what a line is.
+ */
+export function chatsSeen(lines: Record<string, any>[]): ChatSeen[] {
+  const found = new Map<number, ChatSeen>();
+  for (const line of lines) {
+    if (line.direction !== CHAT_SEEN || safeId(line.chatId) === null || typeof line.type !== "string") continue;
+    if (!found.has(line.chatId)) found.set(line.chatId, { chatId: line.chatId, type: line.type, title: typeof line.title === "string" ? line.title : null });
+  }
+  return [...found.values()];
 }
 
 /**
@@ -233,6 +290,8 @@ function inboundLine({ updateId, userId, chatId, chatType, kind, length, sha256,
 export type Handled =
   | { action: "replayed"; updateId: number }
   | { action: "ignore"; reason: string; chatId: number | null; chatType: string | null }
+  /** A chat notice. NOT an `ignore`, which names a chat and so would have the listener leave it. `recorded` is false for a chat already known. */
+  | { action: "noted"; chatId: number; recorded: boolean }
   | { action: "forward"; accepted: Readonly<Record<string, any>> }
   | { action: "reply"; reason: string; text: string; chatId: number; deleteMessage: { chatId: number; messageId: number | null } | null };
 
@@ -245,7 +304,10 @@ export function createInbound({ ledger, chairman }: {
     }) {
   checkedChairman({ chairman });
   // THE LEDGER IS THE MEMORY (as in the core): a listener that restarts and is handed the same batch again acts on none of it twice.
-  const seen = new Set(ledger.read().filter((line) => line.direction === "in" && Number.isSafeInteger(line.updateId)).map((line) => line.updateId));
+  const lines = ledger.read();
+  const seen = new Set(lines.filter((line) => line.direction === "in" && Number.isSafeInteger(line.updateId)).map((line) => line.updateId));
+  // The same memory for a chat: a restart, or Telegram repeating a post, writes no second line for a chat already recorded.
+  const knownChats = new Set(chatsSeen(lines).map((chat) => chat.chatId));
 
   function record(facts: Facts, { verdict, reason, hashed = true }: { verdict: string; reason: string | null; hashed?: boolean; }) {
     // The line is written BEFORE the caller is told what to do: a crash between the two loses one message and never repeats one.
@@ -274,10 +336,22 @@ export function createInbound({ ledger, chairman }: {
     return { action: "reply", reason: result.reason, text: result.reply, chatId: accepted.chatId, deleteMessage };
   }
 
+  /** One line per distinct chat, and nothing of what was said in it. Written before the caller is told, as every line here is. */
+  function noted(chat: ChatSeen): Handled {
+    const recorded = !knownChats.has(chat.chatId);
+    if (recorded) {
+      ledger.append({ direction: CHAT_SEEN, chatId: chat.chatId, type: chat.type, title: chat.title });
+      knownChats.add(chat.chatId);
+    }
+    return { action: "noted", chatId: chat.chatId, recorded };
+  }
+
   return {
     handle(update: unknown): Handled {
       const updateId = isObject(update) ? safeId(update.update_id) : null;
       if (updateId !== null && seen.has(updateId)) return { action: "replayed", updateId };
+      const notice = chatNotice(update, chairman);
+      if (notice !== null) return noted(notice);
       const acceptance = acceptUpdate(update, { chairman });
       if (acceptance.ok) return classified(acceptance.accepted, acceptance.facts);
       return dropped(acceptance.facts, acceptance.reason);

@@ -1,3 +1,4 @@
+// no-token: prepareContext -- Telegram is a fake and the ledger a temp file, and nothing here calls it; `poll.ts` only carries it in through `acquireLock`'s `createAnswers` import (measured with `gh` and `herdr` stubbed first on PATH: neither was spawned; a11ign/a11ign#4743)
 // @ts-check
 // THE LONG POLL AND THE LISTENER (a11ign/a11ign#2907 done-whens 1-5), against a FAKE TELEGRAM that behaves the way the real one does where it
 // matters here: it REDELIVERS every update until a later `getUpdates` confirms it with an offset, so "a restart replays nothing" is something
@@ -33,6 +34,7 @@ const TOKEN = "123456789:AAFk3x9Q-test_token_value_ZZ";
 const CHAIRMAN = Object.freeze({ userId: 4242, chatId: 4242 });
 const STRANGER = 9001;
 const GROUP_ID = -1001234;
+const CHANNEL_ID = -1005678;
 const MS = 1000;
 const PASSWORD_LINE = "password: hunter2";
 // The tool's OWN unit template (`host/` at this repository's root, `src/messaging/providers/telegram` up four), not a project file.
@@ -89,7 +91,10 @@ function fakeTelegram({ updates = [], script = [], stopAfter = 1 }: { updates?: 
     if (scripted instanceof Error) throw scripted;
     if (scripted !== undefined && scripted !== "ok") return reply(scripted.status, scripted.body);
     if (body.offset !== undefined) pending = pending.filter((each) => each.update_id >= body.offset);
-    return reply(200, { ok: true, result: [...pending] });
+    // As the real one: an update of a type the request did not list is not sent, so a listener that stops asking for one stops seeing it.
+    const asked: string[] | undefined = body.allowed_updates;
+    const wanted = (each: Record<string, any>) => asked === undefined || Object.keys(each).some((key) => key !== "update_id" && asked.includes(key));
+    return reply(200, { ok: true, result: pending.filter(wanted) });
   }));
   return {
     fetch: fetchImpl, requests,
@@ -353,6 +358,24 @@ describe("what the listener does about what the core said", () => {
     assert.equal(telegram.calls("leaveChat").length, 0);
   });
 
+  test("a chat notice is recorded and the bot STAYS: the channel it was added to is never left, answered or forwarded from (#4743)", async () => {
+    const added = {
+      update_id: 70,
+      my_chat_member: { chat: { id: CHANNEL_ID, type: "channel", title: "announcements" }, from: { id: CHAIRMAN.userId }, date: 1, old_chat_member: { status: "left" }, new_chat_member: { status: "administrator" } },
+    };
+    const post = { update_id: 71, channel_post: { message_id: 1, chat: { id: CHANNEL_ID, type: "channel", title: "announcements" }, date: 1, text: "/stop" } };
+    const groupMessage = update(73, { chat: { id: GROUP_ID, type: "supergroup" } });
+    const telegram = fakeTelegram({ updates: [added, post, update(72), groupMessage] });
+    const run = listener({ directory: freshDirectory(), telegram });
+    await run.run();
+    assert.deepEqual(telegram.calls("leaveChat").map((call) => call.body), [{ chat_id: GROUP_ID }], "the group is left, as before (the control); the channel is not");
+    assert.deepEqual(telegram.requests.map((request) => request.method).filter((method) => !["getUpdates", "leaveChat"].includes(method)), [], "nothing was sent or deleted");
+    assert.deepEqual(run.forwarded.map((accepted) => accepted.updateId), [72], "only the chairman's message reached the forward path");
+    const seen = readLedgerLines(run.ledgerPath).filter((line) => line.direction === "chat-seen");
+    assert.deepEqual(seen.map((line) => [line.chatId, line.type, line.title]), [[CHANNEL_ID, "channel", "announcements"]], "one line, though two updates named the chat");
+    assert.equal(JSON.parse(readFileSync(run.offsetPath, "utf8")).offset, 74, "the offset moved past both notices");
+  });
+
   test("a message that is a credential is deleted, then answered; and it is not forwarded", async () => {
     const telegram = fakeTelegram({ updates: [update(60, { text: PASSWORD_LINE })] });
     const run = listener({ directory: freshDirectory(), telegram });
@@ -384,12 +407,12 @@ describe("the provider", () => {
     assert.equal(telegram.calls("getUpdates").length, 0, "the already-aborted poll reached no network");
   });
 
-  test("a poll asks for messages and button presses only, with a long timeout, and no offset the first time", async () => {
+  test("a poll asks for messages, button presses and the two chat notices, with a long timeout, and no offset the first time", async () => {
     const telegram = fakeTelegram();
     const provider = createTelegramPollingProvider({ token: createSecret(TOKEN), chatId: CHAIRMAN.chatId, fetch: telegram.fetch, sleep: async () => {}, log: () => {} });
     await provider.poll(undefined);
     assert.deepEqual(telegram.calls("getUpdates")[0].body, { timeout: LONG_POLL_SECONDS, allowed_updates: [...ALLOWED_UPDATES] });
-    assert.deepEqual([...ALLOWED_UPDATES], ["message", "callback_query"]);
+    assert.deepEqual([...ALLOWED_UPDATES], ["message", "callback_query", "my_chat_member", "channel_post"]);
   });
 
   test("an abort while the long poll is open returns at once with nothing, and the cursor it was given", async () => {
