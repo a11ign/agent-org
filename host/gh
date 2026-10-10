@@ -91,6 +91,11 @@ fi
 #     lines; a bounded diagnostic does not take a lock on every gh call for that.
 #   - A11Y_GH_LEDGER_NOW stands in for the clock, as A11Y_GH_REAL does for the exec: a test pins both.
 
+# The calling session's id, as the ledger and the attribution below both read it: `CLAUDE_CODE_SESSION_ID`, else `CODEX_THREAD_ID`, else empty.
+session_id() {
+  printf %s "${CLAUDE_CODE_SESSION_ID:-${CODEX_THREAD_ID:-}}" | tr -dc 'A-Za-z0-9-' | cut -c1-64
+}
+
 ledger_record() { # status stdout-copy first-arg second-arg
   [ "${A11Y_GH_LEDGER:-}" = off ] && return 0
   cfg=${GH_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gh}
@@ -109,7 +114,7 @@ ledger_record() { # status stdout-copy first-arg second-arg
   fi
   account=$(sed -n 's/^ *user: *//p' "$cfg/hosts.yml" | head -n 1)
   caller=$(tr '\0\t\n' '   ' < "/proc/$PPID/cmdline" | cut -c1-160)
-  session=$(printf %s "${CLAUDE_CODE_SESSION_ID:-${CODEX_THREAD_ID:-}}" | tr -dc 'A-Za-z0-9-' | cut -c1-64)
+  session=$(session_id)
   now=${A11Y_GH_LEDGER_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
   printf '%s\t%s\t%s\t%s\t%s\t%s %s\t%s\t%s\t%s\n' "$now" "${account:-unknown}" "$resource" "$cost" "$1" "$3" "$4" \
     "${HERDR_WORKSPACE_ID:--}" "$caller" "${session:--}" >> "$file" || return 0
@@ -267,6 +272,93 @@ read_cache_store() { # the stdout copy, the generation read BEFORE the call ran
   return 0
 }
 
+# --- #4505 MOVE 0 (agent-org#486): A DECISION COMMENT CARRIES THE ROLE AND RUN THAT POSTED IT --------------------------------
+#
+# `ceo`, `product-manager` and `orchestrator` post as ONE account (a11ign-ai-leads), so a comment on a row cannot say which of them decided,
+# and the epic's measure (chairman corrections per day) and its cutovers need that. Managers post by running `gh issue comment` themselves, so
+# this wrapper is the one place every post passes. For `issue comment`, `pr comment` and `pr review` it appends ONE trailing line to the body,
+#
+#     <!-- decided-by: <role> run: <id> -->
+#
+# an HTML comment, so the rendered comment reads as before and the API's raw body carries it.
+#
+#   - THE ROLE is the herdr label of $HERDR_WORKSPACE_ID (`ceo`, `product-manager`, `orchestrator`, `worker-agent-org-486`): the seat's name,
+#     read from herdr's own socket, which costs no GitHub point. THE RUN is the session id the ledger above records (a Claude Code session's
+#     id, else a Codex thread's), which changes when a seat restarts, so it names which instance of the seat posted. No run id leaves the
+#     role alone: `<!-- decided-by: <role> -->`.
+#   - NEVER A GUESS: no workspace id, a herdr that does not answer, an answer for another workspace, or a label with a character outside
+#     [A-Za-z0-9._-] means NO LINE. The line is a statement about who decided, and an absent line is true where a wrong one is not.
+#   - A BODY THAT CANNOT BE REWRITTEN IS POSTED UNCHANGED, never refused: a file that cannot be read, no scratch directory, a body that
+#     already ends in a `decided-by:` line (so a nested call never stacks two) and a call naming no body (`--edit-last`, `--web`) all go
+#     through exactly as given. The spellings handled are `--body X`, `--body=X`, `-b X`, `-bX`, `-b=X`, and `--body-file P`, `--body-file=P`,
+#     `-F P`, `-FP`, `-F=P` where P is a path or `-` for stdin: a file body is read once, and gh is given a scratch copy with the line added.
+#   - Any other command, `gh api` included, is not touched: the argument list is rebuilt only for the three.
+decided_by_line() {
+  [ -n "${HERDR_WORKSPACE_ID:-}" ] || return 0
+  herdr_out=$(
+    if command -v timeout >/dev/null 2>&1; then timeout 5 "${HERDR_BIN_PATH:-herdr}" workspace get "$HERDR_WORKSPACE_ID"
+    else "${HERDR_BIN_PATH:-herdr}" workspace get "$HERDR_WORKSPACE_ID"; fi 2>/dev/null) || return 0
+  [ "$(printf %s "$herdr_out" | sed -n 's/.*"workspace_id": *"\([^"]*\)".*/\1/p')" = "$HERDR_WORKSPACE_ID" ] || return 0
+  role=$(printf %s "$herdr_out" | sed -n 's/.*"label": *"\([^"]*\)".*/\1/p')
+  case "$role" in ''|*[!A-Za-z0-9._-]*) return 0 ;; esac
+  [ "${#role}" -le 64 ] || return 0
+  run=$(session_id)
+  if [ -n "$run" ]; then printf '<!-- decided-by: %s run: %s -->' "$role" "$run"
+  else printf '<!-- decided-by: %s -->' "$role"; fi
+}
+
+# Prints the body with the line appended after a blank line, or the body itself when it already ends in one. `$1` body, `$2` the line.
+attributed_text() {
+  case "$(printf '%s\n' "$1" | awk 'NF { l = $0 } END { print l }')" in
+    "<!-- decided-by: "*) printf '%s' "$1" ;;
+    *) printf '%s\n\n%s' "$1" "$2" ;;
+  esac
+}
+
+# `$1` a body: prints it with the line, or unchanged.
+attributed_body() {
+  attributed_text "$1" "$decided_by"
+}
+
+# `$1` a path or `-`, `$2` a name unique in this call: prints the path of a scratch copy with the line, or `$1` when it cannot be made.
+attributed_file() {
+  [ -n "$attr_dir" ] || { printf '%s' "$1"; return 0; }
+  if [ "$1" = - ]; then text=$(cat) || { printf '%s' "$1"; return 0; }
+  else text=$(cat -- "$1" 2>/dev/null) || { printf '%s' "$1"; return 0; }; fi
+  attributed_text "$text" "$decided_by" > "$attr_dir/$2" 2>/dev/null && printf '\n' >> "$attr_dir/$2" 2>/dev/null &&
+    printf '%s' "$attr_dir/$2" || printf '%s' "$1"
+}
+
+attr_dir=
+case "$1 $2" in
+  "issue comment"|"pr comment"|"pr review")
+    decided_by=$(decided_by_line)
+    if [ -n "$decided_by" ]; then
+      attr_dir=$(mktemp -d "${TMPDIR:-/tmp}/gh-body.XXXXXX" 2>/dev/null) || attr_dir=
+      attr_n=$#; attr_i=0; attr_want=
+      while [ "$attr_i" -lt "$attr_n" ]; do
+        a=$1; shift; attr_i=$((attr_i + 1))
+        if [ -n "$attr_want" ]; then
+          if [ "$attr_want" = body ]; then a=$(attributed_body "$a"); else a=$(attributed_file "$a" "$attr_i"); fi
+          attr_want=
+        else
+          case "$a" in
+            --body|-b) attr_want=body ;;
+            --body-file|-F) attr_want=file ;;
+            --body=*) a=--body=$(attributed_body "${a#--body=}") ;;
+            --body-file=*) a=--body-file=$(attributed_file "${a#--body-file=}" "$attr_i") ;;
+            -b=*) a=-b=$(attributed_body "${a#-b=}") ;;
+            -F=*) a=-F=$(attributed_file "${a#-F=}" "$attr_i") ;;
+            -b?*) a=-b$(attributed_body "${a#-b}") ;;
+            -F?*) a=-F$(attributed_file "${a#-F}" "$attr_i") ;;
+          esac
+        fi
+        set -- "$@" "$a"
+      done
+    fi
+    ;;
+esac
+
 call_class "$@"
 cache_on=0
 RC=${A11Y_GH_READ_CACHE_DIR:-$GH_CONFIG_DIR/read-cache}
@@ -310,4 +402,5 @@ ledger_record "$status" "$copy" "$1" "$2" 2>/dev/null || :
 [ "$cache_on" = 1 ] && [ -n "$copy" ] && [ "$status" -eq 0 ] && read_cache_store "$gen0" "$copy"
 [ "$class" = write ] && [ "${A11Y_GH_READ_CACHE:-}" != off ] && drop_read_cache "$@"
 [ -n "$copy" ] && rm -f "${copy:?}"
+[ -n "$attr_dir" ] && rm -rf "${attr_dir:?}"
 exit "$status"
