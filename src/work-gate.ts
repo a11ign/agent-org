@@ -4250,6 +4250,9 @@ export function reviewBlocked(prs: any[], required: string[] | null = null): {
     refusedAt: string | null; patchUnchanged: boolean | null; refusalLifted: boolean;
 }[] {
   return mergeCandidates(prs, required)
+    // agent-org#489: A REFUSAL THE GATE HAS RECORDED AS POSTED AT AN OLDER HEAD IS NOBODY'S ORDER (`withStaleRefusals` stamps it, and only after the record landed).
+    // The stamp names the commit it was made for, so a newer refusal on the same pull request is not hidden by it.
+    .filter((pr) => pr.staleRefusal === undefined || pr.staleRefusal !== refusalCommitOf(pr))
     .map((pr) => ({ number: Number(pr.number), ...subjectIdentity(pr), ...reviewStateOf(pr), session: sessionOf(pr),
       head: String(pr.headRefOid ?? ""), refusedAt: refusalCommitOf(pr), patchUnchanged: patchUnchangedSince(pr, refusalCommitOf(pr)),
       refusalLifted: refusalLiftedAt(pr, refusalCommitOf(pr)) }))
@@ -7159,7 +7162,7 @@ function writeResolverDefect(defect: ResolverDefect, { run, log }: { run: (args:
 function codeReadings(openPrs: any[], scope: Scope, trunkRed: ReturnType<typeof readScopeTrunkRed> = readScopeTrunkRed(scope)) {
   const required = requiredWhenNeeded(openPrs);
   const split = readArmingOf(openPrs, required);
-  return { prs: withVerifyStamps(withEjections(withEvidenceLabelAges(withPatchIds(openPrs, defaultRun, required)), split?.ejections), { checkout: verifyCheckoutOf(scope.key) }), required, baseTip: baseTipWhenRed(openPrs),
+  return { prs: withStaleRefusals(withVerifyStamps(withEjections(withEvidenceLabelAges(withPatchIds(openPrs, defaultRun, required)), split?.ejections), { checkout: verifyCheckoutOf(scope.key) }), required), required, baseTip: baseTipWhenRed(openPrs),
     unarmed: split === null ? null : split.unarmed,
     trunkRed };
 }
@@ -8058,6 +8061,95 @@ export function readArmingOf(openPrs: any[], required: string[] | null, { scope 
   return { unarmed: settleUnarmedPrs(split.unarmed, { armed: reading.armed.length, of: candidates.length, portFor, scope, env, ...(log === undefined ? {} : { log }) }), ejections: split.ejections };
 }
 
+/** agent-org#489: where the switch for `withStaleRefusals` is read; `off` restores the order as it was. */
+export const REVIEW_BLOCKED_SWITCH_ENV = "A11IGN_PR_REVIEW_BLOCKED_BY_GATE";
+
+/** What `withStaleRefusals` is given for one repository: the ticket port's one write, the record on the pull request. */
+export type StaleRefusalPort = Pick<TicketPort, "postDecision">;
+
+/** The token a record carries, so the next tick's read of the pull request's own comments finds it and says nothing twice. */
+const staleRefusalMarker = (oid: string) => `stale-refusal: ${oid}`;
+
+/**
+ * PURE. agent-org#489: THE COMMIT A PULL REQUEST'S REFUSAL WAS POSTED AT WHEN NO REFUSAL ON IT STANDS AT THE HEAD IT HAS NOW, or `null` when that cannot be said.
+ *
+ * STALE ONLY WHEN EVERY `CHANGES_REQUESTED` ON IT IS POSITIVELY OLDER, which is the row's "only blocking review". Each one that fails the test below keeps the
+ * pull request in the order, as today (EVERY DOUBT IS A WAKE, as #488 and #490 did it):
+ *  - a refusal at the current head is live, whoever else refused earlier;
+ *  - a refusal whose commit the payload does not name is not a comparison anybody made;
+ *  - a refusal whose PATCH is the head's (#3045: a rebase, an update-branch) is the same work refused, so the rework is still owed. Only a patch KNOWN to be
+ *    equal keeps it: a patch that could not be read (`patchUnchangedSince`'s `null`, a refused `withPatchIds` read) leaves the comparison to the commits, which is
+ *    the row's own, and the reviewer seat is asked either way (`draftOrder` finds no verdict at a head it has not been written at).
+ * `reviewStateOf` must say REFUSED too: GitHub's `reviewDecision` is what holds the pull request, and a list of reviews alone is not a decision.
+ */
+export function staleRefusalOf(pr: any): string | null {
+  if (reviewStateOf(pr).code !== REVIEW_STATE.REFUSED) return null;
+  const head = String(pr?.headRefOid ?? "");
+  if (head === "" || !Array.isArray(pr?.reviews)) return null;
+  const refusals = pr.reviews.filter((r: any) => r?.state === "CHANGES_REQUESTED").map((r: any) => String(r?.commit?.oid ?? ""));
+  if (refusals.length === 0 || refusals.some((oid: string) => oid === "" || oid === head || patchUnchangedSince(pr, oid) === true)) return null;
+  return refusalCommitOf(pr);
+}
+
+/** Whether the pull request's own comments already carry the record for this refusal. */
+const staleRefusalRecorded = (pr: any, oid: string): boolean =>
+  Array.isArray(pr?.comments) && pr.comments.some((c: any) => String(c?.body ?? "").includes(staleRefusalMarker(oid)));
+
+/**
+ * agent-org#489 (Phase 1 of a11ign/a11ign#4505): A REFUSAL POSTED AT AN OLDER HEAD THAN THE PULL REQUEST HAS NOW ORDERS NO ONE, AND THE GATE SAYS SO ON THE PULL REQUEST.
+ *
+ * The cause's own declaration names this arm as the one only reading settles: `dismiss_stale_reviews` does not clear a `CHANGES_REQUESTED`, so one may stand at a
+ * head the author has since replaced (#2049 sat seven hours on one). The reading is a comparison of the review's `commit.oid` with `headRefOid`, data the gate
+ * already holds, so the gate does it. What the order asked of the author or the manager (compare, then route) has nothing left to decide:
+ *  - the rework is not owed for a head the review never saw (`staleRefusalOf`; an equal patch is the one case it keeps), so the author is not asked for it;
+ *  - the fresh look IS owed, and it is the reviewer seat's, which `draft-awaiting-verdict` asks for any green head that carries no verdict at its patch -- the
+ *    same cause that already starts `reviewer-<n>` for an AWAITING_REVIEW pull request (#3592). `pr-review-blocked` asking a manager too was a second order for one fact.
+ *
+ * A REFUSAL AT THE CURRENT HEAD IS UNCHANGED, and is ordered to its labelled owner session directly (`reviewBlockedOrders`'s `ownedBy`) with the manager's set
+ * order only for the unowned ones. That routing was already the cause's code; this row adds the comparison in front of it and does not move it.
+ *
+ * ONE RECORD PER REFUSAL, FOUND IN THE PULL REQUEST'S OWN COMMENTS (the list this tick already read), so a standing stale refusal is said once and not once a tick,
+ * and a pull request whose record cannot be posted stays in the order: THE RECORD FIRST, THE STAMP AFTER, so a refusal nobody was told of is never one nobody is
+ * ordered about. The stamp (`staleRefusal`) names the commit it was made for.
+ *
+ * THE SWITCH: `A11IGN_PR_REVIEW_BLOCKED_BY_GATE=off` in the tick's environment returns the pull requests untouched, with no write and no port asked, and the
+ * order is today's. The one-line revert in code is the `withStaleRefusals(...)` wrapper in `codeReadings` and in `main`'s `decideArgs`. Live cutover, no shadow phase.
+ *
+ * @param prs the pull requests as the rest of the tick will read them (`withPatchIds` first: the patch comparison is read off them)
+ * @param required the required checks, which `reviewBlocked`'s population is derived from
+ * @param portFor the ticket port of one repository, by `owner/name`: the only way this function reaches a tracker
+ * @returns `prs` itself when the switch is off or none is stale, else the same list with `staleRefusal` stamped on the ones whose record is on the pull request
+ */
+export function withStaleRefusals(prs: any[], required: string[] | null, { portFor = (scope: string): StaleRefusalPort => githubTicketAdapter({ run: defaultRun, scope }),
+    env = process.env, log = (line: string) => { process.stderr.write(line); }, now = Date.now(), scope = repoNow() }: {
+  portFor?: (scope: string) => StaleRefusalPort; env?: Record<string, string | undefined>; log?: (line: string) => void; now?: number; scope?: string;
+} = {}): any[] {
+  if (env[REVIEW_BLOCKED_SWITCH_ENV] === "off") return prs;
+  const byNumber = new Map(prs.map((pr) => [Number(pr?.number), pr]));
+  const stamped = new Map<number, string>();
+  for (const { number } of reviewBlocked(prs, required)) {
+    const pr = byNumber.get(number);
+    const oid = staleRefusalOf(pr);
+    if (oid === null) continue;
+    if (!staleRefusalRecorded(pr, oid)) {
+      const head = String(pr.headRefOid);
+      try {
+        portFor(scope).postDecision({ tracker: TRACKER, scope, id: number }, { role: "work-gate", runId: `tick-${now}`, kind: "pr-review-blocked", text:
+          `**work-gate, pr-review-blocked:** the review holding this pull request (\`CHANGES_REQUESTED\`) was posted at \`${oid.slice(0, 8)}\`, and the head is now \`${head.slice(0, 8)}\`, `
+          + "pushed after it. The review is not about this head, so neither its author nor a manager was ordered about it (agent-org#489). Only a newer review lifts it, and "
+          + "the reviewer seat is asked for one by `draft-awaiting-verdict`, as for any head with no review at its patch.\n\n"
+          + `<!-- ${staleRefusalMarker(oid)} -->` });
+        log(`pr-review-blocked: #${number} was refused at ${oid.slice(0, 8)}, the head is ${head.slice(0, 8)} -- recorded on it, no order.\n`);
+      } catch (err) {
+        log(`pr-review-blocked: COULD NOT RECORD the stale refusal on #${number} (${String((err as any)?.message ?? err).split("\n")[0].slice(0, 120)}) -- it stays in the order.\n`);
+        continue;
+      }
+    }
+    stamped.set(number, oid);
+  }
+  return stamped.size === 0 ? prs : prs.map((pr) => (stamped.has(Number(pr?.number)) ? { ...pr, staleRefusal: stamped.get(Number(pr.number)) } : pr));
+}
+
 function main() {
   refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/work-gate.ts" });
   const githubStatus = startGithubStatus(); // #3723: FIRST, so its wall overlaps the reads below and never adds to them
@@ -8104,7 +8196,7 @@ function main() {
   // pay for it twice on exactly the red tick this row is about.
   const required = requiredWhenNeeded(openPrs);
   const baseTip = baseTipWhenRed(openPrs), armingSplit = readArmingOf(openPrs, required); // #3019: BEFORE the arguments -- ejected PRs are stamped onto `prs` and leave `unarmed`; agent-org#488: the gate arms a lone unarmed one here
-  const decideArgs = { primaryDrift, prs: withVerifyStamps(withEjections(withWaitingEdges(withPrOwners(withEvidenceLabelAges(withPatchIds(openPrs, defaultRun, required)), allOpen, stampLookup(), { agents: liveWorkspaceLabels, ended: endedSessionLabels }), allOpen, { dir: REVIEWER_STATE_DIR }), armingSplit?.ejections), { checkout: verifyCheckoutOf("") }), readyRows: rows, promotableRows: promotableRows ?? [],
+  const decideArgs = { primaryDrift, prs: withStaleRefusals(withVerifyStamps(withEjections(withWaitingEdges(withPrOwners(withEvidenceLabelAges(withPatchIds(openPrs, defaultRun, required)), allOpen, stampLookup(), { agents: liveWorkspaceLabels, ended: endedSessionLabels }), allOpen, { dir: REVIEWER_STATE_DIR }), armingSplit?.ejections), { checkout: verifyCheckoutOf("") }), required), readyRows: rows, promotableRows: promotableRows ?? [],
     chairmanBlocked: chairmanBlocked ?? [], prFiles, drain, required, baseTip,
     epics: epicRowsOf(allOpen),
     answerOwed: rowsOwingAnswers({ openRows: allOpen, openPrs, closedRows: closedAnswerRows(closedRows) }),

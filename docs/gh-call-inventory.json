@@ -1265,7 +1265,8 @@
     "pr-review-blocked": {
       "group": "ACTION",
       "namedIn": [
-        "src/claim-stall.ts"
+        "src/claim-stall.ts",
+        "src/work-gate.ts"
       ]
     },
     "unclaimed-blocker-cleared": {
