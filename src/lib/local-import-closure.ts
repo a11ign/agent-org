@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// COPIED FROM `packages/guards/src/local-import-closure.ts` at cd4bdb7dc (#2658, child 3g of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
+// COPIED FROM `packages/guards/src/local-import-closure.ts` at bb8dfa7fb (#2658, child 3g of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
 // its package. The product keeps its original and the two can drift, with no cross-repository pin: `agent-org-outward-edges.test.ts` compares them.
+// ITS ORIGINAL IS GONE: a11ign#4718 (25f0e9b3e) deleted `packages/guards/src/local-import-closure.ts` for `@a11ign/toolchain/lib/local-import-closure`, so org-health reads this copy as "could not be compared"; `bb8dfa7fb` is the last commit that changed it.
 // CHANGED FROM THE ORIGINAL: NOTHING but this header.
 // ==== end of copy header ====
 // @ts-check
@@ -29,7 +30,7 @@ import { dirname, join, resolve } from "node:path";
  * than the mention-versus-use trap `acceptance-commands.mjs`'s own header already names: not "a comment
  * MENTIONING an operation," but "a comment CONTAINING syntactically valid code that performs one."
  *
- * NOT `@a11ign/evidence/source-text`'s own `stripComments`, deliberately -- checked, not assumed. That one
+ * NOT `@a11ign/toolchain/lib/source-text`'s own `stripComments`, deliberately -- checked, not assumed. That one
  * is a real tokenizer (it correctly skips `//` inside a string literal, which this one does not) but it
  * REMOVES a block comment's interior newlines rather than blanking them, so its output is SHORTER than its
  * input whenever one spans multiple lines -- exactly the property `closureRequirementMessage` needs never
@@ -64,7 +65,7 @@ export function stripComments(text: string): string {
   // The alternation closes both. Measured across all 871 tracked files: it agrees with the line-first
   // version on every one, 0 differing, and preserves the offset property identically -- same length, same
   // line count -- which is the property `closureRequirementMessage` needs and the reason this module does
-  // not use `@a11ign/evidence/source-text`'s tokenizer. `pre-install-import-graph.test.ts:82-89` already
+  // not use `@a11ign/toolchain/lib/source-text`'s tokenizer. `pre-install-import-graph.test.ts:82-89` already
   // names this file and ships this exact line as the fix.
   //
   // BLANKED PER RUN OF NON-NEWLINES, NOT PER CHARACTER (#2546). `m.replace(/[^\n]/g, " ")` called the engine once for every

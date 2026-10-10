@@ -1,4 +1,4 @@
-// COPIED FROM `packages/guards/src/isolation-gate.ts` at f3b5c5f59 (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
+// COPIED FROM `packages/guards/src/isolation-gate.ts` at 7ed322a32 (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
 // its package. The product keeps its original and the two can drift, with no cross-repository pin: `agent-org-outward-edges.test.ts` compares them.
 // CHANGED FROM THE ORIGINAL, 71 NAMED LINES:
 // - its import of cli-flags.ts, now the tool's own copy beside it
@@ -428,6 +428,12 @@ function packAndInstall(dir: string, consumer: string, manifest: { name?: string
       detail: `packs, but ${rangeProblems.length} internal range(s) in the tarballs are wrong: ${rangeProblems.join("; ")}` } };
   }
   runNpm(["init", "-y"], consumer);
+  // THE SMOKE IS `isolation-smoke.ts`, ES-module syntax, copied into THIS directory and run by `node` (#4393 renamed
+  // the `.mjs` smokes). A `.mjs` did not care what the nearest package.json said; a `.ts` takes its module type from
+  // it, and npm 11.19.0's `init -y` writes `"type": "commonjs"` (measured; the npm 9.2.0 on this host's PATH writes
+  // none), so every package failed `SyntaxError: Cannot use import statement outside a module` (#4654). Set it
+  // explicitly rather than lean on Node's syntax detection, which an explicit `commonjs` switches off.
+  runNpm(["pkg", "set", "type=module"], consumer);
   // `--no-workspaces` and absolute tarball paths: without them npm can walk UP from the temp directory
   // and re-attach to a workspace root, which would reintroduce exactly the symlink resolution the gate
   // exists to avoid.
