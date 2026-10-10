@@ -5,7 +5,7 @@ Acceptance:
 cd /home/agent/repos/wt-agent-org-665 && npx rstest run --config scripts/rstest/rstest.config.ts src/agent-tool-update.test.ts
 ```
 
-Run as `node --test src/agent-tool-update.test.ts` in this branch's tree, because the worktree has no `node_modules` and `rstest` could not load `@a11ign/toolchain` from it (the file is `node:test`, which `rstest` shims). Printed: `tests 30, pass 30, fail 0`.
+Run in this branch's tree through the main clone's `node_modules` (a symlink, no install). Printed: `VERDICT pass: 30 tests in 1 file`; `node --test src/agent-tool-update.test.ts` agrees (`tests 30, pass 30, fail 0`).
 
 Against `HEAD`'s unmodified `src/agent-tool-update.ts` the new file cannot load (`does not provide an export named 'productOfSeat'`). With `HEAD`'s logic and the two new exports stubbed so it loads: `tests 30, pass 22, fail 8`, the six new `#665` cases and the two reworded refusal cases among them.
 
