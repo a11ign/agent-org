@@ -4,7 +4,8 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-type Finding = import("./host-units.ts").Finding;
+/** The fields of `host-units.ts`'s `Finding` this check sets, declared here so the leaf names no module that resolves a project. */
+type Finding = { unit: string, problem: string, detail: string, manualFix?: boolean, hostProgram?: boolean };
 
 /** The finding's problem when the client and the daemon are two builds that disagree on a version or a default no config declares. */
 export const CLIENT_DAEMON_DISAGREE = "CODEX CLIENT AND DAEMON DISAGREE";

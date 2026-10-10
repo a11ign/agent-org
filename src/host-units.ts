@@ -2469,10 +2469,13 @@ Parameters<typeof hostIdentityDrift>[0] & Parameters<typeof identityDrift>[0] & 
   // THE SAME GATE COVERS BOTH. A machine with no user systemd is not an agent host, so its `~/.claude`
   // posture is nobody's business either -- and a laptop told "ORG IS IN AUTO MODE" teaches its owner to
   // ignore this command, which would lose the timer finding along with it.
+  // TYPED `Finding[]`: the leaf declares only the fields it sets, and a spread of its narrower type would narrow every consumer's element.
+  const codexDaemonDisagreement: Finding[] = codexClientDaemonDrift({ home: (deps.host ?? homeHostConfig()).home,
+    readCodexConfig: deps.readCodexConfig, ...deps.codexDrift });
   return [...unclassifiedInLiveTree(deps), ...unitDrift(shippedUnitNames(deps).map((u) => unitState(u, deps))),
     ...orphanedUnits(deps), ...supersededHostScripts(deps), ...missingUnitPrograms(deps), ...hostInstallPending(deps), ...unitsWithoutHostVariable(deps),
     ...hostIdentityDrift(deps), ...reviewerDoorDrift(deps), ...identityDrift(deps), ...humanLoginOnHost(deps), ...codexTrustDrift(deps),
-    ...codexClientDaemonDrift({ home: (deps.host ?? homeHostConfig()).home, readCodexConfig: deps.readCodexConfig, ...deps.codexDrift }), ...permissionModeDrift(deps), ...modelEffortDrift(deps), ...pnpmDrift({ repoRoot: REPO_ROOT, ...deps.pnpm })];
+    ...codexDaemonDisagreement, ...permissionModeDrift(deps), ...modelEffortDrift(deps), ...pnpmDrift({ repoRoot: REPO_ROOT, ...deps.pnpm })];
 }
 
 /** @param {string[]} args */
