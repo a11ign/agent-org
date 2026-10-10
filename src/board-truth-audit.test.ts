@@ -10,7 +10,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CLAIM_FRESH_MS, QUESTIONS, TABLE_ROW, boardTruthAudit, boardTruthTable, closesOf, postDaysTable, readBoardFacts } from "./board-truth-audit.ts";
+import { CLAIM_FRESH_MS, DUPLICATE_SIMILARITY, QUESTIONS, TABLE_ROW, boardTruthAudit, boardTruthTable, closesOf, postDaysTable, readBoardFacts, similarity, wordsOf } from "./board-truth-audit.ts";
 import { declaredRowsFromBody } from "./close-rows-for-merged-pr.ts";
 import { boardTruthReading, orgHealthOrders, orgHealthReadings, SIGNALS } from "./org-health.ts";
 import { STALL_UNTOLD_RELEASE_MS } from "./claim-stall.ts";
@@ -242,6 +242,25 @@ test("sibling adoption rows naming different repositories are not near-duplicate
   assert.deepEqual(found({ openRows: [lab(51, "control")], closedRows: [{ ...closed, title: lab(50, "lab").title.replace("lab stability", "control stability") }] }, QUESTIONS.DUPLICATE), [], "a11ign/lab against a11ign/control");
 });
 
+/** The titles the work gate files from one template (`class-repeat.ts`): a11ign#4833 and a11ign#4623 as they stood on 2026-10-10. @param {string} id */
+const classRepeatTitle = (id: string) => `Failure class ${id} repeated: make its guard stop it everywhere`;
+
+test("class-repeat titles of different failure classes are not near-duplicates (agent-org#671)", () => {
+  const [handReroute, mainRed] = [row(4623, ["ready"], { title: classRepeatTitle("hand-reroute") }), row(4833, ["ready"], { title: classRepeatTitle("main-red") })];
+  // POSITIVE CONTROL for the line below: the pair is 10 words of 12 in common, over `DUPLICATE_SIMILARITY`, so the empty result is the id rule and not a short title.
+  assert.ok(similarity(wordsOf(mainRed.title), wordsOf(handReroute.title)) >= DUPLICATE_SIMILARITY, "the two real titles clear the word threshold on their own");
+  assert.deepEqual(found({ openRows: [mainRed, handReroute] }, QUESTIONS.DUPLICATE), [], "#4833 and #4623 are two rows for two classes");
+  assert.deepEqual(found({ openRows: [handReroute], closedRows: [{ ...mainRed, state: "CLOSED", stateReason: "COMPLETED" }] }, QUESTIONS.DUPLICATE), [], "against a closed row of another class");
+  // the same class id is still one row: the later of two is the duplicate
+  assert.deepEqual(found({ openRows: [mainRed, row(4834, ["ready"], { title: classRepeatTitle("main-red") })] }, QUESTIONS.DUPLICATE), [4834]);
+  assert.deepEqual(found({ openRows: [mainRed, row(4834, ["ready"], { title: classRepeatTitle("Main-Red") })] }, QUESTIONS.DUPLICATE), [4834], "a class id is compared lower-cased");
+  // a title not of the form is compared by words alone, whether or not the other title is of it
+  const notOfTheForm = (number: number, title: string) => row(number, ["ready"], { title });
+  assert.deepEqual(found({ openRows: [mainRed, notOfTheForm(4835, "Failure class main-red has repeated: make its guard stop it everywhere")] }, QUESTIONS.DUPLICATE), [4835], "only one title carries an id: words decide");
+  const plain = "Make the failure class guard stop it everywhere once the row repeated";
+  assert.deepEqual(found({ openRows: [notOfTheForm(4836, plain), notOfTheForm(4837, `${plain} again`)] }, QUESTIONS.DUPLICATE), [4837], "neither title carries an id: words decide");
+});
+
 test("a fact that could not be read is UNREAD and never counted as agreeing", () => {
   const audit = boardTruthAudit(facts({ closedRows: null, mergedPrs: null, liveSessions: null, waitFacts: null }));
   assert.deepEqual(audit.unread.sort(), [QUESTIONS.CLOSER_MERGED, QUESTIONS.DUPLICATE, QUESTIONS.NO_CLAIMANT, QUESTIONS.WAIT_TRUE].sort());
@@ -292,15 +311,15 @@ test("the reader: a failed closed-row or merged-PR read is UNREAD (null), a part
     return JSON.stringify(args[0] === "pr" ? [{ number: 900, body: "Closes #10" }] : [{ number: 10, labels: [{ name: "ready" }] }]);
   };
   const standing = [{ label: "ceo", status: "idle" }, { label: "orchestrator", status: "idle" }, { label: "worker-11", status: "working" }];
-  const read = readBoardFacts("a/b", { run, agents: () => standing, now: NOW });
+  const read = readBoardFacts("a/b", { run, agents: () => standing, now: NOW, trackers: [] });
   assert.equal(read.closedRows, null);
   assert.deepEqual(read.mergedPrs, [{ number: 900, body: "Closes #10" }]);
   assert.deepEqual(read.liveSessions, ["ceo", "orchestrator", "worker-11"]);
   assert.equal(read.waitFacts, null, "the wait facts are the tick's, so they are unread here");
   assert.ok(calls.filter((args) => args[0] !== "api").every((args) => args.slice(-2).join(" ") === "--repo a/b"));
   assert.deepEqual(Object.keys(read.roadmaps ?? {}), ["10"], "the one `Roadmap` read is aliased by row, and its answer is read");
-  assert.equal(readBoardFacts("a/b", { run, agents: () => [{ label: "worker-11", status: "working" }], now: NOW }).liveSessions, null, "no standing pane is not a listing of the org");
-  assert.equal(readBoardFacts("a/b", { run, agents: () => null, now: NOW }).liveSessions, null);
+  assert.equal(readBoardFacts("a/b", { run, agents: () => [{ label: "worker-11", status: "working" }], now: NOW, trackers: [] }).liveSessions, null, "no standing pane is not a listing of the org");
+  assert.equal(readBoardFacts("a/b", { run, agents: () => null, now: NOW, trackers: [] }).liveSessions, null);
   assert.throws(() => readBoardFacts("a/b", { run: () => { throw new Error("HTTP 502"); }, agents: () => null }), /502/);
 });
 
@@ -363,8 +382,9 @@ test("tick: the open rows are the tick's own (no second open-list read), and a c
   const calls: any[] = [];
   const run = (args: string[]) => { calls.push(args); return "[]"; };
   boardTruthNow({ openRowsRead: [tickRow(10, ["ready"])], waitFacts: null, now: NOW }, wire({ run }));
-  const lists = calls.filter((args) => args[0] !== "api");
-  assert.equal(calls.length - lists.length, 1, "and ONE aliased `Roadmap` read for the 10 rows, not a request per row");
+  // the tick's own repository only: a second declared tracker (the ambient project's) is read beside it and has its own open-list read
+  const lists = calls.filter((args) => args[0] !== "api" && args.at(-1) === "a/b");
+  assert.equal(calls.filter((args) => args[0] === "api").length, 1, "and ONE aliased `Roadmap` read for the 10 rows, not a request per row");
   assert.ok(lists.length > 0 && lists.every((args) => args.includes("--state") && ["closed", "merged"].includes(args[args.indexOf("--state") + 1])), JSON.stringify(calls));
   const closedRead = calls.find((args) => args.includes("closed"));
   assert.ok(closedRead && !/body/.test(closedRead[closedRead.indexOf("--json") + 1]), "the closed rows ask for no body");
@@ -495,7 +515,7 @@ test("the standalone read asks for blockedBy, so the seventh question is read th
 const HOME_TRACKER = { key: "", repo: "a/home" };
 const ORG_TRACKER = { key: "agent-org", repo: "a/org", codeRepo: "a/org-code" };
 /** A `gh` fake answering by the `--repo` it is aimed at: `rowsOf` maps a repository to the open rows it holds, and a repository in `refuse` throws on every read. */
-const gh = (rowsOf: Record<string, any[]>, refuse: string[] = []) => (args: string[]) => {
+const fakeGh = (rowsOf: Record<string, any[]>, refuse: string[] = []) => (args: string[]) => {
   if (args[0] === "api") return roadmapRead(args);
   const repo = args[args.indexOf("--repo") + 1];
   if (refuse.includes(repo)) throw new Error(`HTTP 502 from ${repo}`);
@@ -505,7 +525,7 @@ const gh = (rowsOf: Record<string, any[]>, refuse: string[] = []) => (args: stri
 /** A complete herdr listing (standing panes present), so the live sessions are READ and a test of another question is not muddied by that one being unread. */
 const ORG_SEATS = [{ label: "ceo", status: "idle" }, { label: "orchestrator", status: "idle" }, { label: "worker-11", status: "working" }];
 const twoTrackers = (rowsOf: Record<string, any[]>, refuse = ([] as string[])) =>
-  readBoardFacts("a/home", { run: gh(rowsOf, refuse), agents: () => ORG_SEATS, now: NOW, trackers: [HOME_TRACKER, ORG_TRACKER],
+  readBoardFacts("a/home", { run: fakeGh(rowsOf, refuse), agents: () => ORG_SEATS, now: NOW, trackers: [HOME_TRACKER, ORG_TRACKER],
     openRows: rowsOf["a/home"] ?? [], waitFacts: { items: {} } });
 
 test("#4080 CONTROL: with ONE declared tracker the table is the one it always printed (a recorded snapshot), and no other tracker is asked", () => {
