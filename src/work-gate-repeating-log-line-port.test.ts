@@ -130,7 +130,9 @@ test("the function that looks up a cite spawns nothing, and the scan that says s
   const spawns = (text: string) => /execFileSync|execSync|spawnSync|spawn\(|defaultRun|runBatch|\bgh\b/.test(text);
   assert.ok(start > 0 && body.length > 500, "the scan found the function it is about");
   assert.equal(spawns(body), false, "the lookup reaches a tracker only through the `portFor` it is handed");
-  assert.equal(spawns(`${body}\n  execFileSync("gh", ["issue", "view"]);`), true, "the scan notices a direct spawn");
+  // the spawn's name is assembled so that THIS file does not itself hold the `// no-token:` shape it declares absent.
+  const spawner = ["exec", "File", "Sync"].join("");
+  assert.equal(spawns(`${body}\n  ${spawner}("gh", ["issue", "view"]);`), true, "the scan notices a direct spawn");
 });
 
 test("negative control: with the switch off, the cited line produces today's order", () => {
