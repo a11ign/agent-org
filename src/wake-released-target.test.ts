@@ -45,10 +45,11 @@ const namedOrder = (session: string) => ({ session, cause: "answer-label-unexpla
 
 test("#3568 CONTROL: with no seat released, a pool order goes to the first free instance, which is typed its order unchanged", () => {
   const h = herdr();
-  const got = send(h.run)([poolOrder(3536)], idle(RELEASED, LIVE));
+  // The order is for the row `worker-2702` is the spare of: a spare is typed only its own row (#459, "one instance, one row").
+  const got = send(h.run)([poolOrder(2702)], idle(RELEASED, LIVE));
   assert.deepEqual(got.refused, []);
   assert.equal(h.prompted(RELEASED).length, 1, "the live instance is sent its order (an empty run would pass every assertion below, so this one has to fail it)");
-  assert.match(got.sent[0], new RegExp(`^${RELEASED} <- engineers/ready-row-unclaimed/3536`));
+  assert.match(got.sent[0], new RegExp(`^${RELEASED} <- engineers/ready-row-unclaimed/2702`));
 });
 
 test("#3568 a seat released earlier in the tick receives no herdr call at all, and its ready-row-unclaimed order goes to a free engineer", () => {
@@ -109,14 +110,15 @@ test("#3568 relaneTarget CONTROL: a live-but-busy seat inside the bound is still
 test("#3568 NO SECOND CALL: after ONE agent_not_found for a seat, later orders for it -- pool and named -- are handled without calling herdr again", () => {
   const h = herdr([RELEASED]);
   // The seat died BETWEEN the roster read and the prompt, so the tick has not been told: the first order pays the one refusal.
-  const got = send(h.run)([poolOrder(3536), namedOrder(RELEASED), poolOrder(3559)], idle(RELEASED, LIVE));
+  // Each pool order is for the row its spare is the spare of (#459): 2702's goes to the seat that dies, 3536's to the one that is there.
+  const got = send(h.run)([poolOrder(2702), namedOrder(RELEASED), poolOrder(3536)], idle(RELEASED, LIVE));
   const calls = h.about(RELEASED);
   assert.ok(calls.length >= 1, "the first order DID reach herdr -- done-when 4: a death between the read and the prompt stays one refusal");
   const firstRefusal = calls.length;
   assert.equal(got.refused.filter((l) => l.includes("agent_not_found")).length, 1, `one refusal, not one per order: ${JSON.stringify(got.refused)}`);
   assert.equal(h.about(RELEASED).length, firstRefusal, "and every later order for the seat made no further call");
   assert.match(got.settled[0], /^DROPPED worker-2702\/answer-label-unexplained/, "the derived cause for it is dropped");
-  assert.match(got.sent.join("\n"), new RegExp(`${LIVE} <- engineers/ready-row-unclaimed/3559`), "and the next ready row goes to the engineer that is there");
+  assert.match(got.sent.join("\n"), new RegExp(`${LIVE} <- engineers/ready-row-unclaimed/3536`), "and the next ready row goes to the engineer that is there");
   assert.ok(got.goneSeats.has(RELEASED), "the seat is reported gone, so the tick's second delivery does not ask again");
 });
 
