@@ -37,7 +37,8 @@ import { shippedUnits, unitState, unitDrift, driftReport, hostUnitsInstall, syst
   programCandidates, hostIdentityDrift, hostIdentityNotes, hostIdentityInstall, ownedIdentityFiles, reviewerDoorInstall, compileCacheNotes,
   WORKERS_README, HUMAN_ACCOUNT_ALLOWED, compileCacheDrift, declaredCompileCache, PROJECT_UNITS_DIR, shippedUnitText,
   shippedScriptText, leadsListText, modelEffortDrift, sessionModelDrift, sessionModelNotes, lastModelIn,
-  liveClaudeSessions, codexTrustDrift, codexTrustedProjects, OPTIONAL_UNITS, TOOL_ENTRIES, toolForm, LONG_RUNNING_TEMPLATES, unclassifiedEntries, declaredProjectKeys, windowEnd, windowEndNotes, workTickToolForm } from "../host-units.ts";
+  liveClaudeSessions, codexTrustDrift, codexTrustedProjects, OPTIONAL_UNITS, TOOL_ENTRIES, toolForm, LONG_RUNNING_TEMPLATES, unclassifiedEntries, declaredProjectKeys, windowEnd, windowEndNotes, workTickToolForm,
+  autoMemorySeatLabels, seatWrapperNotes } from "../host-units.ts";
 import { DECLARED_CLAUDE_MODELS, PROFILES, CLAUDE_EFFORTS, HAIKU_MODEL_ID, HAIKU_TIER_LABEL } from "../worker-profile.ts";
 import { HostConfigRefusal, homeHostConfig, parseBeforeTick, parseHostConfig, readUnitsDeclaration, renderTemplate, renderedName, templateValues } from "../host-config.ts";
 import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
@@ -2303,7 +2304,14 @@ test("#2332: END TO END -- `host:install` then `host:check --json` on a temp HOM
     writeFileSync(hostFile, JSON.stringify({ ...declared, home, binDir: join(home, ".local/bin"),
       projects: [{ id: declared.primary, checkout: PROJECT_ROOT }],
       gh: { ...declared.gh, workers: join(home, "workers"), leads: join(home, "leads") } }));
-    const env = { PATH: `${bin}:${process.env.PATH}`, HOME: home, AGENT_ORG_HOST: hostFile };
+    // a11ign#4823: the seat wrapper installs into `<home>/.opencode/bin`, and `host:check` NOTES a pane whose PATH does not lead with it, so this
+    // PATH does, as the real `~/.zshenv` does; before the install that directory holds no `claude`, so the control below reads the note.
+    // THE RESOLUTION IS STUBBED, NOT ASKED OF THE MACHINE: `host:check` runs `zsh -c 'command -v claude'`, and a runner without zsh (or without
+    // a `claude`) reads `null` BEFORE and AFTER the install, which made the after-reading fail where the control passed for the wrong reason.
+    // So `zsh` here is `sh` on the PATH this test set, and a `claude` after the wrapper's directory gives the control a real "elsewhere".
+    writeFileSync(join(bin, "zsh"), '#!/bin/sh\n[ "$1" = -c ] && exec /bin/sh -c "$2"\nexit 2\n', { mode: 0o755 });
+    writeFileSync(join(bin, "claude"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const env ={ PATH: `${home}/.opencode/bin:${bin}:${process.env.PATH}`, HOME: home, AGENT_ORG_HOST: hostFile };
     const entry = join(TOOL_ROOT, "src/host-units.ts");
     const run = (...args: string[]) => {
       const done = spawnSync(process.execPath, [entry, ...args], { encoding: "utf8", env });
@@ -2312,11 +2320,22 @@ test("#2332: END TO END -- `host:install` then `host:check --json` on a temp HOM
     };
     const identityFindings = (out: string) => JSON.parse(out).findings
       .filter((f: { unit: string }) => f.unit.startsWith(home) && /\/(gh|workspaces\.txt|README\.md|\.gitconfig)$/.test(f.unit));
-    assert.ok(identityFindings(run("--json").stdout).length >= 3, "before the install: gh, the leads list and the README are all absent");
+    const before = run("--json").stdout;
+    assert.ok(identityFindings(before).length >= 3, "before the install: gh, the leads list and the README are all absent");
+    const shadowNote = (out: string) => JSON.parse(out).notes.some((n: { problem: string }) => /SEAT WRAPPER/.test(n.problem));
+    assert.ok(shadowNote(before), "the control: with no wrapper installed, a pane's shell is told it resolves `claude` elsewhere");
     const install = run("--install");
     assert.match(install.stdout, /installed .*\/\.local\/bin\/gh/);
     const after = JSON.parse(run("--json").stdout);
     assert.deepEqual(identityFindings(JSON.stringify(after)), [], "after the install every identity file matches");
+    assert.equal(shadowNote(JSON.stringify(after)), false, "after the install the pane's shell resolves `claude` to the wrapper, so there is no note");
+    // "COULD NOT BE ASKED" IS ITS OWN READING (and never a clean one): a shell that cannot answer leaves the note up, saying so, even with the wrapper installed.
+    const detailOf = (out: string) => JSON.parse(out).notes.find((n: { problem: string }) => /SEAT WRAPPER/.test(n.problem))?.detail ?? "";
+    const goodZsh = readFileSync(join(bin, "zsh"), "utf8");
+    writeFileSync(join(bin, "zsh"), "#!/bin/sh\nexit 127\n", { mode: 0o755 });
+    assert.match(detailOf(run("--json").stdout), /could not be asked what `claude` resolves to/);
+    writeFileSync(join(bin, "zsh"), goodZsh, { mode: 0o755 });
+    assert.match(detailOf(before), /resolves `claude` to .*\/stub-bin\/claude/, "and the control read a real `claude` elsewhere, not a failure to ask");
     // #3539: THE TEMP PROJECT HOLDS NO ROSTER AND THE TEMP HOME NO HERDR, so `host:check` adds its own `persistent seats: UNKNOWN` note; this test is about the identity files
     // and the compile cache, so the seat note is set aside here and read by `persistent-seat-running.test.ts`.
     const notSeats = <N extends { unit: string }>(notes: N[]) => notes.filter((n) => n.unit !== "persistent seats");
@@ -3119,4 +3138,113 @@ test("#4437: `host:check` REPORTS a CLI and a daemon that disagree -- the check 
   assert.deepEqual(flagged("0.162.0"), [], "CONTROL: the pinned fixture, one build, reads clean");
   assert.equal(flagged("0.157.0").length, 1, "a CLI five releases behind its daemon is one finding");
   assert.match(flagged("0.157.0")[0].detail, /the CLI is 0\.157\.0 and the daemon it talks to is 0\.162\.0/);
+});
+
+// --- a11ign#4823: THE `claude` SEAT WRAPPER'S ROSTER, INSTALL AND SHADOWING --------------------------------------------------------------
+//
+// The wrapper RUNNING is `host-install-claude-wrapper.test.ts`; what is here is what needs `host-units.ts`. THE SEAT LIST IS THE ROSTER'S, the file is
+// installed into the first PATH directory and compared by `host:check`, and a wrapper that is installed and shadowed is a note.
+
+/** A project root whose declaration names `.agent-org/roles` and whose roster holds `live`: what `roleBriefPath` resolves, not a path handed in. */
+function roster(live: object[]): string {
+  const root = tmpDir("claude-wrapper-");
+  mkdirSync(join(root, ".agent-org/roles"), { recursive: true });
+  writeFileSync(join(root, ".agent-org/project.json"), JSON.stringify({ roles: { dir: ".agent-org/roles" } }));
+  writeFileSync(join(root, ".agent-org/roles/sessions.json"), JSON.stringify({ live, retired: [] }));
+  return root;
+}
+
+test("#4823: the seats are the roster's standing entries minus ceo: not spare, not a family, and a name herdr could label", () => {
+  const projectRoot = roster([
+    { name: "ceo", role: "ceo" }, { name: "product-manager" }, { name: "orchestrator" }, { name: "liaison", persistent: true },
+    { name: "worker-<n>", role: "engineer", spare: true, family: { prefix: "worker-", from: 4 } },
+    { name: "reviewer", spare: true }, { name: "has space" }, { name: "a;rm" }, { role: "nameless" },
+  ]);
+  assert.deepEqual(autoMemorySeatLabels({ projectRoot }), ["product-manager", "orchestrator", "liaison"]);
+});
+
+test("#4823: a project that declares no roles has no seats ([]), and one whose declaration or roster cannot be read is NULL, which is not []", () => {
+  const dir = tmpDir("claude-wrapper-");
+  mkdirSync(join(dir, "none/.agent-org"), { recursive: true });
+  writeFileSync(join(dir, "none/.agent-org/project.json"), JSON.stringify({ schema: 1 }));
+  assert.deepEqual(autoMemorySeatLabels({ projectRoot: join(dir, "none") }), [], "the declaration is readable and has no `roles`: it says it has none");
+  assert.equal(autoMemorySeatLabels({ projectRoot: join(dir, "absent") }), null, "no declaration at all is a reading that could not be made");
+  const noRoster = roster([]);
+  rmSync(join(noRoster, ".agent-org/roles/sessions.json"));
+  assert.equal(autoMemorySeatLabels({ projectRoot: noRoster }), null, "roles are declared and the roster is not there");
+  writeFileSync(join(noRoster, ".agent-org/roles/sessions.json"), "{ not json");
+  assert.equal(autoMemorySeatLabels({ projectRoot: noRoster }), null, "malformed");
+  assert.deepEqual(autoMemorySeatLabels({ projectRoot: roster([]) }), [], "the control: a roster that names no standing seat is empty, and readable");
+});
+
+test("#4823: an unreadable roster renders no wrapper, and the install refuses rather than write one that switches nobody", () => {
+  const dir = tmpDir("claude-wrapper-");
+  const deps = { host: { ...homeHostConfig(), binDir: join(dir, "bin") }, projectRoot: join(dir, "absent") };
+  assert.equal(shippedScriptText("claude", deps as never), null);
+  assert.throws(() => hostIdentityInstall({ ...deps, scriptDir: join(dir, "bin"), seatDir: join(dir, "seat"), workersDir: join(dir, "w"), leadsDir: join(dir, "l"),
+    out: () => {} } as never), /shipped copy could not be read/);
+});
+
+function where(projectRoot = roster([{ name: "ceo" }, { name: "product-manager" }, { name: "liaison" }])) {
+  const root = tmpDir("claude-wrapper-");
+  const binDir = join(root, "bin");
+  // The credential helper is a person's dotfile and `hostIdentityDrift` reads it: a fixture that is already right keeps its finding out of these.
+  const gitConfigPath = join(root, "gitconfig");
+  writeFileSync(gitConfigPath, `[credential "https://github.com"]\n\thelper = \n\thelper = !${binDir}/gh auth git-credential\n`);
+  return { host: { ...homeHostConfig(), binDir }, projectRoot, scriptDir: binDir, seatDir: join(root, "seat"), workersDir: join(root, "workers"),
+    leadsDir: join(root, "leads"), gitConfigPath, out: () => {} };
+}
+
+test("#4823: the wrapper is shipped by the tool and rendered with the host's binDir and the roster's seats, no placeholder left", () => {
+  assert.ok(TOOL_ENTRIES.includes("claude"));
+  assert.ok(existsSync(join(SHIPPED_DIR, "claude")));
+  const deps = where();
+  const text = shippedScriptText("claude", deps as never);
+  assert.ok(text !== null && !text.includes("@@"), "a placeholder no value fills would have been refused");
+  assert.ok(text.includes(`REAL=\${A11Y_CLAUDE_REAL:-${deps.host.binDir}/claude}`));
+  assert.ok(text.includes("SEATS=${A11Y_CLAUDE_SEATS:-product-manager liaison}"));
+});
+
+test("#4823: `host:install` writes the rendered wrapper, executable, into seatDir; `host:check` is clean, then DIVERGED, then NOT INSTALLED", () => {
+  const deps = where();
+  hostIdentityInstall(deps as never);
+  const target = join(deps.seatDir, "claude");
+  assert.equal(readFileSync(target, "utf8"), shippedScriptText("claude", deps as never));
+  assert.ok((statSync(target).mode & 0o111) === 0o111);
+  const claude = (found: { unit: string, problem: string }[]) => found.filter((f) => f.unit === target);
+  assert.deepEqual(hostIdentityDrift(deps as never), [], "the control: the installed host reads clean");
+  writeFileSync(target, "#!/bin/sh\nexec /bin/true\n");
+  assert.deepEqual(claude(hostIdentityDrift(deps as never)).map((f) => f.problem), ["DIVERGED"]);
+  rmSync(target);
+  assert.deepEqual(claude(hostIdentityDrift(deps as never)).map((f) => f.problem), ["NOT INSTALLED"]);
+});
+
+test("#4823: a roster that moves is a DIVERGED wrapper, since the seat list is baked into the file", () => {
+  const deps = where();
+  hostIdentityInstall(deps as never);
+  const moved = { ...deps, projectRoot: roster([{ name: "product-manager" }, { name: "liaison" }, { name: "newcomer" }]) };
+  assert.deepEqual(hostIdentityDrift(moved as never).map((f) => f.problem), ["DIVERGED"]);
+});
+
+test("#4823: a caller that moved scriptDir and named no seatDir is not made to own the real home's wrapper", () => {
+  const { seatDir, ...fixture } = where();
+  const labels = (d: object) => ownedIdentityFiles(d as never).map((f) => f.label);
+  assert.ok(!labels(fixture).includes("claude seat wrapper"));
+  assert.ok(labels({ ...fixture, seatDir }).includes("claude seat wrapper"), "the control: named, it is owned");
+  const { scriptDir, ...production } = fixture;
+  void scriptDir;
+  assert.ok(ownedIdentityFiles(production as never).some((f) => f.label === "claude seat wrapper" && f.target.endsWith("/.opencode/bin/claude")),
+    "the control: with nothing moved it is the real home's first PATH directory");
+});
+
+test("#4823: a pane that resolves claude to the symlink is reported; one that resolves to the wrapper is clean; one that could not be asked is said so", () => {
+  const seatDir = "/h/.opencode/bin";
+  assert.deepEqual(seatWrapperNotes({ seatDir, resolve: () => `${seatDir}/claude` }), []);
+  const shadowed = seatWrapperNotes({ seatDir, resolve: () => "/h/.local/bin/claude" });
+  assert.equal(shadowed.length, 1);
+  assert.match(shadowed[0].detail, /resolves `claude` to \/h\/\.local\/bin\/claude/);
+  const unknown = seatWrapperNotes({ seatDir, resolve: () => null });
+  assert.equal(unknown.length, 1);
+  assert.match(unknown[0].detail, /could not be asked/);
+  assert.doesNotMatch(unknown[0].detail, /resolves `claude` to/);
 });

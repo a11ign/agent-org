@@ -1,0 +1,62 @@
+#!/bin/bash
+# claude seat wrapper (a11ign#4823, follow-up of a11ign#3663).
+#
+# WHY. herdr RESTORES a standing seat as a bare `claude --resume <id>` and nothing else (its Claude integration keeps the session
+# id and no flags), so a launch flag typed into a pane does not outlive a herdr restart. Measured 2026-10-09 12:32:42: all four
+# seats came back in one second and the `autoMemoryEnabled:false` given to three of them on 2026-10-05 was gone. The cost is read
+# in #3663: the restored seats' first-turn cache write sat near 31.9k against ~29.5k while it was off.
+#
+# WHAT. When the workspace this runs in is a standing seat other than `ceo`, `--settings '{"autoMemoryEnabled":false}'` is added
+# to the argument list. Routing is by herdr workspace id, as `gh` is, which survives a restart; the seat NAME is the workspace's
+# herdr label (`herdr workspace get`), so no pane id is typed anywhere. Everything else is exec'd unchanged:
+#
+#   - `ceo` is NOT a seat here (#3663, Done-when 1): it carries what a /clear would drop, and its index is cut instead.
+#   - A call that already names `--settings` passes through with exactly one: a spawned worker carries `worker-settings.json`
+#     from `agentArgs` and has a workspace id too. That is checked BEFORE herdr is asked, so a worker costs no socket call.
+#   - A call whose first argument is not a flag is a prompt or a subcommand (`update`, `mcp`, `doctor`), which an appended
+#     `--settings` could break; and a `--` ends the options, so nothing can be appended after it.
+#   - A herdr that does not answer, an answer for another workspace or an unexpected label means NO flag: the line says who the
+#     seat is, and an unflagged seat is the state this file starts from, where a guessed flag could land on `ceo`.
+#
+# THE SEAT LIST IS RENDERED, NOT TYPED: `@@seatLabels@@` is the roster's (`sessions.json`) live entries that are not `spare`
+# and not a family, minus `ceo`, written by `host:install` and compared by `host:check` (DIVERGED once the roster moves).
+#
+# WHERE IT RUNS FROM. `~/.local/bin/claude` is a symlink into `~/.local/share/claude/versions/<v>` which the CLI's self-update
+# rewrites, so a wrapper installed AT that path would be replaced by the next update. This file is installed in the first directory
+# on a pane's PATH (`~/.opencode/bin`, put there by `~/.zshenv`), which nothing rewrites, and it execs the symlink, so an update
+# is followed. `host:check` reports a pane's shell resolving `claude` to anything else.
+#
+# `exec -a claude` keeps argv[0] as the restore wrote it, so `ps` and the readers of `claude --resume <id>` see what they saw.
+# The two paths below are overridable so a test can RUN this file against a stub; an explicit `--settings` already wins here.
+REAL=${A11Y_CLAUDE_REAL:-@@binDir@@/claude}
+SEATS=${A11Y_CLAUDE_SEATS:-@@seatLabels@@}
+SETTINGS='{"autoMemoryEnabled":false}'
+
+if [ "$REAL" -ef "$0" ]; then
+  echo "claude: ${REAL} is this wrapper, so it would exec itself. Install the wrapper ahead of the real binary on PATH, never over it." >&2
+  exit 127
+fi
+
+# Succeeds when this workspace is one of the seats that get the flag. `herdr` is asked once, and for no longer than 5 seconds.
+is_flagged_seat() {
+  [ -n "$SEATS" ] && [ -n "${HERDR_WORKSPACE_ID:-}" ] || return 1
+  herdr_out=$(timeout 5 "${HERDR_BIN_PATH:-herdr}" workspace get "$HERDR_WORKSPACE_ID" 2>/dev/null) || return 1
+  [ "$(printf %s "$herdr_out" | sed -n 's/.*"workspace_id": *"\([^"]*\)".*/\1/p')" = "$HERDR_WORKSPACE_ID" ] || return 1
+  label=$(printf %s "$herdr_out" | sed -n 's/.*"label": *"\([^"]*\)".*/\1/p')
+  case "$label" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
+  case " $SEATS " in *" $label "*) return 0 ;; esac
+  return 1
+}
+
+# Succeeds when the arguments may take a trailing `--settings`: they open with a flag, name no settings and hold no `--`.
+may_take_settings() {
+  [ "$#" -eq 0 ] || case "$1" in -*) ;; *) return 1 ;; esac
+  for a; do
+    case "$a" in --settings|--settings=*|--) return 1 ;; esac
+  done
+}
+
+if may_take_settings "$@" && is_flagged_seat; then
+  exec -a claude "$REAL" "$@" --settings "$SETTINGS"
+fi
+exec -a claude "$REAL" "$@"

@@ -376,7 +376,8 @@
         "api rest": 1
       },
       "labels": [
-        "$HAIKU_TIER_LABEL"
+        "$HAIKU_TIER_LABEL",
+        "$SEAT_LABEL"
       ],
       "parsesCloses": false
     },
