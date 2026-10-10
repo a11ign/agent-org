@@ -10,6 +10,9 @@ type Finding = { unit: string, problem: string, detail: string, manualFix?: bool
 /** The finding's problem when the client and the daemon are two builds that disagree on a version or a default no config declares. */
 export const CLIENT_DAEMON_DISAGREE = "CODEX CLIENT AND DAEMON DISAGREE";
 
+/** The command that owns every Codex and Claude Code version move (agent-org#462): the finding names it, so whoever reads the drift knows what to run. */
+export const CODEX_UPDATE_OWNER = "`agent-org agent-tool:update`";
+
 /** How long one read of `codex` may take: the check runs under the tick, and a wedged daemon must not hold it. */
 const CODEX_READ_TIMEOUT_MS = 10_000;
 
@@ -174,7 +177,8 @@ export function codexClientDaemonDrift({ home, run = runProgram, readCodexConfig
     findings.unshift({ unit, problem: CLIENT_DAEMON_DISAGREE, manualFix: true,
       detail: `${parts.join("; ")}. A session that meets a default the other build does not has stopped on a dialog before (#4437). `
         + `This check edits nothing: declaring a flag is a ruling. ${lines.length === 0 ? "Update the CLI to the daemon's release (or the daemon to the CLI's)."
-          : `Once ruled, add ${lines.join(", ")} under \`[features]\` in \`${config}\`, the value the client already runs with.`}` });
+          : `Once ruled, add ${lines.join(", ")} under \`[features]\` in \`${config}\`, the value the client already runs with.`} `
+        + `${CODEX_UPDATE_OWNER} is the one owner of a version move (a daemon updating itself outside it is this drift), and it moves both.` });
   }
   return findings;
 }
