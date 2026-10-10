@@ -35,6 +35,7 @@ import {
   RESTART_RESEND_WINDOW_MS, INTERRUPTED_TEXT, THRASH_TEXT, gitRun, gitInvocation, newestOwnCommit, statMtime, pathExists,
 } from "./claim-stall.ts";
 import { sandboxGitEnv } from "./lib/git-env.ts";
+import { WORKER_STATE_DIR, writeDeclaration, type Declaration } from "./worker-state.ts";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -118,13 +119,15 @@ function tickWith(world: World, comments: Comment[], { rows = [row(2407)], memor
   elsewhere = undefined as import("./claim-stall.ts").ElsewherePrs | undefined,
   // `null` by default, same as `restartAt`: the gate is asked about the row's SESSION only when a test gives a listing,
   // never against the real `herdr` on whatever host runs the suite (`agentsFor`'s own doc says why -- CI must not depend on it).
-  agents = null as Agent[] | null } = {}) {
+  agents = null as Agent[] | null,
+  // #460: where the gate reads declarations from; `/state` does not exist, which reads as "nobody has declared" (the regime is ON).
+  stateDir = "/state" } = {}) {
   const h = host(world, now);
   const log: string[] = [];
   const claimed = rows.map((r) => (r.number === 2407 && blockedBy.length > 0
     ? { ...r, blockedBy: { nodes: blockedBy.map((n) => ({ number: n, state: "OPEN" })) } } : r));
   const orders = claimStallTick({ rows: claimed, claimedComments: claimed.map((r) => ({ number: r.number, comments })), openPrs: prs,
-    mergedPrs: merged, ...(elsewhere === undefined ? {} : { elsewhere }), io: h.io, repo: REPO, now, restartAt, agents, stateDir: "/state", ledger: () => ledger,
+    mergedPrs: merged, ...(elsewhere === undefined ? {} : { elsewhere }), io: h.io, repo: REPO, now, restartAt, agents, stateDir, ledger: () => ledger,
     log: (l: string) => log.push(l), read: () => JSON.parse(JSON.stringify(memory)), write: (_p: string, s: object) => {
       for (const k of Object.keys(memory)) delete memory[k];
       Object.assign(memory, s);
@@ -2092,11 +2095,41 @@ test("#4017 CONTROLS: the same holder is still nudged when its pull request is o
   assert.equal(oldAndNew.kind, "pr-owned", "a holder that opened a second pull request ten minutes ago has just MOVED");
 });
 
-test("#4017 the tick: a young pull request of an idle holder sends nothing, and the same one aged past the interval sends the idle nudge", () => {
+test("#4017 the tick: a young pull request of an idle holder sends nothing while the state directory cannot be read, and the same one aged past the interval sends the idle nudge", () => {
+  // #460 reversed the grace for a gate that CAN read declarations (below): `/state/worker-state` being a FILE is the "could not ask" case, where the older rules stay.
+  const unreadable = mkdtempSync(join(tmpdir(), "claim-stalled-unreadable-"));
+  writeFileSync(join(unreadable, WORKER_STATE_DIR), "a file where the directory should be");
+  try {
+    const memory = () => ({ 2407: { session: "worker-7", idleSince: ago(50) } });
+    const young = tickWith({}, [claim(600)], { agents: IDLE_HOLDER, memory: memory(), stateDir: unreadable, prs: [{ ...OPEN_PR, createdAt: iso(ago(54)) }] });
+    assert.deepEqual(young.orders, [], "a pull request opened 54 minutes ago is the review the org owes, not the holder stalling");
+    const aged = tickWith({}, [claim(600)], { agents: IDLE_HOLDER, memory: memory(), stateDir: unreadable, prs: [{ ...OPEN_PR, createdAt: iso(ago(N_MIN + 1)) }] });
+    assert.equal(aged.orders.length, 1, "CONTROL: the same fixture a minute past the interval still reaches the holder");
+    assert.match(aged.orders[0].prompt, /IDLE FOR \d+ MINUTES WITH NO WAIT THE ORG CAN READ/);
+  } finally {
+    rmSync(unreadable, { recursive: true, force: true });
+  }
+});
+
+test("#460 the tick: a young pull request no longer excuses an idle holder that declared nothing; `waiting-review` for THAT pull request does, and the nudge says which", () => {
   const memory = () => ({ 2407: { session: "worker-7", idleSince: ago(50) } });
-  const young = tickWith({}, [claim(600)], { agents: IDLE_HOLDER, memory: memory(), prs: [{ ...OPEN_PR, createdAt: iso(ago(54)) }] });
-  assert.deepEqual(young.orders, [], "a pull request opened 54 minutes ago is the review the org owes, not the holder stalling");
-  const aged = tickWith({}, [claim(600)], { agents: IDLE_HOLDER, memory: memory(), prs: [{ ...OPEN_PR, createdAt: iso(ago(N_MIN + 1)) }] });
-  assert.equal(aged.orders.length, 1, "CONTROL: the same fixture a minute past the interval still reaches the holder");
-  assert.match(aged.orders[0].prompt, /IDLE FOR \d+ MINUTES WITH NO WAIT THE ORG CAN READ/);
+  const young = [{ ...OPEN_PR, createdAt: iso(ago(54)) }];
+  const declared = (declaration: Omit<Declaration, "session" | "at">) => {
+    const dir = mkdtempSync(join(tmpdir(), "claim-stalled-declared-"));
+    writeDeclaration(`${dir}/${WORKER_STATE_DIR}`, { session: "worker-7", at: ago(30), ...declaration });
+    return dir;
+  };
+  const waiting = declared({ state: "waiting-review", pr: { number: 9 } });
+  const other = declared({ state: "waiting-review", pr: { number: 10 } });
+  try {
+    const none = tickWith({}, [claim(600)], { agents: IDLE_HOLDER, memory: memory(), prs: young });
+    assert.equal(none.orders.length, 1, "nothing declared: the 54-minute-old pull request is not an excuse any more");
+    assert.match(none.orders[0].prompt, /YOU DECLARED NOTHING/);
+    assert.deepEqual(tickWith({}, [claim(600)], { agents: IDLE_HOLDER, memory: memory(), prs: young, stateDir: waiting }).orders, [], "CONTROL: declared for #9, which is open and awaiting review");
+    const wrong = tickWith({}, [claim(600)], { agents: IDLE_HOLDER, memory: memory(), prs: young, stateDir: other });
+    assert.equal(wrong.orders.length, 1, "a declaration naming a pull request the holder does not have is nobody's wait");
+  } finally {
+    rmSync(waiting, { recursive: true, force: true });
+    rmSync(other, { recursive: true, force: true });
+  }
 });

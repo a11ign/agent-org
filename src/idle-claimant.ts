@@ -18,6 +18,7 @@
 import { listingIsComplete } from "./herdr-agents.ts";
 import { ANSWER_PREFIX, NEEDS_CHAIRMAN_LABEL } from "./project-vocabulary.ts";
 import { reviewerSeat } from "./review-attribution.ts";
+import type { DeclarationReading } from "./worker-state.ts";
 
 const MINUTE_MS = 60_000;
 
@@ -135,7 +136,15 @@ export function isStoppedHolder({ built, prs }: { built?: boolean; prs?: IdlePr[
   return built === true && (prs ?? []).length === 0;
 }
 
-export type IdleReading = { kind: "unknown", why: string } | { kind: "not-idle", status: string | null } | { kind: "waiting", fields: string[] } | { kind: "watching", since: number, idleMs: number } | { kind: "stall", since: number, idleMs: number };
+export type IdleReading = { kind: "unknown", why: string } | { kind: "not-idle", status: string | null } | { kind: "waiting", fields: string[] } | { kind: "watching", since: number, idleMs: number } | { kind: "stall", since: number, idleMs: number, declared?: DeclarationReading };
+
+/**
+ * THE PULL-REQUEST KINDS THAT ARE INFERENCES, which a declared state replaces (#460, class `worker-state-ambiguous`). A pending check, a reviewer pane and
+ * an approval are what a worker that `waiting-ci` / `waiting-review` would be looking at, and a worker that stopped mid-task on "Next I'll ..." with its pull
+ * request open looks identical to it from them. Under the declaration regime they no longer excuse an idle worker; the declaration does, while the
+ * thing it names holds. `awaiting-evidence` and `pr-held` stay: each is a LABEL the worker itself set, which is a declaration already.
+ */
+export const INFERRED_PR_KINDS = Object.freeze(["review-requested", "checks-pending", "review-approved"]);
 
 /**
  * IS THIS HOLDER AN IDLE CLAIMANT WITH NO DECLARED WAIT?
@@ -145,24 +154,33 @@ export type IdleReading = { kind: "unknown", why: string } | { kind: "not-idle",
  * `blocked` never trip it. Then the fields -- ANY ONE clears it. Only then the clock: `idleSince` is the first tick of an unbroken run of
  * idle readings (the caller keeps it; `herdr` reports a status and never since when), and a holder idle for less than N is `watching`.
  *
- * @param {{ session: string | null, waitKinds?: string[], prs?: IdlePr[], built?: boolean }} facts `waitKinds` are the ROW's, already decided by the gate;
+ * THE DECLARATION REGIME (#460) is ON only when the caller passes `declared` (the gate does, for a claim that names a branch; every other caller, and a
+ * `Claimed-nothing:` claim, reads as before). Under it an idle holder is excused by an explicit field (a row's `blocked-by`, `answer:` ..., a PR's `hold:` or
+ * evidence label) or by a declaration that is FRESH and still true; the inferred PR kinds are not an excuse, and the clock is M whether or not a pull request
+ * is open. A holder that stopped with its pull request up is exactly what the old reading could not see.
+ *
+ * @param {{ session: string | null, waitKinds?: string[], prs?: IdlePr[], built?: boolean, declared?: DeclarationReading }} facts `waitKinds` are the ROW's, already decided by the gate;
  *   `built` turns the stopped clock on ({@link isStoppedHolder}) and is OFF for a caller that does not say, so a reading made without it is N's, as it was
  * @param {{ now: number, agents?: Agent[] | null, idleSince?: number | null }} ctx
  * @returns {IdleReading}
  */
-export function idleClaimantReading(facts: { session: string | null; waitKinds?: string[]; prs?: IdlePr[]; built?: boolean; }, ctx: { now: number; agents?: Agent[] | null; idleSince?: number | null; }): IdleReading {
+export function idleClaimantReading(facts: { session: string | null; waitKinds?: string[]; prs?: IdlePr[]; built?: boolean; declared?: DeclarationReading; }, ctx: { now: number; agents?: Agent[] | null; idleSince?: number | null; }): IdleReading {
   const agents = ctx.agents ?? null;
   if (agents === null) return { kind: "unknown", why: "herdr could not be asked" };
   if (!listingIsComplete(agents)) return { kind: "unknown", why: "the listing lacks a standing pane, so it is not the whole org" };
   const status = agents.find((a) => a.label === facts.session)?.status ?? null;
   if (status === null || !IDLE_STATUSES.includes(status)) return { kind: "not-idle", status };
-  const fields = [...(facts.waitKinds ?? []), ...(facts.prs ?? []).flatMap((pr) => prWaitKinds(pr, agents))];
+  const regime = facts.declared !== undefined && facts.built === true;
+  if (regime && facts.declared?.kind === "excused") return { kind: "waiting", fields: [`declared:${facts.declared.state}`] };
+  const prKinds = (facts.prs ?? []).flatMap((pr) => prWaitKinds(pr, agents)).filter((kind) => !regime || !INFERRED_PR_KINDS.includes(kind));
+  const fields = [...(facts.waitKinds ?? []), ...prKinds];
   if (fields.length > 0) return { kind: "waiting", fields: [...new Set(fields)] };
   const since = ctx.idleSince ?? ctx.now;
   const idleMs = ctx.now - since;
   // TWO CONSECUTIVE TICKS IS BUILT IN: `idleSince` is the first idle tick, so that tick reads `idleMs` 0 and a stall needs a later one.
-  const limit = isStoppedHolder({ built: facts.built, prs: facts.prs }) ? STOPPED_CLAIMANT_MS : IDLE_CLAIMANT_MS;
-  return idleMs >= limit ? { kind: "stall", since, idleMs } : { kind: "watching", since, idleMs };
+  const limit = regime || isStoppedHolder({ built: facts.built, prs: facts.prs }) ? STOPPED_CLAIMANT_MS : IDLE_CLAIMANT_MS;
+  if (idleMs < limit) return { kind: "watching", since, idleMs };
+  return regime ? { kind: "stall", since, idleMs, declared: facts.declared } : { kind: "stall", since, idleMs };
 }
 
 /** @returns {string} every wait a row can carry, spelled as the holder writes it */
@@ -204,5 +222,31 @@ export function stoppedNudgePrompt({ row, branch, idleMinutes, releaseMinutes, c
     + `IF YOU ARE WAITING ON SOMETHING, NAME IT AS A FIELD (the terminal is not one): ${rowSpellings()} | \`pnpm run pr:hold <n> --until "merged #<m>"\` (outside event).\n`
     + (canRelease
       ? `${releaseMinutes} MINUTES AFTER THIS REACHES YOU with nothing moved, the claim is RELEASED; worktree and unpushed work are KEPT.`
+      : "You hold an open pull request, so nothing is released unless the claim changes hands or you go quiet again.");
+}
+
+/**
+ * THE ORDER TO A HOLDER THAT ENDED A TURN WITH NO STATE THE GATE CAN READ (#460). `declared` says which of the three it is -- nothing declared, a
+ * declaration from an earlier turn, or one that was true and no longer is -- because "declare your state" means something different to each, and the
+ * last is the only one where the worker's own statement is what went out of date. The command is spelled in full: it is the one thing the gate reads.
+ * `worker-state.test.ts` pins the command's spelling and the three openings.
+ *
+ * @param {{ row: number, branch: string | null, idleMinutes: number, releaseMinutes: number, canRelease: boolean, declared?: DeclarationReading }} what
+ * @returns {string}
+ */
+export function declareNudgePrompt({ row, branch, idleMinutes, releaseMinutes, canRelease, declared }: { row: number; branch: string | null; idleMinutes: number; releaseMinutes: number; canRelease: boolean; declared?: DeclarationReading; }): string {
+  const said = declared?.kind === "stale"
+    ? `YOU DECLARED \`${declared.state}\` BEFORE YOUR LAST TURN BEGAN, so it describes an earlier turn and the gate does not read it.`
+    : declared?.kind === "lapsed"
+      ? `YOU DECLARED \`${declared.state}\` AND IT IS NO LONGER TRUE: ${declared.why}.`
+      : "YOU DECLARED NOTHING.";
+  return `#${row} IS YOURS AND YOUR SESSION HAS BEEN IDLE FOR ${idleMinutes} MINUTES. EVERY TURN ENDS WITH A DECLARED STATE, AND ${said}\n`
+    + `IF YOU STOPPED MID-TASK, CONTINUE NOW: re-read the row, \`${branch ?? "your branch"}\` and what you last ran, and do the next step. A background task you `
+    + "started may be LOST (a restarted session loses them and no completion notice will ever come): look, and re-run what is gone.\n"
+    + "IF YOU ARE WAITING, DECLARE WHAT FOR, ONCE, AS YOUR LAST ACT OF THE TURN: `agent-org worker:state waiting-ci <pr>` (checks running) | "
+    + "`agent-org worker:state waiting-review <pr>` (review asked) | `agent-org worker:state done` (merged or row closed) | "
+    + "`agent-org worker:state blocked <row> <reason>` (it puts the row's answer label on itself). Each excuses you only while it stays true.\n"
+    + (canRelease
+      ? `${releaseMinutes} MINUTES AFTER THIS REACHES YOU with nothing moved and nothing declared, the claim is RELEASED; worktree and unpushed work are KEPT.`
       : "You hold an open pull request, so nothing is released unless the claim changes hands or you go quiet again.");
 }
