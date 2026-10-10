@@ -3513,7 +3513,11 @@ export function wholeSuiteNote(commands: string[]): string[] {
  */
 export type BodyReportInput = { body: string, run: (command: string) => number, diff: DiffReading, rowLabels?: (row: { repo: string | null, number: number }) => string[],
   /** ADR 0044: where the `Acceptance:` family is read from. Absent, it is resolved from `diff.added` and `readFile`, so no caller has to. */
-  acceptance?: AcceptanceSource, readFile?: (path: string) => string };
+  acceptance?: AcceptanceSource, readFile?: (path: string) => string,
+  /** The pull request's author (`PR_AUTHOR`), handed to the acceptance reader and used for nothing yet (agent-org#666). Absent when unknown, never `""`. */
+  author?: string,
+  /** The reader `acceptanceSourceOf` calls. A seam, so a test can see WHAT it was handed (the reader ignores `author`, so no verdict shows it). */
+  resolveSource?: typeof resolveAcceptanceSource };
 export type BodyReport = { name: string, report: (input: BodyReportInput) => { ok: boolean, lines: string[] } };
 
 /**
@@ -3551,17 +3555,42 @@ export const CI_BODY_REPORTS: BodyReport[] = [
  * ADR 0044: THE SOURCE THE `Acceptance:` FAMILY IS READ FROM, resolved once per input. The file the pull request ADDS under `.acceptance/` when
  * it adds one, else the body. A caller that resolved it already (`checkBody` does, to leak-check the file's text) hands it in.
  */
-export function acceptanceSourceOf({ body, diff, acceptance, readFile = (path) => readFileSync(path, "utf8") }: BodyReportInput): AcceptanceSource {
+export function acceptanceSourceOf({ body, diff, acceptance, readFile = (path) => readFileSync(path, "utf8"), author, resolveSource = resolveAcceptanceSource }: BodyReportInput): AcceptanceSource {
   if (acceptance !== undefined) return acceptance;
-  return resolveAcceptanceSource({ body, added: diff.ok ? (diff.added ?? []) : undefined, read: readFile });
+  return resolveSource({ body, added: diff.ok ? (diff.added ?? []) : undefined, read: readFile, author });
 }
 
 /**
  * The same, for a caller that holds only the body: the public entry for the workflow's own reads of the sections (`hasFullHistoryDeclaration`),
  * which must come from the same text the commands do. Reads the checkout at `cwd`.
  */
-export function acceptanceSourceOfThisPullRequest(body: string, cwd: string = process.cwd()): AcceptanceSource {
-  return acceptanceSourceOf({ body, run: () => 0, diff: changedFilesOfThisPullRequest(cwd), readFile: (path) => readFileSync(join(cwd, path), "utf8") });
+export function acceptanceSourceOfThisPullRequest(body: string, cwd: string = process.cwd(), author?: string, extra: Partial<BodyReportInput> = {}): AcceptanceSource {
+  return acceptanceSourceOf(thisPullRequestInput(body, cwd, author, extra));
+}
+
+/**
+ * The input a report run over THIS pull request is handed: its diff and files read from the checkout at `cwd`, `extra` laid over it. Apart from
+ * `acceptanceSourceOfThisPullRequest` and `ciInputOf`, which both lay `extra` over it, so a test can see the `author` each hands the reader.
+ */
+export function thisPullRequestInput(body: string, cwd: string, author?: string, extra: Partial<BodyReportInput> = {}): BodyReportInput {
+  return { body, run: () => 0, diff: changedFilesOfThisPullRequest(cwd), readFile: (path) => readFileSync(join(cwd, path), "utf8"), author, ...extra };
+}
+
+/**
+ * What the CLI entry hands the reports: the body from `PR_BODY` and the author from `PR_AUTHOR` (`prAuthorFromEnv`), the rest from `env` and the
+ * checkout at `cwd`. `main` is this and a print, so a test reads the whole wiring without spawning it.
+ */
+export function ciInputOf(env: NodeJS.ProcessEnv, cwd: string = process.cwd()): BodyReportInput {
+  return thisPullRequestInput(env.PR_BODY ?? "", cwd, prAuthorFromEnv(env), { run: runForReal, rowLabels: rowLabelsFromEnv(env) });
+}
+
+/**
+ * agent-org#666: THE PULL REQUEST'S AUTHOR, FROM `PR_AUTHOR` ALONE. One opaque string from the environment, never argv (as `PR_BODY` is not) and
+ * never read from the body, a label or a branch name, which the author controls. Unset or empty is `undefined`, so "no author given" and "an
+ * author" are never one value.
+ */
+export function prAuthorFromEnv(env: NodeJS.ProcessEnv): string | undefined {
+  return env.PR_AUTHOR ? env.PR_AUTHOR : undefined;
 }
 
 /**
@@ -3609,8 +3638,7 @@ function main() {
   // FROM AN ENV VAR, NEVER ARGV -- a PR body is adversarial input (anyone can open a PR), and passing it
   // as a shell argument would put it on a command line for something else to misinterpret. GitHub Actions'
   // own `env:` mapping is what keeps it a single opaque string here, never re-parsed as shell.
-  const body = process.env.PR_BODY ?? "";
-  const result = runCiBodyReports({ body, run: runForReal, diff: changedFilesOfThisPullRequest(), rowLabels: rowLabelsFromEnv(process.env) });
+  const result = runCiBodyReports(ciInputOf(process.env));
   for (const line of result.lines) console.log(line);
   process.exit(result.ok ? 0 : 1);
 }
