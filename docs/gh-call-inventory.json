@@ -3,10 +3,10 @@
   "summary": {
     "files": 92,
     "spawns": 133,
-    "calls": 380,
+    "calls": 381,
     "shapes": {
       "api rest": 131,
-      "issue list": 41,
+      "issue list": 42,
       "api graphql": 37,
       "issue view": 33,
       "pr list": 29,
@@ -964,7 +964,7 @@
         "issue comment": 4,
         "issue create": 1,
         "issue edit": 2,
-        "issue list": 2,
+        "issue list": 3,
         "issue view": 4,
         "project item-add": 1,
         "project item-edit": 1
