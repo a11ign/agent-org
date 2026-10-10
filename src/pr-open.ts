@@ -1225,7 +1225,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
     process.exitCode = EXIT_NOTHING_SENT;
   } else {
     process.exitCode = main(undefined, { rowBody: defaultRowBody, verifyStamp: defaultVerifyStamp,
-      rowLabels: defaultRowLabels, labelExists: defaultLabelExists, write: writeAcceptanceFile,
-      claimedRows: (prRepo) => lookupClaimedRowsOfTrackers(trackerReposFor(prRepo)) });
+      claimedRows: (prRepo) => lookupClaimedRowsOfTrackers(trackerReposFor(prRepo)),
+      rowLabels: defaultRowLabels, labelExists: defaultLabelExists, write: writeAcceptanceFile });
   }
 }
