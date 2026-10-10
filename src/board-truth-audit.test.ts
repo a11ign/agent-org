@@ -17,6 +17,9 @@ import { STALL_UNTOLD_RELEASE_MS } from "./claim-stall.ts";
 import { boardRowsOf, boardTruthFact, boardTruthNow, orgHealthNow } from "./work-gate/org-health.ts";
 
 const NOW = Date.parse("2026-10-08T12:00:00Z");
+/** The aliased `Roadmap` read (a11ign/agent-org#517) as a fake `gh` answers it: every row asked for comes back boarded nowhere and under no epic, so the question is READ and finds nothing. `board-truth-audit-roadmap.test.ts` holds the question's own cases. */
+const roadmapRead = (args: string[]) => JSON.stringify({ data: { repository: Object.fromEntries([...String(args.find((a) => a.startsWith("query=")) ?? "").matchAll(/\br(\d+): issue/g)]
+  .map(([, n]) => [`r${n}`, { number: Number(n), repository: { nameWithOwner: "a/b" }, parent: null, projectItems: { totalCount: 0, nodes: [] } }])) } });
 const MINUTE = 60_000;
 const DAY = "2026-10-08";
 
@@ -52,8 +55,12 @@ const BOARD = {
   waitFacts: { items: { "#50": { state: "closed", labels: [], resolvedAt: NOW, changedAt: NOW } } },
 };
 
-test("emptiness control: the seeded board is found on all eight questions, so the empty results below are readings", () => {
-  const audit = boardTruthAudit(facts(({ ...BOARD, liveSessions: ["ceo"] } as any)));
+test("emptiness control: the seeded board is found on all nine questions, so the empty results below are readings", () => {
+  // the ninth: #517 is `Self-healing org` on project 2 under an epic that says so, and carries none (a11ign/agent-org#517)
+  const roadmapped = row(517, ["ready"], { body: "the work" });
+  const roadmaps: Record<number, any> = Object.fromEntries([...BOARD.openRows, roadmapped].map((r) => [r.number, { ref: `a/b#${r.number}`, items: [], parent: null }]));
+  roadmaps[517] = { ref: "a/b#517", items: [{ project: "a11ign/2", value: null }], parent: { ref: "a/epic#4437", items: [{ project: "a11ign/2", value: "Self-healing org" }], parent: null } };
+  const audit = boardTruthAudit(facts(({ ...BOARD, openRows: [...BOARD.openRows, roadmapped], roadmaps, liveSessions: ["ceo"] } as any)));
   assert.deepEqual([...new Set(audit.findings.map((f) => f.question))].sort(), Object.values(QUESTIONS).sort());
   assert.deepEqual(audit.unread, []);
 });
@@ -280,6 +287,7 @@ test("the reader: a failed closed-row or merged-PR read is UNREAD (null), a part
   const calls: any[] = [];
   const run = (args: string[]) => {
     calls.push(args);
+    if (args[0] === "api") return roadmapRead(args);
     if (args[1] === "list" && args.includes("closed")) throw new Error("HTTP 502");
     return JSON.stringify(args[0] === "pr" ? [{ number: 900, body: "Closes #10" }] : [{ number: 10, labels: [{ name: "ready" }] }]);
   };
@@ -289,7 +297,8 @@ test("the reader: a failed closed-row or merged-PR read is UNREAD (null), a part
   assert.deepEqual(read.mergedPrs, [{ number: 900, body: "Closes #10" }]);
   assert.deepEqual(read.liveSessions, ["ceo", "orchestrator", "worker-11"]);
   assert.equal(read.waitFacts, null, "the wait facts are the tick's, so they are unread here");
-  assert.ok(calls.every((args) => args.slice(-2).join(" ") === "--repo a/b"));
+  assert.ok(calls.filter((args) => args[0] !== "api").every((args) => args.slice(-2).join(" ") === "--repo a/b"));
+  assert.deepEqual(Object.keys(read.roadmaps ?? {}), ["10"], "the one `Roadmap` read is aliased by row, and its answer is read");
   assert.equal(readBoardFacts("a/b", { run, agents: () => [{ label: "worker-11", status: "working" }], now: NOW }).liveSessions, null, "no standing pane is not a listing of the org");
   assert.equal(readBoardFacts("a/b", { run, agents: () => null, now: NOW }).liveSessions, null);
   assert.throws(() => readBoardFacts("a/b", { run: () => { throw new Error("HTTP 502"); }, agents: () => null }), /502/);
@@ -315,7 +324,7 @@ function tick(openRowsRead: any[] | null, io: Record<string, any> = {}) {
 }
 /** @param {any[]} orders */
 const boardTruthOrders = (orders: any[]) => orders.filter((o) => o.subject === SIGNALS.BOARD_TRUTH);
-const wire = (over: any = {}) => ({ repo: "a/b", run: () => "[]", agents: () => [{ label: "ceo", status: "idle" }, { label: "orchestrator", status: "idle" }, { label: "worker-11", status: "working" }], post: () => "posted", log: () => {}, ...over });
+const wire = (over: any = {}) => ({ repo: "a/b", run: (args: string[]) => args[0] === "api" ? roadmapRead(args) : "[]", agents: () => [{ label: "ceo", status: "idle" }, { label: "orchestrator", status: "idle" }, { label: "worker-11", status: "working" }], post: () => "posted", log: () => {}, ...over });
 /** The tick's row as `readOpenRows` returns it: labels are objects, and there is no `state` and no `comments`. */
 const tickRow = (number: number, labels: string[], more: Record<string, any> = {}) => ({ number, title: `row ${number}`, body: "", labels: labels.map((name) => ({ name })), ...more });
 
@@ -354,7 +363,9 @@ test("tick: the open rows are the tick's own (no second open-list read), and a c
   const calls: any[] = [];
   const run = (args: string[]) => { calls.push(args); return "[]"; };
   boardTruthNow({ openRowsRead: [tickRow(10, ["ready"])], waitFacts: null, now: NOW }, wire({ run }));
-  assert.ok(calls.length > 0 && calls.every((args) => args.includes("--state") && ["closed", "merged"].includes(args[args.indexOf("--state") + 1])), JSON.stringify(calls));
+  const lists = calls.filter((args) => args[0] !== "api");
+  assert.equal(calls.length - lists.length, 1, "and ONE aliased `Roadmap` read for the 10 rows, not a request per row");
+  assert.ok(lists.length > 0 && lists.every((args) => args.includes("--state") && ["closed", "merged"].includes(args[args.indexOf("--state") + 1])), JSON.stringify(calls));
   const closedRead = calls.find((args) => args.includes("closed"));
   assert.ok(closedRead && !/body/.test(closedRead[closedRead.indexOf("--json") + 1]), "the closed rows ask for no body");
   const claimed = tickRow(11, ["in-progress", "session:worker-99"]);
@@ -485,6 +496,7 @@ const HOME_TRACKER = { key: "", repo: "a/home" };
 const ORG_TRACKER = { key: "agent-org", repo: "a/org", codeRepo: "a/org-code" };
 /** A `gh` fake answering by the `--repo` it is aimed at: `rowsOf` maps a repository to the open rows it holds, and a repository in `refuse` throws on every read. */
 const gh = (rowsOf: Record<string, any[]>, refuse: string[] = []) => (args: string[]) => {
+  if (args[0] === "api") return roadmapRead(args);
   const repo = args[args.indexOf("--repo") + 1];
   if (refuse.includes(repo)) throw new Error(`HTTP 502 from ${repo}`);
   if (args[0] === "pr") return "[]";

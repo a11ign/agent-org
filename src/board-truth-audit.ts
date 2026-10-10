@@ -5,7 +5,7 @@
 // whose 13 children were all closed and which stayed open, and #3425, a `ready` row carrying `no-code-left`, a label that only a
 // claimed row has.
 //
-// EIGHT QUESTIONS, EACH A PURE FUNCTION OF ROWS THE CALLER ALREADY READ, so the rule is testable without a tracker and the reader that
+// NINE QUESTIONS, EACH A PURE FUNCTION OF ROWS THE CALLER ALREADY READ, so the rule is testable without a tracker and the reader that
 // fetches them (`readBoardFacts`, below) is the only part that spends a call:
 //   epic-all-closed       an open `epic` whose sub-issues are all closed                      -> product-manager (close it)
 //   closing-pr-merged     an open row a merged PR names in `Closes #n`                        -> product-manager (close it)
@@ -20,6 +20,8 @@
 //                         `needs:chairman` (chairman rule 1, 2026-10-08, #4049)                       -> product-manager (give it one)
 //   parked-on-the-chairman   a `parked` row, not `needs:chairman`, with a `Blocked-on:` line naming the chairman, whatever date or condition it also
 //                         carries (#4201, class fix A: a wait on the chairman is never a date)         -> product-manager (`needs:chairman` and a brief)
+//   roadmap-value         an open row under a roadmap epic (its parent, or its parent's parent, has a `Roadmap` value on a Project the row is boarded to)
+//                         whose own value on that Project is absent or another one (a11ign/agent-org#517, chairman on a11ign#928, 2026-10-09, item 3)  -> product-manager (one `gh project item-edit`)
 //
 // TWO MORE READ THE LAST DAY'S COMMENTS (`PROSE_QUESTIONS`, a11ign/a11ign#4232): a HANDOFF WRITTEN AS A SENTENCE moves nobody, so a comment by an org account that hands off in
 // prose (`goes to <session>`, `<session> will file`, `<session> to file`, `for <session> to`, `I will ask <session>`, `Asked of <session>`) is flagged unless the same author filed
@@ -49,6 +51,7 @@ export const QUESTIONS = Object.freeze({
   DUPLICATE: "duplicate-or-superseded",
   PARKED_BARE: "parked-without-condition",
   PARKED_ON_CHAIRMAN: "parked-on-the-chairman",
+  ROADMAP: "roadmap-value",
 });
 
 /**
@@ -80,7 +83,16 @@ export type BoardRow = { number: number, title?: string, body?: string, state?: 
 /** `mergedAt` is absent when a read omitted it */
 export type MergedPr = { number: number, body?: string, mergedAt?: string | null };
 /** `others` (#4080) is what each KEYED tracker answered; absent with one declared tracker */
-export type BoardFacts = { now: number, openRows: BoardRow[], closedRows: BoardRow[] | null, mergedPrs: MergedPr[] | null, liveSessions: string[] | null, waitFacts: import("./wait-condition.ts").WaitFacts | null, others?: OtherTracker[], proseEvidence?: ProseEvidence | null };
+export type BoardFacts = { now: number, openRows: BoardRow[], closedRows: BoardRow[] | null, mergedPrs: MergedPr[] | null, liveSessions: string[] | null, waitFacts: import("./wait-condition.ts").WaitFacts | null, others?: OtherTracker[], proseEvidence?: ProseEvidence | null, roadmaps?: RowRoadmaps | null };
+/**
+ * One row's `Roadmap` value on one Project it is boarded to (a11ign/agent-org#517). `project` is `owner/number`, so two Projects' values are never mixed: the field is the Project's, and a row
+ * boarded to two carries two. `value` is `null` for an item with the field unset.
+ */
+export type RoadmapItem = { project: string, value: string | null };
+/** A row's `Roadmap` items and its parent's, read as far as two levels up (the backfill's depth). `ref` is `owner/name#n`, so a parent in another repository is named whole. */
+export type RoadmapNode = { ref: string, items: RoadmapItem[], parent: RoadmapNode | null };
+/** by row number; `undefined` on `BoardFacts` is a caller that does not ask, `null` is a read that failed (UNREAD), and a row with no entry was not read */
+export type RowRoadmaps = Record<number, RoadmapNode>;
 /**
  * `codeRepo` is the code repository of the same key, where the pull requests that close this tracker's rows are
  */
@@ -305,6 +317,41 @@ function parkedOnChairmen({ openRows }: BoardFacts): Finding[] {
     `parked on the chairman: a date does not move the chairman, so give it \`${NEEDS_CHAIRMAN_LABEL}\` and a BRIEF, or a wait the gate can read`));
 }
 
+/** The epic whose value a row is held to: its parent's on a Project, else its parent's parent's (two levels, as the backfill was). @param {RoadmapNode} node @param {string} project @returns {{ epic: RoadmapNode, value: string } | null} */
+function epicValueOn(node: RoadmapNode, project: string): { epic: RoadmapNode; value: string; } | null {
+  for (const epic of [node.parent, node.parent?.parent ?? null]) {
+    const value = epic?.items.find((item) => item.project === project)?.value;
+    if (epic && value) return { epic, value };
+  }
+  return null;
+}
+
+/**
+ * A ROW UNDER A ROADMAP EPIC CARRIES ITS EPIC'S `Roadmap` VALUE (a11ign/agent-org#517). `row-file` enforces it at filing and cannot see a row boarded by hand, linked as a sub-issue afterwards, or
+ * whose epic's value changed; this is the net under it. The comparison is PER PROJECT, because the field is the Project's: a row is held to the value its epic has on a Project THE ROW IS BOARDED TO,
+ * so an epic that has one on Project 2 and none on Project 1 asks nothing of a row on Project 1 (#517 itself is `Self-healing org` on 2 and unset on 1, with its epic the same). A row boarded to no
+ * Project at all, or not to the epic's, has no item to read and is NOT JUDGED here: that is a different disagreement (a row off the board), and calling it a missing value would be a guess.
+ * @param {BoardFacts} facts @returns {Finding[]}
+ */
+function roadmapMismatches({ openRows, roadmaps }: BoardFacts): Finding[] {
+  if (!roadmaps) return [];
+  return openRows.flatMap((row) => {
+    const node = roadmaps[row.number];
+    if (!node) return [];
+    return node.items.flatMap((item) => {
+      const held = epicValueOn(node, item.project);
+      if (!held || held.value === item.value) return [];
+      const via = held.epic === node.parent ? "" : ` (through ${node.parent?.ref})`;
+      const own = item.value === null || item.value === "" ? "no `Roadmap` value" : `\`Roadmap\` \`${item.value}\``;
+      return [finding(row, QUESTIONS.ROADMAP, `\`Roadmap\` on project ${item.project}`,
+        `${own}, and its epic ${held.epic.ref}${via} has \`${held.value}\`: \`gh project item-edit\` it to \`${held.value}\``)];
+    });
+  });
+}
+
+/** ABSENCE IS NOT PROOF: a row the read has no entry for was not judged, so the question is UNREAD, never "agrees". `undefined` is a caller that does not ask. @param {BoardFacts} facts */
+const roadmapsRead = ({ roadmaps, openRows }: BoardFacts): boolean => roadmaps === undefined || (roadmaps !== null && openRows.every((row) => roadmaps[row.number] !== undefined));
+
 export const PROSE_QUESTIONS = Object.freeze({
   HANDOFF: "handoff-in-prose",
   READING_FIELD: "reading-without-defect-row",
@@ -407,11 +454,12 @@ const READERS: [string, (f: BoardFacts) => Finding[], (f: BoardFacts) => boolean
   [QUESTIONS.DUPLICATE, duplicates, (f) => f.closedRows !== null],
   [QUESTIONS.PARKED_BARE, parkedWithoutConditions, (f) => parkedBare(f).every(blockersRead)],
   [QUESTIONS.PARKED_ON_CHAIRMAN, parkedOnChairmen, () => true],
+  [QUESTIONS.ROADMAP, roadmapMismatches, roadmapsRead],
   ...PROSE_READERS,
 ];
 
 /**
- * ASK ALL EIGHT QUESTIONS. A question whose fact was not read still answers what it can from the rest (a `Not-before` date needs no fact) and is named in `unread`, so the table never states health it did not read.
+ * ASK ALL NINE QUESTIONS. A question whose fact was not read still answers what it can from the rest (a `Not-before` date needs no fact) and is named in `unread`, so the table never states health it did not read.
  * @param {BoardFacts} facts
  * `filing` is how many rows were EXCUSED from the state-label question because they are being filed (#4048), so the table can say it rather than read them as agreeing.
  * #4080: EVERY KEYED TRACKER IS ASKED THE SAME QUESTIONS (`facts.others`), its findings tagged with its key. `notAsked` is what a keyed tracker is not asked on purpose: the wait facts are the gate's, read for the
@@ -472,11 +520,12 @@ export function boardTruthTable({ findings, unread, filing = 0, merging = 0, not
 const gh = (args: string[]): string => execFileSync("gh", args, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
 
 /**
- * THE READS THE EIGHT QUESTIONS NEED; one that fails is `null` (UNREAD), never an empty list. Live sessions come from `herdr`'s workspace list, and a partial listing is
+ * THE READS THE NINE QUESTIONS NEED; one that fails is `null` (UNREAD), never an empty list. Live sessions come from `herdr`'s workspace list, and a partial listing is
  * UNREAD too (it would read every holder as gone). Merged PRs are the newest 200 and closed rows the newest 500, which cover a day's closers and the rows a duplicate is
  * likely to repeat. The closed rows ask for no body (2.4 MB of the 2.5 MB the read measured on 2026-10-08, and no question reads it).
  * #4045: THE TICK HANDS ITS OWN READS IN. `openRows` is the open list the gate already holds (so the 1000-row read, comments and all, is not made a second time) and `waitFacts` the
  * facts its wait pass built; a caller that gives neither gets the old behaviour, the open rows read here and the wait facts `null` (unread).
+ * a11ign/agent-org#517: THE `Roadmap` VALUES are one more read per tracker, `readRoadmaps`: the rows' own and their parents' (`gh issue list` carries neither), in ONE aliased GraphQL request per 50 rows.
  * #4080: EVERY KEYED TRACKER IS READ TOO, by the same three reads aimed at its own repository (its merged PRs from the code repository of the same key). `repo` stays the first tracker's: the
  * tick hands its rows in and the table is posted there. A tracker whose open rows are refused is `facts: null` with what `gh` said, so it is named unread and the first tracker's rows still stand.
  * @param {string} repo `owner/name`
@@ -491,8 +540,9 @@ export function readBoardFacts(repo: string, { run = gh, agents = readAgents, no
   const mergedPrs = orUnread(["pr", "list", "--state", "merged", "--limit", "200", "--json", "number,body,mergedAt"]);
   const listed = agents();
   const liveSessions = listed !== null && listingIsComplete(listed) ? listed.map((a) => a.label) : null;
+  const roadmaps = readRoadmaps(repo, openRows, run);
   const others = trackers.filter((tracker) => tracker.key !== "").map((tracker) => readOtherTracker(tracker, { run, now, liveSessions }));
-  return { now, openRows, closedRows, mergedPrs, liveSessions, waitFacts, ...(others.length > 0 && { others }) };
+  return { now, openRows, closedRows, mergedPrs, liveSessions, waitFacts, roadmaps, ...(others.length > 0 && { others }) };
 }
 
 /**
@@ -553,7 +603,51 @@ function readOtherTracker({ key, repo, codeRepo }: DeclaredTracker, { run, now, 
   }
   const closedRows = orUnread(repo, ["issue", "list", "--state", "closed", "--limit", "500", "--json", "number,title,state,stateReason"]);
   const mergedPrs = codeRepo === undefined ? null : orUnread(codeRepo, ["pr", "list", "--state", "merged", "--limit", "200", "--json", "number,body,mergedAt"]);
-  return { key, repo, facts: { now, openRows, closedRows, mergedPrs, liveSessions, waitFacts: null } };
+  return { key, repo, facts: { now, openRows, closedRows, mergedPrs, liveSessions, waitFacts: null, roadmaps: readRoadmaps(repo, openRows, run) } };
+}
+
+const ROADMAP_FIELD = "Roadmap";
+const ROADMAP_ROWS_PER_REQUEST = 50;
+const ROADMAP_ITEMS_ASKED = 20;
+const ROADMAP_ISSUE_FIELDS = `number repository { nameWithOwner } projectItems(first: ${ROADMAP_ITEMS_ASKED}) { totalCount nodes {
+  project { number owner { ... on Organization { login } ... on User { login } } }
+  value: fieldValueByName(name: "${ROADMAP_FIELD}") { ... on ProjectV2ItemFieldSingleSelectValue { name } ... on ProjectV2ItemFieldTextValue { text } } } }`;
+
+/** @param {any} issue a GraphQL `Issue` node with `ROADMAP_ISSUE_FIELDS` and up to two `parent` levels @returns {RoadmapNode} THROWS on a node that is not shaped so, or whose items were cut short */
+function roadmapNodeOf(issue: any): RoadmapNode {
+  const items = issue?.projectItems;
+  if (typeof issue?.number !== "number" || !Array.isArray(items?.nodes) || (items.totalCount ?? items.nodes.length) > items.nodes.length) {
+    throw new Error(`roadmap read: #${issue?.number} came back without all of its project items`);
+  }
+  return { ref: `${issue.repository?.nameWithOwner}#${issue.number}`,
+    items: items.nodes.map((node: any) => ({ project: `${node.project.owner.login}/${node.project.number}`, value: node.value?.name ?? node.value?.text ?? null })),
+    parent: issue.parent ? roadmapNodeOf(issue.parent) : null };
+}
+
+/**
+ * THE `Roadmap` FACTS: each open row's items and its parent's and grandparent's, ONE aliased request per 50 rows (a board of 65 is two requests, about two points of GraphQL, each tick).
+ * It is aliased by row number rather than a project-items walk because the walk pages every row the board ever held, closed ones included, and this asks only for the rows the audit judges.
+ * A refused or misshapen answer is `null` (UNREAD), never an empty map: an empty map would say every row agrees.
+ * @param {string} repo `owner/name` @param {BoardRow[]} openRows @param {(args: string[]) => string} run @returns {RowRoadmaps | null}
+ */
+function readRoadmaps(repo: string, openRows: BoardRow[], run: (args: string[]) => string): RowRoadmaps | null {
+  const [owner, name] = repo.split("/");
+  const found: RowRoadmaps = {};
+  try {
+    for (let from = 0; from < openRows.length; from += ROADMAP_ROWS_PER_REQUEST) {
+      const aliases = openRows.slice(from, from + ROADMAP_ROWS_PER_REQUEST).map((row) =>
+        `r${row.number}: issue(number: ${row.number}) { ...F parent { ...F parent { ...F } } }`).join("\n");
+      const query = `fragment F on Issue { ${ROADMAP_ISSUE_FIELDS} }\nquery($owner: String!, $name: String!) { repository(owner: $owner, name: $name) {\n${aliases}\n} }`;
+      const answer = JSON.parse(run(["api", "graphql", "-f", `query=${query}`, "-f", `owner=${owner}`, "-f", `name=${name}`]))?.data?.repository;
+      if (typeof answer !== "object" || answer === null || Array.isArray(answer)) throw new Error("roadmap read: no repository in the answer");
+      for (const row of openRows.slice(from, from + ROADMAP_ROWS_PER_REQUEST)) {
+        if (answer[`r${row.number}`]) found[row.number] = roadmapNodeOf(answer[`r${row.number}`]);
+      }
+    }
+  } catch {
+    return null;
+  }
+  return found;
 }
 
 /** The record the day's table is posted on (#4045). A row the org owns, not a pull request: it is `ceo`'s and the chairman's reading place. */
