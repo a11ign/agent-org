@@ -4,13 +4,16 @@ Acceptance:
 ```bash
 npx rstest run --config scripts/rstest/rstest.config.* src/answer-label-guard.test.ts
 npx rstest run --config scripts/rstest/rstest.config.* src/work-gate/org-health.test.ts
+npx rstest run --config scripts/rstest/rstest.config.* src/packaging/prose-flag-sends-an-order.test.ts
 ```
 
 The row's commands are these with `cd ~/repos/agent-org &&` in front; the primary checkout carries the new files only after the merge, so they are run in the PR's own tree, with `AGENT_ORG_HOST` set to a11y-witness's `.agent-org/host.json` (this worktree is inside no project, and every test that imports `org-health.ts` refuses without it, `board-truth-audit.test.ts` included). Printed:
 ```
 VERDICT pass: 10 tests in 1 file -- full report: A11Y_RSTEST_FULL_REPORT=1
 VERDICT pass: 3 tests in 1 file -- full report: A11Y_RSTEST_FULL_REPORT=1
+VERDICT pass: 7 tests in 1 file -- full report: A11Y_RSTEST_FULL_REPORT=1
 ```
+The third (`prose-flag-sends-an-order.test.ts`, the one test that pinned the defect) fails 1 of 7 with `origin/main`'s `org-health.ts` in place of this branch's, and passes with it (measured 2026-10-10, restored from a copy and `diff`ed identical).
 
 Mutation (each applied with a script, run against both test files, restored from a copy and `diff`ed identical; never `git checkout --`). Failures are of the 13 tests in the two files:
   - the guard never refuses: 11 fail; the two that pass are the allowed-case controls.
