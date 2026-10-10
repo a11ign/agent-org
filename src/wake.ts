@@ -6814,7 +6814,9 @@ const defaultGit = (cmd: string, args: string[], opts?: object) =>
  */
 export type TeardownDeps = { spares: string[], registry: Record<string, SpareInstance>, now: number, run: (args: string[]) => string, heldRows: (role: string) => number[] | null,
   /** `role` is who held the row: a keyed spare's row numbers are its OWN tracker's, so the number alone asks the wrong repository (#4685). */
-  rowState: (row: number, role: string) => string | null, worktrees: (role: string, rows: number[]) => SpareWorktree[], record: (cycle: SpareCycle) => void, warn: (line: string) => void, };
+  rowState: (row: number, role: string) => string | null, worktrees: (role: string, rows: number[]) => SpareWorktree[], record: (cycle: SpareCycle) => void, warn: (line: string) => void,
+  /** WHY the last `heldRows(role)` answered `null`, so the line that leaves the instance running names the cause and not only the session (agent-org#4893). Absent says nothing. */
+  unreadBecause?: (role: string) => string | null, };
 
 /**
  * END EVERY SPARE INSTANCE WHOSE ROW HAS CLOSED, and write one ledger line for each ending. The tick's
@@ -6845,7 +6847,8 @@ export function endFinishedSpares(agents: { label: string; status: string; }[], 
     if (agent === undefined) continue; // A partial read looks the same as absence, so this records nothing.
     const held = deps.heldRows(role);
     if (held === null) {
-      deps.warn(`teardown: could not read the rows "${role}" holds -- leaving it running.`);
+      const because = deps.unreadBecause?.(role);
+      deps.warn(`teardown: could not read the rows "${role}" holds -- leaving it running${because ? ` (${because})` : ""}.`);
       continue;
     }
     const before = registry[role] ?? { spawnedAt: deps.now, rows: [] };
@@ -6969,10 +6972,34 @@ function trackerOfSpare(role: string): string | null | undefined {
   return key === "" ? undefined : trackerRepositoryOf(key);
 }
 
-/** The rows `role` holds, read in ITS tracker: `null` when that cannot be asked, so the teardown leaves the instance running (#4685). */
-function heldRowsOfSpare(role: string): number[] | null {
+/**
+ * The rows `role` holds, read in ITS tracker: `null` when that cannot be asked, so the teardown leaves the instance running (#4685).
+ *
+ * A `null` IS GIVEN ITS CAUSE in `causes` (agent-org#4893): `lookupOtherHeldIssues` swallows the error by design, and the line that said "could not
+ * read the rows ... leaving it running" 15 times a tick named neither a cause nor which tracker. Measured 2026-10-10: every session failed alike, keyed
+ * and unkeyed, in the two windows the GraphQL pool was exhausted -- a read of a pool that was down, which no line said, so it read as a keyed-tracker bug.
+ * @param causes written to, keyed by role: the failed read's own stderr line, or why no read was attempted
+ * @param [deps] `read` is the reader and `gh` the runner it is handed: seams, so the tracker a keyed role is asked in is tested without GitHub
+ */
+export function heldRowsOfSpare(role: string, causes: Map<string, string>,
+  { read = lookupOtherHeldIssues, gh = defaultGh }: { read?: typeof lookupOtherHeldIssues; gh?: (args: string[]) => string; } = {}): number[] | null {
+  causes.delete(role);
   const repo = trackerOfSpare(role);
-  return repo === null ? null : lookupOtherHeldIssues(role, 0, repo === undefined ? {} : { repo });
+  if (repo === null) {
+    causes.set(role, "its tracker key is not one the project declares");
+    return null;
+  }
+  const run = (args: string[]) => {
+    try {
+      return gh(args);
+    } catch (err) {
+      causes.set(role, `${repo ?? "the first tracker"}: ${herdrReason(err)}`);
+      throw err;
+    }
+  };
+  const rows = read(role, 0, repo === undefined ? { run } : { repo, run });
+  if (rows === null && !causes.has(role)) causes.set(role, `${repo ?? "the first tracker"}: the answer was not a list of rows`);
+  return rows;
 }
 
 /** The repository root `role`'s worktrees are listed in: the tick's checkout, or the declared clone of its tracker's repository (#4685). THROWS when there is none, so no worktree reads as clean for want of a clone. */
@@ -6996,9 +7023,10 @@ export function tearDownSpares(agents: { label: string; status: string; }[], led
   try {
     const paths = sparePathsFrom(ledgerPath);
     mkdirSync(dirname(ledgerPath), { recursive: true });
+    const unread = new Map<string, string>();
     const { ended, registry } = endFinishedSpares(agents, {
       spares: spareInstances(agents), registry: readSpareRegistry(paths.registry), now: Date.now(), run: defaultRun,
-      heldRows: (role) => heldRowsOfSpare(role),
+      heldRows: (role) => heldRowsOfSpare(role, unread), unreadBecause: (role) => unread.get(role) ?? null,
       rowState: (row, role) => { const repo = trackerOfSpare(role); return repo === null ? null : rowStateOf(row, repo); },
       worktrees: (role, rows) => spareWorktrees({ role, rows, repoRoot: repoRootOfSpare(role) }),
       record: (cycle) => appendSpareCycle(paths.cycles, cycle),
