@@ -1,3 +1,4 @@
+// no-token: recordHandReroutes -- every tick here is handed the hand-fix recorder's marker as just run, so it reads nothing; the subject is the audit call, not that recorder (a11ign/agent-org#620)
 // @ts-check
 // THE WORK TICK RUNS THE MESSAGING AUDIT (a11ign/agent-org#620, follow-up to a11ign/a11ign#4746, #928): `auditMessaging` was exported and tested and nothing called it, so the
 // detector filed no incident until a tick ran it. Every case here goes through `recordTickFailures` itself, the function the tick calls, over a scratch `home` (whose messaging
