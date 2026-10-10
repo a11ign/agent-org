@@ -39,6 +39,7 @@ import { homeProjectDeclaration } from "../project-config.ts";
 import { readReleaseFacts, registryDistTags, remoteTagExists, splitHeldOnSatisfied, heldOnSatisfiedOrders, umbrellaEdges, umbrellaEdgeOrders } from "./held-on-satisfied-orders.ts";
 import { referencesOf, releaseReferencesOf, waitItemOf, staleWaits, bareWaits, manualWaits, parseWaits, liftableHolds, isItemWait } from "../wait-condition.ts";
 import { stallReasonOf, ownerOfPr } from "./pr-orders.ts";
+import { claimedScopesOf, scopeAddedReadings, scopeAddedOrders } from "./scope-added-orders.ts"; // #4759
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -498,7 +499,8 @@ export function orgHealthNow({ prsRead, keyedPrsRead = [], readyRead, openRowsRe
   const readings = exactMilestoneClock({ orders: proxyReadings, fact: milestoneClock, now, merge: facts, readMoves, log });
   const { held: heldOnSatisfied, rest } = splitHeldOnSatisfied(stale);
   const cap = { limit: MAX_ROW_ORDERS_PER_TICK };
-  return [...readings, ...staleWaitOrders(rest), ...heldOnSatisfiedOrders(heldOnSatisfied, cap), ...umbrellaEdgeOrders(waits?.umbrella ?? [], cap)];
+  return [...readings, ...staleWaitOrders(rest), ...heldOnSatisfiedOrders(heldOnSatisfied, cap), ...umbrellaEdgeOrders(waits?.umbrella ?? [], cap),
+    ...scopeAddedOrders(scopeAddedReadings({ claimed: claimedScopesOf({ openRows: openRowsRead, claimedComments, holderOf: sessionOf }) }), cap)];
 }
 
 const MS_PER_MINUTE = 60_000;
