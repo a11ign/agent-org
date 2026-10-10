@@ -2,7 +2,7 @@ The DORA reading answers a repository's ancestry from its declared clone when th
 
 Mutation: forcing the clone's `range` to answer `null` fails the clone-answers and the lacks-the-commit tests; forcing `status` to `ahead` fails the diverged-release test; each leaves the other tests green.
 
-Acceptance: `cd ~/repos/agent-org && node --import tsx --test src/dora-ancestry-from-the-clone.test.ts src/dora-lead-time-reads-are-bounded.test.ts`
+Acceptance: `node --import tsx --test src/dora-ancestry-from-the-clone.test.ts src/dora-lead-time-reads-are-bounded.test.ts`
 
 Closes a11ign/a11ign#4690
 
