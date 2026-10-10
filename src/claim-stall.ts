@@ -450,7 +450,7 @@ export function holderWorkAtRisk(io: HostReads, { merged, ...home }: {
 /**
  * Everything the reading knows about ONE claimed row. The two costly facts are THUNKS, so a row that is plainly moving (a comment or a commit inside N) costs no `git status`, and a tick pays for a worktree only when the cheap signals already say it has been quiet. `nothing` (#3407): the claim names no git object on purpose, so it can be nudged and never released
  */
-export type ClaimFacts = { row: number, title?: string, session: string, claimedAt: number, branch: string | null, worktree: string | null, comment: number | null, commit: number | null, push: number | null, file: () => number | null, work: () => ReturnType<typeof workAtRisk>, openPrs: number, mergedPr: { number: number, mergedAt: number, repoKey?: string, head?: string } | null, waiting: string | null, blockedBy: number[], waitKind?: string | null, ownPrs?: import("./idle-claimant.ts").IdlePr[], nothing?: boolean, declared?: DeclarationReading, mergedHeld?: string, };
+export type ClaimFacts = { row: number, title?: string, session: string, claimedAt: number, branch: string | null, worktree: string | null, comment: number | null, commit: number | null, push: number | null, file: () => number | null, work: () => ReturnType<typeof workAtRisk>, openPrs: number, mergedPr: { number: number, mergedAt: number, repoKey?: string, head?: string } | null, waiting: string | null, blockedBy: number[], waitKind?: string | null, ownPrs?: import("./idle-claimant.ts").IdlePr[], nothing?: boolean, declared?: DeclarationReading, mergedHeld?: string, clockHeld?: string, };
 export type Reading = { kind: "moving", lastMoveAt: number } | { kind: "pr-owned" } | { kind: "waiting", waiting: string } | { kind: "nudge", lastMoveAt: number, idleMs: number, idle?: boolean } | { kind: "nudged", nudgedAt: number, deliveredAt: number | null, lastMoveAt: number, idle?: boolean } | { kind: "idle-watch", since: number } | { kind: "vacating", since: number } | { kind: "release", why: "stalled" | "blocked" | "merged" | "gone" | "closed" | "wait", lastMoveAt: number | null, idleMs: number | null, nudgedAt: number | null, edges?: number[], waiting?: string, mergedPr?: number, mergedPrRepoKey?: string, mergedPrHead?: string, openPrs?: number[], openPrRepoKeys?: (string | undefined)[], since?: number, idle?: boolean, interrupt?: boolean } | { kind: "holding", why: string, expected?: boolean };
 
 /** @param {(number | null)[]} times @returns {number | null} */
@@ -751,8 +751,10 @@ export type MergedPr = { number: number, headRefName?: string, mergedAt?: string
 export type ElsewherePrs = { open: OpenPr[] | null, merged: MergedPr[] | null };
 /**
  * `openPrs` and `mergedPrs` are the HOME repository's; `elsewhere` is absent for a project with one code repository; `trackerRepo` is the home repository's `owner/repo`, which a pull request title's reference names (`ownsPr`'s third rung); `sessionRows` is how many claimed rows the session holds, and its label (the fourth rung) counts only for a session holding one
+ * `now` (#612) is the tick's time, and with `intervalMs` (the stall interval, as `readClaim`'s context has it) it decides whether the claim record is old enough that the session label's time could be
+ * the later start: absent, the caller does not date the clock and `claimedAt` is the record's, as it was before.
  */
-export type ClaimInput = { row: number, title?: string, session: string, waiting: string | null, blockedBy: number[], comments: RowComment[], openPrs: OpenPr[], mergedPrs: MergedPr[] | null, elsewhere?: ElsewherePrs, repo: string, trackerRepo?: string, sessionRows?: number, waitKind?: string | null };
+export type ClaimInput = { row: number, title?: string, session: string, waiting: string | null, blockedBy: number[], comments: RowComment[], openPrs: OpenPr[], mergedPrs: MergedPr[] | null, elsewhere?: ElsewherePrs, repo: string, trackerRepo?: string, sessionRows?: number, waitKind?: string | null, now?: number, intervalMs?: number };
 
 /**
  * (#3075) THE PULL REQUESTS A ROW'S WORK CAN BE IN, from every tracked code repository, by the ONE function every reader of "has this row got a pull
@@ -797,8 +799,12 @@ export function claimFactsFrom(input: ClaimInput, io: HostReads): ClaimFacts | {
     const claimant = { row: input.row, branch, session: input.session, soleHolder: input.sessionRows === 1,
       ...(input.trackerRepo === undefined ? {} : { trackerRepo: input.trackerRepo }) };
     const ownPrs = prs.open.filter((p) => ownsPr(claimant, p) !== null);
-    const { merged, held } = landedWork({ merged: prs.merged ?? [], claimant, record, io });
-    return { row: input.row, session: input.session, claimedAt: record.at, branch, worktree,
+    // ONE read of the row's label history serves both the merge's anchor and the clock's: the seam is asked at most once per claim per tick
+    let labelled: { at: number | null } | undefined;
+    const labelledAt = (): number | null => (labelled ??= { at: sessionLabelAddedAt(io.labelEvents?.(claimant.row) ?? null, claimant.session) }).at;
+    const { merged, held } = landedWork({ merged: prs.merged ?? [], claimant, record, io, labelledAt });
+    const clock = claimClock({ record, input, io, labelledAt });
+    return { row: input.row, session: input.session, claimedAt: clock.at, branch, worktree,
       ...(input.title === undefined ? {} : { title: input.title }),
       comment: commentMove(input.comments, record),
       commit: branch === null ? null : newestOwnCommit(io.git, dir, branch),
@@ -811,7 +817,8 @@ export function claimFactsFrom(input: ClaimInput, io: HostReads): ClaimFacts | {
         ...(merged.headRefName ? { head: merged.headRefName } : {}) },
       waiting: input.waiting, blockedBy: input.blockedBy,
       ...(input.waitKind === undefined ? {} : { waitKind: input.waitKind }),
-      ownPrs, ...(record.nothing ? { nothing: true } : {}), ...(held === null ? {} : { mergedHeld: held }) };
+      ownPrs, ...(record.nothing ? { nothing: true } : {}), ...(held === null ? {} : { mergedHeld: held }),
+      ...(clock.held === null ? {} : { clockHeld: clock.held }) };
   } catch (err) {
     if (err instanceof Unreadable) return { skip: `#${input.row}: ${err.message}` };
     throw err;
@@ -827,17 +834,38 @@ export function claimFactsFrom(input: ClaimInput, io: HostReads): ClaimFacts | {
  * since that is the older anchor whenever a claim was made by `row-claim`, the label is only ever the stricter of the two for a hand start. A caller that
  * gives no `labelEvents` seam keeps the record alone; a seam that cannot answer, or an answer with no such event, gives `held`: the reason a merge that
  * counts from the record is NOT taken, which fails toward not releasing -- a release closes the holder's workspace, and the work is kept either way.
- * @param {{ merged: MergedPr[], claimant: import("./pr-ownership.ts").Claim, record: ClaimRecord, io: HostReads }} args
+ * @param {{ merged: MergedPr[], claimant: import("./pr-ownership.ts").Claim, record: ClaimRecord, io: HostReads, labelledAt: () => number | null }} args
  * @returns {{ merged: ReturnType<typeof newestMergedAfter>, held: string | null }}
  */
-function landedWork({ merged, claimant, record, io }: { merged: (MergedPr & { repoKey?: string; })[]; claimant: import("./pr-ownership.ts").Claim; record: ClaimRecord; io: HostReads; }): { merged: ReturnType<typeof newestMergedAfter>; held: string | null; } {
+function landedWork({ merged, claimant, record, io, labelledAt: labelledAtOf }: { merged: (MergedPr & { repoKey?: string; })[]; claimant: import("./pr-ownership.ts").Claim; record: ClaimRecord; io: HostReads; labelledAt: () => number | null; }): { merged: ReturnType<typeof newestMergedAfter>; held: string | null; } {
   const fromRecord = newestMergedAfter(merged, claimant, record.at);
   if (fromRecord === null || io.labelEvents === undefined) return { merged: fromRecord, held: null };
-  const labelledAt = sessionLabelAddedAt(io.labelEvents(claimant.row), claimant.session);
+  const labelledAt = labelledAtOf();
   if (labelledAt === null) {
     return { merged: null, held: `${prMention(fromRecord.number, fromRecord.repoKey)} merged after the claim record, but when ${SESSION_PREFIX}${claimant.session} was added to #${claimant.row} could not be read, so it is not taken as this holder's landed work` };
   }
   return { merged: newestMergedAfter(merged, claimant, labelledAt), held: null };
+}
+
+/**
+ * (#612) WHEN THIS HOLDER'S STALL CLOCK STARTS: the later of the newest claim record and the newest `labeled` event of its `session:` label. A hand
+ * start writes no record, so the newest one is the PREVIOUS holder's, and a session started ten hours after it had ten idle hours at its first tick:
+ * nudged at once, and released after the grace if it had not moved. #4789 anchored a merged pull request the same way; this is the clock's half.
+ * A claim by `row-claim` (record and label together) reads exactly as before, the record being the later or the same.
+ *
+ * THE SEAM IS ASKED ONLY WHEN THE LABEL COULD MOVE THE ANSWER: a record younger than the stall interval is still inside `moving` whatever the label says,
+ * so a quiet org spends no call. A caller that gives no `now` or no `labelEvents` seam keeps the record. A label time that cannot be read keeps the
+ * record's too, never a later or an earlier one (a refused read is not a reason to nudge SOONER), and `held` says why so the tick can.
+ * @param {{ record: ClaimRecord, input: ClaimInput, io: HostReads, labelledAt: () => number | null }} args @returns {{ at: number, held: string | null }}
+ */
+function claimClock({ record, input, io, labelledAt }: { record: ClaimRecord; input: ClaimInput; io: HostReads; labelledAt: () => number | null; }): { at: number; held: string | null; } {
+  if (io.labelEvents === undefined || input.now === undefined) return { at: record.at, held: null };
+  if (input.now - record.at < (input.intervalMs ?? STALL_INTERVAL_MS)) return { at: record.at, held: null };
+  const at = labelledAt();
+  if (at === null) {
+    return { at: record.at, held: `when ${SESSION_PREFIX}${input.session} was added to #${input.row} could not be read, so the stall clock starts at the claim record` };
+  }
+  return { at: Math.max(record.at, at), held: null };
 }
 
 /**
