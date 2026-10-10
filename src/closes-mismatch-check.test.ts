@@ -7,11 +7,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { chmodSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  claimedBranchReport, claimedBranchStep, claimedBranchVerdict, type ClaimedRow, type PrHead,
+  claimedBranchReport, claimedBranchStep, claimedBranchVerdict, lookupClaimedRowsOfTrackers, trackerReposFor, type ClaimedRow, type PrHead,
 } from "./closes-mismatch-check.ts";
+import { homeProjectDeclaration } from "./project-config.ts";
 import { claimRecordComment } from "./row-claim.ts";
 import { REPO } from "./project-identity.ts";
 import type { ClosesDeclaration } from "./acceptance-commands.ts";
@@ -25,7 +26,11 @@ const AT = "2026-10-10T09:00:00Z";
 const comment = (body: string, createdAt = AT) => ({ body, createdAt, author: { login: "a11ign-ai-workers" } });
 const claim = (branch: string, session = "worker-4770") => comment(claimRecordComment({ session, branch, worktree: "../wt" }));
 const release = () => comment(claimRecordComment({ session: "worker-4770", released: true }), "2026-10-10T10:00:00Z");
-const row = (number: number, comments: ReturnType<typeof comment>[], unreadable = false): ClaimedRow => ({ number, comments, unreadable });
+const row = (number: number, comments: ReturnType<typeof comment>[], unreadable = false, repo?: string): ClaimedRow => ({ number, repo, comments, unreadable });
+// agent-org#744: a declared tracker other than the default one (the machinery rows of `a11ign/agent-org`, in a11ign's own declaration).
+const OTHER = homeProjectDeclaration().tracker.map((tracker) => tracker.repo).find((repo) => repo !== REPO) ?? "a11ign/agent-org";
+const OTHER_BRANCH = "agent/a-pull-request-that-agent-org-744";
+const OTHER_ROWS = [row(744, [claim(OTHER_BRANCH, "worker-agent-org-744")], false, OTHER)];
 const head = (branch: string, fork = false): PrHead => ({ branch, fork });
 
 const ROWS = [row(4770, [comment("an ordinary comment"), claim(BRANCH)]), row(4800, [claim("agent/something-else-4800", "worker-4800")])];
@@ -99,6 +104,59 @@ test("#4770: a row that does name the branch is refused even when ANOTHER row's 
   assert.equal(report.ok, false, "a positive match decides; only the absence of one is unprovable");
 });
 
+// --- agent-org#744: the same refusal, whichever declared tracker holds the row ---
+
+test("#744: `Closes: none` on a branch a claim record of the OTHER tracker names is REFUSED, the row named in full and the split instruction given", () => {
+  const report = claimedBranchReport(NONE, head(OTHER_BRANCH), { rows: [...ROWS, ...OTHER_ROWS], unreadTrackers: [] });
+  assert.equal(report.ok, false);
+  const text = report.ok === false ? report.reasons.join("\n") : "";
+  assert.ok(text.includes(`claimed branch of open row ${OTHER}#744`), text);
+  assert.ok(text.includes(`declare \`Closes ${OTHER}#744\``), "a bare #744 would name an issue of the PR's own repository (#2995)");
+  assert.match(text, /file what remains .* as its own row/);
+});
+
+test("#744: the same holds for a PR of that tracker's own repository, which still names the row in full", () => {
+  const report = claimedBranchReport(NONE, head(OTHER_BRANCH), OTHER_ROWS, OTHER);
+  assert.ok(report.ok === false && report.reasons[1].includes(`declare \`Closes ${OTHER}#744\``));
+});
+
+test("#744: a branch no tracker's claim names passes `Closes: none -- <reason>`, with both trackers read", () => {
+  const report = claimedBranchReport(NONE, head("agent/an-unrelated-change-9"), { rows: [...ROWS, ...OTHER_ROWS], unreadTrackers: [] });
+  assert.deepEqual(report, { ok: true, note: "agent/an-unrelated-change-9 is no open row's claimed branch" });
+});
+
+test("#744: an unreadable tracker is `could not tell`, named, and never `no claim`", () => {
+  const report = claimedBranchReport(NONE, head("agent/an-unrelated-change-9"), { rows: ROWS, unreadTrackers: [OTHER] });
+  assert.equal(report.ok, null);
+  assert.ok(report.ok === null && report.reason.includes(`could not read the open claimed rows of ${OTHER}`), JSON.stringify(report));
+  const verdict = claimedBranchVerdict(report);
+  assert.equal(verdict?.exit, 0, "a skip does not refuse: CI asks again, and a pull request that finishes no row is not stopped by a blip");
+});
+
+test("#744: a match in a readable tracker refuses even when another tracker could not be read", () => {
+  const report = claimedBranchReport(NONE, head(BRANCH), { rows: ROWS, unreadTrackers: [OTHER] });
+  assert.equal(report.ok, false, "a positive match decides; only the absence of one is unprovable");
+});
+
+test("#744: `trackerReposFor` is the tracker of the PR's own key first, then every declared tracker, once each", () => {
+  const declaration = {
+    tracker: [{ key: "", repo: "o/main", board: { owner: "o", number: 1 } }, { key: "tool", repo: "o/tool", board: { owner: "o", number: 2 } }],
+    code: [{ key: "", repo: "o/main" }, { key: "tool", repo: "o/tool" }, { key: "lib", repo: "o/lib" }],
+  };
+  assert.deepEqual(trackerReposFor("o/tool", declaration), ["o/tool", "o/main"]);
+  assert.deepEqual(trackerReposFor("o/main", declaration), ["o/main", "o/tool"]);
+  assert.deepEqual(trackerReposFor("o/lib", declaration), ["o/main", "o/tool"], "a repository with no tracker of its own files into the primary, and every tracker is still read");
+  assert.deepEqual(trackerReposFor("o/elsewhere", declaration), ["o/main", "o/tool"]);
+});
+
+test("#744: `lookupClaimedRowsOfTrackers` keeps one tracker's rows when another's read failed, and names the failed one", () => {
+  const read = (repo: string) => (repo === "o/down" ? null : [row(1, [claim("agent/x-1")], false, repo)]);
+  const got = lookupClaimedRowsOfTrackers(["o/up", "o/down"], read);
+  assert.deepEqual(got.unreadTrackers, ["o/down"]);
+  assert.deepEqual(got.rows.map((r) => r.repo), ["o/up"]);
+  assert.deepEqual(lookupClaimedRowsOfTrackers([], read), { rows: [], unreadTrackers: [] });
+});
+
 // --- claimedBranchStep: the wiring, with the two reads injected ---
 
 test("#4770 step: asks GitHub only for a `none` declaration", () => {
@@ -116,27 +174,67 @@ test("#4770 step: asks GitHub only for a `none` declaration", () => {
 
 const CHECK_CLI = fileURLToPath(new URL("./closes-mismatch-check.ts", import.meta.url));
 
-function runCheck(world: { headRef: string; rows: ClaimedRow[] | "fail"; own?: number[] }, body: string) {
+// agent-org#744: the CLI's tracker list is the HOME project's declaration, read once at import, and CI's pinned project may declare one tracker
+// only. So a case that needs a second tracker runs under a host of its own: a project of nobody's, with a default tracker and a second one.
+const FIXTURE = { repo: "acme/widgets", other: "acme/machinery" };
+const FIXTURE_DECLARATION = {
+  schema: 1,
+  roles: { dir: "roles" },
+  tracker: [{ key: "", repo: FIXTURE.repo, board: { owner: "acme", number: 1 } }, { key: "machinery", repo: FIXTURE.other, board: { owner: "acme", number: 2 } }],
+  code: [{ key: "", repo: FIXTURE.repo }, { key: "machinery", repo: FIXTURE.other }],
+  units: { prefix: "acme-", boardReportWorkflow: "board.yml", own: [] },
+  vocabulary: {
+    labels: { backlog: "backlog", needsChairman: "needs:chairman", outOfRelease: "out-of-release", blocked: "blocked" },
+    prefixes: { lane: "lane:", session: "session:", answer: "answer:" },
+    milestones: { roadToVersionOne: "Road to one", outOfRelease: "Out of release" },
+    lanesFile: "lanes.json",
+    templateFields: { acceptance: "Acceptance", closes: "Closes", fleet: "Fleet" },
+    fleetQuestion: "Does it need the fleet?",
+    resources: [],
+  },
+};
+
+/** A host file whose primary project declares two trackers, in a fresh directory. @param {string} dir @returns {string} */
+function twoTrackerHost(dir: string): string {
+  const checkout = join(dir, "checkout");
+  mkdirSync(join(checkout, ".agent-org"), { recursive: true });
+  mkdirSync(join(checkout, "roles"));
+  writeFileSync(join(checkout, "roles/sessions.json"), JSON.stringify({ live: [{ name: "ceo" }], retired: [] }));
+  writeFileSync(join(checkout, ".agent-org/project.json"), JSON.stringify(FIXTURE_DECLARATION));
+  const hostFile = join(dir, "host.json");
+  writeFileSync(hostFile, JSON.stringify({
+    schema: 1, home: "/home/agent", binDir: "/home/agent/.local/bin", primary: "proj",
+    projects: [{ id: "proj", checkout }], gh: { workers: "/home/agent/workers", leads: "/home/agent/leads", leadsHeader: [], leadsWorkspaces: [] },
+  }));
+  return hostFile;
+}
+
+function runCheck(world: { headRef: string; rows: ClaimedRow[] | "fail"; other?: ClaimedRow[] | "fail"; own?: number[] }, body: string) {
   const dir = tmpDir("closes-claimed-branch-");
   const fake = join(dir, "gh");
-  const pull = { head: { ref: world.headRef, repo: { full_name: REPO } }, base: { repo: { full_name: REPO } } };
-  const rows = { data: { repository: { issues: { totalCount: world.rows === "fail" ? 0 : world.rows.length,
-    nodes: world.rows === "fail" ? [] : world.rows.map((r) => ({ number: r.number, comments: { totalCount: r.comments.length, nodes: r.comments } })) } } } };
+  const twoTrackers = world.other !== undefined;
+  const repo = twoTrackers ? FIXTURE.repo : REPO;
+  const pull = { head: { ref: world.headRef, repo: { full_name: repo } }, base: { repo: { full_name: repo } } };
+  const issuesOf = (list: ClaimedRow[] | "fail" | undefined) => ({ data: { repository: { issues: { totalCount: list === undefined || list === "fail" ? 0 : list.length,
+    nodes: list === undefined || list === "fail" ? [] : list.map((r) => ({ number: r.number, comments: { totalCount: r.comments.length, nodes: r.comments } })) } } } });
+  const rows = issuesOf(world.rows);
   const own = { data: { repository: { pullRequest: { closingIssuesReferences: {
     nodes: (world.own ?? []).map((number) => ({ number, title: "t", labels: { nodes: [] } })) } } } } };
   writeFileSync(join(dir, "pull.json"), JSON.stringify(pull));
   writeFileSync(join(dir, "rows.json"), JSON.stringify(rows));
+  writeFileSync(join(dir, "other.json"), JSON.stringify(issuesOf(world.other)));
   writeFileSync(join(dir, "own.json"), JSON.stringify(own));
   writeFileSync(fake, `#!/bin/sh
 case "$*" in
   *pulls/*) cat "${dir}/pull.json" ;;
+  *"issues(states"*"name=${FIXTURE.other.split("/")[1]}"*) [ "${world.other === "fail"}" = true ] && exit 1; cat "${dir}/other.json" ;;
   *"issues(states"*) [ "${world.rows === "fail"}" = true ] && exit 1; cat "${dir}/rows.json" ;;
   *) cat "${dir}/own.json" ;;
 esac
 `);
   chmodSync(fake, 0o755);
   const result = spawnSync(process.execPath, [CHECK_CLI, "4800"], {
-    encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, PR_BODY: body },
+    encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, PR_BODY: body, ...(twoTrackers ? { AGENT_ORG_HOST: twoTrackerHost(dir) } : {}) },
   });
   return { status: result.status, out: result.stdout };
 }
@@ -166,4 +264,23 @@ test("#4770 CLI: an unreadable claim record is skipped with its reason, and the 
   assert.equal(status, 0);
   assert.match(out, /skipped the claimed-branch comparison -- could not read the open claimed rows/);
   assert.match(out, /declared and resolved agree/);
+});
+
+test("#744 CLI: `Closes: none` on a branch the OTHER tracker's claim record names exits 1, naming that row in full", () => {
+  const { status, out } = runCheck({ headRef: OTHER_BRANCH, rows: ROWS, other: OTHER_ROWS }, "Closes: none -- the rest is a later step");
+  assert.equal(status, 1);
+  assert.match(out, /^CLOSES MISMATCH: REFUSED -- a claimed row's own pull request cannot keep the row open:/);
+  assert.ok(out.includes(`claimed branch of open row ${FIXTURE.other}#744`), out);
+});
+
+test("#744 CLI: a branch neither tracker's claim names passes `Closes: none`, with both trackers read", () => {
+  const { status, out } = runCheck({ headRef: "dependabot/pnpm/yaml-2.8.0", rows: ROWS, other: OTHER_ROWS }, "Closes: none -- dependency update");
+  assert.equal(status, 0);
+  assert.match(out, /is no open row's claimed branch/);
+});
+
+test("#744 CLI: an unreadable other tracker is skipped with its name, never passed as `no claim`", () => {
+  const { status, out } = runCheck({ headRef: "agent/an-unrelated-change-9", rows: ROWS, other: "fail" }, "Closes: none -- finishes no row");
+  assert.equal(status, 0);
+  assert.ok(out.includes(`skipped the claimed-branch comparison -- could not read the open claimed rows of ${FIXTURE.other}`), out);
 });

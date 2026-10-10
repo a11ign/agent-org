@@ -47,6 +47,12 @@
  * head ref against the `Claimed-branch:` of every open claimed row's claim record, never the row's number against the PR's. A PR on no
  * row's branch (a dependency bump, a docs-only change) is unaffected. See `claimedBranchReport`.
  *
+ * IN ANY TRACKER (agent-org#744, chairman 2026-10-10: "why are there so many workers hanging about in herdr?" -- fifteen panes, none working,
+ * each holding a row whose pull request had merged as `Closes: none`). The rows were read from `REPO`'s tracker alone, so a claimed row of
+ * another declared tracker (the machinery rows of `a11ign/agent-org`) was never matched. The rows are now those of EVERY declared tracker, and
+ * a tracker that cannot be read is "could not tell" for the absence of a match and never "no claim"; a match in a readable one still refuses.
+ * `pr-open.ts` asks the same question before it sends, so the author is told at the command and not after the merge.
+ *
  * A PR ABOUT "TEXT THAT PARSES AS AN INSTRUCTION" CANNOT DESCRIBE ITSELF WITHOUT BECOMING AN INSTANCE --
  * expect this, do not read it as having broken something. The PR that built this check tripped its own
  * two example patterns while drafting the body that explains them: `Closes: none` inside a sentence
@@ -67,6 +73,7 @@ import { gh, lookup, lookupClosingIssues, lookupRecentClosesPrs } from "./merge-
 import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { claimRecordOf, type RowComment } from "./claim-stall.ts";
 import { CLAIM_LABEL } from "./claim-labels.ts";
+import { homeProjectDeclaration } from "./project-config.ts";
 
 // GitHub's own documented closing keywords -- close/closes/closed, fix/fixes/fixed, resolve/resolves/
 // resolved -- immediately followed by `#<number>`. Used only to LOCATE the phrase in the body for a
@@ -243,7 +250,12 @@ export type PrHead = { branch: string, fork: boolean };
  * An open claimed row as the lookup read it. `unreadable` is true when the row has more comments than the window read and the claim
  * record is not among them: the record may exist, so the row can be neither matched nor ruled out.
  */
-export type ClaimedRow = { number: number, comments: RowComment[], unreadable: boolean };
+export type ClaimedRow = { number: number, repo?: string, comments: RowComment[], unreadable: boolean };
+/**
+ * The open claimed rows of every tracker asked, and the trackers that could not be read at all. A bare array of rows is the one-tracker shorthand
+ * `claimedBranchReport` takes (`repo` absent: the default tracker's).
+ */
+export type ClaimedRows = { rows: ClaimedRow[], unreadTrackers: string[] };
 export type ClaimedBranchReport =
   | { ok: true, note: string | null }
   | { ok: false, reasons: string[] }
@@ -254,32 +266,40 @@ export type ClaimedBranchReport =
  * `Claimed-branch:` -- by REF, so a PR number that happens to equal a row number is no match and a row's branch under another number is
  * one. `claimRecordOf` is the claim-stall reader: a RELEASED claim has no branch, so a released row does not hold its old branch.
  *
- * `ok: null` is "could not say" and is never "no row holds it": a failed read of the head or of the rows, and a row whose claim record
- * lies beyond the comments read, are each named (this repo's own rule throughout `merge-guard/lookups.ts`).
+ * `ok: null` is "could not say" and is never "no row holds it": a failed read of the head or of the rows, a TRACKER whose rows were not read, and a
+ * row whose claim record lies beyond the comments read, are each named (this repo's own rule throughout `merge-guard/lookups.ts`). A row that
+ * does name the branch still refuses when another tracker could not be read: only the absence of a match is unprovable.
+ *
+ * A row is named in full (`owner/repo#n`) unless both it and the PR are the default tracker's: a bare `Closes #n` in a pull request of any
+ * other repository names THAT repository's issue (#2995), which is not what the refusal asks the author to write.
  * @param {import("./acceptance-commands.ts").ClosesDeclaration} declaration
  * @param {PrHead | null} head
- * @param {ClaimedRow[] | null} rows
+ * @param {ClaimedRow[] | ClaimedRows | null} rows
  * @param {string} [prRepo]
  * @returns {ClaimedBranchReport}
  */
-export function claimedBranchReport(declaration: import("./acceptance-commands.ts").ClosesDeclaration, head: PrHead | null, rows: ClaimedRow[] | null, prRepo: string = REPO): ClaimedBranchReport {
+export function claimedBranchReport(declaration: import("./acceptance-commands.ts").ClosesDeclaration, head: PrHead | null, rows: ClaimedRow[] | ClaimedRows | null, prRepo: string = REPO): ClaimedBranchReport {
   if (declaration.kind !== "none") return { ok: true, note: null };
   if (head === null) return { ok: null, reason: "could not read the PR's head branch, so cannot say whether it is a claimed row's" };
   if (rows === null) return { ok: null, reason: "could not read the open claimed rows' claim records" };
   if (head.fork) return { ok: true, note: `${head.branch} comes from a fork, which no claim names` };
-  const holders = rows.filter((row) => claimRecordOf(row.comments)?.branch === head.branch);
+  const { rows: list, unreadTrackers } = Array.isArray(rows) ? { rows, unreadTrackers: [] as string[] } : rows;
+  const rowName = (row: ClaimedRow) => ((row.repo ?? REPO) === REPO && prRepo === REPO ? `#${row.number}` : `${row.repo ?? REPO}#${row.number}`);
+  const holders = list.filter((row) => claimRecordOf(row.comments)?.branch === head.branch);
   if (holders.length > 0) {
-    const named = holders.map((row) => (prRepo === REPO ? `#${row.number}` : `${REPO}#${row.number}`));
+    const named = holders.map(rowName);
     return { ok: false, reasons: [
       `you declared a \`none\` Closes line, but this PR's branch ${head.branch} is the claimed branch of open row ${named.join(", ")}: the PR that IS a row's `
         + "deliverable closes that row (one deliverable per row).",
       `declare \`Closes ${named[0]}\`, and file what remains (a live reading, a decision, a later step) as its own row; the merge then closes the row and files the verify row.`,
     ] };
   }
-  const unreadable = rows.filter((row) => row.unreadable).map((row) => `#${row.number}`);
-  if (unreadable.length > 0) {
-    return { ok: null, reason: `the claim record of ${unreadable.join(", ")} lies beyond the comments read, so ${head.branch} cannot be ruled out as its branch` };
-  }
+  const unreadable = list.filter((row) => row.unreadable).map(rowName);
+  const cannot = [
+    ...(unreadable.length > 0 ? [`the claim record of ${unreadable.join(", ")} lies beyond the comments read, so ${head.branch} cannot be ruled out as its branch`] : []),
+    ...(unreadTrackers.length > 0 ? [`could not read the open claimed rows of ${unreadTrackers.join(", ")}, so ${head.branch} cannot be ruled out as a row's branch there`] : []),
+  ];
+  if (cannot.length > 0) return { ok: null, reason: cannot.join("; ") };
   return { ok: true, note: `${head.branch} is no open row's claimed branch` };
 }
 
@@ -301,14 +321,15 @@ const CLAIM_COMMENT_WINDOW = 100;
 const CLAIMED_ROWS_PAGE = 100;
 
 /**
- * The open claimed rows of the tracker with the comments their claim records are read from -- ONE query. `null` on failure or when the
+ * The open claimed rows of ONE tracker with the comments their claim records are read from -- ONE query. `null` on failure or when the
  * page is not the whole population (`totalCount` beyond it): an unread row is not an unclaimed one, the same rule as every lookup in
- * `merge-guard/lookups.ts`. Rows are the tracker's, whichever repository the PR is in (a layer PR's `Closes` names the tracker in full form).
+ * `merge-guard/lookups.ts`. Each row carries the repository it was read from. `lookupClaimedRowsOfTrackers` is the one over several.
+ * @param {string} [repo] the tracker's `owner/name`; the default tracker's when absent
  * @returns {ClaimedRow[] | null}
  */
-export function lookupOpenClaimedRows(): ClaimedRow[] | null {
+export function lookupOpenClaimedRows(repo: string = REPO): ClaimedRow[] | null {
   return lookup(() => {
-    const [owner, name] = REPO.split("/");
+    const [owner, name] = repo.split("/");
     const query = "query($owner:String!,$name:String!,$label:String!,$count:Int!,$window:Int!){"
       + "repository(owner:$owner,name:$name){issues(states:OPEN,labels:[$label],first:$count){totalCount nodes{number "
       + "comments(last:$window){totalCount nodes{body createdAt author{login}}}}}}}";
@@ -317,9 +338,41 @@ export function lookupOpenClaimedRows(): ClaimedRow[] | null {
     if (issues.totalCount > issues.nodes.length) throw new Error("the claimed rows exceed one page");
     return issues.nodes.map((issue: { number: number, comments: { totalCount: number, nodes: RowComment[] } }) => {
       const comments = issue.comments.nodes;
-      return { number: issue.number, comments, unreadable: issue.comments.totalCount > comments.length && claimRecordOf(comments) === null };
+      return { number: issue.number, repo, comments, unreadable: issue.comments.totalCount > comments.length && claimRecordOf(comments) === null };
     });
   });
+}
+
+/**
+ * Pure. The trackers a pull request of `prRepo` can close a row of: the one its repository files into (the tracker of the same key, when the
+ * project declares one) first, then EVERY declared tracker -- a layer repository's pull request closes a row of the primary tracker by the full
+ * form of `Closes`, so the tracker its own key names is not the only place its branch can be claimed.
+ * @param {string} prRepo
+ * @param {Pick<import("./project-config.ts").ProjectDeclaration, "tracker" | "code">} [declaration]
+ * @returns {string[]}
+ */
+export function trackerReposFor(prRepo: string, declaration: Pick<ReturnType<typeof homeProjectDeclaration>, "tracker" | "code"> = homeProjectDeclaration()): string[] {
+  const key = declaration.code.find((entry) => entry.repo === prRepo)?.key;
+  const own = declaration.tracker.filter((tracker) => tracker.key === key);
+  return [...new Set([...own, ...declaration.tracker].map((tracker) => tracker.repo))];
+}
+
+/**
+ * The open claimed rows of each of `repos`, with the ones that could not be read named and never read as empty (agent-org#744). One tracker's
+ * failure costs only its own rows: the others' are still returned, so a match among them still decides.
+ * @param {readonly string[]} repos
+ * @param {(repo: string) => ClaimedRow[] | null} [read]
+ * @returns {ClaimedRows}
+ */
+export function lookupClaimedRowsOfTrackers(repos: readonly string[], read: (repo: string) => ClaimedRow[] | null = lookupOpenClaimedRows): ClaimedRows {
+  const rows: ClaimedRow[] = [];
+  const unreadTrackers: string[] = [];
+  for (const repo of repos) {
+    const got = read(repo);
+    if (got === null) unreadTrackers.push(repo);
+    else rows.push(...got);
+  }
+  return { rows, unreadTrackers };
 }
 
 /**
@@ -335,7 +388,7 @@ export function lookupPrHead(prNumber: number, prRepo: string): PrHead | null {
 }
 
 /** The two reads the third direction makes, injectable so the wiring is testable without GitHub. */
-export type ClaimedBranchReads = { head: (prNumber: number, prRepo: string) => PrHead | null, rows: () => ClaimedRow[] | null };
+export type ClaimedBranchReads = { head: (prNumber: number, prRepo: string) => PrHead | null, rows: (prRepo: string) => ClaimedRow[] | ClaimedRows | null };
 
 /**
  * The third direction end to end: asks only when the declaration is `none` (every well-formed PR with a `Closes` costs nothing extra).
@@ -345,9 +398,9 @@ export type ClaimedBranchReads = { head: (prNumber: number, prRepo: string) => P
  * @returns {{ exit: 0 | 1, lines: string[] } | null}
  */
 export function claimedBranchStep(declaration: import("./acceptance-commands.ts").ClosesDeclaration, pr: { prNumber: number; prRepo: string; },
-  reads: ClaimedBranchReads = { head: lookupPrHead, rows: lookupOpenClaimedRows }): { exit: 0 | 1; lines: string[]; } | null {
+  reads: ClaimedBranchReads = { head: lookupPrHead, rows: (prRepo) => lookupClaimedRowsOfTrackers(trackerReposFor(prRepo)) }): { exit: 0 | 1; lines: string[]; } | null {
   if (declaration.kind !== "none") return null;
-  return claimedBranchVerdict(claimedBranchReport(declaration, reads.head(pr.prNumber, pr.prRepo), reads.rows(), pr.prRepo));
+  return claimedBranchVerdict(claimedBranchReport(declaration, reads.head(pr.prNumber, pr.prRepo), reads.rows(pr.prRepo), pr.prRepo));
 }
 
 function main() {
