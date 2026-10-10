@@ -231,6 +231,21 @@ test("a ledger counter is no class: it is left out of the groups, a real event k
   assert.deepEqual(groupByClass(index, [], [repeat("unclassified"), repeat("mystery-kind")]).map((g) => [g.id, g.entry]), [["mystery-kind", null]], "an unknown key is a stranger beside a counter");
 });
 
+test("a ledger holding two refs under each counter and no closed rows reads CLEAR, and a real typo in the ledger is still an unknown class (agent-org#508)", () => {
+  const ledgerOf = (...keys: string[]) => keys.flatMap((key) => ["r1", "r2"].map((ref, i) => `${key}\t${NOW - (10 - i) * MINUTE}\t${ref}`)).join("\n");
+  const readOf = (ledger: string) => readClassRepeat(tracker([]).run, REPO, { root: "/project", read: () => INDEX, now: NOW, ledgerPath: "/state/failure-ledger", readLedger: () => ledger });
+  const counters = readOf(ledgerOf("unclassified", "unidentified-caller-order"));
+  assert.ok(!("unreadable" in counters) && Array.isArray(counters.ledger) && counters.ledger.length === 2, "the ledger does hold both counters as repeats, so the case is not vacuous");
+  const [reading, ...rest] = classRepeatReadings({ now: NOW, classRepeat: counters });
+  assert.equal(rest.length, 0);
+  assert.equal(reading.status, "clear", "the counters are bookkeeping, not strangers");
+  assert.doesNotMatch(reading.detail, /unknown class|unclassified|unidentified-caller-order/);
+  const typo = classRepeatReadings({ now: NOW, classRepeat: readOf(ledgerOf("unclassified", "mystery-kind")) });
+  assert.deepEqual(typo.map((r) => r.status), ["unknown"], "a ledger key that is neither a counter nor indexed is still named");
+  assert.match(typo[0].detail, /unknown class/);
+  assert.ok(typo[0].detail.includes("`class:mystery-kind`") && !typo[0].detail.includes("unclassified"));
+});
+
 const REAL = join(HOME_CHECKOUT, FAILURE_CLASSES_PATH);
 test("the project's real failure-classes.json parses and every class has an id, a name and a guard or a guardNote",
   { skip: existsSync(REAL) ? false : `${REAL} is absent on this host (the project checkout is not at a commit that has the seed, #4125)` }, () => {
