@@ -17,15 +17,14 @@ The wiring is in `wake.ts`, not `work-gate.ts`: the gate is synchronous and a de
 ## How you verified it
 
 ```
-$ bash -c 'cd ~/repos/agent-org && npx rstest run src/ci-failure-class.test.ts src/review-depth.test.ts'   # the row's command, from this worktree
-$ node --import tsx --test src/wake-ci-class-review-depth.test.ts
-ℹ tests 11   ℹ pass 11   ℹ fail 0
+$ AGENT_ORG_HOST=<a recorded host with no triage> node --import tsx --test src/wake-ci-class-review-depth.test.ts src/ci-failure-class.test.ts src/review-depth.test.ts
+ℹ tests 32   ℹ pass 32   ℹ fail 0
 $ (the 21 wake-family test files)
 ℹ tests 313  ℹ pass 313  ℹ fail 0
 $ node_modules/.bin/tsc --noEmit -p tsconfig.json   # only the pre-existing mjs-ratchet.test.ts missing-module errors
 ```
 
-Two tests drive the real `wake.ts` entry with stub herdr/gh/git: a red PR reaches `ci-failure-class` (journal line carries the class and route; the checkless control carries none), and a reviewer start reaches `review-depth` (a workflow path is started at `gpt-5.6-luna/high` with "Review depth: full" in the prompt; a docs-only change at `/medium` with no depth line).
+The row's own command is `npx rstest run` over the two older files; those are `node:test` files and need `AGENT_ORG_HOST` set to a checkout that holds `.agent-org/project.json` (the command refuses without it on `main` too), so the Acceptance line below is the `node --import tsx --test` form, and it needs the same variable. Two tests drive the real `wake.ts` entry with stub herdr/gh/git: a red PR reaches `ci-failure-class` (journal line carries the class and route; the checkless control carries none), and a reviewer start reaches `review-depth` (a workflow path is started at `gpt-5.6-luna/high` with "Review depth: full" in the prompt; a docs-only change at `/medium` with no depth line).
 
 Acceptance: `node --import tsx --test src/wake-ci-class-review-depth.test.ts src/ci-failure-class.test.ts src/review-depth.test.ts`
 
