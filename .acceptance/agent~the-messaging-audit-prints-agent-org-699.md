@@ -7,7 +7,8 @@ bash -c 'cd /home/agent/repos/wt-agent-org-699 && grep -q "a clean pass prints n
 
 Printed `VERDICT pass: 30 tests in 2 files` (25 in `audit.test.ts`, 5 in `audit-tick.test.ts`). The `grep` exits 1 on `main` (no test names the case) and 0 here.
 
-Mutation (each restored from a copy, `diff` showing it byte-identical; failures counted over the two files):
+Mutation:
+- Each mutant was restored from a copy with `diff` showing it byte-identical; failures are counted over the two files (30 tests).
 - The count line never printed (`if (misuses.length > 0) print(line)` replaced by a no-op): 6 of 30 red, among them "a pass that flags one still prints", the second-pass case and the tick's stderr case.
 - The count line always printed on the main pass (the pre-change behaviour): 6 of 30 red, among them "a clean pass prints nothing" and the tick's "twin" case.
 - The first-run baseline printing again: 4 of 30 red, among them "the first-run baseline pass prints nothing and still writes the cursor".
