@@ -22,7 +22,7 @@ import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DEFAULT_TRIAGE_MIN_CONFIDENCE } from "./host-config.ts";
 // (`triage-provider.ts` imports `decide` back for `triageOrder`: a cycle, and safe because neither module uses the other at load, only inside a call.)
-import { askProvider, printDiagnostic, processState, TRIAGE_UNAVAILABLE, type ProviderQuestion, type TriageDeps } from "./triage-provider.ts";
+import { askProvider, printDiagnostic, processState, TRIAGE_UNAVAILABLE, type Described, type ProviderQuestion, type TriageDeps } from "./triage-provider.ts";
 
 export const DECISION_USES = Object.freeze(["model-routing", "wake-triage", "ci-failure-class", "failure-class-match", "duplicate-row", "review-depth"] as const);
 export type DecisionUse = (typeof DECISION_USES)[number];
@@ -36,11 +36,11 @@ export const OUTCOME_ASKED = "asked";
 const MIN_SCORE = 1;
 const MAX_SCORE = MIN_SCORE + SCORE_LEVELS - 1;
 
-/** The five descriptions of a `score`'s levels, level 1 first: what the API is sent as `criteria`, where a description's position is its score. */
-export type ScoreLevels = readonly [string, string, string, string, string];
+/** The five descriptions of a `score`'s levels, level 1 first: what the API is sent as `criteria`, where a description's position is its score. A level is text or structure (#4752). */
+export type ScoreLevels = readonly [Described, Described, Described, Described, Described];
 /** A `choice` among `criteria` or a `score` from 1 to 5 over `levels`, with the deterministic `fallback` this use takes in the provider's place and an optional floor of its own. */
 export type Question = (
-  | { type: "choice"; instructions: string; criteria: Readonly<Record<string, string>>; fallback: string }
+  | { type: "choice"; instructions: string; criteria: Readonly<Record<string, Described>>; fallback: string }
   | { type: "score"; instructions: string; levels: ScoreLevels; fallback: number }
 ) & { minConfidence?: number };
 export type Value = string | number;
