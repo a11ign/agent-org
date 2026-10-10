@@ -34,11 +34,11 @@ import { freshnessLine, sessionsWorking, STALE_AFTER_MS, storeFreshness, transcr
 import { fingerprint, HEAD_BYTES, loadState, planRead, saveState, stateFileFor } from "./ingest-state.ts";
 import type { Carry, FileState, IngestState } from "./ingest-state.ts";
 import type { GhCallsReport } from "./gh-calls.ts";
-import { appendToStore, compactStore, DEFINITIONS, eventsForRow, eventsOfDeferrals, eventsOfTranscript, openStore, readStore, repriceEvents, subjectOf, subjectsOf as subjectsOfKey } from "./store.ts";
+import { appendToStore, CLIENT_CACHE_READ_RATE, compactStore, COST_BY, costBy, DEFINITIONS, duplicateIds, eventsForRow, eventsOfDeferrals, eventsOfTranscript, openStore, readStore, repriceEvents, subjectOf, subjectsOf as subjectsOfKey } from "./store.ts";
 import { DEFINITIONS as WATERFALL_DEFINITIONS, renderWaterfall, waterfall } from "./waterfall.ts";
 import type { Stats } from "node:fs";
 import type { LedgerEntry, PullRequest } from "../wakes-per-row.ts";
-import type { Tokens, TraceEvent } from "./store.ts";
+import type { CostBy, CostRow, Duplicates, Tokens, TraceEvent } from "./store.ts";
 import type { Move } from "./aggregate.ts";
 
 const DEFAULT_SINCE_DAYS = 3;
@@ -62,6 +62,9 @@ const WAKE_CACHE_FLAG = "--wake-cache";
 const INGEST_FLAG = "--ingest";
 const FRESHNESS_FLAG = "--freshness";
 const COMPACT_STORE_WORD = "compact-store";
+const DUPLICATES_WORD = "duplicates";
+const COST_WORD = "cost";
+const MAX_DUPLICATES_SHOWN = 20;
 const DRY_RUN_FLAG = "--dry-run";
 const DEFAULT_WAKE_CACHE_DAYS = 7; // a week of wakes: enough that each standing seat has a hundred or more first turns, and the store holds little older
 const ISO_WEEK_ONE_DAY = 4; // 4 January is always in ISO week 1
@@ -118,6 +121,80 @@ export const isIngest = (argv: string[]) => argv.includes(INGEST_FLAG);
 export const isFreshness = (argv: string[]) => argv.includes(FRESHNESS_FLAG);
 
 export const isCompactStore = (argv: string[]) => argv.includes(COMPACT_STORE_WORD);
+
+/** The command word of `trace <word> ...`: the first argument that is not the `--` separator. A word is only a command in that place, so `--cause cost` is not one. */
+const commandWord = (argv: string[]) => argv.find((word) => word !== "--");
+
+export const isDuplicates = (argv: string[]) => commandWord(argv) === DUPLICATES_WORD;
+
+export const isCost = (argv: string[]) => commandWord(argv) === COST_WORD;
+
+/** `trace duplicates [--store <path>]`: any other argument is refused, as `compact-store`'s are. */
+export function parseDuplicatesArgs(argv: string[]) {
+  const [, ...given] = argv.filter((word) => word !== "--");
+  const [flag, value, ...extra] = given;
+  if (given.length > 0 && (flag !== "--store" || !value || extra.length > 0)) throw new Error(`unknown argument ${given.join(" ")}: trace duplicates [--store <path>]`);
+  return { store: value ?? defaultStore() };
+}
+
+const COST_USAGE = `trace cost --by ${COST_BY.join("|")} [--since <ISO>] [--store <path>]`;
+
+/** `trace cost --by day|row|cause|session [--since <ISO>] [--store <path>]`: `--by` is required, because a sum with no stated grouping is the hand-rolled one. */
+export function parseCostArgs(argv: string[]) {
+  const [, ...given] = argv.filter((word) => word !== "--");
+  const flags: Record<string, string> = {};
+  for (let index = 0; index < given.length; index += 2) {
+    const name = given[index];
+    if (!["--by", "--since", "--store"].includes(name) || given[index + 1] === undefined) throw new Error(`unknown argument ${given.slice(index).join(" ")}: ${COST_USAGE}`);
+    flags[name.slice(2)] = given[index + 1];
+  }
+  if (!COST_BY.includes(flags.by as CostBy)) throw new Error(`--by must be one of ${COST_BY.join(", ")} (got ${flags.by ?? "nothing"}): ${COST_USAGE}`);
+  const since = flags.since === undefined ? null : Date.parse(flags.since);
+  if (since !== null && Number.isNaN(since)) throw new Error(`--since must be an ISO time (got ${flags.since})`);
+  return { by: flags.by as CostBy, since, store: flags.store ?? defaultStore() };
+}
+
+/** The line the ingest report and `trace duplicates` print: ids on more than one line, then the extra lines they hold. */
+export const duplicatesLine = ({ ids, extra }: Duplicates) => `duplicate ids: ${ids.size} (${extra} extra lines)`;
+
+/** What `trace duplicates` prints: the line, then each id with the lines it is on, the most first. */
+export function duplicatesReport(found: Duplicates, store: string): string[] {
+  const shown = [...found.ids].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, MAX_DUPLICATES_SHOWN);
+  return [duplicatesLine(found), `${found.lines} lines, ${found.distinct} distinct ids in ${store}`,
+    ...shown.map(([id, lines]) => `  ${id}: ${lines} lines`),
+    ...(found.ids.size > shown.length ? [`  ... and ${found.ids.size - shown.length} more`] : []),
+    ...(found.ids.size > 0 ? ["`trace compact-store` leaves one line per id; every reader de-duplicates by id until then"] : [])];
+}
+
+/** The table `trace cost` prints, its first line naming how the sum was read. */
+export function costReport({ rows, total }: { rows: CostRow[]; total: CostRow; }, { by, since, store, events }: { by: CostBy; since: number | null; store: string; events: number; }): string[] {
+  const usd = (value: number) => value.toFixed(COST_DECIMALS);
+  const primary = "usd (PRICES)";
+  const client = `usd (cache reads at $${CLIENT_CACHE_READ_RATE.toFixed(2)}/M)`;
+  const table = [[by, "turns", "unpriced", primary, client], ...[...rows, total].map((row) => [row.key, String(row.turns), String(row.unpriced), usd(row.usd), usd(row.usdAtClientRate)])];
+  const widths = table[0].map((_, column) => Math.max(...table.map((cells) => cells[column].length)));
+  const layout = (cells: string[]) => cells.map((cell, column) => (column === 0 ? cell.padEnd(widths[column]) : cell.padStart(widths[column]))).join("  ");
+  return [`cost by ${by}: read through readStore, repriced from PRICES (the stored costUsd is not summed)`,
+    `store: ${store}; ${events} events, one line per id; ${since === null ? "from the start of the store" : `since ${new Date(since).toISOString()}`}`,
+    `"${primary}" is the primary reading, every turn priced at its model's cache-read rate in PRICES; "${client}" reprices the same turns with every cache-read token at $${CLIENT_CACHE_READ_RATE.toFixed(2)}/M, `
+    + "which is how Claude Code's own cost display reads them, so the two differ by the cache-read tokens times the gap between $0.20 and the model's own rate",
+    "unpriced: turns of a model with no price in PRICES, counted and not dollared (not free)",
+    ...(by === "row" ? ["a turn on several rows is under each of them, so the rows are not to be added; the total counts it once"] : []),
+    "", ...table.map(layout)];
+}
+
+function mainDuplicates() {
+  const { store } = parseDuplicatesArgs(process.argv.slice(2));
+  const found = duplicateIds(store);
+  for (const line of duplicatesReport(found, store)) console.log(line);
+  if (found.ids.size > 0) process.exitCode = 1;
+}
+
+function mainCost() {
+  const { by, since, store } = parseCostArgs(process.argv.slice(2));
+  const events = repriceEvents(readStore(store));
+  for (const line of costReport(costBy(events, by, since), { by, since, store, events: events.length })) console.log(line);
+}
 
 /** `trace compact-store [--store <path>] [--dry-run]`: any other argument is refused, because a misspelt `--dry-run` would rewrite the store. */
 export function parseCompactStoreArgs(argv: string[]) {
@@ -1101,7 +1178,10 @@ async function mainIngest() {
   const { homeProjectDeclaration } = await import("../project-config.ts");
   const { report } = ingestHome({ since, storePath, rowRepo: homeProjectDeclaration().tracker[0].repo });
   for (const line of ingestSummary(report)) console.log(line);
-  if (ingestFailures(report).length > 0) process.exitCode = 1;
+  // A duplicate id is a store that over-counts under any reader that sums its lines (a11ign/a11ign#4437, `metrics-integrity`): above zero it fails the run, as an unreadable file does.
+  const duplicates = duplicateIds(storePath);
+  console.log(duplicatesLine(duplicates));
+  if (ingestFailures(report).length > 0 || duplicates.ids.size > 0) process.exitCode = 1;
 }
 
 /** `--freshness`: the store's newest turn against the clock, read from its tail; exit 1 when it is stale, so a unit or a person can act on the code. */
@@ -1126,6 +1206,8 @@ async function mainWakeCache() {
 }
 
 async function main() {
+  if (isDuplicates(process.argv.slice(2))) return mainDuplicates();
+  if (isCost(process.argv.slice(2))) return mainCost();
   if (isCompactStore(process.argv.slice(2))) return void compactStore(parseCompactStoreArgs(process.argv.slice(2))).forEach((line) => console.log(line));
   if (isIngest(process.argv.slice(2))) return mainIngest();
   if (isFreshness(process.argv.slice(2))) return mainFreshness();

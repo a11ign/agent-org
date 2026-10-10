@@ -42,7 +42,7 @@ export const DEFINITIONS = [
   "WALL-CLOCK OF A TURN (inferred): from the record before its first block to its last block. That record is stamped after a tool call ends, so the call is NOT in it: it is the model's own time.",
   "TOOL TIME OF A TURN (`toolMs`, measured): when the message follows a tool call, from the last block of the message before it to the tool's result record; `null` when it follows no tool call, never 0. A turn that follows an order or a prompt has none, and so does the first turn of a read when nothing was carried to say when the call began.",
   "TOOL READ (`toolRead`, measured): on the turn that CARRIES a result, the growth of the window the result caused: this turn's `input + cacheRead + cacheWrite5m + cacheWrite1h`, less the previous message's, less the previous message's own `output` (which re-enters the window the same way). Present only when the previous message called `Read`, `Grep` or `Glob`; `tool` is that tool, or `mixed` when the message called more than one tool (any mix with a tool that is not one of the three is in it too), and `tokens` is `null` (never 0) when the window cannot be read that way: a prompt, an order or a compaction came between, the window shrank, or the previous message is not in the store. `null` on a turn stored by this reader means no such call preceded it; an ABSENT field is a turn stored before the reader, which says nothing.",
-  "COST: tokens x the rate in PRICES, cache writes at the 1-hour rate when the split is absent (every transcript seen writes 1-hour). `null` for a model with no price.",
+  "COST: tokens x the rate in PRICES, cache writes at the 1-hour rate when the split is absent (every transcript seen writes 1-hour). `null` for a model with no price. A STORED `costUsd` IS A FIRST READING, priced at the rates of the day it was ingested (the stored value switched cache-read pricing from $0.20 to $0.10 on 2026-10-08), so a sum of stored `costUsd` over the raw file is wrong for that reason as well as for the duplicate ids under SUPERSEDED: `repriceEvents` reprices every turn at read and `trace cost` is the command that sums.",
   "GITHUB EVENT: what GitHub's REST API holds of a row or pull request (`source: github`, session `github`): filed/opened, claimed/released (the claim-record comments), labeled/unlabeled for an order to a session or a hold, ready_for_review, reviewed (state, and the head it was posted on), head_moved, ci_run, added_to_merge_queue, removed_from_merge_queue, merged, closed.",
   "HEAD_MOVED (inferred): `at` is the commit's own date, not the push's; the timeline carries no push event. CI RUN: each head the timeline names is asked for its check-runs; the merge queue's own runs, on its temporary branch, and legacy commit statuses are not read.",
   "OUTCOME of a queue exit (inferred): `merged` when it falls within 5 s of the pull request's merge, else `unmerged` (an ejection or a person). GitHub writes the same event for both.",
@@ -108,12 +108,13 @@ export type ToolRead = { tool: "Read" | "Grep" | "Glob" | "mixed"; tokens: numbe
 
 /**
  * Cost of a turn, or `null` when the model has no price: an unpriced turn is unknown, and 0 would say it was free.
+ * @param cacheReadRate dollars per million for the cache-read tokens in place of the model's own: how `trace cost` reads a turn the way Claude Code's own display does
  */
-export function costOf(model: string | undefined, tokens: Tokens): number | null {
+export function costOf(model: string | undefined, tokens: Tokens, cacheReadRate?: number): number | null {
   const price = PRICES.find((entry) => (entry.model === undefined ? model?.startsWith(entry.prefix ?? "") : model === entry.model));
   if (!price) return null;
   if (price.maxPrompt !== undefined && tokens.input + tokens.cacheRead + tokens.cacheWrite5m + tokens.cacheWrite1h > price.maxPrompt) return null;
-  const dollars = (tokens.input * price.input + tokens.output * price.output + tokens.cacheRead * price.cacheRead
+  const dollars = (tokens.input * price.input + tokens.output * price.output + tokens.cacheRead * (cacheReadRate ?? price.cacheRead)
     + tokens.cacheWrite5m * price.input * WRITE_5M_FACTOR + tokens.cacheWrite1h * price.input * WRITE_1H_FACTOR) / TOKENS_PER_MILLION;
   return Math.round(dollars * COST_PRECISION) / COST_PRECISION;
 }
@@ -566,6 +567,100 @@ export function readStore(path: string, chunkBytes: number = STORE_READ_CHUNK): 
 export function openStore(path: string, read: (path: string) => TraceEvent[] = readStore): { path: string; events: TraceEvent[]; at: Map<string, number>; } {
   const events = read(path);
   return { path, events, at: new Map(events.map((event, position) => [event.id, position])) };
+}
+
+const ID_PREFIX = Buffer.from('{"id":"');
+const QUOTE_BYTE = 0x22;
+const BACKSLASH_BYTE = 0x5c;
+
+/**
+ * The id of one stored line WITHOUT parsing the line into an event: an event is written `{"id":"...",...}`, so the id is the bytes up to the next quote. A line that does not start that
+ * way, or whose id holds an escape, is parsed as JSON, so the answer never depends on the key order of the writer that wrote it.
+ */
+function idOfLine(line: Buffer): string {
+  if (line.subarray(0, ID_PREFIX.length).equals(ID_PREFIX)) {
+    const close = line.indexOf(QUOTE_BYTE, ID_PREFIX.length);
+    if (close !== -1 && !line.subarray(ID_PREFIX.length, close).includes(BACKSLASH_BYTE)) return line.toString("utf8", ID_PREFIX.length, close);
+  }
+  const { id } = JSON.parse(line.toString("utf8"));
+  if (typeof id !== "string") throw new Error(`a stored line carries no id: ${line.toString("utf8", 0, 120)}`);
+  return id;
+}
+
+/** `ids` maps each id found on more than one line to the number of lines it is on; `extra` is the lines past the first of each, which is what `compact-store` removes. */
+export type Duplicates = { lines: number; distinct: number; extra: number; ids: Map<string, number>; };
+
+/**
+ * The ids that appear on more than one line of a store file, and how many extra lines they hold: the count `readStore` hides, because it keeps the last copy of each id. It reads the file
+ * in chunks and takes each line's id off its first bytes, never parsing a line into an event (the file is hundreds of megabytes and this runs on a clock). The unterminated end is a line a
+ * writer is still writing, and is not counted. A missing file holds none.
+ * @param chunkBytes a parameter so a test can make a line span chunks
+ */
+export function duplicateIds(path: string, chunkBytes: number = STORE_READ_CHUNK): Duplicates {
+  const copies = new Map<string, number>();
+  let lines = 0;
+  if (existsSync(path)) {
+    const fd = openSync(path, "r");
+    try {
+      eachLine(fd, (line, terminated) => {
+        if (!terminated || line.length === 0) return;
+        const id = idOfLine(line);
+        lines += 1;
+        copies.set(id, (copies.get(id) ?? 0) + 1);
+      }, chunkBytes);
+    } finally {
+      closeSync(fd);
+    }
+  }
+  const ids = new Map([...copies].filter(([, count]) => count > 1));
+  return { lines, distinct: copies.size, extra: lines - copies.size, ids };
+}
+
+/** What Claude Code's own cost display reads a cache-read token at, per million (the stored value was priced at it until 2026-10-08, and `PRICES` holds the page's rate). */
+export const CLIENT_CACHE_READ_RATE = 0.2;
+
+export type CostBy = "day" | "row" | "cause" | "session";
+export const COST_BY: CostBy[] = ["day", "row", "cause", "session"];
+export type CostRow = { key: string; turns: number; unpriced: number; usd: number; usdAtClientRate: number; };
+
+const NO_KEY = { row: "(no row)", cause: "(no cause)" };
+
+/** The keys a turn is reported under. A turn on SEVERAL rows (`rows`, `row` null) is under each of them, as `DEFINITIONS` says, so the rows of a `--by row` are not to be added. */
+function costKeys(event: TraceEvent, by: CostBy): string[] {
+  if (by === "day") return [new Date(event.at).toISOString().slice(0, "YYYY-MM-DD".length)];
+  if (by === "session") return [event.session];
+  if (by === "cause") return [event.cause ?? NO_KEY.cause];
+  if (event.row !== null) return [`#${event.row}`];
+  return event.rows && event.rows.length > 0 ? event.rows.map((row) => `#${row}`) : [NO_KEY.row];
+}
+
+/**
+ * The turns of a store summed by `day` (UTC), `row`, `cause` or `session`: each turn ONCE (the caller read through `readStore`) and priced from `PRICES` at the call, never from the stored
+ * `costUsd` (a stored value that disagrees is not the one summed). `usdAtClientRate` is the same turns with every cache-read token priced at `CLIENT_CACHE_READ_RATE`, so the two differ by
+ * the cache-read tokens times the gap between that rate and the model's own. A turn with no price (or no tokens) is counted in `unpriced` and adds no dollars, which is not the same as free.
+ * @returns the rows by key, and the total, in which a turn counts once however many rows it is on
+ */
+export function costBy(events: TraceEvent[], by: CostBy, since: number | null = null): { rows: CostRow[]; total: CostRow; } {
+  const sum = (key: string): CostRow => ({ key, turns: 0, unpriced: 0, usd: 0, usdAtClientRate: 0 });
+  const total = sum("total");
+  const rows = new Map<string, CostRow>();
+  const add = (row: CostRow, usd: number | null, atClient: number | null) => {
+    row.turns += 1;
+    if (usd === null || atClient === null) row.unpriced += 1;
+    else {
+      row.usd += usd;
+      row.usdAtClientRate += atClient;
+    }
+  };
+  for (const event of events) {
+    if (event.kind !== "turn" || (since !== null && event.at < since)) continue;
+    const usd = event.tokens ? costOf(event.model, event.tokens) : null;
+    const atClient = event.tokens ? costOf(event.model, event.tokens, CLIENT_CACHE_READ_RATE) : null;
+    add(total, usd, atClient);
+    for (const key of costKeys(event, by)) add(rows.get(key) ?? rows.set(key, sum(key)).get(key) as CostRow, usd, atClient);
+  }
+  const settled = (row: CostRow): CostRow => ({ ...row, usd: Math.round(row.usd * COST_PRECISION) / COST_PRECISION, usdAtClientRate: Math.round(row.usdAtClientRate * COST_PRECISION) / COST_PRECISION });
+  return { rows: [...rows.values()].map(settled).sort((a, b) => a.key.localeCompare(b.key, "en", { numeric: true })), total: settled(total) };
 }
 
 /** What a store file holds: its lines, the ids among them, the lines a rewrite removes (all but the last copy of an id) and how many of those are of each `kind`. */

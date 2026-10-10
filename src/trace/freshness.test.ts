@@ -352,13 +352,14 @@ function cliHome() {
   return { dir, transcript, storePath, run };
 }
 
-test("`--ingest` adds the turn, a second run adds nothing, it prints one report line, renders nothing and calls no GitHub", () => {
+test("`--ingest` adds the turn, a second run adds nothing, it prints one report line and the duplicate-id line, renders nothing and calls no GitHub", () => {
   const h = cliHome();
   const first = h.run("--ingest", "--since", "2026-10-01T00:00:00Z");
   assert.equal(first.status, 0, first.stderr);
   const lines = first.stdout.trim().split("\n");
-  assert.deepEqual(lines.filter((line) => !/^ {2}COLD START: /.test(line)).length, 1, `one report line (and, on a first run, the cold-start note) and no rendering: ${first.stdout}`);
+  assert.deepEqual(lines.filter((line) => !/^ {2}COLD START: /.test(line)).length, 2, `one report line, the duplicate-id line (and, on a first run, the cold-start note) and no rendering: ${first.stdout}`);
   assert.match(lines[0], /^ingest: 1 transcripts read, 0 unchanged, \d+ events added, 0 failed/);
+  assert.equal(lines.at(-1), "duplicate ids: 0 (0 extra lines)", "agent-org#476: the store's duplicate count is on the report, and zero is said");
   const turns = () => readStore(h.storePath).filter((event) => event.kind === "turn");
   assert.equal(turns().length, 1, "the transcript's turn is in the store");
   const stored = readFileSync(h.storePath, "utf8");
@@ -367,6 +368,19 @@ test("`--ingest` adds the turn, a second run adds nothing, it prints one report 
   assert.match(second.stdout, /^ingest: 0 transcripts read, 1 unchanged, 0 events added, 0 failed/);
   assert.equal(readFileSync(h.storePath, "utf8"), stored, "the store is byte-identical after the second run");
   assert.equal(existsSync(GH_CALLS), false, "no `gh` was called");
+});
+
+test("`--ingest` prints `duplicate ids: n` and exits 1 above zero, as it does for an unreadable source, and still adds what it read (agent-org#476)", () => {
+  const h = cliHome();
+  const since = ["--since", "2026-10-01T00:00:00Z"];
+  writeFileSync(h.storePath, `${JSON.stringify({ id: "old", kind: "wake" })}\n${JSON.stringify({ id: "old", kind: "wake", n: 2 })}\n`);
+  const run = h.run("--ingest", ...since);
+  assert.equal(run.status, 1, run.stderr);
+  assert.match(run.stdout, /^duplicate ids: 1 \(1 extra lines\)$/m);
+  assert.match(run.stdout, /^ingest: 1 transcripts read/, "the transcript was still read: the failure is the count, not a refusal to ingest");
+  assert.equal(readStore(h.storePath).filter((event) => event.kind === "turn").length, 1);
+  const control = cliHome().run("--ingest", ...since);
+  assert.equal(control.status, 0, `CONTROL: a store with each id once exits 0: ${control.stderr}`);
 });
 
 test("`--ingest` counts and exits on a failure of ANY source: an unreadable `gh` ledger or deferral log is `1 failed` and exit 1, and an absent one is not a failure", () => {
