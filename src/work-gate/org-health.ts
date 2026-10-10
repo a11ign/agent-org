@@ -40,6 +40,7 @@ import { readReleaseFacts, registryDistTags, remoteTagExists, splitHeldOnSatisfi
 import { referencesOf, releaseReferencesOf, waitItemOf, staleWaits, bareWaits, manualWaits, parseWaits, liftableHolds, isItemWait } from "../wait-condition.ts";
 import { stallReasonOf, ownerOfPr } from "./pr-orders.ts";
 import { claimedScopesOf, scopeAddedReadings, scopeAddedOrders } from "./scope-added-orders.ts"; // #4759
+import { idleHoldIncidents, idleHoldOrders } from "./idle-hold-incidents.ts"; // #571
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -500,7 +501,8 @@ export function orgHealthNow({ prsRead, keyedPrsRead = [], readyRead, openRowsRe
   const { held: heldOnSatisfied, rest } = splitHeldOnSatisfied(stale);
   const cap = { limit: MAX_ROW_ORDERS_PER_TICK };
   return [...readings, ...staleWaitOrders(rest), ...heldOnSatisfiedOrders(heldOnSatisfied, cap), ...umbrellaEdgeOrders(waits?.umbrella ?? [], cap),
-    ...scopeAddedOrders(scopeAddedReadings({ claimed: claimedScopesOf({ openRows: openRowsRead, claimedComments, holderOf: sessionOf }) }), cap)];
+    ...scopeAddedOrders(scopeAddedReadings({ claimed: claimedScopesOf({ openRows: openRowsRead, claimedComments, holderOf: sessionOf }) }), cap),
+    ...idleHoldOrders(idleHoldIncidents({ prs: prsRead === null ? null : [...prsRead, ...keyedPrsRead], facts: waits?.facts ?? null, now, repo: repoNow() }), cap)]; // #571: no call of its own
 }
 
 const MS_PER_MINUTE = 60_000;

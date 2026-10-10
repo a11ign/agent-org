@@ -56,6 +56,7 @@ export const ORG_HEALTH_CLASSES: Readonly<Record<string, { severity: "page"; } |
   "github-incident": PAGE,
   "pane-stopped-at-a-prompt": PAGE,
   "class-repeat": PAGE,
+  "hold-on-idle-row": PAGE, // #571: a hold the refusal could not stop; PAGE because each is one hold with a decision to take, and its key is stable per hold
   "ruling-not-taken": PAGE,
   "chairman-ask-raised-order": PAGE,
   "chairman-ask-malformed-order": PAGE,
