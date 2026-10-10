@@ -110,6 +110,8 @@ export const TOOL_ENTRIES = Object.freeze([
   "otel-receiver.service.in",
   // a11ign/a11ign#4053: the drained kernel reboot's pair. The service runs `host-kernel.ts --reboot`; the timer is the hour `ceo` named and has NO `Requires=`, so `host:install` never reboots.
   "kernel-reboot.service.in", "kernel-reboot.timer.in",
+  // a11ign#4879: the daily confidence reading's pair. The service runs `decision-confidence-post.ts`, which posts once per UTC day and dedupes itself; the timer is only a clock.
+  "confidence-post.service.in", "confidence-post.timer.in",
   // a11ign#4823: the `claude` seat wrapper, COPIED like `gh` (`seatWrapperFiles`) but into the first directory on a pane's PATH, not `binDir`.
   "claude",
 ]);
@@ -397,6 +399,10 @@ const OTHER_TOOL_FORMS: Readonly<Record<string, ReadonlyArray<readonly [RegExp, 
   // THE DRAINED KERNEL REBOOT (a11ign/a11ign#4053): run from the tool's checkout, like the receiver above.
   "kernel-reboot.service.in": [
     [/^ExecStart=%h\/\.local\/bin\/node packages\/agent-org\/src\/host-kernel\.ts --reboot$/m, "ExecStart=%h/.local/bin/node src/host-kernel.ts --reboot"],
+  ],
+  // THE DAILY CONFIDENCE READING (a11ign#4879): run from the tool's checkout, like the receiver above; the template names `AGENT_ORG_HOST` itself, as the shadow window's does.
+  "confidence-post.service.in": [
+    [/^ExecStart=%h\/\.local\/bin\/node packages\/agent-org\/src\/decision-confidence-post\.ts$/m, "ExecStart=%h/.local/bin/node src/decision-confidence-post.ts"],
   ],
   "shadow-window.service.in": [
     [/^ExecStart=%h\/\.local\/bin\/node packages\/agent-org\/src\/shadow-window\.ts /m, "ExecStart=%h/.local/bin/node src/shadow-window.ts "],
