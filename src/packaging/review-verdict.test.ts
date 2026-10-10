@@ -239,3 +239,33 @@ test("#3030: a review with no body (a bare approval) is not a verdict, and a PR 
     "**Review of #9 at `cccccccc`, by reviewer-9: convinced.**")] }, [head]).verdict, "convinced",
   "a pull request read without `reviews` keeps working off its comments");
 });
+
+// --- agent-org#586: A DISMISSED REVIEW IS A VERDICT SOMEBODY RULED OUT ---------------------------------
+//
+// agent-org#579's only review ("not convinced" at its head) was ruled wrong and dismissed, and the gate kept reading it as the
+// standing verdict, so `settledVerdictOrder` kept sending the author `verdict-not-convinced` for rework that was not owed.
+
+test("agent-org#586: a DISMISSED refusal at the head is no verdict, and the same review still standing IS one", () => {
+  const head = "0715e664c0000000000000000000000000000abc";
+  const body = "**Review of #579 at `0715e664`, by reviewer-579: not convinced — the blocker.**";
+  const at = "2026-10-10T01:00:00Z";
+  const dismissed = verdictAmong({ author: PR_AUTHOR, comments: [], reviews: [review("DISMISSED", at, body)] }, [head]);
+  assert.equal(dismissed.verdict, null, "a dismissed refusal is not the standing verdict");
+  assert.equal(dismissed.examined, 0, "and it is not counted among what was read");
+  // The positive control: the identical review in the state a live refusal carries. Without it the null above could be an
+  // empty reader rather than the dismissal being honoured.
+  assert.equal(verdictAmong({ author: PR_AUTHOR, comments: [], reviews: [review("CHANGES_REQUESTED", at, body)] }, [head]).verdict,
+    "not-convinced", "the same refusal, not dismissed, still reads not-convinced");
+});
+
+test("agent-org#586: a newer convinced review after a dismissed refusal is the verdict; a review with no state still counts", () => {
+  const head = "0715e664c0000000000000000000000000000abc";
+  const no = "**Review of #579 at `0715e664`, by reviewer-579: not convinced — the blocker.**";
+  const yes = "**Review of #579 at `0715e664`, by reviewer-579: convinced.**";
+  const after = { author: PR_AUTHOR, comments: [], reviews: [
+    review("DISMISSED", "2026-10-10T01:00:00Z", no), review("APPROVED", "2026-10-10T05:00:00Z", yes)] };
+  assert.equal(verdictAmong(after, [head]).verdict, "convinced");
+  // The older callers' shape: no `state` at all. It must not be mistaken for a dismissal.
+  const stateless = { id: "R-1", submittedAt: "2026-10-10T01:00:00Z", body: no };
+  assert.equal(verdictAmong({ author: PR_AUTHOR, comments: [], reviews: [stateless] }, [head]).verdict, "not-convinced");
+});
