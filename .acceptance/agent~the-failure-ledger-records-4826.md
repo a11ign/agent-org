@@ -2,12 +2,13 @@ The failure ledger records an UNANSWERED claimed-worker nudge, not every nudge: 
 
 Acceptance:
 ```bash
-bash -c 'cd /home/agent/repos/agent-org-wt-4826 && AGENT_ORG_HOST=/home/agent/repos/a11y-witness/.agent-org/host.json node --import tsx --test src/claimed-worker-stalled-ledger.test.ts'
+bash -c 'cd /home/agent/repos/agent-org-wt-4826 && AGENT_ORG_HOST=/home/agent/repos/a11y-witness/.agent-org/host.json npx rstest run --config scripts/rstest/rstest.config.ts src/claimed-worker-stalled-ledger.test.ts'
 ```
 
-Printed `ℹ tests 3`, `ℹ pass 3`, `ℹ fail 0`. The cases run the REAL writer (`claimStallTick` with its own `recordStalledNudges`, over a temporary state directory) and read the file back through `parseFailureLedger` and `repeatsIn`, the pair `class-repeat` reads: four nudges on four rows (4799, 4808, 4787, 4804), each answered by a row comment two minutes later, leave NO line and NO repeat, and the test first asserts all four WERE nudged, each under the wake ledger's `nudgeKey`; its positive control, two rows nudged and never answered, are released and leave two lines and ONE repeat; and one unanswered nudge beside four answered ones is one ref and not a repeat, while a second unanswered nudge on the same row is a second ref and is. The Acceptance command as the row wrote it (`cd /home/agent/repos/agent-org`) names the primary checkout, which holds this file only after the merge.
+Printed `VERDICT pass: 3 tests in 1 file` (`node --import tsx --test` on the same file, the row's own spelling: `ℹ pass 3`, `ℹ fail 0`; the body parser refuses that spelling's `&&`). The cases run the REAL writer (`claimStallTick` with its own `recordStalledNudges`, over a temporary state directory) and read the file back through `parseFailureLedger` and `repeatsIn`, the pair `class-repeat` reads: four nudges on four rows (4799, 4808, 4787, 4804), each answered by a row comment two minutes later, leave NO line and NO repeat, and the test first asserts all four WERE nudged, each under the wake ledger's `nudgeKey`; its positive control, two rows nudged and never answered, are released and leave two lines and ONE repeat; and one unanswered nudge beside four answered ones is one ref and not a repeat, while a second unanswered nudge on the same row is a second ref and is. The Acceptance command as the row wrote it (`cd /home/agent/repos/agent-org`) names the primary checkout, which holds this file only after the merge.
 
-Mutation (both directions, restored from a `cp` and `diff` showed it byte-identical each time; run over `claimed-worker-stalled-ledger.test.ts` and `idle-claimant-stopped.test.ts`, 20 tests):
+Mutation:
+(both directions, restored from a `cp` and `diff` showed it byte-identical each time; run over `claimed-worker-stalled-ledger.test.ts` and `idle-claimant-stopped.test.ts`, 20 tests)
 - The writer fires on a FRESH nudge, as before this change (`reading.kind === "nudge"`, ref on `now`): 6 of 20 red, the answered-nudges case and the mixed case among them.
 - The writer never fires (`false`): 7 of 20 red, the positive control, the `repeatsIn` twin and the refused-append case among them.
 - The ref carries the tick's `now` and not the nudge's `nudgedAt`: 7 of 20 red.
