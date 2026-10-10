@@ -1,3 +1,4 @@
+// no-token: prepareContext -- `main` reaches `requestActions` (buttons only); `converse.ts` loads `prompt-session.ts` and `wake.ts` on first use, which no run here makes
 // @ts-check
 // THE SHIPPED COMPOSITION OF `messaging:watch` CAN SEND (a11ign/a11ign#3164). Every other test of `main` injects its own provider, which is how
 // the real default stayed EMPTY until the `chairman-watch` unit's first firing: it exited 1 with "no implementation of it yet" and the chairman had
