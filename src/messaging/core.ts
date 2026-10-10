@@ -9,6 +9,11 @@
 // about its key, now, config) and touches nothing, so every number in the design is exercised against a clock a test owns. The
 // messenger around it asks the rate limiter, calls the provider and writes ONE ledger line per attempt.
 //
+// **EVERY KIND DECLARES WHO IT IS FOR (a11ign/a11ign#4742).** `audience` is `ask` (needs the chairman: a request, a stall) or `announcement`
+// (told to him, asks nothing: the rest), and the plan carries it so the provider can route. A kind with NO audience is refused at send,
+// with a line naming the kind, and is never defaulted: a default would put a message in the chairman's ask list or in a channel nobody
+// answers, and the first sign would be a missing ask.
+//
 // WHAT THE CORE NEVER DOES: invent a message the ledger does not hold. A held-down or duplicate observation writes no line (it is not
 // an attempt, and 100 ticks must not write 100 lines); a deferral, a failure and a digest overflow each write one.
 
@@ -16,6 +21,7 @@ import { normalizeEvent, stateFingerprint } from "./event.ts";
 import type { MessagingEvent } from "./event.ts";
 import { STATUS, deliveredTimestamps, deliveryLine, describeError, foldLedger, applyLine } from "./ledger.ts";
 import type { KeyRecord, createLedger } from "./ledger.ts";
+import { AUDIENCE, AUDIENCES } from "./provider-contract.ts";
 import { createRateLimiter, DEFAULT_RATE } from "./rate-limit.ts";
 
 const MINUTE_MS = 60_000;
@@ -26,17 +32,18 @@ const DIGEST_ENTRY_LIMIT = 200;
 
 export const DEFAULT_CONFIG = Object.freeze({
   kinds: Object.freeze({
-    request: Object.freeze({ holdDownMs: 0, remind: true, silent: false }),
-    incident: Object.freeze({ holdDownMs: 30 * MINUTE_MS, remind: true, silent: false }),
-    stall: Object.freeze({ holdDownMs: 0, remind: true, silent: false }),
+    // `audience`: a request and a stall NEED the chairman, so they are asks; everything else is told to him and asks nothing.
+    request: Object.freeze({ holdDownMs: 0, remind: true, silent: false, audience: AUDIENCE.ask }),
+    incident: Object.freeze({ holdDownMs: 30 * MINUTE_MS, remind: true, silent: false, audience: AUDIENCE.announcement }),
+    stall: Object.freeze({ holdDownMs: 0, remind: true, silent: false, audience: AUDIENCE.ask }),
     // No quiet hours: the summary is the only silent message (decision 1).
-    summary: Object.freeze({ holdDownMs: 0, remind: false, silent: true }),
+    summary: Object.freeze({ holdDownMs: 0, remind: false, silent: true, audience: AUDIENCE.announcement }),
     // A release is told once and never reminded or cleared: it is a fact that happened, not a condition that stands. Not silent: it is news.
-    release: Object.freeze({ holdDownMs: 0, remind: false, silent: false }),
+    release: Object.freeze({ holdDownMs: 0, remind: false, silent: false, audience: AUDIENCE.announcement }),
     // A milestone is told once and never reminded or cleared: it is a declared moment that happened, not a condition that stands. Not silent: it is news.
-    milestone: Object.freeze({ holdDownMs: 0, remind: false, silent: false }),
+    milestone: Object.freeze({ holdDownMs: 0, remind: false, silent: false, audience: AUDIENCE.announcement }),
     // A watched thing changing state is told once per change and never reminded or cleared: the chairman asked to be told when it moves, and the watch ends with the thing.
-    watch: Object.freeze({ holdDownMs: 0, remind: false, silent: false }),
+    watch: Object.freeze({ holdDownMs: 0, remind: false, silent: false, audience: AUDIENCE.announcement }),
   }),
   reminders: Object.freeze({ max: 3, everyMs: 24 * HOUR_MS }),
   rate: Object.freeze({ burst: DEFAULT_RATE.burst, hourlyCap: DEFAULT_RATE.hourlyCap, windowMs: HOUR_MS }),
@@ -56,16 +63,22 @@ export function resolveConfig(overrides: { kinds?: Record<string, object>; remin
   };
 }
 
+/** `audience` is what the kind declared, carried as it was found: an undeclared one is `undefined` here and is refused where it would be sent. */
 type Plan = { action: "none"; why: string; }
-  | { action: "send"; kind: "first" | "update" | "reminder" | "cleared"; reminder?: number; }
+  | { action: "send"; kind: "first" | "update" | "reminder" | "cleared"; reminder?: number; audience?: string; }
   | { action: "withdraw"; };
 
 /**
  * What to do about one observed event. Pure: the same inputs always give the same plan.
  *
- * `record` is what the ledger says about this key.
+ * `record` is what the ledger says about this key. A plan to send carries the audience its kind declared.
  */
 export function planNotification(event: MessagingEvent, record: KeyRecord | undefined, nowMs: number, config: ReturnType<typeof resolveConfig>): Plan {
+  const plan = planWhatToDo(event, record, nowMs, config);
+  return plan.action === "send" ? { ...plan, audience: config.kinds[event.kind].audience } : plan;
+}
+
+function planWhatToDo(event: MessagingEvent, record: KeyRecord | undefined, nowMs: number, config: ReturnType<typeof resolveConfig>): Plan {
   const open = record?.open ?? false;
   // The episode already ended: a stale observation of it (same `firstSeenAt`, or earlier) is not a recurrence.
   if (!open && record?.clearedAt != null && event.firstSeenAt <= record.clearedAt) return { action: "none", why: "already-cleared" };
@@ -187,17 +200,32 @@ export function createMessenger({ provider, ledger, now, config: overrides }: { 
     }
   }
 
+  /** Refused BEFORE the rate limiter is asked: a kind that cannot be routed spends none of the hour's allowance. */
+  function refuseUndeclared(event: MessagingEvent): Decision {
+    const error = `alert not sent: kind ${JSON.stringify(event.kind)} declares no audience (ask or announcement), and the sender never defaults one`;
+    record({ key: event.key, status: STATUS.invalid, error });
+    return { key: event.key, action: "invalid" };
+  }
+
   async function deliver(event: MessagingEvent, plan: Extract<Plan, { action: "send"; }>): Promise<Decision> {
+    const { audience } = plan;
+    if (audience === undefined || !AUDIENCES.includes(audience)) return refuseUndeclared(event);
     const known = state.get(event.key);
     const text = composeText(event, plan, maxText, config.reminders.max);
+    // A "cleared" notice replies under the message it clears, EXCEPT in the one-way channel (an announcement with a destination of its own):
+    // there the "Cleared: ..." stands alone and carries the text that says what it clears. With one destination the announcement is in the
+    // chairman's chat, as it always was, and threads as it always did.
+    const toChannel = audience === AUDIENCE.announcement && (provider.capabilities.destinations ?? 1) >= AUDIENCES.length;
+    const repliesUnderOriginal = !toChannel && plan.kind === "cleared" && provider.capabilities.replies && known?.messageRef;
     const message = {
       text,
       silent: config.kinds[event.kind].silent,
-      replyTo: plan.kind === "cleared" && provider.capabilities.replies && known?.messageRef ? known.messageRef : undefined,
+      audience,
+      replyTo: repliesUnderOriginal ? known.messageRef : undefined,
       ...buttonsFor(event, plan, provider.capabilities),
     };
     // The ledger keeps the text AS SENT, link and all: what the chairman was shown is the one thing a later reading must not have to rebuild.
-    const extra = { kind: plan.kind, stateHash: stateFingerprint(event), reminder: plan.reminder ?? null, text };
+    const extra = { kind: plan.kind, stateHash: stateFingerprint(event), reminder: plan.reminder ?? null, text, audience };
     const { status } = await attemptSend(event.key, message, extra);
     const spoken = { first: "sent", update: "updated", reminder: "reminded", cleared: "cleared" }[plan.kind];
     return { key: event.key, action: status === STATUS.sent ? spoken : status };
@@ -218,8 +246,10 @@ export function createMessenger({ provider, ledger, now, config: overrides }: { 
     const held = [...state.entries()].filter(([, entry]) => entry.pending).map(([key, entry]) => ({ key, ...entry.pending }));
     if (held.length === 0 || !limiter.hasHourlyRoom()) return [];
     const key = `${DIGEST_KEY_PREFIX}${new Date(now()).toISOString()}`;
-    const message = { text: composeDigest(held as Parameters<typeof composeDigest>[0], maxText), silent: false };
-    const { status } = await attemptSend(key, message, { kind: "digest", covers: held.map((entry) => entry.key) });
+    // The digest is ONE message over both audiences (the ledger's `pending` does not hold which each entry was for), so it goes where
+    // every message could always go: the chairman's chat. Splitting it by audience is a ledger change, which this row's Region excludes.
+    const message = { text: composeDigest(held as Parameters<typeof composeDigest>[0], maxText), silent: false, audience: AUDIENCE.ask };
+    const { status } = await attemptSend(key, message, { kind: "digest", covers: held.map((entry) => entry.key), audience: AUDIENCE.ask });
     return [{ key, action: status === STATUS.sent ? "digest-sent" : `digest-${status}` }];
   }
 

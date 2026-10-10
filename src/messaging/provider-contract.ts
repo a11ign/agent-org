@@ -4,11 +4,21 @@
 // are one question with one answer, and a provider that fails it cannot be wired in.
 //
 // THE INTERFACE:
-//   { id, capabilities: { silent, buttons, replies, conversation, maxText, ratePerSecond? },
-//     send({ text, silent, actions, replyTo }) -> { messageRef, silent },
+//   { id, capabilities: { silent, buttons, replies, conversation, maxText, ratePerSecond?, destinations? },
+//     send({ text, silent, actions, replyTo, audience }) -> { messageRef, silent, audience },
 //     poll?(cursor, signal) -> { updates, cursor } }
 //
-// Two things here go beyond the design's sketch, and both exist so that a check CAN FAIL:
+// **THE AUDIENCE IS WHICH DESTINATION (a11ign/a11ign#4742).** `ask` is the chairman's conversation: what needs him, one message per ask, and
+// the only place a button or a reply belongs. `announcement` is a one-way channel: nothing there may require a reply, so a provider REFUSES
+// `actions` on it always, and `replyTo` once the channel is a destination of its own. An absent `audience` is the provider's own business
+// and means `ask`, where every send went before the field existed; it is the CORE that refuses a kind with no declared audience, never the
+// provider that guesses one. A provider with one chat for both audiences says so (`capabilities.destinations` is 1): `audience` is still
+// honoured (echoed) and `actions` are still refused, but an announcement is then in the chairman's chat as it always was, so a reply to
+// the message it clears threads there as it always did.
+//
+// Three things here go beyond the design's sketch, and all exist so that a check CAN FAIL:
+//   * `send` returns `audience` -- the destination it APPLIED, for the same reason it returns `silent`: a provider that ignores the field
+//     and one that honours it would otherwise be indistinguishable here.
 //   * `send` returns `silent` -- what it APPLIED. The design's `{ messageRef }` leaves "dropped `silent`" unobservable: a provider
 //     that ignores the flag and one that honours it return the same value. Echoing it makes the claim checkable here; a provider's
 //     own test still asserts the wire request (Telegram: `disable_notification`), which this suite cannot see.
@@ -21,6 +31,13 @@
 const CONTRACT_TEXT = "conformance probe";
 const POLL_DEADLINE_MS = 1000;
 const BOOLEAN_CAPABILITIES = Object.freeze(["silent", "buttons", "replies", "conversation"]);
+
+/** Who a message is for. `ask` needs the chairman; `announcement` is told to him and asks nothing. The only two there are. */
+export const AUDIENCE = Object.freeze({ ask: "ask", announcement: "announcement" });
+/** Typed as strings on purpose: it is what an UNTRUSTED `audience` is checked against, so `includes` must accept one. */
+export const AUDIENCES: readonly string[] = Object.freeze(Object.values(AUDIENCE));
+/** How many distinct destinations a provider may route the audiences to: one per audience at most. */
+const MAX_DESTINATIONS = AUDIENCES.length;
 
 export class ConformanceError extends Error {
   failures: { check: string; message: string }[];
@@ -71,6 +88,8 @@ const ALWAYS: Record<string, (provider: any) => Promise<void> | void> = {
     expect(Number.isInteger(caps.maxText) && caps.maxText > 0, "capabilities.maxText must be a positive integer");
     expect(caps.ratePerSecond === undefined || (Number.isFinite(caps.ratePerSecond) && caps.ratePerSecond > 0),
       "capabilities.ratePerSecond, when declared, must be a positive number");
+    expect(caps.destinations === undefined || (Number.isInteger(caps.destinations) && caps.destinations >= 1 && caps.destinations <= MAX_DESTINATIONS),
+      `capabilities.destinations, when declared, must be an integer from 1 to ${MAX_DESTINATIONS}`);
   },
   async "send-returns-message-ref"(provider) {
     await sendOk(provider, { text: CONTRACT_TEXT });
@@ -86,6 +105,17 @@ const ALWAYS: Record<string, (provider: any) => Promise<void> | void> = {
       `silent was requested and the provider reports applying silent=${requested.silent} while declaring capabilities.silent=${provider.capabilities.silent}`);
     const ordinary = await sendOk(provider, { text: CONTRACT_TEXT, silent: false });
     expect(ordinary.silent === false, "an ordinary send was reported as silent");
+  },
+  async "audience-is-honoured"(provider) {
+    for (const audience of AUDIENCES) {
+      const result = await sendOk(provider, { text: CONTRACT_TEXT, audience });
+      expect(result.audience === audience, `audience ${audience} was requested and the provider reports applying audience=${JSON.stringify(result.audience)}`);
+    }
+    const unspecified = await sendOk(provider, { text: CONTRACT_TEXT });
+    expect(unspecified.audience === AUDIENCE.ask, `a send with no audience must land where every send did (ask), not ${JSON.stringify(unspecified.audience)}`);
+  },
+  async "unknown-audience-is-refused"(provider) {
+    expect(await rejects(() => provider.send({ text: CONTRACT_TEXT, audience: "everyone" })), "an audience that is neither ask nor announcement was accepted");
   },
   async "max-text-is-accepted-at-the-limit"(provider) {
     await sendOk(provider, { text: "x".repeat(provider.capabilities.maxText) });
@@ -114,6 +144,30 @@ const CONDITIONAL: Record<string, { applies: (provider: any) => boolean; reason:
     reason: "capabilities.buttons is not declared",
     async run(provider) {
       await sendOk(provider, { text: CONTRACT_TEXT, actions: [{ label: "Yes", data: "yes" }] });
+    },
+  },
+  // The announcement is sent plain FIRST, so a refusal below is the one-way rule and not some other defect in the message.
+  "announcement-refuses-actions": {
+    applies: (provider) => provider.capabilities.buttons === true,
+    reason: "capabilities.buttons is not declared, so no provider-drawn action can be asked of an announcement",
+    async run(provider) {
+      await sendOk(provider, { text: CONTRACT_TEXT, audience: AUDIENCE.announcement });
+      const refused = await rejects(() => provider.send({ text: CONTRACT_TEXT, audience: AUDIENCE.announcement, actions: [{ label: "Yes", data: "yes" }] }));
+      expect(refused, "an announcement carrying actions was accepted: the channel is one-way, so a button under it asks for an answer nobody reads");
+    },
+  },
+  // Both directions, so the rule cannot be met by refusing always (which would fail every incident's "cleared" in a single chat).
+  "announcement-reply-to-follows-its-destination": {
+    applies: (provider) => provider.capabilities.replies === true,
+    reason: "capabilities.replies is not declared, so a reply cannot be asked of an announcement",
+    async run(provider) {
+      const original = await sendOk(provider, { text: CONTRACT_TEXT });
+      const reply = { text: CONTRACT_TEXT, audience: AUDIENCE.announcement, replyTo: original.messageRef };
+      if ((provider.capabilities.destinations ?? 1) >= MAX_DESTINATIONS) {
+        expect(await rejects(() => provider.send(reply)), "an announcement carrying replyTo into its own channel was accepted: the channel is one-way");
+      } else {
+        await sendOk(provider, reply);
+      }
     },
   },
   "poll-returns-updates-and-honours-abort": {

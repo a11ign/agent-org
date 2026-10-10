@@ -30,9 +30,10 @@ test("the fake provider passes, and every check actually RAN (so 'passes' is not
   const { passed, skipped } = await runProviderConformance(createFakeProvider());
   assert.deepEqual(skipped, []);
   assert.deepEqual(passed.sort(), [
-    "actions-are-accepted", "capabilities-shape", "empty-text-is-refused", "identity", "max-text-is-accepted-at-the-limit",
+    "actions-are-accepted", "announcement-refuses-actions", "announcement-reply-to-follows-its-destination", "audience-is-honoured",
+    "capabilities-shape", "empty-text-is-refused", "identity", "max-text-is-accepted-at-the-limit",
     "max-text-is-enforced", "message-refs-are-distinct", "poll-returns-updates-and-honours-abort", "reply-to-is-accepted",
-    "send-returns-message-ref", "silent-is-honoured",
+    "send-returns-message-ref", "silent-is-honoured", "unknown-audience-is-refused",
   ]);
 });
 
@@ -40,7 +41,10 @@ test("a provider that declares fewer capabilities passes, and the checks it is n
   const plain = createFakeProvider({ capabilities: { silent: false, buttons: false, replies: false, conversation: false } });
   const { passed, skipped } = await runProviderConformance(plain);
   assert.ok(passed.includes("silent-is-honoured"), "a provider that cannot be silent must say so, and is held to saying it");
-  assert.deepEqual(skipped.map((entry) => entry.check).sort(), ["actions-are-accepted", "poll-returns-updates-and-honours-abort", "reply-to-is-accepted"]);
+  assert.deepEqual(skipped.map((entry) => entry.check).sort(), [
+    "actions-are-accepted", "announcement-refuses-actions", "announcement-reply-to-follows-its-destination",
+    "poll-returns-updates-and-honours-abort", "reply-to-is-accepted",
+  ]);
   for (const entry of skipped) assert.match(entry.reason, /is not declared/);
 });
 
