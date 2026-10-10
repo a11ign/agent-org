@@ -48,22 +48,27 @@ export function withClosingRowOwners(prs: any[], openRows: any[], rowsRepo?: str
     if (closing === "split") return pr;
     const owner = closing ?? branchRowOwner(pr, held);
     if (owner) return { ...pr, rowOwner: owner };
-    return pr.labelEnded && closingRowsClosed(pr, openRows, rowsRepo) ? { ...pr, closingRowsClosed: true } : pr;
+    return pr.labelEnded ? { ...pr, ...rowsNobodyHolds(pr, openRows, rowsRepo) } : pr;
   });
 }
 
 /**
- * #4644: WHETHER EVERY ROW A PULL REQUEST NAMES IS CLOSED, which is what lets `ownerOfPr` call a dead owner's PR `owner-gone` instead of "nobody
- * could be named". a11ign#4626 carried `session:worker-4624`, worker-4624 ended and its row was closed while the PR stayed open: rungs 2-5 need an
- * OPEN claimed row, so all four failed and the PR fell to `ceo`. Closed is read as ABSENT FROM `openRows`, so TWO READINGS MUST NOT PASS FOR IT:
- * no rows read at all (`openRows` empty because the read was refused, the case `withClosingRowOwners` already leaves as it was) and a PR that names
- * no row (nothing to be closed). Only a PR that names a row, every one of which is missing from a non-empty read, is flagged.
+ * #4644, #4808: WHAT STATE THE ROWS OF A DEAD OWNER'S PULL REQUEST ARE IN, which is what lets `ownerOfPr` call it `owner-gone` instead of "nobody could be
+ * named". a11ign#4626 carried `session:worker-4624`, worker-4624 ended and its row was CLOSED while the PR stayed open; a11ign#4805 carried
+ * `session:worker-4804`, worker-4804 ended and its row went back to `backlog` OPEN with no claim. Rungs 2-5 each need an open row HELD by a live session,
+ * so both failed all four and landed on `ceo` as "nobody could be named", though the owner is known and gone and the row is `product-manager`'s to route.
+ *
+ * ONLY CALLED FOR A PR NO ROW RUNG ANSWERED, so no row it names is held (a held row would have made `rowOwner`, and a split would have returned): every
+ * named row is closed (`closingRowsClosed`, absent from `openRows`) or open and unheld (`closingRowsUnheld`; the wording differs, see `deadOwnerRowClause`).
+ * TWO READINGS MUST NOT PASS FOR EITHER: no rows read at all (`openRows` empty because the read was refused, the case `withClosingRowOwners` leaves as it
+ * was, and not "unclaimed") and a PR that names no row (nothing to be closed or unclaimed). `{}` for both.
  */
-function closingRowsClosed(pr: any, openRows: any[], rowsRepo?: string) {
-  if (openRows.length === 0) return false;
+function rowsNobodyHolds(pr: any, openRows: any[], rowsRepo?: string): { closingRowsClosed?: true; closingRowsUnheld?: true; } {
+  if (openRows.length === 0) return {};
   const open = new Set(openRows.map((row) => Number(row.number)));
   const named = rowsNamedBy(pr, rowsRepo);
-  return named.length > 0 && named.every(({ row }) => !open.has(row));
+  if (named.length === 0) return {};
+  return named.every(({ row }) => !open.has(row)) ? { closingRowsClosed: true } : { closingRowsUnheld: true };
 }
 
 /**

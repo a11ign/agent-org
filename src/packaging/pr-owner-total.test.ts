@@ -7,7 +7,7 @@
  *
  * THE ORDER (`ownerOfPr`): label, the live session holding the row it closes, the live session holding the row its branch suffix
  * names, a live session the head ref names, a live session that stamped its worktree, else -- #4644 -- `product-manager` for a PR whose
- * label names an ENDED session and whose every row is closed (`owner-gone`), else `ceo`. The ORACLE below is written
+ * label names an ENDED session and whose every row is closed or open and UNCLAIMED -- #4808 (`owner-gone`), else `ceo`. The ORACLE below is written
  * out here, from that sentence, and not derived from the implementation -- a grid compared with the code it tests agrees by
  * construction.
  *
@@ -64,8 +64,8 @@ const ENDED = { agents: () => [] as string[], ended: () => new Map([["worker-8",
 
 /**
  * The declared order, written out. A split is a question, so it skips the two row rungs and the order goes on below them. A DEAD label is no label
- * (#3093). #4644: every row the PR names closed -- `13`, and a branch suffix that is not a released-but-open row (`15` is in the open rows) -- makes
- * the dead owner's PR `product-manager`'s, below every rung that can name a live session.
+ * (#3093). #4644, #4808: every row the PR names is held by NOBODY -- closed (`13`) or open and unclaimed (`15`, whose `session:` label outlived its
+ * `in-progress`) -- makes the dead owner's PR `product-manager`'s, below every rung that can name a live session.
  */
 function expectedOwner({ label, closing, branch, stamp }: Cell): string {
   if (label === "own") return "worker-7";
@@ -77,12 +77,14 @@ function expectedOwner({ label, closing, branch, stamp }: Cell): string {
 }
 
 /**
- * Every row the PR NAMES is closed (#4644): the closing row `13`, or -- when it closes none -- the number a branch ends in, which `rowsNamedBy` reads as a
- * row whether or not the branch was a row's (`agent/worker-99` names row 99). A branch ending in `15` names a row that is OPEN, so it is not closed.
+ * A dead owner whose PR names at least one row and NO named row is held (#4644, #4808): the closing row `13` (closed), or -- when it closes none --
+ * the number a branch ends in, which `rowsNamedBy` reads as a row whether or not the branch was a row's (`agent/worker-99` names row 99, closed;
+ * `agent/some-slug-15` names row 15, open and unclaimed). A split names two HELD rows, so it is nobody's to flag, and a plain branch names none.
+ * (A branch ending in `14` names a HELD row, which answers before this is asked.)
  */
 function deadOwnersPr({ label, closing, branch }: Pick<Cell, "label" | "closing" | "branch">): boolean {
-  if (label !== "ended" || branch === "suffixReleased") return false;
-  return closing === "closed" || (closing === "none" && branch === "sessionRetired");
+  if (label !== "ended" || closing === "split" || closing === "live") return false;
+  return closing === "closed" || branch === "sessionRetired" || branch === "suffixReleased";
 }
 
 const pullRequestFor = (cell: Cell, over: Fixture = {}) => prOf(BRANCHES[cell.branch], {
@@ -112,7 +114,7 @@ test("POSITIVE CONTROL: no label, no row and an `agent/` branch naming a live se
   assert.equal(empty.causeKey, "ceo/pr-checks-failing/pr-2880/24b0e94f");
 });
 
-test("the grid: ownerOfPr names a session for EVERY cell, product-manager only for a dead owner's PR with every row closed, and the one the order says", () => {
+test("the grid: ownerOfPr names a session for EVERY cell, product-manager only for a dead owner's PR whose rows nobody holds, and the one the order says", () => {
   assert.equal(CELLS.length, 3 * 4 * 5 * 3, "the grid is the product of its dimensions: a shrunken one is red, not green");
   assert.equal(new Set(CELLS.map((c) => JSON.stringify(c))).size, CELLS.length, "and no cell is a duplicate");
   const reached = new Set<string>();
