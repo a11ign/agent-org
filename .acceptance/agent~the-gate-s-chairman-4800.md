@@ -3,7 +3,7 @@ The gate's chairman set now includes CLAIMED chairman rows. `offerHierarchyNow` 
 Acceptance:
 
 ```bash
-cd /home/agent/repos/agent-org && npx rstest run --config scripts/rstest/rstest.config.ts src/work-gate-chairman-claimed-holder.test.ts
+cd /home/agent/repos/agent-org-wt-4800 && AGENT_ORG_HOST=/home/agent/repos/wt-4800/.agent-org/host.json npx rstest run --config scripts/rstest/rstest.config.ts src/work-gate-chairman-claimed-holder.test.ts
 ```
 
 Closes a11ign/a11ign#4800
