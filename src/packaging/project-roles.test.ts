@@ -217,9 +217,12 @@ test("the tool's tree ships no role brief: `packages/agent-org/docs/roles` is go
 });
 
 test("no `.md` role brief lives under `packages/agent-org/src` or `packages/agent-org/docs`", () => {
+  // A brief is a file the project's declared roles directory holds, by name. The gate's layout copies this checkout's `docs/` into the tool's
+  // directory (agent-org#659), so `docs/messaging.md` is there and is the tool's own document, not a brief: "any `.md`" counted it.
+  const briefNames = new Set(readdirSync(join(HOME_CHECKOUT, homeRolesDir())).filter((name) => name.endsWith(".md")));
   const walk = (dir: string): string[] => (existsSync(dir)
     ? readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
-      (e.isDirectory() ? walk(join(dir, e.name)) : (e.name.endsWith(".md") ? [join(dir, e.name)] : [])))
+      (e.isDirectory() ? walk(join(dir, e.name)) : (briefNames.has(e.name) ? [join(dir, e.name)] : [])))
     : []);
   const docsBriefs = walk(join(HOME_CHECKOUT, "packages/agent-org/docs"));
   assert.deepEqual(docsBriefs, [], `the tool ships no brief under packages/agent-org/docs: ${docsBriefs.join(", ")}`);
