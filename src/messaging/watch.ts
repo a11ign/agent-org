@@ -51,7 +51,7 @@ import type { KeyRecord } from "./ledger.ts";
 import type { Readers } from "./placeholders.ts";
 import { createTelegramProvider } from "./providers/telegram/send.ts";
 import { readSecretFile, SecretFileRefusal } from "./secret.ts";
-import { accountIsDeclared, defaultLedgerPath, readChairman, trackerRepo } from "./state.ts";
+import { accountIsDeclared, defaultLedgerPath, readAnnouncementsChatId, readChairman, trackerRepo } from "./state.ts";
 import { observeIncidents } from "./sources/incidents.ts";
 import { createReaders } from "./sources/readers.ts";
 import { observeMilestones, readMilestonesFile, seenMilestoneKeys } from "./sources/milestones.ts";
@@ -449,13 +449,14 @@ function hostReaders({ root, home, now, err, github }: { root: string; home: str
 }
 
 /**
- * The Telegram provider for a `messaging` key that is on: the token and the chairman's chat id are read HERE, at the moment of building, so a file that has gone
- * wrong since `messaging:check` is refused on the run that needed it. `listen.ts` reads the same two files the same way.
+ * The Telegram provider for a `messaging` key that is on: the token, the chairman's chat id and, when `announcementsFile` is declared, the channel's are read HERE,
+ * at the moment of building, so a file that has gone wrong since `messaging:check` is refused on the run that needed it. `listen.ts` reads the first two the same
+ * way. The channel is GIVEN to the provider here and nowhere else in `messaging:watch`: without it every announcement still lands in the chairman's chat (#603).
  */
 function telegramProvider(config: MessagingOn, { fetch: fetchImpl, log }: { fetch: typeof fetch; log: (line: string) => void; }) {
   const token = readSecretFile(config.tokenFile);
   const { chatId } = readChairman(config.chairmanFile);
-  return createTelegramProvider({ token, chatId, fetch: fetchImpl, log });
+  return createTelegramProvider({ token, chatId, announcementsChatId: readAnnouncementsChatId(config.announcementsFile), fetch: fetchImpl, log });
 }
 
 /** The provider, or null after saying why it could not be built (the line names the file and never holds a secret). */
