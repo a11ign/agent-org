@@ -1,0 +1,5 @@
+---
+"agent-org": patch
+---
+
+`row-claim check` predicts the chairman's yield (a11ign/a11ign#4799, following #4793). `reportB4` printed `B4 REFUSES THIS CLAIM` for a `priority:chairman` row the claim now lets past a holder that is not itself a chairman row, so the read-only prediction and the claim disagreed on exactly the rows the chairman wants started. The decision is no longer the claim's alone: `chairmanYieldVerdict` is the claim's `chairmanYield` without its words and its stderr line, and `check` calls it over the reads it already made (`B4Ask.made`), so a row the claim walks past prints `B4: yields to the chairman's row (a11ign#4793); would walk past <holders>` in place of the refusal. `check` posts nothing for it (the sweep windows' stalled and overrun notices stay the claim's), asks the chairman's rows only after a refusal, and takes them by injection (`chairmanRows`): a caller that injects any other read and not that one gets today's refusal, as does an unreadable history, a label the chairman did not add, a second chairman row, a sweep's freeze and an unread claimed list. A row that is not the chairman's prints exactly what it printed.
