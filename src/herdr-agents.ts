@@ -48,6 +48,22 @@ export function readAgents(run: (args: string[]) => string = defaultRun): { labe
   }
 }
 
+/**
+ * Each listed agent's CLAUDE SESSION ID by name (`herdr agent list`: `name`, and `agent_session.value`, which is a new id after a restart), or `null`
+ * when herdr could not be asked. A name that carries no id is absent from the map: an unknown id is never read as a changed one (#458).
+ * @param {(args: string[]) => string} [run]
+ * @returns {Map<string, string> | null}
+ */
+export function readAgentSessions(run: (args: string[]) => string = defaultRun): Map<string, string> | null {
+  try {
+    const agents = JSON.parse(run(["--session", "org", "agent", "list"]))?.result?.agents;
+    if (!Array.isArray(agents)) return null;
+    return new Map(agents.filter((a) => a?.name && a?.agent_session?.value).map((a) => [String(a.name), String(a.agent_session.value)]));
+  } catch {
+    return null;
+  }
+}
+
 /** The two panes that are always running. A listing that shows neither of them is not a listing of the org. */
 const STANDING_PANES = Object.freeze(["ceo", "orchestrator"]);
 
