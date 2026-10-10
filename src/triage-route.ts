@@ -22,7 +22,7 @@ import { appendFileSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { flagValue, refuseUnknownFlags } from "./lib/cli-flags.ts";
-import { triageOrder, type Label, type Said, type Triage, type TriageDeps, type TriageOrder } from "./triage-provider.ts";
+import { RED_MAIN_CAUSE, triageOrder, type Label, type Said, type Triage, type TriageDeps, type TriageOrder } from "./triage-provider.ts";
 
 /** The seats whose wakes cost the most and read the most digest material (the row names them). */
 export const TRIAGE_MANAGERS: readonly string[] = Object.freeze(["ceo", "product-manager", "orchestrator"]);
@@ -33,8 +33,6 @@ const DIGEST_RIDE_BYTES = 16 * 1024;
 const MS_PER_MINUTE = 60_000;
 const DIGEST_CAUSE = "triage-digest";
 const CHAIRMAN = /chairman/i;
-/** The cause `trunk-red.ts` gives the one order a red main produces. */
-const RED_MAIN_CAUSE = "trunk-red";
 /** How long after a held order's delivery its coming back is read as "it needed action". */
 export const OUTCOME_WINDOW_MS = 24 * 60 * MS_PER_MINUTE;
 export const NEEDED_ACTION_PROXY = "a PROXY: the same cause was offered to the same seat again within 24 hours of the held order's delivery, which shows it still stood and not that anybody acted on it";
