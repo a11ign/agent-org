@@ -109,7 +109,7 @@ test("each other repository's `main` is asked in the same wave -- the rehearsal'
   const read = (run: (args: string[], repo?: string) => string) => OTHERS.map((scope) => readScopeTrunkRed(scope, run));
   const batched = readWithFirstWaveTogether(read, sequentialRun([]), fakeBatch(batches));
   assert.equal(batches.length, 1);
-  assert.equal(batches[0].filter((call) => call.args.some((arg) => arg.includes("/actions/workflows/"))).length, OTHER_CODE.length);
+  assert.equal(batches[0].filter((call) => call.args.some((arg) => arg.includes("/actions/workflows/"))).length, OTHER_CODE.length * 2, "a push read and a schedule read each (agent-org#539)");
   assert.deepEqual(batched, read(sequentialRun([])));
 });
 

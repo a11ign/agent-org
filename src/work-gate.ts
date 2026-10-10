@@ -603,14 +603,14 @@ export const GH_READS = Object.freeze({
   conditionalOnListedWorker: "api graphql repository { issue(number: <each listed worker-<n>>) { state labels comments } } (readClosedClaimedRows -- a closed row's claim)",
   // #3390: TWO REST CALLS PER ROW LABELLED `needs:chairman` (its `labeled` events, and its comments), and NONE when nothing carries the label.
   conditionalOnChairmanLabelledRow: "api repos/{owner}/{repo}/issues/{n}/events and /comments (withChairmanEventTimes -- chairman-answered)",
-  // #3079: ONE REST CALL PER NON-PRIMARY CODE REPOSITORY, every tick -- the newest push runs of its `ci.yml` on `main` -- and three more on a tick that finds
-  // it red. None for one declared project, which is why it is not in `unconditional`: that list is the primary's own.
+  // #3079: THREE REST CALLS PER NON-PRIMARY CODE REPOSITORY, every tick (agent-org#539; it was one) -- the newest push runs and the newest schedule runs of its `ci.yml` on
+  // `main`, and the jobs of the newest verdict run, which a green run needs for a red `cross-repo` leg -- and three more on a tick that finds it red. None for one declared project, which is why it is not in `unconditional`: that list is the primary's own.
   // #3674: AND TWO MORE `pr list` PER NON-PRIMARY CODE REPOSITORY -- its open list (`readLanes`) and its merged one (`readElsewherePrs`, paid when any row is claimed). 1 point
   // each; the primary's own merged list is `conditionalOnClaimedBranches`. A list that FILLS its first page is asked again at `OPEN_PRS_LIMIT` (7 points): `conditionalOnFullOpenPage`.
   perOtherCodeRepositoryOpenList: "pr list --state open --limit 20 (readPrs via readLanes -- per non-primary code repository)",
   perOtherCodeRepositoryMergedList: "pr list --state merged --limit 100 (readMergedPrs via readElsewherePrs -- per non-primary code repository, while a row is claimed)",
   conditionalOnFullOpenPage: "pr list --state open --limit 100 (readPrs -- only for a repository whose first page of OPEN_PRS_FIRST_PAGE came back full)",
-  perOtherCodeRepository: "api repos/{repo}/actions/workflows/ci.yml/runs (readTrunkRed -- trunk-red for a declared code repository)",
+  perOtherCodeRepository: "api repos/{repo}/actions/workflows/ci.yml/runs, once for event=push and once for event=schedule, and actions/runs/{id}/jobs of the newest verdict run (readTrunkRed -- trunk-red for a declared code repository)",
   // ONE call, and it needs no admin (#2331). It used to be two -- the admin-only protection endpoint, then
   // `branches/main` as the discriminator for its 404 (#2106, #2022) -- and the discriminator's only job
   // was to explain the admin-only 404, which `branches/main` does not give a non-admin credential. Conditional on a settled-red check.

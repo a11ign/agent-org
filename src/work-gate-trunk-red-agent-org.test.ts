@@ -69,13 +69,15 @@ test("a cancelled or in-flight newest run is LOOKED THROUGH to the one before it
   assert.equal(readRed({ workflow_runs: [cancelled, inFlight] }), null, "no verdict at all is nothing to say, not a red");
 });
 
-test("the read asks for PUSH runs of `ci.yml` on main, in agent-org, and a healthy main costs exactly one call", () => {
+test("the read asks for PUSH and SCHEDULE runs of `ci.yml` on main, in agent-org, and a healthy main costs two runs reads and one jobs read (agent-org#539)", () => {
   const healthy = fakeGh({ runs: { workflow_runs: [run(3, "success", "2026-10-02T21:03:33Z")] } });
   assert.equal(readTrunkRed(healthy.gh, agentOrg), null);
-  assert.deepEqual(healthy.calls, [["api", "--method", "GET", `repos/${REPO}/actions/workflows/ci.yml/runs`, "-f", "branch=main", "-f", "event=push", "-f", "per_page=10"]]);
+  const runsRead = (event: string) => ["api", "--method", "GET", `repos/${REPO}/actions/workflows/ci.yml/runs`, "-f", "branch=main", "-f", `event=${event}`, "-f", "per_page=10"];
+  assert.deepEqual(healthy.calls, [runsRead("push"), runsRead("schedule"), ["api", `repos/${REPO}/actions/runs/3/jobs?per_page=100`]],
+    "the jobs of the newest verdict run are read even when it is green: a `continue-on-error` leg reads red only there");
   const red = fakeGh({ runs: RED_NOW });
   readTrunkRed(red.gh, agentOrg);
-  assert.deepEqual(red.calls.slice(1).map((c) => (c[0] === "run" ? `run view ${c[3]} ${c[4]}` : c[1])), [
+  assert.deepEqual(red.calls.slice(2).map((c) => (c[0] === "run" ? `run view ${c[3]} ${c[4]}` : c[1])), [
     `repos/${REPO}/actions/runs/1/jobs?per_page=100`, `run view --repo ${REPO}`, `repos/${REPO}/commits/${BAD}/pulls`],
   "jobs, the log, the merged PR; no annotations call, because there is no recheck job");
   assert.ok(red.calls.every((c) => !c.some((a) => a.includes("a11ign/a11ign"))), "nothing is asked of the primary's repository");
