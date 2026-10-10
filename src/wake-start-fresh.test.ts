@@ -9,7 +9,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { deliver as settlingDeliver, parseOrders, refusalReport, spawnClaimability, startsFresh } from "./wake.ts";
+import { deliver as settlingDeliver, parseOrders, refusalReport, sayClaimRefusal, spawnClaimability, startsFresh, type SpawnClaimer } from "./wake.ts";
 import { startedPanes } from "./packaging/started-pane.ts";
 
 const deliver: typeof settlingDeliver = (orders, agents, roster, deps) => settlingDeliver(orders, agents, roster, { ...deps, sleep: () => {} });
@@ -246,4 +246,62 @@ test("#4524: a row write that fails is SAID and does not change the claim's answ
 
   assert.match(got.refused[0], /file-overlap check \(B4\)/);
   assert.match(said.join("\n"), /could not write #4524's claim refusal on the row \(HTTP 502\)/);
+});
+
+// --- #4524, THE THIRD REOPENING: THE CLAIM'S OWN REFUSAL OF A CHAIRMAN ROW IS TOLD TO THE ROW, AND THE ROW IS FIRST IN A MIXED BATCH WITH EVERY ENGINEER HOLDING A ROW ---
+//
+// Measured 2026-10-10 08:16-08:26Z (`journalctl --user -u a11ign-work-tick`): #4764 carried `priority:chairman`, "7 engineer sessions sit idle, each holding a row", and five
+// ticks said `UNDELIVERED ... no spawn: the claim of #4764 as worker-4764 did not hold (NOT CLAIMED: overlaps the Region of #4738, a row already claimed ...)`. Neither
+// suspect was the cause: `startFresh` lifts the allowance and the pool, and the refusal is the claim's, B4's second half, which no open pull request carries and so
+// `spawnClaimability` could not say. These drive the same `deliver` -> `targetFor` -> `spawnWorker` path with the claim as a seam answering in the claim's own words.
+
+const HELD_BY_4738 = "NOT CLAIMED: overlaps the Region of #4738, a row already claimed (`in-progress`) that has no open pull request declaring `Closes #4738` yet, and which declares: agent-org:src/engineer-route.ts";
+const claimRefusing = (why: string): SpawnClaimer => ({ claim: (order, role) => ({ refusal: `the claim of ${order.causeKey.split("/").pop()} as ${role} did not hold (${why})` }), release: () => "" });
+const row4764 = orderFor(4764, { startFresh: true });
+
+test("#4524 MIXED BATCH, EVERY ENGINEER HOLDING A ROW: the chairman row is the first STARTED, and the allowance it spends is a plain row's to lose", () => {
+  const holders = agents({ ceo: "working", "worker-4519": "idle", "worker-4669": "idle", "worker-4738": "idle" });
+  const held = () => "has held a row: one instance, one row (#2407)";
+  const herdr = recordingHerdr();
+  const got = deliver([row4764, orderFor(4563), orderFor(4443), orderFor(4644)], holders, ["worker-4519", "worker-4669", "worker-4738"],
+    { run: herdr.run, ineligibleReason: held });
+
+  assert.match(got.sent[0], /^worker-4764 <- engineers\/ready-row-unclaimed\/4764 \(STARTED /);
+  assert.equal(got.sent.length, 1, "the allowance the chairman row spent is the only one this tick had");
+  assert.equal(herdr.started().length, 1);
+  assert.deepEqual(got.refused.map((line) => line.split(":")[0]), ["engineers/ready-row-unclaimed/4563", "engineers/ready-row-unclaimed/4443", "engineers/ready-row-unclaimed/4644"]);
+  assert.ok(got.refused.every((line) => /MAX_SPAWNS_PER_TICK/.test(line)), "every plain row waits on the cap, and none of them was ahead of the chairman row");
+});
+
+test("#4524: a chairman row the CLAIM refuses is written on the row, once -- the refusal names the row it overlaps", () => {
+  const gh = github({ prs: [], regions: { 4764: ["agent-org:src/engineer-route.ts"] } });
+  const claimRefused = sayClaimRefusal({ run: gh.run, post: gh.post, warn: () => {} });
+  let got = deliver([row4764], BUSY, [], { run: recordingHerdr().run, claimable: claimable(gh), claimer: claimRefusing(HELD_BY_4738), claimRefused });
+  for (let tick = 0; tick < 2; tick++) got = deliver([row4764], BUSY, [], { run: recordingHerdr().run, claimable: claimable(gh), claimer: claimRefusing(HELD_BY_4738), claimRefused });
+
+  assert.match(got.refused[0], /no spawn: the claim of 4764 as worker-4764 did not hold \(NOT CLAIMED: overlaps the Region of #4738/);
+  assert.equal(gh.posted().length, 1, "the same cause, three ticks, one comment");
+  assert.match(gh.posted()[0], /^4764: <!-- chairman-row-hold:4764:claim:[0-9a-f]{8} -->\n\*\*This `priority:chairman` row was NOT started this tick/);
+  assert.match(gh.posted()[0], /overlaps the Region of #4738, a row already claimed/);
+});
+
+test("#4524 CONTROL: the same claim refusal of a PLAIN row writes nothing, and a different cause on the chairman row is a second comment", () => {
+  const gh = github({ prs: [], regions: {} });
+  const claimRefused = sayClaimRefusal({ run: gh.run, post: gh.post, warn: () => {} });
+  deliver([orderFor(4564)], BUSY, [], { run: recordingHerdr().run, claimer: claimRefusing(HELD_BY_4738), claimRefused });
+  assert.deepEqual(gh.posted(), [], "a plain row's refusal stays a journal line");
+
+  deliver([row4764], BUSY, [], { run: recordingHerdr().run, claimer: claimRefusing(HELD_BY_4738), claimRefused });
+  deliver([row4764], BUSY, [], { run: recordingHerdr().run, claimer: claimRefusing("NOT CLAIMED: overlaps the Region of #4799, a row already claimed"), claimRefused });
+  assert.equal(gh.posted().length, 2);
+});
+
+test("#4524: a claim refusal that cannot be written is SAID, and the refusal still stands", () => {
+  const gh = github({ prs: [], regions: {} });
+  const said: string[] = [];
+  const claimRefused = sayClaimRefusal({ run: gh.run, post: () => { throw new Error("HTTP 502"); }, warn: (line) => said.push(line) });
+  const got = deliver([row4764], BUSY, [], { run: recordingHerdr().run, claimer: claimRefusing(HELD_BY_4738), claimRefused });
+
+  assert.match(got.refused[0], /did not hold/);
+  assert.match(said.join("\n"), /could not write #4764's claim refusal on the row \(HTTP 502\)/);
 });
