@@ -42,6 +42,7 @@ execFileSync("git", ["add", "-A"], { cwd: PROJECT, env: sandboxGitEnv() });
 process.chdir(PROJECT);
 
 const { declaredClosedRows, fileOverlapReason, lookupBlockersOf, lookupMyRegionFiles, lookupOpenPrFiles } = await import("../row-claim/file-overlap-rule.ts");
+const { lookupIssueBody } = await import("../row-claim/template-fields-rule.ts");
 const { declaredRegionFiles } = await import("../region-paths.ts");
 
 /** An open PR whose list is COMPLETE: its count is its list's length (#1419 compares the two). */
@@ -176,6 +177,64 @@ test("#710 REGRESSION FIXTURE: #705-vs-#698's real shape -- a file cited in pros
 test("lookupMyRegionFiles returns null, never [], on a failed lookup", () => {
   const run = (): string => { throw new Error("gh: authentication required"); };
   assert.equal(lookupMyRegionFiles(455, { run }), null);
+});
+
+// --- lookupMyRegionFiles and `no-code-left`: #727 -- the ASKING side reads the label the reservation side already reads (#3541) ---
+
+/** A row as `gh issue view <n> --json body,labels` answers it: the Region names `src/x.ts` and the labels are the caller's. */
+const rowWith = (labels: string[]) => JSON.stringify({ body: "## Region\n\n```\nsrc/x.ts\n```\n", labels: labels.map((name) => ({ name })) });
+
+test("#727 positive control: a row whose Region names src/x.ts and which carries `no-code-left` asks for NO files -- [], not null", () => {
+  const run = () => rowWith(["in-progress", "no-code-left"]);
+  assert.deepEqual(lookupMyRegionFiles(4764, { run }), []);
+});
+
+test("#727 negative control: the same row WITHOUT the label still asks for src/x.ts, so the label is what cleared it", () => {
+  assert.deepEqual(lookupMyRegionFiles(4764, { run: () => rowWith(["in-progress"]) }), ["src/x.ts"]);
+  assert.deepEqual(lookupMyRegionFiles(4764, { run: () => rowWith([]) }), ["src/x.ts"]);
+  assert.deepEqual(lookupMyRegionFiles(4764, { run: () => JSON.stringify({ body: JSON.parse(rowWith([])).body }) }), ["src/x.ts"],
+    "an answer carrying no `labels` field reads as unlabelled, never as a failed lookup");
+});
+
+test("#727: the label rides the SAME call as the body -- one `gh issue view`, asking for both fields", () => {
+  const calls: string[][] = [];
+  const run = (args: string[]) => { calls.push(args); return rowWith(["no-code-left"]); };
+  lookupMyRegionFiles(4764, { run, repo: "a11ign/agent-org" });
+  assert.deepEqual(calls, [["issue", "view", "4764", "--repo", "a11ign/agent-org", "--json", "body,labels"]]);
+});
+
+test("#732: the asking side's Region read and the template check's body read ask ONE argv, so the claim's batch serves both from one call", () => {
+  const regionAsk: string[][] = [];
+  const bodyAsk: string[][] = [];
+  lookupMyRegionFiles(4764, { run: (args) => { regionAsk.push(args); return rowWith([]); }, repo: "a11ign/agent-org" });
+  lookupIssueBody(4764, { run: (args) => { bodyAsk.push(args); return rowWith([]); }, repo: "a11ign/agent-org" });
+  assert.deepEqual(bodyAsk, regionAsk);
+  assert.deepEqual(bodyAsk, [["issue", "view", "4764", "--repo", "a11ign/agent-org", "--json", "body,labels"]]);
+});
+
+test("#732: lookupIssueBody still reads the body out of a `body,labels` answer, and an answer with no `body` still fails loud (null, never \"\")", () => {
+  assert.equal(lookupIssueBody(4764, { run: () => rowWith(["no-code-left"]) }), JSON.parse(rowWith([])).body);
+  assert.equal(lookupIssueBody(4764, { run: () => JSON.stringify({ labels: [] }) }), null, "a mock that answers with no body is asked-the-wrong-question, not an empty row");
+  assert.equal(lookupIssueBody(4764, { run: () => JSON.stringify({ body: "" }) }), "", "a genuinely empty body is still a real answer");
+});
+
+test("#727: a failed lookup is still null, labelled row or not -- a label nobody could read clears nothing", () => {
+  const run = (): string => { throw new Error("gh: authentication required"); };
+  assert.equal(lookupMyRegionFiles(4764, { run }), null);
+  assert.equal(lookupMyRegionFiles(4764, { run: () => "not json" }), null);
+});
+
+test("#727: the label is an exact name -- `no-code-left-yet` or a different case clears nothing", () => {
+  assert.deepEqual(lookupMyRegionFiles(4764, { run: () => rowWith(["no-code-left-yet", "No-Code-Left"]) }), ["src/x.ts"]);
+});
+
+test("#727 ACCEPTANCE, END TO END: a labelled row is not refused against an unrelated open PR on the files its build edited; the unlabelled row is", () => {
+  const open = [pr(723, ["src/x.ts", "src/y.ts"])];
+  const labelled = lookupMyRegionFiles(4764, { run: () => rowWith(["no-code-left"]) }) as string[];
+  const unlabelled = lookupMyRegionFiles(4764, { run: () => rowWith([]) }) as string[];
+  assert.equal(fileOverlapReason(labelled, open, { rowNumber: 4764 }).reason, null);
+  assert.match(fileOverlapReason(unlabelled, open, { rowNumber: 4764 }).reason as string, /#723/,
+    "control: the same PR does refuse the row that has not said it holds no code");
 });
 
 // --- lookupOpenPrFiles: one bulk call, never a loop of per-PR lookups ---
