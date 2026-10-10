@@ -11,18 +11,38 @@
  * fixture with ONE thing changed, and each asserts the row is UNCLAIMED again against the fake board -- which the
  * success case shows is not simply always true.
  */
-import { test } from "node:test";
+import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, existsSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deliver, spawnClaimer, spawnedPrompt, slugOf, registerSpawn, sparePathsFrom, readSpareCycles,
+import { fileURLToPath } from "node:url";
+
+// THE PROJECT THIS RUNS AGAINST IS A RECORDED ONE (#4685; `claimed-region-overlap.test.ts`'s shape): the host file is set FIRST and the tool
+// imported AFTER it, so a project that declares no second tracker -- the one CI pins at `PROJECT_REF` declares only `""` -- cannot move this
+// file's verdict. The keyed cases need a tracker KEY that is declared, because a name for an undeclared key is refused (`familyMember`).
+// The fixture is the overlap rule's recorded project with ONE tracker added, the one the machinery's own rows are in.
+const SCRATCH = mkdtempSync(join(tmpdir(), "wake-spawn-worktree-"));
+after(() => rmSync(SCRATCH, { recursive: true, force: true }));
+const PROJECT = join(SCRATCH, "project");
+cpSync(fileURLToPath(new URL("./packaging/fixtures/row-claim-file-overlap-rule/project", import.meta.url)), PROJECT, { recursive: true });
+const DECLARATION = join(PROJECT, ".agent-org", "project.json");
+const declared = JSON.parse(readFileSync(DECLARATION, "utf8")) as { tracker: { key: string; repo: string; board: { owner: string; number: number } }[] };
+declared.tracker.push({ key: "agent-org", repo: "a11ign/agent-org", board: { owner: "a11ign", number: 2 } });
+writeFileSync(DECLARATION, JSON.stringify(declared));
+const HOST_FILE = join(SCRATCH, "host.json");
+writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join(SCRATCH, "bin"), primary: "fixture",
+  projects: [{ id: "fixture", checkout: PROJECT }], clones: { "agent-org": "/clones/agent-org" },
+  gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
+process.env.AGENT_ORG_HOST = HOST_FILE;
+
+const { deliver, spawnClaimer, spawnedPrompt, slugOf, registerSpawn, sparePathsFrom, readSpareCycles,
   spawnableRole, spareLabelForRow, withSpareInstances, spawnClaimability, rowRefOfOrder, isSpareRole, spareInstances, endFinishedSpares,
-  WORKERS_GH_CONFIG_DIR, HOST_REPOS, PRIMARY_CHECKOUT } from "./wake.ts";
-import { familyMember, isLiveSession } from "./arm-pr.ts";
-import { claimNames } from "./row-claim.ts";
-import { homeProjectDeclaration } from "./project-config.ts";
-import { startedPanes } from "./packaging/started-pane.ts";
+  WORKERS_GH_CONFIG_DIR, HOST_REPOS, PRIMARY_CHECKOUT } = await import("./wake.ts");
+const { familyMember, isLiveSession } = await import("./arm-pr.ts");
+const { claimNames } = await import("./row-claim.ts");
+const { homeProjectDeclaration } = await import("./project-config.ts");
+const { startedPanes } = await import("./packaging/started-pane.ts");
 
 const ROW = 2405;
 const ORDER = {
