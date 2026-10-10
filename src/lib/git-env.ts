@@ -1,4 +1,4 @@
-// COPIED FROM `packages/guards/src/git-env.ts` at cd4bdb7dc (#2658, child 3g of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
+// COPIED FROM `packages/guards/src/git-env.ts` at c6560f915 (#2658, child 3g of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
 // its package. The product keeps its original and the two can drift, with no cross-repository pin: `agent-org-outward-edges.test.ts` compares them.
 // CHANGED FROM THE ORIGINAL: NOTHING but this header.
 // ==== end of copy header ====
@@ -11,7 +11,7 @@
 // checkout) won -- 15 commits across all refs, six of them real work already on `origin/main`, ended up
 // authored by the string that test's own `git config user.name` call had written into the REAL repo.
 //
-// This is the ONE PLACE that fact is stated. Every caller -- test helper (`test-support/git-sandbox.ts`)
+// This is the ONE PLACE that fact is stated. Every caller -- test helper (`@a11ign/toolchain/lib/git-sandbox`)
 // and production git-spawning code alike -- strips through this function rather than re-deriving the
 // list, because a copy of a defensive filter is exactly the shape this repo's CLAUDE.md calls out as
 // "a fact stated twice, and the copies drifted": one copy missing one variable is silent until the day
