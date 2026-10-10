@@ -1,0 +1,5 @@
+---
+"agent-org": patch
+---
+
+The board-truth audit asks a ninth question, `roadmap-value`: an open row under a roadmap epic (its parent, or its parent's parent, has a `Roadmap` value on a Project the row is boarded to) whose own value on that Project is absent or another one is a finding, in any tracker the audit reads. It names the row, the epic and both values, so the fix is one `gh project item-edit`. `row-file` enforcing the value at filing cannot see a row boarded by hand, linked as a sub-issue afterwards, or whose epic's value changed; this is the net under it. `readBoardFacts` reads the values with ONE aliased GraphQL request per 50 open rows (the rows' own items and their parents' and grandparents'); a refused or misshapen answer is `null` and the question is listed as NOT READ, never counted as agreeing. The comparison is per Project, since the field is the Project's: an epic with a value on Project 2 and none on Project 1 asks nothing of a row boarded only to Project 1. a11ign/agent-org#517.
