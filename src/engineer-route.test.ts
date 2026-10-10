@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { decide, decisionLogPathFrom, decisionSwitchesPath, MAX_STATE_BYTES, type DecisionDeps } from "./decision-provider.ts";
 import {
-  composeRoute, HAIKU_MIN_P_MECHANICAL, HAIKU_MIN_P_SCORE, MEDIUM_MAX_P_SUBSYSTEMS, MEDIUM_MIN_P_SCORE, scoreAtMost, type Readings, fallbackRoute, fallbackWindow, GUARD_DECISIONS, isWindowTooSmall, LARGE_ROW_FILES, LARGEST_ROW_FILES, recordRouteOutcome, recordWindowTooSmall, regionSize, routeCostEvents,
+  composeRoute, HAIKU_MAX_P_DEBUGGING, HAIKU_MAX_P_SUBSYSTEMS, HAIKU_MIN_P_MECHANICAL, HAIKU_MIN_P_SCORE, HAIKU_MIN_P_SMALL, MEDIUM_MAX_P_SUBSYSTEMS, MEDIUM_MIN_P_SCORE, scoreAtMost, type Readings, fallbackRoute, fallbackWindow, GUARD_DECISIONS, isWindowTooSmall, LARGE_ROW_FILES, LARGEST_ROW_FILES, recordRouteOutcome, recordWindowTooSmall, regionSize, routeCostEvents,
   MECHANICAL_DATA, DEBUGGING_DATA, routeCostReading, ROUTE_COSTLIER_THAN_FALLBACK, routeEngineer, routeState, SCORE_LEVEL_DATA, SMALL_ROW_FILES, SUBSYSTEMS_DATA, windowOf, windowReadings, windowReportLines, QUESTIONS,
   type Answers, type Route, type RouteRow,
 } from "./engineer-route.ts";
@@ -161,37 +161,38 @@ test("composeRoute: mechanical and a score probably at most 3 is Haiku/high (a11
   assert.equal(composeRoute({ ...CLEAN, score: atLevel(1, 0.9) }, SMALL), "haiku/high");
   assert.equal(composeRoute({ ...CLEAN, score: atLevel(3, 0.9) }, SMALL), "haiku/high", "score 3 IS a Haiku row now (HAIKU_MAX_SCORE, #4877); it routed sonnet/medium at 2");
   assert.equal(composeRoute({ ...CLEAN, score: atLevel(4, 0.9) }, SMALL), "sonnet/high", "one level above the limit stays off Haiku, mechanical or not");
-  assert.equal(composeRoute({ ...CLEAN, mechanical: 0.05 }, SMALL), "sonnet/medium", "a non-mechanical score 2 is the medium rule's row, not Haiku's");
-  assert.equal(composeRoute({ ...CLEAN, mechanical: 0.05, score: atLevel(1, 0.9) }, SMALL), "sonnet/medium", "the control: the loosening is the score's, so a score of 1 does not make a non-mechanical row Haiku's");
-  assert.equal(composeRoute({ ...CLEAN, mechanical: 0.05, score: atLevel(3, 0.9) }, SMALL), "sonnet/medium", "nor does a score of 3: mechanical is still the gate");
-  assert.equal(composeRoute({ ...CLEAN, mechanical: null }, SMALL), "sonnet/medium", "mechanical not given is not a yes");
+  assert.equal(composeRoute({ ...CLEAN, mechanical: 0.05 }, SMALL), "haiku/high", "a non-mechanical score 2 IS Haiku's on size (#4902): mechanical is a logged signal, not a gate");
+  assert.equal(composeRoute({ ...CLEAN, mechanical: null }, SMALL), "haiku/high", "mechanical not given changes nothing for a scored row");
+  assert.equal(composeRoute({ ...CLEAN, mechanical: 0.05, score: atLevel(4, 0.9) }, SMALL), "sonnet/high", "the control: size is the gate, so a non-mechanical score 4 is not lowered");
   assert.equal(composeRoute({ ...CLEAN, debugging: 0.95 }, SMALL), "sonnet/high", "debugging an unknown failure holds every rung");
 });
 
-test("composeRoute DONE-WHEN 1: each threshold is a boundary, held to its own side, and none is the old confidence floor (a yes/no at 0.65 has a confidence of 0.3)", () => {
-  assert.deepEqual([HAIKU_MIN_P_MECHANICAL, HAIKU_MIN_P_SCORE, MEDIUM_MIN_P_SCORE, MEDIUM_MAX_P_SUBSYSTEMS], [0.65, 0.6, 0.6, 0.5], "the chairman's starting values (#4875)");
-  const at = (over: Partial<Readings>) => composeRoute({ ...CLEAN, ...over }, SMALL);
-  assert.equal(at({ mechanical: 0.65 }), "haiku/high", "P(mechanical) AT the threshold qualifies");
-  assert.equal(at({ mechanical: 0.64 }), "sonnet/medium", "just under it is the medium rule's row, not Haiku's");
-  assert.equal(at({ score: levelsOf({ 1: 0.3, 2: 0.3 }) }), "haiku/high", "P(score <= 2) of exactly 0.6, summed over TWO levels, qualifies");
-  assert.equal(at({ score: levelsOf({ 1: 0.2, 2: 0.2, 3: 0.2 }) }), "haiku/high", "P(score <= 3) of exactly 0.6 qualifies (#4877)");
-  assert.equal(at({ score: levelsOf({ 1: 0.2, 2: 0.2, 3: 0.19 }) }), "sonnet/high", "0.59 is under it, and under the medium rule's 0.6 as well");
-  assert.equal(at({ mechanical: 0.05, score: levelsOf({ 1: 0.3, 2: 0.3 }) }), "sonnet/medium");
-  assert.equal(at({ mechanical: 0.05, score: levelsOf({ 1: 0.2, 2: 0.2, 3: 0.2 }) }), "sonnet/medium", "P(score <= 3) of 0.6 qualifies");
-  assert.equal(at({ mechanical: 0.05, score: levelsOf({ 1: 0.2, 2: 0.2, 3: 0.19 }) }), "sonnet/high", "0.59 does not");
-  assert.equal(at({ mechanical: 0.05, subsystems: 0.49 }), "sonnet/medium", "P(subsystems) under 0.5 passes");
-  assert.equal(at({ mechanical: 0.05, subsystems: 0.5 }), "sonnet/high", "and AT 0.5 does not: the bound is strict");
-  assert.equal(at({ debugging: 0.49 }), "haiku/high");
+test("composeRoute DONE-WHEN 1 (#4902): each threshold is a boundary, held to its own side, and none is the old confidence floor (a yes/no at 0.65 has a confidence of 0.3)", () => {
+  assert.deepEqual([HAIKU_MIN_P_SMALL, HAIKU_MIN_P_SCORE, HAIKU_MAX_P_SUBSYSTEMS, HAIKU_MAX_P_DEBUGGING, MEDIUM_MIN_P_SCORE, MEDIUM_MAX_P_SUBSYSTEMS], [0.6, 0.9, 0.1, 0.25, 0.6, 0.5], "the chairman's values (#4902)");
+  assert.equal(HAIKU_MIN_P_MECHANICAL, 0.65, "the one place mechanical still decides: an unscored row in a small Region");
+  const at = (over: Partial<Readings>) => composeRoute({ ...CLEAN, mechanical: 0.05, ...over }, SMALL);
+  const contained = levelsOf({ 1: 0.025, 2: 0.025, 3: 0.85 }); // P(score <= 2) 0.05, P(score <= 3) exactly 0.9: only the containment rule can take it
+  assert.equal(at({ score: levelsOf({ 1: 0.3, 2: 0.3 }) }), "haiku/high", "P(score <= 2) of exactly 0.6, summed over TWO levels, qualifies on size");
+  assert.equal(at({ score: levelsOf({ 1: 0.3, 2: 0.29 }) }), "sonnet/medium", "0.59 does not, and falls to the medium rule");
+  assert.equal(at({ score: contained, subsystems: 0.1, debugging: 0.25 }), "haiku/high", "P(score <= 3) 0.9, subsystems 0.1 and debugging 0.25 are each AT their bound, and qualify");
+  assert.equal(at({ score: levelsOf({ 1: 0.025, 2: 0.025, 3: 0.84 }), subsystems: 0.05, debugging: 0.05 }), "sonnet/medium", "P(score <= 3) of 0.89 is under 0.9");
+  assert.equal(at({ score: contained, subsystems: 0.11, debugging: 0.05 }), "sonnet/medium", "subsystems just over 0.1");
+  assert.equal(at({ score: contained, subsystems: 0.05, debugging: 0.26 }), "sonnet/medium", "debugging just over 0.25");
+  assert.equal(at({ score: contained, subsystems: null, debugging: 0.05 }), "sonnet/medium", "subsystems not given is not containment");
+  assert.equal(at({ score: contained, subsystems: 0.05, debugging: null }), "sonnet/medium", "debugging not given is not containment");
+  assert.equal(at({ score: levelsOf({ 1: 0.2, 2: 0.2, 3: 0.2 }) }), "sonnet/medium", "P(score <= 3) of 0.6 is the medium rule's");
+  assert.equal(at({ score: levelsOf({ 1: 0.2, 2: 0.2, 3: 0.19 }) }), "sonnet/high", "0.59 does not qualify for medium");
+  assert.equal(at({ score: contained, subsystems: 0.49, debugging: 0.05 }), "sonnet/medium", "P(subsystems) under 0.5 passes the medium rule");
+  assert.equal(at({ score: contained, subsystems: 0.5, debugging: 0.05 }), "sonnet/high", "and AT 0.5 does not: the bound is strict");
+  assert.equal(at({ debugging: 0.49 }), "haiku/high", "a size-qualified row is held only by the debugging hold");
   assert.equal(at({ debugging: 0.5 }), "sonnet/high", "P(debugging) at 0.5 holds the row at the top");
 });
 
-test("composeRoute DONE-WHEN 1: a score split across ADJACENT levels is read as the sum, so 0.3 at level 2, 0.3 at level 3 and 0.35 at level 4 is a Haiku/high row though no level is likely", () => {
+test("composeRoute DONE-WHEN 1: a score split across ADJACENT levels is read as the sum, so 0.3 at level 2, 0.3 at level 3 and 0.35 at level 4 is not Haiku's but is a Sonnet/medium row though no level is likely", () => {
   const split = levelsOf({ 2: 0.3, 3: 0.3, 4: 0.35 });
   assert.deepEqual([scoreAtMost(split, 2), scoreAtMost(split, 3)], [0.325, 0.625], "P(<=2) is level 1's 0.025 of the remainder plus level 2's 0.3; P(<=3) adds level 3's 0.3");
-  assert.equal(composeRoute({ ...CLEAN, score: split }, SMALL), "haiku/high", "the row is mechanical, and P(score <= 3) is over 0.6");
-  assert.equal(composeRoute({ ...CLEAN, mechanical: 0.05, score: split }, SMALL), "sonnet/medium");
-  assert.equal(composeRoute({ ...CLEAN, mechanical: 0.05, score: levelsOf({ 2: 0.3, 3: 0.25, 4: 0.4 }) }, SMALL), "sonnet/high", "the control: the same shape with 0.4 above level 3 is P(score <= 3) of 0.575");
-  assert.equal(composeRoute({ ...CLEAN, score: levelsOf({ 2: 0.3, 3: 0.25, 4: 0.4 }) }, SMALL), "sonnet/high", "and a mechanical row of it is not Haiku's either");
+  assert.equal(composeRoute({ ...CLEAN, score: split }, SMALL), "sonnet/medium", "P(score <= 3) is over 0.6 and under Haiku's 0.9, mechanical or not");
+  assert.equal(composeRoute({ ...CLEAN, score: levelsOf({ 2: 0.3, 3: 0.25, 4: 0.4 }) }, SMALL), "sonnet/high", "the control: the same shape with 0.4 above level 3 is P(score <= 3) of 0.575");
 });
 
 test("composeRoute: mechanical with the score NOT GIVEN is Haiku/high only when the Region names at most 3 files; a non-mechanical row with no score never lowers", () => {
@@ -206,11 +207,11 @@ test("composeRoute: mechanical with the score NOT GIVEN is Haiku/high only when 
 });
 
 test("composeRoute: a score probably at most 3 with subsystems NOT probably yes is Sonnet/medium; a probable yes, a higher score and no score are Sonnet/high", () => {
-  const medium: Readings = { mechanical: 0.05, subsystems: 0.05, debugging: 0.05, score: atLevel(3, 0.9) };
+  const medium: Readings = { mechanical: 0.05, subsystems: 0.3, debugging: 0.05, score: atLevel(3, 0.9) };
   assert.equal(composeRoute(medium, SMALL), "sonnet/medium");
   assert.equal(composeRoute({ ...medium, subsystems: null }, SMALL), "sonnet/medium", "subsystems not given passes");
   assert.equal(composeRoute({ ...medium, debugging: null }, SMALL), "sonnet/medium", "only a probable debugging YES holds a row");
-  assert.equal(composeRoute({ ...medium, score: atLevel(1, 0.9) }, MANY), "sonnet/medium", "the Region's size is Haiku's concern, not the medium rule's");
+  assert.equal(composeRoute({ ...medium, score: atLevel(1, 0.9) }, MANY), "haiku/high", "a scored row is Haiku's on size, whatever the Region names (the Region only gates an unscored one)");
   for (const flipped of [{ subsystems: 0.9 }, { debugging: 0.9 }, { score: atLevel(4, 0.9) }, { score: atLevel(5, 0.9) }, { score: null }]) {
     assert.equal(composeRoute({ ...medium, ...flipped }, SMALL), "sonnet/high", JSON.stringify(flipped));
   }
@@ -281,13 +282,15 @@ test("provider on but KEY MISSING, USE OFF, REFUSING or TIMING OUT: each takes t
 
 // --- the provider on (a fake fetch) ---
 
-test("provider ON: clean answers are Haiku/high with the Haiku profile; a non-mechanical score 3 is Sonnet/medium; a subsystem answer on that row is Sonnet/high", async () => {
+test("provider ON: clean answers are Haiku/high with the Haiku profile; a non-mechanical score 3 with subsystems no is Haiku/high (#4902); one unsure of subsystems is Sonnet/medium; a subsystem yes is Sonnet/high", async () => {
   const haiku = rig({ triage: JEV, switches: ON });
   const h = await routeEngineer(rowOf(), haiku.deps);
   assert.deepEqual([h.route, h.via, h.profile?.model, h.profile?.effort, h.profile?.autocompactWindow], ["haiku/high", "jev", HAIKU_MODEL_ID, "high", HAIKU_AUTOCOMPACT_WINDOW_TOKENS]);
   const small = { mechanical: "no", subsystems: "no", score: 3 };
-  const medium = await routeEngineer(rowOf(), rig({ triage: JEV, switches: ON, body: reply(small) }).deps);
-  assert.deepEqual([medium.route, medium.via, medium.profile?.effort], ["sonnet/medium", "jev", "medium"]);
+  const contained = await routeEngineer(rowOf(), rig({ triage: JEV, switches: ON, body: reply(small) }).deps);
+  assert.deepEqual([contained.route, contained.via, contained.profile?.effort], ["haiku/high", "jev", "high"]);
+  const medium = await routeEngineer(rowOf(), rig({ triage: JEV, switches: ON, body: reply({ ...small, low: "subsystems" }) }).deps);
+  assert.deepEqual([medium.route, medium.via, medium.profile?.effort], ["sonnet/medium", "jev", "medium"], "subsystems at P(yes) 0.25 is not containment");
   const cross = await routeEngineer(rowOf(), rig({ triage: JEV, switches: ON, body: reply({ ...small, subsystems: "yes" }) }).deps);
   assert.deepEqual([cross.route, cross.via, cross.profile], ["sonnet/high", "jev", null]);
   assert.equal(haiku.calls(), 1);
@@ -303,10 +306,10 @@ test("#4764 DONE-WHEN 1: a mechanical row the provider says the Acceptance does 
   assert.deepEqual(Object.keys(QUESTIONS), ["mechanical", "subsystems", "debugging", "score"]);
 });
 
-test("#4764 DONE-WHEN 1: a small single-subsystem row (two files, a command, subsystems no, score 3) is Sonnet/medium via the provider, and ONE answer short of that is not Haiku", async () => {
+test("#4764 DONE-WHEN 1: a small single-subsystem row (two files, a command, subsystems no, score 3) is Haiku/high via the provider (#4902), and ONE answer short of that is Sonnet/medium", async () => {
   const given = { mechanical: "no", subsystems: "no", score: 3 };
   const medium = await routeEngineer(rowOf(), rig({ triage: JEV, switches: ON, body: reply(given) }).deps);
-  assert.deepEqual([medium.route, medium.via, medium.profile?.model, medium.profile?.effort], ["sonnet/medium", "jev", "sonnet", "medium"]);
+  assert.deepEqual([medium.route, medium.via, medium.profile?.model, medium.profile?.effort], ["haiku/high", "jev", HAIKU_MODEL_ID, "high"]);
   // The answers the provider was NOT sure of (live: `subsystems` 28 of 49, `score` 31 of 49) are why the route was pinned. At a confidence of 0.5 a `no` is still P(yes) = 0.25 and a level 3
   // still P(score <= 3) = 0.8, so neither is discarded any more (#4875), and the reason says nothing was missing.
   const unsure = await routeEngineer(rowOf(), rig({ triage: JEV, switches: ON, body: reply({ ...given, low: "subsystems" }) }).deps);
@@ -319,7 +322,7 @@ test("#4764 DONE-WHEN 1: a small single-subsystem row (two files, a command, sub
 });
 
 test("provider ON with ONE distribution not given: each question's absence composes what its own rule says, and the same row with a fourth file is the control for score", async () => {
-  const expected: Record<keyof Answers, Route> = { mechanical: "sonnet/medium", subsystems: "haiku/high", debugging: "haiku/high", score: "haiku/high" };
+  const expected: Record<keyof Answers, Route> = { mechanical: "haiku/high", subsystems: "haiku/high", debugging: "haiku/high", score: "haiku/high" };
   for (const name of Object.keys(QUESTIONS) as (keyof Answers)[]) {
     const routed = await routeEngineer(rowOf(), rig({ triage: JEV, switches: ON, body: withoutProbabilities(reply({}), name) }).deps);
     assert.equal(routed.route, expected[name], name);
@@ -416,21 +419,25 @@ test("#4875 DONE-WHEN 1: a row the provider rates 0.8 mechanical with P(score <=
   assert.match(routed.why, /P\(mechanical=yes\)=0\.800, .*P\(score<=3\)=0\.900/);
 });
 
-test("#4875 DONE-WHEN 1: a score split 0.45 at level 2 and 0.4 at level 3 routes to Haiku/high when mechanical (P(score <= 3) is 0.85, #4877), and Sonnet/medium when not", async () => {
+test("#4875 DONE-WHEN 1: a score split 0.45 at level 2 and 0.4 at level 3 routes to Sonnet/medium, mechanical or not (P(score <= 2) is 0.45 and P(score <= 3) 0.85, under Haiku's 0.9, #4902)", async () => {
   const split = ROUTED["score split 0.45 at 2 and 0.4 at 3"];
   const mechanical = await routeEngineer(rowOf(), rig({ triage: JEV, switches: ON, body: reply(split) }).deps);
-  assert.deepEqual([mechanical.route, mechanical.profile?.model], ["haiku/high", HAIKU_MODEL_ID], "P(score <= 2) is 0.45, under 0.6, but level 3 is now Haiku's: P(score <= 3) is 0.85");
+  assert.deepEqual([mechanical.route, mechanical.profile?.model], ["sonnet/medium", "sonnet"]);
   const notMechanical = await routeEngineer(rowOf(), rig({ triage: JEV, switches: ON, body: reply({ ...split, p: { ...split.p, mechanical: 0.1 } }) }).deps);
-  assert.equal(notMechanical.route, "sonnet/medium");
+  assert.equal(notMechanical.route, "sonnet/medium", "mechanical is not a gate (#4902): the same row at 0.1 routes the same");
   const scattered = { ...split, p: { ...split.p, score: { 2: 0.3, 3: 0.25, 4: 0.3, 5: 0.15 } } };
   assert.equal((await routeEngineer(rowOf(), rig({ triage: JEV, switches: ON, body: reply(scattered) }).deps)).route, "sonnet/high", "the control: P(score <= 3) of 0.55 is under 0.6");
 });
 
-test("#4875 DONE-WHEN 1: a row with P(mechanical) = 0.5 does not route to Haiku, though its score is low and the provider is evenly split", async () => {
-  const routed = await routeEngineer(rowOf(), rig({ triage: JEV, switches: ON, body: reply(ROUTED["0.5 mechanical"]) }).deps);
-  assert.deepEqual([routed.route, routed.via], ["sonnet/medium", "jev"], "0.5 is under 0.65, and its score still makes it a medium row");
-  const above = { ...ROUTED["0.5 mechanical"], p: { ...ROUTED["0.5 mechanical"].p, mechanical: 0.66 } };
-  assert.equal((await routeEngineer(rowOf(), rig({ triage: JEV, switches: ON, body: reply(above) }).deps)).route, "haiku/high", "the control: the same row at 0.66");
+test("#4902 DONE-WHEN 1: a row with P(mechanical) = 0.5 and P(score <= 3) 0.94 routes to Haiku/high: mechanical is not a gate, size and containment are", async () => {
+  const body = reply({ p: { mechanical: 0.45, subsystems: 0.05, debugging: 0.19, score: { 1: 0.1, 2: 0.2, 3: 0.64, 4: 0.04, 5: 0.02 } } });
+  const routed = await routeEngineer(rowOf(), rig({ triage: JEV, switches: ON, body }).deps);
+  assert.deepEqual([routed.route, routed.via, routed.profile?.model], ["haiku/high", "jev", HAIKU_MODEL_ID]);
+  assert.match(routed.why, /P\(mechanical=yes\)=0\.450, .*P\(score<=3\)=0\.940/);
+  const crossing = reply({ p: { mechanical: 0.45, subsystems: 0.3, debugging: 0.19, score: { 1: 0.1, 2: 0.2, 3: 0.63, 4: 0.05, 5: 0.02 } } });
+  assert.equal((await routeEngineer(rowOf(), rig({ triage: JEV, switches: ON, body: crossing }).deps)).route, "sonnet/medium", "P(score <= 3) 0.93 with P(subsystems) 0.3 is Sonnet/medium");
+  const large = reply({ p: { mechanical: 0.45, subsystems: 0.05, debugging: 0.19, score: { 1: 0.05, 2: 0.1, 3: 0.1, 4: 0.5, 5: 0.25 } } });
+  assert.equal((await routeEngineer(rowOf(), rig({ triage: JEV, switches: ON, body: large }).deps)).route, "sonnet/high", "P(score <= 3) 0.25 is Sonnet/high");
 });
 
 test("#4875 DONE-WHEN 1: the absolute refusals hold at ANY probability -- lane:ceo, needs:chairman, a workflows Region and no Acceptance command are never asked, however sure", async () => {
@@ -579,10 +586,10 @@ test("the outcome line reads `route <route> via <via> (<why>)`, and what <why> s
   const given = rig({ triage: JEV, switches: ON });
   assert.equal((await routeEngineer(rowOf(), given.deps)).via, "jev");
   assert.equal(outcomeOf(given), "route haiku/high window 130k via jev (the provider's probabilities: P(mechanical=yes)=0.975, P(subsystems=yes)=0.025, P(debugging=yes)=0.025, P(score<=3)=0.980) [fallback would be sonnet/medium]");
-  // jev, one distribution not given: the line names it and why, and the route is what the rest compose (Sonnet/medium: not mechanical, score 2, subsystems no).
+  // jev, one distribution not given: the line names it and why, and the route is what the rest compose (Haiku/high: score 2 is size enough, mechanical is not a gate, #4902).
   const held = rig({ triage: JEV, switches: ON, body: withoutProbabilities(reply({}), "mechanical") });
-  assert.equal((await routeEngineer(rowOf(), held.deps)).route, "sonnet/medium");
-  assert.match(outcomeOf(held), /^route sonnet\/medium window 200k via jev \(the provider's probabilities: P\(mechanical=yes\)=not given \(the answer carried no readable probabilities\), P\(subsystems=yes\)=0\.025, .*\) \[fallback would be sonnet\/medium\]$/);
+  assert.equal((await routeEngineer(rowOf(), held.deps)).route, "haiku/high");
+  assert.match(outcomeOf(held), /^route haiku\/high window 130k via jev \(the provider's probabilities: P\(mechanical=yes\)=not given \(the answer carried no readable probabilities\), P\(subsystems=yes\)=0\.025, .*\) \[fallback would be sonnet\/medium\]$/);
   // fallback: the provider's failure, never the fallback rule's own "a small row".
   const failed = rig({ triage: JEV, switches: ON });
   failed.deps.fetch = (async () => ({ ok: false, status: 422, json: async () => ({}) })) as unknown as typeof fetch;
@@ -712,7 +719,7 @@ test("the guard's control: twenty provider routes that cost what the fallback wo
   const even = rig({ triage: JEV, switches: ON, body: reply({ mechanical: "no", subsystems: "no", score: 3 }) });
   const cheap = rig({ triage: JEV, switches: ON });
   for (let n = 1; n <= GUARD_DECISIONS + 1; n++) {
-    assert.equal((await routeEngineer(rowOf({ number: n }), even.deps)).route, "sonnet/medium");
+    assert.equal((await routeEngineer(rowOf({ number: n }), even.deps)).route, "haiku/high");
     await routeEngineer(rowOf({ number: n }), cheap.deps);
   }
   assert.equal(existsSync(join(dirname(even.logPath), "failure-ledger")), false);
@@ -835,7 +842,7 @@ test("provider ABSENT: a large Region still gets its window, the route's profile
 
 test("a provider answer moves the window ONLY at or over the floor, and only with its own switch on", async () => {
   const body = bodyOf({ region: files(LARGE_ROW_FILES) });
-  const withSwitch = async (switches: string, given: Given) => routeEngineer(rowOf({ body }), rig({ triage: JEV, switches, body: reply({ mechanical: "no", ...given }) }).deps);
+  const withSwitch = async (switches: string, given: Given) => routeEngineer(rowOf({ body }), rig({ triage: JEV, switches, body: reply({ mechanical: "no", debugging: "yes", ...given }) }).deps);
   const up = await withSwitch(WINDOW_ON, { subsystems: "yes" });
   assert.equal(windowOf(up), LARGEST_WINDOW_TOKENS, "subsystems answered yes at 0.95 raises 400k one rung");
   assert.match(up.windowWhy ?? "", /raised it from 400k/);
@@ -848,7 +855,7 @@ test("a provider answer moves the window ONLY at or over the floor, and only wit
   // Down needs BOTH answers: a small score alone does not, the two together do, and never below the ordinary window.
   assert.equal(windowOf(await withSwitch(WINDOW_ON, { subsystems: "no", score: 3 })), LARGE_WINDOW_TOKENS);
   assert.equal(windowOf(await withSwitch(WINDOW_ON, { subsystems: "no", score: 2 })), AUTOCOMPACT_WINDOW_TOKENS);
-  const small = await routeEngineer(rowOf(), rig({ triage: JEV, switches: WINDOW_ON, body: reply({ mechanical: "no", subsystems: "no", score: 1 }) }).deps);
+  const small = await routeEngineer(rowOf(), rig({ triage: JEV, switches: WINDOW_ON, body: reply({ mechanical: "no", debugging: "yes", subsystems: "no", score: 1 }) }).deps);
   assert.equal(windowOf(small), AUTOCOMPACT_WINDOW_TOKENS, "a small row is never taken below today's window");
   // A failed provider leaves the Region's window and says it is the provider's failure.
   const failed = rig({ triage: JEV, switches: WINDOW_ON });

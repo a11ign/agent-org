@@ -18,6 +18,10 @@
 // yes), P(score <= k) and P(subsystems = yes) against the named thresholds below, each scaled to the cost of being wrong: moving DOWN a tier is cheap to be wrong about, because
 // `engineer-escalation.ts` (#4630) catches it. The confidence floor still decides which answers the WINDOW reads ({@link adjustWindow}) and applies to every other use; it no longer discards a routing answer.
 //
+// #4902: HAIKU IS CHOSEN ON SIZE AND CONTAINMENT, NOT ON `mechanical`. Measured on the decision log (2026-10-10, 30 records), P(mechanical = yes) had a median of 0.10 and none reached 0.65, so a
+// gate on it sent nothing to Haiku: our rows describe a change rather than list every edit. {@link takesHaiku} reads P(score <= 2), or P(score <= 3) with subsystems and debugging both unlikely.
+// `mechanical` is still asked and logged, and decides only an unscored row in a small Region.
+//
 // THE STATE IS STRUCTURED AND TRIMMED: the title, the Region's entries, the Acceptance's command text and the Done-when list. Never the row's body, which an agent wrote.
 import { readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -52,14 +56,22 @@ export type Readings = { mechanical: number | null; subsystems: number | null; d
 export const SMALL_ROW_FILES = 3;
 /** The complexity `score` a Haiku row may be at most (3 since a11ign#4877, the chairman's direction on the trial report, a11ign#4627), and the one a Sonnet/medium row is. */
 export const HAIKU_MAX_SCORE = 3;
+/** The score a row is at most when it is Haiku's on size alone (#4902). */
+export const HAIKU_SMALL_SCORE = 2;
 export const MEDIUM_SCORE = 3;
 // THE ROUTING THRESHOLDS (#4875, the chairman's starting values, to be calibrated from the probabilities the decision log now keeps). Each is a probability, and each is LOW on purpose:
 // a row sent down a tier wrongly is caught by the escalation (a Haiku start costs about $0.10 and a restart; a Sonnet/high row's median cost is $1.01), so the price of being wrong
 // is small and the price of never trying is the cost of every row.
-/** Haiku/high needs P(mechanical = yes) of at least this... */
+/** Haiku/high on SIZE: P(score <= {@link HAIKU_SMALL_SCORE}) of at least this (#4902). */
+export const HAIKU_MIN_P_SMALL = 0.6;
+/** Haiku/high on CONTAINMENT: P(score <= {@link HAIKU_MAX_SCORE}) of at least this... */
+export const HAIKU_MIN_P_SCORE = 0.9;
+/** ...AND P(subsystems = yes) at most this... */
+export const HAIKU_MAX_P_SUBSYSTEMS = 0.1;
+/** ...AND P(debugging = yes) at most this. */
+export const HAIKU_MAX_P_DEBUGGING = 0.25;
+/** With no score given, a row the provider reads as mechanical at least this strongly may still go to Haiku from a small Region. The only place `mechanical` is a gate left. */
 export const HAIKU_MIN_P_MECHANICAL = 0.65;
-/** ...AND P(score <= {@link HAIKU_MAX_SCORE}) of at least this. */
-export const HAIKU_MIN_P_SCORE = 0.6;
 /** Sonnet/medium needs P(score <= {@link MEDIUM_SCORE}) of at least this... */
 export const MEDIUM_MIN_P_SCORE = 0.6;
 /** ...AND P(subsystems = yes) BELOW this. */
@@ -194,10 +206,16 @@ export function scoreAtMost(distribution: Readonly<Record<string, number>>, leve
 /** `regionFiles` is {@link regionFileCount}: 0 is a Region that names nothing, which is never "small". */
 const isSmallRegion = (regionFiles: number): boolean => regionFiles > 0 && regionFiles <= SMALL_ROW_FILES;
 
-/** Mechanical, and either a low score or (the score NOT given) a Region small enough that a mechanical row's stated edits cannot be many. */
-function takesHaiku({ mechanical, score }: Readings, regionFiles: number): boolean {
-  if (mechanical === null || mechanical < HAIKU_MIN_P_MECHANICAL) return false;
-  return score === null ? isSmallRegion(regionFiles) : scoreAtMost(score, HAIKU_MAX_SCORE) >= HAIKU_MIN_P_SCORE;
+/**
+ * HAIKU IS CHOSEN ON SIZE AND CONTAINMENT, NOT ON MECHANICALNESS (#4902): our rows describe changes rather than listing every edit, so P(mechanical) had a median of 0.10 and never
+ * reached 0.65, and nothing went to Haiku. Either the row is probably tiny (P(score <= 2)), or it is probably small AND contained (P(score <= 3), no subsystems, not debugging). A
+ * distribution not given never qualifies a row on the containment branch. `mechanical` is logged and only decides an UNSCORED row in a small Region, as before.
+ */
+function takesHaiku({ mechanical, subsystems, debugging, score }: Readings, regionFiles: number): boolean {
+  if (score === null) return mechanical !== null && mechanical >= HAIKU_MIN_P_MECHANICAL && isSmallRegion(regionFiles);
+  if (scoreAtMost(score, HAIKU_SMALL_SCORE) >= HAIKU_MIN_P_SMALL) return true;
+  const contained = subsystems !== null && subsystems <= HAIKU_MAX_P_SUBSYSTEMS && debugging !== null && debugging <= HAIKU_MAX_P_DEBUGGING;
+  return contained && scoreAtMost(score, HAIKU_MAX_SCORE) >= HAIKU_MIN_P_SCORE;
 }
 
 /** A score that is probably at most {@link MEDIUM_SCORE}, and subsystems not probably yes (not given passes: a row this small is not reasoned across modules by default). */
@@ -208,7 +226,7 @@ function takesMedium({ subsystems, score }: Readings): boolean {
 
 /**
  * THE ROUTE A SET OF PROBABILITIES COMPOSES, PURE (#4875, on #4764's rungs). Probably debugging an unknown failure holds a row at Sonnet/high ({@link HOLD_AT_P_DEBUGGING}). Otherwise,
- * in order: Haiku/high ({@link takesHaiku}), Sonnet/medium ({@link takesMedium}), and ANYTHING ELSE is Sonnet/high as before. A question whose distribution was not given never lowers
+ * in order: Haiku/high ({@link takesHaiku}: size and containment), Sonnet/medium ({@link takesMedium}), and ANYTHING ELSE is Sonnet/high as before. A question whose distribution was not given never lowers
  * a row, except that an unscored mechanical row in a small Region may go to Haiku and a debugging question not given does not hold one.
  */
 export function composeRoute(readings: Readings, { regionFiles }: { regionFiles: number }): Route {
