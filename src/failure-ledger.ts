@@ -27,7 +27,13 @@ export const FAILURE_KINDS = Object.freeze(["main-red", "pr-red", "owner-unresol
 export const UNIDENTIFIED_CALLER_KIND = "unidentified-caller-order";
 export const UNCLASSIFIED_KIND = "unclassified";
 
-export type FailureEntry = { classKey: string, at: number, ref: string };
+/**
+ * What `messaging/audit.ts` records (#4746): an announcement that asked the chairman something, or an ask with no row or record. Not seeded in `FAILURE_KINDS` or the index,
+ * whose test pins the six first-move kinds: `repeatsIn` and the daily pass read any key, and each entry's ref names the message and which half failed.
+ */
+export const MESSAGING_AUDIENCE_MISUSE_KIND = "messaging-audience-misuse";
+
+export type FailureEntry ={ classKey: string, at: number, ref: string };
 /** `at` is epoch ms; absent means the tick's own `now` (an event dated by its source, such as a hand fix, carries its own) */
 export type FailureEvent = { classKey: string, ref: string, at?: number };
 export type RecordResult = { appended: number, skipped: number, refused: string | null };
