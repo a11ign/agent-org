@@ -46,9 +46,11 @@ function fakeTelegram() {
 
 function telegram({ announcementsChatId }: { announcementsChatId?: number } = {}) {
   const wire = fakeTelegram();
-  const provider = createTelegramProvider({
+  const real = createTelegramProvider({
     token: createSecret(TOKEN), chatId: ASK_CHAT, announcementsChatId, fetch: wire.fetch, sleep: async () => {}, log: () => {},
   });
+  // These tests pin where each message goes, so they run the lifecycle without the asks' record (a11ign/a11ign#4745): the pinned list is a message of its own.
+  const provider = { ...real, capabilities: { ...real.capabilities, edit: false, pin: false } };
   return { provider, requests: wire.requests };
 }
 
@@ -59,8 +61,10 @@ function messengerOver(provider: any, config?: Parameters<typeof resolveConfig>[
   return { tick: (events: unknown[]) => messenger.tick(events), lines: () => readLedgerLines(path) };
 }
 
+/** A request's key carries its row (`#1`): an ask with no row is refused at send (a11ign/a11ign#4745), and none of these tests is about that. */
 function event(kind: string, more: Record<string, unknown> = {}) {
-  return { key: `${kind}:audience-test`, kind, severity: "info", firstSeenAt: START, text: `a ${kind} the chairman is told`, links: [], ...more };
+  const row = kind === "request" ? "#1" : "";
+  return { key: `${kind}:audience-test${row}`, kind, severity: "info", firstSeenAt: START, text: `a ${kind} the chairman is told`, links: [], ...more };
 }
 
 /** The chat ids the requests went to, in order. */
@@ -91,7 +95,7 @@ describe("each kind declares its audience, and the plan carries it", () => {
 
 describe("a kind with no audience is refused at send, never defaulted", () => {
   test("nothing is sent, the line names the kind, and a declared kind beside it still goes (the positive control)", async () => {
-    const provider = createFakeProvider();
+    const provider = createFakeProvider({ capabilities: { edit: false, pin: false } });
     const run = messengerOver(provider, { kinds: { request: { audience: undefined } } });
     const decisions = await run.tick([event("request"), event("release")]);
     assert.deepEqual(decisions.map((decision) => decision.action), ["invalid", "sent"]);
@@ -99,11 +103,11 @@ describe("a kind with no audience is refused at send, never defaulted", () => {
     assert.equal(provider.sent[0].audience, "announcement");
     const refusal = run.lines().find((line) => line.status === "invalid");
     assert.match(refusal?.error, /^alert not sent: kind "request" declares no audience/, "the line names the kind and begins as every refusal of an ask does");
-    assert.equal(refusal?.key, "request:audience-test");
+    assert.equal(refusal?.key, "request:audience-test#1");
   });
 
   test("an audience that is neither ask nor announcement is refused the same way, not passed through", async () => {
-    const provider = createFakeProvider();
+    const provider = createFakeProvider({ capabilities: { edit: false, pin: false } });
     const run = messengerOver(provider, { kinds: { stall: { audience: "everyone" } } });
     const [decision] = await run.tick([event("stall")]);
     assert.equal(decision.action, "invalid");
@@ -134,10 +138,10 @@ describe("routing: with one destination both audiences reach the same chat, with
   });
 
   test("the same routing through the fake provider, where a test reads `destination` off what was sent", async () => {
-    const provider = createFakeProvider({ capabilities: { destinations: 2 } });
+    const provider = createFakeProvider({ capabilities: { destinations: 2, edit: false, pin: false } });
     await routedTo(provider, () => []);
     assert.deepEqual(provider.sent.map((message) => message.destination), ["ask", "announcement"]);
-    const single = createFakeProvider();
+    const single = createFakeProvider({ capabilities: { edit: false, pin: false } });
     await routedTo(single, () => []);
     assert.deepEqual(single.sent.map((message) => message.destination), ["ask", "ask"]);
   });
@@ -197,15 +201,15 @@ describe("an announcement is one-way", () => {
   });
 
   test("the ledger records which audience each line was for", async () => {
-    const run = messengerOver(createFakeProvider({ capabilities: { destinations: 2 } }));
+    const run = messengerOver(createFakeProvider({ capabilities: { destinations: 2, edit: false, pin: false } }));
     await run.tick([event("request"), event("release")]);
-    assert.deepEqual(run.lines().map((line) => [line.key, line.audience]), [["request:audience-test", "ask"], ["release:audience-test", "announcement"]]);
+    assert.deepEqual(run.lines().map((line) => [line.key, line.audience]), [["request:audience-test#1", "ask"], ["release:audience-test", "announcement"]]);
   });
 });
 
 describe("the contract holds a provider to the audience", () => {
   test("the fake and the Telegram provider (with and without a channel) pass, and the audience checks RAN", async () => {
-    const providers = [createFakeProvider(), createFakeProvider({ capabilities: { destinations: 2 } }), telegram().provider, telegram({ announcementsChatId: CHANNEL_CHAT }).provider];
+    const providers = [createFakeProvider({ capabilities: { edit: false, pin: false } }), createFakeProvider({ capabilities: { destinations: 2, edit: false, pin: false } }), telegram().provider, telegram({ announcementsChatId: CHANNEL_CHAT }).provider];
     for (const provider of providers) {
       const { passed } = await runProviderConformance(provider);
       for (const check of ["audience-is-honoured", "unknown-audience-is-refused", "announcement-refuses-actions", "announcement-reply-to-follows-its-destination"]) {
@@ -224,11 +228,11 @@ describe("the contract holds a provider to the audience", () => {
       }
       return assert.fail("expected a ConformanceError and there was none");
     };
-    const real = createFakeProvider({ capabilities: { destinations: 2 } });
+    const real = createFakeProvider({ capabilities: { destinations: 2, edit: false, pin: false } });
     const ignores = { ...real, send: async (message: any) => ({ ...(await real.send({ ...message, audience: undefined })) }) };
     // Ignoring the audience sends everything as an ask: an announcement's buttons and reply are accepted, and an unknown audience is not told apart.
     assert.deepEqual(await failedChecks(ignores), ["announcement-refuses-actions", "announcement-reply-to-follows-its-destination", "audience-is-honoured", "unknown-audience-is-refused"]);
-    const permissive = createFakeProvider({ capabilities: { destinations: 2 } });
+    const permissive = createFakeProvider({ capabilities: { destinations: 2, edit: false, pin: false } });
     const noOneWay = { ...permissive, send: async (message: any) => permissive.send({ text: message.text, silent: message.silent, audience: message.audience }) };
     // `actions` and `replyTo` are dropped before the fake sees them, so nothing is refused: the two one-way checks must notice.
     assert.deepEqual(await failedChecks(noOneWay), ["announcement-refuses-actions", "announcement-reply-to-follows-its-destination"]);
@@ -237,7 +241,7 @@ describe("the contract holds a provider to the audience", () => {
   });
 
   test("a provider that declares more destinations than there are audiences fails the shape check", async () => {
-    const odd = createFakeProvider({ capabilities: { destinations: 3 } });
+    const odd = createFakeProvider({ capabilities: { destinations: 3, edit: false, pin: false } });
     await assert.rejects(() => runProviderConformance(odd), (error: unknown) => error instanceof ConformanceError
       && error.failures.some((failure) => failure.check === "capabilities-shape" && /destinations/.test(failure.message)));
   });

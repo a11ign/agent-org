@@ -14,9 +14,15 @@
 // with a line naming the kind, and is never defaulted: a default would put a message in the chairman's ask list or in a channel nobody
 // answers, and the first sign would be a missing ask.
 //
+// **AN ASK KEEPS A RECORD, AND IS TICKED IN PLACE (a11ign/a11ign#4745, `asks.ts`).** Where the provider can edit AND pin, an ask is never reminded by
+// message and its resolution EDITS the message it was sent as (`✅ <outcome> — <first line>`) instead of sending a "cleared" one, and one pinned
+// message lists what is still open. Where it cannot, every ask is reminded and cleared by message exactly as above: an ask that is neither ticked
+// nor listed is visible only through its reminders. An ask names a row (or its kind declares why it has none), or it is refused at send.
+//
 // WHAT THE CORE NEVER DOES: invent a message the ledger does not hold. A held-down or duplicate observation writes no line (it is not
 // an attempt, and 100 ticks must not write 100 lines); a deferral, a failure and a digest overflow each write one.
 
+import { askFields, createAsks, firstLineOf, refusalFor } from "./asks.ts";
 import { normalizeEvent, stateFingerprint } from "./event.ts";
 import type { MessagingEvent } from "./event.ts";
 import { STATUS, deliveredTimestamps, deliveryLine, describeError, foldLedger, applyLine } from "./ledger.ts";
@@ -33,17 +39,21 @@ const DIGEST_ENTRY_LIMIT = 200;
 export const DEFAULT_CONFIG = Object.freeze({
   kinds: Object.freeze({
     // `audience`: a request and a stall NEED the chairman, so they are asks; everything else is told to him and asks nothing.
-    request: Object.freeze({ holdDownMs: 0, remind: true, silent: false, audience: AUDIENCE.ask }),
-    incident: Object.freeze({ holdDownMs: 30 * MINUTE_MS, remind: true, silent: false, audience: AUDIENCE.announcement }),
-    stall: Object.freeze({ holdDownMs: 0, remind: true, silent: false, audience: AUDIENCE.ask }),
+    // `rowLess`: why an ask of this kind may name no row (#4745). A request is a row's, so it has none to give and is refused without one.
+    request: Object.freeze({ holdDownMs: 0, remind: true, silent: false, audience: AUDIENCE.ask, rowLess: null as string | null }),
+    incident: Object.freeze({ holdDownMs: 30 * MINUTE_MS, remind: true, silent: false, audience: AUDIENCE.announcement, rowLess: null as string | null }),
+    stall: Object.freeze({
+      holdDownMs: 0, remind: true, silent: false, audience: AUDIENCE.ask,
+      rowLess: "a stall is the whole org not moving, so it belongs to no one row" as string | null,
+    }),
     // No quiet hours: the summary is the only silent message (decision 1).
-    summary: Object.freeze({ holdDownMs: 0, remind: false, silent: true, audience: AUDIENCE.announcement }),
+    summary: Object.freeze({ holdDownMs: 0, remind: false, silent: true, audience: AUDIENCE.announcement, rowLess: null as string | null }),
     // A release is told once and never reminded or cleared: it is a fact that happened, not a condition that stands. Not silent: it is news.
-    release: Object.freeze({ holdDownMs: 0, remind: false, silent: false, audience: AUDIENCE.announcement }),
+    release: Object.freeze({ holdDownMs: 0, remind: false, silent: false, audience: AUDIENCE.announcement, rowLess: null as string | null }),
     // A milestone is told once and never reminded or cleared: it is a declared moment that happened, not a condition that stands. Not silent: it is news.
-    milestone: Object.freeze({ holdDownMs: 0, remind: false, silent: false, audience: AUDIENCE.announcement }),
+    milestone: Object.freeze({ holdDownMs: 0, remind: false, silent: false, audience: AUDIENCE.announcement, rowLess: null as string | null }),
     // A watched thing changing state is told once per change and never reminded or cleared: the chairman asked to be told when it moves, and the watch ends with the thing.
-    watch: Object.freeze({ holdDownMs: 0, remind: false, silent: false, audience: AUDIENCE.announcement }),
+    watch: Object.freeze({ holdDownMs: 0, remind: false, silent: false, audience: AUDIENCE.announcement, rowLess: null as string | null }),
   }),
   reminders: Object.freeze({ max: 3, everyMs: 24 * HOUR_MS }),
   rate: Object.freeze({ burst: DEFAULT_RATE.burst, hourlyCap: DEFAULT_RATE.hourlyCap, windowMs: HOUR_MS }),
@@ -63,6 +73,9 @@ export function resolveConfig(overrides: { kinds?: Record<string, object>; remin
   };
 }
 
+/** What the plan reads: the resolved numbers, and whether the provider keeps the asks' record (it can edit AND pin, so an ask is listed and need not be reminded). */
+type Config = ReturnType<typeof resolveConfig> & { asksKept?: boolean };
+
 /** `audience` is what the kind declared, carried as it was found: an undeclared one is `undefined` here and is refused where it would be sent. */
 type Plan = { action: "none"; why: string; }
   | { action: "send"; kind: "first" | "update" | "reminder" | "cleared"; reminder?: number; audience?: string; }
@@ -73,12 +86,12 @@ type Plan = { action: "none"; why: string; }
  *
  * `record` is what the ledger says about this key. A plan to send carries the audience its kind declared.
  */
-export function planNotification(event: MessagingEvent, record: KeyRecord | undefined, nowMs: number, config: ReturnType<typeof resolveConfig>): Plan {
+export function planNotification(event: MessagingEvent, record: KeyRecord | undefined, nowMs: number, config: Config): Plan {
   const plan = planWhatToDo(event, record, nowMs, config);
   return plan.action === "send" ? { ...plan, audience: config.kinds[event.kind].audience } : plan;
 }
 
-function planWhatToDo(event: MessagingEvent, record: KeyRecord | undefined, nowMs: number, config: ReturnType<typeof resolveConfig>): Plan {
+function planWhatToDo(event: MessagingEvent, record: KeyRecord | undefined, nowMs: number, config: Config): Plan {
   const open = record?.open ?? false;
   // The episode already ended: a stale observation of it (same `firstSeenAt`, or earlier) is not a recurrence.
   if (!open && record?.clearedAt != null && event.firstSeenAt <= record.clearedAt) return { action: "none", why: "already-cleared" };
@@ -99,7 +112,7 @@ function planResolution(record: KeyRecord | undefined, open: boolean): Plan {
   return record?.pending ? { action: "withdraw" } : { action: "send", kind: "cleared" };
 }
 
-function planReminder(record: KeyRecord | undefined, policy: { remind: boolean; }, nowMs: number, config: ReturnType<typeof resolveConfig>): Plan {
+function planReminder(record: KeyRecord | undefined, policy: { remind: boolean; }, nowMs: number, config: Config): Plan {
   if (!record || !policy.remind || record.reminders >= config.reminders.max) return { action: "none", why: "duplicate" };
   if (nowMs - record.lastNotifiedAt < config.reminders.everyMs) return { action: "none", why: "duplicate" };
   return { action: "send", kind: "reminder", reminder: record.reminders + 1 };
@@ -163,10 +176,15 @@ type Decision = { key: string; action: string; };
  * `now` returns epoch milliseconds. Nothing else in the core reads the clock, the filesystem path or the network.
  */
 export function createMessenger({ provider, ledger, now, config: overrides }: { provider: any; ledger: ReturnType<typeof createLedger>; now: () => number; config?: Parameters<typeof resolveConfig>[0]; }) {
-  const config = resolveConfig(overrides);
+  const resolved = resolveConfig(overrides);
   const maxText = provider.capabilities.maxText;
   const history = ledger.read();
   const state = foldLedger(history);
+  const asks = createAsks({
+    provider, history, now, noteDelivered: () => limiter.noteDelivered(), append: (fields) => record(fields),
+    audienceOf: (key) => resolved.kinds[key.split(":")[0]]?.audience,
+  });
+  const config: Config = { ...resolved, asksKept: asks.kept };
   const limiter = createRateLimiter({
     now, ratePerSecond: provider.capabilities.ratePerSecond, burst: config.rate.burst,
     hourlyCap: config.rate.hourlyCap, windowMs: config.rate.windowMs,
@@ -177,6 +195,7 @@ export function createMessenger({ provider, ledger, now, config: overrides }: { 
   const record = (fields: Record<string, unknown>): Record<string, any> => {
     const line = ledger.append(deliveryLine({ provider: provider.id, ...fields } as Parameters<typeof deliveryLine>[0]));
     applyLine(state, line);
+    asks.apply(line);
     return line;
   };
 
@@ -201,15 +220,35 @@ export function createMessenger({ provider, ledger, now, config: overrides }: { 
   }
 
   /** Refused BEFORE the rate limiter is asked: a kind that cannot be routed spends none of the hour's allowance. */
-  function refuseUndeclared(event: MessagingEvent): Decision {
-    const error = `alert not sent: kind ${JSON.stringify(event.kind)} declares no audience (ask or announcement), and the sender never defaults one`;
+  function refuse(event: MessagingEvent, error: string): Decision {
     record({ key: event.key, status: STATUS.invalid, error });
     return { key: event.key, action: "invalid" };
+  }
+
+  function refuseUndeclared(event: MessagingEvent): Decision {
+    return refuse(event, `alert not sent: kind ${JSON.stringify(event.kind)} declares no audience (ask or announcement), and the sender never defaults one`);
+  }
+
+  /**
+   * A resolved ask is TICKED where it stands and sends nothing (#4745). When it cannot be (no provider edit, no message the ledger knows, or the edit
+   * failed and said so on a line), the old "cleared" message is the answer, so a resolved ask is never left unticked AND unannounced.
+   */
+  async function tickInPlace(event: MessagingEvent): Promise<Decision | null> {
+    const outcome = firstLineOf(event.text);
+    return (await asks.tickResolved({ key: event.key, outcome })) ? { key: event.key, action: "cleared" } : null;
   }
 
   async function deliver(event: MessagingEvent, plan: Extract<Plan, { action: "send"; }>): Promise<Decision> {
     const { audience } = plan;
     if (audience === undefined || !AUDIENCES.includes(audience)) return refuseUndeclared(event);
+    const policy = config.kinds[event.kind];
+    const asked = audience === AUDIENCE.ask;
+    const refusal = asked ? refusalFor({ key: event.key, rowLess: policy.rowLess }) : null;
+    if (refusal !== null) return refuse(event, refusal);
+    if (asked && plan.kind === "cleared") {
+      const ticked = await tickInPlace(event);
+      if (ticked !== null) return ticked;
+    }
     const known = state.get(event.key);
     const text = composeText(event, plan, maxText, config.reminders.max);
     // A "cleared" notice replies under the message it clears, EXCEPT in the one-way channel (an announcement with a destination of its own):
@@ -219,13 +258,16 @@ export function createMessenger({ provider, ledger, now, config: overrides }: { 
     const repliesUnderOriginal = !toChannel && plan.kind === "cleared" && provider.capabilities.replies && known?.messageRef;
     const message = {
       text,
-      silent: config.kinds[event.kind].silent,
+      silent: policy.silent,
       audience,
       replyTo: repliesUnderOriginal ? known.messageRef : undefined,
       ...buttonsFor(event, plan, provider.capabilities),
     };
     // The ledger keeps the text AS SENT, link and all: what the chairman was shown is the one thing a later reading must not have to rebuild.
-    const extra = { kind: plan.kind, stateHash: stateFingerprint(event), reminder: plan.reminder ?? null, text, audience };
+    // An ask also keeps its record (`asks.ts`): which ask, which row, and for a clearing the outcome it ended with.
+    const askRecord = asked ? askFields(asks.state, { key: event.key, kind: plan.kind, rowLess: policy.rowLess }) : {};
+    const outcome = plan.kind === "cleared" ? { outcome: firstLineOf(event.text) } : {};
+    const extra = { kind: plan.kind, stateHash: stateFingerprint(event), reminder: plan.reminder ?? null, text, audience, ...askRecord, ...outcome };
     const { status } = await attemptSend(event.key, message, extra);
     const spoken = { first: "sent", update: "updated", reminder: "reminded", cleared: "cleared" }[plan.kind];
     return { key: event.key, action: status === STATUS.sent ? spoken : status };
@@ -273,6 +315,8 @@ export function createMessenger({ provider, ledger, now, config: overrides }: { 
         }
         decisions.push(await observeOne(event));
       }
+      // After every event, so the list is written ONCE for the pass and from the set the pass left (#4745).
+      decisions.push(...await asks.syncList());
       return decisions;
     },
   };

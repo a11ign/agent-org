@@ -22,7 +22,14 @@ export const STATUS = Object.freeze({
   /** Resolved before the digest naming it went out, so the digest must not name it. */
   withdrawn: "withdrawn",
   invalid: "invalid",
+  /** An existing message was rewritten (the open-asks list): not a send, so it never spends the hour's allowance. */
+  edited: "edited",
+  /** A message was pinned: bookkeeping that rings nobody and is not a send. */
+  pinned: "pinned",
 });
+
+/** The open-asks list is a message of its own, never an ask: `applyLine` leaves it out of the per-key fold (`asks.ts` folds it). */
+export const ASKS_LIST_KIND = "asks-list";
 
 const REDACTED = "<redacted>";
 const CAUSE_DEPTH = 5;
@@ -141,6 +148,7 @@ function applyNotification(record: KeyRecord, line: Record<string, any>, at: num
 export function applyLine(state: Map<string, KeyRecord>, line: Record<string, any>) {
   if (line.direction === "in" || typeof line.key !== "string") return;
   const at = Date.parse(line.ts);
+  if (line.kind === ASKS_LIST_KIND) return;
   if (line.kind === "digest") {
     if (line.status !== STATUS.sent) return;
     for (const covered of line.covers ?? []) if (state.has(covered)) (state.get(covered) as KeyRecord).pending = null;
@@ -161,7 +169,10 @@ export function foldLedger(lines: Record<string, any>[]): Map<string, KeyRecord>
   return state;
 }
 
-/** Returns when each delivered outbound message went, for the hourly cap to restart from */
+/**
+ * Returns when each delivered outbound message went, for the hourly cap to restart from. An ask ticked in place is `sent` (the readers of
+ * `kind: "cleared"` look for exactly that) and `edited: true`, and it reached the chairman as a rewrite, not a message: it is not counted.
+ */
 export function deliveredTimestamps(lines: Record<string, any>[]): number[] {
-  return lines.filter((line) => line.direction !== "in" && line.status === STATUS.sent).map((line) => Date.parse(line.ts));
+  return lines.filter((line) => line.direction !== "in" && line.status === STATUS.sent && line.edited !== true).map((line) => Date.parse(line.ts));
 }
