@@ -315,10 +315,12 @@ function readsOnce(run: typeof defaultRun): typeof defaultRun {
  * #883: EXPORTED, not module-private -- `row-file.ts` needs the identical creation for the `lane:<owner>`
  * labels it derives, and a second copy of "create a label idempotently before adding it" is the same
  * fact-stated-twice shape #749 itself exists to name. Behaviour is unchanged for every existing caller.
- * @param {string[]} labels @param {{ run?: typeof defaultRun, batch?: typeof runBatch }} [deps] `batch` (#3566, slice 9) asks the creates together; absent, one by one
+ * agent-org#575: `repo` is the repository the labels are created in -- the tracker's, for a claim in a tracker that is not the first, whose
+ * repository holds none of them until a claim makes them (the first tracker's default is what every caller written before this row meant).
+ * @param {string[]} labels @param {{ run?: typeof defaultRun, batch?: typeof runBatch, repo?: string }} [deps] `batch` (#3566, slice 9) asks the creates together; absent, one by one
  */
-export function ensureLabelsExist(labels: string[], { run = defaultRun, batch }: { run?: typeof defaultRun; batch?: typeof runBatch; } = {}) {
-  const create = (label: string) => ["label", "create", label, "--repo", REPO, "--force"];
+export function ensureLabelsExist(labels: string[], { run = defaultRun, batch, repo = REPO }: { run?: typeof defaultRun; batch?: typeof runBatch; repo?: string; } = {}) {
+  const create = (label: string) => ["label", "create", label, "--repo", repo, "--force"];
   if (batch !== undefined && labels.length > 1 && createdTogether(labels.map(create), batch)) return;
   for (const label of labels) run("gh", create(label));
 }
@@ -542,17 +544,24 @@ export function decideClaim(labelsBefore: string[], mySession: string): { procee
  *
  * @param {number} issueNumber
  * @param {string} statusName exactly one of the Project's real Status option names ("Ready", "In progress", …)
- * @param {{ run?: typeof defaultRun, log?: (line: string) => void, snapshot?: typeof withBoardSnapshot }} [deps]
+ * agent-org#575: `tracker` is the tracker the row lives in, and absent is the first's, so every caller written before this row moves the card
+ * it always moved. A move on ANOTHER tracker's board is the one `item-edit` on THAT board and no snapshot: the snapshot reads the first
+ * tracker's board (`board-snapshot-scope.ts` binds its project and its repository at import), so one taken here would be a reading of the
+ * wrong board standing in for a guard of the right one. `row-file.ts`'s `moveTrackerStatus` (#4078) is the same rule for a filing.
+ * @param {{ run?: typeof defaultRun, log?: (line: string) => void, snapshot?: typeof withBoardSnapshot, tracker?: Tracker }} [deps]
  * @returns {{ moved: true } | { moved: false, reason: string, notOnBoard: boolean }}
  */
 export function moveProjectStatus(issueNumber: number, statusName: string,
-  { run = defaultRun, log = (line) => process.stderr.write(`${line}\n`), snapshot = withBoardSnapshot }: { run?: typeof defaultRun; log?: (line: string) => void; snapshot?: typeof withBoardSnapshot; } = {}): { moved: true; } | { moved: false; reason: string; notOnBoard: boolean; } {
-  const url = `https://github.com/${REPO}/issues/${issueNumber}`;
+  { run = defaultRun, log = (line) => process.stderr.write(`${line}\n`), snapshot = withBoardSnapshot, tracker }: { run?: typeof defaultRun; log?: (line: string) => void; snapshot?: typeof withBoardSnapshot; tracker?: Tracker; } = {}): { moved: true; } | { moved: false; reason: string; notOnBoard: boolean; } {
+  const url = `https://github.com/${tracker?.repo ?? REPO}/issues/${issueNumber}`;
+  const board = tracker?.board ?? { owner: PROJECT_OWNER, number: PROJECT_NUMBER };
+  const edit = () => run("gh", ["project", "item-edit", String(board.number), "--owner", board.owner,
+    "--url", url, "--field", "Status", "--value", statusName]);
+  const firstBoard = board.owner === PROJECT_OWNER && board.number === PROJECT_NUMBER;
   try {
-    snapshot(() => run("gh", ["project", "item-edit", String(PROJECT_NUMBER), "--owner", PROJECT_OWNER,
-      "--url", url, "--field", "Status", "--value", statusName]),
-      // #1275: the snapshot covers the one item this edit touches, not the whole board.
-      { run, log, excludeIssueNumber: issueNumber, touches: issueNumber });
+    // #1275: the snapshot covers the one item this edit touches, not the whole board.
+    if (firstBoard) snapshot(edit, { run, log, excludeIssueNumber: issueNumber, touches: issueNumber });
+    else edit();
     return { moved: true };
   } catch (error) {
     const message = (error as Error).message;
@@ -735,17 +744,18 @@ function claimedRegionsVerdict(myFiles: string[], claimed: { number: number; fil
  * @param {{ ghRun: (args: string[]) => string }} deps
  * @returns {{ proceed: true, blockedByNote: string | null } | { proceed: false, reason: string }}
  */
-function eligibilityWithBlockedBy({ issueNumber, mySession, ineligible, blockedBy }: { issueNumber: number; mySession: string; ineligible: string; blockedBy: string | undefined; }, deps: { ghRun: (args: string[]) => string; }): { proceed: true; blockedByNote: string | null; } | { proceed: false; reason: string; } {
+function eligibilityWithBlockedBy({ issueNumber, mySession, ineligible, blockedBy }: { issueNumber: number; mySession: string; ineligible: string; blockedBy: string | undefined; }, deps: { ghRun: (args: string[]) => string; repo?: string; }): { proceed: true; blockedByNote: string | null; } | { proceed: false; reason: string; } {
   if (!blockedBy) return { proceed: false, reason: ineligible };
-  const heldRows = lookupHeldRows(mySession, issueNumber, { run: deps.ghRun });
-  const inBuild = heldRows === null ? null : inBuildReason(heldRows);
+  const repo = deps.repo ?? REPO;
+  const heldRows = lookupHeldRows(mySession, issueNumber, { run: deps.ghRun, repo });
+  const inBuild = heldRows === null ? null : inBuildReason(heldRows, Date.now(), { repo });
   if (!inBuild) return { proceed: false, reason: ineligible };
   // #741's OVERRIDE NEEDS AN OPEN PR TO CARRY ITS MEASUREMENT COMMENT, AND A ROW IN BUILD HAS NONE -- that
   // is what "in build" means. So the override cannot fire on a #989 refusal, and `resolveBlockedByOverride`
   // says exactly that ("no open PR of this session's own was found to attach a measurement comment to")
   // rather than being silently skipped. Moving the measurement comment onto the ROW is a separate row; it
   // is a change to what #741 asks for, not a rename.
-  const override = resolveBlockedByOverride(null, blockedBy, { run: deps.ghRun });
+  const override = resolveBlockedByOverride(null, blockedBy, { run: deps.ghRun, repo });
   if (!override.ok) {
     return { proceed: false,
       reason: `${ineligible} (--blocked-by=${blockedBy} did not apply: ${override.reason})` };
@@ -760,9 +770,9 @@ function eligibilityWithBlockedBy({ issueNumber, mySession, ineligible, blockedB
  * @param {string | null} blockedByNote
  * @param {(cmd: string, args: string[]) => string} runFn
  */
-function postBlockedByNoteIfAny(issueNumber: number, blockedByNote: string | null, runFn: (cmd: string, args: string[]) => string) {
+function postBlockedByNoteIfAny(issueNumber: number, blockedByNote: string | null, runFn: (cmd: string, args: string[]) => string, repo: string = REPO) {
   if (blockedByNote) {
-    runFn("gh", ["issue", "comment", String(issueNumber), "--repo", REPO, "--body", blockedByNote]);
+    runFn("gh", ["issue", "comment", String(issueNumber), "--repo", repo, "--body", blockedByNote]);
   }
 }
 
@@ -777,9 +787,9 @@ function postBlockedByNoteIfAny(issueNumber: number, blockedByNote: string | nul
  * @param {{ session: string, branch?: string, worktree?: string }} record
  * @param {(cmd: string, args: string[]) => string} runFn
  */
-function postClaimRecord(issueNumber: number, { session, branch, worktree }: { session: string; branch?: string; worktree?: string; }, runFn: (cmd: string, args: string[]) => string) {
+function postClaimRecord(issueNumber: number, { session, branch, worktree }: { session: string; branch?: string; worktree?: string; }, runFn: (cmd: string, args: string[]) => string, repo: string = REPO) {
   const body = claimRecordComment({ session, branch, worktree, nothing: !branch && !worktree ? NOTHING_REASON : null });
-  runFn("gh", ["issue", "comment", String(issueNumber), "--repo", REPO, "--body", body]);
+  runFn("gh", ["issue", "comment", String(issueNumber), "--repo", repo, "--body", body]);
 }
 
 /**
@@ -795,9 +805,9 @@ function postClaimRecord(issueNumber: number, { session, branch, worktree }: { s
  * @param {{ session: string, recorded: { branch: string | null, worktree: string | null, nothing?: true } }} release
  * @param {(cmd: string, args: string[]) => string} runFn
  */
-function postReleaseRecord(issueNumber: number, { session, recorded }: { session: string; recorded: { branch: string | null; worktree: string | null; nothing?: true; }; }, runFn: (cmd: string, args: string[]) => string) {
+function postReleaseRecord(issueNumber: number, { session, recorded }: { session: string; recorded: { branch: string | null; worktree: string | null; nothing?: true; }; }, runFn: (cmd: string, args: string[]) => string, repo: string = REPO) {
   if (!recorded.branch && !recorded.worktree && !recorded.nothing) return;
-  runFn("gh", ["issue", "comment", String(issueNumber), "--repo", REPO, "--body",
+  runFn("gh", ["issue", "comment", String(issueNumber), "--repo", repo, "--body",
     claimRecordComment({ session, released: true })]);
 }
 
@@ -880,10 +890,11 @@ export function labelSetForClaim(labels: readonly string[], add: readonly string
  * folding the two into one function is left to whoever next touches that file.
  * @param {number} issueNumber
  * @param {readonly string[]} labels
+ * @param {string} [repo] agent-org#575: the tracker's repository; absent, the first tracker's, which is what every caller before it meant
  * @returns {string[]}
  */
-export function claimLabelSetArgs(issueNumber: number, labels: readonly string[]): string[] {
-  return ["api", "--method", "PUT", `repos/${REPO}/issues/${issueNumber}/labels`,
+export function claimLabelSetArgs(issueNumber: number, labels: readonly string[], repo: string = REPO): string[] {
+  return ["api", "--method", "PUT", `repos/${repo}/issues/${issueNumber}/labels`,
     ...labels.flatMap((label) => ["-f", `labels[]=${label}`])];
 }
 
@@ -916,14 +927,14 @@ export function claimLabelSetArgs(issueNumber: number, labels: readonly string[]
  * for any path outside `/private/tmp`). The two facts are written as a claim COMMENT instead, by
  * `writeRowLabels` after it knows it won the race.
  * @param {number} issueNumber
- * @param {{ run: typeof defaultRun, mySession: string, extraLabels: string[], landed: string[], labelBatch?: typeof runBatch }} args
- *   `landed` gains the write once it has succeeded (#1399)
+ * @param {{ run: typeof defaultRun, mySession: string, extraLabels: string[], landed: string[], labelBatch?: typeof runBatch, repo?: string }} args
+ *   `repo` (agent-org#575) is the tracker's repository the labels are made in and set on; absent, the first's. `landed` gains the write once it has succeeded (#1399)
  * @returns {{ refusal: string | null }} a refusal means NOTHING was written
  */
-function applyClaimLabels(issueNumber: number, { run, mySession, extraLabels, landed, labelBatch }: { run: typeof defaultRun; mySession: string; extraLabels: string[]; landed: string[]; labelBatch?: typeof runBatch; }): { refusal: string | null; } {
+function applyClaimLabels(issueNumber: number, { run, mySession, extraLabels, landed, labelBatch, repo = REPO }: { run: typeof defaultRun; mySession: string; extraLabels: string[]; landed: string[]; labelBatch?: typeof runBatch; repo?: string; }): { refusal: string | null; } {
   const claimLabels = [CLAIM_LABEL, `${SESSION_PREFIX}${mySession}`, ...extraLabels];
-  ensureLabelsExist([...claimLabels, WAS_READY_LABEL], { run, batch: labelBatch });
-  const fresh = fetchLabels(issueNumber, { run });
+  ensureLabelsExist([...claimLabels, WAS_READY_LABEL], { run, batch: labelBatch, repo });
+  const fresh = fetchLabels(issueNumber, { run, repo });
   const decision = decideClaim(fresh.labels, mySession);
   if (!decision.proceed) {
     return { refusal: `${decision.reason} -- as read immediately before the label write, which a claim that `
@@ -933,7 +944,7 @@ function applyClaimLabels(issueNumber: number, { run, mySession, extraLabels, la
   // read the write is computed from. A resume finds `ready` already gone and adds nothing.
   const wasReady = fresh.labels.includes(READY_LABEL);
   const labels = labelSetForClaim(fresh.labels, wasReady ? [...claimLabels, WAS_READY_LABEL] : claimLabels);
-  run("gh", claimLabelSetArgs(issueNumber, labels));
+  run("gh", claimLabelSetArgs(issueNumber, labels, repo));
   landed.push(`set the row's labels to ${labels.join(", ")} (\`${READY_LABEL}\` removed in the same write)`);
   return { refusal: null };
 }
@@ -959,13 +970,14 @@ export function persistentReason(mySession: string, persistent: boolean): string
  * it makes first, and once against the real ones. IT WRITES NOTHING AND SAYS NOTHING on the rehearsal (every answer is empty, so no pull request is
  * listed to be reported), which is what makes the second run safe. `preWrite` is the claim's read-once `run`.
  * @param {{ issueNumber: number, mySession: string, before: { labels: string[] }, drained: readonly string[],
- *           instance: { spare: boolean, rows: readonly number[] }, adoptedBranch?: string, blockedBy?: string }} claim
+ *           instance: { spare: boolean, rows: readonly number[] }, adoptedBranch?: string, blockedBy?: string, repo?: string }} claim
+ *   `repo` (agent-org#575) is the tracker the row lives in, which every read here about the ROW reads it from; absent, the first
  * @param {typeof defaultRun} preWrite
  * @returns {{ refusal: { claimed: false, reason: string } | null, blockedByNote: Parameters<typeof postBlockedByNoteIfAny>[1] }}
  */
-function preWriteChecks({ issueNumber, mySession, before, drained, instance, adoptedBranch, blockedBy }: {
+function preWriteChecks({ issueNumber, mySession, before, drained, instance, adoptedBranch, blockedBy, repo = REPO }: {
         issueNumber: number; mySession: string; before: { labels: string[]; }; drained: readonly string[];
-        instance: { spare: boolean; rows: readonly number[]; }; adoptedBranch?: string; blockedBy?: string;
+        instance: { spare: boolean; rows: readonly number[]; }; adoptedBranch?: string; blockedBy?: string; repo?: string;
     }, preWrite: typeof defaultRun): { refusal: { claimed: false; reason: string; } | null; blockedByNote: Parameters<typeof postBlockedByNoteIfAny>[1]; } {
   // #707: THE TEMPLATE FIELDS, checked on EVERY claim attempt -- unlike the session-eligibility block
   // below, this is a property of the ROW, not of who is claiming it or when they last touched it, so it
@@ -973,7 +985,7 @@ function preWriteChecks({ issueNumber, mySession, before, drained, instance, ado
   // a hand-claim (#673) that bypassed row-claim entirely, must still be caught the first time row-claim
   // itself acts on it, which may well be a "resume".
   const ghRunForBody = (args: string[]) => preWrite("gh", args);
-  const body = lookupIssueBody(issueNumber, { run: ghRunForBody });
+  const body = lookupIssueBody(issueNumber, { run: ghRunForBody, repo });
   if (body !== null) {
     const templateReason = templateFieldsReason(body, issueNumber);
     if (templateReason) return { refusal: { claimed: false, reason: templateReason }, blockedByNote: null };
@@ -989,7 +1001,7 @@ function preWriteChecks({ issueNumber, mySession, before, drained, instance, ado
   // its non-resumed B2/B4 bundle and for any caller (such as #1886's own Open-check) that reads it
   // directly -- this one is what makes the row-owned property actually hold on every attempt, resumed or
   // not.
-  const blockedRow = lookupBlockedByEdge(issueNumber, { run: ghRunForBody });
+  const blockedRow = lookupBlockedByEdge(issueNumber, { run: ghRunForBody, repo });
   const blockedReason = blockedByEdgeReason(blockedRow);
   if (blockedReason) return { refusal: { claimed: false, reason: blockedReason }, blockedByNote: null };
 
@@ -1009,10 +1021,10 @@ function preWriteChecks({ issueNumber, mySession, before, drained, instance, ado
     // #2407: ONE INSTANCE, ONE ROW -- the same "new row only" placement, for a spare that holds or has held another.
     const oneRow = oneRowReason(mySession, issueNumber, instance);
     if (oneRow) return { refusal: { claimed: false, reason: oneRow }, blockedByNote: null };
-    const ineligible = sessionEligibilityReason(issueNumber, mySession, { run: preWrite, adoptedBranch });
+    const ineligible = sessionEligibilityReason(issueNumber, mySession, { run: preWrite, adoptedBranch, repo });
     if (ineligible) {
       const eligibility = eligibilityWithBlockedBy({ issueNumber, mySession, ineligible, blockedBy },
-        { ghRun: ghRunForBody });
+        { ghRun: ghRunForBody, repo });
       if (!eligibility.proceed) return { refusal: { claimed: false, reason: eligibility.reason }, blockedByNote: null };
       blockedByNote = eligibility.blockedByNote;
     }
@@ -1035,20 +1047,23 @@ function preWriteChecks({ issueNumber, mySession, before, drained, instance, ado
  *   absent is not one. `drained` (#2324) is the roles the drain holds back now -- see {@link drainedNow}. ABSENT MEANS NONE, so a
  *   caller that does not say is not refused for a fact it never asked about; the CLI is what asks. `instance`
  *   (#2407) is what the asking session's instance holds or has held -- see {@link instanceNow}, and the same
- *   convention: absent is a standing engineer with no rows.
+ *   convention: absent is a standing engineer with no rows. `tracker` (agent-org#575) is the declared tracker the row lives in: its repository is where
+ *   the row is read, its labels made and set, its claim comments posted, and its board is where the card moves. ABSENT IS THE FIRST TRACKER, and a claim
+ *   there makes exactly the calls it always made.
  * @returns {{ claimed: true, statusMoved: true } | { claimed: true, statusMoved: false, notOnBoard: boolean, statusReason: string } | { claimed: false, reason: string }}
  */
 function writeRowLabels(issueNumber: number, mySession: string, extraLabels: string[],
   { run = defaultRun, moveStatus = moveProjectStatus, branch, worktree, blockedBy, drained = [],
     instance = { spare: false, rows: [] }, adoptedBranch, persistent = false,
     batch = run === defaultRun ? runBatch : undefined,
-    labelBatch = run === defaultRun ? runBatch : undefined }: {
+    labelBatch = run === defaultRun ? runBatch : undefined, tracker }: {
           run?: typeof defaultRun; moveStatus?: typeof moveProjectStatus; branch?: string;
           worktree?: string; blockedBy?: string; drained?: readonly string[];
           instance?: { spare: boolean; rows: readonly number[]; }; adoptedBranch?: string; persistent?: boolean;
-          batch?: typeof runBatch; labelBatch?: typeof runBatch;
+          batch?: typeof runBatch; labelBatch?: typeof runBatch; tracker?: Tracker;
       } = {}): { claimed: true; statusMoved: true; } | { claimed: true; statusMoved: false; notOnBoard: boolean; statusReason: string; } | { claimed: false; reason: string; } {
-  const before = fetchLabels(issueNumber, { run });
+  const repo = tracker?.repo ?? REPO;
+  const before = fetchLabels(issueNumber, { run, repo });
   const decision = decideClaim(before.labels, mySession);
   if (!decision.proceed) return { claimed: false, reason: decision.reason };
   const notEngineer = persistentReason(mySession, persistent);
@@ -1059,7 +1074,7 @@ function writeRowLabels(issueNumber: number, mySession: string, extraLabels: str
   // the checks' own; a read the rehearsal could not foresee (the claimed rows' Regions wait for a Region that names a file) runs on its own as before.
   // NOTHING FROM THE FIRST WRITE ON IS PART OF THIS: the labels above and the labels `applyClaimLabels` reads again stay fresh and sequential.
   const checked = readWithFirstWaveTogether(
-    (together) => preWriteChecks({ issueNumber, mySession, before, drained, instance, adoptedBranch, blockedBy },
+    (together) => preWriteChecks({ issueNumber, mySession, before, drained, instance, adoptedBranch, blockedBy, repo },
       readsOnce((cmd, args) => {
         if (cmd !== "gh") return run(cmd, args);
         assertNoLeakInArgv(cmd, args); // #1053: the batch is a spawn of its own, so the guard `defaultRun` carries is asked here as well
@@ -1074,10 +1089,10 @@ function writeRowLabels(issueNumber: number, mySession: string, extraLabels: str
   // #1399: FROM THE FIRST WRITE ON, A FAILURE IS A PARTIAL WRITE, never `COULD NOT DETERMINE` -- see
   // `LANDED_WRITE_EXIT`. The checks above wrote nothing, so a throw from them still propagates as it did.
   return withLandedWrites(issueNumber, landed, () => {
-    const { refusal } = applyClaimLabels(issueNumber, { run, mySession, extraLabels, landed, labelBatch });
+    const { refusal } = applyClaimLabels(issueNumber, { run, mySession, extraLabels, landed, labelBatch, repo });
     if (refusal) return { claimed: false, reason: refusal };
     return completeClaim(issueNumber,
-      { run, moveStatus, mySession, sessionLabel, extraLabels, blockedByNote, branch, worktree, landed });
+      { run, moveStatus, mySession, sessionLabel, extraLabels, blockedByNote, branch, worktree, landed, tracker });
   });
 }
 
@@ -1087,16 +1102,17 @@ function writeRowLabels(issueNumber: number, mySession: string, extraLabels: str
  * @param {number} issueNumber
  * @param {{ run: typeof defaultRun, moveStatus: typeof moveProjectStatus, mySession: string, sessionLabel: string,
  *   extraLabels: string[], blockedByNote: Parameters<typeof postBlockedByNoteIfAny>[1], branch?: string,
- *   worktree?: string, landed: string[] }} state
+ *   worktree?: string, landed: string[], tracker?: Tracker }} state
  * @returns {{ claimed: true, statusMoved: true } | { claimed: true, statusMoved: false, notOnBoard: boolean, statusReason: string } | { claimed: false, reason: string }}
  */
 function completeClaim(issueNumber: number,
-  { run, moveStatus, mySession, sessionLabel, extraLabels, blockedByNote, branch, worktree, landed }: {
+  { run, moveStatus, mySession, sessionLabel, extraLabels, blockedByNote, branch, worktree, landed, tracker }: {
       run: typeof defaultRun; moveStatus: typeof moveProjectStatus; mySession: string; sessionLabel: string;
       extraLabels: string[]; blockedByNote: Parameters<typeof postBlockedByNoteIfAny>[1]; branch?: string;
-      worktree?: string; landed: string[];
+      worktree?: string; landed: string[]; tracker?: Tracker;
   }): { claimed: true; statusMoved: true; } | { claimed: true; statusMoved: false; notOnBoard: boolean; statusReason: string; } | { claimed: false; reason: string; } {
-  const after = fetchLabels(issueNumber, { run });
+  const repo = tracker?.repo ?? REPO;
+  const after = fetchLabels(issueNumber, { run, repo });
   const afterStatus = claimStatus(after.labels);
   const otherSessions = afterStatus.sessions.filter((s) => s !== mySession);
   if (otherSessions.length > 0) {
@@ -1107,7 +1123,7 @@ function completeClaim(issueNumber: number,
     // #987: there is no branch/worktree label to take back any more, and nothing to retract in the thread
     // either -- the claim-record comment is posted BELOW this block, so a claim that lost the race never
     // wrote one. That ordering is the same reason #741's exception note sits where it does.
-    run("gh", ["issue", "edit", String(issueNumber), "--repo", REPO,
+    run("gh", ["issue", "edit", String(issueNumber), "--repo", repo,
       ...[sessionLabel, ...extraLabels].flatMap((l) => ["--remove-label", l])]);
     landed.push(`backed off: removed labels ${[sessionLabel, ...extraLabels].join(", ")}`);
     return { claimed: false, reason: `lost a race to ${otherSessions.join(", ")} -- backed off` };
@@ -1115,13 +1131,13 @@ function completeClaim(issueNumber: number,
   // #741: THE EXCEPTION GOES ON THE RECORD, in the same act that wins the claim -- never on a race we
   // then lost (the block above already returned), so a losing session's attempted override leaves no
   // comment behind naming an exception it never actually exercised.
-  postBlockedByNoteIfAny(issueNumber, blockedByNote, run);
+  postBlockedByNoteIfAny(issueNumber, blockedByNote, run, repo);
   if (blockedByNote) landed.push("posted the --blocked-by exception note");
   // #987: THE BRANCH AND WORKTREE GO ON THE RECORD HERE, for the identical reason #741's note above does
   // -- after the race is known to be won, so a losing session never leaves a record naming a worktree it
   // did not get to keep. `branch`/`worktree` are the values this claim was GIVEN, not values read back:
   // there is nothing to read back yet, and the comment IS the record.
-  postClaimRecord(issueNumber, { session: mySession, branch, worktree }, run);
+  postClaimRecord(issueNumber, { session: mySession, branch, worktree }, run, repo);
   landed.push(`posted the claim record (branch ${branch ?? "none"}, worktree ${worktree ?? "none"})`);
   // #400: THE LABEL IS THE RECORD; THIS MOVES THE VIEW TO MATCH IT, IN THE SAME ACT. A view corrected only
   // by a later sweep is wrong between sweeps, and "between sweeps" is where a worker reads it -- measured
@@ -1130,7 +1146,7 @@ function completeClaim(issueNumber: number,
   // holds must complete regardless of whether the Project view could be updated to match -- but a genuine,
   // unexpected Status-write failure (as opposed to the row simply not being on the board) is a HALF-APPLIED
   // claim, per ceo's ruling, and must be visible to the caller rather than folded into a plain success.
-  const statusResult = moveStatus(issueNumber, "In progress", { run });
+  const statusResult = moveStatus(issueNumber, "In progress", { run, ...(tracker ? { tracker } : {}) });
   if (statusResult.moved) return { claimed: true, statusMoved: true };
   return { claimed: true, statusMoved: false, notOnBoard: statusResult.notOnBoard, statusReason: statusResult.reason };
 }
@@ -1188,7 +1204,7 @@ function reportReachability(issueNumber: number): { code: number | null; output:
  * @param {string} mySession
  * @param {{ run?: typeof defaultRun, moveStatus?: typeof moveProjectStatus }} [deps]
  */
-export function dispatchRow(issueNumber: number, mySession: string, deps: { run?: typeof defaultRun; moveStatus?: typeof moveProjectStatus; } = {}) {
+export function dispatchRow(issueNumber: number, mySession: string, deps: { run?: typeof defaultRun; moveStatus?: typeof moveProjectStatus; tracker?: Tracker; } = {}) {
   return writeRowLabels(issueNumber, mySession, [], deps);
 }
 
@@ -1217,7 +1233,7 @@ export function dispatchRow(issueNumber: number, mySession: string, deps: { run?
 export function claimRow(issueNumber: number, mySession: string, deps: {
     run?: typeof defaultRun; moveStatus?: typeof moveProjectStatus; branch?: string;
     worktree?: string; blockedBy?: string; drained?: readonly string[];
-    instance?: { spare: boolean; rows: readonly number[]; }; adoptedBranch?: string; persistent?: boolean;
+    instance?: { spare: boolean; rows: readonly number[]; }; adoptedBranch?: string; persistent?: boolean; tracker?: Tracker;
 } = {}): { claimed: true; statusMoved: true; } | { claimed: true; statusMoved: false; notOnBoard: boolean; statusReason: string; } | { claimed: false; reason: string; } {
   return writeRowLabels(issueNumber, mySession, [STARTED_LABEL], deps);
 }
@@ -1231,10 +1247,11 @@ export function claimRow(issueNumber: number, mySession: string, deps: {
 // A NAME IS `<role>-<key>-<n>` FOR A NON-EMPTY KEY AND `<role>-<n>` FOR THE EMPTY ONE, which is what keeps `worker-7` and
 // `worker-agent-org-7` two sessions and `../wt-7` and `../wt-agent-org-7` two directories. `claimNames` is that grammar in ONE place.
 //
-// WHAT A CLAIM IN ANOTHER TRACKER CAN DO TODAY: `check` reads it in full. A `claim`, `dispatch`, `decline` or `conflict` there is REFUSED
-// BEFORE ANY WRITE, and says why: they write the row's labels and move its card on the Project board, and the tool's labels are #2619's
-// (3d) and its board snapshot is bound to the first tracker's board (`board-snapshot-scope.ts`), so a write would land on the wrong
-// board or half-apply. A refusal that names its owner is the honest edge of this row, not a claim that the write is handled.
+// WHAT A CLAIM IN ANOTHER TRACKER CAN DO TODAY: `check` reads it in full, and (agent-org#575) `claim` and `decline` WRITE it -- in THAT
+// tracker's repository, never the first's same-numbered issue: the row is read there, its labels made and set there, its claim and
+// release comments posted there, and its card moved on THAT tracker's board. `dispatch` and `conflict` there are still REFUSED BEFORE ANY
+// WRITE, and say why (`conflict` keeps its log by bare row number, which two trackers share). The board move is the one `item-edit` and no
+// snapshot -- see `moveProjectStatus`. A refusal that names its owner is the honest edge of this row, not a claim that the write is handled.
 
 export type Tracker = { key: string, repo: string, board: { owner: string, number: number } };
 
@@ -1270,6 +1287,11 @@ export function claimNames({ key, number }: { key: string; number: number; }): {
  * whose directory name would be shared with the same-numbered row of another tracker, a session named as though it held that row in
  * the first tracker, and last the edge above.
  *
+ * agent-org#575: `claim` and `decline` in a declared tracker are NOT refused once they are named the way decision 2 says -- they are the writes the
+ * tracker's own worker makes, and the write path takes the tracker (`claimRow`/`declineRow`'s `tracker`). `dispatch` and `conflict` are, with a
+ * reason that names what each lacks. WITHOUT THE THREADING A `null` HERE WOULD CLAIM THE FIRST TRACKER'S SAME-NUMBERED ISSUE, which is why the
+ * two are one change.
+ *
  * ONLY THE ONE COLLIDING SESSION SHAPE IS REFUSED (`worker-<n>` for a row that is not the first tracker's): a standing seat is named by
  * its seat (`worker-5`) and claims whatever row it is handed, so the rule is that the row's number is never the only thing telling two
  * trackers' workers apart -- not that every session must spell its tracker.
@@ -1290,8 +1312,10 @@ export function trackerClaimRefusal({ mode, key, number, session, worktree }: { 
     return `\`${session}\` is the name of the session that holds the FIRST tracker's row ${number}; a worker on tracker \`${key}\`'s row ${number} is `
       + `\`${names.session}\` (ADR 0040, decision 2), or its \`${SESSION_PREFIX}\` label would name two rows`;
   }
-  return `\`${mode}\` in tracker \`${key}\` writes the row's labels and moves its card on the Project board, and neither is built for a second `
-    + "tracker yet: the labels are the label row's (#2619, 3d) and the board snapshot is bound to the first tracker's board. "
+  // agent-org#575: `claim` and `decline` are the two a keyed tracker's worker makes, and they write THAT tracker's repository and board.
+  if (mode === "claim" || mode === "decline") return null;
+  return `\`${mode}\` in tracker \`${key}\` is not built for a second tracker yet: only \`claim\` and \`decline\` are (agent-org#575). `
+    + `${mode === "dispatch" ? "A dispatch would mark the row in the first tracker's repository" : "A conflict is logged by bare row number, which two trackers share"}. `
     + `\`check --tracker=${key}\` reads the row in full. Nothing was written.`;
 }
 
@@ -1939,14 +1963,14 @@ function declineRemoveLabels(status: { branch: string | null; worktree: string |
  * removed it (the correct act). An OPEN row whose labels after the write hold no state label is refused here for the same reason a label
  * that did not land is: the edit ran and its effect is not the one a decline promises. A closed row has no lane to be in (`closed`).
  * @param {number} issueNumber @param {string[]} removeLabels @param {string[]} addLabels
- * @param {{ run: typeof defaultRun, landed: string[], closed: boolean }} deps
+ * @param {{ run: typeof defaultRun, landed: string[], closed: boolean, repo?: string }} deps `repo` (agent-org#575) is the tracker's repository; absent, the first's
  */
-function writeDeclineLabels(issueNumber: number, removeLabels: string[], addLabels: string[], { run, landed, closed }: { run: typeof defaultRun; landed: string[]; closed: boolean; }) {
-  ensureLabelsExist(addLabels, { run });
-  run("gh", ["issue", "edit", String(issueNumber), "--repo", REPO,
+function writeDeclineLabels(issueNumber: number, removeLabels: string[], addLabels: string[], { run, landed, closed, repo = REPO }: { run: typeof defaultRun; landed: string[]; closed: boolean; repo?: string; }) {
+  ensureLabelsExist(addLabels, { run, repo });
+  run("gh", ["issue", "edit", String(issueNumber), "--repo", repo,
     ...removeLabels.flatMap((l) => ["--remove-label", l]),
     ...addLabels.flatMap((l) => ["--add-label", l])]);
-  const after = fetchLabels(issueNumber, { run }).labels;
+  const after = fetchLabels(issueNumber, { run, repo }).labels;
   const stillThere = removeLabels.filter((l) => after.includes(l));
   const stillMissing = addLabels.filter((l) => !after.includes(l));
   if (stillThere.length > 0 || stillMissing.length > 0) {
@@ -2054,7 +2078,9 @@ function declineOwnershipReason(status: { claimed: boolean; sessions: string[]; 
  *
  * @param {{ run?: typeof defaultRun, moveStatus?: typeof moveProjectStatus, blockedReason?: string,
  *           removeWorktree?: typeof removeClaimedWorktree, keepWorktree?: boolean, predecessorGone?: boolean, answer?: string,
- *           fetchComments?: typeof fetchClaimComments, recordGone?: typeof recordPredecessorGone }} [deps]
+ *           fetchComments?: typeof fetchClaimComments, recordGone?: typeof recordPredecessorGone, tracker?: Tracker }} [deps]
+ *   `tracker` (agent-org#575) is the declared tracker the row lives in -- the repository its labels are read from and written to, its release
+ *   comments posted to and its card moved on the board of; absent is the first tracker, and a decline there makes the calls it always made.
  * @returns {{ declined: true, restoredReady: boolean, blocked: boolean, closed: boolean, statusMoved: true }
  *   | { declined: true, restoredReady: true, blocked: false, closed: false, statusMoved: false,
  *       notOnBoard: boolean, statusReason: string }
@@ -2062,10 +2088,10 @@ function declineOwnershipReason(status: { claimed: boolean; sessions: string[]; 
  */
 export function declineRow(issueNumber: number, mySession: string,
   { run = defaultRun, moveStatus = moveProjectStatus, blockedReason, removeWorktree = removeClaimedWorktree,
-    fetchComments = fetchClaimComments, keepWorktree = false, predecessorGone = false, answer, recordGone = recordPredecessorGone }: {
+    fetchComments = fetchClaimComments, keepWorktree = false, predecessorGone = false, answer, recordGone = recordPredecessorGone, tracker }: {
           run?: typeof defaultRun; moveStatus?: typeof moveProjectStatus; blockedReason?: string;
           removeWorktree?: typeof removeClaimedWorktree; keepWorktree?: boolean; predecessorGone?: boolean; answer?: string;
-          fetchComments?: typeof fetchClaimComments; recordGone?: typeof recordPredecessorGone;
+          fetchComments?: typeof fetchClaimComments; recordGone?: typeof recordPredecessorGone; tracker?: Tracker;
       } = {}): { declined: true; restoredReady: boolean; blocked: boolean; closed: boolean; statusMoved: true; } |
 {
     declined: true; restoredReady: true; blocked: false; closed: false; statusMoved: false;
@@ -2075,7 +2101,8 @@ export function declineRow(issueNumber: number, mySession: string,
   if (blockedReason && answer) {
     return { declined: false, reason: "--blocked and --answer are two different releases (a finding vs. a ruling owed); give one" };
   }
-  const before = fetchLabels(issueNumber, { run });
+  const repo = tracker?.repo ?? REPO;
+  const before = fetchLabels(issueNumber, { run, repo });
   const status = claimStatus(before.labels);
   const ownershipReason = declineOwnershipReason(status, mySession);
   if (ownershipReason) return { declined: false, reason: ownershipReason };
@@ -2083,11 +2110,11 @@ export function declineRow(issueNumber: number, mySession: string,
   // migration read for the three open rows that still carry one -- `claimedObjects`' own header carries
   // the count and the command that says when the fallback can go. Read AFTER the ownership check, so a
   // decline this session was never entitled to make costs no extra `gh` call.
-  const recorded = claimedObjects({ labels: before.labels, comments: fetchComments(issueNumber, { run }) });
+  const recorded = claimedObjects({ labels: before.labels, comments: fetchComments(issueNumber, { run, repo }) });
   const landed: string[] = [];
   // #1399: as `writeRowLabels` -- from the worktree removal on, a failure reports what it already changed.
   return withLandedWrites(issueNumber, landed, () => releaseRow(issueNumber,
-    { run, moveStatus, blockedReason, removeWorktree, keepWorktree, predecessorGone, answer, mySession, before, status, recorded, landed, recordGone }));
+    { run, moveStatus, blockedReason, removeWorktree, keepWorktree, predecessorGone, answer, mySession, before, status, recorded, landed, recordGone, tracker }));
 }
 
 /**
@@ -2096,16 +2123,17 @@ export function declineRow(issueNumber: number, mySession: string,
  * @param {{ run: typeof defaultRun, moveStatus: typeof moveProjectStatus, blockedReason?: string,
  *   removeWorktree: typeof removeClaimedWorktree, keepWorktree: boolean, predecessorGone: boolean, answer?: string, mySession: string,
  *   before: IssueClaim, status: ReturnType<typeof claimStatus>, recorded: { branch: string | null, worktree: string | null, nothing?: true },
- *   landed: string[], recordGone: typeof recordPredecessorGone }} state
+ *   landed: string[], recordGone: typeof recordPredecessorGone, tracker?: Tracker }} state
  * @returns {ReturnType<typeof declineRow>}
  */
 function releaseRow(issueNumber: number,
-  { run, moveStatus, blockedReason, removeWorktree, keepWorktree, predecessorGone, answer, mySession, before, status, recorded, landed, recordGone }: {
+  { run, moveStatus, blockedReason, removeWorktree, keepWorktree, predecessorGone, answer, mySession, before, status, recorded, landed, recordGone, tracker }: {
       run: typeof defaultRun; moveStatus: typeof moveProjectStatus; blockedReason?: string;
       removeWorktree: typeof removeClaimedWorktree; keepWorktree: boolean; predecessorGone: boolean; answer?: string; mySession: string;
       before: IssueClaim; status: ReturnType<typeof claimStatus>; recorded: { branch: string | null; worktree: string | null; nothing?: true; };
-      landed: string[]; recordGone: typeof recordPredecessorGone;
+      landed: string[]; recordGone: typeof recordPredecessorGone; tracker?: Tracker;
   }): ReturnType<typeof declineRow> {
+  const repo = tracker?.repo ?? REPO;
   // #665: THE WORKTREE COMES OFF FIRST, before any label is touched -- a dirty one refuses the WHOLE
   // decline (see this function's own header for why), so the claim record stays intact until an operator
   // has dealt with the uncommitted work by hand.
@@ -2126,18 +2154,18 @@ function releaseRow(issueNumber: number,
   const keepsState = before.labels.some((l) => l !== CLAIM_LABEL && STATE_LABELS.includes(l));
   const { restoreReady, addLabels } = declineAddLabels({ isClosed, wasReady, blockedReason, answer, keepsState });
   const removeLabels = declineRemoveLabels(status, mySession, wasReady);
-  writeDeclineLabels(issueNumber, removeLabels, addLabels, { run, landed, closed: isClosed });
+  writeDeclineLabels(issueNumber, removeLabels, addLabels, { run, landed, closed: isClosed, repo });
 
   // #987: AND THE RELEASE GOES ON THE RECORD, so the newest claim-record comment stops naming a worktree
   // this call has just removed.
-  postReleaseRecord(issueNumber, { session: mySession, recorded }, run);
+  postReleaseRecord(issueNumber, { session: mySession, recorded }, run, repo);
   if (recorded.branch || recorded.worktree || recorded.nothing) landed.push("posted the release record");
 
   if (blockedReason && !isClosed) {
     // A LABEL CARRIES NO FREE TEXT -- the reason has to live somewhere a future reader can see it, and an
     // issue comment is where every other "record why" in this codebase already puts one
     // (board-report.ts, npm-token-liveness.mjs).
-    run("gh", ["issue", "comment", String(issueNumber), "--repo", REPO, "--body",
+    run("gh", ["issue", "comment", String(issueNumber), "--repo", repo, "--body",
       `Declined by \`${mySession}\` and marked \`blocked\`: ${blockedReason}`]);
     landed.push("posted the blocked reason");
   }
@@ -2158,7 +2186,7 @@ function releaseRow(issueNumber: number,
   // and "claimed"), so a decline moves the view back the same way a claim moved it forward. Never throws;
   // see `moveProjectStatus`'s own comment for why an unexpected failure here is surfaced distinctly rather
   // than folded into a plain `declined: true`.
-  const statusResult = moveStatus(issueNumber, "Ready", { run });
+  const statusResult = moveStatus(issueNumber, "Ready", { run, ...(tracker ? { tracker } : {}) });
   if (statusResult.moved) {
     return { declined: true, restoredReady: true, blocked: false, closed: false, statusMoved: true };
   }
@@ -2513,10 +2541,11 @@ function renderTrackerStatus(tracker: Tracker, { issueNumber, title, status, bod
  * @param {"dispatch" | "claim"} mode
  * @param {number} issueNumber
  * @param {string} mySession
- * @param {{ branch?: string, worktree?: string, adopt?: string, replacedTip?: string }} record
+ * @param {{ branch?: string, worktree?: string, adopt?: string, replacedTip?: string, key?: string }} record `key` (agent-org#575) names a row of a
+ *   tracker that is not the first `<key>#<n>`, as `check` does, so two trackers' row 7 read as two rows
  * @returns {string}
  */
-export function claimLineFor(mode: "dispatch" | "claim", issueNumber: number, mySession: string, { branch, worktree, adopt, replacedTip }: { branch?: string; worktree?: string; adopt?: string; replacedTip?: string; }): string {
+export function claimLineFor(mode: "dispatch" | "claim", issueNumber: number, mySession: string, { branch, worktree, adopt, replacedTip, key = "" }: { branch?: string; worktree?: string; adopt?: string; replacedTip?: string; key?: string; }): string {
   const label = mode === "dispatch" ? "DISPATCHED" : "STARTED";
   const startedSuffix = mode === "claim" ? ` / ${STARTED_LABEL}` : "";
   // #987: `branch <name>`, not `branch:<name>` -- the colon form named a LABEL, and this claim no longer
@@ -2526,18 +2555,20 @@ export function claimLineFor(mode: "dispatch" | "claim", issueNumber: number, my
   const worktreeSuffix = mode === "claim" && worktree ? ` / worktree ${worktree}${adopt ? ` (ADOPTED from ${adopt}, work kept)` : ""}` : "";
   // #3745: the leftover branch's tip, so a reader can find what the name held; it is an ancestor of origin/main by construction.
   const replacedSuffix = replacedTip ? ` (recreated over a leftover branch merged into origin/main, old tip ${replacedTip})` : "";
-  return `${label} -- #${issueNumber} is now ${CLAIM_LABEL} / session:${mySession}`
+  return `${label} -- ${key}#${issueNumber} is now ${CLAIM_LABEL} / session:${mySession}`
     + `${startedSuffix}${branchSuffix}${worktreeSuffix}${replacedSuffix}`;
 }
 
 /**
  * #1432: which write a `dispatch`/`claim` CLI makes -- a claim given a branch and worktree creates them first.
  * @param {"dispatch" | "claim"} mode @param {number} issueNumber @param {string} mySession
- * @param {{ branch?: string, worktree?: string, blockedBy?: string, adopt?: string }} flags
+ * @param {{ branch?: string, worktree?: string, blockedBy?: string, adopt?: string, tracker?: Tracker }} flags `tracker` (agent-org#575) is the declared
+ *   tracker the row is in when it is not the first; absent adds nothing to a call
  */
-function claimOrDispatch(mode: "dispatch" | "claim", issueNumber: number, mySession: string, { branch, worktree, blockedBy, adopt }: { branch?: string; worktree?: string; blockedBy?: string; adopt?: string; }) {
-  if (mode === "dispatch") return dispatchRow(issueNumber, mySession);
-  const claimDeps = { blockedBy, drained: drainedNow(), instance: instanceNow(mySession, issueNumber), persistent: persistentNow(mySession) };
+function claimOrDispatch(mode: "dispatch" | "claim", issueNumber: number, mySession: string, { branch, worktree, blockedBy, adopt, tracker }: { branch?: string; worktree?: string; blockedBy?: string; adopt?: string; tracker?: Tracker; }) {
+  if (mode === "dispatch") return dispatchRow(issueNumber, mySession, tracker ? { tracker } : {});
+  const claimDeps = { blockedBy, drained: drainedNow(), instance: instanceNow(mySession, issueNumber), persistent: persistentNow(mySession),
+    ...(tracker ? { tracker } : {}) };
   if (branch && worktree) return claimWithWorktree(issueNumber, mySession, { branch, worktree, adopt, claimDeps });
   return claimRow(issueNumber, mySession, claimDeps);
 }
@@ -2663,6 +2694,19 @@ function trackerKeyOf(args: string[]): string {
 }
 
 /**
+ * agent-org#575: the declared tracker a keyed claim or decline writes, or `undefined` for the first tracker -- which is how a command written
+ * before this row keeps making the calls it always made. Called only AFTER `trackerClaimRefusal` has answered `null`, so a non-empty key is
+ * declared; an undeclared one still has no tracker here and the refusal above is what said so.
+ * @param {string} key
+ * @returns {Tracker | undefined}
+ */
+function trackerOfKey(key: string): Tracker | undefined {
+  if (key === "") return undefined;
+  const found = trackerFor(key);
+  return found.ok ? found.tracker : undefined;
+}
+
+/**
  * #2748: the CLI's `--adopt=` value, resolving the implicit case -- pulled out of `runDispatchOrClaim` to keep
  * that function's own complexity below the lint gate, same reason `drainedNow`/`instanceNow` were. Nobody types
  * `--adopt=<name>` naming THEMSELVES -- a same-session respawn just runs the ordinary claim command, which is
@@ -2713,21 +2757,22 @@ function runDispatchOrClaim(mode: "dispatch" | "claim", issueNumber: number, res
     process.exitCode = 2;
     return;
   }
-  // #2617: A ROW OF ANOTHER TRACKER is named per decision 2 and, until its labels and board are built, refused before any write.
+  // #2617: A ROW OF ANOTHER TRACKER is named per decision 2 and refused before any write unless it is a `claim` or `decline` (agent-org#575).
   const trackerRefusal = trackerClaimRefusal({ mode, key: trackerKeyOf(rest), number: issueNumber, session: mySession, worktree });
   if (trackerRefusal) {
     process.stdout.write(`NOT CLAIMED: ${trackerRefusal}\n`);
     process.exitCode = 1;
     return;
   }
+  const key = trackerKeyOf(rest);
   try {
-    const result = claimOrDispatch(mode, issueNumber, mySession, { branch, worktree, blockedBy, adopt });
+    const result = claimOrDispatch(mode, issueNumber, mySession, { branch, worktree, blockedBy, adopt, tracker: trackerOfKey(key) });
     if (result.claimed) {
       // #4387: only a CLAIM is a row the instance holds. A dispatch is an offer ("DISPATCHED (not started)") the worker may decline, and
       // recording it would leave an entry no release removes, refusing the worker's later legitimate claim.
       if (mode === "claim") recordHeldRow(mySession, issueNumber);
       const claimLine = claimLineFor(mode, issueNumber, mySession, { branch, worktree, adopt,
-        replacedTip: (result as { replacedTip?: string }).replacedTip });
+        replacedTip: (result as { replacedTip?: string }).replacedTip, ...(key === "" ? {} : { key }) });
       if (result.statusMoved) {
         process.stdout.write(`${claimLine}\n`);
         process.exitCode = 0;
@@ -2795,8 +2840,11 @@ function runDecline(issueNumber: number, rest: string[]) {
     return;
   }
   const { keepWorktree, predecessorGone, answer } = release;
+  const key = trackerKeyOf(rest);
+  const tracker = trackerOfKey(key);
+  const name = `${key}#${issueNumber}`;
   try {
-    const result = declineRow(issueNumber, mySession, { blockedReason, keepWorktree, predecessorGone, answer });
+    const result = declineRow(issueNumber, mySession, { blockedReason, keepWorktree, predecessorGone, answer, ...(tracker ? { tracker } : {}) });
     if (result.declined) {
       // #449/#752: WHAT CAME BACK, NOT JUST THAT SOMETHING DID -- the four shapes read differently to a
       // human deciding what happens next: restored (pickable again), blocked (a finding, do not repick
@@ -2808,14 +2856,14 @@ function runDecline(issueNumber: number, rest: string[]) {
         : result.restoredReady ? `and restored to \`${READY_LABEL}\``
         : `(was not \`${READY_LABEL}\` before the claim -- not restored)`;
       if (result.statusMoved) {
-        process.stdout.write(`DECLINED -- #${issueNumber} is unclaimed again ${outcome}\n`);
+        process.stdout.write(`DECLINED -- ${name} is unclaimed again ${outcome}\n`);
         process.exitCode = 0;
       } else if (result.notOnBoard) {
-        process.stdout.write(`DECLINED -- #${issueNumber} is unclaimed again ${outcome} (not on the Project `
+        process.stdout.write(`DECLINED -- ${name} is unclaimed again ${outcome} (not on the Project `
           + `board -- Status view not applicable)\n`);
         process.exitCode = 0;
       } else {
-        process.stdout.write(`DECLINED -- #${issueNumber} is unclaimed again ${outcome}, BUT the Project `
+        process.stdout.write(`DECLINED -- ${name} is unclaimed again ${outcome}, BUT the Project `
           + `Status could not be moved to match: ${result.statusReason}\n`);
         process.exitCode = 3;
       }

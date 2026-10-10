@@ -214,17 +214,19 @@ test("#2617: a claim in the first tracker is never refused for its names -- ever
   }
 });
 
-test("#2617: a claim in another tracker must NAME its worktree and session with the key -- and the correctly named one is stopped only by the "
-  + "write edge, which says so", () => {
+test("#2617: a claim in another tracker must NAME its worktree and session with the key -- and the correctly named one is written (agent-org#575), "
+  + "while dispatch and conflict are stopped at the write edge, which says so", () => {
   const refusal = (session: string, worktree: string) =>
     trackerClaimRefusal({ mode: "claim", key: "agent-org", number: 7, session, worktree }, TWO_TRACKERS);
   assert.match(refusal("worker-agent-org-7", "../wt-7") ?? "", /names its worktree `wt-agent-org-7`, not `\.\.\/wt-7`/);
   assert.match(refusal("worker-7", "../wt-agent-org-7") ?? "", /`worker-7` is the name of the session that holds the FIRST tracker's row 7.*`worker-agent-org-7`/);
-  const named = refusal("worker-agent-org-7", "../wt-agent-org-7") ?? "";
-  assert.match(named, /neither is built for a second tracker yet.*Nothing was written\./, "correct names reach the edge and are refused there");
-  assert.doesNotMatch(named, /names its worktree|is the name of the session/, "and not for their names");
-  const decline = trackerClaimRefusal({ mode: "decline", key: "agent-org", number: 7 }, TWO_TRACKERS) ?? "";
-  assert.match(decline, /`decline` in tracker `agent-org` writes/);
+  assert.equal(refusal("worker-agent-org-7", "../wt-agent-org-7"), null, "correct names reach the write, and the write is built (agent-org#575)");
+  assert.equal(trackerClaimRefusal({ mode: "decline", key: "agent-org", number: 7 }, TWO_TRACKERS), null, "so does a decline");
+  for (const mode of ["dispatch", "conflict"] as const) {
+    const edge = trackerClaimRefusal({ mode, key: "agent-org", number: 7, session: "worker-agent-org-7" }, TWO_TRACKERS) ?? "";
+    assert.match(edge, new RegExp(`\`${mode}\` in tracker \`agent-org\` is not built for a second tracker yet.*Nothing was written\\.`), mode);
+    assert.doesNotMatch(edge, /names its worktree|is the name of the session/, `${mode}: and not for its names`);
+  }
 });
 
 test("#2617: an undeclared tracker key is REFUSED listing what IS declared -- never read as the first tracker", () => {
