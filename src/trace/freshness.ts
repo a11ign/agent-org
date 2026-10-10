@@ -11,7 +11,8 @@
 // every transcript quiet for an hour is NOT stale. A TOUCHED FILE IS NOT A MESSAGE (a11ign/a11ign#928, three false incidents on 2026-10-10): a session that has finished its last message
 // still rewrites its `last-prompt` and `cost-state` lines, which carry no timestamp and no message, so its file moves while it produces no turn. The test is therefore the timestamp of the
 // newest `assistant`/`user` line (a Codex rollout's `response_item`), and the file's mtime is only the cheap "could it hold one" filter in front of reading it.
-// THE NEWEST MESSAGE AND THE NEWEST TURN ARE BOTH READ FROM THE TAIL of the file, not from all of it: the store is 537 MB and the question is asked every five minutes.
+// THE NEWEST MESSAGE AND THE NEWEST TURN ARE BOTH READ FROM THE TAIL of the file, not from all of it: the store is 537 MB and the question is asked every five minutes. The turn read goes
+// back past the tail only while what it has found is older than the window (a11ign/agent-org#709: after a cold start the file's end holds the oldest turns).
 //
 // A KNOWN EDGE, measured from the code and not from a run: a turn is held back until its message is `QUIET_MS` (5 minutes) old and then waits for the next ingest, so a turn can be up to
 // ten minutes behind its transcript in a HEALTHY store. The check runs right after an ingest, when the lag is the five minutes of quiet and no more, so a healthy store reads about five
@@ -30,7 +31,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 export const STALE_AFTER_MS = 10 * 60 * 1000;
 const MS_PER_MINUTE = 60 * 1000;
 const MINUTES_PER_HOUR = 60;
-/** The tail read first, and the most it grows to when that tail holds no `turn` (the file ends in a long run of `gh_call`s): 85,000 events, not the 1.2 million. */
+/** The tail read first, and the largest chunk the read grows to while the newest turn found is older than the window or none is found (a long run of `gh_call`s, a cold start's old turns). */
 const TAIL_FIRST_BYTES = 1024 * 1024;
 const TAIL_LAST_BYTES = 32 * 1024 * 1024;
 const TURN_KIND = "\"kind\":\"turn\"";
@@ -60,22 +61,31 @@ export function transcriptRoots(home: string = homedir()): TranscriptRoot[] {
 }
 
 /**
- * The time of the newest `turn` event, from the end of the file, or `null` for a store that is absent or holds none in the tail read. It is the newest by `at`, not the last on
- * the file: one ingest appends its transcripts in directory order, so the last line is not the latest turn. A line that does not parse is the one a writer is in the middle of.
+ * The time of the newest `turn` event, read from the end of the file, or `null` for a store that is absent or holds none. It is the newest by `at`, not the last on the file: one
+ * ingest appends its transcripts in directory order, so the last line is not the latest turn. A line that does not parse is the one a writer is in the middle of.
+ *
+ * A READING OLDER THAN THE WINDOW IS NOT AN ANSWER (a11ign/agent-org#709). Right after a cold start (a `STATE_VERSION` move, a lost state file) the ingest has re-appended every transcript
+ * in directory order, so the file's END holds whichever transcripts came last and may be two days old while the newest turn of the store is minutes old on the first line. The read
+ * therefore goes on, one chunk further back, until a turn INSIDE the window turns up or the file is exhausted, and `TAIL_LAST_BYTES` is the size of the largest chunk and not a stop.
+ * A genuinely stale store reads all of itself (each byte once) and returns the newest it saw; a healthy one stops in the first chunk.
  */
-export function newestTurnAt(storePath: string): number | null {
+export function newestTurnAt(storePath: string, now: number = Date.now()): number | null {
   if (!existsSync(storePath)) return null;
+  const inWindow = now - STALE_AFTER_MS;
   const fd = openSync(storePath, "r");
   try {
-    const size = fstatSync(fd).size;
-    for (let window = TAIL_FIRST_BYTES; ; window *= 2) {
-      const length = Math.min(size, window);
-      const bytes = Buffer.alloc(length);
-      readSync(fd, bytes, 0, length, size - length);
-      const lines = bytes.toString("utf8").split("\n");
-      if (length < size) lines.shift(); // a window that does not begin the file begins in the middle of a line
-      let newest: number | null = null;
-      for (const line of lines) {
+    let newest: number | null = null;
+    let end = fstatSync(fd).size;
+    let carry: Buffer = Buffer.alloc(0); // the head of the line the chunk after this one (nearer the end) began in the middle of
+    for (let window = TAIL_FIRST_BYTES; end > 0; window = Math.min(window * 2, TAIL_LAST_BYTES)) {
+      const start = Math.max(0, end - window);
+      const chunk = Buffer.alloc(end - start);
+      readSync(fd, chunk, 0, chunk.length, start);
+      const bytes = Buffer.concat([chunk, carry]);
+      const firstBreak = start > 0 ? bytes.indexOf(10) : -1; // a chunk that does not begin the file begins in the middle of a line, which the chunk before it finishes
+      carry = start > 0 ? bytes.subarray(0, firstBreak < 0 ? bytes.length : firstBreak) : Buffer.alloc(0);
+      const whole = start > 0 ? (firstBreak < 0 ? "" : bytes.toString("utf8", firstBreak + 1)) : bytes.toString("utf8");
+      for (const line of whole.split("\n")) {
         if (!line.includes(TURN_KIND)) continue;
         try {
           const { at } = JSON.parse(line);
@@ -84,8 +94,10 @@ export function newestTurnAt(storePath: string): number | null {
           // the line being written
         }
       }
-      if (newest !== null || length >= size || window >= TAIL_LAST_BYTES) return newest;
+      if (newest !== null && newest >= inWindow) return newest;
+      end = start;
     }
+    return newest;
   } finally {
     closeSync(fd);
   }
@@ -152,7 +164,7 @@ export function sessionsWorking({ roots, now, windowMs = STALE_AFTER_MS }: { roo
 
 /** Stale is old AND somebody working. `ageMs` is `null` for a store with no turn at all, which is older than any window and so stale while anyone is working. */
 export function storeFreshness({ storePath, now, working }: { storePath: string; now: number; working: boolean; }): Freshness {
-  const newest = newestTurnAt(storePath);
+  const newest = newestTurnAt(storePath, now);
   const ageMs = newest === null ? null : Math.max(0, now - newest);
   return { newestTurnAt: newest, ageMs, working, stale: working && (ageMs === null || ageMs > STALE_AFTER_MS) };
 }
