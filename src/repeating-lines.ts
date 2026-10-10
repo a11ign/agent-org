@@ -223,13 +223,17 @@ const journalctl = (args: string[]) => execFileSync("journalctl", args, { encodi
  * that can crash the gate stops every order behind it (`diskHeadroomTick`'s rule) -- and a journal that cannot be read is
  * SAID, never reported as a clean bill: absence of a reading is not a reading of absence.
  *
+ * `settle` (agent-org#492) is handed every group that repeats and returns the ones that still need a session: a line an open row already cites
+ * is answered there, and the caller says so. IT IS FAILED OPEN HERE -- a `settle` that throws offers every group, because a lookup that
+ * could not be made is not an answer, and the other failure (no order) is the silence this detector exists to end.
+ *
  * @param {{ run?: (args: string[]) => string, allow?: ReturnType<typeof loadAllowlist> | (() => ReturnType<typeof loadAllowlist>),
- *           k?: number, log?: (line: string) => void }} [io]
+ *           k?: number, log?: (line: string) => void, settle?: (groups: RepeatingGroup[]) => RepeatingGroup[] }} [io]
  */
 export function repeatingLinesTick({ run = journalctl, allow = loadAllowlist, k = REPEAT_TICKS,
-  log = (line) => process.stderr.write(line) }: {
+  log = (line) => process.stderr.write(line), settle }: {
         run?: (args: string[]) => string; allow?: ReturnType<typeof loadAllowlist> | (() => ReturnType<typeof loadAllowlist>);
-        k?: number; log?: (line: string) => void;
+        k?: number; log?: (line: string) => void; settle?: (groups: RepeatingGroup[]) => RepeatingGroup[];
     } = {}) {
   try {
     const ticks = parseTicks(run(["--user", "-u", "a11ign-work-tick", "--since", JOURNAL_SINCE, "-o", "short-iso"]));
@@ -237,7 +241,15 @@ export function repeatingLinesTick({ run = journalctl, allow = loadAllowlist, k 
     for (const g of groups) {
       log(`${SELF} ${g.atLeast ? ">=" : ""}${g.count} ticks since ${g.since}: ${headline(g).slice(0, 160)}\n`);
     }
-    return repeatingLineOrders(groups);
+    let open = groups;
+    if (settle !== undefined && groups.length > 0) {
+      try {
+        open = settle(groups);
+      } catch (err) {
+        log(`${SELF} could not look for rows citing these lines (${String((err as any)?.message ?? err).split("\n")[0].slice(0, 160)}) -- every line is offered.\n`);
+      }
+    }
+    return repeatingLineOrders(open);
   } catch (err) {
     log(`${SELF} could not run (${String((err as any)?.message ?? err).split("\n")[0].slice(0, 160)}) -- no order this tick.\n`);
     return [];
