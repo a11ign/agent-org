@@ -1,0 +1,5 @@
+---
+"agent-org": minor
+---
+
+The gate raises a hold on a row nobody is working. Each tick, for every pull request held `--until closed #N`, the wait read's own facts are asked whether #N is open, unclaimed (no `in-progress`, no `session:*` label) and closed by no open pull request, and whether the hold is older than 15 minutes (`idleHoldIncident`, strictly more, its clock the later of the hold and #N's last change). A hold that is raises one `org-health` order to `ceo`, class `hold-on-idle-row`, keyed on the pull request, the target and the date the hold was taken (so the same hold on every tick is one key, not one per minute), naming the pull request, the target and the minutes. It costs no API call: the target and the closing pull requests come from the lists the wait read already holds. A target the facts do not hold, a target that is itself a pull request, a hold with no date and a hold on more than one condition stay silent. The signal NEVER LIFTS THE HOLD: lifting is the holder's, and the order says the three ways out (claim the row, merge the pull request first, or re-take the hold `--until=manual`). a11ign/a11ign#4661, agent-org#571.
