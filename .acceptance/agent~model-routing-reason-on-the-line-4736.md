@@ -1,6 +1,7 @@
 Model routing has never consulted the provider: every call was rejected with HTTP 422, so all 15 routed starts in a11ign's decision log read `"via":"none"` with reason `the API answered HTTP 422`, and the routing line a person reads (`route X via fallback`) named no reason. This is the whole of a11ign/a11ign#4736 (the mirror of agent-org#564, and item 1 of the chairman's direction on a11ign/a11ign#4627): the wire, the scale, and the reason on every line.
 
-Closes a11ign/a11ign#4736, a11ign/agent-org#564
+Closes a11ign/a11ign#4736
+Closes a11ign/agent-org#564
 
 **Follows #588** (merged: the wire, the scale and the pinned wire, items 1 to 3 of the mirror). It named no row to close, because the mirror's larger scope arrived while it was in the merge queue, where a branch cannot be updated; items 4 and 5 are this pull request, and it is the one that closes the rows.
 
