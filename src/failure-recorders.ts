@@ -6,7 +6,7 @@
 // no file itself but the audit's cursor.
 import { homedir } from "node:os";
 
-import { FAILURE_LEDGER_FILE, mainRedEvents, recordFailures } from "./failure-ledger.ts";
+import { FAILURE_LEDGER_FILE, mainRedEpisodesPath, readMainRedReadings, recordFailures, type TrunkReading } from "./failure-ledger.ts";
 import { recordHandReroutes } from "./hand-fix-ledger.ts";
 import { auditMessaging } from "./messaging/audit.ts";
 import { defaultLedgerPath } from "./messaging/state.ts";
@@ -23,11 +23,15 @@ const sayOnStderr = (line: string) => process.stderr.write(`${line}\n`);
  *
  * LAST, THE MESSAGING AUDIT (#928, #4746): an announcement that asks the chairman something is a `messaging-audience-misuse` line. `home` is whose messaging ledger it reads (a host with
  * none reads as an empty one, so only the cursor is written), and `say` is where its count line and refusals go -- stderr with the other recorders', never stdout, which is the orders.
- * @param {{ trunkRed: Parameters<typeof mainRedEvents>[0], keyedTrunkReds: Parameters<typeof mainRedEvents>[0][], prs: any[], stateDir: string, now: number, ownerOf: Parameters<typeof unresolvedOwnerEvents>[1], homeRepo: string, home?: string, say?: (line: string) => void }} seen
+ * A RED `main` IS COUNTED ONCE PER STANDING RED, NOT ONCE PER RUN (agent-org#674): `readMainRedReadings` holds what is standing between ticks, in `failure-ledger-main-red`, so a green
+ * reading of a repository (which carries no repository itself, hence `keyedTrunkReds`' `repo`) can end the right one. The standing reds are saved only after the ledger took its lines.
+ * @param {{ trunkRed: TrunkReading, keyedTrunkReds: { repo: string | undefined, red: TrunkReading }[], prs: any[], stateDir: string, now: number, ownerOf: Parameters<typeof unresolvedOwnerEvents>[1], homeRepo: string, home?: string, say?: (line: string) => void }} seen
  */
-export function recordTickFailures({ trunkRed, keyedTrunkReds, prs, stateDir, now, ownerOf, homeRepo, home = homedir(), say = sayOnStderr }: { trunkRed: Parameters<typeof mainRedEvents>[0]; keyedTrunkReds: Parameters<typeof mainRedEvents>[0][]; prs: any[]; stateDir: string; now: number; ownerOf: Parameters<typeof unresolvedOwnerEvents>[1]; homeRepo: string; home?: string; say?: (line: string) => void; }): void {
+export function recordTickFailures({ trunkRed, keyedTrunkReds, prs, stateDir, now, ownerOf, homeRepo, home = homedir(), say = sayOnStderr }: { trunkRed: TrunkReading; keyedTrunkReds: { repo: string | undefined; red: TrunkReading; }[]; prs: any[]; stateDir: string; now: number; ownerOf: Parameters<typeof unresolvedOwnerEvents>[1]; homeRepo: string; home?: string; say?: (line: string) => void; }): void {
   const logPath = `${stateDir}/${FAILURE_LEDGER_FILE}`;
-  recordFailures({ logPath, events: [...mainRedEvents(trunkRed), ...keyedTrunkReds.flatMap(mainRedEvents), ...unresolvedOwnerEvents(prs, ownerOf, homeRepo)], now });
+  const trunk = readMainRedReadings({ episodesPath: mainRedEpisodesPath(logPath), readings: [{ repo: homeRepo, red: trunkRed }, ...keyedTrunkReds] });
+  const written = recordFailures({ logPath, events: [...trunk.events, ...unresolvedOwnerEvents(prs, ownerOf, homeRepo)], now });
+  if (written.refused === null) trunk.commit();
   recordHandReroutes({ logPath, markerPath: `${logPath}-hand-read`, now });
   try {
     auditMessaging({ ledgerPath: defaultLedgerPath(home), failureLogPath: logPath, cursorPath: `${stateDir}/${MESSAGING_AUDIT_CURSOR_FILE}`, now, report: say, print: say });

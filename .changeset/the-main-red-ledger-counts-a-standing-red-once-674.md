@@ -1,0 +1,5 @@
+---
+"agent-org": patch
+---
+
+The `main-red` entry of the failure ledger counts a standing red once, not once per run. A red `checks (cross-repo)` leg on a declared code repository is red on every push and each push is a new run, so one red that no push could fix put a new ref in the ledger on every push and tripped `class-repeat` as if its guard had failed. A red read while one is already standing for the same repository, naming no failed job the standing one did not, is now the same red and records nothing; the ledger line keeps pointing at the run that opened it. A green reading ends it (a later red is a new ref), a red naming a further failed job is a new ref, and a reading that could not be made does not end it. To tell a green from a refused read, `readTrunkRed` now answers `undefined` for a runs read that was refused, for no completed verdict run, and for a green run whose jobs could not be read, and keeps `null` for a `main` that was read and is not red; its orders are unchanged. The standing reds are kept in `failure-ledger-main-red` beside the ledger, whose own format is as it was. agent-org#674.

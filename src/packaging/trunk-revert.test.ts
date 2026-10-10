@@ -212,8 +212,10 @@ test("a HEALTHY main costs exactly ONE call, and reports nothing", () => {
   assert.equal(gh.calls.length, 1, "GH_READS counts this as the one unconditional read");
 });
 
-test("a refused read is null, never a red: the gate does not invent an order from nothing", () => {
-  assert.equal(readTrunkRed(() => { throw new Error("HTTP 403"); }), null);
+test("a refused read is undefined, never a red and never a green: the gate does not invent an order from nothing", () => {
+  const refused = readTrunkRed(() => { throw new Error("HTTP 403"); });
+  assert.equal(refused, undefined, "not `null`, which says main was read and is not red (agent-org#674)");
+  assert.deepEqual(trunkRedOrders(refused), []);
 });
 
 test("END TO END with a fake gh: a red run yields the order, with the failing test read from the log", () => {

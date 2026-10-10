@@ -86,7 +86,7 @@ const CROSS_REPO_LEG = /(^|[\s(/])cross-repo\)?$/;
 
 /**
  * A declared code repository's: its `ci.yml`, whose one job `gate` is the required check and runs the suite. A repository declared with no
- * `ci.yml` answers 404, which is a refused read (`null`, nothing emitted) and never a red.
+ * `ci.yml` answers 404, which is a refused read (`undefined`, nothing emitted) and never a red.
  * @param {string} repoKey @param {string} repo @returns {TrunkSource}
  */
 export function trunkOfCodeRepository(repoKey: string, repo: string): TrunkSource {
@@ -190,9 +190,13 @@ export function failingTestsFromJobLog(logFailedOutput: string, jobName: string)
 }
 
 /**
- * Everything the order needs, read from GitHub -- or `null` when `main` is not red or the question could
- * not be asked. `null` IS NEVER "GREEN AND NEVER 'RED'": a refused read reports nothing, which is what the
- * gate does for every lane it cannot read (#1286), and the tick's PARTIAL exit is unchanged by it.
+ * Everything the order needs, read from GitHub -- or `null` when `main` was READ and is not red, or `undefined` when
+ * the question could not be answered. A refused read reports nothing, which is what the gate does for every lane
+ * it cannot read (#1286), and the tick's PARTIAL exit is unchanged by it. THE TWO EMPTY ANSWERS ARE NOT ONE (agent-org#674):
+ * the order is the same for both (`!red`), but the failure ledger ends a standing red on `null` and must not on `undefined`,
+ * so an API blip is never counted as a green. `undefined` is: a runs read that was refused, no completed verdict run among the newest
+ * (all in flight or cancelled, which says nothing about `main`), and a green run whose jobs could not be read (a red `continue-on-error`
+ * leg lives only there, so its absence is not a green).
  *
  * ONE CALL WHEN THE PRIMARY'S `main` IS HEALTHY. The unconditional read is the newest runs of the source's workflow on `main`; the
  * four that follow are paid only by a tick that found a red (three where there is no re-check job). Each is a single REST call on the core pool,
@@ -209,28 +213,31 @@ export function failingTestsFromJobLog(logFailedOutput: string, jobName: string)
  * @returns {{ runId: number, url: string, sha: string, failedJobs: string[], failingTests: string[] | null,
  *   recheck: "pass" | "fail" | "unknown", parentFailingTests: string[] | null,
  *   originPr: { number: number, title: string, session: string | null } | null,
- *   repo?: string, repoKey?: string, event?: string, leg?: string } | null}
+ *   repo?: string, repoKey?: string, event?: string, leg?: string } | null | undefined}
  */
 export function readTrunkRed(run: (args: string[]) => string = defaultRun, source: TrunkSource = PRIMARY_TRUNK): {
     runId: number; url: string; sha: string; failedJobs: string[]; failingTests: string[] | null;
     recheck: "pass" | "fail" | "unknown"; parentFailingTests: string[] | null;
     originPr: { number: number; title: string; session: string | null; } | null;
     repo?: string; repoKey?: string; event?: string; leg?: string;
-} | null {
+} | null | undefined {
   const { repo } = source;
   const filters = source.eventFilters.length === 0 ? [null] : source.eventFilters;
   const answers = filters.map((filter) => tryParse(() => run(["api", "--method", "GET", `repos/${repo}/actions/workflows/${source.workflow}/runs`,
     "-f", "branch=main", ...(filter === null ? [] : ["-f", filter]), "-f", "per_page=10"])));
-  if (answers.some((a) => a === null)) return null;
+  if (answers.some((a) => a === null)) return undefined;
   const newest = newestVerdictRun({ workflow_runs: answers.flatMap((a) => a?.workflow_runs ?? []) });
-  const runRed = newest !== null && newest.conclusion === "failure";
-  if (newest === null || (!runRed && !source.crossRepoLeg)) return null;
+  if (newest === null) return undefined;
+  const runRed = newest.conclusion === "failure";
+  if (!runRed && !source.crossRepoLeg) return null;
 
-  const jobs = tryParse(() => run(["api", `repos/${repo}/actions/runs/${newest.id}/jobs?per_page=100`]))?.jobs ?? [];
+  const jobsBody = tryParse(() => run(["api", `repos/${repo}/actions/runs/${newest.id}/jobs?per_page=100`]));
+  const jobs = Array.isArray(jobsBody?.jobs) ? jobsBody.jobs : [];
   const failedJobs = jobs.filter((j: any) => j.conclusion === "failure").map((j: any) => String(j.name));
   // A GREEN RUN WITH A RED LEG IS RED `main`: `continue-on-error` keeps the run and `gate` green, and the leg's own conclusion is where the red is.
   const leg = runRed ? undefined : failedJobs.find((name: string) => CROSS_REPO_LEG.test(name));
-  if (!runRed && leg === undefined) return null;
+  // A GREEN RUN WHOSE JOBS WERE NOT READ IS UNREAD, NOT GREEN: the leg is only visible there. (A red run whose jobs were not read is still red, with no job named.)
+  if (!runRed && leg === undefined) return Array.isArray(jobsBody?.jobs) ? null : undefined;
   const recheck = recheckOf(run, source, jobs);
   const failingTests = failedJobs.includes(source.testJob) ? readFailingTests(run, source, newest.id) : null;
   const facts = { runId: newest.id, url: newest.html_url, sha: newest.head_sha, failedJobs, failingTests,
@@ -341,7 +348,7 @@ function attributionParagraph(attribution: ReturnType<typeof attributionOf>) {
  * ISSUES, so that label is read and the session it names is woken. `needs:chairman` had a blind spot here that this does
  * not repair (`readChairmanBlocked` is open issues only), which is why the escalation goes to `answer:ceo`.
  *
- * @param {ReturnType<typeof readTrunkRed> | undefined} red `null` or omitted when `main` is not red
+ * @param {ReturnType<typeof readTrunkRed> | undefined} red `null` or omitted when `main` is not red (or was not read)
  * @returns {{ session: string, fallback?: string, cause: string, subject: string, discriminator: string,
  *   prompt: string, causeKey: string }[]}
  */

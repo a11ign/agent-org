@@ -66,7 +66,7 @@ test("a cancelled or in-flight newest run is LOOKED THROUGH to the one before it
   const inFlight = run(6, null, "2026-10-02T21:11:00Z");
   assert.notEqual(readRed({ workflow_runs: [cancelled, inFlight, ...RED_NOW.workflow_runs] }), null, "red stays red");
   assert.equal(readRed({ workflow_runs: [cancelled, inFlight, ...ACTUAL.workflow_runs] }), null, "green stays green");
-  assert.equal(readRed({ workflow_runs: [cancelled, inFlight] }), null, "no verdict at all is nothing to say, not a red");
+  assert.equal(readRed({ workflow_runs: [cancelled, inFlight] }), undefined, "no verdict at all is nothing to say, not a red and not a green (agent-org#674)");
 });
 
 test("the read asks for PUSH and SCHEDULE runs of `ci.yml` on main, in agent-org, and a healthy main costs two runs reads and one jobs read (agent-org#539)", () => {
