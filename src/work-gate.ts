@@ -7614,9 +7614,22 @@ export function readOpenRowFollowUps(allOpen: any[], run: (args: string[], repo?
   }), run, batch);
 }
 
-/** #4524: `main`'s one call for the hierarchy -- the verified chairman rows (a read per labelled row, none when no row is) and the project's declared ranking. @param {any[]} rows */
-function offerHierarchyNow(rows: any[]): OfferHierarchy {
-  const { chairmanRows, ignored } = readChairmanPriority(rows);
+/**
+ * #4800: THE ROWS WHOSE `priority:chairman` IS VERIFIED -- the Ready rows AND the claimed ones. A claimed row has left `ready`, so verifying only the Ready rows
+ * left a claimed chairman HOLDER out of `chairmanRows`, and `overlapVerdict` walked past it: two chairman rows over one file were both offered and the claim
+ * refused the second (#4793). A claimed holder is read exactly as a Ready row is -- the newest labeller decides, and an unreadable history fails closed. The offer
+ * tier and the share floor read candidate rows only, so a claimed row in the set changes nothing but what a holder is. @param {any[]} rows the Ready rows
+ * @param {any[]} openRows every open row the gate read @param {(args: string[]) => string} [run]
+ */
+export function readChairmanPriorityOfOffer(rows: any[], openRows: any[] = [], run?: (args: string[]) => string) {
+  const readyNumbers = new Set(rows.map((row) => Number(row.number)));
+  const claimedRows = openRows.filter((row) => labelsOf(row).includes(CLAIM_LABEL) && !readyNumbers.has(Number(row.number)));
+  return run === undefined ? readChairmanPriority([...rows, ...claimedRows]) : readChairmanPriority([...rows, ...claimedRows], run);
+}
+
+/** #4524: `main`'s one call for the hierarchy -- the verified chairman rows (a read per labelled row, none when no row is) and the project's declared ranking. @param {any[]} rows @param {any[]} openRows #4800: the claimed rows are read too */
+function offerHierarchyNow(rows: any[], openRows: any[]): OfferHierarchy {
+  const { chairmanRows, ignored } = readChairmanPriorityOfOffer(rows, openRows);
   return { chairmanRows, ignored, milestoneRanking: homeProjectDeclaration().offerMilestones };
 }
 
@@ -7657,7 +7670,7 @@ function main() {
   const strippedClosedClaims = stripClosedClaims(closedClaimLabels); // #3883: the closed rows whose holder herdr does not list lose their claim labels, in the tick that read them
   // #2031: A LOCAL git CALL, NOT AN API ONE -- it adds nothing to `GH_READS` and cannot be refused by an
   // exhausted pool, which is the whole reason the detection can exist. `GIT_READS` counts it.
-  const offerHierarchy = offerHierarchyNow(rows); // #4524: who the chairman's rows are, from the tracker's history, and the declared milestone ranking
+  const offerHierarchy = offerHierarchyNow(rows, allOpen); // #4524: who the chairman's rows are, from the tracker's history, and the declared milestone ranking
   const rowBranches = readRowBranches(), branchPrs = readBranchPrsOfUnclaimed(rows, rowBranches); // #3892: one `pr list` per branch of an unclaimed row, none when there is none
   const pools: import("./org-health.ts").PoolReading[] = []; // #3448: the GraphQL budget the off-board read names, handed to the org-health tick
   const offBoard = rowsOffBoardOrSay(undefined, pools), primaryDrift = readPrimaryDriftNow(); // #2781: local git, once; it feeds `decide` and banners its orders
