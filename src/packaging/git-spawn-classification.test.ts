@@ -269,6 +269,17 @@ test("MUTATION: an import with no actual call is NOT classified SAFE -- 'importe
     "importing sandboxGitEnv without calling it must not satisfy the check -- an unused import guards nothing");
 });
 
+test("MUTATION: a call with no import of the helper is NOT classified SAFE -- a local `sandboxGitEnv` is not the canonical one", () => {
+  const fixture = 'import { execFileSync } from "node:child_process";\n'
+    // A function of the same name, defined here: it scrubs nothing the canonical one does, and a text match on the call alone would pass it.
+    + 'const sandboxGitEnv = () => ({ ...process.env });\n'
+    + 'execFileSync("git", ["status"], { cwd: "/tmp", env: sandboxGitEnv() });\n';
+  assert.ok(spawnsGit(stripComments(fixture)));
+  assert.ok(!usesCanonicalHelper(stripComments(fixture)), "calling a function by the helper's name is not importing the helper");
+  assert.ok(!usesCanonicalHelper(stripComments(fixture.replace("const sandboxGitEnv", 'import { x } from "./not-git-env-at-all.ts";\nconst sandboxGitEnv'))),
+    "a specifier that merely CONTAINS the helper's name is not the helper");
+});
+
 test("MUTATION: an indirected call through an injected seam is still discovered", () => {
   // install-git-hooks.mjs's own shape: the literal "git" is the first argument to a locally-named `run`,
   // never to execFileSync directly. A discovery anchored to node:child_process function names would miss
