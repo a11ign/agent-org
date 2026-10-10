@@ -25,13 +25,14 @@
 //
 // IT READS `wakes-per-row.ts`'s PARSERS by import and edits nothing in it. `parseTranscript` returns wakes without their times of typing or their usage, so the
 // transcript is walked here once more for the records this store needs; the wake record it yields is `isWake`'s, the same test.
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readSync } from "node:fs";
+import { appendFileSync, closeSync, constants, copyFileSync, existsSync, fstatSync, fsyncSync, mkdirSync, openSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { sessionOf } from "../token-audit.ts";
 import { isWake, matchLedger, reviewerTarget } from "../wakes-per-row.ts";
 import type { LedgerEntry } from "../wakes-per-row.ts";
 import type { EndedDeferral } from "../deferral-log.ts";
 import type { GithubKind } from "./github-events.ts";
+import { restampStoreBytes } from "./ingest-state.ts";
 import type { Carry, Previous } from "./ingest-state.ts";
 
 export const DEFINITIONS = [
@@ -51,7 +52,7 @@ export const DEFINITIONS = [
   "CODEX TURN (`harness: codex`, `source: transcript`): one model request of a Codex reviewer session (`~/.codex/sessions`), keyed to the pull request in its name (`reviewer-<n>`), with tokens (`input` the uncached part, `cacheRead` the cached part, `output` including reasoning) and the model. `costUsd` is null when PRICES has no row for the model (only `gpt-5.6-luna` has one, quoted from OpenAI's model page) or the request's prompt is above that row's `maxPrompt`. Its wall-clock runs from the last record sent to the model.",
   "DEFERRAL (`kind: deferral`, `source: deferral-log`, #3510): one wait of an order for a busy seat, written by the gate's own tick when it ENDED (`wake-deferral-log`, beside `wake-deferred`): `startedAt` is the tick that first found the order deferred, `completedAt` (and `at`) the tick that found it no longer deferred, so each end is at most one tick late, and `how` is `delivered` (the ledger holds that cause key at or after the start) or `gone` (it left with no delivery: the order stopped being true). `session` is the addressee in the key. KEYED BY THE CAUSE KEY'S ROW OR PULL REQUEST (`subjectOf`), else the session's name. A wait still OPEN is not here (the log holds ended ones), and a wait that ended before the first tick to write the log is in no record: it can only be inferred from the review event, the ledger's delivery and the seat's own turns.",
   "GH CALL (`kind: gh_call`, `source: gh-ledger`, #3516): one line of a `gh-calls.tsv` ledger (`host/gh`, #3466), with `account`, `resource` (`graphql`, `graphql?` for a call only inferred to spend that pool, `core`, `other`), `cost` (the points the RESPONSE carried, else null: most list calls carry none, so a null cost on a GraphQL call is a FLOOR of one point), `exit` (the call's exit status; `status` is a CI run's), `command` (its first two arguments), `workspace` and `script` (what the calling process was). KEYED BY THE LINE'S SESSION ID (#3589): `host/gh` writes `CLAUDE_CODE_SESSION_ID` (a Codex session's `CODEX_THREAD_ID`) on each call, which is the file name of its transcript, and a turn carries its transcript's id; a call is on that session and, through the session's next turn, on a row (`keyedBy: session`). A line with no id (a unit or script outside any session, or a line written before the wrapper named its session) is `unkeyed: script`; one whose session has no later turn in the store yet is `unkeyed: no-turn`; either way the call's session is `gh-ledger` and it has no row. A ledger keeps 2 MiB, so a call older than its trim is not in the store unless it was ingested first.",
-  "SUPERSEDED: the store is an append-only log in which the LAST copy of an id is the event. A corrected copy of an event (a turn re-read after a fix to its attribution) is appended and supersedes the stored one; an identical copy adds nothing.",
+  "SUPERSEDED: the store keeps ONE line per event id. A corrected copy of an event (a turn re-read after a fix to its attribution) replaces the stored one on disk; an identical copy adds nothing. A file from before that can carry an id twice, and the LAST copy is the event: `trace compact-store` removes the rest, so a sum over the file's lines is a sum over its events.",
 ];
 
 const TOKENS_PER_MILLION = 1_000_000;
@@ -507,42 +508,49 @@ function compactionsOf(records: { index: number; at: number; record: any; }[], s
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------
-// The store: append-only, idempotent
+// The store: one line per event id, idempotent
 
 /** Bytes read from the store at a time. The file is never held as ONE string: V8 refuses a string past 2^29-24 characters, and the store crossed that at 537,274,044 bytes. */
 const STORE_READ_CHUNK = 8 * 1024 * 1024;
 const NEWLINE_BYTE = 0x0a;
 
 /**
- * The events in a store file. The file is an append-only LOG: an event whose attribution was later corrected (`appendToStore`) is on it twice, and the LAST copy of an id
- * is the event, at the position of its last copy.
- * READ IN CHUNKS AND SPLIT ON THE NEWLINE BYTE (0x0a never occurs inside a multi-byte UTF-8 sequence), so a line is decoded whole and the file's size is no limit. A line that
- * does not parse THROWS, as it did when the file was one string: a store with a damaged line is reported, never read around.
+ * Every line of the file open at `fd`, in order, with whether a newline ended it (only the last can lack one). READ IN CHUNKS AND SPLIT ON THE NEWLINE BYTE
+ * (0x0a never occurs inside a multi-byte UTF-8 sequence), so a line is decoded whole and the file's size is no limit. `line` is a view of the chunk: copy it to keep it.
+ * @param chunkBytes a parameter so a test can make a line span chunks
+ */
+function eachLine(fd: number, take: (line: Buffer, terminated: boolean) => void, chunkBytes: number = STORE_READ_CHUNK): void {
+  const chunk = Buffer.allocUnsafe(chunkBytes);
+  let carry: Buffer = Buffer.alloc(0);
+  for (let read = readSync(fd, chunk, 0, chunkBytes, null); read > 0; read = readSync(fd, chunk, 0, chunkBytes, null)) {
+    let start = 0;
+    for (let end = chunk.indexOf(NEWLINE_BYTE); end !== -1 && end < read; end = chunk.indexOf(NEWLINE_BYTE, start)) {
+      take(carry.length > 0 ? Buffer.concat([carry, chunk.subarray(start, end)]) : chunk.subarray(start, end), true);
+      carry = Buffer.alloc(0);
+      start = end + 1;
+    }
+    carry = Buffer.concat([carry, chunk.subarray(start, read)]);
+  }
+  take(carry, false);
+}
+
+/**
+ * The events in a store file: the LAST copy of an id is the event, at the position of its last copy. The file holds one line per id (`appendToStore` replaces a superseded
+ * copy), but a file written before that, or by a writer that only appends (`otel-receiver.ts`), can carry an id twice, and this is what reads it right.
+ * A line that does not parse THROWS, as it did when the file was one string: a store with a damaged line is reported, never read around.
  * @param chunkBytes a parameter so a test can make a line span chunks
  */
 export function readStore(path: string, chunkBytes: number = STORE_READ_CHUNK): TraceEvent[] {
   if (!existsSync(path)) return [];
   const last = new Map<string, TraceEvent>();
-  const take = (line: Buffer) => {
-    if (line.length === 0) return;
-    const event = JSON.parse(line.toString("utf8"));
-    last.delete(event.id); // delete then set: a map keeps the position of the FIRST set, and the event sits at its last copy
-    last.set(event.id, event);
-  };
   const fd = openSync(path, "r");
   try {
-    const chunk = Buffer.allocUnsafe(chunkBytes);
-    let carry: Buffer = Buffer.alloc(0);
-    for (let read = readSync(fd, chunk, 0, chunkBytes, null); read > 0; read = readSync(fd, chunk, 0, chunkBytes, null)) {
-      let start = 0;
-      for (let end = chunk.indexOf(NEWLINE_BYTE); end !== -1 && end < read; end = chunk.indexOf(NEWLINE_BYTE, start)) {
-        take(carry.length > 0 ? Buffer.concat([carry, chunk.subarray(start, end)]) : chunk.subarray(start, end));
-        carry = Buffer.alloc(0);
-        start = end + 1;
-      }
-      carry = Buffer.concat([carry, chunk.subarray(start, read)]);
-    }
-    take(carry);
+    eachLine(fd, (line) => {
+      if (line.length === 0) return;
+      const event = JSON.parse(line.toString("utf8"));
+      last.delete(event.id); // delete then set: a map keeps the position of the FIRST set, and the event sits at its last copy
+      last.set(event.id, event);
+    }, chunkBytes);
   } finally {
     closeSync(fd);
   }
@@ -560,10 +568,129 @@ export function openStore(path: string, read: (path: string) => TraceEvent[] = r
   return { path, events, at: new Map(events.map((event, position) => [event.id, position])) };
 }
 
+/** What a store file holds: its lines, the ids among them, the lines a rewrite removes (all but the last copy of an id) and how many of those are of each `kind`. */
+export type StoreCount = { lines: number; distinct: number; removed: number; byKind: Record<string, number>; };
+
+const TAIL_POLLS = 100;
+const TAIL_POLL_MS = 10;
+/** A rewrite that finds the file replaced under it by another rewrite starts again, this many times, then says so. */
+const REWRITE_ATTEMPTS = 3;
+
+/** The bytes of `fd` from `from` to its end NOW, once the last of them is a newline: a writer's line is read whole, never as the half a read caught mid-write. */
+function settledTail(fd: number, from: number): Buffer {
+  let tail = Buffer.alloc(0);
+  for (let poll = 0; poll < TAIL_POLLS; poll += 1) {
+    tail = Buffer.alloc(fstatSync(fd).size - from);
+    tail = tail.subarray(0, tail.length > 0 ? readSync(fd, tail, 0, tail.length, from) : 0);
+    if (tail.length === 0 || tail[tail.length - 1] === NEWLINE_BYTE) return tail;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT)), 0, 0, TAIL_POLL_MS);
+  }
+  throw new Error(`the store ends in a line with no newline (${tail.length} bytes after byte ${from}) that was not completed in ${TAIL_POLLS * TAIL_POLL_MS} ms`);
+}
+
 /**
- * Append what an open store does not have, as ONE write. An event it already holds is left alone when the new copy is identical (a second call with the same events adds
- * nothing); a copy that DIFFERS supersedes it: it is appended, and `readStore` takes the last copy of an id. Nothing already on disk is rewritten. A correction is how a
- * fix to the attribution of a turn reaches the turns stored before the fix: ids are stable, so without it they would stay as first read.
+ * ONE PASS OF A REWRITE, or `null` when the file was replaced under it. The file is streamed once (a line is kept as its own bytes, not parsed and written again), each id keeps its
+ * LAST copy at the position of that copy (what `readStore` gives it), `appended` is added as if it had been appended, and the result goes to a temp file in the same directory and is renamed
+ * over the store.
+ *
+ * THE OTHER WRITER (`otel-receiver.ts` appends to this file with `appendFileSync` while the host runs) IS NOT LOST BY RE-READING, NOT BY A LOCK: the file is held open, so its old inode
+ * stays readable after the rename, and what was appended past the bytes this pass consumed is read from it (a) when the temp file is written, and added to it, and (b) again after the
+ * rename, where it is appended to the new file. The receiver is not changed and takes no lock, so a rewrite never stalls a request. What remains is a window of microseconds in (b):
+ * an `appendFileSync` that opened the old file before the rename and writes after the sweep found nothing. A line appended by another process that is itself a copy of an id the pass
+ * kept is added raw, so the id is on the file twice until the next rewrite, and `readStore` takes the later.
+ */
+function rewriteOnce(path: string, appended: string, dryRun: boolean, during: (stage: RewriteStage) => void): StoreCount | null {
+  const fd = openSync(path, "r");
+  const temp = `${path}.${process.pid}.tmp`;
+  let renamed = false;
+  try {
+    const kept = new Map<string, { kind: string; line: Buffer | null; }>();
+    const byKind: Record<string, number> = {};
+    let removed = 0;
+    const keep = (line: Buffer) => {
+      if (line.length === 0) return;
+      const event = JSON.parse(line.toString("utf8"));
+      const earlier = kept.get(event.id);
+      if (earlier) {
+        kept.delete(event.id); // delete then set, as `readStore` does: the id sits at its last copy
+        removed += 1;
+        byKind[earlier.kind] = (byKind[earlier.kind] ?? 0) + 1;
+      }
+      kept.set(event.id, { kind: String(event.kind ?? "unknown"), line: dryRun ? null : Buffer.from(line) });
+    };
+    let consumed = 0; // the bytes up to and including the last newline that was read
+    eachLine(fd, (line, terminated) => {
+      if (!terminated) return; // the unterminated end is the tail's: a line a writer is still writing
+      consumed += line.length + 1;
+      keep(line);
+    });
+    during("scanned");
+    for (const line of linesOf(Buffer.from(appended))) keep(line);
+    const count = { lines: kept.size + removed, distinct: kept.size, removed, byKind };
+    if (dryRun) return count;
+    const out = openSync(temp, "w", fstatSync(fd).mode & 0o777);
+    try {
+      let pending: Buffer[] = [];
+      let pendingBytes = 0;
+      const flush = () => {
+        writeFileSync(out, Buffer.concat(pending));
+        pending = [];
+        pendingBytes = 0;
+      };
+      for (const { line } of kept.values()) {
+        pending.push(line as Buffer, Buffer.from("\n"));
+        pendingBytes += (line as Buffer).length + 1;
+        if (pendingBytes >= STORE_READ_CHUNK) flush();
+      }
+      flush();
+      during("written");
+      const late = settledTail(fd, consumed); // appended while the file was being read and the temp file written: after the lines above, before the rename
+      writeFileSync(out, late);
+      fsyncSync(out);
+      consumed += late.length;
+    } finally {
+      closeSync(out);
+    }
+    if (statSync(path).ino !== fstatSync(fd).ino) return null; // another rewrite replaced the file: what it wrote is not in this pass
+    renameSync(temp, path);
+    renamed = true;
+    during("renamed");
+    const after = settledTail(fd, consumed); // a write that reached the old inode before the rename
+    if (after.length > 0) appendFileSync(path, after);
+    return count;
+  } finally {
+    closeSync(fd);
+    if (!renamed) rmSync(temp, { force: true });
+  }
+}
+
+/** Where a rewrite is, for a test that must append as the other writer would: after the file is read, after the temp file is written, after the rename. */
+export type RewriteStage = "scanned" | "written" | "renamed";
+
+/** The lines of a buffer of complete lines, each as bytes of its own. */
+const linesOf = (bytes: Buffer): Buffer[] => bytes.toString("utf8").split("\n").map((line) => Buffer.from(line));
+
+/**
+ * Rewrite the store file so each id is on it ONCE, at the position of its last copy, and return what it held (`dryRun` counts and writes nothing). `appended` is text in the file's own
+ * form (lines, each ending in a newline) to be added as if appended: how `appendToStore` lets a superseding copy replace the stored one. The ingest state's `storeBytes` is
+ * restamped, because the file is smaller and a smaller store reads as deleted.
+ * @param during a parameter so a test can append at each stage, as the receiver would
+ */
+export function rewriteStore(path: string, { appended = "", dryRun = false, during = () => {} }: { appended?: string; dryRun?: boolean; during?: (stage: RewriteStage) => void; } = {}): StoreCount {
+  for (let attempt = 0; attempt < REWRITE_ATTEMPTS; attempt += 1) {
+    const count = rewriteOnce(path, appended, dryRun, during);
+    if (count === null) continue;
+    if (!dryRun) restampStoreBytes(path);
+    return count;
+  }
+  throw new Error(`${path} was replaced by another writer in each of ${REWRITE_ATTEMPTS} attempts to rewrite it: nothing was lost, run it again`);
+}
+
+/**
+ * Add what an open store does not have, as ONE write. An event it already holds is left alone when the new copy is identical (a second call with the same events adds
+ * nothing). A copy that DIFFERS supersedes it, and the superseded line does not stay on disk: the file is rewritten (`rewriteStore`) with each id once. A batch of only new ids is
+ * a plain append that touches nothing already on disk. A correction is how a fix to the attribution of a turn reaches the turns stored before the fix: ids are stable, so without
+ * it they would stay as first read.
  */
 export function appendToStore(store: { path: string; events: TraceEvent[]; at: Map<string, number>; }, events: TraceEvent[]): { added: number; superseded: number; skipped: number; } {
   const fresh: TraceEvent[] = [];
@@ -581,10 +708,39 @@ export function appendToStore(store: { path: string; events: TraceEvent[]; at: M
     }
   }
   if (fresh.length > 0) {
-    mkdirSync(dirname(store.path), { recursive: true });
-    appendFileSync(store.path, fresh.map((event) => `${JSON.stringify(event)}\n`).join(""));
+    const lines = fresh.map((event) => `${JSON.stringify(event)}\n`).join("");
+    if (superseded > 0 && existsSync(store.path)) rewriteStore(store.path, { appended: lines });
+    else {
+      mkdirSync(dirname(store.path), { recursive: true });
+      appendFileSync(store.path, lines);
+    }
   }
   return { added: fresh.length - superseded, superseded, skipped: events.length - fresh.length };
+}
+
+const countLine = (label: string, count: StoreCount) => {
+  const kinds = Object.entries(count.byKind).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([kind, lines]) => `${kind} ${lines}`).join(", ");
+  return `${label}: ${count.lines} lines, ${count.distinct} distinct ids, ${count.removed} lines ${label === "before" ? "to remove" : "removable"}${kinds ? ` (by kind: ${kinds})` : ""}`;
+};
+
+/**
+ * `compact-store`: the one-off that leaves ONE line per event id in a store written before `appendToStore` replaced a superseded copy (agent-org#475). It prints the lines, the distinct
+ * ids, the lines it would remove and their count by kind; `dryRun` stops there and writes nothing. Otherwise it copies the store to `<store>.bak-<UTC date>` FIRST (refused when that
+ * name exists: an earlier backup holds older bytes), rewrites, and prints the same counts read back from the new file. The rewrite restamps the ingest state's `storeBytes`.
+ * @returns the lines to print
+ */
+export function compactStore({ store, dryRun, now = Date.now() }: { store: string; dryRun: boolean; now?: number; }): string[] {
+  if (!existsSync(store)) throw new Error(`no store at ${store}`);
+  const before = rewriteStore(store, { dryRun: true });
+  const out = [countLine("before", before)];
+  if (dryRun) return [...out, `dry run: ${before.removed} lines would be removed; nothing was written`];
+  if (before.removed === 0) return [...out, "nothing to remove: the store was not rewritten and no backup was made"];
+  const backup = `${store}.bak-${new Date(now).toISOString().slice(0, 10)}`;
+  copyFileSync(store, backup, constants.COPYFILE_EXCL);
+  out.push(`backup: ${backup}`);
+  const done = rewriteStore(store);
+  out.push(`rewritten: ${done.removed} lines removed`);
+  return [...out, countLine("after", rewriteStore(store, { dryRun: true }))];
 }
 
 /** Open, append, done: for a caller with one batch. */
