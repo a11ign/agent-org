@@ -6,7 +6,13 @@
 //
 // THE PROVIDER IS OPTIONAL (chairman, #4627). No provider, no key, the use switched off, a refusal, a timeout or a confidence under the floor all answer `normal`, which is the
 // reviewer's order as it was before this module. A reviewer may raise the depth and never lower it (`raiseDepth`).
+//
+// THE CALLER IS `wake.ts` (#4888), where a reviewer's order is delivered and its instance started: {@link readDepthState} reads the diff there (REST, the core pool), and {@link depthEffort}
+// is the effort the reviewer is started with. The gate is synchronous and a provider call is not, so the gate cannot be the caller.
 import { decide, recordOutcome, type DecisionDeps, type Question } from "./decision-provider.ts";
+import { regionEntries } from "./engineer-route.ts";
+import { splitRegionEntry } from "./region-paths.ts";
+import type { Gh } from "./ci-failure-class.ts";
 
 export const DEPTHS = Object.freeze(["light", "normal", "full"] as const);
 export type Depth = (typeof DEPTHS)[number];
@@ -82,4 +88,33 @@ export async function reviewDepth(state: DepthState, deps: DecisionDeps): Promis
   if (decision.via === "none" || decision.fellBack) return { depth: "normal", by: "none", reason: decision.reason ?? "a question fell back, so the depth is normal" };
   if (contradicted(state, answers.docsOrTestsOnly)) return { depth: "normal", by: "none", reason: "the provider said docs or tests only of a diff that holds other paths" };
   return { depth: compose(answers), by: "jev", reason: "answered by the provider" };
+}
+
+// ---------------------------------------------------------------------------------------------------
+// THE STATE AND THE EFFORT (#4888).
+
+/** `gh pr`'s `files` endpoint pages at 100; a diff past that has paths this read did not see, so it is not read at all. */
+const FILES_PAGE = 100;
+const CLOSES = /\bcloses?:?\s+#(\d+)/gi;
+
+/** The effort a reviewer of this depth is STARTED with, or `undefined` for the profile's own: `light` is low, `normal` is the profile's, `full` is high. */
+export function depthEffort(depth: Depth | undefined): string | undefined {
+  if (depth === "light") return "low";
+  return depth === "full" ? "high" : undefined;
+}
+
+/** The paths a row's Region names, without the repository prefix (`agent-org:src/x.ts` is `src/x.ts`). */
+const regionPaths = (body: string): string[] => regionEntries(body).map((entry) => splitRegionEntry(entry).path);
+
+/**
+ * WHAT THE DIFF IS, or `null` when it could not be read whole. `null` is "could not determine", and the caller then asks nobody and sends today's order: a diff whose files or closed rows
+ * were not all read could hide the one gate-bearing path that makes it `full`, and the provider must never be asked to lighten a review it has seen part of.
+ */
+export function readDepthState({ repo, number }: { repo: string; number: number }, gh: Gh): DepthState | null {
+  const pull = JSON.parse(gh(["api", `repos/${repo}/pulls/${number}`]));
+  if (Number(pull.changed_files) > FILES_PAGE) return null;
+  const files: { filename: string }[] = JSON.parse(gh(["api", `repos/${repo}/pulls/${number}/files?per_page=${FILES_PAGE}`]));
+  const closed = [...String(pull.body ?? "").matchAll(CLOSES)].map((match) => match[1]);
+  const closesPaths = [...new Set(closed)].flatMap((row) => regionPaths(String(JSON.parse(gh(["api", `repos/${repo}/issues/${row}`])).body ?? "")));
+  return { paths: files.map((file) => file.filename), added: Number(pull.additions), removed: Number(pull.deletions), title: String(pull.title ?? ""), closesPaths };
 }
