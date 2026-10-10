@@ -541,6 +541,39 @@ export function spentSeen(rows: readonly number[]) {
   return `has held ${rows.map((n) => `#${n}`).join(", ")}: one instance, one row (#2407)`;
 }
 
+/** What `route`'s refusal calls an idle spare offered a row it was not started for (agent-org#459) -- the same shape as {@link spentSeen}, so it reads as a loaded seat. */
+export function spareForOtherRow(member: { key: string; number: number; }) {
+  return `is for ${rowMention(member)} only: one instance, one row (#2407)`;
+}
+
+/**
+ * `ineligibleReason`, NARROWED TO THE ORDER'S OWN ROW for a ready-row offer (agent-org#459): an instance of the spare family is offered the row it was
+ * NAMED for ({@link spareLabelForRow}) and no other, so every other row reaches the spawn path and is started on a FRESH worker.
+ *
+ * MEASURED 2026-10-09 (`journalctl --user -u a11ign-work-tick`): `worker-4466` was started for its own row, never claimed one, and was prompted five times
+ * for five other rows -- `(no clear)` each time -- before the teardown ended it at 09:47. {@link engineerEligibility} refuses a spare once it HAS held a
+ * row (#2407), so one that held none was eligible for every order, `route` found it before the spawn path was asked, and each row it was offered was a
+ * cause key spent on a session that was not going to claim it. Eligibility is built once per tick and knows no row, so the row-blind half stays there
+ * and this is the half that needs the order.
+ *
+ * THE ORDER'S OWN SPARE STILL GETS ITS ORDER: an instance whose first prompt was refused sits idle waiting for exactly this (`withSpareInstances`). A
+ * label that is not in the family (a standing seat, a roster address) is asked as before, and so is any order this does not read as a ready row.
+ *
+ * @param order `causeKey` names the row and its tracker ({@link rowRefOfOrder})
+ * @param [ineligibleReason] the pool's, asked for a label this lets through; `undefined` is "none refused", as in {@link route}
+ * @param [families] the roster's spare families, a parameter so a test can hand it a fixture
+ */
+export function ownRowOnly(order: { session: string; causeKey: string; cause?: string; }, ineligibleReason?: (label: string) => string | null,
+  families: readonly { prefix: string; from: number; }[] = SPARE_FAMILIES): ((label: string) => string | null) | undefined {
+  const ref = isPilotOrder(order) ? rowRefOfOrder(order) : null;
+  if (ref === null) return ineligibleReason;
+  const own = spareLabelForRow({ row: ref.number, key: ref.key, families });
+  return (label) => {
+    const member = label === own ? null : familyMember(label, families);
+    return member === null ? ineligibleReason?.(label) ?? null : spareForOtherRow(member);
+  };
+}
+
 /**
  * The herdr invocation that starts a FRESH worker for this order, or a refusal.
  *
@@ -3877,8 +3910,8 @@ const BUSY_SEAT_REFUSAL = /^(\S+): ("[^"]+" is working(?:; and the fallback "[^"
  */
 export const CAPACITY_WAIT_LIMIT_MS = 30 * 60 * 1000;
 
-/** One seat as `route` writes it into a refusal when nothing is wrong with it but its load: `working`, or a spare that holds or has held its one row ({@link spentSeen}). */
-const LOADED_SEAT = String.raw`[\w.-]+=(?:working|has held #\d+(?:, #\d+)*: one instance, one row \(#2407\))`;
+/** One seat as `route` writes it into a refusal when nothing is wrong with it but its load: `working`, a spare that holds or has held its one row ({@link spentSeen}), or one that waits for its own ({@link spareForOtherRow}). */
+const LOADED_SEAT = String.raw`[\w.-]+=(?:working|has held #\d+(?:, #\d+)*: one instance, one row \(#2407\)|is for \S+ only: one instance, one row \(#2407\))`;
 
 /**
  * What {@link routeWithFallback} puts BEFORE the pool's refusal when the order's own session is gone and it fell back to `engineers` (a11ign/a11ign#3814): a `trunk-red`
@@ -4950,7 +4983,8 @@ function targetFor(order: {
 } | { refusal: string; } {
   // A REVIEWER ORDER IS ASKED FIRST AND SEPARATELY (#2401): the engineer pilot's checks below are unchanged.
   if (isReviewerOrder(order)) return reviewerTarget(order, live, deps);
-  const routed = routeWithFallback(order, live, withSpareInstances(roster, live), deps.ineligibleReason);
+  // agent-org#459: A READY ROW IS OFFERED TO ITS OWN SPARE OR TO A FRESH WORKER, never to another row's idle instance (`ownRowOnly`).
+  const routed = routeWithFallback(order, live, withSpareInstances(roster, live), ownRowOnly(order, deps.ineligibleReason));
   if (!("refusal" in routed)) {
     // THE FALLBACK IS TYPED ITS OWN WORDS (#3078): the order's `prompt` is written to the owner, and says the fix is theirs.
     if (routed.label === order.fallback && typeof order.fallbackPrompt === "string") {
