@@ -6,7 +6,7 @@
 // stall tick is the case that would be a false positive if the audit read an `edited` line. The mutations, both directions, are pasted in the pull request.
 
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
@@ -146,7 +146,8 @@ describe("the cursor: a pass writes only what it has not seen, and says how many
     const result = auditMessaging({ ...p, now: START, report: () => {}, print: (line) => said.push(line) });
     assert.equal(result.flagged, 0);
     assert.deepEqual(entriesOf(p.failureLogPath), []);
-    assert.deepEqual(said, ["messaging audit: 0 checked, 0 flagged"]);
+    assert.deepEqual(said, [], "a baseline pass found nothing and says nothing (agent-org#699)");
+    assert.equal(result.line, "messaging audit: 0 checked, 0 flagged", "the reading is still on the result");
     assert.equal(readFileSync(p.cursorPath, "utf8").trim(), "1");
   });
 
@@ -161,7 +162,8 @@ describe("the cursor: a pass writes only what it has not seen, and says how many
     const second = auditMessaging({ ...p, now: START + 2 * MINUTE, report: () => {}, print: (line) => said.push(line) });
     assert.deepEqual({ checked: second.checked, flagged: second.flagged, appended: second.appended }, { checked: 0, flagged: 0, appended: 0 });
     assert.equal(entriesOf(p.failureLogPath).length, 1, "100 ticks would still be one entry");
-    assert.deepEqual(said, ["messaging audit: 2 checked, 1 flagged", "messaging audit: 0 checked, 0 flagged"]);
+    assert.deepEqual(said, ["messaging audit: 2 checked, 1 flagged"], "the pass that flagged says so; the clean one after it says nothing");
+    assert.equal(second.line, "messaging audit: 0 checked, 0 flagged", "the silent pass still carries its count");
   });
 
   test("a refused append leaves the cursor, so the next pass tries again and reports why", () => {
@@ -188,6 +190,82 @@ describe("the cursor: a pass writes only what it has not seen, and says how many
     assert.notEqual(result.refused, null);
     assert.ok(reported[0].startsWith("messaging audit: NOT RUN"));
     assert.deepEqual(entriesOf(p.failureLogPath), []);
+  });
+});
+
+describe("the count line is printed only when something was flagged (agent-org#699)", () => {
+  /** One pass over `p`, with what it printed and what it reported. */
+  function pass(p: ReturnType<typeof paths>, now: number) {
+    const said: string[] = [];
+    const reported: string[] = [];
+    const result = auditMessaging({ ...p, now, report: (line) => reported.push(line), print: (line) => said.push(line) });
+    return { result, said, reported };
+  }
+  /** A scratch host whose cursor is already at the end of one earlier line, so the next pass audits only what is appended after. */
+  function baselined() {
+    const p = paths();
+    appendTo(p.ledgerPath, [announcement({ key: "release:earlier", providerMessageId: "m-0" })]);
+    pass(p, START);
+    return p;
+  }
+
+  test("a clean pass prints nothing: lines were checked, none flagged, and the result still carries the count", () => {
+    const p = baselined();
+    appendTo(p.ledgerPath, [announcement({ text: "Worker 4 is off. I switched it on.", providerMessageId: "m-1" })]);
+    const clean = pass(p, START + MINUTE);
+    assert.equal(clean.result.checked, 1, "positive control: the pass did read a line, so nothing printed is not nothing read");
+    assert.equal(clean.result.flagged, 0);
+    assert.deepEqual(clean.said, []);
+    assert.equal(clean.result.line, "messaging audit: 1 checked, 0 flagged");
+    assert.deepEqual(clean.reported, [], "and it reports nothing on stderr either");
+
+    const q = baselined();
+    appendTo(q.ledgerPath, [announcement({ text: "Worker 4 is off. Should I switch it on?", providerMessageId: "m-1" })]);
+    assert.deepEqual(pass(q, START + MINUTE).said, ["messaging audit: 1 checked, 1 flagged"], "the twin with the one offending part: the same pass is loud");
+  });
+
+  test("a pass that flags one still prints `messaging audit: n checked, 1 flagged`", () => {
+    const p = baselined();
+    appendTo(p.ledgerPath, [
+      announcement({ text: "Ready to ship?", providerMessageId: "m-1" }),
+      announcement({ text: "Shipped.", providerMessageId: "m-2" }),
+    ]);
+    const flagged = pass(p, START + MINUTE);
+    assert.equal(flagged.result.flagged, 1);
+    assert.deepEqual(flagged.said, ["messaging audit: 2 checked, 1 flagged"]);
+    assert.equal(flagged.result.line, flagged.said[0], "what is printed is what the result carries");
+
+    const q = baselined();
+    appendTo(q.ledgerPath, [
+      announcement({ text: "Ready to ship.", providerMessageId: "m-1" }),
+      announcement({ text: "Shipped.", providerMessageId: "m-2" }),
+    ]);
+    assert.deepEqual(pass(q, START + MINUTE).said, [], "the twin with the question stated: the same two lines, nothing printed");
+  });
+
+  test("the first-run baseline pass prints nothing and still writes the cursor", () => {
+    const p = paths();
+    appendTo(p.ledgerPath, [announcement({ text: "Something earlier?", providerMessageId: "m-0" }), ask({ providerMessageId: "m-1" })]);
+    const first = pass(p, START);
+    assert.deepEqual(first.said, []);
+    assert.equal(readFileSync(p.cursorPath, "utf8").trim(), "2", "the cursor is at the end of the ledger");
+    assert.ok(first.reported.some((line) => line.startsWith("messaging audit: first run, baseline at 2")), "the baseline is still said once, on the report channel");
+    assert.deepEqual(entriesOf(p.failureLogPath), [], "what was sent before the record is not audited");
+
+    appendTo(p.ledgerPath, [announcement({ text: "Ready to ship?", providerMessageId: "m-2" })]);
+    assert.deepEqual(pass(p, START + MINUTE).said, ["messaging audit: 1 checked, 1 flagged"], "the control: the pass after the baseline is not silenced by it");
+  });
+
+  test("a clean pass that could not write its cursor is still reported, though it prints nothing", { skip: process.getuid?.() === 0 && "root writes through a read-only file, so the write cannot be made to fail" }, () => {
+    const p = baselined();
+    appendTo(p.ledgerPath, [announcement({ text: "All quiet.", providerMessageId: "m-1" })]);
+    chmodSync(p.cursorPath, 0o444);
+    const blocked = pass(p, START + MINUTE);
+    assert.equal(blocked.result.checked, 1, "positive control: a line was read and the pass ran");
+    assert.equal(blocked.result.flagged, 0);
+    assert.notEqual(blocked.result.refused, null);
+    assert.deepEqual(blocked.said, []);
+    assert.ok(blocked.reported.some((line) => line.startsWith("messaging audit: cursor NOT WRITTEN")), "silence on stdout must not hide a pass that did not finish");
   });
 });
 

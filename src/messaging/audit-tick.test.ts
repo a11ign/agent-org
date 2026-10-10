@@ -82,7 +82,8 @@ describe("the tick audits the messaging ledger", () => {
     appendToLedger(on, [announcement({ text: "Worker 4 is off. I switched it on." })]);
     tick(on, START + HOUR);
     assert.deepEqual(misuseLines(on), []);
-    assert.ok(on.said.includes("messaging audit: 1 checked, 0 flagged"), `the audit ran and read the line: ${on.said.join(" | ")}`);
+    assert.deepEqual(on.said.filter((line) => line.includes("checked")), [], "a clean pass says nothing (agent-org#699), so the detector has no line to repeat");
+    assert.equal(readFileSync(join(on.stateDir, MESSAGING_AUDIT_CURSOR_FILE), "utf8").trim(), "1", "the audit ran and read the line: the cursor moved past it");
   });
 
   test("a host with no messaging ledger files nothing, does not throw, and writes only the cursor", () => {
@@ -96,17 +97,21 @@ describe("the tick audits the messaging ledger", () => {
     assert.equal(existsSync(defaultLedgerPath(on.home)), false, "and the ledger is not created by being audited");
   });
 
-  test("the count line is said every tick, so a tick that audited 0 is told from one that did not run", () => {
+  test("a clean tick says no count line and a tick that flags says it, so the detector sees a line only when there is something to read (agent-org#699)", () => {
     const on = host();
+    const countLines = () => on.said.filter((line) => line.startsWith("messaging audit: ") && line.includes("checked"));
     tick(on, START);
-    assert.deepEqual(on.said.filter((line) => line.startsWith("messaging audit: ") && line.includes("checked")), ["messaging audit: 0 checked, 0 flagged"]);
-    appendToLedger(on, [announcement({ text: "Ready to ship?" })]);
     tick(on, START + HOUR);
-    assert.equal(on.said.at(-1), "messaging audit: 1 checked, 1 flagged");
+    assert.deepEqual(countLines(), [], "two clean ticks, the first of them the baseline: no line");
+    appendToLedger(on, [announcement({ text: "Ready to ship?" })]);
+    tick(on, START + 2 * HOUR);
+    assert.deepEqual(countLines(), ["messaging audit: 1 checked, 1 flagged"], "the control: the tick that flagged one says so");
   });
 
   test("the count line goes to stderr with the other recorders' lines, never to stdout, which is the tick's orders", () => {
     const on = host();
+    tick(on, START);
+    appendToLedger(on, [announcement({ text: "Ready to ship?" })]); // only a flagged pass prints (agent-org#699), so this one has something to say
     const realOut = process.stdout.write;
     const realErr = process.stderr.write;
     const out: string[] = [];
@@ -114,12 +119,12 @@ describe("the tick audits the messaging ledger", () => {
     process.stdout.write = ((chunk: unknown) => (out.push(String(chunk)), true)) as typeof process.stdout.write;
     process.stderr.write = ((chunk: unknown) => (err.push(String(chunk)), true)) as typeof process.stderr.write;
     try {
-      recordTickFailures({ trunkRed: null, keyedTrunkReds: [], prs: [], stateDir: on.stateDir, now: START, ownerOf: () => ({ source: "label" }), homeRepo: "a11ign/a11ign", home: on.home });
+      recordTickFailures({ trunkRed: null, keyedTrunkReds: [], prs: [], stateDir: on.stateDir, now: START + HOUR, ownerOf: () => ({ source: "label" }), homeRepo: "a11ign/a11ign", home: on.home });
     } finally {
       process.stdout.write = realOut;
       process.stderr.write = realErr;
     }
     assert.deepEqual(out, [], "nothing on stdout: a line there is not an order and the consumer reads every line as one");
-    assert.ok(err.some((line) => line.includes("messaging audit: 0 checked, 0 flagged")), `stderr: ${err.join("")}`);
+    assert.ok(err.some((line) => line.includes("messaging audit: 1 checked, 1 flagged")), `stderr: ${err.join("")}`);
   });
 });

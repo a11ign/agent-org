@@ -137,7 +137,8 @@ export type AuditIo = { now: number; audienceOf?: AudienceOf; report?: (line: st
 
 /**
  * ONE AUDIT PASS over the ledger lines the cursor has not seen. Never throws: an unreadable ledger or cursor is REPORTED and the cursor stays, so the next tick reads again.
- * Prints the count line `messaging audit: n checked, m flagged`.
+ * Prints the count line `messaging audit: n checked, m flagged` only when something was flagged (agent-org#699): a pass that found nothing said it on every tick, and the repeating-line
+ * detector read 47 of them as one fault. The reading is not lost, since `AuditResult.line` carries it for a caller that wants it, and a pass that could not do its job still reports why.
  */
 export function auditMessaging({ ledgerPath, failureLogPath, cursorPath, now, audienceOf = declaredAudience, report = reportToStderr, print = printToStdout }: AuditPaths & AuditIo): AuditResult {
   const idle = (refused: string | null): AuditResult => ({ checked: 0, flagged: 0, appended: 0, refused, line: countLine(0, 0) });
@@ -154,7 +155,6 @@ export function auditMessaging({ ledgerPath, failureLogPath, cursorPath, now, au
   if (cursor === null) {
     report(`messaging audit: first run, baseline at ${lines.length} earlier lines (not audited: asks before #4745 carry no record)`);
     const refused = writeCursor(cursorPath, lines.length, report);
-    print(countLine(0, 0));
     return idle(refused);
   }
   if (cursor > lines.length) report(`messaging audit: the ledger holds ${lines.length} lines and the cursor was at ${cursor}; reading it from the start`);
@@ -162,6 +162,6 @@ export function auditMessaging({ ledgerPath, failureLogPath, cursorPath, now, au
   const recorded = recordFailures({ logPath: failureLogPath, events: misuses.map(eventOf), now, report });
   const refused = recorded.refused ?? writeCursor(cursorPath, lines.length, report);
   const line = countLine(checked, misuses.length);
-  print(line);
+  if (misuses.length > 0) print(line);
   return { checked, flagged: misuses.length, appended: recorded.appended, refused, line };
 }
