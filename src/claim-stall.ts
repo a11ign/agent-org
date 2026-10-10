@@ -35,7 +35,9 @@ import { subjectMention } from "./review-attribution.ts";
 import { listingIsComplete } from "./herdr-agents.ts";
 // #2999: THE IDLE-CLAIMANT READING, a sibling leaf. It decides whether an idle holder has a wait the org can read; this file carries the
 // decision as the nudge and, a second reading later, as the release it already owned.
-import { idleClaimantReading, idleNudgePrompt, IDLE_CLAIMANT_MS } from "./idle-claimant.ts";
+import { idleClaimantReading, idleNudgePrompt, stoppedNudgePrompt, isStoppedHolder, IDLE_CLAIMANT_MS, STOPPED_CLAIMANT_MS } from "./idle-claimant.ts";
+// #458: the failure ledger is a leaf of its own (`node:fs` only), so a recorder here keeps this file one.
+import { recordFailures, type FailureEvent, type RecordResult } from "./failure-ledger.ts";
 // #3445: WHETHER A PULL REQUEST IS THE CLAIMANT'S, for the open lookup and the merged one alike: a sibling leaf, so this file stays one.
 import { ownsPr } from "./pr-ownership.ts";
 // #3453: where a keyed repository's clone lives (`host.json`'s `clones`), for the read of the worktrees a merged pull request's work was in. A leaf too.
@@ -479,7 +481,8 @@ function overlayReading(facts: ClaimFacts, ctx: {
     }): Reading {
   const base = clockReading(facts, ctx);
   if (base.kind !== "pr-owned" && base.kind !== "moving") return base;
-  const idle = idleClaimantReading({ session: facts.session, prs: facts.ownPrs ?? [],
+  // #458: THE STOPPED CLOCK is for a claim that names a branch; a `Claimed-nothing:` claim keeps N (it is idle at its prompt by design).
+  const idle = idleClaimantReading({ session: facts.session, prs: facts.ownPrs ?? [], built: facts.nothing !== true,
     waitKinds: [...(facts.waitKind ? [facts.waitKind] : []), ...(facts.blockedBy.length > 0 ? ["blocked-by"] : [])] }, ctx);
   if (idle.kind === "waiting" || ownPrStillYoung(facts, ctx)) return base;
   const held = ctx.nudge === null ? null : rememberedNudge(facts, ctx);
@@ -937,10 +940,11 @@ export type StallOrder = { session: string, cause: string, subject: string, disc
  * @param {ClaimFacts} facts @param {number} nudgedAt @param {number} idleMs @returns {StallOrder}
  */
 function idleNudgeOrder(facts: ClaimFacts, nudgedAt: number, idleMs: number): StallOrder {
+  const what = { row: facts.row, branch: facts.branch, idleMinutes: minutes(idleMs), releaseMinutes: minutes(STALL_INTERVAL_MS), canRelease: facts.openPrs === 0 };
   return {
     session: facts.session, cause: "claim-stalled", subject: `row-${facts.row}`, discriminator: `idle-nudge-${nudgedAt}`,
-    prompt: idleNudgePrompt({ row: facts.row, branch: facts.branch, idleMinutes: minutes(idleMs), releaseMinutes: minutes(STALL_INTERVAL_MS),
-      canRelease: facts.openPrs === 0 }),
+    // #458: a holder the stopped clock applies to is told to CONTINUE; the text is chosen from the same facts the reading was
+    prompt: isStoppedHolder({ built: facts.nothing !== true, prs: facts.ownPrs }) ? stoppedNudgePrompt(what) : idleNudgePrompt(what),
     causeKey: nudgeKey(facts.session, facts.row, nudgedAt), resume: true,
     ...(facts.title === undefined ? {} : { title: facts.title }),
   };
@@ -1073,10 +1077,109 @@ export function claimStalledOrders(readings: { facts: ClaimFacts; reading: Readi
     // OFFERED UNTIL DELIVERED, and then never again: the ledger holds a delivered key for one wake window only, so an offer that outlived the
     // delivery would send it a second time.
     else if (reading.kind === "nudged" && reading.deliveredAt === null) {
-      orders.push(reading.idle ? idleNudgeOrder(facts, reading.nudgedAt, IDLE_CLAIMANT_MS) : nudgeOrder(facts, reading.nudgedAt, reading.lastMoveAt));
+      const floor = isStoppedHolder({ built: facts.nothing !== true, prs: facts.ownPrs }) ? STOPPED_CLAIMANT_MS : IDLE_CLAIMANT_MS;
+      orders.push(reading.idle ? idleNudgeOrder(facts, reading.nudgedAt, floor) : nudgeOrder(facts, reading.nudgedAt, reading.lastMoveAt));
     } else if (reading.kind === "release") orders.push(releaseOrder(facts, reading));
   }
   return orders;
+}
+
+// --- THE LEDGER AND THE RESTART NOTICE (#458) --------------------------------------------------------------------------------------------
+
+/**
+ * The failure ledger's class key for a claimed worker that stopped (epic #4437). It is a constant of this file and not an entry of the ledger's seeded
+ * `FAILURE_KINDS`: those files are #4452's and #4475's, and adding the key there is a one-line follow-up after they merge.
+ */
+export const CLAIMED_WORKER_STALLED = "claimed-worker-stalled";
+
+/**
+ * ONE EVENT PER FRESH NUDGE, `<session>/#<row>/<nudge time>` (the nudge time in epoch ms, the spelling `nudgeKey` and the wake ledger carry, so a line
+ * in one finds its line in the other). A `nudged` reading is the same episode offered again and is NOT an event, and neither is a release: a second
+ * row's nudge is a different ref, which is what `repeatsIn` counts as a repeat of the class.
+ * @param {{ facts: ClaimFacts, reading: Reading }[] | undefined} readings @param {number} now @returns {FailureEvent[]}
+ */
+export function stalledNudgeEvents(readings: { facts: ClaimFacts; reading: Reading; }[] | undefined, now: number): FailureEvent[] {
+  return (readings ?? []).filter(({ reading }) => reading.kind === "nudge")
+    .map(({ facts }) => ({ classKey: CLAIMED_WORKER_STALLED, ref: `${facts.session}/#${facts.row}/${now}`, at: now }));
+}
+
+/**
+ * Append this tick's nudges to the failure ledger. NEVER THROWS INTO THE TICK (a recorder that stopped the tick would be the outage it records), and a
+ * refused append is REPORTED by `recordFailures` and comes back as `refused`, never swallowed. `record` is the seam a test writes nowhere through.
+ * @param {{ readings: { facts: ClaimFacts, reading: Reading }[] | undefined, now: number, logPath: string, record?: typeof recordFailures, report?: (line: string) => void }} tick
+ * @returns {RecordResult}
+ */
+export function recordStalledNudges({ readings, now, logPath, record = recordFailures, report = (line) => process.stderr.write(`${line}\n`) }: {
+        readings: { facts: ClaimFacts; reading: Reading; }[] | undefined; now: number; logPath: string; record?: typeof recordFailures; report?: (line: string) => void;
+    }): RecordResult {
+  try {
+    return record({ logPath, events: stalledNudgeEvents(readings, now), now, report });
+  } catch (cause) {
+    const refused = String((cause as Error)?.message ?? cause).split("\n")[0].slice(0, 160);
+    report(`${CLAIMED_WORKER_STALLED}: NOT RECORDED: ${refused}`);
+    return { appended: 0, skipped: 0, refused };
+  }
+}
+
+/** The memory of the restart notice, beside the nudge's: `{ "<session>/<row>": "<agent session id the holder was last told about>" }`. */
+export const AGENT_SESSIONS_FILE = "agent-sessions.json";
+
+/** `<session>/claim-stalled/row-<n>/restart-<id>`: one per restart of one holder's session, spelled like {@link nudgeKey} so the ledger reads it the same way. */
+export function restartNoticeKey(session: string, row: number, agentSession: string) {
+  return `${session}/${CLAIM_STALLED}/row-${row}/restart-${agentSession}`;
+}
+
+/**
+ * THE ORDER TO A HOLDER WHOSE SESSION RESTARTED: its background tasks went with the old process, so the completion notice it is waiting for will never
+ * come. The `claim-stalled` cause, like every "go back to your work" order here, so it is delivered and counted by the machinery that already is.
+ * @param {ClaimFacts} facts @param {string} agentSession @returns {StallOrder}
+ */
+function restartNoticeOrder(facts: ClaimFacts, agentSession: string): StallOrder {
+  return {
+    session: facts.session, cause: "claim-stalled", subject: `row-${facts.row}`, discriminator: `restart-${agentSession}`,
+    prompt: `#${facts.row} IS YOURS AND YOUR SESSION RESTARTED: every background task you started before the restart is LOST, and no completion notice `
+      + "will ever arrive for it.\n"
+      + `RE-READ the row, its pull request and its checks, then CONTINUE from where \`${facts.branch ?? "its branch"}\` stands: re-run what was running, push `
+      + "what is unpushed. This is sent once for this restart.",
+    causeKey: restartNoticeKey(facts.session, facts.row, agentSession), resume: true,
+    ...(facts.title === undefined ? {} : { title: facts.title }),
+  };
+}
+
+/**
+ * WHO WAS TOLD THEIR TASKS ARE LOST, from the holder's agent-session id changing. NOT "the session started after its claim": a dispatch CLAIMS FIRST and
+ * starts the process after, so every fresh start would read as one (#458's measurement comment). A restart is a second id for a holder the gate has
+ * already seen, and `herdr agent list` carries it.
+ *
+ *   first sighting      remembered, no order: a fresh start (or the first tick after this ships) is not a restart
+ *   same id             nothing
+ *   a new id            ONE order, offered until the wake ledger shows it DELIVERED and then remembered; a holder mid-turn right after a restart is
+ *                       `working`, so a notice dropped on the first tick would never reach it
+ *   not listed          unchanged: `goneReading` owns an absent session, and a listing that failed (`null`) is never read as a restart
+ *
+ * A row already being nudged or released this tick (`nudge`, `nudged`, `release`, `vacating`) is skipped, since that order already tells the holder to
+ * continue. A `Claimed-nothing:` claim is never told (as the stopped clock is not its own). `after` carries only the rows still claimed, so it cannot grow.
+ * @param {{ readings: { facts: ClaimFacts, reading: Reading }[], sessions: Map<string, string> | null, acked: Record<string, string>, delivered: (key: string) => boolean }} tick
+ * @returns {{ orders: StallOrder[], after: Record<string, string> }}
+ */
+export function restartNotices({ readings, sessions, acked, delivered }: {
+        readings: { facts: ClaimFacts; reading: Reading; }[]; sessions: Map<string, string> | null; acked: Record<string, string>; delivered: (key: string) => boolean;
+    }): { orders: StallOrder[]; after: Record<string, string>; } {
+  const orders: StallOrder[] = [];
+  const after: Record<string, string> = {};
+  const skipped: Reading["kind"][] = ["nudge", "nudged", "release", "vacating"];
+  for (const { facts, reading } of readings) {
+    const slot = `${facts.session}/${facts.row}`;
+    const remembered = typeof acked[slot] === "string" ? acked[slot] : undefined;
+    const current = sessions?.get(facts.session);
+    if (remembered !== undefined) after[slot] = remembered;
+    if (current === undefined || facts.nothing === true) continue;
+    if (remembered === undefined) { after[slot] = current; continue; }
+    if (remembered === current) continue;
+    if (delivered(restartNoticeKey(facts.session, facts.row, current))) { after[slot] = current; continue; }
+    if (!skipped.includes(reading.kind)) orders.push(restartNoticeOrder(facts, current));
+  }
+  return { orders, after };
 }
 
 // --- A CLOSED ROW'S CLAIM (#3535) -----------------------------------------------------------------------------------------

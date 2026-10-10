@@ -14,12 +14,14 @@ import { labelsOf, REPO_CHECKOUT, REVIEWER_STATE_DIR, systemctlRun, openBlockers
 import { familyNumber } from "../arm-pr.ts";
 import { CLAIM_LABEL } from "../claim-labels.ts";
 import { gitRun, pathExists, statMtime, readStallState, writeStallState, STALL_STATE_FILE, nextStallState,
-  claimStalledOrders, readHerdrRestart, claimFactsFrom, readClaim, nudgeDeliveredAt, nudgeKey, closedClaimOrders } from "../claim-stall.ts";
-import { readAgents } from "../herdr-agents.ts";
+  claimStalledOrders, readHerdrRestart, claimFactsFrom, readClaim, nudgeDeliveredAt, nudgeKey, closedClaimOrders,
+  restartNotices, recordStalledNudges, AGENT_SESSIONS_FILE } from "../claim-stall.ts";
+import { FAILURE_LEDGER_FILE } from "../failure-ledger.ts";
+import { readAgents, readAgentSessions } from "../herdr-agents.ts";
 import { NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL, SESSION_PREFIX } from "../project-vocabulary.ts";
 import { waitingOn, fleetWaitingOn, describeWaiting } from "../waiting-condition.ts";
 import { homeProjectDeclaration } from "../project-config.ts";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 /**
  * What a row DECLARES it is waiting on, as a phrase, or `null`. Only the waits that are DATA the org already reads -- a
@@ -102,9 +104,9 @@ export function claimStallTick({ io = { git: gitRun, exists: pathExists, mtime: 
   stateDir = REVIEWER_STATE_DIR, log = (line) => process.stderr.write(line), read = readStallState, write = writeStallState, ...inputs }: {
         rows: any[]; claimedComments: any[] | null; openPrs: any[]; mergedPrs: any[] | null;
         elsewhere?: import("../claim-stall.ts").ElsewherePrs; io?: import("../claim-stall.ts").HostReads; repo?: string; now?: number; restartAt?: number | null;
-        agents?: { label: string; status: string; }[] | null;
+        agents?: { label: string; status: string; }[] | null; agentSessions?: Map<string, string> | null;
         stateDir?: string; log?: (line: string) => void; ledger?: () => string;
-        read?: typeof readStallState; write?: typeof writeStallState; onFacts?: OnClaimFacts;
+        read?: typeof readStallState; write?: typeof writeStallState; onFacts?: OnClaimFacts; record?: typeof recordStalledNudges;
     }): import("../claim-stall.ts").StallOrder[] {
   try {
     return evaluateClaims({ ...inputs, io, repo, now, stateDir, log, read, write });
@@ -118,11 +120,11 @@ export function claimStallTick({ io = { git: gitRun, exists: pathExists, mtime: 
 /**
  * `claimStallTick`'s body, with every default resolved by its caller. NEVER CALLED WITHOUT THE CATCH ABOVE: a throw here is the tick's to report.
  */
-function evaluateClaims({ rows, claimedComments, openPrs, mergedPrs, elsewhere, restartAt, agents, ledger, io, repo, now, stateDir, log, read, write, onFacts }: {
+function evaluateClaims({ rows, claimedComments, openPrs, mergedPrs, elsewhere, restartAt, agents, agentSessions, ledger, io, repo, now, stateDir, log, read, write, onFacts, record = recordStalledNudges }: {
         rows: any[]; claimedComments: any[] | null; openPrs: any[]; mergedPrs: any[] | null; restartAt?: number | null;
-        elsewhere?: import("../claim-stall.ts").ElsewherePrs; agents?: { label: string; status: string; }[] | null;
+        elsewhere?: import("../claim-stall.ts").ElsewherePrs; agents?: { label: string; status: string; }[] | null; agentSessions?: Map<string, string> | null;
         ledger?: () => string; io: import("../claim-stall.ts").HostReads; repo: string; now: number; stateDir: string;
-        log: (line: string) => void; read: typeof readStallState; write: typeof writeStallState; onFacts?: OnClaimFacts;
+        log: (line: string) => void; read: typeof readStallState; write: typeof writeStallState; onFacts?: OnClaimFacts; record?: typeof recordStalledNudges;
     }) {
   const held = rows.filter((r) => labelsOf(r).includes(CLAIM_LABEL));
   if (held.length > 0 && claimedComments === null) {
@@ -133,13 +135,50 @@ function evaluateClaims({ rows, claimedComments, openPrs, mergedPrs, elsewhere, 
   const statePath = `${stateDir}/${STALL_STATE_FILE}`;
   const before = read(statePath);
   const byRow = new Map((claimedComments ?? []).map((r) => [Number(r?.number), r?.comments ?? []]));
+  const wakeLedger = ledger ?? (() => ledgerText(`${stateDir}/wake-ledger`));
   const { readings, skipped } = readClaims({ held, byRow, openPrs, mergedPrs, elsewhere, io, repo, now, before, log,
-    ledger: ledger ?? (() => ledgerText(`${stateDir}/wake-ledger`)), restart: restartFor(held, restartAt),
+    ledger: wakeLedger, restart: restartFor(held, restartAt),
     agents: agentsFor(held, agents) });
   onFacts?.({ moves: new Map(readings.map(({ facts }) => [facts.row, movesOf(facts)])), skipped });
   const after = nextStallState(before, readings, now);
   if (after !== before) write(statePath, after);
-  return claimStalledOrders(readings, now);
+  // #458: THE TWO THINGS THAT NEED THE STATE DIRECTORY ITSELF (the restart memory and the failure ledger) are done only where one exists, so a tick
+  // run on a fixture with the `read`/`write` seams writes nowhere. A failure of either is said and never stops the orders.
+  const kept = existsSync(stateDir);
+  const sessionsPath = `${stateDir}/${AGENT_SESSIONS_FILE}`;
+  const told = restartNotices({ readings, sessions: agentSessionsFor(held, agentSessions, agents),
+    acked: kept ? readAckedSessions(sessionsPath) : {}, delivered: (key) => nudgeDeliveredAt(wakeLedger(), key) !== null });
+  if (kept) writeAckedSessions(sessionsPath, told.after, log);
+  if (kept) record({ readings, now, logPath: `${stateDir}/${FAILURE_LEDGER_FILE}` });
+  return [...claimStalledOrders(readings, now), ...told.orders];
+}
+
+/**
+ * The herdr agent listing's session ids the restart notice reads (#458): the caller's reading when it has one, else a live one -- unless the caller
+ * supplied the workspace listing (`agents`) and not this, which is a fixture, and makes no herdr call. Only when some row is claimed.
+ */
+function agentSessionsFor(held: any[], given: Map<string, string> | null | undefined, agents: unknown): Map<string, string> | null {
+  if (given !== undefined) return given;
+  return held.length > 0 && agents === undefined ? readAgentSessions() : null;
+}
+
+/** What each holder's session was last told about, `{}` when the file is missing or unreadable: an unreadable memory only ever MISSES a notice, never repeats one. */
+function readAckedSessions(path: string): Record<string, string> {
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeAckedSessions(path: string, acked: Record<string, string>, log: (line: string) => void) {
+  const text = `${JSON.stringify(acked, null, 2)}\n`;
+  try {
+    if (text !== `${JSON.stringify(readAckedSessions(path), null, 2)}\n`) writeFileSync(path, text);
+  } catch (err: any) {
+    log(`claim-stall: the restart memory could not be written (${String(err?.message ?? err).split("\n")[0]}) -- a restart notice may be offered again.\n`);
+  }
 }
 
 /**

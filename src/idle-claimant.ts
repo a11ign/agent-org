@@ -37,6 +37,23 @@ export const IDLE_CLAIMANT_MINUTES = 45;
 export const IDLE_CLAIMANT_MS = IDLE_CLAIMANT_MINUTES * MINUTE_MS;
 
 /**
+ * M: how long a holder that has STOPPED may sit `idle` -- a claim that names a branch, no open pull request, no declared wait -- before it is woken
+ * with "continue" (#458, class `claimed-worker-stalled`). N above is a figure for a row that has not moved while its holder looks busy; the four
+ * workers of #4437 had ended a turn on "Next I'll ..." or lost their background tasks, were 40 to 58 minutes in and none was yet woken.
+ *
+ * THE CAP BINDS; IT IS NOT DERIVED ABOVE THE LONGEST GAP (measured 2026-10-10, `worker-agent-org-458`, posted on #458 before this code with its script).
+ *   POPULATION  912 worker sessions that went on to open a pull request (1,474 transcripts, 2026-09-19 .. 2026-10-10), 355 between-turn gaps before the
+ *               first pull request, from the session transcripts: neither the tick journal nor `herdr` keeps a worker's status by time.
+ *   RESULT      a healthy wait (the gap ended by the session's own background task finishing, n=146): p50 3.7, p90 11.3, p95 16.5, max 90.5 minutes.
+ *               "Above the longest, one tick of margin" is about 93 minutes, which the row's own ceiling (10) refuses, so M is the ceiling: 10 sits at
+ *               the 87.7th percentile and 18 of 146 healthy waits in three weeks (under one a day) draw one "continue" turn they did not need.
+ * WHAT THIS DOES NOT PROVE: that `herdr` reads `idle` while a live background task runs (inferred from the four in the row, which were `idle`/`done`
+ * with LOST tasks, not observed for a live one); and the orders-ended gaps are a mix of stops and answered waits, so they are no stop population.
+ */
+export const STOPPED_CLAIMANT_MINUTES = 10;
+export const STOPPED_CLAIMANT_MS = STOPPED_CLAIMANT_MINUTES * MINUTE_MS;
+
+/**
  * The `herdr` statuses that mean "nobody is working": `idle`, and `done` (a finished turn the person has not looked at yet). The row said
  * `idle`; the live listing at 2026-10-02T12:50Z was 7 `done`, 4 `idle`, 4 `working`, and a holder is exactly as stopped in either. `working`
  * is not a stall, `blocked` is a session asking a person, and `unknown` is a pane with no agent -- `goneReading`'s case, not this one.
@@ -108,6 +125,16 @@ function prWaitKinds(pr: IdlePr, agents: Agent[]): string[] {
   return kinds;
 }
 
+/**
+ * IS THIS HOLDER ONE THE STOPPED CLOCK APPLIES TO: its claim names a git object (`built`: a `Claimed-nothing:` claim is a host act or a reading, which
+ * is idle at its prompt by design) and it holds NO open pull request. A holder with a pull request is waiting on the org's review or checks, and
+ * those have their own causes and the 45-minute clock above. ONE DEFINITION, because the reading and the order's text both ask it.
+ * @param {{ built?: boolean, prs?: IdlePr[] }} holder @returns {boolean}
+ */
+export function isStoppedHolder({ built, prs }: { built?: boolean; prs?: IdlePr[]; }): boolean {
+  return built === true && (prs ?? []).length === 0;
+}
+
 export type IdleReading = { kind: "unknown", why: string } | { kind: "not-idle", status: string | null } | { kind: "waiting", fields: string[] } | { kind: "watching", since: number, idleMs: number } | { kind: "stall", since: number, idleMs: number };
 
 /**
@@ -118,11 +145,12 @@ export type IdleReading = { kind: "unknown", why: string } | { kind: "not-idle",
  * `blocked` never trip it. Then the fields -- ANY ONE clears it. Only then the clock: `idleSince` is the first tick of an unbroken run of
  * idle readings (the caller keeps it; `herdr` reports a status and never since when), and a holder idle for less than N is `watching`.
  *
- * @param {{ session: string | null, waitKinds?: string[], prs?: IdlePr[] }} facts `waitKinds` are the ROW's, already decided by the gate
+ * @param {{ session: string | null, waitKinds?: string[], prs?: IdlePr[], built?: boolean }} facts `waitKinds` are the ROW's, already decided by the gate;
+ *   `built` turns the stopped clock on ({@link isStoppedHolder}) and is OFF for a caller that does not say, so a reading made without it is N's, as it was
  * @param {{ now: number, agents?: Agent[] | null, idleSince?: number | null }} ctx
  * @returns {IdleReading}
  */
-export function idleClaimantReading(facts: { session: string | null; waitKinds?: string[]; prs?: IdlePr[]; }, ctx: { now: number; agents?: Agent[] | null; idleSince?: number | null; }): IdleReading {
+export function idleClaimantReading(facts: { session: string | null; waitKinds?: string[]; prs?: IdlePr[]; built?: boolean; }, ctx: { now: number; agents?: Agent[] | null; idleSince?: number | null; }): IdleReading {
   const agents = ctx.agents ?? null;
   if (agents === null) return { kind: "unknown", why: "herdr could not be asked" };
   if (!listingIsComplete(agents)) return { kind: "unknown", why: "the listing lacks a standing pane, so it is not the whole org" };
@@ -132,8 +160,13 @@ export function idleClaimantReading(facts: { session: string | null; waitKinds?:
   if (fields.length > 0) return { kind: "waiting", fields: [...new Set(fields)] };
   const since = ctx.idleSince ?? ctx.now;
   const idleMs = ctx.now - since;
-  return idleMs >= IDLE_CLAIMANT_MS ? { kind: "stall", since, idleMs } : { kind: "watching", since, idleMs };
+  // TWO CONSECUTIVE TICKS IS BUILT IN: `idleSince` is the first idle tick, so that tick reads `idleMs` 0 and a stall needs a later one.
+  const limit = isStoppedHolder({ built: facts.built, prs: facts.prs }) ? STOPPED_CLAIMANT_MS : IDLE_CLAIMANT_MS;
+  return idleMs >= limit ? { kind: "stall", since, idleMs } : { kind: "watching", since, idleMs };
 }
+
+/** @returns {string} every wait a row can carry, spelled as the holder writes it */
+const rowSpellings = (): string => Object.values(WAIT_FIELDS).filter((f) => f.on === "row").map((f) => `\`${f.spelling}\``).join(" | ");
 
 /**
  * THE NUDGE, to an idle holder. It says the one thing the holder must do, and SPELLS THE FIELDS: "name your wait" must never again mean
@@ -146,11 +179,30 @@ export function idleClaimantReading(facts: { session: string | null; waitKinds?:
  * @returns {string}
  */
 export function idleNudgePrompt({ row, branch, idleMinutes, releaseMinutes, canRelease }: { row: number; branch: string | null; idleMinutes: number; releaseMinutes: number; canRelease: boolean; }): string {
-  const spellings = Object.values(WAIT_FIELDS).filter((f) => f.on === "row").map((f) => `\`${f.spelling}\``).join(" | ");
+  const spellings = rowSpellings();
   return `#${row} IS YOURS AND IDLE FOR ${idleMinutes} MINUTES WITH NO WAIT THE ORG CAN READ (the terminal is not one).\n`
     + `NAME WHAT YOU WAIT FOR AS A FIELD, OR CONTINUE. Each clears itself: ${spellings} | an open PR awaiting review, checks or the queue | `
     + `\`${EVIDENCE_LABEL}\` | \`pnpm run pr:hold <n> --until "merged #<m>"\` (outside event). To continue: commit, push \`${branch ?? "your branch"}\` or comment.\n`
     + (canRelease
       ? `${releaseMinutes} MINUTES AFTER THIS REACHES YOU with neither, the claim is RELEASED; worktree and unpushed work are KEPT.`
+      : "You hold an open pull request, so nothing is released unless the claim changes hands or you go quiet again.");
+}
+
+/**
+ * THE ORDER TO A HOLDER THAT STOPPED (#458): "continue", with what happened to the four of #4437 said first -- a turn ended on "Next I'll ...", and
+ * background tasks a restart took with them, which never send the notice the holder waits for. A holder that is genuinely waiting on something is told
+ * to name it as a field, the one thing the gate can read. `idle-claimant-stopped.test.ts` pins the spellings and the release sentence.
+ *
+ * @param {{ row: number, branch: string | null, idleMinutes: number, releaseMinutes: number, canRelease: boolean }} what
+ * @returns {string}
+ */
+export function stoppedNudgePrompt({ row, branch, idleMinutes, releaseMinutes, canRelease }: { row: number; branch: string | null; idleMinutes: number; releaseMinutes: number; canRelease: boolean; }): string {
+  return `#${row} IS YOURS AND YOUR SESSION HAS BEEN IDLE FOR ${idleMinutes} MINUTES with no open pull request, no check pending and no wait the org can read: `
+    + "YOU STOPPED MID-TASK.\n"
+    + `CONTINUE NOW. Re-read the row, \`${branch ?? "your branch"}\` and what you last ran, and do the next step you were about to take. A background task you `
+    + "started may be LOST (a restarted session loses them and no completion notice will ever come): look, and re-run what is gone.\n"
+    + `IF YOU ARE WAITING ON SOMETHING, NAME IT AS A FIELD (the terminal is not one): ${rowSpellings()} | \`pnpm run pr:hold <n> --until "merged #<m>"\` (outside event).\n`
+    + (canRelease
+      ? `${releaseMinutes} MINUTES AFTER THIS REACHES YOU with nothing moved, the claim is RELEASED; worktree and unpushed work are KEPT.`
       : "You hold an open pull request, so nothing is released unless the claim changes hands or you go quiet again.");
 }
