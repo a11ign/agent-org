@@ -58,6 +58,7 @@
 // "I could not tell you whether it is claimed" and "I could not log that I told you" are different
 // failures, and conflating them would make a full disk read as an unreadable board.
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { existsSync, realpathSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
@@ -82,6 +83,7 @@ import { blockedByEdgeReason, lookupBlockedByEdge } from "./row-claim/blocked-by
 import { claimedRegionOverlapReason, fileOverlapReason, lookupClaimedRegions, lookupMyRegionFiles, lookupOpenPrFiles } from "./row-claim/file-overlap-rule.ts";
 import { readSweepWindows, sweepFreezeAtClaim, sweepFreezeOf, type SweepRow } from "./sweep-window.ts"; // #4603: a declared sweep freezes its Region for its window
 import { templateFieldsReason, lookupIssueBody } from "./row-claim/template-fields-rule.ts";
+import { extractLabeledSection } from "./region-paths.ts"; // the section reader `templateFieldsReason` already uses, so the hash and the template check read one Region
 import { staleRuleReason } from "./row-claim/stale-rule-guard.ts";
 // #2031 EXTRACTED THE RULE THIS FILE DEFINED, and the extraction is the whole of this file's change.
 // `work-gate.ts` now asks the same question of every Ready row, and #2031's own filing names the reason
@@ -169,6 +171,30 @@ const CLAIM_RECORD_WORKTREE = "Claimed-worktree:";
 // a field -- and so is not a release, which has no field; the stall check reads it by the clock and never releases it.
 const CLAIM_RECORD_NOTHING = "Claimed-nothing:";
 const NOTHING_REASON = "the claim named no branch and no worktree";
+// #4739 (class `row-not-finishable`, #4627): WHAT THE ROW PROMISED WHEN IT WAS CLAIMED. A claim record named who holds a row and which git
+// objects, and nothing named the scope the holder agreed to -- so a Region or Acceptance widened UNDER a holder was indistinguishable from one the
+// row always carried (a11ign#4737 was folded into a claimed row and the worker compacted mid-edit). The hash is the record of the scope as it
+// stood; comparing it with the live row is a later row's act (a11ign#4759), and this one only remembers.
+const CLAIM_RECORD_SCOPE = "Claimed-scope:";
+const SCOPE_SECTIONS = ["Region", "Acceptance"] as const;
+const SCOPE_HASH_LENGTH = 12;
+
+/**
+ * Pure: a short hash of the row's `## Region` and `## Acceptance` sections and of nothing else, whitespace-normalised.
+ *
+ * Both sections are read by `extractLabeledSection`, the reader the template-fields check runs over this same body, so the hash cannot disagree
+ * with the claim about what the Region is. Prose outside the two sections gives the same hash; a path added to, removed from or changed in either gives
+ * another. A SECTION THAT IS ABSENT hashes as absent (`null`), which is not the empty string, so a row that gains a Region section reads as a change.
+ *
+ * It reports a change and does not say which way it went: a narrowing hashes differently from the original exactly as a widening does, and
+ * what to do about each is the comparing row's decision.
+ * @param {string} body the row's issue body
+ * @returns {string} hex, `SCOPE_HASH_LENGTH` characters
+ */
+export function scopeHash(body: string): string {
+  const sections = SCOPE_SECTIONS.map((field) => extractLabeledSection(body, field)?.replace(/\s+/g, " ").trim() ?? null);
+  return createHash("sha256").update(JSON.stringify(sections)).digest("hex").slice(0, SCOPE_HASH_LENGTH);
+}
 
 /**
  * Pure: the claim-record comment for a claim (or, with both fields absent, for a RELEASE).
@@ -183,18 +209,22 @@ const NOTHING_REASON = "the claim named no branch and no worktree";
  *
  * #3407: `nothing` is the reason a CLAIM names no git object (`Claimed-nothing: <reason>`). It is what makes that claim legible to the stall
  * check, which reads a record's own time and cannot evaluate a claim that wrote none.
- * @param {{ session: string, branch?: string | null, worktree?: string | null, nothing?: string | null, released?: boolean }} record
+ *
+ * #4739: `scope` is the row's `scopeHash` as the claim read it (`Claimed-scope: <hash>`). A release never carries one, and a claim that did not
+ * read the body passes none, so a record without the line reads `scope: null` exactly as every record written before this row does.
+ * @param {{ session: string, branch?: string | null, worktree?: string | null, nothing?: string | null, scope?: string | null, released?: boolean }} record
  * @returns {string}
  */
-export function claimRecordComment({ session, branch, worktree, nothing, released = false }: { session: string; branch?: string | null; worktree?: string | null; nothing?: string | null; released?: boolean; }): string {
+export function claimRecordComment({ session, branch, worktree, nothing, scope, released = false }: { session: string; branch?: string | null; worktree?: string | null; nothing?: string | null; scope?: string | null; released?: boolean; }): string {
   const what = released ? `released by \`${session}\`` : `claimed by \`${session}\``;
-  const lines = released ? [] : [
+  const objects = released ? [] : [
     ...(branch ? [`${CLAIM_RECORD_BRANCH} ${branch}`] : []),
     ...(worktree ? [`${CLAIM_RECORD_WORKTREE} ${worktree}`] : []),
     ...(nothing ? [`${CLAIM_RECORD_NOTHING} ${nothing}`] : []),
   ];
+  const lines = [...objects, ...(!released && scope ? [`${CLAIM_RECORD_SCOPE} ${scope}`] : [])];
   return [CLAIM_RECORD_MARKER, `**Claim record** -- ${what}.`, "", ...lines,
-    ...(lines.length === 0 ? ["No branch or worktree is recorded for this row."] : []),
+    ...(objects.length === 0 ? ["No branch or worktree is recorded for this row."] : []),
     "", "The branch and worktree live here rather than in a `branch:`/`worktree:` label because GitHub "
     + "caps a label name at 50 characters and an ordinary absolute path does not fit (#987).",
   ].join("\n");
@@ -207,18 +237,19 @@ export function claimRecordComment({ session, branch, worktree, nothing, release
  * claimed again, and each of those appended its own record. `comments` is oldest-first, the order
  * `gh issue view --json comments` returns.
  * @param {string[]} comments comment bodies, oldest first
- * @returns {{ branch: string | null, worktree: string | null, recorded: boolean, nothing?: true }} `nothing` is present only for a
- *   #3407 nothing-claim, so every reading that does not know of it is unchanged
+ * @returns {{ branch: string | null, worktree: string | null, recorded: boolean, scope: string | null, nothing?: true }} `nothing` is present only for a
+ *   #3407 nothing-claim, so every reading that does not know of it is unchanged. `scope` (#4739) is the `Claimed-scope:` hash, `null` for no
+ *   record, a release, and every claim written before the line existed.
  */
-export function claimRecordFrom(comments: string[]): { branch: string | null; worktree: string | null; recorded: boolean; nothing?: true; } {
+export function claimRecordFrom(comments: string[]): { branch: string | null; worktree: string | null; recorded: boolean; scope: string | null; nothing?: true; } {
   const records = comments.filter((c) => c.includes(CLAIM_RECORD_MARKER));
   const newest = records.at(-1);
-  if (newest === undefined) return { branch: null, worktree: null, recorded: false };
+  if (newest === undefined) return { branch: null, worktree: null, recorded: false, scope: null };
   const read = (key: string) => {
     const match = new RegExp(`^${key}\\s*(.+)$`, "m").exec(newest);
     return match ? match[1].trim() : null;
   };
-  return { branch: read(CLAIM_RECORD_BRANCH), worktree: read(CLAIM_RECORD_WORKTREE), recorded: true,
+  return { branch: read(CLAIM_RECORD_BRANCH), worktree: read(CLAIM_RECORD_WORKTREE), recorded: true, scope: read(CLAIM_RECORD_SCOPE),
     ...(read(CLAIM_RECORD_NOTHING) === null ? {} : { nothing: true }) };
 }
 
@@ -797,8 +828,8 @@ function postBlockedByNoteIfAny(issueNumber: number, blockedByNote: string | nul
  * @param {{ session: string, branch?: string, worktree?: string }} record
  * @param {(cmd: string, args: string[]) => string} runFn
  */
-function postClaimRecord(issueNumber: number, { session, branch, worktree }: { session: string; branch?: string; worktree?: string; }, runFn: (cmd: string, args: string[]) => string, repo: string = REPO) {
-  const body = claimRecordComment({ session, branch, worktree, nothing: !branch && !worktree ? NOTHING_REASON : null });
+function postClaimRecord(issueNumber: number, { session, branch, worktree, scope }: { session: string; branch?: string; worktree?: string; scope?: string | null; }, runFn: (cmd: string, args: string[]) => string, repo: string = REPO) {
+  const body = claimRecordComment({ session, branch, worktree, scope, nothing: !branch && !worktree ? NOTHING_REASON : null });
   runFn("gh", ["issue", "comment", String(issueNumber), "--repo", repo, "--body", body]);
 }
 
@@ -983,12 +1014,14 @@ export function persistentReason(mySession: string, persistent: boolean): string
  *           instance: { spare: boolean, rows: readonly number[] }, adoptedBranch?: string, blockedBy?: string, repo?: string }} claim
  *   `repo` (agent-org#575) is the tracker the row lives in, which every read here about the ROW reads it from; absent, the first
  * @param {typeof defaultRun} preWrite
- * @returns {{ refusal: { claimed: false, reason: string } | null, blockedByNote: Parameters<typeof postBlockedByNoteIfAny>[1] }}
+ * @returns {{ refusal: { claimed: false, reason: string } | null, blockedByNote: Parameters<typeof postBlockedByNoteIfAny>[1], scope: string | null }}
+ *   `scope` (#4739) is the `scopeHash` of the very body the template check just read, so the record names the row as it was checked and not
+ *   as a second read finds it; `null` when the body could not be read, which the record leaves out rather than hashing nothing.
  */
 function preWriteChecks({ issueNumber, mySession, before, drained, instance, adoptedBranch, blockedBy, repo = REPO }: {
         issueNumber: number; mySession: string; before: { labels: string[]; }; drained: readonly string[];
         instance: { spare: boolean; rows: readonly number[]; }; adoptedBranch?: string; blockedBy?: string; repo?: string;
-    }, preWrite: typeof defaultRun): { refusal: { claimed: false; reason: string; } | null; blockedByNote: Parameters<typeof postBlockedByNoteIfAny>[1]; } {
+    }, preWrite: typeof defaultRun): { refusal: { claimed: false; reason: string; } | null; blockedByNote: Parameters<typeof postBlockedByNoteIfAny>[1]; scope: string | null; } {
   // #707: THE TEMPLATE FIELDS, checked on EVERY claim attempt -- unlike the session-eligibility block
   // below, this is a property of the ROW, not of who is claiming it or when they last touched it, so it
   // is not skipped on a resumed (`alreadyMine`) claim: a row dispatched before this check shipped, or by
@@ -998,7 +1031,7 @@ function preWriteChecks({ issueNumber, mySession, before, drained, instance, ado
   const body = lookupIssueBody(issueNumber, { run: ghRunForBody, repo });
   if (body !== null) {
     const templateReason = templateFieldsReason(body, issueNumber);
-    if (templateReason) return { refusal: { claimed: false, reason: templateReason }, blockedByNote: null };
+    if (templateReason) return { refusal: { claimed: false, reason: templateReason }, blockedByNote: null, scope: null };
   }
 
   // #1886, PR #1891 NOT CONVINCED (reviewer, 576a678b): THE ROW'S OWN `blockedBy` EDGE, checked on EVERY
@@ -1013,7 +1046,7 @@ function preWriteChecks({ issueNumber, mySession, before, drained, instance, ado
   // not.
   const blockedRow = lookupBlockedByEdge(issueNumber, { run: ghRunForBody, repo });
   const blockedReason = blockedByEdgeReason(blockedRow, repo === REPO ? {} : { repo });
-  if (blockedReason) return { refusal: { claimed: false, reason: blockedReason }, blockedByNote: null };
+  if (blockedReason) return { refusal: { claimed: false, reason: blockedReason }, blockedByNote: null, scope: null };
 
   // B2 (#476) + B4 (#462): SESSION ELIGIBILITY, not row ownership -- `decideClaim` above already answered
   // "is this row somebody else's"; these ask "should THIS session start ANY new row right now", which is
@@ -1027,19 +1060,19 @@ function preWriteChecks({ issueNumber, mySession, before, drained, instance, ado
   if (!alreadyMine) {
     // #2324: A NEW ROW, which is the only kind a drained role is refused -- resuming its own is not one.
     const drain = drainReason(mySession, drained);
-    if (drain) return { refusal: { claimed: false, reason: drain }, blockedByNote: null };
+    if (drain) return { refusal: { claimed: false, reason: drain }, blockedByNote: null, scope: null };
     // #2407: ONE INSTANCE, ONE ROW -- the same "new row only" placement, for a spare that holds or has held another.
     const oneRow = oneRowReason(mySession, issueNumber, instance);
-    if (oneRow) return { refusal: { claimed: false, reason: oneRow }, blockedByNote: null };
+    if (oneRow) return { refusal: { claimed: false, reason: oneRow }, blockedByNote: null, scope: null };
     const ineligible = sessionEligibilityReason(issueNumber, mySession, { run: preWrite, adoptedBranch, repo });
     if (ineligible) {
       const eligibility = eligibilityWithBlockedBy({ issueNumber, mySession, ineligible, blockedBy },
         { ghRun: ghRunForBody, repo });
-      if (!eligibility.proceed) return { refusal: { claimed: false, reason: eligibility.reason }, blockedByNote: null };
+      if (!eligibility.proceed) return { refusal: { claimed: false, reason: eligibility.reason }, blockedByNote: null, scope: null };
       blockedByNote = eligibility.blockedByNote;
     }
   }
-  return { refusal: null, blockedByNote };
+  return { refusal: null, blockedByNote, scope: body === null ? null : scopeHash(body) };
 }
 
 /**
@@ -1092,7 +1125,7 @@ function writeRowLabels(issueNumber: number, mySession: string, extraLabels: str
       })),
     (args) => run("gh", args), batch);
   if (checked.refusal) return checked.refusal;
-  const { blockedByNote } = checked;
+  const { blockedByNote, scope } = checked;
 
   const sessionLabel = `${SESSION_PREFIX}${mySession}`;
   const landed: string[] = [];
@@ -1102,7 +1135,7 @@ function writeRowLabels(issueNumber: number, mySession: string, extraLabels: str
     const { refusal } = applyClaimLabels(issueNumber, { run, mySession, extraLabels, landed, labelBatch, repo });
     if (refusal) return { claimed: false, reason: refusal };
     return completeClaim(issueNumber,
-      { run, moveStatus, mySession, sessionLabel, extraLabels, blockedByNote, branch, worktree, landed, tracker });
+      { run, moveStatus, mySession, sessionLabel, extraLabels, blockedByNote, branch, worktree, scope, landed, tracker });
   });
 }
 
@@ -1112,14 +1145,14 @@ function writeRowLabels(issueNumber: number, mySession: string, extraLabels: str
  * @param {number} issueNumber
  * @param {{ run: typeof defaultRun, moveStatus: typeof moveProjectStatus, mySession: string, sessionLabel: string,
  *   extraLabels: string[], blockedByNote: Parameters<typeof postBlockedByNoteIfAny>[1], branch?: string,
- *   worktree?: string, landed: string[], tracker?: Tracker }} state
+ *   worktree?: string, scope?: string | null, landed: string[], tracker?: Tracker }} state
  * @returns {{ claimed: true, statusMoved: true } | { claimed: true, statusMoved: false, notOnBoard: boolean, statusReason: string } | { claimed: false, reason: string }}
  */
 function completeClaim(issueNumber: number,
-  { run, moveStatus, mySession, sessionLabel, extraLabels, blockedByNote, branch, worktree, landed, tracker }: {
+  { run, moveStatus, mySession, sessionLabel, extraLabels, blockedByNote, branch, worktree, scope, landed, tracker }: {
       run: typeof defaultRun; moveStatus: typeof moveProjectStatus; mySession: string; sessionLabel: string;
       extraLabels: string[]; blockedByNote: Parameters<typeof postBlockedByNoteIfAny>[1]; branch?: string;
-      worktree?: string; landed: string[]; tracker?: Tracker;
+      worktree?: string; scope?: string | null; landed: string[]; tracker?: Tracker;
   }): { claimed: true; statusMoved: true; } | { claimed: true; statusMoved: false; notOnBoard: boolean; statusReason: string; } | { claimed: false; reason: string; } {
   const repo = tracker?.repo ?? REPO;
   const after = fetchLabels(issueNumber, { run, repo });
@@ -1147,7 +1180,7 @@ function completeClaim(issueNumber: number,
   // -- after the race is known to be won, so a losing session never leaves a record naming a worktree it
   // did not get to keep. `branch`/`worktree` are the values this claim was GIVEN, not values read back:
   // there is nothing to read back yet, and the comment IS the record.
-  postClaimRecord(issueNumber, { session: mySession, branch, worktree }, run, repo);
+  postClaimRecord(issueNumber, { session: mySession, branch, worktree, scope }, run, repo);
   landed.push(`posted the claim record (branch ${branch ?? "none"}, worktree ${worktree ?? "none"})`);
   // #400: THE LABEL IS THE RECORD; THIS MOVES THE VIEW TO MATCH IT, IN THE SAME ACT. A view corrected only
   // by a later sweep is wrong between sweeps, and "between sweeps" is where a worker reads it -- measured
