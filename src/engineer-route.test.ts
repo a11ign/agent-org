@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { decisionLogPathFrom, decisionSwitchesPath, MAX_STATE_BYTES, type DecisionDeps } from "./decision-provider.ts";
+import { decide, decisionLogPathFrom, decisionSwitchesPath, MAX_STATE_BYTES, type DecisionDeps } from "./decision-provider.ts";
 import { composeRoute, fallbackRoute, recordRouteOutcome, routeEngineer, routeState, QUESTIONS, type Answers, type RouteRow } from "./engineer-route.ts";
 import { parseHostConfig } from "./host-config.ts";
 import { tmpDir } from "./lib/tmp-fixture.ts";
@@ -27,17 +27,35 @@ const rowOf = (over: Partial<RouteRow> = {}): RouteRow => ({ number: 4999, title
 
 type Given = Partial<Record<keyof Answers, string | number>> & { confidence?: number; low?: keyof Answers };
 const CLEAN_HAIKU = { mechanical: "yes", subsystems: "no", debugging: "no", covered: "yes", score: 2 };
+/** The API's score is the level's POSITION from zero and fractional (agent-org#564): level 2 comes back `1.04`, not `2`. `score` in a {@link Given} is the 1-based level. */
+const positionOf = (level: number): number => level - 1 + 0.04;
 /** The provider's reply for a set of answers; `low` names the one question answered under the floor. */
 function reply(given: Given) {
   const base = { ...CLEAN_HAIKU, ...given };
   const answers = Object.fromEntries((Object.keys(QUESTIONS) as (keyof Answers)[]).map((name) => {
     const confidence = name === given.low ? 0.5 : given.confidence ?? 0.95;
-    return [name, name === "score" ? { type: "score", score: base.score, confidence } : { type: "choice", choice: base[name], probabilities: {}, confidence }];
+    return [name, name === "score" ? { type: "score", score: positionOf(base.score as number), confidence, probabilities: {} } : { type: "choice", choice: base[name], probabilities: {}, confidence }];
   }));
   return { answers };
 }
 
-function rig(opts: { triage?: unknown; switches?: string; body?: unknown; haikuSwitch?: string; throws?: boolean } = {}) {
+/**
+ * What the API's OpenAPI document (`components.schemas`, 2026-10-09) requires of a request: a `score` question carries `criteria`, an ORDERED ARRAY of level descriptions, and a
+ * `choice` question carries `criteria`, an OBJECT of descriptions by choice. One invalid question rejects the whole request, so this returns the first violation, or `null`.
+ */
+function violation(sent: unknown): string | null {
+  const questions = (sent as { questions?: Record<string, { type?: string; instructions?: unknown; criteria?: unknown }> } | null)?.questions;
+  if (typeof questions !== "object" || questions === null) return "questions: required";
+  for (const [name, q] of Object.entries(questions)) {
+    if (typeof q?.instructions !== "string") return `${name}.instructions: required`;
+    if (q.type === "score" && !(Array.isArray(q.criteria) && q.criteria.length === 5 && q.criteria.every((l) => typeof l === "string" && l !== ""))) return `${name}.criteria: a score needs an array of five level descriptions`;
+    if (q.type === "choice" && !(typeof q.criteria === "object" && q.criteria !== null && !Array.isArray(q.criteria) && Object.values(q.criteria).length >= 2)) return `${name}.criteria: a choice needs an object`;
+    if (q.type !== "score" && q.type !== "choice") return `${name}.type: not a question type`;
+  }
+  return null;
+}
+
+function rig(opts: { triage?: unknown; switches?: string; body?: unknown; haikuSwitch?: string; throws?: boolean; validates?: boolean } = {}) {
   const dir = tmpDir("engineer-route-");
   if (opts.switches !== undefined) {
     mkdirSync(join(dir, ".agent-org"));
@@ -46,9 +64,13 @@ function rig(opts: { triage?: unknown; switches?: string; body?: unknown; haikuS
   const haikuSwitch = join(dir, "haiku-tier.json");
   writeFileSync(haikuSwitch, opts.haikuSwitch ?? '{ "enabled": true }');
   let calls = 0;
-  const fn = (async () => {
+  const sent: unknown[] = [];
+  const fn = (async (_url: string, init: { body: string }) => {
     calls += 1;
     if (opts.throws) throw new Error("connection refused");
+    sent.push(JSON.parse(init.body));
+    // A fake that accepts any body is what let a request the API rejected pass every test: with `validates`, a body the API would refuse is its HTTP 422.
+    if (opts.validates && violation(sent.at(-1)) !== null) return { ok: false, status: 422, json: async () => ({ detail: [{ type: "missing", msg: violation(sent.at(-1)) }] }) };
     return { ok: true, status: 200, json: async () => opts.body ?? reply({}) };
   }) as unknown as typeof fetch;
   const logPath = decisionLogPathFrom(join(dir, "state", "wake-ledger"));
@@ -58,7 +80,7 @@ function rig(opts: { triage?: unknown; switches?: string; body?: unknown; haikuS
     readKey: (path) => { reads.push(path); return "tsk-FAKE"; }, haikuSwitchPath: haikuSwitch,
   };
   const log = () => (existsSync(logPath) ? readFileSync(logPath, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
-  return { deps, calls: () => calls, reads, log, logPath };
+  return { deps, calls: () => calls, sent, reads, log, logPath };
 }
 const ON = JSON.stringify({ "model-routing": true });
 
@@ -166,6 +188,52 @@ test("a composed Haiku is still refused by the Haiku switch: switch off gives So
   assert.equal((await routeEngineer(rowOf(), rig({ triage: JEV, switches: ON }).deps)).route, "haiku/high");
 });
 
+// --- the wire: what is POSTED, validated against the API's own schema (agent-org#564) ---
+
+/** The 200 the API answered the first valid request with (2026-10-09T23:10Z): a zero-based, fractional score, and a choice under the floor. Recorded, not invented. */
+const RECORDED_SCORE = { type: "score", score: 0.04, confidence: 0.97,
+  legend: { 0: "one stated edit in one file", 1: "a few independent edits", 2: "a new small unit with a test", 3: "several subsystems", 4: "a design with open questions" },
+  probabilities: { 0: 0.98, 1: 0.01, 2: 0.01, 3: 0.0, 4: 0.0 } };
+const RECORDED_MECHANICAL = { type: "choice", choice: "yes", confidence: 0.44, probabilities: { yes: 0.72, no: 0.28 } };
+const choice = (value: string) => ({ type: "choice", choice: value, confidence: 0.95, probabilities: {} });
+const RECORDED_200 = { model: "jev-1.13.0", usage: { input_tokens: 426, output_tokens: 46 },
+  answers: { mechanical: RECORDED_MECHANICAL, subsystems: choice("no"), debugging: choice("no"), covered: choice("yes"), score: RECORDED_SCORE } };
+
+test("the routing request validates against the API's shape: the score carries `criteria` as an array of its five levels, each choice an object; the recorded 200 is read, not dropped", async () => {
+  const r = rig({ triage: JEV, switches: ON, body: RECORDED_200, validates: true });
+  const routed = await routeEngineer(rowOf(), r.deps);
+  assert.equal(r.calls(), 1);
+  assert.equal(violation(r.sent[0]), null);
+  const { questions } = r.sent[0] as { questions: Record<string, { type: string; criteria: unknown }> };
+  assert.deepEqual(Object.keys(questions), Object.keys(QUESTIONS));
+  assert.ok(Array.isArray(questions.score.criteria) && questions.score.criteria.length === 5, "the score's criteria is an array of five");
+  assert.deepEqual(questions.score.criteria, QUESTIONS.score.type === "score" ? QUESTIONS.score.levels : null, "in the order the levels are scored, level 1 first");
+  for (const name of ["mechanical", "subsystems", "debugging", "covered"]) assert.ok(!Array.isArray(questions[name].criteria), `${name}'s criteria is an object`);
+  // The provider answered: a zero-based 0.04 is level 1, and the row is NOT a fallback. The choice at 0.44 is under the 0.9 floor and is the one answer not given.
+  assert.equal(routed.via, "jev");
+  const line = r.log().find((l) => l.answers !== undefined);
+  assert.deepEqual([line.via, line.answers.score.value, line.answers.score.fellBack, line.answers.mechanical.fellBack], ["jev", 1, false, true]);
+  assert.match(line.answers.mechanical.reason, /yes at 0\.44, under the floor 0\.9/);
+  assert.equal(routed.route, "sonnet/high", "an answer not given composes Sonnet/high");
+  assert.match(routed.reason!, /^answers not given \(mechanical: yes at 0\.44, under the floor 0\.9\)$/);
+});
+
+test("CONTROL: the same request with the score's `criteria` left off is the API's HTTP 422, every question falls back with it, and the log says so", async () => {
+  const r = rig({ triage: JEV, switches: ON, body: RECORDED_200, validates: true });
+  const noLevels = { ...QUESTIONS, score: { ...QUESTIONS.score, levels: undefined as never } };
+  const d = await decide("model-routing", routeState(rowOf()), noLevels, r.deps);
+  assert.deepEqual([d.via, d.reason], ["none", "the API answered HTTP 422"]);
+  assert.match(violation(r.sent[0])!, /^score\.criteria/);
+  assert.deepEqual(Object.values(d.answers).map((a) => a.fellBack), [true, true, true, true, true], "one invalid question rejects the whole request");
+  assert.equal(r.log()[0].answers.mechanical.reason, "the API answered HTTP 422");
+});
+
+test("the recorded 200 with every answer over the floor composes a route the way the 1..5 levels say: level 1 mechanical and covered is Haiku/high", async () => {
+  const body = { ...RECORDED_200, answers: { ...RECORDED_200.answers, mechanical: { ...RECORDED_MECHANICAL, confidence: 0.95 } } };
+  const routed = await routeEngineer(rowOf(), rig({ triage: JEV, switches: ON, body, validates: true }).deps);
+  assert.deepEqual([routed.route, routed.via, routed.reason], ["haiku/high", "jev", undefined]);
+});
+
 // --- overrides win ---
 
 test("`tier:haiku` decides before the provider is asked, and the provider's contrary answer does not move it", async () => {
@@ -213,6 +281,10 @@ test("every route is a decision-log line, in the fallback, override, refused and
   const routes = (lines: { id?: string; outcome?: string }[]) => lines.filter((l) => l.outcome !== undefined).map((l) => [l.id, l.outcome]);
   assert.deepEqual(routes(r.log()), [["row-1", "route haiku/high via jev"], ["row-2", "route haiku/high via override"], ["row-3", "route sonnet/high via refused"]]);
   assert.deepEqual(routes(off.log()), [["row-4", "route sonnet/medium via fallback"]]);
+  // A route the provider did not decide carries WHY on its outcome line: a refused row says what refused it, a fallback says why the provider did not decide.
+  const reasons = (lines: { outcome?: string; reason?: string }[]) => lines.filter((l) => l.outcome !== undefined).map((l) => l.reason);
+  assert.deepEqual(reasons(r.log()), [undefined, undefined, "the row carries lane:ceo"]);
+  assert.deepEqual(reasons(off.log()), ["no triage provider is declared"]);
   assert.ok(r.log().some((l) => l.use === "model-routing" && l.answers !== undefined), "the provider's own line (the answers) is there too");
   recordRouteOutcome(1, "merged-first-pass", r.deps);
   assert.deepEqual(routes(r.log()).at(-1), ["row-1", "merged-first-pass"]);
@@ -241,4 +313,29 @@ test("spawnClaimer.tier: a routed row gets its route's profile; a row with no ro
   assert.equal(claimer.tier?.(claimed(10))?.effort, "medium");
   assert.equal(claimer.tier?.(claimed(11))?.model, HAIKU_MODEL_ID, "the control: with no route the label still decides");
   assert.equal(spawnClaimer({ routes: new Map(), switchPath, readRow: () => ({ labels: ["ready"], body: bodyOf() }) }).tier?.(claimed(12)), null);
+});
+
+// --- every fallback says why, on a line of the decision log ---
+
+test("every way the provider does not decide a route puts its reason on the outcome line and in the journal's `why`: switch off, no provider, HTTP 422, a timeout, a state too large, a malformed answer", async () => {
+  const withFetch = (r: ReturnType<typeof rig>, fn: unknown) => { r.deps.fetch = fn as typeof fetch; return r; };
+  // `routeState` clips every field, so only a multi-byte state reaches the cap: three bytes a character fills it.
+  const wide = rowOf({ title: "€".repeat(200), body: bodyOf({ region: Array.from({ length: 12 }, () => "€".repeat(120)), acceptance: "€".repeat(600), doneWhen: Array.from({ length: 8 }, () => "€".repeat(200)) }) });
+  const cases: [string, ReturnType<typeof rig>, RouteRow, string][] = [
+    ["switch off", rig({ triage: JEV }), rowOf(), "the use is switched off"],
+    ["no provider", rig({ switches: ON }), rowOf(), "no triage provider is declared"],
+    ["HTTP 422", withFetch(rig({ triage: JEV, switches: ON }), async () => ({ ok: false, status: 422, json: async () => ({}) })), rowOf(), "the API answered HTTP 422"],
+    ["a timeout", withFetch(rig({ triage: JEV, switches: ON }), () => new Promise(() => {})), rowOf(), "the API timed out"],
+    ["a state too large", rig({ triage: JEV, switches: ON }), wide, "the state is too large to send"],
+    ["a malformed answer", rig({ triage: JEV, switches: ON, body: { answers: {} } }), rowOf(), "the API's answer was not a choice with a confidence"],
+  ];
+  for (const [label, r, row, reason] of cases) {
+    const routed = await routeEngineer(row, r.deps);
+    const outcome = r.log().filter((l) => l.outcome !== undefined).at(-1);
+    assert.equal(routed.via, "fallback", label);
+    assert.equal(routed.reason, reason, label);
+    assert.equal(outcome.reason, reason, `${label}: the outcome line carries it`);
+    assert.ok(routed.why.endsWith(`the provider did not decide: ${reason}`), `${label}: the journal's why carries it too`);
+  }
+  assert.equal(cases[4][1].calls(), 0, "the state over the cap was never sent: the outcome line is the only line that can say why");
 });

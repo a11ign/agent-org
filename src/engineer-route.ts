@@ -19,8 +19,9 @@ export type Route = "haiku/high" | "sonnet/medium" | "sonnet/high";
 /** `override` is a `tier:haiku` label deciding; `refused` is a row nothing may lower; `jev` is a provider's answers composed; `fallback` is the file-count rule. */
 export type Via = "override" | "refused" | "jev" | "fallback";
 export type RouteRow = { number: number; title: string; labels: readonly string[]; body: string };
-export type Routed = { route: Route; via: Via; why: string; /** `null` is the ordinary Sonnet/high profile, byte-identical to before. */ profile: TierProfile | null };
-/** One answer per question; `null` is an answer that was not given with the confidence the floor asks. */
+export type Routed = { route: Route; via: Via; why: string; /** `null` is the ordinary Sonnet/high profile, byte-identical to before. */ profile: TierProfile | null;
+  /** Why the provider did not decide this route (a fallback), or which answers it did not give (a `jev` route held to Sonnet/high); absent when it decided it. */ reason?: string };
+/** One answer per question; `null` is an answer that was not given: malformed, or under the confidence floor. Any `null` composes Sonnet/high. */
 export type Answers = { mechanical: boolean | null; subsystems: boolean | null; debugging: boolean | null; covered: boolean | null; score: number | null };
 
 /** The Region's largest size that is still "a small row" (the row's own number). */
@@ -49,9 +50,11 @@ export const QUESTIONS: Readonly<Record<keyof Answers, Question>> = Object.freez
     instructions: "Does this row require DEBUGGING AN UNKNOWN FAILURE: the cause is not stated in the row and has to be found before anything is fixed?" },
   covered: { type: "choice", criteria: YES_NO, fallback: "no",
     instructions: "Does the Acceptance command FULLY COVER the Done-when: if the command passes, is every Done-when item shown to be true?" },
+  // The provider scores a level by its POSITION in `levels` (from zero); `decide` hands the callers the 1-based level, so `fallback: 5` is the last description.
   score: { type: "score", fallback: 5,
-    instructions: "Complexity of the row from 1 to 5. 1: one stated edit in one file. 2: a few stated edits, each independent. 3: a new small unit with a test, in one subsystem. "
-      + "4: a change that touches how two modules agree. 5: a new seam, a migration or anything whose shape the row does not state. Signals: file count, whether the Acceptance is a command, whether the Done-when is checkable." },
+    levels: ["one stated edit in one file", "a few stated edits, each independent", "a new small unit with a test, in one subsystem",
+      "a change that touches how two modules agree", "a new seam, a migration or anything whose shape the row does not state"],
+    instructions: "Complexity of the row, as the level whose description fits it. Signals: file count, whether the Acceptance is a command, whether the Done-when is checkable." },
 });
 
 const asBool = (value: unknown): boolean | null => (value === "yes" ? true : value === "no" ? false : null);
@@ -134,6 +137,8 @@ export type RouteDeps = DecisionDeps & { /** For a test: the Haiku switch file. 
 
 const decided = (route: Route, via: Via, why: string, profile: TierProfile | null): Routed => ({ route, via, why, profile });
 const ordinary = (via: Via, why: string): Routed => decided("sonnet/high", via, why, null);
+/** A route the provider did not decide, with the reason it did not: the journal line and the decision log's outcome line both say it, so a fallback is never silent. */
+const withReason = (routed: Routed, reason: string): Routed => ({ ...routed, reason, why: `${routed.why}; the provider did not decide: ${reason}` });
 
 function profiled(route: Route, via: Via, row: RouteRow, haikuSwitch: string | undefined): Routed {
   if (route === "sonnet/high") return ordinary(via, "the ordinary profile");
@@ -148,23 +153,26 @@ function profiled(route: Route, via: Via, row: RouteRow, haikuSwitch: string | u
  */
 export async function routeEngineer(row: RouteRow, deps: RouteDeps): Promise<Routed> {
   const routed = await routeOnly(row, deps);
-  recordOutcome("model-routing", `${ID_PREFIX}${row.number}`, `route ${routed.route} via ${routed.via}`, deps);
+  recordOutcome("model-routing", `${ID_PREFIX}${row.number}`, `route ${routed.route} via ${routed.via}`, deps, routed.reason);
   return routed;
 }
 
 async function routeOnly(row: RouteRow, deps: RouteDeps): Promise<Routed> {
   if (row.labels.includes(HAIKU_TIER_LABEL)) {
     const haiku = haikuProfileOf(row, deps.haikuSwitchPath);
-    return "profile" in haiku ? decided("haiku/high", "override", HAIKU_TIER_LABEL, haiku.profile) : ordinary("override", haiku.refused);
+    return "profile" in haiku ? decided("haiku/high", "override", HAIKU_TIER_LABEL, haiku.profile) : { ...ordinary("override", haiku.refused), reason: haiku.refused };
   }
   const held = whyHeld(row);
-  if (held !== null) return ordinary("refused", held);
+  if (held !== null) return { ...ordinary("refused", held), reason: held };
   const decision = await decide("model-routing", routeState(row), QUESTIONS, { ...deps, id: `${ID_PREFIX}${row.number}` });
-  if (decision.via === "none") return profiled(fallbackRoute(row), "fallback", row, deps.haikuSwitchPath);
+  if (decision.via === "none") return withReason(profiled(fallbackRoute(row), "fallback", row, deps.haikuSwitchPath), decision.reason ?? "the provider gave no answer and no reason");
   const given = (name: keyof Answers) => (decision.answers[name].fellBack ? null : decision.answers[name].value);
   const answers: Answers = { mechanical: asBool(given("mechanical")), subsystems: asBool(given("subsystems")), debugging: asBool(given("debugging")),
     covered: asBool(given("covered")), score: typeof given("score") === "number" ? (given("score") as number) : null };
-  return profiled(composeRoute(answers), "jev", row, deps.haikuSwitchPath);
+  const routed = profiled(composeRoute(answers), "jev", row, deps.haikuSwitchPath);
+  // A null answer is not a no: it composes Sonnet/high, and the line says which answers were not given and why (the provider's own line has the same, per question).
+  const notGiven = Object.entries(decision.answers).filter(([, a]) => a.fellBack).map(([name, a]) => `${name}: ${a.reason ?? "no reason"}`);
+  return notGiven.length === 0 ? routed : { ...routed, reason: `answers not given (${notGiven.join("; ")})` };
 }
 
 /** What came of a route, appended to the same log: `merged-first-pass` or `not-first-pass`, so the floor is tuned from results. */

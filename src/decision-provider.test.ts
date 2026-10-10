@@ -20,13 +20,16 @@ const HOST = JSON.stringify({
 const withTriage = (triage?: unknown) => parseHostConfig(triage === undefined ? HOST : JSON.stringify({ ...JSON.parse(HOST), triage }));
 const JEV = { provider: "jev", keyPath: KEY_PATH, minConfidence: 0.9 };
 
+const LEVELS = ["tiny", "small", "medium", "large", "huge"] as const;
 const QUESTIONS: Record<string, Question> = {
   tier: { type: "choice", instructions: "Which tier?", criteria: { haiku: "mechanical", sonnet: "judgment" }, fallback: "sonnet" },
-  size: { type: "score", instructions: "How big, 1 to 5?", fallback: 3 },
+  size: { type: "score", instructions: "How big?", levels: LEVELS, fallback: 3 },
 };
 const STATE = { row: 4628, title: SECRET_STATE };
+/** The API's own shape for a score: the level's POSITION from zero, fractional (`0.04` for level 0), so `size[0]` is the 1-based level and what is sent back is `level - 1 + 0.04`. */
+const positionOf = (level: number): number => level - 1 + 0.04;
 const reply = (tier: [string, number], size: [number, number]) => ({
-  answers: { tier: { type: "choice", choice: tier[0], probabilities: {}, confidence: tier[1] }, size: { type: "score", score: size[0], confidence: size[1] } },
+  answers: { tier: { type: "choice", choice: tier[0], probabilities: {}, confidence: tier[1] }, size: { type: "score", score: positionOf(size[0]), confidence: size[1] } },
 });
 
 type Reply = { status?: number; body?: unknown; throws?: boolean; hangs?: boolean };
@@ -109,6 +112,9 @@ test("a malformed switch file turns every use off with ONE diagnostic naming the
     assert.equal(r.lines.length, 1, "one line per process, not one per decision");
     assert.ok(r.lines[0].includes(r.deps.switchesPath!), "names the file");
     assert.ok(!r.lines[0].includes(SECRET_FILE_TEXT), "does not echo it");
+    const d = await decide("model-routing", STATE, QUESTIONS, r.deps);
+    assert.equal(d.reason, "the use is switched off: the switches file could not be used", "the reason is not the plain `switched off` of a file that said so");
+    assert.ok(!JSON.stringify(d).includes(SECRET_FILE_TEXT));
   }
 });
 
@@ -122,7 +128,7 @@ test("CONTROL: provider on, use on: one request carrying the key, both questions
   const sent = JSON.parse(r.net.calls[0].init.body);
   assert.deepEqual(sent.state, STATE);
   assert.deepEqual(sent.questions.tier, { type: "choice", instructions: "Which tier?", criteria: QUESTIONS.tier.type === "choice" ? QUESTIONS.tier.criteria : {} });
-  assert.deepEqual(sent.questions.size, { type: "score", instructions: "How big, 1 to 5?" });
+  assert.deepEqual(sent.questions.size, { type: "score", instructions: "How big?", criteria: [...LEVELS] }, "a score's levels go as `criteria`, an ordered array, and no `fallback`");
   assert.ok(!("fallback" in sent.questions.tier) && !("minConfidence" in sent.questions.tier), "the fallback is the caller's and is not sent");
 });
 
@@ -133,6 +139,16 @@ test("a confidence under the floor replaces THAT answer with its fallback and sa
   assert.deepEqual([d.via, d.fellBack, d.answers.tier.fellBack, d.answers.size.fellBack], ["jev", true, true, false]);
   assert.equal(d.answers.tier.asked, "haiku");
   assert.match(d.answers.tier.reason!, /haiku at 0\.89, under the floor 0\.9/);
+});
+
+test("a score is read from the provider's zero-based fractional position: ROUNDED to the nearest level and moved to 1..5; a position outside the five levels is malformed", async () => {
+  const asked = async (score: unknown) => {
+    const body = { answers: { tier: { type: "choice", choice: "haiku", probabilities: {}, confidence: 0.99 }, size: { type: "score", score, confidence: 0.99 } } };
+    const d = await decide("model-routing", STATE, QUESTIONS, rig({ triage: JEV, switches: ON, reply: { body } }).deps);
+    return d.answers.size.fellBack ? "fallback" : d.answers.size.value;
+  };
+  const cases: [unknown, unknown][] = [[0, 1], [0.04, 1], [0.49, 1], [0.5, 2], [1.6, 3], [2, 3], [3.4, 4], [4, 5], [4.4, 5], [4.6, "fallback"], [5, "fallback"], [-0.4, 1], [-0.6, "fallback"], ["2", "fallback"], [null, "fallback"]];
+  for (const [position, level] of cases) assert.equal(await asked(position), level, `position ${String(position)}`);
 });
 
 test("a question's own floor beats the host's: 0.8 passes a 0.9 host floor when the question says 0.7, and fails when it says 0.85", async () => {
@@ -204,8 +220,11 @@ test("recordOutcome appends the eventual outcome under the same id; without a lo
   const lines = r.log();
   assert.equal(lines.length, 2);
   assert.deepEqual(lines[1], { use: "model-routing", id: "row-4628", outcome: "merged", at: 2_000 });
+  recordOutcome("model-routing", "row-4628", "route sonnet/high via fallback", { logPath: r.logPath, now: () => 3_000 }, "the use is switched off");
+  assert.deepEqual(r.log().at(-1), { use: "model-routing", id: "row-4628", outcome: "route sonnet/high via fallback", reason: "the use is switched off", at: 3_000 });
+  assert.equal(r.log().length, 3);
   recordOutcome("model-routing", "row-4628", "merged", {});
-  assert.equal(r.log().length, 2);
+  assert.equal(r.log().length, 3);
   const lost: string[] = [];
   recordOutcome("model-routing", "x", "merged", { logPath: join(r.logPath, "inside-a-file"), diagnostic: (l) => lost.push(l) });
   assert.equal(lost.length, 1);
