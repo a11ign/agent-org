@@ -172,6 +172,22 @@ test("each state is excused ONLY while the thing it names is true (twin: the sam
   assert.equal(declarationReading({ ...blocked, row: 461 }, ctx({ answersOwed: [DEFAULT_ANSWERER] })).kind, "lapsed", "blocked: on a row the worker does not hold");
 });
 
+test("`blocked` is excused by the label of the session it NAMES, and an answer label owed by anyone else does not excuse it (twin: the named one does)", () => {
+  const toCeo = decl({ state: "blocked", pr: undefined, row: 460, to: "ceo" });
+  assert.equal(declarationReading(toCeo, ctx({ answersOwed: ["ceo"] })).kind, "excused", "--to=ceo and the row carries ceo's label");
+  assert.equal(declarationReading(toCeo, ctx({ answersOwed: [DEFAULT_ANSWERER] })).kind, "lapsed", "--to=ceo, and only product-manager's label is on the row");
+  assert.equal(declarationReading(toCeo, ctx({ answersOwed: [DEFAULT_ANSWERER, "ceo"] })).kind, "excused", "both labels: the named one is there");
+  const unnamed = decl({ state: "blocked", pr: undefined, row: 460 });
+  assert.equal(declarationReading(unnamed, ctx({ answersOwed: ["ceo"] })).kind, "lapsed", "no --to means product-manager, so ceo's label is another wait");
+  const reading = declarationReading(toCeo, ctx({ answersOwed: [DEFAULT_ANSWERER] }));
+  assert.ok(reading.kind === "lapsed" && reading.why.includes("ceo") && reading.why.includes(DEFAULT_ANSWERER), "the order names who it was declared on and what the row carries");
+});
+
+test("`--to` naming the worker itself is REFUSED by name: its own answer label is the row waiting on it, which could never excuse the block", () => {
+  const refused = parseDeclaration(["blocked", "460", "why"], { session: "worker-9", now: T0, to: "worker-9" });
+  assert.ok("refused" in refused && refused.refused.refused === "owed-to-self", JSON.stringify(refused));
+});
+
 test("`lastDeliveredTo` reads deliveries TO the session from the wake ledger, and not markers or other sessions' lines", () => {
   const ledger = [
     `${T0 - 50 * MIN}\tworker-9/claim-stalled/row-460/nudge-1`,

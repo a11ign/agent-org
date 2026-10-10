@@ -29,7 +29,7 @@ export type PrRef = { number: number; repoKey?: string };
 export type Declaration = { session: string; state: DeclaredState; at: number; pr?: PrRef; row?: number; reason?: string; to?: string };
 
 /** A refusal is NAMED, so the worker (and the test) can tell "no pull request" from "no reason" from "no such state". */
-export type Refusal = { refused: "no-state" | "unknown-state" | "missing-pr" | "bad-pr" | "missing-row" | "bad-row" | "missing-reason" | "unexpected-argument" | "no-session"; why: string };
+export type Refusal = { refused: "no-state" | "unknown-state" | "missing-pr" | "bad-pr" | "missing-row" | "bad-row" | "missing-reason" | "unexpected-argument" | "no-session" | "owed-to-self"; why: string };
 
 /** The directory, under the host's state directory, holding one `<session>.json` per worker. One file per session, so two workers never race a write. */
 export const WORKER_STATE_DIR = "worker-state";
@@ -81,6 +81,7 @@ export function parseDeclaration(words: string[], { session, now, to = null }: {
   const reason = rest.slice(1).join(" ").trim();
   if (reason === "") return refuse("missing-reason", "`blocked` needs the reason, because it is posted on the row and is the question the answerer reads");
   if (to !== null && !SESSION_NAME_SHAPE.test(to)) return refuse("no-session", `--to=${to} is not a session name`);
+  if (to === session) return refuse("owed-to-self", `--to=${to} is you: your own answer label means the row waits on YOU, so it could never excuse a block on someone else`);
   return { declaration: { ...base, row: Number(row[1]), reason, to: to ?? DEFAULT_ANSWERER } };
 }
 
@@ -183,7 +184,8 @@ const samePr = (declared: PrRef, open: PrFact): boolean => open.number === decla
  *   `waiting-ci <pr>`      that pull request is open and a check on it is still running (the gate wakes the worker on the result, as it does today);
  *   `waiting-review <pr>`  it is open and its review is not a request for changes (an APPROVED one is the merge queue's, and the worker has nothing to do);
  *   `done`                 the row is closed, or a pull request of the claim merged;
- *   `blocked <row>`        that row carries an `answer:<session>` label owed by someone else, and the excuse ends the moment the label is removed.
+ *   `blocked <row>`        that row carries the `answer:<session>` label of the session the declaration NAMES (`to`, else {@link DEFAULT_ANSWERER}); a label
+ *                          owed by anyone else is a different wait and does not excuse this one, and the excuse ends the moment the label is removed.
  * @param {Declaration | null | undefined} declaration @param {ClaimContext} ctx @returns {DeclarationReading}
  */
 export function declarationReading(declaration: Declaration | null | undefined, ctx: ClaimContext): DeclarationReading {
@@ -199,9 +201,10 @@ export function declarationReading(declaration: Declaration | null | undefined, 
   }
   if (state === "blocked") {
     if (declaration.row !== ctx.row) return lapsed(`it names #${declaration.row}, and the row you hold is #${ctx.row}`);
-    return ctx.answersOwed.length > 0
-      ? excused(`#${ctx.row} is waiting on an answer from ${ctx.answersOwed[0]}`)
-      : lapsed(`#${ctx.row} no longer carries the label that names who owes the answer, so nobody does`);
+    const owed = declaration.to ?? DEFAULT_ANSWERER;
+    return ctx.answersOwed.includes(owed)
+      ? excused(`#${ctx.row} is waiting on an answer from ${owed}`)
+      : lapsed(`#${ctx.row} no longer carries the answer label of ${owed}, the session it was declared blocked on${ctx.answersOwed.length > 0 ? ` (it carries ${ctx.answersOwed.join(", ")}'s, which is another wait)` : ""}`);
   }
   const open = declaration.pr === undefined ? undefined : ctx.ownPrs.find((pr) => samePr(declaration.pr as PrRef, pr));
   const named = declaration.pr === undefined ? "its pull request" : `#${declaration.pr.number}`;
