@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { updatePrimary, lockfileMoved, readPrimaryDrift } from "../update-primary.ts";
 import { changedFiles } from "../lib/changed-files.ts";
-import { withGitSandbox } from "../lib/git-sandbox.ts";
+import { withGitSandbox } from "@a11ign/toolchain/lib/git-sandbox";
 import { UPDATE_PRIMARY_VERBS } from "./update-primary-argv.ts";
 
 /**

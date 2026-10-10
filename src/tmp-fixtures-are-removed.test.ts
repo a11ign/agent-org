@@ -32,7 +32,7 @@ import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { stripComments } from "./lib/source-text.ts";
+import { stripComments } from "@a11ign/toolchain/lib/source-text";
 
 const SRC = dirname(fileURLToPath(import.meta.url));
 const TOOL_ROOT = dirname(SRC);
@@ -43,7 +43,6 @@ const SELF = "src/tmp-fixtures-are-removed.test.ts";
 /** Non-test modules that make a fixture directory for a test, and so are held to the same rule. */
 const SUPPORT_FILES = [
   "src/lib/tmp-fixture.ts",
-  "src/lib/git-sandbox.ts",
   "src/packaging/host-units-project.ts",
 ];
 

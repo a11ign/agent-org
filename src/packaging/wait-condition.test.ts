@@ -289,7 +289,7 @@ function tick(prsRead: unknown[], run: (args: string[]) => string) {
   const decideArgs = { prs, required: [], readyRows: [], prFiles: new Map(), rowBranches: [], openRows: [], primaryDrift: null, claimRefusals: [] };
   const decided = decide({ prs, readyRows: [], openRows: ROWS } as never);
   const orders = orgHealthNow({ prsRead, readyRead: [], openRowsRead: [], decideArgs, decided } as never,
-    { now: NOW, lastMergedAt: () => NOW - HOUR_MS, log: (line: string) => said.push(line), readCopies: (() => []) as never, readCaptures: (() => undefined) as never,
+    { now: NOW, lastMergedAt: () => NOW - HOUR_MS, log: (line: string) => said.push(line), readCaptures: (() => undefined) as never,
       readWaits: ((args: never) => waitTickFacts({ ...(args as Parameters<typeof waitTickFacts>[0]), run })) as never,
       // #3364: the gate would LIFT these holds itself; a release that fails is the fallback, so the order and the signal below are still the ones tested here
       // (`gate-lifts-resolved-holds.test.ts` owns the lift).

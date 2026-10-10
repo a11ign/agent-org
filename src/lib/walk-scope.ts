@@ -1,10 +1,9 @@
 #!/usr/bin/env node
-// COPIED FROM `packages/guards/src/walk-scope.ts` at 42cfb887d (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, so `agent-org` imports nothing outside
-// its package. The product keeps its original and the two can drift, with no cross-repository pin: `agent-org-outward-edges.test.ts` compares them.
+// COPIED FROM `packages/guards/src/walk-scope.ts` at 42cfb887d (#2623, child 5 of #69; ADR 0040, decision 4): the tool's own copy, and the ONE copy the tool keeps (a11ign/agent-org#522): the
+// toolchain's `walk-scope` fixes `REPO_ROOT` at its own install directory, which as installed is not the project (a11ign#4718), so every declared scope would be relative to the wrong tree.
+// The product keeps its original and the two can drift, with no cross-repository pin: `agent-org-outward-edges.test.ts` compares them.
 // CHANGED FROM THE ORIGINAL, 68 NAMED LINES:
-// - its dynamic import of ci-changed.ts, now the tool's own copy beside it
-// - its static import of walk-scope-declaration.ts, now the tool's own copy beside it (the original names it `@a11ign/toolchain/lib/walk-scope-declaration` since a11ign#4589; the installed toolchain here has no `lib/`)
-// - its dynamic import of walk-scope-discovery.ts, likewise the tool's own copy beside it: the same line as the ci-changed.ts import above, so it adds no line to the count
+// - its dynamic import of ci-changed, which was `../../../scripts/ci-changed.ts` and is now `@a11ign/toolchain/lib/ci-changed`, the tool's declared dependency
 // - its REPO_ROOT computation, now the project's checkout (`HOME_CHECKOUT`) and not a count of directories up from `src` (#3074)
 // - the original's JSDoc type annotations (`@param`, `@returns`, `@type`, `@typedef`), which this copy writes as TypeScript syntax or drops (the `js-to-ts` sweep, agent-org#431). The count is the reader's own, 68 lines of the original with no counterpart here, and a ceiling.
 // ==== end of copy header ====
@@ -43,7 +42,7 @@ import { after } from "node:test";
 import { fileURLToPath } from "node:url";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 // The declaration's parser lives apart, so the selector can read declarations without installing this.
-import { inScope, parseWalkScope } from "./walk-scope-declaration.ts";
+import { inScope, parseWalkScope } from "@a11ign/toolchain/lib/walk-scope-declaration";
 import { HOME_CHECKOUT } from "../project-config.ts";
 
 export { inScope, parseWalkScope };
@@ -695,7 +694,7 @@ export async function declareWalkScope(testUrl: string) {
     // Dynamic, not static: the selector's module graph is loaded only when a declaring guard's tests finish,
     // and never ahead of the observer in a declarer's import order.
     const [{ sourceClosure, packageIndex }, { knownPackages }] = await Promise.all(
-      [import("./walk-scope-discovery.ts"), import("./ci-changed.ts")]);
+      [import("@a11ign/toolchain/lib/walk-scope-discovery"), import("@a11ign/toolchain/lib/ci-changed")]);
     const packages = packageIndex(REPO_ROOT, knownPackages(REPO_ROOT));
     const own = new Set([...sourceClosure(testPath, REPO_ROOT, packages)]
       .map((absolute) => relative(REPO_ROOT, absolute)));

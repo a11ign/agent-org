@@ -316,7 +316,6 @@ test("the calls one read spends: a release, one listing per releasable path, and
 
 const QUIET = { now: at("2026-10-09T10:00:00Z"), lastMergedAt: at("2026-10-09T09:00:00Z"), work: { greenPrs: 0, claimableRows: 0 }, redPrs: [], refusals: {},
   drift: { behind: 0, ahead: 0, dirty: [] }, primarySince: null };
-const noCopies = () => [{ original: "a.mjs", copy: "b.mjs", originalText: null, copyText: "", allowedLines: 0 }];
 
 test("the signal is in the readings only when the fact is given, and its order names what to do", () => {
   assert.equal(SIGNALS.RELEASE_BEHIND_MAIN, SIGNAL);
@@ -334,7 +333,7 @@ test("the signal is in the readings only when the fact is given, and its order n
 
 test("the tick says an unread repository on stderr and offers nothing; a level one is silent", () => {
   const said: string[] = [];
-  const io = { log: (l: string) => said.push(l), readCopies: noCopies, readAutoOff: () => undefined as never };
+  const io = { log: (l: string) => said.push(l), readAutoOff: () => undefined as never };
   assert.deepEqual(orgHealthTick({ ...QUIET, releaseBehind: null } as never, io), []);
   assert.match(said.join(""), /org-health: release-behind-main UNKNOWN -- the dora repositories could not be listed/);
   const silent: string[] = [];
@@ -345,7 +344,7 @@ test("the tick says an unread repository on stderr and offers nothing; a level o
 test("the gate's own path carries it: orgHealthNow with the fact orders it, and without the reader asks nothing", () => {
   const decideArgs = { prs: [], required: [], readyRows: [], prFiles: new Map(), rowBranches: [], openRows: [], primaryDrift: null, claimRefusals: [] };
   const tick = (readReleaseBehind?: () => unknown) => orgHealthNow({ prsRead: [], readyRead: [], openRowsRead: [], decideArgs, decided: [] } as never,
-    { now: QUIET.now, lastMergedAt: () => QUIET.now, readCaptures: () => undefined, readLabJobs: () => [], readCopies: () => [], log: () => {}, teamAccess: () => undefined,
+    { now: QUIET.now, lastMergedAt: () => QUIET.now, readCaptures: () => undefined, readLabJobs: () => [], log: () => {}, teamAccess: () => undefined,
       readWaits: () => ({ facts: new Map(), stale: [], bare: [], manual: 0 }), ...(readReleaseBehind && { readReleaseBehind }) } as never) as { subject: string }[];
   const ofSignal = (orders: { subject: string }[]) => orders.filter((o) => o.subject === SIGNAL);
   assert.equal(ofSignal(tick(() => [factOf(replayWorld())])).length, 1, "a repository behind its releases is offered by the tick");

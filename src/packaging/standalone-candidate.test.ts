@@ -24,6 +24,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { HOME_CHECKOUT, HOST_ENV, resolveHomeCheckout } from "../project-config.ts";
 import { HOST_CONFIG_ENV } from "../host-config.ts";
+import { linkToolchain } from "./copied-tool-fixture.ts";
 
 // The PROJECT's checkout (its declaration is what the labels are read from), and the TOOL's own `src`, which are two trees (the tool is not
 // inside the project here), so neither is found by counting directories up from this file.
@@ -57,6 +58,7 @@ test.after(() => {
 function standaloneTree(): string {
   const src = join(scratch(), "tool", "src");
   cpSync(TOOL_SRC, src, { recursive: true, filter: (from) => !/\.test\.[mc]?[jt]s$/.test(from) });
+  linkToolchain(join(src, "..")); // the tool's one declared dependency (a11ign/agent-org#522): what `tool/src` resolves a bare specifier to
   writeFileSync(join(src, "..", "package.json"), '{"type":"module"}'); // the standalone repository's own: without it tsx loads the `.ts` files as CommonJS
   return src;
 }
@@ -156,6 +158,7 @@ function productTree(): string {
   const root = scratch();
   const src = join(root, "packages/agent-org/src");
   cpSync(TOOL_SRC, src, { recursive: true, filter: (from) => !/\.test\.[mc]?[jt]s$/.test(from) });
+  linkToolchain(join(root, "packages/agent-org"));
   mkdirSync(join(root, ".agent-org"), { recursive: true });
   cpSync(join(REPO, ".agent-org/project.json"), join(root, ".agent-org/project.json"));
   writeFileSync(join(root, "packages/agent-org/package.json"), '{"type":"module"}'); // the package's own: without it tsx loads the `.ts` files as CommonJS

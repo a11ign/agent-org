@@ -53,7 +53,7 @@ const CONVERTED_FILES: readonly string[] = [
   "row-claim-file-overlap-rule",
   "host-project-paths",
   "org-health",
-  "org-health-fleet-and-copies",
+  "org-health-fleet-idle",
   "acceptance-commands",
   "gh-token-jobs",
   "keyed-repo-review",

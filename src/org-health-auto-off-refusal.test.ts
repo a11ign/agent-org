@@ -218,8 +218,6 @@ test("reading the real path: a mirror written to `runs/fleet-auto-off-mirror.jso
 
 const QUIET = { now: NOW, lastMergedAt: NOW - 60 * MINUTE_MS, work: { greenPrs: 0, claimableRows: 0 }, redPrs: [], refusals: {},
   drift: { behind: 0, ahead: 0, dirty: [] }, primarySince: null };
-/** An extracted tool's tree: a copy with no original, which `orgHealthTick` leaves out rather than stating unknown, so the copies are neither tripped nor unknown here. */
-const noCopies = () => [{ original: "a.mjs", copy: "b.mjs", originalText: null, copyText: "", allowedLines: 0 }];
 
 test("the readings carry the signal only when the fact is given, and the order names the signal, the reason, the age and the bound", () => {
   assert.equal(orgHealthReadings(QUIET as never).some((r) => r.signal === SIGNAL), false);
@@ -238,18 +236,18 @@ test("the readings carry the signal only when the fact is given, and the order n
 
 test("the tick reads the record itself when the caller gives none: a standing refusal is offered, a record that cannot be read is said on stderr", () => {
   const said: string[] = [];
-  const offered = orgHealthTick(QUIET as never, { log: (l) => said.push(l), readCopies: noCopies, readAutoOff: () => refusing(16) as never });
+  const offered = orgHealthTick(QUIET as never, { log: (l) => said.push(l), readAutoOff: () => refusing(16) as never });
   assert.deepEqual(offered.map((o) => o.subject), [SIGNAL]);
   assert.deepEqual(said, [], "a tripped signal's report is its order, and a line written every tick would be offered as a fault of its own");
 
   const unread: string[] = [];
-  const none = orgHealthTick(QUIET as never, { log: (l) => unread.push(l), readCopies: noCopies, readAutoOff: () => ({ unreadable: "the mirror is gone" }) });
+  const none = orgHealthTick(QUIET as never, { log: (l) => unread.push(l), readAutoOff: () => ({ unreadable: "the mirror is gone" }) });
   assert.deepEqual(none, []);
   assert.match(unread.join(""), /org-health: fleet-auto-off-refusing UNKNOWN -- the mirror is gone; it is not read as clear\./);
 });
 
 test("a caller's own `autoOff` fact wins over the reader, which is not asked", () => {
   const orders = orgHealthTick({ ...QUIET, autoOff: { refusal: null, readAt: READ_AT } } as never,
-    { log: () => undefined, readCopies: noCopies, readAutoOff: () => { throw new Error("must not be asked"); } });
+    { log: () => undefined, readAutoOff: () => { throw new Error("must not be asked"); } });
   assert.deepEqual(orders, []);
 });

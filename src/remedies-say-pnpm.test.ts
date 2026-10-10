@@ -86,7 +86,7 @@ test("the real source tree names no npm command outside the pinned exemptions, a
   const files = toolFiles();
   const copies = files.filter((path) => COPY_HEADER.test(read(path)));
   assert.ok(files.length > 100, `POSITIVE CONTROL: the walk read ${files.length} files of src/ and host/, so an empty tree is not an empty pass`);
-  assert.ok(copies.length >= 10, `POSITIVE CONTROL: the copy header was found on ${copies.length} files, so \`COPIED FROM\` is not matching nothing`);
+  assert.ok(copies.length >= 1, `POSITIVE CONTROL: the copy header was found on ${copies.length} files, so \`COPIED FROM\` is not matching nothing`);
   const offenders = files.filter((path) => !copies.includes(path))
     .map((path) => ({ path, lines: linesNamingNpm(read(path)) }))
     .filter(({ lines }) => lines > 0)

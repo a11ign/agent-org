@@ -7,7 +7,8 @@
  * So the tool's files land under `<copyRoot>/packages/agent-org/`, the project's under `<copyRoot>/`, and the copied tool is told the
  * copy is its project by a `host.json` of its own (`AGENT_ORG_HOST`), the one way it learns where a project is.
  */
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { localImports } from "../lib/local-import-closure.ts";
@@ -46,6 +47,22 @@ export function importClosure(entry: string, also: string[] = []): Set<string> {
   return files;
 }
 
+/**
+ * The tool's one declared dependency (`@a11ign/toolchain`, a11ign/agent-org#522), linked where a bare specifier in a copy under `root` finds it.
+ * It is ALL a copy gets: the closure copied above follows relative imports only, so a copy is still a tree with no other `node_modules`.
+ */
+export function linkToolchain(root: string): void {
+  const link = join(root, "node_modules/@a11ign/toolchain");
+  if (existsSync(link)) return;
+  mkdirSync(dirname(link), { recursive: true });
+  symlinkSync(installedToolchain(), link);
+}
+
+/** The directory of the `@a11ign/toolchain` this checkout resolves: the one a staged tree or an offline install is given, so no test reaches a registry. */
+export function installedToolchain(): string {
+  return realpathSync(join(dirname(createRequire(import.meta.url).resolve("@a11ign/toolchain/lib/git-env")), "..", ".."));
+}
+
 function copyInto(target: string, source: string): void {
   mkdirSync(dirname(target), { recursive: true });
   copyFileSync(source, target);
@@ -56,7 +73,8 @@ function copyInto(target: string, source: string): void {
  * @returns the copy of `entry`, and the environment that makes the copy its own project
  */
 export function copyToolAndProject(entry: string, files: Iterable<string>, copyRoot: string): { entry: string; env: Record<string, string> } {
-  for (const file of files) copyInto(join(copyRoot, TOOL_DIR, relative(TOOL_ROOT, file)), file);
+  const copied = [...files];
+  for (const file of copied) copyInto(join(copyRoot, TOOL_DIR, relative(TOOL_ROOT, file)), file);
   // The tool's own package.json says "type": "module"; without it the copy's `.ts` files load as CommonJS under node.
   writeFileSync(join(copyRoot, TOOL_DIR, "package.json"), '{"type":"module"}');
   for (const file of projectFiles()) copyInto(join(copyRoot, file), join(HOME_CHECKOUT, file));
@@ -64,5 +82,8 @@ export function copyToolAndProject(entry: string, files: Iterable<string>, copyR
   const host = JSON.parse(readFileSync(hostSource, "utf8")) as { primary: string };
   const hostPath = join(copyRoot, ".agent-org/host.json");
   writeFileSync(hostPath, JSON.stringify({ ...host, projects: [{ id: host.primary, checkout: copyRoot }] }));
+  // DERIVED, never assumed: a closure that imports nothing from the toolchain (the gate's, #2174) is copied into a tree with NO `node_modules`, which is
+  // the premise of its test; one that does gets the one dependency and nothing else.
+  if (copied.some((file) => /\b(?:from|import)\s*\(?\s*["']@a11ign\/toolchain\//.test(readFileSync(file, "utf8")))) linkToolchain(copyRoot);
   return { entry: join(copyRoot, TOOL_DIR, relative(TOOL_ROOT, entry)), env: { [HOST_ENV]: hostPath } };
 }

@@ -7,9 +7,11 @@
  * reading a manifest, so the programs this tool ships are held to it by a walk of their source. This asks whether a spawn should be of npm at
  * all; whether it is safe on Windows is `lib/npm-cli-executable.ts`'s question.
  *
- * ONE NAMED FILE, `ALLOWED`, `src/lib/isolation-gate.ts`: the CONSUMER half of the isolation gate installs the packed tarballs with npm into a
- * directory that is not a workspace, because that is the install a user gets. npm is the point. It carries a one-line `STAYS npm` comment,
- * pinned here. Nothing else is exempt: the primary-update script was carried as named debt until a11ign/a11ign#3108 spelled its build `pnpm`.
+ * NO FILE IS NAMED IN `ALLOWED` NOW. It held one, `src/lib/isolation-gate.ts`, whose CONSUMER half installs the packed tarballs with npm into a
+ * directory that is not a workspace, because that is the install a user gets: npm was the point there, and the file carried a one-line
+ * `STAYS npm` comment, pinned here. That file is the toolchain's since a11ign/agent-org#522 and no longer in this tree to be scanned; the table
+ * and its checks stay, so a future exemption is a decision made here. The primary-update script was carried as named debt until a11ign/a11ign#3108
+ * spelled its build `pnpm`.
  *
  * WHAT THIS CANNOT SEE: a command assembled at run time (`spawn(tool, ...)` with `tool = "npm"`), or `npm` handed to a shell as part of a
  * longer string such as `sh -c "npm run x"`. It reads the literal at the call.
@@ -18,13 +20,11 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { stripComments } from "../lib/source-text.ts";
+import { stripComments } from "@a11ign/toolchain/lib/source-text";
 import { toolSources, type ToolFile } from "./tool-source.ts";
 
 /** The named files that keep npm, and why. The reason is for a reader; the test pins the FILE NAMES. */
-const ALLOWED: Record<string, string> = {
-  "src/lib/isolation-gate.ts": "the consumer half installs the packed tarballs with npm, outside any workspace",
-};
+const ALLOWED: Record<string, string> = {};
 
 /** Every comment in an allowlisted file that says why, matched by this exact opening. */
 const STAYS_MARKER = /\/\/ STAYS npm\b/;
@@ -78,8 +78,8 @@ test("a fixture spawnSync(\"npm\", ...) is REFUSED, naming the file and the line
 
 test("the same spelling in an allowlisted file passes, and in the same file under another name it does not", () => {
   const source = 'spawnSync("npm", ["view", "a11ign"]);\n';
-  assert.deepEqual(refusals({ "src/lib/isolation-gate.ts": source }), []);
-  assert.equal(refusals({ "src/lib/isolation-gate-copy.mjs": source }).length, 1);
+  assert.deepEqual(refusals({ "src/exempt.ts": source }, ["src/exempt.ts"]), []);
+  assert.equal(refusals({ "src/exempt-copy.mjs": source }, ["src/exempt.ts"]).length, 1);
 });
 
 test("an npx call is REFUSED, whether through the helper or a child_process call or a command string", () => {
@@ -123,7 +123,7 @@ test("the real tree: no spawn of npm or npx outside the named files", () => {
   assert.deepEqual(refusals(scannedSources()), []);
 });
 
-test("positive control: the walk is not empty, and finds the spawn that IS exempt, in the named file", () => {
+test("positive control: the walk is not empty, and finds the spawn that IS exempt, in each named file", () => {
   const sources = scannedSources();
   assert.ok(Object.keys(sources).length > 100, "too few files scanned: the walk is broken, and an empty walk passes everything");
   for (const path of Object.keys(ALLOWED)) {
@@ -132,8 +132,8 @@ test("positive control: the walk is not empty, and finds the spawn that IS exemp
   }
 });
 
-test("the exemption is EXACTLY this named file, so a new one is a decision made here and not a convenience", () => {
-  assert.deepEqual(Object.keys(ALLOWED), ["src/lib/isolation-gate.ts"]);
+test("there is NO exempt file, so a new one is a decision made here and not a convenience", () => {
+  assert.deepEqual(Object.keys(ALLOWED), []);
 });
 
 test("the allowlisted file says in a `STAYS npm` comment why it does", () => {

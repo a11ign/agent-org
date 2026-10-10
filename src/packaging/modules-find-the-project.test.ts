@@ -7,7 +7,10 @@
  *
  * `lib/product-home.ts`, `lib/walk-scope.ts` and `ready-label-audit.ts` each reached a project file (the product's manifest, the tree a
  * declared scope is relative to, `docs/row-filing.md`) by `src` up three or four, which is `packages/agent-org/src`'s root in the monorepo and
- * the HOME directory in this repository. A test that reads the project the host file names cannot tell the two apart when the tool also sits
+ * the HOME directory in this repository. `product-home` is the toolchain's now (a11ign/agent-org#522) and takes its root from where IT is
+ * installed: `board-document.ts` hands it `HOME_CHECKOUT`, and it is asked here through the document that does. `walk-scope` stays the tool's
+ * own declared copy, because the toolchain's `REPO_ROOT` has no such parameter, and its test below is what pins that copy's root. A test that
+ * reads the project the host file names cannot tell the two apart when the tool also sits
  * in that project, so each child here runs against a SCRATCH project, one whose files are the only ones carrying the marker below: a module
  * that resolved anything else would fail naming the file it read.
  */
@@ -60,9 +63,18 @@ function inChild(hostFile: string, expression: string): unknown {
   return JSON.parse(result.stdout);
 }
 
-test("product-home reads the PROJECT's manifest: the scratch project's homepage, not the file at some depth above the tool", () => {
+/** The expression that renders the board document in the child, whose one sentence about the product's home is `productHome(HOME_CHECKOUT)`. */
+const renderedDocumentHas = (marker: string) => `(async () => {
+  const { document } = await import(${JSON.stringify(`${SRC}/board-document.ts`)});
+  const { foundByChairman } = await import(${JSON.stringify(`${SRC}/found-by-chairman.ts`)});
+  return document({ since: "2026-01-01T00:00:00Z", all: [], open: [], closed: [], milestones: [], release: null, merges: [], unpushed: 0, strays: [],
+    latestGate: null, gateIsFresh: false, foundByChairman: foundByChairman([], new Date()),
+    fleetHours: { status: "not instrumented", note: "no total exists." }, achievements: [] }, { text: "x" }).includes(${JSON.stringify(marker)});
+})()`;
+
+test("the board document says the PROJECT's manifest homepage: the scratch project's, not the file at some depth above the tool", () => {
   const { hostFile } = scratchProject();
-  assert.equal(inChild(hostFile, `import(${JSON.stringify(`${SRC}/lib/product-home.ts`)}).then((m) => m.productHome())`), MARKER);
+  assert.equal(inChild(hostFile, renderedDocumentHas(MARKER)), true);
 });
 
 test("walk-scope's REPO_ROOT is the PROJECT's checkout, the tree every declared scope is relative to", () => {
@@ -78,9 +90,8 @@ test("ready-label-audit reads the PROJECT's docs/row-filing.md, the guidance a f
 test("POSITIVE CONTROL: a project that lacks the file makes the module FAIL naming it, so the three readings above are the project's and not a default", () => {
   const { checkout, hostFile } = scratchProject();
   rmSync(join(checkout, "packages/cli/package.json"));
-  const result = spawnSync(process.execPath, ["--input-type=module", "-e",
-    `(await import(${JSON.stringify(`${SRC}/lib/product-home.ts`)})).productHome()`],
-  { cwd: HERE, encoding: "utf8", env: { ...process.env, AGENT_ORG_HOST: hostFile } });
-  assert.notEqual(result.status, 0, "productHome answered with the project's manifest gone");
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", `console.log(await (${renderedDocumentHas(MARKER)}))`],
+    { cwd: HERE, encoding: "utf8", env: { ...process.env, AGENT_ORG_HOST: hostFile } });
+  assert.notEqual(result.status, 0, "the document rendered with the project's manifest gone");
   assert.ok(result.stderr.includes(join(checkout, "packages/cli/package.json")), `the missing file is not named:\n${result.stderr}`);
 });

@@ -134,7 +134,7 @@ function gateTick(pr: Pr) {
     closes: declaredClosedRows(pr.body, { prRepo: LAB, trackerRepo: TRACKER }), held: (pr.labels as string[]).some((l) => l.startsWith("hold:")) };
   const decideArgs = { prs: [], required: [], readyRows: [ROW_4372], prFiles: [prFile], rowBranches: [], openRows: [ROW_4372], primaryDrift: null, claimRefusals: [] };
   const orders = orgHealthNow({ prsRead: [], keyedPrsRead: [pr], readyRead: [ROW_4372], openRowsRead: [ROW_4372], decideArgs, decided: [] } as never,
-    { now: NOW, lastMergedAt: () => NOW, readCaptures: () => undefined, readLabJobs: () => [], readCopies: () => [], log: () => {}, teamAccess: () => undefined } as never) as { subject: string; session: string; prompt: string }[];
+    { now: NOW, lastMergedAt: () => NOW, readCaptures: () => undefined, readLabJobs: () => [], log: () => {}, teamAccess: () => undefined } as never) as { subject: string; session: string; prompt: string }[];
   const calls = existsSync(GH_LOG) ? readFileSync(GH_LOG, "utf8").split("\n").filter(Boolean) : [];
   return { orders: orders.filter((o) => o.subject === SIGNALS.SHELVED_CIRCLE), calls };
 }

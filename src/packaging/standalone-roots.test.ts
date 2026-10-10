@@ -17,21 +17,20 @@
  * three modules take `HOME_CHECKOUT`. `host-units`'s `REPO_ROOT` is the PROJECT's checkout and not the tool's: what it reads there (`.agent-org/units`,
  * `package.json` scripts, git history) is the project's, and `SHIPPED_DIR` is the tool's own location and stays `import.meta.url`-relative.
  *
- * #2884 (child 5d-5): `lib/changed-packages.ts` spelled the same thing from `src/lib`, where up three is `packages/` and not even the
- * checkout; it works only because git walks up. The scan now reads `src/lib` too (every file there is a copy of a product file, and
- * only that one spelled it), and a child proves its git calls run in the fixture checkout: `filesChangedAgainstOrigin()` answers with
- * a file committed there, which a `cwd` of `packages/` or the directory above `tool` cannot.
+ * #2884 (child 5d-5): `lib/changed-packages.ts` spelled the same thing from `src/lib`, where up three was `packages/`. It was one of the tool's
+ * declared copies and is gone with them (a11ign/agent-org#522): `src/lib` holds the six the gate's closure reaches, `walk-scope.ts` and the
+ * `tree-wide-guard.ts` re-export now, and the scan still reads them. The toolchain's `changed-packages` is not read here: nothing in the tool imports it, and its root is its own install's.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { HOME_CHECKOUT, HOST_ENV } from "../project-config.ts";
 import { sandboxGitEnv } from "../lib/git-env.ts";
-import { changedFiles } from "../lib/changed-files.ts";
+import { linkToolchain } from "./copied-tool-fixture.ts";
 import { snapshotDirFor } from "../board-snapshot-scope.ts";
 
 // Two trees: the PROJECT's checkout, which the fixtures copy from, and the TOOL's own `src`, which is what is scanned and copied.
@@ -53,9 +52,8 @@ function upThreeSpellings(source: string): boolean {
 }
 
 /**
- * Non-test `.mjs` and `.ts` under `src` AND `src/lib`, as paths relative to `src`. `lib/` holds the tool's copies of product files (#2623), and a copy
- * keeps the product's spelling of the root unless its header names an edit: `changed-packages.ts` did, and from `src/lib` that is
- * `packages/`, not the checkout (#2884). None of the other `lib/` files spells it, so no `lib/` file needs an exemption.
+ * Non-test `.mjs` and `.ts` under `src` AND `src/lib`, as paths relative to `src`. `lib/` held the tool's copies of product files (#2623) and holds
+ * the one re-export now; a file placed there is read for the three-up spelling like any other, and none needs an exemption.
  */
 const nonTestModules = (): string[] =>
   [".", "lib"].flatMap((dir) => readdirSync(join(SRC, dir))
@@ -79,7 +77,7 @@ test("the scan reads a real population, and it contains SELF (so SELF's exemptio
   assert.ok(modules.length > 50, `only ${modules.length} modules scanned`);
   assert.ok(modules.includes(SELF.file));
   assert.equal(upThreeSpellings(readFileSync(join(SRC, SELF.file), "utf8")), true, `SELF no longer spells it: ${SELF.reason}`);
-  assert.ok(modules.includes(join("lib", "changed-packages.ts")), "the scan reaches lib/");
+  assert.ok(modules.includes(join("lib", "tree-wide-guard.ts")), "the scan reaches lib/");
   assert.ok(modules.some((name) => name.startsWith("lib/")) && modules.some((name) => !name.startsWith("lib/")), "both directories are read");
 });
 
@@ -135,6 +133,7 @@ function standaloneTree(): { src: string; aboveTool: string } {
   const aboveTool = scratch();
   const src = join(aboveTool, "tool", "src");
   cpSync(SRC, src, { recursive: true, filter: (from) => !/\.test\.[mc]?[jt]s$/.test(from) });
+  linkToolchain(join(aboveTool, "tool")); // the tool's one declared dependency (a11ign/agent-org#522), where `tool/src` resolves a bare specifier
   writeFileSync(join(src, "..", "package.json"), '{"type":"module"}'); // the standalone repository's own: without it tsx loads the `.ts` files as CommonJS
   return { src, aboveTool };
 }
@@ -150,30 +149,7 @@ function writeHost(checkout: string): string {
 /** One module's root-derived value, as the child prints it. `answer` runs in the child with the module imported as `m`. */
 type Module = {
   name: string; file: string; answer: string; expectedInFixture: (checkout: string) => unknown; expectedInTree: unknown;
-  /** Runs on the fixture checkout before the child reads it, for a module whose answer comes from git history. */
-  prepare?: (checkout: string) => void;
 };
-
-const FIXTURE_CHANGED_FILE = "FIXTURE-CHANGED-AFTER-ORIGIN.md";
-
-/** `origin/main` at the fixture's one commit, then one more commit: the diff `filesChangedAgainstOrigin` reads is that file alone. */
-function commitPastOriginMain(checkout: string): void {
-  const git = (...args: string[]) => execFileSync("git", ["-C", checkout, "-c", "user.name=t", "-c", "user.email=t@example.invalid", ...args], { env: sandboxGitEnv() });
-  git("update-ref", "refs/remotes/origin/main", "HEAD");
-  writeFileSync(join(checkout, FIXTURE_CHANGED_FILE), "x\n");
-  git("add", "-A");
-  git("commit", "-q", "-m", "past origin/main");
-}
-
-/** The same question asked of this checkout in the parent, with the range spelled out, so the in-tree answer is not the module's own. */
-function inTreeChangedAgainstOrigin(): string[] {
-  try {
-    const base = execFileSync("git", ["merge-base", "HEAD", "origin/main"], { cwd: REPO, env: sandboxGitEnv(), encoding: "utf8" }).trim();
-    return changedFiles([base, "HEAD"], { repoRoot: REPO });
-  } catch {
-    return [];
-  }
-}
 
 const MODULES: Module[] = [
   { name: "board-data ROOT", file: "board-data.ts", answer: "m.ROOT",
@@ -194,8 +170,6 @@ const MODULES: Module[] = [
     expectedInFixture: (checkout) => checkout, expectedInTree: REPO },
   { name: "update-primary PRIMARY_CHECKOUT", file: "update-primary.ts", answer: "m.PRIMARY_CHECKOUT",
     expectedInFixture: (checkout) => checkout, expectedInTree: REPO },
-  { name: "lib/changed-packages filesChangedAgainstOrigin()", file: "lib/changed-packages.ts", answer: "m.filesChangedAgainstOrigin()",
-    prepare: commitPastOriginMain, expectedInFixture: () => [FIXTURE_CHANGED_FILE], expectedInTree: inTreeChangedAgainstOrigin() },
 ];
 
 /** Import `<src>/<file>` in a child and print `answer` as JSON. `host` undefined removes `$AGENT_ORG_HOST` whatever this process holds. */
@@ -212,7 +186,6 @@ function readIn(src: string, module: Module, host: string | undefined): unknown 
 for (const module of MODULES) {
   test(`${module.name}: with $AGENT_ORG_HOST set, the fixture checkout and not the directory above tool/`, () => {
     const checkout = fixtureProject();
-    module.prepare?.(checkout);
     const { src, aboveTool } = standaloneTree();
     const got = readIn(src, module, writeHost(checkout));
     assert.deepEqual(got, module.expectedInFixture(checkout));

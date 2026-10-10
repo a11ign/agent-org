@@ -36,7 +36,7 @@ function tick({ rows, lastMerge = 600, moves = { at: null } }: { rows: Row[] | n
   const asked: unknown[] = [];
   const orders = orgHealthNow(
     { prsRead: [], readyRead: [], openRowsRead: rows, decideArgs, decided: [] } as never,
-    { now: NOW, lastMergedAt: () => (lastMerge === null ? null : ago(lastMerge)), log: (line: string) => said.push(line), readCopies: () => [] as never,
+    { now: NOW, lastMergedAt: () => (lastMerge === null ? null : ago(lastMerge)), log: (line: string) => said.push(line), 
       readCaptures: (() => ({ captures24h: 3, lastCaptureAt: ago(10) })) as never, readLabJobs: () => [], readWaits: (() => null) as never, teamAccess: () => undefined,
       readMilestoneMoves: ((input: unknown) => { asked.push(input); if (moves === "throws") throw new Error("gh refused"); return moves; }) as never },
   );

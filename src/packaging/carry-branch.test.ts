@@ -27,7 +27,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { carryBranch, branchCheckedOutLocally } from "../carry-branch.ts";
-import { declareTreeWideGuard } from "../lib/tree-wide-guard.ts";
+import { declareTreeWideGuard } from "@a11ign/toolchain/lib/tree-wide-guard";
 import { REMOVAL_LOG_ENV } from "../worktree-removal.ts";
 import { tmpDirForFile } from "../lib/tmp-fixture.ts";
 

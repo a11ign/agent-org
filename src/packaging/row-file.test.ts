@@ -39,7 +39,7 @@ import { filingWarnings, malformedAcceptanceCommandWarning, quotedTestCountWarni
 import { CLAIM_LABEL } from "../claim-labels.ts";
 import { filedByLine } from "../row-claim.ts";
 import { REPO } from "../project-identity.ts";
-import { withGitSandbox } from "../lib/git-sandbox.ts";
+import { withGitSandbox } from "@a11ign/toolchain/lib/git-sandbox";
 
 const CLI = fileURLToPath(new URL("../row-file.ts", import.meta.url));
 /**

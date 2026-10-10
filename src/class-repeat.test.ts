@@ -209,7 +209,7 @@ test("two classes repeating in one tick are two readings with their own keys", (
 test("the tick: an omitted fact is silent, a tripped one is one order to ceo, an unknown one logs and orders nothing", () => {
   const lines = ([] as string[]);
   const base = { now: NOW, lastMergedAt: NOW - MINUTE, work: null, redPrs: [], refusals: {}, drift: { behind: 0, ahead: 0, dirty: [] }, primarySince: null, copies: [] };
-  const io = { log: (l: string) => lines.push(l), readCopies: () => [], readAutoOff: () => undefined };
+  const io = { log: (l: string) => lines.push(l), readAutoOff: () => undefined };
   assert.equal(orgHealthReadings(base).some((r) => r.signal === SIGNALS.CLASS_REPEAT), false, "a caller that does not ask gets no class-repeat reading");
   const orders = orgHealthTick({ ...base, classRepeat: factOf(TWO_IN_X) }, (io as any)).filter((o) => o.subject === SIGNALS.CLASS_REPEAT);
   assert.deepEqual(orders.map((o) => [o.session, o.cause, o.causeKey]), [["ceo", "org-health", "ceo/org-health/class-repeat/x@11"]]);

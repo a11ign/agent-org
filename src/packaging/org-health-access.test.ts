@@ -197,7 +197,7 @@ test("#3634: the tick carries the reading, omits it when not asked, and the orde
   const decideArgs = { prs: [], required: [], readyRows: [], prFiles: new Map(), rowBranches: [], openRows: [], primaryDrift: null, claimRefusals: [] };
   const drifted = access([...clean, ...listing({ "a11ign/auth-capture-check": "admin" })]);
   const tick = (teamAccess: () => unknown) => orgHealthNow({ prsRead: [], readyRead: [], openRowsRead: [], decideArgs, decided: [] } as never,
-    { now: NOW, lastMergedAt: () => NOW, readCaptures: () => undefined, readLabJobs: () => [], readCopies: () => [], log: () => {}, teamAccess,
+    { now: NOW, lastMergedAt: () => NOW, readCaptures: () => undefined, readLabJobs: () => [], log: () => {}, teamAccess,
       readWaits: () => ({ facts: new Map(), stale: [], bare: [], manual: 0 }) } as never) as { subject: string; session: string; prompt: string }[];
   const order = tick(() => drifted).find((o) => o.subject === SIGNALS.TEAM_ACCESS);
   assert.deepEqual(tick(() => access(clean)).filter((o) => o.subject === SIGNALS.TEAM_ACCESS), [], "clear offers nothing");

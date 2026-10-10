@@ -294,7 +294,7 @@ function wired({ rows, comments, claimFacts, agents }: { rows: Record<string, un
   const asked: string[] = [];
   const decideArgs = { prs: [], required: [], readyRows: [], prFiles: new Map(), rowBranches: [], openRows: [], primaryDrift: null, claimRefusals: [], claimFacts };
   const orders = orgHealthNow({ prsRead: [], readyRead: [], openRowsRead: rows, claimedComments: comments, decideArgs, decided: [] } as never,
-    { now: NOW, lastMergedAt: () => NOW - 60 * MINUTE_MS, log: () => undefined, readCopies: (() => []) as never, readCaptures: (() => undefined) as never,
+    { now: NOW, lastMergedAt: () => NOW - 60 * MINUTE_MS, log: () => undefined, readCaptures: (() => undefined) as never,
       readWaits: (() => null) as never, release: (() => false) as never, readHolderAgents: (() => { asked.push("herdr"); return agents; }) as never });
   return { orders: (orders as Order[]).filter((o) => o.subject === SIGNALS.OVERDUE), asked };
 }

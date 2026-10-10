@@ -150,7 +150,7 @@ const decideArgs = (readyRows: unknown[], openRows: unknown[]) => ({ prs: [], re
 function tick(openRowsRead: unknown[] | null, { readyRows = [] as unknown[], prsRead = [] as unknown[] | null } = {}) {
   rmSync(GH_LOG, { force: true });
   const orders = orgHealthNow({ prsRead, readyRead: readyRows, openRowsRead, decideArgs: decideArgs(readyRows, openRowsRead ?? []), decided: [] } as never,
-    { now: NOW, lastMergedAt: () => NOW, readCaptures: () => undefined, readLabJobs: () => [], readCopies: () => [], log: () => {}, teamAccess: () => undefined } as never) as { subject: string; session: string; prompt: string }[];
+    { now: NOW, lastMergedAt: () => NOW, readCaptures: () => undefined, readLabJobs: () => [], log: () => {}, teamAccess: () => undefined } as never) as { subject: string; session: string; prompt: string }[];
   const calls = existsSync(GH_LOG) ? readFileSync(GH_LOG, "utf8").split("\n").filter(Boolean) : [];
   return { orders: orders.filter((o) => o.subject === SIGNALS.IDLE_WITH_OPEN_ROWS), calls };
 }

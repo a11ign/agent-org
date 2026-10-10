@@ -338,7 +338,7 @@ function tick(openRowsRead: any[] | null, io: Record<string, any> = {}) {
   const decideArgs = { prs: [], required: [], readyRows: [], prFiles: new Map(), rowBranches: [], openRows: openRowsRead ?? [], primaryDrift: null, claimRefusals: [] };
   const waits = { facts: { items: {} }, stale: [], bare: [], manual: [], umbrella: [] };
   return orgHealthNow(({ prsRead: [], readyRead: [], openRowsRead, decideArgs, decided: [] } as any), ({ now: NOW, lastMergedAt: () => NOW,
-    readCaptures: () => undefined, readLabJobs: () => [], readCopies: () => [], log: () => {}, teamAccess: () => undefined, readWaits: () => waits,
+    readCaptures: () => undefined, readLabJobs: () => [], log: () => {}, teamAccess: () => undefined, readWaits: () => waits,
     readHolderAgents: () => null, ...io } as any));
 }
 /** @param {any[]} orders */

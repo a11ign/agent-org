@@ -36,7 +36,7 @@ function tick(rows: unknown[], via: Readers) {
   const decideArgs = { prs, required: [], readyRows: [], prFiles: new Map(), rowBranches: [], openRows: rows, primaryDrift: null, claimRefusals: [] };
   const decided = decide({ prs, readyRows: [], openRows: rows } as never);
   const orders = orgHealthNow({ prsRead: [], readyRead: [], openRowsRead: rows, decideArgs, decided } as never,
-    { now: NOW, lastMergedAt: () => NOW - 3_600_000, log: () => {}, readCopies: (() => []) as never, readCaptures: (() => undefined) as never,
+    { now: NOW, lastMergedAt: () => NOW - 3_600_000, log: () => {}, readCaptures: (() => undefined) as never,
       readWaits: ((args: never) => waitTickFacts({ ...(args as Parameters<typeof waitTickFacts>[0]), run: () => { throw new Error("refused"); }, readers: via })) as never,
       release: (() => false) as never, teamAccess: () => undefined });
   return (orders as { session: string; subject: string; prompt: string }[]).filter((o) => o.session === "product-manager");

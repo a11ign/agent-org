@@ -14,7 +14,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { withGitSandbox, type GitSandbox } from "../lib/git-sandbox.ts";
+import { withGitSandbox, type GitSandbox } from "@a11ign/toolchain/lib/git-sandbox";
 import { HOME_CHECKOUT } from "../project-config.ts";
 import { regionPathsFromBody, trackedTopLevelDirs } from "../region-paths.ts";
 
