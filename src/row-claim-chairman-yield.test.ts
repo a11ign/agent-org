@@ -60,7 +60,7 @@ type World = {
 };
 
 /** One `gh`, routed the way `claimed-region-overlap.test.ts` routes it, plus the two reads the yield adds. `calls` is every argv it was asked. */
-function gh(world: World, calls: string[][] = []) {
+function fakeGh(world: World, calls: string[][] = []) {
   return (_cmd: string, args: string[]): string => {
     calls.push(args);
     if (args[0] === "issue" && args[1] === "view") {
@@ -94,7 +94,7 @@ function history(world: World, args: string[]): string {
   return `${actor}\n`;
 }
 
-const verdict = (world: World, calls?: string[][]) => sessionEligibility(ASKER, `worker-${ASKER}`, { run: gh(world, calls), repo: TRACKER, repos: [AGENT_ORG] });
+const verdict = (world: World, calls?: string[][]) => sessionEligibility(ASKER, `worker-${ASKER}`, { run: fakeGh(world, calls), repo: TRACKER, repos: [AGENT_ORG] });
 
 // --- (1) a chairman row over a plain claimed row ------------------------------------------------------------------------------------
 
@@ -186,14 +186,14 @@ test("(8) with no overlap the claim does not read the chairman's rows at all", (
 
 test("(8) `sessionEligibilityReason` is the same verdict as `sessionEligibility`'s reason", () => {
   const world: World = { labelled: { [ASKER]: CHAIRMAN }, claimed: [{ number: HOLDER, files: [SHARED] }] };
-  assert.equal(sessionEligibilityReason(ASKER, `worker-${ASKER}`, { run: gh(world), repo: TRACKER, repos: [AGENT_ORG] }), null);
-  assert.notEqual(sessionEligibilityReason(ASKER, `worker-${ASKER}`, { run: gh({ claimed: world.claimed }), repo: TRACKER, repos: [AGENT_ORG] }), null);
+  assert.equal(sessionEligibilityReason(ASKER, `worker-${ASKER}`, { run: fakeGh(world), repo: TRACKER, repos: [AGENT_ORG] }), null);
+  assert.notEqual(sessionEligibilityReason(ASKER, `worker-${ASKER}`, { run: fakeGh({ claimed: world.claimed }), repo: TRACKER, repos: [AGENT_ORG] }), null);
 });
 
 // --- (9) THE CLAIM ITSELF: the seam above is driven, and so is the call site that says so on the row ------------------------------------
 
 const claimWith = (world: World, calls: string[][]) => claimRow(ASKER, `worker-${ASKER}`, {
-  run: gh(world, calls), moveStatus: () => ({ moved: true }), drained: [], instance: { spare: false, rows: [] }, persistent: false,
+  run: fakeGh(world, calls), moveStatus: () => ({ moved: true }), drained: [], instance: { spare: false, rows: [] }, persistent: false,
   tracker: { key: "", repo: TRACKER },
 } as never);
 const commentsOn = (calls: string[][]) => calls.filter((args) => args[0] === "issue" && args[1] === "comment").map((args) => args[args.indexOf("--body") + 1]);
