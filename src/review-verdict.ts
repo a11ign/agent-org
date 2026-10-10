@@ -152,9 +152,13 @@ function verdictHereAt(comment: any, head: string) {
 export function verdictBearers(pr: { comments?: any[] | null; reviews?: any[] | null; }): { body: string; id?: number | string; }[] {
   const timed = (item: any, field: string) =>
     ({ at: Date.parse(item?.[field] ?? ""), body: item?.body ?? "", id: item?.id });
+  // A DISMISSED review is a verdict somebody ruled out (agent-org#586): left in, the gate acted on it for as long as
+  // it was the newest, ordering rework the ruling said was not owed. Only the state `DISMISSED` leaves; a review with
+  // no `state` field (the shape older callers and tests pass) still counts.
+  const standing = (r: any) => r?.state !== "DISMISSED";
   const items = [
     ...(pr?.comments ?? []).map((c: any) => timed(c, "createdAt")),
-    ...(pr?.reviews ?? []).map((r: any) => timed(r, "submittedAt")),
+    ...(pr?.reviews ?? []).filter(standing).map((r: any) => timed(r, "submittedAt")),
   ];
   const key = (item: { at: number; }) => (Number.isFinite(item.at) ? item.at : -Infinity);
   return items
