@@ -2,10 +2,10 @@ A red `cross-repo` leg, or a red nightly, of a declared code repository's `ci.ym
 
 Acceptance:
 ```bash
-cd /home/agent/repos/agent-org && grep -q 'event=schedule' src/trunk-red.ts && node --test src/trunk-red.test.ts
+grep -q 'event=schedule' src/trunk-red.ts && node --test src/trunk-red.test.ts
 ```
 
-The row's command, run in the PR's own tree (the primary clone carries the change only after the merge) with `AGENT_ORG_HOST` set to a11y-witness's `.agent-org/host.json`. Printed: `ℹ tests 9 / ℹ pass 9 / ℹ fail 0`, exit 0. At `HEAD` before the change the `grep` fails (0 matches) and the test file has 2 tests.
+The row's command is `cd /home/agent/repos/agent-org && grep -q 'event=schedule' src/trunk-red.ts && node --test src/trunk-red.test.ts`. The primary clone carries the change only after the merge, so the command above is the same one run in the PR's own tree, with `AGENT_ORG_HOST` set to a11y-witness's `.agent-org/host.json`. Printed: `ℹ tests 9 / ℹ pass 9 / ℹ fail 0`, exit 0. At `HEAD` before the change the `grep` fails (0 matches) and the test file has 2 tests.
 
 Change 1, the measurement (done-when 2), with `gh api repos/a11ign/lab/actions/runs/<id>/jobs`, 2026-10-10: the job `checks (cross-repo)` reads `conclusion: "failure"` (failed step `The tests of this leg`) while its run reads `conclusion: "success"` and `gate` reads `success`, on lab's schedule run 38045596539 and push run 38044280935; the same job read `failure` on all 11 of the newest `ci.yml` runs on `main` (11 of 11, push and schedule). So the leg's own job conclusion IS readable, and it is the only place the red is.
 
