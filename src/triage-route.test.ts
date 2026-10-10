@@ -108,9 +108,12 @@ test("each case the row names, composed in code over a fake provider, with its n
     return { route: out.deliver.length === 1 ? "wake" : "digest", asked: real.bodies.length };
   };
   const repeatedAt = (minutesAgo: number) => ({ facts: { deliveries: [{ at: T0 - minutesAgo * MINUTE, key: order(1).causeKey, session: "product-manager" }] } });
-  // a red main always wakes, and asks nobody
-  assert.deepEqual(await route(INFORMATIONAL, { facts: { mainRed: true } }), { route: "wake", asked: 0 });
+  // the red main's OWN order wakes, and asks nobody; any other order sent while main is red is asked, and digests (#4887)
+  const redMainOwn = { session: "product-manager", causeKey: "product-manager/trunk-red/pr-4/abcd1234", prompt: "main is red" };
+  assert.deepEqual(await route(INFORMATIONAL, { facts: { mainRed: true } }, redMainOwn), { route: "wake", asked: 0 });
+  assert.deepEqual(await route(INFORMATIONAL, { facts: { mainRed: true } }), { route: "digest", asked: 1 }, "NEGATIVE CONTROL: another cause, main red, is asked and digests");
   assert.deepEqual(await route(INFORMATIONAL, { facts: { mainRed: false } }), { route: "digest", asked: 1 }, "CONTROL: the same order with main green digests");
+  assert.deepEqual(await route({ ...INFORMATIONAL, "names-red-main": "yes" }, { facts: { mainRed: true } }), { route: "wake", asked: 1 }, "while main is red, the question is what wakes it");
   // a chairman direction always wakes, and asks nobody
   assert.deepEqual(await route(INFORMATIONAL, {}, { ...order(1), startFresh: true }), { route: "wake", asked: 0 });
   // a repeat inside the hour digests; outside it, or with no delivery on record, it does not

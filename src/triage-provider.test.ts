@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { parseHostConfig } from "./host-config.ts";
-import { compose, DIGEST_MAX_P_ASKS, DIGEST_MAX_P_GUARD, DIGEST_MIN_P_INFORMATIONAL, DIGEST_MIN_P_REPEAT, freshState, QUESTIONS, REPEAT_WINDOW_MINUTES, triageOrder, type QuestionName, type Readings } from "./triage-provider.ts";
+import { compose, DIGEST_MAX_P_ASKS, DIGEST_MAX_P_GUARD, DIGEST_MIN_P_INFORMATIONAL, DIGEST_MIN_P_REPEAT, freshState, QUESTIONS, RED_MAIN_CAUSE, REPEAT_WINDOW_MINUTES, triageOrder, type QuestionName, type Readings } from "./triage-provider.ts";
 
 const FAKE_KEY = "tsk-FAKE-0123456789-do-not-print";
 const KEY_PATH = "/fake/typesafe/key";
@@ -259,12 +259,18 @@ test("the fallback of every question wakes, so no question left unanswered can h
   assert.deepEqual(fallbacks, { "asks-this-seat": "yes", repeat: "no", "names-red-main": "yes", "names-chairman-direction": "yes", "informational-only": "no" });
 });
 
-test("a red main or a chairman direction in the state wakes BEFORE anything is asked; the same order with neither is asked", async () => {
-  for (const flagged of [{ mainRed: true }, { chairmanDirection: true }]) {
+test("the red main's OWN order and a chairman direction wake BEFORE anything is asked; the trunk being red does not skip the question for any other order (#4887)", async () => {
+  const own = { cause: RED_MAIN_CAUSE, causeKey: "engineers/trunk-red/pr-4/abcd1234" };
+  for (const flagged of [{ ...own, mainRed: true }, own, { chairmanDirection: true }]) {
     const { deps, net } = rig(JEV, { body: digestible(0.99) });
     const result = await triageOrder({ ...ORDER, ...flagged }, deps);
-    assert.deepEqual([result.route, result.via, net.calls.length], ["wake", "none", 0]);
+    assert.deepEqual([result.route, result.via, net.calls.length], ["wake", "none", 0], JSON.stringify(flagged));
   }
+  // NEGATIVE CONTROL: the same order with main red and ANOTHER cause is asked, is told main is red, and digests on a confident `asks-this-seat=no`
+  const red = rig(JEV, { body: digestible(0.99) });
+  const other = await triageOrder({ ...ORDER, mainRed: true }, red.deps);
+  assert.deepEqual([other.route, other.via, red.net.calls.length], ["digest", "jev", 1]);
+  assert.equal(JSON.parse(red.net.calls[0].init.body).state.mainRed, true, "`mainRed` is still a fact the provider is told");
   const control = rig(JEV, { body: digestible(0.99) });
   assert.equal((await triageOrder(ORDER, control.deps)).route, "digest");
   assert.equal(control.net.calls.length, 1);

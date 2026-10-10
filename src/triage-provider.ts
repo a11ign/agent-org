@@ -26,7 +26,9 @@ const TIMEOUT_MS = 10_000;
 const NO_CAUSE = "(no cause)";
 /** How recent a delivery of the same cause to the same seat makes a new offer of it a repeat; `triage-route.ts`'s flush uses the same hour. */
 export const REPEAT_WINDOW_MINUTES = 60;
-const ALWAYS_WAKES = "main is red or a chairman direction is attached, so it wakes whatever the provider would say";
+/** The cause `trunk-red.ts` gives the one order a red main produces: the order that IS the red main, as opposed to any order sent while main is red. */
+export const RED_MAIN_CAUSE = "trunk-red";
+const ALWAYS_WAKES = "this is the red main's own order or a chairman direction is attached, so it wakes whatever the provider would say";
 
 const yesNo = (instructions: string, fallback: "yes" | "no"): Question => ({
   type: "choice", instructions, fallback,
@@ -248,13 +250,15 @@ const readingsOf = (decision: Decision): Record<QuestionName, number | null> =>
  * Where should this order go, according to the host's declared triage provider?
  *
  * The host's own `triage` declaration is already the opt-in for `wake-triage` (#4384), so the use is on unless the caller passes `switches` saying otherwise: reading
- * `.agent-org/decisions.json` as well would quietly turn off a triage somebody set up. A red main or a chairman direction in the state wakes BEFORE anything is asked.
+ * `.agent-org/decisions.json` as well would quietly turn off a triage somebody set up. The red main's OWN order (its cause is {@link RED_MAIN_CAUSE}) and a chairman
+ * direction wake BEFORE anything is asked. `mainRed` is the TRUNK's state and every order of a tick carries it, so it is a fact the provider is told and not a reason to
+ * skip it: an order about something else, sent while main is red, is asked, and `names-red-main` is the question that wakes it (a11ign/a11ign#4887).
  */
 export async function triageOrder(order: TriageOrder, deps: TriageDeps): Promise<Triage> {
   const { provider, keyPath } = deps.host.triage ?? { provider: "none" };
   if (provider !== "jev" || keyPath === undefined) return wake("none", NO_PROVIDER);
   if (!hasCause(order)) return wake("none", "the order has no cause, and an order that cannot be read is never routed");
-  if (order.mainRed === true || order.chairmanDirection === true) return wake("none", ALWAYS_WAKES);
+  if (order.cause === RED_MAIN_CAUSE || order.chairmanDirection === true) return wake("none", ALWAYS_WAKES);
   const state = Object.fromEntries(STATE_FIELDS.filter((field) => order[field] !== undefined).map((field) => [field, order[field]]));
   const decision = await decide("wake-triage", state, QUESTIONS, { ...deps, switches: { "wake-triage": true, ...deps.switches } });
   if (decision.via === "none") return wake("none", decision.reason ?? NO_PROVIDER);
