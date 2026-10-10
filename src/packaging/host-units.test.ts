@@ -903,7 +903,7 @@ test("#1974: every shipped unit that spawns `gh` declares which account -- over 
   // units it names are the assertion that it did: a floor is a bound on the count, and these are the
   // members.
   assert.deepEqual(spending.map((u) => u.unit).sort(),
-    ["a11ign-board-report.service", "a11ign-corpus-release-nightly.service", "a11ign-kernel-reboot.service", "a11ign-tmp-prune.service", "a11ign-trace-publish.service", "a11ign-trace-weekly.service", "a11ign-work-tick.service",
+    ["a11ign-board-report.service", "a11ign-corpus-release-nightly.service", "a11ign-kernel-reboot.service", "a11ign-tmp-prune.service", "a11ign-trace-ingest.service", "a11ign-trace-publish.service", "a11ign-trace-weekly.service", "a11ign-work-tick.service",
       "a11ign-worktree-prune.service"],
     "every shipped .service that can reach `gh` -- the project's own, which reaches it only through the script it spawns, "
     + "and the dispatcher's, which was charged on UNKNOWN until its script was shipped");
@@ -1332,6 +1332,9 @@ test("#2000: which shipped timers run their service at `host:install`, and which
     "a11ign-shadow-window.timer",
     // a11ign/a11ign#3849: the /tmp janitor's timer. Its service runs once at `host:install`, and that run IS wanted: it is the first batch of the clear, bounded to one run's budget.
     "a11ign-tmp-prune.timer",
+    // a11ign/agent-org#498: the trace store's five-minute clock. Its service runs once at `host:install`, and that run is wanted: it ingests whatever the store is behind by and checks it. The ingest
+    // is idempotent (a second run adds nothing) and an incident is raised once per episode, so a re-install on a fresh store does nothing.
+    "a11ign-trace-ingest.timer",
     // a11ign/a11ign#3515: the trace pages' timer. Its service runs once at `host:install` and DECIDES whether anything moved: a first install publishes, a re-install on an unmoved head does nothing.
     "a11ign-trace-publish.timer",
     "a11ign-work-tick.timer",
@@ -2910,6 +2913,35 @@ test("#3515: installed as the tool, the trace pages' service runs publish.ts fro
   assert.match(installed, /^Environment=AGENT_ORG_HOST=\/project\/\.agent-org\/host\.json$/m);
   assert.match(installed, /^ExecStart=%h\/\.local\/bin\/node src\/trace\/publish\.ts$/m);
   assert.match(installed, /^Environment=GH_CONFIG_DIR=\/w\/gh$/m, "it spends the workers account, never the person's");
+});
+
+// a11ign/agent-org#498: the trace store's own clock. What the row asks pinned: the account it declares, the compile cache, and a five-minute `OnUnitActiveSec`.
+test("agent-org#498: the trace store's ingest unit declares its account and compile cache, its timer fires every five minutes, and the tool form runs freshness.ts from the tool", () => {
+  const read = (name: string) => readFileSync(join(SHIPPED_DIR, name), "utf8");
+  const service = read("trace-ingest.service.in");
+  const timer = read("trace-ingest.timer.in");
+  const ACCOUNT = /^Environment=GH_CONFIG_DIR=@@workersDir@@\/gh$/m;
+  const CACHE = /^Environment=NODE_COMPILE_CACHE=%h\/\.cache\/node-compile-cache$/m;
+  const FIVE_MINUTES = /^OnUnitActiveSec=5min$/m;
+  assert.match(service, ACCOUNT, "the org's own account, never the person's: the one comment it can post spends it");
+  assert.match(service, CACHE);
+  assert.match(service, /^Type=oneshot$/m);
+  assert.doesNotMatch(service, /^\[Install\]/m, "only the timer may start it");
+  assert.match(timer, FIVE_MINUTES);
+  assert.match(timer, /^Requires=@@prefix@@trace-ingest\.service$/m, "the timer names the service it runs");
+  assert.match(timer, /^WantedBy=timers\.target$/m);
+  // NEGATIVE CONTROLS: each pattern refuses the unit with that one line altered, so a pin that stopped matching anything would fail here and not pass over a drifted unit.
+  assert.doesNotMatch(service.replace("GH_CONFIG_DIR=@@workersDir@@/gh", "GH_CONFIG_DIR=@@home@@/.config/gh"), ACCOUNT);
+  assert.doesNotMatch(service.replace(/^Environment=NODE_COMPILE_CACHE=.*$/m, ""), CACHE);
+  assert.doesNotMatch(timer.replace("OnUnitActiveSec=5min", "OnUnitActiveSec=10min"), FIVE_MINUTES);
+
+  const rendered = service.replaceAll("@@checkout@@", "/p").replaceAll("@@binDir@@", "/b").replaceAll("@@home@@", "/h").replaceAll("@@workersDir@@", "/w");
+  assert.match(rendered, /^ExecStart=%h\/\.local\/bin\/node packages\/agent-org\/src\/trace\/freshness\.ts$/m, "POSITIVE CONTROL: the shipped form is the one the tool form rewrites");
+  const installed = toolForm("trace-ingest.service.in", rendered, { tool: "/tool", checkout: "/project", beforeTicks: [] });
+  assert.match(installed, /^WorkingDirectory=\/tool$/m);
+  assert.match(installed, /^Environment=AGENT_ORG_HOST=\/project\/\.agent-org\/host\.json$/m, "told where the host's declaration is: the incident is posted on the declared tracker");
+  assert.match(installed, /^ExecStart=%h\/\.local\/bin\/node src\/trace\/freshness\.ts$/m);
+  assert.match(installed, /^Environment=GH_CONFIG_DIR=\/w\/gh$/m);
 });
 
 test("#4071: the OTel receiver's unit is listed where this guard looks -- classified as the tool's, long-running with no timer, installed as the tool runs it", () => {
