@@ -326,12 +326,21 @@ export function ingestHome({ home = homedir(), since, storePath, rowRepo, ledger
   });
 }
 
+/**
+ * Every file the run could not read, across the three sources it ingests: the transcripts, the `gh` call ledgers and the deferral logs each report their own `failed`, and a clock that
+ * counted only the first would stay green over a ledger it was not ingesting. A file that is merely absent is not a failure (a host with no Codex, no deferral log yet).
+ */
+export function ingestFailures(ingested: IngestReport): string[] {
+  return [...ingested.failed, ...(ingested.ghCalls?.failed ?? []), ...(ingested.deferrals?.failed ?? [])];
+}
+
 /** What `--ingest` prints: one line (read, unchanged, added, failed), the failed files under it, and a cold start said as one. `added` is every kind of event the run appended. */
 export function ingestSummary(ingested: IngestReport): string[] {
   const added = ingested.added + (ingested.ghCalls?.added ?? 0) + (ingested.deferrals?.added ?? 0);
-  return [`ingest: ${ingested.read} transcripts read, ${ingested.unchanged} unchanged, ${added} events added, ${ingested.failed.length} failed`
+  const failures = ingestFailures(ingested);
+  return [`ingest: ${ingested.read} transcripts read, ${ingested.unchanged} unchanged, ${added} events added, ${failures.length} failed`
     + `${ingested.heldBack > 0 ? `, ${ingested.heldBack} messages held back (written in the last 5 minutes)` : ""}`,
-  ...ingested.failed.map((failure) => `  failed: ${failure}`), ...(ingested.coldStart ? [`  COLD START: ${ingested.coldStart}`] : [])];
+  ...failures.map((failure) => `  failed: ${failure}`), ...(ingested.coldStart ? [`  COLD START: ${ingested.coldStart}`] : [])];
 }
 
 type DeferralsReport = { read: number; unchanged: number; absent: string[]; failed: string[]; spans: number; reread: string[]; added: number; };
@@ -1078,7 +1087,7 @@ async function mainIngest() {
   const { homeProjectDeclaration } = await import("../project-config.ts");
   const { report } = ingestHome({ since, storePath, rowRepo: homeProjectDeclaration().tracker[0].repo });
   for (const line of ingestSummary(report)) console.log(line);
-  if (report.failed.length > 0) process.exitCode = 1;
+  if (ingestFailures(report).length > 0) process.exitCode = 1;
 }
 
 /** `--freshness`: the store's newest turn against the clock, read from its tail; exit 1 when it is stale, so a unit or a person can act on the code. */

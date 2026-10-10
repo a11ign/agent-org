@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { after, test } from "node:test";
+import { DEFERRAL_LOG_FILE } from "../deferral-log.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import {
   advance, checkAndRaise, episodeFileFor, freshnessLine, INCIDENT_CLASS, INCIDENT_ROW, incidentOrder, NO_EPISODE, newestTurnAt, sessionsWorking, STALE_AFTER_MS, storeFreshness, transcriptRoots,
@@ -240,6 +241,28 @@ test("`--ingest` adds the turn, a second run adds nothing, it prints one report 
   assert.match(second.stdout, /^ingest: 0 transcripts read, 1 unchanged, 0 events added, 0 failed/);
   assert.equal(readFileSync(h.storePath, "utf8"), stored, "the store is byte-identical after the second run");
   assert.equal(existsSync(GH_CALLS), false, "no `gh` was called");
+});
+
+test("`--ingest` counts and exits on a failure of ANY source: an unreadable `gh` ledger or deferral log is `1 failed` and exit 1, and an absent one is not a failure", () => {
+  const since = ["--since", "2026-10-01T00:00:00Z"];
+  const clean = cliHome();
+  const control = clean.run("--ingest", ...since);
+  assert.equal(control.status, 0, `CONTROL: no ledger and no deferral log is a host that has had none, not a failure: ${control.stderr}`);
+  assert.match(control.stdout, /^ingest: 1 transcripts read, 0 unchanged, \d+ events added, 0 failed/);
+
+  // A path that exists and cannot be read as a file (a directory) fails the file: listed, state unmoved, never skipped.
+  const unreadable = [
+    { source: "gh call ledger", path: (dir: string) => join(dir, "workers", "gh", "gh-calls.tsv") },
+    { source: "deferral log", path: (dir: string) => join(dir, ".cache", "a11ign", DEFERRAL_LOG_FILE) },
+  ];
+  for (const { source, path } of unreadable) {
+    const h = cliHome();
+    mkdirSync(path(h.dir), { recursive: true });
+    const ran = h.run("--ingest", ...since);
+    assert.match(ran.stdout, /^ingest: 1 transcripts read, 0 unchanged, \d+ events added, 1 failed/, `${source}: the failure is counted\n${ran.stdout}${ran.stderr}`);
+    assert.match(ran.stdout, new RegExp(`^ {2}failed: ${path(h.dir).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "m"), `${source}: and named`);
+    assert.equal(ran.status, 1, `${source}: and the exit code says so, so a unit over it shows FAILED`);
+  }
 });
 
 test("`--freshness` exits 1 for a stale store and 0 for a fresh one, and 0 for an old store nobody is working on", () => {

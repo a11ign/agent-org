@@ -37,6 +37,8 @@ Evidence (this branch, `/home/agent/repos/wt-agent-org-498`):
 - mutations, each turning at least one named case red and restored green: the check ignoring "working" (4 cases), an episode never remembered (4), a turn inside the window not closing the episode (2), the newest turn taken as the last line (1).
 - read-only against the live store: `trace -- --freshness` prints `trace store: newest turn 2026-10-09T19:05:07.927Z (13h 9m ago); a session is working (...): STALE`, exit 1. That is the outage the row describes, seen by the new check.
 
+Review rework (reviewer-agent-org-601, at `85d3c00b`): `--ingest` counted and exited on the transcripts' `failed` only, so an unreadable `gh` ledger or deferral log printed `0 failed` and exited 0. `ingestFailures` now gathers the three sources' `failed` lists for both the report line and the exit code; the case `--ingest counts and exits on a failure of ANY source` fails (1 of 15) with that one line reverted and passes with it, and its control (absent ledger and log: `0 failed`, exit 0) passes both ways.
+
 Mutation: the freshness check ignoring "working" turned 4 cases red; an episode never remembered, 4; a turn inside the window not closing the episode, 2; the newest turn taken as the last line, 1; each restored green (`src/trace/freshness.test.ts`). The units' pins each carry a control that the pattern refuses the unit with that one line altered.
 
 Left open, not done by this pull request (host acts and a follow-up):
