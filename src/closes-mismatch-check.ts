@@ -41,6 +41,12 @@
  * (the `acceptance` job's own gate) already refuses those; re-litigating them here would be a second,
  * independently-drifting opinion about the same fact rather than a new one.
  *
+ * A THIRD DIRECTION (#4770, chairman 2026-10-10: "tickets should be one deliverable"): `Closes: none` on the PR that IS a claimed row's
+ * deliverable. Neither of the two above sees it -- a `none` that closes nothing agrees with what GitHub resolved -- and it is the loophole
+ * that kept five of 29 rows open after their own PR merged (#4148, #4741, #4451, #4449, #4203 of the tracker). The fact compared is DATA: the PR's
+ * head ref against the `Claimed-branch:` of every open claimed row's claim record, never the row's number against the PR's. A PR on no
+ * row's branch (a dependency bump, a docs-only change) is unaffected. See `claimedBranchReport`.
+ *
  * A PR ABOUT "TEXT THAT PARSES AS AN INSTRUCTION" CANNOT DESCRIBE ITSELF WITHOUT BECOMING AN INSTANCE --
  * expect this, do not read it as having broken something. The PR that built this check tripped its own
  * two example patterns while drafting the body that explains them: `Closes: none` inside a sentence
@@ -57,8 +63,10 @@ import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
 import { extractClosesDeclaration, closesReferences } from "./acceptance-commands.ts";
 import { REPO } from "./project-identity.ts";
-import { lookupClosingIssues, lookupRecentClosesPrs } from "./merge-guard/lookups.ts";
+import { gh, lookup, lookupClosingIssues, lookupRecentClosesPrs } from "./merge-guard/lookups.ts";
 import { refuseUnknownFlags } from "./lib/cli-flags.ts";
+import { claimRecordOf, type RowComment } from "./claim-stall.ts";
+import { CLAIM_LABEL } from "./claim-labels.ts";
 
 // GitHub's own documented closing keywords -- close/closes/closed, fix/fixes/fixed, resolve/resolves/
 // resolved -- immediately followed by `#<number>`. Used only to LOCATE the phrase in the body for a
@@ -227,6 +235,121 @@ export function mismatchVerdict(report: { ok: false; reasons: string[]; }, under
   return refusal(report);
 }
 
+// --- THE THIRD DIRECTION: `Closes: none` ON A CLAIMED ROW'S OWN BRANCH (#4770) --------------------------------------------------------
+
+/** What the PR's head says: its branch, and whether it comes from a fork (a fork's branch name is nobody's claim). */
+export type PrHead = { branch: string, fork: boolean };
+/**
+ * An open claimed row as the lookup read it. `unreadable` is true when the row has more comments than the window read and the claim
+ * record is not among them: the record may exist, so the row can be neither matched nor ruled out.
+ */
+export type ClaimedRow = { number: number, comments: RowComment[], unreadable: boolean };
+export type ClaimedBranchReport =
+  | { ok: true, note: string | null }
+  | { ok: false, reasons: string[] }
+  | { ok: null, reason: string };
+
+/**
+ * Pure. Does a PR declaring `Closes: none` sit on the claimed branch of an open row? The comparison is the head ref against each row's
+ * `Claimed-branch:` -- by REF, so a PR number that happens to equal a row number is no match and a row's branch under another number is
+ * one. `claimRecordOf` is the claim-stall reader: a RELEASED claim has no branch, so a released row does not hold its old branch.
+ *
+ * `ok: null` is "could not say" and is never "no row holds it": a failed read of the head or of the rows, and a row whose claim record
+ * lies beyond the comments read, are each named (this repo's own rule throughout `merge-guard/lookups.ts`).
+ * @param {import("./acceptance-commands.ts").ClosesDeclaration} declaration
+ * @param {PrHead | null} head
+ * @param {ClaimedRow[] | null} rows
+ * @param {string} [prRepo]
+ * @returns {ClaimedBranchReport}
+ */
+export function claimedBranchReport(declaration: import("./acceptance-commands.ts").ClosesDeclaration, head: PrHead | null, rows: ClaimedRow[] | null, prRepo: string = REPO): ClaimedBranchReport {
+  if (declaration.kind !== "none") return { ok: true, note: null };
+  if (head === null) return { ok: null, reason: "could not read the PR's head branch, so cannot say whether it is a claimed row's" };
+  if (rows === null) return { ok: null, reason: "could not read the open claimed rows' claim records" };
+  if (head.fork) return { ok: true, note: `${head.branch} comes from a fork, which no claim names` };
+  const holders = rows.filter((row) => claimRecordOf(row.comments)?.branch === head.branch);
+  if (holders.length > 0) {
+    const named = holders.map((row) => (prRepo === REPO ? `#${row.number}` : `${REPO}#${row.number}`));
+    return { ok: false, reasons: [
+      `you declared a \`none\` Closes line, but this PR's branch ${head.branch} is the claimed branch of open row ${named.join(", ")}: the PR that IS a row's `
+        + "deliverable closes that row (one deliverable per row).",
+      `declare \`Closes ${named[0]}\`, and file what remains (a live reading, a decision, a later step) as its own row; the merge then closes the row and files the verify row.`,
+    ] };
+  }
+  const unreadable = rows.filter((row) => row.unreadable).map((row) => `#${row.number}`);
+  if (unreadable.length > 0) {
+    return { ok: null, reason: `the claim record of ${unreadable.join(", ")} lies beyond the comments read, so ${head.branch} cannot be ruled out as its branch` };
+  }
+  return { ok: true, note: `${head.branch} is no open row's claimed branch` };
+}
+
+/**
+ * Pure. What the third direction prints and exits with. Only a refusal exits 1: a skip prints its reason and exits 0 so the check's two other
+ * directions still run after it; `null` when the declaration is not `none` and this direction has nothing to say.
+ * @param {ClaimedBranchReport} report
+ * @returns {{ exit: 0 | 1, lines: string[] } | null}
+ */
+export function claimedBranchVerdict(report: ClaimedBranchReport): { exit: 0 | 1; lines: string[]; } | null {
+  if (report.ok === null) return { exit: 0, lines: [`CLOSES MISMATCH: skipped the claimed-branch comparison -- ${report.reason}`] };
+  if (report.ok) return report.note === null ? null : { exit: 0, lines: [`CLOSES MISMATCH: claimed branch ok -- ${report.note}`] };
+  return { exit: 1, lines: ["CLOSES MISMATCH: REFUSED -- a claimed row's own pull request cannot keep the row open:", ...report.reasons.map((reason) => `  ${reason}`)] };
+}
+
+/** Comments read per row: the newest, because a re-claim after a release is the record `claimRecordOf` takes. */
+const CLAIM_COMMENT_WINDOW = 100;
+/** Open claimed rows read in one page: more than this and the page is not the population, which is `null` and not a short list. */
+const CLAIMED_ROWS_PAGE = 100;
+
+/**
+ * The open claimed rows of the tracker with the comments their claim records are read from -- ONE query. `null` on failure or when the
+ * page is not the whole population (`totalCount` beyond it): an unread row is not an unclaimed one, the same rule as every lookup in
+ * `merge-guard/lookups.ts`. Rows are the tracker's, whichever repository the PR is in (a layer PR's `Closes` names the tracker in full form).
+ * @returns {ClaimedRow[] | null}
+ */
+export function lookupOpenClaimedRows(): ClaimedRow[] | null {
+  return lookup(() => {
+    const [owner, name] = REPO.split("/");
+    const query = "query($owner:String!,$name:String!,$label:String!,$count:Int!,$window:Int!){"
+      + "repository(owner:$owner,name:$name){issues(states:OPEN,labels:[$label],first:$count){totalCount nodes{number "
+      + "comments(last:$window){totalCount nodes{body createdAt author{login}}}}}}}";
+    const issues = JSON.parse(gh(["api", "graphql", "-f", `query=${query}`, "-F", `owner=${owner}`, "-F", `name=${name}`,
+      "-F", `label=${CLAIM_LABEL}`, "-F", `count=${CLAIMED_ROWS_PAGE}`, "-F", `window=${CLAIM_COMMENT_WINDOW}`])).data.repository.issues;
+    if (issues.totalCount > issues.nodes.length) throw new Error("the claimed rows exceed one page");
+    return issues.nodes.map((issue: { number: number, comments: { totalCount: number, nodes: RowComment[] } }) => {
+      const comments = issue.comments.nodes;
+      return { number: issue.number, comments, unreadable: issue.comments.totalCount > comments.length && claimRecordOf(comments) === null };
+    });
+  });
+}
+
+/**
+ * The PR's head branch and whether it is a fork's, by REST (`core`, not the GraphQL pool the closing-reference lookup spends). `null` on failure.
+ * @param {number} prNumber @param {string} prRepo @returns {PrHead | null}
+ */
+export function lookupPrHead(prNumber: number, prRepo: string): PrHead | null {
+  return lookup(() => {
+    const pull = JSON.parse(gh(["api", `repos/${prRepo}/pulls/${prNumber}`]));
+    if (typeof pull.head.ref !== "string" || pull.head.ref === "") throw new Error("the PR names no head branch");
+    return { branch: pull.head.ref, fork: pull.head.repo?.full_name !== pull.base.repo.full_name };
+  });
+}
+
+/** The two reads the third direction makes, injectable so the wiring is testable without GitHub. */
+export type ClaimedBranchReads = { head: (prNumber: number, prRepo: string) => PrHead | null, rows: () => ClaimedRow[] | null };
+
+/**
+ * The third direction end to end: asks only when the declaration is `none` (every well-formed PR with a `Closes` costs nothing extra).
+ * @param {import("./acceptance-commands.ts").ClosesDeclaration} declaration
+ * @param {{ prNumber: number, prRepo: string }} pr
+ * @param {ClaimedBranchReads} [reads]
+ * @returns {{ exit: 0 | 1, lines: string[] } | null}
+ */
+export function claimedBranchStep(declaration: import("./acceptance-commands.ts").ClosesDeclaration, pr: { prNumber: number; prRepo: string; },
+  reads: ClaimedBranchReads = { head: lookupPrHead, rows: lookupOpenClaimedRows }): { exit: 0 | 1; lines: string[]; } | null {
+  if (declaration.kind !== "none") return null;
+  return claimedBranchVerdict(claimedBranchReport(declaration, reads.head(pr.prNumber, pr.prRepo), reads.rows(), pr.prRepo));
+}
+
 function main() {
   refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/closes-mismatch-check.ts" });
   const prNumber = Number(process.argv[2]);
@@ -244,6 +367,9 @@ function main() {
     process.exit(0);
   }
   const prRepo = process.argv[3] ?? REPO; // #2995
+  const claimed = claimedBranchStep(declaration, { prNumber, prRepo });
+  for (const line of claimed?.lines ?? []) console.log(line);
+  if (claimed?.exit === 1) process.exit(1);
   const resolved = lookupClosingIssues(prNumber, prRepo);
   const report = closesMismatchReport(declaration, resolved, body, prRepo);
   if (report.ok === null) {
