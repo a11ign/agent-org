@@ -255,13 +255,20 @@ function inProjectWithTestScript<T>(body: () => T): T {
   }
 }
 
+// agent-org#519: the body is no longer an acceptance source, so `checkBody` is handed the body as the file its diff adds under `.acceptance/`.
+const asAddedFile = (body: string) => {
+  const file = ".acceptance/agent~example-1.md";
+  return { diff: { ok: true as const, files: [file], added: [file] }, readFile: () => body };
+};
+
 test("pr:open refuses a whole-suite acceptance line at open time, through the SAME report CI runs", async () => {
   const { checkBody } = await import("../pr-open.ts");
-  const refused = inProjectWithTestScript(() => checkBody("Acceptance: npm test\n\nCloses: none — a reason", { run: () => 0 }));
+  const wholeSuite = "Acceptance: npm test\n\nCloses: none — a reason";
+  const refused = inProjectWithTestScript(() => checkBody(wholeSuite, { run: () => 0, ...asAddedFile(wholeSuite) }));
   assert.equal(refused.ok, false);
   assert.match(refused.lines.join("\n"), /Name the files this change is verified by/);
 
-  const accepted = checkBody(
-    'Acceptance: node -e "process.exit(0)"\n\nCloses: none — a reason', { run: () => 0 });
+  const ordinary = 'Acceptance: node -e "process.exit(0)"\n\nCloses: none — a reason';
+  const accepted = checkBody(ordinary, { run: () => 0, ...asAddedFile(ordinary) });
   assert.equal(accepted.ok, true, "the ordinary case must still open, or this refuses everything");
 });

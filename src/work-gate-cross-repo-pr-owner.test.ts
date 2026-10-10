@@ -15,6 +15,11 @@ import { join } from "node:path";
 import { scopesOf, scopeTick, withScopedPrOwners, resolverDefectOf, fileResolverDefects } from "./work-gate.ts";
 import { sendToGitHub, unstampableRefusal, main as prOpen, EXIT_NOTHING_SENT } from "./pr-open.ts";
 
+// agent-org#519: the body is no longer an acceptance source, so the diff ADDS this file and `readFile` returns the text the body meant to carry.
+const withAcceptanceFile = (body: string) => ({
+  git: (args: string[]) => (args[0] === "diff" ? ".acceptance/agent~example-1.md" : "x"), readFile: () => body,
+});
+
 /** The private directories the filing tests wrote state into, removed when the file is done (`private-tmp` refuses a test that leaves one). */
 const scratch: string[] = [];
 after(() => { for (const dir of scratch) rmSync(dir, { recursive: true, force: true }); });
@@ -187,7 +192,7 @@ test("(11) pr:open: a create with no nameable owner is REFUSED before anything i
   const sent: string[][] = [];
   const err: string[] = [];
   const body = "## Acceptance\n\nnode -e \"process.exit(0)\"\n\nCloses: none -- a test fixture\n";
-  const open = (owner: string | null) => prOpen(["create", "--draft", "--body", body], { run: (a) => { sent.push(a); }, git: () => "x",
+  const open = (owner: string | null) => prOpen(["create", "--draft", "--body", body], { run: (a) => { sent.push(a); }, ...withAcceptanceFile(body),
     prHead: () => ({ ref: "x", oid: "x" }), runAcceptance: () => 0, runMutation: () => 0, owner: () => owner, rowLabels: () => [],
     labelExists: () => false, out: () => {}, err: (line) => { err.push(line); } });
   assert.equal(open(null), EXIT_NOTHING_SENT);

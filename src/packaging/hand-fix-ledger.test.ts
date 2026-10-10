@@ -19,6 +19,11 @@ import {
 import { main as prOpen, EXIT_NOTHING_SENT } from "../pr-open.ts";
 
 const EM = "—";
+
+// agent-org#519: the body is no longer an acceptance source, so the diff ADDS this file and `readFile` returns the text the body meant to carry.
+const withAcceptanceFile = (body: string) => ({
+  git: (args: string[]) => (args[0] === "diff" ? ".acceptance/agent~example-1.md" : "x"), readFile: () => body,
+});
 const NOW = new Date("2026-10-01T22:00:00Z");
 
 interface ChangeInput { key?: string; number?: number | null; author?: string | null; actors?: (string | null)[];
@@ -143,7 +148,7 @@ test("#2939 pr-open ACCEPTS a well-formed Hand-fix line, and a body with none is
   const sent: string[][] = [];
   const body = `## Acceptance\n\nnode -e "process.exit(0)"\n\nCloses #2939\nHand-fix: the gate should have filed it ${EM} work-gate.ts\n`;
   const code = prOpen(["create", "--draft", "--body", body], {
-    run: (a: string[]) => { sent.push(a); }, git: () => "x", prHead: () => ({ ref: "x", oid: "x" }),
+    run: (a: string[]) => { sent.push(a); }, ...withAcceptanceFile(body), prHead: () => ({ ref: "x", oid: "x" }),
     runAcceptance: () => 0, runMutation: () => 0, owner: () => "ceo", out: () => {}, err: () => {},
   });
   assert.equal(code, 0);

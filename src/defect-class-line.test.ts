@@ -24,13 +24,17 @@ const rowLabels = (number: number, repo: string) => {
   return labels;
 };
 
+// agent-org#519: the body is no longer an acceptance source, so every body below is read from the file the diff adds (`.acceptance/`), and `git` says the diff adds it.
+const ACCEPTANCE_FILE = ".acceptance/agent~defect-class-line.md";
+const gitAddingAcceptance = (args: string[]) => (args[0] === "diff" ? ACCEPTANCE_FILE : "x");
+
 /** `pr-open create`, nothing sent anywhere; returns the exit code, what it said and whether it went to `gh`. */
 function openPr(body: any, deps = { rowLabels }) {
   const sent: any[] = [];
   const err: any[] = [];
   const out: any[] = [];
   const code = prOpen(["create", "--draft", "--body", body], {
-    run: (a) => { sent.push(a); }, git: () => "x", prHead: () => ({ ref: "x", oid: "x" }),
+    run: (a) => { sent.push(a); }, git: gitAddingAcceptance, readFile: () => body, prHead: () => ({ ref: "x", oid: "x" }),
     runAcceptance: () => 0, runMutation: () => 0, owner: () => "ceo", out: (l) => { out.push(l); }, err: (l) => { err.push(l); },
     ...deps,
   });
@@ -39,7 +43,7 @@ function openPr(body: any, deps = { rowLabels }) {
 
 /** The CI parse over the same body: what the acceptance job prints, with the label reader CI is given. */
 const ciParse = (body: any, labelsOf = (row: any) => rowLabels(row.number, row.repo ?? "a11ign/a11ign")) =>
-  runCiBodyReports({ body, run: () => 0, diff: { ok: true, files: [] }, rowLabels: labelsOf }, CI_BODY_REPORTS.filter((r) => r.name === "class"));
+  runCiBodyReports({ body, run: () => 0, diff: { ok: true, files: [ACCEPTANCE_FILE], added: [ACCEPTANCE_FILE] }, readFile: () => body, rowLabels: labelsOf }, CI_BODY_REPORTS.filter((r) => r.name === "class"));
 
 test("the parser reads both shapes and keeps what it cannot read (positive control for every refusal below)", () => {
   assert.deepEqual(classLinesIn(GOOD).declared, [{ id: "stale-reading", where: "any reader that caches a label it is asked for later", guard: "#4122 child B's class-repeat reading" }]);

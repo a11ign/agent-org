@@ -252,6 +252,10 @@ test("#2617: a row of another tracker is read from THAT tracker -- the same numb
 
 const ACCEPTANCE = "## Acceptance\n\n```bash\nnode -e \"process.exit(0)\"\n```\n";
 
+// agent-org#519: the body is no longer an acceptance source, so the Acceptance these two drivers run is the file their diff adds, read back as `ACCEPTANCE`.
+const ACCEPTANCE_FILE = ".acceptance/agent~x.md";
+const acceptanceFileSeams = { diff: { ok: true as const, files: [ACCEPTANCE_FILE], added: [ACCEPTANCE_FILE] }, readFile: () => ACCEPTANCE };
+
 test("#2617 done-when 2: the merge-blocking parser ACCEPTS `Closes a11ign/a11ign#7`, and the accepted form is one its own extractor returns", () => {
   const body = `${ACCEPTANCE}\nCloses a11ign/a11ign#7\n`;
   const declaration = extractClosesDeclaration(body);
@@ -283,10 +287,10 @@ test("#2617: a body that names only bare rows is read EXACTLY as it always was -
 });
 
 test("#2617 done-when 2: pr-open's own check ACCEPTS the body, and refuses the malformed one", () => {
-  const accepted = checkBody(`${ACCEPTANCE}\nCloses a11ign/a11ign#7\n`, { run: () => 0 });
+  const accepted = checkBody(`${ACCEPTANCE}\nCloses a11ign/a11ign#7\n`, { run: () => 0, ...acceptanceFileSeams });
   assert.equal(accepted.ok, true);
   assert.ok(accepted.lines.includes("CLOSES: a11ign/a11ign#7"));
-  assert.equal(checkBody(`${ACCEPTANCE}\nCloses a11ign#7\n`, { run: () => 0 }).ok, false);
+  assert.equal(checkBody(`${ACCEPTANCE}\nCloses a11ign#7\n`, { run: () => 0, ...acceptanceFileSeams }).ok, false);
 });
 
 test("#2617 done-when 2: `pr-open` reads the Region of a qualified row from THAT repository, a bare row as before, and sends the PR", () => {
@@ -296,9 +300,11 @@ test("#2617 done-when 2: `pr-open` reads the Region of a qualified row from THAT
   const out: string[] = [];
   const code = main(["create", "--repo", SECOND.repo, "--body", `${ACCEPTANCE}\nCloses a11ign/a11ign#7\n`], {
     run: (args: string[]) => { sent.push(args); },
-    git: (args: string[]) => (args[0] === "diff" ? "src/x.ts" : args.includes("--abbrev-ref") ? "agent/x" : "deadbeef"),
+    // only the `--diff-filter=A` read names the file, so the Region's own diff (`1 changed path(s)`, `1 inside`) is what it was
+    git: (args: string[]) => (args[0] === "diff" ? (args.includes("--diff-filter=A") ? ACCEPTANCE_FILE : "src/x.ts") : args.includes("--abbrev-ref") ? "agent/x" : "deadbeef"),
     prHead: () => ({ ref: "agent/x", oid: "deadbeef" }),
     runAcceptance: () => 0,
+    readFile: acceptanceFileSeams.readFile,
     rowBody: (number: number, repo?: string) => { asked.push([number, repo]); return rows[number]; },
     rootFiles: NO_ROOT_FILES,
     code: BOTH,
