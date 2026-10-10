@@ -10,7 +10,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { haikuTierProfile, readHaikuSwitch, agentArgs, AUTO_COMPACT_TRIGGER_MARGIN_TOKENS, HAIKU_AUTOCOMPACT_WINDOW_TOKENS,
-  HAIKU_PROMPT_CEILING_TOKENS, HAIKU_MODEL_ID, HAIKU_TIER_SWITCH_PATH, AUTOCOMPACT_WINDOW_TOKENS, type TierProfile } from "../worker-profile.ts";
+  HAIKU_PROMPT_CEILING_TOKENS, HAIKU_MODEL_ID, DECLARED_CLAUDE_MODELS, profileFor, HAIKU_TIER_SWITCH_PATH, AUTOCOMPACT_WINDOW_TOKENS, type TierProfile } from "../worker-profile.ts";
 import { spawnInvocation, spawnClaimer } from "../wake.ts";
 import { repriceEvents, type TraceEvent } from "../trace/store.ts";
 import { measuresOf, reportLines, stopRule, summarise, firstHaikuStart, median, MIN_RATE_ROWS, type RowMeasures } from "../trace/haiku-tier-report.ts";
@@ -42,7 +42,21 @@ test("the shipped switch is ON, and a tier:haiku row gets a claude-haiku-5-5 lau
   const window = Number(args[args.indexOf("--autocompact") + 1]);
   assert.equal(window, HAIKU_AUTOCOMPACT_WINDOW_TOKENS);
   assert.ok(window - AUTO_COMPACT_TRIGGER_MARGIN_TOKENS <= HAIKU_PROMPT_CEILING_TOKENS, `trigger ${window - AUTO_COMPACT_TRIGGER_MARGIN_TOKENS} is past the ceiling`);
+  const ordinary = profileFor("ready-row-unclaimed");
+  assert.ok(!("refusal" in ordinary));
+  assert.equal(args[args.indexOf("--effort") + 1], ordinary.effort, "a Haiku worker runs at the ordinary worker's effort");
   assert.equal(args[args.indexOf("--effort") + 1], "high");
+  assert.notEqual(args[args.indexOf("--effort") + 1], "low", "negative control: the assumed floor is not what it starts at");
+});
+
+test("a Haiku launch and an ordinary launch for the same cause carry the SAME --effort value, so changing one moves the other or fails", () => {
+  const effortOf = (args: string[]) => args[args.indexOf("--effort") + 1];
+  const ordinary = spawnInvocation({ cause: "ready-row-unclaimed" }, "worker-1", "p1");
+  const haiku = spawnInvocation({ cause: "ready-row-unclaimed" }, "worker-1", "p1", {}, tiered().profile);
+  assert.ok(!("refusal" in ordinary) && !("refusal" in haiku));
+  assert.equal(effortOf(haiku.args), effortOf(ordinary.args));
+  assert.equal(effortOf(haiku.args), DECLARED_CLAUDE_MODELS.sonnet.effortLevel);
+  assert.equal(HAIKU_MODEL_ID, "claude-haiku-5-5");
 });
 
 test("the same row WITHOUT the label carries the ordinary Sonnet profile byte for byte, and says nothing", () => {

@@ -112,8 +112,17 @@ export const HAIKU_TIER_SWITCH_PATH = fileURLToPath(new URL("./haiku-tier.json",
 /** Labels a tier label never overrides: a tier lowers cost, never what a row is allowed to touch. */
 const TIER_REFUSING_LABELS = Object.freeze([`${LANE_PREFIX}ceo`, NEEDS_CHAIRMAN_LABEL]);
 
-/** What `--effort` a Haiku worker is started with: `high`, the same as the Sonnet workers, so the #4382 trial compares model against model. Low would confound it: a Haiku failure at low could not be told apart from the effort. Haiku output is cheap, so the extra thinking costs far less than one wrong PR. */
-const HAIKU_EFFORT = "high";
+/** The cause whose profile is "the ordinary worker": the Sonnet workers' build. A Haiku worker's effort is read from it, never typed a second time. */
+const ORDINARY_WORKER_CAUSE = "ready-row-unclaimed";
+
+/** What `--effort` a Haiku worker is started with: the Sonnet workers' own (`high` today), read from their profile, ON PURPOSE -- the #4382 trial changes the model and nothing else, so a Haiku failure is a model failure and not an effort one. Haiku output is cheap, so the thinking costs far less than one wrong PR. A `medium` arm is a later, separate step. */
+const HAIKU_EFFORT = ordinaryWorkerEffort();
+
+function ordinaryWorkerEffort(): string {
+  const ordinary = profileFor(ORDINARY_WORKER_CAUSE);
+  if ("refusal" in ordinary) throw new Error(`worker-profile: the Haiku effort is read from "${ORDINARY_WORKER_CAUSE}" and that profile is refused: ${ordinary.refusal}`);
+  return ordinary.effort;
+}
 
 export type TierProfile = { kind: "claude"; model: string; effort: string; why: string; autocompactWindow: number };
 
