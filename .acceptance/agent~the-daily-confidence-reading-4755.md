@@ -27,7 +27,7 @@ VERDICT pass: 13 tests in 1 file
 $ npx tsc --noEmit -p tsconfig.json     # no error in decision-confidence-post*
 ```
 
-The whole suite with `AGENT_ORG_HOST` set: 10 failed of 1956 tests and 20 files failed to load, none of them these. **The same 20 files with these two files moved aside fail identically (same names)**, so none is this diff's.
+The whole suite with `AGENT_ORG_HOST=<a host file>` set: 34 failed of 8143 tests (the report names 20 of them, all in 8 files, none of them these two). **Those 8 files re-run with these two files moved aside fail 19 of 145 with the identical test names**, so none is this diff's. (Measured, not inferred: both runs are in this session. A first run set `AGENT_ORG_HOST` to a directory, which the tool refuses at import, and is not the reading above.)
 
 Not run, and why: the CLI against the live host. It posts to the chairman's channel or to #4627, which is the done-when's act after a release, not a development check.
 
