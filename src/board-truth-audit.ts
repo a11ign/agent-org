@@ -330,9 +330,13 @@ function authorSessionOf(body: string, row: BoardRow) {
 }
 
 export type JudgedComment = { row: BoardRow, comment: RowComment, author: string, at: number, text: string };
-/** The comments by org accounts in the last day, old enough that the author has had the grace (a younger one is not judged yet). @param {BoardFacts} facts @returns {JudgedComment[]} */
+/**
+ * The comments by org accounts in the last day, old enough that the author has had the grace (a younger one is not judged yet). A row whose `state` is `CLOSED` is not judged: the day's comment read
+ * is `state=all`, and a handoff sentence under a row that has closed was either done or is a follow-up its author must file, so the flag (and the `answer:<route>` order it becomes) reaches nobody who can act
+ * on it (21 orders about finished work reached one seat at once, 2026-10-09). A row with NO `state` is judged as before. @param {BoardFacts} facts @returns {JudgedComment[]}
+ */
 function commentsToJudge({ openRows, now }: BoardFacts): JudgedComment[] {
-  return openRows.flatMap((row) => (row.comments ?? []).flatMap((comment) => {
+  return openRows.filter((row) => row.state !== "CLOSED").flatMap((row) => (row.comments ?? []).flatMap((comment) => {
     const at = Date.parse(comment.createdAt ?? "");
     const author = comment.author?.login ?? "";
     const aged = Number.isFinite(at) && now - at >= HANDOFF_GRACE_MS && now - at <= DAY_MS;
@@ -369,10 +373,13 @@ function handoffsInProse(facts: BoardFacts): Finding[] {
     PROSE_QUESTIONS.HANDOFF, `a row filed, or \`${ANSWER_PREFIX}${h.session}\`, in the same turn`, `a handoff written as a sentence, "${h.phrase}", and no row or order followed within 15 minutes`)));
 }
 
+/** @param {string} text @returns {boolean} a reading comment carrying no `Defect-row:` line */
+const readingWithoutField = (text: string): boolean => READING_COMMENT.test(text) && !DEFECT_ROW_LINE.test(text);
+
 /** @param {BoardFacts} facts @returns {Finding[]} */
 function readingsWithoutField(facts: BoardFacts): Finding[] {
   if (facts.proseEvidence === undefined) return [];
-  return commentsToJudge(facts).filter(({ text }) => READING_COMMENT.test(text) && !DEFECT_ROW_LINE.test(text)).map((judged) => proseFinding(judged,
+  return commentsToJudge(facts).filter(({ text }) => readingWithoutField(text)).map((judged) => proseFinding(judged,
     PROSE_QUESTIONS.READING_FIELD, "`Defect-row: #N` or `Defect-row: none -- <reason>` line", "a reading with no `Defect-row:` field, which the org cannot read as prose"));
 }
 
@@ -493,6 +500,8 @@ export function readBoardFacts(repo: string, { run = gh, agents = readAgents, no
  * handoff is as likely on a parked or closed one (#4090 was neither claimed nor open at the time). ONE paginated REST call lists every comment of the last day in the repository (measured 2026-10-08:
  * 899 comments, 9 pages, 1.0 MB, so it is not a per-tick read); the org accounts' are kept and grouped by row. Then ONE call for the issues created in the day (who filed what, when) and ONE per row
  * holding a handoff comment, for its `labeled` events. REST spends the core pool, not GraphQL's. A refused read is `null` (UNREAD), never "no evidence", which would flag every handoff.
+ * THE ROWS CARRY THEIR STATE: the comment list has none, so the issues read (made whenever a comment could raise a finding, and then also the evidence) marks a row it lists as closed `CLOSED`, which
+ * `commentsToJudge` skips, and the events are read for open rows only. A row the list does not hold keeps no `state` and is judged as before.
  * Orders are not evidence here: the queue is local state the audit cannot see, so a handoff answered ONLY by an order is flagged, and the label the order also needs is the remedy.
  * @param {{ repo: string, run: (args: string[]) => string, now: number }} input @returns {BoardFacts | null} facts for `proseAudit` alone: only `openRows` and `proseEvidence` mean anything
  */
@@ -505,13 +514,17 @@ export function readProseFacts({ repo, run, now }: { repo: string; run: (args: s
     const byRow = new Map();
     for (const c of comments) byRow.set(c.number, [...(byRow.get(c.number) ?? []), c]);
     const openRows = [...byRow].map(([number, rowComments]) => ({ number, labels: [], comments: rowComments }));
-    const facts = { now, openRows, closedRows: null, mergedPrs: null, liveSessions: null, waitFacts: null };
-    const needing = [...new Set(commentsToJudge(facts).filter(({ text }) => handoffsIn(text).length > 0).map(({ row }) => row.number))];
-    if (needing.length === 0) return { ...facts, proseEvidence: { rows: [], labelEvents: [] } };
-    const rows = lines([`repos/${repo}/issues?state=all&since=${since}&per_page=100`, "--jq", ".[] | select(.pull_request | not) | {author: .user.login, createdAt: .created_at, text: (.title + \"\\n\" + (.body // \"\"))}"]);
+    const facts: BoardFacts = { now, openRows, closedRows: null, mergedPrs: null, liveSessions: null, waitFacts: null };
+    const askable = commentsToJudge(facts).some(({ text }) => handoffsIn(text).length > 0 || readingWithoutField(text));
+    if (!askable) return { ...facts, proseEvidence: { rows: [], labelEvents: [] } };
+    const issues = lines([`repos/${repo}/issues?state=all&since=${since}&per_page=100`, "--jq", ".[] | select(.pull_request | not) | {number: .number, state: .state, author: .user.login, createdAt: .created_at, text: (.title + \"\\n\" + (.body // \"\"))}"]);
+    const closed = new Set(issues.filter((issue) => issue.state === "closed").map((issue) => issue.number));
+    const stated = { ...facts, openRows: openRows.map((row) => closed.has(row.number) ? { ...row, state: "CLOSED" } : row) };
+    const rows = issues.map(({ author, createdAt, text }) => ({ author, createdAt, text }));
+    const needing = [...new Set(commentsToJudge(stated).filter(({ text }) => handoffsIn(text).length > 0).map(({ row }) => row.number))];
     const labelEvents = needing.flatMap((n) => lines([`repos/${repo}/issues/${n}/events?per_page=100`, "--jq",
       `.[] | select(.event == "labeled") | {number: ${n}, label: .label.name, actor: .actor.login, createdAt: .created_at}`]));
-    return { ...facts, proseEvidence: { rows, labelEvents } };
+    return { ...stated, proseEvidence: { rows, labelEvents } };
   } catch {
     return null;
   }
