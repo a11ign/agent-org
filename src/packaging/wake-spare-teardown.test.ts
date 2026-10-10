@@ -13,7 +13,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sandboxGitEnv } from "../lib/git-env.ts";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 import { deliver as settlingDeliver, engineerRoles }
   from "../wake.ts";
 import { spareRoles, spareInstances, spareDecision, cycleVerdict, consecutiveClean, endFinishedSpares, spawnEnvironment,

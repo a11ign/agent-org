@@ -29,7 +29,7 @@
 // `session:` label at all) leaves no event to find.
 import { execFileSync } from "node:child_process";
 import { REPO } from "./project-identity.ts";
-import { sandboxGitEnv } from "./lib/git-env.ts";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 import { SESSION_PREFIX } from "./project-vocabulary.ts";
 
 // `maxBuffer` is RAISED because the projected event log is a few hundred KB today and grows with the

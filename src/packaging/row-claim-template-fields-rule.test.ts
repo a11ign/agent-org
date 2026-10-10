@@ -12,7 +12,7 @@
 // acceptance command as filed. No test here calls `gh`: every test passes a literal string body straight
 // into `missingTemplateFields`/`templateFieldsReason`, both pure functions over that string and
 // `REQUIRED_FIELDS` (a plain constant), so reaching `gh` is not part of what this file tests.
-import { declareWalkScope } from "../lib/walk-scope.ts";
+import { declareWalkScope } from "@a11ign/toolchain/lib/walk-scope";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {

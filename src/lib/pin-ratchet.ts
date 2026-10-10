@@ -23,7 +23,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sandboxGitEnv } from "./git-env.ts";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 
 export type Declaration = { name: string; reason: string };
 export type Base = { ref: string } | { unreadable: string };

@@ -15,7 +15,7 @@ import { spawnSync, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
-import { sandboxGitEnv } from "../lib/git-env.ts";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 import { sparePathsFrom } from "../wake.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 import { copyToolAndProject, importClosure, toolFile } from "./copied-tool-fixture.ts";

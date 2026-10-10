@@ -23,13 +23,13 @@ import { pathToFileURL } from "node:url";
 import { statedWritingTime } from "./board-summary-check.ts";
 import { execFileSync, spawnSync } from "node:child_process";
 import path from "node:path";
-import { refuseUnknownFlags } from "./lib/cli-flags.ts";
+import { refuseUnknownFlags } from "@a11ign/toolchain/lib/cli-flags";
 import { collect, readSetIsNotMain, ROOT, REPO, MILESTONE, HOURS_MS, issues, outOfRelease, unclassified, achievementsWhoseWorldMoved,
   realPageCaptureAge, worstVerdict } from "./board-data.ts";
 import { foundByChairmanLine } from "./found-by-chairman.ts";
 import { toHtml } from "./board-markdown.ts";
 import { editionDay, publishEdition, todaysEditionExists } from "./board-discussion.ts";
-import { productHome, PRODUCT_HOME_SOURCE } from "./lib/product-home.ts";
+import { productHome, PRODUCT_HOME_SOURCE } from "@a11ign/toolchain/lib/product-home";
 
 // Module scope, not inside main(): `section5` reads it, and `document()` is exported for the renderer
 // test, which builds a real document without ever calling main().

@@ -38,8 +38,8 @@ import { basename, dirname, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 // RELATIVE, not the package specifier -- this must run before any `pnpm install`/build, the same constraint
 // `work-gate.ts` and `org-watch.ts` state at their own imports.
-import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
-import { pnpmCliInvocation } from "./lib/npm-cli-executable.ts"; // #3386: a bare `pnpm` spawn is `pnpm.cmd` on Windows, which CVE-2024-27980 refuses
+import { refuseUnknownFlags, flagValue } from "@a11ign/toolchain/lib/cli-flags";
+import { pnpmCliInvocation } from "@a11ign/toolchain/lib/npm-cli-executable"; // #3386: a bare `pnpm` spawn is `pnpm.cmd` on Windows, which CVE-2024-27980 refuses
 import { blastTail, readBlockingRecord } from "./blast-tail.ts";
 import type { BlockingRecord } from "./blocking-impact.ts";
 import { routeEngineer, type Routed } from "./engineer-route.ts";
@@ -79,7 +79,7 @@ import { lookupBlockedByEdge, blockedByEdgeReason } from "./row-claim/blocked-by
 import { fileOverlapReason, lookupMyRegionFiles, lookupOpenPrFiles } from "./row-claim/file-overlap-rule.ts";
 // The scrubbing helper, RELATIVE like the imports above: a leaked GIT_DIR must not redirect the teardown's
 // `git worktree list` onto another repository (git-spawn-classification.test.ts).
-import { sandboxGitEnv } from "./lib/git-env.ts";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 // #2470: THIS FILE NOW SENDS A BODY TO GITHUB (the release comment), so it reaches the leak guard like every other tracker writer (#1053).
 import { assertNoLeakInArgv } from "./lib/leak-patterns.ts";
 // #2470: THE PURE HALF OF A CLAIM THAT DOES NOT MOVE -- a leaf, so `work-gate.ts` and this file both import it and neither imports the other's

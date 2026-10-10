@@ -33,7 +33,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { stripComments } from "../lib/local-import-closure.ts";
+import { stripComments } from "@a11ign/toolchain/lib/local-import-closure";
 import { judgePin, type Declaration } from "../lib/pin-ratchet.ts";
 import { TOOL_ROOT } from "./copied-tool-fixture.ts";
 import {

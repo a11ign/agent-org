@@ -11,7 +11,7 @@
  *
  * Both halves are pinned here, against the REAL parser rather than a copy of its rules.
  */
-import { declareWalkScope } from "../lib/walk-scope.ts";
+import { declareWalkScope } from "@a11ign/toolchain/lib/walk-scope";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";

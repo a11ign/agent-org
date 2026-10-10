@@ -75,8 +75,8 @@
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
-import { sandboxGitEnv } from "./lib/git-env.ts";
+import { refuseUnknownFlags, flagValue } from "@a11ign/toolchain/lib/cli-flags";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 
 export const EXIT = { PASS: 0, REFUSE: 1, CANNOT_ASK: 2 };
 

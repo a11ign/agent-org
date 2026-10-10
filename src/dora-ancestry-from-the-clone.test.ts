@@ -15,7 +15,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sandboxGitEnv } from "./lib/git-env.ts";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 import { readRepository, renderDora } from "./dora.ts";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */

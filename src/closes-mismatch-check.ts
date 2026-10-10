@@ -64,7 +64,7 @@ import { realpathSync } from "node:fs";
 import { extractClosesDeclaration, closesReferences } from "./acceptance-commands.ts";
 import { REPO } from "./project-identity.ts";
 import { gh, lookup, lookupClosingIssues, lookupRecentClosesPrs } from "./merge-guard/lookups.ts";
-import { refuseUnknownFlags } from "./lib/cli-flags.ts";
+import { refuseUnknownFlags } from "@a11ign/toolchain/lib/cli-flags";
 import { claimRecordOf, type RowComment } from "./claim-stall.ts";
 import { CLAIM_LABEL } from "./claim-labels.ts";
 

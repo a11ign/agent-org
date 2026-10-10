@@ -51,7 +51,7 @@ function tick({ prs, rows, at = NOW }: { prs: Record<string, unknown>[]; rows: R
   const decideArgs = { prs: owners, required: [], readyRows: [], prFiles: new Map(), rowBranches: [], openRows: [], primaryDrift: null, claimRefusals: [] };
   const decided = decide({ prs: owners, readyRows: [], openRows: rows } as never);
   const orders = orgHealthNow({ prsRead: prs, readyRead: [], openRowsRead: rows, decideArgs, decided } as never,
-    { now: at, lastMergedAt: () => at - HOUR_MS, log: () => {}, readCopies: (() => []) as never, readCaptures: (() => undefined) as never,
+    { now: at, lastMergedAt: () => at - HOUR_MS, log: () => {}, readCaptures: (() => undefined) as never,
       readWaits: ((args: never) => waitTickFacts({ ...(args as Parameters<typeof waitTickFacts>[0]), run })) as never,
       release: ((n: number, s: string) => { released.push([n, s]); return true; }) as never, teamAccess: () => undefined });
   const idle = (orders as { causeKey: string; session: string; subject: string; cause: string; discriminator: string; prompt: string }[])

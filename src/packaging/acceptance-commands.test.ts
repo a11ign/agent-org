@@ -33,7 +33,7 @@ import {
   acceptancePathsReason, declaredNewFiles, unresolvedAcceptancePaths,
   declaredFleetAnswer,
 } from "../acceptance-commands.ts";
-import { withGitSandbox, sandboxGitEnv } from "../lib/git-sandbox.ts";
+import { withGitSandbox, sandboxGitEnv } from "@a11ign/toolchain/lib/git-sandbox";
 
 // THE PROJECT THE CLASSIFIER READS IS BUILT BELOW, NOT BORROWED (#3233). Every command here is classified against the cwd's
 // `package.json`, its test files and its git index, and this file used to read a11ign's: which test declares `// requires:`, what

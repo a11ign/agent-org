@@ -23,7 +23,7 @@ import { readFileSync, existsSync, readdirSync, mkdtempSync, mkdirSync, writeFil
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { localImports } from "../lib/local-import-closure.ts";
+import { localImports } from "@a11ign/toolchain/lib/local-import-closure";
 import { SPAWNS_GH } from "../acceptance-commands.ts";
 
 /** Can a `gh` spawn be reached from this file, through any depth of local imports? */

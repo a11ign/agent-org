@@ -29,8 +29,8 @@
 import { readFileSync, writeFileSync, existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { refuseUnknownFlags } from "./lib/cli-flags.ts";
-import { worktreeResolution, resolutionLine } from "./lib/worktree-resolution.ts";
+import { refuseUnknownFlags } from "@a11ign/toolchain/lib/cli-flags";
+import { worktreeResolution, resolutionLine } from "@a11ign/toolchain/lib/worktree-resolution";
 
 /** The stamp's filename, inside the worktree it names. */
 export const OWNER_FILE = ".a11y-owner";

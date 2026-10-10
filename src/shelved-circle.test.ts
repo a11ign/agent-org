@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
-import { sandboxGitEnv } from "./lib/git-env.ts";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 
 // The project is a recorded one, as `idle-with-open-rows.test.ts`: the host file is set FIRST and the tool imported AFTER it, dynamically.
 const SCRATCH = mkdtempSync(join(tmpdir(), "shelved-circle-"));
@@ -134,7 +134,7 @@ function gateTick(pr: Pr) {
     closes: declaredClosedRows(pr.body, { prRepo: LAB, trackerRepo: TRACKER }), held: (pr.labels as string[]).some((l) => l.startsWith("hold:")) };
   const decideArgs = { prs: [], required: [], readyRows: [ROW_4372], prFiles: [prFile], rowBranches: [], openRows: [ROW_4372], primaryDrift: null, claimRefusals: [] };
   const orders = orgHealthNow({ prsRead: [], keyedPrsRead: [pr], readyRead: [ROW_4372], openRowsRead: [ROW_4372], decideArgs, decided: [] } as never,
-    { now: NOW, lastMergedAt: () => NOW, readCaptures: () => undefined, readLabJobs: () => [], readCopies: () => [], log: () => {}, teamAccess: () => undefined } as never) as { subject: string; session: string; prompt: string }[];
+    { now: NOW, lastMergedAt: () => NOW, readCaptures: () => undefined, readLabJobs: () => [], log: () => {}, teamAccess: () => undefined } as never) as { subject: string; session: string; prompt: string }[];
   const calls = existsSync(GH_LOG) ? readFileSync(GH_LOG, "utf8").split("\n").filter(Boolean) : [];
   return { orders: orders.filter((o) => o.subject === SIGNALS.SHELVED_CIRCLE), calls };
 }

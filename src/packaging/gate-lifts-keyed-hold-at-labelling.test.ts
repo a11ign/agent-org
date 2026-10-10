@@ -65,7 +65,7 @@ function tick({ prs = [], keyed = [] }: { prs?: Record<string, unknown>[]; keyed
   const decideArgs = { prs: owned, required: [], readyRows: [], prFiles: new Map(), rowBranches: [], openRows: [], primaryDrift: null, claimRefusals: [] };
   const decided = decide({ prs: owned, readyRows: [], openRows: rows } as never);
   const orders = orgHealthNow({ prsRead: prs, keyedPrsRead: keyed, readyRead: [], openRowsRead: [], decideArgs, decided } as never,
-    { now: NOW, lastMergedAt: () => NOW - MINUTE_MS, log: () => {}, readCopies: (() => []) as never, readCaptures: (() => undefined) as never,
+    { now: NOW, lastMergedAt: () => NOW - MINUTE_MS, log: () => {}, readCaptures: (() => undefined) as never,
       readWaits: ((args: never) => waitTickFacts({ ...(args as Parameters<typeof waitTickFacts>[0]), run })) as never,
       release: ((number: number, session: string, repoKey?: string) => { asked.push({ number, session, repoKey }); return ok; }) as never,
       teamAccess: () => undefined });

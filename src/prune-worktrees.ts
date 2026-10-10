@@ -78,7 +78,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
-import { sandboxGitEnv } from "./lib/git-env.ts";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 // RELATIVE for the same reason as `cli-flags.ts` below (#1373): `row-claim.ts` imports this file before
 // `pnpm install`, where a package specifier dies.
 import { worktreeOwner } from "./worktree-owner.ts";
@@ -1238,7 +1238,7 @@ import { realpathSync } from "node:fs";
 // #1373: RELATIVE, not `@a11ign/screenreader-fleet/cli-flags` -- `row-claim.ts` imports this file now, and
 // `close-rows-for-merged-pr.ts`, `close-rows-sweep.ts` and `workflow-run-liveness.ts` run it before
 // `pnpm install`, where a package specifier dies (`pre-install-import-graph.test.ts`).
-import { refuseUnknownFlags } from "./lib/cli-flags.ts";
+import { refuseUnknownFlags } from "@a11ign/toolchain/lib/cli-flags";
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {
   main();
 }

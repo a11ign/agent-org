@@ -12,7 +12,7 @@
 // lines that mattered. Posting this daily is a later row (a11ign#4748's done-when 3); this one builds the reading and a CLI that prints it.
 import { readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { flagValue, refuseUnknownFlags } from "./lib/cli-flags.ts";
+import { flagValue, refuseUnknownFlags } from "@a11ign/toolchain/lib/cli-flags";
 
 const MS_PER_MINUTE = 60_000;
 const MS_PER_HOUR = 60 * MS_PER_MINUTE;

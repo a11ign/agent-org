@@ -40,7 +40,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { sandboxGitEnv } from "./lib/git-env.ts";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 import { PARKED_LABEL, conditionHolds, declaredWaitsOf, isItemWait, waitFieldsOf, waitItemOf } from "./wait-condition.ts";
 import { notBeforeDate, notBeforeIso } from "./waiting-condition.ts";
 import { CLAIM_LABEL, READY_LABEL } from "./claim-labels.ts";

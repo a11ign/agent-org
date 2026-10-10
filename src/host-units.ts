@@ -36,11 +36,11 @@ import { readdirSync, readFileSync, mkdirSync, rmSync, existsSync, realpathSync,
   renameSync, chmodSync, openSync, fstatSync, readSync, closeSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { refuseUnknownFlags } from "./lib/cli-flags.ts";
+import { refuseUnknownFlags } from "@a11ign/toolchain/lib/cli-flags";
 import { LATEST } from "./lib/release-tag.ts";
 import { installPendingFindings } from "./update-tool.ts";
-import { localImports, stripComments } from "./lib/local-import-closure.ts";
-import { sandboxGitEnv } from "./lib/git-env.ts";
+import { localImports, stripComments } from "@a11ign/toolchain/lib/local-import-closure";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 import { agreement, agreementReport, memoFile, readFacts } from "./lib/tool-version-agreement.ts";
 import { SPAWNS_GH, agentOrgCommand } from "./acceptance-commands.ts";
 import { COMMANDS, FIXED_ARGS } from "./commands.ts";

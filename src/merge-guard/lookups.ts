@@ -16,7 +16,7 @@
 // files made the omission visible rather than introducing it.
 import { execFileSync } from "node:child_process";
 import { REPO } from "../project-identity.ts";
-import { sandboxGitEnv } from "../lib/git-env.ts";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 import { assertNoLeakInArgv } from "../lib/leak-patterns.ts";
 
 /** @param {string[]} args */

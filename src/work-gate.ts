@@ -33,7 +33,7 @@ import { realpathSync, existsSync, readFileSync, appendFileSync, mkdirSync, writ
 import { dirname, join } from "node:path";
 // RELATIVE, not the package specifier -- this must run before any `pnpm install`/build, the same constraint
 // `org-watch.ts` and `build-packages.mjs` state at their own imports.
-import { refuseUnknownFlags } from "./lib/cli-flags.ts";
+import { refuseUnknownFlags } from "@a11ign/toolchain/lib/cli-flags";
 import { READY_LABEL, CLAIM_LABEL, CLAIM_RECORD_MARKER } from "./claim-labels.ts";
 import { verdictAmong, patchIdOfDiff, evidenceHeads, refusalHeads, refusalLiftedAt } from "./review-verdict.ts";
 // `verdictAmong` lives in review-verdict.ts (#3030), so a test of the verdict reader need not import this file and its token.
@@ -67,7 +67,7 @@ import { extractClosesDeclaration } from "./acceptance-commands.ts";
 // EVERY `git` SPAWN IN THIS REPO STRIPS `GIT_*` THROUGH ONE FUNCTION (`git-env.ts`'s own header records
 // the 2026-09-06 incident where an inherited `GIT_DIR` landed fifteen commits in the wrong checkout).
 // This tick runs under systemd, where the environment is not the one a person typed.
-import { sandboxGitEnv } from "./lib/git-env.ts";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 // THE REFUSAL PATH ONLY, and a LEAF import so this file keeps the property its own header states. The
 // reader lived in `queue-table.ts` until #2003; importing THAT would have pulled five modules into the
 // graph of a script that runs 720 times a day, to use a function it calls only when already refusing.

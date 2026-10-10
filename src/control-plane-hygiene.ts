@@ -13,8 +13,8 @@ import { existsSync, lstatSync, readFileSync, readdirSync, statfsSync } from "no
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { refuseUnknownFlags } from "./lib/cli-flags.ts";
-import { sandboxGitEnv } from "./lib/git-env.ts";
+import { refuseUnknownFlags } from "@a11ign/toolchain/lib/cli-flags";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 
 const REPO_ROOT = execFileSync("git", ["rev-parse", "--show-toplevel"],
   { encoding: "utf8", env: sandboxGitEnv() }).trim();

@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
-import { sandboxGitEnv } from "./lib/git-env.ts";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 
 // The project is a recorded one, as `state-label-exactly-one.test.ts`: the host file is set FIRST and the tool imported AFTER it, dynamically.
 const SCRATCH = mkdtempSync(join(tmpdir(), "idle-with-open-rows-"));
@@ -150,7 +150,7 @@ const decideArgs = (readyRows: unknown[], openRows: unknown[]) => ({ prs: [], re
 function tick(openRowsRead: unknown[] | null, { readyRows = [] as unknown[], prsRead = [] as unknown[] | null } = {}) {
   rmSync(GH_LOG, { force: true });
   const orders = orgHealthNow({ prsRead, readyRead: readyRows, openRowsRead, decideArgs: decideArgs(readyRows, openRowsRead ?? []), decided: [] } as never,
-    { now: NOW, lastMergedAt: () => NOW, readCaptures: () => undefined, readLabJobs: () => [], readCopies: () => [], log: () => {}, teamAccess: () => undefined } as never) as { subject: string; session: string; prompt: string }[];
+    { now: NOW, lastMergedAt: () => NOW, readCaptures: () => undefined, readLabJobs: () => [], log: () => {}, teamAccess: () => undefined } as never) as { subject: string; session: string; prompt: string }[];
   const calls = existsSync(GH_LOG) ? readFileSync(GH_LOG, "utf8").split("\n").filter(Boolean) : [];
   return { orders: orders.filter((o) => o.subject === SIGNALS.IDLE_WITH_OPEN_ROWS), calls };
 }

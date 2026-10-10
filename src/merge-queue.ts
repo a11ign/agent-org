@@ -45,10 +45,10 @@ import { appendFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
-import { sandboxGitEnv } from "./lib/git-env.ts";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 import { gitCommonDir } from "./merge-guard.ts";
 import { REPO } from "./project-identity.ts";
-import { refuseUnknownFlags } from "./lib/cli-flags.ts";
+import { refuseUnknownFlags } from "@a11ign/toolchain/lib/cli-flags";
 import { newestPerName } from "./newest-check-run.ts";
 
 /** The exit codes the header documents, one name each (#1482). */

@@ -12,7 +12,7 @@ import ts from "typescript";
 
 import { staleRuleReason, ruleFiles, rulePathspec, ruleDirOf, workTreeOf, installedLayoutOf }
   from "../row-claim/stale-rule-guard.ts";
-import { sandboxGitEnv } from "../lib/git-env.ts";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 
 /**
  * THE TOOL'S ROOT AND ITS REPOSITORY, found from this file's own location and git, never by counting directories (#3041). `src/packaging/..` is

@@ -50,9 +50,9 @@
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
-import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
+import { refuseUnknownFlags, flagValue } from "@a11ign/toolchain/lib/cli-flags";
 import { REPO } from "./project-identity.ts";
-import { sandboxGitEnv } from "./lib/git-env.ts";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 import { assertNoLeakInArgv } from "./lib/leak-patterns.ts";
 // #2619 (child 3d of #69): the `blocked` label, moved to the project's declared vocabulary.
 import { BLOCKED_LABEL } from "./project-vocabulary.ts";

@@ -67,7 +67,7 @@ const isLedgerWorker = (worker: any) => Boolean(worker) && Array.isArray(worker.
  * entry makes the whole file null, as in the writer, because an empty ledger would answer "zero captures", a claim about the fleet nobody
  * read). `undefined` is NO READING: the ledger is YOUNGER than the window and holds no capture, and a zero from a ledger started a
  * minute ago is not a day of idleness -- but it is not a fault either, and `orgHealthReadings` reads an omitted fleet as silent, so
- * the first day does not log an UNKNOWN every tick for `repeating-lines.ts` to offer at 30 ticks (`copiesToCompare`'s reason). A capture
+ * the first day does not log an UNKNOWN every tick for `repeating-lines.ts` to offer at 30 ticks. A capture
  * inside a young ledger is still a capture.
  */
 export function readFleetCaptures({ now, path = join(REPO_CHECKOUT, FLEET_CAPTURES_LEDGER), read = readFileSync }: { now: number; path?: string; read?: (path: string, encoding: "utf8") => string; }): { captures24h: number; lastCaptureAt: number | null; } | null | undefined {
@@ -450,7 +450,7 @@ const lastMerge = (read: number | { at: number; repo: string; } | null): { lastM
 export function orgHealthNow({ prsRead, keyedPrsRead = [], readyRead, openRowsRead, claimedComments, decideArgs, decided, held, pools }: { prsRead: any[] | null; keyedPrsRead?: any[]; readyRead: any[] | null; openRowsRead: any[] | null; claimedComments?: any[] | null; decideArgs: any; decided: any[]; held?: { subject: string; }[]; pools?: import("../org-health.ts").PoolReading[]; },
   io: {
       now?: number; lastMergedAt?: () => number | { at: number; repo: string; } | null; readCaptures?: (now: number) => ReturnType<typeof readFleetCaptures>;
-      log?: (line: string) => void; readCopies?: () => null; readLabJobs?: () => string[] | null; readWaits?: typeof waitTickFacts;
+      log?: (line: string) => void; readLabJobs?: () => string[] | null; readWaits?: typeof waitTickFacts;
       release?: typeof releaseHoldViaModule; readHolderAgents?: typeof readAgents; readToolAgreement?: typeof import("../org-health.ts").readToolAgreement; readNodeStrips?: typeof import("../node-strips-types.ts").readNodeStrips;
       readMilestoneMoves?: typeof readMilestoneMoves;
       readReleaseRuns?: () => import("../org-health.ts").ReleaseRuns | null | undefined;
@@ -459,7 +459,7 @@ export function orgHealthNow({ prsRead, keyedPrsRead = [], readyRead, openRowsRe
       teamAccess?: () => import("../org-health.ts").TeamAccessFact | undefined;
       readBoardTruth?: (input: BoardTruthInput) => ReturnType<typeof boardTruthAudit> | null | undefined;
   } = {}) {
-  const { now = Date.now(), lastMergedAt = () => readLatestMerge(defaultRun, mergeRepositories()), readCaptures = (at) => readFleetCaptures({ now: at }), log, readCopies,
+  const { now = Date.now(), lastMergedAt = () => readLatestMerge(defaultRun, mergeRepositories()), readCaptures = (at) => readFleetCaptures({ now: at }), log,
     readLabJobs = dispatchedLabJobsOrSay, readWaits = waitTickFacts, release, readHolderAgents = readAgents, readToolAgreement = () => undefined, readNodeStrips = () => undefined, readReleaseRuns = () => undefined, readReleaseBehind = () => undefined, readClassRepeat = () => undefined,
     teamAccess = () => readTeamAccess(defaultRun), readBoardTruth = () => undefined,
     readMilestoneMoves: readMoves = io.lastMergedAt === undefined ? readMilestoneMoves : undefined } = io; // #4295: the real exact-start read exactly when the merge read is real
@@ -496,7 +496,7 @@ export function orgHealthNow({ prsRead, keyedPrsRead = [], readyRead, openRowsRe
     ...teamAccessFact(teamAccess()),
     ...boardTruthFact({ openRowsRead, claimedComments, waitFacts: waits?.facts ?? null, now }, readBoardTruth), // #4045
   };
-  const proxyReadings = orgHealthTick(facts, { ...(log && { log }), ...(readCopies && { readCopies }) });
+  const proxyReadings = orgHealthTick(facts, { ...(log && { log }) });
   const readings = exactMilestoneClock({ orders: proxyReadings, fact: milestoneClock, now, merge: facts, readMoves, log });
   const { held: heldOnSatisfied, rest } = splitHeldOnSatisfied(stale);
   const cap = { limit: MAX_ROW_ORDERS_PER_TICK };

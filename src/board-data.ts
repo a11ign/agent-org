@@ -24,8 +24,8 @@
 // It writes to stdout by default. `--post` publishes it as a comment on the board-report issue, so the
 // generating and the publishing are separate acts and a bad report can be seen before it is posted.
 import { execFileSync } from "node:child_process";
-import { sandboxGitEnv } from "./lib/git-env.ts";
-import { changedFiles } from "./lib/changed-files.ts";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
+import { changedFiles } from "@a11ign/toolchain/lib/changed-files";
 import { readFileSync, existsSync, readdirSync} from "node:fs";
 import { fileURLToPath } from "node:url";
 import { OUT_OF_RELEASE_LABEL } from "./project-vocabulary.ts";

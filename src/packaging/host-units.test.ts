@@ -28,7 +28,7 @@ import { readFileSync, readdirSync, mkdirSync, realpathSync, rmSync, writeFileSy
 import { execFileSync, spawnSync } from "node:child_process";
 import { basename, dirname, join } from "node:path";
 import { PROJECT_ROOT, TOOL_ROOT } from "./host-units-project.ts";
-import { sandboxGitEnv } from "../lib/git-env.ts";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 import { shippedUnits, unitState, unitDrift, driftReport, hostUnitsInstall, systemdUserAvailable,
   hostUnitDrift, permissionModeDrift, orphanedUnits, SHIPPED_DIR, execCommands,
   entriesFromCommand, ghSpawnReachedFrom, identityDrift, unitsSpendingGh, opaqueCommands, humanLoginOnHost, HUMAN_LOGIN_ON_HOST,

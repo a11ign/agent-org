@@ -48,7 +48,7 @@ import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { refuseUnknownFlags } from "./lib/cli-flags.ts";
+import { refuseUnknownFlags } from "@a11ign/toolchain/lib/cli-flags";
 import { LATEST, chooseReleaseTag, isReleaseTag } from "./lib/release-tag.ts";
 import { gitIn } from "./lib/tool-version.ts";
 import { isPrimaryWorktree } from "./prune-worktrees.ts";

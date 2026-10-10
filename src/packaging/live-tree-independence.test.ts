@@ -24,7 +24,7 @@ import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { sandboxGitEnv } from "../lib/git-env.ts";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 
 const run = promisify(execFile);
 
@@ -53,7 +53,7 @@ const CONVERTED_FILES: readonly string[] = [
   "row-claim-file-overlap-rule",
   "host-project-paths",
   "org-health",
-  "org-health-fleet-and-copies",
+  "org-health-fleet-idle",
   "acceptance-commands",
   "gh-token-jobs",
   "keyed-repo-review",

@@ -28,7 +28,7 @@ import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { lastRun, markRun, recordFailures, type FailureEvent } from "./failure-ledger.ts";
-import { sandboxGitEnv } from "./lib/git-env.ts";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 import { HOME_CHECKOUT } from "./project-config.ts";
 import { REPO } from "./project-identity.ts";
 

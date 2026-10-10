@@ -58,7 +58,7 @@ function redPrSignal(pr: ReturnType<typeof prOf>, incident: Incident, jobs: Reco
   const { held } = holdForGithubIncident(decided, incident, { prs, run: fakeGh(jobs), nowMs: NOW });
   const decideArgs = { prs, required: [], readyRows: [], prFiles: new Map(), rowBranches: [], openRows: rows, primaryDrift: null, claimRefusals: [] };
   const orders = orgHealthNow({ prsRead: [pr], readyRead: [], openRowsRead: rows, decideArgs, decided, held } as never,
-    { now: NOW, lastMergedAt: () => NOW - MINUTE, log: () => {}, readCopies: (() => []) as never, readCaptures: (() => undefined) as never, readLabJobs: () => [],
+    { now: NOW, lastMergedAt: () => NOW - MINUTE, log: () => {}, readCaptures: (() => undefined) as never, readLabJobs: () => [],
       readWaits: (() => ({ facts: new Map(), stale: [], bare: [], manual: 0 })) as never, teamAccess: () => undefined }) as Order[];
   return { ordered: decided.filter((o) => o.cause === "pr-checks-failing").length, held: held.length, signals: orders.filter((o) => o.subject === RED_PR_SIGNAL) };
 }

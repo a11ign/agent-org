@@ -22,7 +22,7 @@ import { readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { flagValue, refuseUnknownFlags } from "../lib/cli-flags.ts";
+import { flagValue, refuseUnknownFlags } from "@a11ign/toolchain/lib/cli-flags";
 import { sessionOf, transcriptFiles } from "../token-audit.ts";
 import { isWake } from "../wakes-per-row.ts";
 import { readRecords, tokensOf } from "./store.ts";

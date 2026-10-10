@@ -114,7 +114,6 @@ test("a second failure is a NEW order: the discriminator is the run", () => {
 
 const QUIET = { now: NOW, lastMergedAt: NOW - 60 * 60_000, work: { greenPrs: 0, claimableRows: 0 }, redPrs: [], refusals: {},
   drift: { behind: 0, ahead: 0, dirty: [] }, primarySince: null };
-const noCopies = () => [{ original: "a.mjs", copy: "b.mjs", originalText: null, copyText: "", allowedLines: 0 }];
 
 test("the signal is in the readings only when the fact is given, and the order says what retries it", () => {
   assert.equal(orgHealthReadings({ ...QUIET, autoOff: { refusal: null, readAt: NOW } } as never).some((r) => r.signal === SIGNAL), false, "an omitted fact is silent");
@@ -132,11 +131,11 @@ test("the signal is in the readings only when the fact is given, and the order s
 
 test("the tick says an unread release on stderr and offers nothing; a cleared one is silent", () => {
   const said: string[] = [];
-  assert.deepEqual(orgHealthTick({ ...QUIET, releaseRuns: null } as never, { log: (l) => said.push(l), readCopies: noCopies, readAutoOff: () => undefined as never }), []);
+  assert.deepEqual(orgHealthTick({ ...QUIET, releaseRuns: null } as never, { log: (l) => said.push(l), readAutoOff: () => undefined as never }), []);
   assert.match(said.join(""), /org-health: release-run-failed UNKNOWN -- the runs of release\.yml on main could not be read/);
   const silent: string[] = [];
   const clearRuns = { runs: [run(37650000000, "push", "success", "2026-10-07T15:40:00Z")] };
-  assert.deepEqual(orgHealthTick({ ...QUIET, releaseRuns: clearRuns } as never, { log: (l) => silent.push(l), readCopies: noCopies, readAutoOff: () => undefined as never }), []);
+  assert.deepEqual(orgHealthTick({ ...QUIET, releaseRuns: clearRuns } as never, { log: (l) => silent.push(l), readAutoOff: () => undefined as never }), []);
   assert.deepEqual(silent, []);
 });
 
@@ -184,7 +183,7 @@ test("the reader's refusals are nulls, never an empty answer: the list, the jobs
 test("orgHealthNow offers the order from the reader it is given, and nothing when the reader is not asked or the release is clean", () => {
   const decideArgs = { prs: [], required: [], readyRows: [], prFiles: new Map(), rowBranches: [], openRows: [], primaryDrift: null, claimRefusals: [] };
   const tick = (readReleaseRuns?: () => unknown) => orgHealthNow({ prsRead: [], readyRead: [], openRowsRead: [], decideArgs, decided: [] } as never,
-    { now: NOW, lastMergedAt: () => NOW, readCaptures: () => undefined, readLabJobs: () => [], readCopies: () => [], log: () => {}, teamAccess: () => undefined,
+    { now: NOW, lastMergedAt: () => NOW, readCaptures: () => undefined, readLabJobs: () => [], log: () => {}, teamAccess: () => undefined,
       readWaits: () => ({ facts: new Map(), stale: [], bare: [], manual: 0 }), ...(readReleaseRuns && { readReleaseRuns }) } as never) as { subject: string; session: string; prompt: string }[];
   const ofSignal = <T extends { subject: string }>(orders: T[]) => orders.filter((o) => o.subject === SIGNAL);
   const order = ofSignal(tick(() => failedWith()))[0];

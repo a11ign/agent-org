@@ -8,12 +8,12 @@ import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { existsSync, mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
-import { sandboxGitEnv } from "../lib/git-env.ts";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { updatePrimary, lockfileMoved, readPrimaryDrift } from "../update-primary.ts";
-import { changedFiles } from "../lib/changed-files.ts";
-import { withGitSandbox } from "../lib/git-sandbox.ts";
+import { changedFiles } from "@a11ign/toolchain/lib/changed-files";
+import { withGitSandbox } from "@a11ign/toolchain/lib/git-sandbox";
 import { UPDATE_PRIMARY_VERBS } from "./update-primary-argv.ts";
 
 /**

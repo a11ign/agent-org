@@ -70,7 +70,7 @@ import { existsSync, readdirSync, readFileSync, lstatSync, readlinkSync, renameS
 import { basename, dirname, join, sep } from "node:path";
 // RELATIVE rather than `@a11ign/screenreader-fleet/cli-flags` for the reason `prune-worktrees.ts` records:
 // files in this package run before `pnpm install`, where a package specifier dies.
-import { refuseUnknownFlags } from "./lib/cli-flags.ts";
+import { refuseUnknownFlags } from "@a11ign/toolchain/lib/cli-flags";
 import { worktreeOwner } from "./worktree-owner.ts";
 import { claimRefusal, nestedWorktrees, recordRemoval, worktreeBranch } from "./worktree-removal.ts";
 

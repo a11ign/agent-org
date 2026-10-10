@@ -24,7 +24,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BASELINE_FILE, checkMjsRatchet, findBaselineRoot, isScriptSource, type Baseline } from "@a11ign/toolchain/mjs-ratchet";
-import { sandboxGitEnv } from "../lib/git-env.ts";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 import { TOOL_REPO_ENV } from "../lib/pin-ratchet.ts";
 
 const HERE = fileURLToPath(import.meta.url);

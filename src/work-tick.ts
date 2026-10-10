@@ -26,7 +26,7 @@ import { appendFileSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSy
 import { loadavg } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { refuseUnknownFlags } from "./lib/cli-flags.ts";
+import { refuseUnknownFlags } from "@a11ign/toolchain/lib/cli-flags";
 import { tellBlocked, BLOCKED_TOLD_FILE } from "./worker-state.ts";
 import { stateEntryPath } from "./host-config.ts";
 import { defaultRun } from "./prompt-session.ts";

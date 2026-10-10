@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { restartLongRunning, updateTool } from "./update-tool.ts";
 import { liveToolVersion, toolVersionLine } from "./lib/tool-version.ts";
-import { sandboxGitEnv, withGitSandbox } from "./lib/git-sandbox.ts";
+import { sandboxGitEnv, withGitSandbox } from "@a11ign/toolchain/lib/git-sandbox";
 
 /** A primary checkout as `isPrimaryWorktree` reads one (a real `.git` directory), holding nothing else: git itself is the fake. */
 function withPrimaryDirectory(fn: any) {

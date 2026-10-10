@@ -54,7 +54,7 @@ function tick({ rows, prs = [], lastMerge = 600 }: { rows: Row[] | null; prs?: R
   const said: string[] = [];
   const orders = orgHealthNow(
     { prsRead: prs, readyRead: [], openRowsRead: rows, decideArgs, decided: [] } as never,
-    { now: NOW, lastMergedAt: () => (lastMerge === null ? null : ago(lastMerge)), log: (line: string) => said.push(line), readCopies: () => [] as never,
+    { now: NOW, lastMergedAt: () => (lastMerge === null ? null : ago(lastMerge)), log: (line: string) => said.push(line), 
       readCaptures: (() => QUIET_FLEET) as never, readLabJobs: () => [], readWaits: (() => null) as never, teamAccess: () => undefined },
   );
   return { clock: orders.filter((order: { subject: string }) => order.subject === SUBJECT), said };

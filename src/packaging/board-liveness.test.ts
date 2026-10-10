@@ -31,7 +31,7 @@
 //
 // The declaration is verified against the entry's own code, so if one of these functions ever starts
 // doing its own lookups this refuses rather than trusting the comment.
-import { declareWalkScope } from "../lib/walk-scope.ts";
+import { declareWalkScope } from "@a11ign/toolchain/lib/walk-scope";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 

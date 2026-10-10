@@ -30,7 +30,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
 import path from "node:path";
-import { refuseUnknownFlags } from "./lib/cli-flags.ts";
+import { refuseUnknownFlags } from "@a11ign/toolchain/lib/cli-flags";
 import { bodyCapRefusal, document } from "./board-document.ts";
 import { collect, reported } from "./board-data.ts";
 

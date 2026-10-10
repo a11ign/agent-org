@@ -19,7 +19,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { DEFERRAL_LOG_FILE, parseDeferralLog } from "../deferral-log.ts";
-import { sandboxGitEnv } from "../lib/git-env.ts";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 import { measure, mergedRows, parseLedger, readInstances, readTranscripts, rowsClosedBy } from "../wakes-per-row.ts";
 import { aggregate, claimsOf, MOVES, renderAggregate, weekStart } from "./aggregate.ts";
 import { buildMap } from "./map.ts";

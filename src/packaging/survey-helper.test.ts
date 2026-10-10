@@ -20,7 +20,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { survey, render, DEFAULT_READ_LIMIT } from "../survey.ts";
-import { sandboxGitEnv } from "../lib/git-env.ts";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 
 // The tool's own CLI, found from this file and not through the project's checkout, where `packages/agent-org` is the old frozen copy.
 const SURVEY_CLI = fileURLToPath(new URL("../survey.ts", import.meta.url));

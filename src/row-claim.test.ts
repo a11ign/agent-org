@@ -23,7 +23,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { sandboxGitEnv } from "./lib/git-env.ts";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 import { parseProjectDeclaration } from "./project-config.ts";
 import { REPO } from "./project-identity.ts";
 import { PROJECT_NUMBER, PROJECT_OWNER } from "./board-snapshot.ts";

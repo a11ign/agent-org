@@ -31,7 +31,7 @@ import { HostConfigRefusal, homeHostConfig, parseBeforeTick, parseHostConfig, re
   from "../host-config.ts";
 import { handoffQueuePath, keptClaimsPath, ledgerPathFrom, reviewerPathsFrom, sparePathsFrom } from "../wake.ts";
 import { updateTool } from "../update-tool.ts";
-import { sandboxGitEnv, withGitSandbox } from "../lib/git-sandbox.ts";
+import { sandboxGitEnv, withGitSandbox } from "@a11ign/toolchain/lib/git-sandbox";
 
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 

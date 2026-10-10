@@ -144,7 +144,7 @@ const NOW = Date.parse("2026-10-10T12:00:00Z");
 /** The org-health tick over one claimed row, with every other read stood in; the orders it offers that are about THIS reading. */
 function tick(input: ReturnType<typeof claimed>, { ask = true } = {}) {
   const orders = orgHealthNow({ prsRead: [], readyRead: [], openRowsRead: input.openRows, ...(ask && { claimedComments: input.claimedComments }), decideArgs, decided: [] } as never,
-    { now: NOW, lastMergedAt: () => NOW, readCaptures: () => undefined, readLabJobs: () => [], readCopies: () => [], log: () => {}, teamAccess: () => undefined,
+    { now: NOW, lastMergedAt: () => NOW, readCaptures: () => undefined, readLabJobs: () => [], log: () => {}, teamAccess: () => undefined,
       readWaits: () => ({ facts: new Map(), stale: [], bare: [], manual: 0 }) } as never) as { subject: string; session: string; prompt: string }[];
   return orders.filter((o) => o.subject.startsWith("scope-added-mid-row"));
 }

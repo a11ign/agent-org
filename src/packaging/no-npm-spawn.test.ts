@@ -18,7 +18,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { stripComments } from "../lib/source-text.ts";
+import { stripComments } from "@a11ign/toolchain/lib/source-text";
 import { toolSources, type ToolFile } from "./tool-source.ts";
 
 /** The named files that keep npm, and why. The reason is for a reader; the test pins the FILE NAMES. */

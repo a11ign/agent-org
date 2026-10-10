@@ -19,7 +19,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
-import { sandboxGitEnv } from "./git-env.ts";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 import { chooseReleaseTag, compareReleaseTags, isReleaseTag, LATEST } from "./release-tag.ts";
 import { liveToolVersion, gitIn } from "./tool-version.ts";
 

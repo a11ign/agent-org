@@ -21,8 +21,8 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 // RELATIVE, not `@a11ign/screenreader-fleet/cli-flags` or `@a11ign/guards/git-env`: `agent-org` imports nothing
 // outside its own package (#2658, ADR 0040 decision 4) -- these are its own copies, in `lib/`.
-import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
-import { sandboxGitEnv } from "./lib/git-env.ts";
+import { refuseUnknownFlags, flagValue } from "@a11ign/toolchain/lib/cli-flags";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 
 export type GrepTask = { kind: "grep", pattern: string, paths: string[], flags?: string[] };
 export type ReadTask = { kind: "read", path: string, offset?: number, limit?: number };

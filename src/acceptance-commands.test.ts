@@ -18,7 +18,7 @@ import assert from "node:assert/strict";
 
 import { acceptanceSourceOf, acceptanceSourceOfThisPullRequest, ciInputOf, prAuthorFromEnv, runCiBodyReports, thisPullRequestInput } from "./acceptance-commands.ts";
 import { resolveAcceptanceSource } from "./acceptance-file.ts";
-import { sandboxGitEnv } from "./lib/git-env.ts";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 
 const FILE = ".acceptance/agent~example-666.md";
 const OTHER = ".acceptance/agent~example-667.md";

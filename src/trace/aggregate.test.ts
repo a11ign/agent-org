@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { aggregate, compareWeeks, DEFINITIONS, MOVES, dearestPhase, nearestRank, NOT_DERIVABLE, NOT_HELD, phaseShares, renderAggregate, weekStart, Move } from "./aggregate.ts";
-import { sandboxGitEnv } from "../lib/git-env.ts";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 import { eventsOfTranscript, PRICES, TraceEvent } from "./store.ts";
 import { parseMergePaths, readMergePaths, readMoves } from "./trace.ts";
 import { waterfall } from "./waterfall.ts";

@@ -45,7 +45,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { sandboxGitEnv } from "./lib/git-env.ts";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 import { isShipped, noReleaseReason } from "./release-behind-main.ts";
 
 /** What an unreadable source prints. Never `0`. */
@@ -1114,7 +1114,7 @@ export function readDora({ repositories, now, readers = githubReaders }: { repos
 }
 
 async function main() {
-  const { refuseUnknownFlags, flagValue } = await import("./lib/cli-flags.ts");
+  const { refuseUnknownFlags, flagValue } = await import("@a11ign/toolchain/lib/cli-flags");
   refuseUnknownFlags(["--now"], { entry: import.meta.url, command: "agent-org dora" });
   const nowFlag = flagValue(process.argv, "now");
   const now = nowFlag === undefined ? Date.now() : Date.parse(nowFlag);

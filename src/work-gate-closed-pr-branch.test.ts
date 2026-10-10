@@ -16,7 +16,7 @@ import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { sandboxGitEnv } from "./lib/git-env.ts";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 
 // THE PROJECT THIS RUNS AGAINST IS A RECORDED ONE (`claimed-region-overlap.test.ts`'s shape): the host file is set FIRST and the tool imported AFTER it, so the
 // acceptance command as written -- no `$AGENT_ORG_HOST` -- runs.

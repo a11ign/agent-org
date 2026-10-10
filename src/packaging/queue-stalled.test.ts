@@ -31,7 +31,7 @@ import { newestConclusion } from "../newest-check-run.ts";
 // recurring shape, and the fix for a vocabulary split walked straight into it.
 // ---------------------------------------------------------------------------------------------------
 
-import { sandboxGitEnv } from "../lib/git-env.ts";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 import { queueEjectionOf, ejectionQueryArgs, armedFromApi } from "../pr-armed-state.ts";
 import { readEjections, decide, stallReasonOf, greenUnarmedOrders, STALL_REASON } from "../work-gate.ts";
 

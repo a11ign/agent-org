@@ -72,7 +72,7 @@ function scratchHost(): Scratch {
   return { home, project, hostFile };
 }
 
-const { localImports } = await import("../lib/local-import-closure.ts");
+const { localImports } = await import("@a11ign/toolchain/lib/local-import-closure");
 
 const SRC = fileURLToPath(new URL("..", import.meta.url));
 

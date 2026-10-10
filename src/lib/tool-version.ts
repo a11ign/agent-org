@@ -3,7 +3,7 @@
 // tick (`work-gate.test.ts`'s #2174 population guard refused exactly that edge).
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { sandboxGitEnv } from "./git-env.ts";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 import { compareReleaseTags, isReleaseTag } from "./release-tag.ts";
 
 export const gitIn = (cwd: string): (args: string[]) => string => (args) => execFileSync("git", args, { cwd, env: sandboxGitEnv(), encoding: "utf8" });

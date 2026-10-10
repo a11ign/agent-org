@@ -46,8 +46,8 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
-import { sandboxGitEnv } from "./lib/git-env.ts";
+import { refuseUnknownFlags, flagValue } from "@a11ign/toolchain/lib/cli-flags";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 
 /** `git merge-file` returns >127 for a real error; anything up to it is the conflict count. */
 const GIT_ERROR_STATUS = 128;

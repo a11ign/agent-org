@@ -20,7 +20,7 @@
 // generating and the publishing are separate acts and a bad report can be seen before it is posted.
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { refuseUnknownFlags } from "./lib/cli-flags.ts";
+import { refuseUnknownFlags } from "@a11ign/toolchain/lib/cli-flags";
 import { READY_LABEL, BACKLOG_LABEL, SESSION_PREFIX } from "./project-vocabulary.ts";
 import {
   REPO, MILESTONE, HOURS_MS, MINUTE_MS, MEDIAN, READ_SET,

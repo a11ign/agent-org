@@ -1,8 +1,0 @@
-// COPIED FROM `packages/guards/src/cli-flags.mjs.txt` at 598e883cc (#2623): a recorded stand-in for the tool's own copy (#3233).
-// CHANGED FROM THE ORIGINAL: NOTHING but this header.
-// ==== end of copy header ====
-// @ts-check
-// (#3233) A RECORDED STAND-IN for a second original, whose copy changes nothing but its header: the pair that stays clean while another one trips.
-export function parseFlags(argv) {
-  return argv.filter((arg) => arg.startsWith("--"));
-}

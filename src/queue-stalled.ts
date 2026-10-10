@@ -50,8 +50,8 @@
 //      see the workflow step for what treats it as one)
 //   2  a lookup failed. INCONCLUSIVE, never "fine".
 import { execFileSync } from "node:child_process";
-import { refuseUnknownFlags } from "./lib/cli-flags.ts";
-import { sandboxGitEnv } from "./lib/git-env.ts";
+import { refuseUnknownFlags } from "@a11ign/toolchain/lib/cli-flags";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { newestConclusion, newestRun, normaliseConclusion, SUCCESS, workflowRunIdOf } from "./newest-check-run.ts";

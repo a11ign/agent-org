@@ -15,7 +15,7 @@
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
-import { refuseUnknownFlags } from "./lib/cli-flags.ts";
+import { refuseUnknownFlags } from "@a11ign/toolchain/lib/cli-flags";
 
 /**
  * Pure. `text` is a `node:test` TAP log (`pnpm test`'s own stdout+stderr, redirected). Returns `fail` only

@@ -32,7 +32,7 @@ import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { stripComments } from "./lib/source-text.ts";
+import { stripComments } from "@a11ign/toolchain/lib/source-text";
 
 const SRC = dirname(fileURLToPath(import.meta.url));
 const TOOL_ROOT = dirname(SRC);

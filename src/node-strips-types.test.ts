@@ -159,7 +159,7 @@ test("orgHealthReadings carries the signal only when the fact is given, and the 
 test("orgHealthNow offers the order from the reader it is given, and nothing when the reader is not asked or every node strips", () => {
   const decideArgs = { prs: [], required: [], readyRows: [], prFiles: new Map(), rowBranches: [], openRows: [], primaryDrift: null, claimRefusals: [] };
   const tick = (readNodeStrips?: () => unknown) => orgHealthNow({ prsRead: [], readyRead: [], openRowsRead: [], decideArgs, decided: [] } as never,
-    { now: NOW, lastMergedAt: () => NOW, readCaptures: () => undefined, readLabJobs: () => [], readCopies: () => [], log: () => {}, teamAccess: () => undefined,
+    { now: NOW, lastMergedAt: () => NOW, readCaptures: () => undefined, readLabJobs: () => [], log: () => {}, teamAccess: () => undefined,
       readWaits: () => ({ facts: new Map(), stale: [], bare: [], manual: 0 }), ...(readNodeStrips && { readNodeStrips }) } as never) as { subject: string; prompt: string }[];
   const ofSignal = (orders: { subject: string }[]) => orders.filter((o) => o.subject === SIGNAL);
   const bad = standIn("tick-bad", "false");

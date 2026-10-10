@@ -25,7 +25,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sandboxGitEnv } from "../lib/git-env.ts";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 
 // The project this file runs against is the recorded one `org-health.test.ts` explains (#3233): the host file is set FIRST and the tool imported AFTER it.
 const PROJECT_SCRATCH = mkdtempSync(join(tmpdir(), "outcome-clock-project-"));
@@ -294,7 +294,7 @@ function wired({ rows, comments, claimFacts, agents }: { rows: Record<string, un
   const asked: string[] = [];
   const decideArgs = { prs: [], required: [], readyRows: [], prFiles: new Map(), rowBranches: [], openRows: [], primaryDrift: null, claimRefusals: [], claimFacts };
   const orders = orgHealthNow({ prsRead: [], readyRead: [], openRowsRead: rows, claimedComments: comments, decideArgs, decided: [] } as never,
-    { now: NOW, lastMergedAt: () => NOW - 60 * MINUTE_MS, log: () => undefined, readCopies: (() => []) as never, readCaptures: (() => undefined) as never,
+    { now: NOW, lastMergedAt: () => NOW - 60 * MINUTE_MS, log: () => undefined, readCaptures: (() => undefined) as never,
       readWaits: (() => null) as never, release: (() => false) as never, readHolderAgents: (() => { asked.push("herdr"); return agents; }) as never });
   return { orders: (orders as Order[]).filter((o) => o.subject === SIGNALS.OVERDUE), asked };
 }

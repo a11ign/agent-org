@@ -44,7 +44,7 @@ import { join } from "node:path";
 // rather than naming it), and there it dies on startup with ERR_MODULE_NOT_FOUND.
 import { proseBlockers } from "./waiting-condition.ts";
 import { umbrellaEdge } from "./wait-condition.ts";
-import { refuseUnknownFlags } from "./lib/cli-flags.ts";
+import { refuseUnknownFlags } from "@a11ign/toolchain/lib/cli-flags";
 import { REPO } from "./project-identity.ts";
 import { HOME_CHECKOUT, homeProjectDeclaration } from "./project-config.ts";
 import { fetchBoardItems, PROJECT_NUMBER } from "./board-snapshot.ts";
@@ -54,7 +54,7 @@ import { fetchBoardItems, PROJECT_NUMBER } from "./board-snapshot.ts";
 // the three states it is instead.
 import { fetchClosedRowEvents, unattributableClosedRows, reportableUnattributable, attributionFor,
   fetchClosingPullRequest, PROVENANCE_REQUIRED_FROM } from "./claim-provenance.ts";
-import { sandboxGitEnv } from "./lib/git-env.ts";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 // `CLAIM_LABEL` from the module the CLAIM PATH itself writes, never the string "in-progress" retyped
 // here: #2008's finding was a predicate that disagreed with the claim path about what a claim means, and
 // a second spelling of the label is how that disagreement gets to happen again silently.

@@ -24,7 +24,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { ownerOf, stashLines } from "../stash-whose.ts";
-import { sandboxGitEnv } from "../lib/git-env.ts";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 import { HOME_CHECKOUT } from "../project-config.ts";
 
 const HOOK = join(HOME_CHECKOUT, "scripts/git-hooks/reference-transaction");
