@@ -1,0 +1,15 @@
+An unclaimed ready row starts a FRESH worker: `wake.ts` `ownRowOnly` refuses an idle `worker-<n>` spare for every row but the one it was named for (`spareLabelForRow`), so `route` falls to the spawn path instead of typing a second row into a standing session (the five wakes of `worker-4466`, 2026-10-09). The refusal names the row the spare is for (`is for #4466 only: one instance, one row (#2407)`) and `splitRefusals` reads it as a capacity wait, not a fault.
+
+Acceptance: `bash -c 'cd /home/agent/repos/wt-agent-org-459 && AGENT_ORG_HOST=/home/agent/repos/a11y-witness/.agent-org/host.json npx rstest run --config scripts/rstest/rstest.config.ts src/ready-row-dispatch.test.ts'`
+
+Mutation: `ownRowOnly` made never to restrict (`if (ref === null || ref !== null) return ineligibleReason`) failed 5 of 10 tests, so the fresh-worker, five-rows, refusal and haiku/Sonnet cases depend on it; the restriction applied to the spare's own row too (`const member = familyMember(label, families)`) failed 3 of 10, so a spare is still typed its own row. Both read by `rstest` on the file, mutated file restored from a `cp` copy and `diff`ed identical.
+
+Measured: `VERDICT pass: 10 tests in 1 file` for the acceptance file. Five existing tests encoded "an idle spare takes any ready row" and were changed to the row's rule: `wake-released-target` (2: row 3536 was typed into `worker-2702`), `packaging/wake-one-row` (the control typed row 2407 into a counter-named `worker-4`), `packaging/wake-spare-family` (2: `worker-12` was typed row 2403). Each now types the row into the spare named for it, and `wake-one-row` and `wake-spare-family` also assert that a spare named for no row is not typed it and a fresh worker starts. The first push of this PR failed CI on exactly the three packaging ones and my own `spareLabelForRow` test, which read the host's declared families; all four pass at the head after it (`VERDICT pass: 40 tests in 3 files` for the packaging pair plus the acceptance file). The whole suite here: `VERDICT fail: 34 of 8059 tests failed in 441 files`, all in 12 files that do not import `wake.ts` routing (gh 502, the host's `engineer.md` absent from this worktree, `@a11ign/toolchain/mjs-ratchet` missing), and the same ones fail on an untouched `HEAD`; CI's failing set was only the four above.
+
+Refuted, and posted on the row: change 2's premise holds only at a row's own address (#2469; the six journal lines are row #4082, whose address `worker-4082` had been prompted for #4415 at 07:24Z), which change 1 closes. A rule that a stalled holder frees its address for a second process is a policy change to #2469 and #2407 and is not made here; the tests state that the idle/done cases pass before the change too. Change 3's premise (rows dropped) is refuted by the journal: #4442, #4468, #4443 and #4180 were SHELVED by their declared waits and B4, then started on Haiku. Change 4: the refusal names row, reason and holders and now names a spare's row.
+
+Closes a11ign/agent-org#459
+
+platform: none; the change is to `wake.ts` routing and its tests.
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)

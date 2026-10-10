@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const HOST_NODE = "%h/.local/bin/node";
-const SIX_UNITS = ["kernel-reboot", "otel-receiver", "shadow-window", "tmp-prune", "trace-publish", "work-tick"];
+const SIX_UNITS = ["kernel-reboot", "otel-receiver", "shadow-window", "tmp-prune", "trace-ingest", "trace-publish", "work-tick"];
 const NODE_FLOOR_THAT_STRIPS = 24;
 
 type Manifest = { dependencies?: Record<string, string>; devDependencies?: Record<string, string>; engines?: { node?: string }; scripts?: Record<string, string> };

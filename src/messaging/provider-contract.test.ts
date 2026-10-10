@@ -20,8 +20,8 @@ async function failedChecks(provider: unknown): Promise<string[]> {
   return [];
 }
 
-/** A provider with one behaviour broken, wrapping a working fake. @param {(real: any) => {id?: string, send?: (message: {text: string, silent?: boolean}) => Promise<unknown>, poll?: unknown, capabilities?: unknown}} override */
-function broken(override: (real: any) => { id?: string; send?: (message: { text: string; silent?: boolean; }) => Promise<unknown>; poll?: unknown; capabilities?: unknown; }) {
+/** A provider with one behaviour broken, wrapping a working fake. @param {(real: any) => {id?: string, send?: (message: {text: string, silent?: boolean}) => Promise<unknown>, poll?: unknown, capabilities?: unknown, edit?: unknown, pin?: unknown}} override */
+function broken(override: (real: any) => { id?: string; send?: (message: { text: string; silent?: boolean; }) => Promise<unknown>; poll?: unknown; capabilities?: unknown; edit?: unknown; pin?: unknown; }) {
   const real = createFakeProvider();
   return { ...real, ...override(real) };
 }
@@ -31,8 +31,9 @@ test("the fake provider passes, and every check actually RAN (so 'passes' is not
   assert.deepEqual(skipped, []);
   assert.deepEqual(passed.sort(), [
     "actions-are-accepted", "announcement-refuses-actions", "announcement-reply-to-follows-its-destination", "audience-is-honoured",
-    "capabilities-shape", "empty-text-is-refused", "identity", "max-text-is-accepted-at-the-limit",
-    "max-text-is-enforced", "message-refs-are-distinct", "poll-returns-updates-and-honours-abort", "reply-to-is-accepted",
+    "capabilities-shape", "edit-changes-a-sent-message", "edit-refuses-empty-and-overlong-text",
+    "empty-text-is-refused", "identity", "max-text-is-accepted-at-the-limit",
+    "max-text-is-enforced", "message-refs-are-distinct", "pin-is-accepted", "poll-returns-updates-and-honours-abort", "reply-to-is-accepted",
     "send-returns-message-ref", "silent-is-honoured", "unknown-audience-is-refused",
   ]);
 });
@@ -46,6 +47,53 @@ test("a provider that declares fewer capabilities passes, and the checks it is n
     "poll-returns-updates-and-honours-abort", "reply-to-is-accepted",
   ]);
   for (const entry of skipped) assert.match(entry.reason, /is not declared/);
+});
+
+test("a provider that declares neither edit nor pin passes, and their three checks are SKIPPED with the reason, never passed", async () => {
+  const neither = createFakeProvider({ capabilities: { edit: false, pin: false } });
+  const { passed, skipped } = await runProviderConformance(neither);
+  const asked = ["edit-changes-a-sent-message", "edit-refuses-empty-and-overlong-text", "pin-is-accepted"];
+  assert.deepEqual(skipped.map((entry) => entry.check).sort(), asked);
+  assert.deepEqual(skipped.map((entry) => entry.reason).sort(), ["capabilities.edit is not declared", "capabilities.edit is not declared", "capabilities.pin is not declared"]);
+  for (const check of asked) assert.equal(passed.includes(check), false, `${check} was skipped and must not also be a pass`);
+  // A provider written before the two capabilities existed declares neither key at all, and is held to the same.
+  const { edit, pin, ...older } = FULL_CAPABILITIES;
+  assert.deepEqual((await runProviderConformance(broken(() => ({ capabilities: older })))).skipped.map((entry) => entry.check).sort(), asked);
+});
+
+test("FAILS a provider that declares edit and cannot, that says an edit changed nothing, or that names another message", async () => {
+  assert.deepEqual(await failedChecks(broken(() => ({ edit: undefined }))), ["edit-changes-a-sent-message"]);
+  const neverChanged = broken((real) => ({ edit: async (args: any) => ({ ...(await real.edit(args)), unchanged: true }) }));
+  assert.deepEqual(await failedChecks(neverChanged), ["edit-changes-a-sent-message"]);
+  const wrongRef = broken((real) => ({ edit: async (args: any) => ({ ...(await real.edit(args)), messageRef: "elsewhere" }) }));
+  assert.deepEqual(await failedChecks(wrongRef), ["edit-changes-a-sent-message"]);
+});
+
+test("FAILS an edit that accepts empty or over-long text, and a pin that is missing or names another message", async () => {
+  const lax = broken((real) => ({ edit: async ({ messageRef, text }: any) => (text === "" || text.length > real.capabilities.maxText ? { messageRef, unchanged: false } : real.edit({ messageRef, text })) }));
+  assert.deepEqual(await failedChecks(lax), ["edit-refuses-empty-and-overlong-text"]);
+  assert.deepEqual(await failedChecks(broken(() => ({ pin: undefined }))), ["pin-is-accepted"]);
+  assert.deepEqual(await failedChecks(broken(() => ({ pin: async () => ({ messageRef: "elsewhere" }) }))), ["pin-is-accepted"]);
+});
+
+test("FAILS a declaration of edit or pin that is not a boolean", async () => {
+  assert.ok((await failedChecks(broken(() => ({ capabilities: { ...FULL_CAPABILITIES, edit: "yes" } })))).includes("capabilities-shape"));
+  assert.ok((await failedChecks(broken(() => ({ capabilities: { ...FULL_CAPABILITIES, pin: 1 } })))).includes("capabilities-shape"));
+});
+
+test("the fake provider's edit rewrites what the chairman would read, and its pin adds to the pinned list once", async () => {
+  const fake = createFakeProvider();
+  const { messageRef } = await fake.send({ text: "ask: publish?" });
+  assert.deepEqual(await fake.edit({ messageRef, text: "✅ ask: publish? — published" }), { messageRef, unchanged: false });
+  assert.equal(fake.sent[0].text, "✅ ask: publish? — published");
+  assert.deepEqual(fake.edits, [{ messageRef, from: "ask: publish?", to: "✅ ask: publish? — published" }]);
+  assert.deepEqual(await fake.edit({ messageRef, text: "✅ ask: publish? — published" }), { messageRef, unchanged: true });
+  assert.equal(fake.edits.length, 1, "an edit that changed nothing is not recorded as one");
+  await fake.pin({ messageRef });
+  await fake.pin({ messageRef });
+  assert.deepEqual(fake.pinned, [messageRef]);
+  await assert.rejects(() => fake.edit({ messageRef: "fake-99", text: "x" }), RangeError);
+  await assert.rejects(() => fake.pin({ messageRef: "fake-99" }), RangeError);
 });
 
 test("FAILS a provider that drops `silent`", async () => {
@@ -73,7 +121,11 @@ test("FAILS a provider that returns no `messageRef`", async () => {
 });
 
 test("FAILS a provider that returns the same `messageRef` for two messages", async () => {
-  const same = broken((real) => ({ send: async (message) => ({ ...(await real.send(message)), messageRef: "always" }) }));
+  // It declares neither edit nor pin: the fake can find no message called "always", and that is not the fault this test is about.
+  const same = broken((real) => ({
+    send: async (message) => ({ ...(await real.send(message)), messageRef: "always" }),
+    capabilities: { ...FULL_CAPABILITIES, edit: false, pin: false },
+  }));
   assert.deepEqual(await failedChecks(same), ["message-refs-are-distinct"]);
 });
 

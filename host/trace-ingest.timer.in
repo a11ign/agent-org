@@ -1,0 +1,16 @@
+[Unit]
+# THE FIVE-MINUTE CLOCK OF THE TRACE STORE -- a11ign/agent-org#498. See @@prefix@@trace-ingest.service for what it runs. `Requires=` makes `host:install` run the service once (the
+# partition in host-units.test.ts names every timer that does), which is safe here: the ingest is idempotent (a second run adds nothing) and an incident is raised once per episode.
+Description=Five-minute ingest of the trace store, and a check that it is fresh (agent-org#498)
+Requires=@@prefix@@trace-ingest.service
+
+[Timer]
+# FIVE MINUTES, because a turn is held back until its message is five minutes quiet: a faster clock would not land turns sooner, and a slower one makes the ten-minute window the
+# chairman set unmeasurable. OnUnitActiveSec counts from the end of the last run, so a long ingest delays the next and never overlaps it.
+OnBootSec=2min
+OnUnitActiveSec=5min
+
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

@@ -101,6 +101,8 @@ export const TOOL_ENTRIES = Object.freeze([
   "trace-weekly.service.in", "trace-weekly.timer.in", "trace-weekly-post.sh",
   // a11ign/a11ign#3515: the trace pages' pair. The service runs `src/trace/publish.ts`, which decides whether a head has moved; the timer is only a clock.
   "trace-publish.service.in", "trace-publish.timer.in",
+  // a11ign/agent-org#498: the trace store's own five-minute clock. The service runs `src/trace/freshness.ts` (ingest, then the freshness check and its once-per-episode incident); the timer is only a clock.
+  "trace-ingest.service.in", "trace-ingest.timer.in",
   // a11ign/a11ign#3849: the /tmp fixture janitor's pair, and the user-level tmpfiles rule that ages the private tmp root out (not a unit: `installTmpfiles` copies it).
   "tmp-prune.service.in", "tmp-prune.timer.in", "a11ign-tmp.tmpfiles.conf.in",
   // a11ign/a11ign#4071: the OTel receiver's service, a long-running one (`LONG_RUNNING_TEMPLATES`) with no timer, as the chairman listener's is.
@@ -371,6 +373,10 @@ const OTHER_TOOL_FORMS: Readonly<Record<string, ReadonlyArray<readonly [RegExp, 
   // THE TRACE PAGES (a11ign/a11ign#3515): run from the tool's checkout as the shadow window's script is, and told where the host's declaration is (added for every tool form).
   "trace-publish.service.in": [
     [/^ExecStart=%h\/\.local\/bin\/node packages\/agent-org\/src\/trace\/publish\.ts$/m, "ExecStart=%h/.local/bin/node src/trace/publish.ts"],
+  ],
+  // THE TRACE STORE'S CLOCK (a11ign/agent-org#498): run from the tool's checkout as the pages' script is.
+  "trace-ingest.service.in": [
+    [/^ExecStart=%h\/\.local\/bin\/node packages\/agent-org\/src\/trace\/freshness\.ts$/m, "ExecStart=%h/.local/bin/node src/trace/freshness.ts"],
   ],
   // THE CHAIRMAN-MESSAGING PAIR (#3443): they ran `pnpm run messaging:*` from the PROJECT's checkout, which is the version the project's lockfile pins and not the
   // tool checkout's, so the host ran two versions of one tool and the older one ran everything the chairman touches. The scripts are `package.json`'s own

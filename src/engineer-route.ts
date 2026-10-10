@@ -14,14 +14,17 @@
 // it, and {@link routeCostReading} raises a ledger incident when the provider's last {@link GUARD_DECISIONS} routes averaged dearer than that.
 //
 // THE STATE IS STRUCTURED AND TRIMMED: the title, the Region's entries, the Acceptance's command text and the Done-when list. Never the row's body, which an agent wrote.
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { extractAcceptanceSection } from "./acceptance-commands.ts";
-import { decide, decisionsIn, recordOutcome, type DecisionDeps, type Question, type ScoreLevels } from "./decision-provider.ts";
 import { FAILURE_LEDGER_FILE, recordFailures, type FailureEvent } from "./failure-ledger.ts";
+import { pathToFileURL } from "node:url";
+import { decide, decisionLogPathFrom, decisionsIn, readSwitches, recordOutcome, type DecisionDeps, type Question, type ScoreLevels } from "./decision-provider.ts";
+import { stateEntryPath } from "./host-config.ts";
 import { LANE_PREFIX, NEEDS_CHAIRMAN_LABEL } from "./project-vocabulary.ts";
-import { extractLabeledSection, extractRegionSection } from "./region-paths.ts";
-import { AUTOCOMPACT_WINDOW_TOKENS, haikuTierProfile, HAIKU_TIER_LABEL, type TierProfile } from "./worker-profile.ts";
+import { extractLabeledSection, extractRegionSection, splitRegionEntry } from "./region-paths.ts";
+import { printDiagnostic, processState } from "./triage-provider.ts";
+import { AUTOCOMPACT_WINDOW_TOKENS, clampWindow, haikuTierProfile, HAIKU_TIER_LABEL, MIN_WORKING_ROOM_TOKENS, ordinaryTierProfile, SONNET_WINDOW_RUNGS, type TierProfile } from "./worker-profile.ts";
 
 export type Route = "haiku/high" | "sonnet/medium" | "sonnet/high";
 /** `override` is a `tier:haiku` label deciding; `refused` is a row nothing may lower; `jev` is a provider's answers composed; `fallback` is the file-count rule. */
@@ -29,7 +32,8 @@ export type Via = "override" | "refused" | "jev" | "fallback";
 export type RouteRow = { number: number; title: string; labels: readonly string[]; body: string };
 export type Routed = { route: Route; via: Via;
   /** THE REASON THE ROUTE WAS TAKEN, one text: the work tick's `routed ...` journal line and the decision log's outcome line (`route <route> via <via> (<why>)`) both print it. */ why: string;
-  /** `null` is the ordinary Sonnet/high profile, byte-identical to before. */ profile: TierProfile | null;
+  /** `null` is the ordinary Sonnet/high profile at the ordinary window, byte-identical to before. */ profile: TierProfile | null;
+  /** WHY THE WINDOW IS WHAT IT IS (#4738), only when it is not simply the route's own: the Region's size, what the provider's answers did to it, or the ceiling that held it. Kept apart from `why`, which IS the reason a fallback was taken. */ windowWhy?: string;
   /** Why the provider did not decide this route (a fallback), or which answers it did not give (a `jev` route held to Sonnet/high); absent when it decided it. */ reason?: string };
 /** One answer per question; `null` is an answer that was not given: malformed, or under the confidence floor. {@link composeRoute} says what each question's absence means. */
 export type Answers = { mechanical: boolean | null; subsystems: boolean | null; debugging: boolean | null; score: number | null };
@@ -198,7 +202,7 @@ export const ROUTE_COST: Readonly<Record<Route, number>> = Object.freeze({ "haik
 export const GUARD_DECISIONS = 20;
 /** The failure-ledger class key (an event kind, like `main-red`). */
 export const ROUTE_COSTLIER_THAN_FALLBACK = "route-costlier-than-fallback";
-const WOULD_BE = /^route (\S+) via jev .*\[fallback would be (\S+)\]$/;
+const WOULD_BE = /^route (\S+)(?: window \d+k(?: \([^)]*\))?)? via jev .*\[fallback would be (\S+)\]$/;
 const isRoute = (value: string): value is Route => Object.hasOwn(ROUTE_COST, value);
 
 export type RouteCostReading =
@@ -250,6 +254,8 @@ function haikuProfileOf(row: RouteRow, switchPath: string | undefined): HaikuAsk
 
 export type RouteDeps = DecisionDeps & { /** For a test: the Haiku switch file. */ haikuSwitchPath?: string };
 
+/** THE `--autocompact` WINDOW A ROUTE'S START GETS (#4738), read off its profile: no profile is the ordinary one, at {@link AUTOCOMPACT_WINDOW_TOKENS}. */
+export const windowOf = ({ profile }: Pick<Routed, "profile">): number => profile?.autocompactWindow ?? AUTOCOMPACT_WINDOW_TOKENS;
 const decided = (route: Route, via: Via, why: string, profile: TierProfile | null): Routed => ({ route, via, why, profile });
 const ordinary = (via: Via, why: string): Routed => decided("sonnet/high", via, why, null);
 /** A route the provider did not decide: its `why` IS the reason it did not (the switch off, the API's status, a timeout, an answer under the floor), so a fallback is never silent. */
@@ -262,15 +268,106 @@ function profiled(route: Route, via: Via, row: RouteRow, haikuSwitch: string | u
   return "profile" in haiku ? decided(route, via, "a mechanical row with a command Acceptance", haiku.profile) : ordinary(via, `Haiku was composed but refused: ${haiku.refused}`);
 }
 
+// --- THE WINDOW (a11ign/a11ign#4738, the chairman's "use 1b" on #4627) ---
+//
+// A route sets the context window as well as the model and effort, because a row that touches many files compacts mid-edit in the ordinary one. It is sized in two steps:
+// {@link fallbackWindow} from the Region alone (always, so no provider is needed), then {@link adjustWindow} by the provider's `score` and `subsystems` answers one rung either way,
+// and only when the answer was given at or over the floor AND `model-routing-window` is on in `.agent-org/decisions.json`. The rungs and the clamp are `worker-profile.ts`'s.
+
+/** One large module read costs about this many tokens: layer-edges.mjs ~11k and ADR 0040 ~16k (the figures `worker-profile.ts` measured), at the middle. */
+const FILE_READ_TOKENS = 12_000;
+/** The files the ordinary window's working room reads ONCE: a row naming this many cannot be read and then edited inside it without a compaction between. */
+export const LARGE_ROW_FILES = Math.floor(MIN_WORKING_ROOM_TOKENS / FILE_READ_TOKENS);
+/** Twice that: each file read once to understand it and again around the edits. */
+export const LARGEST_ROW_FILES = LARGE_ROW_FILES * 2;
+/** Two repositories mean two checkouts' layouts and conventions held at once, whatever the file count; three is the widest row there is. */
+export const MULTI_REPOSITORIES = 2;
+export const LARGEST_REPOSITORIES = 3;
+/** The provider's complexity `score` from which a row is larger than its Region says ("a change that touches how two modules agree") and up to which it is smaller ("a few stated edits"). */
+export const LARGER_SCORE = 4;
+export const SMALLER_SCORE = 2;
+/** The key in `.agent-org/decisions.json` that lets the provider's answers move the window. The router's own `model-routing` key is what lets it be ASKED. */
+export const WINDOW_SWITCH = "model-routing-window";
+const TOKENS_PER_K = 1_000;
+
+export const windowLabel = (tokens: number): string => `${Math.round(tokens / TOKENS_PER_K)}k`;
+
+export type RegionSize = { files: number; repositories: number };
+/** The Region's files (a directory counts as {@link DIRECTORY_FILES}) and the repositories its entries are keyed to; a bare path is the project's first repository. */
+export function regionSize(body: string): RegionSize {
+  const keys = new Set(regionEntries(body).map((entry) => splitRegionEntry(entry).key));
+  return { files: regionFileCount(body), repositories: keys.size };
+}
+
+type Sizing = { tokens: number; basis: string; /** The provider's answers were read, so the line says what they did even when they moved nothing. */ provider: boolean };
+
+/** WITH NO PROVIDER: the ordinary window for a row under {@link LARGE_ROW_FILES} files and {@link MULTI_REPOSITORIES} repositories, the next rung from either, the largest from {@link LARGEST_ROW_FILES} or {@link LARGEST_REPOSITORIES}. */
+export function fallbackWindow(body: string): { tokens: number; basis: string } {
+  const { files, repositories } = regionSize(body);
+  const [ordinaryRung, largeRung, largestRung] = SONNET_WINDOW_RUNGS;
+  const largest = files >= LARGEST_ROW_FILES || repositories >= LARGEST_REPOSITORIES;
+  const large = files >= LARGE_ROW_FILES || repositories >= MULTI_REPOSITORIES;
+  return { tokens: largest ? largestRung : large ? largeRung : ordinaryRung, basis: `the Region names files=${files} repositories=${repositories}` };
+}
+
+/**
+ * THE PROVIDER'S READING OF A SIZE, PURE. One rung UP when either answer says the row is larger (`subsystems` yes, or a score of at least {@link LARGER_SCORE}); one rung DOWN only
+ * when BOTH are given and say smaller, because a compaction mid-edit costs more than the rung does. An answer that was not given (`null`) counts for nothing in either direction.
+ */
+export function adjustWindow(tokens: number, { score, subsystems }: Pick<Answers, "score" | "subsystems">): number {
+  const larger = subsystems === true || (score !== null && score >= LARGER_SCORE);
+  const smaller = subsystems === false && score !== null && score <= SMALLER_SCORE;
+  const at = Math.max(0, SONNET_WINDOW_RUNGS.indexOf(tokens));
+  const moved = Math.min(Math.max(at + (larger ? 1 : smaller ? -1 : 0), 0), SONNET_WINDOW_RUNGS.length - 1);
+  return SONNET_WINDOW_RUNGS[moved];
+}
+
+/** What the provider answered, for the window only: the answers composed, and why each one that is `null` was not given. */
+type Provided = { answers: Answers; notGiven: Partial<Record<keyof Answers, string>> };
+
+function windowSwitchOn(deps: RouteDeps): boolean {
+  const switches = deps.switches ?? (deps.switchesPath === undefined ? {} : readSwitches(deps.switchesPath, { diagnostic: deps.diagnostic ?? printDiagnostic, state: deps.state ?? processState, read: deps.read ?? readFileSync }));
+  return (switches as Record<string, boolean | undefined>)[WINDOW_SWITCH] === true;
+}
+
+function sizeOf(row: RouteRow, provided: Provided | null, deps: RouteDeps): Sizing {
+  const base = fallbackWindow(row.body);
+  if (provided === null || !windowSwitchOn(deps)) return { ...base, provider: false };
+  const tokens = adjustWindow(base.tokens, provided.answers);
+  const held = (["score", "subsystems"] as const).filter((name) => provided.answers[name] === null).map((name) => `${name}: ${provided.notGiven[name] ?? "no reason"}`);
+  const moved = tokens === base.tokens ? `kept it at ${windowLabel(tokens)}` : `${tokens > base.tokens ? "raised" : "lowered"} it from ${windowLabel(base.tokens)}`;
+  const heldText = held.length === 0 ? "" : ` (not given, so left out: ${held.join("; ")})`;
+  return { tokens, basis: `${base.basis}; the provider's answers ${moved}${heldText}`, provider: true };
+}
+
+/** The route's profile at `tokens`: a profile it already has with the window set, or for the ordinary route no profile at all while the window is the ordinary one (byte-identical to before). */
+function profileAt(routed: Routed, tokens: number): TierProfile | null {
+  if (routed.profile !== null) return { ...routed.profile, autocompactWindow: tokens };
+  if (tokens === AUTOCOMPACT_WINDOW_TOKENS) return null;
+  return ordinaryTierProfile({ autocompactWindow: tokens, why: `the ordinary profile at a ${windowLabel(tokens)} window (a11ign/a11ign#4738)` });
+}
+
+/** THE ROUTE WITH ITS WINDOW. {@link clampWindow} has the last word, so a Haiku route is at its ceiling whatever the Region size or the provider says. */
+function sizeWindow(routed: Routed, row: RouteRow, provided: Provided | null, deps: RouteDeps): Routed {
+  const sizing = sizeOf(row, provided, deps);
+  const model = routed.profile?.model ?? "sonnet";
+  const tokens = clampWindow(model, sizing.tokens);
+  const held = sizing.tokens > AUTOCOMPACT_WINDOW_TOKENS && tokens < sizing.tokens;
+  const note = held ? `${sizing.basis}; held to the ceiling of ${model}` : sizing.provider || tokens !== windowOf(routed) ? sizing.basis : null;
+  return { ...routed, profile: profileAt(routed, tokens), ...(note === null ? {} : { windowWhy: note }) };
+}
+
 /**
  * THE ROUTE OF ONE ROW. Overrides decide before the provider is asked: a `tier:haiku` label (the Haiku profile, or the ordinary one when the existing refusals say so) and a row nothing
  * may lower. Otherwise the four questions go through `decide`; any failure takes {@link fallbackRoute}. Every route is a decision-log line, and a provider route's line carries the
  * route the fallback would have taken (`[fallback would be X]`), which the guard ({@link routeCostReading}) compares.
  */
 export async function routeEngineer(row: RouteRow, deps: RouteDeps): Promise<Routed> {
-  const routed = await routeOnly(row, deps);
+  const { routed: chosen, provided } = await routeOnly(row, deps);
+  const routed = sizeWindow(chosen, row, provided, deps);
+  const window = `${windowLabel(windowOf(routed))}${routed.windowWhy === undefined ? "" : ` (${routed.windowWhy})`}`;
   const wouldBe = routed.via === "jev" ? ` [fallback would be ${fallbackRoute(row)}]` : "";
-  recordOutcome("model-routing", `${ID_PREFIX}${row.number}`, `route ${routed.route} via ${routed.via} (${routed.why})${wouldBe}`, deps, routed.reason);
+  recordOutcome("model-routing", `${ID_PREFIX}${row.number}`, `route ${routed.route} window ${window} via ${routed.via} (${routed.why})${wouldBe}`, deps, routed.reason);
   if (routed.via === "jev") guardRouteCost(deps);
   return routed;
 }
@@ -302,17 +399,20 @@ function jsonOrNothing(line: string): unknown {
   }
 }
 
-async function routeOnly(row: RouteRow, deps: RouteDeps): Promise<Routed> {
+type Chosen = { routed: Routed; /** The provider's answers, when it gave any: the window reads them too. */ provided: Provided | null };
+const alone = (routed: Routed): Chosen => ({ routed, provided: null });
+
+async function routeOnly(row: RouteRow, deps: RouteDeps): Promise<Chosen> {
   if (row.labels.includes(HAIKU_TIER_LABEL)) {
     const haiku = haikuProfileOf(row, deps.haikuSwitchPath);
-    if ("profile" in haiku) return decided("haiku/high", "override", HAIKU_TIER_LABEL, haiku.profile);
+    if ("profile" in haiku) return alone(decided("haiku/high", "override", HAIKU_TIER_LABEL, haiku.profile));
     const refusal = `${HAIKU_TIER_LABEL} was refused: ${haiku.refused}`;
-    return { ...ordinary("override", refusal), reason: refusal };
+    return alone({ ...ordinary("override", refusal), reason: refusal });
   }
   const held = whyHeld(row);
-  if (held !== null) return { ...ordinary("refused", held), reason: held };
+  if (held !== null) return alone({ ...ordinary("refused", held), reason: held });
   const decision = await decide("model-routing", routeState(row), QUESTIONS, { ...deps, id: `${ID_PREFIX}${row.number}` });
-  if (decision.via === "none") return withReason(profiled(fallbackRoute(row), "fallback", row, deps.haikuSwitchPath), decision.reason ?? "the provider gave no answer and no reason");
+  if (decision.via === "none") return alone(withReason(profiled(fallbackRoute(row), "fallback", row, deps.haikuSwitchPath), decision.reason ?? "the provider gave no answer and no reason"));
   const given = (name: keyof Answers) => (decision.answers[name].fellBack ? null : decision.answers[name].value);
   const answers: Answers = { mechanical: asBool(given("mechanical")), subsystems: asBool(given("subsystems")), debugging: asBool(given("debugging")),
     score: typeof given("score") === "number" ? (given("score") as number) : null };
@@ -326,11 +426,91 @@ async function routeOnly(row: RouteRow, deps: RouteDeps): Promise<Routed> {
   };
   const refusedHaiku = composed === "haiku/high" && routed.profile === null ? `; ${routed.why}` : "";
   const why = `the provider answered: ${(Object.keys(QUESTIONS) as (keyof Answers)[]).map(read).join(", ")}${refusedHaiku}`;
-  const notGiven = Object.entries(decision.answers).filter(([, a]) => a.fellBack).map(([name, a]) => `${name}: ${a.reason ?? "no reason"}`);
-  return notGiven.length === 0 ? { ...routed, why } : { ...routed, why, reason: `answers not given (${notGiven.join("; ")})` };
+  const notGivenEntries = Object.entries(decision.answers).filter(([, a]) => a.fellBack);
+  const provided: Provided = { answers, notGiven: Object.fromEntries(notGivenEntries.map(([name, a]) => [name, a.reason ?? "no reason"])) };
+  const notGiven = notGivenEntries.map(([name, a]) => `${name}: ${a.reason ?? "no reason"}`);
+  return { routed: notGiven.length === 0 ? { ...routed, why } : { ...routed, why, reason: `answers not given (${notGiven.join("; ")})` }, provided };
 }
 
 /** What came of a route, appended to the same log: `merged-first-pass` or `not-first-pass`, so the floor is tuned from results. */
 export function recordRouteOutcome(row: number, outcome: string, deps: Pick<DecisionDeps, "logPath" | "now" | "diagnostic">): void {
   recordOutcome("model-routing", `${ID_PREFIX}${row}`, outcome, deps);
 }
+
+// --- THE WINDOW AGAINST ITS COMPACTIONS, PER ROUTE (a11ign/a11ign#4738 item 4) ---
+//
+// The window a route chose is on its outcome line already. The compactions, the cost and the pull request are MEASURED in the trace store, so they are joined to it at read time and not
+// copied into a second log that would then disagree; the one thing the log adds is the verdict, `window too small`, which is a DEFINITION (more than {@link WINDOW_TOO_SMALL_COMPACTIONS}
+// compactions in one session) and so is written once per row. `node src/engineer-route.ts [--log <decisions>] [--store <events.ndjson>] [--record]` prints it.
+
+/** A row that compacts more than this many times in one session had a window too small for it. */
+export const WINDOW_TOO_SMALL_COMPACTIONS = 2;
+export const WINDOW_TOO_SMALL = "window too small";
+const ROUTE_LINE = /^route (\S+) window (\d+)k(?: \([^)]*\))? via \S+/;
+const ROW_ID = /^row-(\d+)$/;
+
+export type WindowReading = { row: number; route: string; windowK: number; outcome: string | null; tooSmall: boolean };
+/** What the trace store measured of a row: its most compactions in one session and its priced cost. */
+export type WindowFacts = { compactions: number; costUsd: number };
+
+/** ONE READING PER ROW from the decision log's lines: the LAST route line (a row routed twice took the later), the last outcome that is neither a route nor a verdict, and whether the verdict is there. */
+export function windowReadings(lines: readonly unknown[]): WindowReading[] {
+  const byRow = new Map<number, WindowReading>();
+  for (const line of lines as { use?: unknown; id?: unknown; outcome?: unknown }[]) {
+    if (line?.use !== "model-routing" || typeof line.id !== "string" || typeof line.outcome !== "string") continue;
+    const row = Number(ROW_ID.exec(line.id)?.[1]);
+    if (!Number.isInteger(row)) continue;
+    const route = ROUTE_LINE.exec(line.outcome);
+    const had = byRow.get(row) ?? { row, route: "", windowK: 0, outcome: null, tooSmall: false };
+    if (route !== null) byRow.set(row, { ...had, route: route[1], windowK: Number(route[2]) });
+    else if (line.outcome.startsWith(WINDOW_TOO_SMALL)) byRow.set(row, { ...had, tooSmall: true });
+    else byRow.set(row, { ...had, outcome: line.outcome });
+  }
+  return [...byRow.values()].filter((reading) => reading.route !== "");
+}
+
+/** Whether a row's compactions are a window too small. A row the store has no sessions for (`undefined`) is not one: absence is not a reading. */
+export const isWindowTooSmall = (facts: WindowFacts | undefined): boolean => facts !== undefined && facts.compactions > WINDOW_TOO_SMALL_COMPACTIONS;
+
+/** One line per route and window: the rows, their compactions (total and the most one took), the cost, the outcomes the log holds, and how many were too small. */
+export function windowReportLines(readings: readonly WindowReading[], facts: ReadonlyMap<number, WindowFacts>): string[] {
+  const groups = new Map<string, WindowReading[]>();
+  for (const reading of readings) groups.set(`${reading.route} window ${reading.windowK}k`, [...(groups.get(`${reading.route} window ${reading.windowK}k`) ?? []), reading]);
+  return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([label, rows]) => {
+    const measured = rows.map((r) => facts.get(r.row)).filter((f): f is WindowFacts => f !== undefined);
+    const compactions = measured.map((f) => f.compactions);
+    const outcomes = rows.reduce((count, r) => count.set(r.outcome ?? "no outcome recorded", (count.get(r.outcome ?? "no outcome recorded") ?? 0) + 1), new Map<string, number>());
+    return `${label}: ${rows.length} rows (${measured.length} in the store), compactions ${compactions.reduce((a, b) => a + b, 0)} (most in one row ${Math.max(0, ...compactions)}), `
+      + `cost $${measured.reduce((a, f) => a + f.costUsd, 0).toFixed(2)}, too small ${rows.filter((r) => r.tooSmall || isWindowTooSmall(facts.get(r.row))).length}, `
+      + `outcomes ${[...outcomes].map(([name, n]) => `${name} ${n}`).join(", ")}`;
+  });
+}
+
+/** The verdict on a row, appended once to the decision log: `window too small` with what it measured. */
+export function recordWindowTooSmall(row: number, { window, compactions }: { window: string; compactions: number }, deps: Pick<DecisionDeps, "logPath" | "now" | "diagnostic">): void {
+  recordOutcome("model-routing", `${ID_PREFIX}${row}`, `${WINDOW_TOO_SMALL}: ${compactions} compactions at ${window}`, deps);
+}
+
+async function windowReportMain(argv: readonly string[]): Promise<void> {
+  const flag = (name: string): string | undefined => argv[argv.indexOf(name) + 1];
+  const logPath = (argv.includes("--log") ? flag("--log") : undefined) ?? decisionLogPathFrom(stateEntryPath("wake-ledger"));
+  // Dynamic, so the work tick that imports this module does not load the trace store for a report it never prints.
+  const [{ eventsForRow, readStore, repriceEvents }, { defaultStore }, { measuresOf }] = await Promise.all([import("./trace/store.ts"), import("./trace/otel-receiver.ts"), import("./trace/haiku-tier-report.ts")]);
+  const lines = readFileSync(logPath, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as unknown);
+  const events = repriceEvents(readStore((argv.includes("--store") ? flag("--store") : undefined) ?? defaultStore()));
+  const readings = windowReadings(lines);
+  const facts = new Map<number, WindowFacts>();
+  for (const { row } of readings) {
+    if (eventsForRow(events, { rows: [row], prs: [] }).length === 0) continue;
+    const measured = measuresOf({ number: row, haiku: false, closedAt: 0, pr: null }, events);
+    facts.set(row, { compactions: measured.compactions, costUsd: measured.costUsd });
+  }
+  process.stdout.write(`${windowReportLines(readings, facts).join("\n")}\n`);
+  if (!argv.includes("--record")) return;
+  for (const reading of readings) {
+    if (reading.tooSmall || !isWindowTooSmall(facts.get(reading.row))) continue;
+    recordWindowTooSmall(reading.row, { window: `${reading.windowK}k`, compactions: facts.get(reading.row)?.compactions ?? 0 }, { logPath });
+  }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) await windowReportMain(process.argv.slice(2));

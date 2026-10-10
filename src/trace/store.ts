@@ -25,7 +25,7 @@
 //
 // IT READS `wakes-per-row.ts`'s PARSERS by import and edits nothing in it. `parseTranscript` returns wakes without their times of typing or their usage, so the
 // transcript is walked here once more for the records this store needs; the wake record it yields is `isWake`'s, the same test.
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readSync } from "node:fs";
 import { dirname } from "node:path";
 import { sessionOf } from "../token-audit.ts";
 import { isWake, matchLedger, reviewerTarget } from "../wakes-per-row.ts";
@@ -498,15 +498,44 @@ function compactionsOf(records: { index: number; at: number; record: any; }[], s
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------
 // The store: append-only, idempotent
 
+/** Bytes read from the store at a time. The file is never held as ONE string: V8 refuses a string past 2^29-24 characters, and the store crossed that at 537,274,044 bytes. */
+const STORE_READ_CHUNK = 8 * 1024 * 1024;
+const NEWLINE_BYTE = 0x0a;
+
 /**
  * The events in a store file. The file is an append-only LOG: an event whose attribution was later corrected (`appendToStore`) is on it twice, and the LAST copy of an id
  * is the event, at the position of its last copy.
+ * READ IN CHUNKS AND SPLIT ON THE NEWLINE BYTE (0x0a never occurs inside a multi-byte UTF-8 sequence), so a line is decoded whole and the file's size is no limit. A line that
+ * does not parse THROWS, as it did when the file was one string: a store with a damaged line is reported, never read around.
+ * @param chunkBytes a parameter so a test can make a line span chunks
  */
-export function readStore(path: string): TraceEvent[] {
+export function readStore(path: string, chunkBytes: number = STORE_READ_CHUNK): TraceEvent[] {
   if (!existsSync(path)) return [];
-  const lines = readFileSync(path, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
-  const last = new Map(lines.map((event, position) => [event.id, position]));
-  return lines.filter((event, position) => last.get(event.id) === position);
+  const last = new Map<string, TraceEvent>();
+  const take = (line: Buffer) => {
+    if (line.length === 0) return;
+    const event = JSON.parse(line.toString("utf8"));
+    last.delete(event.id); // delete then set: a map keeps the position of the FIRST set, and the event sits at its last copy
+    last.set(event.id, event);
+  };
+  const fd = openSync(path, "r");
+  try {
+    const chunk = Buffer.allocUnsafe(chunkBytes);
+    let carry: Buffer = Buffer.alloc(0);
+    for (let read = readSync(fd, chunk, 0, chunkBytes, null); read > 0; read = readSync(fd, chunk, 0, chunkBytes, null)) {
+      let start = 0;
+      for (let end = chunk.indexOf(NEWLINE_BYTE); end !== -1 && end < read; end = chunk.indexOf(NEWLINE_BYTE, start)) {
+        take(carry.length > 0 ? Buffer.concat([carry, chunk.subarray(start, end)]) : chunk.subarray(start, end));
+        carry = Buffer.alloc(0);
+        start = end + 1;
+      }
+      carry = Buffer.concat([carry, chunk.subarray(start, read)]);
+    }
+    take(carry);
+  } finally {
+    closeSync(fd);
+  }
+  return [...last.values()];
 }
 
 /**

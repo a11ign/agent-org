@@ -20,6 +20,14 @@
 // chat as it always was, where an incident's "cleared" threads under the original, so `replyTo` is accepted there: refusing it would fail
 // every such notice, and the row says that case is exactly as before.
 //
+// **EDIT AND PIN (a11ign/a11ign#4744).** The asks list is one message per ask, ticked in place when it is resolved, and one pinned message
+// listing what is open, so the provider can `edit` a sent message (`editMessageText`) and `pin` one (`pinChatMessage`, always with
+// `disable_notification: true`: a pin is bookkeeping and must not ring). Both act in the destination's chat, `ask` unless told otherwise,
+// because a message id means something only inside its own chat: an edit that guessed the chat would rewrite another message. **An edit is
+// ONE message**, so it refuses past `TELEGRAM_MAX_MESSAGE`, where `send` splits up to `maxText`. Telegram answers an edit that changes
+// nothing with 400 "message is not modified"; that is the state asked for, so it is `unchanged: true` and not a failure (and not logged
+// as one). `pinChatMessage` ADDS to a chat's pinned list and replaces nothing, so a caller pins the list once and edits it in place.
+//
 // **THE TOKEN IS IN THE URL (`/bot<token>/`), SO EVERY `fetch` GOES THROUGH `redactingFetch`** and every line this module logs or
 // throws is scrubbed again by the secret's own value. A failure the HTTP layer reports is described by its status and Telegram's own
 // `description`, which is Telegram's text and not the request's.
@@ -51,7 +59,7 @@ const NEWLINE = "\n";
 export const MAX_CALLBACK_DATA_BYTES = 64;
 export const MAX_BUTTONS = 8;
 export const MAX_BUTTON_LABEL = 64;
-/** What Telegram answers when the markup it is asked to remove is already gone: the keyboard is off, which is what was wanted. */
+/** What Telegram answers when an edit changes nothing: the markup it is asked to remove is already gone, or the text is the text. Either way it is the state asked for. */
 const NOT_MODIFIED = /message is not modified/i;
 
 export class TelegramSendError extends Error {
@@ -116,6 +124,24 @@ function retryAfterOf(body: Record<string, any>, response: Response | Record<str
   return Number.isFinite(fromHeader) && fromHeader >= 0 ? fromHeader : undefined;
 }
 
+function isNotModified(error: unknown): boolean {
+  return error instanceof TelegramSendError && error.status === BAD_REQUEST && NOT_MODIFIED.test(error.message);
+}
+
+/** Returns the id a `messageRef` names, or refuses it before any request is made */
+function messageIdOf(messageRef: string): number {
+  const messageId = /^\d+$/.test(messageRef) ? Number(messageRef) : NaN;
+  if (!Number.isSafeInteger(messageId) || messageId === 0) throw new TypeError(`telegram: ${JSON.stringify(messageRef)} is not a message id`);
+  return messageId;
+}
+
+/** Returns the audience, `ask` when absent; an unknown one is refused */
+function knownAudience(audience: string | undefined): string {
+  const named = audience ?? AUDIENCE.ask;
+  if (!AUDIENCES.includes(named)) throw new RangeError(`telegram: audience ${JSON.stringify(named)} is not one of ${AUDIENCES.join(", ")}`);
+  return named;
+}
+
 /** `deadline` is the request's clock, injected like `sleep` */
 export function createTelegramProvider({ token, chatId, announcementsChatId, fetch: fetchImpl = globalThis.fetch, sleep = defaultSleep, log = defaultLog, apiBase = TELEGRAM_API, deadline = AbortSignal.timeout }: {
         token: import("../../secret.ts").Secret; chatId: number | string; announcementsChatId?: number | string; fetch?: typeof fetch; sleep?: (ms: number) => Promise<void>;
@@ -164,6 +190,8 @@ export function createTelegramProvider({ token, chatId, announcementsChatId, fet
   async function callOnce(method: string, payload: Record<string, unknown>): Promise<Record<string, any>> {
     const first = await attempt(method, payload);
     if (first.ok) return first.result;
+    // Not a failure, so not logged as one: an edit that changes nothing is routine, and a "refused by Telegram" line for it would be a lie.
+    if (isNotModified(first.error)) throw first.error;
     const { status, retryAfter } = first.error;
     if (status !== TOO_MANY_REQUESTS || retryAfter === undefined || retryAfter > MAX_RETRY_WAIT_SECONDS) throw refused(first.error, { retried: false });
     note(`telegram: 429, waiting ${retryAfter}s as Telegram asked, then sending once more`);
@@ -185,13 +213,38 @@ export function createTelegramProvider({ token, chatId, announcementsChatId, fet
 
   /** Takes the keyboard off a message; one that has none is already what was asked for */
   async function clearKeyboard(messageRef: string): Promise<void> {
-    const messageId = /^\d+$/.test(messageRef) ? Number(messageRef) : NaN;
-    if (!Number.isSafeInteger(messageId) || messageId === 0) throw new TypeError(`telegram: ${JSON.stringify(messageRef)} is not a message id`);
+    const messageId = messageIdOf(messageRef);
     try {
       await callOnce("editMessageReplyMarkup", { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } });
     } catch (error) {
-      if (!(error instanceof TelegramSendError && error.status === BAD_REQUEST && NOT_MODIFIED.test(error.message))) throw error;
+      if (!isNotModified(error)) throw error;
     }
+  }
+
+  /**
+   * Rewrites a sent message's text in place, in plain text like `send`. An edit carries no `reply_markup`, so Telegram takes the message's
+   * keyboard off with it: a resolved ask has nothing left to press.
+   * Returns the same `messageRef`, and whether Telegram said the text was already that
+   */
+  async function edit({ messageRef, text, audience }: { messageRef: string; text: string; audience?: string; }): Promise<{ messageRef: string; unchanged: boolean; }> {
+    const chat = chatFor[knownAudience(audience)];
+    const messageId = messageIdOf(messageRef);
+    if (typeof text !== "string" || text === "") throw new RangeError("telegram: text is empty");
+    if (text.length > TELEGRAM_MAX_MESSAGE) throw new RangeError(`telegram: an edit is one message and ${text.length} characters exceeds ${TELEGRAM_MAX_MESSAGE}`);
+    try {
+      await callOnce("editMessageText", { chat_id: chat, message_id: messageId, text });
+      return { messageRef, unchanged: false };
+    } catch (error) {
+      if (isNotModified(error)) return { messageRef, unchanged: true };
+      throw error;
+    }
+  }
+
+  /** Pins a message without notifying anybody. Returns the same `messageRef` */
+  async function pin({ messageRef, audience }: { messageRef: string; audience?: string; }): Promise<{ messageRef: string; }> {
+    const chat = chatFor[knownAudience(audience)];
+    await callOnce("pinChatMessage", { chat_id: chat, message_id: messageIdOf(messageRef), disable_notification: true });
+    return { messageRef };
   }
 
   /** Logs a failure, with whether the one retry was spent, and hands the error back to throw. */
@@ -205,10 +258,12 @@ export function createTelegramProvider({ token, chatId, announcementsChatId, fet
   return {
     id: "telegram",
     capabilities: Object.freeze({
-      silent: true, buttons: true, replies: true, conversation: false,
+      silent: true, buttons: true, replies: true, conversation: false, edit: true, pin: true,
       maxText: TELEGRAM_MAX_MESSAGE * MAX_PARTS, ratePerSecond: 1, destinations,
     }),
     clearKeyboard,
+    edit,
+    pin,
     async send(message: { text: string; silent?: boolean; actions?: unknown[]; replyTo?: string; audience?: string; }): Promise<{ messageRef: string; silent: boolean; messageRefs: string[]; audience: string; }> {
       const parts = partsOf(message?.text);
       const audience = audienceOf(message, { hasChannel });
@@ -234,8 +289,7 @@ export function createTelegramProvider({ token, chatId, announcementsChatId, fet
  * announcement that asks for an answer, before any part is sent.
  */
 function audienceOf(message: { audience?: string; actions?: unknown[]; replyTo?: string; }, { hasChannel }: { hasChannel: boolean; }): string {
-  const audience = message.audience ?? AUDIENCE.ask;
-  if (!AUDIENCES.includes(audience)) throw new RangeError(`telegram: audience ${JSON.stringify(audience)} is not one of ${AUDIENCES.join(", ")}`);
+  const audience = knownAudience(message.audience);
   if (audience !== AUDIENCE.announcement) return audience;
   if ((message.actions?.length ?? 0) > 0) throw new RangeError("telegram: an announcement is one-way and carries no actions (a message that needs an answer is an ask)");
   if (hasChannel && message.replyTo !== undefined) throw new RangeError("telegram: an announcement in the channel is one-way and carries no replyTo");
