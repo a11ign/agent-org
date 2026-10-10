@@ -54,3 +54,8 @@ Mutation: `src/dora.ts` copied aside, one change at a time, restored from the co
 - **The AFTER sequence does not include a `gh pr list` that answered** (rate limit above). The unit tests inject the clock and a `gh` script, so they pin the words and the zero per-tag calls, not the live list's duration.
 - **A repository with no declared clone still reads one `commits/<tag>` per release** and will still spend its budget on 400 of them: the fix is the clone's, as the row names it, and the retro now says which limit when it happens.
 - **The role file `.agent-org/roles/engineer.md` is not in this repository's tree**; I read the copy in the `a11y-witness` sibling checkout.
+
+## Outside the Region
+
+Outside-Region: src/dora-lead-time-reads-are-bounded.test.ts — two assertions pinned the old words `hit its time limit` for a budget that was spent; the words are what this row changes, so they moved with it (the regexes now name `was not started: this repository's read budget is spent`).
+Outside-Region: src/org-retro-dora-resumes.test.ts — two assertions pinned the same old words for a hung call and for a spent budget; they now assert `timed out after 400 ms` and `was not started: ...`.
