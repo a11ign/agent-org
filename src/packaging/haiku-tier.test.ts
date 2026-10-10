@@ -11,10 +11,10 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { haikuTierProfile, readHaikuSwitch, agentArgs, AUTO_COMPACT_TRIGGER_MARGIN_TOKENS, HAIKU_AUTOCOMPACT_WINDOW_TOKENS,
-  HAIKU_PROMPT_CEILING_TOKENS, HAIKU_MODEL_ID, DECLARED_CLAUDE_MODELS, profileFor, HAIKU_TIER_SWITCH_PATH, AUTOCOMPACT_WINDOW_TOKENS, type TierProfile } from "../worker-profile.ts";
+  HAIKU_PROMPT_CEILING_TOKENS, HAIKU_MODEL_ID, HAIKU_TIER_LABEL, DECLARED_CLAUDE_MODELS, profileFor, HAIKU_TIER_SWITCH_PATH, AUTOCOMPACT_WINDOW_TOKENS, type TierProfile } from "../worker-profile.ts";
 import { spawnInvocation, spawnClaimer } from "../wake.ts";
 import { repriceEvents, type TraceEvent } from "../trace/store.ts";
-import { measuresOf, reportLines, stopRule, summarise, firstHaikuStart, median, MIN_RATE_ROWS, type RowMeasures } from "../trace/haiku-tier-report.ts";
+import { closedRowOf, measuresOf, reportLines, stopRule, summarise, firstHaikuStart, median, MIN_RATE_ROWS, type RowMeasures } from "../trace/haiku-tier-report.ts";
 
 const SCRATCH = mkdtempSync(join(tmpdir(), "haiku-tier-"));
 after(() => { rmSync(SCRATCH, { recursive: true, force: true }); });
@@ -142,7 +142,13 @@ function events(row: Fixture) {
   return [...turns, ...compactions, ...reviews, ...(row.merged === false ? [] : [github("merged", "m")])];
 }
 
-const closedRow = (row: Fixture) => ({ number: row.number, haiku: row.haiku, closedAt: row.closedAt, pr: { repo: REPO, number: row.number } });
+/** What `gh issue list --json closedByPullRequestsReferences` returns for a pull request's repository: `{id, name, owner: {id, login}}`, with NO `nameWithOwner` (agent-org#530). */
+const ghRepository = (repo: string) => { const [login, name] = repo.split("/"); return { id: "R_kgDOfixture", name, owner: { id: "O_kgDOfixture", login } }; };
+const ghIssue = (row: Fixture) => ({ number: row.number, labels: row.haiku ? [{ name: HAIKU_TIER_LABEL }] : [{ name: "ready" }], closedAt: new Date(row.closedAt).toISOString(),
+  closedByPullRequestsReferences: [{ number: row.number, repository: ghRepository(REPO) }] });
+
+/** Every fixture row goes through `closedRowOf` on the shape `gh` really returns, so the whole suite reads a pull request's repository as the live report does. */
+const closedRow = (row: Fixture) => closedRowOf(ghIssue(row));
 
 /** `count` rows of one tier, closed an hour apart from T0, taking `tweak` to differ from the baseline. */
 function rows(haiku: boolean, count: number, tweak: (i: number) => Partial<Fixture> = () => ({})): Fixture[] {
@@ -212,4 +218,21 @@ test("the report separates the tiers: Haiku rows in one block, the rest closed i
   assert.match(lines.join("\n"), /tier:haiku rows:\n {2}n=8 closed/);
   assert.match(otherBlock[1], /n=8 closed/, "the row closed before the window must not count");
   assert.equal(firstHaikuStart([], []), null);
+});
+
+test("a closing pull request's repo is built from owner.login and name, the shape gh returns, so its store events are found (agent-org#530)", () => {
+  const row = closedRowOf(ghIssue({ number: 1000, haiku: true, closedAt: T0 + HOUR }));
+  assert.deepEqual(row.pr, { repo: REPO, number: 1000 });
+  assert.equal(row.haiku, true);
+  assert.equal(measuresOf(row, repriceEvents(events({ number: 1000, haiku: true, closedAt: T0 + HOUR }) as unknown as TraceEvent[])).merged, true);
+  // the negative control: the bare name `gh` also returns is not the repo the store's event ids carry, and finds no merge.
+  const bare = measuresOf({ ...row, pr: { repo: "agent-org", number: 1000 } }, repriceEvents(events({ number: 1000, haiku: true, closedAt: T0 + HOUR }) as unknown as TraceEvent[]));
+  assert.equal(bare.merged, false);
+});
+
+test("closedRowOf still takes a nameWithOwner where one is given, takes no pull request as none, and refuses a repository it cannot read rather than matching nothing", () => {
+  const withOwner = { number: 7, closedAt: new Date(T0).toISOString(), closedByPullRequestsReferences: [{ number: 70, repository: { nameWithOwner: "a11ign/lab", name: "lab" } }] };
+  assert.deepEqual(closedRowOf(withOwner).pr, { repo: "a11ign/lab", number: 70 });
+  assert.equal(closedRowOf({ number: 8, closedAt: new Date(T0).toISOString() }).pr, null);
+  assert.throws(() => closedRowOf({ ...withOwner, closedByPullRequestsReferences: [{ number: 70, repository: { name: "lab" } }] }), /#7: .*no repository.*keys: name/);
 });
