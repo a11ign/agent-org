@@ -426,7 +426,7 @@ test("MUTATION TARGET: --blocked-by given while the refusal is B4 (file overlap)
     // with the same object is what silently skipped B4 entirely the first time this test was written.
     if (args[0] === "issue" && args[1] === "view") {
       const fields = args[args.indexOf("--json") + 1];
-      if (fields === "body") return JSON.stringify({ body });
+      if (fields.split(",").includes("body")) return JSON.stringify({ body });
       return JSON.stringify({ number: 700, title: "A row", labels: [] });
     }
     if (args[0] === "pr" && args[1] === "list") {
@@ -622,7 +622,8 @@ function splitClaimRun() {
   const routed = routedRun(splitRoutes);
   return (cmd: string, args: string[]): string => {
     const fields = args[args.indexOf("--json") + 1] ?? "";
-    if (args[0] === "issue" && args[1] === "view" && /labels/.test(fields)) {
+    // #732: the row's body is asked as `body,labels`, so "mentions labels" no longer says "this is the claim's own label read".
+    if (args[0] === "issue" && args[1] === "view" && /labels/.test(fields) && !fields.split(",").includes("body")) {
       return JSON.stringify({ number: 2760, title: "A row", labels: [] });
     }
     return routed(cmd, args);

@@ -43,7 +43,7 @@ function ghAnswer(args: string[], options: Options = {}): string {
   }
   if (args[0] === "issue" && args[1] === "view") {
     if (fieldsOf(args) === "blockedBy") return JSON.stringify({ blockedBy: { nodes: [] } });
-    if (fieldsOf(args) === "body") return JSON.stringify({ body: options.body ?? NO_REGION });
+    if (fieldsOf(args).split(",").includes("body")) return JSON.stringify({ body: options.body ?? NO_REGION, labels: (options.labels ?? []) });
     return JSON.stringify({ number: 3566, title: "A row", labels: options.labels ?? [], state: "OPEN" });
   }
   if (isWrite(args)) return "";
@@ -83,7 +83,7 @@ test("POSITIVE CONTROL: the one-at-a-time claim reads the body, the edge, the he
   const result = claim({ run: sequentialRun(seen) });
   assert.equal(result.claimed, true, "a clear row is claimed, so the reads below are the ones a claim makes");
   const reads = beforeFirstWrite(seen).map(shape);
-  assert.ok(reads.some((read) => read.startsWith("issue view") && read.endsWith("body")), "the body is read");
+  assert.ok(reads.some((read) => read.startsWith("issue view") && read.split(" ").pop()?.split(",").includes("body")), "the body is read");
   assert.ok(reads.some((read) => read.endsWith("blockedBy")), "the edge is read");
   assert.ok(reads.some((read) => read.startsWith("issue list")), "the held rows are listed");
   assert.ok(reads.filter((read) => read.startsWith("pr list")).length >= 1, "each declared repository's pull requests are listed");
@@ -169,7 +169,7 @@ test("RESUMING a row this session already holds asks the body and the edge toget
   const result = claim({ run: sequentialRun(left, { labels: mine }), batch: fakeBatch(batches, { labels: mine }) });
   assert.equal(result.claimed, true);
   assert.equal(batches.length, 1);
-  assert.deepEqual(batches[0].map(shape).sort(), ["issue view blockedBy", "issue view body"]);
+  assert.deepEqual(batches[0].map(shape).sort(), ["issue view blockedBy", "issue view body,labels"]);
   assert.deepEqual(left.filter((call) => call.args[0] === "pr" || call.args[1] === "list"), [], "a resume spends no round trip on a front that was never new");
 });
 

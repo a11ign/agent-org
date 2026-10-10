@@ -111,7 +111,7 @@ function fakeGithub(seed: { first?: string[], second?: string[], bodies?: { firs
       if (!issue) return fail(`issue view ${number} -- Could not resolve to an issue in ${repo}`);
       const fields = args[args.indexOf("--json") + 1];
       if (fields === "blockedBy") return JSON.stringify({ blockedBy: { nodes: [] } });
-      if (fields === "body") return JSON.stringify({ body: issue.body });
+      if (fields.split(",").includes("body")) return JSON.stringify({ body: issue.body, labels: issue.labels.map((name) => ({ name })) });
       if (fields === "comments") return JSON.stringify({ comments: issue.comments.map((body) => ({ body })) });
       return JSON.stringify({ number, title: "A row", labels: issue.labels.map((name) => ({ name })), state: issue.state });
     }
@@ -568,7 +568,7 @@ test("a KEYED tracker's claim hashes the TRACKER'S row, not the first tracker's 
 test("a body that cannot be read leaves the line OUT rather than hashing nothing, and the claim goes on as it did", () => {
   const gh = fakeGithub();
   const run = (cmd: string, args: string[]) => {
-    if (args.includes("body")) throw Object.assign(new Error("Command failed: gh issue view -- HTTP 502"), { status: 1, stdout: "", stderr: "502" });
+    if (args.includes("body") || args.includes("body,labels")) throw Object.assign(new Error("Command failed: gh issue view -- HTTP 502"), { status: 1, stdout: "", stderr: "502" });
     return gh.run(cmd, args);
   };
   const result = claimRow(ROW, "worker-575", { run, ...CLAIM_DEPS, branch: "agent/x-575", worktree: "../wt-575", moveStatus: () => ({ moved: true as const }) });
