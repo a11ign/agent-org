@@ -2770,7 +2770,8 @@ function boardExisting(argv: string[], deps: {
     return { ok: false, code: 1, message: `row-file: \`${BOARD_FLAG}${issueNumber}\` is refused by the same `
       + `claimability rules as \`${PROMOTE_FLAG}\`:\n${gate}` };
   }
-  const boarding = isEpic ? { label: BACKLOG_LABEL, status: BACKLOG_STATUS } : { label: READY_LABEL, status: READY_STATUS };
+  // An epic's state label is `epic`, already on it (#3942: `epic` REPLACES `backlog`); Backlog is its Status, not a label to add.
+  const boarding = isEpic ? { label: EPIC_LABEL, status: BACKLOG_STATUS } : { label: READY_LABEL, status: READY_STATUS };
   const result = boardAndVerify({ issueNumber, url: `https://github.com/${REPO}/issues/${issueNumber}`,
     boarding, session: null, laneLabels: [lane.label],
     milestone: null, lead: `Row #${issueNumber} (filed by somebody else)` }, deps);
