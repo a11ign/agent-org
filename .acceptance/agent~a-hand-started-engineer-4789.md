@@ -28,6 +28,6 @@ Mutation: the label never anchors (`fromRecord` returned) -> 1 red (#4524's case
 
 ## Anything a reviewer should be sceptical of
 
-- **`claimedAt` is still the record's time.** A hand-started engineer's stall clock still starts at the previous holder's record, so it can be nudged early and released two hours after, which is the same family and is not this row's Change. Filed separately.
+- **`claimedAt` is still the record's time.** A hand-started engineer's stall clock still starts at the previous holder's record, so it can be nudged early and released two hours after, which is the same family and is not this row's Change. Filed as a11ign/agent-org#612.
 - **An unreadable label time holds the row's clock reading for that tick.** `holding` pre-empts the nudge and stall readings while a merged pull request of the holder's counts from the record and its label cannot be dated; it is logged each tick the read fails, and the next tick that answers resumes.
 - **The seam is one REST call per such row per tick**, with no cache. It is asked only after a merge is found, and a release ends the claim, so a row asks again only while it is held.
