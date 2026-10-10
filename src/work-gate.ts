@@ -113,6 +113,8 @@ import { BACKLOG_LABEL, NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL, OUT_OF_RELEASE_L
 // #2075: WHICH PROJECT A ROW MUST BE ON. `board-snapshot-scope.ts` runs no `gh` and imports only `node:*`, the repo
 // identity and `settle-closed-status.ts`, so the gate keeps the property its own header states.
 import { PROJECT_NUMBER } from "./board-snapshot-scope.ts";
+import type { OpenItemsReader } from "./ticket-port/port.ts"; // agent-org#484: the first consumer of the ticket port
+import { githubTicketAdapter } from "./ticket-port/github-adapter.ts";
 // #2356: A RED `main` WAKES A FIXER. Imports only `node:*`, `parent-recheck-summary.ts` and the repo identity,
 // so the gate keeps the property its own header states -- it runs before any `pnpm install` or build.
 import { readTrunkRed, trunkOfCodeRepository, trunkRedOrders } from "./trunk-red.ts";
@@ -1810,25 +1812,9 @@ export function fleetBatchOrders(rows: any[], clock: { today?: string; nowMs?: n
  * A ROW FILED WITHOUT `row-file` IS INVISIBLE ON PROJECT 1, AND THE CHECK THAT SEES IT WOKE NOBODY (#2075). `row-file` is the only path that boards a row and nothing requires it. Measured 2026-09-23: 9 of 50 open rows had no Project 1 item, two of them `ready` (claimable on the label, invisible in every Status view), and 28 of the 121 rows filed since 2026-09-22T00:00Z (23%) never reached the board. `ready-label-audit`'s `reportAbsentFromBoard` asked exactly this and answered correctly -- on a daily schedule, into a nightly that is red by design, so #1889 was still absent twenty hours after it printed `ABSENT`. This is that question asked where `agent-practices.md` says such a question belongs: in the gate, on an API call rather than a model turn and not a day late. IT ASKS EACH ROW FOR ITS OWN MEMBERSHIP AND NEVER READS THE BOARD LISTING, and that is the load-bearing choice. Measured 2026-09-23 (the row's own comment): `gh project item-list` did NOT contain #2075 and #2076 about four minutes after they were added, while `repository.issue(n).projectItems` reported both on the board seconds later. A tick runs every two minutes, so a listing-based cause would wake `product-manager` for rows `row-file` had just boarded correctly -- the noisiest possible false positive, on the one path that works. One connection query carries every open row's `projectItems` in a single call, so this costs no more than the listing would have. `onBoard` IS TRI-STATE: `true`, `false`, or `null` for "could not tell" -- a row with more items than the page returned and none of them Project 1, which is not the same claim as "not on the board" and is never reported as one.
  */
 export type BoardFacts = { number: number, title: string, createdMs: number, onBoard: boolean | null };
-export const ROW_OFF_BOARD_QUERY = `
-  query($owner: String!, $name: String!, $after: String) {
-    # #3448: THE ACCOUNT AND ITS GRAPHQL BUDGET, IN AN ANSWER THIS TICK ALREADY PAYS FOR. \`rateLimit\` is never charged, so the pool-low signal costs no point.
-    viewer { login }
-    rateLimit { limit remaining resetAt }
-    repository(owner: $owner, name: $name) {
-      issues(states: OPEN, first: 100, after: $after) {
-        pageInfo { hasNextPage endCursor }
-        nodes {
-          number title createdAt
-          projectItems(first: 10) { totalCount nodes { project { number } } }
-        }
-      }
-    }
-  }
-`;
-
-/** The pages `readRowsOffBoard` will walk. Beyond this it returns `null`: a partial list is not a reading. */
-const ROW_OFF_BOARD_MAX_PAGES = 10;
+// #4505 / agent-org#484: THE QUERY, THE PAGING AND THE MEMBERSHIP TEST MOVED TO THE TICKET PORT'S GITHUB ADAPTER (ADR 0046 decision 4). The
+// name is kept: `graphql-pool-health.test.ts` pins that the query asks for `rateLimit` and `viewer`.
+export { OPEN_ITEMS_QUERY as ROW_OFF_BOARD_QUERY } from "./ticket-port/github-adapter.ts";
 
 /**
  * HOW YOUNG A ROW IS TOO YOUNG TO CALL OFF THE BOARD. Not a lag allowance -- the read above has none -- but the window in
@@ -1842,47 +1828,22 @@ const ROW_OFF_BOARD_MAX_PAGES = 10;
 export const ROW_OFF_BOARD_GRACE_MS = 5 * 60_000;
 
 /**
- * One open issue's board facts, from its `repository.issues` node.
- */
-function boardFactsOf(node: any): BoardFacts {
-  const items = node?.projectItems;
-  const found = Array.isArray(items?.nodes) && items.nodes.some((n: any) => n?.project?.number === PROJECT_NUMBER);
-  const complete = Array.isArray(items?.nodes) && items.nodes.length >= items.totalCount;
-  return { number: node.number, title: String(node.title ?? ""), createdMs: Date.parse(node.createdAt),
-    onBoard: found ? true : complete ? false : null };
-}
-
-/**
  * Every open row's Project 1 membership, read PER ISSUE, or `null` when the read was refused or is not a whole list.
  *
  * `null` MEANS COULD NOT ASK, NEVER "NOTHING IS OFF THE BOARD" -- #1286's rule, for its reason: a refused `gh` exits non-zero
  * with empty stdout, and an empty answer would read as a clean board. `errors` beside `data` is refused too (#555), and so is
- * a list still paging at `ROW_OFF_BOARD_MAX_PAGES`.
+ * a list still paging at the adapter's page cap.
  *
  * #3448: THE GRAPHQL POOL THE ANSWER NAMES IS PUSHED ONTO `pools` (the first page's: one budget, read once), so the tick learns its own account's budget from the
  * read it was making. A refused read pushes nothing, and the pool-low signal then says it was not read.
+ *
+ * agent-org#484: THE FIRST CONSUMER OF THE TICKET PORT. It asks the tracker only through `OpenItemsReader` (`ticket-port/port.ts`), and the GitHub adapter
+ * holds the query, the paging and the Project 1 test that used to live here; the facts it returns are unchanged.
  */
 export function readRowsOffBoard(run: (args: string[]) => string = defaultRun, pools: import("./org-health.ts").PoolReading[] = []): BoardFacts[] | null {
-  const [owner, name] = repoNow().split("/");
-  const facts: BoardFacts[] = [];
-  try {
-    let after = null;
-    for (let page = 0; page < ROW_OFF_BOARD_MAX_PAGES; page++) {
-      const args = ["api", "graphql", "-f", `query=${ROW_OFF_BOARD_QUERY}`, "-F", `owner=${owner}`, "-F", `name=${name}`];
-      if (after !== null) args.push("-f", `after=${after}`);
-      const parsed = JSON.parse(run(args));
-      const issues = parsed?.errors ? null : parsed?.data?.repository?.issues;
-      if (!Array.isArray(issues?.nodes)) return null;
-      const pool = page === 0 ? poolFromRateLimitField(parsed.data) : null;
-      if (pool !== null) pools.push(pool);
-      facts.push(...issues.nodes.map(boardFactsOf));
-      if (issues.pageInfo?.hasNextPage !== true) return facts;
-      after = issues.pageInfo.endCursor;
-    }
-    return null;
-  } catch {
-    return null;
-  }
+  const reader: OpenItemsReader = githubTicketAdapter({ run, scope: repoNow() });
+  const items = reader.readOpenItems({ onBudget: (budget) => pools.push(budget) });
+  return items === null ? null : items.map(({ ref, title, openedAtMs, onBoard }) => ({ number: ref.id, title, createdMs: openedAtMs, onBoard }));
 }
 
 /**
