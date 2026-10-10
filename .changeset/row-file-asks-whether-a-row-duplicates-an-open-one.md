@@ -1,5 +1,0 @@
----
-"agent-org": minor
----
-
-`row-file` asks the decision provider whether a new row duplicates an open one. Code chooses the open rows whose titles share at least half their words with the new title (the board-truth audit's own measure, at most five), and the provider is asked three atomic questions per candidate over both titles and both Region lists, never a body: the same change, the same defect, or one supersedes the other. A `same change` or `same defect` above the confidence floor REFUSES the filing, naming both rows; `one supersedes` is a warning line. The way out is `--distinct-from=<n>` on the filing, recorded on the new row as `Distinct-from: #<n>`. With no provider declared, no key, the use switched off in `.agent-org/decisions.json` (absent means off), a refusal, a timeout or a confidence under the floor, nothing changes: `row-file` takes the exact-title rule (#4294) as before. The decision log records each refusal and whether `--distinct-from` followed it. a11ign/a11ign#4634.
