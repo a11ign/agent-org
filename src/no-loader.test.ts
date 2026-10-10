@@ -1,4 +1,4 @@
-// no-token: reads package.json and the shipped unit templates from disk; nothing here runs a unit or reaches a remote.
+// no-token: none -- reads package.json and the shipped unit templates from disk; nothing here runs a unit or reaches a remote.
 /**
  * (#4389, ADR 0043's amendment) NO RUNTIME LOADER: `tsx` is not a dependency, no unit and no package script names `--import tsx`, and every shipped unit that runs `node` runs the
  * HOST's own (`%h/.local/bin/node`, which strips types: #4388) on a `.ts` file. `/usr/bin/node` is the distro build and prints `process.features.typescript` = `false`, so a unit naming it
