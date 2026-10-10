@@ -19,7 +19,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { refusalLifted } from "../review-verdict.ts";
+import { refusalLifted, verdictAmong } from "../review-verdict.ts";
 
 const DOOR = fileURLToPath(new URL("../reviewer/pr-review-verdict.sh", import.meta.url));
 
@@ -65,7 +65,7 @@ const BOT = "a11ign-bot";
 /** A code owner's hand-written approval of one path (agent-org#66): a review, but not one that opens as a verdict. */
 const SCOPED_APPROVAL = "ceo, as code owner of `.github/`: **approved for the workflow change only**. I did not review `src/`.";
 
-interface Review { when: string; state: string; commit: string; body: string | null; user?: string }
+interface Review { when: string; state: string; commit: string; body: string | null; user?: string; id?: number }
 /** A review the door could have posted, unless `body` says otherwise: its body opens with the verdict line. */
 const reviewAt = (commit: string, state: string, when: string, body: string | null = `${openerAt(commit)}\n\nbody`): Review =>
   ({ commit, state, when, body });
@@ -77,7 +77,11 @@ interface Scenario {
   verdict?: "convinced" | "not-convinced";
   opener?: string;
   /** A `gh` read that fails, named by what it was reading. */
-  failing?: "reviews" | "compare" | "checks";
+  failing?: "reviews" | "compare" | "checks" | "user";
+  /** The account the door posts as, which `gh api user` answers (agent-org#514). Default: the one every door-posted review comes from. */
+  account?: string;
+  /** What follows the verdict line in the verdict file; a superseding verdict names the review it supersedes here (agent-org#514). */
+  body?: string;
   /** The check runs that concluded `failure`, by commit (a11ign#3199). A commit absent here has only a passing check run. */
   failedChecks?: Record<string, string[]>;
 }
@@ -89,14 +93,16 @@ function runDoor(scenario: Scenario): Run {
   const dir = mkdtempSync(join(tmpdir(), "door-second-"));
   try {
     const opener = scenario.opener ?? openerAt(scenario.head);
-    writeFileSync(join(dir, "verdict.md"), `${opener}\n\nbody\n`);
+    writeFileSync(join(dir, "verdict.md"), `${opener}\n\n${scenario.body ?? "body"}\n`);
     writeFileSync(join(dir, "pr.json"), JSON.stringify({ head: { sha: scenario.head }, base: { ref: "main" } }));
-    writeFileSync(join(dir, "reviews.json"), JSON.stringify((scenario.reviews ?? []).map((r) => ({
-      submitted_at: r.when, state: r.state, commit_id: r.commit, html_url: `https://example/pull/7#review-${r.when}`, body: r.body, user: { login: r.user ?? BOT } }))));
+    writeFileSync(join(dir, "user.json"), JSON.stringify({ login: scenario.account ?? BOT }));
+    writeFileSync(join(dir, "reviews.json"), JSON.stringify((scenario.reviews ?? []).map((r, i) => ({
+      id: r.id ?? 1000 + i, submitted_at: r.when, state: r.state, commit_id: r.commit, html_url: `https://example/pull/7#review-${r.when}`, body: r.body, user: { login: r.user ?? BOT } }))));
     for (const [sha, diff] of Object.entries(DIFFS)) writeFileSync(join(dir, `diff-${sha}`), diff);
     if (scenario.failing === "reviews") writeFileSync(join(dir, "fail-reviews"), "");
     if (scenario.failing === "compare") writeFileSync(join(dir, "fail-compare"), "");
     if (scenario.failing === "checks") writeFileSync(join(dir, "fail-checks"), "");
+    if (scenario.failing === "user") writeFileSync(join(dir, "fail-user"), "");
     // A passing run beside the failing ones, so the door's own `select(.conclusion == "failure")` is what picks them out.
     for (const sha of Object.keys(DIFFS)) {
       const runs = [{ name: "lint", conclusion: "success" }, ...(scenario.failedChecks?.[sha] ?? []).map((name) => ({ name, conclusion: "failure" }))];
@@ -112,6 +118,7 @@ jq_arg=""; prev=""
 for x in "$@"; do [[ "$prev" == --jq ]] && jq_arg="$x"; prev="$x"; done
 case "$a" in
   "pr review"*|*"--method POST"*) exit 0 ;;
+  "api user"*) [[ ! -f "$D/fail-user" ]] || exit 1; jq -r "$jq_arg" "$D/user.json" ;;
   *"/check-runs"*) [[ ! -f "$D/fail-checks" ]] || exit 1
     sha="\${a#*commits/}"; sha="\${sha%%/*}"; f=("$D"/checks-"$sha"*); jq -r "$jq_arg" "\${f[0]}" ;;
   *"/compare/"*) [[ ! -f "$D/fail-compare" ]] || exit 1
@@ -453,4 +460,134 @@ test("4029 (6) the same lift at an equal patch ON ANOTHER COMMIT (a merge of mai
   const { status, calls, stderr } = runDoor({ head: AFTER_MERGE_OF_MAIN, reviews: [DOOR_APPROVAL_AT_358, dismissedLater] });
   assert.equal(status, 0, stderr);
   assert.equal(posted(calls).length, 1);
+});
+
+// --- agent-org#514 (from a11ign#4558): AN APPROVE SUPERSEDES THE SAME ACCOUNT'S STANDING CHANGES_REQUESTED, AND NOTHING ELSE ---------
+//
+// #4558 at head a913994a: `reviewer` posted CHANGES_REQUESTED after reading the head commit's diff against its parent and not the pull request's
+// against `main`; the corrected verdict, at the SAME head, was refused at the door and the block stood until somebody with admin dismissed it.
+// ceo's ruling (a), narrowed: at an equal patch the door posts a review that differs in state from the standing one ONLY when the standing one is a
+// CHANGES_REQUESTED the same account posted, the new one is an APPROVE, and its body names the review. Each refusal below differs from the case
+// that posts by exactly ONE fact: the state, the account, or the audit line.
+
+const BLOCK_ID = 4210512001;
+/** The standing block, with an id of the length a real review has, so a number in the body cannot meet it by chance. */
+const blockAt = (commit: string, when = "2026-10-09T14:41:48Z"): Review => ({ ...reviewAt(commit, "CHANGES_REQUESTED", when), id: BLOCK_ID });
+const NAMES_BY_ID = `Supersedes review ${BLOCK_ID}: it was read against the head commit's parent, not \`main\`.`;
+const NAMES_BY_OPENER = (commit: string) => `Supersedes: Review of #7 at \`${commit.slice(0, 8)}\` (CHANGES_REQUESTED), which misread the diff.`;
+const READ_ACCOUNT = (calls: string[]) => calls.filter((c) => c.startsWith("api user"));
+
+test("514 (1) CONTROL, same state: a CHANGES_REQUESTED over the account's own CHANGES_REQUESTED at an equal patch still refuses, naming it or not", () => {
+  for (const body of [undefined, NAMES_BY_ID, NAMES_BY_OPENER(FIRST)]) {
+    const { status, calls, stderr } = runDoor({ head: FIRST, reviews: [blockAt(FIRST)], verdict: "not-convinced", body });
+    assert.equal(status, EXIT_SECOND_REVIEW, stderr);
+    assert.deepEqual(posted(calls), [], "NOTHING was posted");
+    assert.deepEqual(READ_ACCOUNT(calls), [], "a same-state repeat is refused before the account is read");
+  }
+});
+
+test("514 (2) POSITIVE: an APPROVE over the account's own standing CHANGES_REQUESTED at the SAME head, naming it by id or by opener, posts", () => {
+  for (const body of [NAMES_BY_ID, NAMES_BY_OPENER(FIRST), `${NAMES_BY_ID}\n${NAMES_BY_OPENER(FIRST)}`]) {
+    const { status, calls, stderr } = runDoor({ head: FIRST, reviews: [blockAt(FIRST)], body });
+    assert.equal(status, 0, stderr);
+    assert.equal(posted(calls).length, 1, "the correction was posted once");
+    assert.match(posted(calls)[0], /--approve/);
+    assert.match(stderr, /superseding CHANGES_REQUESTED at 2026-10-09T14:41:48Z/, "and the door says what it superseded");
+    assert.ok(calls.some((c) => c.includes("/statuses/")), "and it was attributed, as every posted review is");
+    assert.deepEqual(calls.filter((c) => /dismissals/.test(c)), [], "no review was dismissed by anyone");
+  }
+});
+
+test("514 (2) POSITIVE: the same at an equal patch on ANOTHER commit (a merge of main since the block), all checks green", () => {
+  const { status, calls, stderr } = runDoor({ head: AFTER_MERGE_OF_MAIN, reviews: [blockAt(FIRST)], body: NAMES_BY_OPENER(FIRST) });
+  assert.equal(status, 0, stderr);
+  assert.equal(posted(calls).length, 1);
+  assert.equal(calls.filter((c) => c.includes("/compare/")).length, 2, "the case IS in the equal-patch population: both diffs were compared and equal");
+});
+
+test("514 (3) NEGATIVE, state: a CHANGES_REQUESTED over a standing APPROVED refuses, even naming it", () => {
+  const approved: Review = { ...reviewAt(FIRST, "APPROVED", "2026-10-09T14:41:48Z"), id: BLOCK_ID };
+  for (const body of [undefined, NAMES_BY_ID, NAMES_BY_OPENER(FIRST)]) {
+    const { status, calls, stderr } = runDoor({ head: FIRST, reviews: [approved], verdict: "not-convinced", body });
+    assert.equal(status, EXIT_SECOND_REVIEW, stderr);
+    assert.deepEqual(posted(calls), []);
+  }
+});
+
+test("514 (3b) NEGATIVE, state: an APPROVE over a standing APPROVED refuses, even naming it: only a block is superseded", () => {
+  const { status, calls, stderr } = runDoor({ head: FIRST, reviews: [{ ...reviewAt(FIRST, "APPROVED", "2026-10-09T14:41:48Z"), id: BLOCK_ID }], body: NAMES_BY_ID });
+  assert.equal(status, EXIT_SECOND_REVIEW, stderr);
+  assert.deepEqual(posted(calls), []);
+  assert.deepEqual(READ_ACCOUNT(calls), []);
+});
+
+test("514 (4) NEGATIVE, audit line: the APPROVE that does not name the block refuses, and the refusal says how to name it", () => {
+  // The default verdict file's OPENER already reads `Review of #7 at \`f3879426\``, the standing review's own opener: it must not count.
+  const named: [string, string | undefined][] = [
+    ["no naming line at all", undefined],
+    ["another review's id", "Supersedes review 4210599999."],
+    ["a different commit's opener", NAMES_BY_OPENER(NEW_WORK)],
+    ["the id as a fragment of a longer number", `Supersedes review 9${BLOCK_ID}1.`],
+  ];
+  for (const [what, body] of named) {
+    const { status, calls, stderr } = runDoor({ head: FIRST, reviews: [blockAt(FIRST)], body });
+    assert.equal(status, EXIT_SECOND_REVIEW, `${what}: ${stderr}`);
+    assert.deepEqual(posted(calls), [], what);
+    assert.match(stderr, new RegExp(`name it on a line AFTER the verdict line: its id \\(${BLOCK_ID}\\)`), what);
+    assert.deepEqual(READ_ACCOUNT(calls), [], `${what}: an unnamed block is refused before the account is read`);
+  }
+});
+
+test("514 (4) the naming must be AFTER the verdict line: the standing opener quoted only in the first line does not count", () => {
+  const { status, calls } = runDoor({ head: FIRST, reviews: [blockAt(FIRST)],
+    opener: `${openerAt(FIRST)} supersedes Review of #7 at \`${FIRST.slice(0, 8)}\` and review ${BLOCK_ID}` });
+  assert.equal(status, EXIT_SECOND_REVIEW);
+  assert.deepEqual(posted(calls), []);
+});
+
+test("514 (5) NEGATIVE, account: a CHANGES_REQUESTED another account posted is not this account's to supersede", () => {
+  const { status, calls, stderr } = runDoor({ head: FIRST, reviews: [{ ...blockAt(FIRST), user: "someone-else" }], body: NAMES_BY_ID });
+  assert.equal(status, EXIT_SECOND_REVIEW, stderr);
+  assert.deepEqual(posted(calls), []);
+  assert.match(stderr, /posted by someone-else, not by this account \(a11ign-bot\)/);
+  assert.equal(READ_ACCOUNT(calls).length, 1);
+});
+
+test("514 (5) CONTROL: the account is a read, and one that fails is COULD-NOT-TELL (exit 4), never `yours`", () => {
+  const { status, calls, stderr } = runDoor({ head: FIRST, reviews: [blockAt(FIRST)], body: NAMES_BY_ID, failing: "user" });
+  assert.equal(status, EXIT_UNDETERMINED, stderr);
+  assert.deepEqual(posted(calls), []);
+  assert.match(stderr, /could not tell whether #7 already has a review/);
+});
+
+test("514 (6) a block is superseded ONCE: after the APPROVE posts, a second APPROVE naming either review, or a CHANGES_REQUESTED, refuses", () => {
+  const superseding: Review = { ...reviewAt(FIRST, "APPROVED", "2026-10-09T15:10:00Z", `${openerAt(FIRST)}\n\n${NAMES_BY_ID}`), id: 4210512002 };
+  for (const [verdict, body] of [
+    ["convinced", NAMES_BY_ID],
+    ["convinced", "Supersedes review 4210512002."],
+    ["not-convinced", NAMES_BY_ID],
+  ] as const) {
+    const { status, calls, stderr } = runDoor({ head: FIRST, reviews: [blockAt(FIRST), superseding], verdict, body });
+    assert.equal(status, EXIT_SECOND_REVIEW, `${verdict} ${body}: ${stderr}`);
+    assert.deepEqual(posted(calls), []);
+  }
+});
+
+test("514 (7) the door and the gate agree: once the APPROVE names the block, the gate reads the pull request as convinced, not as the block", () => {
+  const head = FIRST;
+  const block = { id: "r1", submittedAt: "2026-10-09T14:41:48Z", state: "CHANGES_REQUESTED", body: `${openerAt(head).replace(": convinced", ": not convinced")}\n\nbody` };
+  const correction = { id: "r2", submittedAt: "2026-10-09T15:10:00Z", state: "APPROVED",
+    // The naming line says "not-convinced" after the opener's `convinced`: the verdict is the first word read, the opener's.
+    body: `${openerAt(head)}\n\nSupersedes my not-convinced review r1 (\`Review of #7 at \\\`${head.slice(0, 8)}\\\`\`).` };
+  const before = verdictAmong({ headRefOid: head, author: { login: "worker-9" }, reviews: [block] }, [head]);
+  const after = verdictAmong({ headRefOid: head, author: { login: "worker-9" }, reviews: [block, correction] }, [head]);
+  assert.equal(before.verdict, "not-convinced", "the block alone stands");
+  assert.equal(after.verdict, "convinced", "the correction is the newest verdict at the head");
+  assert.equal(after.id, "r2");
+});
+
+test("514 cost: the common paths read no account; only a named, same-state-different correction does, once", () => {
+  assert.deepEqual(READ_ACCOUNT(runDoor({ head: FIRST }).calls), [], "no review at all");
+  assert.deepEqual(READ_ACCOUNT(runDoor({ head: NEW_WORK, reviews: [blockAt(FIRST)], body: NAMES_BY_ID }).calls), [], "a block at a DIFFERENT patch");
+  assert.equal(READ_ACCOUNT(runDoor({ head: FIRST, reviews: [blockAt(FIRST)], body: NAMES_BY_ID }).calls).length, 1);
 });

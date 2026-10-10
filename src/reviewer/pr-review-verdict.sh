@@ -31,6 +31,10 @@
 #           as a code owner's scoped approval, is not counted (a11ign#3087). Nothing was posted, and the
 #           message names the review that stands. A refusal that is wrong goes to `product-manager`, never to a second review.
 #           A CHANGES_REQUESTED posted while a check run failed at its commit, when none fails at the head, does not stand (a11ign#3199).
+#           EXACTLY ONE THING SUPERSEDES A STANDING REVIEW (agent-org#514, ceo's ruling on a11ign#4558): an APPROVE, over a standing
+#           CHANGES_REQUESTED that this same account posted, whose body NAMES that review on a line after the verdict line (its id, or
+#           `Review of #<n> at <sha8>`). A block is superseded once and by an approve only: a repeat of the same state, a CHANGES_REQUESTED
+#           over an APPROVED, an APPROVE that names nothing, and an APPROVE over another account's block are all still refused.
 #        4  COULD NOT TELL whether it has one (a `gh` read failed). Nothing was posted; the door is safe to run again.
 #        5  REFUSED: the head moved since you reviewed it (#3640). The opener names the commit reviewed and the pull request's head now
 #           has a DIFFERENT patch. `gh pr review` has no commit option and attaches to whatever the head is, so posting would hand
@@ -66,6 +70,9 @@ esac
 body="$(<"$file")"
 # THE OPENER IS STILL THE FIRST LINE, and it is the only part validated: the clock and the authors' timers parse it.
 opener="$(head -n 1 "$file")"
+# THE LINES AFTER THE OPENER, where a superseding verdict must name the review it supersedes (agent-org#514). Never the opener itself: at an
+# unchanged head it already reads `Review of #<n> at <that head>`, so a check that included it would be met by every verdict at all.
+after_opener="$(tail -n +2 "$file")"
 [[ "$opener" == "**Review of #$n at "* ]] || { echo "pr-review-verdict: first line of '$file' is not the verdict line for #$n" >&2; exit 2; }
 # THE COMMIT THE VERDICT IS ABOUT (#3640). The sha after `at`, in backticks, is the spelling `HEAD_AFTER_AT` in review-verdict.ts reads, so the
 # door and the gate agree on which commit a verdict names. A verdict that names none cannot be shown to be about the head it will attach to,
@@ -245,8 +252,38 @@ refuse_stale_head() {
   exit "$EXIT_HEAD_MOVED"
 }
 
+# WHETHER THE VERDICT FILE NAMES THE REVIEW IT SUPERSEDES (agent-org#514): its id as a whole number, or the standing review's own opener
+# `Review of #<n> at <sha8>`, on a line AFTER the verdict line. This is the audit line without being a gate on anything but this one path.
+names_review() {
+  local rid="$1" commit="$2"
+  [[ -n "$after_opener" && -n "$commit" ]] || return 1
+  if grep -qF -- "Review of #$n at \`${commit:0:8}" <<<"$after_opener"; then return 0; fi
+  [[ "$rid" =~ ^[0-9]+$ ]] && grep -qE "(^|[^0-9])$rid([^0-9]|\$)" <<<"$after_opener"
+}
+
+# A CORRECTION IS THE ONE SECOND REVIEW AT AN EQUAL PATCH THE DOOR POSTS (agent-org#514, from a11ign#4558). `reviewer` read the head COMMIT's diff
+# against its parent, not the pull request's against `main`, and its CHANGES_REQUESTED stood at an unchanged head with no way for its own reviewer
+# to supersede it: the repeat rule could not tell a correction from a repeat, and `reviewDecision` stayed CHANGES_REQUESTED until somebody with admin
+# dismissed it. The ruling is narrow so #3050's six-reviews-for-one-commit bound holds: only an APPROVE (the caller checks the verdict and the
+# standing review's state), only over a block THIS ACCOUNT posted, only when the body names it. The account is read from `gh` and only on this
+# path, so the common path costs no call; a read that fails is COULD-NOT-TELL, never "yours".
+# EVERY REVIEWER INSTANCE SHARES ONE ACCOUNT (see the header), so "the same reviewer" is the account and not the session: the door has no
+# session-level fact for a review that is not its own to read back. Sets SUPERSEDE_HINT to what the refusal should add.
+SUPERSEDE_HINT=""
+supersedes_block() {
+  local rid="$1" commit="$2" standing_user="$3" me
+  if ! names_review "$rid" "$commit"; then
+    SUPERSEDE_HINT=" If this APPROVE corrects that block, name it on a line AFTER the verdict line: its id ($rid) or \`Review of #$n at ${commit:0:8}\`."
+    return 1
+  fi
+  me="$(gh api user --jq .login)" || undetermined "the reviewing account would not read"
+  [[ -n "$me" && "$me" == "$standing_user" ]] && return 0
+  SUPERSEDE_HINT=" That block was posted by $standing_user, not by this account (${me:-unknown}), so it is not yours to supersede."
+  return 1
+}
+
 refuse_second_review() {
-  local reviews lapsed when state user commit url kind pid differing=" "
+  local reviews lapsed when state user commit url kind rid pid differing=" "
   # ONLY A REVIEW THE DOOR COULD HAVE POSTED: one of the two states it posts, AND a body that opens as a verdict (the same opener the
   # door itself requires above). A DISMISSED review no longer stands, a COMMENTED one is not a verdict, and a code owner's hand-written
   # approval of one path (agent-org#66: "approved for the workflow change only") opens some other way and is not the duplicate
@@ -263,11 +300,11 @@ refuse_second_review() {
   # is only where GitHub attached it, which is the HEAD at the moment of posting and so says nothing about what the reviewer read. It is the
   # fallback for a body that names none. The named one may be an abbreviation; the compare and check-run reads below resolve it.
   reviews="$(gh api "repos/$REPO/pulls/$n/reviews?per_page=100" --paginate \
-      --jq '.[] | .body //= "" | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED") | [.submitted_at, .state, (.user.login // "-"), ((.body | split("\n")[0] | capture("(^|[^A-Za-z0-9_])(at|of)\\s+`(?<sha>[0-9a-fA-F]{7,40})`")? | .sha) // .commit_id), .html_url, (if .state != "DISMISSED" and (.body | startswith("**Review of #'"$n"' at ")) then "verdict" else "other" end)] | @tsv' \
+      --jq '.[] | .body //= "" | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED") | [.submitted_at, .state, (.user.login // "-"), ((.body | split("\n")[0] | capture("(^|[^A-Za-z0-9_])(at|of)\\s+`(?<sha>[0-9a-fA-F]{7,40})`")? | .sha) // .commit_id), .html_url, (if .state != "DISMISSED" and (.body | startswith("**Review of #'"$n"' at ")) then "verdict" else "other" end), ((.id // "-") | tostring)] | @tsv' \
       | sort -r)" || undetermined "its reviews would not read"
   lapsed=" $(awk -F'\t' '!seen[$3]++ && $2 == "DISMISSED" { printf "%s ", $3 }' <<<"$reviews")"
   [[ -n "$reviews" ]] || return 0
-  while IFS=$'\t' read -r when state user commit url kind; do
+  while IFS=$'\t' read -r when state user commit url kind rid; do
     [[ "$kind" == verdict && "$lapsed" != *" $user "* ]] || continue
     if ! same_commit "$commit" "$PR_HEAD"; then
       [[ "$differing" != *" $commit "* ]] || continue
@@ -277,8 +314,14 @@ refuse_second_review() {
       # An equal patch at ANOTHER commit: a refusal posted for a check that has since cleared no longer applies. An approval always does (#3033).
       if [[ "$state" == CHANGES_REQUESTED ]] && refusal_lifted "$commit" "$PR_HEAD"; then continue; fi
     fi
+    SUPERSEDE_HINT=""
+    if [[ "$verdict" == convinced && "$state" == CHANGES_REQUESTED ]] && supersedes_block "$rid" "$commit" "$user"; then
+      echo "pr-review-verdict: superseding $state at $when ($url, commit ${commit:0:8}) with this APPROVE, which names it (agent-org#514)." >&2
+      return 0
+    fi
     echo "pr-review-verdict: NOT POSTED. #$n already has a review at an equal patch: $state at $when ($url, commit ${commit:0:8}," \
-         "head ${PR_HEAD:0:8}). A second review at one patch is refused whatever its verdict; if this refusal is wrong, escalate to" \
+         "head ${PR_HEAD:0:8}). A second review at one patch is refused; the one exception is an APPROVE that names this account's" \
+         "own standing CHANGES_REQUESTED.$SUPERSEDE_HINT If this refusal is wrong, escalate to" \
          "product-manager rather than posting again." >&2
     exit "$EXIT_SECOND_REVIEW"
   done <<<"$reviews"
