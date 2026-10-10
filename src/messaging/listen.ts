@@ -21,14 +21,15 @@
 // **THE GITHUB WRITES ARE THE UNIT'S ACCOUNT, NEVER THE PERSON'S (#1967).** This is the one program here that writes to GitHub, so it refuses to
 // start where no account is declared, as `watch.ts` does for its reads.
 //
-// EXIT CODES: 0 stopped when told to (or messaging is off), 1 failed while running, 2 REFUSED to start or told to stop by Telegram (config,
-// secrets, no chairman paired yet, the lock, a 409). The unit does not restart a 2: a refusal does not mend itself, and restarting one
+// EXIT CODES: 0 stopped when told to (or messaging is off, or `--help`), 1 failed while running, 2 REFUSED to start or told to stop by Telegram (a flag it
+// does not have, config, secrets, no chairman paired yet, the lock, a 409). The unit does not restart a 2: a refusal does not mend itself, and restarting one
 // that is a 409 makes this listener the second poller in a fight.
 
 import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { parseArgs } from "node:util";
 
 import { toolVersionLine } from "../lib/tool-version.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
@@ -47,6 +48,13 @@ import type { Readers } from "./placeholders.ts";
 import { createWatchReaders, hostFiles } from "./watch-list.ts";
 
 export const EXIT = Object.freeze({ ok: 0, failed: 1, refused: 2 });
+
+export const USAGE = [
+  "usage: messaging:listen [-h | --help]",
+  "  Long-running: polls Telegram for the chairman's messages and hands them to the inbound core. One listener per bot; the `chairman-listen` unit runs it.",
+  "  It takes no flags but --help: the project comes from $AGENT_ORG_HOST, and a second instance is refused.",
+  "  -h, --help    print this and exit: nothing is read, no lock is taken and no request is made",
+].join("\n");
 const LOCK_FILE = "listener.lock";
 const OFFSET_FILE = "offset.json";
 const LOCK_FILE_MODE = 0o600;
@@ -298,9 +306,21 @@ export async function main(deps: {
     root?: string; home?: string; now?: () => number; fetch?: typeof fetch; signal?: AbortSignal; sleep?: (ms: number) => Promise<void>;
     out?: (line: string) => void; err?: (line: string) => void; onForward?: (accepted: Readonly<Record<string, any>>) => Promise<void> | void;
     converse?: (accepted: Readonly<Record<string, any>>) => Promise<void> | void; github?: GithubWriter; readers?: Readers;
-    env?: Record<string, string | undefined>;
+    env?: Record<string, string | undefined>; argv?: string[];
 } = {}): Promise<number> {
   const { root, home, out, err, env, github } = { ...DEFAULT_DEPS(), ...deps };
+  // THE FLAGS ARE READ BEFORE ANYTHING ELSE (a11ign/agent-org#513): `--help` once ran the poller, which Telegram answers with a 409 to the listener that is already running.
+  try {
+    const { values } = parseArgs({ args: deps.argv ?? [], options: { help: { type: "boolean", short: "h" } } });
+    if (values.help === true) {
+      out(USAGE);
+      return EXIT.ok;
+    }
+  } catch (error) {
+    if (!(error instanceof TypeError)) throw error;
+    err(`messaging:listen: ${error.message}\n${USAGE}`);
+    return EXIT.refused;
+  }
   try {
     const config = readMessagingConfig(root, { home });
     // OFF IS SILENT AND CONSTRUCTS NOTHING: no secret is read, no lock taken, no directory made.
@@ -325,5 +345,5 @@ if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.a
   // #3443: THE LISTENER IS LONG-RUNNING AND HOLDS ITS MODULES, so its journal's first line says which agent-org version it loaded: the proof that a move of the tool
   // checkout was followed by a restart, and the line `orchestrator`'s read-back after a move looks for.
   console.log(toolVersionLine());
-  process.exitCode = await main();
+  process.exitCode = await main({ argv: process.argv.slice(2) });
 }

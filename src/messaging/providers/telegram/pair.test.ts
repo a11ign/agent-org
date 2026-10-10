@@ -8,13 +8,13 @@
 // differs between "written" and "not written" is that one thing.
 
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 
 import { createSecret } from "../../secret.ts";
-import { PAIRING_TTL_MS, REFUSAL, createPairingSession, generateCode, runPairing, writeChairmanFile } from "./pair.ts";
+import { EXIT, PAIRING_TTL_MS, REFUSAL, USAGE, createPairingSession, generateCode, main, runPairing, writeChairmanFile } from "./pair.ts";
 
 const TOKEN = "123456789:AAFk3x9Q-test_token_value_ZZ";
 const CODE = "K7M2QX9P4A";
@@ -188,4 +188,50 @@ test("a code is ten characters from an alphabet without look-alikes, and two cod
 
 test("a session refuses an empty code, so 'every guess matches' cannot be configured", () => {
   assert.throws(() => createPairingSession({ code: "", now: () => START }), /non-empty/);
+});
+
+test("a11ign/agent-org#513: --help and an unknown flag print and exit before the config is read or Telegram is asked; a plain run reaches the fake", async () => {
+  const home = join(scratch, `home-${nextDirectory += 1}`);
+  const root = join(scratch, `root-${nextDirectory}`);
+  const secrets = join(home, ".config", "agent-org");
+  mkdirSync(secrets, { recursive: true, mode: 0o700 });
+  mkdirSync(join(root, ".agent-org"), { recursive: true });
+  writeFileSync(join(secrets, "telegram-token"), `${TOKEN}\n`, { mode: OWNER_ONLY });
+  const messaging = { provider: "telegram", tokenFile: "~/.config/agent-org/telegram-token", chairmanFile: "~/.config/agent-org/chairman.json" };
+  writeFileSync(join(root, ".agent-org", "project.json"), JSON.stringify({ schema: 1, messaging }));
+
+  /** A Telegram that records every request and fails it: reaching it at all is what each case below is about. */
+  const run = async (/** @type {string[]} */ argv: string[]) => {
+    /** @type {string[]} */ const requested: string[] = [];
+    /** @type {string[]} */ const out: string[] = [];
+    /** @type {string[]} */ const err: string[] = [];
+    const fetchImpl = /** @type {typeof fetch} */ (/** @type {unknown} */ (async (/** @type {string} */ url: string) => {
+      requested.push(url.replace(TOKEN, "<token>"));
+      throw new Error("Telegram was reached");
+    }));
+    const code = await main(argv, { fetch: fetchImpl, home, out: (line) => out.push(line), err: (line) => err.push(line) });
+    return { code, requested, out, err };
+  };
+
+  const control = await run([`--root=${root}`]);
+  assert.deepEqual(control.requested, ["https://api.telegram.org/bot<token>/getUpdates"], `a plain run did not reach the fake: ${control.err.join("\n")}`);
+  assert.equal(control.code, EXIT.notPaired);
+  assert.match(control.out[0], /^Send this to your bot within 10 minutes/, "the plain run printed no code: it is not the run it is meant to be the control for");
+
+  for (const argv of [["--help"], ["-h"], [`--root=${root}`, "--help"], ["--help", `--root=${root}`]]) {
+    const help = await run(argv);
+    assert.deepEqual(help.requested, [], `${argv.join(" ")} reached Telegram`);
+    assert.deepEqual(help.out, [USAGE], `${argv.join(" ")} did not print the usage`);
+    assert.deepEqual(help.err, []);
+    assert.equal(help.code, EXIT.paired, `${argv.join(" ")} did not exit 0`);
+  }
+  for (const argv of [["--no-such-flag"], [`--root=${root}`, "--no-such-flag"], ["--no-such-flag", "--help"], ["stray"]]) {
+    const refused = await run(argv);
+    assert.deepEqual(refused.requested, [], `${argv.join(" ")} reached Telegram`);
+    assert.deepEqual(refused.out, [], `${argv.join(" ")} printed a pairing code`);
+    assert.match(refused.err.join("\n"), argv.includes("--no-such-flag") ? /--no-such-flag/ : /stray/);
+    assert.match(refused.err.join("\n"), /usage: messaging:pair/);
+    assert.equal(refused.code, EXIT.refused, `${argv.join(" ")} did not exit with the refused code`);
+  }
+  assert.ok(!existsSync(join(secrets, "chairman.json")), "a flag refused or answered still wrote the chairman file");
 });

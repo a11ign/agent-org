@@ -23,7 +23,7 @@ import { fileURLToPath } from "node:url";
 const HOST_FILE = join(homedir(), "repos", "a11y-witness", ".agent-org", "host.json");
 if (!process.env.AGENT_ORG_HOST && existsSync(HOST_FILE)) process.env.AGENT_ORG_HOST = HOST_FILE;
 
-const { createForwarder, tellingWhenUndelivered, main, verifyingReaders, EXIT } = await import("./listen.ts");
+const { createForwarder, tellingWhenUndelivered, main, verifyingReaders, EXIT, USAGE } = await import("./listen.ts");
 const { createConverse, notReached } = await import("./converse.ts");
 const { createInbound } = await import("./inbound.ts");
 const { createLedger, readLedgerLines } = await import("./ledger.ts");
@@ -228,6 +228,45 @@ describe("the default onForward, through main() (done-when 1 and 2, running)", (
     assert.deepEqual(lines.filter((line) => /consumer/.test(line)), []);
   });
 
+  test("a11ign/agent-org#513: --help and an unknown flag print and exit before the config is read, a lock is taken or Telegram is asked; a plain run reaches the fake", async () => {
+    const { home, root } = installation();
+    /** @type {string[]} */ const requested: string[] = [];
+    const run = async (/** @type {string[]} */ argv: string[]) => {
+      requested.length = 0;
+      /** @type {string[]} */ const out: string[] = [];
+      /** @type {string[]} */ const err: string[] = [];
+      // The first request stops the listener, as the helper above does on its second: a run that reaches the fake ends, and one that should not is never asked.
+      const controller = new AbortController();
+      const fetch = /** @type {typeof globalThis.fetch} */ (/** @type {unknown} */ (async (/** @type {string} */ url: string) => {
+        requested.push(url);
+        controller.abort();
+        return { ok: true, json: async () => ({ ok: true, result: [] }) };
+      }));
+      const code = await main({ argv, root, home, env, github, fetch, signal: controller.signal, sleep: async () => {}, out: (line) => out.push(line), err: (line) => err.push(line) });
+      return { code, out, err, reached: requested.length };
+    };
+
+    // The control: the same main, the same root and fetch, with no flag. It must reach the fake, or the cases below could pass over an unwired one.
+    const control = await run([]);
+    assert.ok(control.reached > 0, `a plain run never reached the fake: ${control.err.join("\n")}`);
+
+    for (const argv of [["--help"], ["-h"]]) {
+      const help = await run(argv);
+      assert.equal(help.reached, 0, `${argv.join(" ")} reached Telegram`);
+      assert.deepEqual(help.out, [USAGE]);
+      assert.deepEqual(help.err, []);
+      assert.equal(help.code, EXIT.ok);
+    }
+    for (const argv of [["--no-such-flag"], ["--root=/elsewhere"], ["stray"], ["--no-such-flag", "--help"]]) {
+      const refused = await run(argv);
+      assert.equal(refused.reached, 0, `${argv.join(" ")} reached Telegram`);
+      assert.deepEqual(refused.out, []);
+      assert.match(refused.err.join("\n"), new RegExp(argv[0].replace(/^-+/, "").replace(/=.*/, "")));
+      assert.match(refused.err.join("\n"), /usage: messaging:listen/);
+      assert.equal(refused.code, EXIT.refused, `${argv.join(" ")} did not exit with the refused code`);
+    }
+  });
+
   test("a queue that will not load is told to the chairman through the running listener, and the next update is still handled", async () => {
     const { home, root } = installation();
     const wire = telegram([messageUpdate(20, "first"), pressUpdate(21)]);
@@ -344,6 +383,10 @@ describe("the unit and the source", () => {
     assert.ok(!/has no consumer yet/.test(SOURCE), "listen.ts went back to dropping accepted updates with a log line");
     assert.match(SOURCE, /onForward \?\? createForwarder\(/, "the default onForward is no longer the forwarder, so this test would pass on a listener that forwards nothing");
     assert.match(SOURCE, /converse: tellingWhenUndelivered\(/, "the converse path is no longer wrapped, so a queue that will not load is dropped again");
+  });
+
+  test("the entry point hands main the command line (a11ign/agent-org#513), so the flag test above is of the program that runs", () => {
+    assert.match(SOURCE, /await main\(\{ argv: process\.argv\.slice\(2\) \}\)/, "the entry calls main without its argv: --help would run the poller again");
   });
 });
 

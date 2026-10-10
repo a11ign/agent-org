@@ -17,6 +17,7 @@ import { randomInt, timingSafeEqual } from "node:crypto";
 import { closeSync, mkdirSync, openSync, renameSync, unlinkSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
+import { parseArgs } from "node:util";
 
 import { MessagingConfigRefusal, readMessagingConfig } from "../../config.ts";
 import { readSecretFile, redactingFetch } from "../../secret.ts";
@@ -180,26 +181,54 @@ function defaultPrint(line: string) {
   process.stdout.write(`${line}\n`);
 }
 
-/** The project root: `--root=<dir>`, else the current directory. */
-function rootFrom(argv: string[]): string {
-  const flag = argv.find((arg) => arg.startsWith("--root="));
-  return flag === undefined ? process.cwd() : flag.slice("--root=".length);
+export const EXIT = Object.freeze({ paired: 0, notPaired: 1, refused: 2 });
+
+export const USAGE = [
+  "usage: messaging:pair [--root=<dir>]",
+  "  Prints a one-time code; send `/pair <code>` to the bot from your private chat with it within 10 minutes, and the chairman file is written.",
+  "  --root=<dir>  the project root (default: the current directory)",
+  "  -h, --help    print this and exit: nothing is read and no request is made",
+].join("\n");
+
+/**
+ * THE FLAGS ARE READ BEFORE ANYTHING ELSE (a11ign/agent-org#513): `--help` once started the poll, and Telegram answered the listener's next `getUpdates` with a 409.
+ * Strict, so a flag this command does not have is refused by name and never ignored.
+ */
+function readFlags(argv: string[]): { help: boolean; root: string; } | { refusal: string; } {
+  try {
+    const { values } = parseArgs({ args: argv, options: { root: { type: "string" }, help: { type: "boolean", short: "h" } } });
+    return { help: values.help === true, root: values.root ?? process.cwd() };
+  } catch (error) {
+    if (!(error instanceof TypeError)) throw error;
+    return { refusal: error.message };
+  }
 }
 
-/** The exit code: 0 paired, 1 not. */
-export async function main(argv: string[]): Promise<number> {
+/** The exit code: 0 paired, 1 not, 2 refused to start (a flag it does not have). */
+export async function main(argv: string[], { fetch: fetchImpl, home, out = defaultPrint, err = (line) => { process.stderr.write(`${line}\n`); } }: {
+  fetch?: typeof fetch; home?: string; out?: (line: string) => void; err?: (line: string) => void;
+} = {}): Promise<number> {
+  const flags = readFlags(argv);
+  if ("refusal" in flags) {
+    err(`messaging:pair: ${flags.refusal}\n${USAGE}`);
+    return EXIT.refused;
+  }
+  if (flags.help) {
+    out(USAGE);
+    return EXIT.paired;
+  }
   try {
-    const config = readMessagingConfig(rootFrom(argv));
+    const config = readMessagingConfig(flags.root, { home });
     if (!config.enabled) {
-      defaultPrint("messaging: OFF (no `messaging` key in .agent-org/project.json); there is nothing to pair");
-      return 1;
+      out("messaging: OFF (no `messaging` key in .agent-org/project.json); there is nothing to pair");
+      return EXIT.notPaired;
     }
-    const result = await runPairing({ token: readSecretFile(config.tokenFile), chairmanFile: config.chairmanFile });
-    return result.paired ? 0 : 1;
+    const result = await runPairing({ token: readSecretFile(config.tokenFile), chairmanFile: config.chairmanFile, fetch: fetchImpl, print: out });
+    return result.paired ? EXIT.paired : EXIT.notPaired;
   } catch (error) {
     if (!(error instanceof Error)) throw error;
-    process.stderr.write(`messaging:pair: ${error instanceof MessagingConfigRefusal ? "MALFORMED -- " : ""}${error.message}\n`);
-    return 1;
+    err(`messaging:pair: ${error instanceof MessagingConfigRefusal ? "MALFORMED -- " : ""}${error.message}`);
+    return EXIT.notPaired;
   }
 }
 
