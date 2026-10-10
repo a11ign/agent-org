@@ -4209,6 +4209,7 @@ export const ESCALATION_LABEL = `${ANSWER_PREFIX}ceo`;
  * label and no record, and the next tick tries again. `ask` is `null` only for a caller that opts out; `escalationMemory` always supplies it.
  *
  * AND A CLEARED CAUSE IS ASKED AGAIN, ONCE ({@link reaskCleared}): an `ALREADY ESCALATED` key whose label was removed an hour ago and is still true.
+ * A label row only: a FILED row has no number here, and its answer closes it ({@link closeAnsweredRow}, #622) instead of being asked again.
  */
 export function escalateStuck(stuck: string[], run: (args: string[]) => string = guardedGh, log: (line: string) => void = (l) => process.stderr.write(l),
   { escalated = new Set(), record = () => {}, unavailable = () => null, repoOf = codeRepositoryOf, ask = null, boardOf = primaryBoard }: {
@@ -4227,6 +4228,7 @@ export function escalateStuck(stuck: string[], run: (args: string[]) => string =
     if (escalated.has(key)) {
       log(`ALREADY ESCALATED ${ref} (${key}) -- a removed label is an answer; it stays off until the cause changes\n`);
       if (ask !== null && target.row !== null) reaskCleared({ row: target.row, key }, { run, log, ask });
+      if (target.title !== null) closeAnsweredRow({ title: target.title, key }, { run, log });
       continue;
     }
     const outage = outageOf(key, unavailable);
@@ -4255,20 +4257,21 @@ export function escalateStuck(stuck: string[], run: (args: string[]) => string =
  * `place` answers the row number it labelled or filed, or `null` when `gh` did not say.
  *
  * `row` is the primary's row number when the escalation is a LABEL on it, and `null` when it is a filed row (which carries its own body).
+ * `title` is a filed row's title, the key {@link fileRepositoryRow} and {@link closeAnsweredRow} both find it by, and `null` for a label.
  */
-function escalationTargetOf(key: string, { repoOf, boardOf }: { repoOf: (repoKey: string) => string | null; boardOf: () => Board | null; }): { ref: string; row: number | null; place: (run: (args: string[]) => string) => number | null; } | null {
+function escalationTargetOf(key: string, { repoOf, boardOf }: { repoOf: (repoKey: string) => string | null; boardOf: () => Board | null; }): { ref: string; row: number | null; title: string | null; place: (run: (args: string[]) => string) => number | null; } | null {
   const subject = stuckSubjectOf(key);
   if (subject === null) return null;
   if (subject.repoKey === "") {
     const row = (subject.number as number);
-    return { ref: `#${row}`, row, place: (run) => { run(["issue", "edit", String(row), "--add-label", ESCALATION_LABEL]); return row; } };
+    return { ref: `#${row}`, row, title: null, place: (run) => { run(["issue", "edit", String(row), "--add-label", ESCALATION_LABEL]); return row; } };
   }
   // A keyed EPIC is not a red: the row filed below says `main` is red, which it is not, and its label cannot be set from the primary's tracker.
   if (/\/epic-/.test(key)) return null;
   const repo = repoOf(subject.repoKey);
   if (repo === null) return null;
   const ref = subject.number === null ? `${subject.repoKey}@${subject.sha8}` : subjectMention({ repoKey: subject.repoKey, number: subject.number });
-  return { ref, row: null, place: (run) => fileRepositoryRow({ ref, repo, key, board: boardOf() }, run) };
+  return { ref, row: null, title: stuckRowWording({ ref, repo, key }).title, place: (run) => fileRepositoryRow({ ref, repo, key, board: boardOf() }, run) };
 }
 
 /** The cause kind a key carries: `<session>/<cause>/<subject>/...`, the segment `stuckSubjectOf` splits around. */
@@ -4359,6 +4362,44 @@ function fileRepositoryRow({ ref, repo, key, board }: { ref: string; repo: strin
   boardFiledRow({ url: filed[1], number }, board, run);
   return number;
 }
+
+/**
+ * Close the row {@link fileRepositoryRow} filed once its `answer:ceo` is gone (#622). Removing the label is the answer, and the row asks
+ * nothing after it: left open it is a `parked` row with no wait, which `board-truth-audit` names to `product-manager`. A label row has its
+ * re-ask ({@link reaskCleared}); a filed row has no number here, so it is found as {@link fileRepositoryRow} finds it, by title, and
+ * its mark is the same one, read the other way: filing looks among the open rows that CARRY the label, this among the `parked` ones that do not.
+ *
+ * LEFT ALONE: a row that still carries any `answer:` label (an `answer:<session>` swapped in for `answer:ceo` is a ruling re-routed, not
+ * given), and a row that is no longer `parked` (someone moved it on, and closing it would discard work). The cause is not asked again: the
+ * key stays escalated, so it stays quiet until its causeKey changes or it stops being emitted, as `ALREADY ESCALATED` says.
+ *
+ * `--limit 100` reads the open `parked` rows of the tracker (5 when this was written); a row past it is not found and stays open, as before.
+ * FAILS LOUD and is retried next tick: a `gh` refusal is a `COULD NOT CLOSE` line, never a throw into the tick.
+ *
+ * @returns the rows it closed
+ */
+function closeAnsweredRow({ title, key }: { title: string; key: string; }, { run, log }: { run: (args: string[]) => string; log: (line: string) => void; }): number[] {
+  const closed: number[] = [];
+  try {
+    const parked: { number: number; title: string; labels: { name: string; }[]; }[] = JSON.parse(
+      run(["issue", "list", "--state", "open", "--label", PARKED_LABEL, "--limit", "100", "--json", "number,title,labels"]));
+    const filed = parked.filter((row) => row.title === title);
+    if (filed.some((row) => row.labels.some((label) => label.name.startsWith(ANSWER_PREFIX)))) return closed;
+    for (const row of filed) {
+      run(["issue", "close", String(row.number), "--comment", answeredComment(key)]);
+      closed.push(row.number);
+      log(`ANSWERED #${row.number} (${key}) -- ${ESCALATION_LABEL} was removed, so the row is closed\n`);
+    }
+  } catch (err: any) {
+    log(`COULD NOT CLOSE ANSWERED ROW (${key}): ${String(err?.message ?? err).split("\n")[0].slice(0, 90)}\n`);
+  }
+  return closed;
+}
+
+/** The comment a filed stuck-cause row is closed with: which cause it asked about, and what happens if that cause is still true. */
+const answeredComment = (key: string) => `**Answered: \`${ESCALATION_LABEL}\` was removed, so the tick closes this row.** It asked about the cause \`${key}\`. `
+  + "Removing the label is the answer, and a row that waits on nothing is not left open. The cause stays quiet until its key changes or it "
+  + "stops being emitted and comes back.\n";
 
 /**
  * What the escalation needs from outside: write a comment, and read the session's state. Injected so a test reaches neither `gh` nor herdr.
