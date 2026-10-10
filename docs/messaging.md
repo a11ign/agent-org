@@ -40,7 +40,8 @@ decision 8).
   (`/bot<token>/`) from every error it surfaces** (a failed `fetch` quotes it). The chairman's Telegram user id and chat id are not
   secrets but are personal data in a public repository: they live in `chairmanFile` (0600), written by a **pairing command**. The
   chairman runs `messaging:pair` in their own shell, the host prints a one-time code, they send `/pair <code>` to the bot within 10
-  minutes, and the bot records the first sender that proves it. Nobody types an id into a repository.
+  minutes, and the bot records the first sender that proves it. Nobody types an id into a repository. `messaging:pair` and
+  `messaging:listen` read their flags first: `--help` prints the usage and an unknown flag is refused (exit 2), neither reaching Telegram.
 - **Long polling (`getUpdates`), no inbound port**, one listener process under a single-instance lock (a second poller gets
   `409 Conflict`), the offset persisted after each accepted batch.
 - **No quiet hours.** The summary, where one is declared, is the only silent message.
