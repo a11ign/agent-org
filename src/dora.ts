@@ -36,9 +36,14 @@
 // ONE npm PACKAGE PER REPOSITORY IS READ (`release.package`), and `renderDora` says which: a release of another package in the same repository is not a
 // deployment in this reading. a11ign publishes four together in one version pull request, so it declares the command.
 //
-// A LEAF: it imports nothing from the tool but `release-behind-main.ts` (itself a leaf: what a releasable change is, #4688), so `org-retro.ts` can import it and the test can run it with injected readers and no network.
+// A LEAF: it imports nothing from the tool but `release-behind-main.ts` (itself a leaf: what a releasable change is, #4688) so `org-retro.ts` can import it and the test can run it with injected readers and no network.
+//
+// ANCESTRY IS ASKED OF THE DECLARED CLONE FIRST (#4690): `git merge-base --is-ancestor` and `git rev-list` against the checkout `host.json` names answer in milliseconds what GitHub's
+// `compare` answers in 2 to 7 s a page, and a repository that releases ~70 times a day (1,341 commits between its oldest change and its newest release) cannot be read by the second inside a budget
+// that does not grow with the release count. `compare` stays as the fallback for a repository with no clone and for a clone that lacks the commit even after a fetch, and the reading NAMES
+// which one answered (`ancestry`), so a lead time that came from the API is distinguishable from one that came from git.
 import { execFileSync } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { isShipped, noReleaseReason } from "./release-behind-main.ts";
 
@@ -74,6 +79,7 @@ const PROMOTION_LINE = /^Promoted to latest: (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2
 /** `gh pr list --json files` returns the first 100: a pull request showing that many may have touched more, so it is treated as releasable. */
 const FILES_PAGE = 100;
 const SHA_LENGTH = 40;
+const SHORT_SHA = 8;
 /** An npm registry document for a long-lived package is large. */
 const MAX_BUFFER = 256 * 1024 * 1024;
 const READ_TIMEOUT_SECONDS = 60;
@@ -159,6 +165,106 @@ function ordered(releases: Release[]): (Release & { at: number; })[] | null {
   return stamped.some((release) => Number.isNaN(release.at)) ? null : stamped.sort((a, b) => a.at - b.at);
 }
 
+/** `host.json`'s `clones`, by repository NAME (`agent-org`, not `a11ign/agent-org`). `unreadable` is why the declaration could not be read, so a missing clone is told from a missing declaration. */
+export type DeclaredClones = { clones: Readonly<Record<string, string>>; unreadable?: string };
+
+/**
+ * The host's declaration of where each repository is cloned: the `clones` map of the file `$AGENT_ORG_HOST` names. Read HERE and not through `host-config.ts`, because that module
+ * resolves the home checkout when it is LOADED and throws where nothing is declared, which would make this leaf unimportable by a test or a shell with no host. A declaration
+ * that is unset or cannot be read is NAMED and reads as no clone: the `compare` read it falls back to is the answer the tool always gave.
+ */
+function declaredClones(env: Record<string, string | undefined> = process.env): DeclaredClones {
+  const path = env.AGENT_ORG_HOST;
+  if (path === undefined || path === "") return { clones: {}, unreadable: "no host declaration is set (AGENT_ORG_HOST)" };
+  try {
+    const clones = JSON.parse(readFileSync(path, "utf8")).clones;
+    return { clones: clones !== null && typeof clones === "object" ? clones : {} };
+  } catch (err: any) {
+    return { clones: {}, unreadable: `the host declaration could not be read (${String(err?.message ?? err).split("\n")[0]})` };
+  }
+}
+
+/** @param {string} clone @param {string[]} args @returns {boolean} whether `git -C clone <args>` exits 0; exit 1 is the answer "no", any other failure throws */
+function gitHolds(clone: string, args: string[]): boolean {
+  try {
+    run("git", ["-C", clone, ...args]);
+    return true;
+  } catch (err: any) {
+    if (err?.status === 1) return false;
+    throw err;
+  }
+}
+
+/**
+ * Ancestry from ONE repository's declared clone, with the fallback NAMED. `range` answers `null` when the clone cannot answer (no clone declared, or it lacks `base` or `head` even after
+ * one `git fetch --tags origin`, bounded by the repository's read limits), and `fellBack` runs the GitHub read in its place and counts it, so `source` can say which answered.
+ * @param {{ repository: Repository, clones: DeclaredClones }} input
+ */
+function cloneReader({ repository, clones }: { repository: Repository; clones: DeclaredClones; }) {
+  const name = repository.repo.split("/").pop() ?? repository.repo;
+  const path = clones.clones[name] ?? null;
+  const tally = { clone: 0, github: 0, why: path === null ? (clones.unreadable ?? `no clone is declared for ${name}`) : null as string | null };
+  let fetched = false;
+  let fetchFailure = "";
+  const has = (commit: string) => gitHolds(path as string, ["rev-parse", "--verify", "--quiet", `${commit}^{commit}`]);
+  const fetchOnce = () => {
+    if (fetched) return;
+    fetched = true;
+    try {
+      run("git", ["-C", path as string, "fetch", "--quiet", "--tags", "origin"]);
+    } catch (err: any) {
+      fetchFailure = ` and the fetch of its tags failed (${String(err?.message ?? err).split("\n")[0]})`;
+    }
+  };
+  /** @returns {string | null} the first of the commits the clone does not hold, after one fetch */
+  const lacking = (commits: string[]): string | null => {
+    if (path === null) return null;
+    const missing = () => commits.find((commit) => !has(commit)) ?? null;
+    if (missing() === null) return null;
+    fetchOnce();
+    return missing();
+  };
+  const answers = (commits: string[]): boolean => {
+    if (path === null) return false;
+    const absent = lacking(commits);
+    if (absent !== null) tally.why ??= `the clone of ${name} lacks ${absent.slice(0, SHORT_SHA)}${fetchFailure}`;
+    return absent === null;
+  };
+  const fromClone = ({ base, head }: { base: string; head: string }): Range | null => {
+    if (!answers([base, head])) return null;
+    const ahead = gitHolds(path as string, ["merge-base", "--is-ancestor", base, head]);
+    const status = ahead ? (base === head ? "identical" : "ahead") : gitHolds(path as string, ["merge-base", "--is-ancestor", head, base]) ? "behind" : "diverged";
+    const commits = run("git", ["-C", path as string, "rev-list", "--reverse", "--topo-order", `${base}..${head}`]).split("\n").filter((line) => line !== "");
+    tally.clone += 1;
+    return { status, commits };
+  };
+  return {
+    range: ({ base, head }: { base: string; head: string }): Range | null => {
+      try {
+        return fromClone({ base, head });
+      } catch (err: any) {
+        tally.why ??= `the clone of ${name} could not be read (${String(err?.message ?? err).split("\n")[0]})`;
+        return null;
+      }
+    },
+    parentOf: (commit: string): string | null => {
+      if (path === null || !has(commit)) return null;
+      const [, ...parents] = run("git", ["-C", path, "rev-list", "--parents", "-n", "1", commit]).trim().split(" ");
+      return parents.length === 1 ? parents[0] : null;
+    },
+    fellBack: <T>(read: () => T): T => {
+      tally.github += 1;
+      return read();
+    },
+    /** What answered: `clone`, or `github compare` with the reason the clone did not (and how many of the ranges it did answer). */
+    source: (): string => {
+      if (tally.github === 0 && tally.clone > 0) return "clone";
+      if (tally.github === 0) return "none read";
+      return `github compare (${tally.why ?? "the clone was not asked"}${tally.clone > 0 ? `; the clone answered ${tally.clone} range${tally.clone === 1 ? "" : "s"}` : ""})`;
+    },
+  };
+}
+
 /**
  * ANCESTRY, ASKED ONCE PER RELEASE AND NOT ONCE PER CHANGE (measured 2026-10-03: a call per merged pull request took 3m49s for one repository with 623 changes,
  * and this runs inside the work gate's tick). `base` is the OLDEST commit anyone will ask about; a release's `range` from it lists every commit in the release
@@ -175,14 +281,15 @@ function ordered(releases: Release[]): (Release & { at: number; })[] | null {
  *   `contains` is `null` when the range could not be read: never read as `false`. `inHistory` answers from the one ordered history alone, and is `undefined`
  *   where that history does not place the release or the commit: asking it never reads anything.
  */
-function ancestryOf({ repository, readers, base, releases }: { repository: Repository; readers: Readers; base: string | null; releases: Release[]; }): { contains: (release: Release, commit: string) => boolean | null; inHistory: (release: Release, commit: string) => boolean | undefined; } {
+function ancestryOf({ repository, readers, base, releases, clones }: { repository: Repository; readers: Readers; base: string | null; releases: Release[]; clones: DeclaredClones; }): { contains: (release: Release, commit: string) => boolean | null; inHistory: (release: Release, commit: string) => boolean | undefined; source: () => string; } {
+  const clone = cloneReader({ repository, clones });
   /** Keyed by COMMIT: a backport and the release it was cut beside can point at one commit, and the range is the commit's. The Set keeps the order the commits were listed in. @type {Map<string, { status: string, commits: Set<string> } | null>} */
   const ranges: Map<string, { status: string; commits: Set<string>; } | null> = new Map();
   const rangeOf = (release: Release) => {
     const head = release.commit;
     if (head === null || base === null) return null;
     if (!ranges.has(head)) {
-      const range = attempt(() => { startable("compare"); return readers.range(repository, { base, head }); });
+      const range = attempt(() => clone.range({ base, head }) ?? clone.fellBack(() => { startable("compare"); return readers.range(repository, { base, head }); }));
       ranges.set(head, range === null ? null : { status: range.status, commits: new Set(range.commits) });
     }
     return ranges.get(head) ?? null;
@@ -205,7 +312,7 @@ function ancestryOf({ repository, readers, base, releases }: { repository: Repos
     const head = release.commit;
     if (history === null || head === null) return undefined;
     if (!placed.has(head)) {
-      const parent = history.has(head) ? null : attempt(() => readers.parentOf?.(repository, head) ?? null);
+      const parent = history.has(head) ? null : attempt(() => clone.parentOf(head) ?? readers.parentOf?.(repository, head) ?? null);
       placed.set(head, history.get(head) ?? (parent === null ? undefined : history.get(parent)));
     }
     return placed.get(head);
@@ -222,7 +329,7 @@ function ancestryOf({ repository, readers, base, releases }: { repository: Repos
     if (range === null) return null;
     return commit === base ? range.status === "ahead" || range.status === "identical" : range.commits.has(commit);
   };
-  return { contains, inHistory };
+  return { contains, inHistory, source: clone.source };
 }
 
 /**
@@ -433,7 +540,7 @@ function channelBlocks({ repository, versions, tags, records, now }: { repositor
 /** @param {Repository} repository @param {string} reason */
 function unknownRepository(repository: Repository, reason: string) {
   return { repo: repository.repo, npmPackage: npmPackageOf(repository), status: ("unknown" as const), reason, oldestUnreleasedMinutes: null, deploymentFrequency: null, leadTime: null, promotionLeadTime: null, qualified: null, changeFailure: null, restore: null,
-    reasons: ({} as Record<string, string>) };
+    reasons: ({} as Record<string, string>), ancestry: (null as string | null) };
 }
 
 /**
@@ -536,7 +643,7 @@ function channelBlocksOf({ repository, readers, windowStart, versions, now }: { 
  * not hide a deployment frequency that was read, and none of them is ever a 0 made of an absence.
  * @param {Repository} repository @param {Readers} readers @param {number} now
  */
-export function measureRepository(repository: Repository, readers: Readers, now: number) {
+export function measureRepository(repository: Repository, readers: Readers, now: number, clones: DeclaredClones = { clones: {} }) {
   const windowStart = now - LOOKBACK_DAYS * MS_PER_DAY;
   const sources = readSources({ repository, readers, windowStart });
   if ("refusal" in sources) return unknownRepository(repository, sources.refusal);
@@ -545,7 +652,8 @@ export function measureRepository(repository: Repository, readers: Readers, now:
   const releasable = merged === null ? null : merged.filter((pr) => (noReleaseYet || Date.parse(pr.mergedAt) >= windowStart) && isReleasable(pr, repository));
   const regressions = attempt(() => readers.regressions(repository, { since: new Date(windowStart).toISOString() }));
   const inScope = regressions === null ? null : regressions.filter((regression) => regressionInScope(regression, windowStart));
-  const context = { releases, windowStart, ...ancestryOf({ repository, readers, releases, base: oldestCommit({ releasable: releasable ?? [], regressions: inScope ?? [] }) }) };
+  const ancestry = ancestryOf({ repository, readers, releases, clones, base: oldestCommit({ releasable: releasable ?? [], regressions: inScope ?? [] }) });
+  const context = { releases, windowStart, contains: ancestry.contains, inHistory: ancestry.inHistory };
   const frequency = deploymentFrequency({ releases, releasable, now });
   const lead = releasable === null ? { block: null, reason: "its merged pull requests could not be read" } : leadTime({ releasable, context, now });
   lead.reason = namingTheLimit(lead.reason);
@@ -565,13 +673,14 @@ export function measureRepository(repository: Repository, readers: Readers, now:
     changeFailure: fixing.rows === null ? null : changeFailure({ inWindow: frequency.releases, fixes }),
     restore: fixing.rows === null ? null : timeToRestore({ rows: fixing.rows, windowStart, now }),
     reasons: (reasons as Record<string, string>),
+    ancestry: ancestry.source(),
   };
 }
 
 /** @param {Repository} repository @param {Readers} readers @param {number} now @returns {ReturnType<typeof measureRepository>} */
-function measureOrUnknown(repository: Repository, readers: Readers, now: number): ReturnType<typeof measureRepository> {
+function measureOrUnknown(repository: Repository, readers: Readers, now: number, clones: DeclaredClones): ReturnType<typeof measureRepository> {
   try {
-    return measureRepository(repository, readers, now);
+    return measureRepository(repository, readers, now, clones);
   } catch (err: any) {
     return unknownRepository(repository, `the measurement failed (${String(err?.message ?? err).split("\n")[0]})`);
   }
@@ -580,13 +689,14 @@ function measureOrUnknown(repository: Repository, readers: Readers, now: number)
 /**
  * ONE repository's reading, the unit the gate keeps as it goes (#3736). NEVER THROWS: a repository whose measure throws is `unknown` with the first line of why.
  * Every child it starts is bounded (`timeoutMs` each, `repositoryMs` for the repository), and an `unknown` that a bound caused names the call that hit it.
- * @param {{ repository: Repository, readers?: Readers, now: number, limits?: { timeoutMs?: number, repositoryMs?: number } }} input
+ * `clones` is where each repository is cloned (the host's declaration by default): ancestry is read from there first (#4690).
+ * @param {{ repository: Repository, readers?: Readers, now: number, limits?: { timeoutMs?: number, repositoryMs?: number }, clones?: DeclaredClones }} input
  */
-export function readRepository({ repository, readers = githubReaders, now, limits = {} }: { repository: Repository; readers?: Readers; now: number; limits?: { timeoutMs?: number; repositoryMs?: number; }; }) {
+export function readRepository({ repository, readers = githubReaders, now, limits = {}, clones = declaredClones() }: { repository: Repository; readers?: Readers; now: number; limits?: { timeoutMs?: number; repositoryMs?: number; }; clones?: DeclaredClones; }) {
   const outer = readLimits;
   readLimits = { timeoutMs: limits.timeoutMs ?? READ_TIMEOUT_MS, deadlineAt: Date.now() + (limits.repositoryMs ?? REPOSITORY_BUDGET_MS), timedOut: [] };
   try {
-    const reading = measureOrUnknown(repository, readers, now);
+    const reading = measureOrUnknown(repository, readers, now, clones);
     const [first] = readLimits.timedOut;
     return reading.status === "unknown" && first !== undefined ? { ...reading, reason: `${reading.reason} (${first} hit its time limit)` } : reading;
   } finally {
@@ -736,6 +846,8 @@ function repositoryLines(reading: RepositoryReading): string[] {
   if (reading.status === "unknown") return [`- ${reading.repo}: ${UNKNOWN} -- ${reading.reason}. Not 0: nothing was measured.`];
   const age = reading.oldestUnreleasedMinutes === null ? "" : `; oldest unreleased merge is ${duration(reading.oldestUnreleasedMinutes)} old`;
   const lines = [reading.status === "no release yet" ? `- ${reading.repo}: no release yet${age}` : `- ${reading.repo}:`];
+  const ancestry: string | null | undefined = (reading as { ancestry?: string | null }).ancestry;
+  if (typeof ancestry === "string" && ancestry.startsWith("github compare")) lines.push(`    Ancestry read from ${ancestry}`);
   for (const metric of PRINTED) {
     const state = metricState(reading, metric);
     const body = state.state === "value" ? metric.text((reading as any)[metric.block]) : `${state.state} -- ${state.reason}`;
