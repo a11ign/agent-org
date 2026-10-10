@@ -1,4 +1,4 @@
-// no-token: nothing here reaches a remote -- every row, comment page and body is a fixture value, and `orgHealthNow` is given its own fakes for the waits, the merge and the fleet.
+// no-token: gh -- nothing here reaches GitHub: every row, comment page and body is a fixture value, and `orgHealthNow` is given its own fakes for the waits, the merge and the fleet
 /**
  * a11ign/a11ign#4759 (class `row-not-finishable`, #4627): A CLAIMED ROW WHOSE REGION OR ACCEPTANCE CHANGED AFTER THE CLAIM IS ORDERED TO `product-manager` AS A NEW ROW'S WORTH OF SCOPE.
  *
