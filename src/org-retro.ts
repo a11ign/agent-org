@@ -214,15 +214,18 @@ export const RELEASE_REASON_KINDS: Record<string, "voiding" | "released"> = {
  * @returns {{ voided: number, byReason: Record<string, number>, otherReleases: Record<string, number> }}
  */
 export function releaseStats(lines: { at: number; message: string; }[]): { voided: number; byReason: Record<string, number>; otherReleases: Record<string, number>; } {
-  const byReason: Record<string, number> = {};
-  const otherReleases: Record<string, number> = {};
+  // Maps, not plain objects: a journal reason is data, and `constructor` or `__proto__` must count as a reason, not as an inherited property.
+  const byReason = new Map<string, number>();
+  const otherReleases = new Map<string, number>();
   for (const { message } of lines) {
     const match = RELEASE.exec(message);
     if (match === null || match[3] === "merged") continue;
-    const into = (RELEASE_REASON_KINDS[match[3]] ?? "voiding") === "voiding" ? byReason : otherReleases;
-    into[match[3]] = (into[match[3]] ?? 0) + 1;
+    const known = Object.hasOwn(RELEASE_REASON_KINDS, match[3]);
+    const into = !known || RELEASE_REASON_KINDS[match[3]] === "voiding" ? byReason : otherReleases;
+    into.set(match[3], (into.get(match[3]) ?? 0) + 1);
   }
-  return { voided: Object.values(byReason).reduce((sum, n) => sum + n, 0), byReason, otherReleases };
+  const voided = [...byReason.values()].reduce((sum, n) => sum + n, 0);
+  return { voided, byReason: Object.fromEntries(byReason), otherReleases: Object.fromEntries(otherReleases) };
 }
 
 /**

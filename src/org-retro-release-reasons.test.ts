@@ -39,3 +39,11 @@ test("a stalled line counts 1, and a declared wait, a block or a closed row coun
   const quiet = ["blocked", "closed", "wait", "merged"].map((why) => ({ at: 0, message: `RELEASED #7 (worker-7, ${why})` }));
   assert.equal(releaseStats(quiet).voided, 0);
 });
+
+test("a reason nobody classified is a voiding, including one named like an inherited property", () => {
+  for (const why of ["teleported", "constructor", "toString", "__proto__"]) {
+    const stats = releaseStats([{ at: 0, message: `RELEASED #9 (worker-9, ${why})` }]);
+    assert.equal(stats.voided, 1, why);
+    assert.deepEqual(stats.otherReleases, {}, why);
+  }
+});
