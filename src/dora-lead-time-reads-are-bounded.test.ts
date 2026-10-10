@@ -115,8 +115,8 @@ test("a budget already spent makes the lead time unknown and SAYS the time limit
   const reading = read({ ...readers, regressions: () => [regression] }, { repositoryMs: 0 });
   assert.equal(reading.status, "read");
   assert.equal(reading.leadTime, null, "unknown stays unknown, never 0 and never unreleased");
-  assert.match(reading.reasons.leadTime, /^ancestry of #\d+ could not be read \(.+ hit its time limit\)$/);
-  assert.match(reading.reasons.changeFailure, /^ancestry of the fix for regression #9 could not be read \(.+ hit its time limit\)$/);
+  assert.match(reading.reasons.leadTime, /^ancestry of #\d+ could not be read \(.+ was not started: this repository's read budget is spent\)$/);
+  assert.match(reading.reasons.changeFailure, /^ancestry of the fix for regression #9 could not be read \(.+ was not started: this repository's read budget is spent\)$/);
   assert.equal(reading.changeFailure, null);
   assert.equal(reading.restore, null);
 });

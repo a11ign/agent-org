@@ -95,7 +95,7 @@ test("THE CONTROL: a repository whose read never returns ends at the bound, the 
   assert.match(first.said.join(""), /3 of 4 repositories \(3 read this tick/);
   assert.deepEqual(Object.keys(cacheOf(dir).readings), [FIRST, HUNG, THIRD], "each repository's reading is in the cache, the hung one among them");
   assert.equal(cacheOf(dir).readings[HUNG].status, "unknown");
-  assert.match(cacheOf(dir).readings[HUNG].reason, /gh api repos\/a11ign\/hung\/releases hit its time limit/, "the unknown names the call that ran out");
+  assert.match(cacheOf(dir).readings[HUNG].reason, /gh api repos\/a11ign\/hung\/releases timed out after 400 ms/, "the unknown names the call that ran out");
 
   const second = tickWith(dir, LATER, seams);
   assert.deepEqual(seams.asked.map((a) => a.repo), [FIRST, HUNG, THIRD, LAST], "the second call read only the unread repository");
@@ -144,7 +144,7 @@ test("yesterday's readings are not today's: a new UTC date reads from the start"
 test("a repository whose own budget is spent starts no more children and is unknown naming the call", () => {
   const reading = readRepository({ repository: REPOSITORIES[0], now: NOW, limits: { timeoutMs: 400, repositoryMs: 0 } });
   assert.equal(reading.status, "unknown");
-  assert.match(reading.reason ?? "", /gh api repos\/a11ign\/first\/releases hit its time limit/);
+  assert.match(reading.reason ?? "", /gh api repos\/a11ign\/first\/releases was not started: this repository's read budget is spent/);
 });
 
 test("a repository that reads fine is read, not unknown (the fake world is healthy outside the hung repository)", () => {

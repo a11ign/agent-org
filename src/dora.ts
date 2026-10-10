@@ -81,6 +81,7 @@ const PROMOTION_LINE = /^Promoted to latest: (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2
 const FILES_PAGE = 100;
 const SHA_LENGTH = 40;
 const SHORT_SHA = 8;
+const TAG_REF_PREFIX = "refs/tags/";
 /** An npm registry document for a long-lived package is large. */
 const MAX_BUFFER = 256 * 1024 * 1024;
 const READ_TIMEOUT_SECONDS = 60;
@@ -111,7 +112,12 @@ export type Regression = { number: number, openedAt: string, closedAt: string | 
 /**
  * `parentOf` is the commit's only parent, `null` for none or two; a reader without it places a release by its own commit alone. `promotions` is where `latest` moved: a reader without it leaves the two channel readings `unknown`. `distTags` is the npm package's dist-tags, which say whether it HAS a `next` channel (#4040): a reader without it leaves that question unasked, and the repository is read as one that has the channel
  */
-export type Readers = { releases: (r: Repository, window: { since: string }) => Release[] | null, mergedPrs: (r: Repository, window: { since: string | null }) => MergedPr[] | null, regressions: (r: Repository, window: { since: string }) => Regression[] | null, range: (r: Repository, commits: { base: string, head: string }) => Range | null, parentOf?: (r: Repository, commit: string) => string | null, promotions?: (r: Repository, window: { since: string }) => PromotionRecords | null, distTags?: (r: Repository) => Record<string, string> | null };
+export type Readers = { releases: (r: Repository, window: ReleaseWindow) => Release[] | null, mergedPrs: (r: Repository, window: { since: string | null }) => MergedPr[] | null, regressions: (r: Repository, window: { since: string }) => Regression[] | null, range: (r: Repository, commits: { base: string, head: string }) => Range | null, parentOf?: (r: Repository, commit: string) => string | null, promotions?: (r: Repository, window: { since: string }) => PromotionRecords | null, distTags?: (r: Repository) => Record<string, string> | null };
+/**
+ * What a releases read is given: `since`, and `tagCommit`, the commit a tag names read from the declared clone with NO call of its own. It answers `null` for a tag the clone does not
+ * hold (or where no clone is declared), and only for THAT tag does a reader fall back to asking GitHub, so a repository with 400 tags in the window is not 400 `commits/<tag>` calls.
+ */
+export type ReleaseWindow = { since: string, tagCommit?: (tag: string) => string | null };
 /**
  * `latest` is the version the `latest` dist-tag names now (`null`: it names none); `notes` is the notes of each version's GitHub Release, keyed by version, and a version with no Release has no key
  */
@@ -211,6 +217,13 @@ function cloneReader({ repository, clones }: { repository: Repository; clones: D
   let fetched = false;
   let fetchFailure = "";
   const has = (commit: string) => gitHolds(path as string, ["rev-parse", "--verify", "--quiet", `${commit}^{commit}`]);
+  /** Every tag the clone holds and the commit it names, from ONE `for-each-ref`: `%(*objectname)` is the commit an annotated tag points at, empty for a lightweight one, whose `%(objectname)` is it. @type {Map<string, string> | null} */
+  let tags: Map<string, string> | null = null;
+  const readTags = (): Map<string, string> => {
+    tags ??= new Map(runGit(path as string, ["for-each-ref", "--format=%(refname) %(*objectname) %(objectname)", "refs/tags"]).split("\n").filter((line) => line !== "")
+      .map((line) => { const [name, peeled, object] = line.split(" "); return [name.slice(TAG_REF_PREFIX.length), peeled === "" ? object : peeled] as [string, string]; }));
+    return tags;
+  };
   const fetchOnce = () => {
     if (fetched) return;
     fetched = true;
@@ -251,6 +264,19 @@ function cloneReader({ repository, clones }: { repository: Repository; clones: D
         return null;
       }
     },
+    /** The commit a tag names, from the clone: `null` for a tag it does not hold even after the one fetch of its tags, which the caller asks GitHub for, that tag alone. */
+    tagCommit: (tag: string): string | null => {
+      if (path === null) return null;
+      try {
+        const held = readTags().get(tag);
+        if (held !== undefined || fetched) return held ?? null;
+        fetchOnce();
+        tags = null;
+        return readTags().get(tag) ?? null;
+      } catch {
+        return null; // a clone that cannot be listed answers no tag, and each is asked of GitHub as it always was
+      }
+    },
     parentOf: (commit: string): string | null => {
       if (path === null || !has(commit)) return null;
       const [, ...parents] = runGit(path, ["rev-list", "--parents", "-n", "1", commit]).trim().split(" ");
@@ -280,13 +306,12 @@ function cloneReader({ repository, clones }: { repository: Repository; clones: D
  * and 184 releases in the window, whose one range from the oldest change to the newest release lists 863 commits, every one of the 863 in order of commit date.
  * One `compare` of ~4 s stands in for the one-per-release that no budget covers once a repository releases on every merge. A release or commit that range does not
  * list (a release cut from older history than `base`, a commit on no path to the newest release) is asked of its own range, as before.
- * @param {{ repository: Repository, readers: Readers, base: string | null, releases: Release[] }} input
+ * @param {{ repository: Repository, readers: Readers, base: string | null, releases: Release[], clone: ReturnType<typeof cloneReader> }} input
  * @returns {{ contains: (release: Release, commit: string) => boolean | null, inHistory: (release: Release, commit: string) => boolean | undefined }}
  *   `contains` is `null` when the range could not be read: never read as `false`. `inHistory` answers from the one ordered history alone, and is `undefined`
  *   where that history does not place the release or the commit: asking it never reads anything.
  */
-function ancestryOf({ repository, readers, base, releases, clones }: { repository: Repository; readers: Readers; base: string | null; releases: Release[]; clones: DeclaredClones; }): { contains: (release: Release, commit: string) => boolean | null; inHistory: (release: Release, commit: string) => boolean | undefined; source: () => string; } {
-  const clone = cloneReader({ repository, clones });
+function ancestryOf({ repository, readers, base, releases, clone }: { repository: Repository; readers: Readers; base: string | null; releases: Release[]; clone: ReturnType<typeof cloneReader>; }): { contains: (release: Release, commit: string) => boolean | null; inHistory: (release: Release, commit: string) => boolean | undefined; source: () => string; } {
   /** Keyed by COMMIT: a backport and the release it was cut beside can point at one commit, and the range is the commit's. The Set keeps the order the commits were listed in. @type {Map<string, { status: string, commits: Set<string> } | null>} */
   const ranges: Map<string, { status: string; commits: Set<string>; } | null> = new Map();
   const rangeOf = (release: Release) => {
@@ -572,11 +597,11 @@ function oldestCommit({ releasable, regressions }: { releasable: MergedPr[]; reg
 /**
  * The releases, `[]` when the declared npm package was never published (the registry's 404), or `null` when the read was refused. A 404 is told from a
  * network error by the reader's `NEVER_PUBLISHED` code, and only an npm repository can have one: a tag repository's 404 is a refusal like any other.
- * @param {{ repository: Repository, readers: Readers, windowStart: number }} input @returns {Release[] | null}
+ * @param {{ repository: Repository, readers: Readers, windowStart: number, clone: ReturnType<typeof cloneReader> }} input @returns {Release[] | null}
  */
-function readReleases({ repository, readers, windowStart }: { repository: Repository; readers: Readers; windowStart: number; }): Release[] | null {
+function readReleases({ repository, readers, windowStart, clone }: { repository: Repository; readers: Readers; windowStart: number; clone: ReturnType<typeof cloneReader>; }): Release[] | null {
   try {
-    return readers.releases(repository, { since: new Date(windowStart).toISOString() });
+    return readers.releases(repository, { since: new Date(windowStart).toISOString(), tagCommit: clone.tagCommit });
   } catch (err: any) {
     return err?.code === NEVER_PUBLISHED && repository.release.kind === "npm" ? [] : null;
   }
@@ -608,11 +633,11 @@ function readDistTags({ repository, readers, versions }: { repository: Repositor
  * The two reads every metric stands on, or WHY the repository is unknown. No release and no merged pull request is `no release yet`, as the row that
  * declared the repository promised: the page shows it as unfinished. It is the readers' contract that makes that safe: a read that FAILED throws or
  * answers `null`, and `[]` is only a read that found nothing.
- * @param {{ repository: Repository, readers: Readers, windowStart: number }} input
+ * @param {{ repository: Repository, readers: Readers, windowStart: number, clone: ReturnType<typeof cloneReader> }} input
  * @returns {{ refusal: string } | { releases: (Release & { at: number })[], merged: MergedPr[] | null }}
  */
-function readSources({ repository, readers, windowStart }: { repository: Repository; readers: Readers; windowStart: number; }): { refusal: string; } | { releases: (Release & { at: number; })[]; merged: MergedPr[] | null; } {
-  const listed = readReleases({ repository, readers, windowStart });
+function readSources({ repository, readers, windowStart, clone }: { repository: Repository; readers: Readers; windowStart: number; clone: ReturnType<typeof cloneReader>; }): { refusal: string; } | { releases: (Release & { at: number; })[]; merged: MergedPr[] | null; } {
+  const listed = readReleases({ repository, readers, windowStart, clone });
   if (listed === null) return { refusal: "its releases could not be read" };
   const releases = ordered(listed);
   if (releases === null) return { refusal: "a release has no publish time that can be read" };
@@ -628,7 +653,7 @@ function readSources({ repository, readers, windowStart }: { repository: Reposit
  */
 function namingTheLimit(reason: string | null): string | null {
   const [first] = readLimits.timedOut;
-  return reason === null || first === undefined ? reason : `${reason} (${first} hit its time limit)`;
+  return reason === null || first === undefined ? reason : `${reason} (${first})`;
 }
 
 /**
@@ -649,14 +674,15 @@ function channelBlocksOf({ repository, readers, windowStart, versions, now }: { 
  */
 export function measureRepository(repository: Repository, readers: Readers, now: number, clones: DeclaredClones = { clones: {} }) {
   const windowStart = now - LOOKBACK_DAYS * MS_PER_DAY;
-  const sources = readSources({ repository, readers, windowStart });
+  const clone = cloneReader({ repository, clones });
+  const sources = readSources({ repository, readers, windowStart, clone });
   if ("refusal" in sources) return unknownRepository(repository, sources.refusal);
   const { releases, merged } = sources;
   const noReleaseYet = releases.length === 0;
   const releasable = merged === null ? null : merged.filter((pr) => (noReleaseYet || Date.parse(pr.mergedAt) >= windowStart) && isReleasable(pr, repository));
   const regressions = attempt(() => readers.regressions(repository, { since: new Date(windowStart).toISOString() }));
   const inScope = regressions === null ? null : regressions.filter((regression) => regressionInScope(regression, windowStart));
-  const ancestry = ancestryOf({ repository, readers, releases, clones, base: oldestCommit({ releasable: releasable ?? [], regressions: inScope ?? [] }) });
+  const ancestry = ancestryOf({ repository, readers, releases, clone, base: oldestCommit({ releasable: releasable ?? [], regressions: inScope ?? [] }) });
   const context = { releases, windowStart, contains: ancestry.contains, inHistory: ancestry.inHistory };
   const frequency = deploymentFrequency({ releases, releasable, now });
   const lead = releasable === null ? { block: null, reason: "its merged pull requests could not be read" } : leadTime({ releasable, context, now });
@@ -702,7 +728,7 @@ export function readRepository({ repository, readers = githubReaders, now, limit
   try {
     const reading = measureOrUnknown(repository, readers, now, clones);
     const [first] = readLimits.timedOut;
-    return reading.status === "unknown" && first !== undefined ? { ...reading, reason: `${reading.reason} (${first} hit its time limit)` } : reading;
+    return reading.status === "unknown" && first !== undefined ? { ...reading, reason: `${reading.reason} (${first})` } : reading;
   } finally {
     readLimits = outer;
   }
@@ -885,13 +911,17 @@ export function renderDora(report: DoraReport): string[] {
 
 /**
  * THE LIMITS THE CHILDREN RUN UNDER, for the repository being read. Module state because the readers are plain functions that call `run`, and the read is
- * synchronous, so one repository is read at a time (`readRepository` sets it and puts it back). `timedOut` names the calls that hit a limit, for the repository's reason.
+ * synchronous, so one repository is read at a time (`readRepository` sets it and puts it back). `timedOut` says, in words, which call a limit ended AND WHICH LIMIT it was
+ * (it ran its own, it ran what was left of the repository's budget, or it was never started because none was left), for the repository's reason.
  * @type {{ timeoutMs: number, deadlineAt: number, timedOut: string[] }}
  */
 let readLimits: { timeoutMs: number; deadlineAt: number; timedOut: string[]; } = { timeoutMs: READ_TIMEOUT_MS, deadlineAt: Infinity, timedOut: [] };
 
 /** @param {string} command @param {string[]} args @returns {string} the call as a person would name it: the command and the first two words that are not flags */
 const callName = (command: string, args: string[]): string => [command, ...args.filter((arg) => !arg.startsWith("-")).slice(0, 2)].join(" ");
+
+/** @param {number} ms @returns {string} `90 s`, or `400 ms` below a second */
+const durationOf = (ms: number): string => (ms < 1000 ? `${Math.round(ms)} ms` : `${Math.round(ms / 1000)} s`);
 
 /**
  * The milliseconds left of this repository's budget, or a throw that records `call` as the one the budget ended. Every read starts here, so a reader that
@@ -901,8 +931,9 @@ const callName = (command: string, args: string[]): string => [command, ...args.
 function startable(call: string): number {
   const left = readLimits.deadlineAt - Date.now();
   if (left <= 0) {
-    readLimits.timedOut.push(call);
-    throw new Error(`${call} was not started: this repository's read budget is spent`);
+    const refusal = `${call} was not started: this repository's read budget is spent`;
+    readLimits.timedOut.push(refusal);
+    throw new Error(refusal);
   }
   return left;
 }
@@ -915,8 +946,10 @@ function run(command: string, args: string[], env?: Record<string, string | unde
     return execFileSync(command, args, { encoding: "utf8", maxBuffer: MAX_BUFFER, stdio: ["ignore", "pipe", "ignore"], timeout, ...(env === undefined ? {} : { env }) });
   } catch (err: any) {
     if (err?.code !== "ETIMEDOUT") throw err;
-    readLimits.timedOut.push(call);
-    throw new Error(`${call} timed out after ${Math.round(timeout / 1000)} s`, { cause: err });
+    // The limit it ran is its OWN unless the repository's budget had less left than that: then it is the budget's, and a call that was only ever given a few seconds says so.
+    const timedOut = `${call} timed out after ${durationOf(timeout)}${timeout < readLimits.timeoutMs ? `, all that was left of this repository's read budget (a call's own limit is ${durationOf(readLimits.timeoutMs)})` : ""}`;
+    readLimits.timedOut.push(timedOut);
+    throw new Error(timedOut, { cause: err });
   }
 }
 
@@ -1005,7 +1038,7 @@ function attestedCommit(npmPackage: string, version: string): string | null {
 }
 
 /** @param {Repository & { release: { kind: "npm", package: string } }} repository @param {{ since: string }} window @returns {Release[]} */
-function npmReleases(repository: Repository & { release: { kind: "npm"; package: string; }; }, { since }: { since: string; }): Release[] {
+function npmReleases(repository: Repository & { release: { kind: "npm"; package: string; }; }, { since, tagCommit }: ReleaseWindow): Release[] {
   const url = `https://registry.npmjs.org/${repository.release.package.replace("/", "%2f")}`;
   // No `-f`: it would make a 404 (never published) and a failed read the same exit status. The status is the last line, after the document.
   const answer = run("curl", ["-sS", "--max-time", String(READ_TIMEOUT_SECONDS), "-H", "Accept: application/json", "-w", "\n%{http_code}", url]);
@@ -1013,16 +1046,27 @@ function npmReleases(repository: Repository & { release: { kind: "npm"; package:
   const status = answer.slice(split + 1);
   if (status === HTTP_NOT_FOUND) throw neverPublished(repository.release.package);
   if (status !== HTTP_OK) throw new Error(`the registry answered HTTP ${status} for ${repository.release.package}`);
-  return npmReleasesFrom({ document: JSON.parse(answer.slice(0, split)), repository, since, commits: { commitOf, attestedCommit } });
+  return npmReleasesFrom({ document: JSON.parse(answer.slice(0, split)), repository, since, commits: { commitOf: (repo, ref) => tagCommit?.(ref) ?? commitOf(repo, ref), attestedCommit } });
 }
 
-/** @param {Repository} repository @param {{ since: string }} window @returns {Release[]} the `v*` tags that have a published GitHub Release */
-function tagReleases(repository: Repository, { since }: { since: string; }): Release[] {
-  const rows = ghJson(["api", `repos/${repository.repo}/releases`, "--paginate", "--slurp"]).flat();
+/**
+ * The releases of a tag repository from its GitHub Releases: the `v*` tags that have one published, each placed by the commit its tag names. THAT COMMIT IS READ FROM THE CLONE
+ * (`tagCommit`, one `for-each-ref` for every tag) and only a tag the clone does not hold is asked of GitHub, its own `commits/<tag>` call. Measured 2026-10-10 for `a11ign/agent-org`:
+ * the release list, then 409 `commits/<tag>` calls of 0.4 to 2.7 s (218 s together), then `gh pr list` with the 17 s of the 240 s budget that were left, which is less than the 24 s it takes:
+ * it was ended by the budget and not by its own 90 s, and the lead time, the failure rate and the restore time went `unknown` with it.
+ * @param {{ rows: any[], repository: Repository, since: string, commits: { commitOf: (repo: string, ref: string) => string | null, tagCommit?: (tag: string) => string | null } }} input @returns {Release[]}
+ */
+export function tagReleasesFrom({ rows, repository, since, commits }: { rows: any[]; repository: Repository; since: string; commits: { commitOf: (repo: string, ref: string) => string | null; tagCommit?: (tag: string) => string | null; }; }): Release[] {
   return rows.filter((r: any) => !r.draft && typeof r.tag_name === "string" && r.tag_name.startsWith("v")).map((r: any) => ({
     id: r.tag_name, publishedAt: r.published_at, deprecated: false,
-    commit: resolveCommit({ publishedAt: r.published_at, since, known: undefined, lookups: [() => commitOf(repository.repo, r.tag_name)] }),
+    commit: resolveCommit({ publishedAt: r.published_at, since, known: undefined, lookups: [() => commits.tagCommit?.(r.tag_name) ?? null, () => commits.commitOf(repository.repo, r.tag_name)] }),
   }));
+}
+
+/** @param {Repository} repository @param {ReleaseWindow} window @returns {Release[]} the `v*` tags that have a published GitHub Release */
+function tagReleases(repository: Repository, { since, tagCommit }: ReleaseWindow): Release[] {
+  const rows = ghJson(["api", `repos/${repository.repo}/releases`, "--paginate", "--slurp"]).flat();
+  return tagReleasesFrom({ rows, repository, since, commits: { commitOf, ...(tagCommit === undefined ? {} : { tagCommit }) } });
 }
 
 /**
