@@ -2,13 +2,11 @@ Model routing has never consulted the provider: every call was rejected with HTT
 
 Closes a11ign/a11ign#4736, a11ign/agent-org#564
 
-**Stacked on #588.** That pull request (the wire, the scale and the pinned wire: items 1 to 3 of the mirror) was approved and in the merge queue when the mirror's larger scope arrived, and a queued branch cannot be updated, so items 4 and 5 are this one. Until #588 merges, this diff also shows its commits; after, only `src/engineer-route.ts`, its test, a changeset and this file. #588 names no row to close, so this is the pull request that does.
-
-a11ign/a11ign#4627 stays open. The mirror's Done-when 2 (the first live `"via":"jev"` record after a release, quoted with its row and its outcome line) is still owed there, by product-manager; this PR makes that record possible and cannot show it.
-
-Outside-Region: src/triage-provider.ts — #588's change, shown here until it merges: `ProviderQuestion`'s score variant gains `criteria`, the type `wire()` returns, so the type matches the wire (a type only).
+**Follows #588** (merged: the wire, the scale and the pinned wire, items 1 to 3 of the mirror). It named no row to close, because the mirror's larger scope arrived while it was in the merge queue, where a branch cannot be updated; items 4 and 5 are this pull request, and it is the one that closes the rows.
 
 ## What changes, and why
+
+Items 1 to 3 are #588's, already on `main`; they are listed so the mirror's Change reads whole. This diff is items 4 and 5, in `src/engineer-route.ts` and its test.
 
 - **The wire (mirror item 1).** `wire()` sent a `score` question as `{type, instructions}`; the API's `ScoreQuestion` requires `criteria`, an ordered array of level descriptions, and one invalid question rejects the whole request (the four valid `choice` questions fell back with it). `Question` (type `score`) now carries `levels`, five descriptions with level 1 first, taken from the text the instructions already held in `src/engineer-route.ts`; `wire()` sends them as `criteria`. No other `type: "score"` question exists in `src/` (grepped: `engineer-route.ts` is the only one). `ProviderQuestion` in `src/triage-provider.ts` (outside the Region, a type only) gains the array so the type matches the wire.
 - **The scale (item 2).** The API scores a level by its position from zero and answers fractionally (`0.04` for the first level). `readAnswer` rounds to the nearest level and adds one, so the callers still see 1..5; a position that rounds outside the five levels is still malformed.
