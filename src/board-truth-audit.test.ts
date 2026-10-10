@@ -515,7 +515,7 @@ test("the standalone read asks for blockedBy, so the seventh question is read th
 const HOME_TRACKER = { key: "", repo: "a/home" };
 const ORG_TRACKER = { key: "agent-org", repo: "a/org", codeRepo: "a/org-code" };
 /** A `gh` fake answering by the `--repo` it is aimed at: `rowsOf` maps a repository to the open rows it holds, and a repository in `refuse` throws on every read. */
-const gh = (rowsOf: Record<string, any[]>, refuse: string[] = []) => (args: string[]) => {
+const fakeGh = (rowsOf: Record<string, any[]>, refuse: string[] = []) => (args: string[]) => {
   if (args[0] === "api") return roadmapRead(args);
   const repo = args[args.indexOf("--repo") + 1];
   if (refuse.includes(repo)) throw new Error(`HTTP 502 from ${repo}`);
@@ -525,7 +525,7 @@ const gh = (rowsOf: Record<string, any[]>, refuse: string[] = []) => (args: stri
 /** A complete herdr listing (standing panes present), so the live sessions are READ and a test of another question is not muddied by that one being unread. */
 const ORG_SEATS = [{ label: "ceo", status: "idle" }, { label: "orchestrator", status: "idle" }, { label: "worker-11", status: "working" }];
 const twoTrackers = (rowsOf: Record<string, any[]>, refuse = ([] as string[])) =>
-  readBoardFacts("a/home", { run: gh(rowsOf, refuse), agents: () => ORG_SEATS, now: NOW, trackers: [HOME_TRACKER, ORG_TRACKER],
+  readBoardFacts("a/home", { run: fakeGh(rowsOf, refuse), agents: () => ORG_SEATS, now: NOW, trackers: [HOME_TRACKER, ORG_TRACKER],
     openRows: rowsOf["a/home"] ?? [], waitFacts: { items: {} } });
 
 test("#4080 CONTROL: with ONE declared tracker the table is the one it always printed (a recorded snapshot), and no other tracker is asked", () => {
