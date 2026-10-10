@@ -246,7 +246,7 @@ function claimGh({ edge = "OPEN", prFiles = ["packages/agent-org/src/wake.ts"] a
     if (args[0] === "issue" && fields === "blockedBy") {
       return JSON.stringify({ blockedBy: { nodes: edge === "NONE" ? [] : [{ number: 2323, state: edge }] } });
     }
-    if (args[0] === "issue" && fields === "body") return JSON.stringify({ body: `## Region\n\n\`\`\`\n${region}\n\`\`\`\n` });
+    if (args[0] === "issue" && fields.split(",").includes("body")) return JSON.stringify({ body: `## Region\n\n\`\`\`\n${region}\n\`\`\`\n` });
     if (args[0] === "pr" && args[1] === "list") {
       if (prFiles === null) throw new Error("gh: pr list failed");
       return JSON.stringify([{ number: 2300, changedFiles: prFiles.length, files: prFiles.map((path) => ({ path })),
@@ -333,7 +333,7 @@ const args = process.argv.slice(2);
 const json = args[args.indexOf("--json") + 1];
 const send = (value) => process.stdout.write(JSON.stringify(value));
 if (args[0] === "issue" && json === "blockedBy") send({ blockedBy: { nodes: [] } });
-else if (args[0] === "issue" && json === "body") send({ body: "## Region\\n\\n\`\`\`\\npackages/agent-org/src/wake.ts\\n\`\`\`\\n" });
+else if (args[0] === "issue" && json.split(",").includes("body")) send({ body: "## Region\\n\\n\`\`\`\\npackages/agent-org/src/wake.ts\\n\`\`\`\\n" });
 else if (args[0] === "pr" && args[1] === "list") {
   const repo = args[args.indexOf("--repo") + 1];
   const giveUp = Date.now() + ${STUB_GIVE_UP_MS};

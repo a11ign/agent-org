@@ -422,7 +422,8 @@ function claimReads({ failBody = false } = {}) {
       const labels = labelReads === 1 ? ["ready"] : ["in-progress", "session:worker-9", "started", "was-ready"];
       return JSON.stringify({ number: 77, title: "A row", state: "OPEN", labels: labels.map((name) => ({ name })) });
     }
-    if (args[1] === "view" && json === "body") {
+    // #732: the body is asked as `body,labels` (one argv for the template check's read and B4's Region lookup), so match on the field, not the string.
+    if (args[1] === "view" && json.split(",").includes("body")) {
       if (failBody) throw new Error("simulated: the body read failed");
       return JSON.stringify({ body: "Region: none\nAcceptance: x\nOpen-check: y\n" });
     }
@@ -431,7 +432,11 @@ function claimReads({ failBody = false } = {}) {
   };
   return { calls, run };
 }
-const rowReads = (calls: string[][], json: string) => calls.filter((args) => args[0] === "issue" && args[1] === "view" && args.includes(json)).length;
+/** The `issue view` calls whose `--json` fields are exactly `json` or include it as one field (`body` is asked as `body,labels`, #732). */
+const rowReads = (calls: string[][], json: string) => calls.filter((args) => {
+  const fields = args[args.indexOf("--json") + 1] ?? "";
+  return args[0] === "issue" && args[1] === "view" && (fields === json || fields.split(",").includes(json));
+}).length;
 
 test("#3566: one claim reads the row's body and its blockedBy edge ONCE each, and still reads its labels fresh before and after the write", () => {
   const { calls, run } = claimReads();
