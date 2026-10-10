@@ -198,7 +198,7 @@ function ghFindings(source: string): string[] {
       const callee = bare || member;
       if (SPAWNERS.has(callee)) found.push(`calls ${callee}()`);
     }
-    if ((ts.isStringLiteralLike(node) || ts.isTemplateHead(node)) && /^gh(\s|$)/.test(node.text)) found.push(`names the command ${JSON.stringify(node.text)}`);
+    if ((ts.isStringLiteralLike(node) || ts.isTemplateHead(node)) && /^gh$|^gh\s/.test(node.text)) found.push(`names the command ${JSON.stringify(node.text)}`);
     ts.forEachChild(node, visit);
   };
   visit(ts.createSourceFile("x.ts", source, ts.ScriptTarget.Latest, true));
