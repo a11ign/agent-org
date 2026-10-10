@@ -1,0 +1,5 @@
+---
+"agent-org": patch
+---
+
+`pr-codeowner-review-missing` no longer names a pull request on which the code owner has already posted an `APPROVED` or `CHANGES_REQUESTED` review against the head the pull request has now (a11ign/agent-org#483, phase 1 of a11ign/a11ign#4505). The cause counted an `APPROVED` review only, so a refusal on the current head left the pull request in the "missing" set and every tick asked the owner for a review already given. A review on an older head, a `COMMENTED` one and a `DISMISSED` one still do not count, so a push after a refusal asks again; an `APPROVED` review that carries no sha settles the cause as before. `AGENT_ORG_CODEOWNER_REVIEW_APPROVED_ONLY=1` in the gate's environment puts the filter back to counting `APPROVED` only. The `NOTE: could not read the closed rows that still owe an answer` line now ends with `Refused at <gh verb>: <why>` (the failing call and the first line of its stderr or error), where it printed nothing of the cause; the read still answers `null`.
