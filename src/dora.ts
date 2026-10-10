@@ -186,12 +186,12 @@ function declaredClones(env: Record<string, string | undefined> = process.env): 
 }
 
 /** `git` with every inherited `GIT_*` variable scrubbed, so a leaked `GIT_DIR` cannot redirect a read of the clone onto another repository. */
-const runGit = (args: string[]): string => run("git", args, sandboxGitEnv());
+const runGit = (clone: string, args: string[]): string => run("git", ["-C", clone, ...args], sandboxGitEnv());
 
 /** @param {string} clone @param {string[]} args @returns {boolean} whether `git -C clone <args>` exits 0; exit 1 is the answer "no", any other failure throws */
 function gitHolds(clone: string, args: string[]): boolean {
   try {
-    runGit(["-C", clone, ...args]);
+    runGit(clone, args);
     return true;
   } catch (err: any) {
     if (err?.status === 1) return false;
@@ -215,7 +215,7 @@ function cloneReader({ repository, clones }: { repository: Repository; clones: D
     if (fetched) return;
     fetched = true;
     try {
-      runGit(["-C", path as string, "fetch", "--quiet", "--tags", "origin"]);
+      runGit(path as string, ["fetch", "--quiet", "--tags", "origin"]);
     } catch (err: any) {
       fetchFailure = ` and the fetch of its tags failed (${String(err?.message ?? err).split("\n")[0]})`;
     }
@@ -238,7 +238,7 @@ function cloneReader({ repository, clones }: { repository: Repository; clones: D
     if (!answers([base, head])) return null;
     const ahead = gitHolds(path as string, ["merge-base", "--is-ancestor", base, head]);
     const status = ahead ? (base === head ? "identical" : "ahead") : gitHolds(path as string, ["merge-base", "--is-ancestor", head, base]) ? "behind" : "diverged";
-    const commits = runGit(["-C", path as string, "rev-list", "--reverse", "--topo-order", `${base}..${head}`]).split("\n").filter((line) => line !== "");
+    const commits = runGit(path as string, ["rev-list", "--reverse", "--topo-order", `${base}..${head}`]).split("\n").filter((line) => line !== "");
     tally.clone += 1;
     return { status, commits };
   };
@@ -253,7 +253,7 @@ function cloneReader({ repository, clones }: { repository: Repository; clones: D
     },
     parentOf: (commit: string): string | null => {
       if (path === null || !has(commit)) return null;
-      const [, ...parents] = runGit(["-C", path, "rev-list", "--parents", "-n", "1", commit]).trim().split(" ");
+      const [, ...parents] = runGit(path, ["rev-list", "--parents", "-n", "1", commit]).trim().split(" ");
       return parents.length === 1 ? parents[0] : null;
     },
     fellBack: <T>(read: () => T): T => {
