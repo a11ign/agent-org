@@ -1,6 +1,6 @@
 // a11ign/a11ign#4382: THE HAIKU TIER'S REPORT -- the four measures the chairman named, per tier, and the stop rule written on that row BEFORE the first Haiku worker started.
 //
-// `node src/trace/haiku-tier-report.ts [--store <events.ndjson>]` reads the closed rows and their pull requests from `gh` (one `issue list`) and the turns, compactions and
+// `node src/trace/haiku-tier-report.ts [--store <events.ndjson>]` reads the rows closed since the first Haiku turn and their pull requests from `gh` (`issue list --search "closed:<from>..<to>"`) and the turns, compactions and
 // reviews from the trace store, and prints for `tier:haiku` rows and for the other rows closed in the same window: first-pass merge, review rejections per pull request,
 // compactions, and cost per closed row (turns per row beside them, which is NOT a stop condition), and each row's effort with the arm split by it (agent-org#469). `ceo` reads it once, at 8 closed Haiku rows or 72 hours after the first
 // Haiku worker starts, and applies (a)-(e) below.
@@ -242,16 +242,54 @@ export function closedRowOf(issue: GhIssue): ClosedRow {
   return row;
 }
 
-/** The closed rows with their labels and closing pull request: ONE `gh issue list`, newest first. */
-function readClosedRows(): ClosedRow[] {
-  const out = execFileSync("gh", ["issue", "list", "--repo", REPO, "--state", "closed", "--limit", "300", "--json", "number,labels,closedAt,closedByPullRequestsReferences"], { encoding: "utf8" });
-  return (JSON.parse(out) as GhIssue[]).map(closedRowOrUnresolved);
+/** `gh issue list --limit` is applied to the rows NEWEST CREATED first, and a search reaches at most this many (GitHub's own cap). A read that returns this many may have been cut. */
+export const CLOSED_ROWS_LIMIT = 1000;
+const MS_PER_SECOND = 1000;
+
+/** The earliest turn the store holds that a Haiku model took. The report's window opens at the first turn of a `tier:haiku` ROW (`firstHaikuStart`), which is this or later, so reading
+ * from here reads every row the window needs and, at worst, a few more that `reportLines` then leaves out. `null` where no Haiku turn is held: the clock is not running. */
+export function windowStartOf(events: TraceEvent[]): number | null {
+  const starts = events.filter((e) => e.kind === "turn" && e.model?.startsWith(HAIKU_MODEL_ID)).map((e) => e.at);
+  return starts.length === 0 ? null : Math.min(...starts);
+}
+
+/** A second-precision UTC timestamp, the form a `closed:` search qualifier takes. */
+const searchTime = (ms: number): string => new Date(Math.floor(ms / MS_PER_SECOND) * MS_PER_SECOND).toISOString().replace(/\.\d{3}Z$/, "Z");
+
+/** The `gh issue list` arguments for the rows CLOSED in `[from, to]`. `--limit` alone returns the newest CREATED, so a row opened before the cut and closed inside the window is
+ * never read (agent-org#707); the `closed:` qualifier is what selects by closing time. */
+export function closedRowsArgs(from: number, to: number): string[] {
+  return ["issue", "list", "--repo", REPO, "--state", "closed", "--search", `closed:${searchTime(from)}..${searchTime(to)}`, "--limit", String(CLOSED_ROWS_LIMIT),
+    "--json", "number,labels,closedAt,closedByPullRequestsReferences"];
+}
+
+/** Runs `gh` and returns its stdout; injected so a test can stand in for it. */
+export type GhRunner = (args: string[]) => string;
+const ghOutput: GhRunner = (args) => execFileSync("gh", args, { encoding: "utf8" });
+
+/** Every row closed in `[from, to]`. A read that fills `CLOSED_ROWS_LIMIT` may have been cut, so its range is halved and read again; a one-second range that still fills it throws, rather than
+ * report a count short by the rows it left behind. */
+function issuesClosedBetween(from: number, to: number, gh: GhRunner): GhIssue[] {
+  const issues = JSON.parse(gh(closedRowsArgs(from, to))) as GhIssue[];
+  if (issues.length < CLOSED_ROWS_LIMIT) return issues;
+  const mid = Math.floor((from + (to - from) / 2) / MS_PER_SECOND) * MS_PER_SECOND;
+  if (mid <= Math.floor(from / MS_PER_SECOND) * MS_PER_SECOND) throw new Error(`${CLOSED_ROWS_LIMIT} rows closed within one second at ${searchTime(from)}: the read cannot tell whether it is whole`);
+  return [...issuesClosedBetween(from, mid, gh), ...issuesClosedBetween(mid + MS_PER_SECOND, to, gh)];
+}
+
+/** The closed rows with their labels and closing pull request, for the rows closed from `from` to `to`. */
+export function readClosedRows(from: number, to: number, gh: GhRunner = ghOutput): ClosedRow[] {
+  return issuesClosedBetween(from, to, gh).map(closedRowOrUnresolved);
 }
 
 function main(): void {
   const flag = process.argv.indexOf("--store");
   const storePath = flag >= 0 ? process.argv[flag + 1] : defaultStore();
-  process.stdout.write(`${reportLines({ closed: readClosedRows(), events: readStore(storePath), now: Date.now() }).join("\n")}\n`);
+  const events = readStore(storePath);
+  const now = Date.now();
+  const from = windowStartOf(events);
+  // No Haiku turn held: the report has no window, so no row is in it and none is read.
+  process.stdout.write(`${reportLines({ closed: from === null ? [] : readClosedRows(from, now), events, now }).join("\n")}\n`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) main();
