@@ -28,10 +28,23 @@ const NO_CAUSE = "(no cause)";
 export const REPEAT_WINDOW_MINUTES = 60;
 const ALWAYS_WAKES = "main is red or a chairman direction is attached, so it wakes whatever the provider would say";
 
-const yesNo = (instructions: string, fallback: "yes" | "no"): Question => ({
+const yesNo = (instructions: string, fallback: "yes" | "no", minConfidence?: number): Question => ({
   type: "choice", instructions, fallback,
   criteria: { yes: "the statement is true of this event.", no: "the statement is not true of this event." },
+  ...(minConfidence === undefined ? {} : { minConfidence }),
 });
+
+/**
+ * PER-QUESTION FLOORS (a11ign#4627 item 2). A flat 0.7 over five questions meant an order was held only when every answer the composition read was at or over it, and 607 of 609
+ * five-answer asks had one under it, so 2 were held. A floor is now sized to what its answer can do:
+ *  - `asks-this-seat` is the one answer that can hold an order with nothing else to corroborate it, so it keeps the host's floor (0.7 unless the host declares another).
+ *  - `repeat` is checked again against the delivery the state holds ({@link compose}), so the model's `yes` is a corroboration and a lower floor is enough.
+ *  - the two that can only FORCE a wake are read from facts the state also carries and `triageOrder` checks before asking; their `no` needs only a little confidence, and an answer under
+ *    this floor is still their fallback, which wakes. A `yes` wakes at any confidence, because under the floor it is the fallback and over it it is the answer.
+ * These two numbers are a first choice, not a measured one: until this change the provider's raw answers were thrown away, so they are tuned from the `said` the digest log now keeps.
+ */
+export const REPEAT_FLOOR = 0.5;
+export const WAKE_GUARD_FLOOR = 0.3;
 
 /**
  * The five questions, each atomic. The `fallback` of each is the answer that WAKES: a question the provider did not answer at or over the floor must never be the
@@ -39,9 +52,9 @@ const yesNo = (instructions: string, fallback: "yes" | "no"): Question => ({
  */
 export const QUESTIONS = Object.freeze({
   "asks-this-seat": yesNo("Does this event ask something only the seat named in `session` can answer, or a row write nobody else will make?", "yes"),
-  "repeat": yesNo("Is this event a repeat of one already delivered to this same seat within the last 60 minutes? `lastDeliveredMinutesAgo` is the minutes since this same `causeKey` was last delivered to `session`, and is null or absent when no such delivery is known.", "no"),
-  "names-red-main": yesNo("Does this event name a red main, a failing build of the trunk? `mainRed` says whether the trunk is red at this moment, and absent means not known.", "yes"),
-  "names-chairman-direction": yesNo("Does this event carry a direction from the chairman? `chairmanDirection` says whether one is attached.", "yes"),
+  "repeat": yesNo("Is this event a repeat of one already delivered to this same seat within the last 60 minutes? `lastDeliveredMinutesAgo` is the minutes since this same `causeKey` was last delivered to `session`, and is null or absent when no such delivery is known.", "no", REPEAT_FLOOR),
+  "names-red-main": yesNo("Does this event name a red main, a failing build of the trunk? `mainRed` says whether the trunk is red at this moment, and absent means not known.", "yes", WAKE_GUARD_FLOOR),
+  "names-chairman-direction": yesNo("Does this event carry a direction from the chairman? `chairmanDirection` says whether one is attached.", "yes", WAKE_GUARD_FLOOR),
   "informational-only": yesNo("Is this event informational only: true, but asking nobody to do or decide anything?", "no"),
 } satisfies Record<string, Question>);
 export type QuestionName = keyof typeof QUESTIONS;
@@ -57,8 +70,13 @@ export type TriageOrder = {
   cause?: string; causeKey?: string; session?: string;
   lastDeliveredMinutesAgo?: number | null; mainRed?: boolean; chairmanDirection?: boolean;
 };
-/** `answers` are the five yes/no values composed into `route`, so a held order's log line says WHY it was held. */
-export type Triage = { route: Label; via: "jev" | "none"; confidence?: number; reason: string; answers?: Record<string, string> };
+/** What the provider said to one question, before any floor: its `value` and `confidence`. Each is absent when the provider gave none (a refusal, a malformed answer). */
+export type Said = { value?: string; confidence?: number };
+/**
+ * `answers` are the five yes/no values composed into `route`, so a held order's log line says WHY it was held; `said` is what the provider actually answered to each, which differs from
+ * `answers` wherever a floor replaced it with a fallback, so a floor can be tuned from a replay.
+ */
+export type Triage = { route: Label; via: "jev" | "none"; confidence?: number; reason: string; answers?: Record<string, string>; said?: Record<string, Said> };
 /** The only fields of an order that are ever sent: a whitelist, so a field added to {@link TriageOrder} later is not sent by accident. */
 const STATE_FIELDS = ["cause", "causeKey", "session", "lastDeliveredMinutesAgo", "mainRed", "chairmanDirection"] as const;
 /** What is true of THIS process; a test passes a fresh one. */
@@ -170,9 +188,20 @@ function weakest(decision: Decision): number | undefined {
   return given.length === 0 ? undefined : Math.min(...given);
 }
 
+/** What the provider said to every question, as the raw value and confidence it gave and not the fallback that may have replaced it. */
+function saidOf(decision: Decision): Record<QuestionName, Said> {
+  return Object.fromEntries(QUESTION_NAMES.map((name) => {
+    const { value, asked, confidence } = decision.answers[name];
+    // `asked` is the provider's value when a floor replaced it; with a confidence and no `asked`, `value` is the provider's own. With neither, nothing came back.
+    const raw = asked ?? (confidence === undefined ? undefined : value);
+    return [name, { ...(raw === undefined ? {} : { value: String(raw) }), ...(confidence === undefined ? {} : { confidence }) }];
+  })) as Record<QuestionName, Said>;
+}
+
 /**
- * THE COMPOSITION, in code and over the answers alone. A red main or a chairman direction always wakes; a repeat of a delivery inside {@link REPEAT_WINDOW_MINUTES}, or an event that is
- * informational only and asks nothing of this seat, is held for the digest; anything else wakes. `repeat` counts only when the state itself holds a delivery inside the window: an
+ * THE COMPOSITION, in code and over the answers alone. A red main or a chairman direction always wakes. ONE confident answer holds an order for the digest (a11ign#4627 item 2): a repeat
+ * of a delivery inside {@link REPEAT_WINDOW_MINUTES}, or an event that asks nothing of this seat (`asks-this-seat` is `no` only when the provider was over its floor, because its fallback is
+ * `yes`), or an event that is informational only and asks nothing of this seat; anything else wakes. `repeat` counts only when the state itself holds a delivery inside the window: an
  * answer the facts contradict is not a reason to hold an order. There is no `drop`: held is held.
  */
 export function compose(answers: Readonly<Record<QuestionName, string>>, repeatAgeMinutes: number | null | undefined): { route: "wake" | "digest"; reason: string } {
@@ -182,7 +211,7 @@ export function compose(answers: Readonly<Record<QuestionName, string>>, repeatA
   if (yes("repeat") && typeof repeatAgeMinutes === "number" && repeatAgeMinutes < REPEAT_WINDOW_MINUTES) {
     return { route: "digest", reason: `a repeat of one delivered ${repeatAgeMinutes} minute(s) ago` };
   }
-  if (yes("informational-only") && !yes("asks-this-seat")) return { route: "digest", reason: "informational only, and it asks nothing of this seat" };
+  if (!yes("asks-this-seat")) return { route: "digest", reason: yes("informational-only") ? "informational only, and it asks nothing of this seat" : "it asks nothing of this seat" };
   return { route: "wake", reason: "nothing says it can wait" };
 }
 
@@ -202,5 +231,5 @@ export async function triageOrder(order: TriageOrder, deps: TriageDeps): Promise
   if (decision.via === "none") return wake("none", decision.reason ?? NO_PROVIDER);
   const answers = valuesOf(decision);
   const { route, reason } = compose(answers, order.lastDeliveredMinutesAgo);
-  return { route, via: "jev", confidence: weakest(decision), reason: `jev: ${reason}`, answers };
+  return { route, via: "jev", confidence: weakest(decision), reason: `jev: ${reason}`, answers, said: saidOf(decision) };
 }

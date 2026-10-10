@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { parseHostConfig } from "./host-config.ts";
-import { DIGEST_FLUSH_MS, NEEDED_ACTION_PROXY, OUTCOME_WINDOW_MS, carriedKeys, digestDue, flushOrders, namesRedMain, readDigest, ridingDigest, routeOrders, routable, settleRidden, type GateOrder, type RouteDeps } from "./triage-route.ts";
+import { DIGEST_FLUSH_MS, NEEDED_ACTION_PROXY, OUTCOME_WINDOW_MS, carriedKeys, digestDue, digestShareByDay, flushOrders, formatDigestShare, namesRedMain, readDigest, ridingDigest, routeOrders, routable, settleRidden, type GateOrder, type RouteDeps } from "./triage-route.ts";
 import { freshState, type Triage } from "./triage-provider.ts";
 
 const T0 = 1_000_000_000_000;
@@ -43,9 +43,9 @@ test("a digest answer holds the order, and a drop answer does the same: nothing 
 });
 
 const QUESTION_NAMES = ["asks-this-seat", "repeat", "names-red-main", "names-chairman-direction", "informational-only"];
-/** The five answers, quiet unless `say` names one, all at `confidence`. */
+/** The five answers, quiet unless `say` names one (it asks something of this seat, and nothing else is true), all at `confidence`. */
 const answersFor = (say: Record<string, string>, confidence: number) => ({
-  answers: Object.fromEntries(QUESTION_NAMES.map((name) => [name, { type: "choice", choice: say[name] ?? "no", probabilities: {}, confidence }])),
+  answers: Object.fromEntries(QUESTION_NAMES.map((name) => [name, { type: "choice", choice: say[name] ?? (name === "asks-this-seat" ? "yes" : "no"), probabilities: {}, confidence }])),
 });
 /** The real provider over a fake `fetch`: every request body is kept, and `reply` decides the answer. */
 function realProvider(reply: () => unknown) {
@@ -56,7 +56,8 @@ function realProvider(reply: () => unknown) {
   return { triageDeps, bodies, lines };
 }
 const ok = (body: unknown) => ({ ok: true, status: 200, json: async () => body });
-const INFORMATIONAL = { "informational-only": "yes" };
+/** Informational only, and asking nothing of this seat. */
+const INFORMATIONAL = { "informational-only": "yes", "asks-this-seat": "no" };
 
 test("the real provider's floor decides: 0.9 digests and 0.89 delivers, and a provider error delivers", async () => {
   const run = async (reply: () => unknown) => {
@@ -119,6 +120,9 @@ test("each case the row names, composed in code over a fake provider, with its n
   assert.deepEqual(await route(INFORMATIONAL), { route: "digest", asked: 1 });
   assert.deepEqual(await route({ ...INFORMATIONAL, "asks-this-seat": "yes" }), { route: "wake", asked: 1 });
   assert.deepEqual(await route({ "asks-this-seat": "yes" }), { route: "wake", asked: 1 });
+  // ONE confident answer that it asks nothing of this seat digests (a11ign#4627 item 2); five quiet answers do not
+  assert.deepEqual(await route({ "asks-this-seat": "no" }), { route: "digest", asked: 1 });
+  assert.deepEqual(await route({}), { route: "wake", asked: 1 }, "CONTROL: it asks something of this seat, and nothing says it can wait");
   // the provider's own reading of a red main or a chairman direction wins over the rest
   assert.deepEqual(await route({ ...INFORMATIONAL, "names-red-main": "yes" }), { route: "wake", asked: 1 });
   assert.deepEqual(await route({ ...INFORMATIONAL, "names-chairman-direction": "yes" }), { route: "wake", asked: 1 });
@@ -289,7 +293,7 @@ test("a held order is flushed alone once its oldest item is 60 minutes old, and 
   assert.deepEqual(flushOrders(pending, carriedKeys(flushed.rides), T0 + DIGEST_FLUSH_MS).orders, [], "an item an order already carries is not flushed too");
 });
 
-test("every asked order leaves a line, held or delivered, with route, via and confidence", async () => {
+test("every asked order leaves a line, held or delivered, with route, via and confidence, and the reason when nobody answered", async () => {
   const path = digestFile();
   const answers: Triage[] = [{ route: "digest", via: "jev", confidence: 0.97, reason: "" }, { route: "wake", via: "jev", confidence: 0.99, reason: "" }, { route: "wake", via: "none", reason: "down" }];
   let next = 0;
@@ -299,8 +303,65 @@ test("every asked order leaves a line, held or delivered, with route, via and co
   assert.deepEqual(lines.map((l) => [l.causeKey.split("/")[2], l.triage, l.held]), [
     ["1", { route: "digest", via: "jev", confidence: 0.97 }, true],
     ["2", { route: "wake", via: "jev", confidence: 0.99 }, false],
-    ["3", { route: "wake", via: "none" }, false],
+    ["3", { route: "wake", via: "none", reason: "down" }, false],
   ]);
+});
+
+/** One order asked of the REAL provider over a fake `fetch`, and the `asked` line it left. */
+async function askedLine(reply: () => unknown, extra: Partial<RouteDeps["triageDeps"] & object> = {}) {
+  const path = digestFile();
+  const real = realProvider(reply);
+  await routeOrders([order(1)], deps(path, { triage: undefined, triageDeps: { ...real.triageDeps, ...extra } }));
+  return JSON.parse(readFileSync(path, "utf8").trim().split("\n")[0]).asked;
+}
+
+test("an order that took via none keeps WHY: a refusal, a timeout, a thrown fetch and a key that could not be read each name themselves, and a via jev line carries no reason", async () => {
+  assert.equal((await askedLine(() => ({ ok: false, status: 503 }))).triage.reason, "the API answered HTTP 503");
+  assert.equal((await askedLine(() => { throw new Error("connection refused"); })).triage.reason, "the API call failed");
+  assert.equal((await askedLine(() => new Promise(() => {}), { timeoutMs: 20 })).triage.reason, "the API timed out");
+  const unreadable = await askedLine(() => ok(answersFor({}, 0.95)), { readKey: () => { throw new Error("EACCES: /secret/path"); } });
+  assert.deepEqual(unreadable.triage, { route: "wake", via: "none", reason: "triage-unavailable" });
+  assert.equal(JSON.stringify(unreadable).includes("/secret/path"), false, "the reason never carries the key's path");
+  const answered = await askedLine(() => ok(answersFor({}, 0.95)));
+  assert.equal("reason" in answered.triage, false, "CONTROL: a provider that answered writes no reason on the line");
+});
+
+test("an asked line keeps what the provider SAID beside what was used, so a floor can be tuned from a replay", async () => {
+  const body = answersFor({ "asks-this-seat": "no" }, 0.95);
+  (body.answers["names-red-main"] as { confidence: number }).confidence = 0.1;
+  const line = await askedLine(() => ok(body));
+  assert.equal(line.answers["names-red-main"], "yes", "the used value is the fallback, which wakes");
+  assert.deepEqual(line.said["names-red-main"], { value: "no", confidence: 0.1 }, "the provider said no at 0.1");
+  assert.deepEqual(line.said["asks-this-seat"], { value: "no", confidence: 0.95 });
+  assert.deepEqual(Object.keys(line.said), QUESTION_NAMES);
+});
+
+const askedAt = (at: number, held: boolean) => JSON.stringify({ asked: { at, causeKey: "k", session: "ceo", triage: { route: held ? "digest" : "wake", via: "jev" }, held } });
+const DAY0 = Date.UTC(2026, 9, 9, 12);
+const DAY1 = DAY0 + 24 * HOUR;
+const many = (at: number, asked: number, held: number) => Array.from({ length: asked }, (_, i) => askedAt(at + i, i < held));
+
+test("the digest share is read per UTC day, and a day under 5% over at least 50 asks is an incident line", () => {
+  const log = [...many(DAY0, 810, 63), ...many(DAY1, 530, 7)].join("\n");
+  const reading = digestShareByDay(log);
+  assert.deepEqual(reading.days.map((d) => [d.day, d.asked, d.held, d.incident]), [["2026-10-09", 810, 63, false], ["2026-10-10", 530, 7, true]]);
+  assert.equal(reading.unreadable, 0);
+  const text = formatDigestShare(reading);
+  assert.match(text, /2026-10-09 {2}63 of 810 {2}7\.8%/);
+  assert.match(text, /LEDGER INCIDENT: 2026-10-10 wake-triage digest share 1\.3% \(7 of 530 asks\) is under 5\.0%\./);
+  assert.equal(text.split("\n").filter((l) => l.startsWith("LEDGER INCIDENT")).length, 1, "CONTROL: the healthy day prints no incident");
+});
+
+test("a day needs 50 asks to be an incident, 5% itself is not under, and a line it cannot read is counted and named", () => {
+  assert.equal(digestShareByDay(many(DAY0, 49, 0).join("\n")).days[0].incident, false, "49 asks with none held is too few to say");
+  assert.equal(digestShareByDay(many(DAY0, 50, 0).join("\n")).days[0].incident, true);
+  assert.equal(digestShareByDay(many(DAY0, 100, 5).join("\n")).days[0].incident, false, "exactly 5% is not under 5%");
+  assert.equal(digestShareByDay(many(DAY0, 100, 4).join("\n")).days[0].incident, true);
+  const messy = [...many(DAY0, 50, 0), "{not json", JSON.stringify({ asked: { causeKey: "no-time" } }), JSON.stringify({ delivered: ["k"], at: DAY0, carrier: "c" })].join("\n");
+  const reading = digestShareByDay(messy);
+  assert.deepEqual([reading.days[0].asked, reading.unreadable], [50, 2], "a delivered line is not an ask, and the two unreadable lines are counted");
+  assert.match(formatDigestShare(reading), /2 line\(s\) could not be read/);
+  assert.equal(formatDigestShare(digestShareByDay("")), "No asked orders in the triage digest log.");
 });
 
 test("after a revert to provider none an order held earlier still rides and flushes", async () => {
