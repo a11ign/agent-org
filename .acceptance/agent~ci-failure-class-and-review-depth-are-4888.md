@@ -6,7 +6,7 @@ Closes a11ign/a11ign#4888
 
 - **Red-PR path.** `wake.ts` reads the facts of a red-check order's first red check over REST (`pulls/N`, `commits/SHA/check-runs`, `actions/runs/ID`, the job log, `main`'s and other PRs' recent runs), asks `ci-failure-class`, writes `wake: <cause> CI failure class: <class> -> <route> (...)` to the journal, and appends the class and the route's words to the prompt only when a provider answered. At most three orders per wake, so a storm of red PRs cannot spend the pool.
 - **Reviewer start.** `wake.ts` reads the PR's changed paths and the Regions of the rows it closes, asks `review-depth`, and `spawnReviewer` passes `low`/`high` as the effort override for `light`/`full`. `.github/workflows/`, auth and security paths are `full` by rule, before any provider.
-- **A closed row is read from the repository the body names.** `Closes a11ign/a11ign#4888` in an agent-org pull request reads `a11ign/a11ign`'s row; a bare `#N` reads the pull request's own (the first version matched only the bare form, so the canonical body never reached the Region).
+- **A closed row is read from the repository the body names.** A closing line in the full form, naming a row of `a11ign/a11ign` from an agent-org pull request, reads that repository's row; a bare `#N` reads the pull request's own (the first version matched only the bare form, so the canonical body never reached the Region).
 - **Unchanged without an answer.** No provider, an unreadable fact (`null`), or an error leaves the order and the reviewer as they were.
 
 ## Platform first, deleting first
