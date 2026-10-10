@@ -7,8 +7,11 @@
 // blind hour. `a11ign-trace-ingest.timer` runs THIS FILE every five minutes: it ingests (`trace -- --ingest`, in a child, so a failing ingest cannot stop the check that follows
 // it) and then asks the question below.
 //
-// "WORKING" IS A TRANSCRIPT MODIFIED INSIDE THE WINDOW, which needs no GitHub call: nobody working means silence is not an outage, and the same eleven-minute-old store with every
-// transcript untouched for an hour is NOT stale. THE NEWEST TURN IS READ FROM THE TAIL of the file, not from all of it: the store is 537 MB and the question is asked every five minutes.
+// "WORKING" IS A TRANSCRIPT THAT GAINED A MESSAGE INSIDE THE WINDOW, which needs no GitHub call: nobody working means silence is not an outage, and the same eleven-minute-old store with
+// every transcript quiet for an hour is NOT stale. A TOUCHED FILE IS NOT A MESSAGE (a11ign/a11ign#928, three false incidents on 2026-10-10): a session that has finished its last message
+// still rewrites its `last-prompt` and `cost-state` lines, which carry no timestamp and no message, so its file moves while it produces no turn. The test is therefore the timestamp of the
+// newest `assistant`/`user` line (a Codex rollout's `response_item`), and the file's mtime is only the cheap "could it hold one" filter in front of reading it.
+// THE NEWEST MESSAGE AND THE NEWEST TURN ARE BOTH READ FROM THE TAIL of the file, not from all of it: the store is 537 MB and the question is asked every five minutes.
 //
 // A KNOWN EDGE, measured from the code and not from a run: a turn is held back until its message is `QUIET_MS` (5 minutes) old and then waits for the next ingest, so a turn can be up to
 // ten minutes behind its transcript in a HEALTHY store. The check runs right after an ingest, when the lag is the five minutes of quiet and no more, so a healthy store reads about five
@@ -23,7 +26,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-/** The chairman's number: no `turn` for this long while a session is working. Also how recent a transcript's change must be to count as working. */
+/** The chairman's number: no `turn` for this long while a session is working. Also how recent a transcript's newest message must be to count as working. */
 export const STALE_AFTER_MS = 10 * 60 * 1000;
 const MS_PER_MINUTE = 60 * 1000;
 const MINUTES_PER_HOUR = 60;
@@ -31,7 +34,12 @@ const MINUTES_PER_HOUR = 60;
 const TAIL_FIRST_BYTES = 1024 * 1024;
 const TAIL_LAST_BYTES = 32 * 1024 * 1024;
 const TURN_KIND = "\"kind\":\"turn\"";
+/** The tail of a transcript read first for its newest message, and the most it grows to when that tail holds none (a last line of one huge tool result). */
+const TRANSCRIPT_TAIL_FIRST_BYTES = 256 * 1024;
+const TRANSCRIPT_TAIL_LAST_BYTES = 32 * 1024 * 1024;
 const INGEST_TIMEOUT_MS = 20 * MS_PER_MINUTE; // a cold start (a lost state file) re-reads every transcript, which is minutes; the unit's own limit is above this
+/** `type` of a record that is a message: Claude Code's two, and Codex's `response_item` (a Codex rollout has no bookkeeping line that rewrites itself after the last item). */
+const MESSAGE_TYPES = new Set(["assistant", "user", "response_item"]);
 const TRACE = join(dirname(fileURLToPath(import.meta.url)), "trace.ts");
 
 /** The standing row the incident is posted on (`fleet-watch`'s record, as `fleet-gated-nightly.ts` posts on its own), and the seat that owns the store. */
@@ -84,17 +92,62 @@ export function newestTurnAt(storePath: string): number | null {
 }
 
 /**
- * Whether any session is working: a `.jsonl` exactly `depth` directories under a root, modified inside the window. A root that is not optional and cannot be read THROWS: "could
+ * The time of the newest message line of a transcript, read from its end, or `null` when the tail holds none. A message line is a Claude Code `assistant` or `user` record with a
+ * timestamp of its own, or a Codex `response_item`; `last-prompt`, `cost-state`, `attachment` and the rest are bookkeeping a session rewrites after its last message. A transcript is
+ * written in order, so the newest message in the tail is the last one, and a line that does not parse is the one a writer is in the middle of.
+ */
+export function newestMessageAt(path: string): number | null {
+  const fd = openSync(path, "r");
+  try {
+    const size = fstatSync(fd).size;
+    for (let window = TRANSCRIPT_TAIL_FIRST_BYTES; ; window *= 2) {
+      const length = Math.min(size, window);
+      const bytes = Buffer.alloc(length);
+      readSync(fd, bytes, 0, length, size - length);
+      const lines = bytes.toString("utf8").split("\n");
+      if (length < size) lines.shift(); // a window that does not begin the file begins in the middle of a line
+      let newest: number | null = null;
+      for (const line of lines) {
+        if (!line.includes("\"timestamp\"")) continue;
+        try {
+          const record = JSON.parse(line);
+          if (!MESSAGE_TYPES.has(record?.type) || typeof record.timestamp !== "string") continue;
+          const at = Date.parse(record.timestamp);
+          if (!Number.isNaN(at) && (newest === null || at > newest)) newest = at;
+        } catch {
+          // the line being written
+        }
+      }
+      if (newest !== null || length >= size || window >= TRANSCRIPT_TAIL_LAST_BYTES) return newest;
+    }
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * Whether any session is working: a `.jsonl` exactly `depth` directories under a root whose newest message line is inside the window. A file not modified inside the window cannot
+ * hold such a line, so it is not opened; one that was modified is opened, because a modification alone is not a message. A root that is not optional and cannot be read THROWS: "could
  * not tell whether anyone is working" is never reported as "nobody is".
  */
 export function sessionsWorking({ roots, now, windowMs = STALE_AFTER_MS }: { roots: TranscriptRoot[]; now: number; windowMs?: number; }): boolean {
   const since = now - windowMs;
-  const touched = (dir: string, depth: number): boolean => readdirSync(dir, { withFileTypes: true }).some((entry) => {
+  const wroteMessage = (path: string): boolean => {
+    const modified = statSync(path, { throwIfNoEntry: false })?.mtimeMs ?? 0;
+    if (modified < since) return false;
+    try {
+      return (newestMessageAt(path) ?? 0) >= since;
+    } catch (cause) {
+      if ((cause as NodeJS.ErrnoException)?.code === "ENOENT") return false; // gone between the listing and the read: no message in the window; any other refusal is "could not tell"
+      throw cause;
+    }
+  };
+  const written = (dir: string, depth: number): boolean => readdirSync(dir, { withFileTypes: true }).some((entry) => {
     const path = join(dir, entry.name);
-    if (depth > 0) return entry.isDirectory() && touched(path, depth - 1);
-    return entry.name.endsWith(".jsonl") && (statSync(path, { throwIfNoEntry: false })?.mtimeMs ?? 0) >= since;
+    if (depth > 0) return entry.isDirectory() && written(path, depth - 1);
+    return entry.name.endsWith(".jsonl") && wroteMessage(path);
   });
-  return roots.some(({ dir, depth, optional }) => (optional && !existsSync(dir) ? false : touched(dir, depth)));
+  return roots.some(({ dir, depth, optional }) => (optional && !existsSync(dir) ? false : written(dir, depth)));
 }
 
 /** Stale is old AND somebody working. `ageMs` is `null` for a store with no turn at all, which is older than any window and so stale while anyone is working. */
@@ -110,7 +163,7 @@ const howLong = (ms: number) => (minutesOf(ms) >= MINUTES_PER_HOUR ? `${Math.flo
 /** The one line `trace -- --freshness` and the unit print. */
 export function freshnessLine(reading: Freshness): string {
   const newest = reading.newestTurnAt === null || reading.ageMs === null ? "the store holds no turn event" : `newest turn ${new Date(reading.newestTurnAt).toISOString()} (${howLong(reading.ageMs)} ago)`;
-  const who = reading.working ? `a session is working (a transcript changed in the last ${minutesOf(STALE_AFTER_MS)} minutes)` : "no session is working";
+  const who = reading.working ? `a session is working (a message was written in the last ${minutesOf(STALE_AFTER_MS)} minutes)` : "no session is working";
   return `trace store: ${newest}; ${who}: ${reading.stale ? `STALE (no turn for ${minutesOf(STALE_AFTER_MS)} minutes while a session works)` : "not stale"}`;
 }
 
