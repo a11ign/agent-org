@@ -12,7 +12,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createIssue } from "./row-file.ts";
-import { doneWhenItems, unfinishableItems, unsplitDoneWhenRefusal } from "./unsplit-done-when.ts";
+import { doneWhenItems, liveCheckItems, unfinishableItems, unsplitDoneWhenRefusal } from "./unsplit-done-when.ts";
 
 const NOW = new Date("2026-10-09T20:40:00Z");
 const HEAD = "## Region\n\npackages/lab/src/packaging/foo.ts\n\n## Acceptance\n\n```\nnpx tsx --test src/foo.test.ts\n```\n\n## Open-check\n\n```\ngit grep -n foo origin/main | wc -l\n0\n```\n\n";
@@ -104,4 +104,42 @@ test("6. WIRED IN: `createIssue` refuses an unsplit body before anything is file
   } finally {
     process.stderr.write = write;
   }
+});
+
+// --- a11ign/agent-org#719: the FOURTH kind. A live check is a reading, filed as the verify row, and is NEVER a refusal at `row-file`. ---
+
+const LIVE_CHECK = ["1. One record per use is quoted on #4627.", "1. The `trunk` log line names the verify row after the merge.", "1. The switch reads on in the field.",
+  "1. Use 1 is live in a11ign.", "1. The published version carries the fix.", "1. Version 1.4.2 is published.", "1. The count is correct in production."];
+const NOT_A_LIVE_CHECK = ["1. The tests pass.", "1. The README names the flag.", "1. The acceptance command's output is quoted in the pull request.",
+  "1. The live gh call is mocked in the test.", "1. The flag is documented.", "1. The verify row is its own row, filed beside this one."];
+
+test("11. `liveCheckItems` names a quoted record on a row, a switch read on, a log line after the merge, a published version; and it is NOT a refusal", () => {
+  for (const item of LIVE_CHECK) {
+    const found = liveCheckItems(bodyWith(item), { now: NOW });
+    assert.equal(found.length, 1, item);
+    assert.equal(found[0].kind, "live-check", item);
+    assert.deepEqual(kindsOf(bodyWith(item)), [], `${item}: row-file's classifier does not return it, so the row is still filed`);
+    assert.equal(unsplitDoneWhenRefusal(bodyWith(item), { now: NOW }), null, item);
+  }
+  for (const item of NOT_A_LIVE_CHECK) assert.deepEqual(liveCheckItems(bodyWith(item), { now: NOW }), [], item);
+});
+
+test("12. a seat's act and another row's outcome are NOT live checks, even when they name a reading (the refusals are kept)", () => {
+  for (const item of [...SEAT, ...ROW, "1. ceo reads the switch on and quotes it on #4627.", "1. Once #4438 merges the log line shows after the merge."]) {
+    assert.deepEqual(liveCheckItems(bodyWith(item), { now: NOW }), [], item);
+  }
+  assert.deepEqual(kindsOf(bodyWith("1. ceo reads the switch on and quotes it on #4627.")), ["seat-act"], "and it is still refused by row-file");
+});
+
+test("13. a record quoted on the build's OWN row, or a quotation in code, is not a live check", () => {
+  assert.equal(liveCheckItems(bodyWith("1. The command's output is quoted on #719."), { now: NOW, self: 719 }).length, 0, "the engineer's own completion comment");
+  assert.equal(liveCheckItems(bodyWith("1. The command's output is quoted on #719."), { now: NOW, self: 4630 }).length, 1, "the same words on another row's number are a reading");
+  assert.equal(liveCheckItems(bodyWith('1. A test closes a row whose Done-when 2 reads "one record per use is quoted on #4627" and asserts a verify row.'), { now: NOW }).length, 0,
+    "a quoted fixture is what the test is about, not what the row asks for");
+  assert.equal(liveCheckItems(bodyWith("1. A test reads `quoted on #4627` from the fixture."), { now: NOW }).length, 0);
+});
+
+test("14. a `future-time` item is not returned twice: the live-check reader leaves it to `unfinishableItems`", () => {
+  assert.deepEqual(liveCheckItems(bodyWith(FUTURE[0]), { now: NOW }), []);
+  assert.deepEqual(kindsOf(bodyWith(FUTURE[0])), ["future-time"]);
 });
