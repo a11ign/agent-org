@@ -1,17 +1,18 @@
-// no-token: gh -- `dora.ts` reaches `gh` only through the readers this file injects; the tracked-file listing is `git ls-files` on the local clone (#4688)
+// no-token: gh -- `dora.ts` reaches `gh` only through the readers this file injects; the file listing is a walk of this file's own `src/` directory (#4688)
 /**
  * `src/dora.ts`, a11ign/a11ign#4688: THE DORA READING AND `release-behind-main.ts` AGREE ON WHAT A RELEASABLE CHANGE IS.
  *
  * `a11ign/documents#13` touched one file under the declared releasable path, `src/mjs-ratchet.test.ts`. The release-behind-main detector excluded a test file and a changeset;
  * the DORA reading was a bare prefix match, so it counted the merge as an unreleased change and read a release as missed. One rule, now one definition: `isShipped`.
  *
- * THE POPULATION IS DERIVED: every file this clone tracks under `src/`, asked of `isShipped` and of the DORA reading (through `measureRepository`, one fixture pull request
+ * THE POPULATION IS DERIVED: every file under this checkout's `src/`, asked of `isShipped` and of the DORA reading (through `measureRepository`, one fixture pull request
  * per file) with `releasablePaths: ["src/"]`. POSITIVE CONTROLS: both the rejected set and the accepted set are asserted non-empty, and the two named fixtures
  * (`src/x.test.ts` is not releasable, `src/x.ts` is) are run through the same reading.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
 import { measureRepository } from "./dora.ts";
 import { isShipped } from "./release-behind-main.ts";
 
@@ -34,7 +35,13 @@ function countedFor(pr: { paths: string[] | null, body?: string | null }): numbe
   return JSON.stringify(reading).includes("\"changes\":1") ? 1 : 0;
 }
 
-const tracked = execFileSync("git", ["ls-files", "src/"], { encoding: "utf8" }).split("\n").filter(Boolean);
+/** Every file under `src/` as `src/<relative path>`; a walk and not `git ls-files`, which is not available (nor scrubbed of GIT_*) wherever the suite runs from. */
+function filesUnder(directory: string, prefix: string): string[] {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => (entry.isDirectory()
+    ? filesUnder(join(directory, entry.name), `${prefix}${entry.name}/`)
+    : [`${prefix}${entry.name}`]));
+}
+const tracked = filesUnder(import.meta.dirname, "src/");
 
 test("the DORA reading and `isShipped` agree on every tracked file under src/", () => {
   const rejected = tracked.filter((path) => !isShipped(path, ["src/"]));
