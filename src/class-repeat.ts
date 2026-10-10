@@ -35,8 +35,11 @@ export const CLASS_REPEAT_WINDOW_MS = 90 * 60 * 1000;
 const RECENT_CLOSED_WINDOW = 100;
 const CLASS_ROWS_WINDOW = 100;
 const MAX_REASON_CHARS = 160;
+const MAX_TITLE_CHARS = 120;
+const CLASS_ROW_TITLE_START = "Failure class ";
+const CLASS_ROW_TITLE_END = " repeated: make its guard stop it everywhere";
 /** What `gh` is asked to keep of each row: the raw `issues` listing carries every body, which this never reads. */
-const ROW_PROJECTION = "[.[] | {number, state, closed_at, pull_request: (.pull_request != null), labels: [.labels[].name]}]";
+const ROW_PROJECTION = "[.[] | {number, state, closed_at, title, pull_request: (.pull_request != null), labels: [.labels[].name]}]";
 
 export type FailureClass = { id: string, name: string, guard: string | null, guardNote: string | null, kinds?: string[] };
 /** a CLOSED row and the class ids its `class:` labels name; `closedAt` is epoch ms */
@@ -78,11 +81,17 @@ export function parseFailureClasses(text: string): FailureClass[] | null {
  * ONE CLOSED ROW PER GITHUB LISTING ENTRY THAT IS ONE: a pull request is in the `issues` listing too, and an open row is never an instance -- the
  * class step happens before a row closes (child A), so the count is of what was closed. Filtered here as well as in the query, because a fake that
  * answers every query would otherwise count an open row. `null` is an entry that is not the projection's shape.
+ *
+ * A CLASS ROW IS NEVER AN INSTANCE OF ITS OWN CLASS (a11ign/agent-org#570). It is the FIX filed because the class repeated, so counting it when it closes
+ * makes the row that answers the alert instance N+1 and, being the newest, the discriminator of the next offer: closing it re-tripped what it answers.
+ * `classRowArgv` no longer labels it, but a row is also labelled by the classifier (#4633, which labels any `defect` nobody classed) and by hand, so
+ * the title says what it is whatever labels it carries. A genuine occurrence is not touched: it has no such title.
  * @param {any} entry @returns {ClassRow | null | "skip"}
  */
 function rowOf(entry: any): ClassRow | null | "skip" {
   if (typeof entry?.number !== "number" || !Array.isArray(entry.labels)) return null;
   if (entry.pull_request === true || entry.state !== "closed") return "skip";
+  if (isClassRowTitle(entry.title)) return "skip";
   const classes = entry.labels.filter((l: unknown) => typeof l === "string" && l.startsWith(CLASS_LABEL_PREFIX)).map((l: string) => l.slice(CLASS_LABEL_PREFIX.length));
   const closedAt = Date.parse(entry.closed_at);
   return { number: entry.number, closedAt: Number.isFinite(closedAt) ? closedAt : null, classes };
@@ -252,7 +261,6 @@ const FILER_SESSION = "work-gate";
 /** Why `row-file` may run from the primary checkout the gate lives in: `launchGate` prints this, so the exception is in the log and not in somebody's memory. */
 const LAUNCH_REASON = "class-repeat files the class row from the gate's own checkout (a11ign/a11ign#4451)";
 const CLASS_LABEL_DESCRIPTION = "Closed rows carrying this label are instances of one failure class (.agent-org/failure-classes.json)";
-const MAX_TITLE_CHARS = 120;
 
 type Remembered = Record<string, { row: string, covers: string, at: string }>;
 
@@ -327,15 +335,23 @@ export function classRowBody(group: ClassGroup): string {
 }
 
 /** The title is stable per class, so `row-file`'s own refusal of a title an OPEN row already has backs up the memory if the memory is lost. */
-const classRowTitle = (group: ClassGroup): string => `Failure class ${group.id} repeated: make its guard stop it everywhere`.slice(0, MAX_TITLE_CHARS);
+const classRowTitle = (group: ClassGroup): string => `${CLASS_ROW_TITLE_START}${group.id}${CLASS_ROW_TITLE_END}`.slice(0, MAX_TITLE_CHARS);
+
+/** Whether a title is `classRowTitle` of SOME class: the whole shape, or one cut at `MAX_TITLE_CHARS` (an id that long loses its ending and must not escape `rowOf`'s exclusion for it). */
+function isClassRowTitle(title: unknown): boolean {
+  if (typeof title !== "string" || !title.startsWith(CLASS_ROW_TITLE_START)) return false;
+  const whole = title.endsWith(CLASS_ROW_TITLE_END) && title.length > CLASS_ROW_TITLE_START.length + CLASS_ROW_TITLE_END.length;
+  return whole || title.length === MAX_TITLE_CHARS;
+}
 
 /**
- * The argv `row-file` is given for one class: a defect (so the closing pull request owes a `Class:` line), in the self-healing milestone, labelled with the class.
+ * The argv `row-file` is given for one class: a defect (so the closing pull request owes a `Class:` line), in the self-healing milestone, and NOT labelled with the class:
+ * the label marks an occurrence and this row is the fix (a11ign/agent-org#570), so its stable title is its dedupe and `rowOf` its other half.
  * `--tracker=` (the home tracker's key is the empty string) because the body's Region is the index under `.agent-org/`, which `rowTracker` reads as an org row and files in a11ign/agent-org,
  * where neither the milestone nor the class labels exist: the create was refused every tick (#4615).
  */
 export function classRowArgv(group: ClassGroup, session: string = FILER_SESSION): string[] {
-  return ["--kind", "defect", "--tracker=", "--milestone", CLASS_ROW_MILESTONE, "--label", `${CLASS_LABEL_PREFIX}${group.id}`, `--session=${session}`, "--title", classRowTitle(group), "--body", classRowBody(group)];
+  return ["--kind", "defect", "--tracker=", "--milestone", CLASS_ROW_MILESTONE, `--session=${session}`, "--title", classRowTitle(group), "--body", classRowBody(group)];
 }
 
 /** Whether a repeat is worth a row THIS tick: a class with no guard always (it is filed once and remembered), one with a guard only while the repeat is fresh, as the order is. */
@@ -369,7 +385,10 @@ function writeRemembered<T extends object = Remembered>(statePath: string, remem
 
 type FilingIo = { run: (args: string[]) => string, repo: string, fileRow: (argv: string[]) => string, now: number, statePath?: string, session?: string, log?: (line: string) => void };
 
-/** File ONE class: make sure its label exists (a ledger kind has no closed row, so no label yet), then `row-file`. A refusal at either step is the filing's `refused`. */
+/**
+ * File ONE class: make sure its label exists (a ledger kind has no closed row, so no label yet, and `org-health`'s order tells a human to put it on a row), then `row-file`, which does
+ * NOT put it on the class row (#570). A refusal at either step is the filing's `refused`.
+ */
 function fileOne(group: ClassGroup, { run, repo, fileRow, session }: Pick<FilingIo, "run" | "repo" | "fileRow" | "session">): Filing {
   try {
     run(["label", "create", `${CLASS_LABEL_PREFIX}${group.id}`, "--repo", repo, "--force", "--description", CLASS_LABEL_DESCRIPTION]);

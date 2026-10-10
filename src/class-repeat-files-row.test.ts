@@ -85,7 +85,7 @@ const freshState = () => scratch("class-repeat-files-row-");
 const orders = (readings: Parameters<typeof orgHealthOrders>[0]) => orgHealthOrders(readings).map((o) => o.prompt);
 const filingsOf = (fact: ClassRepeatFact) => ("unreadable" in fact ? undefined : fact.filings);
 
-test("a class with two closed instances files ONE row naming both, with the label, the kind and the milestone", () => {
+test("a class with two closed instances files ONE row naming both, with the kind and the milestone and NOT the class label (#570)", () => {
   const state = freshState();
   const { fileRow, argvs } = filer();
   const { fact, calls, readings } = tick({ state, fileRow });
@@ -94,11 +94,11 @@ test("a class with two closed instances files ONE row naming both, with the labe
   const after = (flag: string) => argv[argv.indexOf(flag) + 1];
   assert.equal(after("--kind"), "defect");
   assert.equal(after("--milestone"), CLASS_ROW_MILESTONE);
-  assert.equal(after("--label"), "class:x");
+  assert.equal(argv.includes("--label"), false, "the class row is the fix, not an occurrence of the class: no label (#570)");
   assert.ok(argv.includes("--session=work-gate"));
   const body = after("--body");
   for (const linked of ["#10", "#11", "`x`", "the x failure", "the x detector in CI"]) assert.ok(body.includes(linked), `the body names ${linked}`);
-  assert.ok(calls.some((c) => c[0] === "label" && c.includes("class:x") && c.includes(REPO)), "the class label is made sure of before the row carries it");
+  assert.ok(calls.some((c) => c[0] === "label" && c.includes("class:x") && c.includes(REPO)), "the class label is still made sure of, for the rows that ARE occurrences and are labelled by hand");
   assert.deepEqual(filingsOf(fact), { x: { filed: "#4500", covers: "11" } });
   assert.deepEqual(orders(readings), [], "a class that has its row is not also offered to ceo");
   assert.match(readings[0].detail, /class `x` repeated and was filed as #4500/);
@@ -141,7 +141,7 @@ test("two ledger events with DIFFERENT refs file a row naming both; the same ref
   assert.equal(twoRefs.argvs.length, 1, "two distinct refs are a repeat");
   const body = bodyFromArgv(twoRefs.argvs[0]) as string;
   assert.ok(body.includes("run/1") && body.includes("run/2"), "the body links every occurrence");
-  assert.equal(twoRefs.argvs[0][twoRefs.argvs[0].indexOf("--label") + 1], "class:main-red");
+  assert.equal(twoRefs.argvs[0].includes("--label"), false, "a ledger class's row carries no class label either (#570)");
   assert.deepEqual(filingsOf(fact), { "main-red": { filed: "#4500", covers: "run/2" } });
   const sameRef = filer();
   const other = freshState();
