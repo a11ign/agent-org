@@ -1,0 +1,5 @@
+---
+"agent-org": minor
+---
+
+The `overdue` list of `org-health` is recorded as data and no longer made into an order. `settleOverdueLists` (`src/work-gate.ts`) takes the tick's `org-health` orders of class `overdue`, writes the list once per change, as one `postDecision` through the ticket port on the standing row #928 (the row every `org-health` prompt already says to write on), and drops the order. A change is the sorted `kind#number:reason` key the order already carries, so a merge, a close, a new item or a moved reason writes and a clock that only ticks does not; the last key written is kept in `org-health-overdue-written.json` beside the other state entries. The three stuck-link numbers (`no-merge-while-work-exists`, `red-pr-unattended`, `ready-row-refused`) and every other class keep their order, text and route. A write that fails keeps the order and records nothing, so the list is never lost between ticks. `A11IGN_OVERDUE_LIST_AS_DATA=off` in the tick's environment restores the order, with no write. a11ign/agent-org#491.
