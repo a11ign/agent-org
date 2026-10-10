@@ -209,7 +209,8 @@ test("lookupOpenPrFiles returns null, never [], on a failed lookup", () => {
 // --- #1419: a PR's list is compared with its OWN count before it is compared with the Region ---
 //
 // Measured on #1412: `gh pr list --json files` returned 100 of its 113 files, all 100 of them `.changeset/*.md`, so
-// the filter emptied the list and B4 printed "ZERO changed files" while `package.json` sat at position 101+.
+// the filter emptied the list and B4 printed "ZERO changed files" while `package.json` sat at position 101+. (agent-org#464: the ROOT
+// manifest is itself excluded now, so these tests name `packages/cli/package.json`, a different file that still collides.)
 
 /** #1412's measured shape: its first 100 files are changesets, and its 13 real files lie beyond the cap. */
 const CHANGESETS_100 = Array.from({ length: 100 }, (_, i) => `.changeset/entry-${i}.md`);
@@ -236,15 +237,15 @@ test("#1419 DONE-WHEN 2: a PR returning 0 of 113 files is REFUSED as not compara
   assert.deepEqual(emptyOtherPrs, [], "an empty list with a non-zero count is not the zero-files note");
 });
 
-test("#1419 DONE-WHEN 3: #1412's shape -- 100 changesets visible of 113, the row naming package.json -- is REFUSED, never 'ZERO changed files'", () => {
-  const { reason, emptyOtherPrs } = fileOverlapReason(["package.json"], [{ number: 1412, files: CHANGESETS_100, changedFiles: 113 }]);
+test("#1419 DONE-WHEN 3: #1412's shape -- 100 changesets visible of 113, the row naming packages/cli/package.json -- is REFUSED, never 'ZERO changed files'", () => {
+  const { reason, emptyOtherPrs } = fileOverlapReason(["packages/cli/package.json"], [{ number: 1412, files: CHANGESETS_100, changedFiles: 113 }]);
   assert.match(reason as string, /cannot compare with #1412: its file list came back with 100 of its 113 changed files/);
   assert.deepEqual(emptyOtherPrs, [], "the changeset filter emptying a SHORT list must not become the zero-files note");
 });
 
 test("#1419 POSITIVE CONTROL: a PR whose list equals its count behaves exactly as before, overlap and no-overlap", () => {
   const full = [...CHANGESETS_100, ...REAL_13];
-  assert.match(fileOverlapReason(["package.json"], [pr(1412, full)]).reason as string, /overlaps #1412, which already touches: package\.json/);
+  assert.match(fileOverlapReason(["packages/cli/package.json"], [pr(1412, full)]).reason as string, /overlaps #1412, which already touches: packages\/cli\/package\.json/);
   assert.equal(fileOverlapReason(["packages/agent-org/src/row-claim.ts"], [pr(1412, full)]).reason, null);
 });
 
@@ -279,7 +280,7 @@ test("#1419 THE LOOKUP PAGES A SHORT LIST through REST, once and only for that P
   assert.deepEqual(rest, [["api", "--paginate", "repos/a11ign/a11ign/pulls/1412/files?per_page=100", "--jq", ".[].filename"]],
     "exactly one REST page-through, for the short PR only");
   assert.equal(others?.find((o) => o.number === 1412)?.files.length, 113);
-  assert.match(fileOverlapReason(["package.json"], others ?? []).reason as string, /overlaps #1412, which already touches: package\.json/,
+  assert.match(fileOverlapReason(["packages/cli/package.json"], others ?? []).reason as string, /overlaps #1412, which already touches: packages\/cli\/package\.json/,
     "paged to the real overlap -- the 101st-113th files are compared");
 });
 
@@ -293,7 +294,7 @@ test("#1419 a FAILED page keeps the short list and says so -- the rule then refu
   assert.notEqual(others, null, "a null read skips B4 entirely, which is this row's defect by another door");
   assert.equal(others?.[0].files.length, 100);
   assert.match(said.join("\n"), /could not page #1412's files past 100 \(HTTP 502\)/);
-  assert.match(fileOverlapReason(["package.json"], others ?? []).reason as string, /cannot compare with #1412/);
+  assert.match(fileOverlapReason(["packages/cli/package.json"], others ?? []).reason as string, /cannot compare with #1412/);
 });
 
 // --- #2101: A ROW AND ITS OWN PULL REQUEST ARE ONE PIECE OF WORK ---
