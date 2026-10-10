@@ -8,6 +8,10 @@ Acceptance: `bash -c 'cd /home/agent/repos/agent-org-wt-4762 && node --test src/
 
 Closes a11ign/a11ign#4762
 
+History: full
+
+`host-units.test.ts` reaches `shippedUnits` (`addedOnSomeRef`, `git log --all`), which needs the real answer a shallow checkout cannot give; the line above is why the acceptance job is handed full history.
+
 platform: checked the `claude` CLI, which resolves a `--model` alias itself and exposes no listing this check could read, so the table is the one the file already holds (`DECLARED_CLAUDE_MODELS`, `HAIKU_MODEL_ID`) and no new alias table was added.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
