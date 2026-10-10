@@ -1,7 +1,7 @@
 // @ts-check
 // THE TWO LEAK PATTERNS TRUE OF ANY PUBLIC REPOSITORY, in a file that imports NOTHING (#3039). `leak-patterns.ts` imports `project-config.mjs`,
 // which refuses at import when the tool is in no project (`AGENT_ORG_HOST` unset and no declaration beside it), and this repository's own `gate`
-// runs `.github/scripts/leak-scan.mjs` BEFORE any project exists: a scan that needs only these two must not need a project to import them.
+// runs `.github/scripts/leak-scan.ts` BEFORE any project exists: a scan that needs only these two must not need a project to import them.
 
 /**
  * The two patterns true of any public repository. The IPv4 branches each spell a FULL four-octet shape: an earlier form required only three

@@ -251,8 +251,8 @@ interface Workflow { jobs: Record<string, Job> }
 const REAL = parse(readFileSync(join(ROOT, ".github", "workflows", "release.yml"), "utf8")) as Workflow;
 const CHECK_JOB = "consumer-check";
 const TAG_JOB = "release";
-const INTERFACE_RUN = /node --import tsx --test src\/public-interface\.test\.ts\b/;
-const CONSUMER_RUN = /node --import tsx --test src\/release-consumer-check\.test\.ts\b/;
+const INTERFACE_RUN = /node --test src\/public-interface\.test\.ts\b/;
+const CONSUMER_RUN = /node --test src\/release-consumer-check\.test\.ts\b/;
 
 const needsOf = (job: Job | undefined): string[] => (job?.needs === undefined ? [] : [job.needs].flat());
 const stepIndex = (steps: readonly Step[], pattern: RegExp): number => steps.findIndex((s) => pattern.test(s.run ?? ""));

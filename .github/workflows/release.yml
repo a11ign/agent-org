@@ -49,7 +49,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: 22.22.1
+          node-version: 24.21.0
       - name: The consumer -- a11ign/a11ign at main, read-only, into consumer/
         uses: actions/checkout@v7
         with:
@@ -57,15 +57,15 @@ jobs:
           ref: main
           path: consumer
           persist-credentials: false
-      # By name, as ci.yml's `suite` does (no lockfile here): `tsx` runs the `.ts` programs, `typescript` reads each declared module's exports, `yaml` parses the workflow the second test pins.
+      # By name, as ci.yml's `suite` does (no lockfile here): Node 24 runs the `.ts` programs itself, `typescript` reads each declared module's exports, `yaml` parses the workflow the second test pins.
       - name: Install the dependencies the two tests import
-        run: npm install --no-save --no-package-lock "tsx@^4.22.4" "typescript@^6.0.3" "yaml@^2.9.0"
+        run: npm install --no-save --no-package-lock "typescript@^6.0.3" "yaml@^2.9.0"
       - name: The public-interface check -- every declared subpath and name is still delivered
-        run: node --import tsx --test src/public-interface.test.ts
+        run: node --test src/public-interface.test.ts
       - name: The consumer check -- what a11ign imports is a subset of the declared interface
         env:
           A11IGN_CHECKOUT: ${{ github.workspace }}/consumer
-        run: node --import tsx --test src/release-consumer-check.test.ts
+        run: node --test src/release-consumer-check.test.ts
 
   release:
     needs: consumer-check

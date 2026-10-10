@@ -1,10 +1,9 @@
-// @ts-check
 // EVERY PATH A WORKFLOW NAMES MUST EXIST IN THIS REPOSITORY (#2792, a11ign/a11ign#2623). This repository was extracted from a product's
 // `packages/agent-org/` by a history rewrite, so a workflow copied from that product can name a path that only ever lived beside it
 // (`packages/agent-org/src/...`, `scripts/...`) and would fail at run time, or worse, be skipped. This check reads each workflow's text for
 // paths under the directories this repository has and refuses one that is not there, naming it.
 //
-// Usage: node .github/scripts/workflow-paths.mjs [--root=<dir>]   (default: the current directory)
+// Usage: node .github/scripts/workflow-paths.ts [--root=<dir>]   (default: the current directory)
 // Exit:  0 = every named path exists, 1 = a workflow names one that does not, 2 = nothing was examined.
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
@@ -23,17 +22,15 @@ const NAMED_PATH = new RegExp(`(?<![\\w./-])((?:${[...OWN_DIRECTORIES, ...PRODUC
 // place a command must run from inside that checkout and so cannot spell the prefix; it exempts its own line and nothing else.
 const IN_PROJECT_MARKER = /#\s*in-project\s*$/;
 
-/** @param {string} text @returns {string[]} */
-export function pathsNamedIn(text) {
+export function pathsNamedIn(text: string): string[] {
   const claimed = text.split("\n").filter((line) => !IN_PROJECT_MARKER.test(line)).join("\n");
   return [...new Set([...claimed.matchAll(NAMED_PATH)].map((match) => match[1] ?? ""))];
 }
 
-/** @param {string} root @returns {{ examined: number; named: number; missing: string[] }} */
-export function check(root) {
+export function check(root: string): { examined: number; named: number; missing: string[] } {
   const workflowDirectory = join(root, WORKFLOWS);
   const files = existsSync(workflowDirectory) ? readdirSync(workflowDirectory).filter((name) => /\.ya?ml$/.test(name)).sort() : [];
-  const missing = [];
+  const missing: string[] = [];
   let named = 0;
   for (const file of files) {
     for (const path of pathsNamedIn(readFileSync(join(workflowDirectory, file), "utf8"))) {
@@ -44,7 +41,7 @@ export function check(root) {
   return { examined: files.length, named, missing };
 }
 
-function main() {
+function main(): void {
   const root = process.argv.find((arg) => arg.startsWith("--root="))?.slice("--root=".length) ?? process.cwd();
   const { examined, named, missing } = check(root);
   if (examined === 0 || named === 0) {
