@@ -75,7 +75,7 @@ import { poolDiagnosis, refusalPoolLine, poolFromRateLimitField } from "./api-po
 import { declaredGhAccount } from "./gh-identity.ts";
 import { stateEntryPath } from "./host-config.ts"; // #2799
 // #2848: THE REPEATING-LINE QUESTION, in its own leaf for the reason `disk-headroom.ts` is one: it reads the journal, not GitHub.
-import { repeatingLinesTick } from "./repeating-lines.ts";
+import { REPEAT_TICKS, normaliseLine, repeatingLinesTick, type RepeatingGroup } from "./repeating-lines.ts";
 // #2936: THE ORG-HEALTH QUESTION, in its own leaf for the same reason: relative imports only, so the gate keeps the property its own header states.
 import { redSinceOf, readToolAgreement, readReleaseRuns } from "./org-health.ts";
 import { readNodeStrips } from "./node-strips-types.ts";
@@ -113,8 +113,8 @@ import { BACKLOG_LABEL, NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL, OUT_OF_RELEASE_L
 // #2075: WHICH PROJECT A ROW MUST BE ON. `board-snapshot-scope.ts` runs no `gh` and imports only `node:*`, the repo
 // identity and `settle-closed-status.ts`, so the gate keeps the property its own header states.
 import { PROJECT_NUMBER } from "./board-snapshot-scope.ts";
-import type { OpenItemsReader } from "./ticket-port/port.ts"; // agent-org#484: the first consumer of the ticket port
-import { githubTicketAdapter } from "./ticket-port/github-adapter.ts";
+import type { OpenItemsReader, TicketPort } from "./ticket-port/port.ts"; // agent-org#484: the first consumer of the ticket port
+import { githubTicketAdapter, TRACKER } from "./ticket-port/github-adapter.ts";
 // #2356: A RED `main` WAKES A FIXER. Imports only `node:*`, `parent-recheck-summary.ts` and the repo identity,
 // so the gate keeps the property its own header states -- it runs before any `pnpm install` or build.
 import { readTrunkRed, trunkOfCodeRepository, trunkRedOrders } from "./trunk-red.ts";
@@ -680,6 +680,9 @@ export const GH_READS = Object.freeze({
   // A healthy `main` pays none of them; a red one is rare and short-lived by the ruling this cause serves.
   conditionalOnRedTrunk: "api runs/{id}/jobs, check-runs/{id}/annotations, run view --log-failed,"
     + " commits/{sha}/pulls (readTrunkRed -- trunk-red)",
+  // agent-org#492: ONE GRAPHQL CALL (`issue(number:)` through the ticket port's `readItem`) PER REPEATING LINE AN OPEN ROW CITES, at most three candidates for a line,
+  // and one more `issue comment` write at a count milestone. A tick with no repeating line, or with one no row cites, pays none (`settleCitedRepeatingLines`).
+  conditionalOnCitedRepeatingLine: "api graphql repository.issue(number) (settleCitedRepeatingLines -- repeating-log-line, through the ticket port)",
 });
 
 /**
@@ -7655,6 +7658,98 @@ function offerHierarchyNow(rows: any[], openRows: any[]): OfferHierarchy {
   return { chairmanRows, ignored, milestoneRanking: homeProjectDeclaration().offerMilestones };
 }
 
+/**
+ * agent-org#492 (Phase 1 of a11ign/a11ign#4505): A REPEATING LOG LINE THAT AN OPEN ROW ALREADY CITES DOES NOT WAKE `orchestrator` AGAIN.
+ *
+ * The detector (`repeating-lines.ts`) offers a line to `orchestrator` to fix, file `ready` or allowlist; once it is FILED, the same line kept waking
+ * the seat each time its key window expired, with nothing left to decide. MEASURED 2026-10-10 on the trace store's `repeating-log-line` wakes of the 7
+ * days before (the delivered order's first quoted line, normalised as below, against the bodies of the rows open at the wake): 10 of the 56 wakes whose
+ * order could be read named a line a row open at that moment cited, 4 of them in this tracker and 6 in `a11ign/agent-org`'s.
+ *
+ * WHAT "CITES" MEANS: the first `CITE_PREFIX_CHARS` of the line, normalised by `normaliseLine` (numbers, shas and times are one line), occurs in the
+ * row's normalised title and body. The prompt cuts a line at 300 characters and a row rarely quotes it whole, so a prefix is the match; a line whose
+ * normalised prefix is under `CITE_MIN_CHARS` is never matched, because a short needle cites anything and the failure to avoid is a fault nobody is told
+ * about. Every doubt is a wake, as today: an unreadable row, a closed one and a body that no longer carries the line are all "not cited".
+ *
+ * THE ROWS IN HAND ARE THE CANDIDATES AND THE PORT IS THE ASK. `openRows` were read this tick for the other causes (bodies included), so narrowing
+ * costs no call; each candidate is then re-read through the ticket port (`readItem`, level-triggered: act only if it still holds) and a cite counts only
+ * when THAT answer is open and still carries the line. One read per cited line per tick, at most `CITE_VERIFY_MAX` for a line. NO ROW IS ASKED PER OPEN
+ * ROW: `readOpenItems` carries no body, and `readItem` for each of about 100 rows would be a call apiece on every tick a fault lasts. THE ROWS IN HAND
+ * ARE THE PRIMARY'S AND EVERY SCOPE'S THAT DECLARES A TRACKER; `a11ign/agent-org` declares none here, so its rows (6 of the 10 above) are not seen
+ * and that line still wakes the seat.
+ *
+ * THE ROW WRITE is one `postDecision` carrying the count, at the ticks where the run is 30, 60, 120, 240 ... long (`isCountMilestone`): the count moves
+ * by one a tick, so the doubling is a schedule that needs no state file, and a day-long fault is five comments and not seven hundred.
+ *
+ * THE SWITCH: `A11IGN_REPEATING_LINE_SUPPRESSION=off` in the tick's environment restores every order, as `A11IGN_ORG_HEALTH_SUPPRESSION=off` does for its
+ * detector. The one-line revert in code is the call site in `main`: `repeatingLinesTick({ settle: ... })` back to `repeatingLinesTick()`.
+ */
+export const REPEATING_LINE_SWITCH_ENV = "A11IGN_REPEATING_LINE_SUPPRESSION";
+/** How much of a normalised line is the needle: 80 of the 300 the prompt quotes, which found the same ten wakes as the whole line over the measured week. */
+export const CITE_PREFIX_CHARS = 80;
+/** A needle shorter than this matches nothing (see above); `github-status: operational (call N ms).`, 39, is the shortest line the week cited. */
+export const CITE_MIN_CHARS = 30;
+/** The candidates one line may cost a read for: a line cited by four rows needs one that holds, not all four. */
+export const CITE_VERIFY_MAX = 3;
+/** Where the count is written: a run whose length is the threshold times a power of two, so it is written once as it grows. */
+export const isCountMilestone = (count: number): boolean => count >= REPEAT_TICKS && Number.isInteger(Math.log2(count / REPEAT_TICKS));
+
+/** The text a line is searched for in, normalised the way the line is. */
+const citeText = (item: { title?: string; body?: string; }): string => normaliseLine(`${item.title ?? ""}\n${item.body ?? ""}`);
+
+/** The needle a headline is searched for by, or `null` when it is too short to cite anything. */
+export function citeNeedle(headline: string): string | null {
+  const needle = normaliseLine(headline).trim().slice(0, CITE_PREFIX_CHARS).trim();
+  return needle.length >= CITE_MIN_CHARS ? needle : null;
+}
+
+/**
+ * The groups that STILL need `orchestrator`: those no open row cites. A cited group is said on stderr (`repeating-lines:` is the detector's own prefix, which it
+ * does not count) and, at a milestone, written to the row. A port that cannot answer is "not cited", and a write that fails is said and the suppression
+ * stands: the cite was verified, and a failed comment is not a reason to wake a seat for a line a row already holds.
+ *
+ * @param portFor the ticket port of one tracker, by `owner/name`: the only way this function reaches a tracker
+ */
+export function settleCitedRepeatingLines(groups: RepeatingGroup[], { openRows, portFor, env = process.env, log = (line) => process.stderr.write(line), now = Date.now() }: {
+  openRows: { number: number; title?: string; body?: string; repo?: string; }[]; portFor: (scope: string) => TicketPort;
+  env?: Record<string, string | undefined>; log?: (line: string) => void; now?: number;
+}): RepeatingGroup[] {
+  if (env[REPEATING_LINE_SWITCH_ENV] === "off") return groups;
+  const searchable = openRows.map((row) => ({ row, text: citeText(row) }));
+  return groups.filter((group) => {
+    const headline = group.lines[0];
+    const needle = citeNeedle(headline);
+    if (needle === null) return true;
+    const candidates = searchable.filter(({ text }) => text.includes(needle)).map(({ row }) => row).sort((a, b) => a.number - b.number).slice(0, CITE_VERIFY_MAX);
+    for (const row of candidates) {
+      const ref = { tracker: TRACKER, scope: row.repo ?? repoNow(), id: row.number };
+      const port = portFor(ref.scope);
+      const item = port.readItem(ref);
+      if (item === null || item.state === "done" || !citeText(item).includes(needle)) continue;
+      let wrote = "";
+      if (isCountMilestone(group.count)) {
+        try {
+          const quoted = headline.slice(0, 300).replaceAll("```", "'''");
+          port.postDecision(ref, { role: "work-gate", runId: `tick-${now}`, kind: "repeating-line-count", text:
+            `**work-gate, repeating-log-line:** a line this row cites has repeated ${group.atLeast ? "at least " : ""}${group.count} consecutive ticks, first seen ${group.since}:\n\n`
+            + "```\n" + quoted + "\n```\n\n"
+            + "Because this row is open and cites it, the gate does not wake `orchestrator` for it again (agent-org#492). This is the count at this tick; the next "
+            + "comment is at twice it. If the fault is fixed the line stops repeating; if this row closes first, the line is offered again." });
+          wrote = ", count written to the row";
+        } catch (err) {
+          wrote = `, COULD NOT WRITE THE COUNT (${String((err as any)?.message ?? err).split("\n")[0].slice(0, 120)})`;
+        }
+      }
+      log(`repeating-lines: ${group.count} ticks, cited by open row ${ref.scope}#${ref.id} -- no order${wrote}: ${headline.slice(0, 100)}\n`);
+      return false;
+    }
+    return true;
+  });
+}
+
+/** The ticket port of the repository `scope` names, through the gate's own `gh`. */
+const portOf = (scope: string): TicketPort => githubTicketAdapter({ run: defaultRun, scope });
+
 function main() {
   refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/work-gate.ts" });
   const githubStatus = startGithubStatus(); // #3723: FIRST, so its wall overlaps the reads below and never adds to them
@@ -7739,7 +7834,7 @@ function main() {
   // #4602: THE SAME `blocked` THE TICK REPORTS AS WITHHELD (below), counted per holder and over time -- computed once, so the count and the report cannot disagree.
   const shelvedHere = partitionUnclaimed(rows, prFiles, { rowBranches, branchPrs, openRows: allOpen, chairmanRows: offerHierarchy.chairmanRows }).blocked;
   orders.push(...blockingImpactOrders({ shelved: [...shelvedHere, ...others.flatMap((tick) => tick.blocked)], openRows: allOpen, prs: [...openPrs, ...pullRequestsOfOthers(otherScopes)], stateDir: REVIEWER_STATE_DIR }));
-  orders.push(...reviewerAuthTick({ orders }), ...repeatingLinesTick(), ...orgHealthNow({ prsRead: prs, keyedPrsRead: pullRequestsOfOthers(otherScopes), readyRead: readyRows, openRowsRead, claimedComments: claimedCommentsForClock(allOpen, claimedComments), decideArgs, decided, held: incident.held, pools }, { readToolAgreement, readNodeStrips, readReleaseRuns: () => readReleaseRuns(defaultRun, repoNow()), readClassRepeat: () => readClassRepeat(defaultRun, repoNow(), liveClassRepeatIo()), readReleaseBehind: releaseBehindNow, readBoardTruth: boardTruthNow, readWaits: unparkingWaits(waitTickFacts, { run: defaultRun }) }),
+  orders.push(...reviewerAuthTick({ orders }), ...repeatingLinesTick({ settle: (groups) => settleCitedRepeatingLines(groups, { openRows: [...(openRowsRead ?? []), ...otherScopes.flatMap(({ read }) => read.openRows ?? [])], portFor: portOf }) }), ...orgHealthNow({ prsRead: prs, keyedPrsRead: pullRequestsOfOthers(otherScopes), readyRead: readyRows, openRowsRead, claimedComments: claimedCommentsForClock(allOpen, claimedComments), decideArgs, decided, held: incident.held, pools }, { readToolAgreement, readNodeStrips, readReleaseRuns: () => readReleaseRuns(defaultRun, repoNow()), readClassRepeat: () => readClassRepeat(defaultRun, repoNow(), liveClassRepeatIo()), readReleaseBehind: releaseBehindNow, readBoardTruth: boardTruthNow, readWaits: unparkingWaits(waitTickFacts, { run: defaultRun }) }),
     ...rulingOrdersNow({ prsRead: prs, openRowsRead, now: Date.now() }), ...chairmanAsksNow(openRowsRead)); // #2848, #2936, #2997, #4020: before the dead man's switch -- a repeating line, a stuck org: something found
   // FIRST OF ALL, AND ON PURPOSE (#2163): `wake` delivers in this order and records each delivery with a write, so
   // on a full disk the tick can end partway. The order that says the disk is full must not be the one behind it.
