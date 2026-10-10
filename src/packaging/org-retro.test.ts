@@ -61,9 +61,9 @@ test("idle minutes: a tick that offered a Ready row nobody could take counts TWO
   assert.equal(idle.idleMinutes, 6, "3 ticks x 2 minutes -- a literal, so dropping the term or changing the tick goes red");
 });
 
-test("claim-stall voidings: every release whose reason is not `merged`, by reason", () => {
+test("claim-stall voidings: only the reasons that are a claim that stopped moving, other releases beside them", () => {
   const releases = releaseStats(journalLines(JOURNAL, WINDOW));
-  assert.deepEqual(releases, { voided: 3, byReason: { gone: 2, blocked: 1 } }, "#1 merged is a row finishing, not a voiding");
+  assert.deepEqual(releases, { voided: 2, byReason: { gone: 2 }, otherReleases: { blocked: 1 } }, "#1 merged is a row finishing, and blocked is a declared wait: neither is a voiding");
 });
 
 // --- the ledger fixture: the SHAPE the live wake ledger has, `<epochMs>\t<causeKey>[\t<recipient>]`, markers carrying their key second ------------
@@ -234,7 +234,7 @@ test("the report computes each number from the fixture window with its hand-chec
   assert.match(text, /PRs merged: 3; median open-to-merge 30m/);
   assert.match(text, /Idle minutes while a claimable row existed: 6 \(3 of 5 ticks/);
   assert.match(text, /Stalls \(org-stalled wakes\): 2; claim-stalled wakes: 1/);
-  assert.match(text, /voidings .*: 3 \(gone x2, blocked x1\)/);
+  assert.match(text, /voidings .*: 2 \(gone x2\); other releases, not voidings: blocked x1/);
   assert.match(text, /org-health offers by signal: merge-gap x2, red-age x1/);
   assert.match(text, /Red PRs now: 2; age median 1h15m, max 2h00m \(#10\)/);
   assert.ok(text.includes(`- ${handFixLine(HAND_FIXES_ONE)}`), "the hand-fix line is the ledger's own line, verbatim (the next test pins what it says)");
