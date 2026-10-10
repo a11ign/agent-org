@@ -34,6 +34,12 @@ export const UNCLASSIFIED_KIND = "unclassified";
  */
 export const MESSAGING_AUDIENCE_MISUSE_KIND = "messaging-audience-misuse";
 
+/**
+ * What the work gate records (#730): a `priority:chairman` label put on by a login that is not the chairman's. Not seeded in `FAILURE_KINDS` or the index, for the reason
+ * above. The ref is `<repo>#<row>:<actor>`, `unknown` where the row's history names none, so the same actor on the same row is one incident however many ticks see it.
+ */
+export const CHAIRMAN_LABEL_NOT_CHAIRMAN_KIND = "chairman-label-not-chairman";
+
 export type FailureEntry ={ classKey: string, at: number, ref: string };
 /** `at` is epoch ms; absent means the tick's own `now` (an event dated by its source, such as a hand fix, carries its own) */
 export type FailureEvent = { classKey: string, ref: string, at?: number };
