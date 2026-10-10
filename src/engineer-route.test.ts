@@ -271,6 +271,9 @@ test("a row nothing may lower is never asked: lane:ceo, needs:chairman, a workfl
 
 // --- the log ---
 
+/** The OUTCOME line, as against the REQUEST line (`answers`, and since #4754 `outcome: "asked"`): a request line's `outcome` is the provider having been asked, not a route. */
+const isOutcomeLine = (l: { outcome?: string; answers?: unknown }): boolean => l.outcome !== undefined && l.answers === undefined;
+
 test("every route is a decision-log line, in the fallback, override, refused and provider cases, and the outcome lands beside it", async () => {
   const r = rig({ triage: JEV, switches: ON });
   const off = rig();
@@ -278,14 +281,14 @@ test("every route is a decision-log line, in the fallback, override, refused and
   await routeEngineer(rowOf({ number: 2, labels: ["tier:haiku"] }), r.deps);
   await routeEngineer(rowOf({ number: 3, labels: ["lane:ceo"] }), r.deps);
   await routeEngineer(rowOf({ number: 4 }), off.deps);
-  const routes = (lines: { id?: string; outcome?: string }[]) => lines.filter((l) => l.outcome !== undefined).map((l) => [l.id, l.outcome]);
+  const routes = (lines: { id?: string; outcome?: string }[]) => lines.filter(isOutcomeLine).map((l) => [l.id, l.outcome]);
   assert.deepEqual(routes(r.log()), [
     ["row-1", "route haiku/high via jev (the provider answered: mechanical=yes, subsystems=no, debugging=no, covered=yes, score=2)"],
     ["row-2", "route haiku/high via override (tier:haiku)"],
     ["row-3", "route sonnet/high via refused (the row carries lane:ceo)"]]);
   assert.deepEqual(routes(off.log()), [["row-4", "route sonnet/medium via fallback (no triage provider is declared)"]]);
   // A route the provider did not decide carries WHY on its outcome line: a refused row says what refused it, a fallback says why the provider did not decide.
-  const reasons = (lines: { outcome?: string; reason?: string }[]) => lines.filter((l) => l.outcome !== undefined).map((l) => l.reason);
+  const reasons = (lines: { outcome?: string; reason?: string }[]) => lines.filter(isOutcomeLine).map((l) => l.reason);
   assert.deepEqual(reasons(r.log()), [undefined, undefined, "the row carries lane:ceo"]);
   assert.deepEqual(reasons(off.log()), ["no triage provider is declared"]);
   assert.ok(r.log().some((l) => l.use === "model-routing" && l.answers !== undefined), "the provider's own line (the answers) is there too");
@@ -321,7 +324,7 @@ test("spawnClaimer.tier: a routed row gets its route's profile; a row with no ro
 // --- every fallback says why, on a line of the decision log ---
 
 /** The outcome line `routeEngineer` appended for the row, as a person reads it. */
-const outcomeOf = (r: ReturnType<typeof rig>): string => r.log().filter((l) => l.outcome !== undefined).at(-1).outcome;
+const outcomeOf = (r: ReturnType<typeof rig>): string => r.log().filter(isOutcomeLine).at(-1).outcome;
 
 test("the outcome line reads `route <route> via <via> (<why>)`, and what <why> says is the reason for each via: jev, fallback, refused, override", async () => {
   // jev, every answer given: the answers that composed the route.
@@ -379,7 +382,7 @@ test("every way the provider does not decide a route puts its reason on the outc
   ];
   for (const [label, r, row, reason] of cases) {
     const routed = await routeEngineer(row, r.deps);
-    const outcome = r.log().filter((l) => l.outcome !== undefined).at(-1);
+    const outcome = r.log().filter(isOutcomeLine).at(-1);
     assert.equal(routed.via, "fallback", label);
     assert.equal(routed.reason, reason, label);
     assert.equal(outcome.reason, reason, `${label}: the outcome line carries it`);

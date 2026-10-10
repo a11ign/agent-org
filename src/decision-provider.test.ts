@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { decide, decisionLogPathFrom, decisionSwitchesPath, MAX_STATE_BYTES, recordOutcome, type DecisionDeps, type Question } from "./decision-provider.ts";
+import { decide, decisionLogPathFrom, decisionsIn, decisionSwitchesPath, MAX_STATE_BYTES, OUTCOME_ASKED, recordOutcome, type DecisionDeps, type Question } from "./decision-provider.ts";
 import { parseHostConfig } from "./host-config.ts";
 import { tmpDir } from "./lib/tmp-fixture.ts";
 import { freshState, triageOrder } from "./triage-provider.ts";
@@ -196,14 +196,14 @@ test("a deps that throws is a decision that failed, not a throw: the fallbacks, 
   assert.ok(!r.lines[0].includes(KEY_PATH));
 });
 
-test("the log: one line per asked decision with use, questions, answers, via, fellBack, at and the state's FIELD NAMES; no state value and no key", async () => {
+test("the log: one line per asked decision with use, questions, answers, via, fellBack, outcome asked, at and the state's FIELD NAMES; no state value and no key", async () => {
   const r = rig({ triage: JEV, switches: ON, reply: { body: reply(["haiku", 0.89], [4, 0.95]) } });
   await decide("model-routing", STATE, QUESTIONS, r.deps);
   await decide("model-routing", STATE, QUESTIONS, r.deps);
   const lines = r.log();
   assert.equal(lines.length, 2);
   assert.deepEqual(lines[0], {
-    use: "model-routing", id: "row-4628", fields: ["row", "title"], questions: ["tier", "size"], via: "jev", fellBack: true, at: 1_000,
+    use: "model-routing", id: "row-4628", fields: ["row", "title"], questions: ["tier", "size"], via: "jev", fellBack: true, outcome: "asked", at: 1_000,
     answers: {
       tier: { value: "sonnet", confidence: 0.89, fellBack: true, asked: "haiku", reason: "haiku at 0.89, under the floor 0.9" },
       size: { value: 4, confidence: 0.95, fellBack: false },
@@ -228,6 +228,67 @@ test("recordOutcome appends the eventual outcome under the same id; without a lo
   const lost: string[] = [];
   recordOutcome("model-routing", "x", "merged", { logPath: join(r.logPath, "inside-a-file"), diagnostic: (l) => lost.push(l) });
   assert.equal(lost.length, 1);
+});
+
+// --- one counted decision per routing (#4754) ---
+
+/** The REQUEST line as `decide` wrote it before #4754: the same line with no `outcome`, which is what a reader saw as None. */
+const asBeforeTheChange = (lines: any[]) => lines.map(({ outcome, ...rest }) => (rest.answers === undefined ? { outcome, ...rest } : rest));
+const withoutOutcome = (lines: any[]) => lines.filter((l) => l.outcome === undefined);
+
+test("a routing is ONE counted decision and no line of it reads outcome None: the request line says asked, and the outcome beside it closes it", async () => {
+  const r = rig({ triage: JEV, switches: ON });
+  await decide("model-routing", STATE, QUESTIONS, r.deps);
+  recordOutcome("model-routing", "row-4628", "route haiku/high via jev", { logPath: r.logPath, now: () => 2_000 }, "the provider answered");
+  const lines = r.log();
+  assert.equal(lines.length, 2, "two lines are written, as before");
+  assert.deepEqual(lines.map((l) => l.outcome), [OUTCOME_ASKED, "route haiku/high via jev"]);
+  assert.deepEqual(withoutOutcome(lines), [], "no line reads outcome None");
+  assert.deepEqual(decisionsIn(lines), [{ use: "model-routing", id: "row-4628", at: 1_000, asked: true, outcome: "route haiku/high via jev", reason: "the provider answered" }]);
+});
+
+test("the control: the writer as it was leaves two lines per routing and one of them None, and the same reading still counts one", async () => {
+  const r = rig({ triage: JEV, switches: ON });
+  await decide("model-routing", STATE, QUESTIONS, r.deps);
+  recordOutcome("model-routing", "row-4628", "route haiku/high via jev", { logPath: r.logPath, now: () => 2_000 });
+  const before = asBeforeTheChange(r.log());
+  assert.equal(before.length, 2, "counted by line it is two decisions");
+  assert.equal(withoutOutcome(before).length, 1, "and one of them reads None: this is the defect, and the check above is what notices it gone");
+  assert.equal(decisionsIn(before).length, 1);
+  assert.deepEqual(decisionsIn(before), decisionsIn(r.log()), "the old shape and the new read as the same decision");
+});
+
+test("decisionsIn over a mixed log: old requests, new requests, outcome-only routings, a repeated id and an open request each count once; lines it cannot read are skipped", () => {
+  const request = (id: string, at: number, outcome?: string) => ({ use: "model-routing", id, fields: ["row"], questions: ["tier"], answers: { tier: { value: "sonnet", fellBack: true } }, via: "jev", fellBack: false, ...(outcome === undefined ? {} : { outcome }), at });
+  const done = (id: string, outcome: string, at: number, reason?: string) => ({ use: "model-routing", id, outcome, ...(reason === undefined ? {} : { reason }), at });
+  const log = [
+    request("row-1", 10),                       // before #4754: no outcome
+    done("row-1", "route haiku/high via jev", 11),
+    done("row-2", "route haiku/high via override", 12), // nobody was asked: an outcome line alone
+    request("row-3", 20, "asked"),              // since #4754
+    done("row-3", "route sonnet/high via fallback", 21, "under the floor"),
+    request("row-1", 30, "asked"),              // the same row routed again: its own decision
+    done("row-1", "route sonnet/high via jev", 31),
+    request("row-4", 40, "asked"),              // asked, and nothing has come of it yet
+    request("row-5", 41, "asked"),              // two open at once: each outcome closes ITS request, not the earliest
+    request("row-6", 42, "asked"),
+    done("row-6", "route haiku/high via jev", 43),
+    done("row-5", "route sonnet/high via jev", 44),
+    { use: "wake-triage", via: "none", answers: {}, at: 50 }, // a request with no id can be counted and never paired
+    null, "not an object", { outcome: "no use" }, { use: "model-routing", at: 60 }, // unreadable or neither shape
+  ];
+  assert.deepEqual(decisionsIn(log).map((d) => [d.id, d.at, d.asked, d.outcome]), [
+    ["row-1", 10, true, "route haiku/high via jev"],
+    ["row-2", 12, false, "route haiku/high via override"],
+    ["row-3", 20, true, "route sonnet/high via fallback"],
+    ["row-1", 30, true, "route sonnet/high via jev"],
+    ["row-4", 40, true, OUTCOME_ASKED],
+    ["row-5", 41, true, "route sonnet/high via jev"],
+    ["row-6", 42, true, "route haiku/high via jev"],
+    [undefined, 50, true, OUTCOME_ASKED],
+  ]);
+  assert.equal(decisionsIn(log).find((d) => d.id === "row-3")?.reason, "under the floor");
+  assert.deepEqual(decisionsIn([]), []);
 });
 
 test("a log that cannot be written does not take the decision with it", async () => {
