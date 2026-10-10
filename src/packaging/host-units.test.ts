@@ -1528,7 +1528,7 @@ test("#581: `node -e \"<code>\"` is inline code, not a script path, so a load ch
     installedDir: "/installed",
     readDir: (() => ["a11ign-fleet-watch.service"]) as never,
     read: (() => unit) as never,
-    exists: (path: string) => path === "/repo/packages/control/src/fleet-watch.ts",
+    exists: (path) => String(path) === "/repo/packages/control/src/fleet-watch.ts",
   }), [], "THE UNIT AS FILED: its load check no longer reads as a missing program, and its real program is there");
 });
 
