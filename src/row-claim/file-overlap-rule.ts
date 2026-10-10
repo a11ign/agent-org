@@ -17,6 +17,11 @@
 // collide; until A3 lands, treating them as a collision would block a dependency bump behind an unrelated
 // script addition for no reason connected to this rule's own purpose.
 //
+// SO ARE THE SHARED MANIFESTS AT A REPOSITORY'S ROOT (agent-org#464): `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`. Nearly
+// every row touches them, and an overlap on them ALONE shelved ready rows every tick; two PRs editing different lines merge cleanly
+// and two editing the same line conflict, where the merge queue says so. A subdirectory's `package.json` is another package's file and
+// still collides, and a row whose Region is only manifests still has a Region (this is not the empty-Region refusal).
+//
 // AN EMPTY FILE LIST IS REPORTED, NEVER FOLDED INTO "NO CONFLICT" -- #462's own finding: checking one PR's
 // files and getting zero looked like "no overlap, proceed" and was actually a MERGED PR whose head had
 // become an ancestor of `main`, so its diff read empty by construction. An OPEN PR reading zero files is
@@ -83,6 +88,20 @@ import { lookupBlockedByEdge } from "./blocked-by-edge-rule.ts";
 
 // ADR 0044: and each pull request's own `.acceptance/` file, for the same reason -- a shared directory is no shared change.
 const isChangeset: (path: string) => boolean = (path): boolean => path.startsWith(".changeset/") || isAcceptancePath(path);
+
+/**
+ * agent-org#464: THE SHARED MANIFESTS AT A REPOSITORY'S ROOT, named once. Nearly every row edits one of them, and two pull requests
+ * that each edit a different line merge cleanly while two that edit the same line conflict where the merge queue says so -- the
+ * changeset's case one level up. Measured 2026-10-09 (a11ign/a11ign#928): two ready rows shelved every tick on `package.json` alone.
+ * ROOT ONLY: `packages/x/package.json` is another package's file and still collides ({@link isSharedManifest}).
+ */
+const SHARED_MANIFESTS: ReadonlySet<string> = new Set(["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"]);
+
+/** A repo-relative path that is a shared manifest at the ROOT of its repository (the key of a `<key>:` entry already stripped). */
+const isSharedManifest = (path: string): boolean => SHARED_MANIFESTS.has(path);
+
+/** What B4 does not compare, on every side: a changeset or acceptance file, or a root shared manifest. */
+const isExcludedFromOverlap = (path: string): boolean => isChangeset(path) || isSharedManifest(path);
 
 /** #2617: the tracker the project's own rows live in -- the first entry, which the empty key names (ADR 0040, decision 2). */
 const primaryTrackerRepo = () => homeProjectDeclaration().tracker[0].repo;
@@ -185,7 +204,7 @@ export function fileOverlapReason(myFiles: string[], otherPrFiles: {
         number: number; files: string[]; changedFiles: number; closes?: number[] | number | null;
         held?: boolean; blockersOf?: (row: number) => number[] | null; repo?: string; repoKey?: string; branch?: string;
     }[], { rowNumber = null, blockersOf, adoptedBranch = null }: { rowNumber?: number | null; blockersOf?: (row: number) => number[] | null; adoptedBranch?: string | null; } = {}): { reason: string | null; emptyOtherPrs: (number | string)[]; } {
-  const mine = new Set(myFiles.filter((p) => !isChangeset(splitRegionEntry(p).path)));
+  const mine = new Set(myFiles.filter((p) => !isExcludedFromOverlap(splitRegionEntry(p).path)));
   const emptyOtherPrs: (number | string)[] = [];
   if (mine.size === 0) return { reason: null, emptyOtherPrs };
 
@@ -203,7 +222,7 @@ export function fileOverlapReason(myFiles: string[], otherPrFiles: {
       emptyOtherPrs.push(other.repo === undefined ? other.number : `${other.repo}#${other.number}`);
       continue;
     }
-    const theirs = other.files.filter((p) => !isChangeset(p));
+    const theirs = other.files.filter((p) => !isExcludedFromOverlap(p));
     if (theirs.length === 0) continue;
     // #941: an entry ending in `/` is a directory the row declared, and it covers every file under it.
     // #2617: an entry is compared only with the files of the repository it is prefixed for (a bare one is the first's).
@@ -272,9 +291,9 @@ export function claimedRegionOverlapReason(myFiles: string[], claimedRows: { num
 }
 
 /**
- * The Region entries that count for B4: all of them but changesets, which never collide.
+ * The Region entries that count for B4: all of them but changesets and root shared manifests, which the merge queue settles.
  */
-const regionEntriesOf = (entries: string[]): string[] => entries.filter((entry) => !isChangeset(splitRegionEntry(entry).path));
+const regionEntriesOf = (entries: string[]): string[] => entries.filter((entry) => !isExcludedFromOverlap(splitRegionEntry(entry).path));
 
 /**
  * The entries of `mine` and `theirs` that meet: same repository key, and one path equal to or covering the other. The MORE SPECIFIC

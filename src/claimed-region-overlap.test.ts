@@ -287,13 +287,16 @@ test("the Regions in this file are read by the tree's own parser as the rules re
 
 // --- (10) #3541: A CLAIMED ROW THAT HOLDS NO CODE STOPS RESERVING ITS REGION ------------------------------------------------------------
 
-/** #3418's Region as it stood at 18:38Z (`userContentEdits`, measured 2026-10-04): one fenced entry, then the narrowing paragraph that NAMES `package.json`. */
+/**
+ * #3418's Region as it stood at 18:38Z (`userContentEdits`, measured 2026-10-04): one fenced entry, then the narrowing paragraph that NAMES a root file. The real
+ * paragraph named `package.json`, which B4 no longer compares at all (agent-org#464), so `tsconfig.json` stands in: the prose-versus-fence reading is unchanged.
+ */
 const NARROWING_3418 = "**Narrowed by `product-manager` 2026-10-04T18:45Z: done-when 1's code merged as agent-org#180 (`5617bff`), so the first Region "
-  + "(`watch-list.ts`, its test, `sources/watched.ts` and its test, `watch.ts`, `package.json`, `event.ts`, `core.ts`) outlived its commit. "
+  + "(`watch-list.ts`, its test, `sources/watched.ts` and its test, `watch.ts`, `tsconfig.json`, `event.ts`, `core.ts`) outlived its commit. "
   + "What is left is a LIVE watch and three ledger readings, which edit nothing.**";
 const BODY_3418 = (fence: string[]) => `## Region\n\n\`\`\`\n${fence.join("\n")}\n\`\`\`\n\n${NARROWING_3418}\n\n`
   + "The repository is **`a11ign/agent-org`**; paths are relative to its root.\n";
-const ROOT = { rootFiles: new Set(["package.json"]) };
+const ROOT = { rootFiles: new Set(["tsconfig.json"]) };
 const WATCH_LIST = "agent-org:src/messaging/watch-list.ts";
 const holder = (number: number, body: string, labels = ["in-progress"]) =>
   ({ number, labels: labels.map((name) => ({ name })), body, blockedBy: { nodes: [] } });
@@ -329,23 +332,23 @@ test("(10)(2) the label drops ONLY the claimed-row reservation: an open pull req
   assert.match(claimFor(3509, "worker-3509", run) ?? "", /overlaps #148 in a11ign\/agent-org/, "at the claim as well");
 });
 
-test("(10)(3) PROSE DOES NOT RESERVE: #3418's body, with `package.json` in the narrowing paragraph, does not shelve a row whose Region is `package.json`; inside the fence it does", () => {
-  const ready = readyRow(3509, ["package.json"]);
+test("(10)(3) PROSE DOES NOT RESERVE: #3418's body, with `tsconfig.json` in the narrowing paragraph, does not shelve a row whose Region is `tsconfig.json`; inside the fence it does", () => {
+  const ready = readyRow(3509, ["tsconfig.json"]);
   const prose = holder(3418, BODY_3418([WATCH_LIST]));
-  const fenced = holder(3418, BODY_3418([WATCH_LIST, "package.json"]));
+  const fenced = holder(3418, BODY_3418([WATCH_LIST, "tsconfig.json"]));
   assert.equal(shelvedBy(ready, [fenced]).length, 1, "control: the file INSIDE the fence is a declaration");
-  assert.match(shelvedBy(ready, [fenced])[0].reason, /package\.json/);
+  assert.match(shelvedBy(ready, [fenced])[0].reason, /tsconfig\.json/);
   assert.deepEqual(shelvedBy(ready, [prose]), []);
   assert.deepEqual(claimedRegionsOf([prose], ROOT), [{ number: 3418, files: [WATCH_LIST], blockedBy: [] }], "the fenced entry still declares");
-  assert.deepEqual(declaredRegionFiles(prose.body, ROOT)?.includes("package.json"), true, "control: the asking-side reader still reads the prose (not in scope)");
+  assert.deepEqual(declaredRegionFiles(prose.body, ROOT)?.includes("tsconfig.json"), true, "control: the asking-side reader still reads the prose (not in scope)");
 });
 
 test("(10)(4) NO FENCE READS AS TODAY: a Region section with no fenced block still declares the root-level file its prose names", () => {
-  const ready = readyRow(3509, ["package.json"]);
-  const noFence = holder(3418, "## Region\n\nThis row edits `package.json` and nothing else.\n");
+  const ready = readyRow(3509, ["tsconfig.json"]);
+  const noFence = holder(3418, "## Region\n\nThis row edits `tsconfig.json` and nothing else.\n");
   assert.equal(shelvedBy(ready, [noFence]).length, 1);
-  assert.deepEqual(claimedRegionsOf([noFence], ROOT)?.[0]?.files, ["package.json"]);
-  const inline = holder(3418, "Region: package.json\n");
+  assert.deepEqual(claimedRegionsOf([noFence], ROOT)?.[0]?.files, ["tsconfig.json"]);
+  const inline = holder(3418, "Region: tsconfig.json\n");
   assert.equal(shelvedBy(ready, [inline]).length, 1, "the inline `Region:` form has no fence either");
 });
 
