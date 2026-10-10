@@ -247,10 +247,26 @@ export function namesDifferentRepos(row: BoardRow, other: BoardRow): boolean {
   return a.size > 0 && b.size > 0 && (a.size !== b.size || [...a].some((name) => !b.has(name)));
 }
 
+/**
+ * The class id of a title of the work gate's one template, `Failure class <id> repeated: ...` (`class-repeat.ts`), lower-cased; `undefined` for any other title.
+ * @param {string | undefined} title @returns {string | undefined}
+ */
+const classRepeatIdOf = (title: string | undefined): string | undefined => /^\s*failure class (\S+) repeated\b/i.exec(String(title ?? ""))?.[1].toLowerCase();
+
+/**
+ * Two class-repeat titles that carry different class ids are two rows (agent-org#671): the gate files every class's row from one template, so `main-red` and `hand-reroute` share 10 of 12
+ * words (0.83, over `DUPLICATE_SIMILARITY`) and a11ign#4833 was called a near-duplicate of #4623. A title not of the form, or two of the same id, are compared by words alone.
+ * @param {BoardRow} row @param {BoardRow} other @returns {boolean}
+ */
+function namesDifferentFailureClasses(row: BoardRow, other: BoardRow): boolean {
+  const [a, b] = [classRepeatIdOf(row.title), classRepeatIdOf(other.title)];
+  return a !== undefined && b !== undefined && a !== b;
+}
+
 /** @param {BoardRow} row @param {BoardRow} other @returns {boolean} */
 function nearDuplicates(row: BoardRow, other: BoardRow): boolean {
   const [a, b] = [wordsOf(row.title), wordsOf(other.title)];
-  return a.size >= DUPLICATE_MIN_WORDS && b.size >= DUPLICATE_MIN_WORDS && similarity(a, b) >= DUPLICATE_SIMILARITY && !namesDifferentRepos(row, other);
+  return a.size >= DUPLICATE_MIN_WORDS && b.size >= DUPLICATE_MIN_WORDS && similarity(a, b) >= DUPLICATE_SIMILARITY && !namesDifferentRepos(row, other) && !namesDifferentFailureClasses(row, other);
 }
 
 /** @param {BoardRow} row @param {Map<number, BoardRow>} known @returns {Finding[]} */
