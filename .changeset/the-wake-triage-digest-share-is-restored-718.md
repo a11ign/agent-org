@@ -1,0 +1,5 @@
+---
+"agent-org": minor
+---
+
+The wake-triage digest share is restored (a11ign#4627 item 2). Five questions each needed an answer at or over a flat 0.7 and 607 of 609 five-answer asks had one under it, so an order was held only when the provider was sure of every answer; the provider's own `asked` value was thrown away too. Each question now has a floor sized to what its answer can do: `asks-this-seat` keeps the host's, `repeat` is 0.5 (the state's own delivery corroborates it), and the two wake guards 0.3 with the same fallback that wakes. ONE confident `asks-this-seat=no` holds an order for the digest; a red main or a chairman direction still wakes, and an order the provider could not answer still wakes. The `asked` line now carries `said` (the provider's raw value and confidence per question) and, when `via` is `none`, the `reason`. `node src/triage-route.ts [--log=<path>]` reads the digest share per UTC day and prints a `LEDGER INCIDENT` line for a day under 5% over at least 50 asks. a11ign/agent-org#718.

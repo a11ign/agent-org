@@ -2,8 +2,9 @@
 // no-token: gh -- nothing here calls `gh`; every dependency is injected
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { decide } from "./decision-provider.ts";
 import { parseHostConfig } from "./host-config.ts";
-import { compose, freshState, QUESTIONS, REPEAT_WINDOW_MINUTES, triageOrder, type QuestionName } from "./triage-provider.ts";
+import { compose, freshState, QUESTIONS, REPEAT_FLOOR, REPEAT_WINDOW_MINUTES, triageOrder, WAKE_GUARD_FLOOR, type QuestionName } from "./triage-provider.ts";
 
 const FAKE_KEY = "tsk-FAKE-0123456789-do-not-print";
 const KEY_PATH = "/fake/typesafe/key";
@@ -17,14 +18,21 @@ const ORDER = { cause: "answer-owed", causeKey: "product-manager/answer-owed/row
 
 type Reply = { status?: number; body?: unknown; throws?: boolean; hangs?: boolean };
 const NAMES = Object.keys(QUESTIONS) as QuestionName[];
-/** What the provider says to the five questions when nothing in the event asks for a wake. */
-const QUIET = { "asks-this-seat": "no", repeat: "no", "names-red-main": "no", "names-chairman-direction": "no", "informational-only": "no" } as const;
+/** What the provider says to the five questions when nothing in the event asks for a wake and nothing says it can wait: it asks something of this seat. */
+const QUIET = { "asks-this-seat": "yes", repeat: "no", "names-red-main": "no", "names-chairman-direction": "no", "informational-only": "no" } as const;
 /** All five answered at one confidence, `say` overriding the quiet `no`s. */
 const answered = (say: Partial<Record<QuestionName, string>>, confidence = 0.95) => ({
   answers: Object.fromEntries(NAMES.map((name) => [name, { type: "choice", choice: { ...QUIET, ...say }[name], probabilities: {}, confidence }])),
 });
-/** Held for the digest: informational only, asking nothing of this seat. */
-const digestible = (confidence = 0.95) => answered({ "informational-only": "yes" }, confidence);
+/** Held for the digest: one answer, that the event asks nothing of this seat. */
+const digestible = (confidence = 0.95) => answered({ "asks-this-seat": "no" }, confidence);
+/** Each question answered at its OWN confidence, `[choice, confidence]`, the rest quiet at 0.95: what a provider that is sure of one thing and not of the others sends. */
+const mixed = (say: Partial<Record<QuestionName, readonly [string, number]>>) => ({
+  answers: Object.fromEntries(NAMES.map((name) => {
+    const [choice, confidence] = say[name] ?? [QUIET[name], 0.95];
+    return [name, { type: "choice", choice, probabilities: {}, confidence }];
+  })),
+});
 
 /** A fake `fetch` that records every call and answers `reply`. */
 function fakeFetch(reply: Reply | (() => Reply)) {
@@ -89,8 +97,8 @@ test("Jev enabled: an informational order digests at 0.95, the same at 0.89 unde
   const digest = rig(JEV, { body: digestible(0.95) });
   const routed = await triageOrder(ORDER, digest.deps);
   assert.deepEqual([routed.route, routed.via, routed.confidence], ["digest", "jev", 0.95]);
-  assert.match(routed.reason, /informational only/);
-  assert.equal(routed.answers?.["informational-only"], "yes", "the line that says why it was held carries the answers");
+  assert.match(routed.reason, /asks nothing of this seat/);
+  assert.equal(routed.answers?.["asks-this-seat"], "no", "the line that says why it was held carries the answers");
   const wakes = rig(JEV, { body: answered({ "asks-this-seat": "yes" }) });
   assert.equal((await triageOrder(ORDER, wakes.deps)).route, "wake");
   const low = rig(JEV, { body: digestible(0.89) });
@@ -192,8 +200,8 @@ test("the fake key's text appears in nothing the run printed or returned", async
 const ask = (say: Partial<Record<QuestionName, string>>, age: number | null | undefined = undefined) => compose({ ...QUIET, ...say }, age);
 
 test("compose: a red main or a chairman direction always wakes, and the same answers without it digest (the negative control)", () => {
-  const informational = { "informational-only": "yes" } as const;
-  assert.equal(ask(informational).route, "digest", "CONTROL: informational only, nothing red, digests");
+  const informational = { "asks-this-seat": "no" } as const;
+  assert.equal(ask(informational).route, "digest", "CONTROL: it asks nothing of this seat, nothing red, digests");
   assert.equal(ask({ ...informational, "names-red-main": "yes" }).route, "wake");
   assert.equal(ask({ ...informational, "names-chairman-direction": "yes" }).route, "wake");
   assert.equal(ask({ repeat: "yes", "names-red-main": "yes" }, 5).route, "wake", "a repeat that names a red main still wakes");
@@ -208,7 +216,8 @@ test("compose: a repeat inside the hour digests, at the hour it wakes, and an an
   assert.equal(ask({ repeat: "no" }, 5).route, "wake", "CONTROL: the provider said it is not a repeat");
 });
 
-test("compose: informational only digests unless it also asks something of this seat, and nothing else digests", () => {
+test("compose: ONE answer that it asks nothing of this seat digests, informational only digests unless it also asks something of this seat, and nothing else digests", () => {
+  assert.equal(ask({ "asks-this-seat": "no" }).route, "digest", "one confident answer is enough: informational-only stayed `no`");
   assert.equal(ask({ "informational-only": "yes", "asks-this-seat": "no" }).route, "digest");
   assert.equal(ask({ "informational-only": "yes", "asks-this-seat": "yes" }).route, "wake", "contradictory answers are a wake");
   assert.equal(ask({ "asks-this-seat": "yes" }).route, "wake");
@@ -235,7 +244,7 @@ test("a red main or a chairman direction in the state wakes BEFORE anything is a
 
 test("the provider naming a red main or a chairman direction wakes an order whose state says neither", async () => {
   for (const say of [{ "names-red-main": "yes" }, { "names-chairman-direction": "yes" }] as const) {
-    const { deps } = rig(JEV, { body: answered({ ...say, "informational-only": "yes" }) });
+    const { deps } = rig(JEV, { body: answered({ ...say, "asks-this-seat": "no" }) });
     assert.equal((await triageOrder(ORDER, deps)).route, "wake");
   }
 });
@@ -247,27 +256,72 @@ test("a repeat the provider reports digests only when the state holds a delivery
   assert.equal((await triageOrder({ ...ORDER, lastDeliveredMinutesAgo: null }, rig(JEV, repeat).deps)).route, "wake");
 });
 
-test("one answer under the floor takes its own fallback and nothing else changes: a low red-main answer wakes, a low informational answer wakes, a low repeat answer wakes", async () => {
-  const mixed = (low: QuestionName, say: Partial<Record<QuestionName, string>>) => {
+test("one answer under its floor takes its own fallback and nothing else changes: a low asks-this-seat, red-main, chairman-direction, informational or repeat answer wakes", async () => {
+  const lowered = (low: QuestionName, floor: number, say: Partial<Record<QuestionName, string>>) => {
     const body = answered(say, 0.95);
-    (body.answers[low] as { confidence: number }).confidence = 0.5;
+    (body.answers[low] as { confidence: number }).confidence = floor - 0.01;
     return { body };
   };
-  const digestAnswers = { "informational-only": "yes" } as const;
-  assert.equal((await triageOrder(ORDER, rig(JEV, mixed("names-red-main", digestAnswers)).deps)).route, "wake");
-  assert.equal((await triageOrder(ORDER, rig(JEV, mixed("names-chairman-direction", digestAnswers)).deps)).route, "wake");
-  assert.equal((await triageOrder(ORDER, rig(JEV, mixed("asks-this-seat", digestAnswers)).deps)).route, "wake");
-  assert.equal((await triageOrder(ORDER, rig(JEV, mixed("informational-only", digestAnswers)).deps)).route, "wake");
-  assert.equal((await triageOrder(ORDER, rig(JEV, mixed("repeat", { repeat: "yes" })).deps)).route, "wake");
-  assert.equal((await triageOrder(ORDER, rig(JEV, mixed("repeat", digestAnswers)).deps)).route, "digest", "CONTROL: a low answer that cannot hold the order changes nothing");
+  const digestAnswers = { "asks-this-seat": "no" } as const;
+  const wakes = async (reply: { body: unknown }) => (await triageOrder(ORDER, rig(JEV, reply).deps)).route;
+  // the host's own floor (0.9 here) governs the answer that holds an order alone; the two wake guards have their own, lower floor
+  assert.equal(await wakes(lowered("asks-this-seat", JEV.minConfidence, digestAnswers)), "wake");
+  assert.equal(await wakes(lowered("names-red-main", WAKE_GUARD_FLOOR, digestAnswers)), "wake");
+  assert.equal(await wakes(lowered("names-chairman-direction", WAKE_GUARD_FLOOR, digestAnswers)), "wake");
+  assert.equal(await wakes(lowered("informational-only", JEV.minConfidence, { "informational-only": "yes" })), "wake");
+  assert.equal(await wakes(lowered("repeat", REPEAT_FLOOR, { repeat: "yes" })), "wake");
+  assert.equal(await wakes(lowered("repeat", REPEAT_FLOOR, digestAnswers)), "digest", "CONTROL: a low answer that cannot hold the order changes nothing");
+});
+
+test("THE RECORDED SHAPE (a11ign#4627 item 2): asks-this-seat=no at 0.9 and the other four under 0.7 digests, where a flat 0.7 woke it, and the line keeps what was said", async () => {
+  const HOST_07 = { provider: "jev", keyPath: KEY_PATH, minConfidence: 0.7 };
+  const reply = mixed({
+    "asks-this-seat": ["no", 0.9], repeat: ["no", 0.4], "names-red-main": ["no", 0.5], "names-chairman-direction": ["no", 0.4], "informational-only": ["no", 0.3],
+  });
+  const { deps } = rig(HOST_07, { body: reply });
+  const t = await triageOrder(ORDER, deps);
+  assert.deepEqual([t.route, t.via, t.confidence], ["digest", "jev", 0.3]);
+  assert.deepEqual(t.answers, { "asks-this-seat": "no", repeat: "no", "names-red-main": "no", "names-chairman-direction": "no", "informational-only": "no" });
+  assert.deepEqual(t.said, {
+    "asks-this-seat": { value: "no", confidence: 0.9 }, repeat: { value: "no", confidence: 0.4 }, "names-red-main": { value: "no", confidence: 0.5 },
+    "names-chairman-direction": { value: "no", confidence: 0.4 }, "informational-only": { value: "no", confidence: 0.3 },
+  });
+  // NEGATIVE CONTROL: the same five answers under the flat 0.7 the questions used to share. The two wake guards fall back to `yes`, which wakes.
+  const flat = Object.fromEntries(NAMES.map((name) => { const { minConfidence: _own, ...question } = QUESTIONS[name]; return [name, question]; }));
+  const decision = await decide("wake-triage", {}, flat, { ...deps, switches: { "wake-triage": true } });
+  const used = Object.fromEntries(NAMES.map((name) => [name, String(decision.answers[name].value)])) as Record<QuestionName, string>;
+  assert.equal(used["names-red-main"], "yes");
+  assert.equal(compose(used, 30).route, "wake");
+});
+
+test("a red main named at 0.3 wakes, whatever else is confident, and a `no` under the wake guard's floor wakes too; the line keeps the value the floor replaced", async () => {
+  const HOST_07 = { provider: "jev", keyPath: KEY_PATH, minConfidence: 0.7 };
+  const sure = { "asks-this-seat": ["no", 0.95], repeat: ["yes", 0.95] } as const;
+  const named = await triageOrder(ORDER, rig(HOST_07, { body: mixed({ ...sure, "names-red-main": ["yes", 0.3] }) }).deps);
+  assert.deepEqual([named.route, named.answers?.["names-red-main"], named.said?.["names-red-main"]], ["wake", "yes", { value: "yes", confidence: 0.3 }]);
+  assert.equal((await triageOrder(ORDER, rig(HOST_07, { body: mixed({ ...sure, "names-chairman-direction": ["yes", 0.3] }) }).deps)).route, "wake");
+  const unsure = await triageOrder(ORDER, rig(HOST_07, { body: mixed({ ...sure, "names-red-main": ["no", WAKE_GUARD_FLOOR - 0.1] }) }).deps);
+  assert.deepEqual([unsure.route, unsure.answers?.["names-red-main"], unsure.said?.["names-red-main"]], ["wake", "yes", { value: "no", confidence: WAKE_GUARD_FLOOR - 0.1 }]);
+  assert.equal((await triageOrder(ORDER, rig(HOST_07, { body: mixed(sure) }).deps)).route, "digest", "CONTROL: the same confident answers with the guards answered `no` digest");
+});
+
+test("a repeat the provider is 0.6 sure of digests when the state holds the delivery, and an unanswered question has a `said` with neither value nor confidence", async () => {
+  const HOST_07 = { provider: "jev", keyPath: KEY_PATH, minConfidence: 0.7 };
+  const reply = mixed({ repeat: ["yes", 0.6] });
+  assert.equal((await triageOrder({ ...ORDER, lastDeliveredMinutesAgo: 30 }, rig(HOST_07, { body: reply }).deps)).route, "digest");
+  assert.equal((await triageOrder({ ...ORDER, lastDeliveredMinutesAgo: 61 }, rig(HOST_07, { body: reply }).deps)).route, "wake");
+  const body = mixed({ "asks-this-seat": ["no", 0.95] });
+  (body.answers as Record<string, unknown>)["informational-only"] = { type: "choice", choice: "perhaps", confidence: 0.9 };
+  const t = await triageOrder(ORDER, rig(HOST_07, { body }).deps);
+  assert.deepEqual([t.route, t.said?.["informational-only"], t.answers?.["informational-only"]], ["digest", {}, "no"]);
 });
 
 test("one malformed answer among five is that question's fallback and not a failed read: the others still count", async () => {
-  const body = answered({ "informational-only": "yes" }, 0.99);
+  const body = answered({ "asks-this-seat": "no" }, 0.99);
   (body.answers["names-red-main"] as { choice: string }).choice = "maybe";
   const result = await triageOrder(ORDER, rig(JEV, { body }).deps);
   assert.deepEqual([result.route, result.via], ["wake", "jev"], "the red-main question fell back to yes, which wakes");
-  const otherwise = answered({ "informational-only": "yes" }, 0.99);
+  const otherwise = answered({ "asks-this-seat": "no" }, 0.99);
   (otherwise.answers["repeat"] as { choice: string }).choice = "maybe";
   assert.equal((await triageOrder(ORDER, rig(JEV, { body: otherwise }).deps)).route, "digest", "CONTROL: a malformed repeat falls back to no, which cannot hold an order, and the rest digest it");
 });
