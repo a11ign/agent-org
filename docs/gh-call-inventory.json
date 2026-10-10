@@ -1,11 +1,11 @@
 {
   "generatedBy": "src/packaging/gh-call-inventory.ts",
   "summary": {
-    "files": 92,
+    "files": 94,
     "spawns": 133,
-    "calls": 384,
+    "calls": 389,
     "shapes": {
-      "api rest": 131,
+      "api rest": 136,
       "issue list": 42,
       "api graphql": 37,
       "issue view": 34,
@@ -210,6 +210,14 @@
       "calls": {
         "pr comment": 1,
         "pr list": 1
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/ci-failure-class.ts": {
+      "spawns": 0,
+      "calls": {
+        "api rest": 2
       },
       "labels": [],
       "parsesCloses": false
@@ -616,6 +624,14 @@
       "spawns": 0,
       "calls": {
         "api rest": 4
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/review-depth.ts": {
+      "spawns": 0,
+      "calls": {
+        "api rest": 3
       },
       "labels": [],
       "parsesCloses": false

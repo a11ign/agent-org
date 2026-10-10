@@ -45,6 +45,8 @@ import type { BlockingRecord } from "./blocking-impact.ts";
 import { routeEngineer, type Routed } from "./engineer-route.ts";
 import { ESCALATION_KIND, ESCALATION_USE, claimFacts, escalationLogLine, escalationNote, haikuStarts, shouldEscalate, transcriptCounts } from "./engineer-escalation.ts";
 import { decisionLogPathFrom, decisionSwitchesPath } from "./decision-provider.ts";
+import { classifyCiFailure, classLine, classNote, readCiFailure, type Gh } from "./ci-failure-class.ts";
+import { depthEffort, depthLine, readDepthState, reviewDepth, type Depth } from "./review-depth.ts";
 import { profileFor, agentArgs, haikuTierProfile, type TierProfile, armOf, ARM, CALM_FINISH_PARAGRAPH, tripsArmOf, TRIPS_ARM, ROUND_TRIPS_PARAGRAPH } from "./worker-profile.ts";
 import { JUDGMENT_CAUSES, ANSWER_PREFIX, LAUNCH_PLACEHOLDER, REVIEWER_REGISTRY_FILE, readReviewerRegistry, scopesOf,
   readWithFirstWaveTogether, runBatch }
@@ -1793,7 +1795,7 @@ export function repointedForReviewer(order: { session: string; prompt: string; }
  *
  * @param deps `cwd` is the verified checkout
  */
-function spawnReviewer(order: { session: string; cause?: string; causeKey?: string; }, agents: { label: string; status: string; }[], { run = defaultRun, env, cwd, registry, codexConfig }: {
+function spawnReviewer(order: { session: string; cause?: string; causeKey?: string; reviewDepth?: Depth; }, agents: { label: string; status: string; }[], { run = defaultRun, env, cwd, registry, codexConfig }: {
         run?: (args: string[]) => string; env?: Record<string, string>; cwd: string;
         registry?: Record<string, { spawnedAt: number; }>; codexConfig?: () => string | null;
     }): { label: string; workspace: string; profile: { kind: string; model: string; effort: string; }; } |
@@ -1802,7 +1804,9 @@ function spawnReviewer(order: { session: string; cause?: string; causeKey?: stri
   if ("refusal" in reviewer) return reviewer;
   const pane = openPane(run, reviewer.session, reviewerEnvironment(reviewer.session, env, cwd), cwd);
   if ("refusal" in pane) return pane;
-  const invocation = spawnInvocation({ ...order, cause: String(order.cause) }, reviewer.session, pane.pane);
+  // #4888: THE DEPTH SETS THE EFFORT the reviewer is started with; absent, the cause's own profile is what it was.
+  const effort = depthEffort(order.reviewDepth);
+  const invocation = spawnInvocation({ ...order, cause: String(order.cause) }, reviewer.session, pane.pane, effort === undefined ? {} : { effort });
   if ("refusal" in invocation) return { refusal: `${invocation.refusal}${closedNote(run, pane.workspace)}` };
   try {
     run(invocation.args);
@@ -1887,7 +1891,7 @@ export function noReviewCheckoutFor(session: string): string | null {
  * fetch costs no process and no order names a path that is not there; a `reviewer-<n>` that exists and is working
  * WAITS for the next tick, because a second workspace under its label would make `route` ambiguous.
  */
-function reviewerTarget(order: { session: string; cause?: string; causeKey?: string; prompt: string; }, live: { label: string; status: string; }[], deps: ReviewerDeps): {
+function reviewerTarget(order: { session: string; cause?: string; causeKey?: string; prompt: string; reviewDepth?: Depth; }, live: { label: string; status: string; }[], deps: ReviewerDeps): {
     label: string; profile?: { kind: string; model: string; effort: string; }; reviewer: true;
     order: { prompt: string; }; workspace?: string;
 } | { refusal: string; } {
@@ -6539,6 +6543,75 @@ export async function routesForStarts(orders: readonly { causeKey: string }[], {
 }
 
 /**
+ * #4888: THE RED-CHECK ORDER AND THE REVIEWER'S ORDER ARE EACH PUT TO THE PROVIDER, here, at the one async seam the tick has. `work-gate.ts` is synchronous end to end, so the gate cannot
+ * await a provider; it writes the order, and the tick classifies it just before delivery, beside {@link routesForStarts}. Both are capped at {@link ENRICH_AHEAD} per tick, never throw, and
+ * leave an order as the gate wrote it whenever the facts could not be read or no provider answered.
+ */
+export const ENRICH_AHEAD = 3;
+/** The cause key of a settled-red order (`<session>/pr-checks-failing/pr-<ref>/<head8>`, `/conflicting` optional); a hung check, an ejection and a checkless head end otherwise. */
+const RED_CHECK_KEY = /\/pr-checks-failing\/pr-([a-z0-9][a-z0-9-]*#)?([1-9][0-9]*)\/([0-9a-f]{8})(?:\/conflicting)?$/;
+type Enrichable = { session: string; causeKey: string; prompt: string; cause?: string };
+type EnrichDeps = { host: Parameters<typeof routeEngineer>[1]["host"]; ledgerPath: string; projectDir?: string; gh?: Gh };
+
+const enrichDecisionDeps = ({ host, ledgerPath, projectDir = PRIMARY_CHECKOUT }: EnrichDeps, id: string) =>
+  ({ host, switchesPath: decisionSwitchesPath(projectDir), logPath: decisionLogPathFrom(ledgerPath), id });
+
+/** The pull request a settled-red order is about, or `null` for a key naming none or a repository the declaration does not list (never the primary's by default). */
+function redPullRequestOf(order: Enrichable): { repo: string; number: number; head8: string } | null {
+  const match = order.cause === "pr-checks-failing" ? RED_CHECK_KEY.exec(order.causeKey) : null;
+  const repo = match === null ? null : codeRepositoryOf((match[1] ?? "").replace(/#$/, ""));
+  return match === null || repo === null ? null : { repo, number: Number(match[2]), head8: match[3] };
+}
+
+/**
+ * `ci-failure-class` (#4632) for each settled-red order. The class and the route go in the journal line whoever chose; the ORDER's text gains them only when the PROVIDER chose, so with
+ * no provider the order is the gate's, byte for byte. `read` and `classify` are seams for a test.
+ */
+export async function withCiFailureClass<T extends Enrichable>(orders: readonly T[], deps: EnrichDeps & { read?: typeof readCiFailure; classify?: typeof classifyCiFailure; now?: number }): Promise<T[]> {
+  const { gh = defaultGh, read = readCiFailure, classify = classifyCiFailure, now = Date.now() } = deps;
+  const notes = new Map<string, string>();
+  await Promise.all(orders.filter((o) => redPullRequestOf(o) !== null).slice(0, ENRICH_AHEAD).map(async (order) => {
+    try {
+      const failure = read(redPullRequestOf(order)!, gh, now);
+      if (failure === null) return;
+      const decision = await classify(failure, enrichDecisionDeps(deps, order.causeKey));
+      process.stderr.write(`wake: ${order.causeKey} ${classLine(decision)}\n`);
+      if (decision.via === "jev") notes.set(order.causeKey, classNote(decision));
+    } catch (err) {
+      process.stderr.write(`wake: could not classify ${order.causeKey} (${firstLine(err)}) -- the order as the gate wrote it.\n`);
+    }
+  }));
+  return orders.map((o) => (notes.has(o.causeKey) ? { ...o, prompt: `${o.prompt}\n\n${notes.get(o.causeKey)}` } : o));
+}
+
+/**
+ * `review-depth` (#4635) for each reviewer order. A depth CODE chose (`full`: a workflow, an auth or security path, a gate-bearing Region) needs no provider and is applied whatever
+ * the host declares; one the provider chose is applied too; `normal` by fallback is the order as it was. The depth rides the order as `reviewDepth`, which sets the effort the instance is
+ * STARTED with ({@link spawnReviewer}), and its line rides the prompt, where the reviewer may raise it and never lower it.
+ */
+export async function withReviewDepth<T extends Enrichable>(orders: readonly T[], deps: EnrichDeps & { read?: typeof readDepthState; depth?: typeof reviewDepth }): Promise<(T & { reviewDepth?: Depth })[]> {
+  const { gh = defaultGh, read = readDepthState, depth = reviewDepth } = deps;
+  const applied = new Map<string, Depth>();
+  await Promise.all(orders.filter((o) => isReviewerOrder(o)).slice(0, ENRICH_AHEAD).map(async (order) => {
+    try {
+      const ref = orderPullRequestRef(order);
+      const repo = ref === null ? null : codeRepositoryOf(ref.key);
+      const state = ref === null || repo === null ? null : read({ repo, number: ref.number }, gh);
+      if (state === null) return;
+      const answer = await depth(state, enrichDecisionDeps(deps, order.causeKey));
+      process.stderr.write(`wake: ${order.session} review depth ${answer.depth} by ${answer.by} (${answer.reason}).\n`);
+      if (answer.by !== "none") applied.set(order.causeKey, answer.depth);
+    } catch (err) {
+      process.stderr.write(`wake: could not read the depth for ${order.session} (${firstLine(err)}) -- the order as the gate wrote it.\n`);
+    }
+  }));
+  return orders.map((o) => {
+    const chosen = applied.get(o.causeKey);
+    return chosen === undefined ? o : { ...o, prompt: `${o.prompt}\n\n${depthLine(chosen)}`, reviewDepth: chosen };
+  });
+}
+
+/**
  * #3892: THE TREE A REPLACEMENT IS BUILT IN, when no release left a record of one. The gate offered the row for a branch whose pull request was CLOSED unmerged
  * and says which branches (`order.replaces`); the previous holder's tree is on the host, still on that branch, and `--adopt` is the one claim #2014 leaves open for a
  * branch that is on `origin`. A release that recorded no branch or worktree (#3505's: "No branch or worktree is recorded") left `kept` nothing to answer, so the
@@ -8112,9 +8185,12 @@ async function main() {
 
   const spares = sparePathsFrom(ledgerPath);
   const drained = drainNow(spares.cycles);
-  const routes = await routesForStarts(todo, { host: hostOrEmpty(), ledgerPath });
+  const host = hostOrEmpty();
+  // #4888: `ci-failure-class` and `review-depth` are asked here, of the orders about to be delivered.
+  const ready = await withReviewDepth(await withCiFailureClass(todo, { host, ledgerPath }), { host, ledgerPath });
+  const routes = await routesForStarts(ready, { host, ledgerPath });
   // A SEAT THE FIRST DELIVERY FOUND ENDED IS ENDED FOR THE SECOND (#3568): one `agent_not_found` per label per tick, not one per order.
-  const { sent, refused: gateRefused, stuck, outaged, settled } = deliver(todo, free, roster, { record, unavailable, clock, relane: relaneFacts(ledgerPath),
+  const { sent, refused: gateRefused, stuck, outaged, settled } = deliver(ready, free, roster, { record, unavailable, clock, relane: relaneFacts(ledgerPath),
     goneSeats: handed.goneSeats,
     claimOrders: claimOrdersIn(claimOrdersPath(ledgerPath)),
     counts: deliveryCounts(ledgerPath), ineligibleReason: poolEngineerReason(poolEligibility(spares, drained), unavailable),
