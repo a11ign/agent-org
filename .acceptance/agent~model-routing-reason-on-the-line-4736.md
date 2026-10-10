@@ -2,7 +2,7 @@ Model routing has never consulted the provider: every call was rejected with HTT
 
 Closes a11ign/a11ign#4736, a11ign/agent-org#564
 
-**Stacked on #588.** That pull request (the wire, the scale and the pinned wire: items 1 to 3 of the mirror) was approved and in the merge queue when the mirror's larger scope arrived, and a queued branch cannot be updated, so items 4 and 5 are this one. Until #588 merges, this diff also shows its commits; after, only `src/engineer-route.ts`, its test, a changeset and this file. #588 declares `Closes: none`, so this is the pull request that closes the rows.
+**Stacked on #588.** That pull request (the wire, the scale and the pinned wire: items 1 to 3 of the mirror) was approved and in the merge queue when the mirror's larger scope arrived, and a queued branch cannot be updated, so items 4 and 5 are this one. Until #588 merges, this diff also shows its commits; after, only `src/engineer-route.ts`, its test, a changeset and this file. #588 names no row to close, so this is the pull request that does.
 
 a11ign/a11ign#4627 stays open. The mirror's Done-when 2 (the first live `"via":"jev"` record after a release, quoted with its row and its outcome line) is still owed there, by product-manager; this PR makes that record possible and cannot show it.
 
