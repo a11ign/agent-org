@@ -4,7 +4,7 @@
  * `packages/agent-org/src/row-claim/waiting-language-rule.ts` for the full account: a warning, never a
  * refusal, printed by `row-file.ts` alongside `directoryRegionWarning` and `unrecognisedRegionWarning`.
  */
-import { declareWalkScope } from "@a11ign/toolchain/lib/walk-scope";
+import { declareWalkScope } from "../lib/walk-scope.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { waitingLanguageWarning } from "../row-claim/waiting-language-rule.ts";

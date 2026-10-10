@@ -1,0 +1,13 @@
+// @ts-check
+// (#3233) A RECORDED STAND-IN for the project's original of a copied file: org-health-fleet-and-copies.test.ts reads it beside `tool/src/lib/isolation-gate.mjs`,
+// the way `readDeclaredCopies` reads the real pair, so the copy-drift signal is exercised on a pair that a11ign's tree cannot move.
+import { parseFlags } from "../../cli/src/cli-flags.mjs";
+import { npmCliExecutable } from "../../cli/src/npm-cli-executable.mjs";
+
+const REGISTRY = "https://registry.npmjs.org/";
+
+export function isolationGate(argv) {
+  const flags = parseFlags(argv);
+  const npm = npmCliExecutable();
+  return { flags, npm, registry: REGISTRY };
+}

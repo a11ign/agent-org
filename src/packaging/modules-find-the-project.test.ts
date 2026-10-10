@@ -7,9 +7,10 @@
  *
  * `lib/product-home.ts`, `lib/walk-scope.ts` and `ready-label-audit.ts` each reached a project file (the product's manifest, the tree a
  * declared scope is relative to, `docs/row-filing.md`) by `src` up three or four, which is `packages/agent-org/src`'s root in the monorepo and
- * the HOME directory in this repository. The first two are the toolchain's now (a11ign/agent-org#522) and take their root from where THEY are
- * installed, not from the project: `productHome` is handed `HOME_CHECKOUT` by `board-document.ts`, and is asked here through the document that
- * does; `walk-scope`'s `REPO_ROOT` has no such parameter, so its test below stays and is the one that says so. A test that reads the project the host file names cannot tell the two apart when the tool also sits
+ * the HOME directory in this repository. `product-home` is the toolchain's now (a11ign/agent-org#522) and takes its root from where IT is
+ * installed: `board-document.ts` hands it `HOME_CHECKOUT`, and it is asked here through the document that does. `walk-scope` stays the tool's
+ * own declared copy, because the toolchain's `REPO_ROOT` has no such parameter, and its test below is what pins that copy's root. A test that
+ * reads the project the host file names cannot tell the two apart when the tool also sits
  * in that project, so each child here runs against a SCRATCH project, one whose files are the only ones carrying the marker below: a module
  * that resolved anything else would fail naming the file it read.
  */
@@ -78,8 +79,7 @@ test("the board document says the PROJECT's manifest homepage: the scratch proje
 
 test("walk-scope's REPO_ROOT is the PROJECT's checkout, the tree every declared scope is relative to", () => {
   const { checkout, hostFile } = scratchProject();
-  assert.equal(inChild(hostFile, `import("@a11ign/toolchain/lib/walk-scope").then((m) => m.REPO_ROOT)`), realpathSync(checkout),
-    "the toolchain's walk-scope fixes REPO_ROOT two directories above ITS OWN dist/lib, which installed is its package directory: every declared scope is then relative to that tree and a read of the project is not observed");
+  assert.equal(inChild(hostFile, `import(${JSON.stringify(`${SRC}/lib/walk-scope.ts`)}).then((m) => m.REPO_ROOT)`), realpathSync(checkout));
 });
 
 test("ready-label-audit reads the PROJECT's docs/row-filing.md, the guidance a filer reads", () => {

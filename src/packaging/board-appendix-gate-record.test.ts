@@ -7,7 +7,7 @@
  * In its own file because it imports `board-data.ts`, which spawns `gh`, and CI's acceptance job refuses
  * anything that does; it runs in the ordinary `ts` suite.
  */
-import { declareWalkScope } from "@a11ign/toolchain/lib/walk-scope";
+import { declareWalkScope } from "../lib/walk-scope.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 

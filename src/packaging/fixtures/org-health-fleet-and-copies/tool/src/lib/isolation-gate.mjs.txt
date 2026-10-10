@@ -1,0 +1,18 @@
+// COPIED FROM `packages/guards/src/isolation-gate.mjs.txt` at 598e883cc (#2623): a recorded stand-in for the tool's own copy (#3233).
+// CHANGED FROM THE ORIGINAL, 2 NAMED LINES:
+// - its import of cli-flags.mjs, now the tool's own copy beside it
+// - its import of npm-cli-executable.mjs, now the tool's own copy beside it
+// ==== end of copy header ====
+// @ts-check
+// (#3233) A RECORDED STAND-IN for the project's original of a copied file: org-health-fleet-and-copies.test.ts reads it beside `tool/src/lib/isolation-gate.mjs`,
+// the way `readDeclaredCopies` reads the real pair, so the copy-drift signal is exercised on a pair that a11ign's tree cannot move.
+import { parseFlags } from "./cli-flags.mjs";
+import { npmCliExecutable } from "./npm-cli-executable.mjs";
+
+const REGISTRY = "https://registry.npmjs.org/";
+
+export function isolationGate(argv) {
+  const flags = parseFlags(argv);
+  const npm = npmCliExecutable();
+  return { flags, npm, registry: REGISTRY };
+}

@@ -7,7 +7,7 @@
  * otherwise applies. See docs/operational-lessons.md, "Guard triage 4 of 6", for the rest of the file's
  * reasoning and what else it asserted.
  */
-import { declareWalkScope } from "@a11ign/toolchain/lib/walk-scope";
+import { declareWalkScope } from "../lib/walk-scope.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
