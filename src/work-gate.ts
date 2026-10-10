@@ -1572,6 +1572,29 @@ export function readOpenRows(run: (args: string[]) => string = defaultRun): any[
   }
 }
 
+/** The cut `reasonOf` makes of a refusal's cause, the length of `class-repeat.ts`'s `MAX_REASON_CHARS` (that file's own, not exported). */
+const REFUSAL_REASON_CHARS = 160;
+
+/**
+ * Why a `gh` call threw, in one line: `gh`'s own first line of stderr when it was captured (`err.stderr`, or the lines after the first of
+ * a batched call's message), else the error's first line. An `execFileSync` failure's first line is `Command failed: gh <args>`, which
+ * the verb already says and which a long `--search` fills the cut with, so that line is the last choice and not the first.
+ */
+const reasonOf = (err: unknown): string => {
+  const e = err as { stderr?: unknown; message?: unknown } | null;
+  const lines = [e?.stderr, e?.message ?? err].flatMap((text) => String(text ?? "").split("\n")).map((line) => line.trim()).filter(Boolean);
+  return (lines.find((line) => !line.startsWith("Command failed:")) ?? lines[0] ?? "no message").slice(0, REFUSAL_REASON_CHARS);
+};
+
+/** `readClosedAnswerRows`'s last refusal as a line (`issue list: boom`: the `gh` call, then why), `null` when the last read answered. Written by that read, read by `closedAnswerRows`. */
+let closedRowsRefusal: string | null = null;
+
+/** Records the reason and answers the `null` the read returns. */
+function refusedClosedRows(verb: string, reason: string): null {
+  closedRowsRefusal = `${verb}: ${reason}`;
+  return null;
+}
+
 /**
  * #2202: THE CLOSED ROWS THAT STILL OWE AN ANSWER -- the half of `answer-owed` that `readOpenRows` cannot see.
  *
@@ -1600,28 +1623,36 @@ export function readOpenRows(run: (args: string[]) => string = defaultRun): any[
  * ordering the half that answered and staying silent about the half that did not.
  *
  *
+ * THE REASON IS KEPT BESIDE THE `null`, NOT IN IT (a11ign/agent-org#483): the return stays `null` so no caller changes, and
+ * `closedRowsRefusal` says which call failed and its first line, for `closedAnswerRows` to print when the answer is used.
+ *
  * @returns `null` when refused, never `[]` -- "could not ask" is not "nobody owes anything"
  */
 export function readClosedAnswerRows(run: (args: string[]) => string = defaultRun): any[] | null {
+  closedRowsRefusal = null;
+  let asking = "";
+  const ask = (args: string[]) => { asking = ghCallName(args); return run(args); };
   try {
     // `gh label list --json` prints ZERO BYTES, not `[]`, when nothing matches (#472): a repository with no `answer:`
     // label -- agent-org, since it became a declared tracker -- is "nobody owes anything", not a refusal. Only the
     // EMPTY stdout is read so; text that does not parse, a non-array and a thrown `gh` stay `null` below.
-    const labelsText = run(["label", "list", "--search", ANSWER_PREFIX, "--limit", "100", "--json", "name"]);
+    const labelsText = ask(["label", "list", "--search", ANSWER_PREFIX, "--limit", "100", "--json", "name"]);
     if (labelsText.trim() === "") return [];
     const labels = JSON.parse(labelsText);
-    if (!Array.isArray(labels)) return null;
+    if (!Array.isArray(labels)) return refusedClosedRows(asking, "answered something that is not a list");
     const names = labels.map((l) => l?.name).filter((n) => typeof n === "string" && n.startsWith(ANSWER_PREFIX));
     if (names.length === 0) return [];
     const byLabel = `label:${names.map((n) => `"${n}"`).join(",")}`;
-    const closedIssues = JSON.parse(run(["issue", "list", "--state", "closed", "--limit", "100",
+    const closedIssues = JSON.parse(ask(["issue", "list", "--state", "closed", "--limit", "100",
       "--search", byLabel, "--json", "number,title,labels,state"]));
-    const closedPrs = JSON.parse(run(["pr", "list", "--state", "all", "--limit", "100",
+    const closedPrs = JSON.parse(ask(["pr", "list", "--state", "all", "--limit", "100",
       "--search", `${byLabel} -is:open`, "--json", "number,title,labels,state,isDraft"]));
-    if (!Array.isArray(closedIssues) || !Array.isArray(closedPrs)) return null;
+    if (!Array.isArray(closedIssues) || !Array.isArray(closedPrs)) {
+      return refusedClosedRows(Array.isArray(closedIssues) ? "pr list" : "issue list", "answered something that is not a list");
+    }
     return withAnswerLabel([...closedIssues, ...closedPrs]);
-  } catch {
-    return null;
+  } catch (err) {
+    return refusedClosedRows(asking, reasonOf(err));
   }
 }
 
@@ -2111,10 +2142,11 @@ function readPrimaryDriftNow(): import("./update-primary.ts").PrimaryDrift | nul
  * said here, where it was, when the answer is used.
  * @param rows what `readClosedAnswerRows` answered
  */
-function closedAnswerRows(rows: any[] | null): any[] {
+export function closedAnswerRows(rows: any[] | null): any[] {
   if (rows === null) {
     process.stderr.write("NOTE: could not read the closed rows that still owe an answer -- a question on a row "
-      + "a merge already closed -- or a pull request no longer open -- is NOT being chased this tick (#2202, #2641).\n");
+      + "a merge already closed -- or a pull request no longer open -- is NOT being chased this tick (#2202, #2641)."
+      + `${closedRowsRefusal === null ? "" : ` Refused at ${closedRowsRefusal}`}\n`);
     return [];
   }
   return withoutEndedAnswerSessions(rows);
@@ -4274,7 +4306,8 @@ function touchesOwnedLanePath(files: string[], lane: { paths: string[]; except?:
 
 /**
  * PURE. #1959: every open pull request CODEOWNERS assigns to the pipeline lane's owner and that owner has
- * not approved -- the gap nothing asked about before this row. `reviewDecision` alone cannot say WHO
+ * not reviewed at the head it has now (`ownerHasReviewed`: an approval or a refusal; a refusal left the pull request
+ * here and re-asked for a review already given, a11ign/agent-org#483) -- the gap nothing asked about before this row. `reviewDecision` alone cannot say WHO
  * approved, only that GitHub is satisfied, and measured 2026-09-22: `DanBeckDev` (`ceo`'s login) has never
  * authored a formal GitHub review in this repository, so a pipeline PR could sit indefinitely on an
  * unanswered CODEOWNERS request -- advisory today, a hard merge block the moment #1756's flip lands.
@@ -4303,10 +4336,38 @@ export function pipelineCodeownerReviewMissing(prs: any[], prFiles: { number: nu
   return prs
     .filter((pr) => pr.author?.login !== login)
     .filter((pr) => touchesOwnedLanePath(filesByRef.get(subjectRef(pr.repoKey, pr.number)) ?? [], lane))
-    .filter((pr) => !(pr.reviews ?? []).some(
-      (r: any) => r?.state === "APPROVED" && r?.author?.login === login))
+    .filter((pr) => !ownerHasReviewed(pr, login))
     .map((pr) => ({ number: Number(pr.number), ...subjectIdentity(pr), session: sessionOf(pr) }))
     .sort((a, b) => a.number - b.number);
+}
+
+/**
+ * The environment variable that puts `pipelineCodeownerReviewMissing` back to counting an `APPROVED` review only. SET TO `1` it is
+ * the revert; unset (the ordinary case) a refusal on the pull request's current head settles the cause too.
+ */
+export const CODEOWNER_REVIEW_APPROVED_ONLY_ENV = "AGENT_ORG_CODEOWNER_REVIEW_APPROVED_ONLY";
+
+/**
+ * Has the code owner already given this pull request the review CODEOWNERS asks for? `APPROVED` or `CHANGES_REQUESTED` on the head the
+ * pull request has NOW: a push after a refusal is new work the owner has not seen, so it is asked again, and `COMMENTED` and `DISMISSED`
+ * settle nothing (a comment is not a review and does not satisfy CODEOWNERS). `reviews[].commit.oid` is the sha the review was posted
+ * against; `latestReviews[]` carries it as the empty string, which is why `readPrs` asks for `reviews`.
+ *
+ * A REVIEW IS STALE ONLY WHEN BOTH SHAS ARE KNOWN AND DIFFER. A review with no `commit.oid`, or a pull request the read gave no
+ * `headRefOid`, cannot be shown to be on an older head (absence is not proof): an `APPROVED` there settles the cause exactly as it did
+ * before this row (`#1959 (c)` pins it), and a `CHANGES_REQUESTED` there does not, because it is the NEW settling state and is counted
+ * only on evidence that it is on the head the pull request has.
+ */
+function ownerHasReviewed(pr: any, login: string): boolean {
+  const approvedOnly = process.env[CODEOWNER_REVIEW_APPROVED_ONLY_ENV] === "1";
+  const head = typeof pr.headRefOid === "string" ? pr.headRefOid : "";
+  return (pr.reviews ?? []).some((r: any) => {
+    if (r?.author?.login !== login) return false;
+    if (approvedOnly) return r?.state === "APPROVED";
+    const at = typeof r?.commit?.oid === "string" ? r.commit.oid : "";
+    if (at !== "" && head !== "") return (r?.state === "APPROVED" || r?.state === "CHANGES_REQUESTED") && at === head;
+    return r?.state === "APPROVED";
+  });
 }
 
 /**
@@ -4331,7 +4392,7 @@ function pipelineCodeownerReviewOrders(missing: { number: number; repoKey?: stri
     subject: "pr-codeowner-review-missing",
     discriminator: key,
     prompt: `${missing.length} open pull request(s) touch a \`.github/workflows/\` path CODEOWNERS `
-      + `assigns to you and carry NO APPROVED review from you: ${named}.\n`
+      + `assigns to you and carry NO APPROVED or CHANGES_REQUESTED review from you on their current head: ${named}.\n`
       + "Nothing asked for this review before #1959: `reviewDecision` alone cannot say the approval came "
       + "from the code owner, and you have never authored a formal GitHub review in this repository. It is "
       + "advisory today -- #1756 (still open) is what turns it into a hard merge block.\n"

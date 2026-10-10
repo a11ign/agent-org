@@ -12,7 +12,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { comparablePrFiles, pipelineCodeownerReviewMissing } from "./work-gate.ts";
+import { CODEOWNER_REVIEW_APPROVED_ONLY_ENV, comparablePrFiles, pipelineCodeownerReviewMissing } from "./work-gate.ts";
 
 const WORKFLOW = ".github/workflows/release-per-merge.yml";
 const DEPENDENCY_BUMP = "packages/lab/package.json";
@@ -61,4 +61,74 @@ test("a tracker PR (no repoKey) and a sibling's PR with its number stay two entr
 
 test("two repositories that BOTH touch an owned path under one number are both named", () => {
   assert.deepEqual(named([pr(3, [WORKFLOW], TOOLCHAIN), pr(3, [WORKFLOW], LAB)]).sort(), ["lab#3", "toolchain#3"]);
+});
+
+// --- a11ign/agent-org#483: THE OWNER'S REVIEW OF THE CURRENT HEAD SETTLES THE CAUSE, WHATEVER IT SAID ------------------------------------------
+//
+// The cause counted `APPROVED` only, so a refusal on the current head left the pull request in the "missing" set and every tick asked the code
+// owner for a review it had given (lab#46 woke `ceo` at 11:08Z with the head unchanged and `ceo`'s CHANGES_REQUESTED on it).
+//
+// POSITIVE CONTROL for every "is not named": the same pull request with NO review from the owner is named (the first case here), so the list is
+// never empty by construction; and `onHead` / `onOldHead` differ in the sha alone, so the head comparison is what the pair tests.
+
+const OWNER = "a11ign-ai-leads", HEAD = "9f3c1a7", OLD_HEAD = "41be0d2";
+
+/** A review as `gh pr list --json reviews` carries it: the author, the state, and the sha it was posted against. */
+const review = (state: string, oid: string, login = OWNER) => ({ author: { login }, state, commit: { oid } });
+
+/** A workflow pull request at `HEAD` carrying `reviews`. */
+const reviewed = (...reviews: unknown[]): Pr => ({ ...pr(46, [WORKFLOW]), headRefOid: HEAD, reviews });
+
+/** `named` with the revert switch set (`on`) or removed, restored after, so no case leaks the variable into the next. */
+const namedWithSwitch = (prs: Pr[], on: boolean) => {
+  const before = process.env[CODEOWNER_REVIEW_APPROVED_ONLY_ENV];
+  if (on) process.env[CODEOWNER_REVIEW_APPROVED_ONLY_ENV] = "1"; else delete process.env[CODEOWNER_REVIEW_APPROVED_ONLY_ENV];
+  try { return named(prs); } finally {
+    if (before === undefined) delete process.env[CODEOWNER_REVIEW_APPROVED_ONLY_ENV]; else process.env[CODEOWNER_REVIEW_APPROVED_ONLY_ENV] = before;
+  }
+};
+
+test("#483 control: a pull request with NO review from the owner is named, and so is one reviewed only by someone else", () => {
+  assert.deepEqual(namedWithSwitch([reviewed()], false), ["#46"]);
+  assert.deepEqual(namedWithSwitch([reviewed(review("APPROVED", HEAD, "a11ign-ai-workers"), review("CHANGES_REQUESTED", HEAD, "somebody-else"))], false), ["#46"]);
+});
+
+test("#483: a pull request with the owner's CHANGES_REQUESTED on headRefOid is NOT named", () => {
+  assert.deepEqual(namedWithSwitch([reviewed(review("CHANGES_REQUESTED", HEAD))], false), []);
+});
+
+test("#483: a pull request with the owner's APPROVED on headRefOid is NOT named (today's case still holds)", () => {
+  assert.deepEqual(namedWithSwitch([reviewed(review("APPROVED", HEAD))], false), []);
+});
+
+test("#483: a pull request whose only owner review is on an OLDER commit.oid is named: a push after a refusal asks again", () => {
+  assert.deepEqual(namedWithSwitch([reviewed(review("CHANGES_REQUESTED", OLD_HEAD))], false), ["#46"]);
+  assert.deepEqual(namedWithSwitch([reviewed(review("APPROVED", OLD_HEAD))], false), ["#46"], "an approval of a head that has since moved is not an approval of this one");
+  assert.deepEqual(namedWithSwitch([reviewed(review("CHANGES_REQUESTED", OLD_HEAD), review("CHANGES_REQUESTED", HEAD))], false), [], "and the owner's later review of the new head settles it");
+});
+
+test("#483: a pull request whose only owner review is COMMENTED (or DISMISSED) is named: neither is a review CODEOWNERS counts", () => {
+  assert.deepEqual(namedWithSwitch([reviewed(review("COMMENTED", HEAD))], false), ["#46"]);
+  assert.deepEqual(namedWithSwitch([reviewed(review("DISMISSED", HEAD))], false), ["#46"]);
+});
+
+test("#483: a review with no commit, or a pull request with no headRefOid, is not two equal heads: a refusal there is named, an approval settles as before", () => {
+  const noCommit = (state: string) => ({ author: { login: OWNER }, state });
+  assert.deepEqual(namedWithSwitch([reviewed(noCommit("CHANGES_REQUESTED"))], false), ["#46"]);
+  assert.deepEqual(namedWithSwitch([{ ...reviewed({ ...review("CHANGES_REQUESTED", ""), commit: {} }), headRefOid: undefined }], false), ["#46"]);
+  assert.deepEqual(namedWithSwitch([{ ...reviewed(review("CHANGES_REQUESTED", HEAD)), headRefOid: undefined }], false), ["#46"]);
+  // today's pinned case (`work-gate.test.ts` #1959 (c)): an approval that carries no sha cannot be shown to be stale, so it still settles
+  assert.deepEqual(namedWithSwitch([reviewed(noCommit("APPROVED"))], false), []);
+});
+
+test("#483 negative control: with the switch ON the CHANGES_REQUESTED case is named again, and an APPROVED on any head is today's answer", () => {
+  assert.deepEqual(namedWithSwitch([reviewed(review("CHANGES_REQUESTED", HEAD))], true), ["#46"], "the refusal on the current head is named once more");
+  assert.deepEqual(namedWithSwitch([reviewed(review("APPROVED", HEAD))], true), []);
+  assert.deepEqual(namedWithSwitch([reviewed(review("APPROVED", OLD_HEAD))], true), [], "today's filter never looked at the head");
+});
+
+test("#483: a pull request the owner authored stays excluded, with or without a review", () => {
+  const own = { ...reviewed(), author: { login: OWNER } };
+  assert.deepEqual(namedWithSwitch([own], false), []);
+  assert.deepEqual(namedWithSwitch([own], true), []);
 });
