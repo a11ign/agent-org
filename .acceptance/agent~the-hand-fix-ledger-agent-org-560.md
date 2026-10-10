@@ -17,6 +17,8 @@ Acceptance: `AGENT_ORG_HOST=/home/agent/repos/a11y-witness/.agent-org/host.json 
 
 Closes: none — the row's Done-when 2 (tell a11ign#4623 the fix is in force, with the merge commit) can only be true after this merges, so the row stays open until that comment is posted.
 
+Outside-Region: .changeset/the-hand-fix-ledger-reads-a-dependency-bot-as-automation.md — the entry the `changeset-required` check asks for on a change under `src/`; CI failed without it.
+
 platform: n/a (no GitHub, pnpm, systemd or git feature; the test takes `git` and `gh` as seams)
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
