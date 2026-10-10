@@ -1,0 +1,11 @@
+`host:check` raises `CODEX CLIENT AND DAEMON DISAGREE` when the Codex CLI and the Codex daemon report different versions (`codex app-server daemon version`: `cliVersion` against `appServerVersion`), or when a feature whose default differs between the two builds' `features list` is not declared in `~/.codex/config.toml` `[features]` (a11ign/agent-org#461, epic a11ign/a11ign#4437, class `tool-drift-interactive-prompt`). It lists each flag with both defaults and its remedy names the `<flag> = <value>` line to add, the value the client already runs with; it reads and never writes, as `codexTrustDrift` does. No `codex`, a daemon that is not running, a `features list` that fails and an unreadable config each raise a finding that says which and are never read as clean. The new leaf `src/codex-drift.ts` takes the version JSON, both `features list` outputs and the config by injection; `hostUnitDrift` registers it next to `codexTrustDrift`.
+
+Acceptance: `cd /home/agent/repos/wt-agent-org-461 && npx rstest run --config scripts/rstest/rstest.config.ts src/codex-drift.test.ts`
+
+Mutation: five, each restored from a `cp` copy under the scratchpad and `diff`ed byte-identical (never `git checkout --`). The finding never fires: 7 of 11 red. The declared set ignored, so every differing flag is always undeclared: 3 red (the declared-all clear, the two-of-three negative control and the "not a declaration" cases). The version skew ignored: 3 red. The remedy naming the daemon's default instead of the client's: 2 red. The check dropped from `hostUnitDrift`: 1 red, the new wiring test in `src/packaging/host-units.test.ts` (1 of 157), and every direct call in `codex-drift.test.ts` stays green, which is why that test exists.
+
+Outside-Region: `src/packaging/host-units.test.ts` — `hostWithOneUnit` pins every host read; unpinned, two existing tests (`#2184`) read whatever `codex` the machine holds and fail with the new finding (or with `CODEX NOT FOUND` where CI has none), so the fixture pins `codexDrift.run`, and the wiring test for the new check sits beside the #3702 one.
+
+Closes a11ign/agent-org#461
+
+platform: none; `codex` and its daemon are read on the host, and `~/.codex/config.toml` is only read.

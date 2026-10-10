@@ -1748,10 +1748,18 @@ const hostWithOneUnit = (installedSuffix: string) => {
   const readGhHosts = (() => { throw Object.assign(new Error("no hosts.yml"), { code: "ENOENT" }); }) as never;
   // PINNED SATISFIED TOO (#3702): `hostUnitDrift` now reads `~/.codex/config.toml` against the real `host.json`'s clones, so an unpinned one reads the machine's.
   const readCodexConfig = () => trustingEvery(Object.values(homeHostConfig().clones ?? {}));
-  return { ...identity, installedDir: dirs.installed, readGhHosts, readCodexConfig,
+  // PINNED SATISFIED TOO (#4437): `hostUnitDrift` now asks `codex` for the CLI's and the daemon's versions and defaults, and an unpinned one runs
+  // whatever `codex` the machine has (none, in CI, which is a finding of its own).
+  const codexDrift = { run: matchedCodex };
+  return { ...identity, installedDir: dirs.installed, readGhHosts, readCodexConfig, codexDrift,
     settingsPath, systemctl: SYSTEMD_OK, program: join(dirs.repo, "host/dispatch.sh"),
     pnpm: { path: dirs.bin, repoRoot: dirs.repo, version: () => "10.0.0\n" } };
 };
+
+/** `codex` as a host whose CLI and daemon are one build answers it: the same version, the same feature defaults. */
+const matchedCodex = (_program: string, args: string[]) => args[0] === "features"
+  ? "shell_tool                               stable             true\n"
+  : JSON.stringify({ status: "running", cliVersion: "0.162.0", appServerVersion: "0.162.0", managedCodexPath: "/daemon/codex" });
 
 test("#2184 INTEGRATED CONTROL: a STALE unit whose program is missing gets BOTH findings, and the "
   + "second does not claim the unit matches the repository", () => {
@@ -3076,4 +3084,16 @@ test("#3702: `host:check` REPORTS an untrusted clone -- the check is wired in", 
   const flagged = (readCodexConfig: () => string) => hostUnitDrift({ ...clean, host, readCodexConfig }).filter((d) => d.problem === "CLONE NOT TRUSTED BY CODEX");
   assert.deepEqual(flagged(() => trustingEvery(Object.values(CLONES))), [], "CONTROL: every declared clone trusted reads clean");
   assert.deepEqual(flagged(() => "").map((d) => d.unit).sort(), Object.values(CLONES).sort(), "a config trusting nothing flags every declared clone");
+});
+
+test("#4437: `host:check` REPORTS a CLI and a daemon that disagree -- the check is wired in", () => {
+  // THE MUTANT: dropping `...codexClientDaemonDrift(...)` from `hostUnitDrift` leaves every direct call in `codex-drift.test.ts` green.
+  const clean = hostWithOneUnit("");
+  const skewed = (cliVersion: string) => (program: string, args: string[]) => args[0] === "features" ? matchedCodex(program, args)
+    : JSON.stringify({ status: "running", cliVersion, appServerVersion: "0.162.0", managedCodexPath: "/daemon/codex" });
+  const flagged = (cliVersion: string) => hostUnitDrift({ ...clean, codexDrift: { run: skewed(cliVersion) } })
+    .filter((d) => d.problem === "CODEX CLIENT AND DAEMON DISAGREE");
+  assert.deepEqual(flagged("0.162.0"), [], "CONTROL: the pinned fixture, one build, reads clean");
+  assert.equal(flagged("0.157.0").length, 1, "a CLI five releases behind its daemon is one finding");
+  assert.match(flagged("0.157.0")[0].detail, /the CLI is 0\.157\.0 and the daemon it talks to is 0\.162\.0/);
 });
