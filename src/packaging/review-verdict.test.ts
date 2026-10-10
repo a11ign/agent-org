@@ -269,3 +269,14 @@ test("agent-org#586: a newer convinced review after a dismissed refusal is the v
   const stateless = { id: "R-1", submittedAt: "2026-10-10T01:00:00Z", body: no };
   assert.equal(verdictAmong({ author: PR_AUTHOR, comments: [], reviews: [stateless] }, [head]).verdict, "not-convinced");
 });
+
+test("agent-org#586: a dismissed review does not hide a verdict comment, and the comment alone still settles the head", () => {
+  const head = "0715e664c0000000000000000000000000000abc";
+  const yes = "**Review of #579 at `0715e664`, by reviewer-579: convinced.**";
+  const no = "**Review of #579 at `0715e664`, by reviewer-579: not convinced — the blocker.**";
+  const pr = { author: PR_AUTHOR, comments: [comment("2026-10-10T05:00:00Z", yes)],
+    reviews: [review("DISMISSED", "2026-10-10T06:00:00Z", no)] };
+  const found = verdictAmong(pr, [head]);
+  assert.equal(found.verdict, "convinced", "the dismissed refusal is newer than the comment and still does not outrank it");
+  assert.equal(found.examined, 1, "only the comment was read");
+});
