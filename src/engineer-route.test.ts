@@ -279,8 +279,11 @@ test("every route is a decision-log line, in the fallback, override, refused and
   await routeEngineer(rowOf({ number: 3, labels: ["lane:ceo"] }), r.deps);
   await routeEngineer(rowOf({ number: 4 }), off.deps);
   const routes = (lines: { id?: string; outcome?: string }[]) => lines.filter((l) => l.outcome !== undefined).map((l) => [l.id, l.outcome]);
-  assert.deepEqual(routes(r.log()), [["row-1", "route haiku/high via jev"], ["row-2", "route haiku/high via override"], ["row-3", "route sonnet/high via refused"]]);
-  assert.deepEqual(routes(off.log()), [["row-4", "route sonnet/medium via fallback"]]);
+  assert.deepEqual(routes(r.log()), [
+    ["row-1", "route haiku/high via jev (the provider answered: mechanical=yes, subsystems=no, debugging=no, covered=yes, score=2)"],
+    ["row-2", "route haiku/high via override (tier:haiku)"],
+    ["row-3", "route sonnet/high via refused (the row carries lane:ceo)"]]);
+  assert.deepEqual(routes(off.log()), [["row-4", "route sonnet/medium via fallback (no triage provider is declared)"]]);
   // A route the provider did not decide carries WHY on its outcome line: a refused row says what refused it, a fallback says why the provider did not decide.
   const reasons = (lines: { outcome?: string; reason?: string }[]) => lines.filter((l) => l.outcome !== undefined).map((l) => l.reason);
   assert.deepEqual(reasons(r.log()), [undefined, undefined, "the row carries lane:ceo"]);
@@ -317,6 +320,51 @@ test("spawnClaimer.tier: a routed row gets its route's profile; a row with no ro
 
 // --- every fallback says why, on a line of the decision log ---
 
+/** The outcome line `routeEngineer` appended for the row, as a person reads it. */
+const outcomeOf = (r: ReturnType<typeof rig>): string => r.log().filter((l) => l.outcome !== undefined).at(-1).outcome;
+
+test("the outcome line reads `route <route> via <via> (<why>)`, and what <why> says is the reason for each via: jev, fallback, refused, override", async () => {
+  // jev, every answer given: the answers that composed the route.
+  const given = rig({ triage: JEV, switches: ON });
+  assert.equal((await routeEngineer(rowOf(), given.deps)).via, "jev");
+  assert.equal(outcomeOf(given), "route haiku/high via jev (the provider answered: mechanical=yes, subsystems=no, debugging=no, covered=yes, score=2)");
+  // jev, one answer not given: the line names it and why, and the route is Sonnet/high.
+  const held = rig({ triage: JEV, switches: ON, body: reply({ low: "mechanical" }) });
+  assert.equal((await routeEngineer(rowOf(), held.deps)).route, "sonnet/high");
+  assert.match(outcomeOf(held), /^route sonnet\/high via jev \(the provider answered: mechanical=not given \(yes at [0-9.]+, under the floor 0\.9\), subsystems=no, /);
+  // fallback: the provider's failure, never the fallback rule's own "a small row".
+  const failed = rig({ triage: JEV, switches: ON });
+  failed.deps.fetch = (async () => ({ ok: false, status: 422, json: async () => ({}) })) as unknown as typeof fetch;
+  const fell = await routeEngineer(rowOf(), failed.deps);
+  assert.deepEqual([fell.route, fell.via], ["sonnet/medium", "fallback"]);
+  assert.equal(outcomeOf(failed), "route sonnet/medium via fallback (the API answered HTTP 422)");
+  // refused: what refused it.
+  const refused = rig({ triage: JEV, switches: ON });
+  await routeEngineer(rowOf({ body: bodyOf({ acceptance: null }) }), refused.deps);
+  assert.equal(outcomeOf(refused), "route sonnet/high via refused (it has no Acceptance command)");
+  // override: the label, and the refusal when Haiku was refused.
+  const label = rig({ triage: JEV, switches: ON });
+  await routeEngineer(rowOf({ labels: ["tier:haiku"] }), label.deps);
+  assert.equal(outcomeOf(label), "route haiku/high via override (tier:haiku)");
+  const barred = rig({ triage: JEV, switches: ON });
+  await routeEngineer(rowOf({ labels: ["tier:haiku", "lane:ceo"] }), barred.deps);
+  assert.match(outcomeOf(barred), /^route sonnet\/high via override \(tier:haiku was refused: .*lane:ceo/);
+});
+
+test("a route the provider did not decide: the work tick's journal line prints the same text the outcome line does", async () => {
+  const r = rig({ triage: JEV });
+  const routed = await routeEngineer(rowOf({ number: 10 }), r.deps);
+  const written: string[] = [];
+  const write = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: string | Uint8Array) => { written.push(String(chunk)); return true; }) as typeof process.stderr.write;
+  try {
+    spawnClaimer({ routes: new Map([[10, routed]]), switchPath: undefined, readRow: () => ({ labels: ["ready"], body: bodyOf() }) }).tier?.({ row: 10, branch: "b", worktree: "w", launchDir: "l" });
+  } finally { process.stderr.write = write; }
+  assert.deepEqual(written, [`wake: #10 routed sonnet/medium via fallback (the use is switched off).\n`]);
+  assert.equal(outcomeOf(r), "route sonnet/medium via fallback (the use is switched off)");
+});
+
+
 test("every way the provider does not decide a route puts its reason on the outcome line and in the journal's `why`: switch off, no provider, HTTP 422, a timeout, a state too large, a malformed answer", async () => {
   const withFetch = (r: ReturnType<typeof rig>, fn: unknown) => { r.deps.fetch = fn as typeof fetch; return r; };
   // `routeState` clips every field, so only a multi-byte state reaches the cap: three bytes a character fills it.
@@ -335,7 +383,9 @@ test("every way the provider does not decide a route puts its reason on the outc
     assert.equal(routed.via, "fallback", label);
     assert.equal(routed.reason, reason, label);
     assert.equal(outcome.reason, reason, `${label}: the outcome line carries it`);
-    assert.ok(routed.why.endsWith(`the provider did not decide: ${reason}`), `${label}: the journal's why carries it too`);
+    assert.equal(routed.why, reason, `${label}: the journal's why is the same text`);
+    assert.equal(outcome.outcome, `route ${routed.route} via fallback (${reason})`, `${label}: and so is the outcome line a person reads`);
+    assert.doesNotMatch(outcome.outcome, /a small row/, `${label}: the reason is the failure's, not the fallback rule's gloss`);
   }
   assert.equal(cases[4][1].calls(), 0, "the state over the cap was never sent: the outcome line is the only line that can say why");
 });
