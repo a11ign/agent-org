@@ -1,3 +1,4 @@
+// no-token: prepareContext -- `main` reaches `requestActions` (buttons only); `converse.ts` loads `prompt-session.ts` and `wake.ts` on first use, which no run here makes
 // @ts-check
 // THE SHIPPED COMPOSITION OF `messaging:watch` CAN SEND (a11ign/a11ign#3164). Every other test of `main` injects its own provider, which is how
 // the real default stayed EMPTY until the `chairman-watch` unit's first firing: it exited 1 with "no implementation of it yet" and the chairman had
@@ -20,6 +21,7 @@ import { main } from "./watch.ts";
 const REPO = "a11ign/a11ign";
 const TOKEN = "123456789:AAFk3x9Q-test_token_value_ZZ";
 const CHAT_ID = 4242;
+const CHANNEL_CHAT_ID = -1001234567890;
 const OWNER_ONLY = 0o600;
 const GROUP_READABLE = 0o644;
 const EXIT = { ok: 0, failed: 1 };
@@ -30,15 +32,22 @@ after(() => rmSync(scratch, { recursive: true, force: true }));
 
 /**
  * A checkout whose `messaging` key is on, and a home holding the two files that key names.
- * @param {{ tokenMode?: number, paired?: boolean, summary?: { at?: string, timezone?: string } }} [options] `summary` is the opt-in key, absent unless given
+ * @param {{ tokenMode?: number, paired?: boolean, summary?: { at?: string, timezone?: string }, announcements?: { content?: string, mode?: number, written?: boolean } }} [options]
+ *   `summary` is the opt-in key, absent unless given. `announcements` declares `messaging.announcementsFile` and, unless `written` is false, writes that file.
  * @returns {{ root: string, home: string }}
  */
-function host({ tokenMode = OWNER_ONLY, paired = true, summary = undefined }: { tokenMode?: number; paired?: boolean; summary?: { at?: string; timezone?: string; }; } = {}): { root: string; home: string; } {
+function host({ tokenMode = OWNER_ONLY, paired = true, summary = undefined, announcements = undefined }: {
+    tokenMode?: number; paired?: boolean; summary?: { at?: string; timezone?: string; }; announcements?: { content?: string; mode?: number; written?: boolean; };
+} = {}): { root: string; home: string; } {
   const root = mkdtempSync(join(scratch, "root-"));
   const home = mkdtempSync(join(scratch, "home-"));
   mkdirSync(join(root, ".agent-org"));
-  const messaging = { provider: "telegram", tokenFile: "~/.config/agent-org/telegram-token", chairmanFile: "~/.config/agent-org/telegram-chairman" };
-  writeFileSync(join(root, ".agent-org", "project.json"), JSON.stringify({ tracker: [{ key: "", repo: REPO }], messaging: summary === undefined ? messaging : { ...messaging, summary } }));
+  const messaging = {
+    provider: "telegram", tokenFile: "~/.config/agent-org/telegram-token", chairmanFile: "~/.config/agent-org/telegram-chairman",
+    ...(announcements === undefined ? {} : { announcementsFile: "~/.config/agent-org/telegram-announcements" }),
+    ...(summary === undefined ? {} : { summary }),
+  };
+  writeFileSync(join(root, ".agent-org", "project.json"), JSON.stringify({ tracker: [{ key: "", repo: REPO }], messaging }));
   const secrets = join(home, ".config", "agent-org");
   mkdirSync(secrets, { recursive: true });
   writeFileSync(join(secrets, "telegram-token"), `${TOKEN}\n`);
@@ -46,6 +55,10 @@ function host({ tokenMode = OWNER_ONLY, paired = true, summary = undefined }: { 
   if (paired) {
     writeFileSync(join(secrets, "telegram-chairman"), JSON.stringify({ userId: CHAT_ID, chatId: CHAT_ID }));
     chmodSync(join(secrets, "telegram-chairman"), OWNER_ONLY);
+  }
+  if (announcements !== undefined && announcements.written !== false) {
+    writeFileSync(join(secrets, "telegram-announcements"), announcements.content ?? `${CHANNEL_CHAT_ID}\n`);
+    chmodSync(join(secrets, "telegram-announcements"), announcements.mode ?? OWNER_ONLY);
   }
   return { root, home };
 }
@@ -108,6 +121,51 @@ describe("main with the registry it SHIPS (no `providers` argument)", () => {
     assert.equal(result.code, EXIT.failed);
     assert.match(result.err.join("\n"), /telegram-chairman/);
     assert.equal(telegram.requests.length, 0);
+  });
+});
+
+// THE ANNOUNCEMENTS CHANNEL IS REACHED BY THE SHIPPED COMPOSITION (a11ign/agent-org#603, found by #4755). `audience.test.ts` proves the provider routes by
+// audience when it is GIVEN the channel's id; `telegramProvider` was the one place that builds it and it never gave it, so every announcement the watcher
+// sent still landed in the chairman's chat after `messaging.announcementsFile` was declared (#4747). The announcement here is the daily summary: a release
+// needs the host's own `gh` (`main` hands `releaseRepos` none to a caller that injected `github`), and the summary is an `announcement` kind all the same.
+describe("main with the registry it SHIPS sends an announcement to the channel when `messaging.announcementsFile` is declared (#603)", () => {
+  /** @param {ReturnType<typeof host>} world @returns {Promise<{ code: number, chats: unknown[], lines: string, err: string[] }>} the `chat_id` of every message sent */
+  async function chatsOf(world: { root: string; home: string; }) {
+    const telegram = fakeTelegram();
+    const result = await run(world, telegram.fetchImpl);
+    return { code: result.code, chats: telegram.bodies.map((body) => body.chat_id), lines: result.lines, err: result.err };
+  }
+
+  test("the summary goes to the channel's chat id, and the chairman's chat gets none of it", async () => {
+    const { code, chats, lines } = await chatsOf(host({ summary: {}, announcements: {} }));
+    assert.equal(code, EXIT.ok, lines);
+    assert.deepEqual(chats, [CHANNEL_CHAT_ID], "exactly the one summary was sent, and to the channel");
+  });
+
+  test("CONTROL: the same run with `announcementsFile` absent sends it to the chairman's chat", async () => {
+    const { code, chats, lines } = await chatsOf(host({ summary: {} }));
+    assert.equal(code, EXIT.ok, lines);
+    assert.deepEqual(chats, [CHAT_ID], "this is what the channel test above must differ from, so it is not a run that sent nothing");
+  });
+
+  test("a file that holds no integer is refused naming the file, exit 1, nothing fetched, and is never read as \"no channel\"", async () => {
+    for (const content of ["not-a-chat-id\n", "-100123 456\n", "1.5\n", "0\n", "1e3\n", "{\"chatId\":-1001}\n"]) {
+      const { code, chats, err } = await chatsOf(host({ summary: {}, announcements: { content } }));
+      assert.equal(code, EXIT.failed, JSON.stringify(content));
+      assert.match(err.join("\n"), /telegram-announcements/, JSON.stringify(content));
+      const words = err.join("\n").split(/\s+/).filter((word) => !word.includes("telegram-announcements"));
+      assert.ok(!words.some((word) => word.replace(/[^\w.-]/g, "") === content.trim().replace(/[^\w.-]/g, "")), `the refusal quotes none of what the file held: ${err.join(" | ")}`);
+      assert.deepEqual(chats, [], `nothing went to the chairman's chat instead: ${JSON.stringify(content)}`);
+    }
+  });
+
+  test("a file at mode 0644, or one that is declared and not there, is refused naming the file, exit 1, nothing fetched", async () => {
+    for (const announcements of [{ mode: GROUP_READABLE }, { written: false }]) {
+      const { code, chats, err } = await chatsOf(host({ summary: {}, announcements }));
+      assert.equal(code, EXIT.failed, JSON.stringify(announcements));
+      assert.match(err.join("\n"), /telegram-announcements/, JSON.stringify(announcements));
+      assert.deepEqual(chats, [], JSON.stringify(announcements));
+    }
   });
 });
 

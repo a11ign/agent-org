@@ -17,6 +17,11 @@
 // A READ THE TOOL COULD NOT MAKE IS `unknown`, NEVER 0 (`org-retro.ts`'s header, #1286): a tracker that cannot be listed, a list that reached its limit (so it may be cut
 // short), a row that came back with no labels or no comments field, or NO declared tracker at all makes the whole reading `unknown` and NAMES the read. Absence is not proof.
 //
+// THE OFFER (a11ign/agent-org#636): the number is a reading, and nothing yet acted on it. `untieredOffer` answers, per gate tick, whether `product-manager` is owed the sweep: the count is
+// `read` and above zero on this tick AND on the one before (`UntieredMemory`, kept in the state dir), so a stock that exists for one tick is a row being filed and not a backlog. `unknown`
+// never offers and is remembered as no count, so an unread tick between two above zero breaks the run: absence is not proof either way. The rows are KEYED SORTED (`untieredSweepKey`), so
+// the same stock is one question however the tracker lists it.
+//
 // A LEAF: relative imports of leaves only, like `org-retro.ts`, which imports it and runs before any install.
 import { execFileSync } from "node:child_process";
 import { READY_LABEL } from "./claim-labels.ts";
@@ -113,6 +118,38 @@ export function untieredReadyRows({ trackers }: { trackers: TrackerReader[]; }):
   }
   if (refused.length > 0) return { status: "unknown", reads: refused };
   return { status: "read", count: rows.length, rows, apart };
+}
+
+/** The previous gate tick's reading: its count, or `null` when that tick's read was `unknown` (or this is the first tick). */
+export type UntieredMemory = { count: number | null };
+/** Kept in the state dir (`stateEntryPath("")`), beside `dora-reading.json`. */
+export const UNTIERED_MEMORY_FILE = "untiered-ready-reading.json";
+
+/** @param {unknown} kept the parsed file @returns {UntieredMemory} anything that is not `{ count: <non-negative integer> }` is no count */
+export function parseUntieredMemory(kept: unknown): UntieredMemory {
+  const count = (kept as { count?: unknown } | null)?.count;
+  return { count: typeof count === "number" && Number.isInteger(count) && count >= 0 ? count : null };
+}
+
+/** @param {UntieredRow} a @param {UntieredRow} b @returns {number} by tracker (the project's own first), then row number */
+const byTrackerThenNumber = (a: UntieredRow, b: UntieredRow): number => {
+  const trackerOf = (row: UntieredRow) => row.name.slice(0, row.name.lastIndexOf("#"));
+  const [x, y] = [trackerOf(a), trackerOf(b)];
+  return x === y ? a.number - b.number : x < y ? -1 : 1;
+};
+
+/** @param {UntieredRow[]} rows @returns {string} the rows' names, sorted, so the same stock is the same key in any order */
+export const untieredSweepKey = (rows: UntieredRow[]): string => [...rows].sort(byTrackerThenNumber).map((r) => r.name).join(",");
+
+/**
+ * Is the sweep owed this tick, and what is the memory to keep? Pure. `rows` is the stock to name, sorted, or `null` when nothing is offered.
+ * @param {UntieredReady | null | undefined} ready this tick's reading @param {UntieredMemory | null} previous the last tick's, `null` when there is none
+ * @returns {{ rows: UntieredRow[] | null, memory: UntieredMemory }}
+ */
+export function untieredOffer(ready: UntieredReady | null | undefined, previous: UntieredMemory | null): { rows: UntieredRow[] | null; memory: UntieredMemory; } {
+  if (ready === null || ready === undefined || ready.status !== "read") return { rows: null, memory: { count: null } };
+  const owed = ready.count > 0 && (previous?.count ?? 0) > 0;
+  return { rows: owed ? [...ready.rows].sort(byTrackerThenNumber) : null, memory: { count: ready.count } };
 }
 
 const names = (rows: UntieredRow[]): string => rows.slice(0, LISTED_ROWS).map((r) => r.name).join(", ") + (rows.length > LISTED_ROWS ? `, and ${rows.length - LISTED_ROWS} more` : "");

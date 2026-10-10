@@ -1510,6 +1510,29 @@ test("#1998: `unitEntryPoints` follows a shell interpreter exactly as it follows
     + "rather than guessed at");
 });
 
+test("#581: `node -e \"<code>\"` is inline code, not a script path, so a load check is no missing program", () => {
+  const deps = { repoRoot: "/repo", scripts: {} };
+  const code = "\"import('./packages/control/src/fleet-watch.ts')\"";
+  assert.deepEqual(programCandidates("%h/.local/bin/node ./packages/control/src/fleet-watch.ts", deps),
+    ["/repo/packages/control/src/fleet-watch.ts"],
+    "POSITIVE CONTROL: the same file named as a script IS a candidate, so the empty results below are not an empty reader");
+  for (const flag of ["-e", "--eval", "-p", "--print"]) {
+    assert.deepEqual(programCandidates(`%h/.local/bin/node ${flag} ${code}`, deps), [],
+      `\`${flag}\` hands node CODE: the eval string is not a program and must not be resolved against the WorkingDirectory`);
+  }
+  assert.deepEqual(programCandidates(`%h/.local/bin/node --eval=${code}`, deps), [], "the `=` form is inline code as well");
+  assert.deepEqual(programCandidates("%h/.local/bin/node --import tsx ./packages/control/src/fleet-watch.ts", deps),
+    ["/repo/packages/control/src/fleet-watch.ts"],
+    "an option that is NOT inline code still falls through to the script after it, so the early return is not a blanket skip");
+  const unit = `[Service]\nWorkingDirectory=/repo\nExecStartPre=%h/.local/bin/node -e ${code}\nExecStart=%h/.local/bin/node ./packages/control/src/fleet-watch.ts\n`;
+  assert.deepEqual(missingUnitPrograms({
+    installedDir: "/installed",
+    readDir: (() => ["a11ign-fleet-watch.service"]) as never,
+    read: (() => unit) as never,
+    exists: (path) => String(path) === "/repo/packages/control/src/fleet-watch.ts",
+  }), [], "THE UNIT AS FILED: its load check no longer reads as a missing program, and its real program is there");
+});
+
 test("#1998 NEGATIVE CONTROL: a shell script OUT of the tree is still OPAQUE", () => {
   // The branch #1993 added must still be reachable, or this row replaced a conservative reading with a
   // silent pass. `bash` is deliberately NOT in `ANALYSABLE_TOOLS`: an interpreter is followable only

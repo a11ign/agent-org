@@ -637,6 +637,16 @@ export const TOOL_CAUSE_DECLARATIONS = Object.freeze([
     why: "the gate has already read and quoted the claim's refusal; the output is a decision about whose "
       + "tree it is, over a fact already in the prompt",
   }),
+  declareCause("ready-rows-untiered", GROUPS.JUDGMENT, {
+    kind: "claude",
+    model: "sonnet",
+    // MEDIUM (#636), `ready-row-unclaimable`'s: the gate has already counted the rows and named them; the work is reading each row's Acceptance and
+    // deciding whether it is mechanical and machine-checkable (`tier:haiku`) or not (`Tier: sonnet -- <reason>`), a short judgment over material in the order.
+    // JUDGMENT, NOT JUDGMENT_START: it starts no work, and a drain (which withholds starts) is exactly when a stock of undecided rows should still be swept.
+    effort: "medium",
+    why: "the gate has counted and named the ready rows with no tier decision; the output is a tier label or a "
+      + "`Tier: sonnet -- <reason>` line on each, a judgment over each row's Acceptance already in the prompt",
+  }),
   declareCause("org-health", GROUPS.JUDGMENT, {
     kind: "claude",
     model: "sonnet",

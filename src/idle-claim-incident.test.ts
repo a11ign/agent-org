@@ -193,7 +193,7 @@ test("the daily tick records the incidents once per episode in the failure ledge
   const dir = mkdtempSync(join(tmpdir(), "idle-claim-tick-"));
   try {
     const inputs = { ...emptyReads, idleClaims: incidents([claim()]) };
-    const tick = (now: number) => retrospectiveTick({ now, stateDir: dir, log: () => {}, read: () => inputs, readLedger: () => "", record: () => "recorded" });
+    const tick = (now: number) => retrospectiveTick({ now, stateDir: dir, log: () => {}, read: () => inputs, readLedger: () => "", readUntiered: () => null, record: () => "recorded" });
     assert.equal(tick(NOW).length, 1);
     tick(NOW + 5 * MIN);
     const entries = parseFailureLedger(readFileSync(join(dir, FAILURE_LEDGER_FILE), "utf8"));

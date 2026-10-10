@@ -97,7 +97,7 @@ jobs:
         run: |
           rm -rf project/packages/agent-org
           mkdir project/packages/agent-org
-          cp -r src host scripts .github CHANGELOG.md package.json LICENSE README.md project/packages/agent-org/
+          cp -r src host scripts docs .github CHANGELOG.md package.json LICENSE README.md project/packages/agent-org/
           rsync -a --ignore-existing --exclude='*.test.ts' --exclude='*.test.mjs' project/packages/lab/src/packaging/ project/packages/agent-org/src/packaging/
           # The project deleted `project/packages/agent-org` (a11ign/a11ign#2976) and loads the tool by path (`toolModule`, a11ign/a11ign#3534). The fixture that once needed its static import
           # rewritten to reach the tool (`board-document-chrome-resolver.test.ts`) is this repository's own now, and imports `../board-document.mjs` as it stands: nothing to rewrite.

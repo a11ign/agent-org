@@ -26,7 +26,8 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 /**
  * What the live tick reads the host with. `labelEvents` (#4789) is the tracker's row history, so a merge counts only from when THIS session's label
- * was added; without it a hand-started engineer inherits the previous holder's merged pull request.
+ * was added; without it a hand-started engineer inherits the previous holder's merged pull request. #612 reads the same history for the stall clock,
+ * so without it a hand-started engineer is nudged at its first tick.
  */
 export const LIVE_HOST_READS: import("../claim-stall.ts").HostReads = { git: gitRun, exists: pathExists, mtime: statMtime,
   labelEvents: (row: number) => readLabelEvents(row, homeProjectDeclaration().tracker[0].repo) };
@@ -246,13 +247,15 @@ function readClaims({ held, byRow, openPrs, mergedPrs, elsewhere, io, repo, now,
     const session = sessions[0].slice(SESSION_PREFIX.length);
     const built = claimFactsFrom({ row: row.number, title: row.title, session, waiting: declaredWait(row, session),
       waitKind: declaredWaitOf(row, session)?.kind ?? null, blockedBy: openBlockers(row), comments: byRow.get(Number(row.number)) ?? [], openPrs: withChecksPending(openPrs), mergedPrs,
-      trackerRepo: homeProjectDeclaration().tracker[0].repo, sessionRows: heldBy.get(session),
+      trackerRepo: homeProjectDeclaration().tracker[0].repo, sessionRows: heldBy.get(session), now,
       ...(elsewhere === undefined ? {} : { elsewhere: { ...elsewhere, open: elsewhere.open === null ? null : withChecksPending(elsewhere.open) } }), repo }, io);
     if ("skip" in built) {
       log(`claim-stall: ${built.skip} -- not evaluated.\n`);
       skipped.set(Number(row.number), built.skip);
       continue;
     }
+    // #612: a clock that could not be dated from the label keeps the record's time, and the tick says so (a log line, not a reading: the reading is today's)
+    if (built.clockHeld !== undefined) log(`claim-stall: #${built.row} (${session}) clock kept at the claim record: ${built.clockHeld}.\n`);
     // #460: the declaration, read against THIS claim. A claim that names no branch (`nothing`) is idle at its prompt by design and has none to make.
     const facts = declarations === null || built.nothing === true ? built : { ...built, declared: declarationReading(declarations.byClaimant.get(session), {
       row: built.row, claimedAt: built.claimedAt, turnStartedAt: lastDeliveredTo(ledger(), session), ownPrs: built.ownPrs ?? [], mergedPr: built.mergedPr,

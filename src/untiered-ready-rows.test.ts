@@ -4,8 +4,14 @@
 // counted, a second tracker is read, and a tracker that cannot be read makes the number `unknown`, never 0.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { untieredReadyRows, untieredLines, ghReadyReader, hasTierDecision, ROW_LIST_LIMIT, LISTED_ROWS } from "./untiered-ready-rows.ts";
-import { buildReport, renderReport } from "./org-retro.ts";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpDir } from "./lib/tmp-fixture.ts";
+import { untieredReadyRows, untieredLines, ghReadyReader, hasTierDecision, ROW_LIST_LIMIT, LISTED_ROWS, untieredOffer, untieredSweepKey, parseUntieredMemory,
+  UNTIERED_MEMORY_FILE } from "./untiered-ready-rows.ts";
+import { buildReport, renderReport, retrospectiveTick, untieredSweepOrder } from "./org-retro.ts";
+import { PROFILES } from "./worker-profile.ts";
+import { JUDGMENT_CAUSES, START_CAUSES } from "./work-gate.ts";
 
 const NOW = Date.parse("2026-10-09T10:30:00Z");
 
@@ -171,4 +177,91 @@ test("the retrospective prints the line, and a refused or unmade read prints `un
   assert.match(renderReport(refused), /Ready rows with no tier decision[^\n]*: unknown \(could not read the ready rows of a11ign\/a11ign \(boom\)\)/);
   const unread = buildReport(base, NOW);
   assert.match(renderReport(unread), /Ready rows with no tier decision[^\n]*: unknown \(the trackers were not read\)/);
+});
+
+// --- #636: THE GATE OFFERS `product-manager` THE SWEEP AFTER TWO TICKS ABOVE ZERO ------------------------------------------------------------------------------
+
+const stateDir = () => tmpDir("untiered-sweep-");
+/** One gate tick over `rows` (an Error is a refused tracker, `null` a reader that answered nothing); a ledger that cannot be read holds the daily retrospective off, so only the sweep answers. */
+const sweepTick = (dir: string, rows: any[] | Error | null) => retrospectiveTick({
+  now: NOW, stateDir: dir, log: () => {}, readLedger: () => null, read: () => { throw new Error("the retrospective is not due"); },
+  readUntiered: () => (rows === null ? null : rows instanceof Error ? untieredReadyRows({ trackers: [tracker(rows)] }) : reading(rows)),
+}).filter((order) => order.cause === "ready-rows-untiered");
+const ROWS = [{ ...BARE, number: 466 }, { ...BARE, number: 7, title: "Another mechanical row" }];
+
+test("positive control: two ticks above zero offer ONE order to product-manager, naming the rows and carrying the answer", () => {
+  const dir = stateDir();
+  assert.deepEqual(sweepTick(dir, ROWS), [], "the first tick above zero offers nothing");
+  const offered = sweepTick(dir, ROWS);
+  assert.equal(offered.length, 1);
+  const [order] = offered;
+  assert.equal(order.session, "product-manager");
+  assert.equal(order.cause, "ready-rows-untiered");
+  assert.equal(order.causeKey, "product-manager/ready-rows-untiered/#7,#466", "the rows' numbers, sorted");
+  assert.match(order.prompt, /#7 Another mechanical row\n {2}#466 A mechanical row/);
+  assert.match(order.prompt, /`tier:haiku`/);
+  assert.match(order.prompt, /`Tier: sonnet -- <reason>`/);
+  assert.equal(JSON.parse(readFileSync(join(dir, UNTIERED_MEMORY_FILE), "utf8")).count, 2, "the count is kept in the state dir");
+});
+
+test("negative controls: count 0 offers nothing, and a count above zero on ONE tick offers nothing", () => {
+  const dir = stateDir();
+  assert.deepEqual(sweepTick(dir, []), []);
+  assert.deepEqual(sweepTick(dir, []), [], "zero on two ticks is still nothing");
+  const once = stateDir();
+  assert.deepEqual(sweepTick(once, ROWS), [], "above zero on one tick");
+  assert.deepEqual(sweepTick(once, []), [], "and the run is over when the next tick reads zero");
+  assert.deepEqual(sweepTick(once, ROWS), [], "a new run starts at one tick again");
+});
+
+test("negative control: `unknown` offers nothing, and an unread tick between two above zero breaks the run", () => {
+  const dir = stateDir();
+  assert.deepEqual(sweepTick(dir, ROWS), []);
+  assert.deepEqual(sweepTick(dir, new Error("HTTP 502")), [], "a refused tracker read is unknown, never 0 and never above zero");
+  assert.equal(JSON.parse(readFileSync(join(dir, UNTIERED_MEMORY_FILE), "utf8")).count, null, "remembered as no count");
+  assert.deepEqual(sweepTick(dir, ROWS), [], "the run was broken by the tick nobody read");
+  assert.equal(sweepTick(dir, ROWS).length, 1, "control: the next consecutive read offers");
+  assert.deepEqual(sweepTick(stateDir(), null), [], "a reader that gave nothing offers nothing");
+});
+
+test("the same rows on the third tick are the same causeKey; a changed stock is a new one", () => {
+  const dir = stateDir();
+  sweepTick(dir, ROWS);
+  const second = sweepTick(dir, ROWS)[0];
+  const third = sweepTick(dir, [...ROWS].reverse())[0];
+  assert.equal(third.causeKey, second.causeKey, "the same stock in another order is one question");
+  const changed = sweepTick(dir, [...ROWS, { ...BARE, number: 500 }])[0];
+  assert.notEqual(changed.causeKey, second.causeKey);
+  assert.equal(untieredSweepKey([{ number: 10, name: "#10", title: "" }, { number: 9, name: "agent-org#9", title: "" }, { number: 2, name: "#2", title: "" }]), "#2,#10,agent-org#9", "numeric, the project's own tracker first");
+});
+
+test("a row tiered between the ticks is not named, and a stock that empties offers nothing", () => {
+  const dir = stateDir();
+  sweepTick(dir, ROWS);
+  const [order] = sweepTick(dir, [ROWS[0], withLabel("tier:haiku", ROWS[1])]);
+  assert.equal(order.causeKey, "product-manager/ready-rows-untiered/#466");
+  assert.deepEqual(sweepTick(dir, [withLabel("tier:haiku", ROWS[0])]), []);
+});
+
+test("the sweep is read on a tick where the retrospective is not due, and a damaged memory file is no count rather than an error", () => {
+  const dir = stateDir();
+  writeFileSync(join(dir, UNTIERED_MEMORY_FILE), "{ not json");
+  assert.deepEqual(sweepTick(dir, ROWS), [], "a corrupt file is no previous tick");
+  assert.equal(sweepTick(dir, ROWS).length, 1);
+  assert.deepEqual(parseUntieredMemory({ count: -1 }), { count: null });
+  assert.deepEqual(parseUntieredMemory({ count: "3" }), { count: null });
+  assert.deepEqual(parseUntieredMemory(null), { count: null });
+  assert.deepEqual(parseUntieredMemory({ count: 4 }), { count: 4 });
+});
+
+test("`untieredOffer` is pure over the two readings, and `ready-rows-untiered` is a declared JUDGMENT cause that starts no work", () => {
+  const read = (count: number) => reading(Array.from({ length: count }, (_, i) => ({ ...BARE, number: i + 1 })));
+  assert.equal(untieredOffer(read(2), { count: 1 }).rows?.length, 2);
+  assert.equal(untieredOffer(read(2), null).rows, null);
+  assert.equal(untieredOffer(read(0), { count: 3 }).rows, null);
+  assert.deepEqual(untieredOffer(untieredReadyRows({ trackers: [] }), { count: 3 }), { rows: null, memory: { count: null } });
+  assert.ok(PROFILES["ready-rows-untiered"], "an undeclared cause is refused at the wake: `profileFor` finds no profile");
+  assert.ok(JUDGMENT_CAUSES.includes("ready-rows-untiered"));
+  assert.ok(!START_CAUSES.includes("ready-rows-untiered"));
+  assert.equal(untieredSweepOrder([{ number: 1, name: "#1", title: "t" }]).causeKey, "product-manager/ready-rows-untiered/#1");
 });

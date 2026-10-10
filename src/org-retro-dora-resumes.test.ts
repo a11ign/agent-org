@@ -73,7 +73,7 @@ function tickWith(stateDir: string, now: number, seams: ReturnType<typeof counti
   const said: string[] = [];
   const restReads: number[] = [];
   const orders = retro.retrospectiveTick({
-    now, stateDir, log: (line) => said.push(line), readLedger: () => "",
+    now, stateDir, log: (line) => said.push(line), readLedger: () => "", readUntiered: () => null,
     read: (where) => retro.readWhenDoraIsRead(where, { dora: seams.dora, readRest: ((w: any) => { restReads.push(now); return inputsOfAnEmptyOrg(w); }) as any }),
   });
   return { orders, said, restReads };

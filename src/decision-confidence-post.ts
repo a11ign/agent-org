@@ -169,24 +169,22 @@ async function logPath(): Promise<string> {
   return decisionLogPathFrom(stateEntryPath("wake-ledger"));
 }
 
-/** The channel's chat id from `messaging.announcementsFile`: a secret file (mode 600) holding one integer. A file that holds anything else is refused, never read as "no channel". */
-async function announcementsChatId(path: string | null): Promise<number | undefined> {
-  if (path === null) return undefined;
-  const { readSecretFile } = await import("./messaging/secret.ts");
-  const id = Number(readSecretFile(path).reveal());
-  if (!Number.isSafeInteger(id)) return cannotPost(`${path} does not hold a chat id (one integer).`);
-  return id;
-}
-
 /** Messaging configured: the same provider `messaging:watch` builds, plus the channel when `announcementsFile` is declared. */
 async function messengerDelivery({ config, now }: { config: MessagingOn; now: number }): Promise<Delivery> {
-  const { readSecretFile } = await import("./messaging/secret.ts");
-  const { readChairman, defaultLedgerPath } = await import("./messaging/state.ts");
+  const { readSecretFile, SecretFileRefusal } = await import("./messaging/secret.ts");
+  const { readAnnouncementsChatId, readChairman, defaultLedgerPath } = await import("./messaging/state.ts");
   const { createTelegramProvider } = await import("./messaging/providers/telegram/send.ts");
-  const provider = createTelegramProvider({
-    token: readSecretFile(config.tokenFile), chatId: readChairman(config.chairmanFile).chatId,
-    announcementsChatId: await announcementsChatId(config.announcementsFile), log: (line) => process.stderr.write(`${line}\n`),
-  });
+  let provider;
+  try {
+    provider = createTelegramProvider({
+      token: readSecretFile(config.tokenFile), chatId: readChairman(config.chairmanFile).chatId,
+      announcementsChatId: readAnnouncementsChatId(config.announcementsFile), log: (line) => process.stderr.write(`${line}\n`),
+    });
+  } catch (error) {
+    // A secret file that is refused is a post that cannot be made (exit 2), as a non-integer channel file was before the read moved to `messaging/state.ts`.
+    if (error instanceof SecretFileRefusal) return cannotPost(error.message);
+    throw error;
+  }
   return { via: "messenger", provider, ledger: createLedger({ path: defaultLedgerPath(homedir()), now: () => now }) };
 }
 

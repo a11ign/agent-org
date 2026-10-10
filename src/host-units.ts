@@ -710,9 +710,17 @@ export function entriesFromCommand(command: string, { repoRoot = REPO_ROOT, scri
   return programCandidates(command, { repoRoot, scripts, cwd }).filter((entry) => exists(entry));
 }
 
-/** The first argument node would run as a script: past its flags, and past the VALUE of a spaced `--import` (`--import <module>`), which is not a path. */
+/** Node's inline-code options: what follows is CODE to evaluate (a unit's load check, `node -e "import('./x.ts')"`), so there is no script file to name. */
+const INLINE_CODE_OPTIONS = new Set(["-e", "--eval", "-p", "--print"]);
+
+/**
+ * The first argument node would run as a script: past its flags, and past the VALUE of a spaced `--import` (`--import <module>`), which is not a path.
+ * Nothing at all when node is handed inline code (`-e`, `-p`, `--eval`, `--print`, or their `=` forms, #581): the next token is the code, and
+ * returning it made `host:check` charge `<WorkingDirectory>/"import('./x.ts')"` as a missing program for a unit whose load check exits 0.
+ */
 function scriptOfNode(args: string[]): string | undefined {
   for (let i = 0; i < args.length; i += 1) {
+    if (INLINE_CODE_OPTIONS.has(args[i]) || /^--(?:eval|print)=/.test(args[i])) return undefined;
     if (args[i] === "--import") i += 1;
     else if (!args[i].startsWith("-")) return args[i];
   }

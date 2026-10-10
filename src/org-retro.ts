@@ -50,7 +50,8 @@ import { readDora, readRepository, doraReport, READ_TIMEOUT_MS, renderDora, dora
 import { homeProjectDeclaration } from "./project-config.ts";
 // THE STOCK-ROW READING (#4175): its own leaf, because it asks the tracker per row and a refused read there names the row.
 import { unwaitedStockRows, unwaitedLines, ghTrackerReader } from "./unwaited-stock-rows.ts";
-import { untieredReadyRows, untieredLines, ghReadyReader } from "./untiered-ready-rows.ts";
+import { untieredReadyRows, untieredLines, ghReadyReader, untieredOffer, untieredSweepKey, parseUntieredMemory, UNTIERED_MEMORY_FILE, type UntieredRow } from "./untiered-ready-rows.ts";
+import { HAIKU_TIER_LABEL } from "./worker-profile.ts";
 
 /** The cause this file feeds (`cause-declaration.ts` declares it), addressed to `ceo`. */
 export const RETRO_CAUSE = "org-retrospective";
@@ -721,6 +722,29 @@ export function retrospectiveOrder(date: string, reportText: string) {
   };
 }
 
+/**
+ * THE ORDER THE GATE HANDS `product-manager` for the untiered-ready sweep (a11ign/agent-org#636): the count of `ready` rows with no tier decision was above zero on two
+ * consecutive ticks. It names every row and carries the answer, so the session decides rather than re-derives. A JUDGMENT cause, discriminated on the sorted rows: the same stock is
+ * the same `causeKey`, one question, and a stock that changed is a new one.
+ * @param {UntieredRow[]} rows the rows to name, sorted (`untieredOffer`'s)
+ */
+export function untieredSweepOrder(rows: UntieredRow[]) {
+  const key = untieredSweepKey(rows);
+  return {
+    session: "product-manager",
+    cause: "ready-rows-untiered", // A LITERAL, for `retrospectiveOrder`'s reason
+    subject: "ready-rows",
+    discriminator: key,
+    prompt: `${rows.length} \`${READY_LABEL}\` row(s) have made NO tier decision, and the count has been above zero on two consecutive ticks:\n`
+      + rows.map((r) => `  ${r.name} ${r.title}`).join("\n") + "\n"
+      + `The chairman's direction is that every mechanical row with a machine-checkable Acceptance is \`${HAIKU_TIER_LABEL}\`, rows already ready and not yet claimed included. `
+      + `For each row above: put \`${HAIKU_TIER_LABEL}\` on it if it is mechanical and its Acceptance is machine-checkable, or write a line opening \`Tier: sonnet -- <reason>\` `
+      + "(in the body or a comment, outside a code fence, with a reason) on the others. The decision is a field, not a sentence: a row with neither is counted again. "
+      + "THIS ORDER DOES NOT TIER THE ROWS FOR YOU: which tier a row deserves is yours. It returns unchanged while the same rows are untiered, and as a new question when the set changes.",
+    causeKey: `product-manager/ready-rows-untiered/${key}`,
+  };
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // The READS. Each returns `null` for a refused one and never throws; everything above is pure.
 
@@ -1009,21 +1033,51 @@ export function readWhenDoraIsRead(where: { now: number; stateDir: string; }, { 
 }
 
 /**
- * THE GATE'S WHOLE CONTACT WITH THIS FILE: the retrospective's order if today's is still owed, else none. NEVER THROWS: a broken
+ * THE UNTIERED-READY SWEEP, once per gate tick (a11ign/agent-org#636): the order to `product-manager` when `untieredReadyRows` is `read` with a count above zero on this tick and
+ * on the one before. THE PREVIOUS TICK'S COUNT IS KEPT IN THE STATE DIR (`UNTIERED_MEMORY_FILE`), written every tick and rewritten as `null` for an `unknown` one, so an unread
+ * tick breaks the run. NEVER THROWS: a refused read offers nothing, and a memory that cannot be kept is a miss (the offer is one tick later), not an error.
+ * @param {{ stateDir: string, log: (line: string) => void, readUntiered: () => ReturnType<typeof untieredReadyRows> | null }} where
+ * @returns {ReturnType<typeof untieredSweepOrder>[]}
+ */
+function untieredSweepTick({ stateDir, log, readUntiered }: { stateDir: string; log: (line: string) => void; readUntiered: () => ReturnType<typeof untieredReadyRows> | null; }): ReturnType<typeof untieredSweepOrder>[] {
+  try {
+    const path = join(stateDir, UNTIERED_MEMORY_FILE);
+    const previous = parseUntieredMemory(attemptDora(() => JSON.parse(readFileSync(path, "utf8"))));
+    const { rows, memory } = untieredOffer(attemptDora(readUntiered), previous);
+    keepReadings(path, memory);
+    return rows === null ? [] : [untieredSweepOrder(rows)];
+  } catch (err: any) {
+    log(`org-retro: could not read the untiered ready rows (${String(err?.message ?? err).split("\n")[0]}) -- no ready-rows-untiered order this tick.\n`);
+    return [];
+  }
+}
+
+/**
+ * THE GATE'S WHOLE CONTACT WITH THIS FILE: the retrospective's order if today's is still owed, and the untiered-ready sweep's if it is (`untieredSweepTick`; it is read on EVERY tick,
+ * because two consecutive ticks is its condition and the retrospective is read once a day). NEVER THROWS: a broken
  * report must not stop the orders behind it, and it says so on stderr rather than offering a half-built one. The ledger is read
  * BEFORE the report, so a day already delivered costs one file read and not the day of PR, journal and transcript reads.
  * THE ONLY WRITER OF THE READINGS FILE (`main` below never writes): offering the retrospective IS recording today's reading.
  * A TICK THAT HAS NOT YET READ EVERY DECLARED REPOSITORY offers nothing and says how many it has (#3736): `read` answers `{ doraPending }` and the other reads are not made.
  * @param {{ now?: number, stateDir?: string, log?: (line: string) => void, read?: (where: Parameters<typeof readAll>[0]) => Parameters<typeof buildReport>[0] | { doraPending: Extract<ReturnType<typeof resumableDora>, { complete: false }> }, readLedger?: (stateDir: string) => string | null,
- *   record?: typeof recordReading }} [seams]
- * @returns {ReturnType<typeof retrospectiveOrder>[]}
+ *   record?: typeof recordReading, readUntiered?: () => ReturnType<typeof untieredReadyRows> | null }} [seams]
+ * @returns {(ReturnType<typeof retrospectiveOrder> | ReturnType<typeof untieredSweepOrder>)[]}
  */
 export function retrospectiveTick({ now = Date.now(), stateDir = stateEntryPath(""), log = (line) => process.stderr.write(line),
   read = (where) => readWhenDoraIsRead(where),
-  readLedger = (dir) => readText(`${dir}/wake-ledger`), record = recordReading }: {
+  readLedger = (dir) => readText(`${dir}/wake-ledger`), record = recordReading,
+  readUntiered = () => untieredReadyRows({ trackers: homeProjectDeclaration().tracker.map((tracker) => ghReadyReader(tracker)) }) }: {
         now?: number; stateDir?: string; log?: (line: string) => void; read?: (where: Parameters<typeof readAll>[0]) => Parameters<typeof buildReport>[0] | { doraPending: Extract<ReturnType<typeof resumableDora>, { complete: false; }>; }; readLedger?: (stateDir: string) => string | null;
-        record?: typeof recordReading;
-    } = {}): ReturnType<typeof retrospectiveOrder>[] {
+        record?: typeof recordReading; readUntiered?: () => ReturnType<typeof untieredReadyRows> | null;
+    } = {}): (ReturnType<typeof retrospectiveOrder> | ReturnType<typeof untieredSweepOrder>)[] {
+  return [...dailyRetrospective({ now, stateDir, log, read, readLedger, record }), ...untieredSweepTick({ stateDir, log, readUntiered })];
+}
+
+/** The daily retrospective's half of `retrospectiveTick`. */
+function dailyRetrospective({ now, stateDir, log, read, readLedger, record }: {
+        now: number; stateDir: string; log: (line: string) => void; read: (where: Parameters<typeof readAll>[0]) => Parameters<typeof buildReport>[0] | { doraPending: Extract<ReturnType<typeof resumableDora>, { complete: false; }>; };
+        readLedger: (stateDir: string) => string | null; record: typeof recordReading;
+    }): ReturnType<typeof retrospectiveOrder>[] {
   try {
     const date = retrospectiveDue(now, readLedger(stateDir));
     if (date === null) return [];

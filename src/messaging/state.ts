@@ -1,5 +1,5 @@
-// The four small reads `watch.ts`, `listen.ts` and `reply-cli.ts` share (a11ign/a11ign#3080): where the delivery log lives, whether a GitHub account is
-// declared, which repository holds the rows, and who the chairman is. A LEAF: it imports nothing that resolves the checkout or reads the project's
+// The small reads `watch.ts`, `listen.ts`, `reply-cli.ts` and `decision-confidence-post.ts` share (a11ign/a11ign#3080): where the delivery log lives, whether a
+// GitHub account is declared, which repository holds the rows, who the chairman is, and where announcements go. A LEAF: it imports nothing that resolves the checkout or reads the project's
 // declaration at import (`host-config.ts`, `project-config.ts`), so a command that imports it loads outside a configured host. `reply-cli.ts` once
 // carried its own copies for that reason, pinned against the originals by source-text tests; `reply-cli.test.mjs` now pins THIS file's imports instead.
 
@@ -7,7 +7,10 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { PROJECT_FILE } from "./config.ts";
-import { secretFileProblem, SecretFileRefusal } from "./secret.ts";
+import { readSecretFile, secretFileProblem, SecretFileRefusal } from "./secret.ts";
+
+/** A Telegram chat id as the file holds it: one non-zero integer, no sign needed (a private chat is positive, a channel's is negative). */
+const CHAT_ID = /^-?[1-9]\d*$/;
 
 /** Returns the first tracker's repository: the rows the chairman is asked about are filed there */
 export function trackerRepo(root: string): string {
@@ -44,4 +47,17 @@ export function readChairman(path: string): { userId: number; chatId: number; } 
   const { userId, chatId } = parsedIds(path);
   if (!Number.isSafeInteger(userId) || !Number.isSafeInteger(chatId)) throw new SecretFileRefusal(path, "it holds no integer userId and chatId; pair again");
   return { userId: userId as number, chatId: chatId as number };
+}
+
+/**
+ * The announcements channel's chat id from `messaging.announcementsFile`, which is optional: `null` is "no channel declared" and gives `undefined`, so the
+ * provider sends announcements to the chairman's chat as it did before there was one. A file that is declared and holds anything but one integer is a
+ * refusal naming the file (never its content), and is never read as "no channel": an announcement that quietly went to the chairman's chat is the
+ * defect this read exists to end (a11ign/agent-org#603).
+ */
+export function readAnnouncementsChatId(path: string | null): number | undefined {
+  if (path === null) return undefined;
+  const held = readSecretFile(path).reveal();
+  if (!CHAT_ID.test(held) || !Number.isSafeInteger(Number(held))) throw new SecretFileRefusal(path, "it holds no chat id (one integer, the announcements channel's); a channel file holds the id alone");
+  return Number(held);
 }
