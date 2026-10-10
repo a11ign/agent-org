@@ -46,11 +46,11 @@ import { SPAWNS_GH, agentOrgCommand } from "./acceptance-commands.ts";
 import { COMMANDS, FIXED_ARGS } from "./commands.ts";
 import { pnpmDrift } from "./host-pnpm.ts";
 import { codexClientDaemonDrift } from "./codex-drift.ts";
-import { HOME_CHECKOUT, PROJECT_DECLARATION_PATH } from "./project-config.ts";
+import { HOME_CHECKOUT, PROJECT_DECLARATION_PATH, ProjectDeclarationRefusal } from "./project-config.ts";
 import { CLAUDE_EFFORTS, DECLARED_CLAUDE_MODELS, HAIKU_MODEL_ID, HAIKU_TIER_LABEL } from "./worker-profile.ts";
 import { REPO } from "./project-identity.ts";
 import { readAgents, absentSeats } from "./herdr-agents.ts";
-import { persistentEntries, persistentRoles } from "./project-roles.ts";
+import { persistentEntries, persistentRoles, roleBriefPath } from "./project-roles.ts";
 import { kernelFindings, kernelNotes } from "./host-kernel.ts";
 import { HostConfigRefusal, LONG_RUNNING_TEMPLATES, TEMPLATE_SUFFIX, homeHostConfig, leadsWorkspacesText, readBeforeTick, readUnitsDeclaration,
   renderTemplate, renderedName, stateEntryPath, templateValues } from "./host-config.ts";
@@ -110,6 +110,8 @@ export const TOOL_ENTRIES = Object.freeze([
   "otel-receiver.service.in",
   // a11ign/a11ign#4053: the drained kernel reboot's pair. The service runs `host-kernel.ts --reboot`; the timer is the hour `ceo` named and has NO `Requires=`, so `host:install` never reboots.
   "kernel-reboot.service.in", "kernel-reboot.timer.in",
+  // a11ign#4823: the `claude` seat wrapper, COPIED like `gh` (`seatWrapperFiles`) but into the first directory on a pane's PATH, not `binDir`.
+  "claude",
 ]);
 
 /**
@@ -160,7 +162,7 @@ export type UnitsDeclaration = import("./host-config.ts").UnitsDeclaration;
 /**
  * `declaredKeys` stands in for the project's top-level keys, which decide `OPTIONAL_UNITS`; a fixture directory declares none. `projectUnitsDir` is the project's own units: the real one when `shippedDir` is left to default, and NONE when a test hands its own `shippedDir`, so a fixture directory is never silently joined by a11ign's eight units. `host` and `units` stand in for the two declarations a template is rendered from.
  */
-export type ShippedDeps = { shippedDir?: string, projectUnitsDir?: string | null, readDir?: typeof readdirSync, read?: typeof readFileSync, host?: HostConfig, units?: UnitsDeclaration, declaredKeys?: ReadonlySet<string> };
+export type ShippedDeps = { shippedDir?: string, projectUnitsDir?: string | null, readDir?: typeof readdirSync, read?: typeof readFileSync, host?: HostConfig, units?: UnitsDeclaration, declaredKeys?: ReadonlySet<string>, projectRoot?: string };
 
 /**
  * The unit files this repository ships, sorted so a report reads the same way twice: the tool's (templates listed under the name
@@ -488,7 +490,50 @@ export function shippedUnitText(unit: string, deps: ShippedDeps = {}): string | 
 export function shippedScriptText(name: string, deps: ShippedDeps = {}): string | null {
   const { toolDir, read, values } = shippedContext(deps);
   const text = textOf(join(toolDir, name), read);
-  return text === null ? null : renderTemplate(text, values(), name);
+  if (text === null) return null;
+  const seats = name === "claude" ? autoMemorySeatLabels(deps) : [];
+  return seats === null ? null : renderTemplate(text, { ...values(), seatLabels: seats.join(" ") }, name);
+}
+
+// --- a11ign#4823: THE `claude` SEAT WRAPPER, AND WHICH SEATS IT SWITCHES ------------------------------------------------------------------
+//
+// herdr restores a standing seat as a bare `claude --resume <id>`, so `autoMemoryEnabled:false` typed into a pane at launch did not survive
+// the restart of 2026-10-09 (a11ign#3663, which read the cost). `host/claude` adds it to a `claude` started in a standing seat's workspace,
+// whoever started it. The wrapper is in `TOOL_ENTRIES` and is a template under its own name like `gh`; the one value it takes that
+// `templateValues` does not carry is the seat list, which is the roster's and is read here, never typed in the script.
+
+/** The one standing seat that keeps its auto-memory (#3663, Done-when 1): it carries what a /clear would drop, and its index is cut instead. */
+export const SEAT_KEEPING_AUTO_MEMORY = "ceo";
+
+/** What a herdr label may hold, and what `host/claude` itself accepts: a name outside it could not match a label and must not reach the script. */
+const SEAT_LABEL = /^[A-Za-z0-9._-]+$/;
+
+/**
+ * The roster's STANDING seats other than `ceo`, by the name herdr labels their workspace with: a `live` entry that is not `spare` and not a
+ * family of instances (`worker-<n>`, whose instances carry `--settings` from `agentArgs`). TWO READINGS THAT ARE NOT "NONE" ARE KEPT APART: a
+ * project whose declaration has no `roles` key has no roster by its own say (`project-roles.ts`: "or has none"), so it has no seats, `[]`; a
+ * roster that could not be read or parsed is `null`, which is NOT the empty list, since an empty list renders a wrapper that switches nobody
+ * and an unreadable roster must not install one.
+ * @param {ShippedDeps} [deps] @returns {string[] | null}
+ */
+export function autoMemorySeatLabels({ projectRoot, read = readFileSync }: ShippedDeps = {}): string[] | null {
+  let path: string;
+  try {
+    path = roleBriefPath("sessions.json", projectRoot).absolute;
+  } catch (cause) {
+    const declaresNone = cause instanceof ProjectDeclarationRefusal && cause.field === "roles" && cause.message.includes("it is missing");
+    return declaresNone ? [] : null;
+  }
+  try {
+    const roster = JSON.parse(String(read(path, "utf8"))) as { live?: unknown };
+    if (!Array.isArray(roster.live)) return null;
+    return (roster.live as { name?: unknown, spare?: unknown, family?: unknown }[])
+      .filter((entry) => entry.spare !== true && entry.family === undefined)
+      .map((entry) => entry.name)
+      .filter((name): name is string => typeof name === "string" && SEAT_LABEL.test(name) && name !== SEAT_KEEPING_AUTO_MEMORY);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -1655,6 +1700,28 @@ function agentOrgLauncher(scriptDir: string, deps: ShippedDeps): { label: string
 }
 
 /**
+ * Where the `claude` seat wrapper is installed: the first directory on a pane's PATH, which is `~/.opencode/bin` (`~/.zshenv` puts it ahead of
+ * `~/.local/bin`). NOT `binDir`: `~/.local/bin/claude` is a symlink into `~/.local/share/claude/versions/<v>` and the CLI's self-update rewrites
+ * it, so a wrapper installed there is replaced by the next update, and the wrapper execs that symlink to follow one.
+ * @param {ShippedDeps} deps @returns {string}
+ */
+function seatWrapperDirectory(deps: ShippedDeps): string {
+  return join((deps.host ?? homeHostConfig()).home, ".opencode", "bin");
+}
+
+/**
+ * The seat wrapper as an owned file. OWNED ONLY WHERE THE CALLER MEANT THE REAL HOST: a caller that moved `scriptDir` (a fixture) and named no
+ * `seatDir` is not asking about the real home's `~/.opencode/bin`, and owning it would let a test overwrite the wrapper every pane runs.
+ * @param {ShippedDeps & { scriptDir?: string, seatDir?: string }} deps
+ * @returns {{ label: string, target: string, mode: number, expected: string | null }[]}
+ */
+function seatWrapperFiles(deps: ShippedDeps & { scriptDir?: string; seatDir?: string; }): { label: string; target: string; mode: number; expected: string | null; }[] {
+  if (deps.seatDir === undefined && deps.scriptDir !== undefined) return [];
+  const dir = deps.seatDir ?? seatWrapperDirectory(deps);
+  return [{ label: "claude seat wrapper", target: join(dir, "claude"), mode: 0o755, expected: shippedScriptText("claude", deps) }];
+}
+
+/**
  * The files this repository owns on the host for the identity policy, each with the text it must hold.
  * `expected` is `null` when the shipped source cannot be read, which is NOT the empty string.
  * @param {ShippedDeps & { shippedDir?: string, scriptDir?: string, workersDir?: string, leadsDir?: string,
@@ -1662,13 +1729,14 @@ function agentOrgLauncher(scriptDir: string, deps: ShippedDeps): { label: string
  * @returns {{ label: string, target: string, mode: number, expected: string | null }[]}
  */
 export function ownedIdentityFiles(deps: ShippedDeps & {
-    shippedDir?: string; scriptDir?: string; workersDir?: string; leadsDir?: string;
+    shippedDir?: string; scriptDir?: string; workersDir?: string; leadsDir?: string; seatDir?: string;
     read?: typeof readFileSync;
 } = {}): { label: string; target: string; mode: number; expected: string | null; }[] {
   const { scriptDir = binDirectory(deps), workersDir = workersDirectory(deps), leadsDir = leadsDirectory(deps) } = deps;
   return [
     { label: "gh", target: join(scriptDir, "gh"), mode: 0o755, expected: shippedScriptText("gh", deps) },
     ...agentOrgLauncher(scriptDir, deps),
+    ...seatWrapperFiles(deps),
     { label: "gh-leads-workspaces.txt", target: join(leadsDir, "workspaces.txt"),
       mode: 0o644, expected: leadsListText(deps) },
     { label: "workers README", target: join(workersDir, "README.md"), mode: 0o644, expected: WORKERS_README },
@@ -1827,6 +1895,32 @@ function zshenvNote(unit: string, why: string): Finding {
       + "`export NODE_COMPILE_CACHE=\"$HOME/.cache/node-compile-cache\"` to it (#2458, docs/known-gaps.md §50)." };
 }
 
+/** What a pane's shell resolves `claude` to: `zsh -c` reads `~/.zshenv`, where the PATH is set. `null` when it could not be asked. @returns {string | null} */
+function zshResolvesClaude(): string | null {
+  try {
+    return execFileSync("zsh", ["-c", "command -v claude"], { encoding: "utf8", timeout: 10_000 }).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * WHETHER A PANE'S SHELL REACHES THE SEAT WRAPPER (a11ign#4823), reported and NEVER a failure, for `compileCacheNotes`'s reason: the remedy is
+ * the PATH in a person's dotfile, which `host:install` must not edit. A wrapper that is installed and shadowed is the vacuous form of this
+ * guard (every comparison of its bytes is clean and no seat is switched), so the resolution itself is read. `resolve` is `null` for "could not
+ * be asked", which is its own reading and never "resolved to something else".
+ * @param {{ host?: HostConfig, seatDir?: string, resolve?: () => string | null }} [deps] @returns {Finding[]}
+ */
+export function seatWrapperNotes({ host, seatDir, resolve = zshResolvesClaude }: { host?: HostConfig; seatDir?: string; resolve?: () => string | null; } = {}): Finding[] {
+  const target = join(seatDir ?? seatWrapperDirectory({ host }), "claude");
+  const found = resolve();
+  if (found === target) return [];
+  const reading = found === null ? "could not be asked what `claude` resolves to" : `resolves \`claude\` to ${found}`;
+  return [{ unit: target, problem: "A PANE'S SHELL MAY NOT RUN THE claude SEAT WRAPPER",
+    detail: `\`zsh -c 'command -v claude'\` ${reading}, not the wrapper, so a restored standing seat starts without \`--settings\` and keeps its `
+      + "auto-memory. Not a failure, and `host:install` will not change it: the directory must come before `~/.local/bin` in the PATH `~/.zshenv` sets." }];
+}
+
 /**
  * #3533: WHICH `agent-org` RELEASE EVERY RUNNER RUNS, read from the machine: the tool checkout, each worktree's resolved copy and the last `ci.yml` run, against the newest release tag of the
  * tool's remote. `null` is a host that declares no tool (nothing to compare). It is NOT part of `--json`: that is the gate's instrument and the org-health tick reads the same comparison itself
@@ -1853,7 +1947,7 @@ export function toolVersionNotes(reading: ReturnType<typeof readToolVersionAgree
 
 /** Every note `host:check` reports beside its findings; none of them is a failure. @returns {Finding[]} */
 function hostNotes(): Finding[] {
-  return [...hostIdentityNotes(), ...compileCacheNotes(), ...sessionModelNotes(), ...persistentSeatNotes(), ...windowEndNotes(), ...kernelNotes()];
+  return [...hostIdentityNotes(), ...compileCacheNotes(), ...seatWrapperNotes(), ...sessionModelNotes(), ...persistentSeatNotes(), ...windowEndNotes(), ...kernelNotes()];
 }
 
 /**
