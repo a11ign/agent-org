@@ -114,7 +114,7 @@ import { BACKLOG_LABEL, NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL, OUT_OF_RELEASE_L
 // identity and `settle-closed-status.ts`, so the gate keeps the property its own header states.
 import { PROJECT_NUMBER, PROJECT_OWNER } from "./board-snapshot-scope.ts";
 import { withBoardSnapshot } from "./board-snapshot.ts"; // agent-org#490: the guard a board write keeps (#399, #1275); `row-file` and `row-claim` take it from the same place
-import type { OpenItemsReader, TicketPort } from "./ticket-port/port.ts"; // agent-org#484: the first consumer of the ticket port
+import type { OpenItemsReader, TicketPort, TicketState } from "./ticket-port/port.ts"; // agent-org#484: the first consumer of the ticket port
 import { githubTicketAdapter, TRACKER } from "./ticket-port/github-adapter.ts";
 // #2356: A RED `main` WAKES A FIXER. Imports only `node:*`, `parent-recheck-summary.ts` and the repo identity,
 // so the gate keeps the property its own header states -- it runs before any `pnpm install` or build.
@@ -7846,16 +7846,19 @@ export function settleOverdueLists(orders: any[], { portFor, dir = REVIEWER_STAT
 export const ROW_OFF_BOARD_SWITCH_ENV = "A11IGN_ROW_OFF_BOARD_BY_GATE";
 
 /** The state each Status-naming label stands for, and the Status the board shows for it (`ticket-port/github-adapter.ts`'s `STATUS_OF`, which this must agree with). */
-const BOARDED_STATE_OF_LABEL: Readonly<Record<string, { state: "backlog" | "ready" | "in-progress"; status: string; }>> = Object.freeze({
-  [READY_LABEL]: { state: "ready", status: "Ready" },
-  [BACKLOG_LABEL]: { state: "backlog", status: "Backlog" },
-  [CLAIM_LABEL]: { state: "in-progress", status: "In progress" },
+type BoardedState = { state: TicketState; status: string; };
+// The port's state IS the label's name for these three (`ticket-port/github-adapter.ts` writes each state as the label of that name), so the state is read from the
+// vocabulary and not spelled again here (#2619's ratchet).
+const BOARDED_STATE_OF_LABEL: Readonly<Record<string, BoardedState>> = Object.freeze({
+  [READY_LABEL]: { state: READY_LABEL as TicketState, status: "Ready" },
+  [BACKLOG_LABEL]: { state: BACKLOG_LABEL as TicketState, status: "Backlog" },
+  [CLAIM_LABEL]: { state: CLAIM_LABEL as TicketState, status: "In progress" },
 });
 /** The port's own state labels (`ready`, `backlog`, `in-progress`, `parked`): a row carrying two of them is one the port would strip a label from. */
 const PORT_STATE_LABELS: readonly string[] = [READY_LABEL, BACKLOG_LABEL, CLAIM_LABEL, "parked"];
 
 /** @returns the state and Status a row's labels name, or `null` for a row that is not a lookup: none, two, `parked` beside one, or an `epic` */
-function statusNamedBy(row: any): { state: "backlog" | "ready" | "in-progress"; status: string; } | null {
+function statusNamedBy(row: any): BoardedState | null {
   const labels = labelsOf(row);
   if (labels.includes(EPIC_LABEL)) return null;
   const states = PORT_STATE_LABELS.filter((label) => labels.includes(label));
