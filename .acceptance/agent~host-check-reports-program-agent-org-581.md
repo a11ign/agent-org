@@ -22,7 +22,7 @@ load rc=0
 
 The Open-check printed `["/home/agent/repos/a11y-witness/\"import('./packages/control/src/fleet-watch.ts')\""]` at `04c94f6`.
 
-Acceptance: `node --test src/packaging/host-units.test.ts`
+Acceptance: `bash -c 'cd /home/agent/repos/wt-agent-org-581 && node --test src/packaging/host-units.test.ts'`
 
 Mutation: deleting the early return turns the new test red (157 of 158) and no other; replacing it with an unconditional `return undefined` turns the new test red along with the six tests that need a script path read (7 of 158 fail), so the positive control is doing its work. The file was restored byte-identical (`diff` clean).
 
