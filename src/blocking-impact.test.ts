@@ -11,7 +11,7 @@ import { test } from "node:test";
 import { buildReport, renderReport } from "./org-retro.ts";
 import { FAILURE_LEDGER_FILE, parseFailureLedger, repeatsIn } from "./failure-ledger.ts";
 import {
-  advance, BLOCKING_FILE, BLOCKING_MIN_MINUTES, BLOCKING_MIN_ROWS, blockingImpactTick, heldRefOf, holdingsOf, LOCK_GRIDLOCK_KIND, MAX_TICK_GAP_MS, parseRecord, resolverOf, rowComment,
+  advance, BLOCKING_FILE, BLOCKING_MIN_MINUTES, BLOCKING_MIN_ROWS, blockingImpactTick, deadlocksAmong, heldRefOf, holdingsOf, LOCK_GRIDLOCK_KIND, MAX_TICK_GAP_MS, parseRecord, resolverOf, rowComment,
   topBlocker, wakeOrder, wakeText, type BlockingRecord, type Held, type Incident, type Ref, type Shelved,
 } from "./blocking-impact.ts";
 
@@ -115,6 +115,97 @@ test("the resolver places a claimed row by its own label, a pull request by its 
   assert.equal(resolveOpen({ number: 12 }), null, "a bare number is not another repository's pull request");
   assert.equal(resolveOpen({ number: 101 }), null, "a row with no session label has no holder");
   assert.equal(resolveOpen({ number: 999 }), null);
+});
+
+// agent-org#695: a keyed tracker's shelving names ITS rows by bare number. The resolver used to look every bare number up among the home tracker's rows, so agent-org#475 shelved behind
+// agent-org#469 was looked for as a11ign#469 (a merged pull request), found no holder and was counted "nobody is known to hold". The mutation (`refOfShelving` leaves the ref bare) fails (a).
+const KEYED = "a11ign/agent-org";
+const sessionOf = (item: { session?: string }) => item.session ?? null;
+const closesOf = (pr: { closes?: number[] }) => pr.closes ?? [];
+const keyedResolver = (open: { rows?: object[]; prs?: object[]; trackers?: Record<string, object[]> }) =>
+  resolverOf({ rows: (open.rows ?? []) as any, prs: (open.prs ?? []) as any, trackers: open.trackers as any, sessionOf, closesOf });
+
+test("a keyed tracker's shelving naming a bare number is attributed to that tracker's claimed row, and unattributed is 0", () => {
+  const resolveOpen = keyedResolver({ rows: [], trackers: { [KEYED]: [{ number: 469, session: "worker-agent-org-469" }, { number: 521, session: "worker-agent-org-521" }] } });
+  const blocked: Shelved[] = [475, 530, 689].map((number) => ({ number, reason: B4_ROW(469), repo: KEYED }));
+  const { holdings, unattributed } = holdingsOf([...blocked, { number: 522, reason: B4_ROW(521), repo: KEYED }], resolveOpen);
+  assert.equal(unattributed, 0);
+  assert.deepEqual(holdings.get("worker-agent-org-469"), { rows: [475, 530, 689], heldRows: [469], heldIn: KEYED });
+  assert.deepEqual(holdings.get("worker-agent-org-521"), { rows: [522], heldRows: [521], heldIn: KEYED });
+  // negative control: the same shelvings with the tracker's rows not handed to the resolver (what the gate did) are the count the row is filed about
+  assert.equal(holdingsOf(blocked, keyedResolver({ rows: [] })).unattributed, 3, "positive control: without the keyed rows the three are counted unattributed");
+});
+
+test("the same bare number with no repo resolves to the home tracker's row, and a keyed one to its own tracker's, never the other's", () => {
+  const resolveOpen = keyedResolver({ rows: [{ number: 469, session: "worker-home" }], trackers: { [KEYED]: [{ number: 469, session: "worker-agent-org-469" }] } });
+  const { holdings, unattributed } = holdingsOf([{ number: 1001, reason: B4_ROW(469) }, { number: 475, reason: B4_ROW(469), repo: KEYED }], resolveOpen);
+  assert.equal(unattributed, 0);
+  assert.deepEqual(holdings.get("worker-home"), { rows: [1001], heldRows: [469] }, "the home shelving is what it was: no `heldIn`");
+  assert.deepEqual(holdings.get("worker-agent-org-469"), { rows: [475], heldRows: [469], heldIn: KEYED });
+  const homeOnly = keyedResolver({ rows: [{ number: 469, session: "worker-home" }] });
+  assert.deepEqual(holdingsOf([{ number: 1001, reason: B4_ROW(469) }], homeOnly).holdings.get("worker-home"), { rows: [1001], heldRows: [469] }, "no `trackers` given: exactly the old resolver");
+  assert.equal(holdingsOf([{ number: 475, reason: B4_ROW(469), repo: KEYED }], homeOnly).unattributed, 1, "a keyed number is not looked for among the home rows");
+});
+
+test("a keyed shelving naming a number no open row of that tracker holds is still unattributed", () => {
+  const resolveOpen = keyedResolver({ rows: [{ number: 999, session: "worker-home" }], prs: [{ number: 999, session: "worker-home-pr" }],
+    trackers: { [KEYED]: [{ number: 469, session: "worker-agent-org-469" }, { number: 998 }] } });
+  const { holdings, unattributed } = holdingsOf([
+    { number: 475, reason: B4_ROW(999), repo: KEYED }, // held nowhere in the keyed tracker; a home row 999 is claimed, and must not catch it
+    { number: 476, reason: B4_ROW(998), repo: KEYED }, // an open keyed row, with no `session:` label
+    { number: 477, reason: B4_ROW(469), repo: "a11ign/other" }, // a tracker whose rows were not read
+  ], resolveOpen);
+  assert.equal(unattributed, 3);
+  assert.deepEqual([...holdings.keys()], []);
+});
+
+test("a keyed tracker's pull-request text stays the home repository's pull request, and `#N in <repo>` is that repository's", () => {
+  const resolveOpen = keyedResolver({ rows: [], prs: [{ number: 12, session: "worker-home" }, { number: 12, repo: KEYED, session: "worker-agent-org-12", closes: [700] }],
+    trackers: { [KEYED]: [{ number: 12, session: "worker-agent-org-row-12" }] } });
+  const { holdings } = holdingsOf([
+    { number: 475, reason: B4_PR(12), repo: KEYED },
+    { number: 476, reason: `overlaps #12 in ${KEYED}, which already touches: src/work-gate.ts. B4: no two open pull requests touch the same file`, repo: KEYED },
+  ], resolveOpen);
+  assert.deepEqual(holdings.get("worker-home"), { rows: [475], heldRows: [] }, "a keyed repository's own pull requests are named with their repository, so a bare one is the home's (`prName`)");
+  assert.deepEqual(holdings.get("worker-agent-org-12"), { rows: [476], heldRows: [700] });
+});
+
+test("a keyed tracker's deadlock is read over that tracker's own edges, and a home row of the same number is not its edge", () => {
+  const edges = (blockedBy: number[]) => ({ blockedBy: { nodes: blockedBy.map((number) => ({ number, state: "OPEN" })) } });
+  const open = {
+    // the keyed tracker: pull request agent-org#32 closes #20, which waits on #10, which agent-org#32 shelves
+    prs: [{ number: 32, repo: KEYED, session: "worker-agent-org-32", closes: [20] }],
+    trackers: { [KEYED]: [{ number: 20, ...edges([10]) }, { number: 10 }] },
+  };
+  const shelved: Shelved[] = [{ number: 10, reason: `overlaps #32 in ${KEYED}, which already touches: src/work-gate.ts. B4`, repo: KEYED }];
+  assert.deepEqual(deadlocksAmong(shelved, keyedResolver(open)), [{ shelved: 10, pr: "agent-org#32", path: [20, 10], repo: KEYED }]);
+  const homeEdge = keyedResolver({ ...open, trackers: { [KEYED]: [{ number: 20 }, { number: 10 }] }, rows: [{ number: 20, ...edges([10]) }] });
+  assert.deepEqual(deadlocksAmong(shelved, homeEdge), [], "negative control: the edge is the home tracker's row 20, not the keyed one's");
+  const named = holdingsOf(shelved, keyedResolver(open), new Set([`${KEYED}#10`]));
+  assert.equal(named.unattributed, 0);
+});
+
+test("a keyed tracker's incident writes its row comment in that tracker, and none when a holder's held rows are in two", () => {
+  const keyedBlocked = (held: number, count: number, first = 1001): Shelved[] => Array.from({ length: count }, (_, i) => ({ number: first + i, reason: B4_ROW(held), repo: KEYED }));
+  const resolveOpen = keyedResolver({ rows: [{ number: 100, session: "worker-agent-org-469" }], trackers: { [KEYED]: [{ number: 469, session: "worker-agent-org-469" }] } });
+  inScratch((dir) => {
+    const comments: [number, string | undefined][] = [];
+    const run = (minute: number, blocked: Shelved[]) => blockingImpactTick({ blocked, resolve: resolveOpen, stateDir: dir, now: T0 + minute * MINUTE,
+      comment: (row, _body, repo) => { comments.push([row, repo]); }, log: () => {} });
+    for (let minute = 0; minute < 30; minute += STEP) run(minute, keyedBlocked(469, 5));
+    const orders = run(30, keyedBlocked(469, 5));
+    assert.equal(orders.length, 1);
+    assert.equal(orders[0].session, "worker-agent-org-469");
+    assert.deepEqual(comments, [[469, KEYED]], "agent-org#469 is written, and a11ign#469 is not");
+  });
+  inScratch((dir) => {
+    const comments: unknown[] = [];
+    const mixed = [...keyedBlocked(469, 3), ...behind(100, 2).map((row) => ({ ...row, reason: B4_ROW(100) }))];
+    const run = (minute: number) => blockingImpactTick({ blocked: mixed, resolve: resolveOpen, stateDir: dir, now: T0 + minute * MINUTE, comment: (...args) => { comments.push(args); }, log: () => {} });
+    for (let minute = 0; minute < 30; minute += STEP) run(minute);
+    assert.equal(run(30).length, 1, "positive control: the wake still goes");
+    assert.deepEqual(comments, [], "a row number that could be either tracker's is not written");
+  });
 });
 
 test("heldRefOf reads both B4 texts and nothing else", () => {
