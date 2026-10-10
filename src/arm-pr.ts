@@ -236,7 +236,14 @@ export function openBlockersOf(row: { blockedBy?: { nodes?: unknown; totalCount?
  */
 export function blockerVerdict({ repo, prBody, run }: { repo: string; prBody: string | null | undefined; run: (ghArgs: string[]) => string; }): { kind: "clear"; } | { kind: "open-blocker"; why: string; blockers: number[]; } | { kind: "cannot-ask"; why: string; } {
   if (typeof prBody !== "string") return { kind: "cannot-ask", why: "the PR body was not read, so the rows it closes are unknown" };
-  const readings = closedRowReferences(prBody, repo).map((row) => ({ row, ...readOpenBlockers({ row, run }) }));
+  const closing = closedRowReferences(prBody, repo);
+  const closedTogether = new Set(closing.map((row) => `${row.repo}#${row.number}`));
+  // #470: a blocker this same merge closes is not a wait -- the merge is its only exit, so refusing on it deadlocked (lab#39). A
+  // blocker number is its row's own tracker's, hence the row's `repo` and never the PR's: a bare 6 is not `a11ign/a11ign#6`.
+  const readings = closing.map((row) => {
+    const reading = readOpenBlockers({ row, run });
+    return { row, ...reading, open: reading.open?.filter((n) => !closedTogether.has(`${row.repo}#${n}`)) ?? null };
+  });
   const blocked = readings.filter((reading) => reading.open !== null && reading.open.length > 0);
   if (blocked.length > 0) {
     const blockers = [...new Set(blocked.flatMap((reading) => reading.open ?? []))];

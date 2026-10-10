@@ -130,6 +130,63 @@ test("#3544 a row named in another repository (`Closes owner/repo#n`) is read TH
   assert.match(why(verdict), new RegExp(`closing row ${REPO}#3422 is blocked by open #3509`));
 });
 
+// --- #470: a blocker the same merge closes is not a blocker (lab#39 deadlocked on `Closes: #4305, #4372`, #4305 blocked by #4372) ---
+
+test("#470 the lab#39 case: `Closes: #5, #6` where row 5 is blocked by open #6 is clear -- the merge is the blocker's only exit", () => {
+  const verdict = armPr.blockerVerdict({ repo: REPO, prBody: "Closes: #5, #6", run: answering({ 5: edges(node(6, "OPEN")), 6: UNBLOCKED }) });
+  assert.deepEqual(verdict, { kind: "clear" });
+});
+
+test("#470 CONTROL: the same body with row 5 blocked by open #7, which the PR does not close, is `open-blocker` naming #7 and not #6", () => {
+  const verdict = armPr.blockerVerdict({ repo: REPO, prBody: "Closes: #5, #6", run: answering({ 5: edges(node(7, "OPEN")), 6: UNBLOCKED }) });
+  assert.equal(verdict.kind, "open-blocker");
+  assert.deepEqual("blockers" in verdict ? verdict.blockers : null, [7]);
+  assert.match(why(verdict), /closing row #5 is blocked by open #7\. Declared order is enforced: it arms on the tick after that blocker closes/);
+  assert.doesNotMatch(why(verdict), /#6/);
+});
+
+test("#470 CONTROL: row 5 blocked by open #6 AND open #7 is `open-blocker` naming #7 only", () => {
+  const verdict = armPr.blockerVerdict({ repo: REPO, prBody: "Closes: #5, #6", run: answering({ 5: edges(node(6, "OPEN"), node(7, "OPEN")), 6: UNBLOCKED }) });
+  assert.equal(verdict.kind, "open-blocker");
+  assert.deepEqual("blockers" in verdict ? verdict.blockers : null, [7]);
+  assert.match(why(verdict), /closing row #5 is blocked by open #7\. Declared order/);
+  assert.doesNotMatch(why(verdict), /#6/);
+});
+
+test("#470 CONTROL: `Closes: #5` alone with row 5 blocked by open #6 still refuses, naming #6", () => {
+  const verdict = armPr.blockerVerdict({ repo: REPO, prBody: "Closes: #5", run: answering({ 5: edges(node(6, "OPEN")) }) });
+  assert.equal(verdict.kind, "open-blocker");
+  assert.deepEqual("blockers" in verdict ? verdict.blockers : null, [6]);
+  assert.match(why(verdict), /closing row #5 is blocked by open #6/);
+});
+
+test("#470 CONTROL: a closing row in ANOTHER repository (`a11ign/a11ign#6`) is not matched by the bare blocker 6 of a row in the PR's own repository", () => {
+  const asked: string[][] = [];
+  const verdict = armPr.blockerVerdict({ repo: "a11ign/agent-org", prBody: "Closes: #5, a11ign/a11ign#6",
+    run: answering({ 5: edges(node(6, "OPEN")), 6: UNBLOCKED }, asked) });
+  assert.deepEqual(asked.map((args) => `${args[4]}#${args[2]}`), ["a11ign/agent-org#5", "a11ign/a11ign#6"], "both rows read, each in its own tracker");
+  assert.equal(verdict.kind, "open-blocker");
+  assert.deepEqual("blockers" in verdict ? verdict.blockers : null, [6]);
+  assert.match(why(verdict), /closing row #5 is blocked by open #6/);
+});
+
+test("#470 the other half of the key: the same pair named in the PR's own repository with its full name IS the same row, so it clears", () => {
+  const verdict = armPr.blockerVerdict({ repo: "a11ign/agent-org", prBody: "Closes: #5, a11ign/agent-org#6", run: answering({ 5: edges(node(6, "OPEN")), 6: UNBLOCKED }) });
+  assert.deepEqual(verdict, { kind: "clear" });
+});
+
+test("#470 a closing blocker's OWN open blockers still count, and an unreadable row among the pair is still `cannot-ask`", () => {
+  const body = "Closes: #5, #6";
+  const own = armPr.blockerVerdict({ repo: REPO, prBody: body, run: answering({ 5: edges(node(6, "OPEN")), 6: edges(node(8, "OPEN")) }) });
+  assert.equal(own.kind, "open-blocker");
+  assert.deepEqual("blockers" in own ? own.blockers : null, [8]);
+  assert.match(why(own), /closing row #6 is blocked by open #8/);
+  assert.doesNotMatch(why(own), /closing row #5/);
+  const unread = armPr.blockerVerdict({ repo: REPO, prBody: body, run: answering({ 5: edges(node(6, "OPEN")), 6: new Error("HTTP 502") }) });
+  assert.equal(unread.kind, "cannot-ask", "row 5 is cleared by the pair, row 6 was not read: not a row with no blocker");
+  assert.match(why(unread), /could not read closing row #6's blocked-by edges/);
+});
+
 // --- door one: the per-PR `arm` job ---
 
 type Fixture = { rows: Record<number, unknown | Error>; comments?: { body: string }[] | Error; commentFails?: boolean; body?: string };
