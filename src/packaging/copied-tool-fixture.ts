@@ -54,9 +54,13 @@ export function importClosure(entry: string, also: string[] = []): Set<string> {
 export function linkToolchain(root: string): void {
   const link = join(root, "node_modules/@a11ign/toolchain");
   if (existsSync(link)) return;
-  const installed = realpathSync(join(dirname(createRequire(import.meta.url).resolve("@a11ign/toolchain/lib/git-env")), "..", ".."));
   mkdirSync(dirname(link), { recursive: true });
-  symlinkSync(installed, link);
+  symlinkSync(installedToolchain(), link);
+}
+
+/** The directory of the `@a11ign/toolchain` this checkout resolves: the one a staged tree or an offline install is given, so no test reaches a registry. */
+export function installedToolchain(): string {
+  return realpathSync(join(dirname(createRequire(import.meta.url).resolve("@a11ign/toolchain/lib/git-env")), "..", ".."));
 }
 
 function copyInto(target: string, source: string): void {

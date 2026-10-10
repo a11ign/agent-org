@@ -32,7 +32,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { sandboxGitEnv } from "../lib/git-env.ts";
-import { linkToolchain } from "./copied-tool-fixture.ts";
+import { installedToolchain, linkToolchain } from "./copied-tool-fixture.ts";
 
 const TOOL_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const PNPM_TIMEOUT_MS = 120_000;
@@ -123,7 +123,10 @@ function pnpm(cwd: string, ...args: string[]) {
 /** An empty project, with or without its own `typescript`, that has `agent-org` installed from the tagged repository. */
 function installedProject({ withTypescript }: { withTypescript: boolean }) {
   const project = projectRepository();
-  writeFileSync(join(project, "package.json"), JSON.stringify({ name: "acme-widgets", version: "1.0.0", private: true }));
+  // The tool declares `@a11ign/toolchain` (a11ign/agent-org#522) and `pnpm` runs `--offline`, so the dependency is resolved from the one this checkout
+  // has installed, by an override, and not from a registry mirror this machine may not hold.
+  const overrides = { "@a11ign/toolchain": `link:${installedToolchain()}` };
+  writeFileSync(join(project, "package.json"), JSON.stringify({ name: "acme-widgets", version: "1.0.0", private: true, pnpm: { overrides } }));
   const typescript = withTypescript ? [`typescript@file:${fixtureTypescript()}`] : [];
   const added = pnpm(project, "add", "--offline", "-D", ...typescript, `agent-org@git+file://${taggedTool()}#semver:^0.1.0`);
   return { project, added };
