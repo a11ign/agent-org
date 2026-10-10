@@ -1,3 +1,4 @@
+// no-token: gh -- the claimer's row read is an injected `readRow`, and every launch is built from a fixture row; nothing here reaches `gh` (agent-org#468)
 /**
  * `packages/agent-org/src/worker-profile.ts`'s Haiku tier and `trace/haiku-tier-report.ts` (a11ign/a11ign#4382, the chairman's spend trial).
  *
