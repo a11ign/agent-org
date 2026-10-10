@@ -1,3 +1,4 @@
+// no-token: prepareContext -- Telegram is a fake and the ledger a temp file, and nothing here calls it; `poll.ts` only carries it in through `acquireLock`'s `createAnswers` import (measured with `gh` and `herdr` stubbed first on PATH: neither was spawned; a11ign/a11ign#4743)
 // @ts-check
 // THE LONG POLL AND THE LISTENER (a11ign/a11ign#2907 done-whens 1-5), against a FAKE TELEGRAM that behaves the way the real one does where it
 // matters here: it REDELIVERS every update until a later `getUpdates` confirms it with an offset, so "a restart replays nothing" is something
