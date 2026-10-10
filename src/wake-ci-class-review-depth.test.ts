@@ -102,6 +102,21 @@ test("readDepthState: the paths, the lines and the Region of every row the pull 
   assert.equal(readDepthState({ repo: REPO, number: 5 }, big), null, "a diff whose files were not all read is not read at all");
 });
 
+test("readDepthState: a row closed in the FULL form is read from the repository it names, which is what every pull request body carries", () => {
+  const OTHER = "a11ign/agent-org";
+  const asked: string[] = [];
+  const gh = fakeGh({
+    [`repos/${OTHER}/pulls/9/files`]: [{ filename: "docs/a.md" }],
+    [`repos/${REPO}/issues/4888`]: { body: "## Region\n\n```\nagent-org:src/wake.ts\n```\n" },
+    [`repos/${OTHER}/issues/7`]: { body: "## Region\n\n```\nsrc/review-depth.ts\n```\n" },
+    [`repos/${OTHER}/pulls/9`]: { changed_files: 1, additions: 1, deletions: 0, title: "t", body: "Closes a11ign/a11ign#4888\n\nCloses a11ign/agent-org#7\nCloses #7" },
+  }, asked);
+  const state = readDepthState({ repo: OTHER, number: 9 }, gh)!;
+  assert.deepEqual(state.closesPaths, ["src/wake.ts", "src/review-depth.ts"], "both full forms are read, and a bare #7 is the same row as the full one, once");
+  assert.ok(asked.includes(`api repos/${REPO}/issues/4888`), "the row of another repository is read from THAT repository, not from the pull request's own");
+  assert.equal(asked.filter((line) => line.endsWith("/issues/7")).length, 1);
+});
+
 test("depthEffort: light is low, full is high, normal is the profile's own", () => {
   assert.deepEqual(["light", "normal", "full", undefined].map((d) => depthEffort(d as never)), ["low", undefined, "high", undefined]);
 });

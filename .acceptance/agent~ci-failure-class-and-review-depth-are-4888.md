@@ -6,6 +6,7 @@ Closes a11ign/a11ign#4888
 
 - **Red-PR path.** `wake.ts` reads the facts of a red-check order's first red check over REST (`pulls/N`, `commits/SHA/check-runs`, `actions/runs/ID`, the job log, `main`'s and other PRs' recent runs), asks `ci-failure-class`, writes `wake: <cause> CI failure class: <class> -> <route> (...)` to the journal, and appends the class and the route's words to the prompt only when a provider answered. At most three orders per wake, so a storm of red PRs cannot spend the pool.
 - **Reviewer start.** `wake.ts` reads the PR's changed paths and the Regions of the rows it closes, asks `review-depth`, and `spawnReviewer` passes `low`/`high` as the effort override for `light`/`full`. `.github/workflows/`, auth and security paths are `full` by rule, before any provider.
+- **A closed row is read from the repository the body names.** `Closes a11ign/a11ign#4888` in an agent-org pull request reads `a11ign/a11ign`'s row; a bare `#N` reads the pull request's own (the first version matched only the bare form, so the canonical body never reached the Region).
 - **Unchanged without an answer.** No provider, an unreadable fact (`null`), or an error leaves the order and the reviewer as they were.
 
 ## Platform first, deleting first
@@ -18,7 +19,7 @@ The wiring is in `wake.ts`, not `work-gate.ts`: the gate is synchronous and a de
 
 ```
 $ AGENT_ORG_HOST=<a recorded host with no triage> node --import tsx --test src/wake-ci-class-review-depth.test.ts src/ci-failure-class.test.ts src/review-depth.test.ts
-ℹ tests 32   ℹ pass 32   ℹ fail 0
+ℹ tests 33   ℹ pass 33   ℹ fail 0
 $ (the 21 wake-family test files)
 ℹ tests 313  ℹ pass 313  ℹ fail 0
 $ node_modules/.bin/tsc --noEmit -p tsconfig.json   # only the pre-existing mjs-ratchet.test.ts missing-module errors
@@ -28,7 +29,7 @@ The row's own command is `npx rstest run` over the two older files; those are `n
 
 Acceptance: `node --import tsx --test src/wake-ci-class-review-depth.test.ts src/ci-failure-class.test.ts src/review-depth.test.ts`
 
-Mutation: 5 mutants, each killed by exactly its own tests (the red-check order never asked; the class never written to the journal; the reviewer never asked; the effort override dropped; the always-full paths not forced). Sources restored with `cp` and proved byte-identical.
+Mutation: 6 mutants, each killed by its own tests (the red-check order never asked; the class never written to the journal; the reviewer never asked; the effort override dropped; the always-full paths not forced; a row closed in the full `owner/repo#N` form not read, which `reviewer-agent-org-738` found and the first fixture, written in the bare `#N` form, could not). Sources restored with `cp` and proved byte-identical.
 
 ## Anything a reviewer should be sceptical of
 

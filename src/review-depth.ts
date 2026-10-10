@@ -95,7 +95,8 @@ export async function reviewDepth(state: DepthState, deps: DecisionDeps): Promis
 
 /** `gh pr`'s `files` endpoint pages at 100; a diff past that has paths this read did not see, so it is not read at all. */
 const FILES_PAGE = 100;
-const CLOSES = /\bcloses?:?\s+#(\d+)/gi;
+/** A row a body closes, in the full form a pull request is held to (`Closes a11ign/a11ign#4888`, #2995) or the bare `#n`, which is a row of the pull request's OWN repository. */
+const CLOSES = /\bcloses?:?\s+(?:([\w.-]+\/[\w.-]+))?#(\d+)/gi;
 
 /** The effort a reviewer of this depth is STARTED with, or `undefined` for the profile's own: `light` is low, `normal` is the profile's, `full` is high. */
 export function depthEffort(depth: Depth | undefined): string | undefined {
@@ -114,7 +115,7 @@ export function readDepthState({ repo, number }: { repo: string; number: number 
   const pull = JSON.parse(gh(["api", `repos/${repo}/pulls/${number}`]));
   if (Number(pull.changed_files) > FILES_PAGE) return null;
   const files: { filename: string }[] = JSON.parse(gh(["api", `repos/${repo}/pulls/${number}/files?per_page=${FILES_PAGE}`]));
-  const closed = [...String(pull.body ?? "").matchAll(CLOSES)].map((match) => match[1]);
-  const closesPaths = [...new Set(closed)].flatMap((row) => regionPaths(String(JSON.parse(gh(["api", `repos/${repo}/issues/${row}`])).body ?? "")));
+  const closed = [...String(pull.body ?? "").matchAll(CLOSES)].map((match) => `${match[1] ?? repo}/issues/${match[2]}`);
+  const closesPaths = [...new Set(closed)].flatMap((row) => regionPaths(String(JSON.parse(gh(["api", `repos/${row}`])).body ?? "")));
   return { paths: files.map((file) => file.filename), added: Number(pull.additions), removed: Number(pull.deletions), title: String(pull.title ?? ""), closesPaths };
 }
