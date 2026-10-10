@@ -1,4 +1,4 @@
-`blockerVerdict` ignores an open blocker that the same pull request closes, so a pair declared `Closes: #5, #6` with row 5 blocked by #6 is `clear` instead of deadlocking (a11ign/lab#39). The match is on the closing row's repository and number.
+`blockerVerdict` ignores an open blocker that the same pull request closes, so a pull request closing both rows 5 and 6, with row 5 blocked by #6 is `clear` instead of deadlocking (a11ign/lab#39). The match is on the closing row's repository and number.
 
 Closes a11ign/agent-org#470
 
