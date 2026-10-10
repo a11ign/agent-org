@@ -24,6 +24,48 @@ The tool reads `.agent-org/project.json` of the project it serves, and never ans
 | monorepo (`packages/agent-org/src`) | the repository root | the host file's primary project |
 | the tool's own checkout | REFUSED naming `AGENT_ORG_HOST` | the host file's primary project |
 
+## Which GitHub account each role calls as
+
+`gh` calls are made by three roles: the **scheduler** (the gate, the tick and the `host:*` scripts: a process outside any agent workspace), the **workers** (engineer sessions) and the
+**managers** (the standing leads). `host.json`'s `github.identity` sets, per role, how that role authenticates:
+
+```json
+{
+  "github": {
+    "identity": {
+      "scheduler": { "mode": "github-apps", "appId": 1234567, "keyPath": "/home/agent/.config/agent-org/apps/scheduler.pem" },
+      "workers": { "mode": "user-accounts" }
+    }
+  }
+}
+```
+
+| mode | what the role calls as | what it needs |
+|---|---|---|
+| `user-accounts` (the default, and what a role left out gets) | the personal account whose `gh` config directory the host already routes the role to | nothing; a host with no `github` key behaves exactly as before |
+| `github-apps` | `<app>[bot]`, with a one-hour installation token minted from the app's private key and cached | `appId` and an absolute `keyPath` (a mode-600 `.pem`); `installationId` only when the app is installed in more than one place |
+
+The roles are chosen one at a time, so a host can move the scheduler first and leave the rest (`scheduler` is the role whose shared pool starved: the gate hit GitHub's secondary
+limit as the workers' account). A role that is not one of the three, a `github-apps` role without `appId` and `keyPath`, and a `user-accounts` role that names an app are refused by
+field name when `host.json` is read. A role outside any agent workspace is the scheduler; `AGENT_ORG_GH_ROLE=scheduler|workers|managers` states the role when that guess is wrong.
+
+How it behaves:
+
+- **A separate pool per role.** Each app's installation token spends the app's own rate limit, not the personal account's.
+- **Minted on demand, refreshed before it expires.** The token is cached under the host's state directory (`app-tokens/<role>.token`, mode 600) and replaced when less than
+  five minutes of it is left, so a call is not handed a token that dies under it. Reading the cache starts no process.
+- **A failed mint falls back to today's account**, so the call still goes through, and records one ledger line with resource `incident` naming the stage that failed (`key`,
+  `installation` or `token`). The role is not asked again for a minute.
+- **An explicit `GH_TOKEN` or `GITHUB_TOKEN` wins**: a CI runner or a person who named a credential is not re-routed.
+
+The trade-offs, which are why this is an option and not the default:
+
+- **Authorship changes to `<app>[bot]`**, in commits' pushes, comments, reviews and PRs; whatever matches on the old login (rulesets' bypass lists, CODEOWNERS, `a11ign-bot`
+  rules) must be told the app, and an app's approval counts toward a required review only where the ruleset allows it. Verify this per role before moving it.
+- **An installation token cannot answer `viewer`** (the GraphQL query for "who am I") and only reaches repositories the app is installed on and the permissions it was granted.
+- **The key is a standing secret** on the host; a leaked token is good for an hour, a leaked key until the app's key is revoked.
+- **The minter needs `node` and the network**; with neither the role runs on its personal account and the incident says so.
+
 ## What an install holds
 
 `src/` (the programs and their data, without `*.test.*`), `host/` (the unit templates `host:install` reads), `LICENSE`, `README.md` and

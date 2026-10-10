@@ -95,6 +95,9 @@ test("#2620: a host.json's values are what `templateValues` hands the templates,
   assert.deepEqual(templateValues(host, units), {
     home: "/home/agent", binDir: "/home/agent/.local/bin", checkout: "/home/agent/repos/a11y-witness",
     workersDir: "/home/agent/workers", leadsDir: "/home/agent/leads", prefix: "a11ign-",
+    // #4900: the four values the wrapper's app block renders from; a host that declares no `github-apps` role has `appRoles` empty and the block does nothing.
+    appRoles: "", appDeclared: "case \"$1\" in\n    *) return 1 ;;\n  esac", appTokenDir: "/home/agent/.cache/a11ign/app-tokens",
+    appTokenScript: "/home/agent/repos/a11y-witness/packages/agent-org/src/app-token.ts",
   });
   assert.deepEqual(host.gh.leadsWorkspaces.map((w) => w.id), ["w6", "w2", "w5"], "the leads list is the file it replaced");
 });
@@ -125,7 +128,8 @@ const TODAYS_TEXT = {
 // a11ign/a11ign#4397 MOVED IT AGAIN, deliberately: `gh pr create` is refused unless `A11Y_PR_OPEN` is set (only `pr:open` sets it). Same staleness, same remedy.
 // a11ign/a11ign#4148 part 6 MOVED IT AGAIN, deliberately: `auth git-credential` and an `api` call naming GET no longer drop the read cache, and a write drops only its own repository's entries. Same staleness, same remedy.
 // agent-org#486 MOVED IT AGAIN, deliberately: `issue comment`, `pr comment` and `pr review` get a trailing `<!-- decided-by: <role> run: <id> -->` line. Same staleness, same remedy.
-const TODAYS_GH_WRAPPER = "a5c6b093f1aef6aa302b3e425ce37f4426c519b396d7f57947ce73164096f37a";
+// a11ign/a11ign#4900 MOVED IT AGAIN, deliberately: a role `host.json` declares as `github-apps` calls as that app (`GH_TOKEN` from `app-token.ts`'s cache); for the recorded host, which declares none, the block is inert. Same staleness, same remedy.
+const TODAYS_GH_WRAPPER = "cba3cbfdb6aae0bffa23c0d5704939c96e91913d022b1f92c50a387859aaaa36";
 // #2896 MOVED THIS ONE, deliberately: the recorded host's header says `pnpm run host:install` / `pnpm run host:check` where it said `npm run`.
 const TODAYS_LEADS_LIST = "dbca070c4bb7934ff1e9cdc9505f9edee638d98fcff10963b18d5d3a743770a2";
 

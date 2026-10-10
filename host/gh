@@ -20,6 +20,8 @@
 #      acted as the org owner, with admin, and one spent his search limit. Admin acts are done from the chairman's own
 #      machine, never from this host. The refusal exits before gh-real and BEFORE THE LEDGER below, so it writes no line:
 #      a ledger line goes into the account's own config dir and there is no account here to name.
+#   6. (#4900) a role `host.json` declares as `github-apps` acts as its app, not as the account: see the block headed #4900 below. A host
+#      that declares none is routed by steps 1-5 exactly as before.
 #
 # Routing is by herdr workspace id, which survives a session restart.
 #
@@ -112,8 +114,8 @@ ledger_record() { # status stdout-copy first-arg second-arg
     cost=$(grep -o '"rateLimit": *{[^}]*}' "$2" | grep -o '"cost": *[0-9]*' | tr -dc '0-9\n' |
       awk '{ s += $1; n++ } END { if (n) print s }')
   fi
-  account=$(sed -n 's/^ *user: *//p' "$cfg/hosts.yml" | head -n 1)
-  caller=$(tr '\0\t\n' '   ' < "/proc/$PPID/cmdline" | cut -c1-160)
+  account=${app_account:-$(sed -n 's/^ *user: *//p' "$cfg/hosts.yml" | head -n 1)}
+  caller=${LEDGER_CALLER:-$(tr '\0\t\n' '   ' < "/proc/$PPID/cmdline" | cut -c1-160)}
   session=$(session_id)
   now=${A11Y_GH_LEDGER_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
   printf '%s\t%s\t%s\t%s\t%s\t%s %s\t%s\t%s\t%s\n' "$now" "${account:-unknown}" "$resource" "$cost" "$1" "$3" "$4" \
@@ -271,6 +273,102 @@ read_cache_store() { # the stdout copy, the generation read BEFORE the call ran
   [ "$(($$ % 16))" -eq 0 ] && find "$RC/e" -type f -mmin +60 -exec rm -f {} + 2>/dev/null
   return 0
 }
+
+# --- #4900: A ROLE'S GITHUB APP, WHEN host.json DECLARES ONE -------------------------------------------------------
+#
+# Every session of a role shared one personal account's pool and its secondary limit, and the gate starved behind six workers (17 ticks
+# in 30 minutes ended `CANNOT ASK`). `host.json`'s `github.identity` can name, per role, a GitHub App; for such a role this wrapper puts the
+# app's installation token in `GH_TOKEN`, which `gh` prefers to `hosts.yml`, and the call is the app's, on the app's own pool.
+#
+#   - THE DEFAULT IS TODAY'S BEHAVIOUR, BYTE FOR BYTE. `@@appRoles@@` renders empty on a host that declares no app, and this block then
+#     does nothing: no token file is read, no process is started. `A11Y_APP_ROLES` overrides it, as `A11Y_GH_REAL` overrides the exec.
+#   - THE ROLE is read off the same facts the routing above used: `AGENT_ORG_GH_ROLE` when a caller declares one (a unit may), else
+#     no workspace id (a unit or script outside any agent workspace: the gate, the tick, `host:*`) is `scheduler`, the leads config
+#     is `managers`, anything else is `workers`.
+#   - AN EXPLICIT `GH_TOKEN` OR `GITHUB_TOKEN` WINS, as an explicit `GH_CONFIG_DIR` does: a runner or a person who named a credential is not re-routed.
+#   - THE TOKEN is read from the cache file `agent-org`'s minter writes (`<expiry epoch> <token>`), in shell and with no process, while it has
+#     more than 5 minutes left; only a stale one starts `app-token.ts`, once an hour per role.
+#   - A MINT THAT FAILS FALLS BACK TO TODAY'S ACCOUNT, and the call goes through as it always did. It is recorded as ONE ledger line with
+#     resource `incident`, status 1, the command `app-token <role>` and the minter's reason in the caller field (`gh-ledger.ts`
+#     reads it, at no points), and the role is not asked again for 60 seconds, so an outage costs one process a minute and not one per call.
+#   - THE MINTER NEVER SEES THE CALL'S STDIN (`</dev/null`): `gh pr create --body-file -` reads it, and a minter that consumed it would
+#     post an empty body. Its stderr goes to a file beside the token, never to the caller's.
+#   - THE LEDGER NAMES THE APP (`app:<role>`), not the account whose `hosts.yml` the call would otherwise have read, so a pool is not
+#     charged to a name it did not spend.
+app_account=
+app_role() {
+  case "${AGENT_ORG_GH_ROLE:-}" in scheduler|workers|managers) printf %s "$AGENT_ORG_GH_ROLE"; return 0 ;; esac
+  if [ -z "${HERDR_WORKSPACE_ID:-}" ]; then printf scheduler
+  elif [ "$GH_CONFIG_DIR" = "$LEADS_DIR/gh" ]; then printf managers
+  else printf workers; fi
+}
+
+# `$1` a role: sets `app_id`, `app_key` and `app_inst` from the declaration rendered here (host.json's `github.identity`), or fails for a
+# role it declares no app for. The minter is handed these and never reads host.json: it would have to resolve the project from the cwd.
+app_declared() {
+  app_id=; app_key=; app_inst=
+  @@appDeclared@@
+}
+
+# `$1` a role: prints its token and succeeds, or fails and prints nothing (the incident is recorded here).
+app_token() {
+  app_declared "$1" || return 1
+  app_dir=${A11Y_APP_TOKEN_DIR:-@@appTokenDir@@}
+  now_s=$(date +%s)
+  if IFS=' ' read -r app_exp app_tok 2>/dev/null < "$app_dir/$1.token"; then
+    case "$app_exp" in
+      ''|*[!0-9]*) ;;
+      *) if [ -n "$app_tok" ] && [ "$((app_exp - now_s))" -gt "${A11Y_APP_REFRESH_MARGIN:-300}" ]; then printf %s "$app_tok"; return 0; fi ;;
+    esac
+  fi
+  if IFS= read -r app_failed 2>/dev/null < "$app_dir/$1.failed"; then
+    case "$app_failed" in
+      ''|*[!0-9]*) ;;
+      *) [ "$((now_s - app_failed))" -lt "${A11Y_APP_RETRY_SECONDS:-60}" ] && return 1 ;;
+    esac
+  fi
+  app_cmd=${A11Y_APP_NODE:-node}
+  app_script=${A11Y_APP_TOKEN_SCRIPT:-@@appTokenScript@@}
+  mkdir -p "$app_dir" 2>/dev/null && chmod 700 "$app_dir" 2>/dev/null
+  app_err=$app_dir/$1.err
+  if command -v timeout >/dev/null 2>&1; then
+    app_tok=$(A11Y_APP_ID=$app_id A11Y_APP_KEY_PATH=$app_key A11Y_APP_INSTALLATION_ID=$app_inst A11Y_APP_TOKEN_DIR=$app_dir \
+      timeout 30 "$app_cmd" "$app_script" "$1" 2>"$app_err" < /dev/null)
+  else
+    app_tok=$(A11Y_APP_ID=$app_id A11Y_APP_KEY_PATH=$app_key A11Y_APP_INSTALLATION_ID=$app_inst A11Y_APP_TOKEN_DIR=$app_dir \
+      "$app_cmd" "$app_script" "$1" 2>"$app_err" < /dev/null)
+  fi
+  app_status=$?
+  case "$app_tok" in ''|*[!A-Za-z0-9_-]*) [ "$app_status" -eq 0 ] && app_status=1 ;; esac
+  if [ "$app_status" -eq 0 ]; then
+    rm -f "${app_dir:?}/$1.failed" 2>/dev/null
+    printf %s "$app_tok"
+    return 0
+  fi
+  printf '%s\n' "$now_s" > "$app_dir/$1.failed" 2>/dev/null
+  reason=$(head -n 1 "$app_err" 2>/dev/null | tr '\0\t\n' '   ' | cut -c1-160)
+  # a subshell, so the three settings below cannot outlive the incident line (a prefix assignment on a function call is not portable)
+  (
+    LEDGER_RESOURCE=incident
+    LEDGER_CALLER="app-token $1 failed, fell back to the account: ${reason:-no reason given}"
+    app_account=
+    ledger_record "$app_status" "" app-token "$1"
+  ) 2>/dev/null || :
+  return 1
+}
+
+APP_ROLES=${A11Y_APP_ROLES-@@appRoles@@}
+if [ -n "$APP_ROLES" ] && [ -z "${GH_TOKEN:-}" ] && [ -z "${GITHUB_TOKEN:-}" ]; then
+  app_who=$(app_role)
+  case " $APP_ROLES " in
+    *" $app_who "*)
+      if app_tok=$(app_token "$app_who") && [ -n "$app_tok" ]; then
+        GH_TOKEN=$app_tok
+        export GH_TOKEN
+        app_account=app:$app_who
+      fi ;;
+  esac
+fi
 
 # --- #4505 MOVE 0 (agent-org#486): A DECISION COMMENT CARRIES THE ROLE AND RUN THAT POSTED IT --------------------------------
 #

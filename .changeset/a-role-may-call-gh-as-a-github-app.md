@@ -1,0 +1,5 @@
+---
+"agent-org": minor
+---
+
+`host.json` gains `github.identity`, settable per role (`scheduler`, `workers`, `managers`) to `user-accounts` (the default, today's behaviour byte for byte) or `github-apps` (an `appId` and an absolute `keyPath`, and an `installationId` when the app has several). For a `github-apps` role `host/gh` puts the app's installation token in `GH_TOKEN`: `src/app-token.ts` signs the app's JWT, trades it for a one-hour installation token and caches it per role, replaced when less than five minutes remain. A failed mint falls back to the role's personal account and records one `incident` ledger line naming the stage (`key`, `installation`, `token`); the role is not retried for a minute. An explicit `GH_TOKEN` still wins, and the ledger names the app (`app:<role>`) rather than the account it did not use. A role not in the three, a `github-apps` role without an app, and a `user-accounts` role naming one are refused by field name. The README gains the option's reference and trade-offs. a11ign/a11ign#4900.

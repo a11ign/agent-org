@@ -20,6 +20,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { HOME_CHECKOUT, PROJECT_DECLARATION_PATH, SUPPORTED_SCHEMA } from "./project-config.ts";
 import { LATEST, isToolVersion } from "./lib/release-tag.ts";
+import { GITHUB_ROLES, type AppIdentity, type GithubRole } from "./app-token.ts";
+
+export { GITHUB_ROLES, type GithubRole };
 
 export const HOST_CONFIG_ENV = "AGENT_ORG_HOST";
 /** Where the host's declaration is, relative to a checkout, when `$AGENT_ORG_HOST` does not say. */
@@ -42,9 +45,13 @@ export type HostProject = { id: string, checkout: string };
  * `triage` is the one key that `parseHostConfig` ALWAYS sets (a hand-built `HostConfig` in a test may leave it out, hence the `?`), `{ provider: "none" }` when the declaration has none, because "no triage" is a value the
  * wake path reads and not a question it asks of the shape (a later row routes on it; this one routes nothing).
  */
-export type HostConfig = { schema: number, home: string, binDir: string, primary: string, projects: HostProject[], gh: GhDirectories, tool?: string, toolVersion?: string, stateDir?: string, clones?: Readonly<Record<string, string>>, triage?: Readonly<TriageDeclaration> };
+export type HostConfig = { schema: number, home: string, binDir: string, primary: string, projects: HostProject[], gh: GhDirectories, tool?: string, toolVersion?: string, stateDir?: string, clones?: Readonly<Record<string, string>>, triage?: Readonly<TriageDeclaration>, github?: Readonly<GithubDeclaration> };
 export type TriageDeclaration = { provider: "none" } | { provider: "jev", keyPath: string, minConfidence: number };
 export type UnitsDeclaration = { prefix: string, boardReportWorkflow: string, own: string[] };
+
+/** How a role authenticates (#4900). `user-accounts` is today's behaviour and the default; `github-apps` names the app (`app-token.ts`'s `AppIdentity`). */
+export type RoleIdentity = { mode: "user-accounts" } | ({ mode: "github-apps" } & AppIdentity);
+export type GithubDeclaration = { identity: Readonly<Record<GithubRole, Readonly<RoleIdentity>>> };
 
 /** A refusal that names the field, so a test can tell WHICH rule fired. */
 export class HostConfigRefusal extends Error {
@@ -196,7 +203,71 @@ export function parseHostConfig(text: string, source: string = HOST_DECLARATION_
     ...(stateDir === undefined ? {} : { stateDir }),
     ...(clones === undefined ? {} : { clones }),
     triage: readTriage(host, source),
+    github: readGithub(host, source),
   });
+}
+
+const USER_ACCOUNTS: Readonly<RoleIdentity> = Object.freeze({ mode: "user-accounts" });
+/** An app id or installation id as GitHub writes it: digits (an App ID, an installation ID) or the `Iv1.…` client id. */
+const GITHUB_ID = /^[A-Za-z0-9._-]+$/;
+
+/**
+ * HOW EACH ROLE AUTHENTICATES (#4900, the chairman's direction on the row): `github.identity` names, per role, `user-accounts` (the personal
+ * account directories `gh` routes to today) or `github-apps` (an installation token minted from the app's key, one hour, its own rate-limit
+ * pool). ABSENT is `user-accounts` for every role, and so is a role left out, so a host that says nothing behaves as it always has. Refused by
+ * field name: a role that is not one of the three (a typo would leave a role on the shared account while looking migrated), a `github-apps`
+ * role without `appId` and `keyPath`, and a `user-accounts` role that names an app (a half-flipped declaration, which would be ignored).
+ * @param {Record<string, unknown>} host @param {string} source @returns {Readonly<GithubDeclaration>}
+ */
+function readGithub(host: Record<string, unknown>, source: string): Readonly<GithubDeclaration> {
+  const roles: Record<GithubRole, Readonly<RoleIdentity>> = { scheduler: USER_ACCOUNTS, workers: USER_ACCOUNTS, managers: USER_ACCOUNTS };
+  if (Object.hasOwn(host, "github")) {
+    const github = requiredObject(host.github, "github", source);
+    const identity = Object.hasOwn(github, "identity") ? requiredObject(github.identity, "github.identity", source) : {};
+    for (const key of Object.keys(identity)) {
+      if (!(GITHUB_ROLES as readonly string[]).includes(key)) {
+        throw new HostConfigRefusal(`github.identity.${key}`, `it is not a role; the roles are ${GITHUB_ROLES.join(", ")}`, source);
+      }
+      roles[key as GithubRole] = readRoleIdentity(requiredObject(identity[key], `github.identity.${key}`, source), `github.identity.${key}.`, source);
+    }
+  }
+  return Object.freeze({ identity: Object.freeze(roles) });
+}
+
+/** @param {Record<string, unknown>} role @param {string} at @param {string} source @returns {Readonly<RoleIdentity>} */
+function readRoleIdentity(role: Record<string, unknown>, at: string, source: string): Readonly<RoleIdentity> {
+  const mode = requiredString(role, "mode", at, source);
+  if (mode === "user-accounts") {
+    for (const name of ["appId", "keyPath", "installationId"]) {
+      if (Object.hasOwn(role, name)) throw new HostConfigRefusal(`${at}${name}`, "it names an app, and `mode` is `user-accounts`, so it would be ignored", source);
+    }
+    return USER_ACCOUNTS;
+  }
+  if (mode !== "github-apps") {
+    throw new HostConfigRefusal(`${at}mode`, `it must be "user-accounts" or "github-apps", not ${JSON.stringify(mode)}`, source);
+  }
+  const keyPath = requiredPath(role, "keyPath", at, source);
+  const installationId = Object.hasOwn(role, "installationId") ? githubId(role, "installationId", at, source) : undefined;
+  return Object.freeze({ mode, appId: githubId(role, "appId", at, source), keyPath, ...(installationId === undefined ? {} : { installationId }) });
+}
+
+/** An id GitHub issued, written as a string or as the integer a hand-written file naturally holds; refused when it is neither. */
+function githubId(from: Record<string, unknown>, name: string, at: string, source: string): string {
+  const value = from[name];
+  const text = typeof value === "number" && Number.isInteger(value) && value > 0 ? String(value) : value;
+  if (typeof text !== "string" || !GITHUB_ID.test(text)) {
+    const why = Object.hasOwn(from, name) ? `it must be the id GitHub issued (digits, or an \`Iv1.\` client id), not ${JSON.stringify(value)}` : "it is missing";
+    throw new HostConfigRefusal(`${at}${name}`, why, source);
+  }
+  return text;
+}
+
+/**
+ * The identity a role authenticates as on this host. A hand-built `HostConfig` that leaves `github` out is a host with no apps.
+ * @param {HostConfig} host @param {GithubRole} role
+ */
+export function roleIdentity(host: HostConfig, role: GithubRole): Readonly<RoleIdentity> {
+  return host.github?.identity[role] ?? USER_ACCOUNTS;
 }
 
 const NONE: Readonly<TriageDeclaration> = Object.freeze({ provider: "none" });
@@ -470,6 +541,32 @@ export function templateValues(host: HostConfig, units: UnitsDeclaration): Recor
     workersDir: host.gh.workers,
     leadsDir: host.gh.leads,
     prefix: units.prefix,
+    ...appTokenValues(host, primary.checkout),
+  };
+}
+
+/** A word a `sh` single-quoted string carries exactly, whatever the declaration holds. */
+const shellQuote = (value: string) => `'${value.replace(/'/g, "'\\''")}'`;
+
+/**
+ * What `host/gh` needs to route a role to its app (#4900): which roles are app-backed, each one's app, where the minted tokens are cached
+ * and the minter. The wrapper never reads `host.json` itself (a shell script parsing JSON on every `gh` call is what a rendered template is
+ * for), so a host with no `github-apps` role renders `appRoles` empty and the wrapper takes none of the new paths.
+ * `appDeclared` is the `case` statement that sets the app (a statement, so the raw template is itself valid `sh`), quoted for `sh`. The minter is the tool's own file: under `tool` on a host in the
+ * installed form, else where the primary checkout has always carried it.
+ * @param {HostConfig} host @param {string} checkout
+ */
+function appTokenValues(host: HostConfig, checkout: string): Record<string, string> {
+  const arms = GITHUB_ROLES.flatMap((role) => {
+    const identity = roleIdentity(host, role);
+    if (identity.mode !== "github-apps") return [];
+    return [`    ${role}) app_id=${shellQuote(identity.appId)}; app_key=${shellQuote(identity.keyPath)}; app_inst=${shellQuote(identity.installationId ?? "")} ;;`];
+  });
+  return {
+    appRoles: GITHUB_ROLES.filter((role) => roleIdentity(host, role).mode === "github-apps").join(" "),
+    appDeclared: ["case \"$1\" in", ...arms, "    *) return 1 ;;", "  esac"].join("\n"),
+    appTokenDir: stateEntryPath("app-tokens", { host, home: host.home, env: {} }),
+    appTokenScript: host.tool === undefined ? join(checkout, "packages/agent-org/src/app-token.ts") : join(host.tool, "src/app-token.ts"),
   };
 }
 
