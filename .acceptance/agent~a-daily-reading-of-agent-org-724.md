@@ -9,7 +9,7 @@ The row's command, `npx rstest run src/route-guard.test.ts` without `--config`, 
 
 Printed `VERDICT pass: 15 tests in 1 file`. With `src/trace/haiku-tier-report.test.ts` and `src/engineer-route.test.ts`: `VERDICT pass: 72 tests in 3 files`.
 
-Mutation (each applied to a copy of `src/route-guard.ts`, the file restored from it and `diff` byte-identical after the run):
+Mutation: each applied to a copy of `src/route-guard.ts`, the file restored from it and `diff` byte-identical after the run:
 - The guard never fires (`over: false`): red, the 6-under case and the exact-5 case.
 - The guard always fires (`over: true`): red, the 4-under case and the exact-5 case.
 - `>=` for `>` on the gap: 1 red, the exact-5 case.
