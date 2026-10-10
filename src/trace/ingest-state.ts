@@ -15,8 +15,8 @@ import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSyn
 import { dirname } from "node:path";
 
 // A version moves when a fix to what a turn CARRIES must reach turns already stored: the state of another version is a cold start, every transcript is read from byte 0, and
-// `appendToStore` supersedes each stored turn with the differing copy. 3: `toolMs` (a11ign/a11ign#3669), absent from every turn stored before it, so its tool time printed as `unexplained` (#3680). 4: `toolRead` (a11ign/a11ign#3967), the tokens a `Read`, `Grep` or `Glob` result added to the window, absent from every turn stored before it.
-export const STATE_VERSION = 4;
+// `appendToStore` supersedes each stored turn with the differing copy. 3: `toolMs` (a11ign/a11ign#3669), absent from every turn stored before it, so its tool time printed as `unexplained` (#3680). 4: `toolRead` (a11ign/a11ign#3967), the tokens a `Read`, `Grep` or `Glob` result added to the window, absent from every turn stored before it. 5: `effort` (agent-org#469), the effort Claude Code wrote on the transcript record, absent from every turn stored before it, so every row of the Haiku trial would read `unknown`.
+export const STATE_VERSION = 5;
 
 /** The first bytes hashed to tell a rewritten file from a grown one. Small, so that checking a grown file costs next to nothing. */
 export const HEAD_BYTES = 256;

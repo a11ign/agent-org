@@ -83,6 +83,7 @@ test("A REAL api_request becomes ONE source:otel record with org.role, prompt.id
       row: null, pr: null, repo: null, cause: null, causeKey: null, wakeId: null, requestId: REQUEST_ID,
       promptId: "a50257c3-696f-46fc-9f50-5483556d2fac", sessionId: "eec3945a-5a85-4c3c-9aa2-39e4b8445cef", model: "claude-haiku-5-5",
       usage: { input: 2, output: 4, cacheRead: 9179, cacheCreation: 13356 }, clientCostUsd: 0.0027651900000000003, durationMs: 742,
+      effort: "medium", // agent-org#469: the probe event's own `effort` attribute, kept so a reading can say what a request ran at
     });
   });
 });
