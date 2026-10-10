@@ -114,7 +114,7 @@ import { BACKLOG_LABEL, NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL, OUT_OF_RELEASE_L
 // identity and `settle-closed-status.ts`, so the gate keeps the property its own header states.
 import { PROJECT_NUMBER, PROJECT_OWNER } from "./board-snapshot-scope.ts";
 import { withBoardSnapshot } from "./board-snapshot.ts"; // agent-org#490: the guard a board write keeps (#399, #1275); `row-file` and `row-claim` take it from the same place
-import type { OpenItemsReader, TicketPort, TicketState } from "./ticket-port/port.ts"; // agent-org#484: the first consumer of the ticket port
+import type { ChangeRef, CodeHostPort, OpenItemsReader, TicketPort, TicketState } from "./ticket-port/port.ts"; // agent-org#484: the first consumer of the ticket port
 import { githubTicketAdapter, TRACKER } from "./ticket-port/github-adapter.ts";
 // #2356: A RED `main` WAKES A FIXER. Imports only `node:*`, `parent-recheck-summary.ts` and the repo identity,
 // so the gate keeps the property its own header states -- it runs before any `pnpm install` or build.
@@ -130,7 +130,7 @@ import { worktreeOwner } from "./worktree-owner.ts";
 // `work-gate/pr-orders.ts`, which imports the shared PR facts BACK from this file. The cycle is safe because
 // nothing there reads an import at load time (only inside a function), and this file stays the entry point:
 // every name that module exported is re-exported here, so no caller of `work-gate.ts` changes.
-import { requiredWhenNeeded, perPullRequestOrders, greenUnarmedOrders, reviewBlockedOrders,
+import { requiredWhenNeeded, perPullRequestOrders, greenUnarmedOrders, type UnarmedFacts, reviewBlockedOrders,
   stalledPrOrders, STALL_REASONS_WITHOUT_A_CAUSE, HOLD_RED_JOBS, ownerOfPr, hungCheckOf } from "./work-gate/pr-orders.ts";
 export { redOnlyBySupersededRun, mergeConflictOrders, greenUnarmedOrders, reviewBlockedOrders, HOLD_RED_JOBS,
   stallReasonOf, stallOrderOf, stalledPrOrders, STALL_REASON, STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr,
@@ -159,7 +159,7 @@ import { stallOrdersOrNone, claimStallsNow, closedClaimsNow } from "./work-gate/
 import { readAgents, listingIsComplete } from "./herdr-agents.ts";
 // #3883: THE STRIP A CLOSED ROW'S CLAIM LABELS TAKE, from the leaf both it and `close-rows-for-merged-pr.ts` import -- never a second copy of the label list.
 import { stripClaimLabelsVia } from "./claim-label-strip.ts";
-import { familyNumber } from "./arm-pr.ts";
+import { armedAlready, EXIT as ARM_EXIT, familyNumber, runArmPr } from "./arm-pr.ts"; // agent-org#488: `runArmPr` is the command the order names, run by the gate
 export { claimStallTick, claimStallsNow, closedClaimsNow } from "./work-gate/claim-stall-tick.ts";
 export { ROW_CALL_COUNT_SPLIT_THRESHOLD, claimedRowSession, rowCallCountSignals, ROW_CALL_COUNT_ASSESSED_MARKER,
   rowCallCountAssessedCalls, formatRowCallCountAssessment, rowCallCountOrders } from "./work-gate/row-call-count-orders.ts";
@@ -690,6 +690,9 @@ export const GH_READS = Object.freeze({
   // agent-org#490: PER ROW THE GATE BOARDS, which is a row off Project 1 whose label names a Status (none for a tick with no such row, the ordinary tick): ONE GRAPHQL CALL (the port's
   // `changeState` reads the row), `project item-add`, a scoped board snapshot read and `project item-edit`, and one `issue comment`. The off-board read above is the same one as before.
   conditionalOnOffBoardRows: "api graphql issue(number), project item-add, project item-edit, issue comment (settleOffBoardRows -- row-off-board, through the ticket port)",
+  // agent-org#488: PER UNARMED PR THE GATE ARMS, which is a green unheld PR nothing armed in a queue that has an armed one (none for the ordinary tick, and none for an
+  // all-unarmed queue, which is a manager's): `arm-pr`'s own reads (`pr view`, the closing rows' blockers, the PR's timeline), `pr merge --auto`, the armed read-back and one `issue comment`.
+  conditionalOnUnarmedArm: "pr view, api graphql (blockers, ejection, armed read-back), pr merge --auto, issue comment (settleUnarmedPrs -- pr-green-unarmed, through the code-host port)",
 });
 
 /**
@@ -4406,12 +4409,21 @@ function pipelineCodeownerReviewOrders(missing: { number: number; repoKey?: stri
  * and calling that "unarmed" would wake somebody to arm a pull request nothing has looked at.
  */
 export function readUnarmed(candidates: number[], run: (args: string[]) => string = defaultRun): number[] | null {
-  if (candidates.length === 0) return [];
+  return readArming(candidates, run)?.unarmed ?? null;
+}
+
+/**
+ * agent-org#488: `readUnarmed`'s read, WITH THE COUNT IT ALREADY HOLDS. The same one call, the same `null` for a refused read; `armed` is the
+ * candidates the API says ARE armed now (a candidate the query did not return is in neither list, as it is in neither for `readUnarmed`).
+ * "One unarmed among armed ones" and "every candidate unarmed" are the two arms of a fork, and the count is what tells them apart.
+ */
+export function readArming(candidates: number[], run: (args: string[]) => string = defaultRun): { unarmed: number[]; armed: number[]; } | null {
+  if (candidates.length === 0) return { unarmed: [], armed: [] };
   try {
     const nodes = JSON.parse(run(openPullRequestsQueryArgs(repoNow())));
     if (!Array.isArray(nodes)) return null;
     const armed = new Map(nodes.map((n) => [Number(n?.number), armedFromApi(n)]));
-    return candidates.filter((n) => armed.get(n) === false);
+    return { unarmed: candidates.filter((n) => armed.get(n) === false), armed: candidates.filter((n) => armed.get(n) === true) };
   } catch {
     return null;
   }
@@ -6228,7 +6240,7 @@ export function performActions(orders: any[], run: (args: string[]) => string = 
  *        `= null` default for `rowBranches`'s reason, and OMITTED AND `null` MEAN THE SAME THING: the
  *        `pr-checks-failing` prompt says whether `main` moved is UNKNOWN. IT CHANGES ONLY THOSE WORDS.
  *        `unarmed` is `readUnarmed(shouldBeMerging(prs, required))` -- the green, unheld pull requests
- *        the API says nothing has armed. It DEFAULTS TO `null`, which is "not asked or refused" and
+ *        the API says nothing has armed, or (agent-org#488) `UnarmedFacts` from `settleUnarmedPrs`: the ones the gate did not arm, with the count it held. It DEFAULTS TO `null`, which is "not asked or refused" and
  *        emits no order: a caller that cannot make that read must never produce a false all-clear, and
  *        must never produce a false alarm either.
  *        `offBoard` is `readRowsOffBoard()` -- every open row's Project 1 membership, or `null` (#2075). OMITTED AND `null` MEAN
@@ -6257,7 +6269,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
         prs: any[]; readyRows: any[]; promotableRows?: any[]; chairmanBlocked?: any[]; nowMs?: number;
         prFiles?: { number: number; files: string[]; changedFiles: number; }[];
         drain?: boolean; required?: string[] | null; epics?: any[]; answerOwed?: any[];
-        key?: string; repo?: string; openRows?: any[]; unarmed?: number[] | null;
+        key?: string; repo?: string; openRows?: any[]; unarmed?: number[] | UnarmedFacts | null;
         claimedComments?: { number?: number; comments?: { body?: string; id?: string; }[]; }[];
         rowBranches?: { branch: string; head: string; row: number; }[] | null;
         branchPrs?: { branch: string; number: number; state: string; }[] | null;
@@ -7145,7 +7157,7 @@ function writeResolverDefect(defect: ResolverDefect, { run, log }: { run: (args:
  */
 function codeReadings(openPrs: any[], scope: Scope, trunkRed: ReturnType<typeof readScopeTrunkRed> = readScopeTrunkRed(scope)) {
   const required = requiredWhenNeeded(openPrs);
-  const split = readEjections(readUnarmed(shouldBeMerging(openPrs, required)));
+  const split = readArmingOf(openPrs, required);
   return { prs: withVerifyStamps(withEjections(withEvidenceLabelAges(withPatchIds(openPrs, defaultRun, required)), split?.ejections), { checkout: verifyCheckoutOf(scope.key) }), required, baseTip: baseTipWhenRed(openPrs),
     unarmed: split === null ? null : split.unarmed,
     trunkRed };
@@ -7942,6 +7954,109 @@ const boardingPortOf = (scope: string): TicketPort => githubTicketAdapter({ run:
   }, { run: (_cmd, args) => defaultRun(args), log: (line) => process.stderr.write(`${line}\n`), excludeIssueNumber: id, touches: id });
 } });
 
+/** agent-org#488: where the switch for `settleUnarmedPrs` is read; `off` restores the order as it was. */
+export const GREEN_UNARMED_SWITCH_ENV = "A11IGN_PR_GREEN_UNARMED_BY_GATE";
+
+/** What `settleUnarmedPrs` is given for one repository: the code host's arm (ADR 0046 decision 3) and the ticket port's one write, the record on the pull request. */
+export type ArmingPort = Pick<CodeHostPort, "armMerge"> & Pick<TicketPort, "postDecision">;
+
+/**
+ * agent-org#488 (Phase 1 of a11ign/a11ign#4505): A LONE UNARMED PULL REQUEST IS ARMED BY THE GATE, AND A MANAGER IS WOKEN ONLY WHEN EVERY CANDIDATE IS UNARMED.
+ *
+ * The cause's own declaration says the act is one command and the judgment is the fork between "this pull request missed its arming event" and "the arming
+ * credential is refusing, so nothing in the repository can arm anything" (#1969). The fork is a count the gate already holds, and this reads it:
+ *
+ *  - ONE candidate unarmed, or several unarmed beside at least one that IS armed: the credential works, so the gate arms each unarmed one through the code-host
+ *    port (`arm-pr`'s own command, with its hold, authorship, ejection and blocker checks) and records it with one `postDecision` on the pull request. No order.
+ *  - SEVERAL candidates unarmed and none armed: the signature of the outage. The gate arms NOTHING and the order goes to the manager with the count in it,
+ *    because getting that fork wrong is the failure this cause exists to end.
+ *
+ * EVERY DOUBT IS A WAKE, as #490 did it. A pull request the gate did not arm (the command refused, held it, found an open blocker, or the read-back says it is not
+ * armed) stays in the order, with what the gate saw. The count is of POSITIVELY armed candidates: one the read did not cover is not evidence the credential works.
+ *
+ * THE SWITCH: `A11IGN_PR_GREEN_UNARMED_BY_GATE=off` in the tick's environment returns the list as it is, with no write and no port asked, and the order is today's.
+ * The one-line revert in code is the call site in `readArmingOf`: `unarmed: settleUnarmedPrs(...)` back to `unarmed: split.unarmed`. Live cutover, no shadow phase.
+ *
+ * @param unarmed the candidates still unarmed once the ejected ones were split out (`readEjections`)
+ * @param armed how many candidates the read says ARE armed now; `of` is how many candidates there were
+ * @param portFor the arming port of one repository, by `owner/name`: the only way this function reaches the code host or a tracker
+ * @returns the facts the order is made from: `unarmed` itself when the switch is off or nothing is unarmed, else the ones the gate did not arm
+ */
+export function settleUnarmedPrs(unarmed: number[], { armed, of, portFor, env = process.env, log = (line) => process.stderr.write(line), now = Date.now(), scope = repoNow() }: {
+  armed: number; of: number; portFor: (scope: string) => ArmingPort; env?: Record<string, string | undefined>; log?: (line: string) => void; now?: number; scope?: string;
+}): number[] | UnarmedFacts {
+  if (env[GREEN_UNARMED_SWITCH_ENV] === "off" || unarmed.length === 0) return unarmed;
+  if (unarmed.length > 1 && armed === 0) return { numbers: unarmed, of, armed };
+  const left: number[] = [];
+  const tried: { number: number; why: string; }[] = [];
+  for (const number of unarmed) {
+    const why = armOne(number, scope, portFor, now, log);
+    if (why !== null) { left.push(number); tried.push({ number, why }); }
+  }
+  return left.length === 0 ? [] : { numbers: left, of, armed, tried };
+}
+
+/** Arms one pull request through the port and records it; `null` when it is armed, else why it is not (said once, short). */
+function armOne(number: number, scope: string, portFor: (scope: string) => ArmingPort, now: number, log: (line: string) => void): string | null {
+  const port = portFor(scope);
+  try {
+    // THE ARM FIRST, THE RECORD AFTER: a comment for a pull request that was not armed would say what is not so.
+    if (!port.armMerge({ host: TRACKER, id: `${scope}#${number}` })) {
+      log(`pr-green-unarmed: ran the arming command on #${number} and it is NOT armed -- it stays in the order.\n`);
+      return "the arming command ran and the pull request is still not armed (held, blocked on an open row, or refused: its own lines say which)";
+    }
+  } catch (err) {
+    const why = String((err as any)?.message ?? err).split("\n")[0].slice(0, 200);
+    log(`pr-green-unarmed: COULD NOT ARM #${number} (${why}) -- it stays in the order.\n`);
+    return why;
+  }
+  let recorded = "";
+  try {
+    port.postDecision({ tracker: TRACKER, scope, id: number }, { role: "work-gate", runId: `tick-${now}`, kind: "pr-green-unarmed", text:
+      "**work-gate, pr-green-unarmed:** this pull request was green on every required check, not held and not armed, while another candidate in the queue was armed or it was the only "
+      + "one unarmed, so the arming credential is working. The gate ran `arm-pr` on it and it is armed (agent-org#488). No manager was woken." });
+  } catch (err) {
+    recorded = `, COULD NOT RECORD IT ON THE PULL REQUEST (${String((err as any)?.message ?? err).split("\n")[0].slice(0, 120)})`;
+  }
+  log(`pr-green-unarmed: armed #${number}${recorded} -- no order.\n`);
+  return null;
+}
+
+/**
+ * The arming port of the repository `scope` names. `armMerge` runs `arm-pr`'s own command (`runArmPr`, which is what the order has always told a manager to run:
+ * the hold, authorship, ejection and blocker checks and the session label are all its) with the gate's `defaultRun`, so the identity and the call census are the
+ * gate's. `runArmPr` reports an exit code, and an exit code is not "armed" (#1022), so a zero is READ BACK from the pull request's own state. Anything but a zero throws
+ * with the command's own last line. `postDecision` is the ticket adapter's: a pull request is an item of the tracker whose comment endpoint is the issue's.
+ */
+const armingPortOf = (scope: string): ArmingPort => {
+  const tickets = githubTicketAdapter({ run: defaultRun, scope });
+  const ghRun = (_cmd: string, args: string[]) => defaultRun(args);
+  return {
+    postDecision: (ref, decision) => tickets.postDecision(ref, decision),
+    armMerge(ref: ChangeRef) {
+      const [repo, number] = ref.id.split("#");
+      const said: string[] = [];
+      const code = runArmPr({ argv: [`--pr=${number}`, `--repo=${repo}`], env: {}, run: ghRun, sleep: () => "ok", log: (line) => said.push(line), error: (line) => said.push(line) });
+      if (code !== ARM_EXIT.DONE) throw new Error(`arm-pr exited ${code}: ${said.filter((line) => line.trim() !== "").at(-1) ?? "it said nothing"}`);
+      return armedAlready({ number, repo, run: ghRun, error: () => {} }) !== null;
+    },
+  };
+};
+
+/**
+ * agent-org#488: THE ARMING READ OF ONE TICK, ITS EJECTIONS AND WHAT THE GATE DID ABOUT THE UNARMED ONES -- `readEjections(readUnarmed(...))` as it was, with
+ * `settleUnarmedPrs` between that and the order. `null` is a refused read, as before. The revert is the `unarmed:` line below.
+ */
+export function readArmingOf(openPrs: any[], required: string[] | null, { scope = repoNow(), run = defaultRun, portFor = armingPortOf, env = process.env, log }: {
+  scope?: string; run?: (args: string[]) => string; portFor?: (scope: string) => ArmingPort; env?: Record<string, string | undefined>; log?: (line: string) => void;
+} = {}) {
+  const candidates = shouldBeMerging(openPrs, required);
+  const reading = readArming(candidates, run);
+  const split = readEjections(reading === null ? null : reading.unarmed, run);
+  if (reading === null || split === null) return null;
+  return { unarmed: settleUnarmedPrs(split.unarmed, { armed: reading.armed.length, of: candidates.length, portFor, scope, env, ...(log === undefined ? {} : { log }) }), ejections: split.ejections };
+}
+
 function main() {
   refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/work-gate.ts" });
   const githubStatus = startGithubStatus(); // #3723: FIRST, so its wall overlaps the reads below and never adds to them
@@ -7987,7 +8102,7 @@ function main() {
   // `requiredWhenNeeded` makes a `gh` call when anything is red -- calling it inline in both places would
   // pay for it twice on exactly the red tick this row is about.
   const required = requiredWhenNeeded(openPrs);
-  const baseTip = baseTipWhenRed(openPrs), armingSplit = readEjections(readUnarmed(shouldBeMerging(openPrs, required))); // #3019: BEFORE the arguments -- ejected PRs are stamped onto `prs` and leave `unarmed`
+  const baseTip = baseTipWhenRed(openPrs), armingSplit = readArmingOf(openPrs, required); // #3019: BEFORE the arguments -- ejected PRs are stamped onto `prs` and leave `unarmed`; agent-org#488: the gate arms a lone unarmed one here
   const decideArgs = { primaryDrift, prs: withVerifyStamps(withEjections(withWaitingEdges(withPrOwners(withEvidenceLabelAges(withPatchIds(openPrs, defaultRun, required)), allOpen, stampLookup(), { agents: liveWorkspaceLabels, ended: endedSessionLabels }), allOpen, { dir: REVIEWER_STATE_DIR }), armingSplit?.ejections), { checkout: verifyCheckoutOf("") }), readyRows: rows, promotableRows: promotableRows ?? [],
     chairmanBlocked: chairmanBlocked ?? [], prFiles, drain, required, baseTip,
     epics: epicRowsOf(allOpen),

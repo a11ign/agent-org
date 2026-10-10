@@ -1222,7 +1222,9 @@
     },
     "pr-green-unarmed": {
       "group": "ACTION",
-      "namedIn": []
+      "namedIn": [
+        "src/work-gate.ts"
+      ]
     },
     "claimed-row-amended": {
       "group": "JUDGMENT",

@@ -394,6 +394,29 @@ export function stalledPrOrders(prs: any[], { required = null, reasons = null, n
 }
 
 /**
+ * agent-org#488: WHAT THE GATE KNOWS OF THE QUEUE WHEN IT SENDS `pr-green-unarmed`, which is the fork the order's own reasoning turns on.
+ * `numbers` are the pull requests still unarmed; `of` is how many CANDIDATES (green, unheld, not conflicting) the tick had and `armed` how many of them
+ * the API says ARE armed; `tried` are the ones the gate ran the arming command on and which it could not arm, each with why. A bare list is "the gate
+ * did not look": today's order, unchanged.
+ */
+export type UnarmedFacts = { numbers: number[]; of?: number; armed?: number; tried?: { number: number; why: string; }[]; };
+
+/** The paragraph that carries the gate's count into the order; empty for a bare list, which is the order as it was. */
+function unarmedCountText(unarmed: number, of: number | undefined, armed: number | undefined, tried: { number: number; why: string; }[], key: string): string {
+  if (of === undefined || armed === undefined) return "";
+  const outage = armed === 0;
+  return `THE GATE'S COUNT: ${unarmed} of ${of} candidate(s) are unarmed and ${armed} are armed. `
+    + (outage
+      ? "NO candidate is armed, which is the signature of a refusing arming credential and not of one missed event"
+        + (tried.length > 0 ? ". " : ", so the gate armed nothing: that fork is yours. ")
+      : "At least one candidate IS armed, so the credential works and the gate armed what it could. ")
+    + (tried.length > 0
+      ? `It RAN THE ARMING COMMAND on ${tried.map((t) => subjectMention({ repoKey: key, number: t.number })).join(", ")} and it did not arm: `
+        + `${tried.map((t) => `${subjectMention({ repoKey: key, number: t.number })}: ${t.why}`).join("; ")}.\n`
+      : "\n");
+}
+
+/**
  * ONE ORDER NAMING EVERY GREEN, UNHELD, UNARMED PULL REQUEST -- #1969, and the report that did not exist.
  *
  * WHAT IT IS FOR. `queue-stalled.ts` names every ARMED, green PR that cannot merge. Nothing named a
@@ -424,14 +447,19 @@ export function stalledPrOrders(prs: any[], { required = null, reasons = null, n
  * close-outs". Arming by hand under another account's token is `auto-arm.yml`'s own documented exception
  * for a PR auto-arm never armed, and it is a queue act rather than the author's code work.
  *
- * @param unarmed `null` when the queue read was refused -- no order, never a false all-clear
+ * agent-org#488: THE GATE ARMS WHAT IT CAN BEFORE THIS IS CALLED (`settleUnarmedPrs`), so this names the pull requests it did not arm: every candidate
+ * unarmed (the outage's signature, which is a manager's fork), or ones the arming command refused. `UnarmedFacts` carries the count and why; a bare list
+ * is the order as it was.
+ *
+ * @param facts `null` when the queue read was refused -- no order, never a false all-clear
  * @param [scope] the repository these pull requests are in; the primary project's when omitted
  */
-export function greenUnarmedOrders(unarmed: number[] | null, scope: { key: string; repo: string; } = { key: "", repo: REPO }): {
+export function greenUnarmedOrders(facts: number[] | UnarmedFacts | null, scope: { key: string; repo: string; } = { key: "", repo: REPO }): {
     session: string; cause: string; subject: string; discriminator: string;
     prompt: string; causeKey: string;
 }[] {
-  if (unarmed === null || unarmed.length === 0) return [];
+  const { numbers: unarmed, of, armed, tried = [] }: UnarmedFacts = Array.isArray(facts) ? { numbers: facts } : facts ?? { numbers: [] };
+  if (unarmed.length === 0) return [];
   const refs = unarmed.map((n) => subjectRef(scope.key, n));
   const key = refs.join(".");
   return [{
@@ -441,6 +469,7 @@ export function greenUnarmedOrders(unarmed: number[] | null, scope: { key: strin
     discriminator: key,
     prompt: `${unarmed.length} pull request(s) are green on every required check, NOT held, and NOTHING `
       + `HAS ARMED THEM: ${unarmed.map((n) => subjectMention({ repoKey: scope.key, number: n })).join(", ")}.\n`
+      + unarmedCountText(unarmed.length, of, armed, tried, scope.key)
       + "This is the state a refused arming credential produces, and it is invisible everywhere else: "
       + "`queue-stalled.ts` names armed PRs that cannot merge, and a green unarmed one is the mirror "
       + "nothing reported until #1969. It is read here with the HOST's identity, never the arming PAT, "
