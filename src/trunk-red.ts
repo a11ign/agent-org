@@ -24,8 +24,9 @@
 //      job, and giving it a `trunk.yml` would be a second workflow doing what its `ci.yml` already says on `push: branches: [main]` ("so
 //      green on main is a run"). So the reader takes WHAT TO READ AS DATA (`TrunkSource`): the newest `success`/`failure` push run of
 //      `ci.yml`, a cancelled or in-flight one looked through exactly as `newestVerdictRun` does. `event=push` is asked for, because
-//      `ci.yml` also runs on `pull_request` and `merge_group`, and only a run on `main` itself says anything about `main`. There is no
-//      parent re-check there, so the attribution is `unknown` and the order says so: it never blames a merge, and agent-org's `gate`
+//      `ci.yml` also runs on `pull_request` and `merge_group`, and only a run on `main` itself says anything about `main`. the `schedule` event is
+//      asked for as well (a11ign/agent-org#539): a nightly runs with no commit, and the tool at its newest tag and the registry move when none does.
+//      There is no parent re-check there, so the attribution is `unknown` and the order says so: it never blames a merge, and agent-org's `gate`
 //      tests the tool against a11ign at `main`, which moves on its own, so a red there may be the project's change and no merge's.
 //   2. WHO RECEIVES IT. The primary's order goes to the merging PR's session with `engineers` as the way out. For another repository the merging
 //      session is usually a released `worker-N`, and an engineer refuses an order that is not its own row's (#2407), so that fallback reaches
@@ -34,6 +35,10 @@
 //      the `ready-row-unclaimed` order then reaches an engineer who can claim it, which is the one path that reaches somebody who can act.
 //   3. WHAT IT COSTS THE PRIMARY. NOTHING: `readTrunkRed()` with no argument is the call it always was, and its order is byte for byte
 //      what it was. The other repositories' reads are made by `scopeTick` (`work-gate.ts`), which one declared project never runs.
+// A RED `cross-repo` LEG IS RED `main` TOO (a11ign/agent-org#539). `ci.yml` sets `continue-on-error` on that matrix leg so that it never blocks, and
+// the price is that the RUN reads `success` and `gate` passes while the leg is red: the leg's own job conclusion is the only place the red is.
+// Measured 2026-10-10 on lab's `main`: the `checks (cross-repo)` job read `failure` on every one of the newest 11 `push` and `schedule` runs
+// while each run read `success`. So a repository's newest verdict run is asked for its jobs even when green, and the order names the leg.
 // WHAT THIS DOES NOT DO: escalate a stuck agent-org red to `answer:ceo`. `stuckRowOf` reads a `pr-<n>` subject as a row of the PRIMARY, and
 // labelling a11ign's #56 for agent-org's would be wrong, so a keyed subject (`pr-agent-org#56`) names no row and is reported, not labelled.
 import { execFileSync } from "node:child_process";
@@ -60,12 +65,24 @@ const BUILD_TEST_JOB = "trunkBuildTest / run";
 
 /**
  * WHAT TO READ TO KNOW WHETHER A REPOSITORY'S `main` IS RED (#3079). `recheckJob` is `null` where no workflow re-runs the suite at the parent.
+ * `eventFilters` are the `event=<name>` filters asked for, one call each, and `[]` asks for none (the primary's `trunk.yml` runs on `main` only). `crossRepoLeg`
+ * says a red `cross-repo` job counts as red `main` although the run reads `success` (agent-org#539).
  */
-export type TrunkSource = { repo: string, repoKey: string, workflow: string, testJob: string, recheckJob: string | null, pushOnly: boolean };
+export type TrunkSource = { repo: string, repoKey: string, workflow: string, testJob: string, recheckJob: string | null, eventFilters: readonly string[],
+  crossRepoLeg: boolean };
 
 /** The primary project's: `trunk.yml` in `REPO`, read exactly as it always was. */
 export const PRIMARY_TRUNK = Object.freeze({ repo: REPO, repoKey: "", workflow: TRUNK_WORKFLOW, testJob: BUILD_TEST_JOB,
-  recheckJob: RECHECK_JOB, pushOnly: false });
+  recheckJob: RECHECK_JOB, eventFilters: Object.freeze([]), crossRepoLeg: false });
+
+/** `push` is the merge itself and `schedule` the nightly (`pull_request` and `merge_group` say nothing about `main`). */
+const CODE_REPOSITORY_EVENT_FILTERS: readonly string[] = Object.freeze(["event=push", "event=schedule"]);
+
+/**
+ * The `cross-repo` leg of a matrix, by the name GitHub gives its job: `cross-repo`, `checks (cross-repo)` or `ci / cross-repo`, and not
+ * `cross-repo-copies`. The leg's name is the matrix value (`scripts/cross-repo-tests.ts` of the lab says which tests it holds).
+ */
+const CROSS_REPO_LEG = /(^|[\s(/])cross-repo\)?$/;
 
 /**
  * A declared code repository's: its `ci.yml`, whose one job `gate` is the required check and runs the suite. A repository declared with no
@@ -73,7 +90,7 @@ export const PRIMARY_TRUNK = Object.freeze({ repo: REPO, repoKey: "", workflow: 
  * @param {string} repoKey @param {string} repo @returns {TrunkSource}
  */
 export function trunkOfCodeRepository(repoKey: string, repo: string): TrunkSource {
-  return { repo, repoKey, workflow: "ci.yml", testJob: "gate", recheckJob: null, pushOnly: true };
+  return { repo, repoKey, workflow: "ci.yml", testJob: "gate", recheckJob: null, eventFilters: CODE_REPOSITORY_EVENT_FILTERS, crossRepoLeg: true };
 }
 
 /** The most parent failures the recheck records: an annotation is bounded, and a parent this broken is named by its first few. */
@@ -92,15 +109,15 @@ const defaultRun = (args: string[]) =>
  * because ISO-8601 sorts lexically.
  *
  * @param {{ workflow_runs?: { id: number, head_sha: string, status: string, conclusion: string | null,
- *   html_url: string, created_at: string }[] } | null} payload the `actions/workflows/<f>/runs` body
- * @returns {{ id: number, head_sha: string, conclusion: string, html_url: string } | null}
+ *   html_url: string, created_at: string, event?: string }[] } | null} payload the `actions/workflows/<f>/runs` body
+ * @returns {{ id: number, head_sha: string, conclusion: string, html_url: string, event?: string } | null}
  */
 export function newestVerdictRun(payload: {
         workflow_runs?: {
             id: number; head_sha: string; status: string; conclusion: string | null;
-            html_url: string; created_at: string;
+            html_url: string; created_at: string; event?: string;
         }[];
-    } | null): { id: number; head_sha: string; conclusion: string; html_url: string; } | null {
+    } | null): { id: number; head_sha: string; conclusion: string; html_url: string; event?: string; } | null {
   const runs = (payload?.workflow_runs ?? [])
     .filter((r) => r.status === "completed" && (r.conclusion === "success" || r.conclusion === "failure"))
     .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
@@ -177,39 +194,51 @@ export function failingTestsFromJobLog(logFailedOutput: string, jobName: string)
  * not be asked. `null` IS NEVER "GREEN AND NEVER 'RED'": a refused read reports nothing, which is what the
  * gate does for every lane it cannot read (#1286), and the tick's PARTIAL exit is unchanged by it.
  *
- * ONE CALL WHEN `main` IS HEALTHY. The unconditional read is the newest runs of the source's workflow on `main`; the
+ * ONE CALL WHEN THE PRIMARY'S `main` IS HEALTHY. The unconditional read is the newest runs of the source's workflow on `main`; the
  * four that follow are paid only by a tick that found a red (three where there is no re-check job). Each is a single REST call on the core pool,
  * and each may be refused independently -- a refused one degrades that FACT to `null`/`unknown`, and the
  * order is still sent, because a red `main` with an unnamed test is still a red `main`.
+ *
+ * A DECLARED CODE REPOSITORY PAYS MORE (agent-org#539): one runs call per filter in `source.eventFilters`, and its newest verdict run's jobs even when
+ * that run is green, because a `continue-on-error` leg reads red only there. Every runs read must answer, or the whole read is refused: a nightly
+ * read without the push that came after it would report a red that is already fixed. The newest run of either event decides, so a green nightly
+ * clears a red push and a green push clears a red nightly.
  *
  * @param {(args: string[]) => string} [run]
  * @param {TrunkSource} [source] omitted for the primary project, whose calls are then exactly what they were
  * @returns {{ runId: number, url: string, sha: string, failedJobs: string[], failingTests: string[] | null,
  *   recheck: "pass" | "fail" | "unknown", parentFailingTests: string[] | null,
  *   originPr: { number: number, title: string, session: string | null } | null,
- *   repo?: string, repoKey?: string } | null}
+ *   repo?: string, repoKey?: string, event?: string, leg?: string } | null}
  */
 export function readTrunkRed(run: (args: string[]) => string = defaultRun, source: TrunkSource = PRIMARY_TRUNK): {
     runId: number; url: string; sha: string; failedJobs: string[]; failingTests: string[] | null;
     recheck: "pass" | "fail" | "unknown"; parentFailingTests: string[] | null;
     originPr: { number: number; title: string; session: string | null; } | null;
-    repo?: string; repoKey?: string;
+    repo?: string; repoKey?: string; event?: string; leg?: string;
 } | null {
   const { repo } = source;
-  const runs = tryParse(() => run(["api", "--method", "GET", `repos/${repo}/actions/workflows/${source.workflow}/runs`,
-    "-f", "branch=main", ...(source.pushOnly ? ["-f", "event=push"] : []), "-f", "per_page=10"]));
-  const newest = newestVerdictRun(runs);
-  if (newest === null || newest.conclusion !== "failure") return null;
+  const filters = source.eventFilters.length === 0 ? [null] : source.eventFilters;
+  const answers = filters.map((filter) => tryParse(() => run(["api", "--method", "GET", `repos/${repo}/actions/workflows/${source.workflow}/runs`,
+    "-f", "branch=main", ...(filter === null ? [] : ["-f", filter]), "-f", "per_page=10"])));
+  if (answers.some((a) => a === null)) return null;
+  const newest = newestVerdictRun({ workflow_runs: answers.flatMap((a) => a?.workflow_runs ?? []) });
+  const runRed = newest !== null && newest.conclusion === "failure";
+  if (newest === null || (!runRed && !source.crossRepoLeg)) return null;
 
   const jobs = tryParse(() => run(["api", `repos/${repo}/actions/runs/${newest.id}/jobs?per_page=100`]))?.jobs ?? [];
   const failedJobs = jobs.filter((j: any) => j.conclusion === "failure").map((j: any) => String(j.name));
+  // A GREEN RUN WITH A RED LEG IS RED `main`: `continue-on-error` keeps the run and `gate` green, and the leg's own conclusion is where the red is.
+  const leg = runRed ? undefined : failedJobs.find((name: string) => CROSS_REPO_LEG.test(name));
+  if (!runRed && leg === undefined) return null;
   const recheck = recheckOf(run, source, jobs);
   const failingTests = failedJobs.includes(source.testJob) ? readFailingTests(run, source, newest.id) : null;
   const facts = { runId: newest.id, url: newest.html_url, sha: newest.head_sha, failedJobs, failingTests,
     recheck: recheck.result, parentFailingTests: recheck.parentFailingTests,
     originPr: readOriginPr(run, repo, newest.head_sha) };
-  // The primary's facts carry no `repo`/`repoKey`, so they stay what they were.
-  return source.repoKey === "" ? facts : { ...facts, repo, repoKey: source.repoKey };
+  // The primary's facts carry no `repo`/`repoKey`, so they stay what they were. Nor does a push's `event`, so a push run read red is the fact it was.
+  return source.repoKey === "" ? facts : { ...facts, repo, repoKey: source.repoKey,
+    ...(newest.event === "schedule" ? { event: newest.event } : {}), ...(leg === undefined ? {} : { leg }) };
 }
 
 /** @param {(args: string[]) => string} run @param {TrunkSource} source @param {any[]} jobs */
@@ -338,9 +367,11 @@ export function trunkRedOrders(red: ReturnType<typeof readTrunkRed> | undefined)
     subject,
     discriminator: sha8,
     prompt: `**MAIN IS RED${keyed ? ` IN \`${red.repo}\`` : ""}. FIX FORWARD -- DO NOT REVERT.** This is the top of every queue: put down what you are doing.\n`
-      + `The merge is ${merged}, at \`${sha8}\`. The failing job(s): ${red.failedJobs.map((j) => `\`${j}\``).join(", ") || "not readable"}.\n`
+      + `${red.event === "schedule" ? "The newest merge" : "The merge"} is ${merged}, at \`${sha8}\`. The failing job(s): ${red.failedJobs.map((j) => `\`${j}\``).join(", ") || "not readable"}.\n`
       + `The failing test(s): ${tests}.\n`
       + `The run: ${red.url}\n`
+      + (red.leg === undefined ? "" : legParagraph(red.leg))
+      + (red.event === "schedule" ? NIGHTLY_PARAGRAPH : "")
       + `${keyed ? NO_RECHECK_PARAGRAPH : attributionParagraph(attribution)}\n`
       + RULING_PARAGRAPH
       + (keyed ? ROUTED_INSTRUCTIONS : OWN_INSTRUCTIONS),
@@ -358,6 +389,8 @@ const isKeyed = (red: { repoKey?: string; }) => (red.repoKey ?? "") !== "";
  */
 function addressee(red: NonNullable<ReturnType<typeof readTrunkRed>>, attribution: ReturnType<typeof attributionOf>): { session: string; fallback?: string; } {
   const owner = red.originPr?.session ?? null;
+  // A nightly runs with no commit of its own, so the session that merged the newest commit is not the one who owes it.
+  if (isKeyed(red) && red.event === "schedule") return { session: ROUTER };
   if (isKeyed(red)) {
     // `product-manager` has no way out of its own: a seat that cannot be woken is reported by the wake, never routed to a pool that refuses.
     return owner === null || owner === ROUTER ? { session: ROUTER } : { session: owner, fallback: ROUTER };
@@ -379,6 +412,17 @@ function subjectOf(red: NonNullable<ReturnType<typeof readTrunkRed>>, sha8: stri
   if (red.originPr) return `pr-${subjectRef(key, red.originPr.number)}`;
   return isKeyed(red) ? `trunk-${key}-${sha8}` : `trunk-${sha8}`;
 }
+
+/**
+ * THE LEG, NAMED (agent-org#539). The run and `gate` read `success`, so the fixer reading the run page sees green and would stop: the order says
+ * where the red is and why nothing blocked.
+ */
+const legParagraph = (leg: string) => `THE RED IS THE \`${leg}\` LEG, NOT \`own\`, AND \`gate\` READ GREEN. That leg is \`continue-on-error\`, so the run and the required check say `
+  + `\`success\` while it fails and nothing blocked. Its tests read what is outside the repository (the core's workflows and baselines, the tool at its `
+  + "newest tag), so it goes red when no commit of this repository changed. Read that job's log, not `gate`'s.\n";
+
+const NIGHTLY_PARAGRAPH = "THIS IS THE SCHEDULED (NIGHTLY) RUN, NOT A MERGE: it has no commit of its own, so it reads red because something it reads moved "
+  + "(the tool at its newest tag, the registry, a pinned core). The commit above is only the newest on `main`; it is not the cause until you have shown it is.\n";
 
 /** What a repository with no parent re-check can say (decision 1 of the header): never that a merge is to blame. */
 const NO_RECHECK_PARAGRAPH = "NO PARENT RE-CHECK RUNS FOR THIS REPOSITORY, so this cannot say whether the merge is the cause. Its `gate` "
