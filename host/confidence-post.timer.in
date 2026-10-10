@@ -1,0 +1,18 @@
+[Unit]
+# THE CLOCK BEHIND THE DAILY CONFIDENCE READING -- a11ign/a11ign#4879 (chairman, a11ign/a11ign#4627 item 4, 2026-10-10). See
+# @@prefix@@confidence-post.service for what it runs, and why a timer rather than a session or a tick.
+Description=Daily 07:50 London post of the provider-confidence reading (a11ign#4879)
+
+[Timer]
+# LONDON, NOT UTC, in the expression, for the reason board-report.timer gives: the reading is read against a London working morning.
+#
+# 07:50, AFTER THE 07:10 BOARD EDITION AND THE MONDAY 07:30 TOKEN REPORT, so the three do not share the work tick's API minute: all of them
+# spend the one account's pool (`a11ign-ai-workers`). The program's own day is the UTC day, which 07:50 London is the same one of in both seasons.
+OnCalendar=*-*-* 07:50:00 Europe/London
+
+# A HOST THAT WAS ASLEEP OR REBOOTING AT 07:50 STILL POSTS, when it is next up. Without this a missed morning is simply lost, and a missing reading
+# looks like a day on which the provider had nothing to be unsure of. A second firing the same UTC day posts nothing: the program dedupes on the day.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

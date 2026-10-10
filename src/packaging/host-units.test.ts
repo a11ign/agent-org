@@ -38,7 +38,7 @@ import { shippedUnits, unitState, unitDrift, driftReport, hostUnitsInstall, syst
   WORKERS_README, HUMAN_ACCOUNT_ALLOWED, compileCacheDrift, declaredCompileCache, PROJECT_UNITS_DIR, shippedUnitText,
   shippedScriptText, leadsListText, modelEffortDrift, sessionModelDrift, sessionModelNotes, lastModelIn,
   liveClaudeSessions, codexTrustDrift, codexTrustedProjects, OPTIONAL_UNITS, TOOL_ENTRIES, toolForm, LONG_RUNNING_TEMPLATES, unclassifiedEntries, declaredProjectKeys, windowEnd, windowEndNotes, workTickToolForm,
-  autoMemorySeatLabels, seatWrapperNotes } from "../host-units.ts";
+  autoMemorySeatLabels, seatWrapperNotes, hostVariableAsRun } from "../host-units.ts";
 import { DECLARED_CLAUDE_MODELS, PROFILES, CLAUDE_EFFORTS, HAIKU_MODEL_ID, HAIKU_TIER_LABEL } from "../worker-profile.ts";
 import { HostConfigRefusal, homeHostConfig, parseBeforeTick, parseHostConfig, readUnitsDeclaration, renderTemplate, renderedName, templateValues } from "../host-config.ts";
 import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
@@ -961,7 +961,7 @@ test("#1974: every shipped unit that spawns `gh` declares which account -- over 
   // units it names are the assertion that it did: a floor is a bound on the count, and these are the
   // members.
   assert.deepEqual(spending.map((u) => u.unit).sort(),
-    ["a11ign-board-report.service", "a11ign-corpus-release-nightly.service", "a11ign-kernel-reboot.service", "a11ign-tmp-prune.service", "a11ign-trace-ingest.service", "a11ign-trace-publish.service", "a11ign-trace-weekly.service", "a11ign-work-tick.service",
+    ["a11ign-board-report.service", "a11ign-confidence-post.service", "a11ign-corpus-release-nightly.service", "a11ign-kernel-reboot.service", "a11ign-tmp-prune.service", "a11ign-trace-ingest.service", "a11ign-trace-publish.service", "a11ign-trace-weekly.service", "a11ign-work-tick.service",
       "a11ign-worktree-prune.service"],
     "every shipped .service that can reach `gh` -- the project's own, which reaches it only through the script it spawns, "
     + "and the dispatcher's, which was charged on UNKNOWN until its script was shipped");
@@ -1403,6 +1403,9 @@ test("#2000: which shipped timers run their service at `host:install`, and which
     + "and check it is a run you want unattended at an operator's keystroke");
   assert.deepEqual(timers.filter((u) => !requiring.includes(u)), [
     "a11ign-board-report.timer",
+    // a11ign/a11ign#4879: the daily confidence reading's timer, on the board edition's side for its reason: the service POSTS, to the chairman's channel or the epic. It dedupes on the UTC day, so
+    // a start at `host:install` would be harmless the second time; but the first reading of a day is the clock's to make, and an install is not where it should arrive.
+    "a11ign-confidence-post.timer",
     // a11ign/a11ign#4053: the kernel reboot's timer. Its service REBOOTS THE HOST, so a start at `host:install` would reboot it at an operator's keystroke; the hour is the clock's alone.
     "a11ign-kernel-reboot.timer",
     // a11ign/a11ign#3627: the weekly token-efficiency post, on the board edition's side for the board edition's reason: it POSTS A REPORT.
@@ -1411,7 +1414,7 @@ test("#2000: which shipped timers run their service at `host:install`, and which
     + "four above each started their service in that second and board-report did not, though the same run "
     + "reinstalled it. It activates its service by name alone, ON PURPOSE: it dispatches a board edition, "
     + "and a firing at every `host:install` would publish one at an operator's keystroke rather than on the clock. "
-    + "The weekly report's timer is the second member: its service comments on the record issue. The kernel reboot's is the third: its service reboots the host");
+    + "The weekly report's timer is the second member: its service comments on the record issue. The kernel reboot's is the third: its service reboots the host. The confidence reading's is the fourth: its service posts the day's reading");
   // AND THE INSTALL-TIME START IS NOT HYPOTHETICAL. The partition above only matters because the installer
   // really does issue that start job for every shipped timer; asserted through the same injected
   // `systemctl` the #1858 test uses, against the REAL shipped directory.
@@ -3049,6 +3052,62 @@ test("agent-org#498: the trace store's ingest unit declares its account and comp
   assert.match(installed, /^Environment=AGENT_ORG_HOST=\/project\/\.agent-org\/host\.json$/m, "told where the host's declaration is: the incident is posted on the declared tracker");
   assert.match(installed, /^ExecStart=%h\/\.local\/bin\/node src\/trace\/freshness\.ts$/m);
   assert.match(installed, /^Environment=GH_CONFIG_DIR=\/w\/gh$/m);
+});
+
+// a11ign/a11ign#4879: the daily confidence reading was merged (#4755) and nothing ran it. What is pinned is what makes it arrive WITHOUT a person: that the pair
+// ships, that the service names the host declaration (without it the program prints `CANNOT POST` and exits 0, a green unit that posts nothing), and a daily,
+// persistent clock.
+test("a11ign#4879: the daily confidence reading's pair ships, its service names AGENT_ORG_HOST and the lines every service needs, and its timer is daily and persistent", () => {
+  const read = (name: string) => readFileSync(join(SHIPPED_DIR, name), "utf8");
+  const service = read("confidence-post.service.in");
+  const timer = read("confidence-post.timer.in");
+  const render = (text: string) => text.replaceAll("@@checkout@@", "/p").replaceAll("@@binDir@@", "/b").replaceAll("@@home@@", "/h").replaceAll("@@workersDir@@", "/w");
+
+  // POSITIVE CONTROL: the pair is in the shipped list `host:check` and `host:install` walk, and is classified as the tool's.
+  assert.ok(TOOL_ENTRIES.includes("confidence-post.service.in") && TOOL_ENTRIES.includes("confidence-post.timer.in"));
+  const listed = shippedUnits(SHIPPED_DIR, { projectUnitsDir: null, prefix: "a11ign-", declaredKeys: new Set() });
+  assert.ok(listed.includes("a11ign-confidence-post.service") && listed.includes("a11ign-confidence-post.timer"), `the pair is shipped (${listed.join(", ")})`);
+  assert.deepEqual(unclassifiedEntries({ shippedDir: SHIPPED_DIR, projectUnitsDir: null }), [], "and nothing in the host directory is classified nowhere");
+
+  // THE HOST DECLARATION: asked as the service manager would read it (`hostVariableAsRun`), the same function the install's refusal uses.
+  const rendered = render(service);
+  assert.equal(hostVariableAsRun([rendered]), "/p/.agent-org/host.json", "POSITIVE CONTROL: the service names the host's declaration");
+  const withoutIt = rendered.replace(/^Environment=AGENT_ORG_HOST=.*\n/m, "");
+  assert.notEqual(withoutIt, rendered, "the line was there to remove");
+  assert.equal(hostVariableAsRun([withoutIt]), null, "NEGATIVE CONTROL: the same service with that line removed starts with no declaration");
+
+  // THE LINES EVERY SERVICE CARRIES, each with its own negative control so a pattern that matched nothing would fail here.
+  const LINES: Record<string, RegExp> = {
+    "the compile cache under the home": /^Environment=NODE_COMPILE_CACHE=%h\/\.cache\/node-compile-cache$/m,
+    "HOME, stated": /^Environment=HOME=@@home@@$/m,
+    "the org's own account": /^Environment=GH_CONFIG_DIR=@@workersDir@@\/gh$/m,
+    "PATH, with the routing wrapper's directory first": /^Environment=PATH=@@binDir@@:/m,
+  };
+  for (const [what, line] of Object.entries(LINES)) {
+    assert.match(service, line, `the service declares ${what}`);
+    assert.doesNotMatch(service.replace(new RegExp(line.source, "m"), ""), line, `NEGATIVE CONTROL: ${what} is a line, and removing it is seen`);
+  }
+  assert.match(service, /^Type=oneshot$/m);
+  assert.doesNotMatch(service, /^\[Install\]/m, "only the timer may start it: an Install section would post at every boot");
+  assert.match(service, /^ExecStart=%h\/\.local\/bin\/node packages\/agent-org\/src\/decision-confidence-post\.ts$/m);
+  assert.ok(existsSync(join(TOOL_ROOT, "src/decision-confidence-post.ts")), "and the program it runs exists");
+
+  // THE CLOCK: once a day, and a host that was asleep still posts.
+  const DAILY = /^OnCalendar=\*-\*-\* \d\d:\d\d:00 Europe\/London$/m;
+  const PERSISTENT = /^Persistent=true$/m;
+  assert.match(timer, DAILY);
+  assert.match(timer, PERSISTENT);
+  assert.match(timer, /^WantedBy=timers\.target$/m);
+  assert.doesNotMatch(timer.replace(/^OnCalendar=.*$/m, "OnCalendar=Mon *-*-* 07:50:00 Europe/London"), DAILY, "NEGATIVE CONTROL: a weekly expression is not a daily one");
+  assert.doesNotMatch(timer.replace(PERSISTENT, "Persistent=false"), PERSISTENT, "NEGATIVE CONTROL: a timer that forgot the missed morning is seen");
+
+  // INSTALLED AS THE TOOL: the program runs from the tool's checkout, and the declaration the template names is kept (added once, never twice).
+  assert.match(rendered, /^ExecStart=%h\/\.local\/bin\/node packages\/agent-org\/src\/decision-confidence-post\.ts$/m, "POSITIVE CONTROL: the shipped form is the one the tool form rewrites");
+  const installed = toolForm("confidence-post.service.in", rendered, { tool: "/tool", checkout: "/project", beforeTicks: [] });
+  assert.match(installed, /^WorkingDirectory=\/tool$/m);
+  assert.match(installed, /^ExecStart=%h\/\.local\/bin\/node src\/decision-confidence-post\.ts$/m);
+  assert.equal(installed.match(/^Environment=AGENT_ORG_HOST=/gm)?.length, 1, "named once");
+  assert.equal(hostVariableAsRun([installed]), "/p/.agent-org/host.json", "and it is the declaration of the host the template was rendered for");
 });
 
 test("#4071: the OTel receiver's unit is listed where this guard looks -- classified as the tool's, long-running with no timer, installed as the tool runs it", () => {

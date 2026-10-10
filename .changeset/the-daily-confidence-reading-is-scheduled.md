@@ -1,0 +1,5 @@
+---
+"agent-org": patch
+---
+
+The daily confidence reading is scheduled on the host, so it arrives without a person running it. `decision-confidence-post.ts` (a11ign/a11ign#4755) posts once per UTC day and dedupes itself, but no unit called it, so the only reading that ever arrived was the one posted by hand on 2026-10-10. `host/confidence-post.service.in` is a oneshot that runs it from the checkout with `AGENT_ORG_HOST` declared (without it the program prints `CANNOT POST` and exits 0, a green unit that posts nothing), the workers' account, `HOME`, `PATH` and the compile cache declared as the sibling units declare theirs, and no `[Install]`; `host/confidence-post.timer.in` fires it at 07:50 London every day with `Persistent=true`, so a host that was asleep still posts. Both are in `TOOL_ENTRIES` and `OTHER_TOOL_FORMS`, so `host:check` reads the pair and `host:install` writes it. The timer carries no `Requires=`: the first reading of a day is the clock's to make. a11ign/a11ign#4879, from a11ign/a11ign#4627.
