@@ -45,6 +45,7 @@ import { agreement, agreementReport, memoFile, readFacts } from "./lib/tool-vers
 import { SPAWNS_GH, agentOrgCommand } from "./acceptance-commands.ts";
 import { COMMANDS, FIXED_ARGS } from "./commands.ts";
 import { pnpmDrift } from "./host-pnpm.ts";
+import { codexClientDaemonDrift } from "./codex-drift.ts";
 import { HOME_CHECKOUT, PROJECT_DECLARATION_PATH } from "./project-config.ts";
 import { CLAUDE_EFFORTS, DECLARED_CLAUDE_MODELS, HAIKU_MODEL_ID, HAIKU_TIER_LABEL } from "./worker-profile.ts";
 import { REPO } from "./project-identity.ts";
@@ -2459,18 +2460,22 @@ function unclassifiedInLiveTree(deps: ShippedDeps & { units?: UnitsDeclaration; 
  * absent. "Installed and current" was never the same claim as "the program it names exists".
  * @param {Parameters<typeof unitState>[1] & Parameters<typeof supersededHostScripts>[0]
  *   & Parameters<typeof hostIdentityDrift>[0] & Parameters<typeof identityDrift>[0] & Parameters<typeof humanLoginOnHost>[0] & Parameters<typeof codexTrustDrift>[0]
- *   & { pnpm?: Parameters<typeof pnpmDrift>[0] }} [deps]
+ *   & { pnpm?: Parameters<typeof pnpmDrift>[0], codexDrift?: Partial<Parameters<typeof codexClientDaemonDrift>[0]> }} [deps]
  */
 export function hostUnitDrift(deps: Parameters<typeof unitState>[1] & Parameters<typeof supersededHostScripts>[0] &
 Parameters<typeof hostIdentityDrift>[0] & Parameters<typeof identityDrift>[0] & Parameters<typeof humanLoginOnHost>[0] & Parameters<typeof codexTrustDrift>[0] &
-{ pnpm?: Parameters<typeof pnpmDrift>[0]; } = {}) {
+{ pnpm?: Parameters<typeof pnpmDrift>[0]; codexDrift?: Partial<Parameters<typeof codexClientDaemonDrift>[0]>; } = {}) {
   if (!systemdUserAvailable(deps.systemctl ?? defaultSystemctl)) return [];
   // THE SAME GATE COVERS BOTH. A machine with no user systemd is not an agent host, so its `~/.claude`
   // posture is nobody's business either -- and a laptop told "ORG IS IN AUTO MODE" teaches its owner to
   // ignore this command, which would lose the timer finding along with it.
+  // TYPED `Finding[]`: the leaf declares only the fields it sets, and a spread of its narrower type would narrow every consumer's element.
+  const codexDaemonDisagreement: Finding[] = codexClientDaemonDrift({ home: (deps.host ?? homeHostConfig()).home,
+    readCodexConfig: deps.readCodexConfig, ...deps.codexDrift });
   return [...unclassifiedInLiveTree(deps), ...unitDrift(shippedUnitNames(deps).map((u) => unitState(u, deps))),
     ...orphanedUnits(deps), ...supersededHostScripts(deps), ...missingUnitPrograms(deps), ...hostInstallPending(deps), ...unitsWithoutHostVariable(deps),
-    ...hostIdentityDrift(deps), ...reviewerDoorDrift(deps), ...identityDrift(deps), ...humanLoginOnHost(deps), ...codexTrustDrift(deps), ...permissionModeDrift(deps), ...modelEffortDrift(deps), ...pnpmDrift({ repoRoot: REPO_ROOT, ...deps.pnpm })];
+    ...hostIdentityDrift(deps), ...reviewerDoorDrift(deps), ...identityDrift(deps), ...humanLoginOnHost(deps), ...codexTrustDrift(deps),
+    ...codexDaemonDisagreement, ...permissionModeDrift(deps), ...modelEffortDrift(deps), ...pnpmDrift({ repoRoot: REPO_ROOT, ...deps.pnpm })];
 }
 
 /** @param {string[]} args */
