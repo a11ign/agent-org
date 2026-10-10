@@ -43,14 +43,18 @@ export function lookupBlockedByEdge(issueNumber: number, { run = gh, repo = REPO
  * `null` means proceed: no open `blockedBy` edge, or the lookup itself failed. FAILS OPEN on a lookup
  * failure, matching B2/B4 -- this protects a session's ability to claim ANYTHING when the network is
  * down, not a verdict about whether the row is genuinely blocked.
+ *
+ * a11ign/a11ign#4737: `repo` names the repository the edge was read from, and is given for a row of a KEYED tracker only -- its blockers are
+ * that repository's issues, and a bare `#12` in the refusal would read as the first tracker's row 12. Absent, the line is the line it was.
  * @param {{blockedBy?: {nodes?: {number?: number, state?: string}[]}} | null} row
+ * @param {{ repo?: string }} where
  * @returns {string | null}
  */
-export function blockedByEdgeReason(row: { blockedBy?: { nodes?: { number?: number; state?: string; }[]; }; } | null): string | null {
+export function blockedByEdgeReason(row: { blockedBy?: { nodes?: { number?: number; state?: string; }[]; }; } | null, { repo }: { repo?: string; } = {}): string | null {
   if (row === null) return null;
   const waiting = waitingOn(row, todayIso());
   if (waiting?.kind !== "row") return null;
-  const names = waiting.numbers.map((n) => `#${n}`).join(", ");
+  const names = waiting.numbers.map((n) => `${repo ?? ""}#${n}`).join(", ");
   return `blocked by still-open ${names}: GitHub's own \`blockedBy\` edge names a row this claim must `
     + `wait on. Clear the edge with \`gh issue edit --remove-blocked-by\` once ${names} closes, or close `
     + `it, before claiming.`;

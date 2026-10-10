@@ -16,7 +16,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parseProjectDeclaration } from "../project-config.ts";
 import {
-  b4Lines, claimNames, reportB4, sessionEligibilityReason, trackerClaimRefusal, trackerFor,
+  b4Lines, claimNames, claimWithWorktree, reportB4, sessionEligibilityReason, trackerClaimRefusal, trackerFor,
 } from "../row-claim.ts";
 import {
   declaredClosedRows, fileOverlapReason, lookupMyRegionFiles, lookupOpenPrFiles,
@@ -214,17 +214,21 @@ test("#2617: a claim in the first tracker is never refused for its names -- ever
   }
 });
 
-test("#2617: a claim in another tracker must NAME its worktree and session with the key -- and the correctly named one is stopped only by the "
-  + "write edge, which says so", () => {
+test("#2617: a claim in another tracker must NAME its worktree and session with the key -- and the correctly named one is written (agent-org#575), "
+  + "and so are dispatch, decline and conflict (a11ign/a11ign#4737)", () => {
   const refusal = (session: string, worktree: string) =>
     trackerClaimRefusal({ mode: "claim", key: "agent-org", number: 7, session, worktree }, TWO_TRACKERS);
   assert.match(refusal("worker-agent-org-7", "../wt-7") ?? "", /names its worktree `wt-agent-org-7`, not `\.\.\/wt-7`/);
   assert.match(refusal("worker-7", "../wt-agent-org-7") ?? "", /`worker-7` is the name of the session that holds the FIRST tracker's row 7.*`worker-agent-org-7`/);
-  const named = refusal("worker-agent-org-7", "../wt-agent-org-7") ?? "";
-  assert.match(named, /neither is built for a second tracker yet.*Nothing was written\./, "correct names reach the edge and are refused there");
-  assert.doesNotMatch(named, /names its worktree|is the name of the session/, "and not for their names");
-  const decline = trackerClaimRefusal({ mode: "decline", key: "agent-org", number: 7 }, TWO_TRACKERS) ?? "";
-  assert.match(decline, /`decline` in tracker `agent-org` writes/);
+  assert.equal(refusal("worker-agent-org-7", "../wt-agent-org-7"), null, "correct names reach the write, and the write is built (agent-org#575)");
+  assert.equal(trackerClaimRefusal({ mode: "decline", key: "agent-org", number: 7 }, TWO_TRACKERS), null, "so does a decline");
+  for (const mode of ["dispatch", "conflict"] as const) {
+    assert.equal(trackerClaimRefusal({ mode, key: "agent-org", number: 7, session: "worker-agent-org-7" }, TWO_TRACKERS), null,
+      `${mode}: no "not built" refusal is left in a keyed tracker`);
+    const wrong = trackerClaimRefusal({ mode, key: "agent-org", number: 7, session: "worker-7" }, TWO_TRACKERS) ?? "";
+    assert.match(wrong, /`worker-7` is the name of the session that holds the FIRST tracker's row 7/, `${mode}: the names check stays`);
+    assert.doesNotMatch(wrong, /not built/, mode);
+  }
 });
 
 test("#2617: an undeclared tracker key is REFUSED listing what IS declared -- never read as the first tracker", () => {
@@ -335,4 +339,60 @@ test("#2617: a layer pull request that declares it closes the ASKING row is that
   const stranger = fakeGh({ region: regionBody("nvda-worker:src/x.ts"), prs: { [SECOND.repo]: [ghPr(4, ["src/x.ts"], "Closes #2617")] } });
   assert.match(eligibility(stranger, BOTH) ?? "", /overlaps #4 in a11ign\/nvda-worker/,
     "control: a bare `Closes #2617` in the layer repository is ITS #2617, so it is a stranger and still refuses");
+});
+
+// --- a11ign/a11ign#4737: a claim IN the second tracker reads that tracker's rows and pull requests, and its refusals name the repository ------------
+
+const KEYED = { key: "agent-org", repo: "a11ign/agent-org" };
+
+test("a11ign/a11ign#4737 item 4: a keyed row's `blockedBy` edge is read from the KEYED repository, and the refusal names it -- `a11ign/agent-org#12`, not a bare `#12`", () => {
+  const reads: string[][] = [];
+  const run = (_cmd: string, args: string[]) => {
+    reads.push(args);
+    if (args[0] === "issue" && args[1] === "view") {
+      return args[args.indexOf("--json") + 1] === "blockedBy"
+        ? JSON.stringify({ blockedBy: { nodes: [{ number: 12, state: "OPEN" }] } })
+        : JSON.stringify({ body: regionBody("agent-org:src/row-claim.ts") });
+    }
+    return "[]";
+  };
+  const keyed = sessionEligibilityReason(575, "worker-agent-org-575", { run, repo: KEYED.repo, repos: [FIRST, KEYED] }) ?? "";
+  assert.match(keyed, /^blocked by still-open a11ign\/agent-org#12:/, "the repository is named, so #12 is not read as the first tracker's row 12");
+  assert.deepEqual([...new Set(reads.filter((a) => a[0] === "issue").map((a) => a[a.indexOf("--repo") + 1]))], [KEYED.repo], "and every row read was the keyed repository's");
+  const first = sessionEligibilityReason(575, "worker-575", { run, repo: FIRST.repo, repos: [FIRST, KEYED] }) ?? "";
+  assert.match(first, /^blocked by still-open #12:/, "CONTROL: the first tracker's refusal reads as it always did");
+});
+
+test("a11ign/a11ign#4737 item 4: B4 for a keyed row reads the KEYED repository's open pull requests and the refusal names that repository and pull request", () => {
+  const fake = fakeGh({ region: regionBody("agent-org:src/row-claim.ts"), prs: { [KEYED.repo]: [ghPr(581, ["src/row-claim.ts"])] } });
+  const reason = sessionEligibilityReason(575, "worker-agent-org-575",
+    { run: (_cmd: string, args: string[]) => fake.run(args), repo: KEYED.repo, repos: [FIRST, KEYED] });
+  assert.match(reason ?? "", /overlaps #581 in a11ign\/agent-org, which already touches: src\/row-claim\.ts\./);
+  assert.ok(fake.calls.some((c) => c[0] === "pr" && c[c.indexOf("--repo") + 1] === KEYED.repo), "the keyed repository's pull requests were read");
+  const same = fakeGh({ region: regionBody("agent-org:src/row-claim.ts"), prs: { [FIRST.repo]: [ghPr(581, ["src/row-claim.ts"])] } });
+  assert.equal(sessionEligibilityReason(575, "worker-agent-org-575",
+    { run: (_cmd: string, args: string[]) => same.run(args), repo: KEYED.repo, repos: [FIRST, KEYED] }), null,
+  "CONTROL: the same path touched in the FIRST repository is not the keyed row's file");
+});
+
+test("a11ign/a11ign#4737 item 3: a keyed claim whose worktree path or branch exists is REFUSED before any write, naming what exists", () => {
+  const calls: string[][] = [];
+  const run = ((cmd: string, args: string[]) => { calls.push([cmd, ...args]); return ""; }) as never;
+  const claim = (() => { throw new Error("the claim must not run"); }) as never;
+  const path = claimWithWorktree(575, "worker-agent-org-575", { branch: "agent/x-agent-org-575", worktree: "../wt-agent-org-575", run, claim,
+    exists: (p: string) => p === "/clones/wt-agent-org-575", owner: () => "worker-agent-org-575", claimDeps: { tracker: { ...KEYED, board: { owner: "a11ign", number: 2 } } },
+    clone: "/clones/agent-org", stamp: () => {} });
+  assert.equal(path.claimed, false);
+  assert.match((path as { reason: string }).reason, /--worktree=\/clones\/wt-agent-org-575 ALREADY EXISTS.*Refusing before any write/);
+  assert.deepEqual(calls.filter(([cmd, ...rest]) => cmd === "gh" || rest.includes("worktree") && rest.includes("add") || rest.includes("fetch")), [],
+    "no gh call, no fetch and no `worktree add` happened");
+  assert.ok(calls.every(([cmd, ...rest]) => cmd !== "git" || (rest[0] === "-C" && rest[1] === "/clones/agent-org")), "every git read named the keyed clone");
+});
+
+test("a11ign/a11ign#4737: the three refusals that exist today still refuse in a keyed tracker, for their own reasons -- undeclared key, `wt-<n>` worktree, `worker-<n>` session", () => {
+  const refusal = (key: string, session: string, worktree: string) => trackerClaimRefusal({ mode: "claim", key, number: 575, session, worktree }, TWO_TRACKERS) ?? "";
+  assert.match(refusal("nope", "worker-nope-575", "../wt-nope-575"), /no tracker with key `nope`/);
+  assert.match(refusal("agent-org", "worker-agent-org-575", "../wt-575"), /names its worktree `wt-agent-org-575`, not `\.\.\/wt-575`/);
+  assert.match(refusal("agent-org", "worker-575", "../wt-agent-org-575"), /`worker-575` is the name of the session that holds the FIRST tracker's row 575/);
+  assert.equal(refusal("agent-org", "worker-agent-org-575", "../wt-agent-org-575"), "", "control: the right names are not refused");
 });
