@@ -338,6 +338,13 @@ function areBlockedOnEachOther(asker: number | null, claimed: number, blockersOf
  */
 export const NO_CODE_LEFT_LABEL = "no-code-left";
 
+/**
+ * #732: THE ONE `--json` ASK THE CLAIM MAKES OF A ROW ITSELF. The asking side's Region read (`lookupMyRegionFiles`) and the template
+ * check's body read (`lookupIssueBody`) both use it, because the claim's batched pre-write read serves them from ONE `gh issue view`
+ * only while their argv is identical -- change one and the claim makes a second call. `labels` is for {@link NO_CODE_LEFT_LABEL}.
+ */
+export const ROW_READ_FIELDS = "body,labels";
+
 const hasLabel = (row: any, name: string) => (row?.labels ?? []).some((l: any) => String(l?.name ?? l) === name);
 
 const FENCE_LINE = /^\s*(?:```|~~~)/;
@@ -446,11 +453,18 @@ function notComparableReason(other: { number: number; files: string[]; changedFi
  *
  * #2617: the row is read from `repo`, the TRACKER it lives in (default the first), and its entries may carry a repository prefix
  * (`nvda-worker:src/x.ts`) -- returned as written, for `fileOverlapReason` to place. One `gh` call, whatever the repositories.
+ *
+ * #727 (#732): A ROW LABELLED {@link NO_CODE_LEFT_LABEL} ASKS FOR NO FILE, whatever its Region still names. The label is the holder's word that
+ * the row edits nothing now (a build merged and only a host read is left), and until now only the RESERVATION side read it
+ * ({@link claimedRegionsOf}): the asking side read the body alone, so a reopened verify-only row was refused against an unrelated open
+ * pull request on the files its finished build had edited. `labels` rides the same `gh issue view` as `body` -- the same argv ({@link ROW_READ_FIELDS}) as the template check's body read, so the claim still makes one call -- and
+ * the answer is `[]` -- a real, comparable "no files" -- never `null`, which would say the question could not be asked.
  */
 export function lookupMyRegionFiles(issueNumber: number, { run = gh, repo = REPO }: { run?: (args: string[]) => string; repo?: string; } = {}): string[] | null {
   return lookup(() => {
-    const raw = run(["issue", "view", String(issueNumber), "--repo", repo, "--json", "body"]);
-    const parsed: { body?: string; } = JSON.parse(raw);
+    const raw = run(["issue", "view", String(issueNumber), "--repo", repo, "--json", ROW_READ_FIELDS]);
+    const parsed: { body?: string; labels?: unknown[]; } = JSON.parse(raw);
+    if (hasLabel(parsed, NO_CODE_LEFT_LABEL)) return [];
     return declaredRegionFiles(parsed.body ?? "");
   });
 }

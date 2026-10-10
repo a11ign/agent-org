@@ -1,6 +1,6 @@
 // a11ign/a11ign#4382: THE HAIKU TIER'S REPORT -- the four measures the chairman named, per tier, and the stop rule written on that row BEFORE the first Haiku worker started.
 //
-// `node src/trace/haiku-tier-report.ts [--store <events.ndjson>]` reads the closed rows and their pull requests from `gh` (one `issue list`) and the turns, compactions and
+// `node src/trace/haiku-tier-report.ts [--store <events.ndjson>]` reads the rows closed since the first Haiku turn and their pull requests from `gh` (`issue list --search "closed:<from>..<to>"`) and the turns, compactions and
 // reviews from the trace store, and prints for `tier:haiku` rows and for the other rows closed in the same window: first-pass merge, review rejections per pull request,
 // compactions, and cost per closed row (turns per row beside them, which is NOT a stop condition), and each row's effort with the arm split by it (agent-org#469). `ceo` reads it once, at 8 closed Haiku rows or 72 hours after the first
 // Haiku worker starts, and applies (a)-(e) below.
@@ -34,7 +34,8 @@ export const MIN_SAVING_FRACTION = 0.4;
 const MS_PER_HOUR = 3_600_000;
 const PERCENT = 100;
 
-export type ClosedRow = { number: number; haiku: boolean; closedAt: number; pr: { repo: string; number: number } | null };
+/** `pr` is null both where the row has no closing pull request and where it has one whose repository cannot be read; `unresolved` tells the two apart (agent-org#689), and a row built without it is not. */
+export type ClosedRow = { number: number; haiku: boolean; closedAt: number; pr: { repo: string; number: number } | null; unresolved?: boolean };
 export type RowMeasures = { number: number; haiku: boolean; merged: boolean; rejections: number; compactions: number; oversize: number; turns: number; costUsd: number; unpriced: number; effort: string };
 
 export const EFFORT_MIXED = "mixed";
@@ -153,10 +154,17 @@ export function firstHaikuStart(haikuRows: ClosedRow[], events: TraceEvent[]): n
   return starts.length === 0 ? null : Math.min(...starts);
 }
 
-function groupLines(s: Summary): string[] {
-  return [`  n=${s.n} closed (${s.nMerged} with a merged pull request)`,
-    `  first-pass merge: ${s.firstPassRate === null ? "none merged" : rateText(s.nMerged, s.firstPassRate)}`,
-    `  review rejections per PR: ${s.meanRejections === null ? "none merged" : `${s.meanRejections.toFixed(2)} (n=${s.nMerged})`}`,
+/** The closed rows that have no merged pull request for a reason the merge count cannot show: no closing pull request at all, and one whose repository could not be read (agent-org#689). */
+export function closersOf(rows: ClosedRow[]): { noPr: number; unresolved: number } {
+  return { noPr: rows.filter((row) => row.pr === null && !row.unresolved).length, unresolved: rows.filter((row) => row.unresolved).length };
+}
+
+function groupLines(s: Summary, closers: { noPr: number; unresolved: number }): string[] {
+  // An unresolved row is NOT a row that did not merge: with any, "none merged" would say what was not measured.
+  const none = closers.unresolved > 0 ? `none merged (${closers.unresolved} unresolved, so not a reading)` : "none merged";
+  return [`  n=${s.n} closed (${s.nMerged} with a merged pull request, ${closers.noPr} with no closing pull request, ${closers.unresolved} unresolved)`,
+    `  first-pass merge: ${s.firstPassRate === null ? none : rateText(s.nMerged, s.firstPassRate)}`,
+    `  review rejections per PR: ${s.meanRejections === null ? none : `${s.meanRejections.toFixed(2)} (n=${s.nMerged})`}`,
     `  most compactions by one session: ${s.mostCompactions}`,
     `  cost per closed row, median: ${s.medianCostUsd === null ? "no turns held" : `$${s.medianCostUsd.toFixed(2)} (n=${s.nCost}${s.floors > 0 ? `, ${s.floors} a floor` : ""})`}`,
     `  turns per row, median (not a stop condition): ${s.medianTurns ?? "no rows"} (n=${s.n})`];
@@ -198,11 +206,12 @@ export function reportLines({ closed, events, now }: { closed: ClosedRow[]; even
   const measured = inWindow.map((row) => measuresOf(row, priced));
   const haiku = measured.filter((row) => row.haiku);
   const other = measured.filter((row) => !row.haiku);
+  const closers = { haiku: closersOf(inWindow.filter((row) => row.haiku)), other: closersOf(inWindow.filter((row) => !row.haiku)) };
   const verdicts = stopRule({ haiku, other, closedInWindow: haiku.length, started, now });
   const verdictText = (v: Verdict): string => `${v.tripped === null ? "UNREADABLE" : v.tripped ? "STOP" : "ok"}  ${v.line}`;
   return [`${HAIKU_TIER_LABEL} trial report (a11ign/a11ign#4382), window from ${started === null ? "no Haiku worker yet" : new Date(started).toISOString()} to ${new Date(now).toISOString()}`,
-    `${HAIKU_TIER_LABEL} rows:`, ...groupLines(summarise(haiku)), ...effortLines(haiku),
-    "other rows closed in the same window:", ...groupLines(summarise(other)), ...effortLines(other),
+    `${HAIKU_TIER_LABEL} rows:`, ...groupLines(summarise(haiku), closers.haiku), ...effortLines(haiku),
+    "other rows closed in the same window:", ...groupLines(summarise(other), closers.other), ...effortLines(other),
     "stop rule (STOP: set enabled to false in src/haiku-tier.json; UNREADABLE decides nothing):", ...verdicts.map(verdictText)];
 }
 
@@ -210,29 +219,77 @@ export function reportLines({ closed, events, now }: { closed: ClosedRow[]; even
 type GhRepository = { nameWithOwner?: string; name?: string; owner?: { login?: string } };
 type GhIssue = { number: number; labels?: { name: string }[]; closedAt: string; closedByPullRequestsReferences?: { number: number; repository?: GhRepository }[] };
 
-/** `owner/name`, the form the store's `gh:<repo>#<n>:` event ids carry. An unreadable repository throws: `null` here would read as "no pull request" for every row at once, the silent zero this replaces. */
-function repoOf(row: number, repository: GhRepository | undefined): string {
+/** `owner/name`, the form the store's `gh:<repo>#<n>:` event ids carry. `null` where the repository names neither `nameWithOwner` nor `owner.login` and `name`. */
+function repoOf(repository: GhRepository | undefined): string | null {
   if (repository?.nameWithOwner) return repository.nameWithOwner;
   if (repository?.owner?.login && repository.name) return `${repository.owner.login}/${repository.name}`;
-  throw new Error(`#${row}: its closing pull request names no repository the report can read (keys: ${Object.keys(repository ?? {}).join(",") || "none"})`);
+  return null;
 }
 
-export function closedRowOf(issue: GhIssue): ClosedRow {
+/** One closed row. A closing pull request whose repository cannot be read is kept as `unresolved` with `pr: null`, so the report counts it and prints it (agent-org#689): `null` alone
+ * would read as "no pull request" and fold into "none merged", the silent zero agent-org#530 replaced. */
+export function closedRowOrUnresolved(issue: GhIssue): ClosedRow {
   const closer = (issue.closedByPullRequestsReferences ?? [])[0];
-  return { number: issue.number, haiku: (issue.labels ?? []).some((l) => l.name === HAIKU_TIER_LABEL),
-    closedAt: Date.parse(issue.closedAt), pr: closer ? { repo: repoOf(issue.number, closer.repository), number: closer.number } : null };
+  const repo = closer ? repoOf(closer.repository) : null;
+  return { number: issue.number, haiku: (issue.labels ?? []).some((l) => l.name === HAIKU_TIER_LABEL), closedAt: Date.parse(issue.closedAt),
+    pr: closer && repo ? { repo, number: closer.number } : null, unresolved: closer !== undefined && repo === null };
 }
 
-/** The closed rows with their labels and closing pull request: ONE `gh issue list`, newest first. */
-function readClosedRows(): ClosedRow[] {
-  const out = execFileSync("gh", ["issue", "list", "--repo", REPO, "--state", "closed", "--limit", "300", "--json", "number,labels,closedAt,closedByPullRequestsReferences"], { encoding: "utf8" });
-  return (JSON.parse(out) as GhIssue[]).map(closedRowOf);
+/** The strict reader (agent-org#530): a repository it cannot read throws with the row number and the keys seen. The report itself reads rows through `closedRowOrUnresolved`. */
+export function closedRowOf(issue: GhIssue): ClosedRow {
+  const row = closedRowOrUnresolved(issue);
+  if (row.unresolved) throw new Error(`#${issue.number}: its closing pull request names no repository the report can read (keys: ${Object.keys(issue.closedByPullRequestsReferences?.[0]?.repository ?? {}).join(",") || "none"})`);
+  return row;
+}
+
+/** `gh issue list --limit` is applied to the rows NEWEST CREATED first, and a search reaches at most this many (GitHub's own cap). A read that returns this many may have been cut. */
+export const CLOSED_ROWS_LIMIT = 1000;
+const MS_PER_SECOND = 1000;
+
+/** The earliest turn the store holds that a Haiku model took. The report's window opens at the first turn of a `tier:haiku` ROW (`firstHaikuStart`), which is this or later, so reading
+ * from here reads every row the window needs and, at worst, a few more that `reportLines` then leaves out. `null` where no Haiku turn is held: the clock is not running. */
+export function windowStartOf(events: TraceEvent[]): number | null {
+  const starts = events.filter((e) => e.kind === "turn" && e.model?.startsWith(HAIKU_MODEL_ID)).map((e) => e.at);
+  return starts.length === 0 ? null : Math.min(...starts);
+}
+
+/** A second-precision UTC timestamp, the form a `closed:` search qualifier takes. */
+const searchTime = (ms: number): string => new Date(Math.floor(ms / MS_PER_SECOND) * MS_PER_SECOND).toISOString().replace(/\.\d{3}Z$/, "Z");
+
+/** The `gh issue list` arguments for the rows CLOSED in `[from, to]`. `--limit` alone returns the newest CREATED, so a row opened before the cut and closed inside the window is
+ * never read (agent-org#707); the `closed:` qualifier is what selects by closing time. */
+export function closedRowsArgs(from: number, to: number): string[] {
+  return ["issue", "list", "--repo", REPO, "--state", "closed", "--search", `closed:${searchTime(from)}..${searchTime(to)}`, "--limit", String(CLOSED_ROWS_LIMIT),
+    "--json", "number,labels,closedAt,closedByPullRequestsReferences"];
+}
+
+/** Runs `gh` and returns its stdout; injected so a test can stand in for it. */
+export type GhRunner = (args: string[]) => string;
+const ghOutput: GhRunner = (args) => execFileSync("gh", args, { encoding: "utf8" });
+
+/** Every row closed in `[from, to]`. A read that fills `CLOSED_ROWS_LIMIT` may have been cut, so its range is halved and read again; a one-second range that still fills it throws, rather than
+ * report a count short by the rows it left behind. */
+function issuesClosedBetween(from: number, to: number, gh: GhRunner): GhIssue[] {
+  const issues = JSON.parse(gh(closedRowsArgs(from, to))) as GhIssue[];
+  if (issues.length < CLOSED_ROWS_LIMIT) return issues;
+  const mid = Math.floor((from + (to - from) / 2) / MS_PER_SECOND) * MS_PER_SECOND;
+  if (mid <= Math.floor(from / MS_PER_SECOND) * MS_PER_SECOND) throw new Error(`${CLOSED_ROWS_LIMIT} rows closed within one second at ${searchTime(from)}: the read cannot tell whether it is whole`);
+  return [...issuesClosedBetween(from, mid, gh), ...issuesClosedBetween(mid + MS_PER_SECOND, to, gh)];
+}
+
+/** The closed rows with their labels and closing pull request, for the rows closed from `from` to `to`. */
+export function readClosedRows(from: number, to: number, gh: GhRunner = ghOutput): ClosedRow[] {
+  return issuesClosedBetween(from, to, gh).map(closedRowOrUnresolved);
 }
 
 function main(): void {
   const flag = process.argv.indexOf("--store");
   const storePath = flag >= 0 ? process.argv[flag + 1] : defaultStore();
-  process.stdout.write(`${reportLines({ closed: readClosedRows(), events: readStore(storePath), now: Date.now() }).join("\n")}\n`);
+  const events = readStore(storePath);
+  const now = Date.now();
+  const from = windowStartOf(events);
+  // No Haiku turn held: the report has no window, so no row is in it and none is read.
+  process.stdout.write(`${reportLines({ closed: from === null ? [] : readClosedRows(from, now), events, now }).join("\n")}\n`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) main();

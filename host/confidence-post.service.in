@@ -1,0 +1,41 @@
+[Unit]
+# THE DAILY CONFIDENCE READING, POSTED -- a11ign/a11ign#4879, from the chairman's direction on a11ign/a11ign#4627 (item 4, 2026-10-10): "the daily
+# per-question confidence reading (agent-org#595) has not been seen".
+#
+# `decision-confidence-post.ts` (a11ign/a11ign#4755) was written, tested and merged, and NOTHING RAN IT: the only day it ever posted was
+# 2026-10-10, by hand. It posts once per UTC day and dedupes itself on the day's marker, so this unit may fire as often as a clock likes; the
+# timer is only a clock. It is a timer and not a tick's order because it must fire with no work tick running (the 2026-10-02 outage would have
+# silenced a tick-borne post), and it leaves `failure-recorders.ts` alone.
+Description=Post the daily provider-confidence reading (a11ign#4879)
+
+[Service]
+Type=oneshot
+
+# The checkout the repository-relative ExecStart resolves against, as the other units that run a program from this repository do.
+WorkingDirectory=@@checkout@@
+
+# PATH IS DECLARED because a systemd unit does not get a login shell's. With messaging off the reading is a comment on the epic through a bare `gh`,
+# and @@binDir@@ holds the routing wrapper (board-report.service has the measurement of what the bare name resolved to without it).
+Environment=PATH=@@binDir@@:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# `gh` needs a home to find credentials under, and the messenger's ledger lives under it. Stated rather than assumed.
+Environment=HOME=@@home@@
+
+# V8's compile cache goes under the home, not /tmp (#2458); a unit reads no shell startup file, and `host-units.test.ts` pins this on every shipped service.
+Environment=NODE_COMPILE_CACHE=%h/.cache/node-compile-cache
+
+# THE HOST'S DECLARATION, NAMED. The program resolves its project, the provider and the messaging configuration from `host.json` and, run without
+# `AGENT_ORG_HOST`, prints `CANNOT POST: the host declaration could not be read` and posts NOTHING, with exit 0 (the row's own measurement): a
+# unit without this line would be green every morning and silent every morning.
+Environment=AGENT_ORG_HOST=@@checkout@@/.agent-org/host.json
+
+# WHICH ACCOUNT THE POST SPENDS, DECLARED: the org's own (`a11ign-ai-workers`), never the person's, as trace-weekly.service states for the same reason.
+Environment=GH_CONFIG_DIR=@@workersDir@@/gh
+
+# THE POST IS A FEW READS AND ONE WRITE (the tracker route's `gh` calls are each cut at 60 s inside the program), so a unit that hangs must fail rather than hold the next day's slot.
+TimeoutStartSec=600
+
+ExecStart=%h/.local/bin/node packages/agent-org/src/decision-confidence-post.ts
+
+# NO [Install] SECTION, and its absence is load-bearing, as board-report.service explains: `WantedBy=default.target` would run this oneshot at every boot.
+# The timer is the only thing that may start it.

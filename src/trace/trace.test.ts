@@ -525,7 +525,7 @@ test("PRODUCT-MANAGER: a turn that WROTE to a row is on that row, whatever its w
   assert.equal(touchesOf([], ROW_REPO) && Object.keys(touchesOf([], ROW_REPO)).length, 0, "a turn that wrote to nothing carries no field");
 });
 
-test("STORE: a corrected copy of an event supersedes the stored one by being APPENDED; an identical copy adds nothing; readStore takes the last copy of an id", () => {
+test("STORE: a corrected copy of an event REPLACES the stored one on disk; an identical copy adds nothing; readStore returns the corrected one (agent-org#475)", () => {
   const path = join(tmpDir("trace-supersede-"), "events.ndjson");
   const before = readPm().events.find((event) => event.id === "turn:pm_1");
   const stale = { ...before, rows: undefined, touchedRows: undefined, row: null }; // the turn as stored before the attribution fix
@@ -534,7 +534,7 @@ test("STORE: a corrected copy of an event supersedes the stored one by being APP
   assert.deepEqual(appendToStore(store, [stale]), { added: 0, superseded: 0, skipped: 1 });
   assert.deepEqual(appendToStore(store, [before]), { added: 0, superseded: 1, skipped: 0 });
   assert.deepEqual(appendToStore(store, [before]), { added: 0, superseded: 0, skipped: 1 }, "identical to the correction now: nothing more");
-  assert.equal(readFileSync(path, "utf8").split("\n").filter(Boolean).length, 2, "the log holds both copies: nothing on disk was rewritten");
+  assert.equal(readFileSync(path, "utf8").split("\n").filter(Boolean).length, 1, "one line for the id: the superseded copy did not stay on disk");
   const reopened = readStore(path);
   assert.equal(reopened.length, 1);
   assert.deepEqual(reopened[0].touchedRows, before.touchedRows);

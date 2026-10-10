@@ -6,7 +6,7 @@
 // no file itself but the audit's cursor.
 import { homedir } from "node:os";
 
-import { FAILURE_LEDGER_FILE, mainRedEpisodesPath, readMainRedReadings, recordFailures, type TrunkReading } from "./failure-ledger.ts";
+import { CHAIRMAN_LABEL_NOT_CHAIRMAN_KIND, FAILURE_LEDGER_FILE, mainRedEpisodesPath, readMainRedReadings, recordFailures, type TrunkReading } from "./failure-ledger.ts";
 import { recordHandReroutes } from "./hand-fix-ledger.ts";
 import { auditMessaging } from "./messaging/audit.ts";
 import { defaultLedgerPath } from "./messaging/state.ts";
@@ -16,6 +16,22 @@ import { unresolvedOwnerEvents } from "./pr-ownership.ts";
 export const MESSAGING_AUDIT_CURSOR_FILE = "messaging-audit-cursor";
 
 const sayOnStderr = (line: string) => process.stderr.write(`${line}\n`);
+
+/**
+ * #730: A `priority:chairman` LABEL THE CHAIRMAN DID NOT ADD IS A LEDGER INCIDENT, recorded here by the gate and not typed by `ceo`. One line per `<repo>#<row>:<actor>`: the tick repeats
+ * every few minutes, so `recordFailures` reads the ledger first and skips a ref it holds, and one incident is one line however many ticks see it. A history that names no actor is
+ * `unknown`, never skipped. Each entry is written on its own so that the answer is its own: `recorded` is false only where THAT line could not be written, and the order to `ceo`
+ * then asks for it by hand rather than say a line exists that does not. Never throws.
+ * @returns the entries as given, each with whether its line is in the ledger
+ */
+export function recordIgnoredChairmanLabels<T extends { number: number; actor: string | null }>({ ignored, repo, stateDir, now }: { ignored: T[]; repo: string; stateDir: string; now: number }): (T & { recorded: boolean })[] {
+  const logPath = `${stateDir}/${FAILURE_LEDGER_FILE}`;
+  return ignored.map((entry) => {
+    const ref = `${repo}#${entry.number}:${entry.actor ?? "unknown"}`;
+    const { refused } = recordFailures({ logPath, events: [{ classKey: CHAIRMAN_LABEL_NOT_CHAIRMAN_KIND, ref }], now });
+    return { ...entry, recorded: refused === null };
+  });
+}
 
 /**
  * THE EVENTS OF THIS TICK THAT NEVER BECOME A CLOSED ROW, appended to `failure-ledger` beside `wake-deferral-log` -- a red `main`, a pull request nobody could be named the owner of,

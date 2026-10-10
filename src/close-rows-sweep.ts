@@ -52,6 +52,10 @@
 //      EXCEPT when every refusal is `project-unreadable` (the token cannot read the Project, #546): that exits 0
 //      with a DEGRADED line naming the rows -- `closeRowsExit`'s bridge, shared with the immediate path.
 //
+// THE VERIFY ROW IS FILED HERE TOO (a11ign/agent-org#719). `trunk.yml` runs THIS on every push to main and the dispatch path only on a manual dispatch, so a verify row
+// filed by the dispatch path alone was filed for no normal merge (measured 2026-10-10: ~60 merged rows, no `<!-- verify-row: build #N -->` marker). `closeOnePr` calls
+// the same `fileVerifyRowsFor` the dispatch path does, for the rows it closed AND the rows it found closed, off the build rows the one lookup already carries.
+//
 //   node packages/agent-org/src/close-rows-sweep.ts [--window=<minutes>]
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
@@ -61,8 +65,9 @@ import { pathToFileURL } from "node:url";
 import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
 // #1227: `settleClosedStatus` is imported rather than re-derived, for the reason this file's own header
 // gives about `stripClaimLabels`: a second copy of that decision is the "fact stated twice" shape.
-import { closurePlan, stripClaimLabels, closeRowsExit, LIVE_SETTLE_DEPS, logRateLimit }
+import { closurePlan, stripClaimLabels, closeRowsExit, LIVE_SETTLE_DEPS, logRateLimit, fileVerifyRowsFor, liveVerifyEffects }
   from "./close-rows-for-merged-pr.ts";
+import type { BuildRow, VerifyEffects } from "./verify-row.ts";
 import { settleClosedStatus } from "./settle-closed-status.ts";
 
 export type Refusal = import("./settle-closed-status.ts").Refusal;
@@ -108,24 +113,28 @@ function settleAlreadyClosed(already: { number: number; labels: string[]; }[], r
   return unsettled;
 }
 
+/** Where a refused verify row is said: `closeOnePr`'s second result, present ONLY when a build with a live reading got no verify row (so the exit says so). */
+export type SweepOutcome = { failed: number[]; unsettled: Refusal[]; skipped: number[]; lost?: number[]; };
+
 /**
  * Resolve and act on ONE merged PR's closing plan -- split out of `main` to keep its complexity within this
  * repo's ESLint budget, and EXPORTED with its effects injected so its Status half is driven by a test (#1299).
  * @param {number} number
  * @param {string} repo
  * @param {{ gh_?: (args: string[]) => string, strip?: typeof stripClaimLabels,
- *   settle?: (n: number) => SettleOutcome }} [deps]
- * @returns {{ failed: number[], unsettled: Refusal[], skipped: number[] }} rows that could not be closed, the
- *   refusal for each closed row whose Status did not move, and rows left alone because they were reopened
- *   after this PR merged (#1877) -- all empty on success
+ *   settle?: (n: number) => SettleOutcome, verify?: VerifyEffects }} [deps] `verify` is the verify row's effects (a11ign/agent-org#719)
+ * @returns {{ failed: number[], unsettled: Refusal[], skipped: number[], lost?: number[] }} rows that could not be closed, the
+ *   refusal for each closed row whose Status did not move, rows left alone because they were reopened
+ *   after this PR merged (#1877) -- all empty on success -- and, only when there are some, the closed builds whose verify row could not be filed
  */
 export function closeOnePr(number: number, repo: string, { gh_ = gh, strip = stripClaimLabels,
-  settle = (n: number) => settleClosedStatus(n, LIVE_SETTLE_DEPS) }: {
+  settle = (n: number) => settleClosedStatus(n, LIVE_SETTLE_DEPS), verify }: {
         gh_?: (args: string[]) => string; strip?: typeof stripClaimLabels;
-        settle?: (n: number) => SettleOutcome;
-    } = {}): { failed: number[]; unsettled: Refusal[]; skipped: number[]; } {
+        settle?: (n: number) => SettleOutcome; verify?: VerifyEffects;
+    } = {}): SweepOutcome {
   const [owner, name] = repo.split("/");
   let issues, sha, prMergedAt;
+  const builds = new Map<number, BuildRow | null>();
   try {
     // `labels(first:20){nodes{name}}` added for #754, same reason as the immediate path's identical
     // change in close-rows-for-merged-pr.ts: one lookup carries both what to close and what to strip.
@@ -133,6 +142,7 @@ export function closeOnePr(number: number, repo: string, { gh_ = gh, strip = str
     // `closurePlan` for what this backs (the sweep drives the identical, imported decision).
     const query = `{repository(owner:"${owner}",name:"${name}"){pullRequest(number:${number}){`
       + `mergedAt mergeCommit{oid} closingIssuesReferences(first:20){nodes{number state `
+      + `title body milestone{title} parent{number} `
       + `labels(first:20){nodes{name}} timelineItems(itemTypes:[REOPENED_EVENT],last:1){nodes{`
       + `... on ReopenedEvent{createdAt}}}}}}}}`;
     const pr = JSON.parse(gh_(["api", "graphql", "-f", `query=${query}`,
@@ -140,11 +150,17 @@ export function closeOnePr(number: number, repo: string, { gh_ = gh, strip = str
     const nodes: {
         number: number; state: string; labels: { nodes: { name: string; }[]; };
         timelineItems: { nodes: { createdAt: string; }[]; };
+        title?: string; body?: string | null; milestone?: { title: string; } | null; parent?: { number: number; } | null;
     }[] = pr.closingIssuesReferences.nodes;
     issues = nodes.map((i) => ({
       number: i.number, state: i.state, labels: (i.labels?.nodes ?? []).map((l) => l.name),
       reopenedAt: i.timelineItems?.nodes?.[0]?.createdAt ?? null,
     }));
+    // The build rows of the verify row, off the lookup that already ran: a row whose title was not returned is `null`, which is "could not read", never "no reading".
+    for (const i of nodes) {
+      builds.set(i.number, typeof i.title !== "string" ? null : { number: i.number, title: i.title, body: i.body ?? "",
+        labels: (i.labels?.nodes ?? []).map((l) => l.name), milestone: i.milestone?.title ?? null, parent: i.parent?.number ?? null });
+    }
     sha = pr.mergeCommit?.oid ?? "unknown";
     prMergedAt = pr.mergedAt ?? null;
   } catch (cause) {
@@ -169,7 +185,7 @@ export function closeOnePr(number: number, repo: string, { gh_ = gh, strip = str
     return n;
   });
 
-  const failed = [];
+  const failed: number[] = [];
   for (const { number: n, labels } of close) {
     const sentence = `Closed by the pipeline's sweep: PR #${number} merged as \`${sha}\` and declared `
       + `\`Closes #${n}\`, but the immediate pull_request:closed trigger did not fire for it (#394).\n\n`
@@ -189,7 +205,23 @@ export function closeOnePr(number: number, repo: string, { gh_ = gh, strip = str
     strip(n, labels, repo, "SWEEP");
     unsettled.push(...settle(n).refused);
   }
-  return { failed, unsettled, skipped };
+  const lost = fileVerifyRows([...close.map((row) => row.number).filter((n) => !failed.includes(n)), ...already.map((row) => row.number)],
+    { pr: String(number), mergedAt: prMergedAt, builds, effects: verify ?? liveVerifyEffects(repo) });
+  return { failed, unsettled, skipped, ...(lost.length ? { lost } : {}) };
+}
+
+/**
+ * A closed build row's verify row, filed by the SAME `fileVerifyRowsFor` the dispatch path calls (a11ign/agent-org#719) and printed as `SWEEP:` like every line here. A PR with no
+ * merge time read files nothing and says so: a closed row whose reading it could not place is NOT CHECKED, never "has none".
+ * @returns {number[]} the closed builds with a live reading whose verify row could not be filed
+ */
+function fileVerifyRows(closed: number[], { pr, mergedAt, builds, effects }: { pr: string; mergedAt: string | null; builds: Map<number, BuildRow | null>; effects: VerifyEffects; }): number[] {
+  if (closed.length === 0) return [];
+  if (mergedAt === null) {
+    console.log(`SWEEP: PR #${pr} merge time was not read, so ${closed.map((n) => `#${n}`).join(" ")} NOT CHECKED for a verify row.`);
+    return [];
+  }
+  return fileVerifyRowsFor(closed, { prNumber: pr, mergedAt }, { read: (n) => builds.get(n) ?? null, effects, say: (line) => console.log(`SWEEP: ${line}`) });
 }
 
 /**
@@ -198,8 +230,13 @@ export function closeOnePr(number: number, repo: string, { gh_ = gh, strip = str
  * @param {{ failed: number[], unsettled: Refusal[] }} outcome
  * @returns {{ code: number, lines: string[] }}
  */
-export function sweepExit(outcome: { failed: number[]; unsettled: Refusal[]; }): { code: number; lines: string[]; } {
-  return closeRowsExit(outcome, "SWEEP");
+export function sweepExit(outcome: { failed: number[]; unsettled: Refusal[]; lost?: number[]; }): { code: number; lines: string[]; } {
+  const exit = closeRowsExit(outcome, "SWEEP");
+  const lost = outcome.lost ?? [];
+  if (lost.length === 0) return exit;
+  // Same decision as the dispatch path: a lost verify row is a build the epic never learns the reading of, and the job is idempotent, so a re-run files it.
+  const line = `SWEEP: no verify row for ${lost.length} closed build row(s): ${lost.map((n) => `#${n}`).join(" ")} -- the job is idempotent, so a re-run files it.`;
+  return { code: exit.code === EXIT.DONE ? EXIT.COULD_NOT_CLOSE : exit.code, lines: [...exit.lines, line] };
 }
 
 /**
@@ -244,7 +281,7 @@ function main() {
 
   const outcomes = prs.map(({ number }) => closeOnePr(number, repo));
   const { code, lines } = sweepExit({
-    failed: outcomes.flatMap((o) => o.failed), unsettled: outcomes.flatMap((o) => o.unsettled) });
+    failed: outcomes.flatMap((o) => o.failed), unsettled: outcomes.flatMap((o) => o.unsettled), lost: outcomes.flatMap((o) => o.lost ?? []) });
   for (const line of lines) console.error(line);
   exitAfterSweep(code);
 }

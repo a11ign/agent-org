@@ -1,0 +1,5 @@
+---
+"agent-org": patch
+---
+
+A `priority:chairman` label that the chairman's login did not add is now recorded in the failure ledger by the gate itself, as class `chairman-label-not-chairman` with the ref `<repo>#<row>:<actor>`. The gate already ignored such a label and woke `ceo` to "record it as one", but nothing wrote the line, so the incident existed only if `ceo` typed it by hand and the class-repeat counter never saw it. The line is written once per row and actor (the tick reads the ledger first and skips a ref it holds, so a tick every few minutes is not many incidents), and a row whose history names no actor, or whose newest labeller's account is gone, is recorded with the actor `unknown` and not skipped. A history the gate could not read at all is still not an incident: the label is not honoured that tick and nothing is recorded, so an outage cannot forge a line. The order to `ceo` keeps its text and says the line is already written, so `ceo` takes the label off if it should not stand and does not type one; where the ledger could not be written the order asks for it by hand, as before. a11ign/agent-org#730, a11ign/a11ign#4885, #4879, epic #4437.

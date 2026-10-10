@@ -18,9 +18,11 @@
 //
 // THE REVERT IS `"provider": "none"` in the host's `triage` block. Routing then asks nobody and writes nothing, and delivery is byte-identical to before. Orders already held
 // still ride or flush, because a revert must not strand what was held under the old setting.
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { triageOrder, type Label, type Triage, type TriageDeps, type TriageOrder } from "./triage-provider.ts";
+import { pathToFileURL } from "node:url";
+import { flagValue, refuseUnknownFlags } from "./lib/cli-flags.ts";
+import { triageOrder, type Label, type Said, type Triage, type TriageDeps, type TriageOrder } from "./triage-provider.ts";
 
 /** The seats whose wakes cost the most and read the most digest material (the row names them). */
 export const TRIAGE_MANAGERS: readonly string[] = Object.freeze(["ceo", "product-manager", "orchestrator"]);
@@ -39,12 +41,12 @@ export const NEEDED_ACTION_PROXY = "a PROXY: the same cause was offered to the s
 
 /** `startFresh` is the gate's own mark of a row the chairman prioritised (#4524): the one structured chairman direction an order carries. */
 export type GateOrder = { session: string; causeKey: string; prompt: string; cause?: string; resume?: boolean; decision?: boolean; startFresh?: boolean };
-/** What was decided about one asked order: the ledger line the row calls `triage: { route, via, confidence }`. */
-export type Routing = { route: Label; via: Triage["via"]; confidence?: number };
+/** What was decided about one asked order: the ledger line the row calls `triage: { route, via, confidence }`. `reason` is carried when `via` is `none`: why nobody answered (a key that could not be read, a refusal, a timeout), which the outage cannot otherwise be diagnosed from. */
+export type Routing = { route: Label; via: Triage["via"]; confidence?: number; reason?: string };
 /** An order held for the digest: all that is needed to deliver it later, and what the provider said. */
 export type Held = { at: number; causeKey: string; session: string; prompt: string; triage: Routing };
-/** Every asked order, held or not -- the list the measurement reads. */
-export type Asked = { at: number; causeKey: string; session: string; triage: Routing; held: boolean; answers?: Record<string, string> };
+/** Every asked order, held or not -- the list the measurement reads. `answers` are the values composed into the route; `said` is what the provider answered to each question before any floor, so a floor can be tuned from a replay. */
+export type Asked = { at: number; causeKey: string; session: string; triage: Routing; held: boolean; answers?: Record<string, string>; said?: Record<string, Said> };
 /** What came of a held order: it was offered again after its delivery. `proxy` says what that does and does not show. */
 export type Outcome = { at: number; causeKey: string; session: string; deliveredAt: number; "needed-action": true; proxy: string };
 type DigestLine = { asked: Asked; prompt?: string } | { delivered: string[]; at: number; carrier: string } | { outcome: Outcome };
@@ -137,7 +139,7 @@ async function askSafely(order: GateOrder, deps: RouteDeps, now: number): Promis
   }
 }
 
-const routing = ({ route, via, confidence }: Triage): Routing => ({ route, via, ...(confidence === undefined ? {} : { confidence }) });
+const routing = ({ route, via, confidence, reason }: Triage): Routing => ({ route, via, ...(confidence === undefined ? {} : { confidence }), ...(via === "none" ? { reason } : {}) });
 
 /**
  * READ A HELD ORDER'S OUTCOME. An order that was held, delivered, and is offered AGAIN to the same seat inside {@link OUTCOME_WINDOW_MS} gets one `outcome` line: it still
@@ -175,7 +177,7 @@ export async function routeOrders<T extends GateOrder>(orders: readonly T[], dep
     if (answer === undefined) { deliver.push(order); continue; }
     const { causeKey, session, prompt } = order;
     const keep = answer.route !== "wake";
-    const asked: Asked = { at, causeKey, session, triage: routing(answer), held: keep, ...(answer.answers === undefined ? {} : { answers: answer.answers }) };
+    const asked: Asked = { at, causeKey, session, triage: routing(answer), held: keep, ...(answer.answers === undefined ? {} : { answers: answer.answers }), ...(answer.said === undefined ? {} : { said: answer.said }) };
     appendLine(deps.digestPath, { asked, ...(keep ? { prompt } : {}) });
     if (keep) held.push({ at, causeKey, session, prompt, triage: routing(answer) }); else deliver.push(order);
   }
@@ -254,3 +256,78 @@ export function settleRidden(carrier: string, ridden: readonly string[] | undefi
 }
 
 export const carriedKeys = (...rides: ReadonlyMap<string, readonly string[]>[]): Set<string> => new Set(rides.flatMap((r) => [...r.values()].flat()));
+
+// ---- THE DIGEST SHARE, READ (a11ign#4627 item 2) ----
+/** The share of a day's asks held for the digest under which the day is a ledger incident, once it holds {@link INCIDENT_MIN_ASKS} asks (chairman, a11ign#4627). */
+export const DIGEST_SHARE_FLOOR = 0.05;
+export const INCIDENT_MIN_ASKS = 50;
+const PERCENT = 100;
+
+/** One UTC day of `asked` lines: how many were asked, how many of those were held, and whether the day is an incident. */
+export type DigestDay = { day: string; asked: number; held: number; share: number; incident: boolean };
+
+/**
+ * THE DIGEST SHARE PER DAY, from the log's `asked` lines. A line that is not JSON, or an `asked` line without a time and a held flag, is counted and not guessed at: a share over lines
+ * that were skipped silently would look complete and be wrong by exactly those. A day is an incident under {@link DIGEST_SHARE_FLOOR} over at least {@link INCIDENT_MIN_ASKS} asks.
+ */
+export function digestShareByDay(text: string): { days: DigestDay[]; unreadable: number } {
+  const byDay = new Map<string, { asked: number; held: number }>();
+  let unreadable = 0;
+  for (const raw of text.split("\n").filter((line) => line.trim() !== "")) {
+    let line: Partial<DigestLine> & { asked?: Partial<Asked> };
+    try {
+      line = JSON.parse(raw);
+    } catch {
+      unreadable += 1;
+      continue;
+    }
+    if (typeof line !== "object" || line === null || !("asked" in line)) continue;
+    const { at, held } = line.asked ?? {};
+    if (typeof at !== "number" || !Number.isFinite(at) || typeof held !== "boolean") { unreadable += 1; continue; }
+    const day = new Date(at).toISOString().slice(0, 10);
+    const count = byDay.get(day) ?? { asked: 0, held: 0 };
+    count.asked += 1;
+    if (held) count.held += 1;
+    byDay.set(day, count);
+  }
+  const days = [...byDay].sort(([a], [b]) => (a < b ? -1 : 1)).map(([day, { asked, held }]): DigestDay => {
+    const share = held / asked;
+    return { day, asked, held, share, incident: asked >= INCIDENT_MIN_ASKS && share < DIGEST_SHARE_FLOOR };
+  });
+  return { days, unreadable };
+}
+
+const percent = (share: number): string => `${(share * PERCENT).toFixed(1)}%`;
+
+/** The reading a person reads: a line per day, and an incident line under it for each day that is one. */
+export function formatDigestShare({ days, unreadable }: ReturnType<typeof digestShareByDay>): string {
+  if (days.length === 0) return ["No asked orders in the triage digest log.", ...(unreadable === 0 ? [] : [`${unreadable} line(s) could not be read.`])].join("\n");
+  return [
+    "Triage digest share per day (UTC), held of asked:",
+    ...days.map((d) => `${d.day}  ${d.held} of ${d.asked}  ${percent(d.share)}`),
+    ...days.filter((d) => d.incident).map((d) => `LEDGER INCIDENT: ${d.day} wake-triage digest share ${percent(d.share)} (${d.held} of ${d.asked} asks) is under ${percent(DIGEST_SHARE_FLOOR)}.`),
+    ...(unreadable === 0 ? [] : [`${unreadable} line(s) could not be read and are not in this reading.`]),
+  ].join("\n");
+}
+
+async function main(): Promise<void> {
+  refuseUnknownFlags(["--log="], { entry: import.meta.url, command: "node src/triage-route.ts" });
+  let path = flagValue(process.argv, "log");
+  if (path === undefined) {
+    // Imported here and not at the top: the modules that know the host resolve its checkout on import, which the routing above must not need.
+    const { stateEntryPath } = await import("./host-config.ts");
+    path = digestPathFrom(stateEntryPath("wake-ledger"));
+  }
+  let text = "";
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (err) {
+    if ((err as { code?: string })?.code !== "ENOENT") {
+      process.stderr.write(`CANNOT ASK: the digest log could not be read (${(err as { code?: string })?.code ?? "unknown error"}). That is a failed read, NOT a day with no asks.\n`);
+      process.exit(2);
+    }
+  }
+  process.stdout.write(`${formatDigestShare(digestShareByDay(text))}\n`);
+}
+
+if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) await main();

@@ -15,7 +15,7 @@
 // THE KEY is read by `readKey(path)` at call time, once per process, and lives only in the closure that builds the request header. It is never printed, logged or
 // returned; a key that cannot be read is recorded as the reason `triage-unavailable` and nothing else (not the error's text, which names the path).
 import { readFileSync } from "node:fs";
-import { decide, type Decision, type DecisionUse, type Question } from "./decision-provider.ts";
+import { decide, type Answer, type Decision, type DecisionUse, type Question } from "./decision-provider.ts";
 
 export const JEV_URL = "https://api.typesafe.ai/v1/systemone";
 export const JEV_MODEL = "jev-latest";
@@ -57,8 +57,13 @@ export type TriageOrder = {
   cause?: string; causeKey?: string; session?: string;
   lastDeliveredMinutesAgo?: number | null; mainRed?: boolean; chairmanDirection?: boolean;
 };
-/** `answers` are the five yes/no values composed into `route`, so a held order's log line says WHY it was held. */
-export type Triage = { route: Label; via: "jev" | "none"; confidence?: number; reason: string; answers?: Record<string, string> };
+/** What the provider said to one question, before any floor: its `value` and `confidence`. Each is absent when the provider gave none (a refusal, a malformed answer). */
+export type Said = { value?: string; confidence?: number };
+/**
+ * `answers` are the five yes/no values composed into `route`, so a held order's log line says WHY it was held; `said` is what the provider actually answered to each, which differs from
+ * `answers` wherever a floor replaced it with a fallback, so a floor can be tuned from a replay.
+ */
+export type Triage = { route: Label; via: "jev" | "none"; confidence?: number; reason: string; answers?: Record<string, string>; said?: Record<string, Said>; probabilities?: Readings };
 /** The only fields of an order that are ever sent: a whitelist, so a field added to {@link TriageOrder} later is not sent by accident. */
 const STATE_FIELDS = ["cause", "causeKey", "session", "lastDeliveredMinutesAgo", "mainRed", "chairmanDirection"] as const;
 /** What is true of THIS process; a test passes a fresh one. */
@@ -170,21 +175,74 @@ function weakest(decision: Decision): number | undefined {
   return given.length === 0 ? undefined : Math.min(...given);
 }
 
+/** What the provider said to every question, as the raw value and confidence it gave and not the fallback that may have replaced it. */
+function saidOf(decision: Decision): Record<QuestionName, Said> {
+  return Object.fromEntries(QUESTION_NAMES.map((name) => {
+    const { value, asked, confidence } = decision.answers[name];
+    // `asked` is the provider's value when a floor replaced it; with a confidence and no `asked`, `value` is the provider's own. With neither, nothing came back.
+    const raw = asked ?? (confidence === undefined ? undefined : value);
+    return [name, { ...(raw === undefined ? {} : { value: String(raw) }), ...(confidence === undefined ? {} : { confidence }) }];
+  })) as Record<QuestionName, Said>;
+}
+
+// THE THRESHOLDS (#4889, the chairman's starting values, to be calibrated from the probabilities `probabilities` now carries). The composition reads P(yes), never the floored value:
+// a flat floor over five answers meant an order was held only when ALL of them cleared 0.7 (p >= 0.85 for a binary choice), so about 1 in 200 digested. Each is a probability, and the
+// price of being wrong is low: a digest drops nothing, it is delivered with the seat's next order or within the hour.
+/** A digest needs P(informational only) of at least this... */
+export const DIGEST_MIN_P_INFORMATIONAL = 0.65;
+/** ...AND P(asks something only this seat can answer) BELOW this. */
+export const DIGEST_MAX_P_ASKS = 0.3;
+/** ...AND P(names a red main) BELOW this, and P(names a chairman direction) BELOW this: these only ever force a wake. */
+export const DIGEST_MAX_P_GUARD = 0.2;
+/** A repeat of a delivery the state holds inside the window digests at P(repeat) of at least this (the state's own age is the corroboration). */
+export const DIGEST_MIN_P_REPEAT = 0.5;
+
+/** P(yes) per question, or `null` for a distribution the provider did not give or that could not be read: "not given", never a probability of zero. */
+export type Readings = Readonly<Record<QuestionName, number | null>>;
+
+/** The reason an order wakes: the first condition of a digest that its readings do not meet. `null` when it meets them all. */
+function whyNotDigest(p: Readings, deciding: readonly QuestionName[]): string | null {
+  const limits: Record<string, number> = { "names-red-main": DIGEST_MAX_P_GUARD, "names-chairman-direction": DIGEST_MAX_P_GUARD, "asks-this-seat": DIGEST_MAX_P_ASKS };
+  for (const name of deciding) {
+    const value = p[name];
+    if (value === null) return `${name} was not given a probability`;
+    if (name === "informational-only" ? value < DIGEST_MIN_P_INFORMATIONAL : value >= limits[name]) return `${name} is at p=${value}`;
+  }
+  return null;
+}
+
 /**
- * THE COMPOSITION, in code and over the answers alone. A red main or a chairman direction always wakes; a repeat of a delivery inside {@link REPEAT_WINDOW_MINUTES}, or an event that is
- * informational only and asks nothing of this seat, is held for the digest; anything else wakes. `repeat` counts only when the state itself holds a delivery inside the window: an
- * answer the facts contradict is not a reason to hold an order. There is no `drop`: held is held.
+ * THE COMPOSITION, in code and over P(yes) alone (#4889). The questions that decide are the only ones read, and a question that does not change the outcome cannot veto it.
+ * DIGEST when P(informational only) >= {@link DIGEST_MIN_P_INFORMATIONAL}, P(asks this seat) < {@link DIGEST_MAX_P_ASKS}, and neither P(red main) nor P(chairman direction) reaches
+ * {@link DIGEST_MAX_P_GUARD}; or when the state holds a delivery of this cause inside {@link REPEAT_WINDOW_MINUTES} and P(repeat) >= {@link DIGEST_MIN_P_REPEAT} with the same two guards
+ * clear (an answer the facts contradict is not a reason to hold an order). Otherwise WAKE; a probability not given is never read as "no". There is no `drop`: held is held.
  */
-export function compose(answers: Readonly<Record<QuestionName, string>>, repeatAgeMinutes: number | null | undefined): { route: "wake" | "digest"; reason: string } {
-  const yes = (name: QuestionName): boolean => answers[name] === "yes";
-  if (yes("names-red-main")) return { route: "wake", reason: "it names a red main" };
-  if (yes("names-chairman-direction")) return { route: "wake", reason: "it carries a chairman direction" };
-  if (yes("repeat") && typeof repeatAgeMinutes === "number" && repeatAgeMinutes < REPEAT_WINDOW_MINUTES) {
+export function compose(p: Readings, repeatAgeMinutes: number | null | undefined): { route: "wake" | "digest"; reason: string } {
+  const guards = ["names-red-main", "names-chairman-direction"] as const;
+  const guarded = whyNotDigest(p, guards);
+  if (guarded !== null) return { route: "wake", reason: `${guarded}, so it is not held` };
+  if (typeof repeatAgeMinutes === "number" && repeatAgeMinutes < REPEAT_WINDOW_MINUTES && (p.repeat ?? 0) >= DIGEST_MIN_P_REPEAT) {
     return { route: "digest", reason: `a repeat of one delivered ${repeatAgeMinutes} minute(s) ago` };
   }
-  if (yes("informational-only") && !yes("asks-this-seat")) return { route: "digest", reason: "informational only, and it asks nothing of this seat" };
-  return { route: "wake", reason: "nothing says it can wait" };
+  const why = whyNotDigest(p, ["informational-only", "asks-this-seat"]);
+  if (why !== null) return { route: "wake", reason: `${why}, so nothing says it can wait` };
+  return { route: "digest", reason: "informational only, and it asks nothing of this seat" };
 }
+
+/**
+ * P(yes) of one answer. The provider's distribution when it gave one (a distribution that does not name `yes` is a probability of zero: it put nothing there); otherwise what its `choice` and
+ * `confidence` say, since a binary choice's confidence is `(p_max - 0.5) / 0.5`; and `null`, "not given" and never zero, when it gave neither a distribution nor a readable choice.
+ */
+function pYes({ probabilities, confidence, value, asked }: Answer): number | null {
+  if (probabilities !== undefined) return probabilities.yes ?? 0;
+  const choice = asked ?? (confidence === undefined ? undefined : value);
+  if (confidence === undefined || (choice !== "yes" && choice !== "no")) return null;
+  const pMax = 0.5 + confidence / 2;
+  return choice === "yes" ? pMax : 1 - pMax;
+}
+
+const readingsOf = (decision: Decision): Record<QuestionName, number | null> =>
+  Object.fromEntries(QUESTION_NAMES.map((name) => [name, pYes(decision.answers[name])])) as Record<QuestionName, number | null>;
 
 /**
  * Where should this order go, according to the host's declared triage provider?
@@ -200,7 +258,7 @@ export async function triageOrder(order: TriageOrder, deps: TriageDeps): Promise
   const state = Object.fromEntries(STATE_FIELDS.filter((field) => order[field] !== undefined).map((field) => [field, order[field]]));
   const decision = await decide("wake-triage", state, QUESTIONS, { ...deps, switches: { "wake-triage": true, ...deps.switches } });
   if (decision.via === "none") return wake("none", decision.reason ?? NO_PROVIDER);
-  const answers = valuesOf(decision);
-  const { route, reason } = compose(answers, order.lastDeliveredMinutesAgo);
-  return { route, via: "jev", confidence: weakest(decision), reason: `jev: ${reason}`, answers };
+  const probabilities = readingsOf(decision);
+  const { route, reason } = compose(probabilities, order.lastDeliveredMinutesAgo);
+  return { route, via: "jev", confidence: weakest(decision), reason: `jev: ${reason}`, answers: valuesOf(decision), said: saidOf(decision), probabilities };
 }

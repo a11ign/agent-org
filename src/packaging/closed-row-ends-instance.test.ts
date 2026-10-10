@@ -13,7 +13,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { claimStallsNow, claimStallTick, closedClaimsNow, closedClaimsWhenWorkerListed, readOpenRowFollowUps, GH_READS,
-  closedClaimLabelsWhenListed, closedClaimDebris, stripClosedClaims } from "../work-gate.ts";
+  closedClaimLabelsWhenListed, closedClaimDebris, stripClosedClaims, declaredTrackerRepos } from "../work-gate.ts";
 import { labelsToStrip as labelsToStripOfLeaf, stripClaimLabelsVia } from "../claim-label-strip.ts";
 import { labelsToStrip as labelsToStripOfCloser } from "../close-rows-for-merged-pr.ts";
 import { performRelease } from "../wake.ts";
@@ -278,10 +278,10 @@ const stale = (number: number, ...names: string[]) => ({ number, labels: names.m
 const DEBRIS = ["in-progress", "started", "session:worker-9", "was-ready", "answer:ceo"];
 
 /** One tick's act: the `gh issue edit` calls it made, what it said on its log, and how many rows it reports stripped. */
-function stripTick(asked: Parameters<typeof stripClosedClaims>[0]) {
+function stripTick(asked: Parameters<typeof stripClosedClaims>[0] | { rows: unknown[] | null; agents: Agent[]; }) {
   const edits: string[][] = [];
   const said: string[] = [];
-  const stripped = stripClosedClaims(asked, { gh: (args) => { edits.push(args); return ""; }, say: (l) => { said.push(l); }, repo: "a11ign/a11ign" });
+  const stripped = stripClosedClaims(asked && { unread: [], ...asked } as never, { gh: (args) => { edits.push(args); return ""; }, say: (l) => { said.push(l); }, repo: "a11ign/a11ign" });
   return { edits, said, stripped };
 }
 const removed = (args: string[]) => args.flatMap((a, i) => (args[i - 1] === "--remove-label" ? [a] : []));
@@ -317,7 +317,7 @@ const closed = (number: number, holder: string, closedAt: string | undefined) =>
 const tick = (rows: ReturnType<typeof closed>[]) => {
   const edits: string[][] = [];
   const said: string[] = [];
-  const stripped = stripClosedClaims({ rows, agents: org("worker-3900") },
+  const stripped = stripClosedClaims({ rows, unread: [], agents: org("worker-3900") },
     { gh: (args) => { edits.push(args); return ""; }, say: (l) => { said.push(l); }, repo: "a11ign/a11ign", nowMs: TICK });
   return { edits, said, stripped };
 };
@@ -336,8 +336,12 @@ test("#3900 (2) the same seat's row closed 1 hour ago is KEPT and named", () => 
   assert.ok(said.some((l) => /#3164 keeps its claim labels: ceo is listed/.test(l)), said.join("|"));
 });
 
-test("#3900 (3) a LISTED worker's row closed 3 days ago is KEPT: the grace is for standing seats only", () => {
-  const { edits, said, stripped } = tick([closed(3900, "worker-3900", closedAgo(72))]);
+test("#3900 (3) a LISTED worker that is WORKING keeps a row closed 3 days ago: the standing seat's day does not apply to it", () => {
+  const edits: string[][] = [];
+  const said: string[] = [];
+  const agents = [...org(), { label: "worker-3900", status: "working" }];
+  const stripped = stripClosedClaims({ rows: [closed(3900, "worker-3900", closedAgo(72))], unread: [], agents },
+    { gh: (args) => { edits.push(args); return ""; }, say: (l) => { said.push(l); }, repo: "a11ign/a11ign", nowMs: TICK });
   assert.deepEqual([edits, stripped], [[], 0]);
   assert.ok(said.some((l) => /#3900 keeps its claim labels: worker-3900 is listed/.test(l)), said.join("|"));
 });
@@ -347,9 +351,100 @@ test("#3900 (4) a missing or unparseable `closedAt` is KEPT: fail toward not str
   assert.deepEqual([edits, stripped], [[], 0]);
 });
 
+// --- agent-org#745: AN IDLE PANE ON A CLOSED ROW LOSES ITS CLAIM LABELS AFTER TEN MINUTES, IN EITHER TRACKER ------------------------------------------------
+
+const minutesAgo = (minutes: number) => new Date(TICK - minutes * 60_000).toISOString();
+/** One tick over `rows`, with `worker-745` listed in `status` beside the standing panes. */
+const workerTick = (rows: ReturnType<typeof closed>[], status: string, holder = "worker-745") => {
+  const edits: string[][] = [];
+  const said: string[] = [];
+  const stripped = stripClosedClaims({ rows, unread: [], agents: [...org(), { label: holder, status }] },
+    { gh: (args) => { edits.push(args); return ""; }, say: (l) => { said.push(l); }, repo: "a11ign/a11ign", nowMs: TICK });
+  return { edits, said, stripped };
+};
+
+test("#745 (1) POSITIVE CONTROL: a row closed 11 minutes ago, held by a LISTED IDLE worker-<n>, is stripped", () => {
+  const { edits, stripped, said } = workerTick([closed(745, "worker-745", minutesAgo(11))], "idle");
+  assert.equal(stripped, 1);
+  assert.deepEqual(removed(edits[0]), ["in-progress", "started", "session:worker-745"]);
+  assert.ok(!said.some((l) => /keeps its claim labels/.test(l)), said.join("|"));
+  assert.equal(workerTick([closed(745, "worker-745", minutesAgo(11))], "done").stripped, 1, "a DONE pane is between turns as an idle one is");
+});
+
+test("#745 (2) NEGATIVE CONTROLS: the same row 2 minutes old is kept, and so is an 11-minute one whose pane is WORKING or BLOCKED", () => {
+  for (const [at, status] of [[2, "idle"], [2, "done"], [11, "working"], [11, "blocked"], [300, "working"]] as const) {
+    const { edits, stripped, said } = workerTick([closed(745, "worker-745", minutesAgo(at))], status);
+    assert.deepEqual([edits, stripped], [[], 0], `${at} min, ${status}`);
+    assert.ok(said.some((l) => /#745 keeps its claim labels: worker-745 is listed/.test(l)), said.join("|"));
+  }
+});
+
+test("#745 (3) the grace is ten minutes to the millisecond, and a missing, unparseable or FUTURE `closedAt` still holds", () => {
+  const at = (ms: number) => new Date(TICK - ms).toISOString();
+  assert.equal(workerTick([closed(1, "worker-745", at(10 * 60_000))], "idle").stripped, 0, "exactly ten minutes is still inside");
+  assert.equal(workerTick([closed(1, "worker-745", at(10 * 60_000 + 1000))], "idle").stripped, 1);
+  for (const closedAt of [undefined, "not a date", at(-60_000)]) assert.equal(workerTick([closed(1, "worker-745", closedAt)], "idle").stripped, 0, String(closedAt));
+});
+
+test("#745 (4) a status herdr gave that is neither idle nor done is not between turns: `unknown` and a missing status hold", () => {
+  assert.equal(workerTick([closed(1, "worker-745", minutesAgo(60))], "unknown").stripped, 0);
+  const debris = closedClaimDebris([closed(1, "worker-745", minutesAgo(60))], [{ label: "worker-745" }], TICK);
+  assert.deepEqual([debris.strip, debris.kept.map((k) => k.holders)], [[], [["worker-745"]]]);
+});
+
+test("#745 (5) a row holding BOTH a held pane and a released one keeps its labels; a standing seat's day is unchanged", () => {
+  const row = { ...stale(9, "in-progress", "session:worker-745", "session:worker-746"), closedAt: minutesAgo(30) };
+  const agents = [...org(), { label: "worker-745", status: "idle" }, { label: "worker-746", status: "working" }];
+  assert.deepEqual(closedClaimDebris([row], agents, TICK).kept, [{ number: 9, holders: ["worker-746"] }]);
+  assert.equal(workerTick([closed(3164, "ceo", minutesAgo(30))], "idle").stripped, 0, "ceo, idle, 30 min: a seat's grace is a day");
+  assert.equal(workerTick([closed(3164, "ceo", closedAgo(25))], "idle").stripped, 1);
+});
+
+test("#745 (6) the read asks EVERY declared tracker, aimed at it, and a second tracker's row is stripped IN THAT REPOSITORY", () => {
+  const asked: { args: string[]; repo: string | undefined }[] = [];
+  const run = (args: string[], repo?: string) => {
+    asked.push({ args, repo });
+    return JSON.stringify(repo === "a11ign/agent-org" ? [{ ...closed(745, "worker-745", minutesAgo(11)) }] : [closed(4437, "worker-9", minutesAgo(1))]);
+  };
+  const got = closedClaimLabelsWhenListed([...org(), { label: "worker-745", status: "idle" }, { label: "worker-9", status: "idle" }], run, [undefined, "a11ign/agent-org"])!;
+  assert.deepEqual(asked.map((a) => a.repo), [undefined, "a11ign/agent-org"], "the home tracker unaimed, as ever; the other aimed");
+  assert.deepEqual(got.unread, []);
+  assert.deepEqual(got.rows?.map((r) => [r.number, r.repo]), [[4437, undefined], [745, "a11ign/agent-org"]]);
+  const edits: string[][] = [];
+  const said: string[] = [];
+  const stripped = stripClosedClaims(got, { gh: (args) => { edits.push(args); return ""; }, say: (l) => { said.push(l); }, repo: "a11ign/a11ign", nowMs: TICK });
+  assert.equal(stripped, 1);
+  assert.deepEqual(edits[0].slice(0, 5), ["issue", "edit", "745", "--repo", "a11ign/agent-org"], "the strip names the repository it acts in");
+  assert.ok(said.some((l) => /closed #4437 keeps its claim labels: worker-9/.test(l)), "the home row's line is as it was");
+  assert.deepEqual(closedClaimDebris([{ ...closed(5, "worker-9", minutesAgo(30)), repo: "a11ign/agent-org" }], [{ label: "worker-9", status: "idle" }], TICK).strip.map((s) => s.repo), ["a11ign/agent-org"]);
+});
+
+test("#745 (7) a refused read stays null, never 'no debris': one tracker's refusal is named and the other's rows are still decided", () => {
+  const agents = org("worker-745");
+  const rows = [closed(745, "worker-9", minutesAgo(11))];
+  const refusing = (bad: (repo: string | undefined) => boolean) => (_args: string[], repo?: string) => { if (bad(repo)) throw new Error("HTTP 502"); return JSON.stringify(rows); };
+  const trackers = [undefined, "a11ign/agent-org"];
+  const all = closedClaimLabelsWhenListed(agents, refusing(() => true), trackers)!;
+  assert.equal(all.rows, null, "every read refused: null, and not []");
+  const said: string[] = [];
+  assert.equal(stripClosedClaims(all, { gh: () => { throw new Error("must not be called"); }, say: (l) => { said.push(l); } }), 0);
+  assert.match(said.join("|"), /NOT read.*refused/);
+  const part = closedClaimLabelsWhenListed(agents, refusing((repo) => repo === "a11ign/agent-org"), trackers)!;
+  assert.deepEqual([part.rows?.length, part.unread.length], [1, 1], "the home tracker's row is read; the second tracker is named as unread");
+  assert.equal(closedClaimLabelsWhenListed(agents, () => "{}", trackers)!.rows, null, "a non-list answer is a refusal too");
+});
+
+test("#745 (8) the follow-ups' wave reads each declared tracker once, from the one listing", () => {
+  const trackers = declaredTrackerRepos();
+  assert.equal(trackers[0], undefined, "the home tracker leads, unaimed");
+  const { batches } = followUps(org("worker-3535"), (args) => (args.includes("number,labels,closedAt") ? JSON.stringify([stale(5, "in-progress")]) : "[]"));
+  const asked = batches.flat().filter((c) => c.args.includes("number,labels,closedAt"));
+  assert.deepEqual(asked.map((c) => c.repo), trackers, "one read per tracker the project declares, and no tracker twice");
+});
+
 test("#3883 (4) NOT ASKED and UNREAD are said as such and strip NOTHING -- absence of a listing is not an unlisted holder", () => {
   const notAsked = stripTick(null);
-  const unread = stripTick({ rows: null, agents: org() });
+  const unread = stripTick({ rows: null, unread: ["a11ign/a11ign"], agents: org() });
   for (const t of [notAsked, unread]) assert.deepEqual([t.edits, t.stripped], [[], 0]);
   assert.match(notAsked.said.join(), /NOT read.*listing was missing or incomplete/);
   assert.match(unread.said.join(), /NOT read.*refused/);
@@ -358,7 +453,7 @@ test("#3883 (4) NOT ASKED and UNREAD are said as such and strip NOTHING -- absen
 test("#3883 (5) a failed edit is said, counted as NOT stripped, and does not stop the next row", () => {
   const said: string[] = [];
   const gh = (args: string[]) => { if (args[2] === "7") throw new Error("HTTP 502"); return ""; };
-  const stripped = stripClosedClaims({ rows: [stale(7, "in-progress"), stale(8, "in-progress")], agents: org() }, { gh, say: (l) => { said.push(l); }, repo: "r/r" });
+  const stripped = stripClosedClaims({ rows: [stale(7, "in-progress"), stale(8, "in-progress")], unread: [], agents: org() }, { gh, say: (l) => { said.push(l); }, repo: "r/r" });
   assert.equal(stripped, 1);
   assert.ok(said.some((l) => /#7 closed but COULD NOT STRIP in-progress -- HTTP 502/.test(l)));
   assert.ok(said.some((l) => /#8 stripped in-progress/.test(l)));
@@ -370,19 +465,19 @@ test("#3883 (6) the read: asked once, labels only, closed + in-progress, and ONL
   assert.equal(closedClaimLabelsWhenListed(null, run), null);
   assert.equal(closedClaimLabelsWhenListed([{ label: "worker-9", status: "idle" }], run), null, "neither standing pane listed");
   assert.equal(seen.length, 0, "no call made for either");
-  const asked = closedClaimLabelsWhenListed(org(), run)!;
+  const asked = closedClaimLabelsWhenListed(org(), run, [undefined])!;
   assert.deepEqual(asked.rows, [stale(1, "in-progress")]);
   assert.equal(seen.length, 1);
   assert.deepEqual(seen[0].slice(0, 6), ["issue", "list", "--state", "closed", "--label", "in-progress"]);
   assert.equal(seen[0][seen[0].indexOf("--json") + 1], "number,labels,closedAt", "no comments: the page is the debris and nothing else");
-  assert.deepEqual(closedClaimLabelsWhenListed(org(), () => { throw new Error("502"); })?.rows, null, "a refusal is null, never []");
-  assert.deepEqual(closedClaimLabelsWhenListed(org(), () => "{}")?.rows, null);
+  assert.deepEqual(closedClaimLabelsWhenListed(org(), () => { throw new Error("502"); }, [undefined])?.rows, null, "a refusal is null, never []");
+  assert.deepEqual(closedClaimLabelsWhenListed(org(), () => "{}", [undefined])?.rows, null);
 });
 
 test("#3883 (7) the follow-ups' wave makes the read once, from the SAME listing it hands #3535 (a second herdr read would be a second answer)", () => {
   const { batches } = followUps(org("worker-3535"), (args) => (args.includes("number,labels,closedAt") ? JSON.stringify([stale(5, "in-progress")]) : "[]"));
   const asked = batches.flat().filter((c) => c.args.includes("--state") && c.args.includes("closed") && c.args.includes("in-progress") && c.args.includes("number,labels,closedAt"));
-  assert.equal(asked.length, 1);
+  assert.equal(asked.length, declaredTrackerRepos().length, "once per declared tracker (agent-org#745), never twice for one");
   const calls: Call[] = [];
   const got = readOpenRowFollowUps(OPEN_ROWS, ((args: string[]) => { calls.push({ args, repo: undefined }); return "[]"; }) as never, undefined as never, undefined as never) as { closedClaimLabels: unknown };
   assert.equal(got.closedClaimLabels, null, "a test's `gh` stub carries no herdr listing: not asked, so not 'unlisted'");

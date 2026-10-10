@@ -121,7 +121,7 @@ import { answersOwedBy, ANSWER_PREFIX } from "./waiting-condition.ts";
 // carries above.
 import { assertNoLeakInArgv } from "./lib/leak-patterns.ts";
 // #4641: a closed build row whose Done-when named a live reading gets its verify row filed in the same turn.
-import { fileVerifyRow, verifyMarker, type BuildRow, type VerifyEffects, type VerifyOutcome } from "./verify-row.ts";
+import { fileVerifyRow, verifyMarker, type BuildRow, type DeclinedItem, type VerifyEffects, type VerifyOutcome } from "./verify-row.ts";
 
 export const EXIT = { DONE: 0, COULD_NOT_CLOSE: 1, CANNOT_ASK: 2, STATUS_NOT_MOVED: 3 };
 
@@ -767,19 +767,29 @@ export function liveReadBuildRow(n: number, repo: string): BuildRow | null {
   }
 }
 
-/** #4641: THE LINE EACH OUTCOME PRINTS. `none` prints nothing (most rows name no live reading), and a link that failed is named beside the row it was filed. */
+/** The clause that names what a verify row did NOT take and why (a seat's act and another row's outcome are not a reading), so a close that filed none says it plainly. */
+function declinedClause(declined: DeclinedItem[] | undefined): string {
+  if (!declined?.length) return "";
+  const named = declined.map((item) => `"${item.text}" (${item.kind === "seat-act" ? "a seat's act" : "another row's outcome"}: \`${item.evidence}\`)`);
+  return ` Not taken: ${named.join("; ")} -- no engineer can finish it, so it is not a verify row's.`;
+}
+
+/**
+ * #4641: THE LINE EACH OUTCOME PRINTS. `none` prints nothing for a row with no live reading AND no item a verify row declined (most rows), and says why when it declined one
+ * (a11ign/agent-org#719: "none filed" is a statement the close makes, never a silence). A link that failed is named beside the row it was filed.
+ */
 export function verifyOutcomeLine(n: number, outcome: VerifyOutcome): string | null {
-  if (outcome.kind === "none") return null;
+  if (outcome.kind === "none") return outcome.declined?.length ? `VERIFY-ROW: #${n} NONE FILED --${declinedClause(outcome.declined)}` : null;
   if (outcome.kind === "already") return `VERIFY-ROW: #${n} already has verify row #${outcome.number} -- none filed.`;
   if (outcome.kind === "failed") return `VERIFY-ROW: #${n} NOT FILED -- ${outcome.reason}.`;
   const problems = outcome.problems.length ? ` BUT ${outcome.problems.join("; ")}` : "";
-  return `VERIFY-ROW: #${n} verify row #${outcome.number} FILED (Not-before ${outcome.plan.notBefore})${problems}.`;
+  return `VERIFY-ROW: #${n} verify row #${outcome.number} FILED (Not-before ${outcome.plan.notBefore})${problems}.${declinedClause(outcome.declined)}`;
 }
 
 /**
  * #4641: FILES THE VERIFY ROW OF EVERY ROW THIS RUN CLOSED (or found closed by this merge), and returns the rows with a live reading whose verify row could not be filed, so the exit says so --
  * a lost verify row is a build the epic never learns the reading of. A row that cannot be READ is named `NOT CHECKED` and does not fail the job: most rows name no reading, and a read
- * hiccup must not turn every merge red. The job is idempotent, so its re-run files what failed.
+ * hiccup must not turn every merge red. The job is idempotent, so its re-run files what failed. BOTH closing paths call this (a11ign/agent-org#719): the sweep is the one a push takes.
  * @param {number[]} closed @param {{ prNumber: string, mergedAt: string }} ctx
  * @param {{ read: (n: number) => BuildRow | null, effects: VerifyEffects, say: (line: string) => void }} deps
  * @returns {number[]}
@@ -900,7 +910,7 @@ function main() {
   // #4641: the verify row of each build row that left the open population at this merge, filed in the same turn.
   const closedHere = [...plan.close, ...plan.already].map((row) => row.number).filter((n) => !result.failed.includes(n));
   const lost = prMergedAt === null ? [] : fileVerifyRowsFor(closedHere, { prNumber: prRef, mergedAt: prMergedAt },
-    { read: (n) => liveReadBuildRow(n, REPO), effects: liveVerifyEffects(REPO), say: (line) => console.log(line) });
+    { read: (n) => liveReadBuildRow(n, REPO), effects: liveVerifyEffects(REPO), say: (line) => console.log(`CLOSE-ROWS: ${line}`) });
   if (lost.length) console.error(`CLOSE-ROWS: no verify row for ${lost.length} closed build row(s): ${lost.map((n) => `#${n}`).join(" ")} -- the job is idempotent, so a re-run files it.`);
   exitAfterSweep(code === EXIT.DONE && lost.length ? EXIT.COULD_NOT_CLOSE : code);
 }

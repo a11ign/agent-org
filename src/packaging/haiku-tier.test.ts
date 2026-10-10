@@ -14,7 +14,8 @@ import { haikuTierProfile, readHaikuSwitch, agentArgs, AUTO_COMPACT_TRIGGER_MARG
   HAIKU_PROMPT_CEILING_TOKENS, HAIKU_MODEL_ID, HAIKU_TIER_LABEL, DECLARED_CLAUDE_MODELS, profileFor, HAIKU_TIER_SWITCH_PATH, AUTOCOMPACT_WINDOW_TOKENS, type TierProfile } from "../worker-profile.ts";
 import { spawnInvocation, spawnClaimer } from "../wake.ts";
 import { repriceEvents, type TraceEvent } from "../trace/store.ts";
-import { closedRowOf, measuresOf, reportLines, stopRule, summarise, firstHaikuStart, median, MIN_RATE_ROWS, type RowMeasures } from "../trace/haiku-tier-report.ts";
+import { closedRowOf, closedRowsArgs, readClosedRows, windowStartOf, measuresOf, reportLines, stopRule, summarise, firstHaikuStart, median, CLOSED_ROWS_LIMIT, MIN_RATE_ROWS,
+  type GhRunner, type RowMeasures } from "../trace/haiku-tier-report.ts";
 
 const SCRATCH = mkdtempSync(join(tmpdir(), "haiku-tier-"));
 after(() => { rmSync(SCRATCH, { recursive: true, force: true }); });
@@ -235,4 +236,71 @@ test("closedRowOf still takes a nameWithOwner where one is given, takes no pull 
   assert.deepEqual(closedRowOf(withOwner).pr, { repo: "a11ign/lab", number: 70 });
   assert.equal(closedRowOf({ number: 8, closedAt: new Date(T0).toISOString() }).pr, null);
   assert.throws(() => closedRowOf({ ...withOwner, closedByPullRequestsReferences: [{ number: 70, repository: { name: "lab" } }] }), /#7: .*no repository.*keys: name/);
+});
+
+// --- the read of the closed rows (agent-org#707) -------------------------------------------------------------------
+
+/** A `gh issue list` that behaves as `gh` does: the closed rows (`number` is creation order), those matching a `closed:<from>..<to>` search if one is given, then the NEWEST CREATED `--limit` of them. */
+function fakeGh(all: { number: number; closedAt: string }[]): GhRunner & { calls: string[][] } {
+  const run = (args: string[]): string => {
+    run.calls.push(args);
+    const value = (flag: string): string | undefined => args[args.indexOf(flag) + 1];
+    const range = value("--search")?.match(/^closed:(\S+)\.\.(\S+)$/);
+    const inRange = (row: { closedAt: string }): boolean => !range || (Date.parse(row.closedAt) >= Date.parse(range[1]) && Date.parse(row.closedAt) <= Date.parse(range[2]));
+    return JSON.stringify(all.filter(inRange).sort((a, b) => b.number - a.number).slice(0, Number(value("--limit"))));
+  };
+  run.calls = [] as string[][];
+  return run;
+}
+
+const UNFILTERED_READ = ["issue", "list", "--state", "closed", "--limit", "300", "--json", "number,labels,closedAt,closedByPullRequestsReferences"];
+const EARLY = 10;
+/** Row #10 was opened long ago and closed five hours into the window; #20 was closed ten hours BEFORE it; 350 newer rows were all closed inside it, so the 300 newest created never reach #10. */
+const GITHUB = [
+  ghIssue({ number: EARLY, haiku: true, closedAt: T0 + 5 * HOUR }),
+  ghIssue({ number: 20, haiku: false, closedAt: T0 - 10 * HOUR }),
+  ...Array.from({ length: 350 }, (_, i) => ghIssue({ number: 5000 + i, haiku: false, closedAt: T0 + (i % 40) * HOUR })),
+];
+
+test("a row opened before the 300 newest created and closed inside the window is read, and the report counts it (agent-org#707)", () => {
+  const gh = fakeGh(GITHUB);
+  const numbers = (list: string): number[] => (JSON.parse(list) as { number: number }[]).map((issue) => issue.number);
+  // NEGATIVE CONTROL: the read this replaced, on the same rows, never reaches #10; it is what made the report short by the rows opened earliest.
+  assert.ok(!numbers(fakeGh(GITHUB)(UNFILTERED_READ)).includes(EARLY), "the fixture must put #10 past the 300 newest created, or this test proves nothing");
+  const rowsRead = readClosedRows(T0, T0 + 100 * HOUR, gh);
+  assert.ok(rowsRead.some((row) => row.number === EARLY), "#10 closed in the window must be read");
+  assert.ok(!rowsRead.some((row) => row.number === 20), "a row closed before the window is not read");
+  assert.equal(rowsRead.length, 351);
+  assert.equal(gh.calls.length, 1, "one read where the window holds fewer rows than the limit");
+  const evts = repriceEvents(events({ number: EARLY, haiku: true, closedAt: T0 + 5 * HOUR }) as unknown as TraceEvent[]);
+  const lines = reportLines({ closed: rowsRead, events: evts, now: T0 + 100 * HOUR });
+  assert.match(lines[lines.indexOf(`${HAIKU_TIER_LABEL} rows:`) + 1], /n=1 closed \(1 with a merged pull request/);
+});
+
+test("the read selects by closing time: the closed: range carries the window's start and end to the second", () => {
+  const args = closedRowsArgs(T0 + 1500, T0 + HOUR + 999);
+  assert.equal(args[args.indexOf("--search") + 1], "closed:2026-10-10T00:00:01Z..2026-10-10T01:00:00Z");
+  assert.equal(args[args.indexOf("--limit") + 1], String(CLOSED_ROWS_LIMIT));
+  assert.deepEqual(args.slice(0, 2), ["issue", "list"]);
+});
+
+test("the window opens at the earliest Haiku-model turn the store holds, never a Sonnet turn or another kind of event", () => {
+  const turn = (id: string, at: number, model: string) => ({ id, kind: "turn", source: "transcript", at, session: "s", row: 1, pr: null, repo: null, model });
+  const held = [turn("a", T0 + 3 * HOUR, HAIKU_MODEL_ID), turn("b", T0 + HOUR, HAIKU_MODEL_ID), turn("c", T0, "claude-sonnet-5-5"), { ...turn("d", T0 - HOUR, HAIKU_MODEL_ID), kind: "compaction" }];
+  assert.equal(windowStartOf(held as unknown as TraceEvent[]), T0 + HOUR);
+  assert.equal(windowStartOf([held[2]] as unknown as TraceEvent[]), null);
+  assert.equal(windowStartOf([]), null);
+});
+
+test("a read that fills the limit is halved and read again, so a window of more rows than the limit is whole; one second that fills it throws", () => {
+  const light = (number: number, closedAt: number) => ({ number, labels: [], closedAt: new Date(closedAt).toISOString() });
+  const many = Array.from({ length: CLOSED_ROWS_LIMIT + 500 }, (_, i) => light(i + 1, T0 + Math.floor((i * 10 * HOUR) / (CLOSED_ROWS_LIMIT + 500))));
+  const gh = fakeGh(many);
+  const got = readClosedRows(T0, T0 + 10 * HOUR, gh);
+  assert.deepEqual(got.map((row) => row.number).sort((a, b) => a - b), many.map((row) => row.number));
+  assert.ok(gh.calls.length > 1, "the first read filled the limit, so the range had to be split");
+  // NEGATIVE CONTROL: one read of the same range is cut at the limit, which is what the halving is for.
+  assert.equal((JSON.parse(fakeGh(many)(closedRowsArgs(T0, T0 + 10 * HOUR))) as unknown[]).length, CLOSED_ROWS_LIMIT);
+  const oneSecond = Array.from({ length: CLOSED_ROWS_LIMIT }, (_, i) => light(i + 1, T0 + HOUR));
+  assert.throws(() => readClosedRows(T0, T0 + 2 * HOUR, fakeGh(oneSecond)), /cannot tell whether it is whole/);
 });

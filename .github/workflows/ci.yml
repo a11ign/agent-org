@@ -88,10 +88,11 @@ jobs:
       # `yaml` and `typescript` are the tool's own; `@rstest/core` and `@a11ign/toolchain` are the runner (a11ign/a11ign#3738). The ranges repeat `package.json`'s devDependencies,
       # because this job installs by name and not from it: move them together.
       # `@a11ign/toolchain` is EXACT, not a range (a11ign/a11ign#4308): 0.1.6 was published with no `dist/`, so the `^0.1.2` install resolved it and every `merge_group` run failed with
-      # `Cannot find module '.../@a11ign/toolchain/dist/rstest-config.mjs'`. 0.1.5 is the last version that ships `dist/`; move this pin deliberately, to a release that does.
+      # `Cannot find module '.../@a11ign/toolchain/dist/rstest-config.mjs'`. 0.7.1 ships `dist/` (its tarball holds `dist/rstest-config.mjs` and `dist/lib/git-sandbox.mjs`) and exports the `./lib/*` subpaths the
+      # tool imports (`product-home`, `tree-wide-guard`, `walk-scope-declaration`, `walk-scope-discovery`, `ci-changed`, `git-sandbox`); move this pin deliberately, to a release that still does.
       - name: Install the tool's dependencies where the project's root would hold them
         run: |
-          npm install --no-save --no-package-lock "yaml@^2.9.0" "typescript@^6.0.3" "@rstest/core@^0.12.3" "@a11ign/toolchain@0.1.5"
+          npm install --no-save --no-package-lock "yaml@^2.9.0" "typescript@^6.0.3" "@rstest/core@^0.12.3" "@a11ign/toolchain@0.7.1"
           mv node_modules project/node_modules
       - name: Put this checkout's tool where the tool lives in a project, and the tests' siblings beside the tests
         run: |
@@ -172,14 +173,14 @@ jobs:
         with:
           node-version: 24.21.0
       - name: Install the dev dependencies the program imports types from (typescript, @types/node, yaml)
-        # The toolchain is named EXACT beside `package.json`'s `^0.1.5` for the same reason as in `suite` (a11ign/a11ign#4308): the range resolved 0.1.6, which has no `dist/`.
-        run: npm install --no-package-lock --no-save "@a11ign/toolchain@0.1.5"
+        # The toolchain is named EXACT beside `package.json`'s range for the same reason as in `suite` (a11ign/a11ign#4308): a range once resolved 0.1.6, which has no `dist/`.
+        run: npm install --no-package-lock --no-save "@a11ign/toolchain@0.7.1"
       - name: tsc --noEmit over tsconfig.json
         run: npm run typecheck
-      # THE LAYOUT CHECK (a11ign/a11ign#4211, ADR 0043 Decision 7; the check is a11ign/a11ign#4210, published in `@a11ign/toolchain` 0.1.5). This repository is the standard's model -- one package at the root, one
+      # THE LAYOUT CHECK (a11ign/a11ign#4211, ADR 0043 Decision 7; the check is a11ign/a11ign#4210, published in `@a11ign/toolchain`). This repository is the standard's model -- one package at the root, one
       # README, no workspace file -- so the step is the negative control that lives in a real repository: it must PASS here, and a change that makes this a monorepo would turn `gate` red. It runs in this job
-      # because `gate` waits for it and the install above already holds the pinned `@a11ign/toolchain`. The published one-liner (`npx --package @a11ign/toolchain layout-check`) does NOT run on Linux
-      # as of 0.1.5: `dist/layout-check.mjs` has no `#!` line, so the shell reads its `import` lines (`import: not found`, exit 2). Node runs the file, and the same file's main guard fires, so call it by path.
+      # because `gate` waits for it and the install above already holds the pinned `@a11ign/toolchain`. At 0.7.1 `dist/layout-check.mjs` begins `#!/usr/bin/env node`, so the published one-liner
+      # (`npx --package @a11ign/toolchain layout-check`) can run it; this step still calls it by path, which needs no `npx` resolution and fires the same file's main guard.
       - name: The layout check -- a single-package repository has its package at the root, with no workspace file
         run: node node_modules/@a11ign/toolchain/dist/layout-check.mjs
       # THE PROGRAM MUST NOT SHRINK QUIETLY: a typecheck that passes because `exclude` grew, or `include` stopped matching, is a check that checks nothing. 429 files were in the

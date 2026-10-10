@@ -28,6 +28,7 @@ import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { lastRun, markRun, recordFailures, type FailureEvent } from "./failure-ledger.ts";
+import { DEPENDENCY_BOT_LOGIN } from "./dependency-bot-login.ts";
 import { sandboxGitEnv } from "./lib/git-env.ts";
 import { HOME_CHECKOUT } from "./project-config.ts";
 import { REPO } from "./project-identity.ts";
@@ -58,6 +59,11 @@ export const ORG_LOGINS = Object.freeze(["a11ign-ai-workers", "a11ign-ai-leads",
  * `claude`, the account GitHub resolves `noreply@anthropic.com` to -- the identity a worker session's own commits carry.
  * Measured on the first run (2026-10-01): 16 of 226 derived hits were `claude`, every one inside an org-authored PR.
  * Counting these would make the ledger a measure of how often CI and the workers run.
+ *
+ * A dependency bot is automation too and is NOT in this list: `classifyLogin` reads it from `DEPENDENCY_BOT_LOGIN`, the one
+ * definition of its spellings (`app/dependabot` as `gh pr list` writes the PR author, `dependabot[bot]` as the commits API writes a
+ * commit's, #4624), so a second hand-typed list cannot drift from it (#560). Left out, 23 of the 30 `hand-reroute` refs measured on
+ * 2026-10-09 were Dependabot bumps, which made a population that is not a repeat read as one (a11ign#4623).
  */
 export const AUTOMATION_LOGINS = Object.freeze(["a11ign-ci", "github-actions[bot]", "claude"]);
 
@@ -131,7 +137,7 @@ export function declarationRefusal(body: string): string | null {
 export function classifyLogin(login: string | null | undefined, { org = ORG_LOGINS, automation = AUTOMATION_LOGINS }: { org?: readonly string[]; automation?: readonly string[]; } = {}): "org" | "automation" | "human" | "unknown" {
   if (!login || UNATTRIBUTABLE_LOGINS.includes(login)) return "unknown";
   if (org.includes(login)) return "org";
-  if (automation.includes(login)) return "automation";
+  if (automation.includes(login) || DEPENDENCY_BOT_LOGIN.test(login)) return "automation";
   return "human";
 }
 
