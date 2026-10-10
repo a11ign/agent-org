@@ -311,12 +311,12 @@ test("the gate's tick offers once per date through the ledger: the same date lat
 });
 
 function retrospectiveTickWith(now: number, ledger: string) {
-  return retrospectiveTick({ now, stateDir: "/nonexistent", read: fixtureRead, log: () => undefined, readLedger: () => ledger });
+  return retrospectiveTick({ now, stateDir: "/nonexistent", read: fixtureRead, log: () => undefined, readLedger: () => ledger, readUntiered: () => null });
 }
 
 test("a report that throws offers nothing and says so on stderr, rather than stopping the orders behind it", () => {
   const said: string[] = [];
-  const orders = retrospectiveTick({ now: OFFER_NOW, stateDir: "/nonexistent", read: () => { throw new Error("boom\nsecond line"); }, log: (l) => said.push(l), readLedger: () => "" });
+  const orders = retrospectiveTick({ now: OFFER_NOW, stateDir: "/nonexistent", read: () => { throw new Error("boom\nsecond line"); }, log: (l) => said.push(l), readLedger: () => "", readUntiered: () => null });
   assert.deepEqual(orders, []);
   assert.match(said.join(""), /org-retro: could not build today's retrospective \(boom\) -- no org-retrospective order this tick\./);
 });
@@ -458,7 +458,7 @@ test("delivering the offer appends exactly one line per UTC date, and a manual r
   const dir = tmpDir("org-retro-");
   const path = join(dir, READINGS_FILE);
   const read = ({ now, stateDir }: { now: number; stateDir: string }) => ({ ...fixtureRead(), readings: readReadings(join(stateDir, READINGS_FILE)), now });
-  const tickAt = (now: number) => retrospectiveTick({ now, stateDir: dir, read: read as never, log: () => undefined, readLedger: () => "" });
+  const tickAt = (now: number) => retrospectiveTick({ now, stateDir: dir, read: read as never, log: () => undefined, readLedger: () => "", readUntiered: () => null });
   const lines = () => readFileSync(path, "utf8").split("\n").filter((l) => l !== "");
   assert.equal(tickAt(OFFER_NOW).length, 1);
   assert.equal(lines().length, 1, "the first offer of the date writes one line");
@@ -468,7 +468,7 @@ test("delivering the offer appends exactly one line per UTC date, and a manual r
   assert.equal(lines().length, 1, "and the same date does not write a second line");
   assert.equal(tickAt(NEXT_DATE).length, 1);
   assert.deepEqual(lines().map((l) => JSON.parse(l).date), ["2026-10-02", "2026-10-03"], "the next UTC date writes its own");
-  assert.match(retrospectiveTick({ now: NEXT_DATE, stateDir: dir, read: read as never, log: () => undefined, readLedger: () => "" })[0].prompt, /Against the previous reading, 2026-10-02:/,
+  assert.match(retrospectiveTick({ now: NEXT_DATE, stateDir: dir, read: read as never, log: () => undefined, readLedger: () => "", readUntiered: () => null })[0].prompt, /Against the previous reading, 2026-10-02:/,
     "and the order the model reads carries the comparison with the line just written");
   // The writer and the reader share ONE path: the scan above cannot see `join(stateDir, READINGS_FILE)`, so this round trip is what proves someone writes what is read.
   assert.equal(readReadings(path).entries.length, 2);
@@ -493,7 +493,7 @@ test("a readings file with no line that parses is left as it is, not appended to
 
 test("a failing write does not stop the offer, and says so", () => {
   const said: string[] = [];
-  const orders = retrospectiveTick({ now: OFFER_NOW, stateDir: "/nonexistent", read: fixtureRead as never, log: (l) => said.push(l), readLedger: () => "",
+  const orders = retrospectiveTick({ now: OFFER_NOW, stateDir: "/nonexistent", read: fixtureRead as never, log: (l) => said.push(l), readLedger: () => "", readUntiered: () => null,
     record: () => { throw new Error("ENOSPC: no space left\nsecond line"); } });
   assert.equal(orders.length, 1, "the order still goes out");
   assert.match(said.join(""), /today's reading was not recorded \(ENOSPC: no space left\)/);

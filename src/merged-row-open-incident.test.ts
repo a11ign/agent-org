@@ -211,7 +211,7 @@ test("the daily tick records the incidents once per episode in the failure ledge
   const dir = mkdtempSync(join(tmpdir(), "merged-row-open-tick-"));
   try {
     const inputs = { ...emptyReads, mergedRowOpen: incidents([row()], [merged()]) };
-    const tick = (reads: typeof inputs, now: number) => retrospectiveTick({ now, stateDir: dir, log: () => {}, read: () => reads, readLedger: () => "", record: () => "recorded" });
+    const tick = (reads: typeof inputs, now: number) => retrospectiveTick({ now, stateDir: dir, log: () => {}, read: () => reads, readLedger: () => "", readUntiered: () => null, record: () => "recorded" });
     assert.equal(tick({ ...inputs, mergedRowOpen: [] }, NOW).length, 1);
     assert.equal(readFileSyncOrEmpty(join(dir, FAILURE_LEDGER_FILE)), "", "nothing found, nothing recorded");
     tick(inputs, NOW);

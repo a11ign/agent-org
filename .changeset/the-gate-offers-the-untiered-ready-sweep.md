@@ -1,0 +1,5 @@
+---
+"agent-org": patch
+---
+
+The gate offers `product-manager` the untiered-ready sweep after two ticks above zero (a11ign/agent-org#636, follows #466). `retrospectiveTick` now also reads the `ready` rows with no tier decision on every tick, keeps the count in the state dir (`untiered-ready-reading.json`, beside `dora-reading.json`), and when the count is `read` and above zero on this tick and on the one before it returns one `ready-rows-untiered` order to `product-manager`: it names every row and carries the answer (`tier:haiku` on each mechanical row with a machine-checkable Acceptance, a `Tier: sonnet -- <reason>` line on the others). The `causeKey` is the sorted row numbers, so the same stock is one question and a changed stock is a new one. An `unknown` reading never offers and breaks the run. `ready-rows-untiered` is a declared `JUDGMENT` cause (sonnet, medium), so the wake no longer refuses it for want of a profile. Nothing changes for a project with no `ready` rows lacking a tier decision.
