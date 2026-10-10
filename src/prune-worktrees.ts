@@ -36,6 +36,14 @@
 // commits ahead of main, 5 modified files, 2 untracked) -- which is why `isWorkingTreeClean` is asked
 // unconditionally and never short-circuited by a clean merge status.
 //
+// #4620 (incident #3846), THE ONE RULING THAT NARROWS THE PARAGRAPH ABOVE: a DIRTY tree is removable once its work is a REF
+// this tool can name and read back. Deleting another session's uncommitted work stays refused; deleting a directory whose work
+// is a branch (`git worktree remove` never deletes the branch) or a `refs/salvage/*` commit is not "deleting work". Two cases
+// only, both behind `removeByRef` (the RUN's policy, set by `main()` like the removal limit) and behind every refusal a merged
+// tree meets (ACTIVE, HELD, `runs/`, the row's claim): a tracked-clean tree whose HEAD reads back as its branch ref, and a tree
+// with tracked edits, SALVAGED first (`git stash create`, so an untracked `node_modules` pile is not swept in, then
+// `update-ref refs/salvage/...` and a read-back). Whatever cannot be read back stays DIRTY and says why. Never `--force`.
+//
 // NEVER TOUCHES THE PRIMARY CHECKOUT -- the fleet-driving tree. Identified structurally, not by path or
 // list position: the primary's `.git` is a real DIRECTORY; every linked worktree's `.git` is a text file
 // (`gitdir: <path>`) pointing into the primary's `.git/worktrees/<name>`. That is git's own mechanism for
@@ -77,7 +85,7 @@ export const ACTIVITY_WINDOW_MS = 10 * 60 * 1000; // 10 minutes: survives a stas
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { basename, join, relative } from "node:path";
 import { sandboxGitEnv } from "./lib/git-env.ts";
 // RELATIVE for the same reason as `cli-flags.ts` below (#1373): `row-claim.ts` imports this file before
 // `pnpm install`, where a package specifier dies.
@@ -716,7 +724,8 @@ export function heldByOwner(worktreePath: string, mainLine: Set<string> | null, 
     + "CLAIMED and has not finished with, not one whose work has landed. Refusing to remove it" };
 }
 
-export type ReportedWorktree = { path: string, branch: string | null, cleared?: string[] };
+/** `recovery` is the line a removed DIRTY tree prints (#4620) and `salvaged` the refs it was pinned under; `reason` is why a DIRTY one stayed. */
+export type ReportedWorktree = { path: string, branch: string | null, cleared?: string[], recovery?: string, salvaged?: string[], reason?: string };
 export type PruneReport = { removed: ReportedWorktree[], records: (ReportedWorktree & { reason: string })[], held: (ReportedWorktree & { reason: string })[], dirty: ReportedWorktree[], cherryPicked: ReportedWorktree[], inconclusive: ReportedWorktree[], active: ReportedWorktree[], skippedPrimary: string | null, unexamined: number, };
 
 /**
@@ -941,20 +950,196 @@ function removeWorktree(worktreePath: string, ignorable: string[], { run, remove
 }
 
 /**
+ * #4620: WHERE A DIRTY TREE'S WORK IS PINNED BEFORE THE TREE IS REMOVED, and the one place this tool writes a ref. `refs/salvage/*` is
+ * never pruned by this tool (nor read as a branch by anything here): the ref is the work, and a person decides when it goes.
+ */
+export const SALVAGE_REF_PREFIX = "refs/salvage/";
+
+/** A salvage commit is authored by the tool, so a host with no git identity configured can still make one and the author names its origin. */
+const SALVAGE_IDENTITY = ["-c", "user.name=prune-worktrees", "-c", "user.email=prune-worktrees@localhost"];
+
+/** What a DIRTY tree needs before removal: `salvage` is whether tracked edits must be pinned first; `ignorable` is `cleanliness`'s. */
+export type Recovery = { head: string, branch: string | null, salvage: boolean, ignorable: string[] };
+export type RecoveryVerdict = { into: "recoverable", recovery: Recovery } | { into: "dirty", reason: string } | { into: "active" } | { into: "inconclusive" };
+
+/**
+ * #4620: THE TRACKED CHANGES IN A TREE, SEPARATED FROM ITS UNTRACKED PATHS. `cleanliness` answers one question (is it removable as
+ * it stands); a salvage needs two: how many tracked entries there are, and whether any untracked path is WORK (not ignored by the
+ * primary). Untracked work is never salvaged -- `stash create` does not carry it and `git worktree remove` refuses it -- so a tree
+ * holding it stays DIRTY BEFORE a ref is written, and an hourly run does not leave one salvage ref per hour for a tree git will refuse.
+ *
+ * @param {string} worktreePath
+ * @param {{ run?: typeof defaultRun, ignoreAuthority?: string | null }} [deps]
+ * @returns {{ tracked: number, untrackedWork: boolean, ignorable: string[] } | "unknown"}
+ */
+export function trackedStatus(worktreePath: string, { run = defaultRun, ignoreAuthority = null }: { run?: typeof defaultRun; ignoreAuthority?: string | null; } = {}): { tracked: number; untrackedWork: boolean; ignorable: string[]; } | "unknown" {
+  let status: string;
+  try {
+    status = run("git", ["status", "--porcelain", "-z"], { cwd: worktreePath });
+  } catch {
+    return "unknown";
+  }
+  const entries = status.split("\0").filter((entry) => entry !== "");
+  const untracked = entries.filter((entry) => entry.startsWith("?? ")).map((entry) => entry.slice(3));
+  const ignorable: string[] = [];
+  let untrackedWork = false;
+  for (const path of untracked) {
+    const ignored = ignoreAuthority === null ? false : ignoredByAuthority(ignoreAuthority, path, { run });
+    if (ignored === "unknown") return "unknown";
+    if (ignored) ignorable.push(path);
+    else untrackedWork = true;
+  }
+  return { tracked: entries.length - untracked.length, untrackedWork, ignorable };
+}
+
+/** `git rev-parse --verify <rev>^{commit}`'s sha; THROWS when the name does not resolve to a commit. */
+function readCommit(cwd: string, rev: string, run: typeof defaultRun): string {
+  return run("git", ["rev-parse", "--verify", "--quiet", `${rev}^{commit}`], { cwd }).trim();
+}
+
+/**
+ * #4620: DOES A DIRTY TREE'S WORK LIVE IN A REF, AND IS THE TREE OTHERWISE FREE TO GO? Called only for a `classify` verdict of
+ * `"dirty"` (a cherry-picked tree is a human's, and an inconclusive one is not guessed at). It asks, in this order, and a tree
+ * that fails one is reported in the bucket the question names and never salvaged:
+ *   1. ACTIVE: git activity inside the window -- asked HERE because `assessWorktree` only asks it of a merged, clean tree, and
+ *      a tree with a tracked edit is the one a session is most likely standing in. A tree it cannot ask about is INCONCLUSIVE.
+ *   2. untracked work (see `trackedStatus`): DIRTY, nothing written.
+ *   3. HEAD read back: a named branch must resolve, as `refs/heads/<branch>`, to the SAME sha as HEAD -- the ref a surviving
+ *      branch is. A branch whose ref is missing or elsewhere is DIRTY; so is a DETACHED tree with no tracked edit, whose commits
+ *      no ref names (that population is not this row's: only edits are pinned there).
+ * A detached tree WITH tracked edits is recoverable: `salvageTracked` pins its HEAD and the edits.
+ *
+ * @param {string} repoRoot
+ * @param {WorktreeEntry} entry
+ * @param {{ run: typeof defaultRun, now: number, ignoreAuthority: string | null }} deps
+ * @returns {RecoveryVerdict}
+ */
+export function recoveryFor(repoRoot: string, entry: WorktreeEntry, { run, now, ignoreAuthority }: { run: typeof defaultRun; now: number; ignoreAuthority: string | null; }): RecoveryVerdict {
+  const active = recentGitActivity(entry.path, { run, now });
+  if (active === "unknown") return { into: "inconclusive" };
+  if (active) return { into: "active" };
+  const status = trackedStatus(entry.path, { run, ignoreAuthority });
+  if (status === "unknown") return { into: "inconclusive" };
+  if (status.untrackedWork) {
+    return { into: "dirty", reason: "it holds untracked files the primary checkout does not ignore, which no ref carries and `git worktree remove` refuses" };
+  }
+  let head = "";
+  try {
+    head = readCommit(entry.path, "HEAD", run);
+  } catch {
+    // left empty: the refusal below is the same for a HEAD that does not resolve and one that prints nothing
+  }
+  if (head === "") return { into: "dirty", reason: "its HEAD does not resolve to a commit, so there is nothing to read back" };
+  if (entry.branch === null) {
+    if (status.tracked === 0) {
+      return { into: "dirty", reason: `its HEAD is detached at ${head.slice(0, 12)} and no ref holds it, and it has no tracked edit to pin` };
+    }
+    return { into: "recoverable", recovery: { head, branch: null, salvage: true, ignorable: status.ignorable } };
+  }
+  let named = "";
+  try {
+    named = readCommit(repoRoot, `refs/heads/${entry.branch}`, run);
+  } catch {
+    // an unresolved name is the same answer as one that resolves elsewhere: no ref reads back as HEAD
+  }
+  if (named === "" || named !== head) {
+    return { into: "dirty", reason: `refs/heads/${entry.branch} ${named === "" ? "does not resolve" : `reads ${named.slice(0, 12)}`}, not HEAD ${head.slice(0, 12)}, so no surviving ref holds its commits` };
+  }
+  return { into: "recoverable", recovery: { head, branch: entry.branch, salvage: status.tracked > 0, ignorable: status.ignorable } };
+}
+
+/** A tree's directory name as one ref component: what git allows, nothing it could mistake for a range, a lock or a hidden name. */
+function salvageTreeName(worktreePath: string): string {
+  const name = basename(worktreePath).replace(/[^A-Za-z0-9._-]+/g, "-").replace(/\.{2,}/g, ".").replace(/^[.-]+/, "");
+  return name === "" ? "tree" : name;
+}
+
+/** Creates `ref` at `sha` (refusing to move one that exists) and reads it back; THROWS unless it reads back as `sha`. */
+function pinRef(repoRoot: string, ref: string, sha: string, run: typeof defaultRun): string {
+  run("git", ["check-ref-format", ref], { cwd: repoRoot });
+  run("git", ["update-ref", ref, sha, ""], { cwd: repoRoot });
+  const back = readCommit(repoRoot, ref, run);
+  if (back !== sha) throw new Error(`${ref} reads back as ${back === "" ? "nothing" : back}, not ${sha}`);
+  return ref;
+}
+
+/**
+ * #4620: THE SALVAGE. Pins what the tree holds that no branch does, READS EACH REF BACK, and only then reports the refs the caller
+ * may remove the tree on. A DETACHED head is pinned first (`<name>-head-<epoch>`); tracked edits are `git stash create`d (tracked
+ * only: no `-u`, so an untracked pile is never swept in) and pinned as `<name>-<epoch>`. Nothing here moves the working tree, the
+ * index or any existing ref.
+ *
+ * IDEMPOTENT, because the prune is hourly and git has guards of its own: a tree salvaged, then refused by `git worktree remove`
+ * (a lock, a submodule) is looked at again an hour later, and writing a second ref for work already pinned would leave 24 a day.
+ * An existing ref for the same tree whose commit has the SAME tree object and the same first parent is the same work and is reused.
+ *
+ * @param {string} worktreePath
+ * @param {string} repoRoot
+ * @param {Recovery} recovery
+ * @param {{ run: typeof defaultRun, now: number }} deps
+ * @returns {{ refs: string[], edits: string } | { reason: string }} the refs and the commit holding the edits (the one the tree is
+ *   then held to, see `discardPinnedEdits`), or why none could be trusted -- the tree then stands, DIRTY
+ */
+export function salvageTracked(worktreePath: string, repoRoot: string, recovery: Recovery, { run, now }: { run: typeof defaultRun; now: number; }): { refs: string[]; edits: string; } | { reason: string; } {
+  const epoch = Math.floor(now / 1000);
+  const name = salvageTreeName(worktreePath);
+  const mine = new RegExp(`^${SALVAGE_REF_PREFIX}${name.replace(/[.]/g, "\\.")}-(head-)?\\d+$`);
+  try {
+    const listed = run("git", ["for-each-ref", "--format=%(refname) %(objectname) %(tree) %(parent)", `${SALVAGE_REF_PREFIX}${name}-*`], { cwd: repoRoot })
+      .split("\n").filter((line) => line.trim() !== "").map((line) => line.split(" "))
+      .filter(([ref]) => mine.test(ref));
+    const refs: string[] = [];
+    if (recovery.branch === null) {
+      const pinned = listed.find(([ref, sha]) => /-head-\d+$/.test(ref) && sha === recovery.head);
+      refs.push(pinned !== undefined ? pinned[0] : pinRef(repoRoot, `${SALVAGE_REF_PREFIX}${name}-head-${epoch}`, recovery.head, run));
+    }
+    const created = run("git", [...SALVAGE_IDENTITY, "stash", "create"], { cwd: worktreePath }).trim();
+    if (created === "") {
+      return { reason: "`git stash create` printed no commit for a tree that reads as carrying tracked changes, so there is nothing to read back" };
+    }
+    const createdTree = run("git", ["rev-parse", "--verify", `${created}^{tree}`], { cwd: repoRoot }).trim();
+    const same = listed.find(([ref, , tree, parent]) => !/-head-\d+$/.test(ref) && tree === createdTree && parent === recovery.head);
+    refs.push(same !== undefined ? same[0] : pinRef(repoRoot, `${SALVAGE_REF_PREFIX}${name}-${epoch}`, created, run));
+    return { refs, edits: same !== undefined ? readCommit(repoRoot, same[0], run) : created };
+  } catch (cause) {
+    return { reason: `its work could not be pinned under ${SALVAGE_REF_PREFIX} and read back (${(cause as Error).message.split("\n")[0]})` };
+  }
+}
+
+/**
+ * #4620: MAKE THE TREE CLEAN BY DISCARDING EXACTLY WHAT IS PINNED, so `git worktree remove` -- WITHOUT `--force`, which the row
+ * forbids and which stays the last guard -- has nothing of the tree's to refuse. Git refuses any tree with a modified tracked file
+ * (measured: `contains modified or untracked files, use --force to delete it`), so a salvage that stopped at the ref could never
+ * be followed by a removal. THE ORDER IS THE SAFETY: this runs only after `salvageTracked` read every ref back, and it first asks
+ * git whether the working tree still EQUALS the pinned commit (`diff --quiet <commit>`: tracked paths only, staged and unstaged
+ * alike), so an edit made after the salvage is a refusal rather than a discard. Untracked paths are not touched by `reset --hard`.
+ *
+ * @param {string} worktreePath @param {string} edits the commit `salvageTracked` pinned @param {typeof defaultRun} run
+ */
+function discardPinnedEdits(worktreePath: string, edits: string, run: typeof defaultRun) {
+  try {
+    run("git", ["diff", "--quiet", edits], { cwd: worktreePath });
+  } catch {
+    throw new Error(`the tree changed since its tracked edits were pinned at ${edits.slice(0, 12)}, so they are not all in a ref`);
+  }
+  run("git", ["reset", "--hard", "--quiet", "HEAD"], { cwd: worktreePath });
+}
+
+/**
  * #2782: THE REMOVAL, WITH ITS LINE. One `removing` line BEFORE the delete and one `removed` or `failed` after it, so the
  * log names a tree whose removal was begun and never finished, and so a crash mid-delete is still a line. A log that cannot be
  * written REFUSES the removal (`logged: false`): a delete nobody can see is the defect this row exists to end.
  *
  * @param {ReportedWorktree} reported @param {string[]} ignorable
  * @param {{ run: typeof defaultRun, remove: (path: string, deps: { run: typeof defaultRun }) => void,
- *   record: typeof recordRemoval }} deps
+ *   record: typeof recordRemoval, reason?: string }} deps `reason` is the log's: "merged, clean ..." unless #4620 removed the tree by a ref
  * @returns {{ done: true } | { done: false, logged: boolean }}
  */
-function removeAndRecord(reported: ReportedWorktree, ignorable: string[], { run, remove, record }: {
+function removeAndRecord(reported: ReportedWorktree, ignorable: string[], { run, remove, record, reason = "merged, clean, inactive and not held" }: {
         run: typeof defaultRun; remove: (path: string, deps: { run: typeof defaultRun; }) => void;
-        record: typeof recordRemoval;
+        record: typeof recordRemoval; reason?: string;
     }): { done: true; } | { done: false; logged: boolean; } {
-  const line = { path: reported.path, branch: reported.branch, caller: CALLER, reason: "merged, clean, inactive and not held" };
+  const line = { path: reported.path, branch: reported.branch, caller: CALLER, reason };
   try {
     record({ ...line, event: "removing" });
   } catch {
@@ -987,12 +1172,13 @@ const VERDICT_BUCKET: Record<"dirty" | "cherry-picked" | "inconclusive" | "activ
  * @param {ReportedWorktree} reported @param {string[]} ignorable
  * @param {{ claim?: typeof claimRefusal, dryRun: boolean, run: typeof defaultRun, record?: typeof recordRemoval,
  *   remove: (path: string, deps: { run: typeof defaultRun }) => void }} deps `claim` and `record` default to the real ones
- * @returns {{ into: "removed" } | { into: "dirty" } | { into: "held", reason: string }}
+ * @returns {{ into: "removed" } | { into: "dirty" } | { into: "held", reason: string }} (#4620: with `recovery`, a refusal says why)
  */
-function claimThenRemove(reported: ReportedWorktree, ignorable: string[], { claim = claimRefusal, dryRun, run, remove, record = recordRemoval }: {
+function claimThenRemove(reported: ReportedWorktree, ignorable: string[], { claim = claimRefusal, dryRun, run, remove, record = recordRemoval, recovery = null, repoRoot = "", now = 0 }: {
         claim?: typeof claimRefusal; dryRun: boolean; run: typeof defaultRun; record?: typeof recordRemoval;
         remove: (path: string, deps: { run: typeof defaultRun; }) => void;
-    }): { into: "removed"; } | { into: "dirty"; } | { into: "held"; reason: string; } {
+        recovery?: Recovery | null; repoRoot?: string; now?: number;
+    }): { into: "removed"; salvaged?: string[]; } | { into: "dirty"; reason?: string; } | { into: "held"; reason: string; } {
   const claimed = claim(reported);
   if (claimed.refused) return { into: "held", reason: claimed.reason };
   // `dryRun` SKIPS THE REMOVAL AND NOTHING ELSE -- same walk, same predicate, same buckets. The
@@ -1011,10 +1197,54 @@ function claimThenRemove(reported: ReportedWorktree, ignorable: string[], { clai
   // that cannot be cleared is DIRTY -- the refusal this replaces, reached by measurement rather than
   // by a stale rule.
   if (dryRun) return { into: "removed" };
+  if (recovery !== null) return removeByRecovery(reported, ignorable, recovery, { run, remove, record, repoRoot, now });
   const removal = removeAndRecord(reported, ignorable, { run, remove, record });
   if (removal.done) return { into: "removed" };
   return removal.logged ? { into: "dirty" }
     : { into: "held", reason: "the removal log could not be written -- a delete nobody can see is refused (#2782)" };
+}
+
+/**
+ * #4620: THE REMOVAL OF A DIRTY TREE, AFTER ITS WORK IS A REF. The salvage comes AFTER the row's claim (a tree the claim refuses is
+ * never salvaged, so no ref is left for a tree that stays) and BEFORE the log line, so the line names the refs; the pinned edits are
+ * then discarded (`discardPinnedEdits`) so git's own guard, which refuses a modified tree, is satisfied without `--force`. A removal git
+ * refuses (a lock, a submodule, an edit that arrived since the salvage) buckets the tree as DIRTY with git's own words: it never
+ * ends the run, which would put the same tree at the front of every hour's walk and starve the ones behind it.
+ *
+ * @param {ReportedWorktree} reported @param {string[]} ignorable @param {Recovery} recovery
+ * @param {{ run: typeof defaultRun, remove: (path: string, deps: { run: typeof defaultRun }) => void, record: typeof recordRemoval,
+ *   repoRoot: string, now: number }} deps
+ * @returns {{ into: "removed", salvaged?: string[] } | { into: "dirty", reason: string } | { into: "held", reason: string }}
+ */
+function removeByRecovery(reported: ReportedWorktree, ignorable: string[], recovery: Recovery, { run, remove, record, repoRoot, now }: {
+        run: typeof defaultRun; remove: (path: string, deps: { run: typeof defaultRun; }) => void;
+        record: typeof recordRemoval; repoRoot: string; now: number;
+    }): { into: "removed"; salvaged?: string[]; } | { into: "dirty"; reason: string; } | { into: "held"; reason: string; } {
+  let salvaged: string[] | undefined;
+  let edits: string | null = null;
+  if (recovery.salvage) {
+    const made = salvageTracked(reported.path, repoRoot, recovery, { run, now });
+    if ("reason" in made) return { into: "dirty", reason: made.reason };
+    salvaged = made.refs;
+    edits = made.edits;
+  }
+  const reason = salvaged !== undefined
+    ? `dirty tree removed once its tracked changes were pinned under ${salvaged.join(", ")} (#4620)`
+    : `dirty tree removed once its commits read back as refs/heads/${recovery.branch} at ${recovery.head} (#4620)`;
+  try {
+    // The discard runs INSIDE the logged removal -- after its `removing` line, before git's own removal -- so a destructive step is a line.
+    const discardThenRemove = (path: string, deps: { run: typeof defaultRun; }) => {
+      if (edits !== null) discardPinnedEdits(path, edits, run);
+      remove(path, deps);
+    };
+    const removal = removeAndRecord(reported, ignorable, { run, remove: discardThenRemove, record, reason });
+    if (removal.done) return { into: "removed", salvaged };
+    return removal.logged ? { into: "dirty", reason: "the ignored entries could not be cleared" }
+      : { into: "held", reason: "the removal log could not be written -- a delete nobody can see is refused (#2782)" };
+  } catch (cause) {
+    const refs = salvaged !== undefined ? `; its work stays at ${salvaged.join(", ")}` : "";
+    return { into: "dirty", reason: `git refused the removal (${(cause as Error).message.split("\n")[0]})${refs}` };
+  }
 }
 
 /**
@@ -1036,7 +1266,7 @@ function heldUnlessReleased(entry: WorktreeEntry, ctx: PruneContext): { refused:
   return row.closed ? { refused: false } : { refused: true, reason: `${held.reason}. ${row.reason}` };
 }
 
-export type PruneContext = { repoRoot: string, run: typeof defaultRun, now: number, dryRun: boolean, primaryPath: string | null, mainLine: Set<string> | null, report: PruneReport, hash?: (file: string) => string, rowsClosed: typeof rowsClosed, pause: () => void, remove: (path: string, deps: { run: typeof defaultRun }) => void, claim?: typeof claimRefusal, record?: typeof recordRemoval, };
+export type PruneContext = { repoRoot: string, run: typeof defaultRun, now: number, dryRun: boolean, primaryPath: string | null, mainLine: Set<string> | null, report: PruneReport, hash?: (file: string) => string, rowsClosed: typeof rowsClosed, pause: () => void, remove: (path: string, deps: { run: typeof defaultRun }) => void, claim?: typeof claimRefusal, record?: typeof recordRemoval, removeByRef: boolean, };
 
 /**
  * One non-primary tree: assess it, then put it in exactly one bucket of `ctx.report`, removing it when nothing refuses.
@@ -1046,13 +1276,24 @@ export type PruneContext = { repoRoot: string, run: typeof defaultRun, now: numb
  */
 function pruneEntry(entry: WorktreeEntry, ctx: PruneContext) {
   const { report, run } = ctx;
-  const reported = { path: entry.path, branch: entry.branch };
+  const reported: ReportedWorktree = { path: entry.path, branch: entry.branch };
   const assessment = assessWorktree(ctx.repoRoot, entry, { run, now: ctx.now, ignoreAuthority: ctx.primaryPath });
   const verdict = classify(assessment);
-  if (verdict !== "remove") {
+  // #4620: a DIRTY tree whose work is (or can be made) a ref goes on through every refusal below as a removable one does.
+  let recovery: Recovery | null = null;
+  if (verdict === "dirty" && ctx.removeByRef) {
+    const found = recoveryFor(ctx.repoRoot, entry, { run, now: ctx.now, ignoreAuthority: ctx.primaryPath });
+    if (found.into === "recoverable") recovery = found.recovery;
+    else {
+      if (found.into === "dirty") report.dirty.push({ ...reported, reason: found.reason });
+      else report[found.into].push(reported);
+      return;
+    }
+  } else if (verdict !== "remove") {
     report[VERDICT_BUCKET[verdict]].push(reported);
     return;
   }
+  const ignorable = recovery !== null ? recovery.ignorable : assessment.ignorable;
   // #2020 BEFORE #1373, and only because it is the cheaper question and the more actionable answer --
   // a tree that is both held and holding records reports the owner who is standing in it. Either
   // refusal removes nothing, so the order decides which reason is printed and nothing else.
@@ -1069,11 +1310,24 @@ function pruneEntry(entry: WorktreeEntry, ctx: PruneContext) {
   }
   // #3850: the pause sits BEFORE every removal but the run's first, so a run that removes one tree waits for nothing.
   if (!ctx.dryRun && report.removed.length > 0) ctx.pause();
-  const outcome = claimThenRemove(reported, assessment.ignorable,
-    { claim: ctx.claim, dryRun: ctx.dryRun, run, remove: ctx.remove, record: ctx.record });
+  const outcome = claimThenRemove(reported, ignorable,
+    { claim: ctx.claim, dryRun: ctx.dryRun, run, remove: ctx.remove, record: ctx.record, recovery, repoRoot: ctx.repoRoot, now: ctx.now });
   if (outcome.into === "held") report.held.push({ ...reported, reason: outcome.reason });
-  else if (outcome.into === "dirty") report.dirty.push(reported);
-  else report.removed.push({ ...reported, cleared: assessment.ignorable });
+  else if (outcome.into === "dirty") report.dirty.push(outcome.reason === undefined ? reported : { ...reported, reason: outcome.reason });
+  else report.removed.push({ ...reported, cleared: ignorable, ...recoveryNote(recovery, outcome.salvaged, ctx.dryRun) });
+}
+
+/**
+ * #4620: the report's words for a tree removed by a ref -- `{}` for an ordinary removal -- so the work is findable from the line
+ * that says its directory is gone. A dry run has made no ref, so it says one WOULD be.
+ * @param {Recovery | null} recovery @param {string[] | undefined} salvaged @param {boolean} dryRun
+ * @returns {Pick<ReportedWorktree, "recovery" | "salvaged">}
+ */
+function recoveryNote(recovery: Recovery | null, salvaged: string[] | undefined, dryRun: boolean): Pick<ReportedWorktree, "recovery" | "salvaged"> {
+  if (recovery === null) return {};
+  if (!recovery.salvage) return { recovery: `its commits stay on branch ${recovery.branch} at ${recovery.head.slice(0, 12)}` };
+  if (dryRun || salvaged === undefined) return { recovery: `tracked changes would first be pinned under ${SALVAGE_REF_PREFIX}` };
+  return { recovery: `tracked changes salvaged to ${salvaged.join(", ")}`, salvaged };
 }
 
 /**
@@ -1083,22 +1337,24 @@ function pruneEntry(entry: WorktreeEntry, ctx: PruneContext) {
  * @param {{ run?: typeof defaultRun, remove?: (path: string, deps: { run: typeof defaultRun }) => void,
  *   now?: number, dryRun?: boolean, hash?: (file: string) => string, claim?: typeof claimRefusal,
  *   record?: typeof recordRemoval, rowsClosed?: typeof rowsClosed, maxRemovals?: number, pauseMs?: number,
- *   pause?: (ms: number) => void }} [deps] `dryRun` skips the removal
+ *   pause?: (ms: number) => void, removeByRef?: boolean }} [deps] `dryRun` skips the removal
  *   and nothing else -- same walk, same predicate, same buckets, so the listing is the tool's own answer
  *   rather than a second one. `hash` reads a `runs/` record's sha256 (#1373). `claim` reads the ROW's claim
  *   (#2782) and `record` writes the removal's log line. `rowsClosed` reads whether the rows a HELD tree names
  *   have closed (#3850). `maxRemovals` ends the walk once that many trees are removed (or, in a dry run, would
  *   be) and counts the trees it did not reach in `unexamined`; it defaults to no limit, because the limit is
- *   a property of a RUN and `main()` is the run. `pauseMs` is the wait between removals, also `main()`'s.
+ *   a property of a RUN and `main()` is the run. `pauseMs` is the wait between removals, also `main()`'s. `removeByRef`
+ *   (#4620) lets a DIRTY tree go once its work is a ref read back (see the file header); it is the run's policy for the same
+ *   reason, and a caller that does not name it keeps today's reading of every dirty tree.
  * @returns {PruneReport}
  */
 export function pruneWorktrees(repoRoot: string, deps: {
     run?: typeof defaultRun; remove?: (path: string, deps: { run: typeof defaultRun; }) => void;
     now?: number; dryRun?: boolean; hash?: (file: string) => string; claim?: typeof claimRefusal;
     record?: typeof recordRemoval; rowsClosed?: typeof rowsClosed; maxRemovals?: number; pauseMs?: number;
-    pause?: (ms: number) => void;
+    pause?: (ms: number) => void; removeByRef?: boolean;
 } = {}): PruneReport {
-  const { run = defaultRun, remove, now = Date.now(), maxRemovals = Infinity, pauseMs = 0, pause = sleep } = deps;
+  const { run = defaultRun, remove, now = Date.now(), maxRemovals = Infinity, pauseMs = 0, pause = sleep, removeByRef = false } = deps;
   const porcelain = run("git", ["worktree", "list", "--porcelain"], { cwd: repoRoot });
   const entries = parseWorktreeList(porcelain);
   const primaryPath = entries.find((entry) => isPrimaryWorktree(entry.path))?.path ?? null;
@@ -1108,7 +1364,7 @@ export function pruneWorktrees(repoRoot: string, deps: {
   };
   const ctx: PruneContext = {
     repoRoot, run, now, dryRun: deps.dryRun ?? false, primaryPath, report, hash: deps.hash, claim: deps.claim,
-    record: deps.record, rowsClosed: deps.rowsClosed ?? rowsClosed, pause: () => pause(pauseMs),
+    record: deps.record, rowsClosed: deps.rowsClosed ?? rowsClosed, pause: () => pause(pauseMs), removeByRef,
     // #2020: one walk for the whole run, not one per worktree -- it is the same answer for every tree.
     mainLine: mainLineCommits(repoRoot, { run }),
     remove: remove ?? ((path, { run: r }) => { r("git", ["worktree", "remove", path], { cwd: repoRoot }); }),
@@ -1126,7 +1382,7 @@ export function pruneWorktrees(repoRoot: string, deps: {
 function pushSection(lines: string[], entries: ReportedWorktree[], header: string) {
   if (entries.length === 0) return;
   lines.push(header);
-  for (const e of entries) lines.push(`  ${e.path}  (${e.branch ?? "detached"})`);
+  for (const e of entries) lines.push(`  ${e.path}  (${e.branch ?? "detached"})${e.reason === undefined ? "" : `: ${e.reason}`}`);
 }
 
 /**
@@ -1148,7 +1404,8 @@ export function formatReport(report: PruneReport, dryRun = false) {
   for (const r of report.removed) {
     const cleared = r.cleared !== undefined && r.cleared.length > 0
       ? `  [cleared, ignored by the primary checkout: ${r.cleared.join(", ")}]` : "";
-    lines.push(`  ${r.path}  (${r.branch ?? "detached"})${cleared}`);
+    const recovered = r.recovery !== undefined ? `  [${r.recovery}]` : "";
+    lines.push(`  ${r.path}  (${r.branch ?? "detached"})${cleared}${recovered}`);
   }
   if (report.held.length > 0) {
     lines.push(`refused ${report.held.length} HELD worktree(s) (#2020) -- stamped by a session and carrying no `
@@ -1224,7 +1481,7 @@ async function main() {
   const positional = process.argv.slice(2).find((a) => !a.startsWith("--"));
   const repoRoot = positional ?? process.cwd();
   const root = statSync(repoRoot).isDirectory() ? repoRoot : process.cwd();
-  const report = pruneWorktrees(root, { dryRun, maxRemovals: MAX_REMOVALS_PER_RUN, pauseMs: PAUSE_BETWEEN_REMOVALS_MS });
+  const report = pruneWorktrees(root, { dryRun, maxRemovals: MAX_REMOVALS_PER_RUN, pauseMs: PAUSE_BETWEEN_REMOVALS_MS, removeByRef: true });
   process.stdout.write(formatReport(report, dryRun) + "\n");
   // #933: PRINTED ON EVERY RUN, INCLUDING `--apply`, and after the removals rather than instead of them.
   // The prune already refuses a dirty worktree; the gap this closes is that nobody hears the refusal, so
