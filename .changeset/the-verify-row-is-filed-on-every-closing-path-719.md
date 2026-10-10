@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-The verify row is filed by the path a normal merge takes, and for a live-check item. Before, `close-rows-sweep` (what `trunk.yml` runs on every push to main) never called `fileVerifyRowsFor`, so a build row that closed on its merge never got the `<!-- verify-row: build #N -->` row its live reading was to move to; only a manual dispatch did. `closeOnePr` now files it for the rows it closed and the rows it found closed, off the build rows its one lookup already carries, with the same marker, and a verify row it could not file exits `COULD_NOT_CLOSE` like the dispatch path. A Done-when item that asks for a quoted record on a row, a switch read on, a log line after the merge or a published version is a reading too (`liveCheckItems`); `row-file` does not refuse it, and a seat's act or another row's outcome is still declined. The close line names the verify row it filed, or says plainly that it filed none and which item it did not take. A verify row carries every reading of its build, not the first one. a11ign/agent-org#719.
