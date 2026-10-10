@@ -25,13 +25,17 @@ export type DecisionUse = (typeof DECISION_USES)[number];
 /** More than this is not a trimmed state, and is not sent. */
 export const MAX_STATE_BYTES = 4096;
 const SWITCHES_FILE = join(".agent-org", "decisions.json");
+/** A `score` has this many levels, level 1 first; the API reads them by position from zero and answers on that scale (agent-org#564). */
+export const SCORE_LEVELS = 5;
 const MIN_SCORE = 1;
-const MAX_SCORE = 5;
+const MAX_SCORE = MIN_SCORE + SCORE_LEVELS - 1;
 
-/** A `choice` among `criteria` or a `score` from 1 to 5, with the deterministic `fallback` this use takes in the provider's place and an optional floor of its own. */
+/** The five descriptions of a `score`'s levels, level 1 first: what the API is sent as `criteria`, where a description's position is its score. */
+export type ScoreLevels = readonly [string, string, string, string, string];
+/** A `choice` among `criteria` or a `score` from 1 to 5 over `levels`, with the deterministic `fallback` this use takes in the provider's place and an optional floor of its own. */
 export type Question = (
   | { type: "choice"; instructions: string; criteria: Readonly<Record<string, string>>; fallback: string }
-  | { type: "score"; instructions: string; fallback: number }
+  | { type: "score"; instructions: string; levels: ScoreLevels; fallback: number }
 ) & { minConfidence?: number };
 export type Value = string | number;
 /** `asked` is what the provider said when `fellBack` replaced it (an answer under the floor); `reason` says why it was replaced. */
@@ -63,19 +67,25 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
  * The switches in `path`. Absent file: every use off, quietly. Unreadable, not JSON, not an object or a value that is not a boolean: every use off and ONE line naming the file,
  * which is all the line says -- the file's text is configuration somebody wrote and the line is not the place to echo it.
  */
-export function readSwitches(path: string, { diagnostic, state, read }: Env): Switches {
+export function readSwitches(path: string, env: Env): Switches {
+  return readSwitchesChecked(path, env).switches;
+}
+
+/** {@link readSwitches}, and whether the file was there and could not be used: that is a different reason from a use that is simply off. */
+function readSwitchesChecked(path: string, { diagnostic, state, read }: Env): { switches: Switches; unusable: boolean } {
   let parsed: unknown;
   try {
     parsed = JSON.parse(String(read(path, "utf8")));
   } catch (err) {
-    if ((err as { code?: string })?.code !== "ENOENT") warnOnce(`${path} could not be read as JSON`, diagnostic, state);
-    return {};
+    if ((err as { code?: string })?.code === "ENOENT") return { switches: {}, unusable: false };
+    warnOnce(`${path} could not be read as JSON`, diagnostic, state);
+    return { switches: {}, unusable: true };
   }
   if (!isRecord(parsed) || Object.values(parsed).some((v) => typeof v !== "boolean")) {
     warnOnce(`${path} is not an object of booleans`, diagnostic, state);
-    return {};
+    return { switches: {}, unusable: true };
   }
-  return parsed as Switches;
+  return { switches: parsed as Switches, unusable: false };
 }
 
 function warnOnce(what: string, diagnostic: (line: string) => void, state: NonNullable<TriageDeps["state"]>): void {
@@ -86,7 +96,7 @@ function warnOnce(what: string, diagnostic: (line: string) => void, state: NonNu
 
 const wire = (question: Question): ProviderQuestion => question.type === "choice"
   ? { type: "choice", instructions: question.instructions, criteria: question.criteria }
-  : { type: "score", instructions: question.instructions };
+  : { type: "score", instructions: question.instructions, criteria: question.levels };
 
 const fallbacks = (questions: Readonly<Record<string, Question>>, reason: string): Record<string, Answer> =>
   Object.fromEntries(Object.entries(questions).map(([name, q]) => [name, { value: q.fallback, fellBack: true, reason }]));
@@ -95,12 +105,17 @@ const fallbacks = (questions: Readonly<Record<string, Question>>, reason: string
 const unasked = (use: DecisionUse, questions: Readonly<Record<string, Question>>, reason: string): Decision =>
   ({ use, via: "none", fellBack: true, reason, answers: fallbacks(questions, reason) });
 
-/** The provider's reading of one answer, or `undefined` when it is not a value this question allows with a confidence from 0 to 1. */
+/**
+ * The provider's reading of one answer, or `undefined` when it is not a value this question allows with a confidence from 0 to 1. A score comes back ZERO-BASED and FRACTIONAL (the
+ * level's position, `0.04` for level 0, agent-org#564), so it is ROUNDED to the nearest level and moved onto the 1..5 scale the callers use; one that rounds outside the levels is malformed.
+ */
 function readAnswer(question: Question, raw: unknown): { value: Value; confidence: number } | undefined {
   const { choice, score, confidence } = (isRecord(raw) ? raw : {}) as { choice?: unknown; score?: unknown; confidence?: unknown };
   if (typeof confidence !== "number" || !(confidence >= 0 && confidence <= 1)) return undefined;
   if (question.type === "choice") return typeof choice === "string" && Object.hasOwn(question.criteria, choice) ? { value: choice, confidence } : undefined;
-  return typeof score === "number" && score >= MIN_SCORE && score <= MAX_SCORE ? { value: score, confidence } : undefined;
+  if (typeof score !== "number" || !Number.isFinite(score)) return undefined;
+  const level = Math.round(score) + MIN_SCORE;
+  return level >= MIN_SCORE && level <= MAX_SCORE ? { value: level, confidence } : undefined;
 }
 
 function settle(question: Question, raw: unknown, floorDefault: number): Answer {
@@ -138,8 +153,9 @@ async function decideAsked(use: DecisionUse, state: Readonly<Record<string, unkn
   if (!DECISION_USES.includes(use)) return unasked(use, questions, "the use is not one this tool knows");
   if (Object.keys(questions).length === 0) return unasked(use, questions, "no question was asked");
   if (host.triage?.provider !== "jev") return unasked(use, questions, "no triage provider is declared");
-  const switches = deps.switches ?? (deps.switchesPath === undefined ? {} : readSwitches(deps.switchesPath, { diagnostic, state: processLocal, read }));
-  if (switches[use] !== true) return unasked(use, questions, "the use is switched off");
+  const file = deps.switches !== undefined || deps.switchesPath === undefined ? undefined : readSwitchesChecked(deps.switchesPath, { diagnostic, state: processLocal, read });
+  const switches = deps.switches ?? file?.switches ?? {};
+  if (switches[use] !== true) return unasked(use, questions, file?.unusable ? "the use is switched off: the switches file could not be used" : "the use is switched off");
   if (Buffer.byteLength(JSON.stringify(state)) > MAX_STATE_BYTES) return unasked(use, questions, "the state is too large to send");
   const reply = await askProvider({ state, questions: Object.fromEntries(Object.entries(questions).map(([name, q]) => [name, wire(q)])) }, deps);
   const decision = "failed" in reply ? unasked(use, questions, reply.failed) : answered(use, questions, reply.answers, host.triage.minConfidence ?? DEFAULT_TRIAGE_MIN_CONFIDENCE);
@@ -174,9 +190,10 @@ export async function decide(use: DecisionUse, state: Readonly<Record<string, un
 
 /**
  * RECORD WHAT CAME OF A DECISION. `id` is the one `decide` was given in `deps.id`; the outcome is a short label the caller chooses (`merged`, `reopened`, `wrong-class`), so a
- * floor is tuned from real results. Without a `logPath` it records nothing, and it never throws.
+ * floor is tuned from real results. `reason` is why the outcome is not the provider's: a decision that never reached the provider (a switch off, a state too large, a key that
+ * could not be read) writes no line of its own, so this is the only line that can say it. Without a `logPath` it records nothing, and it never throws.
  */
-export function recordOutcome(use: DecisionUse, id: string, outcome: string, deps: Pick<DecisionDeps, "logPath" | "now" | "diagnostic">): void {
+export function recordOutcome(use: DecisionUse, id: string, outcome: string, deps: Pick<DecisionDeps, "logPath" | "now" | "diagnostic">, reason?: string): void {
   if (deps.logPath === undefined) return;
-  writeLine(deps.logPath, { use, id, outcome, at: (deps.now ?? Date.now)() }, deps.diagnostic ?? printDiagnostic);
+  writeLine(deps.logPath, { use, id, outcome, ...(reason === undefined ? {} : { reason }), at: (deps.now ?? Date.now)() }, deps.diagnostic ?? printDiagnostic);
 }
