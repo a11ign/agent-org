@@ -341,11 +341,14 @@ test("hostSeams.targets: Codex's is the newer of the two updater files with the 
       writeFileSync(join(home, ".codex", "packages", dir, "auto-update-version"), text);
     }
     const asked: string[] = [];
-    const seams = hostSeams({ home, runProgram: (program, args) => { asked.push(`${program} ${args.join(" ")}`); return "2.1.297\n"; } });
+    const seams = hostSeams({ home, runProgram: (program, args) => { asked.push(`${program} ${args.join(" ")}`); return JSON.stringify({ name: "@anthropic-ai/claude-code", version: "2.1.297" }); } });
     assert.deepEqual(seams.targets("2.1.300"), { "codex-cli": "0.162.1", "codex-daemon": "0.162.1", "claude-code": "2.1.300" });
     assert.deepEqual(asked, [], "a pinned Claude asks nobody");
     assert.equal(seams.targets()["claude-code"], "2.1.297");
-    assert.deepEqual(asked, ["npm view @anthropic-ai/claude-code version"]);
+    assert.deepEqual(asked, ["curl -fsS --max-time 20 https://registry.npmjs.org/@anthropic-ai/claude-code/latest"], "asked over curl, never npm");
+    // an answer with no version is NO target too
+    const blank = hostSeams({ home, runProgram: () => "{}" });
+    assert.equal(blank.targets()["claude-code"], undefined);
     // a registry that cannot be asked is NO target, never a guess
     const offline = hostSeams({ home, runProgram: () => { throw new Error("ENOTFOUND"); } });
     assert.equal(offline.targets()["claude-code"], undefined);

@@ -256,6 +256,9 @@ export function updateAgentTools(deps: Deps, options: Options = {}): Result {
 
 // ===== the live seams =====
 
+/** The registry's answer for the newest Claude Code release (the package the native installer's `claude` is built from). */
+const CLAUDE_REGISTRY_LATEST = "https://registry.npmjs.org/@anthropic-ai/claude-code/latest";
+
 const run = (program: string, args: string[], timeout = 60_000): string => execFileSync(program, args, { encoding: "utf8", timeout, stdio: ["ignore", "pipe", "pipe"] });
 const causeOf = (cause: unknown): string => {
   const { stderr } = cause as { stderr?: unknown };
@@ -322,13 +325,16 @@ export function hostSeams({ home = homedir(), runProgram = run, herdr = (args) =
         "claude-code": read("claude-code", () => /^(\S+) \(Claude Code\)/.exec(runProgram("claude", ["--version"]).trim())?.[1] ?? (() => { throw new Error("no version in `claude --version`"); })()),
       };
     },
-    /** Codex's latest is what its own updater selected (`auto-update-version`), the newer of the two files; Claude's is the npm registry's, or the flag. */
+    /** Codex's latest is what its own updater selected (`auto-update-version`), the newer of the two files; Claude's is the package registry's `latest` (read with `curl`: this tool spawns no npm, `no-npm-spawn.test.ts`), or the flag. */
     targets(claudePin?: string): Partial<Record<Tool, string>> {
       const files = [join(daemonPackages, "auto-update-version"), join(standalone, "auto-update-version")].map(readTarget).filter((v): v is string => v !== undefined);
       const latest = files.length === 0 ? undefined : files.reduce(newer);
       let claude = claudePin;
       if (claude === undefined) {
-        try { claude = runProgram("npm", ["view", "@anthropic-ai/claude-code", "version"], 30_000).trim() || undefined; } catch { claude = undefined; }
+        try {
+          const reported = JSON.parse(runProgram("curl", ["-fsS", "--max-time", "20", CLAUDE_REGISTRY_LATEST], 30_000)).version;
+          claude = typeof reported === "string" && reported !== "" ? reported : undefined;
+        } catch { claude = undefined; }
       }
       return { "codex-cli": latest, "codex-daemon": latest, "claude-code": claude };
     },
