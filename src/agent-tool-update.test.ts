@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { codexClientDaemonDrift } from "./codex-drift.ts";
 import { COMMANDS } from "./commands.ts";
 import { parseFailureLedger, recordFailures, type FailureEvent } from "./failure-ledger.ts";
-import { TOOL_DRIFT_KIND, hostSeams, judgeSmoke, plainDialogOnScreen, updateAgentTools, type Deps, type Options, type SmokeKind, type SmokeRaw, type Tool, type Versions } from "./agent-tool-update.ts";
+import { TOOL_DRIFT_KIND, hostSeams, judgeSmoke, plainDialogOnScreen, productOfSeat, toolsHeldBy, updateAgentTools, type Deps, type Options, type SmokeKind, type SmokeRaw, type Tool, type Versions } from "./agent-tool-update.ts";
 
 const OLD: Versions = { "codex-cli": "0.157.0", "codex-daemon": "0.162.1", "claude-code": "2.1.296" };
 const NEW = { "codex-cli": "0.162.1", "codex-daemon": "0.162.1", "claude-code": "2.1.296" } as const;
@@ -165,45 +165,128 @@ test("a revert that reports success but leaves the new version is caught by the 
   assert.match(result.line, /codex-cli reads 0\.162\.1, not 0\.157\.0/);
 });
 
-// (5) THE COMMAND REFUSES TO RUN WHILE A SEAT IS MID-TURN UNLESS TOLD WHICH SESSIONS TO LET FINISH.
-test("a seat mid-turn refuses the move at once, names it, and moves nothing", () => {
+// (5) THE COMMAND REFUSES TO RUN WHILE A SEAT THAT RUNS A TOOL TO BE MOVED IS MID-TURN UNLESS TOLD WHICH SESSIONS TO LET FINISH (#665: a seat of the other product is not held).
+test("a seat mid-turn that runs the tool being moved refuses at once, names it and the tools it holds for, and moves nothing", () => {
   const h = host({ working: [["reviewer-agent-org-601"]] });
   const result = run(h);
   assert.equal(result.outcome, "busy");
   assert.equal(result.exitCode, 1);
-  assert.match(result.line, /REFUSED: reviewer-agent-org-601 is mid-turn and was not named in --let-finish; nothing was moved/);
+  assert.match(result.line, /REFUSED: reviewer-agent-org-601 \(runs codex, held for codex-cli\) is mid-turn and was not named in --let-finish; nothing was moved/);
   assert.deepEqual([h.log.moves, h.log.smokes, h.log.sleeps], [[], [], []]);
 });
 
 test("a seat named in --let-finish is WAITED FOR, then the move proceeds; the control is the same seat unnamed (above)", () => {
-  const h = host({ working: [["worker-4799"], ["worker-4799"], []] });
-  const result = run(h, { letFinish: ["worker-4799"], waitMs: 10 * 60_000, pollMs: 30_000 });
+  const h = host({ working: [["reviewer-4799"], ["reviewer-4799"], []] });
+  const result = run(h, { letFinish: ["reviewer-4799"], waitMs: 10 * 60_000, pollMs: 30_000 });
   assert.equal(result.outcome, "kept");
   assert.deepEqual(h.log.sleeps, [30_000, 30_000], "it polled until the seat finished");
   assert.deepEqual(h.log.moves, ["codex-cli->0.162.1"]);
 });
 
 test("a named seat that never finishes refuses after the bound, and a second, unnamed seat refuses at once", () => {
-  const stuck = host({ working: [["worker-4799"]] });
-  const result = run(stuck, { letFinish: ["worker-4799"], waitMs: 2 * 60_000, pollMs: 30_000 });
+  const stuck = host({ working: [["reviewer-4799"]] });
+  const result = run(stuck, { letFinish: ["reviewer-4799"], waitMs: 2 * 60_000, pollMs: 30_000 });
   assert.equal(result.outcome, "busy");
-  assert.match(result.line, /worker-4799 still mid-turn after 2 min/);
+  assert.match(result.line, /reviewer-4799 still mid-turn after 2 min/);
   assert.deepEqual(stuck.log.moves, []);
-  const two = host({ working: [["worker-4799", "reviewer-9"]] });
-  const second = run(two, { letFinish: ["worker-4799"] });
-  assert.match(second.line, /REFUSED: reviewer-9 is mid-turn/);
-  assert.doesNotMatch(second.line, /worker-4799/, "only the unnamed seat is the refusal");
+  const two = host({ working: [["reviewer-4799", "reviewer-9"]] });
+  const second = run(two, { letFinish: ["reviewer-4799"] });
+  assert.match(second.line, /REFUSED: reviewer-9 \(runs codex, held for codex-cli\) is mid-turn/);
+  assert.doesNotMatch(second.line, /reviewer-4799/, "only the unnamed seat is the refusal");
   assert.deepEqual(two.log.sleeps, [], "an unnamed seat is not waited for");
 });
 
 test("the caller's own session is not held on, and an unreadable listing HOLDS the move (unknown is not idle)", () => {
-  const own = host({ working: [["worker-agent-org-462"]] });
-  assert.equal(run(own, { session: "worker-agent-org-462" }).outcome, "kept");
+  const own = host({ working: [["reviewer-462"]] });
+  assert.equal(run(own, { session: "reviewer-462" }).outcome, "kept");
+  assert.equal(run(host({ working: [["reviewer-462"]] })).outcome, "busy", "control: the same seat is held when it is not the caller");
   const unread = host({ working: [null] });
   const result = run(unread);
   assert.equal(result.outcome, "busy");
   assert.match(result.line, /NOT READ: herdr's seat listing/);
   assert.deepEqual(unread.log.moves, []);
+});
+
+// #665: THE HOLD IS THE SEATS THAT RUN A TOOL THIS RUN MOVES. Each case states its control, so a mutant that holds everything or nothing is killed by the other.
+const CODEX_ONLY = { start: OLD, target: NEW } as const;
+const CLAUDE_ONLY = { start: OLD, target: { ...OLD, "claude-code": "2.1.297" } } as const;
+const BOTH = { start: OLD, target: { ...NEW, "claude-code": "2.1.297" } } as const;
+
+test("#665: only codex-cli to move and Claude seats mid-turn gives NO refusal, no wait, and the seat is not named", () => {
+  for (const seat of ["worker-agent-org-665", "worker-1", "ceo", "orchestrator", "product-manager"]) {
+    const h = host({ ...CODEX_ONLY, working: [[seat]] });
+    const result = run(h);
+    assert.equal(result.outcome, "kept", seat);
+    assert.deepEqual(h.log.moves, ["codex-cli->0.162.1"], seat);
+    assert.deepEqual(h.log.sleeps, [], `${seat} is not waited for`);
+    assert.doesNotMatch(result.line, new RegExp(seat));
+  }
+  const control = run(host({ ...CODEX_ONLY, working: [["reviewer-1"]] }));
+  assert.equal(control.outcome, "busy", "control: the same move is held by a reviewer");
+});
+
+test("#665: only claude-code to move and a reviewer mid-turn gives no refusal; the control is a worker, which is held", () => {
+  for (const seat of ["reviewer-1", "reviewer-agent-org-601", "reviewer"]) {
+    const h = host({ ...CLAUDE_ONLY, working: [[seat]] });
+    const result = run(h);
+    assert.equal(result.outcome, "kept", seat);
+    assert.deepEqual(h.log.moves, ["claude-code->2.1.297"], seat);
+    assert.deepEqual(h.log.sleeps, []);
+  }
+  const control = run(host({ ...CLAUDE_ONLY, working: [["worker-agent-org-665"]] }));
+  assert.equal(control.outcome, "busy");
+  assert.match(control.line, /REFUSED: worker-agent-org-665 \(runs claude, held for claude-code\) is mid-turn/);
+});
+
+test("#665: both products moving, either seat mid-turn refuses naming that seat, and both seats refuse naming both", () => {
+  const reviewer = run(host({ ...BOTH, working: [["reviewer-2"]] }));
+  assert.equal(reviewer.outcome, "busy");
+  assert.match(reviewer.line, /REFUSED: reviewer-2 \(runs codex, held for codex-cli\) is mid-turn/);
+  const worker = run(host({ ...BOTH, working: [["worker-3"]] }));
+  assert.equal(worker.outcome, "busy");
+  assert.match(worker.line, /REFUSED: worker-3 \(runs claude, held for claude-code\) is mid-turn/);
+  const both = host({ ...BOTH, working: [["worker-3", "reviewer-2"]] });
+  const refusal = run(both);
+  assert.match(refusal.line, /worker-3 \(runs claude/);
+  assert.match(refusal.line, /reviewer-2 \(runs codex/);
+  assert.deepEqual(both.log.moves, []);
+});
+
+test("#665: a seat whose label matches neither rule is held for every tool being moved, whichever product moves, and says so", () => {
+  for (const [name, move, tools] of [["codex", CODEX_ONLY, "codex-cli"], ["claude", CLAUDE_ONLY, "claude-code"], ["both", BOTH, "codex-cli, claude-code"]] as const) {
+    for (const seat of ["mystery-seat", "smoke-reviewer-m1abc", "reviewerx"]) {
+      const h = host({ ...move, working: [[seat]] });
+      const result = run(h);
+      assert.equal(result.outcome, "busy", `${name}: ${seat}`);
+      assert.match(result.line, new RegExp(`REFUSED: ${seat} \\(product unknown, so held for ${tools}\\) is mid-turn`));
+      assert.deepEqual(h.log.moves, []);
+    }
+  }
+});
+
+test("#665: a seat outside the hold set is not waited for while a named seat inside it is", () => {
+  const h = host({ ...CODEX_ONLY, working: [["reviewer-1", "worker-1"], ["worker-1"]] });
+  const result = run(h, { letFinish: ["reviewer-1"], waitMs: 10 * 60_000, pollMs: 30_000 });
+  assert.equal(result.outcome, "kept");
+  assert.deepEqual(h.log.sleeps, [30_000], "one poll, for the reviewer; the worker never kept it waiting");
+  const still = host({ ...CODEX_ONLY, working: [["reviewer-1", "worker-1"]] });
+  const bounded = run(still, { letFinish: ["reviewer-1"], waitMs: 60_000, pollMs: 30_000 });
+  assert.equal(bounded.outcome, "busy");
+  assert.match(bounded.line, /REFUSED: reviewer-1 still mid-turn/);
+  assert.doesNotMatch(bounded.line, /worker-1/);
+});
+
+test("#665: productOfSeat is the one label-to-product rule, and a label matching neither rule has no product", () => {
+  assert.equal(productOfSeat("reviewer-1"), "codex");
+  assert.equal(productOfSeat("reviewer"), "codex");
+  assert.equal(productOfSeat("worker-agent-org-665"), "claude");
+  assert.equal(productOfSeat("ceo"), "claude");
+  assert.equal(productOfSeat("smoke-reviewer-m1abc"), null);
+  assert.equal(productOfSeat("reviewerx"), null);
+  assert.equal(productOfSeat(""), null);
+  assert.deepEqual(toolsHeldBy("reviewer-1", ["codex-cli", "codex-daemon", "claude-code"]), ["codex-cli", "codex-daemon"]);
+  assert.deepEqual(toolsHeldBy("worker-1", ["codex-cli", "codex-daemon", "claude-code"]), ["claude-code"]);
+  assert.deepEqual(toolsHeldBy("who", ["codex-daemon"]), ["codex-daemon"]);
 });
 
 // The roads the row does not name but a wrong revert would strand reviewers on.
