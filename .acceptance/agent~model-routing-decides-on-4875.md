@@ -38,11 +38,11 @@ Each applied to the source, the test file run, and the source restored byte-iden
 - The floor discards again (a floored answer keeps no distribution) -> 7 red; no answer keeps a distribution -> 18 red.
 - Score keys left zero-based -> 7 red; a total over 1 kept -> 1 red; an empty record taken as a distribution -> 4 red.
 
-Acceptance: `bash -c 'cd ~/repos/agent-org && npx rstest run src/engineer-route.test.ts'`
+Acceptance: `npx rstest run --config scripts/rstest/rstest.config.* src/engineer-route.test.ts`
 
 ## Anything a reviewer should be sceptical of
 
-- **The row's command runs the primary checkout**, which does not hold this change until it merges; the same file was run from the worktree with its own config (above). Both are `rstest`.
+- **The command is not the row's verbatim.** The row's is `bash -c 'cd ~/repos/agent-org && npx rstest run src/engineer-route.test.ts'`, which runs the primary checkout (it holds this change only after it merges, and without `--config` finds no suites in that tree: `pr-open` ran it and got `No test suites found`). The one above is the same file, run from this worktree with the repository's own config, as the previous acceptance files do.
 - **The thresholds are the chairman's starting values, not calibrated.** The decision log has had no probabilities until now, so there is nothing to calibrate against; the first daily reading is the verify row's.
 - **The window still reads the floor.** `adjustWindow` and `provider-confidence.ts` use `value`/`fellBack`, so a routing answer under the floor is still reported there as "under floor" while the route used it. That is left alone on purpose; moving them is a separate row.
 - **Open-check:** `grep -cE 'route haiku/high via jev' ~/.cache/a11ign/decisions` prints 0 because the line carries `window <w>` between them; with that allowed for, 2 of 78 provider routes are Haiku/high. A reading at a moment of a log that grows.
