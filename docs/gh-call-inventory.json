@@ -1,0 +1,1393 @@
+{
+  "generatedBy": "src/packaging/gh-call-inventory.ts",
+  "summary": {
+    "files": 92,
+    "spawns": 133,
+    "calls": 381,
+    "shapes": {
+      "api rest": 131,
+      "issue list": 42,
+      "api graphql": 37,
+      "issue view": 33,
+      "pr list": 29,
+      "issue comment": 26,
+      "pr view": 17,
+      "issue edit": 13,
+      "label create": 10,
+      "pr merge": 6,
+      "project item-edit": 5,
+      "issue create": 4,
+      "pr comment": 4,
+      "run list": 4,
+      "run view": 4,
+      "issue close": 3,
+      "pr edit": 3,
+      "project item-add": 2,
+      "label list": 1,
+      "pr close": 1,
+      "pr ready": 1,
+      "release create": 1,
+      "release upload": 1,
+      "release view": 1,
+      "repo view": 1,
+      "workflow run": 1
+    }
+  },
+  "files": {
+    "src/api-pool.ts": {
+      "spawns": 0,
+      "calls": {
+        "api graphql": 1
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/arm-pr.ts": {
+      "spawns": 2,
+      "calls": {
+        "api graphql": 2,
+        "api rest": 1,
+        "issue view": 2,
+        "pr comment": 1,
+        "pr edit": 1,
+        "pr merge": 1,
+        "pr view": 3
+      },
+      "labels": [
+        "$SESSION_PREFIX"
+      ],
+      "parsesCloses": false
+    },
+    "src/auto-arm-sweep.ts": {
+      "spawns": 1,
+      "calls": {
+        "api graphql": 1,
+        "api rest": 2,
+        "pr merge": 1,
+        "pr view": 4
+      },
+      "labels": [
+        "$BLOCKED_LABEL",
+        "$HOLD_PREFIX",
+        "$SESSION_PREFIX"
+      ],
+      "parsesCloses": false
+    },
+    "src/blast-radius.ts": {
+      "spawns": 1,
+      "calls": {
+        "api rest": 1,
+        "issue list": 1
+      },
+      "labels": [
+        "$BACKLOG_LABEL",
+        "$CLAIM_LABEL",
+        "$NO_CODE_LEFT_LABEL",
+        "$READY_LABEL"
+      ],
+      "parsesCloses": false
+    },
+    "src/board-data.ts": {
+      "spawns": 2,
+      "calls": {
+        "api graphql": 1,
+        "api rest": 2,
+        "pr list": 1
+      },
+      "labels": [
+        "$META_LABEL",
+        "$OUT_OF_RELEASE_LABEL",
+        "$READY_LABEL"
+      ],
+      "parsesCloses": false
+    },
+    "src/board-discussion.ts": {
+      "spawns": 0,
+      "calls": {
+        "api graphql": 1
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/board-document.ts": {
+      "spawns": 3,
+      "calls": {
+        "release create": 1,
+        "release upload": 1,
+        "release view": 1
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/board-report.ts": {
+      "spawns": 0,
+      "calls": {
+        "api rest": 2,
+        "issue comment": 1,
+        "issue list": 1
+      },
+      "labels": [
+        "$BACKLOG_LABEL",
+        "$READY_LABEL",
+        "$SESSION_PREFIX"
+      ],
+      "parsesCloses": false
+    },
+    "src/board-schedule-liveness.ts": {
+      "spawns": 0,
+      "calls": {
+        "api rest": 1,
+        "issue comment": 1,
+        "issue view": 2,
+        "run list": 3
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/board-snapshot-scope.ts": {
+      "spawns": 0,
+      "calls": {
+        "api graphql": 1
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/board-snapshot.ts": {
+      "spawns": 5,
+      "calls": {
+        "api graphql": 1,
+        "issue list": 1
+      },
+      "labels": [
+        "$READY_LABEL"
+      ],
+      "parsesCloses": false
+    },
+    "src/board-summary-check.ts": {
+      "spawns": 0,
+      "calls": {
+        "issue comment": 1,
+        "issue view": 1
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/board-truth-audit.ts": {
+      "spawns": 1,
+      "calls": {
+        "api graphql": 1,
+        "api rest": 2,
+        "issue comment": 1,
+        "issue list": 4,
+        "pr list": 2
+      },
+      "labels": [
+        "$ANSWER_PREFIX",
+        "$BACKLOG_LABEL",
+        "$CLAIM_LABEL",
+        "$LANE_ANY_LABEL",
+        "$LANE_PREFIX",
+        "$NEEDS_CHAIRMAN_LABEL",
+        "$NO_CODE_LEFT_LABEL",
+        "$PARKED_LABEL",
+        "$SESSION_PREFIX",
+        "$STARTED_LABEL",
+        "$STATE_LABEL",
+        "$STATE_LABELS"
+      ],
+      "parsesCloses": true
+    },
+    "src/branch-inventory-report.ts": {
+      "spawns": 3,
+      "calls": {
+        "api rest": 3
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/carry-branch.ts": {
+      "spawns": 2,
+      "calls": {
+        "pr comment": 1,
+        "pr list": 1
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/ci-health-liveness.ts": {
+      "spawns": 1,
+      "calls": {
+        "api rest": 4
+      },
+      "labels": [
+        "$READY_LABEL"
+      ],
+      "parsesCloses": false
+    },
+    "src/claim-label-strip.ts": {
+      "spawns": 0,
+      "calls": {
+        "issue edit": 1
+      },
+      "labels": [
+        "$CLAIM_LABEL",
+        "$READY_LABEL",
+        "$SESSION_PREFIX",
+        "$STARTED_LABEL"
+      ],
+      "parsesCloses": false
+    },
+    "src/claim-provenance.ts": {
+      "spawns": 3,
+      "calls": {
+        "api graphql": 1,
+        "api rest": 1,
+        "issue list": 1
+      },
+      "labels": [
+        "$SESSION_PREFIX"
+      ],
+      "parsesCloses": false
+    },
+    "src/claim-stall.ts": {
+      "spawns": 1,
+      "calls": {
+        "api rest": 1
+      },
+      "labels": [
+        "$ANSWER_PREFIX",
+        "$SESSION_PREFIX"
+      ],
+      "parsesCloses": false
+    },
+    "src/class-repeat.ts": {
+      "spawns": 1,
+      "calls": {
+        "api rest": 2,
+        "issue edit": 1,
+        "label create": 2
+      },
+      "labels": [
+        "$CLASS_LABEL_PREFIX",
+        "$DEFECT_LABEL"
+      ],
+      "parsesCloses": false
+    },
+    "src/close-rows-for-merged-pr.ts": {
+      "spawns": 2,
+      "calls": {
+        "api graphql": 4,
+        "api rest": 2,
+        "issue close": 1,
+        "issue comment": 1,
+        "issue create": 1,
+        "issue edit": 1,
+        "issue list": 1,
+        "issue view": 1
+      },
+      "labels": [
+        "$ANSWER_PREFIX",
+        "$CLAIM_LABEL"
+      ],
+      "parsesCloses": true
+    },
+    "src/close-rows-sweep.ts": {
+      "spawns": 1,
+      "calls": {
+        "api graphql": 1,
+        "issue close": 1,
+        "pr list": 1
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/closes-mismatch-check.ts": {
+      "spawns": 0,
+      "calls": {
+        "api graphql": 1,
+        "api rest": 1
+      },
+      "labels": [
+        "$CLAIM_LABEL"
+      ],
+      "parsesCloses": false
+    },
+    "src/decision-confidence-post.ts": {
+      "spawns": 1,
+      "calls": {
+        "api rest": 1,
+        "issue comment": 1
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/dora.ts": {
+      "spawns": 2,
+      "calls": {
+        "api rest": 4,
+        "issue list": 1,
+        "pr list": 1,
+        "pr view": 1,
+        "repo view": 1
+      },
+      "labels": [
+        "regression"
+      ],
+      "parsesCloses": false
+    },
+    "src/duplicate-row.ts": {
+      "spawns": 2,
+      "calls": {
+        "issue list": 1,
+        "issue view": 1
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/fleet-gated-nightly.ts": {
+      "spawns": 0,
+      "calls": {
+        "issue comment": 1,
+        "issue list": 1
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/hand-fix-ledger.ts": {
+      "spawns": 1,
+      "calls": {
+        "api rest": 2,
+        "pr list": 1
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/host-kernel.ts": {
+      "spawns": 1,
+      "calls": {
+        "issue comment": 1
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/host-units.ts": {
+      "spawns": 2,
+      "calls": {
+        "api rest": 1
+      },
+      "labels": [
+        "$HAIKU_TIER_LABEL"
+      ],
+      "parsesCloses": false
+    },
+    "src/lane-ownership.ts": {
+      "spawns": 0,
+      "calls": {
+        "api rest": 1
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/lib/tool-version-agreement.ts": {
+      "spawns": 1,
+      "calls": {
+        "api rest": 2,
+        "run view": 1
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/merge-guard.ts": {
+      "spawns": 0,
+      "calls": {
+        "api rest": 3,
+        "pr view": 2
+      },
+      "labels": [
+        "$HOLD_PREFIX",
+        "$SESSION_PREFIX"
+      ],
+      "parsesCloses": false
+    },
+    "src/merge-guard/armed-race-rule.ts": {
+      "spawns": 0,
+      "calls": {
+        "api rest": 1,
+        "pr list": 1
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/merge-guard/lookups.ts": {
+      "spawns": 2,
+      "calls": {
+        "api graphql": 2,
+        "api rest": 2
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/merge-queue.ts": {
+      "spawns": 1,
+      "calls": {
+        "api rest": 2,
+        "pr list": 1,
+        "pr merge": 1
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/messaging/github-writer.ts": {
+      "spawns": 1,
+      "calls": {
+        "api rest": 5
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/messaging/placeholders.ts": {
+      "spawns": 0,
+      "calls": {
+        "api rest": 1,
+        "pr view": 1
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/messaging/reply-cli.ts": {
+      "spawns": 1,
+      "calls": {},
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/messaging/watch-list.ts": {
+      "spawns": 1,
+      "calls": {},
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/messaging/watch.ts": {
+      "spawns": 1,
+      "calls": {
+        "api rest": 1,
+        "issue list": 1,
+        "issue view": 1,
+        "pr list": 2
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/org-health.ts": {
+      "spawns": 0,
+      "calls": {
+        "api rest": 5
+      },
+      "labels": [
+        "$ANSWER_PREFIX",
+        "$BACKLOG_LABEL",
+        "$CLASS_LABEL_PREFIX",
+        "$PARKED_LABEL",
+        "$READY_LABEL",
+        "$STATE_LABEL",
+        "$STATE_LABELS"
+      ],
+      "parsesCloses": false
+    },
+    "src/org-retro.ts": {
+      "spawns": 1,
+      "calls": {
+        "issue list": 2,
+        "pr list": 4
+      },
+      "labels": [
+        "$CLAIM_LABEL",
+        "$HAIKU_TIER_LABEL",
+        "$READY_LABEL",
+        "$SESSION_PREFIX"
+      ],
+      "parsesCloses": false
+    },
+    "src/org-watch.ts": {
+      "spawns": 1,
+      "calls": {
+        "api rest": 3,
+        "run view": 1
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/pr-armed-state.ts": {
+      "spawns": 0,
+      "calls": {
+        "api graphql": 2
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/pr-hold.ts": {
+      "spawns": 2,
+      "calls": {
+        "issue view": 1,
+        "label create": 1,
+        "pr comment": 1,
+        "pr edit": 1,
+        "pr merge": 2,
+        "pr view": 4
+      },
+      "labels": [
+        "$HOLD_PREFIX",
+        "$REARM_LABEL"
+      ],
+      "parsesCloses": false
+    },
+    "src/pr-open.ts": {
+      "spawns": 6,
+      "calls": {
+        "api rest": 5,
+        "label create": 1,
+        "pr edit": 1,
+        "pr merge": 1
+      },
+      "labels": [
+        "$SESSION_PREFIX"
+      ],
+      "parsesCloses": false
+    },
+    "src/provider-low-confidence.ts": {
+      "spawns": 1,
+      "calls": {
+        "issue list": 1,
+        "label create": 1
+      },
+      "labels": [
+        "$CLASS_LABEL"
+      ],
+      "parsesCloses": false
+    },
+    "src/prune-tmp.ts": {
+      "spawns": 1,
+      "calls": {
+        "pr list": 1
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/queue-stalled.ts": {
+      "spawns": 1,
+      "calls": {
+        "pr list": 1
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/queue-table.ts": {
+      "spawns": 2,
+      "calls": {
+        "api graphql": 2,
+        "api rest": 5,
+        "run list": 1
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/ready-label-audit.ts": {
+      "spawns": 9,
+      "calls": {
+        "api graphql": 3,
+        "api rest": 5,
+        "issue list": 6,
+        "pr list": 2
+      },
+      "labels": [
+        "$BACKLOG_LABEL",
+        "$BLOCKED_LABEL",
+        "$CLAIM_LABEL",
+        "$MUTEX_LABELS",
+        "$OUT_OF_RELEASE_LABEL",
+        "$READY_LABEL",
+        "$SESSION_PREFIX",
+        "$STATE_LABELS",
+        "$WAS_READY_LABEL"
+      ],
+      "parsesCloses": false
+    },
+    "src/release-behind-main.ts": {
+      "spawns": 0,
+      "calls": {
+        "api rest": 4
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/row-claim.ts": {
+      "spawns": 18,
+      "calls": {
+        "api rest": 1,
+        "issue comment": 4,
+        "issue edit": 2,
+        "issue list": 1,
+        "issue view": 2,
+        "label create": 1,
+        "project item-edit": 1
+      },
+      "labels": [
+        "$ANSWER_LABEL_PREFIX",
+        "$ANSWER_PREFIX",
+        "$BACKLOG_LABEL",
+        "$BLOCKED_LABEL",
+        "$BRANCH_LABEL_PREFIX",
+        "$CHAIRMAN_PRIORITY_LABEL",
+        "$CLAIM_LABEL",
+        "$READY_LABEL",
+        "$SESSION_PREFIX",
+        "$STARTED_LABEL",
+        "$STATE_LABELS",
+        "$WAS_READY_LABEL",
+        "$WORKTREE_LABEL_PREFIX"
+      ],
+      "parsesCloses": false
+    },
+    "src/row-claim/blocked-by-edge-rule.ts": {
+      "spawns": 0,
+      "calls": {
+        "issue view": 1
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/row-claim/blocked-by-rule.ts": {
+      "spawns": 0,
+      "calls": {
+        "issue view": 1,
+        "pr view": 1
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/row-claim/file-overlap-rule.ts": {
+      "spawns": 0,
+      "calls": {
+        "api rest": 1,
+        "issue list": 1,
+        "issue view": 1,
+        "pr list": 1
+      },
+      "labels": [
+        "$CLAIM_LABEL",
+        "$NO_CODE_LEFT_LABEL"
+      ],
+      "parsesCloses": false
+    },
+    "src/row-claim/own-pr-health-rule.ts": {
+      "spawns": 0,
+      "calls": {
+        "api graphql": 2,
+        "api rest": 1,
+        "issue comment": 1,
+        "issue edit": 1,
+        "issue list": 1,
+        "issue view": 2,
+        "label create": 1,
+        "pr list": 1,
+        "pr view": 1
+      },
+      "labels": [
+        "$ANSWER_PREFIX",
+        "$CLAIM_LABEL",
+        "$SESSION_PREFIX"
+      ],
+      "parsesCloses": false
+    },
+    "src/row-claim/stale-rule-guard.ts": {
+      "spawns": 1,
+      "calls": {
+        "api rest": 1
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/row-claim/template-fields-rule.ts": {
+      "spawns": 0,
+      "calls": {
+        "issue view": 1
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/row-file.ts": {
+      "spawns": 18,
+      "calls": {
+        "api graphql": 3,
+        "api rest": 3,
+        "issue create": 1,
+        "issue edit": 1,
+        "issue list": 1,
+        "issue view": 4,
+        "label create": 1,
+        "project item-add": 1,
+        "project item-edit": 2
+      },
+      "labels": [
+        "$ANSWER_PREFIX",
+        "$BACKLOG_LABEL",
+        "$BOARD_LABELS",
+        "$CLAIM_LABEL",
+        "$DEFECT_LABEL",
+        "$EPIC_LABEL",
+        "$KIND_LABELS",
+        "$LANE_ANY_LABEL",
+        "$LANE_PREFIX",
+        "$OUT_OF_RELEASE_LABEL",
+        "$READY_LABEL",
+        "$STATE_LABELS"
+      ],
+      "parsesCloses": false
+    },
+    "src/row-reachability.ts": {
+      "spawns": 1,
+      "calls": {
+        "issue view": 1,
+        "pr list": 2
+      },
+      "labels": [
+        "$BLOCKED_LABEL"
+      ],
+      "parsesCloses": false
+    },
+    "src/settle-closed-rows.ts": {
+      "spawns": 1,
+      "calls": {},
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/settle-closed-status.ts": {
+      "spawns": 0,
+      "calls": {
+        "api graphql": 1
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/stranded-branches.ts": {
+      "spawns": 4,
+      "calls": {
+        "api rest": 1,
+        "pr close": 1,
+        "pr comment": 1,
+        "pr list": 1
+      },
+      "labels": [
+        "$BLOCKED_LABEL"
+      ],
+      "parsesCloses": false
+    },
+    "src/survey.ts": {
+      "spawns": 1,
+      "calls": {},
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/sweep-window.ts": {
+      "spawns": 0,
+      "calls": {
+        "issue comment": 1,
+        "issue list": 1,
+        "issue view": 1,
+        "pr list": 1
+      },
+      "labels": [
+        "$CLAIM_LABEL",
+        "$SESSION_PREFIX"
+      ],
+      "parsesCloses": false
+    },
+    "src/tick-snapshot.ts": {
+      "spawns": 1,
+      "calls": {
+        "api rest": 1
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/ticket-port/github-adapter.ts": {
+      "spawns": 0,
+      "calls": {
+        "api graphql": 2,
+        "issue comment": 1,
+        "issue edit": 1,
+        "project item-edit": 1
+      },
+      "labels": [
+        "$ANSWER_PREFIX",
+        "$BACKLOG_LABEL",
+        "$CHAIRMAN_PRIORITY_LABEL",
+        "$CLAIM_LABEL",
+        "$LANE_PREFIX",
+        "$OUT_OF_RELEASE_LABEL",
+        "$READY_LABEL",
+        "$STATE_LABEL",
+        "$STATE_OF_LABEL"
+      ],
+      "parsesCloses": false
+    },
+    "src/trace/freshness.ts": {
+      "spawns": 1,
+      "calls": {
+        "issue comment": 1
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/trace/haiku-tier-report.ts": {
+      "spawns": 1,
+      "calls": {
+        "issue list": 1
+      },
+      "labels": [
+        "$HAIKU_TIER_LABEL"
+      ],
+      "parsesCloses": false
+    },
+    "src/trace/headless-pilot.ts": {
+      "spawns": 1,
+      "calls": {
+        "issue view": 1
+      },
+      "labels": [
+        "$SESSION_PREFIX"
+      ],
+      "parsesCloses": false
+    },
+    "src/trace/publish.ts": {
+      "spawns": 1,
+      "calls": {
+        "api rest": 1
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/trace/trace.ts": {
+      "spawns": 1,
+      "calls": {
+        "api rest": 1
+      },
+      "labels": [
+        "$STOP_LABEL"
+      ],
+      "parsesCloses": false
+    },
+    "src/tracker-comment.ts": {
+      "spawns": 1,
+      "calls": {
+        "api rest": 2
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/trunk-red.ts": {
+      "spawns": 1,
+      "calls": {
+        "api rest": 4,
+        "run view": 1
+      },
+      "labels": [
+        "$LANE_PREFIX",
+        "$READY_LABEL",
+        "$SESSION_PREFIX"
+      ],
+      "parsesCloses": false
+    },
+    "src/trunk-sweep.ts": {
+      "spawns": 1,
+      "calls": {
+        "api rest": 2,
+        "workflow run": 1
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/unpark-satisfied.ts": {
+      "spawns": 0,
+      "calls": {
+        "api graphql": 1,
+        "api rest": 2,
+        "issue comment": 1,
+        "issue view": 1
+      },
+      "labels": [
+        "$ANSWER_PREFIX",
+        "$BACKLOG_LABEL",
+        "$BLOCKED_LABEL",
+        "$CLAIM_LABEL",
+        "$NEEDS_CHAIRMAN_LABEL",
+        "$PARKED_LABEL",
+        "$READY_LABEL"
+      ],
+      "parsesCloses": false
+    },
+    "src/untiered-ready-rows.ts": {
+      "spawns": 1,
+      "calls": {
+        "issue list": 1
+      },
+      "labels": [
+        "$EXCLUDED_LABELS",
+        "$HAIKU_TIER_LABEL",
+        "$HOLD_LABEL_PREFIX",
+        "$LANE_PREFIX",
+        "$NEEDS_CHAIRMAN_LABEL",
+        "$READY_LABEL"
+      ],
+      "parsesCloses": false
+    },
+    "src/unwaited-stock-rows.ts": {
+      "spawns": 1,
+      "calls": {
+        "api rest": 1,
+        "issue list": 1
+      },
+      "labels": [
+        "$BACKLOG_LABEL",
+        "$NEEDS_CHAIRMAN_LABEL",
+        "$PARKED_LABEL",
+        "$STANDING_WAIT_LABELS",
+        "$STOCK_LABELS"
+      ],
+      "parsesCloses": false
+    },
+    "src/wake.ts": {
+      "spawns": 2,
+      "calls": {
+        "api graphql": 1,
+        "api rest": 4,
+        "issue close": 1,
+        "issue comment": 4,
+        "issue create": 1,
+        "issue edit": 2,
+        "issue list": 3,
+        "issue view": 4,
+        "project item-add": 1,
+        "project item-edit": 1
+      },
+      "labels": [
+        "$ANSWER_PREFIX",
+        "$ESCALATION_LABEL",
+        "$FILED_STUCK_ROW_LABELS",
+        "$OUT_OF_RELEASE_LABEL",
+        "$PARKED_LABEL",
+        "$READY_LABEL",
+        "$SESSION_PREFIX"
+      ],
+      "parsesCloses": false
+    },
+    "src/wakes-per-row.ts": {
+      "spawns": 1,
+      "calls": {
+        "api rest": 2
+      },
+      "labels": [],
+      "parsesCloses": true
+    },
+    "src/work-gate.ts": {
+      "spawns": 1,
+      "calls": {
+        "api graphql": 2,
+        "api rest": 15,
+        "issue comment": 2,
+        "issue create": 1,
+        "issue list": 9,
+        "label create": 1,
+        "label list": 1,
+        "pr list": 4,
+        "pr ready": 1,
+        "run view": 1
+      },
+      "labels": [
+        "$ANSWER_PREFIX",
+        "$AWAITING_EVIDENCE_LABEL",
+        "$BACKLOG_LABEL",
+        "$BLOCKED_LABEL",
+        "$CHAIRMAN_LABEL",
+        "$CHAIRMAN_PRIORITY_LABEL",
+        "$CLAIM_LABEL",
+        "$EPIC_LABEL",
+        "$LANE_PREFIX",
+        "$NEEDS_CHAIRMAN_LABEL",
+        "$OUT_OF_RELEASE_LABEL",
+        "$PARKED_LABEL",
+        "$PRIORITY_LABEL",
+        "$READY_LABEL",
+        "$RESOLVER_DEFECT_LABEL",
+        "$SESSION_PREFIX",
+        "fleet-gated"
+      ],
+      "parsesCloses": false
+    },
+    "src/work-gate/chairman-ask-orders.ts": {
+      "spawns": 0,
+      "calls": {
+        "issue comment": 1,
+        "issue edit": 2,
+        "issue view": 1
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/work-gate/held-on-satisfied-orders.ts": {
+      "spawns": 0,
+      "calls": {
+        "api rest": 1
+      },
+      "labels": [
+        "$READY_LABEL"
+      ],
+      "parsesCloses": false
+    },
+    "src/work-gate/org-health.ts": {
+      "spawns": 0,
+      "calls": {
+        "api rest": 5,
+        "issue comment": 1
+      },
+      "labels": [
+        "$ANSWER_PREFIX",
+        "$CLAIM_LABEL",
+        "$LANE_PREFIX",
+        "$NEEDS_CHAIRMAN_LABEL",
+        "$READY_LABEL",
+        "$SESSION_PREFIX"
+      ],
+      "parsesCloses": false
+    },
+    "src/work-gate/ready-when-unblocked.ts": {
+      "spawns": 0,
+      "calls": {
+        "issue view": 1
+      },
+      "labels": [
+        "$ANSWER_PREFIX",
+        "$BACKLOG_LABEL",
+        "$CLAIM_LABEL",
+        "$NEEDS_CHAIRMAN_LABEL",
+        "$READY_LABEL"
+      ],
+      "parsesCloses": false
+    },
+    "src/work-gate/row-call-count-orders.ts": {
+      "spawns": 0,
+      "calls": {
+        "api rest": 1
+      },
+      "labels": [
+        "$ANSWER_PREFIX",
+        "$BLOCKED_LABEL",
+        "$HOLD_PREFIX",
+        "$NEEDS_CHAIRMAN_LABEL",
+        "$PARKED_LABEL",
+        "$SESSION_PREFIX"
+      ],
+      "parsesCloses": false
+    },
+    "src/work-tick.ts": {
+      "spawns": 2,
+      "calls": {
+        "api rest": 2
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/worker-state.ts": {
+      "spawns": 1,
+      "calls": {
+        "issue comment": 1,
+        "issue edit": 1,
+        "label create": 1
+      },
+      "labels": [
+        "$ANSWER_PREFIX"
+      ],
+      "parsesCloses": false
+    },
+    "src/workflow-run-liveness.ts": {
+      "spawns": 0,
+      "calls": {
+        "api rest": 1
+      },
+      "labels": [],
+      "parsesCloses": false
+    },
+    "src/worktree-removal.ts": {
+      "spawns": 1,
+      "calls": {
+        "issue view": 2
+      },
+      "labels": [
+        "$SESSION_PREFIX"
+      ],
+      "parsesCloses": false
+    }
+  },
+  "causes": {
+    "draft-awaiting-verdict": {
+      "group": "ACTION",
+      "namedIn": [
+        "src/wake.ts",
+        "src/work-gate.ts"
+      ]
+    },
+    "draft-convinced-not-ready": {
+      "group": "ACTION",
+      "namedIn": []
+    },
+    "verdict-not-convinced": {
+      "group": "ACTION",
+      "namedIn": []
+    },
+    "pr-checks-failing": {
+      "group": "ACTION",
+      "namedIn": [
+        "src/claim-stall.ts",
+        "src/wake.ts",
+        "src/work-gate.ts"
+      ]
+    },
+    "ready-queue-empty": {
+      "group": "JUDGMENT_START",
+      "namedIn": [
+        "src/work-gate.ts"
+      ]
+    },
+    "lane-backlog-unpromoted": {
+      "group": "JUDGMENT_START",
+      "namedIn": [
+        "src/work-gate.ts"
+      ]
+    },
+    "chairman-blocked": {
+      "group": "JUDGMENT",
+      "namedIn": [
+        "src/work-gate.ts"
+      ]
+    },
+    "chairman-answered": {
+      "group": "JUDGMENT",
+      "namedIn": [
+        "src/work-gate.ts"
+      ]
+    },
+    "org-stalled": {
+      "group": "JUDGMENT_START",
+      "namedIn": [
+        "src/org-retro.ts",
+        "src/work-gate.ts"
+      ]
+    },
+    "epic-unfiled": {
+      "group": "JUDGMENT_START",
+      "namedIn": [
+        "src/work-gate.ts"
+      ]
+    },
+    "epic-finished": {
+      "group": "JUDGMENT_START",
+      "namedIn": [
+        "src/work-gate.ts"
+      ]
+    },
+    "answer-owed": {
+      "group": "ACTION",
+      "namedIn": [
+        "src/work-gate.ts"
+      ]
+    },
+    "blocked-unexaminable": {
+      "group": "JUDGMENT_START",
+      "namedIn": [
+        "src/work-gate.ts"
+      ]
+    },
+    "blocker-cleared": {
+      "group": "JUDGMENT",
+      "namedIn": [
+        "src/wakes-per-row.ts",
+        "src/work-gate.ts"
+      ]
+    },
+    "pr-green-unarmed": {
+      "group": "ACTION",
+      "namedIn": []
+    },
+    "claimed-row-amended": {
+      "group": "JUDGMENT",
+      "namedIn": [
+        "src/work-gate.ts"
+      ]
+    },
+    "row-branch-unshipped": {
+      "group": "JUDGMENT",
+      "namedIn": [
+        "src/work-gate.ts"
+      ]
+    },
+    "ready-row-incomplete": {
+      "group": "JUDGMENT",
+      "namedIn": [
+        "src/work-gate.ts"
+      ]
+    },
+    "closes-unresolved-repo-wide": {
+      "group": "JUDGMENT",
+      "namedIn": [
+        "src/work-gate.ts"
+      ]
+    },
+    "primary-stale": {
+      "group": "ACTION",
+      "namedIn": [
+        "src/work-gate.ts"
+      ]
+    },
+    "host-units-stale": {
+      "group": "ACTION",
+      "namedIn": [
+        "src/work-gate.ts"
+      ]
+    },
+    "pr-review-blocked": {
+      "group": "ACTION",
+      "namedIn": [
+        "src/claim-stall.ts"
+      ]
+    },
+    "unclaimed-blocker-cleared": {
+      "group": "JUDGMENT_START",
+      "namedIn": [
+        "src/work-gate.ts"
+      ]
+    },
+    "pr-merge-conflict": {
+      "group": "ACTION",
+      "namedIn": []
+    },
+    "trunk-red": {
+      "group": "ACTION",
+      "namedIn": [
+        "src/trunk-red.ts",
+        "src/wake.ts"
+      ]
+    },
+    "verdict-comment-unreviewed": {
+      "group": "ACTION",
+      "namedIn": [
+        "src/wake.ts",
+        "src/work-gate.ts"
+      ]
+    },
+    "reviewer-auth-failed": {
+      "group": "JUDGMENT",
+      "namedIn": [
+        "src/work-gate.ts"
+      ]
+    },
+    "awaiting-evidence-stale": {
+      "group": "JUDGMENT",
+      "namedIn": []
+    },
+    "disk-headroom-low": {
+      "group": "JUDGMENT",
+      "namedIn": [
+        "src/work-gate.ts"
+      ]
+    },
+    "tick-overran": {
+      "group": "JUDGMENT",
+      "namedIn": []
+    },
+    "repeating-log-line": {
+      "group": "JUDGMENT",
+      "namedIn": []
+    },
+    "backlog-aged-unpromoted": {
+      "group": "JUDGMENT",
+      "namedIn": [
+        "src/work-gate.ts"
+      ]
+    },
+    "claim-stalled": {
+      "group": "ACTION",
+      "namedIn": [
+        "src/claim-stall.ts",
+        "src/org-retro.ts",
+        "src/wakes-per-row.ts"
+      ]
+    },
+    "row-off-board": {
+      "group": "JUDGMENT",
+      "namedIn": [
+        "src/work-gate.ts"
+      ]
+    },
+    "pr-codeowner-review-missing": {
+      "group": "ACTION",
+      "namedIn": [
+        "src/work-gate.ts"
+      ]
+    },
+    "row-call-count-signal": {
+      "group": "JUDGMENT",
+      "namedIn": [
+        "src/work-gate/row-call-count-orders.ts"
+      ]
+    },
+    "answer-label-unexplained": {
+      "group": "ACTION",
+      "namedIn": [
+        "src/claim-stall.ts",
+        "src/work-gate.ts"
+      ]
+    },
+    "answer-given": {
+      "group": "JUDGMENT",
+      "namedIn": [
+        "src/work-gate.ts"
+      ]
+    },
+    "ready-row-unclaimed": {
+      "group": "ACTION_START",
+      "namedIn": [
+        "src/trace/headless-pilot.ts",
+        "src/wake.ts",
+        "src/work-gate.ts"
+      ]
+    },
+    "ready-row-unclaimable": {
+      "group": "JUDGMENT",
+      "namedIn": [
+        "src/work-gate.ts"
+      ]
+    },
+    "ready-rows-untiered": {
+      "group": "JUDGMENT",
+      "namedIn": [
+        "src/org-retro.ts"
+      ]
+    },
+    "org-health": {
+      "group": "JUDGMENT",
+      "namedIn": [
+        "src/org-health.ts",
+        "src/org-retro.ts",
+        "src/work-gate.ts",
+        "src/work-gate/chairman-ask-orders.ts",
+        "src/work-gate/held-on-satisfied-orders.ts",
+        "src/work-gate/org-health.ts"
+      ]
+    },
+    "org-retrospective": {
+      "group": "JUDGMENT",
+      "namedIn": [
+        "src/org-retro.ts"
+      ]
+    }
+  }
+}

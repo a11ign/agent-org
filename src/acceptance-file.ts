@@ -52,10 +52,13 @@ export type AcceptanceSource =
  * THE READER. `added` is the paths the pull request ADDS (a modified or copied file is not added); `undefined` means the diff could not be
  * read, which is not the same as "adds nothing" and is reported as such. `read` reads one path of the head's tree and its failure
  * propagates: a file the diff says exists and cannot be opened is never read as "none".
- * @param {{ body: string, added: readonly string[] | undefined, read: (path: string) => string }} input
+ *
+ * `author` is the login of the pull request's author (`PR_AUTHOR`), carried to the reader for agent-org#519's narrow exemption and USED FOR
+ * NOTHING YET: it changes no verdict. It is the author as GitHub reports it, never read from the body, a label or a branch name.
+ * @param {{ body: string, added: readonly string[] | undefined, read: (path: string) => string, author?: string }} input
  * @returns {AcceptanceSource}
  */
-export function resolveAcceptanceSource({ body, added, read }: { body: string; added: readonly string[] | undefined; read: (path: string) => string; }): AcceptanceSource {
+export function resolveAcceptanceSource({ body, added, read }: { body: string; added: readonly string[] | undefined; read: (path: string) => string; author?: string; }): AcceptanceSource {
   if (added === undefined) return { kind: "body", text: body, why: "diff-unreadable" };
   const files = added.filter(isAcceptancePath).sort();
   if (files.length === 0) return { kind: "body", text: body, why: "no-file" };
