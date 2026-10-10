@@ -35,7 +35,8 @@ import { subjectMention } from "./review-attribution.ts";
 import { listingIsComplete } from "./herdr-agents.ts";
 // #2999: THE IDLE-CLAIMANT READING, a sibling leaf. It decides whether an idle holder has a wait the org can read; this file carries the
 // decision as the nudge and, a second reading later, as the release it already owned.
-import { idleClaimantReading, idleNudgePrompt, stoppedNudgePrompt, isStoppedHolder, IDLE_CLAIMANT_MS, STOPPED_CLAIMANT_MS } from "./idle-claimant.ts";
+import { idleClaimantReading, idleNudgePrompt, stoppedNudgePrompt, declareNudgePrompt, isStoppedHolder, IDLE_CLAIMANT_MS, STOPPED_CLAIMANT_MS } from "./idle-claimant.ts";
+import type { DeclarationReading } from "./worker-state.ts";
 // #458: the failure ledger is a leaf of its own (`node:fs` only), so a recorder here keeps this file one.
 import { recordFailures, type FailureEvent, type RecordResult } from "./failure-ledger.ts";
 // #3445: WHETHER A PULL REQUEST IS THE CLAIMANT'S, for the open lookup and the merged one alike: a sibling leaf, so this file stays one.
@@ -449,7 +450,7 @@ export function holderWorkAtRisk(io: HostReads, { merged, ...home }: {
 /**
  * Everything the reading knows about ONE claimed row. The two costly facts are THUNKS, so a row that is plainly moving (a comment or a commit inside N) costs no `git status`, and a tick pays for a worktree only when the cheap signals already say it has been quiet. `nothing` (#3407): the claim names no git object on purpose, so it can be nudged and never released
  */
-export type ClaimFacts = { row: number, title?: string, session: string, claimedAt: number, branch: string | null, worktree: string | null, comment: number | null, commit: number | null, push: number | null, file: () => number | null, work: () => ReturnType<typeof workAtRisk>, openPrs: number, mergedPr: { number: number, mergedAt: number, repoKey?: string, head?: string } | null, waiting: string | null, blockedBy: number[], waitKind?: string | null, ownPrs?: import("./idle-claimant.ts").IdlePr[], nothing?: boolean, mergedHeld?: string, };
+export type ClaimFacts = { row: number, title?: string, session: string, claimedAt: number, branch: string | null, worktree: string | null, comment: number | null, commit: number | null, push: number | null, file: () => number | null, work: () => ReturnType<typeof workAtRisk>, openPrs: number, mergedPr: { number: number, mergedAt: number, repoKey?: string, head?: string } | null, waiting: string | null, blockedBy: number[], waitKind?: string | null, ownPrs?: import("./idle-claimant.ts").IdlePr[], nothing?: boolean, declared?: DeclarationReading, mergedHeld?: string, };
 export type Reading = { kind: "moving", lastMoveAt: number } | { kind: "pr-owned" } | { kind: "waiting", waiting: string } | { kind: "nudge", lastMoveAt: number, idleMs: number, idle?: boolean } | { kind: "nudged", nudgedAt: number, deliveredAt: number | null, lastMoveAt: number, idle?: boolean } | { kind: "idle-watch", since: number } | { kind: "vacating", since: number } | { kind: "release", why: "stalled" | "blocked" | "merged" | "gone" | "closed" | "wait", lastMoveAt: number | null, idleMs: number | null, nudgedAt: number | null, edges?: number[], waiting?: string, mergedPr?: number, mergedPrRepoKey?: string, mergedPrHead?: string, openPrs?: number[], openPrRepoKeys?: (string | undefined)[], since?: number, idle?: boolean, interrupt?: boolean } | { kind: "holding", why: string, expected?: boolean };
 
 /** @param {(number | null)[]} times @returns {number | null} */
@@ -486,9 +487,13 @@ function overlayReading(facts: ClaimFacts, ctx: {
   const base = clockReading(facts, ctx);
   if (base.kind !== "pr-owned" && base.kind !== "moving") return base;
   // #458: THE STOPPED CLOCK is for a claim that names a branch; a `Claimed-nothing:` claim keeps N (it is idle at its prompt by design).
+  // #460: `declared` is what the worker's last turn ended on, read by the gate for a claim that names a branch. Its presence turns the DECLARATION REGIME on, in
+  // which an idle holder with no fresh and still-true declaration is stalled at M, a young pull request of its own no excuse (it should have declared `waiting-ci`).
+  const regime = facts.declared !== undefined && facts.nothing !== true;
   const idle = idleClaimantReading({ session: facts.session, prs: facts.ownPrs ?? [], built: facts.nothing !== true,
+    ...(regime ? { declared: facts.declared } : {}),
     waitKinds: [...(facts.waitKind ? [facts.waitKind] : []), ...(facts.blockedBy.length > 0 ? ["blocked-by"] : [])] }, ctx);
-  if (idle.kind === "waiting" || ownPrStillYoung(facts, ctx)) return base;
+  if (idle.kind === "waiting" || (!regime && ownPrStillYoung(facts, ctx))) return base;
   const held = ctx.nudge === null ? null : rememberedNudge(facts, ctx);
   if (held !== null) return held;
   if (idle.kind === "stall") return { kind: "nudge", idle: true, lastMoveAt: ctx.now - idle.idleMs, idleMs: idle.idleMs };
@@ -1010,7 +1015,8 @@ function idleNudgeOrder(facts: ClaimFacts, nudgedAt: number, idleMs: number): St
   return {
     session: facts.session, cause: "claim-stalled", subject: `row-${facts.row}`, discriminator: `idle-nudge-${nudgedAt}`,
     // #458: a holder the stopped clock applies to is told to CONTINUE; the text is chosen from the same facts the reading was
-    prompt: isStoppedHolder({ built: facts.nothing !== true, prs: facts.ownPrs }) ? stoppedNudgePrompt(what) : idleNudgePrompt(what),
+    prompt: facts.declared !== undefined && facts.nothing !== true ? declareNudgePrompt({ ...what, declared: facts.declared })
+      : isStoppedHolder({ built: facts.nothing !== true, prs: facts.ownPrs }) ? stoppedNudgePrompt(what) : idleNudgePrompt(what),
     causeKey: nudgeKey(facts.session, facts.row, nudgedAt), resume: true,
     ...(facts.title === undefined ? {} : { title: facts.title }),
   };
@@ -1143,7 +1149,7 @@ export function claimStalledOrders(readings: { facts: ClaimFacts; reading: Readi
     // OFFERED UNTIL DELIVERED, and then never again: the ledger holds a delivered key for one wake window only, so an offer that outlived the
     // delivery would send it a second time.
     else if (reading.kind === "nudged" && reading.deliveredAt === null) {
-      const floor = isStoppedHolder({ built: facts.nothing !== true, prs: facts.ownPrs }) ? STOPPED_CLAIMANT_MS : IDLE_CLAIMANT_MS;
+      const floor = facts.declared !== undefined && facts.nothing !== true || isStoppedHolder({ built: facts.nothing !== true, prs: facts.ownPrs }) ? STOPPED_CLAIMANT_MS : IDLE_CLAIMANT_MS;
       orders.push(reading.idle ? idleNudgeOrder(facts, reading.nudgedAt, floor) : nudgeOrder(facts, reading.nudgedAt, reading.lastMoveAt));
     } else if (reading.kind === "release") orders.push(releaseOrder(facts, reading));
   }

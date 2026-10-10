@@ -19,7 +19,8 @@ import { gitRun, pathExists, statMtime, readStallState, writeStallState, STALL_S
 import { FAILURE_LEDGER_FILE } from "../failure-ledger.ts";
 import { readAgents, readAgentSessions } from "../herdr-agents.ts";
 import { NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL, SESSION_PREFIX } from "../project-vocabulary.ts";
-import { waitingOn, fleetWaitingOn, describeWaiting } from "../waiting-condition.ts";
+import { waitingOn, fleetWaitingOn, describeWaiting, answersOwedBy } from "../waiting-condition.ts";
+import { WORKER_STATE_DIR, readDeclarations, lastDeliveredTo, declarationReading } from "../worker-state.ts";
 import { homeProjectDeclaration } from "../project-config.ts";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
@@ -143,7 +144,11 @@ function evaluateClaims({ rows, claimedComments, openPrs, mergedPrs, elsewhere, 
   const before = read(statePath);
   const byRow = new Map((claimedComments ?? []).map((r) => [Number(r?.number), r?.comments ?? []]));
   const wakeLedger = ledger ?? (() => ledgerText(`${stateDir}/wake-ledger`));
-  const { readings, skipped } = readClaims({ held, byRow, openPrs, mergedPrs, elsewhere, io, repo, now, before, log,
+  // #460: WHAT EACH WORKER'S LAST TURN DECLARED, read once, with no model. `null` is a directory that exists and cannot be read: the declaration regime is
+  // then OFF for the tick (absence is not proof), and every claim is read as it was before the declaration existed.
+  const declarations = held.length === 0 ? null : readDeclarations(`${stateDir}/${WORKER_STATE_DIR}`);
+  if (declarations !== null && declarations.unreadable.length > 0) log(`claim-stall: worker-state files that could not be read (those workers read as undeclared): ${declarations.unreadable.join(", ")}.\n`);
+  const { readings, skipped } = readClaims({ held, byRow, openPrs, mergedPrs, elsewhere, io, repo, now, before, log, declarations,
     ledger: wakeLedger, restart: restartFor(held, restartAt),
     agents: agentsFor(held, agents) });
   onFacts?.({ moves: new Map(readings.map(({ facts }) => [facts.row, movesOf(facts)])), skipped });
@@ -222,11 +227,11 @@ function rowsPerSession(held: any[]): Map<string, number> {
   return counts;
 }
 
-function readClaims({ held, byRow, openPrs, mergedPrs, elsewhere, io, repo, now, restart, agents, before, log, ledger }: {
+function readClaims({ held, byRow, openPrs, mergedPrs, elsewhere, io, repo, now, restart, agents, before, log, ledger, declarations }: {
         held: any[]; byRow: Map<number, any[]>; openPrs: any[]; mergedPrs: any[] | null;
         elsewhere?: import("../claim-stall.ts").ElsewherePrs; io: import("../claim-stall.ts").HostReads; repo: string; now: number; restart: number | null;
         agents: { label: string; status: string; }[] | null;
-        before: import("../claim-stall.ts").StallState; log: (line: string) => void; ledger: () => string;
+        before: import("../claim-stall.ts").StallState; log: (line: string) => void; ledger: () => string; declarations: ReturnType<typeof readDeclarations>;
     }): { readings: { facts: import("../claim-stall.ts").ClaimFacts; reading: import("../claim-stall.ts").Reading; }[]; skipped: Map<number, string>; } {
   const readings: { facts: import("../claim-stall.ts").ClaimFacts; reading: import("../claim-stall.ts").Reading; }[] = [];
   // the rows whose facts could not be built, with the reason `claimFactsFrom` gave (#3451)
@@ -239,15 +244,19 @@ function readClaims({ held, byRow, openPrs, mergedPrs, elsewhere, io, repo, now,
       continue;
     }
     const session = sessions[0].slice(SESSION_PREFIX.length);
-    const facts = claimFactsFrom({ row: row.number, title: row.title, session, waiting: declaredWait(row, session),
+    const built = claimFactsFrom({ row: row.number, title: row.title, session, waiting: declaredWait(row, session),
       waitKind: declaredWaitOf(row, session)?.kind ?? null, blockedBy: openBlockers(row), comments: byRow.get(Number(row.number)) ?? [], openPrs: withChecksPending(openPrs), mergedPrs,
       trackerRepo: homeProjectDeclaration().tracker[0].repo, sessionRows: heldBy.get(session),
       ...(elsewhere === undefined ? {} : { elsewhere: { ...elsewhere, open: elsewhere.open === null ? null : withChecksPending(elsewhere.open) } }), repo }, io);
-    if ("skip" in facts) {
-      log(`claim-stall: ${facts.skip} -- not evaluated.\n`);
-      skipped.set(Number(row.number), facts.skip);
+    if ("skip" in built) {
+      log(`claim-stall: ${built.skip} -- not evaluated.\n`);
+      skipped.set(Number(row.number), built.skip);
       continue;
     }
+    // #460: the declaration, read against THIS claim. A claim that names no branch (`nothing`) is idle at its prompt by design and has none to make.
+    const facts = declarations === null || built.nothing === true ? built : { ...built, declared: declarationReading(declarations.byClaimant.get(session), {
+      row: built.row, claimedAt: built.claimedAt, turnStartedAt: lastDeliveredTo(ledger(), session), ownPrs: built.ownPrs ?? [], mergedPr: built.mergedPr,
+      answersOwed: answersOwedBy(row).filter((owed) => owed !== session) }) };
     const reading = readClaim(facts, { now, restartAt: restart, agents, ...rememberedFor({ entry: before[facts.row], session, row: facts.row, ledger }) });
     // A HOLDER THAT HAS WORK AND A BLOCKER is the EXPECTED hold and is not said every tick; only a read that could not be made is.
     if (reading.kind === "holding" && reading.expected !== true) {

@@ -8,6 +8,10 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { WORKER_STATE_DIR, writeDeclaration, type Declaration } from "../worker-state.ts";
 import {
   idleClaimantReading, idleNudgePrompt, WAIT_FIELDS, IDLE_CLAIMANT_MINUTES, IDLE_CLAIMANT_MS, IDLE_STATUSES, EVIDENCE_LABEL, HOLD_LABEL_PREFIX,
 } from "../idle-claimant.ts";
@@ -217,10 +221,21 @@ const claimComment = { body: claimRecordComment({ session: "worker-9", branch: B
   author: { login: "a11ign-ai-workers" } };
 const noGit = { git: () => ({ status: 0, out: "" }), exists: () => false, mtime: () => null };
 
-function gateTick(row: object, { prs = [] as object[], agents = listing("idle"), memory = { 2999: { session: "worker-9", idleSince: ago(50) } } as Record<string, unknown> } = {}) {
+function gateTick(row: object, { prs = [] as object[], agents = listing("idle"), memory = { 2999: { session: "worker-9", idleSince: ago(50) } } as Record<string, unknown>, stateDir = "/state" } = {}) {
   return claimStallTick({ rows: [row], claimedComments: [{ number: 2999, comments: [claimComment] }], openPrs: prs, mergedPrs: null, io: noGit,
-    repo: "/repo", now: NOW, restartAt: null, agents, stateDir: "/state", ledger: () => "", log: () => undefined,
+    repo: "/repo", now: NOW, restartAt: null, agents, stateDir, ledger: () => "", log: () => undefined,
     read: () => JSON.parse(JSON.stringify(memory)), write: () => undefined } as never) as { prompt: string; cause: string; release?: { why: string } }[];
+}
+
+/** #460: `gateTick` over a state directory in which `worker-9` declared `declaration` 100 minutes ago (the claim is 200 old, so it is fresh). */
+function declaredTick(row: object, declaration: Omit<Declaration, "session" | "at">, options: Omit<Parameters<typeof gateTick>[1], "stateDir"> = {}) {
+  const dir = mkdtempSync(join(tmpdir(), "idle-claimant-declared-"));
+  try {
+    writeDeclaration(`${dir}/${WORKER_STATE_DIR}`, { session: "worker-9", at: ago(100), ...declaration });
+    return gateTick(row, { ...options, stateDir: dir });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 /** the orders that ASK the holder something: #4637 releases a holder holding nothing on a declared wait, and a release is not a nudge */
@@ -243,14 +258,20 @@ test("#2999 through the gate: only the NEWEST run per check name decides `checks
   const done = { name: "gate", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-10-02T10:05:00Z", completedAt: "2026-10-02T10:09:00Z" };
   const newer = { name: "gate", status: "IN_PROGRESS", startedAt: "2026-10-02T10:20:00Z", completedAt: "0001-01-01T00:00:00Z" };
   const pr = (statusCheckRollup: object[]) => ({ number: 2968, headRefName: BRANCH, reviewDecision: "REVIEW_REQUIRED", labels: [], statusCheckRollup });
-  assert.equal(gateTick(claimRow(""), { prs: [pr([stale, done])] }).length, 1, "the newer, completed run settles it: the holder is nudged");
-  assert.equal(gateTick(claimRow(""), { prs: [pr([done, newer])] }).length, 0, "the control: the pending run NEWER than the completed one is a wait");
+  const waitingCi = { state: "waiting-ci" as const, pr: { number: 2968 } };
+  // #460: a pending check is a wait only for a holder that DECLARED `waiting-ci` (the declaration is what is read; the check is what must still be true)
+  assert.equal(declaredTick(claimRow(""), waitingCi, { prs: [pr([stale, done])] }).length, 1, "the newer, completed run settles it: the declared wait has lapsed and the holder is nudged");
+  assert.equal(declaredTick(claimRow(""), waitingCi, { prs: [pr([done, newer])] }).length, 0, "the control: the pending run NEWER than the completed one is the wait the holder named");
+  assert.equal(gateTick(claimRow(""), { prs: [pr([done, newer])] }).length, 1, "and the same pending run with NOTHING declared is no longer a wait");
 });
 
-test("#2999 through the gate: an open PR with a live `reviewer-<n>` is not nudged; without it the holder is, and `claimFactsFrom` carries the PR", () => {
+test("#2999 through the gate: an open PR is not nudged for a holder that declared `waiting-review`; the undeclared holder is, a live `reviewer-<n>` or not, and `claimFactsFrom` carries the PR", () => {
   const pr = { number: 2968, headRefName: BRANCH, reviewDecision: "REVIEW_REQUIRED", labels: [], checksPending: false };
+  const reviewer = listing("idle", [{ label: "reviewer-2968", status: "working" }]);
   assert.equal(gateTick(claimRow(""), { prs: [pr] }).length, 1);
-  assert.equal(gateTick(claimRow(""), { prs: [pr], agents: listing("idle", [{ label: "reviewer-2968", status: "working" }]) }).length, 0);
+  assert.equal(gateTick(claimRow(""), { prs: [pr], agents: reviewer }).length, 1, "#460: a reviewer's pane is inference, and the holder's own declaration is the evidence");
+  assert.equal(declaredTick(claimRow(""), { state: "waiting-review", pr: { number: 2968 } }, { prs: [pr], agents: reviewer }).length, 0, "declared, the same holder is waiting");
+  assert.equal(declaredTick(claimRow(""), { state: "waiting-review", pr: { number: 2969 } }, { prs: [pr] }).length, 1, "a declaration for ANOTHER pull request is not this one's wait");
   const built = claimFactsFrom({ row: 2999, session: "worker-9", waiting: null, blockedBy: [], comments: [claimComment], openPrs: [pr], mergedPrs: null,
     repo: "/repo", waitKind: "not-before" }, noGit as never) as { ownPrs: unknown[]; waitKind: string };
   assert.deepEqual(built.ownPrs, [pr]);

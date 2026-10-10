@@ -54,6 +54,7 @@ export const COMMANDS = {
   "work:profile": "worker-profile.ts",
   "work:tick": "work-tick.ts",
   "work:wake": "wake.ts",
+  "worker:state": "worker-state.ts",
   "workflow:liveness": "workflow-run-liveness.ts",
   "worktree:stamp": "worktree-owner.ts",
   "worktree:whose": "worktree-owner.ts",

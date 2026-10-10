@@ -183,6 +183,10 @@ const DECLARED_NON_VOCABULARY_HITS: Declaration[] = [
   // not the row `ready` label.
   ...nonVocabulary("work-gate.ts", ["`blocked`"], "the `herdr` status mentioned in a report string"),
   ...nonVocabulary("work-gate.ts", ['"ready"'], "GitHub's own `gh pr ready` CLI verb, not the row `ready` label"),
+  // `worker-state.ts` (#460): `"blocked"` is the worker-state NAME `worker:state blocked <row> <reason>` accepts and the `herdr` pane STATUS the
+  // tick tells; `` `blocked` `` is that same state named in its refusal text. Neither is the `blocked` GitHub label (the command's own label
+  // is the answer label, read from the vocabulary at run time, not spelled here).
+  ...nonVocabulary("worker-state.ts", ['"blocked"', "`blocked`"], "the declared-state name and the `herdr` pane status, never the `blocked` label"),
   // `work-gate/pr-orders.ts`: `{ kind: "ready", ... }` is the action kind for `gh pr ready` (GitHub's own draft -> ready-for-review CLI verb),
   // not the row `ready` label.
   ...nonVocabulary("work-gate/pr-orders.ts", ['"ready"'], "the action kind for `gh pr ready`, GitHub's own verb"),

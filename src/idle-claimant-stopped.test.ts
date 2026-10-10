@@ -5,7 +5,7 @@
 // EVERY "NOT NUDGED" ASSERTION HAS A TWIN: the same fixture with ONE thing changed that IS nudged (`fixture` below, and each case names its twin), so a decider that
 // never fires turns the twins red and one that always fires turns the controls red. The mutations, both directions, are in the pull request.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -13,6 +13,7 @@ import { claimStallTick } from "./work-gate.ts";
 import { claimRecordComment } from "./row-claim.ts";
 import { CLAIMED_WORKER_STALLED, STALL_INTERVAL_MS, recordStalledNudges, stalledNudgeEvents } from "./claim-stall.ts";
 import { FAILURE_LEDGER_FILE, parseFailureLedger, repeatsIn } from "./failure-ledger.ts";
+import { WORKER_STATE_DIR, writeDeclaration, type Declaration } from "./worker-state.ts";
 import { IDLE_CLAIMANT_MINUTES, STOPPED_CLAIMANT_MINUTES, WAIT_FIELDS, isStoppedHolder, stoppedNudgePrompt } from "./idle-claimant.ts";
 
 const MIN = 60_000;
@@ -94,11 +95,36 @@ test("`done` is as stopped as `idle`; `blocked`, `unknown` and a partial listing
   assert.deepEqual(orders.filter((o) => o.release === undefined), [], "a listing that lacks the standing panes is not the whole org");
 });
 
-test("NEGATIVE CONTROL: the same worker with an open PR whose check is pending is NOT nudged; the twin with the check done is, at the 45-minute clock", () => {
-  assert.deepEqual(nudgedAt(fixture({ prs: [prOf(4001, { pending: true })] }), 60), [], "a pending check is a wait the org can read");
-  const done = nudgedAt(fixture({ prs: [prOf(4001)] }), 60);
-  assert.equal(done[0], IDLE_CLAIMANT_MINUTES, "a PR is on N, not on M: it is not 'stopped', it is waiting on review or the queue");
-  assert.deepEqual(nudgedAt(fixture(), 60).slice(0, 1), [M], "and the no-PR twin of both is nudged at M");
+/** A state directory holding `worker-9`'s declaration, made `minutesBefore` T0 (the claim is 20 minutes old, so 5 is a declaration made after it). */
+function declaredIn(declaration: Omit<Declaration, "session" | "at">, { minutesBefore = 5 } = {}): string {
+  const dir = mkdtempSync(join(tmpdir(), "idle-claimant-stopped-declared-"));
+  writeDeclaration(`${dir}/${WORKER_STATE_DIR}`, { session: "worker-9", at: T0 - minutesBefore * MIN, ...declaration });
+  return dir;
+}
+
+test("NEGATIVE CONTROL (#460): an open PR with a pending check excuses the worker only when it DECLARED `waiting-ci` for it; the twins are nudged at M", () => {
+  const pr = prOf(4001, { pending: true });
+  const waiting = declaredIn({ state: "waiting-ci", pr: { number: pr.number } });
+  const declaredNothing = fixture({ prs: [pr] });
+  try {
+    assert.deepEqual(nudgedAt(fixture({ prs: [pr], stateDir: waiting }), 60), [], "declared, still pending: the wait the worker named");
+    assert.equal(nudgedAt(declaredNothing, 60)[0], M, "the same pending PR with nothing declared is no longer read as a wait: it is stalled at M, not at the 45-minute clock");
+    assert.equal(nudgedAt(fixture({ prs: [prOf(4001)], stateDir: waiting }), 60)[0], M, "the declaration outlives its condition: the check finished, so `waiting-ci` is not true any more");
+  } finally {
+    rmSync(waiting, { recursive: true, force: true });
+  }
+  assert.deepEqual(nudgedAt(fixture(), 60).slice(0, 1), [M], "and the no-PR twin of all of them is nudged at M");
+});
+
+test("REGIME OFF: a state directory that cannot be READ (not merely empty) leaves the 45-minute rules in force, because absence is not proof", () => {
+  const unreadable = mkdtempSync(join(tmpdir(), "idle-claimant-stopped-unreadable-"));
+  writeFileSync(`${unreadable}/${WORKER_STATE_DIR}`, "a file where the directory should be");
+  try {
+    assert.deepEqual(nudgedAt(fixture({ prs: [prOf(4001, { pending: true })], stateDir: unreadable }), 60), [], "could not ask: a pending check is a wait, as before");
+    assert.equal(nudgedAt(fixture({ prs: [prOf(4001)], stateDir: unreadable }), 60)[0], IDLE_CLAIMANT_MINUTES, "and a PR is on N, as before");
+  } finally {
+    rmSync(unreadable, { recursive: true, force: true });
+  }
 });
 
 test("a `working` worker is NOT nudged, however long; the twin is the same worker idle", () => {
