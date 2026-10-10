@@ -112,7 +112,8 @@ import { BACKLOG_LABEL, NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL, OUT_OF_RELEASE_L
   LANE_PREFIX, SESSION_PREFIX } from "./project-vocabulary.ts";
 // #2075: WHICH PROJECT A ROW MUST BE ON. `board-snapshot-scope.ts` runs no `gh` and imports only `node:*`, the repo
 // identity and `settle-closed-status.ts`, so the gate keeps the property its own header states.
-import { PROJECT_NUMBER } from "./board-snapshot-scope.ts";
+import { PROJECT_NUMBER, PROJECT_OWNER } from "./board-snapshot-scope.ts";
+import { withBoardSnapshot } from "./board-snapshot.ts"; // agent-org#490: the guard a board write keeps (#399, #1275); `row-file` and `row-claim` take it from the same place
 import type { OpenItemsReader, TicketPort } from "./ticket-port/port.ts"; // agent-org#484: the first consumer of the ticket port
 import { githubTicketAdapter, TRACKER } from "./ticket-port/github-adapter.ts";
 // #2356: A RED `main` WAKES A FIXER. Imports only `node:*`, `parent-recheck-summary.ts` and the repo identity,
@@ -686,6 +687,9 @@ export const GH_READS = Object.freeze({
   conditionalOnCitedRepeatingLine: "api graphql repository.issue(number) (settleCitedRepeatingLines -- repeating-log-line, through the ticket port)",
   // agent-org#491: ONE `issue comment` WRITE (the ticket port's `postDecision`) PER CHANGE OF THE `overdue` LIST, and no read at all. A tick whose list is what it was at the last write pays none.
   conditionalOnOverdueList: "issue comment (settleOverdueLists -- org-health's overdue list, through the ticket port)",
+  // agent-org#490: PER ROW THE GATE BOARDS, which is a row off Project 1 whose label names a Status (none for a tick with no such row, the ordinary tick): ONE GRAPHQL CALL (the port's
+  // `changeState` reads the row), `project item-add`, a scoped board snapshot read and `project item-edit`, and one `issue comment`. The off-board read above is the same one as before.
+  conditionalOnOffBoardRows: "api graphql issue(number), project item-add, project item-edit, issue comment (settleOffBoardRows -- row-off-board, through the ticket port)",
 });
 
 /**
@@ -1817,7 +1821,8 @@ export function fleetBatchOrders(rows: any[], clock: { today?: string; nowMs?: n
 /**
  * A ROW FILED WITHOUT `row-file` IS INVISIBLE ON PROJECT 1, AND THE CHECK THAT SEES IT WOKE NOBODY (#2075). `row-file` is the only path that boards a row and nothing requires it. Measured 2026-09-23: 9 of 50 open rows had no Project 1 item, two of them `ready` (claimable on the label, invisible in every Status view), and 28 of the 121 rows filed since 2026-09-22T00:00Z (23%) never reached the board. `ready-label-audit`'s `reportAbsentFromBoard` asked exactly this and answered correctly -- on a daily schedule, into a nightly that is red by design, so #1889 was still absent twenty hours after it printed `ABSENT`. This is that question asked where `agent-practices.md` says such a question belongs: in the gate, on an API call rather than a model turn and not a day late. IT ASKS EACH ROW FOR ITS OWN MEMBERSHIP AND NEVER READS THE BOARD LISTING, and that is the load-bearing choice. Measured 2026-09-23 (the row's own comment): `gh project item-list` did NOT contain #2075 and #2076 about four minutes after they were added, while `repository.issue(n).projectItems` reported both on the board seconds later. A tick runs every two minutes, so a listing-based cause would wake `product-manager` for rows `row-file` had just boarded correctly -- the noisiest possible false positive, on the one path that works. One connection query carries every open row's `projectItems` in a single call, so this costs no more than the listing would have. `onBoard` IS TRI-STATE: `true`, `false`, or `null` for "could not tell" -- a row with more items than the page returned and none of them Project 1, which is not the same claim as "not on the board" and is never reported as one.
  */
-export type BoardFacts = { number: number, title: string, createdMs: number, onBoard: boolean | null };
+// agent-org#490: `boardedAs` is set only by `settleOffBoardRows`, on a row the gate boarded THIS TICK that still declares no release, so the order can ask for the one thing the gate does not do.
+export type BoardFacts = { number: number, title: string, createdMs: number, onBoard: boolean | null, boardedAs?: string };
 // #4505 / agent-org#484: THE QUERY, THE PAGING AND THE MEMBERSHIP TEST MOVED TO THE TICKET PORT'S GITHUB ADAPTER (ADR 0046 decision 4). The
 // name is kept: `graphql-pool-health.test.ts` pins that the query asks for `rateLimit` and `viewer`.
 export { OPEN_ITEMS_QUERY as ROW_OFF_BOARD_QUERY } from "./ticket-port/github-adapter.ts";
@@ -1879,7 +1884,10 @@ export function rowsOffBoard(facts: BoardFacts[], nowMs: number = Date.now()): {
  * IT DOES NOT BOARD THE ROW. Boarding carries a Status judgment (#1990 is `In progress`, #2068 is `Ready`) and this repository's
  * audits report the debris rather than act on the tracker.
  *
- * @param facts `readRowsOffBoard`'s result; OMITTED AND `null` MEAN "NOT ASKED"
+ * agent-org#490 NARROWED WHAT REACHES IT, NOT WHAT IT DOES: `settleOffBoardRows` boards a row whose label names a Status before this is
+ * called, so the facts it is given are the rows that did not have one (and a row the gate boarded that declares no release, `boardedAs`).
+ *
+ * @param facts `readRowsOffBoard`'s result, as `settleOffBoardRows` left it; OMITTED AND `null` MEAN "NOT ASKED"
  */
 export function rowOffBoardOrders(facts: BoardFacts[] | null | undefined, nowMs: number = Date.now()): {
     session: string; cause: string; subject: string; discriminator: string;
@@ -1888,13 +1896,12 @@ export function rowOffBoardOrders(facts: BoardFacts[] | null | undefined, nowMs:
   const absent = rowsOffBoard(facts ?? [], nowMs);
   if (absent.length === 0) return [];
   const key = absent.map((r) => subjectRef(r.repoKey, r.number)).join(".");
-  return [{
-    session: "product-manager",
-    cause: "row-off-board",
-    subject: "project-1",
-    discriminator: key,
-    prompt: `${absent.length} open row(s) have NO item on Project ${PROJECT_NUMBER}, so they are invisible in every Status view:\n`
-      + absent.map((r) => `  ${subjectMention(r)} ${r.title}`).join("\n") + "\n"
+  const boardedAs = new Map((facts ?? []).filter((f) => f.boardedAs !== undefined).map((f) => [f.number, f.boardedAs as string]));
+  const unboarded = absent.filter((r) => !boardedAs.has(r.number));
+  const boarded = absent.filter((r) => boardedAs.has(r.number));
+  const prompts: string[] = [];
+  if (unboarded.length > 0) prompts.push(`${unboarded.length} open row(s) have NO item on Project ${PROJECT_NUMBER}, so they are invisible in every Status view:\n`
+      + unboarded.map((r) => `  ${subjectMention(r)} ${r.title}`).join("\n") + "\n"
       + "A row filed with a bare `gh issue create` never reaches the board: only `row-file` boards one, and a board label applied "
       + `AT CREATION (\`${READY_LABEL}\` or \`${BACKLOG_LABEL}\` one second after the row exists) is the fingerprint of that path. Each was read from `
       + "the ISSUE's own `projectItems`, not from a board listing (which lags minutes behind an add), and none is younger than "
@@ -1903,7 +1910,20 @@ export function rowOffBoardOrders(facts: BoardFacts[] | null | undefined, nowMs:
       + `In progress), and give it a release declaration (a milestone or \`${OUT_OF_RELEASE_LABEL}\`) if it has none -- \`row-file\` would have `
       + "refused a filing without one. An `epic` cannot be claimed, so it is boarded with `row-file --board=<n> --lane=any`, which puts it at Backlog "
       + "(#4456) -- never raw `gh project item-add`. THIS ORDER DOES NOT BOARD THE ROW FOR YOU: the Status is a judgment and it is yours.\n"
-      + "THIS ARRIVES WHEN THE SET CHANGES. A row you leave off stays in the set and this order returns unchanged.",
+      + "THIS ARRIVES WHEN THE SET CHANGES. A row you leave off stays in the set and this order returns unchanged.");
+  // agent-org#490: the gate boarded these itself, and the order names them for the one thing it does not do.
+  if (boarded.length > 0) prompts.push(`${boarded.length} open row(s) were off Project ${PROJECT_NUMBER} and the gate BOARDED them this tick, each at the Status its label says, `
+      + "but each declares no release:\n"
+      + boarded.map((r) => `  ${subjectMention(r)} ${r.title} (boarded at ${boardedAs.get(r.number)})`).join("\n") + "\n"
+      + `Give each a release declaration (a milestone or \`${OUT_OF_RELEASE_LABEL}\`) -- \`row-file\` would have refused a filing without one. `
+      + "The gate does not choose one: which release a row belongs to is a judgment, and the ticket port has no milestone write. "
+      + "THEY ARE ON THE BOARD NOW, so this order does not return for them.");
+  return [{
+    session: "product-manager",
+    cause: "row-off-board",
+    subject: "project-1",
+    discriminator: key,
+    prompt: prompts.join("\n\n"),
     causeKey: `product-manager/row-off-board/${key}`,
   }];
 }
@@ -7822,6 +7842,104 @@ export function settleOverdueLists(orders: any[], { portFor, dir = REVIEWER_STAT
   return orders.filter((order) => overdueKeyOf(order) === null || kept.has(order));
 }
 
+/** agent-org#490: where the switch for `settleOffBoardRows` is read; `off` restores the order as it was. */
+export const ROW_OFF_BOARD_SWITCH_ENV = "A11IGN_ROW_OFF_BOARD_BY_GATE";
+
+/** The state each Status-naming label stands for, and the Status the board shows for it (`ticket-port/github-adapter.ts`'s `STATUS_OF`, which this must agree with). */
+const BOARDED_STATE_OF_LABEL: Readonly<Record<string, { state: "backlog" | "ready" | "in-progress"; status: string; }>> = Object.freeze({
+  [READY_LABEL]: { state: "ready", status: "Ready" },
+  [BACKLOG_LABEL]: { state: "backlog", status: "Backlog" },
+  [CLAIM_LABEL]: { state: "in-progress", status: "In progress" },
+});
+/** The port's own state labels (`ready`, `backlog`, `in-progress`, `parked`): a row carrying two of them is one the port would strip a label from. */
+const PORT_STATE_LABELS: readonly string[] = [READY_LABEL, BACKLOG_LABEL, CLAIM_LABEL, "parked"];
+
+/** @returns the state and Status a row's labels name, or `null` for a row that is not a lookup: none, two, `parked` beside one, or an `epic` */
+function statusNamedBy(row: any): { state: "backlog" | "ready" | "in-progress"; status: string; } | null {
+  const labels = labelsOf(row);
+  if (labels.includes(EPIC_LABEL)) return null;
+  const states = PORT_STATE_LABELS.filter((label) => labels.includes(label));
+  return states.length === 1 ? BOARDED_STATE_OF_LABEL[states[0]] ?? null : null;
+}
+
+/** A row's release declaration, by `row-file`'s rule: a milestone, or the `out-of-release` label. */
+const declaresRelease = (row: any): boolean => Boolean(row?.milestone) || labelsOf(row).includes(OUT_OF_RELEASE_LABEL);
+
+/**
+ * agent-org#490 (Phase 1 of a11ign/a11ign#4505): A ROW OFF PROJECT 1 WHOSE LABEL NAMES A STATUS IS BOARDED BY THE GATE, AND A MANAGER IS WOKEN ONLY FOR THE REST.
+ *
+ * The cause's own declaration says the gate has already read each row's Project membership and named the absent ones; what was left for `product-manager` was boarding
+ * each at the Status its label says (`ready` -> Ready, `backlog` -> Backlog, `in-progress` -> In progress). That is a lookup, so the gate does it, through the ticket
+ * port's `changeState` -- the one call that sets the state and the board Status -- and says so on the row with one `postDecision`, so who boarded it is on its timeline.
+ *
+ * WHAT IS BOARDED, AND WHAT IS NOT. A row is boarded only when it is provably off the board and past the grace (`rowsOffBoard`), was read in this tick's open rows, and
+ * carries EXACTLY ONE of the port's state labels, which is one of those three. Everything else is left in the facts and so in the order, as today: a row with no label
+ * that names a Status, one with two (the port would remove one of them: that is a decision about the row and not a lookup), an `epic` (boarded by `row-file --board`,
+ * at Backlog, #4456), and one whose write failed. EVERY DOUBT IS A WAKE, as #491 did it.
+ *
+ * NO RELEASE IS DECLARED BY THE GATE. Which release a row belongs to is the filer's choice between a milestone and `out-of-release`, and the port has no milestone write,
+ * so no rule here is mechanical. A row the gate boarded that still declares none comes back marked `boardedAs`: it is on the board now, and the order asks for the
+ * declaration only, once (next tick the row is not off the board, so the set has changed and nothing returns).
+ *
+ * THE SWITCH: `A11IGN_ROW_OFF_BOARD_BY_GATE=off` in the tick's environment returns the facts untouched, with no write and no port asked, and the order is today's.
+ * The one-line revert in code is the call site in `main`: `offBoard: settleOffBoardRows(offBoard, ...)` back to `offBoard,` in `decideArgs`. Live cutover, no shadow phase.
+ *
+ * @param facts `readRowsOffBoard`'s result; `null` (could not ask) is returned as it is
+ * @param portFor the ticket port of one tracker, by `owner/name`, whose `changeState` ADDS a row that is not on the board: the only way this function reaches a tracker
+ * @returns the facts the order is made from: every one not boarded, and each boarded row that declares no release
+ */
+export function settleOffBoardRows(facts: BoardFacts[] | null, { openRows, portFor, env = process.env, log = (line) => process.stderr.write(line), now = Date.now(), scope = repoNow() }: {
+  openRows: any[]; portFor: (scope: string) => TicketPort; env?: Record<string, string | undefined>; log?: (line: string) => void; now?: number; scope?: string;
+}): BoardFacts[] | null {
+  if (facts === null || env[ROW_OFF_BOARD_SWITCH_ENV] === "off") return facts;
+  const absent = new Set(rowsOffBoard(facts, now).map((row) => row.number));
+  if (absent.size === 0) return facts;
+  const rows = new Map(openRows.map((row) => [Number(row.number), row]));
+  const left: BoardFacts[] = [];
+  for (const fact of facts) {
+    const row = absent.has(fact.number) ? rows.get(fact.number) : undefined;
+    const named = row === undefined ? null : statusNamedBy(row);
+    if (row === undefined || named === null) { left.push(fact); continue; }
+    const ref = { tracker: TRACKER, scope, id: fact.number };
+    try {
+      // THE WRITE FIRST, THE RECORD AFTER: a comment for a row that was not boarded would say what is not so.
+      portFor(scope).changeState(ref, { state: named.state });
+    } catch (err) {
+      left.push(fact);
+      log(`row-off-board: COULD NOT BOARD #${fact.number} at ${named.status} (${String((err as any)?.message ?? err).split("\n")[0].slice(0, 160)}) -- it stays in the order.\n`);
+      continue;
+    }
+    let recorded = "";
+    try {
+      portFor(scope).postDecision(ref, { role: "work-gate", runId: `tick-${now}`, kind: "row-off-board", text:
+        `**work-gate, row-off-board:** this row had no item on Project ${PROJECT_NUMBER}. It was added at **${named.status}**, the Status its state label says (agent-org#490). `
+        + "The gate declares no release: " + (declaresRelease(row) ? "this row already declares one." : "this row declares none, and `product-manager` is asked for it.") });
+    } catch (err) {
+      recorded = `, COULD NOT RECORD IT ON THE ROW (${String((err as any)?.message ?? err).split("\n")[0].slice(0, 120)})`;
+    }
+    if (!declaresRelease(row)) left.push({ ...fact, boardedAs: named.status });
+    log(`row-off-board: boarded #${fact.number} at ${named.status}${recorded}${declaresRelease(row) ? " -- no order" : " -- no release declared, the order asks for it"}.\n`);
+  }
+  return left;
+}
+
+/**
+ * The ticket port of the repository `scope` names, for a write that BOARDS: the adapter's own `changeState` sets the Status with `project item-edit`, which refuses a row that
+ * is not an item of the project, so this one adds the item first (`row-file`'s order: `item-add`, then the Status). The Status move keeps the board snapshot guard
+ * (#399, #1275) scoped to the one row, as `moveProjectStatus` does for a claim, so a refused snapshot refuses the move and the add before it.
+ */
+const boardingPortOf = (scope: string): TicketPort => githubTicketAdapter({ run: defaultRun, scope, moveStatus: (id, statusName) => {
+  const url = `https://github.com/${scope}/issues/${id}`;
+  withBoardSnapshot(() => {
+    defaultRun(["project", "item-add", String(PROJECT_NUMBER), "--owner", PROJECT_OWNER, "--url", url]);
+    try {
+      defaultRun(["project", "item-edit", String(PROJECT_NUMBER), "--owner", PROJECT_OWNER, "--url", url, "--field", "Status", "--value", statusName]);
+    } catch (err) {
+      throw new Error(`the row was ADDED to Project ${PROJECT_NUMBER} but its Status could not be set (${String((err as any)?.message ?? err).split("\n")[0].slice(0, 120)}); it is on the board with no Status`, { cause: err });
+    }
+  }, { run: (_cmd, args) => defaultRun(args), log: (line) => process.stderr.write(`${line}\n`), excludeIssueNumber: id, touches: id });
+} });
+
 function main() {
   refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/work-gate.ts" });
   const githubStatus = startGithubStatus(); // #3723: FIRST, so its wall overlaps the reads below and never adds to them
@@ -7892,9 +8010,9 @@ function main() {
     // #2356: `null` for a refused read or a green `main`, and the two need no telling apart HERE -- both
     // emit nothing, and a refused read is not reported as health because nothing else reads "trunk is fine".
     trunkRed: readTrunkRed(),
-    // #2075: ONE GRAPHQL CALL, READ PER ISSUE. `null` (refused) emits nothing and is said on stderr below.
+    // #2075: ONE GRAPHQL CALL, READ PER ISSUE. `null` (refused) emits nothing and is said on stderr below. agent-org#490: `settleOffBoardRows` boards the rows whose label names a Status first.
     // #2691's `callCountSignals` is beside it, costing no `GH_READS`; `claimedComments` (#2710's window anchor) is the SAME read made above.
-    offBoard, callCountSignals: rowCallCountSignals(allOpen, liveClaudeTurns(), claimedComments, { waitClearedAt: readWaitClearedAt }), bareAnswerLabels: bareAnswerLabelOrders(withAnswerLabel([...allOpen, ...openPrs]), defaultRun, Date.now()), answerGiven: answerGivenOrders(allOpen), labJobs: labJobRecordsOrSay(), ...engineerShareReads(allOpen) }; const decided = withStalePrimaryNotice(decideAndTap(decideArgs), primaryDrift); // #2711, #2729, #3632; `main` is at its 90-line limit
+    offBoard: settleOffBoardRows(offBoard, { openRows: allOpen, portFor: boardingPortOf }), callCountSignals: rowCallCountSignals(allOpen, liveClaudeTurns(), claimedComments, { waitClearedAt: readWaitClearedAt }), bareAnswerLabels: bareAnswerLabelOrders(withAnswerLabel([...allOpen, ...openPrs]), defaultRun, Date.now()), answerGiven: answerGivenOrders(allOpen), labJobs: labJobRecordsOrSay(), ...engineerShareReads(allOpen) }; const decided = withStalePrimaryNotice(decideAndTap(decideArgs), primaryDrift); // #2711, #2729, #3632; `main` is at its 90-line limit
   const others = otherScopeTicks(drain, otherScopes, openPrs, homeRowsOf(allOpen)); // #4386: `homeRowsOf` -- so an agent-org pull request is owned by the worker its branch names. #2618: the OTHER declared repositories -- none for one project, whose orders are what they were
   recordTickFailures({ trunkRed: decideArgs.trunkRed, keyedTrunkReds: others.map((tick) => ({ repo: tick.repo, red: tick.trunkRed })), prs: decideArgs.prs });
   fileResolverDefects([...resolverDefectsOf(decideArgs.prs, allOpen), ...others.flatMap((tick) => tick.defects)]); // #4386: a fallback order for a PR that named a live claimant files its own defect, once per PR
