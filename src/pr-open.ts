@@ -31,6 +31,9 @@
 // `Outside-Region: <path> — <reason>`, em dash required. The wiring lives in the ENTRY block, like #1352's
 // `launchGate`: the row's body is read from GitHub, and the tests that call `main` directly must not reach it.
 //
+// A PULL REQUEST ON A CLAIMED ROW'S BRANCH CANNOT DECLARE `Closes: none` (agent-org#744): the same refusal CI's closes-mismatch check makes, read
+// from every declared tracker, told here before anything is sent. Wired in the entry block, like the Region's.
+//
 // EXIT CODES (#1479). A caller must be able to tell a refusal from a partial success, because they need
 // opposite next steps: retry the command, or never retry it.
 //   0  the body passed, `gh pr <mode>` ran, and a ready create was armed.
@@ -58,6 +61,7 @@ import { isLiveSession } from "./arm-pr.ts";
 import { laneAuthorshipRefusal, loadLanes, reviewOnlyPathsIn } from "./lane-ownership.ts";
 import { declarationRefusal } from "./hand-fix-ledger.ts";
 import { VERIFY_STATE, readVerifyStamp, verifyRefusalLine } from "./verify-stamp.ts";
+import { claimedBranchReport, lookupClaimedRowsOfTrackers, trackerReposFor, type ClaimedRow, type ClaimedRows } from "./closes-mismatch-check.ts";
 
 // The header's EXIT CODES, named because 1 and 3 ask a caller for opposite next steps.
 export const EXIT_NOTHING_SENT = 1;
@@ -840,6 +844,49 @@ function regionStep(body: string, rest: string[], { git, rowBody, rootFiles, cod
 }
 
 /**
+ * agent-org#744: A PULL REQUEST ON A CLAIMED ROW'S BRANCH CANNOT DECLARE `Closes: none`, AND THE AUTHOR IS TOLD HERE. `closes-mismatch-check.ts`
+ * refuses it in CI, after the pull request exists and after the worker has moved on; three rows (agent-org#475 and #560, a11ign#4874) stayed
+ * open with a worker holding the claim because the refusal was never reached for a pull request in another tracker. This is the same
+ * comparison (`claimedBranchReport`, the head ref against every declared tracker's `Claimed-branch:` records), run before anything is sent.
+ *
+ * ONLY A MATCH REFUSES. A tracker that cannot be read is printed as `UNCHECKED` and goes on: CI asks again, and a GitHub blip must not stop
+ * a pull request that finishes no row. A body that is not `Closes: none` is not asked (no read is made for it), and so is a pull request on
+ * a branch no claim names, which passes with `Closes: none -- <reason>` as before. OFF when no `claimedRows` is wired, which is every direct
+ * caller of `main` and none of the shipped CLI (the entry block wires it, as `regionStep`'s `rowBody` is).
+ * @param {string} body @param {string[]} rest
+ * @param {{ git?: (args: string[]) => string, code?: readonly { key: string, repo: string }[],
+ *           claimedRows?: (prRepo: string) => ClaimedRow[] | ClaimedRows | null, out: (line: string) => void, err: (line: string) => void }} io
+ * @returns {number | null} EXIT_NOTHING_SENT for a refusal, else null
+ */
+function claimedRowStep(body: string, rest: string[], { git = defaultGit, code, claimedRows, out, err }: {
+        git?: (args: string[]) => string; code?: readonly { key: string; repo: string; }[];
+        claimedRows?: (prRepo: string) => ClaimedRow[] | ClaimedRows | null; out: (line: string) => void; err: (line: string) => void;
+    }): number | null {
+  if (!claimedRows) return null;
+  const declaration = extractClosesDeclaration(body);
+  if (declaration.kind !== "none") return null;
+  let branch = flagAfter(rest, "--head");
+  if (branch === null) {
+    try {
+      branch = git(["rev-parse", "--abbrev-ref", "HEAD"]).trim();
+    } catch (error) {
+      void error; // an unreadable branch is "could not tell", reported by the report below
+    }
+  }
+  const head = branch ? { branch, fork: false } : null;
+  const prRepo = flagAfter(rest, "--repo") ?? originRepoOf(git, code ?? homeProjectDeclaration().code) ?? REPO;
+  const report = claimedBranchReport(declaration, head, claimedRows(prRepo), prRepo);
+  if (report.ok === null) {
+    out(`pr-open: UNCHECKED -- the claimed-row comparison for \`Closes: none\` was skipped: ${report.reason}. CI asks again.\n`);
+    return null;
+  }
+  if (report.ok) return null;
+  err(`pr-open: REFUSED -- a claimed row's own pull request cannot declare \`Closes: none\`, because the merge is what closes the row:\n`
+    + `${report.reasons.map((reason) => `  ${reason}`).join("\n")}\nNothing was sent (agent-org#744).\n`);
+  return EXIT_NOTHING_SENT;
+}
+
+/**
  * #3215: A READY pull request is opened only on a green verify stamp for this head and this body; a DRAFT opens without one, because it is
  * where CI starts and work is shared, and refusing it would put the cost on the one step that cannot be re-run cheaply. `edit` opens nothing.
  * A project that declares no verify script is not refused, and the line says so by name (`verify-stamp.ts`). WIRED IN THE ENTRY BLOCK like
@@ -869,6 +916,7 @@ function verifyStampStep(mode: string, rest: string[], body: string, { verifySta
  *           runAcceptance?: (command: string) => number, runMutation?: (command: string) => number,
  *           owner?: () => string | null, rowBody?: (number: number, repo?: string) => string, rootFiles?: Set<string>,
  *           rowLabels?: (number: number, repo: string) => string[], labelExists?: (name: string) => boolean,
+ *           claimedRows?: (prRepo: string) => ClaimedRow[] | ClaimedRows | null,
  *           code?: readonly { key: string, repo: string }[], login?: () => string, lanes?: {lanes: import("./lane-ownership.ts").Lane[]} | null,
  *           verifyStamp?: (body: string) => import("./verify-stamp.ts").VerifyReading, write?: (path: string, text: string) => void,
  *           readFile?: (path: string) => string, out?: (line: string) => void, err?: (line: string) => void }} [deps]
@@ -876,12 +924,13 @@ function verifyStampStep(mode: string, rest: string[], body: string, { verifySta
  */
 export function main(argv: string[] = process.argv.slice(2),
   { run, git, prHead, runAcceptance, runMutation = runForReal, owner, rowBody, rowLabels, labelExists, rootFiles, code, login, lanes,
-    verifyStamp, write, readFile, out = writeOut, err = writeErr }: {
+    claimedRows, verifyStamp, write, readFile, out = writeOut, err = writeErr }: {
           run?: (args: string[]) => void; git?: (args: string[]) => string;
           prHead?: (repo: string, number: string) => { ref: string; oid: string; } | null;
           runAcceptance?: (command: string) => number; runMutation?: (command: string) => number;
           owner?: () => string | null; rowBody?: (number: number, repo?: string) => string; rootFiles?: Set<string>;
           rowLabels?: (number: number, repo: string) => string[]; labelExists?: (name: string) => boolean;
+          claimedRows?: (prRepo: string) => ClaimedRow[] | ClaimedRows | null;
           code?: readonly { key: string; repo: string; }[]; login?: () => string; lanes?: { lanes: import("./lane-ownership.ts").Lane[]; } | null;
           verifyStamp?: (body: string) => import("./verify-stamp.ts").VerifyReading; write?: (path: string, text: string) => void;
           readFile?: (path: string) => string; out?: (line: string) => void; err?: (line: string) => void;
@@ -911,6 +960,9 @@ export function main(argv: string[] = process.argv.slice(2),
   // #2417: before checkBody for the same reason, and before anything is sent.
   const outsideRegion = regionStep(body, rest, { git, rowBody, rootFiles, code, out, err });
   if (outsideRegion !== null) return outsideRegion;
+  // agent-org#744: before checkBody too, for the same reason, and before anything is sent.
+  const keepsRowOpen = claimedRowStep(body, rest, { git, code, claimedRows, out, err });
+  if (keepsRowOpen !== null) return keepsRowOpen;
   const result = checkBody(body, { run: runAcceptance, diff: localDiffReading(rest, git), readFile,
     rowLabels: rowLabels && ((row) => rowLabels(row.number, row.repo ?? REPO)) }); // #4123: a bare `#N` is the tracker's, as in `rowsNamed`
   for (const line of result.lines) out(`${line}\n`);
@@ -1173,6 +1225,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
     process.exitCode = EXIT_NOTHING_SENT;
   } else {
     process.exitCode = main(undefined, { rowBody: defaultRowBody, verifyStamp: defaultVerifyStamp,
-      rowLabels: defaultRowLabels, labelExists: defaultLabelExists, write: writeAcceptanceFile });
+      rowLabels: defaultRowLabels, labelExists: defaultLabelExists, write: writeAcceptanceFile,
+      claimedRows: (prRepo) => lookupClaimedRowsOfTrackers(trackerReposFor(prRepo)) });
   }
 }
