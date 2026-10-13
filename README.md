@@ -78,7 +78,10 @@ takes them one each. `agent-org ticket:serve` starts a board on `127.0.0.1` and 
   group and for the page. A ticket sits under its parent, whatever its own status. A parent folds the tickets under it away, and starts folded.
   Its checkbox picks every ticket under it that is not on the queue, never the parent itself, and shows part ticked when only some are picked.
   A parent that is not yours, such as an epic someone else owns, says so. Filter by Linear project (several at once) or by search, and fold any status group; both are remembered in the
-  browser. Choose the model and the effort, then Queue. You do not choose a repository: the worker does.
+  browser. On a machine that sets `tickets.plan`, a ticket with no plan of its own is marked, so you can attach one before a worker starts it.
+  The mark is muted when the ticket's parent has a plan, because a worker is briefed with its parent's plan too. An epic is never marked or
+  counted, because no worker starts one. A Plan filter, also remembered, shows only the tickets with a plan, or only those without, each
+  under its epic. Choose the model and the effort, then Queue. You do not choose a repository: the worker does.
 - **Board.** Every run in one list, newest activity first, each with a status icon after GitHub's Actions runs, and a filter per status
   with its count: Needs you, In progress, Blocked, Queued, Awaiting review, Completed, Failed and Cancelled. A run is Completed once the tracker
   completes its ticket, or once its pull requests have merged, as Linear's GitHub integration reports them. Linear completes a ticket on a
@@ -139,6 +142,7 @@ a worker can choose from:
 | `tickets.deny` | none. `[{ "pattern": "<regular expression>", "reason": "<why>" }]`: Bash commands the hook refuses as well as its own, each matched against the whole command, with the reason the worker is told |
 | `tickets.connectors` | none, and every connector is refused. `["^mcp__<connector>__<tools>", ...]`: regular expressions, each anchored with `^mcp__`, for the connector tools a worker may call, matched against the tool's name. Linear's reads through the claude.ai connector: `["^mcp__claude_ai_Linear__(get\\|list\\|search\\|extract)_"]`. The brief names them, so a worker can read its ticket's parent and blockers |
 | `tickets.terminal` | none, and the board shows no terminal link. A web address that serves a run's terminal, with `{workspace}`, `{pane}` and `{key}` filled in per run: for [herdr web ui](https://github.com/devswha/herdr-web-ui) serving the `tickets` session on port 7318, `"http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal"` |
+| `tickets.plan` | none, and the board marks no ticket. A regular expression that the name of a file uploaded to a ticket matches when the file is the ticket's plan. NBL's create-ticket names a plan `<KEY>-0001-plan-<slug>.md`: `"-plan-[^/]*\\.md$"`. A bare `plan` would also match `floorplan.png` |
 | `stateDir` | `~/.local/state/agent-org`: the queue, each ticket's brief, attachments and outcome |
 
 The Linear key is a personal API key, so ticket mode reads as you and needs no workspace admin. On macOS, store it once with

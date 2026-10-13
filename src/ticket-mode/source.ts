@@ -24,6 +24,11 @@ export type Ticket = Readonly<{
   priority: number;
   /** The key of the ticket this one is part of, whose plan may bind it, or `null`. */
   parent: string | null;
+  /**
+   * The names of the files uploaded to it, as the tracker titles them. A link to elsewhere, such as a pull request, is not one. Absent from a
+   * ticket stored on the queue before they were read, and from a source that does not read them.
+   */
+  uploads?: readonly string[];
 }>;
 
 /** A pull request's state as the tracker last saw it. A draft, or one in review, is `open`. */

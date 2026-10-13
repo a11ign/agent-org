@@ -26,8 +26,9 @@
   .group.collapsed > .row { display: none; }
   .fold { background: none; border: 0; padding: 0; color: var(--text); cursor: pointer; font-size: 18px; line-height: 1; width: 20px; transition: transform .15s; }
   .group.collapsed .fold { transform: rotate(-90deg); }
-  .projects { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 4px 0 8px; }
-  .projects .label { color: var(--muted); margin-right: 4px; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 4px 0 8px; }
+  .chips[hidden] { display: none; }
+  .chips .label { color: var(--muted); margin-right: 4px; }
   .chip { font: inherit; font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel); color: var(--text); cursor: pointer; }
   .chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
   .chip .n { opacity: .7; margin-left: 4px; }
@@ -82,6 +83,9 @@
   .state { font-weight: 600; }
   .state.paused { color: var(--warn); }
   .state.started { color: var(--ok); }
+  .no-plan { display: inline-flex; vertical-align: -2px; margin-right: 6px; color: var(--warn); }
+  .no-plan.covered { color: var(--muted); }
+  .no-plan svg { width: 14px; height: 14px; }
 </style>
 </head>
 <body>
@@ -99,7 +103,8 @@
       <button class="small" id="fold-all" type="button"></button>
       <span id="loaded" class="pill"></span>
     </div>
-    <div class="projects" id="projects"></div>
+    <div class="chips" id="projects"></div>
+    <div class="chips" id="plans" hidden></div>
     <div id="paused-note" class="notice" hidden>Workers are paused. Tickets you queue wait on the Board until you start workers there.</div>
     <div id="groups"></div>
   </section>
@@ -124,8 +129,8 @@
 // The decisions (what shows, how it groups, what can be selected, what status a run has and what it offers) are board-view.ts's, tested there.
 // This page only draws what they return and wires the clicks.
 import {
-  RUN_STATUSES, flatten, groupByStatus, isParked, parentKeys, parentTick, projectCounts, projectOf, queueLabel, recall, remember, runActions, runStatus, runsShown, selectable, statusCounts, terminalLink,
-  ticketCount, toggled, visibleTickets, waitsOn,
+  RUN_STATUSES, flatten, groupByStatus, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, projectCounts, projectOf, queueLabel, recall, remember, runActions, runStatus,
+  runsShown, selectable, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, waitsOn,
 } from "/board-view.js";
 
 const el = (tag, props = {}, ...children) => {
@@ -137,6 +142,8 @@ const $ = (id) => document.getElementById(id);
 const storage = (() => { try { return window.localStorage; } catch { return null; } })();
 const state = {
   tickets: [], parents: [], queue: { entries: [], max: 3, paused: true }, selected: new Set(), terminal: null,
+  // The pattern a plan's name matches (the host file's `tickets.plan`), or null when the board looks for none; and the plan filter chosen.
+  plan: null, planChoice: planChoiceOf(recall(storage, "ticket-mode.plan")),
   // Sections start collapsed, so a first visit sees every status and its count before any list.
   open: recall(storage, "ticket-mode.open"), projects: recall(storage, "ticket-mode.projects"),
   // Parents start folded too, so an epic reads as one row until it is opened.
@@ -160,24 +167,53 @@ const entryFor = (key) => state.queue.entries.find((e) => e.ticket.key === key);
 const pickableShown = () => groupByStatus(shown(), state.parents).flatMap(([, nodes]) => flatten(nodes)).filter((t) => selectable(t, state.queue.entries));
 /** Every section open, and every parent in them. */
 const allOpen = (groups) => everyOpen(groups.map(([status]) => status)) && groups.flatMap(([, nodes]) => parentKeys(nodes)).every((key) => state.openParents.has(key));
-const shown = () => visibleTickets(state.tickets, state.projects, $("filter").value);
+const planFilter = () => (state.plan && state.planChoice ? { pattern: state.plan, choice: state.planChoice } : null);
+const shown = () => visibleTickets(state.tickets, state.projects, $("filter").value, planFilter());
+
+function chip(label, pressed, onClick, n) {
+  const b = el("button", { className: "chip", type: "button" }, label, n === undefined ? null : el("span", { className: "n" }, String(n)));
+  b.setAttribute("aria-pressed", String(pressed));
+  b.addEventListener("click", onClick);
+  return b;
+}
 
 function renderProjects() {
   const counts = projectCounts(state.tickets);
-  const chip = (label, pressed, onClick, n) => {
-    const b = el("button", { className: "chip", type: "button" }, label, n === undefined ? null : el("span", { className: "n" }, String(n)));
-    b.setAttribute("aria-pressed", String(pressed));
-    b.addEventListener("click", onClick);
-    return b;
-  };
   const choose = (next) => { state.projects = next; remember(storage, "ticket-mode.projects", next); render(); };
   $("projects").replaceChildren(el("span", { className: "label" }, "Projects"),
     chip("All projects", state.projects.size === 0, () => choose(new Set())),
     ...counts.map(([name, n]) => chip(name, state.projects.has(name), () => choose(toggled(state.projects, name)), n)));
 }
 
+/** The plan chips, counting the tickets a worker can be given; none on a machine that names no plan pattern. */
+function renderPlans() {
+  $("plans").hidden = !state.plan;
+  if (!state.plan) return;
+  const plans = planCounts(state.tickets, state.plan);
+  const choose = (choice) => { state.planChoice = choice; remember(storage, "ticket-mode.plan", new Set(choice ? [choice] : [])); render(); };
+  $("plans").replaceChildren(el("span", { className: "label" }, "Plan"),
+    chip("All", state.planChoice === null, () => choose(null)),
+    chip("With a plan", state.planChoice === "with", () => choose("with"), plans.with),
+    chip("Without a plan", state.planChoice === "without", () => choose("without"), plans.without));
+}
+
+// A document with a mark on it: the ticket has no plan of its own.
+const NO_PLAN = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 1.5h5.5L13 5v9.5H4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M8.5 6v4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="8.5" cy="12.3" r=".9" fill="currentColor"/></svg>';
+
+/** The no-plan mark for a ticket, muted when its parent's plan covers it; nothing when it has a plan or the board looks for none. */
+function planMark(t) {
+  const missing = state.plan ? missingPlan(t, state.plan, [...state.tickets, ...state.parents]) : null;
+  if (!missing) return null;
+  const mark = el("span", { className: `no-plan${missing.covered ? " covered" : ""}`, title: missing.note });
+  mark.innerHTML = NO_PLAN;
+  mark.setAttribute("role", "img");
+  mark.setAttribute("aria-label", missing.note);
+  return mark;
+}
+
 function renderPick() {
   renderProjects();
+  renderPlans();
   const tickets = shown();
   const free = (t) => selectable(t, state.queue.entries);
   const list = $("groups");
@@ -200,9 +236,10 @@ function renderPick() {
     head.addEventListener("click", () => setOpen(toggled(state.open, status)));
     const box = el("div", { className: `group${expanded ? "" : " collapsed"}` }, head);
     // A ticket under its parent is indented, and names its own status, which can differ from the section's. A parent folds the tickets under
-    // it away, and its checkbox picks them rather than itself; one that is not the person's says so.
-    const titleCell = (t, depth, arrow = null, note = null) => el("span", {}, arrow, el("a", { href: t.url, target: "_blank", rel: "noreferrer" }, t.title),
-      depth > 0 ? el("span", { className: "sub" }, ` · ${t.status}`) : null, note);
+    // it away, and its checkbox picks them rather than itself; one that is not the person's says so. Only a ticket a worker can be given carries
+    // the no-plan mark: an epic is never started.
+    const titleCell = (t, depth, { arrow = null, mark = null, note = null } = {}) => el("span", {}, arrow, mark,
+      el("a", { href: t.url, target: "_blank", rel: "noreferrer" }, t.title), depth > 0 ? el("span", { className: "sub" }, ` · ${t.status}`) : null, note);
     const pill = (text) => el("span", { className: "pill" }, text);
     const place = (row, depth) => { if (depth > 0) row.setAttribute("style", `--depth: ${depth}`); box.append(row); };
     const add = (node, depth) => {
@@ -221,14 +258,14 @@ function renderPick() {
         arrow.addEventListener("click", () => setOpenParents(toggled(state.openParents, t.key)));
         const count = ticketCount(children);
         place(el("div", { className: `row parent${context ? " context" : ""}${nested}` }, tick, keyCell,
-          titleCell(t, depth, arrow, el("span", { className: "sub" }, ` · ${count} ticket${count === 1 ? "" : "s"} under it`)),
+          titleCell(t, depth, { arrow, note: el("span", { className: "sub" }, ` · ${count} ticket${count === 1 ? "" : "s"} under it`) }),
           pill(projectOf(t)), pill(context ? "Not assigned to you" : standing)), depth);
         if (open) for (const child of children) add(child, depth + 1);
         return;
       }
       const tick = el("input", { type: "checkbox", checked: state.selected.has(t.key), disabled: Boolean(taken) });
       tick.addEventListener("change", () => { tick.checked ? state.selected.add(t.key) : state.selected.delete(t.key); render(); });
-      place(el("label", { className: `row${taken ? " taken" : ""}${nested}` }, tick, keyCell, titleCell(t, depth), pill(projectOf(t)), pill(standing)), depth);
+      place(el("label", { className: `row${taken ? " taken" : ""}${nested}` }, tick, keyCell, titleCell(t, depth, { mark: planMark(t) }), pill(projectOf(t)), pill(standing)), depth);
     };
     for (const node of nodes) add(node, 0);
     list.append(box);
@@ -333,6 +370,7 @@ function render() { renderPick(); renderBoard(); renderFooter(); }
 
 function setup(config) {
   state.terminal = config.terminal ?? null;
+  state.plan = config.plan ? new RegExp(config.plan) : null;
   $("model").replaceChildren(...config.models.map((m) => el("option", { value: m, textContent: m, selected: m === config.choice.model })));
   $("effort").replaceChildren(...config.efforts.map((x) => el("option", { value: x, textContent: x, selected: x === config.choice.effort })));
 }

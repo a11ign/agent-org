@@ -9,7 +9,9 @@
 // (`isParked`) decide what the board shows and what the pool does, so `queue.ts` and `pool.ts` import them from here rather than restating them.
 
 /** The fields of a ticket the board shows. */
-export type ViewTicket = Readonly<{ key: string; title: string; status: string; statusOrder: number; priority: number; project: string | null; parent?: string | null }>;
+export type ViewTicket = Readonly<{
+  key: string; title: string; status: string; statusOrder: number; priority: number; project: string | null; parent?: string | null; uploads?: readonly string[];
+}>;
 
 /**
  * A ticket in the Pick list's tree, with the tickets under it. A node with tickets under it is a parent: its checkbox picks them, and it is not
@@ -35,11 +37,72 @@ export const NO_PROJECT = "(no project)";
 
 export const projectOf = (ticket: ViewTicket): string => ticket.project ?? NO_PROJECT;
 
-/** The tickets to show: in one of the chosen projects (any, when none is chosen) and matching every search word. */
-export function visibleTickets(tickets: readonly ViewTicket[], projects: ReadonlySet<string>, search: string): ViewTicket[] {
+/**
+ * A ticket has a plan when a file uploaded to it has a name `plan` matches: the host file's `tickets.plan`. A ticket whose uploads were not read
+ * has none, so a source that does not read them leaves every ticket unplanned.
+ */
+export const hasPlan = (ticket: ViewTicket, plan: RegExp): boolean => (ticket.uploads ?? []).some((name) => plan.test(name));
+
+/** Which tickets the plan filter keeps: those with a plan of their own, or those without one. */
+export type PlanChoice = "with" | "without";
+
+/** The plan filter in force: the pattern a plan's name matches, and which tickets to keep. */
+export type PlanFilter = Readonly<{ pattern: RegExp; choice: PlanChoice }>;
+
+/** The plan filter remembered in the browser, or null, meaning every ticket, for anything else it holds. */
+export function planChoiceOf(remembered: ReadonlySet<string>): PlanChoice | null {
+  const [choice] = remembered;
+  return choice === "with" || choice === "without" ? choice : null;
+}
+
+/** The tickets a worker can be given: every one that no other ticket sits under. An epic is not work for a worker. */
+export function workItems<T extends ViewTicket>(tickets: readonly T[]): T[] {
+  const parents = new Set(tickets.flatMap((t) => (t.parent ? [t.parent] : [])));
+  return tickets.filter((t) => !parents.has(t.key));
+}
+
+/**
+ * The keys the plan filter keeps: each ticket a worker can be given that has a plan, or has none, as chosen, and every ticket above it, so it
+ * still shows under its epic. An epic is kept only for what it holds: its own plan does not decide it.
+ */
+function keptByPlan(tickets: readonly ViewTicket[], { pattern, choice }: PlanFilter): Set<string> {
+  const wanted = choice === "with";
+  const kept = new Set(workItems(tickets).filter((t) => hasPlan(t, pattern) === wanted).map((t) => t.key));
+  const byKey = new Map(tickets.map((t) => [t.key, t]));
+  for (const key of [...kept]) {
+    for (let above = byKey.get(key)?.parent; above && byKey.has(above) && !kept.has(above); above = byKey.get(above)?.parent) kept.add(above);
+  }
+  return kept;
+}
+
+/**
+ * The tickets to show: in one of the chosen projects (any, when none is chosen), matching every search word, and, under a plan filter, the
+ * tickets it keeps.
+ */
+export function visibleTickets<T extends ViewTicket>(tickets: readonly T[], projects: ReadonlySet<string>, search: string, plan: PlanFilter | null = null): T[] {
   const words = search.trim().toLowerCase();
+  const kept = plan === null ? null : keptByPlan(tickets, plan);
   return tickets.filter((t) => (projects.size === 0 || projects.has(projectOf(t)))
-    && (words === "" || `${t.key} ${t.title} ${t.project ?? ""}`.toLowerCase().includes(words)));
+    && (words === "" || `${t.key} ${t.title} ${t.project ?? ""}`.toLowerCase().includes(words))
+    && (kept === null || kept.has(t.key)));
+}
+
+/** How many of the tickets a worker can be given have a plan of their own, and how many have none. */
+export function planCounts(tickets: readonly ViewTicket[], plan: RegExp): Readonly<{ with: number; without: number }> {
+  const work = workItems(tickets);
+  const planned = work.filter((t) => hasPlan(t, plan)).length;
+  return { with: planned, without: work.length - planned };
+}
+
+/**
+ * What the board says about a ticket with no plan of its own, and whether its parent's plan covers it: a worker is briefed with its parent's
+ * plan as well as its own. Null when the ticket has a plan. `tickets` is every ticket the board knows, parents included.
+ */
+export function missingPlan(ticket: ViewTicket, plan: RegExp, tickets: readonly ViewTicket[]): Readonly<{ note: string; covered: boolean }> | null {
+  if (hasPlan(ticket, plan)) return null;
+  const parent = tickets.find((t) => t.key === ticket.parent);
+  if (parent !== undefined && hasPlan(parent, plan)) return { note: `No plan of its own. A worker reads its parent ${parent.key}'s plan.`, covered: true };
+  return { note: "No plan attached. Attach one before a worker starts this.", covered: false };
 }
 
 /** Each project and how many tickets it holds, most first, then by name. */
