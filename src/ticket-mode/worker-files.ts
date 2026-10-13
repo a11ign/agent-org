@@ -8,7 +8,7 @@
 // THE WORKER CHOOSES THE REPOSITORY AND FINDS ITS COMMANDS. It starts in the ticket's own folder beside the person's repositories, reads the ticket,
 // decides where the work lands, and makes a worktree there with `ticket:worktree`. Each repository's `CLAUDE.md`/`AGENTS.md` names how to install,
 // test and typecheck it, which is where any engineer looks, so nothing about a repository is declared here or in the host file.
-import type { Ticket } from "./source.ts";
+import type { Blocker, Ticket } from "./source.ts";
 
 /** The file a worker writes last, and the one thing the pool and the stop hook read to know a run has ended. */
 export const OUTCOME_FILE = "outcome.json";
@@ -67,12 +67,31 @@ This machine lets you call the connector tools whose names match ${connectors.ma
 }
 
 /**
- * The brief, as markdown. `worktreeCommand` is the full command line that makes a worktree, short of the repository's name. `notes` is the host
- * file's `tickets.brief`, how workers behave on this machine, and `connectors` its `tickets.connectors`.
+ * The section naming the tickets this one waited on, or nothing for a ticket that waited on none. A blocker's merge can come minutes before the
+ * release it feeds, such as a package version, so the worker checks the release is out rather than finding it missing.
  */
-export function briefText({ ticket, folder, ticketDir, attachments, parent = null, clones, worktreeCommand, notes, connectors = [] }: {
-  ticket: Ticket; folder: string; ticketDir: string; attachments: readonly string[]; parent?: ParentTicket | null; clones: Readonly<Record<string, string>>;
-  worktreeCommand: string; notes?: string; connectors?: readonly string[];
+function blockersText(blockers: readonly Blocker[]): string {
+  if (blockers.length === 0) return "";
+  const pulls = (blocker: Blocker) => Object.entries(blocker.pulls).map(([url, state]) => `${url} (${state})`).join(", ") || "no pull request linked";
+  return `
+## Tickets that blocked this one
+
+This ticket waited until each of these was done:
+
+${blockers.map((blocker) => `- ${blocker.key}, ${blocker.status}: ${pulls(blocker)}`).join("\n")}
+
+If your work depends on something one of them releases, such as a new package version, check that the release is out before you rely on it, for example with \`gh release list --repo <owner>/<repo>\` or the package registry. A release can follow its merge by some minutes: wait for it rather than fail.
+`;
+}
+
+/**
+ * The brief, as markdown. `worktreeCommand` is the full command line that makes a worktree, short of the repository's name. `notes` is the host
+ * file's `tickets.brief`, how workers behave on this machine, and `connectors` its `tickets.connectors`. `blockers` are the tickets this one
+ * waited on.
+ */
+export function briefText({ ticket, folder, ticketDir, attachments, parent = null, blockers = [], clones, worktreeCommand, notes, connectors = [] }: {
+  ticket: Ticket; folder: string; ticketDir: string; attachments: readonly string[]; parent?: ParentTicket | null; blockers?: readonly Blocker[];
+  clones: Readonly<Record<string, string>>; worktreeCommand: string; notes?: string; connectors?: readonly string[];
 }): string {
   const repos = Object.entries(clones).map(([name, path]) => `- \`${name}\` at \`${path}\``).join("\n");
   return `# ${ticket.key}: ${ticket.title}
@@ -88,7 +107,7 @@ ${ticket.description.trim() || "(no description)"}
 ## Files from the ticket
 
 ${filesText(attachments)}
-${parentText(parent)}
+${parentText(parent)}${blockersText(blockers)}
 ## Where the work lands: you decide
 
 You are in this ticket's own folder, \`${folder}\`. These are the repositories on this machine, checked out by the person you work for. Read them, but never commit or change branches in them:

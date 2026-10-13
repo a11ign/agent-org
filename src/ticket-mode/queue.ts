@@ -9,8 +9,8 @@
 // the only writer of the file, which it replaces whole by rename, so a reader never sees half of one.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { isParked, settledByPulls } from "./board-view.ts";
-import type { PullState, Ticket } from "./source.ts";
+import { isParked, settledByPulls, waitsOn } from "./board-view.ts";
+import type { Blocker, PullState, Ticket } from "./source.ts";
 
 /** How a finished run ended. A worker writes the first three; the pool decides the rest. */
 export type Outcome =
@@ -47,6 +47,8 @@ export type Entry = Readonly<{
   trackerState?: string;
   /** The state of each of the ticket's pull requests by URL once the run has finished, as last read: a run whose pull requests merged is done. */
   pullStates?: Readonly<Record<string, PullState>>;
+  /** The tickets that block this one, as last read while it is queued; unset until the tracker has been asked. */
+  blockers?: readonly Blocker[];
 }>;
 
 /**
@@ -168,6 +170,18 @@ export function recordPullStates(queue: Queue, pulls: ReadonlyMap<string, Readon
   }) };
 }
 
+/** Record the tickets that block each queued run, for each run the tracker was asked about. A run that has started keeps what it started with. */
+export function recordBlockers(queue: Queue, blockers: ReadonlyMap<string, readonly Blocker[]>): Queue {
+  return { ...queue, entries: queue.entries.map((entry) => {
+    const found = blockers.get(entry.ticket.key);
+    return entry.phase === "queued" && found !== undefined ? { ...entry, blockers: found } : entry;
+  }) };
+}
+
+/** The keys of queued runs whose blockers have not been read yet. */
+export const unreadBlockerKeys = (queue: Queue): string[] =>
+  queue.entries.filter((entry) => entry.phase === "queued" && entry.blockers === undefined).map((entry) => entry.ticket.key);
+
 /** Record the tracker's state for each finished run it named. */
 export function recordTrackerStates(queue: Queue, states: ReadonlyMap<string, string>): Queue {
   return { ...queue, entries: queue.entries.map((entry) => {
@@ -178,12 +192,13 @@ export function recordTrackerStates(queue: Queue, states: ReadonlyMap<string, st
 
 /**
  * The queued entries to start now, in queue order: none while the queue is paused or the host is loaded past its cores (`wake.ts`'s `hostLoadRefusal` rule, where
- * exactly equal does not refuse), and otherwise as many as the free slots allow.
+ * exactly equal does not refuse), and otherwise as many as the free slots allow. An entry still waiting on a blocker is passed over, and holds
+ * no slot.
  */
 export function nextStarts(queue: Queue, load: number, cores: number): Entry[] {
   if (queue.paused || load > cores) return [];
   const free = queue.max - queue.entries.filter(isLive).length;
-  return queue.entries.filter((entry) => entry.phase === "queued").slice(0, Math.max(0, free));
+  return queue.entries.filter((entry) => entry.phase === "queued" && waitsOn(entry, queue.entries).length === 0).slice(0, Math.max(0, free));
 }
 
 export function emptyQueue(max: number): Queue {

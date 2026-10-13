@@ -255,6 +255,24 @@ test("the runs view lists every run with its status icon, most recently active f
   assert.deepEqual(icons, ["icon st-completed", "icon st-awaiting-review", "icon st-needs-you", "icon st-working", "icon st-failed", "icon st-queued"]);
 });
 
+test("a run waiting on a blocker is Blocked, with its own filter, and names what it waits on", async () => {
+  const runs = [
+    entry("APP-1", { phase: "queued", blockers: [{ key: "LIB-1", state: "started", status: "In Review" }] }),
+    entry("LIB-1", { phase: "finished", startedAt: 2, finishedAt: 3, outcome: { kind: "draft-pr", prs: [{ repo: "libs", url: "https://github.com/x/libs/pull/3" }] } }),
+    entry("APP-2", { phase: "queued", blockers: [{ key: "LIB-2", state: "started", status: "In Review" }] }),
+    entry("LIB-2", { phase: "finished", startedAt: 2, finishedAt: 4, outcome: { kind: "draft-pr", prs: [{ repo: "libs", url: "https://github.com/x/libs/pull/4" }] },
+      pullStates: { "https://github.com/x/libs/pull/4": "merged" } }),
+  ];
+  const p = await page(new Map(), {}, runs);
+  const blocked = runRows(p).find((r) => r.text().includes("APP-1"))!;
+  assert.equal(blocked.children[0].className, "icon st-blocked");
+  assert.match(blocked.text(), /Waits on LIB-1 \(In Review\)/);
+  assert.equal(runRows(p).find((r) => r.text().includes("APP-2"))!.children[0].className, "icon st-queued", "its blocker merged on the queue");
+  filterButton(p, "Blocked").fire("click");
+  assert.deepEqual(runRows(p).map((r) => r.text().match(/APP-\d|LIB-\d/)![0]), ["APP-1"]);
+  assert.equal(filterButton(p, "Blocked").children.find((c) => c.className === "n")!.text(), "1");
+});
+
 test("the In progress filter is a still dot, and a working run's own icon is the spinning ring", async () => {
   const p = await page(new Map(), {}, RUNS);
   const railIcon = filterButton(p, "In progress").children[0] as Node_ & { innerHTML: string };

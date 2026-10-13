@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, isParked, parentKeys, parentTick, ticketCount, projectCounts, queueLabel, recall, remember, runActions, runStatus, runsShown, selectable, statusCounts, terminalLink, toggled,
+  HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, isParked, parentKeys, parentTick, ticketCount, projectCounts, queueLabel, recall, remember, runActions, runStatus, runsShown, selectable, statusCounts, terminalLink, toggled, waitsOn,
   visibleTickets, type ViewEntry, type ViewTicket,
 } from "./board-view.ts";
 
@@ -174,7 +174,33 @@ test("every status is counted, a status with no runs at zero, and the filters li
   assert.equal(counts.get("queued"), 2);
   assert.equal(counts.get("failed"), 1);
   assert.equal(counts.get("completed"), 0);
-  assert.deepEqual(RUN_STATUSES.map(({ status }) => status), ["needs-you", "working", "queued", "awaiting-review", "completed", "failed", "cancelled"]);
+  assert.deepEqual(RUN_STATUSES.map(({ status }) => status), ["needs-you", "working", "blocked", "queued", "awaiting-review", "completed", "failed", "cancelled"]);
+});
+
+const blocker = (key: string, state: string, status = state) => ({ key, state, status });
+
+test("a queued run is blocked until each ticket that blocks it is done in the tracker, or completed as a run on the queue", () => {
+  const merged = "https://github.com/x/y/pull/1";
+  const waiting = run({ ticket: { key: "APP-1" }, phase: "queued", blockers: [blocker("LIB-1", "started", "In Review"), blocker("LIB-2", "completed", "Done")] });
+  const lib1 = run({ ticket: { key: "LIB-1" }, outcome: { kind: "draft-pr", prs: [{ url: merged }] }, pullStates: { [merged]: "open" } });
+  assert.deepEqual(waitsOn(waiting, [waiting, lib1]), [blocker("LIB-1", "started", "In Review")], "LIB-2 is done in the tracker; LIB-1's pull request is open");
+  assert.equal(runStatus(waiting, [waiting, lib1]), "blocked");
+  const lib1Merged = { ...lib1, pullStates: { [merged]: "merged" } };
+  assert.deepEqual(waitsOn(waiting, [waiting, lib1Merged]), [], "its run on the queue merged, though the tracker still has it in review");
+  assert.equal(runStatus(waiting, [waiting, lib1Merged]), "queued");
+  assert.deepEqual(waitsOn(waiting, [waiting]), [blocker("LIB-1", "started", "In Review")], "off the queue, only the tracker's word lets it go");
+  assert.equal(runStatus(run({ phase: "queued" })), "queued", "a run with no blockers, or none read yet, is queued");
+});
+
+test("a canceled or duplicate blocker never lets a run go, and the run is counted as blocked", () => {
+  const waiting = run({ ticket: { key: "APP-1" }, phase: "queued", blockers: [blocker("LIB-1", "canceled", "Canceled"), blocker("LIB-2", "duplicate", "Duplicate")] });
+  assert.equal(waitsOn(waiting, [waiting]).length, 2, "the work it waited on will not come: a person decides");
+  const merged = "https://github.com/x/y/pull/2";
+  const lib = run({ ticket: { key: "LIB-3" }, outcome: { kind: "draft-pr", prs: [{ url: merged }] }, pullStates: { [merged]: "merged" } });
+  const released = run({ ticket: { key: "APP-2" }, phase: "queued", blockers: [blocker("LIB-3", "started", "In Review")] });
+  const counts = statusCounts([waiting, released, lib]);
+  assert.deepEqual([counts.get("blocked"), counts.get("queued")], [1, 1], "APP-2's blocker merged on the queue, so it counts as queued");
+  assert.deepEqual(runsShown([waiting], "blocked").map((e) => e.ticket.key), ["APP-1"]);
 });
 
 test("runs are listed most recently active first, and a filter keeps only its status", () => {

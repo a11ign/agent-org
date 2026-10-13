@@ -70,6 +70,16 @@ test("the connectors a machine allows are named in the brief, and a machine that
   assert.equal(brief([]).includes("## Connectors"), false);
 });
 
+test("a ticket that waited names each blocker, its status and its pull requests, and one that waited on none has no such section", () => {
+  const brief = (blockers?: { key: string; state: string; status: string; pulls: Record<string, "open" | "merged" | "closed"> }[]) =>
+    briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", blockers });
+  const text = brief([{ key: "NBF-1944", state: "started", status: "In Review", pulls: { "https://github.com/o/libs/pull/8": "merged" } }, { key: "NBF-1", state: "completed", status: "Done", pulls: {} }]);
+  assert.match(text, /- NBF-1944, In Review: https:\/\/github\.com\/o\/libs\/pull\/8 \(merged\)\n- NBF-1, Done: no pull request linked/);
+  assert.match(text, /`gh release list --repo <owner>\/<repo>`/);
+  assert.equal(brief().includes("## Tickets that blocked this one"), false);
+  assert.equal(brief([]).includes("## Tickets that blocked this one"), false);
+});
+
 test("the machine's notes join the brief under their own heading, and a machine with none adds no heading", () => {
   const brief = (notes?: string) => briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", notes });
   assert.ok(brief("Start apps with `npm run dev:atomic`.\n").includes("## On this machine\n\nStart apps with `npm run dev:atomic`.\n\n## The outcome file"));
