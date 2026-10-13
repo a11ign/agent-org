@@ -322,7 +322,7 @@ test(
   { skip: liveSkipReason({ config, env: process.env }) },
   () => {
     assert.deepEqual(config?.globalSetup, ["src/private-tmp.ts"]);
-    assert.deepEqual(config?.setupFiles, ["src/private-tmp-setup.ts"]);
+    assert.equal(config?.setupFiles?.[0], "src/private-tmp-setup.ts", "first, so a later setup file already has the private TMPDIR");
     assert.ok(existsSync(join(REPO, "src/private-tmp.ts")) && existsSync(join(REPO, "src/private-tmp-setup.ts")), "both entries exist");
     const runRoot = process.env[RUN_ROOT_ENV];
     assert.ok(runRoot, `${RUN_ROOT_ENV} is published to the worker, so the globalSetup ran`);
