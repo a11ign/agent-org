@@ -24,6 +24,7 @@ import { waitingOn, fleetWaitingOn, describeWaiting, answersOwedBy } from "../wa
 import { declaredWaitsOf, waitItemOf, conditionHolds, type WaitFacts } from "../wait-condition.ts";
 import { WORKER_STATE_DIR, readDeclarations, lastDeliveredTo, declarationReading } from "../worker-state.ts";
 import { homeProjectDeclaration } from "../project-config.ts";
+import { CANARY_STATE_FILE, DEFAULT_CANARY_OPTIONS, machineryFlagOn, parseCanaryState, type CanaryState } from "../org-health.ts";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 /**
@@ -45,23 +46,59 @@ export const LIVE_HOST_READS: import("../claim-stall.ts").HostReads = { git: git
  * declared waits would exempt exactly the rows this cause exists for. An `answer:` owed by ANOTHER session (`answer:product-manager` on a
  * row an orchestrator holds) is the holder waiting on a ruling, and is respected.
  */
-function declaredWait(row: any, holder: string, waitFacts: WaitFacts | null): string | null {
-  return declaredWaitOf(row, holder, waitFacts)?.phrase ?? null;
+function declaredWait(row: any, holder: string, waitFacts: WaitFacts | null, watching: ReadonlySet<string> | null): string | null {
+  return declaredWaitOf(row, holder, waitFacts, watching)?.phrase ?? null;
 }
 
 /**
  * `declaredWait`'s decision with its KIND, which is the `WAIT_FIELDS` key `idle-claimant.ts` counts as a field (#2999): ONE decider for "this
  * row has a wait field", so the idle reading and the clock reading cannot disagree about a row. `blocked` (the label) is not a kind: it names
  * no referent. `fleet-hold` is a `Fleet-hold-until:` line, whose second meaning -- a claim on the workers -- nothing else reads.
+ *
+ * `canary-hour` is a row that names a machinery flag the canary is still watching (`canaryHourOf`), read after the row's own declared waits so a row that
+ * states one keeps its kind.
  */
-function declaredWaitOf(row: any, holder: string, waitFacts: WaitFacts | null): { kind: string; phrase: string; } | null {
+function declaredWaitOf(row: any, holder: string, waitFacts: WaitFacts | null, watching: ReadonlySet<string> | null): { kind: string; phrase: string; } | null {
   if (labelsOf(row).includes(CHAIRMAN_LABEL)) return { kind: "chairman", phrase: `waiting on the chairman (${CHAIRMAN_LABEL})` };
   const waiting = waitingOn({ ...row, blockedBy: { nodes: [] } }) ?? fleetWaitingOn(row);
   if (waiting !== null && !(waiting.kind === "answer" && waiting.session === holder)) {
     const kind = waiting.kind === "date" ? "not-before" : waiting.kind === "row" ? "blocked-by" : waiting.kind;
     return { kind, phrase: describeWaiting(waiting) };
   }
-  return waitingForOf(row, waitFacts);
+  return canaryHourOf(row, watching) ?? waitingForOf(row, waitFacts);
+}
+
+/**
+ * The machinery flags the canary is still WATCHING at `now`: switched ON, with no final verdict (`passed` or `reverted`), and inside the hour its `onAt`
+ * starts (a flag the gate has not yet started has no `onAt`, and its hour has not begun, so it is watching). Read from the canary file in `stateDir`, the
+ * file the gate writes. The names are the file's own keys: `switchFlag` writes only a name in `FLAG_REGISTRY`, so these are the registered flags, and
+ * the registry is not imported here because `machinery-flag.ts` imports this family's work-gate modules, and importing it from here throws at load (a TDZ error).
+ * `null` when that file cannot be read or is not its shape: a failed read never excuses a quiet holder.
+ */
+function canaryWatching(stateDir: string, now: number): ReadonlySet<string> | null {
+  const path = `${stateDir}/${CANARY_STATE_FILE}`;
+  let state: CanaryState;
+  try {
+    state = parseCanaryState(existsSync(path) ? readFileSync(path, "utf8") : null);
+  } catch {
+    return null;
+  }
+  const windowMs = DEFAULT_CANARY_OPTIONS.windowMinutes * 60_000;
+  return new Set(Object.keys(state.flags).filter((name) => {
+    const record = state.flags[name];
+    return machineryFlagOn(state, name) && record.verdict !== "passed" && record.verdict !== "reverted" && (record.onAt === null || now < record.onAt + windowMs);
+  }));
+}
+
+/**
+ * The `canary-hour` decision: a row whose title or body NAMES a flag the canary is still watching, read as `namesOwedKey` reads a name in
+ * `flag-switch-ledger.ts` -- a whole word, not a prefix or a dotted part of a longer name.
+ */
+function canaryHourOf(row: any, watching: ReadonlySet<string> | null): { kind: string; phrase: string; } | null {
+  if (watching === null) return null;
+  const text = `${row.title}\n${row.body ?? ""}`;
+  const flag = [...watching].find((name) => new RegExp(`(^|[^\\w.])${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w.])`).test(text));
+  return flag === undefined ? null : { kind: "canary-hour", phrase: `waiting on the machinery canary for \`${flag}\`, which is still inside its hour` };
 }
 
 /**
@@ -214,12 +251,13 @@ function evaluateClaims({ rows, claimedComments, openPrs, mergedPrs, elsewhere, 
   const everyHeld = [...(homeUnread ? [] : held), ...readable.flatMap((unit) => unit.held)];
   const statePath = `${stateDir}/${STALL_STATE_FILE}`;
   const before = read(statePath);
+  const watching = canaryWatching(stateDir, now);
   const wakeLedger = ledger ?? (() => ledgerText(`${stateDir}/wake-ledger`));
   // #460: WHAT EACH WORKER'S LAST TURN DECLARED, read once, with no model. `null` is a directory that exists and cannot be read: the declaration regime is
   // then OFF for the tick (absence is not proof), and every claim is read as it was before the declaration existed.
   const declarations = everyHeld.length === 0 ? null : readDeclarations(`${stateDir}/${WORKER_STATE_DIR}`);
   if (declarations !== null && declarations.unreadable.length > 0) log(`claim-stall: worker-state files that could not be read (those workers read as undeclared): ${declarations.unreadable.join(", ")}.\n`);
-  const shared = { openPrs, mergedPrs, elsewhere, repo, now, log, declarations, ledger: wakeLedger, restart: restartFor(everyHeld, restartAt),
+  const shared = { openPrs, mergedPrs, elsewhere, repo, now, log, declarations, watching, ledger: wakeLedger, restart: restartFor(everyHeld, restartAt),
     agents: agentsFor(everyHeld, agents), heldBy: rowsPerSession(everyHeld) };
   const homeBefore = unscoped(before);
   const home = homeUnread ? { readings: [], skipped: new Map<number, string>() }
@@ -382,7 +420,7 @@ function rowsPerSession(held: any[]): Map<string, number> {
   return counts;
 }
 
-function readClaims({ held, byRow, openPrs, mergedPrs, elsewhere, io, repo, now, restart, agents, before, log, ledger, declarations, key, trackerRepo, heldBy, waitFacts }: {
+function readClaims({ held, byRow, openPrs, mergedPrs, elsewhere, io, repo, now, restart, agents, before, log, ledger, declarations, key, trackerRepo, heldBy, waitFacts, watching }: {
         held: any[]; byRow: Map<number, any[]>; openPrs: any[]; mergedPrs: any[] | null;
         elsewhere?: import("../claim-stall.ts").ElsewherePrs; io: import("../claim-stall.ts").HostReads; repo: string; now: number; restart: number | null;
         agents: { label: string; status: string; }[] | null;
@@ -391,6 +429,8 @@ function readClaims({ held, byRow, openPrs, mergedPrs, elsewhere, io, repo, now,
         key: string; trackerRepo: string; heldBy: Map<string, number>;
         /** #1183: the home repository's wait facts (`null` for another tracker, whose bare `#n` are not these), read against each row's body `Waiting-for:` */
         waitFacts: WaitFacts | null;
+        /** the machinery flags the canary is still watching at this tick (`canaryWatching`), `null` when its file could not be read */
+        watching: ReadonlySet<string> | null;
     }): { readings: { facts: import("../claim-stall.ts").ClaimFacts; reading: import("../claim-stall.ts").Reading; }[]; skipped: Map<number, string>; } {
   const readings: { facts: import("../claim-stall.ts").ClaimFacts; reading: import("../claim-stall.ts").Reading; }[] = [];
   // the rows whose facts could not be built, with the reason `claimFactsFrom` gave (#3451)
@@ -405,8 +445,8 @@ function readClaims({ held, byRow, openPrs, mergedPrs, elsewhere, io, repo, now,
       continue;
     }
     const session = sessions[0].slice(SESSION_PREFIX.length);
-    const built = claimFactsFrom({ row: row.number, title: row.title, session, waiting: declaredWait(row, session, waitFacts),
-      waitKind: declaredWaitOf(row, session, waitFacts)?.kind ?? null, blockedBy: openBlockers(row), comments: byRow.get(Number(row.number)) ?? [], openPrs: withChecksPending(openPrs), mergedPrs,
+    const built = claimFactsFrom({ row: row.number, title: row.title, session, waiting: declaredWait(row, session, waitFacts, watching),
+      waitKind: declaredWaitOf(row, session, waitFacts, watching)?.kind ?? null, blockedBy: openBlockers(row), comments: byRow.get(Number(row.number)) ?? [], openPrs: withChecksPending(openPrs), mergedPrs,
       trackerRepo, sessionRows: heldBy.get(session), now,
       ...(elsewhere === undefined ? {} : { elsewhere: { ...elsewhere, open: elsewhere.open === null ? null : withChecksPending(elsewhere.open) } }), repo }, io);
     if ("skip" in built) {
