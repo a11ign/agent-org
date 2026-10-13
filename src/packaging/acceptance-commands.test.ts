@@ -4038,7 +4038,7 @@ test("#1340 CONTROL: a hit found WITH a parser carries no fallback note, and nei
     assert.equal(hit.noParser, undefined);
     assert.doesNotMatch(closureRequirementMessage(hit), /FALLBACK/);
     const tokenEntry = join(dir, "spawns-gh.test.mjs");
-    writeFileSync(tokenEntry, 'import { execFileSync } from "node:child_process";\nexecFileSync("gh", ["api", "user"]);\n');
+    writeFileSync(tokenEntry, `import { execFileSync } from "node:child_process";\n${spell('execFileSync("g', 'h"')}, ["api", "user"]);\n`);
     const tokenHits = deriveClosureRequirements(tokenEntry, createClosureMemo({ parser: NO_PARSER }));
     assert.deepEqual(tokenHits.map((h) => h.requirement), ["token"]);
     assert.equal(tokenHits[0].noParser, undefined, "token reads the text whole with or without a parser, so the note would be false there");

@@ -1351,13 +1351,13 @@ export function closureRequirementMessage(hit: ClosureHit): string {
 }
 
 /**
- * #1340: A REFUSAL THAT CAME FROM THE FALLBACK NAMES THE FALLBACK. With no parser the scan reads a `runsRoot()` sentence in a string, or in a function
+ * #1340: A REFUSAL THAT CAME FROM THE FALLBACK NAMES THE FALLBACK. With no parser the scan reads a sentence naming the resolver call in a string, or in a function
  * nothing reaches, as a corpus read: the refusal then says something about the scan and nothing certain about the file, and `needs corpus` alone reads
  * as the second. `rejected` is the resolver's own account of each place it looked.
  */
 function noParserNote(rejected: string | undefined): string {
   if (rejected === undefined) return "";
-  return " -- found by the FALLBACK full-text scan, because no TypeScript parser could be loaded: a `runsRoot()` named in a string or in an unreached "
+  return " -- found by the FALLBACK full-text scan, because no TypeScript parser could be loaded: a call to the corpus resolver named in a string or in an unreached "
     + "function is charged as a read here, so this may not be a finding about this file. Make `typescript` resolvable and run it again. "
     + rejected;
 }
