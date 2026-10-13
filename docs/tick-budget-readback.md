@@ -8,7 +8,7 @@ Over the 410 ticks the file holds, the tick wall is **p50 104.8 s, p95 199.0 s**
 
 ## Coverage, and what the figures leave out
 
-- **The window is shorter than 24 h.** The file holds ticks from `2026-10-13T00:41:59Z` to `16:25:46Z`, about 15.7 h, not the 24 h the row asks for. `appendTickCost` in `src/work-tick.ts` keeps only the newest half of the file once it passes 2 MB, so older ticks are not in it. The reading is over everything the file holds; a true 24 h reading needs a longer store than this file.
+- **The window is shorter than 24 h.** The file holds ticks from `2026-10-13T00:41:59Z` to `16:25:46Z`, about 15.7 h, not the 24 h the row asks for. `appendTickCost` in `src/work-tick.ts` keeps only the newest half of the file once it passes 2 MB, so older ticks are not in it. The reading is over everything the file holds; a true 24 h reading needs a longer store than this file. Checked for the missing ticks: no other copy of `tick-cost.jsonl` exists on the host, and the `tick-census.<pid>.jsonl` and `tick-gate-spans.<pid>.jsonl` files in `~/.cache/a11ign` hold per-spawn and per-gate timings with no tick start or wall, so they cannot rebuild the missing ticks' wall.
 - **Killed ticks are not counted.** A tick killed by its timeout writes no `tick-cost` line, so these figures are the ticks that finished. Exit codes in the window: 242 exit 0, 132 exit 1, 36 exit 2. The non-zero ones are included.
 - **Phase rows count only the ticks that ran the phase.** `wake` ran on 374 of 410 ticks and `github-status` on 374; the others are on every tick.
 
