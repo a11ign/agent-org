@@ -4376,10 +4376,16 @@ test("#2003: the pool reading has ONE definition, and the gate pays for it only 
   // a healthy tick pays a point every two minutes, which is the one thing this row must not buy.
   assert.equal(gate.match(/poolDiagnosis\(/g)?.length, 1,
     "poolDiagnosis is called once, inside cannotAskReport -- a second call site is a second price");
-  const refusalBranch = /if \(prs === null && readyRows === null\) \{([\s\S]*?)\n {2}\}/.exec(gate)?.[1] ?? "";
-  assert.match(refusalBranch, /cannotAskReport\(\{ run: defaultRun, identity: declaredGhAccount\(\) \}\)/,
-    "the report is built inside the refusal branch; anywhere else and every healthy tick pays for it. "
+  // The refusal branch is `cannotAskExit`, which `main` calls on every tick: it returns before the report
+  // unless both lanes are refused, so the report is built on the refusal path only.
+  const exitAt = gate.indexOf("export function cannotAskExit(");
+  const exitBody = gate.slice(exitAt, gate.indexOf("\n}\n", exitAt));
+  const readAt = exitBody.indexOf("if (prs !== null || readyRows !== null) return null;");
+  assert.ok(readAt > 0 && exitBody.indexOf("cannotAskReport({ run, identity: identity() })") > readAt,
+    "the report is built after the early return for a read tick; anywhere else and every healthy tick pays for it. "
     + "#1984: identity is read here too, at zero extra gh calls -- a local file read, not a network one");
+  assert.ok(gate.includes("cannotAskExit({ prs, readyRows, identity: () => declaredGhAccount() })"),
+    "and `main` passes identity lazily, so a read tick never reads it");
   // The declaration spells the same call shape, so it is excluded by name rather than by counting matches.
   assert.equal(gate.match(/(?<!function )cannotAskReport\(\{/g)?.length, 1,
     "exactly one call site, and it is the one inside the refusal branch asserted above");

@@ -93,9 +93,9 @@ test("a refused repository is that lane's null beside the answers of the others 
 test("`main` asks through this reader AFTER the outage check, and asks neither reader on its own", () => {
   const source = workGateSource();
   const main = source.slice(source.indexOf("\nfunction main() {"));
-  const outageAt = main.indexOf("EXIT.CANNOT_ASK");
+  const outageAt = main.indexOf("cannotAskExit({");
   const waveAt = main.indexOf("readLanesAfterOutageCheck(");
-  assert.ok(outageAt > 0, "the outage check is still in `main`");
+  assert.ok(outageAt > 0, "the outage check (`cannotAskExit`) is still in `main`");
   assert.ok(waveAt > outageAt, "and the one wave is asked after it");
   assert.doesNotMatch(main, /readTrackerLanes\(\)|readOtherScopes\(\)/, "neither reader is asked alone");
 });
