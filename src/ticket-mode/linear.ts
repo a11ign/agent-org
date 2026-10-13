@@ -22,7 +22,9 @@ const PAGE = 100;
 
 /** Keys read in one batched request: each is an aliased query, and a long query text is one Linear may refuse. */
 const STATE_BATCH = 25;
-const ISSUE_FIELDS = "identifier title description url branchName priority state { name position } team { key } project { name } parent { identifier }";
+/** A ticket's attachments: Linear's first page of 50, read the same way for the board's list and for a worker's download. */
+const ATTACHMENTS = "attachments(first: 50) { nodes { url title } }";
+const ISSUE_FIELDS = `identifier title description url branchName priority state { name position } team { key } project { name } parent { identifier } ${ATTACHMENTS}`;
 /** A file name that is safe as it stands: no folder, and an extension. A plan's attachment title is one. */
 const FILE_NAME = /^[\w.-]+\.\w{1,8}$/;
 
@@ -47,13 +49,22 @@ export function readLinearKey(source: KeySource, security: (args: string[]) => s
 type IssueNode = {
   identifier: string; title: string; description: string | null; url: string; branchName: string; priority: number;
   state: { name: string; position: number }; team: { key: string }; project: { name: string } | null; parent: { identifier: string } | null;
-};
+} & Attachments;
+
+type Attachments = { attachments?: { nodes: { url: string; title: string }[] } };
+
+/**
+ * The attachments that are uploads, as Linear lists them beside a ticket's description; a link to elsewhere, such as a pull request, is left out.
+ * Anchored at the upload origin, because every download carries the key: a link that only mentions an upload goes somewhere else. PURE.
+ */
+const uploadsIn = (node: Attachments): { url: string; title: string }[] => (node.attachments?.nodes ?? []).filter(({ url }) => url.startsWith(UPLOAD_ORIGIN));
 
 function toTicket(node: IssueNode): Ticket {
   return Object.freeze({
     key: node.identifier, title: node.title, description: node.description ?? "", url: node.url, branch: node.branchName,
     status: node.state.name, statusOrder: node.state.position, team: node.team.key, project: node.project?.name ?? null, priority: node.priority,
     parent: node.parent?.identifier ?? null,
+    uploads: uploadsIn(node).map(({ title }) => title),
   });
 }
 
@@ -128,11 +139,10 @@ export function linearSource({ key, fetch: request = fetch }: { key: string; fet
     return found;
   }
 
-  /** The uploads attached to a ticket, as Linear lists them beside its description. Links to elsewhere, such as a pull request, are left out. */
+  /** The uploads attached to a ticket. */
   async function attachedUploads(identifier: string): Promise<{ url: string; title: string }[]> {
-    const found = await issue<{ attachments: { nodes: { url: string; title: string }[] } }>(identifier, "attachments { nodes { url title } }");
-    // Anchored, because every download carries the key: a link that only mentions an upload goes somewhere else.
-    return (found?.attachments.nodes ?? []).filter(({ url }) => url.startsWith(UPLOAD_ORIGIN));
+    const found = await issue<Attachments>(identifier, ATTACHMENTS);
+    return found === null ? [] : uploadsIn(found);
   }
 
   return {

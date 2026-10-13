@@ -126,6 +126,64 @@ const rowFor = (p: Page, key: string) => rowsOf(p).find((r) => r.children[1].tex
 const foldOf = (p: Page, key: string) => rowFor(p, key).all().find((n) => n.className === "fold")!;
 const tickOf = (p: Page, key: string) => rowFor(p, key).all().find((n) => n.tag === "input")!;
 
+const PLAN = "-plan-[^/]*\\.md$";
+const ticketIn = (key: string, extra: Record<string, unknown> = {}) => ({ key, title: key, status: "Backlog", statusOrder: 0, priority: 2, project: null, url: "", ...extra });
+// P-1 is an epic with a plan over P-3, which has none; P-2 has none, and P-4 has one.
+const PLANS = [
+  ticketIn("P-1", { uploads: ["P-1-0001-plan-x.md"] }),
+  ticketIn("P-2", { uploads: ["shot.png"] }),
+  ticketIn("P-3", { parent: "P-1" }),
+  ticketIn("P-4", { uploads: ["P-4-0001-plan-y.md"] }),
+];
+const markOf = (p: Page, key: string) => rowFor(p, key).all().find((n) => n.className.startsWith("no-plan")) as (Node_ & { title?: string }) | undefined;
+const planChip = (p: Page, label: string) => p.$("plans").children.find((c) => c.tag === "button" && c.children[0]?.text() === label)!;
+
+test("on a machine that names a plan's pattern, a ticket with no plan is marked, muted when its parent's plan covers it, and an epic is never marked", async () => {
+  const p = await page(new Map(), { plan: PLAN }, [], PLANS);
+  foldOf(p, "P-1").fire("click");
+  assert.equal(markOf(p, "P-4"), undefined, "it has a plan");
+  assert.equal(markOf(p, "P-2")?.className, "no-plan");
+  assert.equal(markOf(p, "P-2")?.attrs["aria-label"], "No plan attached. Attach one before a worker starts this.");
+  assert.equal(markOf(p, "P-3")?.className, "no-plan covered");
+  assert.equal(markOf(p, "P-3")?.title, "No plan of its own. A worker reads its parent P-1's plan.");
+  assert.equal(markOf(p, "P-1"), undefined);
+  const bareEpic = await page(new Map(), { plan: PLAN }, [], [ticketIn("B-1"), ticketIn("B-2", { parent: "B-1" })]);
+  assert.equal(markOf(bareEpic, "B-1"), undefined, "an epic with no plan is not marked either: no worker starts it");
+});
+
+test("a ticket under someone else's epic is covered by that epic's plan once the parents load", async () => {
+  const theirs = ticketIn("X-1", { uploads: ["X-1-0001-plan-z.md"] });
+  const p = await page(new Map(), { plan: PLAN }, [], [ticketIn("C-9", { parent: "X-1" })], [theirs]);
+  foldOf(p, "X-1").fire("click");
+  assert.equal(markOf(p, "C-9")?.className, "no-plan covered");
+});
+
+test("a machine that names no plan pattern marks no ticket and has no plan filter", async () => {
+  const p = await page(new Map(), {}, [], PLANS);
+  foldOf(p, "P-1").fire("click");
+  assert.deepEqual(["P-1", "P-2", "P-3", "P-4"].map((key) => markOf(p, key)), [undefined, undefined, undefined, undefined]);
+  assert.equal(p.$("plans").hidden, true);
+});
+
+test("the plan filter counts the tickets a worker can be given with a plan and without, shows only the chosen ones, and is remembered", async () => {
+  const storage = new Map<string, string>();
+  const p = await page(storage, { plan: PLAN }, [], PLANS);
+  assert.equal(p.$("plans").hidden, false);
+  assert.equal(planChip(p, "With a plan").text(), "With a plan1", "P-4; the epic P-1's own plan is not counted");
+  assert.equal(planChip(p, "Without a plan").text(), "Without a plan2");
+  planChip(p, "Without a plan").fire("click");
+  assert.deepEqual(p.shownKeys(), ["P-1", "P-2"], "P-3 stays under its epic, folded");
+  assert.equal(planChip(p, "Without a plan").attrs["aria-pressed"], "true");
+  assert.deepEqual(JSON.parse(storage.get("ticket-mode.plan")!), ["without"]);
+  assert.deepEqual((await page(storage, { plan: PLAN }, [], PLANS)).shownKeys(), ["P-1", "P-2"], "the reload keeps the filter");
+  planChip(p, "With a plan").fire("click");
+  assert.deepEqual(p.shownKeys(), ["P-4"]);
+  planChip(p, "All").fire("click");
+  assert.deepEqual(p.shownKeys(), ["P-1", "P-2", "P-4"]);
+  assert.equal(storage.get("ticket-mode.plan"), "[]");
+  assert.deepEqual((await page(storage, { plan: PLAN }, [], PLANS)).shownKeys(), ["P-1", "P-2", "P-4"], "the reload shows every ticket");
+});
+
 test("a parent starts folded, opens to list the tickets under it, indented, each naming its own status, and stays as left after a reload", async () => {
   const storage = new Map<string, string>();
   const p = await page(storage, {}, [], EPIC);

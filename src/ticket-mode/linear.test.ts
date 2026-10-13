@@ -41,6 +41,20 @@ test("assigned() reads every page of the viewer's unfinished tickets, sending th
   assert.match(second.query, /nin: \["completed", "canceled", "duplicate"\]/, "finished tickets are not offered, nor duplicates, which Linear types on their own");
 });
 
+test("each ticket names the files uploaded to it, read in the same request as the list, and not its other links, such as a pull request", async () => {
+  const { fetch, requests } = linear([{ data: { viewer: { assignedIssues: { nodes: [
+    node("NBF-1", { attachments: { nodes: [
+      { url: "https://uploads.linear.app/org/a/plan", title: "NBF-1-0001-plan-fit-to-view.md" },
+      { url: "https://github.com/netboxlabs/nbl-ui-netbox/pull/1", title: "feat: fit to view" },
+    ] } }),
+    node("NBF-2"),
+  ], pageInfo: { hasNextPage: false, endCursor: null } } } } }]);
+  const [one, two] = await linearSource({ key: "k", fetch }).assigned();
+  assert.deepEqual(one.uploads, ["NBF-1-0001-plan-fit-to-view.md"]);
+  assert.deepEqual(two.uploads, [], "a ticket with nothing attached has no uploads");
+  assert.equal(requests.length, 1, "read with the list, not one request per ticket");
+});
+
 test("read() finds a ticket by its team and number, returns null for a key Linear has no ticket for, and throws when Linear cannot be asked", async () => {
   const found = linear([{ data: { issues: { nodes: [node("NBF-1270")] } } }]);
   assert.equal((await linearSource({ key: "k", fetch: found.fetch }).read("NBF-1270"))?.title, "Title NBF-1270");

@@ -13,9 +13,9 @@ import type { Ticket, TicketSource } from "./source.ts";
 const ticket = (key: string, title = key) => ({ key, title, description: "", url: "", branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
 const TOKEN = "a".repeat(48);
 
-function board(port = 4747) {
+function board(port = 4747, ticketSettings: Record<string, unknown> = {}) {
   const dir = tmpDir("ticket-server-");
-  const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/r/netbox", "platform-monorepo": "/r/pm" }, stateDir: dir, tickets: { port } });
+  const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/r/netbox", "platform-monorepo": "/r/pm" }, stateDir: dir, tickets: { port, ...ticketSettings } });
   const source: TicketSource = { assigned: async () => [ticket("NBF-1"), ticket("NBF-2")], read: async (key) => (key === "VE-9" ? ticket("VE-9") : null), download: async () => [] };
   const ticks: string[] = [];
   const pool = {
@@ -137,6 +137,13 @@ test("remove, stop, close and max go through the board", async () => {
 test("the page is given the machine's terminal address, or null when it serves none", async () => {
   const [, config] = await board().api("GET", "/api/config", {}) as [number, any];
   assert.equal(config.terminal, null);
+});
+
+test("the page is given the pattern a ticket's plan is named by, or null when the machine names none", async () => {
+  const [, none] = await board().api("GET", "/api/config", {}) as [number, any];
+  assert.equal(none.plan, null);
+  const [, named] = await board(4747, { plan: "-plan-[^/]*\\.md$" }).api("GET", "/api/config", {}) as [number, any];
+  assert.equal(named.plan, "-plan-[^/]*\\.md$");
 });
 
 test("over HTTP: no token is 401, the printed URL sets the cookie, and the cookie then reaches the API", async () => {

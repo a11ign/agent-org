@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, isParked, parentKeys, parentTick, ticketCount, projectCounts, queueLabel, recall, remember, runActions, runStatus, runsShown, selectable, statusCounts, terminalLink, toggled, waitsOn,
-  visibleTickets, type ViewEntry, type ViewTicket,
+  hasPlan, missingPlan, planChoiceOf, planCounts, visibleTickets, workItems, type ViewEntry, type ViewTicket,
 } from "./board-view.ts";
 
 const t = (key: string, status: string, statusOrder: number, priority: number, project: string | null, title = key): ViewTicket =>
@@ -27,6 +27,66 @@ test("the search narrows within the chosen projects, matching key, title or proj
   assert.deepEqual(keys(visibleTickets(TICKETS, new Set(["Visual Explorer - GA"]), "  RACKS ")), ["NBF-2"]);
   assert.deepEqual(keys(visibleTickets(TICKETS, new Set(), "nbca")), ["NBCA-4", "NBCA-5"]);
   assert.deepEqual(keys(visibleTickets(TICKETS, new Set(["Billing"]), "racks")), [], "a search outside the chosen projects finds nothing");
+});
+
+// The NBL host file's pattern: create-ticket names a plan `<KEY>-0001-plan-<slug>.md`.
+const PLAN = /-plan-[^/]*\.md$/;
+const planned = (ticket: ViewTicket, ...uploads: string[]): ViewTicket => ({ ...ticket, uploads });
+const PLANNED = [
+  planned(t("NBF-1", "Backlog", 0, 3, "Visual Explorer - GA"), "NBF-1-0001-plan-fit-to-view.md", "NBF-1-adr-0001-zoom.md"),
+  planned(t("NBF-2", "Backlog", 0, 1, "Visual Explorer - GA"), "NBF-2-adr-0001-explanation.md", "screenshot.png"),
+  t("NBF-3", "Backlog", 0, 0, null),
+];
+
+test("a ticket has a plan when a file uploaded to it is named like one, and an ADR, a screenshot or no uploads at all is not one", () => {
+  assert.deepEqual(PLANNED.map((x) => hasPlan(x, PLAN)), [true, false, false]);
+});
+
+test("the plan filter keeps the tickets with a plan, or those without, within the projects and search, and keeps all without a filter", () => {
+  assert.deepEqual(keys(visibleTickets(PLANNED, new Set(), "", { pattern: PLAN, choice: "with" })), ["NBF-1"]);
+  assert.deepEqual(keys(visibleTickets(PLANNED, new Set(), "", { pattern: PLAN, choice: "without" })), ["NBF-2", "NBF-3"]);
+  assert.deepEqual(keys(visibleTickets(PLANNED, new Set([NO_PROJECT]), "", { pattern: PLAN, choice: "without" })), ["NBF-3"]);
+  assert.deepEqual(keys(visibleTickets(PLANNED, new Set(), "")), ["NBF-1", "NBF-2", "NBF-3"]);
+});
+
+// An epic with a plan, over a ticket with one and a ticket without; and an epic with none over a ticket without.
+const EPICS = [
+  planned(t("E-1", "Backlog", 0, 2, null), "E-1-0001-plan-epic.md"),
+  { ...planned(t("E-2", "Backlog", 0, 2, null), "E-2-0001-plan-part.md"), parent: "E-1" },
+  { ...t("E-3", "Backlog", 0, 2, null), parent: "E-1" },
+  t("E-4", "Backlog", 0, 2, null),
+  { ...t("E-5", "Backlog", 0, 2, null), parent: "E-4" },
+];
+
+test("an epic is never work for a worker: only the tickets under none count, and the filter keeps an epic only for a ticket it keeps under it", () => {
+  assert.deepEqual(keys(workItems(EPICS)), ["E-2", "E-3", "E-5"]);
+  assert.deepEqual(planCounts(EPICS, PLAN), { with: 1, without: 2 }, "an epic's own plan is not counted");
+  assert.deepEqual(keys(visibleTickets(EPICS, new Set(), "", { pattern: PLAN, choice: "with" })), ["E-1", "E-2"], "E-4 has no plan and nothing under it does");
+  assert.deepEqual(keys(visibleTickets(EPICS, new Set(), "", { pattern: PLAN, choice: "without" })), ["E-1", "E-3", "E-4", "E-5"],
+    "E-1 has a plan but shows for E-3, so E-3 is not torn from its epic");
+});
+
+test("the plan chips count the tickets with a plan and those without", () => {
+  assert.deepEqual(planCounts(PLANNED, PLAN), { with: 1, without: 2 });
+});
+
+test("only a remembered with or without is a plan filter; anything else the browser holds is every ticket", () => {
+  assert.equal(planChoiceOf(new Set(["with"])), "with");
+  assert.equal(planChoiceOf(new Set(["without"])), "without");
+  assert.equal(planChoiceOf(new Set(["null"])), null);
+  assert.equal(planChoiceOf(new Set()), null);
+});
+
+test("a ticket with no plan says so, and says when its parent's plan is what a worker reads instead", () => {
+  const epic = planned(t("NBF-10", "Backlog", 0, 2, null), "NBF-10-0001-plan-epic.md");
+  const bare = { ...t("NBF-11", "Backlog", 0, 2, null), parent: "NBF-10" };
+  const orphan = { ...t("NBF-12", "Backlog", 0, 2, null), parent: "NBF-3" };
+  const known = [...PLANNED, epic, bare, orphan];
+  assert.equal(missingPlan(PLANNED[0], PLAN, known), null, "it has its own");
+  assert.deepEqual(missingPlan(bare, PLAN, known), { note: "No plan of its own. A worker reads its parent NBF-10's plan.", covered: true });
+  assert.deepEqual(missingPlan(orphan, PLAN, known), { note: "No plan attached. Attach one before a worker starts this.", covered: false },
+    "a parent with no plan covers nothing");
+  assert.equal(missingPlan({ ...bare, parent: "NBF-99" }, PLAN, known)?.covered, false, "nor does a parent the board does not know");
 });
 
 test("project chips count their tickets, most first, then by name", () => {

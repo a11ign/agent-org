@@ -18,7 +18,7 @@ test("only `clones` is required, every repository in it is offered, and every ot
 
 test("the `tickets` block and `stateDir` override the defaults", () => {
   const settings = parseTicketSettings({ clones, stateDir: "/state", tickets: { max: 5, port: 5000, herdrSession: "nbl", worktreeRoot: "/wt", linearKey: { path: "/keys/linear" } } });
-  assert.deepEqual({ ...settings, clones: undefined }, { clones: undefined, max: 5, port: 5000, herdrSession: "nbl", worktreeRoot: "/wt", stateDir: "/state", linearKey: { path: "/keys/linear" }, brief: null, deny: [], plugins: [], terminal: null, connectors: [] });
+  assert.deepEqual({ ...settings, clones: undefined }, { clones: undefined, max: 5, port: 5000, herdrSession: "nbl", worktreeRoot: "/wt", stateDir: "/state", linearKey: { path: "/keys/linear" }, brief: null, deny: [], plugins: [], terminal: null, plan: null, connectors: [] });
 });
 
 test("a machine can add notes to every brief and refuse commands of its own", () => {
@@ -37,6 +37,11 @@ test("a machine names where it serves a run's terminal, as a web address naming 
   const terminal = "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal";
   assert.equal(parseTicketSettings({ clones, tickets: { terminal } }, "/home/me").terminal, terminal);
   assert.equal(parseTicketSettings({ clones }, "/home/me").terminal, null, "none by default, so the board shows no link");
+});
+
+test("a machine names how the board recognises a ticket's plan among the files uploaded to it, as a regular expression", () => {
+  assert.equal(parseTicketSettings({ clones, tickets: { plan: "-plan-[^/]*\\.md$" } }, "/home/me").plan, "-plan-[^/]*\\.md$");
+  assert.equal(parseTicketSettings({ clones }, "/home/me").plan, null, "none by default, so the board marks no ticket");
 });
 
 test("a machine names the connector tools its workers may call, each a pattern anchored at the tool's name", () => {
@@ -75,6 +80,9 @@ test("a bad field is refused by its name", () => {
   assert.equal(field({ clones, tickets: { connectors: "^mcp__x" } }), "tickets.connectors", "one pattern, not a list");
   assert.equal(field({ clones, tickets: { connectors: ["Linear"] } }), "tickets.connectors[0]", "not anchored at the tool's name");
   assert.equal(field({ clones, tickets: { connectors: ["^mcp__x", "^mcp__("] } }), "tickets.connectors[1]", "not a regular expression");
+  assert.equal(field({ clones, tickets: { plan: "-plan-(" } }), "tickets.plan", "not a regular expression");
+  assert.equal(field({ clones, tickets: { plan: "" } }), "tickets.plan", "empty, which every name matches");
+  assert.equal(field({ clones, tickets: { plan: ["-plan-"] } }), "tickets.plan", "not a string");
   assert.equal(field({ clones, tickets: [] }), "tickets");
   assert.equal(field({ clones }), "accepted", "POSITIVE CONTROL: a valid file is not refused");
 });
