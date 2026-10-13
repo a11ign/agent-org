@@ -47,7 +47,7 @@ test("before it commits, a fresh subagent reviews the diff for changed behaviour
   assert.ok(review > 0 && review < commit, "the review comes before the commit");
   assert.ok(review < brief.indexOf("run the clean-code-review skill"), "behaviour first, then structure");
   assert.ok(claims > 0 && claims < commit);
-  for (const part of ["read only", "a test that fails without the fix", "not a neighbouring value", "a fix must fail there", "say it is unchecked"]) {
+  for (const part of ["read only", "give it your diff and its base", "a test that fails without the fix", "not a neighbouring value", "Run it on the base", "a fix must fail there", "a kept behaviour must pass there too", "say it is unchecked"]) {
     assert.ok(brief.includes(part), `the brief says ${part}`);
   }
   assert.match(brief, /\n5\. Commit with a conventional commit message\.\n6\. Push the branch/, "the steps stay numbered in order");
