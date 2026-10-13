@@ -105,6 +105,7 @@ import { holderWorkAtRisk, workAtRisk, cloneOfKey, gitRun, pathExists, statMtime
 // too, without importing this file (which already imports `claim-stall.ts` and would cycle). Re-exported below so
 // every existing importer of `readAgents`/`listingIsComplete` from "./wake.ts" is unchanged.
 import { readAgents, listingIsComplete, absentSeats, REFUSAL_EXCERPT, firstLine, herdrReason, agentStartArgs, openPane, closedNote } from "./herdr-agents.ts";
+import { seatRunKeys, isAbsentReviewerSeat } from "./seat-retire-reset.ts"; // agent-org#1392: a retired seat's runs end with it; an absent seat's cap is started again
 import { persistentRoles, persistentEntries, type PersistentEntry } from "./project-roles.ts";
 import { liveToolVersion } from "./lib/tool-version.ts";
 import { readState as readSelftestState, selftestPaths, worthAChild } from "./messaging/selftest.ts"; // #3540: the question of whether to start the self-test at all
@@ -1992,6 +1993,14 @@ export function reviewerPathsFrom(ledgerPath: string): { registry: string; endin
 }
 
 /**
+ * THE RUNS OF A RETIRED SEAT'S CAUSES END WITH IT (agent-org#1392): one RESET line for each cause the seat owns that has a run in the
+ * ledger. The ledger stays append-only, so the six deliveries that capped the cause are still there, read before the reset.
+ */
+export function endSeatRuns(ledgerPath: string, session: string) {
+  for (const key of seatRunKeys(session, deliveryCounts(ledgerPath))) writeFileSync(ledgerPath, `${Date.now()}\t${RESET}\t${key}\n`, { flag: "a" });
+}
+
+/**
  * Note that a reviewer instance was STARTED for `session`: the gate's auth detector reads `spawnedAt` to tell a
  * refresh that came after the instance started from one it lived through, and the teardown reads the keys.
  */
@@ -2139,6 +2148,8 @@ export function endFinishedReviewers(agents: { label: string; status: string; }[
         registry: Record<string, ReviewerInstance>; now: number; run: (args: string[]) => string;
         prState: (pr: number, key: string) => string | null; removeCheckout: (session: string, pr: number, key: string) => string | null;
         record: (line: object) => void; warn: (line: string) => void; recordAbsence?: (line: object) => void;
+        /** agent-org#1392: ends the runs of the seat's causes, once the seat is gone -- a cap that outlived its seat would refuse for ever. */
+        endRuns?: (session: string) => void;
     }): { ended: string[]; cleared: string[]; registry: Record<string, ReviewerInstance>; } {
   const registry = { ...deps.registry };
   const ended: string[] = [];
@@ -2149,11 +2160,15 @@ export function endFinishedReviewers(agents: { label: string; status: string; }[
     const state = reviewedPullRequestState(session, instance, deps);
     if (state === null) continue;
     if (state === "open") {
-      if (!restored.includes(session) && reconcileOpenReviewer({ session, pr: Number(instance?.number), agents, registry }, deps)) cleared.push(session);
+      if (!restored.includes(session) && reconcileOpenReviewer({ session, pr: Number(instance?.number), agents, registry }, deps)) {
+        deps.endRuns?.(session);
+        cleared.push(session);
+      }
       continue;
     }
     if (!endFinishedReviewer({ session, instance, state, restored: restored.includes(session) }, agents, deps)) continue;
     delete registry[session];
+    deps.endRuns?.(session);
     ended.push(session);
   }
   return { ended, cleared, registry };
@@ -2285,7 +2300,8 @@ export function tearDownReviewers(agents: { label: string; status: string; }[], 
     const appendTo = (path: string) => (line: object) => writeFileSync(path, `${JSON.stringify(line)}\n`, { flag: "a" });
     const { ended, cleared, registry } = endFinishedReviewers(agents, { registry: before, now: Date.now(),
       run: defaultRun, prState: pullRequestState, removeCheckout: (session, pr, key) => removeReviewCheckout({ session, pr, key }),
-      warn: (line) => say(`${line}\n`), record: appendTo(paths.endings), recordAbsence: appendTo(paths.absences) });
+      warn: (line) => say(`${line}\n`), record: appendTo(paths.endings), recordAbsence: appendTo(paths.absences),
+      endRuns: (session) => endSeatRuns(ledgerPath, session) });
     writeFileSync(paths.registry, `${JSON.stringify(registry)}\n`);
     for (const session of ended) say(`ENDED ${session}: its pull request is no longer open\n`);
     for (const session of cleared) say(`CLEARED ${session}: its pull request is open and it is gone from herdr -- the next tick starts a fresh one\n`);
@@ -5637,8 +5653,10 @@ function noteClaimOrders(claimOrders: ClaimOrders | undefined, { gateOrder, targ
 export function deliver(orders: readonly { session: string; causeKey: string; prompt: string; cause?: string; title?: string; replaces?: { branch: string; }[]; resume?: boolean; outageNow?: boolean; startFresh?: boolean; briefRole?: string; trust?: ReviewTrust; }[], agents: { label: string; status: string; }[], roster: string[],
   { run = defaultRun, record, counts, ineligibleReason, env, registerSpawn, drained, claimable, claimer, memory, hostLoad, claimRefused, oneShot, ceoOneShot,
     launch, reviewerEnv, registerReviewer, checkout, registry, unavailable, sleep, contextRoot, codexConfig, clock, relane, goneSeats, claimOrders, toolchain,
-    now = Date.now, serve, accountPause }: {
+    now = Date.now, serve, accountPause, endRun }: {
           run?: (args: string[]) => string; record?: (key: string, recipient?: string, noClear?: boolean, at?: number) => void;
+          /** agent-org#1392: writes the RESET that ends a capped cause's run when its absent seat is started again (see `isAbsentReviewerSeat`). */
+          endRun?: (causeKey: string, at: number) => void;
           /** agent-org#1307: the account's pause for this tick; while it holds, no Claude seat is started, claimed for or prompted, and no `claude -p` run is served. */
           accountPause?: AccountLimit | null;
           serve?: (order: { causeKey: string; }) => ServedRecord | null;
@@ -5678,7 +5696,10 @@ export function deliver(orders: readonly { session: string; causeKey: string; pr
     // silent-retry version of the bug this whole change fixes -- work going nowhere while the log looks
     // busy. Naming it and stopping is the only answer that reaches a person.
     const already = counts?.get(order.causeKey) ?? 0;
-    if (already >= MAX_DELIVERIES) {
+    // agent-org#1392: A CAPPED CAUSE WHOSE SEAT IS ABSENT IS STARTED AGAIN, NOT CAPPED. The cap counted deliveries to a seat that is gone, and no
+    // run of it can end while the seat is absent. Its RESET is written only when the order is placed (below), so a refused order keeps its count.
+    const restart = already >= MAX_DELIVERIES && isAbsentReviewerSeat(order.session, { registry: registry?.() ?? {}, agents });
+    if (already >= MAX_DELIVERIES && !restart) {
       recordCapped({ stuck, outaged }, order, already);
       continue;
     }
@@ -5748,6 +5769,8 @@ export function deliver(orders: readonly { session: string; causeKey: string; pr
     // not say who was woken, and the only account of a wrong delivery was the recipient's own prose. A NAMED
     // order's recipient is already in its key and is not repeated.
     // A FALLBACK DELIVERY IS RECORDED THE SAME WAY (#2356): the key names the session it was ADDRESSED to.
+    // THE RESTART'S RESET COMES BEFORE ITS DELIVERY LINE (#1392): the next tick counts from the reset, not from the seventh delivery.
+    if (restart) endRun?.(order.causeKey, at);
     if (record) record(order.causeKey, target.label !== gateOrder.session ? target.label : undefined, noClear, at);
     noteClaimOrders(claimOrders, { gateOrder, target, continuation, at });
     // WHETHER A CLEAR WAS SENT IS READABLE (#2483): a STARTED line has no history to clear, a standing seat's
@@ -8629,7 +8652,8 @@ async function main() {
     oneShot: createOrchestratorOneShot({ readRow: readRowForTier }), ceoOneShot: createCeoOneShot({ readRow: readRowForTier }),
     memory: spawnMemoryGate(), hostLoad: readHostLoad, claimer: claimerFor(spares, ledgerPath, hostLayout, escalatedRoutes(claimOrdersText(ledgerPath), routes)), launch: hostLayout,
     registerReviewer: (session, trust) => registerReviewer(reviewerPathsFrom(ledgerPath), session, Date.now(), trust),
-    registry: () => readReviewerRegistry(reviewerPathsFrom(ledgerPath).registry) });
+    registry: () => readReviewerRegistry(reviewerPathsFrom(ledgerPath).registry),
+    endRun: (causeKey, at) => writeFileSync(ledgerPath, `${at}\t${RESET}\t${causeKey}\n`, { flag: "a" }) });
   finishTick({ handed, sent, gateRefused: [...gateRefused, ...releasesNotDone], stuck, outaged, ledgerPath, unavailable, settled });
 }
 
