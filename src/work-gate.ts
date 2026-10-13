@@ -560,6 +560,22 @@ function tickHealthNow(): TickHealth | null {
   return tickHealthOf({ costText, ledgerText: text(stateEntryPath("wake-ledger")), now: Date.now() });
 }
 
+/**
+ * #1332: THE CANARY'S SAMPLE OF A TICK, from the lanes the tick REFUSED. A repository the gate skipped by design (paced, or no event named it) is not passed in, because it is not blind (#1329).
+ * `unread` is built here and nowhere else, so both exits of `main` count a refused lane the same way.
+ */
+export function canarySampleNow({ prs, readyRows, others, ...rest }: Omit<Parameters<typeof machineryCanaryNow>[0], "unread"> & { prs: any[] | null; readyRows: any[] | null; others: { refused: string[]; }[]; }): any[] {
+  return machineryCanaryNow({ ...rest, unread: unreadLanes({ prs, readyRows, others }) });
+}
+
+/**
+ * #1332: THE SAMPLE OF A `CANNOT_ASK` TICK. Both lanes are refused by construction, so the tick records ONE blind sample before it exits and `blind-ticks` reads 1 for it.
+ * Its orders are dropped on purpose: a tick that read nothing wakes no session (the report on stderr says so), and a standing order is repeated by the next tick that can see.
+ */
+export function recordCannotAskSample({ run = defaultRun, now, dir, io }: { run?: typeof defaultRun; now?: number; dir?: string; io?: Parameters<typeof machineryCanaryNow>[0]["io"]; } = {}): void {
+  canarySampleNow({ prs: null, readyRows: null, others: [], unarmed: null, releaseRuns: null, run, now, dir, io });
+}
+
 function main() {
   refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/work-gate.ts" });
   const githubStatus = endGateSpan("startup", startGithubStatus()); // #3723: FIRST, so its wall overlaps the reads below and never adds to them
@@ -573,6 +589,7 @@ function main() {
   // BOTH LANES REFUSED IS `CANNOT_ASK`; ONE IS `PARTIAL`. Nothing here may report a refused read as quiet.
   if (prs === null && readyRows === null) {
     process.stderr.write(cannotAskReport({ run: defaultRun, identity: declaredGhAccount() }));
+    recordCannotAskSample(); // #1332: a tick that could not read still owes the canary its one blind sample
     process.exit(EXIT.CANNOT_ASK);
   }
 
@@ -672,7 +689,7 @@ function main() {
   endGateSpan("chairmanAsks+holdHolders");
   // #1329: THE CANARY COUNTS REFUSED LANES ONLY. A repository the gate skipped BY DESIGN (paced, or no event named it) is not blind, so it
   // stays out of `blind-ticks`; it is still named on the PARTIAL line below, which is where a skipped lane is reported.
-  orders.push(...machineryCanaryNow({ unread: unreadLanes({ prs, readyRows, others }), unarmed: armingSplit === null ? null : armingSplit.unarmed, releaseRuns: releaseSeen.runs ?? null, suppressions: incident.suppressions, stranded: armingSplit?.stranded ?? [] })); endGateSpan("machineryCanary"); // a11ign#5100, a11ign#5125
+  orders.push(...canarySampleNow({ prs, readyRows, others, unarmed: armingSplit === null ? null : armingSplit.unarmed, releaseRuns: releaseSeen.runs ?? null, suppressions: incident.suppressions, stranded: armingSplit?.stranded ?? [] })); endGateSpan("machineryCanary"); // a11ign#5100, a11ign#5125
   endGateSpan("approvedUnqueued", approvedUnqueuedNow({ prs: prs === null ? null : [...prs, ...pullRequestsOfOthers(otherScopes)], repos: homeProjectDeclaration().tracker.map((t) => t.repo), repo: repoNow(), stateDir: REVIEWER_STATE_DIR, run: defaultRun })); // agent-org#893: the daily reading on #928; never throws, adds no order
   // FIRST OF ALL, AND ON PURPOSE (#2163): `wake` delivers in this order and records each delivery with a write, so
   // on a full disk the tick can end partway. The order that says the disk is full must not be the one behind it.
