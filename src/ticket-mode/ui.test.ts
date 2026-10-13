@@ -115,32 +115,92 @@ test("status sections start collapsed, open and close from anywhere on their hea
   assert.equal(storage.get("ticket-mode.open"), "[]");
 });
 
-test("a ticket is listed under its shown parent, indented, and names its own status", async () => {
-  const p = await page(new Map(), {}, [], [
-    { key: "E-1", title: "epic", status: "In Progress", statusOrder: 2, priority: 2, project: null, url: "", parent: null },
-    { key: "C-1", title: "child", status: "Todo", statusOrder: 1, priority: 2, project: null, url: "", parent: "E-1" },
-    { key: "G-1", title: "grandchild", status: "Backlog", statusOrder: 0, priority: 2, project: null, url: "", parent: "C-1" },
-  ]);
+const EPIC = [
+  { key: "E-1", title: "epic", status: "In Progress", statusOrder: 2, priority: 2, project: null, url: "", parent: null },
+  { key: "C-1", title: "child", status: "Todo", statusOrder: 1, priority: 2, project: null, url: "", parent: "E-1" },
+  { key: "G-1", title: "grandchild", status: "Backlog", statusOrder: 0, priority: 2, project: null, url: "", parent: "C-1" },
+];
+type Page = Awaited<ReturnType<typeof page>>;
+const rowsOf = (p: Page) => p.$("groups").all().filter((n) => n.className.startsWith("row"));
+const rowFor = (p: Page, key: string) => rowsOf(p).find((r) => r.children[1].text() === key)!;
+const foldOf = (p: Page, key: string) => rowFor(p, key).all().find((n) => n.className === "fold")!;
+const tickOf = (p: Page, key: string) => rowFor(p, key).all().find((n) => n.tag === "input")!;
+
+test("a parent starts folded, opens to list the tickets under it, indented, each naming its own status, and stays as left after a reload", async () => {
+  const storage = new Map<string, string>();
+  const p = await page(storage, {}, [], EPIC);
   assert.equal(p.groups().length, 1, "one section, the epic's");
+  assert.deepEqual(p.shownKeys(), ["E-1"], "folded, the epic is one row");
+  assert.match(rowFor(p, "E-1").text(), /2 tickets under it/);
+  foldOf(p, "E-1").fire("click");
+  assert.deepEqual(p.shownKeys(), ["E-1", "C-1"], "the child is a parent too, and folded");
+  foldOf(p, "C-1").fire("click");
   assert.deepEqual(p.shownKeys(), ["E-1", "C-1", "G-1"]);
-  const rows = p.$("groups").all().filter((n) => n.className.startsWith("row"));
-  assert.deepEqual(rows.map((r) => r.attrs.style), [undefined, "--depth: 1", "--depth: 2"]);
-  assert.match(rows[1].text(), /child · Todo/);
-  assert.equal(rows[0].text().includes("· In Progress"), false, "a top-level ticket's status is its section's");
+  assert.deepEqual(rowsOf(p).map((r) => r.attrs.style), [undefined, "--depth: 1", "--depth: 2"]);
+  assert.match(rowFor(p, "C-1").text(), /child · Todo/);
+  assert.equal(rowFor(p, "E-1").text().includes("· In Progress"), false, "a top-level ticket's status is its section's");
+  assert.deepEqual(JSON.parse(storage.get("ticket-mode.open-parents")!), ["E-1", "C-1"]);
+  assert.deepEqual((await page(storage, {}, [], EPIC)).shownKeys(), ["E-1", "C-1", "G-1"], "the reload keeps them open");
+  foldOf(p, "E-1").fire("click");
+  assert.deepEqual(p.shownKeys(), ["E-1"], "folding the epic hides everything under it");
 });
 
-test("a parent that is not the person's heads its children with no checkbox, and its section's checkbox takes only the children", async () => {
-  const p = await page(new Map(), {}, [], [
-    { key: "VE-65", title: "visual explorer", status: "Backlog", statusOrder: 0, priority: 2, project: null, url: "", parent: "NBF-1917" },
-  ], [{ key: "NBF-1917", title: "lint rules", status: "Todo", statusOrder: 1, priority: 2, project: null, url: "", parent: null }]);
-  const rows = p.$("groups").all().filter((n) => n.className.startsWith("row"));
-  assert.deepEqual(rows.map((r) => [r.className, r.attrs.style]), [["row context", undefined], ["row child", "--depth: 1"]]);
-  assert.equal(rows[0].all().some((n) => n.tag === "input"), false);
-  assert.match(rows[0].text(), /Not assigned to you/);
-  const tick = p.groups()[0].children[0].all().find((n) => n.tag === "input")!;
-  tick.checked = true;
-  tick.fire("change");
-  assert.equal(p.$("queue").textContent, "Queue 1 ticket");
+test("ticking a parent picks the tickets under it that can still be picked, never the parent, and part ticks it when only some are picked", async () => {
+  const tickets = [...EPIC, { key: "C-2", title: "queued", status: "Todo", statusOrder: 1, priority: 2, project: null, url: "", parent: "E-1" }];
+  const p = await page(new Map(), {}, [entry("C-2", { phase: "queued" })], tickets);
+  tickOf(p, "E-1").checked = true;
+  tickOf(p, "E-1").fire("change");
+  assert.equal(p.$("queue").textContent, "Queue 1 ticket", "only G-1: C-1 is a parent, and C-2 is on the queue already");
+  assert.equal(tickOf(p, "E-1").checked, true);
+  foldOf(p, "E-1").fire("click");
+  assert.equal(tickOf(p, "C-1").checked, true, "a parent under it shows its own tickets picked");
+  p.$("queue").fire("click");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(p.posts.find((x) => x.path === "/api/queue")?.body.keys, ["G-1"]);
+});
+
+test("a parent with some of its tickets picked is part ticked, and one with none left to pick cannot be ticked", async () => {
+  const tickets = [
+    { key: "E-1", title: "epic", status: "Todo", statusOrder: 1, priority: 2, project: null, url: "", parent: null },
+    ...["C-1", "C-2"].map((key) => ({ key, title: key, status: "Todo", statusOrder: 1, priority: 2, project: null, url: "", parent: "E-1" })),
+    { key: "E-2", title: "done epic", status: "Todo", statusOrder: 1, priority: 2, project: null, url: "", parent: null },
+    { key: "C-3", title: "queued", status: "Todo", statusOrder: 1, priority: 2, project: null, url: "", parent: "E-2" },
+  ];
+  const p = await page(new Map([["ticket-mode.open-parents", JSON.stringify(["E-1"])]]), {}, [entry("C-3", { phase: "queued" })], tickets);
+  tickOf(p, "C-1").checked = true;
+  tickOf(p, "C-1").fire("change");
+  assert.deepEqual([tickOf(p, "E-1").checked, (tickOf(p, "E-1") as unknown as { indeterminate: boolean }).indeterminate], [false, true]);
+  assert.equal(tickOf(p, "E-2").disabled, true, "its one ticket is on the queue");
+});
+
+test("a parent that is not the person's heads its children with a checkbox that picks them, and says it is not theirs", async () => {
+  const p = await page(new Map(), {}, [], ["VE-65", "VE-66"].map((key) => ({ key, title: key, status: "Backlog", statusOrder: 0, priority: 2, project: null, url: "", parent: "NBF-1917" })),
+    [{ key: "NBF-1917", title: "lint rules", status: "Todo", statusOrder: 1, priority: 2, project: null, url: "", parent: null }]);
+  assert.deepEqual(rowsOf(p).map((r) => r.className), ["row parent context"], "folded, as every parent starts");
+  assert.match(rowFor(p, "NBF-1917").text(), /Not assigned to you/);
+  tickOf(p, "NBF-1917").checked = true;
+  tickOf(p, "NBF-1917").fire("change");
+  assert.equal(p.$("queue").textContent, "Queue 2 tickets");
+  foldOf(p, "NBF-1917").fire("click");
+  assert.deepEqual(rowsOf(p).map((r) => [r.className, r.attrs.style]), [["row parent context", undefined], ["row child", "--depth: 1"], ["row child", "--depth: 1"]]);
+});
+
+test("Select all takes every ticket under a parent, folded or not, and never the parent", async () => {
+  const p = await page(new Map(), {}, [], EPIC);
+  p.$("all").checked = true;
+  p.$("all").fire("change");
+  assert.equal(p.$("queue").textContent, "Queue 1 ticket", "only G-1");
+  assert.equal(p.$("all").checked, true);
+});
+
+test("Expand all opens every parent with the sections, and Collapse all folds them again", async () => {
+  const p = await page(new Map(), {}, [], EPIC);
+  p.$("fold-all").fire("click");
+  assert.deepEqual(p.shownKeys(), ["E-1", "C-1", "G-1"]);
+  assert.equal(p.$("fold-all").textContent, "Collapse all");
+  p.$("fold-all").fire("click");
+  assert.deepEqual(p.shownKeys(), ["E-1"]);
+  assert.equal(p.$("fold-all").textContent, "Expand all");
 });
 
 test("ticking a section's checkbox selects its tickets and leaves the section as it was", async () => {

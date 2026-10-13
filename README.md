@@ -75,8 +75,9 @@ The org (the gate, rows, the board, the reviewer) decides its own work. Ticket m
 takes them one each. `agent-org ticket:serve` starts a board on `127.0.0.1` and prints its URL, which carries a one-time token.
 
 - **Pick.** Your assigned Linear tickets that are not done or canceled, grouped by status the way Linear shows them, with Select All per
-  group and for the page. A ticket sits under its parent, whatever its own status. A parent that is not yours, such as an epic someone else
-  owns, heads its children without a checkbox. Filter by Linear project (several at once) or by search, and fold any status group; both are remembered in the
+  group and for the page. A ticket sits under its parent, whatever its own status. A parent folds the tickets under it away, and starts folded.
+  Its checkbox picks every ticket under it that is not on the queue, never the parent itself, and shows part ticked when only some are picked.
+  A parent that is not yours, such as an epic someone else owns, says so. Filter by Linear project (several at once) or by search, and fold any status group; both are remembered in the
   browser. Choose the model and the effort, then Queue. You do not choose a repository: the worker does.
 - **Board.** Every run in one list, newest activity first, each with a status icon after GitHub's Actions runs, and a filter per status
   with its count: Needs you, In progress, Queued, Awaiting review, Completed, Failed and Cancelled. A run is Completed once the tracker
