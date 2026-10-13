@@ -53,3 +53,18 @@ test("a re-fail whose log could not be read is the gate's order as written, whic
   const [again] = await enrich([AGAIN], null);
   assert.equal(again.prompt, AGAIN.prompt);
 });
+
+test("a re-fail beyond the per-tick classification cap still carries the failing assertion, and the cap still holds for everything else", async () => {
+  const { ENRICH_AHEAD } = await import("./wake.ts");
+  const plain = Array.from({ length: ENRICH_AHEAD }, (_, i) => ({ ...FIRST, causeKey: `worker-7/pr-checks-failing/pr-${100 + i}/abcdef1${i}`, prompt: `PR ${100 + i} has FAILING checks.` }));
+  const beyond = { ...FIRST, causeKey: "worker-7/pr-checks-failing/pr-200/abcdef20", prompt: "PR 200 has FAILING checks." };
+  const refail = { ...AGAIN, causeKey: "worker-7/pr-checks-failing/pr-201/abcdef21/refail-1", prompt: "PR 201 FAILED AGAIN at this same head." };
+  const classified: string[] = [];
+  const counting = (failure: CiFailure, deps: Parameters<typeof classifyCiFailure>[1]) => { classified.push(deps.id ?? ""); return classifyCiFailure(failure, deps); };
+  const out = await withCiFailureClass([...plain, beyond, refail], { host: {}, ledgerPath: "/nonexistent/ledger", read: () => FACTS, classify: counting });
+  assert.equal(classified.length, ENRICH_AHEAD, "POSITIVE CONTROL: only the first ENRICH_AHEAD orders were classified, a first failure past the cap is not");
+  assert.ok(!classified.includes(refail.causeKey), "the re-fail past the cap was read, not classified");
+  assert.equal(out[ENRICH_AHEAD].prompt, beyond.prompt, "a first failure past the cap is the gate's order, byte for byte");
+  assert.ok(out[ENRICH_AHEAD + 1].prompt.startsWith(refail.prompt), "the gate's words come first");
+  assert.ok(out[ENRICH_AHEAD + 1].prompt.includes(ASSERTION), "the re-fail past the cap names the assertion that failed");
+});

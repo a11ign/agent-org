@@ -6814,7 +6814,19 @@ function redPullRequestOf(order: Enrichable): { repo: string; number: number; he
 export async function withCiFailureClass<T extends Enrichable>(orders: readonly T[], deps: EnrichDeps & { read?: typeof readCiFailure; classify?: typeof classifyCiFailure; now?: number }): Promise<T[]> {
   const { gh = defaultGh, read = readCiFailure, classify = classifyCiFailure, now = Date.now() } = deps;
   const notes = new Map<string, string>();
-  await Promise.all(orders.filter((o) => redPullRequestOf(o) !== null).slice(0, ENRICH_AHEAD).map(async (order) => {
+  const reds = orders.filter((o) => redPullRequestOf(o) !== null);
+  // The cap bounds what CLASSIFYING costs (a provider may be asked). A re-fail beyond it is not classified, but it is still told what failed: reading one log is not a provider call, and
+  // an order that exists because a rerun did not clear it is half an order without the assertion (agent-org#1185).
+  const beyondCap = reds.slice(ENRICH_AHEAD).filter((o) => redPullRequestOf(o)!.refail);
+  await Promise.all(beyondCap.map(async (order) => {
+    try {
+      const named = refailNote(read(redPullRequestOf(order)!, gh, now)?.errorLines ?? []);
+      if (named !== null) notes.set(order.causeKey, named);
+    } catch (err) {
+      process.stderr.write(`wake: could not read the log of ${order.causeKey} (${firstLine(err)}) -- the order as the gate wrote it.\n`);
+    }
+  }));
+  await Promise.all(reds.slice(0, ENRICH_AHEAD).map(async (order) => {
     try {
       const red = redPullRequestOf(order)!;
       const failure = read(red, gh, now);
