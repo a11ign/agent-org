@@ -561,19 +561,30 @@ function tickHealthNow(): TickHealth | null {
 }
 
 /**
- * #1332: THE CANARY'S SAMPLE OF A TICK, from the lanes the tick REFUSED. A repository the gate skipped by design (paced, or no event named it) is not passed in, because it is not blind (#1329).
- * `unread` is built here and nowhere else, so both exits of `main` count a refused lane the same way.
+ * #1332 / #1329: THE LANES OF ONE TICK, read once and handed two ways. The canary's sample counts the lanes the tick REFUSED: a repository the gate skipped by
+ * design (paced, or no event named it) is not blind, so it is not passed to the canary. The PARTIAL line names every lane the tick did not read, the skipped ones
+ * included, so a skip is never reported clean. Both come from the same reads here, so nothing in `main` chooses between them.
  */
-export function canarySampleNow({ prs, readyRows, others, ...rest }: Omit<Parameters<typeof machineryCanaryNow>[0], "unread"> & { prs: any[] | null; readyRows: any[] | null; others: { refused: string[]; }[]; }): any[] {
-  return machineryCanaryNow({ ...rest, unread: unreadLanes({ prs, readyRows, others }) });
+export function tickLanes({ prs, readyRows, others, pacedSkips, ...canary }: Omit<Parameters<typeof machineryCanaryNow>[0], "unread"> & { prs: any[] | null; readyRows: any[] | null; others: { refused: string[]; }[]; pacedSkips: { refused: string[]; }[]; }): { orders: any[]; unread: string[]; } {
+  return {
+    orders: machineryCanaryNow({ ...canary, unread: unreadLanes({ prs, readyRows, others }) }),
+    unread: unreadLanes({ prs, readyRows, others: [...others, ...pacedSkips] }),
+  };
 }
 
 /**
- * #1332: THE SAMPLE OF A `CANNOT_ASK` TICK. Both lanes are refused by construction, so the tick records ONE blind sample before it exits and `blind-ticks` reads 1 for it.
- * Its orders are dropped on purpose: a tick that read nothing wakes no session (the report on stderr says so), and a standing order is repeated by the next tick that can see.
+ * #1332: A TICK THAT CANNOT ASK. Both primary lanes refused means nothing was examined: the tick says so on stderr, records ONE blind sample (`blind-ticks` reads 1),
+ * and returns the exit code `main` exits with. A tick that read a primary lane returns `null` and touches nothing here. The sample's orders are dropped on purpose: a tick
+ * that read nothing wakes no session, and a standing order is repeated by the next tick that can see.
  */
-export function recordCannotAskSample({ run = defaultRun, now, dir, io }: { run?: typeof defaultRun; now?: number; dir?: string; io?: Parameters<typeof machineryCanaryNow>[0]["io"]; } = {}): void {
-  canarySampleNow({ prs: null, readyRows: null, others: [], unarmed: null, releaseRuns: null, run, now, dir, io });
+export function cannotAskExit({ prs, readyRows, identity, run = defaultRun, now, dir, io, write = (text: string) => process.stderr.write(text) }: {
+  prs: any[] | null; readyRows: any[] | null; identity: () => ReturnType<typeof declaredGhAccount>; run?: typeof defaultRun; now?: number; dir?: string;
+  io?: Parameters<typeof machineryCanaryNow>[0]["io"]; write?: (text: string) => void;
+}): number | null {
+  if (prs !== null || readyRows !== null) return null;
+  write(cannotAskReport({ run, identity: identity() }));
+  tickLanes({ prs, readyRows, others: [], pacedSkips: [], unarmed: null, releaseRuns: null, run, now, dir, io });
+  return EXIT.CANNOT_ASK;
 }
 
 function main() {
@@ -587,11 +598,8 @@ function main() {
   const readyRows = endGateSpan("readReadyRows", readReadyRows());
 
   // BOTH LANES REFUSED IS `CANNOT_ASK`; ONE IS `PARTIAL`. Nothing here may report a refused read as quiet.
-  if (prs === null && readyRows === null) {
-    process.stderr.write(cannotAskReport({ run: defaultRun, identity: declaredGhAccount() }));
-    recordCannotAskSample(); // #1332: a tick that could not read still owes the canary its one blind sample
-    process.exit(EXIT.CANNOT_ASK);
-  }
+  const cannotAsk = cannotAskExit({ prs, readyRows, identity: () => declaredGhAccount() }); // #1332: a tick that could not read still owes the canary its one blind sample
+  if (cannotAsk !== null) process.exit(cannotAsk);
 
   // The third read is only needed to size the refill, and a refused one must not read as an empty shelf.
   // #3566: this one, `needs:chairman` and the open rows (`openRowsRead`) are asked TOGETHER, and with the other repositories' lists (slice 6).
@@ -689,7 +697,8 @@ function main() {
   endGateSpan("chairmanAsks+holdHolders");
   // #1329: THE CANARY COUNTS REFUSED LANES ONLY. A repository the gate skipped BY DESIGN (paced, or no event named it) is not blind, so it
   // stays out of `blind-ticks`; it is still named on the PARTIAL line below, which is where a skipped lane is reported.
-  orders.push(...canarySampleNow({ prs, readyRows, others, unarmed: armingSplit === null ? null : armingSplit.unarmed, releaseRuns: releaseSeen.runs ?? null, suppressions: incident.suppressions, stranded: armingSplit?.stranded ?? [] })); endGateSpan("machineryCanary"); // a11ign#5100, a11ign#5125
+  const lanes = tickLanes({ prs, readyRows, others, pacedSkips, unarmed: armingSplit === null ? null : armingSplit.unarmed, releaseRuns: releaseSeen.runs ?? null, suppressions: incident.suppressions, stranded: armingSplit?.stranded ?? [] });
+  orders.push(...lanes.orders); endGateSpan("machineryCanary"); // a11ign#5100, a11ign#5125
   endGateSpan("approvedUnqueued", approvedUnqueuedNow({ prs: prs === null ? null : [...prs, ...pullRequestsOfOthers(otherScopes)], repos: homeProjectDeclaration().tracker.map((t) => t.repo), repo: repoNow(), stateDir: REVIEWER_STATE_DIR, run: defaultRun })); // agent-org#893: the daily reading on #928; never throws, adds no order
   // FIRST OF ALL, AND ON PURPOSE (#2163): `wake` delivers in this order and records each delivery with a write, so
   // on a full disk the tick can end partway. The order that says the disk is full must not be the one behind it.
@@ -705,7 +714,7 @@ function main() {
   // leaves a set silently is the defect both filters exist to fix.
   endGateSpan("reportWithheld", reportWithheld({ drain, blocked: [...shelvedHere, ...partitionFleetBatch(allOpen).waiting, ...others.flatMap((tick) => tick.blocked)] }));
 
-  const unread = unreadLanes({ prs, readyRows, others: [...others, ...pacedSkips] });
+  const { unread } = lanes;
   if (unread.length > 0) exitPartial(unread, emitted.length);
   // PERFORMED COUNTS AS WORK. A tick that marked a draft ready did something, and exiting QUIET would
   // report it as an idle org to every reader of this exit code.
