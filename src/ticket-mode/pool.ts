@@ -28,7 +28,7 @@ import type { Ticket, TicketSource } from "./source.ts";
 import { TICKET_ENV } from "./worktree-command.ts";
 import { HOST_FILE_ENV, type TicketSettings } from "./settings.ts";
 import {
-  BRIEF_FILE, DENY_FILE, OUTCOME_FILE, PREVIOUS_OUTCOME_FILE, STOP_COUNT_FILE, briefText, firstPrompt, workerFlags, workerSettings, type HookCommand, type ParentTicket,
+  BRIEF_FILE, CONNECTORS_FILE, DENY_FILE, OUTCOME_FILE, PREVIOUS_OUTCOME_FILE, STOP_COUNT_FILE, briefText, firstPrompt, workerFlags, workerSettings, type HookCommand, type ParentTicket,
 } from "./worker-files.ts";
 
 /** herdr waits on Claude's start; a slow one has been measured past 30 s (`wake.ts`'s start budget), so a start gets 90. */
@@ -257,8 +257,10 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     const attachments = await source.download(ticket, dir);
     const parent = await parentOf(ticket, dir);
     const worktreeCommand = `${hook.node} ${hook.bin} ticket:worktree`;
-    writeFileSync(join(dir, BRIEF_FILE), briefText({ ticket, folder, ticketDir: dir, attachments, parent, clones: settings.clones, worktreeCommand, notes: machineNotes() }));
+    writeFileSync(join(dir, BRIEF_FILE), briefText({ ticket, folder, ticketDir: dir, attachments, parent, clones: settings.clones, worktreeCommand, notes: machineNotes(),
+      connectors: settings.connectors }));
     writeFileSync(join(dir, DENY_FILE), `${JSON.stringify(settings.deny)}\n`);
+    writeFileSync(join(dir, CONNECTORS_FILE), `${JSON.stringify(settings.connectors)}\n`);
     mkdirSync(join(folder, ".claude"), { recursive: true });
     writeFileSync(join(folder, SETTINGS_FILE),
       `${JSON.stringify(workerSettings({ model: entry.model, ticketDir: dir, readDirs: Object.values(settings.clones), hook, plugins: settings.plugins }), null, 2)}\n`);

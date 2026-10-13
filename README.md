@@ -106,8 +106,9 @@ or `needs-human`. Nothing is written to Linear.
 
 **What a worker may not do** is enforced by `ticket:hook`, which the ticket folder's `.claude/settings.local.json` names, so a session herdr
 resumes after a restart keeps it. A stop with no outcome file is refused twice in a row. These are refused outright: a pull request that
-is not a draft, `gh pr ready`, `merge` and `review`, requesting a reviewer, `gh workflow run`, a force push, and every MCP connector. A
-machine adds its own refusals with `tickets.deny`.
+is not a draft, `gh pr ready`, `merge` and `review`, requesting a reviewer, `gh workflow run`, a force push, and every MCP connector the
+machine does not name in `tickets.connectors`. A worker runs with the person's connectors, Slack and mail among them, so a machine names
+only the tools its workers need, such as its tracker's reads. A machine adds its own refusals with `tickets.deny`.
 
 **Configuration** is machine facts only, in the host file `$AGENT_ORG_HOST` names. Only `clones` is required, and it lists every repository
 a worker can choose from:
@@ -127,6 +128,7 @@ a worker can choose from:
 | `tickets.brief` | none. A markdown file added to every worker's brief under "On this machine", read again for each run: how workers share the machine, such as the command that starts a dev server without taking a fixed port |
 | `tickets.plugins` | none. `["name@marketplace", ...]`: Claude Code plugins every worker runs with, already installed on the machine. A worker starts in its ticket's folder, where none of the person's project settings apply, so a plugin enabled only for a project would be missing |
 | `tickets.deny` | none. `[{ "pattern": "<regular expression>", "reason": "<why>" }]`: Bash commands the hook refuses as well as its own, each matched against the whole command, with the reason the worker is told |
+| `tickets.connectors` | none, and every connector is refused. `["^mcp__<connector>__<tools>", ...]`: regular expressions, each anchored with `^mcp__`, for the connector tools a worker may call, matched against the tool's name. Linear's reads through the claude.ai connector: `["^mcp__claude_ai_Linear__(get\\|list\\|search\\|extract)_"]`. The brief names them, so a worker can read its ticket's parent and blockers |
 | `tickets.terminal` | none, and the board shows no terminal link. A web address that serves a run's terminal, with `{workspace}`, `{pane}` and `{key}` filled in per run: for [herdr web ui](https://github.com/devswha/herdr-web-ui) serving the `tickets` session on port 7318, `"http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal"` |
 | `stateDir` | `~/.local/state/agent-org`: the queue, each ticket's brief, attachments and outcome |
 

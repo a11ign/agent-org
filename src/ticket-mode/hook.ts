@@ -8,16 +8,18 @@
 // honoured it would let a worker end on that second stop with no outcome. Its own count is what bounds it.
 //
 // PRE-TOOL-USE: WHAT ONLY A PERSON DOES. A worker opens a DRAFT pull request and stops. Marking it ready, requesting a review, merging, force-pushing,
-// running a workflow and posting to Slack are the person's, and so is every connector: the worker has its ticket in its brief and needs none.
-// The host file's `tickets.deny` adds this machine's own refusals, which the pool copies beside the outcome file. A refusal is exit 2 with the
-// reason on stderr, which Claude Code hands back to the model.
+// running a workflow and posting to Slack are the person's, and so is every connector the machine does not name. A worker runs with the person's
+// connectors, Slack and mail among them, so a connector is refused unless the host file's `tickets.connectors` lets its tool name through: a
+// machine whose tickets live in Linear names Linear's reads, and its worker can read a ticket's parent and blockers there. The host file's
+// `tickets.deny` adds this machine's own command refusals. The pool copies both beside the outcome file. A refusal is exit 2 with the reason on
+// stderr, which Claude Code hands back to the model.
 //
 // IT FAILS OPEN, OUT LOUD, for a payload or a count it cannot read: a hook that refused on what it could not read would stop every worker.
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { DenyRule } from "./settings.ts";
-import { DENY_FILE, OUTCOME_FILE, STOP_COUNT_FILE } from "./worker-files.ts";
+import { CONNECTORS_FILE, DENY_FILE, OUTCOME_FILE, STOP_COUNT_FILE } from "./worker-files.ts";
 
 export type HookResult = Readonly<{ code: 0 | 2; say: readonly string[] }>;
 
@@ -41,9 +43,14 @@ const SKILL_REFUSALS: readonly Refusal[] = [
   { pattern: /post-pr-to-slack/, why: "announcing a pull request is the person's" },
 ];
 
-/** The PreToolUse verdict for one tool call. `machine` holds this machine's own Bash refusals, after the built-in ones. PURE. */
-export function toolVerdict(toolName: string, input: Record<string, unknown>, machine: readonly Refusal[] = []): HookResult {
-  if (toolName.startsWith("mcp__")) return refuse(`${toolName} is a connector; a ticket-mode worker has its ticket in its brief and uses none`);
+/**
+ * The PreToolUse verdict for one tool call. `machine` holds this machine's own Bash refusals, after the built-in ones, and `connectors` the
+ * connector tool names it allows. PURE.
+ */
+export function toolVerdict(toolName: string, input: Record<string, unknown>, machine: readonly Refusal[] = [], connectors: readonly RegExp[] = []): HookResult {
+  if (toolName.startsWith("mcp__")) {
+    return connectors.some((pattern) => pattern.test(toolName)) ? ALLOW : refuse(`${toolName} is a connector this machine's tickets.connectors does not allow`);
+  }
   if (toolName === "Skill") {
     const skill = String(input.skill ?? input.name ?? "");
     const hit = SKILL_REFUSALS.find(({ pattern }) => pattern.test(skill));
@@ -68,6 +75,20 @@ export function machineRefusals(ticketDir: string, read: (path: string) => strin
   } catch (err) {
     if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return { refusals: [] };
     return { refusals: [], note: `ticket:hook: could not read ${file}, so only the built-in refusals apply.` };
+  }
+}
+
+/**
+ * The connector tool names this machine allows, from the copy of `tickets.connectors` beside the outcome file. None when there is no copy, so
+ * every connector is refused. A copy it cannot read is reported and allows none.
+ */
+export function machineConnectors(ticketDir: string, read: (path: string) => string = (p) => readFileSync(p, "utf8")): { connectors: readonly RegExp[]; note?: string } {
+  const file = join(ticketDir, CONNECTORS_FILE);
+  try {
+    return { connectors: (JSON.parse(read(file)) as string[]).map((pattern) => new RegExp(pattern)) };
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return { connectors: [] };
+    return { connectors: [], note: `ticket:hook: could not read ${file}, so every connector is refused.` };
   }
 }
 
@@ -96,8 +117,10 @@ export function main(stdin: string, argv: string[]): HookResult {
     if (event === "stop") return stopVerdict(ticketDir);
     const payload = JSON.parse(stdin) as { tool_name?: string; tool_input?: Record<string, unknown> };
     const { refusals, note } = machineRefusals(ticketDir);
-    const verdict = toolVerdict(String(payload.tool_name ?? ""), payload.tool_input ?? {}, refusals);
-    return note === undefined ? verdict : { ...verdict, say: [note, ...verdict.say] };
+    const allowed = machineConnectors(ticketDir);
+    const verdict = toolVerdict(String(payload.tool_name ?? ""), payload.tool_input ?? {}, refusals, allowed.connectors);
+    const notes = [note, allowed.note].filter((n): n is string => n !== undefined);
+    return notes.length === 0 ? verdict : { ...verdict, say: [...notes, ...verdict.say] };
   } catch (err) {
     return { code: 0, say: [`ticket:hook: could not read the ${event} payload (${String((err as Error)?.message ?? err).split("\n")[0]}), so it is ALLOWED.`] };
   }

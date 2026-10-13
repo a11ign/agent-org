@@ -49,6 +49,13 @@ test("the worker checks its diff against every criterion and binding decision be
   }
 });
 
+test("the connectors a machine allows are named in the brief, and a machine that allows none adds no section", () => {
+  const brief = (connectors?: string[]) => briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", connectors });
+  assert.match(brief(["^mcp__claude_ai_Linear__(get|list)_"]), /## Connectors\n\nThis machine lets you call the connector tools whose names match `\^mcp__claude_ai_Linear__\(get\|list\)_`\. .*the tickets that block it/);
+  assert.equal(brief().includes("## Connectors"), false);
+  assert.equal(brief([]).includes("## Connectors"), false);
+});
+
 test("the machine's notes join the brief under their own heading, and a machine with none adds no heading", () => {
   const brief = (notes?: string) => briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", notes });
   assert.ok(brief("Start apps with `npm run dev:atomic`.\n").includes("## On this machine\n\nStart apps with `npm run dev:atomic`.\n\n## The outcome file"));

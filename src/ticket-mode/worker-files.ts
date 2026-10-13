@@ -19,6 +19,8 @@ export const BRIEF_FILE = "brief.md";
 export const STOP_COUNT_FILE = "stop-refusals";
 /** The host file's `tickets.deny`, copied beside the outcome file, where the PreToolUse hook reads it. */
 export const DENY_FILE = "deny.json";
+/** The host file's `tickets.connectors`, copied beside the outcome file, where the PreToolUse hook reads it. */
+export const CONNECTORS_FILE = "connectors.json";
 
 /** The ticket a worker's ticket is part of, and the paths of its downloaded files. */
 export type ParentTicket = Readonly<{ ticket: Ticket; attachments: readonly string[] }>;
@@ -54,13 +56,23 @@ ${filesText(attachments)}
 `;
 }
 
+/** The connectors section of the brief, or nothing when the machine allows none. */
+function connectorsText(connectors: readonly string[]): string {
+  if (connectors.length === 0) return "";
+  return `
+## Connectors
+
+This machine lets you call the connector tools whose names match ${connectors.map((pattern) => `\`${pattern}\``).join(", ")}. Use them for what your ticket needs, such as reading its parent, the tickets that block it and related work. Every other connector is refused.
+`;
+}
+
 /**
  * The brief, as markdown. `worktreeCommand` is the full command line that makes a worktree, short of the repository's name. `notes` is the host
- * file's `tickets.brief`, how workers behave on this machine.
+ * file's `tickets.brief`, how workers behave on this machine, and `connectors` its `tickets.connectors`.
  */
-export function briefText({ ticket, folder, ticketDir, attachments, parent = null, clones, worktreeCommand, notes }: {
+export function briefText({ ticket, folder, ticketDir, attachments, parent = null, clones, worktreeCommand, notes, connectors = [] }: {
   ticket: Ticket; folder: string; ticketDir: string; attachments: readonly string[]; parent?: ParentTicket | null; clones: Readonly<Record<string, string>>;
-  worktreeCommand: string; notes?: string;
+  worktreeCommand: string; notes?: string; connectors?: readonly string[];
 }): string {
   const repos = Object.entries(clones).map(([name, path]) => `- \`${name}\` at \`${path}\``).join("\n");
   return `# ${ticket.key}: ${ticket.title}
@@ -97,7 +109,7 @@ ${repos}
 6. If a design gate asks for a design check, decline it with "unattended worker, no design tool access" and say so in the pull request body.
 
 Never mark a pull request ready, request a review, merge, force-push, run a workflow, or post to Slack. Those are the person's.
-${notes?.trim() ? `\n## On this machine\n\n${notes.trim()}\n` : ""}
+${connectorsText(connectors)}${notes?.trim() ? `\n## On this machine\n\n${notes.trim()}\n` : ""}
 ## The outcome file
 
 Write \`${ticketDir}/${OUTCOME_FILE}\` as the last thing you do, with exactly one of:
