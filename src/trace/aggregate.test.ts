@@ -418,6 +418,24 @@ test("SPLIT: a key that carries a head reads after a change when the head moved 
   assertAddsUp(noHead);
 });
 
+test("SPLIT: a key whose head is followed by /conflicting or /refail-<n> reads that head as the plain key does; a suffixed key with no head reads none", () => {
+  const wakes = (session: string, causeKey: string) => [0, 20, 40].map((minute, index) => wake(`wake:c:${session}:${index}`, `2026-09-29T08:${String(minute).padStart(2, "0")}:00Z`, session, causeKey, { cause: "pr-checks-failing" }));
+  const movedOn = (pr: number) => [
+    github("opened", "2026-09-29T07:00:00Z", { pr }), github("head_moved", "2026-09-29T08:10:00Z", { pr, headSha: "ffffffff00112233" }), // before repeat 1: a different head
+    github("head_moved", "2026-09-29T08:30:00Z", { pr, headSha: "abcdef1234567890" }), // before repeat 2: the same head
+  ];
+  const splitOfKey = (session: string, pr: number, causeKey: string) => causeOf(causesOf([...movedOn(pr), ...wakes(session, causeKey)]), "pr-checks-failing");
+  const conflicting = splitOfKey("worker-23", 23, "worker-23/pr-checks-failing/pr-23/abcdef12/conflicting");
+  const refail = splitOfKey("worker-24", 24, "worker-24/pr-checks-failing/pr-24/abcdef12/refail-1");
+  const noHead = splitOfKey("worker-27", 27, "worker-27/pr-checks-failing/pr-27/conflicting");
+  assert.deepEqual(Object.values(conflicting.split).map((share) => share.count), [1, 1, 0], "/conflicting: repeat 1 after the head moved away, repeat 2 on the same head");
+  assert.deepEqual(Object.values(refail.split).map((share) => share.count), [1, 1, 0], "/refail-<n>: repeat 1 after the head moved away, repeat 2 on the same head");
+  assert.deepEqual(Object.values(noHead.split).map((share) => share.count), [0, 2, 0], "a suffix with no head before it is not changed by a head moving");
+  assertAddsUp(conflicting);
+  assertAddsUp(refail);
+  assertAddsUp(noHead);
+});
+
 test("SPLIT: a label going on or off the row is a change, and the class's split adds up to the class (its total unchanged by the split)", () => {
   const key = "worker-14/answer-owed/row-14";
   const events = [...SPLIT_ROW, github("filed", "2026-09-29T07:00:00Z", { row: 14 }), github("unlabeled", "2026-09-29T08:30:00Z", { row: 14, name: "answer:worker-14" }),
