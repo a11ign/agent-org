@@ -1561,12 +1561,13 @@ export function retroClasses({ now, stateDir, unit = "a11ign-work-tick.service",
   readInertOptionReading = (at, recorded) => attemptDora(() => readInertOptions({ now: at, recorded, memory })),
   readDenials = (at) => readSafetyCheckDenials({ since: at - WINDOW_MS }),
   readUnderspecifiedStops = (at) => attemptDora(() => readUnderspecified({ now: at })),
-  readSharedRows = readClosedSharedRows, pinBumpOn = () => readPinBumpFlag(stateDir), readPinBump = (at) => pinBumpRead({ now: at }) }: {
+  readSharedRows = readClosedSharedRows, pinBumpOn = () => readPinBumpFlag(stateDir), readPinBump = (at) => pinBumpRead({ now: at }),
+  readOpenPrs = () => ghJson(["pr", "list", "--state", "open", "--limit", "100", "--json", "number,labels,statusCheckRollup,reviewDecision"]) }: {
         now: number; stateDir: string; unit?: string; memory?: RetroReads; readHandFixes?: (now: number) => ReturnType<typeof readHandFixLedger>;
         readDoraReport?: (now: number) => ReturnType<typeof readDora> | null; readUnwaited?: (now: number) => ReturnType<typeof unwaitedStockRows>; readUntiered?: () => ReturnType<typeof untieredReadyRows>; readMergedRepositories?: (now: number) => ReturnType<typeof readMerged>;
         readAgentListing?: () => Agent[] | null; readIdleHours?: (now: number) => IdleClaimedHours | null; readOpenRowIncidents?: (now: number) => MergedRowOpenIncident[] | null;
         readInertOptionReading?: (now: number, recorded: string[]) => InertOptionReading | null; readDenials?: (now: number) => SafetyCheckDenialReading | null;
-        readUnderspecifiedStops?: (now: number) => UnderspecifiedReading | null; readSharedRows?: () => any[] | null;
+        readUnderspecifiedStops?: (now: number) => UnderspecifiedReading | null; readSharedRows?: () => any[] | null; readOpenPrs?: () => any[] | null;
         pinBumpOn?: () => boolean | null; readPinBump?: (now: number) => PinBumpMeasure;
     }) {
   const since = now - WINDOW_MS;
@@ -1577,7 +1578,7 @@ export function retroClasses({ now, stateDir, unit = "a11ign-work-tick.service",
       return { merged: mergedRepositories?.[0]?.prs ?? null, mergedRepositories };
     } },
     { name: "open pull requests", read: () => {
-      const openPrs = ghJson(["pr", "list", "--state", "open", "--limit", "100", "--json", "number,labels,statusCheckRollup,reviewDecision"]);
+      const openPrs = readOpenPrs();
       return { openPrs, idleClaims: readIdleClaims({ now, stateDir, openPrs, agents: readAgentListing() }) };
     } },
     { name: "idle claimed hours", read: () => ({ idleClaimedHours: readIdleHours(now) }) },

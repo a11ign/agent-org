@@ -46,6 +46,8 @@ const { familyMember, isLiveSession } = await import("./arm-pr.ts");
 const { claimNames } = await import("./row-claim.ts");
 const { homeProjectDeclaration } = await import("./project-config.ts");
 const { startedPanes } = await import("./packaging/started-pane.ts");
+/** The row the tier check reads: an ordinary one, so the claim never reaches the real `gh` for its labels (`readRowForTier`'s default). */
+const ORDINARY_ROW = () => ({ labels: [], body: "", title: "" });
 
 const ROW = 2405;
 const ORDER = {
@@ -131,7 +133,7 @@ function spawn(host: ReturnType<typeof fakeHost>, herdr: ReturnType<typeof fakeH
   extra: { registered?: string[]; recorded?: string[] } = {}) {
   return deliver([ORDER], NOBODY, [ROLE], {
     run: herdr.run,
-    claimer: spawnClaimer({ exec: host.exec, exists: host.exists }),
+    claimer: spawnClaimer({ exec: host.exec, exists: host.exists, readRow: ORDINARY_ROW }),
     registerSpawn: (role: string) => { extra.registered?.push(role); },
     record: (key: string) => { extra.recorded?.push(key); },
   });
@@ -190,7 +192,7 @@ test("#2405 REFUSED CLAIM: an answer, not a failure -- no pane, nothing register
     const paths = sparePathsFrom(join(dir, "wake-ledger"));
     const recorded: string[] = [];
     const got = deliver([ORDER], NOBODY, [ROLE], { run: herdr.run,
-      claimer: spawnClaimer({ exec: host.exec, exists: host.exists }),
+      claimer: spawnClaimer({ exec: host.exec, exists: host.exists, readRow: ORDINARY_ROW }),
       registerSpawn: (role: string) => registerSpawn(paths, role), record: (k: string) => { recorded.push(k); } });
 
     assert.deepEqual(got.sent, []);
@@ -307,7 +309,7 @@ test("#2405 an order whose row cannot be read opens no pane", () => {
   const host = fakeHost();
   const herdr = fakeHerdr(host.events);
   const got = deliver([{ ...ORDER, causeKey: "engineers/ready-row-unclaimed/none" }], NOBODY, [ROLE],
-    { run: herdr.run, claimer: spawnClaimer({ exec: host.exec, exists: host.exists }) });
+    { run: herdr.run, claimer: spawnClaimer({ exec: host.exec, exists: host.exists, readRow: ORDINARY_ROW }) });
   assert.match(got.refused.join("\n"), /cannot tell which row/);
   assert.deepEqual(herdr.calls, []);
 });
@@ -417,7 +419,7 @@ test("#4685 SPAWN: a keyed row is claimed from ITS clone with --tracker, in a ke
   const herdr = fakeHerdr(host.events);
   const registered: string[] = [];
   const got = deliver([KEYED], heldBy([ROLE]), [ROLE], { run: herdr.run,
-    claimer: spawnClaimer({ exec: host.exec, exists: host.exists, cloneOf: (key) => (key === "agent-org" ? { clone: CLONE } : { refusal: `no clone for ${key}` }) }),
+    claimer: spawnClaimer({ exec: host.exec, exists: host.exists, readRow: ORDINARY_ROW, cloneOf: (key) => (key === "agent-org" ? { clone: CLONE } : { refusal: `no clone for ${key}` }) }),
     registerSpawn: (role: string) => { registered.push(role); }, record: () => {} });
 
   assert.deepEqual(got.sent, [`${KEYED_ROLE} <- ${KEYED.causeKey} (STARTED sonnet/high)`], JSON.stringify(got));
@@ -443,7 +445,7 @@ test("#4685 SPAWN: a keyed row with no clone on the host is refused by name, bef
   const host = fakeHost({ rowDir: KEYED_DIR });
   const herdr = fakeHerdr(host.events);
   const got = deliver([KEYED], heldBy([ROLE]), [ROLE], { run: herdr.run,
-    claimer: spawnClaimer({ exec: host.exec, exists: host.exists, cloneOf: () => ({ refusal: "host.json names no clone for agent-org" }) }),
+    claimer: spawnClaimer({ exec: host.exec, exists: host.exists, readRow: ORDINARY_ROW, cloneOf: () => ({ refusal: "host.json names no clone for agent-org" }) }),
     registerSpawn: () => {}, record: () => {} });
   assert.deepEqual(got.sent, []);
   assert.match(got.refused.join("\n"), /cannot claim agent-org#481: host.json names no clone for agent-org/);

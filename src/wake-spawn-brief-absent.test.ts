@@ -30,6 +30,8 @@ process.env.AGENT_ORG_HOST = HOST_FILE;
 const { deliver, spawnClaimer, whyNoBrief, HOST_REPOS } = await import("./wake.ts");
 const { roleBriefPath } = await import("./project-roles.ts");
 const { startedPanes } = await import("./packaging/started-pane.ts");
+/** The row the tier check reads: an ordinary one, so the claim never reaches the real `gh` for its labels (`readRowForTier`'s default). */
+const ORDINARY_ROW = () => ({ labels: [], body: "", title: "" });
 
 const BRIEF = roleBriefPath("engineer.md").absolute;
 const ROW = 869;
@@ -80,7 +82,7 @@ function fakeHerdr(events: string[]) {
 function spawn() {
   const host = fakeHost();
   const herdr = fakeHerdr(host.events);
-  const got = deliver([ORDER], [], [ROLE], { run: herdr.run, claimer: spawnClaimer({ exec: host.exec, exists: host.exists }),
+  const got = deliver([ORDER], [], [ROLE], { run: herdr.run, claimer: spawnClaimer({ exec: host.exec, exists: host.exists, readRow: ORDINARY_ROW }),
     registerSpawn: () => {}, record: () => {} });
   const said = (needle: string) => host.events.filter((e) => e.includes(needle));
   return { got, events: host.events, said };

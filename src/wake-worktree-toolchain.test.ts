@@ -28,6 +28,8 @@ process.env.AGENT_ORG_HOST = HOST_FILE;
 
 const { deliver, spawnClaimer, rebuildCheckOn, worktreeToolchainReason, sayToolchainRefusal, REBUILD_CHECK_SWITCH, HOST_REPOS } = await import("./wake.ts");
 const { startedPanes } = await import("./packaging/started-pane.ts");
+/** The row the tier check reads: an ordinary one, so the claim never reaches the real `gh` for its labels (`readRowForTier`'s default). */
+const ORDINARY_ROW = () => ({ labels: [], body: "", title: "" });
 type ToolchainGate = import("./wake.ts").ToolchainGate;
 
 const ROW = 1169;
@@ -90,7 +92,7 @@ function fakeHerdr() {
 function spawn(host: ReturnType<typeof fakeHost>, herdr: ReturnType<typeof fakeHerdr>, toolchain?: ToolchainGate) {
   return deliver([ORDER], NOBODY, [ROLE], {
     run: herdr.run,
-    claimer: spawnClaimer({ exec: host.exec, exists: host.exists }),
+    claimer: spawnClaimer({ exec: host.exec, exists: host.exists, readRow: ORDINARY_ROW }),
     toolchain,
     registerSpawn: () => {},
     record: () => {},

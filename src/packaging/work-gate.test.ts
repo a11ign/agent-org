@@ -6009,11 +6009,14 @@ test("#2075: a refused, errored, malformed or never-ending read is `null` -- nev
 });
 
 test("#2075: rowsOffBoardOrSay says on stderr when it could not ask, and is silent when it did", () => {
-  const lines: string[] = [];
-  // `rowsOffBoardOrSay` runs the real `gh`; a bare token-less host refuses it, so pin the SAY on both branches through the log.
-  const said = rowsOffBoardOrSay((line: string) => lines.push(line));
-  if (said === null) assert.match(lines.join(""), /CANNOT ASK which open rows are off Project 1.*not a clean board/);
-  else assert.deepEqual(lines, [], "a read that answered says nothing");
+  const refusedLines: string[] = [];
+  const refused = rowsOffBoardOrSay((line: string) => refusedLines.push(line), [], () => { throw new Error("gh exited 4: not logged in"); });
+  assert.equal(refused, null);
+  assert.match(refusedLines.join(""), /CANNOT ASK which open rows are off Project 1.*not a clean board/);
+  const answeredLines: string[] = [];
+  const answered = rowsOffBoardOrSay((line: string) => answeredLines.push(line), [], graphqlPages([page([issueNode(1, [1])])]).run);
+  assert.ok(Array.isArray(answered), "the control: a healthy page is read");
+  assert.deepEqual(answeredLines, [], "a read that answered says nothing");
 });
 
 test("#2075: row-off-board is a JUDGMENT cause and FINISH, and `decide` emits it from `offBoard` and from nothing else", () => {
