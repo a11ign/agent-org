@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { isParked } from "./board-view.ts";
 import {
-  amend, emptyQueue, enqueue, finish, isLive, loadQueue, markResumed, markRunning, markStarting, nextStarts, observe, park, recordRepos,
-  recordPullStates, recordTrackerStates, remove, retry, saveQueue, setMax, setPaused, unpark, unsettledKeys, type Queue,
+  amend, emptyQueue, enqueue, finish, isLive, loadQueue, markResumed, markRunning, markStarting, nextStarts, observe, park, recordBlockers, recordRepos,
+  recordPullStates, recordTrackerStates, remove, retry, saveQueue, setMax, setPaused, unpark, unreadBlockerKeys, unsettledKeys, type Queue,
 } from "./queue.ts";
 import type { Ticket } from "./source.ts";
 
@@ -56,6 +56,19 @@ test("nextStarts fills free slots in queue order, counts starting and running al
   assert.deepEqual(nextStarts(queue, 14, 14).map((e) => e.ticket.key), ["C"], "exactly equal to the cores does not refuse");
   assert.deepEqual(nextStarts(queue, 14.01, 14), [], "past them it does");
   assert.throws(() => setMax(queue, 0), /1 or more/);
+});
+
+test("nextStarts passes over a run waiting on a blocker, which holds no slot, and starts it once the blocker is done", () => {
+  const blockedBy = (state: string) => new Map([["A", [{ key: "LIB-1", state, status: state, pulls: {} }]], ["B", []]]);
+  let queue = setPaused(enqueue(emptyQueue(1), [ticket("A"), ticket("B")], choice, 1), false);
+  assert.deepEqual(unreadBlockerKeys(queue), ["A", "B"], "nothing read yet");
+  queue = recordBlockers(queue, blockedBy("started"));
+  assert.deepEqual(unreadBlockerKeys(queue), []);
+  assert.deepEqual(nextStarts(queue, 0, 14).map((e) => e.ticket.key), ["B"], "B starts first though it was queued after A");
+  queue = recordBlockers(queue, blockedBy("completed"));
+  assert.deepEqual(nextStarts(queue, 0, 14).map((e) => e.ticket.key), ["A"]);
+  const started = recordBlockers(markStarting(queue, "A", 2), blockedBy("started"));
+  assert.deepEqual(started.entries[0].blockers, [{ key: "LIB-1", state: "completed", status: "completed", pulls: {} }], "a run that has started keeps what it started with");
 });
 
 test("observe marks working, and a status that is none of the four ordinary ones as waiting on a person", () => {

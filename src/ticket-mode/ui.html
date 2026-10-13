@@ -68,7 +68,7 @@
   .empty { padding: 32px 16px; color: var(--muted); text-align: center; }
   .icon { width: 16px; height: 16px; margin-top: 2px; display: block; }
   .icon svg { width: 16px; height: 16px; display: block; }
-  .st-queued { color: var(--st-queued); } .st-working { color: var(--st-progress); } .st-needs-you { color: var(--st-needs); }
+  .st-queued, .st-blocked { color: var(--st-queued); } .st-working { color: var(--st-progress); } .st-needs-you { color: var(--st-needs); }
   .st-awaiting-review { color: var(--st-review); } .st-completed { color: var(--st-done); } .st-failed { color: var(--st-failed); } .st-cancelled { color: var(--st-cancelled); }
   .runs .run .st-working svg { animation: spin 1.1s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -125,7 +125,7 @@
 // This page only draws what they return and wires the clicks.
 import {
   RUN_STATUSES, flatten, groupByStatus, isParked, parentKeys, parentTick, projectCounts, projectOf, queueLabel, recall, remember, runActions, runStatus, runsShown, selectable, statusCounts, terminalLink,
-  ticketCount, toggled, visibleTickets,
+  ticketCount, toggled, visibleTickets, waitsOn,
 } from "/board-view.js";
 
 const el = (tag, props = {}, ...children) => {
@@ -246,6 +246,7 @@ function since(ms) {
 // One icon per status, drawn in the status's colour (`currentColor`); the working ring is the one that spins.
 const ICONS = {
   "queued": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="2"/></svg>',
+  "blocked": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5 8h6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
   "working": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-opacity=".25" stroke-width="2"/><path d="M8 2a6 6 0 0 1 6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
   "needs-you": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7" fill="currentColor"/><path d="M8 4.5v4.5" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/><circle cx="8" cy="11.6" r="1" fill="#fff"/></svg>',
   "awaiting-review": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="4.5" cy="3.5" r="1.8" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="4.5" cy="12.5" r="1.8" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="11.5" cy="12.5" r="1.8" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M4.5 5.3v5.4M11.5 10.7V6.5a2 2 0 0 0-2-2H7.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
@@ -273,7 +274,8 @@ function length(ms) {
 }
 
 function row(e) {
-  const status = runStatus(e);
+  const status = runStatus(e, state.queue.entries);
+  const waits = waitsOn(e, state.queue.entries);
   const o = e.outcome;
   const actions = el("div", { className: "actions" });
   for (const verb of runActions(e)) {
@@ -294,6 +296,7 @@ function row(e) {
       el("div", { className: "title" }, el("a", { href: e.ticket.url, target: "_blank", rel: "noreferrer" }, e.ticket.key), ` ${e.ticket.title}`),
       el("div", { className: "meta" }, `${LABEL[status]} · ${repos} · ${e.model}/${e.effort} · ${when}${tokens}`),
       e.waiting ? el("div", { className: "waiting" }, "Waiting on a person") : null,
+      waits.length > 0 ? el("div", { className: "meta" }, `Waits on ${waits.map((b) => `${b.key} (${b.status})`).join(", ")}`) : null,
       reason ? el("div", { className: "meta" }, reason) : null,
       isParked(e) ? el("div", { className: "waiting" }, "Still open: answer the agent in its terminal and the run carries on") : null),
     el("div", { className: "side" }, terminal, prs, actions));

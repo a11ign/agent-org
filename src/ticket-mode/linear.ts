@@ -10,7 +10,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { extname, join } from "node:path";
 import type { KeySource } from "./settings.ts";
-import type { PullState, Ticket, TicketSource } from "./source.ts";
+import type { Blocker, PullState, Ticket, TicketSource } from "./source.ts";
 
 export const LINEAR_API = "https://api.linear.app/graphql";
 /** Linear stores uploads here, and only a request carrying the key may read one. */
@@ -65,6 +65,15 @@ export function uploadLinks(description: string): string[] {
 /** A pull request's state from Linear's word for it: `merged` and `closed` are final, and anything else, a draft included, is still open. PURE. */
 export function pullState(status: string | undefined): PullState {
   return status === "merged" || status === "closed" ? status : "open";
+}
+
+/** A ticket's links, as read for the state of its pull requests. Linear's GitHub integration keeps each one's state in its metadata. */
+type Attached = { attachments: { nodes: { url: string; sourceType: string; metadata: { status?: string } | null }[] } };
+const ATTACHED_PULLS = "attachments { nodes { url sourceType metadata } }";
+
+/** The state of each pull request a ticket links, by URL. Its other links, such as an upload, are left out. PURE. */
+function linkedPulls(node: Attached): Record<string, PullState> {
+  return Object.fromEntries(node.attachments.nodes.filter(({ sourceType }) => sourceType === "github").map(({ url, metadata }) => [url, pullState(metadata?.status)]));
 }
 
 /** The name the `n`th download is saved as: its attachment title when that names a file, or else `attachment-<n>` and an extension. PURE. */
@@ -152,12 +161,16 @@ export function linearSource({ key, fetch: request = fetch }: { key: string; fet
     },
 
     async pullStates(keys) {
-      // Linear's GitHub integration keeps each linked pull request's state in its attachment's metadata.
-      type Attached = { attachments: { nodes: { url: string; sourceType: string; metadata: { status?: string } | null }[] } };
-      const found = await eachIssue<Attached>(keys, "attachments { nodes { url sourceType metadata } }");
-      return new Map([...found].map(([key, node]) => [key, Object.fromEntries(node.attachments.nodes
-        .filter(({ sourceType }) => sourceType === "github")
-        .map(({ url, metadata }) => [url, pullState(metadata?.status)]))]));
+      const found = await eachIssue<Attached>(keys, ATTACHED_PULLS);
+      return new Map([...found].map(([key, node]) => [key, linkedPulls(node)]));
+    },
+
+    async blockers(keys) {
+      // Linear stores "A blocks B" once, on A: B reads its blockers as the inverse relations of type `blocks`.
+      type Related = { inverseRelations: { nodes: { type: string; issue: { identifier: string; state: { type: string; name: string } } & Attached }[] } };
+      const found = await eachIssue<Related>(keys, `inverseRelations { nodes { type issue { identifier state { type name } ${ATTACHED_PULLS} } } }`);
+      return new Map([...found].map(([key, node]) => [key, node.inverseRelations.nodes.filter(({ type }) => type === "blocks")
+        .map(({ issue }): Blocker => ({ key: issue.identifier, state: issue.state.type, status: issue.state.name, pulls: linkedPulls(issue) }))]));
     },
 
     async download(ticket, dir) {

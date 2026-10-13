@@ -21,8 +21,11 @@ export type TicketNode<T extends ViewTicket = ViewTicket> = Readonly<{ ticket: T
 export type ViewEntry = Readonly<{
   ticket: Readonly<{ key: string }>; phase: string; outcome?: Readonly<{ kind: string; prs?: readonly Readonly<{ url: string }>[] }>; waiting?: boolean;
   trackerState?: string; pullStates?: Readonly<Record<string, string>>; queuedAt?: number; startedAt?: number; finishedAt?: number; workspace?: string;
-  pane?: string;
+  pane?: string; blockers?: readonly ViewBlocker[];
 }>;
+
+/** A ticket that blocks a queued one: its key, and its state's type and name in the tracker. */
+export type ViewBlocker = Readonly<{ key: string; state: string; status: string }>;
 
 /** Where a browser keeps the view's settings between visits; `localStorage` in the page. */
 export type Storage = Readonly<{ getItem(name: string): string | null; setItem(name: string, value: string): void }>;
@@ -131,12 +134,13 @@ export function remember(storage: Storage | null, name: string, values: Readonly
 }
 
 /** A run's status on the board, after GitHub's Actions runs: each has its own icon and filter. */
-export type RunStatus = "needs-you" | "working" | "queued" | "awaiting-review" | "completed" | "failed" | "cancelled";
+export type RunStatus = "needs-you" | "working" | "blocked" | "queued" | "awaiting-review" | "completed" | "failed" | "cancelled";
 
 /** Every status, in the order the filters list them: what needs a person first, what is settled last. */
 export const RUN_STATUSES: readonly Readonly<{ status: RunStatus; label: string }>[] = [
   { status: "needs-you", label: "Needs you" },
   { status: "working", label: "In progress" },
+  { status: "blocked", label: "Blocked" },
   { status: "queued", label: "Queued" },
   { status: "awaiting-review", label: "Awaiting review" },
   { status: "completed", label: "Completed" },
@@ -161,12 +165,26 @@ export function settledByPulls(entry: ViewEntry): RunStatus | null {
 }
 
 /**
- * A run's status. The tracker's word wins once the run has finished: a ticket it completed is done and one it canceled is cancelled, whatever
- * the run ended in. Then its pull requests: Linear completes a ticket on a merge only where its team's workflow says so, so a run whose pull
- * requests merged is done even while its ticket is still in progress. Before either, the outcome decides.
+ * The blockers still holding a queued run back, given every run on the queue. A blocker lets go once the tracker completes it, or, when it is on
+ * the queue itself, once its run is completed, which its pull requests merging is enough for. A canceled or duplicate blocker never lets go: the
+ * work it promised will not come, so a person decides. Waiting is not on order: an unblocked run queued later starts first.
  */
-export function runStatus(entry: ViewEntry): RunStatus {
-  if (entry.phase === "queued") return "queued";
+export function waitsOn(entry: ViewEntry, entries: readonly ViewEntry[]): ViewBlocker[] {
+  return (entry.blockers ?? []).filter((blocker) => {
+    if (blocker.state === "completed") return false;
+    const run = entries.find((e) => e.ticket.key === blocker.key);
+    return run === undefined || run.phase !== "finished" || runStatus(run) !== "completed";
+  });
+}
+
+/**
+ * A run's status. A queued run is blocked while a ticket that blocks it is not done (`entries` is the whole queue, for {@link waitsOn}). The
+ * tracker's word wins once the run has finished: a ticket it completed is done and one it canceled is cancelled, whatever the run ended in. Then
+ * its pull requests: Linear completes a ticket on a merge only where its team's workflow says so, so a run whose pull requests merged is done
+ * even while its ticket is still in progress. Before either, the outcome decides.
+ */
+export function runStatus(entry: ViewEntry, entries: readonly ViewEntry[] = []): RunStatus {
+  if (entry.phase === "queued") return waitsOn(entry, entries).length > 0 ? "blocked" : "queued";
   if (entry.phase !== "finished") return entry.waiting ? "needs-you" : "working";
   if (entry.trackerState === "completed") return "completed";
   if (entry.trackerState === "canceled" || entry.trackerState === "duplicate") return "cancelled";
@@ -179,14 +197,14 @@ export function runStatus(entry: ViewEntry): RunStatus {
 /** How many runs have each status. */
 export function statusCounts(entries: readonly ViewEntry[]): Map<RunStatus, number> {
   const counts = new Map<RunStatus, number>(RUN_STATUSES.map(({ status }) => [status, 0]));
-  for (const status of entries.map(runStatus)) counts.set(status, (counts.get(status) ?? 0) + 1);
+  for (const status of entries.map((entry) => runStatus(entry, entries))) counts.set(status, (counts.get(status) ?? 0) + 1);
   return counts;
 }
 
 /** The runs a filter shows (every run for `null`), the most recently active first, as GitHub lists its runs. */
 export function runsShown<T extends ViewEntry>(entries: readonly T[], filter: RunStatus | null): T[] {
   const latest = (entry: ViewEntry) => entry.finishedAt ?? entry.startedAt ?? entry.queuedAt ?? 0;
-  return entries.filter((entry) => filter === null || runStatus(entry) === filter).sort((a, b) => latest(b) - latest(a));
+  return entries.filter((entry) => filter === null || runStatus(entry, entries) === filter).sort((a, b) => latest(b) - latest(a));
 }
 
 /** A parked run: a finished one that kept its herdr workspace, so a person can still answer its agent there. It holds no slot. */

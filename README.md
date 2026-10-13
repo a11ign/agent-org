@@ -80,7 +80,7 @@ takes them one each. `agent-org ticket:serve` starts a board on `127.0.0.1` and 
   A parent that is not yours, such as an epic someone else owns, says so. Filter by Linear project (several at once) or by search, and fold any status group; both are remembered in the
   browser. Choose the model and the effort, then Queue. You do not choose a repository: the worker does.
 - **Board.** Every run in one list, newest activity first, each with a status icon after GitHub's Actions runs, and a filter per status
-  with its count: Needs you, In progress, Queued, Awaiting review, Completed, Failed and Cancelled. A run is Completed once the tracker
+  with its count: Needs you, In progress, Blocked, Queued, Awaiting review, Completed, Failed and Cancelled. A run is Completed once the tracker
   completes its ticket, or once its pull requests have merged, as Linear's GitHub integration reports them. Linear completes a ticket on a
   merge only where its team's workflow says so. A run whose pull requests all closed unmerged is Cancelled. The board asks every two minutes. A run can be removed
   while queued, stopped while running, and retried once it has failed. The number of workers at once can be changed live. On a machine
@@ -89,6 +89,12 @@ takes them one each. `agent-org ticket:serve` starts a board on `127.0.0.1` and 
   and holds no slot, so you can answer the agent in its terminal. Once the agent works again the run is In progress again, its old outcome
   is moved to `outcome.prev.json`, and the worker must write a new one before it stops. Close shuts a parked run's workspace and keeps its
   outcome, and a parked run is retried only once it is closed.
+- **Blocked until what blocks it is done.** A queued run whose ticket the tracker marks "blocked by" another waits, as Blocked, naming what
+  it waits on, and holds no slot, while a run queued after it with nothing blocking it starts first. A blocker lets go once the tracker
+  completes it, or, when it is on the queue itself, once its run is Completed, which its pull requests merging is enough for. A canceled or
+  duplicate blocker never lets go, so a person decides. The blockers are read before a run first starts, and nothing starts while the tracker
+  cannot say; they are read again every two minutes, so a relation changed in the tracker counts. A run that waited names its blockers and
+  their pull requests in its brief, and checks that any release it depends on is out before relying on it.
 - **Paused until you start it.** A new queue is paused, so queueing a ticket never also starts it: queue what you want, then press
   Start workers on the Board when what the workers need is ready. Pause stops new starts and leaves running workers alone, and the
   choice survives a restart of the board.
