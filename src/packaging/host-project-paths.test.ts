@@ -140,7 +140,9 @@ const TODAYS_TEXT = {
 // a11ign/a11ign#5044 step 1 (agent-org#955) MOVED IT AGAIN, deliberately: `AGENT_ORG_GH_ROLE=reviewer` is a role `app_role` names, so a host that declares the reviewer
 // a `github-apps` identity sends a reviewer instance's call out on that App; for the recorded host, which declares none, `reviewer` is not in `@@appRoles@@` and the call is unchanged. Same staleness, same remedy.
 // a11ign/agent-org#1006 (a11ign#4777) MOVED IT, deliberately: the token check accepts a dotted installation token (GitHub's contain `.`), and an incident names the first stderr line and the exit status. Same staleness, same remedy.
-const TODAYS_GH_WRAPPER = "3c0ccdb23433a214e2ab211e91d3386f35e474c7eeb8ef789097ec7188e7aac7";
+// a11ign/agent-org#1347 MOVED IT AGAIN, deliberately: a reviewer's call whose App token cannot be minted is REFUSED (exit 1, the incident on stderr) and no longer
+// falls back to the account; the recorded host declares no reviewer app, so the refusal is inert here. Same staleness, same remedy.
+const TODAYS_GH_WRAPPER = "d03a53d65c8f3550d92219d864d4fcc6d3405302e551c2113385d35e6c124be2";
 // #2896 MOVED THIS ONE, deliberately: the recorded host's header says `pnpm run host:install` / `pnpm run host:check` where it said `npm run`.
 const TODAYS_LEADS_LIST = "dbca070c4bb7934ff1e9cdc9505f9edee638d98fcff10963b18d5d3a743770a2";
 

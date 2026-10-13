@@ -356,6 +356,33 @@ test("#4900: FALLBACK: a mint that fails sends the call through as the account, 
   assert.deepEqual([h.mints(), h.lines().filter((l) => l.includes("\tincident\t")).length], [2, 2], "after the window the role is asked again");
 });
 
+// #1347: THE REVIEWER IS REFUSED, NOT FALLEN BACK. A reviewer's call sent as the account counts as the account's approval on `main` (agent-org#1242),
+// so when its App's token cannot be minted the call is refused: non-zero, nothing sent, the reason on stderr. Every other role keeps the fallback.
+test("#1347: a reviewer whose App token cannot be minted is REFUSED: nothing is sent, the reason is on stderr; another role still falls back", () => {
+  const reviewerApp = { mode: "github-apps", appId: "id-reviewer", keyPath: "/nonexistent-4900/reviewer.pem" };
+  const h = host(wrapperFor({ ...THREE_APPS, reviewer: reviewerApp }));
+  const roles = "scheduler workers managers reviewer";
+  const cause = "app token: key: /keys/reviewer.pem cannot be read";
+  const reviewerDir = reviewerConfig(h);
+  const asReviewer = { AGENT_ORG_GH_ROLE: "reviewer", GH_CONFIG_DIR: reviewerDir, A11Y_APP_ROLES: roles, MINT_FAIL: cause, TMPDIR: h.root };
+  const refused = h.run(asReviewer, "pr", "review", "42", "--approve");
+  assert.deepEqual([refused.status, refused.stdout], [1, ""], "REFUSED: non-zero, and the stub that would have sent the call never ran");
+  assert.match(refused.stderr, /^gh: refused: the reviewer call is NOT sent as the account\. app-token reviewer failed for App id-reviewer: app token: key: \/keys\/reviewer\.pem cannot be read \(exit 1\)\n$/,
+    "the stderr line names the role, the App and the mint failure");
+  assert.equal(h.mints(), 1, "the minter was asked once");
+  const reviewerLedger = readFileSync(join(reviewerDir, "gh-calls.tsv"), "utf8").split("\n").filter(Boolean).map((l) => parseLine(l));
+  assert.ok(reviewerLedger.some((e) => e?.resource === "incident" && /cannot be read \(exit 1\)$/.test(e.caller ?? "")), "the incident is on the reviewer's ledger as well as on stderr");
+
+  const again = h.run(asReviewer, "pr", "review", "42", "--approve");
+  assert.deepEqual([again.status, again.stdout], [1, ""], "inside the 60-second window the reviewer is still refused, with no second mint");
+  assert.match(again.stderr, /cannot be read \(exit 1\)\n$/, "the reason is kept for the window too");
+  assert.equal(h.mints(), 1);
+
+  const fallback = h.run({ HERDR_WORKSPACE_ID: "w3", MINT_FAIL: cause }, "pr", "list");
+  assert.deepEqual([fallback.status, tokenOf(fallback.stdout), fallback.stderr], [0, "none", ""],
+    "POSITIVE CONTROL: the same failure for a worker still goes through as the account, so the refusal is the reviewer's and not a dead wrapper");
+});
+
 test("#4900: the call's status and stdin are the caller's own through an app, and the minter never sees the stdin", () => {
   const h = host();
   const spawnWithStdin = spawnSync("sh", [WRAPPER, "issue", "create", "--body-file", "-"], {
