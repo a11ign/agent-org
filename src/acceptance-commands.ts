@@ -73,7 +73,7 @@ import { sandboxGitEnv } from "./lib/git-env.ts";
 import { changedFiles } from "./lib/changed-files.ts";
 import { localImports, importedNamesFor, stripComments } from "./lib/local-import-closure.ts";
 import { toolImports } from "./lib/installed-tool-imports.ts";
-import { resolveTypescript } from "./lib/resolve-typescript.ts";
+import { tryResolveTypescript, type TypescriptResolution } from "./lib/resolve-typescript.ts";
 import { defectClassReport } from "./defect-class-line.ts"; // #4123
 import { resolveAcceptanceSource, sectionsTextOf, sourceLine, type AcceptanceSource } from "./acceptance-file.ts"; // ADR 0044
 import { HostConfigRefusal, homeHostConfig } from "./host-config.ts"; // #4322
@@ -833,23 +833,19 @@ const fingerprint = (a: string, b: string): string => a + b;
  *
  * AND WHEN IT IS NOT, THE FALLBACK OVER-CHARGES RATHER THAN UNDER-CHARGES: no parser means the old
  * full-text scan, which refuses more than it should. That is the safe direction for a guard whose other
- * failure would be a test running in CI with no corpus and reading `runs/`. Stated here because a silent
- * fallback to a DIFFERENT answer is the shape this repository keeps finding in its own tooling.
+ * failure would be a test running in CI with no corpus and reading `runs/`. #1340: the over-charge reached `pr:open` from a worktree with no
+ * `node_modules` (the exact row #1327 closed was refused again) and read as a finding about the file, so a `corpus` hit found without a parser
+ * carries `noParser` and `closureRequirementMessage` names the fallback and why there was no parser.
  *
  * `acorn` was the alternative and is deliberately not used: it resolves here only as another package's
  * transitive dependency, which would make this guard hostage to somebody else's tree.
  */
-let typescriptModule: typeof import("typescript") | null | undefined = undefined;
+let typescriptResolution: TypescriptResolution | undefined = undefined;
 
-function loadTypescript(): typeof import("typescript") | null {
-  if (typescriptModule !== undefined) return typescriptModule;
-  try {
-    typescriptModule = resolveTypescript();
-  } catch (error) {
-    void error; // pre-install: the caller falls back to the full-text scan, which over-charges
-    typescriptModule = null;
-  }
-  return typescriptModule as typeof import("typescript") | null;
+function loadResolution(memo: ClosureMemo): TypescriptResolution {
+  if (memo.parser !== undefined) return memo.parser;
+  typescriptResolution ??= tryResolveTypescript();
+  return typescriptResolution;
 }
 
 /**
@@ -889,8 +885,8 @@ function loadTypescript(): typeof import("typescript") | null {
  * @param [memo] the parse is kept here, so a file reached from many entries is parsed once
  */
 function reachableScope(codeOnly: string, fileName: string, imported: Set<string>, isEntry: boolean, memo: ClosureMemo = createClosureMemo()): { scope: string; codeScope: string; referenced: Set<string> | null; } {
-  const ts = loadTypescript();
-  // no parser: scan everything, follow every name, and read string content as code too -- the safe direction
+  const { typescript: ts } = loadResolution(memo);
+  // no parser: scan everything, follow every name, and read string content as code too -- the safe direction (and named on the refusal, #1340)
   if (ts === null) return { scope: codeOnly, codeScope: codeOnly, referenced: null };
   const source = parsedSource(memo, ts, fileName, codeOnly);
   if (isEntry) return { scope: codeOnly, codeScope: blankStringContent(ts, source, codeOnly), referenced: referencedNames(ts, source, null) };
@@ -1120,7 +1116,9 @@ function lineNumberOf(text: string, index: number): number {
   return text.slice(0, index).split("\n").length;
 }
 
-export type ClosureHit = { requirement: "token" | "corpus" | "history", file: string, line: number, chain: string[], wrongDeclaration?: boolean, malformedDeclaration?: boolean };
+export type ClosureHit = { requirement: "token" | "corpus" | "history", file: string, line: number, chain: string[], wrongDeclaration?: boolean, malformedDeclaration?: boolean,
+  /** #1340: set on a `corpus` hit found by the fallback full-text scan: why there was no parser. The hit may be a sentence in a string, not a read. */
+  noParser?: string };
 
 /**
  * #1636: the names of `bound` that reachable code actually uses -- or every bound name when there was no parser to say (`referenced === null`),
@@ -1133,7 +1131,9 @@ function keepReferenced(bound: string[], referenced: Set<string> | null): Set<st
 /**
  * `visited` is every file each entry's walk read: an entry's answer can only change if one of those did, which is what lets a caller reuse it.
  */
-export type ClosureMemo = { sources: Map<string, { text: string, codeOnly: string }>, parsed: Map<string, import("typescript").SourceFile>, scopes: Map<string, { scope: string, codeScope: string, referenced: Set<string> | null, matches: Map<number, RegExpExecArray | null> }>, edges: Map<string, { target: string, names: Set<string> }[]>, visited: Map<string, Set<string>> };
+export type ClosureMemo = { sources: Map<string, { text: string, codeOnly: string }>, parsed: Map<string, import("typescript").SourceFile>, scopes: Map<string, { scope: string, codeScope: string, referenced: Set<string> | null, matches: Map<number, RegExpExecArray | null> }>, edges: Map<string, { target: string, names: Set<string> }[]>, visited: Map<string, Set<string>>,
+  /** #1340: the parser answer to use instead of resolving `typescript` from this process's cwd and the tool's tree. A caller that knows it has none says so here. */
+  parser?: TypescriptResolution };
 /**
  * (#3549) WHAT ONE SCAN OF MANY ENTRIES SHARES. `deriveClosureRequirements` over a whole directory of tests walks the SAME modules once per entry, and
  * each visit read the file, stripped its comments, parsed it and blanked its bodies again: measured at 182 CPU-s for one pass over 190 files, nearly
@@ -1143,8 +1143,8 @@ export type ClosureMemo = { sources: Map<string, { text: string, codeOnly: strin
  * again, so a module-level cache would answer for the old text. A caller that omits it gets a fresh memo per call, which is what it always had.
  * `scopes` and `matches` are keyed by what decides them (the file, the names reached in it, whether it is the entry), not by the entry that asked.
  */
-export function createClosureMemo(): ClosureMemo {
-  return { sources: new Map(), parsed: new Map(), scopes: new Map(), edges: new Map(), visited: new Map() };
+export function createClosureMemo({ parser }: { parser?: TypescriptResolution; } = {}): ClosureMemo {
+  return { sources: new Map(), parsed: new Map(), scopes: new Map(), edges: new Map(), visited: new Map(), ...(parser === undefined ? {} : { parser }) };
 }
 
 function sourceOf(memo: ClosureMemo, file: string): { text: string; codeOnly: string; } {
@@ -1274,7 +1274,9 @@ export function deriveClosureRequirements(entry: string, memo: ClosureMemo = cre
     const hit = { requirement, file, line: lineNumberOf(text, match.index), chain };
     if (requirement !== "corpus") { found.set(requirement, hit); return; }
     const writesPath = declaredWritePath(text);
-    if (writesPath === null) { found.set(requirement, hit); return; }
+    // #1340: only a corpus hit depends on the parser (it decides what string content and unreached bodies count); `token` and `history` read the text whole
+    const { rejected } = loadResolution(memo);
+    if (writesPath === null) { found.set(requirement, rejected === null ? hit : { ...hit, noParser: rejected }); return; }
     if (writeDeclarationHolds(codeOnly, writesPath)) { exemptCorpus = true; return; }
     found.set(requirement, { ...hit, wrongDeclaration: true });
   };
@@ -1327,13 +1329,13 @@ export function deriveClosureRequirements(entry: string, memo: ClosureMemo = cre
  * spot.
  */
 export function closureRequirementMessage(hit: ClosureHit): string {
-  const { requirement, file, line, chain, wrongDeclaration, malformedDeclaration } = hit;
+  const { requirement, file, line, chain, wrongDeclaration, malformedDeclaration, noParser } = hit;
   const entryLabel = basename(chain[0]);
   const fileLabel = basename(file);
   const suffix = malformedDeclaration
     ? ` -- ${fileLabel}:${line} is not a \`// no-token:\` declaration: the name must end the line, or be followed by `
       + "\" -- <reason>\"; refusing rather than ignoring it"
-    : !wrongDeclaration ? "" : requirement === "token"
+    : !wrongDeclaration ? noParserNote(noParser) : requirement === "token"
     ? ` -- ${fileLabel} declares \`// no-token:\` a function its own code DOES call or spawn; refusing rather than `
       + "trusting an unverified claim"
     : ` -- ${fileLabel} declares \`// writes:\` a path its own code does not bear out; refusing rather `
@@ -1346,6 +1348,18 @@ export function closureRequirementMessage(hit: ClosureHit): string {
   }
   return `${entryLabel} requires ${requirement} via ${hops.join(" → ")} → ${fileLabel}:${line}${suffix}`
     + noTokenRemedy(hit, hops);
+}
+
+/**
+ * #1340: A REFUSAL THAT CAME FROM THE FALLBACK NAMES THE FALLBACK. With no parser the scan reads a sentence naming the resolver call in a string, or in a function
+ * nothing reaches, as a corpus read: the refusal then says something about the scan and nothing certain about the file, and `needs corpus` alone reads
+ * as the second. `rejected` is the resolver's own account of each place it looked.
+ */
+function noParserNote(rejected: string | undefined): string {
+  if (rejected === undefined) return "";
+  return " -- found by the FALLBACK full-text scan, because no TypeScript parser could be loaded: a call to the corpus resolver named in a string or in an unreached "
+    + "function is charged as a read here, so this may not be a finding about this file. Make `typescript` resolvable and run it again. "
+    + rejected;
 }
 
 /**

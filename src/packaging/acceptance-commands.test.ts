@@ -18,7 +18,7 @@ import {
   classifyCommand, extractAcceptanceSection, acceptanceReport, testFileArgumentsResolve,
   testFileRequirements, unmetRequirements, unmetCommandRequirements,
   hasFullHistoryDeclaration, jobCapabilities,
-  deriveClosureRequirements, closureRequirementMessage, unmetClosureRequirements,
+  deriveClosureRequirements, closureRequirementMessage, unmetClosureRequirements, createClosureMemo,
   unmetCommandClosureRequirements,
   singleNodeInvocation,
   runsTheWholeSuite,
@@ -4000,6 +4000,48 @@ test("#1327: a `${ runsRoot() }` substitution inside a template literal is code 
     const entry = join(dir, "template-substitution.test.mjs");
     writeFileSync(entry, "export const where = `the root is ${" + spell("runsRo", "ot()") + "} and runsRoot() is prose`;\n");
     assert.deepEqual(deriveClosureRequirements(entry).map((h) => h.requirement), ["corpus"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- #1340: with no TypeScript parser (a worktree with no `node_modules`) the scan falls back to the full text and charges the #1327 sentence
+// again. The refusal that came from the fallback must say so, and a refusal that did not must not. `createClosureMemo({ parser })` is the seam. ---
+
+const NO_PARSER = { typescript: null, rejected: "`typescript` with the JS compiler API is a peer dependency of agent-org and none was usable: add it with `pnpm add -D typescript` (5 or 6). Rejected: the project (`/scratch`): Cannot find module 'typescript'" };
+
+test("#1340: a `runsRoot()` sentence in a string, scanned with no parser, is charged `corpus` AND the message names the fallback and why", () => {
+  const dir = mkdtempSync(join(tmpdir(), "acceptance-noparser-"));
+  try {
+    const entry = join(dir, "reason-string.test.mjs");
+    writeFileSync(entry, `const reason = "resolves under ${spell("runsRo", "ot()")} -- not a gate";\nexport { reason };\n`);
+    const hits = deriveClosureRequirements(entry, createClosureMemo({ parser: NO_PARSER }));
+    assert.deepEqual(hits.map((h) => h.requirement), ["corpus"], "the fallback over-charges: that is the documented safe direction");
+    assert.equal(hits[0].noParser, NO_PARSER.rejected);
+    const message = closureRequirementMessage(hits[0]);
+    assert.match(message, /FALLBACK full-text scan/);
+    assert.match(message, /may not be a finding about this file/);
+    assert.ok(message.includes(NO_PARSER.rejected), message);
+    assert.deepEqual(deriveClosureRequirements(entry), [], "CONTROL: the same file with a parser is not charged (#1327)");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("#1340 CONTROL: a hit found WITH a parser carries no fallback note, and neither does a `token` hit found without one", () => {
+  const dir = mkdtempSync(join(tmpdir(), "acceptance-noparser-"));
+  try {
+    const entry = join(dir, "real-call.test.mjs");
+    writeFileSync(entry, `const root = ${spell("runsRo", "ot()")};\nexport { root };\n`);
+    const [hit] = deriveClosureRequirements(entry);
+    assert.equal(hit.requirement, "corpus");
+    assert.equal(hit.noParser, undefined);
+    assert.doesNotMatch(closureRequirementMessage(hit), /FALLBACK/);
+    const tokenEntry = join(dir, "spawns-gh.test.mjs");
+    writeFileSync(tokenEntry, `import { execFileSync } from "node:child_process";\n${spell('execFileSync("g', 'h"')}, ["api", "user"]);\n`);
+    const tokenHits = deriveClosureRequirements(tokenEntry, createClosureMemo({ parser: NO_PARSER }));
+    assert.deepEqual(tokenHits.map((h) => h.requirement), ["token"]);
+    assert.equal(tokenHits[0].noParser, undefined, "token reads the text whole with or without a parser, so the note would be false there");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

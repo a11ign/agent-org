@@ -46,3 +46,18 @@ export function resolveTypescript({ from = process.cwd() }: { from?: string; } =
   throw new Error(`\`typescript\` with the JS compiler API is a peer dependency of agent-org and none was usable: add it with \`pnpm add -D typescript\` (5 or 6). Rejected: ${failures.map((failure) => failure.message).join("; ")}`,
     { cause: new AggregateError(failures, "each place `typescript` was looked for") });
 }
+
+/**
+ * #1340: WHAT A CALLER THAT CAN GO ON WITHOUT A PARSER GETS INSTEAD OF A THROW, and the reason in the same value. `acceptance-commands.ts` falls back to a
+ * full-text scan when there is no parser, and that scan charges a `runsRoot()` sentence in a string as a corpus read, so a refusal it produced must be able
+ * to say it came from the fallback. A `null` with the reason beside it cannot be mistaken for "no parser needed".
+ */
+export type TypescriptResolution = { typescript: TypeScript; rejected: null; } | { typescript: null; rejected: string; };
+
+export function tryResolveTypescript(where: { from?: string; } = {}): TypescriptResolution {
+  try {
+    return { typescript: resolveTypescript(where), rejected: null };
+  } catch (error) {
+    return { typescript: null, rejected: error instanceof Error ? error.message : String(error) };
+  }
+}
