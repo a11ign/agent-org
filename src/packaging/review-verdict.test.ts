@@ -280,3 +280,35 @@ test("agent-org#586: a dismissed review does not hide a verdict comment, and the
   assert.equal(found.verdict, "convinced", "the dismissed refusal is newer than the comment and still does not outrank it");
   assert.equal(found.examined, 1, "only the comment was read");
 });
+
+// --- agent-org#1381: A REPLY THAT QUOTES A REFUSAL IS NOT THE REFUSAL ----------------------------------------
+//
+// On agent-org#1352 the PR author's reply ("Reply to the NOT CONVINCED review at `c84ce2fc`: ...") was read as the verdict at
+// the head, so the gate ordered `verdict-not-convinced` six times and never summoned a reviewer.
+
+const HEAD_1352 = "c84ce2fce400a20d842623aa47ce4abd9e5fbe36";
+const REPLY_1352 = `Reply to the NOT CONVINCED review at \`${HEAD_1352.slice(0, 8)}\`: the reasons are in the body.`;
+const REFUSAL_1352 = `**Review of #1352 at \`${HEAD_1352.slice(0, 8)}\`, by reviewer-1352: not convinced — the blocker.**`;
+const commentBy = (login: string, createdAt: string, body: string) => ({ id: `C-${createdAt}`, createdAt, body, author: { login } });
+
+test("agent-org#1381: the PR author's reply quoting a NOT CONVINCED review is no verdict at its head", () => {
+  // The row's own shape: a string author, and the PR's author named.
+  assert.equal(verdictAtHead({ comments: [{ body: REPLY_1352, author: "worker-1" }], head: HEAD_1352, prAuthor: "worker-1" }).verdict,
+    null, "a reply by the PR's author is not a verdict, even quoting one");
+  // The PR author cannot write a verdict on their own work, even in the reviewer's exact form.
+  assert.equal(verdictAtHead({ comments: [{ body: REFUSAL_1352, author: "worker-1" }], head: HEAD_1352, prAuthor: "worker-1" }).verdict,
+    null, "a refusal in the convention's form by the PR's author is still not a verdict");
+  const pr = { author: PR_AUTHOR, comments: [commentBy("worker-1", "2026-10-02T15:22:00Z", REPLY_1352)], reviews: [] };
+  assert.equal(verdictAmong(pr, [HEAD_1352]).verdict, null, "the gate reads the reply as absent, so a reviewer is asked for");
+});
+
+test("agent-org#1381: a reply by another account opens in prose, so it is no verdict; the reviewer's own refusal still is", () => {
+  assert.equal(verdictAtHead({ comments: [{ body: REPLY_1352, author: "worker-2" }], head: HEAD_1352, prAuthor: "worker-1" }).verdict,
+    null, "a comment that does not open in the reviewer's form is not a verdict");
+  // The positive control: the same head, the same PR, and the reviewer's own refusal in the convention's form reads.
+  const found = verdictAtHead({ comments: [{ body: REFUSAL_1352, author: "reviewer-1352" }], head: HEAD_1352, prAuthor: "worker-1" });
+  assert.equal(found.verdict, "not-convinced");
+  assert.equal(found.byIsAuthor, false, "and it is attributed to someone other than the PR's author");
+  const pr = { author: PR_AUTHOR, comments: [commentBy("reviewer-1352", "2026-10-02T16:00:00Z", REFUSAL_1352)], reviews: [] };
+  assert.equal(verdictAmong(pr, [HEAD_1352]).verdict, "not-convinced", "over the gate's own read of a comment, too");
+});

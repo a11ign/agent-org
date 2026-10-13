@@ -1,0 +1,7 @@
+A reply that quotes a NOT CONVINCED review is no verdict at its head: `verdictAtHead` counts a comment only when it opens in the reviewer's form and its author is not the PR's author, and a review body counts as before (agent-org#1381).
+
+Acceptance: node --experimental-strip-types -e 'import("./src/review-verdict.ts").then(({verdictAtHead})=>{const h="c84ce2fce400a20d842623aa47ce4abd9e5fbe36";const body="Reply to the NOT CONVINCED review at `"+h+"`: the reasons are in the body.";const r=verdictAtHead({comments:[{body,author:"a11ign-workers"}],head:h,prAuthor:"a11ign-workers"});process.exit(r.verdict===null?0:1)})'
+
+Mutation: the author guard (`sameAccount(...)` in `verdictHereAt`) switched off failed the new PR-author reply test; the opener guard (`CONVENTION_OPENER`) switched off failed the new prose-reply test; each guard forced to always fire failed its own tests and the shared ones. Each mutant was run against `src/packaging/review-verdict.test.ts` and the file restored byte-for-byte.
+
+Measured: `node --test src/packaging/review-verdict.test.ts` 23 of 23 passed on HEAD; the two new agent-org#1381 tests failed on HEAD and pass now (25 pass). `node --test src/packaging/door-refuses-second-review.test.ts` 46 pass. `pnpm run typecheck` exit 0. `pnpm test` (whole suite): 5 of 11381 tests fail in `host-install-agent-org-launcher`, `live-tree-independence` (2), `multi-board-gate` and `release-tag-on-merge`; the same 5 fail with the HEAD versions of the two edited files, so they are not this change.

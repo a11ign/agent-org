@@ -41,6 +41,14 @@ const WORDS = /\b(un-?convinced|not\s+(?:\w+\s+){0,3}convinced|convinced)\b/i;
 const OPENER = /\b(?:Review|Re-read)\s+(?:of|at)\b/i;
 
 /**
+ * agent-org#1381: THE OPENER IN THE REVIEWER'S OWN FORM, AT THE START OF THE LINE -- `**Review of #1352 at \`c84ce2fc\`, by ...`.
+ * `OPENER` matches anywhere, so `Reply to the NOT CONVINCED review at \`c84ce2fc\`` opens like a verdict and was read as one. The
+ * door writes its verdict under this opener (`reviewer/pr-review-verdict.sh` checks the first line it posts), so a comment that
+ * opens in prose is not a verdict a reviewer wrote.
+ */
+const CONVENTION_OPENER = /^\s*\**\s*(?:Review|Re-read)\s+(?:of|at)\b/i;
+
+/**
  * #1259: THE HEAD AND THE AUTHOR, READ FROM THE VERDICT'S OWN OPENER LINE AND NOWHERE ELSE.
  *
  * A clock does not ask "is there a verdict" but "is there a verdict AT THIS HEAD, FROM A REVIEWER WHO IS NOT
@@ -124,12 +132,27 @@ export function reviewVerdict(body: string): {
     : { verdict: "none", word: null, head, author };
 }
 
-/** Whether this comment carries a real verdict at `head`. Extracted so `verdictAtHead` stays under the
- * complexity ceiling -- the loop was doing the finding and the judging in one function. */
-function verdictHereAt(comment: any, head: string) {
+/** A login compared the way GitHub compares them: case-insensitively. An absent login on either side is not a match. */
+function sameAccount(a: string | null | undefined, b: string | null | undefined) {
+  return !!a && !!b && a.toLowerCase() === b.toLowerCase();
+}
+
+/**
+ * Whether this comment carries a real verdict at `head`. Extracted so `verdictAtHead` stays under the
+ * complexity ceiling -- the loop was doing the finding and the judging in one function.
+ *
+ * agent-org#1381: a REVIEW BODY is a verdict as it stands. A COMMENT is one only when it opens in the reviewer's form
+ * (`CONVENTION_OPENER`) and was not written by the PR's own author, because a reply quoting a refusal is not the refusal.
+ * An author the read did not name is NOT treated as the PR's author: a comment with no `author` still counts, as it did.
+ */
+function verdictHereAt(comment: any, head: string, prAuthor: string | null) {
   const parsed = reviewVerdict(comment?.body ?? "");
   if (parsed.verdict !== "convinced" && parsed.verdict !== "not-convinced") return null;
-  return headMatches(parsed.head, head) ? parsed : null;
+  if (!headMatches(parsed.head, head)) return null;
+  if (comment?.review === true) return parsed;
+  const opener = openerLine(comment?.body ?? "") ?? "";
+  if (!CONVENTION_OPENER.test(opener) || sameAccount(comment?.author, prAuthor)) return null;
+  return parsed;
 }
 
 /**
@@ -149,21 +172,24 @@ function verdictHereAt(comment: any, head: string) {
  * @param {{ comments?: any[] | null, reviews?: any[] | null }} pr
  * @returns {{ body: string, id?: number | string }[]}
  */
-export function verdictBearers(pr: { comments?: any[] | null; reviews?: any[] | null; }): { body: string; id?: number | string; }[] {
-  const timed = (item: any, field: string) =>
-    ({ at: Date.parse(item?.[field] ?? ""), body: item?.body ?? "", id: item?.id });
+export function verdictBearers(pr: { comments?: any[] | null; reviews?: any[] | null; }): { body: string; id?: number | string; author: string | null; review: boolean; }[] {
+  // agent-org#1381: `author` is the login (`gh` gives `{ login }`, a test may give the string), and `review` marks a review body,
+  // which `verdictHereAt` takes as a verdict as it stands. A comment is judged by its opener and its author there.
+  const login = (author: any): string | null => (typeof author === "string" ? author : author?.login ?? null);
+  const timed = (item: any, field: string, review: boolean) =>
+    ({ at: Date.parse(item?.[field] ?? ""), body: item?.body ?? "", id: item?.id, author: login(item?.author), review });
   // A DISMISSED review is a verdict somebody ruled out (agent-org#586): left in, the gate acted on it for as long as
   // it was the newest, ordering rework the ruling said was not owed. Only the state `DISMISSED` leaves; a review with
   // no `state` field (the shape older callers and tests pass) still counts.
   const standing = (r: any) => r?.state !== "DISMISSED";
   const items = [
-    ...(pr?.comments ?? []).map((c: any) => timed(c, "createdAt")),
-    ...(pr?.reviews ?? []).filter(standing).map((r: any) => timed(r, "submittedAt")),
+    ...(pr?.comments ?? []).map((c: any) => timed(c, "createdAt", false)),
+    ...(pr?.reviews ?? []).filter(standing).map((r: any) => timed(r, "submittedAt", true)),
   ];
   const key = (item: { at: number; }) => (Number.isFinite(item.at) ? item.at : -Infinity);
   return items
     .sort((a, b) => (key(a) === key(b) ? 0 : key(a) < key(b) ? -1 : 1))
-    .map(({ body, id }) => ({ body, id }));
+    .map(({ body, id, author, review }) => ({ body, id, author, review }));
 }
 
 /**
@@ -197,7 +223,7 @@ export function verdictBearers(pr: { comments?: any[] | null; reviews?: any[] | 
  * @returns {{ verdict: "convinced" | "not-convinced" | null, by: string | null,
  *             byIsAuthor: boolean | null, id: number | string | null, examined: number }}
  */
-export function verdictAtHead({ comments, head, prAuthor = null }: { comments: { body: string; id?: number | string; }[]; head: string; prAuthor?: string | null; }): {
+export function verdictAtHead({ comments, head, prAuthor = null }: { comments: { body: string; id?: number | string; author?: string | null; review?: boolean; }[]; head: string; prAuthor?: string | null; }): {
     verdict: "convinced" | "not-convinced" | null; by: string | null;
     byIsAuthor: boolean | null; id: number | string | null; examined: number;
 } {
@@ -210,7 +236,7 @@ export function verdictAtHead({ comments, head, prAuthor = null }: { comments: {
   // `convinced` at the same head has changed their mind, not written two verdicts.
   for (let i = comments.length - 1; i >= 0; i -= 1) {
     const c = comments[i];
-    const parsed = verdictHereAt(c, head);
+    const parsed = verdictHereAt(c, head, prAuthor);
     if (!parsed) continue;
     return {
       verdict: parsed.verdict as "convinced" | "not-convinced" | null,
