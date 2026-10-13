@@ -177,6 +177,15 @@ const FAILING_ASSERTION = /AssertionError|^\s*(?:not ok\b|FAIL\b|✖|✗)/;
  * {@link readCiFailure}, is today's classifier, which reads the whole log.
  */
 export const CI_CLASS: { readonly assertionsOnly: boolean } = Object.freeze({ assertionsOnly: true });
+const MAX_ASSERTIONS_NAMED = 5;
+/**
+ * agent-org#1185: THE FAILING ASSERTION LINES of a failure, for the order a same-head re-fail sends. Only the lines that say a TEST failed ({@link FAILING_ASSERTION}), so a passing
+ * test's printed "rate limit" is not quoted; and when the log names no test (a step that failed before any ran) the first error lines are the best the log has, never nothing.
+ */
+export function failingAssertionLines(errorLines: readonly string[]): string[] {
+  const named = errorLines.filter((line) => FAILING_ASSERTION.test(line));
+  return (named.length > 0 ? named : errorLines.filter((line) => !NOT_THE_FAILURE.test(line))).slice(0, MAX_ASSERTIONS_NAMED).map((line) => line.trim());
+}
 const READS_OUTSIDE = /\b(ENOTFOUND|EAI_AGAIN|ECONNRESET|ETIMEDOUT|ECONNREFUSED)\b|getaddrinfo|could not resolve host|unable to access '?https?:/i;
 const RED_CONCLUSIONS = new Set(["failure", "timed_out"]);
 const RUN_AND_JOB = /\/actions\/runs\/(\d+)\/job\/(\d+)/;
