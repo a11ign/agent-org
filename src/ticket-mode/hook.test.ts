@@ -22,13 +22,44 @@ test("a worker opens a draft and nothing past it: ready, merge, review, reviewer
   }
 });
 
-test("every connector is refused, and so is the skill that announces a pull request", () => {
+test("every connector is refused when the machine names none, and so is the skill that announces a pull request", () => {
   assert.equal(toolVerdict("mcp__claude_ai_Linear__save_comment", {}).code, 2);
   assert.equal(toolVerdict("mcp__plugin_slack_slack__slack_send_message", {}).code, 2);
   assert.equal(toolVerdict("Skill", { skill: "post-pr-to-slack" }).code, 2);
   assert.equal(toolVerdict("Skill", { skill: "clean-code-review" }).code, 0, "POSITIVE CONTROL: the review the brief asks for is allowed");
   assert.equal(toolVerdict("Skill", { skill: "nbl-ui:tool-screenshot" }).code, 0, "a machine's own screenshot skill is allowed");
   assert.equal(toolVerdict("Edit", { file_path: "/x" }).code, 0);
+});
+
+const LINEAR_READS = [/^mcp__claude_ai_Linear__(get|list|search|extract)_/];
+
+test("a connector tool the machine names is allowed, and every other connector, a write to the same one included, is still refused", () => {
+  for (const read of ["mcp__claude_ai_Linear__get_issue", "mcp__claude_ai_Linear__list_comments", "mcp__claude_ai_Linear__search_documentation"]) {
+    assert.equal(toolVerdict(read, {}, [], LINEAR_READS).code, 0, read);
+  }
+  for (const refused of ["mcp__claude_ai_Linear__save_issue", "mcp__claude_ai_Linear__delete_attachment", "mcp__plugin_slack_slack__slack_send_message", "mcp__claude_ai_Gmail__create_draft"]) {
+    const verdict = toolVerdict(refused, {}, [], LINEAR_READS);
+    assert.equal(verdict.code, 2, refused);
+    assert.match(verdict.say[0], /tickets\.connectors does not allow/);
+  }
+});
+
+/** A pre-tool-use call for `tool` in a ticket dir holding `connectors` as its copy of the machine's allowed connectors. */
+function withConnectors(connectors: string, tool: string) {
+  const dir = tmpDir("ticket-hook-connectors-");
+  writeFileSync(join(dir, "connectors.json"), connectors);
+  return main(JSON.stringify({ tool_name: tool, tool_input: {} }), ["pre-tool-use", dir]);
+}
+
+test("the hook reads the machine's allowed connectors beside the outcome file, and one it cannot read allows none, out loud", () => {
+  const linear = JSON.stringify(["^mcp__claude_ai_Linear__(get|list)_"]);
+  assert.equal(withConnectors(linear, "mcp__claude_ai_Linear__get_issue").code, 0);
+  assert.equal(withConnectors(linear, "mcp__claude_ai_Linear__save_comment").code, 2);
+  const broken = withConnectors("{not json", "mcp__claude_ai_Linear__get_issue");
+  assert.equal(broken.code, 2);
+  assert.match(broken.say[0], /could not read .*connectors\.json, so every connector is refused/);
+  assert.equal(main(JSON.stringify({ tool_name: "mcp__claude_ai_Linear__get_issue", tool_input: {} }), ["pre-tool-use", tmpDir("ticket-hook-none-")]).code, 2,
+    "no copy at all: every connector is refused");
 });
 
 /** A pre-tool-use call for `command` in a ticket dir holding `deny` as its copy of the machine's refusals. */

@@ -81,6 +81,16 @@ test("each run's brief carries the machine's notes, and its ticket dir a copy of
   const dir = ticketDir(settings, "NBF-1");
   assert.match(readFileSync(join(dir, "brief.md"), "utf8"), /## On this machine\n\nStart apps with `npm run dev:atomic`\./);
   assert.deepEqual(JSON.parse(readFileSync(join(dir, "deny.json"), "utf8")), deny);
+  assert.deepEqual(JSON.parse(readFileSync(join(dir, "connectors.json"), "utf8")), [], "a machine that names no connectors allows none");
+});
+
+test("a run's brief names the connectors the machine allows, and its ticket dir holds the copy the hook reads", async () => {
+  const connectors = ["^mcp__claude_ai_Linear__(get|list|search|extract)_"];
+  const { pool, settings } = setup(1, ["NBF-1"], { connectors });
+  await pool.tick();
+  const dir = ticketDir(settings, "NBF-1");
+  assert.match(readFileSync(join(dir, "brief.md"), "utf8"), /## Connectors\n\nThis machine lets you call/);
+  assert.deepEqual(JSON.parse(readFileSync(join(dir, "connectors.json"), "utf8")), connectors);
 });
 
 test("a ticket's parent joins its brief, quoted, with the parent's files in a folder of their own", async () => {
