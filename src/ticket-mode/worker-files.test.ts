@@ -39,6 +39,20 @@ test("the ticket's files come with the order to read them first, and a ticket wi
   assert.ok(brief([]).includes("## Files from the ticket\n\nNone.\n"));
 });
 
+test("before it commits, a fresh subagent reviews the diff for changed behaviour, and every claim in the body has an assertion run on the base", () => {
+  const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w" });
+  const commit = brief.indexOf("Commit with a conventional commit message");
+  const review = brief.indexOf("start a subagent that has not seen your reasoning");
+  const claims = brief.indexOf("Check what your pull request body will claim.");
+  assert.ok(review > 0 && review < commit, "the review comes before the commit");
+  assert.ok(review < brief.indexOf("run the clean-code-review skill"), "behaviour first, then structure");
+  assert.ok(claims > 0 && claims < commit);
+  for (const part of ["read only", "give it your diff and its base", "a test that fails without the fix", "not a neighbouring value", "Run it on the base", "a fix must fail there", "a kept behaviour must pass there too", "say it is unchecked"]) {
+    assert.ok(brief.includes(part), `the brief says ${part}`);
+  }
+  assert.match(brief, /\n5\. Commit with a conventional commit message\.\n6\. Push the branch/, "the steps stay numbered in order");
+});
+
 test("the worker checks its diff against every criterion and binding decision before it commits", () => {
   const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w" });
   const check = brief.indexOf("Check your diff against what was asked.");
