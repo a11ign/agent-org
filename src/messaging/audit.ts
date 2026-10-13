@@ -1,7 +1,7 @@
 // THE AUDIENCE AUDIT (a11ign/a11ign#4746, #928 row 4 of 5; the detector #4437 names): an `announcement` that asks the chairman something, or an `ask` with no row or
 // record, is a LEDGER INCIDENT. Without it the channel drifts back into the one chat it replaced ("really hard to keep track of what I'm needed for").
 //
-//   announcement-question   an announcement whose text ends a line in `?`, or carries a `needs:chairman` / `answer:` / "reply" request marker (the lists below); a `release:` quotes label names, so it is not read for the markers
+//   announcement-question   an announcement whose text ends a line in `?`, or carries a `needs:chairman` / `answer:` / "reply" request marker (the lists below); a `release:` quotes a change log, so it is not read as asking at all
 //   ask-row                 an ask naming neither a row (`row`) nor the reason its kind has none (`rowLess`): it could not be ticked or listed against anything
 //   ask-record              an ask with no `askId`: `foldAsks` could not tell which ask it was
 //
@@ -52,8 +52,12 @@ export function asksSomething(text: string, markers: readonly string[] = REQUEST
   return endsInQuestion || markers.some((marker) => lowered.includes(marker)) || REPLY_REQUEST.test(text);
 }
 
-/** A release quotes the label names it removed or never applied ("once its answer:ceo is removed"), so in one a label marker is not a request. The `?` and "reply" checks still apply to it. */
-export const markersOf = (line: Line): readonly string[] => (String(line.key).split(":")[0] === "release" ? [] : REQUEST_MARKERS);
+/**
+ * THE one predicate for an announcement's text, read by the guard (`deliver` in `core.ts`) and the detector (`misuseOf`) alike, so they cannot disagree.
+ * A `release:` quotes a change log (label names such as "once its answer:ceo is removed", a "reply" or a `?` in its notes), so it asks nobody and none of the
+ * checks apply to it. Every other key is read for all three.
+ */
+export const announcementAsks = (key: string, text: string): boolean => String(key).split(":")[0] !== "release" && asksSomething(text);
 
 const nonEmpty = (value: unknown): boolean => typeof value === "string" && value.trim() !== "";
 
@@ -82,7 +86,7 @@ function audienceChecked(line: Line, audienceOf: AudienceOf): string | undefined
 export function misuseOf(line: Line, audienceOf: AudienceOf = declaredAudience): Misuse[] {
   const audience = audienceChecked(line, audienceOf);
   const failed: string[] = [];
-  if (audience === AUDIENCE.announcement && asksSomething(String(line.text ?? ""), markersOf(line))) failed.push(HALF.question);
+  if (audience === AUDIENCE.announcement && announcementAsks(String(line.key), String(line.text ?? ""))) failed.push(HALF.question);
   if (audience === AUDIENCE.ask && !nonEmpty(line.row) && !nonEmpty(line.rowLess)) failed.push(HALF.row);
   if (audience === AUDIENCE.ask && !nonEmpty(line.askId)) failed.push(HALF.record);
   return failed.map((half) => ({ half, messageRef: refOf(line), excerpt: excerptOf(line.text) }));
