@@ -11,7 +11,10 @@
 /** The fields of a ticket the board shows. */
 export type ViewTicket = Readonly<{ key: string; title: string; status: string; statusOrder: number; priority: number; project: string | null; parent?: string | null }>;
 
-/** A ticket in the Pick list's tree, with the tickets under it. A `context` node is a parent shown only for its children: it cannot be picked. */
+/**
+ * A ticket in the Pick list's tree, with the tickets under it. A node with tickets under it is a parent: its checkbox picks them, and it is not
+ * picked itself. A `context` node is a parent that is not the person's, shown only for its children.
+ */
 export type TicketNode<T extends ViewTicket = ViewTicket> = Readonly<{ ticket: T; children: readonly TicketNode<T>[]; context?: boolean }>;
 
 /** The fields of a queue entry the board reads. */
@@ -73,12 +76,32 @@ export function groupByStatus<T extends ViewTicket>(tickets: readonly T[], paren
   return [...groups];
 }
 
-/** The person's tickets in a tree, each before the tickets under it. A context node's own ticket is left out: it cannot be picked. */
+/**
+ * The tickets a person can pick in a tree, in its order. Every parent is left out, the person's own and a context node alike, and the tickets
+ * under it are in: an epic is not work for a worker, so picking a parent picks the tickets under it instead.
+ */
 export const flatten = <T extends ViewTicket>(nodes: readonly TicketNode<T>[]): T[] =>
-  nodes.flatMap((n) => [...(n.context ? [] : [n.ticket]), ...flatten(n.children)]);
+  nodes.flatMap((n) => (n.children.length > 0 ? flatten(n.children) : n.context ? [] : [n.ticket]));
+
+/** How many tickets a tree holds, at any depth. */
+export const ticketCount = (nodes: readonly TicketNode[]): number => nodes.reduce((n, node) => n + 1 + ticketCount(node.children), 0);
+
+/** The key of every parent in a tree, at any depth, each before the parents under it. */
+export const parentKeys = (nodes: readonly TicketNode[]): string[] =>
+  nodes.flatMap((n) => (n.children.length > 0 ? [n.ticket.key, ...parentKeys(n.children)] : []));
 
 /** A ticket can be selected when it is not on the queue already. */
 export const selectable = (ticket: ViewTicket, entries: readonly ViewEntry[]): boolean => !entries.some((e) => e.ticket.key === ticket.key);
+
+/**
+ * A parent's checkbox: the keys of the tickets under it, at any depth, that can still be picked, ticked when every one is selected and part
+ * ticked when only some are. A parent with none left to pick has an empty `keys`, and its checkbox is disabled.
+ */
+export function parentTick(node: TicketNode, selected: ReadonlySet<string>, entries: readonly ViewEntry[]): Readonly<{ keys: string[]; checked: boolean; indeterminate: boolean }> {
+  const keys = flatten(node.children).filter((t) => selectable(t, entries)).map((t) => t.key);
+  const picked = keys.filter((key) => selected.has(key)).length;
+  return { keys, checked: keys.length > 0 && picked === keys.length, indeterminate: picked > 0 && picked < keys.length };
+}
 
 /** `values` with `value` added, or taken out when it was there. A new set: the old one is left as it was. */
 export function toggled<T>(values: ReadonlySet<T>, value: T): Set<T> {
