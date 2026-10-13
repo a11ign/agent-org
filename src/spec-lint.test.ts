@@ -430,7 +430,7 @@ test("`readAll` carries the read into the report's inputs through its seam", () 
       now: NOW, stateDir,
       readMergedRepositories: () => [], readHandFixes: () => ({ status: "unknown" }) as never, readUnwaited: () => null as never, readUntiered: () => null as never,
       readDoraReport: () => null, readAgentListing: () => null, readIdleHours: () => null, readOpenRowIncidents: () => null, readInertOptionReading: () => null,
-      readDenials: () => null, readUnderspecifiedStops: (at) => {
+      readDenials: () => null, readSharedRows: () => null, pinBumpOn: () => false, readOpenPrs: () => null, readUnderspecifiedStops: (at) => {
         seen.push(at);
         return underspecifiedReading([]);
       },

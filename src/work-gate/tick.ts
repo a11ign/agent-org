@@ -472,9 +472,11 @@ export function dispatchedLabJobsOrSay(read: typeof readDispatchedLabJobs = read
  * `readRowsOffBoard`, saying on stderr when it could not ask (split out of `main`, which sits on `complexity`'s limit).
  * A refused read emits no order and MUST NOT read as a clean board, so the difference is written where the tick log reads.
  *  @param [pools] where the read leaves the GraphQL pool it saw (#3448)
+ *  @param [run] the `gh` call, the real one unless a test hands it another
  */
-export function rowsOffBoardOrSay(log: (line: string) => void = (line) => process.stderr.write(line), pools: import("../org-health.ts").PoolReading[] = []) {
-  const facts = readRowsOffBoard(defaultRun, pools);
+export function rowsOffBoardOrSay(log: (line: string) => void = (line) => process.stderr.write(line), pools: import("../org-health.ts").PoolReading[] = [],
+  run: typeof defaultRun = defaultRun) {
+  const facts = readRowsOffBoard(run, pools);
   if (facts === null) {
     log("CANNOT ASK which open rows are off Project 1: the read was refused. row-off-board was NOT evaluated "
       + "this tick, and that silence is not a clean board.\n");

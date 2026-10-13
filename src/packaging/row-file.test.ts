@@ -590,6 +590,8 @@ test("#883 ACCEPTANCE, MUTATION TARGET: an unreadable/malformed docs/lane-owners
   let called = false;
   const code = createIssue(argv, {
     spawnGh: () => { called = true; return FILED_URL; },
+    // The overlap reads before the lanes check, refused as CI's token-less `gh` refuses them, so no read reaches GitHub.
+    run: () => { throw new Error("gh exited 4: not logged in"); },
     loadLanesConfig: () => null,
   });
   assert.equal(code, 1);
