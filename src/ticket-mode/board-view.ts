@@ -9,12 +9,16 @@
 // (`isParked`) decide what the board shows and what the pool does, so `queue.ts` and `pool.ts` import them from here rather than restating them.
 
 /** The fields of a ticket the board shows. */
-export type ViewTicket = Readonly<{ key: string; title: string; status: string; statusOrder: number; priority: number; project: string | null }>;
+export type ViewTicket = Readonly<{ key: string; title: string; status: string; statusOrder: number; priority: number; project: string | null; parent?: string | null }>;
+
+/** A ticket in the Pick list's tree, with the tickets under it. A `context` node is a parent shown only for its children: it cannot be picked. */
+export type TicketNode<T extends ViewTicket = ViewTicket> = Readonly<{ ticket: T; children: readonly TicketNode<T>[]; context?: boolean }>;
 
 /** The fields of a queue entry the board reads. */
 export type ViewEntry = Readonly<{
-  ticket: Readonly<{ key: string }>; phase: string; outcome?: Readonly<{ kind: string }>; waiting?: boolean; trackerState?: string;
-  queuedAt?: number; startedAt?: number; finishedAt?: number; workspace?: string; pane?: string;
+  ticket: Readonly<{ key: string }>; phase: string; outcome?: Readonly<{ kind: string; prs?: readonly Readonly<{ url: string }>[] }>; waiting?: boolean;
+  trackerState?: string; pullStates?: Readonly<Record<string, string>>; queuedAt?: number; startedAt?: number; finishedAt?: number; workspace?: string;
+  pane?: string;
 }>;
 
 /** Where a browser keeps the view's settings between visits; `localStorage` in the page. */
@@ -39,15 +43,39 @@ export function projectCounts(tickets: readonly ViewTicket[]): [string, number][
   return [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
 }
 
-/** The tickets grouped by status, in the workflow's order, each group by priority (urgent first, none last). */
-export function groupByStatus(tickets: readonly ViewTicket[]): [string, ViewTicket[]][] {
+/** The Pick list's order: the workflow's, then by priority (urgent first, none last). */
+const pickOrder = (a: ViewTicket, b: ViewTicket): number => {
   const rank = (p: number) => (p === 0 ? 5 : p);
-  const groups = new Map<string, ViewTicket[]>();
-  for (const t of [...tickets].sort((a, b) => a.statusOrder - b.statusOrder || rank(a.priority) - rank(b.priority))) {
-    groups.set(t.status, [...(groups.get(t.status) ?? []), t]);
-  }
+  return a.statusOrder - b.statusOrder || rank(a.priority) - rank(b.priority);
+};
+
+/**
+ * The tickets as a tree, its heads in the Pick list's order. A ticket whose parent is shown sits under that parent, whatever its own status, so
+ * an epic reads with its parts. `parents` are tickets that are not the person's, such as an epic someone else owns: one with a shown ticket
+ * under it heads that ticket as a context node. Any other ticket is a head of its own.
+ */
+export function ticketTree<T extends ViewTicket>(tickets: readonly T[], parents: readonly T[] = []): TicketNode<T>[] {
+  const sorted = [...tickets].sort(pickOrder);
+  const shown = new Set(sorted.map((t) => t.key));
+  const node = (ticket: T): TicketNode<T> => ({ ticket, children: sorted.filter((t) => t.parent === ticket.key).map(node) });
+  const roots = sorted.filter((t) => !t.parent || !shown.has(t.parent));
+  const context = parents.filter((p) => !shown.has(p.key))
+    .map((p): TicketNode<T> => ({ ticket: p, context: true, children: roots.filter((t) => t.parent === p.key).map(node) }))
+    .filter((n) => n.children.length > 0);
+  const underContext = new Set(context.flatMap((n) => n.children.map((c) => c.ticket.key)));
+  return [...context, ...roots.filter((t) => !underContext.has(t.key)).map(node)].sort((a, b) => pickOrder(a.ticket, b.ticket));
+}
+
+/** The tree's heads grouped by their own status, in the Pick list's order. A ticket under a head shows in the head's group, whatever its status. */
+export function groupByStatus<T extends ViewTicket>(tickets: readonly T[], parents: readonly T[] = []): [string, TicketNode<T>[]][] {
+  const groups = new Map<string, TicketNode<T>[]>();
+  for (const head of ticketTree(tickets, parents)) groups.set(head.ticket.status, [...(groups.get(head.ticket.status) ?? []), head]);
   return [...groups];
 }
+
+/** The person's tickets in a tree, each before the tickets under it. A context node's own ticket is left out: it cannot be picked. */
+export const flatten = <T extends ViewTicket>(nodes: readonly TicketNode<T>[]): T[] =>
+  nodes.flatMap((n) => [...(n.context ? [] : [n.ticket]), ...flatten(n.children)]);
 
 /** A ticket can be selected when it is not on the queue already. */
 export const selectable = (ticket: ViewTicket, entries: readonly ViewEntry[]): boolean => !entries.some((e) => e.ticket.key === ticket.key);
@@ -100,8 +128,19 @@ export const RUN_STATUSES: readonly Readonly<{ status: RunStatus; label: string 
 export const HANDED_BACK: ReadonlySet<string> = new Set(["needs-human", "wrong-repo", "no-outcome"]);
 
 /**
- * A run's status. The tracker's word wins once the run has finished: a ticket it completed is done (Linear completes it when its pull request
- * merges) and one it canceled is cancelled, whatever the run ended in. Before that, the outcome decides.
+ * A finished run's status from its pull requests alone, once each has merged or closed: completed when any merged, cancelled when every one
+ * closed unmerged. `null` while one is still open, and for a run with none.
+ */
+export function settledByPulls(entry: ViewEntry): RunStatus | null {
+  const states = (entry.outcome?.prs ?? []).map(({ url }) => entry.pullStates?.[url]);
+  if (states.length === 0 || !states.every((state) => state === "merged" || state === "closed")) return null;
+  return states.includes("merged") ? "completed" : "cancelled";
+}
+
+/**
+ * A run's status. The tracker's word wins once the run has finished: a ticket it completed is done and one it canceled is cancelled, whatever
+ * the run ended in. Then its pull requests: Linear completes a ticket on a merge only where its team's workflow says so, so a run whose pull
+ * requests merged is done even while its ticket is still in progress. Before either, the outcome decides.
  */
 export function runStatus(entry: ViewEntry): RunStatus {
   if (entry.phase === "queued") return "queued";
@@ -109,7 +148,7 @@ export function runStatus(entry: ViewEntry): RunStatus {
   if (entry.trackerState === "completed") return "completed";
   if (entry.trackerState === "canceled" || entry.trackerState === "duplicate") return "cancelled";
   const kind = entry.outcome?.kind ?? "";
-  if (kind === "draft-pr") return "awaiting-review";
+  if (kind === "draft-pr") return settledByPulls(entry) ?? "awaiting-review";
   if (HANDED_BACK.has(kind)) return "needs-you";
   return kind === "stopped" ? "cancelled" : "failed";
 }

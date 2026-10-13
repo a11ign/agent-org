@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
+import { runStatus } from "./board-view.ts";
 import { countTokens, createPool, findTranscript, herdrName, isStartDialog, parseOutcome, ticketDir, ticketFolder, worktreesIn } from "./pool.ts";
 import { emptyQueue, enqueue, finish, retry, setPaused, type Queue } from "./queue.ts";
 import { parseTicketSettings } from "./settings.ts";
@@ -349,6 +350,25 @@ test("the tracker is asked about finished runs only, its answer is recorded, and
   answer = new Error("Linear answered 500");
   await pool.refreshTracker();
   assert.equal(queue.entries.find((e) => e.ticket.key === "NBF-2")!.trackerState, undefined);
+});
+
+test("a run whose pull request merged reads as completed while its ticket is still in progress, and is not asked about again", async () => {
+  const url = "https://github.com/netboxlabs/nbl-ui-platform-libs/pull/775";
+  const asked: string[][] = [];
+  const tracker: TicketSource = {
+    ...source,
+    stateTypes: async (keys) => new Map(keys.map((key) => [key, "started"])),
+    pullStates: async (keys) => { asked.push([...keys]); return new Map([["NBF-1", { [url]: "merged" as const }]]); },
+  };
+  const root = tmpDir("ticket-pool-pulls-");
+  const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox" }, stateDir: join(root, "state") });
+  let queue: Queue = finish(enqueue(emptyQueue(2), [ticket("NBF-1")], { model: "sonnet", effort: "high" }, 0), "NBF-1", { kind: "draft-pr", prs: [{ repo: "r", url }] }, 5);
+  const store = { get: () => queue, set: (next: Queue) => { queue = next; } };
+  const pool = createPool(store, { settings, source: tracker, hook: { node: "/node", bin: "/b" }, herdr: () => "{}", now: () => 9, load: () => ({ load: 0, cores: 1 }), transcriptsRoot: root, wait: async () => {} });
+  await pool.refreshTracker();
+  assert.equal(runStatus(queue.entries[0]), "completed");
+  await pool.refreshTracker();
+  assert.equal(asked.length, 1);
 });
 
 test("a source that cannot read states never marks a run completed", async () => {

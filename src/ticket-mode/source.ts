@@ -26,6 +26,9 @@ export type Ticket = Readonly<{
   parent: string | null;
 }>;
 
+/** A pull request's state as the tracker last saw it. A draft, or one in review, is `open`. */
+export type PullState = "open" | "merged" | "closed";
+
 export interface TicketSource {
   /** Every unfinished ticket assigned to the person whose key this is. Throws when the tracker cannot be asked. */
   assigned(): Promise<readonly Ticket[]>;
@@ -37,9 +40,14 @@ export interface TicketSource {
    */
   download(ticket: Ticket, dir: string): Promise<readonly string[]>;
   /**
-   * Each key's state TYPE in the tracker (`completed`, `canceled`, `started`, ...), for the keys the tracker knows. It is how the board learns a run's
-   * pull requests landed: Linear's GitHub integration moves an issue to a completed state when its pull request merges. A source without it never
-   * marks a run completed. Throws when the tracker cannot be asked.
+   * Each key's state TYPE in the tracker (`completed`, `canceled`, `started`, ...), for the keys the tracker knows. A ticket completed or canceled
+   * settles its run, whatever the run ended in. A source without it never settles a run from its ticket. Throws when the tracker cannot be asked.
    */
   stateTypes?(keys: readonly string[]): Promise<ReadonlyMap<string, string>>;
+  /**
+   * The state of every pull request each key's ticket links, by key and then by the pull request's URL. A merged pull request can sit on a
+   * ticket that is still in progress, because Linear completes a ticket on a merge only where its team's workflow says so. A source without it
+   * leaves a run to its ticket's state. Throws when the tracker cannot be asked.
+   */
+  pullStates?(keys: readonly string[]): Promise<ReadonlyMap<string, Readonly<Record<string, PullState>>>>;
 }

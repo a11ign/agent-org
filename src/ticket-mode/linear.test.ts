@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { LINEAR_API, downloadName, linearSource, readLinearKey, uploadLinks } from "./linear.ts";
+import { LINEAR_API, downloadName, linearSource, pullState, readLinearKey, uploadLinks } from "./linear.ts";
 import type { Ticket } from "./source.ts";
 
 const node = (identifier: string, extra: Record<string, unknown> = {}) => ({
@@ -97,6 +97,27 @@ test("a download keeps its attachment title as its name only when the title is a
   assert.equal(downloadName(2, link, "../../escape.md", "text/markdown"), "attachment-2", "a title with a folder in it names nothing");
   assert.equal(downloadName(2, link, "Screenshot", "image/png"), "attachment-2.png");
   assert.equal(downloadName(1, "https://uploads.linear.app/org/a/two.jpg", null, "image/png"), "attachment-1.jpg", "the link's own extension comes first");
+});
+
+test("pullStates() reads each linked pull request's state by URL from Linear's GitHub attachments, a draft as open, and nothing else", async () => {
+  const merged = "https://github.com/netboxlabs/nbl-ui-platform-libs/pull/775";
+  const draft = "https://github.com/netboxlabs/nbl-ui-netbox/pull/790";
+  const { fetch, requests } = linear([{ data: {
+    k0: { nodes: [{ attachments: { nodes: [
+      { url: merged, sourceType: "github", metadata: { status: "merged", draft: false } },
+      { url: "https://uploads.linear.app/org/a/plan", sourceType: "oauthClient", metadata: {} },
+    ] } }] },
+    k1: { nodes: [{ attachments: { nodes: [{ url: draft, sourceType: "github", metadata: { status: "draft", draft: true } }] } }] },
+    k2: { nodes: [] },
+  } }]);
+  const pulls = await linearSource({ key: "k", fetch }).pullStates!(["NBF-1936", "VE-65", "NBF-9999"]);
+  assert.deepEqual([...pulls], [["NBF-1936", { [merged]: "merged" }], ["VE-65", { [draft]: "open" }]]);
+  assert.equal(requests.length, 1, "one request for the whole batch");
+  assert.deepEqual(JSON.parse(String(requests[0].init.body)).variables, { t0: "NBF", n0: 1936, t1: "VE", n1: 65, t2: "NBF", n2: 9999 });
+});
+
+test("a pull request is merged or closed only on Linear's word, and open otherwise", () => {
+  assert.deepEqual(["merged", "closed", "draft", "open", "inReview", undefined].map(pullState), ["merged", "closed", "open", "open", "open", "open"]);
 });
 
 test("the key comes from the Keychain service or the file the host file names, and an empty one is refused", () => {

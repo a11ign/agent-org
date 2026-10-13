@@ -75,11 +75,13 @@ The org (the gate, rows, the board, the reviewer) decides its own work. Ticket m
 takes them one each. `agent-org ticket:serve` starts a board on `127.0.0.1` and prints its URL, which carries a one-time token.
 
 - **Pick.** Your assigned Linear tickets that are not done or canceled, grouped by status the way Linear shows them, with Select All per
-  group and for the page. Filter by Linear project (several at once) or by search, and fold any status group; both are remembered in the
+  group and for the page. A ticket sits under its parent, whatever its own status. A parent that is not yours, such as an epic someone else
+  owns, heads its children without a checkbox. Filter by Linear project (several at once) or by search, and fold any status group; both are remembered in the
   browser. Choose the model and the effort, then Queue. You do not choose a repository: the worker does.
 - **Board.** Every run in one list, newest activity first, each with a status icon after GitHub's Actions runs, and a filter per status
   with its count: Needs you, In progress, Queued, Awaiting review, Completed, Failed and Cancelled. A run is Completed once the tracker
-  completes its ticket, which Linear does when the ticket's pull request merges; the board asks every two minutes. A run can be removed
+  completes its ticket, or once its pull requests have merged, as Linear's GitHub integration reports them. Linear completes a ticket on a
+  merge only where its team's workflow says so. A run whose pull requests all closed unmerged is Cancelled. The board asks every two minutes. A run can be removed
   while queued, stopped while running, and retried once it has failed. The number of workers at once can be changed live. On a machine
   that sets `tickets.terminal`, a live or parked run has an Open terminal link to its agent's terminal in the browser.
 - **Parked, not closed, when a run needs you.** A run that ends `needs-human`, `wrong-repo` or with no outcome keeps its herdr workspace

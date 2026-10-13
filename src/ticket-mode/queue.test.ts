@@ -6,7 +6,7 @@ import { tmpDir } from "../lib/tmp-fixture.ts";
 import { isParked } from "./board-view.ts";
 import {
   amend, emptyQueue, enqueue, finish, isLive, loadQueue, markResumed, markRunning, markStarting, nextStarts, observe, park, recordRepos,
-  recordTrackerStates, remove, retry, saveQueue, setMax, setPaused, unpark, unsettledKeys, type Queue,
+  recordPullStates, recordTrackerStates, remove, retry, saveQueue, setMax, setPaused, unpark, unsettledKeys, type Queue,
 } from "./queue.ts";
 import type { Ticket } from "./source.ts";
 
@@ -99,6 +99,18 @@ test("finished runs are read from the tracker until it settles their ticket, and
   assert.deepEqual(unsettledKeys(queue), ["NBF-2"], "a completed ticket is not asked about again");
 });
 
+test("a finished run records its pull requests' states, and one they settle is not asked about again", () => {
+  const url = "https://github.com/netboxlabs/nbl-ui-platform-libs/pull/775";
+  let queue: Queue = enqueue(emptyQueue(3), [ticket("NBF-1"), ticket("NBF-2")], { model: "opus", effort: "high" }, 0);
+  queue = finish(queue, "NBF-1", { kind: "draft-pr", prs: [{ repo: "nbl-ui-platform-libs", url }] }, 5);
+  queue = recordPullStates(queue, new Map([["NBF-1", { [url]: "open" as const }], ["NBF-2", { [url]: "merged" as const }]]));
+  assert.equal(queue.entries.find((e) => e.ticket.key === "NBF-2")!.pullStates, undefined, "a queued run takes no pull request states");
+  assert.deepEqual(unsettledKeys(queue), ["NBF-1"], "an open pull request is asked about again");
+  queue = recordPullStates(queue, new Map([["NBF-1", { [url]: "merged" as const }]]));
+  assert.deepEqual(queue.entries.find((e) => e.ticket.key === "NBF-1")!.pullStates, { [url]: "merged" });
+  assert.deepEqual(unsettledKeys(queue), [], "a merged one is not");
+});
+
 test("a parked run keeps its workspace and pane, holds no slot, and is not retried until its workspace is closed", () => {
   let queue = setPaused(enqueue(emptyQueue(1), [ticket("A"), ticket("B")], choice, 1), false);
   queue = markRunning(markStarting(queue, "A", 2), "A", "w1", "w1:p1");
@@ -117,8 +129,9 @@ test("finish drops the workspace and pane, and markResumed makes a parked run li
   const finished = finish(running, "A", { kind: "stopped" }, 5);
   assert.deepEqual([finished.entries[0].workspace, finished.entries[0].pane], [undefined, undefined]);
   assert.equal(markResumed(finished, "A").entries[0].phase, "finished", "a run with no workspace has nothing to resume in");
-  const parked = recordTrackerStates(park(running, "A", { kind: "no-outcome" }, 5), new Map([["A", "started"]]));
+  const parked = recordPullStates(recordTrackerStates(park(running, "A", { kind: "no-outcome" }, 5), new Map([["A", "started"]])), new Map([["A", { u: "open" as const }]]));
   const [a] = markResumed(parked, "A").entries;
-  assert.deepEqual([a.phase, a.outcome, a.finishedAt, a.trackerState, a.workspace, a.pane, a.seenWorking], ["running", undefined, undefined, undefined, "w1", "w1:p1", true]);
+  assert.deepEqual([a.phase, a.outcome, a.finishedAt, a.trackerState, a.pullStates, a.workspace, a.pane, a.seenWorking],
+    ["running", undefined, undefined, undefined, undefined, "w1", "w1:p1", true]);
   assert.equal(unpark(running, "A").entries[0].workspace, "w1", "unpark leaves a live run's workspace alone");
 });

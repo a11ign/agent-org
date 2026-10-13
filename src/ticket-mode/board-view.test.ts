@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  HANDED_BACK, NO_PROJECT, RUN_STATUSES, groupByStatus, isParked, projectCounts, queueLabel, recall, remember, runActions, runStatus, runsShown, selectable, statusCounts, terminalLink, toggled,
+  HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, isParked, projectCounts, queueLabel, recall, remember, runActions, runStatus, runsShown, selectable, statusCounts, terminalLink, toggled,
   visibleTickets, type ViewEntry, type ViewTicket,
 } from "./board-view.ts";
 
@@ -36,7 +36,43 @@ test("project chips count their tickets, most first, then by name", () => {
 test("groups follow the workflow's order, and within a group urgent comes first and no priority last", () => {
   const groups = groupByStatus(TICKETS);
   assert.deepEqual(groups.map(([status]) => status), ["Backlog", "Todo", "In Progress"]);
-  assert.deepEqual(keys(groups[0][1]), ["NBF-2", "NBF-1", "NBF-3"], "priority 1 (urgent) before 3 (medium) before 0 (none)");
+  assert.deepEqual(keys(flatten(groups[0][1])), ["NBF-2", "NBF-1", "NBF-3"], "priority 1 (urgent) before 3 (medium) before 0 (none)");
+});
+
+test("a ticket sits under its shown parent whatever its own status, and one whose parent is not shown stands in its own status", () => {
+  const nested = [
+    { ...t("NBF-1917", "In Progress", 2, 2, null, "Lint rules across the fleet"), parent: null },
+    { ...t("NBF-1936", "Todo", 1, 2, null, "Shared config"), parent: "NBF-1917" },
+    { ...t("NBF-1999", "Backlog", 0, 2, null, "A part of a part"), parent: "NBF-1936" },
+    { ...t("VE-65", "Backlog", 0, 1, null, "Visual Explorer"), parent: "NBF-1917" },
+    { ...t("VAL-11", "Backlog", 0, 2, null, "Validation"), parent: "NBF-1000" },
+  ];
+  const groups = groupByStatus(nested);
+  assert.deepEqual(groups.map(([status, nodes]) => [status, nodes.map((n) => n.ticket.key)]), [["Backlog", ["VAL-11"]], ["In Progress", ["NBF-1917"]]],
+    "only the tickets with no shown parent head a status");
+  const [epic] = groups[1][1];
+  assert.deepEqual(epic.children.map((n) => n.ticket.key), ["VE-65", "NBF-1936"], "children in the workflow's order, then by priority");
+  assert.deepEqual(epic.children[1].children.map((n) => n.ticket.key), ["NBF-1999"], "a grandchild sits under its own parent");
+  assert.deepEqual(keys(flatten(groups[1][1])), ["NBF-1917", "VE-65", "NBF-1936", "NBF-1999"], "each ticket before the ones under it");
+});
+
+test("a parent that is not the person's heads its shown children in its own status, and is not one of the person's tickets", () => {
+  const mine = [
+    { ...t("VE-65", "Backlog", 0, 1, null), parent: "NBF-1917" },
+    { ...t("NBF-1936", "In Progress", 2, 2, null), parent: "NBF-1917" },
+    { ...t("NBF-1", "Backlog", 0, 2, null), parent: null },
+  ];
+  const parents = [
+    { ...t("NBF-1917", "Todo", 1, 2, null, "Lint rules across the fleet"), parent: null },
+    { ...t("NBF-1000", "Todo", 1, 2, null, "No shown child"), parent: null },
+  ];
+  const groups = groupByStatus(mine, parents);
+  assert.deepEqual(groups.map(([status, nodes]) => [status, nodes.map((n) => `${n.ticket.key}${n.context ? " (context)" : ""}`)]),
+    [["Backlog", ["NBF-1"]], ["Todo", ["NBF-1917 (context)"]]], "a parent with no shown child is left out");
+  assert.deepEqual(groups[1][1][0].children.map((n) => n.ticket.key), ["VE-65", "NBF-1936"]);
+  assert.deepEqual(keys(flatten(groups[1][1])), ["VE-65", "NBF-1936"], "the context parent cannot be picked");
+  assert.deepEqual(groupByStatus(mine, [{ ...t("NBF-1", "Backlog", 0, 2, null), parent: null }]).flatMap(([, nodes]) => nodes.filter((n) => n.context)), [],
+    "a parent that is the person's own is never a context node");
 });
 
 test("a ticket already on the queue cannot be selected again", () => {
@@ -78,6 +114,19 @@ test("a finished run's outcome decides its status until the tracker settles the 
   assert.equal(runStatus(run({ outcome: { kind: "crashed" } })), "failed");
   assert.equal(runStatus(run({ outcome: { kind: "stopped" } })), "cancelled");
   assert.equal(runStatus(run({ outcome: { kind: "draft-pr" }, trackerState: "started" })), "awaiting-review", "a ticket still open in the tracker");
+});
+
+test("a run that opened pull requests is settled by them once each has merged or closed, even while its ticket is in progress", () => {
+  const prs = [{ url: "https://github.com/o/a/pull/1" }, { url: "https://github.com/o/b/pull/2" }];
+  const settled = (states: Record<string, string>, trackerState = "started") => runStatus(run({ outcome: { kind: "draft-pr", prs }, pullStates: states, trackerState }));
+  const [a, b] = prs.map(({ url }) => url);
+  assert.equal(settled({ [a]: "merged", [b]: "merged" }), "completed");
+  assert.equal(settled({ [a]: "merged", [b]: "open" }), "awaiting-review", "one still open");
+  assert.equal(settled({ [a]: "merged" }), "awaiting-review", "one the tracker has not reported");
+  assert.equal(settled({ [a]: "merged", [b]: "closed" }), "completed", "some of the work landed");
+  assert.equal(settled({ [a]: "closed", [b]: "closed" }), "cancelled", "none of it landed");
+  assert.equal(settled({ [a]: "merged", [b]: "merged" }, "canceled"), "cancelled", "the tracker's word still wins");
+  assert.equal(runStatus(run({ outcome: { kind: "draft-pr", prs: [] }, pullStates: {} })), "awaiting-review", "a run with no pull requests is not settled by them");
 });
 
 test("the tracker's word wins once it settles the ticket: completed once its pull requests merged, cancelled once it was canceled", () => {
