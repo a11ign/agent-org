@@ -31,6 +31,7 @@ import {
 } from "./wake.ts";
 import { readReviewerRegistry, REVIEWER_REGISTRY_FILE } from "./work-gate.ts";
 import { parityOwner } from "./review-attribution.ts";
+import { INSIDE } from "./review-trust.ts";
 import { sandboxGitEnv } from "./lib/git-env.ts";
 import { REMOVAL_LOG_ENV } from "./worktree-removal.ts";
 import { startedPanes, STUB_STARTED_PANE } from "./packaging/started-pane.ts";
@@ -61,7 +62,7 @@ const TICK_ENTRY = fileURLToPath(new URL("./work-tick.ts", import.meta.url));
 /** The order the gate emits for PR `n`: addressed to `reviewer-<n>`, the name `parityOwner` returns. */
 const reviewOrder = (n: number, cause = "draft-awaiting-verdict") => ({
   session: `reviewer-${n}`, cause, causeKey: `reviewer-${n}/${cause}/pr-${n}/abc12345`,
-  prompt: `Draft #${n} is green with no verdict at its head.`,
+  prompt: `Draft #${n} is green with no verdict at its head.`, trust: INSIDE,
 });
 /** No engineer process runs and no standing address is listed, so a row's spare is named for the ROW: `worker-2131` (#2469). */
 const NO_ENGINEERS = agents({});

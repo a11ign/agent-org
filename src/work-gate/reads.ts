@@ -563,6 +563,10 @@ function prFields(): string {
       + "headRefName,"
       // #3445: `title`, the third rung of `ownsPr` (a title ending in the row's `owner/repo#n`); `labels` is already above, the fourth.
       + "title,"
+      // #1311: `isCrossRepository` AND `headRepository`, on the same call. The reviewer's trust (`review-trust.ts`) is INSIDE only for a
+      // pull request GitHub says is NOT from a fork, so the flag is the one input the decision cannot do without; `headRepository` names
+      // the fork for the record. Two more names on a request already made, like the ones above.
+      + "isCrossRepository,headRepository,"
       // #2209: `mergeStateStatus` AND `mergeable`, BOTH ON THE SAME CALL, because nothing here read whether
       // a pull request CONFLICTS with `main`. #2203 went DIRTY when #2205 merged, was green and approved,
       // and was reported as a credential outage while six Ready rows sat behind it. `gh pr list --json`

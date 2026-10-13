@@ -14,6 +14,7 @@ import assert from "node:assert/strict";
 import { deliver as settlingDeliver, refusalReport, startBudgetDeferrals, START_BUDGET_MS } from "../wake.ts";
 import { describeSpawn, summariseCensus } from "../lib/spawn-census.ts";
 import { startedPanes } from "./started-pane.ts";
+import { INSIDE } from "../review-trust.ts";
 
 const deliver: typeof settlingDeliver = (orders, agents, roster, deps) => settlingDeliver(orders, agents, roster, { ...deps, sleep: () => {} });
 const agents = (spec: Record<string, string>) => Object.entries(spec).map(([label, status]) => ({ label, status }));
@@ -25,7 +26,7 @@ const chairmanRow = (row: number) => ({
 });
 const reviewerOrder = {
   session: "reviewer-18", cause: "draft-awaiting-verdict", causeKey: "reviewer-18/draft-awaiting-verdict/pr-18/abc12345",
-  prompt: "Draft #18 is green with no verdict at its head.",
+  prompt: "Draft #18 is green with no verdict at its head.", trust: INSIDE,
 };
 const promptToCeo = { session: "ceo", cause: "state-reading", causeKey: "ceo/state-reading/1", prompt: "Read the state." };
 const checkoutSeams = {

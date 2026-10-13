@@ -72,8 +72,10 @@ test("(1) the declaration reads `agent-org` as a CODE scope with no tracker of i
 
 const GREEN = [{ name: "ci", status: "COMPLETED", conclusion: "SUCCESS" }];
 const HEAD = "abc12345deadbeefcafe000011112222";
+/** #1311: the pull requests here are the project's own and by a declared lead, so they are INSIDE: the identities are this file's, not the host's. */
+const DECLARED = { exact: ["a11ign-ai-leads"], pattern: [] };
 /** A ready (not draft), green, unreviewed pull request, as `gh pr list` returns it. */
-const readyPr = (number: number) => ({ number, isDraft: false, headRefOid: HEAD, statusCheckRollup: GREEN, author: { login: "a11ign-ai-leads" },
+const readyPr = (number: number) => ({ number, isDraft: false, headRefOid: HEAD, statusCheckRollup: GREEN, isCrossRepository: false, author: { login: "a11ign-ai-leads" },
   comments: [], labels: [], reviews: [], reviewRequests: [] });
 /** A fake of the per-tick reads, deliberately partial: the real ones return more fields than these tests read. */
 type Readings = NonNullable<Parameters<typeof scopeTick>[3]>;
@@ -85,7 +87,7 @@ function ordersOf(key: string, prs: unknown[]) {
   const scope = scopesOf([homeProjectDeclaration()]).find((s) => s.key === key)!;
   const aimedAt: (string | undefined)[] = [];
   const run = (args: string[], repo?: string) => { aimedAt.push(repo); return args[0] === "pr" ? JSON.stringify(prs) : "[]"; };
-  const orders = scopeTick(scope, false, readLanes(scope, run), NO_READINGS).orders as { session: string, cause: string, causeKey: string, prompt: string }[];
+  const orders = scopeTick(scope, false, readLanes(scope, run), NO_READINGS, DECLARED).orders as { session: string, cause: string, causeKey: string, prompt: string }[];
   return { orders, aimedAt };
 }
 

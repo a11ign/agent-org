@@ -13,6 +13,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { CLEAR_SETTLE_MS, deliver as settlingDeliver, MAX_SPAWNS_PER_TICK, hostLoadRefusal } from "./wake.ts";
 import { startedPanes } from "./packaging/started-pane.ts";
+import { INSIDE } from "./review-trust.ts";
 
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
 const noSettle = () => {};
@@ -28,7 +29,7 @@ const engineerOrder = {
 };
 const reviewerOrder = {
   session: "reviewer-18", cause: "draft-awaiting-verdict", causeKey: "reviewer-18/draft-awaiting-verdict/pr-18/abc12345",
-  prompt: "Draft #18 is green with no verdict at its head.",
+  prompt: "Draft #18 is green with no verdict at its head.", trust: INSIDE,
 };
 const promptToCeo = {
   session: "ceo", cause: "state-reading", causeKey: "ceo/state-reading/1", prompt: "Read the state.",

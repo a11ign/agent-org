@@ -29,6 +29,7 @@ import { VERIFY_STATE } from "../verify-stamp.ts";
 import { equivalentHeads } from "../review-verdict.ts";
 // #705: the definition moved to a leaf the hand-fix ledger can also import; re-exported so a reader of it from here is unchanged.
 import { DEPENDENCY_BOT_LOGIN } from "../dependency-bot-login.ts";
+import { AUTOMATION_WRITER_LOGIN, INSIDE, OUTSIDE, declaredIdentities, outsidePrompt, reviewTrustOf, type DeclaredIdentities, type ReviewTrust } from "../review-trust.ts";
 export { DEPENDENCY_BOT_LOGIN } from "../dependency-bot-login.ts";
 // #2619 (child 3d of #69): the `session:` prefix and the `blocked` label, moved to the project's
 // declared vocabulary. (The `"ready"` action `kind` a few lines below is `gh pr ready`'s draft-status
@@ -721,11 +722,8 @@ export function isDependencyBotPr(pr: any): boolean {
   return DEPENDENCY_BOT_LOGIN.test(String(pr?.author?.login ?? ""));
 }
 
-/**
- * The login the writer app opens a pull request as (a11ign/agent-org#1239): the re-pin writer, which regenerates the pins of the workflows
- * `ceo` leads. Read the way {@link DEPENDENCY_BOT_LOGIN} is, so the bare, `app/` and `[bot]` spellings are one author.
- */
-const AUTOMATION_WRITER_LOGIN = /^(?:app\/)?octo-sts(?:\[bot\])?$/i;
+// The login the writer app opens a pull request as (a11ign/agent-org#1239) is `AUTOMATION_WRITER_LOGIN`, in `review-trust.ts`: the trust
+// decision and this order must name the same account, so the constant lives where both can read it.
 
 /**
  * Whether the writer app opened `pr` on an `automation/` branch (a11ign/agent-org#1239). No session claims, labels or stamps one, so the
@@ -1100,7 +1098,7 @@ function approvedAtHead(pr: any, heads: string[]): boolean | null {
  * DECISION, so an approval nobody wants yet is no defect. Keyed on the AUTHORED head, so update-branch does
  * not re-fire it.
  */
-function unreviewedConvincedOrder(pr: any, found: { verdict: string | null; by: string | null; byIsAuthor: boolean | null; }, heads: ReviewHeads) {
+function unreviewedConvincedOrder(pr: any, found: { verdict: string | null; by: string | null; byIsAuthor: boolean | null; }, heads: ReviewHeads, trust: ReviewTrust = INSIDE) {
   if (pr.isDraft) return null;
   if (!armabilityOf({ labels: labelsOf(pr) }).arm) return null;
   if (approvedAtHead(pr, heads.all ?? []) !== false) return null;
@@ -1110,11 +1108,16 @@ function unreviewedConvincedOrder(pr: any, found: { verdict: string | null; by: 
     ? " That comment is signed by the pull request's own author, so it is not a review of anything: "
       + "review the change first, and post the approval only if it stands."
     : "";
+  // #1311: AN OUTSIDE PULL REQUEST IS NOT READ BY A REVIEWER WHO CAN POST. Its sandbox has no credentials and no network, so the approval is
+  // posted by the gate from the verdict block the reviewer writes (`outsidePrompt`), and the instruction to post with the door is withheld.
+  if (trust === OUTSIDE) return { session, cause: "verdict-comment-unreviewed", subject: `pr-${subjectRef(pr.repoKey, pr.number)}`, discriminator: key,
+    prompt: outsidePrompt(pr, head8, reviewerRoleFile(pr)) + authored, causeKey: `${session}/verdict-comment-unreviewed/pr-${subjectRef(pr.repoKey, pr.number)}/${key}`, trust };
   return {
     session,
     cause: "verdict-comment-unreviewed",
     subject: `pr-${subjectRef(pr.repoKey, pr.number)}`,
     discriminator: key,
+    trust,
     prompt: `Ready ${subjectMention(pr)} at \`${head8}\` is green and carries a CONVINCED verdict`
       + `${found.by ? ` from ${found.by}` : ""} as a COMMENT, and no APPROVED review at that head -- `
       + "so GitHub's `reviewDecision` is not APPROVED and it cannot merge. The comment did not become a "
@@ -1201,7 +1204,7 @@ function stampWithholdsReady(pr: any, required: string[] | null) {
 function settledVerdictOrder(pr: any, found: {
         verdict: string | null; by: string | null;
         byIsAuthor: boolean | null;
-    }, heads: ReviewHeads, required: string[] | null = null) {
+    }, heads: ReviewHeads, required: string[] | null = null, trust: ReviewTrust = INSIDE) {
   const { head8, key } = heads;
   if (found.verdict === "convinced" && pr.isDraft) {
     if (found.byIsAuthor === false && stampWithholdsReady(pr, required)) return unverifiedReadyOrder(pr, found, heads);
@@ -1231,7 +1234,7 @@ function settledVerdictOrder(pr: any, found: {
       ...(found.byIsAuthor === false ? { mayRelane: true } : {}),
     };
   }
-  if (found.verdict === "convinced") return unreviewedConvincedOrder(pr, found, heads);
+  if (found.verdict === "convinced") return unreviewedConvincedOrder(pr, found, heads, trust);
   if (found.verdict === "not-convinced") return notConvincedOrder(pr, found, heads);
   // Any other settled verdict -- `unrecognised`, or one the opener did not attribute -- is left alone:
   // re-prompting a reviewer who has already answered costs more than waiting for a human to look.
@@ -1327,7 +1330,8 @@ function unchangedRunningHead(pr: any, wait: "settled" | "running" | null): stri
  * the minutes CI takes is what wrote a `RESET` and re-armed it after each of #3033's four merges. Only `draft-awaiting-verdict` is
  * emitted from that state -- a settled verdict's follow-ups, `draft-convinced-not-ready`'s ready-flip above all, wait for settled checks.
  */
-function draftOrder(pr: any, required: string[] | null = null, baseTip: { sha: string; date: string; } | null = null, rowReviewSkill = false) {
+function draftOrder(pr: any, required: string[] | null = null, baseTip: { sha: string; date: string; } | null = null, rowReviewSkill = false,
+  trust: ReviewTrust = INSIDE) {
   // RED FIRST, and before the green check: a red PR is work whether or not it is a draft, and it can
   // never reach the reviewer lane below, which requires green.
   const red = failingChecksOrder(pr, required, baseTip);
@@ -1342,7 +1346,7 @@ function draftOrder(pr: any, required: string[] | null = null, baseTip: { sha: s
   // (#1244). Waking anyway would re-prompt a reviewer who has already answered; the cost of being wrong
   // the other way is one author-written verdict going unchallenged, which `ceo`'s spot-check of one
   // verdict in five is the control for.
-  if (found.verdict !== null) return wait === "settled" ? settledVerdictOrder(pr, found, heads, required) : null;
+  if (found.verdict !== null) return wait === "settled" ? settledVerdictOrder(pr, found, heads, required, trust) : null;
   // #2416: A PULL REQUEST WAITING FOR AN EXTERNAL RUN IS NOT ASKED FOR A VERDICT, and this is the gate's half of
   // the two routes into a review (the author's is a sentence in `org-routing-and-timers.md`). It sits AFTER
   // the settled-verdict read on purpose: a verdict somebody prompted by hand is still read and acted on, so
@@ -1371,8 +1375,10 @@ function draftOrder(pr: any, required: string[] | null = null, baseTip: { sha: s
     cause: "draft-awaiting-verdict",
     subject: `pr-${subjectRef(pr.repoKey, pr.number)}`,
     discriminator: heads.key,
-    prompt: awaitingVerdictPrompt(pr, heads, rowReviewSkill),
+    prompt: trust === OUTSIDE ? outsidePrompt(pr, heads.head8, reviewerRoleFile(pr)) : awaitingVerdictPrompt(pr, heads, rowReviewSkill),
     causeKey: `${session}/draft-awaiting-verdict/pr-${subjectRef(pr.repoKey, pr.number)}/${heads.key}`,
+    // #1311: THE TRUST IS ON THE ORDER, so the spawn that starts its reviewer reads it from the order and never decides it again.
+    trust,
   };
 }
 
@@ -1383,9 +1389,14 @@ function draftOrder(pr: any, required: string[] | null = null, baseTip: { sha: s
  * @param [now] the clock, omitted is `Date.now()`; or `{ nowMs, recheck, rowReviewSkill }` (agent-org#1187, #1268), which is how `RECHECK_FLAG`'s and `ROW_REVIEW_SKILL_FLAG`'s readings reach the orders without a 5th
  *   positional parameter (`max-params`). `recheck` omitted is OFF, so a caller that passes a bare clock, as every caller did before, gets the ordering it always got.
  */
-export function perPullRequestOrders(prs: any[], required: string[] | null, baseTip?: any, now: number | { nowMs?: number; recheck?: boolean; rowReviewSkill?: boolean; } = Date.now()) {
-  const { nowMs = Date.now(), recheck = false, rowReviewSkill = false } = typeof now === "number" ? { nowMs: now } : now;
-  const asked = prs.map((pr) => ({ pr, order: draftOrder(pr, required, baseTip, rowReviewSkill) }));
+export function perPullRequestOrders(prs: any[], required: string[] | null, baseTip?: any, now: number | { nowMs?: number; recheck?: boolean; rowReviewSkill?: boolean; identities?: DeclaredIdentities; } = Date.now()) {
+  const { nowMs = Date.now(), recheck = false, rowReviewSkill = false, identities } = typeof now === "number" ? { nowMs: now } : now;
+  // #1311: the declared identities are read ONCE per call, and only when a pull request is asked at all; a test passes its own.
+  let declared = identities;
+  const asked = prs.map((pr) => {
+    declared ??= declaredIdentities();
+    return { pr, order: draftOrder(pr, required, baseTip, rowReviewSkill, reviewTrustOf(pr, declared)) };
+  });
   const unreached = asked.filter(({ pr, order }) => order === null && !isCheckless(pr, nowMs)).map(({ pr }) => pr);
   return [...asked.flatMap(({ order }) => order ?? []), ...checklessPrOrders(prs, nowMs), ...unorderedPrOrders(unreached, required, nowMs),
     ...sharedFileOrders(prs, undefined, { recheck }), ...awaitingEvidenceStaleOrders(prs)];

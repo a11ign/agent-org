@@ -19,15 +19,17 @@ const RELATIVE = ".agent-org/roles/reviewer.md";
 const ABSOLUTE = join(HOME_CHECKOUT, RELATIVE);
 
 /** A green, ready pull request with no verdict at its head, the state that earns the reviewer's order. `repoKey` is undefined for the project's own. */
+/** #1311: the author is a declared identity, so the order is the INSIDE one these tests were written against. */
+const DECLARED = { exact: ["worker-1"], pattern: [] };
 const awaiting = (number: number, repoKey?: string) => ({
-  number, headRefOid: HEAD, isDraft: false, statusCheckRollup: GREEN, updatedAt: "2026-10-12T09:50:00Z", mergeable: "MERGEABLE",
+  number, headRefOid: HEAD, isDraft: false, isCrossRepository: false, statusCheckRollup: GREEN, updatedAt: "2026-10-12T09:50:00Z", mergeable: "MERGEABLE",
   mergeStateStatus: "CLEAN", headRefName: `agent/some-slug-${number}`, comments: [], closingIssuesReferences: [],
   author: { login: "worker-1" }, reviewDecision: null, labels: [], reviews: [], ...(repoKey === undefined ? {} : { repoKey, repo: `a11ign/${repoKey}` }),
 });
 
 /** The one reviewer order a pull request earns, with its prompt. */
 function reviewerPromptFor(pr: ReturnType<typeof awaiting>): string {
-  const asked = perPullRequestOrders([pr] as never, null, null, NOW).filter((o: { cause: string }) => o.cause === "draft-awaiting-verdict");
+  const asked = perPullRequestOrders([pr] as never, null, null, { nowMs: NOW, identities: DECLARED }).filter((o: { cause: string }) => o.cause === "draft-awaiting-verdict");
   assert.equal(asked.length, 1, "the pull request earns one reviewer order");
   return (asked[0] as { prompt: string }).prompt;
 }

@@ -54,6 +54,8 @@ import { JUDGMENT_CAUSES, ANSWER_PREFIX, LAUNCH_PLACEHOLDER, REVIEWER_REGISTRY_F
   readWithFirstWaveTogether, runBatch }
   from "./work-gate.ts";
 import { reviewerInstance, subjectMention } from "./review-attribution.ts";
+import { reviewerDoorPath } from "./reviewer-door-path.ts";
+import { INSIDE, OUTSIDE, REVIEWER_GH_CONFIG_DIR, outsideReviewArgs, outsideReviewerEnvironment, postOutsideVerdicts, type DoorRun, type ReviewTrust } from "./review-trust.ts";
 // A LEAF, and where the stall bound lives (#3448): the waker's deferral limit and the signal raised for a wait over it are one number.
 import { ORDER_STALL_MINUTES, SIGNALS, orderStallReading, panePromptReading, orgHealthOrders } from "./org-health.ts";
 // #2688: THE SAME INSTRUMENT #928's OFFLINE REPORT IS BUILT FROM, READ LIVE INSTEAD OF ONLY REPORTED --
@@ -1014,7 +1016,13 @@ export const REVIEWER_CAUSES = Object.freeze(["draft-awaiting-verdict", "verdict
  * engineers get -- self-approval is refused for the author and `a11ign-bot` approves both engineer accounts
  * (`docs/reviewer-instancing.md`, section 1). It is `/home/agent/reviewer/gh` on the host.
  */
-export const REVIEWER_GH_CONFIG_DIR = "/home/agent/reviewer/gh";
+export { REVIEWER_GH_CONFIG_DIR };
+
+/**
+ * What the reviewer registry records about a started reviewer. `trust` is written ONLY for an OUTSIDE one (#1311), so an inside entry keeps
+ * the bytes it always had; an entry with no `trust` is an inside reviewer, which is what every entry written before #1311 is.
+ */
+type ReviewerEntry = { spawnedAt: number; trust?: ReviewTrust; };
 
 /**
  * The environment a reviewer instance's workspace starts with: its own `gh` account; as `A11Y_REVIEWER_SESSION`, the
@@ -1664,8 +1672,8 @@ export function linkReviewDependencies({ path, repoRoot, fs = REAL_LINK_FS }: { 
  * is {@link reviewRef}'s keyed one, and there is no `packages/` to hybrid-link ({@link linkKeyedDependencies}). A keyed instance with
  * no declared clone is a refusal, never the primary's tree. An explicit `repoRoot` wins, as it always did, so a test names its own.
  */
-export function prepareReviewCheckout({ pr, session, git = defaultGit, exists = existsSync, root = REVIEW_CHECKOUT_ROOT,
-  repoRoot: given, link }: { pr: number; session: string; } & CheckoutDeps): { path: string; head: string; note?: string; } | { refusal: string; } {
+export function prepareReviewCheckout({ pr, session, trust = INSIDE, git = defaultGit, exists = existsSync, root = REVIEW_CHECKOUT_ROOT,
+  repoRoot: given, link }: { pr: number; session: string; trust?: ReviewTrust; } & CheckoutDeps): { path: string; head: string; note?: string; } | { refusal: string; } {
   const path = reviewCheckoutPath(session, root);
   const where = reviewTreeSource(session, given, link);
   if ("refusal" in where) return where;
@@ -1679,6 +1687,9 @@ export function prepareReviewCheckout({ pr, session, git = defaultGit, exists = 
     else git("git", ["-C", repoRoot, "worktree", "add", "--quiet", "--force", "--detach", path, head]);
     const at = git("git", ["-C", path, "rev-parse", "HEAD"]).trim();
     if (at !== head || !exists(path)) return { refusal: `no review checkout: ${path} is at ${at || "nothing"}, not PR #${pr}'s head ${head}` };
+    // #1311: AN OUTSIDE TREE GETS NO DEPENDENCIES. `linkDependencies` puts the host's `node_modules` under the tree, and a stranger's pull request
+    // has no business being run against them: the outside reviewer reads the text and runs nothing, so nothing here is linked for it.
+    if (trust === OUTSIDE) return { path, head, note: OUTSIDE_CHECKOUT_NOTE };
     const unlinked = linkDependencies({ path, repoRoot });
     if (typeof unlinked === "string") return { refusal: `no review dependencies for PR #${pr} at ${path} (${unlinked})` };
     return unlinked === null ? { path, head } : { path, head, note: unlinked.note };
@@ -1686,6 +1697,12 @@ export function prepareReviewCheckout({ pr, session, git = defaultGit, exists = 
     return { refusal: `no review checkout for PR #${pr} at ${path} (${firstLine(err)})` };
   }
 }
+
+/**
+ * What an outside reviewer's checkout says in its prompt in place of the dependencies line: nothing is linked and nothing is run, so the
+ * Acceptance is read for what it asks, and not run (#1311).
+ */
+const OUTSIDE_CHECKOUT_NOTE = "Nothing is linked in this checkout and nothing in it is run: the pull request is read, so the Acceptance is read for what it asks and is not run.";
 
 /**
  * #2827: {@link removeReviewCheckout}'s one `git worktree remove`, WITH its line -- `removing` BEFORE the delete, `removed` or
@@ -1737,7 +1754,12 @@ export function removeReviewCheckout({ pr, session, key = "", git = defaultGit, 
  * The order's text, with the sentence that says where the reviewer's tree is and what it cannot do to it. The path
  * named here is one {@link prepareReviewCheckout} has just verified exists, so it is the only path an order names.
  */
-export function withReviewCheckout(order: { prompt: string; session: string; }, checkout: { path: string; head: string; note?: string; }, pr: number) {
+export function withReviewCheckout(order: { prompt: string; session: string; trust?: ReviewTrust; }, checkout: { path: string; head: string; note?: string; }, pr: number) {
+  // #1311: AN OUTSIDE REVIEWER IS NOT SIGNED AS THE REVIEWER. Its sandbox cannot reach the door, and the sentence that names the door and the
+  // reviewer's account would tell it to post with an identity it was never given; its verdict is the block its prompt asks for, and nothing else.
+  if (order.trust === OUTSIDE) return { ...order, prompt: `${order.prompt}\n\nYour checkout of #${pr} is \`${checkout.path}\`, detached at the pull `
+    + `request's head \`${checkout.head.slice(0, 8)}\`. Your sandbox is read-only: review from this path and do not make another checkout. `
+    + `${checkout.note ?? OUTSIDE_CHECKOUT_NOTE}` };
   return { ...order, prompt: `${order.prompt}\n\nYour checkout of #${pr} is \`${checkout.path}\`, detached at the pull `
     + `request's current head \`${checkout.head.slice(0, 8)}\`. It was prepared for you and is re-pointed on every push. Your `
     + "sandbox cannot write `.git`, so `git checkout`, `git fetch` and `git worktree` are refused there: review from "
@@ -1813,21 +1835,32 @@ export function repointedForReviewer(order: { session: string; prompt: string; }
  *
  * @param deps `cwd` is the verified checkout
  */
-function spawnReviewer(order: { session: string; cause?: string; causeKey?: string; reviewDepth?: Depth; }, agents: { label: string; status: string; }[], { run = defaultRun, env, cwd, registry, codexConfig }: {
+function spawnReviewer(order: { session: string; cause?: string; causeKey?: string; reviewDepth?: Depth; trust?: ReviewTrust; }, agents: { label: string; status: string; }[], { run = defaultRun, env, cwd, registry, codexConfig }: {
         run?: (args: string[]) => string; env?: Record<string, string>; cwd: string;
-        registry?: Record<string, { spawnedAt: number; }>; codexConfig?: () => string | null;
+        registry?: Record<string, ReviewerEntry>; codexConfig?: () => string | null;
     }): { label: string; workspace: string; profile: { kind: string; model: string; effort: string; }; } |
 { refusal: string; } {
+  // #1311: AN ORDER THAT DOES NOT SAY WHETHER ITS PULL REQUEST IS INSIDE IS NOT STARTED. The trust is decided where the order is made (`review-trust.ts`);
+  // a spawn that found it missing would be deciding it itself, and it must not be the default.
+  if (order.trust !== INSIDE && order.trust !== OUTSIDE) return { refusal: `no reviewer spawn for "${order.session}": the order does not say whether its pull request is inside the org` };
   const reviewer = spawnableReviewer(order, agents, registry);
   if ("refusal" in reviewer) return reviewer;
-  const pane = openPane(run, reviewer.session, reviewerEnvironment(reviewer.session, env, cwd), cwd);
+  const outside = order.trust === OUTSIDE;
+  const pane = openPane(run, reviewer.session, outside ? outsideReviewerEnvironment(reviewer.session, reviewedRepositoryOf(reviewer.session))
+    : reviewerEnvironment(reviewer.session, env, cwd), cwd);
   if ("refusal" in pane) return pane;
   // #4888: THE DEPTH SETS THE EFFORT the reviewer is started with; absent, the cause's own profile is what it was.
   const effort = depthEffort(order.reviewDepth);
   const invocation = spawnInvocation({ ...order, cause: String(order.cause) }, reviewer.session, pane.pane, effort === undefined ? {} : { effort });
   if ("refusal" in invocation) return { refusal: `${invocation.refusal}${closedNote(run, pane.workspace)}` };
+  // #1311: AN OUTSIDE REVIEWER IS STARTED IN A READ-ONLY SANDBOX, and only codex has the sandbox pair `outsideReviewArgs` replaces. A profile that is not
+  // codex, or one with no sandbox to replace, is refused here rather than started with the sandbox it came with.
+  const sandboxed = invocation.args.some((arg) => arg.startsWith("sandbox_mode="));
+  if (outside && (invocation.profile.kind !== "codex" || !sandboxed)) {
+    return { refusal: `no outside reviewer for "${reviewer.session}": its profile (${invocation.profile.kind}) cannot be started read-only${closedNote(run, pane.workspace)}` };
+  }
   try {
-    run(invocation.args);
+    run(outside ? outsideReviewArgs(invocation.args) : invocation.args);
   } catch (err) {
     return { refusal: `herdr refused to start "${reviewer.session}" (${herdrReason(err)})${codexTrustNote(reviewer.session, err, codexConfig)}`
       + closedNote(run, pane.workspace) };
@@ -1886,7 +1919,7 @@ function codexTrustNote(session: string, err: unknown, read: () => string | null
 }
 
 /** `codexConfig` reads the reviewer's codex config, a seam so a test can hold either answer */
-export type ReviewerDeps = {run: (args: string[]) => string, reviewerEnv?: Record<string, string>, checkout?: CheckoutDeps, registry?: () => Record<string, {spawnedAt: number}>, registerReviewer?: (session: string) => void, memory?: () => string | null, codexConfig?: () => string | null, startHold?: () => string | null};
+export type ReviewerDeps = {run: (args: string[]) => string, reviewerEnv?: Record<string, string>, checkout?: CheckoutDeps, registry?: () => Record<string, ReviewerEntry>, registerReviewer?: (session: string, trust?: ReviewTrust) => void, memory?: () => string | null, codexConfig?: () => string | null, startHold?: () => string | null};
 
 /**
  * WHY NO REVIEW CHECKOUT CAN BE MADE FOR THIS INSTANCE, or `null` when one can (#2618, lifted for a declared key by #2969). A tree is
@@ -1909,15 +1942,23 @@ export function noReviewCheckoutFor(session: string): string | null {
  * fetch costs no process and no order names a path that is not there; a `reviewer-<n>` that exists and is working
  * WAITS for the next tick, because a second workspace under its label would make `route` ambiguous.
  */
-function reviewerTarget(order: { session: string; cause?: string; causeKey?: string; prompt: string; reviewDepth?: Depth; }, live: { label: string; status: string; }[], deps: ReviewerDeps): {
+function reviewerTarget(order: { session: string; cause?: string; causeKey?: string; prompt: string; reviewDepth?: Depth; trust?: ReviewTrust; }, live: { label: string; status: string; }[], deps: ReviewerDeps): {
     label: string; profile?: { kind: string; model: string; effort: string; }; reviewer: true;
     order: { prompt: string; }; workspace?: string;
 } | { refusal: string; } {
+  if (order.trust !== INSIDE && order.trust !== OUTSIDE) return { refusal: `no reviewer for "${order.session}": the order does not say whether its pull request is inside the org` };
   const wrong = reviewerMismatch(order, order.session);
   if (wrong !== null) return { refusal: wrong };
   const withoutTree = noReviewCheckoutFor(order.session);
   if (withoutTree !== null) return { refusal: withoutTree };
   const routed = route(order.session, live, []);
+  // A LIVE REVIEWER KEEPS THE TRUST IT WAS STARTED WITH. A prompt sent to an inside reviewer carries an outside pull request to a pane with the
+  // reviewer's credentials, and the reverse leaves an outside reviewer answering a pull request that was never its to read; so it is refused,
+  // and the reviewer that is there is left to finish or be ended. An entry with no trust is inside, which is what every entry before #1311 was.
+  const started = deps.registry?.()[order.session]?.trust ?? INSIDE;
+  if (!("refusal" in routed) && started !== order.trust) {
+    return { refusal: `reviewer "${order.session}" was started ${started === OUTSIDE ? "outside" : "inside"} the org, and this pull request is ${order.trust === OUTSIDE ? "outside" : "inside"}: not sent` };
+  }
   if ("refusal" in routed) {
     const may = spawnableReviewer(order, live, deps.registry?.());
     if ("refusal" in may) return { refusal: `${routed.refusal}; ${may.refusal}` };
@@ -1933,7 +1974,7 @@ function reviewerTarget(order: { session: string; cause?: string; causeKey?: str
   }
   // THE REF, NOT `orderPullRequest`: that answers `null` for another repository's pull request, and `Number(null)` is 0 (#2969).
   const pr = Number(orderPullRequestRef(order)?.number);
-  const checkout = prepareReviewCheckout({ pr, session: order.session, ...deps.checkout });
+  const checkout = prepareReviewCheckout({ pr, session: order.session, trust: order.trust, ...deps.checkout });
   if ("refusal" in checkout) return checkout;
   const carried = withReviewCheckout(order, checkout, pr);
   if (!("refusal" in routed)) return { label: routed.label, reviewer: true, order: carried };
@@ -1941,7 +1982,7 @@ function reviewerTarget(order: { session: string; cause?: string; causeKey?: str
     registry: deps.registry?.(), codexConfig: deps.codexConfig });
   if ("refusal" in spawn) return { refusal: `${routed.refusal}; ${spawn.refusal}` };
   // REGISTERED BEFORE THE PROMPT, as the engineer path does: a refused prompt leaves the process running.
-  deps.registerReviewer?.(spawn.label);
+  deps.registerReviewer?.(spawn.label, order.trust);
   return { label: spawn.label, profile: spawn.profile, reviewer: true, order: carried, workspace: spawn.workspace };
 }
 
@@ -1954,9 +1995,10 @@ export function reviewerPathsFrom(ledgerPath: string): { registry: string; endin
  * Note that a reviewer instance was STARTED for `session`: the gate's auth detector reads `spawnedAt` to tell a
  * refresh that came after the instance started from one it lived through, and the teardown reads the keys.
  */
-export function registerReviewer(paths: { registry: string; }, session: string, now: number = Date.now()) {
-  const registry = readReviewerRegistry(paths.registry);
-  registry[session] = { spawnedAt: now };
+export function registerReviewer(paths: { registry: string; }, session: string, now: number = Date.now(), trust: ReviewTrust = INSIDE) {
+  const registry: Record<string, ReviewerEntry> = readReviewerRegistry(paths.registry);
+  // #1311: AN OUTSIDE ENTRY SAYS SO; an inside one is written exactly as it was before the trust existed.
+  registry[session] = trust === OUTSIDE ? { spawnedAt: now, trust } : { spawnedAt: now };
   writeFileSync(paths.registry, `${JSON.stringify(registry)}\n`);
 }
 
@@ -5592,7 +5634,7 @@ function noteClaimOrders(claimOrders: ClaimOrders | undefined, { gateOrder, targ
  *   marked `outageNow`: several of THIS TICK's own reads were refused together, so several causes reaching the cap
  *   in the same run share ONE reason and must not each reach `escalateStuck` as if they were N unrelated stuck rows.
  */
-export function deliver(orders: readonly { session: string; causeKey: string; prompt: string; cause?: string; title?: string; replaces?: { branch: string; }[]; resume?: boolean; outageNow?: boolean; startFresh?: boolean; briefRole?: string; }[], agents: { label: string; status: string; }[], roster: string[],
+export function deliver(orders: readonly { session: string; causeKey: string; prompt: string; cause?: string; title?: string; replaces?: { branch: string; }[]; resume?: boolean; outageNow?: boolean; startFresh?: boolean; briefRole?: string; trust?: ReviewTrust; }[], agents: { label: string; status: string; }[], roster: string[],
   { run = defaultRun, record, counts, ineligibleReason, env, registerSpawn, drained, claimable, claimer, memory, hostLoad, claimRefused, oneShot, ceoOneShot,
     launch, reviewerEnv, registerReviewer, checkout, registry, unavailable, sleep, contextRoot, codexConfig, clock, relane, goneSeats, claimOrders, toolchain,
     now = Date.now, serve, accountPause }: {
@@ -5621,6 +5663,13 @@ export function deliver(orders: readonly { session: string; causeKey: string; pr
   // agent-org#1025: ONLY `agent start` IS TIMED, and only the spawn paths below use this `run`; the context and prompt calls keep the caller's.
   const starts = startBudgetOf(now);
   const spawnRun = starts.timed(run);
+  // #1311: THE OUTSIDE VERDICTS ARE POSTED FIRST, from the panes their reviewers wrote, so a verdict is not held behind this tick's other orders. A
+  // failure to read them is one line, not a stopped tick: the verdict is posted on a later tick, since the block stays in the pane.
+  try {
+    settled.push(...postOutsideVerdictsOf(registry?.() ?? {}, run));
+  } catch (err) {
+    settled.push(`outside verdicts not read this tick: ${firstLine(err)}`);
+  }
   for (const gateOrder of orders) {
     // A REPEAT ORDER TO A LIVE WORKER'S CLAIM IS NUMBERED BEFORE IT IS ROUTED (#4070), and the cap's order is the one that is routed, so everything below reads `order`.
     const continuation = continuationOf(gateOrder, live, roster, claimOrders);
@@ -7805,6 +7854,35 @@ export function thrashEscalationPrompt(label: string): string {
 }
 
 /**
+ * THE OUTSIDE REVIEWER'S PANE, read FAR deeper than {@link paneReader}'s forty lines: its verdict block is written at the end of a long review,
+ * and the block is what the gate posts (#1311). The gate reads it once a tick, so the cost is one herdr call per outside reviewer.
+ */
+export function outsidePaneReader(run: (args: string[]) => string): (label: string) => string | null {
+  return (label) => {
+    try {
+      return run(["--session", "org", "agent", "read", label, "--source", "recent", "--lines", "400"]);
+    } catch {
+      return null;
+    }
+  };
+}
+
+/**
+ * #1311: THE GATE POSTS EACH OUTSIDE REVIEWER'S VERDICT, outside the sandbox, from the pane the reviewer wrote it in. It reads the registry for
+ * the outside entries, and only those: an inside reviewer posts its own verdict through the door as it always did. The door runs with the
+ * reviewer's identity (`reviewerEnvironment`), which the sandboxed reviewer never had.
+ */
+export function postOutsideVerdictsOf(registry: Record<string, ReviewerEntry>, run: (args: string[]) => string, doorRun?: DoorRun): string[] {
+  const outside = Object.entries(registry).flatMap(([session, entry]) => {
+    if (entry.trust !== OUTSIDE) return [];
+    const pr = reviewerInstance(session)?.number ?? null;
+    return pr === null ? [] : [{ session, pr }];
+  });
+  if (outside.length === 0) return [];
+  return postOutsideVerdicts({ outside, read: outsidePaneReader(run), env: (session) => reviewerEnvironment(session), door: reviewerDoorPath(), run: doorRun });
+}
+
+/**
  * A pane's recent OUTPUT, or `null` for anything herdr will not say. `herdr agent read <name>` is the reading, and it is what the row asked
  * to be read FIRST: it addresses the agent by its label (no workspace-and-pane walk), returns the terminal's own recent scrollback, and costs
  * one process per idle session. `--source recent` and not `detection`, which is herdr's classifier's own excerpt and says `idle`.
@@ -8550,7 +8628,7 @@ async function main() {
     toolchain: rebuildCheckOn() ? { reason: (tree, install) => worktreeToolchainReason(tree, { install }), refused: sayToolchainRefusal() } : undefined,
     oneShot: createOrchestratorOneShot({ readRow: readRowForTier }), ceoOneShot: createCeoOneShot({ readRow: readRowForTier }),
     memory: spawnMemoryGate(), hostLoad: readHostLoad, claimer: claimerFor(spares, ledgerPath, hostLayout, escalatedRoutes(claimOrdersText(ledgerPath), routes)), launch: hostLayout,
-    registerReviewer: (session) => registerReviewer(reviewerPathsFrom(ledgerPath), session),
+    registerReviewer: (session, trust) => registerReviewer(reviewerPathsFrom(ledgerPath), session, Date.now(), trust),
     registry: () => readReviewerRegistry(reviewerPathsFrom(ledgerPath).registry) });
   finishTick({ handed, sent, gateRefused: [...gateRefused, ...releasesNotDone], stuck, outaged, ledgerPath, unavailable, settled });
 }

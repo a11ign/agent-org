@@ -17,8 +17,10 @@ const NOW = Date.parse("2026-10-13T10:20:00Z");
 const HEAD = "1268face1268face1268face1268face1268face";
 const GREEN = [{ name: "gate", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-10-13T10:00:00Z" }];
 const RELATIVE = ".agent-org/roles/reviewer.md";
+/** #1311: the author is a declared identity, so the order is the INSIDE one these tests were written against. */
+const DECLARED = { exact: ["worker-1"], pattern: [] };
 const awaiting = (number: number, repoKey?: string) => ({
-  number, headRefOid: HEAD, isDraft: false, statusCheckRollup: GREEN, updatedAt: "2026-10-13T09:50:00Z", mergeable: "MERGEABLE",
+  number, headRefOid: HEAD, isDraft: false, isCrossRepository: false, statusCheckRollup: GREEN, updatedAt: "2026-10-13T09:50:00Z", mergeable: "MERGEABLE",
   mergeStateStatus: "CLEAN", headRefName: `agent/some-slug-${number}`, comments: [], closingIssuesReferences: [],
   author: { login: "worker-1" }, reviewDecision: null, labels: [], reviews: [], ...(repoKey === undefined ? {} : { repoKey, repo: `a11ign/${repoKey}` }),
 });
@@ -29,22 +31,22 @@ const promptOf = (orders: unknown[]): string => {
 };
 
 test("flag OFF (omitted or false): the order is the old sentence with the contradiction removed and names no skill", () => {
-  const omitted = promptOf(perPullRequestOrders([awaiting(1268)] as never, null, null, NOW));
-  const off = promptOf(perPullRequestOrders([awaiting(1268)] as never, null, null, { nowMs: NOW, rowReviewSkill: false }));
+  const omitted = promptOf(perPullRequestOrders([awaiting(1268)] as never, null, null, { nowMs: NOW, identities: DECLARED }));
+  const off = promptOf(perPullRequestOrders([awaiting(1268)] as never, null, null, { nowMs: NOW, identities: DECLARED, rowReviewSkill: false }));
   assert.equal(omitted, off);
   assert.ok(off.endsWith(`Review it per ${RELATIVE} and post the verdict as it says.`), off);
   assert.doesNotMatch(off, /leave one comment|row-review/, "the reviewer role file says to post no comment, so the order may not ask for one, whatever the flag says");
 });
 
 test("flag ON: the order names `row-review` and sends the verdict to the role file's way of posting", () => {
-  const on = promptOf(perPullRequestOrders([awaiting(1268)] as never, null, null, { nowMs: NOW, rowReviewSkill: true }));
+  const on = promptOf(perPullRequestOrders([awaiting(1268)] as never, null, null, { nowMs: NOW, identities: DECLARED, rowReviewSkill: true }));
   assert.ok(on.endsWith(`Review it with the \`row-review\` skill, then post the verdict per ${RELATIVE}.`), on);
   assert.doesNotMatch(on, /leave one comment/);
 });
 
 test("flag ON differs from OFF in that last sentence only: the same state, the same head and the same key", () => {
-  const [off] = perPullRequestOrders([awaiting(1268)] as never, null, null, { nowMs: NOW }) as { prompt: string; causeKey: string; discriminator: string; }[];
-  const [on] = perPullRequestOrders([awaiting(1268)] as never, null, null, { nowMs: NOW, rowReviewSkill: true }) as typeof off[];
+  const [off] = perPullRequestOrders([awaiting(1268)] as never, null, null, { nowMs: NOW, identities: DECLARED }) as { prompt: string; causeKey: string; discriminator: string; }[];
+  const [on] = perPullRequestOrders([awaiting(1268)] as never, null, null, { nowMs: NOW, identities: DECLARED, rowReviewSkill: true }) as typeof off[];
   assert.equal(on.causeKey, off.causeKey);
   assert.equal(on.discriminator, off.discriminator);
   const stem = (p: string) => p.slice(0, p.indexOf("Review it "));
@@ -53,8 +55,8 @@ test("flag ON differs from OFF in that last sentence only: the same state, the s
 
 test("a keyed repository's reviewer is sent to the role file under the project root either way", () => {
   const keyed = join(HOME_CHECKOUT, RELATIVE);
-  assert.ok(promptOf(perPullRequestOrders([awaiting(1139, "agent-org")] as never, null, null, { nowMs: NOW, rowReviewSkill: true })).endsWith(`then post the verdict per ${keyed}.`));
-  assert.ok(promptOf(perPullRequestOrders([awaiting(1139, "agent-org")] as never, null, null, { nowMs: NOW })).endsWith(`Review it per ${keyed} and post the verdict as it says.`));
+  assert.ok(promptOf(perPullRequestOrders([awaiting(1139, "agent-org")] as never, null, null, { nowMs: NOW, identities: DECLARED, rowReviewSkill: true })).endsWith(`then post the verdict per ${keyed}.`));
+  assert.ok(promptOf(perPullRequestOrders([awaiting(1139, "agent-org")] as never, null, null, { nowMs: NOW, identities: DECLARED })).endsWith(`Review it per ${keyed} and post the verdict as it says.`));
 });
 
 // --- the flag's reading, where the orders are decided ----------------------------------------------------------------------
@@ -76,7 +78,7 @@ test("rowReviewSkillFlagOn: a caller's reading wins; otherwise the canary state'
 test("`decide` carries the reading into the order: the flag on in `decide` is the skill named in the reviewer's order", () => {
   // THE MUTANT: dropping `rowReviewSkill:` from `decide`'s `perPullRequestOrders` call keeps every direct call above green and the production order unchanged.
   const reviewerPrompt = (rowReviewSkill: boolean) => {
-    const orders = decide({ prs: [awaiting(1268)], readyRows: [], nowMs: NOW, recheck: false, rowReviewSkill } as never) as { cause: string; prompt: string; }[];
+    const orders = decide({ prs: [awaiting(1268)], readyRows: [], nowMs: NOW, recheck: false, rowReviewSkill, identities: DECLARED } as never) as { cause: string; prompt: string; }[];
     return promptOf(orders);
   };
   assert.match(reviewerPrompt(true), /`row-review` skill/);

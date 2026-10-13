@@ -42,6 +42,7 @@ import { REVIEW_STATE, reviewStateOf } from "./pr-state.ts";
 import { EXIT, branchesToReplace, conditionalFor, defaultRun, holdTickBudget, inRepo, isGhRun, readArming, readClaimedRowComments, readElsewherePrs, readOpenRows,
   readPromotableRows, readPrs, readReadyRows, readWithFirstWaveTogether, repoNow, restReadsOfTick, runBatch, standingFor, isGateProcess } from "./reads.ts";
 import { type Budget, budgetLine, restConditionalOn, tickBudget } from "../gh-conditional.ts";
+import type { DeclaredIdentities } from "../review-trust.ts";
 import { claimedRowAmendedOrders } from "./causes/rows-amended.ts";
 import { answerGivenOrders, answerGivenOrdersOrNone, answerOrders, bareAnswerLabelOrders, bareAnswerOrdersOrNone, blockedReferentOrders,
   endedSessionLabels, liveWorkspaceLabels, rowsOwingAnswers } from "./causes/rows-answers.ts";
@@ -263,7 +264,7 @@ export function blockerClearedReading(rows: any[], today: string = todayIso(), n
  */
 export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = [], prFiles = [],
   drain = false, required = null, epics = [], answerOwed = [], openRows = [], unarmed = null,
-  claimedComments = [], rowBranches, branchPrs, hostDrift, primaryDrift, closings, claimFacts, trunkRed, baseTip, claimStalls, offBoard, key, repo, callCountSignals, bareAnswerLabels, labJobs, claimRefusals, nowMs, recheck, rowReviewSkill, answerGiven, engineerStarts, projectDeclaration, shareLog, shareMemory, offerHierarchy, waitFacts }: {
+  claimedComments = [], rowBranches, branchPrs, hostDrift, primaryDrift, closings, claimFacts, trunkRed, baseTip, claimStalls, offBoard, key, repo, callCountSignals, bareAnswerLabels, labJobs, claimRefusals, nowMs, recheck, rowReviewSkill, answerGiven, engineerStarts, projectDeclaration, shareLog, shareMemory, offerHierarchy, waitFacts, identities }: {
         prs: any[]; readyRows: any[]; promotableRows?: any[]; chairmanBlocked?: any[]; nowMs?: number; recheck?: boolean; rowReviewSkill?: boolean;
         prFiles?: { number: number; files: string[]; changedFiles: number; }[];
         drain?: boolean; required?: string[] | null; epics?: any[]; answerOwed?: any[];
@@ -283,6 +284,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
         engineerStarts?: { at: number; kind: string; }[]; projectDeclaration?: Parameters<typeof productRegionsOf>[0]; shareLog?: (line: string) => void; shareMemory?: { stateDir: string; now?: number; };
         offerHierarchy?: OfferHierarchy;
         waitFacts?: import("../wait-condition.ts").WaitFacts | null; // #1075: the facts a ready row's body `Waiting-for:` is read against
+        identities?: DeclaredIdentities; // #1311: who the org declares. OMITTED READS THE HOST (`declaredIdentities()`); a test passes its own so it does not depend on the machine
     }): {
     session: string; cause: string; subject: string; discriminator: string;
     prompt: string; causeKey: string;
@@ -305,7 +307,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // #2470/#2711/#2729: A CLAIM THAT DOES NOT MOVE, A BARE `answer:` LABEL ON IT, OR A LAB JOB IT DISPATCHED THAT HAS ENDED -- all address the row's own holder, so all outrank every cause offering NEW work.
   orders.push(...stallOrdersOrNone(claimStalls), ...bareAnswerOrdersOrNone(bareAnswerLabels), ...answerGivenOrdersOrNone(answerGiven), ...labJobFinishedOrders(openRows, labJobs, Date.now()));
 
-  orders.push(...perPullRequestOrders(prs, required, baseTip, { nowMs, recheck: recheckFlagOn(recheck), rowReviewSkill: rowReviewSkillFlagOn(rowReviewSkill) }), ...closesUnresolvedOrders(prs)); // #2823 beside them; #3092 the checkless
+  orders.push(...perPullRequestOrders(prs, required, baseTip, { nowMs, recheck: recheckFlagOn(recheck), rowReviewSkill: rowReviewSkillFlagOn(rowReviewSkill), identities }), ...closesUnresolvedOrders(prs)); // #2823 beside them; #3092 the checkless
   // #2031: AHEAD OF THE OFFER, AND IT IS THE SAME READING THAT WITHHELD IT. `partitionUnclaimed` shelves
   // the row on `rowBranches` and this emits the cause that names the branch -- one condition, one read,
   // said once as a withholding and once as a question. Ahead of `rowOrders` for the ordering reason the
@@ -582,7 +584,7 @@ function repositoryNote(scope: Scope) {
  * #4386: `home` is the PRIMARY tracker's open rows and repository, which a scope with NO tracker of its own (agent-org's) takes its pull requests' owners from.
  * @returns `defects`: the pull requests the ladder could not own though they name a live claimant; `trunkRed`: the scope's `main` as read, for the failure ledger (#4475), and `repo`: the code repository it is the `main` of (agent-org#674: a green reading carries no repository of its own, and the ledger ends a standing red by it)
  */
-export function scopeTick(scope: Scope, drain: boolean, read: ReturnType<typeof readLanes> & { siblingPrs?: any[]; home?: HomeRows; } = readLanes(scope), readings: { code: typeof codeReadings; tracker: (lists: { allOpen: any[]; rows: any[]; }) => Omit<ReturnType<typeof trackerReadings>, "chairmanRows"> & { chairmanRows?: Set<number>; }; } = { code: codeReadings, tracker: trackerReadings }): { orders: any[]; blocked: any[]; refused: string[]; defects: ResolverDefect[]; trunkRed: ReturnType<typeof readScopeTrunkRed>; repo: string | undefined; } {
+export function scopeTick(scope: Scope, drain: boolean, read: ReturnType<typeof readLanes> & { siblingPrs?: any[]; home?: HomeRows; } = readLanes(scope), readings: { code: typeof codeReadings; tracker: (lists: { allOpen: any[]; rows: any[]; }) => Omit<ReturnType<typeof trackerReadings>, "chairmanRows"> & { chairmanRows?: Set<number>; }; } = { code: codeReadings, tracker: trackerReadings }, identities?: DeclaredIdentities): { orders: any[]; blocked: any[]; refused: string[]; defects: ResolverDefect[]; trunkRed: ReturnType<typeof readScopeTrunkRed>; repo: string | undefined; } {
   const { prs, readyRows, promotableRows, chairmanBlocked, openRows } = read;
   const refused = [
     ...(prs === null ? [`the pull-request list of ${scope.code?.repo}`] : []),
@@ -604,7 +606,7 @@ export function scopeTick(scope: Scope, drain: boolean, read: ReturnType<typeof 
     openRows: allOpen, claimedComments: tracker.claimedComments, unarmed: code.unarmed, closings: tracker.closings, trunkRed: code.trunkRed,
     // #1085: a keyed tracker's chairman rows are offered first, as a home row's are (#4524); a scope with no tracker has none to ask about
     offerHierarchy: tracker.chairmanRows === undefined ? undefined : { chairmanRows: tracker.chairmanRows },
-    key: scope.key, repo: scope.code?.repo ?? scope.tracker?.repo });
+    key: scope.key, repo: scope.code?.repo ?? scope.tracker?.repo, identities });
   return { orders: orders.map((order) => ({ ...order, prompt: `${order.prompt}${repositoryNote(scope)}` })),
     blocked: partitionUnclaimed(rows, prFiles, { rowBranches: null, openRows: allOpen }).blocked, refused, defects: owned.defects, trunkRed: code.trunkRed, repo: scope.code?.repo };
 }

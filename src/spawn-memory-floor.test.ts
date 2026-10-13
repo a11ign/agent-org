@@ -22,6 +22,7 @@ import {
 } from "./spawn-memory-floor.ts";
 import { DEFAULT_MEMORY_MAX } from "@a11ign/toolchain/lib/test-memory-cap";
 import { deliver } from "./wake.ts";
+import { INSIDE } from "./review-trust.ts";
 import { startedPanes, STUB_STARTED_PANE } from "./packaging/started-pane.ts";
 
 const KB_PER_MB = 1024;
@@ -45,7 +46,7 @@ const ROW_ORDER = {
 };
 const reviewOrder = (n: number) => ({
   session: `reviewer-${n}`, cause: "draft-awaiting-verdict", causeKey: `reviewer-${n}/draft-awaiting-verdict/pr-${n}/abc12345`,
-  prompt: `Draft #${n} is green with no verdict at its head.`,
+  prompt: `Draft #${n} is green with no verdict at its head.`, trust: INSIDE,
 });
 
 /** A `herdr` that records every call and answers `workspace create` as the live org does. */

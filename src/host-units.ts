@@ -38,6 +38,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { AppIdentity } from "./app-token.ts";
+import { reviewerDoorPath } from "./reviewer-door-path.ts";
 import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { LATEST } from "./lib/release-tag.ts";
 import { installPendingFindings } from "./update-tool.ts";
@@ -2299,15 +2300,8 @@ export function tickAppRoleSilent({ host = homeHostConfig(), now = Date.now(), r
 export const REVIEWER_DOOR_SOURCE = fileURLToPath(new URL("./reviewer/pr-review-verdict.sh", import.meta.url));
 const REVIEWER_DOOR_INSTALLER = fileURLToPath(new URL("./reviewer/install-reviewer-bin.sh", import.meta.url));
 
-/**
- * Where the door RUNS from: `$A11Y_REVIEWER_BIN` else `<home>/reviewer/bin`, the installer's own default, which a test reads out of
- * the script. The directory the reviewers' execpolicy names.
- * @param {ShippedDeps & { reviewerBin?: string }} [deps]
- */
-export function reviewerDoorPath(deps: ShippedDeps & { reviewerBin?: string; } = {}) {
-  const bin = deps.reviewerBin ?? process.env.A11Y_REVIEWER_BIN ?? join((deps.host ?? homeHostConfig()).home, "reviewer", "bin");
-  return join(bin, "pr-review-verdict");
-}
+// `reviewerDoorPath` lives in a leaf the gate can import without this module's git-history reads (#1311); re-exported here.
+export { reviewerDoorPath };
 
 /**
  * Is the installed door the shipped one: `CURRENT`, `DRIFTED` (present and different), `NOT INSTALLED`, or `SOURCE UNREADABLE` --

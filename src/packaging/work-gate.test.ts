@@ -5433,11 +5433,13 @@ const verdictAt = (n: number, oid: string, word: string) =>
   ({ body: `Review of #${n} at \`${oid.slice(0, 8)}\`, by \`reviewer\`: ${word}.` });
 
 /** A green, NON-draft pull request -- the shape #2104 had -- with an optional commit chain attached. */
+// #1311: a same-repository pull request by a declared worker is INSIDE; the identities are the test's own, not the host's.
+const DECLARED = { exact: ["a11ign-ai-workers"], pattern: [] };
 function readyPr(n: number, head: string, extra: Record<string, unknown> = {}) {
-  return { number: n, isDraft: false, headRefOid: head, statusCheckRollup: GREEN,
+  return { number: n, isDraft: false, headRefOid: head, statusCheckRollup: GREEN, isCrossRepository: false,
     author: { login: "a11ign-ai-workers" }, comments: [], labels: [{ name: "session:worker-judge" }], ...extra };
 }
-const ordersFor = (pr: unknown) => decide({ prs: [pr], readyRows: [] }) as
+const ordersFor = (pr: unknown) => decide({ prs: [pr], readyRows: [], identities: DECLARED }) as
   { cause: string, session: string, causeKey: string, prompt: string }[];
 
 test("#2176 a green NON-DRAFT with no verdict at its head wakes its parity reviewer", () => {

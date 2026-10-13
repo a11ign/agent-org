@@ -17,6 +17,7 @@ import { ACCOUNT_LIMIT_FLAG, UNREADABLE_RECORD, accountLimitFlag, accountLimitLo
   writeAccountLimits, ACCOUNT_LIMIT_FILE, type AccountLimit } from "./account-limit.ts";
 import { claimStalledOrders } from "./claim-stall.ts";
 import { deliver as settlingDeliver } from "./wake.ts";
+import { INSIDE } from "./review-trust.ts";
 import { startedPanes } from "./packaging/started-pane.ts";
 import { CANARY_STATE_FILE, emptyCanaryState, withMachineryFlag, type CanaryState } from "./org-health.ts";
 
@@ -38,7 +39,7 @@ const checkout = {
 
 const engineerOrder = { session: "engineers", cause: "ready-row-unclaimed", causeKey: "engineers/ready-row-unclaimed/2131", prompt: "Ready row #2131 is unclaimed." };
 const decisionOrder = { session: "ceo", cause: "state-reading", causeKey: "ceo/state-reading/1", prompt: "Decide the open question." };
-const reviewOrder = { session: "reviewer-18", cause: "draft-awaiting-verdict", causeKey: "reviewer-18/draft-awaiting-verdict/pr-18/abc12345", prompt: "Draft #18 is green with no verdict at its head." };
+const reviewOrder = { session: "reviewer-18", cause: "draft-awaiting-verdict", causeKey: "reviewer-18/draft-awaiting-verdict/pr-18/abc12345", prompt: "Draft #18 is green with no verdict at its head.", trust: INSIDE };
 
 /** A herdr that opens a workspace and starts whatever it is asked to, recording every call. */
 function recordingHerdr() {

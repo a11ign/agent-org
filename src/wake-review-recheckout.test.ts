@@ -20,6 +20,7 @@ import { join } from "node:path";
 import { deliver, deliverHandoffs, handoffId, repointedForReviewer } from "./wake.ts";
 import { promptOrQueue, STANCE, EXIT } from "./prompt-session.ts";
 import { startedPanes } from "./packaging/started-pane.ts";
+import { INSIDE } from "./review-trust.ts";
 
 const REVIEW_ROOT = "/reviews-root";
 const PRIMARY = "/primary";
@@ -59,7 +60,7 @@ function reviewerAtFirstHead(pr: number, co: ReturnType<typeof fakeCheckout>) {
   const sent: string[][] = [];
   const pane = startedPanes();
   const out = deliver([{ session: `reviewer-${pr}`, cause: "draft-awaiting-verdict",
-    causeKey: `reviewer-${pr}/draft-awaiting-verdict/pr-${pr}/abc12345`, prompt: `Draft #${pr} is green.` }],
+    causeKey: `reviewer-${pr}/draft-awaiting-verdict/pr-${pr}/abc12345`, prompt: `Draft #${pr} is green.`, trust: INSIDE }],
     agents({}), [], { run: (args) => { sent.push(args); return pane(args) ?? JSON.stringify({ result: { root_pane: { pane_id: "wB:p1" },
       workspace: { workspace_id: "wB" } } }); }, checkout: co.seams, reviewerEnv: {}, registerReviewer: () => {} });
   assert.equal(out.refused.length, 0, out.refused.join(";"));
@@ -74,7 +75,7 @@ test("#2771 (1a): a tick-delivered order about an ALREADY-LIVE reviewer's own pu
   for (const push of [2, 3]) {
     co.push(2754);
     const out = deliver([{ session: "reviewer-2754", cause: "pr-checks-failing", causeKey: `reviewer-2754/pr-checks-failing/pr-2754/push${push}`,
-      prompt: "Re-review at the new head." }], agents({ "reviewer-2754": "idle" }), [],
+      prompt: "Re-review at the new head.", trust: INSIDE }], agents({ "reviewer-2754": "idle" }), [],
       { run: (args) => { prompts.push(args[args.length - 1]); return "{}"; }, checkout: co.seams });
     assert.deepEqual(out.refused, []);
     assert.equal(treeOf(co, 2754), headOf(2754, push), `after push ${push} the tree is at that head, not the first`);

@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CiFailure } from "./ci-failure-class.ts";
 import type { DepthState } from "./review-depth.ts";
+import { INSIDE } from "./review-trust.ts";
 
 // A RECORDED PROJECT AND A HOST THAT DECLARES NO PROVIDER, set BEFORE the tool is imported (`claimed-region-overlap.test.ts`'s shape): `wake.ts` resolves the project's declaration at
 // import, and the process tests below inherit this environment, so a host with a real `triage` block would have these ticks ask the REAL provider with the real key.
@@ -176,7 +177,7 @@ test("withCiFailureClass: no more than ENRICH_AHEAD orders are read in a tick", 
   assert.equal(reads, ENRICH_AHEAD);
 });
 
-const REVIEW_ORDER = { session: "reviewer-9", cause: "draft-awaiting-verdict", causeKey: "reviewer-9/draft-awaiting-verdict/pr-9/abc12345", prompt: "Draft #9 is green." };
+const REVIEW_ORDER = { session: "reviewer-9", cause: "draft-awaiting-verdict", causeKey: "reviewer-9/draft-awaiting-verdict/pr-9/abc12345", prompt: "Draft #9 is green.", trust: INSIDE };
 const stateOf = (paths: string[]): DepthState => ({ paths, added: 1, removed: 0, title: "t" });
 
 test("withReviewDepth: a depth code chose and a depth the provider chose ride the order and set the effort; a fallback leaves it as written", async () => {

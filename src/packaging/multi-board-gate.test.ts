@@ -29,7 +29,9 @@ import { parityOwner, reviewerSeat, reviewerInstance, reviewerInstanceNumber, se
 const GREEN = [{ name: "ci", status: "COMPLETED", conclusion: "SUCCESS" }];
 const RED = [{ name: "ci", status: "COMPLETED", conclusion: "FAILURE" }];
 const HEAD = "abc12345deadbeefcafe000011112222";
-const pr = (number: number, extra: Record<string, unknown> = {}) => ({ number, isDraft: true, headRefOid: HEAD, statusCheckRollup: GREEN,
+// #1311: a same-repository pull request by a declared worker is INSIDE, and the identities are this file's own (`DECLARED`), not the host's.
+const DECLARED = { exact: ["a11ign-ai-workers"], pattern: [] };
+const pr = (number: number, extra: Record<string, unknown> = {}) => ({ number, isDraft: true, headRefOid: HEAD, statusCheckRollup: GREEN, isCrossRepository: false,
   author: { login: "a11ign-ai-workers" }, comments: [], labels: [], ...extra });
 const row = (number: number, extra: Record<string, unknown> = {}) => ({ number, title: `row ${number}`, labels: [{ name: "ready" }], ...extra });
 type Order = { session: string, cause: string, subject: string, discriminator: string, causeKey: string, prompt: string, title?: string,
@@ -72,7 +74,7 @@ const NO_READINGS = { code: (prs: unknown[]) => ({ prs, required: null, baseTip:
 /** One scope's orders, made the way `main` makes them: the lanes through `readLanes`, then `decide` (the per-tick extras stubbed). */
 function ordersOf(scope: ReturnType<typeof scopesOf>[number], gh: ReturnType<typeof fakeGh>) {
   const lanes = readLanes(scope, gh.run);
-  return { lanes, tick: scopeTick(scope, false, lanes, NO_READINGS) };
+  return { lanes, tick: scopeTick(scope, false, lanes, NO_READINGS, DECLARED) };
 }
 
 test("the scopes: one per KEY, the primary's (empty) key FIRST, and a key declared twice REFUSES naming it", () => {
@@ -230,6 +232,7 @@ function fixtures() {
       { number: 302, title: "asks 2", isDraft: true, labels: [{ name: "answer:product-manager" }] }],
     unarmed: [105],
     openRows: [{ number: 501, title: "gated", labels: [{ name: "fleet-gated" }], body: "", blockedBy: [] }],
+    identities: DECLARED,
   };
   const EMPTY_SHELF_INPUT = {
     prs: [],
