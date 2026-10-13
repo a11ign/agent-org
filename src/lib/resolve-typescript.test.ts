@@ -79,3 +79,25 @@ test("when no place has the API, it refuses naming each candidate rejected and w
     return true;
   });
 });
+
+// #1340: the caller that can go on without a parser gets the reason beside the `null`, so its refusal can name the fallback it came from.
+test("tryResolveTypescript: with no usable typescript anywhere it returns null AND each place's rejection, where resolveTypescript throws", async () => {
+  const tool = directoryHolding("7.0.2-tool", NATIVE_COMPILER);
+  const project = directoryHolding("7.0.2-project", NATIVE_COMPILER);
+  await resolverIn(tool);
+  const module = await import(pathToFileURL(join(tool, "lib", "resolve-typescript.ts")).href);
+  const resolution = module.tryResolveTypescript({ from: project });
+  assert.equal(resolution.typescript, null);
+  assert.match(resolution.rejected, /pnpm add -D typescript/);
+  assert.ok(resolution.rejected.includes(project), resolution.rejected);
+  assert.equal(resolution.rejected.match(/no JS compiler API/g)?.length, 2, resolution.rejected);
+});
+
+test("tryResolveTypescript CONTROL: with a usable typescript it returns it and a null `rejected`", async () => {
+  const tool = directoryHolding("6.0.3-tool", WITH_API);
+  await resolverIn(tool);
+  const module = await import(pathToFileURL(join(tool, "lib", "resolve-typescript.ts")).href);
+  const resolution = module.tryResolveTypescript({ from: directoryHolding("5.9.0-project", WITH_API) });
+  assert.equal(resolution.typescript.version, "5.9.0-project");
+  assert.equal(resolution.rejected, null);
+});
