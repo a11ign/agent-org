@@ -5,4 +5,6 @@ Acceptance:
 node --test src/app-token.test.ts src/gh-identity.test.ts src/app-role-silent.test.ts
 ```
 
+History: full
+
 Consumer-declaration: none -- a host that declares no `github-apps` reviewer is unchanged; a host that declares one gets a refused review, not an approval as `a11ign-bot`, when its App's token cannot be minted.
