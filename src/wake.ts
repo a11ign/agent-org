@@ -1037,12 +1037,23 @@ type ReviewerEntry = { spawnedAt: number; trust?: ReviewTrust; };
  * `~/.npm` and the checkout's parent are not, so `npx` in a tree with no dependencies died with `rofs` writing `~/.npm/_logs`.
  * `/tmp` is RAM-backed ({@link REVIEW_CHECKOUT_ROOT}); `node_modules/.cache` is gitignored and goes with the tree when
  * {@link removeReviewCheckout} removes it, so nothing outlives the pull request.
+ *
+ * THE APP TOKEN IS CACHED THERE TOO (agent-org#1342): `A11Y_APP_TOKEN_DIR` is `node_modules/.cache/app-tokens` in the same tree. `host/gh`'s
+ * `app_token` writes the minted token, its `.err` and its `.failed` to that directory, and its default (`~/.cache/a11ign/app-tokens`) is read-only
+ * in the sandbox, so every mint failed there once the token an unsandboxed caller had cached expired. Since #1347 a failed mint REFUSES the
+ * reviewer's call, so from 2026-10-13 ~16:06Z no reviewer could post a verdict without improvising a cache of its own.
+ *
+ * A KEYED REPOSITORY'S REVIEWER ALSO GETS `AGENT_ORG_HOST` ({@link hostConfigPath}), as {@link spawnEnvironment} gives every worker (#850). Its
+ * checkout (an agent-org one) holds no `.agent-org/project.json`, so any Acceptance that imports the project's vocabulary refused at import:
+ * agent-org#1378's `src/pr-owner-routing.test.ts` died in review as `Cannot access 'RESOURCES' before initialization` while it passed 11/11 in its
+ * worker's pane. The primary's checkout declares its own project, so its reviewer is not given one.
  *   @param [tree] the instance's checkout
  */
 export function reviewerEnvironment(session: string, override: Record<string, string> = {}, tree: string = reviewCheckoutPath(session)): Record<string, string> {
   const repo = reviewedRepositoryOf(session);
   return { GH_CONFIG_DIR: REVIEWER_GH_CONFIG_DIR, AGENT_ORG_GH_ROLE: "reviewer", A11Y_REVIEWER_SESSION: session,
-    npm_config_cache: `${tree}/node_modules/.cache/npm`, ...(repo === null ? {} : { GH_REPO: repo }), ...override };
+    npm_config_cache: `${tree}/node_modules/.cache/npm`, A11Y_APP_TOKEN_DIR: `${tree}/node_modules/.cache/app-tokens`,
+    ...(repo === null ? {} : { GH_REPO: repo, [HOST_CONFIG_ENV]: hostConfigPath() }), ...override };
 }
 
 /**

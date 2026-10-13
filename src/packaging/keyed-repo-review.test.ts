@@ -355,6 +355,9 @@ test("(3) the keyed reviewer's order and environment carry `GH_REPO=a11ign/agent
   assert.equal(reviewerEnvironment(SESSION).GH_REPO, "a11ign/agent-org");
   assert.equal(reviewerEnvironment(SESSION, { GH_REPO: "x/y" }).GH_REPO, "x/y", "an override still wins, key by key");
   assert.equal("GH_REPO" in reviewerEnvironment("reviewer-6"), false);
+  // agent-org#1378: a keyed checkout declares no project, so the reviewer is pointed at the host's, as a worker is (#850).
+  assert.equal(reviewerEnvironment(SESSION).AGENT_ORG_HOST, HOST_FILE, "the file the gate resolved, the recorded host here");
+  assert.equal("AGENT_ORG_HOST" in reviewerEnvironment("reviewer-6"), false, "NEGATIVE CONTROL: the primary's checkout declares its own project");
   assert.doesNotMatch(withReviewCheckout({ session: "reviewer-6", prompt: "p" }, { path: "/reviews-root/reviewer-6", head: HEAD }, 6).prompt, /GH_REPO/);
 });
 
@@ -384,7 +387,9 @@ test("the primary's instance is byte-identical to before: seat, fetch root, ref,
   const prompt = withReviewCheckout({ session: "reviewer-6", prompt: "p" }, { path: "/r/reviewer-6", head: HEAD }, 6).prompt;
   assert.ok(prompt.endsWith("post the verdict as `A11Y_REVIEWER_SESSION=reviewer-6 $HOME/reviewer/bin/pr-review-verdict <n> <convinced|not-convinced> <file>` "
     + "and the verdict line's `by` names you."), "the door line is the one it always was, with nothing after it");
-  assert.deepEqual(Object.keys(reviewerEnvironment("reviewer-6")).sort(), ["A11Y_REVIEWER_SESSION", "AGENT_ORG_GH_ROLE", "GH_CONFIG_DIR", "npm_config_cache"]);
+  // The one key added since is the App token's writable cache (agent-org#1342), which every reviewer needs; the primary gets no `AGENT_ORG_HOST`.
+  assert.deepEqual(Object.keys(reviewerEnvironment("reviewer-6")).sort(),
+    ["A11Y_APP_TOKEN_DIR", "A11Y_REVIEWER_SESSION", "AGENT_ORG_GH_ROLE", "GH_CONFIG_DIR", "npm_config_cache"]);
 });
 
 // --- (4) NOBODY OWNS IT -----------------------------------------------------------------------------------------------------------
