@@ -10,7 +10,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { extname, join } from "node:path";
 import type { KeySource } from "./settings.ts";
-import type { Ticket, TicketSource } from "./source.ts";
+import type { PullState, Ticket, TicketSource } from "./source.ts";
 
 export const LINEAR_API = "https://api.linear.app/graphql";
 /** Linear stores uploads here, and only a request carrying the key may read one. */
@@ -20,7 +20,7 @@ const UPLOAD_ORIGIN = "https://uploads.linear.app/";
 const TICKET_KEY = /^([A-Za-z][A-Za-z0-9]*)-(\d+)$/;
 const PAGE = 100;
 
-/** Keys read in one `stateTypes` request: each is an aliased query, and a long query text is one Linear may refuse. */
+/** Keys read in one batched request: each is an aliased query, and a long query text is one Linear may refuse. */
 const STATE_BATCH = 25;
 const ISSUE_FIELDS = "identifier title description url branchName priority state { name position } team { key } project { name } parent { identifier }";
 /** A file name that is safe as it stands: no folder, and an extension. A plan's attachment title is one. */
@@ -62,6 +62,11 @@ export function uploadLinks(description: string): string[] {
   return [...new Set(description.match(UPLOADS) ?? [])];
 }
 
+/** A pull request's state from Linear's word for it: `merged` and `closed` are final, and anything else, a draft included, is still open. PURE. */
+export function pullState(status: string | undefined): PullState {
+  return status === "merged" || status === "closed" ? status : "open";
+}
+
 /** The name the `n`th download is saved as: its attachment title when that names a file, or else `attachment-<n>` and an extension. PURE. */
 export function downloadName(n: number, link: string, title: string | null, contentType: string): string {
   if (title !== null && FILE_NAME.test(title)) return `attachment-${n}-${title}`;
@@ -96,6 +101,24 @@ export function linearSource({ key, fetch: request = fetch }: { key: string; fet
     return data.issues.nodes[0] ?? null;
   }
 
+  /** `fields` of each ticket `keys` names, by key, in one request per batch, each key an aliased read by team and number as `issue` does it. */
+  async function eachIssue<T>(keys: readonly string[], fields: string): Promise<Map<string, T>> {
+    const found = new Map<string, T>();
+    const parsed = keys.map((key) => [key, TICKET_KEY.exec(key)] as const).filter((pair): pair is readonly [string, RegExpExecArray] => pair[1] !== null);
+    for (let start = 0; start < parsed.length; start += STATE_BATCH) {
+      const batch = parsed.slice(start, start + STATE_BATCH);
+      const params = batch.map((_, i) => `$t${i}: String!, $n${i}: Float!`).join(", ");
+      const reads = batch.map((_, i) => `k${i}: issues(first: 1, filter: { team: { key: { eq: $t${i} } }, number: { eq: $n${i} } }) { nodes { ${fields} } }`).join(" ");
+      const variables = Object.fromEntries(batch.flatMap(([, parts], i) => [[`t${i}`, parts[1].toUpperCase()], [`n${i}`, Number(parts[2])]]));
+      const data: Record<string, { nodes: T[] }> = await query(`query(${params}) { ${reads} }`, variables);
+      batch.forEach(([key], i) => {
+        const [node] = data[`k${i}`]?.nodes ?? [];
+        if (node !== undefined) found.set(key, node);
+      });
+    }
+    return found;
+  }
+
   /** The uploads attached to a ticket, as Linear lists them beside its description. Links to elsewhere, such as a pull request, are left out. */
   async function attachedUploads(identifier: string): Promise<{ url: string; title: string }[]> {
     const found = await issue<{ attachments: { nodes: { url: string; title: string }[] } }>(identifier, "attachments { nodes { url title } }");
@@ -124,21 +147,17 @@ export function linearSource({ key, fetch: request = fetch }: { key: string; fet
     },
 
     async stateTypes(keys) {
-      // One request per batch, each key an aliased read by team and number, as `read` does it.
-      const states = new Map<string, string>();
-      const parsed = keys.map((key) => [key, TICKET_KEY.exec(key)] as const).filter((pair): pair is readonly [string, RegExpExecArray] => pair[1] !== null);
-      for (let start = 0; start < parsed.length; start += STATE_BATCH) {
-        const batch = parsed.slice(start, start + STATE_BATCH);
-        const params = batch.map((_, i) => `$t${i}: String!, $n${i}: Float!`).join(", ");
-        const reads = batch.map((_, i) => `k${i}: issues(first: 1, filter: { team: { key: { eq: $t${i} } }, number: { eq: $n${i} } }) { nodes { identifier state { type } } }`).join(" ");
-        const variables = Object.fromEntries(batch.flatMap(([, parts], i) => [[`t${i}`, parts[1].toUpperCase()], [`n${i}`, Number(parts[2])]]));
-        const data: Record<string, { nodes: { identifier: string; state: { type: string } }[] }> = await query(`query(${params}) { ${reads} }`, variables);
-        batch.forEach(([key], i) => {
-          const [found] = data[`k${i}`]?.nodes ?? [];
-          if (found !== undefined) states.set(key, found.state.type);
-        });
-      }
-      return states;
+      const found = await eachIssue<{ state: { type: string } }>(keys, "state { type }");
+      return new Map([...found].map(([key, node]) => [key, node.state.type]));
+    },
+
+    async pullStates(keys) {
+      // Linear's GitHub integration keeps each linked pull request's state in its attachment's metadata.
+      type Attached = { attachments: { nodes: { url: string; sourceType: string; metadata: { status?: string } | null }[] } };
+      const found = await eachIssue<Attached>(keys, "attachments { nodes { url sourceType metadata } }");
+      return new Map([...found].map(([key, node]) => [key, Object.fromEntries(node.attachments.nodes
+        .filter(({ sourceType }) => sourceType === "github")
+        .map(({ url, metadata }) => [url, pullState(metadata?.status)]))]));
     },
 
     async download(ticket, dir) {

@@ -26,6 +26,29 @@ function board(port = 4747) {
   return { ...made, ticks, dir };
 }
 
+test("/api/parents reads the parents of the person's tickets that are not the person's own, and leaves out one it cannot read", async () => {
+  const dir = tmpDir("ticket-server-parents-");
+  const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/r/netbox" }, stateDir: dir });
+  const reads: string[] = [];
+  const child = (key: string, parent: string | null) => ({ ...ticket(key), parent });
+  const source: TicketSource = {
+    assigned: async () => [child("VE-65", "NBF-1917"), child("NBF-1936", "NBF-1917"), child("NBF-1", null), child("NBF-2", "NBF-1"), child("VAL-11", "NBF-404"), child("X-1", "NBF-500")],
+    read: async (key) => {
+      reads.push(key);
+      if (key === "NBF-500") throw new Error("Linear answered 500");
+      return key === "NBF-1917" ? child("NBF-1917", null) : null;
+    },
+    download: async () => [],
+  };
+  const pool = { tick: async () => {}, stop: () => {}, close: () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {} };
+  const { api } = createBoard({ settings, source, token: TOKEN, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7 });
+  await api("GET", "/api/tickets", {});
+  const [status, parents] = await api("GET", "/api/parents", {}) as [number, Ticket[]];
+  assert.equal(status, 200);
+  assert.deepEqual(parents.map((p) => p.key), ["NBF-1917"]);
+  assert.deepEqual(reads, ["NBF-1917", "NBF-404", "NBF-500"], "each missing parent once, and never NBF-1, which is the person's own");
+});
+
 test("a request to another host is refused, and so is a write from another origin", () => {
   assert.equal(refusal({ headers: { host: "127.0.0.1:4747" }, method: "GET" }, 4747), null);
   assert.equal(refusal({ headers: { host: "localhost:4747" }, method: "POST", origin: undefined } as any, 4747), null);

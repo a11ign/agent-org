@@ -9,8 +9,8 @@
 // the only writer of the file, which it replaces whole by rename, so a reader never sees half of one.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { isParked } from "./board-view.ts";
-import type { Ticket } from "./source.ts";
+import { isParked, settledByPulls } from "./board-view.ts";
+import type { PullState, Ticket } from "./source.ts";
 
 /** How a finished run ended. A worker writes the first three; the pool decides the rest. */
 export type Outcome =
@@ -43,8 +43,10 @@ export type Entry = Readonly<{
   waiting?: boolean;
   outcome?: Outcome;
   tokens?: Readonly<{ input: number; output: number }>;
-  /** The ticket's state type in the tracker once the run has finished, as last read: `completed` once its pull requests merged. */
+  /** The ticket's state type in the tracker once the run has finished, as last read. */
   trackerState?: string;
+  /** The state of each of the ticket's pull requests by URL once the run has finished, as last read: a run whose pull requests merged is done. */
+  pullStates?: Readonly<Record<string, PullState>>;
 }>;
 
 /**
@@ -140,7 +142,7 @@ export function park(queue: Queue, key: string, outcome: Outcome, now: number, t
 /** A person answered a parked run's agent, which is working again: the run is live once more, and its old outcome and tracker state are dropped. */
 export function markResumed(queue: Queue, key: string): Queue {
   return replace(queue, key, (entry) => (isParked(entry)
-    ? { ...entry, phase: "running", outcome: undefined, finishedAt: undefined, trackerState: undefined, waiting: false, seenWorking: true }
+    ? { ...entry, phase: "running", outcome: undefined, finishedAt: undefined, trackerState: undefined, pullStates: undefined, waiting: false, seenWorking: true }
     : entry));
 }
 
@@ -152,9 +154,18 @@ export function unpark(queue: Queue, key: string): Queue {
 /** The tracker states a finished run can end in, after which its ticket is not read again. */
 const SETTLED = new Set(["completed", "canceled", "duplicate"]);
 
-/** The keys of finished runs whose ticket the tracker has not yet settled: the ones worth asking about again. */
+/** The keys of finished runs that neither the tracker nor their pull requests have settled yet: the ones worth asking about again. */
 export function unsettledKeys(queue: Queue): string[] {
-  return queue.entries.filter((entry) => entry.phase === "finished" && !SETTLED.has(entry.trackerState ?? "")).map((entry) => entry.ticket.key);
+  return queue.entries.filter((entry) => entry.phase === "finished" && !SETTLED.has(entry.trackerState ?? "") && settledByPulls(entry) === null)
+    .map((entry) => entry.ticket.key);
+}
+
+/** Record the state of each finished run's pull requests, for each run the tracker named. */
+export function recordPullStates(queue: Queue, pulls: ReadonlyMap<string, Readonly<Record<string, PullState>>>): Queue {
+  return { ...queue, entries: queue.entries.map((entry) => {
+    const states = pulls.get(entry.ticket.key);
+    return entry.phase === "finished" && states !== undefined ? { ...entry, pullStates: states } : entry;
+  }) };
 }
 
 /** Record the tracker's state for each finished run it named. */

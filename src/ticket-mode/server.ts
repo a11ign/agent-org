@@ -126,6 +126,13 @@ export function createBoard(deps: BoardDeps) {
       known = new Map(tickets.map((ticket) => [ticket.key, ticket]));
       return [200, tickets];
     }
+    if (method === "GET" && path === "/api/parents") {
+      // The parents of the person's tickets that are not the person's own, so the Pick list can nest under them. One the tracker cannot
+      // read is left out, and its children stand on their own.
+      const missing = [...new Set([...known.values()].flatMap((t) => (t.parent && !known.has(t.parent) ? [t.parent] : [])))];
+      const read = await Promise.allSettled(missing.map((key) => source.read(key)));
+      return [200, read.flatMap((r) => (r.status === "fulfilled" && r.value !== null ? [r.value] : []))];
+    }
     if (method === "GET" && path === "/api/queue") return [200, queue];
     if (method === "POST" && path === "/api/queue") {
       const choice = validRunChoice(body);

@@ -52,7 +52,7 @@ const TICKETS = [
 ];
 
 /** Run the page's script against a fake document, with `storage` as its localStorage. Resolves once the first render has happened. */
-async function page(storage: Map<string, string>, config: Record<string, unknown> = {}, entries: unknown[] = []) {
+async function page(storage: Map<string, string>, config: Record<string, unknown> = {}, entries: unknown[] = [], tickets: unknown[] = TICKETS, parents: unknown[] = []) {
   const byId = new Map<string, Node_>();
   const posts: { path: string; body: any }[] = [];
   const document = {
@@ -65,7 +65,7 @@ async function page(storage: Map<string, string>, config: Record<string, unknown
     const body = init.body === undefined ? undefined : JSON.parse(init.body);
     if (init.method === "POST") posts.push({ path, body });
     const value = path === "/api/config" ? { models: ["opus"], efforts: ["high"], choice: { model: "opus", effort: "high" }, max: 3, ...config }
-      : path === "/api/tickets" ? TICKETS : { entries, max: 3, paused: true };
+      : path === "/api/tickets" ? tickets : path === "/api/parents" ? parents : { entries, max: 3, paused: true };
     return { ok: true, json: async () => value, statusText: "" };
   };
   const localStorage = { getItem: (k: string) => storage.get(k) ?? null, setItem: (k: string, v: string) => { storage.set(k, v); } };
@@ -113,6 +113,34 @@ test("status sections start collapsed, open and close from anywhere on their hea
   reloaded.groups()[0].children[0].all().find((n) => n.className === "fold")!.fire("click");
   assert.deepEqual(collapsed(reloaded), [true, true], "the arrow closes it");
   assert.equal(storage.get("ticket-mode.open"), "[]");
+});
+
+test("a ticket is listed under its shown parent, indented, and names its own status", async () => {
+  const p = await page(new Map(), {}, [], [
+    { key: "E-1", title: "epic", status: "In Progress", statusOrder: 2, priority: 2, project: null, url: "", parent: null },
+    { key: "C-1", title: "child", status: "Todo", statusOrder: 1, priority: 2, project: null, url: "", parent: "E-1" },
+    { key: "G-1", title: "grandchild", status: "Backlog", statusOrder: 0, priority: 2, project: null, url: "", parent: "C-1" },
+  ]);
+  assert.equal(p.groups().length, 1, "one section, the epic's");
+  assert.deepEqual(p.shownKeys(), ["E-1", "C-1", "G-1"]);
+  const rows = p.$("groups").all().filter((n) => n.className.startsWith("row"));
+  assert.deepEqual(rows.map((r) => r.attrs.style), [undefined, "--depth: 1", "--depth: 2"]);
+  assert.match(rows[1].text(), /child · Todo/);
+  assert.equal(rows[0].text().includes("· In Progress"), false, "a top-level ticket's status is its section's");
+});
+
+test("a parent that is not the person's heads its children with no checkbox, and its section's checkbox takes only the children", async () => {
+  const p = await page(new Map(), {}, [], [
+    { key: "VE-65", title: "visual explorer", status: "Backlog", statusOrder: 0, priority: 2, project: null, url: "", parent: "NBF-1917" },
+  ], [{ key: "NBF-1917", title: "lint rules", status: "Todo", statusOrder: 1, priority: 2, project: null, url: "", parent: null }]);
+  const rows = p.$("groups").all().filter((n) => n.className.startsWith("row"));
+  assert.deepEqual(rows.map((r) => [r.className, r.attrs.style]), [["row context", undefined], ["row child", "--depth: 1"]]);
+  assert.equal(rows[0].all().some((n) => n.tag === "input"), false);
+  assert.match(rows[0].text(), /Not assigned to you/);
+  const tick = p.groups()[0].children[0].all().find((n) => n.tag === "input")!;
+  tick.checked = true;
+  tick.fire("change");
+  assert.equal(p.$("queue").textContent, "Queue 1 ticket");
 });
 
 test("ticking a section's checkbox selects its tickets and leaves the section as it was", async () => {
@@ -165,6 +193,16 @@ test("the runs view lists every run with its status icon, most recently active f
   assert.equal(rows.length, 6);
   const icons = rows.map((r) => r.children[0].className);
   assert.deepEqual(icons, ["icon st-completed", "icon st-awaiting-review", "icon st-needs-you", "icon st-working", "icon st-failed", "icon st-queued"]);
+});
+
+test("the In progress filter is a still dot, and a working run's own icon is the spinning ring", async () => {
+  const p = await page(new Map(), {}, RUNS);
+  const railIcon = filterButton(p, "In progress").children[0] as Node_ & { innerHTML: string };
+  const rowIcon = runRows(p).map((r) => r.children[0]).find((i) => i.className === "icon st-working") as Node_ & { innerHTML: string };
+  assert.equal(railIcon.className, "icon st-working", "it keeps the status's colour");
+  assert.match(railIcon.innerHTML, /<circle cx="8" cy="8" r="5" fill="currentColor"\/>/);
+  assert.doesNotMatch(railIcon.innerHTML, /<path/, "no arc to turn");
+  assert.match(rowIcon.innerHTML, /<path d="M8 2a6 6 0 0 1 6 6"/);
 });
 
 test("each filter shows its count, and choosing one shows only its runs and is remembered", async () => {

@@ -21,7 +21,7 @@ import { join } from "node:path";
 import { agentStartArgs, closedNote, herdrReason, openPane, readAgents } from "../herdr-agents.ts";
 import { HANDED_BACK, isParked } from "./board-view.ts";
 import {
-  finish, isLive, markResumed, markRunning, markStarting, nextStarts, observe, park, recordRepos, recordTrackerStates, unpark, unsettledKeys,
+  finish, isLive, markResumed, markRunning, markStarting, nextStarts, observe, park, recordPullStates, recordRepos, recordTrackerStates, unpark, unsettledKeys,
   type Entry, type Outcome, type Queue,
 } from "./queue.ts";
 import type { Ticket, TicketSource } from "./source.ts";
@@ -475,13 +475,22 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     }
   }
 
-  /** Ask the tracker where each finished run's ticket stands, so a run whose pull requests merged reads as completed. A refused read changes nothing. */
+  /**
+   * Ask the tracker where each finished run's ticket and pull requests stand, so a run whose pull requests merged reads as completed. A refused
+   * read changes nothing.
+   */
   async function refreshTracker(): Promise<void> {
     const keys = unsettledKeys(store.get());
-    if (keys.length === 0 || source.stateTypes === undefined) return;
+    if (keys.length === 0) return;
     try {
-      const states = await source.stateTypes(keys);
-      update((queue) => recordTrackerStates(queue, states));
+      if (source.stateTypes !== undefined) {
+        const states = await source.stateTypes(keys);
+        update((queue) => recordTrackerStates(queue, states));
+      }
+      if (source.pullStates !== undefined) {
+        const pulls = await source.pullStates(keys);
+        update((queue) => recordPullStates(queue, pulls));
+      }
     } catch {
       // the tracker could not be asked: the next refresh asks again
     }

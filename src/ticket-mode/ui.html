@@ -36,6 +36,9 @@
   .row .pill { justify-self: end; }
   .row:first-of-type { border-top: 0; }
   .row.taken { opacity: .55; }
+  .row.child { padding-left: calc(12px + var(--depth) * 24px); }
+  .row.context, .row.context a { color: var(--muted); }
+  .row .sub { color: var(--muted); font-size: 12px; }
   .key { font-variant-numeric: tabular-nums; color: var(--muted); }
   .pill { font-size: 12px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
   footer { position: fixed; bottom: 0; left: 0; right: 0; background: var(--panel); border-top: 1px solid var(--line); padding: 10px 20px; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
@@ -65,9 +68,9 @@
   .icon svg { width: 16px; height: 16px; display: block; }
   .st-queued { color: var(--st-queued); } .st-working { color: var(--st-progress); } .st-needs-you { color: var(--st-needs); }
   .st-awaiting-review { color: var(--st-review); } .st-completed { color: var(--st-done); } .st-failed { color: var(--st-failed); } .st-cancelled { color: var(--st-cancelled); }
-  .st-working svg { animation: spin 1.1s linear infinite; }
+  .runs .run .st-working svg { animation: spin 1.1s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  @media (prefers-reduced-motion: reduce) { .st-working svg { animation: none; } }
+  @media (prefers-reduced-motion: reduce) { .runs .run .st-working svg { animation: none; } }
   .waiting { color: var(--st-needs); font-size: 12px; font-weight: 600; }
   @media (max-width: 760px) { .runs { grid-template-columns: minmax(0, 1fr); } .filters { flex-direction: row; flex-wrap: wrap; } .run { grid-template-columns: 18px minmax(0, 1fr); } .run .side { grid-column: 2; align-items: flex-start; } }
   a { color: var(--accent); text-decoration: none; }
@@ -119,7 +122,7 @@
 // The decisions (what shows, how it groups, what can be selected, what status a run has and what it offers) are board-view.ts's, tested there.
 // This page only draws what they return and wires the clicks.
 import {
-  RUN_STATUSES, groupByStatus, isParked, projectCounts, projectOf, queueLabel, recall, remember, runActions, runStatus, runsShown, selectable, statusCounts, terminalLink,
+  RUN_STATUSES, flatten, groupByStatus, isParked, projectCounts, projectOf, queueLabel, recall, remember, runActions, runStatus, runsShown, selectable, statusCounts, terminalLink,
   toggled, visibleTickets,
 } from "/board-view.js";
 
@@ -131,7 +134,7 @@ const el = (tag, props = {}, ...children) => {
 const $ = (id) => document.getElementById(id);
 const storage = (() => { try { return window.localStorage; } catch { return null; } })();
 const state = {
-  tickets: [], queue: { entries: [], max: 3, paused: true }, selected: new Set(), terminal: null,
+  tickets: [], parents: [], queue: { entries: [], max: 3, paused: true }, selected: new Set(), terminal: null,
   // Sections start collapsed, so a first visit sees every status and its count before any list.
   open: recall(storage, "ticket-mode.open"), projects: recall(storage, "ticket-mode.projects"),
   runFilter: [...recall(storage, "ticket-mode.run-filter")][0] ?? null,
@@ -170,9 +173,10 @@ function renderPick() {
   const free = (t) => selectable(t, state.queue.entries);
   const list = $("groups");
   list.replaceChildren();
-  const groups = groupByStatus(tickets);
+  const groups = groupByStatus(tickets, state.parents);
   $("fold-all").textContent = everyOpen(groups.map(([status]) => status)) ? "Collapse all" : "Expand all";
-  for (const [status, group] of groups) {
+  for (const [status, nodes] of groups) {
+    const group = flatten(nodes);
     const pickable = group.filter(free);
     const all = el("input", { type: "checkbox", checked: pickable.length > 0 && pickable.every((t) => state.selected.has(t.key)), disabled: pickable.length === 0 });
     all.addEventListener("change", () => { for (const t of pickable) all.checked ? state.selected.add(t.key) : state.selected.delete(t.key); render(); });
@@ -186,15 +190,28 @@ function renderPick() {
       el("span", { className: "count" }, ` ${group.length}${picked ? ` · ${picked} selected` : ""}`));
     head.addEventListener("click", () => setOpen(toggled(state.open, status)));
     const box = el("div", { className: `group${expanded ? "" : " collapsed"}` }, head);
-    for (const t of group) {
+    // A ticket under its parent is indented, and names its own status, which can differ from the section's. A parent that is not the
+    // person's heads its children with no checkbox.
+    const add = ({ ticket: t, children, context }, depth) => {
+      if (context) {
+        box.append(el("div", { className: "row context" }, el("span"), el("span", { className: "key" }, t.key),
+          el("span", {}, el("a", { href: t.url, target: "_blank", rel: "noreferrer" }, t.title)),
+          el("span", { className: "pill" }, projectOf(t)), el("span", { className: "pill" }, "Not assigned to you")));
+        for (const child of children) add(child, depth + 1);
+        return;
+      }
       const taken = entryFor(t.key);
       const tick = el("input", { type: "checkbox", checked: state.selected.has(t.key), disabled: Boolean(taken) });
       tick.addEventListener("change", () => { tick.checked ? state.selected.add(t.key) : state.selected.delete(t.key); render(); });
-      box.append(el("label", { className: `row${taken ? " taken" : ""}` }, tick, el("span", { className: "key" }, t.key),
-        el("span", {}, el("a", { href: t.url, target: "_blank", rel: "noreferrer" }, t.title)),
+      const row = el("label", { className: `row${taken ? " taken" : ""}${depth > 0 ? " child" : ""}` }, tick, el("span", { className: "key" }, t.key),
+        el("span", {}, el("a", { href: t.url, target: "_blank", rel: "noreferrer" }, t.title), depth > 0 ? el("span", { className: "sub" }, ` · ${t.status}`) : null),
         el("span", { className: "pill" }, projectOf(t)),
-        el("span", { className: "pill" }, taken ? `on the queue: ${taken.phase}` : PRIORITY[t.priority] || "No priority")));
-    }
+        el("span", { className: "pill" }, taken ? `on the queue: ${taken.phase}` : PRIORITY[t.priority] || "No priority"));
+      if (depth > 0) row.setAttribute("style", `--depth: ${depth}`);
+      box.append(row);
+      for (const child of children) add(child, depth + 1);
+    };
+    for (const node of nodes) add(node, 0);
     list.append(box);
   }
   const open = tickets.filter(free);
@@ -220,9 +237,12 @@ const ICONS = {
 const LABEL = Object.fromEntries(RUN_STATUSES.map(({ status, label }) => [status, label]));
 const ACTION_LABEL = { remove: "Remove", stop: "Stop", retry: "Retry", close: "Close" };
 
-function statusIcon(status) {
+// The filter rail marks In progress with a still dot: a spinner there turns for as long as any run works.
+const RAIL_ICONS = { ...ICONS, "working": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5" fill="currentColor"/></svg>' };
+
+function statusIcon(status, icons = ICONS) {
   const icon = el("span", { className: `icon st-${status}`, title: LABEL[status] });
-  icon.innerHTML = ICONS[status];
+  icon.innerHTML = icons[status];
   icon.setAttribute("role", "img");
   icon.setAttribute("aria-label", LABEL[status]);
   return icon;
@@ -270,7 +290,7 @@ function renderBoard() {
     return b;
   };
   $("filters").replaceChildren(filter("All runs", null, state.queue.entries.length, null),
-    ...RUN_STATUSES.map(({ status, label }) => filter(label, status, counts.get(status) ?? 0, statusIcon(status))));
+    ...RUN_STATUSES.map(({ status, label }) => filter(label, status, counts.get(status) ?? 0, statusIcon(status, RAIL_ICONS))));
   const runs = runsShown(state.queue.entries, state.runFilter);
   $("runs").replaceChildren(...(runs.length > 0 ? runs.map(row)
     : [el("div", { className: "empty" }, state.runFilter ? `No runs are ${LABEL[state.runFilter].toLowerCase()}.` : "Nothing queued yet. Pick tickets on the Pick tab.")]));
@@ -327,6 +347,9 @@ try {
   setup(await call("GET", "/api/config"));
   [state.tickets, state.queue] = await Promise.all([call("GET", "/api/tickets"), call("GET", "/api/queue")]);
   render();
+  // Parents are read after the first render, so the list never waits on them. Without them, every ticket stands on its own.
+  state.parents = await call("GET", "/api/parents").catch(() => []);
+  renderPick();
 } catch (err) { report(err); }
 setInterval(() => call("GET", "/api/queue").then((q) => { state.queue = q; renderBoard(); renderPick(); }, report), 5000);
 </script>
