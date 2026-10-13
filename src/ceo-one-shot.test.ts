@@ -81,7 +81,7 @@ function drive(orders: readonly object[], { path, body = PLAIN_BODY, live = [], 
   };
   const oneShot = createCeoOneShot({ readRow: () => ({ body }), path, write });
   const ready = withCeoOneShot(orders as { session: string; cause?: string }[], { enabled: () => enabled, rowOf: () => ROW, rootFiles: ROOT_FILES, readRow: () => ({ body }) });
-  const got = deliver(ready as never, [...held, ...live], STANDING, { run: h.run, claimer, ceoOneShot: oneShot, claimable: () => null });
+  const got = deliver(ready as never, [...held, ...live], STANDING, { sleep: () => {}, run: h.run, claimer, ceoOneShot: oneShot, claimable: () => null });
   return { ...h, got, ready, heldAtClaim };
 }
 
@@ -94,7 +94,7 @@ test("flag OFF: the order is byte-identical to the order at origin/main, and so 
   assert.equal(withCeoOneShot(orders, { enabled: () => false }), orders, "the very array comes back");
   const s = scratch();
   try {
-    const before = deliver([GATE_ORDER] as never, held, STANDING, { run: herdr().run });
+    const before = deliver([GATE_ORDER] as never, held, STANDING, { sleep: () => {}, run: herdr().run });
     const after = drive([GATE_ORDER], { path: s.path, enabled: false });
     assert.deepEqual(after.got, before, "the outcome is what it was before this change");
     assert.equal(after.calls.filter((a) => a.join(" ").includes("workspace create")).length, 0, "nothing was started");
@@ -156,12 +156,12 @@ test("flag ON: an IDLE standing engineer is never given the one-shot order; the 
     const claimer: SpawnClaimer = { claim: () => ({ row: 914, key: "agent-org", branch: "agent/b", worktree: "/tmp/wt-agent-org-914", launchDir: "/tmp" }), release: () => "", tier: () => null };
     const oneShot = createCeoOneShot({ readRow: () => ({ body: PLAIN_BODY }), path: s.path });
     const ready = withCeoOneShot([GATE_ORDER], { enabled: () => true, rowOf: () => ROW, rootFiles: ROOT_FILES, readRow: () => ({ body: PLAIN_BODY }) });
-    const got = deliver(ready as never, [{ label: "worker-capture", status: "idle" }, ...held.slice(1)], STANDING, { run: h.run, claimer, ceoOneShot: oneShot, claimable: () => null });
+    const got = deliver(ready as never, [{ label: "worker-capture", status: "idle" }, ...held.slice(1)], STANDING, { sleep: () => {}, run: h.run, claimer, ceoOneShot: oneShot, claimable: () => null });
     assert.deepEqual(got.sent, [`${SEAT} <- ${KEY} (STARTED sonnet/high)`], JSON.stringify(got));
     assert.equal(h.prompt("worker-capture"), undefined, "the idle standing seat was not typed into");
     // THE CONTROL: the plain engineer order for the same row IS offered to the idle standing seat.
     const plain = herdr();
-    const control = deliver([{ ...GATE_ORDER, session: "engineers" }] as never, idle, STANDING, { run: plain.run });
+    const control = deliver([{ ...GATE_ORDER, session: "engineers" }] as never, idle, STANDING, { sleep: () => {}, run: plain.run });
     assert.match(control.sent.join("\n"), /^worker-capture <- /);
   } finally {
     s.done();
