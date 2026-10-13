@@ -407,7 +407,9 @@ read_cache_store() { # the stdout copy, the generation read BEFORE the call ran
 #   - AN EXPLICIT `GH_TOKEN` OR `GITHUB_TOKEN` WINS, as an explicit `GH_CONFIG_DIR` does: a runner or a person who named a credential is not re-routed.
 #   - THE TOKEN is read from the cache file `agent-org`'s minter writes (`<expiry epoch> <token>`), in shell and with no process, while it has
 #     more than 5 minutes left; only a stale one starts `app-token.ts`, once an hour per role.
-#   - A MINT THAT FAILS FALLS BACK TO TODAY'S ACCOUNT, and the call goes through as it always did. It is recorded as ONE ledger line with
+#   - A MINT THAT FAILS FALLS BACK TO TODAY'S ACCOUNT, and the call goes through as it always did, EXCEPT FOR THE REVIEWER: its call is REFUSED (agent-org#1347),
+#     non-zero, nothing sent, the reason on stderr, because a reviewer's approval sent as the account counts as the account's on `main`. Nothing widens
+#     that refusal to another role without a ruling. A failed mint is recorded as ONE ledger line with
 #     resource `incident`, status 1, the command `app-token <role>` and the minter's first stderr line and exit status in the caller field (`gh-ledger.ts`
 #     reads it, at no points), and the role is not asked again for 60 seconds, so an outage costs one process a minute and not one per call.
 #   - THE MINTER NEVER SEES THE CALL'S STDIN (`</dev/null`): `gh pr create --body-file -` reads it, and a minter that consumed it would
@@ -476,14 +478,29 @@ app_token() {
   if [ -z "$reason" ]; then
     if [ "$app_exit" -eq 0 ]; then reason="exited 0 but printed no usable token"; else reason="nothing on stderr"; fi
   fi
+  # the reason is kept beside the token for `app_refuse`, which runs in the caller's shell and cannot read this function's variables
+  printf '%s\n' "$reason (exit $app_exit)" > "$app_dir/$1.why" 2>/dev/null
+  # the reviewer's call is refused (`app_refuse`), every other role's falls back: the incident line says which
+  app_outcome="fell back to the account"
+  [ "$1" = reviewer ] && app_outcome="refused, not sent as the account"
   # a subshell, so the three settings below cannot outlive the incident line (a prefix assignment on a function call is not portable)
   (
     LEDGER_RESOURCE=incident
-    LEDGER_CALLER="app-token $1 failed, fell back to the account: $reason (exit $app_exit)"
+    LEDGER_CALLER="app-token $1 failed, $app_outcome: $reason (exit $app_exit)"
     app_account=
     ledger_record "$app_status" "" app-token "$1"
   ) 2>/dev/null || :
   return 1
+}
+
+# `$1` the reviewer, whose App's token could not be minted (agent-org#1347): the call is REFUSED, never sent as the account, because the account's
+# approval counts as the human's on `main`. The reason goes to stderr, where the caller reads it, and `app_token` has already written the ledger line.
+app_refuse() {
+  app_declared "$1"
+  app_dir=${A11Y_APP_TOKEN_DIR:-@@appTokenDir@@}
+  app_why=$(cat "$app_dir/$1.why" 2>/dev/null) || app_why="no reason was recorded"
+  printf '%s\n' "gh: refused: the $1 call is NOT sent as the account. app-token $1 failed for App ${app_slug:-$app_id}: $app_why" >&2
+  exit 1
 }
 
 APP_ROLES=${A11Y_APP_ROLES-@@appRoles@@}
@@ -495,6 +512,8 @@ if [ -n "$APP_ROLES" ] && [ -z "${GH_TOKEN:-}" ] && [ -z "${GITHUB_TOKEN:-}" ]; 
         GH_TOKEN=$app_tok
         export GH_TOKEN
         app_account=app:$app_who
+      elif [ "$app_who" = reviewer ]; then
+        app_refuse reviewer
       fi ;;
   esac
 fi

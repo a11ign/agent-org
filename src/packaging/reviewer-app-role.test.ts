@@ -178,15 +178,16 @@ test("#955: the reviewer config alone names no role: a declared reviewer App is 
   assert.match(named.stdout, /^token=ghs_reviewer_minted /, "POSITIVE CONTROL: the same host, the role named");
 });
 
-test("#955: a mint that fails sends the reviewer's call through as `a11ign-bot` and records ONE incident naming the role", () => {
+// #1347 (ruling on agent-org#1343): the reviewer's call is REFUSED when its App's token cannot be minted, never sent as `a11ign-bot`.
+test("#955 (ruled by #1347): a mint that fails REFUSES the reviewer's call: nothing goes out as `a11ign-bot`, the reason is on stderr, and ONE incident is recorded", () => {
   const h = host(DECLARED());
   const call = h.run({ ...asReviewer, MINT_FAIL: "app token: token: POST answered 401" }, "pr", "view", "955");
-  assert.equal(call.stdout, "token=none args=pr view 955\n", "the review still goes out, as the account it always did");
-  assert.equal(call.status, 0);
+  assert.deepEqual([call.status, call.stdout], [1, ""], "REFUSED: non-zero, and the stub that would have sent the review never ran");
+  assert.match(call.stderr, /^gh: refused: the reviewer call is NOT sent as the account\. app-token reviewer failed for App .+: app token: token: POST answered 401 \(exit 1\)\n$/,
+    "the caller reads the role, the App and the mint failure on stderr");
   const parsed = h.lines().map((l) => parseLine(l));
-  assert.deepEqual(parsed.map((p) => p?.resource), ["incident", parsed[1]?.resource], "the incident line comes first, then the call's own");
-  assert.match(h.lines()[0], /app-token reviewer failed, fell back to the account: app token: token: POST answered 401/);
-  assert.equal(parsed[1]?.account, BOT);
+  assert.deepEqual(parsed.map((p) => p?.resource), ["incident"], "the incident is the only line: no call was sent");
+  assert.match(h.lines()[0], /app-token reviewer failed, refused, not sent as the account: app token: token: POST answered 401 \(exit 1\)/);
   h.run({ ...asReviewer, MINT_FAIL: "again" }, "pr", "view", "955");
-  assert.equal(h.mints(), 1, "the failed role is not asked again inside the window");
+  assert.equal(h.mints(), 1, "the failed role is not asked again inside the window, and is still refused there");
 });
