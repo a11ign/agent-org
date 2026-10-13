@@ -9,8 +9,8 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { GITHUB_STATUS_URL as GATE_STATUS_URL, githubIncidentOf } from "./work-gate.ts";
-import { CALM_GITHUB_STATUS, GITHUB_STATUS_URL, offlineFetch } from "./offline-fetch.ts";
+import { GITHUB_STATUS_URL, githubIncidentOf } from "./work-gate.ts";
+import { CALM_GITHUB_STATUS, offlineFetch } from "./offline-fetch.ts";
 
 const REPO = fileURLToPath(new URL("../", import.meta.url));
 const CONFIG_PATH = join(REPO, "scripts", "rstest", "rstest.config.ts");
@@ -28,8 +28,7 @@ function recorder() {
   return { real, reached };
 }
 
-test("the status URL is the gate's own, and the calm page reads as clear", () => {
-  assert.equal(GITHUB_STATUS_URL, GATE_STATUS_URL);
+test("the calm page reads as clear to the gate", () => {
   assert.equal(githubIncidentOf({ status: 200, body: JSON.stringify(CALM_GITHUB_STATUS) }).state, "clear");
 });
 

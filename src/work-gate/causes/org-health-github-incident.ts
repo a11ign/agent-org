@@ -10,11 +10,12 @@ import { type UnarmedFacts, hungCheckOf } from "../pr-orders.ts";
 import { blockingChecks, checksSettledGreen } from "../pr-state.ts";
 import { defaultRun, repoNow } from "../reads.ts";
 import { REVIEWER_STATE_DIR } from "../vocabulary.ts";
+import { GITHUB_STATUS_URL } from "./github-status-url.ts";
 
 // ---- #3723: GITHUB'S OWN STATUS, READ ONCE A TICK, AND WHAT A RUNNER OUTAGE HOLDS ---------------------------------------------------------------
 
-/** Where the gate asks, and the bound it asks within: 3 s at most, started WITH the tick's first reads, failing open (`ceo`'s exception to #3566's freeze). */
-export const GITHUB_STATUS_URL = "https://www.githubstatus.com/api/v2/summary.json";
+/** Where the gate asks (`github-status-url.ts`, a leaf the test suite's offline `fetch` shares), and the bound it asks within: 3 s at most, started WITH the tick's first reads, failing open (`ceo`'s exception to #3566's freeze). */
+export { GITHUB_STATUS_URL };
 
 export const GITHUB_STATUS_TIMEOUT_MS = 3000;
 
