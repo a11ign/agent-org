@@ -1,3 +1,4 @@
+// no-token: gh -- every herdr and git call here is an injected seam, and a PATH probe that logs gh and herdr sees no call
 /**
  * agent-org#1392: RETIRING A REVIEWER SEAT ENDS THE RUNS OF ITS CAUSES. A capped cause whose seat is absent is STARTED by the gate, not capped.
  *
