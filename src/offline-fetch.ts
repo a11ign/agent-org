@@ -6,9 +6,9 @@
 // review-depth case reached api.typesafe.ai through the real `fetch`. On a laptop that is a test reading the internet. In CI a GitHub incident
 // changes what a test about something else sees: agent-org#1178 read one from a log, and stubbed that one test.
 //
-// THE STATUS URL COMES FROM ITS LEAF (`work-gate/causes/github-status-url.ts`), never the gate's cause module: this file is preloaded into every Node
+// THE STATUS URL COMES FROM ITS LEAF (`work-gate/github-status-url.ts`), never the gate's cause module: this file is preloaded into every Node
 // process a test starts, and that module imports half the tool.
-import { GITHUB_STATUS_URL } from "./work-gate/causes/github-status-url.ts";
+import { GITHUB_STATUS_URL } from "./work-gate/github-status-url.ts";
 
 /** GitHub's status page on a quiet day: the three components the gate reads, operational, and no incident. */
 export const CALM_GITHUB_STATUS = Object.freeze({
