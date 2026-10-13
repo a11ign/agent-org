@@ -22,7 +22,7 @@ import { readTrunkRed, trunkOfCodeRepository, trunkRedOrders } from "../trunk-re
 import { recordIgnoredChairmanLabels, recordTickFailures as recordFailuresOf } from "../failure-recorders.ts";
 import { readJsonObject, writeJsonObject } from "../claim-stall.ts";
 import { requiredWhenNeeded, perPullRequestOrders, greenUnarmedOrders, type UnarmedFacts, reviewBlockedOrders, stalledPrOrders,
-  STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr, ROW_REVIEW_SKILL_FLAG, PR_OWNER_ROUTING_FLAG, withholdOutsideFollowUps, SAME_HEAD_REFAIL_FLAG } from "./pr-orders.ts";
+  STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr, ROW_REVIEW_SKILL_FLAG, PR_OWNER_ROUTING_FLAG, withholdOutsideFollowUps, reviewOnlyRefs, SAME_HEAD_REFAIL_FLAG } from "./pr-orders.ts";
 import { labJobFinishedOrders, readLabJobRecords, readDispatchedLabJobs } from "./lab-job-orders.ts";
 import { classAndKeyOf as orgHealthClassAndKey } from "./org-health-suppression.ts";
 import { TABLE_ROW as STANDING_ROW } from "../board-truth-audit.ts";
@@ -291,6 +291,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
     session: string; cause: string; subject: string; discriminator: string;
     prompt: string; causeKey: string;
 }[] {
+  const ownerRouting = prOwnerRoutingFlagOn(prOwnerRouting); // #1325: read ONCE, for the review-blocked set below and the last step
   // FIRST, BEFORE EVERY OTHER CAUSE (#2356): a red `main` outranks even `answer-owed` -- see `trunkRedOrders`.
   // `answer-owed` says another session is ALREADY STOPPED waiting on them, which outranks any standing question.
   const orders = [...trunkRedOrders(trunkRed), ...primaryStaleOrders(primaryDrift), ...answerOrders(answerOwed)]; // #2781: a stale primary next, every order below is given from its code
@@ -360,7 +361,9 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // complete it. Same population (`mergeCandidates`), same audience, same placement -- more urgent than a
   // supply question, less urgent than a named red build, and never withheld by a drain, because a drain
   // stops the org TAKING ON work rather than finishing what is in flight.
-  orders.push(...reviewBlockedOrders(reviewBlocked(prs, required)));
+  // #1325: with the flag on, an outside or chairman pull request leaves the set BEFORE its one order is built (see `reviewOnlyRefs`). Off, nothing is read.
+  const reviewOnly = ownerRouting ? reviewOnlyRefs(prs, identities ?? declaredIdentities()) : null;
+  orders.push(...reviewBlockedOrders(reviewBlocked(prs, required).filter((b: any) => reviewOnly === null || !reviewOnly.has(subjectRef(b.repoKey, b.number)))));
   // #2209: a conflicting PR is in no other cause's population, so it is told to its author here; a drain keeps it.
   // #2968: FED BY THE TOTAL CLASSIFIER, NOT BY "GREEN AND UNHELD": #2950, a conflicted draft, sat 7.5 h unheard.
   orders.push(...stalledPrOrders(prs, { required, reasons: STALL_REASONS_WITHOUT_A_CAUSE, nowMs }));
@@ -379,7 +382,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // in ONE place -- `START_CAUSES` is the whole statement of what "new work" means, and a cause added
   // without classifying it is caught by `work-gate.test.ts` rather than silently surviving a window.
   // #1325: LAST, over EVERY cause, because the PR causes come from six producers. With the flag on, an outside or chairman-authored pull request keeps its review.
-  const routed = prOwnerRoutingFlagOn(prOwnerRouting) ? withholdOutsideFollowUps(orders, prs, identities ?? declaredIdentities()) : orders;
+  const routed = ownerRouting ? withholdOutsideFollowUps(orders, prs, identities ?? declaredIdentities()) : orders;
   return drain ? routed.filter((o) => !START_CAUSES.includes(o.cause)) : routed;
 }
 

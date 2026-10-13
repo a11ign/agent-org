@@ -1304,9 +1304,18 @@ const REVIEW_CAUSES: readonly string[] = Object.freeze(["draft-awaiting-verdict"
  * @param declared the identities the org declares, the same reading `perPullRequestOrders` takes
  */
 export function withholdOutsideFollowUps(orders: any[], prs: any[], declared: DeclaredIdentities): any[] {
-  const withheld = new Set(prs.filter((pr) => reviewTrustOf(pr, declared) === OUTSIDE || isChairmanAuthoredPr(pr))
-    .map((pr) => `pr-${subjectRef(pr.repoKey, pr.number)}`));
+  const withheld = new Set([...reviewOnlyRefs(prs, declared)].map((ref) => `pr-${ref}`));
   return orders.filter((order) => !withheld.has(order.subject) || REVIEW_CAUSES.includes(order.cause));
+}
+
+/**
+ * agent-org#1325: the pull requests the flag orders for their review only, as `subjectRef`s: an OUTSIDE one (`reviewTrustOf`) and one the chairman
+ * authored. `withholdOutsideFollowUps` matches them on an order's subject; `decide` also drops them from `reviewBlocked`'s population BEFORE the
+ * `pr-review-blocked` set order is built, because that one order names several pull requests under the subject `pr-review-blocked` and no subject
+ * filter can take one pull request out of it (#1378's first review). PURE.
+ */
+export function reviewOnlyRefs(prs: any[], declared: DeclaredIdentities): Set<string> {
+  return new Set(prs.filter((pr) => reviewTrustOf(pr, declared) === OUTSIDE || isChairmanAuthoredPr(pr)).map((pr) => subjectRef(pr.repoKey, pr.number)));
 }
 
 /**

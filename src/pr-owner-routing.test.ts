@@ -117,9 +117,42 @@ test("the org's own pull request keeps its follow-ups with the flag on: nothing 
   assert.deepEqual(on, off);
 });
 
-test("flag off is byte-identical: a mixed set decides the same orders as the same set with the flag never read", () => {
-  const prs = [prOf(1009, { statusCheckRollup: RED }), prOf(1010, { ...CHAIRMAN_AUTHOR, mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" }), prOf(1011, ORG_AUTHOR)];
-  assert.equal(JSON.stringify(decided(prs, false)), JSON.stringify(decide({ prs, readyRows: [], nowMs: NOW, required: REQUIRED, identities: IDENTITIES, prOwnerRouting: false }) as Order[]));
+/** A green pull request a reviewer refused at its head: in `reviewBlocked`'s population, whose unlabelled members share ONE `product-manager` order. */
+const REFUSED = { reviewDecision: "CHANGES_REQUESTED", reviews: [{ author: { login: "a11ign-reviewer" }, state: "CHANGES_REQUESTED", submittedAt: "2026-10-13T08:30:00Z", commit: { oid: HEAD } }] };
+const MIXED = () => [prOf(1009, { statusCheckRollup: RED }), prOf(1010, { ...CHAIRMAN_AUTHOR, mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" }), prOf(1011, ORG_AUTHOR),
+  prOf(1014, REFUSED), prOf(1015, { ...ORG_AUTHOR, ...REFUSED })];
+const keyed = (orders: Order[]) => orders.map((o) => [o.session, o.cause, o.subject, o.causeKey]);
+/**
+ * THE BASELINE IS `main` BEFORE #1325, NOT THIS BRANCH (#1378's first review): `MIXED` run through `decide` at agent-org `87ba0f6c`, which has no
+ * `prOwnerRouting`, and its orders written here. Comparing the flag-off run with itself would stay green whatever the off path did.
+ */
+const BEFORE_1325 = [
+  ["ceo", "pr-checks-failing", "pr-agent-org#1009", "ceo/pr-checks-failing/pr-agent-org#1009/ab698778"],
+  ["reviewer-agent-org-1011", "draft-awaiting-verdict", "pr-agent-org#1011", "reviewer-agent-org-1011/draft-awaiting-verdict/pr-agent-org#1011/ab698778"],
+  ["reviewer-agent-org-1014", "draft-awaiting-verdict", "pr-agent-org#1014", "reviewer-agent-org-1014/draft-awaiting-verdict/pr-agent-org#1014/ab698778"],
+  ["reviewer-agent-org-1015", "draft-awaiting-verdict", "pr-agent-org#1015", "reviewer-agent-org-1015/draft-awaiting-verdict/pr-agent-org#1015/ab698778"],
+  ["product-manager", "pr-review-blocked", "pr-review-blocked", "product-manager/pr-review-blocked/agent-org#1014:REFUSED.agent-org#1015:REFUSED"],
+  ["ceo", "pr-merge-conflict", "pr-agent-org#1010", "ceo/pr-merge-conflict/pr-agent-org#1010/ab698778"],
+];
+
+test("flag off is byte-identical to `main` before #1325: the mixed set decides exactly the orders pinned from there", () => {
+  assert.deepEqual(keyed(decided(MIXED(), false)), BEFORE_1325);
+});
+
+test("flag on, the same mixed set loses exactly the outside and chairman follow-ups, and the set order keeps only the org's own pull request", () => {
+  assert.deepEqual(keyed(decided(MIXED(), true)), [
+    BEFORE_1325[1], BEFORE_1325[2], BEFORE_1325[3],
+    ["product-manager", "pr-review-blocked", "pr-review-blocked", "product-manager/pr-review-blocked/agent-org#1015:REFUSED"],
+  ]);
+});
+
+test("OUTSIDE AND CHAIRMAN, REFUSED AND UNLABELLED: flag on, neither is in the set order product-manager gets; flag off, both are (positive control)", () => {
+  const prs = [prOf(1016, REFUSED), prOf(1017, { ...CHAIRMAN_AUTHOR, ...REFUSED })];
+  const setOrders = (orders: Order[]) => orders.filter((o) => o.cause === "pr-review-blocked");
+  assert.deepEqual(setOrders(decided(prs, true)), [], "the set order has no subject `pr-<ref>`, so it is filtered by its members, before it is built");
+  const off = setOrders(decided(prs, false));
+  assert.equal(off.length, 1, "POSITIVE CONTROL: flag off sends the set to product-manager");
+  assert.equal(off[0].causeKey, "product-manager/pr-review-blocked/agent-org#1016:REFUSED.agent-org#1017:REFUSED");
 });
 
 test("withholdOutsideFollowUps is PURE and keeps every order that is not a withheld pull request's", () => {
