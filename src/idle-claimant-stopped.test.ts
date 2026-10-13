@@ -4,6 +4,8 @@
 //
 // EVERY "NOT NUDGED" ASSERTION HAS A TWIN: the same fixture with ONE thing changed that IS nudged (`fixture` below, and each case names its twin), so a decider that
 // never fires turns the twins red and one that always fires turns the controls red. The mutations, both directions, are in the pull request.
+// agent-org#1389 (the 18:08Z ref worker-agent-org-1354/#1354/1791914892290): a claimed holder that is idle while the machinery canary is still WATCHING a flag its
+// row names is WAITING on the canary's hour (`canary-hour`), not stopped, so it is not nudged; the same holder once the hour is decided is nudged at M.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,7 +16,9 @@ import { claimRecordComment } from "./row-claim.ts";
 import { CLAIMED_WORKER_STALLED, STALL_INTERVAL_MS, STALL_UNTOLD_RELEASE_MS, recordStalledNudges, stalledNudgeEvents } from "./claim-stall.ts";
 import { FAILURE_LEDGER_FILE, parseFailureLedger, repeatsIn } from "./failure-ledger.ts";
 import { WORKER_STATE_DIR, writeDeclaration, type Declaration } from "./worker-state.ts";
-import { IDLE_CLAIMANT_MINUTES, STOPPED_CLAIMANT_MINUTES, WAIT_FIELDS, isStoppedHolder, stoppedNudgePrompt } from "./idle-claimant.ts";
+import { IDLE_CLAIMANT_MINUTES, STOPPED_CLAIMANT_MINUTES, WAIT_FIELDS, idleClaimantReading, isStoppedHolder, stoppedNudgePrompt } from "./idle-claimant.ts";
+import { FLAG_REGISTRY } from "./machinery-flag.ts";
+import { CANARY_STATE_FILE } from "./org-health.ts";
 
 const MIN = 60_000;
 const T0 = Date.parse("2026-10-10T09:00:00Z");
@@ -115,6 +119,41 @@ test("NEGATIVE CONTROL (#460, withdrawn for an open PR by agent-org#805): an ope
     rmSync(waiting, { recursive: true, force: true });
   }
   assert.deepEqual(nudgedAt(fixture(), 60).slice(0, 1), [M], "and the no-PR twin of all of them is nudged at M");
+});
+
+/** A state directory holding the canary's file, with `flag` switched `on` and its hour starting at `onAt` (ten minutes before T0 by default), its verdict as given. */
+function canaryIn(flag: string, { on = true, onAt = T0 - 10 * MIN, verdict = "watching" as string | null, raw = null as string | null } = {}): string {
+  const dir = mkdtempSync(join(tmpdir(), "idle-claimant-stopped-canary-"));
+  const state = { flags: { [flag]: { on, signals: [], onAt, verdict, decidedAt: null, readings: [], incident: null } }, samples: [], memo: {} };
+  writeFileSync(`${dir}/${CANARY_STATE_FILE}`, raw ?? JSON.stringify(state));
+  return dir;
+}
+
+test("CANARY HOUR (agent-org#1389): a claimed holder idle while the canary is still watching the flag its row names is WAITING and not nudged; its twins -- the hour decided, the hour over, the flag off, the row silent, an unreadable file -- are nudged at M", () => {
+  const FLAG = FLAG_REGISTRY[0];
+  const named = [rowOf(4001, "worker-9", { body: `Flips \`${FLAG}\` on for the canary.` })];
+  const dirs: string[] = [];
+  const canary = (over?: Parameters<typeof canaryIn>[1]) => { const dir = canaryIn(FLAG, over); dirs.push(dir); return dir; };
+  try {
+    const watched = fixture({ rows: named, stateDir: canary() });
+    const memory: Record<string, unknown> = {};
+    const orders: Order[] = [];
+    // the hour opens at `onAt` (T0 - 10 min) and closes an hour later, at T0 + 50 min: the holder is WATCHED on ticks 0 to 49
+    for (let m = 0; m < 50; m++) orders.push(...rawTickAt(m, watched, memory));
+    assert.deepEqual(orders, [], "the canary is inside its hour: the holder waits on it, so no nudge and no release, at any tick of the hour");
+    assert.deepEqual(nudgedAt(fixture({ rows: named, stateDir: canary({ verdict: "passed" }) }), 60)[0], M, "the control: the hour is decided (`passed`), so the holder is nudged at M");
+    assert.deepEqual(nudgedAt(fixture({ rows: named, stateDir: canary({ onAt: T0 - 61 * MIN }) }), 60)[0], M, "the hour is over: the window is one hour from `onAt`");
+    assert.deepEqual(nudgedAt(fixture({ rows: named, stateDir: canary({ on: false }) }), 60)[0], M, "the flag is OFF, so the canary watches nothing");
+    assert.deepEqual(nudgedAt(fixture({ rows: [rowOf(4001, "worker-9", { body: "Nothing about the canary." })], stateDir: canary() }), 60)[0], M, "the row names no flag");
+    assert.deepEqual(nudgedAt(fixture({ rows: named, stateDir: canary({ raw: "not json" }) }), 60)[0], M, "a canary file that cannot be read never excuses a quiet holder");
+  } finally {
+    for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("`canary-hour` is a field the idle reading names: a holder whose wait kind is the canary's reads waiting with that field", () => {
+  assert.deepEqual(idleClaimantReading({ session: "worker-9", built: true, waitKinds: ["canary-hour"] }, { now: T0, agents: listing({ "worker-9": "idle" }) }),
+    { kind: "waiting", fields: ["canary-hour"] });
 });
 
 test("REGIME OFF: a state directory that cannot be READ (not merely empty) leaves the 45-minute rules in force, because absence is not proof", () => {
