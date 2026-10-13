@@ -19,7 +19,7 @@ import { readReenqueueState, REENQUEUE_EJECTED_FLAG } from "../work-gate/causes/
 import { CHAIN_WAIT_FLAG } from "../work-gate/causes/org-health-chain-wait.ts";
 import { CLOSED_UNDER_HALF_FLAG } from "../work-gate/causes/rows-closed-under-half.ts";
 import { PACING_FLAG } from "../work-gate/pacing.ts";
-import { ROW_REVIEW_SKILL_FLAG } from "../work-gate/pr-orders.ts";
+import { PR_OWNER_ROUTING_FLAG, ROW_REVIEW_SKILL_FLAG } from "../work-gate/pr-orders.ts";
 import { QUEUE_ENTRY_NO_RUN_FLAG } from "../work-gate/causes/queue-entry-no-run.ts";
 import { RECHECK_FLAG } from "../work-gate/shared-file-orders.ts";
 import { AUTO_UNPARK_FLAG } from "../unpark-satisfied.ts";
@@ -68,7 +68,7 @@ test("(1) the other registered flags are switched on and read through their own 
   assert.equal(machineryFlagOn(state, OPEN_PR_HOLD_FLAG), true, "prune.holdOpenPr is switched by the command, which `openPrHoldOn` then reads (agent-org#1221)");
   assert.equal(machineryFlagOn(state, REFUSE_ASKING_ANNOUNCEMENTS_FLAG), true, "messaging.refuseAskingAnnouncements is switched by the command, which `canaryFlagOn` in watch.ts then reads (agent-org#1222)");
   assert.equal(machineryFlagOn(state, ROW_REVIEW_SKILL_FLAG), true, "review.rowReviewSkill is switched by the command, which `rowReviewSkillFlagOn` then reads (agent-org#1268)");
-  assert.deepEqual(FLAG_REGISTRY, [REENQUEUE_EJECTED_FLAG, CHAIN_WAIT_FLAG, CLOSED_UNDER_HALF_FLAG, AUTO_UNPARK_FLAG, QUEUE_ENTRY_NO_RUN_FLAG, RECHECK_FLAG, OPEN_PR_HOLD_FLAG, REFUSE_ASKING_ANNOUNCEMENTS_FLAG, PACING_FLAG, ROW_REVIEW_SKILL_FLAG, ACCOUNT_LIMIT_FLAG, PIN_BUMP_FLAG], "the registry is the twelve flags a module reads");
+  assert.deepEqual(FLAG_REGISTRY, [REENQUEUE_EJECTED_FLAG, CHAIN_WAIT_FLAG, CLOSED_UNDER_HALF_FLAG, AUTO_UNPARK_FLAG, QUEUE_ENTRY_NO_RUN_FLAG, RECHECK_FLAG, OPEN_PR_HOLD_FLAG, REFUSE_ASKING_ANNOUNCEMENTS_FLAG, PACING_FLAG, ROW_REVIEW_SKILL_FLAG, PR_OWNER_ROUTING_FLAG, ACCOUNT_LIMIT_FLAG, PIN_BUMP_FLAG], "the registry is the thirteen flags a module reads");
 });
 
 test("(1) the pin/bump count's flag (agent-org#1245) is registered, default OFF, and switched on and off by the command, which its reader then sees", () => {

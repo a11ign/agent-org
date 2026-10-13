@@ -22,7 +22,7 @@ import { readTrunkRed, trunkOfCodeRepository, trunkRedOrders } from "../trunk-re
 import { recordIgnoredChairmanLabels, recordTickFailures as recordFailuresOf } from "../failure-recorders.ts";
 import { readJsonObject, writeJsonObject } from "../claim-stall.ts";
 import { requiredWhenNeeded, perPullRequestOrders, greenUnarmedOrders, type UnarmedFacts, reviewBlockedOrders, stalledPrOrders,
-  STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr, ROW_REVIEW_SKILL_FLAG } from "./pr-orders.ts";
+  STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr, ROW_REVIEW_SKILL_FLAG, PR_OWNER_ROUTING_FLAG, withholdOutsideFollowUps } from "./pr-orders.ts";
 import { labJobFinishedOrders, readLabJobRecords, readDispatchedLabJobs } from "./lab-job-orders.ts";
 import { classAndKeyOf as orgHealthClassAndKey } from "./org-health-suppression.ts";
 import { TABLE_ROW as STANDING_ROW } from "../board-truth-audit.ts";
@@ -42,7 +42,7 @@ import { REVIEW_STATE, reviewStateOf } from "./pr-state.ts";
 import { EXIT, branchesToReplace, conditionalFor, defaultRun, holdTickBudget, inRepo, isGhRun, readArming, readClaimedRowComments, readElsewherePrs, readOpenRows,
   readPromotableRows, readPrs, readReadyRows, readWithFirstWaveTogether, repoNow, restReadsOfTick, runBatch, standingFor, isGateProcess } from "./reads.ts";
 import { type Budget, budgetLine, restConditionalOn, tickBudget } from "../gh-conditional.ts";
-import type { DeclaredIdentities } from "../review-trust.ts";
+import { declaredIdentities, type DeclaredIdentities } from "../review-trust.ts";
 import { claimedRowAmendedOrders } from "./causes/rows-amended.ts";
 import { answerGivenOrders, answerGivenOrdersOrNone, answerOrders, bareAnswerLabelOrders, bareAnswerOrdersOrNone, blockedReferentOrders,
   endedSessionLabels, liveWorkspaceLabels, rowsOwingAnswers } from "./causes/rows-answers.ts";
@@ -259,13 +259,14 @@ export function blockerClearedReading(rows: any[], today: string = todayIso(), n
  *        `recheck` is `RECHECK_FLAG`'s reading (agent-org#1187): OMITTED READS THE FLAG (`recheckFlagOn`), and a test or a replay passes it so the answer does not depend on the host's state directory.
  *        It carries no `= ...` default for `rowBranches`'s reason.
  *        `rowReviewSkill` is `ROW_REVIEW_SKILL_FLAG`'s reading (agent-org#1268), read the same way (`rowReviewSkillFlagOn`): OMITTED READS THE FLAG, and a test passes it.
+ *        `prOwnerRouting` is `PR_OWNER_ROUTING_FLAG`'s reading (agent-org#1325), read the same way (`prOwnerRoutingFlagOn`): OMITTED READS THE FLAG, and a test passes it.
  *        `claimFacts` is the claim-stall tick's reading of every claimed row (#3451) -- what `blockerClearedOrders` drops an order on. OMITTED MEANS NOT ASKED, so no drop;
  *        `null` is a tick that read no claim. It carries no `= undefined` default for `rowBranches`'s reason.
  */
 export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = [], prFiles = [],
   drain = false, required = null, epics = [], answerOwed = [], openRows = [], unarmed = null,
-  claimedComments = [], rowBranches, branchPrs, hostDrift, primaryDrift, closings, claimFacts, trunkRed, baseTip, claimStalls, offBoard, key, repo, callCountSignals, bareAnswerLabels, labJobs, claimRefusals, nowMs, recheck, rowReviewSkill, answerGiven, engineerStarts, projectDeclaration, shareLog, shareMemory, offerHierarchy, waitFacts, identities }: {
-        prs: any[]; readyRows: any[]; promotableRows?: any[]; chairmanBlocked?: any[]; nowMs?: number; recheck?: boolean; rowReviewSkill?: boolean;
+  claimedComments = [], rowBranches, branchPrs, hostDrift, primaryDrift, closings, claimFacts, trunkRed, baseTip, claimStalls, offBoard, key, repo, callCountSignals, bareAnswerLabels, labJobs, claimRefusals, nowMs, recheck, rowReviewSkill, prOwnerRouting, answerGiven, engineerStarts, projectDeclaration, shareLog, shareMemory, offerHierarchy, waitFacts, identities }: {
+        prs: any[]; readyRows: any[]; promotableRows?: any[]; chairmanBlocked?: any[]; nowMs?: number; recheck?: boolean; rowReviewSkill?: boolean; prOwnerRouting?: boolean;
         prFiles?: { number: number; files: string[]; changedFiles: number; }[];
         drain?: boolean; required?: string[] | null; epics?: any[]; answerOwed?: any[];
         key?: string; repo?: string; openRows?: any[]; unarmed?: number[] | UnarmedFacts | null;
@@ -376,7 +377,9 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // DRAIN WITHHOLDS, IT DOES NOT STOP. Filtering here rather than at each producer keeps the partition
   // in ONE place -- `START_CAUSES` is the whole statement of what "new work" means, and a cause added
   // without classifying it is caught by `work-gate.test.ts` rather than silently surviving a window.
-  return drain ? orders.filter((o) => !START_CAUSES.includes(o.cause)) : orders;
+  // #1325: LAST, over EVERY cause, because the PR causes come from six producers. With the flag on, an outside or chairman-authored pull request keeps its review.
+  const routed = prOwnerRoutingFlagOn(prOwnerRouting) ? withholdOutsideFollowUps(orders, prs, identities ?? declaredIdentities()) : orders;
+  return drain ? routed.filter((o) => !START_CAUSES.includes(o.cause)) : routed;
 }
 
 /**
@@ -417,6 +420,15 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
  */
 export function recheckFlagOn(asked?: boolean, read: () => CanaryState = () => readReenqueueState(REVIEWER_STATE_DIR, () => undefined)): boolean {
   return asked ?? machineryFlagOn(read(), RECHECK_FLAG);
+}
+
+/**
+ * agent-org#1325: `PR_OWNER_ROUTING_FLAG` (`prs.ownerRouting`), READ WHERE THE ORDERS ARE DECIDED, for `recheckFlagOn`'s reason. Absent, unreadable or malformed is OFF: every order as it was.
+ * @param [asked] the reading a caller already has; a test passes it so the answer does not move with the host's state directory
+ * @param [read] the flag's state, as `recheckFlagOn` reads it
+ */
+export function prOwnerRoutingFlagOn(asked?: boolean, read: () => CanaryState = () => readReenqueueState(REVIEWER_STATE_DIR, () => undefined)): boolean {
+  return asked ?? machineryFlagOn(read(), PR_OWNER_ROUTING_FLAG);
 }
 
 /**
