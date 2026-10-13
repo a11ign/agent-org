@@ -16,10 +16,12 @@ import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import {
   CANARY_STATE_FILE, DEFAULT_CANARY_OPTIONS, MACHINERY_SIGNALS, UNSOURCED_MACHINERY_SIGNALS, expireSuppressions, machineryCanaryTick, machineryFlagOn, parseCanaryOptions,
-  parseCanaryState, withMachineryFlag, emptyCanaryState, type CanaryFacts, type CanaryIo, type Suppression,
+  parseCanaryState, withMachineryFlag, emptyCanaryState, machineryValues, type CanaryFacts, type CanaryIo, type Suppression,
 } from "../org-health.ts";
 import { EXIT_NOTHING_SENT, machineryDeclarationProblems, machineryFilesIn, machineryRefusal, main } from "../pr-open.ts";
 import { deferredWakeCount, incidentSuppressions, machineryCanaryNow } from "../work-gate.ts";
+import { pacedUnread } from "../work-gate/pacing.ts";
+import { unreadLanes } from "../work-gate/tick.ts";
 import { workGateSource } from "../lib/work-gate-source.ts";
 
 const MINUTE = 60_000;
@@ -320,4 +322,22 @@ test("#5100 THE TICK CALLS IT: the gate's `main` puts `machineryCanaryNow`'s ord
   const pushes = source.match(/orders\.push\(\.\.\.machineryCanaryNow\(/g) ?? [];
   assert.equal(pushes.length, 1, "one call per tick: a second would sample twice and double every count");
   assert.ok(source.indexOf("holdHolderOrdersNow({") < source.indexOf("orders.push(...machineryCanaryNow("), "after the hold holders, before the dead man's switch");
+});
+
+/** The `blind-ticks` value one tick samples for the lanes it could not read (`unread`, as the gate hands it to `machineryCanaryNow`). */
+const blindTicksOf = (unread: string[]): number | null => machineryValues({ facts: facts({ unread }), since: T0 - MINUTE, now: T0, memo: {} }).values[MACHINERY_SIGNALS.BLIND_TICKS];
+
+test("#1329 (1) A PACED TICK IS NOT BLIND: the canary is handed the refused lanes only, so a repository the gate skipped by design samples `blind-ticks` as 0 (the call is a SOURCE pin; the skip is still named on the PARTIAL line)", () => {
+  const source = workGateSource();
+  assert.match(source, /machineryCanaryNow\(\{ unread: unreadLanes\(\{ prs, readyRows, others \}\)/, "the canary's `unread` is built from the refused lanes, not from `pacedSkips`");
+  // a paced tick: both primary lanes read, and the pool's reserve paced the repositories out
+  const pacedSkips = [{ refused: pacedUnread({ paced: true, remaining: 10 }, true) }];
+  assert.equal(blindTicksOf(unreadLanes({ prs: [], readyRows: [], others: [] })), 0, "nothing refused: 0 blind");
+  assert.ok(unreadLanes({ prs: [], readyRows: [], others: pacedSkips }).length > 0, "the PARTIAL line still names the paced lanes, so they are never reported clean");
+});
+
+test("#1329 (2) A REFUSED LANE IS BLIND: a refused pull-request list, Ready rows or other repository samples `blind-ticks` as 1", () => {
+  assert.equal(blindTicksOf(unreadLanes({ prs: null, readyRows: [], others: [] })), 1, "the pull-request list was refused");
+  assert.equal(blindTicksOf(unreadLanes({ prs: [], readyRows: null, others: [] })), 1, "the Ready rows were refused");
+  assert.equal(blindTicksOf(unreadLanes({ prs: [], readyRows: [], others: [{ refused: ["the other repositories' lanes"] }] })), 1, "another repository's read was refused");
 });

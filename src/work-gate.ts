@@ -670,7 +670,9 @@ function main() {
     ...endGateSpan("rulingOrders", rulingOrdersNow({ prsRead: prs, openRowsRead, now: Date.now() })), ...chairmanAsksNow(openRowsRead),
     ...holdHolderOrdersNow({ prs: prs === null ? null : [...prs, ...pullRequestsOfOthers(otherScopes)] })); // #2848, #2936, #2997, #4020, #4970: before the dead man's switch -- a repeating line, a stuck org: something found
   endGateSpan("chairmanAsks+holdHolders");
-  orders.push(...machineryCanaryNow({ unread: unreadLanes({ prs, readyRows, others: [...others, ...pacedSkips] }), unarmed: armingSplit === null ? null : armingSplit.unarmed, releaseRuns: releaseSeen.runs ?? null, suppressions: incident.suppressions, stranded: armingSplit?.stranded ?? [] })); endGateSpan("machineryCanary"); // a11ign#5100, a11ign#5125
+  // #1329: THE CANARY COUNTS REFUSED LANES ONLY. A repository the gate skipped BY DESIGN (paced, or no event named it) is not blind, so it
+  // stays out of `blind-ticks`; it is still named on the PARTIAL line below, which is where a skipped lane is reported.
+  orders.push(...machineryCanaryNow({ unread: unreadLanes({ prs, readyRows, others }), unarmed: armingSplit === null ? null : armingSplit.unarmed, releaseRuns: releaseSeen.runs ?? null, suppressions: incident.suppressions, stranded: armingSplit?.stranded ?? [] })); endGateSpan("machineryCanary"); // a11ign#5100, a11ign#5125
   endGateSpan("approvedUnqueued", approvedUnqueuedNow({ prs: prs === null ? null : [...prs, ...pullRequestsOfOthers(otherScopes)], repos: homeProjectDeclaration().tracker.map((t) => t.repo), repo: repoNow(), stateDir: REVIEWER_STATE_DIR, run: defaultRun })); // agent-org#893: the daily reading on #928; never throws, adds no order
   // FIRST OF ALL, AND ON PURPOSE (#2163): `wake` delivers in this order and records each delivery with a write, so
   // on a full disk the tick can end partway. The order that says the disk is full must not be the one behind it.
