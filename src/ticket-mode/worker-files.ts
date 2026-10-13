@@ -20,15 +20,49 @@ export const STOP_COUNT_FILE = "stop-refusals";
 /** The host file's `tickets.deny`, copied beside the outcome file, where the PreToolUse hook reads it. */
 export const DENY_FILE = "deny.json";
 
+/** The ticket a worker's ticket is part of, and the paths of its downloaded files. */
+export type ParentTicket = Readonly<{ ticket: Ticket; attachments: readonly string[] }>;
+
+/** A ticket's downloaded files as a list, with the order to read them first, or "None.". */
+function filesText(attachments: readonly string[]): string {
+  if (attachments.length === 0) return "None.";
+  return `Read every file here before you start. A plan among them is the agreed approach, so follow it.\n\n${attachments.map((path) => `- \`${path}\``).join("\n")}`;
+}
+
+/**
+ * The parent's section of the brief, or nothing for a ticket with no parent. Its description is quoted, so its own headings, such as its acceptance
+ * criteria for every part, cannot read as the worker's.
+ */
+function parentText(parent: ParentTicket | null): string {
+  if (parent === null) return "";
+  const { ticket, attachments } = parent;
+  const quoted = (ticket.description.trim() || "(no description)").split("\n").map((line) => `> ${line}`.trimEnd()).join("\n");
+  return `
+## The parent ticket
+
+${ticket.key}: ${ticket.title}
+
+${ticket.url}
+
+Your ticket is one part of ${ticket.key}, and its description covers every part. Do only your ticket's part, and follow each decision of the parent's that applies to it.
+
+${quoted}
+
+### Files from ${ticket.key}
+
+${filesText(attachments)}
+`;
+}
+
 /**
  * The brief, as markdown. `worktreeCommand` is the full command line that makes a worktree, short of the repository's name. `notes` is the host
  * file's `tickets.brief`, how workers behave on this machine.
  */
-export function briefText({ ticket, folder, ticketDir, attachments, clones, worktreeCommand, notes }: {
-  ticket: Ticket; folder: string; ticketDir: string; attachments: readonly string[]; clones: Readonly<Record<string, string>>; worktreeCommand: string; notes?: string;
+export function briefText({ ticket, folder, ticketDir, attachments, parent = null, clones, worktreeCommand, notes }: {
+  ticket: Ticket; folder: string; ticketDir: string; attachments: readonly string[]; parent?: ParentTicket | null; clones: Readonly<Record<string, string>>;
+  worktreeCommand: string; notes?: string;
 }): string {
   const repos = Object.entries(clones).map(([name, path]) => `- \`${name}\` at \`${path}\``).join("\n");
-  const files = attachments.length === 0 ? "None." : attachments.map((path) => `- \`${path}\``).join("\n");
   return `# ${ticket.key}: ${ticket.title}
 
 You are an unattended worker. Nobody will answer a question, so decide, do the work, and end by writing the outcome file below.
@@ -39,10 +73,10 @@ ${ticket.url}
 
 ${ticket.description.trim() || "(no description)"}
 
-## Attachments from the ticket
+## Files from the ticket
 
-${files}
-
+${filesText(attachments)}
+${parentText(parent)}
 ## Where the work lands: you decide
 
 You are in this ticket's own folder, \`${folder}\`. These are the repositories on this machine, checked out by the person you work for. Read them, but never commit or change branches in them:
@@ -57,9 +91,10 @@ ${repos}
 
 1. Find the cause in the code. Fix it, with a test that fails without the fix.
 2. Run the repository's checks on what you changed, then run the clean-code-review skill on your diff and fix what it finds.
-3. Commit with a conventional commit message.
-4. Push the branch and open ONE DRAFT pull request per repository you changed: \`gh pr create --draft\`, titled \`<type>(<scope>): <what changed>\`. The body links ${ticket.url}, says what changed and how you verified it, and, when the change is visible, shows it: take screenshots with what this machine provides (see "On this machine" when there is such a section), or else end the body with "Screenshot pending". A pull request that needs another repository's unmerged one says so in its body.
-5. If a design gate asks for a design check, decline it with "unattended worker, no design tool access" and say so in the pull request body.
+3. Check your diff against what was asked. List each acceptance criterion in the ticket. Add each decision in its files, its parent's description and its parent's files that applies to this ticket. Find where your diff meets each one, and finish any it misses. If you leave one unmet on purpose, say which and why in the pull request body.
+4. Commit with a conventional commit message.
+5. Push the branch and open ONE DRAFT pull request per repository you changed: \`gh pr create --draft\`, titled \`<type>(<scope>): <what changed>\`. The body links ${ticket.url}, says what changed and how you verified it, and, when the change is visible, shows it: take screenshots with what this machine provides (see "On this machine" when there is such a section), or else end the body with "Screenshot pending". A pull request that needs another repository's unmerged one says so in its body.
+6. If a design gate asks for a design check, decline it with "unattended worker, no design tool access" and say so in the pull request body.
 
 Never mark a pull request ready, request a review, merge, force-push, run a workflow, or post to Slack. Those are the person's.
 ${notes?.trim() ? `\n## On this machine\n\n${notes.trim()}\n` : ""}

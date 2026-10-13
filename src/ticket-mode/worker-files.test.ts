@@ -5,7 +5,7 @@ import { briefText, firstPrompt, workerFlags, workerSettings } from "./worker-fi
 import type { Ticket } from "./source.ts";
 
 const ticket = { key: "NBF-1270", title: "Refresh Data gives no feedback", description: "Clicking does nothing visible.", url: "https://linear.app/x/issue/NBF-1270",
-  branch: "nbf-1270-refresh", status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 3 } as Ticket;
+  branch: "nbf-1270-refresh", status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 3, parent: "NBF-1200" } as Ticket;
 const clones = { "nbl-ui-netbox": "/work/nbl-ui-netbox", "nbl-ui-platform-libs": "/work/nbl-ui-platform-libs" };
 
 test("the brief carries the ticket, every repository to choose from, the worktree command, the draft rule and the outcome file's path", () => {
@@ -15,6 +15,37 @@ test("the brief carries the ticket, every repository to choose from, the worktre
     "/node /tool/src/bin.ts ticket:worktree <repo>", "/work/.tickets/NBF-1270/<repo>", "nbf-1270-refresh", "never commit or change branches in them",
     "gh pr create --draft", "/state/tickets/NBF-1270/outcome.json", "attachment-1.png", "wrong-repo", "needs-human", "CLAUDE.md"]) {
     assert.ok(brief.includes(part), `the brief names ${part}`);
+  }
+});
+
+test("a parent's description is quoted under its own heading, with its files, and a ticket without one has no such section", () => {
+  const parentTicket = { ...ticket, key: "NBF-1200", title: "Feedback across the app", url: "https://linear.app/x/issue/NBF-1200",
+    description: "Every button gives feedback.\n\n## Acceptance criteria\n\n- [ ] every app", parent: null } as Ticket;
+  const brief = (parent?: { ticket: Ticket; attachments: string[] }) =>
+    briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], parent, clones, worktreeCommand: "w" });
+  const withParent = brief({ ticket: parentTicket, attachments: ["/d/parent/attachment-1-NBF-1200-0001-plan.md"] });
+  for (const part of ["## The parent ticket\n\nNBF-1200: Feedback across the app", "https://linear.app/x/issue/NBF-1200", "Do only your ticket's part",
+    "> Every button gives feedback.\n>\n> ## Acceptance criteria\n>\n> - [ ] every app", "### Files from NBF-1200", "`/d/parent/attachment-1-NBF-1200-0001-plan.md`"]) {
+    assert.ok(withParent.includes(part), `the brief carries ${part}`);
+  }
+  assert.equal(withParent.match(/^## Acceptance criteria/m), null, "the parent's criteria never read as the worker's own");
+  assert.equal(brief().includes("## The parent ticket"), false);
+});
+
+test("the ticket's files come with the order to read them first, and a ticket with none says so", () => {
+  const brief = (attachments: string[]) => briefText({ ticket, folder: "/f", ticketDir: "/d", attachments, clones, worktreeCommand: "w" });
+  assert.ok(brief(["/d/attachment-1-NBF-1270-0001-plan.md"]).includes(
+    "## Files from the ticket\n\nRead every file here before you start. A plan among them is the agreed approach, so follow it.\n\n- `/d/attachment-1-NBF-1270-0001-plan.md`"));
+  assert.ok(brief([]).includes("## Files from the ticket\n\nNone.\n"));
+});
+
+test("the worker checks its diff against every criterion and binding decision before it commits", () => {
+  const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w" });
+  const check = brief.indexOf("Check your diff against what was asked.");
+  assert.ok(check > 0, "the brief has the check");
+  assert.ok(check < brief.indexOf("Commit with a conventional commit message"), "it comes before the commit, so what it finds is fixed in it");
+  for (const part of ["each acceptance criterion in the ticket", "its parent's description and its parent's files", "say which and why in the pull request body"]) {
+    assert.ok(brief.includes(part), `the check names ${part}`);
   }
 });
 

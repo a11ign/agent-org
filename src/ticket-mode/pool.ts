@@ -24,11 +24,11 @@ import {
   finish, isLive, markResumed, markRunning, markStarting, nextStarts, observe, park, recordRepos, recordTrackerStates, unpark, unsettledKeys,
   type Entry, type Outcome, type Queue,
 } from "./queue.ts";
-import type { TicketSource } from "./source.ts";
+import type { Ticket, TicketSource } from "./source.ts";
 import { TICKET_ENV } from "./worktree-command.ts";
 import { HOST_FILE_ENV, type TicketSettings } from "./settings.ts";
 import {
-  BRIEF_FILE, DENY_FILE, OUTCOME_FILE, PREVIOUS_OUTCOME_FILE, STOP_COUNT_FILE, briefText, firstPrompt, workerFlags, workerSettings, type HookCommand,
+  BRIEF_FILE, DENY_FILE, OUTCOME_FILE, PREVIOUS_OUTCOME_FILE, STOP_COUNT_FILE, briefText, firstPrompt, workerFlags, workerSettings, type HookCommand, type ParentTicket,
 } from "./worker-files.ts";
 
 /** herdr waits on Claude's start; a slow one has been measured past 30 s (`wake.ts`'s start budget), so a start gets 90. */
@@ -223,20 +223,41 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
   }
 
   /**
+   * The ticket as the tracker has it now, so an edit made after it was queued reaches the worker. Its branch stays the one it was queued with,
+   * which a retry's worktree is already on. A ticket the tracker no longer has is briefed as it was queued.
+   */
+  async function current(queued: Ticket): Promise<Ticket> {
+    const fresh = await source.read(queued.key);
+    return fresh === null ? queued : { ...fresh, branch: queued.branch };
+  }
+
+  /** The ticket this one is part of, with its files in `<dir>/parent`, or `null`. A child's binding decisions are often in its parent's plan. */
+  async function parentOf(ticket: Ticket, dir: string): Promise<ParentTicket | null> {
+    // A run queued before tickets carried a parent has none recorded.
+    if (!ticket.parent) return null;
+    const parent = await source.read(ticket.parent);
+    if (parent === null) return null;
+    const parentDir = join(dir, "parent");
+    mkdirSync(parentDir, { recursive: true });
+    return { ticket: parent, attachments: await source.download(parent, parentDir) };
+  }
+
+  /**
    * The ticket's folder, its brief, its copy of this machine's refusals and its settings file. The folder sits among the person's repositories
    * (under `worktreeRoot`), so the worker starts with the workspace's own `CLAUDE.md` around it, and it is no repository itself: the worker makes
    * its worktrees inside it with `ticket:worktree` once it has decided where the work lands. Throws, with the reason, when any of it cannot be made.
    */
   async function prepare(entry: Entry): Promise<{ folder: string; dir: string }> {
-    const { ticket } = entry;
+    const ticket = await current(entry.ticket);
     const dir = ticketDir(settings, ticket.key);
     const folder = ticketFolder(settings, ticket.key);
     mkdirSync(dir, { recursive: true });
     // An earlier run's outcome and stop count would end this run before it began.
     for (const file of [OUTCOME_FILE, STOP_COUNT_FILE]) rmSync(join(dir, file), { force: true });
     const attachments = await source.download(ticket, dir);
+    const parent = await parentOf(ticket, dir);
     const worktreeCommand = `${hook.node} ${hook.bin} ticket:worktree`;
-    writeFileSync(join(dir, BRIEF_FILE), briefText({ ticket, folder, ticketDir: dir, attachments, clones: settings.clones, worktreeCommand, notes: machineNotes() }));
+    writeFileSync(join(dir, BRIEF_FILE), briefText({ ticket, folder, ticketDir: dir, attachments, parent, clones: settings.clones, worktreeCommand, notes: machineNotes() }));
     writeFileSync(join(dir, DENY_FILE), `${JSON.stringify(settings.deny)}\n`);
     mkdirSync(join(folder, ".claude"), { recursive: true });
     writeFileSync(join(folder, SETTINGS_FILE),

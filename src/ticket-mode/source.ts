@@ -22,6 +22,8 @@ export type Ticket = Readonly<{
   project: string | null;
   /** 0 is none, 1 is the most urgent. */
   priority: number;
+  /** The key of the ticket this one is part of, whose plan may bind it, or `null`. */
+  parent: string | null;
 }>;
 
 export interface TicketSource {
@@ -29,7 +31,10 @@ export interface TicketSource {
   assigned(): Promise<readonly Ticket[]>;
   /** One ticket by key, or `null` when the tracker has none by that key. Throws when the tracker cannot be asked. */
   read(key: string): Promise<Ticket | null>;
-  /** Fetch the files the ticket's description links to into `dir`, returning their paths. Short-lived links make this a step of preparing a worker. */
+  /**
+   * Fetch the files the ticket's description links to, and the files attached to it, into `dir`, returning their paths. Short-lived links make this
+   * a step of preparing a worker.
+   */
   download(ticket: Ticket, dir: string): Promise<readonly string[]>;
   /**
    * Each key's state TYPE in the tracker (`completed`, `canceled`, `started`, ...), for the keys the tracker knows. It is how the board learns a run's

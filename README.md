@@ -94,10 +94,13 @@ Each run starts in the ticket's own folder, `<worktreeRoot>/<ticket>`, among the
 ticket mode's own session (never the org's). The worker reads its ticket and decides where the work lands, which a model can do from what a
 ticket says and a rule cannot, then makes its worktree there with `ticket:worktree <repo>`. That command keeps the branch rules in code: the
 ticket's own branch (`branchName` in Linear, so Linear links the pull request), from the remote's default branch as `ls-remote` reports it,
-never an existing branch, and the same worktree again on a retry. The board shows the repositories once the worker has made them. The worker
-reads each repository's `CLAUDE.md`/`AGENTS.md` for its commands, opens a DRAFT pull request per repository it changed, and writes an outcome
-file: `draft-pr`, `wrong-repo` (the fix belongs in none of them) or `needs-human`.
-Nothing is written to Linear.
+never an existing branch, and the same worktree again on a retry. The board shows the repositories once the worker has made them. Its brief
+is written from the ticket as Linear has it when the run starts, on the branch it was queued with. The brief carries the files on the
+ticket, both those its description links to and those attached beside it, such as a plan. When the ticket is part of a parent ticket, the
+brief also carries the parent's description, quoted, and the parent's files. Before it commits, the worker checks its diff against each
+acceptance criterion and each decision that binds the ticket. The worker reads each repository's `CLAUDE.md`/`AGENTS.md` for its commands,
+opens a DRAFT pull request per repository it changed, and writes an outcome file: `draft-pr`, `wrong-repo` (the fix belongs in none of them)
+or `needs-human`. Nothing is written to Linear.
 
 **What a worker may not do** is enforced by `ticket:hook`, which the ticket folder's `.claude/settings.local.json` names, so a session herdr
 resumes after a restart keeps it. A stop with no outcome file is refused twice in a row. These are refused outright: a pull request that

@@ -32,15 +32,18 @@ function herdr(status: Map<string, string>, screen: { text: string } = { text: "
   return { run, calls, refused };
 }
 
-function setup(max = 2, keys = ["NBF-1", "NBF-2", "NBF-3"], tickets: Record<string, unknown> = {}) {
+/** `parents` gives a ticket its parent's key. A ticket without one is shaped as a run queued before tickets carried a parent. */
+function setup(max = 2, keys = ["NBF-1", "NBF-2", "NBF-3"], tickets: Record<string, unknown> = {},
+  { source: tracker = source, parents = {} }: { source?: TicketSource; parents?: Record<string, string> } = {}) {
   const root = tmpDir("ticket-pool-");
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox", "nbl-ui-platform-libs": "/repos/libs" }, stateDir: join(root, "state"), tickets });
-  let queue: Queue = setPaused(enqueue(emptyQueue(max), keys.map(ticket), { model: "sonnet", effort: "high" }, 0), false);
+  const queued = keys.map((key) => (key in parents ? { ...ticket(key), parent: parents[key] } : ticket(key)));
+  let queue: Queue = setPaused(enqueue(emptyQueue(max), queued, { model: "sonnet", effort: "high" }, 0), false);
   const store = { get: () => queue, set: (next: Queue) => { queue = next; } };
   const status = new Map<string, string>();
   const screen = { text: "" };
   const h = herdr(status, screen);
-  const pool = createPool(store, { settings, source, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: h.run, hostFile: "/work/.agent-org/host.json", now: () => 100, load: () => ({ load: 1, cores: 14 }), transcriptsRoot: join(root, "transcripts"), wait: async () => {} });
+  const pool = createPool(store, { settings, source: tracker, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: h.run, hostFile: "/work/.agent-org/host.json", now: () => 100, load: () => ({ load: 1, cores: 14 }), transcriptsRoot: join(root, "transcripts"), wait: async () => {} });
   const entry = (key: string) => queue.entries.find((e) => e.ticket.key === key)!;
   return { settings, pool, status, h, entry, store, root, screen };
 }
@@ -77,6 +80,49 @@ test("each run's brief carries the machine's notes, and its ticket dir a copy of
   const dir = ticketDir(settings, "NBF-1");
   assert.match(readFileSync(join(dir, "brief.md"), "utf8"), /## On this machine\n\nStart apps with `npm run dev:atomic`\./);
   assert.deepEqual(JSON.parse(readFileSync(join(dir, "deny.json"), "utf8")), deny);
+});
+
+test("a ticket's parent joins its brief, quoted, with the parent's files in a folder of their own", async () => {
+  const reads: string[] = [];
+  const downloads: string[] = [];
+  const tracker: TicketSource = {
+    ...source,
+    read: async (key) => {
+      reads.push(key);
+      return key === "NBF-100" ? { ...ticket(key), description: "Every app moves to error." } : null;
+    },
+    download: async (t, dir) => {
+      downloads.push(`${t.key} ${dir}`);
+      return [join(dir, `attachment-1-${t.key}-0001-plan.md`)];
+    },
+  };
+  const { pool, settings } = setup(3, ["NBF-1", "NBF-2", "NBF-3"], {}, { source: tracker, parents: { "NBF-1": "NBF-100", "NBF-2": "NBF-404" } });
+  await pool.tick();
+  const dir = ticketDir(settings, "NBF-1");
+  const brief = readFileSync(join(dir, "brief.md"), "utf8");
+  assert.match(brief, /## The parent ticket\n\nNBF-100: NBF-100\n/);
+  assert.match(brief, /\n> Every app moves to error\.\n/);
+  assert.ok(brief.includes(join(dir, "parent", "attachment-1-NBF-100-0001-plan.md")), "the parent's plan is named in the brief");
+  assert.ok(brief.includes(join(dir, "attachment-1-NBF-1-0001-plan.md")), "and so is the ticket's own");
+  assert.ok(downloads.includes(`NBF-100 ${join(dir, "parent")}`), "the parent's files land beside the ticket's, not over them");
+  assert.equal(readFileSync(join(ticketDir(settings, "NBF-2"), "brief.md"), "utf8").includes("## The parent ticket"), false, "a parent the tracker has no ticket for adds nothing");
+  assert.ok(reads.includes("NBF-404"), "a parent the tracker has no ticket for is still asked for");
+  assert.ok(reads.every((key) => typeof key === "string"), "a run queued before tickets carried a parent asks for none");
+});
+
+test("a run is briefed from its ticket as the tracker has it now, on the branch it was queued with", async () => {
+  const tracker: TicketSource = {
+    ...source,
+    read: async (key) => (key === "NBF-1" ? { ...ticket(key), title: "Edited title", description: "Edited after it was queued.", branch: "nbf-1-edited-title" } : null),
+  };
+  const { pool, settings, h } = setup(2, ["NBF-1", "NBF-2"], {}, { source: tracker });
+  await pool.tick();
+  const brief = readFileSync(join(ticketDir(settings, "NBF-1"), "brief.md"), "utf8");
+  assert.match(brief, /^# NBF-1: Edited title\n/);
+  assert.ok(brief.includes("Edited after it was queued."));
+  assert.ok(brief.includes("`nbf-1`") && !brief.includes("nbf-1-edited-title"), "Linear renames the branch with the title; a retry's worktree is on the queued one");
+  assert.ok(h.calls.find((args) => args.includes("create") && args.includes("AGENT_ORG_TICKET=NBF-1"))!.includes("AGENT_ORG_TICKET_BRANCH=nbf-1"));
+  assert.match(readFileSync(join(ticketDir(settings, "NBF-2"), "brief.md"), "utf8"), /^# NBF-2: NBF-2\n/, "a ticket the tracker no longer has is briefed as queued");
 });
 
 test("the machine's plugins are enabled in each worker's settings file", async () => {

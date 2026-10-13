@@ -5,7 +5,7 @@
 // as the person: their key, their assigned tickets. It writes nothing to Linear. Linear's own GitHub integration links each pull request, because
 // the worker's branch is the ticket's `branchName`.
 //
-// THE KEY NEVER LEAVES THIS MODULE. It is read once, from the macOS Keychain or a file the host file names, and sent only to api.linear.app.
+// THE KEY NEVER LEAVES THIS MODULE. It is read once, from the macOS Keychain or a file the host file names, and sent only to api.linear.app and uploads.linear.app.
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { extname, join } from "node:path";
@@ -15,11 +15,16 @@ import type { Ticket, TicketSource } from "./source.ts";
 export const LINEAR_API = "https://api.linear.app/graphql";
 /** Linear stores uploads here, and only a request carrying the key may read one. */
 const UPLOADS = /https:\/\/uploads\.linear\.app\/[^\s)"'<>]+/g;
+const UPLOAD_ORIGIN = "https://uploads.linear.app/";
+/** A tracker key, split into its team and number. */
+const TICKET_KEY = /^([A-Za-z][A-Za-z0-9]*)-(\d+)$/;
 const PAGE = 100;
 
 /** Keys read in one `stateTypes` request: each is an aliased query, and a long query text is one Linear may refuse. */
 const STATE_BATCH = 25;
-const ISSUE_FIELDS = "identifier title description url branchName priority state { name position } team { key } project { name }";
+const ISSUE_FIELDS = "identifier title description url branchName priority state { name position } team { key } project { name } parent { identifier }";
+/** A file name that is safe as it stands: no folder, and an extension. A plan's attachment title is one. */
+const FILE_NAME = /^[\w.-]+\.\w{1,8}$/;
 
 type Fetch = typeof fetch;
 
@@ -41,19 +46,27 @@ export function readLinearKey(source: KeySource, security: (args: string[]) => s
 
 type IssueNode = {
   identifier: string; title: string; description: string | null; url: string; branchName: string; priority: number;
-  state: { name: string; position: number }; team: { key: string }; project: { name: string } | null;
+  state: { name: string; position: number }; team: { key: string }; project: { name: string } | null; parent: { identifier: string } | null;
 };
 
 function toTicket(node: IssueNode): Ticket {
   return Object.freeze({
     key: node.identifier, title: node.title, description: node.description ?? "", url: node.url, branch: node.branchName,
     status: node.state.name, statusOrder: node.state.position, team: node.team.key, project: node.project?.name ?? null, priority: node.priority,
+    parent: node.parent?.identifier ?? null,
   });
 }
 
 /** Every Linear upload a description links to, once each, in the order they appear. PURE. */
 export function uploadLinks(description: string): string[] {
   return [...new Set(description.match(UPLOADS) ?? [])];
+}
+
+/** The name the `n`th download is saved as: its attachment title when that names a file, or else `attachment-<n>` and an extension. PURE. */
+export function downloadName(n: number, link: string, title: string | null, contentType: string): string {
+  if (title !== null && FILE_NAME.test(title)) return `attachment-${n}-${title}`;
+  const extension = extname(new URL(link).pathname) || (contentType.startsWith("image/") ? `.${contentType.slice(6).split(";")[0]}` : "");
+  return `attachment-${n}${extension}`;
 }
 
 export function linearSource({ key, fetch: request = fetch }: { key: string; fetch?: Fetch }): TicketSource {
@@ -68,6 +81,26 @@ export function linearSource({ key, fetch: request = fetch }: { key: string; fet
       throw new Error(`Linear answered ${response.status}: ${body?.errors?.map((e) => e.message).join("; ") ?? "no JSON"}`);
     }
     return body.data as T;
+  }
+
+  /**
+   * One ticket's `fields`, or `null` for a string that is no key or a key Linear has no ticket for. It reads by team and number, so a missing
+   * ticket is an empty list: nothing hangs on the wording of an error.
+   */
+  async function issue<T>(identifier: string, fields: string): Promise<T | null> {
+    const parts = TICKET_KEY.exec(identifier);
+    if (parts === null) return null;
+    const data: { issues: { nodes: T[] } } = await query(
+      `query($team: String!, $number: Float!) { issues(first: 1, filter: { team: { key: { eq: $team } }, number: { eq: $number } }) { nodes { ${fields} } } }`,
+      { team: parts[1].toUpperCase(), number: Number(parts[2]) });
+    return data.issues.nodes[0] ?? null;
+  }
+
+  /** The uploads attached to a ticket, as Linear lists them beside its description. Links to elsewhere, such as a pull request, are left out. */
+  async function attachedUploads(identifier: string): Promise<{ url: string; title: string }[]> {
+    const found = await issue<{ attachments: { nodes: { url: string; title: string }[] } }>(identifier, "attachments { nodes { url title } }");
+    // Anchored, because every download carries the key: a link that only mentions an upload goes somewhere else.
+    return (found?.attachments.nodes ?? []).filter(({ url }) => url.startsWith(UPLOAD_ORIGIN));
   }
 
   return {
@@ -86,20 +119,14 @@ export function linearSource({ key, fetch: request = fetch }: { key: string; fet
     },
 
     async read(identifier) {
-      // By team and number, so a key Linear has no ticket for is an empty list: nothing hangs on the wording of an error.
-      const parts = /^([A-Za-z][A-Za-z0-9]*)-(\d+)$/.exec(identifier);
-      if (parts === null) return null;
-      const data: { issues: { nodes: IssueNode[] } } = await query(
-        `query($team: String!, $number: Float!) { issues(first: 1, filter: { team: { key: { eq: $team } }, number: { eq: $number } }) { nodes { ${ISSUE_FIELDS} } } }`,
-        { team: parts[1].toUpperCase(), number: Number(parts[2]) });
-      const [found] = data.issues.nodes;
-      return found === undefined ? null : toTicket(found);
+      const found = await issue<IssueNode>(identifier, ISSUE_FIELDS);
+      return found === null ? null : toTicket(found);
     },
 
     async stateTypes(keys) {
       // One request per batch, each key an aliased read by team and number, as `read` does it.
       const states = new Map<string, string>();
-      const parsed = keys.map((key) => [key, /^([A-Za-z][A-Za-z0-9]*)-(\d+)$/.exec(key)] as const).filter((pair): pair is readonly [string, RegExpExecArray] => pair[1] !== null);
+      const parsed = keys.map((key) => [key, TICKET_KEY.exec(key)] as const).filter((pair): pair is readonly [string, RegExpExecArray] => pair[1] !== null);
       for (let start = 0; start < parsed.length; start += STATE_BATCH) {
         const batch = parsed.slice(start, start + STATE_BATCH);
         const params = batch.map((_, i) => `$t${i}: String!, $n${i}: Float!`).join(", ");
@@ -115,13 +142,14 @@ export function linearSource({ key, fetch: request = fetch }: { key: string; fet
     },
 
     async download(ticket, dir) {
+      const linked = uploadLinks(ticket.description);
+      const attached = (await attachedUploads(ticket.key)).filter(({ url }) => !linked.includes(url));
+      const files = [...linked.map((url) => ({ url, title: null })), ...attached];
       const paths: string[] = [];
-      for (const [index, link] of uploadLinks(ticket.description).entries()) {
-        const response = await request(link, { headers: { Authorization: key } });
+      for (const [index, { url, title }] of files.entries()) {
+        const response = await request(url, { headers: { Authorization: key } });
         if (!response.ok) continue;
-        const type = response.headers.get("content-type") ?? "";
-        const extension = extname(new URL(link).pathname) || (type.startsWith("image/") ? `.${type.slice(6).split(";")[0]}` : "");
-        const path = join(dir, `attachment-${index + 1}${extension}`);
+        const path = join(dir, downloadName(index + 1, url, title, response.headers.get("content-type") ?? ""));
         writeFileSync(path, Buffer.from(await response.arrayBuffer()));
         paths.push(path);
       }

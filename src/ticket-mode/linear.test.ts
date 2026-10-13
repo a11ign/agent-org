@@ -3,13 +3,15 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { LINEAR_API, linearSource, readLinearKey, uploadLinks } from "./linear.ts";
+import { LINEAR_API, downloadName, linearSource, readLinearKey, uploadLinks } from "./linear.ts";
 import type { Ticket } from "./source.ts";
 
 const node = (identifier: string, extra: Record<string, unknown> = {}) => ({
   identifier, title: `Title ${identifier}`, description: null, url: `https://linear.app/x/issue/${identifier}`, branchName: identifier.toLowerCase(),
-  priority: 2, state: { name: "Backlog", position: 0 }, team: { key: identifier.split("-")[0] }, project: { name: "Visual Explorer - GA" }, ...extra,
+  priority: 2, state: { name: "Backlog", position: 0 }, team: { key: identifier.split("-")[0] }, project: { name: "Visual Explorer - GA" }, parent: null, ...extra,
 });
+/** Linear's answer to the read of a ticket's attachments. */
+const attached = (...nodes: { url: string; title: string }[]) => ({ data: { issues: { nodes: [{ attachments: { nodes } }] } } });
 
 /** A Linear that answers GraphQL from `pages` in order, and recording every request. */
 function linear(pages: unknown[], uploads: Record<string, { status: number; body?: string; type?: string }> = {}) {
@@ -50,12 +52,19 @@ test("read() finds a ticket by its team and number, returns null for a key Linea
   await assert.rejects(linearSource({ key: "k", fetch: linear([{ errors: [{ message: "Authentication required" }] }]).fetch }).read("NBF-1"), /Authentication required/);
 });
 
+test("a ticket carries its parent's key, and null when it has none", async () => {
+  const { fetch } = linear([{ data: { issues: { nodes: [node("VE-65", { parent: { identifier: "NBF-1917" } })] } } }, { data: { issues: { nodes: [node("NBF-1917")] } } }]);
+  const tracker = linearSource({ key: "k", fetch });
+  assert.equal((await tracker.read("VE-65"))?.parent, "NBF-1917");
+  assert.equal((await tracker.read("NBF-1917"))?.parent, null);
+});
+
 test("download() fetches each Linear upload the description links to, with the key, and skips one that will not load", async () => {
   const a = "https://uploads.linear.app/org/a/one";
   const b = "https://uploads.linear.app/org/b/two.jpg";
   const ticket = { key: "NBF-1", description: `![one](${a}) text ![two](${b}) again ${a} and https://example.com/not-ours.png` } as Ticket;
   assert.deepEqual(uploadLinks(ticket.description), [a, b], "each upload once, in order, and only Linear's");
-  const { fetch, requests } = linear([], { [a]: { status: 200, body: "PNG", type: "image/png" }, [b]: { status: 403 } });
+  const { fetch, requests } = linear([attached()], { [a]: { status: 200, body: "PNG", type: "image/png" }, [b]: { status: 403 } });
   const dir = tmpDir("ticket-linear-download-");
   const paths = await linearSource({ key: "k", fetch }).download(ticket, dir);
   assert.equal(paths.length, 1);
@@ -63,6 +72,31 @@ test("download() fetches each Linear upload the description links to, with the k
   assert.equal(readFileSync(paths[0], "utf8"), "PNG");
   assert.ok(!existsSync(`${dir}/attachment-2.jpg`));
   assert.ok(requests.every(({ init }) => (init.headers as Record<string, string>).Authorization === "k"), "uploads are only readable with the key");
+});
+
+test("download() also fetches the uploads attached to the ticket, after the description's, and never sends the key off Linear", async () => {
+  const inline = "https://uploads.linear.app/org/a/inline";
+  const plan = "https://uploads.linear.app/org/b/plan";
+  const pull = "https://github.com/netboxlabs/nbl-ui-platform-libs/pull/775";
+  const lookalike = `https://example.com/redirect?to=${plan}`;
+  const ticket = { key: "NBF-1936", description: `![shot](${inline})` } as Ticket;
+  const { fetch, requests } = linear(
+    [attached({ url: plan, title: "NBF-1936-0001-plan-shared-config-lint-rules.md" }, { url: inline, title: "shot" }, { url: pull, title: "feat: lint" }, { url: lookalike, title: "x.md" })],
+    { [inline]: { status: 200, body: "PNG" }, [plan]: { status: 200, body: "# Plan", type: "text/markdown" } });
+  const dir = tmpDir("ticket-linear-attached-");
+  const paths = await linearSource({ key: "k", fetch }).download(ticket, dir);
+  assert.deepEqual(paths, [`${dir}/attachment-1.png`, `${dir}/attachment-2-NBF-1936-0001-plan-shared-config-lint-rules.md`], "an upload the description links to is fetched once");
+  assert.equal(readFileSync(paths[1], "utf8"), "# Plan");
+  assert.deepEqual(JSON.parse(String(requests[0].init.body)).variables, { team: "NBF", number: 1936 });
+  assert.deepEqual(requests.slice(1).map(({ url }) => url), [inline, plan], "a pull request link, or a link that only mentions an upload, is never fetched with the key");
+});
+
+test("a download keeps its attachment title as its name only when the title is a plain file name", () => {
+  const link = "https://uploads.linear.app/org/a/file";
+  assert.equal(downloadName(2, link, "NBF-1-0001-plan-x.md", "text/markdown"), "attachment-2-NBF-1-0001-plan-x.md");
+  assert.equal(downloadName(2, link, "../../escape.md", "text/markdown"), "attachment-2", "a title with a folder in it names nothing");
+  assert.equal(downloadName(2, link, "Screenshot", "image/png"), "attachment-2.png");
+  assert.equal(downloadName(1, "https://uploads.linear.app/org/a/two.jpg", null, "image/png"), "attachment-1.jpg", "the link's own extension comes first");
 });
 
 test("the key comes from the Keychain service or the file the host file names, and an empty one is refused", () => {
