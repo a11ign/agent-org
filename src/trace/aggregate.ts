@@ -333,8 +333,8 @@ const DEFERRED_MARK = "@deferred:";
 
 /** What counts as a change to an order's subject: the claim, a release, or a wait label going on or off. A head moving counts only for a key that names a head. */
 const CHANGE_KINDS = new Set(["claimed", "released", "labeled", "unlabeled"]);
-/** The head a pull request's key carries (`worker-2667/pr-checks-failing/pr-2669/ed8208fe`): the gate's short prefix of the sha. */
-const HEAD_OF_KEY = /\/pr-(?:[\w.-]+#)?\d+\/([0-9a-f]{7,40})$/;
+/** The head a pull request's key carries (`worker-2667/pr-checks-failing/pr-2669/ed8208fe`): the gate's short prefix of the sha. A settled-red key may end `/conflicting` or `/refail-<n>` after it. */
+const HEAD_OF_KEY = /\/pr-(?:[\w.-]+#)?\d+\/([0-9a-f]{7,40})(?:\/(?:conflicting|refail-\d+))?$/;
 const CHANGES = (["afterChange", "unchanged", "unexplained"] as const);
 
 /** The rows and pull requests a subject names, as keys that cannot be mistaken for one another. */
