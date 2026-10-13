@@ -81,12 +81,13 @@ takes them one each. `agent-org ticket:serve` starts a board on `127.0.0.1` and 
   browser. On a machine that sets `tickets.plan`, a ticket with no plan of its own is marked, so you can attach one before a worker starts it.
   The mark is muted when the ticket's parent has a plan, because a worker is briefed with its parent's plan too. An epic is never marked or
   counted, because no worker starts one. A Plan filter, also remembered, shows only the tickets with a plan, or only those without, each
-  under its epic. Choose the model and the effort, then Queue. You do not choose a repository: the worker does.
+  under its epic. Queue runs them on the model and effort set in Settings, which the footer names. You do not choose a repository: the
+  worker does.
 - **Board.** Every run in one list, newest activity first, each with a status icon after GitHub's Actions runs, and a filter per status
   with its count: Needs you, In progress, Blocked, Queued, Awaiting review, Completed, Failed and Cancelled. A run is Completed once the tracker
   completes its ticket, or once its pull requests have merged, as Linear's GitHub integration reports them. Linear completes a ticket on a
   merge only where its team's workflow says so. A run whose pull requests all closed unmerged is Cancelled. The board asks every two minutes. A run can be removed
-  while queued, stopped while running, and retried once it has failed. The number of workers at once can be changed live. On a machine
+  while queued, stopped while running, and retried once it has failed. The number of workers at once is set in Settings, and a change takes effect straight away. On a machine
   that sets `tickets.terminal`, a live or parked run has an Open terminal link to its agent's terminal in the browser.
 - **Parked, not closed, when a run needs you.** A run that ends `needs-human`, `wrong-repo` or with no outcome keeps its herdr workspace
   and holds no slot, so you can answer the agent in its terminal. Once the agent works again the run is In progress again, its old outcome

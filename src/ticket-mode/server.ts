@@ -68,16 +68,24 @@ export function refusal(request: Pick<IncomingMessage, "headers" | "method">, po
   return null;
 }
 
-/** The last model and effort chosen, so the page offers them again. */
+/** The model and effort the board's settings give a ticket queued from now on. A saved value the board no longer offers falls back. */
 function readChoice(path: string): RunChoice {
   const fallback: RunChoice = { model: "opus", effort: "high" };
   if (!existsSync(path)) return fallback;
   try {
     const saved = JSON.parse(readFileSync(path, "utf8")) as Partial<RunChoice>;
-    return { model: saved.model ?? fallback.model, effort: saved.effort ?? fallback.effort };
+    return {
+      model: MODELS.includes(String(saved.model)) ? String(saved.model) : fallback.model,
+      effort: EFFORTS.includes(String(saved.effort)) ? String(saved.effort) : fallback.effort,
+    };
   } catch {
     return fallback;
   }
+}
+
+function writeChoice(path: string, choice: RunChoice): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(choice)}\n`);
 }
 
 function checkModel(model: string): void {
@@ -96,8 +104,8 @@ function validRunChoice(body: Json): RunChoice {
   return { model, effort };
 }
 
-/** An amend names only what it changes, and each part is held to the rules queueing uses. */
-function validAmend(body: Json): Partial<RunChoice> {
+/** A change to a run's model or effort, or to the settings', names only what it changes, and each part is held to the rules queueing uses. */
+function validChange(body: Json): Partial<RunChoice> {
   const model = body.model === undefined ? undefined : String(body.model);
   const effort = body.effort === undefined ? undefined : String(body.effort);
   if (model !== undefined) checkModel(model);
@@ -144,10 +152,16 @@ export function createBoard(deps: BoardDeps) {
         tickets.push(ticket);
       }
       store.set(enqueue(queue, tickets, choice, now()));
-      mkdirSync(dirname(deps.choicePath), { recursive: true });
-      writeFileSync(deps.choicePath, `${JSON.stringify(choice)}\n`);
       wake();
       return [200, queue];
+    }
+    if (method === "POST" && path === "/api/choice") {
+      // Only the part named is changed, so two pages open at once cannot undo each other's other half.
+      const change = validChange(body);
+      if (Object.keys(change).length === 0) throw new Error("name a model or an effort to change");
+      const choice = { ...readChoice(deps.choicePath), ...change };
+      writeChoice(deps.choicePath, choice);
+      return [200, { choice }];
     }
     if (method === "POST" && path === "/api/paused") {
       if (typeof body.paused !== "boolean") throw new Error("paused must be true or false");
@@ -163,7 +177,7 @@ export function createBoard(deps: BoardDeps) {
     const action = /^\/api\/queue\/([A-Za-z0-9_-]+)\/(amend|remove|retry|stop|close)$/.exec(path);
     if (method === "POST" && action) {
       const [, key, verb] = action;
-      if (verb === "amend") store.set(amend(queue, key, validAmend(body)));
+      if (verb === "amend") store.set(amend(queue, key, validChange(body)));
       if (verb === "remove") store.set(remove(queue, key));
       if (verb === "retry") store.set(retry(queue, key, now()));
       if (verb === "stop") pool.stop(key);
