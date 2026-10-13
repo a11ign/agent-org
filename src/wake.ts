@@ -47,7 +47,7 @@ import { HAIKU_DEFAULT_CI_FAILURES, haikuDefaultOn, routeEngineer, type Routed }
 import { DEFAULT_CAPS, ESCALATION_KIND, ESCALATION_USE, claimFacts, escalationLogLine, escalationNote, haikuStarts, isHaiku, shouldEscalate, transcriptCounts } from "./engineer-escalation.ts";
 import { decisionLogPathFrom, decisionSwitchesPath, readSwitches } from "./decision-provider.ts";
 import { printDiagnostic, processState } from "./triage-provider.ts";
-import { classifyCiFailure, classLine, classNote, notesTheOrder, readCiFailure, type Gh } from "./ci-failure-class.ts";
+import { classifyCiFailure, classLine, classNote, failingAssertionLines, notesTheOrder, readCiFailure, type Gh } from "./ci-failure-class.ts";
 import { depthEffort, depthLine, readDepthState, reviewDepth, type Depth } from "./review-depth.ts";
 import { profileFor, agentArgs, haikuTierProfile, type TierProfile, armOf, ARM, CALM_FINISH_PARAGRAPH, tripsArmOf, TRIPS_ARM, ROUND_TRIPS_PARAGRAPH } from "./worker-profile.ts";
 import { JUDGMENT_CAUSES, ANSWER_PREFIX, LAUNCH_PLACEHOLDER, REVIEWER_REGISTRY_FILE, readReviewerRegistry, scopesOf,
@@ -6789,8 +6789,11 @@ export async function routesForStarts(orders: readonly { causeKey: string }[], {
  * leave an order as the gate wrote it whenever the facts could not be read or no provider answered.
  */
 export const ENRICH_AHEAD = 3;
-/** The cause key of a settled-red order (`<session>/pr-checks-failing/pr-<ref>/<head8>`, `/conflicting` optional); a hung check, an ejection and a checkless head end otherwise. */
-const RED_CHECK_KEY = /\/pr-checks-failing\/pr-([a-z0-9][a-z0-9-]*#)?([1-9][0-9]*)\/([0-9a-f]{8})(?:\/conflicting)?$/;
+/**
+ * The cause key of a settled-red order (`<session>/pr-checks-failing/pr-<ref>/<head8>`, `/conflicting` optional, then `/refail-<n>` for the nth same-head re-fail, agent-org#1185, which
+ * only a gate with `checks.sameHeadRefail` ON writes); a hung check, an ejection and a checkless head end otherwise.
+ */
+const RED_CHECK_KEY = /\/pr-checks-failing\/pr-([a-z0-9][a-z0-9-]*#)?([1-9][0-9]*)\/([0-9a-f]{8})(?:\/conflicting)?(\/refail-[1-9][0-9]*)?$/;
 type Enrichable = { session: string; causeKey: string; prompt: string; cause?: string };
 type EnrichDeps = { host: Parameters<typeof routeEngineer>[1]["host"]; ledgerPath: string; projectDir?: string; gh?: Gh };
 
@@ -6798,10 +6801,10 @@ const enrichDecisionDeps = ({ host, ledgerPath, projectDir = PRIMARY_CHECKOUT }:
   ({ host, switchesPath: decisionSwitchesPath(projectDir), logPath: decisionLogPathFrom(ledgerPath), id });
 
 /** The pull request a settled-red order is about, or `null` for a key naming none or a repository the declaration does not list (never the primary's by default). */
-function redPullRequestOf(order: Enrichable): { repo: string; number: number; head8: string } | null {
+function redPullRequestOf(order: Enrichable): { repo: string; number: number; head8: string; refail: boolean } | null {
   const match = order.cause === "pr-checks-failing" ? RED_CHECK_KEY.exec(order.causeKey) : null;
   const repo = match === null ? null : codeRepositoryOf((match[1] ?? "").replace(/#$/, ""));
-  return match === null || repo === null ? null : { repo, number: Number(match[2]), head8: match[3] };
+  return match === null || repo === null ? null : { repo, number: Number(match[2]), head8: match[3], refail: match[4] !== undefined };
 }
 
 /**
@@ -6813,16 +6816,26 @@ export async function withCiFailureClass<T extends Enrichable>(orders: readonly 
   const notes = new Map<string, string>();
   await Promise.all(orders.filter((o) => redPullRequestOf(o) !== null).slice(0, ENRICH_AHEAD).map(async (order) => {
     try {
-      const failure = read(redPullRequestOf(order)!, gh, now);
+      const red = redPullRequestOf(order)!;
+      const failure = read(red, gh, now);
       if (failure === null) return;
       const decision = await classify(failure, enrichDecisionDeps(deps, order.causeKey));
       process.stderr.write(`wake: ${order.causeKey} ${classLine(decision)}\n`);
-      if (notesTheOrder(decision)) notes.set(order.causeKey, classNote(decision));
+      // A same-head re-fail (agent-org#1185) is told WHAT failed whoever chose the class: the order exists because a rerun did not clear it, so "fix it" with nothing to read is half an order.
+      const named = red.refail ? refailNote(failure.errorLines) : null;
+      const note = [notesTheOrder(decision) ? classNote(decision) : null, named].filter((part): part is string => part !== null).join("\n\n");
+      if (note !== "") notes.set(order.causeKey, note);
     } catch (err) {
       process.stderr.write(`wake: could not classify ${order.causeKey} (${firstLine(err)}) -- the order as the gate wrote it.\n`);
     }
   }));
   return orders.map((o) => (notes.has(o.causeKey) ? { ...o, prompt: `${o.prompt}\n\n${notes.get(o.causeKey)}` } : o));
+}
+
+/** The failing assertion(s) a same-head re-fail's order carries, or `null` when the log named none. */
+function refailNote(errorLines: readonly string[]): string | null {
+  const lines = failingAssertionLines(errorLines);
+  return lines.length === 0 ? null : `The failing assertion, from this run's log:\n${lines.map((line) => `    ${line}`).join("\n")}`;
 }
 
 /**
