@@ -29,6 +29,9 @@ export type Ticket = Readonly<{
 /** A pull request's state as the tracker last saw it. A draft, or one in review, is `open`. */
 export type PullState = "open" | "merged" | "closed";
 
+/** A ticket that blocks another, as the tracker last saw it: its state's type and name, and the state of each pull request it links, by URL. */
+export type Blocker = Readonly<{ key: string; state: string; status: string; pulls: Readonly<Record<string, PullState>> }>;
+
 export interface TicketSource {
   /** Every unfinished ticket assigned to the person whose key this is. Throws when the tracker cannot be asked. */
   assigned(): Promise<readonly Ticket[]>;
@@ -50,4 +53,9 @@ export interface TicketSource {
    * leaves a run to its ticket's state. Throws when the tracker cannot be asked.
    */
   pullStates?(keys: readonly string[]): Promise<ReadonlyMap<string, Readonly<Record<string, PullState>>>>;
+  /**
+   * The tickets that block each key's ticket, by key, as the tracker records "blocked by". A key the tracker has no ticket for is left out. A
+   * source without it never holds a queued run back. Throws when the tracker cannot be asked.
+   */
+  blockers?(keys: readonly string[]): Promise<ReadonlyMap<string, readonly Blocker[]>>;
 }

@@ -557,6 +557,15 @@ describe("the audience guard refuses an announcement that asks, before any send 
     assert.deepEqual(on.misuses, []);
   });
 
+  test("a release whose notes use 'reply' and end in '?' is sent; the same word outside a release is refused", async () => {
+    const run = harness({ refuses: true });
+    const [release] = await run.tick([announcement({ key: "release:v1.3", kind: "release", text: "v1.3 is out: a reply that quotes a NOT CONVINCED verdict is no longer read as the verdict. Why?", firstSeenAt: START })]);
+    assert.equal(release.action, "sent");
+    const [milestone] = await run.tick([announcement({ key: "milestone:v1.3", kind: "milestone", text: "Milestone 9: reply here", firstSeenAt: START })]);
+    assert.equal(milestone.action, "invalid", "positive control: 'reply' outside a release is still refused");
+    assert.equal(run.provider.sent.length, 1, "only the release went out");
+  });
+
   test("a plain announcement is delivered byte-for-byte as it is with the guard OFF", async () => {
     const event = announcement({ key: "incident:trunk", text: "trunk is red" });
     const on = harness({ refuses: true });

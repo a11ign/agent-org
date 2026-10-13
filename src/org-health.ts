@@ -2446,7 +2446,8 @@ export type CanaryFacts = {
 export function machineryValues({ facts, since, now, memo }: { facts: CanaryFacts; since: number; now: number; memo: Record<string, number>; }): { values: Record<string, number | null>; memo: Record<string, number>; } {
   const inSpan = (at: number) => at > since && at <= now;
   const failedRuns = facts.releaseRuns?.runs.filter((run) => run.conclusion === "failure" && inSpan(Date.parse(run.updatedAt))).length ?? null;
-  const kept = Object.fromEntries(Object.entries(memo).filter(([key]) => !key.startsWith("unarmed:")));
+  // A refused read says nothing about the clocks (#1332): when `unarmed` is unread they are kept, not restarted.
+  const kept = Object.fromEntries(Object.entries(memo).filter(([key]) => facts.unarmed === null || !key.startsWith("unarmed:")));
   const seen = Object.fromEntries((facts.unarmed ?? []).map((pr) => [`unarmed:${pr}`, memo[`unarmed:${pr}`] ?? now]));
   const unqueued = facts.unarmed === null ? null : Object.values(seen).filter((first) => now - first >= UNQUEUED_MINUTES * MS_PER_MINUTE).length;
   return {
@@ -2550,9 +2551,9 @@ function advance({ state, facts, now, options }: { state: CanaryState; facts: Ca
 /**
  * THE GATE'S ONE CALL, PER TICK: sample the signals, evaluate every flag, file the incident of a revert, expire the suppressions, and return the orders. NEVER THROWS -- a canary that can crash the gate
  * stops every order behind it (`orgHealthTick`'s rule). A state file that cannot be read stops the canary this tick and says so; a flag is OFF unless the state says on, so the failure is the safe one.
- * @param tick `suppressed` is what the tick's own suppressors report they are keeping back
+ * @param tick `suppressed` is what the tick's own suppressors report they are keeping back. ABSENT means the tick did not ask them (a `CANNOT_ASK` tick, #1332): nothing is released and the held-order clocks are kept as they are, not read as ended
  */
-export function machineryCanaryTick({ now, facts, suppressed = [], dir, options, io }: {
+export function machineryCanaryTick({ now, facts, suppressed, dir, options, io }: {
   now: number; facts: CanaryFacts; suppressed?: Suppression[]; dir: string; options: CanaryOptions; io: CanaryIo;
 }): Record<string, any>[] {
   if (!options.enabled) return [];
@@ -2564,7 +2565,7 @@ export function machineryCanaryTick({ now, facts, suppressed = [], dir, options,
       const incident = filedIncident({ name, record, io });
       return [name, incident === null ? record : { ...record, incident }];
     }));
-    const { released, memo } = expireSuppressions({ suppressed, memo: moved.memo, now, minutes: options.suppressionMinutes });
+    const { released, memo } = suppressed === undefined ? { released: [], memo: moved.memo } : expireSuppressions({ suppressed, memo: moved.memo, now, minutes: options.suppressionMinutes });
     io.write(path, `${JSON.stringify({ flags, samples: moved.samples, memo }, null, 1)}\n`);
     const standing = Object.entries(flags).filter(([, record]) => record.verdict === "reverted" && now - (record.decidedAt as number) < CANARY_ORDER_HOURS * MS_PER_HOUR);
     return [...standing.map(([name, record]) => canaryOrder({ name, record })), ...released];

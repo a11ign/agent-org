@@ -895,8 +895,15 @@ function unownedSentence(pr: any, { blocking, nowMs }: { blocking: any[]; nowMs:
  * the red stays on the head while the real work turns from "fix the check" into "rebase". #2990 sat 63 minutes at
  * one key, delivered six times, with its owner never told. `/conflicting` is therefore part of the key: a
  * conflict-free red PR keeps its key byte for byte, and red-to-conflicted restarts the count.
+ *
+ * A RE-FAIL AT THE SAME HEAD IS A NEW CAUSE TOO, BEHIND `SAME_HEAD_REFAIL_FLAG` (agent-org#1185, half 2 of #1166). The key names the head and not the run, so a
+ * rerun that fails the same way was the first failure's key and the delivered ledger dropped it: agent-org#1130's `suite` failed, its rerun failed identically, and nobody
+ * was told. ON, `/refail-<n>` follows the key, `n` being how many EARLIER runs of a still-red check failed at this head ({@link earlierFailuresOnHead}); `n` is absent
+ * for a head that has failed once, so every key a head has today is byte for byte the same. OFF (the default, and every caller that does not pass it) never reads the
+ * earlier runs at all.
  */
-function failingChecksOrder(pr: any, required: string[] | null = null, baseTip: { sha: string; date: string; } | null = null) {
+function failingChecksOrder(pr: any, required: string[] | null = null, baseTip: { sha: string; date: string; } | null = null,
+  { sameHeadRefail = false }: { sameHeadRefail?: boolean } = {}) {
   // ONLY A CHECK THAT CAN HOLD THE PULL REQUEST COUNTS AS RED. A settled-red job outside the required
   // set is a real failure and somebody's problem -- it is not THIS pull request being blocked, and
   // waking its session to "fix the cause on that branch" is a prompt spent on a PR that merges anyway.
@@ -911,6 +918,8 @@ function failingChecksOrder(pr: any, required: string[] | null = null, baseTip: 
   const { session } = ownerOfPr(pr);
   if (redOnlyFromAHold(pr) || redWhileWaiting(pr)) return null;
   const conflicting = conflictStateOf(pr) === CONFLICT_STATE.CONFLICTING;
+  const refailed = sameHeadRefail ? earlierFailuresOnHead(pr.statusCheckRollup ?? [], blocking) : [];
+  const refails = Math.max(0, ...refailed.map(({ earlier }) => earlier));
   return {
     session,
     ...(session === DEAD_OWNER_FALLBACK ? {}
@@ -918,9 +927,29 @@ function failingChecksOrder(pr: any, required: string[] | null = null, baseTip: 
     cause: "pr-checks-failing",
     subject: `pr-${subjectRef(pr.repoKey, pr.number)}`,
     discriminator: head8,
-    prompt: failingChecksPrompt({ pr, head8, blocking, baseTip, conflicting, nowMs: Date.now() }),
-    causeKey: `${session}/pr-checks-failing/pr-${subjectRef(pr.repoKey, pr.number)}/${head8}${conflicting ? "/conflicting" : ""}`,
+    prompt: failingChecksPrompt({ pr, head8, blocking, baseTip, conflicting, nowMs: Date.now(), refailed }),
+    causeKey: `${session}/pr-checks-failing/pr-${subjectRef(pr.repoKey, pr.number)}/${head8}${conflicting ? "/conflicting" : ""}${refails > 0 ? `/refail-${refails}` : ""}`,
   };
+}
+
+/**
+ * agent-org#1185: the machinery flag behind which a re-fail at the same head is its own order. Its switch is `machinery:flag`; `decide` reads it (`sameHeadRefailFlagOn`, in
+ * `tick.ts`) and passes the reading in, so this file stays pure of the state directory. OFF is the key every red head has had.
+ */
+export const SAME_HEAD_REFAIL_FLAG = "checks.sameHeadRefail";
+/** A run that REPORTED a failure. `CANCELLED` is not one: `pull_request: edited` cancels the run in flight on the same head, and that is not the check failing. */
+const REPORTED_FAILURES = ["FAILURE", "TIMED_OUT"];
+
+/**
+ * Each still-red blocking check that ALSO failed in an earlier run at this head, with how many earlier runs did; empty when none did. `rollup` is the RAW `statusCheckRollup`, which unions superseded runs
+ * (`newest-check-run.ts`), and `blocking` is the newest run of each name narrowed from it, so an entry of `rollup` that is not the one in `blocking` is an earlier attempt.
+ * Runs are told apart by their job URL (a rerun is a new job), so one run listed twice counts once. Two workflows that each have a job of the same name are one name here,
+ * as `newestPerName` already reads them.
+ */
+function earlierFailuresOnHead(rollup: any[], blocking: any[]): { name: string; earlier: number }[] {
+  const earlierRuns = (newest: any) => new Set(rollup.filter((c) => c !== newest && c?.name === newest.name && REPORTED_FAILURES.includes(conclusionOf(c)))
+    .map((c, at) => (typeof c.detailsUrl === "string" && c.detailsUrl !== "" ? c.detailsUrl : `entry-${at}`))).size;
+  return blocking.filter((c) => checksSettledGreen([c]) === false).map((c) => ({ name: String(c.name), earlier: earlierRuns(c) })).filter(({ earlier }) => earlier > 0);
 }
 
 /**
@@ -944,6 +973,14 @@ const CONFLICTING_RED_SENTENCE = "IT ALSO CONFLICTS with `main` (GitHub reports 
   + "resolve the conflicts and push, then read what is red on the new run. ";
 
 /**
+ * agent-org#1185: what a re-fail's order says first. The check FAILED AGAIN at this head, so the rerun the owner (or the tick) made did not clear it and a further rerun is the
+ * one thing that cannot: the failing assertion, read from the job's log, is added to the order by the wake tick (`withCiFailureClass`).
+ */
+const sameHeadRefailSentence = (refailed: { name: string; earlier: number }[]) => `${refailed.map(({ name }) => `\`${name}\``).join(", ")} FAILED AGAIN at this same head: `
+  + `${refailed.map(({ name, earlier }) => `${earlier} earlier run${earlier === 1 ? "" : "s"} of \`${name}\``).join(", ")} failed here and a rerun did not clear it, so rerunning it again will not either. `
+  + "Read the failing assertion and fix it, or push the change that does. ";
+
+/**
  * The words of a `pr-checks-failing` order: when the failing run started, whether `main` has moved since,
  * and the question that decides the fix (#2117).
  *
@@ -954,8 +991,9 @@ const CONFLICTING_RED_SENTENCE = "IT ALSO CONFLICTS with `main` (GitHub reports 
  * whether the failing assertion names a defect or a refusal. #2087 (2026-09-23) cost two sessions a cycle
  * each, and they reached opposite readings of one PR.
  */
-function failingChecksPrompt({ pr, head8, blocking, baseTip, conflicting, nowMs }: { pr: any; head8: string; blocking: any[]; baseTip: { sha: string; date: string; } | null; conflicting: boolean; nowMs: number; }) {
+function failingChecksPrompt({ pr, head8, blocking, baseTip, conflicting, nowMs, refailed = [] }: { pr: any; head8: string; blocking: any[]; baseTip: { sha: string; date: string; } | null; conflicting: boolean; nowMs: number; refailed?: { name: string; earlier: number }[]; }) {
   return `${subjectMention(pr)} at \`${head8}\` has FAILING checks and is blocked. `
+    + (refailed.length > 0 ? sameHeadRefailSentence(refailed) : "")
     + (conflicting ? CONFLICTING_RED_SENTENCE : "")
     + `${ownershipSentence(pr, { blocking, nowMs })} `
     + `${baseMovedSentence(failingRunStartedAt(blocking), baseTip)} `
@@ -1354,11 +1392,11 @@ function unchangedRunningHead(pr: any, wait: "settled" | "running" | null): stri
  * the minutes CI takes is what wrote a `RESET` and re-armed it after each of #3033's four merges. Only `draft-awaiting-verdict` is
  * emitted from that state -- a settled verdict's follow-ups, `draft-convinced-not-ready`'s ready-flip above all, wait for settled checks.
  */
-function draftOrder(pr: any, required: string[] | null = null, baseTip: { sha: string; date: string; } | null = null, rowReviewSkill = false,
-  trust: ReviewTrust = INSIDE) {
+function draftOrder(pr: any, required: string[] | null = null, baseTip: { sha: string; date: string; } | null = null,
+  flags: { rowReviewSkill?: boolean; sameHeadRefail?: boolean } = {}, trust: ReviewTrust = INSIDE) {
   // RED FIRST, and before the green check: a red PR is work whether or not it is a draft, and it can
   // never reach the reviewer lane below, which requires green.
-  const red = failingChecksOrder(pr, required, baseTip);
+  const red = failingChecksOrder(pr, required, baseTip, { sameHeadRefail: flags.sameHeadRefail });
   if (red) return red;
   const wait = reviewWait(pr, required);
   const head = wait === "settled" ? reviewableHead(pr, required) : unchangedRunningHead(pr, wait);
@@ -1399,7 +1437,7 @@ function draftOrder(pr: any, required: string[] | null = null, baseTip: { sha: s
     cause: "draft-awaiting-verdict",
     subject: `pr-${subjectRef(pr.repoKey, pr.number)}`,
     discriminator: heads.key,
-    prompt: trust === OUTSIDE ? outsidePrompt(pr, heads.head8, reviewerRoleFile(pr)) : awaitingVerdictPrompt(pr, heads, rowReviewSkill),
+    prompt: trust === OUTSIDE ? outsidePrompt(pr, heads.head8, reviewerRoleFile(pr)) : awaitingVerdictPrompt(pr, heads, flags.rowReviewSkill),
     causeKey: `${session}/draft-awaiting-verdict/pr-${subjectRef(pr.repoKey, pr.number)}/${heads.key}`,
     // #1311: THE TRUST IS ON THE ORDER, so the spawn that starts its reviewer reads it from the order and never decides it again.
     trust,
@@ -1410,16 +1448,16 @@ function draftOrder(pr: any, required: string[] | null = null, baseTip: { sha: s
  * Every order the open pull requests earn: each one's own (`draftOrder`), the checkless ones (#3092), the ones GitHub holds for review that
  * NO order reached (#4002), the later one of each pair that changes one file (#3480), then the set-wide one for labelled pull requests nobody
  * has explained (#2416).
- * @param [now] the clock, omitted is `Date.now()`; or `{ nowMs, recheck, rowReviewSkill }` (agent-org#1187, #1268), which is how `RECHECK_FLAG`'s and `ROW_REVIEW_SKILL_FLAG`'s readings reach the orders without a 5th
+ * @param [now] the clock, omitted is `Date.now()`; or `{ nowMs, recheck, rowReviewSkill, sameHeadRefail }` (agent-org#1187, #1268, #1185), which is how `RECHECK_FLAG`'s, `ROW_REVIEW_SKILL_FLAG`'s and `SAME_HEAD_REFAIL_FLAG`'s readings reach the orders without a 5th
  *   positional parameter (`max-params`). `recheck` omitted is OFF, so a caller that passes a bare clock, as every caller did before, gets the ordering it always got.
  */
-export function perPullRequestOrders(prs: any[], required: string[] | null, baseTip?: any, now: number | { nowMs?: number; recheck?: boolean; rowReviewSkill?: boolean; identities?: DeclaredIdentities; } = Date.now()) {
-  const { nowMs = Date.now(), recheck = false, rowReviewSkill = false, identities } = typeof now === "number" ? { nowMs: now } : now;
+export function perPullRequestOrders(prs: any[], required: string[] | null, baseTip?: any, now: number | { nowMs?: number; recheck?: boolean; rowReviewSkill?: boolean; sameHeadRefail?: boolean; identities?: DeclaredIdentities; } = Date.now()) {
+  const { nowMs = Date.now(), recheck = false, rowReviewSkill = false, sameHeadRefail = false, identities } = typeof now === "number" ? { nowMs: now } : now;
   // #1311: the declared identities are read ONCE per call, and only when a pull request is asked at all; a test passes its own.
   let declared = identities;
   const asked = prs.map((pr) => {
     declared ??= declaredIdentities();
-    return { pr, order: draftOrder(pr, required, baseTip, rowReviewSkill, reviewTrustOf(pr, declared)) };
+    return { pr, order: draftOrder(pr, required, baseTip, { rowReviewSkill, sameHeadRefail }, reviewTrustOf(pr, declared)) };
   });
   const unreached = asked.filter(({ pr, order }) => order === null && !isCheckless(pr, nowMs)).map(({ pr }) => pr);
   return [...asked.flatMap(({ order }) => order ?? []), ...checklessPrOrders(prs, nowMs), ...unorderedPrOrders(unreached, required, nowMs),

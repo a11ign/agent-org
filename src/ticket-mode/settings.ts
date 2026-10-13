@@ -4,7 +4,8 @@
 // MACHINE FACTS ONLY, IN THE HOST FILE AGENT-ORG ALREADY READS. Which repositories this machine has checked out, where worktrees go, how many
 // workers it can carry and where the tracker's key lives are facts no repository can know, which is the host file's rule (`host-config.ts`'s
 // header). Nothing here is a fact about one repository: a worker chooses the repository and reads its own `CLAUDE.md`. The optional `brief`,
-// `deny` and `plugins` say how workers behave on this machine, for example how they share its dev servers with each other and with the person.
+// `deny`, `plugins` and `connectors` say how workers behave on this machine, for example how they share its dev servers with each other and with
+// the person, and which of the person's connectors they may call.
 // The optional `terminal` says where this machine serves a worker's terminal in a browser, if it does.
 //
 // READ RAW, AS `haiku-brief.ts` READS ITS KEY. `readHostConfig` ignores unknown keys, so `tickets` is inert to every existing reader, and this
@@ -42,6 +43,11 @@ export type TicketSettings = Readonly<{
   plugins: readonly string[];
   /** The web address of a run's live terminal, with `{workspace}`, `{pane}` and `{key}` filled in per run, or null when this machine serves none. */
   terminal: string | null;
+  /**
+   * The connector tools a worker may call, as regular expressions matched against the tool's name, each anchored at its start with `^mcp__`.
+   * Every other connector stays refused. None by default.
+   */
+  connectors: readonly string[];
 }>;
 
 export class TicketSettingsRefusal extends Error {
@@ -90,6 +96,27 @@ function terminalTemplate(value: unknown): string | null {
   return value;
 }
 
+const CONNECTOR_SHAPE = "a regular expression anchored at the tool's name, such as \"^mcp__claude_ai_Linear__(get|list|search)_\"";
+
+/**
+ * Each pattern must start `^mcp__`, so it is read from the start of a connector tool's name. An unanchored one, such as `Linear`, would also let
+ * through any other connector whose tool name happens to contain it.
+ */
+function connectorPatterns(value: unknown): readonly string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new TicketSettingsRefusal("tickets.connectors", `must be a list, each ${CONNECTOR_SHAPE}`);
+  return Object.freeze(value.map((pattern: unknown, i) => {
+    const field = `tickets.connectors[${i}]`;
+    if (typeof pattern !== "string" || !pattern.startsWith("^mcp__")) throw new TicketSettingsRefusal(field, `must be ${CONNECTOR_SHAPE}, not ${JSON.stringify(pattern)}`);
+    try {
+      new RegExp(pattern);
+    } catch {
+      throw new TicketSettingsRefusal(field, `is not a regular expression: ${JSON.stringify(pattern)}`);
+    }
+    return pattern;
+  }));
+}
+
 function denyRules(value: unknown): readonly DenyRule[] {
   if (value === undefined) return [];
   if (!Array.isArray(value)) throw new TicketSettingsRefusal("tickets.deny", `must be a list of ${DENY_RULE_SHAPE}`);
@@ -135,6 +162,7 @@ export function parseTicketSettings(host: unknown, home: string = homedir()): Ti
     deny: denyRules(tickets.deny),
     plugins: pluginList(tickets.plugins),
     terminal: terminalTemplate(tickets.terminal),
+    connectors: connectorPatterns(tickets.connectors),
   });
 }
 

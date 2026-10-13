@@ -22,7 +22,7 @@
 // WHAT THE CORE NEVER DOES: invent a message the ledger does not hold. A held-down or duplicate observation writes no line (it is not
 // an attempt, and 100 ticks must not write 100 lines); a deferral, a failure and a digest overflow each write one.
 
-import { HALF, asksSomething, excerptOf, markersOf, refusalEventOf } from "./audit.ts";
+import { HALF, announcementAsks, excerptOf, refusalEventOf } from "./audit.ts";
 import { askFields, createAsks, firstLineOf, refusalFor } from "./asks.ts";
 import type { FailureEvent } from "../failure-ledger.ts";
 import { normalizeEvent, stateFingerprint } from "./event.ts";
@@ -40,7 +40,7 @@ const DIGEST_ENTRY_LIMIT = 200;
 
 /**
  * THE AUDIENCE GUARD (a11ign#5112, agent-org#1222): with the flag ON, `deliver()` refuses an announcement whose text asks the chairman something, before any send.
- * `asksSomething` with `markersOf` is the one predicate (`audit.ts`), so the guard and the detector cannot disagree about what an ask is. OFF, nothing is refused and the
+ * `announcementAsks` (`audit.ts`) is the one predicate, so the guard and the detector cannot disagree about what an ask is. OFF, nothing is refused and the
  * detector alone records, as it always did. A machinery flag (`machinery-flag.ts`), read by the caller, which passes the answer in: this module reads no state file.
  */
 export const REFUSE_ASKING_ANNOUNCEMENTS_FLAG = "messaging.refuseAskingAnnouncements";
@@ -273,7 +273,7 @@ export function createMessenger({ provider, ledger, now, config: overrides, refu
   async function deliver(event: MessagingEvent, plan: Extract<Plan, { action: "send"; }>): Promise<Decision> {
     const { audience } = plan;
     if (audience === undefined || !AUDIENCES.includes(audience)) return refuseUndeclared(event);
-    if (refusesAskingAnnouncements && audience === AUDIENCE.announcement && asksSomething(event.text, markersOf({ key: event.key }))) return refuseAsking(event);
+    if (refusesAskingAnnouncements && audience === AUDIENCE.announcement && announcementAsks(event.key, event.text)) return refuseAsking(event);
     const policy = config.kinds[event.kind];
     const asked = audience === AUDIENCE.ask;
     const refusal = asked ? refusalFor({ key: event.key, rowLess: policy.rowLess }) : null;

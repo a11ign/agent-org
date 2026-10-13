@@ -75,11 +75,12 @@ The org (the gate, rows, the board, the reviewer) decides its own work. Ticket m
 takes them one each. `agent-org ticket:serve` starts a board on `127.0.0.1` and prints its URL, which carries a one-time token.
 
 - **Pick.** Your assigned Linear tickets that are not done or canceled, grouped by status the way Linear shows them, with Select All per
-  group and for the page. A ticket sits under its parent, whatever its own status. A parent that is not yours, such as an epic someone else
-  owns, heads its children without a checkbox. Filter by Linear project (several at once) or by search, and fold any status group; both are remembered in the
+  group and for the page. A ticket sits under its parent, whatever its own status. A parent folds the tickets under it away, and starts folded.
+  Its checkbox picks every ticket under it that is not on the queue, never the parent itself, and shows part ticked when only some are picked.
+  A parent that is not yours, such as an epic someone else owns, says so. Filter by Linear project (several at once) or by search, and fold any status group; both are remembered in the
   browser. Choose the model and the effort, then Queue. You do not choose a repository: the worker does.
 - **Board.** Every run in one list, newest activity first, each with a status icon after GitHub's Actions runs, and a filter per status
-  with its count: Needs you, In progress, Queued, Awaiting review, Completed, Failed and Cancelled. A run is Completed once the tracker
+  with its count: Needs you, In progress, Blocked, Queued, Awaiting review, Completed, Failed and Cancelled. A run is Completed once the tracker
   completes its ticket, or once its pull requests have merged, as Linear's GitHub integration reports them. Linear completes a ticket on a
   merge only where its team's workflow says so. A run whose pull requests all closed unmerged is Cancelled. The board asks every two minutes. A run can be removed
   while queued, stopped while running, and retried once it has failed. The number of workers at once can be changed live. On a machine
@@ -88,6 +89,12 @@ takes them one each. `agent-org ticket:serve` starts a board on `127.0.0.1` and 
   and holds no slot, so you can answer the agent in its terminal. Once the agent works again the run is In progress again, its old outcome
   is moved to `outcome.prev.json`, and the worker must write a new one before it stops. Close shuts a parked run's workspace and keeps its
   outcome, and a parked run is retried only once it is closed.
+- **Blocked until what blocks it is done.** A queued run whose ticket the tracker marks "blocked by" another waits, as Blocked, naming what
+  it waits on, and holds no slot, while a run queued after it with nothing blocking it starts first. A blocker lets go once the tracker
+  completes it, or, when it is on the queue itself, once its run is Completed, which its pull requests merging is enough for. A canceled or
+  duplicate blocker never lets go, so a person decides. The blockers are read before a run first starts, and nothing starts while the tracker
+  cannot say; they are read again every two minutes, so a relation changed in the tracker counts. A run that waited names its blockers and
+  their pull requests in its brief, and checks that any release it depends on is out before relying on it.
 - **Paused until you start it.** A new queue is paused, so queueing a ticket never also starts it: queue what you want, then press
   Start workers on the Board when what the workers need is ready. Pause stops new starts and leaves running workers alone, and the
   choice survives a restart of the board.
@@ -99,15 +106,18 @@ ticket's own branch (`branchName` in Linear, so Linear links the pull request), 
 never an existing branch, and the same worktree again on a retry. The board shows the repositories once the worker has made them. Its brief
 is written from the ticket as Linear has it when the run starts, on the branch it was queued with. The brief carries the files on the
 ticket, both those its description links to and those attached beside it, such as a plan. When the ticket is part of a parent ticket, the
-brief also carries the parent's description, quoted, and the parent's files. Before it commits, the worker checks its diff against each
-acceptance criterion and each decision that binds the ticket. The worker reads each repository's `CLAUDE.md`/`AGENTS.md` for its commands,
+brief also carries the parent's description, quoted, and the parent's files. Before it commits, a subagent that has not seen the worker's
+reasoning reviews the diff, read only, for behaviour it changed but meant to keep. The worker then checks its diff against each
+acceptance criterion and each decision that binds the ticket, and backs each behaviour its pull request body claims with an assertion of
+exactly that behaviour, run on the base. The worker reads each repository's `CLAUDE.md`/`AGENTS.md` for its commands,
 opens a DRAFT pull request per repository it changed, and writes an outcome file: `draft-pr`, `wrong-repo` (the fix belongs in none of them)
 or `needs-human`. Nothing is written to Linear.
 
 **What a worker may not do** is enforced by `ticket:hook`, which the ticket folder's `.claude/settings.local.json` names, so a session herdr
 resumes after a restart keeps it. A stop with no outcome file is refused twice in a row. These are refused outright: a pull request that
-is not a draft, `gh pr ready`, `merge` and `review`, requesting a reviewer, `gh workflow run`, a force push, and every MCP connector. A
-machine adds its own refusals with `tickets.deny`.
+is not a draft, `gh pr ready`, `merge` and `review`, requesting a reviewer, `gh workflow run`, a force push, and every MCP connector the
+machine does not name in `tickets.connectors`. A worker runs with the person's connectors, Slack and mail among them, so a machine names
+only the tools its workers need, such as its tracker's reads. A machine adds its own refusals with `tickets.deny`.
 
 **Configuration** is machine facts only, in the host file `$AGENT_ORG_HOST` names. Only `clones` is required, and it lists every repository
 a worker can choose from:
@@ -127,6 +137,7 @@ a worker can choose from:
 | `tickets.brief` | none. A markdown file added to every worker's brief under "On this machine", read again for each run: how workers share the machine, such as the command that starts a dev server without taking a fixed port |
 | `tickets.plugins` | none. `["name@marketplace", ...]`: Claude Code plugins every worker runs with, already installed on the machine. A worker starts in its ticket's folder, where none of the person's project settings apply, so a plugin enabled only for a project would be missing |
 | `tickets.deny` | none. `[{ "pattern": "<regular expression>", "reason": "<why>" }]`: Bash commands the hook refuses as well as its own, each matched against the whole command, with the reason the worker is told |
+| `tickets.connectors` | none, and every connector is refused. `["^mcp__<connector>__<tools>", ...]`: regular expressions, each anchored with `^mcp__`, for the connector tools a worker may call, matched against the tool's name. Linear's reads through the claude.ai connector: `["^mcp__claude_ai_Linear__(get\\|list\\|search\\|extract)_"]`. The brief names them, so a worker can read its ticket's parent and blockers |
 | `tickets.terminal` | none, and the board shows no terminal link. A web address that serves a run's terminal, with `{workspace}`, `{pane}` and `{key}` filled in per run: for [herdr web ui](https://github.com/devswha/herdr-web-ui) serving the `tickets` session on port 7318, `"http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal"` |
 | `stateDir` | `~/.local/state/agent-org`: the queue, each ticket's brief, attachments and outcome |
 

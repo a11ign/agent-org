@@ -46,7 +46,7 @@ function tick(on: Host, now: number) {
 
 /** An announcement line as the core writes it; `over` is what a case changes. */
 const announcement = (over: Line = {}): Line => ({
-  key: "release:a11ign/agent-org@v0.1.0", status: "sent", kind: "first", audience: "announcement", providerMessageId: "m-1", text: "agent-org v0.1.0 is released", ...over,
+  key: "incident:power", status: "sent", kind: "first", audience: "announcement", providerMessageId: "m-1", text: "Power is back", ...over,
 });
 
 function appendToLedger(on: Host, lines: Line[]) {

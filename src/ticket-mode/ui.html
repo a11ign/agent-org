@@ -38,6 +38,8 @@
   .row.taken { opacity: .55; }
   .row.child { padding-left: calc(12px + var(--depth) * 24px); }
   .row.context, .row.context a { color: var(--muted); }
+  .row .fold { font-size: 14px; width: 16px; margin-right: 4px; vertical-align: middle; }
+  .row .fold[aria-expanded="false"] { transform: rotate(-90deg); }
   .row .sub { color: var(--muted); font-size: 12px; }
   .key { font-variant-numeric: tabular-nums; color: var(--muted); }
   .pill { font-size: 12px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
@@ -66,7 +68,7 @@
   .empty { padding: 32px 16px; color: var(--muted); text-align: center; }
   .icon { width: 16px; height: 16px; margin-top: 2px; display: block; }
   .icon svg { width: 16px; height: 16px; display: block; }
-  .st-queued { color: var(--st-queued); } .st-working { color: var(--st-progress); } .st-needs-you { color: var(--st-needs); }
+  .st-queued, .st-blocked { color: var(--st-queued); } .st-working { color: var(--st-progress); } .st-needs-you { color: var(--st-needs); }
   .st-awaiting-review { color: var(--st-review); } .st-completed { color: var(--st-done); } .st-failed { color: var(--st-failed); } .st-cancelled { color: var(--st-cancelled); }
   .runs .run .st-working svg { animation: spin 1.1s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -122,8 +124,8 @@
 // The decisions (what shows, how it groups, what can be selected, what status a run has and what it offers) are board-view.ts's, tested there.
 // This page only draws what they return and wires the clicks.
 import {
-  RUN_STATUSES, flatten, groupByStatus, isParked, projectCounts, projectOf, queueLabel, recall, remember, runActions, runStatus, runsShown, selectable, statusCounts, terminalLink,
-  toggled, visibleTickets,
+  RUN_STATUSES, flatten, groupByStatus, isParked, parentKeys, parentTick, projectCounts, projectOf, queueLabel, recall, remember, runActions, runStatus, runsShown, selectable, statusCounts, terminalLink,
+  ticketCount, toggled, visibleTickets, waitsOn,
 } from "/board-view.js";
 
 const el = (tag, props = {}, ...children) => {
@@ -137,9 +139,12 @@ const state = {
   tickets: [], parents: [], queue: { entries: [], max: 3, paused: true }, selected: new Set(), terminal: null,
   // Sections start collapsed, so a first visit sees every status and its count before any list.
   open: recall(storage, "ticket-mode.open"), projects: recall(storage, "ticket-mode.projects"),
+  // Parents start folded too, so an epic reads as one row until it is opened.
+  openParents: recall(storage, "ticket-mode.open-parents"),
   runFilter: [...recall(storage, "ticket-mode.run-filter")][0] ?? null,
 };
 const setOpen = (next) => { state.open = next; remember(storage, "ticket-mode.open", next); renderPick(); };
+const setOpenParents = (next) => { state.openParents = next; remember(storage, "ticket-mode.open-parents", next); renderPick(); };
 const everyOpen = (statuses) => statuses.length > 0 && statuses.every((status) => state.open.has(status));
 const PRIORITY = ["", "Urgent", "High", "Medium", "Low"];
 
@@ -151,6 +156,10 @@ async function call(method, path, body) {
 }
 function report(err) { $("error").textContent = err ? String(err.message || err) : ""; }
 const entryFor = (key) => state.queue.entries.find((e) => e.ticket.key === key);
+/** What Select all takes: every shown ticket a person can pick, so not a parent, as the parent's own checkbox picks the tickets under it. */
+const pickableShown = () => groupByStatus(shown(), state.parents).flatMap(([, nodes]) => flatten(nodes)).filter((t) => selectable(t, state.queue.entries));
+/** Every section open, and every parent in them. */
+const allOpen = (groups) => everyOpen(groups.map(([status]) => status)) && groups.flatMap(([, nodes]) => parentKeys(nodes)).every((key) => state.openParents.has(key));
 const shown = () => visibleTickets(state.tickets, state.projects, $("filter").value);
 
 function renderProjects() {
@@ -174,7 +183,7 @@ function renderPick() {
   const list = $("groups");
   list.replaceChildren();
   const groups = groupByStatus(tickets, state.parents);
-  $("fold-all").textContent = everyOpen(groups.map(([status]) => status)) ? "Collapse all" : "Expand all";
+  $("fold-all").textContent = allOpen(groups) ? "Collapse all" : "Expand all";
   for (const [status, nodes] of groups) {
     const group = flatten(nodes);
     const pickable = group.filter(free);
@@ -190,32 +199,42 @@ function renderPick() {
       el("span", { className: "count" }, ` ${group.length}${picked ? ` · ${picked} selected` : ""}`));
     head.addEventListener("click", () => setOpen(toggled(state.open, status)));
     const box = el("div", { className: `group${expanded ? "" : " collapsed"}` }, head);
-    // A ticket under its parent is indented, and names its own status, which can differ from the section's. A parent that is not the
-    // person's heads its children with no checkbox.
-    const add = ({ ticket: t, children, context }, depth) => {
-      if (context) {
-        box.append(el("div", { className: "row context" }, el("span"), el("span", { className: "key" }, t.key),
-          el("span", {}, el("a", { href: t.url, target: "_blank", rel: "noreferrer" }, t.title)),
-          el("span", { className: "pill" }, projectOf(t)), el("span", { className: "pill" }, "Not assigned to you")));
-        for (const child of children) add(child, depth + 1);
+    // A ticket under its parent is indented, and names its own status, which can differ from the section's. A parent folds the tickets under
+    // it away, and its checkbox picks them rather than itself; one that is not the person's says so.
+    const titleCell = (t, depth, arrow = null, note = null) => el("span", {}, arrow, el("a", { href: t.url, target: "_blank", rel: "noreferrer" }, t.title),
+      depth > 0 ? el("span", { className: "sub" }, ` · ${t.status}`) : null, note);
+    const pill = (text) => el("span", { className: "pill" }, text);
+    const place = (row, depth) => { if (depth > 0) row.setAttribute("style", `--depth: ${depth}`); box.append(row); };
+    const add = (node, depth) => {
+      const { ticket: t, children, context } = node;
+      const taken = entryFor(t.key);
+      const standing = taken ? `on the queue: ${taken.phase}` : PRIORITY[t.priority] || "No priority";
+      const keyCell = el("span", { className: "key" }, t.key);
+      const nested = depth > 0 ? " child" : "";
+      if (children.length > 0) {
+        const open = state.openParents.has(t.key);
+        const { keys, checked, indeterminate } = parentTick(node, state.selected, state.queue.entries);
+        const tick = el("input", { type: "checkbox", checked, indeterminate, disabled: keys.length === 0 });
+        tick.addEventListener("change", () => { for (const key of keys) tick.checked ? state.selected.add(key) : state.selected.delete(key); render(); });
+        const arrow = el("button", { className: "fold", type: "button", textContent: "▾", title: open ? "Collapse" : "Expand" });
+        arrow.setAttribute("aria-expanded", String(open));
+        arrow.addEventListener("click", () => setOpenParents(toggled(state.openParents, t.key)));
+        const count = ticketCount(children);
+        place(el("div", { className: `row parent${context ? " context" : ""}${nested}` }, tick, keyCell,
+          titleCell(t, depth, arrow, el("span", { className: "sub" }, ` · ${count} ticket${count === 1 ? "" : "s"} under it`)),
+          pill(projectOf(t)), pill(context ? "Not assigned to you" : standing)), depth);
+        if (open) for (const child of children) add(child, depth + 1);
         return;
       }
-      const taken = entryFor(t.key);
       const tick = el("input", { type: "checkbox", checked: state.selected.has(t.key), disabled: Boolean(taken) });
       tick.addEventListener("change", () => { tick.checked ? state.selected.add(t.key) : state.selected.delete(t.key); render(); });
-      const row = el("label", { className: `row${taken ? " taken" : ""}${depth > 0 ? " child" : ""}` }, tick, el("span", { className: "key" }, t.key),
-        el("span", {}, el("a", { href: t.url, target: "_blank", rel: "noreferrer" }, t.title), depth > 0 ? el("span", { className: "sub" }, ` · ${t.status}`) : null),
-        el("span", { className: "pill" }, projectOf(t)),
-        el("span", { className: "pill" }, taken ? `on the queue: ${taken.phase}` : PRIORITY[t.priority] || "No priority"));
-      if (depth > 0) row.setAttribute("style", `--depth: ${depth}`);
-      box.append(row);
-      for (const child of children) add(child, depth + 1);
+      place(el("label", { className: `row${taken ? " taken" : ""}${nested}` }, tick, keyCell, titleCell(t, depth), pill(projectOf(t)), pill(standing)), depth);
     };
     for (const node of nodes) add(node, 0);
     list.append(box);
   }
-  const open = tickets.filter(free);
-  $("all").checked = open.length > 0 && open.every((t) => state.selected.has(t.key));
+  const everyPickable = pickableShown();
+  $("all").checked = everyPickable.length > 0 && everyPickable.every((t) => state.selected.has(t.key));
   $("loaded").textContent = `${tickets.length} of ${state.tickets.length} assigned to you shown, ${state.selected.size} selected`;
 }
 
@@ -227,6 +246,7 @@ function since(ms) {
 // One icon per status, drawn in the status's colour (`currentColor`); the working ring is the one that spins.
 const ICONS = {
   "queued": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="2"/></svg>',
+  "blocked": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5 8h6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
   "working": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-opacity=".25" stroke-width="2"/><path d="M8 2a6 6 0 0 1 6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
   "needs-you": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7" fill="currentColor"/><path d="M8 4.5v4.5" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/><circle cx="8" cy="11.6" r="1" fill="#fff"/></svg>',
   "awaiting-review": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="4.5" cy="3.5" r="1.8" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="4.5" cy="12.5" r="1.8" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="11.5" cy="12.5" r="1.8" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M4.5 5.3v5.4M11.5 10.7V6.5a2 2 0 0 0-2-2H7.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
@@ -254,7 +274,8 @@ function length(ms) {
 }
 
 function row(e) {
-  const status = runStatus(e);
+  const status = runStatus(e, state.queue.entries);
+  const waits = waitsOn(e, state.queue.entries);
   const o = e.outcome;
   const actions = el("div", { className: "actions" });
   for (const verb of runActions(e)) {
@@ -275,6 +296,7 @@ function row(e) {
       el("div", { className: "title" }, el("a", { href: e.ticket.url, target: "_blank", rel: "noreferrer" }, e.ticket.key), ` ${e.ticket.title}`),
       el("div", { className: "meta" }, `${LABEL[status]} · ${repos} · ${e.model}/${e.effort} · ${when}${tokens}`),
       e.waiting ? el("div", { className: "waiting" }, "Waiting on a person") : null,
+      waits.length > 0 ? el("div", { className: "meta" }, `Waits on ${waits.map((b) => `${b.key} (${b.status})`).join(", ")}`) : null,
       reason ? el("div", { className: "meta" }, reason) : null,
       isParked(e) ? el("div", { className: "waiting" }, "Still open: answer the agent in its terminal and the run carries on") : null),
     el("div", { className: "side" }, terminal, prs, actions));
@@ -325,11 +347,16 @@ for (const tab of document.querySelectorAll(".tab")) {
 }
 $("filter").addEventListener("input", render);
 $("fold-all").addEventListener("click", () => {
-  const statuses = groupByStatus(shown()).map(([status]) => status);
-  setOpen(everyOpen(statuses) ? new Set() : new Set([...state.open, ...statuses]));
+  const groups = groupByStatus(shown(), state.parents);
+  const statuses = groups.map(([status]) => status);
+  const parents = groups.flatMap(([, nodes]) => parentKeys(nodes));
+  const closing = allOpen(groups);
+  state.openParents = closing ? new Set() : new Set([...state.openParents, ...parents]);
+  remember(storage, "ticket-mode.open-parents", state.openParents);
+  setOpen(closing ? new Set() : new Set([...state.open, ...statuses]));
 });
 $("all").addEventListener("change", () => {
-  for (const t of shown().filter((t) => selectable(t, state.queue.entries))) $("all").checked ? state.selected.add(t.key) : state.selected.delete(t.key);
+  for (const t of pickableShown()) $("all").checked ? state.selected.add(t.key) : state.selected.delete(t.key);
   render();
 });
 $("queue").addEventListener("click", async () => {

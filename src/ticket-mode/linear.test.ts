@@ -116,6 +116,29 @@ test("pullStates() reads each linked pull request's state by URL from Linear's G
   assert.deepEqual(JSON.parse(String(requests[0].init.body)).variables, { t0: "NBF", n0: 1936, t1: "VE", n1: 65, t2: "NBF", n2: 9999 });
 });
 
+test("blockers() reads each ticket's \"blocked by\" from Linear's inverse relations of type blocks, with each blocker's state and pull requests", async () => {
+  const merged = "https://github.com/netboxlabs/nbl-ui-platform-libs/pull/775";
+  const { fetch, requests } = linear([{ data: {
+    k0: { nodes: [{ inverseRelations: { nodes: [
+      { type: "blocks", issue: { identifier: "NBF-1936", state: { type: "completed", name: "Done" }, attachments: { nodes: [
+        { url: merged, sourceType: "github", metadata: { status: "merged" } },
+        { url: "https://uploads.linear.app/org/a/plan", sourceType: "oauthClient", metadata: {} },
+      ] } } },
+      { type: "related", issue: { identifier: "VE-66", state: { type: "backlog", name: "Backlog" }, attachments: { nodes: [] } } },
+      { type: "blocks", issue: { identifier: "NBF-1944", state: { type: "unstarted", name: "Planned" }, attachments: { nodes: [] } } },
+    ] } }] },
+    k1: { nodes: [{ inverseRelations: { nodes: [] } }] },
+    k2: { nodes: [] },
+  } }]);
+  const blockers = await linearSource({ key: "k", fetch }).blockers!(["NBF-1940", "NBF-1", "NBF-9999"]);
+  assert.deepEqual([...blockers], [
+    ["NBF-1940", [{ key: "NBF-1936", state: "completed", status: "Done", pulls: { [merged]: "merged" } }, { key: "NBF-1944", state: "unstarted", status: "Planned", pulls: {} }]],
+    ["NBF-1", []],
+  ], "a related ticket is no blocker, and a key Linear has no ticket for is left out");
+  assert.equal(requests.length, 1, "one request for the whole batch");
+  assert.match(JSON.parse(String(requests[0].init.body)).query, /inverseRelations \{ nodes \{ type issue \{ identifier state \{ type name \}/);
+});
+
 test("a pull request is merged or closed only on Linear's word, and open otherwise", () => {
   assert.deepEqual(["merged", "closed", "draft", "open", "inReview", undefined].map(pullState), ["merged", "closed", "open", "open", "open", "open"]);
 });

@@ -27,6 +27,7 @@ import { OPEN_PR_HOLD_FLAG } from "../prune-worktrees.ts";
 import { REFUSE_ASKING_ANNOUNCEMENTS_FLAG } from "../messaging/core.ts";
 import { ACCOUNT_LIMIT_FLAG } from "../account-limit.ts";
 import { PIN_BUMP_FLAG } from "../pin-bump-measure.ts";
+import { SAME_HEAD_REFAIL_FLAG } from "../work-gate/pr-orders.ts";
 
 const SESSION = "worker-agent-org-1061";
 const T0 = Date.parse("2026-10-12T09:00:00Z");
@@ -58,7 +59,7 @@ test("(1) `on` makes the reader read the flag ON, `off` makes it read OFF, and t
 
 test("(1) the other registered flags are switched on and read through their own readers' flag name", () => {
   const dir = tmpDir("machinery-flag-switch-");
-  for (const name of [CHAIN_WAIT_FLAG, CLOSED_UNDER_HALF_FLAG, AUTO_UNPARK_FLAG, QUEUE_ENTRY_NO_RUN_FLAG, RECHECK_FLAG, OPEN_PR_HOLD_FLAG, REFUSE_ASKING_ANNOUNCEMENTS_FLAG, ROW_REVIEW_SKILL_FLAG]) assert.equal(run(dir, ["on", name, `--session=${SESSION}`]).code, 0);
+  for (const name of [CHAIN_WAIT_FLAG, CLOSED_UNDER_HALF_FLAG, AUTO_UNPARK_FLAG, QUEUE_ENTRY_NO_RUN_FLAG, RECHECK_FLAG, OPEN_PR_HOLD_FLAG, REFUSE_ASKING_ANNOUNCEMENTS_FLAG, ROW_REVIEW_SKILL_FLAG, SAME_HEAD_REFAIL_FLAG]) assert.equal(run(dir, ["on", name, `--session=${SESSION}`]).code, 0);
   const state = JSON.parse(readFileSync(join(dir, CANARY_STATE_FILE), "utf8")) as CanaryState;
   assert.equal(machineryFlagOn(state, CHAIN_WAIT_FLAG), true);
   assert.equal(machineryFlagOn(state, CLOSED_UNDER_HALF_FLAG), true);
@@ -68,7 +69,8 @@ test("(1) the other registered flags are switched on and read through their own 
   assert.equal(machineryFlagOn(state, OPEN_PR_HOLD_FLAG), true, "prune.holdOpenPr is switched by the command, which `openPrHoldOn` then reads (agent-org#1221)");
   assert.equal(machineryFlagOn(state, REFUSE_ASKING_ANNOUNCEMENTS_FLAG), true, "messaging.refuseAskingAnnouncements is switched by the command, which `canaryFlagOn` in watch.ts then reads (agent-org#1222)");
   assert.equal(machineryFlagOn(state, ROW_REVIEW_SKILL_FLAG), true, "review.rowReviewSkill is switched by the command, which `rowReviewSkillFlagOn` then reads (agent-org#1268)");
-  assert.deepEqual(FLAG_REGISTRY, [REENQUEUE_EJECTED_FLAG, CHAIN_WAIT_FLAG, CLOSED_UNDER_HALF_FLAG, AUTO_UNPARK_FLAG, QUEUE_ENTRY_NO_RUN_FLAG, RECHECK_FLAG, OPEN_PR_HOLD_FLAG, REFUSE_ASKING_ANNOUNCEMENTS_FLAG, PACING_FLAG, ROW_REVIEW_SKILL_FLAG, PR_OWNER_ROUTING_FLAG, ACCOUNT_LIMIT_FLAG, PIN_BUMP_FLAG], "the registry is the thirteen flags a module reads");
+  assert.equal(machineryFlagOn(state, SAME_HEAD_REFAIL_FLAG), true, "checks.sameHeadRefail is switched by the command, which `sameHeadRefailFlagOn` then reads (agent-org#1185)");
+  assert.deepEqual(FLAG_REGISTRY, [REENQUEUE_EJECTED_FLAG, CHAIN_WAIT_FLAG, CLOSED_UNDER_HALF_FLAG, AUTO_UNPARK_FLAG, QUEUE_ENTRY_NO_RUN_FLAG, RECHECK_FLAG, OPEN_PR_HOLD_FLAG, REFUSE_ASKING_ANNOUNCEMENTS_FLAG, PACING_FLAG, ROW_REVIEW_SKILL_FLAG, ACCOUNT_LIMIT_FLAG, PIN_BUMP_FLAG, SAME_HEAD_REFAIL_FLAG, PR_OWNER_ROUTING_FLAG], "the registry is the fourteen flags a module reads");
 });
 
 test("(1) the pin/bump count's flag (agent-org#1245) is registered, default OFF, and switched on and off by the command, which its reader then sees", () => {

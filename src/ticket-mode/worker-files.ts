@@ -8,7 +8,7 @@
 // THE WORKER CHOOSES THE REPOSITORY AND FINDS ITS COMMANDS. It starts in the ticket's own folder beside the person's repositories, reads the ticket,
 // decides where the work lands, and makes a worktree there with `ticket:worktree`. Each repository's `CLAUDE.md`/`AGENTS.md` names how to install,
 // test and typecheck it, which is where any engineer looks, so nothing about a repository is declared here or in the host file.
-import type { Ticket } from "./source.ts";
+import type { Blocker, Ticket } from "./source.ts";
 
 /** The file a worker writes last, and the one thing the pool and the stop hook read to know a run has ended. */
 export const OUTCOME_FILE = "outcome.json";
@@ -19,6 +19,8 @@ export const BRIEF_FILE = "brief.md";
 export const STOP_COUNT_FILE = "stop-refusals";
 /** The host file's `tickets.deny`, copied beside the outcome file, where the PreToolUse hook reads it. */
 export const DENY_FILE = "deny.json";
+/** The host file's `tickets.connectors`, copied beside the outcome file, where the PreToolUse hook reads it. */
+export const CONNECTORS_FILE = "connectors.json";
 
 /** The ticket a worker's ticket is part of, and the paths of its downloaded files. */
 export type ParentTicket = Readonly<{ ticket: Ticket; attachments: readonly string[] }>;
@@ -54,13 +56,42 @@ ${filesText(attachments)}
 `;
 }
 
+/** The connectors section of the brief, or nothing when the machine allows none. */
+function connectorsText(connectors: readonly string[]): string {
+  if (connectors.length === 0) return "";
+  return `
+## Connectors
+
+This machine lets you call the connector tools whose names match ${connectors.map((pattern) => `\`${pattern}\``).join(", ")}. Use them for what your ticket needs, such as reading its parent, the tickets that block it and related work. Every other connector is refused.
+`;
+}
+
+/**
+ * The section naming the tickets this one waited on, or nothing for a ticket that waited on none. A blocker's merge can come minutes before the
+ * release it feeds, such as a package version, so the worker checks the release is out rather than finding it missing.
+ */
+function blockersText(blockers: readonly Blocker[]): string {
+  if (blockers.length === 0) return "";
+  const pulls = (blocker: Blocker) => Object.entries(blocker.pulls).map(([url, state]) => `${url} (${state})`).join(", ") || "no pull request linked";
+  return `
+## Tickets that blocked this one
+
+This ticket waited until each of these was done:
+
+${blockers.map((blocker) => `- ${blocker.key}, ${blocker.status}: ${pulls(blocker)}`).join("\n")}
+
+If your work depends on something one of them releases, such as a new package version, check that the release is out before you rely on it, for example with \`gh release list --repo <owner>/<repo>\` or the package registry. A release can follow its merge by some minutes: wait for it rather than fail.
+`;
+}
+
 /**
  * The brief, as markdown. `worktreeCommand` is the full command line that makes a worktree, short of the repository's name. `notes` is the host
- * file's `tickets.brief`, how workers behave on this machine.
+ * file's `tickets.brief`, how workers behave on this machine, and `connectors` its `tickets.connectors`. `blockers` are the tickets this one
+ * waited on.
  */
-export function briefText({ ticket, folder, ticketDir, attachments, parent = null, clones, worktreeCommand, notes }: {
-  ticket: Ticket; folder: string; ticketDir: string; attachments: readonly string[]; parent?: ParentTicket | null; clones: Readonly<Record<string, string>>;
-  worktreeCommand: string; notes?: string;
+export function briefText({ ticket, folder, ticketDir, attachments, parent = null, blockers = [], clones, worktreeCommand, notes, connectors = [] }: {
+  ticket: Ticket; folder: string; ticketDir: string; attachments: readonly string[]; parent?: ParentTicket | null; blockers?: readonly Blocker[];
+  clones: Readonly<Record<string, string>>; worktreeCommand: string; notes?: string; connectors?: readonly string[];
 }): string {
   const repos = Object.entries(clones).map(([name, path]) => `- \`${name}\` at \`${path}\``).join("\n");
   return `# ${ticket.key}: ${ticket.title}
@@ -76,7 +107,7 @@ ${ticket.description.trim() || "(no description)"}
 ## Files from the ticket
 
 ${filesText(attachments)}
-${parentText(parent)}
+${parentText(parent)}${blockersText(blockers)}
 ## Where the work lands: you decide
 
 You are in this ticket's own folder, \`${folder}\`. These are the repositories on this machine, checked out by the person you work for. Read them, but never commit or change branches in them:
@@ -90,14 +121,15 @@ ${repos}
 ## What to do
 
 1. Find the cause in the code. Fix it, with a test that fails without the fix.
-2. Run the repository's checks on what you changed, then run the clean-code-review skill on your diff and fix what it finds.
+2. Run the repository's checks on what you changed. Then start a subagent that has not seen your reasoning, give it your diff and its base, and ask it to find, read only, every behaviour your diff changes that you meant to keep. Fix each real finding with a test that fails without the fix. Then run the clean-code-review skill on your diff and fix what it finds.
 3. Check your diff against what was asked. List each acceptance criterion in the ticket. Add each decision in its files, its parent's description and its parent's files that applies to this ticket. Find where your diff meets each one, and finish any it misses. If you leave one unmet on purpose, say which and why in the pull request body.
-4. Commit with a conventional commit message.
-5. Push the branch and open ONE DRAFT pull request per repository you changed: \`gh pr create --draft\`, titled \`<type>(<scope>): <what changed>\`. The body links ${ticket.url}, says what changed and how you verified it, and, when the change is visible, shows it: take screenshots with what this machine provides (see "On this machine" when there is such a section), or else end the body with "Screenshot pending". A pull request that needs another repository's unmerged one says so in its body.
-6. If a design gate asks for a design check, decline it with "unattended worker, no design tool access" and say so in the pull request body.
+4. Check what your pull request body will claim. For each behaviour it says you fixed, kept or changed, name the test assertion that checks exactly that behaviour, not a neighbouring value. Run it on the base: a fix must fail there, and a kept behaviour must pass there too. Claim nothing you have no such assertion for, or say it is unchecked.
+5. Commit with a conventional commit message.
+6. Push the branch and open ONE DRAFT pull request per repository you changed: \`gh pr create --draft\`, titled \`<type>(<scope>): <what changed>\`. The body links ${ticket.url}, says what changed and how you verified it, and, when the change is visible, shows it: take screenshots with what this machine provides (see "On this machine" when there is such a section), or else end the body with "Screenshot pending". A pull request that needs another repository's unmerged one says so in its body.
+7. If a design gate asks for a design check, decline it with "unattended worker, no design tool access" and say so in the pull request body.
 
 Never mark a pull request ready, request a review, merge, force-push, run a workflow, or post to Slack. Those are the person's.
-${notes?.trim() ? `\n## On this machine\n\n${notes.trim()}\n` : ""}
+${connectorsText(connectors)}${notes?.trim() ? `\n## On this machine\n\n${notes.trim()}\n` : ""}
 ## The outcome file
 
 Write \`${ticketDir}/${OUTCOME_FILE}\` as the last thing you do, with exactly one of:

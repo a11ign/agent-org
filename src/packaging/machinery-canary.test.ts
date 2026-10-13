@@ -19,9 +19,9 @@ import {
   parseCanaryState, withMachineryFlag, emptyCanaryState, machineryValues, type CanaryFacts, type CanaryIo, type Suppression,
 } from "../org-health.ts";
 import { EXIT_NOTHING_SENT, machineryDeclarationProblems, machineryFilesIn, machineryRefusal, main } from "../pr-open.ts";
-import { deferredWakeCount, incidentSuppressions, machineryCanaryNow } from "../work-gate.ts";
+import { cannotAskExit, deferredWakeCount, incidentSuppressions, machineryCanaryNow, tickLanes } from "../work-gate.ts";
+import { EXIT } from "../work-gate/reads.ts";
 import { pacedUnread } from "../work-gate/pacing.ts";
-import { unreadLanes } from "../work-gate/tick.ts";
 import { workGateSource } from "../lib/work-gate-source.ts";
 
 const MINUTE = 60_000;
@@ -317,27 +317,100 @@ test("#5100 THE FLAG IS OFF UNTIL SOMEBODY TURNS IT ON: an absent record reads o
   assert.equal(machineryFlagOn(withMachineryFlag(on, { name: FLAG, on: false }), FLAG), false);
 });
 
-test("#5100 THE TICK CALLS IT: the gate's `main` puts `machineryCanaryNow`'s orders among its own, once, after the hold holders (a SOURCE pin: `main` is not driven whole by any test, and says so)", () => {
+test("#5100 THE TICK CALLS IT: the gate's `main` takes the canary's orders from `tickLanes`, once, after the hold holders (a SOURCE pin on placement only: `main` is not driven whole by any test, and the seam's behaviour is pinned below)", () => {
   const source = workGateSource();
-  const pushes = source.match(/orders\.push\(\.\.\.machineryCanaryNow\(/g) ?? [];
-  assert.equal(pushes.length, 1, "one call per tick: a second would sample twice and double every count");
-  assert.ok(source.indexOf("holdHolderOrdersNow({") < source.indexOf("orders.push(...machineryCanaryNow("), "after the hold holders, before the dead man's switch");
+  const calls = source.match(/const lanes = tickLanes\(/g) ?? [];
+  assert.equal(calls.length, 1, "one call per tick: a second would sample twice and double every count");
+  assert.ok(source.indexOf("holdHolderOrdersNow({") < source.indexOf("const lanes = tickLanes("), "after the hold holders, before the dead man's switch");
+  assert.equal(source.match(/orders\.push\(\.\.\.lanes\.orders\)/g)?.length ?? 0, 1, "and the orders go in once");
 });
 
-/** The `blind-ticks` value one tick samples for the lanes it could not read (`unread`, as the gate hands it to `machineryCanaryNow`). */
-const blindTicksOf = (unread: string[]): number | null => machineryValues({ facts: facts({ unread }), since: T0 - MINUTE, now: T0, memo: {} }).values[MACHINERY_SIGNALS.BLIND_TICKS];
+/** One tick's lanes, read through the seam `main` uses: the `blind-ticks` the canary sampled, and the lanes PARTIAL names. */
+const sampledTick = (lanes: { prs: any[] | null; readyRows: any[] | null; others: { refused: string[]; }[]; pacedSkips: { refused: string[]; }[]; }) => {
+  const h = memoryIo();
+  const { unread } = tickLanes({ ...lanes, unarmed: [], releaseRuns: null, run: () => "", now: T0, dir: "/state", io: h.io });
+  return { blind: h.state().samples[0].values[MACHINERY_SIGNALS.BLIND_TICKS], unread };
+};
 
-test("#1329 (1) A PACED TICK IS NOT BLIND: the canary is handed the refused lanes only, so a repository the gate skipped by design samples `blind-ticks` as 0 (the call is a SOURCE pin; the skip is still named on the PARTIAL line)", () => {
-  const source = workGateSource();
-  assert.match(source, /machineryCanaryNow\(\{ unread: unreadLanes\(\{ prs, readyRows, others \}\)/, "the canary's `unread` is built from the refused lanes, not from `pacedSkips`");
+test("#1329 A REFUSED LANE IS BLIND, AND A PACED ONE IS NOT: a refused pull-request list, Ready rows or other repository samples `blind-ticks` as 1; a repository the gate paced out samples 0 and is still named on PARTIAL", () => {
+  const refusedPulls = sampledTick({ prs: null, readyRows: [], others: [], pacedSkips: [] });
+  assert.equal(refusedPulls.blind, 1, "the pull-request list was refused");
+  assert.deepEqual(refusedPulls.unread, ["the pull-request list"], "and PARTIAL names it");
+  assert.equal(sampledTick({ prs: [], readyRows: null, others: [], pacedSkips: [] }).blind, 1, "the Ready rows were refused");
+  assert.equal(sampledTick({ prs: [], readyRows: [], others: [{ refused: ["the other repositories' lanes"] }], pacedSkips: [] }).blind, 1, "another repository's read was refused");
+
   // a paced tick: both primary lanes read, and the pool's reserve paced the repositories out
-  const pacedSkips = [{ refused: pacedUnread({ paced: true, remaining: 10 }, true) }];
-  assert.equal(blindTicksOf(unreadLanes({ prs: [], readyRows: [], others: [] })), 0, "nothing refused: 0 blind");
-  assert.ok(unreadLanes({ prs: [], readyRows: [], others: pacedSkips }).length > 0, "the PARTIAL line still names the paced lanes, so they are never reported clean");
+  const paced = [{ refused: pacedUnread({ paced: true, remaining: 10 }, true) }];
+  const pacedTick = sampledTick({ prs: [], readyRows: [], others: [], pacedSkips: paced });
+  assert.equal(pacedTick.blind, 0, "skipped by design is not blind");
+  assert.deepEqual(pacedTick.unread, paced.flatMap((skip) => skip.refused), "PARTIAL still names the paced lanes, so they are never reported clean");
 });
 
-test("#1329 (2) A REFUSED LANE IS BLIND: a refused pull-request list, Ready rows or other repository samples `blind-ticks` as 1", () => {
-  assert.equal(blindTicksOf(unreadLanes({ prs: null, readyRows: [], others: [] })), 1, "the pull-request list was refused");
-  assert.equal(blindTicksOf(unreadLanes({ prs: [], readyRows: null, others: [] })), 1, "the Ready rows were refused");
-  assert.equal(blindTicksOf(unreadLanes({ prs: [], readyRows: [], others: [{ refused: ["the other repositories' lanes"] }] })), 1, "another repository's read was refused");
+// ---------------------------------------------------------------------------------------------------------------------
+// (6) #1332: a tick that could not read still owes the canary its sample
+// ---------------------------------------------------------------------------------------------------------------------
+
+/** Who the tick says it is, for the report `cannotAskExit` writes. */
+const ACCOUNT = () => ({ login: "worker-agent-org-1332", source: "test" });
+
+/** A tick whose two primary lanes were refused, through the seam `main` exits by: the one sample it owes the canary, and its report. */
+const blindTick = (h: ReturnType<typeof memoryIo>, now: number, dir = "/state") => cannotAskExit({ prs: null, readyRows: null, identity: ACCOUNT, run: () => "", now, dir, io: h.io, write: () => {} });
+
+test("#1332 (1) A CANNOT_ASK TICK RECORDS ONE BLIND SAMPLE AND EXITS CANNOT_ASK: both lanes refused reads `blind-ticks` 1 and says so on stderr; a tick that read a lane does neither", () => {
+  const h = memoryIo();
+  const said: string[] = [];
+  const code = cannotAskExit({ prs: null, readyRows: null, identity: ACCOUNT, run: () => "", now: T0, dir: "/state", io: h.io, write: (text) => said.push(text) });
+  assert.equal(code, EXIT.CANNOT_ASK, "the exit `main` takes");
+  assert.match(said.join(""), /^CANNOT ASK: /, "the report says the tick examined nothing");
+  assert.equal(h.state().samples.length, 1, "the one sample the exit owes the canary");
+  assert.equal(h.state().samples[0].values[MACHINERY_SIGNALS.BLIND_TICKS], 1, "it was nothing before this change");
+
+  const read = cannotAskExit({ prs: [], readyRows: null, identity: ACCOUNT, run: () => "", now: T0 + 10 * MINUTE, dir: "/state", io: h.io, write: (text) => said.push(text) });
+  assert.equal(read, null, "a tick that read the pull-request list is not CANNOT_ASK");
+  assert.equal(h.state().samples.length, 1, "and the exit records no sample for it");
+  assert.equal(said.length, 1, "and says nothing");
+});
+
+test("#1332 (1b) `main` TAKES THE EXIT BEFORE IT READS THE REST (a SOURCE pin on placement only: `main` is not driven whole by any test; the exit's behaviour is pinned above)", () => {
+  const source = workGateSource();
+  const main = source.slice(source.indexOf("\nfunction main() {"));
+  assert.ok(main.indexOf("cannotAskExit({") > 0, "`main` asks the seam");
+  assert.ok(main.indexOf("cannotAskExit({") < main.indexOf("tickPacing()"), "before the pacing read, so a tick that could not read exits without reading more");
+  assert.ok(main.includes("if (cannotAsk !== null) process.exit(cannotAsk);"), "and it exits with the code the seam returned");
+});
+
+test("#1332 (2) THE HELD-ORDER CLOCKS SURVIVE A TICK THAT ASKED NO SUPPRESSORS: a suppression first seen before a blind tick is delivered at fifteen minutes, not twenty", () => {
+  const held: Suppression = { key: "k-1332", kind: "hold", holder: "worker-1332", reason: "GitHub reports an incident", order: null, claimedRow: null };
+  const h = memoryIo();
+  tickAt(h, 0, facts(), [held]);
+  blindTick(h, T0 + 5 * MINUTE);
+  assert.equal(h.state().memo[`held:${held.key}`], T0, "the clock is still there after the blind tick, and still reads from minute 0");
+
+  const delivered = tickAt(h, 15, facts(), [held]).filter((order) => order.subject === "suppression-expired");
+  assert.equal(delivered.length, 1, "DELIVERED at fifteen minutes");
+});
+
+test("#1332 (3) A REFUSED READ KEEPS THE APPROVED-UNQUEUED CLOCKS: a blind tick restarts neither the fifteen minutes nor the count", () => {
+  const h = memoryIo();
+  tickAt(h, 0, facts({ unarmed: [7] }));
+  blindTick(h, T0 + 5 * MINUTE);
+  assert.equal(h.state().memo["unarmed:7"], T0, "the clock of PR 7 is kept");
+
+  tickAt(h, 20, facts({ unarmed: [7] }));
+  assert.equal(h.state().samples.at(-1)?.values[MACHINERY_SIGNALS.APPROVED_UNQUEUED], 1, "PR 7 has been unqueued for twenty minutes, not restarted at the blind tick");
+});
+
+test("#1332 (4) THE THRESHOLD DURING A SHARED OUTAGE: an outage already running in the hour before is the baseline, so a flag switched on inside it is not reverted by it; a healthy hour then a sudden outage is", () => {
+  const sustained = memoryIo();
+  for (let minute = -60; minute <= -10; minute += 10) blindTick(sustained, T0 + minute * MINUTE);
+  sustained.store.text = JSON.stringify(withMachineryFlag(sustained.state(), { name: FLAG, on: true, signals: [MACHINERY_SIGNALS.BLIND_TICKS] }));
+  for (let minute = 0; minute <= 60; minute += 10) blindTick(sustained, T0 + minute * MINUTE);
+  assert.equal(sustained.state().flags[FLAG].verdict, "passed", "the outage is in the baseline: six blind ticks against six is no rise");
+
+  const sudden = memoryIo();
+  for (let minute = -60; minute <= -10; minute += 10) tickAt(sudden, minute, facts());
+  sudden.store.text = JSON.stringify(withMachineryFlag(sudden.state(), { name: FLAG, on: true, signals: [MACHINERY_SIGNALS.BLIND_TICKS] }));
+  tickAt(sudden, 0, facts());
+  for (let minute = 10; minute <= 30; minute += 10) blindTick(sudden, T0 + minute * MINUTE);
+  assert.equal(sudden.state().flags[FLAG].verdict, "reverted", "a healthy hour then three blind ticks is a rise past the minimum");
 });

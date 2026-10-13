@@ -21,14 +21,15 @@ import { join } from "node:path";
 import { agentStartArgs, closedNote, herdrReason, openPane, readAgents } from "../herdr-agents.ts";
 import { HANDED_BACK, isParked } from "./board-view.ts";
 import {
-  finish, isLive, markResumed, markRunning, markStarting, nextStarts, observe, park, recordPullStates, recordRepos, recordTrackerStates, unpark, unsettledKeys,
+  finish, isLive, markResumed, markRunning, markStarting, nextStarts, observe, park, recordBlockers, recordPullStates, recordRepos, recordTrackerStates,
+  unpark, unreadBlockerKeys, unsettledKeys,
   type Entry, type Outcome, type Queue,
 } from "./queue.ts";
 import type { Ticket, TicketSource } from "./source.ts";
 import { TICKET_ENV } from "./worktree-command.ts";
 import { HOST_FILE_ENV, type TicketSettings } from "./settings.ts";
 import {
-  BRIEF_FILE, DENY_FILE, OUTCOME_FILE, PREVIOUS_OUTCOME_FILE, STOP_COUNT_FILE, briefText, firstPrompt, workerFlags, workerSettings, type HookCommand, type ParentTicket,
+  BRIEF_FILE, CONNECTORS_FILE, DENY_FILE, OUTCOME_FILE, PREVIOUS_OUTCOME_FILE, STOP_COUNT_FILE, briefText, firstPrompt, workerFlags, workerSettings, type HookCommand, type ParentTicket,
 } from "./worker-files.ts";
 
 /** herdr waits on Claude's start; a slow one has been measured past 30 s (`wake.ts`'s start budget), so a start gets 90. */
@@ -257,8 +258,10 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     const attachments = await source.download(ticket, dir);
     const parent = await parentOf(ticket, dir);
     const worktreeCommand = `${hook.node} ${hook.bin} ticket:worktree`;
-    writeFileSync(join(dir, BRIEF_FILE), briefText({ ticket, folder, ticketDir: dir, attachments, parent, clones: settings.clones, worktreeCommand, notes: machineNotes() }));
+    writeFileSync(join(dir, BRIEF_FILE), briefText({ ticket, folder, ticketDir: dir, attachments, parent, blockers: entry.blockers, clones: settings.clones, worktreeCommand,
+      notes: machineNotes(), connectors: settings.connectors }));
     writeFileSync(join(dir, DENY_FILE), `${JSON.stringify(settings.deny)}\n`);
+    writeFileSync(join(dir, CONNECTORS_FILE), `${JSON.stringify(settings.connectors)}\n`);
     mkdirSync(join(folder, ".claude"), { recursive: true });
     writeFileSync(join(folder, SETTINGS_FILE),
       `${JSON.stringify(workerSettings({ model: entry.model, ticketDir: dir, readDirs: Object.values(settings.clones), hook, plugins: settings.plugins }), null, 2)}\n`);
@@ -381,8 +384,28 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     }
   }
 
-  /** Start what there is room for. Each start is recorded before it begins, so a second tick cannot start it again. */
+  /**
+   * Ask the tracker which tickets block each of `keys`, and record the answer on each queued run. A source that cannot say records none, so
+   * nothing waits; a key the tracker has no ticket for is recorded with none, so it starts and fails on its own. Throws when the tracker cannot be
+   * asked.
+   */
+  async function readBlockers(keys: readonly string[]): Promise<void> {
+    if (keys.length === 0) return;
+    const found = source.blockers === undefined ? new Map() : await source.blockers(keys);
+    update((queue) => recordBlockers(queue, new Map(keys.map((key) => [key, found.get(key) ?? []]))));
+  }
+
+  /**
+   * Start what there is room for. A run whose blockers have not been read is read first, and none starts while the tracker cannot say, because
+   * starting a run before its blockers are known would start work that waits on another. Each start is recorded before it begins, so a second
+   * tick cannot start it again.
+   */
   async function fill(): Promise<void> {
+    try {
+      await readBlockers(unreadBlockerKeys(store.get()));
+    } catch {
+      return;
+    }
     const { load, cores } = (deps.load ?? (() => ({ load: loadavg()[0], cores: availableParallelism() })))();
     for (const entry of nextStarts(store.get(), load, cores)) {
       update((queue) => markStarting(queue, entry.ticket.key, now()));
@@ -476,10 +499,16 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
   }
 
   /**
-   * Ask the tracker where each finished run's ticket and pull requests stand, so a run whose pull requests merged reads as completed. A refused
-   * read changes nothing.
+   * Ask the tracker where each finished run's ticket and pull requests stand, so a run whose pull requests merged reads as completed, and which
+   * tickets block each queued run, so a relation changed in the tracker and a blocker finished outside the queue both count. A refused read
+   * changes nothing.
    */
   async function refreshTracker(): Promise<void> {
+    try {
+      await readBlockers(store.get().entries.filter((entry) => entry.phase === "queued").map((entry) => entry.ticket.key));
+    } catch {
+      // the tracker could not be asked: the next refresh asks again
+    }
     const keys = unsettledKeys(store.get());
     if (keys.length === 0) return;
     try {

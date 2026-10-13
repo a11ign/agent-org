@@ -39,6 +39,20 @@ test("the ticket's files come with the order to read them first, and a ticket wi
   assert.ok(brief([]).includes("## Files from the ticket\n\nNone.\n"));
 });
 
+test("before it commits, a fresh subagent reviews the diff for changed behaviour, and every claim in the body has an assertion run on the base", () => {
+  const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w" });
+  const commit = brief.indexOf("Commit with a conventional commit message");
+  const review = brief.indexOf("start a subagent that has not seen your reasoning");
+  const claims = brief.indexOf("Check what your pull request body will claim.");
+  assert.ok(review > 0 && review < commit, "the review comes before the commit");
+  assert.ok(review < brief.indexOf("run the clean-code-review skill"), "behaviour first, then structure");
+  assert.ok(claims > 0 && claims < commit);
+  for (const part of ["read only", "give it your diff and its base", "a test that fails without the fix", "not a neighbouring value", "Run it on the base", "a fix must fail there", "a kept behaviour must pass there too", "say it is unchecked"]) {
+    assert.ok(brief.includes(part), `the brief says ${part}`);
+  }
+  assert.match(brief, /\n5\. Commit with a conventional commit message\.\n6\. Push the branch/, "the steps stay numbered in order");
+});
+
 test("the worker checks its diff against every criterion and binding decision before it commits", () => {
   const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w" });
   const check = brief.indexOf("Check your diff against what was asked.");
@@ -47,6 +61,23 @@ test("the worker checks its diff against every criterion and binding decision be
   for (const part of ["each acceptance criterion in the ticket", "its parent's description and its parent's files", "say which and why in the pull request body"]) {
     assert.ok(brief.includes(part), `the check names ${part}`);
   }
+});
+
+test("the connectors a machine allows are named in the brief, and a machine that allows none adds no section", () => {
+  const brief = (connectors?: string[]) => briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", connectors });
+  assert.match(brief(["^mcp__claude_ai_Linear__(get|list)_"]), /## Connectors\n\nThis machine lets you call the connector tools whose names match `\^mcp__claude_ai_Linear__\(get\|list\)_`\. .*the tickets that block it/);
+  assert.equal(brief().includes("## Connectors"), false);
+  assert.equal(brief([]).includes("## Connectors"), false);
+});
+
+test("a ticket that waited names each blocker, its status and its pull requests, and one that waited on none has no such section", () => {
+  const brief = (blockers?: { key: string; state: string; status: string; pulls: Record<string, "open" | "merged" | "closed"> }[]) =>
+    briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", blockers });
+  const text = brief([{ key: "NBF-1944", state: "started", status: "In Review", pulls: { "https://github.com/o/libs/pull/8": "merged" } }, { key: "NBF-1", state: "completed", status: "Done", pulls: {} }]);
+  assert.match(text, /- NBF-1944, In Review: https:\/\/github\.com\/o\/libs\/pull\/8 \(merged\)\n- NBF-1, Done: no pull request linked/);
+  assert.match(text, /`gh release list --repo <owner>\/<repo>`/);
+  assert.equal(brief().includes("## Tickets that blocked this one"), false);
+  assert.equal(brief([]).includes("## Tickets that blocked this one"), false);
 });
 
 test("the machine's notes join the brief under their own heading, and a machine with none adds no heading", () => {

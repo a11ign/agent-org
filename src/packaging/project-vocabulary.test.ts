@@ -176,6 +176,8 @@ const DECLARED_NON_VOCABULARY_HITS: Declaration[] = [
   // `claim-stall.ts`'s own `why: "stalled" | "blocked" | "merged"` release-reading enum: a native `blockedBy` GRAPH EDGE outcome (`blockedReading`),
   // never the `blocked` GitHub LABEL -- the same word, an unrelated fact this module invented for its own return type.
   ...nonVocabulary("claim-stall.ts", ['"blocked"'], "its own `why` enum: a `blockedBy` graph-edge outcome, never the `blocked` label"),
+  // `ticket-mode/board-view.ts`: `RunStatus`'s own `"blocked"` is a ticket-mode RUN's status (a queued run waiting on tickets that block it), never the `blocked` GitHub label.
+  ...nonVocabulary("ticket-mode/board-view.ts", ['"blocked"'], "a ticket-mode run's own status, not the `blocked` label"),
   // `wake.ts`: an agent's own `herdr` STATUS (`blockedSessions`, unrelated to the `blocked` label) and `claim-stall.ts`'s `why: "blocked"`
   // consumed here (`releaseHeadline`) -- both the same non-vocabulary fact as above; plus prose that happens to start a string segment with the
   // English word "answer:" (`REFUSED_CLAIM_IS_AN_ANSWER`: "...that is an answer: report it and stop...").
@@ -207,6 +209,8 @@ const DECLARED_NON_VOCABULARY_HITS: Declaration[] = [
   // `work-gate/pr-orders.ts`: `{ kind: "ready", ... }` is the action kind for `gh pr ready` (GitHub's own draft -> ready-for-review CLI verb),
   // not the row `ready` label.
   ...nonVocabulary("work-gate/pr-orders.ts", ['"ready"'], "the action kind for `gh pr ready`, GitHub's own verb"),
+  // `ticket-mode/board-view.ts` (agent-org#1383): the ticket board's own `RunStatus` member `"blocked"`, which the board's run state names; it is never the `blocked` GitHub label.
+  ...nonVocabulary("ticket-mode/board-view.ts", ['"blocked"'], "the ticket board's own RunStatus member, never the `blocked` label"),
 ];
 
 test("the messaging sources' label literals equal the vocabulary's", () => {

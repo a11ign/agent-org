@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, isParked, projectCounts, queueLabel, recall, remember, runActions, runStatus, runsShown, selectable, statusCounts, terminalLink, toggled,
+  HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, isParked, parentKeys, parentTick, ticketCount, projectCounts, queueLabel, recall, remember, runActions, runStatus, runsShown, selectable, statusCounts, terminalLink, toggled, waitsOn,
   visibleTickets, type ViewEntry, type ViewTicket,
 } from "./board-view.ts";
 
@@ -53,7 +53,39 @@ test("a ticket sits under its shown parent whatever its own status, and one whos
   const [epic] = groups[1][1];
   assert.deepEqual(epic.children.map((n) => n.ticket.key), ["VE-65", "NBF-1936"], "children in the workflow's order, then by priority");
   assert.deepEqual(epic.children[1].children.map((n) => n.ticket.key), ["NBF-1999"], "a grandchild sits under its own parent");
-  assert.deepEqual(keys(flatten(groups[1][1])), ["NBF-1917", "VE-65", "NBF-1936", "NBF-1999"], "each ticket before the ones under it");
+  assert.deepEqual(keys(flatten(groups[1][1])), ["VE-65", "NBF-1999"], "a parent, at any depth, is not picked: the tickets under it are");
+});
+
+test("a tree counts every ticket in it and names every parent, at any depth", () => {
+  const nested = [
+    { ...t("NBF-1917", "In Progress", 2, 2, null), parent: null },
+    { ...t("NBF-1936", "Todo", 1, 2, null), parent: "NBF-1917" },
+    { ...t("NBF-1999", "Backlog", 0, 2, null), parent: "NBF-1936" },
+    { ...t("VE-65", "Backlog", 0, 1, null), parent: "NBF-1917" },
+    { ...t("NBF-1", "Backlog", 0, 2, null), parent: null },
+  ];
+  const heads = groupByStatus(nested).flatMap(([, nodes]) => nodes);
+  assert.equal(ticketCount(heads), 5);
+  assert.equal(ticketCount(heads.find((n) => n.ticket.key === "NBF-1917")!.children), 3, "the tickets under the epic, a grandchild among them");
+  assert.deepEqual(parentKeys(heads), ["NBF-1917", "NBF-1936"], "a ticket with nothing under it is no parent");
+});
+
+test("a parent's checkbox takes the tickets under it that can still be picked, ticked when all are selected and part ticked when some are", () => {
+  const nested = [
+    { ...t("NBF-1917", "In Progress", 2, 2, null), parent: null },
+    { ...t("NBF-1936", "Todo", 1, 2, null), parent: "NBF-1917" },
+    { ...t("NBF-1999", "Backlog", 0, 2, null), parent: "NBF-1936" },
+    { ...t("VE-65", "Backlog", 0, 1, null), parent: "NBF-1917" },
+    { ...t("VE-66", "Backlog", 0, 1, null), parent: "NBF-1917" },
+  ];
+  const [[, [epic]]] = groupByStatus(nested);
+  const queued: ViewEntry[] = [{ ticket: { key: "VE-66" }, phase: "queued" }];
+  assert.deepEqual(parentTick(epic, new Set(), queued), { keys: ["VE-65", "NBF-1999"], checked: false, indeterminate: false },
+    "a grandchild is under it, and a ticket on the queue already is not");
+  assert.deepEqual(parentTick(epic, new Set(["VE-65"]), queued), { keys: ["VE-65", "NBF-1999"], checked: false, indeterminate: true });
+  assert.deepEqual(parentTick(epic, new Set(["VE-65", "NBF-1999"]), queued), { keys: ["VE-65", "NBF-1999"], checked: true, indeterminate: false });
+  const allQueued: ViewEntry[] = ["VE-65", "VE-66", "NBF-1999"].map((key) => ({ ticket: { key }, phase: "queued" }));
+  assert.deepEqual(parentTick(epic, new Set(), allQueued), { keys: [], checked: false, indeterminate: false }, "nothing left to pick");
 });
 
 test("a parent that is not the person's heads its shown children in its own status, and is not one of the person's tickets", () => {
@@ -142,7 +174,33 @@ test("every status is counted, a status with no runs at zero, and the filters li
   assert.equal(counts.get("queued"), 2);
   assert.equal(counts.get("failed"), 1);
   assert.equal(counts.get("completed"), 0);
-  assert.deepEqual(RUN_STATUSES.map(({ status }) => status), ["needs-you", "working", "queued", "awaiting-review", "completed", "failed", "cancelled"]);
+  assert.deepEqual(RUN_STATUSES.map(({ status }) => status), ["needs-you", "working", "blocked", "queued", "awaiting-review", "completed", "failed", "cancelled"]);
+});
+
+const blocker = (key: string, state: string, status = state) => ({ key, state, status });
+
+test("a queued run is blocked until each ticket that blocks it is done in the tracker, or completed as a run on the queue", () => {
+  const merged = "https://github.com/x/y/pull/1";
+  const waiting = run({ ticket: { key: "APP-1" }, phase: "queued", blockers: [blocker("LIB-1", "started", "In Review"), blocker("LIB-2", "completed", "Done")] });
+  const lib1 = run({ ticket: { key: "LIB-1" }, outcome: { kind: "draft-pr", prs: [{ url: merged }] }, pullStates: { [merged]: "open" } });
+  assert.deepEqual(waitsOn(waiting, [waiting, lib1]), [blocker("LIB-1", "started", "In Review")], "LIB-2 is done in the tracker; LIB-1's pull request is open");
+  assert.equal(runStatus(waiting, [waiting, lib1]), "blocked");
+  const lib1Merged = { ...lib1, pullStates: { [merged]: "merged" } };
+  assert.deepEqual(waitsOn(waiting, [waiting, lib1Merged]), [], "its run on the queue merged, though the tracker still has it in review");
+  assert.equal(runStatus(waiting, [waiting, lib1Merged]), "queued");
+  assert.deepEqual(waitsOn(waiting, [waiting]), [blocker("LIB-1", "started", "In Review")], "off the queue, only the tracker's word lets it go");
+  assert.equal(runStatus(run({ phase: "queued" })), "queued", "a run with no blockers, or none read yet, is queued");
+});
+
+test("a canceled or duplicate blocker never lets a run go, and the run is counted as blocked", () => {
+  const waiting = run({ ticket: { key: "APP-1" }, phase: "queued", blockers: [blocker("LIB-1", "canceled", "Canceled"), blocker("LIB-2", "duplicate", "Duplicate")] });
+  assert.equal(waitsOn(waiting, [waiting]).length, 2, "the work it waited on will not come: a person decides");
+  const merged = "https://github.com/x/y/pull/2";
+  const lib = run({ ticket: { key: "LIB-3" }, outcome: { kind: "draft-pr", prs: [{ url: merged }] }, pullStates: { [merged]: "merged" } });
+  const released = run({ ticket: { key: "APP-2" }, phase: "queued", blockers: [blocker("LIB-3", "started", "In Review")] });
+  const counts = statusCounts([waiting, released, lib]);
+  assert.deepEqual([counts.get("blocked"), counts.get("queued")], [1, 1], "APP-2's blocker merged on the queue, so it counts as queued");
+  assert.deepEqual(runsShown([waiting], "blocked").map((e) => e.ticket.key), ["APP-1"]);
 });
 
 test("runs are listed most recently active first, and a filter keeps only its status", () => {

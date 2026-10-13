@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
 import { MESSAGING_AUDIENCE_MISUSE_KIND, parseFailureLedger } from "../failure-ledger.ts";
-import { EXCERPT_LENGTH, HALF, REQUEST_MARKERS, asksSomething, auditLines, auditMessaging, misuseOf } from "./audit.ts";
+import { EXCERPT_LENGTH, HALF, REQUEST_MARKERS, announcementAsks, asksSomething, auditLines, auditMessaging, misuseOf } from "./audit.ts";
 import { createMessenger } from "./core.ts";
 import { createFakeProvider } from "./fake-provider.ts";
 import { createLedger } from "./ledger.ts";
@@ -29,8 +29,8 @@ type Line = Record<string, any>;
 
 /** An announcement line as the core writes it; `over` is what a case changes. */
 const announcement = (over: Line = {}): Line => ({
-  key: "release:a11ign/agent-org@v0.1.0", status: "sent", kind: "first", audience: "announcement", providerMessageId: "m-1",
-  text: "agent-org v0.1.0 is released", ts: TS, ...over,
+  key: "incident:power", status: "sent", kind: "first", audience: "announcement", providerMessageId: "m-1",
+  text: "Power is back", ts: TS, ...over,
 });
 /** An ask line as the core writes it for a row. */
 const ask = (over: Line = {}): Line => ({
@@ -66,14 +66,19 @@ describe("an announcement that asks the chairman something is flagged", () => {
     assert.deepEqual(halvesOf(announcement({ ...stall, text: "Row 7 is waiting on worker-4" })), [], "the twin: none of the markers");
   });
 
-  test("a release that quotes a label name is not flagged; a question in one still is", () => {
+  test("a release quotes a change log, so none of its words is read as asking; the same words in any other announcement still are", () => {
     const releaseOf0133 = "agent-org 0.133.14 is out: A stuck-cause row the tick filed in the primary's tracker is closed, with a comment naming the cause key, once its answer:ceo is removed (a11ign/agent-org#622).\nhttps://github.com/a11ign/agent-org/releases/tag/v0.133.14";
     const releaseOf0156 = "agent-org 0.156.13 is out: worker:state blocked <row> --on <n> <reason> writes a native blockedBy edge from <row> to <n> and posts the reason, with no answer: label, because no answer is owed (a11ign/agent-org#921).\nhttps://github.com/a11ign/agent-org/releases/tag/v0.156.13";
+    const releaseOf0196 = "agent-org 0.196.1 is out: A reply that quotes a NOT CONVINCED review is no longer read as the verdict";
     assert.deepEqual(halvesOf(announcement({ key: "release:a11ign/agent-org@v0.133.14", providerMessageId: "4", text: releaseOf0133 })), [], "the first false flag, ledger line 4");
     assert.deepEqual(halvesOf(announcement({ key: "release:a11ign/agent-org@v0.156.13", providerMessageId: "140", text: releaseOf0156 })), [], "the second false flag, ledger line 140");
-    assert.deepEqual(halvesOf(announcement({ key: "release:a11ign/agent-org@v0.156.13", text: "Shipped. Shall I tell the fleet?" })), [HALF.question], "positive control: a release's `?` is still a question");
-    assert.deepEqual(halvesOf(announcement({ key: "release:a11ign/agent-org@v0.156.13", text: "Shipped. Reply with yes to tell the fleet" })), [HALF.question], "a release's request to reply is still a question");
-    assert.equal(asksSomething("once its answer:ceo is removed", []), false, "no markers: a label name alone asks nothing");
+    assert.deepEqual(halvesOf(announcement({ key: "release:a11ign/agent-org@v0.196.1", text: releaseOf0196 })), [], "the third false flag: the noun 'reply' in a change log");
+    assert.deepEqual(halvesOf(announcement({ key: "release:a11ign/agent-org@v0.156.13", text: "Shipped. Shall I tell the fleet?" })), [], "a release's trailing `?` quotes a change log and asks nothing");
+    assert.deepEqual(halvesOf(announcement({ key: "release:a11ign/agent-org@v0.156.13", text: "Shipped. Reply with yes to tell the fleet" })), [], "a release's word 'reply' asks nothing");
+    assert.deepEqual(halvesOf(announcement({ key: "incident:rota", text: "Shipped. Shall I tell the fleet?" })), [HALF.question], "positive control: the same `?` in a non-release is still a question");
+    assert.deepEqual(halvesOf(announcement({ key: "milestone:a11ign/agent-org#9", text: "Shipped. Reply with yes to tell the fleet" })), [HALF.question], "positive control: the same word 'reply' in a non-release is still a question");
+    assert.equal(announcementAsks("release:a11ign/agent-org@v0.156.13", "once its answer:ceo is removed"), false, "a release's label name asks nothing");
+    assert.equal(announcementAsks("stall:no-merge", "once its answer:ceo is removed"), true, "positive control: a label marker outside a release asks");
   });
 
   test("the SAME question in an ask is not this half's: an ask may ask", () => {
@@ -281,7 +286,7 @@ describe("the count line is printed only when something was flagged (agent-org#6
 });
 
 describe("against the real core: the lines the messenger writes are the lines the audit reads", () => {
-  test("a release whose text asks is flagged; a request, a row-less stall and a stall's tick are not", async () => {
+  test("a release whose text asks is not flagged; a milestone that asks is; a request, a row-less stall and a stall's tick are not", async () => {
     const p = paths();
     let at = START;
     const provider = createFakeProvider();
@@ -295,14 +300,17 @@ describe("against the real core: the lines the messenger writes are the lines th
       event({ key: "release:a11ign/agent-org@v0.7.8", kind: "release", text: "v0.7.8 is out. Shall I tell the fleet?" }),
     ]);
     at += MINUTE;
+    // A separate tick: the first one has spent the rate limit's burst, and a milestone past it is deferred, not sent.
+    await messenger.tick([event({ key: "milestone:a11ign/agent-org#9", kind: "milestone", text: "Milestone 9 is done. Shall I tell the fleet?" })]);
+    at += MINUTE;
     await messenger.tick([event({ key: "stall:no-merge", kind: "stall", text: "Merged again", resolved: true })]);
     const said: string[] = [];
     const result = auditMessaging({ ...p, now: at, report: () => {}, print: (line) => said.push(line) });
     const written = JSON.parse(`[${readFileSync(p.ledgerPath, "utf8").trim().split("\n").join(",")}]`);
     assert.ok(written.some((line: Line) => line.edited === true), "positive control: the stall WAS ticked in place, so the skip is exercised");
-    assert.equal(result.checked, 3, said.join());
+    assert.equal(result.checked, 4, said.join());
     assert.equal(result.flagged, 1);
     const [entry] = entriesOf(p.failureLogPath);
-    assert.match(entry.ref, /announcement-question "v0\.7\.8 is out\. Shall I tell the fleet\?"$/);
+    assert.match(entry.ref, /announcement-question "Milestone 9 is done\. Shall I tell the fleet\?"$/);
   });
 });

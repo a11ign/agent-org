@@ -11,15 +11,21 @@
 /** The fields of a ticket the board shows. */
 export type ViewTicket = Readonly<{ key: string; title: string; status: string; statusOrder: number; priority: number; project: string | null; parent?: string | null }>;
 
-/** A ticket in the Pick list's tree, with the tickets under it. A `context` node is a parent shown only for its children: it cannot be picked. */
+/**
+ * A ticket in the Pick list's tree, with the tickets under it. A node with tickets under it is a parent: its checkbox picks them, and it is not
+ * picked itself. A `context` node is a parent that is not the person's, shown only for its children.
+ */
 export type TicketNode<T extends ViewTicket = ViewTicket> = Readonly<{ ticket: T; children: readonly TicketNode<T>[]; context?: boolean }>;
 
 /** The fields of a queue entry the board reads. */
 export type ViewEntry = Readonly<{
   ticket: Readonly<{ key: string }>; phase: string; outcome?: Readonly<{ kind: string; prs?: readonly Readonly<{ url: string }>[] }>; waiting?: boolean;
   trackerState?: string; pullStates?: Readonly<Record<string, string>>; queuedAt?: number; startedAt?: number; finishedAt?: number; workspace?: string;
-  pane?: string;
+  pane?: string; blockers?: readonly ViewBlocker[];
 }>;
+
+/** A ticket that blocks a queued one: its key, and its state's type and name in the tracker. */
+export type ViewBlocker = Readonly<{ key: string; state: string; status: string }>;
 
 /** Where a browser keeps the view's settings between visits; `localStorage` in the page. */
 export type Storage = Readonly<{ getItem(name: string): string | null; setItem(name: string, value: string): void }>;
@@ -73,12 +79,32 @@ export function groupByStatus<T extends ViewTicket>(tickets: readonly T[], paren
   return [...groups];
 }
 
-/** The person's tickets in a tree, each before the tickets under it. A context node's own ticket is left out: it cannot be picked. */
+/**
+ * The tickets a person can pick in a tree, in its order. Every parent is left out, the person's own and a context node alike, and the tickets
+ * under it are in: an epic is not work for a worker, so picking a parent picks the tickets under it instead.
+ */
 export const flatten = <T extends ViewTicket>(nodes: readonly TicketNode<T>[]): T[] =>
-  nodes.flatMap((n) => [...(n.context ? [] : [n.ticket]), ...flatten(n.children)]);
+  nodes.flatMap((n) => (n.children.length > 0 ? flatten(n.children) : n.context ? [] : [n.ticket]));
+
+/** How many tickets a tree holds, at any depth. */
+export const ticketCount = (nodes: readonly TicketNode[]): number => nodes.reduce((n, node) => n + 1 + ticketCount(node.children), 0);
+
+/** The key of every parent in a tree, at any depth, each before the parents under it. */
+export const parentKeys = (nodes: readonly TicketNode[]): string[] =>
+  nodes.flatMap((n) => (n.children.length > 0 ? [n.ticket.key, ...parentKeys(n.children)] : []));
 
 /** A ticket can be selected when it is not on the queue already. */
 export const selectable = (ticket: ViewTicket, entries: readonly ViewEntry[]): boolean => !entries.some((e) => e.ticket.key === ticket.key);
+
+/**
+ * A parent's checkbox: the keys of the tickets under it, at any depth, that can still be picked, ticked when every one is selected and part
+ * ticked when only some are. A parent with none left to pick has an empty `keys`, and its checkbox is disabled.
+ */
+export function parentTick(node: TicketNode, selected: ReadonlySet<string>, entries: readonly ViewEntry[]): Readonly<{ keys: string[]; checked: boolean; indeterminate: boolean }> {
+  const keys = flatten(node.children).filter((t) => selectable(t, entries)).map((t) => t.key);
+  const picked = keys.filter((key) => selected.has(key)).length;
+  return { keys, checked: keys.length > 0 && picked === keys.length, indeterminate: picked > 0 && picked < keys.length };
+}
 
 /** `values` with `value` added, or taken out when it was there. A new set: the old one is left as it was. */
 export function toggled<T>(values: ReadonlySet<T>, value: T): Set<T> {
@@ -108,12 +134,13 @@ export function remember(storage: Storage | null, name: string, values: Readonly
 }
 
 /** A run's status on the board, after GitHub's Actions runs: each has its own icon and filter. */
-export type RunStatus = "needs-you" | "working" | "queued" | "awaiting-review" | "completed" | "failed" | "cancelled";
+export type RunStatus = "needs-you" | "working" | "blocked" | "queued" | "awaiting-review" | "completed" | "failed" | "cancelled";
 
 /** Every status, in the order the filters list them: what needs a person first, what is settled last. */
 export const RUN_STATUSES: readonly Readonly<{ status: RunStatus; label: string }>[] = [
   { status: "needs-you", label: "Needs you" },
   { status: "working", label: "In progress" },
+  { status: "blocked", label: "Blocked" },
   { status: "queued", label: "Queued" },
   { status: "awaiting-review", label: "Awaiting review" },
   { status: "completed", label: "Completed" },
@@ -138,12 +165,26 @@ export function settledByPulls(entry: ViewEntry): RunStatus | null {
 }
 
 /**
- * A run's status. The tracker's word wins once the run has finished: a ticket it completed is done and one it canceled is cancelled, whatever
- * the run ended in. Then its pull requests: Linear completes a ticket on a merge only where its team's workflow says so, so a run whose pull
- * requests merged is done even while its ticket is still in progress. Before either, the outcome decides.
+ * The blockers still holding a queued run back, given every run on the queue. A blocker lets go once the tracker completes it, or, when it is on
+ * the queue itself, once its run is completed, which its pull requests merging is enough for. A canceled or duplicate blocker never lets go: the
+ * work it promised will not come, so a person decides. Waiting is not on order: an unblocked run queued later starts first.
  */
-export function runStatus(entry: ViewEntry): RunStatus {
-  if (entry.phase === "queued") return "queued";
+export function waitsOn(entry: ViewEntry, entries: readonly ViewEntry[]): ViewBlocker[] {
+  return (entry.blockers ?? []).filter((blocker) => {
+    if (blocker.state === "completed") return false;
+    const run = entries.find((e) => e.ticket.key === blocker.key);
+    return run === undefined || run.phase !== "finished" || runStatus(run) !== "completed";
+  });
+}
+
+/**
+ * A run's status. A queued run is blocked while a ticket that blocks it is not done (`entries` is the whole queue, for {@link waitsOn}). The
+ * tracker's word wins once the run has finished: a ticket it completed is done and one it canceled is cancelled, whatever the run ended in. Then
+ * its pull requests: Linear completes a ticket on a merge only where its team's workflow says so, so a run whose pull requests merged is done
+ * even while its ticket is still in progress. Before either, the outcome decides.
+ */
+export function runStatus(entry: ViewEntry, entries: readonly ViewEntry[] = []): RunStatus {
+  if (entry.phase === "queued") return waitsOn(entry, entries).length > 0 ? "blocked" : "queued";
   if (entry.phase !== "finished") return entry.waiting ? "needs-you" : "working";
   if (entry.trackerState === "completed") return "completed";
   if (entry.trackerState === "canceled" || entry.trackerState === "duplicate") return "cancelled";
@@ -156,14 +197,14 @@ export function runStatus(entry: ViewEntry): RunStatus {
 /** How many runs have each status. */
 export function statusCounts(entries: readonly ViewEntry[]): Map<RunStatus, number> {
   const counts = new Map<RunStatus, number>(RUN_STATUSES.map(({ status }) => [status, 0]));
-  for (const status of entries.map(runStatus)) counts.set(status, (counts.get(status) ?? 0) + 1);
+  for (const status of entries.map((entry) => runStatus(entry, entries))) counts.set(status, (counts.get(status) ?? 0) + 1);
   return counts;
 }
 
 /** The runs a filter shows (every run for `null`), the most recently active first, as GitHub lists its runs. */
 export function runsShown<T extends ViewEntry>(entries: readonly T[], filter: RunStatus | null): T[] {
   const latest = (entry: ViewEntry) => entry.finishedAt ?? entry.startedAt ?? entry.queuedAt ?? 0;
-  return entries.filter((entry) => filter === null || runStatus(entry) === filter).sort((a, b) => latest(b) - latest(a));
+  return entries.filter((entry) => filter === null || runStatus(entry, entries) === filter).sort((a, b) => latest(b) - latest(a));
 }
 
 /** A parked run: a finished one that kept its herdr workspace, so a person can still answer its agent there. It holds no slot. */

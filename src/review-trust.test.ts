@@ -239,8 +239,8 @@ test("#1311 (inside): a declared author in the org's own repository is started E
   const out = deliver([reviewOrderFor(pullRequest(7102, { crossRepository: false, login: "worker-1" }))], agents({}), ROSTER, w.deps);
   assert.equal(out.sent.length, 1, `started; refused: ${JSON.stringify(out.refused)}`);
   const pane = callWith(w.h, "workspace create");
-  assert.deepEqual(envNames(pane), ["GH_CONFIG_DIR", "AGENT_ORG_GH_ROLE", "A11Y_REVIEWER_SESSION", "npm_config_cache"],
-    "the reviewer's own account and its cache, as the inside pane has always had them");
+  assert.deepEqual(envNames(pane), ["GH_CONFIG_DIR", "AGENT_ORG_GH_ROLE", "A11Y_REVIEWER_SESSION", "npm_config_cache", "A11Y_APP_TOKEN_DIR"],
+    "the reviewer's own account and its two caches: npm's, and since agent-org#1342 the App token's");
   assert.equal(envValue(pane, "GH_CONFIG_DIR"), REVIEWER_GH_CONFIG_DIR);
   const expected = spawnInvocation({ cause: "draft-awaiting-verdict" }, "reviewer-7102", "wB:p1", {});
   assert.ok(!("refusal" in expected));

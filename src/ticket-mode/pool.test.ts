@@ -81,6 +81,16 @@ test("each run's brief carries the machine's notes, and its ticket dir a copy of
   const dir = ticketDir(settings, "NBF-1");
   assert.match(readFileSync(join(dir, "brief.md"), "utf8"), /## On this machine\n\nStart apps with `npm run dev:atomic`\./);
   assert.deepEqual(JSON.parse(readFileSync(join(dir, "deny.json"), "utf8")), deny);
+  assert.deepEqual(JSON.parse(readFileSync(join(dir, "connectors.json"), "utf8")), [], "a machine that names no connectors allows none");
+});
+
+test("a run's brief names the connectors the machine allows, and its ticket dir holds the copy the hook reads", async () => {
+  const connectors = ["^mcp__claude_ai_Linear__(get|list|search|extract)_"];
+  const { pool, settings } = setup(1, ["NBF-1"], { connectors });
+  await pool.tick();
+  const dir = ticketDir(settings, "NBF-1");
+  assert.match(readFileSync(join(dir, "brief.md"), "utf8"), /## Connectors\n\nThis machine lets you call/);
+  assert.deepEqual(JSON.parse(readFileSync(join(dir, "connectors.json"), "utf8")), connectors);
 });
 
 test("a ticket's parent joins its brief, quoted, with the parent's files in a folder of their own", async () => {
@@ -369,6 +379,46 @@ test("a run whose pull request merged reads as completed while its ticket is sti
   assert.equal(runStatus(queue.entries[0]), "completed");
   await pool.refreshTracker();
   assert.equal(asked.length, 1);
+});
+
+const blocks = (key: string, state: string, status: string, pulls: Record<string, "open" | "merged" | "closed"> = {}) => ({ key, state, status, pulls });
+
+test("a run waits on its blocker: its blockers are read before anything starts, a later unblocked run starts first, and it starts once the blocker is done", async () => {
+  let lib = blocks("LIB-1", "started", "In Review");
+  const asked: string[][] = [];
+  const tracker: TicketSource = { ...source, blockers: async (keys) => { asked.push([...keys]); return new Map([["NBF-1", [lib]]]); } };
+  const { pool, entry } = setup(2, ["NBF-1", "NBF-2"], {}, { source: tracker });
+  await pool.tick();
+  assert.deepEqual(asked, [["NBF-1", "NBF-2"]], "read once, for both, before either started");
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-2").phase], ["queued", "running"]);
+  assert.deepEqual(entry("NBF-2").blockers, [], "a ticket the tracker names no blocker for has none");
+  await pool.tick();
+  assert.equal(entry("NBF-1").phase, "queued", "still blocked, and not read again on a tick");
+  lib = blocks("LIB-1", "completed", "Done", { "https://github.com/x/libs/pull/9": "merged" });
+  await pool.refreshTracker();
+  await pool.tick();
+  assert.equal(entry("NBF-1").phase, "running");
+});
+
+test("nothing starts while the tracker cannot say what blocks a run, and a source that cannot say holds nothing back", async () => {
+  const down: TicketSource = { ...source, blockers: async () => { throw new Error("Linear answered 503"); } };
+  const refused = setup(2, ["NBF-1"], {}, { source: down });
+  await refused.pool.tick();
+  assert.equal(refused.entry("NBF-1").phase, "queued");
+  assert.equal(refused.entry("NBF-1").blockers, undefined, "asked again on the next tick");
+  const unsupported = setup(2, ["NBF-1"]);
+  await unsupported.pool.tick();
+  assert.equal(unsupported.entry("NBF-1").phase, "running");
+});
+
+test("a run that waited names its blockers and their pull requests in its brief", async () => {
+  const pr = "https://github.com/netboxlabs/nbl-ui-platform-libs/pull/800";
+  const tracker: TicketSource = { ...source, blockers: async () => new Map([["NBF-1", [blocks("NBF-1944", "completed", "Done", { [pr]: "merged" })]]]) };
+  const { pool, settings } = setup(1, ["NBF-1"], {}, { source: tracker });
+  await pool.tick();
+  const brief = readFileSync(join(ticketDir(settings, "NBF-1"), "brief.md"), "utf8");
+  assert.match(brief, /## Tickets that blocked this one\n\nThis ticket waited until each of these was done:\n\n- NBF-1944, Done: https:\/\/github\.com\/netboxlabs\/nbl-ui-platform-libs\/pull\/800 \(merged\)/);
+  assert.match(brief, /check that the release is out before you rely on it/);
 });
 
 test("a source that cannot read states never marks a run completed", async () => {
