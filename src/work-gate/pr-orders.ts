@@ -1286,6 +1286,39 @@ function settledVerdictOrder(pr: any, found: {
 export const ROW_REVIEW_SKILL_FLAG = "review.rowReviewSkill";
 
 /**
+ * agent-org#1325: the machinery flag behind which a pull request the org does not own is ordered for its REVIEW and nothing else. Its switch is
+ * `machinery:flag`; `decide` reads it (`prOwnerRoutingFlagOn`, in `tick.ts`) and passes the reading in. OFF is every order as it was.
+ */
+export const PR_OWNER_ROUTING_FLAG = "prs.ownerRouting";
+
+/** The causes that ask a reviewer for a verdict. With the flag on, these are the only orders an outside or chairman-authored pull request keeps. */
+const REVIEW_CAUSES: readonly string[] = Object.freeze(["draft-awaiting-verdict", "verdict-comment-unreviewed"]);
+
+/**
+ * agent-org#1325: WITH THE FLAG ON, an OUTSIDE pull request (`reviewTrustOf`) and one the chairman authored keep only the orders that ask a reviewer
+ * for a verdict. Its red checks, conflict, not-convinced verdict and changes-requested wake no session: the author of an outside pull request is not
+ * ours to wake, and a chairman's pull request is the chairman's to finish. Every pull request order carries the subject `pr-<ref>`, which is what
+ * this matches on. PURE.
+ * @param orders every order `decide` has made, in the order it made them
+ * @param prs the open pull requests, which say who each one's author is
+ * @param declared the identities the org declares, the same reading `perPullRequestOrders` takes
+ */
+export function withholdOutsideFollowUps(orders: any[], prs: any[], declared: DeclaredIdentities): any[] {
+  const withheld = new Set([...reviewOnlyRefs(prs, declared)].map((ref) => `pr-${ref}`));
+  return orders.filter((order) => !withheld.has(order.subject) || REVIEW_CAUSES.includes(order.cause));
+}
+
+/**
+ * agent-org#1325: the pull requests the flag orders for their review only, as `subjectRef`s: an OUTSIDE one (`reviewTrustOf`) and one the chairman
+ * authored. `withholdOutsideFollowUps` matches them on an order's subject; `decide` also drops them from `reviewBlocked`'s population BEFORE the
+ * `pr-review-blocked` set order is built, because that one order names several pull requests under the subject `pr-review-blocked` and no subject
+ * filter can take one pull request out of it (#1378's first review). PURE.
+ */
+export function reviewOnlyRefs(prs: any[], declared: DeclaredIdentities): Set<string> {
+  return new Set(prs.filter((pr) => reviewTrustOf(pr, declared) === OUTSIDE || isChairmanAuthoredPr(pr)).map((pr) => subjectRef(pr.repoKey, pr.number)));
+}
+
+/**
  * `head8` is the head a reviewer would be reading; `key` is what the ORDER is keyed on -- the first eight characters of the PATCH id
  * (#3045), so an update-branch, a rebase or an amend, which make a new head with the same work, keep the key. It is `head8` only when
  * the patch could not be read. `all` is every full head whose patch equals the current head's, current first (`equivalentHeads`). `wait` is

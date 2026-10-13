@@ -52,6 +52,7 @@ export const FLAGS_WITH_ANOTHER_HOME: Readonly<Record<string, string>> = Object.
   "messaging.refuseAskingAnnouncements": "switched by `machinery:flag` (agent-org#1222), which writes the canary state and not a declaration file",
   "gate.graphqlPacing": "switched by `machinery:flag` (agent-org#1240), which writes the canary state and not a declaration file",
   "review.rowReviewSkill": "switched by `machinery:flag` (agent-org#1268), which writes the canary state and not a declaration file",
+  "prs.ownerRouting": "switched by `machinery:flag` (agent-org#1325), which writes the canary state and not a declaration file",
   "gate.accountLimitPause": "switched by `machinery:flag` (agent-org#1307), which writes the canary state and not a declaration file",
   "retro.pinBump": "switched by `machinery:flag` (agent-org#1245), which writes the canary state and not a declaration file",
   "checks.sameHeadRefail": "switched by `machinery:flag` (agent-org#1185), which writes the canary state and not a declaration file",
