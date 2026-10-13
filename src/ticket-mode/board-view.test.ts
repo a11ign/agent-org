@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, isParked, projectCounts, queueLabel, recall, remember, runActions, runStatus, runsShown, selectable, statusCounts, terminalLink, toggled,
+  HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, isParked, parentKeys, parentTick, ticketCount, projectCounts, queueLabel, recall, remember, runActions, runStatus, runsShown, selectable, statusCounts, terminalLink, toggled,
   visibleTickets, type ViewEntry, type ViewTicket,
 } from "./board-view.ts";
 
@@ -53,7 +53,39 @@ test("a ticket sits under its shown parent whatever its own status, and one whos
   const [epic] = groups[1][1];
   assert.deepEqual(epic.children.map((n) => n.ticket.key), ["VE-65", "NBF-1936"], "children in the workflow's order, then by priority");
   assert.deepEqual(epic.children[1].children.map((n) => n.ticket.key), ["NBF-1999"], "a grandchild sits under its own parent");
-  assert.deepEqual(keys(flatten(groups[1][1])), ["NBF-1917", "VE-65", "NBF-1936", "NBF-1999"], "each ticket before the ones under it");
+  assert.deepEqual(keys(flatten(groups[1][1])), ["VE-65", "NBF-1999"], "a parent, at any depth, is not picked: the tickets under it are");
+});
+
+test("a tree counts every ticket in it and names every parent, at any depth", () => {
+  const nested = [
+    { ...t("NBF-1917", "In Progress", 2, 2, null), parent: null },
+    { ...t("NBF-1936", "Todo", 1, 2, null), parent: "NBF-1917" },
+    { ...t("NBF-1999", "Backlog", 0, 2, null), parent: "NBF-1936" },
+    { ...t("VE-65", "Backlog", 0, 1, null), parent: "NBF-1917" },
+    { ...t("NBF-1", "Backlog", 0, 2, null), parent: null },
+  ];
+  const heads = groupByStatus(nested).flatMap(([, nodes]) => nodes);
+  assert.equal(ticketCount(heads), 5);
+  assert.equal(ticketCount(heads.find((n) => n.ticket.key === "NBF-1917")!.children), 3, "the tickets under the epic, a grandchild among them");
+  assert.deepEqual(parentKeys(heads), ["NBF-1917", "NBF-1936"], "a ticket with nothing under it is no parent");
+});
+
+test("a parent's checkbox takes the tickets under it that can still be picked, ticked when all are selected and part ticked when some are", () => {
+  const nested = [
+    { ...t("NBF-1917", "In Progress", 2, 2, null), parent: null },
+    { ...t("NBF-1936", "Todo", 1, 2, null), parent: "NBF-1917" },
+    { ...t("NBF-1999", "Backlog", 0, 2, null), parent: "NBF-1936" },
+    { ...t("VE-65", "Backlog", 0, 1, null), parent: "NBF-1917" },
+    { ...t("VE-66", "Backlog", 0, 1, null), parent: "NBF-1917" },
+  ];
+  const [[, [epic]]] = groupByStatus(nested);
+  const queued: ViewEntry[] = [{ ticket: { key: "VE-66" }, phase: "queued" }];
+  assert.deepEqual(parentTick(epic, new Set(), queued), { keys: ["VE-65", "NBF-1999"], checked: false, indeterminate: false },
+    "a grandchild is under it, and a ticket on the queue already is not");
+  assert.deepEqual(parentTick(epic, new Set(["VE-65"]), queued), { keys: ["VE-65", "NBF-1999"], checked: false, indeterminate: true });
+  assert.deepEqual(parentTick(epic, new Set(["VE-65", "NBF-1999"]), queued), { keys: ["VE-65", "NBF-1999"], checked: true, indeterminate: false });
+  const allQueued: ViewEntry[] = ["VE-65", "VE-66", "NBF-1999"].map((key) => ({ ticket: { key }, phase: "queued" }));
+  assert.deepEqual(parentTick(epic, new Set(), allQueued), { keys: [], checked: false, indeterminate: false }, "nothing left to pick");
 });
 
 test("a parent that is not the person's heads its shown children in its own status, and is not one of the person's tickets", () => {
