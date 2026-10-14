@@ -18,7 +18,7 @@ test("only `clones` is required, every repository in it is offered, and every ot
 
 test("the `tickets` block and `stateDir` override the defaults", () => {
   const settings = parseTicketSettings({ clones, stateDir: "/state", tickets: { max: 5, port: 5000, herdrSession: "nbl", worktreeRoot: "/wt", linearKey: { path: "/keys/linear" } } });
-  assert.deepEqual({ ...settings, clones: undefined }, { clones: undefined, max: 5, port: 5000, herdrSession: "nbl", worktreeRoot: "/wt", stateDir: "/state", linearKey: { path: "/keys/linear" }, brief: null, deny: [], plugins: [], terminal: null, plan: null, connectors: [] });
+  assert.deepEqual({ ...settings, clones: undefined }, { clones: undefined, max: 5, port: 5000, herdrSession: "nbl", worktreeRoot: "/wt", stateDir: "/state", linearKey: { path: "/keys/linear" }, brief: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, connectors: [] });
 });
 
 test("a machine can add notes to every brief and refuse commands of its own", () => {
@@ -48,6 +48,31 @@ test("a machine names the connector tools its workers may call, each a pattern a
   const connectors = ["^mcp__claude_ai_Linear__(get|list|search|extract)_"];
   assert.deepEqual(parseTicketSettings({ clones, tickets: { connectors } }, "/home/me").connectors, connectors);
   assert.deepEqual(parseTicketSettings({ clones }, "/home/me").connectors, [], "none by default, so every connector is refused");
+});
+
+test("a machine names how a ticket with no plan is planned first, and where the plan leaves the ticket", () => {
+  const plan = "-plan-[^/]*\\.md$";
+  const run = "Run the planning skill with: unattended: plan {key} into {dir}";
+  assert.deepEqual(parseTicketSettings({ clones, tickets: { plan, planner: { run, state: "Planned" } } }, "/home/me").planner, { run, state: "Planned" });
+  assert.deepEqual(parseTicketSettings({ clones, tickets: { plan, planner: { run } } }, "/home/me").planner, { run, state: null }, "no state leaves the ticket's alone");
+  assert.equal(parseTicketSettings({ clones, tickets: { plan } }, "/home/me").planner, null, "none by default, so the board plans nothing");
+});
+
+test("a planner is refused without the ticket and folder it is given, without a plan pattern, and with an empty state", () => {
+  const plan = "-plan-[^/]*\\.md$";
+  const refused = (tickets: Record<string, unknown>) => {
+    try {
+      parseTicketSettings({ clones, tickets }, "/home/me");
+    } catch (err) {
+      assert.ok(err instanceof TicketSettingsRefusal);
+      return `${err.field}: ${err.message}`;
+    }
+    return "accepted";
+  };
+  assert.match(refused({ plan, planner: { run: "plan {key}" } }), /^tickets\.planner: .*naming \{key\} and \{dir\}/);
+  assert.match(refused({ plan, planner: "plan {key} into {dir}" }), /^tickets\.planner: /);
+  assert.match(refused({ planner: { run: "plan {key} into {dir}" } }), /^tickets\.planner: .*needs tickets\.plan/);
+  assert.match(refused({ plan, planner: { run: "plan {key} into {dir}", state: "" } }), /^tickets\.planner\.state: /);
 });
 
 test("a bad field is refused by its name", () => {

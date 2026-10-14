@@ -620,3 +620,64 @@ test("a live or parked run links its terminal when the machine serves one, and a
   const none = await page(new Map(), { entries: runs });
   assert.equal(runRows(none).flatMap((r) => r.all()).find((n) => n.className === "terminal"), undefined, "a machine that serves no terminal shows no link");
 });
+
+const PLANNING = { ...SETTINGS, plan: "-plan-[^/]*\\.md$", planner: true, choice: { model: "opus", effort: "high", planModel: "opus", planEffort: "max" } };
+const PLAN_TICKETS = [
+  { key: "T-1", title: "one", status: "Backlog", statusOrder: 0, priority: 2, project: "Alpha", url: "", uploads: ["T-1-0001-plan-a.md"] },
+  { key: "T-2", title: "two", status: "Backlog", statusOrder: 0, priority: 2, project: "Alpha", url: "" },
+];
+/** Select every ticket shown. */
+function selectAll(p: Page) {
+  p.$("all").checked = true;
+  p.$("all").fire("change");
+}
+
+test("Plan first shows once a selected ticket has no plan, Queue says how many it plans first, and the queue is told to plan them", async () => {
+  const p = await page(new Map(), { config: PLANNING, tickets: PLAN_TICKETS });
+  assert.equal(p.$("plan-first-label").hidden, true, "nothing is selected yet");
+  selectAll(p);
+  assert.equal(p.$("plan-first-label").hidden, false);
+  assert.equal(p.$("queue").textContent, "Queue 2 tickets, planning 1 first");
+  p.$("queue").fire("click");
+  await settle();
+  assert.equal(p.posts.find((x) => x.path === "/api/queue")?.body.plan, true);
+});
+
+test("unticking Plan first queues every selected ticket to be worked as it is", async () => {
+  const p = await page(new Map(), { config: PLANNING, tickets: PLAN_TICKETS });
+  selectAll(p);
+  p.$("plan-first").checked = false;
+  p.$("plan-first").fire("change");
+  assert.equal(p.$("queue").textContent, "Queue 2 tickets");
+  p.$("queue").fire("click");
+  await settle();
+  assert.equal(p.posts.find((x) => x.path === "/api/queue")?.body.plan, false);
+});
+
+test("a board that plans nothing shows neither Plan first nor the planning settings, and asks for no planning", async () => {
+  const p = await page(new Map(), { config: { ...SETTINGS, plan: "-plan-[^/]*\\.md$" }, tickets: PLAN_TICKETS });
+  selectAll(p);
+  assert.equal(p.$("plan-first-label").hidden, true);
+  assert.equal(p.$("planning-settings").hidden, true);
+  assert.equal(p.$("queue").textContent, "Queue 2 tickets");
+  p.$("queue").fire("click");
+  await settle();
+  assert.equal(p.posts.find((x) => x.path === "/api/queue")?.body.plan, false);
+});
+
+test("the planning model and effort are set in Settings part by part, apart from the run's", async () => {
+  const p = await page(new Map(), { config: PLANNING, tickets: PLAN_TICKETS });
+  await openFrom(p, "open-settings");
+  assert.equal(p.$("planning-settings").hidden, false);
+  assert.deepEqual([p.$("planModel").value, p.$("planEffort").value], ["opus", "max"]);
+  await change(p, "planModel", "sonnet");
+  assert.deepEqual(p.posts.at(-1), { path: "/api/choice", body: { planModel: "sonnet" } });
+  assert.deepEqual(footerChoice(p), ["opus", "high"], "the run's choice is unchanged");
+});
+
+test("a planning run is Planning on the Board, and its row names the planning model before the run's", async () => {
+  const p = await page(new Map(), { entries: [entry("P-1", { phase: "running", startedAt: 5, model: "sonnet", plan: { model: "opus", effort: "max" } })] });
+  const [row] = runRows(p);
+  assert.equal(row.children[0].className, "icon st-planning");
+  assert.match(row.text(), /Planning · .*plan on opus\/max, then sonnet\/high/);
+});

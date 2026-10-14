@@ -11,30 +11,37 @@
 //   - its workspace missing from two complete listings in a row, or `unknown` twice: `crashed`;
 //   - any other status (a dialog, a prompt waiting on a person) is shown on the board as waiting, and the run continues.
 //
+// A TICKET WITH NO PLAN CAN BE PLANNED FIRST. Its first run is a planning run, on the planning model and effort, told to plan and change no code,
+// and refused anything that would (`PLANNING_DENY`). When it writes `planned`, the board attaches the files it left in the ticket's `plan` folder
+// and queues the ticket again to be worked, where it was. A plan the tracker will not take ends the run for a person, with its files kept.
+//
 // A RUN THAT HANDS ITS TICKET BACK IS PARKED, NOT CLOSED. On `needs-human`, `wrong-repo` or `no-outcome` its workspace stays open and holds no
 // slot, so the person can answer the agent in its terminal. An agent seen working again has been answered: its outcome file is moved aside, so
 // the stop hook asks for a new one, and the run is live again. Close ends a parked run's workspace; a workspace closed by hand is noticed.
 import { execFile, execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { availableParallelism, homedir, loadavg } from "node:os";
 import { join } from "node:path";
 import { agentStartArgs, closedNote, herdrReason, openPane, readAgents } from "../herdr-agents.ts";
-import { HANDED_BACK, isParked } from "./board-view.ts";
+import { HANDED_BACK, hasPlan, isParked } from "./board-view.ts";
 import {
-  finish, isLive, markResumed, markRunning, markStarting, nextStarts, observe, park, recordBlockers, recordPullStates, recordRepos, recordTrackerStates,
+  finish, isLive, markResumed, markRunning, markStarting, nextStarts, observe, park, planDone, recordBlockers, recordPullStates, recordRepos, recordTrackerStates,
   unpark, unreadBlockerKeys, unsettledKeys,
-  type Entry, type Outcome, type Queue,
+  type Entry, type Outcome, type Queue, type RunChoice,
 } from "./queue.ts";
 import type { Ticket, TicketSource } from "./source.ts";
 import { TICKET_ENV } from "./worktree-command.ts";
 import { HOST_FILE_ENV, type TicketSettings } from "./settings.ts";
 import {
-  BRIEF_FILE, CONNECTORS_FILE, DENY_FILE, OUTCOME_FILE, PREVIOUS_OUTCOME_FILE, STOP_COUNT_FILE, briefText, firstPrompt, workerFlags, workerSettings, type HookCommand, type ParentTicket,
+  BRIEF_FILE, CONNECTORS_FILE, DENY_FILE, OUTCOME_FILE, PLAN_DIR, PLANNING_DENY, PREVIOUS_OUTCOME_FILE, STOP_COUNT_FILE, briefText, firstPrompt, planBriefText, workerFlags,
+  workerSettings, type HookCommand, type ParentTicket,
 } from "./worker-files.ts";
 
 /** herdr waits on Claude's start; a slow one has been measured past 30 s (`wake.ts`'s start budget), so a start gets 90. */
 const START_TIMEOUT_MS = 90_000;
 const SETTINGS_FILE = ".claude/settings.local.json";
+/** The largest file a planning run's plan may hold. A plan is prose; anything bigger is not one. */
+const PLAN_FILE_BYTES = 1_000_000;
 /** Listings in a row a run may be missing from before its workspace counts as gone: a running run is then crashed, and a parked one unparked. */
 const MISSES_TO_GONE = 2;
 
@@ -135,6 +142,7 @@ export function parseOutcome(text: string): Outcome {
     if (value.kind === "draft-pr" && Array.isArray(value.prs)) {
       return { kind: "draft-pr", prs: value.prs.map((pr: Record<string, unknown>) => ({ repo: String(pr.repo ?? ""), url: String(pr.url ?? "") })) };
     }
+    if (value.kind === "planned") return { kind: "planned" };
     if (value.kind === "wrong-repo") return { kind: "wrong-repo", where: String(value.where ?? "") };
     if (value.kind === "needs-human") return { kind: "needs-human", reason: String(value.reason ?? "") };
   } catch {
@@ -188,6 +196,13 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
   const session = { session: settings.herdrSession };
   const misses = new Map<string, number>();
   const answered = new Map<string, number>();
+  /** The planning runs whose plans are being attached, so a tick that sees the same outcome file meanwhile does not attach them again. */
+  const attaching = new Set<string>();
+
+  /** A run is a planning run while its entry still needs its plan and this machine has a planner. */
+  const isPlanning = (entry: Entry): boolean => entry.plan !== undefined && settings.planner !== null;
+  /** The model and effort a run starts on: the planning ones for a planning run, and the entry's own otherwise. */
+  const runChoice = (entry: Entry): RunChoice => (isPlanning(entry) && entry.plan ? entry.plan : entry);
   /** Each live run's Claude session id by its workspace, as herdr last reported it (it changes when herdr restarts a session). */
   const claudeSessions = new Map<string, string>();
 
@@ -257,14 +272,24 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     for (const file of [OUTCOME_FILE, STOP_COUNT_FILE]) rmSync(join(dir, file), { force: true });
     const attachments = await source.download(ticket, dir);
     const parent = await parentOf(ticket, dir);
-    const worktreeCommand = `${hook.node} ${hook.bin} ticket:worktree`;
-    writeFileSync(join(dir, BRIEF_FILE), briefText({ ticket, folder, ticketDir: dir, attachments, parent, blockers: entry.blockers, clones: settings.clones, worktreeCommand,
-      notes: machineNotes(), connectors: settings.connectors }));
-    writeFileSync(join(dir, DENY_FILE), `${JSON.stringify(settings.deny)}\n`);
+    const notes = machineNotes();
+    const connectors = settings.connectors;
+    if (isPlanning(entry) && settings.planner) {
+      // An earlier attempt's files would be attached as this one's.
+      const planDir = join(dir, PLAN_DIR);
+      rmSync(planDir, { recursive: true, force: true });
+      mkdirSync(planDir, { recursive: true });
+      writeFileSync(join(dir, BRIEF_FILE), planBriefText({ ticket, ticketDir: dir, planDir, attachments, parent, clones: settings.clones, run: settings.planner.run, notes, connectors }));
+    } else {
+      const worktreeCommand = `${hook.node} ${hook.bin} ticket:worktree`;
+      writeFileSync(join(dir, BRIEF_FILE), briefText({ ticket, folder, ticketDir: dir, attachments, parent, blockers: entry.blockers, clones: settings.clones, worktreeCommand,
+        notes, connectors, planned: entry.planned === true }));
+    }
+    writeFileSync(join(dir, DENY_FILE), `${JSON.stringify(isPlanning(entry) ? [...settings.deny, ...PLANNING_DENY] : settings.deny)}\n`);
     writeFileSync(join(dir, CONNECTORS_FILE), `${JSON.stringify(settings.connectors)}\n`);
     mkdirSync(join(folder, ".claude"), { recursive: true });
     writeFileSync(join(folder, SETTINGS_FILE),
-      `${JSON.stringify(workerSettings({ model: entry.model, ticketDir: dir, readDirs: Object.values(settings.clones), hook, plugins: settings.plugins }), null, 2)}\n`);
+      `${JSON.stringify(workerSettings({ model: runChoice(entry).model, ticketDir: dir, readDirs: Object.values(settings.clones), hook, plugins: settings.plugins }), null, 2)}\n`);
     return { folder, dir };
   }
 
@@ -277,7 +302,8 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     const env = { [TICKET_ENV.key]: key, [TICKET_ENV.branch]: entry.ticket.branch, ...(hostFile ? { [TICKET_ENV.host]: hostFile } : {}) };
     const opened = openPane(run, name, env, folder, session);
     if ("refusal" in opened) throw new Error(opened.refusal);
-    const tail = [firstPrompt(dir), ...workerFlags({ name: key, model: entry.model, effort: entry.effort, addDirs: [dir] })];
+    const { model, effort } = runChoice(entry);
+    const tail = [firstPrompt(dir), ...workerFlags({ name: key, model, effort, addDirs: [dir] })];
     try {
       await herdrAsync(agentStartArgs(name, "claude", opened.pane, tail, session), START_TIMEOUT_MS);
     } catch (err) {
@@ -333,7 +359,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
       update((queue) => observe(queue, key, seen));
       const current = store.get().entries.find((e) => e.ticket.key === key) ?? entry;
       const outcomePath = join(ticketDir(settings, key), OUTCOME_FILE);
-      if ((seen === "idle" || seen === "done") && existsSync(outcomePath)) end(current, parseOutcome(readFileSync(outcomePath, "utf8")));
+      if ((seen === "idle" || seen === "done") && existsSync(outcomePath)) settle(current, parseOutcome(readFileSync(outcomePath, "utf8")));
       else if (seen === "done" || (seen === "idle" && current.seenWorking === true)) end(current, { kind: "no-outcome" });
     }
   }
@@ -361,6 +387,62 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     if (existsSync(join(dir, OUTCOME_FILE))) renameSync(join(dir, OUTCOME_FILE), join(dir, PREVIOUS_OUTCOME_FILE));
     rmSync(join(dir, STOP_COUNT_FILE), { force: true });
     update((queue) => markResumed(queue, key));
+  }
+
+  /** A run wrote its outcome: a planning run's plan is attached, and any other outcome ends the run. */
+  function settle(entry: Entry, outcome: Outcome): void {
+    if (outcome.kind !== "planned") return end(entry, outcome);
+    if (!isPlanning(entry)) return end(entry, { kind: "needs-human", reason: "the worker wrote a planned outcome, but its run was not a planning run" });
+    // Nothing waits on the attach, so its own failure is caught here rather than left to stop the board.
+    attachPlan(entry).catch((err) => { process.stderr.write(`ticket:serve: ${entry.ticket.key}'s plan: ${String((err as Error)?.message ?? err)}\n`); });
+  }
+
+  /** Whether the run `entry` was taken from is still the run on the queue: not stopped, retried or started again since. */
+  const sameRun = (entry: Entry): boolean => {
+    const now = store.get().entries.find((e) => e.ticket.key === entry.ticket.key);
+    return now?.phase === "running" && now.workspace === entry.workspace && now.startedAt === entry.startedAt;
+  };
+
+  /**
+   * The files a planning run left in `planDir` to attach, or why they cannot be. Only plain markdown files are taken: a planning run is
+   * unattended, so a link in its folder could point the board at a secret it would then upload.
+   */
+  function planFiles(planDir: string): { files: string[] } | { refusal: string } {
+    const names = existsSync(planDir) ? readdirSync(planDir).sort() : [];
+    if (names.length === 0) return { refusal: `the planning run wrote no plan in ${planDir}` };
+    const odd = names.find((name) => {
+      const info = lstatSync(join(planDir, name));
+      return !info.isFile() || !name.endsWith(".md") || info.size > PLAN_FILE_BYTES;
+    });
+    if (odd !== undefined) return { refusal: `the plan folder ${planDir} holds ${odd}, which is not a markdown file of 1 MB or less, so nothing was attached` };
+    return { files: names.map((name) => join(planDir, name)) };
+  }
+
+  /**
+   * Attach a planning run's files to its ticket, close its workspace, and queue the ticket again to be worked. A plan that cannot be attached ends
+   * the run for a person, with its files kept in the ticket's `plan` folder.
+   */
+  async function attachPlan(entry: Entry): Promise<void> {
+    const key = entry.ticket.key;
+    if (attaching.has(key)) return;
+    attaching.add(key);
+    const planDir = join(ticketDir(settings, key), PLAN_DIR);
+    try {
+      const found = planFiles(planDir);
+      if ("refusal" in found) return end(entry, { kind: "needs-human", reason: found.refusal });
+      if (source.attachPlan === undefined) return end(entry, { kind: "needs-human", reason: `this tracker takes no plans: attach the files in ${planDir} by hand` });
+      await source.attachPlan(key, found.files, settings.planner?.state ?? null);
+      // Stopped, or stopped and started again, while its plan was attached: the person's last word stands, and a newer run is not touched.
+      if (!sameRun(entry)) return;
+      if (entry.workspace) closedNote((args) => herdr(args), entry.workspace, session);
+      misses.delete(key);
+      answered.delete(herdrName(key));
+      update((queue) => planDone(queue, key));
+    } catch (err) {
+      if (sameRun(entry)) end(entry, { kind: "needs-human", reason: `the plan could not be attached (${String((err as Error)?.message ?? err)}): its files are in ${planDir}` });
+    } finally {
+      attaching.delete(key);
+    }
   }
 
   /** Record how a run ended. One that hands its ticket back keeps its workspace (parked); any other has its workspace closed. */
@@ -410,6 +492,11 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     for (const entry of nextStarts(store.get(), load, cores)) {
       update((queue) => markStarting(queue, entry.ticket.key, now()));
       try {
+        if (isPlanning(entry) && await planReached(entry.ticket)) {
+          // A plan reached the ticket since it was queued, such as one a person attached or an earlier attempt left: it is worked from that.
+          update((queue) => planDone(queue, entry.ticket.key, false));
+          continue;
+        }
         const { folder, dir } = await prepare(entry);
         const { workspace, pane } = await start(entry, folder, dir);
         // Stopped while it was starting: the stop is the person's last word, so the workspace it raced is closed and the run stays stopped.
@@ -423,6 +510,12 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
         update((queue) => finish(queue, entry.ticket.key, { kind: "crashed", reason: String((err as Error)?.message ?? err).split("\n")[0] }, now()));
       }
     }
+  }
+
+  /** Whether the ticket has a plan of its own in the tracker now. */
+  async function planReached(queued: Ticket): Promise<boolean> {
+    const fresh = await source.read(queued.key);
+    return fresh !== null && settings.plan !== null && hasPlan(fresh, new RegExp(settings.plan));
   }
 
   /** Stop a live run: close its workspace and keep its worktrees. */

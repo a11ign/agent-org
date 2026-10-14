@@ -19,6 +19,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { refuseUnknownFlags } from "../lib/cli-flags.ts";
 import { boardKey, boardKeyPath } from "./board-key.ts";
+import { hasPlan } from "./board-view.ts";
 import { browserSessions, browserSessionsPath, SESSION_SECONDS, type BrowserSessions } from "./browser-sessions.ts";
 import { linearSource, readLinearKey } from "./linear.ts";
 import { createPairing, PAIR_MINUTES, type Pairing } from "./pairing.ts";
@@ -101,22 +102,27 @@ export function refusal(request: Pick<IncomingMessage, "headers" | "method">, po
   return null;
 }
 
-/** The model and effort the board's settings give a ticket queued from now on. A saved value the board no longer offers falls back. */
-function readChoice(path: string): RunChoice {
-  const fallback: RunChoice = { model: "opus", effort: "high" };
+/** The settings' choices: the model and effort a ticket queued from now on runs with, and those a ticket planned first is planned with. */
+type SavedChoice = RunChoice & Readonly<{ planModel: string; planEffort: string }>;
+
+/** Each part of the saved choice, with the rule its value is held to. */
+const CHOICE_PARTS: Readonly<Record<keyof SavedChoice, (value: string) => void>> = { model: checkModel, effort: checkEffort, planModel: checkModel, planEffort: checkEffort };
+
+/** The saved choice. A saved value the board no longer offers falls back, so queueing with the settings is never refused. */
+function readChoice(path: string): SavedChoice {
+  // Planning is the harder job, so it starts on the most capable model; the person changes either in Settings.
+  const fallback: SavedChoice = { model: "opus", effort: "high", planModel: "opus", planEffort: "high" };
   if (!existsSync(path)) return fallback;
   try {
-    const saved = JSON.parse(readFileSync(path, "utf8")) as Partial<RunChoice>;
-    return {
-      model: MODELS.includes(String(saved.model)) ? String(saved.model) : fallback.model,
-      effort: EFFORTS.includes(String(saved.effort)) ? String(saved.effort) : fallback.effort,
-    };
+    const saved = JSON.parse(readFileSync(path, "utf8")) as Partial<SavedChoice>;
+    const valid = (part: keyof SavedChoice, allowed: readonly string[]) => (allowed.includes(String(saved[part])) ? String(saved[part]) : fallback[part]);
+    return { model: valid("model", MODELS), effort: valid("effort", EFFORTS), planModel: valid("planModel", MODELS), planEffort: valid("planEffort", EFFORTS) };
   } catch {
     return fallback;
   }
 }
 
-function writeChoice(path: string, choice: RunChoice): void {
+function writeChoice(path: string, choice: SavedChoice): void {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(choice)}\n`);
 }
@@ -137,14 +143,14 @@ function validRunChoice(body: Json): RunChoice {
   return { model, effort };
 }
 
-/** A change to a run's model or effort, or to the settings', names only what it changes, and each part is held to the rules queueing uses. */
-function validChange(body: Json): Partial<RunChoice> {
-  const model = body.model === undefined ? undefined : String(body.model);
-  const effort = body.effort === undefined ? undefined : String(body.effort);
-  if (model !== undefined) checkModel(model);
-  if (effort !== undefined) checkEffort(effort);
-  // `RunChoice` is read-only, so the change is built whole rather than assigned field by field.
-  return { ...(model === undefined ? {} : { model }), ...(effort === undefined ? {} : { effort }) };
+/**
+ * A change to a run's model or effort, or to the settings', names only what it changes, and each part is held to the rules queueing uses.
+ * `parts` are the ones this change may name: a queued run has no planning choice of its own to change.
+ */
+function validChange<P extends keyof SavedChoice>(body: Json, parts: readonly P[]): Partial<Pick<SavedChoice, P>> {
+  const named = parts.filter((part) => body[part] !== undefined).map((part) => [part, String(body[part])] as const);
+  for (const [part, value] of named) CHOICE_PARTS[part](value);
+  return Object.fromEntries(named) as Partial<Pick<SavedChoice, P>>;
 }
 
 /** The request handler, with every dependency named, so a test drives it without a socket. */
@@ -159,10 +165,20 @@ export function createBoard(deps: BoardDeps) {
   let known = new Map<string, Ticket>();
 
   const wake = () => { void pool.tick(); };
+  /** Whether this board plans a ticket first: the machine names a planner, and the tracker can take the plan it writes. */
+  const plans = settings.planner !== null && settings.plan !== null && source.attachPlan !== undefined;
+
+  /** Which of `tickets` to plan before they are worked, and on what: each without a plan of its own, when this board plans at all. */
+  function planFirst(tickets: readonly Ticket[]): Readonly<{ keys: ReadonlySet<string>; choice: RunChoice }> | null {
+    if (!plans || settings.plan === null) return null;
+    const pattern = new RegExp(settings.plan);
+    const { planModel, planEffort } = readChoice(deps.choicePath);
+    return { keys: new Set(tickets.filter((ticket) => !hasPlan(ticket, pattern)).map((ticket) => ticket.key)), choice: { model: planModel, effort: planEffort } };
+  }
 
   async function api(method: string, path: string, body: Json): Promise<[number, unknown]> {
     if (method === "GET" && path === "/api/config") {
-      return [200, { models: MODELS, efforts: EFFORTS, choice: readChoice(deps.choicePath), max: queue.max, terminal: settings.terminal, plan: settings.plan }];
+      return [200, { models: MODELS, efforts: EFFORTS, choice: readChoice(deps.choicePath), max: queue.max, terminal: settings.terminal, plan: settings.plan, planner: plans }];
     }
     if (method === "GET" && path === "/api/tickets") {
       const tickets = await source.assigned();
@@ -186,13 +202,13 @@ export function createBoard(deps: BoardDeps) {
         if (ticket === null) throw new Error(`no ticket ${key}`);
         tickets.push(ticket);
       }
-      store.set(enqueue(queue, tickets, choice, now()));
+      store.set(enqueue(queue, tickets, choice, now(), body.plan === true ? planFirst(tickets) : null));
       wake();
       return [200, queue];
     }
     if (method === "POST" && path === "/api/choice") {
       // Only the part named is changed, so two pages open at once cannot undo each other's other half.
-      const change = validChange(body);
+      const change = validChange(body, ["model", "effort", "planModel", "planEffort"]);
       if (Object.keys(change).length === 0) throw new Error("name a model or an effort to change");
       const choice = { ...readChoice(deps.choicePath), ...change };
       writeChoice(deps.choicePath, choice);
@@ -212,7 +228,7 @@ export function createBoard(deps: BoardDeps) {
     const action = /^\/api\/queue\/([A-Za-z0-9_-]+)\/(amend|remove|retry|stop|close)$/.exec(path);
     if (method === "POST" && action) {
       const [, key, verb] = action;
-      if (verb === "amend") store.set(amend(queue, key, validChange(body)));
+      if (verb === "amend") store.set(amend(queue, key, validChange(body, ["model", "effort"])));
       if (verb === "remove") store.set(remove(queue, key));
       if (verb === "retry") store.set(retry(queue, key, now()));
       if (verb === "stop") pool.stop(key);

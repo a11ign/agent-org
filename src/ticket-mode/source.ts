@@ -63,4 +63,10 @@ export interface TicketSource {
    * source without it never holds a queued run back. Throws when the tracker cannot be asked.
    */
   blockers?(keys: readonly string[]): Promise<ReadonlyMap<string, readonly Blocker[]>>;
+  /**
+   * Attach a planning run's files to the ticket, each titled with its file name, and move the ticket to the state named `state` when it has not
+   * started. A file already attached under its name is not attached again, so an attempt that was cut off can be repeated. A source without it
+   * takes no plans, so the board offers no planning. Throws when the tracker refuses.
+   */
+  attachPlan?(key: string, files: readonly string[], state: string | null): Promise<void>;
 }

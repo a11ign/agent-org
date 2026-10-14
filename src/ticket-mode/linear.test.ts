@@ -1,7 +1,8 @@
 // no-token: gh -- `fetch` and `security` are injected; nothing reaches Linear or the Keychain
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { LINEAR_API, downloadName, linearSource, pullState, readLinearKey, uploadLinks } from "./linear.ts";
 import type { Ticket } from "./source.ts";
@@ -180,4 +181,74 @@ test("stateTypes() reads every key's state type in one aliased request by team a
   const sent = JSON.parse(String(requests[0].init.body));
   assert.deepEqual(sent.variables, { t0: "NBF", n0: 1270, t1: "NBF", n1: 9999, t2: "VE", n2: 61 }, "keys travel as variables, never in the query text");
   assert.equal(sent.query.includes("NBF-1270"), false);
+});
+
+/** Linear's answer to the read attachPlan starts with: the ticket's id, its state's type, its team's states and its uploads. */
+const planning = (type: string, ...uploads: { url: string; title: string }[]) => ({ data: { issues: { nodes: [{
+  id: "uuid-1", state: { type }, team: { states: { nodes: [{ id: "s-backlog", name: "Backlog" }, { id: "s-planned", name: "Planned" }] } }, attachments: { nodes: uploads },
+}] } } });
+const signed = (n: number) => ({ data: { fileUpload: { success: true, uploadFile: { uploadUrl: `https://storage.example/upload-${n}?sig=1`, assetUrl: `https://uploads.linear.app/org/asset-${n}`,
+  headers: [{ key: "x-goog-content-length-range", value: "1,100" }] } } } });
+const done = { data: { ok: { success: true } } };
+const planFiles = () => {
+  const dir = tmpDir("linear-plan-");
+  const plan = join(dir, "NBF-1-0001-plan-fit-to-view.md");
+  const adr = join(dir, "NBF-1-adr-0001-zoom-anchor.md");
+  writeFileSync(plan, "# Fit to view\n");
+  writeFileSync(adr, "# Zoom anchor\n");
+  return [plan, adr];
+};
+
+test("attachPlan() uploads each file to the address Linear signs, without the key, attaches it under its own name, and moves an unstarted ticket to the planner's state", async () => {
+  const files = planFiles();
+  const { fetch, requests } = linear([planning("backlog"), signed(1), done, signed(2), done, done], {
+    "https://storage.example/upload-1?sig=1": { status: 200 }, "https://storage.example/upload-2?sig=1": { status: 200 },
+  });
+  await linearSource({ key: "lin_api_secret", fetch }).attachPlan!("NBF-1", files, "Planned");
+  const puts = requests.filter((r) => r.init.method === "PUT");
+  assert.deepEqual(puts.map((r) => r.url), ["https://storage.example/upload-1?sig=1", "https://storage.example/upload-2?sig=1"]);
+  for (const put of puts) {
+    const headers = put.init.headers as Record<string, string>;
+    assert.equal(headers.Authorization, undefined, "the key never goes to the storage address");
+    assert.equal(headers["x-goog-content-length-range"], "1,100", "the headers Linear signed are sent as they are");
+  }
+  const bodies = requests.filter((r) => r.url === LINEAR_API).map((r) => JSON.parse(String(r.init.body)));
+  assert.deepEqual(bodies.filter((b) => /attachmentCreate/.test(b.query)).map((b) => [b.variables.issueId, b.variables.title, b.variables.url]), [
+    ["uuid-1", "NBF-1-0001-plan-fit-to-view.md", "https://uploads.linear.app/org/asset-1"],
+    ["uuid-1", "NBF-1-adr-0001-zoom-anchor.md", "https://uploads.linear.app/org/asset-2"],
+  ]);
+  assert.deepEqual(bodies.filter((b) => /issueUpdate/.test(b.query)).map((b) => b.variables), [{ id: "uuid-1", stateId: "s-planned" }]);
+});
+
+test("attachPlan() attaches nothing twice, so a cut-off attempt can be repeated", async () => {
+  const files = planFiles();
+  const { fetch, requests } = linear([planning("backlog", { url: "https://uploads.linear.app/org/asset-1", title: "NBF-1-0001-plan-fit-to-view.md" }), signed(2), done, done], {
+    "https://storage.example/upload-2?sig=1": { status: 200 },
+  });
+  await linearSource({ key: "k", fetch }).attachPlan!("NBF-1", files, "Planned");
+  const titles = requests.filter((r) => r.url === LINEAR_API).map((r) => JSON.parse(String(r.init.body))).filter((b) => /attachmentCreate/.test(b.query)).map((b) => b.variables.title);
+  assert.deepEqual(titles, ["NBF-1-adr-0001-zoom-anchor.md"]);
+});
+
+test("attachPlan() leaves a started ticket's state alone, and any state when the planner names none", async () => {
+  for (const [type, state] of [["started", "Planned"], ["backlog", null]] as const) {
+    const [plan] = planFiles();
+    const { fetch, requests } = linear([planning(type), signed(1), done], { "https://storage.example/upload-1?sig=1": { status: 200 } });
+    await linearSource({ key: "k", fetch }).attachPlan!("NBF-1", [plan], state);
+    assert.equal(requests.some((r) => r.url === LINEAR_API && /issueUpdate/.test(String(r.init.body))), false, `${type}, ${state}`);
+  }
+});
+
+test("attachPlan() says so when the storage refuses an upload, and attaches nothing for it", async () => {
+  const [plan] = planFiles();
+  const { fetch, requests } = linear([planning("backlog"), signed(1)], { "https://storage.example/upload-1?sig=1": { status: 403 } });
+  await assert.rejects(linearSource({ key: "k", fetch }).attachPlan!("NBF-1", [plan], "Planned"), /the upload of NBF-1-0001-plan-fit-to-view\.md was refused \(403\)/);
+  assert.equal(requests.some((r) => /attachmentCreate/.test(String(r.init.body ?? ""))), false);
+});
+
+test("attachPlan() refuses a state the ticket's team does not have before it uploads anything", async () => {
+  const [plan] = planFiles();
+  const { fetch, requests } = linear([planning("backlog")]);
+  await assert.rejects(linearSource({ key: "k", fetch }).attachPlan!("NBF-1", [plan], "Plannned"), /NBF-1's team has no state named Plannned/);
+  assert.equal(requests.length, 1, "only the ticket was read");
 });

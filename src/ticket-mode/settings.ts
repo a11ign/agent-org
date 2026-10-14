@@ -46,11 +46,21 @@ export type TicketSettings = Readonly<{
   terminal: string | null;
   /** A regular expression the name of a file uploaded to a ticket matches when it is the ticket's plan, or null when the board looks for none. */
   plan: string | null;
+  /** How a ticket with no plan is planned before it is worked, or null when this machine plans none. */
+  planner: Planner | null;
   /**
    * The connector tools a worker may call, as regular expressions matched against the tool's name, each anchored at its start with `^mcp__`.
    * Every other connector stays refused. None by default.
    */
   connectors: readonly string[];
+}>;
+
+/** What a planning run is told, and where its plan leaves the ticket. */
+export type Planner = Readonly<{
+  /** The planning worker's instruction, with `{key}` and `{dir}` filled in per run: the ticket, and the folder its plan files go in. */
+  run: string;
+  /** The tracker state a ticket moves to once its plan is attached, if it has not started, or null to leave its state alone. */
+  state: string | null;
 }>;
 
 export class TicketSettingsRefusal extends Error {
@@ -116,6 +126,19 @@ function planPattern(value: unknown): string | null {
   return value;
 }
 
+const PLANNER_SHAPE = "must be { \"run\": \"<the planning worker's instruction, naming {key} and {dir}>\", \"state\": \"<optional: the state a planned ticket moves to>\" }";
+
+/** A planner needs the plan pattern, which is how the board knows which tickets already have a plan. */
+function plannerOf(value: unknown, plan: string | null): Planner | null {
+  if (value === undefined) return null;
+  if (!isObject(value) || typeof value.run !== "string" || !value.run.includes("{key}") || !value.run.includes("{dir}")) {
+    throw new TicketSettingsRefusal("tickets.planner", PLANNER_SHAPE);
+  }
+  if (value.state !== undefined && (typeof value.state !== "string" || value.state === "")) throw new TicketSettingsRefusal("tickets.planner.state", "must be a state's name");
+  if (plan === null) throw new TicketSettingsRefusal("tickets.planner", "needs tickets.plan, which says which tickets have a plan already");
+  return Object.freeze({ run: value.run, state: value.state ?? null });
+}
+
 const CONNECTOR_SHAPE = "a regular expression anchored at the tool's name, such as \"^mcp__claude_ai_Linear__(get|list|search)_\"";
 
 /**
@@ -162,6 +185,7 @@ export function parseTicketSettings(host: unknown, home: string = homedir()): Ti
   const stateDir = host.stateDir === undefined ? join(home, ".local", "state", "agent-org") : absolutePath(host.stateDir, "stateDir");
   const session = tickets.herdrSession ?? "tickets";
   if (typeof session !== "string" || !/^[A-Za-z0-9_-]+$/.test(session)) throw new TicketSettingsRefusal("tickets.herdrSession", "must be a herdr session name");
+  const plan = planPattern(tickets.plan);
   return Object.freeze({
     clones: Object.freeze(repos),
     max: positiveInteger(tickets.max, "tickets.max", 3),
@@ -174,7 +198,8 @@ export function parseTicketSettings(host: unknown, home: string = homedir()): Ti
     deny: denyRules(tickets.deny),
     plugins: pluginList(tickets.plugins),
     terminal: terminalTemplate(tickets.terminal),
-    plan: planPattern(tickets.plan),
+    plan,
+    planner: plannerOf(tickets.planner, plan),
     connectors: connectorPatterns(tickets.connectors),
   });
 }

@@ -6,7 +6,7 @@ import { tmpDir } from "../lib/tmp-fixture.ts";
 import { isParked } from "./board-view.ts";
 import {
   amend, emptyQueue, enqueue, finish, isLive, loadQueue, markResumed, markRunning, markStarting, nextStarts, observe, park, recordBlockers, recordRepos,
-  recordPullStates, recordTrackerStates, remove, retry, saveQueue, setMax, setPaused, unpark, unreadBlockerKeys, unsettledKeys, type Queue,
+  planDone, recordPullStates, recordTrackerStates, remove, retry, saveQueue, setMax, setPaused, unpark, unreadBlockerKeys, unsettledKeys, type Queue,
 } from "./queue.ts";
 import type { Ticket } from "./source.ts";
 
@@ -20,6 +20,35 @@ test("enqueue adds what you selected, in order, once each, with no repository un
   assert.deepEqual(keys(queue), ["A", "B", "C"]);
   assert.equal(queue.entries[1].model, "opus", "B kept the choice it was first queued with");
   assert.deepEqual(queue.entries.map((e) => e.repos), [[], [], []]);
+});
+
+const planChoice = { model: "opus", effort: "max" };
+
+test("a ticket queued to be planned first carries the planning model and effort, and the others do not", () => {
+  const queue = enqueue(emptyQueue(3), [ticket("A"), ticket("B")], { model: "sonnet", effort: "high" }, 1, { keys: new Set(["A"]), choice: planChoice });
+  assert.deepEqual(queue.entries[0].plan, planChoice);
+  assert.deepEqual([queue.entries[0].model, queue.entries[0].effort], ["sonnet", "high"], "it is worked on the run's own choice once planned");
+  assert.equal(queue.entries[1].plan, undefined);
+});
+
+test("once its plan is attached, a planned ticket is queued again where it was, to be worked, with nothing left of its planning run", () => {
+  let queue = enqueue(emptyQueue(3), [ticket("A"), ticket("B")], choice, 1, { keys: new Set(["A"]), choice: planChoice });
+  queue = markRunning(markStarting(queue, "A", 2), "A", "w1", "w1:p1");
+  queue = planDone(observe(queue, "A", "working"), "A");
+  const [a] = queue.entries;
+  assert.deepEqual(keys(queue), ["A", "B"]);
+  assert.deepEqual({ phase: a.phase, plan: a.plan, planned: a.planned, workspace: a.workspace, pane: a.pane, startedAt: a.startedAt, seenWorking: a.seenWorking, queuedAt: a.queuedAt },
+    { phase: "queued", plan: undefined, planned: true, workspace: undefined, pane: undefined, startedAt: undefined, seenWorking: undefined, queuedAt: 1 });
+  assert.deepEqual(nextStarts(setPaused(queue, false), 0, 4).map((e) => e.ticket.key), ["A", "B"], "it starts in its old place");
+});
+
+test("a retried planning run plans again, and a retried planned run keeps its mark", () => {
+  let queue = enqueue(emptyQueue(3), [ticket("A")], choice, 1, { keys: new Set(["A"]), choice: planChoice });
+  queue = retry(finish(markStarting(queue, "A", 2), "A", { kind: "crashed", reason: "herdr refused" }, 3), "A", 4);
+  assert.deepEqual(queue.entries[0].plan, planChoice);
+  queue = planDone(queue, "A");
+  queue = retry(finish(markStarting(queue, "A", 5), "A", { kind: "crashed", reason: "herdr refused" }, 6), "A", 7);
+  assert.deepEqual([queue.entries[0].plan, queue.entries[0].planned], [undefined, true]);
 });
 
 test("the repositories a worker made worktrees in are recorded on its entry", () => {

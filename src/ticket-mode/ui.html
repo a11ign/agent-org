@@ -72,10 +72,10 @@
   .icon { width: 16px; height: 16px; margin-top: 2px; display: block; }
   .icon svg { width: 16px; height: 16px; display: block; }
   .st-queued, .st-blocked { color: var(--st-queued); } .st-working { color: var(--st-progress); } .st-needs-you { color: var(--st-needs); }
-  .st-awaiting-review { color: var(--st-review); } .st-completed { color: var(--st-done); } .st-failed { color: var(--st-failed); } .st-cancelled { color: var(--st-cancelled); }
-  .runs .run .st-working svg { animation: spin 1.1s linear infinite; }
+  .st-planning { color: var(--st-review); } .st-awaiting-review { color: var(--st-review); } .st-completed { color: var(--st-done); } .st-failed { color: var(--st-failed); } .st-cancelled { color: var(--st-cancelled); }
+  .runs .run .st-working svg, .runs .run .st-planning svg { animation: spin 1.1s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  @media (prefers-reduced-motion: reduce) { .runs .run .st-working svg { animation: none; } }
+  @media (prefers-reduced-motion: reduce) { .runs .run .st-working svg, .runs .run .st-planning svg { animation: none; } }
   .waiting { color: var(--st-needs); font-size: 12px; font-weight: 600; }
   @media (max-width: 760px) { .runs { grid-template-columns: minmax(0, 1fr); } .filters { flex-direction: row; flex-wrap: wrap; } .run { grid-template-columns: 18px minmax(0, 1fr); } .run .side { grid-column: 2; align-items: flex-start; } }
   a { color: var(--accent); text-decoration: none; }
@@ -92,6 +92,7 @@
   dialog::backdrop { background: rgb(0 0 0 / .4); }
   dialog h2 { font-size: 16px; margin: 0 0 16px; }
   .settings fieldset { border: 0; padding: 0; margin: 0 0 18px; display: grid; gap: 10px; }
+  .settings fieldset[hidden], footer [hidden] { display: none; }
   .settings legend { font-weight: 600; padding: 0; margin-bottom: 8px; }
   .settings label { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
   .settings input[type="number"] { width: 72px; }
@@ -121,6 +122,12 @@
       <p class="hint">The default for tickets you queue. The Pick footer can choose otherwise for one batch. A run already on the queue keeps its own.</p>
       <label>Model <select id="model"></select></label>
       <label>Effort <select id="effort"></select></label>
+    </fieldset>
+    <fieldset id="planning-settings" hidden>
+      <legend>Planning</legend>
+      <p class="hint">A ticket queued with Plan first is planned on these before it runs. Planning decides for you, so it usually wants the most capable model.</p>
+      <label>Model <select id="planModel"></select></label>
+      <label>Effort <select id="planEffort"></select></label>
     </fieldset>
     <fieldset>
       <legend>Workers</legend>
@@ -166,6 +173,7 @@
   <span id="batch-note" class="hint"></span>
   <button class="small" id="batch-reset" type="button" hidden>Use the default</button>
   <button class="small" id="change-choice" type="button">Change the default</button>
+  <label class="batch" id="plan-first-label" hidden title="Plan each selected ticket that has no plan of its own before it runs, on the planning model in Settings"><input type="checkbox" id="plan-first" checked> Plan first</label>
   <button class="primary" id="queue">Queue 0 tickets</button>
 </footer>
 <script type="module">
@@ -173,7 +181,7 @@
 // This page only draws what they return and wires the clicks.
 import {
   PRIORITY_NAMES, RUN_STATUSES, flatten, groupByStatus, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, queueLabel, recall, remember, runActions, runStatus,
-  runsShown, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, waitsOn, workersLabel,
+  runChoiceLabel, runsShown, unplannedCount, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, waitsOn, workersLabel,
 } from "/board-view.js";
 
 const el = (tag, props = {}, ...children) => {
@@ -186,7 +194,9 @@ const storage = (() => { try { return window.localStorage; } catch { return null
 const state = {
   tickets: [], parents: [], queue: { entries: [], max: 3, paused: true }, selected: new Set(), terminal: null,
   // The model and effort the settings give a ticket queued from now on, and the parts the Pick footer chose otherwise for the next batch only.
-  choice: { model: "", effort: "" }, batch: {},
+  choice: { model: "", effort: "", planModel: "", planEffort: "" }, batch: {},
+  // Whether this board plans a ticket with no plan before it runs: the machine names a planner and its tracker takes plans.
+  planner: false,
   // The pattern a plan's name matches (the host file's `tickets.plan`), or null when the board looks for none; and the plan filter chosen.
   plan: null, planChoice: planChoiceOf(recall(storage, "ticket-mode.plan")),
   // Sections start collapsed, so a first visit sees every status and its count before any list.
@@ -338,6 +348,7 @@ const ICONS = {
   "queued": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="2"/></svg>',
   "blocked": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5 8h6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
   "working": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-opacity=".25" stroke-width="2"/><path d="M8 2a6 6 0 0 1 6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+  "planning": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-opacity=".25" stroke-width="2"/><path d="M8 2a6 6 0 0 1 6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
   "needs-you": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7" fill="currentColor"/><path d="M8 4.5v4.5" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/><circle cx="8" cy="11.6" r="1" fill="#fff"/></svg>',
   "awaiting-review": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="4.5" cy="3.5" r="1.8" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="4.5" cy="12.5" r="1.8" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="11.5" cy="12.5" r="1.8" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M4.5 5.3v5.4M11.5 10.7V6.5a2 2 0 0 0-2-2H7.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
   "completed": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7" fill="currentColor"/><path d="M4.8 8.2l2.2 2.2 4.2-4.6" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
@@ -347,8 +358,9 @@ const ICONS = {
 const LABEL = Object.fromEntries(RUN_STATUSES.map(({ status, label }) => [status, label]));
 const ACTION_LABEL = { remove: "Remove", stop: "Stop", retry: "Retry", close: "Close" };
 
-// The filter rail marks In progress with a still dot: a spinner there turns for as long as any run works.
-const RAIL_ICONS = { ...ICONS, "working": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5" fill="currentColor"/></svg>' };
+// The filter rail marks In progress and Planning with a still dot: a spinner there turns for as long as any run works.
+const DOT = '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5" fill="currentColor"/></svg>';
+const RAIL_ICONS = { ...ICONS, "working": DOT, "planning": DOT };
 
 function statusIcon(status, icons = ICONS) {
   const icon = el("span", { className: `icon st-${status}`, title: LABEL[status] });
@@ -384,7 +396,7 @@ function row(e) {
     statusIcon(status),
     el("div", {},
       el("div", { className: "title" }, el("a", { href: e.ticket.url, target: "_blank", rel: "noreferrer" }, e.ticket.key), ` ${e.ticket.title}`),
-      el("div", { className: "meta" }, `${LABEL[status]} · ${repos} · ${e.model}/${e.effort} · ${when}${tokens}`),
+      el("div", { className: "meta" }, `${LABEL[status]} · ${repos} · ${runChoiceLabel(e)} · ${when}${tokens}`),
       e.waiting ? el("div", { className: "waiting" }, "Waiting on a person") : null,
       waits.length > 0 ? el("div", { className: "meta" }, `Waits on ${waits.map((b) => `${b.key} (${b.status})`).join(", ")}`) : null,
       reason ? el("div", { className: "meta" }, reason) : null,
@@ -420,13 +432,20 @@ function setDefault(choice) {
   state.batch = batchOverride(choice, batchChoice(choice, state.batch));
 }
 
+// The selected tickets with no plan of their own, which Plan first plans before they are worked; none on a board that plans nothing.
+function unplannedSelected() {
+  return state.planner && state.plan ? unplannedCount(state.tickets.filter((t) => state.selected.has(t.key)), state.plan) : 0;
+}
+const planningCount = () => ($("plan-first").checked ? unplannedSelected() : 0);
+
 function renderFooter() {
   const next = batchChoice(state.choice, state.batch);
   $("batch-model").value = next.model;
   $("batch-effort").value = next.effort;
   $("batch-note").textContent = batchNote(state.choice, state.batch);
   $("batch-reset").hidden = isDefaultBatch(state.batch);
-  $("queue").textContent = queueLabel(state.selected.size);
+  $("plan-first-label").hidden = unplannedSelected() === 0;
+  $("queue").textContent = queueLabel(state.selected.size, planningCount());
   $("queue").disabled = state.selected.size === 0;
 }
 
@@ -436,6 +455,8 @@ async function readChoice() {
   if (config) setDefault(config.choice);
   $("model").value = state.choice.model;
   $("effort").value = state.choice.effort;
+  $("planModel").value = state.choice.planModel;
+  $("planEffort").value = state.choice.planEffort;
   renderFooter();
 }
 async function readMax() {
@@ -490,8 +511,11 @@ function setup(config) {
   state.terminal = config.terminal ?? null;
   state.plan = config.plan ? new RegExp(config.plan) : null;
   setDefault(config.choice);
-  for (const id of ["model", "batch-model"]) $(id).replaceChildren(...config.models.map((m) => el("option", { value: m, textContent: m })));
-  for (const id of ["effort", "batch-effort"]) $(id).replaceChildren(...config.efforts.map((x) => el("option", { value: x, textContent: x })));
+  for (const id of ["model", "batch-model", "planModel"]) $(id).replaceChildren(...config.models.map((m) => el("option", { value: m, textContent: m })));
+  for (const id of ["effort", "batch-effort", "planEffort"]) $(id).replaceChildren(...config.efforts.map((x) => el("option", { value: x, textContent: x })));
+  state.planner = config.planner === true;
+  $("planning-settings").hidden = !state.planner;
+  $("plan-first").checked = true;
 }
 
 for (const tab of document.querySelectorAll(".tab")) {
@@ -520,7 +544,7 @@ $("queue").addEventListener("click", async () => {
   try {
     const sent = state.batch;
     const { model, effort } = batchChoice(state.choice, sent);
-    state.queue = await call("POST", "/api/queue", { keys: [...state.selected], model, effort });
+    state.queue = await call("POST", "/api/queue", { keys: [...state.selected], model, effort, plan: planningCount() > 0 });
     state.selected.clear();
     // A batch's own model and effort are for that batch: the next one starts from the default again, unless it was chosen while this queued.
     if (state.batch === sent) state.batch = {};
@@ -537,6 +561,8 @@ for (const part of ["model", "effort"]) {
   });
 }
 $("batch-reset").addEventListener("click", () => { state.batch = {}; renderFooter(); });
+$("plan-first").addEventListener("change", renderFooter);
+for (const part of ["planModel", "planEffort"]) $(part).addEventListener("change", () => saveChoice(part));
 $("model").addEventListener("change", () => saveChoice("model"));
 $("effort").addEventListener("change", () => saveChoice("effort"));
 $("max").addEventListener("change", saveMax);

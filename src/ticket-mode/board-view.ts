@@ -23,7 +23,11 @@ export type TicketNode<T extends ViewTicket = ViewTicket> = Readonly<{ ticket: T
 export type ViewEntry = Readonly<{
   ticket: Readonly<{ key: string }>; phase: string; outcome?: Readonly<{ kind: string; prs?: readonly Readonly<{ url: string }>[] }>; waiting?: boolean;
   trackerState?: string; pullStates?: Readonly<Record<string, string>>; queuedAt?: number; startedAt?: number; finishedAt?: number; workspace?: string;
-  pane?: string; blockers?: readonly ViewBlocker[];
+  pane?: string; blockers?: readonly ViewBlocker[]; model?: string; effort?: string;
+  /** Set while the ticket still needs its plan: the model and effort its planning run uses. */
+  plan?: Readonly<{ model: string; effort: string }>;
+  /** Its plan was written by a planning run, not agreed with a person. */
+  planned?: boolean;
 }>;
 
 /** A ticket that blocks a queued one: its key, and its state's type and name in the tracker. */
@@ -215,12 +219,13 @@ export function remember(storage: Storage | null, name: string, values: Readonly
 }
 
 /** A run's status on the board, after GitHub's Actions runs: each has its own icon and filter. */
-export type RunStatus = "needs-you" | "working" | "blocked" | "queued" | "awaiting-review" | "completed" | "failed" | "cancelled";
+export type RunStatus = "needs-you" | "working" | "planning" | "blocked" | "queued" | "awaiting-review" | "completed" | "failed" | "cancelled";
 
 /** Every status, in the order the filters list them: what needs a person first, what is settled last. */
 export const RUN_STATUSES: readonly Readonly<{ status: RunStatus; label: string }>[] = [
   { status: "needs-you", label: "Needs you" },
   { status: "working", label: "In progress" },
+  { status: "planning", label: "Planning" },
   { status: "blocked", label: "Blocked" },
   { status: "queued", label: "Queued" },
   { status: "awaiting-review", label: "Awaiting review" },
@@ -266,7 +271,7 @@ export function waitsOn(entry: ViewEntry, entries: readonly ViewEntry[]): ViewBl
  */
 export function runStatus(entry: ViewEntry, entries: readonly ViewEntry[] = []): RunStatus {
   if (entry.phase === "queued") return waitsOn(entry, entries).length > 0 ? "blocked" : "queued";
-  if (entry.phase !== "finished") return entry.waiting ? "needs-you" : "working";
+  if (entry.phase !== "finished") return entry.waiting ? "needs-you" : entry.plan ? "planning" : "working";
   if (entry.trackerState === "completed") return "completed";
   if (entry.trackerState === "canceled" || entry.trackerState === "duplicate") return "cancelled";
   const kind = entry.outcome?.kind ?? "";
@@ -339,5 +344,24 @@ export const batchNote = (defaults: Choice, batch: Partial<Choice>): string =>
 /** What the Board says about how many workers run at once. */
 export const workersLabel = (max: number): string => `Up to ${max} worker${max === 1 ? "" : "s"} at once`;
 
-/** The Queue button's words for `count` selected tickets. */
-export const queueLabel = (count: number): string => (count === 0 ? "Select tickets to queue" : `Queue ${count} ticket${count === 1 ? "" : "s"}`);
+/** The Queue button's words for `count` selected tickets, `planning` of which are planned first. */
+export function queueLabel(count: number, planning = 0): string {
+  if (count === 0) return "Select tickets to queue";
+  const queue = `Queue ${count} ticket${count === 1 ? "" : "s"}`;
+  if (planning === 0) return queue;
+  const which = planning < count ? String(planning) : count === 1 ? "it" : "all";
+  return `${queue}, planning ${which} first`;
+}
+
+/** How many of `tickets` have no plan of their own, so would be planned first. */
+export const unplannedCount = (tickets: readonly ViewTicket[], plan: RegExp): number => tickets.filter((t) => !hasPlan(t, plan)).length;
+
+/**
+ * The model and effort a run uses, as its row names them: a ticket still to be planned names its planning run's too, and one worked from a
+ * planning run's plan says so, since nobody agreed that plan.
+ */
+export function runChoiceLabel(entry: ViewEntry): string {
+  const run = `${entry.model}/${entry.effort}`;
+  if (entry.plan) return `plan on ${entry.plan.model}/${entry.plan.effort}, then ${run}`;
+  return entry.planned ? `${run} on an unattended plan` : run;
+}

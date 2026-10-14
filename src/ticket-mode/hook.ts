@@ -107,7 +107,7 @@ export function stopVerdict(ticketDir: string, { exists = existsSync, read = (p:
     return { code: 0, say: [`ticket-mode: ${refused} stops in a row without ${outcome}, so this one is allowed and the board records no outcome.`] };
   }
   write(counter, String(refused + 1));
-  return refuse(`write ${outcome} before you stop: { "kind": "draft-pr", "prs": [...] }, { "kind": "wrong-repo", "where": "..." } or { "kind": "needs-human", "reason": "..." }.`);
+  return refuse(`write ${outcome} before you stop, with one of the outcomes your brief lists, such as { "kind": "needs-human", "reason": "..." }.`);
 }
 
 export function main(stdin: string, argv: string[]): HookResult {

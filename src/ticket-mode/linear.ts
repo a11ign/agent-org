@@ -2,13 +2,14 @@
 // module: Linear as a ticket source -- GraphQL over an injected `fetch`, with a personal API key
 //
 // A PERSONAL KEY, NOT AN APP. A Linear agent app is installed by a workspace admin, which a person on a work account cannot do, so ticket mode reads
-// as the person: their key, their assigned tickets. It writes nothing to Linear. Linear's own GitHub integration links each pull request, because
-// the worker's branch is the ticket's `branchName`.
+// as the person: their key, their assigned tickets. It writes only what a planning run hands the board: the plan's files, attached to the ticket,
+// and the ticket's move to the planner's state. Workers write nothing. Linear's own GitHub integration links each pull request, because the
+// worker's branch is the ticket's `branchName`.
 //
 // THE KEY NEVER LEAVES THIS MODULE. It is read once, from the macOS Keychain or a file the host file names, and sent only to api.linear.app and uploads.linear.app.
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
-import { extname, join } from "node:path";
+import { basename, extname, join } from "node:path";
 import type { KeySource } from "./settings.ts";
 import type { Blocker, PullState, Ticket, TicketSource } from "./source.ts";
 
@@ -87,6 +88,14 @@ function linkedPulls(node: Attached): Record<string, PullState> {
   return Object.fromEntries(node.attachments.nodes.filter(({ sourceType }) => sourceType === "github").map(({ url, metadata }) => [url, pullState(metadata?.status)]));
 }
 
+/** What attaching a plan reads of its ticket: its id, its state's type, its team's states, and the files already attached. */
+type Planning = { id: string; state: { type: string }; team: { states: { nodes: { id: string; name: string }[] } } } & Attachments;
+/** Linear's answer to a request to upload a file: where to PUT it, with which headers, and the address it is then read from. */
+type Upload = { fileUpload: { success: boolean; uploadFile: { uploadUrl: string; assetUrl: string; headers: { key: string; value: string }[] } | null } };
+
+/** The state types a plan moves a ticket on from: new work only, never work already started back. */
+const UNSTARTED = new Set(["backlog", "triage"]);
+
 /** The name the `n`th download is saved as: its attachment title when that names a file, or else `attachment-<n>` and an extension. PURE. */
 export function downloadName(n: number, link: string, title: string | null, contentType: string): string {
   if (title !== null && FILE_NAME.test(title)) return `attachment-${n}-${title}`;
@@ -139,6 +148,22 @@ export function linearSource({ key, fetch: request = fetch }: { key: string; fet
     return found;
   }
 
+  /** Upload the markdown file at `path` and attach it to the ticket `issueId` under `title`. */
+  async function attachFile(issueId: string, path: string, title: string): Promise<void> {
+    const body = readFileSync(path);
+    const { fileUpload }: Upload = await query(
+      "mutation($contentType: String!, $filename: String!, $size: Int!) { fileUpload(contentType: $contentType, filename: $filename, size: $size) { success uploadFile { uploadUrl assetUrl headers { key value } } } }",
+      { contentType: "text/markdown", filename: title, size: body.length });
+    if (!fileUpload.success || fileUpload.uploadFile === null) throw new Error(`Linear would not take the upload of ${title}`);
+    const { uploadUrl, assetUrl, headers } = fileUpload.uploadFile;
+    // The file goes to the storage address Linear signed, without the key: the signature is the permission.
+    const put = await request(uploadUrl, { method: "PUT", body, headers: { "Content-Type": "text/markdown", "Cache-Control": "public, max-age=31536000",
+      ...Object.fromEntries(headers.map(({ key: name, value }) => [name, value])) } });
+    if (!put.ok) throw new Error(`the upload of ${title} was refused (${put.status})`);
+    await query("mutation($issueId: String!, $url: String!, $title: String!) { attachmentCreate(input: { issueId: $issueId, url: $url, title: $title }) { success } }",
+      { issueId, url: assetUrl, title });
+  }
+
   /** The uploads attached to a ticket. */
   async function attachedUploads(identifier: string): Promise<{ url: string; title: string }[]> {
     const found = await issue<Attachments>(identifier, ATTACHMENTS);
@@ -181,6 +206,20 @@ export function linearSource({ key, fetch: request = fetch }: { key: string; fet
       const found = await eachIssue<Related>(keys, `inverseRelations { nodes { type issue { identifier state { type name } ${ATTACHED_PULLS} } } }`);
       return new Map([...found].map(([key, node]) => [key, node.inverseRelations.nodes.filter(({ type }) => type === "blocks")
         .map(({ issue }): Blocker => ({ key: issue.identifier, state: issue.state.type, status: issue.state.name, pulls: linkedPulls(issue) }))]));
+    },
+
+    async attachPlan(identifier, files, state) {
+      const found = await issue<Planning>(identifier, `id state { type } team { states { nodes { id name } } } ${ATTACHMENTS}`);
+      if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
+      // The state is found before anything is uploaded, so a name the team does not have attaches nothing.
+      const target = state === null || !UNSTARTED.has(found.state.type) ? null : found.team.states.nodes.find(({ name }) => name === state);
+      if (target === undefined) throw new Error(`${identifier}'s team has no state named ${state}`);
+      const attached = new Set(uploadsIn(found).map(({ title }) => title));
+      for (const path of files) {
+        const title = basename(path);
+        if (!attached.has(title)) await attachFile(found.id, path, title);
+      }
+      if (target !== null) await query("mutation($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }", { id: found.id, stateId: target.id });
     },
 
     async download(ticket, dir) {
