@@ -89,7 +89,7 @@ function linkedPulls(node: Attached): Record<string, PullState> {
 }
 
 /** What attaching a plan reads of its ticket: its id, its state's type, its team's states, and the files already attached. */
-type Planning = { id: string; state: { type: string }; team: { states: { nodes: { id: string; name: string }[] } } } & Attachments;
+type Planning = { id: string; state: { type: string; name: string }; team: { states: { nodes: { id: string; name: string }[] } } } & Attachments;
 /** Linear's answer to a request to upload a file: where to PUT it, with which headers, and the address it is then read from. */
 type Upload = { fileUpload: { success: boolean; uploadFile: { uploadUrl: string; assetUrl: string; headers: { key: string; value: string }[] } | null } };
 
@@ -209,17 +209,19 @@ export function linearSource({ key, fetch: request = fetch }: { key: string; fet
     },
 
     async attachPlan(identifier, files, state) {
-      const found = await issue<Planning>(identifier, `id state { type } team { states { nodes { id name } } } ${ATTACHMENTS}`);
+      const found = await issue<Planning>(identifier, `id state { type name } team { states { nodes { id name } } } ${ATTACHMENTS}`);
       if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
-      // The state is found before anything is uploaded, so a name the team does not have attaches nothing.
-      const target = state === null || !UNSTARTED.has(found.state.type) ? null : found.team.states.nodes.find(({ name }) => name === state);
-      if (target === undefined) throw new Error(`${identifier}'s team has no state named ${state}`);
+      const moves = state !== null && UNSTARTED.has(found.state.type);
+      const target = moves ? found.team.states.nodes.find(({ name }) => name === state) : undefined;
       const attached = new Set(uploadsIn(found).map(({ title }) => title));
       for (const path of files) {
         const title = basename(path);
         if (!attached.has(title)) await attachFile(found.id, path, title);
       }
-      if (target !== null) await query("mutation($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }", { id: found.id, stateId: target.id });
+      // Teams name their states differently: a team without the planner's keeps the ticket's current state.
+      if (moves && target === undefined) return `${identifier}'s team has no state named ${state}, so it stays in ${found.state.name}`;
+      if (target !== undefined) await query("mutation($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }", { id: found.id, stateId: target.id });
+      return null;
     },
 
     async download(ticket, dir) {

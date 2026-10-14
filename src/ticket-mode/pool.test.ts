@@ -1,5 +1,5 @@
 // no-token: gh -- herdr, git, Linear and the clock are all injected; nothing is spawned
-import { test } from "node:test";
+import { mock, test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -515,6 +515,7 @@ function planTracker(refusal: string | null = null) {
   const tracker: TicketSource = { ...source, attachPlan: async (key, files, state) => {
     if (refusal !== null) throw new Error(refusal);
     attached.push({ key, files: [...files], state });
+    return null;
   } };
   return { tracker, attached };
 }
@@ -564,7 +565,7 @@ test("a planning run that writes planned has its plan attached, and its ticket i
 test("a plan is attached once, though more ticks see its outcome while it is attached", async () => {
   let release: () => void = () => {};
   const calls: string[] = [];
-  const tracker: TicketSource = { ...source, attachPlan: (key) => { calls.push(key); return new Promise<void>((resolve) => { release = resolve; }); } };
+  const tracker: TicketSource = { ...source, attachPlan: (key) => { calls.push(key); return new Promise<string | null>((resolve) => { release = () => resolve(null); }); } };
   const { pool, status, entry, settings } = setup(1, ["NBF-1"], PLANNER, { source: tracker, planFirst: ["NBF-1"] });
   await pool.tick();
   writeFileSync(join(ticketDir(settings, "NBF-1"), "plan", "NBF-1-0001-plan-fit.md"), "# Fit\n");
@@ -602,7 +603,7 @@ test("a plan the tracker will not take, a planning run that wrote no plan, and a
 
 test("a stop while a plan is attached is the person's last word: the ticket is not queued again", async () => {
   let release: () => void = () => {};
-  const tracker: TicketSource = { ...source, attachPlan: () => new Promise<void>((resolve) => { release = resolve; }) };
+  const tracker: TicketSource = { ...source, attachPlan: () => new Promise<string | null>((resolve) => { release = () => resolve(null); }) };
   const { pool, status, entry, settings } = setup(1, ["NBF-1"], PLANNER, { source: tracker, planFirst: ["NBF-1"] });
   await pool.tick();
   writeFileSync(join(ticketDir(settings, "NBF-1"), "plan", "NBF-1-0001-plan-fit.md"), "# Fit\n");
@@ -640,7 +641,7 @@ function heldTracker() {
   const calls: string[] = [];
   const tracker: TicketSource = { ...source, attachPlan: (key) => {
     calls.push(key);
-    return new Promise<void>((resolve, reject) => { held.release = resolve; held.fail = reject; });
+    return new Promise<string | null>((resolve, reject) => { held.release = () => resolve(null); held.fail = reject; });
   } };
   return { tracker, held, calls };
 }
@@ -705,4 +706,19 @@ test("a ticket whose plan reached it after it was queued is worked from that pla
   await pool.tick();
   assert.equal(entry("NBF-1").phase, "running");
   assert.match(readFileSync(join(ticketDir(settings, "NBF-1"), "brief.md"), "utf8"), /^# NBF-1: NBF-1\n/);
+});
+
+test("a plan attached without the planner's state still sends the ticket to be worked, and the board's log says why its state stayed", async () => {
+  const tracker: TicketSource = { ...source, attachPlan: async () => "NBF-1's team has no state named Planned, so it stays in Todo" };
+  const written: string[] = [];
+  const spy = mock.method(process.stderr, "write", (chunk: string) => { written.push(String(chunk)); return true; });
+  try {
+    const made = setup(1, ["NBF-1"], PLANNER, { source: tracker, planFirst: ["NBF-1"] });
+    await plannedRun(made);
+    await settled();
+    assert.deepEqual([made.entry("NBF-1").plan, made.entry("NBF-1").planned], [undefined, true]);
+  } finally {
+    spy.mock.restore();
+  }
+  assert.ok(written.includes("ticket:serve: NBF-1's team has no state named Planned, so it stays in Todo\n"));
 });

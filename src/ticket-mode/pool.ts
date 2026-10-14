@@ -431,7 +431,8 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
       const found = planFiles(planDir);
       if ("refusal" in found) return end(entry, { kind: "needs-human", reason: found.refusal });
       if (source.attachPlan === undefined) return end(entry, { kind: "needs-human", reason: `this tracker takes no plans: attach the files in ${planDir} by hand` });
-      await source.attachPlan(key, found.files, settings.planner?.state ?? null);
+      const note = await source.attachPlan(key, found.files, settings.planner?.state ?? null);
+      if (note !== null) process.stderr.write(`ticket:serve: ${note}\n`);
       // Stopped, or stopped and started again, while its plan was attached: the person's last word stands, and a newer run is not touched.
       if (!sameRun(entry)) return;
       if (entry.workspace) closedNote((args) => herdr(args), entry.workspace, session);

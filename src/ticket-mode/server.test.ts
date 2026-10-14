@@ -114,7 +114,7 @@ test("planning has its own model and effort in the settings, opus at high until 
 });
 
 /** A board whose machine plans, over a tracker that takes plans: NBF-1 has a plan of its own and NBF-2 has none. */
-function planningBoard(attachPlan: TicketSource["attachPlan"] | null = async () => {}) {
+function planningBoard(attachPlan: TicketSource["attachPlan"] | null = async () => null) {
   const dir = tmpDir("ticket-server-planning-");
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/r/netbox" }, stateDir: dir,
     tickets: { plan: "-plan-[^/]*\\.md$", planner: { run: "plan {key} into {dir}", state: "Planned" } } });
