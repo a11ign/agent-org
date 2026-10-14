@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { parseTicketSettings } from "./settings.ts";
-import { boardViewScript, createBoard, isPaired, refusal } from "./server.ts";
+import { boardViewScript, createBoard, pairedBy, refusal } from "./server.ts";
 import type { Ticket, TicketSource } from "./source.ts";
 
 const ticket = (key: string, title = key) => ({ key, title, description: "", url: "", branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
@@ -59,12 +59,12 @@ test("a request to another host is refused, and so is a write from another origi
 
 test("a request is paired by the board's key in its header, or by a session the board opened in its cookie, and never by the key as a cookie", () => {
   const sessions = { holds: (value: string) => value === "s".repeat(48) };
-  assert.equal(isPaired({ headers: { "x-ticket-token": KEY } }, KEY, sessions), true);
-  assert.equal(isPaired({ headers: { cookie: `x=1; ticket_session=${"s".repeat(48)}` } }, KEY, sessions), true);
-  assert.equal(isPaired({ headers: { cookie: `ticket_session=${KEY}` } }, KEY, sessions), false, "the key never pairs a browser");
-  assert.equal(isPaired({ headers: { "x-ticket-token": "wrong", cookie: `ticket_session=${"s".repeat(48)}` } }, KEY, sessions), false, "a header, once sent, decides");
-  assert.equal(isPaired({ headers: {} }, KEY, sessions), false);
-  assert.equal(isPaired({ headers: { "x-ticket-token": `${"a".repeat(47)}é` } }, KEY, sessions), false, "a header of the key's length but more bytes is refused, not thrown");
+  assert.equal(pairedBy({ headers: { "x-ticket-token": KEY } }, KEY, sessions), "key");
+  assert.equal(pairedBy({ headers: { cookie: `x=1; ticket_session=${"s".repeat(48)}` } }, KEY, sessions), "browser");
+  assert.equal(pairedBy({ headers: { cookie: `ticket_session=${KEY}` } }, KEY, sessions), null, "the key never pairs a browser");
+  assert.equal(pairedBy({ headers: { "x-ticket-token": "wrong", cookie: `ticket_session=${"s".repeat(48)}` } }, KEY, sessions), null, "a header, once sent, decides");
+  assert.equal(pairedBy({ headers: {} }, KEY, sessions), null);
+  assert.equal(pairedBy({ headers: { "x-ticket-token": `${"a".repeat(47)}é` } }, KEY, sessions), null, "a header of the key's length but more bytes is refused, not thrown");
 });
 
 test("queueing takes the tickets you selected with the model and effort sent, no repository until the worker chooses one, and wakes the pool", async () => {
@@ -254,10 +254,16 @@ test("over HTTP: a request body over 64 KB is refused, even from what has paired
   });
 });
 
-test("only a request that already carries the key can make a pairing code", async () => {
+test("only a request that carries the key can make a pairing code: not one with no credential, and not a paired browser", async () => {
   await overHttp(async (base) => {
     const refused = await fetch(`${base}/api/pair-code`, { method: "POST" });
     assert.equal(refused.status, 401);
     assert.match((await refused.json() as { error: string }).error, /not paired: open http:\/\/127\.0\.0\.1:\d+\/ and type the code agent-org ticket:pair prints/);
+    const { code } = await (await fetch(`${base}/api/pair-code`, { method: "POST", headers: { "x-ticket-token": KEY } })).json() as { code: string };
+    const cookie = String((await pairWith(base, code)).headers.get("set-cookie")).split(";")[0];
+    assert.equal((await fetch(`${base}/api/queue`, { headers: { cookie } })).status, 200, "the browser is paired");
+    const browser = await fetch(`${base}/api/pair-code`, { method: "POST", headers: { cookie } });
+    assert.equal(browser.status, 403);
+    assert.match((await browser.json() as { error: string }).error, /made with the board's key: run agent-org ticket:pair/);
   });
 });

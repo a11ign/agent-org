@@ -25,16 +25,23 @@ export function browserSessionsPath(stateDir: string): string {
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 
-/** The sessions in `path`: each session's hash, with when it expires. A missing or unreadable file holds none, so every browser pairs again. */
-export function browserSessions(path: string, now: () => number = Date.now): BrowserSessions {
-  let expiries = new Map<string, number>();
-  if (existsSync(path)) {
-    try {
-      expiries = new Map(Object.entries(JSON.parse(readFileSync(path, "utf8")) as Record<string, number>));
-    } catch {
-      expiries = new Map();
-    }
+function readExpiries(path: string): Map<string, number> {
+  const refuse = () => new Error(`${path} does not hold the board's browser sessions: delete it, which unpairs every browser, and pair again with agent-org ticket:pair`);
+  let saved: unknown;
+  try {
+    saved = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    throw refuse();
   }
+  if (saved === null || typeof saved !== "object" || Array.isArray(saved)) throw refuse();
+  const entries = Object.entries(saved);
+  if (!entries.every(([hashed, expires]) => /^[0-9a-f]{64}$/.test(hashed) && Number.isFinite(expires))) throw refuse();
+  return new Map(entries as [string, number][]);
+}
+
+/** The sessions in `path`: each session's hash, with when it expires. A missing file holds none. REFUSES a file that does not hold sessions. */
+export function browserSessions(path: string, now: () => number = Date.now): BrowserSessions {
+  const expiries = existsSync(path) ? readExpiries(path) : new Map<string, number>();
   const save = () => {
     mkdirSync(dirname(path), { recursive: true });
     const next = `${path}.${process.pid}.tmp`;

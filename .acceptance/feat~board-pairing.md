@@ -1,4 +1,4 @@
-The ticket board pairs a browser once with a one-time code instead of a token in its URL: the key file (`src/ticket-mode/board-key.ts`), the codes (`src/ticket-mode/pairing.ts`), each browser's session (`src/ticket-mode/browser-sessions.ts`), the pairing page and `/pair` (`src/ticket-mode/pair.html`, `pairBrowser` and `isPaired` in `src/ticket-mode/server.ts`) and `ticket:pair` (`src/ticket-mode/pair-command.ts`).
+The ticket board pairs a browser once with a one-time code instead of a token in its URL: the key file (`src/ticket-mode/board-key.ts`), the codes (`src/ticket-mode/pairing.ts`), each browser's session (`src/ticket-mode/browser-sessions.ts`), the pairing page and `/pair` (`src/ticket-mode/pair.html`, `pairBrowser` and `pairedBy` in `src/ticket-mode/server.ts`) and `ticket:pair` (`src/ticket-mode/pair-command.ts`).
 
 Acceptance:
 ```bash

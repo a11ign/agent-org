@@ -65,12 +65,15 @@ export function boardViewScript(read: (path: string) => string = (path) => readF
   return stripTypeScriptTypes(read(VIEW));
 }
 
-/** The request carries the board's key in its `x-ticket-token` header, or, with no header, a paired browser's session in its cookie. */
-export function isPaired(request: Pick<IncomingMessage, "headers">, key: string, sessions: Pick<BrowserSessions, "holds">): boolean {
+/**
+ * What the request is paired by: the board's key in its `x-ticket-token` header, a paired browser's session in its cookie when it sends no
+ * header, or nothing.
+ */
+export function pairedBy(request: Pick<IncomingMessage, "headers">, key: string, sessions: Pick<BrowserSessions, "holds">): "key" | "browser" | null {
   const header = request.headers["x-ticket-token"];
-  if (header !== undefined) return sameSecret(String(header), key);
+  if (header !== undefined) return sameSecret(String(header), key) ? "key" : null;
   const cookie = String(request.headers.cookie ?? "").split(";").map((part) => part.trim()).find((part) => part.startsWith(`${COOKIE}=`))?.slice(COOKIE.length + 1);
-  return cookie !== undefined && sessions.holds(cookie);
+  return cookie !== undefined && sessions.holds(cookie) ? "browser" : null;
 }
 
 /** Whether `given` is `expected`, in time that does not depend on where they differ. Comparing digests makes any two inputs the same length. */
@@ -174,7 +177,6 @@ export function createBoard(deps: BoardDeps) {
       return [200, read.flatMap((r) => (r.status === "fulfilled" && r.value !== null ? [r.value] : []))];
     }
     if (method === "GET" && path === "/api/queue") return [200, queue];
-    if (method === "POST" && path === "/api/pair-code") return [200, { code: pairing.mint(), minutes: PAIR_MINUTES }];
     if (method === "POST" && path === "/api/queue") {
       const choice = validRunChoice(body);
       const keys = Array.isArray(body.keys) ? body.keys.map(String) : [];
@@ -242,7 +244,13 @@ export function createBoard(deps: BoardDeps) {
     const refused = refusal(request, settings.port);
     if (refused !== null) return sendJson(response, 403, { error: refused });
     const url = new URL(request.url ?? "/", `http://127.0.0.1:${settings.port}`);
-    if (!isPaired(request, key, sessions)) return pairBrowser(request, response, url.pathname);
+    const by = pairedBy(request, key, sessions);
+    if (by === null) return pairBrowser(request, response, url.pathname);
+    // A code pairs a new browser, so only the key makes one. A browser's session, which can reach another port's server, cannot.
+    if (request.method === "POST" && url.pathname === "/api/pair-code") {
+      if (by !== "key") return sendJson(response, 403, { error: "a pairing code is made with the board's key: run agent-org ticket:pair" });
+      return sendJson(response, 200, { code: pairing.mint(), minutes: PAIR_MINUTES });
+    }
     if (request.method === "GET" && url.pathname === "/board-view.js") {
       response.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-store" });
       return void response.end(boardViewScript());

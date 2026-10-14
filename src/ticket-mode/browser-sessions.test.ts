@@ -28,9 +28,11 @@ test("a session expires after a year, and an expired one is dropped from the fil
   assert.equal(Object.keys(JSON.parse(readFileSync(path, "utf8"))).length, 1);
 });
 
-test("a sessions file that cannot be read holds none, so every browser pairs again", () => {
+test("a sessions file that does not hold sessions is refused, with how to fix it, rather than unpairing every browser without a word", () => {
   const path = browserSessionsPath(tmpDir("browser-sessions-junk-"));
-  const session = browserSessions(path).open();
-  writeFileSync(path, "not json");
-  assert.equal(browserSessions(path).holds(session), false);
+  browserSessions(path).open();
+  for (const junk of ["not json", "null", "[]", JSON.stringify({ "not-a-hash": 1 }), JSON.stringify({ ["a".repeat(64)]: "soon" })]) {
+    writeFileSync(path, junk);
+    assert.throws(() => browserSessions(path), /does not hold the board's browser sessions: delete it, which unpairs every browser/, junk);
+  }
 });
