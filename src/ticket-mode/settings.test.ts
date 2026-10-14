@@ -18,7 +18,7 @@ test("only `clones` is required, every repository in it is offered, and every ot
 
 test("the `tickets` block and `stateDir` override the defaults", () => {
   const settings = parseTicketSettings({ clones, stateDir: "/state", tickets: { max: 5, port: 5000, herdrSession: "nbl", worktreeRoot: "/wt", linearKey: { path: "/keys/linear" } } });
-  assert.deepEqual({ ...settings, clones: undefined }, { clones: undefined, max: 5, port: 5000, herdrSession: "nbl", worktreeRoot: "/wt", stateDir: "/state", linearKey: { path: "/keys/linear" }, brief: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, connectors: [] });
+  assert.deepEqual({ ...settings, clones: undefined }, { clones: undefined, max: 5, port: 5000, herdrSession: "nbl", worktreeRoot: "/wt", stateDir: "/state", linearKey: { path: "/keys/linear" }, brief: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, workingState: null, connectors: [] });
 });
 
 test("a machine can add notes to every brief and refuse commands of its own", () => {
@@ -73,6 +73,13 @@ test("a planner is refused without the ticket and folder it is given, without a 
   assert.match(refused({ plan, planner: "plan {key} into {dir}" }), /^tickets\.planner: /);
   assert.match(refused({ planner: { run: "plan {key} into {dir}" } }), /^tickets\.planner: .*needs tickets\.plan/);
   assert.match(refused({ plan, planner: { run: "plan {key} into {dir}", state: "" } }), /^tickets\.planner\.state: /);
+});
+
+test("a machine names the state a ticket moves to as a worker starts it, and an empty name is refused", () => {
+  assert.equal(parseTicketSettings({ clones, tickets: { workingState: "In Progress" } }, "/home/me").workingState, "In Progress");
+  assert.equal(parseTicketSettings({ clones }, "/home/me").workingState, null, "none by default, so no ticket is moved");
+  assert.throws(() => parseTicketSettings({ clones, tickets: { workingState: " " } }, "/home/me"), /tickets\.workingState/);
+  assert.equal(parseTicketSettings({ clones, tickets: { workingState: " In Progress " } }, "/home/me").workingState, "In Progress", "spaces around the name are dropped");
 });
 
 test("a bad field is refused by its name", () => {

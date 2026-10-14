@@ -89,12 +89,17 @@ function linkedPulls(node: Attached): Record<string, PullState> {
 }
 
 /** What attaching a plan reads of its ticket: its id, its state's type, its team's states, and the files already attached. */
-type Planning = { id: string; state: { type: string; name: string }; team: { states: { nodes: { id: string; name: string }[] } } } & Attachments;
+type Planning = Stateful & Attachments;
+/** What moving a ticket's state reads of it: its id, its state's type and name, and the states its team has. */
+type Stateful = { id: string; state: { type: string; name: string }; team: { states: { nodes: { id: string; name: string }[] } } };
+const STATEFUL = "id state { type name } team { states { nodes { id name } } }";
 /** Linear's answer to a request to upload a file: where to PUT it, with which headers, and the address it is then read from. */
 type Upload = { fileUpload: { success: boolean; uploadFile: { uploadUrl: string; assetUrl: string; headers: { key: string; value: string }[] } | null } };
 
-/** The state types a plan moves a ticket on from: new work only, never work already started back. */
-const UNSTARTED = new Set(["backlog", "triage"]);
+/** The state types a plan moves a ticket on from: new work only, never work already planned or started back. */
+const BEFORE_PLANNING = new Set(["backlog", "triage"]);
+/** The state types a worker starting moves a ticket on from: any work not yet started, a planned ticket included. */
+const BEFORE_WORK = new Set([...BEFORE_PLANNING, "unstarted"]);
 
 /** The name the `n`th download is saved as: its attachment title when that names a file, or else `attachment-<n>` and an extension. PURE. */
 export function downloadName(n: number, link: string, title: string | null, contentType: string): string {
@@ -148,6 +153,21 @@ export function linearSource({ key, fetch: request = fetch }: { key: string; fet
     return found;
   }
 
+  /**
+   * Move the ticket to its team's state named `state`, when its state's type is one of `from`. Teams name their states differently, so a team
+   * without one of that name keeps the ticket's current state, and the returned note says so; it is null otherwise.
+   */
+  async function moveTo(identifier: string, found: Stateful, state: string, from: ReadonlySet<string>): Promise<string | null> {
+    if (!from.has(found.state.type)) return null;
+    const target = found.team.states.nodes.find(({ name }) => name === state);
+    if (target === undefined) return `${identifier}'s team has no state named ${state}, so it stays in ${found.state.name}`;
+    const { issueUpdate }: { issueUpdate: { success: boolean } } = await query(
+      "mutation($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }", { id: found.id, stateId: target.id });
+    // Linear can answer a mutation it did not carry out with success false and no error, so the answer is read, not assumed.
+    if (!issueUpdate.success) throw new Error(`Linear did not move ${identifier} to ${state}`);
+    return null;
+  }
+
   /** Upload the markdown file at `path` and attach it to the ticket `issueId` under `title`. */
   async function attachFile(issueId: string, path: string, title: string): Promise<void> {
     const body = readFileSync(path);
@@ -160,8 +180,10 @@ export function linearSource({ key, fetch: request = fetch }: { key: string; fet
     const put = await request(uploadUrl, { method: "PUT", body, headers: { "Content-Type": "text/markdown", "Cache-Control": "public, max-age=31536000",
       ...Object.fromEntries(headers.map(({ key: name, value }) => [name, value])) } });
     if (!put.ok) throw new Error(`the upload of ${title} was refused (${put.status})`);
-    await query("mutation($issueId: String!, $url: String!, $title: String!) { attachmentCreate(input: { issueId: $issueId, url: $url, title: $title }) { success } }",
+    const { attachmentCreate }: { attachmentCreate: { success: boolean } } = await query(
+      "mutation($issueId: String!, $url: String!, $title: String!) { attachmentCreate(input: { issueId: $issueId, url: $url, title: $title }) { success } }",
       { issueId, url: assetUrl, title });
+    if (!attachmentCreate.success) throw new Error(`Linear did not attach ${title}`);
   }
 
   /** The uploads attached to a ticket. */
@@ -209,19 +231,20 @@ export function linearSource({ key, fetch: request = fetch }: { key: string; fet
     },
 
     async attachPlan(identifier, files, state) {
-      const found = await issue<Planning>(identifier, `id state { type name } team { states { nodes { id name } } } ${ATTACHMENTS}`);
+      const found = await issue<Planning>(identifier, `${STATEFUL} ${ATTACHMENTS}`);
       if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
-      const moves = state !== null && UNSTARTED.has(found.state.type);
-      const target = moves ? found.team.states.nodes.find(({ name }) => name === state) : undefined;
       const attached = new Set(uploadsIn(found).map(({ title }) => title));
       for (const path of files) {
         const title = basename(path);
         if (!attached.has(title)) await attachFile(found.id, path, title);
       }
-      // Teams name their states differently: a team without the planner's keeps the ticket's current state.
-      if (moves && target === undefined) return `${identifier}'s team has no state named ${state}, so it stays in ${found.state.name}`;
-      if (target !== undefined) await query("mutation($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }", { id: found.id, stateId: target.id });
-      return null;
+      return state === null ? null : moveTo(identifier, found, state, BEFORE_PLANNING);
+    },
+
+    async moveToWorkingState(identifier, state) {
+      const found = await issue<Stateful>(identifier, STATEFUL);
+      if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
+      return moveTo(identifier, found, state, BEFORE_WORK);
     },
 
     async download(ticket, dir) {

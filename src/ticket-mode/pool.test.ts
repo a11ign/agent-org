@@ -520,6 +520,19 @@ function planTracker(refusal: string | null = null) {
   } };
   return { tracker, attached };
 }
+/** Run `act` with the board's log captured, and return the lines it wrote. */
+async function captureStderr(act: () => Promise<void>): Promise<string[]> {
+  const written: string[] = [];
+  const write = process.stderr.write;
+  process.stderr.write = ((chunk: string) => { written.push(String(chunk)); return true; }) as typeof process.stderr.write;
+  try {
+    await act();
+  } finally {
+    process.stderr.write = write;
+  }
+  return written;
+}
+
 /** Let the pool's attaching, which a tick starts and does not wait for, finish. */
 const settled = async () => { for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setImmediate(resolve)); };
 
@@ -711,17 +724,12 @@ test("a ticket whose plan reached it after it was queued is worked from that pla
 
 test("a plan attached without the planner's state still sends the ticket to be worked, and the board's log says why its state stayed", async () => {
   const tracker: TicketSource = { ...source, attachPlan: async () => "NBF-1's team has no state named Planned, so it stays in Todo" };
-  const written: string[] = [];
-  const write = process.stderr.write;
-  process.stderr.write = ((chunk: string) => { written.push(String(chunk)); return true; }) as typeof process.stderr.write;
-  try {
+  const written = await captureStderr(async () => {
     const made = setup(1, ["NBF-1"], PLANNER, { source: tracker, planFirst: ["NBF-1"] });
     await plannedRun(made);
     await settled();
     assert.deepEqual([made.entry("NBF-1").plan, made.entry("NBF-1").planned], [undefined, true]);
-  } finally {
-    process.stderr.write = write;
-  }
+  });
   assert.ok(written.includes("ticket:serve: NBF-1's team has no state named Planned, so it stays in Todo\n"));
 });
 
@@ -734,4 +742,61 @@ test("a run whose plugin is installed only for another folder is not started, an
   assert.equal(outcome?.kind, "crashed");
   assert.match(outcome?.kind === "crashed" ? outcome.reason : "", /nbl-ui@applied-ai is installed only for \/work, so a worker in .* runs without it: install it for every folder with `claude plugin install nbl-ui@applied-ai --scope user`/);
   assert.equal(h.calls.some((args) => args.includes("start")), false, "no worker was started");
+});
+
+/** A tracker that records each ticket it is asked to move as work starts, answering with `note`, or failing with `failure`. */
+function startTracker(note: string | null = null, failure: string | null = null) {
+  const moved: string[] = [];
+  const tracker: TicketSource = { ...source, moveToWorkingState: async (key, state) => {
+    moved.push(`${key} ${state}`);
+    if (failure !== null) throw new Error(failure);
+    return note;
+  } };
+  return { tracker, moved };
+}
+
+test("a ticket moves to the working state as its worker starts, and a planning run moves nothing", async () => {
+  const { tracker, moved } = startTracker();
+  const { pool } = setup(2, ["NBF-1", "NBF-2"], { ...PLANNER, workingState: "In Progress" }, { source: tracker, planFirst: ["NBF-2"] });
+  await pool.tick();
+  await settled();
+  assert.deepEqual(moved, ["NBF-1 In Progress"]);
+});
+
+test("a machine that names no working state moves nothing", async () => {
+  const { tracker, moved } = startTracker();
+  const { pool } = setup(1, ["NBF-1"], {}, { source: tracker });
+  await pool.tick();
+  await settled();
+  assert.deepEqual(moved, []);
+});
+
+test("a move the tracker refuses, or one its team has no state for, goes to the board's log, and the run carries on", async () => {
+  for (const [note, failure, line] of [
+    ["NBF-1's team has no state named In Progress, so it stays in Todo", null, "ticket:serve: NBF-1's team has no state named In Progress, so it stays in Todo\n"],
+    [null, "Linear answered 500", "ticket:serve: NBF-1 could not be moved to In Progress: Linear answered 500\n"],
+  ] as const) {
+    const { tracker } = startTracker(note, failure);
+    const written = await captureStderr(async () => {
+      const { pool, entry } = setup(1, ["NBF-1"], { workingState: "In Progress" }, { source: tracker });
+      await pool.tick();
+      await settled();
+      assert.equal(entry("NBF-1").phase, "running");
+    });
+    assert.ok(written.includes(line), line);
+  }
+});
+
+test("a tracker that throws before it answers the move cannot stop the run, and one that cannot move tickets is not asked", async () => {
+  const throwing: TicketSource = { ...source, moveToWorkingState: () => { throw new Error("not ready"); } };
+  const written = await captureStderr(async () => {
+    const { pool, entry } = setup(1, ["NBF-1"], { workingState: "In Progress" }, { source: throwing });
+    await pool.tick();
+    await settled();
+    assert.equal(entry("NBF-1").phase, "running");
+  });
+  assert.ok(written.includes("ticket:serve: NBF-1 could not be moved to In Progress: not ready\n"));
+  const { pool, entry } = setup(1, ["NBF-1"], { workingState: "In Progress" });
+  await pool.tick();
+  assert.equal(entry("NBF-1").phase, "running", "a source without the move starts the run as before");
 });
