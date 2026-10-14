@@ -65,8 +65,9 @@ export interface TicketSource {
   blockers?(keys: readonly string[]): Promise<ReadonlyMap<string, readonly Blocker[]>>;
   /**
    * Attach a planning run's files to the ticket, each titled with its file name, and move the ticket to the state named `state` when it has not
-   * started. A file already attached under its name is not attached again, so an attempt that was cut off can be repeated. A source without it
-   * takes no plans, so the board offers no planning. Throws when the tracker refuses.
+   * started and its team has a state of that name. Teams name their states differently, so one without it keeps the ticket's state, and the
+   * returned note says so; it is null when nothing was left undone. A file already attached under its name is not attached again, so an attempt
+   * that was cut off can be repeated. A source without it takes no plans, so the board offers no planning. Throws when the tracker refuses.
    */
-  attachPlan?(key: string, files: readonly string[], state: string | null): Promise<void>;
+  attachPlan?(key: string, files: readonly string[], state: string | null): Promise<string | null>;
 }

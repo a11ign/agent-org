@@ -185,7 +185,7 @@ test("stateTypes() reads every key's state type in one aliased request by team a
 
 /** Linear's answer to the read attachPlan starts with: the ticket's id, its state's type, its team's states and its uploads. */
 const planning = (type: string, ...uploads: { url: string; title: string }[]) => ({ data: { issues: { nodes: [{
-  id: "uuid-1", state: { type }, team: { states: { nodes: [{ id: "s-backlog", name: "Backlog" }, { id: "s-planned", name: "Planned" }] } }, attachments: { nodes: uploads },
+  id: "uuid-1", state: { type, name: type === "backlog" ? "Backlog" : "In Progress" }, team: { states: { nodes: [{ id: "s-backlog", name: "Backlog" }, { id: "s-planned", name: "Planned" }] } }, attachments: { nodes: uploads },
 }] } } });
 const signed = (n: number) => ({ data: { fileUpload: { success: true, uploadFile: { uploadUrl: `https://storage.example/upload-${n}?sig=1`, assetUrl: `https://uploads.linear.app/org/asset-${n}`,
   headers: [{ key: "x-goog-content-length-range", value: "1,100" }] } } } });
@@ -246,9 +246,17 @@ test("attachPlan() says so when the storage refuses an upload, and attaches noth
   assert.equal(requests.some((r) => /attachmentCreate/.test(String(r.init.body ?? ""))), false);
 });
 
-test("attachPlan() refuses a state the ticket's team does not have before it uploads anything", async () => {
+test("attachPlan() still attaches the plan when the ticket's team has no state of the planner's name, leaves the state alone and says so", async () => {
   const [plan] = planFiles();
-  const { fetch, requests } = linear([planning("backlog")]);
-  await assert.rejects(linearSource({ key: "k", fetch }).attachPlan!("NBF-1", [plan], "Plannned"), /NBF-1's team has no state named Plannned/);
-  assert.equal(requests.length, 1, "only the ticket was read");
+  const { fetch, requests } = linear([planning("backlog"), signed(1), done], { "https://storage.example/upload-1?sig=1": { status: 200 } });
+  const note = await linearSource({ key: "k", fetch }).attachPlan!("NBF-1", [plan], "Todo");
+  assert.equal(note, "NBF-1's team has no state named Todo, so it stays in Backlog");
+  assert.ok(requests.some((r) => /attachmentCreate/.test(String(r.init.body ?? ""))), "the plan is attached");
+  assert.equal(requests.some((r) => /issueUpdate/.test(String(r.init.body ?? ""))), false);
+});
+
+test("attachPlan() says nothing when it did all it was asked", async () => {
+  const [plan] = planFiles();
+  const { fetch } = linear([planning("backlog"), signed(1), done, done], { "https://storage.example/upload-1?sig=1": { status: 200 } });
+  assert.equal(await linearSource({ key: "k", fetch }).attachPlan!("NBF-1", [plan], "Planned"), null);
 });
