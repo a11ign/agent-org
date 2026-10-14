@@ -142,6 +142,7 @@
       <span id="loaded" class="pill"></span>
     </div>
     <div class="chips" id="projects"></div>
+    <div class="chips" id="priorities"></div>
     <div class="chips" id="plans" hidden></div>
     <div id="paused-note" class="notice" hidden>Workers are paused. Tickets you queue wait on the Board until you start workers there.</div>
     <div id="groups"></div>
@@ -171,7 +172,7 @@
 // The decisions (what shows, how it groups, what can be selected, what status a run has and what it offers) are board-view.ts's, tested there.
 // This page only draws what they return and wires the clicks.
 import {
-  RUN_STATUSES, flatten, groupByStatus, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, projectCounts, projectOf, queueLabel, recall, remember, runActions, runStatus,
+  PRIORITY_NAMES, RUN_STATUSES, flatten, groupByStatus, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, queueLabel, recall, remember, runActions, runStatus,
   runsShown, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, waitsOn, workersLabel,
 } from "/board-view.js";
 
@@ -189,7 +190,7 @@ const state = {
   // The pattern a plan's name matches (the host file's `tickets.plan`), or null when the board looks for none; and the plan filter chosen.
   plan: null, planChoice: planChoiceOf(recall(storage, "ticket-mode.plan")),
   // Sections start collapsed, so a first visit sees every status and its count before any list.
-  open: recall(storage, "ticket-mode.open"), projects: recall(storage, "ticket-mode.projects"),
+  open: recall(storage, "ticket-mode.open"), projects: recall(storage, "ticket-mode.projects"), priorities: prioritiesOf(recall(storage, "ticket-mode.priorities")),
   // Parents start folded too, so an epic reads as one row until it is opened.
   openParents: recall(storage, "ticket-mode.open-parents"),
   runFilter: [...recall(storage, "ticket-mode.run-filter")][0] ?? null,
@@ -197,7 +198,6 @@ const state = {
 const setOpen = (next) => { state.open = next; remember(storage, "ticket-mode.open", next); renderPick(); };
 const setOpenParents = (next) => { state.openParents = next; remember(storage, "ticket-mode.open-parents", next); renderPick(); };
 const everyOpen = (statuses) => statuses.length > 0 && statuses.every((status) => state.open.has(status));
-const PRIORITY = ["", "Urgent", "High", "Medium", "Low"];
 
 async function call(method, path, body) {
   const response = await fetch(path, { method, headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -212,7 +212,7 @@ const pickableShown = () => groupByStatus(shown(), state.parents).flatMap(([, no
 /** Every section open, and every parent in them. */
 const allOpen = (groups) => everyOpen(groups.map(([status]) => status)) && groups.flatMap(([, nodes]) => parentKeys(nodes)).every((key) => state.openParents.has(key));
 const planFilter = () => (state.plan && state.planChoice ? { pattern: state.plan, choice: state.planChoice } : null);
-const shown = () => visibleTickets(state.tickets, state.projects, $("filter").value, planFilter());
+const shown = () => visibleTickets(state.tickets, { projects: state.projects, search: $("filter").value, plan: planFilter(), priorities: state.priorities });
 
 function chip(label, pressed, onClick, n) {
   const b = el("button", { className: "chip", type: "button" }, label, n === undefined ? null : el("span", { className: "n" }, String(n)));
@@ -227,6 +227,14 @@ function renderProjects() {
   $("projects").replaceChildren(el("span", { className: "label" }, "Projects"),
     chip("All projects", state.projects.size === 0, () => choose(new Set())),
     ...counts.map(([name, n]) => chip(name, state.projects.has(name), () => choose(toggled(state.projects, name)), n)));
+}
+
+/** The priority chips, counting the tickets a worker can be given, most urgent first. */
+function renderPriorities() {
+  const choose = (next) => { state.priorities = next; remember(storage, "ticket-mode.priorities", new Set([...next].map(String))); render(); };
+  $("priorities").replaceChildren(el("span", { className: "label" }, "Priority"),
+    chip("All priorities", state.priorities.size === 0, () => choose(new Set())),
+    ...priorityCounts(state.tickets).map(([priority, n]) => chip(PRIORITY_NAMES[priority], state.priorities.has(priority), () => choose(toggled(state.priorities, priority)), n)));
 }
 
 /** The plan chips, counting the tickets a worker can be given; none on a machine that names no plan pattern. */
@@ -257,6 +265,7 @@ function planMark(t) {
 
 function renderPick() {
   renderProjects();
+  renderPriorities();
   renderPlans();
   const tickets = shown();
   const free = (t) => selectable(t, state.queue.entries);
@@ -289,7 +298,7 @@ function renderPick() {
     const add = (node, depth) => {
       const { ticket: t, children, context } = node;
       const taken = entryFor(t.key);
-      const standing = taken ? `on the queue: ${taken.phase}` : PRIORITY[t.priority] || "No priority";
+      const standing = taken ? `on the queue: ${taken.phase}` : PRIORITY_NAMES[t.priority] ?? PRIORITY_NAMES[0];
       const keyCell = el("span", { className: "key" }, t.key);
       const nested = depth > 0 ? " child" : "";
       if (children.length > 0) {

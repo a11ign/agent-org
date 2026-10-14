@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, isParked, parentKeys, parentTick, ticketCount, projectCounts, queueLabel, recall, remember, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, selectable, statusCounts, terminalLink, toggled, waitsOn,
-  hasPlan, missingPlan, planChoiceOf, planCounts, visibleTickets, workItems, type ViewEntry, type ViewTicket,
+  PRIORITY_NAMES, hasPlan, missingPlan, planChoiceOf, planCounts, priorityCounts, prioritiesOf, visibleTickets, workItems, type ViewEntry, type ViewTicket,
 } from "./board-view.ts";
 
 const t = (key: string, status: string, statusOrder: number, priority: number, project: string | null, title = key): ViewTicket =>
@@ -18,15 +18,15 @@ const TICKETS = [
 const keys = (tickets: readonly ViewTicket[]) => tickets.map((x) => x.key);
 
 test("no project chosen shows every ticket; chosen projects show only theirs, several at once, and (no project) is one of them", () => {
-  assert.deepEqual(keys(visibleTickets(TICKETS, new Set(), "")), ["NBF-1", "NBF-2", "NBF-3", "NBCA-4", "NBCA-5"]);
-  assert.deepEqual(keys(visibleTickets(TICKETS, new Set(["Billing"]), "")), ["NBCA-4", "NBCA-5"]);
-  assert.deepEqual(keys(visibleTickets(TICKETS, new Set(["Billing", NO_PROJECT]), "")), ["NBF-3", "NBCA-4", "NBCA-5"]);
+  assert.deepEqual(keys(visibleTickets(TICKETS)), ["NBF-1", "NBF-2", "NBF-3", "NBCA-4", "NBCA-5"]);
+  assert.deepEqual(keys(visibleTickets(TICKETS, { projects: new Set(["Billing"]) })), ["NBCA-4", "NBCA-5"]);
+  assert.deepEqual(keys(visibleTickets(TICKETS, { projects: new Set(["Billing", NO_PROJECT]) })), ["NBF-3", "NBCA-4", "NBCA-5"]);
 });
 
 test("the search narrows within the chosen projects, matching key, title or project, in any case", () => {
-  assert.deepEqual(keys(visibleTickets(TICKETS, new Set(["Visual Explorer - GA"]), "  RACKS ")), ["NBF-2"]);
-  assert.deepEqual(keys(visibleTickets(TICKETS, new Set(), "nbca")), ["NBCA-4", "NBCA-5"]);
-  assert.deepEqual(keys(visibleTickets(TICKETS, new Set(["Billing"]), "racks")), [], "a search outside the chosen projects finds nothing");
+  assert.deepEqual(keys(visibleTickets(TICKETS, { projects: new Set(["Visual Explorer - GA"]), search: "  RACKS " })), ["NBF-2"]);
+  assert.deepEqual(keys(visibleTickets(TICKETS, { search: "nbca" })), ["NBCA-4", "NBCA-5"]);
+  assert.deepEqual(keys(visibleTickets(TICKETS, { projects: new Set(["Billing"]), search: "racks" })), [], "a search outside the chosen projects finds nothing");
 });
 
 // The NBL host file's pattern: create-ticket names a plan `<KEY>-0001-plan-<slug>.md`.
@@ -43,10 +43,10 @@ test("a ticket has a plan when a file uploaded to it is named like one, and an A
 });
 
 test("the plan filter keeps the tickets with a plan, or those without, within the projects and search, and keeps all without a filter", () => {
-  assert.deepEqual(keys(visibleTickets(PLANNED, new Set(), "", { pattern: PLAN, choice: "with" })), ["NBF-1"]);
-  assert.deepEqual(keys(visibleTickets(PLANNED, new Set(), "", { pattern: PLAN, choice: "without" })), ["NBF-2", "NBF-3"]);
-  assert.deepEqual(keys(visibleTickets(PLANNED, new Set([NO_PROJECT]), "", { pattern: PLAN, choice: "without" })), ["NBF-3"]);
-  assert.deepEqual(keys(visibleTickets(PLANNED, new Set(), "")), ["NBF-1", "NBF-2", "NBF-3"]);
+  assert.deepEqual(keys(visibleTickets(PLANNED, { plan: { pattern: PLAN, choice: "with" } })), ["NBF-1"]);
+  assert.deepEqual(keys(visibleTickets(PLANNED, { plan: { pattern: PLAN, choice: "without" } })), ["NBF-2", "NBF-3"]);
+  assert.deepEqual(keys(visibleTickets(PLANNED, { projects: new Set([NO_PROJECT]), plan: { pattern: PLAN, choice: "without" } })), ["NBF-3"]);
+  assert.deepEqual(keys(visibleTickets(PLANNED)), ["NBF-1", "NBF-2", "NBF-3"]);
 });
 
 // An epic with a plan, over a ticket with one and a ticket without; and an epic with none over a ticket without.
@@ -61,9 +61,42 @@ const EPICS = [
 test("an epic is never work for a worker: only the tickets under none count, and the filter keeps an epic only for a ticket it keeps under it", () => {
   assert.deepEqual(keys(workItems(EPICS)), ["E-2", "E-3", "E-5"]);
   assert.deepEqual(planCounts(EPICS, PLAN), { with: 1, without: 2 }, "an epic's own plan is not counted");
-  assert.deepEqual(keys(visibleTickets(EPICS, new Set(), "", { pattern: PLAN, choice: "with" })), ["E-1", "E-2"], "E-4 has no plan and nothing under it does");
-  assert.deepEqual(keys(visibleTickets(EPICS, new Set(), "", { pattern: PLAN, choice: "without" })), ["E-1", "E-3", "E-4", "E-5"],
+  assert.deepEqual(keys(visibleTickets(EPICS, { plan: { pattern: PLAN, choice: "with" } })), ["E-1", "E-2"], "E-4 has no plan and nothing under it does");
+  assert.deepEqual(keys(visibleTickets(EPICS, { plan: { pattern: PLAN, choice: "without" } })), ["E-1", "E-3", "E-4", "E-5"],
     "E-1 has a plan but shows for E-3, so E-3 is not torn from its epic");
+});
+
+test("chosen priorities show only their tickets, several at once, and No priority is one of them", () => {
+  assert.deepEqual(keys(visibleTickets(TICKETS, { priorities: new Set([1]) })), ["NBF-2"]);
+  assert.deepEqual(keys(visibleTickets(TICKETS, { priorities: new Set([1, 0]) })), ["NBF-2", "NBF-3", "NBCA-5"]);
+  assert.deepEqual(keys(visibleTickets(TICKETS, { priorities: new Set([0]), projects: new Set(["Billing"]) })), ["NBCA-5"], "it narrows the other filters");
+  assert.deepEqual(keys(visibleTickets(TICKETS, { priorities: new Set() })), keys(TICKETS), "none chosen shows every ticket");
+});
+
+test("a priority keeps the epic above a ticket it keeps, whatever the epic's own priority", () => {
+  const tree = [t("P-1", "Backlog", 0, 4, null), { ...t("P-2", "Backlog", 0, 1, null), parent: "P-1" }, { ...t("P-3", "Backlog", 0, 3, null), parent: "P-1" }];
+  assert.deepEqual(keys(visibleTickets(tree, { priorities: new Set([1]) })), ["P-1", "P-2"]);
+  assert.deepEqual(keys(visibleTickets(tree, { priorities: new Set([4]) })), [], "the epic's own Low is not a ticket of that priority");
+});
+
+test("the plan and priority filters are met by one ticket together, so an epic is not kept for two tickets that each meet one", () => {
+  const tree = [
+    t("E", "Backlog", 0, 2, null),
+    { ...planned(t("A", "Backlog", 0, 4, null), "A-0001-plan-a.md"), parent: "E" },
+    { ...t("B", "Backlog", 0, 1, null), parent: "E" },
+  ];
+  assert.deepEqual(keys(visibleTickets(tree, { plan: { pattern: PLAN, choice: "with" }, priorities: new Set([1]) })), []);
+  assert.deepEqual(keys(visibleTickets(tree, { plan: { pattern: PLAN, choice: "without" }, priorities: new Set([1]) })), ["E", "B"]);
+});
+
+test("the priority chips count the tickets a worker can be given, most urgent first and none last, and leave out a priority no ticket has", () => {
+  assert.deepEqual(priorityCounts(TICKETS), [[1, 1], [2, 1], [3, 1], [0, 2]]);
+  assert.deepEqual(priorityCounts([t("P-1", "Backlog", 0, 4, null), { ...t("P-2", "Backlog", 0, 1, null), parent: "P-1" }]), [[1, 1]], "an epic is not counted");
+  assert.deepEqual([1, 2, 3, 4, 0].map((p) => PRIORITY_NAMES[p]), ["Urgent", "High", "Medium", "Low", "No priority"]);
+});
+
+test("the remembered priority filter reads back as numbers, and anything that is not a priority is dropped", () => {
+  assert.deepEqual([...prioritiesOf(new Set(["1", "0", "9", "high", "", " "]))], [1, 0]);
 });
 
 test("the plan chips count the tickets with a plan and those without", () => {

@@ -62,12 +62,11 @@ export function workItems<T extends ViewTicket>(tickets: readonly T[]): T[] {
 }
 
 /**
- * The keys the plan filter keeps: each ticket a worker can be given that has a plan, or has none, as chosen, and every ticket above it, so it
- * still shows under its epic. An epic is kept only for what it holds: its own plan does not decide it.
+ * The keys of each ticket a worker can be given that `keep` is true for, and of every ticket above it, so it still shows under its epic. An epic
+ * is kept only for what it holds: what `keep` says of the epic itself does not decide it.
  */
-function keptByPlan(tickets: readonly ViewTicket[], { pattern, choice }: PlanFilter): Set<string> {
-  const wanted = choice === "with";
-  const kept = new Set(workItems(tickets).filter((t) => hasPlan(t, pattern) === wanted).map((t) => t.key));
+function keptWithAncestors(tickets: readonly ViewTicket[], keep: (ticket: ViewTicket) => boolean): Set<string> {
+  const kept = new Set(workItems(tickets).filter(keep).map((t) => t.key));
   const byKey = new Map(tickets.map((t) => [t.key, t]));
   for (const key of [...kept]) {
     for (let above = byKey.get(key)?.parent; above && byKey.has(above) && !kept.has(above); above = byKey.get(above)?.parent) kept.add(above);
@@ -75,17 +74,36 @@ function keptByPlan(tickets: readonly ViewTicket[], { pattern, choice }: PlanFil
   return kept;
 }
 
+/** The Pick list's filters. An empty set, an empty search or no plan filter keeps every ticket. */
+export type PickFilter = Readonly<{ projects?: ReadonlySet<string>; search?: string; plan?: PlanFilter | null; priorities?: ReadonlySet<number> }>;
+
 /**
- * The tickets to show: in one of the chosen projects (any, when none is chosen), matching every search word, and, under a plan filter, the
- * tickets it keeps.
+ * The tickets to show: in one of the chosen projects, matching every search word, and, for the plan and priority filters, the tickets that meet
+ * both, with the epics above them. Both are judged on one ticket, so an epic is kept only for a ticket under it that meets both.
  */
-export function visibleTickets<T extends ViewTicket>(tickets: readonly T[], projects: ReadonlySet<string>, search: string, plan: PlanFilter | null = null): T[] {
+export function visibleTickets<T extends ViewTicket>(tickets: readonly T[], { projects = new Set(), search = "", plan = null, priorities = new Set() }: PickFilter = {}): T[] {
   const words = search.trim().toLowerCase();
-  const kept = plan === null ? null : keptByPlan(tickets, plan);
+  const kept = plan === null && priorities.size === 0 ? null : keptWithAncestors(tickets, (t) =>
+    (plan === null || hasPlan(t, plan.pattern) === (plan.choice === "with")) && (priorities.size === 0 || priorities.has(t.priority)));
   return tickets.filter((t) => (projects.size === 0 || projects.has(projectOf(t)))
     && (words === "" || `${t.key} ${t.title} ${t.project ?? ""}`.toLowerCase().includes(words))
     && (kept === null || kept.has(t.key)));
 }
+
+/** The tracker's priorities, most urgent first and none last, by number and by the name Linear gives each: 1 is the most urgent, and 0 is none. */
+const PRIORITIES: readonly (readonly [number, string])[] = [[1, "Urgent"], [2, "High"], [3, "Medium"], [4, "Low"], [0, "No priority"]];
+export const PRIORITY_NAMES: Readonly<Record<number, string>> = Object.fromEntries(PRIORITIES);
+const PRIORITY_ORDER = PRIORITIES.map(([priority]) => priority);
+
+/** Each priority that a ticket a worker can be given has, most urgent first and none last, with how many have it. */
+export function priorityCounts(tickets: readonly ViewTicket[]): [number, number][] {
+  const work = workItems(tickets);
+  return PRIORITY_ORDER.map((p): [number, number] => [p, work.filter((t) => t.priority === p).length]).filter(([, n]) => n > 0);
+}
+
+/** The priority filter remembered in the browser, as numbers, dropping anything that is not a priority. */
+export const prioritiesOf = (remembered: ReadonlySet<string>): Set<number> =>
+  new Set([...remembered].filter((value) => /^\d$/.test(value)).map(Number).filter((p) => PRIORITY_ORDER.includes(p)));
 
 /** How many of the tickets a worker can be given have a plan of their own, and how many have none. */
 export function planCounts(tickets: readonly ViewTicket[], plan: RegExp): Readonly<{ with: number; without: number }> {

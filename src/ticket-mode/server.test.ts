@@ -129,7 +129,7 @@ test("the page's logic is served as JavaScript the browser can import, and it is
   writeFileSync(file, script);
   const view = await import(pathToFileURL(file).href);
   const tickets = [{ key: "A-1", title: "x", status: "Backlog", statusOrder: 0, priority: 2, project: "P" }];
-  assert.deepEqual(view.visibleTickets(tickets, new Set(["P"]), "").map((t: any) => t.key), ["A-1"], "the browser's copy filters as the tested one does");
+  assert.deepEqual(view.visibleTickets(tickets, { projects: new Set(["P"]) }).map((t: any) => t.key), ["A-1"], "the browser's copy filters as the tested one does");
 });
 
 test("the board's queue starts paused, and Start and Pause go through the API", async () => {

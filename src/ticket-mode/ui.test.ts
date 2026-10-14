@@ -86,7 +86,8 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
   const $ = (id: string) => document.getElementById(id);
   const groups = () => $("groups").children;
   const shownKeys = () => $("groups").all().filter((n) => n.className.startsWith("row")).map((n) => n.children[1].text());
-  const chip = (name: string) => $("projects").children.find((c) => c.tag === "button" && c.children[0]?.text() === name || c.textContent === name)!;
+  /** The chip labelled `name` in a row of chips: the projects, unless another row is named. */
+  const chip = (name: string, row = "projects") => $(row).children.find((c) => c.tag === "button" && (c.children[0]?.text() === name || c.textContent === name))!;
   /** Another page saves `change` to the board's choice, or `workers` as its number of workers at once. */
   const saveElsewhere = ({ workers, ...change }: { model?: string; effort?: string; workers?: number }) => {
     saved = { ...saved, ...change };
@@ -111,6 +112,31 @@ test("a project chip filters the list, several can be chosen at once, and All pr
   p.chip("All projects").fire("click");
   assert.deepEqual(p.shownKeys(), ["T-1", "T-2", "T-3", "T-4"]);
   assert.equal(storage.get("ticket-mode.projects"), "[]");
+});
+
+const BY_PRIORITY = [
+  { key: "U-1", title: "urgent", status: "Backlog", statusOrder: 0, priority: 1, project: "Alpha", url: "" },
+  { key: "H-1", title: "high", status: "Backlog", statusOrder: 0, priority: 2, project: "Alpha", url: "" },
+  { key: "N-1", title: "none", status: "Backlog", statusOrder: 0, priority: 0, project: "Alpha", url: "" },
+];
+
+test("a priority chip filters the list, several can be chosen at once, and All priorities clears them; the choice is kept in localStorage", async () => {
+  const storage = new Map<string, string>();
+  const p = await page(storage, { tickets: BY_PRIORITY });
+  for (const chipText of ["Urgent1", "High1", "No priority1"]) assert.ok(p.$("priorities").text().includes(chipText), `a chip with its count: ${chipText}`);
+  assert.equal(p.$("priorities").text().includes("Low"), false, "a priority no ticket has gets no chip");
+  p.chip("Urgent", "priorities").fire("click");
+  assert.deepEqual(p.shownKeys(), ["U-1"]);
+  p.chip("No priority", "priorities").fire("click");
+  assert.deepEqual(p.shownKeys(), ["U-1", "N-1"]);
+  assert.deepEqual(JSON.parse(storage.get("ticket-mode.priorities")!).sort(), ["0", "1"]);
+  p.chip("All priorities", "priorities").fire("click");
+  assert.deepEqual(p.shownKeys(), ["U-1", "H-1", "N-1"]);
+});
+
+test("a remembered priority filter is applied when the page loads again", async () => {
+  const p = await page(new Map([["ticket-mode.priorities", JSON.stringify(["2"])]]), { tickets: BY_PRIORITY });
+  assert.deepEqual(p.shownKeys(), ["H-1"]);
 });
 
 test("a remembered project filter is applied when the page loads again", async () => {

@@ -84,7 +84,7 @@ takes them one each. `agent-org ticket:serve` starts a board on `127.0.0.1` and 
 - **Pick.** Your assigned Linear tickets that are not done or canceled, grouped by status the way Linear shows them, with Select All per
   group and for the page. A ticket sits under its parent, whatever its own status. A parent folds the tickets under it away, and starts folded.
   Its checkbox picks every ticket under it that is not on the queue, never the parent itself, and shows part ticked when only some are picked.
-  A parent that is not yours, such as an epic someone else owns, says so. Filter by Linear project (several at once) or by search, and fold any status group; both are remembered in the
+  A parent that is not yours, such as an epic someone else owns, says so. Filter by Linear project or priority (several of each at once) or by search, and fold any status group; each is remembered in the
   browser. On a machine that sets `tickets.plan`, a ticket with no plan of its own is marked, so you can attach one before a worker starts it.
   The mark is muted when the ticket's parent has a plan, because a worker is briefed with its parent's plan too. An epic is never marked or
   counted, because no worker starts one. A Plan filter, also remembered, shows only the tickets with a plan, or only those without, each
