@@ -30,6 +30,7 @@ import {
   type Entry, type Outcome, type Queue, type RunChoice,
 } from "./queue.ts";
 import type { Ticket, TicketSource } from "./source.ts";
+import { unreachablePlugins } from "./plugins.ts";
 import { TICKET_ENV } from "./worktree-command.ts";
 import { HOST_FILE_ENV, type TicketSettings } from "./settings.ts";
 import {
@@ -77,6 +78,8 @@ export type PoolDeps = Readonly<{
   load?: () => Readonly<{ load: number; cores: number }>;
   /** Where Claude Code keeps each project's transcripts. */
   transcriptsRoot?: string;
+  /** Claude Code's plugin install record, read to check each worker's plugins are installed where its session will find them. */
+  pluginRecord?: string;
   /** Start the session's headless herdr server; called only when its listing does not answer. */
   startServer?: (session: string) => void;
   /** Wait between looks at a just-started server or agent. */
@@ -261,12 +264,15 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
   /**
    * The ticket's folder, its brief, its copy of this machine's refusals and its settings file. The folder sits among the person's repositories
    * (under `worktreeRoot`), so the worker starts with the workspace's own `CLAUDE.md` around it, and it is no repository itself: the worker makes
-   * its worktrees inside it with `ticket:worktree` once it has decided where the work lands. Throws, with the reason, when any of it cannot be made.
+   * its worktrees inside it with `ticket:worktree` once it has decided where the work lands. Throws, with the reason, when any of it cannot be made, and before making any of it when a plugin the worker needs would not load in that folder.
    */
   async function prepare(entry: Entry): Promise<{ folder: string; dir: string }> {
     const ticket = await current(entry.ticket);
     const dir = ticketDir(settings, ticket.key);
     const folder = ticketFolder(settings, ticket.key);
+    // A worker without its plugins runs without the skills and guards its brief counts on, so it is not started at all.
+    const unreachable = unreachablePlugins(settings.plugins, folder, { record: deps.pluginRecord });
+    if (unreachable.length > 0) throw new Error(unreachable.join(" "));
     mkdirSync(dir, { recursive: true });
     // An earlier run's outcome and stop count would end this run before it began.
     for (const file of [OUTCOME_FILE, STOP_COUNT_FILE]) rmSync(join(dir, file), { force: true });

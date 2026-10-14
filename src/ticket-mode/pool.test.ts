@@ -35,7 +35,7 @@ function herdr(status: Map<string, string>, screen: { text: string } = { text: "
 
 /** `parents` gives a ticket its parent's key. A ticket without one is shaped as a run queued before tickets carried a parent. */
 function setup(max = 2, keys = ["NBF-1", "NBF-2", "NBF-3"], tickets: Record<string, unknown> = {},
-  { source: tracker = source, parents = {}, planFirst = [] }: { source?: TicketSource; parents?: Record<string, string>; planFirst?: string[] } = {}) {
+  { source: tracker = source, parents = {}, planFirst = [], pluginRecord }: { source?: TicketSource; parents?: Record<string, string>; planFirst?: string[]; pluginRecord?: string } = {}) {
   const root = tmpDir("ticket-pool-");
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox", "nbl-ui-platform-libs": "/repos/libs" }, stateDir: join(root, "state"), tickets });
   const queued = keys.map((key) => (key in parents ? { ...ticket(key), parent: parents[key] } : ticket(key)));
@@ -45,7 +45,8 @@ function setup(max = 2, keys = ["NBF-1", "NBF-2", "NBF-3"], tickets: Record<stri
   const status = new Map<string, string>();
   const screen = { text: "" };
   const h = herdr(status, screen);
-  const pool = createPool(store, { settings, source: tracker, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: h.run, hostFile: "/work/.agent-org/host.json", now: () => 100, load: () => ({ load: 1, cores: 14 }), transcriptsRoot: join(root, "transcripts"), wait: async () => {} });
+  const pool = createPool(store, { settings, source: tracker, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: h.run, hostFile: "/work/.agent-org/host.json", now: () => 100, load: () => ({ load: 1, cores: 14 }), transcriptsRoot: join(root, "transcripts"), wait: async () => {},
+    pluginRecord: pluginRecord ?? join(root, "no-plugin-record.json") });
   const entry = (key: string) => queue.entries.find((e) => e.ticket.key === key)!;
   return { settings, pool, status, h, entry, store, root, screen };
 }
@@ -722,4 +723,15 @@ test("a plan attached without the planner's state still sends the ticket to be w
     process.stderr.write = write;
   }
   assert.ok(written.includes("ticket:serve: NBF-1's team has no state named Planned, so it stays in Todo\n"));
+});
+
+test("a run whose plugin is installed only for another folder is not started, and says how to install it for every folder", async () => {
+  const record = join(tmpDir("ticket-plugins-"), "installed_plugins.json");
+  writeFileSync(record, JSON.stringify({ version: 2, plugins: { "nbl-ui@applied-ai": [{ scope: "project", projectPath: "/work", installPath: "/cache/nbl-ui/0.17.0" }] } }));
+  const { pool, h, entry } = setup(1, ["NBF-1"], { plugins: ["nbl-ui@applied-ai"] }, { pluginRecord: record });
+  await pool.tick();
+  const outcome = entry("NBF-1").outcome;
+  assert.equal(outcome?.kind, "crashed");
+  assert.match(outcome?.kind === "crashed" ? outcome.reason : "", /nbl-ui@applied-ai is installed only for \/work, so a worker in .* runs without it: install it for every folder with `claude plugin install nbl-ui@applied-ai --scope user`/);
+  assert.equal(h.calls.some((args) => args.includes("start")), false, "no worker was started");
 });
