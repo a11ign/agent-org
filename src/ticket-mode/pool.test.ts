@@ -1,5 +1,5 @@
 // no-token: gh -- herdr, git, Linear and the clock are all injected; nothing is spawned
-import { mock, test } from "node:test";
+import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -711,14 +711,15 @@ test("a ticket whose plan reached it after it was queued is worked from that pla
 test("a plan attached without the planner's state still sends the ticket to be worked, and the board's log says why its state stayed", async () => {
   const tracker: TicketSource = { ...source, attachPlan: async () => "NBF-1's team has no state named Planned, so it stays in Todo" };
   const written: string[] = [];
-  const spy = mock.method(process.stderr, "write", (chunk: string) => { written.push(String(chunk)); return true; });
+  const write = process.stderr.write;
+  process.stderr.write = ((chunk: string) => { written.push(String(chunk)); return true; }) as typeof process.stderr.write;
   try {
     const made = setup(1, ["NBF-1"], PLANNER, { source: tracker, planFirst: ["NBF-1"] });
     await plannedRun(made);
     await settled();
     assert.deepEqual([made.entry("NBF-1").plan, made.entry("NBF-1").planned], [undefined, true]);
   } finally {
-    spy.mock.restore();
+    process.stderr.write = write;
   }
   assert.ok(written.includes("ticket:serve: NBF-1's team has no state named Planned, so it stays in Todo\n"));
 });
