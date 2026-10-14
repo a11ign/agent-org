@@ -260,3 +260,36 @@ test("attachPlan() says nothing when it did all it was asked", async () => {
   const { fetch } = linear([planning("backlog"), signed(1), done, done], { "https://storage.example/upload-1?sig=1": { status: 200 } });
   assert.equal(await linearSource({ key: "k", fetch }).attachPlan!("NBF-1", [plan], "Planned"), null);
 });
+
+/** Linear's answer to moveToWorkingState's read: the ticket's id, its state, and its team's states. */
+const working = (type: string, name: string) => ({ data: { issues: { nodes: [{
+  id: "uuid-1", state: { type, name }, team: { states: { nodes: [{ id: "s-planned", name: "Planned" }, { id: "s-progress", name: "In Progress" }] } },
+}] } } });
+
+test("moveToWorkingState() moves a ticket not yet started, a planned one included, to the working state", async () => {
+  for (const [type, name] of [["unstarted", "Planned"], ["backlog", "Backlog"], ["triage", "Triage"]]) {
+    const { fetch, requests } = linear([working(type, name), done]);
+    assert.equal(await linearSource({ key: "k", fetch }).moveToWorkingState!("NBF-1", "In Progress"), null);
+    const update = requests.map((r) => JSON.parse(String(r.init.body))).find((b) => /issueUpdate/.test(b.query));
+    assert.deepEqual(update?.variables, { id: "uuid-1", stateId: "s-progress" }, type);
+  }
+});
+
+test("moveToWorkingState() leaves a ticket already started or finished where it is", async () => {
+  for (const [type, name] of [["started", "In Review"], ["completed", "Done"]]) {
+    const { fetch, requests } = linear([working(type, name)]);
+    assert.equal(await linearSource({ key: "k", fetch }).moveToWorkingState!("NBF-1", "In Progress"), null);
+    assert.equal(requests.length, 1, `${type}: only read`);
+  }
+});
+
+test("moveToWorkingState() keeps the ticket's state when its team has no state of that name, and says so", async () => {
+  const { fetch, requests } = linear([working("unstarted", "Planned")]);
+  assert.equal(await linearSource({ key: "k", fetch }).moveToWorkingState!("NBF-1", "Doing"), "NBF-1's team has no state named Doing, so it stays in Planned");
+  assert.equal(requests.length, 1);
+});
+
+test("moveToWorkingState() says so when Linear has no ticket by that key", async () => {
+  const { fetch } = linear([{ data: { issues: { nodes: [] } } }]);
+  await assert.rejects(linearSource({ key: "k", fetch }).moveToWorkingState!("NBF-404", "In Progress"), /Linear has no ticket NBF-404/);
+});

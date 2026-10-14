@@ -199,6 +199,9 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
   const session = { session: settings.herdrSession };
   const misses = new Map<string, number>();
   const answered = new Map<string, number>();
+  /** A line in the board's log, which is its standard error. */
+  const log = (line: string): void => { process.stderr.write(`ticket:serve: ${line}\n`); };
+  const messageOf = (err: unknown): string => String((err as Error)?.message ?? err);
   /** The planning runs whose plans are being attached, so a tick that sees the same outcome file meanwhile does not attach them again. */
   const attaching = new Set<string>();
 
@@ -400,7 +403,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     if (outcome.kind !== "planned") return end(entry, outcome);
     if (!isPlanning(entry)) return end(entry, { kind: "needs-human", reason: "the worker wrote a planned outcome, but its run was not a planning run" });
     // Nothing waits on the attach, so its own failure is caught here rather than left to stop the board.
-    attachPlan(entry).catch((err) => { process.stderr.write(`ticket:serve: ${entry.ticket.key}'s plan: ${String((err as Error)?.message ?? err)}\n`); });
+    attachPlan(entry).catch((err) => log(`${entry.ticket.key}'s plan: ${messageOf(err)}`));
   }
 
   /** Whether the run `entry` was taken from is still the run on the queue: not stopped, retried or started again since. */
@@ -438,7 +441,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
       if ("refusal" in found) return end(entry, { kind: "needs-human", reason: found.refusal });
       if (source.attachPlan === undefined) return end(entry, { kind: "needs-human", reason: `this tracker takes no plans: attach the files in ${planDir} by hand` });
       const note = await source.attachPlan(key, found.files, settings.planner?.state ?? null);
-      if (note !== null) process.stderr.write(`ticket:serve: ${note}\n`);
+      if (note !== null) log(note);
       // Stopped, or stopped and started again, while its plan was attached: the person's last word stands, and a newer run is not touched.
       if (!sameRun(entry)) return;
       if (entry.workspace) closedNote((args) => herdr(args), entry.workspace, session);
@@ -512,11 +515,25 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
           continue;
         }
         update((queue) => markRunning(queue, entry.ticket.key, workspace, pane));
+        if (!isPlanning(entry)) moveTicketToWorkingState(entry.ticket.key);
         await settleStart(entry);
       } catch (err) {
         update((queue) => finish(queue, entry.ticket.key, { kind: "crashed", reason: String((err as Error)?.message ?? err).split("\n")[0] }, now()));
       }
     }
+  }
+
+  /**
+   * Tell the tracker a worker has started on the ticket, by moving it to this machine's working state. Nothing waits on it and nothing turns
+   * on it, so a failure is written to the board's log rather than stopping the run.
+   */
+  function moveTicketToWorkingState(key: string): void {
+    const { workingState } = settings;
+    const move = source.moveToWorkingState?.bind(source);
+    if (workingState === null || move === undefined) return;
+    // Started inside a promise, so even a source that throws before it answers cannot reach the run.
+    Promise.resolve().then(() => move(key, workingState))
+      .then((note) => { if (note !== null) log(note); }, (err) => log(`${key} could not be moved to ${workingState}: ${messageOf(err)}`));
   }
 
   /** Whether the ticket has a plan of its own in the tracker now. */

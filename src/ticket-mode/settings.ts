@@ -48,6 +48,8 @@ export type TicketSettings = Readonly<{
   plan: string | null;
   /** How a ticket with no plan is planned before it is worked, or null when this machine plans none. */
   planner: Planner | null;
+  /** The tracker state a ticket moves to when a worker starts implementing it, if it has not started, or null to leave its state alone. */
+  workingState: string | null;
   /**
    * The connector tools a worker may call, as regular expressions matched against the tool's name, each anchored at its start with `^mcp__`.
    * Every other connector stays refused. None by default.
@@ -134,9 +136,16 @@ function plannerOf(value: unknown, plan: string | null): Planner | null {
   if (!isObject(value) || typeof value.run !== "string" || !value.run.includes("{key}") || !value.run.includes("{dir}")) {
     throw new TicketSettingsRefusal("tickets.planner", PLANNER_SHAPE);
   }
-  if (value.state !== undefined && (typeof value.state !== "string" || value.state === "")) throw new TicketSettingsRefusal("tickets.planner.state", "must be a state's name");
+  const state = stateName(value.state, "tickets.planner.state");
   if (plan === null) throw new TicketSettingsRefusal("tickets.planner", "needs tickets.plan, which says which tickets have a plan already");
-  return Object.freeze({ run: value.run, state: value.state ?? null });
+  return Object.freeze({ run: value.run, state });
+}
+
+/** A state's name, without the spaces around it, which a state's name in the tracker never has; null when the host file names none. */
+function stateName(value: unknown, field: string): string | null {
+  if (value === undefined) return null;
+  if (typeof value !== "string" || value.trim() === "") throw new TicketSettingsRefusal(field, "must be a state's name, such as \"In Progress\"");
+  return value.trim();
 }
 
 const CONNECTOR_SHAPE = "a regular expression anchored at the tool's name, such as \"^mcp__claude_ai_Linear__(get|list|search)_\"";
@@ -200,6 +209,7 @@ export function parseTicketSettings(host: unknown, home: string = homedir()): Ti
     terminal: terminalTemplate(tickets.terminal),
     plan,
     planner: plannerOf(tickets.planner, plan),
+    workingState: stateName(tickets.workingState, "tickets.workingState"),
     connectors: connectorPatterns(tickets.connectors),
   });
 }

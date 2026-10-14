@@ -70,4 +70,10 @@ export interface TicketSource {
    * that was cut off can be repeated. A source without it takes no plans, so the board offers no planning. Throws when the tracker refuses.
    */
   attachPlan?(key: string, files: readonly string[], state: string | null): Promise<string | null>;
+  /**
+   * Move the ticket to the state named `state` as a worker starts implementing it, when it has not started yet. A ticket already started, or
+   * finished, is left where it is. A team with no state of that name keeps the ticket's state, and the returned note says so; it is null
+   * otherwise. A source without it moves nothing. Throws when the tracker refuses.
+   */
+  moveToWorkingState?(key: string, state: string): Promise<string | null>;
 }
