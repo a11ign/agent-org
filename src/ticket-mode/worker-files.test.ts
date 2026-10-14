@@ -1,7 +1,7 @@
 // no-token: gh -- pure builders
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { briefText, firstPrompt, workerFlags, workerSettings } from "./worker-files.ts";
+import { briefText, firstPrompt, planBriefText, workerFlags, workerSettings } from "./worker-files.ts";
 import type { Ticket } from "./source.ts";
 
 const ticket = { key: "NBF-1270", title: "Refresh Data gives no feedback", description: "Clicking does nothing visible.", url: "https://linear.app/x/issue/NBF-1270",
@@ -130,5 +130,13 @@ test("a planning run is refused git's writes, a pull request and a worktree, and
     "gh pr create --draft", "gh pr edit 3", "node /tool/src/bin.ts ticket:worktree nbl-ui-netbox"]) assert.equal(refused(command), true, command);
   for (const command of ["git grep -n add", "git log --grep commit", "git show HEAD:src/a.ts", "git -C /repos/a fetch origin", "git diff origin/develop", "git branch -a", "gh pr view 12"]) {
     assert.equal(refused(command), false, command);
+  }
+});
+
+test("both briefs tell a worker to stop for a person when a skill they name is missing, not to follow a copy of it", () => {
+  const work = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones: { a: "/a" }, worktreeCommand: "wt" });
+  const plan = planBriefText({ ticket, ticketDir: "/d", planDir: "/d/plan", attachments: [], clones: { a: "/a" }, run: "plan {key} into {dir}" });
+  for (const brief of [work, plan]) {
+    assert.match(brief, /If a skill this brief names is not available in this session, write a `needs-human` outcome naming it, rather than following a copy of its files\./);
   }
 });

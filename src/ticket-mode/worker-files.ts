@@ -23,6 +23,9 @@ export const DENY_FILE = "deny.json";
 /** The host file's `tickets.connectors`, copied beside the outcome file, where the PreToolUse hook reads it. */
 export const CONNECTORS_FILE = "connectors.json";
 
+/** What a worker does when a skill its brief names is missing: a copy of the skill's files, read by hand, is not the skill and its helpers. */
+const MISSING_SKILL = "If a skill this brief names is not available in this session, write a `needs-human` outcome naming it, rather than following a copy of its files.";
+
 /** The folder in the ticket's own directory that a planning run writes its plan's files in, for the board to attach. */
 export const PLAN_DIR = "plan";
 
@@ -137,6 +140,8 @@ ${repos}
 
 ${instruction}
 
+${MISSING_SKILL}
+
 The plan's files go in \`${planDir}\`, and nowhere else. The board attaches each one to the ticket under its file name. Write only markdown files there, each 1 MB or less: anything else stops the board attaching any of them.
 ${connectorsText(connectors)}${notes?.trim() ? `\n## On this machine\n\n${notes.trim()}\n` : ""}
 ## The outcome file
@@ -197,6 +202,8 @@ ${plannedText(planned)}1. Find the cause in the code. Fix it, with a test that f
 7. If a design gate asks for a design check, decline it with "unattended worker, no design tool access" and say so in the pull request body.
 
 Never mark a pull request ready, request a review, merge, force-push, run a workflow, or post to Slack. Those are the person's.
+
+${MISSING_SKILL}
 ${connectorsText(connectors)}${notes?.trim() ? `\n## On this machine\n\n${notes.trim()}\n` : ""}
 ## The outcome file
 
