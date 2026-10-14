@@ -63,8 +63,9 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
     createElement: (tag: string) => new Node_(tag),
     querySelectorAll: () => [],
   };
-  // The board's saved choice, which a POST to /api/choice changes part by part, as the server does.
+  // The board's saved choice, which a POST to /api/choice changes part by part, as the server does, and its saved number of workers.
   let saved = { model: "opus", effort: "high", ...(config.choice as object | undefined) };
+  let max = 3;
   const fetch = async (path: string, init: { method: string; body?: string } = { method: "GET" }) => {
     const body = init.body === undefined ? undefined : JSON.parse(init.body);
     if (init.method === "POST") posts.push({ path, body });
@@ -74,9 +75,9 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
       "/api/tickets": () => tickets,
       "/api/parents": () => parents,
       "/api/choice": () => { saved = { ...saved, ...body }; return { choice: saved }; },
-      "/api/max": () => ({ entries, max: body.max, paused: true }),
+      "/api/max": () => { max = body.max; return { entries, max, paused: true }; },
     };
-    const value = answers[path]?.() ?? { entries, max: 3, paused: true };
+    const value = answers[path]?.() ?? { entries, max, paused: true };
     return { ok: true, json: async () => value, statusText: "" };
   };
   const localStorage = { getItem: (k: string) => storage.get(k) ?? null, setItem: (k: string, v: string) => { storage.set(k, v); } };
@@ -86,8 +87,11 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
   const groups = () => $("groups").children;
   const shownKeys = () => $("groups").all().filter((n) => n.className.startsWith("row")).map((n) => n.children[1].text());
   const chip = (name: string) => $("projects").children.find((c) => c.tag === "button" && c.children[0]?.text() === name || c.textContent === name)!;
-  /** Another page saves `change` to the board's choice. */
-  const saveElsewhere = (change: Record<string, string>) => { saved = { ...saved, ...change }; };
+  /** Another page saves `change` to the board's choice, or `workers` as its number of workers at once. */
+  const saveElsewhere = ({ workers, ...change }: { model?: string; effort?: string; workers?: number }) => {
+    saved = { ...saved, ...change };
+    max = workers ?? max;
+  };
   return { $, groups, shownKeys, chip, posts, saveElsewhere };
 }
 
@@ -383,6 +387,33 @@ test("a model the board refuses goes back to what is saved, and the footer keeps
   assert.equal(p.$("model").value, "opus");
   assert.equal(p.$("settings-status").textContent, "/api/choice refused");
   assert.equal(p.$("runs-with").textContent, "Runs on opus at high effort");
+});
+
+test("a refused change reads what is saved again, so what another page saved since Settings opened is what shows and what Queue sends", async () => {
+  const p = await page(new Map(), { config: SETTINGS, refused: ["/api/choice"] });
+  await openFrom(p, "open-settings");
+  p.saveElsewhere({ model: "sonnet" });
+  await change(p, "effort", "max");
+  await settle();
+  assert.equal(p.$("settings-status").textContent, "/api/choice refused");
+  assert.deepEqual([p.$("model").value, p.$("effort").value], ["sonnet", "high"]);
+  assert.equal(p.$("runs-with").textContent, "Runs on sonnet at high effort");
+  p.$("all").checked = true;
+  p.$("all").fire("change");
+  p.$("queue").fire("click");
+  await settle();
+  const queued = p.posts.find((x) => x.path === "/api/queue")?.body;
+  assert.deepEqual([queued?.model, queued?.effort], ["sonnet", "high"]);
+});
+
+test("a refused number of workers reads what is saved again, so what another page saved since Settings opened is what shows", async () => {
+  const p = await page(new Map(), { config: SETTINGS, refused: ["/api/max"] });
+  await openFrom(p, "open-settings");
+  p.saveElsewhere({ workers: 5 });
+  await change(p, "max", "0");
+  await settle();
+  assert.equal(p.$("max").value, "5");
+  assert.equal(p.$("max-note").textContent, "Up to 5 workers at once");
 });
 
 const entry = (key: string, fields: Record<string, unknown>) => ({ ticket: { key, title: `title ${key}`, url: "" }, repos: [], model: "opus", effort: "high", queuedAt: 1, ...fields });

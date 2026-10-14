@@ -405,18 +405,25 @@ function renderFooter() {
   $("queue").disabled = state.selected.size === 0;
 }
 
-/**
- * The settings dialog, with each control showing what is saved now. The choice is read again first, because another page may have changed it;
- * the number of workers comes with the queue every few seconds.
- */
-async function openSettings() {
+// What is saved now, read again into the page and the controls, because another page may have changed it since.
+async function readChoice() {
   const config = await call("GET", "/api/config").catch(() => null);
   if (config) state.choice = config.choice;
   $("model").value = state.choice.model;
   $("effort").value = state.choice.effort;
-  $("max").value = String(state.queue.max);
-  $("settings-status").textContent = "";
   renderFooter();
+}
+async function readMax() {
+  const queue = await call("GET", "/api/queue").catch(() => null);
+  if (queue) state.queue = queue;
+  $("max").value = String(state.queue.max);
+  render();
+}
+
+// The settings dialog, with each control showing what is saved now.
+async function openSettings() {
+  await Promise.all([readChoice(), readMax()]);
+  $("settings-status").textContent = "";
   $("settings").showModal();
 }
 
@@ -430,16 +437,16 @@ function showRefused(err) {
   $("settings-status").className = "hint failed";
 }
 
-// Each setting is saved as it changes, and only what changed is sent. One the board refuses puts the control back to what is saved.
+// Each setting is saved as it changes, and only what changed is sent. One the board refuses puts the controls back to what is saved.
 function saveChoice(part) {
   call("POST", "/api/choice", { [part]: $(part).value }).then(({ choice }) => {
     state.choice = choice;
     showSaved();
     renderFooter();
   }, (err) => {
-    $(part).value = state.choice[part];
     showRefused(err);
-  });
+    return readChoice();
+  }).catch(report);
 }
 function saveMax() {
   call("POST", "/api/max", { max: Number($("max").value) }).then((q) => {
@@ -447,9 +454,9 @@ function saveMax() {
     showSaved();
     render();
   }, (err) => {
-    $("max").value = String(state.queue.max);
     showRefused(err);
-  });
+    return readMax();
+  }).catch(report);
 }
 
 function render() { renderPick(); renderBoard(); renderFooter(); }
