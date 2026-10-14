@@ -1,0 +1,5 @@
+---
+"agent-org": minor
+---
+
+The ticket board can plan a ticket before it is worked. On a machine that sets the new `tickets.planner`, the Pick footer offers Plan first whenever a selected ticket has no plan of its own, and Queue says how many it will plan. Each such ticket's first run is a planning run, on a planning model and effort set in Settings apart from the run's (opus at high effort until changed). It is told the machine's planning instruction, changes no code, and is refused a commit, a push, a worktree and a pull request. When it writes the new `planned` outcome, the board attaches the files it left to the ticket and moves an unstarted ticket to the planner's state, through the new `TicketSource.attachPlan`, which Linear implements. The ticket goes back on the queue where it was, and its run is told the plan was not agreed with a person, so its pull request lists each decision the plan made. A plan the tracker refuses ends the run for a person, with its files kept. The Board shows a planning run as Planning, and a run's row names the planning model before the run's. The stop hook's refusal points at the outcomes the brief lists.

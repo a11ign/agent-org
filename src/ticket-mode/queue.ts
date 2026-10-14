@@ -12,9 +12,10 @@ import { dirname } from "node:path";
 import { isParked, settledByPulls, waitsOn } from "./board-view.ts";
 import type { Blocker, PullState, Ticket } from "./source.ts";
 
-/** How a finished run ended. A worker writes the first three; the pool decides the rest. */
+/** How a finished run ended. A worker writes the first four; the pool decides the rest. */
 export type Outcome =
   | Readonly<{ kind: "draft-pr"; prs: readonly Readonly<{ repo: string; url: string }>[] }>
+  | Readonly<{ kind: "planned" }>
   | Readonly<{ kind: "wrong-repo"; where: string }>
   | Readonly<{ kind: "needs-human"; reason: string }>
   | Readonly<{ kind: "no-outcome" }>
@@ -29,6 +30,13 @@ export type Entry = Readonly<{
   repos: readonly string[];
   model: string;
   effort: string;
+  /**
+   * The model and effort the ticket is planned with before it is worked, while it still needs its plan. Its next run is a planning run, and the
+   * entry is queued again, without this, once the plan is attached.
+   */
+  plan?: RunChoice;
+  /** Its plan was written by a planning run, which decided for the person: the pull request says what it decided. */
+  planned?: boolean;
   phase: Phase;
   queuedAt: number;
   startedAt?: number;
@@ -69,10 +77,15 @@ function replace(queue: Queue, key: string, change: (entry: Entry) => Entry): Qu
 
 const find = (queue: Queue, key: string): Entry | undefined => queue.entries.find((entry) => entry.ticket.key === key);
 
-/** Add each ticket not already on the queue, after the last entry. A ticket already there is left as it is. */
-export function enqueue(queue: Queue, tickets: readonly Ticket[], choice: RunChoice, now: number): Queue {
+/**
+ * Add each ticket not already on the queue, after the last entry. A ticket already there is left as it is. Each ticket `planFirst` names is
+ * planned, on its model and effort, before it is worked.
+ */
+export function enqueue(queue: Queue, tickets: readonly Ticket[], choice: RunChoice, now: number,
+  planFirst: Readonly<{ keys: ReadonlySet<string>; choice: RunChoice }> | null = null): Queue {
   const fresh = tickets.filter((ticket) => find(queue, ticket.key) === undefined);
-  return { ...queue, entries: [...queue.entries, ...fresh.map((ticket): Entry => ({ ticket, repos: [], ...choice, phase: "queued", queuedAt: now }))] };
+  const plan = (ticket: Ticket) => (planFirst?.keys.has(ticket.key) ? { plan: planFirst.choice } : {});
+  return { ...queue, entries: [...queue.entries, ...fresh.map((ticket): Entry => ({ ticket, repos: [], ...choice, ...plan(ticket), phase: "queued", queuedAt: now }))] };
 }
 
 /** Change a queued entry's model or effort. An entry that has started keeps what it started with. */
@@ -92,8 +105,9 @@ export function remove(queue: Queue, key: string): Queue {
 export function retry(queue: Queue, key: string, now: number): Queue {
   const entry = find(queue, key);
   if (entry === undefined || entry.phase !== "finished" || entry.outcome?.kind === "draft-pr" || isParked(entry)) return queue;
-  const { ticket, repos, model, effort } = entry;
-  return { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== key), { ticket, repos, model, effort, phase: "queued", queuedAt: now }] };
+  const { ticket, repos, model, effort, plan, planned } = entry;
+  const retried: Entry = { ticket, repos, model, effort, ...(plan ? { plan } : {}), ...(planned ? { planned } : {}), phase: "queued", queuedAt: now };
+  return { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== key), retried] };
 }
 
 export function setPaused(queue: Queue, paused: boolean): Queue {
@@ -139,6 +153,15 @@ export function finish(queue: Queue, key: string, outcome: Outcome, now: number,
 /** The run has ended and keeps its workspace and pane, where a person can answer its agent. */
 export function park(queue: Queue, key: string, outcome: Outcome, now: number, tokens?: Entry["tokens"]): Queue {
   return replace(queue, key, (entry) => ended(entry, outcome, now, tokens));
+}
+
+/**
+ * The ticket has its plan: it goes back on the queue, where it was, to be worked with its own model and effort. A planning run leaves nothing
+ * behind but the mark that its plan was decided for the person; `unattended` is false for a plan that reached the ticket some other way.
+ */
+export function planDone(queue: Queue, key: string, unattended = true): Queue {
+  return replace(queue, key, ({ ticket, repos, model, effort, queuedAt, blockers }) =>
+    ({ ticket, repos, model, effort, ...(unattended ? { planned: true } : {}), phase: "queued", queuedAt, ...(blockers ? { blockers } : {}) }));
 }
 
 /** A person answered a parked run's agent, which is working again: the run is live once more, and its old outcome and tracker state are dropped. */

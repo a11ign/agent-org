@@ -3,7 +3,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, isParked, parentKeys, parentTick, ticketCount, projectCounts, queueLabel, recall, remember, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, selectable, statusCounts, terminalLink, toggled, waitsOn,
-  PRIORITY_NAMES, hasPlan, missingPlan, planChoiceOf, planCounts, priorityCounts, prioritiesOf, visibleTickets, workItems, type ViewEntry, type ViewTicket,
+  PRIORITY_NAMES, hasPlan, missingPlan, planChoiceOf, planCounts, priorityCounts, prioritiesOf, runChoiceLabel, unplannedCount, visibleTickets, workItems,
+  type ViewEntry, type ViewTicket,
 } from "./board-view.ts";
 
 const t = (key: string, status: string, statusOrder: number, priority: number, project: string | null, title = key): ViewTicket =>
@@ -267,7 +268,7 @@ test("every status is counted, a status with no runs at zero, and the filters li
   assert.equal(counts.get("queued"), 2);
   assert.equal(counts.get("failed"), 1);
   assert.equal(counts.get("completed"), 0);
-  assert.deepEqual(RUN_STATUSES.map(({ status }) => status), ["needs-you", "working", "blocked", "queued", "awaiting-review", "completed", "failed", "cancelled"]);
+  assert.deepEqual(RUN_STATUSES.map(({ status }) => status), ["needs-you", "working", "planning", "blocked", "queued", "awaiting-review", "completed", "failed", "cancelled"]);
 });
 
 const blocker = (key: string, state: string, status = state) => ({ key, state, status });
@@ -329,6 +330,9 @@ test("the Queue button says what it will do", () => {
   assert.equal(queueLabel(0), "Select tickets to queue");
   assert.equal(queueLabel(1), "Queue 1 ticket");
   assert.equal(queueLabel(3), "Queue 3 tickets");
+  assert.equal(queueLabel(3, 2), "Queue 3 tickets, planning 2 first");
+  assert.equal(queueLabel(3, 3), "Queue 3 tickets, planning all first");
+  assert.equal(queueLabel(1, 1), "Queue 1 ticket, planning it first");
 });
 
 test("a run offers what its state allows: Remove queued, Stop live, Close parked, Retry once closed, and nothing for a result", () => {
@@ -359,4 +363,26 @@ test("a run's terminal link fills the machine's template with its workspace, pan
   assert.equal(terminalLink(null, live), null, "the machine serves no terminal");
   assert.equal(terminalLink("http://h/{pane}", { ...live, pane: undefined }), null, "a run still starting has no pane yet");
   assert.equal(terminalLink("http://h/{pane}", { ticket: { key: "NBF-1" }, phase: "finished" }), null, "a closed run has no terminal");
+});
+
+test("a run planning its ticket is Planning, with its own filter after In progress; one queued to be planned is Queued", () => {
+  const plan = { model: "opus", effort: "max" };
+  assert.equal(runStatus({ ticket: { key: "A" }, phase: "running", plan }), "planning");
+  assert.equal(runStatus({ ticket: { key: "A" }, phase: "running", plan, waiting: true }), "needs-you", "a planning run waiting on a person needs you");
+  assert.equal(runStatus({ ticket: { key: "A" }, phase: "queued", plan }), "queued");
+  assert.equal(runStatus({ ticket: { key: "A" }, phase: "running" }), "working");
+  const order = RUN_STATUSES.map(({ status }) => status);
+  assert.equal(order.indexOf("planning"), order.indexOf("working") + 1);
+});
+
+test("the tickets to be planned first are those with no plan of their own", () => {
+  const plan = /-plan-[^/]*\.md$/;
+  const tickets = [{ ...t("A", "Backlog", 0, 2, null), uploads: ["A-0001-plan-x.md"] }, t("B", "Backlog", 0, 2, null), { ...t("C", "Backlog", 0, 2, null), uploads: ["screenshot.png"] }];
+  assert.equal(unplannedCount(tickets, plan), 2);
+});
+
+test("a run's row names its model and effort, and a ticket still to be planned names its planning run's first", () => {
+  assert.equal(runChoiceLabel({ ticket: { key: "A" }, phase: "queued", model: "sonnet", effort: "high" }), "sonnet/high");
+  assert.equal(runChoiceLabel({ ticket: { key: "A" }, phase: "queued", model: "sonnet", effort: "high", plan: { model: "opus", effort: "max" } }), "plan on opus/max, then sonnet/high");
+  assert.equal(runChoiceLabel({ ticket: { key: "A" }, phase: "running", model: "sonnet", effort: "high", planned: true }), "sonnet/high on an unattended plan");
 });

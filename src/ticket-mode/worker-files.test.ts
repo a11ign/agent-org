@@ -122,3 +122,13 @@ test("the brief tells the worker that a person may answer it after it hands the 
   const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w" });
   assert.match(brief, /A person may answer you here after a `needs-human` or `wrong-repo` outcome\. If one does, carry on with what they said, and write the outcome file again/);
 });
+
+test("a planning run is refused git's writes, a pull request and a worktree, and keeps git's reads", async () => {
+  const { PLANNING_DENY } = await import("./worker-files.ts");
+  const refused = (command: string) => PLANNING_DENY.some(({ pattern }) => new RegExp(pattern).test(command));
+  for (const command of ["git commit -m x", "git -C /repos/a push origin b", "git --no-pager add .", "git -c core.x=y stash", "git checkout develop", "git rebase main",
+    "gh pr create --draft", "gh pr edit 3", "node /tool/src/bin.ts ticket:worktree nbl-ui-netbox"]) assert.equal(refused(command), true, command);
+  for (const command of ["git grep -n add", "git log --grep commit", "git show HEAD:src/a.ts", "git -C /repos/a fetch origin", "git diff origin/develop", "git branch -a", "gh pr view 12"]) {
+    assert.equal(refused(command), false, command);
+  }
+});

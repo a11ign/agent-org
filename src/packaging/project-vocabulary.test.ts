@@ -211,6 +211,8 @@ const DECLARED_NON_VOCABULARY_HITS: Declaration[] = [
   ...nonVocabulary("work-gate/pr-orders.ts", ['"ready"'], "the action kind for `gh pr ready`, GitHub's own verb"),
   // `ticket-mode/board-view.ts` (agent-org#1383): the ticket board's own `RunStatus` member `"blocked"`, which the board's run state names; it is never the `blocked` GitHub label.
   ...nonVocabulary("ticket-mode/board-view.ts", ['"blocked"'], "the ticket board's own RunStatus member, never the `blocked` label"),
+  // `ticket-mode/linear.ts`: `"backlog"` and `"triage"` are Linear's own state TYPES, read to decide whether a planned ticket moves to the planner's state; never the board's `backlog` column.
+  ...nonVocabulary("ticket-mode/linear.ts", ['"backlog"'], "a Linear state type, read from Linear, never the board's backlog"),
 ];
 
 test("the messaging sources' label literals equal the vocabulary's", () => {

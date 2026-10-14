@@ -79,28 +79,75 @@ test("queueing takes the tickets you selected with the model and effort sent, no
   assert.ok(existsSync(join(b.dir, "queue.json")));
   assert.deepEqual(b.ticks, ["tick"]);
   const [, config] = await b.api("GET", "/api/config", {}) as [number, any];
-  assert.deepEqual(config.choice, { model: "opus", effort: "high" }, "the settings decide new runs; queueing does not change them");
+  assert.deepEqual(config.choice, { model: "opus", effort: "high", planModel: "opus", planEffort: "high" }, "the settings decide new runs; queueing does not change them");
 });
 
 test("the settings save the part of the choice they name, keep the other part, refuse an unknown or empty change, and wake nothing", async () => {
   const b = board();
   const [, model] = await b.api("POST", "/api/choice", { model: "sonnet" }) as [number, any];
-  assert.deepEqual(model, { choice: { model: "sonnet", effort: "high" } });
+  assert.deepEqual(model, { choice: { model: "sonnet", effort: "high", planModel: "opus", planEffort: "high" } });
   const [, effort] = await b.api("POST", "/api/choice", { effort: "max" }) as [number, any];
-  assert.deepEqual(effort, { choice: { model: "sonnet", effort: "max" } }, "a change to the effort keeps the model saved before it");
+  assert.deepEqual(effort, { choice: { model: "sonnet", effort: "max", planModel: "opus", planEffort: "high" } }, "a change to the effort keeps the model saved before it");
   await assert.rejects(b.api("POST", "/api/choice", { model: "gpt" }), /model must be one of/);
   await assert.rejects(b.api("POST", "/api/choice", { effort: "huge" }), /effort must be one of/);
   await assert.rejects(b.api("POST", "/api/choice", {}), /name a model or an effort/);
   const [, config] = await b.api("GET", "/api/config", {}) as [number, any];
-  assert.deepEqual(config.choice, { model: "sonnet", effort: "max" });
+  assert.deepEqual(config.choice, { model: "sonnet", effort: "max", planModel: "opus", planEffort: "high" });
   assert.deepEqual(b.ticks, [], "a setting for new runs wakes nothing");
 });
 
 test("a saved model or effort the board no longer offers falls back, so queueing with the settings is never refused", async () => {
   const b = board();
-  writeFileSync(join(b.dir, "choice.json"), JSON.stringify({ model: "gpt-9", effort: "max" }));
+  writeFileSync(join(b.dir, "choice.json"), JSON.stringify({ model: "gpt-9", effort: "max", planModel: "sonnet", planEffort: "huge" }));
   const [, config] = await b.api("GET", "/api/config", {}) as [number, any];
-  assert.deepEqual(config.choice, { model: "opus", effort: "max" });
+  assert.deepEqual(config.choice, { model: "opus", effort: "max", planModel: "sonnet", planEffort: "high" });
+});
+
+test("planning has its own model and effort in the settings, opus at high until changed, and changing it leaves the run's alone", async () => {
+  const b = board();
+  const [, before] = await b.api("GET", "/api/config", {}) as [number, any];
+  assert.deepEqual([before.choice.planModel, before.choice.planEffort], ["opus", "high"]);
+  await b.api("POST", "/api/choice", { model: "sonnet" });
+  const [, saved] = await b.api("POST", "/api/choice", { planEffort: "max" }) as [number, any];
+  assert.deepEqual(saved.choice, { model: "sonnet", effort: "high", planModel: "opus", planEffort: "max" });
+  await assert.rejects(b.api("POST", "/api/choice", { planModel: "gpt" }), /model must be one of/);
+});
+
+/** A board whose machine plans, over a tracker that takes plans: NBF-1 has a plan of its own and NBF-2 has none. */
+function planningBoard(attachPlan: TicketSource["attachPlan"] | null = async () => {}) {
+  const dir = tmpDir("ticket-server-planning-");
+  const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/r/netbox" }, stateDir: dir,
+    tickets: { plan: "-plan-[^/]*\\.md$", planner: { run: "plan {key} into {dir}", state: "Planned" } } });
+  const planned = { ...ticket("NBF-1"), uploads: ["NBF-1-0001-plan-x.md"] };
+  const source: TicketSource = { assigned: async () => [planned, ticket("NBF-2")], read: async () => null, download: async () => [], ...(attachPlan ? { attachPlan } : {}) };
+  const pool = { tick: async () => {}, stop: () => {}, close: () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {} };
+  return createBoard({ settings, source, key: KEY, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7 });
+}
+
+test("queueing with plan first plans each ticket without a plan of its own, on the planning model and effort, and leaves the others to be worked", async () => {
+  const b = planningBoard();
+  await b.api("GET", "/api/tickets", {});
+  await b.api("POST", "/api/choice", { planModel: "opus", planEffort: "max" });
+  const [, queue] = await b.api("POST", "/api/queue", { keys: ["NBF-1", "NBF-2"], model: "sonnet", effort: "high", plan: true }) as [number, any];
+  assert.deepEqual(queue.entries.map((e: any) => [e.ticket.key, e.model, e.plan ?? null]), [["NBF-1", "sonnet", null], ["NBF-2", "sonnet", { model: "opus", effort: "max" }]]);
+  const [, config] = await b.api("GET", "/api/config", {}) as [number, any];
+  assert.equal(config.planner, true, "the page is told this board plans");
+});
+
+test("queueing without plan first, or on a board that does not plan, plans nothing", async () => {
+  const b = planningBoard();
+  await b.api("GET", "/api/tickets", {});
+  const [, queue] = await b.api("POST", "/api/queue", { keys: ["NBF-2"], model: "sonnet", effort: "high" }) as [number, any];
+  assert.equal(queue.entries[0].plan, undefined);
+  const plain = board();
+  await plain.api("GET", "/api/tickets", {});
+  const [, unplanned] = await plain.api("POST", "/api/queue", { keys: ["NBF-2"], model: "opus", effort: "high", plan: true }) as [number, any];
+  assert.equal(unplanned.entries[0].plan, undefined, "a machine with no planner plans nothing, whatever the page asks");
+  const [, config] = await plain.api("GET", "/api/config", {}) as [number, any];
+  assert.equal(config.planner, false);
+  const noAttach = planningBoard(null);
+  const [, told] = await noAttach.api("GET", "/api/config", {}) as [number, any];
+  assert.equal(told.planner, false, "a tracker that cannot take a plan is not offered planning");
 });
 
 test("an unknown model or an unknown ticket is refused, and nothing is queued", async () => {
