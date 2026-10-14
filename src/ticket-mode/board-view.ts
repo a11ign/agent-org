@@ -297,5 +297,11 @@ export function terminalLink(template: string | null, entry: ViewEntry): string 
   return template.replace(/\{(workspace|pane|key)\}/g, (_, name: string) => encodeURIComponent(values[name]));
 }
 
+/** What the Pick footer says a queued ticket runs with. */
+export const runsWithLabel = (choice: Readonly<{ model: string; effort: string }>): string => `Runs on ${choice.model} at ${choice.effort} effort`;
+
+/** What the Board says about how many workers run at once. */
+export const workersLabel = (max: number): string => `Up to ${max} worker${max === 1 ? "" : "s"} at once`;
+
 /** The Queue button's words for `count` selected tickets. */
 export const queueLabel = (count: number): string => (count === 0 ? "Select tickets to queue" : `Queue ${count} ticket${count === 1 ? "" : "s"}`);

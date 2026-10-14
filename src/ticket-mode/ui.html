@@ -44,10 +44,9 @@
   .row .sub { color: var(--muted); font-size: 12px; }
   .key { font-variant-numeric: tabular-nums; color: var(--muted); }
   .pill { font-size: 12px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
-  footer { position: fixed; bottom: 0; left: 0; right: 0; background: var(--panel); border-top: 1px solid var(--line); padding: 10px 20px; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+  /* Above the sticky status headers (z-index 1), which otherwise paint over it, and its buttons, as they scroll under it. */
+  footer { position: fixed; bottom: 0; left: 0; right: 0; z-index: 2; background: var(--panel); border-top: 1px solid var(--line); padding: 10px 20px; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
   footer[hidden] { display: none; }
-  footer fieldset { border: 0; padding: 0; margin: 0; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-  footer legend { float: left; margin-right: 6px; color: var(--muted); }
   select, button.primary, button.small, input[type="number"] { font: inherit; padding: 5px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--text); }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; cursor: pointer; }
   button.primary:disabled { opacity: .5; cursor: default; }
@@ -83,6 +82,19 @@
   .state { font-weight: 600; }
   .state.paused { color: var(--warn); }
   .state.started { color: var(--ok); }
+  .settings-open { margin-left: auto; display: inline-flex; gap: 6px; align-items: center; background: none; border: 1px solid var(--line); border-radius: 6px;
+    padding: 5px 10px; color: var(--text); font: inherit; cursor: pointer; }
+  .settings-open svg { width: 16px; height: 16px; }
+  dialog { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); padding: 20px; width: min(420px, calc(100vw - 32px)); }
+  dialog::backdrop { background: rgb(0 0 0 / .4); }
+  dialog h2 { font-size: 16px; margin: 0 0 16px; }
+  .settings fieldset { border: 0; padding: 0; margin: 0 0 18px; display: grid; gap: 10px; }
+  .settings legend { font-weight: 600; padding: 0; margin-bottom: 8px; }
+  .settings label { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .settings input[type="number"] { width: 72px; }
+  .settings .actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .hint { color: var(--muted); font-size: 12px; margin: 0; }
+  .hint.failed { color: var(--bad); }
   .no-plan { display: inline-flex; vertical-align: -2px; margin-right: 6px; color: var(--warn); }
   .no-plan.covered { color: var(--muted); }
   .no-plan svg { width: 14px; height: 14px; }
@@ -93,7 +105,30 @@
   <h1>Ticket queue</h1>
   <button class="tab" data-tab="pick" aria-selected="true">Pick</button>
   <button class="tab" data-tab="board" aria-selected="false">Board</button>
+  <button class="settings-open" id="open-settings" type="button" aria-haspopup="dialog">
+    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h7M13 4h1M2 12h1M7 12h7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="11" cy="4" r="2" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="5" cy="12" r="2" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+    Settings
+  </button>
 </header>
+<dialog id="settings" aria-labelledby="settings-title">
+  <form method="dialog" class="settings">
+    <h2 id="settings-title">Settings</h2>
+    <fieldset>
+      <legend>New runs</legend>
+      <p class="hint">Tickets you queue from now on run with these. A run already on the queue keeps its own.</p>
+      <label>Model <select id="model"></select></label>
+      <label>Effort <select id="effort"></select></label>
+    </fieldset>
+    <fieldset>
+      <legend>Workers</legend>
+      <label>Workers at once <input id="max" type="number" min="1" step="1"></label>
+    </fieldset>
+    <div class="actions">
+      <p id="settings-status" class="hint" role="status"></p>
+      <button class="primary" value="done">Done</button>
+    </div>
+  </form>
+</dialog>
 <main>
   <div id="error" class="error" role="alert"></div>
   <section id="pick">
@@ -112,7 +147,8 @@
     <div class="bar">
       <span id="pool-state" class="state"></span>
       <button class="primary" id="toggle-pause"></button>
-      <label>Workers at once <input id="max" type="number" min="1" style="width:64px"></label><button class="small" id="save-max">Save</button>
+      <span id="max-note" class="hint"></span>
+      <button class="small" id="change-max" type="button">Change</button>
     </div>
     <div class="runs">
       <nav class="filters" id="filters" aria-label="Filter runs by status"></nav>
@@ -121,8 +157,8 @@
   </section>
 </main>
 <footer id="queue-bar">
-  <label>Model <select id="model"></select></label>
-  <label>Effort <select id="effort"></select></label>
+  <span id="runs-with" class="hint"></span>
+  <button class="small" id="change-choice" type="button">Change</button>
   <button class="primary" id="queue">Queue 0 tickets</button>
 </footer>
 <script type="module">
@@ -130,7 +166,7 @@
 // This page only draws what they return and wires the clicks.
 import {
   RUN_STATUSES, flatten, groupByStatus, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, projectCounts, projectOf, queueLabel, recall, remember, runActions, runStatus,
-  runsShown, selectable, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, waitsOn,
+  runsShown, runsWithLabel, selectable, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, waitsOn, workersLabel,
 } from "/board-view.js";
 
 const el = (tag, props = {}, ...children) => {
@@ -142,6 +178,8 @@ const $ = (id) => document.getElementById(id);
 const storage = (() => { try { return window.localStorage; } catch { return null; } })();
 const state = {
   tickets: [], parents: [], queue: { entries: [], max: 3, paused: true }, selected: new Set(), terminal: null,
+  // The model and effort the settings give a ticket queued from now on.
+  choice: { model: "", effort: "" },
   // The pattern a plan's name matches (the host file's `tickets.plan`), or null when the board looks for none; and the plan filter chosen.
   plan: null, planChoice: planChoiceOf(recall(storage, "ticket-mode.plan")),
   // Sections start collapsed, so a first visit sees every status and its count before any list.
@@ -353,7 +391,7 @@ function renderBoard() {
   const runs = runsShown(state.queue.entries, state.runFilter);
   $("runs").replaceChildren(...(runs.length > 0 ? runs.map(row)
     : [el("div", { className: "empty" }, state.runFilter ? `No runs are ${LABEL[state.runFilter].toLowerCase()}.` : "Nothing queued yet. Pick tickets on the Pick tab.")]));
-  if (document.activeElement !== $("max")) $("max").value = state.queue.max;
+  $("max-note").textContent = workersLabel(state.queue.max);
   const paused = state.queue.paused !== false;
   $("pool-state").textContent = paused ? "Workers paused: nothing queued will start" : "Workers started: queued tickets start as slots free up";
   $("pool-state").className = `state ${paused ? "paused" : "started"}`;
@@ -362,8 +400,63 @@ function renderBoard() {
 }
 
 function renderFooter() {
+  $("runs-with").textContent = runsWithLabel(state.choice);
   $("queue").textContent = queueLabel(state.selected.size);
   $("queue").disabled = state.selected.size === 0;
+}
+
+// What is saved now, read again into the page and the controls, because another page may have changed it since.
+async function readChoice() {
+  const config = await call("GET", "/api/config").catch(() => null);
+  if (config) state.choice = config.choice;
+  $("model").value = state.choice.model;
+  $("effort").value = state.choice.effort;
+  renderFooter();
+}
+async function readMax() {
+  const queue = await call("GET", "/api/queue").catch(() => null);
+  if (queue) state.queue = queue;
+  $("max").value = String(state.queue.max);
+  render();
+}
+
+// The settings dialog, with each control showing what is saved now.
+async function openSettings() {
+  await Promise.all([readChoice(), readMax()]);
+  $("settings-status").textContent = "";
+  $("settings").showModal();
+}
+
+// The dialog's own line, where its outcome is seen: the page's error line sits behind the dialog.
+function showSaved() {
+  $("settings-status").textContent = "Saved";
+  $("settings-status").className = "hint";
+}
+function showRefused(err) {
+  $("settings-status").textContent = String(err.message || err);
+  $("settings-status").className = "hint failed";
+}
+
+// Each setting is saved as it changes, and only what changed is sent. One the board refuses puts the controls back to what is saved.
+function saveChoice(part) {
+  call("POST", "/api/choice", { [part]: $(part).value }).then(({ choice }) => {
+    state.choice = choice;
+    showSaved();
+    renderFooter();
+  }, (err) => {
+    showRefused(err);
+    return readChoice();
+  }).catch(report);
+}
+function saveMax() {
+  call("POST", "/api/max", { max: Number($("max").value) }).then((q) => {
+    state.queue = q;
+    showSaved();
+    render();
+  }, (err) => {
+    showRefused(err);
+    return readMax();
+  }).catch(report);
 }
 
 function render() { renderPick(); renderBoard(); renderFooter(); }
@@ -371,8 +464,9 @@ function render() { renderPick(); renderBoard(); renderFooter(); }
 function setup(config) {
   state.terminal = config.terminal ?? null;
   state.plan = config.plan ? new RegExp(config.plan) : null;
-  $("model").replaceChildren(...config.models.map((m) => el("option", { value: m, textContent: m, selected: m === config.choice.model })));
-  $("effort").replaceChildren(...config.efforts.map((x) => el("option", { value: x, textContent: x, selected: x === config.choice.effort })));
+  state.choice = config.choice;
+  $("model").replaceChildren(...config.models.map((m) => el("option", { value: m, textContent: m })));
+  $("effort").replaceChildren(...config.efforts.map((x) => el("option", { value: x, textContent: x })));
 }
 
 for (const tab of document.querySelectorAll(".tab")) {
@@ -399,14 +493,17 @@ $("all").addEventListener("change", () => {
 });
 $("queue").addEventListener("click", async () => {
   try {
-    state.queue = await call("POST", "/api/queue", { keys: [...state.selected], model: $("model").value, effort: $("effort").value });
+    state.queue = await call("POST", "/api/queue", { keys: [...state.selected], model: state.choice.model, effort: state.choice.effort });
     state.selected.clear();
     report(null);
     render();
   } catch (err) { report(err); }
 });
 $("toggle-pause").addEventListener("click", () => call("POST", "/api/paused", { paused: state.queue.paused === false }).then((q) => { state.queue = q; render(); }, report));
-$("save-max").addEventListener("click", () => call("POST", "/api/max", { max: Number($("max").value) }).then((q) => { state.queue = q; render(); }, report));
+for (const id of ["open-settings", "change-choice", "change-max"]) $(id).addEventListener("click", () => { openSettings().catch(report); });
+$("model").addEventListener("change", () => saveChoice("model"));
+$("effort").addEventListener("change", () => saveChoice("effort"));
+$("max").addEventListener("change", saveMax);
 
 try {
   setup(await call("GET", "/api/config"));

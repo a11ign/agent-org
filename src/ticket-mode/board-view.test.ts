@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, isParked, parentKeys, parentTick, ticketCount, projectCounts, queueLabel, recall, remember, runActions, runStatus, runsShown, selectable, statusCounts, terminalLink, toggled, waitsOn,
+  HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, isParked, parentKeys, parentTick, ticketCount, projectCounts, queueLabel, recall, remember, runsWithLabel, workersLabel, runActions, runStatus, runsShown, selectable, statusCounts, terminalLink, toggled, waitsOn,
   hasPlan, missingPlan, planChoiceOf, planCounts, visibleTickets, workItems, type ViewEntry, type ViewTicket,
 } from "./board-view.ts";
 
@@ -274,6 +274,9 @@ test("runs are listed most recently active first, and a filter keeps only its st
 });
 
 test("the Queue button says what it will do", () => {
+  assert.equal(runsWithLabel({ model: "sonnet", effort: "max" }), "Runs on sonnet at max effort");
+  assert.equal(workersLabel(1), "Up to 1 worker at once");
+  assert.equal(workersLabel(3), "Up to 3 workers at once");
   assert.equal(queueLabel(0), "Select tickets to queue");
   assert.equal(queueLabel(1), "Queue 1 ticket");
   assert.equal(queueLabel(3), "Queue 3 tickets");

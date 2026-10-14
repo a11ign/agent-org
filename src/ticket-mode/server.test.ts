@@ -64,7 +64,7 @@ test("the token is taken from the cookie or the header, and a wrong or missing o
   assert.equal(carriesToken({ headers: {} }, TOKEN), false);
 });
 
-test("queueing takes the tickets you selected with the model and effort chosen, no repository until the worker chooses one, remembers the choice, and wakes the pool", async () => {
+test("queueing takes the tickets you selected with the model and effort sent, no repository until the worker chooses one, and wakes the pool", async () => {
   const b = board();
   await b.api("GET", "/api/tickets", {});
   const [status, queue] = await b.api("POST", "/api/queue", { keys: ["NBF-2", "VE-9"], model: "opus", effort: "max" }) as [number, any];
@@ -75,6 +75,27 @@ test("queueing takes the tickets you selected with the model and effort chosen, 
   ], "VE-9 was not in the assigned list, so it was read by key");
   assert.ok(existsSync(join(b.dir, "queue.json")));
   assert.deepEqual(b.ticks, ["tick"]);
+  const [, config] = await b.api("GET", "/api/config", {}) as [number, any];
+  assert.deepEqual(config.choice, { model: "opus", effort: "high" }, "the settings decide new runs; queueing does not change them");
+});
+
+test("the settings save the part of the choice they name, keep the other part, refuse an unknown or empty change, and wake nothing", async () => {
+  const b = board();
+  const [, model] = await b.api("POST", "/api/choice", { model: "sonnet" }) as [number, any];
+  assert.deepEqual(model, { choice: { model: "sonnet", effort: "high" } });
+  const [, effort] = await b.api("POST", "/api/choice", { effort: "max" }) as [number, any];
+  assert.deepEqual(effort, { choice: { model: "sonnet", effort: "max" } }, "a change to the effort keeps the model saved before it");
+  await assert.rejects(b.api("POST", "/api/choice", { model: "gpt" }), /model must be one of/);
+  await assert.rejects(b.api("POST", "/api/choice", { effort: "huge" }), /effort must be one of/);
+  await assert.rejects(b.api("POST", "/api/choice", {}), /name a model or an effort/);
+  const [, config] = await b.api("GET", "/api/config", {}) as [number, any];
+  assert.deepEqual(config.choice, { model: "sonnet", effort: "max" });
+  assert.deepEqual(b.ticks, [], "a setting for new runs wakes nothing");
+});
+
+test("a saved model or effort the board no longer offers falls back, so queueing with the settings is never refused", async () => {
+  const b = board();
+  writeFileSync(join(b.dir, "choice.json"), JSON.stringify({ model: "gpt-9", effort: "max" }));
   const [, config] = await b.api("GET", "/api/config", {}) as [number, any];
   assert.deepEqual(config.choice, { model: "opus", effort: "max" });
 });
