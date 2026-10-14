@@ -72,7 +72,14 @@ The trade-offs, which are why this is an option and not the default:
 ## Ticket mode: a local board that turns the tickets you pick into draft pull requests
 
 The org (the gate, rows, the board, the reviewer) decides its own work. Ticket mode does not: you pick tickets, and a pool of Claude workers
-takes them one each. `agent-org ticket:serve` starts a board on `127.0.0.1` and prints its URL, which carries a one-time token.
+takes them one each. `agent-org ticket:serve` starts a board on `127.0.0.1` and prints its URL, which carries no secret.
+
+- **Pair a browser once.** A browser the board has not seen shows a pairing page. Run `agent-org ticket:pair` and type the code it prints:
+  a code works once, within 10 minutes, and five wrong codes spend it. The browser then holds a session of its own, as an HttpOnly cookie,
+  for a year and across restarts. The board keeps only the sessions' hashes, in `<stateDir>/tickets/browsers.json`, and deleting that file
+  unpairs every browser. The board refuses to start on a file that does not hold sessions, rather than unpair every browser silently. A script on the machine sends the board's key, from `<stateDir>/tickets/board.key`, as the `x-ticket-token`
+  header. Only the key makes a pairing code. The key never goes to a browser, because a browser sends its cookies for `127.0.0.1` to every port there. The board makes both
+  files with mode 600, and refuses a key file another user owns or can read.
 
 - **Pick.** Your assigned Linear tickets that are not done or canceled, grouped by status the way Linear shows them, with Select All per
   group and for the page. A ticket sits under its parent, whatever its own status. A parent folds the tickets under it away, and starts folded.

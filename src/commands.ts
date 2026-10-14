@@ -51,6 +51,7 @@ export const COMMANDS = {
   "stash:whose": "stash-whose.ts",
   "survey": "survey.ts",
   "ticket:hook": "ticket-mode/hook.ts",
+  "ticket:pair": "ticket-mode/pair-command.ts",
   "ticket:serve": "ticket-mode/server.ts",
   "ticket:worktree": "ticket-mode/worktree-command.ts",
   "trace": "trace/trace.ts",

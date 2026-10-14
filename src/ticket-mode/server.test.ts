@@ -7,11 +7,11 @@ import { pathToFileURL } from "node:url";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { parseTicketSettings } from "./settings.ts";
-import { boardViewScript, carriesToken, createBoard, refusal } from "./server.ts";
+import { boardViewScript, createBoard, pairedBy, refusal } from "./server.ts";
 import type { Ticket, TicketSource } from "./source.ts";
 
 const ticket = (key: string, title = key) => ({ key, title, description: "", url: "", branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
-const TOKEN = "a".repeat(48);
+const KEY = "a".repeat(48);
 
 function board(port = 4747, ticketSettings: Record<string, unknown> = {}) {
   const dir = tmpDir("ticket-server-");
@@ -22,7 +22,7 @@ function board(port = 4747, ticketSettings: Record<string, unknown> = {}) {
     tick: async () => { ticks.push("tick"); }, stop: (key: string) => { ticks.push(`stop ${key}`); }, close: (key: string) => { ticks.push(`close ${key}`); },
     reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {},
   };
-  const made = createBoard({ settings, source, token: TOKEN, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7 });
+  const made = createBoard({ settings, source, key: KEY, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7 });
   return { ...made, ticks, dir };
 }
 
@@ -41,7 +41,7 @@ test("/api/parents reads the parents of the person's tickets that are not the pe
     download: async () => [],
   };
   const pool = { tick: async () => {}, stop: () => {}, close: () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {} };
-  const { api } = createBoard({ settings, source, token: TOKEN, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7 });
+  const { api } = createBoard({ settings, source, key: KEY, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7 });
   await api("GET", "/api/tickets", {});
   const [status, parents] = await api("GET", "/api/parents", {}) as [number, Ticket[]];
   assert.equal(status, 200);
@@ -57,11 +57,14 @@ test("a request to another host is refused, and so is a write from another origi
   assert.equal(refusal({ headers: { host: "127.0.0.1:4747", origin: "http://127.0.0.1:4747" }, method: "POST" }, 4747), null);
 });
 
-test("the token is taken from the cookie or the header, and a wrong or missing one is not", () => {
-  assert.equal(carriesToken({ headers: { cookie: `x=1; ticket_token=${TOKEN}` } }, TOKEN), true);
-  assert.equal(carriesToken({ headers: { "x-ticket-token": TOKEN } }, TOKEN), true);
-  assert.equal(carriesToken({ headers: { cookie: "ticket_token=wrong" } }, TOKEN), false);
-  assert.equal(carriesToken({ headers: {} }, TOKEN), false);
+test("a request is paired by the board's key in its header, or by a session the board opened in its cookie, and never by the key as a cookie", () => {
+  const sessions = { holds: (value: string) => value === "s".repeat(48) };
+  assert.equal(pairedBy({ headers: { "x-ticket-token": KEY } }, KEY, sessions), "key");
+  assert.equal(pairedBy({ headers: { cookie: `x=1; ticket_session=${"s".repeat(48)}` } }, KEY, sessions), "browser");
+  assert.equal(pairedBy({ headers: { cookie: `ticket_session=${KEY}` } }, KEY, sessions), null, "the key never pairs a browser");
+  assert.equal(pairedBy({ headers: { "x-ticket-token": "wrong", cookie: `ticket_session=${"s".repeat(48)}` } }, KEY, sessions), null, "a header, once sent, decides");
+  assert.equal(pairedBy({ headers: {} }, KEY, sessions), null);
+  assert.equal(pairedBy({ headers: { "x-ticket-token": `${"a".repeat(47)}é` } }, KEY, sessions), null, "a header of the key's length but more bytes is refused, not thrown");
 });
 
 test("queueing takes the tickets you selected with the model and effort sent, no repository until the worker chooses one, and wakes the pool", async () => {
@@ -167,7 +170,8 @@ test("the page is given the pattern a ticket's plan is named by, or null when th
   assert.equal(named.plan, "-plan-[^/]*\\.md$");
 });
 
-test("over HTTP: no token is 401, the printed URL sets the cookie, and the cookie then reaches the API", async () => {
+/** A board listening on a free port on 127.0.0.1, for `run`, then closed. */
+async function overHttp(run: (base: string) => Promise<void>) {
   const probe: Server = createServer();
   await new Promise<void>((done) => probe.listen(0, "127.0.0.1", done));
   const port = (probe.address() as { port: number }).port;
@@ -176,17 +180,90 @@ test("over HTTP: no token is 401, the printed URL sets the cookie, and the cooki
   const server = createServer((req, res) => { void b.handle(req, res); });
   await new Promise<void>((done) => server.listen(port, "127.0.0.1", done));
   try {
-    const base = `http://127.0.0.1:${port}`;
+    await run(`http://127.0.0.1:${port}`);
+  } finally {
+    await new Promise<void>((done) => server.close(() => done()));
+  }
+}
+const pairWith = (base: string, code: string) => fetch(`${base}/pair`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code }) });
+
+test("over HTTP: a browser that has not paired gets the pairing page and no API, and a code from ticket:pair gets it a cookie that lasts a year", async () => {
+  await overHttp(async (base) => {
     assert.equal((await fetch(`${base}/api/queue`)).status, 401);
-    const entry = await fetch(`${base}/?token=${TOKEN}`, { redirect: "manual" });
-    assert.equal(entry.status, 303);
-    const cookie = String(entry.headers.get("set-cookie"));
-    assert.match(cookie, /HttpOnly; SameSite=Strict/);
+    const unpaired = await fetch(`${base}/`);
+    assert.equal(unpaired.status, 200);
+    assert.match(await unpaired.text(), /<title>Pair this browser<\/title>/);
+    assert.equal((await fetch(`${base}/?token=${KEY}`, { redirect: "manual" })).headers.get("set-cookie"), null, "the key in a URL no longer pairs anything");
+    const { code } = await (await fetch(`${base}/api/pair-code`, { method: "POST", headers: { "x-ticket-token": KEY } })).json() as { code: string };
+    const paired = await pairWith(base, code);
+    assert.equal(paired.status, 200);
+    const cookie = String(paired.headers.get("set-cookie"));
+    assert.match(cookie, /^ticket_session=[0-9a-f]{48}; HttpOnly; SameSite=Strict; Path=\/; Max-Age=31536000$/);
+    assert.equal(cookie.includes(KEY), false, "the browser gets a session of its own, not the board's key");
     const queue = await fetch(`${base}/api/queue`, { headers: { cookie: cookie.split(";")[0] } });
     assert.equal(queue.status, 200);
     const page = await fetch(`${base}/`, { headers: { cookie: cookie.split(";")[0] } });
     assert.match(await page.text(), /<title>Ticket queue<\/title>/);
-  } finally {
-    await new Promise<void>((done) => server.close(() => done()));
-  }
+    assert.equal((await pairWith(base, code)).status, 401, "a code pairs one browser");
+  });
+});
+
+test("over HTTP: a wrong code is refused with what to do", async () => {
+  await overHttp(async (base) => {
+    const wrong = await pairWith(base, "ABCD-EFGH");
+    assert.equal(wrong.status, 401);
+    assert.equal(wrong.headers.get("set-cookie"), null);
+    assert.match((await wrong.json() as { error: string }).error, /wrong, used or out of date\. Run agent-org ticket:pair/);
+  });
+});
+
+test("over HTTP: a pairing request that is too big, or not a JSON object, is a 400 that spends none of the code's tries, and the board keeps answering", async () => {
+  await overHttp(async (base) => {
+    const { code } = await (await fetch(`${base}/api/pair-code`, { method: "POST", headers: { "x-ticket-token": KEY } })).json() as { code: string };
+    const bad = ["null", "[]", "7", "{", JSON.stringify({ code, pad: "x".repeat(2048) })];
+    for (const body of bad) {
+      const refused = await fetch(`${base}/pair`, { method: "POST", body });
+      assert.equal(refused.status, 400, body.slice(0, 20));
+      assert.equal(refused.headers.get("set-cookie"), null);
+    }
+    assert.equal((await pairWith(base, code)).status, 200, "five bad requests left the code live");
+  });
+});
+
+test("over HTTP: a key header of the key's length in more bytes is refused, and the board keeps answering", async () => {
+  await overHttp(async (base) => {
+    assert.equal((await fetch(`${base}/api/queue`, { headers: { "x-ticket-token": `${"a".repeat(47)}\u00e9` } })).status, 401);
+    assert.equal((await fetch(`${base}/api/queue`, { headers: { "x-ticket-token": KEY } })).status, 200);
+  });
+});
+
+
+test("over HTTP: a body that is not JSON is a 400, and the board keeps answering", async () => {
+  await overHttp(async (base) => {
+    const bad = await fetch(`${base}/api/paused`, { method: "POST", headers: { "x-ticket-token": KEY }, body: "{" });
+    assert.equal(bad.status, 400);
+    assert.equal((await fetch(`${base}/api/queue`, { headers: { "x-ticket-token": KEY } })).status, 200);
+  });
+});
+
+test("over HTTP: a request body over 64 KB is refused, even from what has paired", async () => {
+  await overHttp(async (base) => {
+    const big = await fetch(`${base}/api/queue`, { method: "POST", headers: { "x-ticket-token": KEY }, body: JSON.stringify({ keys: ["x".repeat(70_000)] }) });
+    assert.equal(big.status, 400);
+    assert.match((await big.json() as { error: string }).error, /over 65536 bytes/);
+  });
+});
+
+test("only a request that carries the key can make a pairing code: not one with no credential, and not a paired browser", async () => {
+  await overHttp(async (base) => {
+    const refused = await fetch(`${base}/api/pair-code`, { method: "POST" });
+    assert.equal(refused.status, 401);
+    assert.match((await refused.json() as { error: string }).error, /not paired: open http:\/\/127\.0\.0\.1:\d+\/ and type the code agent-org ticket:pair prints/);
+    const { code } = await (await fetch(`${base}/api/pair-code`, { method: "POST", headers: { "x-ticket-token": KEY } })).json() as { code: string };
+    const cookie = String((await pairWith(base, code)).headers.get("set-cookie")).split(";")[0];
+    assert.equal((await fetch(`${base}/api/queue`, { headers: { cookie } })).status, 200, "the browser is paired");
+    const browser = await fetch(`${base}/api/pair-code`, { method: "POST", headers: { cookie } });
+    assert.equal(browser.status, 403);
+    assert.match((await browser.json() as { error: string }).error, /made with the board's key: run agent-org ticket:pair/);
+  });
 });
