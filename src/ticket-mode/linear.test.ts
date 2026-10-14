@@ -189,7 +189,9 @@ const planning = (type: string, ...uploads: { url: string; title: string }[]) =>
 }] } } });
 const signed = (n: number) => ({ data: { fileUpload: { success: true, uploadFile: { uploadUrl: `https://storage.example/upload-${n}?sig=1`, assetUrl: `https://uploads.linear.app/org/asset-${n}`,
   headers: [{ key: "x-goog-content-length-range", value: "1,100" }] } } } });
-const done = { data: { ok: { success: true } } };
+/** Linear's answer to a mutation it carried out, and to one it did not. */
+const done = { data: { issueUpdate: { success: true }, attachmentCreate: { success: true } } };
+const notDone = { data: { issueUpdate: { success: false }, attachmentCreate: { success: false } } };
 const planFiles = () => {
   const dir = tmpDir("linear-plan-");
   const plan = join(dir, "NBF-1-0001-plan-fit-to-view.md");
@@ -292,4 +294,15 @@ test("moveToWorkingState() keeps the ticket's state when its team has no state o
 test("moveToWorkingState() says so when Linear has no ticket by that key", async () => {
   const { fetch } = linear([{ data: { issues: { nodes: [] } } }]);
   await assert.rejects(linearSource({ key: "k", fetch }).moveToWorkingState!("NBF-404", "In Progress"), /Linear has no ticket NBF-404/);
+});
+
+test("a state move Linear answers with success false is a refusal, not a move", async () => {
+  const { fetch } = linear([working("unstarted", "Planned"), notDone]);
+  await assert.rejects(linearSource({ key: "k", fetch }).moveToWorkingState!("NBF-1", "In Progress"), /Linear did not move NBF-1 to In Progress/);
+});
+
+test("an attachment Linear answers with success false is a refusal, not an attached plan", async () => {
+  const [plan] = planFiles();
+  const { fetch } = linear([planning("backlog"), signed(1), notDone], { "https://storage.example/upload-1?sig=1": { status: 200 } });
+  await assert.rejects(linearSource({ key: "k", fetch }).attachPlan!("NBF-1", [plan], "Planned"), /Linear did not attach NBF-1-0001-plan-fit-to-view\.md/);
 });

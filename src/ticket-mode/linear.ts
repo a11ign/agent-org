@@ -161,7 +161,10 @@ export function linearSource({ key, fetch: request = fetch }: { key: string; fet
     if (!from.has(found.state.type)) return null;
     const target = found.team.states.nodes.find(({ name }) => name === state);
     if (target === undefined) return `${identifier}'s team has no state named ${state}, so it stays in ${found.state.name}`;
-    await query("mutation($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }", { id: found.id, stateId: target.id });
+    const { issueUpdate }: { issueUpdate: { success: boolean } } = await query(
+      "mutation($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }", { id: found.id, stateId: target.id });
+    // Linear can answer a mutation it did not carry out with success false and no error, so the answer is read, not assumed.
+    if (!issueUpdate.success) throw new Error(`Linear did not move ${identifier} to ${state}`);
     return null;
   }
 
@@ -177,8 +180,10 @@ export function linearSource({ key, fetch: request = fetch }: { key: string; fet
     const put = await request(uploadUrl, { method: "PUT", body, headers: { "Content-Type": "text/markdown", "Cache-Control": "public, max-age=31536000",
       ...Object.fromEntries(headers.map(({ key: name, value }) => [name, value])) } });
     if (!put.ok) throw new Error(`the upload of ${title} was refused (${put.status})`);
-    await query("mutation($issueId: String!, $url: String!, $title: String!) { attachmentCreate(input: { issueId: $issueId, url: $url, title: $title }) { success } }",
+    const { attachmentCreate }: { attachmentCreate: { success: boolean } } = await query(
+      "mutation($issueId: String!, $url: String!, $title: String!) { attachmentCreate(input: { issueId: $issueId, url: $url, title: $title }) { success } }",
       { issueId, url: assetUrl, title });
+    if (!attachmentCreate.success) throw new Error(`Linear did not attach ${title}`);
   }
 
   /** The uploads attached to a ticket. */
