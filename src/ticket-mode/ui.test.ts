@@ -318,24 +318,35 @@ async function openFrom(p: Page, button: string) {
   p.$(button).fire("click");
   await settle();
 }
-/** Change one control in Settings, and let its save come back. */
+/** Change one control, in Settings or the Pick footer, and let what it does come back. */
 async function change(p: Page, id: string, value: string) {
   p.$(id).value = value;
   p.$(id).fire("change");
   await settle();
 }
 
+/** The model and effort the Pick footer shows for the tickets queued next. */
+const footerChoice = (p: Page) => [p.$("batch-model").value, p.$("batch-effort").value];
+/** Select every ticket shown, press Queue, and return what was sent. */
+async function queueAll(p: Page) {
+  p.$("all").checked = true;
+  p.$("all").fire("change");
+  p.$("queue").fire("click");
+  await settle();
+  return p.posts.filter((x) => x.path === "/api/queue").at(-1)?.body;
+}
+
 test("the Pick footer says what a queued ticket runs with, Settings saves each part on its own, and Queue sends what is saved", async () => {
   const p = await page(new Map(), { config: SETTINGS });
-  assert.equal(p.$("runs-with").textContent, "Runs on opus at high effort");
+  assert.deepEqual(footerChoice(p), ["opus", "high"]);
   await openFrom(p, "change-choice");
   assert.equal(p.$("settings").open, true, "Change opens the settings");
   await change(p, "model", "sonnet");
   assert.deepEqual(p.posts.at(-1), { path: "/api/choice", body: { model: "sonnet" } });
-  assert.equal(p.$("runs-with").textContent, "Runs on sonnet at high effort");
+  assert.deepEqual(footerChoice(p), ["sonnet", "high"]);
   await change(p, "effort", "max");
   assert.deepEqual(p.posts.at(-1), { path: "/api/choice", body: { effort: "max" } });
-  assert.equal(p.$("runs-with").textContent, "Runs on sonnet at max effort");
+  assert.deepEqual(footerChoice(p), ["sonnet", "max"]);
   assert.equal(p.$("settings-status").textContent, "Saved");
   p.$("all").checked = true;
   p.$("all").fire("change");
@@ -350,10 +361,10 @@ test("Settings shows what another page saved, and changing one part keeps the ot
   p.saveElsewhere({ model: "sonnet" });
   await openFrom(p, "open-settings");
   assert.equal(p.$("model").value, "sonnet");
-  assert.equal(p.$("runs-with").textContent, "Runs on sonnet at high effort");
+  assert.deepEqual(footerChoice(p), ["sonnet", "high"]);
   await change(p, "effort", "max");
   assert.deepEqual(p.posts.at(-1)?.body, { effort: "max" });
-  assert.equal(p.$("runs-with").textContent, "Runs on sonnet at max effort");
+  assert.deepEqual(footerChoice(p), ["sonnet", "max"]);
 });
 
 test("workers at once is set in Settings, opened from the Board's Change, and the Board says how many run at once", async () => {
@@ -386,7 +397,7 @@ test("a model the board refuses goes back to what is saved, and the footer keeps
   await change(p, "model", "sonnet");
   assert.equal(p.$("model").value, "opus");
   assert.equal(p.$("settings-status").textContent, "/api/choice refused");
-  assert.equal(p.$("runs-with").textContent, "Runs on opus at high effort");
+  assert.deepEqual(footerChoice(p), ["opus", "high"]);
 });
 
 test("a refused change reads what is saved again, so what another page saved since Settings opened is what shows and what Queue sends", async () => {
@@ -397,7 +408,7 @@ test("a refused change reads what is saved again, so what another page saved sin
   await settle();
   assert.equal(p.$("settings-status").textContent, "/api/choice refused");
   assert.deepEqual([p.$("model").value, p.$("effort").value], ["sonnet", "high"]);
-  assert.equal(p.$("runs-with").textContent, "Runs on sonnet at high effort");
+  assert.deepEqual(footerChoice(p), ["sonnet", "high"]);
   p.$("all").checked = true;
   p.$("all").fire("change");
   p.$("queue").fire("click");
@@ -414,6 +425,77 @@ test("a refused number of workers reads what is saved again, so what another pag
   await settle();
   assert.equal(p.$("max").value, "5");
   assert.equal(p.$("max-note").textContent, "Up to 5 workers at once");
+});
+
+test("a batch runs on its own model and effort: Queue sends them, the default is not saved, and the next batch starts from the default", async () => {
+  const p = await page(new Map(), { config: SETTINGS });
+  assert.equal(p.$("batch-note").textContent, "The default");
+  assert.equal(p.$("batch-reset").hidden, true);
+  await change(p, "batch-model", "sonnet");
+  assert.deepEqual(footerChoice(p), ["sonnet", "high"]);
+  assert.equal(p.$("batch-note").textContent, "These tickets only. The default is opus at high effort");
+  assert.equal(p.$("batch-reset").hidden, false);
+  const queued = await queueAll(p);
+  assert.deepEqual([queued?.model, queued?.effort], ["sonnet", "high"]);
+  assert.equal(p.posts.some((x) => x.path === "/api/choice"), false, "the default is not saved");
+  assert.deepEqual(footerChoice(p), ["opus", "high"], "the next batch starts from the default");
+  assert.equal(p.$("batch-note").textContent, "The default");
+  await openFrom(p, "open-settings");
+  assert.deepEqual([p.$("model").value, p.$("effort").value], ["opus", "high"]);
+});
+
+test("Use the default puts a batch back on the default, and so does choosing the default's own values", async () => {
+  const p = await page(new Map(), { config: SETTINGS });
+  await change(p, "batch-effort", "max");
+  p.$("batch-reset").fire("click");
+  assert.deepEqual(footerChoice(p), ["opus", "high"]);
+  assert.equal(p.$("batch-note").textContent, "The default");
+  await change(p, "batch-model", "sonnet");
+  await change(p, "batch-model", "opus");
+  assert.equal(p.$("batch-note").textContent, "The default");
+  assert.equal(p.$("batch-reset").hidden, true);
+});
+
+test("a default that catches up to a batch's choice makes the batch the default again", async () => {
+  const p = await page(new Map(), { config: SETTINGS });
+  await change(p, "batch-effort", "max");
+  await openFrom(p, "change-choice");
+  await change(p, "effort", "max");
+  assert.equal(p.$("batch-note").textContent, "The default");
+  assert.equal(p.$("batch-reset").hidden, true);
+});
+
+test("a batch keeps the part it chose when the default changes, and follows the default in the part it did not", async () => {
+  const p = await page(new Map(), { config: SETTINGS });
+  await change(p, "batch-model", "sonnet");
+  await openFrom(p, "change-choice");
+  await change(p, "effort", "max");
+  assert.deepEqual(footerChoice(p), ["sonnet", "max"]);
+  assert.equal(p.$("batch-note").textContent, "These tickets only. The default is opus at max effort");
+  const queued = await queueAll(p);
+  assert.deepEqual([queued?.model, queued?.effort], ["sonnet", "max"]);
+});
+
+test("a batch chosen while the last one is being queued is kept for the next, and the last one is sent as it was", async () => {
+  const p = await page(new Map(), { config: SETTINGS });
+  p.$("all").checked = true;
+  p.$("all").fire("change");
+  p.$("queue").fire("click");
+  p.$("batch-model").value = "sonnet";
+  p.$("batch-model").fire("change");
+  for (let i = 0; i < 3; i++) await settle();
+  assert.equal(p.posts.find((x) => x.path === "/api/queue")?.body.model, "opus");
+  assert.deepEqual(footerChoice(p), ["sonnet", "high"]);
+});
+
+test("a queue the board refuses keeps the batch's own model and effort, and queueing again sends them again", async () => {
+  const p = await page(new Map(), { config: SETTINGS, refused: ["/api/queue"] });
+  await change(p, "batch-effort", "max");
+  const first = await queueAll(p);
+  assert.deepEqual(footerChoice(p), ["opus", "max"]);
+  assert.equal(p.$("batch-reset").hidden, false);
+  const again = await queueAll(p);
+  assert.deepEqual([first?.effort, again?.effort], ["max", "max"]);
 });
 
 const entry = (key: string, fields: Record<string, unknown>) => ({ ticket: { key, title: `title ${key}`, url: "" }, repos: [], model: "opus", effort: "high", queuedAt: 1, ...fields });

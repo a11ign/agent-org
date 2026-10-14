@@ -297,8 +297,26 @@ export function terminalLink(template: string | null, entry: ViewEntry): string 
   return template.replace(/\{(workspace|pane|key)\}/g, (_, name: string) => encodeURIComponent(values[name]));
 }
 
-/** What the Pick footer says a queued ticket runs with. */
-export const runsWithLabel = (choice: Readonly<{ model: string; effort: string }>): string => `Runs on ${choice.model} at ${choice.effort} effort`;
+type Choice = Readonly<{ model: string; effort: string }>;
+
+/** The model and effort the tickets queued next run with: the default, with the parts chosen for this batch in its place. */
+export const batchChoice = (defaults: Choice, batch: Partial<Choice>): Choice => ({ ...defaults, ...batch });
+
+/**
+ * The parts of `chosen` that differ from the default, which is all a batch keeps. A part chosen equal to the default is dropped, so the batch
+ * follows the default there when the default changes.
+ */
+export const batchOverride = (defaults: Choice, chosen: Choice): Partial<Choice> => ({
+  ...(chosen.model === defaults.model ? {} : { model: chosen.model }),
+  ...(chosen.effort === defaults.effort ? {} : { effort: chosen.effort }),
+});
+
+/** Whether a batch runs on the default, having chosen nothing of its own. */
+export const isDefaultBatch = (batch: Partial<Choice>): boolean => Object.keys(batch).length === 0;
+
+/** What the Pick footer says beside the batch's model and effort. */
+export const batchNote = (defaults: Choice, batch: Partial<Choice>): string =>
+  isDefaultBatch(batch) ? "The default" : `These tickets only. The default is ${defaults.model} at ${defaults.effort} effort`;
 
 /** What the Board says about how many workers run at once. */
 export const workersLabel = (max: number): string => `Up to ${max} worker${max === 1 ? "" : "s"} at once`;

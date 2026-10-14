@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, isParked, parentKeys, parentTick, ticketCount, projectCounts, queueLabel, recall, remember, runsWithLabel, workersLabel, runActions, runStatus, runsShown, selectable, statusCounts, terminalLink, toggled, waitsOn,
+  HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, isParked, parentKeys, parentTick, ticketCount, projectCounts, queueLabel, recall, remember, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, selectable, statusCounts, terminalLink, toggled, waitsOn,
   hasPlan, missingPlan, planChoiceOf, planCounts, visibleTickets, workItems, type ViewEntry, type ViewTicket,
 } from "./board-view.ts";
 
@@ -273,8 +273,24 @@ test("runs are listed most recently active first, and a filter keeps only its st
   assert.deepEqual(runsShown(entries, "queued").map((e) => e.ticket.key), ["OLD"]);
 });
 
+test("a batch runs on the default with the parts chosen for it in place, and keeps only the parts that differ from the default", () => {
+  const defaults = { model: "sonnet", effort: "high" };
+  assert.deepEqual(batchChoice(defaults, {}), defaults);
+  assert.deepEqual(batchChoice(defaults, { model: "opus" }), { model: "opus", effort: "high" });
+  assert.deepEqual(batchOverride(defaults, { model: "opus", effort: "high" }), { model: "opus" });
+  assert.deepEqual(batchOverride(defaults, { model: "sonnet", effort: "high" }), {}, "a batch chosen back to the default is the default again");
+  assert.deepEqual(batchOverride({ model: "opus", effort: "high" }, { model: "opus", effort: "max" }), { effort: "max" }, "a default that catches up drops that part");
+});
+
+test("the Pick footer says whether a batch runs on the default, and names the default when it does not", () => {
+  const defaults = { model: "sonnet", effort: "high" };
+  assert.equal(isDefaultBatch({}), true);
+  assert.equal(isDefaultBatch({ effort: "max" }), false);
+  assert.equal(batchNote(defaults, {}), "The default");
+  assert.equal(batchNote(defaults, { effort: "max" }), "These tickets only. The default is sonnet at high effort");
+});
+
 test("the Queue button says what it will do", () => {
-  assert.equal(runsWithLabel({ model: "sonnet", effort: "max" }), "Runs on sonnet at max effort");
   assert.equal(workersLabel(1), "Up to 1 worker at once");
   assert.equal(workersLabel(3), "Up to 3 workers at once");
   assert.equal(queueLabel(0), "Select tickets to queue");

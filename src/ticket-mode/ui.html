@@ -47,6 +47,9 @@
   /* Above the sticky status headers (z-index 1), which otherwise paint over it, and its buttons, as they scroll under it. */
   footer { position: fixed; bottom: 0; left: 0; right: 0; z-index: 2; background: var(--panel); border-top: 1px solid var(--line); padding: 10px 20px; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
   footer[hidden] { display: none; }
+  footer .batch { display: flex; align-items: center; gap: 6px; }
+  /* On a narrow screen the footer wraps taller than main's bottom padding, so it stays in the flow, stuck to the bottom, and covers nothing. */
+  @media (max-width: 640px) { footer { position: sticky; } main { padding-bottom: 16px; } }
   select, button.primary, button.small, input[type="number"] { font: inherit; padding: 5px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--text); }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; cursor: pointer; }
   button.primary:disabled { opacity: .5; cursor: default; }
@@ -77,7 +80,7 @@
   @media (max-width: 760px) { .runs { grid-template-columns: minmax(0, 1fr); } .filters { flex-direction: row; flex-wrap: wrap; } .run { grid-template-columns: 18px minmax(0, 1fr); } .run .side { grid-column: 2; align-items: flex-start; } }
   a { color: var(--accent); text-decoration: none; }
   a:hover { text-decoration: underline; }
-  .bar { display: flex; gap: 12px; align-items: center; margin-bottom: 8px; }
+  .bar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
   .notice { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--warn); border-radius: 6px; padding: 8px 12px; margin-bottom: 8px; }
   .state { font-weight: 600; }
   .state.paused { color: var(--warn); }
@@ -115,7 +118,7 @@
     <h2 id="settings-title">Settings</h2>
     <fieldset>
       <legend>New runs</legend>
-      <p class="hint">Tickets you queue from now on run with these. A run already on the queue keeps its own.</p>
+      <p class="hint">The default for tickets you queue. The Pick footer can choose otherwise for one batch. A run already on the queue keeps its own.</p>
       <label>Model <select id="model"></select></label>
       <label>Effort <select id="effort"></select></label>
     </fieldset>
@@ -157,8 +160,11 @@
   </section>
 </main>
 <footer id="queue-bar">
-  <span id="runs-with" class="hint"></span>
-  <button class="small" id="change-choice" type="button">Change</button>
+  <label class="batch">Run on <select id="batch-model" aria-label="Model for the tickets you queue next"></select></label>
+  <label class="batch">at <select id="batch-effort" aria-label="Effort for the tickets you queue next"></select> effort</label>
+  <span id="batch-note" class="hint"></span>
+  <button class="small" id="batch-reset" type="button" hidden>Use the default</button>
+  <button class="small" id="change-choice" type="button">Change the default</button>
   <button class="primary" id="queue">Queue 0 tickets</button>
 </footer>
 <script type="module">
@@ -166,7 +172,7 @@
 // This page only draws what they return and wires the clicks.
 import {
   RUN_STATUSES, flatten, groupByStatus, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, projectCounts, projectOf, queueLabel, recall, remember, runActions, runStatus,
-  runsShown, runsWithLabel, selectable, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, waitsOn, workersLabel,
+  runsShown, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, waitsOn, workersLabel,
 } from "/board-view.js";
 
 const el = (tag, props = {}, ...children) => {
@@ -178,8 +184,8 @@ const $ = (id) => document.getElementById(id);
 const storage = (() => { try { return window.localStorage; } catch { return null; } })();
 const state = {
   tickets: [], parents: [], queue: { entries: [], max: 3, paused: true }, selected: new Set(), terminal: null,
-  // The model and effort the settings give a ticket queued from now on.
-  choice: { model: "", effort: "" },
+  // The model and effort the settings give a ticket queued from now on, and the parts the Pick footer chose otherwise for the next batch only.
+  choice: { model: "", effort: "" }, batch: {},
   // The pattern a plan's name matches (the host file's `tickets.plan`), or null when the board looks for none; and the plan filter chosen.
   plan: null, planChoice: planChoiceOf(recall(storage, "ticket-mode.plan")),
   // Sections start collapsed, so a first visit sees every status and its count before any list.
@@ -399,8 +405,18 @@ function renderBoard() {
   $("paused-note").hidden = !paused;
 }
 
+// A new default: the batch keeps only the parts that still differ from it, so a default that catches up makes the batch the default.
+function setDefault(choice) {
+  state.choice = choice;
+  state.batch = batchOverride(choice, batchChoice(choice, state.batch));
+}
+
 function renderFooter() {
-  $("runs-with").textContent = runsWithLabel(state.choice);
+  const next = batchChoice(state.choice, state.batch);
+  $("batch-model").value = next.model;
+  $("batch-effort").value = next.effort;
+  $("batch-note").textContent = batchNote(state.choice, state.batch);
+  $("batch-reset").hidden = isDefaultBatch(state.batch);
   $("queue").textContent = queueLabel(state.selected.size);
   $("queue").disabled = state.selected.size === 0;
 }
@@ -408,7 +424,7 @@ function renderFooter() {
 // What is saved now, read again into the page and the controls, because another page may have changed it since.
 async function readChoice() {
   const config = await call("GET", "/api/config").catch(() => null);
-  if (config) state.choice = config.choice;
+  if (config) setDefault(config.choice);
   $("model").value = state.choice.model;
   $("effort").value = state.choice.effort;
   renderFooter();
@@ -440,7 +456,7 @@ function showRefused(err) {
 // Each setting is saved as it changes, and only what changed is sent. One the board refuses puts the controls back to what is saved.
 function saveChoice(part) {
   call("POST", "/api/choice", { [part]: $(part).value }).then(({ choice }) => {
-    state.choice = choice;
+    setDefault(choice);
     showSaved();
     renderFooter();
   }, (err) => {
@@ -464,9 +480,9 @@ function render() { renderPick(); renderBoard(); renderFooter(); }
 function setup(config) {
   state.terminal = config.terminal ?? null;
   state.plan = config.plan ? new RegExp(config.plan) : null;
-  state.choice = config.choice;
-  $("model").replaceChildren(...config.models.map((m) => el("option", { value: m, textContent: m })));
-  $("effort").replaceChildren(...config.efforts.map((x) => el("option", { value: x, textContent: x })));
+  setDefault(config.choice);
+  for (const id of ["model", "batch-model"]) $(id).replaceChildren(...config.models.map((m) => el("option", { value: m, textContent: m })));
+  for (const id of ["effort", "batch-effort"]) $(id).replaceChildren(...config.efforts.map((x) => el("option", { value: x, textContent: x })));
 }
 
 for (const tab of document.querySelectorAll(".tab")) {
@@ -493,14 +509,25 @@ $("all").addEventListener("change", () => {
 });
 $("queue").addEventListener("click", async () => {
   try {
-    state.queue = await call("POST", "/api/queue", { keys: [...state.selected], model: state.choice.model, effort: state.choice.effort });
+    const sent = state.batch;
+    const { model, effort } = batchChoice(state.choice, sent);
+    state.queue = await call("POST", "/api/queue", { keys: [...state.selected], model, effort });
     state.selected.clear();
+    // A batch's own model and effort are for that batch: the next one starts from the default again, unless it was chosen while this queued.
+    if (state.batch === sent) state.batch = {};
     report(null);
     render();
   } catch (err) { report(err); }
 });
 $("toggle-pause").addEventListener("click", () => call("POST", "/api/paused", { paused: state.queue.paused === false }).then((q) => { state.queue = q; render(); }, report));
 for (const id of ["open-settings", "change-choice", "change-max"]) $(id).addEventListener("click", () => { openSettings().catch(report); });
+for (const part of ["model", "effort"]) {
+  $(`batch-${part}`).addEventListener("change", () => {
+    state.batch = batchOverride(state.choice, { ...batchChoice(state.choice, state.batch), [part]: $(`batch-${part}`).value });
+    renderFooter();
+  });
+}
+$("batch-reset").addEventListener("click", () => { state.batch = {}; renderFooter(); });
 $("model").addEventListener("change", () => saveChoice("model"));
 $("effort").addEventListener("change", () => saveChoice("effort"));
 $("max").addEventListener("change", saveMax);
