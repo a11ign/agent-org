@@ -88,8 +88,9 @@ takes them one each. `agent-org ticket:serve` starts a board on `127.0.0.1` and 
   browser. On a machine that sets `tickets.plan`, a ticket with no plan of its own is marked, so you can attach one before a worker starts it.
   The mark is muted when the ticket's parent has a plan, because a worker is briefed with its parent's plan too. An epic is never marked or
   counted, because no worker starts one. A Plan filter, also remembered, shows only the tickets with a plan, or only those without, each
-  under its epic. Queue runs them on the model and effort set in Settings, which the footer names. You do not choose a repository: the
-  worker does.
+  under its epic. Queue runs them on the model and effort the footer shows, which start as the default set in Settings. Changing them in
+  the footer applies to that batch only: the default stays as it is, runs already queued keep their own, and the next batch starts from
+  the default again. You do not choose a repository: the worker does.
 - **Board.** Every run in one list, newest activity first, each with a status icon after GitHub's Actions runs, and a filter per status
   with its count: Needs you, In progress, Blocked, Queued, Awaiting review, Completed, Failed and Cancelled. A run is Completed once the tracker
   completes its ticket, or once its pull requests have merged, as Linear's GitHub integration reports them. Linear completes a ticket on a
