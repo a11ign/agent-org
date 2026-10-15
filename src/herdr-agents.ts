@@ -28,6 +28,12 @@ export type SessionOption = { session?: string };
 /** @param {string[]} args */
 const defaultRun = (args: string[]) => execFileSync("herdr", args, { encoding: "utf8", timeout: 30_000 });
 
+/** Where the paneless line goes by default: the stderr the gate's own `GATE:` lines go to. */
+const defaultSay = (line: string) => process.stderr.write(`${line}\n`);
+
+/** agent-org#1413: the labels last said through each sink. `readAgents` runs many times in one tick, so the line is said once per change in the set, not per read. */
+const panelessSaid = new WeakMap<(line: string) => void, string>();
+
 /**
  * Every workspace herdr knows, as `{ label, status }`, or `null` when herdr could not be asked.
  *
@@ -43,9 +49,10 @@ const defaultRun = (args: string[]) => execFileSync("herdr", args, { encoding: "
  * {@link markPaneless}. Presence decides "a seat exists", so dropping it here would read a live seat as absent and start a second one.
  *
  * @param {(args: string[]) => string} [run]
+ * @param {{session?: string, say?: (line: string) => void}} [options] `say` takes the one line {@link sayPaneless} writes; the default is stderr.
  * @returns {{label: string, status: string, paneless?: boolean}[] | null}
  */
-export function readAgents(run: (args: string[]) => string = defaultRun, { session = ORG_SESSION }: SessionOption = {}): ListedAgent[] | null {
+export function readAgents(run: (args: string[]) => string = defaultRun, { session = ORG_SESSION, say = defaultSay }: SessionOption & { say?: (line: string) => void; } = {}): ListedAgent[] | null {
   let raw;
   try {
     raw = run(["--session", session, "workspace", "list"]);
@@ -64,11 +71,25 @@ export function readAgents(run: (args: string[]) => string = defaultRun, { sessi
     return null;
   }
   if (agents.some((a) => a.status === "unknown")) markPaneless(agents, panes, run, session);
+  sayPaneless(agents.filter((a) => a.paneless === true), say);
   return agents;
 }
 
 /** One listed agent as {@link readAgents} reports it. `paneless` is set only when herdr has shown its pane gone (agent-org#1413). */
 export type ListedAgent = { label: string; status: string; paneless?: boolean; };
+
+/**
+ * agent-org#1413, Change 2: THE ONE LINE SAYING WHAT WAS TREATED AS ENDED. `say` gets `treated N listed agents with no pane as ended: <labels>` when the set of paneless
+ * labels differs from the set last said through that sink, and nothing when it is the same. An empty set clears the memory, so a set that comes back is said again.
+ * A run is a process, so this says the line once per run that finds the set (and once per change within one), and a later run says it again: nothing is kept between runs.
+ */
+function sayPaneless(paneless: ListedAgent[], say: (line: string) => void): void {
+  if (paneless.length === 0) { panelessSaid.delete(say); return; }
+  const labels = paneless.map((a) => a.label).join(", ");
+  if (panelessSaid.get(say) === labels) return;
+  panelessSaid.set(say, labels);
+  say(`treated ${paneless.length} listed agents with no pane as ended: ${labels}`);
+}
 
 /**
  * A workspace's root pane, by herdr's own naming: every agent's pane is `<workspace>:p1` (measured live 2026-10-15 for all 17 listed agents, and

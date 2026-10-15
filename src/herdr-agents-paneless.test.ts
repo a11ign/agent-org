@@ -14,7 +14,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readAgents, type ListedAgent } from "./herdr-agents.ts";
 import { stripClosedClaims } from "./work-gate.ts";
-import { dropUnknownHandoffs, queueHandoff, readHandoffs, UNKNOWN_SESSION_MS, HANDOFF_QUEUE_FILE } from "./wake.ts";
+import { dropUnknownHandoffs, queueHandoff, readHandoffs, UNKNOWN_SESSION_MS, HANDOFF_QUEUE_FILE, WAKEABLE } from "./wake.ts";
+import { IDLE_STATUSES } from "./idle-claimant.ts";
 
 const NOW = Date.parse("2026-10-15T09:00:00Z");
 
@@ -122,6 +123,32 @@ test("(2) an order addressed to a PANELESS worker with an open row is dropped at
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("(1) a paneless seat is not read as idle: `unknown` is in neither the statuses that may receive a prompt nor the statuses that mean nobody is working", () => {
+  assert.equal(WAKEABLE.includes("unknown"), false);
+  assert.equal(IDLE_STATUSES.includes("unknown"), false);
+});
+
+test("(2) the one line says what was treated as ended, ONCE per change in the paneless set, and says nothing for a readable org", () => {
+  const said: string[] = [];
+  const say = (line: string) => { said.push(line); };
+  const one = herdr([{ name: "worker-5470", status: "unknown", pane: "w4N1:p1" }], ["w4N1:p1"]);
+  readAgents(one.run, { say });
+  readAgents(one.run, { say });
+  assert.deepEqual(said, ["treated 1 listed agents with no pane as ended: worker-5470"], "two reads of the same set say it once");
+
+  const two = herdr([{ name: "worker-5470", status: "unknown", pane: "w4N1:p1" }, { name: "worker-5472", status: "unknown", pane: "w4N5:p1" }], ["w4N1:p1", "w4N5:p1"]);
+  readAgents(two.run, { say });
+  assert.equal(said[1], "treated 2 listed agents with no pane as ended: worker-5470, worker-5472", "a new member is a change, so it is said");
+
+  const none = herdr([{ name: "worker-5471", status: "unknown", pane: "w4N2:p1" }]);
+  readAgents(none.run, { say });
+  assert.equal(said.length, 2, "a live `unknown` agent with a readable pane says nothing");
+
+  readAgents(one.run, { say });
+  assert.equal(said.length, 3, "a set that comes back after a readable org is said again");
+  assert.equal(said[2], "treated 1 listed agents with no pane as ended: worker-5470");
 });
 
 test("(3) a LIVE agent with `unknown` status and a readable pane is NOT treated as ended: its order with an open row is kept at the bound", () => {
