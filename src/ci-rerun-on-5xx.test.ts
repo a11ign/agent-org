@@ -46,9 +46,10 @@ test("a log that names no error is the owner's", () => {
   assert.equal(lastErrorLine("all good\n"), null);
 });
 
-test("shipped OFF: the flag is false and the decision is today's route", () => {
-  assert.equal(CI_RERUN_ON_5XX.enabled, false);
-  assert.deepEqual(rerunRedOn5xx({ log: LOG_5XX, ...DECIDE }), { action: "owner", reason: "ci.rerunOn5xx is off" });
+test("shipped ON: the flag is true, so a 5xx red is rerun by default; the explicit OFF is today's route", () => {
+  assert.equal(CI_RERUN_ON_5XX.enabled, true);
+  assert.equal(rerunRedOn5xx({ log: LOG_5XX, ...DECIDE }).action, "rerun", "no flag passed: the 5xx is rerun");
+  assert.deepEqual(rerunRedOn5xx({ log: LOG_5XX, ...DECIDE }, { enabled: false }), { action: "owner", reason: "ci.rerunOn5xx is off" });
 });
 
 test("ON: a 5xx red is a rerun, and the ledger line names the repo, the run and the head", () => {

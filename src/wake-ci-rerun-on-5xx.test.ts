@@ -102,12 +102,12 @@ test("OFF (shipped): the tick is today's route byte for byte -- the same reads, 
   assert.equal(existsSync(rerunFileIn(dir)), false);
 });
 
-test("the shipped flag is what the tick reads when none is injected: OFF, so a 5xx red is not rerun", async () => {
+test("the shipped flag is what the tick reads when none is injected: ON, so a 5xx red is rerun once (agent-org#1180, a11ign#5230)", async () => {
   const dir = freshDir("shipped");
   const world = host();
   const [order] = await withCiFailureClass([ORDER], { host: {}, ledgerPath: ledgerIn(dir), gh: world.gh, now: NOW, classify: classifier() as never });
-  assert.equal(world.asked.some((line) => line.startsWith("run rerun")), false);
-  assert.equal(order.prompt, ORDER.prompt);
+  assert.equal(world.asked.filter((line) => line === RERUN_CALL).length, 1, `one rerun, with no flag passed: ${world.asked.join(" | ")}`);
+  assert.match(order.prompt, /rerun this check's failed jobs once/);
 });
 
 test("ON, negative controls: a 5xx earlier in the log and a test failure after it, a head already rerun, and a timed-out job are each the owner's, with no write", async () => {
