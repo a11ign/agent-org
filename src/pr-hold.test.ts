@@ -1,13 +1,16 @@
-// no-token: gh -- the hold-holder step is pure over the pull requests, the herdr listing and the declarations handed to it; `holdHolderOrdersNow` is given its listing and a temp state directory
+// no-token: gh -- the hold-holder step is pure over the pull requests, the herdr listing and the declarations handed to it; `holdHolderOrdersNow` is given its listing and a temp state directory; the take-level cycle tests run the real CLI against a fake `gh` first on PATH that keeps its state in a JSON file
 /**
  * #4970: A HOLD ON A PULL REQUEST OUTLIVES NO HOLDER. A holder idle 30 minutes with no declared state, or gone, is woken ONCE; 30 minutes later, still idle or gone, the seat that decides
  * is asked ONCE; and nothing here removes a label. Every "left alone" has a sibling that differs in the one thing that makes it act.
  */
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { HOME_CHECKOUT, PROJECT_DECLARATION_PATH } from "./project-config.ts";
 import {
   declarationExcusesHold, escalationSeatFor, holdHolderKey, holderOrdersOf, holderStep, HOLD_HOLDER_CAUSE, HOLDER_ESCALATE_MINUTES, HOLDER_IDLE_MINUTES,
   type HolderDeclaration, type HolderMemory,
@@ -231,4 +234,116 @@ test("the tick calls it: `main()` in work-gate.ts spreads `holdHolderOrdersNow` 
   const gate = workGateSource();
   const calls = gate.match(/\.\.\.holdHolderOrdersNow\(\{ prs: prs === null \? null : \[\.\.\.prs, \.\.\.pullRequestsOfOthers\(otherScopes\)\] \}\)/g) ?? [];
   assert.equal(calls.length, 1, "exactly one call in the tick, so a deleted wiring is a red test and not a silent gate");
+});
+
+// --- the take refuses a hold that closes a cycle (#1396): the real CLI against a fake `gh` that answers for each item by its `repo#n` ----------------------
+
+const REPO = "a11ign/agent-org";
+const FIRST_REPO = "a11ign/a11ign";
+const HELD = `${REPO}#1365`;
+const TARGET = `${REPO}#1325`;
+const CLOSER = { number: 1378, repo: REPO };
+const EXECUTABLE = 0o755;
+const CLI = fileURLToPath(new URL("./pr-hold.ts", import.meta.url));
+
+type CycleItem = { state?: string, labels?: string[], body?: string, comments?: string[], closedBy?: { number: number, repo: string }[] };
+
+const CYCLE_GH = `#!/usr/bin/env node
+const fs = require("node:fs");
+const file = process.env.FAKE_GH_STATE;
+const state = JSON.parse(fs.readFileSync(file, "utf8"));
+const args = process.argv.slice(2);
+const flag = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : null);
+const save = () => fs.writeFileSync(file, JSON.stringify(state));
+state.calls.push(args.join(" "));
+const number = args.slice(2).find((a) => /^\\d+$/.test(a));
+const item = state.items[flag("--repo") + "#" + number];
+if (!item) { save(); process.stderr.write("fake gh: no such item: " + args.join(" ")); process.exit(1); }
+const comments = item.comments.map((body) => ({ body, createdAt: "2026-10-13T08:00:00Z" }));
+if (args[0] === "issue" && args[1] === "view") {
+  process.stdout.write(JSON.stringify({ state: item.state, labels: item.labels.map((name) => ({ name })), body: item.body, comments,
+    closedByPullRequestsReferences: item.closedBy.map((c) => ({ number: c.number, repository: { name: c.repo.split("/")[1], owner: { login: c.repo.split("/")[0] } } })) }));
+} else if (args[0] === "pr" && args[1] === "view") {
+  process.stdout.write(JSON.stringify({ labels: item.labels.map((name) => ({ name })), body: item.body, comments, state: "OPEN",
+    autoMergeRequest: item.armed ? { enabledAt: "now" } : null }));
+} else if (args[0] === "pr" && args[1] === "edit") {
+  if (args.includes("--remove-label")) item.labels = item.labels.filter((l) => l !== flag("--remove-label"));
+  if (args.includes("--add-label")) item.labels.push(flag("--add-label"));
+} else if (args[0] === "pr" && args[1] === "comment") {
+  item.comments.push(flag("--body"));
+} else if (args[0] === "pr" && args[1] === "merge") {
+  item.armed = args.includes("--auto");
+} else { save(); process.stderr.write("fake gh: unexpected " + args.join(" ")); process.exit(1); }
+save();
+`;
+
+/** The host's declaration with the two repositories this test names, as `pr-hold-idle-target.test.ts` builds it. */
+function cycleFixture(dir: string): string {
+  mkdirSync(join(dir, ".agent-org"), { recursive: true });
+  const own = JSON.parse(readFileSync(join(HOME_CHECKOUT, PROJECT_DECLARATION_PATH), "utf8")) as Record<string, unknown>;
+  writeFileSync(join(dir, PROJECT_DECLARATION_PATH), JSON.stringify({ ...own, tracker: [{ key: "", repo: FIRST_REPO, board: { owner: "a11ign", number: 1 } }],
+    code: [{ key: "", repo: FIRST_REPO }, { key: "agent-org", repo: REPO }] }));
+  const host = join(dir, ".agent-org", "host.json");
+  writeFileSync(host, JSON.stringify({ schema: 1, home: dir, binDir: dir, primary: "fx", tool: dir, projects: [{ id: "fx", checkout: dir }] }));
+  return host;
+}
+
+/** `product-manager` takes a hold on agent-org#1365 with `argv`; `items` are the pull requests and rows the fake knows, every other one is missing. */
+function cycleTake(items: Record<string, CycleItem>, ...argv: string[]) {
+  const dir = mkdtempSync(join(tmpdir(), "pr-hold-1396-"));
+  try {
+    const state = join(dir, "state.json");
+    const known = Object.fromEntries(Object.entries(items).map(([key, item]) =>
+      [key, { state: "OPEN", labels: [], body: "", comments: [], closedBy: [], armed: true, ...item }]));
+    writeFileSync(state, JSON.stringify({ items: known, calls: [] }));
+    writeFileSync(join(dir, "gh"), CYCLE_GH);
+    chmodSync(join(dir, "gh"), EXECUTABLE);
+    const result = spawnSync(process.execPath, [CLI, "1365", "--repo-key=agent-org", "--session=product-manager", ...argv], { encoding: "utf8",
+      env: { PATH: `${dir}:${process.env.PATH ?? ""}`, HOME: dir, FAKE_GH_STATE: state, AGENT_ORG_HOST: cycleFixture(dir) } });
+    const after = JSON.parse(readFileSync(state, "utf8"));
+    return { status: result.status, stderr: result.stderr, calls: after.calls as string[], held: after.items[HELD] as { labels: string[], comments: string[] } };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** The 2026-10-13 shape: #1325 is open and closed by #1378, and the held #1365 waits `closed #1325`. `closer` is #1378's body. */
+const cycleShape = (closerBody: string, heldBody = "") => ({
+  [HELD]: { labels: ["ready"], body: heldBody },
+  [TARGET]: { labels: ["ready"], closedBy: [CLOSER] },
+  [`${REPO}#1378`]: { body: closerBody },
+});
+
+test("REFUSED (#1396): `closed #1325` where #1325's open pull request #1378 waits `merged #1365` is refused, the cycle named, and nothing written", () => {
+  const refused = cycleTake(cycleShape("Closes #1325\n\nWaiting-for: merged #1365"), "--until=closed #1325");
+  assert.equal(refused.status, 1, refused.stderr);
+  assert.match(refused.stderr, /^REFUSING --until="closed #1325": the hold would close a cycle, a11ign\/agent-org#1365, which waits on a11ign\/agent-org#1325, which waits on a11ign\/agent-org#1378, which waits on a11ign\/agent-org#1365: each waits on the next/m);
+  assert.match(refused.stderr, /--until=manual/);
+  assert.deepEqual(refused.calls.filter((c) => /^pr (edit|comment|merge) /.test(c)), [], "no label, no marker, no merge");
+  assert.deepEqual(refused.held.labels, ["ready"], "the held pull request carries no hold");
+  assert.deepEqual(refused.held.comments, [], "and no marker");
+  assert.deepEqual(refused.calls, [
+    `issue view 1325 --repo ${REPO} --json state,labels,closedByPullRequestsReferences,body,comments`,
+    `pr view 1365 --repo ${REPO} --json body`,
+    `pr view 1378 --repo ${REPO} --json body,comments`,
+  ], "the reads the decision needs, and nothing after the refusal");
+});
+
+test("REFUSED (#1396): the same cycle through the row the held pull request closes: #1365 closes #1300, and #1378 waits `closed #1300`", () => {
+  const refused = cycleTake(cycleShape("Closes #1325\n\nWaiting-for: closed #1300", "Closes #1300"), "--until=closed #1325");
+  assert.equal(refused.status, 1, refused.stderr);
+  assert.match(refused.stderr, /would close a cycle, a11ign\/agent-org#1365, which waits on a11ign\/agent-org#1325, which waits on a11ign\/agent-org#1378, which waits on a11ign\/agent-org#1300, which waits on a11ign\/agent-org#1365/);
+  assert.deepEqual(refused.calls.filter((c) => /^pr (edit|comment|merge) /.test(c)), []);
+});
+
+test("CONTROL (#1396): the same hold is TAKEN when #1378 waits on a third row, and when #1378 cannot be read (a NOTE, not a refusal)", () => {
+  const third = cycleTake(cycleShape("Closes #1325\n\nWaiting-for: merged #1300"), "--until=closed #1325");
+  assert.equal(third.status, 0, third.stderr);
+  assert.deepEqual(third.held.labels, ["ready", "hold:product-manager", "rearm-on-release"]);
+  assert.deepEqual(third.held.comments, [`${WAIT_MARKER}\nHeld by \`product-manager\`.\nWaiting-for: closed #1325`]);
+
+  const unreadable = cycleTake({ [HELD]: { labels: ["ready"] }, [TARGET]: { labels: ["ready"], closedBy: [CLOSER] } }, "--until=closed #1325");
+  assert.equal(unreadable.status, 0, unreadable.stderr);
+  assert.match(unreadable.stderr, /^NOTE: could not read a11ign\/agent-org#1378, a pull request that closes a11ign\/agent-org#1325/m);
+  assert.deepEqual(unreadable.held.labels, ["ready", "hold:product-manager", "rearm-on-release"], "the hold is taken as asked");
 });

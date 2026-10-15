@@ -188,7 +188,7 @@ test("REFUSED: `--until=closed #4524` on an open, unclaimed row with no pull req
   assert.deepEqual(refused.pr.comments, [], "no marker comment");
   assert.equal(refused.pr.armed, true, "and it was not disarmed");
   assert.deepEqual(refused.calls.filter((c) => WRITES.test(c)), [], "the label call is never reached: no edit, comment or merge");
-  assert.deepEqual(refused.calls, [`issue view 4524 --repo ${FIRST} --json state,labels,closedByPullRequestsReferences`], "the one read the decision needs, and nothing after it");
+  assert.deepEqual(refused.calls, [`issue view 4524 --repo ${FIRST} --json state,labels,closedByPullRequestsReferences,body,comments`], "the one read the decision needs, and nothing after it");
 });
 
 test("CONTROL: the same hold is TAKEN when the row carries `in-progress`, or a `session:` label, or has an open pull request that closes it", () => {
