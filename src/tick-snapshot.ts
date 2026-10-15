@@ -127,9 +127,10 @@ export type TickEvents = { changed: ReadonlySet<string>, healthy: boolean, recon
 
 /**
  * what is kept per repository: the tag each probe path last returned, and when its generation last moved. `facts` is the content each tag was read with (agent-org#1207), by
- * probe path; a tag held without it (a file written before this check) is a baseline, not a drift.
+ * probe path; a tag held without it (a file written before this check) is a baseline, not a drift. `factsReadAt` is when that content was read (agent-org#1431): the window
+ * a drift is judged over starts there, because an event moves `bumpedAt` past it without re-reading anything.
  */
-export type Held = { tags: Record<string, string>, bumpedAt: number, facts?: Record<string, Facts> };
+export type Held = { tags: Record<string, string>, bumpedAt: number, facts?: Record<string, Facts>, factsReadAt?: number };
 
 /** @param {string} path @returns {Record<string, Held>} */
 function readTags(path: string): Record<string, Held> {
@@ -184,11 +185,15 @@ export function refreshTickSnapshot({ repos, homeRepo, configDir, run = ghRun, n
     const eventNamed = named.has(repo.toLowerCase());
     // Poll: the probes are the answer. Events: none, except ONCE when the repository is due, as the safety net for a delivery the receiver never got (agent-org#982).
     const probes = !viaEvents || due ? probePaths(repo).map((path) => ({ path, held: held.tags[path], heldFacts: held.facts?.[path], ...probeOnce({ path, held: held.tags[path], run }) })) : [];
-    const drift = viaEvents && due ? driftOf({ repo, probes, named: eventNamed, windowStartS: held.bumpedAt, nowS }) : null;
+    // The baseline's read time. An event that named the repository after it has moved `bumpedAt` past it (`bumpedAt` only moves on an event or a reconcile, and a reconcile that
+    // keeps the baseline does not move it), so that comparison is the question "did an event name this repository since the content was read?" (agent-org#1431).
+    const readAt = held.factsReadAt ?? held.bumpedAt;
+    const namedSince = eventNamed || held.bumpedAt > readAt;
+    const drift = viaEvents && due ? driftOf({ repo, probes, namedSince, windowStartS: readAt, nowS }) : null;
     // A tag that moved over the same content is counted, not filed: the health signal stays visible without an incident per repository per window.
     const sameContent = viaEvents && due && drift === null && probes.some(noContentChange) ? 1 : 0;
     const changed = (viaEvents && eventNamed) || probes.some((p) => p.changed);
-    return { repo, held, before, due, probes, drift, sameContent, changed, eventNamed };
+    return { repo, held, before, due, probes, drift, sameContent, changed, eventNamed, readAt };
   });
   // Phase 2: file the pass's drifts as ONE incident naming every drifted repository (agent-org#1207). A refused filing leaves their windows and held tags as they were, so the next tick is due and the same probes say CHANGED again: retried, not lost.
   const drifts = reads.flatMap((r) => (r.drift === null ? [] : [r.drift]));
@@ -197,18 +202,18 @@ export function refreshTickSnapshot({ repos, homeRepo, configDir, run = ghRun, n
   if (sameContent > 0) countSuppressed(suppressedPath(root), nowMs, sameContent);
   // Phase 3: write each repository's state and its line.
   const lines = [];
-  for (const { repo, held, before, due, probes, drift, changed, eventNamed } of reads) {
+  for (const { repo, held, before, due, probes, drift, changed, eventNamed, readAt } of reads) {
     const unfiled = drift !== null && !filed;
     const counter = changed || due ? (before?.counter ?? 0) + 1 : (before?.counter ?? 1);
     // While events answer, tags are kept as they are except at a reconcile that filed (or found nothing): they are what the probes compare against on the tick the receiver is found dead, where a difference reads as a change.
-    // The content each tag was read with is kept with it, so a kept tag and its facts are always the same read.
+    // The content each tag was read with is kept with it, so a kept tag and its facts are always the same read, and `factsReadAt` is the time of that read (agent-org#1431).
     const keep = viaEvents && (!due || unfiled);
     const kept = keep ? held.tags : Object.fromEntries(probes.flatMap((p) => (p.etag === undefined ? [] : [[p.path, p.etag]])));
     const keptFacts = keep ? held.facts : Object.fromEntries(probes.flatMap((p): [string, Facts][] => {
       const facts = p.facts ?? (p.etag === p.held ? p.heldFacts : undefined);
       return p.etag === undefined || facts === undefined ? [] : [[p.path, facts]];
     }));
-    tags[repo] = { tags: kept, bumpedAt: unfiled ? held.bumpedAt : changed || due ? nowS : held.bumpedAt, facts: keptFacts };
+    tags[repo] = { tags: kept, bumpedAt: unfiled ? held.bumpedAt : changed || due ? nowS : held.bumpedAt, facts: keptFacts, factsReadAt: keep ? readAt : nowS };
     for (const slug of repo === homeRepo ? [slugOf(repo), slugOf("")] : [slugOf(repo)]) writeWhole(join(root, "gen", slug), `${counter} ${nowS}\n`);
     const driftNote = drift === null ? "" : `; MISSED DELIVERY inferred from the ${drift.probe} probe, ${filed ? "incident filed" : "incident NOT filed, retried next tick"}`;
     const why = viaEvents ? (eventNamed ? "event" : "no event") : probes.map((p) => p.why).join(", ");

@@ -91,6 +91,15 @@ test("NEGATIVE CONTROL: a healthy receiver with nothing named makes ZERO gh call
   assert.deepEqual(lines, [`${HOME_REPO}: unchanged (no event) generation 1`, `${OTHER}: unchanged (no event) generation 1`]);
 });
 
+test("an event moves `bumpedAt` and leaves `factsReadAt` where the content was last read: the event does not re-read anything (agent-org#1431)", () => {
+  const dir = polled();
+  const { run } = recordingGh();
+  refreshTickSnapshot({ repos: REPOS, homeRepo: HOME_REPO, configDir: dir, run, nowMs: T0 + 30 * SEC, events: healthy([OTHER]) });
+  assert.equal(heldTags(dir)[OTHER].bumpedAt, (T0 + 30 * SEC) / SEC, "the event moved the window");
+  assert.equal(heldTags(dir)[OTHER].factsReadAt, T0 / SEC, "the content was read at the poll, and the event after it did not read it again");
+  assert.equal(heldTags(dir)[HOME_REPO].factsReadAt, T0 / SEC, "a repository no event named keeps its read time too");
+});
+
 test("an event for one repository bumps only that repository's generation, and the repository is matched without regard to case", () => {
   const dir = polled();
   const { run, calls } = recordingGh();
