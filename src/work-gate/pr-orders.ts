@@ -21,7 +21,7 @@ import { newestPerName } from "../newest-check-run.ts";
 import { reviewerSeat, subjectMention, subjectRef } from "../review-attribution.ts";
 import { NO_VERDICT } from "../merge-guard/checks-rule.ts";
 import { armabilityOf } from "../pr-hold-state.ts";
-import { isHeldRed, isWaitingRed } from "../red-pr.ts";
+import { holdsOn, isHeldRed, isWaitingRed } from "../red-pr.ts";
 import { sharedFileOrders } from "./shared-file-orders.ts";
 import { REPO } from "../project-identity.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
@@ -713,6 +713,17 @@ function redWhileWaiting(pr: any) {
   return isWaitingRed(pr);
 }
 
+/**
+ * agent-org#1466: A PULL REQUEST HELD ON A DECLARED WAIT IS NOT ORDERED TO REWORK A NOT CONVINCED VERDICT, FOR AS LONG AS THE WAIT STANDS. a11ign#5496 carried
+ * `hold:orchestrator` and `Waiting-for: closed a11ign/agent-org#1426`, and its reviewer had returned NOT CONVINCED at the head. The rework order was re-issued every
+ * tick until `MAX_DELIVERIES` escalated it to `ceo`, for a wait the tick already read. The same two keys as {@link redOnlyFromAHold} and {@link redWhileWaiting}, with
+ * no red needed: a `hold:*` label on the PR (whoever placed it), or an open edge at the head the wait was recorded at (`isWaitingRed`). The order returns when the
+ * label comes off, the edge closes, or a new head is pushed, because each of those leaves nothing that holds it here.
+ */
+function heldOnPurpose(pr: any) {
+  return holdsOn(pr).length > 0 || isWaitingRed(pr);
+}
+
 const MS_PER_MINUTE = 60_000;
 
 /**
@@ -1278,7 +1289,7 @@ function settledVerdictOrder(pr: any, found: {
     };
   }
   if (found.verdict === "convinced") return unreviewedConvincedOrder(pr, found, heads, trust);
-  if (found.verdict === "not-convinced") return notConvincedOrder(pr, found, heads);
+  if (found.verdict === "not-convinced") return heldOnPurpose(pr) ? null : notConvincedOrder(pr, found, heads);
   // Any other settled verdict -- `unrecognised`, or one the opener did not attribute -- is left alone:
   // re-prompting a reviewer who has already answered costs more than waiting for a human to look.
   return null;
