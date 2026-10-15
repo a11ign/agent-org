@@ -22,7 +22,8 @@ import { readTrunkRed, trunkOfCodeRepository, trunkRedOrders } from "../trunk-re
 import { recordIgnoredChairmanLabels, recordTickFailures as recordFailuresOf } from "../failure-recorders.ts";
 import { readJsonObject, writeJsonObject } from "../claim-stall.ts";
 import { requiredWhenNeeded, perPullRequestOrders, greenUnarmedOrders, type UnarmedFacts, reviewBlockedOrders, stalledPrOrders,
-  STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr, ROW_REVIEW_SKILL_FLAG, PR_OWNER_ROUTING_FLAG, withholdOutsideFollowUps, routeDeadOwnerRefusals, reviewOnlyRefs, SAME_HEAD_REFAIL_FLAG } from "./pr-orders.ts";
+  STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr, ROW_REVIEW_SKILL_FLAG, PR_OWNER_ROUTING_FLAG, withholdOutsideFollowUps, routeDeadOwnerRefusals, reviewOnlyRefs, SAME_HEAD_REFAIL_FLAG, acceptanceGateOf } from "./pr-orders.ts";
+import { checkoutPullRequestMerge, orgSideAcceptanceEligibility, orgSideAcceptanceVerdict, releasePullRequestCheckout, type OrgSideVerdict } from "../acceptance-commands.ts"; // agent-org#1502
 import { labJobFinishedOrders, readLabJobRecords, readDispatchedLabJobs } from "./lab-job-orders.ts";
 import { classAndKeyOf as orgHealthClassAndKey } from "./org-health-suppression.ts";
 import { TABLE_ROW as STANDING_ROW } from "../board-truth-audit.ts";
@@ -42,7 +43,7 @@ import { REVIEW_STATE, reviewStateOf } from "./pr-state.ts";
 import { EXIT, branchesToReplace, conditionalFor, defaultRun, holdTickBudget, inRepo, isGhRun, readArming, readClaimedRowComments, readElsewherePrs, readOpenRows,
   readPromotableRows, readPrs, readReadyRows, readWithFirstWaveTogether, repoNow, restReadsOfTick, runBatch, standingFor, isGateProcess } from "./reads.ts";
 import { type Budget, budgetLine, restConditionalOn, tickBudget } from "../gh-conditional.ts";
-import { declaredIdentities, type DeclaredIdentities } from "../review-trust.ts";
+import { INSIDE, declaredIdentities, reviewTrustOf, type DeclaredIdentities } from "../review-trust.ts";
 import { claimedRowAmendedOrders } from "./causes/rows-amended.ts";
 import { answerGivenOrders, answerGivenOrdersOrNone, answerOrders, bareAnswerLabelOrders, bareAnswerOrdersOrNone, blockedReferentOrders,
   endedSessionLabels, liveWorkspaceLabels, rowsOwingAnswers } from "./causes/rows-answers.ts";
@@ -1373,6 +1374,13 @@ const armingPortOf = (scope: string): ArmingPort => {
   };
 };
 
+/** agent-org#1502: the unarmed list `settleUnarmedPrs` returned, with the ones acceptance withheld added back as `withheld` so the order names them. */
+function withWithheld(settled: number[] | UnarmedFacts, withheld: { number: number; why: string; }[], counts: { armed: number; of: number; }): UnarmedFacts {
+  const facts: UnarmedFacts = Array.isArray(settled) ? { numbers: settled, ...counts } : settled;
+  const numbers = [...facts.numbers, ...withheld.map((w) => w.number)].sort((a, b) => a - b);
+  return { ...facts, numbers, withheld };
+}
+
 /**
  * agent-org#488: THE ARMING READ OF ONE TICK, ITS EJECTIONS AND WHAT THE GATE DID ABOUT THE UNARMED ONES -- `readEjections(readUnarmed(...))` as it was, with
  * `settleUnarmedPrs` between that and the order. `null` is a refused read, as before. The revert is the `unarmed:` line below.
@@ -1387,7 +1395,58 @@ export function readArmingOf(openPrs: any[], required: string[] | null, { scope 
   const say = log ?? ((line: string) => process.stderr.write(line));
   // a11ign#5125: BEFORE the orders -- an ejection that was not the PR's own is armed here and leaves `ejections`, so no owner is woken for it; the rest are today's `ejected` orders.
   const requeued = requeueEjected(split.ejections, { prs: openPrs, scope, run, portFor, state: state ?? readReenqueueState(), now, log: say, evidence: split.evidence });
-  return { unarmed: settleUnarmedPrs(split.unarmed, { armed: reading.armed.length, of: candidates.length, portFor, scope, env, ...(log === undefined ? {} : { log }) }), ejections: requeued.remaining, stranded: requeued.stranded };
+  // agent-org#1502: the org-side acceptance verdict decides WHICH of the unarmed the gate may arm; the ones it withholds are named in the order, never armed.
+  const gated = gateUnarmedOnAcceptance(split.unarmed, { openPrs, scope, env, ...(log === undefined ? {} : { log }) });
+  const settled = settleUnarmedPrs(gated.armable, { armed: reading.armed.length, of: candidates.length, portFor, scope, env, ...(log === undefined ? {} : { log }) });
+  const unarmed = gated.withheld.length === 0 ? settled : withWithheld(settled, gated.withheld, { armed: reading.armed.length, of: candidates.length });
+  return { unarmed, ejections: requeued.remaining, stranded: requeued.stranded };
+}
+
+/** agent-org#1502: where the org-side acceptance gate is switched ON. OPT-IN, unlike `GREEN_UNARMED_SWITCH_ENV`: it runs a command the pull request names, on the host. */
+export const ACCEPTANCE_GATE_SWITCH_ENV = "A11IGN_PR_ACCEPTANCE_BY_GATE";
+/** How many acceptance commands one tick may RUN; the rest are withheld "deferred" and run on a later tick, so one tick is never the length of a suite times a queue. */
+export const MAX_ACCEPTANCE_RUNS_PER_TICK = 2;
+
+/**
+ * agent-org#1502 (ADR 0045 cut c): THE ORG-SIDE ACCEPTANCE VERDICT GATES ARMING. Of the unarmed candidates, the same-repository `agent/*` ones by a declared
+ * identity (`orgSideAcceptanceEligibility`, and ONLY those) get their acceptance family run on the host, in a checkout of the pull request's merge ref, and
+ * are armed only on a `pass` at their current head; the rest of the unarmed are returned untouched. A verdict is remembered by head (`pass` and `fail`, never
+ * `not-run`), so a failing pull request is not re-run every tick and a push is.
+ *
+ * SWITCH: `A11IGN_PR_ACCEPTANCE_BY_GATE=on`. Off (the default), `armable` is `unarmed` and nothing is read, checked out or run. The one-line revert in code is the
+ * call site in `readArmingOf`.
+ *
+ * @returns `armable` for `settleUnarmedPrs`, `withheld` for the order
+ */
+export function gateUnarmedOnAcceptance(unarmed: number[], { openPrs, scope, env = process.env, declared = declaredIdentities(), verdictOf, stateDir = REVIEWER_STATE_DIR, log = (line: string) => process.stderr.write(line) }: {
+  openPrs: any[]; scope: string; env?: Record<string, string | undefined>; declared?: DeclaredIdentities; verdictOf?: (pr: any) => OrgSideVerdict; stateDir?: string; log?: (line: string) => void;
+}): { armable: number[]; withheld: { number: number; why: string; }[]; } {
+  if (env[ACCEPTANCE_GATE_SWITCH_ENV] !== "on" || unarmed.length === 0) return { armable: unarmed, withheld: [] };
+  const byDeclaredIdentity = (pr: any) => reviewTrustOf(pr, declared) === INSIDE;
+  const file = join(stateDir, "acceptance-verdicts.json");
+  const remembered: Record<string, OrgSideVerdict> = readJsonObject(file);
+  let ran = 0;
+  const run = verdictOf ?? ((pr: any): OrgSideVerdict => {
+    const key = `${scope}#${pr.number}@${pr.headRefOid}`;
+    const known = remembered[key];
+    if (known !== undefined && (known.kind === "pass" || known.kind === "fail")) return known;
+    if (ran >= MAX_ACCEPTANCE_RUNS_PER_TICK) return { kind: "not-run", head: String(pr.headRefOid), lines: [], why: "acceptance is deferred to a later tick (the per-tick run limit)" };
+    ran++;
+    const repoRoot = env.A11IGN_ACCEPTANCE_REPO_ROOT ?? process.cwd();
+    const verdict = orgSideAcceptanceVerdict(pr, { byDeclaredIdentity, baseRepo: scope, checkout: checkoutPullRequestMerge({ repoRoot, scratch: join(stateDir, "acceptance-checkouts") }),
+      release: releasePullRequestCheckout({ repoRoot }) });
+    if (verdict.kind !== "not-run") {
+      remembered[key] = verdict;
+      try { writeJsonObject(file, remembered); } catch (err) { log(`acceptance-gate: COULD NOT REMEMBER the verdict of #${pr.number} (${String((err as any)?.message ?? err).split("\n")[0].slice(0, 120)}) -- it is run again.\n`); }
+    }
+    return verdict;
+  });
+  const gated = acceptanceGateOf(unarmed, {
+    prOf: (number) => openPrs.find((pr) => Number(pr.number) === number),
+    gateOf: (pr) => (orgSideAcceptanceEligibility(pr, { byDeclaredIdentity, baseRepo: scope }).eligible ? run(pr) : null),
+  });
+  for (const { number, why } of gated.withheld) log(`acceptance-gate: #${number} is NOT armed -- ${why}.\n`);
+  return gated;
 }
 
 /** agent-org#489: where the switch for `withStaleRefusals` is read; `off` restores the order as it was. */

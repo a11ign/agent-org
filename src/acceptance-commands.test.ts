@@ -9,14 +9,18 @@
  *       and two are still a duplicate whoever wrote them;
  *   (c) the author REACHES the reader at every link, seen through the `resolveSource` seam, so (b) cannot be passing for another reason.
  */
-import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { acceptanceSourceOf, acceptanceSourceOfThisPullRequest, ciInputOf, prAuthorFromEnv, runCiBodyReports, thisPullRequestInput } from "./acceptance-commands.ts";
+import { acceptanceSourceOf, acceptanceSourceOfThisPullRequest, checkoutPullRequestMerge, ciInputOf, orgSideAcceptanceEligibility, orgSideAcceptanceVerdict, prAuthorFromEnv, runCiBodyReports,
+  thisPullRequestInput } from "./acceptance-commands.ts";
+import { INSIDE, reviewTrustOf } from "./review-trust.ts";
+import { acceptanceGateOf, greenUnarmedOrders } from "./work-gate/pr-orders.ts";
+import { ACCEPTANCE_GATE_SWITCH_ENV, gateUnarmedOnAcceptance } from "./work-gate/tick.ts";
 import { resolveAcceptanceSource } from "./acceptance-file.ts";
 import { sandboxGitEnv } from "./lib/git-env.ts";
 
@@ -158,4 +162,187 @@ test("(c) acceptanceSourceOfThisPullRequest and the CLI's own input carry the au
     assert.equal(ciInputOf({ PR_BODY: BODY, PR_AUTHOR: "" }, dir).author, undefined, "empty reaches the reader as undefined, not as \"\"");
     assert.equal(ciInputOf({ PR_BODY: `Author: dependabot[bot]\n${BODY}`, GITHUB_ACTOR: "dependabot[bot]" }, dir).author, undefined, "never the body or the actor");
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// --- agent-org#1502: THE ORG SIDE RUNS AN AGENT PULL REQUEST'S ACCEPTANCE, SAME-REPOSITORY AGENT BRANCHES ONLY, AND ITS VERDICT GATES ARMING ---------------------
+//
+// WHERE: the host gate, in a checkout of the pull request's merge ref. WHO: not from a fork (GitHub's own flag), head repository the base, branch `agent/*`, author a
+// declared identity. Every test below that says "executes nothing" is the same assertion: the `checkout` seam, the only thing that puts the pull request's files on the
+// host, and the `report` seam, the only thing that runs its text, were never called.
+
+const BASE = "a11ign/a11ign";
+const HEAD = "1111111111111111111111111111111111111111";
+const DECLARED = { exact: ["a11ign-worker[bot]"], pattern: [] as RegExp[] };
+/** `review-trust.ts`'s decision with a fixed declaration: the one the gate injects. */
+const byDeclaredIdentity = (pr: any) => reviewTrustOf(pr, DECLARED) === INSIDE;
+const agentPr = (over: Record<string, unknown> = {}) => ({ number: 7, headRefName: "agent/some-row-1502", headRefOid: HEAD, isCrossRepository: false, body: BODY,
+  headRepository: { name: "a11ign" }, author: { login: "a11ign-worker[bot]" }, ...over });
+const guardedSeams = () => {
+  const calls = { checkout: 0, report: 0, release: 0 };
+  return { calls, seams: {
+    byDeclaredIdentity, baseRepo: BASE,
+    checkout: () => { calls.checkout++; return "/nonexistent-checkout"; },
+    report: () => { calls.report++; return { ok: true, lines: ["ACCEPTANCE: RAN"] }; },
+    release: () => { calls.release++; },
+  } };
+};
+
+/** Each row breaks exactly ONE rule of an otherwise eligible pull request, so a refusal can only be that rule's. */
+const INELIGIBLE: [string, Record<string, unknown>, RegExp][] = [
+  ["a fork", { isCrossRepository: true, headRepository: { name: "someone-else" } }, /from a fork/],
+  ["a fork's flag that GitHub did not return", { isCrossRepository: undefined }, /did not say whether/],
+  ["a fork's flag as the string \"false\"", { isCrossRepository: "false" }, /did not say whether/],
+  ["a head repository that is not the base, whatever the flag says", { headRepository: { nameWithOwner: "someone-else/a11ign" } }, /head repository/],
+  ["a branch that is not agent/*", { headRefName: "feature/x" }, /not `agent\/\*`/],
+  ["a branch that only CONTAINS agent/", { headRefName: "fork/agent/x" }, /not `agent\/\*`/],
+  ["an unreadable branch", { headRefName: undefined }, /not `agent\/\*`/],
+  ["an author the host does not declare", { author: { login: "a-stranger" } }, /not an identity the host declares/],
+  ["no author", { author: null }, /not an identity the host declares/],
+];
+
+test("(1502 a) eligibility: an agent branch of this repository by a declared identity is eligible; each rule broken alone makes it not, and says which", () => {
+  assert.deepEqual(orgSideAcceptanceEligibility(agentPr(), { byDeclaredIdentity, baseRepo: BASE }), { eligible: true }, "POSITIVE CONTROL");
+  assert.deepEqual(orgSideAcceptanceEligibility(agentPr({ headRepository: { nameWithOwner: BASE } }), { byDeclaredIdentity, baseRepo: BASE }), { eligible: true }, "CONTROL: the full name of the base");
+  for (const [name, over, why] of INELIGIBLE) {
+    const answer = orgSideAcceptanceEligibility(agentPr(over), { byDeclaredIdentity, baseRepo: BASE });
+    assert.equal(answer.eligible, false, name);
+    assert.match((answer as { reason: string; }).reason, why, name);
+  }
+  assert.equal(orgSideAcceptanceEligibility(null, { byDeclaredIdentity, baseRepo: BASE }).eligible, false, "no pull request read");
+});
+
+test("(1502 b) an ineligible pull request has NOTHING executed: no checkout, no report, no release, and the verdict is not-run", () => {
+  for (const [name, over] of INELIGIBLE) {
+    const { calls, seams } = guardedSeams();
+    const verdict = orgSideAcceptanceVerdict(agentPr(over), seams);
+    assert.equal(verdict.kind, "not-run", name);
+    assert.deepEqual(calls, { checkout: 0, report: 0, release: 0 }, `${name}: nothing touched the pull request's files or ran its text`);
+  }
+  const { calls, seams } = guardedSeams();
+  assert.equal(orgSideAcceptanceVerdict(agentPr(), seams).kind, "pass", "CONTROL: the same seams DO run for an eligible pull request, so the zeros above are the gate's");
+  assert.deepEqual(calls, { checkout: 1, report: 1, release: 1 });
+});
+
+test("(1502 c) the verdict is the command's own, at the head named, and every unreadable state is not-run and never pass", () => {
+  const seams = (ok: boolean) => ({ ...guardedSeams().seams, report: () => ({ ok, lines: ["ACCEPTANCE: RAN node --test x", "ACCEPTANCE: FAIL exit 1"] }) });
+  const pass = orgSideAcceptanceVerdict(agentPr(), seams(true));
+  assert.deepEqual([pass.kind, pass.head], ["pass", HEAD]);
+  const fail = orgSideAcceptanceVerdict(agentPr(), seams(false));
+  assert.deepEqual([fail.kind, fail.head], ["fail", HEAD]);
+  assert.deepEqual(fail.lines, ["ACCEPTANCE: RAN node --test x", "ACCEPTANCE: FAIL exit 1"]);
+  const throws = { ...guardedSeams().seams, checkout: () => { throw new Error("the merge ref's head is 2222, not 1111\nsecond line"); } };
+  const noCheckout = orgSideAcceptanceVerdict(agentPr(), throws);
+  assert.equal(noCheckout.kind, "not-run");
+  assert.match(noCheckout.why, /no checkout at 11111111 \(the merge ref's head is 2222/);
+  assert.doesNotMatch(noCheckout.why, /second line/);
+  for (const over of [{ headRefOid: undefined }, { headRefOid: "" }, { number: "x" }, { body: undefined }]) {
+    const { calls, seams: s } = guardedSeams();
+    assert.equal(orgSideAcceptanceVerdict(agentPr(over), s).kind, "not-run", JSON.stringify(over));
+    assert.equal(calls.report, 0, `${JSON.stringify(over)}: nothing ran`);
+  }
+});
+
+test("(1502 c2) a report that throws still releases the checkout", () => {
+  const { calls, seams } = guardedSeams();
+  assert.throws(() => orgSideAcceptanceVerdict(agentPr(), { ...seams, report: () => { throw new Error("boom"); } }), /boom/);
+  assert.equal(calls.release, 1, "the worktree is removed whatever the command did");
+});
+
+test("(1502 d) checkoutPullRequestMerge refuses a stale merge ref: its second parent must be the head the gate asked about", () => {
+  const log: string[] = [];
+  const git = (merged: string, second: string) => (args: string[]) => {
+    log.push(args.join(" "));
+    if (args[0] === "rev-parse") return `${merged}\n`;
+    if (args[0] === "rev-list") return `${merged} basebase ${second}\n`;
+    return "";
+  };
+  const fresh = checkoutPullRequestMerge({ repoRoot: "/r", scratch: "/s", git: git("mmmm", HEAD) });
+  assert.equal(fresh(HEAD, 7), `/s/pr-7-${HEAD.slice(0, 12)}`, "POSITIVE CONTROL");
+  assert.ok(log.some((line) => line.startsWith("worktree add --detach")), log.join("\n"));
+  log.length = 0;
+  const stale = checkoutPullRequestMerge({ repoRoot: "/r", scratch: "/s", git: git("mmmm", "2222222222222222222222222222222222222222") });
+  assert.throws(() => stale(HEAD, 7), /not 11111111/);
+  assert.ok(!log.some((line) => line.startsWith("worktree add")), "a stale merge ref adds no worktree");
+});
+
+/** A real repository: `main`, then a branch adding `.acceptance/<name>.md`, then their `--no-ff` merge (what `refs/pull/N/merge` is). Returns the dir and the marker the command writes. */
+function mergeFixture(): { dir: string; marker: string; head: string; } {
+  const dir = mkdtempSync(join(tmpdir(), "org-side-acceptance-"));
+  const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.invalid", ...args], { cwd: dir, encoding: "utf8", env: sandboxGitEnv() }).trim();
+  const marker = join(dir, "COMMAND-RAN");
+  git("init", "-q", "-b", "main");
+  writeFileSync(join(dir, "README.md"), "base\n");
+  git("add", "."); git("commit", "-q", "-m", "base");
+  git("checkout", "-q", "-b", "agent/some-row-1502");
+  mkdirSync(join(dir, ".acceptance"));
+  writeFileSync(join(dir, ".acceptance", "agent~some-row-1502.md"), `## Acceptance\n\n\`\`\`bash\nnode -e "require('node:fs').writeFileSync('COMMAND-RAN', 'ran')"\n\`\`\`\n`);
+  git("add", "."); git("commit", "-q", "-m", "work");
+  const head = git("rev-parse", "HEAD");
+  git("checkout", "-q", "main");
+  git("merge", "-q", "--no-ff", "-m", "merge", "agent/some-row-1502");
+  return { dir, marker, head };
+}
+
+test("(1502 e) END TO END, a real process: an agent pull request's command RUNS in the checkout, and the same pull request from a fork executes nothing", () => {
+  const { dir, marker, head } = mergeFixture();
+  try {
+    const checkout = () => dir;
+    const eligible = orgSideAcceptanceVerdict(agentPr({ headRefOid: head, body: "Closes: none -- a fixture\n" }), { byDeclaredIdentity, baseRepo: BASE, checkout });
+    assert.ok(existsSync(marker), `POSITIVE CONTROL: the command ran in the checkout (${eligible.kind}: ${eligible.lines.join(" | ")})`);
+    assert.ok(eligible.lines.some((line) => /^ACCEPTANCE: RAN/.test(line)), eligible.lines.join("\n"));
+    rmSync(marker);
+
+    const fork = orgSideAcceptanceVerdict(agentPr({ headRefOid: head, body: "Closes: none -- a fixture\n", isCrossRepository: true, headRepository: { name: "fork" } }),
+      { byDeclaredIdentity, baseRepo: BASE, checkout });
+    assert.equal(fork.kind, "not-run");
+    assert.equal(existsSync(marker), false, "the fork's identical command was never executed");
+    assert.deepEqual(fork.lines, [], "and no report of it exists");
+
+    const stranger = orgSideAcceptanceVerdict(agentPr({ headRefOid: head, author: { login: "a-stranger" } }), { byDeclaredIdentity, baseRepo: BASE, checkout });
+    assert.equal(stranger.kind, "not-run");
+    assert.equal(existsSync(marker), false, "a same-repository agent branch by no org identity executes nothing either");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("(1502 f) acceptanceGateOf: arm only on a pass AT THIS HEAD; a fail, a not-run, another head's pass and an unread pull request are withheld; an unrun one passes through", () => {
+  const prs: Record<number, { headRefOid: string; }> = { 1: { headRefOid: "a" }, 2: { headRefOid: "b" }, 3: { headRefOid: "c" }, 4: { headRefOid: "d" }, 5: { headRefOid: "e" } };
+  const verdicts: Record<number, ReturnType<typeof orgSideAcceptanceVerdict> | null> = {
+    1: { kind: "pass", head: "a", lines: [], why: "ok" },
+    2: { kind: "fail", head: "b", lines: ["ACCEPTANCE: RAN x", "ACCEPTANCE: FAIL exit 1"], why: "acceptance FAILED at b" },
+    3: { kind: "not-run", head: "c", lines: [], why: "not run: no checkout" },
+    4: { kind: "pass", head: "OLD", lines: [], why: "ok" },
+    5: null,
+  };
+  const gate = (numbers: number[]) => acceptanceGateOf(numbers, { prOf: (n) => prs[n], gateOf: (pr) => verdicts[Number(Object.keys(prs).find((k) => prs[Number(k)] === pr))] });
+  const out = gate([1, 2, 3, 4, 5, 6]);
+  assert.deepEqual(out.armable, [1, 5], "the pass at this head, and the one the org does not run");
+  assert.deepEqual(out.withheld.map((w) => w.number), [2, 3, 4, 6]);
+  assert.match(out.withheld[0].why, /FAILED at b: ACCEPTANCE: FAIL exit 1/);
+  assert.match(out.withheld[2].why, /not at the head it is at now/);
+  assert.match(out.withheld[3].why, /not in the list/);
+  assert.deepEqual([...out.armable, ...out.withheld.map((w) => w.number)].sort(), [1, 2, 3, 4, 5, 6], "a partition: nothing is dropped");
+});
+
+test("(1502 g) the order names the withheld ones and says NOT to arm them by hand; with none withheld it is the order as it was", () => {
+  const bare = greenUnarmedOrders({ numbers: [8, 9], of: 3, armed: 1, tried: [] });
+  assert.doesNotMatch(bare[0].prompt, /ACCEPTANCE HOLDS/, "CONTROL: nothing withheld, nothing said");
+  const withheld = greenUnarmedOrders({ numbers: [8, 9], of: 3, armed: 1, tried: [], withheld: [{ number: 9, why: "acceptance FAILED at 1111aaaa" }] });
+  assert.match(withheld[0].prompt, /ACCEPTANCE HOLDS .*9.*acceptance FAILED at 1111aaaa/);
+  assert.match(withheld[0].prompt, /NOT to be armed by hand/);
+  const alone = greenUnarmedOrders({ numbers: [9], withheld: [{ number: 9, why: "acceptance FAILED" }] });
+  assert.match(alone[0].prompt, /NOT to be armed by hand/, "a bare list with a withheld one still says so");
+});
+
+test("(1502 h) gateUnarmedOnAcceptance: OFF by default reads and runs nothing; ON runs only the eligible ones and never an outside pull request", () => {
+  const prs = [agentPr({ number: 1 }), agentPr({ number: 2, headRefName: "feature/y" }), agentPr({ number: 3, isCrossRepository: true }), agentPr({ number: 4, author: { login: "a-stranger" } })];
+  const asked: number[] = [];
+  const verdictOf = (pr: any) => { asked.push(pr.number); return { kind: "fail" as const, head: pr.headRefOid, lines: ["ACCEPTANCE: FAIL exit 1"], why: "acceptance FAILED" }; };
+  const off = gateUnarmedOnAcceptance([1, 2, 3, 4], { openPrs: prs, scope: BASE, env: {}, declared: DECLARED, verdictOf });
+  assert.deepEqual(off, { armable: [1, 2, 3, 4], withheld: [] });
+  assert.deepEqual(asked, [], "off: no verdict was asked for");
+  const on = gateUnarmedOnAcceptance([1, 2, 3, 4], { openPrs: prs, scope: BASE, env: { [ACCEPTANCE_GATE_SWITCH_ENV]: "on" }, declared: DECLARED, verdictOf, log: () => {} });
+  assert.deepEqual(asked, [1], "on: only the eligible agent pull request was asked about; the branch, the fork and the stranger were not");
+  assert.deepEqual(on.armable, [2, 3, 4], "the org says nothing of what it does not run");
+  assert.deepEqual(on.withheld.map((w) => w.number), [1]);
+  assert.deepEqual(gateUnarmedOnAcceptance([1], { openPrs: prs, scope: BASE, env: { [ACCEPTANCE_GATE_SWITCH_ENV]: "yes" }, declared: DECLARED, verdictOf }).armable, [1], "only the word `on` turns it on");
 });
