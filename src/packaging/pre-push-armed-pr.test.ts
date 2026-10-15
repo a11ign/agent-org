@@ -61,8 +61,8 @@ test("#5526: armed, green AND up to date but REVIEW_REQUIRED is ALLOWED -- the a
   assert.equal(racesAnArmedMerge({ armed: true, green: true, behindBy: 0, reviewDecision: "REVIEW_REQUIRED" }), false);
 });
 
-test("#5526: an EMPTY decision REFUSES -- the base requires no review, so the merge can complete with nobody approving", () => {
-  assert.equal(racesAnArmedMerge({ armed: true, green: true, behindBy: 0, reviewDecision: "" }), true);
+test("#5526: an EMPTY decision is ALLOWED -- the row refuses only APPROVED, the decision a merge completes on; the empty case is a question for product-manager", () => {
+  assert.equal(racesAnArmedMerge({ armed: true, green: true, behindBy: 0, reviewDecision: "" }), false);
 });
 
 test("#5526: a decision that was never read is ALLOWED -- the fail-open direction, applied to the review axis", () => {

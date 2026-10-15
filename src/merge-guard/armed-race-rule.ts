@@ -34,10 +34,10 @@
 // below), so a behind-by lookup there would be a round trip for a value nothing reads. `null` (could not
 // determine) folds into "does not race" the same fail-open direction as everything else here.
 //
-// REVIEW DECISION, #5526: a merge can complete underneath a push only if it can complete WITHOUT an approval. That is
-// `APPROVED`, or empty (the base requires no review). `CHANGES_REQUESTED` and `REVIEW_REQUIRED` cannot merge while
-// `main` requires an approving review (a11ign#2022): the approval would have to land, and the merge fire, inside the
-// push window, which the APPROVED case already covers. An absent decision folds into "does not race".
+// REVIEW DECISION, #5526: a merge completes on `APPROVED`, and only there is the race real. `CHANGES_REQUESTED` and
+// `REVIEW_REQUIRED` cannot merge while `main` requires an approving review (a11ign#2022): the approval would have to
+// land, and the merge fire, inside the push window, which the APPROVED case already covers. An absent decision folds
+// into "does not race".
 import { REPO } from "../project-identity.ts";
 import { checkReasons } from "./checks-rule.ts";
 import { gh, lookup, lookupRequiredContexts, lookupCheckRuns } from "./lookups.ts";
@@ -71,18 +71,12 @@ export function lookupArmedPrStatus(branchName: string,
       const value = JSON.parse(run(["api", `repos/${REPO}/compare/main...${pr.headRefOid}`])).behind_by;
       return typeof value === "number" ? value : null;
     }) : null;
-    // gh answers "no review requirement" as null or "" -- both are read as "" (the merge needs no approval, so it can
-    // race). A key that is absent is no answer at all, and fails open like every other unknown here.
+    // gh answers "no review requirement" as null or "" -- both are read as "", which is not APPROVED and so does not
+    // refuse (see racesAnArmedMerge). A key that is absent is no answer at all, and fails open like every other unknown here.
     const reviewDecision = "reviewDecision" in pr ? (pr.reviewDecision ?? "") : null;
     return { number: pr.number, armed: true, green, behindBy, reviewDecision };
   });
 }
-
-/**
- * The review states a merge can complete in: APPROVED, or empty when `main` requires no review. Any other decision
- * (CHANGES_REQUESTED, REVIEW_REQUIRED) blocks the merge while a review is required, so a push to it cannot race one.
- */
-const REVIEW_DECISIONS_THAT_CAN_MERGE: ReadonlySet<string> = new Set(["APPROVED", ""]);
 
 /**
  * Should THIS push be refused because it would race a merge that could complete underneath it? Armed,
@@ -108,8 +102,9 @@ const REVIEW_DECISIONS_THAT_CAN_MERGE: ReadonlySet<string> = new Set(["APPROVED"
  *
  * #5526: the review decision is part of the same race. A PR whose decision is CHANGES_REQUESTED or REVIEW_REQUIRED cannot
  * merge while `main` requires an approval, so the push is the fix a reviewer asked for and it ALLOWS -- even armed, green
- * and up to date. Only a decision that lets the merge complete (APPROVED, or empty) keeps refusing. An absent decision
- * allows, as every unknown does here.
+ * and up to date. Only APPROVED, the decision a merge completes on, keeps refusing. An empty decision allows too: the row
+ * names APPROVED alone, and whether an empty decision (no review required) should refuse is a question for
+ * product-manager, not this change. An absent decision allows, as every unknown does here.
  *
  * @param {{ armed: boolean, green: boolean | null, behindBy?: number | null, reviewDecision?: string | null } | null} status
  * @returns {boolean}
@@ -118,5 +113,5 @@ export function racesAnArmedMerge(status: { armed: boolean; green: boolean | nul
   if (!status) return false;
   if (!(status.armed && status.green === true)) return false;
   if (status.behindBy !== 0) return false;
-  return status.reviewDecision != null && REVIEW_DECISIONS_THAT_CAN_MERGE.has(status.reviewDecision);
+  return status.reviewDecision === "APPROVED";
 }
