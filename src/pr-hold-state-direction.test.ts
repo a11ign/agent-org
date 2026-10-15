@@ -5,7 +5,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { HOLDER_IDLE_MINUTES, holderOrdersOf } from "./pr-hold-state.ts";
+import { HOLDER_ESCALATE_MINUTES, HOLDER_IDLE_MINUTES, holderOrdersOf } from "./pr-hold-state.ts";
 import { WAIT_MARKER } from "./wait-condition.ts";
 
 const MINUTE = 60_000;
@@ -26,6 +26,13 @@ const heldPr = (comments: unknown[]) => ({ number: 4971, labels: [{ name: `hold:
 function wakeOf(prs: ReturnType<typeof heldPr>[]) {
   const first = holderOrdersOf({ prs, agents: LISTING, declarations: new Map(), memory: {}, now: HELD_AT });
   return holderOrdersOf({ prs, agents: LISTING, declarations: new Map(), memory: first.memory, now: HELD_AT + HOLDER_IDLE_MINUTES * MINUTE }).orders;
+}
+
+/** The orders of the tick at which the decision is asked: the holder was woken, and is still idle {@link HOLDER_ESCALATE_MINUTES} after the wake. */
+function decisionOf(prs: ReturnType<typeof heldPr>[]) {
+  const first = holderOrdersOf({ prs, agents: LISTING, declarations: new Map(), memory: {}, now: HELD_AT });
+  const woken = holderOrdersOf({ prs, agents: LISTING, declarations: new Map(), memory: first.memory, now: HELD_AT + HOLDER_IDLE_MINUTES * MINUTE });
+  return holderOrdersOf({ prs, agents: LISTING, declarations: new Map(), memory: woken.memory, now: HELD_AT + (HOLDER_IDLE_MINUTES + HOLDER_ESCALATE_MINUTES) * MINUTE }).orders;
 }
 
 test("the wake quotes the manager direction posted after the hold, with its first line, its author and its seat", () => {
@@ -66,6 +73,15 @@ test("a direction longer than the bound is cut, not sent whole", () => {
   assert.match(wake.prompt, /LONG x/);
   assert.ok(!wake.prompt.includes("x".repeat(2000)), "a body is cut well short of its length");
   assert.match(wake.prompt, /cut/);
+});
+
+test("the decision asked of the escalation seat quotes the manager direction too", () => {
+  const direction = comment(MANAGER, HELD_AT + 5 * MINUTE, `Orchestrator ruling: drop your hold, agent-org#1378 goes first.${decided("orchestrator")}`);
+  const [decision] = decisionOf([heldPr([MARKER, direction])]);
+  assert.ok(decision, "the decision is asked once the holder has been idle past the escalation");
+  assert.match(decision.prompt, /IS HELD BY A SESSION THAT HAS STOPPED/);
+  assert.match(decision.prompt, /Orchestrator ruling: drop your hold, agent-org#1378 goes first\./, "quotes the direction's first line");
+  assert.match(decision.prompt, /`orchestrator`/, "names the seat that said it");
 });
 
 test("a hold with no manager direction after it quotes none", () => {

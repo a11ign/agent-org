@@ -32,6 +32,7 @@ import { SESSION_PREFIX } from "./project-vocabulary.ts";
 import { IDLE_STATUSES } from "./idle-claimant.ts";
 import { listingIsComplete } from "./herdr-agents.ts";
 import { subjectMention, subjectRef } from "./review-attribution.ts";
+import { decidedBy } from "./decided-by.ts";
 
 export type Wait = import("./wait-condition.ts").Wait;
 export type WaitFacts = import("./wait-condition.ts").WaitFacts;
@@ -285,12 +286,6 @@ export const MANAGER_SEATS: readonly string[] = Object.freeze(["orchestrator", "
  */
 export const MANAGER_LOGINS: readonly string[] = Object.freeze(["a11ign-ai-leads", "a11ign-managers[bot]", "a11ign-managers", "app/a11ign-managers"]);
 
-/** The seat a comment says posted it: the role in its LAST `decided-by` marker (`decidedBy` in `claim-stall.ts`, copied for the same reason as {@link MANAGER_LOGINS}). */
-function seatOf(body: unknown): string | null {
-  const marks = [...String(body ?? "").matchAll(/<!--\s*decided-by:\s*([A-Za-z0-9._-]+)(?:\s+run:\s*\S+)?\s*-->/g)];
-  return marks.at(-1)?.[1] ?? null;
-}
-
 /** How many manager directions a hold-reminder order quotes: the newest, and no more. The rest are named, so the holder knows there is more to read. */
 export const DIRECTIONS_QUOTED = 3;
 
@@ -317,7 +312,7 @@ export function managerDirectionsAfter(comments: unknown[], since: number | null
   for (const raw of comments) {
     const { author, body, createdAt } = raw as { author?: { login?: unknown } | null; body?: unknown; createdAt?: unknown };
     const at = Date.parse(String(createdAt ?? ""));
-    const seat = seatOf(body);
+    const seat = decidedBy(body);
     const login = String(author?.login ?? "");
     if (!(at > since) || seat === null || !MANAGER_SEATS.includes(seat) || !MANAGER_LOGINS.includes(login)) continue;
     directions.push({ seat, author: login, body: String(body), at });
@@ -383,6 +378,7 @@ function decisionPrompt(hold: HoldFacts, { idleMinutes, gone }: { idleMinutes: n
     ? `\`${holder}\` NO LONGER EXISTS (no workspace carries that label), so it could not be woken`
     : `\`${holder}\` was woken ${HOLDER_ESCALATE_MINUTES} minutes ago and is still idle (${idleMinutes} minutes idle in all) with no declared state`;
   return `${mention} IS HELD BY A SESSION THAT HAS STOPPED${pr.approved ? ", AND IT IS APPROVED" : ""}: ${state}. The hold: ${hold.reason}.\n`
+    + directionsText(hold.directions)
     + `DECIDE, AND WRITE THE REASON ON THE PULL REQUEST: release it (\`${releaseCommand(hold)}\`, which only the reason on the pull request makes safe to do for another session), or take the work over `
     + "and say who now holds it. If the reason is still true, record where it ends as a field (`Waiting-for:`, `Not-before:`, `answer:<session>`).\n"
     + "THE GATE DID NOT AND WILL NOT REMOVE THE LABEL: the decision is yours, and this order is asked once for this hold.";
