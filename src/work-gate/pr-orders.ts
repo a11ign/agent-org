@@ -27,6 +27,7 @@ import { REPO } from "../project-identity.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 import { VERIFY_STATE } from "../verify-stamp.ts";
 import { equivalentHeads } from "../review-verdict.ts";
+import type { OrgSideVerdict } from "../acceptance-commands.ts"; // agent-org#1502: a type, so no load-time edge into the file that has a cycle with the gate
 // #705: the definition moved to a leaf the hand-fix ledger can also import; re-exported so a reader of it from here is unchanged.
 import { DEPENDENCY_BOT_LOGIN } from "../dependency-bot-login.ts";
 import { AUTOMATION_WRITER_LOGIN, INSIDE, OUTSIDE, declaredIdentities, outsidePrompt, reviewTrustOf, type DeclaredIdentities, type ReviewTrust } from "../review-trust.ts";
@@ -412,11 +413,53 @@ export function stalledPrOrders(prs: any[], { required = null, reasons = null, n
  * the API says ARE armed; `tried` are the ones the gate ran the arming command on and which it could not arm, each with why. A bare list is "the gate
  * did not look": today's order, unchanged.
  */
-export type UnarmedFacts = { numbers: number[]; of?: number; armed?: number; tried?: { number: number; why: string; }[]; };
+export type UnarmedFacts = { numbers: number[]; of?: number; armed?: number; tried?: { number: number; why: string; }[];
+  /** agent-org#1502: the ones the gate did NOT try to arm because the org-side acceptance verdict is not a pass at their head, each with why. A subset of `numbers`. */
+  withheld?: { number: number; why: string; }[]; };
+
+/**
+ * agent-org#1502 (ADR 0045 cut c, plan a11ign#928 section 6 decision 1): THE ORG-SIDE ACCEPTANCE VERDICT GATES ARMING.
+ *
+ * Of the pull requests the gate would arm, the ones the org runs acceptance for (`gateOf` answers non-null: same-repository `agent/*` branches by a
+ * declared identity, and nothing else) are armable ONLY on a verdict that is `pass` AT THE HEAD THE PULL REQUEST IS NOW AT. A `fail`, a `not-run`, a
+ * verdict for another head and a pull request that was not read are all WITHHELD, with why: an unread verdict is not a pass, which is the rule
+ * `armDecision` applies to unreadable labels. A pull request `gateOf` answers null for is returned armable and untouched, because the org has not
+ * said anything about it and this gate only ever REFUSES what the org ran; whether an outside pull request is armed is ADR 0045 D4's, by hand.
+ *
+ * PURE: `gateOf` is what runs (or fetches a cached) verdict, and is called once per pull request that is in `unarmed`.
+ *
+ * @returns `armable` and `withheld` partition `unarmed`, each in the order given
+ */
+export function acceptanceGateOf(unarmed: number[], { prOf, gateOf }: {
+  prOf: (number: number) => { headRefOid?: unknown; } | null | undefined; gateOf: (pr: any) => OrgSideVerdict | null;
+}): { armable: number[]; withheld: { number: number; why: string; }[]; } {
+  const armable: number[] = [];
+  const withheld: { number: number; why: string; }[] = [];
+  for (const number of unarmed) {
+    const pr = prOf(number);
+    if (pr === null || pr === undefined) {
+      withheld.push({ number, why: "the pull request was not in the list the gate read, so whether the org runs its acceptance is unknown" });
+      continue;
+    }
+    const verdict = gateOf(pr);
+    if (verdict === null) armable.push(number);
+    else if (verdict.kind === "pass" && verdict.head !== null && verdict.head === pr.headRefOid) armable.push(number);
+    else if (verdict.kind === "pass") withheld.push({ number, why: `its acceptance passed at ${String(verdict.head).slice(0, 8)}, not at the head it is at now` });
+    else {
+      const failing = verdict.lines.find((line) => /REFUSED|FAIL|MISSING|exit/i.test(line));
+      withheld.push({ number, why: `${verdict.why}${failing === undefined ? "" : `: ${failing.slice(0, 200)}`}` });
+    }
+  }
+  return { armable, withheld };
+}
 
 /** The paragraph that carries the gate's count into the order; empty for a bare list, which is the order as it was. */
-function unarmedCountText(unarmed: number, of: number | undefined, armed: number | undefined, tried: { number: number; why: string; }[], key: string): string {
-  if (of === undefined || armed === undefined) return "";
+function unarmedCountText(unarmed: number, of: number | undefined, armed: number | undefined, tried: { number: number; why: string; }[], key: string,
+  withheld: { number: number; why: string; }[] = []): string {
+  const held = withheld.length === 0 ? "" : `ACCEPTANCE HOLDS ${withheld.map((t) => `${subjectMention({ repoKey: key, number: t.number })}: ${t.why}`).join("; ")}. `
+    + "THESE ARE NOT UNARMED BY AN OUTAGE and are NOT to be armed by hand: the org's own check refused them, and arming by hand merges past it. "
+    + "The remedy is the pull request's own (fix the Acceptance or the code and push; the verdict is read again at the new head).\n";
+  if (of === undefined || armed === undefined) return held;
   const outage = armed === 0;
   return `THE GATE'S COUNT: ${unarmed} of ${of} candidate(s) are unarmed and ${armed} are armed. `
     + (outage
@@ -426,7 +469,7 @@ function unarmedCountText(unarmed: number, of: number | undefined, armed: number
     + (tried.length > 0
       ? `It RAN THE ARMING COMMAND on ${tried.map((t) => subjectMention({ repoKey: key, number: t.number })).join(", ")} and it did not arm: `
         + `${tried.map((t) => `${subjectMention({ repoKey: key, number: t.number })}: ${t.why}`).join("; ")}.\n`
-      : "\n");
+      : "\n") + held;
 }
 
 /**
@@ -471,7 +514,7 @@ export function greenUnarmedOrders(facts: number[] | UnarmedFacts | null, scope:
     session: string; cause: string; subject: string; discriminator: string;
     prompt: string; causeKey: string;
 }[] {
-  const { numbers: unarmed, of, armed, tried = [] }: UnarmedFacts = Array.isArray(facts) ? { numbers: facts } : facts ?? { numbers: [] };
+  const { numbers: unarmed, of, armed, tried = [], withheld = [] }: UnarmedFacts = Array.isArray(facts) ? { numbers: facts } : facts ?? { numbers: [] };
   if (unarmed.length === 0) return [];
   const refs = unarmed.map((n) => subjectRef(scope.key, n));
   const key = refs.join(".");
@@ -482,7 +525,7 @@ export function greenUnarmedOrders(facts: number[] | UnarmedFacts | null, scope:
     discriminator: key,
     prompt: `${unarmed.length} pull request(s) are green on every required check, NOT held, and NOTHING `
       + `HAS ARMED THEM: ${unarmed.map((n) => subjectMention({ repoKey: scope.key, number: n })).join(", ")}.\n`
-      + unarmedCountText(unarmed.length, of, armed, tried, scope.key)
+      + unarmedCountText(unarmed.length, of, armed, tried, scope.key, withheld)
       + "This is the state a refused arming credential produces, and it is invisible everywhere else: "
       + "`queue-stalled.ts` names armed PRs that cannot merge, and a green unarmed one is the mirror "
       + "nothing reported until #1969. It is read here with the HOST's identity, never the arming PAT, "

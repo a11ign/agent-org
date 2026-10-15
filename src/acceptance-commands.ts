@@ -65,6 +65,7 @@ import {
   declaredRegionFiles, extractLabeledSection, regionCovers, trackedTopLevelDirs,
 } from "./region-paths.ts";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { pnpmCliInvocation } from "./lib/npm-cli-executable.ts";
 import { existsSync, globSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -3803,6 +3804,129 @@ export function runCiBodyReports(input: BodyReportInput, reports: BodyReport[] =
   const resolved = { ...input, acceptance: acceptanceSourceOf(input) };
   const results = reports.map(({ report }) => report(resolved));
   return { ok: results.every((result) => result.ok), lines: results.flatMap((result) => result.lines) };
+}
+
+/**
+ * agent-org#1502 (ADR 0045 cut c, a11ign#5460): WHO MAY HAVE ITS ACCEPTANCE COMMAND RUN ON THE ORG SIDE, AND WHERE.
+ *
+ * WHERE: the HOST GATE, on a pull request it already reads (plan a11ign#928 section 2: what starts it is an event on a11ign, so the gate and not a
+ * scheduled workflow). It runs the command in its own checkout of the pull request's merge ref, as the engineer's `pr:open` already ran the same
+ * command in the engineer's worktree: the command's author and its runner are one trust domain, which is the whole of why it may run there.
+ *
+ * WHO: a pull request is eligible only when ALL FOUR hold, and every doubt is "not eligible", never "eligible":
+ *   1. GitHub says it is not from a fork (`isCrossRepository === false`), read and never inferred from a name;
+ *   2. when `headRepository` names a repository, it is the base repository (a second reading of 1, which can only refuse);
+ *   3. its branch is `agent/*`, the branch family the org's sessions open;
+ *   4. its author is an identity the host declares: `byDeclaredIdentity` is `review-trust.ts`'s `reviewTrustOf(pr, declared) === INSIDE`, the one trust
+ *      decision the reviewer already uses, INJECTED and not imported -- that module reaches `gh`, and importing it here would charge a token to every
+ *      acceptance command whose closure includes this file (`packaging/board-snapshot-scope.test.ts` and #621's self-reference pin say so).
+ * An outside pull request meets NONE of this: no checkout, no process, no read of its body past the fields above.
+ *
+ * `reason` is the sentence a person reads, so each refusal names the first rule that failed.
+ */
+export type OrgSidePullRequest = {
+  number?: unknown; headRefName?: unknown; headRefOid?: unknown; isCrossRepository?: unknown; body?: unknown;
+  headRepository?: { name?: unknown; nameWithOwner?: unknown; } | null; author?: { login?: unknown; } | null;
+};
+export const ORG_SIDE_BRANCH_PREFIX = "agent/";
+
+export function orgSideAcceptanceEligibility(pr: OrgSidePullRequest | null | undefined, { byDeclaredIdentity, baseRepo }: { byDeclaredIdentity: (pr: OrgSidePullRequest) => boolean; baseRepo: string; }):
+  { eligible: true; } | { eligible: false; reason: string; } {
+  const no = (reason: string) => ({ eligible: false as const, reason });
+  if (pr === null || pr === undefined) return no("no pull request was read");
+  if (pr.isCrossRepository !== false) return no(pr.isCrossRepository === true ? "it is from a fork" : "GitHub did not say whether it is from a fork, and unreadable is outside");
+  const head = pr.headRepository;
+  const named = typeof head?.nameWithOwner === "string" ? head.nameWithOwner : typeof head?.name === "string" ? head.name : null;
+  if (named !== null && named.toLowerCase() !== baseRepo.toLowerCase() && named.toLowerCase() !== baseRepo.split("/").at(-1)?.toLowerCase()) {
+    return no(`its head repository is \`${named}\`, not \`${baseRepo}\``);
+  }
+  if (typeof pr.headRefName !== "string" || !pr.headRefName.startsWith(ORG_SIDE_BRANCH_PREFIX)) return no(`its branch is not \`${ORG_SIDE_BRANCH_PREFIX}*\``);
+  if (!byDeclaredIdentity(pr)) return no(`its author \`${String(pr.author?.login ?? "")}\` is not an identity the host declares`);
+  return { eligible: true };
+}
+
+/** `pass` and `fail` are the command's own verdict at `head`; `not-run` is every other state, which ARMS NOTHING (an unread verdict is not a pass). */
+export type OrgSideVerdict = { kind: "pass" | "fail" | "not-run"; head: string | null; lines: string[]; why: string; };
+
+/**
+ * The org side's run of ONE pull request's acceptance family, behind {@link orgSideAcceptanceEligibility}. `checkout` and `report` are the seams, and the
+ * test of "an outside pull request executes nothing" is that neither is called for it: `checkout` is the only thing that puts the pull request's files
+ * on the host and `report` the only thing that runs its text. A checkout that throws, a body that is not text and a head the checkout does not hold are
+ * `not-run`, never `pass`.
+ *
+ * @param checkout the directory holding the merge of this head into the base, or a throw saying why not; given the head it must hold
+ * @param prepare makes that directory runnable (its dependencies installed). A throw is `not-run`, NEVER `fail`: a checkout that could not be prepared
+ *   says nothing about the pull request, and a fresh worktree has no `node_modules` (the first real run, a11ign#5555, failed `rstest not found` for that reason)
+ */
+export function orgSideAcceptanceVerdict(pr: OrgSidePullRequest | null | undefined, { byDeclaredIdentity, baseRepo, checkout, prepare = () => {}, report = defaultOrgSideReport, release = () => {} }: {
+  byDeclaredIdentity: (pr: OrgSidePullRequest) => boolean; baseRepo: string; checkout: (head: string, number: number) => string; prepare?: (cwd: string) => void;
+  report?: (input: BodyReportInput, cwd: string) => { ok: boolean; lines: string[]; }; release?: (cwd: string) => void;
+}): OrgSideVerdict {
+  const eligibility = orgSideAcceptanceEligibility(pr, { byDeclaredIdentity, baseRepo });
+  if (!eligibility.eligible) return { kind: "not-run", head: null, lines: [], why: `not run on the org side: ${eligibility.reason}` };
+  const head = typeof pr?.headRefOid === "string" && pr.headRefOid !== "" ? pr.headRefOid : null;
+  const number = Number(pr?.number);
+  if (head === null || !Number.isInteger(number)) return { kind: "not-run", head, lines: [], why: "not run: the pull request's head or number was not read" };
+  if (typeof pr?.body !== "string") return { kind: "not-run", head, lines: [], why: "not run: the pull request's body was not read" };
+  let cwd: string;
+  try {
+    cwd = checkout(head, number);
+  } catch (error) {
+    return { kind: "not-run", head, lines: [], why: `not run: no checkout at ${head.slice(0, 8)} (${String((error as Error).message ?? error).split("\n")[0].slice(0, 160)})` };
+  }
+  let result: { ok: boolean; lines: string[]; };
+  try {
+    try {
+      prepare(cwd);
+    } catch (error) {
+      return { kind: "not-run", head, lines: [], why: `not run: the checkout at ${head.slice(0, 8)} could not be prepared (${String((error as Error).message ?? error).split("\n")[0].slice(0, 160)})` };
+    }
+    result = report(thisPullRequestInput(pr.body, cwd, String(pr.author?.login), { run: (command) => runAcceptanceCommand(command, { cwd }) }), cwd);
+  } finally {
+    release(cwd);
+  }
+  return { kind: result.ok ? "pass" : "fail", head, lines: result.lines, why: result.ok ? `acceptance passed at ${head.slice(0, 8)}` : `acceptance FAILED at ${head.slice(0, 8)}` };
+}
+
+const defaultOrgSideReport = (input: BodyReportInput) => runCiBodyReports(input);
+
+/**
+ * THE DEFAULT CHECKOUT: `refs/pull/<n>/merge` fetched into a detached worktree under `scratch`, which is what CI's `pull_request` checkout is and what
+ * `changedFilesOfThisPullRequest` reads (HEAD a merge commit, first parent the base). The merge ref is GitHub's and may be stale, so its second parent
+ * must BE the head the gate asked about; a stale one throws. `git` is the seam so a test needs no remote.
+ */
+export function checkoutPullRequestMerge({ repoRoot, scratch, git = (args, cwd) => execFileSync("git", args, { cwd, encoding: "utf8", env: sandboxGitEnv() }) }: {
+  repoRoot: string; scratch: string; git?: (args: string[], cwd: string) => string;
+}): (head: string, number: number) => string {
+  return (head, number) => {
+    git(["fetch", "--quiet", "origin", `refs/pull/${number}/merge`], repoRoot);
+    const merged = git(["rev-parse", "FETCH_HEAD"], repoRoot).trim();
+    const parents = git(["rev-list", "--parents", "-n", "1", merged], repoRoot).trim().split(/\s+/).slice(1);
+    if (parents[1] !== head) throw new Error(`the merge ref's head is ${String(parents[1]).slice(0, 8)}, not ${head.slice(0, 8)}`);
+    const dir = join(scratch, `pr-${number}-${head.slice(0, 12)}`);
+    git(["worktree", "add", "--detach", "--force", dir, merged], repoRoot);
+    return dir;
+  };
+}
+
+/**
+ * The `prepare` of {@link checkoutPullRequestMerge}: the checkout's own lockfile, installed from the host's store with NO network and NO lifecycle scripts,
+ * so what runs next is the pull request's command and nothing an install pulled in. A tree that is not a pnpm workspace has no lockfile and needs none.
+ */
+export function installPullRequestCheckout({ run = (cwd: string) => {
+  const pnpm = pnpmCliInvocation(["install", "--frozen-lockfile", "--offline", "--ignore-scripts"]); // the helper, not a bare `pnpm` (no-npm-spawn.test.ts: `pnpm.cmd` on Windows)
+  execFileSync(pnpm.command, pnpm.args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+}, exists = existsSync }: {
+  run?: (cwd: string) => void; exists?: (path: string) => boolean;
+} = {}): (cwd: string) => void {
+  return (cwd) => { if (exists(join(cwd, "pnpm-lock.yaml"))) run(cwd); };
+}
+
+/** The `release` of {@link checkoutPullRequestMerge}: the worktree it added is removed, so a tick leaves no checkout of a pull request's files behind. */
+export function releasePullRequestCheckout({ repoRoot, git = (args, cwd) => execFileSync("git", args, { cwd, encoding: "utf8", env: sandboxGitEnv() }) }: {
+  repoRoot: string; git?: (args: string[], cwd: string) => string;
+}): (cwd: string) => void {
+  return (cwd) => { git(["worktree", "remove", "--force", cwd], repoRoot); };
 }
 
 function main() {
