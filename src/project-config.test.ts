@@ -12,7 +12,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { sandboxGitEnv } from "./lib/git-env.ts";
-import { ABSENT_ROUTING, FALLBACK_ROUTES, ProjectDeclarationRefusal, ROUTES, parseProjectDeclaration, resolveHomeCheckout } from "./project-config.ts";
+import { HOST_DECLARATION_PATH } from "./host-config.ts";
+import { ABSENT_ROUTING, FALLBACK_ROUTES, HOST_DECLARATION, ProjectDeclarationRefusal, ROUTES, parseProjectDeclaration, resolveHomeCheckout } from "./project-config.ts";
 
 const BASE = {
   schema: 1,
@@ -144,7 +145,7 @@ for (const where of ["worktree", "clone"] as const) {
     const cwd = where === "worktree" ? fixture.worktree : fixture.clone;
     assert.throws(() => standaloneFrom(cwd), (error: unknown) => {
       assert.ok(error instanceof ProjectDeclarationRefusal);
-      assert.equal((error as any).field, "AGENT_ORG_HOST");
+      assert.equal((error as ProjectDeclarationRefusal).field, "AGENT_ORG_HOST");
       assert.ok(error.message.includes(fixture.host), `the declaration's path is not named:\n${error.message}`);
       assert.ok(error.message.includes(`AGENT_ORG_HOST=${fixture.host}`), `the value to set is not named:\n${error.message}`);
       return true;
@@ -181,4 +182,8 @@ test("#1433 CONTROL: a directory in no repository refuses without naming a decla
     assert.ok(!error.message.includes("clones"), `a hint with no clone is named:\n${error.message}`);
     return true;
   });
+});
+
+test("#1433 PIN: the host declaration path this module names is the one host-config.ts names (host-config imports this module, so the two cannot share a binding)", () => {
+  assert.equal(HOST_DECLARATION, HOST_DECLARATION_PATH);
 });

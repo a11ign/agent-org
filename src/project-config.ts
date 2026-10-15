@@ -497,8 +497,8 @@ function installedProject(cwd: string): string {
     + " (declare the project there, or set `AGENT_ORG_HOST` to a host file whose primary is the project)", "the tool's checkout resolution");
 }
 
-/** The host declaration's path inside a checkout: the path `host-config.ts`'s `HOST_DECLARATION_PATH` names, which this module cannot import back. */
-const HOST_DECLARATION = ".agent-org/host.json";
+/** The host declaration's path inside a checkout. `host-config.ts` imports this module, so it cannot be imported back; the project-config test pins this to `host-config.ts`'s `HOST_DECLARATION_PATH`. */
+export const HOST_DECLARATION = ".agent-org/host.json";
 
 /**
  * The host declaration whose `clones` map names THIS repository's checkout, or `null` (#1433). It is read only to NAME the file: nothing is resolved from
