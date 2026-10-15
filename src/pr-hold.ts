@@ -65,7 +65,11 @@ import { pathToFileURL } from "node:url";
 import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
 import { disarmVerdict, armVerdict, holdTargetIdleReason, REARM_LABEL, HOLD_PREFIX, holdersOf } from "./pr-hold-state.ts";
 import type { PullRequestRef, RefFact } from "./pr-hold-state.ts";
-import { parseWaits, WAIT_MARKER, MANUAL_WAIT_HOURS } from "./wait-condition.ts";
+import { parseWaits, WAIT_MARKER, MANUAL_WAIT_HOURS, waitItemOf, declaredWaitsOf } from "./wait-condition.ts";
+import { holdCycleOf, holdCycleText, refKey } from "./hold-cycle.ts";
+import type { CycleParty } from "./hold-cycle.ts";
+import { closedRefsOf } from "./board-truth-audit.ts";
+import { pullRequestFieldsOf } from "./ticket-port/pull-request-fields.ts";
 import { REPO } from "./project-identity.ts";
 import { homeProjectDeclaration } from "./project-config.ts";
 import { assertNoLeakInArgv } from "./lib/leak-patterns.ts";
@@ -290,6 +294,7 @@ function main() {
 /**
  * A HOLD THAT WAITS FOR A ROW NOBODY IS WORKING NEVER ENDS, SO THE TAKE REFUSES IT (#4661, class `hold-on-idle-row`, chairman). `--until=closed #N` where #N is
  * open, has no claim and has no open pull request closing it is refused, naming the way out. The reading is `holdTargetIdleReason`'s; this only fetches the facts.
+ * A target somebody IS working is then checked for a CYCLE (`holdCycleRefusal`, #1396).
  *
  * ABSENCE IS NOT PROOF, so only a POSITIVE reading refuses. A target that cannot be read (a pull request number, a repository this token cannot see, a failed
  * call) leaves the hold taken as it always was, with a note on stderr, and the gate's detector (`idleHoldIncident`) is what catches it later. Refusing on
@@ -303,32 +308,75 @@ function idleTargetRefusal(pr: HeldPr, until: string | null): string | null {
   if (parsed?.state !== "closed") return null;
   // A bare `#n` names the held pull request's own repository (`wait-condition.ts`'s `ownedBy`), so it is resolved the same way here.
   const repo = parsed.repo ?? pr.repo;
-  const target = { ...parsed, repo, key: `${repo}#${parsed.number}` };
+  const target = { number: parsed.number, repo, key: `${repo}#${parsed.number}` };
   const facts = readTargetFacts(target);
   if (facts === null) {
     process.stderr.write(`NOTE: could not read ${target.key}, so whether anybody is working it was not checked; the hold is taken as asked.\n`);
     return null;
   }
-  const reason = holdTargetIdleReason({ wait: target, fact: facts.fact }, { openPullRequests: facts.openPullRequests });
-  if (reason === null) return null;
-  return `REFUSING --until=${JSON.stringify(until)}: ${reason}. Nothing was written. Merge ${mention(pr)} and let the row rebase when it lands (a row that lands `
-    + `after you has nothing to wait for), or take the hold with \`--until=manual\`, which is counted and expires after ${MANUAL_WAIT_HOURS} hours.`;
+  const reason = holdTargetIdleReason({ wait: { ...parsed, repo, key: target.key }, fact: facts.fact }, { openPullRequests: facts.openPullRequests });
+  if (reason !== null) {
+    return `REFUSING --until=${JSON.stringify(until)}: ${reason}. Nothing was written. Merge ${mention(pr)} and let the row rebase when it lands (a row that lands `
+      + `after you has nothing to wait for), or take the hold with \`--until=manual\`, which is counted and expires after ${MANUAL_WAIT_HOURS} hours.`;
+  }
+  return holdCycleRefusal(pr, until, target, facts);
 }
 
 /**
- * THE TARGET ROW'S STATE, LABELS AND CLOSING PULL REQUESTS, in one `gh issue view`, or `null` when it could not be had. `closedByPullRequestsReferences` lists a
- * pull request that is open or MERGED (measured on #4641, closed by merged agent-org#556), and a merged one has closed the row, so on an OPEN row every
- * reference is an open pull request. A pull request number fails `gh issue view` and reads `null`, which is not a refusal.
- * @param {{ repo: string, number: number }} target @returns {{ fact: RefFact, openPullRequests: PullRequestRef[] } | null}
+ * A HOLD THAT CLOSES A CYCLE IS REFUSED (#1396, chairman class 1). The target is open and somebody is working it, so the idle rule passed, but the held pull request
+ * waits on it and the target, or the open pull request that closes it, waits back: `merged <held>`, or `closed <row>` on a row the held pull request closes. Neither
+ * can move, and no tick names it (agent-org#1365 and #1378 sat about 2 h, 2026-10-13). The reading is `holdCycleOf`'s; this reads the parties.
+ *
+ * THE SAME DISCIPLINE AS `idleTargetRefusal`: only a positive reading refuses, and an edge that cannot be read is absent, with a NOTE, so the hold is taken as asked.
+ * The held pull request's key needs no read; its body (for the rows it closes) and each closing pull request's body and comments are read here.
+ * @param {HeldPr} pr @param {string | null} until @param {{ number: number, repo: string, key: string }} target
+ * @param {{ row: any, openPullRequests: PullRequestRef[] }} facts what `readTargetFacts` read
+ * @returns {string | null} the refusal text, or `null` to go on
  */
-function readTargetFacts(target: { repo: string; number: number; }): { fact: RefFact; openPullRequests: PullRequestRef[]; } | null {
+function holdCycleRefusal(pr: HeldPr, until: string | null, target: { number: number, repo: string, key: string }, facts: { row: any, openPullRequests: PullRequestRef[] }): string | null {
+  const heldRaw = readPullRequest(pr.repo, pr.number, "body");
+  if (heldRaw === null) process.stderr.write(`NOTE: could not read ${mention(pr)}'s body, so the rows it closes were not checked for a cycle; the hold is taken as asked.\n`);
+  const held: CycleParty = { key: refKey(null, pr.number, pr.repo), home: pr.repo, waits: [],
+    closes: heldRaw === null ? [] : closedRefsOf(String(heldRaw.body ?? "")).map((ref) => refKey(ref.repo, ref.number, pr.repo)) };
+  const targetParty: CycleParty = { key: refKey(null, target.number, target.repo), home: target.repo,
+    waits: declaredWaitsOf(waitItemOf({ ...facts.row, number: target.number }, "row")).waits, closes: [] };
+  const closing: CycleParty[] = [];
+  for (const ref of facts.openPullRequests) {
+    const raw = readPullRequest(ref.repo, ref.number, "body,comments");
+    if (raw === null) {
+      process.stderr.write(`NOTE: could not read ${refKey(null, ref.number, ref.repo)}, a pull request that closes ${target.key}, so whether it waits on the held pull request was not checked.\n`);
+      continue;
+    }
+    closing.push({ key: refKey(null, ref.number, ref.repo), home: ref.repo, waits: declaredWaitsOf(waitItemOf({ ...raw, number: ref.number }, "pr")).waits, closes: [] });
+  }
+  const cycle = holdCycleOf(held, targetParty, closing);
+  if (cycle === null) return null;
+  return `REFUSING --until=${JSON.stringify(until)}: the hold would close a cycle, ${holdCycleText(cycle)}: each waits on the next, so none can move. Nothing was written. `
+    + `Route it to orchestrator, which decides which of the two holds waits on nothing. \`--until=manual\` is counted and expires after ${MANUAL_WAIT_HOURS} hours.`;
+}
+
+/**
+ * A pull request's named fields, or `null` when they could not be had. Absence is not proof, so the caller notes it and reads no further edge from it.
+ * @param {string} repo @param {number} number @param {string} fields @returns {any | null}
+ */
+function readPullRequest(repo: string, number: number, fields: string): Record<string, any> | null {
+  return pullRequestFieldsOf({ repo, number, fields, run: gh });
+}
+
+/**
+ * THE TARGET ROW'S STATE, LABELS, CLOSING PULL REQUESTS AND RAW ROW (its body and comments, for the waits it declares), in one `gh issue view`, or `null` when it could
+ * not be had. `closedByPullRequestsReferences` lists a pull request that is open or MERGED (measured on #4641, closed by merged agent-org#556), and a merged one has closed
+ * the row, so on an OPEN row every reference is an open pull request. A pull request number fails `gh issue view` and reads `null`, which is not a refusal.
+ * @param {{ repo: string, number: number }} target @returns {{ fact: RefFact, openPullRequests: PullRequestRef[], row: any } | null}
+ */
+function readTargetFacts(target: { repo: string; number: number; }): { fact: RefFact; openPullRequests: PullRequestRef[]; row: any; } | null {
   try {
-    const row = JSON.parse(gh(["issue", "view", String(target.number), "--repo", target.repo, "--json", "state,labels,closedByPullRequestsReferences"]));
+    const row = JSON.parse(gh(["issue", "view", String(target.number), "--repo", target.repo, "--json", "state,labels,closedByPullRequestsReferences,body,comments"]));
     const state = String(row.state ?? "").toLowerCase();
     if (!["open", "closed"].includes(state) || !Array.isArray(row.labels) || !Array.isArray(row.closedByPullRequestsReferences)) return null;
     const openPullRequests = row.closedByPullRequestsReferences.map((ref: { number: number; repository?: { name?: string; owner?: { login?: string; }; }; }) =>
       ({ number: ref.number, repo: `${ref.repository?.owner?.login}/${ref.repository?.name}` }));
-    return { fact: { state: state as RefFact["state"], labels: row.labels.map((l: { name: string; }) => l.name), resolvedAt: null, changedAt: null }, openPullRequests };
+    return { fact: { state: state as RefFact["state"], labels: row.labels.map((l: { name: string; }) => l.name), resolvedAt: null, changedAt: null }, openPullRequests, row };
   } catch {
     return null;
   }
