@@ -1365,7 +1365,7 @@ export function compileCacheDrift(deps: ShippedDeps & { shippedDir?: string; rea
     });
 }
 
-export type Finding = {unit: string, problem: string, detail: string, revertsIdentity?: boolean, runnerVersions?: boolean, manualFix?: boolean, hostProgram?: boolean, seatAbsent?: boolean, removesUnit?: boolean, shippedOnRef?: string, supersededScript?: string, missingProgram?: string, installedCopy?: InstalledCopyState};
+export type Finding = {unit: string, problem: string, detail: string, revertsIdentity?: boolean, runnerVersions?: boolean, manualFix?: boolean, hostProgram?: boolean, seatAbsent?: boolean, removesUnit?: boolean, noProjectUnits?: boolean, unitsUnreadable?: boolean, shippedOnRef?: string, supersededScript?: string, missingProgram?: string, installedCopy?: InstalledCopyState};
 
 /**
  * HOW THE INSTALLED UNIT STANDS AGAINST THE REPOSITORY, carried on a `missingProgram` finding as the MEASURED FACT rather than as an assumption baked into its prose. It decides both the sentence the finding prints and whether `uncovered` says the shared remedy cannot fix it.
@@ -2940,9 +2940,81 @@ Parameters<typeof hostIdentityDrift>[0] & Parameters<typeof identityDrift>[0] & 
   const codexDaemonDisagreement: Finding[] = codexClientDaemonDrift({ home: (deps.host ?? homeHostConfig()).home,
     readCodexConfig: deps.readCodexConfig, ...deps.codexDrift });
   return [...unclassifiedInLiveTree(deps), ...unitDrift(shippedUnitNames(deps).map((u) => unitState(u, deps))),
-    ...orphanedUnits(deps), ...supersededHostScripts(deps), ...missingUnitPrograms(deps), ...hostInstallPending(deps), ...unitsWithoutHostVariable(deps),
+    ...orphanedUnits(deps), ...emptyProjectUnitsFinding(deps), ...supersededHostScripts(deps), ...missingUnitPrograms(deps), ...hostInstallPending(deps), ...unitsWithoutHostVariable(deps),
     ...hostIdentityDrift(deps), ...reviewerDoorDrift(deps), ...rowReviewSkillDrift(deps), ...identityDrift(deps), ...humanLoginOnHost(deps), ...codexTrustDrift(deps),
     ...codexDaemonDisagreement, ...permissionModeDrift(deps), ...modelEffortDrift(deps), ...pnpmDrift({ repoRoot: REPO_ROOT, ...deps.pnpm })];
+}
+
+/**
+ * The project's own units directory a check or an install reads, or `null` when it reads none: a fixture handed its own `shippedDir` and no
+ * `projectUnitsDir` (the rule `shippedContext` applies, named once here for #1505).
+ * @param {ShippedDeps} [deps] @returns {string | null}
+ */
+function projectUnitsDirOf({ shippedDir, projectUnitsDir }: ShippedDeps = {}): string | null {
+  if (projectUnitsDir !== undefined) return projectUnitsDir;
+  return (shippedDir ?? SHIPPED_DIR) === SHIPPED_DIR ? PROJECT_UNITS_DIR : null;
+}
+
+/**
+ * THE FIRST LINE OF `host:check` AND `host:install` (#1505): which checkout the project's units were read from, and its HEAD. Two directories on one
+ * host gave one reading `1 problem` and another `14 files not shipped`, and neither said which checkout it had read. The checkout is the one `dir`
+ * belongs to (`git rev-parse --show-toplevel`), so the line names the directory actually read, even one a test hands in.
+ * @param {string | null} dir the project's units directory, or null for a run that reads none @returns {string}
+ */
+export function projectUnitsLine(dir: string | null, { read = readdirSync }: { read?: typeof readdirSync } = {}): string {
+  if (dir === null) return "project units: none read -- this run reads no project units directory.\n";
+  const files = namesIn(dir, read).length;
+  let checkout = dir;
+  let head = "no HEAD (not a git checkout)";
+  try {
+    const [top, sha] = execFileSync("git", ["-C", dir, "rev-parse", "--show-toplevel", "--short", "HEAD"],
+      { encoding: "utf8", env: sandboxGitEnv(), stdio: ["ignore", "pipe", "ignore"] }).trim().split("\n");
+    checkout = top;
+    head = sha;
+  } catch {
+    // A missing or unversioned directory is the case this line exists to show, so the line still names the directory it tried.
+  }
+  return `project units read from ${checkout} @ ${head}, ${files} files\n`;
+}
+
+/**
+ * THE PROJECT'S UNITS DIRECTORY IS THERE AND HOLDS NONE OF ITS UNITS, while the host has installed some (#1505, the third line of the change).
+ * That is what deleting a host's whole project timer set looks like from the inside: `host:install` removes every installed unit no shipped set
+ * names, and an empty directory names none of the project's. A directory that does not exist is silence here, since the missing-unit check asks that.
+ * @param {ShippedDeps & { installedDir?: string, readDir?: typeof readdirSync }} [deps] @returns {Finding[]}
+ */
+export function emptyProjectUnitsFinding(deps: ShippedDeps & { installedDir?: string; readDir?: typeof readdirSync; } = {}): Finding[] {
+  const dir = projectUnitsDirOf(deps);
+  const { installedDir = INSTALLED_DIR, readDir = readdirSync } = deps;
+  if (dir === null) return [];
+  // A directory that is not there is silence here, since the missing-unit check asks that. One that is there and cannot be read is
+  // UNKNOWN, never safe: it is reported as unreadable, and the install remedy is withheld for it (`remedy`).
+  const unreadable = (unit: string, err: unknown): Finding[] => {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    return [{ unit, problem: "PROJECT UNITS UNREADABLE", unitsUnreadable: true,
+      detail: `${unit} exists but could not be read (${(err as Error).message}), so nothing here can say which units it holds. Settle why it cannot be read before anything is installed or removed.` }];
+  };
+  let held: string[];
+  try {
+    held = readDir(dir).map(String);
+  } catch (err) {
+    return unreadable(dir, err);
+  }
+  const prefix = unitPrefix(deps);
+  const isOwn = (name: string) => name.startsWith(prefix) && isUnit(name);
+  if (held.some(isOwn)) return [];
+  let installedNames: string[];
+  try {
+    installedNames = readDir(installedDir).map(String);
+  } catch (err) {
+    return unreadable(installedDir, err);
+  }
+  const installed = installedNames.filter(isOwn);
+  if (installed.length === 0) return [];
+  return [{ unit: dir, problem: "PROJECT UNITS EMPTY", noProjectUnits: true,
+    detail: `it holds no \`${prefix}*\` unit, but ${installed.length} are installed (${installed.join(", ")}). \`host:install\` would REMOVE every installed `
+      + "unit the tool does not ship, and those are this project's: the checkout these units were read from is not the one this host serves "
+      + "(`AGENT_ORG_HOST`), or its units were deleted. Settle which before anything is installed or removed." }];
 }
 
 /** @param {string[]} args */
@@ -3024,6 +3096,7 @@ export function hostUnitsInstall(deps: ShippedDeps & {
   const { installedDir = INSTALLED_DIR, systemctl = defaultSystemctl, mkdir = mkdirSync, rm = rmSync,
     out = (l) => process.stdout.write(l) } = deps;
   const { shippedDir = SHIPPED_DIR, readDir = readdirSync, git = defaultGit } = deps;
+  out(projectUnitsLine(projectUnitsDirOf(deps), { read: readDir }));
   refuseUnclassified(deps);
   refuseUnitsWithoutHostVariable(deps);
   // `readDir` IS INJECTED THROUGH TO BOTH DISCOVERIES, and the first version of this hard-wired
@@ -3038,7 +3111,10 @@ export function hostUnitsInstall(deps: ShippedDeps & {
   // first because deleting the file leaves an enabled symlink in `timers.target.wants` behind, and a
   // dangling want is a warning on every subsequent `daemon-reload` -- noise that trains an operator to
   // ignore this command's output.
-  for (const { unit } of orphanedUnits({ ...deps, shippedDir, installedDir, readDir, git })) {
+  const orphans = orphanedUnits({ ...deps, shippedDir, installedDir, readDir, git });
+  const compared = `${shippedDir} and ${projectUnitsDirOf(deps) ?? "no project units directory"}`;
+  for (const { unit } of orphans) out(`ORPHAN ${unit} -- not shipped by the directories compared: ${compared}\n`);
+  for (const { unit } of orphans) {
     if (startedByEnable(unit, unitPrefix(deps))) systemctl(["disable", "--now", unit]);
     rm(join(installedDir, unit), { force: true });
     out(`REMOVED ${unit} -- no longer shipped by this repository\n`);
@@ -3518,16 +3594,26 @@ function uncovered(drift: Finding[]): string {
  * @param {Finding[]} drift @returns {string}
  */
 function remedy(drift: Finding[]): string {
+  // An unreadable directory's contents are unknown, so no install is named as the fix: `host:install` acts on exactly those contents.
+  const unreadable = drift.filter((d) => d.unitsUnreadable);
+  if (unreadable.length > 0) {
+    return `${uncovered(drift)}  No remedy is named: ${unreadable.map((d) => d.unit).join(", ")} cannot be read, so `
+      + "`host:install` cannot be judged safe. Make it readable, then run `pnpm run host:check` again.\n";
+  }
   const line = `${uncovered(drift)}  Remedy for all of them: pnpm run host:install\n`;
   const reverts = drift.filter((d) => d.revertsIdentity);
   const removes = drift.filter((d) => d.removesUnit);
   const pending = drift.filter((d) => d.shippedOnRef);
-  if (reverts.length === 0 && removes.length === 0 && pending.length === 0) return line;
+  const emptied = drift.filter((d) => d.noProjectUnits);
+  if (reverts.length === 0 && removes.length === 0 && pending.length === 0 && emptied.length === 0) return line;
   return "  !! DO NOT RUN THE REMEDY YET -- it would change this host in a way nothing here would\n"
     + "     report afterwards.\n"
     + reverts.map((d) => `     ${d.unit} is installed with a \`GH_CONFIG_DIR\` the repository does not `
       + "ship,\n     and `host:install` copies the repository over the host. Land that line in\n"
       + "     packages/agent-org/host/ first.\n").join("")
+    + (emptied.length === 0 ? "" : "     the project's units directory holds none of its units, so `host:install` would\n"
+      + "     REMOVE every installed unit it does not ship (each listed as ORPHAN). Settle which\n"
+      + "     checkout this host serves (AGENT_ORG_HOST) first.\n")
     + removes.map((d) => `     ${d.unit} would be DELETED, and this repository has no record of ever\n`
       + "     shipping it -- so nothing here knows what stops when it goes. Read it and its journal\n"
       + "     first, then ship it under packages/agent-org/host/ or confirm it is dead.\n").join("")
@@ -3597,7 +3683,7 @@ function main() {
   }
   const versions = readToolVersionAgreement();
   const drift = [...hostFindings(), ...toolVersionFindings(versions)];
-  process.stdout.write(driftReport(drift, asked, asked ? [...hostNotes(), ...toolVersionNotes(versions)] : []));
+  process.stdout.write(projectUnitsLine(projectUnitsDirOf()) + driftReport(drift, asked, asked ? [...hostNotes(), ...toolVersionNotes(versions)] : []));
   if (drift.length > 0) process.exitCode = 1;
 }
 
