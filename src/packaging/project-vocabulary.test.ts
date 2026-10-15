@@ -173,6 +173,9 @@ const DECLARED_NON_VOCABULARY_HITS: Declaration[] = [
   // #3942: the same leaf holds `STATE_LABELS`, whose `backlog` and `blocked` ARE vocabulary labels. It cannot import the vocabulary (no imports, same contract), so it keeps its
   // own copy and `state-label-exactly-one.test.ts` ("STATE_LABELS is the six names ...") pins each equal to the vocabulary's, which is what stops the copy drifting.
   ...nonVocabulary("claim-labels.ts", ['"backlog"', '"blocked"'], "the import-free leaf's own copy of two vocabulary labels in STATE_LABELS, pinned equal to them (#3942)"),
+  // `worker-stop-hook.ts`: the `state` of the `blocked` DECLARATION the bound writes (`worker-state.ts`'s `DeclaredState`, the same word as the label because the state
+  // IS the label's name there). It is a worker-state declaration's state, not the GitHub label, which the hook reaches through `applyBlocked`, never by spelling it.
+  ...nonVocabulary("worker-stop-hook.ts", ['"blocked"'], "the declared state of a worker's blocked declaration (`DeclaredState`), not a label the hook writes"),
   // `claim-stall.ts`'s own `why: "stalled" | "blocked" | "merged"` release-reading enum: a native `blockedBy` GRAPH EDGE outcome (`blockedReading`),
   // never the `blocked` GitHub LABEL -- the same word, an unrelated fact this module invented for its own return type.
   ...nonVocabulary("claim-stall.ts", ['"blocked"'], "its own `why` enum: a `blockedBy` graph-edge outcome, never the `blocked` label"),
