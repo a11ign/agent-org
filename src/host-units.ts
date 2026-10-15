@@ -2990,8 +2990,12 @@ export function emptyProjectUnitsFinding(deps: ShippedDeps & { installedDir?: st
   let held: string[];
   try {
     held = readDir(dir).map(String);
-  } catch {
-    return [];
+  } catch (err) {
+    // A directory that is not there is silence here, since the missing-unit check asks that. One that is there and cannot be read is
+    // UNKNOWN, never safe: it is reported, not skipped.
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    return [{ unit: dir, problem: "PROJECT UNITS UNREADABLE",
+      detail: `the project units directory exists but could not be read (${(err as Error).message}), so nothing says which units this host's project ships. Settle why it cannot be read before anything is installed or removed.` }];
   }
   const prefix = unitPrefix(deps);
   const isOwn = (name: string) => name.startsWith(prefix) && isUnit(name);

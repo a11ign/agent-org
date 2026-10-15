@@ -93,3 +93,16 @@ test("#1505: a project units directory that holds none of its units, with units 
   // And an empty directory with nothing installed is not a problem: there is nothing for an install to delete.
   assert.deepEqual(emptyProjectUnitsFinding({ projectUnitsDir: empty, installedDir: tmpDir("nothing-installed-") }), []);
 });
+
+test("#1505: a project units directory that exists and cannot be read is a PROBLEM line, never silence; a missing one is silence", () => {
+  const installed = installedWith(PROJECT_FILES);
+  // POSITIVE CONTROL: an unreadable directory (EACCES) is reported as unknown, not as safe.
+  const denied = Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+  const unreadable = emptyProjectUnitsFinding({ projectUnitsDir: PROJECT_UNITS, installedDir: installed, readDir: (() => { throw denied; }) as never });
+  assert.equal(unreadable.length, 1);
+  assert.equal(unreadable[0].problem, "PROJECT UNITS UNREADABLE");
+  assert.match(driftReport(unreadable), /host units: 1 problem\(s\)\.\n {2}\S+: PROJECT UNITS UNREADABLE/);
+  // NEGATIVE CONTROL: a directory that is not there is silence here, since the missing-unit check asks that.
+  const missing = Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
+  assert.deepEqual(emptyProjectUnitsFinding({ projectUnitsDir: PROJECT_UNITS, installedDir: installed, readDir: (() => { throw missing; }) as never }), []);
+});
