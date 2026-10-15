@@ -875,7 +875,7 @@ export function otherTrackerClaims(otherScopes: ReturnType<typeof readOtherScope
  */
 export function withClosedClaims(stalls: ReturnType<typeof claimStallsWithFacts>, read: ReturnType<typeof closedClaimsWhenWorkerListed>): ReturnType<typeof claimStallsWithFacts> {
   const { home: closedClaims, keyed } = splitClosedClaimsByTracker(read);
-  return { ...stalls, claimStalls: [...stalls.claimStalls, ...closedClaimsNow(closedClaims, { trackerRepo: repoNow() }), ...keyedClosedClaimOrders(keyed)] };
+  return { ...stalls, claimStalls: [...stalls.claimStalls, ...closedClaimsNow(closedClaims, { trackerRepo: repoNow(), stateDir: REVIEWER_STATE_DIR }), ...keyedClosedClaimOrders(keyed)] };
 }
 
 /**
@@ -901,7 +901,7 @@ function splitClosedClaimsByTracker(read: ReturnType<typeof closedClaimsWhenWork
  * pass spells another tracker's row (`agent-org#730`), so the two passes' orders for one row are one entry in the ledger.
  */
 function keyedClosedClaimOrders(keyed: ReturnType<typeof splitClosedClaimsByTracker>["keyed"]): import("../claim-stall.ts").StallOrder[] {
-  return [...keyed].flatMap(([key, { repo, rows, agents }]) => closedClaimsNow({ rows, agents }, { trackerRepo: repo, isInstance: (session) => familyMember(session) !== null })
+  return [...keyed].flatMap(([key, { repo, rows, agents }]) => closedClaimsNow({ rows, agents }, { trackerRepo: repo, stateDir: REVIEWER_STATE_DIR, isInstance: (session) => familyMember(session) !== null })
     .map((order) => {
       const row = /^row-(\d+)$/.exec(order.subject)?.[1];
       const ref = row === undefined ? null : subjectRef(key, Number(row));

@@ -1416,10 +1416,12 @@ export type ClosedClaimedRow = { number: number, title?: string, labels?: ({ nam
  * NOTHING ELSE CAN SEE ONE. `claimStallTick` evaluates the OPEN claimed rows, a closed row is in none of them, and `spareDecision` ends an
  * instance only BETWEEN turns, which is right for a row that is open (forcing a delivery wipes the work it interrupts, #1966) and wrong for one that no longer exists.
  *
- * A ROW CLOSED BY ITS OWN PULL REQUEST IS NOT THIS RELEASE'S: one of `closedByPullRequestsReferences` is the CLAIMANT'S (`ownsPr`: the claimed branch, the row
- * suffix or the title's reference, the same rungs the merged release uses), the merge's own sweep takes the labels off, and a claimant whose pull request merged is
- * ended by the rule that says so. It is SAID on `log`, never silently skipped. A closing reference that is NOT the claimant's -- somebody else's pull request, in
- * this repository or the other -- closed a row whose holder is still building, and that is exactly this release's case (review of #313, 2026-10-06).
+ * A ROW CLOSED BY ITS OWN PULL REQUEST IS RELEASED HERE TOO (#1463). One of `closedByPullRequestsReferences` may be the CLAIMANT'S (`ownsPr`: the claimed branch,
+ * the row suffix or the title's reference, the same rungs the merged release uses). That used to be left to "the merge's settle", and that settle does not exist
+ * for an agent-org row: the close-rows sweep lives in the host repository's CI and was never copied here, and the merged release reads OPEN rows only. #1325's labels
+ * (closed by #1378, its own pull request) were kept for 39 hours by that exemption, and the stall detector said so every tick. So the claim is released like any
+ * other closed one, and the line that says why is said ONCE per stand (`once`: the memory of the last tick's own-pull-request lines), never on every tick.
+ * A closing reference that is NOT the claimant's -- somebody else's pull request, in this repository or the other -- is this release's case as before (review of #313).
  *
  * THE INTERRUPT IS DECIDED HERE, FROM THE READING OF HERDR: the holder is a per-row instance (`isInstance`) AND `working`. A standing seat is
  * released and never interrupted, and an idle instance has nothing to interrupt. `agents === null` (herdr could not be asked) is NOT "idle": the release
@@ -1428,11 +1430,14 @@ export type ClosedClaimedRow = { number: number, title?: string, labels?: ({ nam
  * `rows === null` is a refused read -- reported as UNREAD, never as "no closed claim" and never as one found.
  * @param {{ rows: ClosedClaimedRow[] | null, agents: { label: string, status: string }[] | null, repo: string,
  *   isInstance: (session: string) => boolean, log?: (line: string) => void, trackerRepo?: string }} args
+ * `once` is the own-pull-request memory: `before` is what the last tick said (keyed `tracker#row`, valued by the stand: the session and the pull request), and
+ * `after` is what this tick says, which the caller writes back. A line is said only when its key's stand is new to `before`.
  * @returns {StallOrder[]}
  */
-export function closedClaimOrders({ rows, agents, repo, isInstance, log = () => {}, trackerRepo }: {
+export function closedClaimOrders({ rows, agents, repo, isInstance, log = () => {}, trackerRepo, once }: {
         rows: ClosedClaimedRow[] | null; agents: { label: string; status: string; }[] | null; repo: string;
         isInstance: (session: string) => boolean; log?: (line: string) => void; trackerRepo?: string;
+        once?: { before: Record<string, string>; after: Record<string, string>; };
     }): StallOrder[] {
   if (rows === null) {
     log(`claim-stall: the closed rows still carrying a claim were NOT read this tick${agents === null ? " (herdr could not be asked, so whether a per-row instance exists is unknown)" : ""} -- a closed row's claim was NOT evaluated.\n`);
@@ -1440,7 +1445,7 @@ export function closedClaimOrders({ rows, agents, repo, isInstance, log = () => 
   }
   const orders: StallOrder[] = [];
   for (const row of rows) {
-    const order = closedClaimOrder(row, { agents, repo, isInstance, log, trackerRepo });
+    const order = closedClaimOrder(row, { agents, repo, isInstance, log, trackerRepo, once });
     if (order !== null) orders.push(order);
   }
   return orders;
@@ -1449,10 +1454,10 @@ export function closedClaimOrders({ rows, agents, repo, isInstance, log = () => 
 /**
  * ONE closed row's release order, or `null` with the reason said on `log`.
  * @param {ClosedClaimedRow} row
- * @param {{ agents: { label: string, status: string }[] | null, repo: string, isInstance: (session: string) => boolean, log: (line: string) => void, trackerRepo?: string }} ctx
+ * @param {{ agents: { label: string, status: string }[] | null, repo: string, isInstance: (session: string) => boolean, log: (line: string) => void, trackerRepo?: string, once?: { before: Record<string, string>, after: Record<string, string> } }} ctx
  * @returns {StallOrder | null}
  */
-function closedClaimOrder(row: ClosedClaimedRow, { agents, repo, isInstance, log, trackerRepo }: { agents: { label: string; status: string; }[] | null; repo: string; isInstance: (session: string) => boolean; log: (line: string) => void; trackerRepo?: string; }): StallOrder | null {
+function closedClaimOrder(row: ClosedClaimedRow, { agents, repo, isInstance, log, trackerRepo, once }: { agents: { label: string; status: string; }[] | null; repo: string; isInstance: (session: string) => boolean; log: (line: string) => void; trackerRepo?: string; once?: { before: Record<string, string>; after: Record<string, string>; }; }): StallOrder | null {
   const names = (row.labels ?? []).map((l) => (typeof l === "string" ? l : String(l.name ?? "")));
   const sessions = names.filter((n) => n.startsWith(SESSION_PREFIX));
   if (sessions.length !== 1) {
@@ -1464,8 +1469,12 @@ function closedClaimOrder(row: ClosedClaimedRow, { agents, repo, isInstance, log
   const claimant = { row: row.number, branch: record?.branch ?? null, session, ...(trackerRepo === undefined ? {} : { trackerRepo }) };
   const own = (row.closedByPullRequestsReferences ?? []).find((pr) => ownsPr(claimant, pr) !== null);
   if (own !== undefined) {
-    log(`claim-stall: #${row.number} was closed by its own pull request (#${own.number}) -- the merge's settle owns its labels, not a closed release.\n`);
-    return null;
+    const key = `${trackerRepo ?? ""}#${row.number}`;
+    const stand = `${session}#${own.number}`;
+    if (once !== undefined) once.after[key] = stand;
+    if (once === undefined || once.before[key] !== stand) {
+      log(`claim-stall: #${row.number} was closed by its own pull request (#${own.number}) -- no merge settle clears an agent-org row's claim labels, so ${session}'s claim is released here.\n`);
+    }
   }
   const worktree = record?.worktree ?? null;
   const holder = agents?.find((a) => a.label === session);
