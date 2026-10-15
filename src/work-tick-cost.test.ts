@@ -362,7 +362,7 @@ test("#3566: an open list the tick already read is not read again by `readElsewh
 
 test("#3566: `main` hands the lanes `readOtherScopes` read to the claim-stall read, so no other repository's open list is asked twice", () => {
   const source = workGateSource();
-  assert.match(source, /claimStallsWithFacts\(openRowsRead, claimedComments, prs, otherScopes, \{\}, waitReads\?\.facts \?\? null\)/);
+  assert.match(source, /claimStallsWithFacts\(openRowsRead, claimedComments, prs, otherScopes, \{ openRowsPaced: !primaryRead \}, waitReads\?\.facts \?\? null\)/);
   assert.match(source, /elsewhere: \(\) => readElsewherePrs\(undefined, undefined, otherScopes\)/);
 });
 

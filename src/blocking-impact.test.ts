@@ -11,8 +11,8 @@ import { test } from "node:test";
 import { buildReport, renderReport } from "./org-retro.ts";
 import { FAILURE_LEDGER_FILE, parseFailureLedger, repeatsIn } from "./failure-ledger.ts";
 import {
-  advance, BLOCKING_FILE, BLOCKING_MIN_MINUTES, BLOCKING_MIN_ROWS, blockingImpactTick, deadlocksAmong, heldRefOf, holdingsOf, LOCK_GRIDLOCK_KIND, MAX_TICK_GAP_MS, parseRecord, resolverOf, rowComment,
-  topBlocker, wakeOrder, wakeText, type BlockingRecord, type Held, type Incident, type Ref, type Shelved,
+  advance, BLOCKING_FILE, BLOCKING_MIN_MINUTES, BLOCKING_MIN_ROWS, blockingImpactTick, deadlocksAmong, escalationText, heldRefOf, holdingsOf, LOCK_GRIDLOCK_KIND, MAX_TICK_GAP_MS, parseRecord, resolverOf,
+  rowComment, topBlocker, wakeOrder, wakeText, type BlockingRecord, type Held, type Incident, type Ref, type Shelved,
 } from "./blocking-impact.ts";
 
 const T0 = Date.parse("2026-10-09T10:00:00Z");
@@ -291,19 +291,122 @@ function tickThrough(dir: string, { from, to, count }: { from: number; to: numbe
   return orders;
 }
 
-test("the live tick records the incident once, comments on the held row once, wakes the holder once, and prints each holder's count", () => {
+test("the live tick records the incident once, comments on the held row for the incident and for its escalation, wakes the holder once, escalates once, and prints each holder's count", () => {
   inScratch((dir) => {
     const seen = { comments: [] as [number, string][], log: [] as string[] };
     assert.deepEqual(tickThrough(dir, { from: 0, to: 25, count: 5 }, seen), [], "25 minutes is under the line");
     const orders = tickThrough(dir, { from: 30, to: 90, count: 5 }, seen);
-    assert.equal(orders.length, 1, "one wake order across an hour of ticks");
-    assert.equal(orders[0].session, "worker-a");
-    assert.equal(seen.comments.length, 1, "one row write across an hour of ticks");
-    assert.equal(seen.comments[0][0], 100);
+    assert.deepEqual(orders.map((o) => o.session), ["worker-a", "product-manager"], "one wake across an hour of ticks, and one escalation at 60 minutes");
+    assert.equal(orders[0].cause, "ready-row-unclaimable");
+    assert.deepEqual(seen.comments.map(([row]) => row), [100, 100], "a row write for the incident and one for the escalation, both on row 100");
+    assert.match(seen.comments[1][1], /lock-gridlock-escalated: worker-a since/);
     const ledger = parseFailureLedger(readFileSync(join(dir, FAILURE_LEDGER_FILE), "utf8"));
-    assert.deepEqual(ledger.map((e) => e.classKey), [LOCK_GRIDLOCK_KIND], "one ledger event under the class key");
+    assert.deepEqual(ledger.map((e) => e.classKey), [LOCK_GRIDLOCK_KIND], "one ledger event under the class key: the escalation writes none");
     assert.ok(seen.log.some((line) => /worker-a shelves 5 rows behind #100: #1001 #1002 #1003 #1004 #1005/.test(line)), `the count is printed: ${seen.log.join(" | ")}`);
     assert.ok(existsSync(join(dir, BLOCKING_FILE)));
+  });
+});
+
+// agent-org#1426: a fired episode still standing an hour after its wake is escalated to product-manager once. The mutations (escalate at 59, drop the `fired` check, drop the once-only flag)
+// fail the positive control and the negatives below.
+test("positive control: an episode fired at 30 with 5 rows still shelved at 60 raises ONE product-manager order at 60, and none at 61 or 62", () => {
+  inScratch((dir) => {
+    const seen = { comments: [] as [number, string][], log: [] as string[] };
+    assert.deepEqual(tickThrough(dir, { from: 0, to: 55, count: 5 }, seen).map((o) => o.session), ["worker-a"], "the holder's wake at 30, and nothing else before 60");
+    const at60 = tickAt(dir, 60, 5, seen);
+    assert.deepEqual(at60.map((o) => o.session), ["product-manager"], "positive control: one escalation at 60 minutes");
+    assert.equal(at60[0].cause, "ready-row-unclaimable");
+    assert.equal(at60[0].causeKey, `product-manager/lock-gridlock/worker-a-${T0}-escalated`);
+    assert.match(at60[0].prompt, /escalation of the wake already sent to worker-a/);
+    assert.deepEqual(tickAt(dir, 61, 5, seen), [], "the next tick makes none");
+    assert.deepEqual(tickAt(dir, 62, 5, seen), [], "nor the one after");
+    assert.deepEqual(seen.comments.map(([row]) => row), [100, 100], "the row write for the incident, and one for the escalation");
+    assert.match(seen.comments[1][1], /lock-gridlock-escalated: worker-a since/);
+    const ledger = parseFailureLedger(readFileSync(join(dir, FAILURE_LEDGER_FILE), "utf8"));
+    assert.deepEqual(ledger.map((e) => e.classKey), [LOCK_GRIDLOCK_KIND], "the escalation writes no ledger line: still one occurrence");
+  });
+});
+
+test("negative: at 59 minutes no escalation is raised", () => {
+  inScratch((dir) => {
+    const seen = { comments: [] as [number, string][], log: [] as string[] };
+    const orders = [...tickThrough(dir, { from: 0, to: 55, count: 5 }, seen), ...tickAt(dir, 59, 5, seen)];
+    assert.deepEqual(orders.map((o) => o.session), ["worker-a"], "59 minutes is under the escalation line");
+  });
+});
+
+test("negative: at 61 minutes with only 4 rows shelved, no escalation is raised", () => {
+  inScratch((dir) => {
+    const seen = { comments: [] as [number, string][], log: [] as string[] };
+    tickThrough(dir, { from: 0, to: 55, count: 5 }, seen);
+    assert.deepEqual(tickAt(dir, 61, 4, seen), [], "4 rows is under the row line, so the episode ends and nothing is escalated");
+    assert.equal(seen.comments.length, 1, "only the incident's row write, from minute 30");
+  });
+});
+
+test("negative: a gap past MAX_TICK_GAP_MS restarts the clock, so the tick at 61 after the gap escalates nothing", () => {
+  inScratch((dir) => {
+    const seen = { comments: [] as [number, string][], log: [] as string[] };
+    assert.deepEqual(tickThrough(dir, { from: 0, to: 30, count: 5 }, seen).map((o) => o.session), ["worker-a"]);
+    assert.deepEqual(tickAt(dir, 61, 5, seen), [], "31 minutes unobserved: a new episode that has lasted none of them");
+  });
+});
+
+test("a record with no escalated key reads false, and its fired episode escalates once", () => {
+  const { holdings } = holdingsOf(behind(100, 5), resolve);
+  let record: BlockingRecord | null = null;
+  const escalations: Incident[] = [];
+  for (let minute = 0; minute <= 61; minute += 1) {
+    const step = advance(record, { now: T0 + minute * MINUTE, holdings });
+    record = step.record;
+    escalations.push(...step.escalations);
+    if (minute === 31) {
+      assert.equal(record.episodes["worker-a"].fired, true, "the episode fired at 30");
+      delete record.episodes["worker-a"].escalated;
+      assert.equal("escalated" in record.episodes["worker-a"], false, "a record written before the key existed");
+    }
+  }
+  assert.equal(escalations.length, 1, "absent reads as not escalated: one escalation at 60");
+  assert.equal(escalations[0].minutes, 60);
+  assert.equal(record?.episodes["worker-a"].escalated, true, "and the flag is now set, so it is once");
+});
+
+test("the escalation names the holder, its row, the shelved rows, the minutes, the pull request's state, and the three ways out in order", () => {
+  const incident: Incident = { holder: "worker-a", since: T0, minutes: 60, rows: [1001, 1002, 1003, 1004, 1005], heldRows: [100] };
+  const text = escalationText(incident, { pr: "300", review: "APPROVED" });
+  assert.match(text, /escalation of the wake already sent to worker-a/);
+  assert.ok(text.includes("row #100 ") && text.includes("(#1001 #1002 #1003 #1004 #1005)"), "the held row, and the shelved rows as they are listed");
+  assert.ok(text.includes("worker-a's pull request 300 has review decision APPROVED"), "the holder's pull request state");
+  const [one, two, three] = ["(1)", "(2)", "(3)"].map((mark) => text.indexOf(mark));
+  assert.ok(one >= 0 && one < two && two < three, "the three ways out, in order");
+  assert.match(text, /releases no claim/);
+  assert.match(escalationText(incident, undefined), /worker-a has no open pull request the gate could read/, "a holder with no pull request the gate can read");
+});
+
+// agent-org#1426 (reviewer, #1468): the holder's pull request is found by its `Closes` and label through the REAL resolver (`resolverOf`), not a fake `prOf`. Row 100's pull request is #300, and the number-keyed lookup this replaced could not find it.
+test("the escalation reads the holder's pull request and its review decision through the real resolver", () => {
+  inScratch((dir) => {
+    const open = { rows: [{ number: 100, session: "worker-a" }], prs: [{ number: 300, session: "worker-a", closes: [100], reviewDecision: "APPROVED" }] };
+    const orders = [];
+    for (let minute = 0; minute <= 60; minute += 5) {
+      orders.push(...blockingImpactTick({ blocked: behind(100, 5), resolve: keyedResolver(open), stateDir: dir, now: T0 + minute * MINUTE, comment: () => {}, log: () => {} }));
+    }
+    const escalation = orders.find((o) => o.session === "product-manager");
+    assert.ok(escalation, "the escalation is raised at 60");
+    assert.match(escalation.prompt, /worker-a's pull request #300 has review decision APPROVED/);
+  });
+});
+
+test("the escalation says the holder has no pull request the gate can read when its only pull request closes another row", () => {
+  inScratch((dir) => {
+    const open = { rows: [{ number: 100, session: "worker-a" }], prs: [{ number: 300, session: "worker-a", closes: [999], reviewDecision: "APPROVED" }] };
+    const orders = [];
+    for (let minute = 0; minute <= 60; minute += 5) {
+      orders.push(...blockingImpactTick({ blocked: behind(100, 5), resolve: keyedResolver(open), stateDir: dir, now: T0 + minute * MINUTE, comment: () => {}, log: () => {} }));
+    }
+    const escalation = orders.find((o) => o.session === "product-manager");
+    assert.ok(escalation, "the escalation is raised at 60");
+    assert.match(escalation.prompt, /worker-a has no open pull request the gate could read/);
   });
 });
 

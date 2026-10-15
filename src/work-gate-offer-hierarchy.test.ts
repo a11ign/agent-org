@@ -7,8 +7,11 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decide, hierarchyOrders, milestoneRank, partitionUnclaimed, readChairmanPriority, CHAIRMAN_PRIORITY_LABEL } from "./work-gate.ts";
+import { decide, hierarchyOrders, milestoneRank, offerHierarchyNow, partitionUnclaimed, readChairmanPriority, CHAIRMAN_PRIORITY_LABEL } from "./work-gate.ts";
 import { parseProjectDeclaration } from "./project-config.ts";
+import { tmpDir } from "./lib/tmp-fixture.ts";
+import { chairmanRowAnsweredByCeo } from "./work-gate/causes/rows-offer.ts";
+import { stuckSubjectOf } from "./wake.ts";
 
 const DECLARATION = {
   code: [{ key: "", repo: "a11ign/a11ign" }, { key: "agent-org", repo: "a11ign/agent-org" }],
@@ -101,6 +104,54 @@ test("a B4-shelved chairman row is reported to ceo, not offered; against a plain
 
   const plain = offered([ready(20, { region })], { openRows: [plainHolder] });
   assert.deepEqual(plain.subjects, [], "control: the same row, not the chairman's, is shelved by the same holder");
+});
+
+test("#1456: a refused chairman row is told once per reason; a ceo answer since that telling silences it; a changed reason, or a closed blocker, tells again", () => {
+  const dir = tmpDir("chairman-refusals-");
+  const T0 = Date.parse("2026-10-15T10:00:00Z");
+  const MIN = 60_000;
+  const refusal = (reason: string, answeredAt: string | null, now: number, openRows: { number: number; }[]) => hierarchyOrders(
+    { chairmanRows: new Set([20]), refusals: { stateDir: dir, now, answeredAt: () => answeredAt } },
+    { blocked: [{ number: 20, reason }], yielding: [], openRows, prs: [] });
+  const told = (orders: { causeKey: string; }[]) => orders.filter((o) => o.causeKey.startsWith("ceo/chairman-row-refused/")).length;
+  const reason = "blocked by #5311 -- declared on the row, and it clears itself";
+  const open = [{ number: 5311 }];
+
+  assert.equal(told(refusal(reason, null, T0, open)), 1, "the first refusal is told");
+  assert.equal(told(refusal(reason, null, T0 + 23 * MIN, open)), 1, "control: no ceo comment, the same reason is told again as it always was");
+  assert.equal(told(refusal(reason, String(new Date(T0 + 25 * MIN).toISOString()), T0 + 30 * MIN, open)), 0, "a ceo comment newer than the first telling silences the same reason");
+  assert.equal(told(refusal(reason, String(new Date(T0 + 25 * MIN).toISOString()), T0 + 46 * MIN, open)), 0, "and keeps silencing it on the next wake");
+  assert.equal(told(refusal("blocked by #5312 -- declared on the row, and it clears itself", String(new Date(T0 + 25 * MIN).toISOString()), T0 + 50 * MIN, [...open, { number: 5312 }])), 1, "a changed reason is a new telling");
+  assert.equal(told(refusal("blocked by #5312 -- declared on the row, and it clears itself", String(new Date(T0 + 55 * MIN).toISOString()), T0 + 56 * MIN, open)), 1, "a blocker the reason names that has closed, on a row still refused, is told again");
+
+  const keyed = hierarchyOrders({ chairmanRows: new Set([1456]), refusals: { stateDir: dir, now: T0, answeredAt: () => null } }, { blocked: [{ number: 1456, repoKey: "agent-org", repo: "a11ign/agent-org", reason }], yielding: [], openRows: [], prs: [] });
+  const [order] = keyed.filter((o) => o.causeKey.startsWith("ceo/chairman-row-refused/"));
+  assert.equal(order?.subject, "row-agent-org#1456", "the subject names the repository");
+  assert.match(order?.prompt ?? "", /agent-org#1456/);
+  assert.equal(stuckSubjectOf(order?.causeKey ?? "")?.repoKey, "agent-org", "the stuck path reads the repository from the key");
+  assert.equal(stuckSubjectOf(order?.causeKey ?? "")?.number, 1456);
+});
+
+test("#1456: the ceo answer is read from the repository's comments since the first telling: the newest decided-by ceo comment on THIS issue; a refused read is no answer", () => {
+  const since = "2026-10-15T10:00:00.000Z";
+  const comment = (number: number, at: string, body: string) => ({ created_at: at, body, issue_url: `https://api.github.com/repos/a11ign/a11ign/issues/${number}` });
+  const pages = [[comment(20, "2026-10-15T10:30:00Z", "answered <!-- decided-by: ceo -->"), comment(20, "2026-10-15T10:40:00Z", "<!-- decided-by: worker-3 -->"), comment(21, "2026-10-15T10:50:00Z", "<!-- decided-by: ceo -->")]];
+  const asked: string[][] = [];
+  const run = (args: string[]) => { asked.push(args); return JSON.stringify(pages); };
+  assert.equal(chairmanRowAnsweredByCeo({ number: 20, repo: "a11ign/a11ign" }, since, run), "2026-10-15T10:30:00.000Z", "the newest ceo comment on #20, not #21's and not the worker's");
+  assert.match(asked[0]?.join(" ") ?? "", /repos\/a11ign\/a11ign\/issues\/comments\?since=2026-10-15T10:00:00\.000Z/, "one repository-wide list since the first telling");
+  assert.equal(chairmanRowAnsweredByCeo({ number: 20, repo: "a11ign/a11ign" }, since, () => "not json"), null, "an unreadable answer is no answer, so the refusal is told again");
+});
+
+test("#1456: with CHAIRMAN_REFUSAL_FLAG off there is no ledger and the refusal is the order main gives; the flag reads from the state directory", () => {
+  const dir = tmpDir("chairman-refusal-flag-");
+  const reason = "blocked by #5311 -- declared on the row, and it clears itself";
+  const off = hierarchyOrders({ chairmanRows: new Set([20]) }, { blocked: [{ number: 20, reason }], yielding: [], openRows: [], prs: [] });
+  assert.equal(off.length, 1);
+  assert.equal(off[0]?.subject, "row-20", "the subject is main's");
+  assert.ok(off[0]?.causeKey.startsWith("ceo/chairman-row-refused/20-"), "the key is main's, with no repository segment");
+  assert.equal(offerHierarchyNow([], [], { run: () => "", stateDir: dir, now: 0, refusedOnce: false }).refusals, undefined, "off: nothing reads the answer");
+  assert.notEqual(offerHierarchyNow([], [], { run: () => "", stateDir: dir, now: 0, refusedOnce: true }).refusals, undefined, "on: the ledger is wired");
 });
 
 test("a chairman row is offered over an open pull request that closes no chairman row, and not over one that does", () => {
