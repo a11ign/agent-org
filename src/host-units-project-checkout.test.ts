@@ -106,3 +106,20 @@ test("#1505: a project units directory that exists and cannot be read is a PROBL
   const missing = Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
   assert.deepEqual(emptyProjectUnitsFinding({ projectUnitsDir: PROJECT_UNITS, installedDir: installed, readDir: (() => { throw missing; }) as never }), []);
 });
+
+test("#1505: an unreadable installed directory is unknown, not an empty install; an unreadable project directory withholds the install remedy", () => {
+  const empty = tmpDir("empty-project-units-");
+  const installed = installedWith(PROJECT_FILES);
+  // POSITIVE CONTROL: the installed directory cannot be read, so whether it holds this project's units is unknown -- reported, not read as none.
+  const denied = Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+  const onlyInstalledDenied = (path: unknown) => { if (String(path) === installed) throw denied; return readdirSync(String(path)); };
+  const findings = emptyProjectUnitsFinding({ projectUnitsDir: empty, installedDir: installed, readDir: onlyInstalledDenied as never });
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].problem, "PROJECT UNITS UNREADABLE");
+  assert.equal(findings[0].unit, installed);
+  // The install remedy is withheld for an unreadable finding: `host:install` acts on exactly the contents that could not be read.
+  const report = driftReport(findings);
+  assert.match(report, /host units: 1 problem\(s\)\./);
+  assert.doesNotMatch(report, /pnpm run host:install/, "no install is named as the remedy while the contents are unknown");
+  assert.match(report, /No remedy is named:/);
+});

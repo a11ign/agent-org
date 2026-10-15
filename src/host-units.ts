@@ -1365,7 +1365,7 @@ export function compileCacheDrift(deps: ShippedDeps & { shippedDir?: string; rea
     });
 }
 
-export type Finding = {unit: string, problem: string, detail: string, revertsIdentity?: boolean, runnerVersions?: boolean, manualFix?: boolean, hostProgram?: boolean, seatAbsent?: boolean, removesUnit?: boolean, noProjectUnits?: boolean, shippedOnRef?: string, supersededScript?: string, missingProgram?: string, installedCopy?: InstalledCopyState};
+export type Finding = {unit: string, problem: string, detail: string, revertsIdentity?: boolean, runnerVersions?: boolean, manualFix?: boolean, hostProgram?: boolean, seatAbsent?: boolean, removesUnit?: boolean, noProjectUnits?: boolean, unitsUnreadable?: boolean, shippedOnRef?: string, supersededScript?: string, missingProgram?: string, installedCopy?: InstalledCopyState};
 
 /**
  * HOW THE INSTALLED UNIT STANDS AGAINST THE REPOSITORY, carried on a `missingProgram` finding as the MEASURED FACT rather than as an assumption baked into its prose. It decides both the sentence the finding prints and whether `uncovered` says the shared remedy cannot fix it.
@@ -2987,20 +2987,29 @@ export function emptyProjectUnitsFinding(deps: ShippedDeps & { installedDir?: st
   const dir = projectUnitsDirOf(deps);
   const { installedDir = INSTALLED_DIR, readDir = readdirSync } = deps;
   if (dir === null) return [];
+  // A directory that is not there is silence here, since the missing-unit check asks that. One that is there and cannot be read is
+  // UNKNOWN, never safe: it is reported as unreadable, and the install remedy is withheld for it (`remedy`).
+  const unreadable = (unit: string, err: unknown): Finding[] => {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    return [{ unit, problem: "PROJECT UNITS UNREADABLE", unitsUnreadable: true,
+      detail: `${unit} exists but could not be read (${(err as Error).message}), so nothing here can say which units it holds. Settle why it cannot be read before anything is installed or removed.` }];
+  };
   let held: string[];
   try {
     held = readDir(dir).map(String);
   } catch (err) {
-    // A directory that is not there is silence here, since the missing-unit check asks that. One that is there and cannot be read is
-    // UNKNOWN, never safe: it is reported, not skipped.
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
-    return [{ unit: dir, problem: "PROJECT UNITS UNREADABLE",
-      detail: `the project units directory exists but could not be read (${(err as Error).message}), so nothing says which units this host's project ships. Settle why it cannot be read before anything is installed or removed.` }];
+    return unreadable(dir, err);
   }
   const prefix = unitPrefix(deps);
   const isOwn = (name: string) => name.startsWith(prefix) && isUnit(name);
   if (held.some(isOwn)) return [];
-  const installed = namesIn(installedDir, readDir).filter(isOwn);
+  let installedNames: string[];
+  try {
+    installedNames = readDir(installedDir).map(String);
+  } catch (err) {
+    return unreadable(installedDir, err);
+  }
+  const installed = installedNames.filter(isOwn);
   if (installed.length === 0) return [];
   return [{ unit: dir, problem: "PROJECT UNITS EMPTY", noProjectUnits: true,
     detail: `it holds no \`${prefix}*\` unit, but ${installed.length} are installed (${installed.join(", ")}). \`host:install\` would REMOVE every installed `
@@ -3585,6 +3594,12 @@ function uncovered(drift: Finding[]): string {
  * @param {Finding[]} drift @returns {string}
  */
 function remedy(drift: Finding[]): string {
+  // An unreadable directory's contents are unknown, so no install is named as the fix: `host:install` acts on exactly those contents.
+  const unreadable = drift.filter((d) => d.unitsUnreadable);
+  if (unreadable.length > 0) {
+    return `${uncovered(drift)}  No remedy is named: ${unreadable.map((d) => d.unit).join(", ")} cannot be read, so `
+      + "`host:install` cannot be judged safe. Make it readable, then run `pnpm run host:check` again.\n";
+  }
   const line = `${uncovered(drift)}  Remedy for all of them: pnpm run host:install\n`;
   const reverts = drift.filter((d) => d.revertsIdentity);
   const removes = drift.filter((d) => d.removesUnit);
