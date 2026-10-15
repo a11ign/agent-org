@@ -34,7 +34,12 @@ export { DEPENDENCY_BOT_LOGIN } from "../dependency-bot-login.ts";
 // #2619 (child 3d of #69): the `session:` prefix and the `blocked` label, moved to the project's
 // declared vocabulary. (The `"ready"` action `kind` a few lines below is `gh pr ready`'s draft-status
 // flip -- a built-in GitHub PR field, not this project's `ready` row label -- so it stays a literal.)
-import { SESSION_PREFIX, BLOCKED_LABEL } from "../project-vocabulary.ts";
+import { SESSION_PREFIX, BLOCKED_LABEL, BACKLOG_LABEL, OUT_OF_RELEASE_LABEL } from "../project-vocabulary.ts";
+import { PROJECT_NUMBER, PROJECT_OWNER } from "../board-snapshot-scope.ts";
+import { createRow } from "../ticket-port/approved-unqueued-reads.ts";
+import { readRowsByLabel } from "../ticket-port/rows-by-label.ts";
+import { ensureTriageLabel } from "../ticket-port/outside-idle-writes.ts";
+import { boardFiledRow } from "../ticket-port/board-filed-row.ts";
 import { labelsOf, sessionOf, conflictStateOf, CONFLICT_STATE, reviewStateOf, BLOCKING_REVIEW_STATES, checksSettledGreen, conclusionOf, stillRunning, anyChecksRed, requiredCheckNames,
   blockingChecks, reviewableHead, reviewWait, verdictAmong, awaitingEvidence, AWAITING_EVIDENCE_LABEL,
   AWAITING_EVIDENCE_QUIET_HOURS, AWAITING_EVIDENCE_QUIET_MS, HOUR_MS, REVIEW_STATE, CHAIRMAN_LOGINS } from "../work-gate.ts";
@@ -1344,6 +1349,88 @@ function toDependencyBotWorker(order: any) {
  */
 export function reviewOnlyRefs(prs: any[], declared: DeclaredIdentities): Set<string> {
   return new Set(prs.filter((pr) => reviewTrustOf(pr, declared) === OUTSIDE || isChairmanAuthoredPr(pr)).map((pr) => subjectRef(pr.repoKey, pr.number)));
+}
+
+/**
+ * agent-org#1369: an OUTSIDE pull request idle this long files ONE triage row and wakes no session. #1325 orders such a pull request for its review
+ * only, so nothing else would ever move it, and the row is the orchestrator's to triage. Literal milliseconds: this file is leaf-shaped (see the header).
+ */
+export const OUTSIDE_IDLE_MS = 7 * 24 * 60 * 60 * 1000;
+/** The label a triage row carries. A row is found again by the marker in its body, which is what makes the second tick file nothing. */
+export const OUTSIDE_IDLE_LABEL = "outside-pr-idle";
+
+type GhRun = (args: string[]) => string;
+
+/** The outside pull requests last updated `OUTSIDE_IDLE_MS` or more before `nowMs`. An `updatedAt` that does not parse is NOT idle: nothing is accused on a read that did not say. */
+export function outsideIdlePrs(prs: any[], declared: DeclaredIdentities, nowMs: number): any[] {
+  return prs.filter((pr) => {
+    if (reviewTrustOf(pr, declared) !== OUTSIDE) return false;
+    const touched = Date.parse(String(pr?.updatedAt ?? ""));
+    return Number.isFinite(touched) && nowMs - touched >= OUTSIDE_IDLE_MS;
+  });
+}
+
+/**
+ * The row for one idle pull request. The marker keys the EPISODE, the `updatedAt` that made it idle: a second tick reads the same idleness and finds
+ * the row, while a touch followed by another idle week is a new episode and a new row.
+ */
+export function outsideIdleTriage(pr: any): { marker: string; title: string; body: string } {
+  const ref = subjectRef(pr.repoKey, pr.number);
+  const marker = `<!-- ${OUTSIDE_IDLE_LABEL}:${ref}@${pr.updatedAt} -->`;
+  const body = [
+    marker,
+    `Outside pull request ${ref} (https://github.com/${pr.repo}/pull/${pr.number}) has not been updated since ${pr.updatedAt}.`,
+    "",
+    "An outside pull request is ordered for its review only (`prs.ownerRouting`), so no session will move it. This row is for the orchestrator to triage: close it, hand it back, or find it a reviewer.",
+    "",
+    "Filing this row woke no session.",
+  ].join("\n");
+  return { marker, title: `Outside PR ${ref} idle for 7 days: triage`, body };
+}
+
+/** The bodies of the triage rows, open and closed: a closed row still says its episode was filed, so it is not filed again. Throws when `gh` refuses. */
+export function readOutsideIdleBodies(run: GhRun): string[] {
+  return (["OPEN", "CLOSED"] as const).flatMap((state) =>
+    readRowsByLabel({ label: OUTSIDE_IDLE_LABEL, state, select: "number body", run }).map((row) => String(row.body ?? "")));
+}
+
+/**
+ * Files one triage row for each outside pull request idle at `nowMs` whose episode has no row yet, and returns how many it filed. OFF files nothing and
+ * reads nothing. A read that refuses files nothing and is logged, so the next tick retries; a board that refuses is logged, and the row stays filed.
+ */
+export function fileOutsideIdleTriage(prs: any[], { declared, nowMs, run, log, enabled, readFiled = readOutsideIdleBodies }: {
+  declared: DeclaredIdentities; nowMs: number; run: GhRun; log: (line: string) => void; enabled: boolean; readFiled?: (run: GhRun) => string[];
+}): number {
+  if (!enabled) return 0;
+  const idle = outsideIdlePrs(prs, declared, nowMs);
+  if (idle.length === 0) return 0;
+  let filed: string[];
+  try {
+    filed = readFiled(run);
+  } catch (error) {
+    log(`outside-pr-idle: could not read the triage rows (${String((error as Error).message).split("\n")[0]}); the next tick retries\n`);
+    return 0;
+  }
+  let count = 0;
+  for (const pr of idle) {
+    const row = outsideIdleTriage(pr);
+    if (filed.some((body) => body.includes(row.marker))) continue;
+    let number: number;
+    try {
+      ensureTriageLabel({ repo: REPO, label: OUTSIDE_IDLE_LABEL, description: "An outside pull request idle for 7 days", run });
+      number = createRow({ repo: REPO, title: row.title, labels: [OUTSIDE_IDLE_LABEL], body: row.body, run });
+    } catch (error) {
+      log(`outside-pr-idle: could not file the row for ${row.marker} (${String((error as Error).message).split("\n")[0]}); the next tick retries\n`);
+      continue;
+    }
+    count++;
+    try {
+      boardFiledRow({ repo: REPO, number, owner: PROJECT_OWNER, projectNumber: PROJECT_NUMBER, status: "Backlog", labels: [BACKLOG_LABEL, OUT_OF_RELEASE_LABEL], run });
+    } catch (error) {
+      log(`outside-pr-idle: filed #${number} but could not board it (${String((error as Error).message).split("\n")[0]})\n`);
+    }
+  }
+  return count;
 }
 
 /**

@@ -54,7 +54,9 @@ import { verifyCheckoutOf, withVerifyStamps } from "./verify-stamp.ts"; // #3215
 import { CAUSES, JUDGMENT_CAUSES, START_CAUSES } from "./cause-declaration.ts";
 import { NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL } from "./project-vocabulary.ts";
 import { readTrunkRed } from "./trunk-red.ts";
-import { requiredWhenNeeded } from "./work-gate/pr-orders.ts";
+import { requiredWhenNeeded, fileOutsideIdleTriage } from "./work-gate/pr-orders.ts";
+import { prOwnerRoutingFlagOn } from "./work-gate/tick.ts";
+import { declaredIdentities } from "./review-trust.ts";
 
 export { redOnlyBySupersededRun, mergeConflictOrders, greenUnarmedOrders, reviewBlockedOrders, HOLD_RED_JOBS,
   stallReasonOf, stallOrderOf, stalledPrOrders, STALL_REASON, STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr,
@@ -600,6 +602,8 @@ function main() {
   // BOTH LANES REFUSED IS `CANNOT_ASK`; ONE IS `PARTIAL`. Nothing here may report a refused read as quiet.
   const cannotAsk = cannotAskExit({ prs, readyRows, identity: () => declaredGhAccount() }); // #1332: a tick that could not read still owes the canary its one blind sample
   if (cannotAsk !== null) process.exit(cannotAsk);
+  // agent-org#1369: an outside pull request idle a week files its triage row HERE, and wakes no session. After the refusal exit, so a refused read files nothing.
+  fileOutsideIdleTriage(prs ?? [], { declared: declaredIdentities(), nowMs: Date.now(), run: defaultRun, log: (line) => process.stderr.write(line), enabled: prOwnerRoutingFlagOn() });
 
   // The third read is only needed to size the refill, and a refused one must not read as an empty shelf.
   // #3566: this one, `needs:chairman` and the open rows (`openRowsRead`) are asked TOGETHER, and with the other repositories' lists (slice 6).
