@@ -59,7 +59,8 @@ import { reviewerInstance, subjectMention } from "./review-attribution.ts";
 import { reviewerDoorPath } from "./reviewer-door-path.ts";
 import { INSIDE, OUTSIDE, REVIEWER_GH_CONFIG_DIR, outsideReviewArgs, outsideReviewerEnvironment, postOutsideVerdicts, type DoorRun, type ReviewTrust } from "./review-trust.ts";
 // A LEAF, and where the stall bound lives (#3448): the waker's deferral limit and the signal raised for a wait over it are one number.
-import { ORDER_STALL_MINUTES, SIGNALS, orderStallReading, panePromptReading, orgHealthOrders } from "./org-health.ts";
+import { ORDER_STALL_MINUTES, SIGNALS, orderStallReading, panePromptReading, orgHealthOrders, type CanaryState } from "./org-health.ts";
+import { REVIEWER_STATE_DIR } from "./work-gate/vocabulary.ts";
 // #2688: THE SAME INSTRUMENT #928's OFFLINE REPORT IS BUILT FROM, READ LIVE INSTEAD OF ONLY REPORTED --
 // no new metric, only this one read at delivery time.
 import { claudeTurns, sessionOf, transcriptFiles } from "./token-audit.ts";
@@ -69,6 +70,7 @@ import { REPO } from "./project-identity.ts";
 import { roleBriefPath } from "./project-roles.ts";
 import { serveOrdersByRun, type ServedRecord } from "./serve-by-run.ts";
 import { accountLimitFlag, pauseRefusal, tickAccountLimit, type AccountLimit } from "./account-limit.ts";
+import { isLimitMenu } from "./worker-state.ts";
 import { engineerBriefSentence, briefRoleSentence } from "./spawn-role-brief.ts"; // #828: the sentence that sends a spawned seat to a role brief
 // #832: a `lane:orchestrator` row as a one-shot seat's, behind `workers.orchestratorOneShot`; its cause is a sibling of `SPAWN_CAUSES`, never a member
 import { ONE_SHOT_SPAWN_CAUSES, createOrchestratorOneShot, isOneShotOrder, standInClaimer, withOrchestratorOneShot, type OrchestratorOneShot } from "./orchestrator-one-shot.ts";
@@ -293,10 +295,18 @@ function allowanceOf(agent: any, home: string, now: number): ReturnType<typeof s
   if (agent?.agent !== "claude") return { state: "clear" }; // a `codex` reviewer has another allowance and another message
   const id = String(agent?.agent_session?.value ?? "");
   if (!SESSION_ID.test(id)) return { state: "unknown", why: "herdr names no session id" };
-  const said = lastSaidBy(id, home);
-  if (said === null || !LIMIT_MESSAGE.test(said.text)) return { state: "clear" };
-  const until = limitResetAt(said.text, said.at) ?? (said.at + LIMIT_UNREADABLE_HOLD_MS);
-  return until > now ? { state: "limited", until, text: said.text } : { state: "clear" };
+  const spent = limitSaidBy(id, home);
+  return spent !== null && spent.until > now ? { state: "limited", until: spent.until, text: spent.text } : { state: "clear" };
+}
+
+/**
+ * The allowance message a session LAST SAID, with the time its reset comes, or `null` when its last word is not that message. A message whose reset
+ * cannot be read is held an hour from when it was said ({@link LIMIT_UNREADABLE_HOLD_MS}).
+ */
+function limitSaidBy(sessionId: string, home: string): { text: string; until: number; } | null {
+  const said = lastSaidBy(sessionId, home);
+  if (said === null || !LIMIT_MESSAGE.test(said.text)) return null;
+  return { text: said.text, until: limitResetAt(said.text, said.at) ?? (said.at + LIMIT_UNREADABLE_HOLD_MS) };
 }
 
 /**
@@ -337,6 +347,46 @@ export function accountPauseTick(labels: readonly string[], now: number = Date.n
     return allowance.state === "limited" ? { limitedUntil: allowance.until, seenOn: label, text: allowance.text } : null;
   }).find((limit) => limit !== null) ?? null;
   return tickAccountLimit(seen, now, (line) => process.stdout.write(`${line}\n`));
+}
+
+/**
+ * agent-org#1412: A SEAT PARKED ON THE LIMIT MENU IS FREED once its reset has passed. The menu waits for a choice, so a `blocked` seat that shows it is
+ * stuck even after the allowance is back, and it holds the org. `esc` is the one key sent: it dismisses the menu without choosing an option, and never
+ * `enter` or a digit, which would pick one. A seat is freed only when ALL of these hold: the flag is not off, the seat is `blocked`, its pane shows the menu
+ * ({@link isLimitMenu}), and the allowance message it last said has a reset that has passed. A menu seat whose reset has not come is left alone, and is not
+ * told anything. A read that fails frees nothing (fail closed: the next tick asks again). Says once, when at least one seat is freed.
+ */
+export function freeLimitMenuSeats(agents: readonly { label: string; status: string; }[], { run = defaultRun, home = homedir(), now = Date.now(),
+  say = (line: string) => process.stdout.write(`${line}\n`), state }: { run?: (args: string[]) => string; home?: string; now?: number; say?: (line: string) => void;
+  state?: CanaryState; } = {}): string[] {
+  if (accountLimitFlag(REVIEWER_STATE_DIR, state) === "off") return [];
+  const read = paneReader(run);
+  const freed: string[] = [];
+  for (const { label, status } of agents) {
+    if (status !== "blocked" || !isLimitMenu(read(label)) || !resetPassed(label, { run, home, now })) continue;
+    try {
+      run(["--session", "org", "agent", "send-keys", label, "esc"]);
+      freed.push(label);
+    } catch {
+      // not freed: the next tick asks again
+    }
+  }
+  if (freed.length > 0) say(`freed ${freed.length} seats from the limit menu: ${freed.join(", ")}`);
+  return freed;
+}
+
+/** Whether the allowance message a seat last said has a reset that has passed. Anything that cannot be read says no. */
+function resetPassed(label: string, { run, home, now }: { run: (args: string[]) => string; home: string; now: number; }): boolean {
+  try {
+    const agent = JSON.parse(run(["--session", "org", "agent", "get", label]))?.result?.agent;
+    if (agent?.agent !== "claude") return false;
+    const id = String(agent?.agent_session?.value ?? "");
+    if (!SESSION_ID.test(id)) return false;
+    const spent = limitSaidBy(id, home);
+    return spent !== null && spent.until <= now;
+  } catch {
+    return false;
+  }
 }
 
 const defaultRun = (args: string[]) => execFileSync("herdr", args, { encoding: "utf8", timeout: 30_000 });
@@ -8642,6 +8692,8 @@ async function main() {
   // #4630: A HAIKU START THAT HAS NOT COPED IS RESTARTED ON SONNET before anything is delivered, and what it restarted is working NOW (`free` below).
   // agent-org#1307: THE ACCOUNT'S PAUSE, read before anything that could start a Claude seat. Flag off, it is `null` and the tick is as it was.
   const accountPause = accountPauseTick(agents.map((a) => a.label));
+  // agent-org#1412: with no pause in force, a seat parked on the limit menu whose reset has passed is freed (`esc`), so it can take work again.
+  if (accountPause === null) freeLimitMenuSeats(agents);
   const escalated = performEscalations(agents.map((a) => a.label), { run: defaultRun, gh: defaultGh, post: guardedGh, ledgerPath, worktreesDir: hostLayout.worktreesDir, launch: hostLayout,
     haikuDefault: { on: haikuDefaultOn({ switchesPath: decisionSwitchesPath(PRIMARY_CHECKOUT) }), refused: (label) => instanceRefused(label) }, accountPause });
   for (const line of escalated.lines) process.stdout.write(`${line}\n`);
