@@ -340,13 +340,27 @@ export function unavailableReason(label: string, deps?: Parameters<typeof sessio
  * the record decides, and an unreadable record holds (see {@link tickAccountLimit}). A change is said once (stdout) and logged (ndjson); nothing is said
  * on a tick that changes nothing.
  */
-export function accountPauseTick(labels: readonly string[], now: number = Date.now()): AccountLimit | null {
-  if (accountLimitFlag() === "off") return null;
+export function accountPauseTick(labels: readonly string[], { now = Date.now(), run, home, dir = REVIEWER_STATE_DIR, state,
+  say = (line: string) => process.stdout.write(`${line}\n`) }: LimitTickDeps = {}): AccountLimit | null {
+  if (accountLimitFlag(dir, state) === "off") return null;
   const seen = labels.map((label) => {
-    const allowance = sessionAllowance(label, { now });
+    const allowance = sessionAllowance(label, { now, run, home });
     return allowance.state === "limited" ? { limitedUntil: allowance.until, seenOn: label, text: allowance.text } : null;
   }).find((limit) => limit !== null) ?? null;
-  return tickAccountLimit(seen, now, (line) => process.stdout.write(`${line}\n`));
+  return tickAccountLimit(seen, now, say, dir, home);
+}
+
+/** What the limit tick reads and writes, each defaulted to the production read. A test gives its own herdr, home, state directory and flag state. */
+export type LimitTickDeps = { now?: number; run?: (args: string[]) => string; home?: string; dir?: string; state?: CanaryState; say?: (line: string) => void; };
+
+/**
+ * agent-org#1307 and #1412, THE TICK'S WHOLE LIMIT STEP: the account's pause for this tick (`accountPauseTick`), and, with no pause in force, the seats parked
+ * on the limit menu freed (`freeLimitMenuSeats`). `main` takes its pause from here, so the test that drives this drives the tick's own step.
+ */
+export function limitMenuTick(agents: readonly { label: string; status: string; }[], deps: LimitTickDeps = {}): AccountLimit | null {
+  const pause = accountPauseTick(agents.map((a) => a.label), deps);
+  if (pause === null) freeLimitMenuSeats(agents, deps);
+  return pause;
 }
 
 /**
@@ -8691,9 +8705,8 @@ async function main() {
   const { orders, failed: releasesNotDone, goneSeats: released } = performReleases(gateOrders, agents, { ledgerPath, hostLayout });
   // #4630: A HAIKU START THAT HAS NOT COPED IS RESTARTED ON SONNET before anything is delivered, and what it restarted is working NOW (`free` below).
   // agent-org#1307: THE ACCOUNT'S PAUSE, read before anything that could start a Claude seat. Flag off, it is `null` and the tick is as it was.
-  const accountPause = accountPauseTick(agents.map((a) => a.label));
-  // agent-org#1412: with no pause in force, a seat parked on the limit menu whose reset has passed is freed (`esc`), so it can take work again.
-  if (accountPause === null) freeLimitMenuSeats(agents);
+  // agent-org#1412: with no pause in force, a seat parked on the limit menu whose reset has passed is freed (`esc`), so it can take work again (`limitMenuTick`).
+  const accountPause = limitMenuTick(agents);
   const escalated = performEscalations(agents.map((a) => a.label), { run: defaultRun, gh: defaultGh, post: guardedGh, ledgerPath, worktreesDir: hostLayout.worktreesDir, launch: hostLayout,
     haikuDefault: { on: haikuDefaultOn({ switchesPath: decisionSwitchesPath(PRIMARY_CHECKOUT) }), refused: (label) => instanceRefused(label) }, accountPause });
   for (const line of escalated.lines) process.stdout.write(`${line}\n`);
