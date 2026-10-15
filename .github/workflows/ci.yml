@@ -102,9 +102,14 @@ jobs:
       # `@a11ign/toolchain` is EXACT, not a range (a11ign/a11ign#4308): 0.1.6 was published with no `dist/`, so the `^0.1.2` install resolved it and every `merge_group` run failed with
       # `Cannot find module '.../@a11ign/toolchain/dist/rstest-config.mjs'`. 0.7.1 ships `dist/` (its tarball holds `dist/rstest-config.mjs` and `dist/lib/git-sandbox.mjs`) and exports the `./lib/*` subpaths the
       # tool imports (`product-home`, `tree-wide-guard`, `walk-scope-declaration`, `walk-scope-discovery`, `ci-changed`, `git-sandbox`); move this pin deliberately, to a release that still does.
+      # `@rspack/binding-linux-x64-gnu` is the native binding `rstest` runs on. It is an OPTIONAL dependency of `@rspack/binding`, and this install is by name with no lockfile, so npm can leave it out
+      # without failing the install: the suite then exits on `Cannot find module '@rspack/binding-linux-x64-gnu'` before it lists a test file (merge_group runs 38804076077 and 38804306712, 2026-10-15).
+      # So the binding is named at the version the first install resolved. It is a second install of the whole set, not an install of the binding alone: an install that names only the binding prunes the rest.
       - name: Install the tool's dependencies where the project's root would hold them
         run: |
           npm install --no-save --no-package-lock "yaml@^2.9.0" "typescript@^6.0.3" "@rstest/core@^0.12.3" "@a11ign/toolchain@0.7.1"
+          BINDING=$(node -p "require('./node_modules/@rspack/binding/package.json').version")
+          npm install --no-save --no-package-lock "yaml@^2.9.0" "typescript@^6.0.3" "@rstest/core@^0.12.3" "@a11ign/toolchain@0.7.1" "@rspack/binding-linux-x64-gnu@$BINDING"
           mv node_modules project/node_modules
       - name: Put this checkout's tool where the tool lives in a project, and the tests' siblings beside the tests
         run: |
