@@ -10,7 +10,7 @@ Acceptance:
 cd ~/repos/wt-agent-org-1524 && node --test src/acceptance-commands.test.ts src/ci-failure-class.test.ts
 ```
 
-Closes a11ign/a11ign#5565
+Closes a11ign/agent-org#1524
 
 Measured at this head: `node --test src/acceptance-commands.test.ts src/ci-failure-class.test.ts` -> `tests 52, pass 52, fail 0`. `src/ci-failure-class.test.ts` alone -> `tests 32, pass 32`. `src/packaging/acceptance-commands.test.ts` -> `tests 307, pass 307`. `pnpm run typecheck` -> exit 0. The repository has no `lint` or `verify` script (`package.json` defines `test` and `typecheck` only), so no lint was run.
 
