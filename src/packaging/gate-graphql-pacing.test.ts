@@ -5,6 +5,7 @@
  * Each rule is pinned by a positive assertion and a RED CONTROL: the same rule with its condition removed, which the assertion must refuse.
  *   - the flag is OFF by default, and a poll tick or a test's `run` reads every repository as it always has;
  *   - below the reserve the pool is paced, at the reserve it is not (the boundary is named, not implied);
+ *   - agent-org#1417: between the floor and the reserve a paced tick skips `orgHealth` and still reads the other repositories; below the floor it skips both;
  *   - a paced tick names what it did not read, and never names nothing;
  *   - a webhook tick reads a repository its events named, and one due a sweep, and no other;
  *   - a repository an event-gated tick drops is REPORTED unread, with its reason, as a paced skip is;
@@ -18,7 +19,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { GRAPHQL_RESERVE, GRAPHQL_SWEEP_MINUTES, OTHER_SCOPES_MEMORY, PACING_FLAG, orgHealthSkipped, pacedUnread, pacingNow, pacingOn, primaryRefusedLanes, primaryUnread, readOtherScopesMemory, rememberOtherScopes, scopesToRead } from "../work-gate/pacing.ts";
+import { GRAPHQL_FLOOR, GRAPHQL_RESERVE, GRAPHQL_SWEEP_MINUTES, OTHER_SCOPES_MEMORY, PACING_FLAG, orgHealthSkipped, pacedUnread, pacingNow, pacingOn, primaryRefusedLanes, primaryUnread, readOtherScopesMemory, rememberOtherScopes, scopesToRead } from "../work-gate/pacing.ts";
 import { defaultRun, eventGateOf, otherScopesToRead, primaryDue, primaryLanes, readOpenRows, unreadScopes, type GateFacts } from "../work-gate/reads.ts";
 import type { Scope as TickScope } from "../event-queue.ts";
 import type { Scope } from "../work-gate/vocabulary.ts";
@@ -27,6 +28,7 @@ import { EXIT as GATE_EXIT, offeredByShare, tickLanes } from "../work-gate.ts";
 import { exitPartial, outageThisTick } from "../work-gate/tick.ts";
 import { claimStallsNow } from "../work-gate/claim-stall-tick.ts";
 import { loadAllowlist, normaliseLine } from "../repeating-lines.ts";
+import { workGateSource } from "../lib/work-gate-source.ts";
 
 const MINUTE = 60_000;
 const NOW = Date.parse("2026-10-12T12:00:00Z");
@@ -59,7 +61,7 @@ test("the flag is OFF by default: a canary state with no record for it is OFF, a
 
 test("flag OFF reads nothing and paces nothing, even on a pool the reserve would refuse", () => {
   const { run, calls } = probe(GRAPHQL_RESERVE - 1);
-  assert.deepEqual(pacingNow(run, false), { paced: false, remaining: null });
+  assert.deepEqual(pacingNow(run, false), { paced: false, belowFloor: false, remaining: null });
   assert.equal(calls.length, 0, "the probe is not made with the flag off");
   // RED CONTROL: the same pool, flag on, IS paced: the flag is the only thing that stood between this tick and the skip
   assert.equal(pacingNow(probe(GRAPHQL_RESERVE - 1).run, true).paced, true);
@@ -67,25 +69,53 @@ test("flag OFF reads nothing and paces nothing, even on a pool the reserve would
 
 test("the reserve is a boundary: below it the pool is paced, at it the pool is not", () => {
   assert.equal(GRAPHQL_RESERVE, 1000, "the reserve is named, and the PR says so");
-  assert.deepEqual(pacingNow(probe(999).run, true), { paced: true, remaining: 999 });
-  assert.deepEqual(pacingNow(probe(1000).run, true), { paced: false, remaining: 1000 });
+  assert.deepEqual(pacingNow(probe(999).run, true), { paced: true, belowFloor: false, remaining: 999 });
+  assert.deepEqual(pacingNow(probe(1000).run, true), { paced: false, belowFloor: false, remaining: 1000 });
   // RED CONTROL: a reserve of zero would pace nothing at 999, and this assertion would refuse it
   assert.notEqual(pacingNow(probe(999).run, true).paced, false);
 });
 
 test("a probe that cannot be read is not paced: the reads then refuse on their own and are reported as they are", () => {
-  assert.deepEqual(pacingNow(probe(null).run, true), { paced: false, remaining: null });
+  assert.deepEqual(pacingNow(probe(null).run, true), { paced: false, belowFloor: false, remaining: null });
   // RED CONTROL: a pool read as 0 IS paced, so the null case above is not paced by the same rule
   assert.equal(pacingNow(probe(0).run, true).paced, true);
 });
 
 test("a paced tick names what it did not read, and a tick that was not paced names nothing", () => {
-  assert.deepEqual(pacedUnread({ paced: true, remaining: 10 }, true), ["the other repositories' lanes", "the org-health reads"]);
+  assert.deepEqual(pacedUnread({ paced: true, belowFloor: true, remaining: 10 }, true), ["the other repositories' lanes", "the org-health reads"]);
   // a one-project host has no other repositories to be unread, so only the org-health reads are named
-  assert.deepEqual(pacedUnread({ paced: true, remaining: 10 }, false), ["the org-health reads"]);
-  assert.deepEqual(pacedUnread({ paced: false, remaining: 5000 }, true), []);
+  assert.deepEqual(pacedUnread({ paced: true, belowFloor: true, remaining: 10 }, false), ["the org-health reads"]);
+  assert.deepEqual(pacedUnread({ paced: false, belowFloor: false, remaining: 5000 }, true), []);
   // RED CONTROL: a paced tick that named nothing would read as clean, which is the defect the row forbids
-  assert.notDeepEqual(pacedUnread({ paced: true, remaining: 10 }, false), []);
+  assert.notDeepEqual(pacedUnread({ paced: true, belowFloor: true, remaining: 10 }, false), []);
+});
+
+test("agent-org#1417: above the reserve nothing is paced; between the floor and the reserve only orgHealth is skipped; below the floor the other repositories go too", () => {
+  assert.equal(GRAPHQL_FLOOR, 500, "the floor is named, and the PR says so");
+  assert.ok(GRAPHQL_FLOOR < GRAPHQL_RESERVE, "the floor sits BELOW the reserve, so the bands are ordered");
+  const band = (remaining: number) => pacingNow(probe(remaining).run, true);
+  // above the reserve: nothing is paced, and every repository is read
+  assert.deepEqual(band(GRAPHQL_RESERVE), { paced: false, belowFloor: false, remaining: GRAPHQL_RESERVE });
+  // between: orgHealth is skipped, and the other repositories are NOT named unread, because they are read
+  assert.deepEqual(band(GRAPHQL_RESERVE - 1), { paced: true, belowFloor: false, remaining: GRAPHQL_RESERVE - 1 });
+  assert.deepEqual(band(GRAPHQL_FLOOR), { paced: true, belowFloor: false, remaining: GRAPHQL_FLOOR });
+  assert.deepEqual(pacedUnread(band(GRAPHQL_FLOOR + 1), true), ["the org-health reads"]);
+  assert.equal(orgHealthSkipped(band(GRAPHQL_FLOOR + 1), true), true);
+  // below the floor: both are skipped and both are named
+  assert.deepEqual(band(GRAPHQL_FLOOR - 1), { paced: true, belowFloor: true, remaining: GRAPHQL_FLOOR - 1 });
+  assert.deepEqual(pacedUnread(band(GRAPHQL_FLOOR - 1), true), ["the other repositories' lanes", "the org-health reads"]);
+  // RED CONTROL: the old order (the floor at the reserve) would name the other repositories at 999, and this assertion refuses it
+  assert.notDeepEqual(pacedUnread(band(GRAPHQL_RESERVE - 1), true), ["the other repositories' lanes", "the org-health reads"]);
+});
+
+test("agent-org#1417: the gate reads the other repositories below the reserve and skips them only below the floor", () => {
+  // the read decision is inline in `readOtherScopes` (it needs the live pool), so the wiring is pinned by its text, as the other gate wiring is
+  const gate = workGateSource().replace(/\s+/g, " ");
+  assert.match(gate, /isAmbientRun\(run\) && tickPacing\(\)\.belowFloor \? \[\] : otherScopesToRead\(run, scopes\)/);
+  assert.match(gate, /const eventUnread = pacing\.belowFloor \? \[\] : unreadScopes/);
+  assert.match(gate, /orgHealthSkipped\(pacing, primaryRead\) \? \[\] : orgHealthTogether/, "orgHealth stays on the reserve");
+  // RED CONTROL: the old order skipped the other repositories on `paced`, so that text must NOT be there
+  assert.doesNotMatch(gate, /tickPacing\(\)\.paced \? \[\]/);
 });
 
 test("a repository no event named, read inside the sweep window, is not read", () => {
@@ -212,15 +242,15 @@ test("an event-gated tick that named neither the primary nor its sweep skips the
     assert.equal(primaryDue(defaultRun, HOME, tick), false);
     assert.deepEqual(primaryLanes(defaultRun, HOME, lanes, SKIPPED_PRIMARY, tick), SKIPPED_PRIMARY, "the lanes are refused, as a refused read is");
     assert.equal(reads, 0, "the tracker lanes are not asked");
-    assert.equal(orgHealthSkipped({ paced: false, remaining: null }, false), true, "orgHealth is skipped with them");
-    assert.deepEqual(primaryUnread({ paced: false, remaining: null }, false), ["the primary's tracker lanes (promotable rows, chairman-blocked rows, open rows)", "the org-health reads"]);
+    assert.equal(orgHealthSkipped({ paced: false, belowFloor: false, remaining: null }, false), true, "orgHealth is skipped with them");
+    assert.deepEqual(primaryUnread({ paced: false, belowFloor: false, remaining: null }, false), ["the primary's tracker lanes (promotable rows, chairman-blocked rows, open rows)", "the org-health reads"]);
     // RED CONTROL: the same tick naming the primary's tracker repository reads them, and orgHealth runs
     const named = webhookTick(dir, { named: [{ repo: "org/home-rows", kind: "issue", number: 3 }], memory: { "": NOW - MINUTE } });
     assert.equal(primaryDue(defaultRun, HOME, named), true);
     assert.deepEqual(primaryLanes(defaultRun, HOME, lanes, SKIPPED_PRIMARY, named), { promotableRows: [], chairmanBlocked: [], openRowsRead: [] });
     assert.equal(reads, 1);
-    assert.equal(orgHealthSkipped({ paced: false, remaining: null }, true), false);
-    assert.deepEqual(primaryUnread({ paced: false, remaining: null }, true), []);
+    assert.equal(orgHealthSkipped({ paced: false, belowFloor: false, remaining: null }, true), false);
+    assert.deepEqual(primaryUnread({ paced: false, belowFloor: false, remaining: null }, true), []);
   });
 });
 
@@ -297,7 +327,7 @@ test("agent-org#1414: tickLanes hands the refused and the paced lanes apart, and
   const io: CanaryIo = { read: () => null, write: () => {}, fileIncident: () => "https://example.test/1", log: () => {} };
   const lanes = (prs: any[] | null, pacedSkips: { refused: string[]; }[]) =>
     tickLanes({ prs, readyRows: [], others: [], pacedSkips, unarmed: [], releaseRuns: null, run: () => "", now: NOW, dir: "/state", io });
-  const allPaced = lanes([], [{ refused: pacedUnread({ paced: true, remaining: 10 }, true) }, { refused: [] }]);
+  const allPaced = lanes([], [{ refused: pacedUnread({ paced: true, belowFloor: true, remaining: 10 }, true) }, { refused: [] }]);
   assert.deepEqual(allPaced.refused, []);
   assert.deepEqual(allPaced.paced, ["the other repositories' lanes", "the org-health reads"]);
   assert.deepEqual(allPaced.unread, allPaced.paced, "PARTIAL still names every skipped lane");

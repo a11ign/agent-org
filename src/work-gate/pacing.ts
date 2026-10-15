@@ -3,8 +3,10 @@
  *
  * ONE FLAG, DEFAULT OFF: the machinery flag `gate.graphqlPacing` in `machinery-canary.json`, switched by `machinery:flag` (the canary turns it off
  * on a degraded signal). Off IS the current behaviour, and switching it off is the revert (named in the PR). Flag on, the gate reads the GraphQL pool off the probe it already makes, and when fewer than
- * {@link GRAPHQL_RESERVE} points are left it skips `orgHealth` and the other repositories' lanes FIRST. A skipped lane is REPORTED unread, never
- * clean (`unreadLanes`). A pool that cannot be read is NOT below the reserve: the reads then fail on their own and are reported as they are.
+ * {@link GRAPHQL_RESERVE} points are left it skips `orgHealth` FIRST, because a reviewer order for a settled-green pull request in another repository
+ * is the cheapest read it makes and the other repositories are where those orders come from (agent-org#1417). Below {@link GRAPHQL_FLOOR} it skips the
+ * other repositories' lanes too. A skipped lane is REPORTED unread, never clean (`unreadLanes`). A pool that cannot be read is NOT below the reserve:
+ * the reads then fail on their own and are reported as they are.
  *
  * Flag on AND a webhook tick, the primary's tracker lanes and `orgHealth` are read only when the event queue (`A11Y_TICK_SCOPES_FILE`) names the
  * home repository, or when the home's last whole read is older than {@link GRAPHQL_SWEEP_MINUTES} (`primaryDue`). The other repositories are read
@@ -23,8 +25,15 @@ import { readReenqueueState } from "./causes/pr-ejected.ts";
 
 export const PACING_FLAG = "gate.graphqlPacing";
 
-/** The points the gate keeps back from the GraphQL pool. Below this, `orgHealth` and the other repositories are skipped (not the primary's reads). */
+/** The points the gate keeps back from the GraphQL pool. Below this, `orgHealth` is skipped (not the primary's reads). */
 export const GRAPHQL_RESERVE = 1000;
+
+/**
+ * Below this, the other repositories' lanes are skipped too. Between it and the reserve they are still read, so a settled-green pull request in
+ * another repository still gets its reviewer order (agent-org#1417). The value is a judgement, not a measurement: half the reserve, so the other
+ * repositories' reads cannot take the pool down to the reserve in one tick. Not measured against what one tick's reads cost.
+ */
+export const GRAPHQL_FLOOR = 500;
 
 /** The longest a repository's lanes may go unread on a webhook tick: the sweep that catches what no event named. */
 export const GRAPHQL_SWEEP_MINUTES = 15;
@@ -47,30 +56,35 @@ export function pacingOn(read: () => CanaryState = () => readReenqueueState()): 
   }
 }
 
-export type Pacing = { paced: boolean; remaining: number | null; };
+/**
+ * `paced`: below the reserve, `orgHealth` is skipped. `belowFloor`: below {@link GRAPHQL_FLOOR} as well, the other repositories' lanes are skipped
+ * (so `belowFloor` implies `paced`). The two are separate because the chairman's order is `orgHealth` first and the other repositories only later.
+ */
+export type Pacing = { paced: boolean; belowFloor: boolean; remaining: number | null; };
 
 /**
- * The pool this tick has left, and whether it is below the reserve. Flag off: nothing is read and nothing is paced. A probe that cannot
- * be read gives `remaining: null` and is NOT paced, because the reads it would have skipped are then refused on their own and reported.
+ * The pool this tick has left, and whether it is below the reserve and below the floor. Flag off: nothing is read and nothing is paced. A probe that
+ * cannot be read gives `remaining: null` and is NOT paced, because the reads it would have skipped are then refused on their own and reported.
  */
 export function pacingNow(run: (args: string[]) => string, on: boolean = pacingOn()): Pacing {
-  if (!on) return { paced: false, remaining: null };
+  if (!on) return { paced: false, belowFloor: false, remaining: null };
   let remaining: number | null = null;
   try {
     remaining = poolFromHeaders([...GRAPHQL_POOL_PROBE], run)?.remaining ?? null;
   } catch {
     remaining = null;
   }
-  return { paced: remaining !== null && remaining < GRAPHQL_RESERVE, remaining };
+  return { paced: remaining !== null && remaining < GRAPHQL_RESERVE, belowFloor: remaining !== null && remaining < GRAPHQL_FLOOR, remaining };
 }
 
 /**
- * The lanes a paced tick did NOT read, named for `unreadLanes`. `others` says whether the declaration has other repositories at all, so a
- * one-project host is never told it could not read repositories it does not have.
+ * The lanes a paced tick did NOT read, named for `unreadLanes`. The other repositories' lanes are named only below the floor, because between the floor
+ * and the reserve they are read. `others` says whether the declaration has other repositories at all, so a one-project host is never told it could not
+ * read repositories it does not have.
  */
 export function pacedUnread(pacing: Pacing, others: boolean): string[] {
   if (!pacing.paced) return [];
-  return [...(others ? ["the other repositories' lanes"] : []), "the org-health reads"];
+  return [...(others && pacing.belowFloor ? ["the other repositories' lanes"] : []), "the org-health reads"];
 }
 
 /**

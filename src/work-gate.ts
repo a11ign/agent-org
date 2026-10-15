@@ -479,8 +479,8 @@ export function tickPacing(): Pacing {
  */
 export function readOtherScopes(run: (args: string[], repo?: string) => string = defaultRun, batch: typeof runBatch | undefined = run === defaultRun ? runBatch : undefined): { scope: Scope; read: ReturnType<typeof readLanes>; }[] {
   const scopes = scopesOf([homeProjectDeclaration()]).filter((scope) => scope.key !== "");
-  // agent-org#1240: BELOW THE RESERVE none are read (and `main` reports them unread); on a webhook tick (flag on) only the repositories the events named, and those due a sweep; every one otherwise
-  const wanted = isAmbientRun(run) && tickPacing().paced ? [] : otherScopesToRead(run, scopes);
+  // agent-org#1240: BELOW THE FLOOR none are read (and `main` reports them unread); between the floor and the reserve they are read (agent-org#1417); on a webhook tick (flag on) only the repositories the events named, and those due a sweep; every one otherwise
+  const wanted = isAmbientRun(run) && tickPacing().belowFloor ? [] : otherScopesToRead(run, scopes);
   return readWithFirstWaveTogether((aimed) => wanted.map((scope) => ({ scope, read: readLanes(scope, aimed) })), run, batch);
 }
 
@@ -610,13 +610,13 @@ function main() {
 
   // The third read is only needed to size the refill, and a refused one must not read as an empty shelf.
   // #3566: this one, `needs:chairman` and the open rows (`openRowsRead`) are asked TOGETHER, and with the other repositories' lists (slice 6).
-  // agent-org#1240: BELOW THE POOL'S RESERVE (flag on), `orgHealth` and the other repositories are skipped and REPORTED unread (`pacedSkips`)
+  // agent-org#1240: BELOW THE POOL'S RESERVE (flag on), `orgHealth` is skipped and REPORTED unread (`pacedSkips`); below the FLOOR the other repositories are too (agent-org#1417)
   const pacing = endGateSpan("pacing", tickPacing());
   // agent-org#1240: ON AN EVENT-GATED TICK the primary's tracker lanes are read only when an event named it (or its sweep is due), and `orgHealth` with them; the other repositories the events did not name are dropped. Each is REPORTED unread
   const declaredOthers = scopesOf([homeProjectDeclaration()]).filter((scope) => scope.key !== "");
   const primaryRead = primaryDue(defaultRun, homeScopeOf());
   const { promotableRows, chairmanBlocked, openRowsRead, otherScopes } = readLanesAfterOutageCheck(); endGateSpan("readLanes");
-  const eventUnread = pacing.paced ? [] : unreadScopes(defaultRun, declaredOthers); // read BEFORE the memory is stamped: a repository just read would otherwise look dropped
+  const eventUnread = pacing.belowFloor ? [] : unreadScopes(defaultRun, declaredOthers); // read BEFORE the memory is stamped: a repository just read would otherwise look dropped
   rememberOtherScopesRead(otherScopes, primaryRead && promotableRows !== null && chairmanBlocked !== null && openRowsRead !== null ? (homeScopeOf()?.key ?? null) : null);
   const pacedSkips = [{ refused: pacedUnread(pacing, declaredOthers.length > 0) }, { refused: primaryUnread(pacing, primaryRead) }, { refused: eventUnread }]; const reenqueueState = readReenqueueState(); const waitReads = endGateSpan("waitReads", waitReadsBeforeDecide(prs, otherScopes, openRowsRead, reenqueueState)); // #3095: `otherScopes` is read here, once -- B4 below compares with their pull requests, and `otherScopeTicks` ticks them
   // agent-org#5177: the other trackers' parked rows, which `otherScopeTicks` ticks but the home seam never reads; flag `rows.autoUnpark` in `machinery-canary.json` (not project.json), default OFF.
