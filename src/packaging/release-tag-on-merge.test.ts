@@ -100,6 +100,12 @@ function lockfileProblems(): string[] {
   return problems;
 }
 
+/** A scoped package publishes under `"access": "public"` and nothing else: the shared workflow's `publish` job refuses a config that says otherwise, and on `main` that is a failed release after the merge. */
+const accessProblems = (): string[] => {
+  const access = (JSON.parse(read(".changeset/config.json")) as { access?: string }).access;
+  return access === "public" ? [] : [`.changeset/config.json access is '${access}', not 'public': the publish job refuses it, after the merge`];
+};
+
 const PROPERTIES: Array<[string, (w: Workflow) => string[]]> = [["call", callProblems], ["inputs", inputProblems], ["gate", gateProblems]];
 const problemsOf = (w: Workflow): string[] => PROPERTIES.flatMap(([name, check]) => check(w).map((p) => `${name}: ${p}`));
 
@@ -109,6 +115,10 @@ test("the real release.yml is an npm-publishing call of the shared workflow, and
 
 test("the call names pnpm itself because the repository has no packageManager, and the lockfile resolves the changesets the call and the script name", () => {
   assert.deepEqual(lockfileProblems(), []);
+});
+
+test("the changesets config publishes publicly, which a scoped package needs", () => {
+  assert.deepEqual(accessProblems(), []);
 });
 
 test("positive control: the properties are about something (a pinned call, a changesets version the script names, and a gate job that exists)", () => {
