@@ -1,4 +1,4 @@
-// no-token: git -- builds two temporary git checkouts and reads their HEAD; nothing reaches `gh` or `herdr`, and the install stubs every write and every removal
+// no-token: gh -- nothing here spawns `gh`: the git spawns only build two temporary checkouts and read their HEAD, and the install stubs every write and every removal
 /**
  * (#1505) `host:check` AND `host:install` NAME WHAT THEY READ. Two directories on one host gave one reading `1 problem` and another `14 files not
  * shipped`, and neither said which checkout it had read. The first line of each names the project checkout and its HEAD; `host:install` lists each
