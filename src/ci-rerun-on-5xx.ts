@@ -5,8 +5,8 @@
 // THE ONCE BOUND is the run's own attempt count: a rerun makes attempt 2, and the caller passes `rerunsOnThisHead` from it (`readCiFailure`'s `rerunAlready`), so a second red on the head is the owner's.
 import { ERROR_LINE, LOG_TIMESTAMP, NOT_THE_FAILURE } from "./ci-failure-class.ts";
 
-/** Shipped OFF (agent-org#1180): with it off the tick does what it does today, byte for byte. The a11ign switch row `ci.rerunOn5xx` is the operator's way to turn it on or off. */
-export const CI_RERUN_ON_5XX: { readonly enabled: boolean } = Object.freeze({ enabled: false });
+/** Shipped ON (agent-org#1180, the switch row a11ign#5230): a required check red on a GitHub 5xx is rerun once. The explicit OFF, passed as `flags`, is today's route, byte for byte. */
+export const CI_RERUN_ON_5XX: { readonly enabled: boolean } = Object.freeze({ enabled: true });
 
 /** A GitHub server error as the last error line names it: `HTTP 5xx`, or the `Server Error` text `gh` prints. A 4xx is the caller's own mistake and stays `owner`. */
 const SERVER_ERROR = /\bHTTP 5\d\d\b|\bServer Error\b/;
