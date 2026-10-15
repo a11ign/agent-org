@@ -16,7 +16,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildReport, renderReport, retrospectiveDue, retrospectiveOrder, retrospectiveKey, retrospectiveTick, ledgerEntries, ledgerStats,
-  idleStats, journalLines, releaseStats, redPrStats, mergedStats, tokenStats, CLASS_FIX_INSTRUCTION, RETRO_CAUSE, RETRO_DESTINATION, UNKNOWN,
+  idleStats, journalLines, releaseStats, redPrStats, mergedStats, tokenStats, CLASS_FIX_INSTRUCTION, PAUSED_NUMBER_INSTRUCTION, RETRO_CAUSE, RETRO_DESTINATION, UNKNOWN,
   utcDate, NUMBERS, READINGS_FILE, compareReadings, previousReading, parseReadings, readReadings, recordReading, undeclaredDirections,
   verdictFor, readIdleClaimedHours } from "../org-retro.ts";
 import { isBrokenRed, isHeldRed, HOLD_OWN_JOBS } from "../red-pr.ts";
@@ -332,6 +332,13 @@ test("the prompt carries the numbers, the class-fix instruction and the #928 des
   assert.match(order.prompt, /positive control/);
   assert.ok(order.prompt.includes(RETRO_DESTINATION) && RETRO_DESTINATION === "#928", "the reading and the filed rows are posted on #928");
   assert.match(order.prompt, /nothing tripped/, "a quiet day is posted with its numbers, never silence");
+});
+
+test("the prompt names the paused line after the class-fix instruction: a paused number is not a class to file a row for", () => {
+  const order = retrospectiveOrder("2026-10-02", "THE NUMBERS");
+  assert.ok(order.prompt.includes(PAUSED_NUMBER_INSTRUCTION), "the paused-number instruction, verbatim");
+  assert.ok(order.prompt.indexOf(PAUSED_NUMBER_INSTRUCTION) > order.prompt.indexOf(CLASS_FIX_INSTRUCTION), "appended after the class-fix instruction");
+  assert.match(PAUSED_NUMBER_INSTRUCTION, /^A number marked `paused` is not a class to file a row for/);
 });
 
 /** A section of a markdown file: its heading line to the next `## ` heading. Null when absent -- the positive control below is what makes that visible. */
