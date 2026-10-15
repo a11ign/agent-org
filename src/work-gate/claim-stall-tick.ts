@@ -13,7 +13,7 @@ import { labelsOf, REPO_CHECKOUT, REVIEWER_STATE_DIR, systemctlRun, openBlockers
   readElsewherePrs } from "../work-gate.ts";
 import { familyNumber } from "../arm-pr.ts";
 import { CLAIM_LABEL } from "../claim-labels.ts";
-import { gitRun, pathExists, statMtime, readStallState, writeStallState, STALL_STATE_FILE, nextStallState,
+import { gitRun, pathExists, statMtime, readStallState, writeStallState, readJsonObject, writeJsonObject, STALL_STATE_FILE, nextStallState,
   claimStalledOrders, readHerdrRestart, claimFactsFrom, readClaim, readLabelEvents, nudgeDeliveredAt, nudgeKey, closedClaimOrders,
   restartNotices, recordStalledNudges, AGENT_SESSIONS_FILE, Unreadable } from "../claim-stall.ts";
 import { subjectMention, subjectRef } from "../review-attribution.ts";
@@ -536,7 +536,25 @@ export function claimStallsNow(rows: any[] | null, claimedComments: any[] | null
  * The per-row instance is `worker-<n>`, the roster's own family (`familyNumber`): a standing seat is released and never interrupted by this cause.
  */
 export function closedClaimsNow(closed: { rows: import("../claim-stall.ts").ClosedClaimedRow[] | null; agents: { label: string; status: string; }[] | null; } | null, { repo = REPO_CHECKOUT, isInstance = (session) => familyNumber(session) !== null,
-  log = (line) => process.stderr.write(line), trackerRepo }: { repo?: string; isInstance?: (session: string) => boolean; log?: (line: string) => void; trackerRepo?: string; } = {}): import("../claim-stall.ts").StallOrder[] {
+  log = (line) => process.stderr.write(line), trackerRepo, stateDir, read = (path) => readJsonObject(path), write = (path, lines) => writeJsonObject(path, lines) }: { repo?: string; isInstance?: (session: string) => boolean; log?: (line: string) => void; trackerRepo?: string;
+  stateDir?: string; read?: (path: string) => ClosedLines; write?: (path: string, lines: ClosedLines) => void; } = {}): import("../claim-stall.ts").StallOrder[] {
   if (closed === null) return [];
-  return closedClaimOrders({ ...closed, repo, isInstance, log, trackerRepo });
+  // #1463: the own-pull-request line is said once per stand, and the memory of it lives in its own file beside the stall memory. Without a `stateDir` there is
+  // no memory, so the line is said each time asked (the fixtures that pass none keep their old behaviour). A tracker's entries are its own: another tracker's
+  // are kept as they were, and an entry this tick did not say is gone, so a stand that ended is said again if it ever comes back.
+  if (stateDir === undefined || closed.rows === null) return closedClaimOrders({ ...closed, repo, isInstance, log, trackerRepo });
+  const path = `${stateDir}/${CLOSED_CLAIM_LINES_FILE}`;
+  const before = read(path);
+  const once = { before, after: {} as Record<string, string> };
+  const orders = closedClaimOrders({ ...closed, repo, isInstance, log, trackerRepo, once });
+  const prefix = `${trackerRepo ?? ""}#`;
+  const kept = Object.fromEntries(Object.entries(before).filter(([key]) => !key.startsWith(prefix)));
+  const after = { ...kept, ...once.after };
+  if (JSON.stringify(after) !== JSON.stringify(before)) write(path, after);
+  return orders;
 }
+
+/** #1463: the own-pull-request lines the last tick said, one stand per row (`closedClaimsNow`). */
+export const CLOSED_CLAIM_LINES_FILE = "closed-claim-lines.json";
+/** #1463: `tracker#row` -> the stand (`session#pull request`) its line was said for. */
+type ClosedLines = Record<string, string>;

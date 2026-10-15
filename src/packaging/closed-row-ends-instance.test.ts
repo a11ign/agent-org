@@ -106,10 +106,10 @@ test("#3535 herdr that cannot be asked is NOT idle: the release still happens, n
   assert.match(log.join(""), /herdr's state of worker-3535 was not read/);
 });
 
-test("#3535 a row closed by its OWN merged pull request keeps the merged release it has: no closed order, and it is said", () => {
+test("#1463 a row closed by its OWN merged pull request is released here, and it is said: the merge settle does not exist for agent-org", () => {
   const byPr = closedRow("worker-3535", { closedByPullRequestsReferences: [{ number: 313, headRefName: BRANCH, title: "A closed row ends its instance (a11ign/a11ign#3535)" }] });
   const { orders, log } = closedTick([byPr], [{ label: "worker-3535", status: "working" }]);
-  assert.deepEqual(orders, []);
+  assert.deepEqual([orders.length, orders[0]?.release?.why], [1, "closed"]);
   assert.match(log.join(""), /closed by its own pull request \(#313\)/);
 });
 
@@ -123,9 +123,9 @@ test("#3535 (review of #313) a row closed by SOMEBODY ELSE'S pull request still 
 
 test("#3535 (review of #313) the claimant's pull request among several closing references is still its own: the merged release keeps it", () => {
   const refs = [{ number: 3709, headRefName: "agent/some-other-work-3600", title: "x" }, { number: 313, headRefName: BRANCH, title: "y" }];
-  assert.deepEqual(closedTick([closedRow("worker-3535", { closedByPullRequestsReferences: refs })], [{ label: "worker-3535", status: "working" }]).orders, []);
+  assert.deepEqual(closedTick([closedRow("worker-3535", { closedByPullRequestsReferences: refs })], [{ label: "worker-3535", status: "working" }]).orders.map((o) => o.release?.why), ["closed"]);
   const bySuffix = [{ number: 5, headRefName: "agent/renamed-branch-3535", title: "z" }];
-  assert.deepEqual(closedTick([closedRow("worker-3535", { closedByPullRequestsReferences: bySuffix })], null).orders, [], "the row-suffix rung, as the merged release reads it");
+  assert.deepEqual(closedTick([closedRow("worker-3535", { closedByPullRequestsReferences: bySuffix })], null).orders.map((o) => o.release?.why), ["closed"], "the row-suffix rung, as the merged release reads it");
 });
 
 test("#3535 (review of #313) a closing reference that names no head and no title cannot be called the claimant's: the release happens", () => {
@@ -255,7 +255,7 @@ test("#3535 (5) the shape the decision reads: labels, the claim record's comment
   assert.deepEqual([orders[0].release?.branch, orders[0].release?.interrupt], [BRANCH, true], "the claim record is found in the comments as the read returns them");
   const byPr = issue(3535, "CLOSED", CLAIM, [{ number: 313, head: BRANCH }]);
   const [merged] = closedClaimsWhenWorkerListed([{ label: "worker-3535", status: "working" }], rest(byPr))!.rows!;
-  assert.deepEqual(closedTick([merged], [{ label: "worker-3535", status: "working" }]).orders, [], "a row closed by its own pull request is left to the merged release");
+  assert.deepEqual(closedTick([merged], [{ label: "worker-3535", status: "working" }]).orders.map((o) => o.release?.why), ["closed"], "a row closed by its own pull request is released here (#1463): no merge settle clears agent-org labels");
 });
 
 test("#3535 (5) the call is refused, or herdr is unreadable: UNREAD (rows null), never an empty list and never 'not asked'", () => {
@@ -276,7 +276,7 @@ test("#3535 the gate's `main` hands the follow-ups' closed claims to the orders:
   const main = workGateSource();
   assert.match(main, /const \{[^}]*\bclosedClaims\b[^}]*\} = readOpenRowFollowUps\(allOpen\)/, "read in the follow-ups' wave");
   assert.match(main, /withClosedClaims\(claimStallsWithFacts\(openRowsRead, claimedComments, prs, otherScopes, \{ openRowsPaced: !primaryRead \}, waitReads\?\.facts \?\? null\), closedClaims\)/, "and handed to the orders");
-  assert.match(main, /\.\.\.closedClaimsNow\(closedClaims, \{ trackerRepo: repoNow\(\) \}\)/, "which turns them into orders beside the open claims' own");
+  assert.match(main, /\.\.\.closedClaimsNow\(closedClaims, \{ trackerRepo: repoNow\(\), stateDir: REVIEWER_STATE_DIR \}\)/, "which turns them into orders beside the open claims' own");
 });
 
 // --- #3883: THE LABELS OF A CLOSED ROW WHOSE HOLDER IS NOT LISTED ----------------------------------------------------------------------------------------
