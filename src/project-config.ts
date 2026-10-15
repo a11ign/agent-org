@@ -18,7 +18,7 @@
 // The module imports only `node:fs` and `node:path`: `scripts/repo-identity.mjs` imports it, and it in turn is imported by 31
 // files of this package, so anything heavier here is paid by every one of them (`api-pool.ts` says why that matters).
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sandboxGitEnv } from "./lib/git-env.ts";
@@ -497,6 +497,42 @@ function installedProject(cwd: string): string {
     + " (declare the project there, or set `AGENT_ORG_HOST` to a host file whose primary is the project)", "the tool's checkout resolution");
 }
 
+/** The host declaration's path inside a checkout. `host-config.ts` imports this module, so it cannot be imported back; the project-config test pins this to `host-config.ts`'s `HOST_DECLARATION_PATH`. */
+export const HOST_DECLARATION = ".agent-org/host.json";
+
+/**
+ * The host declaration whose `clones` map names THIS repository's checkout, or `null` (#1433). It is read only to NAME the file: nothing is resolved from
+ * it, so the refusal stays a refusal and no project is defaulted. The checkout is the repository's main clone, which a linked worktree's git common
+ * directory names; the declarations are the `.agent-org/host.json` files beside that clone (the layout the tool serves). A file that cannot be read, or
+ * that names no clone of this one, is skipped, so an absent answer is a refusal without the hint and never a guess.
+ * @param {string} cwd @returns {string | null}
+ */
+function hostDeclaringClone(cwd: string): string | null {
+  let clone: string;
+  try {
+    const common = execFileSync("git", ["rev-parse", "--git-common-dir"], { cwd, encoding: "utf8", env: sandboxGitEnv(), stdio: ["ignore", "pipe", "pipe"] }).trim();
+    clone = dirname(resolve(cwd, common));
+  } catch {
+    return null;
+  }
+  let siblings: string[];
+  try {
+    siblings = readdirSync(dirname(clone)).sort();
+  } catch {
+    return null;
+  }
+  for (const name of siblings) {
+    let clones: unknown;
+    try {
+      clones = JSON.parse(readFileSync(join(dirname(clone), name, HOST_DECLARATION), "utf8")).clones;
+    } catch {
+      continue;
+    }
+    if (isObject(clones) && Object.values(clones).some((path) => typeof path === "string" && resolve(path) === clone)) return join(dirname(clone), name, HOST_DECLARATION);
+  }
+  return null;
+}
+
 /**
  * The checkout the tool serves, by LAYOUT. `$AGENT_ORG_HOST` set (and non-empty, as `hostConfigPath` reads it) wins in every layout and names the
  * host file; the answer is its primary project's checkout (ADR 0040, decision 3). Unset, the layout decides:
@@ -525,9 +561,11 @@ export function resolveHomeCheckout({
   if (existsSync(join(beside, PROJECT_DECLARATION_PATH))) return beside;
   const top = gitToplevel(cwd);
   if (top !== null && existsSync(join(top, PROJECT_DECLARATION_PATH))) return top;
+  const named = hostDeclaringClone(cwd);
   throw new ProjectDeclarationRefusal(HOST_ENV, `it is ${host === undefined ? "unset" : "empty"}, and the checkout it would have guessed, \`${beside}\`, holds no \`${PROJECT_DECLARATION_PATH}\``
     + ` (the tool is not inside a project, and \`${cwd}\` is not inside a repository that holds one).`
-    + " Set it in the unit (`Environment=AGENT_ORG_HOST=<checkout>/.agent-org/host.json`, which `host:install` writes), or in the shell that runs the tool",
+    + " Set it in the unit (`Environment=AGENT_ORG_HOST=<checkout>/.agent-org/host.json`, which `host:install` writes), or in the shell that runs the tool"
+    + (named === null ? "" : ` (this repository is a clone that the host declaration \`${named}\` names in its \`clones\`, so set \`${HOST_ENV}=${named}\`)`),
   "the tool's checkout resolution");
 }
 
