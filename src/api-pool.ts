@@ -29,8 +29,6 @@ export type Pool = {remaining: number, limit: number, used: number, resetInMinut
  * read off the call that failed, and naming it costs a call of its own.
  */
 export const GRAPHQL_POOL_PROBE = Object.freeze(["api", "graphql", "-f", "query=query { viewer { login } }", "-i"]);
-/** (#1518) The CORE (REST) pool's probe: the one `host/gh`'s `pool_probe` sends for a refusal that names no GraphQL. */
-export const CORE_POOL_PROBE = Object.freeze(["api", "user", "-i"]);
 
 /**
  * WHY THERE IS NO SECOND PROBE, THOUGH THE LOGIN IS WHAT #2003 ASKED FOR FIRST.

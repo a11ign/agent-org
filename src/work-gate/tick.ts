@@ -1,13 +1,12 @@
-import { execFileSync, spawnSync } from "node:child_process";
-import { dirname, join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { join } from "node:path";
 import { READY_LABEL, CLAIM_LABEL } from "../claim-labels.ts";
 import { todayIso, ANSWER_PREFIX } from "../waiting-condition.ts";
 import { subjectMention, subjectRef } from "../review-attribution.ts";
 import { REPEAT_TICKS, normaliseLine, type RepeatingGroup } from "../repeating-lines.ts";
 import { machineryFlagOn, redSinceOf, type CanaryState } from "../org-health.ts";
 import { RECHECK_FLAG } from "./shared-file-orders.ts";
-import { ghQueueTick, type QueuedCall } from "../gh-ledger.ts";
-import { CORE_POOL_PROBE, GRAPHQL_POOL_PROBE, poolFromHeaders } from "../api-pool.ts";
+import { ghQueueTick } from "../gh-ledger.ts";
 import { isBrokenRed } from "../red-pr.ts";
 import { holdersOf } from "../pr-hold-state.ts";
 import { REPO } from "../project-identity.ts";
@@ -1559,18 +1558,7 @@ export function withStaleRefusals(prs: any[], required: string[] | null, { portF
  * gate makes it once the reset has passed and writes the 70% incident for a pool nearly spent. NEVER FAILS THE TICK: a queue that cannot be read is a line,
  * and the orders this tick would have sent are not held behind it.
  */
-/**
- * (#1518) THE REFUSED POOL'S `x-ratelimit-remaining` for a queued call, read the way `host/gh` reads it: the GraphQL probe for a refusal that names GraphQL,
- * else the core one, sent AS THE CALL'S ACCOUNT (its config dir, the one `spawnQueued` runs the call as). `null` when there is no answer.
- */
-export function queuedPoolLeft(call: QueuedCall, stderr: string): number | null {
-  const probe = /graphql/i.test(stderr) ? GRAPHQL_POOL_PROBE : CORE_POOL_PROBE;
-  const env = { ...process.env, GH_CONFIG_DIR: dirname(call.dir) };
-  const run = (args: string[]) => execFileSync("gh", args, { encoding: "utf8", env, stdio: ["ignore", "pipe", "pipe"] });
-  return poolFromHeaders([...probe], run)?.remaining ?? null;
-}
-
-export function ghQueueTickOrSay(tick: () => string[] = () => ghQueueTick({ poolLeftOf: queuedPoolLeft }), log: (line: string) => void = (line) => process.stderr.write(line)) {
+export function ghQueueTickOrSay(tick: () => string[] = ghQueueTick, log: (line: string) => void = (line) => process.stderr.write(line)) {
   try {
     for (const line of tick()) log(`${line}\n`);
   } catch (error) {

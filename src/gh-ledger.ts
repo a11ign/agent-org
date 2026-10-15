@@ -15,6 +15,8 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renam
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { GRAPHQL_POOL_PROBE, poolFromHeaders } from "./api-pool.ts";
+import { CORE_POOL_PROBE } from "./ticket-port/core-pool-probe.ts";
 
 /**
  * `sessionId` is the 9th field, the id of the session that made the call (`host/gh`, #3589); a line from before it has 8 fields and NO `sessionId` key, so it reads to the same entry it always did.
@@ -550,9 +552,9 @@ function requeue(call: QueuedCall, resetAtS: number) {
   renameSync(join(call.dir, `${call.id}.meta.tmp`), join(call.dir, `${call.id}.meta`));
 }
 
-export type RunResult = { status: number | null; stderr: string };
+export type RunResult = { status: number | null; stderr: string; stdout?: string };
 export type RunQueued = (call: QueuedCall, argv: string[]) => RunResult;
-/** (#1518) The refused pool's `x-ratelimit-remaining` for a call's account, read by the gate (it owns the one pool reader); null when no answer. This file cannot read it: it is a leaf. */
+/** (#1518) The refused pool's `x-ratelimit-remaining` for a call's account, or null when there is no answer. {@link poolLeftOfQueued} reads it through the run that makes the call, so the probe goes as the same account. */
 export type PoolLeftOf = (call: QueuedCall, stderr: string) => number | null;
 const NO_READING: PoolLeftOf = () => null;
 export type RetryEvent = "completed" | "requeued" | "failed";
@@ -606,7 +608,7 @@ export function retryDue(dir: string, { nowMs, run, poolLeftOf = NO_READING, lim
 }
 
 /** The real run: `gh` as the account whose queue this is, from the directory it was asked in, with its stdin, as its session and workspace (so a comment carries the role that wrote it). */
-const spawnQueued: RunQueued = (call, argv) => {
+export const spawnQueued: RunQueued = (call, argv) => {
   if (call.cwd !== "" && !existsSync(call.cwd)) return { status: 1, stderr: `the directory the call was made from is gone: ${call.cwd}` };
   const stdinPath = join(call.dir, `${call.id}.stdin`);
   const env: NodeJS.ProcessEnv = { ...process.env, GH_CONFIG_DIR: dirname(call.dir), A11Y_GH_QUEUE_RETRY: "1" };
@@ -614,8 +616,20 @@ const spawnQueued: RunQueued = (call, argv) => {
   if (call.session !== NONE) env.CLAUDE_CODE_SESSION_ID = call.session;
   if (call.argv[0] === "pr" && call.argv[1] === "create") env.A11Y_PR_OPEN = "1"; // only `pr:open` queues a create
   const r = spawnSync("gh", argv, { cwd: call.cwd === "" ? undefined : call.cwd, env, encoding: "utf8", timeout: RETRY_TIMEOUT_MS, input: existsSync(stdinPath) ? readFileSync(stdinPath) : "" });
-  return { status: r.status, stderr: `${r.stderr ?? ""}${r.error ? String(r.error.message) : ""}` };
+  return { status: r.status, stderr: `${r.stderr ?? ""}${r.error ? String(r.error.message) : ""}`, stdout: r.stdout ?? "" };
 };
+
+/**
+ * (#1518) THE REFUSED POOL'S `x-ratelimit-remaining`, read the way `host/gh` reads it: the GraphQL probe for a refusal that names GraphQL, else the core one,
+ * sent THROUGH `run`, so it goes as the call's own account (`spawnQueued` sets its config dir). `null` when there is no answer. The probe is sent through the
+ * caller's runner and not spawned here, so this file keeps its one spawn site (the ratchet, #826).
+ */
+export function poolLeftOfQueued(run: RunQueued): PoolLeftOf {
+  return (call, stderr) => {
+    const probe = [...(/graphql/i.test(stderr) ? GRAPHQL_POOL_PROBE : CORE_POOL_PROBE)];
+    return poolFromHeaders(probe, (args) => run(call, args).stdout ?? "")?.remaining ?? null;
+  };
+}
 
 // --- #4898: THE 70% BUDGET ALARM -- which pool is nearly spent, and by whom, BEFORE it refuses -------------------------------
 
@@ -752,7 +766,7 @@ export const accountDirs = (home: string = homedir()) => [join(home, "workers", 
  * was queued and nothing alarmed. A queue that cannot be read is said, never skipped silently, and the ledger and the other account are still read.
  * @param {{ home?: string, nowMs?: number, run?: RunQueued, poolLeftOf?: PoolLeftOf }} [deps]
  */
-export function ghQueueTick({ home = process.env.A11Y_GH_QUEUE_HOME ?? homedir(), nowMs = Date.now(), run = spawnQueued, poolLeftOf = NO_READING }: { home?: string; nowMs?: number; run?: RunQueued; poolLeftOf?: PoolLeftOf; } = {}): string[] {
+export function ghQueueTick({ home = process.env.A11Y_GH_QUEUE_HOME ?? homedir(), nowMs = Date.now(), run = spawnQueued, poolLeftOf = poolLeftOfQueued(run) }: { home?: string; nowMs?: number; run?: RunQueued; poolLeftOf?: PoolLeftOf; } = {}): string[] {
   if (process.env.A11Y_GH_QUEUE === "off") return [];
   const said: string[] = [];
   for (const dir of [...accountDirs(home), join(home, ".config", "gh")]) {

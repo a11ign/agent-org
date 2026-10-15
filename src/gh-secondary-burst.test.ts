@@ -12,7 +12,7 @@
  *   (c) a read refused for a secondary limit is not asked again that tick, and the next tick asks (`readUnlessRefused`, as #1523 pinned it);
  *   (d) a queued call the gate RETRIES and sees refused again is filed as the refused pool reads now (`retryDue`, through `attemptCall`): secondary
  *       with calls left, primary at zero, and the pool is read once for an hourly phrase only;
- *   (e) the gate's reader (`queuedPoolLeft`) sends the wrapper's probe as the entry's own account, and reads the pool it answers, or nothing.
+ *   (e) the retry's reader (`poolLeftOfQueued`, run through `spawnQueued`) sends the wrapper's probe as the entry's own account, and reads the pool it answers, or nothing.
  */
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
@@ -21,8 +21,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpDir, tmpDirForFile } from "./lib/tmp-fixture.ts";
-import { QUEUE_DIR, readQueue, refusalKind, retryDue } from "./gh-ledger.ts";
-import { queuedPoolLeft } from "./work-gate/tick.ts";
+import { poolLeftOfQueued, QUEUE_DIR, readQueue, refusalKind, retryDue, spawnQueued } from "./gh-ledger.ts";
 import { GRAPHQL_POOL_PROBE } from "./api-pool.ts";
 import { poolProbeAnswer as probeOf } from "./packaging/rows-by-label-fixtures.ts";
 import { forgetRefusedReads, readUnlessRefused } from "./ticket-port/rows-by-label.ts";
@@ -251,15 +250,16 @@ test("(e) the gate's pool reader sends the wrapper's probe as the entry's accoun
   writeFileSync(join(bin, "gh"), ["#!/bin/sh", `echo "$GH_CONFIG_DIR $*" >> "${log}"`, `cat "${answer}"`, ""].join("\n"), { mode: 0o755 });
   const cfg = join(root, "cfg");
   const call = queuedCall(join(cfg, QUEUE_DIR));
+  const reading = poolLeftOfQueued(spawnQueued);
   const savedPath = process.env.PATH;
   process.env.PATH = `${bin}:${savedPath}`;
   try {
-    assert.equal(queuedPoolLeft(call, INSTALLATION_REFUSAL), 4560, "the core pool's reading");
+    assert.equal(reading(call, INSTALLATION_REFUSAL), 4560, "the core pool's reading");
     assert.equal(readFileSync(log, "utf8").split("\n")[0], `${cfg} api user -i`, "the core probe, as the account whose queue this is");
-    assert.equal(queuedPoolLeft(call, "GraphQL: API rate limit exceeded for user ID 1"), 4560, "a GraphQL refusal reads the GraphQL pool");
+    assert.equal(reading(call, "GraphQL: API rate limit exceeded for user ID 1"), 4560, "a GraphQL refusal reads the GraphQL pool");
     assert.match(readFileSync(log, "utf8"), /api graphql/, "and sends the GraphQL probe");
     writeFileSync(answer, "");
-    assert.equal(queuedPoolLeft(call, INSTALLATION_REFUSAL), null, "no answer is no reading, never a zero");
+    assert.equal(reading(call, INSTALLATION_REFUSAL), null, "no answer is no reading, never a zero");
   } finally {
     process.env.PATH = savedPath;
   }
