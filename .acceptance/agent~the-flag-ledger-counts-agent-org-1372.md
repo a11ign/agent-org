@@ -1,0 +1,15 @@
+The flag ledger's canary-absent check counts a canary-homed flag as having no switch row only after it has read the other declared trackers too: `readFlagLedger` asks each other `tracker` repository (except the project's own, keyed `""`) for its open `ready` and `in-progress` rows through the ticket port's by-label read (`readRowsByLabel`, a connection, not a search), and a flag named by one of those rows is not absent. The other trackers are read only when a flag past its two-hour window is not named by the home rows, and a refused or failed read of any one is `{ unknown }`, never a clean list. `src/flag-switch-ledger.ts` (`otherTrackerRepos`, `owedRowsOf`, `liveOwedRows`, `canaryAbsentFlags`) and `src/packaging/flag-switch-ledger.test.ts` (the `(8)` tests).
+
+Acceptance: `bash -c 'cd /home/agent/repos/wt-agent-org-1372 && npx rstest run --config scripts/rstest/rstest.config.ts src/packaging/flag-switch-ledger.test.ts'`
+
+The row names `src/flag-switch-ledger.test.ts`, which is not in the repository (the worktree or the main checkout); the ledger's tests are in `src/packaging/flag-switch-ledger.test.ts`, and the new cases were added there rather than in a second file.
+
+Mutation: the other trackers' read made to return no rows (the home rows only) failed 2 of 25 tests: `(8) ... POSITIVE CONTROL` (the row in `a11ign/agent-org` ready/in-progress does not clear the flag) and `(8) ... a refused list of another tracker is UNKNOWN`. `src/flag-switch-ledger.ts` was copied to a scratch file first and restored by copy, verified identical with `diff`.
+
+Measured: `VERDICT pass: 25 tests in 1 file` for the acceptance file. Against the HEAD ledger the same file is `3 of 25` failed (the positive control, the refused-list case, the tracker-keys case), so those cases are red before and green after; the no-row `CONTROL` test passes on both, as it asserts unchanged behaviour. `pnpm run typecheck` exits 0. `gh-call-ratchet.test.ts` passes 8 of 8: an earlier draft that spawned `gh issue list` in this file was refused by it, and the read now goes through the port. Full `pnpm run test`: `115 of 11578 tests failed in 696 files`; the same 115 fail on HEAD (`115 of 11574`) with the same per-file counts, so none is from this change.
+
+Not here, and named: this repository has no `lint`, `verify` or `test:org` script (its scripts are `typecheck`, `test` and `changeset`), so those gates were not run; the 115 full-suite failures predate this change and are not fixed here; the live read of another tracker was not spot-checked against a real repository (the tests inject the lists), to keep the shared GraphQL pool unspent; a refusal of the by-label read is remembered for the rest of the tick by the port, which is its own rule and applies to any later read that tick. The call site in `work-gate.ts` (outside this row's Region) is unchanged.
+
+platform: GitHub's GraphQL `repository.issues(labels:)` connection, read by the ticket port; the leaf runs no `gh` call of its own.
+
+Closes a11ign/agent-org#1372
