@@ -1,10 +1,11 @@
 Nothing alerts when a repository goes unread for longer than the 15-minute sweep pacing promises. A new org-health reading, `repository-unread-past-sweep`, trips when a declared repository's last whole read (`other-scopes-memory.json`) is older than `GRAPHQL_SWEEP_MINUTES` plus one tick (15 + 2.1 = 17.1 min, strict "older than"). A trip names each repository with its age. A repository with no stamped whole read is UNKNOWN (`CANNOT_TELL`), never clear. A trip stands over an unknown. Poll hosts stamp no whole reads, so they are not asked. The threshold is computed in `src/work-gate/org-health.ts` and passed in, so `src/org-health.ts` does not import `pacing.ts` (which imports it).
 
-Acceptance: `node --test src/packaging/gate-graphql-pacing.test.ts`, `pass 29, fail 0`. The new test covers the three done-when cases: stale 40 min trips with the repository named and its age; 17 min is clear (the red control, one minute inside the limit); 5 min is clear; a missing stamp gives UNKNOWN with the `CANNOT_TELL` text; a stamp is not unknown; a trip stands over an unstamped repository.
+Acceptance: `node --test src/packaging/gate-graphql-pacing.test.ts`, `pass 30, fail 0`. The new test covers the three done-when cases: stale 40 min trips with the repository named and its age; 17 min is clear (the red control, one minute inside the limit); 5 min is clear; a missing stamp gives UNKNOWN with the `CANNOT_TELL` text; a stamp is not unknown; a trip stands over an unstamped repository.
 
 Mutation: each mutation was applied to `src/org-health.ts`, the test file was run, and the file was restored from a saved copy and checked with `cmp` each time.
-- never fires (`if (late.length > 0)` → `< 0`): 1 test fails (28 pass).
-- always fires (`now - r.readAtMs > limit` → `> -1`): 1 test fails (28 pass).
+- never fires (`if (late.length > 0)` → `< 0`): 1 test fails (29 pass).
+- always fires (`now - r.readAtMs > limit` → `> -1`): 1 test fails (29 pass).
+- wiring removed (the `if (facts.sweeps !== undefined)` registration in `orgHealthReadings` deleted): 1 test fails (29 pass), the new production-wiring test. Restored from a saved copy and checked with `cmp`.
 
 Fails before the change: not run. The test file imports `sweepOverdueReading`, which did not exist before, so the file cannot load. This is reasoning, not an observed run.
 

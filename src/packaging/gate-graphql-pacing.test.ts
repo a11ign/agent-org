@@ -24,7 +24,7 @@ import { GRAPHQL_FLOOR, GRAPHQL_RESERVE, GRAPHQL_SWEEP_MINUTES, OTHER_SCOPES_MEM
 import { defaultRun, eventGateOf, eventUnreadForTick, otherScopesForTick, otherScopesToRead, primaryDue, primaryLanes, readOpenRows, unreadScopes, type GateFacts } from "../work-gate/reads.ts";
 import type { Scope as TickScope } from "../event-queue.ts";
 import type { Scope } from "../work-gate/vocabulary.ts";
-import { SIGNALS, emptyCanaryState, sweepOverdueReading, withMachineryFlag, type CanaryIo } from "../org-health.ts";
+import { SIGNALS, emptyCanaryState, orgHealthReadings, sweepOverdueReading, withMachineryFlag, type CanaryIo } from "../org-health.ts";
 import { EXIT as GATE_EXIT, offeredByShare, tickLanes } from "../work-gate.ts";
 import { exitPartial, outageThisTick } from "../work-gate/tick.ts";
 import { claimStallsNow } from "../work-gate/claim-stall-tick.ts";
@@ -505,4 +505,14 @@ test("agent-org#1418: a repository unread past the sweep plus one tick is trippe
   const both = sweepOverdueReading(sweeps([{ name: "a11ign/a11ign", readAtMs: NOW - 40 * MINUTE }, { name: "a11ign/never-read" }]));
   assert.equal(both.status, "tripped");
   assert.match(both.detail, /a11ign\/a11ign \(last whole read 40 min ago\)/);
+});
+
+test("agent-org#1418: the production readings carry the sweep reading when the caller asks, and are silent when it does not", () => {
+  const base = { now: NOW, lastMergedAt: NOW, work: null, redPrs: [], refusals: {}, drift: null, primarySince: null };
+  const stale = { sweepMinutes: GRAPHQL_SWEEP_MINUTES, repos: [{ name: "a11ign/a11ign", readAtMs: NOW - 40 * MINUTE }] };
+  // the registration in orgHealthReadings: removing it leaves no reading here, and this assertion goes red
+  const asked = orgHealthReadings({ ...base, sweeps: stale }).find((r) => r.signal === SIGNALS.SWEEP_OVERDUE);
+  assert.equal(asked?.status, "tripped");
+  assert.match(asked?.detail ?? "", /a11ign\/a11ign \(last whole read 40 min ago\)/);
+  assert.equal(orgHealthReadings(base).some((r) => r.signal === SIGNALS.SWEEP_OVERDUE), false, "a caller that does not ask is silent");
 });
