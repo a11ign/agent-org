@@ -183,6 +183,10 @@ ledger_record() { # status stdout-copy first-arg second-arg
 # at once, agent-org#1482), and a dropped line before its window's first reading stays a floor. A counter-less line waits in every window that already has
 # its baseline, and the first reading that brackets it claims it: another window's baseline between the two readings does not take the line (agent-org#1500). Settling sees the dropped lines only: the first reading a
 # trim leaves in the ledger has no earlier reading to be measured from, so that boundary is a floor too, and the rollup never says so.
+#
+# (agent-org#1420) An 8th field keeps what the pool's counter MOVED over the readings in the row, placed on a call or not (`gh-ledger.ts` `HourRow.moved`), so an hour
+# trimmed out of the ledger is read as the counter saw it and not as its floor. A row with no movement keeps its six or seven fields. A rollup row and a ledger line
+# both begin with a time, and a rollup row can now have eight fields as a ledger line without a session has: the hour is 13 characters and a ledger time is 20.
 rollup_dropped() { # ledger-file dropped-bytes
   { cat "$1.hourly" 2>/dev/null; head -c "$2" "$1"; } | awk -F'\t' '
     function script(c,   u, w) {
@@ -192,7 +196,7 @@ rollup_dropped() { # ledger-file dropped-bytes
       sub("^ +", "", u); split(u, w, / +/)
       return w[1] != "" ? w[1] : "unknown"
     }
-    NF == 6 || NF == 7 { k = $1 "\t" $2 "\t" $3 "\t" (NF == 7 ? $7 : ""); calls[k] += $4; read[k] += $5; floor[k] += $6; next }
+    NF >= 6 && NF <= 8 && length($1) == 13 { k = $1 "\t" $2 "\t" $3 "\t" (NF >= 7 ? $7 : ""); calls[k] += $4; read[k] += $5; floor[k] += $6; if (NF == 8) mvr[k] += $8; next }
     NF >= 8 && $1 ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]/ {
       n += 1; t[n] = $1; acct[n] = $2; res[n] = $3; sub(/\?$/, "", res[n]); cs[n] = script($8); cost[n] = $4
       if (res[n] == "graphql" && NF >= 12 && $(NF - 1) ~ /^[0-9]+$/ && $NF ~ /^[0-9]+$/) { counted[n] = 1; used[n] = $(NF - 1) + 0; rst[n] = $NF }
@@ -209,6 +213,7 @@ rollup_dropped() { # ledger-file dropped-bytes
         key = acct[i] SUBSEP rst[i]
         if (!(key in last)) { last[key] = used[i]; pend[key] = ""; kwin[acct[i]] = kwin[acct[i]] " " rst[i]; continue }
         moved = used[i] - last[key]; if (moved < 0) moved = 0
+        mv[i] = moved
         if (used[i] > last[key]) last[key] = used[i]
         m = split(pend[key], mem, " "); pend[key] = ""
         gn = 0
@@ -230,11 +235,13 @@ rollup_dropped() { # ledger-file dropped-bytes
         calls[k] += 1
         if (hc[i] && !sh[i]) read[k] += ec[i]
         floor[k] += (hc[i] ? ec[i] : (res[i] == "graphql" ? 1 : 0))
+        mvr[k] += mv[i]
       }
       for (k in calls) {
       split(k, p, "\t")
       printf "%s\t%s\t%s\t%d\t%d\t%d", p[1], p[2], p[3], calls[k], read[k], floor[k]
-      if (p[4] != "") printf "\t%s", p[4]
+      if (p[4] != "" || mvr[k] > 0) printf "\t%s", p[4]
+      if (mvr[k] > 0) printf "\t%d", mvr[k]
       printf "\n" } }' | sort > "$1.hourly.$$" &&
     mv "$1.hourly.$$" "$1.hourly"
 }

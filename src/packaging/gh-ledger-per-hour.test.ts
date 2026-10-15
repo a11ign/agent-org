@@ -153,6 +153,31 @@ test("#1482: the rollup a trim writes holds what `settle` makes of the dropped l
   assert.deepEqual(actual, expected, "the rollup is what `settle` makes of the same lines, hour by hour, read and floor alike");
 });
 
+test("agent-org#1420: the rollup a trim writes keeps the hour's counter movement, so a trimmed hour is not read as its floor", () => {
+  const h = host();
+  const RESET = 1791925000;
+  // every response said its own cost (1) while the pool's counter moved 10 per call: the floor of the hour is its calls, the movement is what the pool spent
+  const fixtureText = `${Array.from({ length: 40 }, (_, i) => [`2026-10-13T20:${String(i).padStart(2, "0")}:00Z`, WORKERS, "graphql", "1", "0", "api graphql", "-",
+    "/usr/bin/node /x/src/work-gate.ts", "-", "-", String(100 + i * 10), String(RESET)].join("\t")).join("\n")}\n`;
+  writeFileSync(h.ledger, fixtureText);
+  assert.equal(h.call("2026-10-13T21:00:00Z", "pr", "list").status, 0);
+  const kept = readFileSync(h.ledger, "utf8");
+  const keptFixture = kept.slice(0, kept.length - kept.slice(kept.lastIndexOf("\n", kept.length - 2) + 1).length);
+  const dropped = fixtureText.slice(0, fixtureText.length - keptFixture.length);
+  const droppedLines = dropped.split("\n").filter(Boolean);
+  assert.ok(droppedLines.length >= 20 && fixtureText.endsWith(keptFixture), "POSITIVE CONTROL: the trim dropped the older lines and kept the newest, whole");
+  const rows = parseRollup(readFileSync(rollupPathOf(h.ledger), "utf8"));
+  // the first dropped line is the window's baseline, so the movement is the counter's rise from it to the last dropped line
+  const MOVED = (droppedLines.length - 1) * 10;
+  assert.equal(rows.reduce((sum, r) => sum + (r.moved ?? 0), 0), MOVED, "the rollup carries the counter's movement over the dropped hour");
+  const [hour] = perHour([], rows, { account: WORKERS, resource: "graphql" });
+  assert.deepEqual({ calls: hour.calls, floor: hour.floor, moved: hour.moved }, { calls: droppedLines.length, floor: droppedLines.length, moved: MOVED }, "and reads back as the movement, not its one-point-per-call floor");
+  assert.deepEqual(perHour([], rows, { account: WORKERS, resource: "graphql" }), perHour(parseLedger(dropped), [], { account: WORKERS, resource: "graphql" }), "the rollup and the lines it replaced read the same");
+  assert.match(renderPerHour([hour]), new RegExp(`${MOVED} moved by the pool's counter`));
+  // CONTROL: a six-field row written before the counter was kept is read as it was, with no movement claimed
+  assert.deepEqual(parseRollup("2026-10-13T20\t" + WORKERS + "\tgraphql\t3\t3\t3\n"), [{ hour: "2026-10-13T20", account: WORKERS, resource: "graphql", calls: 3, read: 3, floor: 3 }]);
+});
+
 test("#4148: the CLI prints the per-hour reading from a ledger and its rollup", () => {
   const dir = tmpDirForFile("gh-per-hour-cli-");
   const ledger = join(dir, "gh-calls.tsv");
