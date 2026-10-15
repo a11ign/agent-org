@@ -81,28 +81,33 @@ function inputProblems(w: Workflow): string[] {
 /** The gate the call waits for is a job ci.yml has: an absent one would be waited for until the 45 minutes were out. */
 const gateProblems = (w: Workflow): string[] => (CI.jobs[String(inputsOf(w)["gate-check"])] ? [] : [`ci.yml has no job named '${inputsOf(w)["gate-check"]}', and the called workflow would wait out its time for a check that never comes`]);
 
+/** A file of this repository's tree, or undefined where the tree this test runs in does not carry it: ci.yml lays only `src host scripts docs .github` and a few top-level files beside the tests, so there is no lockfile or `.changeset/` there. */
+const readIfCarried = (path: string): string | undefined => {
+  try {
+    return read(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw new Error(`could not read ${path}`, { cause: error });
+  }
+};
+
 /**
  * The repository has no packageManager, which is why the call names the pnpm: if one appears the input is ignored or argues with it, and this says so. It HAS a lockfile since agent-org#871/#885
  * (red here since, because this read "no lockfile"), and the shared workflow then installs from it and runs the repository's OWN `@changesets/cli`, so the lockfile must resolve the version
- * package.json's `changeset` script and the call's `changesets-version` name: three readers of one version that must not drift.
+ * package.json's `changeset` script and the call's `changesets-version` name: three readers of one version that must not drift. Where the tree has no lockfile (the gate's laid-out copy) there is
+ * nothing to compare, and the property is about the repository's own tree, where the suite runs it.
  */
-function lockfileProblems(): string[] {
+function lockfileProblems(lock: string | undefined = readIfCarried("pnpm-lock.yaml")): string[] {
   const problems: string[] = [];
   if (PACKAGE.packageManager !== undefined) problems.push("package.json now has a packageManager: the shared workflow reads that and ignores the pnpm-version input, so drop the input");
-  let lock: string;
-  try {
-    lock = readFileSync(`${REPO}pnpm-lock.yaml`, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("could not read pnpm-lock.yaml", { cause: error });
-    return [...problems, "there is no pnpm-lock.yaml: the shared workflow falls back to `pnpm dlx @changesets/cli@<changesets-version>`, and the release dry run's lockfile branch is unread"];
-  }
-  if (!lock.includes(`'@changesets/cli@${scriptChangesets()}':`)) problems.push(`pnpm-lock.yaml does not resolve @changesets/cli@${scriptChangesets()}, the version package.json's \`changeset\` script and the call's changesets-version name`);
+  if (lock !== undefined && !lock.includes(`'@changesets/cli@${scriptChangesets()}':`)) problems.push(`pnpm-lock.yaml does not resolve @changesets/cli@${scriptChangesets()}, the version package.json's \`changeset\` script and the call's changesets-version name`);
   return problems;
 }
 
-/** A scoped package publishes under `"access": "public"` and nothing else: the shared workflow's `publish` job refuses a config that says otherwise, and on `main` that is a failed release after the merge. */
-const accessProblems = (): string[] => {
-  const access = (JSON.parse(read(".changeset/config.json")) as { access?: string }).access;
+/** A scoped package publishes under `"access": "public"` and nothing else: the shared workflow's `publish` job refuses a config that says otherwise, and on `main` that is a failed release after the merge. Not carried by the gate's laid-out copy: nothing to read there. */
+const accessProblems = (config: string | undefined = readIfCarried(".changeset/config.json")): string[] => {
+  if (config === undefined) return [];
+  const access = (JSON.parse(config) as { access?: string }).access;
   return access === "public" ? [] : [`.changeset/config.json access is '${access}', not 'public': the publish job refuses it, after the merge`];
 };
 
@@ -119,6 +124,15 @@ test("the call names pnpm itself because the repository has no packageManager, a
 
 test("the changesets config publishes publicly, which a scoped package needs", () => {
   assert.deepEqual(accessProblems(), []);
+});
+
+test("positive control: the lockfile and access guards refuse what they guard against when given it, and say nothing where the tree carries no such file", () => {
+  const cli = `'@changesets/cli@${scriptChangesets()}':`;
+  assert.deepEqual(lockfileProblems(`packages:\n  ${cli}\n`), []);
+  assert.match(lockfileProblems("packages:\n  '@changesets/cli@0.0.1':\n").join(), /does not resolve @changesets\/cli@/);
+  assert.deepEqual(accessProblems('{ "access": "public" }'), []);
+  assert.match(accessProblems('{ "access": "restricted" }').join(), /not 'public'/);
+  assert.match(accessProblems("{}").join(), /not 'public'/);
 });
 
 test("positive control: the properties are about something (a pinned call, a changesets version the script names, and a gate job that exists)", () => {
