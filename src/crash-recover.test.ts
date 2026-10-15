@@ -11,7 +11,7 @@ import { after, test } from "node:test";
 import { sandboxGitEnv } from "./lib/git-env.ts";
 import {
   crashRecoverEnabled, detectUncleanBoot, emptyGitFiles, lastTurnProfiles, planPaneActions, recover, repairGit, repeatCrash, restoreTruncated, resumeCommand,
-  writeFileAtomic, type HerdrAgent, type Ports,
+  withLaunchFlags, writeFileAtomic, type HerdrAgent, type Ports,
 } from "./crash-recover.ts";
 
 const made: string[] = [];
@@ -54,7 +54,7 @@ function ports(over: Partial<Omit<Ports, "checkouts">> & { checkouts: string[]; 
     git, checkouts: () => over.checkouts, asideDir: join(over.checkouts[0], "..", "aside"), seenPath: "", readSeen: () => seen, writeSeen: (s) => { seen = s; },
     herdrAgents: () => over.agents ?? [], herdr: (a) => { calls.push(a); },
     seatProfiles: () => new Map([["ceo", { model: "opus", effort: "high" }]]), traced: () => new Map(),
-    prepare: async () => {}, flagsFor: (a) => (a.role === "seat" ? ["--seat-flags"] : ["--worker-flags"]),
+    prepare: async () => {}, flagsFor: (a) => (a.role === "seat" ? ["--seat-flags"] : ["--worker-flags"]), hostPath: () => "/fixture/host.json",
     resetFailed: () => { calls.push(["reset-failed"]); }, announce: (t) => { said.push(t); }, fileIncident: () => {}, wakeCeo: (t) => { woke.push(t); }, log: () => {},
     ...rest,
   } as Ports;
@@ -111,6 +111,31 @@ test("a dead seat resumes with the seat flags, a dead worker with the worker fla
   assert.equal((actions[1] as typeof ceo).role, "worker");
 });
 
+test("a resumed seat and a resumed worker both type AGENT_ORG_HOST in front of the resume, so a pane started after a crash has the host declaration (#1484)", () => {
+  const actions = planPaneActions({
+    agents: [agent("ceo"), agent("worker-5127")], seatProfiles: new Map([["ceo", { model: "opus" }]]), traced: new Map(),
+  });
+  const [seat, worker] = actions as Extract<(typeof actions)[number], { kind: "resume" }>[];
+  assert.equal(resumeCommand(seat, ["--model", "opus"], "/home/agent/repos/a11y-witness/.agent-org/host.json"),
+    "AGENT_ORG_HOST=/home/agent/repos/a11y-witness/.agent-org/host.json claude --resume 11111111-2222-3333-4444-555555555555 --model opus");
+  assert.equal(resumeCommand(worker, ["--worker-flags"], "/home/agent/repos/a11y-witness/.agent-org/host.json"),
+    "AGENT_ORG_HOST=/home/agent/repos/a11y-witness/.agent-org/host.json claude --resume 11111111-2222-3333-4444-555555555555 --worker-flags");
+  assert.equal(resumeCommand(worker, ["--worker-flags"], "/srv/my host/host.json"),
+    "AGENT_ORG_HOST='/srv/my host/host.json' claude --resume 11111111-2222-3333-4444-555555555555 --worker-flags", "a path with a space is quoted, not split");
+});
+
+test("the production launch wiring takes the host path from host-config.ts, so a resumed pane is never typed without AGENT_ORG_HOST (#1484)", async () => {
+  const tool = mkdtempSync(join(tmpdir(), "crash-tool-"));
+  made.push(tool);
+  mkdirSync(join(tool, "src"), { recursive: true });
+  writeFileSync(join(tool, "src/wake.ts"), "export {};\n");
+  writeFileSync(join(tool, "src/worker-profile.ts"), "export {};\n");
+  writeFileSync(join(tool, "src/host-config.ts"), "export function hostConfigPath() { return \"/fixture/tool/host.json\"; }\n");
+  const wired = withLaunchFlags(ports({ checkouts: [tool] }).p, tool);
+  await wired.prepare();
+  assert.equal(wired.hostPath(), "/fixture/tool/host.json", "the path comes from the tool's own host-config.ts, not a second copy of the resolution");
+});
+
 test("recover on an unclean boot restores, resumes with role flags, closes reviewers, resets failed units and announces once", async () => {
   const { clone } = fixture();
   writeFileSync(join(clone, "project.json"), "");
@@ -120,6 +145,7 @@ test("recover on an unclean boot restores, resumes with role flags, closes revie
   assert.deepEqual(calls.map((c) => c.slice(0, 2).join(" ")), ["pane run", "pane run", "pane close", "reset-failed"]);
   assert.match(calls[0][3], /--seat-flags$/);
   assert.match(calls[1][3], /--worker-flags$/);
+  assert.match(calls[0][3], /^AGENT_ORG_HOST=\/fixture\/host\.json claude --resume /);
   assert.equal(said.length, 1);
   assert.match(said[0], /Restored 1 truncated/);
 });

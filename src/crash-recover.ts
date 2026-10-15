@@ -182,9 +182,19 @@ export function planPaneActions({ agents, seatProfiles, traced }: {
   });
 }
 
-/** The shell command typed into the pane: `claude --resume <id>` plus the org's own launch flags for the role. */
-export function resumeCommand(action: Extract<PaneAction, { kind: "resume" }>, flags: string[]): string {
-  return ["claude", "--resume", action.sessionId, ...flags].join(" ");
+/**
+ * The shell command typed into the pane: `claude --resume <id>` plus the org's own launch flags for the role. A pane started again after a crash
+ * does not hold the variables the spawn gave the first one, so `AGENT_ORG_HOST` goes in front as a shell assignment (#1484); without a `hostPath`
+ * the command keeps its old form.
+ */
+export function resumeCommand(action: Extract<PaneAction, { kind: "resume" }>, flags: string[], hostPath?: string): string {
+  const env = hostPath === undefined ? [] : [`AGENT_ORG_HOST=${shellWord(hostPath)}`];
+  return [...env, "claude", "--resume", action.sessionId, ...flags].join(" ");
+}
+
+/** A word the shell reads as itself: bare when it has no metacharacters, single-quoted otherwise, so a path with a space still reaches the variable whole. */
+function shellWord(text: string): string {
+  return /^[\w@%+=:,./-]+$/.test(text) ? text : `'${text.replaceAll("'", `'\\''`)}'`;
 }
 
 /** The last model/effort per transcript id, from the trace's `turn` events. A line that is not JSON is a torn write from the crash and is skipped. */
@@ -233,6 +243,8 @@ export type Ports = {
   /** Loads what the launch flags need (`wake.ts` reads the declarations), so it runs AFTER the files are restored and never on a clean boot. */
   prepare: () => Promise<void>;
   flagsFor: (action: Extract<PaneAction, { kind: "resume" }>) => string[];
+  /** The host declaration's path, which the resumed command names as `AGENT_ORG_HOST` (#1484). Loaded with the launch flags, for the same reason. */
+  hostPath: () => string | undefined;
   resetFailed: () => void;
   announce: (text: string) => void;
   fileIncident: (title: string, body: string) => void;
@@ -252,7 +264,7 @@ function resumePanes(ports: Ports, report: Report): void {
     try {
       if (action.kind === "skip") report.skipped.push(`${action.name}: ${action.why}`);
       else if (action.kind === "close") { ports.herdr(["pane", "close", action.paneId]); report.closed.push(action.name); }
-      else { ports.herdr(["pane", "run", action.paneId, resumeCommand(action, ports.flagsFor(action))]); report.resumed.push(action.name); }
+      else { ports.herdr(["pane", "run", action.paneId, resumeCommand(action, ports.flagsFor(action), ports.hostPath())]); report.resumed.push(action.name); }
     } catch (cause) {
       report.skipped.push(`${action.name}: ${String((cause as Error).message).split("\n")[0]}`);
     }
@@ -357,6 +369,7 @@ async function realPorts(host: HostFile, home: string): Promise<Ports> {
     traced: () => { try { return lastTurnProfiles(readFileSync(join(stateDir, "trace/events.ndjson"), "utf8")); } catch { return new Map(); } },
     prepare: async () => {},
     flagsFor: () => [],
+    hostPath: () => undefined,
     resetFailed: () => { execFileSync("systemctl", ["--user", "reset-failed"], { timeout: 30_000 }); },
     announce: (text) => { wakeCommand("chairman:reply", [text]); },
     fileIncident: (title, body) => {
@@ -369,16 +382,19 @@ async function realPorts(host: HostFile, home: string): Promise<Ports> {
   };
 }
 
-/** Launch flags need `wake.ts`, which reads the declarations: imported only here, after the files are restored. */
-function withLaunchFlags(ports: Ports, tool: string): Ports {
+/** Launch flags need `wake.ts`, which reads the declarations: imported only here, after the files are restored. The host path comes from `host-config.ts`, the resolver `spawnEnvironment` calls, for the same reason. */
+export function withLaunchFlags(ports: Ports, tool: string): Ports {
   let wake: any;
   let profile: any;
+  let hostConfig: any;
   return {
     ...ports,
     prepare: async () => {
       wake = await import(pathToFileURL(join(tool, "src/wake.ts")).href);
       profile = await import(pathToFileURL(join(tool, "src/worker-profile.ts")).href);
+      hostConfig = await import(pathToFileURL(join(tool, "src/host-config.ts")).href);
     },
+    hostPath: () => hostConfig.hostConfigPath(),
     flagsFor: (action) => {
       const p = action.profile;
       if (action.role === "seat") return wake.seatStartFlags({ model: p.model, effort: p.effort, autocompact: p.autocompact });
