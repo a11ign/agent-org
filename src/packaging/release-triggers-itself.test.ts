@@ -7,11 +7,12 @@
  * behaviour is tested there. This file used to read the steps of the in-file release job; those steps are gone, so each property it pinned is now pinned on the CALLER or
  * lives in toolchain's tests at the sha this repository pins (`ab856fdd`; `release-parity.test.ts` and `release-per-merge.test.ts`). For EACH old property:
  *   - triggers (`push` on `main` and nothing else) ........................ HERE, `triggerProblems`;
- *   - permissions (`contents: write`, `checks: read`, no `pull-requests`, no shorthand; `id-token: write` on the call ONLY, beside `kind: tag`) ... HERE, `permissionProblems`;
+ *   - permissions (`contents: write`, `checks: read`, no `pull-requests`, no shorthand; `id-token: write` on the call ONLY, beside `kind: npm`) ... HERE, `permissionProblems`;
  *   - concurrency (`group: release`, never cancelled in flight) ............ HERE, `concurrencyProblems` (new: the old file had it, and no test did);
  *   - reach (no registry, OIDC, secret; no tag deleted or moved) ........... HERE, `reachProblems`, over the caller's text; the called workflow's own `tag` job holds
- *     `contents: write` and runs no caller code, and `kind: tag` skips its only `id-token` job (toolchain `release-per-merge.test.ts`: the publish job alone holds OIDC). The call
- *     still HOLDS `id-token: write`, because a called workflow's job permissions are checked against the caller's at load, `if:` or not (ceo, review of #352);
+ *     `contents: write` and runs no caller code, and its `publish` job alone holds OIDC, in the `npm-publish` environment (toolchain `release-per-merge.test.ts`). The call
+ *     HOLDS `id-token: write` because a called workflow's job permissions are checked against the caller's at load, `if:` or not (ceo, review of #352), and under `kind: npm` the
+ *     `publish` job uses it (ADR 0045 cut (a), #1377);
  *   - writes (the one push is of the tag, atomic, never forced, no `gh api` write) ... toolchain `release-parity.test.ts`, "parity G5: the tag step pushes every tag
  *     atomically and never forced ..." and its mutants "... seen to FAIL on a push that is not atomic, one that is forced ...". The caller has no step to push with, which
  *     `callProblems` in `release-tag-on-merge.test.ts` pins;
@@ -57,7 +58,7 @@ function triggerProblems(w: Workflow): string[] {
 
 /**
  * Write access is `contents` only, and present on the call; reads add `checks`; `pull-requests` and the shorthand `write-all` never. `id-token: write` is held by the call and
- * ONLY there, and only beside `kind: tag`: the called file's `publish` job asks for it, so a call without it fails to load, while `kind: npm` with it would be a publish.
+ * ONLY there, and only beside `kind: npm`: the called file's `publish` job asks for it, so a call without it fails to load, and beside `kind: tag` it would be a grant nothing uses.
  */
 function permissionProblems(w: Workflow): string[] {
   const blocks: Array<[string, Job["permissions"], Job | undefined]> = [["workflow", w.permissions, undefined], ...Object.entries(w.jobs).map(([n, j]): [string, Job["permissions"], Job] => [n, j.permissions, j])];
@@ -79,12 +80,12 @@ function permissionProblems(w: Workflow): string[] {
   return problems;
 }
 
-/** `id-token` is `write`, on a job that calls the workflow (not at the top), with `kind: tag`, which skips the one job that would mint a token. */
+/** `id-token` is `write`, on a job that calls the workflow (not at the top), with `kind: npm`, whose `publish` job is the one that mints a token with it. */
 function idTokenProblems(where: string, level: string, job: Job | undefined): string[] {
   if (job === undefined) return [`${where}: an id-token permission at the top of the workflow, where every job would inherit it`];
   const problems: string[] = [];
   if (level !== "write") problems.push(`${where}: id-token: ${level}, not write (the called publish job asks for write)`);
-  if (job.with?.kind !== "tag") problems.push(`${where}: id-token: write beside kind '${String(job.with?.kind)}', which would be a publish`);
+  if (job.with?.kind !== "npm") problems.push(`${where}: id-token: write beside kind '${String(job.with?.kind)}', where no job mints a token with it`);
   return problems;
 }
 
@@ -124,7 +125,7 @@ test("positive control: the properties are about something (one push trigger, on
   assert.equal((callJob(REAL).permissions as Record<string, string>)["contents"], "write");
   assert.equal(callJob(REAL).concurrency?.group, "release");
   assert.equal((callJob(REAL).permissions as Record<string, string>)["id-token"], "write");
-  assert.equal(callJob(REAL).with?.kind, "tag");
+  assert.equal(callJob(REAL).with?.kind, "npm");
   assert.ok(WORKFLOW_TEXT.includes("uses: a11ign/toolchain/"), "the file is not the call these properties were written for");
 });
 
@@ -138,7 +139,7 @@ test("positive control: each copy with ONE thing broken is refused by the proper
     ["permissions", "no id-token: write on the call (the call would fail to load)", (w) => { delete (callJob(w).permissions as Record<string, string>)["id-token"]; }],
     ["permissions", "id-token: read on the call", (w) => { (callJob(w).permissions as Record<string, string>)["id-token"] = "read"; }],
     ["permissions", "id-token: write at the top of the workflow", (w) => { w.permissions = { contents: "read", "id-token": "write" }; }],
-    ["permissions", "id-token: write beside kind: npm", (w) => { callJob(w).with = { ...callJob(w).with, kind: "npm" }; }],
+    ["permissions", "id-token: write beside kind: tag", (w) => { callJob(w).with = { ...callJob(w).with, kind: "tag" }; }],
     ["permissions", "pull-requests: write", (w) => { (callJob(w).permissions as Record<string, string>)["pull-requests"] = "write"; }],
     ["permissions", "the write-all shorthand", (w) => { callJob(w).permissions = "write-all"; }],
     ["permissions", "no contents: write", (w) => { callJob(w).permissions = { contents: "read", checks: "read" }; }],

@@ -1,5 +1,5 @@
 ---
-"agent-org": minor
+"@a11ign/agent-org": minor
 ---
 
 Every chairman message now declares who it is for, and the sender routes by it (a11ign/a11ign#4742, row 1 of 5 of the split of the one chairman chat). Each messaging kind carries an `audience`: `request` and `stall` are an `ask` (they need the chairman), and `incident`, `summary`, `release`, `milestone` and `watch` are an `announcement` (told to him, asking nothing). A kind with no audience is refused at send, with a ledger line naming the kind (`alert not sent: kind "<kind>" declares no audience`), and is never defaulted.

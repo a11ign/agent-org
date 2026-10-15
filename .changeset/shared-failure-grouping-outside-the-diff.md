@@ -1,5 +1,5 @@
 ---
-"agent-org": patch
+"@a11ign/agent-org": patch
 ---
 
 The gate's shared-failure grouping (a11ign/a11ign#5008) no longer files an incident for two pull requests whose failures are not the same failure, and no longer holds a red PR's wake past the incident (a11ign/a11ign#5098). It

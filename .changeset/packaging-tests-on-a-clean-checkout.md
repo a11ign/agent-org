@@ -1,5 +1,5 @@
 ---
-"agent-org": patch
+"@a11ign/agent-org": patch
 ---
 
 Seven packaging test files pass from a clean checkout of this repository, not only from inside the project's layout (a11ign/a11ign#3671, follow-up of #3511). Measured at `f52921a` with `AGENT_ORG_HOST` set, `node --import tsx --test` over the seven files: 314 tests, 295 pass, 19 fail; after, 327 tests, 327 pass, 0 fail (the 13 more are `tracker-leak-refusal.test.ts`, which failed as a whole at import and now runs its 14). The same seven files run laid out the way CI lays the tool into the project (`packages/agent-org/`, the project's `packaging/` siblings copied beside them, `AGENT_ORG_HOST` unset): 327 and 0. The whole suite on this branch: 6077 tests, 0 fail, 1 skipped (the `codex` one, which skips itself).

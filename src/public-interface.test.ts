@@ -91,11 +91,13 @@ test("the exports map holds exactly the declared subpaths", () => {
 });
 
 test("Node resolves each declared subpath, through the package name, to the file the map names", () => {
+  const { name } = readManifest(ROOT);
+  assert.equal(name, "@a11ign/agent-org", "the package is published under the a11ign scope (ADR 0045 cut (a))");
   const map = readManifest(ROOT).exports ?? {};
   // `createRequire`, not `import.meta.resolve`: rstest replaces the latter with an object that has no `resolve`, and Node's own resolver is the point.
   const resolveFromPackage = createRequire(join(ROOT, "package.json")).resolve;
   for (const subpath of Object.keys(DECLARED_EXPORTS)) {
-    assert.equal(resolveFromPackage(`agent-org${subpath.slice(1)}`), join(ROOT, map[subpath] as string), subpath);
+    assert.equal(resolveFromPackage(`${name}${subpath.slice(1)}`), join(ROOT, map[subpath] as string), subpath);
   }
 });
 

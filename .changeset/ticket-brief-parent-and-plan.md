@@ -1,5 +1,5 @@
 ---
-"agent-org": minor
+"@a11ign/agent-org": minor
 ---
 
 A ticket-mode worker's brief now carries everything a ticket's plan lives in. It gets the files attached to the ticket, not only the uploads its description links to, and each keeps its attachment title as its file name when that is a plain file name. A ticket that is part of a parent ticket also gets the parent's description, quoted so that its acceptance criteria for every part never read as the worker's own, and the parent's files in a `parent` folder. The brief asks the worker to read those files first, and, before it commits, to check its diff against each acceptance criterion and each decision that binds the ticket, naming in the pull request any it leaves unmet. The brief is written from the ticket as Linear has it when the run starts, so an edit made after the ticket was queued reaches the worker. The branch stays the one it was queued with. Only uploads to Linear are fetched with the key. A pull request or other link attached to the ticket is never requested.

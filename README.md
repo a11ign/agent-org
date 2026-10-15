@@ -4,7 +4,7 @@ An AI agent organisation as a tool: rows, claims, the board, the merge queue and
 
 ## Install
 
-`agent-org` is published to no registry. A project takes it as a git dependency pinned to a release tag, with `typescript` beside it:
+`agent-org` is published to npm as `@a11ign/agent-org`, at the version of the release tag it was cut at. A project can also take it as a git dependency pinned to a release tag, with `typescript` beside it:
 
 ```bash
 pnpm add -D typescript "github:a11ign/agent-org#semver:^0.1.0"
@@ -188,7 +188,7 @@ be read but not run.
 
 ## Releases
 
-**A tag is the release.** `v<version>` on this repository, with a GitHub Release carrying the `CHANGELOG.md` entry, and nothing is published to a registry. **A tag is
+**A tag is the release.** `v<version>` on this repository, with a GitHub Release carrying the `CHANGELOG.md` entry, and the same release publishes `@a11ign/agent-org` to npm at that tag's version. **A tag is
 never moved or deleted once a project can have pinned it**: a moved tag changes what a pinned project gets, so a mistake is fixed by the next version.
 
 A release starts itself, on the merge that carries a changeset, and no pull request stands between the merge and the tag (a11ign/a11ign#3134, #3187); nobody dispatches anything:

@@ -217,10 +217,10 @@ test("the pure reader: the file's name is the branch's with `/` as `~`, and only
 });
 
 test("the reader is importable through the declared public interface, and not only through src/", async () => {
-  const specifier = "agent-org/acceptance-file";
+  const specifier = "@a11ign/agent-org/acceptance-file";
   const viaInterface = await import(specifier);
   assert.equal(typeof viaInterface.resolveAcceptanceSource, "function");
-  const viaCommands = await import("agent-org/acceptance-commands");
+  const viaCommands = await import("@a11ign/agent-org/acceptance-commands");
   assert.equal(typeof viaCommands.acceptanceSourceOfThisPullRequest, "function");
 });
 

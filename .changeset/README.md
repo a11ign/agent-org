@@ -1,7 +1,7 @@
 # Changesets
 
-A release of agent-org is a git tag `v<version>` and a GitHub Release, cut by `.github/workflows/release.yml` when the version pull request merges; **nothing is published
-to a registry**, so `access` above is `restricted` only because changesets requires a value. How a release is cut is in the
+A release of agent-org is a git tag `v<version>` and a GitHub Release, cut by `.github/workflows/release.yml` on the merge that carries a changeset, and the same release publishes `@a11ign/agent-org` to npm at that
+tag's version, so `access` above is `public` (a scoped package publishes under nothing else). How a release is cut is in the
 README's `Releases` section.
 
 ## Adding one

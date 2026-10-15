@@ -1,5 +1,5 @@
 ---
-"agent-org": minor
+"@a11ign/agent-org": minor
 ---
 
 The work gate knows a second priority label, `priority:emergency` (a11ign/a11ign#5032, the chairman's ruling of 2026-10-11: only the chairman sets priority, except in an emergency where the org is blocked). It is OFF

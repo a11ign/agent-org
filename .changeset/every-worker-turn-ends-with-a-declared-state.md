@@ -1,5 +1,5 @@
 ---
-"agent-org": minor
+"@a11ign/agent-org": minor
 ---
 
 A worker's turn ends with a declared state, and an idle worker without a fresh one is stalled (a11ign/agent-org#460, epic #4437, class `worker-state-ambiguous`). **New command `agent-org worker:state <state>`** with exactly four states: `waiting-ci <pr>`, `waiting-review <pr>`, `done` and `blocked <row> <reason>`. It refuses an unknown state, a missing pull request or row, and `blocked` without a reason, each by name, and writes nothing. The declaration (session, state, ref, time) is one file per session under `<state dir>/worker-state/`, which the gate reads with no model call.

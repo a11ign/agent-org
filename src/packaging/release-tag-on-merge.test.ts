@@ -22,8 +22,8 @@
  *   - "(a) there is no version-pr job and no pull-requests permission, and the job that releases holds contents: write only" ... HERE, `callProblems`, and
  *     `release-triggers-itself.test.ts` for the permissions.
  * What stays HERE is what only this repository's call can get wrong: that it IS a call (one job, no steps of its own, no secrets), that the workflow it calls is pinned by a
- * FULL sha (a tag or branch would let a push to toolchain change what is released here), and the inputs: `kind: tag`, the gate this repository's required check is named,
- * and the pnpm and changesets versions a repository with no lockfile has to name. Each property is ALSO run on a copy with exactly that thing broken.
+ * FULL sha (a tag or branch would let a push to toolchain change what is released here), and the inputs: `kind: npm`, the gate this repository's required check is named,
+ * and the pnpm and changesets versions the call names. Each property is ALSO run on a copy with exactly that thing broken.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -60,7 +60,7 @@ function callProblems(w: Workflow): string[] {
   const problems: string[] = [];
   if (!SHARED.test(job.uses ?? "")) problems.push(`uses is '${job.uses}', not the shared per-merge workflow pinned by a full sha`);
   if (job.steps !== undefined) problems.push("the call job has steps of its own: a called job runs none, so they would not run, and a reader would think they did");
-  if (job.secrets !== undefined) problems.push("the call passes `secrets:`, and a tag release needs none");
+  if (job.secrets !== undefined) problems.push("the call passes `secrets:`, and the publish authenticates by OIDC and needs none");
   if (JSON.stringify(job.needs) !== '"consumer-check"') problems.push("the call waits on a job other than consumer-check, and the gate is the called workflow's to wait for");
   return problems;
 }
@@ -69,39 +69,45 @@ function callProblems(w: Workflow): string[] {
 function inputProblems(w: Workflow): string[] {
   const inputs = inputsOf(w);
   const problems: string[] = [];
-  if (inputs["kind"] !== "tag") problems.push(`kind is '${inputs["kind"]}', not 'tag': agent-org publishes to no registry`);
+  if (inputs["kind"] !== "npm") problems.push(`kind is '${inputs["kind"]}', not 'npm': agent-org publishes @a11ign/agent-org at the version it tags (ADR 0045 cut (a))`);
   if (inputs["gate-check"] !== "gate") problems.push(`gate-check is '${inputs["gate-check"]}', not the required check 'gate'`);
   if (inputs["node-version"] !== "22.22.1") problems.push(`node-version is '${inputs["node-version"]}', not the 22.22.1 the release has always run`);
   if (!/^\d+\.\d+\.\d+$/.test(String(inputs["pnpm-version"] ?? ""))) problems.push(`pnpm-version is '${inputs["pnpm-version"]}': with no lockfile and no packageManager the shared workflow refuses the run`);
   if (inputs["changesets-version"] !== scriptChangesets()) problems.push(`changesets-version is '${inputs["changesets-version"]}', not the '${scriptChangesets()}' package.json's \`changeset\` script runs`);
-  if ("dist-tag" in inputs) problems.push("a `dist-tag` is set, and `kind: tag` publishes nothing for it to name");
+  if ("dist-tag" in inputs) problems.push("a `dist-tag` is set: the release publishes to `latest`, and a channel is a decision about what a project's install resolves");
   return problems;
 }
 
 /** The gate the call waits for is a job ci.yml has: an absent one would be waited for until the 45 minutes were out. */
 const gateProblems = (w: Workflow): string[] => (CI.jobs[String(inputsOf(w)["gate-check"])] ? [] : [`ci.yml has no job named '${inputsOf(w)["gate-check"]}', and the called workflow would wait out its time for a check that never comes`]);
 
-/** The repository has no lockfile and no packageManager, which is why the call names the pnpm: if either appears the input is ignored or argues with it, and this says so. */
+/**
+ * The repository has no packageManager, which is why the call names the pnpm: if one appears the input is ignored or argues with it, and this says so. It HAS a lockfile since agent-org#871/#885
+ * (red here since, because this read "no lockfile"), and the shared workflow then installs from it and runs the repository's OWN `@changesets/cli`, so the lockfile must resolve the version
+ * package.json's `changeset` script and the call's `changesets-version` name: three readers of one version that must not drift.
+ */
 function lockfileProblems(): string[] {
   const problems: string[] = [];
   if (PACKAGE.packageManager !== undefined) problems.push("package.json now has a packageManager: the shared workflow reads that and ignores the pnpm-version input, so drop the input");
+  let lock: string;
   try {
-    readFileSync(`${REPO}pnpm-lock.yaml`);
-    problems.push("there is now a pnpm-lock.yaml: the shared workflow installs from it and runs the repository's own changeset, and ignores changesets-version");
+    lock = readFileSync(`${REPO}pnpm-lock.yaml`, "utf8");
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("could not look for pnpm-lock.yaml", { cause: error });
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("could not read pnpm-lock.yaml", { cause: error });
+    return [...problems, "there is no pnpm-lock.yaml: the shared workflow falls back to `pnpm dlx @changesets/cli@<changesets-version>`, and the release dry run's lockfile branch is unread"];
   }
+  if (!lock.includes(`'@changesets/cli@${scriptChangesets()}':`)) problems.push(`pnpm-lock.yaml does not resolve @changesets/cli@${scriptChangesets()}, the version package.json's \`changeset\` script and the call's changesets-version name`);
   return problems;
 }
 
 const PROPERTIES: Array<[string, (w: Workflow) => string[]]> = [["call", callProblems], ["inputs", inputProblems], ["gate", gateProblems]];
 const problemsOf = (w: Workflow): string[] => PROPERTIES.flatMap(([name, check]) => check(w).map((p) => `${name}: ${p}`));
 
-test("the real release.yml is a tag-only call of the shared workflow, and has no pin, input or gate problem", () => {
+test("the real release.yml is an npm-publishing call of the shared workflow, and has no pin, input or gate problem", () => {
   assert.deepEqual(problemsOf(REAL), []);
 });
 
-test("the call names pnpm and changesets itself because the repository has neither a lockfile nor a packageManager, and says when that stops being true", () => {
+test("the call names pnpm itself because the repository has no packageManager, and the lockfile resolves the changesets the call and the script name", () => {
   assert.deepEqual(lockfileProblems(), []);
 });
 
@@ -124,7 +130,7 @@ test("positive control: each copy with ONE thing broken is refused by the proper
     ["call", "inherited secrets", (w) => { callJob(w).secrets = "inherit"; }],
     ["call", "a needs of its own", (w) => { callJob(w).needs = ["lint"]; }],
     ["call", "no needs, so the consumer check no longer precedes the tag", (w) => { delete callJob(w).needs; }],
-    ["inputs", "kind npm", (w) => { inputsOf(w)["kind"] = "npm"; }],
+    ["inputs", "kind tag, which would leave the registry without the tag's version", (w) => { inputsOf(w)["kind"] = "tag"; }],
     ["inputs", "another gate check, one that ci.yml has", (w) => { inputsOf(w)["gate-check"] = "typecheck"; }],
     ["inputs", "another node", (w) => { inputsOf(w)["node-version"] = "22"; }],
     ["inputs", "no pnpm-version", (w) => { delete inputsOf(w)["pnpm-version"]; }],

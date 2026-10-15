@@ -1,5 +1,5 @@
 ---
-"agent-org": minor
+"@a11ign/agent-org": minor
 ---
 
 The `gh` call ledger names the session that made each call, and the trace keys a call by it (a11ign/a11ign#3589, the exact key under #3516's weak one). `host/gh` appends `CLAUDE_CODE_SESSION_ID` (a Codex session's `CODEX_THREAD_ID` when that is what is set; `-` when neither is, as in a unit) as a NINTH field after the caller. It goes last so that a line written before this one, with 8 fields, is read unchanged: `parseLine` returns the same entry it always did, with no `sessionId` key, and a 9-field line is that entry plus `sessionId`. Only `[A-Za-z0-9-]` survive into the field, so an odd value cannot add or remove a tab.

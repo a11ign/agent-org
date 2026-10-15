@@ -1,5 +1,5 @@
 ---
-"agent-org": minor
+"@a11ign/agent-org": minor
 ---
 
 The tool carries seven of the product's libraries as declared copies, not nineteen: 12 of the 19 `// COPIED FROM` files in `src/lib` are gone and every importer of those takes the same names from `@a11ign/toolchain/lib/<stem>` at the version `package.json` declares (`^0.7.0`; a11ign/a11ign#4425, phase 3, row 5 of 5). Seven stay, for two separate reasons. Six are in the import closure of `work-gate.ts`, `work-tick.ts` and `wake.ts` (`changed-files`, `cli-flags`, `git-env`, `local-import-closure`, `npm-cli-executable`, `worktree-resolution`): that closure runs from the host's installed checkout before any install, and `a11ign/a11ign#2174` requires it to load with no `node_modules` (ruled by ceo on a11ign/agent-org#522; a11ign/agent-org#715 is the parity test for them). The seventh, `walk-scope.ts`, stays because the toolchain's `REPO_ROOT` is its own install directory and not the project (a11ign/a11ign#4718); it imports its two helpers from the toolchain, as the product's own copy does. A project that installs the tool should read what moves with that before taking this release:

@@ -1,5 +1,5 @@
 ---
-"agent-org": minor
+"@a11ign/agent-org": minor
 ---
 
 A `dora` entry of the project declaration may carry `adopterDocs`, a non-empty list of path prefixes an outside adopter READS but that ship no code (`README.md`, `RELEASE.md`, `docs/try-it.md`). A Region with ONE entry under an `adopterDocs` prefix of an adopter-facing repository reads as `adopter` for the PRIMARY milestone: `adopterRowKind` returns `adopter` for it, so `row-file`'s `primaryMilestoneRefusal` accepts the row and `milestoneClockFact` counts it, with no edit to either. The key is parsed beside `adopterFacing` with the same discipline: absent stays absent (no key is added), a non-list, an empty list or an empty or non-string member is refused with a `ProjectDeclarationRefusal` naming `dora[i].adopterDocs`, and so is naming it on an entry declared `adopterFacing: false` (a tooling repository's documents reach no outside adopter, so declaring them is a contradiction and not an override). The `because` text of a row that is still org is unchanged. a11ign/a11ign#4084.

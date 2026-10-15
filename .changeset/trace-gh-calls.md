@@ -1,5 +1,5 @@
 ---
-"agent-org": minor
+"@a11ign/agent-org": minor
 ---
 
 The trace store holds every `gh` call, as one `source: "gh-ledger"` record each (`trace/gh-calls.mjs`, a11ign/a11ign#3516, slice of #3494), read from the `gh-calls.tsv` ledgers `host/gh` writes in each account's config directory (`~/workers/gh`, `~/leads/gh`, `~/.config/gh`). Each ledger is read incrementally through the ingest state (a trim past 2 MiB reads as a shrink, is read again from byte 0 and said, and adds nothing already held), and the newest two seconds of a ledger are held back to the next run so that identical lines of one second keep their order. `trace -- <row>` prints, beside the tokens and dollars, the calls keyed to the row and the GraphQL points they spent (a response's cost read, a call without one counted as a one-point FLOOR, and a pool only inferred from the call's shape marked), then every call keyed to no row, listed apart with the callers spending most, and from when the store holds calls per account. The footer's `NOT_HELD` no longer names the ledger.
