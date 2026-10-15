@@ -815,11 +815,12 @@ export function isPilotOrder(order: { session: string; cause?: string; causeKey?
 
 /**
  * The pull request a red-check order is about, as a {@link RowRef} (`key` is `""` for the first tracker, as a row's is), or `null`.
- * Read with {@link RED_CHECK_KEY}, the grammar the gate writes, so a key it cannot parse is not a pull request this spawns for.
+ * Read by {@link redPullRequestOf}, the one reader of {@link RED_CHECK_KEY}, so a key it cannot parse, or one naming a repository the declaration
+ * does not list, is not a pull request this spawns for.
  */
-function pullRequestOfOrder(order: { causeKey: string; }): RowRef | null {
-  const found = RED_CHECK_KEY.exec(order.causeKey);
-  return found ? { key: found[1]?.slice(0, -1) ?? "", number: Number(found[2]) } : null;
+function pullRequestOfOrder(order: { cause?: string; causeKey: string; }): RowRef | null {
+  const red = redPullRequestOf(order);
+  return red === null ? null : { key: red.key, number: red.number };
 }
 
 /**
@@ -828,7 +829,7 @@ function pullRequestOfOrder(order: { causeKey: string; }): RowRef | null {
  */
 export function isPullRequestSpawnOrder(order: { session: string; causeKey?: string; cause?: string; }): boolean {
   return order.session === "engineers" && PULL_REQUEST_SPAWN_CAUSES.includes(String(order.cause))
-    && pullRequestOfOrder({ causeKey: order.causeKey ?? "" }) !== null;
+    && pullRequestOfOrder({ cause: order.cause, causeKey: order.causeKey ?? "" }) !== null;
 }
 
 /**
@@ -7111,10 +7112,11 @@ const enrichDecisionDeps = ({ host, ledgerPath, projectDir = PRIMARY_CHECKOUT }:
   ({ host, switchesPath: decisionSwitchesPath(projectDir), logPath: decisionLogPathFrom(ledgerPath), id });
 
 /** The pull request a settled-red order is about, or `null` for a key naming none or a repository the declaration does not list (never the primary's by default). */
-function redPullRequestOf(order: Enrichable): { repo: string; number: number; head8: string; refail: boolean } | null {
+function redPullRequestOf(order: Pick<Enrichable, "cause" | "causeKey">): { key: string; repo: string; number: number; head8: string; refail: boolean } | null {
   const match = order.cause === "pr-checks-failing" ? RED_CHECK_KEY.exec(order.causeKey) : null;
-  const repo = match === null ? null : codeRepositoryOf((match[1] ?? "").replace(/#$/, ""));
-  return match === null || repo === null ? null : { repo, number: Number(match[2]), head8: match[3], refail: match[4] !== undefined };
+  const key = (match?.[1] ?? "").replace(/#$/, "");
+  const repo = match === null ? null : codeRepositoryOf(key);
+  return match === null || repo === null ? null : { key, repo, number: Number(match[2]), head8: match[3], refail: match[4] !== undefined };
 }
 
 /**
