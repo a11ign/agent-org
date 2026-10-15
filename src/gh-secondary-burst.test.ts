@@ -12,7 +12,8 @@
  *   (c) a read refused for a secondary limit is not asked again that tick, and the next tick asks (`readUnlessRefused`, as #1523 pinned it);
  *   (d) a queued call the gate RETRIES and sees refused again is filed as the refused pool reads now (`retryDue`, through `attemptCall`): secondary
  *       with calls left, primary at zero, and the pool is read once for an hourly phrase only;
- *   (e) the retry's reader (`poolLeftOfQueued`, run through `spawnQueued`) sends the wrapper's probe as the entry's own account, and reads the pool it answers, or nothing.
+ *   (e) the retry's reader (`poolLeftOfQueued`, run through `spawnQueued`) sends the wrapper's probe as the entry's own account, and reads the pool it answers, or nothing;
+ *   (f) the gate's own tick (`ghQueueTick`) takes that reader by default: a queued call refused again on the tick is secondary with calls left, primary at zero.
  */
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
@@ -21,8 +22,9 @@ import { spawn, spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpDir, tmpDirForFile } from "./lib/tmp-fixture.ts";
-import { poolLeftOfQueued, QUEUE_DIR, readQueue, refusalKind, retryDue, spawnQueued } from "./gh-ledger.ts";
+import { ghQueueTick, poolLeftOfQueued, QUEUE_DIR, readQueue, refusalKind, retryDue, spawnQueued } from "./gh-ledger.ts";
 import { GRAPHQL_POOL_PROBE } from "./api-pool.ts";
+import { CORE_POOL_PROBE } from "./ticket-port/core-pool-probe.ts";
 import { poolProbeAnswer as probeOf } from "./packaging/rows-by-label-fixtures.ts";
 import { forgetRefusedReads, readUnlessRefused } from "./ticket-port/rows-by-label.ts";
 
@@ -235,6 +237,28 @@ for (const [name, stderr, left, kind, reads] of [
     assert.equal(outcomes[0].event, "requeued", outcomes[0].detail);
     assert.equal(readQueue(dir)[0].kind, kind, "the requeued entry carries the kind the refusal has now");
     assert.equal(asked.length, reads, "the pool is read once for an hourly phrase, never for a secondary one");
+  });
+}
+
+// ---- (f) the gate's own tick reads the pool for its retries, through the same runner ------------------------------------
+
+for (const [name, left, kind] of [
+  ["(f) ghQueueTick's default reader: a queued call refused again on the tick is SECONDARY when the pool has calls left", 4560, "secondary"],
+  ["(f) POSITIVE CONTROL: the same tick with the pool at zero stays PRIMARY", 0, "primary"],
+] as const) {
+  test(name, () => {
+    const home = tmpDir("gh-secondary-tick-");
+    const dir = join(home, "workers", "gh", QUEUE_DIR);
+    queuedCall(dir);
+    const probes: string[] = [];
+    const run = (_call: unknown, argv: string[]) => {
+      if (argv.join(" ") !== CORE_POOL_PROBE.join(" ")) return { status: 1, stderr: INSTALLATION_REFUSAL };
+      probes.push(argv.join(" "));
+      return { status: 0, stderr: "", stdout: probeOf(left) };
+    };
+    ghQueueTick({ home, nowMs: 1_000_600_000, run });
+    assert.equal(readQueue(dir)[0].kind, kind, "the requeued entry carries the kind the tick's reading gives");
+    assert.equal(probes.length, 1, "the pool is read once, as the account whose queue it is");
   });
 }
 
