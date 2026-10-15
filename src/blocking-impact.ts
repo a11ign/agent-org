@@ -44,8 +44,11 @@ const NAMED_ROWS = 12;
 export type Held = { holder: string; row: number | null; repo?: string };
 /** `repo` is `#N in <repo>`, a pull request of that repository. `tracker` is the repository whose tracker a BARE row number belongs to (absent for the home tracker), which `refOfShelving` sets. */
 export type Ref = { number: number; repo?: string; tracker?: string };
-/** What a deadlock needs and a holder does not: the open pull request a ref names (its display name and the rows it declares it closes), and the open rows a row waits on (`b4-cycle.ts`; the home tracker's unless `tracker` names another's). */
-export type Waits = { prOf: (ref: Ref) => { pr: string; closes: number[] } | null; blockersOf: (row: number, tracker?: string) => number[]; reviewOf: (ref: Ref) => string | null };
+/**
+ * What a deadlock needs and a holder does not: the open pull request a ref names (its display name and the rows it declares it closes), and the open rows a row waits on (`b4-cycle.ts`; the home
+ * tracker's unless `tracker` names another's). `closingPrOf` is the holder's open pull request that closes `row`, with its review decision: `null` when the holder has none the gate can read (agent-org#1426).
+ */
+export type Waits = { prOf: (ref: Ref) => { pr: string; closes: number[] } | null; blockersOf: (row: number, tracker?: string) => number[]; closingPrOf: (row: number, holder: string, tracker?: string) => PullRequestState | null };
 /** `waits` is absent on a resolver written without the edges (a test's table), which finds no deadlock. */
 export type Resolver = ((ref: Ref) => Held | null) & { waits?: Waits };
 /** `repo` is the repository whose tracker the row is in: absent for the home tracker's rows, and set for a keyed tracker's, whose reasons number ITS rows. */
@@ -104,8 +107,13 @@ export function resolverOf({ rows, prs, trackers = {}, sessionOf, closesOf }: { 
     const repo = ref.repo ?? ref.tracker;
     return pr === undefined ? null : { pr: repo === undefined ? `#${ref.number}` : `${repo.split("/").pop()}#${ref.number}`, closes: closesOf(pr) };
   };
-  const reviewOf = (ref: Ref) => prNamed(ref)?.reviewDecision ?? null;
-  return Object.assign(resolve, { waits: { prOf, reviewOf, blockersOf: (row: number, tracker?: string) => openBlockersOf(rowsOf(tracker).find((r) => Number(r.number) === row)) } });
+  // The pull request a holder's row is closed by: the open one of that repository whose `Closes` names the row and whose label is the holder's (agent-org#1426).
+  const closingPrOf = (row: number, holder: string, tracker?: string): PullRequestState | null => {
+    const pr = prs.find((p) => p.repo === tracker && closesOf(p).includes(row) && sessionOf(p) === holder);
+    if (pr === undefined) return null;
+    return { pr: pr.repo === undefined ? `#${pr.number}` : `${pr.repo.split("/").pop()}#${pr.number}`, review: pr.reviewDecision ?? null };
+  };
+  return Object.assign(resolve, { waits: { prOf, closingPrOf, blockersOf: (row: number, tracker?: string) => openBlockersOf(rowsOf(tracker).find((r) => Number(r.number) === row)) } });
 }
 
 /** The OPEN rows a row's `blockedBy` edge names. `nodes` keeps closed blockers, which are waits that have cleared; a node with no `state` is read as open (`arm-pr.ts`'s `openBlockersOf`, which drags in the arming path and is not imported here). */
@@ -436,9 +444,10 @@ function pullRequestsOf(blocked: Shelved[], resolve: Resolver): Map<string, Pull
   if (waits === undefined) return found;
   for (const shelving of blocked) {
     const ref = refOfShelving(shelving);
-    const named = ref === null ? null : waits.prOf(ref);
-    const holder = ref === null ? undefined : resolve(ref)?.holder;
-    if (ref !== null && named !== null && holder !== undefined && !found.has(holder)) found.set(holder, { pr: named.pr, review: waits.reviewOf(ref) });
+    const held = ref === null ? null : resolve(ref);
+    if (held === null || held.row === null || found.has(held.holder)) continue;
+    const pullRequest = waits.closingPrOf(held.row, held.holder, held.repo);
+    if (pullRequest !== null) found.set(held.holder, pullRequest);
   }
   return found;
 }

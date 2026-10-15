@@ -383,18 +383,30 @@ test("the escalation names the holder, its row, the shelved rows, the minutes, t
   assert.match(escalationText(incident, undefined), /worker-a has no open pull request the gate could read/, "a holder with no pull request the gate can read");
 });
 
-test("the escalation reads the holder's pull request and its review decision through the resolver", () => {
+// agent-org#1426 (reviewer, #1468): the holder's pull request is found by its `Closes` and label through the REAL resolver (`resolverOf`), not a fake `prOf`. Row 100's pull request is #300, and the number-keyed lookup this replaced could not find it.
+test("the escalation reads the holder's pull request and its review decision through the real resolver", () => {
   inScratch((dir) => {
-    const withPr = Object.assign((ref: Ref) => resolve(ref), {
-      waits: { prOf: (ref: Ref) => (ref.number === 100 ? { pr: "300", closes: [100] } : null), reviewOf: () => "APPROVED", blockersOf: () => [] },
-    });
+    const open = { rows: [{ number: 100, session: "worker-a" }], prs: [{ number: 300, session: "worker-a", closes: [100], reviewDecision: "APPROVED" }] };
     const orders = [];
     for (let minute = 0; minute <= 60; minute += 5) {
-      orders.push(...blockingImpactTick({ blocked: behind(100, 5), resolve: withPr, stateDir: dir, now: T0 + minute * MINUTE, comment: () => {}, log: () => {} }));
+      orders.push(...blockingImpactTick({ blocked: behind(100, 5), resolve: keyedResolver(open), stateDir: dir, now: T0 + minute * MINUTE, comment: () => {}, log: () => {} }));
     }
     const escalation = orders.find((o) => o.session === "product-manager");
     assert.ok(escalation, "the escalation is raised at 60");
-    assert.match(escalation.prompt, /worker-a's pull request 300 has review decision APPROVED/);
+    assert.match(escalation.prompt, /worker-a's pull request #300 has review decision APPROVED/);
+  });
+});
+
+test("the escalation says the holder has no pull request the gate can read when its only pull request closes another row", () => {
+  inScratch((dir) => {
+    const open = { rows: [{ number: 100, session: "worker-a" }], prs: [{ number: 300, session: "worker-a", closes: [999], reviewDecision: "APPROVED" }] };
+    const orders = [];
+    for (let minute = 0; minute <= 60; minute += 5) {
+      orders.push(...blockingImpactTick({ blocked: behind(100, 5), resolve: keyedResolver(open), stateDir: dir, now: T0 + minute * MINUTE, comment: () => {}, log: () => {} }));
+    }
+    const escalation = orders.find((o) => o.session === "product-manager");
+    assert.ok(escalation, "the escalation is raised at 60");
+    assert.match(escalation.prompt, /worker-a has no open pull request the gate could read/);
   });
 });
 
