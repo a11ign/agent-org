@@ -22,8 +22,10 @@ import { dirname, join } from "node:path";
  * (agent-org#1395) `used` and `reset` are the 11th and 12th: the pool's own counter after the call (`X-Ratelimit-Used`, `X-Ratelimit-Reset` as an epoch), and NO key on a
  * line that did not read it. `settled` is set by `settle`, never by a parse: `read` says `cost` is what the pool's counter moved over this call and was read, `shared`
  * that `cost` is this call's share of a movement that covered several, which is an inference. `unplaced` is a movement no call in the ledger accounts for.
+ * (agent-org#1420) `moved` is set by `settle` on the reading that closed a movement: the whole of what the counter moved since its window's last reading, placed or not,
+ * which is what the hourly rollup keeps as the hour's counter.
  */
-export type LedgerEntry = {time: string, account: string, resource: string, cost: number | null, status: number, command: string, workspace: string, caller: string, sessionId?: string, cache?: string, used?: number, reset?: number, settled?: "read" | "shared", unplaced?: number};
+export type LedgerEntry = {time: string, account: string, resource: string, cost: number | null, status: number, command: string, workspace: string, caller: string, sessionId?: string, cache?: string, used?: number, reset?: number, settled?: "read" | "shared", unplaced?: number, moved?: number};
 
 const FIELDS = 8;
 const NO_SESSION = "-";
@@ -136,6 +138,7 @@ export function settle(entries: LedgerEntry[]): LedgerEntry[] {
       if (last === undefined) continue; // the baseline: this line and what led up to it stay at their floor
       gap.forEach((j) => claimed.add(j));
       const moved = Math.max(0, e.used - last);
+      e.moved = moved;
       const unknown = [...gap, i].filter((j) => out[j].cost === null);
       const left = Math.max(0, moved - [...gap, i].reduce((sum, j) => sum + (out[j].cost ?? 0), 0));
       if (unknown.length === 0) {
@@ -197,31 +200,35 @@ export function renderReport(entries: LedgerEntry[], where: { account?: string; 
 /**
  * (#4148) THE HOURLY ROLLUP BESIDE THE LEDGER. The ledger keeps its newest half past 2 MiB (70 minutes of the busy afternoon this was written in), so `host/gh` counts what
  * a trim is about to drop into `<ledger>.hourly` first: TAB lines of hour (`2026-10-08T13`), account, resource, calls, points READ, floor points and, 7th, the caller SCRIPT
- * (a11ign/a11ign#4148 residual: without it a per-caller reading existed only for the 80 minutes the raw ledger holds). A six-field line is one written before the caller was
+ * (a11ign/a11ign#4148 residual: without it a per-caller reading existed only for the 80 minutes the raw ledger holds) and, 8th, what the pool's counter moved (agent-org#1420, `HourRow.moved`). A six-field line is one written before the caller was
  * kept: it is read as it always was and its calls have no caller to name. A reading for an hour is the two files added, and they never overlap, because a line is dropped from
  * the ledger in the same step that puts it in the rollup.
  * @param {string} ledgerPath
  */
 export const rollupPathOf = (ledgerPath: string) => `${ledgerPath}.hourly`;
 
-/** `caller` is the script that made the calls; it is absent on a row written before the rollup kept one, whose calls have no caller to name */
-export type HourRow = {hour: string, account: string, resource: string, calls: number, read: number, floor: number, caller?: string};
+/**
+ * `caller` is the script that made the calls; it is absent on a row written before the rollup kept one, whose calls have no caller to name.
+ * (agent-org#1420) `moved` is the 8th field: what the pool's own counter moved over the readings in this row, placed on a call or not, so an hour trimmed out of the ledger
+ * is read as the counter saw it and not as its floor. It is absent on a row written before it was kept, and on one no counter reading closed a movement in.
+ */
+export type HourRow = {hour: string, account: string, resource: string, calls: number, read: number, floor: number, caller?: string, moved?: number};
 
-/** @param {string} text @returns {HourRow[]} a line that is not six or seven fields with numbers is skipped, as a half ledger line is */
+/** @param {string} text @returns {HourRow[]} a line that is not six to eight fields with numbers is skipped, as a half ledger line is */
 export function parseRollup(text: string): HourRow[] {
   const rows: HourRow[] = [];
   for (const line of text.split("\n")) {
     const f = line.split("\t");
-    const [calls, read, floor] = [Number(f[3]), Number(f[4]), Number(f[5])];
-    if ((f.length === 6 || f.length === 7) && /^\d{4}-\d\d-\d\dT\d\d$/.test(f[0]) && [calls, read, floor].every(Number.isFinite)) {
-      rows.push({ hour: f[0], account: f[1], resource: f[2], calls, read, floor, ...(f[6] ? { caller: f[6] } : {}) });
+    const [calls, read, floor, moved] = [Number(f[3]), Number(f[4]), Number(f[5]), f.length === 8 ? Number(f[7]) : 0];
+    if (f.length >= 6 && f.length <= 8 && /^\d{4}-\d\d-\d\dT\d\d$/.test(f[0]) && [calls, read, floor, moved].every(Number.isFinite)) {
+      rows.push({ hour: f[0], account: f[1], resource: f[2], calls, read, floor, ...(f[6] ? { caller: f[6] } : {}), ...(moved > 0 ? { moved } : {}) });
     }
   }
   return rows;
 }
 
 /** @param {LedgerEntry} e @returns {HourRow} one call as the row it adds to its hour */
-const hourRowOf = (e: LedgerEntry): HourRow => ({ hour: e.time.slice(0, HOUR_CHARS), account: e.account, resource: e.resource.replace(/\?$/, ""), calls: 1, read: readCost(e), floor: points(e), caller: callerScript(e.caller) });
+const hourRowOf = (e: LedgerEntry): HourRow => ({ hour: e.time.slice(0, HOUR_CHARS), account: e.account, resource: e.resource.replace(/\?$/, ""), calls: 1, read: readCost(e), floor: points(e), caller: callerScript(e.caller), ...(e.moved ? { moved: e.moved } : {}) });
 
 /** The rollup's rows and the ledger's lines, as the one kind of row they are, for one account's one resource if named. */
 const hourRows = (entries: LedgerEntry[], rollup: HourRow[], { account, resource }: { account?: string; resource?: string; }): HourRow[] =>
@@ -232,15 +239,17 @@ const hourRows = (entries: LedgerEntry[], rollup: HourRow[], { account, resource
  * graphql call that did not report (`points`). The ledger's lines and the rollup's rows are the same quantity in two forms, so they are added, never chosen between.
  * @param {LedgerEntry[]} entries @param {HourRow[]} rollup
  * @param {{account?: string, resource?: string}} [where]
- * @returns {{hour: string, calls: number, read: number, floor: number}[]} oldest hour first
+ * (agent-org#1420) `moved` is what the pool's own counter moved over the hour, present only for an hour a counter reading closed a movement in: a floor is not called a measurement.
+ * @returns {{hour: string, calls: number, read: number, floor: number, moved?: number}[]} oldest hour first
  */
-export function perHour(entries: LedgerEntry[], rollup: HourRow[], { account, resource }: { account?: string; resource?: string; } = {}): { hour: string; calls: number; read: number; floor: number; }[] {
-  const byHour: Map<string, { hour: string; calls: number; read: number; floor: number; }> = new Map();
+export function perHour(entries: LedgerEntry[], rollup: HourRow[], { account, resource }: { account?: string; resource?: string; } = {}): { hour: string; calls: number; read: number; floor: number; moved?: number; }[] {
+  const byHour: Map<string, { hour: string; calls: number; read: number; floor: number; moved?: number; }> = new Map();
   for (const r of hourRows(entries, rollup, { account, resource })) {
     const row = byHour.get(r.hour) ?? { hour: r.hour, calls: 0, read: 0, floor: 0 };
     row.calls += r.calls;
     row.read += r.read;
     row.floor += r.floor;
+    if (r.moved !== undefined) row.moved = (row.moved ?? 0) + r.moved;
     byHour.set(r.hour, row);
   }
   return [...byHour.values()].sort((a, b) => a.hour.localeCompare(b.hour));
@@ -281,7 +290,8 @@ export function perHourCallers(entries: LedgerEntry[], rollup: HourRow[], { acco
 export function renderPerHour(hours: ReturnType<typeof perHour>, callers?: HourCallers[]): string {
   if (hours.length === 0) return "gh ledger: no calls recorded for that account and resource\n";
   const lines = hours.flatMap((h) => [
-    `${h.hour}Z  ${String(h.calls).padStart(6)} calls  ${String(h.read).padStart(6)} points read  ${String(h.floor).padStart(6)} floor points`,
+    `${h.hour}Z  ${String(h.calls).padStart(6)} calls  ${String(h.read).padStart(6)} points read  ${String(h.floor).padStart(6)} floor points`
+      + (h.moved === undefined ? "" : `  ${String(h.moved).padStart(6)} moved by the pool's counter`),
     ...(callers?.find((c) => c.hour === h.hour)?.callers ?? []).map((c) =>
       `    ${String(c.floor).padStart(6)} floor points (${String(c.read).padStart(6)} read)  ${String(c.calls).padStart(6)} calls  ${c.caller}`),
   ]);
@@ -352,7 +362,24 @@ function readLedgers(paths: readonly string[], read: (path: string) => string): 
   return { entries, unread };
 }
 
-export type SpenderQuestion = { ledgers: readonly string[]; login: string; appRoles?: readonly string[]; now?: number; read?: (path: string) => string };
+/** `used` is the pool's own used points (`limit - remaining`, agent-org#1420), when the caller has them; the sentence states them beside the ledger's total. */
+export type SpenderQuestion = { ledgers: readonly string[]; login: string; appRoles?: readonly string[]; now?: number; read?: (path: string) => string; used?: number };
+
+/** Under this share of the pool's used points the ledger is said to be short of the spender (agent-org#1420). */
+const ACCOUNTED_FLOOR = 0.9;
+
+/**
+ * (agent-org#1420) THE LEDGER'S TOTAL BESIDE THE POOL'S OWN COUNT: `used` is what the pool says it spent, `total` what the ledger accounts for, and the share is stated rather
+ * than left to a reader to compute. Under 90% the sentence says the rest was spent by calls this ledger does not hold. The last hour of the ledger is not the pool's
+ * window, so a share over 100% is possible and is printed as it is. Nothing is said for a pool with no used points: `used` of 0 is no divisor.
+ * @param {number} total @param {number | undefined} used @returns {string} empty, or `; the pool's own used points are N and the ledger accounts for P% of them ...`
+ */
+function usedClause(total: number, used: number | undefined): string {
+  if (used === undefined || !(used > 0)) return "";
+  const share = total / used;
+  return `; the pool's own used points are ${used} and the ledger accounts for ${Math.round(share * PERCENT)}% of them`
+    + `${share < ACCOUNTED_FLOOR ? `, under ${Math.round(ACCOUNTED_FLOOR * PERCENT)}%, so ${used - total} points were spent by calls this ledger does not hold` : ""}`;
+}
 
 /**
  * (#4916) The sentence `api-pool-low` appends for ONE pool's login, read from EVERY ledger the identity's calls may be written to (the workers', the leads' and the
@@ -361,7 +388,7 @@ export type SpenderQuestion = { ledgers: readonly string[]; login: string; appRo
  * could be read at all", which the caller words.
  * @param {SpenderQuestion} question
  */
-export function spenderPhraseFor({ ledgers, login, appRoles = [], now = Date.now(), read = (path) => readFileSync(path, "utf8") }: SpenderQuestion): string | null {
+export function spenderPhraseFor({ ledgers, login, appRoles = [], now = Date.now(), read = (path) => readFileSync(path, "utf8"), used }: SpenderQuestion): string | null {
   const account = ledgerAccountOf(login, appRoles);
   if (account === null) return `${login} is an App no declared role owns (declared: ${appRoles.join(", ") || "none"}), so its spender is UNREADABLE`;
   const { entries, unread } = readLedgers(ledgers, read);
@@ -377,7 +404,7 @@ export function spenderPhraseFor({ ledgers, login, appRoles = [], now = Date.now
   const basis = top.counted === undefined ? `${top.total} floor points`
     : `${top.total} points by the pool's own counter: ${top.counted.read} read off it, ${top.counted.shared} shared between calls it was not read for, ${top.counted.floor} floor`
       + `${top.counted.unplaced > 0 ? `, and ${top.counted.unplaced} more that no ledgered call accounts for` : ""}`;
-  return `${login}'s last hour (${basis}${as}): top caller ${top.caller} [${top.command}], ${top.points} points (${Math.round(top.share * PERCENT)}%)${short}`;
+  return `${login}'s last hour (${basis}${as}${usedClause(top.total, used)}): top caller ${top.caller} [${top.command}], ${top.points} points (${Math.round(top.share * PERCENT)}%)${short}`;
 }
 
 /**

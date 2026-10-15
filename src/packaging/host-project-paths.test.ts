@@ -150,7 +150,8 @@ const TODAYS_TEXT = {
 // instead of flooring it at one point. Same staleness, same remedy.
 // agent-org#1500 (review) MOVED IT AGAIN, deliberately: a counter-less line waits in each window that already has its baseline, so another window's baseline no longer
 // takes it from the window it sits between. Same staleness, same remedy.
-const TODAYS_GH_WRAPPER = "463478359b1db8303f4813b7c770ae990719c099f6e8914f87c5a43a1cdab544";
+// agent-org#1420 MOVED IT AGAIN, deliberately: the ledger's trim keeps what the pool's counter moved over each rolled-up hour as the rollup row's 8th field. Same staleness, same remedy.
+const TODAYS_GH_WRAPPER = "c9858269d9ecf09d8e993744a3f41dfff06be4a10fcf41f1fab1860a8247d2ad";
 // #2896 MOVED THIS ONE, deliberately: the recorded host's header says `pnpm run host:install` / `pnpm run host:check` where it said `npm run`.
 const TODAYS_LEADS_LIST = "dbca070c4bb7934ff1e9cdc9505f9edee638d98fcff10963b18d5d3a743770a2";
 

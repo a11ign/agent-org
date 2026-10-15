@@ -51,7 +51,7 @@ test("#4916: a [bot] pool is read from the app:<role> lines, which the pool's ow
   const now = Date.now();
   assert.equal(topSpender(parseLedger(lines.join("\n")), { account: SCHEDULER_BOT, now }), null, "CONTROL: filtered by the login, as it was, the ledger reads as nobody's");
   assert.equal(topSpender(parseLedger(lines.join("\n")), { account: "app:scheduler", now })?.total, 3, "CONTROL: the lines ARE there, under the role's name");
-  assert.match(spenderDetail(SCHEDULER_BOT), /^a11ign-scheduler\[bot\]'s last hour \(3 floor points, read from app:scheduler ledger lines\): top caller work-tick\.ts \[issue list\], 2 points \(67%\)$/);
+  assert.match(spenderDetail(SCHEDULER_BOT), /^a11ign-scheduler\[bot\]'s last hour \(3 floor points, read from app:scheduler ledger lines; the pool's own used points are 4080 and the ledger accounts for 0% of them, under 90%, so 4077 points were spent by calls this ledger does not hold\): top caller work-tick\.ts \[issue list\], 2 points \(67%\)$/);
 });
 
 test("#4916: 'no graphql point is recorded' needs every ledger read, and an unread one is UNREADABLE", () => {
@@ -79,7 +79,7 @@ test("#4916: a [bot] login no declared role owns reads UNREADABLE, whatever the 
 test("#4916: lines split across the workers' and leads' ledgers are summed, each ledger once", () => {
   ledgerOf(WORKERS_DIR, [line("app:scheduler"), line("app:scheduler")]);
   ledgerOf(LEADS_DIR, [line("app:scheduler", { command: "pr view", caller: "/usr/bin/node /x/src/row-claim.ts" })]);
-  assert.match(spenderDetail(SCHEDULER_BOT), /\(3 floor points, read from app:scheduler ledger lines\): top caller work-tick\.ts \[issue list\], 2 points \(67%\)$/);
+  assert.match(spenderDetail(SCHEDULER_BOT), /\(3 floor points, read from app:scheduler ledger lines; the pool's own used points are 4080 and the ledger accounts for 0% of them, under 90%, so 4077 points were spent by calls this ledger does not hold\): top caller work-tick\.ts \[issue list\], 2 points \(67%\)$/);
   const path = join(WORKERS_DIR, "gh-calls.tsv");
   assert.match(spenderPhraseFor({ ledgers: [path, path], login: SCHEDULER_BOT, appRoles: ["scheduler"] }) ?? "", /\(2 floor points,/, "a ledger named twice is read once");
   const paths = ledgerPathsOf({ host: HOST_CONFIG, ownDir: WORKERS_DIR });
@@ -122,11 +122,11 @@ test("agent-org#1395: a pool that spent 4,900 points is accounted for by a sente
   const detail = poolLowReading({ pools: [POOL] }).detail.split(". Spender: ")[1];
   const said = Number(/\((\d+) points by the pool's own counter/.exec(detail)?.[1]);
   assert.ok(Math.abs(said - USED) <= USED * 0.1, `the sentence names ${said} of the pool's ${USED} used points, within 10%: ${detail}`);
-  assert.match(detail, /\(4900 points by the pool's own counter: 3200 read off it, 1699 shared between calls it was not read for, 1 floor, read from app:scheduler ledger lines\): top caller work-gate\.ts \[api graphql\], 4051 points \(83%\)$/);
+  assert.match(detail, /\(4900 points by the pool's own counter: 3200 read off it, 1699 shared between calls it was not read for, 1 floor, read from app:scheduler ledger lines; the pool's own used points are 4900 and the ledger accounts for 100% of them\): top caller work-gate\.ts \[api graphql\], 4051 points \(83%\)$/);
   // THE CONTROL: the same six calls as the ledger was before the counter, nine fields
   ledgerOf(WORKERS_DIR, lines.map((l) => l.split("\t").slice(0, 9).join("\t")));
   const before = poolLowReading({ pools: [POOL] }).detail.split(". Spender: ")[1];
-  assert.match(before, /\(6 floor points, read from app:scheduler ledger lines\)/, "CONTROL: without the counter the sentence is the floor, and says so: 6 of 4900");
+  assert.match(before, /\(6 floor points, read from app:scheduler ledger lines; the pool's own used points are 4900 and the ledger accounts for 0% of them, under 90%/, "CONTROL: without the counter the sentence is the floor, and says so: 6 of 4900");
   assert.ok(Math.abs(6 - USED) > USED * 0.1, "CONTROL: and that is not within 10%, which is what the row was opened for");
 });
 
@@ -137,5 +137,27 @@ test("agent-org#1395: a movement no ledgered call accounts for is said, and is n
   ]);
   ledgerOf(LEADS_DIR, []);
   const detail = poolLowReading({ pools: [{ account: SCHEDULER_BOT, resource: "graphql", remaining: 100, limit: 5000, resetAt: "2026-10-13T21:00:00Z" }] }).detail.split(". Spender: ")[1];
-  assert.match(detail, /\(4 points by the pool's own counter: 3 read off it, 0 shared between calls it was not read for, 1 floor, and 7 more that no ledgered call accounts for, read from app:scheduler ledger lines\): top caller work-gate\.ts \[api graphql\], 4 points \(100%\)$/);
+  assert.match(detail, /\(4 points by the pool's own counter: 3 read off it, 0 shared between calls it was not read for, 1 floor, and 7 more that no ledgered call accounts for, read from app:scheduler ledger lines; the pool's own used points are 4900 and the ledger accounts for 0% of them, under 90%, so 4896 points were spent by calls this ledger does not hold\): top caller work-gate\.ts \[api graphql\], 4 points \(100%\)$/);
+});
+
+// --- agent-org#1420: THE SENTENCE STATES THE POOL'S OWN USED POINTS BESIDE THE LEDGER'S TOTAL ------------------------------------------------------------------------------
+
+test("agent-org#1420: a pool of 4,900 used points is stated beside a ledger accounting for 4,900, and for 3,000 it says 61% and that it is under 90%", () => {
+  const POOL = { account: SCHEDULER_BOT, resource: "graphql", remaining: 100, limit: 5000, resetAt: "2026-10-13T21:00:00Z" };
+  const spender = (lines: string[], pool = POOL) => {
+    ledgerOf(WORKERS_DIR, lines);
+    ledgerOf(LEADS_DIR, []);
+    return poolLowReading({ pools: [pool] }).detail.split(". Spender: ")[1];
+  };
+  const whole = spender([counted("app:scheduler", { ago: 20, used: 1 }), counted("app:scheduler", { ago: 10, used: 4900 })]);
+  assert.match(whole, /\(4900 points by the pool's own counter: .*; the pool's own used points are 4900 and the ledger accounts for 100% of them\)/);
+  assert.doesNotMatch(whole, /under 90%/, "CONTROL: a ledger that accounts for all of it is not said to be short");
+  const part = spender([counted("app:scheduler", { ago: 20, used: 1 }), counted("app:scheduler", { ago: 10, used: 3000 })]);
+  assert.match(part, /\(3000 points by the pool's own counter: .*; the pool's own used points are 4900 and the ledger accounts for 61% of them, under 90%, so 1900 points were spent by calls this ledger does not hold\)/);
+  // a floor-only ledger (no counter) is stated the same way: the share is what shows it is a floor
+  const floor = spender([1, 2, 3].map((n) => counted("app:scheduler", { ago: 5 * n })).map((l) => l.split("\t").slice(0, 9).join("\t")));
+  assert.match(floor, /\(3 floor points, read from app:scheduler ledger lines; the pool's own used points are 4900 and the ledger accounts for 0% of them, under 90%/);
+  // a pool with nothing used has no divisor, so the sentence stays as it was
+  ledgerOf(WORKERS_DIR, [counted("app:scheduler", { ago: 5, used: 1 })]);
+  assert.doesNotMatch(spenderPhraseFor({ ledgers: [join(WORKERS_DIR, "gh-calls.tsv")], login: SCHEDULER_BOT, appRoles: ["scheduler"], used: 0 }) ?? "", /used points/);
 });

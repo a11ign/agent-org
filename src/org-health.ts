@@ -1055,8 +1055,11 @@ export function approvedRequiredReadings({ now, enabled, prs }: ApprovedRequired
  * (#4148) A LOW POOL NAMES ITS SPENDER: for a GRAPHQL pool the detail adds who spent that account's last hour, off the `host/gh` ledger beside the config this tick ran under
  * (`spenderOf`; the default reads it). "Low" with no name is a signal nobody can act on, and the first reading of the burner took a hand-run awk. Only the DETAIL carries it:
  * the discriminator is unchanged, so one spent window is still one signal. A ledger that cannot be read leaves the detail as it was and says so, never a guess.
+ *
+ * (agent-org#1420) THE SENTENCE STATES THE POOL'S OWN USED POINTS (`limit - remaining`) beside the ledger's total and the share of them the ledger accounts for, and says so when
+ * that is under 90%. `poolLowReading` hands `spenderOf` the used points; the sentence is built where the ledger's total is (`gh-ledger.ts` `spenderPhraseFor`).
  */
-export function poolLowReading({ pools, spenderOf = ledgerSpender }: { pools: PoolReading[] | null; spenderOf?: (account: string) => string | null; }): Reading {
+export function poolLowReading({ pools, spenderOf = (account, used) => ledgerSpender(account, undefined, used) }: { pools: PoolReading[] | null; spenderOf?: (account: string, used?: number) => string | null; }): Reading {
   if (pools === null) return unknown(SIGNALS.POOL_LOW, "no API pool was read this tick");
   const low = pools.filter((p) => p.limit > 0 && p.remaining / p.limit < POOL_LOW_FRACTION).sort((a, b) => `${a.account}/${a.resource}`.localeCompare(`${b.account}/${b.resource}`));
   if (low.length === 0) return clear(SIGNALS.POOL_LOW);
@@ -1096,11 +1099,11 @@ const declaredAppRoles = (host: HostConfig): string[] => GITHUB_ROLES.filter((ro
  * owns it, and both from every ledger `ledgerPathsOf` names. `read` is the seam a test uses.
  * @param {{account: string, host: HostConfig, ownDir: string, now?: number, read?: (path: string) => string}} where
  */
-export function spenderOfAccount({ account, host, ownDir, now, read = readLedgerFile }: { account: string; host: HostConfig; ownDir: string; now?: number; read?: (path: string) => string; }): string | null {
-  return spenderPhraseFor({ ledgers: ledgerPathsOf({ host, ownDir }), login: account, appRoles: declaredAppRoles(host), now, read });
+export function spenderOfAccount({ account, host, ownDir, now, read = readLedgerFile, used }: { account: string; host: HostConfig; ownDir: string; now?: number; read?: (path: string) => string; used?: number; }): string | null {
+  return spenderPhraseFor({ ledgers: ledgerPathsOf({ host, ownDir }), login: account, appRoles: declaredAppRoles(host), now, read, used });
 }
 
-export function ledgerSpender(account: string, hostOf: () => HostConfig = homeHostConfig): string | null {
+export function ledgerSpender(account: string, hostOf: () => HostConfig = homeHostConfig, used?: number): string | null {
   const ownDir = ledgerDir();
   let host: HostConfig;
   try {
@@ -1108,19 +1111,22 @@ export function ledgerSpender(account: string, hostOf: () => HostConfig = homeHo
   } catch (cause) {
     // The declaration could not be read: an ordinary account still has this process's own ledger, but an App's role cannot be named from nothing.
     if (isAppLogin(account)) return `${account} is an App and the host declaration that names its role could not be read (${(cause as Error).message}), so its spender is UNREADABLE`;
-    return spenderPhraseFor({ ledgers: [join(ownDir, "gh-calls.tsv")], login: account, read: readLedgerFile });
+    return spenderPhraseFor({ ledgers: [join(ownDir, "gh-calls.tsv")], login: account, read: readLedgerFile, used });
   }
-  return spenderOfAccount({ account, host, ownDir });
+  return spenderOfAccount({ account, host, ownDir, used });
 }
 
 /**
  * `. Spender: ...` for each low GRAPHQL pool whose account is named, else "". An account the ledger cannot say anything of reads `UNREADABLE`, because the omission would look
  * like a clean answer.
  */
-function spendersOf(low: PoolReading[], spenderOf: (account: string) => string | null) {
-  const accounts = [...new Set(low.filter((p) => p.resource === "graphql" && p.account !== null).map((p) => (p.account as string)))];
+function spendersOf(low: PoolReading[], spenderOf: (account: string, used?: number) => string | null) {
+  const graphql = low.filter((p) => p.resource === "graphql" && p.account !== null);
+  const accounts = [...new Set(graphql.map((p) => (p.account as string)))];
   if (accounts.length === 0) return "";
-  return `. Spender: ${accounts.map((a) => spenderOf(a) ?? `${a}'s call ledger could not be read, so the spender is UNREADABLE`).join("; ")}`;
+  // an account's used points are its first low graphql pool's: one account has one graphql pool per reset window and this reading keys on the window
+  const usedOf = (a: string) => { const p = graphql.find((q) => q.account === a) as PoolReading; return p.limit - p.remaining; };
+  return `. Spender: ${accounts.map((a) => spenderOf(a, usedOf(a)) ?? `${a}'s call ledger could not be read, so the spender is UNREADABLE`).join("; ")}`;
 }
 
 /**
