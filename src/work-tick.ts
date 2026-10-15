@@ -151,10 +151,11 @@ function queuedOrderCount(path: string): number {
 export { TICK_COST_FILE }; // named in `work-tick-health.ts` (a leaf), which the gate and the weekly report read the cost file through
 
 /**
- * The file is cut to its newest half past this size. A line is about a kilobyte and a tick runs every two minutes, so the cap holds about two days of
- * ticks -- enough to read three consecutive ones and a bad afternoon, and never a file nobody trims.
+ * The file is cut to its newest half past this size, so the half must hold a day of ticks for the tick-wall readback (a11ign/agent-org#1210) to read
+ * 24 hours. That reading had 410 ticks in 15.7 h, about 26 an hour and about 2.5 KiB each: a day is about 1.6 MiB, which the half of the old 2 MiB cap
+ * (1 MiB) could not hold. At 4 MiB the half is 2 MiB, about 800 ticks and 30 hours at that rate.
  */
-export const TICK_COST_BYTES = 2 * 1024 * 1024;
+export const TICK_COST_BYTES = 4 * 1024 * 1024;
 
 const MS_PER_SECOND = 1000;
 const KB = 1024;
