@@ -73,6 +73,7 @@ import { sandboxGitEnv } from "./lib/git-env.ts";
 import { isAppLogin, spenderPhraseFor } from "./gh-ledger.ts";
 import { GITHUB_ROLES, homeHostConfig, hostConfigPath, roleIdentity, stateEntryPath, type HostConfig } from "./host-config.ts";
 // A LEAF too (node builtins only): the append-only log of events that never become a closed row, where a refused claim is written and read back.
+import { CI_RERUN_LEDGER_FILE, rerunOn5xx } from "./ci-rerun-on-5xx.ts";
 import { CLAIM_GUARD_HELD_KIND, CLAIM_REFUSED_KIND, FAILURE_LEDGER_FILE, parseFailureLedger } from "./failure-ledger.ts";
 // A LEAF (`claim-labels.ts` imports nothing), so the label is read from where it is declared, as `repeating-lines.ts` does.
 import { READY_LABEL, STATE_LABELS, stateLabelFindings } from "./claim-labels.ts";
@@ -255,10 +256,12 @@ export const SIGNALS = Object.freeze({
   TICK_WALL_HIGH: "tick-wall-high",
   QUEUE_ENTRY_NO_RUN: "queue-entry-no-run",
   QUEUE_HEAD_AGE: "queue-head-age",
+  REQUIRED_RED_ON_5XX: "required-red-on-5xx",
+  MANUAL_RERUNS: "manual-reruns",
 });
 
 /** Signals whose first reader is not `ceo`: the order goes to that session as well as to `ceo`, who takes every signal. */
-const FIRST_READERS = (Object.freeze({ [SIGNALS.STATE_LABEL]: FIRST_READER, [SIGNALS.BOARD_TRUTH]: FIRST_READER, [SIGNALS.SHELVED_CIRCLE]: FIRST_READER, [SIGNALS.FLAG_WITHOUT_SWITCH]: FIRST_READER, [SIGNALS.QUEUE_ENTRY_NO_RUN]: FIRST_READER, [SIGNALS.QUEUE_HEAD_AGE]: FIRST_READER }) as Readonly<Record<string, string>>);
+const FIRST_READERS = (Object.freeze({ [SIGNALS.STATE_LABEL]: FIRST_READER, [SIGNALS.BOARD_TRUTH]: FIRST_READER, [SIGNALS.SHELVED_CIRCLE]: FIRST_READER, [SIGNALS.FLAG_WITHOUT_SWITCH]: FIRST_READER, [SIGNALS.QUEUE_ENTRY_NO_RUN]: FIRST_READER, [SIGNALS.QUEUE_HEAD_AGE]: FIRST_READER, [SIGNALS.REQUIRED_RED_ON_5XX]: FIRST_READER, [SIGNALS.MANUAL_RERUNS]: FIRST_READER }) as Readonly<Record<string, string>>);
 
 /**
  * `detail` is one line: for `unknown` it is WHY, for `tripped` the numbers. `firstTrippedAt` is epoch ms, or `null` when the signal's own source carries no time.
@@ -790,6 +793,92 @@ export function queueEntryNoRunReading({ day, fact }: { day: string; fact: Queue
   return { signal, status: "tripped", firstTrippedAt: null,
     discriminator: `${signal}@${day}:${fact.today}:${fact.repeats.map((repeat) => repeat.pull).sort((a, b) => a - b).join(",")}`,
     detail: [`${fact.today} merge-queue entr${fact.today === 1 ? "y was" : "ies were"} re-queued today because no run of its group ever started`, ...lines].join("\n") };
+}
+
+/** One line of the `checks rerun on 5xx` ledger the tick writes (agent-org#1217): when, which run, and the repository it was in. */
+export type RerunOn5xx = { at: number; runId: number; repo: string };
+
+const RERUN_LEDGER_LINE = /^(\d+)\tchecks rerun on 5xx: (\S+) run (\d+) head \S+: /;
+
+/**
+ * THE FACT FOR `requiredRedOn5xxReading`: the tick's `checks rerun on 5xx` ledger, beside the delivery ledger. A ledger that is not there is `[]` (the tick has rerun nothing, which is the
+ * ordinary case while `ci.rerunOn5xx` is off); one that cannot be read, or holds a line that is not `<epochMs>\tchecks rerun on 5xx: <repo> run <id> head <sha>: <why>`, is `null`: a line read
+ * wrong is a count drawn wrong, and a stated unknown is never zero. NEVER THROWS.
+ */
+export function readRerunsOn5xx({ path, read = (file) => readFileSync(file, "utf8") }: { path?: string; read?: (path: string) => string; } = {}): RerunOn5xx[] | null {
+  try {
+    const file = path ?? stateEntryPath(CI_RERUN_LEDGER_FILE);
+    let text: string;
+    try {
+      text = read(file);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException | null)?.code === "ENOENT") return [];
+      throw err;
+    }
+    const entries: RerunOn5xx[] = [];
+    for (const line of text.split("\n")) {
+      if (line.trim() === "") continue;
+      const match = RERUN_LEDGER_LINE.exec(line);
+      if (match === null) return null;
+      entries.push({ at: Number(match[1]), repo: match[2], runId: Number(match[3]) });
+    }
+    return entries;
+  } catch {
+    return null;
+  }
+}
+
+/** The run ids of the ledger's reruns, per UTC day (`YYYY-MM-DD`), oldest id first. A day with none is not a key: ask {@link requiredRedOn5xxReading} for today's zero. */
+export function rerunsPerDay(reruns: RerunOn5xx[]): Map<string, number[]> {
+  const days = new Map<string, number[]>();
+  for (const { at, runId } of reruns) {
+    const day = isoOf(at).slice(0, 10);
+    days.set(day, [...(days.get(day) ?? []), runId].sort((a, b) => a - b));
+  }
+  return days;
+}
+
+/**
+ * SIGNAL: REQUIRED CHECKS RERUN ON A GITHUB 5xx (agent-org#1218, chairman a11ign#928): HOW OFTEN GITHUB BROKE A REQUIRED CHECK AND THE TICK ANSWERED IT WITH A RERUN, so the cost of the
+ * rerun is measured. Counted from the ledger line the tick writes, per UTC day, with the run ids. A day with no rerun is a COUNT OF ZERO printed in the detail and `clear`, never an absent
+ * reading; the count trips as a digest (`product-manager` first), keyed on the day and the ids, so a new rerun is a new order and a standing day is not. `reruns` is `null` for a ledger
+ * that could not be read: unknown, never zero.
+ */
+export function requiredRedOn5xxReading({ now, reruns }: { now: number; reruns: RerunOn5xx[] | null; }): Reading {
+  const signal = SIGNALS.REQUIRED_RED_ON_5XX;
+  if (reruns === null) return unknown(signal, "the `checks rerun on 5xx` ledger could not be read, so how often a required check was rerun on a 5xx is not known");
+  const day = isoOf(now).slice(0, 10);
+  const ids = rerunsPerDay(reruns).get(day) ?? [];
+  const detail = `${ids.length} required check${ids.length === 1 ? " was" : "s were"} rerun on a GitHub 5xx on ${day}${ids.length === 0 ? "" : `: run ${ids.join(", run ")}`}`;
+  if (ids.length === 0) return { signal, status: "clear", detail };
+  return { signal, status: "tripped", firstTrippedAt: null, discriminator: `${signal}@${day}:${ids.join(",")}`, detail };
+}
+
+/**
+ * One rerun made at attempt 2 or later, as a reader of the code host saw it: the run, when, the log's own text (`lastErrorLine` reads it), and whether a person asked for it. `byPerson`
+ * is the caller's to decide from the run's triggering actor, because this file holds no tracker call (the call baseline).
+ */
+export type RerunSeen = { runId: number; at: number; log: string; byPerson: boolean };
+
+/**
+ * SIGNAL: A PERSON RERAN A RUN WHOSE LAST ERROR WAS A GITHUB 5xx (agent-org#1218): THE DETECTOR'S MISSES MADE VISIBLE. The decider (`rerunOn5xx`) answers `rerun` for such a log with no prior
+ * rerun on the head, so a person doing it by hand is a case the tick did not answer (the switch was off, the tick was down, or the detector read the log differently). The decider is
+ * ASKED, not re-implemented, so the two agree on what a 5xx is. A run in the tick's own ledger is not a miss, whoever the code host says triggered it. Per UTC day, with the run ids, a day with none
+ * `clear` with a zero. `seen` is `null` for a read that was refused, and `ledger` `null` for an unreadable ledger: each unknown, because a ledger that cannot be read cannot excuse a rerun.
+ */
+export function manualRerunsReading({ now, seen, ledger }: { now: number; seen: RerunSeen[] | null; ledger: RerunOn5xx[] | null; }): Reading {
+  const signal = SIGNALS.MANUAL_RERUNS;
+  if (seen === null) return unknown(signal, "the reruns on the code host could not be read, so how often a person reran a 5xx by hand is not known");
+  if (ledger === null) return unknown(signal, "the `checks rerun on 5xx` ledger could not be read, so a person's rerun cannot be told from the tick's");
+  const day = isoOf(now).slice(0, 10);
+  const tick = new Set(ledger.map((entry) => entry.runId));
+  const ids = seen
+    .filter((rerun) => rerun.byPerson && isoOf(rerun.at).slice(0, 10) === day && !tick.has(rerun.runId))
+    .filter((rerun) => rerunOn5xx({ log: rerun.log, conclusion: "failure", rerunsOnThisHead: false }).action === "rerun")
+    .map((rerun) => rerun.runId).sort((a, b) => a - b);
+  const detail = `${ids.length} run${ids.length === 1 ? "" : "s"} whose last error was a GitHub 5xx ${ids.length === 1 ? "was" : "were"} rerun by a person on ${day}${ids.length === 0 ? "" : `: run ${ids.join(", run ")}`}`;
+  if (ids.length === 0) return { signal, status: "clear", detail };
+  return { signal, status: "tripped", firstTrippedAt: null, discriminator: `${signal}@${day}:${ids.join(",")}`, detail };
 }
 
 /**
@@ -2058,6 +2147,10 @@ export function orgHealthReadings(facts: {
         pools?: PoolReading[] | null; toolAgreement?: { result: ToolAgreement; } | null; nodeStrips?: NodeStripFact | null; teamAccess?: TeamAccessFact; autoOff?: AutoOffFact; stateRows?: Parameters<typeof stateLabelReading>[0]["rows"]; idle?: import("./idle-with-open-rows.ts").IdleRows; shelvedCircle?: ShelvedCircle[] | null; releaseRuns?: ReleaseRuns | null; releaseFailures?: ReleaseFailureRead[] | null; fleetBuildIncident?: FleetBuildIncident[] | null; releaseBehind?: import("./release-behind-main.ts").RepoFact[] | null; boardTruth?: Parameters<typeof boardTruthReading>[0]["audit"];
         classRepeat?: import("./class-repeat.ts").ClassRepeatFact | null; milestoneClock?: Omit<MilestoneClockFact, "endedAt"> | null;
         claimRefusals?: ClaimRefusal[] | null;
+        /** agent-org#1218: `readRerunsOn5xx()`'s answer, `null` for an unreadable ledger and OMITTED when the caller does not ask (a default read would put a signal into every tick test, #1073). */
+        rerunsOn5xx?: RerunOn5xx[] | null;
+        /** agent-org#1218: reruns the code host shows (`RerunSeen`), `null` for a refused read and OMITTED when the caller does not ask; read with `rerunsOn5xx`, whose absence makes it unknown. */
+        rerunsSeen?: RerunSeen[] | null;
         /**
          * agent-org#1135: `readFlagLedger()`'s answer, `null` for a refused read and OMITTED when the caller does not ask. THE TICK DOES NOT READ IT ITSELF, unlike the copies and the refusal ledger:
          * a default read of the project's declarations put a signal into 25 tests that assert the exact orders of a tick (the shape of agent-org#1073), so the live gate hands it over (`work-gate.ts`).
@@ -2098,6 +2191,8 @@ export function orgHealthReadings(facts: {
   if (facts.classRepeat !== undefined) readings.push(...classRepeatReadings({ now: facts.now, classRepeat: facts.classRepeat }));
   if (facts.milestoneClock !== undefined) readings.push(milestoneClockReading({ now: facts.now, fact: facts.milestoneClock === null ? null : { ...facts.milestoneClock, endedAt: facts.lastMergedAt } }));
   if (facts.claimRefusals !== undefined) readings.push(claimRefusalStormReading({ now: facts.now, refusals: facts.claimRefusals }));
+  if (facts.rerunsOn5xx !== undefined) readings.push(requiredRedOn5xxReading({ now: facts.now, reruns: facts.rerunsOn5xx }));
+  if (facts.rerunsSeen !== undefined) readings.push(manualRerunsReading({ now: facts.now, seen: facts.rerunsSeen, ledger: facts.rerunsOn5xx ?? null }));
   if (facts.flagSwitches !== undefined) readings.push(flagSwitchReading({ day: isoOf(facts.now).slice(0, 10), ledger: facts.flagSwitches }));
   if (facts.tickRecord !== undefined) readings.push(tickRecordReading({ now: facts.now, state: facts.tickRecord }));
   if (facts.tickHealth !== undefined) readings.push(tickWallReading({ day: isoOf(facts.now).slice(0, 10), health: facts.tickHealth }));
@@ -2220,6 +2315,10 @@ const REMEDY = (Object.freeze({
   [SIGNALS.QUEUE_HEAD_AGE]: "The merge queue's position-1 entry has stood longer than the detector's limit, so everything behind it waits. The detail says whether any run exists on its group: none is "
     + "`queue-entry-no-run`'s shape (the gate re-queues it once, if its flag is on); a run that is queued or hung is the runner or the workflow, and a run that is red leaves the queue by itself. "
     + "Read the entry's pull request and its newest `merge_group` run before choosing, and FILE what you find `" + READY_LABEL + "` WITH AN OWNER in this turn. It clears the tick the head entry is younger than the limit or gone.",
+  [SIGNALS.REQUIRED_RED_ON_5XX]: "The tick reran a required check once because its last error was a GitHub 5xx, not the code (`checks rerun on 5xx` in the ledger beside the delivery ledger). "
+    + "A count with no incident needs no act: it is the measurement of how often GitHub breaks a required check, and the run ids are in the detail. A day that climbs is GitHub's and goes on the row that owns the rerun.",
+  [SIGNALS.MANUAL_RERUNS]: "A person reran a run whose last error was a GitHub 5xx, so the detector did not answer it first: the switch `ci.rerunOn5xx` was off, the tick was not running, or it read the log differently. "
+    + "Read each run's log, and if the tick should have rerun it FILE the miss `" + READY_LABEL + "` WITH AN OWNER in this turn; if the switch is simply off, say so on the switch row.",
   [APPROVED_DIRTY_SIGNAL]: "An approved pull request has been DIRTY (it conflicts with main) for more than " + APPROVED_DIRTY_MINUTES + " minutes and nobody has pushed to its head inside that window, so it cannot land and nothing is rebasing it. "
     + "The named PRs are above. Rebase each one onto main, or if its author is away, say so on the PR and name who takes it; a push to the head clears the finding, and so does a merge. "
     + "Do not clear it by approving again, which changes nothing about the conflict.",
