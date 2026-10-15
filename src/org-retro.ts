@@ -1022,6 +1022,9 @@ export const CLASS_FIX_INSTRUCTION = "For each number worse than yesterday's, or
   + "whose Acceptance is a test that covers the class and not the instance: a population derived from the tree or the API, with a "
   + "positive control (#2912 fixed \"a closed row names the session\" and left every PR with no row falling back to `product-manager`).";
 
+/** The sentence the order carries after `CLASS_FIX_INSTRUCTION`: a `paused` number is the allowance's pause, not an org defect (#1429). */
+export const PAUSED_NUMBER_INSTRUCTION = "A number marked `paused` is not a class to file a row for: the Claude allowance was paused, so no org defect caused it.";
+
 /** Where the reading and every filed row are posted: #928, the RECORD. */
 export const RETRO_DESTINATION = "#928";
 
@@ -1038,10 +1041,9 @@ export function retrospectiveOrder(date: string, reportText: string) {
     prompt: `THE DAILY RETROSPECTIVE for ${date} (UTC). Optimising the org is your scheduled duty, not a thing the chairman has to ask for. `
       + "The numbers below were computed by `node packages/agent-org/src/org-retro.ts` from the GitHub, journal and ledger reads the gate "
       + "already makes; no model read a log, so do not re-derive them.\n\n"
-      + `${reportText}\n${CLASS_FIX_INSTRUCTION} The verdict beside each number is against the previous reading; \`no baseline\` and \`unknown\` are not good days.\n`
+      + `${reportText}\n${CLASS_FIX_INSTRUCTION} ${PAUSED_NUMBER_INSTRUCTION} The verdict beside each number is against the previous reading; \`no baseline\` and \`unknown\` are not good days.\n`
       + `Post the reading and every row you filed on ${RETRO_DESTINATION}. If nothing tripped, post "nothing tripped" WITH the numbers: a day with nothing to file is never silence. `
-      + "An `unknown` is a source the script could not read, not a good day: say so, and file the unreadable source as the defect. "
-      + "A number marked `paused` is not a class to file a row for: the Claude allowance was paused, so no org defect caused it.",
+      + "An `unknown` is a source the script could not read, not a good day: say so, and file the unreadable source as the defect.",
     causeKey: retrospectiveKey(date),
   };
 }
