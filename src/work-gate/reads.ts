@@ -1403,9 +1403,9 @@ export type EventGate = { named: readonly TickScope[]; lastReadAt: Readonly<Reco
  * queue's file cannot be read (which reads everything, as a poll tick does). The host's `webhook` declaration is the switch (agent-org#1353: behind `gate.graphqlPacing`, absent from the canary, the
  * gate took a whole read every tick and calls per hour did not fall at the webhook switch); the revert is `"source": "poll"`. `facts` is the test's; omitted, they are read from this host.
  */
-export function eventGateOf(run: object, facts?: GateFacts): EventGate | null {
+export function eventGateOf(run: object, facts?: GateFacts, declaresWebhook: () => boolean = webhookMode): EventGate | null {
   if (!isAmbientRun(run)) return null;
-  const live = facts ?? (webhookMode() ? liveGateFacts() : null);
+  const live = facts ?? (declaresWebhook() ? liveGateFacts() : null);
   if (live === null || !live.on || !live.webhook) return null;
   const named = live.tickScopesPath === undefined ? null : readTickScopes(live.tickScopesPath);
   return named === null ? null : { named, lastReadAt: readOtherScopesMemory(live.memoryPath), nowMs: live.nowMs };
