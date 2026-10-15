@@ -12,6 +12,11 @@ export type FakeRow = {
   [more: string]: unknown;
 };
 
+/** The GraphQL pool probe's answer: the `X-Ratelimit-*` headers a real response carries, which `poolFromResponse` reads (#1523). */
+export function poolProbeAnswer(remaining: number, limit = 5000): string {
+  return `HTTP/2 200\nX-Ratelimit-Limit: ${limit}\nX-Ratelimit-Remaining: ${remaining}\nX-Ratelimit-Resource: graphql\n\n{"data":{"viewer":{"login":"x"}}}`;
+}
+
 /** What a `gh api graphql` argv asked of the by-label read, or `null` when it is some other call. */
 export function readsRowsByLabel(args: readonly string[]): { label: string; state: "OPEN" | "CLOSED"; } | null {
   if (args[0] !== "api" || args[1] !== "graphql") return null;
