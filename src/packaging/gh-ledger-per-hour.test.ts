@@ -277,3 +277,42 @@ test("agent-org#1395: the scheduler App's token is handed out by `host/gh` alone
   assert.deepEqual(holders, [], "nothing but app-token.ts and host/gh reads or mints an installation token");
   assert.ok(MINTS.test(readFileSync(join(root, "src/app-token.ts"), "utf8")), "POSITIVE CONTROL: the pattern finds the minter, so an empty answer above is not a pattern that matches nothing");
 });
+
+test("#1482: the trim's rollup settles the reviewer's ordering too: a `pr list` between two readings of A is shared out when B's baseline comes between them", () => {
+  const h = host();
+  const R1 = 1791925000;
+  const R2 = 1791928600;
+  const pool: Record<number, number> = { [R1]: 104, [R2]: 500 };
+  const at = (s: number) => `2026-10-13T20:${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}Z`;
+  const counted = (time: string, used: number, reset: number) =>
+    [time, WORKERS, "graphql", "", "0", "api graphql", "-", "/usr/bin/node /x/src/work-gate.ts", "-", "-", String(used), String(reset)].join("\t");
+  const prList = (time: string) => line(time, { resource: "graphql?", command: "pr list" });
+  // the head of the ledger is the ordering the review named: A's baseline (100), a `pr list`, B's baseline (500), then A's second reading (104). A is 4 points
+  // up across the `pr list`, so the list is shared out; B's baseline between them does not take it. Then a run of further calls, so the trim drops the head.
+  const fixture: string[] = [counted(at(0), 100, R1), prList(at(30)), counted(at(45), 500, R2), counted(at(60), 104, R1)];
+  for (let k = 1; k <= 25; k += 1) {
+    const time = at(60 + 5 * k);
+    if (k % 3 === 0) {
+      pool[R1] += 1;
+      fixture.push(prList(time));
+      continue;
+    }
+    const reset = k % 4 === 0 ? R2 : R1;
+    pool[reset] += 2;
+    fixture.push(counted(time, pool[reset], reset));
+  }
+  const fixtureText = `${fixture.join("\n")}\n`;
+  writeFileSync(h.ledger, fixtureText);
+  // the fixture is past the bound, so this call's line is appended and the trim drops the older half of the file
+  assert.equal(h.call("2026-10-13T21:00:00Z", "pr", "list").status, 0);
+  const kept = readFileSync(h.ledger, "utf8");
+  const appended = kept.slice(kept.lastIndexOf("\n", kept.length - 2) + 1);
+  const keptFixture = kept.slice(0, kept.length - appended.length);
+  assert.ok(fixtureText.endsWith(keptFixture), "POSITIVE CONTROL: what the trim kept is the newest lines of the fixture, whole");
+  const dropped = fixtureText.slice(0, fixtureText.length - keptFixture.length);
+  assert.ok(dropped.startsWith(fixture[0]), "POSITIVE CONTROL: the reviewer's ordering is at the head of the dropped half");
+  assert.ok(dropped.includes(fixture[3]), "POSITIVE CONTROL: A's second reading is in the dropped half");
+  const actual = perHour([], parseRollup(readFileSync(rollupPathOf(h.ledger), "utf8")), { account: WORKERS, resource: "graphql" });
+  const expected = perHour(parseLedger(dropped), [], { account: WORKERS, resource: "graphql" });
+  assert.deepEqual(actual, expected, "the rollup is what `settle` makes of the same lines, hour by hour, read and floor alike");
+});

@@ -180,7 +180,8 @@ ledger_record() { # status stdout-copy first-arg second-arg
 # (#1482) The dropped lines are SETTLED here, as `gh-ledger.ts` `settle` settles a ledger, before they are summed: a graphql reading takes the movement of
 # its own reset window since that window's last reading, shared between the counter-less lines before it and itself, so an hour of a rolled-up trim keeps
 # the points the pool's counter moved and not the one-point floor. The baseline is per reset window and per account (one account can run several windows
-# at once, agent-org#1482), and a dropped line before its window's first reading stays a floor. Settling sees the dropped lines only: the first reading a
+# at once, agent-org#1482), and a dropped line before its window's first reading stays a floor. A counter-less line waits in every window that already has
+# its baseline, and the first reading that brackets it claims it: another window's baseline between the two readings does not take the line (agent-org#1500). Settling sees the dropped lines only: the first reading a
 # trim leaves in the ledger has no earlier reading to be measured from, so that boundary is a floor too, and the rollup never says so.
 rollup_dropped() { # ledger-file dropped-bytes
   { cat "$1.hourly" 2>/dev/null; head -c "$2" "$1"; } | awk -F'\t' '
@@ -200,18 +201,25 @@ rollup_dropped() { # ledger-file dropped-bytes
       for (i = 1; i <= n; i += 1) if (cost[i] != "") { hc[i] = 1; ec[i] = cost[i] + 0 }
       for (i = 1; i <= n; i += 1) {
         if (res[i] != "graphql") continue
-        if (!counted[i]) { gap[acct[i]] = gap[acct[i]] " " i; continue }
+        if (!counted[i]) {
+          m = split(kwin[acct[i]], wl, " ")
+          for (w = 1; w <= m; w += 1) pend[acct[i] SUBSEP wl[w]] = pend[acct[i] SUBSEP wl[w]] " " i
+          continue
+        }
         key = acct[i] SUBSEP rst[i]
-        if (!(key in last)) { last[key] = used[i]; gap[acct[i]] = ""; continue }
+        if (!(key in last)) { last[key] = used[i]; pend[key] = ""; kwin[acct[i]] = kwin[acct[i]] " " rst[i]; continue }
         moved = used[i] - last[key]; if (moved < 0) moved = 0
         if (used[i] > last[key]) last[key] = used[i]
-        m = split(gap[acct[i]] " " i, mem, " "); gap[acct[i]] = ""
+        m = split(pend[key], mem, " "); pend[key] = ""
+        gn = 0
+        for (j = 1; j <= m; j += 1) if (!(mem[j] in claimed)) { claimed[mem[j]] = 1; g[++gn] = mem[j] }
         left = moved
-        for (j = 1; j <= m; j += 1) if (hc[mem[j]]) left -= ec[mem[j]]
+        for (j = 1; j <= gn; j += 1) if (hc[g[j]]) left -= ec[g[j]]
+        if (hc[i]) left -= ec[i]
         if (left < 0) left = 0
         u = 0
         if (!hc[i]) ord[++u] = i
-        for (j = 1; j < m; j += 1) if (!hc[mem[j]]) ord[++u] = mem[j]
+        for (j = 1; j <= gn; j += 1) if (!hc[g[j]]) ord[++u] = g[j]
         if (u > 0) {
           share = int(left / u); extra = left - share * u
           for (j = 1; j <= u; j += 1) { ec[ord[j]] = share + (j <= extra ? 1 : 0); hc[ord[j]] = 1; sh[ord[j]] = (u > 1) }

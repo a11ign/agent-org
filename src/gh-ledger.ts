@@ -118,19 +118,23 @@ export function settle(entries: LedgerEntry[]): LedgerEntry[] {
     // at once (2026-10-15 16Z: four reset epochs in one hour, 123 switches among 776 readings). A single baseline restarted on every switch,
     // so most readings were baselines and read as floor (#1482).
     const before: Map<number, number> = new Map();
-    let gap: number[] = [];
+    // A counter-less line is waiting for a share in EVERY window that has its baseline by the time it appears: its window is not known, so the first
+    // reading that brackets it claims it, and no other window's reading takes it again. A window's baseline clears only that window's list; clearing one
+    // gap for all windows lost a line between two readings of one window whenever another window's baseline came between them (agent-org#1500 review).
+    const pending: Map<number, number[]> = new Map();
+    const claimed = new Set<number>();
     for (const i of indices) {
       const e = out[i];
       if (e.used === undefined || e.reset === undefined) {
-        gap.push(i);
+        for (const list of pending.values()) list.push(i);
         continue;
       }
       const last = before.get(e.reset);
       before.set(e.reset, Math.max(last ?? 0, e.used));
-      if (last === undefined) {
-        gap = []; // the baseline: this line and what led up to it stay at their floor
-        continue;
-      }
+      const gap = (pending.get(e.reset) ?? []).filter((j) => !claimed.has(j));
+      pending.set(e.reset, []);
+      if (last === undefined) continue; // the baseline: this line and what led up to it stay at their floor
+      gap.forEach((j) => claimed.add(j));
       const moved = Math.max(0, e.used - last);
       const unknown = [...gap, i].filter((j) => out[j].cost === null);
       const left = Math.max(0, moved - [...gap, i].reduce((sum, j) => sum + (out[j].cost ?? 0), 0));
@@ -146,7 +150,6 @@ export function settle(entries: LedgerEntry[]): LedgerEntry[] {
           out[j].settled = unknown.length === 1 ? "read" : "shared";
         });
       }
-      gap = [];
     }
   }
   return out;
