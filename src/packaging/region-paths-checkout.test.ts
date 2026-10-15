@@ -10,13 +10,32 @@
  *       directory is recognised from A. The positive control that the census marker notices the remedy is in
  *       `git-reads-name-their-checkout.test.ts`.
  */
-import { test } from "node:test";
+import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { withGitSandbox, type GitSandbox } from "@a11ign/toolchain/lib/git-sandbox";
 import { HOME_CHECKOUT } from "../project-config.ts";
 import { regionPathsFromBody, trackedTopLevelDirs } from "../region-paths.ts";
+
+/**
+ * #1400: this file's git sandboxes are made in a directory of its own, and the `after` removes it. The run's private TMPDIR (`private-tmp.ts`) is
+ * then never asked to remove anything this file made: a sandbox left behind here (CI named one, `region-paths-checkout.test.ts left 1 in its
+ * TMPDIR`, on 2026-10-11 and 2026-10-13) is removed by this file's own cleanup. The run's TMPDIR is put back first; nothing outside `ownTmp` is touched.
+ */
+let runTmp: string | undefined;
+let ownTmp = "";
+before(() => {
+  runTmp = process.env.TMPDIR;
+  ownTmp = mkdtempSync(join(tmpdir(), "region-paths-checkout-"));
+  process.env.TMPDIR = ownTmp;
+});
+after(() => {
+  if (runTmp === undefined) delete process.env.TMPDIR;
+  else process.env.TMPDIR = runTmp;
+  rmSync(ownTmp, { recursive: true, force: true });
+});
 
 /** Commit `files` (paths with a directory) into `box`. */
 function seed(box: GitSandbox, files: string[]): void {
@@ -75,5 +94,11 @@ test("#3366 (3) CONTROL: a Region path in a directory only the project has is re
     assert.ok(dir, "the project has a top-level directory to name");
     const found = inDirectory(tool.dir, () => regionPathsFromBody(`Region: \`${dir}/x.mjs\``));
     assert.deepEqual(found, [`${dir}/x.mjs`]);
+  });
+});
+
+test("#1400 CONTROL: this file's git sandboxes are made in the directory the file owns, so its `after` removes them", () => {
+  withGitSandbox((box) => {
+    assert.equal(dirname(box.dir), realpathSync(ownTmp), "the sandbox sits in the file's own directory, not the run's private TMPDIR");
   });
 });
