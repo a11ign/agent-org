@@ -9,6 +9,7 @@
  *   - a webhook tick reads a repository its events named, and one due a sweep, and no other;
  *   - a repository an event-gated tick drops is REPORTED unread, with its reason, as a paced skip is;
  *   - an event-gated tick that names neither the home repository nor a due sweep skips the primary's tracker lanes and `orgHealth`, and reports both;
+ *   - agent-org#1401: a tick that SKIPPED the primary's lanes by pacing reads none of them as refused, and a refused primary lane is still named as refused;
  *   - the sweep is every `GRAPHQL_SWEEP_MINUTES`, and a repository read inside that window is not read again;
  *   - the memory of read times survives a write of another repository's, and a missing or malformed file reads every repository.
  */
@@ -17,13 +18,14 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { GRAPHQL_RESERVE, GRAPHQL_SWEEP_MINUTES, OTHER_SCOPES_MEMORY, PACING_FLAG, orgHealthSkipped, pacedUnread, pacingNow, pacingOn, primaryUnread, readOtherScopesMemory, rememberOtherScopes, scopesToRead } from "../work-gate/pacing.ts";
+import { GRAPHQL_RESERVE, GRAPHQL_SWEEP_MINUTES, OTHER_SCOPES_MEMORY, PACING_FLAG, orgHealthSkipped, pacedUnread, pacingNow, pacingOn, primaryRefusedLanes, primaryUnread, readOtherScopesMemory, rememberOtherScopes, scopesToRead } from "../work-gate/pacing.ts";
 import { defaultRun, eventGateOf, otherScopesToRead, primaryDue, primaryLanes, unreadScopes, type GateFacts } from "../work-gate/reads.ts";
 import type { Scope as TickScope } from "../event-queue.ts";
 import type { Scope } from "../work-gate/vocabulary.ts";
 import { emptyCanaryState, withMachineryFlag, type CanaryIo } from "../org-health.ts";
-import { EXIT as GATE_EXIT, tickLanes } from "../work-gate.ts";
-import { exitPartial } from "../work-gate/tick.ts";
+import { EXIT as GATE_EXIT, offeredByShare, tickLanes } from "../work-gate.ts";
+import { exitPartial, outageThisTick } from "../work-gate/tick.ts";
+import { claimStallsNow } from "../work-gate/claim-stall-tick.ts";
 import { loadAllowlist, normaliseLine } from "../repeating-lines.ts";
 
 const MINUTE = 60_000;
@@ -331,4 +333,66 @@ test("agent-org#1414: the repeating-lines allowlist matches BOTH all-paced lines
   assert.ok(!matched(refused.line), "the gate's refused line is not allowlisted");
   assert.ok(!matched(partialSaid({ refused: ["the pull-request list"], paced: [] }).line), "nor is a plain refusal");
   assert.ok(!matched("one lane could not be read; see the gate's stderr"), "nor is the tick's refused reading");
+});
+
+// agent-org#1401: the paced skip of the primary's lanes was reported as refused reads (OUTAGE, `could not be read -- NO claim`, `NO PRODUCT ROW OFFERABLE`).
+// A skipped lane is `null` in the same way a refused one is, so the pacing flag is what tells the two apart. Each assertion below has its RED CONTROL beside it.
+test("agent-org#1401: a tick whose primary lanes the pacing SKIPPED reads none of them as refused: no OUTAGE, and no `could not be read -- NO claim` line", () => {
+  const nulls = { prs: [], readyRows: [], promotableRows: null, chairmanBlocked: null, openRows: null, claimedComments: [], offBoard: [], others: [] };
+  assert.equal(outageThisTick({ ...nulls, primaryRead: false }), false, "the primary was not asked, so its nulls are not a refusal");
+  // RED CONTROL: the same nulls with the primary READ are refusals, and OUTAGE fires on them
+  assert.equal(outageThisTick({ ...nulls, primaryRead: true }), true);
+
+  const logged: string[] = [];
+  const log = (line: string) => logged.push(line);
+  claimStallsNow(null, [], [], { openRowsPaced: true, log });
+  assert.ok(!logged.join("").includes("could not be read -- NO claim was evaluated"), "a skipped open-rows read is not `could not be read`");
+  assert.match(logged.join(""), /the open rows were skipped by pacing this tick -- NO claim was evaluated/);
+  // RED CONTROL: the same null with no pacing is a refusal, and is still reported as one
+  logged.length = 0;
+  claimStallsNow(null, [], [], { openRowsPaced: false, log });
+  assert.match(logged.join(""), /could not be read -- NO claim was evaluated/);
+});
+
+test("agent-org#1401: the offer says `PRODUCT ROW OFFER NOT READ` for rows the pacing skipped, and `NO PRODUCT ROW OFFERABLE` only for rows that were read", () => {
+  const declaration = {
+    code: [{ key: "", repo: "a11ign/a11ign" }],
+    dora: [{ repo: "a11ign/a11ign", releasablePaths: ["packages/judge/"] }],
+  };
+  const starts = Array.from({ length: 10 }, (_, i) => ({ at: i, kind: "org" }));
+  const org = { number: 20, title: "row 20", labels: [{ name: "ready" }], body: "## Region\n\n```\npackages/guards/src/rule.ts\n```\n\n## Acceptance\n\nA command.\n\n## Open-check\n\nA check.\n" };
+  const lineFor = (paced: boolean) => {
+    const stateDir = mkdtempSync(join(tmpdir(), "offer-paced-"));
+    const lines: string[] = [];
+    try {
+      offeredByShare([org], { starts, declaration, paced, shareLog: (line: string) => lines.push(line), shareMemory: { stateDir, now: NOW } });
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+    return lines.join("");
+  };
+  assert.equal(lineFor(true), "PRODUCT ROW OFFER NOT READ (share 0/10): the open rows were skipped by pacing this tick\n");
+  assert.ok(!lineFor(true).includes("NO PRODUCT ROW OFFERABLE"), "nor a claim that the shelf is empty, which nobody read");
+  // RED CONTROL: the same offer with the rows read is the shelf-is-empty line
+  assert.match(lineFor(false), /^NO PRODUCT ROW OFFERABLE \(share 0\/10\)/);
+});
+
+test("agent-org#1401: a refused primary lane is named on PARTIAL, and a skipped primary names none", () => {
+  const io: CanaryIo = { read: () => null, write: () => {}, fileIncident: () => "https://example.test/1", log: () => {} };
+  const lanes = (primaryRefused: string[]) =>
+    tickLanes({ prs: [], readyRows: [], others: [], pacedSkips: [], primaryRefused, unarmed: [], releaseRuns: null, run: () => "", now: NOW, dir: "/state", io });
+  const refused = lanes(["the open rows"]);
+  assert.deepEqual(refused.refused, ["the open rows"]);
+  assert.deepEqual(refused.unread, ["the open rows"]);
+  assert.match(partialSaid({ refused: refused.refused, paced: refused.paced }).line, /^PARTIAL: could not read the open rows\. /);
+  // RED CONTROL: a primary the pacing skipped names no refused lane, so PARTIAL does not say `could not read` about it
+  assert.deepEqual(lanes([]).refused, []);
+});
+
+test("agent-org#1401: primaryRefusedLanes names each primary lane that was asked and came back null, and none when the primary was not asked", () => {
+  const allNull = { promotableRows: null, chairmanBlocked: null, openRowsRead: null };
+  assert.deepEqual(primaryRefusedLanes(allNull, true), ["the promotable rows", "the chairman-blocked rows", "the open rows"]);
+  // RED CONTROL: a primary the pacing skipped names nothing, though its lanes are the same nulls
+  assert.deepEqual(primaryRefusedLanes(allNull, false), []);
+  assert.deepEqual(primaryRefusedLanes({ promotableRows: [], chairmanBlocked: [], openRowsRead: [] }, true), []);
 });

@@ -121,7 +121,7 @@ import { holdHolderOrdersNow } from "./work-gate/causes/pr-holds.ts";
 import { stampLookup, withEvidenceLabelAges, withPatchIds } from "./work-gate/causes/pr-reviews.ts";
 import { EXIT, claimedCommentsForClock, defaultRun, draining, readBranchPrsOfUnclaimed, readClaimedRowComments, readPrs, readReadyRows,
   readRowBranches, readWithFirstWaveTogether, releaseBehindNow, repoNow, runBatch, otherScopesToRead, rememberOtherScopesRead, isAmbientRun, primaryDue, primaryLanes, unreadScopes } from "./work-gate/reads.ts";
-import { type Pacing, orgHealthSkipped, pacedUnread, pacingNow, pacingOn, primaryUnread } from "./work-gate/pacing.ts";
+import { type Pacing, orgHealthSkipped, pacedUnread, pacingNow, pacingOn, primaryRefusedLanes, primaryUnread } from "./work-gate/pacing.ts";
 import { answerGivenOrders, bareAnswerLabelOrders, closedAnswerRows, endedSessionLabels, liveWorkspaceLabels, readClosedAnswerRows, rowsOwingAnswers,
   withAnswerLabel } from "./work-gate/causes/rows-answers.ts";
 import { readRecentlyClosed, unclaimedClearings } from "./work-gate/causes/rows-blocker-cleared.ts";
@@ -567,12 +567,12 @@ function tickHealthNow(): TickHealth | null {
  * design (paced, or no event named it) is not blind, so it is not passed to the canary. The PARTIAL line names every lane the tick did not read, the skipped ones
  * included, so a skip is never reported clean. Both come from the same reads here, so nothing in `main` chooses between them.
  */
-export function tickLanes({ prs, readyRows, others, pacedSkips, ...canary }: Omit<Parameters<typeof machineryCanaryNow>[0], "unread"> & { prs: any[] | null; readyRows: any[] | null; others: { refused: string[]; }[]; pacedSkips: { refused: string[]; }[]; }): { orders: any[]; unread: string[]; refused: string[]; paced: string[]; } {
-  const refused = unreadLanes({ prs, readyRows, others });
+export function tickLanes({ prs, readyRows, others, pacedSkips, primaryRefused = [], ...canary }: Omit<Parameters<typeof machineryCanaryNow>[0], "unread"> & { prs: any[] | null; readyRows: any[] | null; others: { refused: string[]; }[]; pacedSkips: { refused: string[]; }[]; /** agent-org#1401: the primary's tracker lanes that were asked and refused (`primaryRefusedLanes`) */ primaryRefused?: string[]; }): { orders: any[]; unread: string[]; refused: string[]; paced: string[]; } {
+  const refused = [...unreadLanes({ prs, readyRows, others }), ...primaryRefused];
   const paced = pacedSkips.flatMap((skip) => skip.refused);
   return {
     orders: machineryCanaryNow({ ...canary, unread: refused }),
-    unread: unreadLanes({ prs, readyRows, others: [...others, ...pacedSkips] }),
+    unread: [...refused, ...paced],
     refused, paced,
   };
 }
@@ -649,7 +649,7 @@ function main() {
   // pay for it twice on exactly the red tick this row is about.
   const required = endGateSpan("required", requiredWhenNeeded(openPrs));
   const baseTip = endGateSpan("baseTip", baseTipWhenRed(openPrs)), armingSplit = endGateSpan("arming", readArmingOf(openPrs, required)); // #3019: BEFORE the arguments -- ejected PRs are stamped onto `prs` and leave `unarmed`; agent-org#488: the gate arms a lone unarmed one here
-  const decideArgs = { primaryDrift, prs: endGateSpan("withStaleRefusals", withStaleRefusals(endGateSpan("withVerifyStamps", withVerifyStamps(endGateSpan("withEjections", withEjections(endGateSpan("withWaitingEdges", withWaitingEdges(endGateSpan("withPrOwners", withPrOwners(endGateSpan("withEvidenceLabelAges", withEvidenceLabelAges(endGateSpan("withPatchIds", withPatchIds(openPrs, defaultRun, required)))), allOpen, stampLookup(), { agents: liveWorkspaceLabels, ended: endedSessionLabels })), allOpen, { dir: REVIEWER_STATE_DIR })), armingSplit?.ejections)), { checkout: verifyCheckoutOf("") })), required)), readyRows: rows, promotableRows: promotableRows ?? [],
+  const decideArgs = { primaryDrift, primaryPaced: !primaryRead, prs: endGateSpan("withStaleRefusals", withStaleRefusals(endGateSpan("withVerifyStamps", withVerifyStamps(endGateSpan("withEjections", withEjections(endGateSpan("withWaitingEdges", withWaitingEdges(endGateSpan("withPrOwners", withPrOwners(endGateSpan("withEvidenceLabelAges", withEvidenceLabelAges(endGateSpan("withPatchIds", withPatchIds(openPrs, defaultRun, required)))), allOpen, stampLookup(), { agents: liveWorkspaceLabels, ended: endedSessionLabels })), allOpen, { dir: REVIEWER_STATE_DIR })), armingSplit?.ejections)), { checkout: verifyCheckoutOf("") })), required)), readyRows: rows, promotableRows: promotableRows ?? [],
     chairmanBlocked: chairmanBlocked ?? [], prFiles, drain, required, baseTip, waitFacts: waitReads?.facts ?? null,
     epics: epicRowsOf(allOpen),
     answerOwed: rowsOwingAnswers({ openRows: allOpen, openPrs, closedRows: closedAnswerRows(closedRows) }),
@@ -659,7 +659,7 @@ function main() {
     // nothing in progress pays nothing; a busy one pays exactly one, whatever the size of the queue.
     claimedComments: claimedComments ?? [],
     // #2470: the SAME comments, read once, and the raw `null` kept for the reader that must tell "refused" from "none".
-    ...endGateSpan("claimStalls", withClosedClaims(claimStallsWithFacts(openRowsRead, claimedComments, prs, otherScopes, {}, waitReads?.facts ?? null), closedClaims)), // #3451: the orders AND the facts they were built from
+    ...endGateSpan("claimStalls", withClosedClaims(claimStallsWithFacts(openRowsRead, claimedComments, prs, otherScopes, { openRowsPaced: !primaryRead }, waitReads?.facts ?? null), closedClaims)), // #3451: the orders AND the facts they were built from
     // #1969: CONDITIONAL, and the condition is answered for free from the list already in hand.
     // `shouldBeMerging` reads `openPrs`; only if it finds a green, unheld, non-draft PR is the
     // merge-queue call made at all.
@@ -679,7 +679,7 @@ function main() {
   const others = endGateSpan("otherScopes", otherScopeTicks(drain, otherScopes, openPrs, homeRowsOf(allOpen))); // #4386: `homeRowsOf` -- so an agent-org pull request is owned by the worker its branch names. #2618: the OTHER declared repositories -- none for one project, whose orders are what they were
   endGateSpan("tickFailures", recordTickFailures({ trunkRed: decideArgs.trunkRed, keyedTrunkReds: others.map((tick) => ({ repo: tick.repo, red: tick.trunkRed })), prs: decideArgs.prs }));
   endGateSpan("resolverDefects", fileResolverDefects([...resolverDefectsOf(decideArgs.prs, allOpen), ...others.flatMap((tick) => tick.defects)])); // #4386: a fallback order for a PR that named a live claimant files its own defect, once per PR
-  const outageNow = outageThisTick({ prs, readyRows, promotableRows, chairmanBlocked, openRows: openRowsRead, claimedComments, offBoard, others });
+  const outageNow = outageThisTick({ prs, readyRows, promotableRows, chairmanBlocked, openRows: openRowsRead, claimedComments, offBoard, others, primaryRead });
   const incident = endGateSpan("incident", holdForIncidentNow(githubStatus, [...decided, ...others.flatMap((tick) => tick.orders)], { prs: [...openPrs, ...pullRequestsOfOthers(otherScopes)], required }));
   const { delivered: orders, performed: performedOnPrs } = endGateSpan("performActions", performActions(markOutageReads(incident.orders, outageNow)));
   const performed = performedOnPrs + strippedClosedClaims; // #3883: a tick that took labels off a closed row did something, and must not read as an idle org
@@ -704,7 +704,7 @@ function main() {
   endGateSpan("chairmanAsks+holdHolders");
   // #1329: THE CANARY COUNTS REFUSED LANES ONLY. A repository the gate skipped BY DESIGN (paced, or no event named it) is not blind, so it
   // stays out of `blind-ticks`; it is still named on the PARTIAL line below, which is where a skipped lane is reported.
-  const lanes = tickLanes({ prs, readyRows, others, pacedSkips, unarmed: armingSplit === null ? null : armingSplit.unarmed, releaseRuns: releaseSeen.runs ?? null, suppressions: incident.suppressions, stranded: armingSplit?.stranded ?? [] });
+  const lanes = tickLanes({ prs, readyRows, others, pacedSkips, primaryRefused: primaryRefusedLanes({ promotableRows, chairmanBlocked, openRowsRead }, primaryRead), unarmed: armingSplit === null ? null : armingSplit.unarmed, releaseRuns: releaseSeen.runs ?? null, suppressions: incident.suppressions, stranded: armingSplit?.stranded ?? [] });
   orders.push(...lanes.orders); endGateSpan("machineryCanary"); // a11ign#5100, a11ign#5125
   endGateSpan("approvedUnqueued", approvedUnqueuedNow({ prs: prs === null ? null : [...prs, ...pullRequestsOfOthers(otherScopes)], repos: homeProjectDeclaration().tracker.map((t) => t.repo), repo: repoNow(), stateDir: REVIEWER_STATE_DIR, run: defaultRun })); // agent-org#893: the daily reading on #928; never throws, adds no order
   // FIRST OF ALL, AND ON PURPOSE (#2163): `wake` delivers in this order and records each delivery with a write, so

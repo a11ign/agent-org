@@ -367,7 +367,7 @@ export function productShare(starts: { at: number; kind: string; }[]): { product
  *
  *        `shareMemory` (#3929) is where the line is remembered so it prints when it CHANGES; omitted, it prints every time it is reached.
  */
-function offeredByFloor(offerable: any[], { starts, declaration, shareLog = (line) => process.stderr.write(line), shareMemory }: { starts?: { at: number; kind: string; }[]; declaration?: Parameters<typeof productRegionsOf>[0]; shareLog?: (line: string) => void; shareMemory?: { stateDir: string; now?: number; }; } = {}) {
+function offeredByFloor(offerable: any[], { starts, declaration, shareLog = (line) => process.stderr.write(line), shareMemory, paced = false }: { starts?: { at: number; kind: string; }[]; declaration?: Parameters<typeof productRegionsOf>[0]; shareLog?: (line: string) => void; shareMemory?: { stateDir: string; now?: number; }; /** agent-org#1401: the open rows were skipped by pacing, so `NO PRODUCT ROW OFFERABLE` would be a claim about rows nobody read. */ paced?: boolean; } = {}) {
   if (starts === undefined || declaration === undefined) return offerable;
   const { product, of } = productShare(starts);
   if (product >= PRODUCT_SHARE_FLOOR) {
@@ -382,7 +382,9 @@ function offeredByFloor(offerable: any[], { starts, declaration, shareLog = (lin
     return [...offerable.filter((row) => laneOwnerOf(row) !== null), ...productRows];
   }
   const unreadable = pool.filter((entry) => entry.unreadable).map((entry) => subjectRef(entry.row.repoKey, entry.row.number));
-  const line = `NO PRODUCT ROW OFFERABLE (share ${product}/${of})${unreadable.length > 0 ? `; counted org, Region unreadable or empty: ${unreadable.join(", ")}` : ""}\n`;
+  // agent-org#1401: a paced tick read no open rows, so "none offerable" and "Region unreadable" would be a fault about rows nobody asked for
+  const line = paced ? `PRODUCT ROW OFFER NOT READ (share ${product}/${of}): the open rows were skipped by pacing this tick\n`
+    : `NO PRODUCT ROW OFFERABLE (share ${product}/${of})${unreadable.length > 0 ? `; counted org, Region unreadable or empty: ${unreadable.join(", ")}` : ""}\n`;
   if (shareLineDue(line, shareMemory)) shareLog(line);
   return offerable;
 }
