@@ -1201,6 +1201,24 @@ function hasNoAgent(agent: { status?: string; }) {
 }
 
 /**
+ * agent-org#1348: the per-tick refresh. Every live INSIDE reviewer that has a checkout gets its token kept past the margin
+ * ({@link ensureReviewerToken}). An OUTSIDE reviewer has no app and is skipped, as is a label whose checkout is not there yet.
+ * @returns one line per failed refresh, labelled, for the caller to say; empty when every token is good.
+ */
+export function refreshLiveReviewerTokens(
+  agents: { label: string; }[], registry: Record<string, ReviewerEntry>, app: AppIdentity | null,
+  { tree = reviewCheckoutPath, exists = existsSync, now, script }: { tree?: (label: string) => string, exists?: (path: string) => boolean, now?: number, script?: string } = {},
+): string[] {
+  const failures: string[] = [];
+  for (const label of liveReviewers(agents)) {
+    if (registry[label]?.trust === OUTSIDE || !exists(tree(label))) continue;
+    const why = ensureReviewerToken(tree(label), app, { now, script });
+    if (why !== null) failures.push(`${label}: ${why}`);
+  }
+  return failures;
+}
+
+/**
  * The live reviewer instances -- workspaces labelled `reviewer-<n>`, the retired standing pane excluded.
  */
 export function liveReviewers(agents: { label: string; }[]): string[] {
@@ -8912,11 +8930,7 @@ async function main() {
   // reviewer has no app, so it gets none; a failed refresh says so, and the token there is kept until it runs out.
   const reviewerApp = reviewerAppIdentity();
   const reviewerRegistry: Record<string, ReviewerEntry> = readReviewerRegistry(reviewerPathsFrom(ledgerPath).registry);
-  for (const label of liveReviewers(agents)) {
-    if (reviewerRegistry[label]?.trust === OUTSIDE || !existsSync(reviewCheckoutPath(label))) continue;
-    const why = ensureReviewerToken(reviewCheckoutPath(label), reviewerApp);
-    if (why !== null) process.stderr.write(`wake: ${label}: ${why}\n`);
-  }
+  for (const why of refreshLiveReviewerTokens(agents, reviewerRegistry, reviewerApp)) process.stderr.write(`wake: ${why}\n`);
   const { sent, refused: gateRefused, stuck, outaged, settled } = deliver(ready, free, roster, { record, unavailable, clock, relane: relaneFacts(ledgerPath),
     reviewerToken: (tree) => ensureReviewerToken(tree, reviewerApp),
     serve: (order) => served.get(order.causeKey) ?? null, accountPause,
