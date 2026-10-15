@@ -51,3 +51,30 @@ export function failedLogOfRun(repo: string, runId: string | number, run: Run): 
 export function stateOfRow(repo: string, number: string | number, run: Run): string {
   return String(parse(run(["issue", "view", String(number), "--repo", repo, "--json", "state"]), "row")?.state ?? "").toUpperCase();
 }
+
+/** The workflow run behind a red check of a change's head, and that check's own conclusion. */
+export type RedRun = { runId: number; conclusion: string | null };
+
+// The two patterns below are `ci-failure-class.ts`'s own (`RED_CONCLUSIONS`, `ROLL_UP_CHECK`, `RUN_AND_JOB`): `redRunOfHead` must pick the SAME check `readCiFailure` classified, so the run
+// it reruns is the run whose log was read. `wake-ci-rerun-on-5xx.test.ts` runs both against one fake host and fails when they pick differently.
+const RED_CONCLUSIONS = new Set(["failure", "timed_out"]);
+const ROLL_UP_CHECK = /(^|[\s/])gate$/i;
+const RUN_AND_JOB = /\/actions\/runs\/(\d+)\/job\/(\d+)/;
+
+/**
+ * THE RUN A RED PULL REQUEST'S CLASSIFIED CHECK BELONGS TO: the first failing check that is not the roll-up `gate`, else the first failing one, as `readCiFailure` picks it.
+ * `null` when the head is no longer the one named (`head8`), when nothing is red, or when the red check is not an Actions job. Reads only, and throws on an unreadable answer.
+ */
+export function redRunOfHead(repo: string, number: string | number, head8: string, run: Run): RedRun | null {
+  const sha = String(parse(run(["api", `repos/${repo}/pulls/${number}`]), "change")?.head?.sha ?? "");
+  if (!sha.startsWith(head8)) return null;
+  const reds = checkRunsOfHead(repo, sha, run).checks.filter((check) => RED_CONCLUSIONS.has(String(check.conclusion)));
+  const red = reds.find((check) => !ROLL_UP_CHECK.test(String(check.name ?? ""))) ?? reds[0];
+  const ids = RUN_AND_JOB.exec(String(red?.details_url ?? ""));
+  return red === undefined || ids === null ? null : { runId: Number(ids[1]), conclusion: red.conclusion ?? null };
+}
+
+/** THE WRITE (agent-org#1217): rerun the failed jobs of one workflow run. A refused rerun THROWS, so a caller cannot read it as done. */
+export function rerunFailedJobsOf(repo: string, runId: string | number, run: Run): void {
+  run(["run", "rerun", String(runId), "--failed", "-R", repo]);
+}
