@@ -1386,11 +1386,26 @@ const readPinBumpFlag = (stateDir: string): boolean | null => {
 type PinBumpReading = PinBumpMeasure | { flagUnreadable: true };
 
 /**
- * THE PIN/BUMP READ (agent-org#1245), made only when `PIN_BUMP_FLAG` is ON: the home repository's issues, all states, read as a plain list (never a
- * search, #5074), and every population repository's open pull requests. A list at its ceiling or refused is `null`, and the leaf counts a `null` as `unknown`, never 0.
+ * The home repository's issues CREATED in the pin/bump window, in `gh issue list --json` shape (agent-org#1430). A connection read newest first, stopped at the window's
+ * boundary: a plain list of every issue is at its ceiling in a repository of 5,500, so the count was `unknown` on every day. `null` when refused, or when the window
+ * is longer than the pages the read may walk: a cut window is `unknown`, never a count quietly too low.
  */
-export function pinBumpRead({ now, read = ghJson, declaration = homeProjectDeclaration() }: { now: number; read?: (args: string[]) => any[] | null; declaration?: { repo: string; dora: { repo: string; }[]; }; }): PinBumpMeasure {
-  const issues = listRead(read, ["issue", "list", "-R", declaration.repo, "--state", "all", "--limit", String(LIST_LIMIT), "--json", "title,body,author,createdAt"]);
+function readIssuesInPinBumpWindow({ repo, now, read }: { repo: string; now: number; read: (args: string[]) => any; }): any[] | null {
+  const since = new Date(now - PIN_BUMP_WINDOW_DAYS * WINDOW_MS).toISOString();
+  try {
+    const ask: SinceRead = { kind: "issues", states: ["OPEN", "CLOSED"], orderBy: "CREATED_AT", repo, select: "title body author{login} createdAt", since };
+    return readRowsSince({ ask, run: runThrough(read) }).map(asListJson);
+  } catch {
+    return null; // a refused read, a payload that was not a connection, or a window longer than its pages: `unknown`
+  }
+}
+
+/**
+ * THE PIN/BUMP READ (agent-org#1245), made only when `PIN_BUMP_FLAG` is ON: the home repository's issues created in the window (#1430, a connection, never a search, #5074),
+ * and every population repository's open pull requests. A list at its ceiling or refused is `null`, and the leaf counts a `null` as `unknown`, never 0.
+ */
+export function pinBumpRead({ now, read = ghJson, declaration = homeProjectDeclaration() }: { now: number; read?: (args: string[]) => any; declaration?: { repo: string; dora: { repo: string; }[]; }; }): PinBumpMeasure {
+  const issues = readIssuesInPinBumpWindow({ repo: declaration.repo, now, read });
   const rows: FiledRow[] | null = issues === null ? null : issues.map((row) => ({ title: row.title ?? "", body: row.body ?? null, author: row.author?.login ?? null, createdAt: row.createdAt }));
   const repos: RepoPrs[] = mergedPopulation(declaration).map((repo) => {
     const prs = listRead(read, ["pr", "list", "-R", repo, "--state", "open", "--limit", String(LIST_LIMIT), "--json", "number,author,createdAt,statusCheckRollup,labels"]);

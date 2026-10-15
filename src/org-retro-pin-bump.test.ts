@@ -47,20 +47,54 @@ test("a refused read is `unknown` on the line, never 0", () => {
   assert.match(line, /a11ign\/x unknown/);
 });
 
+// The home repository's issues as `gh api graphql` answers one page of `repository.issues`: `PAGE` nodes from the `after=` cursor (a page's
+// `endCursor` is the next offset), newest first as the rows are given. Any other read is the open PRs list, answered by the caller.
+const PAGE = 100;
+const isIssuesQuery = (args: string[]) => args.some((arg) => arg.startsWith("query=") && arg.includes("issues("));
+const issuesPage = (rows: object[], args: string[]) => {
+  const at = Number(args.find((arg) => arg.startsWith("after="))?.slice("after=".length) ?? 0);
+  return { data: { repository: { issues: { pageInfo: { hasNextPage: at + PAGE < rows.length, endCursor: String(at + PAGE) }, nodes: rows.slice(at, at + PAGE) } } } };
+};
+
 test("pinBumpRead reads the home repository's filed rows and each population repository's open PRs, and counts them", () => {
   const calls: string[][] = [];
+  const rows = [{ title: "Pin left-pad to 1.3.0", body: "", author: { login: "a11ign" }, createdAt: ago(DAY) }];
   const read = (args: string[]) => {
     calls.push(args);
-    if (args[0] === "issue") return [{ title: "Pin left-pad to 1.3.0", body: "", author: { login: "a11ign" }, createdAt: ago(DAY) }];
+    if (isIssuesQuery(args)) return issuesPage(rows, args);
     if (args[3] === "a11ign/x") return [{ number: 3, author: { login: "app/renovate" }, createdAt: ago(2 * HOUR) }];
     return [];
   };
   const measure = pinBumpRead({ now: NOW, read, declaration: { repo: "a11ign/x", dora: [{ repo: "a11ign/y" }] } });
   assert.equal(measure.pinRows, 1);
   assert.deepEqual(measure.repos, [{ repo: "a11ign/x", aged: 1, red: 0 }, { repo: "a11ign/y", aged: 0, red: 0 }]);
-  const issues = calls.find((args) => args[0] === "issue");
-  assert.ok(issues?.includes("a11ign/x"), "the rows are asked of the home repository");
-  assert.ok(!issues?.includes("--search"), "as a plain list, never a search (#5074)");
+  const issues = calls.find(isIssuesQuery);
+  assert.ok(issues?.includes("owner=a11ign") && issues.includes("name=x"), "the rows are asked of the home repository");
+  assert.ok(issues?.some((arg) => arg.includes("issues(states:[OPEN,CLOSED],")), "a connection of all states, never a search (#5074)");
+});
+
+test("pinBumpRead counts the window's rows in a repository of 3000 issues, where the plain list was at its ceiling (#1430)", () => {
+  // Two hand-filed pins inside the window, then 2,998 older issues: a plain list of all of them is at its 1,000 ceiling and reads null.
+  const rows = [
+    { title: "Pin left-pad to 1.3.0", body: "", author: { login: "a11ign" }, createdAt: ago(DAY) },
+    { title: "Bump lodash to 4.17.22", body: "", author: { login: "a11ign" }, createdAt: ago(2 * DAY) },
+    ...Array.from({ length: 2998 }, (_, i) => ({ title: `Old issue ${i}`, body: "", author: { login: "a11ign" }, createdAt: ago(10 * DAY + i * HOUR) })),
+  ];
+  const read = (args: string[]) => {
+    if (args[0] === "issue") return rows; // the plain list, were it asked: 3,000 rows is past `LIST_LIMIT`
+    if (isIssuesQuery(args)) return issuesPage(rows, args);
+    return [];
+  };
+  const measure = pinBumpRead({ now: NOW, read, declaration: { repo: "a11ign/x", dora: [] } });
+  assert.equal(measure.pinRows, 2, "the two pins in the window are counted, and the 2,998 older rows are not");
+});
+
+test("pinBumpRead: a window whose rows run past the pages it may read before its boundary is `unknown`, never 0", () => {
+  // 1,100 issues all created inside the window: the read walks its 10 pages and the window is still open, so it is cut short.
+  const rows = Array.from({ length: 1100 }, (_, i) => ({ title: `Pin number ${i}`, body: "", author: { login: "a11ign" }, createdAt: ago(i * 60_000) }));
+  const read = (args: string[]) => (isIssuesQuery(args) ? issuesPage(rows, args) : []);
+  const measure = pinBumpRead({ now: NOW, read, declaration: { repo: "a11ign/x", dora: [] } });
+  assert.equal(measure.pinRows, null);
 });
 
 test("pinBumpRead: a list that is refused reads `unknown`, and a filed row that is refused is not a zero", () => {
