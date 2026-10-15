@@ -12,6 +12,7 @@ import { SESSION_PREFIX } from "../../project-vocabulary.ts";
 import { recordEmergencyPriority } from "../../failure-recorders.ts";
 import { readJsonObject, writeJsonObject } from "../../claim-stall.ts";
 import { defaultRun, repoNow } from "../reads.ts";
+import { commentsSince } from "../../ticket-port/comments-since.ts";
 import { CHAIRMAN_LOGINS, CHAIRMAN_PRIORITY_LABEL, LAUNCH_PLACEHOLDER, MAX_ROW_ORDERS_PER_TICK, PRIORITY_LABEL, REVIEWER_STATE_DIR, type Yielding,
   digestOf, isChairmanRow, labelsOf, laneOwnerOf, sessionOf } from "../vocabulary.ts";
 
@@ -46,7 +47,7 @@ export type OfferHierarchy = {
   emergencyRows?: ReadonlySet<number>;
   emergencyIgnored?: EmergencyIgnored[];
   /** #1456: the first-delivery ledger of a refused chairman row, and the `ceo` answer each row carries. Absent is not asked: every refusal is told, as it always was. */
-  refusals?: { stateDir: string; now: number; answeredAt: (row: { number: number; repo?: string; }) => string | null; };
+  refusals?: { stateDir: string; now: number; answeredAt: (row: { number: number; repo?: string; }, since: string) => string | null; };
 };
 
 export const chairmanRowsOf = (hierarchy?: OfferHierarchy) => hierarchy?.chairmanRows;
@@ -621,8 +622,9 @@ function chairmanRefusedOrders(hierarchy: OfferHierarchy, blocked: RefusedRow[],
     const ref = subjectRef(row.repoKey, row.number);
     const digest = digestOf(row.reason);
     const entry = before[ref];
-    const answeredAt = memory.answeredAt(row);
-    const answered = entry !== undefined && entry.digest === digest && answeredAt !== null && Date.parse(answeredAt) > Date.parse(entry.deliveredAt);
+    const sameReason = entry !== undefined && entry.digest === digest;
+    const answeredAt = sameReason ? memory.answeredAt(row, entry.deliveredAt) : null;
+    const answered = answeredAt !== null && Date.parse(answeredAt) > Date.parse(entry.deliveredAt);
     const silenced = answered && !blockerClosed(row, openAndPrs);
     if (silenced) { ledger[ref] = entry; continue; }
     const firstTelling = entry === undefined || entry.digest !== digest || answered;
@@ -648,22 +650,21 @@ function blockerClosed(row: RefusedRow, openAndPrs: any[]): boolean {
 }
 
 /**
- * #1456: WHEN `ceo` LAST ANSWERED a chairman row, on the row: the newest comment whose `decided-by:` marker names `ceo`. `null` when there is none, AND when the comments
- * cannot be read -- an unread answer is no answer, so the refusal is told again rather than silenced.
- * @param {{ number: number, repo?: string }} row @param {(args: string[]) => string} [run]
+ * #1456: WHEN `ceo` LAST ANSWERED a chairman row SINCE `since` (its first telling), on the row: the newest comment whose `decided-by:` marker names `ceo`. `null` when there
+ * is none, AND when the comments cannot be read -- an unread answer is no answer, so the refusal is told again rather than silenced.
+ *
+ * THE READ IS THE PORT'S (`commentsSince`, one repository-wide list since `since`), not a `gh api` shape of this file: a new call here would be a rise in a baselined file, which
+ * `gh-call-ratchet.test.ts` refuses. The port's `run` wants the parsed `--slurp` pages, so a refused or non-JSON answer is `null` there, and so here.
+ * @param {{ number: number, repo?: string }} row @param {string} since @param {(args: string[]) => string} [run]
  */
-export function chairmanRowAnsweredByCeo(row: { number: number; repo?: string; }, run: (args: string[]) => string = defaultRun): string | null {
-  try {
-    const out = run(["api", `repos/${row.repo ?? "{owner}/{repo}"}/issues/${row.number}/comments`, "--paginate", "--jq", ".[] | {at: .created_at, body: (.body // \"\")}"]);
-    const answers = out.split("\n").filter((line) => line.trim() !== "").map((line) => JSON.parse(line)).filter((comment) => decidedBy(comment.body) === "ceo");
-    const newest = answers.reduce((latest: number, comment) => Math.max(latest, Date.parse(String(comment.at))), Number.NEGATIVE_INFINITY);
-    return Number.isFinite(newest) ? new Date(newest).toISOString() : null;
-  } catch {
-    return null;
-  }
+export function chairmanRowAnsweredByCeo(row: { number: number; repo?: string; }, since: string, run: (args: string[]) => string = defaultRun): string | null {
+  const pages = commentsSince({ repo: row.repo ?? "{owner}/{repo}", since: Date.parse(since), run: (args) => { try { return JSON.parse(run(args)); } catch { return null; } } });
+  if (pages === null) return null;
+  const answers = pages.filter((comment) => comment.issue_url.endsWith(`/issues/${row.number}`) && decidedBy(comment.body) === "ceo");
+  const newest = answers.reduce((latest: number, comment) => Math.max(latest, Date.parse(comment.created_at)), Number.NEGATIVE_INFINITY);
+  return Number.isFinite(newest) ? new Date(newest).toISOString() : null;
 }
 
-/** @param {{ number: number, reason: string }} row @param {string} digest @param {boolean} [answered] #1456: `ceo` answered this row since its first telling, and the blocker the reason names has closed */
 /** #1456: the refusal order as it was on main, for `CHAIRMAN_REFUSAL_FLAG` off -- the keys are unchanged, so nothing re-tells at the flag's switch. */
 function legacyChairmanRefusedOrder({ number, reason }: { number: number; reason: string; }): HierarchyOrder {
   const discriminator = `${number}-${digestOf(reason)}`;
@@ -674,6 +675,7 @@ function legacyChairmanRefusedOrder({ number, reason }: { number: number; reason
     causeKey: `ceo/chairman-row-refused/${discriminator}` };
 }
 
+/** @param {{ number: number, reason: string }} row @param {string} digest @param {boolean} [answered] #1456: `ceo` answered this row since its first telling, and the blocker the reason names has closed */
 function chairmanRefusedOrder(row: RefusedRow, digest: string, answered: boolean = false): HierarchyOrder {
   const ref = subjectRef(row.repoKey, row.number);
   const discriminator = `${ref}-${digest}`;

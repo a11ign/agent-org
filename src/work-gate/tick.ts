@@ -1014,7 +1014,7 @@ export function offerHierarchyNow(rows: any[], openRows: any[], { run, stateDir 
   const refusalsOn = refusedOnce ?? machineryFlagOn(readReenqueueState(stateDir, () => undefined), CHAIRMAN_REFUSAL_FLAG);
   // #730: a label the chairman did not add is a ledger incident, written HERE, where the tick builds `ignored`, and not in `readChairmanPriority`, which the claim reads too
   return { chairmanRows, ignored: recordIgnoredChairmanLabels({ ignored, repo: REPO, stateDir, now }), milestoneRanking: homeProjectDeclaration().offerMilestones, ...emergencyHierarchyNow(rows, openRows, { emergency, run, stateDir, now }),
-    refusals: refusalsOn ? { stateDir, now, answeredAt: (row) => chairmanRowAnsweredByCeo(row, run) } : undefined }; // #1456: read only for a row the gate refuses, by `hierarchyOrders`
+    refusals: refusalsOn ? { stateDir, now, answeredAt: (row, since) => chairmanRowAnsweredByCeo(row, since, run) } : undefined }; // #1456: read only for a row the gate refuses, by `hierarchyOrders`
 }
 
 /**
