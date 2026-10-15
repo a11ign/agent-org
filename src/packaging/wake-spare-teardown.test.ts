@@ -222,6 +222,46 @@ test("#2323 (3): spareDecision needs all of `has held a row`, `holds none now` a
     "the first-turn instance holds no row either, and that alone must not end it");
 });
 
+// --- #1519: A PANELESS SEAT WHOSE ROWS ARE CLOSED IS ENDED, NOT LEFT LISTED `unknown` FOR EVER ---
+/** One seat (`worker-5470`) that herdr lists `unknown` with its pane gone (#1413's mark) and whose only row (5470) is closed. Override a fact per test. */
+function panelessSeat({ paneless = true, held = [] as number[] | null, rowState = "CLOSED" as string | null } = {}) {
+  const herdr = teardownHerdr([{ label: "worker-5470", workspace_id: "w4N1", agent_status: "unknown" }]);
+  const cycles: unknown[] = [];
+  const listed = [{ label: "worker-5470", status: "unknown", ...(paneless ? { paneless: true } : {}) }];
+  const deps = {
+    spares: spareInstances(listed), registry: { "worker-5470": { spawnedAt: T0 - 5 * HOUR, rows: [5470] } },
+    now: T0, run: herdr.run, heldRows: () => held, rowState: () => rowState,
+    worktrees: () => [], record: (c: unknown) => cycles.push(c), warn: () => {},
+  };
+  return { got: endFinishedSpares(listed, deps as never), herdr, cycles };
+}
+
+test("#1519 (1): a paneless seat whose only row is closed is ENDED -- its workspace closed, one line written", () => {
+  const { got, herdr, cycles } = panelessSeat();
+  assert.deepEqual(herdr.closed(), ["--session org workspace close w4N1"]);
+  assert.equal(cycles.length, 1, "the ending is written, so the next tick has nothing left to say about it");
+  assert.deepEqual(got.ended, cycles);
+  assert.equal(got.registry["worker-5470"], undefined);
+});
+
+test("#1519 (2): a seat that is `unknown` WITHOUT the paneless mark is not ended -- it may be one starting up", () => {
+  const { got, herdr } = panelessSeat({ paneless: false });
+  assert.deepEqual(herdr.closed(), []);
+  assert.ok(got.registry["worker-5470"], "the entry is kept, so a later tick can still read it");
+});
+
+test("#1519 (3): a paneless seat that still HOLDS an open row is not ended -- that row is work somebody must look at", () => {
+  const { got, herdr } = panelessSeat({ held: [5470] });
+  assert.deepEqual(herdr.closed(), []);
+  assert.ok(got.registry["worker-5470"]);
+});
+
+test("#1519 (4): a paneless seat whose row GitHub could not read is not ended -- an unread row is not a closed one", () => {
+  const { got, herdr } = panelessSeat({ rowState: null });
+  assert.deepEqual(herdr.closed(), []);
+  assert.ok(got.registry["worker-5470"]);
+});
+
 test("#2323 (3): consecutiveClean -- empty says EMPTY, 20 clean is 20, and a failure resets the run", () => {
   // #2407: a line that counts carries `rows`, exactly one of them. The bare `{ clean: true }` these used is LEGACY now.
   const clean = (n: number) => Array.from({ length: n }, () => ({ clean: true, rows: [1] }));
