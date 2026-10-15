@@ -48,6 +48,7 @@ export const ORG_HEALTH_CLASSES: Readonly<Record<string, { severity: "page"; } |
   "fleet-idle-while-work-waits": PAGE,
   "copies-drifted": PAGE,
   "team-access-drifted": PAGE,
+  "repository-unread-past-sweep": PAGE, // agent-org#1418: a repository's whole read is older than the sweep promises, so its pull requests wait unseen; PAGE because nothing else says so
   "fleet-auto-off-refusing": PAGE,
   "release-run-failed": PAGE,
   "release-behind-main": PAGE,

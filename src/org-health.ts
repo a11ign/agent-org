@@ -258,6 +258,7 @@ export const SIGNALS = Object.freeze({
   QUEUE_HEAD_AGE: "queue-head-age",
   REQUIRED_RED_ON_5XX: "required-red-on-5xx",
   MANUAL_RERUNS: "manual-reruns",
+  SWEEP_OVERDUE: "repository-unread-past-sweep",
 });
 
 /** Signals whose first reader is not `ceo`: the order goes to that session as well as to `ceo`, who takes every signal. */
@@ -1364,6 +1365,38 @@ export function teamAccessReading({ access }: { access: TeamAccessFact; }): Read
     detail: `${found.length} team level(s) differ from the declaration: ${named}${more}` };
 }
 
+/** One declared repository's last WHOLE read, as the webhook gate stamps it in `other-scopes-memory.json`. `readAtMs` is OMITTED when nothing is stamped for it. */
+export type SweepRead = { name: string, readAtMs?: number };
+/** agent-org#1418: `sweepMinutes` is `GRAPHQL_SWEEP_MINUTES`, the longest a repository may go unread on a webhook tick. */
+export type SweepFact = { sweepMinutes: number, repos: SweepRead[] };
+
+/**
+ * SIGNAL 15 (agent-org#1418): A DECLARED REPOSITORY HAS GONE UNREAD LONGER THAN THE SWEEP PROMISES (a11ign/a11ign#5408: nine partial ticks, and three
+ * agent pull requests waited about 20 minutes with no alert). A webhook tick reads a repository only where its events named it or it is due a sweep, and
+ * a paced tick can refuse a whole read, which leaves the stamp old. The limit is the sweep plus one tick (`MINUTES_PER_TICK`), and "older than" is strict,
+ * so a repository read on the tick's edge is not a trip. A trip names each repository and its age.
+ *
+ * A MISSING STAMP IS UNKNOWN, NEVER CLEAR: nothing is remembered as read, so the memory says nothing about that repository at all. A trip stands over
+ * an unstamped repository, as a trip stands over an unread team in `teamAccessReading`.
+ */
+export function sweepOverdueReading({ now, sweeps }: { now: number; sweeps: SweepFact; }): Reading {
+  const limit = (sweeps.sweepMinutes + MINUTES_PER_TICK) * MS_PER_MINUTE;
+  const late = sweeps.repos.flatMap((r) => (r.readAtMs !== undefined && now - r.readAtMs > limit
+    ? [{ name: r.name, text: `${r.name} (last whole read ${ageText(r.readAtMs, now)} ago)` }] : []));
+  if (late.length > 0) {
+    const named = late.slice(0, MAX_NAMED).map((l) => l.text).join("; ");
+    const more = late.length > MAX_NAMED ? `, and ${late.length - MAX_NAMED} more` : "";
+    return { signal: SIGNALS.SWEEP_OVERDUE, status: "tripped", firstTrippedAt: null,
+      discriminator: `${SIGNALS.SWEEP_OVERDUE}@${late.map((l) => l.name).sort().join(",")}`,
+      detail: `${late.length} repositor${late.length === 1 ? "y" : "ies"} unread for longer than the sweep plus one tick: ${named}${more}` };
+  }
+  const unstamped = sweeps.repos.filter((r) => r.readAtMs === undefined).map((r) => r.name);
+  if (unstamped.length > 0) {
+    return unknown(SIGNALS.SWEEP_OVERDUE, `CANNOT_TELL: no whole read is stamped for ${unstamped.slice(0, MAX_NAMED).join(", ")}, so its age is not known`);
+  }
+  return clear(SIGNALS.SWEEP_OVERDUE);
+}
+
 /** @returns one entry per repository, `team:repo` keyed so a second repository is a new trip */
 function teamDifferences({ team, layer, exceptions = {}, declared, reached }: TeamAccess): { key: string; text: string; }[] {
   if (reached === null || reached.length === 0) return [];
@@ -2150,6 +2183,8 @@ export function orgHealthReadings(facts: {
         drift: { behind: number; ahead: number; dirty: string[]; } | null; primarySince: number | null;
         fleet?: FleetCaptures | null; waiting?: FleetWaiting | null; copies?: CopyPair[] | null; overdue?: { items: OverdueCandidate[] | null; unread?: string[]; };
         waits?: { stale: Parameters<typeof staleWaitReading>[0]["stale"]; bare: Parameters<typeof waitWithoutReasonReading>[0]["bare"]; manual: number; } | null;
+        /** agent-org#1418: each declared repository's last whole read; OMITTED is "does not ask" (a poll host stamps nothing, so the live gate asks only on a webhook host) */
+        sweeps?: SweepFact;
         pools?: PoolReading[] | null; toolAgreement?: { result: ToolAgreement; } | null; nodeStrips?: NodeStripFact | null; teamAccess?: TeamAccessFact; autoOff?: AutoOffFact; stateRows?: Parameters<typeof stateLabelReading>[0]["rows"]; idle?: import("./idle-with-open-rows.ts").IdleRows; shelvedCircle?: ShelvedCircle[] | null; releaseRuns?: ReleaseRuns | null; releaseFailures?: ReleaseFailureRead[] | null; fleetBuildIncident?: FleetBuildIncident[] | null; releaseBehind?: import("./release-behind-main.ts").RepoFact[] | null; boardTruth?: Parameters<typeof boardTruthReading>[0]["audit"];
         classRepeat?: import("./class-repeat.ts").ClassRepeatFact | null; milestoneClock?: Omit<MilestoneClockFact, "endedAt"> | null;
         claimRefusals?: ClaimRefusal[] | null;
@@ -2184,6 +2219,7 @@ export function orgHealthReadings(facts: {
   if (facts.toolAgreement !== undefined) readings.push(toolVersionReading({ agreement: facts.toolAgreement }));
   if (facts.nodeStrips !== undefined) readings.push(nodeCannotStripReading({ fact: facts.nodeStrips }));
   if (facts.teamAccess !== undefined) readings.push(teamAccessReading({ access: facts.teamAccess }));
+  if (facts.sweeps !== undefined) readings.push(sweepOverdueReading({ now: facts.now, sweeps: facts.sweeps }));
   if (facts.autoOff !== undefined) readings.push(autoOffRefusalReading({ now: facts.now, autoOff: facts.autoOff }));
   if (facts.stateRows !== undefined) readings.push(stateLabelReading({ rows: facts.stateRows, now: facts.now }));
   if (facts.boardTruth !== undefined) readings.push(boardTruthReading({ audit: facts.boardTruth, day: isoOf(facts.now).slice(0, 10) }));
@@ -2251,6 +2287,8 @@ const REMEDY = (Object.freeze({
   [SIGNALS.NODE_CANNOT_STRIP]: "Each `node` named cannot strip types (`process.features.typescript` is not `strip` or `transform`, or the binary could not be run), so any unit or script that runs a `.ts` "
     + "file with it dies at start: ADR 0043 Decision 8 chose upstream Node 24 for exactly this. READ `/usr/bin/node -p process.features.typescript` (and the path named), then reinstall upstream Node 24 "
     + "for the agent user (a11ign/a11ign#4388) or correct the `ExecStart` that names the wrong binary: a distro `nodejs +dfsg` package is the usual cause and it comes back with an apt upgrade. A host action for `orchestrator`.",
+  [SIGNALS.SWEEP_OVERDUE]: "A declared repository has gone unread for longer than the sweep promises, so the pull requests and rows in it wait unseen. Find why its whole read "
+    + "is not landing (a refused read or a paced skip in this tick's log, or the webhook queue that should have named it), then FIX IT: the next whole read stamps the repository and clears this.",
   [SIGNALS.TEAM_ACCESS]: "An org team holds a level on a repository that the project's declaration (`teamAccess.declaration` in `.agent-org/project.json`) does not give: `admin` anywhere it reaches, "
     + "or a level other than the declared one on a declared repository. DO NOT CHANGE THE TEAM'S LEVEL YOURSELF: it is an org-admin act, the chairman's. Read the declaration's own prose "
     + "for what the level should be, then put the repositories named on #928 and `" + ANSWER_PREFIX + "ceo` on the row that carries them, or open the pull request that declares the level if the declaration is the one that is wrong.",
