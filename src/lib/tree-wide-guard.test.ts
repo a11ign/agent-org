@@ -1,3 +1,4 @@
+// no-token: DeclarationReading -- every input that reaches acceptanceGateOf is injected (prOf and gateOf are seams) and the tick test hands every reader a stub, so no declaration is read and no gh call runs
 // agent-org#1503 (ADR 0045 cut c, receiving side of a11ign#5460): the org side of a11ign's `guardSweep`. Each test names its positive control: a discovery
 // that finds nothing, a runner that ran nothing and a verdict that is `pass` over zero guards are all the same defect, so each has a fixture beside it
 // that is MARKED and a twin that is not.
