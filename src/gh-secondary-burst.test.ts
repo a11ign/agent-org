@@ -6,7 +6,9 @@
  * `host/gh` and `gh-ledger.ts` both filed them as PRIMARY. Three claims, each with its positive control beside it:
  *   (a) the same refusal text is SECONDARY in the wrapper's queue and in `refusalKind` when the pool reads calls left, and PRIMARY when it reads zero;
  *   (b) 40 calls from three producers at once never have more than `A11Y_GH_PACE_INFLIGHT` (2) in flight, nor more than `A11Y_GH_PACE_PER_MINUTE`
- *       (4) starts in one window (1 s here, `A11Y_GH_PACE_WINDOW_MS`, 60 s by default). The control is the same calls with the bound lifted, and it overlaps;
+ *       (4) starts in one window (1 s here, `A11Y_GH_PACE_WINDOW_MS`, 60 s by default). The control is the same calls with the bound lifted, and it overlaps.
+ *       The starts are read from the wrapper's own record of its admissions, not from the stub's clock: a stub starts a little after its admission,
+ *       by a lag that a loaded host makes longer than the window;
  *   (c) a read refused for a secondary limit is not asked again that tick, and the next tick asks (`readUnlessRefused`, as #1523 pinned it).
  */
 import { test, beforeEach } from "node:test";
@@ -31,8 +33,13 @@ const WRAPPER = (() => {
 const INSTALLATION_REFUSAL = "gh: API rate limit exceeded for installation ID 170075049";
 const SECONDARY_REFUSAL = "gh: You have exceeded a secondary rate limit. Please wait a few minutes before you try again. (HTTP 403)";
 
-/** A response head that names the pool's own counter, as GitHub answers a call that is `-i`. */
-const head = (remaining: number) => `HTTP/2.0 403 Forbidden\nX-Ratelimit-Remaining: ${remaining}\nX-Ratelimit-Reset: ${Math.floor(Date.now() / 1000) + 1800}\n\n`;
+/**
+ * A response head that names the pool's own counter, as GitHub answers a call that is `-i`. The counter's line is the fixture's, not written here:
+ * the #2003 rule in `packaging/work-gate.test.ts` keeps the header's name in one module, and this file is one of the files it scans.
+ */
+const head = (remaining: number) => probeOf(remaining)
+  .replace("HTTP/2 200", "HTTP/2.0 403 Forbidden")
+  .replace("\n\n", `\nX-Ratelimit-Reset: ${Math.floor(Date.now() / 1000) + 1800}\n\n`);
 
 /**
  * A host whose stub `gh-real` answers the wrapper's probe (`-i`) with `headers` and refuses every other call with `reply`. Its env is the
@@ -81,7 +88,10 @@ const WINDOW_MS = 1000;
 const PER_WINDOW = 4;
 const IN_FLIGHT = 2;
 
-/** One pacing run: `PRODUCERS` chains of calls, each chain one producer's calls in turn, all started at once. Returns the stub's log in order. */
+/**
+ * One pacing run: three chains of calls, each chain one producer's calls in turn, all started at once. Returns the stub's log in order (S when a
+ * call starts, E when it ends) and the admissions the wrapper recorded, in its own clock.
+ */
 async function pacedRun(env: Record<string, string>) {
   const root = tmpDir("gh-pace-1518-");
   const cfg = join(root, "cfg");
@@ -89,13 +99,29 @@ async function pacedRun(env: Record<string, string>) {
   writeFileSync(join(cfg, "hosts.yml"), "github.com:\n    user: a11ign-ai-workers\n    oauth_token: not-a-token\n");
   const log = join(root, "log");
   const stub = join(root, "gh-real");
-  // S and a millisecond clock when a call starts, E when it ends: the file's order is the order the calls ran in
-  writeFileSync(stub, ["#!/bin/sh", `printf 'S %s\\n' "$(date +%s%3N)" >> "${log}"`, "sleep 0.2", `printf 'E\\n' >> "${log}"`, ""].join("\n"), { mode: 0o755 });
+  // S when a call starts, E when it ends: the file's order is the order the calls ran in
+  writeFileSync(stub, ["#!/bin/sh", `printf 'S\\n' >> "${log}"`, "sleep 0.2", `printf 'E\\n' >> "${log}"`, ""].join("\n"), { mode: 0o755 });
   const base = { PATH: process.env.PATH ?? "", A11Y_GH_REAL: stub, GH_CONFIG_DIR: cfg, HERDR_WORKSPACE_ID: "w9", A11Y_GH_READ_CACHE: "off", A11Y_GH_LEDGER: join(cfg, "gh-calls.tsv"), A11Y_GH_PACE_DIR: join(root, "pace"), ...env };
   const one = () => new Promise<number | null>((resolve) => {
     const child = spawn("sh", [WRAPPER, "issue", "view", "1"], { env: base, cwd: root, stdio: ["ignore", "ignore", "ignore"] });
     child.on("close", (code) => resolve(code));
   });
+  // The wrapper rewrites its `starts` file at every admission, pruned to the window it bounds, so it is read every 5 ms. An admission
+  // stays in the file until the window passes it, so every admission shows in some snapshot, and the most copies of one millisecond
+  // that a snapshot held is how many were admitted at that millisecond.
+  const starts = join(root, "pace", "account", "starts");
+  const admitted = new Map<number, number>();
+  const poll = setInterval(() => {
+    let lines: string[];
+    try {
+      lines = readFileSync(starts, "utf8").split("\n").filter((line) => line !== "");
+    } catch {
+      return; // nothing admitted yet
+    }
+    const here = new Map<number, number>();
+    for (const line of lines) here.set(Number(line), (here.get(Number(line)) ?? 0) + 1);
+    for (const [ms, copies] of here) admitted.set(ms, Math.max(admitted.get(ms) ?? 0, copies));
+  }, 5);
   // 40 calls as 14 + 13 + 13, so the three chains together make exactly CALLS
   const shares = [14, 13, 13];
   const chains = shares.map(async (share) => {
@@ -103,9 +129,10 @@ async function pacedRun(env: Record<string, string>) {
     for (let i = 0; i < share; i++) codes.push(await one());
     return codes;
   });
-  const codes = (await Promise.all(chains)).flat();
+  const codes = (await Promise.all(chains).finally(() => clearInterval(poll))).flat();
   const events = readFileSync(log, "utf8").split("\n").filter((line) => line !== "");
-  return { codes, events };
+  const times = [...admitted].flatMap(([ms, copies]) => Array<number>(copies).fill(ms)).sort((a, b) => a - b);
+  return { codes, events, admitted: times };
 }
 
 /** The most calls in flight at once, read off the stub's log in the order it was written. */
@@ -119,9 +146,8 @@ function peakInFlight(events: string[]): number {
   return peak;
 }
 
-/** The most starts in any one window, read off the stub's clock: a window opens at each start and lasts `WINDOW_MS`. */
-function mostStartsInWindow(events: string[]): number {
-  const starts = events.filter((event) => event.startsWith("S ")).map((event) => Number(event.slice(2))).sort((a, b) => a - b);
+/** The most admissions in any one window, read off the wrapper's own record (sorted): a window opens at each admission and lasts `WINDOW_MS`. */
+function mostStartsInWindow(starts: number[]): number {
   let most = 0;
   for (let i = 0; i < starts.length; i++) {
     let inWindow = 0;
@@ -132,14 +158,15 @@ function mostStartsInWindow(events: string[]): number {
 }
 
 test("(b) 40 calls from three producers at once never exceed the in-flight bound nor the per-window bound", async () => {
-  const { codes, events } = await pacedRun({ A11Y_GH_PACE_INFLIGHT: String(IN_FLIGHT), A11Y_GH_PACE_PER_MINUTE: String(PER_WINDOW), A11Y_GH_PACE_WINDOW_MS: String(WINDOW_MS) });
+  const { codes, events, admitted } = await pacedRun({ A11Y_GH_PACE_INFLIGHT: String(IN_FLIGHT), A11Y_GH_PACE_PER_MINUTE: String(PER_WINDOW), A11Y_GH_PACE_WINDOW_MS: String(WINDOW_MS) });
   assert.equal(codes.filter((code) => code === 0).length, CALLS, `all ${CALLS} calls ran, read ${JSON.stringify(codes)}`);
   assert.equal(events.filter((event) => event.startsWith("S")).length, CALLS);
   const peak = peakInFlight(events);
   assert.ok(peak <= IN_FLIGHT, `in flight never exceeded ${IN_FLIGHT}, read a peak of ${peak}`);
   assert.equal(peak, IN_FLIGHT, "the bound is reached, so the calls were paced and not merely sequential");
-  const most = mostStartsInWindow(events);
-  assert.ok(most <= PER_WINDOW, `starts in one ${WINDOW_MS} ms window never exceeded ${PER_WINDOW}, read ${most}`);
+  assert.equal(admitted.length, CALLS, `the wrapper recorded every admission, read ${admitted.length}`);
+  const most = mostStartsInWindow(admitted);
+  assert.ok(most <= PER_WINDOW, `admissions in one ${WINDOW_MS} ms window never exceeded ${PER_WINDOW}, read ${most}`);
 });
 
 test("(b) POSITIVE CONTROL: the same calls with the bound lifted overlap beyond the in-flight bound", async () => {
