@@ -5,8 +5,11 @@
 // order addressed to `engineers` whose cause is {@link ONE_SHOT_SPAWN_CAUSES}' and which carries `briefRole: "orchestrator"`, behind `workers.orchestratorOneShot`, OFF by default and
 // byte-identical when off. This module names the lane and re-exports the factory's pieces under the names `wake.ts` and the tests use. The cause is a SIBLING of `SPAWN_CAUSES`, never a widening.
 //
-// ONE RUN AT A TIME WHILE THE FLEET OR LAB IS IN THE ACCEPTANCE: a live one-shot run of this lane holds a row whose Acceptance names a `FLEET_LAB_PATTERNS` command; the claim is
-// recorded under `orchestrator` (#947's `laneReason`), and a row under a future `Fleet-hold-until` is held. It does not edit `ROUTED_TO`, `FLEET_LAB_PATTERNS` or `fleetOrLabAcceptance`.
+// WHICH ROWS (a11ign/agent-org#1527). A row labelled `fleet-gated`, or whose Acceptance or body names a `FLEET_LAB_PATTERNS` command, is NOT converted: its order keeps the gate's
+// session, the standing `orchestrator`, as it does with the flag OFF. A spawned seat has no inventory and no control host, so it cannot reach the plane and only ends on the stop hook's bound.
+// A row whose body cannot be read keeps the gate's order too (fail closed). The claim of a converted row is recorded under `orchestrator` (#947's `laneReason`), and a row under a future
+// `Fleet-hold-until` is held. It does not edit `ROUTED_TO`, `FLEET_LAB_PATTERNS` or `fleetOrLabAcceptance`.
+import { fleetOrLabAcceptance } from "./acceptance-commands.ts";
 import { oneShotFactory, type OneShot, type OneShotRow } from "./ceo-one-shot.ts";
 
 const orchestrator = oneShotFactory({
@@ -33,12 +36,33 @@ export const orchestratorOneShotEnabled = orchestrator.enabled;
 export const isOneShotOrder = orchestrator.isOrder;
 
 /**
- * THE TICK'S ORDERS, with the gate's order for a ready `lane:orchestrator` row turned into a one-shot run's when the flag is ON. The same array comes back when it is OFF.
+ * THE TICK'S ORDERS, with the gate's order for a ready `lane:orchestrator` row turned into a one-shot run's when the flag is ON and the row is one the lane may run (see the
+ * header: not `fleet-gated`, and no fleet or lab command in its Acceptance). The same array comes back when it is OFF. With NO reader handed, no row is converted: the call site
+ * has not said how to read a row, and an order that cannot be asked about keeps the gate's session.
  *
  * @param enabled the flag's reading; a parameter so a test hands it a stated value
+ * @param rowOf the row an order is about (`wake.ts`'s `rowRefOfOrder`); a parameter, so this module does not import the file that imports it
+ * @param readRow the row's labels and body, one read; THROWS when it cannot (that order then keeps the gate's session)
  */
-export function withOrchestratorOneShot<T extends { session: string; cause?: string; }>(orders: readonly T[], { enabled }: { enabled?: () => boolean } = {}): readonly T[] {
-  return orchestrator.withOneShot(orders, { enabled: enabled ?? orchestratorOneShotEnabled });
+export function withOrchestratorOneShot<T extends { session: string; cause?: string; }>(orders: readonly T[], { enabled, rowOf, readRow }: {
+  enabled?: () => boolean;
+  rowOf?: (order: T) => OneShotRow | null;
+  readRow?: (row: number, key?: string) => { body: string; labels?: readonly string[]; };
+} = {}): readonly T[] {
+  return orchestrator.withOneShot(orders, {
+    enabled: enabled ?? orchestratorOneShotEnabled,
+    admits: (order) => {
+      if (rowOf === undefined || readRow === undefined) return false;
+      const row = rowOf(order);
+      if (row === null) return false;
+      try {
+        const { body, labels = [] } = readRow(row.number, row.key);
+        return !labels.includes("fleet-gated") && fleetOrLabAcceptance(body) === null;
+      } catch {
+        return false;
+      }
+    },
+  });
 }
 
 /** A row and the tracker it is in, as `wake.ts`'s `RowRef`: `key` is `""` for the first tracker. */
