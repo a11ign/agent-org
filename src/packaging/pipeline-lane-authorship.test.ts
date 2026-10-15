@@ -34,7 +34,7 @@ import { SWEEP_WAIT_ENV } from "../auto-arm-sweep.ts";
 import { laneLabelsFor } from "../row-file.ts";
 import { laneAuthorshipRefusal, ownsReviewOnlyLane, reviewOnlyPathsIn, authorshipVerdict, ROLE_LOGIN, APP_ROLE_LANE_OWNER } from "../lane-ownership.ts";
 import { GITHUB_ROLES } from "../app-token.ts";
-import { runArmPr, EXIT } from "../arm-pr.ts";
+import { runArmPr, EXIT, deliberateMarker } from "../arm-pr.ts";
 import { main, EXIT_NOTHING_SENT, loginThrough } from "../pr-open.ts";
 
 const LEADS = "a11ign-ai-leads";
@@ -122,16 +122,30 @@ test("#3254 (3), THE ABSENCE OF AN OVERRIDE IS ASSERTED: no spelling of one chan
 // --- the door every pipeline PR passes through: arm-pr, driven with real shapes ---
 
 /** Drives `runArmPr` for a PR by `author` touching `files`, with `body` and `labels` on it, recording every `gh` call. */
-function driveArm({ author, files, body = "Closes #1", labels = [] as string[], lanes = LANES }: {
-  author: string; files: string[]; body?: string; labels?: string[]; lanes?: typeof LANES | null }) {
+function driveArm({ author, files, body = "Closes #1", labels = [] as string[], lanes = LANES, tip = "abc123" }: {
+  author: string; files: string[]; body?: string; labels?: string[]; lanes?: typeof LANES | null; tip?: string }) {
   const calls: string[][] = [];
   const said: string[] = [];
   const run = (_cmd: string, args: string[]) => {
     calls.push(args);
+    if (args[0] === "pr" && args[1] === "view" && args.includes("comments")) return JSON.stringify({ comments: [] });
     if (args[0] === "pr" && args[1] === "view") {
       return JSON.stringify({ labels: labels.map((name) => ({ name })), body, state: "OPEN", author: { login: author } });
     }
     if (args[0] === "api" && args[2]?.endsWith("/files")) return files.join("\n");
+    // agent-org#1501: what a11ign's `deliberateRefusals` job asked, asked here for an org author's PR: a recorded head that IS the branch's tip, and the
+    // one row the body closes resolved as GitHub would, so the PR is clear and this fixture still reaches its arming.
+    if (args[0] === "api" && args[1] === "repos/a11ign/a11ign/pulls/7") {
+      return JSON.stringify({ state: "open", user: { login: author }, labels: labels.map((name) => ({ name })), body,
+        head: { sha: "abc123", ref: "agent/lane-7", repo: { full_name: "a11ign/a11ign" } }, base: { repo: { full_name: "a11ign/a11ign" } } });
+    }
+    if (args[0] === "api" && args[1] === "repos/a11ign/a11ign/git/ref/heads/agent/lane-7") return JSON.stringify({ object: { sha: tip } });
+    // the row the body closes names no test, so the tests-first read has nothing to hold the PR to.
+    if (args[0] === "api" && args[1] === "repos/a11ign/a11ign/issues/1") return JSON.stringify({ body: "a row naming no test" });
+    if (args.some((x) => x.includes("closingIssuesReferences"))) {
+      return JSON.stringify({ data: { repository: { pullRequest: { closingIssuesReferences: { nodes: [
+        { number: 1, title: "a row", repository: { nameWithOwner: "a11ign/a11ign" }, labels: { nodes: [] } }] } } } } });
+    }
     // #3487: the queue history `arm-pr` now asks last -- never queued, so never ejected.
     if (args.some((x) => x.includes("timelineItems"))) return JSON.stringify({ mergeQueueEntry: null, timelineItems: { nodes: [] } });
     if (args[0] === "issue" && args[1] === "view") return JSON.stringify({ labels: [], blockedBy: { nodes: [], totalCount: 0 } });
@@ -165,7 +179,7 @@ test("#3254 (3) POSITIVE CONTROLS at arm-pr: the workers login, a consumer-gate-
   for (const control of [{ author: WORKERS, files: [WORKFLOW] }, { author: LEADS, files: [CARVED_OUT] },
     { author: LEADS, files: ["README.md"] }]) {
     const out = driveArm(control);
-    assert.equal(out.merged, true, `armed: ${JSON.stringify(control)}`);
+    assert.equal(out.merged, true, `armed: ${JSON.stringify(control)}\n${out.said}`);
     assert.notEqual(out.code, EXIT.REFUSED, JSON.stringify(control));
   }
 });
@@ -385,7 +399,7 @@ const FIXTURE_PROJECT = fileURLToPath(new URL("./fixtures/host-project-paths/pro
  * them. The project is the fixture one, copied, with `PIPELINE` as its only lane -- the sweep reads its lanes the way
  * production does, through `HOME_CHECKOUT`, and nothing here imports a project's own file.
  */
-function driveSweep(author: string, files: string[]) {
+function driveSweep(author: string, files: string[], tip = "abc123") {
   const dir = mkdtempSync(join(tmpdir(), "pipeline-lane-sweep-"));
   try {
     const project = join(dir, "project");
@@ -401,6 +415,9 @@ function driveSweep(author: string, files: string[]) {
 echo "$*" >> "${dir}/calls"
 case "$*" in
   *timelineItems*) echo '{"mergeQueueEntry":null,"timelineItems":{"nodes":[]}}' ;;
+  "api repos/a11ign/a11ign/pulls/7") echo '{"state":"open","user":{"login":"${author}"},"labels":[],"body":"Closes #1","head":{"sha":"abc123","ref":"agent/lane-7","repo":{"full_name":"a11ign/a11ign"}},"base":{"repo":{"full_name":"a11ign/a11ign"}}}' ;;
+  "api repos/a11ign/a11ign/git/ref/heads/agent/lane-7") echo '{"object":{"sha":"${tip}"}}' ;;
+  *closingIssuesReferences*) echo '{"data":{"repository":{"pullRequest":{"closingIssuesReferences":{"nodes":[{"number":1,"title":"a row","repository":{"nameWithOwner":"a11ign/a11ign"},"labels":{"nodes":[]}}]}}}}}' ;;
   *"api graphql"*) echo '[{"number":7,"isDraft":false,"merged":false,"autoMergeRequest":null,"mergeQueueEntry":null}]' ;;
   *"--json labels"*) echo '[]' ;;
   *"--json author"*) echo '${author}' ;;
@@ -449,4 +466,32 @@ test("#3254 (3) POSITIVE CONTROLS at the sweep: the workers login, and a leads P
     const out = driveSweep(author, [...files]);
     assert.equal(out.merged, true, `${author} ${files}: ${out.said}`);
   }
+});
+
+// agent-org#1501: the receiving side of a11ign#5460. Both unattended doors ask what a11ign's `deliberateRefusals` job asked, so a head that is not the
+// branch's recorded tip is refused ARMING (nothing merges), with the reason the job gave, and the same PR with its tip recorded is armed (the control).
+test("#1501: arm-pr REFUSES to arm an org PR whose head is not the branch tip -- no merge call, and the job's reason", () => {
+  const stale = driveArm({ author: WORKERS, files: ["README.md"], tip: "def456" });
+  assert.equal(stale.merged, false, stale.said);
+  assert.equal(stale.code, EXIT.DONE);
+  assert.match(stale.said, /GITHUB'S HEAD IS NOT THE BRANCH TIP/);
+  const posted = stale.calls.find((a) => a[0] === "pr" && a[1] === "comment");
+  assert.ok(posted, "the refusal is said where the author looks");
+  const body = String(posted[posted.indexOf("--body") + 1]);
+  assert.ok(body.startsWith(deliberateMarker("GITHUB'S HEAD IS NOT THE BRANCH TIP: GitHub recorded abc123, the branch's real tip is def456.\n  Every check below belongs to the recorded head, which is not the commit that would actually merge.\n  Re-push the branch so GitHub picks up the real tip, then ask again.")), body);
+  assert.notEqual(deliberateMarker("a"), deliberateMarker("b"), "a changed reason is said afresh");
+  assert.equal(driveArm({ author: WORKERS, files: ["README.md"] }).merged, true, "the same PR with its tip recorded arms");
+});
+
+test("#1501: the SWEEP refuses the same head that is not the tip, and arms the same PR when it is", () => {
+  const stale = driveSweep(WORKERS, ["README.md"], "def456");
+  assert.equal(stale.merged, false, stale.said);
+  assert.match(stale.said, /GITHUB'S HEAD IS NOT THE BRANCH TIP/);
+  assert.equal(driveSweep(WORKERS, ["README.md"]).merged, true);
+});
+
+test("#1501: an arm-pr for a PR by no org identity is not asked about its head -- the refusal never reaches an outside contributor", () => {
+  const out = driveArm({ author: "an-outside-contributor", files: ["README.md"], tip: "def456" });
+  assert.doesNotMatch(out.said, /BRANCH TIP/);
+  assert.equal(out.calls.some((a) => a[0] === "api" && String(a[1]).includes("/git/ref/heads/")), false, "no tip was read for it");
 });

@@ -91,6 +91,8 @@ import { armedFromApi, armedQueryArgs, ejectionVerdict } from "./pr-armed-state.
 // #3544: THE BLOCKER DECIDER IS `arm-pr`'s, IMPORTED -- a second copy is the one place the two doors could disagree about order.
 import { announceBlocked, blockerVerdict } from "./arm-pr.ts";
 import { crossRepoRedVerdict } from "./cross-repo-red.ts";
+// agent-org#1501: `arm-pr`'s deliberate refusal, asked again here for the reason the authorship one is (#3254).
+import { deliberateRefusalVerdict } from "./deliberate-refusal.ts";
 
 // RE-EXPORTED, NOT REDEFINED. `work-gate.ts` imports `armedFromApi` from this file and its own header
 // reasons about the shape of that import graph -- `pr-armed-state.ts` is leaf-shaped, so the property
@@ -186,13 +188,19 @@ export function sweepDecision({ labels, checkRunCount, holdReason = null, parity
  * @returns {{ kind: "clear" } | { kind: "refused" | "ejected" | "cannot-ask", why: string } | { kind: "open-blocker", why: string, blockers: number[] }
  *   | { kind: "cross-repo-red", why: string, files: string[] }}
  */
-export function refusalBeforeArming({ number, repo, author, prBody, run }: { number: string; repo: string; author: string; prBody: string | null; run: (ghArgs: string[]) => string; }): { kind: "clear"; } | { kind: "refused" | "ejected" | "cannot-ask"; why: string; } | { kind: "open-blocker"; why: string; blockers: number[]; } | { kind: "cross-repo-red"; why: string; files: string[]; } {
+export function refusalBeforeArming({ number, repo, author, prBody, run }: { number: string; repo: string; author: string; prBody: string | null; run: (ghArgs: string[]) => string; }): { kind: "clear"; } | { kind: "refused" | "ejected" | "cannot-ask"; why: string; } | { kind: "open-blocker"; why: string; blockers: number[]; } | { kind: "cross-repo-red"; why: string; files: string[]; } | { kind: "deliberate"; why: string; } {
   const authorship = authorshipVerdict({ number, repo, author, run });
   if (authorship.kind !== "clear") return authorship;
   const ejection = ejectionVerdict({ number, repo, run });
   if (ejection.kind !== "clear") return ejection;
   const blocker = blockerVerdict({ repo, prBody, run });
-  return blocker.kind === "clear" ? crossRepoRedVerdict({ number, repo, prBody, run }) : blocker;
+  if (blocker.kind !== "clear") return blocker;
+  const crossRed = crossRepoRedVerdict({ number, repo, prBody, run });
+  if (crossRed.kind !== "clear") return crossRed;
+  // agent-org#1501: LAST, because it is the dearest ask (the branch's tip, the approvals, the closing references). A refusal is announced on the pull request
+  // as the blockers are; `cannot-ask` is a refusal to arm.
+  const deliberate = deliberateRefusalVerdict({ number, repo, author, run });
+  return deliberate.kind === "clear" ? deliberate : deliberate.kind === "refused" ? { kind: "deliberate", why: deliberate.why } : deliberate;
 }
 
 /**
@@ -492,6 +500,7 @@ function main() {
     if (refusal.kind !== "clear") {
       console.log(`SWEEP: #${number} SKIPPED -- ${refusal.why}`);
       if (refusal.kind === "open-blocker" || refusal.kind === "cross-repo-red") announceBlocked({ number, repo, verdict: refusal, run: gh, error: console.error });
+      else if (refusal.kind === "deliberate") announceBlocked({ number, repo, verdict: { why: refusal.why, deliberate: true }, run: gh, error: console.error });
       if (refusal.kind === "cannot-ask") failed.push(number);
       continue;
     }

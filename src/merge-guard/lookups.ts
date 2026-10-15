@@ -94,16 +94,17 @@ export function lookupCheckRuns(sha: string): { name: string; status: string; co
  * Which issues arming PR `number` would close, resolved by GitHub itself (never a `Closes #N` regex over
  * the PR body) -- #249. `null` on failure, same as every other lookup here.
  * #2995: `repo` is the PR's own repository, and each issue says which repository IT is in (a PR of another repository closes a row by the full form).
- * @param {number} number @param {string} [repo]
+ * agent-org#1501: `run` is the caller's own `gh`, so the host gate asks it through the identity and the census it already has.
+ * @param {number} number @param {string} [repo] @param {(args: string[]) => string} [run]
  * @returns {{number: number, repo?: string, title?: string, labels: string[]}[] | null}
  */
-export function lookupClosingIssues(number: number, repo: string = REPO): { number: number; repo?: string; title?: string; labels: string[]; }[] | null {
+export function lookupClosingIssues(number: number, repo: string = REPO, run: (args: string[]) => string = gh): { number: number; repo?: string; title?: string; labels: string[]; }[] | null {
   return lookup(() => {
     const [owner, name] = repo.split("/");
     const query = "query($owner:String!,$name:String!,$number:Int!){"
       + "repository(owner:$owner,name:$name){pullRequest(number:$number){"
       + "closingIssuesReferences(first:20){nodes{number title repository{nameWithOwner} labels(first:20){nodes{name}}}}}}}";
-    const data = JSON.parse(gh(["api", "graphql", "-f", `query=${query}`,
+    const data = JSON.parse(run(["api", "graphql", "-f", `query=${query}`,
       "-F", `owner=${owner}`, "-F", `name=${name}`, "-F", `number=${number}`]));
     return data.data.repository.pullRequest.closingIssuesReferences.nodes.map(
       (/** @type {{number: number, title: string, repository?: {nameWithOwner: string}, labels: {nodes: {name: string}[]}}} */ issue: { number: number; title: string; repository?: { nameWithOwner: string; }; labels: { nodes: { name: string; }[]; }; }) => ({
@@ -132,14 +133,14 @@ const RECENT_CLOSES_PRS = 30;
  * `null` on failure, same as every other lookup here: unread data is never evidence of a repo-wide fault.
  * @returns {{number: number, body: string, resolved: number[]}[] | null}
  */
-export function lookupRecentClosesPrs(): { number: number; body: string; resolved: number[]; }[] | null {
+export function lookupRecentClosesPrs(run: (args: string[]) => string = gh): { number: number; body: string; resolved: number[]; }[] | null {
   return lookup(() => {
     const [owner, name] = REPO.split("/");
     const query = "query($owner:String!,$name:String!,$count:Int!){"
       + "repository(owner:$owner,name:$name){pullRequests(states:[OPEN,MERGED],first:$count,"
       + "orderBy:{field:CREATED_AT,direction:DESC}){nodes{number body "
       + "closingIssuesReferences(first:20){nodes{number}}}}}}";
-    const data = JSON.parse(gh(["api", "graphql", "-f", `query=${query}`,
+    const data = JSON.parse(run(["api", "graphql", "-f", `query=${query}`,
       "-F", `owner=${owner}`, "-F", `name=${name}`, "-F", `count=${RECENT_CLOSES_PRS}`]));
     return data.data.repository.pullRequests.nodes.map(
       (/** @type {{number: number, body: string | null, closingIssuesReferences: {nodes: {number: number}[]}}} */ pr: { number: number; body: string | null; closingIssuesReferences: { nodes: { number: number; }[]; }; }) => ({
