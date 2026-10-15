@@ -153,7 +153,8 @@ const TODAYS_TEXT = {
 // agent-org#1420 MOVED IT AGAIN, deliberately: the ledger's trim keeps what the pool's counter moved over each rolled-up hour as the rollup row's 8th field. Same staleness, same remedy.
 // agent-org#1510 MOVED IT AGAIN, deliberately: `gh project item-list` is refused without a `--limit` of 50 or less, and an allowed listing is priced off the pool's counter (`GH_DEBUG=api` head; a caller's GH_DEBUG other than `api` is refused before the call). Same staleness, same remedy.
 // agent-org#1517 MOVED IT AGAIN, deliberately: a manager's `pr list` / `issue list` is refused for a heavy `--json` field or a `--limit` over 50 or absent (the refusal names `agent-org gate-snapshot-read`), and its allowed listing is priced off the pool's counter like #1510's. Same staleness, same remedy.
-const TODAYS_GH_WRAPPER = "6ad841d010fa5c0bd94252eb411fc4c1777d9ea45ba3813d7889bc9958960259";
+// agent-org#1518 MOVED IT AGAIN, deliberately: an installation refused while its hourly pool has calls left is SECONDARY (queued two minutes, not an hour), and every real call takes an in-flight slot and a start under a per-minute bound, per role. Same staleness, same remedy.
+const TODAYS_GH_WRAPPER = "52354b74772dfe285a764f851ac0f58396a023e22893b70d66217961c4cacddb";
 // #2896 MOVED THIS ONE, deliberately: the recorded host's header says `pnpm run host:install` / `pnpm run host:check` where it said `npm run`.
 const TODAYS_LEADS_LIST = "dbca070c4bb7934ff1e9cdc9505f9edee638d98fcff10963b18d5d3a743770a2";
 

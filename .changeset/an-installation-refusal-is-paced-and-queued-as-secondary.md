@@ -1,0 +1,5 @@
+---
+"agent-org": patch
+---
+
+An installation refused for a rate limit while its hourly pool still has calls left is a **secondary** limit wherever the wrapper and the ledger classify a refusal: `host/gh` queues it for two minutes (`A11Y_GH_QUEUE_SECONDARY_SECONDS`), not an hour, and `gh-ledger.ts`'s `refusalKind` files it as secondary too. The reading is one real probe of the refused pool, asked once per refusal; a pool at zero stays primary, and a refusal with no reading keeps its old kind (#1518). Every real call the wrapper makes now takes one of `A11Y_GH_PACE_INFLIGHT` (8) in-flight slots and one start in a rolling `A11Y_GH_PACE_WINDOW_MS` (60000 ms) under `A11Y_GH_PACE_PER_MINUTE` (120), kept per role in `A11Y_GH_PACE_DIR`, so the producers on one installation share the bound across processes. Those three numbers are a judgment, not GitHub's documented values, which the installation's calls do not reach. A project that installs the wrapper must run `host:install` again; until it does, `host:check` reports the installed `gh` as DIVERGED.

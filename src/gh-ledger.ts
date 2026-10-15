@@ -449,10 +449,15 @@ export type RefusalKind = "primary" | "secondary";
 const SECONDARY_REFUSAL = /secondary rate limit|abuse detection|submitted too quickly/i;
 const PRIMARY_REFUSAL = /api rate limit (?:already )?exceeded|rate limit exceeded|HTTP 429/i;
 
-/** @returns {"primary" | "secondary" | null} what kind of rate limit `gh`'s stderr reports, or null: any other failure is NOT retried */
-export function refusalKind(stderr: string): RefusalKind | null {
+/**
+ * @param poolLeft the refused pool's `x-ratelimit-remaining`, read the same way `host/gh` reads it (`pool_probe`), or null when no head said
+ * @returns {"primary" | "secondary" | null} what kind of rate limit `gh`'s stderr reports, or null: any other failure is NOT retried.
+ * (#1518) an hourly phrase with calls left in its pool is a per-minute refusal, so it is secondary; a pool at zero is primary.
+ */
+export function refusalKind(stderr: string, poolLeft: number | null = null): RefusalKind | null {
   if (SECONDARY_REFUSAL.test(stderr)) return "secondary";
-  return PRIMARY_REFUSAL.test(stderr) ? "primary" : null;
+  if (!PRIMARY_REFUSAL.test(stderr)) return null;
+  return poolLeft !== null && poolLeft > 0 ? "secondary" : "primary";
 }
 
 export type QueuedCall = {
