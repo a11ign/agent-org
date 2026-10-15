@@ -72,6 +72,7 @@ fi
 # gh-real and BEFORE the ledger (so it writes no line), and names the helper that reads one row or the whole board without the pool's cost.
 # A `--limit` of 50 or less is allowed, and its line is priced off the pool's counter (`pool_debug`). It binds every caller of this wrapper:
 # no repository code runs `project item-list`, so there is no caller to exempt.
+# (#1517) The same `--limit` test holds a manager's `pr list` and `issue list` (the block before APP_ROLES); there the refusal names the gate's snapshot.
 item_list_limit_ok() { # argv
   seen=0; bad=0; want=
   for a; do
@@ -200,6 +201,7 @@ ledger_record() { # status stdout-copy first-arg second-arg
   case "$3 $4" in
     "api graphql") resource=graphql ;;
     "project item-list") resource=graphql ;; # #1510: a listing is known to spend the graphql pool, so its line is priced (`pool_used`), not `graphql?`
+    "pr list"|"issue list") resource='graphql?'; [ "$pool_dbg" = 1 ] && resource=graphql ;; # #1517: a manager's list is priced off the counter, as `project item-list` is
     api\ *) resource=core ;;
     pr\ *|issue\ *|project\ *|repo\ *|label\ *|discussion\ *) resource='graphql?' ;;
     *) resource=other ;;
@@ -644,6 +646,50 @@ app_refuse() {
   exit 1
 }
 
+# --- #1517: A MANAGER'S LIST IS READ FROM THE GATE'S SNAPSHOT, NOT THE API -----------------------------------------------------
+#
+# The gate reads the open pull requests, the rows by label and the board once a tick and keeps them on this host. A manager's `pr list` or
+# `issue list` read the same lists through the API again, and a heavy field (`statusCheckRollup`, `body`, `comments`...) or a long list costs
+# hundreds of points of the GraphQL pool every manager shares. For a MANAGER role (`app_role`) such a call is refused, BEFORE the token, gh-real and
+# the ledger, when `--json` names a heavy field, or `--limit` is over 50 or absent. The refusal names `agent-org gate-snapshot-read`, which prints
+# the stored list and its age with no call. An allowed call is priced off the pool's counter as `project item-list` is (#1510): a caller's GH_DEBUG
+# other than `api` is refused, as there, because it would hide the head the price is read from. A worker's or the gate's call is not a manager's
+# and is not touched here: it is neither refused nor priced (`manager_list` stays 0).
+json_heavy() { # argv: prints the first heavy field `--json` names
+  want=
+  for a; do
+    if [ -n "$want" ]; then v=$a; want=
+    else
+      case $a in
+        --json) want=1; continue ;;
+        --json=*) v=${a#--json=} ;;
+        *) continue ;;
+      esac
+    fi
+    for f in $(printf %s "$v" | tr , ' '); do
+      case $f in statusCheckRollup|body|comments|reviews|files|commits|timelineItems) printf %s "$f"; return 0 ;; esac
+    done
+  done
+  return 1
+}
+manager_list=0
+if { [ "$1 $2" = "pr list" ] || [ "$1 $2" = "issue list" ]; } && [ "$(app_role)" = managers ]; then
+  heavy=$(json_heavy "$@") || heavy=
+  if [ -n "$heavy" ]; then
+    echo "gh: refusing '$1 $2' for a manager with '--json $heavy': a manager's list is read from the gate's snapshot, not the API, and that field costs hundreds of GraphQL points. Run 'agent-org gate-snapshot-read prs --repo <owner/name>' (or 'rows', or 'board'), which prints the stored list and its age with no call." >&2
+    exit 1
+  fi
+  if ! item_list_limit_ok "$@"; then
+    echo "gh: refusing '$1 $2' for a manager without '--limit' of 50 or less: a manager's list is read from the gate's snapshot, not the API. Run 'agent-org gate-snapshot-read prs --repo <owner/name>' (or 'rows', or 'board') for the stored list and its age." >&2
+    exit 1
+  fi
+  if [ -n "${GH_DEBUG:-}" ] && [ "$GH_DEBUG" != api ]; then
+    echo "gh: refusing '$1 $2' with GH_DEBUG=$GH_DEBUG: the list is priced off the pool's counter in the 'api' debug head, which that setting would hide. Unset GH_DEBUG, or set it to 'api'." >&2
+    exit 1
+  fi
+  manager_list=1
+fi
+
 APP_ROLES=${A11Y_APP_ROLES-@@appRoles@@}
 if [ -n "$APP_ROLES" ] && [ -z "${GH_TOKEN:-}" ] && [ -z "${GITHUB_TOKEN:-}" ]; then
   app_who=$(app_role)
@@ -957,10 +1003,11 @@ if [ "$queue_on" = 1 ]; then
 fi
 # (agent-org#1510) A `project item-list` is priced off the debug head `GH_DEBUG=api` makes gh-real print, so its response headers reach its stderr and `pool_debug`
 # reads the pool's counter off them. The wrapper sets `GH_DEBUG=api` for the child alone (and unsets it below) only when the caller had not set it; a caller who
-# set `api` keeps its own head on stderr, and `pool_debug` reads the counter off it without taking it out.
+# set `api` keeps its own head on stderr, and `pool_debug` reads the counter off it without taking it out. (#1517) A manager's allowed `pr list` or `issue list`
+# (`manager_list`) is priced the same way; no other `pr` or `issue` call is, so a worker's or the gate's line keeps its `graphql?`.
 pool_dbg=0
 own_dbg=0
-if [ "$1 $2" = "project item-list" ]; then
+if [ "$1 $2" = "project item-list" ] || [ "$manager_list" = 1 ]; then
   if [ -z "$errcopy" ]; then errcopy=$(mktemp "${TMPDIR:-/tmp}/gh-err.XXXXXX" 2>/dev/null) || errcopy=; fi
   if [ -n "$errcopy" ]; then pool_dbg=1; if [ -z "${GH_DEBUG:-}" ]; then own_dbg=1; export GH_DEBUG=api; fi; fi
 fi

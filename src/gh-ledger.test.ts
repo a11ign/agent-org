@@ -579,7 +579,8 @@ function appCall(minter: string) {
   const script = join(root, "mint.sh");
   writeFileSync(script, `#!/bin/sh\ncat > /dev/null\n${minter}\n`, { mode: 0o755 });
   const ledger = join(root, "cfg", "gh-calls.tsv");
-  const r = spawnSync("sh", [APP_WRAPPER, "pr", "list"], { encoding: "utf8", cwd: root, env: {
+  // a manager's list is read from the gate's snapshot unless it names a short --limit and light --json (#1517): the call is that form
+  const r = spawnSync("sh", [APP_WRAPPER, "pr", "list", "--json", "number", "--limit", "30"], { encoding: "utf8", cwd: root, env: {
     PATH: process.env.PATH ?? "", A11Y_GH_REAL: stub, GH_CONFIG_DIR: join(root, "cfg"), HERDR_WORKSPACE_ID: "w9", AGENT_ORG_GH_ROLE: "managers",
     A11Y_APP_ROLES: "managers", A11Y_APP_TOKEN_DIR: join(root, "tokens"), A11Y_APP_NODE: "sh", A11Y_APP_TOKEN_SCRIPT: script,
     A11Y_GH_READ_CACHE: "off", A11Y_GH_LEDGER: ledger,
