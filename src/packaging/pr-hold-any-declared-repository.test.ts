@@ -123,7 +123,7 @@ test("`owner/repo#n` names the same pull request as the key, and a report with n
 test("(2) THE FIRST REPOSITORY IS UNCHANGED: no key writes on `a11ign/a11ign` with exactly the calls it made before", () => {
   const expected = [
     // #4661: a `closed #N` take first asks who is working #N. This fake knows no such row, so the read fails and the hold is taken as it always was.
-    `issue view 148 --repo ${FIRST} --json state,labels,closedByPullRequestsReferences`,
+    `issue view 148 --repo ${FIRST} --json state,labels,closedByPullRequestsReferences,body,comments`,
     `pr view ${PR} --repo ${FIRST} --json labels`,
     `pr edit ${PR} --repo ${FIRST} --add-label hold:ceo`,
     `pr view ${PR} --repo ${FIRST} --json labels`,
