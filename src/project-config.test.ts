@@ -6,8 +6,13 @@
  *      a question that is neither `choice` nor `traits`, a threshold that is not a probability, guidance for a route the project did not configure.
  */
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { ABSENT_ROUTING, FALLBACK_ROUTES, ProjectDeclarationRefusal, ROUTES, parseProjectDeclaration } from "./project-config.ts";
+import { sandboxGitEnv } from "./lib/git-env.ts";
+import { ABSENT_ROUTING, FALLBACK_ROUTES, ProjectDeclarationRefusal, ROUTES, parseProjectDeclaration, resolveHomeCheckout } from "./project-config.ts";
 
 const BASE = {
   schema: 1,
@@ -96,4 +101,84 @@ test("guidance is refused for a route the project did not configure, for a missi
   assert.equal(fieldRefused(withRouting({ guidance: { "sonnet/high": "a stated edit" } })), "routing.guidance.sonnet/high");
   assert.equal(fieldRefused(withRouting({ guidance: [] })), "routing.guidance");
   assert.deepEqual(routingOf({ guidance: { "haiku/high": GUIDANCE } }).guidance, { "haiku/high": GUIDANCE });
+});
+
+/**
+ * #1433: A WORKER SHELL WITHOUT `AGENT_ORG_HOST` IN A CLONE'S WORKTREE. The refusal names the host declaration whose `clones` map names that clone, and the
+ * value to set. Its controls: a declaration that names another checkout is not named, a sibling file that cannot be read is skipped, and a directory in no
+ * repository still refuses without a path.
+ */
+const scratchDirs: string[] = [];
+function scratch(): string {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "project-config-clone-")));
+  scratchDirs.push(dir);
+  return dir;
+}
+test.after(() => {
+  for (const dir of scratchDirs) rmSync(dir, { recursive: true, force: true });
+});
+
+const git = (cwd: string, args: string[]) => execFileSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.invalid", ...args], { cwd, env: sandboxGitEnv(), stdio: "ignore" });
+
+/** A clone `agent-org` with a linked worktree, and a sibling checkout `a11y-witness` whose host declaration carries the `clones` that `declares` returns. */
+function cloneWithWorktree(declares: (clone: string) => Record<string, string>) {
+  const root = scratch();
+  const clone = join(root, "agent-org");
+  mkdirSync(clone);
+  git(clone, ["init", "-q"]);
+  git(clone, ["commit", "-q", "--allow-empty", "-m", "root"]);
+  const worktree = join(root, "wt-agent-org-1433");
+  git(clone, ["worktree", "add", "-q", "--detach", worktree]);
+  const host = join(root, "a11y-witness", ".agent-org", "host.json");
+  mkdirSync(dirname(host), { recursive: true });
+  writeFileSync(host, JSON.stringify({ schema: 1, primary: "a11ign", projects: [{ id: "a11ign", checkout: dirname(dirname(host)) }], clones: declares(clone) }));
+  return { root, clone, worktree, host };
+}
+
+/** The standalone layout with the variable unset: a tool that is not installed, and nothing declared beside it. */
+const standaloneFrom = (cwd: string, beside = scratch()) => resolveHomeCheckout({ env: {}, toolDir: scratch(), beside, cwd });
+
+for (const where of ["worktree", "clone"] as const) {
+  test(`#1433 POSITIVE CONTROL: unset AGENT_ORG_HOST from the ${where} of a clone the host declaration names REFUSES and names that declaration's path, with the value to set`, () => {
+    const fixture = cloneWithWorktree((clone) => ({ "agent-org": clone }));
+    const cwd = where === "worktree" ? fixture.worktree : fixture.clone;
+    assert.throws(() => standaloneFrom(cwd), (error: unknown) => {
+      assert.ok(error instanceof ProjectDeclarationRefusal);
+      assert.equal((error as any).field, "AGENT_ORG_HOST");
+      assert.ok(error.message.includes(fixture.host), `the declaration's path is not named:\n${error.message}`);
+      assert.ok(error.message.includes(`AGENT_ORG_HOST=${fixture.host}`), `the value to set is not named:\n${error.message}`);
+      return true;
+    });
+  });
+}
+
+test("#1433 CONTROL: a declaration whose clones name another checkout is not named, and the refusal still names the path it guessed", () => {
+  const fixture = cloneWithWorktree((clone) => ({ "agent-org": join(dirname(clone), "elsewhere") }));
+  const beside = scratch();
+  assert.throws(() => standaloneFrom(fixture.worktree, beside), (error: unknown) => {
+    assert.ok(error instanceof ProjectDeclarationRefusal);
+    assert.ok(!error.message.includes(fixture.host), `a declaration that names no clone of this one is named:\n${error.message}`);
+    assert.ok(error.message.includes(beside), `the guessed path is not named:\n${error.message}`);
+    return true;
+  });
+});
+
+test("#1433 CONTROL: a sibling host file that cannot be parsed is skipped, and the declaration that names the clone is still found", () => {
+  const fixture = cloneWithWorktree((clone) => ({ "agent-org": clone }));
+  mkdirSync(join(fixture.root, "a-broken", ".agent-org"), { recursive: true });
+  writeFileSync(join(fixture.root, "a-broken", ".agent-org", "host.json"), "{");
+  assert.throws(() => standaloneFrom(fixture.worktree), (error: unknown) => {
+    assert.ok(error instanceof ProjectDeclarationRefusal);
+    assert.ok(error.message.includes(fixture.host), `the declaration is not named past the broken file:\n${error.message}`);
+    return true;
+  });
+});
+
+test("#1433 CONTROL: a directory in no repository refuses without naming a declaration, and the refusal does not throw from the hint", () => {
+  const dir = scratch();
+  assert.throws(() => standaloneFrom(dir), (error: unknown) => {
+    assert.ok(error instanceof ProjectDeclarationRefusal);
+    assert.ok(!error.message.includes("clones"), `a hint with no clone is named:\n${error.message}`);
+    return true;
+  });
 });
