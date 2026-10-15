@@ -85,7 +85,7 @@ export type ListedAgent = { label: string; status: string; paneless?: boolean; }
  */
 function sayPaneless(paneless: ListedAgent[], say: (line: string) => void): void {
   if (paneless.length === 0) { panelessSaid.delete(say); return; }
-  const labels = paneless.map((a) => a.label).join(", ");
+  const labels = paneless.map((a) => a.label).sort().join(", "); // sorted: the same set in another listing order is the same set
   if (panelessSaid.get(say) === labels) return;
   panelessSaid.set(say, labels);
   say(`treated ${paneless.length} listed agents with no pane as ended: ${labels}`);

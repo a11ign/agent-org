@@ -142,6 +142,10 @@ test("(2) the one line says what was treated as ended, ONCE per change in the pa
   readAgents(two.run, { say });
   assert.equal(said[1], "treated 2 listed agents with no pane as ended: worker-5470, worker-5472", "a new member is a change, so it is said");
 
+  const reordered = herdr([{ name: "worker-5472", status: "unknown", pane: "w4N5:p1" }, { name: "worker-5470", status: "unknown", pane: "w4N1:p1" }], ["w4N1:p1", "w4N5:p1"]);
+  readAgents(reordered.run, { say });
+  assert.equal(said.length, 2, "the same paneless set in another listing order is not a change, so it is not said again");
+
   const none = herdr([{ name: "worker-5471", status: "unknown", pane: "w4N2:p1" }]);
   readAgents(none.run, { say });
   assert.equal(said.length, 2, "a live `unknown` agent with a readable pane says nothing");
