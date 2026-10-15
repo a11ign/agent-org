@@ -6,17 +6,18 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { unmetWaitingFor } from "./claim-stall.ts";
-import { closedClaimsNow } from "./work-gate/claim-stall-tick.ts";
 import { SHADOW_COPY_MARKER, SHADOW_STATE_DIR_ENV } from "./host-config.ts";
 import type { RefFact } from "./wait-condition.ts";
 
-// #1463: the composed control reads the gate's own tick, whose state directory is `REVIEWER_STATE_DIR`, read at import. It is a temporary copy
-// (marked as the shadow-window runner's copy, the only thing `stateEntryPath` will stand in for the real one), set BEFORE `work-gate.ts` is imported.
+// #1463: the composed control reads the gate's own tick, whose state directory is `REVIEWER_STATE_DIR`, bound when the module that declares it is first
+// imported. So EVERY module of the gate is imported below, AFTER the state directory is set: a static import here would bind the real one first (imports
+// are hoisted above this code). The state directory is a temporary copy, marked as the shadow-window runner's copy, the only thing `stateEntryPath` stands in for.
 const STATE = mkdtempSync(join(tmpdir(), "claim-stall-1463-"));
 after(() => rmSync(STATE, { recursive: true, force: true }));
 writeFileSync(join(STATE, SHADOW_COPY_MARKER), "");
 process.env[SHADOW_STATE_DIR_ENV] = STATE;
+const { unmetWaitingFor } = await import("./claim-stall.ts");
+const { closedClaimsNow } = await import("./work-gate/claim-stall-tick.ts");
 const { claimStallsWithFacts, withClosedClaims } = await import("./work-gate.ts");
 
 const fact = (state: RefFact["state"]): RefFact => ({ state, labels: [], resolvedAt: null, changedAt: null });
