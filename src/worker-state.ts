@@ -18,7 +18,7 @@
 import { mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { claimRecordOf } from "./claim-record.ts";
-import { MANAGER_SEATS, decidedBy } from "./decided-by.ts";
+import { DEFAULT_ANSWERER, MANAGER_SEATS, decidedBy } from "./decided-by.ts";
 import { herdrRun } from "./herdr-agents.ts";
 import type { BlockerWriter } from "./ticket-port/port.ts";
 import { TRACKER, githubTicketAdapter } from "./ticket-port/github-adapter.ts";
@@ -49,8 +49,8 @@ export type Refusal = { refused: "no-state" | "unknown-state" | "missing-pr" | "
 /** The directory, under the host's state directory, holding one `<session>.json` per worker. One file per session, so two workers never race a write. */
 export const WORKER_STATE_DIR = "worker-state";
 
-/** Who is asked when a worker declares `blocked` and names nobody: the first reader for rows and process (`engineer.md`, "Nobody is at the terminal"). */
-export const DEFAULT_ANSWERER = "product-manager";
+/** {@link DEFAULT_ANSWERER} is defined in `decided-by.ts`, a leaf the gate's readers can import without this file; re-exported here for the modules that name it from `worker-state`. */
+export { DEFAULT_ANSWERER };
 
 /** The host state entry remembering which `blocked` sessions were already told, so one stall is one instruction. */
 export const BLOCKED_TOLD_FILE = "blocked-told.json";
@@ -637,8 +637,9 @@ export async function main(argv: string[] = process.argv.slice(2), env: NodeJS.P
   const { execFileSync } = await import("node:child_process");
   const gh: Gh = (args) => execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   if (declaration.state === "done" && declaration.met !== undefined) {
-    // A ROW CLOSED ON A READING: the declaration is written FIRST (as for every state), then the row is closed with the reading as its comment. Refused
-    // before either, so a reading that does not cover every item closes nothing.
+    // A ROW CLOSED ON A READING: the row is closed with the reading as its comment, and the declaration is written ONLY AFTER that close has landed. The order
+    // is the point: a declaration of a complete reading excuses the holder (`declarationReading`), so writing it first would excuse a worker whose row a
+    // failed close left open. Refused before either, so a reading that does not cover every item closes nothing.
     const { homeProjectDeclaration } = await import("./project-config.ts");
     const { SESSION_PREFIX } = await import("./project-vocabulary.ts");
     const { doneWhenItems } = await import("./engineer-route.ts");
@@ -648,14 +649,14 @@ export async function main(argv: string[] = process.argv.slice(2), env: NodeJS.P
       process.stderr.write(`REFUSED ${resolved.refused.refused}: ${resolved.refused.why}\n`);
       return resolved.refused.refused === "unreadable-row" ? 2 : 1;
     }
-    const path = writeDeclaration(dir, resolved.declaration);
     const repo = resolved.declaration.repo as string;
     try {
       closeRowWithComment({ row: Number(declaration.row), repo, comment: closingComment(declaration.session, resolved.items, resolved.declaration.met ?? []), run: gh });
     } catch (err: any) {
-      process.stderr.write(`NOT CLOSED: #${declaration.row} of ${repo} could not be closed (${String(err?.stderr ?? err?.message ?? err).split("\n")[0]}). The declaration is written at ${path}.\n`);
+      process.stderr.write(`NOT CLOSED: #${declaration.row} of ${repo} could not be closed (${String(err?.stderr ?? err?.message ?? err).split("\n")[0]}). No declaration is written, so the row is still open and the worker is not released: run it again.\n`);
       return 2;
     }
+    const path = writeDeclaration(dir, resolved.declaration);
     process.stdout.write(`DECLARED ${declaration.session}: done ${repo}#${declaration.row}\nCLOSED ${repo}#${declaration.row}: the reading is recorded and the row is closed\nwrote ${path}\n`);
     return 0;
   }

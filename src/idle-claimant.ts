@@ -19,6 +19,7 @@ import { listingIsComplete } from "./herdr-agents.ts";
 import { CLAIM_LABEL } from "./claim-labels.ts";
 import { ANSWER_PREFIX, NEEDS_CHAIRMAN_LABEL } from "./project-vocabulary.ts";
 import { reviewerSeat, subjectMention } from "./review-attribution.ts";
+import { DEFAULT_ANSWERER } from "./decided-by.ts";
 import type { DeclarationReading } from "./worker-state.ts";
 
 const MINUTE_MS = 60_000;
@@ -347,8 +348,8 @@ export function redCheckNudgePrompt({ row, branch, idleMinutes, red, nudge }: { 
 /** How long a VERIFIED note from an idle claimant stands before the gate orders its row closed. */
 export const VERIFIED_CLOSE_MINUTES = 15;
 
-/** Who closes a row the claimant read as done (the first reader for rows, as `worker-state.ts`'s `DEFAULT_ANSWERER`; restated, so this file stays a leaf). */
-export const VERIFIED_CLOSER = "product-manager";
+/** Who closes a row the claimant read as done: the same reader a worker's `blocked` is routed to (`DEFAULT_ANSWERER`, from the leaf `decided-by.ts`). */
+export const VERIFIED_CLOSER = DEFAULT_ANSWERER;
 
 /** A note that says the work is verified: the word VERIFIED, or a Done-when line that says it is met. */
 const VERIFIED_NOTE = /\bVERIFIED\b|Done-when[^\n]*\bmet\b/i;
@@ -364,7 +365,7 @@ export type VerifiedCloseOrder = { kind: "close"; row: number; claimant: string;
  * @param {{ now: number }} ctx
  * @returns {VerifiedCloseOrder | null}
  */
-export function verifiedCloseOrder(facts: { row: number; labels: string[]; claimant: string; claim: { at: number; author: string | null } | null; comments: { url: string; body: string; createdAt: string; author?: { login?: string } | null }[]; idleSince: number | null }, ctx: { now: number }): VerifiedCloseOrder | null {
+export function verifiedCloseOrder(facts: { row: number; labels: string[]; claimant: string; claim: { at: number; author: string | null } | null; comments: { url?: string; id?: string; body: string; createdAt: string; author?: { login?: string } | null }[]; idleSince: number | null }, ctx: { now: number }): VerifiedCloseOrder | null {
   const { claim, idleSince } = facts;
   if (!facts.labels.includes(CLAIM_LABEL) || claim === null || claim.author === null || idleSince === null) return null;
   const notes = facts.comments.filter((c) => c.author?.login === claim.author && Date.parse(c.createdAt) >= claim.at && VERIFIED_NOTE.test(c.body));
@@ -372,5 +373,5 @@ export function verifiedCloseOrder(facts: { row: number; labels: string[]; claim
   if (newest === undefined) return null;
   const verifiedAt = Date.parse(newest.createdAt);
   if (ctx.now - verifiedAt < VERIFIED_CLOSE_MINUTES * MINUTE_MS) return null;
-  return { kind: "close", row: facts.row, claimant: facts.claimant, to: VERIFIED_CLOSER, note: newest.url, verifiedAt, idleMs: ctx.now - idleSince };
+  return { kind: "close", row: facts.row, claimant: facts.claimant, to: VERIFIED_CLOSER, note: newest.url ?? newest.id ?? "", verifiedAt, idleMs: ctx.now - idleSince };
 }
