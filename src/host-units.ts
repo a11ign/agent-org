@@ -54,7 +54,7 @@ import { CLAUDE_EFFORTS, DECLARED_CLAUDE_MODELS, HAIKU_MODEL_ID, HAIKU_TIER_LABE
 import { REPO } from "./project-identity.ts";
 import { appRoleSilent, appRoleSilentEvents, type LedgerSource, type SilentRole } from "./app-role-silent.ts";
 import { FAILURE_LEDGER_FILE, recordFailures } from "./failure-ledger.ts";
-import { readAgents, absentSeats } from "./herdr-agents.ts";
+import { readAgents, absentSeats, herdrRun } from "./herdr-agents.ts";
 import { persistentEntries, persistentRoles, roleBriefPath } from "./project-roles.ts";
 import { kernelFindings, kernelNotes } from "./host-kernel.ts";
 import { GITHUB_ROLES, type GithubRole, HostConfigRefusal, LONG_RUNNING_TEMPLATES, TEMPLATE_SUFFIX, homeHostConfig, leadsWorkspacesText, readBeforeTick, readUnitsDeclaration,
@@ -3207,7 +3207,7 @@ export function lastModelIn(text: string): string | null {
  * @param {(args: string[]) => string} [run]
  * @returns {{ name: string, cwd: string, sessionId: string }[] | null}
  */
-export function liveClaudeSessions(run: (args: string[]) => string = (args) => execFileSync("herdr", args, { encoding: "utf8", timeout: 30_000 })): { name: string; cwd: string; sessionId: string; }[] | null {
+export function liveClaudeSessions(run: (args: string[]) => string = (args) => herdrRun(args)): { name: string; cwd: string; sessionId: string; }[] | null {
   try {
     const agents = JSON.parse(run(["--session", "org", "agent", "list"]))?.result?.agents;
     if (!Array.isArray(agents)) return null;

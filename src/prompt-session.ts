@@ -25,13 +25,13 @@
 // THE RAW `herdr` CALL IS STILL RIGHT sometimes, and this does not remove it: a re-prompt about the SAME
 // draft after a push wants the reviewer's existing context, not a floor. This command is for the first
 // prompt about a topic, which is the "unrelated topic" the clear rule is actually about.
-import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { realpathSync, readFileSync, appendFileSync, mkdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname } from "node:path";
 
 import { refuseUnknownFlags } from "./lib/cli-flags.ts";
+import { herdrRun } from "./herdr-agents.ts";
 import { prepareContext, orderClockIn, CONTEXT_ACTION, readAgents, WAKEABLE, queueHandoff, handoffQueuePath, ledgerPathFrom,
   handoffBacklog, readHandoffs, waitedFor, addressed, repointedForReviewer, isLeadSeat, FYI_STALE_MS } from "./wake.ts";
 // #2619 (child 3d of #69): the `answer:` prefix these two advisory notes name, moved to the project's
@@ -52,7 +52,7 @@ import { FAILURE_LEDGER_FILE, UNCLASSIFIED_KIND, UNIDENTIFIED_CALLER_KIND, recor
 export const EXIT = { OK: 0, REFUSED: 1, QUEUED: 2 };
 
 /** herdr, one call, as `prompt:session` runs it. Exported so `converse.ts` can hand `promptOrQueue` the same runner without spawning anything itself (the no-executor scan bounds that). */
-export const defaultRun = (args: string[]) => execFileSync("herdr", args, { encoding: "utf8", timeout: 30_000 });
+export const defaultRun = (args: string[]) => herdrRun(args);
 
 /**
  * PURE. Whether this session may be prompted at all, and why not when it may not.

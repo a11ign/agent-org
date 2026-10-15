@@ -36,13 +36,13 @@
 // `gh issue list` exits non-zero with empty stdout on a refusal, and reading that as zero rows would post
 // a comment claiming a clean sweep of nothing when nothing was actually asked. `fleetGatedRows` below
 // throws on a failed read rather than returning `[]`, and `main` reports CANNOT_ASK and posts nothing.
-import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
 import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { gh, REPO } from "./board-data.ts";
 import { promptable, clearThenPrompt, PROMPT_REFUSED_PREFIX } from "./prompt-session.ts";
 import { readAgents } from "./wake.ts";
+import { herdrRun } from "./herdr-agents.ts";
 import { FLEET_GATED_SELECTOR } from "./work-gate.ts";
 
 // #914 -- the standing-responsibility record this firing discharges (product-manager's 2026-09-20T08:34:20Z
@@ -57,7 +57,7 @@ export const EXIT = { OK: 0, CANNOT_ASK: 2 };
 /** @param {string[]} args */
 const defaultGhRun = (args: string[]) => gh(args);
 /** @param {string[]} args */
-const defaultHerdrRun = (args: string[]) => execFileSync("herdr", args, { encoding: "utf8", timeout: 30_000 });
+const defaultHerdrRun = (args: string[]) => herdrRun(args);
 
 // `gh issue list` defaults to 30 -- fine for a label-scoped slice today, silent
 // truncation the day it is not. `board-data.ts`'s own `issues()` already met this: a higher number alone
