@@ -10,7 +10,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -76,11 +76,15 @@ const host = () => {
   mkdirSync(cfg);
   writeFileSync(join(cfg, "hosts.yml"), `github.com:\n    user: ${WORKERS}\n    oauth_token: not-a-token\n`);
   const stub = join(root, "gh-real");
-  writeFileSync(stub, ["#!/bin/sh", `[ "$1 $2" = "api graphql" ] && printf '%s' "$STUB_BODY"`, "exit 0", ""].join("\n"), { mode: 0o755 });
+  // (agent-org#1395) answers the `-i` the wrapper puts after `graphql` as `gh` does, with the pool's counter `STUB_USED` names, and no head when none is named
+  writeFileSync(stub, ["#!/bin/sh",
+    `[ "$3" = -i ] && [ -n "$STUB_USED" ] && printf 'HTTP/2.0 200 OK\\r\\nX-Ratelimit-Resource: graphql\\r\\nX-Ratelimit-Used: %s\\r\\nX-Ratelimit-Reset: 1791925000\\r\\n\\r\\n' "$STUB_USED"`,
+    `[ "$1 $2" = "api graphql" ] && printf '%s' "$STUB_BODY"`, "exit 0", ""].join("\n"), { mode: 0o755 });
   const ledger = join(cfg, "gh-calls.tsv");
+  const extra: Record<string, string> = {};
   const call = (now: string, ...args: string[]) => spawnSync("sh", [WRAPPER, ...args], { encoding: "utf8", input: "",
-    env: { PATH: process.env.PATH ?? "", A11Y_GH_REAL: stub, GH_CONFIG_DIR: cfg, A11Y_GH_LEDGER_NOW: now, A11Y_GH_LEDGER_MAX_BYTES: "1500", A11Y_GH_READ_CACHE: "off", STUB_BODY: COSTED_BODY } });
-  return { ledger, call };
+    env: { PATH: process.env.PATH ?? "", A11Y_GH_REAL: stub, GH_CONFIG_DIR: cfg, A11Y_GH_LEDGER_NOW: now, A11Y_GH_LEDGER_MAX_BYTES: "1500", A11Y_GH_READ_CACHE: "off", STUB_BODY: COSTED_BODY, ...extra } });
+  return { ledger, call, extra };
 };
 
 test("#4148: a rollup written as the trim drops lines keeps every hour: the ledger plus the rollup count every call made", () => {
@@ -161,4 +165,77 @@ test("#4148: api-pool-low names its spender, and says UNREADABLE rather than not
   const core = poolLowReading({ pools: [{ ...pools[0], resource: "core" }], spenderOf: () => "should not appear" });
   assert.doesNotMatch(core.detail, /Spender/, "the ledger's points are GraphQL's: a core pool is not blamed on them");
   assert.equal(named.discriminator, poolLowReading({ pools, spenderOf: () => null }).discriminator, "the spender is in the detail only: one spent window is still one signal");
+});
+
+// --- agent-org#1395: THE LEDGER ACCOUNTS FOR THE POOL, BY ITS OWN COUNTER ---------------------------------------------------------------------------------------------------
+//
+// MEASURED 2026-10-13 (`a11ign-scheduler[bot]`, window 19:08:25Z..20:08:25Z): the pool went from full to 5 of 5000, and the ledger held 1,557 graphql lines for it, NOT ONE
+// with a `cost` (`awk -F'\t' '$4 != ""' gh-calls.tsv | wc -l` was 0 over the whole file), so every line read as the one-point floor: 1,557 of ~5,000, 30%. A response names its
+// cost only when the query asked for `rateLimit { cost }`, and `gh pr list` and `gh issue view` build their own; the counter in the response head is the pool's own.
+
+test("agent-org#1395: through the wrapper, an hour the responses never costed is accounted for by the pool's counter, within 10%", () => {
+  const h = host();
+  const bare = '{"data":{"viewer":{"login":"x"}}}'; // a query that did not ask for rateLimit { cost }: the case of every line in the measured hour
+  h.extra.STUB_BODY = bare;
+  // the counter after each call, as the pool reported it: [used after, the call]. The `pr list` is asked without `-i` and carries no counter; the 7 points the counter
+  // moves over `pr list` + `api graphql` are the two of them together (an inference, said as one), and 15 -> 16 is a plain point.
+  const script: [string | null, string[]][] = [
+    ["1", ["api", "graphql"]],            // the window's first reading: a baseline, never a movement (the pool's first point is this call's own)
+    ["8", ["api", "graphql"]],            // 7 read off the counter
+    [null, ["pr", "list"]],
+    ["15", ["api", "graphql"]],           // 7 more, between a `pr list` and this call: shared, 4 and 3
+    ["16", ["api", "graphql"]],           // 1
+  ];
+  script.forEach(([used, args], i) => {
+    if (used === null) delete h.extra.STUB_USED; else h.extra.STUB_USED = used;
+    assert.equal(h.call(`2026-10-13T20:0${i}:00Z`, ...args).status, 0);
+  });
+  const text = readFileSync(h.ledger, "utf8");
+  const entries = parseLedger(text);
+  assert.equal(entries.length, 5, "POSITIVE CONTROL: every call wrote a line");
+  assert.deepEqual(entries.map((e) => e.used), [1, 8, undefined, 15, 16], "the wrapper wrote the counter the head carried, and none where it asked for none");
+  const POOL_USED = 16; // the last response's own X-Ratelimit-Used
+  const now = Date.parse("2026-10-13T20:10:00Z");
+  const settled = topSpender(entries, { account: WORKERS, now });
+  assert.ok(settled !== null && Math.abs(settled.total - POOL_USED) <= POOL_USED * 0.1,
+    `the ledger accounts for ${settled?.total} of the pool's ${POOL_USED}, within 10%`);
+  assert.equal(settled?.total, POOL_USED, "and here, with every movement placed on a call, exactly");
+  assert.deepEqual(settled?.counted, { read: 8, shared: 7, floor: 1, unplaced: 0 }, "7 + 1 read off the counter; 7 shared between the `pr list` and the call that closed the gap; the baseline stays a floor point");
+  // THE CONTROL: the same five calls with the counter cut off the lines read as they did, one point each
+  const floor = topSpender(parseLedger(text.split("\n").filter(Boolean).map((l) => l.split("\t").slice(0, 10).join("\t")).join("\n")), { account: WORKERS, now });
+  assert.equal(floor?.total, 5, "CONTROL: without the counter the ledger says 5 of the pool's 16, which is the defect");
+  const [hour] = perHour(entries, [], { account: WORKERS, resource: "graphql" });
+  assert.deepEqual({ calls: hour.calls, read: hour.read, floor: hour.floor }, { calls: 5, read: 8, floor: 16 }, "--per-hour reads the same: 8 read, and 16 in all with the 7 shared and the baseline");
+});
+
+test("agent-org#1395: what the counter moved that no call in the ledger accounts for is `unplaced`, and a window the counter was never read in stays a floor", () => {
+  const COUNTED = (time: string, used: number, cost = "") => [time, "app:scheduler", "graphql", cost, "0", "api graphql", "-", "/usr/bin/node /x/src/work-gate.ts", "-", "-", String(used), "1791925000"].join("\t");
+  // the second call's response said its own cost (3), and the counter moved 10: 7 points were spent by someone whose call is not here
+  const entries = parseLedger([COUNTED("2026-10-13T20:00:00Z", 100), COUNTED("2026-10-13T20:01:00Z", 110, "3")].join("\n"));
+  const top = topSpender(entries, { account: "app:scheduler", now: Date.parse("2026-10-13T20:05:00Z") });
+  assert.equal(top?.counted?.unplaced, 7, "a caller of the token that is not in the ledger shows as a movement with no call to go to");
+  assert.equal(top?.total, 1 + 3, "and is NOT given to a call that did not spend it");
+  // a ledger from before the counter
+  const before = topSpender(parseLedger([line("2026-10-13T20:00:00Z", { account: "app:scheduler" })].join("\n")), { account: "app:scheduler", now: Date.parse("2026-10-13T20:05:00Z") });
+  assert.equal(before?.counted, undefined, "no reading, no claim: the floor is called a floor");
+  // a counter that went BACK inside one reset window is two calls answered out of order and moves nothing
+  const reordered = parseLedger([COUNTED("2026-10-13T20:00:00Z", 100), COUNTED("2026-10-13T20:01:00Z", 105), COUNTED("2026-10-13T20:02:00Z", 103)].join("\n"));
+  assert.equal(topSpender(reordered, { account: "app:scheduler", now: Date.parse("2026-10-13T20:05:00Z") })?.total, 1 + 5 + 0);
+});
+
+test("agent-org#1395: the scheduler App's token is handed out by `host/gh` alone, so every call that spends its pool is a ledger line", () => {
+  // DONE-WHEN 2: "a test fails when a caller of the scheduler App's token is not ledgered". What can hand the token out is `app-token.ts` (the minter the wrapper runs) and the
+  // wrapper; any other file that reads the cache file or mints one holds a token whose calls no ledger line is written for. The pool's counter (above) shows such spend as `unplaced`.
+  const root = fileURLToPath(new URL("../..", import.meta.url));
+  // a walk of the tree, not `git grep`: a file nobody has added yet is a holder too, and this file spawns nothing that would need GIT_* scrubbed
+  const sources = (dir: string): string[] => readdirSync(join(root, dir), { withFileTypes: true }).flatMap((d) => {
+    const rel = `${dir}/${d.name}`;
+    if (d.isDirectory()) return d.name === "node_modules" || d.name === "fixtures" ? [] : sources(rel);
+    return /\.(ts|mjs|js|sh)$/.test(d.name) && !d.name.endsWith(".test.ts") ? [rel] : [];
+  });
+  const MINTS = /mintInstallationToken|tokenPath\(|parseTokenFile|appToken\(/;
+  const files = [...sources("src"), ...sources("scripts"), "host/gh"];
+  const holders = files.filter((f) => MINTS.test(readFileSync(join(root, f), "utf8")) && f !== "src/app-token.ts" && f !== "host/gh");
+  assert.deepEqual(holders, [], "nothing but app-token.ts and host/gh reads or mints an installation token");
+  assert.ok(MINTS.test(readFileSync(join(root, "src/app-token.ts"), "utf8")), "POSITIVE CONTROL: the pattern finds the minter, so an empty answer above is not a pattern that matches nothing");
 });

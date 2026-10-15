@@ -19,8 +19,11 @@ import { dirname, join } from "node:path";
 /**
  * `sessionId` is the 9th field, the id of the session that made the call (`host/gh`, #3589); a line from before it has 8 fields and NO `sessionId` key, so it reads to the same entry it always did.
  * `cache` is the 10th field, raw: `-` for a call the read cache did not look at, the verdict for a read it did (`verdictOf`), and NO key on a line from before it.
+ * (agent-org#1395) `used` and `reset` are the 11th and 12th: the pool's own counter after the call (`X-Ratelimit-Used`, `X-Ratelimit-Reset` as an epoch), and NO key on a
+ * line that did not read it. `settled` is set by `settle`, never by a parse: `read` says `cost` is what the pool's counter moved over this call and was read, `shared`
+ * that `cost` is this call's share of a movement that covered several, which is an inference. `unplaced` is a movement no call in the ledger accounts for.
  */
-export type LedgerEntry = {time: string, account: string, resource: string, cost: number | null, status: number, command: string, workspace: string, caller: string, sessionId?: string, cache?: string};
+export type LedgerEntry = {time: string, account: string, resource: string, cost: number | null, status: number, command: string, workspace: string, caller: string, sessionId?: string, cache?: string, used?: number, reset?: number, settled?: "read" | "shared", unplaced?: number};
 
 const FIELDS = 8;
 const NO_SESSION = "-";
@@ -46,11 +49,16 @@ export function parseLine(line: string): LedgerEntry | null {
   const status = Number(f[4]);
   if (!Number.isInteger(status)) return null;
   const sessionId = f.length > FIELDS ? f[FIELDS] : NO_SESSION;
-  // Everything after the 9th field is the 10th, so a tab inside it leaves a field `verdictOf` refuses rather than shifting the ones before it
-  const cache = f.length > FIELDS + 1 ? f.slice(FIELDS + 1).join("\t") : undefined;
+  // Everything after the 9th field is the 10th, so a tab inside it leaves a field `verdictOf` refuses rather than shifting the ones before it. A line of
+  // (agent-org#1395) twelve or more fields ends in the pool's counter, so those two are taken off the end first.
+  const COUNTER = /^(\d+|-)$/; // `-` is a call that could not say, and still marks the two fields as the counter's
+  const shaped = f.length >= FIELDS + 4 && COUNTER.test(f[f.length - 2]) && COUNTER.test(f[f.length - 1]);
+  const counted = shaped && /^\d+$/.test(f[f.length - 2]) && /^\d+$/.test(f[f.length - 1]);
+  const cache = f.length > FIELDS + 1 ? f.slice(FIELDS + 1, shaped ? -2 : undefined).join("\t") : undefined;
   return { time: f[0], account: f[1], resource: f[2], cost: f[3] === "" ? null : Number(f[3]), status,
     command: f[5], workspace: f[6], caller: f[FIELDS - 1], ...(sessionId === NO_SESSION || sessionId === "" ? {} : { sessionId }),
-    ...(cache === undefined ? {} : { cache }) };
+    ...(cache === undefined ? {} : { cache }),
+    ...(counted ? { used: Number(f[f.length - 2]), reset: Number(f[f.length - 1]) } : {}) };
 }
 
 /** @param {string} text @returns {LedgerEntry[]} */
@@ -80,6 +88,69 @@ function points(e: LedgerEntry) {
   return e.resource.startsWith("graphql") ? 1 : 0;
 }
 
+/** @returns {number} the points a RESPONSE or the pool's counter said this call spent; a share of a movement that covered several calls is not read */
+const readCost = (e: LedgerEntry) => (e.settled === "shared" ? 0 : e.cost ?? 0);
+
+/**
+ * (agent-org#1395) THE POOL'S OWN COUNTER, PUT BACK ON THE CALLS THAT MOVED IT. Measured 2026-10-13: a pool that went from full to 5 of 5000 in an hour had 1,557
+ * ledger lines, none with a `cost`, so each read as the one-point floor and the ledger explained 30% of it. `host/gh` now writes the pool's counter beside every
+ * `api graphql` call, and the counter's movement between two readings IS the points spent between them, by whoever, so this gives each reading the movement since
+ * the one before it (`settled: "read"`), and shares a movement that covered readings it could not make (a `pr list`, whose response head the wrapper does not
+ * ask for) across those calls and the reading that closed it (`settled: "shared"`, an inference and said as one). Per account, in time order; a counter that
+ * went BACK within one reset window is two calls answered out of order, and moves nothing.
+ *
+ * THE FIRST READING OF A RESET WINDOW IS A BASELINE, never a movement: a ledger is trimmed, so the first line it holds may be the window's four-hundredth call, and
+ * giving it the whole counter would charge a handful of calls with an hour. A line whose response carried its own `cost` keeps it and is taken out of the movement.
+ * What a movement holds beyond that and has no call to go to is `unplaced`, on the reading that closed it: spend by a holder of the token that is not in the
+ * ledger, which is the one thing a counter shows and a ledger line cannot.
+ * @param {LedgerEntry[]} entries @returns {LedgerEntry[]} the same lines in the same order; the argument is not changed
+ */
+export function settle(entries: LedgerEntry[]): LedgerEntry[] {
+  const out = entries.map((e) => ({ ...e }));
+  const byAccount: Map<string, number[]> = new Map();
+  out.forEach((e, i) => {
+    if (e.settled !== undefined || !e.resource.startsWith("graphql")) return;
+    byAccount.set(e.account, [...(byAccount.get(e.account) ?? []), i]);
+  });
+  for (const indices of byAccount.values()) {
+    indices.sort((a, b) => Date.parse(out[a].time) - Date.parse(out[b].time) || a - b);
+    let reset: number | undefined;
+    let before = 0;
+    let gap: number[] = [];
+    for (const i of indices) {
+      const e = out[i];
+      if (e.used === undefined || e.reset === undefined) {
+        gap.push(i);
+        continue;
+      }
+      if (e.reset !== reset) {
+        reset = e.reset;
+        before = e.used; // the baseline: this line and what led up to it stay at their floor
+        gap = [];
+        continue;
+      }
+      const moved = Math.max(0, e.used - before);
+      before = Math.max(before, e.used);
+      const unknown = [...gap, i].filter((j) => out[j].cost === null);
+      const left = Math.max(0, moved - [...gap, i].reduce((sum, j) => sum + (out[j].cost ?? 0), 0));
+      if (unknown.length === 0) {
+        if (left > 0) e.unplaced = left;
+      } else {
+        const share = Math.floor(left / unknown.length);
+        const extra = left - share * unknown.length;
+        // the closing reading takes the remainder first: it is the one call whose own movement is in the figure
+        const order = [i, ...gap.filter((j) => out[j].cost === null)];
+        order.forEach((j, n) => {
+          out[j].cost = share + (n < extra ? 1 : 0);
+          out[j].settled = unknown.length === 1 ? "read" : "shared";
+        });
+      }
+      gap = [];
+    }
+  }
+  return out;
+}
+
 /**
  * The callers ranked by points, within one account (and one resource, if named).
  * `measured` counts the points a response REPORTED, and `points` adds the one-point floor for every call that did not, so a
@@ -97,7 +168,7 @@ export function topCallers(entries: LedgerEntry[], { account, resource, limit = 
     const row = byKey.get(key) ?? { caller, command: e.command, calls: 0, points: 0, measured: 0, failed: 0 };
     row.calls += 1;
     row.points += points(e);
-    row.measured += e.cost ?? 0;
+    row.measured += readCost(e);
     row.failed += e.status === 0 ? 0 : 1;
     byKey.set(key, row);
   }
@@ -109,7 +180,7 @@ export function topCallers(entries: LedgerEntry[], { account, resource, limit = 
  * @param {LedgerEntry[]} entries @param {{account?: string, resource?: string, limit?: number}} [where]
  */
 export function renderReport(entries: LedgerEntry[], where: { account?: string; resource?: string; limit?: number; } = {}) {
-  const rows = topCallers(entries, where);
+  const rows = topCallers(settle(entries), where);
   if (entries.length === 0) return "gh ledger: no calls recorded\n";
   const span = `${entries[0].time} .. ${entries[entries.length - 1].time}`;
   const head = `gh ledger: ${entries.length} calls, ${span}${where.account ? `, account ${where.account}` : ""}\n`;
@@ -146,11 +217,11 @@ export function parseRollup(text: string): HourRow[] {
 }
 
 /** @param {LedgerEntry} e @returns {HourRow} one call as the row it adds to its hour */
-const hourRowOf = (e: LedgerEntry): HourRow => ({ hour: e.time.slice(0, HOUR_CHARS), account: e.account, resource: e.resource.replace(/\?$/, ""), calls: 1, read: e.cost ?? 0, floor: points(e), caller: callerScript(e.caller) });
+const hourRowOf = (e: LedgerEntry): HourRow => ({ hour: e.time.slice(0, HOUR_CHARS), account: e.account, resource: e.resource.replace(/\?$/, ""), calls: 1, read: readCost(e), floor: points(e), caller: callerScript(e.caller) });
 
 /** The rollup's rows and the ledger's lines, as the one kind of row they are, for one account's one resource if named. */
 const hourRows = (entries: LedgerEntry[], rollup: HourRow[], { account, resource }: { account?: string; resource?: string; }): HourRow[] =>
-  [...rollup, ...entries.map(hourRowOf)].filter((r) => (account === undefined || r.account === account) && (resource === undefined || r.resource === resource));
+  [...rollup, ...settle(entries).map(hourRowOf)].filter((r) => (account === undefined || r.account === account) && (resource === undefined || r.resource === resource));
 
 /**
  * One reading per UTC hour for one account's one resource: the calls, the points the responses REPORTED (`read`) and the floor, which adds one point for every
@@ -217,16 +288,30 @@ export function renderPerHour(hours: ReturnType<typeof perHour>, callers?: HourC
  * (#4148) WHO SPENT THE LAST HOUR: the caller with the most points in the window ending at `now`, as the line `api-pool-low` quotes. Names the SCRIPT, never the
  * pid; a window with no points says so rather than naming a caller of nothing.
  * @param {LedgerEntry[]} entries @param {{account?: string, resource?: string, now?: number, windowMs?: number}} [where]
- * @returns {{caller: string, command: string, points: number, share: number, total: number} | null}
+ * (agent-org#1395) `counted` is how `total` was arrived at when the pool's counter was read for any line in the window (`settle`): the points the counter said a call
+ * spent (`read`), the points shared between calls it could not be read for (`shared`), the floor of the calls after the last reading (`floor`), and the movement no
+ * call accounts for (`unplaced`). It is absent for a window with no counter reading, which is a floor and says so.
+ * @returns {{caller: string, command: string, points: number, share: number, total: number, counted?: {read: number, shared: number, floor: number, unplaced: number}} | null}
  */
-export function topSpender(entries: LedgerEntry[], { account, resource = "graphql", now = Date.now(), windowMs = HOUR_MS }: { account?: string; resource?: string; now?: number; windowMs?: number; } = {}): { caller: string; command: string; points: number; share: number; total: number; } | null {
-  const inWindow = entries.filter((e) => {
+export function topSpender(entries: LedgerEntry[], { account, resource = "graphql", now = Date.now(), windowMs = HOUR_MS }: { account?: string; resource?: string; now?: number; windowMs?: number; } = {}): { caller: string; command: string; points: number; share: number; total: number; counted?: { read: number; shared: number; floor: number; unplaced: number; }; } | null {
+  const inWindow = settle(entries).filter((e) => {
     const at = Date.parse(e.time);
     return at > now - windowMs && at <= now;
   });
   const total = topCallers(inWindow, { account, resource, limit: Number.MAX_SAFE_INTEGER }).reduce((sum, r) => sum + r.points, 0);
   const [top] = topCallers(inWindow, { account, resource, limit: 1 });
-  return top === undefined || top.points === 0 ? null : { caller: top.caller, command: top.command, points: top.points, share: top.points / total, total };
+  if (top === undefined || top.points === 0) return null;
+  const spent = inWindow.filter((e) => (account === undefined || e.account === account) && e.resource.replace(/\?$/, "") === resource);
+  // a window with any line that carries the pool's counter is a counted one, even when no line in it needed settling: what the counter moved past the calls is `unplaced`
+  const counted = spent.some((e) => e.settled !== undefined || e.used !== undefined)
+    ? spent.reduce((sum, e) => ({
+      read: sum.read + (e.settled === "read" || (e.settled === undefined && e.cost !== null) ? points(e) : 0),
+      shared: sum.shared + (e.settled === "shared" ? points(e) : 0),
+      floor: sum.floor + (e.settled === undefined && e.cost === null ? points(e) : 0),
+      unplaced: sum.unplaced + (e.unplaced ?? 0),
+    }), { read: 0, shared: 0, floor: 0, unplaced: 0 })
+    : undefined;
+  return { caller: top.caller, command: top.command, points: top.points, share: top.points / total, total, ...(counted === undefined ? {} : { counted }) };
 }
 
 const APP_LOGIN = /^(.+)\[bot\]$/;
@@ -284,7 +369,11 @@ export function spenderPhraseFor({ ledgers, login, appRoles = [], now = Date.now
       : `no graphql point is recorded for ${login} in the ledgers that were read, and ${unread.join(", ")} could not be read, so the spender is UNREADABLE`;
   }
   const short = unread.length === 0 ? "" : ` (${unread.join(", ")} could not be read, so this is a floor)`;
-  return `${login}'s last hour (${top.total} floor points${as}): top caller ${top.caller} [${top.command}], ${top.points} points (${Math.round(top.share * PERCENT)}%)${short}`;
+  // A window the pool's counter was read in is not a floor: its total is the counter's movement, and the sentence says what of it was read, what shared, and what no call holds.
+  const basis = top.counted === undefined ? `${top.total} floor points`
+    : `${top.total} points by the pool's own counter: ${top.counted.read} read off it, ${top.counted.shared} shared between calls it was not read for, ${top.counted.floor} floor`
+      + `${top.counted.unplaced > 0 ? `, and ${top.counted.unplaced} more that no ledgered call accounts for` : ""}`;
+  return `${login}'s last hour (${basis}${as}): top caller ${top.caller} [${top.command}], ${top.points} points (${Math.round(top.share * PERCENT)}%)${short}`;
 }
 
 /**
