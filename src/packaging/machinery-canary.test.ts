@@ -11,9 +11,11 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
+import { ACCOUNT_LIMIT_FILE, ACCOUNT_LIMIT_FLAG, pausedNow } from "../account-limit.ts";
 import {
   CANARY_STATE_FILE, DEFAULT_CANARY_OPTIONS, MACHINERY_SIGNALS, UNSOURCED_MACHINERY_SIGNALS, expireSuppressions, machineryCanaryTick, machineryFlagOn, parseCanaryOptions,
   parseCanaryState, withMachineryFlag, emptyCanaryState, machineryValues, type CanaryFacts, type CanaryIo, type Suppression,
@@ -41,7 +43,8 @@ function memoryIo(initial: string | null = null, { refuseIncident = false }: { r
   const filed: { title: string; body: string }[] = [];
   const logs: string[] = [];
   const io: CanaryIo = {
-    read: () => store.text,
+    // The canary state is the store; any other file (the account record, a11ign#5497) is read from disk, as `realCanaryIo` reads it
+    read: (path) => (path.endsWith(`/${CANARY_STATE_FILE}`) ? store.text : existsSync(path) ? readFileSync(path, "utf8") : null),
     write: (_path, text) => { store.text = text; },
     fileIncident: (title, body) => {
       if (refuseIncident) throw new Error("gh: HTTP 502");
@@ -147,6 +150,83 @@ test("#5100 (2c) A BASELINE FROM TEN MINUTES IS NOT A BASELINE: a flag turned on
   const reading = h.state().flags[FLAG].readings[0];
   assert.equal(h.state().samples.length, 2);
   assert.ok(reading.status === "unknown" || reading.status === "degraded", `a reading is never silently clean without a baseline: ${reading.status}`);
+});
+
+/** a11ign#5497: the gate's account record, held until `until` (ms), as `pausedNow` reads it from `dir`. */
+const writePause = (dir: string, until: number) =>
+  writeFileSync(join(dir, ACCOUNT_LIMIT_FILE), JSON.stringify({ [homedir()]: { limitedUntil: until, seenOn: "2026-10-15", text: "usage limit reached" } }));
+
+/**
+ * a11ign#5497: `wakes-held` on a flag turned on at T0. The account pause is recorded over the hour before it (`pausedBefore`), so every tick there is HELD; then the flag is on and
+ * `wakes-held` reads 23 in its first ten minutes, which is the surge the first hour after a pause read as a regression.
+ */
+function wakesHeldCanary({ pausedBefore }: { pausedBefore: boolean; }) {
+  const dir = tmpDir("machinery-canary-");
+  const h = memoryIo(JSON.stringify(withMachineryFlag(emptyCanaryState(), { name: ACCOUNT_LIMIT_FLAG, on: true, signals: [] })));
+  if (pausedBefore) writePause(dir, T0 - 5 * MINUTE); // holds the ticks up to minute -10, lifted by minute 0
+  const tickWith = (minute: number, deferredWakes: number) => machineryCanaryTick({ now: T0 + minute * MINUTE, facts: facts({ deferredWakes }), dir, options: OPTIONS, io: h.io });
+  for (let minute = -60; minute <= -10; minute += 10) tickWith(minute, 0);
+  h.store.text = JSON.stringify(withMachineryFlag(h.state(), { name: FLAG, on: true, signals: [MACHINERY_SIGNALS.WAKES_HELD] }));
+  tickWith(0, 0); // the tick that finds the flag on starts the hour
+  tickWith(10, 23);
+  for (let minute = 20; minute <= 60 && machineryFlagOn(h.state(), FLAG); minute += 10) tickWith(minute, 0);
+  return h;
+}
+
+test("#5497 (1) A HELD HOUR IS NO BASELINE: the first hour after an account pause does not revert a flag on a steady stock; it reads UNKNOWN and stays ON, and is not PASSED", () => {
+  const h = wakesHeldCanary({ pausedBefore: true });
+  const record = h.state().flags[FLAG];
+  assert.equal(record.readings[0].status, "unknown", "the hour before was a pause: not a baseline");
+  assert.match(record.readings[0].detail, /not a baseline: the account pause held Claude work/);
+  assert.equal(record.on, true, "THE FLAG STAYS ON");
+  assert.equal(record.verdict, "watching", "an hour with nothing read is not PASSED either");
+  assert.deepEqual(h.filed, [], "no incident");
+});
+
+test("#5497 (1b) THE SAME NUMBERS WITH NO PAUSE ARE DEGRADED: a flag on a stock after a quiet hour is reverted (the positive control)", () => {
+  const h = wakesHeldCanary({ pausedBefore: false });
+  const record = h.state().flags[FLAG];
+  assert.equal(record.readings[0].status, "degraded");
+  assert.equal(record.on, false, "THE FLAG IS OFF");
+  assert.equal(record.verdict, "reverted");
+});
+
+test("#5497 (1c) A PAUSE THAT BEGINS INSIDE THE HOUR AFTER THE FLAG IS ON IS READ: only the hour BEFORE is held, so the pause that starts after the switch is not unknown", () => {
+  const dir = tmpDir("machinery-canary-");
+  const h = memoryIo(JSON.stringify(withMachineryFlag(emptyCanaryState(), { name: ACCOUNT_LIMIT_FLAG, on: true, signals: [] })));
+  const tickWith = (minute: number, deferredWakes: number) => machineryCanaryTick({ now: T0 + minute * MINUTE, facts: facts({ deferredWakes }), dir, options: OPTIONS, io: h.io });
+  for (let minute = -60; minute <= -10; minute += 10) tickWith(minute, 0);
+  h.store.text = JSON.stringify(withMachineryFlag(h.state(), { name: FLAG, on: true, signals: [MACHINERY_SIGNALS.WAKES_HELD] }));
+  tickWith(0, 0);
+  tickWith(10, 0);
+  writePause(dir, T0 + 60 * MINUTE); // the pause begins after minute 10, inside the hour the flag now watches
+  tickWith(20, 23);
+  const record = h.state().flags[FLAG];
+  assert.equal(record.readings[0].status, "degraded", "the before-hour was quiet and unheld, so it is a baseline");
+  assert.equal(record.on, false);
+  assert.equal(record.verdict, "reverted");
+});
+
+test("#5497 (1d) THE CANARY'S HELD MARK AGREES WITH `pausedNow` over every kind of record: the tick reads the pause its own way, and this pins that way to the gate's", () => {
+  const cases: { name: string; flagOn: boolean; record: string | null; held: boolean; }[] = [
+    { name: "flag on, an active pause", flagOn: true, record: JSON.stringify({ [homedir()]: { limitedUntil: T0 + 60 * MINUTE, seenOn: "x", text: "y" } }), held: true },
+    { name: "flag on, a pause whose reset has passed", flagOn: true, record: JSON.stringify({ [homedir()]: { limitedUntil: T0 - 1, seenOn: "x", text: "y" } }), held: false },
+    { name: "flag on, no record file", flagOn: true, record: null, held: false },
+    { name: "flag on, a record for another account", flagOn: true, record: JSON.stringify({ "/elsewhere": { limitedUntil: T0 + 60 * MINUTE, seenOn: "x", text: "y" } }), held: false },
+    { name: "flag on, a record that is not JSON", flagOn: true, record: "{not json", held: true },
+    { name: "flag on, a record that is not a pause", flagOn: true, record: JSON.stringify({ [homedir()]: { limitedUntil: "soon" } }), held: true },
+    { name: "flag OFF, an active pause", flagOn: false, record: JSON.stringify({ [homedir()]: { limitedUntil: T0 + 60 * MINUTE, seenOn: "x", text: "y" } }), held: false },
+  ];
+  for (const { name, flagOn, record, held } of cases) {
+    const dir = tmpDir("machinery-canary-");
+    if (record !== null) writeFileSync(join(dir, ACCOUNT_LIMIT_FILE), record);
+    const h = memoryIo(JSON.stringify(flagOn ? withMachineryFlag(emptyCanaryState(), { name: ACCOUNT_LIMIT_FLAG, on: true, signals: [] }) : emptyCanaryState()));
+    const before = h.state();
+    machineryCanaryTick({ now: T0, facts: facts(), dir, options: OPTIONS, io: h.io });
+    const marked = h.state().samples.at(-1)?.held === true;
+    assert.equal(marked, held, `${name}: the tick's held mark`);
+    assert.equal(pausedNow(T0, dir, before) !== null, marked, `${name}: pausedNow agrees`);
+  }
 });
 
 test("#5100 (3) A HELD ORDER OLDER THAN 15 MINUTES IS DELIVERED, with the reason and the original order", () => {
