@@ -38,6 +38,10 @@ const GATE_ORDER_LITERAL = '{"session":"orchestrator","cause":"ready-row-unclaim
 const SEAT = "worker-agent-org-832";
 const PLAIN_BODY = "## Acceptance\n\n```bash\nnpx rstest run src/x.test.ts\n```\n";
 const FLEET_BODY = "## Acceptance\n\n```bash\npnpm run lab:status\n```\n";
+/** The row the order's `causeKey` names, as `wake.ts`'s `rowRefOfOrder` reads it. */
+const ROW_OF = () => ({ key: "agent-org", number: 832 });
+/** The lane's reader for a row of the given body and labels, with the flag ON. */
+const LANE = (body: string, labels: string[] = []) => ({ enabled: () => true, rowOf: ROW_OF, readRow: () => ({ body, labels }) });
 
 /** A scratch directory and its record file; removed by the caller's `finally`. */
 function scratch() {
@@ -70,7 +74,7 @@ function drive(orders: readonly object[], { path, body = PLAIN_BODY, live = [], 
     release: () => "", tier: () => null,
   };
   const oneShot = createOrchestratorOneShot({ readRow: () => ({ body }), path, write });
-  const ready = withOrchestratorOneShot(orders as { session: string; cause?: string }[], { enabled: () => enabled });
+  const ready = withOrchestratorOneShot(orders as { session: string; cause?: string }[], { enabled: () => enabled, rowOf: ROW_OF, readRow: () => ({ body }) });
   const got = deliver(ready as never, [...held, ...live], STANDING, { sleep: () => {}, run: h.run, claimer, oneShot, claimable: () => null });
   return { ...h, got, ready, heldAtClaim };
 }
@@ -94,7 +98,7 @@ test("flag OFF: the order is byte-identical to the order at origin/main, and so 
 });
 
 test("flag ON: the order is addressed to engineers with the sibling cause and briefRole orchestrator, and the prompt names orchestrator.md and not engineer.md", () => {
-  const on = withOrchestratorOneShot([GATE_ORDER], { enabled: () => true })[0] as typeof GATE_ORDER & { briefRole: string };
+  const on = withOrchestratorOneShot([GATE_ORDER], LANE(PLAIN_BODY))[0] as typeof GATE_ORDER & { briefRole: string };
   assert.equal(on.session, "engineers");
   assert.equal(on.cause, ONE_SHOT_SPAWN_CAUSES[0]);
   assert.equal(on.briefRole, "orchestrator");
@@ -117,24 +121,36 @@ test("flag ON: the order is addressed to engineers with the sibling cause and br
   }
 });
 
-test("flag ON, a fleet-or-lab row while one run is live: the order is held and names the live run; with no live run it is spawned", () => {
+test("flag ON, a fleet-or-lab row is never converted, with a run live or not: its order keeps the standing orchestrator and no pane is opened", () => {
   assert.notEqual(fleetOrLabAcceptance(FLEET_BODY), null, "premise: the fixture's Acceptance names a FLEET_LAB_PATTERNS command");
   assert.equal(fleetOrLabAcceptance(PLAIN_BODY), null, "premise: and the plain one does not");
   const s = scratch();
   try {
     writeStandIn({ seat: "worker-agent-org-831", row: 831, owner: "orchestrator" }, { path: s.path });
     const live = [{ label: "worker-agent-org-831", status: "working" }];
-    const second = drive([GATE_ORDER], { path: s.path, body: FLEET_BODY, live });
-    assert.deepEqual(second.got.sent, []);
-    assert.match(second.got.refused.join("\n"), /held: .*worker-agent-org-831 for #831/);
-    assert.equal(second.calls.filter((a) => a.join(" ").includes("workspace create")).length, 0, "no pane was opened");
-    assert.deepEqual(readStandIns(s.path).map((r) => r.seat), ["worker-agent-org-831"], "and no record was written for the held row");
-    // THE CONTROLS: the same row with no live run, and the live run with a row that does not reach the hardware, each spawn.
-    assert.deepEqual(drive([GATE_ORDER], { path: s.path, body: FLEET_BODY, live: [] }).got.sent, [`${SEAT} <- ${KEY} (STARTED sonnet/high)`]);
+    for (const seatsLive of [live, []]) {
+      const fleet = drive([GATE_ORDER], { path: s.path, body: FLEET_BODY, live: seatsLive });
+      assert.equal(fleet.ready[0].session, "orchestrator", "the gate's own order, not an engineers one");
+      assert.deepEqual(fleet.got.sent, []);
+      assert.equal(fleet.calls.filter((a) => a.join(" ").includes("workspace create")).length, 0, "no pane was opened");
+      assert.deepEqual(readStandIns(s.path).map((r) => r.seat), ["worker-agent-org-831"], "and no record was written for the row");
+    }
+    // THE CONTROL: the same live run with a row that does not reach the hardware IS spawned for it.
     assert.deepEqual(drive([GATE_ORDER], { path: s.path, body: PLAIN_BODY, live }).got.sent, [`${SEAT} <- ${KEY} (STARTED sonnet/high)`]);
   } finally {
     s.done();
   }
+});
+
+test("flag ON, a fleet-gated row, or one whose Acceptance reaches the fleet or lab, keeps the gate's order; a plain row is converted; an unreadable row and no reader keep it too", () => {
+  const sessionOf = (lane: object) => (withOrchestratorOneShot([GATE_ORDER], lane as never)[0] as { session: string }).session;
+  assert.equal(sessionOf(LANE(PLAIN_BODY)), "engineers", "THE CONTROL: a plain row IS converted, so the lane still works");
+  assert.equal(sessionOf(LANE(PLAIN_BODY, ["fleet-gated"])), "orchestrator", "a fleet-gated label keeps the gate's order");
+  assert.equal(sessionOf(LANE(PLAIN_BODY, ["ready", "fleet-gated"])), "orchestrator", "...whatever else the row carries");
+  assert.equal(sessionOf(LANE(FLEET_BODY)), "orchestrator", "an Acceptance naming a fleet command keeps it");
+  assert.equal(sessionOf({ ...LANE(PLAIN_BODY), readRow: () => { throw new Error("gh: rate limited"); } }), "orchestrator", "an unreadable row keeps it");
+  assert.equal(sessionOf({ enabled: () => true }), "orchestrator", "no reader handed: nothing is converted");
+  assert.equal(sessionOf({ ...LANE(PLAIN_BODY), enabled: () => false }), "orchestrator", "the flag OFF: the gate's order, as before");
 });
 
 test("flag ON: an IDLE standing engineer is never given the one-shot order; the row's own seat is started instead", () => {
@@ -144,7 +160,7 @@ test("flag ON: an IDLE standing engineer is never given the one-shot order; the 
     const h = herdr();
     const claimer: SpawnClaimer = { claim: () => ({ row: 832, key: "agent-org", branch: "agent/b", worktree: "/tmp/wt-agent-org-832", launchDir: "/tmp" }), release: () => "", tier: () => null };
     const oneShot = createOrchestratorOneShot({ readRow: () => ({ body: PLAIN_BODY }), path: s.path });
-    const ready = withOrchestratorOneShot([GATE_ORDER], { enabled: () => true });
+    const ready = withOrchestratorOneShot([GATE_ORDER], LANE(PLAIN_BODY));
     const got = deliver(ready as never, [{ label: "worker-capture", status: "idle" }, ...held.slice(1)], STANDING, { sleep: () => {}, run: h.run, claimer, oneShot, claimable: () => null });
     assert.deepEqual(got.sent, [`${SEAT} <- ${KEY} (STARTED sonnet/high)`], JSON.stringify(got));
     assert.equal(h.prompt("worker-capture"), undefined, "the idle standing seat was not typed into");
