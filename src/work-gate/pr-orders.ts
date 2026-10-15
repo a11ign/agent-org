@@ -1342,6 +1342,43 @@ function toDependencyBotWorker(order: any) {
 }
 
 /**
+ * agent-org#1370: THE POOL A REJECTED REVIEW ON A DEAD OWNER'S PULL REQUEST GOES TO, with the flag on. A fresh worker takes the branch and the row
+ * over, where `product-manager` was woken for them (`DEAD_OWNER_FALLBACK`). The pool is `wake.ts`'s, as the dependency bot's is (#1368).
+ */
+export const DEAD_OWNER_WORKER_SESSION = "engineers";
+
+/**
+ * agent-org#1370: WITH THE FLAG ON, A REFUSAL (`pr-review-blocked`) ON A PULL REQUEST WHOSE OWNER IS GONE (`ownerOfPr` reads `owner-gone`) is ordered to
+ * `DEAD_OWNER_WORKER_SESSION`, not to the dead session and not to `product-manager`. The refusal's prompt is kept, with the label's ownership sentence taken out
+ * (`toFreshWorker`) and the refusing review's words added: the fresh worker must act on those. The reroute is after `withholdOutsideFollowUps`, which never withholds a worker's pull request.
+ * PURE. The flag off, nothing is rerouted and every order stays as it was.
+ * @param orders every order `decide` has made, in the order it made them
+ * @param prs the open pull requests, which say who owns each one
+ */
+export function routeDeadOwnerRefusals(orders: any[], prs: any[]): any[] {
+  const gone = new Map(prs.filter((pr) => ownerOfPr(pr).source === "owner-gone").map((pr) => [`pr-${subjectRef(pr.repoKey, pr.number)}`, pr]));
+  return orders.map((order) => (gone.has(order.subject) && order.cause === "pr-review-blocked" ? toFreshWorker(order, gone.get(order.subject)) : order));
+}
+
+/**
+ * agent-org#1370: the refusal addressed to a fresh worker. Its `causeKey` moves with the session (#2001). Its prompt says why the worker is new, names the
+ * branch it takes up, drops the sentence that says the rework is the LABEL's (the label names the ended session), and carries the refusing review's words.
+ */
+function toFreshWorker(order: any, pr: any) {
+  const { session, causeKey, prompt, ...rest } = order;
+  const review = [...(pr.reviews ?? [])].reverse().find((r: any) => r?.state === "CHANGES_REQUESTED");
+  const findings = typeof review?.body === "string" && review.body.trim() !== ""
+    ? `The refusing review's words:\n${review.body.trim()}`
+    : "The refusing review carries no body in this read: read it on the pull request before the rework.";
+  return {
+    ...rest, session: DEAD_OWNER_WORKER_SESSION, causeKey: causeKey.replace(`${session}/`, `${DEAD_OWNER_WORKER_SESSION}/`),
+    prompt: `Its session \`${session}\` has ENDED and nobody holds the row this pull request closes, so this rework is a FRESH worker's: take up `
+      + `this pull request's branch \`${pr.headRefName}\` and its row, and act on the refusal below as the reviewer wrote it.\n`
+      + `${prompt.replace(/It carries your session label, so [^.]*\.\s*/, "")}\n${findings}`,
+  };
+}
+
+/**
  * agent-org#1325: the pull requests the flag orders for their review only, as `subjectRef`s: an OUTSIDE one (`reviewTrustOf`) and one the chairman
  * authored. `withholdOutsideFollowUps` matches them on an order's subject; `decide` also drops them from `reviewBlocked`'s population BEFORE the
  * `pr-review-blocked` set order is built, because that one order names several pull requests under the subject `pr-review-blocked` and no subject
