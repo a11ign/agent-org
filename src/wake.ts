@@ -3106,6 +3106,74 @@ export function resolveEndedHandoffs(handoffs: readonly { id: string; session: s
   return { settled, lines };
 }
 
+/**
+ * HOW LONG A QUEUED ORDER'S SESSION MAY BE UNKNOWN TO THE ORG before the order is dropped (agent-org#1416). `unknown` is what herdr reports for a
+ * workspace whose pane has no agent: `worker-agent-org-1325` was written for a row that closed, its worktree went, and the order was `UNDELIVERED`
+ * on 593 ticks in 26 hours with nothing to drop it. Two hours is the bound a waiting order already has ({@link HANDOFF_STALE_MS}): a session that comes
+ * back inside it gets its order, and one that does not is not coming back.
+ * WOULD CHANGE ON: a reading of how many `dropped` records' sessions came back inside the bound, from the `reason` each record carries. Moving it is this one line.
+ */
+export const UNKNOWN_SESSION_MS = HANDOFF_STALE_MS;
+
+/** Where each waiting order's first unknown tick is kept, in milliseconds by order id, beside the queue. */
+export const UNKNOWN_SINCE_FILE = "handoff-unknown-since.json";
+
+/**
+ * IS THIS ORDER'S SESSION UNKNOWN TO THE ORG RIGHT NOW: no standing seat, no reviewer instance, no pane that has an agent. An engineer instance
+ * (`worker-<n>`) is unknown only when its row is CLOSED, the same reading {@link settleOrphan} takes -- an open row may yet start its instance.
+ */
+function sessionUnknown(session: string, deps: { agents: readonly { label: string; status: string; }[]; roster: readonly string[]; isLead: (label: string) => boolean; holder: (ref: number) => { open: boolean; sessions: string[]; } | null; }): boolean {
+  if (session === "engineers" || deps.roster.includes(session) || reviewerInstance(session) !== null || deps.isLead(session)) return false;
+  const seat = deps.agents.find((a) => a.label === session);
+  if (seat !== undefined && seat.status !== "unknown") return false;
+  const row = engineerRow(session);
+  if (row === null) return true;
+  const facts = deps.holder(row);
+  return facts !== null && !facts.open;
+}
+
+/**
+ * DROP AN ORDER WHOSE SESSION THE ORG HAS NOT KNOWN FOR A BOUND (agent-org#1416). The order is retired with a record that carries its text, as
+ * {@link settleOrphan} does, and the row it names is told by a comment on that row (a report needing no decision is a row write, #2167). The bound is
+ * measured from the first tick that saw the session unknown, kept in {@link UNKNOWN_SINCE_FILE}, so one session that comes back is known again and its
+ * clock is cleared. NEVER dropped while the account is paused: a paused seat is not unknown, it is waiting for the limit to reset.
+ *
+ * @returns the orders still waiting, and one line per order dropped
+ */
+export function dropUnknownHandoffs(handoffs: readonly { id: string; session: string; prompt: string; queuedAt?: number; }[], deps: {
+  agents: readonly { label: string; status: string; }[]; roster: readonly string[]; isLead: (label: string) => boolean;
+  holder: (ref: number) => { open: boolean; sessions: string[]; } | null; post: (args: string[]) => unknown; queuePath: string; paused: boolean; now?: number;
+}): { kept: typeof handoffs; lines: string[] } {
+  const now = deps.now ?? Date.now();
+  const statePath = join(dirname(deps.queuePath), UNKNOWN_SINCE_FILE);
+  const since: Record<string, number> = existsSync(statePath) ? JSON.parse(readFileSync(statePath, "utf8")) : {};
+  const next: Record<string, number> = {};
+  const dropped = new Set<string>();
+  const lines: string[] = [];
+  for (const order of handoffs) {
+    if (deps.paused || !sessionUnknown(order.session, deps)) continue;
+    const first = since[order.id] ?? now;
+    if (now - first < UNKNOWN_SESSION_MS) { next[order.id] = first; continue; }
+    const author = authorOf(order.prompt);
+    const row = namedRefs(order.prompt)[0];
+    const waited = waitedFor(now - first);
+    recordDrop(deps.queuePath, order, { reason: `session "${order.session}" is unknown to the org (no pane, not a standing seat) for ${waited}` }, { now });
+    dropped.add(order.id);
+    lines.push(`DROPPED ${order.id}: "${order.session}" is unknown to the org (no pane, not a standing seat) and has been for ${waited}, so order `
+      + `${order.id}${author === null ? "" : ` from "${author}"`}${row === undefined ? "" : ` carrying #${row}`} has no addressee. It is retired with a record `
+      + "(`dropped`, carrying its text), not as a delivery.\n");
+    if (row === undefined) continue;
+    try {
+      deps.post(["issue", "comment", String(row), "--body", `Order ${order.id} was written for "${order.session}", which the org has not known for ${waited} `
+        + "(no pane, not a standing seat). It was dropped from the queue with a record and nothing was delivered. If the work still needs doing, send it to a session that exists."]);
+    } catch (err) {
+      lines.push(`DROP NOT TOLD ON #${row}: ${order.id} was dropped but the comment failed (${firstLine(err)}).\n`);
+    }
+  }
+  if (JSON.stringify(next) !== JSON.stringify(since)) writeFileSync(statePath, JSON.stringify(next));
+  return { kept: handoffs.filter((h) => !dropped.has(h.id)), lines };
+}
+
 /** The row an engineer instance is named for: `worker-2783` -> 2783. Anything else is `null`. */
 function engineerRow(session: string): number | null {
   const found = /^worker-([1-9][0-9]*)$/.exec(session);
@@ -8711,7 +8779,12 @@ async function main() {
     haikuDefault: { on: haikuDefaultOn({ switchesPath: decisionSwitchesPath(PRIMARY_CHECKOUT) }), refused: (label) => instanceRefused(label) }, accountPause });
   for (const line of escalated.lines) process.stdout.write(`${line}\n`);
 
-  const queued = settleEndedOrders(handoffs, agents, { queuePath, ledgerPath });
+  // agent-org#1416: AN ORDER FOR A SESSION THE ORG HAS NOT KNOWN FOR A BOUND IS DROPPED HERE, before it reaches the backlog, the stale report or the delivery,
+  // which is where it was named `UNDELIVERED` on every tick. Never while the account is paused (`accountPause`): a paused seat is waiting, not unknown.
+  const endedSettled = settleEndedOrders(handoffs, agents, { queuePath, ledgerPath });
+  const unknownDropped = dropUnknownHandoffs(endedSettled, { agents, roster, isLead: isLeadSeat, holder: holderOf, post: guardedGh, queuePath, paused: accountPause !== null });
+  for (const line of unknownDropped.lines) process.stderr.write(line);
+  const queued = unknownDropped.kept;
   // #3562: AN FYI NEVER WAKES A LEAD SEAT. It is held until the seat's next real order and rides in it, and one past the bound is dropped here, before it
   // can reach the backlog the tick reports to `ceo`: an order that waits BY DESIGN is not a stalled one.
   const fyis = foldFyis(queued);
