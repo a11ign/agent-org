@@ -22,7 +22,8 @@ import { readTrunkRed, trunkOfCodeRepository, trunkRedOrders } from "../trunk-re
 import { recordIgnoredChairmanLabels, recordTickFailures as recordFailuresOf } from "../failure-recorders.ts";
 import { readJsonObject, writeJsonObject } from "../claim-stall.ts";
 import { requiredWhenNeeded, perPullRequestOrders, greenUnarmedOrders, type UnarmedFacts, reviewBlockedOrders, stalledPrOrders,
-  STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr, ROW_REVIEW_SKILL_FLAG, PR_OWNER_ROUTING_FLAG, withholdOutsideFollowUps, routeDeadOwnerRefusals, reviewOnlyRefs, SAME_HEAD_REFAIL_FLAG, acceptanceGateOf } from "./pr-orders.ts";
+  STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr, ROW_REVIEW_SKILL_FLAG, PR_OWNER_ROUTING_FLAG, withholdOutsideFollowUps, routeDeadOwnerRefusals, reviewOnlyRefs, SAME_HEAD_REFAIL_FLAG, acceptanceGateOf, firstRefusalOf, treeWideGuardVerdict } from "./pr-orders.ts";
+import { treeWideGuardFilesIn, runTreeWideGuards } from "../lib/tree-wide-guard-org-side.ts"; // agent-org#1503
 import { checkoutPullRequestMerge, orgSideAcceptanceEligibility, orgSideAcceptanceVerdict, installPullRequestCheckout, releasePullRequestCheckout, type OrgSideVerdict } from "../acceptance-commands.ts"; // agent-org#1502
 import { labJobFinishedOrders, readLabJobRecords, readDispatchedLabJobs } from "./lab-job-orders.ts";
 import { classAndKeyOf as orgHealthClassAndKey } from "./org-health-suppression.ts";
@@ -1404,46 +1405,60 @@ export function readArmingOf(openPrs: any[], required: string[] | null, { scope 
 
 /** agent-org#1502: where the org-side acceptance gate is switched ON. OPT-IN, unlike `GREEN_UNARMED_SWITCH_ENV`: it runs a command the pull request names, on the host. */
 export const ACCEPTANCE_GATE_SWITCH_ENV = "A11IGN_PR_ACCEPTANCE_BY_GATE";
-/** How many acceptance commands one tick may RUN; the rest are withheld "deferred" and run on a later tick, so one tick is never the length of a suite times a queue. */
+/** agent-org#1503: where the org-side TREE-WIDE GUARDS are switched ON. A second, independent switch: it runs the pull request's own test files, on the host. */
+export const TREE_WIDE_GUARDS_SWITCH_ENV = "A11IGN_PR_TREE_WIDE_GUARDS_BY_GATE";
+/** How many org-side runs (acceptance commands and guard runs together) one tick may RUN; the rest are withheld "deferred" and run on a later tick, so one tick is never the length of a suite times a queue. */
 export const MAX_ACCEPTANCE_RUNS_PER_TICK = 2;
 
 /**
- * agent-org#1502 (ADR 0045 cut c): THE ORG-SIDE ACCEPTANCE VERDICT GATES ARMING. Of the unarmed candidates, the same-repository `agent/*` ones by a declared
- * identity (`orgSideAcceptanceEligibility`, and ONLY those) get their acceptance family run on the host, in a checkout of the pull request's merge ref, and
- * are armed only on a `pass` at their current head; the rest of the unarmed are returned untouched. A verdict is remembered by head (`pass` and `fail`, never
- * `not-run`), so a failing pull request is not re-run every tick and a push is.
+ * agent-org#1502 (ADR 0045 cut c): THE ORG-SIDE VERDICTS GATE ARMING. Of the unarmed candidates, the same-repository `agent/*` ones by a declared
+ * identity (`orgSideAcceptanceEligibility`, and ONLY those) get each switched-on family run on the host, in a checkout of the pull request's merge ref, and
+ * are armed only on a `pass` of every one AT THEIR CURRENT HEAD; the rest of the unarmed are returned untouched. A verdict is remembered by head (`pass` and
+ * `fail`, never `not-run`), so a failing pull request is not re-run every tick and a push is. Two families: the pull request's acceptance command
+ * (#1502) and its tree-wide guards (#1503), which are a11ign's `guardSweep` read on the org side.
  *
- * SWITCH: `A11IGN_PR_ACCEPTANCE_BY_GATE=on`. Off (the default), `armable` is `unarmed` and nothing is read, checked out or run. The one-line revert in code is the
- * call site in `readArmingOf`.
+ * SWITCHES: `A11IGN_PR_ACCEPTANCE_BY_GATE=on` and `A11IGN_PR_TREE_WIDE_GUARDS_BY_GATE=on`, each alone. Both off (the default), `armable` is `unarmed` and
+ * nothing is read, checked out or run. The one-line revert in code is the call site in `readArmingOf`.
  *
  * @returns `armable` for `settleUnarmedPrs`, `withheld` for the order
  */
-export function gateUnarmedOnAcceptance(unarmed: number[], { openPrs, scope, env = process.env, declared = declaredIdentities(), verdictOf, stateDir = REVIEWER_STATE_DIR, log = (line: string) => process.stderr.write(line) }: {
-  openPrs: any[]; scope: string; env?: Record<string, string | undefined>; declared?: DeclaredIdentities; verdictOf?: (pr: any) => OrgSideVerdict; stateDir?: string; log?: (line: string) => void;
+export function gateUnarmedOnAcceptance(unarmed: number[], { openPrs, scope, env = process.env, declared = declaredIdentities(), verdictOf, guardsOf, stateDir = REVIEWER_STATE_DIR, log = (line: string) => process.stderr.write(line) }: {
+  openPrs: any[]; scope: string; env?: Record<string, string | undefined>; declared?: DeclaredIdentities; verdictOf?: (pr: any) => OrgSideVerdict;
+  guardsOf?: (pr: any) => OrgSideVerdict; stateDir?: string; log?: (line: string) => void;
 }): { armable: number[]; withheld: { number: number; why: string; }[]; } {
-  if (env[ACCEPTANCE_GATE_SWITCH_ENV] !== "on" || unarmed.length === 0) return { armable: unarmed, withheld: [] };
+  const acceptanceOn = env[ACCEPTANCE_GATE_SWITCH_ENV] === "on";
+  const guardsOn = env[TREE_WIDE_GUARDS_SWITCH_ENV] === "on";
+  if ((!acceptanceOn && !guardsOn) || unarmed.length === 0) return { armable: unarmed, withheld: [] };
   const byDeclaredIdentity = (pr: any) => reviewTrustOf(pr, declared) === INSIDE;
   const file = join(stateDir, "acceptance-verdicts.json");
   const remembered: Record<string, OrgSideVerdict> = readJsonObject(file);
   let ran = 0;
-  const run = verdictOf ?? ((pr: any): OrgSideVerdict => {
-    const key = `${scope}#${pr.number}@${pr.headRefOid}`;
+  const repoRoot = env.A11IGN_ACCEPTANCE_REPO_ROOT ?? process.cwd();
+  const checkout = () => checkoutPullRequestMerge({ repoRoot, scratch: join(stateDir, "acceptance-checkouts") });
+  /** One family's verdict for one pull request: remembered by head, deferred past the per-tick limit, and remembered only when it is a `pass` or a `fail`. */
+  const familyOf = (family: string, deferredWhy: string, produce: (pr: any) => OrgSideVerdict) => (pr: any): OrgSideVerdict => {
+    const key = `${scope}#${pr.number}@${pr.headRefOid}${family === "" ? "" : `:${family}`}`;
     const known = remembered[key];
     if (known !== undefined && (known.kind === "pass" || known.kind === "fail")) return known;
-    if (ran >= MAX_ACCEPTANCE_RUNS_PER_TICK) return { kind: "not-run", head: String(pr.headRefOid), lines: [], why: "acceptance is deferred to a later tick (the per-tick run limit)" };
+    if (ran >= MAX_ACCEPTANCE_RUNS_PER_TICK) return { kind: "not-run", head: String(pr.headRefOid), lines: [], why: deferredWhy };
     ran++;
-    const repoRoot = env.A11IGN_ACCEPTANCE_REPO_ROOT ?? process.cwd();
-    const verdict = orgSideAcceptanceVerdict(pr, { byDeclaredIdentity, baseRepo: scope, checkout: checkoutPullRequestMerge({ repoRoot, scratch: join(stateDir, "acceptance-checkouts") }),
-      prepare: installPullRequestCheckout(), release: releasePullRequestCheckout({ repoRoot }) });
+    const verdict = produce(pr);
     if (verdict.kind !== "not-run") {
       remembered[key] = verdict;
       try { writeJsonObject(file, remembered); } catch (err) { log(`acceptance-gate: COULD NOT REMEMBER the verdict of #${pr.number} (${String((err as any)?.message ?? err).split("\n")[0].slice(0, 120)}) -- it is run again.\n`); }
     }
     return verdict;
-  });
+  };
+  const acceptance = verdictOf ?? familyOf("", "acceptance is deferred to a later tick (the per-tick run limit)", (pr) =>
+    orgSideAcceptanceVerdict(pr, { byDeclaredIdentity, baseRepo: scope, checkout: checkout(), prepare: installPullRequestCheckout(), release: releasePullRequestCheckout({ repoRoot }) }));
+  const guards = guardsOf ?? familyOf("tree-wide-guards", "tree-wide guards are deferred to a later tick (the per-tick run limit)", (pr) =>
+    treeWideGuardVerdict(pr, { eligible: (p) => orgSideAcceptanceEligibility(p, { byDeclaredIdentity, baseRepo: scope }), checkout: checkout(), prepare: installPullRequestCheckout(),
+      discover: (cwd) => treeWideGuardFilesIn(cwd), run: (files, cwd) => runTreeWideGuards(files, cwd), release: releasePullRequestCheckout({ repoRoot }) }));
   const gated = acceptanceGateOf(unarmed, {
     prOf: (number) => openPrs.find((pr) => Number(pr.number) === number),
-    gateOf: (pr) => (orgSideAcceptanceEligibility(pr, { byDeclaredIdentity, baseRepo: scope }).eligible ? run(pr) : null),
+    gateOf: (pr) => (orgSideAcceptanceEligibility(pr, { byDeclaredIdentity, baseRepo: scope }).eligible
+      ? firstRefusalOf([...(acceptanceOn ? [acceptance(pr)] : []), ...(guardsOn ? [guards(pr)] : [])])
+      : null),
   });
   for (const { number, why } of gated.withheld) log(`acceptance-gate: #${number} is NOT armed -- ${why}.\n`);
   return gated;

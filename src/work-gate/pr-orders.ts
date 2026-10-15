@@ -453,6 +453,63 @@ export function acceptanceGateOf(unarmed: number[], { prOf, gateOf }: {
   return { armable, withheld };
 }
 
+/**
+ * agent-org#1503 (ADR 0045 cut c, the `guardSweep` family): THE ORG-SIDE VERDICT OF A PULL REQUEST'S TREE-WIDE GUARDS. The same four-part eligibility as the
+ * acceptance family (`eligible` is `orgSideAcceptanceEligibility` bound, INJECTED so this file takes only its type), the same merge-ref checkout and the same
+ * verdict shape, so `acceptanceGateOf` arms on either with no second path. What it runs is `discover(cwd)`: the checkout's own guards, which declare their
+ * membership by the marker (`lib/tree-wide-guard.ts`). THE FLOOR IS ONE: a discovery that finds nothing is `not-run` and says so, because a tree whose
+ * marker was renamed would otherwise read `pass` over zero guards, which is the vacuity the sweep's `--min=1` existed to refuse. As in the acceptance
+ * family, a checkout that cannot be made or prepared, and a run that timed out, are `not-run`: they say nothing about the pull request.
+ *
+ * PURE over its seams: an ineligible pull request makes no checkout and runs nothing.
+ */
+export function treeWideGuardVerdict(pr: any, { eligible, checkout, prepare = () => {}, discover, run, release = () => {} }: {
+  eligible: (pr: any) => { eligible: true; } | { eligible: false; reason: string; };
+  checkout: (head: string, number: number) => string; prepare?: (cwd: string) => void; discover: (cwd: string) => string[];
+  run: (files: string[], cwd: string) => { ok: boolean; lines: string[]; ran: number; timedOut: boolean; }; release?: (cwd: string) => void;
+}): OrgSideVerdict {
+  const refused = eligible(pr);
+  if (!refused.eligible) return { kind: "not-run", head: null, lines: [], why: `tree-wide guards not run on the org side: ${refused.reason}` };
+  const head = typeof pr?.headRefOid === "string" && pr.headRefOid !== "" ? pr.headRefOid : null;
+  const number = Number(pr?.number);
+  if (head === null || !Number.isInteger(number)) return { kind: "not-run", head, lines: [], why: "tree-wide guards not run: the pull request's head or number was not read" };
+  const short = head.slice(0, 8);
+  const reason = (error: unknown) => String((error as Error)?.message ?? error).split("\n")[0].slice(0, 160);
+  let cwd: string;
+  try { cwd = checkout(head, number); } catch (error) {
+    return { kind: "not-run", head, lines: [], why: `tree-wide guards not run: no checkout at ${short} (${reason(error)})` };
+  }
+  try {
+    try { prepare(cwd); } catch (error) {
+      return { kind: "not-run", head, lines: [], why: `tree-wide guards not run: the checkout at ${short} could not be prepared (${reason(error)})` };
+    }
+    let files: string[];
+    try { files = discover(cwd); } catch (error) {
+      return { kind: "not-run", head, lines: [], why: `tree-wide guards not run: the guards could not be listed at ${short} (${reason(error)})` };
+    }
+    if (files.length < 1) return { kind: "not-run", head, lines: [], why: `tree-wide guards not run: no test file at ${short} declares itself one (the floor is 1), so a pass here would be over nothing` };
+    const result = run(files, cwd);
+    if (result.timedOut) return { kind: "not-run", head, lines: result.lines, why: `tree-wide guards not run to an end at ${short}: the run timed out` };
+    return { kind: result.ok ? "pass" : "fail", head, lines: result.lines,
+      why: result.ok ? `${files.length} tree-wide guard file(s) passed at ${short} (${result.ran} tests)` : `tree-wide guards FAILED at ${short} (${files.length} file(s))` };
+  } finally {
+    release(cwd);
+  }
+}
+
+/**
+ * agent-org#1503: TWO FAMILIES GATE ONE ARMING, so the verdict `acceptanceGateOf` reads is the first that is not a `pass`, and a `pass` only when every
+ * family passed AT THE SAME HEAD. A family that was switched off is simply not in the list; an empty list is no verdict (`null`: the org said nothing).
+ */
+export function firstRefusalOf(verdicts: OrgSideVerdict[]): OrgSideVerdict | null {
+  if (verdicts.length === 0) return null;
+  const refusal = verdicts.find((verdict) => verdict.kind !== "pass");
+  if (refusal !== undefined) return refusal;
+  const heads = new Set(verdicts.map((verdict) => verdict.head));
+  if (heads.size !== 1) return { kind: "not-run", head: null, lines: [], why: "the org-side families passed at different heads" };
+  return verdicts[0];
+}
+
 /** The paragraph that carries the gate's count into the order; empty for a bare list, which is the order as it was. */
 function unarmedCountText(unarmed: number, of: number | undefined, armed: number | undefined, tried: { number: number; why: string; }[], key: string,
   withheld: { number: number; why: string; }[] = []): string {
