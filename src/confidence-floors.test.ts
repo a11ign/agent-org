@@ -1,7 +1,7 @@
 // agent-org#1205: the floor from what the decision led to. Parsed decision-log lines only: no file, no switch, no provider, no network.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { calibrateFloors, FIRST_PASS_MERGED, FLAT_FLOOR, MIN_SAMPLE } from "./confidence-floors.ts";
+import { calibrateFloors, COMPACTIONS_TOO_MANY, FIRST_PASS_MERGED, FLAT_FLOOR, MIN_SAMPLE } from "./confidence-floors.ts";
 
 const USE = "model-routing";
 const QUESTION = "mechanical";
@@ -79,4 +79,20 @@ test("a later request for an id starts a new routing, and only its own outcomes 
   const control = calibrateFloors([...lines, outcome("row-5", "not-first-pass")], { use: USE });
   assert.equal(control.judged, 2);
   assert.deepEqual(control.unjoined, []);
+});
+
+test("a first-pass merge whose session compacted too often is wrong, and a count at the limit is not", () => {
+  // Answers at 0.75 merged first-pass, but each session compacted 3 times (over the limit of 2): they are wrong, so the floor moves above 0.75.
+  const compacted = new Map(Array.from({ length: 40 }, (_, i) => [`cmp-${i}`, COMPACTIONS_TOO_MANY + 1] as const));
+  const lines = [...routings("cmp", 40, 0.75, FIRST_PASS_MERGED), ...routings("ok", 40, 0.95, FIRST_PASS_MERGED)];
+  const reading = calibrateFloors(lines, { use: USE, compactions: compacted }).floors[QUESTION];
+  assert.equal(reading?.floor, 0.8, "the 0.75 merges compacted over the limit, so only the 0.95 answers are right");
+  assert.equal(reading?.calibrated, true);
+  // Negative control: the same 0.75 merges with a count AT the limit are still right, and the floor falls to the bottom of the grid.
+  const atLimit = new Map(Array.from({ length: 40 }, (_, i) => [`cmp-${i}`, COMPACTIONS_TOO_MANY] as const));
+  assert.equal(calibrateFloors(lines, { use: USE, compactions: atLimit }).floors[QUESTION]?.floor, 0.5);
+  // A count never makes an unjudged routing judged: no outcome, no verdict, however many compactions.
+  const unjudged = calibrateFloors([request("cmp-x", 0.9)], { use: USE, compactions: new Map([["cmp-x", 9]]) });
+  assert.equal(unjudged.judged, 0);
+  assert.deepEqual(unjudged.unjoined.map((u) => u.name), ["cmp-x"]);
 });
