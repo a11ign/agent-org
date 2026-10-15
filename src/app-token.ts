@@ -180,6 +180,17 @@ function readCached(path: string): InstallationToken | null {
 }
 
 /**
+ * Is the role's cached token missing, or with no more than `marginSeconds` left at `now` (epoch seconds)? A caller that refreshes ahead of a use
+ * asks this, and the cache file is read here with the rest of the cache, so no other module reads it or holds the token it contains.
+ */
+export function tokenNeedsRefresh({ cacheDir, role, now, marginSeconds = REFRESH_MARGIN_SECONDS }: {
+  cacheDir: string, role: GithubRole, now: number, marginSeconds?: number,
+}): boolean {
+  const cached = readCached(tokenPath(cacheDir, role));
+  return cached === null || cached.expiresAt - now <= marginSeconds;
+}
+
+/**
  * `node app-token.ts <role>`: print the role's token and exit 0, or say why not on stderr and exit 1. The wrapper runs it only for a role
  * `host.json` declares `github-apps`, handing the app in `A11Y_APP_ID`, `A11Y_APP_KEY_PATH` and `A11Y_APP_INSTALLATION_ID` (optional) and the
  * cache directory in `A11Y_APP_TOKEN_DIR`; any of the first two or the directory missing is exit 2, never a mint for something nobody configured.

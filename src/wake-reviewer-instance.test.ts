@@ -27,11 +27,13 @@ import {
   REVIEWER_CAUSES, REVIEWER_GH_CONFIG_DIR, reviewerEnvironment, spawnableReviewer, isReviewerOrder,
   liveReviewers, endFinishedReviewers, registerReviewer, reviewerPathsFrom, sparePathsFrom, spawnEnvironment,
   MAX_SPAWNS_PER_TICK, orderPullRequest, reviewerMismatch, prepareReviewCheckout, removeReviewCheckout,
-  reviewCheckoutPath, withReviewCheckout, linkReviewDependencies,
+  reviewCheckoutPath, withReviewCheckout, linkReviewDependencies, ensureReviewerToken, REVIEWER_TOKEN_REFRESH_SECONDS,
+  refreshLiveReviewerTokens, reviewerAppOf, reviewerTokenMinter,
 } from "./wake.ts";
+import type { homeHostConfig } from "./host-config.ts";
 import { readReviewerRegistry, REVIEWER_REGISTRY_FILE } from "./work-gate.ts";
 import { parityOwner } from "./review-attribution.ts";
-import { INSIDE } from "./review-trust.ts";
+import { INSIDE, OUTSIDE } from "./review-trust.ts";
 import { sandboxGitEnv } from "./lib/git-env.ts";
 import { REMOVAL_LOG_ENV } from "./worktree-removal.ts";
 import { startedPanes, STUB_STARTED_PANE } from "./packaging/started-pane.ts";
@@ -1000,4 +1002,162 @@ test("#2401 THE WAKE ENTRY: a started reviewer instance is REGISTERED with its s
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// --- agent-org#1348: WAKE MINTS THE REVIEWER'S TOKEN, and the reviewer's environment never names the key --------------------------------------
+
+const APP_KEY = "/home/h/.config/agent-org/apps/a11ign-reviewer.pem";
+const APP = { appId: "5289999", keyPath: APP_KEY, installationId: "170704524", slug: "a11ign-reviewer" };
+const NOW_MS = 1_000_000_000_000;
+const EXPIRES_IN = (seconds: number) => `${NOW_MS / 1000 + seconds} old-token\n`;
+
+/** A minter stand-in: records the key PATH it was handed (never a key), and writes a one-hour token into the directory it is given. */
+function stubMinter(dir: string, { fail = false }: { fail?: boolean } = {}) {
+  const script = join(dir, "mint.mjs");
+  const log = join(dir, "minter.log");
+  writeFileSync(script, `import { appendFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+appendFileSync(${JSON.stringify(log)}, process.env.A11Y_APP_KEY_PATH + "\\n");
+if (${fail}) { console.error("app token: key: stub refusal"); process.exit(1); }
+writeFileSync(join(process.env.A11Y_APP_TOKEN_DIR, "reviewer.token"), \`\${Math.floor(${NOW_MS} / 1000) + 3600} minted-token\\n\`);
+`);
+  return { script, calls: () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean) : []) };
+}
+
+test("#1348 (1): a reviewer's spawn gets its token BEFORE the pane opens, and its environment names the token directory and NOT the key", () => {
+  const w = world();
+  const minted: string[] = [];
+  const out = deliver([reviewOrder(2398)], agents({}), ROSTER, { ...w.deps, reviewerToken: (tree) => { minted.push(tree); return null; } });
+  assert.match(out.sent[0], /\(STARTED /);
+  assert.deepEqual(minted, [`${REVIEW_ROOT}/reviewer-2398`], "the token is made for the instance's own tree");
+  const [create] = w.h.said("workspace create");
+  assert.ok(create.includes(`--env A11Y_APP_TOKEN_DIR=${REVIEW_ROOT}/reviewer-2398/node_modules/.cache/app-tokens`), create);
+  assert.ok(!create.includes(APP_KEY) && !create.includes(".pem"), `the key is not named in the reviewer's environment: ${create}`);
+  assert.ok(w.events.findIndex((e) => e.includes("workspace create")) > w.events.findIndex((e) => e.includes("worktree add")),
+    "the tree exists first, as before");
+});
+
+test("#1348 (1b): a refused token refuses the spawn -- no pane, no prompt, the reason said", () => {
+  const w = world();
+  const out = deliver([reviewOrder(2398)], agents({}), ROSTER, { ...w.deps, reviewerToken: () => "the reviewer's app token could not be minted: stub refusal" });
+  assert.deepEqual(out.sent, []);
+  assert.match(out.refused[0], /stub refusal/);
+  assert.equal(w.h.said("workspace create").length, 0, "no pane was opened");
+  assert.equal(w.h.said("agent prompt reviewer-2398").length, 0, "and no prompt was typed");
+});
+
+test("#1348 (2): `ensureReviewerToken` MINTS into the tree's token directory through the minter, with the KEY PATH given to the minter alone", () => {
+  const dir = tmpDirForFile("reviewer-token-mint-");
+  const tree = join(dir, "tree");
+  const stub = stubMinter(dir);
+  assert.equal(ensureReviewerToken(tree, APP, { now: NOW_MS, script: stub.script }), null);
+  assert.equal(readFileSync(join(tree, "node_modules/.cache/app-tokens/reviewer.token"), "utf8"), `${NOW_MS / 1000 + 3600} minted-token\n`);
+  assert.deepEqual(stub.calls(), [APP_KEY], "the minter was handed the key's path");
+  assert.deepEqual(readdirSync(join(tree, "node_modules/.cache/app-tokens")), ["reviewer.token"], "the scratch directory is gone");
+});
+
+test("#1348 (2b): a token with more than the refresh margin left is KEPT -- no mint -- and a stale one is replaced", () => {
+  const dir = tmpDirForFile("reviewer-token-keep-");
+  const tree = join(dir, "tree");
+  const tokens = join(tree, "node_modules/.cache/app-tokens");
+  mkdirSync(tokens, { recursive: true });
+  const stub = stubMinter(dir);
+  writeFileSync(join(tokens, "reviewer.token"), EXPIRES_IN(REVIEWER_TOKEN_REFRESH_SECONDS + 60));
+  assert.equal(ensureReviewerToken(tree, APP, { now: NOW_MS, script: stub.script }), null);
+  assert.equal(readFileSync(join(tokens, "reviewer.token"), "utf8"), EXPIRES_IN(REVIEWER_TOKEN_REFRESH_SECONDS + 60));
+  assert.deepEqual(stub.calls(), [], "no mint for a token that is good");
+  writeFileSync(join(tokens, "reviewer.token"), EXPIRES_IN(REVIEWER_TOKEN_REFRESH_SECONDS - 60));
+  assert.equal(ensureReviewerToken(tree, APP, { now: NOW_MS, script: stub.script }), null);
+  assert.equal(readFileSync(join(tokens, "reviewer.token"), "utf8"), `${NOW_MS / 1000 + 3600} minted-token\n`, "a stale token is replaced");
+  assert.equal(stub.calls().length, 1);
+});
+
+test("#1348 (2c): a FAILED refresh keeps the token that is there, and says why", () => {
+  const dir = tmpDirForFile("reviewer-token-fail-");
+  const tree = join(dir, "tree");
+  const tokens = join(tree, "node_modules/.cache/app-tokens");
+  mkdirSync(tokens, { recursive: true });
+  writeFileSync(join(tokens, "reviewer.token"), EXPIRES_IN(10));
+  const why = ensureReviewerToken(tree, APP, { now: NOW_MS, script: stubMinter(dir, { fail: true }).script });
+  assert.match(why ?? "", /could not be minted: .*stub refusal/);
+  assert.equal(readFileSync(join(tokens, "reviewer.token"), "utf8"), EXPIRES_IN(10), "the old token is not overwritten by a failure");
+  assert.deepEqual(readdirSync(tokens), ["reviewer.token"], "and the scratch directory is removed");
+});
+
+test("#1348 (2e): a cache that cannot be written is a NAMED refusal, not a throw: a checkout that is a file mints nothing and the tick goes on", () => {
+  const dir = tmpDirForFile("reviewer-token-enotdir-");
+  const tree = join(dir, "tree");
+  writeFileSync(tree, "not a checkout\n");
+  const stub = stubMinter(dir);
+  const why = ensureReviewerToken(tree, APP, { now: NOW_MS, script: stub.script });
+  assert.match(why ?? "", /could not be refreshed: .*ENOTDIR/);
+  assert.deepEqual(stub.calls(), [], "the minter is never asked when the cache cannot be made");
+  assert.equal(readFileSync(tree, "utf8"), "not a checkout\n", "and the checkout file is left as it was");
+});
+
+test("#1348 (2d): a host that does not declare the reviewer as an app mints NOTHING and makes no directory", () => {
+  const dir = tmpDirForFile("reviewer-token-none-");
+  const tree = join(dir, "tree");
+  const stub = stubMinter(dir);
+  assert.equal(ensureReviewerToken(tree, null, { now: NOW_MS, script: stub.script }), null);
+  assert.deepEqual(stub.calls(), []);
+  assert.equal(existsSync(tree), false);
+});
+
+test("#1348 (3): the per-tick refresh mints for a live INSIDE reviewer with a checkout, and skips an OUTSIDE one, a missing checkout, a fresh token and a non-reviewer", () => {
+  const dir = tmpDirForFile("reviewer-token-tick-");
+  const tree = (label: string) => join(dir, label);
+  for (const label of ["reviewer-1", "reviewer-2", "reviewer-4", "worker-1"]) mkdirSync(tree(label));
+  mkdirSync(join(tree("reviewer-4"), "node_modules/.cache/app-tokens"), { recursive: true });
+  writeFileSync(join(tree("reviewer-4"), "node_modules/.cache/app-tokens/reviewer.token"), EXPIRES_IN(REVIEWER_TOKEN_REFRESH_SECONDS + 60));
+  const agents = [{ label: "reviewer-1" }, { label: "reviewer-2" }, { label: "reviewer-3" }, { label: "reviewer-4" }, { label: "worker-1" }];
+  const registry = { "reviewer-2": { spawnedAt: 0, trust: OUTSIDE } };
+  const stub = stubMinter(dir);
+  const failures = refreshLiveReviewerTokens(agents, registry, (t) => ensureReviewerToken(t, APP, { now: NOW_MS, script: stub.script }), { tree });
+  assert.deepEqual(failures, []);
+  assert.deepEqual(stub.calls(), [APP_KEY], "one mint, for reviewer-1 alone");
+  assert.equal(readFileSync(join(tree("reviewer-1"), "node_modules/.cache/app-tokens/reviewer.token"), "utf8"), `${NOW_MS / 1000 + 3600} minted-token\n`);
+  assert.equal(existsSync(join(tree("reviewer-2"), "node_modules")), false, "an OUTSIDE reviewer gets no token");
+  assert.equal(existsSync(join(tree("reviewer-3"))), false, "a reviewer with no checkout yet is not made one");
+  assert.equal(readFileSync(join(tree("reviewer-4"), "node_modules/.cache/app-tokens/reviewer.token"), "utf8"), EXPIRES_IN(REVIEWER_TOKEN_REFRESH_SECONDS + 60), "a fresh token is kept");
+});
+
+test("#1348 (3a): a failed refresh is RETURNED, labelled, so `main` can say which reviewer's token is stale", () => {
+  const dir = tmpDirForFile("reviewer-token-tick-fail-");
+  const tree = (label: string) => join(dir, label);
+  mkdirSync(tree("reviewer-1"));
+  const failures = refreshLiveReviewerTokens([{ label: "reviewer-1" }], {}, (t) => ensureReviewerToken(t, APP, { now: NOW_MS, script: stubMinter(dir, { fail: true }).script }), { tree });
+  assert.equal(failures.length, 1);
+  assert.match(failures[0], /^reviewer-1: the reviewer's app token could not be minted: .*stub refusal/);
+});
+
+test("#1348 (3b): `main` hands `deliver` the refresh, once, and the same minter the spawn uses (a SOURCE pin on this one wire: `main` is not driven whole by any test)", () => {
+  const source = readFileSync(new URL("./wake.ts", import.meta.url), "utf8");
+  assert.equal(source.split("reviewerRefresh: (live) => refreshLiveReviewerTokens(live, reviewerRegistry, reviewerMint),").length - 1, 1, "one wire, in `main`");
+  assert.equal(source.split("reviewerToken: reviewerMint,").length - 1, 1, "the spawn's minter is the same one");
+});
+
+test("#1348 (4): an UNREADABLE host declaration is NOT 'no app': the reviewer's app is unknown, and every mint is refused by name, with no directory made", () => {
+  const dir = tmpDirForFile("reviewer-token-unreadable-");
+  const tree = join(dir, "tree");
+  mkdirSync(tree);
+  const app = reviewerAppOf(() => { throw new Error("the declaration cannot be read: /nowhere/host.json"); });
+  assert.ok("unknown" in app, "the app is unknown, not null");
+  const why = reviewerTokenMinter(app)(tree);
+  assert.match(why ?? "", /cannot be read, so the reviewer's app is unknown: the declaration cannot be read/);
+  assert.equal(existsSync(join(tree, "node_modules")), false, "nothing was minted into, or made in, the tree");
+});
+
+test("#1348 (4a): a host that declares the reviewer on user accounts has NO app, and mints nothing (as before)", () => {
+  const app = reviewerAppOf(() => ({}) as ReturnType<typeof homeHostConfig>);
+  assert.deepEqual(app, { app: null });
+  assert.equal(reviewerTokenMinter(app)(join(tmpDirForFile("reviewer-token-user-"), "tree")), null);
+});
+
+test("#1348 (5): THE TICK REFRESHES: `deliver` asks for the live reviewers' tokens every tick, even with no order in it, and returns what they could not get", () => {
+  const w = world();
+  const seen: string[][] = [];
+  const out = deliver([], [{ label: "reviewer-1", status: "idle" }], ROSTER, { ...w.deps, reviewerRefresh: (live) => { seen.push(live.map((a) => a.label)); return ["reviewer-1: stub refusal"]; } });
+  assert.deepEqual(seen, [["reviewer-1"]], "one refresh, for the live reviewer");
+  assert.deepEqual(out.tokenFailures, ["reviewer-1: stub refusal"]);
 });
