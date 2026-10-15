@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-A merged pull request whose body declares `Closes: none -- <reason>`, where the reason names the row its own branch was built for (`#N` or `owner/repo#N`), now closes that row as built and files its verify row, in the close-out that runs on a merge and in the sweep. Before, GitHub resolved no closing reference, the row stayed open and claimed, and what the reason said was still to do was in no row (a11ign/agent-org#475 and #560). The verify row carries the Done-when items the reason cites (`Done-when 2`), or the reason itself when it cites none; it is blocked by nothing, since its build closes with the act that files it, and it carries `Not-before:` only when an item names a time. The claim is released with the close, a row nobody holds (open, no claim) is left alone and said so, and a row that cannot be read is named and fails the pass instead of being counted closed. A `Closes: none` that names no row of its own (docs and tests) is untouched, GitHub's own answer and a body's `Closes #N` lines outrank it, and the same merge seen twice files one verify row. a11ign/agent-org#750.
