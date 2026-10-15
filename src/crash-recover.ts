@@ -383,7 +383,7 @@ async function realPorts(host: HostFile, home: string): Promise<Ports> {
 }
 
 /** Launch flags need `wake.ts`, which reads the declarations: imported only here, after the files are restored. The host path comes from `host-config.ts`, the resolver `spawnEnvironment` calls, for the same reason. */
-function withLaunchFlags(ports: Ports, tool: string): Ports {
+export function withLaunchFlags(ports: Ports, tool: string): Ports {
   let wake: any;
   let profile: any;
   let hostConfig: any;

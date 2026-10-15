@@ -11,7 +11,7 @@ import { after, test } from "node:test";
 import { sandboxGitEnv } from "./lib/git-env.ts";
 import {
   crashRecoverEnabled, detectUncleanBoot, emptyGitFiles, lastTurnProfiles, planPaneActions, recover, repairGit, repeatCrash, restoreTruncated, resumeCommand,
-  writeFileAtomic, type HerdrAgent, type Ports,
+  withLaunchFlags, writeFileAtomic, type HerdrAgent, type Ports,
 } from "./crash-recover.ts";
 
 const made: string[] = [];
@@ -122,6 +122,18 @@ test("a resumed seat and a resumed worker both type AGENT_ORG_HOST in front of t
     "AGENT_ORG_HOST=/home/agent/repos/a11y-witness/.agent-org/host.json claude --resume 11111111-2222-3333-4444-555555555555 --worker-flags");
   assert.equal(resumeCommand(worker, ["--worker-flags"], "/srv/my host/host.json"),
     "AGENT_ORG_HOST='/srv/my host/host.json' claude --resume 11111111-2222-3333-4444-555555555555 --worker-flags", "a path with a space is quoted, not split");
+});
+
+test("the production launch wiring takes the host path from host-config.ts, so a resumed pane is never typed without AGENT_ORG_HOST (#1484)", async () => {
+  const tool = mkdtempSync(join(tmpdir(), "crash-tool-"));
+  made.push(tool);
+  mkdirSync(join(tool, "src"), { recursive: true });
+  writeFileSync(join(tool, "src/wake.ts"), "export {};\n");
+  writeFileSync(join(tool, "src/worker-profile.ts"), "export {};\n");
+  writeFileSync(join(tool, "src/host-config.ts"), "export function hostConfigPath() { return \"/fixture/tool/host.json\"; }\n");
+  const wired = withLaunchFlags(ports({ checkouts: [tool] }).p, tool);
+  await wired.prepare();
+  assert.equal(wired.hostPath(), "/fixture/tool/host.json", "the path comes from the tool's own host-config.ts, not a second copy of the resolution");
 });
 
 test("recover on an unclean boot restores, resumes with role flags, closes reviewers, resets failed units and announces once", async () => {
