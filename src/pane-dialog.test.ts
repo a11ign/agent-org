@@ -13,6 +13,7 @@ import { TOOL_DRIFT_KIND } from "./agent-tool-update.ts";
 import { parseFailureLedger, repeatsIn } from "./failure-ledger.ts";
 import { dialogOrder, dialogOwner, dialogSignature, raisePaneDialogs, readDialog, readRaised, writeRaised, type Memory } from "./pane-dialog.ts";
 import { STANCE, EXIT, failureLedgerPath, orderClass, promptOrQueue } from "./prompt-session.ts";
+import { isLimitMenu } from "./worker-state.ts";
 
 /** The chairman's quoted question and three choices (a11ign/a11ign#4437, comment 6078759093), drawn the way Codex draws a selection: `› 1.` on the selected line and its key hint under. */
 const REVIEWER_LAB_45 = [
@@ -49,6 +50,12 @@ const LIST_LAST_NO_SIGNATURE = "The three causes, in order:\n  1. The CLI is old
 const WORKING = "Running the suite\n  1. parse passed\n  2. render passed\n\n• Working (12s • esc to interrupt)\n\n  gpt-5 high · 83% context left";
 const WORKING_LAST = "Running the suite\n  1. parse passed\n  2. render passed\n  esc to interrupt";
 const ANSWERED = `${REVIEWER_LAB_45}\n\n• Running without the daemon\n\n› Ask Codex to do anything\n\n  ? for shortcuts`;
+/** The usage-limit menu (agent-org#1412, #1481): a representative reconstruction, not a capture. Both option lines are on screen, so `isLimitMenu` is true. */
+const LIMIT_MENU = [
+  "  You've hit your weekly limit · resets 7am (Europe/London)", "", "  What do you want to do?", "",
+  "  ❯ 1. Stop and wait for limit to reset", "    2. Upgrade your plan", "    3. Switch to usage credits", "",
+  "  Enter to confirm · Esc to cancel",
+].join("\n");
 
 // ---- THE READER -------------------------------------------------------------------------------------------------------------------------------------
 
@@ -193,7 +200,29 @@ test("(5d) a session that is no longer listed is forgotten, and each session is 
   assert.deepEqual(Object.keys(tick({ "worker-agent-org-463": CLAUDE_PERMISSION }, both.raised).raised), ["worker-agent-org-463"]);
 });
 
-test("(5e) the memory is a file: an absent or damaged one is `nothing raised`, and one that did not change is not rewritten", () => {
+test("(5f) the usage-limit menu is not a decision order: a seat on it is ordered to nobody, and the dialog on the other seat is raised as before (agent-org#1481)", () => {
+  assert.equal(isLimitMenu(LIMIT_MENU), true);
+  assert.ok(readDialog(LIMIT_MENU) !== null, "the reader still reads it as a dialog: the exclusion is the raise's, not the reader's");
+  const first = tick({ "worker-4202": LIMIT_MENU, "reviewer-lab-45": REVIEWER_LAB_45, ceo: CODEX_IDLE }, {});
+  assert.equal(first.orders.length, 1, "one order, for the Codex dialog; the limit-menu seat and the plain pane are none");
+  assert.equal(first.orders[0].owner, "product-manager");
+  assert.ok(first.orders[0].text.includes(REVIEWER_QUESTION));
+  assert.ok(!first.orders.some((o) => o.text.includes("Switch to usage credits")), "no order offers usage credits to a manager");
+  assert.deepEqual(first.sent.map((s) => s.label), ["reviewer-lab-45"]);
+  assert.deepEqual(first.refused, []);
+  assert.deepEqual(Object.keys(first.raised), ["reviewer-lab-45"], "the limit-menu seat is remembered for nothing");
+});
+
+test("(5g) a seat that showed the usage-limit menu on one tick and a different dialog on the next raises on the next tick", () => {
+  const menu = tick({ "worker-4202": LIMIT_MENU }, {});
+  assert.equal(menu.orders.length, 0);
+  assert.deepEqual(menu.raised, {});
+  const next = tick({ "worker-4202": REVIEWER_LAB_45 }, menu.raised);
+  assert.equal(next.orders.length, 1, "a dialog after the menu is a new incident");
+  assert.ok(next.orders[0].text.includes(REVIEWER_QUESTION));
+});
+
+test("(5e) the memory is a file:an absent or damaged one is `nothing raised`, and one that did not change is not rewritten", () => {
   const dir = mkdtempSync(join(tmpdir(), "pane-dialog-"));
   try {
     const path = join(dir, "state", "pane-dialog-raised.json");
