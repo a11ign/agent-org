@@ -44,12 +44,17 @@ function fakeFetch(r: Reply) {
   return { fn, calls };
 }
 
-/** A project directory, a host, a fake network and everything one run can leak through. `switches` is the text of `.agent-org/decisions.json`, absent when `undefined`. */
-function rig(opts: { triage?: unknown; switches?: string; reply?: Reply; readKey?: (path: string) => string } = {}) {
+/** A project directory, a host, a fake network and everything one run can leak through. `switches` is the text of `.agent-org/decisions.json`, absent when `undefined`; `floors` is the text of `.agent-org/confidence-floors.json`, the same. */
+function rig(opts: { triage?: unknown; switches?: string; floors?: string; reply?: Reply; readKey?: (path: string) => string } = {}) {
   const dir = tmpDir("decision-provider-");
+  const floorsPath = join(dir, ".agent-org", "confidence-floors.json");
   if (opts.switches !== undefined) {
     mkdirSync(join(dir, ".agent-org"));
     writeFileSync(decisionSwitchesPath(dir), opts.switches);
+  }
+  if (opts.floors !== undefined) {
+    mkdirSync(join(dir, ".agent-org"), { recursive: true });
+    writeFileSync(floorsPath, opts.floors);
   }
   const net = fakeFetch(opts.reply ?? { body: reply(["haiku", 0.95], [2, 0.95]) });
   const lines: string[] = [];
@@ -61,7 +66,7 @@ function rig(opts: { triage?: unknown; switches?: string; reply?: Reply; readKey
     switchesPath: decisionSwitchesPath(dir), logPath, id: "row-4628", now: () => 1_000,
   };
   const log = () => (existsSync(logPath) ? readFileSync(logPath, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
-  return { deps, net, lines, reads, log, logPath };
+  return { deps, net, lines, reads, log, logPath, floorsPath };
 }
 const ON = JSON.stringify({ "model-routing": true });
 const FALLBACKS = { tier: "sonnet", size: 3 };
@@ -156,6 +161,56 @@ test("a question's own floor beats the host's: 0.8 passes a 0.9 host floor when 
   const low = { ...QUESTIONS, tier: { ...QUESTIONS.tier, minConfidence: 0.7 } as Question, size: { ...QUESTIONS.size, minConfidence: 0.85 } as Question };
   const d = await decide("model-routing", STATE, low, r.deps);
   assert.deepEqual([d.answers.tier.fellBack, d.answers.size.fellBack], [false, true]);
+});
+
+// agent-org#1445: the calibrated floors are read from `.agent-org/confidence-floors.json`, one per `<use>.<question>`, and a question's own floor still beats them.
+const FLOORS = JSON.stringify({ "model-routing.tier": 0.95 });
+const MALFORMED_FLOORS = [
+  "{ not json " + SECRET_FILE_TEXT,
+  JSON.stringify([SECRET_FILE_TEXT]),
+  JSON.stringify({ "model-routing.tier": SECRET_FILE_TEXT }),
+  JSON.stringify({ "model-routing.tier": "0.95" }),
+  JSON.stringify({ "model-routing.tier": 1.5 }),
+  JSON.stringify({ "model-routing.tier": -0.1 }),
+];
+
+test("a calibrated floor above the host's sends an answer between them to the fallback; one below keeps it; another use's floor is not this one's", async () => {
+  const between = rig({ triage: JEV, switches: ON, floors: FLOORS, reply: { body: reply(["haiku", 0.92], [2, 0.92]) } });
+  const d = await decide("model-routing", STATE, QUESTIONS, between.deps);
+  assert.deepEqual([d.answers.tier.fellBack, d.answers.size.fellBack, values(d)], [true, false, { tier: "sonnet", size: 2 }], "tier has its own 0.95, size keeps the host's 0.9");
+  assert.match(d.answers.tier.reason!, /haiku at 0\.92, under the floor 0\.95/);
+  const below = rig({ triage: JEV, switches: ON, floors: JSON.stringify({ "model-routing.tier": 0.5 }), reply: { body: reply(["haiku", 0.89], [2, 0.95]) } });
+  assert.deepEqual(values(await decide("model-routing", STATE, QUESTIONS, below.deps)), { tier: "haiku", size: 2 }, "0.89 is under the host's 0.9 but over the calibrated 0.5");
+  const otherUse = rig({ triage: JEV, switches: ON, floors: JSON.stringify({ "review-depth.tier": 0.99 }), reply: { body: reply(["haiku", 0.92], [2, 0.95]) } });
+  assert.equal((await decide("model-routing", STATE, QUESTIONS, otherUse.deps)).answers.tier.fellBack, false, "a floor keyed to review-depth is not model-routing's");
+});
+
+test("a question's own minConfidence beats its calibrated floor: 0.8 passes a calibrated 0.95 when the question says 0.7", async () => {
+  const r = rig({ triage: JEV, switches: ON, floors: FLOORS, reply: { body: reply(["haiku", 0.8], [2, 0.95]) } });
+  const own = { ...QUESTIONS, tier: { ...QUESTIONS.tier, minConfidence: 0.7 } as Question };
+  assert.equal((await decide("model-routing", STATE, own, r.deps)).answers.tier.fellBack, false);
+});
+
+test("no calibrated floors file, or one that cannot be used, changes nothing: the host's floor stands, and a bad file says ONE line naming it and never its text", async () => {
+  const plain = rig({ triage: JEV, switches: ON, reply: { body: reply(["haiku", 0.92], [2, 0.95]) } });
+  const none = await decide("model-routing", STATE, QUESTIONS, plain.deps);
+  assert.deepEqual([none.answers.tier.fellBack, none.answers.size.fellBack, plain.lines], [false, false, []], "0.92 is over the host's 0.9 with no file");
+  for (const text of MALFORMED_FLOORS) {
+    const r = rig({ triage: JEV, switches: ON, floors: text, reply: { body: reply(["haiku", 0.92], [2, 0.95]) } });
+    for (let i = 0; i < 5; i += 1) assert.equal((await decide("model-routing", STATE, QUESTIONS, r.deps)).answers.tier.fellBack, false, `${text}: the host's floor stands`);
+    assert.equal(r.lines.length, 1, `${text}: one line per process, not one per decision`);
+    assert.ok(r.lines[0].includes(r.floorsPath), "names the floors file");
+    assert.ok(!r.lines[0].includes(SECRET_FILE_TEXT), "does not echo it");
+    assert.equal(r.net.calls.length, 5, "the provider is still asked, once per decision");
+  }
+});
+
+test("the floors are not read from decisions.json: a number there is a non-boolean that turns every use off, and a floor is never taken from it", async () => {
+  const r = rig({ triage: JEV, switches: JSON.stringify({ "model-routing": true, "model-routing.tier": 0.95 }), reply: { body: reply(["haiku", 0.92], [2, 0.95]) } });
+  const d = await decide("model-routing", STATE, QUESTIONS, r.deps);
+  assert.deepEqual([d.via, d.reason, r.net.calls.length], ["none", "the use is switched off: the switches file could not be used", 0]);
+  const floorsOnly = rig({ triage: JEV, switches: ON, reply: { body: reply(["haiku", 0.92], [2, 0.95]) } });
+  assert.equal((await decide("model-routing", STATE, QUESTIONS, floorsOnly.deps)).answers.tier.fellBack, false, "with no floors file the tier is the host's 0.9 and 0.92 passes");
 });
 
 test("an answer the question does not allow falls back to its fallback: a choice outside the criteria, a score of 6, a confidence of 2, a missing answer", async () => {

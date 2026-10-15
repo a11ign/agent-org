@@ -16,6 +16,11 @@
 // THE SWITCHES are `.agent-org/decisions.json`: `{ "<use>": true }`, one boolean per use, absent meaning off. A malformed file turns every use off and says which file, never what
 // it held. The provider and its key are the host declaration's `triage` block (#4384), not this file's business.
 //
+// THE CALIBRATED FLOORS are `.agent-org/confidence-floors.json` (agent-org#1445), beside the switches and NOT in them: `{ "<use>.<question>": 0..1 }`, a floor per question that
+// `calibrateFloors` (confidence-floors.ts) set from the routings' outcomes. A question's own `minConfidence` wins, then its calibrated floor, then the host's floor. A file that is absent
+// means no calibrated floors, quietly; one that cannot be used says so once and every question takes the host's floor. Written into decisions.json instead, a number there would turn
+// every use off, since that file must hold booleans only.
+//
 // THE LOG is append-only JSON lines beside the wake ledger, and a routing is TWO lines of two shapes, both with an `outcome` (agent-org: a11ign#4754):
 //   REQUEST  `{ use, id?, fields, questions, answers, via, fellBack, reason?, outcome: "asked", at }`   written by `decide` when the provider was ASKED (a use that is off, or a host
 //            with no key, asked nobody and writes nothing). `"asked"` is its outcome: nothing has come of it yet. Before #4754 the line had no `outcome` and a reader saw None.
@@ -33,6 +38,7 @@ export type DecisionUse = (typeof DECISION_USES)[number];
 /** More than this is not a trimmed state, and is not sent. */
 export const MAX_STATE_BYTES = 4096;
 const SWITCHES_FILE = join(".agent-org", "decisions.json");
+const FLOORS_NAME = "confidence-floors.json";
 /** A `score` has this many levels, level 1 first; the API reads them by position from zero and answers on that scale (agent-org#564). */
 export const SCORE_LEVELS = 5;
 /** The `outcome` of a REQUEST line: the provider was asked and nothing has come of it. An OUTCOME line's is the caller's label, and a still-open decision reads as this one. */
@@ -73,7 +79,10 @@ export const decisionSwitchesPath = (projectDir: string): string => join(project
 export const decisionLogPathFrom = (ledgerPath: string): string => join(dirname(ledgerPath), "decisions");
 
 type Switches = Readonly<Partial<Record<DecisionUse, boolean>>>;
-type Env = Required<Pick<TriageDeps, "diagnostic">> & { state: NonNullable<TriageDeps["state"]>; read: typeof readFileSync };
+/** The calibrated floor of each `<use>.<question>` that has one. */
+type Floors = ReadonlyMap<string, number>;
+// The floors' one-line warning has its own flag on the process state, so a malformed switches file does not swallow it.
+type Env = Required<Pick<TriageDeps, "diagnostic">> & { state: NonNullable<TriageDeps["state"]> & { floorsWarned?: boolean }; read: typeof readFileSync };
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -106,6 +115,32 @@ function warnOnce(what: string, diagnostic: (line: string) => void, state: NonNu
   if (state.switchesWarned) return;
   state.switchesWarned = true;
   diagnostic(`agent-org: decision-provider: ${what}, so every decision use is off and takes its deterministic rule`);
+}
+
+/**
+ * The calibrated floors in `path`. Absent file: none, quietly. Unreadable, not JSON, not an object, or a value that is not a number from 0 to 1: none, and ONE line naming the file.
+ * A value outside 0 to 1 is not a floor anyone can meet (above 1) or a floor that asks nothing (below 0), so the whole file is refused rather than the one value.
+ */
+function readFloors(path: string, { diagnostic, state, read }: Env): Floors {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(String(read(path, "utf8")));
+  } catch (err) {
+    if ((err as { code?: string })?.code === "ENOENT") return new Map();
+    warnFloorsOnce(path, diagnostic, state);
+    return new Map();
+  }
+  if (!isRecord(parsed) || Object.values(parsed).some((v) => typeof v !== "number" || !(v >= 0 && v <= 1))) {
+    warnFloorsOnce(path, diagnostic, state);
+    return new Map();
+  }
+  return new Map(Object.entries(parsed as Record<string, number>));
+}
+
+function warnFloorsOnce(path: string, diagnostic: (line: string) => void, state: Env["state"]): void {
+  if (state.floorsWarned) return;
+  state.floorsWarned = true;
+  diagnostic(`agent-org: decision-provider: ${path} could not be used as calibrated floors (an object of numbers from 0 to 1), so every question takes the host's floor`);
 }
 
 const wire = (question: Question): ProviderQuestion => question.type === "choice"
@@ -161,10 +196,11 @@ function readProbabilities(question: Question, raw: unknown): Record<string, num
   return Object.values(kept).reduce((sum, p) => sum + p, 0) > 1 + PROBABILITY_SLACK ? undefined : kept;
 }
 
-function settle(question: Question, raw: unknown, floorDefault: number): Answer {
+/** `calibrated` is the question's floor from the calibration file, when it has one; a question's own `minConfidence` still beats it, and the host's `floorDefault` is the last word. */
+function settle(question: Question, raw: unknown, calibrated: number | undefined, floorDefault: number): Answer {
   const read = readAnswer(question, raw);
   if (read === undefined) return { value: question.fallback, fellBack: true, reason: `the API's answer was not ${question.type === "choice" ? "a choice" : "a score from 1 to 5"} with a confidence` };
-  const floor = question.minConfidence ?? floorDefault;
+  const floor = question.minConfidence ?? calibrated ?? floorDefault;
   const kept = read.probabilities === undefined ? {} : { probabilities: read.probabilities };
   if (read.confidence < floor) return { value: question.fallback, confidence: read.confidence, ...kept, fellBack: true, asked: read.value, reason: `${read.value} at ${read.confidence}, under the floor ${floor}` };
   return { value: read.value, confidence: read.confidence, ...kept, fellBack: false };
@@ -202,16 +238,18 @@ async function decideAsked(use: DecisionUse, state: Readonly<Record<string, unkn
   const switches = deps.switches ?? file?.switches ?? {};
   if (switches[use] !== true) return unasked(use, questions, file?.unusable ? "the use is switched off: the switches file could not be used" : "the use is switched off");
   if (Buffer.byteLength(JSON.stringify(state)) > MAX_STATE_BYTES) return unasked(use, questions, "the state is too large to send");
+  // The floors sit beside the switches file the caller named (both are in `.agent-org/`), so a caller that gives no switches path gets no calibrated floors.
+  const floors = deps.switchesPath === undefined ? new Map<string, number>() : readFloors(join(dirname(deps.switchesPath), FLOORS_NAME), { diagnostic, state: processLocal, read });
   const reply = await askProvider({ state, questions: Object.fromEntries(Object.entries(questions).map(([name, q]) => [name, wire(q)])) }, deps);
-  const decision = "failed" in reply ? unasked(use, questions, reply.failed) : answered(use, questions, reply.answers, host.triage.minConfidence ?? DEFAULT_TRIAGE_MIN_CONFIDENCE);
+  const decision = "failed" in reply ? unasked(use, questions, reply.failed) : answered(use, questions, reply.answers, host.triage.minConfidence ?? DEFAULT_TRIAGE_MIN_CONFIDENCE, floors);
   // A key that cannot be read asked nobody, so there is nothing to log; every other outcome went out as a request.
   const wasAsked = !("failed" in reply) || reply.failed !== TRIAGE_UNAVAILABLE;
   if (wasAsked && deps.logPath !== undefined) writeLine(deps.logPath, logged(decision, state, deps, now()), diagnostic);
   return decision;
 }
 
-function answered(use: DecisionUse, questions: Readonly<Record<string, Question>>, raw: Record<string, unknown>, floorDefault: number): Decision {
-  const answers = Object.fromEntries(Object.entries(questions).map(([name, q]) => [name, settle(q, raw[name], floorDefault)]));
+function answered(use: DecisionUse, questions: Readonly<Record<string, Question>>, raw: Record<string, unknown>, floorDefault: number, floors: Floors): Decision {
+  const answers = Object.fromEntries(Object.entries(questions).map(([name, q]) => [name, settle(q, raw[name], floors.get(`${use}.${name}`), floorDefault)]));
   const all = Object.values(answers);
   const fellBack = all.some((a) => a.fellBack);
   // `via` says whether the provider answered at all: an answer held back by the floor was still its own (it carries a confidence), a malformed one was not.
