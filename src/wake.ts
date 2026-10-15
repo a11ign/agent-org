@@ -3209,9 +3209,11 @@ export const UNKNOWN_SINCE_FILE = "handoff-unknown-since.json";
  * IS THIS ORDER'S SESSION UNKNOWN TO THE ORG RIGHT NOW: no standing seat, no reviewer instance, no pane that has an agent. An engineer instance
  * (`worker-<n>`) is unknown only when its row is CLOSED, the same reading {@link settleOrphan} takes -- an open row may yet start its instance.
  */
-function sessionUnknown(session: string, deps: { agents: readonly { label: string; status: string; }[]; roster: readonly string[]; isLead: (label: string) => boolean; holder: (ref: number) => { open: boolean; sessions: string[]; } | null; }): boolean {
+function sessionUnknown(session: string, deps: { agents: readonly { label: string; status: string; paneless?: boolean; }[]; roster: readonly string[]; isLead: (label: string) => boolean; holder: (ref: number) => { open: boolean; sessions: string[]; } | null; }): boolean {
   if (session === "engineers" || deps.roster.includes(session) || reviewerInstance(session) !== null || deps.isLead(session)) return false;
   const seat = deps.agents.find((a) => a.label === session);
+  // agent-org#1413: A LISTED SEAT WHOSE PANE IS GONE IS NOT A SEAT THE ORG CAN DELIVER TO, WHATEVER ITS ROW SAYS: it is unknown, and its orders age out like any other's.
+  if (seat?.paneless === true) return true;
   if (seat !== undefined && seat.status !== "unknown") return false;
   const row = engineerRow(session);
   if (row === null) return true;
@@ -3228,7 +3230,7 @@ function sessionUnknown(session: string, deps: { agents: readonly { label: strin
  * @returns the orders still waiting, and one line per order dropped
  */
 export function dropUnknownHandoffs(handoffs: readonly { id: string; session: string; prompt: string; queuedAt?: number; }[], deps: {
-  agents: readonly { label: string; status: string; }[]; roster: readonly string[]; isLead: (label: string) => boolean;
+  agents: readonly { label: string; status: string; paneless?: boolean; }[]; roster: readonly string[]; isLead: (label: string) => boolean;
   holder: (ref: number) => { open: boolean; sessions: string[]; } | null; post: (args: string[]) => unknown; queuePath: string; paused: boolean; now?: number;
 }): { kept: typeof handoffs; lines: string[] } {
   const now = deps.now ?? Date.now();

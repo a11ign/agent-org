@@ -1,7 +1,7 @@
 import { CLAIM_LABEL } from "../../claim-labels.ts";
 import { homeProjectDeclaration } from "../../project-config.ts";
 import { SESSION_PREFIX } from "../../project-vocabulary.ts";
-import { listingIsComplete } from "../../herdr-agents.ts";
+import { listingIsComplete, type ListedAgent } from "../../herdr-agents.ts";
 import { familyMember } from "../../arm-pr.ts";
 import { capturingStderr, defaultRun, repoNow } from "../reads.ts";
 import { ROW_LABELS, aimOf, labelledRows, labelsOf, scopesOf } from "../vocabulary.ts";
@@ -149,7 +149,7 @@ export function declaredTrackerRepos(): (string | undefined)[] {
  * or lacks a standing pane (`listingIsComplete`: a partial listing reads EVERY holder as absent, the live ones included, and the strip would take a working seat's labels). A listing the
  * gate already read for #3535 is REUSED, never read twice, which is why `agents` is a parameter.
  */
-export function closedClaimLabelsWhenListed(agents: { label: string; status: string; }[] | null, run: (args: string[], repo?: string) => string = defaultRun, trackers?: readonly (string | undefined)[]): { rows: ClosedLabelRow[] | null; unread: string[]; agents: { label: string; status: string; }[]; } | null {
+export function closedClaimLabelsWhenListed(agents: ListedAgent[] | null, run: (args: string[], repo?: string) => string = defaultRun, trackers?: readonly (string | undefined)[]): { rows: ClosedLabelRow[] | null; unread: string[]; agents: ListedAgent[]; } | null {
   if (agents === null || !listingIsComplete(agents)) return null;
   return { ...readClosedClaimLabelRows(run, trackers), agents };
 }
@@ -180,16 +180,16 @@ function holdsClosedRow(holder: string, closedAt: unknown, nowMs: number, status
 /**
  * #3883: WHICH CLOSED ROWS' CLAIM LABELS ARE DEBRIS, PURE. A row is KEPT when a `session:<name>` label on it names a holder herdr LISTS and that holder still holds it
  * (`holdsClosedRow`: a standing seat's hold ends a day after the close, an idle or done `worker-<n>`'s ten minutes after it, agent-org#745); everything else -- an unlisted
- * holder, a holder past its grace, or no `session:` label at all -- is stripped, by `labelsToStrip` (`answer:*` stays, as it decides). `repo` rides each entry, so the act is in
+ * holder, a PANELESS one (agent-org#1413: listed, but its pane is gone, so it is ended), a holder past its grace, or no `session:` label at all -- is stripped, by `labelsToStrip` (`answer:*` stays, as it decides). `repo` rides each entry, so the act is in
  * the tracker the row is in.
  */
-export function closedClaimDebris(rows: ClosedLabelRow[], agents: { label: string; status?: string; }[], nowMs: number = Date.now()): { strip: { number: number; labels: string[]; repo?: string; }[]; kept: { number: number; holders: string[]; repo?: string; }[]; } {
+export function closedClaimDebris(rows: ClosedLabelRow[], agents: { label: string; status?: string; paneless?: boolean; }[], nowMs: number = Date.now()): { strip: { number: number; labels: string[]; repo?: string; }[]; kept: { number: number; holders: string[]; repo?: string; }[]; } {
   const strip: { number: number; labels: string[]; repo?: string; }[] = [];
   const kept: { number: number; holders: string[]; repo?: string; }[] = [];
   for (const row of rows) {
     const labels = labelsOf(row);
     const holders = labels.filter((l) => l.startsWith(SESSION_PREFIX)).map((l) => l.slice(SESSION_PREFIX.length))
-      .filter((name) => agents.some((a) => a.label === name && holdsClosedRow(name, row.closedAt, nowMs, a.status)));
+      .filter((name) => agents.some((a) => a.label === name && a.paneless !== true && holdsClosedRow(name, row.closedAt, nowMs, a.status)));
     const at = row.repo === undefined ? {} : { repo: row.repo };
     if (holders.length > 0) kept.push({ number: row.number, holders, ...at });
     else strip.push({ number: row.number, labels, ...at });

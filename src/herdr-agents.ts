@@ -28,6 +28,12 @@ export type SessionOption = { session?: string };
 /** @param {string[]} args */
 const defaultRun = (args: string[]) => execFileSync("herdr", args, { encoding: "utf8", timeout: 30_000 });
 
+/** Where the paneless line goes by default: the stderr the gate's own `GATE:` lines go to. */
+const defaultSay = (line: string) => process.stderr.write(`${line}\n`);
+
+/** agent-org#1413: the labels last said through each sink. `readAgents` runs many times in one tick, so the line is said once per change in the set, not per read. */
+const panelessSaid = new WeakMap<(line: string) => void, string>();
+
 /**
  * Every workspace herdr knows, as `{ label, status }`, or `null` when herdr could not be asked.
  *
@@ -39,23 +45,83 @@ const defaultRun = (args: string[]) => execFileSync("herdr", args, { encoding: "
  * `{"result":{"workspaces":[{"label":"worker-2747","agent_status":"working",...}, ...]}}`, one entry per open
  * workspace -- a CLOSED workspace's label is simply absent from the array, not present with a "closed" status.
  *
+ * An entry whose pane herdr no longer has is still LISTED (it stays in this array, in status `unknown`), marked `paneless: true` -- see
+ * {@link markPaneless}. Presence decides "a seat exists", so dropping it here would read a live seat as absent and start a second one.
+ *
  * @param {(args: string[]) => string} [run]
- * @returns {{label: string, status: string}[] | null}
+ * @param {{session?: string, say?: (line: string) => void}} [options] `say` takes the one line {@link sayPaneless} writes; the default is stderr.
+ * @returns {{label: string, status: string, paneless?: boolean}[] | null}
  */
-export function readAgents(run: (args: string[]) => string = defaultRun, { session = ORG_SESSION }: SessionOption = {}): { label: string; status: string; }[] | null {
+export function readAgents(run: (args: string[]) => string = defaultRun, { session = ORG_SESSION, say = defaultSay }: SessionOption & { say?: (line: string) => void; } = {}): ListedAgent[] | null {
   let raw;
   try {
     raw = run(["--session", session, "workspace", "list"]);
   } catch {
     return null;
   }
+  let agents: ListedAgent[];
+  let panes: Map<string, string>;
   try {
     const parsed = JSON.parse(raw);
     const workspaces = parsed?.result?.workspaces;
     if (!Array.isArray(workspaces)) return null;
-    return workspaces.map((w) => ({ label: String(w.label ?? ""), status: String(w.agent_status ?? "unknown") }));
+    agents = workspaces.map((w) => ({ label: String(w.label ?? ""), status: String(w.agent_status ?? "unknown") }));
+    panes = new Map(workspaces.flatMap((w): [string, string][] => (typeof w?.workspace_id === "string" ? [[String(w.label ?? ""), rootPaneOf(w.workspace_id)]] : [])));
   } catch {
     return null;
+  }
+  if (agents.some((a) => a.status === "unknown")) markPaneless(agents, panes, run, session);
+  sayPaneless(agents.filter((a) => a.paneless === true), say);
+  return agents;
+}
+
+/** One listed agent as {@link readAgents} reports it. `paneless` is set only when herdr has shown its pane gone (agent-org#1413). */
+export type ListedAgent = { label: string; status: string; paneless?: boolean; };
+
+/**
+ * agent-org#1413, Change 2: THE ONE LINE SAYING WHAT WAS TREATED AS ENDED. `say` gets `treated N listed agents with no pane as ended: <labels>` when the set of paneless
+ * labels differs from the set last said through that sink, and nothing when it is the same. An empty set clears the memory, so a set that comes back is said again.
+ * A run is a process, so this says the line once per run that finds the set (and once per change within one), and a later run says it again: nothing is kept between runs.
+ */
+function sayPaneless(paneless: ListedAgent[], say: (line: string) => void): void {
+  if (paneless.length === 0) { panelessSaid.delete(say); return; }
+  const labels = paneless.map((a) => a.label).sort().join(", "); // sorted: the same set in another listing order is the same set
+  if (panelessSaid.get(say) === labels) return;
+  panelessSaid.set(say, labels);
+  say(`treated ${paneless.length} listed agents with no pane as ended: ${labels}`);
+}
+
+/**
+ * A workspace's root pane, by herdr's own naming: every agent's pane is `<workspace>:p1` (measured live 2026-10-15 for all 17 listed agents, and
+ * `openPane` takes the root pane from `workspace create`). A pane named this way that herdr does not have is then `pane_not_found` and marks nothing
+ * else, so a convention that ever failed would leave an agent unmarked, never ended.
+ */
+function rootPaneOf(workspace: string): string {
+  return `${workspace}:p1`;
+}
+
+/**
+ * agent-org#1413: A LISTED AGENT WHOSE PANE HERDR NO LONGER HAS IS ENDED, NOT LIVE. Its workspace stays in `workspace list` with status `unknown`, so
+ * the status alone cannot tell it from a seat still starting; what can is its pane. `herdr pane read <pane>` answers `pane_not_found` for a pane that is
+ * gone (measured live 2026-10-15 on `worker-agent-org-1325`, whose pane `w4KZ:p1` is still in `pane list`, so `pane list` cannot say so; `pane read` can).
+ *
+ * ONLY `pane_not_found` MARKS. Every other failure -- herdr not answering, a timeout, an answer that is not JSON -- is UNKNOWN, which is never read as ended:
+ * a pane that cannot be read now may be one the org still needs. Only an `unknown` status is looked at, so a working or idle seat costs no call.
+ */
+function markPaneless(agents: ListedAgent[], panes: Map<string, string>, run: (args: string[]) => string, session: string): void {
+  for (const agent of agents) {
+    const pane = panes.get(agent.label);
+    if (agent.status === "unknown" && pane !== undefined && paneNotFound(run, pane, session)) agent.paneless = true;
+  }
+}
+
+/** Whether `herdr pane read` says the pane does not exist. Anything else (readable, or herdr failing for another reason) is `false`. */
+function paneNotFound(run: (args: string[]) => string, pane: string, session: string): boolean {
+  try {
+    run(["--session", session, "pane", "read", pane, "--source", "visible"]);
+    return false;
+  } catch (err) {
+    return `${(err as any)?.stderr ?? ""}${(err as any)?.stdout ?? ""}${(err as any)?.message ?? ""}`.includes("pane_not_found");
   }
 }
 
