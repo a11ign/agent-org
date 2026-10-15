@@ -258,6 +258,21 @@ test("work-tick: PARTIAL still delivers the real orders, and says which lane wen
   assert.match(String(got.why), /one lane could not be read/);
 });
 
+/**
+ * agent-org#1414: a gate whose only unread lanes were SKIPPED BY DESIGN exits PACED, and the tick must not call that "could not be read" -- 663 ticks
+ * of it were offered as a fault that never clears. A refused lane keeps PARTIAL and its wording, so the two lines are never one.
+ */
+test("work-tick: a PACED gate still delivers, says no lane could not be read; a PARTIAL one still says it", () => {
+  const paced = afterGate(GATE.PACED);
+  assert.equal(paced.deliver, true, "the orders the gate printed are real");
+  assert.match(String(paced.why), /skipped by pacing, none refused/);
+  assert.doesNotMatch(String(paced.why), /could not be read/);
+  assert.notEqual(GATE.PACED, GATE.PARTIAL, "two codes, or the split is lost before the tick sees it");
+  // the other direction: the refused form is unchanged
+  assert.match(String(afterGate(GATE.PARTIAL).why), /one lane could not be read/);
+  assert.doesNotMatch(String(afterGate(GATE.PARTIAL).why), /skipped by pacing/);
+});
+
 test("work-tick: an exit code nobody documented is treated as CANNOT_ASK, never as quiet", () => {
   for (const code of [7, 129, -1]) {
     assert.equal(afterGate(code).deliver, false, `exit ${code} must not deliver`);

@@ -21,7 +21,10 @@ import { GRAPHQL_RESERVE, GRAPHQL_SWEEP_MINUTES, OTHER_SCOPES_MEMORY, PACING_FLA
 import { defaultRun, eventGateOf, otherScopesToRead, primaryDue, primaryLanes, unreadScopes, type GateFacts } from "../work-gate/reads.ts";
 import type { Scope as TickScope } from "../event-queue.ts";
 import type { Scope } from "../work-gate/vocabulary.ts";
-import { emptyCanaryState, withMachineryFlag } from "../org-health.ts";
+import { emptyCanaryState, withMachineryFlag, type CanaryIo } from "../org-health.ts";
+import { EXIT as GATE_EXIT, tickLanes } from "../work-gate.ts";
+import { exitPartial } from "../work-gate/tick.ts";
+import { loadAllowlist, normaliseLine } from "../repeating-lines.ts";
 
 const MINUTE = 60_000;
 const NOW = Date.parse("2026-10-12T12:00:00Z");
@@ -264,4 +267,68 @@ test("agent-org#1353: with no facts given, a host that declares webhook applies 
       else process.env.A11Y_TICK_SCOPES_FILE = before;
     }
   });
+});
+
+// ---- agent-org#1414: A LANE SKIPPED BY PACING IS NOT "COULD NOT BE READ" ----------------------------------------------------------------------
+
+/** What `exitPartial` wrote and the code it exited with, with `process.exit` and stderr stood in for. */
+function partialSaid(split: { refused: string[]; paced: string[]; }, delivered = 2) {
+  const written: string[] = [];
+  const realWrite = process.stderr.write, realExit = process.exit;
+  process.stderr.write = ((text: string) => { written.push(String(text)); return true; }) as typeof process.stderr.write;
+  let code: number | undefined;
+  process.exit = ((c: number) => { code = c; throw new Error("exit"); }) as typeof process.exit;
+  try {
+    exitPartial(split, delivered);
+  } catch (err) {
+    if ((err as Error).message !== "exit") throw err;
+  } finally {
+    process.stderr.write = realWrite;
+    process.exit = realExit;
+  }
+  return { line: written.join("").trim(), code };
+}
+
+const PACED_LANES = ["the lanes of a11ign/control (no event named it, and it was read less than 15 minutes ago)", "the org-health reads"];
+
+test("agent-org#1414: tickLanes hands the refused and the paced lanes apart, and `unread` is still both", () => {
+  const io: CanaryIo = { read: () => null, write: () => {}, fileIncident: () => "https://example.test/1", log: () => {} };
+  const lanes = (prs: any[] | null, pacedSkips: { refused: string[]; }[]) =>
+    tickLanes({ prs, readyRows: [], others: [], pacedSkips, unarmed: [], releaseRuns: null, run: () => "", now: NOW, dir: "/state", io });
+  const allPaced = lanes([], [{ refused: pacedUnread({ paced: true, remaining: 10 }, true) }, { refused: [] }]);
+  assert.deepEqual(allPaced.refused, []);
+  assert.deepEqual(allPaced.paced, ["the other repositories' lanes", "the org-health reads"]);
+  assert.deepEqual(allPaced.unread, allPaced.paced, "PARTIAL still names every skipped lane");
+  const both = lanes(null, [{ refused: ["the org-health reads"] }]);
+  assert.deepEqual(both.refused, ["the pull-request list"]);
+  assert.deepEqual(both.paced, ["the org-health reads"]);
+  assert.deepEqual(both.unread, ["the pull-request list", "the org-health reads"]);
+});
+
+test("agent-org#1414: an all-paced PARTIAL says `skipped by pacing, none refused` and exits PACED; one refused lane keeps `could not read` and PARTIAL", () => {
+  const paced = partialSaid({ refused: [], paced: PACED_LANES });
+  assert.equal(paced.code, GATE_EXIT.PACED);
+  assert.match(paced.line, /^PARTIAL: 2 lane\(s\) skipped by pacing, none refused: /);
+  assert.doesNotMatch(paced.line, /could not read/);
+  assert.match(paced.line, /NOT examined/, "a skip is still never reported clean");
+  // the refused case, with a paced lane beside it: the refusal decides
+  const refused = partialSaid({ refused: ["the Ready rows"], paced: PACED_LANES });
+  assert.equal(refused.code, GATE_EXIT.PARTIAL);
+  assert.match(refused.line, /^PARTIAL: could not read the Ready rows and the lanes of a11ign\/control/);
+  assert.doesNotMatch(refused.line, /skipped by pacing/);
+  assert.notEqual(GATE_EXIT.PACED, GATE_EXIT.PARTIAL);
+});
+
+test("agent-org#1414: the repeating-lines allowlist matches BOTH all-paced lines and NEITHER refused one", () => {
+  const allow = loadAllowlist();
+  const matched = (line: string) => allow.some((a) => a.pattern.test(normaliseLine(line)));
+  assert.ok(matched(partialSaid({ refused: [], paced: PACED_LANES }).line), "the gate's all-paced line is allowlisted");
+  assert.ok(matched(partialSaid({ refused: [], paced: PACED_LANES.slice(1) }, 39).line), "with one lane, and another order count");
+  assert.ok(matched("lane(s) skipped by pacing, none refused; see the gate's stderr"), "the tick's reading of it");
+  // POSITIVE CONTROL for the two below: the refused lines are real, and have the same prefix and the same tail
+  const refused = partialSaid({ refused: ["the Ready rows"], paced: PACED_LANES });
+  assert.match(refused.line, /^PARTIAL: could not read /);
+  assert.ok(!matched(refused.line), "the gate's refused line is not allowlisted");
+  assert.ok(!matched(partialSaid({ refused: ["the pull-request list"], paced: [] }).line), "nor is a plain refusal");
+  assert.ok(!matched("one lane could not be read; see the gate's stderr"), "nor is the tick's refused reading");
 });
