@@ -22,7 +22,7 @@ import { readTrunkRed, trunkOfCodeRepository, trunkRedOrders } from "../trunk-re
 import { recordIgnoredChairmanLabels, recordTickFailures as recordFailuresOf } from "../failure-recorders.ts";
 import { readJsonObject, writeJsonObject } from "../claim-stall.ts";
 import { requiredWhenNeeded, perPullRequestOrders, greenUnarmedOrders, type UnarmedFacts, reviewBlockedOrders, stalledPrOrders,
-  STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr, ROW_REVIEW_SKILL_FLAG, PR_OWNER_ROUTING_FLAG, withholdOutsideFollowUps, reviewOnlyRefs, SAME_HEAD_REFAIL_FLAG } from "./pr-orders.ts";
+  STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr, ROW_REVIEW_SKILL_FLAG, PR_OWNER_ROUTING_FLAG, withholdOutsideFollowUps, routeDeadOwnerRefusals, reviewOnlyRefs, SAME_HEAD_REFAIL_FLAG } from "./pr-orders.ts";
 import { labJobFinishedOrders, readLabJobRecords, readDispatchedLabJobs } from "./lab-job-orders.ts";
 import { classAndKeyOf as orgHealthClassAndKey } from "./org-health-suppression.ts";
 import { TABLE_ROW as STANDING_ROW } from "../board-truth-audit.ts";
@@ -382,7 +382,8 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // in ONE place -- `START_CAUSES` is the whole statement of what "new work" means, and a cause added
   // without classifying it is caught by `work-gate.test.ts` rather than silently surviving a window.
   // #1325: LAST, over EVERY cause, because the PR causes come from six producers. With the flag on, an outside or chairman-authored pull request keeps its review.
-  const routed = ownerRouting ? withholdOutsideFollowUps(orders, prs, identities ?? declaredIdentities()) : orders;
+  // #1370: the rejected review on a dead owner's pull request goes to a fresh worker, after the withholding (which never touches a worker's pull request).
+  const routed = ownerRouting ? routeDeadOwnerRefusals(withholdOutsideFollowUps(orders, prs, identities ?? declaredIdentities()), prs) : orders;
   return drain ? routed.filter((o) => !START_CAUSES.includes(o.cause)) : routed;
 }
 
