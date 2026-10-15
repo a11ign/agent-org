@@ -698,6 +698,18 @@ export function spawnInvocation(order: { cause: string; }, name: string, pane: s
 export const SPAWN_CAUSES = Object.freeze(["ready-row-unclaimed"]);
 
 /**
+ * The causes a tick may start an engineer process for WITHOUT A ROW to claim: a red pull request, whose fix the engineer pilot carries (agent-org#1520).
+ * A SIBLING OF `SPAWN_CAUSES`, NEVER A WIDENING OF IT, for the reason `REVIEWER_CAUSES` gives: the 20-clean-cycles counter runs on that list.
+ *
+ * WHY A PULL REQUEST IS NOT A ROW. `pr-checks-failing` is addressed to `engineers` and the only thing that starts one is a ready row
+ * (`ready-row-unclaimed`), so a red dependency pull request with no row (a11ign#5528, UNDELIVERED for eight hours) had no path to a process: every
+ * engineer had held a row, `route` refused them, and `spawnWorker` refused the order for naming no row. The pull request is the unit here. It is
+ * NOT CLAIMED (there is no row to claim, and `spawnClaimability` refuses a key it cannot read as a row), and its address is named for the pull request
+ * ({@link spawnableRole}), so one red pull request is at most one process however many ticks offer it, and the pace and safety limits all still apply.
+ */
+export const PULL_REQUEST_SPAWN_CAUSES = Object.freeze(["pr-checks-failing"]);
+
+/**
  * The engineer roles, in the order they are offered work: `sessions.json`'s `live` entries whose `role` is
  * `engineer`, in file order.
  *
@@ -795,9 +807,29 @@ const START_BUDGET_DEFERRED = "deferred: this tick's agent starts have used thei
  * right to. So a non-candidate order reports what `route` said and nothing more, and the pilot's own
  * refusals are reserved for orders it could genuinely have taken.
  */
-export function isPilotOrder(order: { session: string; cause?: string; }) {
+export function isPilotOrder(order: { session: string; cause?: string; causeKey?: string; }) {
   // #832: A ONE-SHOT ORCHESTRATOR RUN IS A PILOT ORDER TOO (it is started, claimed and ended the way an engineer's is), and its cause is asked HERE and never added to `SPAWN_CAUSES`.
-  return order.session === "engineers" && (SPAWN_CAUSES.includes(String(order.cause)) || isOneShotOrder(order) || isCeoOneShotOrder(order));
+  return order.session === "engineers" && (SPAWN_CAUSES.includes(String(order.cause)) || isOneShotOrder(order) || isCeoOneShotOrder(order)
+    || isPullRequestSpawnOrder(order));
+}
+
+/**
+ * The pull request a red-check order is about, as a {@link RowRef} (`key` is `""` for the first tracker, as a row's is), or `null`.
+ * Read by {@link redPullRequestOf}, the one reader of {@link RED_CHECK_KEY}, so a key it cannot parse, or one naming a repository the declaration
+ * does not list, is not a pull request this spawns for.
+ */
+function pullRequestOfOrder(order: { cause?: string; causeKey: string; }): RowRef | null {
+  const red = redPullRequestOf(order);
+  return red === null ? null : { key: red.key, number: red.number };
+}
+
+/**
+ * Is this a red-check order for a pull request the pilot may start an engineer for (agent-org#1520): addressed to `engineers`, a cause in
+ * {@link PULL_REQUEST_SPAWN_CAUSES}, and a key that names its pull request. Such an order carries no row, so nothing about it is claimed.
+ */
+export function isPullRequestSpawnOrder(order: { session: string; causeKey?: string; cause?: string; }): boolean {
+  return order.session === "engineers" && PULL_REQUEST_SPAWN_CAUSES.includes(String(order.cause))
+    && pullRequestOfOrder({ cause: order.cause, causeKey: order.causeKey ?? "" }) !== null;
 }
 
 /**
@@ -878,16 +910,20 @@ export function spawnableRole(order: { session: string; causeKey: string; cause?
       + `"${order.session}"` };
   }
   const oneShot = ONE_SHOT_SPAWN_CAUSES.includes(String(order.cause)) || CEO_ONE_SHOT_SPAWN_CAUSES.includes(String(order.cause));
-  if (!SPAWN_CAUSES.includes(String(order.cause)) && !oneShot) {
+  // agent-org#1520: A RED PULL REQUEST IS NAMED FOR ITSELF, never handed a standing role, so one pull request is one address however many ticks offer it.
+  const pullRequest = isPullRequestSpawnOrder(order);
+  if (!SPAWN_CAUSES.includes(String(order.cause)) && !oneShot && !pullRequest) {
     return { refusal: `no spawn: "${order.cause ?? "an order carrying no cause"}" is not a pilot cause `
-      + `(${SPAWN_CAUSES.join(", ")})` };
+      + `(${[...SPAWN_CAUSES, ...PULL_REQUEST_SPAWN_CAUSES].join(", ")})` };
   }
   // #832: A ONE-SHOT ORCHESTRATOR RUN IS NEVER GIVEN A STANDING ROLE'S ADDRESS, only the spare named for its row: that is the address `endFinishedSpares` ends when the row
   // closes, so "spawned for that row and ended when the row is" holds, and a standing `worker-*` seat is never briefed as the orchestrator.
-  const listed = oneShot ? undefined : roster.find((label) => !agents.some((a) => a.label === label) && !drained.includes(label));
+  const listed = oneShot || pullRequest ? undefined : roster.find((label) => !agents.some((a) => a.label === label) && !drained.includes(label));
   if (listed !== undefined) return { role: listed };
   const seen = roster.map((label) => `${label}=${agents.find((a) => a.label === label)?.status}`).join(", ");
-  const ref = rowRefOfOrder(order);
+  // A PULL REQUEST'S NUMBER NAMES ITS SPARE THE WAY A ROW'S DOES. The two share one family, so a row and a pull request with the same number name one address:
+  // the holder check below then refuses the second while the first holds a process, which is the only failure that matters (never two processes on one address).
+  const ref = pullRequest ? pullRequestOfOrder(order) : rowRefOfOrder(order);
   const label = ref === null ? null : spareLabelForRow({ row: ref.number, key: ref.key });
   if (label === null) {
     return { refusal: `no spawn: all ${roster.length} engineer roles hold a process (${seen}) and this order names `
@@ -896,9 +932,9 @@ export function spawnableRole(order: { session: string; causeKey: string; cause?
   }
   const holder = agents.find((a) => a.label === label);
   if (holder !== undefined || drained.includes(label)) {
-    return { refusal: `no spawn: "${label}" is the address row ${ref === null ? "" : rowMention(ref)} would be named, and it `
+    return { refusal: `no spawn: "${label}" is the address ${pullRequest ? "pull request" : "row"} ${ref === null ? "" : rowMention(ref)} would be named, and it `
       + `${holder === undefined ? "is drained" : `already holds a process (${holder.status})`} -- a second process `
-      + "under one address would share one B2 budget, so the row waits for that process to end (#2469)" };
+      + "under one address would share one B2 budget, so the order waits for that process to end (#2469)" };
   }
   return { role: label };
 }
@@ -5509,11 +5545,13 @@ function targetFor(order: {
   // #832: A ONE-SHOT ORCHESTRATOR RUN'S CLAIM IS HELD, AND ITS RECORD OF A SPAWN WRITTEN, INSIDE THE CLAIMER (`standInClaimer`): the spawn's own order of checks is unchanged, and an order
   // with no guard or no claimer handed in is never spawned, so the hardware rule does not depend on a caller remembering it.
   // #914: the ceo's one-shot run is guarded by its own `ceoOneShot`, the same way, and never by the orchestrator's.
-  const claimer = isOneShotOrder(order) ? standInClaimer(deps.claimer, deps.oneShot, { rowOf: rowRefOfOrder, live })
+  // agent-org#1520: A RED PULL REQUEST HAS NO ROW, so it is given NO claimer and NO claim check: there is no row to claim, and `spawnClaimability` reads only a row key.
+  const pullRequest = isPullRequestSpawnOrder(order);
+  const claimer = pullRequest ? undefined : isOneShotOrder(order) ? standInClaimer(deps.claimer, deps.oneShot, { rowOf: rowRefOfOrder, live })
     : isCeoOneShotOrder(order) ? standInClaimer(deps.claimer, deps.ceoOneShot, { rowOf: rowRefOfOrder, live }) : deps.claimer;
   if (claimer !== undefined && "refusal" in claimer) return { refusal: `${routed.refusal}; no spawn: ${claimer.refusal}` };
   const spawn = spawnWorker(order, live, roster,
-    { run: deps.run, env: deps.env, drained: deps.drained, claimable: deps.claimable, claimer,
+    { run: deps.run, env: deps.env, drained: deps.drained, claimable: pullRequest ? undefined : deps.claimable, claimer,
       memory: deps.memory, claimRefused: deps.claimRefused, toolchain: deps.toolchain });
   if ("refusal" in spawn) return { refusal: `${routed.refusal}; ${spawn.refusal}` };
   // REGISTERED BEFORE THE PROMPT, because a refused prompt leaves the process running (see `deliver`).
@@ -7074,10 +7112,11 @@ const enrichDecisionDeps = ({ host, ledgerPath, projectDir = PRIMARY_CHECKOUT }:
   ({ host, switchesPath: decisionSwitchesPath(projectDir), logPath: decisionLogPathFrom(ledgerPath), id });
 
 /** The pull request a settled-red order is about, or `null` for a key naming none or a repository the declaration does not list (never the primary's by default). */
-function redPullRequestOf(order: Enrichable): { repo: string; number: number; head8: string; refail: boolean } | null {
+function redPullRequestOf(order: Pick<Enrichable, "cause" | "causeKey">): { key: string; repo: string; number: number; head8: string; refail: boolean } | null {
   const match = order.cause === "pr-checks-failing" ? RED_CHECK_KEY.exec(order.causeKey) : null;
-  const repo = match === null ? null : codeRepositoryOf((match[1] ?? "").replace(/#$/, ""));
-  return match === null || repo === null ? null : { repo, number: Number(match[2]), head8: match[3], refail: match[4] !== undefined };
+  const key = (match?.[1] ?? "").replace(/#$/, "");
+  const repo = match === null ? null : codeRepositoryOf(key);
+  return match === null || repo === null ? null : { key, repo, number: Number(match[2]), head8: match[3], refail: match[4] !== undefined };
 }
 
 /**
