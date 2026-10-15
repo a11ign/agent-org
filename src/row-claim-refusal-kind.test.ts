@@ -2,7 +2,8 @@
 /**
  * `src/row-claim.ts`, agent-org#1262 (a11ign/a11ign#5282, class `claim-refused`): A REFUSAL THAT IS THE CLAIM GUARD WORKING IS NOT A FAILURE OF THE CLAIM PATH.
  * The worktree cap, a B4 overlap, a tree that already exists and a rule copy behind the release are written as `claim-guard-held`, which `class-repeat` does not count; the three failures
- * (an unreadable read, B4 not askable, an unknown tracker key) stay `claim-refused`. Both kinds are read by `readClaimRefusals`, so signal 26 still counts every refusal.
+ * (an unreadable read, B4 not askable, an unknown tracker key) stay `claim-refused`. A copy of `src/` run from outside any git work tree is the guard unable to ask, not a
+ * failed claim (agent-org#1458), so it is `claim-guard-held`. Both kinds are read by `readClaimRefusals`, so signal 26 still counts every refusal.
  *
  * THE REF of a failure stays the refusal's first line, which is what it is today (the cause), and is what the existing `row-claim-refusal-cause.test.ts` pins.
  *
@@ -43,18 +44,20 @@ const RULE_BEHIND = "THIS CHECKOUT'S COPY OF THE RULE IS 3 COMMIT(S) BEHIND THE 
 // THE GUARD WORKING, AS A CLAIM ON A ROW SOMEONE ELSE HOLDS, OR ONE WHOSE Waiting-for IS UNMET (agent-org#1453): copied from the text row-claim.ts prints.
 const ALREADY_CLAIMED = "issue is already claimed by worker-5455 -- and the worktree it had just created was removed";
 const WAITING_FOR_UNMET = "`Waiting-for: closed a11ign/agent-org#1185` is not yet true: the row cannot be finished until it is, and a claim on it is released again. Claim it once the condition holds.";
+// THE GUARD WORKING, AS A COPY OF `src/` RUN OUTSIDE ANY GIT WORK TREE (agent-org#1458): copied from the text stale-rule-guard.ts prints.
+const CANNOT_ASK_NO_TREE = "CANNOT ASK whether this checkout's copy of the rule is current: /scratch/copy is not inside a git work tree, so there is\n  no repository to compare against `origin/main`. This refuses rather than assuming it is up to date.";
 
-// THE FAILURE OF THE CLAIM PATH: four refusals, copied the same way. The fourth is the stale-rule guard unable to ask (`stale-rule-guard.ts`): it fails closed, and that is a failure.
+// THE FAILURE OF THE CLAIM PATH: refusals copied the same way. The CANNOT ASK one is the negative control: it is the guard unable to ask for a reason that is not the tree (`origin/main` unresolvable), and that is a failure.
 const UNREADABLE_READ = "row-claim: could not read issue #15 from a11ign/agent-org -- refusing to guess whether it is claimed. Command failed: gh issue view 15";
 const B4_NOT_ASKABLE = "B4 COULD NOT BE ASKED which rows are already claimed: that list could not be read, so this row's Region cannot be compared with theirs. INCONCLUSIVE, not clear -- retry the claim (the gate offers the row again by itself).";
 const UNKNOWN_TRACKER = "no tracker with key `nope` is declared in .agent-org/project.json (declared: the empty key); nothing is defaulted to another tracker's row of the same number";
-const CANNOT_ASK_NO_TREE = "CANNOT ASK whether this checkout's copy of the rule is current: /scratch/copy is not inside a git work tree, so there is no history to read";
+const CANNOT_ASK_NO_HISTORY = "CANNOT ASK whether this checkout's copy of the rule is current: `origin/main` is not\n  resolvable here and the checkout holds no release tag. A verdict computed from a rule that may\n  have been replaced is worse than no verdict, so this refuses rather than assuming it is up to\n  date. `git fetch --tags origin` and try again.";
 
 // A read the rate limit refused: one outage, the guard working (ceo's reading on the row).
 const RATE_LIMITED_READ = "row-claim: could not read issue #15 from a11ign/agent-org -- refusing to guess whether it is claimed. Command failed: gh issue view 15\ngh said: GraphQL: API rate limit already exceeded for user ID 328832207.";
 
-const GUARD_HELD = [WORKTREE_CAP, TREE_EXISTS, B4_OVERLAP, RULE_BEHIND, ALREADY_CLAIMED, WAITING_FOR_UNMET];
-const FAILURES = [UNREADABLE_READ, B4_NOT_ASKABLE, UNKNOWN_TRACKER, CANNOT_ASK_NO_TREE];
+const GUARD_HELD = [WORKTREE_CAP, TREE_EXISTS, B4_OVERLAP, RULE_BEHIND, ALREADY_CLAIMED, WAITING_FOR_UNMET, CANNOT_ASK_NO_TREE];
+const FAILURES = [UNREADABLE_READ, B4_NOT_ASKABLE, UNKNOWN_TRACKER, CANNOT_ASK_NO_HISTORY];
 
 /** Each refusal written, in order, one ledger line per call at a minute apart; returns the ledger's path, read back as lines. */
 function ledgerOf(name: string, refusals: string[]): string[] {
