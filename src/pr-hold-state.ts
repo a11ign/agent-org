@@ -32,6 +32,7 @@ import { SESSION_PREFIX } from "./project-vocabulary.ts";
 import { IDLE_STATUSES } from "./idle-claimant.ts";
 import { listingIsComplete } from "./herdr-agents.ts";
 import { subjectMention, subjectRef } from "./review-attribution.ts";
+import { decidedBy } from "./decided-by.ts";
 
 export type Wait = import("./wait-condition.ts").Wait;
 export type WaitFacts = import("./wait-condition.ts").WaitFacts;
@@ -274,8 +275,71 @@ export function holderStep({ holder, pr, agents, declaration }: { holder: string
 export type HolderOrder = { session: string; cause: string; subject: string; discriminator: string; prompt: string; causeKey: string;
   fallback?: string; fallbackOnlyIfAbsent?: boolean; fallbackPrompt?: string };
 
-/** What is said about the hold itself: who, since when and why, in the words the hold recorded. */
-export type HoldFacts = { pr: HeldPr; holder: string; reason: string };
+// --- A HOLD-REMINDER ORDER QUOTES THE MANAGER'S DIRECTION ON THE PULL REQUEST (agent-org#1397) ---------------------------------------------------------------------------
+
+/** The seats that decide for the org. Their comments are told apart by the `decided-by` marker, because one App serves all three (`lane-ownership.ts`). */
+export const MANAGER_SEATS: readonly string[] = Object.freeze(["orchestrator", "product-manager", "ceo"]);
+
+/**
+ * The managers App's logins and the leads' account: `ROLE_LOGIN.ceo` in `lane-ownership.ts`. Copied, not imported: that module loads the project's declaration
+ * when it is imported, and this module is loaded by every project's wake, so the import broke a project whose declaration names no roles. Keep the two in step by hand.
+ */
+export const MANAGER_LOGINS: readonly string[] = Object.freeze(["a11ign-ai-leads", "a11ign-managers[bot]", "a11ign-managers", "app/a11ign-managers"]);
+
+/** How many manager directions a hold-reminder order quotes: the newest, and no more. The rest are named, so the holder knows there is more to read. */
+export const DIRECTIONS_QUOTED = 3;
+
+/** How much of one direction is quoted. A longer one is cut and the order says so: the pull request has the rest. */
+export const DIRECTION_CHARS = 1200;
+
+/** A manager's comment on a held pull request, posted after its hold was taken. */
+export type ManagerDirection = { seat: string; author: string; body: string; at: number };
+
+/**
+ * THE MANAGER DIRECTIONS POSTED ON A HELD PULL REQUEST AFTER ITS HOLD (agent-org#1397). A holder woken with only the hold's own facts is told the old thing: a manager
+ * posts "drop your hold" after the hold, and the order does not carry it.
+ *
+ * A comment is a direction when a manager login posted it (one of {@link MANAGER_LOGINS}) AND its LAST `decided-by` marker names a manager seat.
+ * The seat is the marker's and not the login's, because one App serves all three seats. A manager comment with no marker names no seat and is not attributed to one:
+ * absence is not proof. A comment at or before the hold's marker is an earlier word and is not quoted.
+ * @param {unknown[]} comments the pull request's comments, as `gh pr list --json comments` gives them
+ * @param {number | null} since the hold marker's date (`holdReasonOf`'s); `null`, an undated hold, quotes nothing
+ * @returns {ManagerDirection[]} oldest first
+ */
+export function managerDirectionsAfter(comments: unknown[], since: number | null): ManagerDirection[] {
+  if (since === null) return [];
+  const directions: ManagerDirection[] = [];
+  for (const raw of comments) {
+    const { author, body, createdAt } = raw as { author?: { login?: unknown } | null; body?: unknown; createdAt?: unknown };
+    const at = Date.parse(String(createdAt ?? ""));
+    const seat = decidedBy(body);
+    const login = String(author?.login ?? "");
+    if (!(at > since) || seat === null || !MANAGER_SEATS.includes(seat) || !MANAGER_LOGINS.includes(login)) continue;
+    directions.push({ seat, author: login, body: String(body), at });
+  }
+  return directions.sort((a, b) => a.at - b.at);
+}
+
+/**
+ * THE DIRECTIONS AS THE ORDER QUOTES THEM: the newest {@link DIRECTIONS_QUOTED}, oldest first, each verbatim up to {@link DIRECTION_CHARS} and named by its seat and author.
+ * The rest are counted, not quoted. `""` for none, so a hold with no direction after it reads exactly as it did.
+ * @param {ManagerDirection[]} directions @returns {string}
+ */
+function directionsText(directions: ManagerDirection[]): string {
+  if (directions.length === 0) return "";
+  const quoted = directions.slice(-DIRECTIONS_QUOTED).map(({ seat, author, body }) => {
+    const shown = body.slice(0, DIRECTION_CHARS).trimEnd();
+    const cut = body.length > DIRECTION_CHARS ? `\n> [cut: ${body.length - DIRECTION_CHARS} characters more on the pull request]` : "";
+    return `MANAGER DIRECTION, \`${seat}\` (by \`${author}\`), POSTED ON THIS PULL REQUEST AFTER THE HOLD:\n${shown.split("\n").map((line) => `> ${line}`.trimEnd()).join("\n")}${cut}\n`;
+  });
+  const earlier = directions.length - quoted.length;
+  return `A MANAGER HAS SAID SOMETHING ON THIS PULL REQUEST SINCE THE HOLD WAS TAKEN. READ IT BEFORE YOU DECIDE WHAT THE HOLD STILL SAYS.\n`
+    + (earlier > 0 ? `${earlier} earlier manager direction${earlier === 1 ? "" : "s"} not quoted: read the pull request for ${earlier === 1 ? "it" : "them"}.\n` : "")
+    + quoted.join("");
+}
+
+/** What is said about the hold itself: who, since when and why, in the words the hold recorded, and the manager directions posted on it since. */
+export type HoldFacts = { pr: HeldPr; holder: string; reason: string; directions: ManagerDirection[] };
 
 const releaseCommand = ({ pr, holder }: { pr: HeldPr; holder: string }): string =>
   `agent-org pr:release ${pr.repoKey === undefined || pr.repoKey === "" ? "" : `--repo-key=${pr.repoKey} `}${pr.number} --session=${holder}`;
@@ -295,6 +359,7 @@ export function holderWakeOrder(hold: HoldFacts, { idleMinutes, gone }: { idleMi
     subject: `pr-${ref}`, discriminator: stage,
     prompt: `YOU HOLD ${mention} (\`${HOLD_PREFIX}${holder}\`)${pr.approved ? ", WHICH IS APPROVED," : ""} AND YOU HAVE BEEN IDLE FOR ${idleMinutes} MINUTES with no declared state: ${hold.reason}. `
       + "A hold stops the pull request being armed; the gate lifts one only when the condition it names is true, and nothing else lifts it but you.\n"
+      + directionsText(hold.directions)
       + `IF ITS REASON IS OVER, RELEASE IT NOW: \`${releaseCommand(hold)}\`.\n`
       + "IF IT STILL STANDS, SAY SO AS A FIELD, because the terminal is not one: `agent-org worker:state blocked <row> <reason>` (the answer you wait for) or "
       + `\`agent-org worker:state waiting-review ${pr.number}\` / \`waiting-ci ${pr.number}\` (it is open and waits on that), or re-take the hold with \`pr:hold ${pr.number} --until "merged #<m>"\`, which the gate lifts itself.\n`
@@ -313,6 +378,7 @@ function decisionPrompt(hold: HoldFacts, { idleMinutes, gone }: { idleMinutes: n
     ? `\`${holder}\` NO LONGER EXISTS (no workspace carries that label), so it could not be woken`
     : `\`${holder}\` was woken ${HOLDER_ESCALATE_MINUTES} minutes ago and is still idle (${idleMinutes} minutes idle in all) with no declared state`;
   return `${mention} IS HELD BY A SESSION THAT HAS STOPPED${pr.approved ? ", AND IT IS APPROVED" : ""}: ${state}. The hold: ${hold.reason}.\n`
+    + directionsText(hold.directions)
     + `DECIDE, AND WRITE THE REASON ON THE PULL REQUEST: release it (\`${releaseCommand(hold)}\`, which only the reason on the pull request makes safe to do for another session), or take the work over `
     + "and say who now holds it. If the reason is still true, record where it ends as a field (`Waiting-for:`, `Not-before:`, `answer:<session>`).\n"
     + "THE GATE DID NOT AND WILL NOT REMOVE THE LABEL: the decision is yours, and this order is asked once for this hold.";
@@ -356,7 +422,7 @@ export function holderOrdersOf({ prs, agents, declarations, memory, now }: { prs
       const key = holdHolderKey({ pr, holder });
       const step = holderStep({ holder, pr, agents, declaration: declarations.get(holder) }, { memory: memory[key], now });
       if (step.memory !== null) next[key] = step.memory;
-      const hold = { pr, holder, reason: holdReasonText(marker) };
+      const hold = { pr, holder, reason: holdReasonText(marker), directions: managerDirectionsAfter(open.comments ?? [], marker.since) };
       if (step.step === "wake") orders.push(holderWakeOrder(hold, step));
       if (step.step === "escalate") orders.push(holderDecisionOrder(hold, step));
     }
