@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { CLAIM_LABEL } from "../../claim-labels.ts";
+import { decidedBy } from "../../decided-by.ts";
 import { subjectMention, subjectRef } from "../../review-attribution.ts";
 import { declaredRegionFiles, regionCovers, splitRegionEntry } from "../../region-paths.ts";
 import { hostConfigPath } from "../../host-config.ts";
@@ -10,6 +12,7 @@ import { SESSION_PREFIX } from "../../project-vocabulary.ts";
 import { recordEmergencyPriority } from "../../failure-recorders.ts";
 import { readJsonObject, writeJsonObject } from "../../claim-stall.ts";
 import { defaultRun, repoNow } from "../reads.ts";
+import { commentsSince } from "../../ticket-port/comments-since.ts";
 import { CHAIRMAN_LOGINS, CHAIRMAN_PRIORITY_LABEL, LAUNCH_PLACEHOLDER, MAX_ROW_ORDERS_PER_TICK, PRIORITY_LABEL, REVIEWER_STATE_DIR, type Yielding,
   digestOf, isChairmanRow, labelsOf, laneOwnerOf, sessionOf } from "../vocabulary.ts";
 
@@ -43,6 +46,8 @@ export type OfferHierarchy = {
   /** #5032: the rows whose `priority:emergency` is HONOURED this tick -- ahead of the chairman's -- and the labels that were not. Absent is not asked. */
   emergencyRows?: ReadonlySet<number>;
   emergencyIgnored?: EmergencyIgnored[];
+  /** #1456: the first-delivery ledger of a refused chairman row, and the `ceo` answer each row carries. Absent is not asked: every refusal is told, as it always was. */
+  refusals?: { stateDir: string; now: number; answeredAt: (row: { number: number; repo?: string; }, since: string) => string | null; };
 };
 
 export const chairmanRowsOf = (hierarchy?: OfferHierarchy) => hierarchy?.chairmanRows;
@@ -578,24 +583,109 @@ type HierarchyOrder = { session: string; cause: string; subject: string; discrim
  * recipient and the words are what differ, the profile asked of the woken session does not. All three are idempotent on their `causeKey`.
  * @param {OfferHierarchy | undefined} hierarchy @param {{ blocked: { number: number, reason: string }[], yielding: Yielding[], openRows: any[], prs: any[] }} facts
  */
-export function hierarchyOrders(hierarchy: OfferHierarchy | undefined, { blocked, yielding, openRows, prs }: { blocked: { number: number; reason: string; }[]; yielding: Yielding[]; openRows: any[]; prs: any[]; }): HierarchyOrder[] {
+export function hierarchyOrders(hierarchy: OfferHierarchy | undefined, { blocked, yielding, openRows, prs }: { blocked: RefusedRow[]; yielding: Yielding[]; openRows: any[]; prs: any[]; }): HierarchyOrder[] {
   if (hierarchy === undefined) return [];
   return [
-    ...blocked.filter((row) => hierarchy.chairmanRows?.has(row.number)).map(chairmanRefusedOrder),
+    ...chairmanRefusedOrders(hierarchy, blocked, [...openRows, ...prs]),
     ...(hierarchy.ignored ?? []).map(ignoredLabelOrder),
     ...(hierarchy.emergencyIgnored ?? []).map(emergencyIgnoredOrder),
     ...yielding.flatMap((entry) => entry.holders.flatMap((holder) => yieldOrder(entry.row, holder, { openRows, prs }))),
   ];
 }
 
-/** @param {{ number: number, reason: string }} row */
-function chairmanRefusedOrder({ number, reason }: { number: number; reason: string; }): HierarchyOrder {
+/** A row the gate shelved, with the repository it came from when it is not the primary's (`subjectIdentity`). */
+type RefusedRow = { number: number; reason: string; repoKey?: string; repo?: string; };
+
+/** #1456: the machinery flag for the refusal ledger below. Off, a refused chairman row is told every tick as it was (`legacyChairmanRefusedOrder`). Read in `tick.ts`'s `offerHierarchyNow`. */
+export const CHAIRMAN_REFUSAL_FLAG = "chairman.refusedOnce";
+
+/** #1456: the ledger file in `stateDir`: per refused chairman row (`subjectRef`), the digest of the reason it was last told for, and when that first telling was. */
+const REFUSAL_LEDGER = "chairman-refusals.json";
+type RefusalLedger = Record<string, { digest: string; deliveredAt: string; }>;
+
+/**
+ * #1456: WHICH REFUSED CHAIRMAN ROWS `ceo` IS TOLD ABOUT NOW. A refusal is told ONCE per reason digest. A row `ceo` has answered SINCE that first telling is not told
+ * again for the same reason, and is told again when the reason changes, or when a blocker the reason names has closed and the row is still refused. A row no `ceo`
+ * comment answers is told exactly as it always was: the ledger only ever SILENCES on an answer, so an unanswered refusal is never dropped. The ledger is rewritten
+ * to the rows refused THIS tick (a row no longer refused is forgotten, so its next refusal is a first telling). A ledger that cannot be written is said and the tell
+ * stays on: the next tick re-tells, which is the old behaviour and never a silence.
+ */
+function chairmanRefusedOrders(hierarchy: OfferHierarchy, blocked: RefusedRow[], openAndPrs: any[]): HierarchyOrder[] {
+  const refused = blocked.filter((row) => hierarchy.chairmanRows?.has(row.number));
+  const memory = hierarchy.refusals;
+  if (memory === undefined) return refused.map(legacyChairmanRefusedOrder);
+  const path = join(memory.stateDir, REFUSAL_LEDGER);
+  const before = readJsonObject(path) as RefusalLedger;
+  const ledger: RefusalLedger = {};
+  const orders: HierarchyOrder[] = [];
+  for (const row of refused) {
+    const ref = subjectRef(row.repoKey, row.number);
+    const digest = digestOf(row.reason);
+    const entry = before[ref];
+    const sameReason = entry !== undefined && entry.digest === digest;
+    const answeredAt = sameReason ? memory.answeredAt(row, entry.deliveredAt) : null;
+    const answered = answeredAt !== null && Date.parse(answeredAt) > Date.parse(entry.deliveredAt);
+    const silenced = answered && !blockerClosed(row, openAndPrs);
+    if (silenced) { ledger[ref] = entry; continue; }
+    const firstTelling = entry === undefined || entry.digest !== digest || answered;
+    ledger[ref] = firstTelling ? { digest, deliveredAt: new Date(memory.now).toISOString() } : entry;
+    orders.push(chairmanRefusedOrder(row, digest, answered));
+  }
+  if (JSON.stringify(ledger) !== JSON.stringify(before)) {
+    try {
+      writeJsonObject(path, ledger);
+    } catch (err: any) {
+      process.stderr.write(`chairman-refusal: could not write ${path} (${String(err?.message ?? err).split("\n")[0]}); the refusals are told again next tick\n`);
+    }
+  }
+  return orders;
+}
+
+/** #1456: a blocker the refusal's reason names -- an unqualified `#<n>` of the row's own repository -- that is no longer open, among `openAndPrs`. A reason naming none is not cleared. */
+function blockerClosed(row: RefusedRow, openAndPrs: any[]): boolean {
+  const named = [...row.reason.matchAll(/(?<![\w/#])#(\d+)\b/g)].map((match) => Number(match[1]));
+  if (named.length === 0) return false;
+  const open = new Set(openAndPrs.filter((candidate) => (candidate?.repoKey ?? "") === (row.repoKey ?? "")).map((candidate) => Number(candidate?.number)));
+  return named.some((number) => !open.has(number));
+}
+
+/**
+ * #1456: WHEN `ceo` LAST ANSWERED a chairman row SINCE `since` (its first telling), on the row: the newest comment whose `decided-by:` marker names `ceo`. `null` when there
+ * is none, AND when the comments cannot be read -- an unread answer is no answer, so the refusal is told again rather than silenced.
+ *
+ * THE READ IS THE PORT'S (`commentsSince`, one repository-wide list since `since`), not a `gh api` shape of this file: a new call here would be a rise in a baselined file, which
+ * `gh-call-ratchet.test.ts` refuses. The port's `run` wants the parsed `--slurp` pages, so a refused or non-JSON answer is `null` there, and so here.
+ * @param {{ number: number, repo?: string }} row @param {string} since @param {(args: string[]) => string} [run]
+ */
+export function chairmanRowAnsweredByCeo(row: { number: number; repo?: string; }, since: string, run: (args: string[]) => string = defaultRun): string | null {
+  const pages = commentsSince({ repo: row.repo ?? "{owner}/{repo}", since: Date.parse(since), run: (args) => { try { return JSON.parse(run(args)); } catch { return null; } } });
+  if (pages === null) return null;
+  const answers = pages.filter((comment) => comment.issue_url.endsWith(`/issues/${row.number}`) && decidedBy(comment.body) === "ceo");
+  const newest = answers.reduce((latest: number, comment) => Math.max(latest, Date.parse(comment.created_at)), Number.NEGATIVE_INFINITY);
+  return Number.isFinite(newest) ? new Date(newest).toISOString() : null;
+}
+
+/** #1456: the refusal order as it was on main, for `CHAIRMAN_REFUSAL_FLAG` off -- the keys are unchanged, so nothing re-tells at the flag's switch. */
+function legacyChairmanRefusedOrder({ number, reason }: { number: number; reason: string; }): HierarchyOrder {
   const discriminator = `${number}-${digestOf(reason)}`;
   return { session: "ceo", cause: "ready-row-unclaimable", subject: `row-${number}`, discriminator,
     prompt: `CHAIRMAN ROW REFUSED: #${number} carries \`${CHAIRMAN_PRIORITY_LABEL}\` and the gate is NOT offering it. The reason, quoted:\n\n> ${reason}\n\n`
       + "The chairman asked for this row to be picked up next, so tell him now what is in the way and what would clear it, and do whatever in your lane clears it "
       + "(every other eligibility check still binds a chairman row: template sections, holds, a B4 overlap with another chairman row).",
     causeKey: `ceo/chairman-row-refused/${discriminator}` };
+}
+
+/** @param {{ number: number, reason: string }} row @param {string} digest @param {boolean} [answered] #1456: `ceo` answered this row since its first telling, and the blocker the reason names has closed */
+function chairmanRefusedOrder(row: RefusedRow, digest: string, answered: boolean = false): HierarchyOrder {
+  const ref = subjectRef(row.repoKey, row.number);
+  const discriminator = `${ref}-${digest}`;
+  return { session: "ceo", cause: "ready-row-unclaimable", subject: `row-${ref}`, discriminator,
+    prompt: `CHAIRMAN ROW REFUSED: ${subjectMention(row)} carries \`${CHAIRMAN_PRIORITY_LABEL}\` and the gate is NOT offering it. The reason, quoted:\n\n> ${row.reason}\n\n`
+      + (answered ? "ceo ANSWERED this row before, and the blocker the reason names has since closed, yet the row is still refused: this is told again for that. " : "")
+      + "The chairman asked for this row to be picked up next, so tell him now what is in the way and what would clear it, and do whatever in your lane clears it "
+      + "(every other eligibility check still binds a chairman row: template sections, holds, a B4 overlap with another chairman row).",
+    // #1456: the subject is `row-<key>#<n>` for a row of another repository, as `stuckSubjectOf` reads it (a `/row-` segment, so the stuck path names the row).
+    causeKey: `ceo/chairman-row-refused/row-${ref}/${digest}` };
 }
 
 /** @param {EmergencyIgnored} ignored #5032: a `priority:emergency` the gate did NOT honour -- told to `ceo`, who is the only setter the label admits */

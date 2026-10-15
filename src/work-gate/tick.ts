@@ -54,7 +54,7 @@ import { type KeyedClosedClaimedRow, readClosedClaimedRows } from "./causes/rows
 import { EPIC_LABEL, epicOrders, finishedEpicOrders } from "./causes/rows-epics.ts";
 import { fleetBatchOrders } from "./causes/rows-fleet-batch.ts";
 import { type BoardFacts, readRowsOffBoard, rowOffBoardOrders, rowsOffBoard } from "./causes/rows-off-board.ts";
-import { type EmergencyPriorityOption, type OfferHierarchy, chairmanRowsOf, emergencyHierarchyNow, hierarchyOrders, offeredByShare, productRegionsOf,
+import { type EmergencyPriorityOption, type OfferHierarchy, CHAIRMAN_REFUSAL_FLAG, chairmanRowAnsweredByCeo, chairmanRowsOf, emergencyHierarchyNow, hierarchyOrders, offeredByShare, productRegionsOf,
   readChairmanPriority, readEmergencyPriorityOption, rowOrders } from "./causes/rows-offer.ts";
 import { blockerClearedOrders, hostDriftOrders, hostUnitsEntry, readOtherScopes, rowsWithOpenPr, trackerReadings } from "../work-gate.ts";
 import { type ArmingPort, MAX_ROW_ORDERS_PER_TICK, NOT_STARTABLE, REVIEWER_STATE_DIR, type Scope, type ScopeRepository, aimOf, comparablePrFiles,
@@ -1008,10 +1008,13 @@ export function readChairmanPriorityOfOffer(rows: any[], openRows: any[] = [], r
 }
 
 /** #4524: `main`'s one call for the hierarchy -- the verified chairman rows (a read per labelled row, none when no row is) and the project's declared ranking. @param {any[]} rows @param {any[]} openRows #4800: the claimed rows are read too */
-export function offerHierarchyNow(rows: any[], openRows: any[], { run, stateDir = REVIEWER_STATE_DIR, now = Date.now(), emergency = readEmergencyPriorityOption() }: { run?: (args: string[]) => string; stateDir?: string; now?: number; emergency?: EmergencyPriorityOption; } = {}): OfferHierarchy {
+export function offerHierarchyNow(rows: any[], openRows: any[], { run, stateDir = REVIEWER_STATE_DIR, now = Date.now(), emergency = readEmergencyPriorityOption(), refusedOnce }: { run?: (args: string[]) => string; stateDir?: string; now?: number; emergency?: EmergencyPriorityOption; refusedOnce?: boolean; } = {}): OfferHierarchy {
   const { chairmanRows, ignored } = readChairmanPriorityOfOffer(rows, openRows, run);
+  // #1456: `CHAIRMAN_REFUSAL_FLAG` is a machinery flag: off, `hierarchyOrders` gets no ledger and tells each refusal as it did; `refusedOnce` is a caller's reading (a test passes it)
+  const refusalsOn = refusedOnce ?? machineryFlagOn(readReenqueueState(stateDir, () => undefined), CHAIRMAN_REFUSAL_FLAG);
   // #730: a label the chairman did not add is a ledger incident, written HERE, where the tick builds `ignored`, and not in `readChairmanPriority`, which the claim reads too
-  return { chairmanRows, ignored: recordIgnoredChairmanLabels({ ignored, repo: REPO, stateDir, now }), milestoneRanking: homeProjectDeclaration().offerMilestones, ...emergencyHierarchyNow(rows, openRows, { emergency, run, stateDir, now }) };
+  return { chairmanRows, ignored: recordIgnoredChairmanLabels({ ignored, repo: REPO, stateDir, now }), milestoneRanking: homeProjectDeclaration().offerMilestones, ...emergencyHierarchyNow(rows, openRows, { emergency, run, stateDir, now }),
+    refusals: refusalsOn ? { stateDir, now, answeredAt: (row, since) => chairmanRowAnsweredByCeo(row, since, run) } : undefined }; // #1456: read only for a row the gate refuses, by `hierarchyOrders`
 }
 
 /**
