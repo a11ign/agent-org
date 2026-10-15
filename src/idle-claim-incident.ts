@@ -106,9 +106,12 @@ export type HolderState = { declaredAt: number | null, turnStartedAt: number | n
  * was idle from the latest of the window's start, the claim, its last declaration and its last turn's start, until `now`. THE START IS THE LATE SIDE, so the figure is a FLOOR:
  * an idle run that ended before `now` and was followed by work is not counted past that work's start, and a holder whose turn began recently is credited from it.
  * A row whose claim could not be dated is not counted and is named in `undated`, never read as 0 hours or as a claim that began at the window's start.
+ * `paused` is the Claude allowance's pause, read by the caller (`pausedIntervals`): time inside it is no holder's idle time, because no seat could have run,
+ * so each span is read net of it. It is an input and not a read, so this file stays a leaf.
  */
-export function idleClaimedHours({ claims, sessionsWithPr, holders, since, now }: {
+export function idleClaimedHours({ claims, sessionsWithPr, holders, since, now, paused = [] }: {
   claims: ClaimedRow[], sessionsWithPr: ReadonlySet<string>, holders: ReadonlyMap<string, HolderState>, since: number, now: number,
+  paused?: readonly { from: number, to: number }[],
 }): { hours: number, claims: number, idleClaims: number, undated: string[] } {
   let ms = 0;
   let idleClaims = 0;
@@ -119,7 +122,13 @@ export function idleClaimedHours({ claims, sessionsWithPr, holders, since, now }
     const { declaredAt = null, turnStartedAt = null } = holders.get(session) ?? {};
     if (declaredAt !== null && declaredAt >= Math.max(claimedAt, turnStartedAt ?? 0)) continue;
     const from = Math.max(since, claimedAt, declaredAt ?? 0, turnStartedAt ?? 0);
-    if (now > from) { ms += now - from; idleClaims++; }
+    const idle = now - from - pausedWithin(paused, from, now);
+    if (idle > 0) { ms += idle; idleClaims++; }
   }
   return { hours: Math.round((ms / HOUR_MS) * 10) / 10, claims: claims.length, idleClaims, undated };
+}
+
+/** @returns the milliseconds of `[from, to]` that the pauses cover (they do not overlap one another, as `pausedIntervals` makes them) */
+function pausedWithin(paused: readonly { from: number, to: number }[], from: number, to: number): number {
+  return paused.reduce((sum, span) => sum + Math.max(0, Math.min(span.to, to) - Math.max(span.from, from)), 0);
 }

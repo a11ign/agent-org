@@ -1618,7 +1618,9 @@ export function readIdleClaimedHours({ now, stateDir, declaration = homeProjectD
   const holders = new Map<string, HolderState>([...new Set(claims.map((c) => c.session))].map((session) => [session,
     { declaredAt: declarations.byClaimant.get(session)?.at ?? null, turnStartedAt: lastDeliveredTo(ledger, session) }]));
   const sessionsWithPr = new Set((prLists as NonNullable<ReturnType<typeof readNamingPrs>>[]).flatMap((p) => p.open).flatMap((pr) => sessionsOf(pr.labels)));
-  return idleClaimedHours({ claims, sessionsWithPr, holders, since: now - WINDOW_MS, now });
+  // the pause is read here, so the claimed span is net of it; an unreadable log counts the span whole and the report's pause line says `unknown`
+  const paused = pauseOf(readAccountLimitLog(stateDir), now)?.intervals ?? [];
+  return idleClaimedHours({ claims, sessionsWithPr, holders, since: now - WINDOW_MS, now, paused });
 }
 
 /**

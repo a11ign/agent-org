@@ -12,7 +12,7 @@ import { STALL_STATE_FILE } from "./claim-stall.ts";
 import { FAILURE_LEDGER_FILE, recordFailures, parseFailureLedger, repeatsIn } from "./failure-ledger.ts";
 import { IDLE_CLAIMANT_MINUTES, WAIT_FIELDS } from "./idle-claimant.ts";
 import { buildReport, readIdleClaims, renderReport, retrospectiveTick } from "./org-retro.ts";
-import { IDLE_CLAIM_INCIDENT_MINUTES, ROW_NOT_FINISHABLE, idleClaimIncidents, incidentEvents, incidentSummary, type IdleClaim } from "./idle-claim-incident.ts";
+import { IDLE_CLAIM_INCIDENT_MINUTES, ROW_NOT_FINISHABLE, idleClaimIncidents, idleClaimedHours, incidentEvents, incidentSummary, type IdleClaim } from "./idle-claim-incident.ts";
 
 const MIN = 60_000;
 const NOW = Date.parse("2026-10-09T21:00:00Z");
@@ -199,4 +199,25 @@ test("the daily tick records the incidents once per episode in the failure ledge
     const entries = parseFailureLedger(readFileSync(join(dir, FAILURE_LEDGER_FILE), "utf8"));
     assert.deepEqual(entries.map((e) => [e.classKey, e.ref]), [[ROW_NOT_FINISHABLE, "#4001@2026-10-09T19:59:00Z"]]);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// --- worker-hours idle on a claimed row: the Claude pause is not idle time (agent-org#1429) ---------------------------------------------------------
+
+const HOUR = 60 * MIN;
+const claimedHoursAgo = (hours: number) => [{ repo: "a11ign/agent-org", row: 4001, session: "worker-7", claimedAt: NOW - hours * HOUR }];
+const hoursWith = (claims: ReturnType<typeof claimedHoursAgo>, paused?: { from: number, to: number }[]) =>
+  idleClaimedHours({ claims, sessionsWithPr: new Set(), holders: new Map(), since: NOW - 24 * HOUR, now: NOW, paused });
+
+test("idleClaimedHours: a claim idle ten hours with no pause reads ten (the twin of the two below)", () => {
+  assert.deepEqual(hoursWith(claimedHoursAgo(10)), { hours: 10, claims: 1, idleClaims: 1, undated: [] });
+});
+
+test("idleClaimedHours: six paused hours inside a ten-hour idle span leave four", () => {
+  assert.equal(hoursWith(claimedHoursAgo(10), [{ from: NOW - 9 * HOUR, to: NOW - 3 * HOUR }]).hours, 4);
+});
+
+test("idleClaimedHours: a claim wholly inside a pause is no idle claim, and a pause running past now is clipped at now", () => {
+  const inside = hoursWith(claimedHoursAgo(2), [{ from: NOW - 3 * HOUR, to: NOW }]);
+  assert.deepEqual([inside.hours, inside.idleClaims, inside.claims], [0, 0, 1], "the row is still a claimed row, and no hour of it is idle");
+  assert.equal(hoursWith(claimedHoursAgo(10), [{ from: NOW - HOUR, to: NOW + 5 * HOUR }]).hours, 9, "one hour before now is paused; the five after now are not in the span");
 });
