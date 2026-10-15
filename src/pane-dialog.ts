@@ -20,7 +20,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { TOOL_DRIFT_KIND } from "./agent-tool-update.ts";
-import { DEFAULT_ANSWERER, isWorkerSession } from "./worker-state.ts";
+import { DEFAULT_ANSWERER, isLimitMenu, isWorkerSession } from "./worker-state.ts";
 
 /** Which dialog each session was last raised for, by label. Beside the blocked-told memory in the state directory. */
 export const PANE_DIALOG_RAISED_FILE = "pane-dialog-raised.json";
@@ -213,6 +213,7 @@ export type Raising = {
  *   - a session showing a dialog it was not raised for (or a different text of one) is ordered to its owner and remembered once the order is accepted;
  *   - the same dialog on the next tick raises nothing;
  *   - a session whose pane READS and shows no dialog is forgotten, so the same dialog meeting it later is a new incident;
+ *   - the usage-limit menu is read as showing no dialog (agent-org#1481): the dated account wait and `limitMenuTick` own that screen, and an order here would offer "switch to usage credits" to a manager on every seat of the account;
  *   - a pane that could not be read keeps what was known: absence of a reading is not a reading of absence;
  *   - a session no longer listed is forgotten.
  * `order` returns whether the owner's order was accepted (delivered or queued) and may throw: a throw is a refusal.
@@ -231,6 +232,7 @@ export function raisePaneDialogs({ roster, read, memory, order, report = () => {
       if (label in memory) raising.raised[label] = memory[label];
       continue;
     }
+    if (isLimitMenu(pane)) continue;
     const dialog = readDialog(pane);
     if (dialog === null) continue;
     const signature = dialogSignature(dialog);
