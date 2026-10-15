@@ -120,7 +120,7 @@ import { readReenqueueState } from "./work-gate/causes/pr-ejected.ts";
 import { holdHolderOrdersNow } from "./work-gate/causes/pr-holds.ts";
 import { stampLookup, withEvidenceLabelAges, withPatchIds } from "./work-gate/causes/pr-reviews.ts";
 import { EXIT, claimedCommentsForClock, defaultRun, draining, readBranchPrsOfUnclaimed, readClaimedRowComments, readPrs, readReadyRows,
-  readRowBranches, readWithFirstWaveTogether, releaseBehindNow, repoNow, runBatch, otherScopesToRead, rememberOtherScopesRead, isAmbientRun, primaryDue, primaryLanes, unreadScopes } from "./work-gate/reads.ts";
+  readRowBranches, readWithFirstWaveTogether, releaseBehindNow, repoNow, runBatch, otherScopesForTick, eventUnreadForTick, rememberOtherScopesRead, primaryDue, primaryLanes } from "./work-gate/reads.ts";
 import { type Pacing, orgHealthSkipped, pacedUnread, pacingNow, pacingOn, primaryRefusedLanes, primaryUnread } from "./work-gate/pacing.ts";
 import { answerGivenOrders, bareAnswerLabelOrders, closedAnswerRows, endedSessionLabels, liveWorkspaceLabels, readClosedAnswerRows, rowsOwingAnswers,
   withAnswerLabel } from "./work-gate/causes/rows-answers.ts";
@@ -480,7 +480,7 @@ export function tickPacing(): Pacing {
 export function readOtherScopes(run: (args: string[], repo?: string) => string = defaultRun, batch: typeof runBatch | undefined = run === defaultRun ? runBatch : undefined): { scope: Scope; read: ReturnType<typeof readLanes>; }[] {
   const scopes = scopesOf([homeProjectDeclaration()]).filter((scope) => scope.key !== "");
   // agent-org#1240: BELOW THE FLOOR none are read (and `main` reports them unread); between the floor and the reserve they are read (agent-org#1417); on a webhook tick (flag on) only the repositories the events named, and those due a sweep; every one otherwise
-  const wanted = isAmbientRun(run) && tickPacing().belowFloor ? [] : otherScopesToRead(run, scopes);
+  const wanted = otherScopesForTick(run, scopes, tickPacing());
   return readWithFirstWaveTogether((aimed) => wanted.map((scope) => ({ scope, read: readLanes(scope, aimed) })), run, batch);
 }
 
@@ -616,7 +616,7 @@ function main() {
   const declaredOthers = scopesOf([homeProjectDeclaration()]).filter((scope) => scope.key !== "");
   const primaryRead = primaryDue(defaultRun, homeScopeOf());
   const { promotableRows, chairmanBlocked, openRowsRead, otherScopes } = readLanesAfterOutageCheck(); endGateSpan("readLanes");
-  const eventUnread = pacing.belowFloor ? [] : unreadScopes(defaultRun, declaredOthers); // read BEFORE the memory is stamped: a repository just read would otherwise look dropped
+  const eventUnread = eventUnreadForTick(pacing, defaultRun, declaredOthers); // read BEFORE the memory is stamped: a repository just read would otherwise look dropped
   rememberOtherScopesRead(otherScopes, primaryRead && promotableRows !== null && chairmanBlocked !== null && openRowsRead !== null ? (homeScopeOf()?.key ?? null) : null);
   const pacedSkips = [{ refused: pacedUnread(pacing, declaredOthers.length > 0) }, { refused: primaryUnread(pacing, primaryRead) }, { refused: eventUnread }]; const reenqueueState = readReenqueueState(); const waitReads = endGateSpan("waitReads", waitReadsBeforeDecide(prs, otherScopes, openRowsRead, reenqueueState)); // #3095: `otherScopes` is read here, once -- B4 below compares with their pull requests, and `otherScopeTicks` ticks them
   // agent-org#5177: the other trackers' parked rows, which `otherScopeTicks` ticks but the home seam never reads; flag `rows.autoUnpark` in `machinery-canary.json` (not project.json), default OFF.

@@ -20,7 +20,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GRAPHQL_FLOOR, GRAPHQL_RESERVE, GRAPHQL_SWEEP_MINUTES, OTHER_SCOPES_MEMORY, PACING_FLAG, orgHealthSkipped, pacedUnread, pacingNow, pacingOn, primaryRefusedLanes, primaryUnread, readOtherScopesMemory, rememberOtherScopes, scopesToRead } from "../work-gate/pacing.ts";
-import { defaultRun, eventGateOf, otherScopesToRead, primaryDue, primaryLanes, readOpenRows, unreadScopes, type GateFacts } from "../work-gate/reads.ts";
+import { defaultRun, eventGateOf, eventUnreadForTick, otherScopesForTick, otherScopesToRead, primaryDue, primaryLanes, readOpenRows, unreadScopes, type GateFacts } from "../work-gate/reads.ts";
 import type { Scope as TickScope } from "../event-queue.ts";
 import type { Scope } from "../work-gate/vocabulary.ts";
 import { emptyCanaryState, withMachineryFlag, type CanaryIo } from "../org-health.ts";
@@ -108,11 +108,46 @@ test("agent-org#1417: above the reserve nothing is paced; between the floor and 
   assert.notDeepEqual(pacedUnread(band(GRAPHQL_RESERVE - 1), true), ["the other repositories' lanes", "the org-health reads"]);
 });
 
-test("agent-org#1417: the gate reads the other repositories below the reserve and skips them only below the floor", () => {
-  // the read decision is inline in `readOtherScopes` (it needs the live pool), so the wiring is pinned by its text, as the other gate wiring is
+test("agent-org#1417: an ambient tick reads the other repositories above the reserve and between the floor and the reserve, and none below the floor", () => {
+  // the decision is `otherScopesForTick` and the report is `eventUnreadForTick`: `readOtherScopes` reads exactly the first and `main` reports the second
+  const scopes = [scope("a", "org/a-code", "org/a-rows"), scope("b", "org/b-code", null)];
+  const named: TickScope[] = [{ repo: "org/a-code", kind: "pr", number: 7 }];
+  const above = { belowFloor: false };
+  const between = { belowFloor: false };
+  const below = { belowFloor: true };
+  withScratch((dir) => {
+    // b's sweep is DUE: the event gate reads it although no event named it, so the reserve alone decides
+    const due = webhookTick(dir, { named, memory: { a: NOW - 2 * MINUTE, b: NOW - 20 * MINUTE } });
+    assert.deepEqual(otherScopesForTick(defaultRun, scopes, above, due).map((s) => s.key), ["a", "b"], "above the reserve: both read");
+    assert.deepEqual(otherScopesForTick(defaultRun, scopes, between, due).map((s) => s.key), ["a", "b"],
+      "between the floor and the reserve: both still read, so the settled-green pull request in b gets its order (RED CONTROL: keyed on `paced` this is [])");
+    assert.deepEqual(otherScopesForTick(defaultRun, scopes, below, due), [], "below the floor: none read");
+    assert.deepEqual(eventUnreadForTick(below, defaultRun, scopes, due), [], "below the floor the paced skip names them, so nothing is reported twice");
+
+    // b's sweep is NOT due and no event named it: the event gate drops it, and it must be REPORTED, not read as clean
+    const fresh = webhookTick(dir, { named, memory: { a: NOW - 2 * MINUTE, b: NOW - MINUTE } });
+    assert.deepEqual(otherScopesForTick(defaultRun, scopes, above, fresh).map((s) => s.key), ["a"]);
+    assert.deepEqual(otherScopesForTick(defaultRun, scopes, between, fresh).map((s) => s.key), ["a"]);
+    assert.deepEqual(eventUnreadForTick(between, defaultRun, scopes, fresh).length, 1, "between: b is reported unread by the event gate");
+    assert.match(eventUnreadForTick(between, defaultRun, scopes, fresh)[0], /org\/b-code.*no event named it/);
+    assert.deepEqual(otherScopesForTick(defaultRun, scopes, below, fresh), [], "below the floor none are read");
+    assert.deepEqual(eventUnreadForTick(below, defaultRun, scopes, fresh), []);
+
+    // flag OFF: no gate, every repository is read and nothing is reported, at any pool
+    const off = webhookTick(dir, { named, memory: { a: NOW - 2 * MINUTE, b: NOW - MINUTE }, on: false });
+    assert.deepEqual(otherScopesForTick(defaultRun, scopes, above, off).map((s) => s.key), ["a", "b"], "flag off reads all: with the flag off the pool is never paced (belowFloor false)");
+    assert.deepEqual(eventUnreadForTick(above, defaultRun, scopes, off), []);
+  });
+  // a run that is not the gate's own is never paced: a test's or a poll's `run` reads every repository, whatever the pool
+  const notAmbient = (_args: string[]) => "";
+  assert.deepEqual(otherScopesForTick(notAmbient, scopes, below).map((s) => s.key), ["a", "b"], "a run that is not the gate's own is never paced");
+});
+
+test("agent-org#1417: the call sites decide through the helpers, and orgHealth stays on the reserve", () => {
+  // the read path itself needs the live pool and the host's declaration, so the call sites are pinned by their text; the rules are pinned by the behaviour above
   const gate = workGateSource().replace(/\s+/g, " ");
-  assert.match(gate, /isAmbientRun\(run\) && tickPacing\(\)\.belowFloor \? \[\] : otherScopesToRead\(run, scopes\)/);
-  assert.match(gate, /const eventUnread = pacing\.belowFloor \? \[\] : unreadScopes/);
+  assert.match(gate, /const wanted = otherScopesForTick\(run, scopes, tickPacing\(\)\)/);
+  assert.match(gate, /const eventUnread = eventUnreadForTick\(pacing, defaultRun, declaredOthers\)/);
   assert.match(gate, /orgHealthSkipped\(pacing, primaryRead\) \? \[\] : orgHealthTogether/, "orgHealth stays on the reserve");
   // RED CONTROL: the old order skipped the other repositories on `paced`, so that text must NOT be there
   assert.doesNotMatch(gate, /tickPacing\(\)\.paced \? \[\]/);

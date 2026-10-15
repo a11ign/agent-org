@@ -12,14 +12,17 @@ Needs `AGENT_ORG_HOST` set in the shell, as on `origin/main`: the test's import 
 
 Closes a11ign/agent-org#1417
 
-Pinned by `src/packaging/gate-graphql-pacing.test.ts`: the three bands (above the reserve, between the reserve and the floor, below the floor), each with boundary values (reserve, reserve−1, floor, floor+1, floor−1), and a wiring test that reads `src/work-gate.ts` through `workGateSource()` and asserts the `belowFloor` keys. The red control is in the band test.
+Pinned by `src/packaging/gate-graphql-pacing.test.ts`. The read decision and the report are two helpers in `src/work-gate/reads.ts`, `otherScopesForTick` and `eventUnreadForTick`, and `src/work-gate.ts` calls them. The band test calls them with the real ambient `defaultRun`, real event-gate facts (a repository b whose sweep is due, and one that is fresh), and each band: above the reserve, between the reserve and the floor, below the floor. It checks which repositories are read and which are reported unread, and a flag-off and a non-ambient run read every repository. Between the floor and the reserve both repositories are read when the sweep is due, so an implementation keyed on `paced` fails there. A call-site test pins the two call lines in `work-gate.ts` and that `orgHealth` stays on the reserve.
 
 Mutation, each file backed up to the scratchpad with `cp`, changed, run, restored with `cp`, and diffed byte-identical (measured before the rebase onto `origin/main`; my four files are unchanged by it):
 - A: `GRAPHQL_FLOOR = GRAPHQL_RESERVE` (the old order): 2 red, including the band test.
 - B: `src/work-gate.ts` event-unread check keyed on `pacing.paced` instead of `pacing.belowFloor`: 1 red, the wiring test.
+- C (review rework, `src/work-gate/reads.ts`): `otherScopesForTick` reads no other repository on an ambient tick (`&& true`): 1 red, the band test.
+- D (review rework, `src/work-gate/reads.ts`): `eventUnreadForTick` reports below the floor too (no `pacing.belowFloor ? []`): 1 red, the band test.
+- E (review rework, `src/work-gate.ts`): the call site passes `{ belowFloor: tickPacing().paced }`, the old order: 1 red, the call-site test.
 
 Measured on the rebased branch (`7d562fa3`):
-- Acceptance, with `AGENT_ORG_HOST` set: `ℹ tests 27`, `ℹ pass 27`, `ℹ fail 0`.
+- Acceptance, with `AGENT_ORG_HOST` set: `ℹ tests 28`, `ℹ pass 28`, `ℹ fail 0` (after the review rework; 27 before it).
 - `pnpm run typecheck` exits 0.
 - Related suites: `machinery-canary` 28/28, `work-gate-size` 4/4, `work-gate-source` 6/6.
 - The 26 files that fail under `node --test` in this worktree were run on a `git archive` of the pre-rebase HEAD: the same pass/fail counts with and without the change. `queue-stalled.test.ts`'s `#3019` failures predate the change too. `mergeTreeConflict` fails only in the archive, which has no `.git`.
