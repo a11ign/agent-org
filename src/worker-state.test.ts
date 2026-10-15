@@ -23,9 +23,10 @@ import { TRACKER } from "./ticket-port/github-adapter.ts";
 import type { BlockerWriter, ItemRef } from "./ticket-port/port.ts";
 import {
   BLOCKED_TOLD_FILE, DECLARED_STATES, DEFAULT_ANSWERER, WORKER_STATE_DIR, applyBlocked, blockedInstruction, blockedToTell, declarationReading,
-  ghRowLook, lastDeliveredTo, main, parseDeclaration, readDeclarations, resolveBlockedRow, splitArgs, tellBlocked, writeDeclaration, type ClaimContext,
-  type Declaration, type RowFact, type RowLook,
+  ghRowLook, lastDeliveredTo, main, parseDeclaration, readDeclarations, resolveBlockedRow, rulingOn, splitArgs, tellBlocked, writeDeclaration, type ClaimContext,
+  type Declaration, type RowComment, type RowFact, type RowLook,
 } from "./worker-state.ts";
+import { MANAGER_SEATS } from "./decided-by.ts";
 
 const MIN = 60_000;
 const T0 = Date.parse("2026-10-10T09:00:00Z");
@@ -356,6 +357,70 @@ test("`blocked` whose label GitHub refused writes NOTHING: the exit is 2 and the
   }
 });
 
+// --- 3b. a ruling already given to this reason is not answered by a repeat (agent-org#1493) ------------------------------
+
+const SESSION_460 = "worker-agent-org-460";
+const REASON = "the spelling is ambiguous";
+const OWN_AT = "2026-10-15T15:31:15Z";
+const RULED_AT = "2026-10-15T15:37:10Z";
+const row460 = (...more: string[]): string => `https://github.com/a11ign/agent-org/issues/460${more.join("")}`;
+/** The worker's own `BLOCKED` comment, as `applyLabel` posts it: the header names the session and the reason, then the owed seat. */
+const blockedComment = (session: string, reason: string, createdAt: string, id: number): RowComment => ({
+  id: `IC_${id}`, url: row460(`#issuecomment-${id}`), createdAt,
+  body: `BLOCKED (\`${session}\`, declared with \`worker:state\`): ${reason}\n\nOwed by \`product-manager\`; the row carries \`${ANSWER_PREFIX}product-manager\`.`,
+});
+/** A comment a seat posted, as `host/gh` writes it: the author's text, then the `decided-by` line naming the seat (the last one is the seat's). */
+const seatComment = (seat: string, createdAt: string, id: number, text = "Ruled: wait for the spelling."): RowComment => ({
+  id: `IC_${id}`, url: row460(`#issuecomment-${id}`), createdAt, body: `${text}\n\n<!-- decided-by: ${seat} run: 4f2a -->`,
+});
+/** A second `blocked` declaration by `SESSION_460` for `reason`, read against the row's `comments` the way `main` reads them: what it wrote through `gh`, and what it printed. */
+function redeclare(reason: string, comments: RowComment[]): { calls: string[][]; lines: string[] } {
+  const calls: string[][] = [];
+  const parsed = parseDeclaration(["blocked", "460", ...reason.split(" ")], { session: SESSION_460, now: T0 });
+  assert.ok("declaration" in parsed, JSON.stringify(parsed));
+  const resolved = resolveBlockedRow(parsed.declaration, { trackers: TRACKERS, look: byNumber({ "a11ign/agent-org#460": { state: "OPEN", labels: [], comments } }), sessionLabel: `${SESSION_PREFIX}${SESSION_460}` });
+  assert.ok("declaration" in resolved, JSON.stringify(resolved));
+  const { lines } = applyBlocked(resolved.declaration, { gh: fakeGh(calls), tracker: "a11ign/agent-org", answerPrefix: ANSWER_PREFIX, writer: fakeWriter([]), comments: resolved.comments });
+  return { calls, lines };
+}
+const labelled = (calls: string[][]): string[] => calls.map((c) => c.slice(0, 2).join(" "));
+
+test("POSITIVE CONTROL: a second `blocked` for a reason a manager has ruled on since the worker's own BLOCKED comment writes NO label and NO comment, and names the ruling", () => {
+  const { calls, lines } = redeclare(REASON, [blockedComment(SESSION_460, REASON, OWN_AT, 1), seatComment("product-manager", RULED_AT, 2)]);
+  assert.deepEqual(calls, [], "nothing is written: a ruling is not answered by a repeat, and the label is the contract");
+  assert.equal(lines.length, 1, "one line is printed");
+  assert.ok(lines[0].includes(row460("#issuecomment-2")), "the line names the ruling's comment");
+  assert.ok(lines[0].includes(RULED_AT), "and the time it was given");
+});
+
+test("NEGATIVE CONTROLS: the ruling stops ONLY the repeat it answers: a different reason, a ruling older than the BLOCKED comment, a worker's own later comment, and no BLOCKED of this session are each labelled and commented as before", () => {
+  const own = blockedComment(SESSION_460, REASON, OWN_AT, 1);
+  const ruled = seatComment("product-manager", RULED_AT, 2);
+  const three = ["label create", "issue edit", "issue comment"];
+  assert.deepEqual(labelled(redeclare("which label is it?", [own, ruled]).calls), three, "a DIFFERENT reason is declared as today");
+  assert.deepEqual(labelled(redeclare(REASON, [seatComment("product-manager", "2026-10-15T15:00:00Z", 3), own]).calls), three, "a ruling OLDER than the last BLOCKED comment answers nothing new");
+  assert.deepEqual(labelled(redeclare(REASON, [own, seatComment("worker-agent-org-9", RULED_AT, 4, "quoting nobody")]).calls), three, "a comment by a WORKER is no ruling");
+  assert.deepEqual(labelled(redeclare(REASON, [blockedComment("worker-agent-org-9", REASON, OWN_AT, 5), ruled]).calls), three, "another session's BLOCKED for the same reason is not this worker's own");
+  assert.deepEqual(labelled(redeclare(REASON, [ruled]).calls), three, "with no BLOCKED comment of its own there is nothing the ruling could answer");
+});
+
+test("`rulingOn` takes every manager seat's marker as a ruling, and the newest manager comment decides (twin: a newer comment by another seat is still the manager's)", () => {
+  for (const seat of MANAGER_SEATS) {
+    const ruling = rulingOn([blockedComment(SESSION_460, REASON, OWN_AT, 1), seatComment(seat, RULED_AT, 2)], blockedDeclaration());
+    assert.equal(ruling?.id, "IC_2", `${seat} is a manager seat, so its comment is a ruling`);
+  }
+  const older = seatComment("orchestrator", "2026-10-15T15:35:00Z", 6);
+  const newest = seatComment("ceo", "2026-10-15T15:50:00Z", 7);
+  assert.equal(rulingOn([blockedComment(SESSION_460, REASON, OWN_AT, 1), newest, older], blockedDeclaration())?.id, "IC_7");
+});
+
+/** The declaration a `blocked` with {@link REASON} makes, for `rulingOn` read on its own. */
+function blockedDeclaration(): Declaration {
+  const parsed = parseDeclaration(["blocked", "460", ...REASON.split(" ")], { session: SESSION_460, now: T0 });
+  assert.ok("declaration" in parsed, JSON.stringify(parsed));
+  return parsed.declaration;
+}
+
 // --- 4. a session herdr reports `blocked` is told once per stall ---------------------------------------------------------
 
 test("a `blocked` herdr session is sent the declare-or-decide instruction ONCE, and a second tick sends none; a stall that ended and began again is told again", () => {
@@ -609,12 +674,16 @@ test("no row of that number, and a row that could not be read, are REFUSED by na
   const refusal = refusalNamed(throwing);
   assert.equal(refusal?.refused, "unreadable-row");
   assert.ok(refusal?.why.includes("HTTP 502"), refusal?.why);
+  const noComments = resolveBlockedRow(blockedOn("460"), { trackers: TRACKERS, look: ghRowLook(() => '{"state":"OPEN","labels":[]}'), sessionLabel: CLAIM_LABEL });
+  assert.equal(refusalNamed(noComments)?.refused, "unreadable-row", "a reply with no comments field refuses the row: no ruling could be read, so nothing is labelled");
 });
 
-test("`ghRowLook`: an issue read as its state and labels, no such issue as null, and any other failure thrown", () => {
+test("`ghRowLook`: an issue read as its state, labels and comments in ONE call, no such issue as null, and any other failure thrown", () => {
   const answering = (reply: string | Error) => (): string => { if (reply instanceof Error) throw reply; return reply; };
-  assert.deepEqual(ghRowLook(answering('{"state":"CLOSED","labels":[{"name":"x"}]}'))("a11ign/a11ign", 460), { state: "CLOSED", labels: ["x"] });
-  assert.deepEqual(ghRowLook(answering('{"state":"OPEN","labels":[]}'))("a11ign/a11ign", 460), { state: "OPEN", labels: [] });
+  const commented = '{"state":"CLOSED","labels":[{"name":"x"}],"comments":[{"id":"IC_1","url":"u","body":"b","createdAt":"t","author":{"login":"a"}}]}';
+  assert.deepEqual(ghRowLook(answering(commented))("a11ign/a11ign", 460), { state: "CLOSED", labels: ["x"], comments: [{ id: "IC_1", url: "u", body: "b", createdAt: "t" }] });
+  assert.deepEqual(ghRowLook(answering('{"state":"OPEN","labels":[],"comments":[]}'))("a11ign/a11ign", 460), { state: "OPEN", labels: [], comments: [] });
+  assert.throws(() => ghRowLook(answering('{"state":"OPEN","labels":[]}'))("a11ign/a11ign", 460), /no comments field/, "a reply with no comments field THROWS: no comments would read as no ruling, which fails open");
   const missing = Object.assign(new Error("gh failed"), { stderr: "GraphQL: Could not resolve to an Issue with the number of 9999." });
   assert.equal(ghRowLook(answering(missing))("a11ign/a11ign", 9999), null);
   assert.throws(() => ghRowLook(answering(Object.assign(new Error("gh failed"), { stderr: "HTTP 502" })))("a11ign/a11ign", 460), /gh failed/);

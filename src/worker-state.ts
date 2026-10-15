@@ -18,6 +18,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { MANAGER_SEATS, decidedBy } from "./decided-by.ts";
 import type { BlockerWriter } from "./ticket-port/port.ts";
 import { TRACKER, githubTicketAdapter } from "./ticket-port/github-adapter.ts";
 
@@ -330,7 +331,10 @@ export function tellBlocked({ roster: listing, path, send, report = () => {}, on
 export type Gh = (args: string[]) => string;
 
 /** What `blocked` needs to know of a row it may name: whether it is open, and which labels it carries. */
-export type RowFact = { state: "OPEN" | "CLOSED"; labels: string[] };
+export type RowFact = { state: "OPEN" | "CLOSED"; labels: string[]; comments?: RowComment[] };
+
+/** One comment on a row, as `gh issue view --json comments` reads it: what the ruling check needs (`rulingOn`) and no more. */
+export type RowComment = { id: string; url: string; body: string; createdAt: string };
 
 /** Reads one row of one repository, or `null` when that repository has no such row. A read that could not be made THROWS: it is not "no such row". */
 export type RowLook = (repo: string, number: number) => RowFact | null;
@@ -343,7 +347,7 @@ export type RowLook = (repo: string, number: number) => RowFact | null;
  * `role` says which of the declaration's two rows this is, so the refusal names the right one: `held` is the row the worker holds (the label would
  * wake a reader who cannot act, and it has to be reopened by a person), `on` is the row it waits on (a `blockedBy` edge to a finished row waits on nothing).
  */
-function resolveRowRef(ref: { number: number; rowKey?: string }, { trackers, look, sessionLabel, role }: { trackers: readonly { key: string; repo: string }[]; look: RowLook; sessionLabel: string; role: "held" | "on" }): { repo: string } | { refused: Refusal } {
+function resolveRowRef(ref: { number: number; rowKey?: string }, { trackers, look, sessionLabel, role }: { trackers: readonly { key: string; repo: string }[]; look: RowLook; sessionLabel: string; role: "held" | "on" }): { repo: string; comments: RowComment[] } | { refused: Refusal } {
   const refuse = (refused: Refusal["refused"], why: string): { refused: Refusal } => ({ refused: { refused, why } });
   const { number } = ref;
   const spell = (tracker: { key: string; repo: string }): string => `${tracker.key === "" ? tracker.repo : tracker.key}#${number}`;
@@ -377,27 +381,28 @@ function resolveRowRef(ref: { number: number; rowKey?: string }, { trackers, loo
     if (role === "on") return refuse("on-closed", `${spell(chosen.tracker)} is ${chosen.row.state}: a block on a finished row waits on nothing, so no \`blockedBy\` edge is written. Name the row that is still open, or, if the wait is on a person, declare \`blocked <row> <reason>\` without \`--on\``);
     return refuse("row-closed", `${spell(chosen.tracker)} is ${chosen.row.state}: a \`blocked\` declaration on a closed row labels a reader who cannot act. If it is the row you hold it has to be REOPENED first (\`gh issue reopen ${number} --repo ${chosen.tracker.repo}\`, by a person); if you meant another row, name it as \`<tracker key>#${number}\``);
   }
-  return { repo: chosen.tracker.repo };
+  return { repo: chosen.tracker.repo, comments: chosen.row.comments ?? [] };
 }
 
 /**
  * THE ROWS A `blocked` DECLARATION NAMES, RESOLVED: the row it is about (`row`), and the row it waits on when given `--on`. The waited-on row is
  * resolved the same way and is refused by name when it is closed or is the row itself, since a block on that row waits on nothing.
  * @param {Declaration} declaration from {@link parseDeclaration}, `blocked` only
+ * `comments` are the held row's comments, read in the same call as its state, for {@link applyBlocked}'s ruling check.
  * @param {{ trackers: readonly { key: string, repo: string }[], look: RowLook, sessionLabel: string }} deps
  */
-export function resolveBlockedRow(declaration: Declaration, deps: { trackers: readonly { key: string; repo: string }[]; look: RowLook; sessionLabel: string }): { declaration: Declaration } | { refused: Refusal } {
+export function resolveBlockedRow(declaration: Declaration, deps: { trackers: readonly { key: string; repo: string }[]; look: RowLook; sessionLabel: string }): { declaration: Declaration; comments: RowComment[] } | { refused: Refusal } {
   const number = declaration.row as number;
   const held = resolveRowRef({ number, rowKey: declaration.rowKey }, { ...deps, role: "held" });
   if ("refused" in held) return held;
   const { rowKey: _typed, onKey: _onTyped, ...rest } = declaration;
-  if (declaration.on === undefined) return { declaration: { ...rest, repo: held.repo } };
+  if (declaration.on === undefined) return { declaration: { ...rest, repo: held.repo }, comments: held.comments };
   const waitsOn = resolveRowRef({ number: declaration.on, rowKey: declaration.onKey }, { ...deps, role: "on" });
   if ("refused" in waitsOn) return waitsOn;
   if (declaration.on === number && waitsOn.repo === held.repo) {
     return { refused: { refused: "on-self", why: `--on=${declaration.on} is the row itself: a row cannot wait on its own edge, so nothing is written` } };
   }
-  return { declaration: { ...rest, repo: held.repo, onRepo: waitsOn.repo } };
+  return { declaration: { ...rest, repo: held.repo, onRepo: waitsOn.repo }, comments: held.comments };
 }
 
 /** The real {@link RowLook}: `gh issue view`, where "no such issue" is `null` and any other failure throws. @param {Gh} gh */
@@ -405,13 +410,19 @@ export function ghRowLook(gh: Gh): RowLook {
   return (repo, number) => {
     let out: string;
     try {
-      out = gh(["issue", "view", String(number), "--repo", repo, "--json", "state,labels"]);
+      out = gh(["issue", "view", String(number), "--repo", repo, "--json", "state,labels,comments"]);
     } catch (err: any) {
       if (/Could not resolve to an? (?:Issue|issue)|not found|no issue/i.test(String(err?.stderr ?? err?.message ?? ""))) return null;
       throw err;
     }
-    const parsed = JSON.parse(out) as { state: string; labels?: { name: string }[] };
-    return { state: parsed.state === "OPEN" ? "OPEN" : "CLOSED", labels: (parsed.labels ?? []).map((label) => label.name) };
+    const parsed = JSON.parse(out) as { state: string; labels?: { name: string }[]; comments?: { id: string; url: string; body: string; createdAt: string }[] };
+    // A reply with no comments cannot answer the ruling check, and "no comments" would read as "no ruling": so it THROWS (the row is unreadable, nothing is labelled).
+    if (!Array.isArray(parsed.comments)) throw new Error(`gh issue view of #${number} of ${repo} carried no comments field, so no ruling can be read`);
+    return {
+      state: parsed.state === "OPEN" ? "OPEN" : "CLOSED",
+      labels: (parsed.labels ?? []).map((label) => label.name),
+      comments: parsed.comments.map(({ id, url, body, createdAt }) => ({ id, url, body, createdAt })),
+    };
   };
 }
 
@@ -424,11 +435,12 @@ export function ghRowLook(gh: Gh): RowLook {
  * (the answer is already the edge). If the edge cannot be written the declaration falls back to the label, so the worker is never blocked with no one
  * told; the returned declaration is then the labelled one, which is what the gate reads.
  *
- * Returns the lines the command prints, and the declaration as it must be written.
- * @param {Declaration} declaration @param {{ gh: Gh, tracker: string, answerPrefix: string }} deps
+ * Returns the lines the command prints, and the declaration as it must be written. `comments` are the row's (see {@link rulingOn}): the label path
+ * writes nothing when a manager has already ruled on this reason.
+ * @param {Declaration} declaration @param {{ gh: Gh, tracker: string, answerPrefix: string, writer: BlockerWriter, comments?: RowComment[] }} deps
  * @returns {{ lines: string[], declaration: Declaration }}
  */
-export function applyBlocked(declaration: Declaration, { gh, tracker, answerPrefix, writer }: { gh: Gh; tracker: string; answerPrefix: string; writer: BlockerWriter }): { lines: string[]; declaration: Declaration } {
+export function applyBlocked(declaration: Declaration, { gh, tracker, answerPrefix, writer, comments = [] }: { gh: Gh; tracker: string; answerPrefix: string; writer: BlockerWriter; comments?: RowComment[] }): { lines: string[]; declaration: Declaration } {
   const row = String(declaration.row);
   if (declaration.on !== undefined) {
     const waitsOn = String(declaration.on);
@@ -439,18 +451,41 @@ export function applyBlocked(declaration: Declaration, { gh, tracker, answerPref
       const cause = String(err?.stderr ?? err?.message ?? err).split("\n")[0];
       const { on: _on, onRepo: _onRepo, ...labelled } = declaration;
       const fallback = { ...labelled, to: DEFAULT_ANSWERER };
-      const applied = applyLabel(fallback, { gh, tracker, answerPrefix });
+      const applied = applyLabel(fallback, { gh, tracker, answerPrefix, comments });
       return { lines: [`could not write the blockedBy edge on #${waitsOn} of ${onRepo} (${cause}), so #${row} is labelled instead`, ...applied.lines], declaration: fallback };
     }
     postReason(gh, tracker, row, `BLOCKED (\`${declaration.session}\`, declared with \`worker:state\`): ${declaration.reason}\n\nWaits on ${onRepo}#${waitsOn}, a native \`blockedBy\` edge: no answer is owed, so the row carries no \`${answerPrefix}\` label.`);
     return { lines: [`blocked #${row} of ${tracker} by #${waitsOn} of ${onRepo} (native edge, no label) and posted the reason`], declaration };
   }
-  return applyLabel(declaration, { gh, tracker, answerPrefix });
+  return applyLabel(declaration, { gh, tracker, answerPrefix, comments });
 }
 
-/** The label path: the label, then the reason. See {@link applyBlocked}. */
-function applyLabel(declaration: Declaration, { gh, tracker, answerPrefix }: { gh: Gh; tracker: string; answerPrefix: string }): { lines: string[]; declaration: Declaration } {
+/**
+ * THE RULING ALREADY GIVEN TO THIS REASON (agent-org#1493). A `blocked` repeat with the reason a manager has ruled on writes no label and no
+ * comment: "a ruling is not answered by a repeat", and the label is the contract, so putting it back after the answer reverses the answer with no
+ * new fact. A ruling is the row's NEWEST comment by a manager seat (`MANAGER_SEATS`, its last `decided-by` line names the seat), and it counts only
+ * when it is newer than the worker's own LAST `BLOCKED` comment with the same reason from the same session. `null` otherwise, so a first declaration,
+ * a different reason, and a repeat no manager has answered are all declared as before.
+ * @param {RowComment[]} comments @param {Declaration} declaration @returns {RowComment | null}
+ */
+export function rulingOn(comments: RowComment[], declaration: Declaration): RowComment | null {
+  const header = `BLOCKED (\`${declaration.session}\`, declared with \`worker:state\`): ${declaration.reason}`;
+  const at = (comment: RowComment): number => Date.parse(comment.createdAt);
+  const own = comments.filter((comment) => comment.body.split("\n")[0] === header);
+  if (own.length === 0) return null;
+  const since = Math.max(...own.map(at));
+  const seated = comments.filter((comment) => MANAGER_SEATS.includes(decidedBy(comment.body) ?? ""));
+  const newest = seated.reduce<RowComment | null>((latest, comment) => (latest === null || at(comment) > at(latest) ? comment : latest), null);
+  return newest !== null && at(newest) > since ? newest : null;
+}
+
+/** The label path: the label, then the reason. See {@link applyBlocked}. A ruling on this reason (see {@link rulingOn}) is named, and nothing is written. */
+function applyLabel(declaration: Declaration, { gh, tracker, answerPrefix, comments }: { gh: Gh; tracker: string; answerPrefix: string; comments: RowComment[] }): { lines: string[]; declaration: Declaration } {
   const row = String(declaration.row);
+  const ruling = rulingOn(comments, declaration);
+  if (ruling !== null) {
+    return { lines: [`#${row} of ${tracker} already has a ruling on this reason: ${ruling.url} (${ruling.createdAt}); no label and no comment were written`], declaration };
+  }
   const label = `${answerPrefix}${declaration.to ?? DEFAULT_ANSWERER}`;
   gh(["label", "create", label, "--repo", tracker, "--force", "--description", "a session owes this row an answer"]);
   gh(["issue", "edit", row, "--repo", tracker, "--add-label", label]);
@@ -488,7 +523,8 @@ export function splitArgs(argv: string[]): { words: string[]; flags: Record<stri
 
 /**
  * The command. Exit 0 declared; 1 REFUSED by name (nothing written); 2 could not ask (no session, GitHub refused the label: the declaration is
- * written FIRST for `waiting-*`/`done`, and for `blocked` only after the label stood, so a `blocked` the row does not carry is never on disk).
+ * written FIRST for `waiting-*`/`done`, and for `blocked` only after the label stood, so a `blocked` the row does not carry is never on disk). The one
+ * exception is a repeat a manager has already ruled on (agent-org#1493): no label stands by design, and the declaration is written as the worker's state.
  */
 export async function main(argv: string[] = process.argv.slice(2), env: NodeJS.ProcessEnv = process.env, now: number = Date.now()): Promise<number> {
   const { words, flags, unknown } = splitArgs(argv);
@@ -524,7 +560,7 @@ export async function main(argv: string[] = process.argv.slice(2), env: NodeJS.P
     written = resolved.declaration;
     try {
       const writer = githubTicketAdapter({ run: gh, scope: written.repo as string });
-      const applied = applyBlocked(written, { gh, tracker: written.repo as string, answerPrefix: ANSWER_PREFIX, writer });
+      const applied = applyBlocked(written, { gh, tracker: written.repo as string, answerPrefix: ANSWER_PREFIX, writer, comments: resolved.comments });
       lines.push(...applied.lines);
       written = applied.declaration;
     } catch (err: any) {

@@ -53,13 +53,13 @@ function seams(dir: string, over: Omit<Partial<Seams>, "prs"> & { prs?: StopPr[]
   const { prs = [], ...rest } = over;
   return { session: SESSION, trackers: TRACKERS, stateDir: dir, now: T0, prs: () => prs, owns, gh: fakeGh([]), answerPrefix: ANSWER_PREFIX, sessionPrefix: SESSION_PREFIX, ...rest };
 }
-/** The `gh` the bound writes through, every call recorded in `calls`: the row is read OPEN, CLOSED, or not at all (`row`), and the writes answer nothing. */
-function fakeGh(calls: string[][], row: "open" | "closed" | "unreadable" = "open"): Gh {
+/** The `gh` the bound writes through, every call recorded in `calls`: the row is read OPEN, CLOSED, or not at all (`row`) with `comments` on it, and the writes answer nothing. */
+function fakeGh(calls: string[][], row: "open" | "closed" | "unreadable" = "open", comments: object[] = []): Gh {
   return (args) => {
     calls.push(args);
     if (args[0] !== "issue" || args[1] !== "view") return "";
     if (row === "unreadable") throw Object.assign(new Error("HTTP 502"), { stderr: "HTTP 502" });
-    return JSON.stringify({ state: row === "open" ? "OPEN" : "CLOSED", labels: [] });
+    return JSON.stringify({ state: row === "open" ? "OPEN" : "CLOSED", labels: [], comments });
   };
 }
 const declaredOf = (dir: string) => readDeclarations(`${dir}/${WORKER_STATE_DIR}`)?.byClaimant.get(SESSION);
@@ -123,6 +123,42 @@ test("BOUNDED: the third consecutive refusal for one row is not issued; the stop
   assert.deepEqual(declaredOf(dir), { session: SESSION, state: "blocked", at: T0 + 5 * MIN, row: 853, repo: REPO, to: "product-manager", reason: `ended its turn after ${MAX_REFUSALS} refusals of worker:stop-hook with no pull request and no declaration; nothing says what it was waiting for` }, "the declaration the refusal named, made for the worker");
   assert.ok(calls.some((args) => args.join(" ") === `issue edit 853 --repo ${REPO} --add-label ${ANSWER_PREFIX}product-manager`), "the answer label is put on the row");
   assert.ok(calls.some((args) => args[0] === "issue" && args[1] === "comment" && args[2] === "853"), "the reason is posted on the row");
+});
+
+/** The reason the bound declares, as `declareAtBound` writes it: the worker's own `BLOCKED` comment for it is what a repeat is checked against. */
+const BOUND_REASON = `ended its turn after ${MAX_REFUSALS} refusals of worker:stop-hook with no pull request and no declaration; nothing says what it was waiting for`;
+const commentAt = (createdAt: number, id: number, body: string) => ({ id: `IC_${id}`, url: `https://github.com/${REPO}/issues/853#issuecomment-${id}`, createdAt: new Date(createdAt).toISOString(), body });
+const ownBoundComment = (createdAt: number) => commentAt(createdAt, 1, `BLOCKED (\`${SESSION}\`, declared with \`worker:state\`): ${BOUND_REASON}\n\nOwed by \`product-manager\`; the row carries \`${ANSWER_PREFIX}product-manager\`.`);
+const seatComment = (createdAt: number, seat: string) => commentAt(createdAt, 2, `Ruled: wait for the pull request.\n\n<!-- decided-by: ${seat} run: 01 -->`);
+
+test("at the bound, a reason a manager has ALREADY RULED ON restores no label: the declaration is written, and nothing is labelled or commented", () => {
+  const dir = stateDir();
+  const calls: string[][] = [];
+  const gh = fakeGh(calls, "open", [ownBoundComment(T0 - 60 * MIN), seatComment(T0 - 30 * MIN, "product-manager")]);
+  runHook(OFF, seams(dir, { gh }));
+  runHook(OFF, seams(dir, { gh }));
+  const third = runHook(OFF, seams(dir, { now: T0 + 5 * MIN, gh }));
+  assert.equal(third.code, 0, "the bound");
+  assert.ok(!calls.some((args) => args.includes("--add-label")), "no answer label is put back on the row");
+  assert.ok(!calls.some((args) => args[0] === "issue" && args[1] === "comment"), "no comment is posted");
+  assert.equal(declaredOf(dir)?.state, "blocked", "the declaration itself is still written");
+});
+
+test("negative controls for the ruling at the bound: a ruling older than the worker's own comment, and a ruling by a seat that is not a manager, each still restore the label", () => {
+  const older = stateDir();
+  const olderCalls: string[][] = [];
+  const olderGh = fakeGh(olderCalls, "open", [seatComment(T0 - 90 * MIN, "product-manager"), ownBoundComment(T0 - 60 * MIN)]);
+  runHook(OFF, seams(older, { gh: olderGh }));
+  runHook(OFF, seams(older, { gh: olderGh }));
+  runHook(OFF, seams(older, { now: T0 + 5 * MIN, gh: olderGh }));
+  assert.ok(olderCalls.some((args) => args.join(" ") === `issue edit 853 --repo ${REPO} --add-label ${ANSWER_PREFIX}product-manager`), "a ruling older than the own comment answers nothing new");
+  const reviewer = stateDir();
+  const reviewerCalls: string[][] = [];
+  const reviewerGh = fakeGh(reviewerCalls, "open", [ownBoundComment(T0 - 60 * MIN), seatComment(T0 - 30 * MIN, "reviewer-agent-org-853")]);
+  runHook(OFF, seams(reviewer, { gh: reviewerGh }));
+  runHook(OFF, seams(reviewer, { gh: reviewerGh }));
+  runHook(OFF, seams(reviewer, { now: T0 + 5 * MIN, gh: reviewerGh }));
+  assert.ok(reviewerCalls.some((args) => args.join(" ") === `issue edit 853 --repo ${REPO} --add-label ${ANSWER_PREFIX}product-manager`), "a reviewer's comment is not a ruling");
 });
 
 test("at the bound, a row that cannot be read or is closed gets no declaration: the stop is still allowed, the ledger line is still written, and the failure is said", () => {
