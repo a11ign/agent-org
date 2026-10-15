@@ -6153,10 +6153,21 @@ export type SpareInstance = { spawnedAt: number, rows: number[] };
  * on a question whose text is the only record of it (`blockedSessions`), and `unknown` is not known to be
  * anything -- none of the three is ended.
  *
+ * `paneless` (agent-org#1413, #1519) is herdr saying the seat's PANE is gone: no turn can be running in it, and its
+ * status will read `unknown` for ever, so it is never "between turns". Its rows are the only account left, and it
+ * ends exactly as an idle spare does -- holds no open row, has held one, and every row it held is read CLOSED
+ * (`rowsClosed`). A row GitHub could not read is not closed, so it keeps the seat listed.
+ *
  * AN INSTANCE THAT NEVER CLAIMS IS ENDED TOO, and RECORDED AS A FAILURE rather than silently: it holds a role's
  * address and does nothing with it. The verdict says `failed`; the caller writes the line.
  */
-export function spareDecision({ status, instance, held, now, claimBoundMs = SPARE_CLAIM_BOUND_MS }: { status: string; instance: SpareInstance; held: number[]; now: number; claimBoundMs?: number; }): { end: false; why: string; } | { end: true; failed?: string; } {
+export function spareDecision({ status, instance, held, now, claimBoundMs = SPARE_CLAIM_BOUND_MS, paneless = false, rowsClosed = false }: { status: string; instance: SpareInstance; held: number[]; now: number; claimBoundMs?: number; paneless?: boolean; rowsClosed?: boolean; }): { end: false; why: string; } | { end: true; failed?: string; } {
+  if (paneless) {
+    if (held.length > 0) return { end: false, why: `holds ${held.map((n) => `#${n}`).join(", ")}` };
+    if (instance.rows.length === 0) return { end: false, why: "paneless, and it never held a row" };
+    if (!rowsClosed) return { end: false, why: "paneless, and a row it held is not read CLOSED" };
+    return { end: true };
+  }
   if (!WAKEABLE.includes(status)) return { end: false, why: `${status}: not between turns` };
   if (held.length > 0) return { end: false, why: `holds ${held.map((n) => `#${n}`).join(", ")}` };
   if (instance.rows.length > 0) return { end: true };
@@ -7404,7 +7415,7 @@ export type TeardownDeps = { spares: string[], registry: Record<string, SpareIns
  * spare is named `worker-<row>`, so an address is never spawned twice and the settle that `registerSpawn` runs for the
  * SAME address never fires -- the registry grew a stale entry per finished engineer.
  */
-export function endFinishedSpares(agents: { label: string; status: string; }[], deps: TeardownDeps): { ended: SpareCycle[]; registry: Record<string, SpareInstance>; } {
+export function endFinishedSpares(agents: { label: string; status: string; paneless?: boolean; }[], deps: TeardownDeps): { ended: SpareCycle[]; registry: Record<string, SpareInstance>; } {
   const registry = { ...deps.registry };
   const ended: SpareCycle[] = [];
   for (const role of deps.spares) {
@@ -7419,7 +7430,10 @@ export function endFinishedSpares(agents: { label: string; status: string; }[], 
     const before = registry[role] ?? { spawnedAt: deps.now, rows: [] };
     const instance = { spawnedAt: before.spawnedAt, rows: [...new Set([...before.rows, ...held])] };
     registry[role] = instance;
-    const decision = spareDecision({ status: agent.status, instance, held, now: deps.now });
+    // A paneless seat's rows are read only when it is paneless, so a readable seat costs no GitHub read here (#1519).
+    const paneless = agent.paneless === true;
+    const rowsClosed = paneless && instance.rows.every((row) => deps.rowState(row, role) === "CLOSED");
+    const decision = spareDecision({ status: agent.status, paneless, rowsClosed, instance, held, now: deps.now });
     if (!decision.end) continue;
     const cycle = closeInstance(role, instance, decision.failed, deps);
     if (cycle === null) continue;
@@ -7623,7 +7637,7 @@ function repoRootOfSpare(role: string): string {
  *
  * @param ledgerPath the delivery ledger; the teardown's state lives beside it
  */
-export function tearDownSpares(agents: { label: string; status: string; }[], ledgerPath: string, say: (line: string) => void = (line) => process.stderr.write(line)) {
+export function tearDownSpares(agents: { label: string; status: string; paneless?: boolean; }[], ledgerPath: string, say: (line: string) => void = (line) => process.stderr.write(line)) {
   try {
     const paths = sparePathsFrom(ledgerPath);
     mkdirSync(dirname(ledgerPath), { recursive: true });
