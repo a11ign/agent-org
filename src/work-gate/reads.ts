@@ -1479,7 +1479,9 @@ function readOpenRowsAsListed(run: (args: string[]) => string): any[] | null {
     const parsed = JSON.parse(run(["issue", "list", "--state", "open", "--limit", "500",
       "--json", "number,title,labels,body,blockedBy,milestone,updatedAt,subIssuesSummary,createdAt"]));
     return Array.isArray(parsed) ? parsed : null;
-  } catch {
+  } catch (cause) {
+    // agent-org#1401: the refusal is said WITH gh's reason, so the journal names it; a silent `null` left the 19:35:53Z and 19:55:01Z ticks without one.
+    process.stderr.write(`NOTE: the open rows could not be read (${said(cause)}); read as refused\n`);
     return null;
   }
 }

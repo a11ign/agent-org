@@ -19,7 +19,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GRAPHQL_RESERVE, GRAPHQL_SWEEP_MINUTES, OTHER_SCOPES_MEMORY, PACING_FLAG, orgHealthSkipped, pacedUnread, pacingNow, pacingOn, primaryRefusedLanes, primaryUnread, readOtherScopesMemory, rememberOtherScopes, scopesToRead } from "../work-gate/pacing.ts";
-import { defaultRun, eventGateOf, otherScopesToRead, primaryDue, primaryLanes, unreadScopes, type GateFacts } from "../work-gate/reads.ts";
+import { defaultRun, eventGateOf, otherScopesToRead, primaryDue, primaryLanes, readOpenRows, unreadScopes, type GateFacts } from "../work-gate/reads.ts";
 import type { Scope as TickScope } from "../event-queue.ts";
 import type { Scope } from "../work-gate/vocabulary.ts";
 import { emptyCanaryState, withMachineryFlag, type CanaryIo } from "../org-health.ts";
@@ -395,4 +395,24 @@ test("agent-org#1401: primaryRefusedLanes names each primary lane that was asked
   // RED CONTROL: a primary the pacing skipped names nothing, though its lanes are the same nulls
   assert.deepEqual(primaryRefusedLanes(allNull, false), []);
   assert.deepEqual(primaryRefusedLanes({ promotableRows: [], chairmanBlocked: [], openRowsRead: [] }, true), []);
+});
+
+test("agent-org#1401: a refused open-rows read says gh's reason on stderr and still returns null; a read that works says nothing", () => {
+  const stderrOf = (run: () => string | void) => {
+    const captured: string[] = [];
+    const write = process.stderr.write;
+    process.stderr.write = ((chunk: string) => { captured.push(String(chunk)); return true; }) as typeof process.stderr.write;
+    try {
+      return { value: run(), said: captured.join("") };
+    } finally {
+      process.stderr.write = write;
+    }
+  };
+  const refused = stderrOf(() => readOpenRows(() => { throw new Error("HTTP 502: Bad Gateway\nmore"); }, null, { home: false, webhook: false }) as unknown as string);
+  assert.equal(refused.value, null);
+  assert.equal(refused.said, "NOTE: the open rows could not be read (HTTP 502: Bad Gateway); read as refused\n");
+  // RED CONTROL: a read that works is not said to have been refused
+  const answered = stderrOf(() => readOpenRows(() => "[]", null, { home: false, webhook: false }) as unknown as string);
+  assert.deepEqual(answered.value, []);
+  assert.equal(answered.said, "");
 });
