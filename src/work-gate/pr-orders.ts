@@ -1295,17 +1295,45 @@ export const PR_OWNER_ROUTING_FLAG = "prs.ownerRouting";
 const REVIEW_CAUSES: readonly string[] = Object.freeze(["draft-awaiting-verdict", "verdict-comment-unreviewed"]);
 
 /**
+ * agent-org#1368: the pool a dependency bot's pull request's follow-up goes to, with the flag on. `ownerOfPr` names no session for such a pull request
+ * (rung 6), so its orders were `ceo`'s. A worker is addressed by the pool, which `wake.ts` resolves to the first free engineer for any cause.
+ */
+export const DEPENDENCY_BOT_WORKER_SESSION = "engineers";
+
+/** agent-org#1368: the follow-ups a dependency bot's pull request keeps with the flag on: its red checks, conflict and not-convinced verdict. */
+const DEPENDENCY_BOT_WORKER_CAUSES: readonly string[] = Object.freeze(["pr-checks-failing", "pr-merge-conflict", "verdict-not-convinced"]);
+
+/**
  * agent-org#1325: WITH THE FLAG ON, an OUTSIDE pull request (`reviewTrustOf`) and one the chairman authored keep only the orders that ask a reviewer
  * for a verdict. Its red checks, conflict, not-convinced verdict and changes-requested wake no session: the author of an outside pull request is not
  * ours to wake, and a chairman's pull request is the chairman's to finish. Every pull request order carries the subject `pr-<ref>`, which is what
  * this matches on. PURE.
+ *
+ * agent-org#1368: a DEPENDENCY BOT'S pull request is OUTSIDE too (no declared author), and `ownerOfPr` names no session for it, so its red checks,
+ * conflict and not-convinced verdict are the one follow-up kept. They go to `DEPENDENCY_BOT_WORKER_SESSION`, not `ceo`, and `ceo` is not woken for
+ * them. Every other follow-up of its pull request is withheld as before. The reroute happens here, not after the filter, because the filter is what
+ * withholds these orders: a reroute after it would never see them.
  * @param orders every order `decide` has made, in the order it made them
  * @param prs the open pull requests, which say who each one's author is
  * @param declared the identities the org declares, the same reading `perPullRequestOrders` takes
  */
 export function withholdOutsideFollowUps(orders: any[], prs: any[], declared: DeclaredIdentities): any[] {
   const withheld = new Set([...reviewOnlyRefs(prs, declared)].map((ref) => `pr-${ref}`));
-  return orders.filter((order) => !withheld.has(order.subject) || REVIEW_CAUSES.includes(order.cause));
+  const botRefs = new Set(prs.filter((pr) => ownerOfPr(pr).source === "dependency-bot").map((pr) => `pr-${subjectRef(pr.repoKey, pr.number)}`));
+  return orders.flatMap((order) => {
+    if (botRefs.has(order.subject) && order.session === UNOWNED_PR_SESSION && DEPENDENCY_BOT_WORKER_CAUSES.includes(order.cause)) return [toDependencyBotWorker(order)];
+    return !withheld.has(order.subject) || REVIEW_CAUSES.includes(order.cause) ? [order] : [];
+  });
+}
+
+/**
+ * agent-org#1368: THE ORDER ADDRESSED TO THE WORKER POOL. Its `causeKey` moves with the session (#2001), since the key is what the wake ledger
+ * dedupes on. The `fallback` a `ceo` failing order carries is `product-manager`'s, for a `ceo` that is absent: a worker is not `ceo`, so the
+ * fallback is dropped with the rest of the `ceo` addressing.
+ */
+function toDependencyBotWorker(order: any) {
+  const { fallback, fallbackOnlyIfAbsent, fallbackPrompt, ...rest } = order;
+  return { ...rest, session: DEPENDENCY_BOT_WORKER_SESSION, causeKey: order.causeKey.replace(`${UNOWNED_PR_SESSION}/`, `${DEPENDENCY_BOT_WORKER_SESSION}/`) };
 }
 
 /**

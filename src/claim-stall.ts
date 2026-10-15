@@ -26,6 +26,7 @@ import { dirname, resolve } from "node:path";
 // EVERY `git` SPAWN IN THIS REPO STRIPS `GIT_*` THROUGH ONE FUNCTION (`git-env.ts`'s own header records the incident).
 import { sandboxGitEnv } from "./lib/git-env.ts";
 import { CLAIM_RECORD_MARKER } from "./claim-labels.ts";
+import { decidedBy } from "./decided-by.ts";
 import { ANSWER_PREFIX, SESSION_PREFIX } from "./project-vocabulary.ts";
 // #3076: how a person is told a pull request's number -- `#38`, or `agent-org#38` for another tracked repository. A pure leaf, like the imports above.
 import { subjectMention } from "./review-attribution.ts";
@@ -215,17 +216,8 @@ export function claimRecordOf(comments: RowComment[]): ClaimRecord | null {
     nothing: CLAIMED_NOTHING.test(body) };
 }
 
-/**
- * The seat a comment says posted it: the role in the LAST `<!-- decided-by: <role> run: <id> -->` line `host/gh` appends to a comment
- * (agent-org#486; the role alphabet is the one it accepts), or `null` for a body that carries none. The last line is the wrapper's own, appended
- * after whatever the author wrote, so a marker quoted earlier in the body does not speak for the comment.
- *
- * @param {unknown} body @returns {string | null}
- */
-export function decidedBy(body: unknown): string | null {
-  const marks = [...String(body ?? "").matchAll(/<!--\s*decided-by:\s*([A-Za-z0-9._-]+)(?:\s+run:\s*\S+)?\s*-->/g)];
-  return marks.at(-1)?.[1] ?? null;
-}
+// `decidedBy` lives in its own leaf (`decided-by.ts`), which `pr-hold-state.ts` reads without loading this module.
+export { decidedBy } from "./decided-by.ts";
 
 /**
  * When the claimant last commented on the row after the claim: a comment newer than the record that is not itself a record, and that is
