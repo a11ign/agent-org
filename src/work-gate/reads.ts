@@ -1377,7 +1377,7 @@ export function readOpenRows(run: (args: string[]) => string = defaultRun, condi
 export const DUE_INDEX_ENTRY = "due-index.json";
 
 /** Whether this host declares `webhook` events. A host whose declaration cannot be read polls, as the tick does, so it records nothing. */
-function webhookMode(): boolean {
+export function webhookMode(): boolean {
   try {
     return homeHostConfig().events?.source === "webhook";
   } catch (error) {

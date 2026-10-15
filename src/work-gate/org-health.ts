@@ -29,7 +29,7 @@ import { roleBriefPath } from "../project-roles.ts";
 import { waitingOn, fleetWaitingOn, notBeforeDate, todayIso } from "../waiting-condition.ts";
 import { ANSWER_PREFIX, NEEDS_CHAIRMAN_LABEL, SESSION_PREFIX, LANE_PREFIX } from "../project-vocabulary.ts";
 import { FLEET_IDLE_HOURS, PRIMARY_MILESTONE_LINE, readLatestMerge, orgHealthTick,
-  primaryStandingSince, readTeamAccess, readReleaseRuns, readReleaseFailures, readFleetBuildIncidents, SIGNALS, MILESTONE_CLOCK_MINUTES, milestoneClockReading, orgHealthOrders, shelvedCircles } from "../org-health.ts";
+  primaryStandingSince, readTeamAccess, readReleaseRuns, readReleaseFailures, readFleetBuildIncidents, SIGNALS, MILESTONE_CLOCK_MINUTES, milestoneClockReading, orgHealthOrders, shelvedCircles, type SweepFact } from "../org-health.ts";
 import { declaredClosedRows } from "../row-claim/file-overlap-rule.ts";
 import { holdersOf, holdExcused } from "../pr-hold-state.ts";
 import { withoutHold } from "../red-pr.ts";
@@ -41,7 +41,9 @@ import { referencesOf, releaseReferencesOf, waitItemOf, staleWaits, bareWaits, m
 import { stallReasonOf, ownerOfPr } from "./pr-orders.ts";
 import { claimedScopesOf, scopeAddedReadings, scopeAddedOrders } from "./scope-added-orders.ts"; // #4759
 import { idleHoldIncidents, idleHoldOrders } from "./idle-hold-incidents.ts"; // #571
-import { forgetReads, readWithFirstWaveTogether } from "./reads.ts"; // agent-org#1145: the child's write makes the memo's answers stale
+import { forgetReads, readWithFirstWaveTogether, webhookMode } from "./reads.ts";
+import { GRAPHQL_SWEEP_MINUTES, OTHER_SCOPES_MEMORY, readOtherScopesMemory } from "./pacing.ts"; // agent-org#1418: the sweep's promise and the memory of whole reads
+import { stateEntryPath } from "../host-config.ts"; // agent-org#1145: the child's write makes the memo's answers stale
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -499,10 +501,12 @@ export function orgHealthNow({ prsRead, keyedPrsRead = [], readyRead, openRowsRe
       readTickRecord?: () => import("../work-tick-health.ts").TickRecordState | undefined;
       /** agent-org#1208: the tick wall p50/p95 and the `tick-overran` wakes per day; `null` is a refused read, OMITTED is "does not ask" */
       readTickHealth?: () => import("../work-tick-health.ts").TickHealth | null | undefined;
+      /** agent-org#1418: each declared repository's last whole read; OMITTED is "does not ask", and only the live gate (`work-gate.ts`) asks, on a webhook host */
+      readSweeps?: () => SweepFact | undefined;
   } = {}) {
   const { now = Date.now(), lastMergedAt = () => readLatestMerge(defaultRun, mergeRepositories()), readCaptures = (at) => readFleetCaptures({ now: at }), log, readCopies, readRefusals,
     readLabJobs = dispatchedLabJobsOrSay, readWaits = waitTickFacts, release, readHolderAgents = readAgents, readToolAgreement = () => undefined, readNodeStrips = () => undefined, readReleaseRuns = () => undefined, readReleaseFailures = () => undefined, raiseReleaseIncidents = () => {}, readFleetBuildIncident = () => undefined, readReleaseBehind = () => undefined, readClassRepeat = () => undefined,
-    teamAccess = () => readTeamAccess(defaultRun), readBoardTruth = () => undefined, readFlagSwitches = () => undefined, readTickRecord = () => undefined, readTickHealth = () => undefined,
+    teamAccess = () => readTeamAccess(defaultRun), readBoardTruth = () => undefined, readFlagSwitches = () => undefined, readTickRecord = () => undefined, readTickHealth = () => undefined, readSweeps = () => undefined,
     readMilestoneMoves: readMoves = io.lastMergedAt === undefined ? readMilestoneMoves : undefined } = io; // #4295: the real exact-start read exactly when the merge read is real
   const { prs, required, primaryDrift, claimRefusals, claimFacts } = decideArgs;
   // #2996: THE WAITS ARE READ BEFORE THE READINGS, because a hold's excuse is now a question about its condition. `null` is a refused
@@ -542,6 +546,7 @@ export function orgHealthNow({ prsRead, keyedPrsRead = [], readyRead, openRowsRe
     ...teamAccessFact(teamAccess()),
     ...flagSwitchesFact(readFlagSwitches()), // agent-org#1135
     ...tickRecordFact(readTickRecord()), // agent-org#1208
+    ...sweepsFact(readSweeps()), // agent-org#1418
     ...tickHealthFact(readTickHealth()),
     ...boardTruthFact({ openRowsRead, claimedComments, waitFacts: waits?.facts ?? null, now }, readBoardTruth), // #4045
   };
@@ -972,6 +977,18 @@ const teamAccessFact = (read: import("../org-health.ts").TeamAccessFact | undefi
 const tickHealthFact = (read: import("../work-tick-health.ts").TickHealth | null | undefined) => (read === undefined ? {} : { tickHealth: read });
 const tickRecordFact = (read: import("../work-tick-health.ts").TickRecordState | undefined) => (read === undefined ? {} : { tickRecord: read });
 const flagSwitchesFact = (read: import("../flag-switch-ledger.ts").FlagLedger | null | undefined) => (read === undefined ? {} : { flagSwitches: read });
+const sweepsFact = (read: SweepFact | undefined) => (read === undefined ? {} : { sweeps: read });
+
+/**
+ * agent-org#1418: each declared repository's last WHOLE read, as the webhook gate stamps it in `other-scopes-memory.json`. A poll host stamps nothing, so
+ * there is no sweep it could be late on and nothing is asked (`undefined`); a missing stamp is kept as missing, which `sweepOverdueReading` says is unknown.
+ */
+export function readSweepFact(): SweepFact | undefined {
+  if (!webhookMode()) return undefined;
+  const memory = readOtherScopesMemory(stateEntryPath(OTHER_SCOPES_MEMORY));
+  const repos = scopesOf([homeProjectDeclaration()]).map((scope) => ({ name: scope.code?.repo ?? scope.tracker?.repo ?? (scope.key || "the home repository"), readAtMs: memory[scope.key] }));
+  return { sweepMinutes: GRAPHQL_SWEEP_MINUTES, repos };
+}
 
 /** #3364: THE WAIT READ AFTER THE GATE HAS LIFTED WHAT IT CAN, so the readings and the orders see only the stale waits a session still owes. `null` stays `null`. */
 function liftedWaits(waits: ReturnType<typeof waitTickFacts>, { now, release }: { now: number; release?: typeof releaseHoldViaModule; }) {

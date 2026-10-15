@@ -12,7 +12,8 @@
  *   - an event-gated tick that names neither the home repository nor a due sweep skips the primary's tracker lanes and `orgHealth`, and reports both;
  *   - agent-org#1401: a tick that SKIPPED the primary's lanes by pacing reads none of them as refused, and a refused primary lane is still named as refused;
  *   - the sweep is every `GRAPHQL_SWEEP_MINUTES`, and a repository read inside that window is not read again;
- *   - the memory of read times survives a write of another repository's, and a missing or malformed file reads every repository.
+ *   - the memory of read times survives a write of another repository's, and a missing or malformed file reads every repository;
+ *   - agent-org#1418: a repository whose whole read is older than the sweep plus one tick is tripped and named with its age, a fresh one is clear, and a missing stamp is UNKNOWN, each with its own output.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -23,7 +24,7 @@ import { GRAPHQL_FLOOR, GRAPHQL_RESERVE, GRAPHQL_SWEEP_MINUTES, OTHER_SCOPES_MEM
 import { defaultRun, eventGateOf, eventUnreadForTick, otherScopesForTick, otherScopesToRead, primaryDue, primaryLanes, readOpenRows, unreadScopes, type GateFacts } from "../work-gate/reads.ts";
 import type { Scope as TickScope } from "../event-queue.ts";
 import type { Scope } from "../work-gate/vocabulary.ts";
-import { emptyCanaryState, withMachineryFlag, type CanaryIo } from "../org-health.ts";
+import { SIGNALS, emptyCanaryState, orgHealthReadings, sweepOverdueReading, withMachineryFlag, type CanaryIo } from "../org-health.ts";
 import { EXIT as GATE_EXIT, offeredByShare, tickLanes } from "../work-gate.ts";
 import { exitPartial, outageThisTick } from "../work-gate/tick.ts";
 import { claimStallsNow } from "../work-gate/claim-stall-tick.ts";
@@ -480,4 +481,38 @@ test("agent-org#1401: a refused open-rows read says gh's reason on stderr and st
   const answered = stderrOf(() => readOpenRows(() => "[]", null, { home: false, webhook: false }) as unknown as string);
   assert.deepEqual(answered.value, []);
   assert.equal(answered.said, "");
+});
+
+test("agent-org#1418: a repository unread past the sweep plus one tick is tripped and named with its age; a fresh one is clear; a missing stamp is UNKNOWN", () => {
+  const sweeps = (repos: { name: string; readAtMs?: number; }[]) => ({ now: NOW, sweeps: { sweepMinutes: GRAPHQL_SWEEP_MINUTES, repos } });
+  // stale: 40 minutes is past 15 + one tick, and the detail names the repository and its age; the fresh one beside it is not named
+  const tripped = sweepOverdueReading(sweeps([{ name: "a11ign/a11ign", readAtMs: NOW - 40 * MINUTE }, { name: "a11ign/fresh", readAtMs: NOW - 5 * MINUTE }]));
+  assert.equal(tripped.status, "tripped");
+  assert.equal(tripped.signal, SIGNALS.SWEEP_OVERDUE);
+  assert.match(tripped.detail, /^1 repository unread for longer than the sweep plus one tick: a11ign\/a11ign \(last whole read 40 min ago\)$/);
+  assert.equal(tripped.discriminator, "repository-unread-past-sweep@a11ign/a11ign");
+  // RED CONTROL: the same repository read 17 minutes ago is inside the limit (15 + 2.1 minutes), so it is clear
+  assert.deepEqual(sweepOverdueReading(sweeps([{ name: "a11ign/a11ign", readAtMs: NOW - 17 * MINUTE }])), { signal: SIGNALS.SWEEP_OVERDUE, status: "clear", detail: "" });
+  // fresh: every repository read inside the limit is clear, with no detail
+  assert.deepEqual(sweepOverdueReading(sweeps([{ name: "a11ign/a11ign", readAtMs: NOW - 5 * MINUTE }])), { signal: SIGNALS.SWEEP_OVERDUE, status: "clear", detail: "" });
+  // missing stamp: nothing is remembered for the repository, so its age is not known, and the reading says which repository
+  const missing = sweepOverdueReading(sweeps([{ name: "a11ign/never-read" }]));
+  assert.equal(missing.status, "unknown");
+  assert.match(missing.detail, /^CANNOT_TELL: no whole read is stamped for a11ign\/never-read, so its age is not known$/);
+  // RED CONTROL: a stamp that is there is not unknown, so the missing one is what made the reading unknown
+  assert.notEqual(sweepOverdueReading(sweeps([{ name: "a11ign/a11ign", readAtMs: NOW - 5 * MINUTE }])).status, "unknown");
+  // a trip stands over an unstamped repository: the stale one is still named
+  const both = sweepOverdueReading(sweeps([{ name: "a11ign/a11ign", readAtMs: NOW - 40 * MINUTE }, { name: "a11ign/never-read" }]));
+  assert.equal(both.status, "tripped");
+  assert.match(both.detail, /a11ign\/a11ign \(last whole read 40 min ago\)/);
+});
+
+test("agent-org#1418: the production readings carry the sweep reading when the caller asks, and are silent when it does not", () => {
+  const base = { now: NOW, lastMergedAt: NOW, work: null, redPrs: [], refusals: {}, drift: null, primarySince: null };
+  const stale = { sweepMinutes: GRAPHQL_SWEEP_MINUTES, repos: [{ name: "a11ign/a11ign", readAtMs: NOW - 40 * MINUTE }] };
+  // the registration in orgHealthReadings: removing it leaves no reading here, and this assertion goes red
+  const asked = orgHealthReadings({ ...base, sweeps: stale }).find((r) => r.signal === SIGNALS.SWEEP_OVERDUE);
+  assert.equal(asked?.status, "tripped");
+  assert.match(asked?.detail ?? "", /a11ign\/a11ign \(last whole read 40 min ago\)/);
+  assert.equal(orgHealthReadings(base).some((r) => r.signal === SIGNALS.SWEEP_OVERDUE), false, "a caller that does not ask is silent");
 });
