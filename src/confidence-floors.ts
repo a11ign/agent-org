@@ -9,9 +9,10 @@
 // verdict: a reused route, a refusal, an override, or a route closed without a merge, which says nothing about the route. A routing with a confidence and no verdict is UNJOINED,
 // and it is counted and named.
 //
-// COMPACTIONS. A first-pass merge whose session compacted more than {@link COMPACTIONS_TOO_MANY} times had a window too small for it, so it is wrong. The count is measured in the
-// trace store (engineer-route.ts), and the log line does not carry it: this module does not read the store, so the caller passes the counts in by routing id. A routing with no count
-// is judged by its outcome alone, and a count only ever turns a right verdict wrong, never a missing verdict into one. TURNS are not read.
+// COMPACTIONS AND TURNS. A first-pass merge whose session compacted more than {@link COMPACTIONS_TOO_MANY} times had a window too small for it, and one that took more than
+// {@link TURNS_TOO_MANY} turns ran past the escalation cap (engineer-escalation.ts), so both are wrong. The figures are measured in the trace store, and the log line carries neither: this
+// module does not read the store, so the caller passes them in by routing id. A routing with no figure is judged by its outcome alone, and a figure only ever turns a right verdict
+// wrong, never a missing verdict into one.
 //
 // THE JOIN. A routing is its REQUEST line and the outcome lines written after it for the same `use` and `id`, up to the next request for that id. The request is the routing; an
 // outcome written later closes nothing else, and a later request starts a new routing of its own.
@@ -30,6 +31,8 @@ export const FIRST_PASS_MERGED = "merged-first-pass";
 const WRONG_OUTCOMES: ReadonlySet<string> = new Set(["not-first-pass", "escalated"]);
 /** The most compactions one session may take and still have had a window big enough. Mirrors `WINDOW_TOO_SMALL_COMPACTIONS` (engineer-route.ts), which this module does not import. */
 export const COMPACTIONS_TOO_MANY = 2;
+/** The most turns one session may take and still be a first pass. Mirrors `ESCALATE_TURNS` (engineer-escalation.ts), the cap a session escalates at. */
+export const TURNS_TOO_MANY = 300;
 
 /** Right (`true`), wrong (`false`), or no verdict (`undefined`) for one outcome label. */
 export function verdictOf(outcome: string): boolean | undefined {
@@ -97,12 +100,15 @@ function readingFor(samples: readonly Sample[], flat: number): FloorReading {
   return { floor: flat, calibrated: false, reason: `no floor keeps ${RIGHT_RATE} right over ${MIN_SAMPLE} answers: the flat ${flat} stands`, sample: samples.length };
 }
 
+/** What the trace store measured of a routing's session: its compactions and its turns. A figure that could not be read is absent, and absence is not a reading. */
+export type Measured = { compactions?: number; turns?: number };
+
 /**
  * THE FLOOR OF EACH QUESTION OF `options.use`, read from the decision log's parsed lines. Every routing is either judged (its outcome gives a verdict, applied to each of its
  * answers) or unjoined (it carries a confidence and no verdict, so it is named and counted). A question with no judged answers gets the flat floor with a reason, never a guess.
- * `compactions` maps a routing's `id` to the compactions its session took (measured in the trace store by the caller); see the header.
+ * `measured` maps a routing's `id` to what the trace store measured of it (see the header).
  */
-export function calibrateFloors(lines: readonly unknown[], options: { use: string; flatFloor?: number; compactions?: ReadonlyMap<string, number> }): Calibration {
+export function calibrateFloors(lines: readonly unknown[], options: { use: string; flatFloor?: number; measured?: ReadonlyMap<string, Measured> }): Calibration {
   const flat = options.flatFloor ?? FLAT_FLOOR;
   const routings = routingsIn(lines, options.use);
   const questions = [...new Set(routings.flatMap((routing) => Object.keys(routing.answers)))];
@@ -110,8 +116,9 @@ export function calibrateFloors(lines: readonly unknown[], options: { use: strin
   const judged: { routing: Routing; right: boolean }[] = [];
   for (const routing of routings) {
     const outcomeVerdict = verdictOfRouting(routing.outcomes);
-    const compacted = routing.id === undefined ? undefined : options.compactions?.get(routing.id);
-    const right = outcomeVerdict === true && compacted !== undefined && compacted > COMPACTIONS_TOO_MANY ? false : outcomeVerdict;
+    const figures = routing.id === undefined ? undefined : options.measured?.get(routing.id);
+    const overCapped = figures !== undefined && ((figures.compactions ?? 0) > COMPACTIONS_TOO_MANY || (figures.turns ?? 0) > TURNS_TOO_MANY);
+    const right = outcomeVerdict === true && overCapped ? false : outcomeVerdict;
     if (right !== undefined) {
       judged.push({ routing, right });
       continue;
