@@ -72,14 +72,38 @@ export function slowThresholdSeconds(env: NodeJS.ProcessEnv = process.env): numb
 }
 
 export type TickOrder = { session: string, cause: string, subject: string, discriminator: string, prompt: string, causeKey: string };
-export type Marker = { at: number, pid: number | null, unreadable: boolean };
+export type Marker = { at: number, pid: number | null, unreadable: boolean, phase: string | null, phaseAt: number | null };
 
 // ---- THE START MARKER ------------------------------------------------------------------------------------------------------------------------
 
-/** @param {string} path @param {{ at: number, pid: number }} marker */
-export function writeStartMarker(path: string, marker: { at: number; pid: number; }) {
+/**
+ * Written whole through a rename, so a reader sees the marker before a phase boundary or after it and never half of one (agent-org#1542).
+ * @param {string} path @param {{ at: number, pid: number, phase?: string, phaseAt?: number }} marker
+ */
+export function writeStartMarker(path: string, marker: { at: number; pid: number; phase?: string; phaseAt?: number; }) {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(marker)}\n`);
+  const temporary = `${path}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(marker)}\n`);
+  renameSync(temporary, path);
+}
+
+/**
+ * The tick's phase boundaries, written into its start marker (agent-org#1542): each call replaces the marker with the same start and the phase begun
+ * now, so a killed tick's reader can say where it sat. NEVER THROWS: a marker that cannot be written does not fail the tick, and the first refusal is
+ * said once, because a tick that recorded no phase is one whose killed wake will say so.
+ * @param {string} path @param {{ at: number, pid: number }} start @param {(text: string) => void} [say] @returns {(phase: string) => void}
+ */
+export function phaseMarker(path: string, start: { at: number; pid: number; }, say: (text: string) => void = (text) => process.stderr.write(text)) {
+  let said = false;
+  return (phase: string) => {
+    try {
+      writeStartMarker(path, { ...start, phase, phaseAt: Date.now() });
+    } catch (err) {
+      if (said) return;
+      said = true;
+      say(`TICK PHASE NOT RECORDED at ${path}: ${String((err as Error)?.message ?? err).split("\n")[0]}. A killed tick will not say which phase it was in.\n`);
+    }
+  };
 }
 
 /**
@@ -106,12 +130,16 @@ export function readMarker(path: string): Marker | null {
     throw error;
   }
   try {
-    const { at, pid } = JSON.parse(text);
-    if (Number.isFinite(at) && Number.isInteger(pid)) return { at, pid, unreadable: false };
+    const { at, pid, phase, phaseAt } = JSON.parse(text);
+    if (Number.isFinite(at) && Number.isInteger(pid)) {
+      // A marker an older tick wrote has no phase, and one whose phase is not a name and a time names none: the pair or nothing.
+      const named = typeof phase === "string" && Number.isFinite(phaseAt);
+      return { at, pid, unreadable: false, phase: named ? phase : null, phaseAt: named ? phaseAt : null };
+    }
   } catch {
     // Falls through to the same answer a parseable file with the wrong fields gets: a marker whose author is unknown.
   }
-  return { at: statSync(path).mtimeMs, pid: null, unreadable: true };
+  return { at: statSync(path).mtimeMs, pid: null, unreadable: true, phase: null, phaseAt: null };
 }
 
 /** @param {number} pid @returns {boolean} */
@@ -138,6 +166,12 @@ export function readKilledTick(path: string, { alive = processAlive }: { alive?:
 // ---- THE TWO ORDERS --------------------------------------------------------------------------------------------------------------------------
 
 const seconds = (ms: number) => (ms / MS_PER_SECOND).toFixed(WALL_DECIMALS);
+
+/** A span as the wake reads it: `8 m 31 s`, or `40 s` under a minute, in whole seconds. */
+const elapsed = (ms: number) => {
+  const total = Math.round(ms / MS_PER_SECOND);
+  return total >= 60 ? `${Math.floor(total / 60)} m ${total % 60} s` : `${total} s`;
+};
 
 /** @param {number} ms */
 const clock = (ms: number) => new Date(ms).toISOString();
@@ -454,13 +488,20 @@ export function recordSlowTick({ line, costText, now, thresholdSeconds = TICK_SL
 export function killedTickOrders(marker: Marker | null, { foundAt, costPath }: { foundAt: number; costPath: string; }): TickOrder[] {
   if (marker === null) return [];
   const startedAt = Math.round(marker.at);
+  // The phase first, when the marker names one (agent-org#1542): the journal of that phase is the reader's first read, and the cost lines of the ticks
+  // before are the second, because a killed tick writes none of its own. The time in the phase is an upper bound, as the time in the tick is.
+  const where = marker.phase !== null && marker.phaseAt !== null
+    ? `It was in phase "${marker.phase}" for at most ${elapsed(foundAt - marker.phaseAt)} when it was killed (the last phase it began at ${clock(marker.phaseAt)}). `
+      + "Read the unit's own journal from that time first: it says what the phase was waiting on. Then the cost lines before it, "
+      + `\`tail -n 5 ${costPath}\` (phases, then the slowest and hottest command lines).`
+    : "No phase was recorded, so the marker cannot say where it was killed. A killed tick writes no cost line, so look at the ones before it: "
+      + `\`tail -n 5 ${costPath}\` (phases, then the slowest and hottest command lines), and at the unit's own journal for what it said last.`;
   return [{
     session: "ceo", cause: "tick-overran", subject: TICK_KILLED, discriminator: String(startedAt),
     prompt: `A TICK WAS KILLED. The one that started at ${clock(startedAt)} never finished: its start marker was still there when the tick that started at `
       + `${clock(foundAt)} began, and a tick that ends by itself clears it. It ran at most ${seconds(foundAt - startedAt)} s (it ended before this one began); `
       + `\`TimeoutStartSec\` is the usual ender, then a restart${marker.unreadable ? ". THE MARKER WAS UNREADABLE, so that start time is the file's modification time" : ""}.\n`
-      + `A killed tick writes no cost line, so look at the ones before it: \`tail -n 5 ${costPath}\` (phases, then the slowest and hottest command lines), `
-      + "and at the unit's own journal for what it said last.",
+      + where,
     causeKey: `ceo/${TICK_OVERRAN}/${TICK_KILLED}-${startedAt}`,
   }];
 }

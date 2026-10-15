@@ -39,7 +39,7 @@ import { BACKLOG_LABEL, LANE_PREFIX, OUT_OF_RELEASE_LABEL } from "./project-voca
 import { completionPath, writeCompletion } from "./lib/tick-completion.ts";
 import { toolVersionLine } from "./lib/tool-version.ts";
 import { refreshTickSnapshot, type TickEvents } from "./tick-snapshot.ts";
-import { TICK_COST_FILE, TICK_RECORD_MARKER, TICK_RECORD_ROW_TITLE, clearOwnMarker, deliverTickOrders, killedTickOrders, readKilledTick, readTickRecordState, recordSlowTick, slowThresholdSeconds,
+import { TICK_COST_FILE, TICK_RECORD_MARKER, TICK_RECORD_ROW_TITLE, clearOwnMarker, deliverTickOrders, killedTickOrders, phaseMarker, readKilledTick, readTickRecordState, recordSlowTick, slowThresholdSeconds,
   standingRowFor, tickMarkerPath, tickRecordPath, tickRecordRowBody, writeStartMarker, type RecordIo } from "./work-tick-health.ts";
 import { createRow, editComment, keyedCommentsOf, postRowComment } from "./ticket-port/approved-unqueued-reads.ts";
 import { CENSUS_ENV, GATE_SPANS_ENV, childrenCpuMs, installSpawnCensus, largestSpans, readCensus, readGateSpans, setCensusPhase, summariseCensus } from "./lib/spawn-census.ts";
@@ -179,15 +179,17 @@ const round = (ms: number) => Math.round(ms);
  * phases with numbers it states; the defaults are the real ones.
  *
  * `startup` is there from the start: it is node's boot and the imports (`wake.ts` is six thousand lines), which no step of `main()` can time.
- * @param {{ clock?: () => number, cpu?: () => { selfMs: number, childrenMs: number }, uptimeMs?: () => number, maxRssKb?: () => number }} [sources]
+ * `begun` is told each phase's name as it starts, before its wall is taken, so the start marker can name the phase a killed tick sat in (agent-org#1542).
+ * @param {{ clock?: () => number, cpu?: () => { selfMs: number, childrenMs: number }, uptimeMs?: () => number, maxRssKb?: () => number, begun?: (name: string) => void }} [sources]
  */
 export function createMeter({ clock = () => performance.now(), cpu = readCpu, uptimeMs = () => process.uptime() * MS_PER_SECOND,
-  maxRssKb = () => process.resourceUsage().maxRSS }: { clock?: () => number; cpu?: () => { selfMs: number; childrenMs: number; }; uptimeMs?: () => number; maxRssKb?: () => number; } = {}) {
+  maxRssKb = () => process.resourceUsage().maxRSS, begun = () => {} }: { clock?: () => number; cpu?: () => { selfMs: number; childrenMs: number; }; uptimeMs?: () => number; maxRssKb?: () => number; begun?: (name: string) => void; } = {}) {
   const totalCpuMs = () => { const { selfMs, childrenMs } = cpu(); return selfMs + childrenMs; };
   const phases: Record<string, { wallMs: number; cpuMs?: number; }> = { startup: { wallMs: round(uptimeMs()), cpuMs: round(totalCpuMs()) } };
   return {
     /** @template T @param {string} name @param {() => T} step @returns {T} */
     phase<T>(name: string, step: () => T): T {
+      begun(name);
       const [wallFrom, cpuFrom] = [clock(), totalCpuMs()];
       setCensusPhase(name);
       let result: T;
@@ -296,7 +298,7 @@ export function appendTickCost(path: string, line: object) {
 /**
  * What one tick carries from its start to `finish`: where it records, the meter, how many wakes `wake` reported, and how to run `wake` for the two reports a tick makes about itself (`work-tick-health.ts`).
  */
-export type Run = { recordPath: string, costPath: string, censusPath: string, gateSpansPath: string, markerPath: string, wakeCommand: { node: string, args: string[] }, meter: ReturnType<typeof createMeter>, wakes: number, gateKilled: boolean };
+export type Run = { recordPath: string, costPath: string, censusPath: string, gateSpansPath: string, markerPath: string, start: { at: number, pid: number }, wakeCommand: { node: string, args: string[] }, meter: ReturnType<typeof createMeter>, wakes: number, gateKilled: boolean };
 
 /**
  * THE CENSUS STARTS HERE, before the first spawn, and reaches every process the tick starts two ways: this process is patched in place (it runs the
@@ -311,8 +313,11 @@ function startRun(ledgerPath: string, wakeArgs: string[]): Run {
   process.env.NODE_OPTIONS = [process.env.NODE_OPTIONS, preload].filter(Boolean).join(" ");
   installSpawnCensus(censusPath);
   const gateSpansPath = join(dirname(ledgerPath), `tick-gate-spans.${process.pid}.jsonl`); // handed to the gate alone (`GATE_SPANS_ENV`), never put in this process's environment
-  return { recordPath: completionPath(ledgerPath), costPath: tickCostPath(ledgerPath), censusPath, gateSpansPath, markerPath: tickMarkerPath(ledgerPath),
-    wakeCommand: { node: process.execPath, args: wakeArgs }, meter: createMeter(), wakes: 0, gateKilled: false };
+  const markerPath = tickMarkerPath(ledgerPath);
+  // The start the marker keeps for the whole run (agent-org#1542): every phase boundary rewrites the marker with this same start and the phase begun.
+  const start = { at: Math.round(Date.now() - process.uptime() * MS_PER_SECOND), pid: process.pid };
+  return { recordPath: completionPath(ledgerPath), costPath: tickCostPath(ledgerPath), censusPath, gateSpansPath, markerPath, start,
+    wakeCommand: { node: process.execPath, args: wakeArgs }, meter: createMeter({ begun: phaseMarker(markerPath, start) }), wakes: 0, gateKilled: false };
 }
 
 /**
@@ -369,7 +374,7 @@ function recordCost(exit: number, run: Run): ReturnType<typeof tickCostLine> | n
 function beginTickHealth(run: Run) {
   try {
     const killed = readKilledTick(run.markerPath);
-    writeStartMarker(run.markerPath, { at: Math.round(Date.now() - process.uptime() * MS_PER_SECOND), pid: process.pid });
+    writeStartMarker(run.markerPath, run.start);
     process.on("exit", () => clearOwnMarker(run.markerPath, process.pid));
     deliverTickOrders(killedTickOrders(killed, { foundAt: Date.now(), costPath: run.costPath }), run.wakeCommand);
   } catch (err) {
