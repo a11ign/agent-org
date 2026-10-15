@@ -5,9 +5,10 @@
  * `runs/board-snapshots`). A manager's `pr list` or `issue list` re-reads the same lists through the API, and `host/gh` refuses it for that reason.
  * This reader is the answer that refusal names: it prints what is stored and how old it is, and it makes NO `gh` call (control f).
  *
- *   gate-snapshot-read prs   --repo <owner/name>   the open pull requests the gate last read whole, with their titles
- *   gate-snapshot-read rows  --repo <owner/name>   the open rows the gate last read, with their titles
- *   gate-snapshot-read board                        the newest board snapshot's path
+ *   gate-snapshot-read prs   --repo <owner/name>           the open pull requests the gate last read whole, with their titles
+ *   gate-snapshot-read rows  --repo <owner/name>           the open rows the gate last read, with their titles
+ *   gate-snapshot-read rows  --repo <owner/name> --json    the same rows as ONE JSON object: each row's number, title, labels and body as stored, and the read's instant and age
+ *   gate-snapshot-read board                                the newest board snapshot's path
  *
  * A SNAPSHOT THAT CANNOT BE READ IS SAID, NEVER A LIST: a missing, unreadable or unnamed store prints its reason and exits 1, because an empty list
  * would read as "nothing is open". The age is the time since the gate's read, not since this command ran; a snapshot the gate has not refreshed
@@ -29,11 +30,21 @@ export const OPEN_PRS_STORE = "open-prs-memory.json";
 /** The gate's kept reads: `rows` per repository, `{ signature, readAt, rows }`, written by the conditional open-rows read (`work-gate/reads.ts`). */
 export const KEPT_READS_STORE = "kept-reads.json";
 
+/** A stored open row whole, as `rows --json` prints it. `labels` is the names in stored order, `null` when the store has no list; `body` is the stored text, `null` (never "") when it has none. */
+export type StoredRow = { number: unknown; title: string; labels: string[] | null; body: string | null; };
+
 export type SnapshotRead =
-  | { ok: true; source: string; readAtMs: number; items: string[]; }
+  | { ok: true; source: string; readAtMs: number; items: string[]; stored?: StoredRow[]; }
   | { ok: false; source: string; reason: string; };
 
 const titled = (item: { number?: unknown; title?: unknown; }) => `#${String(item.number)} ${typeof item.title === "string" ? item.title : ""}`.trimEnd();
+
+const stored = (row: { number?: unknown; title?: unknown; labels?: unknown; body?: unknown; }): StoredRow => ({
+  number: row.number,
+  title: typeof row.title === "string" ? row.title : "",
+  labels: Array.isArray(row.labels) ? row.labels.map((label) => String(label?.name ?? label)) : null,
+  body: typeof row.body === "string" ? row.body : null,
+});
 
 /** The open pull requests the gate last read whole for `repo`, or why there are none. A remembered list is kept whole, so its instant is the read's. */
 export function readOpenPrs({ path, repo, nowMs }: { path: string; repo: string; nowMs: number; }): SnapshotRead {
@@ -54,7 +65,7 @@ export function readOpenRows({ path, repo }: { path: string; repo: string; }): S
   const rows = kept?.[repo]?.rows;
   if (rows === undefined) return { ok: false, source: path, reason: `missing: no open rows kept for ${repo}` };
   if (!Array.isArray(rows?.rows) || !Number.isFinite(rows.readAt)) return { ok: false, source: path, reason: `unreadable: the open rows kept for ${repo} are not a list with an instant` };
-  return { ok: true, source: path, readAtMs: rows.readAt, items: rows.rows.map(titled) };
+  return { ok: true, source: path, readAtMs: rows.readAt, items: rows.rows.map(titled), stored: rows.rows.map(stored) };
 }
 
 /** The newest board snapshot under `dir` (by its file's time), named by path: its age is the file's, and the board is read from it by the caller. */
@@ -79,7 +90,12 @@ export function renderRead(what: string, read: SnapshotRead, nowMs: number): str
   return [`${what} from the gate's snapshot in ${read.source}: read ${at}, ${ageText(nowMs - read.readAtMs)} ago, ${read.items.length} item(s)`, ...read.items];
 }
 
-const USAGE = "usage: agent-org gate-snapshot-read <prs|rows|board> [--repo <owner/name>] [--state <dir>] [--root <dir>]";
+/** `rows --json`: one object with the instant the store was read at and its age (never negative, as the header's), and each stored row whole. */
+export function renderRowsJson(read: Extract<SnapshotRead, { ok: true; }>, nowMs: number): string {
+  return JSON.stringify({ source: read.source, readAt: new Date(read.readAtMs).toISOString(), ageMs: Math.max(0, nowMs - read.readAtMs), rows: read.stored ?? [] });
+}
+
+const USAGE = "usage: agent-org gate-snapshot-read <prs|rows|board> [--repo <owner/name>] [--state <dir>] [--root <dir>] [--json]";
 
 /**
  * The command. Returns the exit status; prints to stdout and stderr only. Nothing here calls `gh`: the stores are files the gate wrote.
@@ -93,6 +109,12 @@ export function main(argv: readonly string[], { nowMs = Date.now(), env = proces
   };
   if (what !== "prs" && what !== "rows" && what !== "board") {
     process.stderr.write(`${USAGE}\n`);
+    return 2;
+  }
+  // `--json` is for rows only: `prs` and `board` refuse it rather than ignore it, so a caller that asks them for JSON is told so.
+  const json = rest.includes("--json");
+  if (json && what !== "rows") {
+    process.stderr.write(`gate-snapshot-read ${what}: --json is for rows only\n${USAGE}\n`);
     return 2;
   }
   const repo = flag("--repo") ?? env.GH_REPO;
@@ -114,9 +136,12 @@ export function main(argv: readonly string[], { nowMs = Date.now(), env = proces
       : readOpenRows({ path: join(stateDir, GATE_VALIDATORS_DIR, KEPT_READS_STORE), repo: repo! });
   }
   const lines = renderRead(what, read, nowMs);
-  if (read.ok) process.stdout.write(`${lines.join("\n")}\n`);
-  else process.stderr.write(`${lines.join("\n")}\n`);
-  return read.ok ? 0 : 1;
+  if (!read.ok) {
+    process.stderr.write(`${lines.join("\n")}\n`);
+    return 1;
+  }
+  process.stdout.write(json ? `${renderRowsJson(read, nowMs)}\n` : `${lines.join("\n")}\n`);
+  return 0;
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) process.exitCode = main(process.argv.slice(2));

@@ -10,7 +10,7 @@ import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpDir } from "./lib/tmp-fixture.ts";
-import { ageText, main, readBoard, readOpenPrs, readOpenRows, renderRead } from "./gate-snapshot-read.ts";
+import { KEPT_READS_STORE, ageText, main, readBoard, readOpenPrs, readOpenRows, renderRead, renderRowsJson } from "./gate-snapshot-read.ts";
 import { GATE_VALIDATORS_DIR } from "./gh-conditional.ts";
 
 const READER = fileURLToPath(new URL("./gate-snapshot-read.ts", import.meta.url));
@@ -90,4 +90,67 @@ test("(f) the command names what it cannot read, and refuses a missing repositor
   assert.equal(missing.stdout, "");
   assert.equal(main(["prs"], { env: {} }), 2, "a read needs a repository");
   assert.equal(main(["issues"]), 2);
+});
+
+/** The kept open rows as the gate writes them: `gh issue list` labels as `{ name }`, and a body only where the row had one. */
+const rowsState = () => {
+  const state = tmpDir("gate-snapshot-read-rows-");
+  mkdirSync(join(state, GATE_VALIDATORS_DIR));
+  writeFileSync(join(state, GATE_VALIDATORS_DIR, KEPT_READS_STORE), JSON.stringify({ [REPO]: { rows: { signature: "s", readAt: NOW - 30_000, rows: [
+    { number: 5155, title: "Fleet hold", labels: [{ name: "fleet-gated" }, { name: "lane:orchestrator" }], body: "Fleet-hold-until: 2026-10-20" },
+    { number: 1517, title: "No body key", labels: [{ name: "lane:any" }] },
+    { number: 1539, title: "No label list", body: "Plain body" },
+  ] } } }));
+  return state;
+};
+
+test("(a)-(c) rows --json prints each stored row whole: its body and labels as stored, null where the store has none, and the age from the stored instant", () => {
+  const state = rowsState();
+  const read = readOpenRows({ path: join(state, GATE_VALIDATORS_DIR, KEPT_READS_STORE), repo: REPO });
+  const out = JSON.parse(renderRowsJson(read.ok ? read : assert.fail("the rows must read"), NOW));
+  assert.deepEqual(out, {
+    source: join(state, GATE_VALIDATORS_DIR, KEPT_READS_STORE),
+    readAt: "2026-10-15T20:09:30.000Z",
+    ageMs: 30_000,
+    rows: [
+      { number: 5155, title: "Fleet hold", labels: ["fleet-gated", "lane:orchestrator"], body: "Fleet-hold-until: 2026-10-20" },
+      { number: 1517, title: "No body key", labels: ["lane:any"], body: null },
+      { number: 1539, title: "No label list", labels: null, body: "Plain body" },
+    ],
+  });
+});
+
+test("(e) rows without --json prints the lines it printed before: the header, then number and title only", () => {
+  const state = rowsState();
+  const read = readOpenRows({ path: join(state, GATE_VALIDATORS_DIR, KEPT_READS_STORE), repo: REPO });
+  const lines = renderRead("rows", read, NOW);
+  assert.match(lines[0], /, 30 s ago, 3 item\(s\)$/);
+  assert.deepEqual(lines.slice(1), ["#5155 Fleet hold", "#1517 No body key", "#1539 No label list"]);
+});
+
+test("(a)-(d) the command: rows --json writes one JSON object to stdout and exits 0; a missing store says its reason on stderr, prints nothing on stdout, and exits 1", () => {
+  const state = rowsState();
+  const ok = spawnSync(process.execPath, [READER, "rows", "--repo", REPO, "--state", state, "--json"], { encoding: "utf8" });
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.equal(ok.stderr, "");
+  const parsed = JSON.parse(ok.stdout);
+  assert.deepEqual(Object.keys(parsed), ["source", "readAt", "ageMs", "rows"]);
+  assert.equal(parsed.rows.length, 3);
+  assert.equal(parsed.rows[1].body, null);
+
+  const empty = tmpDir("gate-snapshot-read-json-empty-");
+  const missing = spawnSync(process.execPath, [READER, "rows", "--repo", REPO, "--state", empty, "--json"], { encoding: "utf8" });
+  assert.equal(missing.status, 1);
+  assert.equal(missing.stdout, "");
+  assert.match(missing.stderr, /no snapshot \(missing: no kept reads\)/);
+});
+
+test("(f) prs and board take no --json: the flag is refused with the usage line and exit 2, never ignored", () => {
+  const state = gateState();
+  for (const args of [["prs", "--repo", REPO, "--state", state, "--json"], ["board", "--json"]]) {
+    const refused = spawnSync(process.execPath, [READER, ...args], { encoding: "utf8" });
+    assert.equal(refused.status, 2, args.join(" "));
+    assert.equal(refused.stdout, "");
+    assert.match(refused.stderr, /^gate-snapshot-read \w+: --json is for rows only\nusage: agent-org gate-snapshot-read /);
+  }
 });
