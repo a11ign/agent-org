@@ -28,6 +28,10 @@ export const LOCK_GRIDLOCK_KIND = "lock-gridlock";
 export const B4_DEADLOCK_KIND = "b4-deadlock";
 /** Who a cycle goes to when its holder's wake did not break it, or when nobody is known to hold the pull request. */
 export const DEADLOCK_ESCALATION_SESSION = "orchestrator";
+/** How long a fired episode may stand before the escalation goes: the 30 that fired it plus 30 for the holder to act on the wake (agent-org#1426). */
+export const BLOCKING_ESCALATE_MINUTES = 60;
+/** Who a standing gridlock goes to once the holder's wake has not cleared it (agent-org#1426): the queue's owner, who can narrow or re-sequence the shelved rows, which the holder cannot. */
+export const BLOCKING_ESCALATION_SESSION = "product-manager";
 /** The record's file name in the state directory. */
 export const BLOCKING_FILE = "blocking-impact.json";
 /** The tick runs every two minutes; a gap beyond this is a break in observation, not a long shelving. */
@@ -40,8 +44,11 @@ const NAMED_ROWS = 12;
 export type Held = { holder: string; row: number | null; repo?: string };
 /** `repo` is `#N in <repo>`, a pull request of that repository. `tracker` is the repository whose tracker a BARE row number belongs to (absent for the home tracker), which `refOfShelving` sets. */
 export type Ref = { number: number; repo?: string; tracker?: string };
-/** What a deadlock needs and a holder does not: the open pull request a ref names (its display name and the rows it declares it closes), and the open rows a row waits on (`b4-cycle.ts`; the home tracker's unless `tracker` names another's). */
-export type Waits = { prOf: (ref: Ref) => { pr: string; closes: number[] } | null; blockersOf: (row: number, tracker?: string) => number[] };
+/**
+ * What a deadlock needs and a holder does not: the open pull request a ref names (its display name and the rows it declares it closes), and the open rows a row waits on (`b4-cycle.ts`; the home
+ * tracker's unless `tracker` names another's). `closingPrOf` is the holder's open pull request that closes `row`, with its review decision: `null` when the holder has none the gate can read (agent-org#1426).
+ */
+export type Waits = { prOf: (ref: Ref) => { pr: string; closes: number[] } | null; blockersOf: (row: number, tracker?: string) => number[]; closingPrOf: (row: number, holder: string, tracker?: string) => PullRequestState | null };
 /** `waits` is absent on a resolver written without the edges (a test's table), which finds no deadlock. */
 export type Resolver = ((ref: Ref) => Held | null) & { waits?: Waits };
 /** `repo` is the repository whose tracker the row is in: absent for the home tracker's rows, and set for a keyed tracker's, whose reasons number ITS rows. */
@@ -51,7 +58,8 @@ export type Shelved = { number: number; reason: string; repo?: string };
  * write goes; `null` when one holder's held rows are in two trackers, whose bare numbers a row write cannot tell apart, so none is made.
  */
 export type Holding = { rows: number[]; heldRows: number[]; heldIn?: string | null };
-export type Episode = { since: number; rows: number[]; heldRows: number[]; fired: boolean; heldIn?: string | null };
+/** `escalated` is the episode's product-manager order (agent-org#1426), absent in a record written before it, which reads as `false`. */
+export type Episode = { since: number; rows: number[]; heldRows: number[]; fired: boolean; escalated?: boolean; heldIn?: string | null };
 /** `minutes` is the time since the previous tick that this sample stands for, so a sample's row-minutes are `rows * minutes`. */
 export type Sample = { at: number; holder: string; row: number | null; rows: number; minutes: number };
 /**
@@ -82,7 +90,7 @@ export function heldRefOf(reason: string): Ref | null {
  * The resolver also carries `waits` (the pull request's whole `Closes` and the rows' `blockedBy` edges, held or not), which is what `deadlocksOf` reads.
  * @param {{ rows: { number: number, blockedBy?: unknown }[], prs: { number: number, repo?: string }[], trackers?: Record<string, { number: number, blockedBy?: unknown }[]>, sessionOf: (item: any) => string | null, closesOf: (pr: any) => number[] }} open
  */
-export function resolverOf({ rows, prs, trackers = {}, sessionOf, closesOf }: { rows: { number: number; blockedBy?: unknown }[]; prs: { number: number; repo?: string }[]; trackers?: Record<string, { number: number; blockedBy?: unknown }[]>; sessionOf: (item: any) => string | null; closesOf: (pr: any) => number[] }): Resolver {
+export function resolverOf({ rows, prs, trackers = {}, sessionOf, closesOf }: { rows: { number: number; blockedBy?: unknown }[]; prs: { number: number; repo?: string; reviewDecision?: string | null }[]; trackers?: Record<string, { number: number; blockedBy?: unknown }[]>; sessionOf: (item: any) => string | null; closesOf: (pr: any) => number[] }): Resolver {
   const rowsOf = (tracker?: string) => (tracker === undefined ? rows : Object.hasOwn(trackers, tracker) ? trackers[tracker] : []);
   const prNamed = ({ number, repo, tracker }: Ref) => prs.find((p) => Number(p.number) === number && p.repo === (repo ?? tracker));
   const resolve = ({ number, repo, tracker }: Ref): Held | null => {
@@ -99,7 +107,13 @@ export function resolverOf({ rows, prs, trackers = {}, sessionOf, closesOf }: { 
     const repo = ref.repo ?? ref.tracker;
     return pr === undefined ? null : { pr: repo === undefined ? `#${ref.number}` : `${repo.split("/").pop()}#${ref.number}`, closes: closesOf(pr) };
   };
-  return Object.assign(resolve, { waits: { prOf, blockersOf: (row: number, tracker?: string) => openBlockersOf(rowsOf(tracker).find((r) => Number(r.number) === row)) } });
+  // The pull request a holder's row is closed by: the open one of that repository whose `Closes` names the row and whose label is the holder's (agent-org#1426).
+  const closingPrOf = (row: number, holder: string, tracker?: string): PullRequestState | null => {
+    const pr = prs.find((p) => p.repo === tracker && closesOf(p).includes(row) && sessionOf(p) === holder);
+    if (pr === undefined) return null;
+    return { pr: pr.repo === undefined ? `#${pr.number}` : `${pr.repo.split("/").pop()}#${pr.number}`, review: pr.reviewDecision ?? null };
+  };
+  return Object.assign(resolve, { waits: { prOf, closingPrOf, blockersOf: (row: number, tracker?: string) => openBlockersOf(rowsOf(tracker).find((r) => Number(r.number) === row)) } });
 }
 
 /** The OPEN rows a row's `blockedBy` edge names. `nodes` keeps closed blockers, which are waits that have cleared; a node with no `state` is read as open (`arm-pr.ts`'s `openBlockersOf`, which drags in the arming path and is not imported here). */
@@ -193,31 +207,39 @@ function nextEpisodes(previous: BlockingRecord | null, { now, holdings, continuo
   for (const [holder, holding] of holdings) {
     if (holding.rows.length < BLOCKING_MIN_ROWS) continue;
     const prior = continuous ? previous?.episodes[holder] : undefined;
-    episodes[holder] = { since: prior?.since ?? now, rows: holding.rows, heldRows: holding.heldRows, fired: prior?.fired ?? false, ...(holding.heldIn === undefined ? {} : { heldIn: holding.heldIn }) };
+    episodes[holder] = { since: prior?.since ?? now, rows: holding.rows, heldRows: holding.heldRows, fired: prior?.fired ?? false, escalated: prior?.escalated ?? false, ...(holding.heldIn === undefined ? {} : { heldIn: holding.heldIn }) };
   }
   return episodes;
 }
 
 /**
- * ONE TICK: the next record, and the incidents newly due. An incident is due the first tick an episode has lasted `BLOCKING_MIN_MINUTES`, and not again until the episode has
- * ended and a new one has lasted as long. `samples` accrue for EVERY holder shelving anything, below the incident threshold too, so the daily top blocker is not limited to
+ * ONE TICK: the next record, the incidents newly due, and the escalations newly due. An incident is due the first tick an episode has lasted `BLOCKING_MIN_MINUTES`, and not again until the episode has
+ * ended and a new one has lasted as long. An escalation (agent-org#1426) is due the first tick a FIRED episode has lasted `BLOCKING_ESCALATE_MINUTES`, once per episode: the holder was woken and the
+ * shelving still stands. `samples` accrue for EVERY holder shelving anything, below the incident threshold too, so the daily top blocker is not limited to
  * holders that were ever an incident; they are kept for 24 hours.
  * @param {BlockingRecord | null} previous `null` for a record nobody could read, which starts every episode afresh
  * @param {{ now: number, holdings: Map<string, Holding> }} tick
  */
-export function advance(previous: BlockingRecord | null, { now, holdings }: { now: number; holdings: Map<string, Holding> }): { record: BlockingRecord; incidents: Incident[] } {
+export function advance(previous: BlockingRecord | null, { now, holdings }: { now: number; holdings: Map<string, Holding> }): { record: BlockingRecord; incidents: Incident[]; escalations: Incident[] } {
   const continuous = previous !== null && now >= previous.at && now - previous.at <= MAX_TICK_GAP_MS;
   const episodes = nextEpisodes(previous, { now, holdings, continuous });
   const incidents: Incident[] = [];
+  const escalations: Incident[] = [];
   for (const [holder, episode] of Object.entries(episodes)) {
-    if (episode.fired || now - episode.since < BLOCKING_MIN_MINUTES * MS_PER_MINUTE) continue;
-    episode.fired = true;
-    incidents.push({ holder, since: episode.since, minutes: Math.floor((now - episode.since) / MS_PER_MINUTE), rows: episode.rows, heldRows: episode.heldRows, ...(episode.heldIn === undefined ? {} : { heldIn: episode.heldIn }) });
+    const lasted = now - episode.since;
+    const incident: Incident = { holder, since: episode.since, minutes: Math.floor(lasted / MS_PER_MINUTE), rows: episode.rows, heldRows: episode.heldRows, ...(episode.heldIn === undefined ? {} : { heldIn: episode.heldIn }) };
+    if (!episode.fired && lasted >= BLOCKING_MIN_MINUTES * MS_PER_MINUTE) {
+      episode.fired = true;
+      incidents.push(incident);
+    } else if (episode.fired && !episode.escalated && lasted >= BLOCKING_ESCALATE_MINUTES * MS_PER_MINUTE) {
+      episode.escalated = true;
+      escalations.push(incident);
+    }
   }
   const minutes = previous !== null && continuous ? (now - previous.at) / MS_PER_MINUTE : 0;
   const fresh: Sample[] = minutes === 0 ? [] : [...holdings].map(([holder, holding]) => ({ at: now, holder, row: holding.heldRows[0] ?? null, rows: holding.rows.length, minutes }));
   const kept = (previous?.samples ?? []).filter((sample) => sample.at > now - DAY_MS);
-  return { record: { at: now, episodes, samples: [...kept, ...fresh], holdings: Object.fromEntries(holdings) }, incidents };
+  return { record: { at: now, episodes, samples: [...kept, ...fresh], holdings: Object.fromEntries(holdings) }, incidents, escalations };
 }
 
 /**
@@ -270,6 +292,33 @@ export function wakeOrder(incident: Incident): BlockingOrder {
   const discriminator = `${incident.holder}-${incident.since}`;
   return { session: incident.holder, cause: "ready-row-unclaimable", subject: incident.heldRows[0] === undefined ? `holder-${incident.holder}` : `row-${incident.heldRows[0]}`,
     discriminator, prompt: wakeText(incident), causeKey: `${incident.holder}/lock-gridlock/${discriminator}` };
+}
+
+/** A holder's pull request among the shelvings: its name, and its `reviewDecision` (`null` when none is recorded). */
+export type PullRequestState = { pr: string; review: string | null };
+
+/** What product-manager is told when the holder's wake has not cleared a standing shelving (agent-org#1426): the holder, its row, the shelved rows, the minutes, and the three ways out, in order. */
+export function escalationText(incident: Incident, pullRequest: PullRequestState | undefined): string {
+  const { holder, rows, heldRows, minutes } = incident;
+  const held = heldRows.length === 0 ? "no row the gate can name" : `row ${rowList(heldRows)}`;
+  const state = pullRequest === undefined ? `${holder} has no open pull request the gate could read` : `${holder}'s pull request ${pullRequest.pr} has review decision ${pullRequest.review ?? "none"}`;
+  return `escalation of the wake already sent to ${holder}: ${holder} holds ${held} and has shelved ${rows.length} ready rows behind it for ${minutes} minutes (${rowList(rows)}), `
+    + `and it has not landed, split or released. Three ways out, in this order: (1) ${holder} lands its change on ${held} (${state}); `
+    + `(2) ${holder}'s Region splits or narrows, a row amendment for you to make; (3) the shelved rows are re-sequenced behind ${held} by blocked-by. This order releases no claim.`;
+}
+
+/** The row write on each held row of an escalated episode. The marker keeps a later tick from reading it as new. */
+export function escalationRowComment(incident: Incident): string {
+  return `<!-- lock-gridlock-escalated: ${incident.holder} since ${new Date(incident.since).toISOString()} -->\n`
+    + `**Escalated to ${BLOCKING_ESCALATION_SESSION}:** \`${incident.holder}\` was woken at ${BLOCKING_MIN_MINUTES} minutes and this row still holds ${incident.rows.length} shelved rows at ${incident.minutes} minutes. `
+    + "The queue is theirs to decide: narrow, split or re-sequence.";
+}
+
+/** The escalation order (agent-org#1426). It reuses `ready-row-unclaimable`, as the wake does, and no ledger line is written for it: an escalation is not a new failure. */
+export function escalationOrder(incident: Incident, pullRequest: PullRequestState | undefined): BlockingOrder {
+  const discriminator = `${incident.holder}-${incident.since}-escalated`;
+  return { session: BLOCKING_ESCALATION_SESSION, cause: "ready-row-unclaimable", subject: incident.heldRows[0] === undefined ? `holder-${incident.holder}` : `row-${incident.heldRows[0]}`,
+    discriminator, prompt: escalationText(incident, pullRequest), causeKey: `${BLOCKING_ESCALATION_SESSION}/lock-gridlock/${discriminator}` };
 }
 
 /** What the holder of a cycle's pull request is woken with, once: the cycle in one sentence and the two ways out, the cheaper first by the chairman's word (agent-org#5009). */
@@ -363,18 +412,44 @@ function previousRecord(path: string, { read, log }: Required<Pick<BlockingIo, "
   }
 }
 
-/** Raise an incident: the ledger event, the row writes, and the wake order. Each effect reports its own refusal and none stops the others. */
-function raise(incident: Incident, { logPath, now, io }: { logPath: string; now: number; io: Required<BlockingIo> }): BlockingOrder {
-  io.record({ logPath, classKey: LOCK_GRIDLOCK_KIND, ref: episodeRef(incident), now, report: io.log });
+/** The row write on each held row of an incident or an escalation, in the tracker the held rows are in. A refusal is reported and stops nothing. */
+function writeHeldRows(incident: Incident, body: string, io: Required<BlockingIo>) {
   const { heldIn } = incident;
   for (const row of heldIn === null ? [] : incident.heldRows) {
     try {
-      io.comment(row, rowComment(incident), heldIn ?? undefined);
+      io.comment(row, body, heldIn ?? undefined);
     } catch (cause) {
       io.log(`blocking-impact: the row write on #${row} was refused (${firstLine(cause)})`);
     }
   }
+}
+
+/** Raise an incident: the ledger event, the row writes, and the wake order. Each effect reports its own refusal and none stops the others. */
+function raise(incident: Incident, { logPath, now, io }: { logPath: string; now: number; io: Required<BlockingIo> }): BlockingOrder {
+  io.record({ logPath, classKey: LOCK_GRIDLOCK_KIND, ref: episodeRef(incident), now, report: io.log });
+  writeHeldRows(incident, rowComment(incident), io);
   return wakeOrder(incident);
+}
+
+/** Raise an escalation (agent-org#1426): the row writes and the product-manager order. No ledger event, which would count as another occurrence of the class. */
+function raiseEscalation(incident: Incident, { io, pullRequest }: { io: Required<BlockingIo>; pullRequest: PullRequestState | undefined }): BlockingOrder {
+  writeHeldRows(incident, escalationRowComment(incident), io);
+  return escalationOrder(incident, pullRequest);
+}
+
+/** The pull request each holder shelves behind, read from its shelvings (`prOf`), with its review decision. The first shelving of a holder that names one is the one kept. */
+function pullRequestsOf(blocked: Shelved[], resolve: Resolver): Map<string, PullRequestState> {
+  const found = new Map<string, PullRequestState>();
+  const { waits } = resolve;
+  if (waits === undefined) return found;
+  for (const shelving of blocked) {
+    const ref = refOfShelving(shelving);
+    const held = ref === null ? null : resolve(ref);
+    if (held === null || held.row === null || found.has(held.holder)) continue;
+    const pullRequest = waits.closingPrOf(held.row, held.holder, held.repo);
+    if (pullRequest !== null) found.set(held.holder, pullRequest);
+  }
+  return found;
 }
 
 /**
@@ -390,14 +465,18 @@ export function blockingImpactTick({ blocked, resolve, stateDir, now, ...seams }
     const sightings = sightingsAmong(blocked, resolve);
     const { holdings, unattributed } = holdingsOf(blocked, resolve, new Set(sightings.map((d) => rowKey(d.shelved, d.repo))));
     const previous = previousRecord(path, io);
-    const { record, incidents } = advance(previous, { now, holdings });
+    const { record, incidents, escalations } = advance(previous, { now, holdings });
     const cycles = advanceDeadlocks(previousDeadlocks(previous, now), sightings, now);
     for (const deadlock of sightings) io.log(deadlockLine(deadlock));
     for (const line of holdingLines(holdings, { episodes: record.episodes, unattributed })) io.log(line);
     const kept = persisted(path, withDeadlocks(record, cycles, { previous, now }), io);
     const logPath = `${stateDir}/${FAILURE_LEDGER_FILE}`;
     const orders = incidents.map((incident) => raise(incident, { logPath, now, io: kept ? io : { ...io, comment: () => {} } }));
-    if (kept) return [...orders, ...cycles.moves.map((move) => raiseDeadlock(move, { logPath, now, io }))];
+    // An escalation is made only when the record that says it was made is kept: otherwise the next tick would make it again.
+    if (kept) {
+      const pullRequests = pullRequestsOf(blocked, resolve);
+      return [...orders, ...escalations.map((incident) => raiseEscalation(incident, { io, pullRequest: pullRequests.get(incident.holder) })), ...cycles.moves.map((move) => raiseDeadlock(move, { logPath, now, io }))];
+    }
     if (cycles.moves.length > 0) io.log("blocking-impact: no circular-wait order was made this tick: the record was not kept, so the same cycle would be put to its holder afresh on every tick");
     return orders;
   } catch (cause) {
