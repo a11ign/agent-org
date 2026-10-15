@@ -125,7 +125,7 @@ test("a read refused for a limit is asked ONCE in a tick, and the line names the
   assert.equal(calls.filter((args) => readsRowsByLabel(args) !== null).length, 1, "the refused read went to GitHub once; the second and third asks did not");
   assert.equal(lines.length, 1, "and said so once");
   assert.match(lines[0], /3948 of 5000 left/, "it names the pool it read, with the count");
-  assert.match(lines[0], /search or secondary/, "and that the refusal came from a resource that pool does not count");
+  assert.match(lines[0], /a secondary limit: the installation was refused while its pool reads 3948 of 5000 left/, "and that an installation refused while its pool reads healthy is a secondary limit (#1523)");
   assert.match(lines[0], /installation ID 170075049/, "and keeps the one identifier the refusal carried");
 });
 

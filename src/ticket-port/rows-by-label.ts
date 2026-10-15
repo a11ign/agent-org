@@ -104,6 +104,10 @@ function exhaustedResource(error: unknown, run: Run): string {
   if (own?.resource) return `${own.resource} (${own.remaining} of ${own.limit} left, named by the refused response)`;
   const probe = poolFromResponse(rawResponse(GRAPHQL_POOL_PROBE, run));
   if (probe === null) return "UNREADABLE (the refusal names an account, and the follow-up read of the GraphQL pool failed too)";
+  // #1523: an INSTALLATION refused while its pool reads healthy is a secondary limit, and the probe's count is the evidence for it, so the line says so.
+  if (/for installation ID \d+/.test(textOf(error)) && probe.remaining > 0) {
+    return `a secondary limit: the installation was refused while its pool reads ${probe.remaining} of ${probe.limit} left`;
+  }
   return `not ${probe.resource ?? "the graphql pool"}'s count (the probe read ${probe.remaining} of ${probe.limit} left): the refusal came from another resource, `
     + "search or secondary, which the message does not name";
 }
