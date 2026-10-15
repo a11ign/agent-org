@@ -1,5 +1,0 @@
----
-"agent-org": minor
----
-
-`org-health` wakes `ceo` once per signal class instead of once per rendered subject (a11ign/a11ign#4065, #4055 move 1b). `src/work-gate/org-health-suppression.ts` declares each of the 27 classes an `org-health` order can carry as `page` (a (class, key) not let through inside 6 hours wakes) or `digest` (never wakes by itself; wakes once when its distinct keys inside the window pass 12, and again only after falling back), keys the subject set normalised (members sorted, ids kept, timestamps dropped), and holds only orders to `ceo`. Every held order is a line of `org-health-suppressed.ndjson` in the host's state directory (class, key, count, time, why), and the held ones ride, at most hourly, on the first order `ceo` receives for any reason, and are written to `org-health-digest.md`. A class in no table wakes (a new detector is loud) and fails the test. `A11IGN_ORG_HEALTH_SUPPRESSION=off` in a unit restores the old behaviour. The wake counts quoted in the row are measured from the trace store, not predicted.
