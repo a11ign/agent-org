@@ -23,7 +23,7 @@ import { recordIgnoredChairmanLabels, recordTickFailures as recordFailuresOf } f
 import { readJsonObject, writeJsonObject } from "../claim-stall.ts";
 import { requiredWhenNeeded, perPullRequestOrders, greenUnarmedOrders, type UnarmedFacts, reviewBlockedOrders, stalledPrOrders,
   STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr, ROW_REVIEW_SKILL_FLAG, PR_OWNER_ROUTING_FLAG, withholdOutsideFollowUps, routeDeadOwnerRefusals, reviewOnlyRefs, SAME_HEAD_REFAIL_FLAG, acceptanceGateOf } from "./pr-orders.ts";
-import { checkoutPullRequestMerge, orgSideAcceptanceEligibility, orgSideAcceptanceVerdict, releasePullRequestCheckout, type OrgSideVerdict } from "../acceptance-commands.ts"; // agent-org#1502
+import { checkoutPullRequestMerge, orgSideAcceptanceEligibility, orgSideAcceptanceVerdict, installPullRequestCheckout, releasePullRequestCheckout, type OrgSideVerdict } from "../acceptance-commands.ts"; // agent-org#1502
 import { labJobFinishedOrders, readLabJobRecords, readDispatchedLabJobs } from "./lab-job-orders.ts";
 import { classAndKeyOf as orgHealthClassAndKey } from "./org-health-suppression.ts";
 import { TABLE_ROW as STANDING_ROW } from "../board-truth-audit.ts";
@@ -1434,7 +1434,7 @@ export function gateUnarmedOnAcceptance(unarmed: number[], { openPrs, scope, env
     ran++;
     const repoRoot = env.A11IGN_ACCEPTANCE_REPO_ROOT ?? process.cwd();
     const verdict = orgSideAcceptanceVerdict(pr, { byDeclaredIdentity, baseRepo: scope, checkout: checkoutPullRequestMerge({ repoRoot, scratch: join(stateDir, "acceptance-checkouts") }),
-      release: releasePullRequestCheckout({ repoRoot }) });
+      prepare: installPullRequestCheckout(), release: releasePullRequestCheckout({ repoRoot }) });
     if (verdict.kind !== "not-run") {
       remembered[key] = verdict;
       try { writeJsonObject(file, remembered); } catch (err) { log(`acceptance-gate: COULD NOT REMEMBER the verdict of #${pr.number} (${String((err as any)?.message ?? err).split("\n")[0].slice(0, 120)}) -- it is run again.\n`); }

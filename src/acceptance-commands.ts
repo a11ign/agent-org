@@ -3854,9 +3854,11 @@ export type OrgSideVerdict = { kind: "pass" | "fail" | "not-run"; head: string |
  * `not-run`, never `pass`.
  *
  * @param checkout the directory holding the merge of this head into the base, or a throw saying why not; given the head it must hold
+ * @param prepare makes that directory runnable (its dependencies installed). A throw is `not-run`, NEVER `fail`: a checkout that could not be prepared
+ *   says nothing about the pull request, and a fresh worktree has no `node_modules` (the first real run, a11ign#5555, failed `rstest not found` for that reason)
  */
-export function orgSideAcceptanceVerdict(pr: OrgSidePullRequest | null | undefined, { byDeclaredIdentity, baseRepo, checkout, report = defaultOrgSideReport, release = () => {} }: {
-  byDeclaredIdentity: (pr: OrgSidePullRequest) => boolean; baseRepo: string; checkout: (head: string, number: number) => string;
+export function orgSideAcceptanceVerdict(pr: OrgSidePullRequest | null | undefined, { byDeclaredIdentity, baseRepo, checkout, prepare = () => {}, report = defaultOrgSideReport, release = () => {} }: {
+  byDeclaredIdentity: (pr: OrgSidePullRequest) => boolean; baseRepo: string; checkout: (head: string, number: number) => string; prepare?: (cwd: string) => void;
   report?: (input: BodyReportInput, cwd: string) => { ok: boolean; lines: string[]; }; release?: (cwd: string) => void;
 }): OrgSideVerdict {
   const eligibility = orgSideAcceptanceEligibility(pr, { byDeclaredIdentity, baseRepo });
@@ -3873,6 +3875,11 @@ export function orgSideAcceptanceVerdict(pr: OrgSidePullRequest | null | undefin
   }
   let result: { ok: boolean; lines: string[]; };
   try {
+    try {
+      prepare(cwd);
+    } catch (error) {
+      return { kind: "not-run", head, lines: [], why: `not run: the checkout at ${head.slice(0, 8)} could not be prepared (${String((error as Error).message ?? error).split("\n")[0].slice(0, 160)})` };
+    }
     result = report(thisPullRequestInput(pr.body, cwd, String(pr.author?.login), { run: (command) => runAcceptanceCommand(command, { cwd }) }), cwd);
   } finally {
     release(cwd);
@@ -3899,6 +3906,16 @@ export function checkoutPullRequestMerge({ repoRoot, scratch, git = (args, cwd) 
     git(["worktree", "add", "--detach", "--force", dir, merged], repoRoot);
     return dir;
   };
+}
+
+/**
+ * The `prepare` of {@link checkoutPullRequestMerge}: the checkout's own lockfile, installed from the host's store with NO network and NO lifecycle scripts,
+ * so what runs next is the pull request's command and nothing an install pulled in. A tree that is not a pnpm workspace has no lockfile and needs none.
+ */
+export function installPullRequestCheckout({ run = (cwd: string) => { execFileSync("pnpm", ["install", "--frozen-lockfile", "--offline", "--ignore-scripts"], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }); }, exists = existsSync }: {
+  run?: (cwd: string) => void; exists?: (path: string) => boolean;
+} = {}): (cwd: string) => void {
+  return (cwd) => { if (exists(join(cwd, "pnpm-lock.yaml"))) run(cwd); };
 }
 
 /** The `release` of {@link checkoutPullRequestMerge}: the worktree it added is removed, so a tick leaves no checkout of a pull request's files behind. */

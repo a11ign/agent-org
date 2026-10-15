@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { acceptanceSourceOf, acceptanceSourceOfThisPullRequest, checkoutPullRequestMerge, ciInputOf, orgSideAcceptanceEligibility, orgSideAcceptanceVerdict, prAuthorFromEnv, runCiBodyReports,
+import { acceptanceSourceOf, acceptanceSourceOfThisPullRequest, checkoutPullRequestMerge, ciInputOf, installPullRequestCheckout, orgSideAcceptanceEligibility, orgSideAcceptanceVerdict, prAuthorFromEnv, runCiBodyReports,
   thisPullRequestInput } from "./acceptance-commands.ts";
 import { INSIDE, reviewTrustOf } from "./review-trust.ts";
 import { acceptanceGateOf, greenUnarmedOrders } from "./work-gate/pr-orders.ts";
@@ -246,6 +246,27 @@ test("(1502 c2) a report that throws still releases the checkout", () => {
   const { calls, seams } = guardedSeams();
   assert.throws(() => orgSideAcceptanceVerdict(agentPr(), { ...seams, report: () => { throw new Error("boom"); } }), /boom/);
   assert.equal(calls.release, 1, "the worktree is removed whatever the command did");
+});
+
+test("(1502 c3) a checkout that cannot be prepared is not-run and never fail, runs nothing, and is still released; prepare runs before the report", () => {
+  const order: string[] = [];
+  const { calls, seams } = guardedSeams();
+  const ok = orgSideAcceptanceVerdict(agentPr(), { ...seams, prepare: () => { order.push("prepare"); }, report: () => { order.push("report"); return { ok: true, lines: [] }; } });
+  assert.equal(ok.kind, "pass");
+  assert.deepEqual(order, ["prepare", "report"], "POSITIVE CONTROL: the install comes first");
+  const reports = { n: 0 };
+  const broken = orgSideAcceptanceVerdict(agentPr(), { ...seams, prepare: () => { throw new Error("ERR_PNPM_NO_OFFLINE_TARBALL x\nmore"); }, report: () => { reports.n++; return { ok: true, lines: [] }; } });
+  assert.equal(broken.kind, "not-run");
+  assert.match(broken.why, /could not be prepared \(ERR_PNPM_NO_OFFLINE_TARBALL x\)/);
+  assert.equal(reports.n, 0, "nothing ran in an unprepared checkout");
+  assert.equal(calls.release, 2, "both checkouts were released, the unprepared one included");
+});
+
+test("(1502 c4) installPullRequestCheckout installs only where the checkout has a lockfile", () => {
+  const ran: string[] = [];
+  installPullRequestCheckout({ run: (cwd) => { ran.push(cwd); }, exists: (path) => path === "/w/pnpm-lock.yaml" })("/w");
+  installPullRequestCheckout({ run: (cwd) => { ran.push(cwd); }, exists: () => false })("/x");
+  assert.deepEqual(ran, ["/w"]);
 });
 
 test("(1502 d) checkoutPullRequestMerge refuses a stale merge ref: its second parent must be the head the gate asked about", () => {
