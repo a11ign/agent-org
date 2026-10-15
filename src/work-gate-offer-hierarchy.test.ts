@@ -9,6 +9,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { decide, hierarchyOrders, milestoneRank, partitionUnclaimed, readChairmanPriority, CHAIRMAN_PRIORITY_LABEL } from "./work-gate.ts";
 import { parseProjectDeclaration } from "./project-config.ts";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { stuckSubjectOf } from "./wake.ts";
 
 const DECLARATION = {
   code: [{ key: "", repo: "a11ign/a11ign" }, { key: "agent-org", repo: "a11ign/agent-org" }],
@@ -101,6 +105,33 @@ test("a B4-shelved chairman row is reported to ceo, not offered; against a plain
 
   const plain = offered([ready(20, { region })], { openRows: [plainHolder] });
   assert.deepEqual(plain.subjects, [], "control: the same row, not the chairman's, is shelved by the same holder");
+});
+
+test("#1456: a refused chairman row is told once per reason; a ceo answer since that telling silences it; a changed reason, or a closed blocker, tells again", () => {
+  const dir = mkdtempSync(join(tmpdir(), "chairman-refusals-"));
+  const T0 = Date.parse("2026-10-15T10:00:00Z");
+  const MIN = 60_000;
+  const refusal = (reason: string, answeredAt: string | null, now: number, openRows: { number: number; }[]) => hierarchyOrders(
+    { chairmanRows: new Set([20]), refusals: { stateDir: dir, now, answeredAt: () => answeredAt } },
+    { blocked: [{ number: 20, reason }], yielding: [], openRows, prs: [] });
+  const told = (orders: { causeKey: string; }[]) => orders.filter((o) => o.causeKey.startsWith("ceo/chairman-row-refused/")).length;
+  const reason = "blocked by #5311 -- declared on the row, and it clears itself";
+  const open = [{ number: 5311 }];
+
+  assert.equal(told(refusal(reason, null, T0, open)), 1, "the first refusal is told");
+  assert.equal(told(refusal(reason, null, T0 + 23 * MIN, open)), 1, "control: no ceo comment, the same reason is told again as it always was");
+  assert.equal(told(refusal(reason, String(new Date(T0 + 25 * MIN).toISOString()), T0 + 30 * MIN, open)), 0, "a ceo comment newer than the first telling silences the same reason");
+  assert.equal(told(refusal(reason, String(new Date(T0 + 25 * MIN).toISOString()), T0 + 46 * MIN, open)), 0, "and keeps silencing it on the next wake");
+  assert.equal(told(refusal("blocked by #5312 -- declared on the row, and it clears itself", String(new Date(T0 + 25 * MIN).toISOString()), T0 + 50 * MIN, [...open, { number: 5312 }])), 1, "a changed reason is a new telling");
+  assert.equal(told(refusal("blocked by #5312 -- declared on the row, and it clears itself", String(new Date(T0 + 55 * MIN).toISOString()), T0 + 56 * MIN, open)), 1, "a blocker the reason names that has closed, on a row still refused, is told again");
+
+  const keyed = hierarchyOrders({ chairmanRows: new Set([1456]) }, { blocked: [{ number: 1456, repoKey: "agent-org", repo: "a11ign/agent-org", reason }], yielding: [], openRows: [], prs: [] });
+  const [order] = keyed.filter((o) => o.causeKey.startsWith("ceo/chairman-row-refused/"));
+  assert.equal(order?.subject, "row-agent-org#1456", "the subject names the repository");
+  assert.match(order?.prompt ?? "", /agent-org#1456/);
+  assert.equal(stuckSubjectOf(order?.causeKey ?? "")?.repoKey, "agent-org", "the stuck path reads the repository from the key");
+  assert.equal(stuckSubjectOf(order?.causeKey ?? "")?.number, 1456);
+  rmSync(dir, { recursive: true, force: true });
 });
 
 test("a chairman row is offered over an open pull request that closes no chairman row, and not over one that does", () => {

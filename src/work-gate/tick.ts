@@ -54,7 +54,7 @@ import { type KeyedClosedClaimedRow, readClosedClaimedRows } from "./causes/rows
 import { EPIC_LABEL, epicOrders, finishedEpicOrders } from "./causes/rows-epics.ts";
 import { fleetBatchOrders } from "./causes/rows-fleet-batch.ts";
 import { type BoardFacts, readRowsOffBoard, rowOffBoardOrders, rowsOffBoard } from "./causes/rows-off-board.ts";
-import { type EmergencyPriorityOption, type OfferHierarchy, chairmanRowsOf, emergencyHierarchyNow, hierarchyOrders, offeredByShare, productRegionsOf,
+import { type EmergencyPriorityOption, type OfferHierarchy, chairmanRowAnsweredByCeo, chairmanRowsOf, emergencyHierarchyNow, hierarchyOrders, offeredByShare, productRegionsOf,
   readChairmanPriority, readEmergencyPriorityOption, rowOrders } from "./causes/rows-offer.ts";
 import { blockerClearedOrders, hostDriftOrders, hostUnitsEntry, readOtherScopes, rowsWithOpenPr, trackerReadings } from "../work-gate.ts";
 import { type ArmingPort, MAX_ROW_ORDERS_PER_TICK, NOT_STARTABLE, REVIEWER_STATE_DIR, type Scope, type ScopeRepository, aimOf, comparablePrFiles,
@@ -1011,7 +1011,8 @@ export function readChairmanPriorityOfOffer(rows: any[], openRows: any[] = [], r
 export function offerHierarchyNow(rows: any[], openRows: any[], { run, stateDir = REVIEWER_STATE_DIR, now = Date.now(), emergency = readEmergencyPriorityOption() }: { run?: (args: string[]) => string; stateDir?: string; now?: number; emergency?: EmergencyPriorityOption; } = {}): OfferHierarchy {
   const { chairmanRows, ignored } = readChairmanPriorityOfOffer(rows, openRows, run);
   // #730: a label the chairman did not add is a ledger incident, written HERE, where the tick builds `ignored`, and not in `readChairmanPriority`, which the claim reads too
-  return { chairmanRows, ignored: recordIgnoredChairmanLabels({ ignored, repo: REPO, stateDir, now }), milestoneRanking: homeProjectDeclaration().offerMilestones, ...emergencyHierarchyNow(rows, openRows, { emergency, run, stateDir, now }) };
+  return { chairmanRows, ignored: recordIgnoredChairmanLabels({ ignored, repo: REPO, stateDir, now }), milestoneRanking: homeProjectDeclaration().offerMilestones, ...emergencyHierarchyNow(rows, openRows, { emergency, run, stateDir, now }),
+    refusals: { stateDir, now, answeredAt: (row) => chairmanRowAnsweredByCeo(row, run) } }; // #1456: read only for a row the gate refuses, by `hierarchyOrders`
 }
 
 /**
