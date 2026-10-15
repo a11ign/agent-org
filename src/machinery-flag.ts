@@ -20,6 +20,7 @@ import { CHAIN_WAIT_FLAG } from "./work-gate/causes/org-health-chain-wait.ts";
 import { REENQUEUE_EJECTED_FLAG } from "./work-gate/causes/pr-ejected.ts";
 import { QUEUE_ENTRY_NO_RUN_FLAG } from "./work-gate/causes/queue-entry-no-run.ts";
 import { CLOSED_UNDER_HALF_FLAG } from "./work-gate/causes/rows-closed-under-half.ts";
+import { CHAIRMAN_REFUSAL_FLAG } from "./work-gate/causes/rows-offer.ts";
 import { RECHECK_FLAG } from "./work-gate/shared-file-orders.ts";
 import { REVIEWER_STATE_DIR } from "./work-gate/vocabulary.ts";
 import { AUTO_UNPARK_FLAG } from "./unpark-satisfied.ts";
@@ -33,7 +34,7 @@ import { PIN_BUMP_FLAG } from "./pin-bump-measure.ts";
 const REFUSED = 2;
 
 /** The flags a module reads. A name that is not here is refused by `switchFlag`. */
-export const FLAG_REGISTRY: readonly string[] = Object.freeze([REENQUEUE_EJECTED_FLAG, CHAIN_WAIT_FLAG, CLOSED_UNDER_HALF_FLAG, AUTO_UNPARK_FLAG, QUEUE_ENTRY_NO_RUN_FLAG, RECHECK_FLAG, OPEN_PR_HOLD_FLAG, REFUSE_ASKING_ANNOUNCEMENTS_FLAG, PACING_FLAG, ROW_REVIEW_SKILL_FLAG, ACCOUNT_LIMIT_FLAG, PIN_BUMP_FLAG, SAME_HEAD_REFAIL_FLAG, PR_OWNER_ROUTING_FLAG]);
+export const FLAG_REGISTRY: readonly string[] = Object.freeze([REENQUEUE_EJECTED_FLAG, CHAIN_WAIT_FLAG, CLOSED_UNDER_HALF_FLAG, AUTO_UNPARK_FLAG, QUEUE_ENTRY_NO_RUN_FLAG, RECHECK_FLAG, OPEN_PR_HOLD_FLAG, REFUSE_ASKING_ANNOUNCEMENTS_FLAG, PACING_FLAG, ROW_REVIEW_SKILL_FLAG, ACCOUNT_LIMIT_FLAG, PIN_BUMP_FLAG, SAME_HEAD_REFAIL_FLAG, PR_OWNER_ROUTING_FLAG, CHAIRMAN_REFUSAL_FLAG]);
 
 export const USAGE = [
   "usage: agent-org machinery:flag on|off <name> [--signals=a,b] --session=<you>",

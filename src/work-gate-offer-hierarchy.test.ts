@@ -7,7 +7,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decide, hierarchyOrders, milestoneRank, partitionUnclaimed, readChairmanPriority, CHAIRMAN_PRIORITY_LABEL } from "./work-gate.ts";
+import { decide, hierarchyOrders, milestoneRank, offerHierarchyNow, partitionUnclaimed, readChairmanPriority, CHAIRMAN_PRIORITY_LABEL } from "./work-gate.ts";
 import { parseProjectDeclaration } from "./project-config.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -125,12 +125,24 @@ test("#1456: a refused chairman row is told once per reason; a ceo answer since 
   assert.equal(told(refusal("blocked by #5312 -- declared on the row, and it clears itself", String(new Date(T0 + 25 * MIN).toISOString()), T0 + 50 * MIN, [...open, { number: 5312 }])), 1, "a changed reason is a new telling");
   assert.equal(told(refusal("blocked by #5312 -- declared on the row, and it clears itself", String(new Date(T0 + 55 * MIN).toISOString()), T0 + 56 * MIN, open)), 1, "a blocker the reason names that has closed, on a row still refused, is told again");
 
-  const keyed = hierarchyOrders({ chairmanRows: new Set([1456]) }, { blocked: [{ number: 1456, repoKey: "agent-org", repo: "a11ign/agent-org", reason }], yielding: [], openRows: [], prs: [] });
+  const keyed = hierarchyOrders({ chairmanRows: new Set([1456]), refusals: { stateDir: dir, now: T0, answeredAt: () => null } }, { blocked: [{ number: 1456, repoKey: "agent-org", repo: "a11ign/agent-org", reason }], yielding: [], openRows: [], prs: [] });
   const [order] = keyed.filter((o) => o.causeKey.startsWith("ceo/chairman-row-refused/"));
   assert.equal(order?.subject, "row-agent-org#1456", "the subject names the repository");
   assert.match(order?.prompt ?? "", /agent-org#1456/);
   assert.equal(stuckSubjectOf(order?.causeKey ?? "")?.repoKey, "agent-org", "the stuck path reads the repository from the key");
   assert.equal(stuckSubjectOf(order?.causeKey ?? "")?.number, 1456);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("#1456: with CHAIRMAN_REFUSAL_FLAG off there is no ledger and the refusal is the order main gives; the flag reads from the state directory", () => {
+  const dir = mkdtempSync(join(tmpdir(), "chairman-refusal-flag-"));
+  const reason = "blocked by #5311 -- declared on the row, and it clears itself";
+  const off = hierarchyOrders({ chairmanRows: new Set([20]) }, { blocked: [{ number: 20, reason }], yielding: [], openRows: [], prs: [] });
+  assert.equal(off.length, 1);
+  assert.equal(off[0]?.subject, "row-20", "the subject is main's");
+  assert.ok(off[0]?.causeKey.startsWith("ceo/chairman-row-refused/20-"), "the key is main's, with no repository segment");
+  assert.equal(offerHierarchyNow([], [], { run: () => "", stateDir: dir, now: 0, refusedOnce: false }).refusals, undefined, "off: nothing reads the answer");
+  assert.notEqual(offerHierarchyNow([], [], { run: () => "", stateDir: dir, now: 0, refusedOnce: true }).refusals, undefined, "on: the ledger is wired");
   rmSync(dir, { recursive: true, force: true });
 });
 

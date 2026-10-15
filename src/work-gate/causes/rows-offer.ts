@@ -595,6 +595,9 @@ export function hierarchyOrders(hierarchy: OfferHierarchy | undefined, { blocked
 /** A row the gate shelved, with the repository it came from when it is not the primary's (`subjectIdentity`). */
 type RefusedRow = { number: number; reason: string; repoKey?: string; repo?: string; };
 
+/** #1456: the machinery flag for the refusal ledger below. Off, a refused chairman row is told every tick as it was (`legacyChairmanRefusedOrder`). Read in `tick.ts`'s `offerHierarchyNow`. */
+export const CHAIRMAN_REFUSAL_FLAG = "chairman.refusedOnce";
+
 /** #1456: the ledger file in `stateDir`: per refused chairman row (`subjectRef`), the digest of the reason it was last told for, and when that first telling was. */
 const REFUSAL_LEDGER = "chairman-refusals.json";
 type RefusalLedger = Record<string, { digest: string; deliveredAt: string; }>;
@@ -609,7 +612,7 @@ type RefusalLedger = Record<string, { digest: string; deliveredAt: string; }>;
 function chairmanRefusedOrders(hierarchy: OfferHierarchy, blocked: RefusedRow[], openAndPrs: any[]): HierarchyOrder[] {
   const refused = blocked.filter((row) => hierarchy.chairmanRows?.has(row.number));
   const memory = hierarchy.refusals;
-  if (memory === undefined) return refused.map((row) => chairmanRefusedOrder(row, digestOf(row.reason)));
+  if (memory === undefined) return refused.map(legacyChairmanRefusedOrder);
   const path = join(memory.stateDir, REFUSAL_LEDGER);
   const before = readJsonObject(path) as RefusalLedger;
   const ledger: RefusalLedger = {};
@@ -661,6 +664,16 @@ export function chairmanRowAnsweredByCeo(row: { number: number; repo?: string; }
 }
 
 /** @param {{ number: number, reason: string }} row @param {string} digest @param {boolean} [answered] #1456: `ceo` answered this row since its first telling, and the blocker the reason names has closed */
+/** #1456: the refusal order as it was on main, for `CHAIRMAN_REFUSAL_FLAG` off -- the keys are unchanged, so nothing re-tells at the flag's switch. */
+function legacyChairmanRefusedOrder({ number, reason }: { number: number; reason: string; }): HierarchyOrder {
+  const discriminator = `${number}-${digestOf(reason)}`;
+  return { session: "ceo", cause: "ready-row-unclaimable", subject: `row-${number}`, discriminator,
+    prompt: `CHAIRMAN ROW REFUSED: #${number} carries \`${CHAIRMAN_PRIORITY_LABEL}\` and the gate is NOT offering it. The reason, quoted:\n\n> ${reason}\n\n`
+      + "The chairman asked for this row to be picked up next, so tell him now what is in the way and what would clear it, and do whatever in your lane clears it "
+      + "(every other eligibility check still binds a chairman row: template sections, holds, a B4 overlap with another chairman row).",
+    causeKey: `ceo/chairman-row-refused/${discriminator}` };
+}
+
 function chairmanRefusedOrder(row: RefusedRow, digest: string, answered: boolean = false): HierarchyOrder {
   const ref = subjectRef(row.repoKey, row.number);
   const discriminator = `${ref}-${digest}`;
