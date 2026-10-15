@@ -38,7 +38,8 @@ import { SESSION_PREFIX, BLOCKED_LABEL, BACKLOG_LABEL, OUT_OF_RELEASE_LABEL } fr
 import { PROJECT_NUMBER, PROJECT_OWNER } from "../board-snapshot-scope.ts";
 import { createRow } from "../ticket-port/approved-unqueued-reads.ts";
 import { readRowsByLabel } from "../ticket-port/rows-by-label.ts";
-import { ensureTriageLabel, boardTriageRow } from "../ticket-port/outside-idle-writes.ts";
+import { ensureTriageLabel } from "../ticket-port/outside-idle-writes.ts";
+import { boardFiledRow } from "../ticket-port/board-filed-row.ts";
 import { labelsOf, sessionOf, conflictStateOf, CONFLICT_STATE, reviewStateOf, BLOCKING_REVIEW_STATES, checksSettledGreen, conclusionOf, stillRunning, anyChecksRed, requiredCheckNames,
   blockingChecks, reviewableHead, reviewWait, verdictAmong, awaitingEvidence, AWAITING_EVIDENCE_LABEL,
   AWAITING_EVIDENCE_QUIET_HOURS, AWAITING_EVIDENCE_QUIET_MS, HOUR_MS, REVIEW_STATE, CHAIRMAN_LOGINS } from "../work-gate.ts";
@@ -1424,7 +1425,7 @@ export function fileOutsideIdleTriage(prs: any[], { declared, nowMs, run, log, e
     }
     count++;
     try {
-      boardTriageRow({ repo: REPO, number, owner: PROJECT_OWNER, projectNumber: PROJECT_NUMBER, status: "Backlog", labels: [BACKLOG_LABEL, OUT_OF_RELEASE_LABEL], run });
+      boardFiledRow({ repo: REPO, number, owner: PROJECT_OWNER, projectNumber: PROJECT_NUMBER, status: "Backlog", labels: [BACKLOG_LABEL, OUT_OF_RELEASE_LABEL], run });
     } catch (error) {
       log(`outside-pr-idle: filed #${number} but could not board it (${String((error as Error).message).split("\n")[0]})\n`);
     }

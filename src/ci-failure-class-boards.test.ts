@@ -65,7 +65,7 @@ test("a new incident is boarded when it is filed: the card, then Backlog, then t
   assert.deepEqual(board, [
     ["project", "item-add", String(PROJECT_NUMBER), "--owner", PROJECT_OWNER, "--url", urlOf(NEW_ROW)],
     ["project", "item-edit", String(PROJECT_NUMBER), "--owner", PROJECT_OWNER, "--url", urlOf(NEW_ROW), "--field", "Status", "--value", "Backlog"],
-    ["issue", "edit", String(NEW_ROW), "--add-label", BACKLOG_LABEL, "--add-label", OUT_OF_RELEASE_LABEL],
+    ["issue", "edit", String(NEW_ROW), "--repo", REPO, "--add-label", BACKLOG_LABEL, "--add-label", OUT_OF_RELEASE_LABEL],
   ], "the three board writes, in row-file's order: the card, its Status, then the labels");
   assert.match(createdBody(writes), /SIGNAL for `orchestrator`/, "the body says it is a signal and carries no claimable work");
 });
