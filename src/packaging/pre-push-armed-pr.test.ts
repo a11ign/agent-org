@@ -48,8 +48,26 @@ test("an armed PR whose gate FAILED is ALLOWED -- fixing it up is exactly what a
   assert.equal(racesAnArmedMerge({ armed: true, green: false }), false);
 });
 
-test("armed, green AND up to date is the one case that REFUSES -- the window where a merge can land, #386's real case, unchanged", () => {
-  assert.equal(racesAnArmedMerge({ armed: true, green: true, behindBy: 0 }), true);
+test("armed, green AND up to date, APPROVED, is the one case that REFUSES -- the window where a merge can land, #386's real case", () => {
+  assert.equal(racesAnArmedMerge({ armed: true, green: true, behindBy: 0, reviewDecision: "APPROVED" }), true);
+});
+
+test("#5526 POSITIVE CONTROL: armed, green AND up to date but CHANGES_REQUESTED is ALLOWED -- a merge cannot complete while "
+  + "main requires an approval, so the push is the fix the reviewer asked for", () => {
+  assert.equal(racesAnArmedMerge({ armed: true, green: true, behindBy: 0, reviewDecision: "CHANGES_REQUESTED" }), false);
+});
+
+test("#5526: armed, green AND up to date but REVIEW_REQUIRED is ALLOWED -- the approval has not been given, so no merge can fire", () => {
+  assert.equal(racesAnArmedMerge({ armed: true, green: true, behindBy: 0, reviewDecision: "REVIEW_REQUIRED" }), false);
+});
+
+test("#5526: an EMPTY decision REFUSES -- the base requires no review, so the merge can complete with nobody approving", () => {
+  assert.equal(racesAnArmedMerge({ armed: true, green: true, behindBy: 0, reviewDecision: "" }), true);
+});
+
+test("#5526: a decision that was never read is ALLOWED -- the fail-open direction, applied to the review axis", () => {
+  assert.equal(racesAnArmedMerge({ armed: true, green: true, behindBy: 0 }), false);
+  assert.equal(racesAnArmedMerge({ armed: true, green: true, behindBy: 0, reviewDecision: null }), false);
 });
 
 test("#442 ACCEPTANCE: armed, green and BEHIND is ALLOWED -- under strict protection the merge this "
@@ -95,12 +113,32 @@ test("#1408: no open PR for the branch is the unarmed shape, read through the in
   assert.deepEqual(status, { number: null, armed: false, green: false, behindBy: null });
 });
 
+test("#5526: the pr list ASKS for reviewDecision, and a pr list that omits it reads as unknown, so the armed push ALLOWS", () => {
+  const asked: string[][] = [];
+  const run = (args: string[]) => {
+    asked.push(args);
+    if (args[0] === "pr" && args[1] === "list") {
+      return JSON.stringify([{ number: 8, autoMergeRequest: { enabledAt: "2026-10-15T12:00:00Z" }, headRefOid: "def5678abc" }]);
+    }
+    if (args[0] === "api") return JSON.stringify({ behind_by: 0 });
+    throw new Error(`an unexpected call reached run: ${args.join(" ")}`);
+  };
+  const status = lookupArmedPrStatus("agent/no-decision", {
+    run,
+    requiredContexts: () => ["gate"],
+    checkRuns: () => [{ name: "gate", status: "completed", conclusion: "success", completedAt: "2026-10-15T12:00:30Z" }],
+  });
+  assert.ok(asked[0][asked[0].indexOf("--json") + 1].split(",").includes("reviewDecision"), "the pr list names reviewDecision in its --json fields");
+  assert.equal(status?.reviewDecision, null, "an absent key is no answer");
+  assert.equal(racesAnArmedMerge(status), false, "and so the push is allowed, as every unknown is");
+});
+
 test("#1408: an ARMED PR whose required checks are green reads its behind-by through the injected run -- the compare call is driven, not assumed", () => {
   const asked: string[][] = [];
   const run = (args: string[]) => {
     asked.push(args);
     if (args[0] === "pr" && args[1] === "list") {
-      return JSON.stringify([{ number: 7, autoMergeRequest: { enabledAt: "2026-09-13T20:00:00Z" }, headRefOid: "abc1234def" }]);
+      return JSON.stringify([{ number: 7, autoMergeRequest: { enabledAt: "2026-09-13T20:00:00Z" }, headRefOid: "abc1234def", reviewDecision: "APPROVED" }]);
     }
     if (args[0] === "api" && String(args[1]).endsWith("/compare/main...abc1234def")) return JSON.stringify({ behind_by: 3 });
     throw new Error(`an unexpected call reached run: ${args.join(" ")}`);
@@ -113,8 +151,8 @@ test("#1408: an ARMED PR whose required checks are green reads its behind-by thr
       return [{ name: "gate", status: "completed", conclusion: "success", completedAt: "2026-09-13T20:00:30Z" }];
     },
   });
-  assert.deepEqual(status, { number: 7, armed: true, green: true, behindBy: 3 },
-    "armed, green by the real checkReasons, and behind by what the injected compare said");
+  assert.deepEqual(status, { number: 7, armed: true, green: true, behindBy: 3, reviewDecision: "APPROVED" },
+    "armed, green by the real checkReasons, behind by what the injected compare said, and the review decision read off the pr list");
   assert.deepEqual(asked.map((args) => args[0] === "api" ? [args[0], args[1].replace(/^repos\/[^/]+\/[^/]+\//, "")] : args.slice(0, 2)),
     [["pr", "list"], ["api", "compare/main...abc1234def"]], "the pr list, then the compare -- both through run");
 });
