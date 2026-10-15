@@ -38,6 +38,8 @@ const WRAPPER = (() => {
 /**
  * A stub `gh-real`: prints a fixed body and a fixed stderr line, echoes its arguments and stdin, and exits as told. `STUB_BODY`
  * is what stdout carries for a graphql call, so a test chooses whether the response names a cost.
+ * (agent-org#1395) It answers `-i` as `gh` does: a status line and the pool's headers (`STUB_USED`, `STUB_RESET`, `STUB_RESOURCE`) and a blank line before the body.
+ * The `-i` the WRAPPER adds is not an argument the caller made, so the echoed line names the call as the caller made it; a test of its own pins that `-i` arrives.
  */
 const host = () => {
   const root = mkdtempSync(join(tmpdir(), "gh-ledger-3466-"));
@@ -49,7 +51,8 @@ const host = () => {
     "#!/bin/sh",
     `echo "$$" > "${root}/stub.pid"`,
     `[ -n "$STUB_SLEEP" ] && sleep "$STUB_SLEEP"`,
-    `printf 'args=%s\\n' "$*"`,
+    `case " $* " in *" -i "*) [ -n "$STUB_USED" ] && printf 'HTTP/2.0 200 OK\\r\\nX-Ratelimit-Resource: %s\\r\\nX-Ratelimit-Used: %s\\r\\nX-Ratelimit-Reset: %s\\r\\n\\r\\n' "\${STUB_RESOURCE:-graphql}" "$STUB_USED" "\${STUB_RESET:-1791925000}" ;; esac`,
+    `printf 'args=%s\\n' "$(printf '%s' "$*" | sed 's/^api graphql -i\\( \\|$\\)/api graphql\\1/')"`,
     `[ "$1 $2" = "api graphql" ] && printf '%s' "$STUB_BODY"`,
     `[ -n "$STUB_STDIN" ] && printf 'stdin=%s\\n' "$(cat)"`,
     `echo "stderr-line" >&2`,
@@ -99,7 +102,7 @@ test("#3589: the line carries the session id of the session that made the call a
     h.run({ CLAUDE_CODE_SESSION_ID: "a b\tc;$(x)" }, "pr", "list");
     const raw = h.lines();
     assert.equal(raw.length, 5, "POSITIVE CONTROL: every call wrote a line");
-    assert.ok(raw.every((l) => l.split("\t").length === 10), "ten fields on every line (the 10th is the read cache's verdict, agent-org#742; a `pr list` is a read it looked at), so a hostile id cannot add or remove one");
+    assert.ok(raw.every((l) => l.split("\t").length === 12), "twelve fields on every line (the 10th is the read cache's verdict, agent-org#742; a `pr list` is a read it looked at; the 11th and 12th the pool's counter, agent-org#1395), so a hostile id cannot add or remove one");
     assert.deepEqual(raw.map((l) => l.split("\t")[8]), [CLAUDE, CODEX, CLAUDE, "-", "abcx"], "the id is the 9th field, before the cache verdict; only [A-Za-z0-9-] survive (`a b<tab>c;$(x)` leaves `abcx`)");
     assert.deepEqual(h.lines().map((l) => parseLine(l)?.sessionId), [CLAUDE, CODEX, CLAUDE, undefined, "abcx"], "the reader reads it, and a `-` is no id");
   } finally { rmSync(h.root, { recursive: true, force: true }); }
@@ -131,6 +134,50 @@ test("#3466: the pool is read off the command where gh says it, and MARKED infer
     for (const args of [["api", "repos/a/b/pulls"], ["pr", "list"], ["issue", "view", "1"], ["run", "list"]]) h.run({}, ...args);
     assert.deepEqual(h.lines().map((l) => { const e = parseLine(l); return [e?.command, e?.resource, e?.cost]; }), [
       ["api repos/a/b/pulls", "core", null], ["pr list", "graphql?", null], ["issue view", "graphql?", null], ["run list", "other", null]]);
+  } finally { rmSync(h.root, { recursive: true, force: true }); }
+});
+
+/** What the stub received, which the echoed line does not say: the wrapper's `-i` is taken off it there. */
+const received = (h: ReturnType<typeof host>, extra: Record<string, string>, ...args: string[]) => {
+  writeFileSync(join(h.root, "argv.txt"), "");
+  const spy = join(h.root, "spy");
+  writeFileSync(spy, `#!/bin/sh\nprintf '%s\\n' "$*" >> "${join(h.root, "argv.txt")}"\nexec sh "${join(h.root, "gh-real")}" "$@"\n`, { mode: 0o755 });
+  const r = spawnSync("sh", [WRAPPER, ...args], { encoding: "utf8", env: { ...h.env(extra), A11Y_GH_REAL: spy }, input: "" });
+  return { ...r, argv: readFileSync(join(h.root, "argv.txt"), "utf8").trim() };
+};
+
+test("agent-org#1395: an `api graphql` call is asked with `-i`, its head is read into the 11th and 12th fields and taken OUT of what the caller reads", () => {
+  const h = host();
+  try {
+    const extra = { STUB_USED: "412", STUB_RESET: "1791925000", STUB_BODY: '{"data":{"viewer":{"login":"x"}}}' };
+    const r = received(h, extra, "api", "graphql", "-f", "query=x");
+    assert.equal(r.argv, "api graphql -i -f query=x", "POSITIVE CONTROL: the stub was ASKED for the head, or nothing below was read from one");
+    assert.equal(r.stdout, 'args=api graphql -f query=x\n{"data":{"viewer":{"login":"x"}}}', "the caller reads the body alone, byte for byte what a call without -i printed");
+    assert.equal(r.stderr, "stderr-line\n");
+    const entry = parseLine(h.lines()[0]);
+    assert.deepEqual({ used: entry?.used, reset: entry?.reset, cost: entry?.cost }, { used: 412, reset: 1791925000, cost: null }, "the pool's counter, and no cost: the query never asked");
+    assert.equal(h.lines()[0].split("\t").length, 12);
+  } finally { rmSync(h.root, { recursive: true, force: true }); }
+});
+
+test("agent-org#1395: `-i` is NOT added where it would change the call, and a head that is not there leaves the output alone", () => {
+  const h = host();
+  try {
+    const extra = { STUB_USED: "7", STUB_BODY: "{}" };
+    assert.equal(received(h, extra, "api", "graphql", "--paginate", "-f", "query=x").argv, "api graphql --paginate -f query=x", "--paginate prints one head per page");
+    assert.equal(received(h, extra, "api", "graphql", "--silent", "-f", "query=x").argv, "api graphql --silent -f query=x", "--silent prints nothing to read a head from");
+    assert.equal(received(h, extra, "api", "graphql", "-i", "-f", "query=x").argv, "api graphql -i -f query=x", "the caller's own -i is not doubled");
+    assert.equal(received(h, extra, "pr", "list").argv, "pr list", "only `api graphql`: another command's response is gh's own to shape");
+    const own = h.run(extra, "api", "graphql", "-i");
+    assert.match(own.stdout, /^HTTP\/2\.0 200 OK\r\n/, "a head the CALLER asked for is theirs and stays in what they read");
+    assert.equal(parseLine(h.lines().at(-1) ?? "")?.used, undefined, "and is not read into the ledger either: the wrapper did not ask for it");
+    // no head at all (a call that failed before GitHub answered), and a head of another pool
+    const headless = h.run({ STUB_BODY: "{}" }, "api", "graphql");
+    assert.equal(headless.stdout, "args=api graphql\n{}", "no status line, so the copy is written back as it was");
+    assert.equal(parseLine(h.lines().at(-1) ?? "")?.used, undefined);
+    const core = h.run({ ...extra, STUB_RESOURCE: "core" }, "api", "graphql");
+    assert.equal(core.stdout, "args=api graphql\n{}", "the head is still taken out");
+    assert.equal(parseLine(h.lines().at(-1) ?? "")?.used, undefined, "a counter of another pool is another pool's");
   } finally { rmSync(h.root, { recursive: true, force: true }); }
 });
 
