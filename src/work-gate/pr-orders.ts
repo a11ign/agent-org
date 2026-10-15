@@ -1342,14 +1342,9 @@ function toDependencyBotWorker(order: any) {
 }
 
 /**
- * agent-org#1370: THE POOL A REJECTED REVIEW ON A DEAD OWNER'S PULL REQUEST GOES TO, with the flag on. A fresh worker takes the branch and the row
- * over, where `product-manager` was woken for them (`DEAD_OWNER_FALLBACK`). The pool is `wake.ts`'s, as the dependency bot's is (#1368).
- */
-export const DEAD_OWNER_WORKER_SESSION = "engineers";
-
-/**
  * agent-org#1370: WITH THE FLAG ON, A REFUSAL (`pr-review-blocked`) ON A PULL REQUEST WHOSE OWNER IS GONE (`ownerOfPr` reads `owner-gone`) is ordered to
- * `DEAD_OWNER_WORKER_SESSION`, not to the dead session and not to `product-manager`. The refusal's prompt is kept, with the label's ownership sentence taken out
+ * `DEPENDENCY_BOT_WORKER_SESSION` (the engineers pool, the same pool as the dependency bot's, #1368), not to the dead session and not to `product-manager`
+ * (`DEAD_OWNER_FALLBACK`), where a fresh worker takes the branch and the row over. The refusal's prompt is kept, with the label's ownership sentence taken out
  * (`toFreshWorker`) and the refusing review's words added: the fresh worker must act on those. The reroute is after `withholdOutsideFollowUps`, which never withholds a worker's pull request.
  * PURE. The flag off, nothing is rerouted and every order stays as it was.
  * @param orders every order `decide` has made, in the order it made them
@@ -1371,7 +1366,7 @@ function toFreshWorker(order: any, pr: any) {
     ? `The refusing review's words:\n${review.body.trim()}`
     : "The refusing review carries no body in this read: read it on the pull request before the rework.";
   return {
-    ...rest, session: DEAD_OWNER_WORKER_SESSION, causeKey: causeKey.replace(`${session}/`, `${DEAD_OWNER_WORKER_SESSION}/`),
+    ...rest, session: DEPENDENCY_BOT_WORKER_SESSION, causeKey: causeKey.replace(`${session}/`, `${DEPENDENCY_BOT_WORKER_SESSION}/`),
     prompt: `Its session \`${session}\` has ENDED and nobody holds the row this pull request closes, so this rework is a FRESH worker's: take up `
       + `this pull request's branch \`${pr.headRefName}\` and its row, and act on the refusal below as the reviewer wrote it.\n`
       + `${prompt.replace(/It carries your session label, so [^.]*\.\s*/, "")}\n${findings}`,
