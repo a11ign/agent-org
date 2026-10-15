@@ -17,6 +17,7 @@ import { GRAPHQL_SWEEP_MINUTES, OTHER_SCOPES_MEMORY, readOtherScopesMemory, reme
 import { cachedReleaseBehind, readReleaseBehind, npmRegistryRead } from "../release-behind-main.ts";
 import { armedFromApi, openPullRequestsQueryArgs } from "../auto-arm-sweep.ts";
 import { REPO } from "../project-identity.ts";
+import { herdrRun as herdrProbe } from "../herdr-agents.ts";
 import { HOME_CHECKOUT, homeProjectDeclaration } from "../project-config.ts";
 import { BACKLOG_LABEL, NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL } from "../project-vocabulary.ts";
 import { conditionalGetArgs, pullViewArgs } from "../ticket-port/conditional-reads.ts";
@@ -1651,4 +1652,4 @@ export function readArming(candidates: number[], run: (args: string[]) => string
   }
 }
 
-export const herdrRun = (args: string[]) => execFileSync("herdr", args, { encoding: "utf8", timeout: 10_000 });
+export const herdrRun = (args: string[]) => herdrProbe(args, 10_000);

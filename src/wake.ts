@@ -109,7 +109,7 @@ import { holderWorkAtRisk, workAtRisk, cloneOfKey, gitRun, pathExists, statMtime
 // THE WORKSPACE LISTING, SHARED WITH THE LEAF (#2747): moved here from this file so `claim-stall.ts` can read it
 // too, without importing this file (which already imports `claim-stall.ts` and would cycle). Re-exported below so
 // every existing importer of `readAgents`/`listingIsComplete` from "./wake.ts" is unchanged.
-import { readAgents, listingIsComplete, absentSeats, REFUSAL_EXCERPT, firstLine, herdrReason, agentStartArgs, openPane, closedNote } from "./herdr-agents.ts";
+import { readAgents, herdrRun, listingIsComplete, absentSeats, REFUSAL_EXCERPT, firstLine, herdrReason, agentStartArgs, openPane, closedNote } from "./herdr-agents.ts";
 import { seatRunKeys, isAbsentReviewerSeat } from "./seat-retire-reset.ts"; // agent-org#1392: a retired seat's runs end with it; an absent seat's cap is started again
 import { persistentRoles, persistentEntries, type PersistentEntry } from "./project-roles.ts";
 import { liveToolVersion } from "./lib/tool-version.ts";
@@ -404,7 +404,7 @@ function resetPassed(label: string, { run, home, now }: { run: (args: string[]) 
   }
 }
 
-const defaultRun = (args: string[]) => execFileSync("herdr", args, { encoding: "utf8", timeout: 30_000 });
+const defaultRun = (args: string[]) => herdrRun(args);
 
 /** `gh`, for the escalation half -- a different binary from `herdr`, so a different runner. */
 const defaultGh = (args: string[]) =>
