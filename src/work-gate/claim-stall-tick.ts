@@ -505,10 +505,17 @@ function ledgerText(path: string) {
  * review as one with no PR at all (nudged, or, with a `blockedBy` edge, released), and a refused row read would empty the nudge memory.
  */
 export function claimStallsNow(rows: any[] | null, claimedComments: any[] | null, prs: any[] | null, { tick = claimStallTick, merged = readMergedPrs, elsewhere = readElsewherePrs,
-  log = (line) => process.stderr.write(line), onFacts, trackers, waitFacts }: {
+  log = (line) => process.stderr.write(line), onFacts, trackers, waitFacts, openRowsPaced = false }: {
         tick?: typeof claimStallTick; merged?: typeof readMergedPrs; elsewhere?: typeof readElsewherePrs; log?: (line: string) => void;
         onFacts?: OnClaimFacts; trackers?: () => TrackerClaims[]; waitFacts?: WaitFacts | null;
+        /** agent-org#1401: the open rows were NOT ASKED (the pacing skipped the primary's lanes), so their `null` is a skip and not a refusal. */
+        openRowsPaced?: boolean;
     } = {}) {
+  if (rows === null && openRowsPaced && prs !== null) {
+    log("claim-stall: the open rows were skipped by pacing this tick -- NO claim was evaluated.\n");
+    onFacts?.(null);
+    return [];
+  }
   if (rows === null || prs === null) {
     log(`claim-stall: the ${rows === null ? "open rows" : "open pull requests"} could not be read -- NO claim was evaluated this tick.\n`);
     onFacts?.(null);
