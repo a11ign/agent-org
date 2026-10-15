@@ -10,7 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -149,6 +149,10 @@ test("#3566: the cost file sits beside the ledger and is trimmed to its last lin
     const kept = readFileSync(path, "utf8").split("\n").filter(Boolean).map((text) => JSON.parse(text));
     assert.ok(kept.length > 0 && kept.length < count, `${kept.length} of ${count}`);
     assert.equal(kept[kept.length - 1].index, count - 1, "the newest line survives the trim");
+    // The kept half spans the cap's half, less at most the one partial line the cut drops, and that half holds a day of ticks (a11ign/agent-org#1210's
+    // reading: 410 ticks in 15.7 h, about 2.5 KiB each, so 24 h is about 1.6 MiB).
+    const oneLine = 1100;
+    assert.ok(statSync(path).size >= TICK_COST_BYTES / 2 - oneLine && TICK_COST_BYTES / 2 >= 1.6 * 1024 * 1024, `${statSync(path).size} bytes kept`);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -358,7 +362,7 @@ test("#3566: an open list the tick already read is not read again by `readElsewh
 
 test("#3566: `main` hands the lanes `readOtherScopes` read to the claim-stall read, so no other repository's open list is asked twice", () => {
   const source = workGateSource();
-  assert.match(source, /claimStallsWithFacts\(openRowsRead, claimedComments, prs, otherScopes, \{\}, waitReads\?\.facts \?\? null\)/);
+  assert.match(source, /claimStallsWithFacts\(openRowsRead, claimedComments, prs, otherScopes, \{ openRowsPaced: !primaryRead \}, waitReads\?\.facts \?\? null\)/);
   assert.match(source, /elsewhere: \(\) => readElsewherePrs\(undefined, undefined, otherScopes\)/);
 });
 

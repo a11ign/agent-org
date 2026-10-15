@@ -51,6 +51,7 @@ import { handoffBacklog, backlogReport, handoffBatches, fitBatch, waitedFor, sta
   PROMPT_ARG_MAX, HANDOFF_BATCH_BYTES, BATCH_WRAPPER_BYTES, targetLabelBytes }
   from "../wake.ts";
 import { startedPanes } from "./started-pane.ts";
+import { dropUnknownHandoffs, UNKNOWN_SESSION_MS } from "../wake.ts";
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
 const noSettle = () => {};
 const deliver: typeof settlingDeliver = (orders, agents, roster, deps) => settlingDeliver(orders, agents, roster, { ...deps, sleep: noSettle });
@@ -256,6 +257,21 @@ test("work-tick: PARTIAL still delivers the real orders, and says which lane wen
   const got = afterGate(GATE.PARTIAL);
   assert.equal(got.deliver, true);
   assert.match(String(got.why), /one lane could not be read/);
+});
+
+/**
+ * agent-org#1414: a gate whose only unread lanes were SKIPPED BY DESIGN exits PACED, and the tick must not call that "could not be read" -- 663 ticks
+ * of it were offered as a fault that never clears. A refused lane keeps PARTIAL and its wording, so the two lines are never one.
+ */
+test("work-tick: a PACED gate still delivers, says no lane could not be read; a PARTIAL one still says it", () => {
+  const paced = afterGate(GATE.PACED);
+  assert.equal(paced.deliver, true, "the orders the gate printed are real");
+  assert.match(String(paced.why), /skipped by pacing, none refused/);
+  assert.doesNotMatch(String(paced.why), /could not be read/);
+  assert.notEqual(GATE.PACED, GATE.PARTIAL, "two codes, or the split is lost before the tick sees it");
+  // the other direction: the refused form is unchanged
+  assert.match(String(afterGate(GATE.PARTIAL).why), /one lane could not be read/);
+  assert.doesNotMatch(String(afterGate(GATE.PARTIAL).why), /skipped by pacing/);
 });
 
 test("work-tick: an exit code nobody documented is treated as CANNOT_ASK, never as quiet", () => {
@@ -2162,4 +2178,82 @@ test("#3769 (3): nothing under the host's unit files sets the test clock (the po
   assert.ok(namesTheClock(`Environment=${SETTLE_TEST_CLOCK_ENV}=0`), "the marker recognises a unit that DID set it");
   const offenders = files.filter((name) => namesTheClock(readFileSync(join(HOST_DIR, name), "utf8")));
   assert.deepEqual(offenders, [], "a unit that sets the test clock would make the production tick settle in no time");
+});
+
+// agent-org#1416: an order for a session the org does not know is dropped once the bound has passed; a session that is working, or paused by the account limit, is not.
+const UNKNOWN_NOW = Date.parse("2026-10-15T08:00:00Z");
+const UNKNOWN_PROMPT = "Sent to you by `ceo` (reply on the row):\n\nThe review of #1325 is still owed.";
+type UnknownSeat = { label: string; status: string; };
+
+/** One tick of the drop, reading the queue the way the tick does, so a drop made on one tick is not there on the next. */
+function unknownTick(queuePath: string, posts: string[][], agents: UnknownSeat[], now: number, paused = false) {
+  return dropUnknownHandoffs(readHandoffs(queuePath), { agents, roster: [], isLead: () => false, holder: () => null,
+    post: (args) => { posts.push(args); }, queuePath, paused, now });
+}
+
+test("an order for a session the org does not know is dropped at the bound, with one line naming it and a comment on the row it carried", () => {
+  const dir = mkdtempSync(join(tmpdir(), "unknown-handoff-"));
+  try {
+    const queuePath = join(dir, HANDOFF_QUEUE_FILE);
+    const order = queueHandoff(queuePath, { session: "worker-agent-org-1325", prompt: UNKNOWN_PROMPT, now: UNKNOWN_NOW });
+    const posts: string[][] = [];
+    const first = unknownTick(queuePath, posts, [], UNKNOWN_NOW);
+    assert.deepEqual(first.kept.map((h) => h.id), [order.id], "the first tick that sees the session unknown starts its clock and keeps the order");
+    assert.deepEqual(first.lines, []);
+    const inside = unknownTick(queuePath, posts, [], UNKNOWN_NOW + UNKNOWN_SESSION_MS - 1);
+    assert.deepEqual(inside.kept.map((h) => h.id), [order.id], "one millisecond inside the bound the order is still waiting");
+    const atBound = unknownTick(queuePath, posts, [], UNKNOWN_NOW + UNKNOWN_SESSION_MS);
+    assert.deepEqual(atBound.kept, [], "at the bound the order leaves the queue");
+    assert.equal(atBound.lines.length, 1, `one line for the drop; got ${JSON.stringify(atBound.lines)}`);
+    const [line] = atBound.lines;
+    assert.ok(line.startsWith(`DROPPED ${order.id}: "worker-agent-org-1325"`), line);
+    assert.ok(line.includes("carrying #1325"), `the line names the row the order carried: ${line}`);
+    assert.equal(line.trimEnd().includes("\n"), false, "the drop is ONE line");
+    assert.equal(posts.length, 1, "the row it carried is told once");
+    assert.deepEqual(posts[0].slice(0, 3), ["issue", "comment", "1325"]);
+    const records = readFileSync(queuePath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    const record = records[records.length - 1];
+    assert.equal(record.dropped, order.id, "the drop is a record, not a delivery");
+    assert.equal(record.prompt, UNKNOWN_PROMPT, "the record carries the text, so the drop loses none");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("an order for a WORKING session is not dropped, however long it waits, and neither is one whose account is paused", () => {
+  const dir = mkdtempSync(join(tmpdir(), "unknown-handoff-"));
+  try {
+    const queuePath = join(dir, HANDOFF_QUEUE_FILE);
+    const order = queueHandoff(queuePath, { session: "worker-agent-org-1325", prompt: UNKNOWN_PROMPT, now: UNKNOWN_NOW });
+    const posts: string[][] = [];
+    const working: UnknownSeat[] = [{ label: "worker-agent-org-1325", status: "working" }];
+    // The first tick is the one that would START the clock if the session were unknown, so the bound is measured past it: a check on one tick alone proves nothing.
+    unknownTick(queuePath, posts, working, UNKNOWN_NOW);
+    const busy = unknownTick(queuePath, posts, working, UNKNOWN_NOW + 3 * UNKNOWN_SESSION_MS);
+    assert.deepEqual(busy.kept.map((h) => h.id), [order.id], "a working session's order is kept, however long past the bound");
+    assert.deepEqual(busy.lines, []);
+    const late = UNKNOWN_NOW + 6 * UNKNOWN_SESSION_MS;
+    unknownTick(queuePath, posts, [], late);
+    const paused = unknownTick(queuePath, posts, [], late + UNKNOWN_SESSION_MS, true);
+    assert.deepEqual(paused.kept.map((h) => h.id), [order.id], "an account paused by the limit keeps every order, even one unknown past the bound");
+    assert.deepEqual(posts, [], "nothing is said on a row about an order that is kept");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a session that comes back starts the bound again: the clock is cleared while it is known", () => {
+  const dir = mkdtempSync(join(tmpdir(), "unknown-handoff-"));
+  try {
+    const queuePath = join(dir, HANDOFF_QUEUE_FILE);
+    const order = queueHandoff(queuePath, { session: "worker-agent-org-1325", prompt: UNKNOWN_PROMPT, now: UNKNOWN_NOW });
+    const posts: string[][] = [];
+    unknownTick(queuePath, posts, [], UNKNOWN_NOW);
+    unknownTick(queuePath, posts, [{ label: "worker-agent-org-1325", status: "idle" }], UNKNOWN_NOW + UNKNOWN_SESSION_MS / 2);
+    const again = unknownTick(queuePath, posts, [], UNKNOWN_NOW + UNKNOWN_SESSION_MS);
+    assert.deepEqual(again.kept.map((h) => h.id), [order.id], "unknown again at the old bound is a NEW clock, not a drop");
+    assert.deepEqual(posts, []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

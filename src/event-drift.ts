@@ -4,8 +4,9 @@
 // In `webhook` mode a lost delivery is silent: the reconcile re-reads the repository, the generation moves, and nobody learns the receiver is dropping events. At the reconcile
 // `refreshTickSnapshot` runs the repository's probe pair ONCE (the poll path's own `probeOnce`); this file decides whether what they said is DRIFT and files it.
 //
-// THE WINDOW. A repository's `bumpedAt` moves on every event that names it and on every reconcile, so a repository that is DUE has had no event since its window opened, and the one place
-// an event can still be "behind" a moved probe is the tick being run (`named`). That is why no event time is kept here: the window is the interval since `bumpedAt`.
+// THE WINDOW. The window is the interval since `factsReadAt`, the moment the content the held tags were compared with was read (agent-org#1431). An event that names the repository
+// after that moment explains a move in its content, so it is not drift: `bumpedAt` moves on every such event, and `namedSince` is the question "has it moved past the read?". While the
+// receiver is healthy, a repository that is not due keeps its baseline, so the reconcile that is due is the one that reads the content again and sees the event's change as explained.
 //
 // THE CONTENT, NOT THE TAG (agent-org#1207, a11ign/a11ign#928). A probe's tag moving is NOT drift on its own. Measured 2026-10-12: the same issues list read anonymously and
 // authenticated carries the same items and a DIFFERENT tag, and a tag held from one read context answers 200 (not 304) when it is sent in the other. So a probe is drift only when
@@ -51,11 +52,11 @@ export const contentMoved = (p: MovedProbe): boolean =>
 export const noContentChange = (p: MovedProbe): boolean => p.changed && p.held !== undefined && p.heldFacts !== undefined && p.facts !== undefined && !contentMoved(p);
 
 /**
- * DRIFT, or `null`. A probe whose tag moved AND whose content moved, against a tag and content that were held, for a repository no event named this tick, is a delivery the receiver did not get.
- * An event naming the repository (`named`) explains the move; a probe whose content did not move says nothing moved.
+ * DRIFT, or `null`. A probe whose tag moved AND whose content moved, against a tag and content that were held, for a repository no event named since they were read, is a delivery the receiver did not get.
+ * An event that named the repository since then (`namedSince`, this tick or after the read) explains the move; a probe whose content did not move says nothing moved.
  */
-export function driftOf({ repo, probes, named, windowStartS, nowS }: { repo: string; probes: readonly MovedProbe[]; named: boolean; windowStartS: number; nowS: number }): Drift | null {
-  if (named) return null;
+export function driftOf({ repo, probes, namedSince, windowStartS, nowS }: { repo: string; probes: readonly MovedProbe[]; namedSince: boolean; windowStartS: number; nowS: number }): Drift | null {
+  if (namedSince) return null;
   const moved = probes.find((p) => p.changed && p.held !== undefined && contentMoved(p));
   return moved === undefined ? null : { repo, probe: probeName(moved.path), windowStartS, nowS };
 }

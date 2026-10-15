@@ -13,7 +13,7 @@ import { CLAIM_LABEL } from "./claim-labels.ts";
 import { REPO } from "./project-identity.ts"; // #2616: the project's repository comes from its declaration, never a literal
 import { PROJECT_NUMBER, PROJECT_OWNER } from "./board-snapshot-scope.ts"; // #5405: the incident row is boarded on the home board when it is filed
 import { BACKLOG_LABEL, OUT_OF_RELEASE_LABEL } from "./project-vocabulary.ts";
-import { isIssueOnBoard } from "./ticket-port/project-membership.ts"; // #5405: the retry asks whether the card is already on the board before it adds it
+import { boardFiledRow } from "./ticket-port/board-filed-row.ts"; // #5405: the card is added only when it is not on the board yet; #1369 shares this write with the outside-idle triage row
 import { readRowsByLabel } from "./ticket-port/rows-by-label.ts"; // #5039
 import { decide, MAX_STATE_BYTES, type DecisionDeps, type Question } from "./decision-provider.ts";
 
@@ -609,12 +609,7 @@ const bodyOf = (group: SharedGroup, prs: readonly string[]): string => [
 // all -- a second item-add is refused or duplicates it, and `isIssueOnBoard` is the read that tells "absent" from "on it with no Status". An unreadable board throws: the next tick retries.
 const BOARD_STATUS = "Backlog";
 function boardIncident(number: number, run: Run): void {
-  const url = `https://github.com/${REPO}/issues/${number}`;
-  if (!isIssueOnBoard(number, { read: run })) {
-    run(["project", "item-add", String(PROJECT_NUMBER), "--owner", PROJECT_OWNER, "--url", url]);
-  }
-  run(["project", "item-edit", String(PROJECT_NUMBER), "--owner", PROJECT_OWNER, "--url", url, "--field", "Status", "--value", BOARD_STATUS]);
-  run(["issue", "edit", String(number), "--add-label", BACKLOG_LABEL, "--add-label", OUT_OF_RELEASE_LABEL]);
+  boardFiledRow({ repo: REPO, number, owner: PROJECT_OWNER, projectNumber: PROJECT_NUMBER, status: BOARD_STATUS, labels: [BACKLOG_LABEL, OUT_OF_RELEASE_LABEL], run });
 }
 
 /** A row filed before #5405, or one whose boarding was refused, carries no release declaration: board it now. The row exists, so a refusal is logged, not thrown. Returns `false` when the board was refused. */

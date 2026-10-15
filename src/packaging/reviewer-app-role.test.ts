@@ -179,15 +179,41 @@ test("#955: the reviewer config alone names no role: a declared reviewer App is 
 });
 
 // #1347 (ruling on agent-org#1343): the reviewer's call is REFUSED when its App's token cannot be minted, never sent as `a11ign-bot`.
-test("#955 (ruled by #1347): a mint that fails REFUSES the reviewer's call: nothing goes out as `a11ign-bot`, the reason is on stderr, and ONE incident is recorded", () => {
+// #1399: that refusal ships behind `AGENT_ORG_REVIEWER_REFUSAL`, OFF; the two tests after this one are the two sides of the switch.
+const SWITCH_ON = { AGENT_ORG_REVIEWER_REFUSAL: "1" };
+const MINT_401 = "app token: token: POST answered 401";
+
+test("#955 (ruled by #1347, switch on by #1399): a mint that fails REFUSES the reviewer's call: nothing goes out as `a11ign-bot`, the reason is on stderr, and ONE incident is recorded", () => {
   const h = host(DECLARED());
-  const call = h.run({ ...asReviewer, MINT_FAIL: "app token: token: POST answered 401" }, "pr", "view", "955");
+  const call = h.run({ ...asReviewer, ...SWITCH_ON, MINT_FAIL: MINT_401 }, "pr", "view", "955");
   assert.deepEqual([call.status, call.stdout], [1, ""], "REFUSED: non-zero, and the stub that would have sent the review never ran");
   assert.match(call.stderr, /^gh: refused: the reviewer call is NOT sent as the account\. app-token reviewer failed for App .+: app token: token: POST answered 401 \(exit 1\)\n$/,
     "the caller reads the role, the App and the mint failure on stderr");
   const parsed = h.lines().map((l) => parseLine(l));
   assert.deepEqual(parsed.map((p) => p?.resource), ["incident"], "the incident is the only line: no call was sent");
   assert.match(h.lines()[0], /app-token reviewer failed, refused, not sent as the account: app token: token: POST answered 401 \(exit 1\)/);
-  h.run({ ...asReviewer, MINT_FAIL: "again" }, "pr", "view", "955");
+  h.run({ ...asReviewer, ...SWITCH_ON, MINT_FAIL: "again" }, "pr", "view", "955");
   assert.equal(h.mints(), 1, "the failed role is not asked again inside the window, and is still refused there");
+});
+
+// #1399 (the switch ships OFF): until the reviewer's token cache is writable (agent-org#1342), a refusal stops every review, so a failed mint FALLS BACK.
+test("#1399: with the switch OFF (the default) a mint that fails falls back: the reviewer's call goes out as the config's account, and the incident is still recorded", () => {
+  const h = host(DECLARED());
+  const call = h.run({ ...asReviewer, MINT_FAIL: MINT_401 }, "pr", "view", "955");
+  assert.equal(call.status, 0, "NOT REFUSED: the call goes through, as it did before #1347");
+  assert.equal(call.stdout, "token=none args=pr view 955\n", "the stub ran and saw NO token: the call is the reviewer config's own account");
+  assert.equal(call.stderr, "", "and nothing is said on stderr");
+  assert.equal(h.mints(), 1, "the one mint was asked, and it failed");
+  assert.equal(parseLine(h.lines()[0])?.resource, "incident");
+  assert.equal(h.lines().length, 2, "the incident, then the call's own line");
+  assert.match(h.lines()[0], /app-token reviewer failed, fell back to the account: app token: token: POST answered 401 \(exit 1\)/, "POSITIVE CONTROL: the incident is written, and it names the fallback");
+  assert.equal(parseLine(h.lines()[1])?.account, BOT, "the call is recorded against the account it went out as");
+});
+
+test("#1399: only the value `1` turns the switch on: any other value, or an empty one, falls back as the default does", () => {
+  for (const value of ["0", "true", "yes", ""]) {
+    const h = host(DECLARED());
+    const call = h.run({ ...asReviewer, AGENT_ORG_REVIEWER_REFUSAL: value, MINT_FAIL: MINT_401 }, "pr", "view", "955");
+    assert.deepEqual([call.status, call.stdout], [0, "token=none args=pr view 955\n"], `AGENT_ORG_REVIEWER_REFUSAL=${JSON.stringify(value)} is not the switch`);
+  }
 });

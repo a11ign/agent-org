@@ -2,7 +2,8 @@
 /**
  * `src/row-claim.ts`, agent-org#1262 (a11ign/a11ign#5282, class `claim-refused`): A REFUSAL THAT IS THE CLAIM GUARD WORKING IS NOT A FAILURE OF THE CLAIM PATH.
  * The worktree cap, a B4 overlap, a tree that already exists and a rule copy behind the release are written as `claim-guard-held`, which `class-repeat` does not count; the three failures
- * (an unreadable read, B4 not askable, an unknown tracker key) stay `claim-refused`. Both kinds are read by `readClaimRefusals`, so signal 26 still counts every refusal.
+ * (an unreadable read, B4 not askable, an unknown tracker key) stay `claim-refused`. A copy of `src/` run from outside any git work tree is the guard unable to ask, not a
+ * failed claim (agent-org#1458), so it is `claim-guard-held`. Both kinds are read by `readClaimRefusals`, so signal 26 still counts every refusal.
  *
  * THE REF of a failure stays the refusal's first line, which is what it is today (the cause), and is what the existing `row-claim-refusal-cause.test.ts` pins.
  *
@@ -11,13 +12,19 @@
  *
  * MUTATIONS, each run by hand with the file copied to the scratchpad and restored byte-identical after: the classifier always answering `claim-refused` (the guard-held
  * POSITIVE CONTROLS go red); the classifier always answering `claim-guard-held` (the failure POSITIVE CONTROLS go red).
+ *
+ * THE CLASSIFICATION (agent-org#1453): every refusal literal `src/row-claim.ts` builds on a claim refusal (a `reason:` or `refusal:` string on a line that returns
+ * `claimed: false`, `proceed: false` or `ok: false`, or a `refusal:` key) must match an entry of `CLAIM_REFUSAL_TEXTS`, which lists each text beside its kind. A new refusal
+ * written without an entry is a red build here. POSITIVE CONTROL: a refusal literal with no entry is reported unclassed, and is classed once it has one.
+ * NOT READ BY THIS SCAN, and classed only at runtime (`claimRefusalKind`'s default, `claim-refused`): a refusal built in a variable or in another module, and the text
+ * of an `Error` thrown into the claim, which reaches the ledger from its message. The entries that cover those are listed in the table, pinned by the tests below.
  */
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { recordClaimRefusal } from "./row-claim.ts";
+import { CLAIM_REFUSAL_TEXTS, recordClaimRefusal } from "./row-claim.ts";
 import { readClaimRefusals } from "./org-health.ts";
 import { groupByClass } from "./class-repeat.ts";
 import { CLAIM_GUARD_HELD_KIND, CLAIM_REFUSED_KIND } from "./failure-ledger.ts";
@@ -34,16 +41,23 @@ const B4_OVERLAP = "overlaps #878 in a11ign/agent-org, which already touches: .g
 // THE GUARD WORKING, AS A STALE CHECKOUT: the rule copy behind the release, copied from the text stale-rule-guard.ts prints (agent-org#1316).
 const RULE_BEHIND = "THIS CHECKOUT'S COPY OF THE RULE IS 3 COMMIT(S) BEHIND THE RELEASE THE HOST RUNS (v0.183.3).";
 
-// THE FAILURE OF THE CLAIM PATH: three refusals, copied the same way.
+// THE GUARD WORKING, AS A CLAIM ON A ROW SOMEONE ELSE HOLDS, OR ONE WHOSE Waiting-for IS UNMET (agent-org#1453): copied from the text row-claim.ts prints.
+const ALREADY_CLAIMED = "issue is already claimed by worker-5455 -- and the worktree it had just created was removed";
+const WAITING_FOR_UNMET = "`Waiting-for: closed a11ign/agent-org#1185` is not yet true: the row cannot be finished until it is, and a claim on it is released again. Claim it once the condition holds.";
+// THE GUARD WORKING, AS A COPY OF `src/` RUN OUTSIDE ANY GIT WORK TREE (agent-org#1458): copied from the text stale-rule-guard.ts prints.
+const CANNOT_ASK_NO_TREE = "CANNOT ASK whether this checkout's copy of the rule is current: /scratch/copy is not inside a git work tree, so there is\n  no repository to compare against `origin/main`. This refuses rather than assuming it is up to date.";
+
+// THE FAILURE OF THE CLAIM PATH: refusals copied the same way. The CANNOT ASK one is the negative control: it is the guard unable to ask for a reason that is not the tree (`origin/main` unresolvable), and that is a failure.
 const UNREADABLE_READ = "row-claim: could not read issue #15 from a11ign/agent-org -- refusing to guess whether it is claimed. Command failed: gh issue view 15";
 const B4_NOT_ASKABLE = "B4 COULD NOT BE ASKED which rows are already claimed: that list could not be read, so this row's Region cannot be compared with theirs. INCONCLUSIVE, not clear -- retry the claim (the gate offers the row again by itself).";
 const UNKNOWN_TRACKER = "no tracker with key `nope` is declared in .agent-org/project.json (declared: the empty key); nothing is defaulted to another tracker's row of the same number";
+const CANNOT_ASK_NO_HISTORY = "CANNOT ASK whether this checkout's copy of the rule is current: `origin/main` is not\n  resolvable here and the checkout holds no release tag. A verdict computed from a rule that may\n  have been replaced is worse than no verdict, so this refuses rather than assuming it is up to\n  date. `git fetch --tags origin` and try again.";
 
 // A read the rate limit refused: one outage, the guard working (ceo's reading on the row).
 const RATE_LIMITED_READ = "row-claim: could not read issue #15 from a11ign/agent-org -- refusing to guess whether it is claimed. Command failed: gh issue view 15\ngh said: GraphQL: API rate limit already exceeded for user ID 328832207.";
 
-const GUARD_HELD = [WORKTREE_CAP, TREE_EXISTS, B4_OVERLAP, RULE_BEHIND];
-const FAILURES = [UNREADABLE_READ, B4_NOT_ASKABLE, UNKNOWN_TRACKER];
+const GUARD_HELD = [WORKTREE_CAP, TREE_EXISTS, B4_OVERLAP, RULE_BEHIND, ALREADY_CLAIMED, WAITING_FOR_UNMET, CANNOT_ASK_NO_TREE];
+const FAILURES = [UNREADABLE_READ, B4_NOT_ASKABLE, UNKNOWN_TRACKER, CANNOT_ASK_NO_HISTORY];
 
 /** Each refusal written, in order, one ledger line per call at a minute apart; returns the ledger's path, read back as lines. */
 function ledgerOf(name: string, refusals: string[]): string[] {
@@ -90,4 +104,42 @@ test("class-repeat groups a repeat of claim-guard-held as no class, and a repeat
   const repeat = (classKey: string) => [{ classKey, refs: ["first", "second"], newestAt: NOW }];
   assert.deepEqual(groupByClass([], [], repeat(CLAIM_GUARD_HELD_KIND)), [], "a guard working is no class and no repeat");
   assert.deepEqual(groupByClass([], [], repeat(CLAIM_REFUSED_KIND)).map(({ id }) => id), [CLAIM_REFUSED_KIND], "a failure repeated is a class");
+});
+
+// THE CLASSIFICATION, read from the file. A refusal literal is the string after `reason:` or `refusal:`, on a line that returns a refusal: the line itself has
+// `claimed: false`, `proceed: false` or `ok: false` (a multi-line return keeps its marker on the line above), or the key is `refusal:`. A `${...}` is read as `X`.
+const LITERAL = /\b(reason|refusal): (`(?:[^`\\\n]|\\.)*`|"(?:[^"\\\n]|\\.)*")/g;
+const RETURNS_REFUSAL = /\b(?:claimed|proceed|ok): false\b/;
+
+/** @returns {string[]} each refusal literal in `source`, its `${...}` read as `X` and its escapes undone; a literal that opens with a variable is left out (its text is classed where the variable is built) */
+function refusalLiterals(source: string): string[] {
+  const lines = source.split("\n");
+  return lines.flatMap((line, i) => /^\s*(?:\/\/|\/?\*)/.test(line) ? [] : [...line.matchAll(LITERAL)]
+    .filter(([, key]) => key === "refusal" || RETURNS_REFUSAL.test(`${lines[i - 1] ?? ""}\n${line}`))
+    .filter(([, , quoted]) => !quoted.startsWith("`${"))
+    .map(([, , quoted]) => quoted.slice(1, -1).replace(/\$\{[^}]*\}/g, "X").replace(/\\(.)/g, "$1")));
+}
+
+/** A refusal this file builds that no entry lists. The release command's own `--answer=` refusal (`releaseFlags`) is not a claim refusal and is not written to the ledger, so it is left out. */
+const NOT_A_CLAIM_REFUSAL = ["--answer=<session> needs a session, not an empty string"];
+const unclassed = (texts: string[], table: typeof CLAIM_REFUSAL_TEXTS = CLAIM_REFUSAL_TEXTS): string[] =>
+  texts.filter((text) => !NOT_A_CLAIM_REFUSAL.includes(text) && !table.some(({ pattern }) => pattern.test(text)));
+
+const ROW_CLAIM_SOURCE = readFileSync(new URL("./row-claim.ts", import.meta.url), "utf8");
+
+test("every refusal literal row-claim.ts builds is classed beside its kind, so an unlisted one is a red build", () => {
+  const built = refusalLiterals(ROW_CLAIM_SOURCE);
+  // NON-VACUITY: the scan reads the refusals the table was extended for, so an empty result cannot pass.
+  assert.ok(built.includes("issue is already claimed by X"), `the scan missed the claimed-by refusal: ${built.join(" | ")}`);
+  assert.ok(built.some((text) => text.startsWith("`Waiting-for: X` is not yet true")), `the scan missed the Waiting-for refusal: ${built.join(" | ")}`);
+  assert.deepEqual(unclassed(built), [], "a refusal literal in row-claim.ts that CLAIM_REFUSAL_TEXTS does not list: name it beside its kind");
+});
+
+test("POSITIVE CONTROL: a refusal written without a kind is unclassed, and is classed once it is listed beside one", () => {
+  const added = "  if (stale) return { claimed: false, reason: `a brand new refusal the guard never named ${stale}` };";
+  const built = refusalLiterals(added);
+  assert.deepEqual(built, ["a brand new refusal the guard never named X"], "the scan reads the added refusal");
+  assert.deepEqual(unclassed(built), built, "with no entry it is reported, which is the red build");
+  const classed = [...CLAIM_REFUSAL_TEXTS, { pattern: /^a brand new refusal/, kind: CLAIM_GUARD_HELD_KIND }];
+  assert.deepEqual(unclassed(built, classed), [], "green once it is classed");
 });

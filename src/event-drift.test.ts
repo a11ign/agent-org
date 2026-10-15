@@ -140,6 +140,30 @@ test("NEGATIVE CONTROL: a probe that moved with an event naming the repository i
   assert.deepEqual(quiet.filed, []);
 });
 
+test("POSITIVE CONTROL (agent-org#1431): an event that named the repository after its baseline explains the move at the due reconcile, so no drift is filed; the next baseline is that reconcile's read", () => {
+  const dir = baselined();
+  const f = filer();
+  // Tick 1: the event names the repository and its content moved with it. The repository is not due, so nothing is re-read.
+  reconcile(dir, issuesMoved, 60, f, [REPO]);
+  // The due reconcile reads the moved content with no event in its own tick: the event above is the explanation, not a lost delivery.
+  const due = reconcile(dir, issuesMoved, 60 + RECONCILE_SECONDS, f);
+  assert.deepEqual(f.filed, [], "the baseline is older than the event, but the event named the repository after it was read");
+  assert.doesNotMatch(due[0], /MISSED DELIVERY/);
+  assert.match(due[0], /CHANGED \(no event\)/);
+  // The reconcile that found nothing read the content again, so a later move with no event is judged from THAT read, and its window starts there.
+  reconcile(dir, instead(ISSUES, { tag: "t3", body: ISSUES_NEWER }), 60 + 2 * RECONCILE_SECONDS, f);
+  assert.deepEqual(f.filed, [[{ repo: REPO, probe: "issues list", windowStartS: (T0 + (60 + RECONCILE_SECONDS) * SEC) / SEC, nowS: (T0 + (60 + 2 * RECONCILE_SECONDS) * SEC) / SEC }]]);
+});
+
+test("the window of a drift starts at the time its baseline was READ, even when a later tick re-read the content on the poll path while the receiver was down (agent-org#1431)", () => {
+  const dir = baselined();
+  const f = filer();
+  refreshTickSnapshot({ repos: [REPO], homeRepo: REPO, configDir: dir, run: steady, nowMs: T0 + 60 * SEC, events: { ...healthy(), healthy: false }, fileDrift: f.fileDrift });
+  const lines = reconcile(dir, issuesMoved, RECONCILE_SECONDS, f);
+  assert.deepEqual(f.filed, [[{ repo: REPO, probe: "issues list", windowStartS: (T0 + 60 * SEC) / SEC, nowS: T0 / SEC + RECONCILE_SECONDS }]], "the content was read at T0+60, not at the T0 the window was last moved");
+  assert.match(lines[0], /MISSED DELIVERY inferred from the issues list probe, incident filed/);
+});
+
 test("NEGATIVE CONTROL: a tag that moved over the SAME content is not drift and files nothing, while the probe still says CHANGED", () => {
   const dir = baselined();
   const f = filer();

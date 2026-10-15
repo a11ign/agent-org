@@ -22,7 +22,7 @@ import { readTrunkRed, trunkOfCodeRepository, trunkRedOrders } from "../trunk-re
 import { recordIgnoredChairmanLabels, recordTickFailures as recordFailuresOf } from "../failure-recorders.ts";
 import { readJsonObject, writeJsonObject } from "../claim-stall.ts";
 import { requiredWhenNeeded, perPullRequestOrders, greenUnarmedOrders, type UnarmedFacts, reviewBlockedOrders, stalledPrOrders,
-  STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr, ROW_REVIEW_SKILL_FLAG, PR_OWNER_ROUTING_FLAG, withholdOutsideFollowUps, reviewOnlyRefs, SAME_HEAD_REFAIL_FLAG } from "./pr-orders.ts";
+  STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr, ROW_REVIEW_SKILL_FLAG, PR_OWNER_ROUTING_FLAG, withholdOutsideFollowUps, routeDeadOwnerRefusals, reviewOnlyRefs, SAME_HEAD_REFAIL_FLAG } from "./pr-orders.ts";
 import { labJobFinishedOrders, readLabJobRecords, readDispatchedLabJobs } from "./lab-job-orders.ts";
 import { classAndKeyOf as orgHealthClassAndKey } from "./org-health-suppression.ts";
 import { TABLE_ROW as STANDING_ROW } from "../board-truth-audit.ts";
@@ -54,7 +54,7 @@ import { type KeyedClosedClaimedRow, readClosedClaimedRows } from "./causes/rows
 import { EPIC_LABEL, epicOrders, finishedEpicOrders } from "./causes/rows-epics.ts";
 import { fleetBatchOrders } from "./causes/rows-fleet-batch.ts";
 import { type BoardFacts, readRowsOffBoard, rowOffBoardOrders, rowsOffBoard } from "./causes/rows-off-board.ts";
-import { type EmergencyPriorityOption, type OfferHierarchy, chairmanRowsOf, emergencyHierarchyNow, hierarchyOrders, offeredByShare, productRegionsOf,
+import { type EmergencyPriorityOption, type OfferHierarchy, CHAIRMAN_REFUSAL_FLAG, chairmanRowAnsweredByCeo, chairmanRowsOf, emergencyHierarchyNow, hierarchyOrders, offeredByShare, productRegionsOf,
   readChairmanPriority, readEmergencyPriorityOption, rowOrders } from "./causes/rows-offer.ts";
 import { blockerClearedOrders, hostDriftOrders, hostUnitsEntry, readOtherScopes, rowsWithOpenPr, trackerReadings } from "../work-gate.ts";
 import { type ArmingPort, MAX_ROW_ORDERS_PER_TICK, NOT_STARTABLE, REVIEWER_STATE_DIR, type Scope, type ScopeRepository, aimOf, comparablePrFiles,
@@ -266,8 +266,10 @@ export function blockerClearedReading(rows: any[], today: string = todayIso(), n
  */
 export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = [], prFiles = [],
   drain = false, required = null, epics = [], answerOwed = [], openRows = [], unarmed = null,
-  claimedComments = [], rowBranches, branchPrs, hostDrift, primaryDrift, closings, claimFacts, trunkRed, baseTip, claimStalls, offBoard, key, repo, callCountSignals, bareAnswerLabels, labJobs, claimRefusals, nowMs, recheck, rowReviewSkill, prOwnerRouting, sameHeadRefail, answerGiven, engineerStarts, projectDeclaration, shareLog, shareMemory, offerHierarchy, waitFacts, identities }: {
+  claimedComments = [], rowBranches, branchPrs, hostDrift, primaryDrift, closings, claimFacts, trunkRed, baseTip, claimStalls, offBoard, key, repo, callCountSignals, bareAnswerLabels, labJobs, claimRefusals, nowMs, recheck, rowReviewSkill, prOwnerRouting, sameHeadRefail, answerGiven, engineerStarts, projectDeclaration, shareLog, shareMemory, offerHierarchy, waitFacts, identities, primaryPaced = false }: {
         prs: any[]; readyRows: any[]; promotableRows?: any[]; chairmanBlocked?: any[]; nowMs?: number; recheck?: boolean; rowReviewSkill?: boolean; prOwnerRouting?: boolean; sameHeadRefail?: boolean;
+        /** agent-org#1401: the primary's tracker lanes were skipped by pacing this tick (`work-gate.ts`), so the open rows are not a read the shelf can be stocked from. */
+        primaryPaced?: boolean;
         prFiles?: { number: number; files: string[]; changedFiles: number; }[];
         drain?: boolean; required?: string[] | null; epics?: any[]; answerOwed?: any[];
         key?: string; repo?: string; openRows?: any[]; unarmed?: number[] | UnarmedFacts | null;
@@ -317,7 +319,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // causes above use: work that already EXISTS outranks work nobody has started.
   const { offerable, blocked, yielding } = partitionUnclaimed(readyRows, prFiles, { rowBranches, branchPrs, openRows, chairmanRows: chairmanRowsOf(offerHierarchy), waitFacts });
   orders.push(...rowBranchOrders(readyRows, rowBranches, prs, branchPrs), ...incompleteRowOrders(readyRows)); // #2791, #3010, #3892
-  orders.push(...rowOrders(offeredByShare(offerable, { starts: engineerStarts, declaration: projectDeclaration, shareLog, shareMemory, chairmanRows: chairmanRowsOf(offerHierarchy), emergencyRows: offerHierarchy?.emergencyRows }), branchesToReplace(rowBranches, branchPrs), offerHierarchy), ...unclaimableRowOrders(offerable, claimRefusals)); // #2845: the offer, and its refusal
+  orders.push(...rowOrders(offeredByShare(offerable, { starts: engineerStarts, declaration: projectDeclaration, shareLog, shareMemory, chairmanRows: chairmanRowsOf(offerHierarchy), emergencyRows: offerHierarchy?.emergencyRows, paced: primaryPaced }), branchesToReplace(rowBranches, branchPrs), offerHierarchy), ...unclaimableRowOrders(offerable, claimRefusals)); // #2845: the offer, and its refusal
   orders.push(...hierarchyOrders(offerHierarchy, { blocked, yielding, openRows, prs })); // #4524: what the hierarchy says to the chairman's reader and to the holders it was offered over
 
   // #2139: AHEAD OF BOTH BACKLOG SURVEYS AND BEHIND EVERY OFFER, because it is neither. It names ONE row
@@ -382,7 +384,8 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // in ONE place -- `START_CAUSES` is the whole statement of what "new work" means, and a cause added
   // without classifying it is caught by `work-gate.test.ts` rather than silently surviving a window.
   // #1325: LAST, over EVERY cause, because the PR causes come from six producers. With the flag on, an outside or chairman-authored pull request keeps its review.
-  const routed = ownerRouting ? withholdOutsideFollowUps(orders, prs, identities ?? declaredIdentities()) : orders;
+  // #1370: the rejected review on a dead owner's pull request goes to a fresh worker, after the withholding (which never touches a worker's pull request).
+  const routed = ownerRouting ? routeDeadOwnerRefusals(withholdOutsideFollowUps(orders, prs, identities ?? declaredIdentities()), prs) : orders;
   return drain ? routed.filter((o) => !START_CAUSES.includes(o.cause)) : routed;
 }
 
@@ -785,20 +788,30 @@ export function markOutageReads(orders: any[], outage: boolean): any[] {
  * nothing", from the primary scope and every other declared one (`others`' own `refused` already counts
  * each of ITS unread lanes by name, the same way `unreadLanes` reports them).
  */
-export function outageThisTick({ prs, readyRows, promotableRows, chairmanBlocked, openRows, claimedComments, offBoard, others }: {
+export function outageThisTick({ prs, readyRows, promotableRows, chairmanBlocked, openRows, claimedComments, offBoard, others, primaryRead = true }: {
         prs: any[] | null; readyRows: any[] | null; promotableRows: any[] | null; chairmanBlocked: any[] | null;
-        openRows: any[] | null; claimedComments: any[] | null; offBoard: any[] | null; others: { refused: string[]; }[];
+        openRows: any[] | null; claimedComments: any[] | null; offBoard: any[] | null; others: { refused: string[]; }[]; primaryRead?: boolean;
     }): boolean {
-  return sharedReadOutage(refusedReadCount([prs, readyRows, promotableRows, chairmanBlocked, openRows, claimedComments, offBoard])
+  // agent-org#1401: a primary the pacing SKIPPED has `null` tracker lanes BY DESIGN (`primaryLanes`), which is not a refusal and is not counted as one
+  const primaryLanes = primaryRead ? [promotableRows, chairmanBlocked, openRows] : [];
+  return sharedReadOutage(refusedReadCount([prs, readyRows, ...primaryLanes, claimedComments, offBoard])
     + others.reduce((n, tick) => n + tick.refused.length, 0));
 }
 
 /**
  * SAY WHICH LANES WENT UNREAD AND END THE TICK `PARTIAL` -- the orders already printed stay real, and none is dropped.
+ *
+ * `refused` and `paced` are the split `tickLanes` holds (agent-org#1414). A tick whose every unread lane was SKIPPED BY DESIGN (`paced`) says so and exits `PACED`,
+ * because "could not read" about a lane nobody asked is a fault that never clears; one refused lane keeps the `PARTIAL` wording and code, whatever else was paced.
  */
-export function exitPartial(unread: string[], delivered: number): never {
-  process.stderr.write(`PARTIAL: could not read ${unread.join(" and ")}. `
-    + `The ${delivered} order(s) above are real; ${unread.length === 1 ? "that lane was" : "those lanes were"} NOT examined and may hold work.\n`);
+export function exitPartial({ refused, paced }: { refused: string[]; paced: string[]; }, delivered: number): never {
+  const unread = [...refused, ...paced];
+  const lanes = `${unread.length === 1 ? "that lane was" : "those lanes were"} NOT examined and may hold work.`;
+  if (refused.length === 0) {
+    process.stderr.write(`PARTIAL: ${paced.length} lane(s) skipped by pacing, none refused: ${paced.join(" and ")}. The ${delivered} order(s) above are real; ${lanes}\n`);
+    process.exit(EXIT.PACED);
+  }
+  process.stderr.write(`PARTIAL: could not read ${unread.join(" and ")}. The ${delivered} order(s) above are real; ${lanes}\n`);
   process.exit(EXIT.PARTIAL);
 }
 
@@ -828,13 +841,13 @@ export function reportClearingDrops({ openRows, prs, closings, claimFacts }: Par
  * @param otherScopes the other repositories' lanes, already read this tick (#3566): their open lists are not asked again
  */
 export function claimStallsWithFacts(rows: Parameters<typeof claimStallsNow>[0], claimedComments: Parameters<typeof claimStallsNow>[1], prs: Parameters<typeof claimStallsNow>[2], otherScopes: ReturnType<typeof readOtherScopes>,
-  seams: Pick<NonNullable<Parameters<typeof claimStallsNow>[3]>, "tick" | "merged" | "elsewhere" | "log"> & { run?: (args: string[], repo?: string) => string; } = {},
+  seams: Pick<NonNullable<Parameters<typeof claimStallsNow>[3]>, "tick" | "merged" | "elsewhere" | "log"> & { run?: (args: string[], repo?: string) => string; openRowsPaced?: boolean; } = {},
   // #1183: the wait facts this tick read, so a holder's body `Waiting-for:` is read against the same facts the ready rows are
   waitFacts: import("../wait-condition.ts").WaitFacts | null = null): { claimStalls: ReturnType<typeof claimStallsNow>; claimFacts: import("../work-gate/claim-stall-tick.ts").ClaimFactsOfTick | null | undefined; } {
   let claimFacts: import("../work-gate/claim-stall-tick.ts").ClaimFactsOfTick | null | undefined;
-  const { run, ...stubs } = seams;
+  const { run, openRowsPaced = false, ...stubs } = seams;
   // agent-org#747: `trackers` is every OTHER declared tracker's claimed rows, from the lanes already read, so the stall pass evaluates their holders too
-  const claimStalls = claimStallsNow(rows, claimedComments, prs, { onFacts: (facts) => { claimFacts = facts; },
+  const claimStalls = claimStallsNow(rows, claimedComments, prs, { onFacts: (facts) => { claimFacts = facts; }, openRowsPaced,
     elsewhere: () => readElsewherePrs(undefined, undefined, otherScopes), trackers: () => otherTrackerClaims(otherScopes, run), waitFacts, ...stubs });
   return { claimStalls, claimFacts };
 }
@@ -995,10 +1008,13 @@ export function readChairmanPriorityOfOffer(rows: any[], openRows: any[] = [], r
 }
 
 /** #4524: `main`'s one call for the hierarchy -- the verified chairman rows (a read per labelled row, none when no row is) and the project's declared ranking. @param {any[]} rows @param {any[]} openRows #4800: the claimed rows are read too */
-export function offerHierarchyNow(rows: any[], openRows: any[], { run, stateDir = REVIEWER_STATE_DIR, now = Date.now(), emergency = readEmergencyPriorityOption() }: { run?: (args: string[]) => string; stateDir?: string; now?: number; emergency?: EmergencyPriorityOption; } = {}): OfferHierarchy {
+export function offerHierarchyNow(rows: any[], openRows: any[], { run, stateDir = REVIEWER_STATE_DIR, now = Date.now(), emergency = readEmergencyPriorityOption(), refusedOnce }: { run?: (args: string[]) => string; stateDir?: string; now?: number; emergency?: EmergencyPriorityOption; refusedOnce?: boolean; } = {}): OfferHierarchy {
   const { chairmanRows, ignored } = readChairmanPriorityOfOffer(rows, openRows, run);
+  // #1456: `CHAIRMAN_REFUSAL_FLAG` is a machinery flag: off, `hierarchyOrders` gets no ledger and tells each refusal as it did; `refusedOnce` is a caller's reading (a test passes it)
+  const refusalsOn = refusedOnce ?? machineryFlagOn(readReenqueueState(stateDir, () => undefined), CHAIRMAN_REFUSAL_FLAG);
   // #730: a label the chairman did not add is a ledger incident, written HERE, where the tick builds `ignored`, and not in `readChairmanPriority`, which the claim reads too
-  return { chairmanRows, ignored: recordIgnoredChairmanLabels({ ignored, repo: REPO, stateDir, now }), milestoneRanking: homeProjectDeclaration().offerMilestones, ...emergencyHierarchyNow(rows, openRows, { emergency, run, stateDir, now }) };
+  return { chairmanRows, ignored: recordIgnoredChairmanLabels({ ignored, repo: REPO, stateDir, now }), milestoneRanking: homeProjectDeclaration().offerMilestones, ...emergencyHierarchyNow(rows, openRows, { emergency, run, stateDir, now }),
+    refusals: refusalsOn ? { stateDir, now, answeredAt: (row, since) => chairmanRowAnsweredByCeo(row, since, run) } : undefined }; // #1456: read only for a row the gate refuses, by `hierarchyOrders`
 }
 
 /**

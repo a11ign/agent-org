@@ -46,7 +46,8 @@ const host = ({ reply = "", status = 0, headers = "" }: { reply?: string; status
   writeFileSync(join(root, "headers"), headers);
   const stub = join(root, "gh-real");
   writeFileSync(stub, ["#!/bin/sh",
-    `for a in "$@"; do if [ "$a" = -i ]; then cat "${root}/headers"; exit 0; fi; done`,
+    // the wrapper's probe is `api -i graphql ...`; the `-i` it puts AFTER `graphql` on a call of its own (agent-org#1395) is that call, answered as it is
+    `if [ "$2" = -i ]; then cat "${root}/headers"; exit 0; fi`,
     `{ printf 'ARGS'; for a in "$@"; do printf '<%s>' "$a"; done; printf '\\nCWD %s\\nIN ' "$PWD"; cat 2>/dev/null; printf '\\n--\\n'; } >> "${calls}"`,
     `st=$(sed -n 1p "${mode}"); sed -n '2,$p' "${mode}" >&2; exit "$st"`, ""].join("\n"), { mode: 0o755 });
   const env = { PATH: process.env.PATH ?? "", A11Y_GH_REAL: stub, GH_CONFIG_DIR: cfg, HERDR_WORKSPACE_ID: "w9", A11Y_GH_READ_CACHE: "off", A11Y_GH_LEDGER: join(cfg, "gh-calls.tsv") };

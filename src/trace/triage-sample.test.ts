@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { allocate, COST, drawTriageSample, Figures, MANAGERS, NO_CAUSE, parseArgs, renderProvenance, renderSheet, SHOWN } from "./triage-sample.ts";
+import { allocate, COST, drawTriageSample, type Figures, MANAGERS, NO_CAUSE, parseArgs, renderProvenance, renderSheet, SHOWN } from "./triage-sample.ts";
 
 const FROM = Date.parse("2026-10-07T00:00:00Z");
 const TO = Date.parse("2026-10-08T00:00:00Z");

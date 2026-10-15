@@ -275,7 +275,7 @@ test("#3535 (5) the read is counted in GH_READS as conditional on a listed worke
 test("#3535 the gate's `main` hands the follow-ups' closed claims to the orders: the read is not dropped between the wave and `decide`", () => {
   const main = workGateSource();
   assert.match(main, /const \{[^}]*\bclosedClaims\b[^}]*\} = readOpenRowFollowUps\(allOpen\)/, "read in the follow-ups' wave");
-  assert.match(main, /withClosedClaims\(claimStallsWithFacts\(openRowsRead, claimedComments, prs, otherScopes, \{\}, waitReads\?\.facts \?\? null\), closedClaims\)/, "and handed to the orders");
+  assert.match(main, /withClosedClaims\(claimStallsWithFacts\(openRowsRead, claimedComments, prs, otherScopes, \{ openRowsPaced: !primaryRead \}, waitReads\?\.facts \?\? null\), closedClaims\)/, "and handed to the orders");
   assert.match(main, /\.\.\.closedClaimsNow\(closedClaims, \{ trackerRepo: repoNow\(\) \}\)/, "which turns them into orders beside the open claims' own");
 });
 

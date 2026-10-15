@@ -321,8 +321,8 @@ test("#1286: a refused read returns null, an empty one returns [] -- and they ar
   assert.equal(readPrs(() => '{"message":"Bad credentials"}'), null);
 });
 
-test("#912: the exit contract keeps four states, and 0 is QUIET on purpose", () => {
-  assert.deepEqual(EXIT, { QUIET: 0, WORK: 1, CANNOT_ASK: 2, PARTIAL: 3 });
+test("#912: the exit contract keeps its states (PACED is PARTIAL's twin, agent-org#1414), and 0 is QUIET on purpose", () => {
+  assert.deepEqual(EXIT, { QUIET: 0, WORK: 1, CANNOT_ASK: 2, PARTIAL: 3, PACED: 4 });
   // THE POLARITY IS THE POINT. Under 0=QUIET the predictable misuse `if work-gate; then wake; fi` wakes
   // every session on every quiet tick -- impossible to miss for more than one tick. Under the opposite
   // polarity the same mistake sleeps silently through a rate limit, which is the 2026-09-08 ten-hour
@@ -330,6 +330,7 @@ test("#912: the exit contract keeps four states, and 0 is QUIET on purpose", () 
   assert.equal(EXIT.QUIET, 0, "flipping this makes a rate-limited gate look like a quiet queue");
   assert.notEqual(EXIT.CANNOT_ASK, EXIT.QUIET, "a refused read is never a quiet one");
   assert.notEqual(EXIT.PARTIAL, EXIT.QUIET, "a half-examined queue is never a quiet one");
+  assert.notEqual(EXIT.PACED, EXIT.QUIET, "a queue whose lanes were skipped by pacing is never a quiet one either: they were NOT examined");
 });
 
 // ---------------------------------------------------------------------------------------------------

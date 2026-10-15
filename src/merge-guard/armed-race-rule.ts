@@ -33,6 +33,11 @@
 // `merge-guard.ts`. Only asked when green: an armed-but-not-green PR never races (see `racesAnArmedMerge`
 // below), so a behind-by lookup there would be a round trip for a value nothing reads. `null` (could not
 // determine) folds into "does not race" the same fail-open direction as everything else here.
+//
+// REVIEW DECISION, #5526: a merge completes on `APPROVED`, and only there is the race real. `CHANGES_REQUESTED` and
+// `REVIEW_REQUIRED` cannot merge while `main` requires an approving review (a11ign#2022): the approval would have to
+// land, and the merge fire, inside the push window, which the APPROVED case already covers. An absent decision folds
+// into "does not race".
 import { REPO } from "../project-identity.ts";
 import { checkReasons } from "./checks-rule.ts";
 import { gh, lookup, lookupRequiredContexts, lookupCheckRuns } from "./lookups.ts";
@@ -44,13 +49,13 @@ import { gh, lookup, lookupRequiredContexts, lookupCheckRuns } from "./lookups.t
  * (or its absence) is where it would show.
  * @param {string} branchName
  * @param {{ run?: typeof gh, requiredContexts?: typeof lookupRequiredContexts, checkRuns?: typeof lookupCheckRuns }} [deps]
- * @returns {{ number: number | null, armed: boolean, green: boolean | null, behindBy: number | null } | null}
+ * @returns {{ number: number | null, armed: boolean, green: boolean | null, behindBy: number | null, reviewDecision?: string | null } | null}
  */
 export function lookupArmedPrStatus(branchName: string,
-  { run = gh, requiredContexts = lookupRequiredContexts, checkRuns = lookupCheckRuns }: { run?: typeof gh; requiredContexts?: typeof lookupRequiredContexts; checkRuns?: typeof lookupCheckRuns; } = {}): { number: number | null; armed: boolean; green: boolean | null; behindBy: number | null; } | null {
+  { run = gh, requiredContexts = lookupRequiredContexts, checkRuns = lookupCheckRuns }: { run?: typeof gh; requiredContexts?: typeof lookupRequiredContexts; checkRuns?: typeof lookupCheckRuns; } = {}): { number: number | null; armed: boolean; green: boolean | null; behindBy: number | null; reviewDecision?: string | null; } | null {
   return lookup(() => {
     const prs = JSON.parse(run(["pr", "list", "--repo", REPO, "--head", branchName, "--state", "open",
-      "--json", "number,autoMergeRequest,headRefOid"]));
+      "--json", "number,autoMergeRequest,headRefOid,reviewDecision"]));
     if (prs.length === 0) return { number: null, armed: false, green: false, behindBy: null };
     const pr = prs[0];
     const armed = pr.autoMergeRequest != null;
@@ -66,7 +71,10 @@ export function lookupArmedPrStatus(branchName: string,
       const value = JSON.parse(run(["api", `repos/${REPO}/compare/main...${pr.headRefOid}`])).behind_by;
       return typeof value === "number" ? value : null;
     }) : null;
-    return { number: pr.number, armed: true, green, behindBy };
+    // gh answers "no review requirement" as null or "" -- both are read as "", which is not APPROVED and so does not
+    // refuse (see racesAnArmedMerge). A key that is absent is no answer at all, and fails open like every other unknown here.
+    const reviewDecision = "reviewDecision" in pr ? (pr.reviewDecision ?? "") : null;
+    return { number: pr.number, armed: true, green, behindBy, reviewDecision };
   });
 }
 
@@ -92,11 +100,18 @@ export function lookupArmedPrStatus(branchName: string,
  * work when the network is down or `gh` is unauthenticated gets deleted within a day (CLAUDE.md already
  * records `A11Y_SKIP_VERIFY=1` reached for six times in one evening for exactly that reason).
  *
- * @param {{ armed: boolean, green: boolean | null, behindBy?: number | null } | null} status
+ * #5526: the review decision is part of the same race. A PR whose decision is CHANGES_REQUESTED or REVIEW_REQUIRED cannot
+ * merge while `main` requires an approval, so the push is the fix a reviewer asked for and it ALLOWS -- even armed, green
+ * and up to date. Only APPROVED, the decision a merge completes on, keeps refusing. An empty decision allows too: the row
+ * names APPROVED alone, and whether an empty decision (no review required) should refuse is a question for
+ * product-manager, not this change. An absent decision allows, as every unknown does here.
+ *
+ * @param {{ armed: boolean, green: boolean | null, behindBy?: number | null, reviewDecision?: string | null } | null} status
  * @returns {boolean}
  */
-export function racesAnArmedMerge(status: { armed: boolean; green: boolean | null; behindBy?: number | null; } | null): boolean {
+export function racesAnArmedMerge(status: { armed: boolean; green: boolean | null; behindBy?: number | null; reviewDecision?: string | null; } | null): boolean {
   if (!status) return false;
   if (!(status.armed && status.green === true)) return false;
-  return status.behindBy === 0;
+  if (status.behindBy !== 0) return false;
+  return status.reviewDecision === "APPROVED";
 }

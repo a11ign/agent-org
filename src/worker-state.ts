@@ -13,8 +13,9 @@
 //   2. the READING (`declarationReading`): is a declaration fresh, and does the condition it names still hold. PURE, and read by the gate with no model;
 //   3. the blocked-session instruction (`blockedToTell`): what a session herdr reports `blocked` is told, once per stall.
 //
-// A LEAF: only `node:fs` at load. The command's own reads (the project declaration, herdr, the host's state directory) are imported inside `main`,
+// A LEAF: only node builtins at load. The command's own reads (the project declaration, herdr, the host's state directory) are imported inside `main`,
 // because `claim-stall.ts` and the gate import this file for the reading and must not pay for them.
+import { execFileSync } from "node:child_process";
 import { mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import type { BlockerWriter } from "./ticket-port/port.ts";
@@ -267,13 +268,35 @@ export function blockedToTell(roster: { label: string; status: string }[], told:
 }
 
 /**
+ * agent-org#1412: THE LIMIT MENU, the screen Claude Code draws in place of a prompt when the allowance is spent. Its two options, as the row quotes them:
+ * `1. Stop and wait for limit to reset` and `3. Switch to usage credits`. Both must be on the screen, so a session that merely quotes one of them is not on it.
+ * A pane that could not be read shows no menu.
+ * @param {string | null} pane @returns {boolean}
+ */
+export function isLimitMenu(pane: string | null): boolean {
+  return pane !== null && /stop and wait for limit to reset/i.test(pane) && /switch to usage credits/i.test(pane);
+}
+
+/** The recent screen of a seat, or `null` when herdr cannot give it. */
+function paneOf(label: string): string | null {
+  try {
+    return execFileSync("herdr", ["--session", "org", "agent", "read", label, "--source", "recent", "--lines", "40"], { encoding: "utf8", timeout: 30_000 });
+  } catch {
+    return null;
+  }
+}
+
+/**
  * THE TICK'S SIDE OF IT: read who was told, send to who was not, remember exactly those that were sent. `send` throws for a pane herdr would not
  * take it from; that session is left OUT of the memory so the next tick tries again, and is named on `report` so it is not silent. A memory that
  * cannot be read is "told nobody" (a repeat instruction is a nuisance; a lost one is the stall this exists to end). Returns the sessions sent to,
  * and the `blocked` labels NOT told (not a worker, or a failed send), which the tick still reports as it always did.
  * @param {{ roster: {label: string, status: string}[], path: string, send: (label: string, text: string) => void, report?: (line: string) => void }} what
  */
-export function tellBlocked({ roster, path, send, report = () => {} }: { roster: { label: string; status: string }[]; path: string; send: (label: string, text: string) => void; report?: (line: string) => void }): { sent: string[]; untold: string[] } {
+export function tellBlocked({ roster: listing, path, send, report = () => {}, onLimitMenu = (label) => isLimitMenu(paneOf(label)) }: { roster: { label: string; status: string }[]; path: string; send: (label: string, text: string) => void; report?: (line: string) => void; onLimitMenu?: (label: string) => boolean }): { sent: string[]; untold: string[] } {
+  // agent-org#1412: A SEAT ON THE LIMIT MENU IS NOT A QUESTION. It waits on a choice the declare-or-decide text cannot answer, so it is neither told nor
+  // reported as untold: it is left to the tick that frees it (`freeLimitMenuSeats`, in wake.ts).
+  const roster = listing.filter((a) => !(a.status === "blocked" && onLimitMenu(a.label)));
   let before: string[] = [];
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8"));

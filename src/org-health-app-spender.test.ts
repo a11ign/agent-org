@@ -96,3 +96,46 @@ test("#4916: an ordinary account is read as it always was, and an unreadable hos
   assert.match(ledgerSpender(SCHEDULER_BOT, refused) ?? "", /host declaration that names its role could not be read \(no host\.json\), so its spender is UNREADABLE/);
   assert.match(ledgerSpender("a11ign-ai-workers", refused) ?? "", /^a11ign-ai-workers's last hour \(2 floor points\)/, "CONTROL: an account needs no declaration");
 });
+
+// --- agent-org#1395: THE SENTENCE ACCOUNTS FOR THE POOL, WITHIN 10% --------------------------------------------------------------------------------------------------------
+//
+// MEASURED 2026-10-13 (`a11ign-scheduler[bot]`, tripped at 20:08Z): the pool read 5 of 5000 and this sentence read 1,557 floor points, 30%, because no line carried a `cost`.
+// The lines now carry the pool's own counter (`host/gh`, 11th and 12th fields), and the sentence names the points the counter moved, by whom it could say.
+
+/** One ledger line with the pool's counter after it (twelve fields); `used` left out is a call whose response the wrapper did not ask the counter of. */
+const counted = (account: string, { ago, command = "api graphql", caller = "/usr/bin/node /x/src/work-gate.ts", used }: { ago: number; command?: string; caller?: string; used?: number }) =>
+  [minutesAgo(ago), account, "graphql", "", "0", command, "-", caller, "-", "-", used === undefined ? "-" : String(used), used === undefined ? "-" : "1791925000"].join("\t");
+
+test("agent-org#1395: a pool that spent 4,900 points is accounted for by a sentence of 4,900, and the floor-only ledger of the same calls is not", () => {
+  const lines = [
+    counted("app:scheduler", { ago: 30, used: 1 }),                                  // the window's first reading: a baseline
+    counted("app:scheduler", { ago: 25, used: 1801 }),                               // 1,800 read
+    counted("app:scheduler", { ago: 20, command: "pr list", caller: TICK }),         // a call whose head was not asked for
+    counted("app:scheduler", { ago: 15, used: 3500 }),                               // 1,699 between the `pr list` and this call: shared, 850 and 849
+    counted("app:scheduler", { ago: 10, used: 4800 }),                               // 1,300 read
+    counted("app:scheduler", { ago: 5, used: 4900 }),                                // 100 read
+  ];
+  ledgerOf(WORKERS_DIR, lines);
+  ledgerOf(LEADS_DIR, []);
+  const POOL = { account: SCHEDULER_BOT, resource: "graphql", remaining: 100, limit: 5000, resetAt: "2026-10-13T21:00:00Z" };
+  const USED = POOL.limit - POOL.remaining;
+  const detail = poolLowReading({ pools: [POOL] }).detail.split(". Spender: ")[1];
+  const said = Number(/\((\d+) points by the pool's own counter/.exec(detail)?.[1]);
+  assert.ok(Math.abs(said - USED) <= USED * 0.1, `the sentence names ${said} of the pool's ${USED} used points, within 10%: ${detail}`);
+  assert.match(detail, /\(4900 points by the pool's own counter: 3200 read off it, 1699 shared between calls it was not read for, 1 floor, read from app:scheduler ledger lines\): top caller work-gate\.ts \[api graphql\], 4051 points \(83%\)$/);
+  // THE CONTROL: the same six calls as the ledger was before the counter, nine fields
+  ledgerOf(WORKERS_DIR, lines.map((l) => l.split("\t").slice(0, 9).join("\t")));
+  const before = poolLowReading({ pools: [POOL] }).detail.split(". Spender: ")[1];
+  assert.match(before, /\(6 floor points, read from app:scheduler ledger lines\)/, "CONTROL: without the counter the sentence is the floor, and says so: 6 of 4900");
+  assert.ok(Math.abs(6 - USED) > USED * 0.1, "CONTROL: and that is not within 10%, which is what the row was opened for");
+});
+
+test("agent-org#1395: a movement no ledgered call accounts for is said, and is not handed to a call", () => {
+  ledgerOf(WORKERS_DIR, [
+    counted("app:scheduler", { ago: 20, used: 100 }),
+    [minutesAgo(10), "app:scheduler", "graphql", "3", "0", "api graphql", "-", "/usr/bin/node /x/src/work-gate.ts", "-", "-", "110", "1791925000"].join("\t"),
+  ]);
+  ledgerOf(LEADS_DIR, []);
+  const detail = poolLowReading({ pools: [{ account: SCHEDULER_BOT, resource: "graphql", remaining: 100, limit: 5000, resetAt: "2026-10-13T21:00:00Z" }] }).detail.split(". Spender: ")[1];
+  assert.match(detail, /\(4 points by the pool's own counter: 3 read off it, 0 shared between calls it was not read for, 1 floor, and 7 more that no ledgered call accounts for, read from app:scheduler ledger lines\): top caller work-gate\.ts \[api graphql\], 4 points \(100%\)$/);
+});

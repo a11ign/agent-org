@@ -82,6 +82,16 @@ export function primaryUnread(pacing: Pacing, primaryRead: boolean): string[] {
   return ["the primary's tracker lanes (promotable rows, chairman-blocked rows, open rows)", ...(pacing.paced ? [] : ["the org-health reads"])];
 }
 
+/**
+ * (agent-org#1401) The primary's tracker lanes that were ASKED and REFUSED this tick, named for `unreadLanes` the way every refused read is. A lane the pacing
+ * skipped is `primaryUnread`'s, and a `null` from a skipped primary is not a refusal: nothing was asked, so nothing was refused. Nothing when the primary was not read.
+ */
+export function primaryRefusedLanes(lanes: { promotableRows: unknown; chairmanBlocked: unknown; openRowsRead: unknown; }, primaryRead: boolean): string[] {
+  if (!primaryRead) return [];
+  return [...(lanes.promotableRows === null ? ["the promotable rows"] : []), ...(lanes.chairmanBlocked === null ? ["the chairman-blocked rows"] : []),
+    ...(lanes.openRowsRead === null ? ["the open rows"] : [])];
+}
+
 /** `orgHealth` is skipped below the reserve, and on an event-gated tick whose primary lanes were not read (`primaryDue`). */
 export function orgHealthSkipped(pacing: Pacing, primaryRead: boolean): boolean {
   return pacing.paced || !primaryRead;

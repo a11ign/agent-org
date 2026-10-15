@@ -1080,17 +1080,36 @@ export function failureReport(error: unknown): { exitCode: number; text: string;
 }
 
 /**
- * agent-org#1262: THE REFUSALS THAT ARE THE CLAIM GUARD WORKING, by the text each guard prints. A refusal matching one is `claim-guard-held`, so it is no class and no repeat; the
- * worktree cap (#1036), a B4 overlap (`overlaps #N`, `overlaps the Region of #N`), a tree or branch that already exists, a read the rate limit refused, and a checkout whose copy of
- * the rule is behind the release the host runs (`stale-rule-guard.ts`, #1014: the guard refusing from a stale copy is the guard working, a11ign#5282). Everything else is a
- * FAILURE of the claim path (an unreadable read that is not a rate limit, B4 not askable, an unknown tracker key) and stays `claim-refused`.
- * A NEW guard refusal counts as a failure until it is named here: the default errs toward the signal, never away from it.
+ * THE REFUSAL TEXTS THIS FILE CAN PRINT, each listed once beside its kind, by the text it prints (agent-org#1262, and agent-org#1453 for the last two guards).
+ * A refusal matching a `claim-guard-held` entry is the claim guard WORKING: no class and no repeat. The worktree cap (#1036), a B4 overlap (`overlaps #N`), a tree or branch
+ * that already exists, a read the rate limit refused, a checkout whose copy of the rule is behind the release the host runs (`stale-rule-guard.ts`, #1014, a11ign#5282), a
+ * claim on a row that another session holds (`is already claimed by`), a claim on a row whose `Waiting-for:` is not yet true (#1281), and a copy of `src/` run from
+ * outside any git work tree (agent-org#1458: a scratch copy is the guard unable to ask, not a failed claim). A refusal matching a
+ * `claim-refused` entry is a FAILURE of the claim path: an unreadable read, B4 not askable, an unknown tracker key, a checkout whose rule cannot be asked about from a git history.
+ * The entries are matched in order and the guard entries come first, so a rate-limited read is held and not a failure.
+ * A refusal no entry matches still counts as `claim-refused` at runtime: the default errs toward the signal, never away from it. `row-claim-refusal-kind.test.ts` is what makes
+ * an unlisted refusal a red build, by reading every refusal literal this file builds against this list.
  */
-const GUARD_HELD_REFUSALS: readonly RegExp[] = [/live worktrees, at or over the cap of/, /ALREADY EXISTS/, /\boverlaps (?:the Region of )?#\d+/, /\brate limit\b/i, /BEHIND THE RELEASE THE HOST RUNS/];
+export const CLAIM_REFUSAL_TEXTS: readonly { pattern: RegExp; kind: string; }[] = [
+  { pattern: /live worktrees, at or over the cap of/, kind: CLAIM_GUARD_HELD_KIND },
+  { pattern: /ALREADY EXISTS/, kind: CLAIM_GUARD_HELD_KIND },
+  { pattern: /\boverlaps (?:the Region of )?#\d+/, kind: CLAIM_GUARD_HELD_KIND },
+  { pattern: /\brate limit\b/i, kind: CLAIM_GUARD_HELD_KIND },
+  { pattern: /BEHIND THE RELEASE THE HOST RUNS/, kind: CLAIM_GUARD_HELD_KIND },
+  { pattern: /is already claimed by /, kind: CLAIM_GUARD_HELD_KIND },
+  { pattern: /`Waiting-for: .+` is not yet true/, kind: CLAIM_GUARD_HELD_KIND },
+  { pattern: /^CANNOT ASK whether this checkout's copy of the rule is current: .* is not inside a git work tree/, kind: CLAIM_GUARD_HELD_KIND },
+  { pattern: /^row-claim: could not read issue #/, kind: CLAIM_REFUSED_KIND },
+  { pattern: /^B4 COULD NOT BE ASKED/, kind: CLAIM_REFUSED_KIND },
+  { pattern: /^no tracker with key `/, kind: CLAIM_REFUSED_KIND },
+  { pattern: /^lost a race to /, kind: CLAIM_REFUSED_KIND },
+  { pattern: /^a claim in tracker .* creates its worktree from that repository's clone/, kind: CLAIM_REFUSED_KIND },
+  { pattern: /^CANNOT ASK whether (?:this checkout's copy|the INSTALLED copy) of the rule is current/, kind: CLAIM_REFUSED_KIND },
+];
 
 /** @param {string} refusal the whole refusal text @returns {string} the failure-ledger kind it is written under */
 function claimRefusalKind(refusal: string): string {
-  return GUARD_HELD_REFUSALS.some((pattern) => pattern.test(refusal)) ? CLAIM_GUARD_HELD_KIND : CLAIM_REFUSED_KIND;
+  return CLAIM_REFUSAL_TEXTS.find(({ pattern }) => pattern.test(refusal))?.kind ?? CLAIM_REFUSED_KIND;
 }
 
 /**

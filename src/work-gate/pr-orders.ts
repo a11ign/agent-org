@@ -34,7 +34,12 @@ export { DEPENDENCY_BOT_LOGIN } from "../dependency-bot-login.ts";
 // #2619 (child 3d of #69): the `session:` prefix and the `blocked` label, moved to the project's
 // declared vocabulary. (The `"ready"` action `kind` a few lines below is `gh pr ready`'s draft-status
 // flip -- a built-in GitHub PR field, not this project's `ready` row label -- so it stays a literal.)
-import { SESSION_PREFIX, BLOCKED_LABEL } from "../project-vocabulary.ts";
+import { SESSION_PREFIX, BLOCKED_LABEL, BACKLOG_LABEL, OUT_OF_RELEASE_LABEL } from "../project-vocabulary.ts";
+import { PROJECT_NUMBER, PROJECT_OWNER } from "../board-snapshot-scope.ts";
+import { createRow } from "../ticket-port/approved-unqueued-reads.ts";
+import { readRowsByLabel } from "../ticket-port/rows-by-label.ts";
+import { ensureTriageLabel } from "../ticket-port/outside-idle-writes.ts";
+import { boardFiledRow } from "../ticket-port/board-filed-row.ts";
 import { labelsOf, sessionOf, conflictStateOf, CONFLICT_STATE, reviewStateOf, BLOCKING_REVIEW_STATES, checksSettledGreen, conclusionOf, stillRunning, anyChecksRed, requiredCheckNames,
   blockingChecks, reviewableHead, reviewWait, verdictAmong, awaitingEvidence, AWAITING_EVIDENCE_LABEL,
   AWAITING_EVIDENCE_QUIET_HOURS, AWAITING_EVIDENCE_QUIET_MS, HOUR_MS, REVIEW_STATE, CHAIRMAN_LOGINS } from "../work-gate.ts";
@@ -1337,6 +1342,38 @@ function toDependencyBotWorker(order: any) {
 }
 
 /**
+ * agent-org#1370: WITH THE FLAG ON, A REFUSAL (`pr-review-blocked`) ON A PULL REQUEST WHOSE OWNER IS GONE (`ownerOfPr` reads `owner-gone`) is ordered to
+ * `DEPENDENCY_BOT_WORKER_SESSION` (the engineers pool, the same pool as the dependency bot's, #1368), not to the dead session and not to `product-manager`
+ * (`DEAD_OWNER_FALLBACK`), where a fresh worker takes the branch and the row over. The refusal's prompt is kept, with the label's ownership sentence taken out
+ * (`toFreshWorker`) and the refusing review's words added: the fresh worker must act on those. The reroute is after `withholdOutsideFollowUps`, which never withholds a worker's pull request.
+ * PURE. The flag off, nothing is rerouted and every order stays as it was.
+ * @param orders every order `decide` has made, in the order it made them
+ * @param prs the open pull requests, which say who owns each one
+ */
+export function routeDeadOwnerRefusals(orders: any[], prs: any[]): any[] {
+  const gone = new Map(prs.filter((pr) => ownerOfPr(pr).source === "owner-gone").map((pr) => [`pr-${subjectRef(pr.repoKey, pr.number)}`, pr]));
+  return orders.map((order) => (gone.has(order.subject) && order.cause === "pr-review-blocked" ? toFreshWorker(order, gone.get(order.subject)) : order));
+}
+
+/**
+ * agent-org#1370: the refusal addressed to a fresh worker. Its `causeKey` moves with the session (#2001). Its prompt says why the worker is new, names the
+ * branch it takes up, drops the sentence that says the rework is the LABEL's (the label names the ended session), and carries the refusing review's words.
+ */
+function toFreshWorker(order: any, pr: any) {
+  const { session, causeKey, prompt, ...rest } = order;
+  const review = [...(pr.reviews ?? [])].reverse().find((r: any) => r?.state === "CHANGES_REQUESTED");
+  const findings = typeof review?.body === "string" && review.body.trim() !== ""
+    ? `The refusing review's words:\n${review.body.trim()}`
+    : "The refusing review carries no body in this read: read it on the pull request before the rework.";
+  return {
+    ...rest, session: DEPENDENCY_BOT_WORKER_SESSION, causeKey: causeKey.replace(`${session}/`, `${DEPENDENCY_BOT_WORKER_SESSION}/`),
+    prompt: `Its session \`${session}\` has ENDED and nobody holds the row this pull request closes, so this rework is a FRESH worker's: take up `
+      + `this pull request's branch \`${pr.headRefName}\` and its row, and act on the refusal below as the reviewer wrote it.\n`
+      + `${prompt.replace(/It carries your session label, so [^.]*\.\s*/, "")}\n${findings}`,
+  };
+}
+
+/**
  * agent-org#1325: the pull requests the flag orders for their review only, as `subjectRef`s: an OUTSIDE one (`reviewTrustOf`) and one the chairman
  * authored. `withholdOutsideFollowUps` matches them on an order's subject; `decide` also drops them from `reviewBlocked`'s population BEFORE the
  * `pr-review-blocked` set order is built, because that one order names several pull requests under the subject `pr-review-blocked` and no subject
@@ -1344,6 +1381,88 @@ function toDependencyBotWorker(order: any) {
  */
 export function reviewOnlyRefs(prs: any[], declared: DeclaredIdentities): Set<string> {
   return new Set(prs.filter((pr) => reviewTrustOf(pr, declared) === OUTSIDE || isChairmanAuthoredPr(pr)).map((pr) => subjectRef(pr.repoKey, pr.number)));
+}
+
+/**
+ * agent-org#1369: an OUTSIDE pull request idle this long files ONE triage row and wakes no session. #1325 orders such a pull request for its review
+ * only, so nothing else would ever move it, and the row is the orchestrator's to triage. Literal milliseconds: this file is leaf-shaped (see the header).
+ */
+export const OUTSIDE_IDLE_MS = 7 * 24 * 60 * 60 * 1000;
+/** The label a triage row carries. A row is found again by the marker in its body, which is what makes the second tick file nothing. */
+export const OUTSIDE_IDLE_LABEL = "outside-pr-idle";
+
+type GhRun = (args: string[]) => string;
+
+/** The outside pull requests last updated `OUTSIDE_IDLE_MS` or more before `nowMs`. An `updatedAt` that does not parse is NOT idle: nothing is accused on a read that did not say. */
+export function outsideIdlePrs(prs: any[], declared: DeclaredIdentities, nowMs: number): any[] {
+  return prs.filter((pr) => {
+    if (reviewTrustOf(pr, declared) !== OUTSIDE) return false;
+    const touched = Date.parse(String(pr?.updatedAt ?? ""));
+    return Number.isFinite(touched) && nowMs - touched >= OUTSIDE_IDLE_MS;
+  });
+}
+
+/**
+ * The row for one idle pull request. The marker keys the EPISODE, the `updatedAt` that made it idle: a second tick reads the same idleness and finds
+ * the row, while a touch followed by another idle week is a new episode and a new row.
+ */
+export function outsideIdleTriage(pr: any): { marker: string; title: string; body: string } {
+  const ref = subjectRef(pr.repoKey, pr.number);
+  const marker = `<!-- ${OUTSIDE_IDLE_LABEL}:${ref}@${pr.updatedAt} -->`;
+  const body = [
+    marker,
+    `Outside pull request ${ref} (https://github.com/${pr.repo}/pull/${pr.number}) has not been updated since ${pr.updatedAt}.`,
+    "",
+    "An outside pull request is ordered for its review only (`prs.ownerRouting`), so no session will move it. This row is for the orchestrator to triage: close it, hand it back, or find it a reviewer.",
+    "",
+    "Filing this row woke no session.",
+  ].join("\n");
+  return { marker, title: `Outside PR ${ref} idle for 7 days: triage`, body };
+}
+
+/** The bodies of the triage rows, open and closed: a closed row still says its episode was filed, so it is not filed again. Throws when `gh` refuses. */
+export function readOutsideIdleBodies(run: GhRun): string[] {
+  return (["OPEN", "CLOSED"] as const).flatMap((state) =>
+    readRowsByLabel({ label: OUTSIDE_IDLE_LABEL, state, select: "number body", run }).map((row) => String(row.body ?? "")));
+}
+
+/**
+ * Files one triage row for each outside pull request idle at `nowMs` whose episode has no row yet, and returns how many it filed. OFF files nothing and
+ * reads nothing. A read that refuses files nothing and is logged, so the next tick retries; a board that refuses is logged, and the row stays filed.
+ */
+export function fileOutsideIdleTriage(prs: any[], { declared, nowMs, run, log, enabled, readFiled = readOutsideIdleBodies }: {
+  declared: DeclaredIdentities; nowMs: number; run: GhRun; log: (line: string) => void; enabled: boolean; readFiled?: (run: GhRun) => string[];
+}): number {
+  if (!enabled) return 0;
+  const idle = outsideIdlePrs(prs, declared, nowMs);
+  if (idle.length === 0) return 0;
+  let filed: string[];
+  try {
+    filed = readFiled(run);
+  } catch (error) {
+    log(`outside-pr-idle: could not read the triage rows (${String((error as Error).message).split("\n")[0]}); the next tick retries\n`);
+    return 0;
+  }
+  let count = 0;
+  for (const pr of idle) {
+    const row = outsideIdleTriage(pr);
+    if (filed.some((body) => body.includes(row.marker))) continue;
+    let number: number;
+    try {
+      ensureTriageLabel({ repo: REPO, label: OUTSIDE_IDLE_LABEL, description: "An outside pull request idle for 7 days", run });
+      number = createRow({ repo: REPO, title: row.title, labels: [OUTSIDE_IDLE_LABEL], body: row.body, run });
+    } catch (error) {
+      log(`outside-pr-idle: could not file the row for ${row.marker} (${String((error as Error).message).split("\n")[0]}); the next tick retries\n`);
+      continue;
+    }
+    count++;
+    try {
+      boardFiledRow({ repo: REPO, number, owner: PROJECT_OWNER, projectNumber: PROJECT_NUMBER, status: "Backlog", labels: [BACKLOG_LABEL, OUT_OF_RELEASE_LABEL], run });
+    } catch (error) {
+      log(`outside-pr-idle: filed #${number} but could not board it (${String((error as Error).message).split("\n")[0]})\n`);
+    }
+  }
+  return count;
 }
 
 /**

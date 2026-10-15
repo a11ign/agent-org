@@ -142,7 +142,11 @@ const TODAYS_TEXT = {
 // a11ign/agent-org#1006 (a11ign#4777) MOVED IT, deliberately: the token check accepts a dotted installation token (GitHub's contain `.`), and an incident names the first stderr line and the exit status. Same staleness, same remedy.
 // a11ign/agent-org#1347 MOVED IT AGAIN, deliberately: a reviewer's call whose App token cannot be minted is REFUSED (exit 1, the incident on stderr) and no longer
 // falls back to the account; the recorded host declares no reviewer app, so the refusal is inert here. Same staleness, same remedy.
-const TODAYS_GH_WRAPPER = "d03a53d65c8f3550d92219d864d4fcc6d3405302e551c2113385d35e6c124be2";
+// agent-org#1395 (a11ign#928) MOVED IT AGAIN, deliberately: an `api graphql` call is asked with `-i` and the pool's own counter (`X-Ratelimit-Used`/`-Reset`) is read off the
+// response head and written as the ledger line's 11th and 12th fields; the head is taken out of the copy before the caller reads it. Same staleness, same remedy.
+// agent-org#1399 MOVED IT AGAIN, deliberately: the reviewer's refusal sits behind `AGENT_ORG_REVIEWER_REFUSAL`, which ships OFF, so a failed mint falls back to the account
+// unless a reviewer instance sets it; the recorded host declares no reviewer app, so the switch is inert here. Same staleness, same remedy.
+const TODAYS_GH_WRAPPER = "57118e0a8d163adb169223b767f4e321c36538da749be9c6014246bab3727c30";
 // #2896 MOVED THIS ONE, deliberately: the recorded host's header says `pnpm run host:install` / `pnpm run host:check` where it said `npm run`.
 const TODAYS_LEADS_LIST = "dbca070c4bb7934ff1e9cdc9505f9edee638d98fcff10963b18d5d3a743770a2";
 

@@ -93,8 +93,11 @@ function host(wrapper = WRAPPER) {
   const reached = join(root, "reached");
   const stub = join(root, "gh-real");
   // the stub's stdout names the token it was handed, so a call that reached it is told apart by what it printed and by the file
-  writeFileSync(stub, ["#!/bin/sh", `echo "token=\${GH_TOKEN:-none} args=$*" >> "${reached}"`,
-    `echo "stub: token=\${GH_TOKEN:-none} args=$*"`, `exit \${STUB_STATUS:-0}`, ""].join("\n"), { mode: 0o755 });
+  writeFileSync(stub, ["#!/bin/sh", // (agent-org#1395) the wrapper asks an `api graphql` call for its response head (`-i`, to read the pool's counter) and takes the head out again; the stub
+    // answers with the args the CALLER gave, so the `-i` is not among them and "reaches GitHub as given" still reads the caller's own argv
+    `args=$(printf '%s' "$*" | sed 's/^api graphql -i /api graphql /')`,
+    `echo "token=\${GH_TOKEN:-none} args=$args" >> "${reached}"`,
+    `echo "stub: token=\${GH_TOKEN:-none} args=$args"`, `exit \${STUB_STATUS:-0}`, ""].join("\n"), { mode: 0o755 });
   const minter = join(root, "mint.sh");
   writeFileSync(minter, ["cat > /dev/null", `[ -n "$MINT_FAIL" ] && { echo "$MINT_FAIL" >&2; exit 1; }`,
     `echo "$(( $(date +%s) + 3600 )) $MINT_TOKEN" > "$A11Y_APP_TOKEN_DIR/$1.token"`, `printf %s "$MINT_TOKEN"`, ""].join("\n"));
