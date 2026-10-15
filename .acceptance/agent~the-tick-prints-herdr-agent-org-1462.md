@@ -16,4 +16,8 @@ Closes a11ign/agent-org#1462
 
 Row: a11ign/agent-org#1462 (done-when 1 and 2 here, done-when 3 after merge; see the note above).
 
+Flag: none -- the old behaviour is the defect: the inherited stderr printed each ended seat's refusal to the tick's journal, so a flag would keep that print on for the window it is gated.
+Health-signals: claims-refused, wakes-held
+Revert: revert this PR; the probes go back to inheriting stderr, with no state to undo.
+
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
