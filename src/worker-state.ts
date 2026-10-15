@@ -18,7 +18,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { decidedBy } from "./decided-by.ts";
+import { MANAGER_SEATS, decidedBy } from "./decided-by.ts";
 import type { BlockerWriter } from "./ticket-port/port.ts";
 import { TRACKER, githubTicketAdapter } from "./ticket-port/github-adapter.ts";
 
@@ -336,12 +336,6 @@ export type RowFact = { state: "OPEN" | "CLOSED"; labels: string[]; comments?: R
 /** One comment on a row, as `gh issue view --json comments` reads it: what the ruling check needs (`rulingOn`) and no more. */
 export type RowComment = { id: string; url: string; body: string; createdAt: string };
 
-/**
- * The seats whose comment is a RULING on a row (agent-org#1493). A copy of `MANAGER_SEATS` in `pr-hold-state.ts`, which this leaf does not load:
- * `worker-state.test.ts` pins the two equal, so the copy cannot drift.
- */
-export const RULING_SEATS: readonly string[] = Object.freeze(["orchestrator", "product-manager", "ceo"]);
-
 /** Reads one row of one repository, or `null` when that repository has no such row. A read that could not be made THROWS: it is not "no such row". */
 export type RowLook = (repo: string, number: number) => RowFact | null;
 
@@ -422,10 +416,12 @@ export function ghRowLook(gh: Gh): RowLook {
       throw err;
     }
     const parsed = JSON.parse(out) as { state: string; labels?: { name: string }[]; comments?: { id: string; url: string; body: string; createdAt: string }[] };
+    // A reply with no comments cannot answer the ruling check, and "no comments" would read as "no ruling": so it THROWS (the row is unreadable, nothing is labelled).
+    if (!Array.isArray(parsed.comments)) throw new Error(`gh issue view of #${number} of ${repo} carried no comments field, so no ruling can be read`);
     return {
       state: parsed.state === "OPEN" ? "OPEN" : "CLOSED",
       labels: (parsed.labels ?? []).map((label) => label.name),
-      comments: (parsed.comments ?? []).map(({ id, url, body, createdAt }) => ({ id, url, body, createdAt })),
+      comments: parsed.comments.map(({ id, url, body, createdAt }) => ({ id, url, body, createdAt })),
     };
   };
 }
@@ -467,7 +463,7 @@ export function applyBlocked(declaration: Declaration, { gh, tracker, answerPref
 /**
  * THE RULING ALREADY GIVEN TO THIS REASON (agent-org#1493). A `blocked` repeat with the reason a manager has ruled on writes no label and no
  * comment: "a ruling is not answered by a repeat", and the label is the contract, so putting it back after the answer reverses the answer with no
- * new fact. A ruling is the row's NEWEST comment by a seat in {@link RULING_SEATS} (its last `decided-by` line names the seat), and it counts only
+ * new fact. A ruling is the row's NEWEST comment by a manager seat (`MANAGER_SEATS`, its last `decided-by` line names the seat), and it counts only
  * when it is newer than the worker's own LAST `BLOCKED` comment with the same reason from the same session. `null` otherwise, so a first declaration,
  * a different reason, and a repeat no manager has answered are all declared as before.
  * @param {RowComment[]} comments @param {Declaration} declaration @returns {RowComment | null}
@@ -478,7 +474,7 @@ export function rulingOn(comments: RowComment[], declaration: Declaration): RowC
   const own = comments.filter((comment) => comment.body.split("\n")[0] === header);
   if (own.length === 0) return null;
   const since = Math.max(...own.map(at));
-  const seated = comments.filter((comment) => RULING_SEATS.includes(decidedBy(comment.body) ?? ""));
+  const seated = comments.filter((comment) => MANAGER_SEATS.includes(decidedBy(comment.body) ?? ""));
   const newest = seated.reduce<RowComment | null>((latest, comment) => (latest === null || at(comment) > at(latest) ? comment : latest), null);
   return newest !== null && at(newest) > since ? newest : null;
 }

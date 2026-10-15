@@ -140,7 +140,7 @@ function declareAtBound(session: string, claim: { key: string; row: number }, se
     if ("refused" in resolved) return resolved.refused.why;
     const tracker = resolved.declaration.repo as string;
     const writer = githubTicketAdapter({ run: seams.gh, scope: tracker });
-    const applied = applyBlocked(resolved.declaration, { gh: seams.gh, tracker, answerPrefix: seams.answerPrefix, writer });
+    const applied = applyBlocked(resolved.declaration, { gh: seams.gh, tracker, answerPrefix: seams.answerPrefix, writer, comments: resolved.comments });
     writeDeclaration(`${seams.stateDir}/${WORKER_STATE_DIR}`, applied.declaration);
     return null;
   } catch (err: any) {

@@ -32,7 +32,7 @@ import { SESSION_PREFIX } from "./project-vocabulary.ts";
 import { IDLE_STATUSES } from "./idle-claimant.ts";
 import { listingIsComplete } from "./herdr-agents.ts";
 import { subjectMention, subjectRef } from "./review-attribution.ts";
-import { decidedBy } from "./decided-by.ts";
+import { MANAGER_SEATS, decidedBy } from "./decided-by.ts";
 
 export type Wait = import("./wait-condition.ts").Wait;
 export type WaitFacts = import("./wait-condition.ts").WaitFacts;
@@ -276,9 +276,6 @@ export type HolderOrder = { session: string; cause: string; subject: string; dis
   fallback?: string; fallbackOnlyIfAbsent?: boolean; fallbackPrompt?: string };
 
 // --- A HOLD-REMINDER ORDER QUOTES THE MANAGER'S DIRECTION ON THE PULL REQUEST (agent-org#1397) ---------------------------------------------------------------------------
-
-/** The seats that decide for the org. Their comments are told apart by the `decided-by` marker, because one App serves all three (`lane-ownership.ts`). */
-export const MANAGER_SEATS: readonly string[] = Object.freeze(["orchestrator", "product-manager", "ceo"]);
 
 /**
  * The managers App's logins and the leads' account: `ROLE_LOGIN.ceo` in `lane-ownership.ts`. Copied, not imported: that module loads the project's declaration

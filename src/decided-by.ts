@@ -13,3 +13,6 @@ export function decidedBy(body: unknown): string | null {
   const marks = [...String(body ?? "").matchAll(/<!--\s*decided-by:\s*([A-Za-z0-9._-]+)(?:\s+run:\s*\S+)?\s*-->/g)];
   return marks.at(-1)?.[1] ?? null;
 }
+
+/** The seats that decide for the org. Their comments are told apart by the `decided-by` marker, because one App serves all three (`lane-ownership.ts`). */
+export const MANAGER_SEATS: readonly string[] = Object.freeze(["orchestrator", "product-manager", "ceo"]);

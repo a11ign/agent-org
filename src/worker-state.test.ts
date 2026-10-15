@@ -23,10 +23,10 @@ import { TRACKER } from "./ticket-port/github-adapter.ts";
 import type { BlockerWriter, ItemRef } from "./ticket-port/port.ts";
 import {
   BLOCKED_TOLD_FILE, DECLARED_STATES, DEFAULT_ANSWERER, WORKER_STATE_DIR, applyBlocked, blockedInstruction, blockedToTell, declarationReading,
-  RULING_SEATS, ghRowLook, lastDeliveredTo, main, parseDeclaration, readDeclarations, resolveBlockedRow, rulingOn, splitArgs, tellBlocked, writeDeclaration, type ClaimContext,
+  ghRowLook, lastDeliveredTo, main, parseDeclaration, readDeclarations, resolveBlockedRow, rulingOn, splitArgs, tellBlocked, writeDeclaration, type ClaimContext,
   type Declaration, type RowComment, type RowFact, type RowLook,
 } from "./worker-state.ts";
-import { MANAGER_SEATS } from "./pr-hold-state.ts";
+import { MANAGER_SEATS } from "./decided-by.ts";
 
 const MIN = 60_000;
 const T0 = Date.parse("2026-10-10T09:00:00Z");
@@ -405,7 +405,6 @@ test("NEGATIVE CONTROLS: the ruling stops ONLY the repeat it answers: a differen
 });
 
 test("`rulingOn` takes every manager seat's marker as a ruling, and the newest manager comment decides (twin: a newer comment by another seat is still the manager's)", () => {
-  assert.deepEqual([...RULING_SEATS], [...MANAGER_SEATS], "the copy of the seats is the manager seats of pr-hold-state.ts");
   for (const seat of MANAGER_SEATS) {
     const ruling = rulingOn([blockedComment(SESSION_460, REASON, OWN_AT, 1), seatComment(seat, RULED_AT, 2)], blockedDeclaration());
     assert.equal(ruling?.id, "IC_2", `${seat} is a manager seat, so its comment is a ruling`);
@@ -675,6 +674,8 @@ test("no row of that number, and a row that could not be read, are REFUSED by na
   const refusal = refusalNamed(throwing);
   assert.equal(refusal?.refused, "unreadable-row");
   assert.ok(refusal?.why.includes("HTTP 502"), refusal?.why);
+  const noComments = resolveBlockedRow(blockedOn("460"), { trackers: TRACKERS, look: ghRowLook(() => '{"state":"OPEN","labels":[]}'), sessionLabel: CLAIM_LABEL });
+  assert.equal(refusalNamed(noComments)?.refused, "unreadable-row", "a reply with no comments field refuses the row: no ruling could be read, so nothing is labelled");
 });
 
 test("`ghRowLook`: an issue read as its state, labels and comments in ONE call, no such issue as null, and any other failure thrown", () => {
@@ -682,7 +683,7 @@ test("`ghRowLook`: an issue read as its state, labels and comments in ONE call, 
   const commented = '{"state":"CLOSED","labels":[{"name":"x"}],"comments":[{"id":"IC_1","url":"u","body":"b","createdAt":"t","author":{"login":"a"}}]}';
   assert.deepEqual(ghRowLook(answering(commented))("a11ign/a11ign", 460), { state: "CLOSED", labels: ["x"], comments: [{ id: "IC_1", url: "u", body: "b", createdAt: "t" }] });
   assert.deepEqual(ghRowLook(answering('{"state":"OPEN","labels":[],"comments":[]}'))("a11ign/a11ign", 460), { state: "OPEN", labels: [], comments: [] });
-  assert.deepEqual(ghRowLook(answering('{"state":"OPEN","labels":[]}'))("a11ign/a11ign", 460), { state: "OPEN", labels: [], comments: [] }, "a reply with no comments field reads as none");
+  assert.throws(() => ghRowLook(answering('{"state":"OPEN","labels":[]}'))("a11ign/a11ign", 460), /no comments field/, "a reply with no comments field THROWS: no comments would read as no ruling, which fails open");
   const missing = Object.assign(new Error("gh failed"), { stderr: "GraphQL: Could not resolve to an Issue with the number of 9999." });
   assert.equal(ghRowLook(answering(missing))("a11ign/a11ign", 9999), null);
   assert.throws(() => ghRowLook(answering(Object.assign(new Error("gh failed"), { stderr: "HTTP 502" })))("a11ign/a11ign", 460), /gh failed/);
