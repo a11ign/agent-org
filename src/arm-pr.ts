@@ -37,6 +37,10 @@ import { GRAPHQL_POOL_PROBE, poolFromHeaders } from "./api-pool.ts";
 import { newestVerdictRun, TRUNK_WORKFLOW } from "./trunk-red.ts";
 // agent-org#992: A LAB PULL REQUEST'S RED CROSS-REPO LEG, asked once for both arming doors (the sweep imports it from here as it does `blockerVerdict`).
 import { crossRepoRedMarker, crossRepoRedVerdict } from "./cross-repo-red.ts";
+// agent-org#1501: WHAT a11ign's `deliberateRefusals` JOB REFUSED (a head that is not the recorded tip, a `Closes` GitHub will not honour), asked here for an
+// agent pull request so the job can leave `gate`'s `needs`. Imported, never re-decided: the sweep asks the same function (`refusalBeforeArming`).
+import { deliberateRefusalVerdict } from "./deliberate-refusal.ts";
+import { createHash } from "node:crypto";
 import { dequeuePullRequestOf } from "./ticket-port/queue-entry-reads.ts";
 import { disableAutoMergeOf, readDisarmSeat } from "./ticket-port/auto-merge-disarm.ts";
 
@@ -280,6 +284,9 @@ function readOpenBlockers({ row, run }: { row: { repo: string; number: number; }
 /** The line that makes a once-only comment findable again; the blocker numbers are in it, so a CHANGED set is said afresh. */
 const blockedMarker = (blockers: number[]) => `<!-- arm-refused: open-blocker ${[...blockers].sort((a, b) => a - b).join(",")} -->`;
 
+/** agent-org#1501: the same for a deliberate refusal, keyed on the reason's own text, which names the heads and numbers it is about: a changed reason is said afresh. */
+export const deliberateMarker = (why: string) => `<!-- arm-refused: deliberate ${createHash("sha256").update(why).digest("hex").slice(0, 12)} -->`;
+
 /**
  * #3544: THE REFUSAL, WHERE A HUMAN LOOKS -- one comment on the PR, not one per tick. The sweep re-asks every tick, so the comment
  * is found by its marker before it is posted; the wait is then read off the PR rather than guessed from a green, unarmed one.
@@ -294,11 +301,13 @@ const blockedMarker = (blockers: number[]) => `<!-- arm-refused: open-blocker ${
  * @returns {{ posted: boolean }}
  */
 export function announceBlocked({ number, repo, verdict, run, error, lead }: {
-        number: string | number; repo: string; verdict: { why: string; blockers: number[]; } | { why: string; files: string[]; };
+        number: string | number; repo: string; verdict: { why: string; blockers: number[]; } | { why: string; files: string[]; } | { why: string; deliberate: true; };
         run: (ghArgs: string[]) => string; error: (line: string) => void; lead?: string;
     }): { posted: boolean; } {
-  const marker = "files" in verdict ? crossRepoRedMarker(verdict.files) : blockedMarker(verdict.blockers);
-  const tail = "files" in verdict ? "This comment is posted once for this set of files, and again if the set changes." : "This comment is posted once; nothing needs doing here.";
+  const marker = "files" in verdict ? crossRepoRedMarker(verdict.files) : "deliberate" in verdict ? deliberateMarker(verdict.why) : blockedMarker(verdict.blockers);
+  const tail = "files" in verdict ? "This comment is posted once for this set of files, and again if the set changes."
+    : "deliberate" in verdict ? "This comment is posted once for this reason, and again if the reason changes. Fix what it names (re-push the branch, or correct the `Closes` line) and the gate arms it on a later tick."
+    : "This comment is posted once; nothing needs doing here.";
   try {
     const existing = JSON.parse(run(["pr", "view", String(number), "--repo", repo, "--json", "comments"])).comments;
     if (!Array.isArray(existing)) throw new Error("the API returned no comment list");
@@ -1190,6 +1199,15 @@ export function runArmPr({ argv, env, run = defaultRun, sleep = defaultSleep, lo
         lead: `**Disarmed: ${disarm.disarmed ? "yes" : "no"} (${disarm.outcome}).**` });
       if (disarm.stuck) return EXIT.CANNOT_ASK;
     }
+    return cannotAsk ? EXIT.CANNOT_ASK : EXIT.DONE;
+  }
+  // agent-org#1501: AFTER the red-leg exit and before any write, the same shape. What a11ign's `deliberateRefusals` job refused is a DONE, as a hold is: the PR
+  // waits for a push or an edit. `cannot-ask` is a refusal to arm and exits CANNOT_ASK, never "fine".
+  const deliberate = deliberateRefusalVerdict({ number, repo, author, run: (args) => gh(args, run) });
+  if (deliberate.kind !== "clear") {
+    const cannotAsk = deliberate.kind === "cannot-ask";
+    (cannotAsk ? error : log)(`arm-pr: NOT arming #${number} -- ${deliberate.why}`);
+    if (!cannotAsk) announceBlocked({ number, repo, verdict: { why: deliberate.why, deliberate: true }, run: (args) => gh(args, run), error });
     return cannotAsk ? EXIT.CANNOT_ASK : EXIT.DONE;
   }
   const { outcome, jumpFailure } = armOrJump({ number, repo, prBody }, { run, sleep, log, error });

@@ -79,7 +79,7 @@ import { parseConsumerDeclarations, valueAtKey, valueMatches, CONSUMER_DECLARATI
 import { REPO } from "./project-identity.ts";
 import { gh, lookup, lookupClosingIssues, lookupRecentClosesPrs } from "./merge-guard/lookups.ts";
 import { refuseUnknownFlags } from "./lib/cli-flags.ts";
-import { claimRecordOf, type RowComment } from "./claim-stall.ts";
+import { claimRecordOf, type RowComment } from "./claim-record.ts";
 import { CLAIM_LABEL } from "./claim-labels.ts";
 import { homeProjectDeclaration } from "./project-config.ts";
 
@@ -333,15 +333,16 @@ const CLAIMED_ROWS_PAGE = 100;
  * page is not the whole population (`totalCount` beyond it): an unread row is not an unclaimed one, the same rule as every lookup in
  * `merge-guard/lookups.ts`. Each row carries the repository it was read from. `lookupClaimedRowsOfTrackers` is the one over several.
  * @param {string} [repo] the tracker's `owner/name`; the default tracker's when absent
+ * @param {(args: string[]) => string} [run] the caller's own `gh` (agent-org#1501: the host gate asks through its own)
  * @returns {ClaimedRow[] | null}
  */
-export function lookupOpenClaimedRows(repo: string = REPO): ClaimedRow[] | null {
+export function lookupOpenClaimedRows(repo: string = REPO, run: (args: string[]) => string = gh): ClaimedRow[] | null {
   return lookup(() => {
     const [owner, name] = repo.split("/");
     const query = "query($owner:String!,$name:String!,$label:String!,$count:Int!,$window:Int!){"
       + "repository(owner:$owner,name:$name){issues(states:OPEN,labels:[$label],first:$count){totalCount nodes{number "
       + "comments(last:$window){totalCount nodes{body createdAt author{login}}}}}}}";
-    const issues = JSON.parse(gh(["api", "graphql", "-f", `query=${query}`, "-F", `owner=${owner}`, "-F", `name=${name}`,
+    const issues = JSON.parse(run(["api", "graphql", "-f", `query=${query}`, "-F", `owner=${owner}`, "-F", `name=${name}`,
       "-F", `label=${CLAIM_LABEL}`, "-F", `count=${CLAIMED_ROWS_PAGE}`, "-F", `window=${CLAIM_COMMENT_WINDOW}`])).data.repository.issues;
     if (issues.totalCount > issues.nodes.length) throw new Error("the claimed rows exceed one page");
     return issues.nodes.map((issue: { number: number, comments: { totalCount: number, nodes: RowComment[] } }) => {
@@ -508,40 +509,38 @@ export function consumerDeclarationStep(declaration: import("./acceptance-comman
   return consumerDeclarationVerdict(consumerDeclarationReport(declaration, text, read));
 }
 
-function main() {
-  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/closes-mismatch-check.ts" });
-  const prNumber = Number(process.argv[2]);
-  if (!prNumber) {
-    console.error("usage: closes-mismatch-check.ts <pr-number> [owner/repo]  (the PR body is read from PR_BODY)");
-    process.exit(2);
-  }
-  // FROM AN ENV VAR, NEVER ARGV -- identical reasoning to `acceptance-commands.ts`'s own `main()`: a PR
-  // body is adversarial input, and GitHub Actions' `env:` mapping keeps it one opaque string.
-  const body = process.env.PR_BODY ?? "";
+/** Every read the whole comparison makes, so the CLI and the host gate hand it the same questions answered through their own `gh`. */
+export type ClosesFacts = {
+  /** The PR's closing references as GitHub resolved them, `null` when the read failed. */
+  resolved: () => ResolvedIssue[] | null;
+  claimed: ClaimedBranchReads;
+  /** The acceptance text the consumer-declaration comparison reads, or `text: null` and the line naming why not. */
+  acceptance: () => { text: string | null; named: string; };
+  consumerFile: ConsumerFileReader;
+  recent: () => ReturnType<typeof lookupRecentClosesPrs>;
+};
+
+/**
+ * THE WHOLE COMPARISON, AS A VERDICT (agent-org#1501, ADR 0045 cut c). `main` below was this and a print; it is split so the host gate asks the very
+ * question a11ign's `deliberateRefusals` job asked, through `deliberateRefusalVerdict`, and the two cannot drift into two opinions about one body.
+ * `exit` is the command's own: 0 passes (a pass line or a named skip), 1 refuses, 2 could not ask. `lines` are printed in order.
+ */
+export function closesVerdictOf(body: string, prNumber: number, prRepo: string, facts: ClosesFacts): { exit: 0 | 1 | 2; lines: string[]; } {
   const declaration = extractClosesDeclaration(body);
   if (declaration.kind === "missing" || declaration.kind === "malformed") {
-    console.log("CLOSES MISMATCH: skipped -- the Closes declaration itself is missing or malformed, "
-      + "which the acceptance job's own closesDeclarationReport gate already refuses.");
-    process.exit(0);
+    return { exit: 0, lines: ["CLOSES MISMATCH: skipped -- the Closes declaration itself is missing or malformed, "
+      + "which the acceptance job's own closesDeclarationReport gate already refuses."] };
   }
-  const prRepo = process.argv[3] ?? REPO; // #2995
-  const claimed = claimedBranchStep(declaration, { prNumber, prRepo });
-  for (const line of claimed?.lines ?? []) console.log(line);
-  if (claimed?.exit === 1) process.exit(1);
-  const consumer = consumerDeclarationStep(declaration, () => {
-    const source = acceptanceSourceOfThisPullRequest(body, process.cwd(), prAuthorFromEnv(process.env));
-    // A refused or duplicate source has no text to read, and `sectionsTextOf`'s "" for the first would read as "declares nothing".
-    return { text: source.kind === "file" || source.kind === "body" ? source.text : null, named: sourceLine(source) };
-  });
+  const lines: string[] = [];
+  const claimed = claimedBranchStep(declaration, { prNumber, prRepo }, facts.claimed);
+  lines.push(...claimed?.lines ?? []);
+  if (claimed?.exit === 1) return { exit: 1, lines };
+  const consumer = consumerDeclarationStep(declaration, facts.acceptance, facts.consumerFile);
   // A refusal is printed and exits now. A pass or a named skip is held and printed AFTER the verdict below, so the line this check has always led
   // with (`WARNING`, `ok`, `REFUSED`) is still first, and the note is not lost on any exit.
-  if (consumer?.exit === 1) {
-    for (const line of consumer.lines) console.log(line);
-    process.exit(1);
-  }
+  if (consumer?.exit === 1) return { exit: 1, lines: [...lines, ...consumer.lines] };
   const heldNotes = consumer?.lines ?? [];
-  const printHeldNotes = () => { for (const line of heldNotes) console.log(line); };
-  const resolved = lookupClosingIssues(prNumber, prRepo);
+  const resolved = facts.resolved();
   const report = closesMismatchReport(declaration, resolved, body, prRepo);
   if (report.ok === null) {
     // FAIL CLOSED, DELIBERATELY, ON A LOOKUP FAILURE -- "could not ask" must never read as "they
@@ -554,23 +553,48 @@ function main() {
     // never treated as READY). A transient GraphQL failure is rare and retriable (push again, or the
     // `update-branch` sweep's own re-push re-runs this); a real accidental closure sailing through
     // silently is not.
-    console.log(`CLOSES MISMATCH: CANNOT ASK -- ${report.reason}`);
-    printHeldNotes();
-    process.exit(2);
+    return { exit: 2, lines: [...lines, `CLOSES MISMATCH: CANNOT ASK -- ${report.reason}`, ...heldNotes] };
   }
   if (!report.ok) {
     // The sibling query is asked only when this PR's own facts already fit, so a lone mismatch costs nothing extra.
     const underTest = { declared: declaration.kind === "closes" ? declaration.numbers : [], resolved: resolved ?? [] };
     const fits = underTest.declared.length > 0 && underTest.resolved.length === 0 && prRepo === REPO;
-    const siblings = fits ? recentClosesSiblings(lookupRecentClosesPrs(), prNumber) : null;
-    const { exit, lines } = mismatchVerdict(report, underTest, siblings);
-    for (const line of lines) console.log(line);
-    printHeldNotes();
-    process.exit(exit);
+    const siblings = fits ? recentClosesSiblings(facts.recent(), prNumber) : null;
+    const verdict = mismatchVerdict(report, underTest, siblings);
+    return { exit: verdict.exit, lines: [...lines, ...verdict.lines, ...heldNotes] };
   }
-  console.log("CLOSES MISMATCH: ok -- declared and resolved agree");
-  printHeldNotes();
-  process.exit(0);
+  return { exit: 0, lines: [...lines, "CLOSES MISMATCH: ok -- declared and resolved agree", ...heldNotes] };
+}
+
+/** The reads of the CLI: the checkout at `cwd` for the acceptance file, and the module's own `gh` for the rest. */
+function cliFacts(body: string, prNumber: number, prRepo: string): ClosesFacts {
+  return {
+    resolved: () => lookupClosingIssues(prNumber, prRepo),
+    claimed: { head: lookupPrHead, rows: (repo) => lookupClaimedRowsOfTrackers(trackerReposFor(repo)) },
+    acceptance: () => {
+      const source = acceptanceSourceOfThisPullRequest(body, process.cwd(), prAuthorFromEnv(process.env));
+      // A refused or duplicate source has no text to read, and `sectionsTextOf`'s "" for the first would read as "declares nothing".
+      return { text: source.kind === "file" || source.kind === "body" ? source.text : null, named: sourceLine(source) };
+    },
+    consumerFile: lookupConsumerFile,
+    recent: () => lookupRecentClosesPrs(),
+  };
+}
+
+function main() {
+  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/closes-mismatch-check.ts" });
+  const prNumber = Number(process.argv[2]);
+  if (!prNumber) {
+    console.error("usage: closes-mismatch-check.ts <pr-number> [owner/repo]  (the PR body is read from PR_BODY)");
+    process.exit(2);
+  }
+  // FROM AN ENV VAR, NEVER ARGV -- identical reasoning to `acceptance-commands.ts`'s own `main()`: a PR
+  // body is adversarial input, and GitHub Actions' `env:` mapping keeps it one opaque string.
+  const body = process.env.PR_BODY ?? "";
+  const prRepo = process.argv[3] ?? REPO; // #2995
+  const { exit, lines } = closesVerdictOf(body, prNumber, prRepo, cliFacts(body, prNumber, prRepo));
+  for (const line of lines) console.log(line);
+  process.exit(exit);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) main();

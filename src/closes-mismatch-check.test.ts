@@ -10,8 +10,10 @@ import { fileURLToPath } from "node:url";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  claimedBranchReport, claimedBranchStep, claimedBranchVerdict, lookupClaimedRowsOfTrackers, trackerReposFor, type ClaimedRow, type PrHead,
+  claimedBranchReport, claimedBranchStep, claimedBranchVerdict, closesVerdictOf, lookupClaimedRowsOfTrackers,
+  trackerReposFor, type ClaimedRow, type PrHead,
 } from "./closes-mismatch-check.ts";
+import { deliberateRefusalVerdict } from "./deliberate-refusal.ts";
 import { homeProjectDeclaration } from "./project-config.ts";
 import { claimRecordComment } from "./row-claim.ts";
 import { REPO } from "./project-identity.ts";
@@ -283,4 +285,118 @@ test("#744 CLI: an unreadable other tracker is skipped with its name, never pass
   const { status, out } = runCheck({ headRef: "agent/an-unrelated-change-9", rows: ROWS, other: "fail" }, "Closes: none -- finishes no row");
   assert.equal(status, 0);
   assert.ok(out.includes(`skipped the claimed-branch comparison -- could not read the open claimed rows of ${FIXTURE.other}`), out);
+});
+
+// --- agent-org#1501: THE HOST GATE'S RECEIVING SIDE. What a11ign's `deliberateRefusals` job refused, asked of one pull request through the caller's `gh`.
+// The fake `gh` answers as GitHub's REST and GraphQL would for ONE pull request; each case changes ONE fact and asserts the verdict, so a case that
+// passed because the fake answered nothing would be a `cannot-ask`, which is asserted as its own kind.
+
+const HEAD = "a".repeat(40);
+const OTHER_TIP = "b".repeat(40);
+const AGENT = "a11ign-ai-workers";
+
+const whyOf = (verdict: ReturnType<typeof deliberateRefusalVerdict>): string => (verdict.kind === "clear" ? "" : verdict.why);
+
+type Host = {
+  author?: string; state?: string; headSha?: string; headRef?: string; headRepo?: string; baseRepo?: string; labels?: string[]; body?: string;
+  tip?: string | null; resolved?: number[] | null; pull?: "unreadable" | "ok";
+};
+
+function host(fact: Host = {}) {
+  const h = { author: AGENT, state: "open", headSha: HEAD, headRef: "agent/a-row-1501", headRepo: REPO, baseRepo: REPO, labels: [] as string[],
+    body: "Closes #1", tip: HEAD as string | null, resolved: [1] as number[] | null, pull: "ok", ...fact };
+  const asked: string[][] = [];
+  const run = (args: string[]): string => {
+    asked.push(args);
+    const path = args[0] === "api" ? args[args.length > 1 && args[1] === "--paginate" ? 2 : 1] : "";
+    if (path === `repos/${REPO}/pulls/7`) {
+      if (h.pull === "unreadable") throw new Error("HTTP 502");
+      return JSON.stringify({ state: h.state, user: { login: h.author }, labels: h.labels.map((name) => ({ name })), body: h.body,
+        head: { sha: h.headSha, ref: h.headRef, repo: { full_name: h.headRepo } }, base: { repo: { full_name: h.baseRepo } } });
+    }
+    if (path === `repos/${REPO}/git/ref/heads/${h.headRef}`) {
+      if (h.tip === null) throw new Error("HTTP 404");
+      return JSON.stringify({ object: { sha: h.tip } });
+    }
+    if (args.some((arg) => arg.includes("closingIssuesReferences"))) {
+      if (h.resolved === null) throw new Error("HTTP 502");
+      return JSON.stringify({ data: { repository: { pullRequest: { closingIssuesReferences: { nodes: h.resolved.map((number) => (
+        { number, title: "a row", repository: { nameWithOwner: REPO }, labels: { nodes: [] } })) } } } } });
+    }
+    if (path === `repos/${REPO}/issues/1`) return JSON.stringify({ body: "a row naming no test" });
+    return "";
+  };
+  return { run, asked, verdict: (reads = {}) => deliberateRefusalVerdict({ number: 7, repo: REPO, run, reads }) };
+}
+
+test("#1501: a clean agent pull request -- head is the tip, no hold, a Closes GitHub honours -- is clear", () => {
+  const out = host().verdict();
+  assert.deepEqual(out, { kind: "clear" }, JSON.stringify(out));
+});
+
+test("#1501: a head that is not the branch's tip is REFUSED with the reason the job gave (#294), not cannot-ask", () => {
+  const out = host({ tip: OTHER_TIP }).verdict();
+  assert.equal(out.kind, "refused");
+  assert.match(whyOf(out), /GITHUB'S HEAD IS NOT THE BRANCH TIP/);
+});
+
+test("#1501: a `hold:` label is REFUSED and names the hold", () => {
+  const out = host({ labels: ["hold:ceo"] }).verdict();
+  assert.equal(out.kind, "refused");
+  assert.match(whyOf(out), /IS HELD/);
+});
+
+test("#1501: a `Closes` GitHub will not honour -- declared #1, resolved none -- is REFUSED, and so is the reverse `Closes: none` with a closure", () => {
+  const unhonoured = host({ resolved: [] }).verdict();
+  assert.equal(unhonoured.kind, "refused");
+  assert.match(whyOf(unhonoured), /CLOSES MISMATCH: REFUSED/);
+  const accidental = host({ body: "Closes: none -- the follow-up is another row", resolved: [1] }).verdict();
+  assert.equal(accidental.kind, "refused");
+  assert.match(whyOf(accidental), /CLOSES MISMATCH: REFUSED/);
+});
+
+test("#1501: a read that failed is CANNOT-ASK, never clear -- the pull, the branch tip, and GitHub's closing references", () => {
+  for (const fact of [{ pull: "unreadable" }, { tip: null }, { resolved: null }] as Host[]) {
+    const out = host(fact).verdict();
+    assert.equal(out.kind, "cannot-ask", `${JSON.stringify(fact)} -> ${JSON.stringify(out)}`);
+  }
+});
+
+test("#1501: a fork's head, and a pull request by no org identity, are met by NEITHER refusal even with a held label and a head that is not the tip", () => {
+  const broken = { tip: OTHER_TIP, labels: ["hold:ceo"], resolved: [] as number[] };
+  assert.deepEqual(host({ ...broken, headRepo: "someone/a-fork" }).verdict(), { kind: "clear" });
+  assert.deepEqual(host({ ...broken, author: "an-outside-contributor" }).verdict(), { kind: "clear" });
+  // The branch NAME is the author's to choose and decides nothing: an agent-looking branch by an outsider is still an outsider's.
+  assert.deepEqual(host({ ...broken, author: "an-outside-contributor", headRef: "agent/looks-like-ours-1" }).verdict(), { kind: "clear" });
+});
+
+test("#1501: a caller that already holds a non-org author asks GitHub NOTHING -- the outside pull request pays no read", () => {
+  const h = host({ tip: OTHER_TIP });
+  const out = deliberateRefusalVerdict({ number: 7, repo: REPO, run: h.run, author: "an-outside-contributor" });
+  assert.deepEqual(out, { kind: "clear" });
+  assert.equal(h.asked.length, 0);
+});
+
+test("#1501: every spelling of the org's logins is an org identity, so each is refused on the same stale head", () => {
+  for (const author of ["a11ign-ai-workers", "a11ign-workers[bot]", "app/a11ign-workers"]) {
+    const out = host({ author, tip: OTHER_TIP }).verdict();
+    assert.equal(out.kind, "refused", `${author}: ${JSON.stringify(out)}`);
+  }
+});
+
+test("#1501: a pull request that is no longer open asks nothing and is clear", () => {
+  assert.deepEqual(host({ state: "closed", tip: OTHER_TIP }).verdict(), { kind: "clear" });
+});
+
+test("#1501: the verdict is the CLI's own -- `closesVerdictOf` prints exactly the lines `closes-mismatch-check` would, and exits as it would", () => {
+  const facts = (resolved: number[] | null) => ({
+    resolved: () => resolved, claimed: { head: () => ({ branch: BRANCH, fork: false }), rows: () => [] }, acceptance: () => ({ text: "", named: "the body" }),
+    consumerFile: () => null, recent: () => null,
+  });
+  assert.deepEqual(closesVerdictOf("Closes #1", 7, REPO, facts([1])), { exit: 0, lines: ["CLOSES MISMATCH: ok -- declared and resolved agree"] });
+  const refused = closesVerdictOf("Closes #1", 7, REPO, facts([]));
+  assert.equal(refused.exit, 1);
+  assert.equal(closesVerdictOf("Closes #1", 7, REPO, facts(null)).exit, 2);
+  const viaHost = host({ resolved: [] }).verdict();
+  assert.equal(whyOf(viaHost).split("\n")[0], refused.lines[0]);
 });
