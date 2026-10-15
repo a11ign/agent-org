@@ -10,7 +10,7 @@ Fails before the change: not run. The test file imports `sweepOverdueReading`, w
 
 Typecheck: `pnpm run typecheck` exits 0.
 
-Full suite: `pnpm run test` (rstest) was still running when this pull request was opened. Its result will be recorded in a follow-up commit on this branch.
+Full suite: `pnpm run test` (rstest): `VERDICT fail: 113 of 11793 tests failed in 707 files`. The failures are in 26 files, and they are not caused by this change. Those 26 files were run on the changed tree (`VERDICT fail: 113 of 760`) and on the unmodified pre-change checkout (`VERDICT fail: 114 of 760`). Every failing name on the changed tree also fails on the baseline. The one difference is a baseline-only failure, a real-git test (`queue-stalled.test.ts`, `mergeTreeConflict`) that fails in the baseline copy, which is not a git checkout. No failure is new.
 
 Related tests: 64 test files that mention org-health or SIGNALS were run with `node --test`. 45 individual tests fail, and `src/trace/trace.test.ts` fails as a file. The same 45 fail on an unmodified HEAD checkout, so they are pre-existing and environment-related. The failing names are identical before and after this change.
 
