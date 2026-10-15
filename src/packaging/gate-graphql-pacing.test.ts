@@ -18,7 +18,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GRAPHQL_RESERVE, GRAPHQL_SWEEP_MINUTES, OTHER_SCOPES_MEMORY, PACING_FLAG, orgHealthSkipped, pacedUnread, pacingNow, pacingOn, primaryUnread, readOtherScopesMemory, rememberOtherScopes, scopesToRead } from "../work-gate/pacing.ts";
-import { defaultRun, otherScopesToRead, primaryDue, primaryLanes, unreadScopes, type GateFacts } from "../work-gate/reads.ts";
+import { defaultRun, eventGateOf, otherScopesToRead, primaryDue, primaryLanes, unreadScopes, type GateFacts } from "../work-gate/reads.ts";
 import type { Scope as TickScope } from "../event-queue.ts";
 import type { Scope } from "../work-gate/vocabulary.ts";
 import { emptyCanaryState, withMachineryFlag } from "../org-health.ts";
@@ -243,5 +243,25 @@ test("flag OFF, or a named list that cannot be read, drops nothing and reads the
     const unreadable: GateFacts = { ...on, tickScopesPath: join(dir, "no-such-file.json") };
     assert.deepEqual(otherScopesToRead(defaultRun, scopes, unreadable).map((s) => s.key), ["b"]);
     assert.deepEqual(unreadScopes(defaultRun, scopes, unreadable), []);
+  });
+});
+
+test("agent-org#1353: with no facts given, a host that declares webhook applies the event gate with the pacing flag ABSENT, and a polling host does not", () => {
+  withScratch((dir) => {
+    const path = join(dir, "tick-scopes.json");
+    writeFileSync(path, JSON.stringify({ version: 1, scopes: [] }));
+    const before = process.env.A11Y_TICK_SCOPES_FILE;
+    process.env.A11Y_TICK_SCOPES_FILE = path;
+    try {
+      assert.equal(pacingOn(() => emptyCanaryState()), false, "the flag is absent, as it is on the host");
+      const run = defaultRun;
+      assert.notEqual(eventGateOf(run, undefined, () => true), null, "a webhook host with an empty feed is event-gated without the flag");
+      assert.deepEqual(eventGateOf(run, undefined, () => true)?.named, [], "and the gate carries the feed's empty answer");
+      // RED CONTROL: a polling host reads whole
+      assert.equal(eventGateOf(run, undefined, () => false), null);
+    } finally {
+      if (before === undefined) delete process.env.A11Y_TICK_SCOPES_FILE;
+      else process.env.A11Y_TICK_SCOPES_FILE = before;
+    }
   });
 });

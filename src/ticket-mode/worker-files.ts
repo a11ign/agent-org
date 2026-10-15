@@ -8,6 +8,7 @@
 // THE WORKER CHOOSES THE REPOSITORY AND FINDS ITS COMMANDS. It starts in the ticket's own folder beside the person's repositories, reads the ticket,
 // decides where the work lands, and makes a worktree there with `ticket:worktree`. Each repository's `CLAUDE.md`/`AGENTS.md` names how to install,
 // test and typecheck it, which is where any engineer looks, so nothing about a repository is declared here or in the host file.
+import type { DenyRule } from "./settings.ts";
 import type { Blocker, Ticket } from "./source.ts";
 
 /** The file a worker writes last, and the one thing the pool and the stop hook read to know a run has ended. */
@@ -21,6 +22,21 @@ export const STOP_COUNT_FILE = "stop-refusals";
 export const DENY_FILE = "deny.json";
 /** The host file's `tickets.connectors`, copied beside the outcome file, where the PreToolUse hook reads it. */
 export const CONNECTORS_FILE = "connectors.json";
+
+/** What a worker does when a skill its brief names is missing: a copy of the skill's files, read by hand, is not the skill and its helpers. */
+const MISSING_SKILL = "If a skill this brief names is not available in this session, write a `needs-human` outcome naming it, rather than following a copy of its files.";
+
+/** The folder in the ticket's own directory that a planning run writes its plan's files in, for the board to attach. */
+export const PLAN_DIR = "plan";
+
+/** What a planning run may not do, beside the machine's own refusals: it reads the repositories and changes none. */
+export const PLANNING_DENY: readonly DenyRule[] = Object.freeze([
+  // git's subcommand, after any -C/-c/--option: a word only searched for, as in `git grep add`, is not one.
+  { pattern: "\\bgit(?:\\s+-[Cc]\\s+\\S+|\\s+--?[\\w-]+(?:=\\S+)?)*\\s+(?:commit|push|checkout|switch|worktree|add|reset|restore|stash|merge|rebase|cherry-pick|am|apply|rm|mv|clean|tag)\\b",
+    reason: "a planning run changes no repository: it reads them, and writes its plan's files and nothing else" },
+  { pattern: "\\bgh\\s+pr\\s+(?:create|edit|ready|merge|close|comment|review)\\b", reason: "a planning run opens and changes no pull request: a worker does, once the plan is attached" },
+  { pattern: "ticket:worktree", reason: "a planning run makes no worktree: it reads the repositories as they are" },
+]);
 
 /** The ticket a worker's ticket is part of, and the paths of its downloaded files. */
 export type ParentTicket = Readonly<{ ticket: Ticket; attachments: readonly string[] }>;
@@ -84,14 +100,71 @@ If your work depends on something one of them releases, such as a new package ve
 `;
 }
 
+/** What a worker is told about a plan a planning run wrote, which no person agreed: nothing when a person's plan, or none, is all it has. */
+function plannedText(planned: boolean): string {
+  if (!planned) return "";
+  return "Your plan was written by an unattended planning run, not agreed with a person. Put each decision it says it made without a person in your pull request body, under the heading \"Decisions made without a person\", so the reviewer checks each one against the code.\n\n";
+}
+
+/**
+ * The planning run's brief, as markdown: plan the ticket with this machine's planner, change no code, and leave the plan's files in `planDir`
+ * for the board to attach. `run` is the host file's `tickets.planner.run`, with the ticket and the folder filled in.
+ */
+export function planBriefText({ ticket, ticketDir, planDir, attachments, parent = null, clones, run, notes, connectors = [] }: {
+  ticket: Ticket; ticketDir: string; planDir: string; attachments: readonly string[]; parent?: ParentTicket | null;
+  clones: Readonly<Record<string, string>>; run: string; notes?: string; connectors?: readonly string[];
+}): string {
+  const repos = Object.entries(clones).map(([name, path]) => `- \`${name}\` at \`${path}\``).join("\n");
+  const instruction = run.replaceAll("{key}", ticket.key).replaceAll("{dir}", planDir);
+  return `# Plan ${ticket.key}: ${ticket.title}
+
+You are an unattended planner. Nobody will answer a question. Plan this ticket, and change no code: make no worktree, commit, push or pull request. A worker implements the plan once the board has attached it to the ticket.
+
+## The ticket
+
+${ticket.url}
+
+${ticket.description.trim() || "(no description)"}
+
+## Files from the ticket
+
+${filesText(attachments)}
+${parentText(parent)}
+## The repositories on this machine
+
+Read them to plan, but never change them, commit in them or change their branches:
+
+${repos}
+
+## What to do
+
+${instruction}
+
+${MISSING_SKILL}
+
+The plan's files go in \`${planDir}\`, and nowhere else. The board attaches each one to the ticket under its file name. Write only markdown files there, each 1 MB or less: anything else stops the board attaching any of them.
+${connectorsText(connectors)}${notes?.trim() ? `\n## On this machine\n\n${notes.trim()}\n` : ""}
+## The outcome file
+
+Write \`${ticketDir}/${OUTCOME_FILE}\` as the last thing you do, with exactly one of:
+
+\`\`\`json
+{ "kind": "planned" }
+{ "kind": "needs-human", "reason": "<the question only a person can answer, and why the evidence does not settle it>" }
+\`\`\`
+
+Write \`planned\` only when the plan's files are in \`${planDir}\`. A person may answer you here after a \`needs-human\` outcome. If one does, finish the plan with what they said, and write the outcome file again as the last thing you do.
+`;
+}
+
 /**
  * The brief, as markdown. `worktreeCommand` is the full command line that makes a worktree, short of the repository's name. `notes` is the host
  * file's `tickets.brief`, how workers behave on this machine, and `connectors` its `tickets.connectors`. `blockers` are the tickets this one
  * waited on.
  */
-export function briefText({ ticket, folder, ticketDir, attachments, parent = null, blockers = [], clones, worktreeCommand, notes, connectors = [] }: {
+export function briefText({ ticket, folder, ticketDir, attachments, parent = null, blockers = [], clones, worktreeCommand, notes, connectors = [], planned = false }: {
   ticket: Ticket; folder: string; ticketDir: string; attachments: readonly string[]; parent?: ParentTicket | null; blockers?: readonly Blocker[];
-  clones: Readonly<Record<string, string>>; worktreeCommand: string; notes?: string; connectors?: readonly string[];
+  clones: Readonly<Record<string, string>>; worktreeCommand: string; notes?: string; connectors?: readonly string[]; planned?: boolean;
 }): string {
   const repos = Object.entries(clones).map(([name, path]) => `- \`${name}\` at \`${path}\``).join("\n");
   return `# ${ticket.key}: ${ticket.title}
@@ -120,7 +193,7 @@ ${repos}
 
 ## What to do
 
-1. Find the cause in the code. Fix it, with a test that fails without the fix.
+${plannedText(planned)}1. Find the cause in the code. Fix it, with a test that fails without the fix.
 2. Run the repository's checks on what you changed. Then start a subagent that has not seen your reasoning, give it your diff and its base, and ask it to find, read only, every behaviour your diff changes that you meant to keep. Fix each real finding with a test that fails without the fix. Then run the clean-code-review skill on your diff and fix what it finds.
 3. Check your diff against what was asked. List each acceptance criterion in the ticket. Add each decision in its files, its parent's description and its parent's files that applies to this ticket. Find where your diff meets each one, and finish any it misses. If you leave one unmet on purpose, say which and why in the pull request body.
 4. Check what your pull request body will claim. For each behaviour it says you fixed, kept or changed, name the test assertion that checks exactly that behaviour, not a neighbouring value. Run it on the base: a fix must fail there, and a kept behaviour must pass there too. Claim nothing you have no such assertion for, or say it is unchecked.
@@ -129,6 +202,8 @@ ${repos}
 7. If a design gate asks for a design check, decline it with "unattended worker, no design tool access" and say so in the pull request body.
 
 Never mark a pull request ready, request a review, merge, force-push, run a workflow, or post to Slack. Those are the person's.
+
+${MISSING_SKILL}
 ${connectorsText(connectors)}${notes?.trim() ? `\n## On this machine\n\n${notes.trim()}\n` : ""}
 ## The outcome file
 

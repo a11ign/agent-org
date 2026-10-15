@@ -1,0 +1,15 @@
+// @ts-check
+// THE SEAT A COMMENT SAYS POSTED IT, IN ONE PLACE. A pure leaf: it imports nothing, so `claim-stall.ts` (which loads the project's declaration and the rest of the
+// claim machinery) and `pr-hold-state.ts` (which every project's wake loads) can both import it without importing each other.
+
+/**
+ * The seat a comment says posted it: the role in the LAST `<!-- decided-by: <role> run: <id> -->` line `host/gh` appends to a comment
+ * (agent-org#486; the role alphabet is the one it accepts), or `null` for a body that carries none. The last line is the wrapper's own, appended
+ * after whatever the author wrote, so a marker quoted earlier in the body does not speak for the comment.
+ *
+ * @param {unknown} body @returns {string | null}
+ */
+export function decidedBy(body: unknown): string | null {
+  const marks = [...String(body ?? "").matchAll(/<!--\s*decided-by:\s*([A-Za-z0-9._-]+)(?:\s+run:\s*\S+)?\s*-->/g)];
+  return marks.at(-1)?.[1] ?? null;
+}

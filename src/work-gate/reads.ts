@@ -13,7 +13,7 @@ import { type Ask, parseReply, readValidators, saveValidators } from "../trace/p
 import { narrowedPrList, readPrList, writePrList } from "../pr-list-memory.ts";
 import { readTickScopes } from "../tick-scopes.ts";
 import type { Scope as TickScope } from "../event-queue.ts";
-import { GRAPHQL_SWEEP_MINUTES, OTHER_SCOPES_MEMORY, pacingOn, readOtherScopesMemory, rememberOtherScopes, scopesToRead } from "./pacing.ts";
+import { GRAPHQL_SWEEP_MINUTES, OTHER_SCOPES_MEMORY, readOtherScopesMemory, rememberOtherScopes, scopesToRead } from "./pacing.ts";
 import { cachedReleaseBehind, readReleaseBehind, npmRegistryRead } from "../release-behind-main.ts";
 import { armedFromApi, openPullRequestsQueryArgs } from "../auto-arm-sweep.ts";
 import { REPO } from "../project-identity.ts";
@@ -1399,12 +1399,13 @@ export type GateFacts = { on: boolean; webhook: boolean; tickScopesPath: string 
 export type EventGate = { named: readonly TickScope[]; lastReadAt: Readonly<Record<string, number>>; nowMs: number; };
 
 /**
- * (agent-org#1240) THE EVENT GATE THIS TICK APPLIES, or `null` for none: the run is not the gate's own, the flag is off, the host polls, or the event
- * queue's file cannot be read (which reads everything, as a poll tick does). `facts` is the test's; omitted, they are read from this host.
+ * (agent-org#1240) THE EVENT GATE THIS TICK APPLIES, or `null` for none: the run is not the gate's own, the host polls, or the event
+ * queue's file cannot be read (which reads everything, as a poll tick does). The host's `webhook` declaration is the switch (agent-org#1353: behind `gate.graphqlPacing`, absent from the canary, the
+ * gate took a whole read every tick and calls per hour did not fall at the webhook switch); the revert is `"source": "poll"`. `facts` is the test's; omitted, they are read from this host.
  */
-export function eventGateOf(run: object, facts?: GateFacts): EventGate | null {
+export function eventGateOf(run: object, facts?: GateFacts, declaresWebhook: () => boolean = webhookMode): EventGate | null {
   if (!isAmbientRun(run)) return null;
-  const live = facts ?? (pacingOn() && webhookMode() ? liveGateFacts() : null);
+  const live = facts ?? (declaresWebhook() ? liveGateFacts() : null);
   if (live === null || !live.on || !live.webhook) return null;
   const named = live.tickScopesPath === undefined ? null : readTickScopes(live.tickScopesPath);
   return named === null ? null : { named, lastReadAt: readOtherScopesMemory(live.memoryPath), nowMs: live.nowMs };
@@ -1445,7 +1446,7 @@ export function primaryLanes<T extends object>(run: object, home: Scope | undefi
  * `homeKey` is the primary's key when ITS tracker lanes were answered this tick (`primaryLanes`), so its sweep is remembered as the others' are.
  */
 export function rememberOtherScopesRead(reads: { scope: Scope; read: { prs: unknown; readyRows: unknown; promotableRows: unknown; chairmanBlocked: unknown; openRows: unknown; }; }[], homeKey: string | null = null): void {
-  if (!(pacingOn() && webhookMode())) return;
+  if (!(webhookMode())) return;
   const answered = reads.filter(({ read }) => [read.prs, read.readyRows, read.promotableRows, read.chairmanBlocked, read.openRows].every((lane) => lane !== null)).map(({ scope }) => scope.key);
   const keys = homeKey === null ? answered : [homeKey, ...answered];
   if (keys.length === 0) return;

@@ -82,12 +82,18 @@ named_sha_in() { [[ "$1" =~ $NAMED_SHA_PATTERN ]] && echo "${BASH_REMATCH[3]}"; 
 named="$(named_sha_in "$opener")" || named=""
 [[ -n "$named" ]] || { echo "pr-review-verdict: the verdict line of '$file' names no commit; it must read 'at <sha>' with the sha in backticks (#3640)" >&2; exit 2; }
 
-# AN ENVIRONMENT FAILURE IS NOT A VERDICT (a11ign#3050, from #3033). A reviewer whose own checkout, toolchain or token is broken has learned
-# nothing about the author's change, and a request-changes made of that sends the author to fix what is not theirs. Refused HERE, before any
-# `gh` call, because the door is the one place every review passes. ONLY a refusal is held: `convinced` that names its evidence, as in
-# `(CI run <id>)`, is a verdict, and so is `convinced` that merely uses the word.
+# AN ENVIRONMENT FAILURE IS NOT A VERDICT UNLESS IT QUOTES ITS COMMAND (a11ign#3050, from #3033; agent-org#1398). A reviewer whose own checkout,
+# toolchain or token is broken has learned nothing about the author's change, and a request-changes made of that sends the author to fix what is
+# not theirs. Refused HERE, before any `gh` call, because the door is the one place every review passes. The hand-off this used to name, `answer:
+# orchestrator` on the row, needs an Issues write the reviewer App does not have, so it reached nobody (a11ign/a11ign#928 comment 6154377194). The
+# verdict file is the one hand-off the reviewer can perform, so the refusal sends it back to be written again with the command in it: a backtick span
+# with a space in it, which is how a command is quoted (`node --test <file>`), and not a bare tag. ONLY a refusal is held: `convinced` that names its
+# evidence, as in `(CI run <id>)`, is a verdict, and so is `convinced` that merely uses the word.
 if [[ "$verdict" == not-convinced ]] && grep -qiF '(environment)' <<<"$opener"; then
-  echo "pr-review-verdict: an environment failure is not a verdict: hand the row to orchestrator" >&2; exit 2
+  grep -qE '`[^` ]+ [^`]*`' <<<"$after_opener" || {
+    echo "pr-review-verdict: an environment failure is not a verdict unless it quotes the command that failed. Write the command in backticks, with" \
+         "its last lines, into the verdict file and run the door again; the gate reads that file, and the reviewer cannot label the row (no Issues write)." >&2
+    exit 2; }
 fi
 
 # THE NAME, WHEN THE PANE WAS NOT GIVEN ONE (#2528). A pane herdr restores itself is not started by the tick, so it holds

@@ -24,6 +24,11 @@ export type Ticket = Readonly<{
   priority: number;
   /** The key of the ticket this one is part of, whose plan may bind it, or `null`. */
   parent: string | null;
+  /**
+   * The names of the files uploaded to it, as the tracker titles them. A link to elsewhere, such as a pull request, is not one. Absent from a
+   * ticket stored on the queue before they were read, and from a source that does not read them.
+   */
+  uploads?: readonly string[];
 }>;
 
 /** A pull request's state as the tracker last saw it. A draft, or one in review, is `open`. */
@@ -58,4 +63,17 @@ export interface TicketSource {
    * source without it never holds a queued run back. Throws when the tracker cannot be asked.
    */
   blockers?(keys: readonly string[]): Promise<ReadonlyMap<string, readonly Blocker[]>>;
+  /**
+   * Attach a planning run's files to the ticket, each titled with its file name, and move the ticket to the state named `state` when it has not
+   * started and its team has a state of that name. Teams name their states differently, so one without it keeps the ticket's state, and the
+   * returned note says so; it is null when nothing was left undone. A file already attached under its name is not attached again, so an attempt
+   * that was cut off can be repeated. A source without it takes no plans, so the board offers no planning. Throws when the tracker refuses.
+   */
+  attachPlan?(key: string, files: readonly string[], state: string | null): Promise<string | null>;
+  /**
+   * Move the ticket to the state named `state` as a worker starts implementing it, when it has not started yet. A ticket already started, or
+   * finished, is left where it is. A team with no state of that name keeps the ticket's state, and the returned note says so; it is null
+   * otherwise. A source without it moves nothing. Throws when the tracker refuses.
+   */
+  moveToWorkingState?(key: string, state: string): Promise<string | null>;
 }

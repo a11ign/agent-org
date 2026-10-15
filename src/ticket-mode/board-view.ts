@@ -9,7 +9,9 @@
 // (`isParked`) decide what the board shows and what the pool does, so `queue.ts` and `pool.ts` import them from here rather than restating them.
 
 /** The fields of a ticket the board shows. */
-export type ViewTicket = Readonly<{ key: string; title: string; status: string; statusOrder: number; priority: number; project: string | null; parent?: string | null }>;
+export type ViewTicket = Readonly<{
+  key: string; title: string; status: string; statusOrder: number; priority: number; project: string | null; parent?: string | null; uploads?: readonly string[];
+}>;
 
 /**
  * A ticket in the Pick list's tree, with the tickets under it. A node with tickets under it is a parent: its checkbox picks them, and it is not
@@ -21,7 +23,11 @@ export type TicketNode<T extends ViewTicket = ViewTicket> = Readonly<{ ticket: T
 export type ViewEntry = Readonly<{
   ticket: Readonly<{ key: string }>; phase: string; outcome?: Readonly<{ kind: string; prs?: readonly Readonly<{ url: string }>[] }>; waiting?: boolean;
   trackerState?: string; pullStates?: Readonly<Record<string, string>>; queuedAt?: number; startedAt?: number; finishedAt?: number; workspace?: string;
-  pane?: string; blockers?: readonly ViewBlocker[];
+  pane?: string; blockers?: readonly ViewBlocker[]; model?: string; effort?: string;
+  /** Set while the ticket still needs its plan: the model and effort its planning run uses. */
+  plan?: Readonly<{ model: string; effort: string }>;
+  /** Its plan was written by a planning run, not agreed with a person. */
+  planned?: boolean;
 }>;
 
 /** A ticket that blocks a queued one: its key, and its state's type and name in the tracker. */
@@ -35,11 +41,90 @@ export const NO_PROJECT = "(no project)";
 
 export const projectOf = (ticket: ViewTicket): string => ticket.project ?? NO_PROJECT;
 
-/** The tickets to show: in one of the chosen projects (any, when none is chosen) and matching every search word. */
-export function visibleTickets(tickets: readonly ViewTicket[], projects: ReadonlySet<string>, search: string): ViewTicket[] {
+/**
+ * A ticket has a plan when a file uploaded to it has a name `plan` matches: the host file's `tickets.plan`. A ticket whose uploads were not read
+ * has none, so a source that does not read them leaves every ticket unplanned.
+ */
+export const hasPlan = (ticket: ViewTicket, plan: RegExp): boolean => (ticket.uploads ?? []).some((name) => plan.test(name));
+
+/** Which tickets the plan filter keeps: those with a plan of their own, or those without one. */
+export type PlanChoice = "with" | "without";
+
+/** The plan filter in force: the pattern a plan's name matches, and which tickets to keep. */
+export type PlanFilter = Readonly<{ pattern: RegExp; choice: PlanChoice }>;
+
+/** The plan filter remembered in the browser, or null, meaning every ticket, for anything else it holds. */
+export function planChoiceOf(remembered: ReadonlySet<string>): PlanChoice | null {
+  const [choice] = remembered;
+  return choice === "with" || choice === "without" ? choice : null;
+}
+
+/** The tickets a worker can be given: every one that no other ticket sits under. An epic is not work for a worker. */
+export function workItems<T extends ViewTicket>(tickets: readonly T[]): T[] {
+  const parents = new Set(tickets.flatMap((t) => (t.parent ? [t.parent] : [])));
+  return tickets.filter((t) => !parents.has(t.key));
+}
+
+/**
+ * The keys of each ticket a worker can be given that `keep` is true for, and of every ticket above it, so it still shows under its epic. An epic
+ * is kept only for what it holds: what `keep` says of the epic itself does not decide it.
+ */
+function keptWithAncestors(tickets: readonly ViewTicket[], keep: (ticket: ViewTicket) => boolean): Set<string> {
+  const kept = new Set(workItems(tickets).filter(keep).map((t) => t.key));
+  const byKey = new Map(tickets.map((t) => [t.key, t]));
+  for (const key of [...kept]) {
+    for (let above = byKey.get(key)?.parent; above && byKey.has(above) && !kept.has(above); above = byKey.get(above)?.parent) kept.add(above);
+  }
+  return kept;
+}
+
+/** The Pick list's filters. An empty set, an empty search or no plan filter keeps every ticket. */
+export type PickFilter = Readonly<{ projects?: ReadonlySet<string>; search?: string; plan?: PlanFilter | null; priorities?: ReadonlySet<number> }>;
+
+/**
+ * The tickets to show: in one of the chosen projects, matching every search word, and, for the plan and priority filters, the tickets that meet
+ * both, with the epics above them. Both are judged on one ticket, so an epic is kept only for a ticket under it that meets both.
+ */
+export function visibleTickets<T extends ViewTicket>(tickets: readonly T[], { projects = new Set(), search = "", plan = null, priorities = new Set() }: PickFilter = {}): T[] {
   const words = search.trim().toLowerCase();
+  const kept = plan === null && priorities.size === 0 ? null : keptWithAncestors(tickets, (t) =>
+    (plan === null || hasPlan(t, plan.pattern) === (plan.choice === "with")) && (priorities.size === 0 || priorities.has(t.priority)));
   return tickets.filter((t) => (projects.size === 0 || projects.has(projectOf(t)))
-    && (words === "" || `${t.key} ${t.title} ${t.project ?? ""}`.toLowerCase().includes(words)));
+    && (words === "" || `${t.key} ${t.title} ${t.project ?? ""}`.toLowerCase().includes(words))
+    && (kept === null || kept.has(t.key)));
+}
+
+/** The tracker's priorities, most urgent first and none last, by number and by the name Linear gives each: 1 is the most urgent, and 0 is none. */
+const PRIORITIES: readonly (readonly [number, string])[] = [[1, "Urgent"], [2, "High"], [3, "Medium"], [4, "Low"], [0, "No priority"]];
+export const PRIORITY_NAMES: Readonly<Record<number, string>> = Object.fromEntries(PRIORITIES);
+const PRIORITY_ORDER = PRIORITIES.map(([priority]) => priority);
+
+/** Each priority that a ticket a worker can be given has, most urgent first and none last, with how many have it. */
+export function priorityCounts(tickets: readonly ViewTicket[]): [number, number][] {
+  const work = workItems(tickets);
+  return PRIORITY_ORDER.map((p): [number, number] => [p, work.filter((t) => t.priority === p).length]).filter(([, n]) => n > 0);
+}
+
+/** The priority filter remembered in the browser, as numbers, dropping anything that is not a priority. */
+export const prioritiesOf = (remembered: ReadonlySet<string>): Set<number> =>
+  new Set([...remembered].filter((value) => /^\d$/.test(value)).map(Number).filter((p) => PRIORITY_ORDER.includes(p)));
+
+/** How many of the tickets a worker can be given have a plan of their own, and how many have none. */
+export function planCounts(tickets: readonly ViewTicket[], plan: RegExp): Readonly<{ with: number; without: number }> {
+  const work = workItems(tickets);
+  const planned = work.filter((t) => hasPlan(t, plan)).length;
+  return { with: planned, without: work.length - planned };
+}
+
+/**
+ * What the board says about a ticket with no plan of its own, and whether its parent's plan covers it: a worker is briefed with its parent's
+ * plan as well as its own. Null when the ticket has a plan. `tickets` is every ticket the board knows, parents included.
+ */
+export function missingPlan(ticket: ViewTicket, plan: RegExp, tickets: readonly ViewTicket[]): Readonly<{ note: string; covered: boolean }> | null {
+  if (hasPlan(ticket, plan)) return null;
+  const parent = tickets.find((t) => t.key === ticket.parent);
+  if (parent !== undefined && hasPlan(parent, plan)) return { note: `No plan of its own. A worker reads its parent ${parent.key}'s plan.`, covered: true };
+  return { note: "No plan attached. Attach one before a worker starts this.", covered: false };
 }
 
 /** Each project and how many tickets it holds, most first, then by name. */
@@ -134,12 +219,13 @@ export function remember(storage: Storage | null, name: string, values: Readonly
 }
 
 /** A run's status on the board, after GitHub's Actions runs: each has its own icon and filter. */
-export type RunStatus = "needs-you" | "working" | "blocked" | "queued" | "awaiting-review" | "completed" | "failed" | "cancelled";
+export type RunStatus = "needs-you" | "working" | "planning" | "blocked" | "queued" | "awaiting-review" | "completed" | "failed" | "cancelled";
 
 /** Every status, in the order the filters list them: what needs a person first, what is settled last. */
 export const RUN_STATUSES: readonly Readonly<{ status: RunStatus; label: string }>[] = [
   { status: "needs-you", label: "Needs you" },
   { status: "working", label: "In progress" },
+  { status: "planning", label: "Planning" },
   { status: "blocked", label: "Blocked" },
   { status: "queued", label: "Queued" },
   { status: "awaiting-review", label: "Awaiting review" },
@@ -185,7 +271,7 @@ export function waitsOn(entry: ViewEntry, entries: readonly ViewEntry[]): ViewBl
  */
 export function runStatus(entry: ViewEntry, entries: readonly ViewEntry[] = []): RunStatus {
   if (entry.phase === "queued") return waitsOn(entry, entries).length > 0 ? "blocked" : "queued";
-  if (entry.phase !== "finished") return entry.waiting ? "needs-you" : "working";
+  if (entry.phase !== "finished") return entry.waiting ? "needs-you" : entry.plan ? "planning" : "working";
   if (entry.trackerState === "completed") return "completed";
   if (entry.trackerState === "canceled" || entry.trackerState === "duplicate") return "cancelled";
   const kind = entry.outcome?.kind ?? "";
@@ -234,5 +320,48 @@ export function terminalLink(template: string | null, entry: ViewEntry): string 
   return template.replace(/\{(workspace|pane|key)\}/g, (_, name: string) => encodeURIComponent(values[name]));
 }
 
-/** The Queue button's words for `count` selected tickets. */
-export const queueLabel = (count: number): string => (count === 0 ? "Select tickets to queue" : `Queue ${count} ticket${count === 1 ? "" : "s"}`);
+type Choice = Readonly<{ model: string; effort: string }>;
+
+/** The model and effort the tickets queued next run with: the default, with the parts chosen for this batch in its place. */
+export const batchChoice = (defaults: Choice, batch: Partial<Choice>): Choice => ({ ...defaults, ...batch });
+
+/**
+ * The parts of `chosen` that differ from the default, which is all a batch keeps. A part chosen equal to the default is dropped, so the batch
+ * follows the default there when the default changes.
+ */
+export const batchOverride = (defaults: Choice, chosen: Choice): Partial<Choice> => ({
+  ...(chosen.model === defaults.model ? {} : { model: chosen.model }),
+  ...(chosen.effort === defaults.effort ? {} : { effort: chosen.effort }),
+});
+
+/** Whether a batch runs on the default, having chosen nothing of its own. */
+export const isDefaultBatch = (batch: Partial<Choice>): boolean => Object.keys(batch).length === 0;
+
+/** What the Pick footer says beside the batch's model and effort. */
+export const batchNote = (defaults: Choice, batch: Partial<Choice>): string =>
+  isDefaultBatch(batch) ? "The default" : `These tickets only. The default is ${defaults.model} at ${defaults.effort} effort`;
+
+/** What the Board says about how many workers run at once. */
+export const workersLabel = (max: number): string => `Up to ${max} worker${max === 1 ? "" : "s"} at once`;
+
+/** The Queue button's words for `count` selected tickets, `planning` of which are planned first. */
+export function queueLabel(count: number, planning = 0): string {
+  if (count === 0) return "Select tickets to queue";
+  const queue = `Queue ${count} ticket${count === 1 ? "" : "s"}`;
+  if (planning === 0) return queue;
+  const which = planning < count ? String(planning) : count === 1 ? "it" : "all";
+  return `${queue}, planning ${which} first`;
+}
+
+/** How many of `tickets` have no plan of their own, so would be planned first. */
+export const unplannedCount = (tickets: readonly ViewTicket[], plan: RegExp): number => tickets.filter((t) => !hasPlan(t, plan)).length;
+
+/**
+ * The model and effort a run uses, as its row names them: a ticket still to be planned names its planning run's too, and one worked from a
+ * planning run's plan says so, since nobody agreed that plan.
+ */
+export function runChoiceLabel(entry: ViewEntry): string {
+  const run = `${entry.model}/${entry.effort}`;
+  if (entry.plan) return `plan on ${entry.plan.model}/${entry.plan.effort}, then ${run}`;
+  return entry.planned ? `${run} on an unattended plan` : run;
+}

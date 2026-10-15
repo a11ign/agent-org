@@ -6,7 +6,8 @@
 // header). Nothing here is a fact about one repository: a worker chooses the repository and reads its own `CLAUDE.md`. The optional `brief`,
 // `deny`, `plugins` and `connectors` say how workers behave on this machine, for example how they share its dev servers with each other and with
 // the person, and which of the person's connectors they may call.
-// The optional `terminal` says where this machine serves a worker's terminal in a browser, if it does.
+// The optional `terminal` says where this machine serves a worker's terminal in a browser, if it does, and the optional `plan` how the board
+// recognises a ticket's plan among the files uploaded to it.
 //
 // READ RAW, AS `haiku-brief.ts` READS ITS KEY. `readHostConfig` ignores unknown keys, so `tickets` is inert to every existing reader, and this
 // module does not teach the strict reader a block only ticket mode uses. It imports neither `host-config.ts` nor `project-config.ts`: both
@@ -43,11 +44,25 @@ export type TicketSettings = Readonly<{
   plugins: readonly string[];
   /** The web address of a run's live terminal, with `{workspace}`, `{pane}` and `{key}` filled in per run, or null when this machine serves none. */
   terminal: string | null;
+  /** A regular expression the name of a file uploaded to a ticket matches when it is the ticket's plan, or null when the board looks for none. */
+  plan: string | null;
+  /** How a ticket with no plan is planned before it is worked, or null when this machine plans none. */
+  planner: Planner | null;
+  /** The tracker state a ticket moves to when a worker starts implementing it, if it has not started, or null to leave its state alone. */
+  workingState: string | null;
   /**
    * The connector tools a worker may call, as regular expressions matched against the tool's name, each anchored at its start with `^mcp__`.
    * Every other connector stays refused. None by default.
    */
   connectors: readonly string[];
+}>;
+
+/** What a planning run is told, and where its plan leaves the ticket. */
+export type Planner = Readonly<{
+  /** The planning worker's instruction, with `{key}` and `{dir}` filled in per run: the ticket, and the folder its plan files go in. */
+  run: string;
+  /** The tracker state a ticket moves to once its plan is attached, if it has not started, or null to leave its state alone. */
+  state: string | null;
 }>;
 
 export class TicketSettingsRefusal extends Error {
@@ -96,6 +111,43 @@ function terminalTemplate(value: unknown): string | null {
   return value;
 }
 
+/** Refuses `field` unless `pattern` compiles as a regular expression. */
+function refuseUnlessRegularExpression(pattern: string, field: string): void {
+  try {
+    new RegExp(pattern);
+  } catch {
+    throw new TicketSettingsRefusal(field, `is not a regular expression: ${JSON.stringify(pattern)}`);
+  }
+}
+
+function planPattern(value: unknown): string | null {
+  if (value === undefined) return null;
+  const shape = "must be a regular expression that the name of a ticket's uploaded plan matches, such as \"-plan-[^/]*\\\\.md$\"";
+  if (typeof value !== "string" || value === "") throw new TicketSettingsRefusal("tickets.plan", shape);
+  refuseUnlessRegularExpression(value, "tickets.plan");
+  return value;
+}
+
+const PLANNER_SHAPE = "must be { \"run\": \"<the planning worker's instruction, naming {key} and {dir}>\", \"state\": \"<optional: the state a planned ticket moves to>\" }";
+
+/** A planner needs the plan pattern, which is how the board knows which tickets already have a plan. */
+function plannerOf(value: unknown, plan: string | null): Planner | null {
+  if (value === undefined) return null;
+  if (!isObject(value) || typeof value.run !== "string" || !value.run.includes("{key}") || !value.run.includes("{dir}")) {
+    throw new TicketSettingsRefusal("tickets.planner", PLANNER_SHAPE);
+  }
+  const state = stateName(value.state, "tickets.planner.state");
+  if (plan === null) throw new TicketSettingsRefusal("tickets.planner", "needs tickets.plan, which says which tickets have a plan already");
+  return Object.freeze({ run: value.run, state });
+}
+
+/** A state's name, without the spaces around it, which a state's name in the tracker never has; null when the host file names none. */
+function stateName(value: unknown, field: string): string | null {
+  if (value === undefined) return null;
+  if (typeof value !== "string" || value.trim() === "") throw new TicketSettingsRefusal(field, "must be a state's name, such as \"In Progress\"");
+  return value.trim();
+}
+
 const CONNECTOR_SHAPE = "a regular expression anchored at the tool's name, such as \"^mcp__claude_ai_Linear__(get|list|search)_\"";
 
 /**
@@ -108,11 +160,7 @@ function connectorPatterns(value: unknown): readonly string[] {
   return Object.freeze(value.map((pattern: unknown, i) => {
     const field = `tickets.connectors[${i}]`;
     if (typeof pattern !== "string" || !pattern.startsWith("^mcp__")) throw new TicketSettingsRefusal(field, `must be ${CONNECTOR_SHAPE}, not ${JSON.stringify(pattern)}`);
-    try {
-      new RegExp(pattern);
-    } catch {
-      throw new TicketSettingsRefusal(field, `is not a regular expression: ${JSON.stringify(pattern)}`);
-    }
+    refuseUnlessRegularExpression(pattern, field);
     return pattern;
   }));
 }
@@ -125,11 +173,7 @@ function denyRules(value: unknown): readonly DenyRule[] {
     if (!isObject(rule) || typeof rule.pattern !== "string" || rule.pattern === "" || typeof rule.reason !== "string" || rule.reason === "") {
       throw new TicketSettingsRefusal(field, `must be ${DENY_RULE_SHAPE}`);
     }
-    try {
-      new RegExp(rule.pattern);
-    } catch {
-      throw new TicketSettingsRefusal(`${field}.pattern`, `is not a regular expression: ${JSON.stringify(rule.pattern)}`);
-    }
+    refuseUnlessRegularExpression(rule.pattern, `${field}.pattern`);
     return Object.freeze({ pattern: rule.pattern, reason: rule.reason });
   }));
 }
@@ -150,6 +194,7 @@ export function parseTicketSettings(host: unknown, home: string = homedir()): Ti
   const stateDir = host.stateDir === undefined ? join(home, ".local", "state", "agent-org") : absolutePath(host.stateDir, "stateDir");
   const session = tickets.herdrSession ?? "tickets";
   if (typeof session !== "string" || !/^[A-Za-z0-9_-]+$/.test(session)) throw new TicketSettingsRefusal("tickets.herdrSession", "must be a herdr session name");
+  const plan = planPattern(tickets.plan);
   return Object.freeze({
     clones: Object.freeze(repos),
     max: positiveInteger(tickets.max, "tickets.max", 3),
@@ -162,6 +207,9 @@ export function parseTicketSettings(host: unknown, home: string = homedir()): Ti
     deny: denyRules(tickets.deny),
     plugins: pluginList(tickets.plugins),
     terminal: terminalTemplate(tickets.terminal),
+    plan,
+    planner: plannerOf(tickets.planner, plan),
+    workingState: stateName(tickets.workingState, "tickets.workingState"),
     connectors: connectorPatterns(tickets.connectors),
   });
 }

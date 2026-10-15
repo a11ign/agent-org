@@ -26,5 +26,6 @@ export default {
   // EVERY RUN HAS A PRIVATE `TMPDIR` (a11ign/a11ign#3854, from the #3846 incident): the globalSetup makes `~/.cache/a11ign/tmp/run-*`, each test file's worker
   // points `TMPDIR` at its own directory inside it, and the teardown names the files that left something and removes the run. Both paths are relative to `root`.
   globalSetup: ["src/private-tmp.ts"],
-  setupFiles: ["src/private-tmp-setup.ts"],
+  // EVERY TEST IS OFF THE NETWORK (`src/offline-fetch.ts`), after its TMPDIR is set.
+  setupFiles: ["src/private-tmp-setup.ts", "src/offline-setup.ts"],
 };

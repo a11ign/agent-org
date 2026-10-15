@@ -15,9 +15,10 @@
 //
 // THE CANARY HALF (agent-org#1324): a flag whose other home is the canary state is decided there, not in a declaration, so the same count reads `machinery-canary.json` through
 // `org-health.ts`'s `parseCanaryState` (the reader `machinery-flag.ts` uses). A flag ABSENT from that state, merged more than two hours before the read, and named by no open row
-// in a `ready` or `in-progress` state is the sixth merged-but-off kind of finding. An unreadable state, or a read of the open rows that did not happen, is UNKNOWN.
+// in a `ready` or `in-progress` state is the sixth merged-but-off kind of finding. The rows are the home repository's AND the other declared trackers' (agent-org#1372: a
+// switch row for code that lives in agent-org is filed there), the other trackers read only when the home rows name no such flag. An unreadable state, or a read of the open rows that did not happen, is UNKNOWN.
 //
-// A LEAF: it reads files and one `git log` per unset flag and runs no tick; `org-health.ts` turns its answer into a reading. The canary half imports `org-health.ts` at runtime,
+// A LEAF: it reads files, one `git log` per unset flag and the ticket port's by-label read of the other trackers, and runs no tick; `org-health.ts` turns its answer into a reading. The canary half imports `org-health.ts` at runtime,
 // which is safe because `org-health.ts` imports this module as a type only.
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
@@ -28,6 +29,8 @@ import { hostConfigPath, stateEntryPath } from "./host-config.ts";
 import { HOME_CHECKOUT } from "./project-config.ts";
 import { CLAIM_LABEL, READY_LABEL } from "./claim-labels.ts";
 import { CANARY_STATE_FILE, emptyCanaryState, parseCanaryState, type CanaryState } from "./org-health.ts";
+import { readRowsByLabel } from "./ticket-port/rows-by-label.ts"; // the owed rows are read through the port, so this leaf spawns nothing (`gh-call-ratchet.test.ts`)
+import { defaultRun } from "./work-gate/reads.ts"; // the gate's one runner: metered, and an identical read answered once
 
 /** The tool's root by this file's own location (`org-health.ts`'s `TOOL_ROOT`): the registry is read from the code that is running, not from the project's tree. */
 const TOOL_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -52,8 +55,10 @@ export const FLAGS_WITH_ANOTHER_HOME: Readonly<Record<string, string>> = Object.
   "messaging.refuseAskingAnnouncements": "switched by `machinery:flag` (agent-org#1222), which writes the canary state and not a declaration file",
   "gate.graphqlPacing": "switched by `machinery:flag` (agent-org#1240), which writes the canary state and not a declaration file",
   "review.rowReviewSkill": "switched by `machinery:flag` (agent-org#1268), which writes the canary state and not a declaration file",
+  "prs.ownerRouting": "switched by `machinery:flag` (agent-org#1325), which writes the canary state and not a declaration file",
   "gate.accountLimitPause": "switched by `machinery:flag` (agent-org#1307), which writes the canary state and not a declaration file",
   "retro.pinBump": "switched by `machinery:flag` (agent-org#1245), which writes the canary state and not a declaration file",
+  "checks.sameHeadRefail": "switched by `machinery:flag` (agent-org#1185), which writes the canary state and not a declaration file",
 });
 
 /** `export const AUTO_UNPARK_FLAG = "rows.autoUnpark"`: the shape the row's open-check greps, with a digit allowed after the first letter so `queue.reenqueue2` is not skipped. */
@@ -173,12 +178,54 @@ const namesOwedKey = (row: OpenRow, key: string): boolean => (row.labels ?? []).
   && new RegExp(`(^|[^\\w.])${key.replace(/\./g, "\\.")}(?![\\w.])`).test(`${row.title}\n${row.body ?? ""}`);
 
 /**
- * THE CANARY VIOLATION, PURE: the canary-homed flags that are absent from `state`, merged more than `CANARY_ABSENT_MS` before `now`, and named by no owed open row.
- * A flag the state carries, on or off, is decided and not counted. A merge date git could not give makes the whole answer unknown, because the two-hour test cannot be made for it.
- * @param openRows the open rows, or `null` when they could not be read; a null read with a flag past its window is unknown, never a clean list
+ * THE OTHER TRACKERS, from a project declaration: each `tracker` entry's repository except the project's own, which is the one keyed `""`. A document with no list names none.
+ * @param doc the parsed `project.json`
  */
-export function canaryAbsentFlags({ shipped, state, openRows, now, merge, anotherHome = FLAGS_WITH_ANOTHER_HOME }: {
-  shipped: readonly ShippedFlag[]; state: CanaryState; openRows: readonly OpenRow[] | null; now: number;
+export function otherTrackerRepos(doc: unknown): string[] {
+  const trackers: unknown = (doc as { tracker?: unknown } | null)?.tracker;
+  if (!Array.isArray(trackers)) return [];
+  return trackers.flatMap((entry: { key?: unknown; repo?: unknown; } | null) => entry?.key !== "" && typeof entry?.repo === "string" ? [entry.repo] : []);
+}
+
+/**
+ * THE OWED ROWS OF THE OTHER TRACKERS, read one `label` at a time per repository. A refused list of any one is UNKNOWN, never an empty set: a row that was not read cannot be
+ * known to be absent.
+ * @param list the open rows of `repo` that carry `label`, or `null` when they could not be read (`liveOwedRows` by default)
+ */
+export function owedRowsOf(repos: readonly string[], list: (repo: string, label: string) => OpenRow[] | null): OpenRow[] | { unknown: string; } {
+  const rows: OpenRow[] = [];
+  for (const repo of repos) {
+    for (const label of OWED_LABELS) {
+      const listed = list(repo, label);
+      if (listed === null) return { unknown: `the open \`${label}\` rows of ${repo} could not be read, so no row there is known to be absent` };
+      rows.push(...listed);
+    }
+  }
+  return rows;
+}
+
+/**
+ * The open rows of `repo` that carry `label`, read through the ticket port, which is a connection and not a search. `null` when the read was refused or failed, or when the
+ * population is longer than the port holds whole: a list that may be cut is not the whole set.
+ */
+export function liveOwedRows(repo: string, label: string): OpenRow[] | null {
+  try {
+    const nodes: { title: string; body: string | null; labels: { nodes: { name: string; }[]; }; }[] = readRowsByLabel({ label, state: "OPEN", select: "title body labels(first:100){nodes{name}}", run: defaultRun, repo });
+    return nodes.map((node) => ({ title: node.title, body: node.body, labels: node.labels.nodes }));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * THE CANARY VIOLATION, PURE: the canary-homed flags that are absent from `state`, merged more than `CANARY_ABSENT_MS` before `now`, and named by no owed open row, in the home
+ * repository or in another declared tracker. A flag the state carries, on or off, is decided and not counted. A merge date git could not give makes the whole answer unknown, because
+ * the two-hour test cannot be made for it.
+ * @param openRows the home repository's open rows, or `null` when they could not be read; a null read with a flag past its window is unknown, never a clean list
+ * @param otherOwedRows the other trackers' owed rows, asked ONLY for a flag the home rows do not name (a refused read there is unknown)
+ */
+export function canaryAbsentFlags({ shipped, state, openRows, otherOwedRows = () => [], now, merge, anotherHome = FLAGS_WITH_ANOTHER_HOME }: {
+  shipped: readonly ShippedFlag[]; state: CanaryState; openRows: readonly OpenRow[] | null; otherOwedRows?: () => readonly OpenRow[] | { unknown: string; }; now: number;
   merge: (flag: ShippedFlag) => { mergedAt: string | null; pr: number | null; }; anotherHome?: Readonly<Record<string, string>>;
 }): CanaryAbsentFlag[] | { unknown: string; } {
   const past: CanaryAbsentFlag[] = [];
@@ -190,7 +237,11 @@ export function canaryAbsentFlags({ shipped, state, openRows, now, merge, anothe
   }
   if (past.length === 0) return [];
   if (openRows === null) return { unknown: `the open rows could not be read, so the rows that name ${past.map((flag) => `\`${flag.key}\``).join(", ")} are not known` };
-  return past.filter((flag) => !openRows.some((row) => namesOwedKey(row, flag.key)));
+  const unnamed = past.filter((flag) => !openRows.some((row) => namesOwedKey(row, flag.key)));
+  if (unnamed.length === 0) return [];
+  const others = otherOwedRows();
+  if ("unknown" in others) return others;
+  return unnamed.filter((flag) => !others.some((row) => namesOwedKey(row, flag.key)));
 }
 
 /**
@@ -204,9 +255,9 @@ export function canaryAbsentFlags({ shipped, state, openRows, now, merge, anothe
  * @param now the time of the read, in epoch milliseconds
  */
 export function readFlagLedger({ toolRoot = TOOL_ROOT, projectRoot = HOME_CHECKOUT, hostPath = hostConfigPath(), read = (path) => readFileSync(path, "utf8"), list = listDirectory, merge = (flag) => mergeOf(flag, { toolRoot }),
-  canary = () => readCanaryState(stateEntryPath(CANARY_STATE_FILE)), openRows = null, now = Date.now() }:
+  canary = () => readCanaryState(stateEntryPath(CANARY_STATE_FILE)), openRows = null, listOwed = liveOwedRows, now = Date.now() }:
   { toolRoot?: string; projectRoot?: string; hostPath?: string; read?: (path: string) => string; list?: (dir: string) => { name: string; directory: boolean; }[]; merge?: (flag: ShippedFlag) => { mergedAt: string | null; pr: number | null; };
-    canary?: () => CanaryState | { unknown: string; }; openRows?: readonly OpenRow[] | null; now?: number; } = {}): FlagLedger {
+    canary?: () => CanaryState | { unknown: string; }; openRows?: readonly OpenRow[] | null; listOwed?: (repo: string, label: string) => OpenRow[] | null; now?: number; } = {}): FlagLedger {
   const shipped = discoverFlags({ toolRoot, read, list });
   if (shipped === null) return { unknown: `${join(toolRoot, "src")} could not be listed, so no flag was found` };
   if (shipped.length === 0) return { unknown: `no \`*_FLAG\` constant was found under ${join(toolRoot, "src")}, so none was compared` };
@@ -229,7 +280,9 @@ export function readFlagLedger({ toolRoot = TOOL_ROOT, projectRoot = HOME_CHECKO
   }
   const state = canary();
   if ("unknown" in state) return state;
-  const canaryAbsent = canaryAbsentFlags({ shipped, state, openRows, now, merge });
+  // `project.json` is read first and is required, so `declarations[0]` is its document; the other trackers are read only when a flag needs them
+  const otherRepos = otherTrackerRepos(declarations[0]);
+  const canaryAbsent = canaryAbsentFlags({ shipped, state, openRows, otherOwedRows: () => owedRowsOf(otherRepos, listOwed), now, merge });
   if ("unknown" in canaryAbsent) return canaryAbsent;
   return { shipped: shipped.length, unset: unsetFlags({ shipped, declarations }).map((flag) => ({ ...flag, ...merge(flag) })), canaryAbsent };
 }

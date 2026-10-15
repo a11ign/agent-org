@@ -1,7 +1,8 @@
 // no-token: gh -- `fetch` and `security` are injected; nothing reaches Linear or the Keychain
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { LINEAR_API, downloadName, linearSource, pullState, readLinearKey, uploadLinks } from "./linear.ts";
 import type { Ticket } from "./source.ts";
@@ -39,6 +40,20 @@ test("assigned() reads every page of the viewer's unfinished tickets, sending th
   const second = JSON.parse(String(requests[1].init.body));
   assert.equal(second.variables.after, "c1", "the second page starts where the first ended");
   assert.match(second.query, /nin: \["completed", "canceled", "duplicate"\]/, "finished tickets are not offered, nor duplicates, which Linear types on their own");
+});
+
+test("each ticket names the files uploaded to it, read in the same request as the list, and not its other links, such as a pull request", async () => {
+  const { fetch, requests } = linear([{ data: { viewer: { assignedIssues: { nodes: [
+    node("NBF-1", { attachments: { nodes: [
+      { url: "https://uploads.linear.app/org/a/plan", title: "NBF-1-0001-plan-fit-to-view.md" },
+      { url: "https://github.com/netboxlabs/nbl-ui-netbox/pull/1", title: "feat: fit to view" },
+    ] } }),
+    node("NBF-2"),
+  ], pageInfo: { hasNextPage: false, endCursor: null } } } } }]);
+  const [one, two] = await linearSource({ key: "k", fetch }).assigned();
+  assert.deepEqual(one.uploads, ["NBF-1-0001-plan-fit-to-view.md"]);
+  assert.deepEqual(two.uploads, [], "a ticket with nothing attached has no uploads");
+  assert.equal(requests.length, 1, "read with the list, not one request per ticket");
 });
 
 test("read() finds a ticket by its team and number, returns null for a key Linear has no ticket for, and throws when Linear cannot be asked", async () => {
@@ -166,4 +181,128 @@ test("stateTypes() reads every key's state type in one aliased request by team a
   const sent = JSON.parse(String(requests[0].init.body));
   assert.deepEqual(sent.variables, { t0: "NBF", n0: 1270, t1: "NBF", n1: 9999, t2: "VE", n2: 61 }, "keys travel as variables, never in the query text");
   assert.equal(sent.query.includes("NBF-1270"), false);
+});
+
+/** Linear's answer to the read attachPlan starts with: the ticket's id, its state's type, its team's states and its uploads. */
+const planning = (type: string, ...uploads: { url: string; title: string }[]) => ({ data: { issues: { nodes: [{
+  id: "uuid-1", state: { type, name: type === "backlog" ? "Backlog" : "In Progress" }, team: { states: { nodes: [{ id: "s-backlog", name: "Backlog" }, { id: "s-planned", name: "Planned" }] } }, attachments: { nodes: uploads },
+}] } } });
+const signed = (n: number) => ({ data: { fileUpload: { success: true, uploadFile: { uploadUrl: `https://storage.example/upload-${n}?sig=1`, assetUrl: `https://uploads.linear.app/org/asset-${n}`,
+  headers: [{ key: "x-goog-content-length-range", value: "1,100" }] } } } });
+/** Linear's answer to a mutation it carried out, and to one it did not. */
+const done = { data: { issueUpdate: { success: true }, attachmentCreate: { success: true } } };
+const notDone = { data: { issueUpdate: { success: false }, attachmentCreate: { success: false } } };
+const planFiles = () => {
+  const dir = tmpDir("linear-plan-");
+  const plan = join(dir, "NBF-1-0001-plan-fit-to-view.md");
+  const adr = join(dir, "NBF-1-adr-0001-zoom-anchor.md");
+  writeFileSync(plan, "# Fit to view\n");
+  writeFileSync(adr, "# Zoom anchor\n");
+  return [plan, adr];
+};
+
+test("attachPlan() uploads each file to the address Linear signs, without the key, attaches it under its own name, and moves an unstarted ticket to the planner's state", async () => {
+  const files = planFiles();
+  const { fetch, requests } = linear([planning("backlog"), signed(1), done, signed(2), done, done], {
+    "https://storage.example/upload-1?sig=1": { status: 200 }, "https://storage.example/upload-2?sig=1": { status: 200 },
+  });
+  await linearSource({ key: "lin_api_secret", fetch }).attachPlan!("NBF-1", files, "Planned");
+  const puts = requests.filter((r) => r.init.method === "PUT");
+  assert.deepEqual(puts.map((r) => r.url), ["https://storage.example/upload-1?sig=1", "https://storage.example/upload-2?sig=1"]);
+  for (const put of puts) {
+    const headers = put.init.headers as Record<string, string>;
+    assert.equal(headers.Authorization, undefined, "the key never goes to the storage address");
+    assert.equal(headers["x-goog-content-length-range"], "1,100", "the headers Linear signed are sent as they are");
+  }
+  const bodies = requests.filter((r) => r.url === LINEAR_API).map((r) => JSON.parse(String(r.init.body)));
+  assert.deepEqual(bodies.filter((b) => /attachmentCreate/.test(b.query)).map((b) => [b.variables.issueId, b.variables.title, b.variables.url]), [
+    ["uuid-1", "NBF-1-0001-plan-fit-to-view.md", "https://uploads.linear.app/org/asset-1"],
+    ["uuid-1", "NBF-1-adr-0001-zoom-anchor.md", "https://uploads.linear.app/org/asset-2"],
+  ]);
+  assert.deepEqual(bodies.filter((b) => /issueUpdate/.test(b.query)).map((b) => b.variables), [{ id: "uuid-1", stateId: "s-planned" }]);
+});
+
+test("attachPlan() attaches nothing twice, so a cut-off attempt can be repeated", async () => {
+  const files = planFiles();
+  const { fetch, requests } = linear([planning("backlog", { url: "https://uploads.linear.app/org/asset-1", title: "NBF-1-0001-plan-fit-to-view.md" }), signed(2), done, done], {
+    "https://storage.example/upload-2?sig=1": { status: 200 },
+  });
+  await linearSource({ key: "k", fetch }).attachPlan!("NBF-1", files, "Planned");
+  const titles = requests.filter((r) => r.url === LINEAR_API).map((r) => JSON.parse(String(r.init.body))).filter((b) => /attachmentCreate/.test(b.query)).map((b) => b.variables.title);
+  assert.deepEqual(titles, ["NBF-1-adr-0001-zoom-anchor.md"]);
+});
+
+test("attachPlan() leaves a started ticket's state alone, and any state when the planner names none", async () => {
+  for (const [type, state] of [["started", "Planned"], ["backlog", null]] as const) {
+    const [plan] = planFiles();
+    const { fetch, requests } = linear([planning(type), signed(1), done], { "https://storage.example/upload-1?sig=1": { status: 200 } });
+    await linearSource({ key: "k", fetch }).attachPlan!("NBF-1", [plan], state);
+    assert.equal(requests.some((r) => r.url === LINEAR_API && /issueUpdate/.test(String(r.init.body))), false, `${type}, ${state}`);
+  }
+});
+
+test("attachPlan() says so when the storage refuses an upload, and attaches nothing for it", async () => {
+  const [plan] = planFiles();
+  const { fetch, requests } = linear([planning("backlog"), signed(1)], { "https://storage.example/upload-1?sig=1": { status: 403 } });
+  await assert.rejects(linearSource({ key: "k", fetch }).attachPlan!("NBF-1", [plan], "Planned"), /the upload of NBF-1-0001-plan-fit-to-view\.md was refused \(403\)/);
+  assert.equal(requests.some((r) => /attachmentCreate/.test(String(r.init.body ?? ""))), false);
+});
+
+test("attachPlan() still attaches the plan when the ticket's team has no state of the planner's name, leaves the state alone and says so", async () => {
+  const [plan] = planFiles();
+  const { fetch, requests } = linear([planning("backlog"), signed(1), done], { "https://storage.example/upload-1?sig=1": { status: 200 } });
+  const note = await linearSource({ key: "k", fetch }).attachPlan!("NBF-1", [plan], "Todo");
+  assert.equal(note, "NBF-1's team has no state named Todo, so it stays in Backlog");
+  assert.ok(requests.some((r) => /attachmentCreate/.test(String(r.init.body ?? ""))), "the plan is attached");
+  assert.equal(requests.some((r) => /issueUpdate/.test(String(r.init.body ?? ""))), false);
+});
+
+test("attachPlan() says nothing when it did all it was asked", async () => {
+  const [plan] = planFiles();
+  const { fetch } = linear([planning("backlog"), signed(1), done, done], { "https://storage.example/upload-1?sig=1": { status: 200 } });
+  assert.equal(await linearSource({ key: "k", fetch }).attachPlan!("NBF-1", [plan], "Planned"), null);
+});
+
+/** Linear's answer to moveToWorkingState's read: the ticket's id, its state, and its team's states. */
+const working = (type: string, name: string) => ({ data: { issues: { nodes: [{
+  id: "uuid-1", state: { type, name }, team: { states: { nodes: [{ id: "s-planned", name: "Planned" }, { id: "s-progress", name: "In Progress" }] } },
+}] } } });
+
+test("moveToWorkingState() moves a ticket not yet started, a planned one included, to the working state", async () => {
+  for (const [type, name] of [["unstarted", "Planned"], ["backlog", "Backlog"], ["triage", "Triage"]]) {
+    const { fetch, requests } = linear([working(type, name), done]);
+    assert.equal(await linearSource({ key: "k", fetch }).moveToWorkingState!("NBF-1", "In Progress"), null);
+    const update = requests.map((r) => JSON.parse(String(r.init.body))).find((b) => /issueUpdate/.test(b.query));
+    assert.deepEqual(update?.variables, { id: "uuid-1", stateId: "s-progress" }, type);
+  }
+});
+
+test("moveToWorkingState() leaves a ticket already started or finished where it is", async () => {
+  for (const [type, name] of [["started", "In Review"], ["completed", "Done"]]) {
+    const { fetch, requests } = linear([working(type, name)]);
+    assert.equal(await linearSource({ key: "k", fetch }).moveToWorkingState!("NBF-1", "In Progress"), null);
+    assert.equal(requests.length, 1, `${type}: only read`);
+  }
+});
+
+test("moveToWorkingState() keeps the ticket's state when its team has no state of that name, and says so", async () => {
+  const { fetch, requests } = linear([working("unstarted", "Planned")]);
+  assert.equal(await linearSource({ key: "k", fetch }).moveToWorkingState!("NBF-1", "Doing"), "NBF-1's team has no state named Doing, so it stays in Planned");
+  assert.equal(requests.length, 1);
+});
+
+test("moveToWorkingState() says so when Linear has no ticket by that key", async () => {
+  const { fetch } = linear([{ data: { issues: { nodes: [] } } }]);
+  await assert.rejects(linearSource({ key: "k", fetch }).moveToWorkingState!("NBF-404", "In Progress"), /Linear has no ticket NBF-404/);
+});
+
+test("a state move Linear answers with success false is a refusal, not a move", async () => {
+  const { fetch } = linear([working("unstarted", "Planned"), notDone]);
+  await assert.rejects(linearSource({ key: "k", fetch }).moveToWorkingState!("NBF-1", "In Progress"), /Linear did not move NBF-1 to In Progress/);
+});
+
+test("an attachment Linear answers with success false is a refusal, not an attached plan", async () => {
+  const [plan] = planFiles();
+  const { fetch } = linear([planning("backlog"), signed(1), notDone], { "https://storage.example/upload-1?sig=1": { status: 200 } });
+  await assert.rejects(linearSource({ key: "k", fetch }).attachPlan!("NBF-1", [plan], "Planned"), /Linear did not attach NBF-1-0001-plan-fit-to-view\.md/);
 });

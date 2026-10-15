@@ -1,0 +1,11 @@
+A hold-reminder order quotes the manager direction posted on the held pull request after the hold was taken: the newest three, verbatim and attributed by seat and author, each cut at 1200 characters, with the count of older ones named. The wake and the decision asked of the escalation seat both quote them. A comment counts only when a manager login posted it and its last `decided-by` marker names a manager seat. The `decided-by` parse lives in `src/decided-by.ts`, a leaf that `claim-stall.ts` re-exports, so the hold module and the claim code share one parser. The manager logins are still copied into the hold module rather than imported from `lane-ownership.ts`, because importing it loads the project declaration and creates an import cycle through the wake.
+
+Acceptance: `node --test src/pr-hold-state-direction.test.ts` (run with `AGENT_ORG_HOST` set to a project declaration, as a worker's unit sets it; without it the module refuses to load on `main` and on this branch alike)
+
+Mutation (positive control, the new test file run against `origin/main`'s `src/pr-hold-state.ts`):
+- the wake quotes the direction (test 1): fails on `main`, `/Orchestrator ruling: drop your hold/` not in the order.
+- newest three quoted, oldest first (test 3): fails on `main`, `direction 3 is quoted`.
+- the cut at 1200 characters (test 4): fails on `main`, `/LONG x/` not in the order.
+- the negatives (test 2: earlier, worker and unnamed-seat comments are not quoted; test 5: no direction, none quoted) pass on `main`, as they should: nothing was quoted before either.
+
+Measured: `node --test src/pr-hold-state-direction.test.ts` with `AGENT_ORG_HOST` set to the machine's HOST declaration: `ℹ tests 6`, `ℹ pass 6`, `ℹ fail 0`. Without it the file refuses to load, on `main` as well. `pnpm run typecheck`: exit 0. `node --test` over `pr-hold.test.ts`, `pr-hold-state.test.ts`, `claim-stall.test.ts` and `work-gate-claim-stalled.test.ts`: 149 pass, 0 fail. Full suite (`pnpm test`) on the rebased tree: `VERDICT fail: 166 of 5722 tests failed in 694 files`. Against the earlier pre-rebase run (161 of 5604), six names are new: four in `src/packaging/org-health.test.ts` and two in the `prune-worktrees` tests. The same two files run on an `origin/main` export fail the same counts (4 and 2), so they predate this change. No lint script exists in this repository.

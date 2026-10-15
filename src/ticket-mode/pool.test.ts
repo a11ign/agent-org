@@ -1,7 +1,7 @@
 // no-token: gh -- herdr, git, Linear and the clock are all injected; nothing is spawned
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { runStatus } from "./board-view.ts";
@@ -35,16 +35,18 @@ function herdr(status: Map<string, string>, screen: { text: string } = { text: "
 
 /** `parents` gives a ticket its parent's key. A ticket without one is shaped as a run queued before tickets carried a parent. */
 function setup(max = 2, keys = ["NBF-1", "NBF-2", "NBF-3"], tickets: Record<string, unknown> = {},
-  { source: tracker = source, parents = {} }: { source?: TicketSource; parents?: Record<string, string> } = {}) {
+  { source: tracker = source, parents = {}, planFirst = [], pluginRecord }: { source?: TicketSource; parents?: Record<string, string>; planFirst?: string[]; pluginRecord?: string } = {}) {
   const root = tmpDir("ticket-pool-");
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox", "nbl-ui-platform-libs": "/repos/libs" }, stateDir: join(root, "state"), tickets });
   const queued = keys.map((key) => (key in parents ? { ...ticket(key), parent: parents[key] } : ticket(key)));
-  let queue: Queue = setPaused(enqueue(emptyQueue(max), queued, { model: "sonnet", effort: "high" }, 0), false);
+  const plan = planFirst.length === 0 ? null : { keys: new Set(planFirst), choice: { model: "opus", effort: "max" } };
+  let queue: Queue = setPaused(enqueue(emptyQueue(max), queued, { model: "sonnet", effort: "high" }, 0, plan), false);
   const store = { get: () => queue, set: (next: Queue) => { queue = next; } };
   const status = new Map<string, string>();
   const screen = { text: "" };
   const h = herdr(status, screen);
-  const pool = createPool(store, { settings, source: tracker, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: h.run, hostFile: "/work/.agent-org/host.json", now: () => 100, load: () => ({ load: 1, cores: 14 }), transcriptsRoot: join(root, "transcripts"), wait: async () => {} });
+  const pool = createPool(store, { settings, source: tracker, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: h.run, hostFile: "/work/.agent-org/host.json", now: () => 100, load: () => ({ load: 1, cores: 14 }), transcriptsRoot: join(root, "transcripts"), wait: async () => {},
+    pluginRecord: pluginRecord ?? join(root, "no-plugin-record.json") });
   const entry = (key: string) => queue.entries.find((e) => e.ticket.key === key)!;
   return { settings, pool, status, h, entry, store, root, screen };
 }
@@ -505,4 +507,296 @@ test("after a restart, a parked run herdr no longer lists is unparked", async ()
   status.delete(herdrName("NBF-1"));
   pool.reconcile();
   assert.deepEqual([entry("NBF-1").workspace, entry("NBF-1").outcome?.kind], [undefined, "needs-human"]);
+});
+
+const PLANNER = { plan: "-plan-[^/]*\\.md$", planner: { run: "Run the planner with: unattended: plan {key} into {dir}", state: "Planned" } };
+/** A tracker that records each plan it is asked to attach, and refuses with `refusal` when one is given. */
+function planTracker(refusal: string | null = null) {
+  const attached: { key: string; files: string[]; state: string | null }[] = [];
+  const tracker: TicketSource = { ...source, attachPlan: async (key, files, state) => {
+    if (refusal !== null) throw new Error(refusal);
+    attached.push({ key, files: [...files], state });
+    return null;
+  } };
+  return { tracker, attached };
+}
+/** Run `act` with the board's log captured, and return the lines it wrote. */
+async function captureStderr(act: () => Promise<void>): Promise<string[]> {
+  const written: string[] = [];
+  const write = process.stderr.write;
+  process.stderr.write = ((chunk: string) => { written.push(String(chunk)); return true; }) as typeof process.stderr.write;
+  try {
+    await act();
+  } finally {
+    process.stderr.write = write;
+  }
+  return written;
+}
+
+/** Let the pool's attaching, which a tick starts and does not wait for, finish. */
+const settled = async () => { for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setImmediate(resolve)); };
+
+test("a ticket queued to be planned first starts a planning run: it plans and changes no code, on the planning model, with the planning refusals added", async () => {
+  const { tracker } = planTracker();
+  const { pool, h, settings } = setup(1, ["NBF-1"], PLANNER, { source: tracker, planFirst: ["NBF-1"] });
+  await pool.tick();
+  const dir = ticketDir(settings, "NBF-1");
+  const brief = readFileSync(join(dir, "brief.md"), "utf8");
+  assert.match(brief, /^# Plan NBF-1: NBF-1\n/);
+  assert.ok(brief.includes(`Run the planner with: unattended: plan NBF-1 into ${join(dir, "plan")}`), "the machine's instruction, with the ticket and its plan folder filled in");
+  assert.match(brief, /\{ "kind": "planned" \}/);
+  const tail = h.calls.find((args) => args.includes("start"))!;
+  assert.deepEqual([tail[tail.indexOf("--model") + 1], tail[tail.indexOf("--effort") + 1]], ["opus", "max"], "the planning model and effort, not the run's");
+  assert.equal(JSON.parse(readFileSync(join(ticketFolder(settings, "NBF-1"), ".claude", "settings.local.json"), "utf8")).model, "opus");
+  const deny = JSON.parse(readFileSync(join(dir, "deny.json"), "utf8")) as { pattern: string }[];
+  for (const command of ["git commit -m plan", "gh pr create --draft", "node bin.ts ticket:worktree nbl-ui-netbox"]) {
+    assert.ok(deny.some(({ pattern }) => new RegExp(pattern).test(command)), `a planning run is refused ${command}`);
+  }
+  assert.equal(deny.some(({ pattern }) => new RegExp(pattern).test("gh pr view 12")), false, "it may still read a pull request");
+});
+
+test("a planning run that writes planned has its plan attached, and its ticket is queued again to be worked on its own model, told the plan was not a person's", async () => {
+  const { tracker, attached } = planTracker();
+  const { pool, h, status, entry, settings } = setup(1, ["NBF-1"], PLANNER, { source: tracker, planFirst: ["NBF-1"] });
+  await pool.tick();
+  const dir = ticketDir(settings, "NBF-1");
+  writeFileSync(join(dir, "plan", "NBF-1-0001-plan-fit.md"), "# Fit\n");
+  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "planned" }));
+  status.set(herdrName("NBF-1"), "idle");
+  await pool.tick();
+  await settled();
+  assert.deepEqual(attached, [{ key: "NBF-1", files: [join(dir, "plan", "NBF-1-0001-plan-fit.md")], state: "Planned" }]);
+  assert.ok(h.calls.some((args) => args.includes("close") && args.includes("w1")), "the planning run's workspace is closed");
+  // The slot it freed is filled in the same tick, so the ticket is worked at once, as a fresh run.
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").workspace, entry("NBF-1").plan, entry("NBF-1").planned, entry("NBF-1").outcome], ["running", "w2", undefined, true, undefined]);
+  const brief = readFileSync(join(dir, "brief.md"), "utf8");
+  assert.match(brief, /^# NBF-1: NBF-1\n/);
+  assert.match(brief, /written by an unattended planning run, not agreed with a person/);
+  const start = h.calls.filter((args) => args.includes("start")).at(-1)!;
+  assert.equal(start[start.indexOf("--model") + 1], "sonnet");
+});
+
+test("a plan is attached once, though more ticks see its outcome while it is attached", async () => {
+  let release: () => void = () => {};
+  const calls: string[] = [];
+  const tracker: TicketSource = { ...source, attachPlan: (key) => { calls.push(key); return new Promise<string | null>((resolve) => { release = () => resolve(null); }); } };
+  const { pool, status, entry, settings } = setup(1, ["NBF-1"], PLANNER, { source: tracker, planFirst: ["NBF-1"] });
+  await pool.tick();
+  writeFileSync(join(ticketDir(settings, "NBF-1"), "plan", "NBF-1-0001-plan-fit.md"), "# Fit\n");
+  writeFileSync(join(ticketDir(settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "planned" }));
+  status.set(herdrName("NBF-1"), "idle");
+  await pool.tick();
+  await pool.tick();
+  release();
+  await settled();
+  assert.deepEqual(calls, ["NBF-1"]);
+  assert.equal(entry("NBF-1").phase, "queued");
+});
+
+test("a plan the tracker will not take, a planning run that wrote no plan, and a planned outcome from a run that was not planning each end for a person", async () => {
+  const cases = [
+    { name: "refused", tracker: planTracker("Linear answered 400").tracker, files: true, planFirst: ["NBF-1"], reason: /the plan could not be attached \(Linear answered 400\): its files are in .*plan/ },
+    { name: "no plan", tracker: planTracker().tracker, files: false, planFirst: ["NBF-1"], reason: /the planning run wrote no plan in .*plan/ },
+    { name: "not planning", tracker: planTracker().tracker, files: false, planFirst: [], reason: /wrote a planned outcome, but its run was not a planning run/ },
+  ];
+  for (const c of cases) {
+    const { pool, status, entry, settings } = setup(1, ["NBF-1"], PLANNER, { source: c.tracker, planFirst: c.planFirst });
+    await pool.tick();
+    const dir = ticketDir(settings, "NBF-1");
+    if (c.files) writeFileSync(join(dir, "plan", "NBF-1-0001-plan-fit.md"), "# Fit\n");
+    writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "planned" }));
+    status.set(herdrName("NBF-1"), "idle");
+    await pool.tick();
+    await settled();
+    const outcome = entry("NBF-1").outcome;
+    assert.equal(outcome?.kind, "needs-human", c.name);
+    assert.match(outcome?.kind === "needs-human" ? outcome.reason : "", c.reason, c.name);
+    if (c.files) assert.ok(existsSync(join(dir, "plan", "NBF-1-0001-plan-fit.md")), "the refused plan's files are kept");
+  }
+});
+
+test("a stop while a plan is attached is the person's last word: the ticket is not queued again", async () => {
+  let release: () => void = () => {};
+  const tracker: TicketSource = { ...source, attachPlan: () => new Promise<string | null>((resolve) => { release = () => resolve(null); }) };
+  const { pool, status, entry, settings } = setup(1, ["NBF-1"], PLANNER, { source: tracker, planFirst: ["NBF-1"] });
+  await pool.tick();
+  writeFileSync(join(ticketDir(settings, "NBF-1"), "plan", "NBF-1-0001-plan-fit.md"), "# Fit\n");
+  writeFileSync(join(ticketDir(settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "planned" }));
+  status.set(herdrName("NBF-1"), "idle");
+  await pool.tick();
+  pool.stop("NBF-1");
+  release();
+  await settled();
+  assert.equal(entry("NBF-1").outcome?.kind, "stopped");
+});
+
+test("a planning outcome is read as planned, and nothing else is", () => {
+  assert.deepEqual(parseOutcome(JSON.stringify({ kind: "planned" })), { kind: "planned" });
+});
+
+test("a planning run starts with an empty plan folder, so an earlier attempt's files are never attached as its own", async () => {
+  const { tracker, attached } = planTracker();
+  const { pool, status, settings } = setup(1, ["NBF-1"], PLANNER, { source: tracker, planFirst: ["NBF-1"] });
+  const planDir = join(ticketDir(settings, "NBF-1"), "plan");
+  mkdirSync(planDir, { recursive: true });
+  writeFileSync(join(planDir, "NBF-1-0001-plan-old.md"), "# An earlier attempt\n");
+  await pool.tick();
+  writeFileSync(join(planDir, "NBF-1-0001-plan-new.md"), "# This run\n");
+  writeFileSync(join(ticketDir(settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "planned" }));
+  status.set(herdrName("NBF-1"), "idle");
+  await pool.tick();
+  await settled();
+  assert.deepEqual(attached.map((a) => a.files), [[join(planDir, "NBF-1-0001-plan-new.md")]]);
+});
+
+/** A tracker whose attach waits until the test lets it go, then succeeds or fails. */
+function heldTracker() {
+  const held: { release: () => void; fail: (err: Error) => void } = { release: () => {}, fail: () => {} };
+  const calls: string[] = [];
+  const tracker: TicketSource = { ...source, attachPlan: (key) => {
+    calls.push(key);
+    return new Promise<string | null>((resolve, reject) => { held.release = () => resolve(null); held.fail = reject; });
+  } };
+  return { tracker, held, calls };
+}
+/** Start NBF-1's planning run and have it write a plan and `planned`, then tick so its attach begins. */
+async function plannedRun(made: ReturnType<typeof setup>) {
+  await made.pool.tick();
+  writeFileSync(join(ticketDir(made.settings, "NBF-1"), "plan", "NBF-1-0001-plan-fit.md"), "# Fit\n");
+  writeFileSync(join(ticketDir(made.settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "planned" }));
+  made.status.set(herdrName("NBF-1"), "idle");
+  await made.pool.tick();
+}
+
+test("a run stopped and retried while its plan was attached is a new run, which the old attach leaves alone", async () => {
+  const { tracker, held } = heldTracker();
+  const made = setup(1, ["NBF-1"], PLANNER, { source: tracker, planFirst: ["NBF-1"] });
+  await plannedRun(made);
+  made.pool.stop("NBF-1");
+  made.store.set(retry(made.store.get(), "NBF-1", 200));
+  made.status.delete(herdrName("NBF-1"));
+  await made.pool.tick();
+  assert.equal(made.entry("NBF-1").workspace, "w2", "the retried planning run has started");
+  held.release();
+  await settled();
+  assert.deepEqual([made.entry("NBF-1").phase, made.entry("NBF-1").workspace, made.entry("NBF-1").plan !== undefined], ["running", "w2", true]);
+});
+
+test("a run stopped while its plan was attached stays stopped when the attach then fails", async () => {
+  const { tracker, held } = heldTracker();
+  const made = setup(1, ["NBF-1"], PLANNER, { source: tracker, planFirst: ["NBF-1"] });
+  await plannedRun(made);
+  made.pool.stop("NBF-1");
+  held.fail(new Error("Linear answered 500"));
+  await settled();
+  assert.equal(made.entry("NBF-1").outcome?.kind, "stopped");
+});
+
+test("a plan folder holding a link or a file too big to be a plan attaches nothing, and the run ends for a person", async () => {
+  for (const write of [
+    (dir: string) => { const secret = join(tmpDir("ticket-secret-"), "board.key"); writeFileSync(secret, "a".repeat(48)); symlinkSync(secret, join(dir, "NBF-1-0001-plan-fit.md")); },
+    (dir: string) => writeFileSync(join(dir, "NBF-1-0001-plan-fit.md"), "x".repeat(1_000_001)),
+    (dir: string) => writeFileSync(join(dir, "diagram.png"), "png"),
+  ]) {
+    const { tracker, attached } = planTracker();
+    const { pool, status, entry, settings } = setup(1, ["NBF-1"], PLANNER, { source: tracker, planFirst: ["NBF-1"] });
+    await pool.tick();
+    write(join(ticketDir(settings, "NBF-1"), "plan"));
+    writeFileSync(join(ticketDir(settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "planned" }));
+    status.set(herdrName("NBF-1"), "idle");
+    await pool.tick();
+    await settled();
+    assert.deepEqual(attached, []);
+    const outcome = entry("NBF-1").outcome;
+    assert.match(outcome?.kind === "needs-human" ? outcome.reason : "", /which is not a markdown file of 1 MB or less, so nothing was attached/);
+  }
+});
+
+test("a ticket whose plan reached it after it was queued is worked from that plan, not planned again", async () => {
+  const tracker: TicketSource = { ...source, read: async (key) => ({ ...ticket(key), uploads: [`${key}-0001-plan-by-hand.md`] }), attachPlan: async () => { throw new Error("not called"); } };
+  const { pool, entry, settings } = setup(1, ["NBF-1"], PLANNER, { source: tracker, planFirst: ["NBF-1"] });
+  await pool.tick();
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").plan, entry("NBF-1").planned], ["queued", undefined, undefined], "not marked as a plan nobody agreed");
+  await pool.tick();
+  assert.equal(entry("NBF-1").phase, "running");
+  assert.match(readFileSync(join(ticketDir(settings, "NBF-1"), "brief.md"), "utf8"), /^# NBF-1: NBF-1\n/);
+});
+
+test("a plan attached without the planner's state still sends the ticket to be worked, and the board's log says why its state stayed", async () => {
+  const tracker: TicketSource = { ...source, attachPlan: async () => "NBF-1's team has no state named Planned, so it stays in Todo" };
+  const written = await captureStderr(async () => {
+    const made = setup(1, ["NBF-1"], PLANNER, { source: tracker, planFirst: ["NBF-1"] });
+    await plannedRun(made);
+    await settled();
+    assert.deepEqual([made.entry("NBF-1").plan, made.entry("NBF-1").planned], [undefined, true]);
+  });
+  assert.ok(written.includes("ticket:serve: NBF-1's team has no state named Planned, so it stays in Todo\n"));
+});
+
+test("a run whose plugin is installed only for another folder is not started, and says how to install it for every folder", async () => {
+  const record = join(tmpDir("ticket-plugins-"), "installed_plugins.json");
+  writeFileSync(record, JSON.stringify({ version: 2, plugins: { "nbl-ui@applied-ai": [{ scope: "project", projectPath: "/work", installPath: "/cache/nbl-ui/0.17.0" }] } }));
+  const { pool, h, entry } = setup(1, ["NBF-1"], { plugins: ["nbl-ui@applied-ai"] }, { pluginRecord: record });
+  await pool.tick();
+  const outcome = entry("NBF-1").outcome;
+  assert.equal(outcome?.kind, "crashed");
+  assert.match(outcome?.kind === "crashed" ? outcome.reason : "", /nbl-ui@applied-ai is installed only for \/work, so a worker in .* runs without it: install it for every folder with `claude plugin install nbl-ui@applied-ai --scope user`/);
+  assert.equal(h.calls.some((args) => args.includes("start")), false, "no worker was started");
+});
+
+/** A tracker that records each ticket it is asked to move as work starts, answering with `note`, or failing with `failure`. */
+function startTracker(note: string | null = null, failure: string | null = null) {
+  const moved: string[] = [];
+  const tracker: TicketSource = { ...source, moveToWorkingState: async (key, state) => {
+    moved.push(`${key} ${state}`);
+    if (failure !== null) throw new Error(failure);
+    return note;
+  } };
+  return { tracker, moved };
+}
+
+test("a ticket moves to the working state as its worker starts, and a planning run moves nothing", async () => {
+  const { tracker, moved } = startTracker();
+  const { pool } = setup(2, ["NBF-1", "NBF-2"], { ...PLANNER, workingState: "In Progress" }, { source: tracker, planFirst: ["NBF-2"] });
+  await pool.tick();
+  await settled();
+  assert.deepEqual(moved, ["NBF-1 In Progress"]);
+});
+
+test("a machine that names no working state moves nothing", async () => {
+  const { tracker, moved } = startTracker();
+  const { pool } = setup(1, ["NBF-1"], {}, { source: tracker });
+  await pool.tick();
+  await settled();
+  assert.deepEqual(moved, []);
+});
+
+test("a move the tracker refuses, or one its team has no state for, goes to the board's log, and the run carries on", async () => {
+  for (const [note, failure, line] of [
+    ["NBF-1's team has no state named In Progress, so it stays in Todo", null, "ticket:serve: NBF-1's team has no state named In Progress, so it stays in Todo\n"],
+    [null, "Linear answered 500", "ticket:serve: NBF-1 could not be moved to In Progress: Linear answered 500\n"],
+  ] as const) {
+    const { tracker } = startTracker(note, failure);
+    const written = await captureStderr(async () => {
+      const { pool, entry } = setup(1, ["NBF-1"], { workingState: "In Progress" }, { source: tracker });
+      await pool.tick();
+      await settled();
+      assert.equal(entry("NBF-1").phase, "running");
+    });
+    assert.ok(written.includes(line), line);
+  }
+});
+
+test("a tracker that throws before it answers the move cannot stop the run, and one that cannot move tickets is not asked", async () => {
+  const throwing: TicketSource = { ...source, moveToWorkingState: () => { throw new Error("not ready"); } };
+  const written = await captureStderr(async () => {
+    const { pool, entry } = setup(1, ["NBF-1"], { workingState: "In Progress" }, { source: throwing });
+    await pool.tick();
+    await settled();
+    assert.equal(entry("NBF-1").phase, "running");
+  });
+  assert.ok(written.includes("ticket:serve: NBF-1 could not be moved to In Progress: not ready\n"));
+  const { pool, entry } = setup(1, ["NBF-1"], { workingState: "In Progress" });
+  await pool.tick();
+  assert.equal(entry("NBF-1").phase, "running", "a source without the move starts the run as before");
 });

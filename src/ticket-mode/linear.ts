@@ -2,13 +2,14 @@
 // module: Linear as a ticket source -- GraphQL over an injected `fetch`, with a personal API key
 //
 // A PERSONAL KEY, NOT AN APP. A Linear agent app is installed by a workspace admin, which a person on a work account cannot do, so ticket mode reads
-// as the person: their key, their assigned tickets. It writes nothing to Linear. Linear's own GitHub integration links each pull request, because
-// the worker's branch is the ticket's `branchName`.
+// as the person: their key, their assigned tickets. It writes only what a planning run hands the board: the plan's files, attached to the ticket,
+// and the ticket's move to the planner's state. Workers write nothing. Linear's own GitHub integration links each pull request, because the
+// worker's branch is the ticket's `branchName`.
 //
 // THE KEY NEVER LEAVES THIS MODULE. It is read once, from the macOS Keychain or a file the host file names, and sent only to api.linear.app and uploads.linear.app.
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
-import { extname, join } from "node:path";
+import { basename, extname, join } from "node:path";
 import type { KeySource } from "./settings.ts";
 import type { Blocker, PullState, Ticket, TicketSource } from "./source.ts";
 
@@ -22,7 +23,9 @@ const PAGE = 100;
 
 /** Keys read in one batched request: each is an aliased query, and a long query text is one Linear may refuse. */
 const STATE_BATCH = 25;
-const ISSUE_FIELDS = "identifier title description url branchName priority state { name position } team { key } project { name } parent { identifier }";
+/** A ticket's attachments: Linear's first page of 50, read the same way for the board's list and for a worker's download. */
+const ATTACHMENTS = "attachments(first: 50) { nodes { url title } }";
+const ISSUE_FIELDS = `identifier title description url branchName priority state { name position } team { key } project { name } parent { identifier } ${ATTACHMENTS}`;
 /** A file name that is safe as it stands: no folder, and an extension. A plan's attachment title is one. */
 const FILE_NAME = /^[\w.-]+\.\w{1,8}$/;
 
@@ -47,13 +50,22 @@ export function readLinearKey(source: KeySource, security: (args: string[]) => s
 type IssueNode = {
   identifier: string; title: string; description: string | null; url: string; branchName: string; priority: number;
   state: { name: string; position: number }; team: { key: string }; project: { name: string } | null; parent: { identifier: string } | null;
-};
+} & Attachments;
+
+type Attachments = { attachments?: { nodes: { url: string; title: string }[] } };
+
+/**
+ * The attachments that are uploads, as Linear lists them beside a ticket's description; a link to elsewhere, such as a pull request, is left out.
+ * Anchored at the upload origin, because every download carries the key: a link that only mentions an upload goes somewhere else. PURE.
+ */
+const uploadsIn = (node: Attachments): { url: string; title: string }[] => (node.attachments?.nodes ?? []).filter(({ url }) => url.startsWith(UPLOAD_ORIGIN));
 
 function toTicket(node: IssueNode): Ticket {
   return Object.freeze({
     key: node.identifier, title: node.title, description: node.description ?? "", url: node.url, branch: node.branchName,
     status: node.state.name, statusOrder: node.state.position, team: node.team.key, project: node.project?.name ?? null, priority: node.priority,
     parent: node.parent?.identifier ?? null,
+    uploads: uploadsIn(node).map(({ title }) => title),
   });
 }
 
@@ -75,6 +87,19 @@ const ATTACHED_PULLS = "attachments { nodes { url sourceType metadata } }";
 function linkedPulls(node: Attached): Record<string, PullState> {
   return Object.fromEntries(node.attachments.nodes.filter(({ sourceType }) => sourceType === "github").map(({ url, metadata }) => [url, pullState(metadata?.status)]));
 }
+
+/** What attaching a plan reads of its ticket: its id, its state's type, its team's states, and the files already attached. */
+type Planning = Stateful & Attachments;
+/** What moving a ticket's state reads of it: its id, its state's type and name, and the states its team has. */
+type Stateful = { id: string; state: { type: string; name: string }; team: { states: { nodes: { id: string; name: string }[] } } };
+const STATEFUL = "id state { type name } team { states { nodes { id name } } }";
+/** Linear's answer to a request to upload a file: where to PUT it, with which headers, and the address it is then read from. */
+type Upload = { fileUpload: { success: boolean; uploadFile: { uploadUrl: string; assetUrl: string; headers: { key: string; value: string }[] } | null } };
+
+/** The state types a plan moves a ticket on from: new work only, never work already planned or started back. */
+const BEFORE_PLANNING = new Set(["backlog", "triage"]);
+/** The state types a worker starting moves a ticket on from: any work not yet started, a planned ticket included. */
+const BEFORE_WORK = new Set([...BEFORE_PLANNING, "unstarted"]);
 
 /** The name the `n`th download is saved as: its attachment title when that names a file, or else `attachment-<n>` and an extension. PURE. */
 export function downloadName(n: number, link: string, title: string | null, contentType: string): string {
@@ -128,11 +153,43 @@ export function linearSource({ key, fetch: request = fetch }: { key: string; fet
     return found;
   }
 
-  /** The uploads attached to a ticket, as Linear lists them beside its description. Links to elsewhere, such as a pull request, are left out. */
+  /**
+   * Move the ticket to its team's state named `state`, when its state's type is one of `from`. Teams name their states differently, so a team
+   * without one of that name keeps the ticket's current state, and the returned note says so; it is null otherwise.
+   */
+  async function moveTo(identifier: string, found: Stateful, state: string, from: ReadonlySet<string>): Promise<string | null> {
+    if (!from.has(found.state.type)) return null;
+    const target = found.team.states.nodes.find(({ name }) => name === state);
+    if (target === undefined) return `${identifier}'s team has no state named ${state}, so it stays in ${found.state.name}`;
+    const { issueUpdate }: { issueUpdate: { success: boolean } } = await query(
+      "mutation($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }", { id: found.id, stateId: target.id });
+    // Linear can answer a mutation it did not carry out with success false and no error, so the answer is read, not assumed.
+    if (!issueUpdate.success) throw new Error(`Linear did not move ${identifier} to ${state}`);
+    return null;
+  }
+
+  /** Upload the markdown file at `path` and attach it to the ticket `issueId` under `title`. */
+  async function attachFile(issueId: string, path: string, title: string): Promise<void> {
+    const body = readFileSync(path);
+    const { fileUpload }: Upload = await query(
+      "mutation($contentType: String!, $filename: String!, $size: Int!) { fileUpload(contentType: $contentType, filename: $filename, size: $size) { success uploadFile { uploadUrl assetUrl headers { key value } } } }",
+      { contentType: "text/markdown", filename: title, size: body.length });
+    if (!fileUpload.success || fileUpload.uploadFile === null) throw new Error(`Linear would not take the upload of ${title}`);
+    const { uploadUrl, assetUrl, headers } = fileUpload.uploadFile;
+    // The file goes to the storage address Linear signed, without the key: the signature is the permission.
+    const put = await request(uploadUrl, { method: "PUT", body, headers: { "Content-Type": "text/markdown", "Cache-Control": "public, max-age=31536000",
+      ...Object.fromEntries(headers.map(({ key: name, value }) => [name, value])) } });
+    if (!put.ok) throw new Error(`the upload of ${title} was refused (${put.status})`);
+    const { attachmentCreate }: { attachmentCreate: { success: boolean } } = await query(
+      "mutation($issueId: String!, $url: String!, $title: String!) { attachmentCreate(input: { issueId: $issueId, url: $url, title: $title }) { success } }",
+      { issueId, url: assetUrl, title });
+    if (!attachmentCreate.success) throw new Error(`Linear did not attach ${title}`);
+  }
+
+  /** The uploads attached to a ticket. */
   async function attachedUploads(identifier: string): Promise<{ url: string; title: string }[]> {
-    const found = await issue<{ attachments: { nodes: { url: string; title: string }[] } }>(identifier, "attachments { nodes { url title } }");
-    // Anchored, because every download carries the key: a link that only mentions an upload goes somewhere else.
-    return (found?.attachments.nodes ?? []).filter(({ url }) => url.startsWith(UPLOAD_ORIGIN));
+    const found = await issue<Attachments>(identifier, ATTACHMENTS);
+    return found === null ? [] : uploadsIn(found);
   }
 
   return {
@@ -171,6 +228,23 @@ export function linearSource({ key, fetch: request = fetch }: { key: string; fet
       const found = await eachIssue<Related>(keys, `inverseRelations { nodes { type issue { identifier state { type name } ${ATTACHED_PULLS} } } }`);
       return new Map([...found].map(([key, node]) => [key, node.inverseRelations.nodes.filter(({ type }) => type === "blocks")
         .map(({ issue }): Blocker => ({ key: issue.identifier, state: issue.state.type, status: issue.state.name, pulls: linkedPulls(issue) }))]));
+    },
+
+    async attachPlan(identifier, files, state) {
+      const found = await issue<Planning>(identifier, `${STATEFUL} ${ATTACHMENTS}`);
+      if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
+      const attached = new Set(uploadsIn(found).map(({ title }) => title));
+      for (const path of files) {
+        const title = basename(path);
+        if (!attached.has(title)) await attachFile(found.id, path, title);
+      }
+      return state === null ? null : moveTo(identifier, found, state, BEFORE_PLANNING);
+    },
+
+    async moveToWorkingState(identifier, state) {
+      const found = await issue<Stateful>(identifier, STATEFUL);
+      if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
+      return moveTo(identifier, found, state, BEFORE_WORK);
     },
 
     async download(ticket, dir) {

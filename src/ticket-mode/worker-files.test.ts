@@ -1,7 +1,7 @@
 // no-token: gh -- pure builders
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { briefText, firstPrompt, workerFlags, workerSettings } from "./worker-files.ts";
+import { briefText, firstPrompt, planBriefText, workerFlags, workerSettings } from "./worker-files.ts";
 import type { Ticket } from "./source.ts";
 
 const ticket = { key: "NBF-1270", title: "Refresh Data gives no feedback", description: "Clicking does nothing visible.", url: "https://linear.app/x/issue/NBF-1270",
@@ -121,4 +121,22 @@ test("the flags end with --disallowedTools, so its list swallows no flag after i
 test("the brief tells the worker that a person may answer it after it hands the ticket back, and that it then writes a new outcome", () => {
   const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w" });
   assert.match(brief, /A person may answer you here after a `needs-human` or `wrong-repo` outcome\. If one does, carry on with what they said, and write the outcome file again/);
+});
+
+test("a planning run is refused git's writes, a pull request and a worktree, and keeps git's reads", async () => {
+  const { PLANNING_DENY } = await import("./worker-files.ts");
+  const refused = (command: string) => PLANNING_DENY.some(({ pattern }) => new RegExp(pattern).test(command));
+  for (const command of ["git commit -m x", "git -C /repos/a push origin b", "git --no-pager add .", "git -c core.x=y stash", "git checkout develop", "git rebase main",
+    "gh pr create --draft", "gh pr edit 3", "node /tool/src/bin.ts ticket:worktree nbl-ui-netbox"]) assert.equal(refused(command), true, command);
+  for (const command of ["git grep -n add", "git log --grep commit", "git show HEAD:src/a.ts", "git -C /repos/a fetch origin", "git diff origin/develop", "git branch -a", "gh pr view 12"]) {
+    assert.equal(refused(command), false, command);
+  }
+});
+
+test("both briefs tell a worker to stop for a person when a skill they name is missing, not to follow a copy of it", () => {
+  const work = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones: { a: "/a" }, worktreeCommand: "wt" });
+  const plan = planBriefText({ ticket, ticketDir: "/d", planDir: "/d/plan", attachments: [], clones: { a: "/a" }, run: "plan {key} into {dir}" });
+  for (const brief of [work, plan]) {
+    assert.match(brief, /If a skill this brief names is not available in this session, write a `needs-human` outcome naming it, rather than following a copy of its files\./);
+  }
 });

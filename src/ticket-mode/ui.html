@@ -26,8 +26,9 @@
   .group.collapsed > .row { display: none; }
   .fold { background: none; border: 0; padding: 0; color: var(--text); cursor: pointer; font-size: 18px; line-height: 1; width: 20px; transition: transform .15s; }
   .group.collapsed .fold { transform: rotate(-90deg); }
-  .projects { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 4px 0 8px; }
-  .projects .label { color: var(--muted); margin-right: 4px; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 4px 0 8px; }
+  .chips[hidden] { display: none; }
+  .chips .label { color: var(--muted); margin-right: 4px; }
   .chip { font: inherit; font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel); color: var(--text); cursor: pointer; }
   .chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
   .chip .n { opacity: .7; margin-left: 4px; }
@@ -43,10 +44,12 @@
   .row .sub { color: var(--muted); font-size: 12px; }
   .key { font-variant-numeric: tabular-nums; color: var(--muted); }
   .pill { font-size: 12px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
-  footer { position: fixed; bottom: 0; left: 0; right: 0; background: var(--panel); border-top: 1px solid var(--line); padding: 10px 20px; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+  /* Above the sticky status headers (z-index 1), which otherwise paint over it, and its buttons, as they scroll under it. */
+  footer { position: fixed; bottom: 0; left: 0; right: 0; z-index: 2; background: var(--panel); border-top: 1px solid var(--line); padding: 10px 20px; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
   footer[hidden] { display: none; }
-  footer fieldset { border: 0; padding: 0; margin: 0; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-  footer legend { float: left; margin-right: 6px; color: var(--muted); }
+  footer .batch { display: flex; align-items: center; gap: 6px; }
+  /* On a narrow screen the footer wraps taller than main's bottom padding, so it stays in the flow, stuck to the bottom, and covers nothing. */
+  @media (max-width: 640px) { footer { position: sticky; } main { padding-bottom: 16px; } }
   select, button.primary, button.small, input[type="number"] { font: inherit; padding: 5px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--text); }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; cursor: pointer; }
   button.primary:disabled { opacity: .5; cursor: default; }
@@ -69,19 +72,36 @@
   .icon { width: 16px; height: 16px; margin-top: 2px; display: block; }
   .icon svg { width: 16px; height: 16px; display: block; }
   .st-queued, .st-blocked { color: var(--st-queued); } .st-working { color: var(--st-progress); } .st-needs-you { color: var(--st-needs); }
-  .st-awaiting-review { color: var(--st-review); } .st-completed { color: var(--st-done); } .st-failed { color: var(--st-failed); } .st-cancelled { color: var(--st-cancelled); }
-  .runs .run .st-working svg { animation: spin 1.1s linear infinite; }
+  .st-planning { color: var(--st-review); } .st-awaiting-review { color: var(--st-review); } .st-completed { color: var(--st-done); } .st-failed { color: var(--st-failed); } .st-cancelled { color: var(--st-cancelled); }
+  .runs .run .st-working svg, .runs .run .st-planning svg { animation: spin 1.1s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  @media (prefers-reduced-motion: reduce) { .runs .run .st-working svg { animation: none; } }
+  @media (prefers-reduced-motion: reduce) { .runs .run .st-working svg, .runs .run .st-planning svg { animation: none; } }
   .waiting { color: var(--st-needs); font-size: 12px; font-weight: 600; }
   @media (max-width: 760px) { .runs { grid-template-columns: minmax(0, 1fr); } .filters { flex-direction: row; flex-wrap: wrap; } .run { grid-template-columns: 18px minmax(0, 1fr); } .run .side { grid-column: 2; align-items: flex-start; } }
   a { color: var(--accent); text-decoration: none; }
   a:hover { text-decoration: underline; }
-  .bar { display: flex; gap: 12px; align-items: center; margin-bottom: 8px; }
+  .bar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
   .notice { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--warn); border-radius: 6px; padding: 8px 12px; margin-bottom: 8px; }
   .state { font-weight: 600; }
   .state.paused { color: var(--warn); }
   .state.started { color: var(--ok); }
+  .settings-open { margin-left: auto; display: inline-flex; gap: 6px; align-items: center; background: none; border: 1px solid var(--line); border-radius: 6px;
+    padding: 5px 10px; color: var(--text); font: inherit; cursor: pointer; }
+  .settings-open svg { width: 16px; height: 16px; }
+  dialog { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); padding: 20px; width: min(420px, calc(100vw - 32px)); }
+  dialog::backdrop { background: rgb(0 0 0 / .4); }
+  dialog h2 { font-size: 16px; margin: 0 0 16px; }
+  .settings fieldset { border: 0; padding: 0; margin: 0 0 18px; display: grid; gap: 10px; }
+  .settings fieldset[hidden], footer [hidden] { display: none; }
+  .settings legend { font-weight: 600; padding: 0; margin-bottom: 8px; }
+  .settings label { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .settings input[type="number"] { width: 72px; }
+  .settings .actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .hint { color: var(--muted); font-size: 12px; margin: 0; }
+  .hint.failed { color: var(--bad); }
+  .no-plan { display: inline-flex; vertical-align: -2px; margin-right: 6px; color: var(--warn); }
+  .no-plan.covered { color: var(--muted); }
+  .no-plan svg { width: 14px; height: 14px; }
 </style>
 </head>
 <body>
@@ -89,7 +109,36 @@
   <h1>Ticket queue</h1>
   <button class="tab" data-tab="pick" aria-selected="true">Pick</button>
   <button class="tab" data-tab="board" aria-selected="false">Board</button>
+  <button class="settings-open" id="open-settings" type="button" aria-haspopup="dialog">
+    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h7M13 4h1M2 12h1M7 12h7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="11" cy="4" r="2" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="5" cy="12" r="2" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+    Settings
+  </button>
 </header>
+<dialog id="settings" aria-labelledby="settings-title">
+  <form method="dialog" class="settings">
+    <h2 id="settings-title">Settings</h2>
+    <fieldset>
+      <legend>New runs</legend>
+      <p class="hint">The default for tickets you queue. The Pick footer can choose otherwise for one batch. A run already on the queue keeps its own.</p>
+      <label>Model <select id="model"></select></label>
+      <label>Effort <select id="effort"></select></label>
+    </fieldset>
+    <fieldset id="planning-settings" hidden>
+      <legend>Planning</legend>
+      <p class="hint">A ticket queued with Plan first is planned on these before it runs. Planning decides for you, so it usually wants the most capable model.</p>
+      <label>Model <select id="planModel"></select></label>
+      <label>Effort <select id="planEffort"></select></label>
+    </fieldset>
+    <fieldset>
+      <legend>Workers</legend>
+      <label>Workers at once <input id="max" type="number" min="1" step="1"></label>
+    </fieldset>
+    <div class="actions">
+      <p id="settings-status" class="hint" role="status"></p>
+      <button class="primary" value="done">Done</button>
+    </div>
+  </form>
+</dialog>
 <main>
   <div id="error" class="error" role="alert"></div>
   <section id="pick">
@@ -99,7 +148,9 @@
       <button class="small" id="fold-all" type="button"></button>
       <span id="loaded" class="pill"></span>
     </div>
-    <div class="projects" id="projects"></div>
+    <div class="chips" id="projects"></div>
+    <div class="chips" id="priorities"></div>
+    <div class="chips" id="plans" hidden></div>
     <div id="paused-note" class="notice" hidden>Workers are paused. Tickets you queue wait on the Board until you start workers there.</div>
     <div id="groups"></div>
   </section>
@@ -107,7 +158,8 @@
     <div class="bar">
       <span id="pool-state" class="state"></span>
       <button class="primary" id="toggle-pause"></button>
-      <label>Workers at once <input id="max" type="number" min="1" style="width:64px"></label><button class="small" id="save-max">Save</button>
+      <span id="max-note" class="hint"></span>
+      <button class="small" id="change-max" type="button">Change</button>
     </div>
     <div class="runs">
       <nav class="filters" id="filters" aria-label="Filter runs by status"></nav>
@@ -116,16 +168,20 @@
   </section>
 </main>
 <footer id="queue-bar">
-  <label>Model <select id="model"></select></label>
-  <label>Effort <select id="effort"></select></label>
+  <label class="batch">Run on <select id="batch-model" aria-label="Model for the tickets you queue next"></select></label>
+  <label class="batch">at <select id="batch-effort" aria-label="Effort for the tickets you queue next"></select> effort</label>
+  <span id="batch-note" class="hint"></span>
+  <button class="small" id="batch-reset" type="button" hidden>Use the default</button>
+  <button class="small" id="change-choice" type="button">Change the default</button>
+  <label class="batch" id="plan-first-label" hidden title="Plan each selected ticket that has no plan of its own before it runs, on the planning model in Settings"><input type="checkbox" id="plan-first" checked> Plan first</label>
   <button class="primary" id="queue">Queue 0 tickets</button>
 </footer>
 <script type="module">
 // The decisions (what shows, how it groups, what can be selected, what status a run has and what it offers) are board-view.ts's, tested there.
 // This page only draws what they return and wires the clicks.
 import {
-  RUN_STATUSES, flatten, groupByStatus, isParked, parentKeys, parentTick, projectCounts, projectOf, queueLabel, recall, remember, runActions, runStatus, runsShown, selectable, statusCounts, terminalLink,
-  ticketCount, toggled, visibleTickets, waitsOn,
+  PRIORITY_NAMES, RUN_STATUSES, flatten, groupByStatus, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, queueLabel, recall, remember, runActions, runStatus,
+  runChoiceLabel, runsShown, unplannedCount, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, waitsOn, workersLabel,
 } from "/board-view.js";
 
 const el = (tag, props = {}, ...children) => {
@@ -137,8 +193,14 @@ const $ = (id) => document.getElementById(id);
 const storage = (() => { try { return window.localStorage; } catch { return null; } })();
 const state = {
   tickets: [], parents: [], queue: { entries: [], max: 3, paused: true }, selected: new Set(), terminal: null,
+  // The model and effort the settings give a ticket queued from now on, and the parts the Pick footer chose otherwise for the next batch only.
+  choice: { model: "", effort: "", planModel: "", planEffort: "" }, batch: {},
+  // Whether this board plans a ticket with no plan before it runs: the machine names a planner and its tracker takes plans.
+  planner: false,
+  // The pattern a plan's name matches (the host file's `tickets.plan`), or null when the board looks for none; and the plan filter chosen.
+  plan: null, planChoice: planChoiceOf(recall(storage, "ticket-mode.plan")),
   // Sections start collapsed, so a first visit sees every status and its count before any list.
-  open: recall(storage, "ticket-mode.open"), projects: recall(storage, "ticket-mode.projects"),
+  open: recall(storage, "ticket-mode.open"), projects: recall(storage, "ticket-mode.projects"), priorities: prioritiesOf(recall(storage, "ticket-mode.priorities")),
   // Parents start folded too, so an epic reads as one row until it is opened.
   openParents: recall(storage, "ticket-mode.open-parents"),
   runFilter: [...recall(storage, "ticket-mode.run-filter")][0] ?? null,
@@ -146,7 +208,6 @@ const state = {
 const setOpen = (next) => { state.open = next; remember(storage, "ticket-mode.open", next); renderPick(); };
 const setOpenParents = (next) => { state.openParents = next; remember(storage, "ticket-mode.open-parents", next); renderPick(); };
 const everyOpen = (statuses) => statuses.length > 0 && statuses.every((status) => state.open.has(status));
-const PRIORITY = ["", "Urgent", "High", "Medium", "Low"];
 
 async function call(method, path, body) {
   const response = await fetch(path, { method, headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -160,24 +221,62 @@ const entryFor = (key) => state.queue.entries.find((e) => e.ticket.key === key);
 const pickableShown = () => groupByStatus(shown(), state.parents).flatMap(([, nodes]) => flatten(nodes)).filter((t) => selectable(t, state.queue.entries));
 /** Every section open, and every parent in them. */
 const allOpen = (groups) => everyOpen(groups.map(([status]) => status)) && groups.flatMap(([, nodes]) => parentKeys(nodes)).every((key) => state.openParents.has(key));
-const shown = () => visibleTickets(state.tickets, state.projects, $("filter").value);
+const planFilter = () => (state.plan && state.planChoice ? { pattern: state.plan, choice: state.planChoice } : null);
+const shown = () => visibleTickets(state.tickets, { projects: state.projects, search: $("filter").value, plan: planFilter(), priorities: state.priorities });
+
+function chip(label, pressed, onClick, n) {
+  const b = el("button", { className: "chip", type: "button" }, label, n === undefined ? null : el("span", { className: "n" }, String(n)));
+  b.setAttribute("aria-pressed", String(pressed));
+  b.addEventListener("click", onClick);
+  return b;
+}
 
 function renderProjects() {
   const counts = projectCounts(state.tickets);
-  const chip = (label, pressed, onClick, n) => {
-    const b = el("button", { className: "chip", type: "button" }, label, n === undefined ? null : el("span", { className: "n" }, String(n)));
-    b.setAttribute("aria-pressed", String(pressed));
-    b.addEventListener("click", onClick);
-    return b;
-  };
   const choose = (next) => { state.projects = next; remember(storage, "ticket-mode.projects", next); render(); };
   $("projects").replaceChildren(el("span", { className: "label" }, "Projects"),
     chip("All projects", state.projects.size === 0, () => choose(new Set())),
     ...counts.map(([name, n]) => chip(name, state.projects.has(name), () => choose(toggled(state.projects, name)), n)));
 }
 
+/** The priority chips, counting the tickets a worker can be given, most urgent first. */
+function renderPriorities() {
+  const choose = (next) => { state.priorities = next; remember(storage, "ticket-mode.priorities", new Set([...next].map(String))); render(); };
+  $("priorities").replaceChildren(el("span", { className: "label" }, "Priority"),
+    chip("All priorities", state.priorities.size === 0, () => choose(new Set())),
+    ...priorityCounts(state.tickets).map(([priority, n]) => chip(PRIORITY_NAMES[priority], state.priorities.has(priority), () => choose(toggled(state.priorities, priority)), n)));
+}
+
+/** The plan chips, counting the tickets a worker can be given; none on a machine that names no plan pattern. */
+function renderPlans() {
+  $("plans").hidden = !state.plan;
+  if (!state.plan) return;
+  const plans = planCounts(state.tickets, state.plan);
+  const choose = (choice) => { state.planChoice = choice; remember(storage, "ticket-mode.plan", new Set(choice ? [choice] : [])); render(); };
+  $("plans").replaceChildren(el("span", { className: "label" }, "Plan"),
+    chip("All", state.planChoice === null, () => choose(null)),
+    chip("With a plan", state.planChoice === "with", () => choose("with"), plans.with),
+    chip("Without a plan", state.planChoice === "without", () => choose("without"), plans.without));
+}
+
+// A document with a mark on it: the ticket has no plan of its own.
+const NO_PLAN = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 1.5h5.5L13 5v9.5H4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M8.5 6v4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="8.5" cy="12.3" r=".9" fill="currentColor"/></svg>';
+
+/** The no-plan mark for a ticket, muted when its parent's plan covers it; nothing when it has a plan or the board looks for none. */
+function planMark(t) {
+  const missing = state.plan ? missingPlan(t, state.plan, [...state.tickets, ...state.parents]) : null;
+  if (!missing) return null;
+  const mark = el("span", { className: `no-plan${missing.covered ? " covered" : ""}`, title: missing.note });
+  mark.innerHTML = NO_PLAN;
+  mark.setAttribute("role", "img");
+  mark.setAttribute("aria-label", missing.note);
+  return mark;
+}
+
 function renderPick() {
   renderProjects();
+  renderPriorities();
+  renderPlans();
   const tickets = shown();
   const free = (t) => selectable(t, state.queue.entries);
   const list = $("groups");
@@ -200,15 +299,16 @@ function renderPick() {
     head.addEventListener("click", () => setOpen(toggled(state.open, status)));
     const box = el("div", { className: `group${expanded ? "" : " collapsed"}` }, head);
     // A ticket under its parent is indented, and names its own status, which can differ from the section's. A parent folds the tickets under
-    // it away, and its checkbox picks them rather than itself; one that is not the person's says so.
-    const titleCell = (t, depth, arrow = null, note = null) => el("span", {}, arrow, el("a", { href: t.url, target: "_blank", rel: "noreferrer" }, t.title),
-      depth > 0 ? el("span", { className: "sub" }, ` · ${t.status}`) : null, note);
+    // it away, and its checkbox picks them rather than itself; one that is not the person's says so. Only a ticket a worker can be given carries
+    // the no-plan mark: an epic is never started.
+    const titleCell = (t, depth, { arrow = null, mark = null, note = null } = {}) => el("span", {}, arrow, mark,
+      el("a", { href: t.url, target: "_blank", rel: "noreferrer" }, t.title), depth > 0 ? el("span", { className: "sub" }, ` · ${t.status}`) : null, note);
     const pill = (text) => el("span", { className: "pill" }, text);
     const place = (row, depth) => { if (depth > 0) row.setAttribute("style", `--depth: ${depth}`); box.append(row); };
     const add = (node, depth) => {
       const { ticket: t, children, context } = node;
       const taken = entryFor(t.key);
-      const standing = taken ? `on the queue: ${taken.phase}` : PRIORITY[t.priority] || "No priority";
+      const standing = taken ? `on the queue: ${taken.phase}` : PRIORITY_NAMES[t.priority] ?? PRIORITY_NAMES[0];
       const keyCell = el("span", { className: "key" }, t.key);
       const nested = depth > 0 ? " child" : "";
       if (children.length > 0) {
@@ -221,14 +321,14 @@ function renderPick() {
         arrow.addEventListener("click", () => setOpenParents(toggled(state.openParents, t.key)));
         const count = ticketCount(children);
         place(el("div", { className: `row parent${context ? " context" : ""}${nested}` }, tick, keyCell,
-          titleCell(t, depth, arrow, el("span", { className: "sub" }, ` · ${count} ticket${count === 1 ? "" : "s"} under it`)),
+          titleCell(t, depth, { arrow, note: el("span", { className: "sub" }, ` · ${count} ticket${count === 1 ? "" : "s"} under it`) }),
           pill(projectOf(t)), pill(context ? "Not assigned to you" : standing)), depth);
         if (open) for (const child of children) add(child, depth + 1);
         return;
       }
       const tick = el("input", { type: "checkbox", checked: state.selected.has(t.key), disabled: Boolean(taken) });
       tick.addEventListener("change", () => { tick.checked ? state.selected.add(t.key) : state.selected.delete(t.key); render(); });
-      place(el("label", { className: `row${taken ? " taken" : ""}${nested}` }, tick, keyCell, titleCell(t, depth), pill(projectOf(t)), pill(standing)), depth);
+      place(el("label", { className: `row${taken ? " taken" : ""}${nested}` }, tick, keyCell, titleCell(t, depth, { mark: planMark(t) }), pill(projectOf(t)), pill(standing)), depth);
     };
     for (const node of nodes) add(node, 0);
     list.append(box);
@@ -248,6 +348,7 @@ const ICONS = {
   "queued": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="2"/></svg>',
   "blocked": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5 8h6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
   "working": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-opacity=".25" stroke-width="2"/><path d="M8 2a6 6 0 0 1 6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+  "planning": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-opacity=".25" stroke-width="2"/><path d="M8 2a6 6 0 0 1 6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
   "needs-you": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7" fill="currentColor"/><path d="M8 4.5v4.5" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/><circle cx="8" cy="11.6" r="1" fill="#fff"/></svg>',
   "awaiting-review": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="4.5" cy="3.5" r="1.8" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="4.5" cy="12.5" r="1.8" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="11.5" cy="12.5" r="1.8" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M4.5 5.3v5.4M11.5 10.7V6.5a2 2 0 0 0-2-2H7.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
   "completed": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7" fill="currentColor"/><path d="M4.8 8.2l2.2 2.2 4.2-4.6" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
@@ -257,8 +358,9 @@ const ICONS = {
 const LABEL = Object.fromEntries(RUN_STATUSES.map(({ status, label }) => [status, label]));
 const ACTION_LABEL = { remove: "Remove", stop: "Stop", retry: "Retry", close: "Close" };
 
-// The filter rail marks In progress with a still dot: a spinner there turns for as long as any run works.
-const RAIL_ICONS = { ...ICONS, "working": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5" fill="currentColor"/></svg>' };
+// The filter rail marks In progress and Planning with a still dot: a spinner there turns for as long as any run works.
+const DOT = '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5" fill="currentColor"/></svg>';
+const RAIL_ICONS = { ...ICONS, "working": DOT, "planning": DOT };
 
 function statusIcon(status, icons = ICONS) {
   const icon = el("span", { className: `icon st-${status}`, title: LABEL[status] });
@@ -294,7 +396,7 @@ function row(e) {
     statusIcon(status),
     el("div", {},
       el("div", { className: "title" }, el("a", { href: e.ticket.url, target: "_blank", rel: "noreferrer" }, e.ticket.key), ` ${e.ticket.title}`),
-      el("div", { className: "meta" }, `${LABEL[status]} · ${repos} · ${e.model}/${e.effort} · ${when}${tokens}`),
+      el("div", { className: "meta" }, `${LABEL[status]} · ${repos} · ${runChoiceLabel(e)} · ${when}${tokens}`),
       e.waiting ? el("div", { className: "waiting" }, "Waiting on a person") : null,
       waits.length > 0 ? el("div", { className: "meta" }, `Waits on ${waits.map((b) => `${b.key} (${b.status})`).join(", ")}`) : null,
       reason ? el("div", { className: "meta" }, reason) : null,
@@ -316,7 +418,7 @@ function renderBoard() {
   const runs = runsShown(state.queue.entries, state.runFilter);
   $("runs").replaceChildren(...(runs.length > 0 ? runs.map(row)
     : [el("div", { className: "empty" }, state.runFilter ? `No runs are ${LABEL[state.runFilter].toLowerCase()}.` : "Nothing queued yet. Pick tickets on the Pick tab.")]));
-  if (document.activeElement !== $("max")) $("max").value = state.queue.max;
+  $("max-note").textContent = workersLabel(state.queue.max);
   const paused = state.queue.paused !== false;
   $("pool-state").textContent = paused ? "Workers paused: nothing queued will start" : "Workers started: queued tickets start as slots free up";
   $("pool-state").className = `state ${paused ? "paused" : "started"}`;
@@ -324,17 +426,96 @@ function renderBoard() {
   $("paused-note").hidden = !paused;
 }
 
+// A new default: the batch keeps only the parts that still differ from it, so a default that catches up makes the batch the default.
+function setDefault(choice) {
+  state.choice = choice;
+  state.batch = batchOverride(choice, batchChoice(choice, state.batch));
+}
+
+// The selected tickets with no plan of their own, which Plan first plans before they are worked; none on a board that plans nothing.
+function unplannedSelected() {
+  return state.planner && state.plan ? unplannedCount(state.tickets.filter((t) => state.selected.has(t.key)), state.plan) : 0;
+}
+const planningCount = () => ($("plan-first").checked ? unplannedSelected() : 0);
+
 function renderFooter() {
-  $("queue").textContent = queueLabel(state.selected.size);
+  const next = batchChoice(state.choice, state.batch);
+  $("batch-model").value = next.model;
+  $("batch-effort").value = next.effort;
+  $("batch-note").textContent = batchNote(state.choice, state.batch);
+  $("batch-reset").hidden = isDefaultBatch(state.batch);
+  $("plan-first-label").hidden = unplannedSelected() === 0;
+  $("queue").textContent = queueLabel(state.selected.size, planningCount());
   $("queue").disabled = state.selected.size === 0;
+}
+
+// What is saved now, read again into the page and the controls, because another page may have changed it since.
+async function readChoice() {
+  const config = await call("GET", "/api/config").catch(() => null);
+  if (config) setDefault(config.choice);
+  $("model").value = state.choice.model;
+  $("effort").value = state.choice.effort;
+  $("planModel").value = state.choice.planModel;
+  $("planEffort").value = state.choice.planEffort;
+  renderFooter();
+}
+async function readMax() {
+  const queue = await call("GET", "/api/queue").catch(() => null);
+  if (queue) state.queue = queue;
+  $("max").value = String(state.queue.max);
+  render();
+}
+
+// The settings dialog, with each control showing what is saved now.
+async function openSettings() {
+  await Promise.all([readChoice(), readMax()]);
+  $("settings-status").textContent = "";
+  $("settings").showModal();
+}
+
+// The dialog's own line, where its outcome is seen: the page's error line sits behind the dialog.
+function showSaved() {
+  $("settings-status").textContent = "Saved";
+  $("settings-status").className = "hint";
+}
+function showRefused(err) {
+  $("settings-status").textContent = String(err.message || err);
+  $("settings-status").className = "hint failed";
+}
+
+// Each setting is saved as it changes, and only what changed is sent. One the board refuses puts the controls back to what is saved.
+function saveChoice(part) {
+  call("POST", "/api/choice", { [part]: $(part).value }).then(({ choice }) => {
+    setDefault(choice);
+    showSaved();
+    renderFooter();
+  }, (err) => {
+    showRefused(err);
+    return readChoice();
+  }).catch(report);
+}
+function saveMax() {
+  call("POST", "/api/max", { max: Number($("max").value) }).then((q) => {
+    state.queue = q;
+    showSaved();
+    render();
+  }, (err) => {
+    showRefused(err);
+    return readMax();
+  }).catch(report);
 }
 
 function render() { renderPick(); renderBoard(); renderFooter(); }
 
 function setup(config) {
   state.terminal = config.terminal ?? null;
-  $("model").replaceChildren(...config.models.map((m) => el("option", { value: m, textContent: m, selected: m === config.choice.model })));
-  $("effort").replaceChildren(...config.efforts.map((x) => el("option", { value: x, textContent: x, selected: x === config.choice.effort })));
+  state.plan = config.plan ? new RegExp(config.plan) : null;
+  setDefault(config.choice);
+  for (const id of ["model", "batch-model", "planModel"]) $(id).replaceChildren(...config.models.map((m) => el("option", { value: m, textContent: m })));
+  for (const id of ["effort", "batch-effort", "planEffort"]) $(id).replaceChildren(...config.efforts.map((x) => el("option", { value: x, textContent: x })));
+  state.planner = config.planner === true;
+  $("planning-settings").hidden = !state.planner;
+  $("plan-first").checked = true;
 }
 
 for (const tab of document.querySelectorAll(".tab")) {
@@ -361,14 +542,30 @@ $("all").addEventListener("change", () => {
 });
 $("queue").addEventListener("click", async () => {
   try {
-    state.queue = await call("POST", "/api/queue", { keys: [...state.selected], model: $("model").value, effort: $("effort").value });
+    const sent = state.batch;
+    const { model, effort } = batchChoice(state.choice, sent);
+    state.queue = await call("POST", "/api/queue", { keys: [...state.selected], model, effort, plan: planningCount() > 0 });
     state.selected.clear();
+    // A batch's own model and effort are for that batch: the next one starts from the default again, unless it was chosen while this queued.
+    if (state.batch === sent) state.batch = {};
     report(null);
     render();
   } catch (err) { report(err); }
 });
 $("toggle-pause").addEventListener("click", () => call("POST", "/api/paused", { paused: state.queue.paused === false }).then((q) => { state.queue = q; render(); }, report));
-$("save-max").addEventListener("click", () => call("POST", "/api/max", { max: Number($("max").value) }).then((q) => { state.queue = q; render(); }, report));
+for (const id of ["open-settings", "change-choice", "change-max"]) $(id).addEventListener("click", () => { openSettings().catch(report); });
+for (const part of ["model", "effort"]) {
+  $(`batch-${part}`).addEventListener("change", () => {
+    state.batch = batchOverride(state.choice, { ...batchChoice(state.choice, state.batch), [part]: $(`batch-${part}`).value });
+    renderFooter();
+  });
+}
+$("batch-reset").addEventListener("click", () => { state.batch = {}; renderFooter(); });
+$("plan-first").addEventListener("change", renderFooter);
+for (const part of ["planModel", "planEffort"]) $(part).addEventListener("change", () => saveChoice(part));
+$("model").addEventListener("change", () => saveChoice("model"));
+$("effort").addEventListener("change", () => saveChoice("effort"));
+$("max").addEventListener("change", saveMax);
 
 try {
   setup(await call("GET", "/api/config"));

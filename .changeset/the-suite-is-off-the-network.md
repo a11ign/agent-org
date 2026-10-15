@@ -1,0 +1,5 @@
+---
+"agent-org": patch
+---
+
+The test suite no longer reaches the network. It made live calls: the gate, run as a process by eight test files, asked githubstatus.com once a tick, 16 times a run, and a review-depth case reached api.typesafe.ai through the real `fetch`. On a laptop that is a test reading the internet, and in CI a GitHub incident changed what a test about something else saw. A second rstest setup file, `src/offline-setup.ts`, runs after the private `TMPDIR` and replaces each test worker's `fetch` with `offlineFetch` (`src/offline-fetch.ts`). It adds the same preload to `NODE_OPTIONS`, so every Node process a test starts, the gate's status worker among them, gets it too. Loopback and `data:` go through, GitHub's status page answers that all is well, and anything else fails as a dropped network does. A test's own stub still wins. The review-depth case meant "no triage block" but, through a default parameter, ran the JEV block with no fake `fetch`. It now builds the host with no triage block, and each "ask nobody" case asserts nobody was asked. No change to what the tool does.

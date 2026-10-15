@@ -25,12 +25,14 @@ class Node_ {
   checked = false;
   hidden = false;
   disabled = false;
+  open = false;
   tag: string;
   constructor(tag: string) { this.tag = tag; }
   append(...nodes: (Node_ | string)[]) {
     for (const n of nodes) this.children.push(Object.assign(typeof n === "string" ? Object.assign(new Node_("#text"), { textContent: n }) : n, { parent: this }));
   }
   replaceChildren(...nodes: Node_[]) { this.children = []; this.append(...nodes); }
+  showModal() { this.open = true; }
   setAttribute(k: string, v: string) { this.attrs[k] = v; }
   getAttribute(k: string) { return this.attrs[k]; }
   addEventListener(type: string, fn: (event: { stopPropagation(): void }) => void) { (this.listeners[type] ??= []).push(fn); }
@@ -52,31 +54,50 @@ const TICKETS = [
 ];
 
 /** Run the page's script against a fake document, with `storage` as its localStorage. Resolves once the first render has happened. */
-async function page(storage: Map<string, string>, config: Record<string, unknown> = {}, entries: unknown[] = [], tickets: unknown[] = TICKETS, parents: unknown[] = []) {
+type PageOptions = { config?: Record<string, unknown>; entries?: unknown[]; tickets?: unknown[]; parents?: unknown[]; refused?: string[] };
+async function page(storage: Map<string, string>, { config = {}, entries = [], tickets = TICKETS, parents = [], refused = [] }: PageOptions = {}) {
   const byId = new Map<string, Node_>();
   const posts: { path: string; body: any }[] = [];
   const document = {
     getElementById: (id: string) => { if (!byId.has(id)) byId.set(id, new Node_(`#${id}`)); return byId.get(id)!; },
     createElement: (tag: string) => new Node_(tag),
     querySelectorAll: () => [],
-    activeElement: null,
   };
+  // The board's saved choice, which a POST to /api/choice changes part by part, as the server does, and its saved number of workers.
+  let saved = { model: "opus", effort: "high", ...(config.choice as object | undefined) };
+  let max = 3;
   const fetch = async (path: string, init: { method: string; body?: string } = { method: "GET" }) => {
     const body = init.body === undefined ? undefined : JSON.parse(init.body);
     if (init.method === "POST") posts.push({ path, body });
-    const value = path === "/api/config" ? { models: ["opus"], efforts: ["high"], choice: { model: "opus", effort: "high" }, max: 3, ...config }
-      : path === "/api/tickets" ? tickets : path === "/api/parents" ? parents : { entries, max: 3, paused: true };
+    if (refused.includes(path)) return { ok: false, json: async () => ({ error: `${path} refused` }), statusText: "" };
+    const answers: Record<string, () => unknown> = {
+      "/api/config": () => ({ models: ["opus"], efforts: ["high"], max: 3, ...config, choice: saved }),
+      "/api/tickets": () => tickets,
+      "/api/parents": () => parents,
+      "/api/choice": () => { saved = { ...saved, ...body }; return { choice: saved }; },
+      "/api/max": () => { max = body.max; return { entries, max, paused: true }; },
+    };
+    const value = answers[path]?.() ?? { entries, max, paused: true };
     return { ok: true, json: async () => value, statusText: "" };
   };
   const localStorage = { getItem: (k: string) => storage.get(k) ?? null, setItem: (k: string, v: string) => { storage.set(k, v); } };
   runInNewContext(SCRIPT, { ...view, document, fetch, window: { localStorage }, setInterval: () => 0, Date, JSON, Object, Array, Set, Map, String, Number, Boolean, Math });
-  for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve));
+  for (let i = 0; i < 10; i++) await settle();
   const $ = (id: string) => document.getElementById(id);
   const groups = () => $("groups").children;
   const shownKeys = () => $("groups").all().filter((n) => n.className.startsWith("row")).map((n) => n.children[1].text());
-  const chip = (name: string) => $("projects").children.find((c) => c.tag === "button" && c.children[0]?.text() === name || c.textContent === name)!;
-  return { $, groups, shownKeys, chip, posts };
+  /** The chip labelled `name` in a row of chips: the projects, unless another row is named. */
+  const chip = (name: string, row = "projects") => $(row).children.find((c) => c.tag === "button" && (c.children[0]?.text() === name || c.textContent === name))!;
+  /** Another page saves `change` to the board's choice, or `workers` as its number of workers at once. */
+  const saveElsewhere = ({ workers, ...change }: { model?: string; effort?: string; workers?: number }) => {
+    saved = { ...saved, ...change };
+    max = workers ?? max;
+  };
+  return { $, groups, shownKeys, chip, posts, saveElsewhere };
 }
+
+/** Let the page's pending fetches and their handlers run. */
+const settle = () => new Promise((resolve) => setImmediate(resolve));
 
 test("a project chip filters the list, several can be chosen at once, and All projects clears them; the choice is kept in localStorage", async () => {
   const storage = new Map<string, string>();
@@ -91,6 +112,31 @@ test("a project chip filters the list, several can be chosen at once, and All pr
   p.chip("All projects").fire("click");
   assert.deepEqual(p.shownKeys(), ["T-1", "T-2", "T-3", "T-4"]);
   assert.equal(storage.get("ticket-mode.projects"), "[]");
+});
+
+const BY_PRIORITY = [
+  { key: "U-1", title: "urgent", status: "Backlog", statusOrder: 0, priority: 1, project: "Alpha", url: "" },
+  { key: "H-1", title: "high", status: "Backlog", statusOrder: 0, priority: 2, project: "Alpha", url: "" },
+  { key: "N-1", title: "none", status: "Backlog", statusOrder: 0, priority: 0, project: "Alpha", url: "" },
+];
+
+test("a priority chip filters the list, several can be chosen at once, and All priorities clears them; the choice is kept in localStorage", async () => {
+  const storage = new Map<string, string>();
+  const p = await page(storage, { tickets: BY_PRIORITY });
+  for (const chipText of ["Urgent1", "High1", "No priority1"]) assert.ok(p.$("priorities").text().includes(chipText), `a chip with its count: ${chipText}`);
+  assert.equal(p.$("priorities").text().includes("Low"), false, "a priority no ticket has gets no chip");
+  p.chip("Urgent", "priorities").fire("click");
+  assert.deepEqual(p.shownKeys(), ["U-1"]);
+  p.chip("No priority", "priorities").fire("click");
+  assert.deepEqual(p.shownKeys(), ["U-1", "N-1"]);
+  assert.deepEqual(JSON.parse(storage.get("ticket-mode.priorities")!).sort(), ["0", "1"]);
+  p.chip("All priorities", "priorities").fire("click");
+  assert.deepEqual(p.shownKeys(), ["U-1", "H-1", "N-1"]);
+});
+
+test("a remembered priority filter is applied when the page loads again", async () => {
+  const p = await page(new Map([["ticket-mode.priorities", JSON.stringify(["2"])]]), { tickets: BY_PRIORITY });
+  assert.deepEqual(p.shownKeys(), ["H-1"]);
 });
 
 test("a remembered project filter is applied when the page loads again", async () => {
@@ -126,9 +172,67 @@ const rowFor = (p: Page, key: string) => rowsOf(p).find((r) => r.children[1].tex
 const foldOf = (p: Page, key: string) => rowFor(p, key).all().find((n) => n.className === "fold")!;
 const tickOf = (p: Page, key: string) => rowFor(p, key).all().find((n) => n.tag === "input")!;
 
+const PLAN = "-plan-[^/]*\\.md$";
+const ticketIn = (key: string, extra: Record<string, unknown> = {}) => ({ key, title: key, status: "Backlog", statusOrder: 0, priority: 2, project: null, url: "", ...extra });
+// P-1 is an epic with a plan over P-3, which has none; P-2 has none, and P-4 has one.
+const PLANS = [
+  ticketIn("P-1", { uploads: ["P-1-0001-plan-x.md"] }),
+  ticketIn("P-2", { uploads: ["shot.png"] }),
+  ticketIn("P-3", { parent: "P-1" }),
+  ticketIn("P-4", { uploads: ["P-4-0001-plan-y.md"] }),
+];
+const markOf = (p: Page, key: string) => rowFor(p, key).all().find((n) => n.className.startsWith("no-plan")) as (Node_ & { title?: string }) | undefined;
+const planChip = (p: Page, label: string) => p.$("plans").children.find((c) => c.tag === "button" && c.children[0]?.text() === label)!;
+
+test("on a machine that names a plan's pattern, a ticket with no plan is marked, muted when its parent's plan covers it, and an epic is never marked", async () => {
+  const p = await page(new Map(), { config: { plan: PLAN }, tickets: PLANS });
+  foldOf(p, "P-1").fire("click");
+  assert.equal(markOf(p, "P-4"), undefined, "it has a plan");
+  assert.equal(markOf(p, "P-2")?.className, "no-plan");
+  assert.equal(markOf(p, "P-2")?.attrs["aria-label"], "No plan attached. Attach one before a worker starts this.");
+  assert.equal(markOf(p, "P-3")?.className, "no-plan covered");
+  assert.equal(markOf(p, "P-3")?.title, "No plan of its own. A worker reads its parent P-1's plan.");
+  assert.equal(markOf(p, "P-1"), undefined);
+  const bareEpic = await page(new Map(), { config: { plan: PLAN }, tickets: [ticketIn("B-1"), ticketIn("B-2", { parent: "B-1" })] });
+  assert.equal(markOf(bareEpic, "B-1"), undefined, "an epic with no plan is not marked either: no worker starts it");
+});
+
+test("a ticket under someone else's epic is covered by that epic's plan once the parents load", async () => {
+  const theirs = ticketIn("X-1", { uploads: ["X-1-0001-plan-z.md"] });
+  const p = await page(new Map(), { config: { plan: PLAN }, tickets: [ticketIn("C-9", { parent: "X-1" })], parents: [theirs] });
+  foldOf(p, "X-1").fire("click");
+  assert.equal(markOf(p, "C-9")?.className, "no-plan covered");
+});
+
+test("a machine that names no plan pattern marks no ticket and has no plan filter", async () => {
+  const p = await page(new Map(), { tickets: PLANS });
+  foldOf(p, "P-1").fire("click");
+  assert.deepEqual(["P-1", "P-2", "P-3", "P-4"].map((key) => markOf(p, key)), [undefined, undefined, undefined, undefined]);
+  assert.equal(p.$("plans").hidden, true);
+});
+
+test("the plan filter counts the tickets a worker can be given with a plan and without, shows only the chosen ones, and is remembered", async () => {
+  const storage = new Map<string, string>();
+  const p = await page(storage, { config: { plan: PLAN }, tickets: PLANS });
+  assert.equal(p.$("plans").hidden, false);
+  assert.equal(planChip(p, "With a plan").text(), "With a plan1", "P-4; the epic P-1's own plan is not counted");
+  assert.equal(planChip(p, "Without a plan").text(), "Without a plan2");
+  planChip(p, "Without a plan").fire("click");
+  assert.deepEqual(p.shownKeys(), ["P-1", "P-2"], "P-3 stays under its epic, folded");
+  assert.equal(planChip(p, "Without a plan").attrs["aria-pressed"], "true");
+  assert.deepEqual(JSON.parse(storage.get("ticket-mode.plan")!), ["without"]);
+  assert.deepEqual((await page(storage, { config: { plan: PLAN }, tickets: PLANS })).shownKeys(), ["P-1", "P-2"], "the reload keeps the filter");
+  planChip(p, "With a plan").fire("click");
+  assert.deepEqual(p.shownKeys(), ["P-4"]);
+  planChip(p, "All").fire("click");
+  assert.deepEqual(p.shownKeys(), ["P-1", "P-2", "P-4"]);
+  assert.equal(storage.get("ticket-mode.plan"), "[]");
+  assert.deepEqual((await page(storage, { config: { plan: PLAN }, tickets: PLANS })).shownKeys(), ["P-1", "P-2", "P-4"], "the reload shows every ticket");
+});
+
 test("a parent starts folded, opens to list the tickets under it, indented, each naming its own status, and stays as left after a reload", async () => {
   const storage = new Map<string, string>();
-  const p = await page(storage, {}, [], EPIC);
+  const p = await page(storage, { tickets: EPIC });
   assert.equal(p.groups().length, 1, "one section, the epic's");
   assert.deepEqual(p.shownKeys(), ["E-1"], "folded, the epic is one row");
   assert.match(rowFor(p, "E-1").text(), /2 tickets under it/);
@@ -140,14 +244,14 @@ test("a parent starts folded, opens to list the tickets under it, indented, each
   assert.match(rowFor(p, "C-1").text(), /child · Todo/);
   assert.equal(rowFor(p, "E-1").text().includes("· In Progress"), false, "a top-level ticket's status is its section's");
   assert.deepEqual(JSON.parse(storage.get("ticket-mode.open-parents")!), ["E-1", "C-1"]);
-  assert.deepEqual((await page(storage, {}, [], EPIC)).shownKeys(), ["E-1", "C-1", "G-1"], "the reload keeps them open");
+  assert.deepEqual((await page(storage, { tickets: EPIC })).shownKeys(), ["E-1", "C-1", "G-1"], "the reload keeps them open");
   foldOf(p, "E-1").fire("click");
   assert.deepEqual(p.shownKeys(), ["E-1"], "folding the epic hides everything under it");
 });
 
 test("ticking a parent picks the tickets under it that can still be picked, never the parent, and part ticks it when only some are picked", async () => {
   const tickets = [...EPIC, { key: "C-2", title: "queued", status: "Todo", statusOrder: 1, priority: 2, project: null, url: "", parent: "E-1" }];
-  const p = await page(new Map(), {}, [entry("C-2", { phase: "queued" })], tickets);
+  const p = await page(new Map(), { entries: [entry("C-2", { phase: "queued" })], tickets });
   tickOf(p, "E-1").checked = true;
   tickOf(p, "E-1").fire("change");
   assert.equal(p.$("queue").textContent, "Queue 1 ticket", "only G-1: C-1 is a parent, and C-2 is on the queue already");
@@ -155,7 +259,7 @@ test("ticking a parent picks the tickets under it that can still be picked, neve
   foldOf(p, "E-1").fire("click");
   assert.equal(tickOf(p, "C-1").checked, true, "a parent under it shows its own tickets picked");
   p.$("queue").fire("click");
-  await new Promise((resolve) => setImmediate(resolve));
+  await settle();
   assert.deepEqual(p.posts.find((x) => x.path === "/api/queue")?.body.keys, ["G-1"]);
 });
 
@@ -166,7 +270,7 @@ test("a parent with some of its tickets picked is part ticked, and one with none
     { key: "E-2", title: "done epic", status: "Todo", statusOrder: 1, priority: 2, project: null, url: "", parent: null },
     { key: "C-3", title: "queued", status: "Todo", statusOrder: 1, priority: 2, project: null, url: "", parent: "E-2" },
   ];
-  const p = await page(new Map([["ticket-mode.open-parents", JSON.stringify(["E-1"])]]), {}, [entry("C-3", { phase: "queued" })], tickets);
+  const p = await page(new Map([["ticket-mode.open-parents", JSON.stringify(["E-1"])]]), { entries: [entry("C-3", { phase: "queued" })], tickets });
   tickOf(p, "C-1").checked = true;
   tickOf(p, "C-1").fire("change");
   assert.deepEqual([tickOf(p, "E-1").checked, (tickOf(p, "E-1") as unknown as { indeterminate: boolean }).indeterminate], [false, true]);
@@ -174,8 +278,7 @@ test("a parent with some of its tickets picked is part ticked, and one with none
 });
 
 test("a parent that is not the person's heads its children with a checkbox that picks them, and says it is not theirs", async () => {
-  const p = await page(new Map(), {}, [], ["VE-65", "VE-66"].map((key) => ({ key, title: key, status: "Backlog", statusOrder: 0, priority: 2, project: null, url: "", parent: "NBF-1917" })),
-    [{ key: "NBF-1917", title: "lint rules", status: "Todo", statusOrder: 1, priority: 2, project: null, url: "", parent: null }]);
+  const p = await page(new Map(), { tickets: ["VE-65", "VE-66"].map((key) => ({ key, title: key, status: "Backlog", statusOrder: 0, priority: 2, project: null, url: "", parent: "NBF-1917" })), parents: [{ key: "NBF-1917", title: "lint rules", status: "Todo", statusOrder: 1, priority: 2, project: null, url: "", parent: null }] });
   assert.deepEqual(rowsOf(p).map((r) => r.className), ["row parent context"], "folded, as every parent starts");
   assert.match(rowFor(p, "NBF-1917").text(), /Not assigned to you/);
   tickOf(p, "NBF-1917").checked = true;
@@ -186,7 +289,7 @@ test("a parent that is not the person's heads its children with a checkbox that 
 });
 
 test("Select all takes every ticket under a parent, folded or not, and never the parent", async () => {
-  const p = await page(new Map(), {}, [], EPIC);
+  const p = await page(new Map(), { tickets: EPIC });
   p.$("all").checked = true;
   p.$("all").fire("change");
   assert.equal(p.$("queue").textContent, "Queue 1 ticket", "only G-1");
@@ -194,7 +297,7 @@ test("Select all takes every ticket under a parent, folded or not, and never the
 });
 
 test("Expand all opens every parent with the sections, and Collapse all folds them again", async () => {
-  const p = await page(new Map(), {}, [], EPIC);
+  const p = await page(new Map(), { tickets: EPIC });
   p.$("fold-all").fire("click");
   assert.deepEqual(p.shownKeys(), ["E-1", "C-1", "G-1"]);
   assert.equal(p.$("fold-all").textContent, "Collapse all");
@@ -228,10 +331,197 @@ test("Select all takes the visible tickets, and Queue sends exactly those with t
   p.$("all").checked = true;
   p.$("all").fire("change");
   p.$("queue").fire("click");
-  await new Promise((resolve) => setImmediate(resolve));
+  await settle();
   const body = p.posts.find((x) => x.path === "/api/queue")?.body;
   assert.deepEqual(body?.keys, ["T-1", "T-3"], "T-2 and T-4 are filtered out");
   assert.equal("repos" in (body ?? {}), false, "the worker chooses the repository");
+});
+
+const SETTINGS = { models: ["opus", "sonnet"], efforts: ["high", "max"], choice: { model: "opus", effort: "high" } };
+
+/** Open Settings from `button`, and let it read what is saved. */
+async function openFrom(p: Page, button: string) {
+  p.$(button).fire("click");
+  await settle();
+}
+/** Change one control, in Settings or the Pick footer, and let what it does come back. */
+async function change(p: Page, id: string, value: string) {
+  p.$(id).value = value;
+  p.$(id).fire("change");
+  await settle();
+}
+
+/** The model and effort the Pick footer shows for the tickets queued next. */
+const footerChoice = (p: Page) => [p.$("batch-model").value, p.$("batch-effort").value];
+/** Select every ticket shown, press Queue, and return what was sent. */
+async function queueAll(p: Page) {
+  p.$("all").checked = true;
+  p.$("all").fire("change");
+  p.$("queue").fire("click");
+  await settle();
+  return p.posts.filter((x) => x.path === "/api/queue").at(-1)?.body;
+}
+
+test("the Pick footer says what a queued ticket runs with, Settings saves each part on its own, and Queue sends what is saved", async () => {
+  const p = await page(new Map(), { config: SETTINGS });
+  assert.deepEqual(footerChoice(p), ["opus", "high"]);
+  await openFrom(p, "change-choice");
+  assert.equal(p.$("settings").open, true, "Change opens the settings");
+  await change(p, "model", "sonnet");
+  assert.deepEqual(p.posts.at(-1), { path: "/api/choice", body: { model: "sonnet" } });
+  assert.deepEqual(footerChoice(p), ["sonnet", "high"]);
+  await change(p, "effort", "max");
+  assert.deepEqual(p.posts.at(-1), { path: "/api/choice", body: { effort: "max" } });
+  assert.deepEqual(footerChoice(p), ["sonnet", "max"]);
+  assert.equal(p.$("settings-status").textContent, "Saved");
+  p.$("all").checked = true;
+  p.$("all").fire("change");
+  p.$("queue").fire("click");
+  await settle();
+  const queued = p.posts.find((x) => x.path === "/api/queue")?.body;
+  assert.deepEqual([queued?.model, queued?.effort], ["sonnet", "max"]);
+});
+
+test("Settings shows what another page saved, and changing one part keeps the other page's change to the other", async () => {
+  const p = await page(new Map(), { config: SETTINGS });
+  p.saveElsewhere({ model: "sonnet" });
+  await openFrom(p, "open-settings");
+  assert.equal(p.$("model").value, "sonnet");
+  assert.deepEqual(footerChoice(p), ["sonnet", "high"]);
+  await change(p, "effort", "max");
+  assert.deepEqual(p.posts.at(-1)?.body, { effort: "max" });
+  assert.deepEqual(footerChoice(p), ["sonnet", "max"]);
+});
+
+test("workers at once is set in Settings, opened from the Board's Change, and the Board says how many run at once", async () => {
+  const p = await page(new Map(), { config: SETTINGS });
+  assert.equal(p.$("max-note").textContent, "Up to 3 workers at once");
+  await openFrom(p, "change-max");
+  assert.equal(p.$("settings").open, true);
+  assert.equal(p.$("max").value, "3", "the control shows what is saved");
+  await change(p, "max", "5");
+  assert.deepEqual(p.posts.at(-1), { path: "/api/max", body: { max: 5 } });
+  assert.equal(p.$("max-note").textContent, "Up to 5 workers at once");
+  assert.equal(p.$("settings-status").textContent, "Saved");
+  await openFrom(p, "open-settings");
+  assert.equal(p.$("settings-status").textContent, "", "opening Settings again clears what the last change said");
+});
+
+test("a number of workers the board refuses goes back to what is saved, and the refusal shows in Settings, where it can be seen", async () => {
+  const p = await page(new Map(), { config: SETTINGS, refused: ["/api/max"] });
+  await openFrom(p, "open-settings");
+  await change(p, "max", "0");
+  assert.equal(p.$("max").value, "3");
+  assert.equal(p.$("settings-status").textContent, "/api/max refused");
+  assert.equal(p.$("settings-status").className, "hint failed");
+  assert.equal(p.$("max-note").textContent, "Up to 3 workers at once");
+});
+
+test("a model the board refuses goes back to what is saved, and the footer keeps what is saved", async () => {
+  const p = await page(new Map(), { config: SETTINGS, refused: ["/api/choice"] });
+  await openFrom(p, "open-settings");
+  await change(p, "model", "sonnet");
+  assert.equal(p.$("model").value, "opus");
+  assert.equal(p.$("settings-status").textContent, "/api/choice refused");
+  assert.deepEqual(footerChoice(p), ["opus", "high"]);
+});
+
+test("a refused change reads what is saved again, so what another page saved since Settings opened is what shows and what Queue sends", async () => {
+  const p = await page(new Map(), { config: SETTINGS, refused: ["/api/choice"] });
+  await openFrom(p, "open-settings");
+  p.saveElsewhere({ model: "sonnet" });
+  await change(p, "effort", "max");
+  await settle();
+  assert.equal(p.$("settings-status").textContent, "/api/choice refused");
+  assert.deepEqual([p.$("model").value, p.$("effort").value], ["sonnet", "high"]);
+  assert.deepEqual(footerChoice(p), ["sonnet", "high"]);
+  p.$("all").checked = true;
+  p.$("all").fire("change");
+  p.$("queue").fire("click");
+  await settle();
+  const queued = p.posts.find((x) => x.path === "/api/queue")?.body;
+  assert.deepEqual([queued?.model, queued?.effort], ["sonnet", "high"]);
+});
+
+test("a refused number of workers reads what is saved again, so what another page saved since Settings opened is what shows", async () => {
+  const p = await page(new Map(), { config: SETTINGS, refused: ["/api/max"] });
+  await openFrom(p, "open-settings");
+  p.saveElsewhere({ workers: 5 });
+  await change(p, "max", "0");
+  await settle();
+  assert.equal(p.$("max").value, "5");
+  assert.equal(p.$("max-note").textContent, "Up to 5 workers at once");
+});
+
+test("a batch runs on its own model and effort: Queue sends them, the default is not saved, and the next batch starts from the default", async () => {
+  const p = await page(new Map(), { config: SETTINGS });
+  assert.equal(p.$("batch-note").textContent, "The default");
+  assert.equal(p.$("batch-reset").hidden, true);
+  await change(p, "batch-model", "sonnet");
+  assert.deepEqual(footerChoice(p), ["sonnet", "high"]);
+  assert.equal(p.$("batch-note").textContent, "These tickets only. The default is opus at high effort");
+  assert.equal(p.$("batch-reset").hidden, false);
+  const queued = await queueAll(p);
+  assert.deepEqual([queued?.model, queued?.effort], ["sonnet", "high"]);
+  assert.equal(p.posts.some((x) => x.path === "/api/choice"), false, "the default is not saved");
+  assert.deepEqual(footerChoice(p), ["opus", "high"], "the next batch starts from the default");
+  assert.equal(p.$("batch-note").textContent, "The default");
+  await openFrom(p, "open-settings");
+  assert.deepEqual([p.$("model").value, p.$("effort").value], ["opus", "high"]);
+});
+
+test("Use the default puts a batch back on the default, and so does choosing the default's own values", async () => {
+  const p = await page(new Map(), { config: SETTINGS });
+  await change(p, "batch-effort", "max");
+  p.$("batch-reset").fire("click");
+  assert.deepEqual(footerChoice(p), ["opus", "high"]);
+  assert.equal(p.$("batch-note").textContent, "The default");
+  await change(p, "batch-model", "sonnet");
+  await change(p, "batch-model", "opus");
+  assert.equal(p.$("batch-note").textContent, "The default");
+  assert.equal(p.$("batch-reset").hidden, true);
+});
+
+test("a default that catches up to a batch's choice makes the batch the default again", async () => {
+  const p = await page(new Map(), { config: SETTINGS });
+  await change(p, "batch-effort", "max");
+  await openFrom(p, "change-choice");
+  await change(p, "effort", "max");
+  assert.equal(p.$("batch-note").textContent, "The default");
+  assert.equal(p.$("batch-reset").hidden, true);
+});
+
+test("a batch keeps the part it chose when the default changes, and follows the default in the part it did not", async () => {
+  const p = await page(new Map(), { config: SETTINGS });
+  await change(p, "batch-model", "sonnet");
+  await openFrom(p, "change-choice");
+  await change(p, "effort", "max");
+  assert.deepEqual(footerChoice(p), ["sonnet", "max"]);
+  assert.equal(p.$("batch-note").textContent, "These tickets only. The default is opus at max effort");
+  const queued = await queueAll(p);
+  assert.deepEqual([queued?.model, queued?.effort], ["sonnet", "max"]);
+});
+
+test("a batch chosen while the last one is being queued is kept for the next, and the last one is sent as it was", async () => {
+  const p = await page(new Map(), { config: SETTINGS });
+  p.$("all").checked = true;
+  p.$("all").fire("change");
+  p.$("queue").fire("click");
+  p.$("batch-model").value = "sonnet";
+  p.$("batch-model").fire("change");
+  for (let i = 0; i < 3; i++) await settle();
+  assert.equal(p.posts.find((x) => x.path === "/api/queue")?.body.model, "opus");
+  assert.deepEqual(footerChoice(p), ["sonnet", "high"]);
+});
+
+test("a queue the board refuses keeps the batch's own model and effort, and queueing again sends them again", async () => {
+  const p = await page(new Map(), { config: SETTINGS, refused: ["/api/queue"] });
+  await change(p, "batch-effort", "max");
+  const first = await queueAll(p);
+  assert.deepEqual(footerChoice(p), ["opus", "max"]);
+  assert.equal(p.$("batch-reset").hidden, false);
+  const again = await queueAll(p);
+  assert.deepEqual([first?.effort, again?.effort], ["max", "max"]);
 });
 
 const entry = (key: string, fields: Record<string, unknown>) => ({ ticket: { key, title: `title ${key}`, url: "" }, repos: [], model: "opus", effort: "high", queuedAt: 1, ...fields });
@@ -248,7 +538,7 @@ const runRows = (p: Awaited<ReturnType<typeof page>>) => p.$("runs").children.fi
 const filterButton = (p: Awaited<ReturnType<typeof page>>, label: string) => p.$("filters").children.find((b) => b.children.some((c) => c.text() === label))!;
 
 test("the runs view lists every run with its status icon, most recently active first", async () => {
-  const p = await page(new Map(), {}, RUNS);
+  const p = await page(new Map(), { entries: RUNS });
   const rows = runRows(p);
   assert.equal(rows.length, 6);
   const icons = rows.map((r) => r.children[0].className);
@@ -263,7 +553,7 @@ test("a run waiting on a blocker is Blocked, with its own filter, and names what
     entry("LIB-2", { phase: "finished", startedAt: 2, finishedAt: 4, outcome: { kind: "draft-pr", prs: [{ repo: "libs", url: "https://github.com/x/libs/pull/4" }] },
       pullStates: { "https://github.com/x/libs/pull/4": "merged" } }),
   ];
-  const p = await page(new Map(), {}, runs);
+  const p = await page(new Map(), { entries: runs });
   const blocked = runRows(p).find((r) => r.text().includes("APP-1"))!;
   assert.equal(blocked.children[0].className, "icon st-blocked");
   assert.match(blocked.text(), /Waits on LIB-1 \(In Review\)/);
@@ -274,7 +564,7 @@ test("a run waiting on a blocker is Blocked, with its own filter, and names what
 });
 
 test("the In progress filter is a still dot, and a working run's own icon is the spinning ring", async () => {
-  const p = await page(new Map(), {}, RUNS);
+  const p = await page(new Map(), { entries: RUNS });
   const railIcon = filterButton(p, "In progress").children[0] as Node_ & { innerHTML: string };
   const rowIcon = runRows(p).map((r) => r.children[0]).find((i) => i.className === "icon st-working") as Node_ & { innerHTML: string };
   assert.equal(railIcon.className, "icon st-working", "it keeps the status's colour");
@@ -285,7 +575,7 @@ test("the In progress filter is a still dot, and a working run's own icon is the
 
 test("each filter shows its count, and choosing one shows only its runs and is remembered", async () => {
   const storage = new Map<string, string>();
-  const p = await page(storage, {}, RUNS);
+  const p = await page(storage, { entries: RUNS });
   assert.equal(filterButton(p, "All runs").children.at(-1)!.text(), "6");
   assert.equal(filterButton(p, "Needs you").children.at(-1)!.text(), "1");
   assert.equal(filterButton(p, "Completed").children.at(-1)!.text(), "1");
@@ -299,7 +589,7 @@ test("each filter shows its count, and choosing one shows only its runs and is r
 });
 
 test("a row offers only the actions its state allows, and a completed run is not retried", async () => {
-  const p = await page(new Map(), {}, RUNS);
+  const p = await page(new Map(), { entries: RUNS });
   const buttons = (key: string) => runRows(p).find((r) => r.text().includes(key))!.all().filter((n) => n.tag === "button").map((b) => b.textContent);
   assert.deepEqual(buttons("Q-1"), ["Remove"]);
   assert.deepEqual(buttons("R-1"), ["Stop"]);
@@ -314,7 +604,7 @@ test("a live or parked run links its terminal when the machine serves one, and a
     entry("P-1", { phase: "finished", startedAt: 2, finishedAt: 4, workspace: "w2", pane: "w2:p1", outcome: { kind: "needs-human", reason: "which colour?" } }),
     entry("F-1", { phase: "finished", startedAt: 2, finishedAt: 3, outcome: { kind: "crashed", reason: "herdr refused" } }),
   ];
-  const p = await page(new Map(), { terminal: "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal" }, runs);
+  const p = await page(new Map(), { config: { terminal: "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal" }, entries: runs });
   const row = (key: string) => runRows(p).find((r) => r.text().includes(key))!;
   const link = (key: string) => row(key).all().find((n) => n.className === "terminal") as (Node_ & { href?: string; target?: string }) | undefined;
   assert.equal(link("R-1")?.href, "http://127.0.0.1:7318/?ws=w1&pane=w1%3Ap1&view=terminal");
@@ -325,8 +615,69 @@ test("a live or parked run links its terminal when the machine serves one, and a
   const close = row("P-1").all().find((n) => n.tag === "button")!;
   assert.equal(close.textContent, "Close");
   close.fire("click");
-  await new Promise((resolve) => setImmediate(resolve));
+  await settle();
   assert.ok(p.posts.some((x) => x.path === "/api/queue/P-1/close"));
-  const none = await page(new Map(), {}, runs);
+  const none = await page(new Map(), { entries: runs });
   assert.equal(runRows(none).flatMap((r) => r.all()).find((n) => n.className === "terminal"), undefined, "a machine that serves no terminal shows no link");
+});
+
+const PLANNING = { ...SETTINGS, plan: "-plan-[^/]*\\.md$", planner: true, choice: { model: "opus", effort: "high", planModel: "opus", planEffort: "max" } };
+const PLAN_TICKETS = [
+  { key: "T-1", title: "one", status: "Backlog", statusOrder: 0, priority: 2, project: "Alpha", url: "", uploads: ["T-1-0001-plan-a.md"] },
+  { key: "T-2", title: "two", status: "Backlog", statusOrder: 0, priority: 2, project: "Alpha", url: "" },
+];
+/** Select every ticket shown. */
+function selectAll(p: Page) {
+  p.$("all").checked = true;
+  p.$("all").fire("change");
+}
+
+test("Plan first shows once a selected ticket has no plan, Queue says how many it plans first, and the queue is told to plan them", async () => {
+  const p = await page(new Map(), { config: PLANNING, tickets: PLAN_TICKETS });
+  assert.equal(p.$("plan-first-label").hidden, true, "nothing is selected yet");
+  selectAll(p);
+  assert.equal(p.$("plan-first-label").hidden, false);
+  assert.equal(p.$("queue").textContent, "Queue 2 tickets, planning 1 first");
+  p.$("queue").fire("click");
+  await settle();
+  assert.equal(p.posts.find((x) => x.path === "/api/queue")?.body.plan, true);
+});
+
+test("unticking Plan first queues every selected ticket to be worked as it is", async () => {
+  const p = await page(new Map(), { config: PLANNING, tickets: PLAN_TICKETS });
+  selectAll(p);
+  p.$("plan-first").checked = false;
+  p.$("plan-first").fire("change");
+  assert.equal(p.$("queue").textContent, "Queue 2 tickets");
+  p.$("queue").fire("click");
+  await settle();
+  assert.equal(p.posts.find((x) => x.path === "/api/queue")?.body.plan, false);
+});
+
+test("a board that plans nothing shows neither Plan first nor the planning settings, and asks for no planning", async () => {
+  const p = await page(new Map(), { config: { ...SETTINGS, plan: "-plan-[^/]*\\.md$" }, tickets: PLAN_TICKETS });
+  selectAll(p);
+  assert.equal(p.$("plan-first-label").hidden, true);
+  assert.equal(p.$("planning-settings").hidden, true);
+  assert.equal(p.$("queue").textContent, "Queue 2 tickets");
+  p.$("queue").fire("click");
+  await settle();
+  assert.equal(p.posts.find((x) => x.path === "/api/queue")?.body.plan, false);
+});
+
+test("the planning model and effort are set in Settings part by part, apart from the run's", async () => {
+  const p = await page(new Map(), { config: PLANNING, tickets: PLAN_TICKETS });
+  await openFrom(p, "open-settings");
+  assert.equal(p.$("planning-settings").hidden, false);
+  assert.deepEqual([p.$("planModel").value, p.$("planEffort").value], ["opus", "max"]);
+  await change(p, "planModel", "sonnet");
+  assert.deepEqual(p.posts.at(-1), { path: "/api/choice", body: { planModel: "sonnet" } });
+  assert.deepEqual(footerChoice(p), ["opus", "high"], "the run's choice is unchanged");
+});
+
+test("a planning run is Planning on the Board, and its row names the planning model before the run's", async () => {
+  const p = await page(new Map(), { entries: [entry("P-1", { phase: "running", startedAt: 5, model: "sonnet", plan: { model: "opus", effort: "max" } })] });
+  const [row] = runRows(p);
+  assert.equal(row.children[0].className, "icon st-planning");
+  assert.match(row.text(), /Planning · .*plan on opus\/max, then sonnet\/high/);
 });

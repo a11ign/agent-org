@@ -47,15 +47,18 @@ test("a Closes with a gate-bearing path is full, and one without is not", async 
 });
 
 test("provider-absent, key-missing and use-switched-off are normal, and ask nobody", async () => {
-  const cases: [string, ReturnType<typeof deps>][] = [
-    ["no triage block", deps(undefined, undefined)],
-    ["provider none", deps(undefined, { provider: "none" })],
-    ["switched off", deps(unasked().fn, JEV, false)],
-    ["key missing", { ...deps(unasked().fn), readKey: () => { throw new Error("ENOENT /fake/key"); } }],
+  // Each case gets a `fetch` that counts. `deps(undefined, undefined)` once stood for "no triage block", but a default parameter takes `undefined`, so it
+  // was the JEV block with no fetch, and the real one reached api.typesafe.ai.
+  const cases: [string, (fn: typeof fetch) => ReturnType<typeof deps>][] = [
+    ["no triage block", (fn) => ({ ...deps(fn), host: hostWith() })],
+    ["provider none", (fn) => deps(fn, { provider: "none" })],
+    ["switched off", (fn) => deps(fn, JEV, false)],
+    ["key missing", (fn) => ({ ...deps(fn), readKey: () => { throw new Error("ENOENT /fake/key"); } })],
   ];
-  for (const [name, d] of cases) {
-    const out = await reviewDepth(state(["README.md"]), d);
-    assert.deepEqual([name, out.depth, out.by], [name, "normal", "none"]);
+  for (const [name, make] of cases) {
+    const net = unasked();
+    const out = await reviewDepth(state(["README.md"]), make(net.fn));
+    assert.deepEqual([name, out.depth, out.by, net.calls], [name, "normal", "none", 0]);
   }
 });
 

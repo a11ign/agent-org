@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { allocate, COST, drawTriageSample, Figures, MANAGERS, NO_CAUSE, parseArgs, renderProvenance, renderSheet, SHOWN } from "./triage-sample.ts";
+import { allocate, COST, drawTriageSample, type Figures, MANAGERS, NO_CAUSE, parseArgs, renderProvenance, renderSheet, SHOWN } from "./triage-sample.ts";
 
 const FROM = Date.parse("2026-10-07T00:00:00Z");
 const TO = Date.parse("2026-10-08T00:00:00Z");
@@ -400,7 +400,8 @@ test("the CLI draws only the named classes and says so in its provenance; an unk
   assert.equal(sample.rows.length, 20);
   assert.ok(sample.rows.every((row: { cause: string; }) => ["answer-owed", "org-health"].includes(row.cause)));
   assert.match(run(...draw).stdout, /manager wakes of cause answer-owed, org-health/);
-  const typo = run("--seed", "4074", "--store", store, "--cause", "answer-owd");
+  // The same window as the draw above: with no `--from`/`--to` the CLI reads the last seven days from now, which holds none of the fixture's events once the clock has moved past them.
+  const typo = run("--seed", "4074", "--store", store, "--from", "2026-10-07T00:00:00Z", "--to", "2026-10-08T00:00:00Z", "--cause", "answer-owd");
   assert.equal(typo.status, 1);
   assert.match(typo.stderr, /no manager wake in the window has cause answer-owd/);
   assert.match(typo.stderr, /usage: node src\/trace\/triage-sample\.ts --seed/);

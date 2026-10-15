@@ -47,7 +47,9 @@ import { HAIKU_DEFAULT_CI_FAILURES, haikuDefaultOn, routeEngineer, type Routed }
 import { DEFAULT_CAPS, ESCALATION_KIND, ESCALATION_USE, claimFacts, escalationLogLine, escalationNote, haikuStarts, isHaiku, shouldEscalate, transcriptCounts } from "./engineer-escalation.ts";
 import { decisionLogPathFrom, decisionSwitchesPath, readSwitches } from "./decision-provider.ts";
 import { printDiagnostic, processState } from "./triage-provider.ts";
-import { classifyCiFailure, classLine, classNote, notesTheOrder, readCiFailure, type Gh } from "./ci-failure-class.ts";
+import { classifyCiFailure, classLine, classNote, failingAssertionLines, notesTheOrder, readCiFailure, type CiFailure, type Gh } from "./ci-failure-class.ts";
+import { CI_RERUN_LEDGER_FILE, CI_RERUN_ON_5XX, rerunLedgerLine, rerunRedOn5xx } from "./ci-rerun-on-5xx.ts";
+import { redRunOfHead, rerunFailedJobsOf } from "./ticket-port/ci-reads.ts";
 import { depthEffort, depthLine, readDepthState, reviewDepth, type Depth } from "./review-depth.ts";
 import { profileFor, agentArgs, haikuTierProfile, type TierProfile, armOf, ARM, CALM_FINISH_PARAGRAPH, tripsArmOf, TRIPS_ARM, ROUND_TRIPS_PARAGRAPH } from "./worker-profile.ts";
 import { JUDGMENT_CAUSES, ANSWER_PREFIX, LAUNCH_PLACEHOLDER, REVIEWER_REGISTRY_FILE, readReviewerRegistry, scopesOf,
@@ -105,6 +107,7 @@ import { holderWorkAtRisk, workAtRisk, cloneOfKey, gitRun, pathExists, statMtime
 // too, without importing this file (which already imports `claim-stall.ts` and would cycle). Re-exported below so
 // every existing importer of `readAgents`/`listingIsComplete` from "./wake.ts" is unchanged.
 import { readAgents, listingIsComplete, absentSeats, REFUSAL_EXCERPT, firstLine, herdrReason, agentStartArgs, openPane, closedNote } from "./herdr-agents.ts";
+import { seatRunKeys, isAbsentReviewerSeat } from "./seat-retire-reset.ts"; // agent-org#1392: a retired seat's runs end with it; an absent seat's cap is started again
 import { persistentRoles, persistentEntries, type PersistentEntry } from "./project-roles.ts";
 import { liveToolVersion } from "./lib/tool-version.ts";
 import { readState as readSelftestState, selftestPaths, worthAChild } from "./messaging/selftest.ts"; // #3540: the question of whether to start the self-test at all
@@ -1036,12 +1039,23 @@ type ReviewerEntry = { spawnedAt: number; trust?: ReviewTrust; };
  * `~/.npm` and the checkout's parent are not, so `npx` in a tree with no dependencies died with `rofs` writing `~/.npm/_logs`.
  * `/tmp` is RAM-backed ({@link REVIEW_CHECKOUT_ROOT}); `node_modules/.cache` is gitignored and goes with the tree when
  * {@link removeReviewCheckout} removes it, so nothing outlives the pull request.
+ *
+ * THE APP TOKEN IS CACHED THERE TOO (agent-org#1342): `A11Y_APP_TOKEN_DIR` is `node_modules/.cache/app-tokens` in the same tree. `host/gh`'s
+ * `app_token` writes the minted token, its `.err` and its `.failed` to that directory, and its default (`~/.cache/a11ign/app-tokens`) is read-only
+ * in the sandbox, so every mint failed there once the token an unsandboxed caller had cached expired. Since #1347 a failed mint REFUSES the
+ * reviewer's call, so from 2026-10-13 ~16:06Z no reviewer could post a verdict without improvising a cache of its own.
+ *
+ * A KEYED REPOSITORY'S REVIEWER ALSO GETS `AGENT_ORG_HOST` ({@link hostConfigPath}), as {@link spawnEnvironment} gives every worker (#850). Its
+ * checkout (an agent-org one) holds no `.agent-org/project.json`, so any Acceptance that imports the project's vocabulary refused at import:
+ * agent-org#1378's `src/pr-owner-routing.test.ts` died in review as `Cannot access 'RESOURCES' before initialization` while it passed 11/11 in its
+ * worker's pane. The primary's checkout declares its own project, so its reviewer is not given one.
  *   @param [tree] the instance's checkout
  */
 export function reviewerEnvironment(session: string, override: Record<string, string> = {}, tree: string = reviewCheckoutPath(session)): Record<string, string> {
   const repo = reviewedRepositoryOf(session);
   return { GH_CONFIG_DIR: REVIEWER_GH_CONFIG_DIR, AGENT_ORG_GH_ROLE: "reviewer", A11Y_REVIEWER_SESSION: session,
-    npm_config_cache: `${tree}/node_modules/.cache/npm`, ...(repo === null ? {} : { GH_REPO: repo }), ...override };
+    npm_config_cache: `${tree}/node_modules/.cache/npm`, A11Y_APP_TOKEN_DIR: `${tree}/node_modules/.cache/app-tokens`,
+    ...(repo === null ? {} : { GH_REPO: repo, [HOST_CONFIG_ENV]: hostConfigPath() }), ...override };
 }
 
 /**
@@ -1992,6 +2006,14 @@ export function reviewerPathsFrom(ledgerPath: string): { registry: string; endin
 }
 
 /**
+ * THE RUNS OF A RETIRED SEAT'S CAUSES END WITH IT (agent-org#1392): one RESET line for each cause the seat owns that has a run in the
+ * ledger. The ledger stays append-only, so the six deliveries that capped the cause are still there, read before the reset.
+ */
+export function endSeatRuns(ledgerPath: string, session: string) {
+  for (const key of seatRunKeys(session, deliveryCounts(ledgerPath))) writeFileSync(ledgerPath, `${Date.now()}\t${RESET}\t${key}\n`, { flag: "a" });
+}
+
+/**
  * Note that a reviewer instance was STARTED for `session`: the gate's auth detector reads `spawnedAt` to tell a
  * refresh that came after the instance started from one it lived through, and the teardown reads the keys.
  */
@@ -2139,6 +2161,8 @@ export function endFinishedReviewers(agents: { label: string; status: string; }[
         registry: Record<string, ReviewerInstance>; now: number; run: (args: string[]) => string;
         prState: (pr: number, key: string) => string | null; removeCheckout: (session: string, pr: number, key: string) => string | null;
         record: (line: object) => void; warn: (line: string) => void; recordAbsence?: (line: object) => void;
+        /** agent-org#1392: ends the runs of the seat's causes, once the seat is gone -- a cap that outlived its seat would refuse for ever. */
+        endRuns?: (session: string) => void;
     }): { ended: string[]; cleared: string[]; registry: Record<string, ReviewerInstance>; } {
   const registry = { ...deps.registry };
   const ended: string[] = [];
@@ -2149,11 +2173,15 @@ export function endFinishedReviewers(agents: { label: string; status: string; }[
     const state = reviewedPullRequestState(session, instance, deps);
     if (state === null) continue;
     if (state === "open") {
-      if (!restored.includes(session) && reconcileOpenReviewer({ session, pr: Number(instance?.number), agents, registry }, deps)) cleared.push(session);
+      if (!restored.includes(session) && reconcileOpenReviewer({ session, pr: Number(instance?.number), agents, registry }, deps)) {
+        deps.endRuns?.(session);
+        cleared.push(session);
+      }
       continue;
     }
     if (!endFinishedReviewer({ session, instance, state, restored: restored.includes(session) }, agents, deps)) continue;
     delete registry[session];
+    deps.endRuns?.(session);
     ended.push(session);
   }
   return { ended, cleared, registry };
@@ -2285,7 +2313,8 @@ export function tearDownReviewers(agents: { label: string; status: string; }[], 
     const appendTo = (path: string) => (line: object) => writeFileSync(path, `${JSON.stringify(line)}\n`, { flag: "a" });
     const { ended, cleared, registry } = endFinishedReviewers(agents, { registry: before, now: Date.now(),
       run: defaultRun, prState: pullRequestState, removeCheckout: (session, pr, key) => removeReviewCheckout({ session, pr, key }),
-      warn: (line) => say(`${line}\n`), record: appendTo(paths.endings), recordAbsence: appendTo(paths.absences) });
+      warn: (line) => say(`${line}\n`), record: appendTo(paths.endings), recordAbsence: appendTo(paths.absences),
+      endRuns: (session) => endSeatRuns(ledgerPath, session) });
     writeFileSync(paths.registry, `${JSON.stringify(registry)}\n`);
     for (const session of ended) say(`ENDED ${session}: its pull request is no longer open\n`);
     for (const session of cleared) say(`CLEARED ${session}: its pull request is open and it is gone from herdr -- the next tick starts a fresh one\n`);
@@ -5637,8 +5666,10 @@ function noteClaimOrders(claimOrders: ClaimOrders | undefined, { gateOrder, targ
 export function deliver(orders: readonly { session: string; causeKey: string; prompt: string; cause?: string; title?: string; replaces?: { branch: string; }[]; resume?: boolean; outageNow?: boolean; startFresh?: boolean; briefRole?: string; trust?: ReviewTrust; }[], agents: { label: string; status: string; }[], roster: string[],
   { run = defaultRun, record, counts, ineligibleReason, env, registerSpawn, drained, claimable, claimer, memory, hostLoad, claimRefused, oneShot, ceoOneShot,
     launch, reviewerEnv, registerReviewer, checkout, registry, unavailable, sleep, contextRoot, codexConfig, clock, relane, goneSeats, claimOrders, toolchain,
-    now = Date.now, serve, accountPause }: {
+    now = Date.now, serve, accountPause, endRun }: {
           run?: (args: string[]) => string; record?: (key: string, recipient?: string, noClear?: boolean, at?: number) => void;
+          /** agent-org#1392: writes the RESET that ends a capped cause's run when its absent seat is started again (see `isAbsentReviewerSeat`). */
+          endRun?: (causeKey: string, at: number) => void;
           /** agent-org#1307: the account's pause for this tick; while it holds, no Claude seat is started, claimed for or prompted, and no `claude -p` run is served. */
           accountPause?: AccountLimit | null;
           serve?: (order: { causeKey: string; }) => ServedRecord | null;
@@ -5678,7 +5709,10 @@ export function deliver(orders: readonly { session: string; causeKey: string; pr
     // silent-retry version of the bug this whole change fixes -- work going nowhere while the log looks
     // busy. Naming it and stopping is the only answer that reaches a person.
     const already = counts?.get(order.causeKey) ?? 0;
-    if (already >= MAX_DELIVERIES) {
+    // agent-org#1392: A CAPPED CAUSE WHOSE SEAT IS ABSENT IS STARTED AGAIN, NOT CAPPED. The cap counted deliveries to a seat that is gone, and no
+    // run of it can end while the seat is absent. Its RESET is written only when the order is placed (below), so a refused order keeps its count.
+    const restart = already >= MAX_DELIVERIES && isAbsentReviewerSeat(order.session, { registry: registry?.() ?? {}, agents });
+    if (already >= MAX_DELIVERIES && !restart) {
       recordCapped({ stuck, outaged }, order, already);
       continue;
     }
@@ -5748,6 +5782,8 @@ export function deliver(orders: readonly { session: string; causeKey: string; pr
     // not say who was woken, and the only account of a wrong delivery was the recipient's own prose. A NAMED
     // order's recipient is already in its key and is not repeated.
     // A FALLBACK DELIVERY IS RECORDED THE SAME WAY (#2356): the key names the session it was ADDRESSED to.
+    // THE RESTART'S RESET COMES BEFORE ITS DELIVERY LINE (#1392): the next tick counts from the reset, not from the seventh delivery.
+    if (restart) endRun?.(order.causeKey, at);
     if (record) record(order.causeKey, target.label !== gateOrder.session ? target.label : undefined, noClear, at);
     noteClaimOrders(claimOrders, { gateOrder, target, continuation, at });
     // WHETHER A CLEAR WAS SENT IS READABLE (#2483): a STARTED line has no history to clear, a standing seat's
@@ -6789,8 +6825,11 @@ export async function routesForStarts(orders: readonly { causeKey: string }[], {
  * leave an order as the gate wrote it whenever the facts could not be read or no provider answered.
  */
 export const ENRICH_AHEAD = 3;
-/** The cause key of a settled-red order (`<session>/pr-checks-failing/pr-<ref>/<head8>`, `/conflicting` optional); a hung check, an ejection and a checkless head end otherwise. */
-const RED_CHECK_KEY = /\/pr-checks-failing\/pr-([a-z0-9][a-z0-9-]*#)?([1-9][0-9]*)\/([0-9a-f]{8})(?:\/conflicting)?$/;
+/**
+ * The cause key of a settled-red order (`<session>/pr-checks-failing/pr-<ref>/<head8>`, `/conflicting` optional, then `/refail-<n>` for the nth same-head re-fail, agent-org#1185, which
+ * only a gate with `checks.sameHeadRefail` ON writes); a hung check, an ejection and a checkless head end otherwise.
+ */
+const RED_CHECK_KEY = /\/pr-checks-failing\/pr-([a-z0-9][a-z0-9-]*#)?([1-9][0-9]*)\/([0-9a-f]{8})(?:\/conflicting)?(\/refail-[1-9][0-9]*)?$/;
 type Enrichable = { session: string; causeKey: string; prompt: string; cause?: string };
 type EnrichDeps = { host: Parameters<typeof routeEngineer>[1]["host"]; ledgerPath: string; projectDir?: string; gh?: Gh };
 
@@ -6798,31 +6837,90 @@ const enrichDecisionDeps = ({ host, ledgerPath, projectDir = PRIMARY_CHECKOUT }:
   ({ host, switchesPath: decisionSwitchesPath(projectDir), logPath: decisionLogPathFrom(ledgerPath), id });
 
 /** The pull request a settled-red order is about, or `null` for a key naming none or a repository the declaration does not list (never the primary's by default). */
-function redPullRequestOf(order: Enrichable): { repo: string; number: number; head8: string } | null {
+function redPullRequestOf(order: Enrichable): { repo: string; number: number; head8: string; refail: boolean } | null {
   const match = order.cause === "pr-checks-failing" ? RED_CHECK_KEY.exec(order.causeKey) : null;
   const repo = match === null ? null : codeRepositoryOf((match[1] ?? "").replace(/#$/, ""));
-  return match === null || repo === null ? null : { repo, number: Number(match[2]), head8: match[3] };
+  return match === null || repo === null ? null : { repo, number: Number(match[2]), head8: match[3], refail: match[4] !== undefined };
+}
+
+/**
+ * agent-org#1217 (follow-up to #1180): A REQUIRED CHECK RED ON A GITHUB 5xx IS RERUN ONCE, here, through the ticket port. Returns the note the order gains, or `null` for today's route:
+ * the flag is off (nothing is read, so OFF is byte for byte), the decider says `owner`, or the red could not be read. `rerun` says the jobs were rerun and the order has nothing left to ask;
+ * a refused rerun is `owner` with its reason as the note. Never throws: a rerun that cannot be made leaves the order as the gate wrote it.
+ */
+function rerunRedOnServerError(red: { repo: string; number: number; head8: string }, failure: CiFailure, { gh, flags, ledgerPath, now }: { gh: Gh; flags: { readonly enabled: boolean }; ledgerPath: string; now: number }): { rerun: boolean; note: string } | null {
+  if (!flags.enabled) return null;
+  let seat: ReturnType<typeof redRunOfHead>;
+  try {
+    seat = redRunOfHead(red.repo, red.number, red.head8, gh);
+  } catch (err) {
+    process.stderr.write(`wake: could not read the run of pull request ${red.number} to rerun it (${firstLine(err)}) -- the order as the gate wrote it.\n`);
+    return null;
+  }
+  if (seat === null) return null;
+  const decision = rerunRedOn5xx({ log: failure.errorLines.join("\n"), conclusion: seat.conclusion, rerunsOnThisHead: failure.rerunAlready }, flags);
+  if (decision.action !== "rerun") return null;
+  try {
+    rerunFailedJobsOf(red.repo, seat.runId, gh);
+  } catch (err) {
+    return { rerun: false, note: `The tick tried to rerun this check's failed jobs, because its last error was a GitHub 5xx, and GitHub refused: ${firstLine(err)}. The failure is yours.` };
+  }
+  const line = rerunLedgerLine(red.repo, seat.runId, red.head8, decision);
+  process.stderr.write(`wake: ${line}\n`);
+  try {
+    appendFileSync(`${dirname(ledgerPath)}/${CI_RERUN_LEDGER_FILE}`, `${now}\t${line}\n`);
+  } catch (err) {
+    process.stderr.write(`wake: could not write the rerun ledger line for run ${seat.runId} (${firstLine(err)}); the rerun was requested.\n`);
+  }
+  return { rerun: true, note: "The tick has rerun this check's failed jobs once itself, because the last error in the log was a GitHub 5xx, not your code. Change nothing; if the check is red again at this head, the failure is yours." };
 }
 
 /**
  * `ci-failure-class` (#4632) for each settled-red order. The class and the route go in the journal line whoever chose; the ORDER's text gains them only when the PROVIDER chose, or when a rule
  * says WAIT for a pin bump (#5151, `notesTheOrder`), so otherwise with no provider the order is the gate's, byte for byte. `read` and `classify` are seams for a test.
  */
-export async function withCiFailureClass<T extends Enrichable>(orders: readonly T[], deps: EnrichDeps & { read?: typeof readCiFailure; classify?: typeof classifyCiFailure; now?: number }): Promise<T[]> {
-  const { gh = defaultGh, read = readCiFailure, classify = classifyCiFailure, now = Date.now() } = deps;
+export async function withCiFailureClass<T extends Enrichable>(orders: readonly T[], deps: EnrichDeps & { read?: typeof readCiFailure; classify?: typeof classifyCiFailure; now?: number; rerunFlags?: { readonly enabled: boolean } }): Promise<T[]> {
+  const { gh = defaultGh, read = readCiFailure, classify = classifyCiFailure, now = Date.now(), rerunFlags = CI_RERUN_ON_5XX } = deps;
   const notes = new Map<string, string>();
-  await Promise.all(orders.filter((o) => redPullRequestOf(o) !== null).slice(0, ENRICH_AHEAD).map(async (order) => {
+  const reds = orders.filter((o) => redPullRequestOf(o) !== null);
+  // The cap bounds what CLASSIFYING costs (a provider may be asked). A re-fail beyond it is not classified, but it is still told what failed: reading one log is not a provider call, and
+  // an order that exists because a rerun did not clear it is half an order without the assertion (agent-org#1185).
+  const beyondCap = reds.slice(ENRICH_AHEAD).filter((o) => redPullRequestOf(o)!.refail);
+  await Promise.all(beyondCap.map(async (order) => {
     try {
-      const failure = read(redPullRequestOf(order)!, gh, now);
+      const named = refailNote(read(redPullRequestOf(order)!, gh, now)?.errorLines ?? []);
+      if (named !== null) notes.set(order.causeKey, named);
+    } catch (err) {
+      process.stderr.write(`wake: could not read the log of ${order.causeKey} (${firstLine(err)}) -- the order as the gate wrote it.\n`);
+    }
+  }));
+  await Promise.all(reds.slice(0, ENRICH_AHEAD).map(async (order) => {
+    try {
+      const red = redPullRequestOf(order)!;
+      const failure = read(red, gh, now);
       if (failure === null) return;
+      const rerunning = rerunRedOnServerError(red, failure, { gh, flags: rerunFlags, ledgerPath: deps.ledgerPath, now });
+      if (rerunning?.rerun) {
+        notes.set(order.causeKey, rerunning.note);
+        return;
+      }
       const decision = await classify(failure, enrichDecisionDeps(deps, order.causeKey));
       process.stderr.write(`wake: ${order.causeKey} ${classLine(decision)}\n`);
-      if (notesTheOrder(decision)) notes.set(order.causeKey, classNote(decision));
+      // A same-head re-fail (agent-org#1185) is told WHAT failed whoever chose the class: the order exists because a rerun did not clear it, so "fix it" with nothing to read is half an order.
+      const named = red.refail ? refailNote(failure.errorLines) : null;
+      const note = [rerunning?.note ?? null, notesTheOrder(decision) ? classNote(decision) : null, named].filter((part): part is string => part !== null).join("\n\n");
+      if (note !== "") notes.set(order.causeKey, note);
     } catch (err) {
       process.stderr.write(`wake: could not classify ${order.causeKey} (${firstLine(err)}) -- the order as the gate wrote it.\n`);
     }
   }));
   return orders.map((o) => (notes.has(o.causeKey) ? { ...o, prompt: `${o.prompt}\n\n${notes.get(o.causeKey)}` } : o));
+}
+
+/** The failing assertion(s) a same-head re-fail's order carries, or `null` when the log named none. */
+function refailNote(errorLines: readonly string[]): string | null {
+  const lines = failingAssertionLines(errorLines);
+  return lines.length === 0 ? null : `The failing assertion, from this run's log:\n${lines.map((line) => `    ${line}`).join("\n")}`;
 }
 
 /**
@@ -8629,7 +8727,8 @@ async function main() {
     oneShot: createOrchestratorOneShot({ readRow: readRowForTier }), ceoOneShot: createCeoOneShot({ readRow: readRowForTier }),
     memory: spawnMemoryGate(), hostLoad: readHostLoad, claimer: claimerFor(spares, ledgerPath, hostLayout, escalatedRoutes(claimOrdersText(ledgerPath), routes)), launch: hostLayout,
     registerReviewer: (session, trust) => registerReviewer(reviewerPathsFrom(ledgerPath), session, Date.now(), trust),
-    registry: () => readReviewerRegistry(reviewerPathsFrom(ledgerPath).registry) });
+    registry: () => readReviewerRegistry(reviewerPathsFrom(ledgerPath).registry),
+    endRun: (causeKey, at) => writeFileSync(ledgerPath, `${at}\t${RESET}\t${causeKey}\n`, { flag: "a" }) });
   finishTick({ handed, sent, gateRefused: [...gateRefused, ...releasesNotDone], stuck, outaged, ledgerPath, unavailable, settled });
 }
 

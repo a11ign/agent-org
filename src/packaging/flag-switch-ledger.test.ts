@@ -20,6 +20,8 @@
  *   (6) WIRING: `orgHealthNow` asks only when handed a reader and says nothing otherwise, and the gate's call site hands it `readFlagLedger`;
  *       break: drop `readFlagSwitches` at `work-gate.ts`'s call -- the wiring test goes red; make `orgHealthNow`'s default a read -- the "does not ask" case goes red. WHY THE DEFAULT IS
  *       SILENT, MEASURED: a first version had `orgHealthTick` read the ledger itself when given none (as it does the copies), and 25 tests in 8 other files failed on the extra order.
+ *   (8) agent-org#1372: THE OTHER TRACKERS. A canary-homed flag the home rows do not name is cleared by a `ready` or `in-progress` row in another declared tracker; the other trackers
+ *       are asked only for such a flag, and a refused list is UNKNOWN. break: read the home rows only -- the first case goes red (no other list is asked, and the flag is counted).
  */
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
@@ -45,7 +47,7 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
 const ledger = await import("../flag-switch-ledger.ts");
-const { discoverFlags, declaresKey, unsetFlags, mergeOf, readFlagLedger, readFlagSwitchesFor, readCanaryState, canaryAbsentFlags, CANARY_ABSENT_MS, FLAGS_WITH_ANOTHER_HOME } = ledger;
+const { discoverFlags, declaresKey, unsetFlags, mergeOf, readFlagLedger, readFlagSwitchesFor, readCanaryState, canaryAbsentFlags, otherTrackerRepos, owedRowsOf, CANARY_ABSENT_MS, FLAGS_WITH_ANOTHER_HOME } = ledger;
 const { SIGNALS, CANARY_STATE_FILE, emptyCanaryState, withMachineryFlag, flagSwitchReading, orgHealthOrders, orgHealthReadings } = await import("../org-health.ts");
 const { FLAG_REGISTRY } = await import("../machinery-flag.ts");
 const { buildReport, renderReport } = await import("../org-retro.ts");
@@ -358,4 +360,62 @@ test("(7) agent-org#1324: an unreadable canary state is UNKNOWN, a missing one i
   assert.ok(!("unknown" in canaryLedger({ hours: 1, openRows: null })), "CONTROL: nothing is past its window, so the open rows are not needed");
   assert.ok("unknown" in canaryLedger({ hours: null, openRows: [] }), "git did not say when it merged, so its two hours cannot be counted");
   assert.deepEqual(canaryAbsentFlags({ shipped: [], state: emptyCanaryState(), openRows: null, now: NOW, merge: pacingMergedHoursAgo(3) }), [], "CONTROL: no shipped flag, nothing to read");
+});
+
+// agent-org#1372: A SWITCH ROW FOR CODE THAT LIVES IN ANOTHER TRACKER IS FILED THERE, so the owed rows of every declared tracker are read before a flag is counted absent.
+const OTHER_TRACKER = project("other-tracker", { "project.json": JSON.stringify({ tracker: [{ key: "", repo: "a11ign/a11ign" }, { key: "agent-org", repo: "a11ign/agent-org" }] }), "host.json": "{}" });
+/** A fake `gh` list: the rows a `repo label` pair holds, `null` for a refused list. A pair the case does not name holds no rows. Records every pair asked for. */
+function otherLists(lists: Record<string, Row[] | null>) {
+  const asked: string[] = [];
+  const listOwed = (repo: string, label: string) => {
+    const pair = `${repo} ${label}`;
+    asked.push(pair);
+    return pair in lists ? lists[pair] : [];
+  };
+  return { asked, listOwed };
+}
+/** The gate's canary half on `gate.graphqlPacing` with the other trackers' lists the case gives, and the home rows it was given. */
+function otherLedger(lists: Record<string, Row[] | null>, { openRows = [] as Row[] | null, hours = 3 } = {}) {
+  const { asked, listOwed } = otherLists(lists);
+  const answer = readFlagLedger({ toolRoot: PACING_TREE, ...OTHER_TRACKER, canary: () => emptyCanaryState(), openRows, now: NOW, merge: pacingMergedHoursAgo(hours), listOwed });
+  return { answer, asked };
+}
+/** The canary-absent count of a read that must not be unknown; an unknown answer fails the assertion. */
+function absentCount(answer: ReturnType<typeof readFlagLedger>): number {
+  assert.ok(!("unknown" in answer), `the read is made: ${JSON.stringify(answer)}`);
+  const absent = answer.canaryAbsent;
+  assert.ok(absent !== undefined, "the canary-absent list is present");
+  return absent.length;
+}
+
+test("(8) agent-org#1372 POSITIVE CONTROL: a flag whose only owed row is in another declared tracker is not counted, and both owed labels of that tracker are asked (break: read the home rows only -- this case goes red)", () => {
+  const ready = otherLedger({ "a11ign/agent-org ready": [named(["ready"], "gate.graphqlPacing: switch it")] });
+  assert.ok(!("unknown" in ready.answer), `the read is made: ${JSON.stringify(ready.answer)}`);
+  assert.equal(absentCount(ready.answer), 0, "a ready row in agent-org names the flag");
+  assert.deepEqual(ready.asked, ["a11ign/agent-org ready", "a11ign/agent-org in-progress"], "the home repository is not asked again; the other tracker is asked for both owed labels");
+  const claimed = otherLedger({ "a11ign/agent-org in-progress": [named(["in-progress"], "Pacing switch", "turns gate.graphqlPacing on")] });
+  assert.equal(absentCount(claimed.answer), 0, "an in-progress row in agent-org whose body names the flag");
+});
+
+test("(8) agent-org#1372 CONTROL: no owed row anywhere still counts; a row of another tracker in a state not owed its switch does not clear it", () => {
+  assert.equal(absentCount(otherLedger({}).answer), 1, "CONTROL: every other tracker holds no owed row, so the flag is counted");
+  assert.equal(absentCount(otherLedger({ "a11ign/agent-org ready": [named(["done"], "gate.graphqlPacing: switch it")] }).answer), 1, "a done row does not name an owed switch");
+  assert.equal(absentCount(otherLedger({ "a11ign/agent-org ready": [named(["ready"], "gate.graphqlPacingWindow: switch it")] }).answer), 1, "the key is matched whole, in another tracker too");
+});
+
+test("(8) agent-org#1372: a refused list of another tracker is UNKNOWN, never a clean list, and the other trackers are not asked for a flag the home rows name or one not past its window", () => {
+  const refused = otherLedger({ "a11ign/agent-org in-progress": null });
+  assert.ok("unknown" in refused.answer && /a11ign\/agent-org/.test(refused.answer.unknown), `a refused other tracker names itself: ${JSON.stringify(refused.answer)}`);
+  const home = otherLedger({ "a11ign/agent-org ready": null }, { openRows: [named(["ready"], "gate.graphqlPacing: switch it")] });
+  assert.ok(!("unknown" in home.answer) && home.asked.length === 0, "CONTROL: the home row names the flag, so no other tracker is read");
+  const young = otherLedger({ "a11ign/agent-org ready": null }, { hours: 1 });
+  assert.ok(!("unknown" in young.answer) && young.asked.length === 0, "CONTROL: one hour in, the flag is not past its window, so no other tracker is read");
+});
+
+test("(8) agent-org#1372: the other trackers are the declared ones except the project's own (key `\"\"`), and a declaration without a list names none", () => {
+  assert.deepEqual(otherTrackerRepos({ tracker: [{ key: "", repo: "a11ign/a11ign" }, { key: "agent-org", repo: "a11ign/agent-org" }] }), ["a11ign/agent-org"]);
+  assert.deepEqual(otherTrackerRepos({ tracker: [{ key: "", repo: "a11ign/a11ign" }] }), [], "the project's own tracker alone is no other");
+  assert.deepEqual(otherTrackerRepos({}), [], "a declaration with no tracker list names none");
+  assert.deepEqual(otherTrackerRepos(null), []);
+  assert.deepEqual(owedRowsOf([], () => null), [], "CONTROL: no other tracker, nothing to refuse");
 });

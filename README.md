@@ -72,18 +72,36 @@ The trade-offs, which are why this is an option and not the default:
 ## Ticket mode: a local board that turns the tickets you pick into draft pull requests
 
 The org (the gate, rows, the board, the reviewer) decides its own work. Ticket mode does not: you pick tickets, and a pool of Claude workers
-takes them one each. `agent-org ticket:serve` starts a board on `127.0.0.1` and prints its URL, which carries a one-time token.
+takes them one each. `agent-org ticket:serve` starts a board on `127.0.0.1` and prints its URL, which carries no secret.
+
+- **Pair a browser once.** A browser the board has not seen shows a pairing page. Run `agent-org ticket:pair` and type the code it prints:
+  a code works once, within 10 minutes, and five wrong codes spend it. The browser then holds a session of its own, as an HttpOnly cookie,
+  for a year and across restarts. The board keeps only the sessions' hashes, in `<stateDir>/tickets/browsers.json`, and deleting that file
+  unpairs every browser. The board refuses to start on a file that does not hold sessions, rather than unpair every browser silently. A script on the machine sends the board's key, from `<stateDir>/tickets/board.key`, as the `x-ticket-token`
+  header. Only the key makes a pairing code. The key never goes to a browser, because a browser sends its cookies for `127.0.0.1` to every port there. The board makes both
+  files with mode 600, and refuses a key file another user owns or can read.
 
 - **Pick.** Your assigned Linear tickets that are not done or canceled, grouped by status the way Linear shows them, with Select All per
   group and for the page. A ticket sits under its parent, whatever its own status. A parent folds the tickets under it away, and starts folded.
   Its checkbox picks every ticket under it that is not on the queue, never the parent itself, and shows part ticked when only some are picked.
-  A parent that is not yours, such as an epic someone else owns, says so. Filter by Linear project (several at once) or by search, and fold any status group; both are remembered in the
-  browser. Choose the model and the effort, then Queue. You do not choose a repository: the worker does.
+  A parent that is not yours, such as an epic someone else owns, says so. Filter by Linear project or priority (several of each at once) or by search, and fold any status group; each is remembered in the
+  browser. On a machine that sets `tickets.plan`, a ticket with no plan of its own is marked, so you can attach one before a worker starts it.
+  The mark is muted when the ticket's parent has a plan, because a worker is briefed with its parent's plan too. An epic is never marked or
+  counted, because no worker starts one. A Plan filter, also remembered, shows only the tickets with a plan, or only those without, each
+  under its epic. Queue runs them on the model and effort the footer shows, which start as the default set in Settings. Changing them in
+  the footer applies to that batch only: the default stays as it is, runs already queued keep their own, and the next batch starts from
+  the default again. You do not choose a repository: the worker does.
+- **Planned first.** On a machine that sets `tickets.planner`, the footer offers Plan first whenever a selected ticket has no plan of its
+  own, and Queue says how many it will plan. Each such ticket's first run is a planning run, on the planning model and effort set in
+  Settings, apart from the run's. It plans and changes no code, and the hook refuses it a commit, a push, a worktree and a pull request.
+  When it writes `planned`, the board attaches the files it left to the ticket and moves an unstarted ticket to the planner's state. The
+  ticket then goes back on the queue where it was, and its run is told the plan was not agreed with a person, so its pull request lists
+  each decision the plan made for you. A plan the tracker will not take ends the run for you, with its files kept.
 - **Board.** Every run in one list, newest activity first, each with a status icon after GitHub's Actions runs, and a filter per status
-  with its count: Needs you, In progress, Blocked, Queued, Awaiting review, Completed, Failed and Cancelled. A run is Completed once the tracker
+  with its count: Needs you, In progress, Planning, Blocked, Queued, Awaiting review, Completed, Failed and Cancelled. A run is Completed once the tracker
   completes its ticket, or once its pull requests have merged, as Linear's GitHub integration reports them. Linear completes a ticket on a
   merge only where its team's workflow says so. A run whose pull requests all closed unmerged is Cancelled. The board asks every two minutes. A run can be removed
-  while queued, stopped while running, and retried once it has failed. The number of workers at once can be changed live. On a machine
+  while queued, stopped while running, and retried once it has failed. The number of workers at once is set in Settings, and a change takes effect straight away. On a machine
   that sets `tickets.terminal`, a live or parked run has an Open terminal link to its agent's terminal in the browser.
 - **Parked, not closed, when a run needs you.** A run that ends `needs-human`, `wrong-repo` or with no outcome keeps its herdr workspace
   and holds no slot, so you can answer the agent in its terminal. Once the agent works again the run is In progress again, its old outcome
@@ -111,7 +129,8 @@ reasoning reviews the diff, read only, for behaviour it changed but meant to kee
 acceptance criterion and each decision that binds the ticket, and backs each behaviour its pull request body claims with an assertion of
 exactly that behaviour, run on the base. The worker reads each repository's `CLAUDE.md`/`AGENTS.md` for its commands,
 opens a DRAFT pull request per repository it changed, and writes an outcome file: `draft-pr`, `wrong-repo` (the fix belongs in none of them)
-or `needs-human`. Nothing is written to Linear.
+or `needs-human`. A worker writes nothing to Linear. The board writes only a planning run's files, attached to its ticket, and the
+ticket's move to the planner's state.
 
 **What a worker may not do** is enforced by `ticket:hook`, which the ticket folder's `.claude/settings.local.json` names, so a session herdr
 resumes after a restart keeps it. A stop with no outcome file is refused twice in a row. These are refused outright: a pull request that
@@ -135,10 +154,13 @@ a worker can choose from:
 | `tickets.worktreeRoot` | `<stateDir>/tickets/worktrees` |
 | `tickets.linearKey` | `{ "keychain": "agent-org-linear" }` (macOS Keychain service), or `{ "path": "/abs/file" }` |
 | `tickets.brief` | none. A markdown file added to every worker's brief under "On this machine", read again for each run: how workers share the machine, such as the command that starts a dev server without taking a fixed port |
-| `tickets.plugins` | none. `["name@marketplace", ...]`: Claude Code plugins every worker runs with, already installed on the machine. A worker starts in its ticket's folder, where none of the person's project settings apply, so a plugin enabled only for a project would be missing |
+| `tickets.plugins` | none. `["name@marketplace", ...]`: Claude Code plugins every worker runs with, installed for the user (`--scope user`). A worker starts in its ticket's folder, which is a project of its own, so a plugin installed only for another project would be missing: the board refuses to start a run until each one is installed for the user, and names the command |
 | `tickets.deny` | none. `[{ "pattern": "<regular expression>", "reason": "<why>" }]`: Bash commands the hook refuses as well as its own, each matched against the whole command, with the reason the worker is told |
 | `tickets.connectors` | none, and every connector is refused. `["^mcp__<connector>__<tools>", ...]`: regular expressions, each anchored with `^mcp__`, for the connector tools a worker may call, matched against the tool's name. Linear's reads through the claude.ai connector: `["^mcp__claude_ai_Linear__(get\\|list\\|search\\|extract)_"]`. The brief names them, so a worker can read its ticket's parent and blockers |
 | `tickets.terminal` | none, and the board shows no terminal link. A web address that serves a run's terminal, with `{workspace}`, `{pane}` and `{key}` filled in per run: for [herdr web ui](https://github.com/devswha/herdr-web-ui) serving the `tickets` session on port 7318, `"http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal"` |
+| `tickets.plan` | none, and the board marks no ticket. A regular expression that the name of a file uploaded to a ticket matches when the file is the ticket's plan. NBL's create-ticket names a plan `<KEY>-0001-plan-<slug>.md`: `"-plan-[^/]*\\.md$"`. A bare `plan` would also match `floorplan.png` |
+| `tickets.planner` | none, and the board plans nothing. Needs `tickets.plan`. `{ "run": "<instruction>", "state": "<state>" }`: what a planning run is told, with `{key}` and `{dir}` filled in per run (the ticket, and the folder its plan's files go in), and the tracker state a planned ticket moves to if it has not started. A team with no state of that name keeps the ticket's state, and the board's log says so, because teams name their states differently. NBL: `{ "run": "Run the nbl-ui:create-ticket skill with this request: unattended: plan {key} into {dir}", "state": "Planned" }` |
+| `tickets.workingState` | none, and no ticket is moved. The tracker state a ticket moves to as a worker starts implementing it, if it has not started yet: `"In Progress"`. A planning run moves nothing. A team with no state of that name keeps the ticket's state, and the board's log says so |
 | `stateDir` | `~/.local/state/agent-org`: the queue, each ticket's brief, attachments and outcome |
 
 The Linear key is a personal API key, so ticket mode reads as you and needs no workspace admin. On macOS, store it once with

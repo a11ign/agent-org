@@ -22,7 +22,7 @@ import { readTrunkRed, trunkOfCodeRepository, trunkRedOrders } from "../trunk-re
 import { recordIgnoredChairmanLabels, recordTickFailures as recordFailuresOf } from "../failure-recorders.ts";
 import { readJsonObject, writeJsonObject } from "../claim-stall.ts";
 import { requiredWhenNeeded, perPullRequestOrders, greenUnarmedOrders, type UnarmedFacts, reviewBlockedOrders, stalledPrOrders,
-  STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr, ROW_REVIEW_SKILL_FLAG } from "./pr-orders.ts";
+  STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr, ROW_REVIEW_SKILL_FLAG, PR_OWNER_ROUTING_FLAG, withholdOutsideFollowUps, reviewOnlyRefs, SAME_HEAD_REFAIL_FLAG } from "./pr-orders.ts";
 import { labJobFinishedOrders, readLabJobRecords, readDispatchedLabJobs } from "./lab-job-orders.ts";
 import { classAndKeyOf as orgHealthClassAndKey } from "./org-health-suppression.ts";
 import { TABLE_ROW as STANDING_ROW } from "../board-truth-audit.ts";
@@ -42,7 +42,7 @@ import { REVIEW_STATE, reviewStateOf } from "./pr-state.ts";
 import { EXIT, branchesToReplace, conditionalFor, defaultRun, holdTickBudget, inRepo, isGhRun, readArming, readClaimedRowComments, readElsewherePrs, readOpenRows,
   readPromotableRows, readPrs, readReadyRows, readWithFirstWaveTogether, repoNow, restReadsOfTick, runBatch, standingFor, isGateProcess } from "./reads.ts";
 import { type Budget, budgetLine, restConditionalOn, tickBudget } from "../gh-conditional.ts";
-import type { DeclaredIdentities } from "../review-trust.ts";
+import { declaredIdentities, type DeclaredIdentities } from "../review-trust.ts";
 import { claimedRowAmendedOrders } from "./causes/rows-amended.ts";
 import { answerGivenOrders, answerGivenOrdersOrNone, answerOrders, bareAnswerLabelOrders, bareAnswerOrdersOrNone, blockedReferentOrders,
   endedSessionLabels, liveWorkspaceLabels, rowsOwingAnswers } from "./causes/rows-answers.ts";
@@ -259,13 +259,15 @@ export function blockerClearedReading(rows: any[], today: string = todayIso(), n
  *        `recheck` is `RECHECK_FLAG`'s reading (agent-org#1187): OMITTED READS THE FLAG (`recheckFlagOn`), and a test or a replay passes it so the answer does not depend on the host's state directory.
  *        It carries no `= ...` default for `rowBranches`'s reason.
  *        `rowReviewSkill` is `ROW_REVIEW_SKILL_FLAG`'s reading (agent-org#1268), read the same way (`rowReviewSkillFlagOn`): OMITTED READS THE FLAG, and a test passes it.
+ *        `prOwnerRouting` is `PR_OWNER_ROUTING_FLAG`'s reading (agent-org#1325), read the same way (`prOwnerRoutingFlagOn`): OMITTED READS THE FLAG, and a test passes it.
+ *        `sameHeadRefail` is `SAME_HEAD_REFAIL_FLAG`'s reading (agent-org#1185), read the same way (`sameHeadRefailFlagOn`).
  *        `claimFacts` is the claim-stall tick's reading of every claimed row (#3451) -- what `blockerClearedOrders` drops an order on. OMITTED MEANS NOT ASKED, so no drop;
  *        `null` is a tick that read no claim. It carries no `= undefined` default for `rowBranches`'s reason.
  */
 export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = [], prFiles = [],
   drain = false, required = null, epics = [], answerOwed = [], openRows = [], unarmed = null,
-  claimedComments = [], rowBranches, branchPrs, hostDrift, primaryDrift, closings, claimFacts, trunkRed, baseTip, claimStalls, offBoard, key, repo, callCountSignals, bareAnswerLabels, labJobs, claimRefusals, nowMs, recheck, rowReviewSkill, answerGiven, engineerStarts, projectDeclaration, shareLog, shareMemory, offerHierarchy, waitFacts, identities }: {
-        prs: any[]; readyRows: any[]; promotableRows?: any[]; chairmanBlocked?: any[]; nowMs?: number; recheck?: boolean; rowReviewSkill?: boolean;
+  claimedComments = [], rowBranches, branchPrs, hostDrift, primaryDrift, closings, claimFacts, trunkRed, baseTip, claimStalls, offBoard, key, repo, callCountSignals, bareAnswerLabels, labJobs, claimRefusals, nowMs, recheck, rowReviewSkill, prOwnerRouting, sameHeadRefail, answerGiven, engineerStarts, projectDeclaration, shareLog, shareMemory, offerHierarchy, waitFacts, identities }: {
+        prs: any[]; readyRows: any[]; promotableRows?: any[]; chairmanBlocked?: any[]; nowMs?: number; recheck?: boolean; rowReviewSkill?: boolean; prOwnerRouting?: boolean; sameHeadRefail?: boolean;
         prFiles?: { number: number; files: string[]; changedFiles: number; }[];
         drain?: boolean; required?: string[] | null; epics?: any[]; answerOwed?: any[];
         key?: string; repo?: string; openRows?: any[]; unarmed?: number[] | UnarmedFacts | null;
@@ -289,6 +291,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
     session: string; cause: string; subject: string; discriminator: string;
     prompt: string; causeKey: string;
 }[] {
+  const ownerRouting = prOwnerRoutingFlagOn(prOwnerRouting); // #1325: read ONCE, for the review-blocked set below and the last step
   // FIRST, BEFORE EVERY OTHER CAUSE (#2356): a red `main` outranks even `answer-owed` -- see `trunkRedOrders`.
   // `answer-owed` says another session is ALREADY STOPPED waiting on them, which outranks any standing question.
   const orders = [...trunkRedOrders(trunkRed), ...primaryStaleOrders(primaryDrift), ...answerOrders(answerOwed)]; // #2781: a stale primary next, every order below is given from its code
@@ -307,7 +310,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // #2470/#2711/#2729: A CLAIM THAT DOES NOT MOVE, A BARE `answer:` LABEL ON IT, OR A LAB JOB IT DISPATCHED THAT HAS ENDED -- all address the row's own holder, so all outrank every cause offering NEW work.
   orders.push(...stallOrdersOrNone(claimStalls), ...bareAnswerOrdersOrNone(bareAnswerLabels), ...answerGivenOrdersOrNone(answerGiven), ...labJobFinishedOrders(openRows, labJobs, Date.now()));
 
-  orders.push(...perPullRequestOrders(prs, required, baseTip, { nowMs, recheck: recheckFlagOn(recheck), rowReviewSkill: rowReviewSkillFlagOn(rowReviewSkill), identities }), ...closesUnresolvedOrders(prs)); // #2823 beside them; #3092 the checkless
+  orders.push(...perPullRequestOrders(prs, required, baseTip, { nowMs, recheck: recheckFlagOn(recheck), rowReviewSkill: rowReviewSkillFlagOn(rowReviewSkill), sameHeadRefail: sameHeadRefailFlagOn(sameHeadRefail), identities }), ...closesUnresolvedOrders(prs)); // #2823 beside them; #3092 the checkless
   // #2031: AHEAD OF THE OFFER, AND IT IS THE SAME READING THAT WITHHELD IT. `partitionUnclaimed` shelves
   // the row on `rowBranches` and this emits the cause that names the branch -- one condition, one read,
   // said once as a withholding and once as a question. Ahead of `rowOrders` for the ordering reason the
@@ -358,7 +361,9 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // complete it. Same population (`mergeCandidates`), same audience, same placement -- more urgent than a
   // supply question, less urgent than a named red build, and never withheld by a drain, because a drain
   // stops the org TAKING ON work rather than finishing what is in flight.
-  orders.push(...reviewBlockedOrders(reviewBlocked(prs, required)));
+  // #1325: with the flag on, an outside or chairman pull request leaves the set BEFORE its one order is built (see `reviewOnlyRefs`). Off, nothing is read.
+  const reviewOnly = ownerRouting ? reviewOnlyRefs(prs, identities ?? declaredIdentities()) : null;
+  orders.push(...reviewBlockedOrders(reviewBlocked(prs, required).filter((b: any) => reviewOnly === null || !reviewOnly.has(subjectRef(b.repoKey, b.number)))));
   // #2209: a conflicting PR is in no other cause's population, so it is told to its author here; a drain keeps it.
   // #2968: FED BY THE TOTAL CLASSIFIER, NOT BY "GREEN AND UNHELD": #2950, a conflicted draft, sat 7.5 h unheard.
   orders.push(...stalledPrOrders(prs, { required, reasons: STALL_REASONS_WITHOUT_A_CAUSE, nowMs }));
@@ -376,7 +381,9 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // DRAIN WITHHOLDS, IT DOES NOT STOP. Filtering here rather than at each producer keeps the partition
   // in ONE place -- `START_CAUSES` is the whole statement of what "new work" means, and a cause added
   // without classifying it is caught by `work-gate.test.ts` rather than silently surviving a window.
-  return drain ? orders.filter((o) => !START_CAUSES.includes(o.cause)) : orders;
+  // #1325: LAST, over EVERY cause, because the PR causes come from six producers. With the flag on, an outside or chairman-authored pull request keeps its review.
+  const routed = ownerRouting ? withholdOutsideFollowUps(orders, prs, identities ?? declaredIdentities()) : orders;
+  return drain ? routed.filter((o) => !START_CAUSES.includes(o.cause)) : routed;
 }
 
 /**
@@ -420,6 +427,15 @@ export function recheckFlagOn(asked?: boolean, read: () => CanaryState = () => r
 }
 
 /**
+ * agent-org#1325: `PR_OWNER_ROUTING_FLAG` (`prs.ownerRouting`), READ WHERE THE ORDERS ARE DECIDED, for `recheckFlagOn`'s reason. Absent, unreadable or malformed is OFF: every order as it was.
+ * @param [asked] the reading a caller already has; a test passes it so the answer does not move with the host's state directory
+ * @param [read] the flag's state, as `recheckFlagOn` reads it
+ */
+export function prOwnerRoutingFlagOn(asked?: boolean, read: () => CanaryState = () => readReenqueueState(REVIEWER_STATE_DIR, () => undefined)): boolean {
+  return asked ?? machineryFlagOn(read(), PR_OWNER_ROUTING_FLAG);
+}
+
+/**
  * agent-org#1268: `ROW_REVIEW_SKILL_FLAG` (`review.rowReviewSkill`), READ WHERE THE ORDERS ARE DECIDED, for `recheckFlagOn`'s reason: `decide` ends every scope's tick, so one read covers
  * the primary and the other scopes. Absent, unreadable or malformed is OFF, which is the reviewer's order as it was.
  * @param [asked] the reading a caller already has; a test or a replay passes it so the answer does not move with the host's state directory
@@ -427,6 +443,16 @@ export function recheckFlagOn(asked?: boolean, read: () => CanaryState = () => r
  */
 export function rowReviewSkillFlagOn(asked?: boolean, read: () => CanaryState = () => readReenqueueState(REVIEWER_STATE_DIR, () => undefined)): boolean {
   return asked ?? machineryFlagOn(read(), ROW_REVIEW_SKILL_FLAG);
+}
+
+/**
+ * agent-org#1185: `SAME_HEAD_REFAIL_FLAG` (`checks.sameHeadRefail`), READ WHERE THE ORDERS ARE DECIDED, for `recheckFlagOn`'s reason. Absent, unreadable or malformed is OFF, which
+ * is the key a red head has always had.
+ * @param [asked] the reading a caller already has; a test or a replay passes it so the answer does not move with the host's state directory
+ * @param [read] the flag's state, as `recheckFlagOn` reads it
+ */
+export function sameHeadRefailFlagOn(asked?: boolean, read: () => CanaryState = () => readReenqueueState(REVIEWER_STATE_DIR, () => undefined)): boolean {
+  return asked ?? machineryFlagOn(read(), SAME_HEAD_REFAIL_FLAG);
 }
 
 export function readHostDrift(): { unit: string; problem: string; detail: string; }[] | null {
