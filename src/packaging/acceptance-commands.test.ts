@@ -3547,7 +3547,7 @@ test("#2305: a HEAD that is not a merge commit is UNREADABLE, never a diff of on
     run(["remote", "add", "origin", dir]); // so the deepening fetch succeeds and the merge test is what refuses
     const reading = changedFilesOfThisPullRequest(dir);
     assert.equal(reading.ok, false, "a non-merge HEAD is never read as the PR's diff");
-    assert.match((reading as { why: string }).why, /not a merge commit/);
+    assert.match((reading as { why: string }).why, /not a parent-bearing merge: re-push or update the branch; a rerun reuses it/, "agent-org#1524: the why names the fix, not the state");
   });
 });
 

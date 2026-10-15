@@ -3626,7 +3626,8 @@ export function changedFilesOfThisPullRequest(cwd: string = process.cwd()): Diff
     // A depth-1 checkout has cut HEAD's parents off; ask for one more level only when they are missing, so
     // a complete clone (`History: full`, a local run) never spends a fetch it does not need.
     if (parentCount() < MERGE_PARENTS) git("fetch", "--deepen=1", "origin");
-    if (parentCount() < MERGE_PARENTS) return { ok: false, why: "HEAD is not a merge commit" };
+    // agent-org#1524: a merge commit that has lost its parents is a SUPERSEDED one that GitHub's merge ref still names; a rerun checks it out again, so the reader says what to do.
+    if (parentCount() < MERGE_PARENTS) return { ok: false, why: "the merge commit this run checked out is not a parent-bearing merge: re-push or update the branch; a rerun reuses it" };
     // Through the one reader of "which paths changed" (#939): with renames detected a moved test file
     // lists only where it WENT. `--no-renames` reads a move as delete + add, and the add is what ACMR keeps.
     const files = changedFiles(["--diff-filter=ACMR", "HEAD^1", "HEAD"], { repoRoot: cwd });

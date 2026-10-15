@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  CI_FAILURE_CLASSES, MAX_ERROR_LINES, classLine, classifyCiFailure, fallbackClass, readCiFailure, routeFor, trimErrorLines,
+  CI_FAILURE_CLASSES, MAX_ERROR_LINES, classLine, classNote, classifyCiFailure, fallbackClass, readCiFailure, routeFor, trimErrorLines,
   holdSharedFailures, notedAs, readSignature, refreshFixed, sharedFailureGroups, sharedFailureTick, type CiFailure, type FailureSignature, type RedCheck, type CiFailureClass, type RedPr, type Run,
 } from "./ci-failure-class.ts";
 import { MAX_STATE_BYTES, type DecisionDeps } from "./decision-provider.ts";
@@ -57,7 +57,7 @@ test("the rule with no provider: red on main is another repository, a rate limit
 });
 
 test("each class has its own route, and a flaky failure is rerun once and never a second time", () => {
-  assert.deepEqual(CI_FAILURE_CLASSES.map((c) => routeFor(c, false)), ["owner", "rerun-once", "cross-repo-incident", "rerun-after-reset", "wait-for-pin-bump"]);
+  assert.deepEqual(CI_FAILURE_CLASSES.map((c) => routeFor(c, false)), ["owner", "rerun-once", "cross-repo-incident", "rerun-after-reset", "wait-for-pin-bump", "push-or-update-branch"]);
   assert.equal(routeFor("flaky", true), "owner");
   // the already-rerun fact moves only the flaky class
   for (const c of CI_FAILURE_CLASSES.filter((k) => k !== "flaky")) assert.equal(routeFor(c, true), routeFor(c, false));
@@ -92,10 +92,10 @@ test("use switched off: the rule, no request; the same inputs switched on ask th
   assert.equal(on.net.calls.length, 1);
 });
 
-test("provider on: its class and route win, for each of the five classes (the fifth is offered only with its fact)", async () => {
+test("provider on: its class and route win, for each of the six classes (the fifth and sixth are offered only with their facts)", async () => {
   for (const klass of CI_FAILURE_CLASSES) {
     const { deps, net } = rig({ reply: { body: answer(klass) } });
-    const out = await classifyCiFailure(failure({ waitsOnPinBump: true }), deps);
+    const out = await classifyCiFailure(failure({ waitsOnPinBump: true, staleMergeRef: true }), deps);
     assert.deepEqual([out.klass, out.route, out.via, out.fellBack, out.confidence], [klass, routeFor(klass, false), "jev", false, 0.95]);
     assert.equal(net.calls.length, 1);
   }
@@ -107,7 +107,7 @@ test("provider on: the request carries the trimmed state and the four criteria (
   const sent = net.calls[0].body;
   assert.deepEqual(Object.keys(sent.state).sort(), ["errorLines", "readsOutsideRepository", "rateLimitOrRunnerLost", "redOnMain", "redOnOtherPrs"].sort());
   assert.equal(sent.state.redOnOtherPrs, true);
-  assert.deepEqual(Object.keys(sent.questions.class.criteria), CI_FAILURE_CLASSES.filter((klass) => klass !== "waiting-on-pin-bump"));
+  assert.deepEqual(Object.keys(sent.questions.class.criteria), CI_FAILURE_CLASSES.filter((klass) => klass !== "waiting-on-pin-bump" && klass !== "stale-merge-ref"));
 });
 
 test("a flaky answer on a run already rerun routes to the owner and keeps the class", async () => {
@@ -162,7 +162,7 @@ test("the line the order and the log carry names the class, the route and who ch
 });
 
 test("the classes are the four the first row named and the one #5151 added", () => {
-  const names: CiFailureClass[] = ["own-defect", "flaky", "another-repository-changed", "infrastructure", "waiting-on-pin-bump"];
+  const names: CiFailureClass[] = ["own-defect", "flaky", "another-repository-changed", "infrastructure", "waiting-on-pin-bump", "stale-merge-ref"];
   assert.deepEqual([...CI_FAILURE_CLASSES], names);
 });
 
@@ -507,4 +507,44 @@ test("#5151 a read that is refused is `false`, said once on stderr, and never dr
     process.stderr.write = write;
   }
   assert.equal(said.filter((line) => /could not read the pin/.test(line)).length, 1);
+});
+
+// ---------------------------------------------------------------------------------------------------
+// agent-org#1524: a run that checked out a SUPERSEDED merge commit is not this pull request's defect. The commit has no parents, so the acceptance gate cannot read the diff; a rerun
+// checks out that same commit again, so the route is to push or update the branch so GitHub builds a new one.
+
+const STALE_LOG = [
+  "ACCEPTANCE-SOURCE: none (the diff could not be read, so no file added under .acceptance/ was found and its author a11ign-workers[bot] is not exempt)",
+  "MUTATION: UNCHECKED -- could not read the diff (the merge commit this run checked out is not a parent-bearing merge: re-push or update the branch; a rerun reuses it).",
+].join("\n");
+
+test("#1524 POSITIVE: an acceptance that could not read the diff is stale-merge-ref, routed to a push or an update of the branch, and the order says a rerun cannot clear it", async () => {
+  const out = readCiFailure(PR, pinGh({ log: STALE_LOG }).read, NOW);
+  assert.equal(out?.staleMergeRef, true);
+  assert.equal(fallbackClass(out!), "stale-merge-ref");
+  assert.equal(routeFor("stale-merge-ref", false), "push-or-update-branch");
+  const decision = await classifyCiFailure(out!, rig({ triage: { provider: "none" } }).deps);
+  assert.equal(decision.route, "push-or-update-branch");
+  assert.match(classNote(decision), /a rerun reuses the same merge commit/);
+});
+
+test("#1524 NEGATIVE: a diff that was read and a test that failed is still the pull request's own defect, routed to its owner", () => {
+  const out = readCiFailure(PR, pinGh({ log: "FAIL  src/x.test.ts > adds\nAssertionError: expected 3, got 4\n" }).read, NOW);
+  assert.equal(out?.staleMergeRef, undefined, "absent, not false: the object is the one it was before #1524");
+  assert.equal(fallbackClass(out!), "own-defect");
+  assert.equal(routeFor("own-defect", false), "owner");
+});
+
+test("#1524 the rule: stale-merge-ref comes after a lost runner and before main, and the provider is offered it only with its fact", async () => {
+  assert.equal(fallbackClass(failure({ staleMergeRef: true })), "stale-merge-ref");
+  assert.equal(fallbackClass(failure({ staleMergeRef: true, redOnMain: true })), "stale-merge-ref");
+  assert.equal(fallbackClass(failure({ staleMergeRef: true, rateLimitOrRunnerLost: true })), "infrastructure");
+  assert.equal(fallbackClass(failure({ staleMergeRef: false, redOnMain: true })), "another-repository-changed");
+  const without = rig({ reply: { body: answer("stale-merge-ref") } });
+  const out = await classifyCiFailure(failure(), without.deps);
+  assert.ok(!Object.keys(without.net.calls[0].body.questions.class.criteria).includes("stale-merge-ref"));
+  assert.equal(out.klass, "own-defect", "an answer outside the offered classes is the rule's");
+  const withFact = rig({ reply: { body: answer("stale-merge-ref") } });
+  assert.equal((await classifyCiFailure(failure({ staleMergeRef: true }), withFact.deps)).klass, "stale-merge-ref");
+  assert.equal(withFact.net.calls[0].body.state.staleMergeRef, true);
 });
