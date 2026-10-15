@@ -25,6 +25,7 @@ import { appendFileSync, existsSync, readFileSync, readdirSync, realpathSync, re
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { stateEntryPath } from "./host-config.ts";
+import { ACCOUNT_LIMIT_LOG, accountLimitLogPath } from "./account-limit.ts";
 // A LEAF (`claim-labels.ts` imports nothing): the label is read from where it is declared, `repeating-lines.ts`'s own reason.
 import { CLAIM_LABEL, CLAIM_RECORD_MARKER, READY_LABEL } from "./claim-labels.ts";
 import { brokenChecks, redChecks as redChecksOf, isBrokenRed, isHeldRed, holdsOn } from "./red-pr.ts";
@@ -221,18 +222,76 @@ export function journalLines(text: string, { since, until }: { since: number; un
  * wait for a seat that is merely busy, which `wake.ts` stopped counting as a fault in a11ign/a11ign#3266 and which is still idle
  * capacity beside claimable work), each counted as `TICK_MINUTES`. INFERRED FROM THE JOURNAL, NOT MEASURED PER SESSION: it says a claimable row waited through a tick, not how
  * many sessions sat idle in it -- so it is a floor on lost time, and the number to read it against is the day before.
- * @param {{ at: number, message: string }[]} lines
- * @returns {{ ticksWithIdleOffer: number, idleMinutes: number, ticks: number }}
+ * A TICK STARTED INSIDE A PAUSE (`paused`, from `pausedIntervals`) is not a tick the org could have filled: the Claude allowance held the work, so
+ * it is neither counted in `ticks` nor in `idleMinutes`, and its idle offers are counted apart as `pausedIdleMinutes` (excluded, and said so).
+ * @param {{ at: number, message: string }[]} lines @param {PausedInterval[]} [paused]
+ * @returns {{ ticksWithIdleOffer: number, idleMinutes: number, ticks: number, pausedIdleMinutes: number }}
  */
-export function idleStats(lines: { at: number; message: string; }[]): { ticksWithIdleOffer: number; idleMinutes: number; ticks: number; } {
-  let ticks = 0;
+export function idleStats(lines: { at: number; message: string; }[], paused: PausedInterval[] = []): { ticksWithIdleOffer: number; idleMinutes: number; ticks: number; pausedIdleMinutes: number; } {
+  const held = (at: number) => paused.some(({ from, to }) => at >= from && at < to);
+  let index = 0; // every tick, paused or not, so each offer is read against its own tick
   let current = -1;
-  const idleTicks = new Set();
-  for (const { message } of lines) {
-    if (TICK_START.test(message)) { ticks += 1; current = ticks; }
-    else if (IDLE_OFFER.test(message) && current > 0) idleTicks.add(current);
+  let inPause = false;
+  let ticks = 0;
+  const idleTicks = new Set<number>();
+  const pausedIdleTicks = new Set<number>();
+  for (const { at, message } of lines) {
+    if (TICK_START.test(message)) {
+      index += 1;
+      current = index;
+      inPause = held(at);
+      if (!inPause) ticks += 1;
+    } else if (IDLE_OFFER.test(message) && current > 0) (inPause ? pausedIdleTicks : idleTicks).add(current);
   }
-  return { ticksWithIdleOffer: idleTicks.size, idleMinutes: idleTicks.size * TICK_MINUTES, ticks };
+  return { ticksWithIdleOffer: idleTicks.size, idleMinutes: idleTicks.size * TICK_MINUTES, ticks, pausedIdleMinutes: pausedIdleTicks.size * TICK_MINUTES };
+}
+
+/** A stretch in which the Claude allowance held Claude work, clipped to the window it was read for. */
+export type PausedInterval = { from: number; to: number; };
+
+/**
+ * THE CLAUDE PAUSE, read from `account-limit.ndjson`: one `enter` and one `leave` line each time the allowance is spent and resumed, and the pause
+ * runs from an `enter` to the next `leave`. An `enter` with NO `leave` after it runs to `until`, the end of the window: the pause has not been said to end.
+ * Clipped to the window, so a pause that began before it counts only from its start.
+ * @param {string} text the log's text, which the caller has read
+ * @param {{ since: number, until: number }} window
+ * @returns {PausedInterval[] | null} `null` when a line does not parse: UNKNOWN, never "not paused"
+ */
+export function pausedIntervals(text: string, { since, until }: { since: number; until: number; }): PausedInterval[] | null {
+  const spans: PausedInterval[] = [];
+  let open: number | null = null;
+  for (const line of text.split("\n")) {
+    if (line.trim() === "") continue;
+    let event: { kind?: unknown; at?: unknown; } | null;
+    try { event = JSON.parse(line); } catch { return null; }
+    const at = typeof event?.at === "string" ? Date.parse(event.at) : Number.NaN;
+    if (!Number.isFinite(at)) return null;
+    if (event?.kind === "enter") open ??= at;
+    else if (event?.kind === "leave") { if (open !== null) spans.push({ from: open, to: at }); open = null; }
+    else return null;
+  }
+  if (open !== null) spans.push({ from: open, to: until });
+  return spans.map(({ from, to }) => ({ from: Math.max(from, since), to: Math.min(to, until) })).filter(({ from, to }) => to > from);
+}
+
+/** The pause read for the window and the window before it: `null` when the log is unknown, and a share of 0 to 1 for each. */
+export type PauseReading = { intervals: PausedInterval[]; current: number; previous: number; };
+
+/** @param {PausedInterval[]} intervals @returns {number} the share of a window `WINDOW_MS` long that the intervals cover */
+function pausedShare(intervals: PausedInterval[]): number {
+  return intervals.reduce((sum, { from, to }) => sum + (to - from), 0) / WINDOW_MS;
+}
+
+/**
+ * @param {string | null | undefined} text the log's text: `null` when it could not be read, `undefined` when nobody read it (both are unknown)
+ * @returns {PauseReading | null}
+ */
+export function pauseOf(text: string | null | undefined, now: number): PauseReading | null {
+  if (text === undefined || text === null) return null;
+  const intervals = pausedIntervals(text, { since: now - WINDOW_MS, until: now });
+  if (intervals === null) return null;
+  const previous = pausedIntervals(text, { since: now - 2 * WINDOW_MS, until: now - WINDOW_MS }) ?? [];
+  return { intervals, current: pausedShare(intervals), previous: pausedShare(previous) };
 }
 
 /**
@@ -496,10 +555,12 @@ export function buildReport(reads: {
         merged: any[] | null; mergedRepositories?: ReturnType<typeof readMerged> | null; openPrs: any[] | null; journal: string | null; ledger: string | null;
         turns: any[] | null; handFixes: ReturnType<typeof readHandFixLedger> | null; readings?: Readings; dora?: ReturnType<typeof readDora> | null;
         unwaited?: ReturnType<typeof unwaitedStockRows> | null; untiered?: ReturnType<typeof untieredReadyRows> | null; failureLedger?: string | null; blockingRecord?: string | null; idleClaims?: IdleClaimIncident[] | null; idleClaimedHours?: IdleClaimedHours | null; mergedRowOpen?: MergedRowOpenIncident[] | null; inertOptions?: InertOptionReading | null; safetyDenials?: SafetyCheckDenialReading | null;
-        underspecified?: UnderspecifiedReading | null; closedSharedRows?: any[] | null; pinBump?: PinBumpReading | null;
+        underspecified?: UnderspecifiedReading | null; closedSharedRows?: any[] | null; pinBump?: PinBumpReading | null; accountLimitLog?: string | null;
     }, now: number) {
   const window = { since: now - WINDOW_MS, until: now };
   const lines = reads.journal === null ? null : journalLines(reads.journal, window);
+  // the Claude pause (`account-limit.ndjson`): `null` is unknown, and the idle figures are corrected only when it is known
+  const pause = pauseOf(reads.accountLimitLog, now);
   const closed = reads.closedSharedRows ?? null;
   const across = reads.mergedRepositories === undefined ? undefined : mergedAcross(reads.mergedRepositories ?? [], window);
   const report = {
@@ -508,7 +569,8 @@ export function buildReport(reads: {
     merged: across === undefined ? mergedStats(reads.merged, window) : across.total,
     mergedRepositories: across?.byRepository,
     mergedPrimaryOnly: mergedStats(reads.merged, window),
-    idle: lines === null ? null : idleStats(lines),
+    idle: lines === null ? null : idleStats(lines, pause?.intervals ?? []),
+    pause,
     releases: lines === null ? null : releaseStats(lines),
     stalls: reads.ledger === null ? null : ledgerStats(ledgerEntries(reads.ledger, window)),
     red: redPrStats(reads.openPrs, now),
@@ -630,7 +692,10 @@ export function previousReading(readings: Readings | undefined, date: string): {
 /**
  * `undefined` is a metric with nothing to measure today (no regression opened), which is neither a failure to read nor a 0
  */
-export type Verdict = "better" | "worse" | "same" | "no baseline" | "unknown" | "undefined";
+export type Verdict = "better" | "worse" | "same" | "no baseline" | "unknown" | "undefined" | "paused";
+
+/** A `worse` read on a day the Claude allowance held work for more than half of is `paused`: the org was not the cause, so it is not filed as a regression. */
+const PAUSED_SHARE = 0.5;
 
 /**
  * `unknown` is a number or a previous file that could not be read; `no baseline` is a read that found nothing earlier. Neither is `same`, and
@@ -651,14 +716,18 @@ export function verdictFor({ better, previous, id, current }: { better: "lower" 
  * is found here, in the report, and printed as a defect. `declarations` are the numbers whose direction is decided at run time: the DORA metrics
  * of the repositories the project declares (`dora.ts`'s own table), each of which may be `undefinedToday`.
  * @param {Record<string, number | null>} numbers @param {ReturnType<typeof previousReading>} previous
+ * `pause` (from `pauseOf`) turns a `worse` into `paused` when the pause covers more than half of either window; `null` (unknown) leaves every verdict as it was.
  * @param {readonly { id: string, label: string, better: "lower" | "higher", undefinedToday?: boolean }[]} [declarations]
+ * @param {PauseReading | null} [pause]
  */
-export function compareReadings(numbers: Record<string, number | null>, previous: ReturnType<typeof previousReading>, declarations: readonly { id: string; label: string; better: "lower" | "higher"; undefinedToday?: boolean; }[] = []) {
+export function compareReadings(numbers: Record<string, number | null>, previous: ReturnType<typeof previousReading>, declarations: readonly { id: string; label: string; better: "lower" | "higher"; undefinedToday?: boolean; }[] = [], pause: PauseReading | null = null) {
   return Object.entries(numbers).map(([id, current]) => {
     const declared = NUMBERS.find((n) => n.id === id) ?? declarations.find((n) => n.id === id);
     const before = previous.status === "read" ? (previous.numbers[id] ?? null) : null;
-    const verdict = declared === undefined ? ("undeclared" as const)
+    const direct = declared === undefined ? ("undeclared" as const)
       : "undefinedToday" in declared && declared.undefinedToday ? ("undefined" as const) : verdictFor({ better: declared.better, previous, id, current });
+    const pausedDay = pause !== null && (pause.current > PAUSED_SHARE || pause.previous > PAUSED_SHARE);
+    const verdict = direct === "worse" && pausedDay ? ("paused" as const) : direct;
     const delta = current !== null && before !== null ? current - before : null;
     return { id, label: declared?.label ?? id, current, previous: before, delta, verdict };
   });
@@ -668,9 +737,9 @@ export function compareReadings(numbers: Record<string, number | null>, previous
 const shown = (n: number | null): string => (n === null ? UNKNOWN : grouped(n));
 
 /** @param {ReturnType<typeof buildReport>} report @returns {string[]} */
-function trendLines({ numbers, previous, dora }: ReturnType<typeof buildReport>): string[] {
+function trendLines({ numbers, previous, dora, pause }: ReturnType<typeof buildReport>): string[] {
   const against = previous.status === "read" ? `the previous reading, ${previous.date}` : previous.status === "none" ? "the previous reading (none yet)" : `the previous reading (${UNKNOWN}: ${READINGS_FILE} could not be read)`;
-  const lines = compareReadings(numbers, previous, doraDeclarations(dora)).map((c) => {
+  const lines = compareReadings(numbers, previous, doraDeclarations(dora), pause).map((c) => {
     if (c.verdict === "undefined") return `- ${c.label}: undefined (nothing to measure today; not 0)`;
     if (c.verdict === "undeclared") return `- ${c.label}: NO DIRECTION DECLARED -- a defect in org-retro.ts's NUMBERS table, not a reading (now ${shown(c.current)})`;
     const was = c.previous === null || previous.status !== "read" ? "" : `, previous ${shown(c.previous)} on ${previous.date}${c.delta === null ? "" : `, delta ${c.delta > 0 ? "+" : ""}${grouped(c.delta)}`}`;
@@ -760,7 +829,7 @@ function journalDerivedLines(report: ReturnType<typeof buildReport>): string[] {
   const unreadLedger = `${UNKNOWN} (the wake ledger could not be read)`;
   return [
     idle === null ? `- Idle minutes while a claimable row existed: ${unreadJournal}`
-      : `- Idle minutes while a claimable row existed: ${idle.idleMinutes} (${idle.ticksWithIdleOffer} of ${idle.ticks} ticks offered a Ready row nobody could take; inferred from the journal at ${TICK_MINUTES} min a tick, a floor)`,
+      : `- Idle minutes while a claimable row existed: ${idle.idleMinutes} (${idle.ticksWithIdleOffer} of ${idle.ticks} ticks offered a Ready row nobody could take; inferred from the journal at ${TICK_MINUTES} min a tick, a floor${idle.pausedIdleMinutes > 0 ? `; ${idle.pausedIdleMinutes} min in the pause, excluded` : ""})`,
     stalls === null ? `- Stalls (org-stalled wakes): ${unreadLedger}` : `- Stalls (org-stalled wakes): ${stalls.orgStalled}; claim-stalled wakes: ${stalls.claimStalled}`,
     releases === null ? `- Claim-stall voidings (claims that stopped moving: stalled, gone): ${unreadJournal}`
       : `- Claim-stall voidings (claims that stopped moving: stalled, gone): ${releases.voided} (${counted(releases.byReason)}); other releases, not voidings: ${counted(releases.otherReleases)}`,
@@ -904,10 +973,23 @@ function pinBumpLines(reading: PinBumpReading | null): string[] {
   return [pinBumpLine(reading)];
 }
 
+/**
+ * THE PAUSE LINE, the one line on the Claude allowance, printed first so no figure below it is read as an org failure by mistake: how long Claude work
+ * was held in the window, or `not paused`, or `unknown` when `account-limit.ndjson` could not be read (a pause cannot then be ruled out).
+ * @param {PauseReading | null} pause @returns {string}
+ */
+function pauseLine(pause: PauseReading | null): string {
+  if (pause === null) return `Claude work pause: ${UNKNOWN} (${ACCOUNT_LIMIT_LOG} could not be read, so a pause cannot be ruled out and the idle figures are not corrected for one)`;
+  if (pause.intervals.length === 0) return "Claude work pause: not paused";
+  const minutes = pause.intervals.reduce((sum, { from, to }) => sum + (to - from), 0) / 60000;
+  const minute = (ms: number) => `${new Date(ms).toISOString().slice(0, 16)}Z`;
+  return `Claude work paused ${duration(minutes)} of 24h (${minute(pause.intervals[0].from)} to ${minute(pause.intervals[pause.intervals.length - 1].to)})`;
+}
+
 export function renderReport(report: ReturnType<typeof buildReport>): string {
   const from = new Date(report.window.since).toISOString();
   const to = new Date(report.window.until).toISOString();
-  return [`ORG RETROSPECTIVE ${report.date} -- the 24 hours ${from} to ${to}`, "",
+  return [`ORG RETROSPECTIVE ${report.date} -- the 24 hours ${from} to ${to}`, "", pauseLine(report.pause), "",
     ...mergedLines(report), ...stallLines(report), ...journalDerivedLines(report), ...redLines(report.red), ...pinBumpLines(report.pinBump), ...blockingLines(report.blocking), ...circularWaitLines(report.circularWaits), ...idleClaimLines(report.idleClaims), ...idleClaimedHoursLines(report.idleClaimedHours), ...mergedRowOpenLines(report.mergedRowOpen), ...inertOptionLines(report.inertOptions), ...safetyDenialLines(report.safetyDenials), ...sharedFailureLines(report.sharedFailures), ...spendLines(report), ...unwaitedLines(report.unwaited), ...untieredLines(report.untiered), ...underspecifiedLines(report.underspecified), ...specLintRefusedLines(report.specLintRefused), ...emergencyPriorityLines(report.emergencyPriority), ...doraLines(report.dora), ...trendLines(report), ""].join("\n");
 }
 
@@ -1141,6 +1223,16 @@ export function resumableDora({ stateDir, now, repositories = homeProjectDeclara
 /** @param {string} path @returns {string | null} */
 function readText(path: string): string | null {
   try { return readFileSync(path, "utf8"); } catch { return null; }
+}
+
+/**
+ * The Claude pause's log. NO FILE is `""`, which is "not paused": nothing has ever been entered. A file that is there and cannot be read (a directory
+ * at its path included) is `null`, which is unknown and never "not paused".
+ * @param {string} stateDir @returns {string | null}
+ */
+export function readAccountLimitLog(stateDir: string): string | null {
+  const path = accountLimitLogPath(stateDir);
+  return existsSync(path) ? readText(path) : "";
 }
 
 /**
@@ -1596,6 +1688,7 @@ export function retroClasses({ now, stateDir, unit = "a11ign-work-tick.service",
       ledger: readText(`${stateDir}/wake-ledger`),
       blockingRecord: readText(`${stateDir}/${BLOCKING_FILE}`),
       readings: readReadings(join(stateDir, READINGS_FILE)),
+      accountLimitLog: readAccountLimitLog(stateDir),
     }) },
     // a refused read is a reading that says so (`status: "unknown"`), never a throw and never a 0
     { name: "hand fixes", read: () => ({ handFixes: readHandFixes(now) }) },
