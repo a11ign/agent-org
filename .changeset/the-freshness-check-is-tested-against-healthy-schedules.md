@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-The trace-freshness check is tested against healthy schedules (a11ign/agent-org#837). `src/trace/freshness-healthy-schedules.test.ts` generates 200 seeded transcript schedules of bursts, quiets, finished sessions and lost state files, drives each one through the real `ingestTranscripts`, and asserts that a session which is working is never read STALE at any tick after the ingest. The two shapes that were false alarms in production are in the generator: a finished session that keeps rewriting its bookkeeping (#704), and a state file lost in the middle of a run that rebuilds the store and ends it with an old Codex rollout (#709). A POSITIVE CONTROL asserts that a session whose ingest is stopped for fifteen minutes still reads STALE, so the test cannot pass by never saying stale. The hold-back shapes (#836, and the 6-to-10-minute gap of agent-org#842) were excluded here until the #836 fix merged; with it, no healthy schedule reads stale and the exclusions are gone. No behaviour changes: `freshness.ts` is untouched.
