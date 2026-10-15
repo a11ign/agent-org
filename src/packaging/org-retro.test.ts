@@ -334,6 +334,12 @@ test("the prompt carries the numbers, the class-fix instruction and the #928 des
   assert.match(order.prompt, /nothing tripped/, "a quiet day is posted with its numbers, never silence");
 });
 
+test("the order's closing paragraph names the paused line: a paused number is not a class to file a row for", () => {
+  const order = retrospectiveOrder("2026-10-02", "THE NUMBERS");
+  assert.match(order.prompt, /A number marked `paused` is not a class to file a row for/);
+  assert.ok(order.prompt.endsWith("no org defect caused it."), "the paused sentence closes the order");
+});
+
 /** A section of a markdown file: its heading line to the next `## ` heading. Null when absent -- the positive control below is what makes that visible. */
 function section(markdown: string, heading: string): string | null {
   const lines = markdown.split("\n");
