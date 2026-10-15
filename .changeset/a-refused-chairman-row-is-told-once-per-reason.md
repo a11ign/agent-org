@@ -1,5 +1,5 @@
 ---
-"agent-org": patch
+"@a11ign/agent-org": patch
 ---
 
 A refused `priority:chairman` row can be told to `ceo` once per reason, and not again after `ceo` has answered it on the row (agent-org#1456). Behind the machinery flag `chairman.refusedOnce` (off by default; switch it with `machinery:flag`). The order for a row refused for a native blocked-by edge (`blocked by #5311 -- declared on the row, and it clears itself`) was re-delivered every ~23 minutes with the same text, though `ceo` had answered on the row three times, and the stuck path could not name the row because its key carried no repository (`STUCK ... names no row of a repository this project declares`). With the flag on, `hierarchyOrders` keeps a first-telling ledger in `chairman-refusals.json` in the state directory, keyed by the row's repository and number, and silences a refusal only when a `decided-by: ceo` comment on the row is newer than its first telling. A changed reason, or a blocker the reason names that has closed while the row is still refused, is told again; a row with no `ceo` answer is told exactly as before. With the flag on, the cause key is `ceo/chairman-row-refused/row-<key>#<n>/<digest>` for a row of another repository and `row-<n>/<digest>` for the primary's, so `stuckSubjectOf` reads it. With the flag off, the order and its key are main's, unchanged.
