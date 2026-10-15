@@ -24,6 +24,7 @@ Done-when 1 is the case set above: the positive control writes nothing and names
 - **The declaration is still written in the ruled case.** No label stands, by design, and the worker is still blocked, so the local declaration records it. The comment on `main` is updated to say so; the rule that a `blocked` the row does not carry is never on disk keeps its meaning for every other case.
 - **`--json comments` is one more field per row read**, in the same `gh issue view` call. The row read now carries every comment on the row, not only its state and labels, so the payload grows with the comment count. The call count does not change.
 - **Not covered, and left for a follow-up**: the `--on` native-edge path does not run the ruling check. That path writes an edge, not a label, and the issue's scope is the label path (`applyLabel`).
+- **Not covered, outside this Region, and a real gap**: the `worker:stop-hook` bound (`src/worker-stop-hook.ts`, `declareAtBound`) calls `applyBlocked` without `comments` (line 143), so a bound declaration on a reason a manager has ruled on still restores the label. It is the same defect class at a second caller. The fix is one line there (pass `comments: resolved.comments`, which `resolveBlockedRow` already returns), but that file is not in this issue's Region, so it is not made here. A follow-up row for it is to be filed.
 
 platform: not affected. The change reads one more field from the `gh` CLI (`comments` in `gh issue view --json`); no platform feature is added or replaced.
 
