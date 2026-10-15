@@ -13,7 +13,7 @@ import { type Ask, parseReply, readValidators, saveValidators } from "../trace/p
 import { narrowedPrList, readPrList, writePrList } from "../pr-list-memory.ts";
 import { readTickScopes } from "../tick-scopes.ts";
 import type { Scope as TickScope } from "../event-queue.ts";
-import { GRAPHQL_SWEEP_MINUTES, OTHER_SCOPES_MEMORY, readOtherScopesMemory, rememberOtherScopes, scopesToRead } from "./pacing.ts";
+import { type Pacing, GRAPHQL_SWEEP_MINUTES, OTHER_SCOPES_MEMORY, readOtherScopesMemory, rememberOtherScopes, scopesToRead } from "./pacing.ts";
 import { cachedReleaseBehind, readReleaseBehind, npmRegistryRead } from "../release-behind-main.ts";
 import { armedFromApi, openPullRequestsQueryArgs } from "../auto-arm-sweep.ts";
 import { REPO } from "../project-identity.ts";
@@ -1396,6 +1396,15 @@ export function otherScopesToRead(run: object, scopes: readonly Scope[], facts?:
   return gate === null ? [...scopes] : scopesToRead({ scopes, ...gate });
 }
 
+/**
+ * (agent-org#1417) THE OTHER REPOSITORIES AN AMBIENT TICK READS, given the pool it left: NONE below the floor (`belowFloor`), the event gate's list
+ * otherwise. Between the floor and the reserve they ARE read, so a settled-green pull request in another repository still gets its reviewer order.
+ * `readOtherScopes` reads exactly this list, so the rule and the read are one.
+ */
+export function otherScopesForTick(run: object, scopes: readonly Scope[], pacing: Pick<Pacing, "belowFloor">, facts?: GateFacts): Scope[] {
+  return isAmbientRun(run) && pacing.belowFloor ? [] : otherScopesToRead(run, scopes, facts);
+}
+
 /** The facts an event gate is decided from: the flag, the host's declaration, the event queue's named scopes (`null`: none, so read all), the memory and the clock. */
 export type GateFacts = { on: boolean; webhook: boolean; tickScopesPath: string | undefined; memoryPath: string; nowMs: number; };
 
@@ -1428,6 +1437,14 @@ export function unreadScopes(run: object, scopes: readonly Scope[], facts?: Gate
   if (gate === null) return [];
   const read = new Set(scopesToRead({ scopes, ...gate }).map((scope) => scope.key));
   return scopes.filter((scope) => !read.has(scope.key)).map((scope) => `the lanes of ${scope.code?.repo ?? scope.tracker?.repo ?? scope.key} (no event named it, and it was read less than ${GRAPHQL_SWEEP_MINUTES} minutes ago)`);
+}
+
+/**
+ * (agent-org#1417) THE OTHER REPOSITORIES AN EVENT GATE DROPPED, REPORTED unread on an ambient tick. Below the floor they are not read at all, and the
+ * paced skip names them (`pacedUnread`), so they are not reported twice: nothing here. Between the floor and the reserve, the gate's own report.
+ */
+export function eventUnreadForTick(pacing: Pick<Pacing, "belowFloor">, run: object, scopes: readonly Scope[], facts?: GateFacts): string[] {
+  return pacing.belowFloor ? [] : unreadScopes(run, scopes, facts);
 }
 
 /**

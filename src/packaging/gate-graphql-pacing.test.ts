@@ -5,6 +5,7 @@
  * Each rule is pinned by a positive assertion and a RED CONTROL: the same rule with its condition removed, which the assertion must refuse.
  *   - the flag is OFF by default, and a poll tick or a test's `run` reads every repository as it always has;
  *   - below the reserve the pool is paced, at the reserve it is not (the boundary is named, not implied);
+ *   - agent-org#1417: between the floor and the reserve a paced tick skips `orgHealth` and still reads the other repositories; below the floor it skips both;
  *   - a paced tick names what it did not read, and never names nothing;
  *   - a webhook tick reads a repository its events named, and one due a sweep, and no other;
  *   - a repository an event-gated tick drops is REPORTED unread, with its reason, as a paced skip is;
@@ -18,8 +19,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { GRAPHQL_RESERVE, GRAPHQL_SWEEP_MINUTES, OTHER_SCOPES_MEMORY, PACING_FLAG, orgHealthSkipped, pacedUnread, pacingNow, pacingOn, primaryRefusedLanes, primaryUnread, readOtherScopesMemory, rememberOtherScopes, scopesToRead } from "../work-gate/pacing.ts";
-import { defaultRun, eventGateOf, otherScopesToRead, primaryDue, primaryLanes, readOpenRows, unreadScopes, type GateFacts } from "../work-gate/reads.ts";
+import { GRAPHQL_FLOOR, GRAPHQL_RESERVE, GRAPHQL_SWEEP_MINUTES, OTHER_SCOPES_MEMORY, PACING_FLAG, orgHealthSkipped, pacedUnread, pacingNow, pacingOn, primaryRefusedLanes, primaryUnread, readOtherScopesMemory, rememberOtherScopes, scopesToRead } from "../work-gate/pacing.ts";
+import { defaultRun, eventGateOf, eventUnreadForTick, otherScopesForTick, otherScopesToRead, primaryDue, primaryLanes, readOpenRows, unreadScopes, type GateFacts } from "../work-gate/reads.ts";
 import type { Scope as TickScope } from "../event-queue.ts";
 import type { Scope } from "../work-gate/vocabulary.ts";
 import { emptyCanaryState, withMachineryFlag, type CanaryIo } from "../org-health.ts";
@@ -27,6 +28,7 @@ import { EXIT as GATE_EXIT, offeredByShare, tickLanes } from "../work-gate.ts";
 import { exitPartial, outageThisTick } from "../work-gate/tick.ts";
 import { claimStallsNow } from "../work-gate/claim-stall-tick.ts";
 import { loadAllowlist, normaliseLine } from "../repeating-lines.ts";
+import { workGateSource } from "../lib/work-gate-source.ts";
 
 const MINUTE = 60_000;
 const NOW = Date.parse("2026-10-12T12:00:00Z");
@@ -59,7 +61,7 @@ test("the flag is OFF by default: a canary state with no record for it is OFF, a
 
 test("flag OFF reads nothing and paces nothing, even on a pool the reserve would refuse", () => {
   const { run, calls } = probe(GRAPHQL_RESERVE - 1);
-  assert.deepEqual(pacingNow(run, false), { paced: false, remaining: null });
+  assert.deepEqual(pacingNow(run, false), { paced: false, belowFloor: false, remaining: null });
   assert.equal(calls.length, 0, "the probe is not made with the flag off");
   // RED CONTROL: the same pool, flag on, IS paced: the flag is the only thing that stood between this tick and the skip
   assert.equal(pacingNow(probe(GRAPHQL_RESERVE - 1).run, true).paced, true);
@@ -67,25 +69,88 @@ test("flag OFF reads nothing and paces nothing, even on a pool the reserve would
 
 test("the reserve is a boundary: below it the pool is paced, at it the pool is not", () => {
   assert.equal(GRAPHQL_RESERVE, 1000, "the reserve is named, and the PR says so");
-  assert.deepEqual(pacingNow(probe(999).run, true), { paced: true, remaining: 999 });
-  assert.deepEqual(pacingNow(probe(1000).run, true), { paced: false, remaining: 1000 });
+  assert.deepEqual(pacingNow(probe(999).run, true), { paced: true, belowFloor: false, remaining: 999 });
+  assert.deepEqual(pacingNow(probe(1000).run, true), { paced: false, belowFloor: false, remaining: 1000 });
   // RED CONTROL: a reserve of zero would pace nothing at 999, and this assertion would refuse it
   assert.notEqual(pacingNow(probe(999).run, true).paced, false);
 });
 
 test("a probe that cannot be read is not paced: the reads then refuse on their own and are reported as they are", () => {
-  assert.deepEqual(pacingNow(probe(null).run, true), { paced: false, remaining: null });
+  assert.deepEqual(pacingNow(probe(null).run, true), { paced: false, belowFloor: false, remaining: null });
   // RED CONTROL: a pool read as 0 IS paced, so the null case above is not paced by the same rule
   assert.equal(pacingNow(probe(0).run, true).paced, true);
 });
 
 test("a paced tick names what it did not read, and a tick that was not paced names nothing", () => {
-  assert.deepEqual(pacedUnread({ paced: true, remaining: 10 }, true), ["the other repositories' lanes", "the org-health reads"]);
+  assert.deepEqual(pacedUnread({ paced: true, belowFloor: true, remaining: 10 }, true), ["the other repositories' lanes", "the org-health reads"]);
   // a one-project host has no other repositories to be unread, so only the org-health reads are named
-  assert.deepEqual(pacedUnread({ paced: true, remaining: 10 }, false), ["the org-health reads"]);
-  assert.deepEqual(pacedUnread({ paced: false, remaining: 5000 }, true), []);
+  assert.deepEqual(pacedUnread({ paced: true, belowFloor: true, remaining: 10 }, false), ["the org-health reads"]);
+  assert.deepEqual(pacedUnread({ paced: false, belowFloor: false, remaining: 5000 }, true), []);
   // RED CONTROL: a paced tick that named nothing would read as clean, which is the defect the row forbids
-  assert.notDeepEqual(pacedUnread({ paced: true, remaining: 10 }, false), []);
+  assert.notDeepEqual(pacedUnread({ paced: true, belowFloor: true, remaining: 10 }, false), []);
+});
+
+test("agent-org#1417: above the reserve nothing is paced; between the floor and the reserve only orgHealth is skipped; below the floor the other repositories go too", () => {
+  assert.equal(GRAPHQL_FLOOR, 500, "the floor is named, and the PR says so");
+  assert.ok(GRAPHQL_FLOOR < GRAPHQL_RESERVE, "the floor sits BELOW the reserve, so the bands are ordered");
+  const band = (remaining: number) => pacingNow(probe(remaining).run, true);
+  // above the reserve: nothing is paced, and every repository is read
+  assert.deepEqual(band(GRAPHQL_RESERVE), { paced: false, belowFloor: false, remaining: GRAPHQL_RESERVE });
+  // between: orgHealth is skipped, and the other repositories are NOT named unread, because they are read
+  assert.deepEqual(band(GRAPHQL_RESERVE - 1), { paced: true, belowFloor: false, remaining: GRAPHQL_RESERVE - 1 });
+  assert.deepEqual(band(GRAPHQL_FLOOR), { paced: true, belowFloor: false, remaining: GRAPHQL_FLOOR });
+  assert.deepEqual(pacedUnread(band(GRAPHQL_FLOOR + 1), true), ["the org-health reads"]);
+  assert.equal(orgHealthSkipped(band(GRAPHQL_FLOOR + 1), true), true);
+  // below the floor: both are skipped and both are named
+  assert.deepEqual(band(GRAPHQL_FLOOR - 1), { paced: true, belowFloor: true, remaining: GRAPHQL_FLOOR - 1 });
+  assert.deepEqual(pacedUnread(band(GRAPHQL_FLOOR - 1), true), ["the other repositories' lanes", "the org-health reads"]);
+  // RED CONTROL: the old order (the floor at the reserve) would name the other repositories at 999, and this assertion refuses it
+  assert.notDeepEqual(pacedUnread(band(GRAPHQL_RESERVE - 1), true), ["the other repositories' lanes", "the org-health reads"]);
+});
+
+test("agent-org#1417: an ambient tick reads the other repositories above the reserve and between the floor and the reserve, and none below the floor", () => {
+  // the decision is `otherScopesForTick` and the report is `eventUnreadForTick`: `readOtherScopes` reads exactly the first and `main` reports the second
+  const scopes = [scope("a", "org/a-code", "org/a-rows"), scope("b", "org/b-code", null)];
+  const named: TickScope[] = [{ repo: "org/a-code", kind: "pr", number: 7 }];
+  const above = { belowFloor: false };
+  const between = { belowFloor: false };
+  const below = { belowFloor: true };
+  withScratch((dir) => {
+    // b's sweep is DUE: the event gate reads it although no event named it, so the reserve alone decides
+    const due = webhookTick(dir, { named, memory: { a: NOW - 2 * MINUTE, b: NOW - 20 * MINUTE } });
+    assert.deepEqual(otherScopesForTick(defaultRun, scopes, above, due).map((s) => s.key), ["a", "b"], "above the reserve: both read");
+    assert.deepEqual(otherScopesForTick(defaultRun, scopes, between, due).map((s) => s.key), ["a", "b"],
+      "between the floor and the reserve: both still read, so the settled-green pull request in b gets its order (RED CONTROL: keyed on `paced` this is [])");
+    assert.deepEqual(otherScopesForTick(defaultRun, scopes, below, due), [], "below the floor: none read");
+    assert.deepEqual(eventUnreadForTick(below, defaultRun, scopes, due), [], "below the floor the paced skip names them, so nothing is reported twice");
+
+    // b's sweep is NOT due and no event named it: the event gate drops it, and it must be REPORTED, not read as clean
+    const fresh = webhookTick(dir, { named, memory: { a: NOW - 2 * MINUTE, b: NOW - MINUTE } });
+    assert.deepEqual(otherScopesForTick(defaultRun, scopes, above, fresh).map((s) => s.key), ["a"]);
+    assert.deepEqual(otherScopesForTick(defaultRun, scopes, between, fresh).map((s) => s.key), ["a"]);
+    assert.deepEqual(eventUnreadForTick(between, defaultRun, scopes, fresh).length, 1, "between: b is reported unread by the event gate");
+    assert.match(eventUnreadForTick(between, defaultRun, scopes, fresh)[0], /org\/b-code.*no event named it/);
+    assert.deepEqual(otherScopesForTick(defaultRun, scopes, below, fresh), [], "below the floor none are read");
+    assert.deepEqual(eventUnreadForTick(below, defaultRun, scopes, fresh), []);
+
+    // flag OFF: no gate, every repository is read and nothing is reported, at any pool
+    const off = webhookTick(dir, { named, memory: { a: NOW - 2 * MINUTE, b: NOW - MINUTE }, on: false });
+    assert.deepEqual(otherScopesForTick(defaultRun, scopes, above, off).map((s) => s.key), ["a", "b"], "flag off reads all: with the flag off the pool is never paced (belowFloor false)");
+    assert.deepEqual(eventUnreadForTick(above, defaultRun, scopes, off), []);
+  });
+  // a run that is not the gate's own is never paced: a test's or a poll's `run` reads every repository, whatever the pool
+  const notAmbient = (_args: string[]) => "";
+  assert.deepEqual(otherScopesForTick(notAmbient, scopes, below).map((s) => s.key), ["a", "b"], "a run that is not the gate's own is never paced");
+});
+
+test("agent-org#1417: the call sites decide through the helpers, and orgHealth stays on the reserve", () => {
+  // the read path itself needs the live pool and the host's declaration, so the call sites are pinned by their text; the rules are pinned by the behaviour above
+  const gate = workGateSource().replace(/\s+/g, " ");
+  assert.match(gate, /const wanted = otherScopesForTick\(run, scopes, tickPacing\(\)\)/);
+  assert.match(gate, /const eventUnread = eventUnreadForTick\(pacing, defaultRun, declaredOthers\)/);
+  assert.match(gate, /orgHealthSkipped\(pacing, primaryRead\) \? \[\] : orgHealthTogether/, "orgHealth stays on the reserve");
+  // RED CONTROL: the old order skipped the other repositories on `paced`, so that text must NOT be there
+  assert.doesNotMatch(gate, /tickPacing\(\)\.paced \? \[\]/);
 });
 
 test("a repository no event named, read inside the sweep window, is not read", () => {
@@ -212,15 +277,15 @@ test("an event-gated tick that named neither the primary nor its sweep skips the
     assert.equal(primaryDue(defaultRun, HOME, tick), false);
     assert.deepEqual(primaryLanes(defaultRun, HOME, lanes, SKIPPED_PRIMARY, tick), SKIPPED_PRIMARY, "the lanes are refused, as a refused read is");
     assert.equal(reads, 0, "the tracker lanes are not asked");
-    assert.equal(orgHealthSkipped({ paced: false, remaining: null }, false), true, "orgHealth is skipped with them");
-    assert.deepEqual(primaryUnread({ paced: false, remaining: null }, false), ["the primary's tracker lanes (promotable rows, chairman-blocked rows, open rows)", "the org-health reads"]);
+    assert.equal(orgHealthSkipped({ paced: false, belowFloor: false, remaining: null }, false), true, "orgHealth is skipped with them");
+    assert.deepEqual(primaryUnread({ paced: false, belowFloor: false, remaining: null }, false), ["the primary's tracker lanes (promotable rows, chairman-blocked rows, open rows)", "the org-health reads"]);
     // RED CONTROL: the same tick naming the primary's tracker repository reads them, and orgHealth runs
     const named = webhookTick(dir, { named: [{ repo: "org/home-rows", kind: "issue", number: 3 }], memory: { "": NOW - MINUTE } });
     assert.equal(primaryDue(defaultRun, HOME, named), true);
     assert.deepEqual(primaryLanes(defaultRun, HOME, lanes, SKIPPED_PRIMARY, named), { promotableRows: [], chairmanBlocked: [], openRowsRead: [] });
     assert.equal(reads, 1);
-    assert.equal(orgHealthSkipped({ paced: false, remaining: null }, true), false);
-    assert.deepEqual(primaryUnread({ paced: false, remaining: null }, true), []);
+    assert.equal(orgHealthSkipped({ paced: false, belowFloor: false, remaining: null }, true), false);
+    assert.deepEqual(primaryUnread({ paced: false, belowFloor: false, remaining: null }, true), []);
   });
 });
 
@@ -297,7 +362,7 @@ test("agent-org#1414: tickLanes hands the refused and the paced lanes apart, and
   const io: CanaryIo = { read: () => null, write: () => {}, fileIncident: () => "https://example.test/1", log: () => {} };
   const lanes = (prs: any[] | null, pacedSkips: { refused: string[]; }[]) =>
     tickLanes({ prs, readyRows: [], others: [], pacedSkips, unarmed: [], releaseRuns: null, run: () => "", now: NOW, dir: "/state", io });
-  const allPaced = lanes([], [{ refused: pacedUnread({ paced: true, remaining: 10 }, true) }, { refused: [] }]);
+  const allPaced = lanes([], [{ refused: pacedUnread({ paced: true, belowFloor: true, remaining: 10 }, true) }, { refused: [] }]);
   assert.deepEqual(allPaced.refused, []);
   assert.deepEqual(allPaced.paced, ["the other repositories' lanes", "the org-health reads"]);
   assert.deepEqual(allPaced.unread, allPaced.paced, "PARTIAL still names every skipped lane");
