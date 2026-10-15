@@ -16,7 +16,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { tmpDir, tmpDirForFile } from "./lib/tmp-fixture.ts";
 import {
   ALARM_FRACTION, NO_CALLER, NO_VERDICT, POOL_POINTS, QUEUED_EXIT, QUEUE_DIR, alarmLine, attachFollowUps, callerScript, dueCalls, ghQueueTick, parseLedger, parseRollup,
-  perHour, perHourCallers, poolAlarms, readGroups, readQueue, recordPoolAlarms, refusalKind, renderByRead, retryDue, rollupPathOf, verdictOf, type QueuedCall, type RunQueued,
+  perHour, perHourCallers, poolAlarms, readGroups, readQueue, recordPoolAlarms, refusalKind, renderByRead, retryDue, rollupPathOf, settle, verdictOf, type QueuedCall, type RunQueued,
 } from "./gh-ledger.ts";
 
 const WRAPPER_TEXT = readFileSync(fileURLToPath(new URL("../host/gh", import.meta.url)), "utf8");
@@ -616,4 +616,39 @@ test("a11ign#4777: a minter that exits 0 but prints no usable token is an incide
   assert.equal(call.stdout, "token=none\n");
   assert.equal(call.incidents.length, 1, "one incident");
   assert.match(call.incidents[0]?.caller ?? "", /exited 0 but printed no usable token \(exit 0\)$/);
+});
+
+test("#1482: a counter-less line between two readings of ONE reset window is shared out between them, with another window's readings in between", () => {
+  const COUNTED = (time: string, used: number, reset: number) => [time, "app:scheduler", "graphql", "", "0", "api graphql", "-", "/usr/bin/node /x/src/work-gate.ts", "-", "-", String(used), String(reset)].join("\t");
+  const PR_LIST = (time: string) => [time, "app:scheduler", "graphql?", "", "0", "pr list", "-", "/usr/bin/node /x/src/work-gate.ts", "-", "-", "-", "-"].join("\t");
+  // window A resets at 1791925000 and window B at 1791928600, and the pool's counter is read in both. The `pr list` sits between A's two readings
+  // (A moved 100 -> 104) and B's reading sits between them too (B moved 500 -> 530): one account, two windows, the same movement either side.
+  const entries = parseLedger([
+    COUNTED("2026-10-13T20:00:00Z", 100, 1791925000),
+    COUNTED("2026-10-13T20:00:30Z", 500, 1791928600),
+    PR_LIST("2026-10-13T20:01:00Z"),
+    COUNTED("2026-10-13T20:01:30Z", 104, 1791925000),
+    COUNTED("2026-10-13T20:02:00Z", 530, 1791928600),
+  ].join("\n"));
+  const settled = settle(entries);
+  assert.deepEqual(settled.map((e) => e.cost), [null, null, 2, 2, 30],
+    "A's 4 points are shared between the `pr list` and the reading that closed the gap; B's 30 are its own reading's, the only call in its gap; the two baselines stay floors");
+  assert.deepEqual(settled.map((e) => e.settled), [undefined, undefined, "shared", "shared", "read"]);
+});
+
+test("#1482: another window's BASELINE between a counter-less line and the next reading of its own window does not clear the line's share (agent-org#1500 review)", () => {
+  const COUNTED = (time: string, used: number, reset: number) => [time, "app:scheduler", "graphql", "", "0", "api graphql", "-", "/usr/bin/node /x/src/work-gate.ts", "-", "-", String(used), String(reset)].join("\t");
+  const PR_LIST = (time: string) => [time, "app:scheduler", "graphql?", "", "0", "pr list", "-", "/usr/bin/node /x/src/work-gate.ts", "-", "-", "-", "-"].join("\t");
+  // A baseline, the `pr list`, then B's FIRST reading (its baseline), then A's second reading: A moved 100 -> 104 across the `pr list`, so the 4 points are
+  // shared between it and A's reading. B's baseline is a floor and does not take the line; B's later reading is its own 30 points, and the line is not its.
+  const entries = parseLedger([
+    COUNTED("2026-10-13T20:00:00Z", 100, 1791925000),
+    PR_LIST("2026-10-13T20:00:30Z"),
+    COUNTED("2026-10-13T20:00:45Z", 500, 1791928600),
+    COUNTED("2026-10-13T20:01:00Z", 104, 1791925000),
+    COUNTED("2026-10-13T20:02:00Z", 530, 1791928600),
+  ].join("\n"));
+  const settled = settle(entries);
+  assert.deepEqual(settled.map((e) => e.cost), [null, 2, null, 2, 30]);
+  assert.deepEqual(settled.map((e) => e.settled), [undefined, "shared", undefined, "shared", "read"]);
 });

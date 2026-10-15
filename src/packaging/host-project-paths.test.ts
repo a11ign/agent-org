@@ -146,7 +146,11 @@ const TODAYS_TEXT = {
 // response head and written as the ledger line's 11th and 12th fields; the head is taken out of the copy before the caller reads it. Same staleness, same remedy.
 // agent-org#1399 MOVED IT AGAIN, deliberately: the reviewer's refusal sits behind `AGENT_ORG_REVIEWER_REFUSAL`, which ships OFF, so a failed mint falls back to the account
 // unless a reviewer instance sets it; the recorded host declares no reviewer app, so the switch is inert here. Same staleness, same remedy.
-const TODAYS_GH_WRAPPER = "57118e0a8d163adb169223b767f4e321c36538da749be9c6014246bab3727c30";
+// agent-org#1482 MOVED IT AGAIN, deliberately: the ledger's trim (`rollup_dropped`) settles a counter-less graphql line between two readings of its reset window the way `settle` does,
+// instead of flooring it at one point. Same staleness, same remedy.
+// agent-org#1500 (review) MOVED IT AGAIN, deliberately: a counter-less line waits in each window that already has its baseline, so another window's baseline no longer
+// takes it from the window it sits between. Same staleness, same remedy.
+const TODAYS_GH_WRAPPER = "463478359b1db8303f4813b7c770ae990719c099f6e8914f87c5a43a1cdab544";
 // #2896 MOVED THIS ONE, deliberately: the recorded host's header says `pnpm run host:install` / `pnpm run host:check` where it said `npm run`.
 const TODAYS_LEADS_LIST = "dbca070c4bb7934ff1e9cdc9505f9edee638d98fcff10963b18d5d3a743770a2";
 

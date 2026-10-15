@@ -14,7 +14,7 @@ import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { callerScript, parseLedger, parseRollup, perHour, renderPerHour, rollupPathOf, spenderPhrase, topSpender } from "../gh-ledger.ts";
+import { callerScript, parseLedger, parseRollup, perHour, renderPerHour, rollupPathOf, settle, spenderPhrase, topSpender } from "../gh-ledger.ts";
 import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
 import { workGateSource } from "../lib/work-gate-source.ts";
 
@@ -113,6 +113,44 @@ test("#4148: a rollup written as the trim drops lines keeps every hour: the ledg
   }
   const lines = readFileSync(rollupPathOf(h.ledger), "utf8").split("\n").filter(Boolean);
   assert.equal(new Set(lines.map((l) => l.split("\t").slice(0, 3).join("\t"))).size, lines.length, "merged on every trim: one row per hour, account and resource, never one per trim");
+});
+
+test("#1482: the rollup a trim writes holds what `settle` makes of the dropped lines: counter-less lines are shared out, not left at the floor", () => {
+  const h = host();
+  const R1 = 1791925000;
+  const R2 = 1791928600;
+  const pool: Record<number, number> = { [R1]: 100, [R2]: 500 };
+  // one account, two reset windows at once; every fourth graphql call is in window B, a `pr list` (no counter, a `graphql?` line) comes between them, and a
+  // costed response shows its own cost now and then. The counter moves by 2 per graphql call in its window and by 1 for each `pr list` (unseen, so in window A).
+  const counted = (time: string, used: number, reset: number, cost = "") =>
+    [time, WORKERS, "graphql", cost, "0", "api graphql", "-", "/usr/bin/node /x/src/work-gate.ts", "-", "-", String(used), String(reset)].join("\t");
+  const fixture: string[] = [];
+  for (let i = 0; i < 40; i += 1) {
+    const time = `2026-10-13T20:${String(i).padStart(2, "0")}:00Z`;
+    if (i % 3 === 2) {
+      pool[R1] += 1;
+      fixture.push(line(time, { resource: "graphql?", command: "pr list" }));
+      continue;
+    }
+    const reset = i % 4 === 0 ? R2 : R1;
+    pool[reset] += 2;
+    fixture.push(counted(time, pool[reset], reset, i % 7 === 0 ? String(COST) : ""));
+  }
+  const fixtureText = `${fixture.join("\n")}\n`;
+  writeFileSync(h.ledger, fixtureText);
+  // the fixture is past the bound, so this call's line is appended and the trim drops the older half of the file
+  assert.equal(h.call("2026-10-13T21:00:00Z", "pr", "list").status, 0);
+  const kept = readFileSync(h.ledger, "utf8");
+  const appended = kept.slice(kept.lastIndexOf("\n", kept.length - 2) + 1);
+  const keptFixture = kept.slice(0, kept.length - appended.length);
+  assert.ok(fixtureText.endsWith(keptFixture), "POSITIVE CONTROL: what the trim kept is the newest lines of the fixture, whole");
+  const dropped = fixtureText.slice(0, fixtureText.length - keptFixture.length);
+  assert.ok(dropped.split("\n").filter(Boolean).length >= 20, "POSITIVE CONTROL: the trim dropped the older lines");
+  const shared = settle(parseLedger(dropped)).filter((e) => e.settled === "shared").length;
+  assert.ok(shared > 0, "POSITIVE CONTROL: some counter-less lines sit between two readings of one window in the dropped half");
+  const actual = perHour([], parseRollup(readFileSync(rollupPathOf(h.ledger), "utf8")), { account: WORKERS, resource: "graphql" });
+  const expected = perHour(parseLedger(dropped), [], { account: WORKERS, resource: "graphql" });
+  assert.deepEqual(actual, expected, "the rollup is what `settle` makes of the same lines, hour by hour, read and floor alike");
 });
 
 test("#4148: the CLI prints the per-hour reading from a ledger and its rollup", () => {
@@ -238,4 +276,43 @@ test("agent-org#1395: the scheduler App's token is handed out by `host/gh` alone
   const holders = files.filter((f) => MINTS.test(readFileSync(join(root, f), "utf8")) && f !== "src/app-token.ts" && f !== "host/gh");
   assert.deepEqual(holders, [], "nothing but app-token.ts and host/gh reads or mints an installation token");
   assert.ok(MINTS.test(readFileSync(join(root, "src/app-token.ts"), "utf8")), "POSITIVE CONTROL: the pattern finds the minter, so an empty answer above is not a pattern that matches nothing");
+});
+
+test("#1482: the trim's rollup settles the reviewer's ordering too: a `pr list` between two readings of A is shared out when B's baseline comes between them", () => {
+  const h = host();
+  const R1 = 1791925000;
+  const R2 = 1791928600;
+  const pool: Record<number, number> = { [R1]: 104, [R2]: 500 };
+  const at = (s: number) => `2026-10-13T20:${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}Z`;
+  const counted = (time: string, used: number, reset: number) =>
+    [time, WORKERS, "graphql", "", "0", "api graphql", "-", "/usr/bin/node /x/src/work-gate.ts", "-", "-", String(used), String(reset)].join("\t");
+  const prList = (time: string) => line(time, { resource: "graphql?", command: "pr list" });
+  // the head of the ledger is the ordering the review named: A's baseline (100), a `pr list`, B's baseline (500), then A's second reading (104). A is 4 points
+  // up across the `pr list`, so the list is shared out; B's baseline between them does not take it. Then a run of further calls, so the trim drops the head.
+  const fixture: string[] = [counted(at(0), 100, R1), prList(at(30)), counted(at(45), 500, R2), counted(at(60), 104, R1)];
+  for (let k = 1; k <= 25; k += 1) {
+    const time = at(60 + 5 * k);
+    if (k % 3 === 0) {
+      pool[R1] += 1;
+      fixture.push(prList(time));
+      continue;
+    }
+    const reset = k % 4 === 0 ? R2 : R1;
+    pool[reset] += 2;
+    fixture.push(counted(time, pool[reset], reset));
+  }
+  const fixtureText = `${fixture.join("\n")}\n`;
+  writeFileSync(h.ledger, fixtureText);
+  // the fixture is past the bound, so this call's line is appended and the trim drops the older half of the file
+  assert.equal(h.call("2026-10-13T21:00:00Z", "pr", "list").status, 0);
+  const kept = readFileSync(h.ledger, "utf8");
+  const appended = kept.slice(kept.lastIndexOf("\n", kept.length - 2) + 1);
+  const keptFixture = kept.slice(0, kept.length - appended.length);
+  assert.ok(fixtureText.endsWith(keptFixture), "POSITIVE CONTROL: what the trim kept is the newest lines of the fixture, whole");
+  const dropped = fixtureText.slice(0, fixtureText.length - keptFixture.length);
+  assert.ok(dropped.startsWith(fixture[0]), "POSITIVE CONTROL: the reviewer's ordering is at the head of the dropped half");
+  assert.ok(dropped.includes(fixture[3]), "POSITIVE CONTROL: A's second reading is in the dropped half");
+  const actual = perHour([], parseRollup(readFileSync(rollupPathOf(h.ledger), "utf8")), { account: WORKERS, resource: "graphql" });
+  const expected = perHour(parseLedger(dropped), [], { account: WORKERS, resource: "graphql" });
+  assert.deepEqual(actual, expected, "the rollup is what `settle` makes of the same lines, hour by hour, read and floor alike");
 });

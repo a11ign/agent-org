@@ -114,23 +114,28 @@ export function settle(entries: LedgerEntry[]): LedgerEntry[] {
   });
   for (const indices of byAccount.values()) {
     indices.sort((a, b) => Date.parse(out[a].time) - Date.parse(out[b].time) || a - b);
-    let reset: number | undefined;
-    let before = 0;
-    let gap: number[] = [];
+    // One baseline PER RESET WINDOW, not per account: a token's window resets on its own clock, and one account (`app:scheduler`) runs several
+    // at once (2026-10-15 16Z: four reset epochs in one hour, 123 switches among 776 readings). A single baseline restarted on every switch,
+    // so most readings were baselines and read as floor (#1482).
+    const before: Map<number, number> = new Map();
+    // A counter-less line is waiting for a share in EVERY window that has its baseline by the time it appears: its window is not known, so the first
+    // reading that brackets it claims it, and no other window's reading takes it again. A window's baseline clears only that window's list; clearing one
+    // gap for all windows lost a line between two readings of one window whenever another window's baseline came between them (agent-org#1500 review).
+    const pending: Map<number, number[]> = new Map();
+    const claimed = new Set<number>();
     for (const i of indices) {
       const e = out[i];
       if (e.used === undefined || e.reset === undefined) {
-        gap.push(i);
+        for (const list of pending.values()) list.push(i);
         continue;
       }
-      if (e.reset !== reset) {
-        reset = e.reset;
-        before = e.used; // the baseline: this line and what led up to it stay at their floor
-        gap = [];
-        continue;
-      }
-      const moved = Math.max(0, e.used - before);
-      before = Math.max(before, e.used);
+      const last = before.get(e.reset);
+      before.set(e.reset, Math.max(last ?? 0, e.used));
+      const gap = (pending.get(e.reset) ?? []).filter((j) => !claimed.has(j));
+      pending.set(e.reset, []);
+      if (last === undefined) continue; // the baseline: this line and what led up to it stay at their floor
+      gap.forEach((j) => claimed.add(j));
+      const moved = Math.max(0, e.used - last);
       const unknown = [...gap, i].filter((j) => out[j].cost === null);
       const left = Math.max(0, moved - [...gap, i].reduce((sum, j) => sum + (out[j].cost ?? 0), 0));
       if (unknown.length === 0) {
@@ -139,13 +144,12 @@ export function settle(entries: LedgerEntry[]): LedgerEntry[] {
         const share = Math.floor(left / unknown.length);
         const extra = left - share * unknown.length;
         // the closing reading takes the remainder first: it is the one call whose own movement is in the figure
-        const order = [i, ...gap.filter((j) => out[j].cost === null)];
+        const order = [i, ...gap].filter((j) => out[j].cost === null);
         order.forEach((j, n) => {
           out[j].cost = share + (n < extra ? 1 : 0);
           out[j].settled = unknown.length === 1 ? "read" : "shared";
         });
       }
-      gap = [];
     }
   }
   return out;
