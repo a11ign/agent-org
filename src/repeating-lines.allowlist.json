@@ -47,6 +47,10 @@
       "reason": "src/work-gate/reads.ts's exit line (agent-org#1095), written as the gate's process ends on every tick it runs: an identical read made again within the tick is answered from the memory the process holds, not asked of `gh` a second time (read deduplication working). A refused read is never kept, so it is never counted as a hit here, and a different tail of the line is not allowlisted."
     },
     {
+      "pattern": "^(PARTIAL: N lane\\(s\\) skipped by pacing, none refused: .*|lane\\(s\\) skipped by pacing, none refused; see the gate's stderr)$",
+      "reason": "the gate's PARTIAL line and the tick's reading of it when every unread lane was SKIPPED BY DESIGN (agent-org#1414): `gate.graphqlPacing` below the pool's reserve, or an event-gated webhook tick that no event named a repository on and whose last whole read is under GRAPHQL_SWEEP_MINUTES old (`pacedSkips`, `unreadLanes`). Nothing was refused and the gate exits PACED (4), not PARTIAL (3); 663 consecutive ticks of it were offered to orchestrator as a fault on 2026-10-14/15. It is a position reading, the twin of the version banner and the checkout lines. The REFUSED form is NOT allowlisted and prints a different line: `PARTIAL: could not read ...` from the gate and `one lane could not be read; see the gate's stderr` from the tick, which a refusal in ANY lane still produces, paced lanes alongside or not."
+    },
+    {
       "pattern": "^aNign-work-tick\\.service: Consumed ",
       "reason": "systemd's per-run resource accounting line, written after every tick."
     }

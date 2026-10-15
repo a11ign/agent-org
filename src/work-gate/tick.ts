@@ -795,10 +795,18 @@ export function outageThisTick({ prs, readyRows, promotableRows, chairmanBlocked
 
 /**
  * SAY WHICH LANES WENT UNREAD AND END THE TICK `PARTIAL` -- the orders already printed stay real, and none is dropped.
+ *
+ * `refused` and `paced` are the split `tickLanes` holds (agent-org#1414). A tick whose every unread lane was SKIPPED BY DESIGN (`paced`) says so and exits `PACED`,
+ * because "could not read" about a lane nobody asked is a fault that never clears; one refused lane keeps the `PARTIAL` wording and code, whatever else was paced.
  */
-export function exitPartial(unread: string[], delivered: number): never {
-  process.stderr.write(`PARTIAL: could not read ${unread.join(" and ")}. `
-    + `The ${delivered} order(s) above are real; ${unread.length === 1 ? "that lane was" : "those lanes were"} NOT examined and may hold work.\n`);
+export function exitPartial({ refused, paced }: { refused: string[]; paced: string[]; }, delivered: number): never {
+  const unread = [...refused, ...paced];
+  const lanes = `${unread.length === 1 ? "that lane was" : "those lanes were"} NOT examined and may hold work.`;
+  if (refused.length === 0) {
+    process.stderr.write(`PARTIAL: ${paced.length} lane(s) skipped by pacing, none refused: ${paced.join(" and ")}. The ${delivered} order(s) above are real; ${lanes}\n`);
+    process.exit(EXIT.PACED);
+  }
+  process.stderr.write(`PARTIAL: could not read ${unread.join(" and ")}. The ${delivered} order(s) above are real; ${lanes}\n`);
   process.exit(EXIT.PARTIAL);
 }
 

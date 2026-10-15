@@ -38,8 +38,11 @@ import { NOT_STARTABLE, PARKED_LABEL, REVIEWER_STATE_DIR, ROW_BLOCKED_BY, ROW_LA
  * `3` PARTIAL exists because this asks about several lanes at once (ADR 0037). One unreadable lane must
  * not void the other's orders and must not be reported as quiet either: the orders on stdout are real and
  * the lane that could not be read is NAMED on stderr.
+ *
+ * `4` PACED is PARTIAL's twin for a tick whose ONLY unread lanes were skipped BY DESIGN (`gate.graphqlPacing`, or no event named the repository):
+ * nothing was refused, so the tick must not say a lane "could not be read" (agent-org#1414). A single refused lane is still `3`.
  */
-export const EXIT = { QUIET: 0, WORK: 1, CANNOT_ASK: 2, PARTIAL: 3 };
+export const EXIT = { QUIET: 0, WORK: 1, CANNOT_ASK: 2, PARTIAL: 3, PACED: 4 };
 
 /** Where the drain marker lives. `touch` it to open a window; `rm` it to close one. */
 export const DRAIN_MARKER = stateEntryPath("drain");

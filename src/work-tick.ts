@@ -72,7 +72,7 @@ export const EXIT = { QUIET: 0, ATTENTION: 1, CANNOT_ASK: 2, CRASH: 70 };
 const CRASH_PRELOAD = ["--import", new URL("./lib/crash-exit.ts", import.meta.url).href];
 
 /** work-gate's own contract, named here so the mapping below reads as a mapping and not as magic numbers. */
-export const GATE = { QUIET: 0, WORK: 1, CANNOT_ASK: 2, PARTIAL: 3 };
+export const GATE = { QUIET: 0, WORK: 1, CANNOT_ASK: 2, PARTIAL: 3, PACED: 4 };
 
 /**
  * THE GATE'S WALL BUDGET, in ms (a11ign/agent-org#1080). The gate was spawned with no deadline, so one slow read spent the unit's whole `TimeoutStartSec`
@@ -89,7 +89,7 @@ export const WAKE_ROOM_MS = 240_000;
 /**
  * What the tick should do next, given how the gate exited.
  *
- * `PARTIAL` (3) PROCEEDS, and that is the interesting one. The gate reports PARTIAL when one lane answered
+ * `PARTIAL` (3) PROCEEDS, and that is the interesting one. `PACED` (4) is its twin for a gate whose only unread lanes were skipped by design, and proceeds too. The gate reports PARTIAL when one lane answered
  * and the other did not: the orders it printed are real and worth delivering, and the unread lane is
  * reported rather than waited for. Holding real work back because a different queue was unreachable would
  * be the quiet-org reading in the other direction.
@@ -117,6 +117,8 @@ export function afterGate(code: number, { queued = 0 }: { queued?: number; } = {
   }
   if (code === GATE.WORK) return { deliver: true };
   if (code === GATE.PARTIAL) return { deliver: true, why: "one lane could not be read; see the gate's stderr" };
+  // agent-org#1414: every unread lane was skipped BY DESIGN (pacing, or no event named it) and none was refused: a position reading, not a fault.
+  if (code === GATE.PACED) return { deliver: true, why: "lane(s) skipped by pacing, none refused; see the gate's stderr" };
   return { deliver: false, exit: EXIT.CANNOT_ASK,
     why: `work-gate exited ${code} -- nothing was examined, so NOTHING was woken. This is not a quiet org.` };
 }

@@ -567,10 +567,13 @@ function tickHealthNow(): TickHealth | null {
  * design (paced, or no event named it) is not blind, so it is not passed to the canary. The PARTIAL line names every lane the tick did not read, the skipped ones
  * included, so a skip is never reported clean. Both come from the same reads here, so nothing in `main` chooses between them.
  */
-export function tickLanes({ prs, readyRows, others, pacedSkips, ...canary }: Omit<Parameters<typeof machineryCanaryNow>[0], "unread"> & { prs: any[] | null; readyRows: any[] | null; others: { refused: string[]; }[]; pacedSkips: { refused: string[]; }[]; }): { orders: any[]; unread: string[]; } {
+export function tickLanes({ prs, readyRows, others, pacedSkips, ...canary }: Omit<Parameters<typeof machineryCanaryNow>[0], "unread"> & { prs: any[] | null; readyRows: any[] | null; others: { refused: string[]; }[]; pacedSkips: { refused: string[]; }[]; }): { orders: any[]; unread: string[]; refused: string[]; paced: string[]; } {
+  const refused = unreadLanes({ prs, readyRows, others });
+  const paced = pacedSkips.flatMap((skip) => skip.refused);
   return {
-    orders: machineryCanaryNow({ ...canary, unread: unreadLanes({ prs, readyRows, others }) }),
+    orders: machineryCanaryNow({ ...canary, unread: refused }),
     unread: unreadLanes({ prs, readyRows, others: [...others, ...pacedSkips] }),
+    refused, paced,
   };
 }
 
@@ -718,8 +721,8 @@ function main() {
   // leaves a set silently is the defect both filters exist to fix.
   endGateSpan("reportWithheld", reportWithheld({ drain, blocked: [...shelvedHere, ...partitionFleetBatch(allOpen).waiting, ...others.flatMap((tick) => tick.blocked)] }));
 
-  const { unread } = lanes;
-  if (unread.length > 0) exitPartial(unread, emitted.length);
+  const { unread, refused, paced } = lanes;
+  if (unread.length > 0) exitPartial({ refused, paced }, emitted.length);
   // PERFORMED COUNTS AS WORK. A tick that marked a draft ready did something, and exiting QUIET would
   // report it as an idle org to every reader of this exit code.
   process.exit(emitted.length > 0 || performed > 0 ? EXIT.WORK : EXIT.QUIET);
