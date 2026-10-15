@@ -358,13 +358,14 @@ test("#4900: FALLBACK: a mint that fails sends the call through as the account, 
 
 // #1347: THE REVIEWER IS REFUSED, NOT FALLEN BACK. A reviewer's call sent as the account counts as the account's approval on `main` (agent-org#1242),
 // so when its App's token cannot be minted the call is refused: non-zero, nothing sent, the reason on stderr. Every other role keeps the fallback.
-test("#1347: a reviewer whose App token cannot be minted is REFUSED: nothing is sent, the reason is on stderr; another role still falls back", () => {
+// #1399: the refusal is behind `AGENT_ORG_REVIEWER_REFUSAL=1`, OFF by default; this test runs with it ON.
+test("#1347 (switch on by #1399): a reviewer whose App token cannot be minted is REFUSED: nothing is sent, the reason is on stderr; another role still falls back", () => {
   const reviewerApp = { mode: "github-apps", appId: "id-reviewer", keyPath: "/nonexistent-4900/reviewer.pem" };
   const h = host(wrapperFor({ ...THREE_APPS, reviewer: reviewerApp }));
   const roles = "scheduler workers managers reviewer";
   const cause = "app token: key: /keys/reviewer.pem cannot be read";
   const reviewerDir = reviewerConfig(h);
-  const asReviewer = { AGENT_ORG_GH_ROLE: "reviewer", GH_CONFIG_DIR: reviewerDir, A11Y_APP_ROLES: roles, MINT_FAIL: cause, TMPDIR: h.root };
+  const asReviewer = { AGENT_ORG_GH_ROLE: "reviewer", GH_CONFIG_DIR: reviewerDir, A11Y_APP_ROLES: roles, MINT_FAIL: cause, TMPDIR: h.root, AGENT_ORG_REVIEWER_REFUSAL: "1" };
   const refused = h.run(asReviewer, "pr", "review", "42", "--approve");
   assert.deepEqual([refused.status, refused.stdout], [1, ""], "REFUSED: non-zero, and the stub that would have sent the call never ran");
   assert.match(refused.stderr, /^gh: refused: the reviewer call is NOT sent as the account\. app-token reviewer failed for App id-reviewer: app token: key: \/keys\/reviewer\.pem cannot be read \(exit 1\)\n$/,
