@@ -17,14 +17,14 @@ import { claimStallTick } from "./work-gate.ts";
 import { claimRecordComment } from "./row-claim.ts";
 import { ANSWER_PREFIX, SESSION_PREFIX } from "./project-vocabulary.ts";
 import { COMMANDS } from "./commands.ts";
-import { STOPPED_CLAIMANT_MINUTES } from "./idle-claimant.ts";
+import { STOPPED_CLAIMANT_MINUTES, VERIFIED_CLOSE_MINUTES, verifiedCloseOrder } from "./idle-claimant.ts";
 import { readClaim, type ClaimFacts } from "./claim-stall.ts";
 import { TRACKER } from "./ticket-port/github-adapter.ts";
 import type { BlockerWriter, ItemRef } from "./ticket-port/port.ts";
 import {
   BLOCKED_TOLD_FILE, DECLARED_STATES, DEFAULT_ANSWERER, WORKER_STATE_DIR, applyBlocked, blockedInstruction, blockedToTell, declarationReading,
-  ghRowLook, lastDeliveredTo, main, parseDeclaration, readDeclarations, resolveBlockedRow, rulingOn, splitArgs, tellBlocked, writeDeclaration, type ClaimContext,
-  type Declaration, type RowComment, type RowFact, type RowLook,
+  closingComment, ghRowLook, lastDeliveredTo, main, parseDeclaration, parseMet, readDeclarations, resolveBlockedRow, resolveDone, rulingOn, splitArgs, tellBlocked, writeDeclaration, type ClaimContext,
+  type Declaration, type RowComment, type RowFact, type RowLook, type DoneWhenReading, type DeclarationReading,
 } from "./worker-state.ts";
 import { MANAGER_SEATS } from "./decided-by.ts";
 
@@ -66,7 +66,8 @@ test("each malformed call is REFUSED BY NAME (twin: the well-formed call beside 
   assert.equal(refusalOf("waiting-ci", "soon"), "bad-pr");
   assert.equal(refusalOf("waiting-ci", "0"), "bad-pr");
   assert.equal(refusalOf("waiting-ci", "12", "13"), "unexpected-argument");
-  assert.equal(refusalOf("done", "12"), "unexpected-argument", "`done` takes nothing: a stray pull request is not silently dropped");
+  assert.equal(refusalOf("done", "12"), "missing-met", "`done <row>` with no reading is not a close (agent-org#1536)");
+  assert.equal(refusalOf("done", "12", "13"), "unexpected-argument", "`done` takes one row: a stray argument is not silently dropped");
   assert.equal(refusalOf("blocked"), "missing-row");
   assert.equal(refusalOf("blocked", "row-one", "why"), "bad-row");
   assert.equal(refusalOf("blocked", "460"), "missing-reason");
@@ -497,6 +498,7 @@ const blockedOn = (ref: string) => {
 };
 const resolve = (ref: string, table: Record<string, RowFact>) => resolveBlockedRow(blockedOn(ref), { trackers: TRACKERS, look: rowsOf(table), sessionLabel: CLAIM_LABEL });
 const refusalNamed = (result: ReturnType<typeof resolve>): { refused: string; why: string } | null => ("refused" in result ? result.refused : null);
+const refusalOfClose = (result: ReturnType<typeof resolveDone>): { refused: string; why: string } | null => ("refused" in result ? result.refused : null);
 
 test("a bare number that is a row in two trackers is read from the CLAIM: the one carrying this session's label, never the first tracker's", () => {
   const result = resolve("460", BOTH);
@@ -678,11 +680,11 @@ test("no row of that number, and a row that could not be read, are REFUSED by na
   assert.equal(refusalNamed(noComments)?.refused, "unreadable-row", "a reply with no comments field refuses the row: no ruling could be read, so nothing is labelled");
 });
 
-test("`ghRowLook`: an issue read as its state, labels and comments in ONE call, no such issue as null, and any other failure thrown", () => {
+test("`ghRowLook`: an issue read as its state, labels, comments and body in ONE call, no such issue as null, and any other failure thrown", () => {
   const answering = (reply: string | Error) => (): string => { if (reply instanceof Error) throw reply; return reply; };
-  const commented = '{"state":"CLOSED","labels":[{"name":"x"}],"comments":[{"id":"IC_1","url":"u","body":"b","createdAt":"t","author":{"login":"a"}}]}';
-  assert.deepEqual(ghRowLook(answering(commented))("a11ign/a11ign", 460), { state: "CLOSED", labels: ["x"], comments: [{ id: "IC_1", url: "u", body: "b", createdAt: "t" }] });
-  assert.deepEqual(ghRowLook(answering('{"state":"OPEN","labels":[],"comments":[]}'))("a11ign/a11ign", 460), { state: "OPEN", labels: [], comments: [] });
+  const commented = '{"state":"CLOSED","body":"B","labels":[{"name":"x"}],"comments":[{"id":"IC_1","url":"u","body":"b","createdAt":"t","author":{"login":"a"}}]}';
+  assert.deepEqual(ghRowLook(answering(commented))("a11ign/a11ign", 460), { state: "CLOSED", labels: ["x"], comments: [{ id: "IC_1", url: "u", body: "b", createdAt: "t" }], body: "B" });
+  assert.deepEqual(ghRowLook(answering('{"state":"OPEN","labels":[],"comments":[]}'))("a11ign/a11ign", 460), { state: "OPEN", labels: [], comments: [], body: "" });
   assert.throws(() => ghRowLook(answering('{"state":"OPEN","labels":[]}'))("a11ign/a11ign", 460), /no comments field/, "a reply with no comments field THROWS: no comments would read as no ruling, which fails open");
   const missing = Object.assign(new Error("gh failed"), { stderr: "GraphQL: Could not resolve to an Issue with the number of 9999." });
   assert.equal(ghRowLook(answering(missing))("a11ign/a11ign", 9999), null);
@@ -694,4 +696,125 @@ test("a `blocked` declaration for the row of ANOTHER repository does not excuse 
   assert.equal(declarationReading(own, ctx({ answersOwed: [DEFAULT_ANSWERER], repo: "a11ign/agent-org" })).kind, "excused");
   assert.equal(declarationReading(own, ctx({ answersOwed: [DEFAULT_ANSWERER], repo: "a11ign/a11ign" })).kind, "lapsed", "row 460 of a11ign/a11ign is another row");
   assert.equal(declarationReading({ ...own, repo: undefined }, ctx({ answersOwed: [DEFAULT_ANSWERER], repo: "a11ign/a11ign" })).kind, "excused", "a declaration written before the repository was recorded is read as before");
+});
+
+// --- `done` closes a row only on a reading (agent-org#1536) ------------------------------------------------------------
+
+const DONE_WHEN = ["the gate reads the reading", "the close comment names each item"];
+const READ_AT = (item: number) => ({ item, comment: `https://github.com/a11ign/agent-org/issues/1536#issuecomment-${item}` });
+const readingCtx = (over: Partial<ClaimContext> = {}): ClaimContext => ctx({ nothing: true, doneWhen: DONE_WHEN, ...over });
+const doneRead = (met?: DoneWhenReading[]): Declaration => decl({ state: "done", pr: undefined, ...(met === undefined ? {} : { row: 460, met }) });
+const whyOf = (reading: DeclarationReading): string => ("why" in reading ? reading.why : "");
+
+test("POSITIVE CONTROL (a): `done` on a `Claimed-nothing:` claim with every Done-when item read as met is EXCUSED, and the reading is named (twin: no reading named is lapsed)", () => {
+  assert.deepEqual(declarationReading(doneRead([READ_AT(1), READ_AT(2)]), readingCtx()), { kind: "excused", state: "done", why: "the reading is recorded and the row is closed" });
+  assert.equal(declarationReading(doneRead(), readingCtx()).kind, "lapsed", "the twin: the same `done` with no reading says nothing was read, so it is not an excuse");
+});
+
+test("POSITIVE CONTROL (b): one Done-when item left unmet is LAPSED, naming the item (twin: the same reading with both items is excused)", () => {
+  const one = declarationReading(doneRead([READ_AT(1)]), readingCtx());
+  assert.equal(one.kind, "lapsed");
+  assert.match(whyOf(one), /Done-when 2 \(the close comment names each item\)/);
+  assert.doesNotMatch(whyOf(one), /Done-when 1 /, "item 1 is read, so it is not named");
+  assert.equal(declarationReading(doneRead([READ_AT(1), READ_AT(2)]), readingCtx()).kind, "excused");
+});
+
+test("NEGATIVE CONTROL (c): `done` on a claim WITH a pull request reads exactly as before, and a reading does not stand in for the merge (twin: the merged one is excused)", () => {
+  const open = readingCtx({ nothing: false, ownPrs: [{ number: 9001 }] });
+  const withPr = declarationReading(doneRead([READ_AT(1), READ_AT(2)]), open);
+  assert.equal(withPr.kind, "lapsed");
+  assert.equal(whyOf(withPr), "the row is still open and no pull request of it has merged", "the same sentence as today");
+  assert.equal(declarationReading(doneRead([READ_AT(1), READ_AT(2)]), readingCtx({ nothing: false, mergedPr: { number: 9001 } })).kind, "excused");
+  assert.equal(declarationReading(doneRead([READ_AT(1), READ_AT(2)]), readingCtx({ nothing: true, mergedPr: null })).kind, "excused", "the reading's own claim, not a merge, is what excuses it");
+});
+
+test("the reading is for the row the claim holds: a reading of ANOTHER row lapses, and a claim with no Done-when items has nothing to read as met", () => {
+  const other = { ...doneRead([READ_AT(1), READ_AT(2)]), row: 999 };
+  assert.match(whyOf(declarationReading(other, readingCtx())), /it names #999, and the row you hold is #460/);
+  assert.match(whyOf(declarationReading(doneRead([READ_AT(1)]), readingCtx({ doneWhen: [] }))), /has no Done-when items/);
+});
+
+test("`done <row> --met=<item>:<comment>,...` is accepted; the bare `done` is as before; each malformed form is REFUSED by name (twin: the well-formed one is accepted)", () => {
+  const refusedAs = (result: ReturnType<typeof parseDeclaration>): string | null => ("refused" in result ? result.refused.refused : null);
+  const read = parseDeclaration(["done", "1536"], { session: "worker-9", now: T0, met: "1:IC_1,2:IC_2" });
+  assert.ok("declaration" in read);
+  assert.deepEqual(read.declaration, { session: "worker-9", state: "done", at: T0, row: 1536, met: [{ item: 1, comment: "IC_1" }, { item: 2, comment: "IC_2" }] });
+  const keyed = parseDeclaration(["done", "agent-org#1536"], { session: "worker-9", now: T0, met: "1:IC_1" });
+  assert.ok("declaration" in keyed && keyed.declaration.rowKey === "agent-org" && keyed.declaration.row === 1536);
+  assert.deepEqual(parseDeclaration(["done"], { session: "worker-9", now: T0 }), { declaration: { session: "worker-9", state: "done", at: T0 } }, "the bare `done` is unchanged");
+  assert.equal(refusedAs(parseDeclaration(["done", "1536"], { session: "worker-9", now: T0 })), "missing-met", "a row with no reading is not a close");
+  assert.equal(refusedAs(parseDeclaration(["done", "1536"], { session: "worker-9", now: T0, met: "1" })), "bad-met");
+  assert.equal(refusedAs(parseDeclaration(["done", "1536"], { session: "worker-9", now: T0, met: "0:IC_1" })), "bad-met", "items start at 1");
+  assert.equal(refusedAs(parseDeclaration(["done", "1536"], { session: "worker-9", now: T0, met: "1:IC_1,1:IC_2" })), "bad-met", "an item is read once");
+  assert.equal(refusedAs(parseDeclaration(["done"], { session: "worker-9", now: T0, met: "1:IC_1" })), "missing-row");
+  assert.equal(refusedAs(parseDeclaration(["done", "1536", "extra"], { session: "worker-9", now: T0, met: "1:IC_1" })), "unexpected-argument");
+  assert.equal(refusedAs(parseDeclaration(["done", "x"], { session: "worker-9", now: T0, met: "1:IC_1" })), "bad-row");
+  assert.equal(refusedAs(parseDeclaration(["waiting-ci", "9001"], { session: "worker-9", now: T0, met: "1:IC_1" })), "unexpected-argument", "`--met` is `done`'s and no other state's");
+  assert.deepEqual(parseMet("1:https://x/y#issuecomment-1"), { met: [{ item: 1, comment: "https://x/y#issuecomment-1" }] }, "the URL's own colon stays in the comment");
+});
+
+test("`--met` is one of the flags, in both spellings (twin: a fifth flag is still unknown)", () => {
+  assert.deepEqual(splitArgs(["done", "1536", "--met=1:IC_1"]).flags, { met: "1:IC_1" });
+  assert.deepEqual(splitArgs(["done", "1536", "--met", "1:IC_1"]).flags, { met: "1:IC_1" });
+  assert.deepEqual(splitArgs(["done", "--color=red"]).unknown, ["--color=red"]);
+});
+
+// The row a `done --met` closes, as `gh issue view` reads it: one tracker, held by `worker-agent-org-1536` under `Claimed-nothing:`.
+const claimedNothing = (at = T0 - 60 * MIN): RowComment => ({ id: "IC_0", url: "u0", body: claimRecordComment({ session: "worker-agent-org-1536", nothing: "no pull request: the reading closes it" }), createdAt: new Date(at).toISOString() });
+const readsOf = (comments: RowComment[], body = "") => byNumber({ "a11ign/a11ign#1536": { state: "OPEN", labels: [CLAIM_LABEL], body, comments } });
+const reads = [{ id: "IC_1", url: "u1", body: "VERIFIED: the gate reads it", createdAt: new Date(T0 - 20 * MIN).toISOString() }, { id: "IC_2", url: "u2", body: "VERIFIED: the close names it", createdAt: new Date(T0 - 19 * MIN).toISOString() }];
+const closeWith = (met: string) => parseDeclaration(["done", "1536"], { session: "worker-agent-org-1536", now: T0, met });
+const resolveClose = (met: string, comments: RowComment[]) => {
+  const parsed = closeWith(met);
+  assert.ok("declaration" in parsed);
+  return resolveDone(parsed.declaration, { trackers: TRACKERS, look: readsOf(comments), sessionLabel: CLAIM_LABEL, doneWhenOf: () => DONE_WHEN });
+};
+
+test("POSITIVE CONTROL: a row claimed `Claimed-nothing:` closes on a reading that names every Done-when item and the comment holding it (twin: the same reading with item 2 left out is refused, naming it)", () => {
+  const closed = resolveClose("1:IC_1,2:IC_2", [claimedNothing(), ...reads]);
+  assert.ok("declaration" in closed, JSON.stringify(closed));
+  assert.deepEqual(closed.declaration.met, [{ item: 1, comment: "u1" }, { item: 2, comment: "u2" }], "the comment URLs are what the closing comment cites");
+  assert.equal(closed.declaration.repo, "a11ign/a11ign");
+  const partial = resolveClose("1:IC_1", [claimedNothing(), ...reads]);
+  assert.equal(refusalOfClose(partial)?.refused, "unmet-done-when");
+  assert.match(refusalOfClose(partial)?.why ?? "", /Done-when 2 \(the close comment names each item\) has no reading/);
+});
+
+test("NEGATIVE CONTROLS: a close is REFUSED by name when the claim has a pull request, when a comment named is not on the row, and when an item is not an item (twin: each accepted form above)", () => {
+  assert.ok("declaration" in resolveClose("1:IC_1,2:IC_2", [claimedNothing(), ...reads]), "the control: this one is accepted");
+  const withPr = byNumber({ "a11ign/a11ign#1536": { state: "OPEN", labels: [CLAIM_LABEL], body: "", comments: [{ ...claimedNothing(), body: claimRecordComment({ session: "worker-agent-org-1536", branch: "agent/x", worktree: "/w" }) }, ...reads] } });
+  const parsed = closeWith("1:IC_1,2:IC_2");
+  assert.ok("declaration" in parsed);
+  assert.equal(refusalOfClose(resolveDone(parsed.declaration, { trackers: TRACKERS, look: withPr, sessionLabel: CLAIM_LABEL, doneWhenOf: () => DONE_WHEN }))?.refused, "no-claim");
+  assert.equal(refusalOfClose(resolveClose("1:IC_1,2:IC_9", [claimedNothing(), ...reads]))?.refused, "unknown-comment", "IC_9 is not a comment on the row");
+  assert.equal(refusalOfClose(resolveClose("1:IC_1,3:IC_2", [claimedNothing(), ...reads]))?.refused, "bad-met", "the row has two items");
+  assert.equal(refusalOfClose(resolveClose("1:IC_1,2:IC_2", []))?.refused, "no-claim", "no claim at all is not a reading's to close");
+});
+
+test("the closing comment names each Done-when item and the comment that holds its reading, so the close can be checked", () => {
+  const text = closingComment("worker-agent-org-1536", DONE_WHEN, [READ_AT(1), READ_AT(2)]);
+  assert.match(text, /^Closed by `worker-agent-org-1536`/);
+  assert.match(text, /1\. the gate reads the reading — read as met in https:\/\/github\.com\/a11ign\/agent-org\/issues\/1536#issuecomment-1$/m);
+  assert.match(text, /2\. the close comment names each item — read as met in https:\/\/github\.com\/a11ign\/agent-org\/issues\/1536#issuecomment-2$/m);
+});
+
+// The detector: a claimant idle on an `in-progress` row whose own VERIFIED note has stood for VERIFIED_CLOSE_MINUTES orders the row closed.
+
+const noteAt = (minutesBefore: number, body = "VERIFIED: both items hold", login = "claimant-account") => ({ url: `note-${minutesBefore}`, body, createdAt: new Date(T0 - minutesBefore * MIN).toISOString(), author: { login } });
+const closeFacts = (over: Partial<Parameters<typeof verifiedCloseOrder>[0]> = {}) => ({ row: 1536, labels: ["in-progress"], claimant: "worker-agent-org-1536", claim: { at: T0 - 60 * MIN, author: "claimant-account" }, comments: [noteAt(16)], idleSince: T0 - 30 * MIN, ...over });
+
+test("POSITIVE CONTROL (d): an idle claimant's VERIFIED note 16 minutes old orders the row closed, to `product-manager`, naming the note (twin: at 14 minutes it does not)", () => {
+  assert.equal(VERIFIED_CLOSE_MINUTES, 15);
+  const order = verifiedCloseOrder(closeFacts(), { now: T0 });
+  assert.deepEqual(order && { kind: order.kind, row: order.row, to: order.to, note: order.note, claimant: order.claimant }, { kind: "close", row: 1536, to: "product-manager", note: "note-16", claimant: "worker-agent-org-1536" });
+  assert.equal(verifiedCloseOrder(closeFacts({ comments: [noteAt(14)] }), { now: T0 }), null, "the twin: 14 minutes has not stood long enough");
+});
+
+test("the detector's other conditions each hold it back: the row is not in progress, the claimant is not idle, the note is not the claimant's, is older than the claim, or does not say VERIFIED (twins: each accepted)", () => {
+  assert.equal(verifiedCloseOrder(closeFacts({ labels: [] }), { now: T0 }), null, "a row that is not in progress is not the gate's to close");
+  assert.equal(verifiedCloseOrder(closeFacts({ idleSince: null }), { now: T0 }), null, "a claimant that is working is not idle");
+  assert.equal(verifiedCloseOrder(closeFacts({ comments: [noteAt(16, "VERIFIED", "someone-else")] }), { now: T0 }), null, "another account's note is not the claimant's");
+  assert.equal(verifiedCloseOrder(closeFacts({ comments: [noteAt(70)] }), { now: T0 }), null, "a note from before the claim is an earlier claim's");
+  assert.equal(verifiedCloseOrder(closeFacts({ comments: [noteAt(16, "looks good")] }), { now: T0 }), null, "a note that says nothing of verified is not a reading");
+  assert.ok(verifiedCloseOrder(closeFacts({ comments: [noteAt(16, "Done-when items 1 and 2 met")] }), { now: T0 }), "the Done-when reading counts too");
 });

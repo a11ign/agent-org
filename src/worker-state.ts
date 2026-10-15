@@ -17,6 +17,7 @@
 // because `claim-stall.ts` and the gate import this file for the reading and must not pay for them.
 import { mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { claimRecordOf } from "./claim-record.ts";
 import { MANAGER_SEATS, decidedBy } from "./decided-by.ts";
 import { herdrRun } from "./herdr-agents.ts";
 import type { BlockerWriter } from "./ticket-port/port.ts";
@@ -34,10 +35,16 @@ export type PrRef = { number: number; repoKey?: string };
  * declared row waits on through a native `blockedBy` edge (`blocked <row> --on <n>`): no answer is owed, so it carries no `to` and no label.
  * `onKey` and `rowKey` are the spellings as typed, and are resolved away into `onRepo` and `repo` before anything is written.
  */
-export type Declaration = { session: string; state: DeclaredState; at: number; pr?: PrRef; row?: number; reason?: string; to?: string; rowKey?: string; repo?: string; on?: number; onKey?: string; onRepo?: string };
+export type Declaration = { session: string; state: DeclaredState; at: number; pr?: PrRef; row?: number; reason?: string; to?: string; rowKey?: string; repo?: string; on?: number; onKey?: string; onRepo?: string; met?: DoneWhenReading[] };
+
+/**
+ * One Done-when item read as met: `item` is its 1-based number in the row's Done-when section, and `comment` is the URL of the comment that holds the
+ * reading (the claimant's VERIFIED note, or whatever it wrote that shows the item). `done <row> --met=<n>:<comment>,...` declares these.
+ */
+export type DoneWhenReading = { item: number; comment: string };
 
 /** A refusal is NAMED, so the worker (and the test) can tell "no pull request" from "no reason" from "no such state". */
-export type Refusal = { refused: "no-state" | "unknown-state" | "missing-pr" | "bad-pr" | "missing-row" | "bad-row" | "missing-reason" | "unexpected-argument" | "no-session" | "owed-to-self" | "unknown-tracker" | "no-such-row" | "ambiguous-row" | "row-closed" | "unreadable-row" | "bad-on" | "on-closed" | "on-self"; why: string };
+export type Refusal = { refused: "no-state" | "unknown-state" | "missing-pr" | "bad-pr" | "missing-row" | "bad-row" | "missing-reason" | "unexpected-argument" | "no-session" | "owed-to-self" | "unknown-tracker" | "no-such-row" | "ambiguous-row" | "row-closed" | "unreadable-row" | "bad-on" | "on-closed" | "on-self" | "missing-met" | "bad-met" | "unknown-comment" | "no-claim" | "unmet-done-when"; why: string };
 
 /** The directory, under the host's state directory, holding one `<session>.json` per worker. One file per session, so two workers never race a write. */
 export const WORKER_STATE_DIR = "worker-state";
@@ -53,7 +60,7 @@ const PR_SHAPE = /^(?:([a-z][a-z0-9-]*))?#?(\d+)$/;
 /** A row: `460`, `#460`, or the tracker spelled in front, by its key or its `owner/name`: `agent-org#460`, `a11ign/agent-org#460`. */
 const ROW_SHAPE = /^(?:([A-Za-z0-9._/-]+)?#)?(\d+)$/;
 
-const USAGE = "usage: agent-org worker:state waiting-ci <pr> | waiting-review <pr> | done | blocked <row> <reason...> [--on=<row it waits on>] [--session=<you>] [--to=<session that owes the answer>]";
+const USAGE = "usage: agent-org worker:state waiting-ci <pr> | waiting-review <pr> | done | done <row> --met=<item>:<comment>,... | blocked <row> <reason...> [--on=<row it waits on>] [--session=<you>] [--to=<session that owes the answer>]";
 
 function prOf(word: string): PrRef | null {
   const match = PR_SHAPE.exec(word);
@@ -63,12 +70,30 @@ function prOf(word: string): PrRef | null {
 }
 
 /**
+ * PURE. `--met=1:<comment>,2:<comment>`, each item once, the comment as its id or URL (a URL's own colons stay in the comment: the item is the digits before the first).
+ * @param {string} raw @returns {{ met: DoneWhenReading[] } | { refused: Refusal }}
+ */
+export function parseMet(raw: string): { met: DoneWhenReading[] } | { refused: Refusal } {
+  const met: DoneWhenReading[] = [];
+  for (const one of raw.split(",")) {
+    const pair = /^(\d+):(.+)$/.exec(one.trim());
+    const item = Number(pair?.[1]);
+    if (pair === null || !Number.isInteger(item) || item <= 0) {
+      return { refused: { refused: "bad-met", why: `\`--met=${raw}\` is not a list of \`<item>:<comment>\` pairs, such as \`--met=1:https://github.com/<repo>/issues/460#issuecomment-1\`` } };
+    }
+    if (met.some((read) => read.item === item)) return { refused: { refused: "bad-met", why: `Done-when ${item} is read more than once in \`--met=${raw}\`: one comment holds each reading` } };
+    met.push({ item, comment: pair[2].trim() });
+  }
+  return { met };
+}
+
+/**
  * PURE. The command line (flags already removed) to a declaration, or the NAMED refusal. Nothing is written for a refusal, and `done` takes no
  * argument: a `done` with a pull request on it is refused rather than half-read, so a typo cannot declare something other than what was meant.
  * `--on` is `blocked` only, and it owes no answer, so it cannot come with `--to`: a declaration that names both would say two things about one wait.
  * @param {string[]} words positionals after the command name @param {{ session: string | null, now: number, to?: string | null, on?: string | null }} ctx
  */
-export function parseDeclaration(words: string[], { session, now, to = null, on = null }: { session: string | null; now: number; to?: string | null; on?: string | null }): { declaration: Declaration } | { refused: Refusal } {
+export function parseDeclaration(words: string[], { session, now, to = null, on = null, met = null }: { session: string | null; now: number; to?: string | null; on?: string | null; met?: string | null }): { declaration: Declaration } | { refused: Refusal } {
   const refuse = (refused: Refusal["refused"], why: string): { refused: Refusal } => ({ refused: { refused, why: `${why}\n${USAGE}` } });
   if (words.length === 0) return refuse("no-state", `no state given: say one of ${DECLARED_STATES.join(", ")}`);
   if (session === null || !SESSION_NAME_SHAPE.test(session)) return refuse("no-session", "no session: pass --session=<you>, or run from a herdr workspace the listing names");
@@ -76,8 +101,20 @@ export function parseDeclaration(words: string[], { session, now, to = null, on 
   if (!(DECLARED_STATES as readonly string[]).includes(state)) return refuse("unknown-state", `\`${state}\` is not a state: it is one of ${DECLARED_STATES.join(", ")}`);
   const base = { session, state: state as DeclaredState, at: now };
   if (on !== null && state !== "blocked") return refuse("unexpected-argument", `--on is for \`blocked\`, and \`${state}\` names no row it waits on`);
+  if (met !== null && state !== "done") return refuse("unexpected-argument", `--met is for \`done\`, and \`${state}\` reads no Done-when item`);
   if (state === "done") {
-    return rest.length === 0 ? { declaration: base } : refuse("unexpected-argument", `\`done\` takes nothing, and got \`${rest.join(" ")}\``);
+    if (met === null) {
+      if (rest.length === 0) return { declaration: base };
+      if (rest.length === 1 && ROW_SHAPE.test(rest[0])) return refuse("missing-met", `\`done ${rest[0]}\` closes a row only on a reading: name the Done-when items read as met, \`done ${rest[0]} --met=<n>:<comment>\``);
+      return refuse("unexpected-argument", `\`done\` takes nothing, and got \`${rest.join(" ")}\`: a row closed on a reading is \`done <row> --met=<n>:<comment>\``);
+    }
+    if (rest.length === 0) return refuse("missing-row", "`done --met` names the row it closes: `done <row> --met=<n>:<comment>`");
+    if (rest.length > 1) return refuse("unexpected-argument", `\`done <row>\` takes one row, and got \`${rest.join(" ")}\``);
+    const row = ROW_SHAPE.exec(rest[0]);
+    if (row === null || Number(row[2]) <= 0) return refuse("bad-row", `\`${rest[0]}\` is not a row (\`460\`, \`#460\` or \`<tracker key>#460\`)`);
+    const reads = parseMet(met);
+    if ("refused" in reads) return { refused: { refused: reads.refused.refused, why: `${reads.refused.why}\n${USAGE}` } };
+    return { declaration: { ...base, row: Number(row[2]), ...(row[1] === undefined ? {} : { rowKey: row[1] }), met: reads.met } };
   }
   if (state === "waiting-ci" || state === "waiting-review") {
     if (rest.length === 0) return refuse("missing-pr", `\`${state}\` needs the pull request it waits on: \`${state} <pr>\``);
@@ -180,7 +217,7 @@ export type PrFact = { number?: number; repoKey?: string; reviewDecision?: strin
  * the claim; `answersOwed` are the sessions an `answer:` label on the row names OTHER than the holder (`answer:<holder>` is the row waiting on the
  * holder, never the holder's wait); `turnStartedAt` is {@link lastDeliveredTo} or `null`.
  */
-export type ClaimContext = { row: number; claimedAt: number; turnStartedAt: number | null; ownPrs: PrFact[]; mergedPr: { number: number } | null; answersOwed: string[]; rowClosed?: boolean; repo?: string };
+export type ClaimContext = { row: number; claimedAt: number; turnStartedAt: number | null; ownPrs: PrFact[]; mergedPr: { number: number } | null; answersOwed: string[]; rowClosed?: boolean; repo?: string; /** The claim is `Claimed-nothing:` (no pull request): a `done` closes on a reading. */ nothing?: boolean; /** The row's Done-when item texts, in order: item N is `doneWhen[N - 1]`. */ doneWhen?: string[] };
 
 /**
  * `none`: nothing declared. `stale`: declared, but before this turn began, so it describes an earlier turn. `excused`: fresh, and what it names
@@ -200,7 +237,7 @@ const samePr = (declared: PrRef, open: PrFact): boolean => open.number === decla
  * condition it names STILL HOLD. A fresh declaration is not an excuse for ever; each state is excused only while the thing it names is true:
  *   `waiting-ci <pr>`      that pull request is open and a check on it is still running (the gate wakes the worker on the result, as it does today);
  *   `waiting-review <pr>`  it is open and its review is not a request for changes (an APPROVED one is the merge queue's, and the worker has nothing to do);
- *   `done`                 the row is closed, or a pull request of the claim merged;
+ *   `done`                 the row is closed, or a pull request of the claim merged, or (a `Claimed-nothing:` claim, which has none) every Done-when item is read as met;
  *   `blocked <row>`        that row carries the `answer:<session>` label of the session the declaration NAMES (`to`, else {@link DEFAULT_ANSWERER}); a label
  *                          owed by anyone else is a different wait and does not excuse this one, and the excuse ends the moment the label is removed.
  * @param {Declaration | null | undefined} declaration @param {ClaimContext} ctx @returns {DeclarationReading}
@@ -214,7 +251,17 @@ export function declarationReading(declaration: Declaration | null | undefined, 
   const lapsed = (why: string): DeclarationReading => ({ kind: "lapsed", state, why });
   if (state === "done") {
     if (ctx.rowClosed === true) return excused("the row is closed");
-    return ctx.mergedPr !== null ? excused(`pull request #${ctx.mergedPr.number} is merged`) : lapsed("the row is still open and no pull request of it has merged");
+    if (ctx.mergedPr !== null) return excused(`pull request #${ctx.mergedPr.number} is merged`);
+    if (ctx.nothing !== true) return lapsed("the row is still open and no pull request of it has merged");
+    // A `Claimed-nothing:` claim has no pull request to merge, so its `done` is a READING: each Done-when item named, and the comment holding it.
+    const met = declaration.met;
+    if (met === undefined) return lapsed("the claim names no pull request, and the declaration reads no Done-when item as met (`done <row> --met=<n>:<comment>`)");
+    if (declaration.row !== undefined && declaration.row !== ctx.row) return lapsed(`it names #${declaration.row}, and the row you hold is #${ctx.row}`);
+    const items = ctx.doneWhen ?? [];
+    if (items.length === 0) return lapsed(`#${ctx.row} has no Done-when items for the reading to cover`);
+    const unmet = items.map((text, i) => ({ item: i + 1, text })).filter(({ item }) => !met.some((one) => one.item === item));
+    if (unmet.length > 0) return lapsed(`the reading does not cover ${unmet.map(({ item, text }) => `Done-when ${item} (${text})`).join(", ")}`);
+    return excused("the reading is recorded and the row is closed");
   }
   if (state === "blocked") {
     if (declaration.row !== ctx.row) return lapsed(`it names #${declaration.row}, and the row you hold is #${ctx.row}`);
@@ -331,7 +378,7 @@ export function tellBlocked({ roster: listing, path, send, report = () => {}, on
 export type Gh = (args: string[]) => string;
 
 /** What `blocked` needs to know of a row it may name: whether it is open, and which labels it carries. */
-export type RowFact = { state: "OPEN" | "CLOSED"; labels: string[]; comments?: RowComment[] };
+export type RowFact = { state: "OPEN" | "CLOSED"; labels: string[]; comments?: RowComment[]; body?: string };
 
 /** One comment on a row, as `gh issue view --json comments` reads it: what the ruling check needs (`rulingOn`) and no more. */
 export type RowComment = { id: string; url: string; body: string; createdAt: string };
@@ -347,7 +394,7 @@ export type RowLook = (repo: string, number: number) => RowFact | null;
  * `role` says which of the declaration's two rows this is, so the refusal names the right one: `held` is the row the worker holds (the label would
  * wake a reader who cannot act, and it has to be reopened by a person), `on` is the row it waits on (a `blockedBy` edge to a finished row waits on nothing).
  */
-function resolveRowRef(ref: { number: number; rowKey?: string }, { trackers, look, sessionLabel, role }: { trackers: readonly { key: string; repo: string }[]; look: RowLook; sessionLabel: string; role: "held" | "on" }): { repo: string; comments: RowComment[] } | { refused: Refusal } {
+function resolveRowRef(ref: { number: number; rowKey?: string }, { trackers, look, sessionLabel, role }: { trackers: readonly { key: string; repo: string }[]; look: RowLook; sessionLabel: string; role: "held" | "on" }): { repo: string; comments: RowComment[]; body: string } | { refused: Refusal } {
   const refuse = (refused: Refusal["refused"], why: string): { refused: Refusal } => ({ refused: { refused, why } });
   const { number } = ref;
   const spell = (tracker: { key: string; repo: string }): string => `${tracker.key === "" ? tracker.repo : tracker.key}#${number}`;
@@ -381,7 +428,7 @@ function resolveRowRef(ref: { number: number; rowKey?: string }, { trackers, loo
     if (role === "on") return refuse("on-closed", `${spell(chosen.tracker)} is ${chosen.row.state}: a block on a finished row waits on nothing, so no \`blockedBy\` edge is written. Name the row that is still open, or, if the wait is on a person, declare \`blocked <row> <reason>\` without \`--on\``);
     return refuse("row-closed", `${spell(chosen.tracker)} is ${chosen.row.state}: a \`blocked\` declaration on a closed row labels a reader who cannot act. If it is the row you hold it has to be REOPENED first (\`gh issue reopen ${number} --repo ${chosen.tracker.repo}\`, by a person); if you meant another row, name it as \`<tracker key>#${number}\``);
   }
-  return { repo: chosen.tracker.repo, comments: chosen.row.comments ?? [] };
+  return { repo: chosen.tracker.repo, comments: chosen.row.comments ?? [], body: chosen.row.body ?? "" };
 }
 
 /**
@@ -405,23 +452,65 @@ export function resolveBlockedRow(declaration: Declaration, deps: { trackers: re
   return { declaration: { ...rest, repo: held.repo, onRepo: waitsOn.repo }, comments: held.comments };
 }
 
+/**
+ * THE ROW A `done <row> --met=...` CLOSES, RESOLVED, AND ITS READING CHECKED. Refused by name (nothing is written, nothing is closed) unless the held
+ * row's claim is `Claimed-nothing:` (a row with a pull request closes by its merge, never by a reading), every Done-when item is covered, and each
+ * comment named is one the row actually carries. `items` are the Done-when texts, in order, for {@link closingComment}.
+ * @param {Declaration} declaration from {@link parseDeclaration}, `done` with `met` only
+ * @param {{ trackers: readonly { key: string, repo: string }[], look: RowLook, sessionLabel: string, doneWhenOf: (body: string) => string[] }} deps
+ */
+export function resolveDone(declaration: Declaration, deps: { trackers: readonly { key: string; repo: string }[]; look: RowLook; sessionLabel: string; doneWhenOf: (body: string) => string[] }): { declaration: Declaration; items: string[] } | { refused: Refusal } {
+  const number = declaration.row as number;
+  const held = resolveRowRef({ number, rowKey: declaration.rowKey }, { ...deps, role: "held" });
+  if ("refused" in held) return held;
+  const claim = claimRecordOf(held.comments);
+  if (claim === null || !claim.nothing) {
+    return { refused: { refused: "no-claim", why: `#${number} of ${held.repo} is not claimed under \`Claimed-nothing:\`: a row with a pull request closes by that pull request's merge, and \`done <row> --met\` closes only a row claimed with no pull request` } };
+  }
+  const items = deps.doneWhenOf(held.body);
+  if (items.length === 0) return { refused: { refused: "unmet-done-when", why: `#${number} of ${held.repo} has no Done-when items, so there is nothing a reading can say is met` } };
+  const met: DoneWhenReading[] = [];
+  for (const read of declaration.met ?? []) {
+    if (read.item > items.length) return { refused: { refused: "bad-met", why: `Done-when ${read.item} is not an item: #${number} has ${items.length}` } };
+    const comment = held.comments.find((c) => c.id === read.comment || c.url === read.comment);
+    if (comment === undefined) return { refused: { refused: "unknown-comment", why: `${read.comment} is not a comment on #${number} of ${held.repo}, so it cannot hold the reading of Done-when ${read.item}` } };
+    met.push({ item: read.item, comment: comment.url });
+  }
+  const unmet = items.map((text, i) => ({ item: i + 1, text })).filter(({ item }) => !met.some((one) => one.item === item));
+  if (unmet.length > 0) return { refused: { refused: "unmet-done-when", why: `not closed: ${unmet.map(({ item, text }) => `Done-when ${item} (${text}) has no reading`).join("; ")}. A row closes only when every item is read as met` } };
+  return { declaration: { session: declaration.session, state: "done", at: declaration.at, row: number, repo: held.repo, met }, items };
+}
+
+/**
+ * The closing comment: every Done-when item, and the comment that holds its reading, so the close is the claimant's own reading and anyone can check it.
+ * @param {string} session @param {string[]} items the Done-when texts, in order @param {DoneWhenReading[]} met
+ */
+export function closingComment(session: string, items: string[], met: DoneWhenReading[]): string {
+  const lines = items.map((text, i) => {
+    const read = met.find((one) => one.item === i + 1);
+    return `${i + 1}. ${text} — read as met in ${read?.comment ?? "(no reading)"}`;
+  });
+  return [`Closed by \`${session}\`: its claim names no pull request (\`Claimed-nothing:\`), and every Done-when item is read as met:`, ...lines].join("\n");
+}
+
 /** The real {@link RowLook}: `gh issue view`, where "no such issue" is `null` and any other failure throws. @param {Gh} gh */
 export function ghRowLook(gh: Gh): RowLook {
   return (repo, number) => {
     let out: string;
     try {
-      out = gh(["issue", "view", String(number), "--repo", repo, "--json", "state,labels,comments"]);
+      out = gh(["issue", "view", String(number), "--repo", repo, "--json", "state,labels,comments,body"]);
     } catch (err: any) {
       if (/Could not resolve to an? (?:Issue|issue)|not found|no issue/i.test(String(err?.stderr ?? err?.message ?? ""))) return null;
       throw err;
     }
-    const parsed = JSON.parse(out) as { state: string; labels?: { name: string }[]; comments?: { id: string; url: string; body: string; createdAt: string }[] };
+    const parsed = JSON.parse(out) as { state: string; body?: string; labels?: { name: string }[]; comments?: { id: string; url: string; body: string; createdAt: string }[] };
     // A reply with no comments cannot answer the ruling check, and "no comments" would read as "no ruling": so it THROWS (the row is unreadable, nothing is labelled).
     if (!Array.isArray(parsed.comments)) throw new Error(`gh issue view of #${number} of ${repo} carried no comments field, so no ruling can be read`);
     return {
       state: parsed.state === "OPEN" ? "OPEN" : "CLOSED",
       labels: (parsed.labels ?? []).map((label) => label.name),
       comments: parsed.comments.map(({ id, url, body, createdAt }) => ({ id, url, body, createdAt })),
+      body: parsed.body ?? "",
     };
   };
 }
@@ -498,7 +587,7 @@ function postReason(gh: Gh, tracker: string, row: string, body: string): void {
   gh(["issue", "comment", row, "--repo", tracker, "--body", body]);
 }
 
-/** `--name=value` or `--name value` out of the flags, and the positionals left over. The command takes three flags (`--session`, `--to`, `--on`) and no others. */
+/** `--name=value` or `--name value` out of the flags, and the positionals left over. The command takes four flags (`--session`, `--to`, `--on`, `--met`) and no others. */
 export function splitArgs(argv: string[]): { words: string[]; flags: Record<string, string>; unknown: string[] } {
   const words: string[] = [];
   const flags: Record<string, string> = {};
@@ -510,7 +599,7 @@ export function splitArgs(argv: string[]): { words: string[]; flags: Record<stri
       words.push(arg);
       continue;
     }
-    if (named[1] !== "session" && named[1] !== "to" && named[1] !== "on") {
+    if (named[1] !== "session" && named[1] !== "to" && named[1] !== "on" && named[1] !== "met") {
       unknown.push(arg);
       continue;
     }
@@ -537,7 +626,7 @@ export async function main(argv: string[] = process.argv.slice(2), env: NodeJS.P
     const { resolveSender, defaultRun } = await import("./prompt-session.ts");
     session = resolveSender(defaultRun, env.HERDR_WORKSPACE_ID);
   }
-  const parsed = parseDeclaration(words, { session, now, to: flags.to ?? null, on: flags.on ?? null });
+  const parsed = parseDeclaration(words, { session, now, to: flags.to ?? null, on: flags.on ?? null, met: flags.met ?? null });
   if ("refused" in parsed) {
     process.stderr.write(`REFUSED ${parsed.refused.refused}: ${parsed.refused.why}\n`);
     return 1;
@@ -545,13 +634,36 @@ export async function main(argv: string[] = process.argv.slice(2), env: NodeJS.P
   const { declaration } = parsed;
   const { stateEntryPath } = await import("./host-config.ts");
   const dir = `${stateEntryPath("")}/${WORKER_STATE_DIR}`;
+  const { execFileSync } = await import("node:child_process");
+  const gh: Gh = (args) => execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  if (declaration.state === "done" && declaration.met !== undefined) {
+    // A ROW CLOSED ON A READING: the declaration is written FIRST (as for every state), then the row is closed with the reading as its comment. Refused
+    // before either, so a reading that does not cover every item closes nothing.
+    const { homeProjectDeclaration } = await import("./project-config.ts");
+    const { SESSION_PREFIX } = await import("./project-vocabulary.ts");
+    const { doneWhenItems } = await import("./engineer-route.ts");
+    const { closeRowWithComment } = await import("./ticket-port/close-row.ts");
+    const resolved = resolveDone(declaration, { trackers: homeProjectDeclaration().tracker, look: ghRowLook(gh), sessionLabel: `${SESSION_PREFIX}${declaration.session}`, doneWhenOf: doneWhenItems });
+    if ("refused" in resolved) {
+      process.stderr.write(`REFUSED ${resolved.refused.refused}: ${resolved.refused.why}\n`);
+      return resolved.refused.refused === "unreadable-row" ? 2 : 1;
+    }
+    const path = writeDeclaration(dir, resolved.declaration);
+    const repo = resolved.declaration.repo as string;
+    try {
+      closeRowWithComment({ row: Number(declaration.row), repo, comment: closingComment(declaration.session, resolved.items, resolved.declaration.met ?? []), run: gh });
+    } catch (err: any) {
+      process.stderr.write(`NOT CLOSED: #${declaration.row} of ${repo} could not be closed (${String(err?.stderr ?? err?.message ?? err).split("\n")[0]}). The declaration is written at ${path}.\n`);
+      return 2;
+    }
+    process.stdout.write(`DECLARED ${declaration.session}: done ${repo}#${declaration.row}\nCLOSED ${repo}#${declaration.row}: the reading is recorded and the row is closed\nwrote ${path}\n`);
+    return 0;
+  }
   const lines: string[] = [];
   let written = declaration;
   if (declaration.state === "blocked") {
-    const { execFileSync } = await import("node:child_process");
     const { homeProjectDeclaration } = await import("./project-config.ts");
     const { ANSWER_PREFIX, SESSION_PREFIX } = await import("./project-vocabulary.ts");
-    const gh: Gh = (args) => execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
     const resolved = resolveBlockedRow(declaration, { trackers: homeProjectDeclaration().tracker, look: ghRowLook(gh), sessionLabel: `${SESSION_PREFIX}${declaration.session}` });
     if ("refused" in resolved) {
       process.stderr.write(`REFUSED ${resolved.refused.refused}: ${resolved.refused.why}\n`);
