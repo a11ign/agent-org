@@ -93,6 +93,11 @@ if [ "$1 $2" = "project item-list" ] && ! item_list_limit_ok "$@"; then
   echo "gh: refusing 'gh project item-list' without '--limit' of 50 or less: listing a whole board spends the GraphQL pool every manager shares. For one row run 'agent-org row-file --promote=<n>'; for the whole board, the gate's 'board-snapshot'." >&2
   exit 1
 fi
+# (agent-org#1510) A caller's `GH_DEBUG` other than `api` would print a debug head `pool_debug` cannot read, so the listing could not be priced: refused here, before the call.
+if [ "$1 $2" = "project item-list" ] && [ -n "${GH_DEBUG:-}" ] && [ "$GH_DEBUG" != api ]; then
+  echo "gh: refusing 'gh project item-list' with GH_DEBUG=$GH_DEBUG: the listing is priced off the pool's counter in the 'api' debug head, which that setting would hide. Unset GH_DEBUG, or set it to 'api'." >&2
+  exit 1
+fi
 
 # --- #3466: THE CALL LEDGER -- which call spends which pool, so the burner can be NAMED -------------------------
 #
@@ -167,7 +172,7 @@ POOL_COUNTER
 # (agent-org#1510) `gh project` has no `-i`, so a listing's counter is read off the debug head `GH_DEBUG=api` makes gh-real print to stderr: one block per request,
 # `* Request at` to `* Request took`, with the response's `X-Ratelimit-*` headers in it. The LAST graphql response's counter is the pool's after the call. The blocks
 # are taken out of the caller's stderr only when every `Request at` has its `Request took` (`balanced`); otherwise the stderr is left as gh wrote it.
-pool_debug() { # stderr-copy
+pool_debug() { # stderr-copy strip-head(1 when the wrapper set GH_DEBUG)
   counter=$(awk -v out="$1.body" '
     function reset() { g = 0; u = ""; r = "" }
     BEGIN { printf "" > out }
@@ -177,7 +182,8 @@ pool_debug() { # stderr-copy
     { print > out }
     END { print (opens > 0 && opens == closes && !inside ? 1 : 0), lu, lr; close(out) }' "$1" 2>/dev/null)
   case $counter in
-    1\ *) mv "$1.body" "$1" 2>/dev/null
+    1\ *) [ "$2" = 1 ] && mv "$1.body" "$1" 2>/dev/null
+      [ "$2" = 1 ] || rm -f "$1.body"
       IFS=' ' read -r _ pool_used pool_reset <<POOL_DEBUG
 $counter
 POOL_DEBUG
@@ -949,18 +955,20 @@ if [ "$queue_on" = 1 ]; then
     if cat <&3 > "$stdin_copy" 2>/dev/null; then exec 3<&-; exec 3< "$stdin_copy"; else stdin_copy=; fi
   fi
 fi
-# (agent-org#1510) A `project item-list` is asked with `GH_DEBUG=api` (exported for the child alone, and unset below), so its response headers reach its stderr and
-# `pool_debug` reads the pool's counter off them. Not when the caller already set `GH_DEBUG`: its stderr is its own.
+# (agent-org#1510) A `project item-list` is priced off the debug head `GH_DEBUG=api` makes gh-real print, so its response headers reach its stderr and `pool_debug`
+# reads the pool's counter off them. The wrapper sets `GH_DEBUG=api` for the child alone (and unsets it below) only when the caller had not set it; a caller who
+# set `api` keeps its own head on stderr, and `pool_debug` reads the counter off it without taking it out.
 pool_dbg=0
-if [ "$1 $2" = "project item-list" ] && [ -z "${GH_DEBUG:-}" ]; then
+own_dbg=0
+if [ "$1 $2" = "project item-list" ]; then
   if [ -z "$errcopy" ]; then errcopy=$(mktemp "${TMPDIR:-/tmp}/gh-err.XXXXXX" 2>/dev/null) || errcopy=; fi
-  if [ -n "$errcopy" ]; then pool_dbg=1; export GH_DEBUG=api; fi
+  if [ -n "$errcopy" ]; then pool_dbg=1; if [ -z "${GH_DEBUG:-}" ]; then own_dbg=1; export GH_DEBUG=api; fi; fi
 fi
 if [ -n "$errcopy" ]; then
   if [ -n "$copy" ]; then "$GH_REAL" "$@" <&3 3<&- > "$copy" 2> "$errcopy" & else "$GH_REAL" "$@" <&3 3<&- 2> "$errcopy" & fi
 elif [ -n "$copy" ]; then "$GH_REAL" "$@" <&3 3<&- > "$copy" & else "$GH_REAL" "$@" <&3 3<&- & fi
 child=$!
-[ "$pool_dbg" = 1 ] && unset GH_DEBUG
+[ "$own_dbg" = 1 ] && unset GH_DEBUG
 exec 3<&-
 trap 'kill -TERM "$child" 2>/dev/null' TERM INT HUP
 wait "$child"
@@ -970,7 +978,7 @@ kill -0 "$child" 2>/dev/null && { wait "$child"; status=$?; }
 trap - TERM INT HUP
 [ "$cond_on" = 1 ] && etag_settle
 [ "$pool_i" = 1 ] && pool_counter "$copy"
-[ "$pool_dbg" = 1 ] && pool_debug "$errcopy"
+[ "$pool_dbg" = 1 ] && pool_debug "$errcopy" "$own_dbg"
 [ -n "$copy" ] && cat "$copy"
 [ -n "$errcopy" ] && cat "$errcopy" >&2
 ledger_record "$status" "$copy" "$ledger_a" "$ledger_b" 2>/dev/null || :

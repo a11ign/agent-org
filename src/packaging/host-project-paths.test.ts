@@ -151,8 +151,8 @@ const TODAYS_TEXT = {
 // agent-org#1500 (review) MOVED IT AGAIN, deliberately: a counter-less line waits in each window that already has its baseline, so another window's baseline no longer
 // takes it from the window it sits between. Same staleness, same remedy.
 // agent-org#1420 MOVED IT AGAIN, deliberately: the ledger's trim keeps what the pool's counter moved over each rolled-up hour as the rollup row's 8th field. Same staleness, same remedy.
-// agent-org#1510 MOVED IT AGAIN, deliberately: `gh project item-list` is refused without a `--limit` of 50 or less, and an allowed listing is priced off the pool's counter (`GH_DEBUG=api` head). Same staleness, same remedy.
-const TODAYS_GH_WRAPPER = "620e748b87d73d0dcf2676b42c7894c163cb84c65efe8ee64fcb5dcc7351eb0e";
+// agent-org#1510 MOVED IT AGAIN, deliberately: `gh project item-list` is refused without a `--limit` of 50 or less, and an allowed listing is priced off the pool's counter (`GH_DEBUG=api` head; a caller's GH_DEBUG other than `api` is refused before the call). Same staleness, same remedy.
+const TODAYS_GH_WRAPPER = "7650f55e4edf899b0c03caf4dab91999695cf207ac88f1f080ed45bc65509d60";
 // #2896 MOVED THIS ONE, deliberately: the recorded host's header says `pnpm run host:install` / `pnpm run host:check` where it said `npm run`.
 const TODAYS_LEADS_LIST = "dbca070c4bb7934ff1e9cdc9505f9edee638d98fcff10963b18d5d3a743770a2";
 

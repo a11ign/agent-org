@@ -79,12 +79,14 @@ const host = ({ used = 54, reply = "", status = 0 }: { used?: number; reply?: st
     "printf 'ITEMS\\n'",
     `exit ${status}`, ""].join("\n"), { mode: 0o755 });
   const env = { PATH: process.env.PATH ?? "", A11Y_GH_REAL: stub, GH_CONFIG_DIR: cfg, HERDR_WORKSPACE_ID: "w9", A11Y_GH_READ_CACHE: "off", A11Y_GH_LEDGER: join(cfg, "gh-calls.tsv"), A11Y_GH_LEDGER_NOW: PIN };
-  const run = (...args: string[]) => {
-    const r = spawnSync("sh", [WRAPPER, ...args], { encoding: "utf8", env, input: "", cwd: root });
+  const runWith = (extra: Record<string, string>, ...args: string[]) => {
+    const r = spawnSync("sh", [WRAPPER, ...args], { encoding: "utf8", env: { ...env, ...extra }, input: "", cwd: root });
     return { status: r.status, stderr: r.stderr, stdout: r.stdout };
   };
+  const run = (...args: string[]) => runWith({}, ...args);
   return {
     run,
+    runWith,
     env,
     ledger: env.A11Y_GH_LEDGER,
     calls: () => (existsSync(calls) ? readFileSync(calls, "utf8") : ""),
@@ -130,6 +132,27 @@ test("(b) the ledger reads the points one --limit 50 call cost: the counter's mo
   assert.ok(listing, "the listing has a line");
   assert.equal(listing.settled, "read");
   assert.equal(listing.cost, 52, "54 - 2");
+});
+
+test("(b) a caller who set GH_DEBUG=api still gets its line priced, and keeps its own debug head on stderr", () => {
+  const h = host({ used: 54 });
+  const r = h.runWith({ GH_DEBUG: "api" }, "project", "item-list", "1", "--owner", "a11ign", "--limit", "50");
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stderr, debugHead(54), "the caller's own debug head is not taken out of its stderr");
+  assert.match(h.calls(), /\nGH_DEBUG=api\n--\n/);
+  const lines = h.lines();
+  assert.equal(lines.length, 1);
+  assert.equal(lines[0][2], "graphql");
+  assert.equal(lines[0][10], "54", "the pool's counter after the call, read off the caller's own head");
+});
+
+test("(c) a caller who set GH_DEBUG to anything but api is refused before the call: its head would hide the pool's counter", () => {
+  const h = host();
+  const r = h.runWith({ GH_DEBUG: "http" }, "project", "item-list", "1", "--owner", "a11ign", "--limit", "50");
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /refusing 'gh project item-list' with GH_DEBUG=http/);
+  assert.equal(h.calls(), "", "the stub must never be reached");
+  assert.deepEqual(h.lines(), [], "a refused call writes no ledger line");
 });
 
 test("(b) the caller's stderr is kept when the debug head is not in it: a plain error passes through", () => {
