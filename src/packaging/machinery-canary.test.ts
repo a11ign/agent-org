@@ -11,11 +11,11 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { ACCOUNT_LIMIT_FILE, ACCOUNT_LIMIT_FLAG, pausedNow } from "../account-limit.ts";
+import { ACCOUNT_LIMIT_FILE, ACCOUNT_LIMIT_FLAG } from "../account-limit.ts";
 import {
   CANARY_STATE_FILE, DEFAULT_CANARY_OPTIONS, MACHINERY_SIGNALS, UNSOURCED_MACHINERY_SIGNALS, expireSuppressions, machineryCanaryTick, machineryFlagOn, parseCanaryOptions,
   parseCanaryState, withMachineryFlag, emptyCanaryState, machineryValues, type CanaryFacts, type CanaryIo, type Suppression,
@@ -43,8 +43,7 @@ function memoryIo(initial: string | null = null, { refuseIncident = false }: { r
   const filed: { title: string; body: string }[] = [];
   const logs: string[] = [];
   const io: CanaryIo = {
-    // The canary state is the store; any other file (the account record, a11ign#5497) is read from disk, as `realCanaryIo` reads it
-    read: (path) => (path.endsWith(`/${CANARY_STATE_FILE}`) ? store.text : existsSync(path) ? readFileSync(path, "utf8") : null),
+    read: () => store.text,
     write: (_path, text) => { store.text = text; },
     fileIncident: (title, body) => {
       if (refuseIncident) throw new Error("gh: HTTP 502");
@@ -207,26 +206,15 @@ test("#5497 (1c) A PAUSE THAT BEGINS INSIDE THE HOUR AFTER THE FLAG IS ON IS REA
   assert.equal(record.verdict, "reverted");
 });
 
-test("#5497 (1d) THE CANARY'S HELD MARK AGREES WITH `pausedNow` over every kind of record: the tick reads the pause its own way, and this pins that way to the gate's", () => {
-  const cases: { name: string; flagOn: boolean; record: string | null; held: boolean; }[] = [
-    { name: "flag on, an active pause", flagOn: true, record: JSON.stringify({ [homedir()]: { limitedUntil: T0 + 60 * MINUTE, seenOn: "x", text: "y" } }), held: true },
-    { name: "flag on, a pause whose reset has passed", flagOn: true, record: JSON.stringify({ [homedir()]: { limitedUntil: T0 - 1, seenOn: "x", text: "y" } }), held: false },
-    { name: "flag on, no record file", flagOn: true, record: null, held: false },
-    { name: "flag on, a record for another account", flagOn: true, record: JSON.stringify({ "/elsewhere": { limitedUntil: T0 + 60 * MINUTE, seenOn: "x", text: "y" } }), held: false },
-    { name: "flag on, a record that is not JSON", flagOn: true, record: "{not json", held: true },
-    { name: "flag on, a record that is not a pause", flagOn: true, record: JSON.stringify({ [homedir()]: { limitedUntil: "soon" } }), held: true },
-    { name: "flag OFF, an active pause", flagOn: false, record: JSON.stringify({ [homedir()]: { limitedUntil: T0 + 60 * MINUTE, seenOn: "x", text: "y" } }), held: false },
-  ];
-  for (const { name, flagOn, record, held } of cases) {
-    const dir = tmpDir("machinery-canary-");
-    if (record !== null) writeFileSync(join(dir, ACCOUNT_LIMIT_FILE), record);
-    const h = memoryIo(JSON.stringify(flagOn ? withMachineryFlag(emptyCanaryState(), { name: ACCOUNT_LIMIT_FLAG, on: true, signals: [] }) : emptyCanaryState()));
-    const before = h.state();
-    machineryCanaryTick({ now: T0, facts: facts(), dir, options: OPTIONS, io: h.io });
-    const marked = h.state().samples.at(-1)?.held === true;
-    assert.equal(marked, held, `${name}: the tick's held mark`);
-    assert.equal(pausedNow(T0, dir, before) !== null, marked, `${name}: pausedNow agrees`);
-  }
+test("#5497 (1d) AN UNREADABLE ACCOUNT RECORD HOLDS THE HOUR, the gate's fail-closed rule: a sample taken while the file cannot be read is held, and a flag OFF holds nothing", () => {
+  const dir = tmpDir("machinery-canary-");
+  writeFileSync(join(dir, ACCOUNT_LIMIT_FILE), "{not json");
+  const h = memoryIo(JSON.stringify(withMachineryFlag(emptyCanaryState(), { name: ACCOUNT_LIMIT_FLAG, on: true, signals: [] })));
+  machineryCanaryTick({ now: T0, facts: facts(), dir, options: OPTIONS, io: h.io });
+  assert.equal(h.state().samples.at(-1)?.held, true, "flag on, the record cannot be read: held");
+  const off = memoryIo(JSON.stringify(emptyCanaryState()));
+  machineryCanaryTick({ now: T0, facts: facts(), dir, options: OPTIONS, io: off.io });
+  assert.deepEqual(off.state().samples.filter((sample) => sample.held), [], "flag off: no sample is held, whatever the file says");
 });
 
 test("#5100 (3) A HELD ORDER OLDER THAN 15 MINUTES IS DELIVERED, with the reason and the original order", () => {

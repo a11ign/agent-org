@@ -87,6 +87,8 @@ import { openIncidentsOf } from "./ticket-port/open-incidents.ts";
 import { closeIncident, closedIncidentsOf, createIncident, jobLogOf } from "./ticket-port/release-incidents.ts";
 // A LEAF too (it imports `newest-check-run.ts` and `pr-hold-state.ts`, which import nothing): the ONE decider of what counts as red.
 import { brokenChecks } from "./red-pr.ts";
+// A LEAF too (`node:*` only): the account pause record, read here and by `account-limit.ts` (a11ign#5497), so the canary holds the hour the gate paused.
+import { ACCOUNT_LIMIT_FLAG, pauseRecorded } from "./account-limit-record.ts";
 // A LEAF too: the closed grammar of what a declared wait is waiting FOR (#2996), and the two ages that bound how long one may stand unexplained.
 import { MANUAL_WAIT_HOURS, PARKED_LABEL, STALE_WAIT_GRACE_MINUTES, isItemWait, namedDoneWhens, parseWaits, pastGrace } from "./wait-condition.ts";
 import { holdersOf } from "./pr-hold-state.ts";
@@ -2570,31 +2572,6 @@ function advance({ state, facts, now, options, held }: { state: CanaryState; fac
 }
 
 /**
- * Whether the account pause holds Claude work at `now` (a11ign#5497), read the way `pausedNow` reads it in account-limit.ts, written out here: account-limit.ts
- * imports this module, and the messaging tools' import graph breaks when this one reaches it back (the prune does the same for `machineryFlagOn`). Flag OFF holds
- * nothing; a record that is absent holds nothing; a record that cannot be read holds (fail closed); a record whose reset has passed holds nothing. The flag is read
- * from `state`, the state the tick starts with, so it cannot be unknown here. The test holds this equal to `pausedNow` over the same fixtures.
- */
-function accountPauseHolds({ now, state, io, dir }: { now: number; state: CanaryState; io: CanaryIo; dir: string; }): boolean {
-  if (!machineryFlagOn(state, ACCOUNT_LIMIT_FLAG_NAME)) return false;
-  const text = io.read(`${dir}/${ACCOUNT_LIMIT_FILE_NAME}`);
-  if (text === null) return false;
-  let parsed: unknown;
-  try { parsed = JSON.parse(text); } catch { return true; }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return true;
-  const limits = parsed as Record<string, unknown>;
-  if (!Object.values(limits).every((limit) => isAccountLimit(limit))) return true;
-  const limit = limits[homedir()] as { limitedUntil: number } | undefined;
-  return limit !== undefined && limit.limitedUntil > now;
-}
-const ACCOUNT_LIMIT_FLAG_NAME = "gate.accountLimitPause"; // account-limit.ts's ACCOUNT_LIMIT_FLAG
-const ACCOUNT_LIMIT_FILE_NAME = "account-limit.json"; // account-limit.ts's ACCOUNT_LIMIT_FILE
-function isAccountLimit(value: unknown): boolean {
-  const limit = value as { limitedUntil?: unknown; seenOn?: unknown; text?: unknown };
-  return typeof limit === "object" && limit !== null && Number.isFinite(limit.limitedUntil) && typeof limit.seenOn === "string" && typeof limit.text === "string";
-}
-
-/**
  * THE GATE'S ONE CALL, PER TICK: sample the signals, evaluate every flag, file the incident of a revert, expire the suppressions, and return the orders. NEVER THROWS -- a canary that can crash the gate
  * stops every order behind it (`orgHealthTick`'s rule). A state file that cannot be read stops the canary this tick and says so; a flag is OFF unless the state says on, so the failure is the safe one.
  * @param tick `suppressed` is what the tick's own suppressors report they are keeping back. ABSENT means the tick did not ask them (a `CANNOT_ASK` tick, #1332): nothing is released and the held-order clocks are kept as they are, not read as ended
@@ -2606,7 +2583,9 @@ export function machineryCanaryTick({ now, facts, suppressed, dir, options, io }
   const path = `${dir}/${CANARY_STATE_FILE}`;
   try {
     const before = parseCanaryState(io.read(path));
-    const moved = advance({ state: before, facts, now, options, held: accountPauseHolds({ now, state: before, io, dir }) });
+    // The account pause holds the hour it covers (a11ign#5497): the flag is read from `before`, the state the tick starts with, so it is not unknown here.
+    const held = machineryFlagOn(before, ACCOUNT_LIMIT_FLAG) && pauseRecorded(now, dir) !== null;
+    const moved = advance({ state: before, facts, now, options, held });
     const flags = Object.fromEntries(Object.entries(moved.flags).map(([name, record]) => {
       const incident = filedIncident({ name, record, io });
       return [name, incident === null ? record : { ...record, incident }];
