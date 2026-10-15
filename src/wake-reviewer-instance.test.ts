@@ -28,8 +28,9 @@ import {
   liveReviewers, endFinishedReviewers, registerReviewer, reviewerPathsFrom, sparePathsFrom, spawnEnvironment,
   MAX_SPAWNS_PER_TICK, orderPullRequest, reviewerMismatch, prepareReviewCheckout, removeReviewCheckout,
   reviewCheckoutPath, withReviewCheckout, linkReviewDependencies, ensureReviewerToken, REVIEWER_TOKEN_REFRESH_SECONDS,
-  refreshLiveReviewerTokens,
+  refreshLiveReviewerTokens, reviewerAppOf, reviewerTokenMinter,
 } from "./wake.ts";
+import type { homeHostConfig } from "./host-config.ts";
 import { readReviewerRegistry, REVIEWER_REGISTRY_FILE } from "./work-gate.ts";
 import { parityOwner } from "./review-attribution.ts";
 import { INSIDE, OUTSIDE } from "./review-trust.ts";
@@ -1101,7 +1102,7 @@ test("#1348 (3): the per-tick refresh mints for a live INSIDE reviewer with a ch
   const agents = [{ label: "reviewer-1" }, { label: "reviewer-2" }, { label: "reviewer-3" }, { label: "reviewer-4" }, { label: "worker-1" }];
   const registry = { "reviewer-2": { spawnedAt: 0, trust: OUTSIDE } };
   const stub = stubMinter(dir);
-  const failures = refreshLiveReviewerTokens(agents, registry, APP, { tree, now: NOW_MS, script: stub.script });
+  const failures = refreshLiveReviewerTokens(agents, registry, (t) => ensureReviewerToken(t, APP, { now: NOW_MS, script: stub.script }), { tree });
   assert.deepEqual(failures, []);
   assert.deepEqual(stub.calls(), [APP_KEY], "one mint, for reviewer-1 alone");
   assert.equal(readFileSync(join(tree("reviewer-1"), "node_modules/.cache/app-tokens/reviewer.token"), "utf8"), `${NOW_MS / 1000 + 3600} minted-token\n`);
@@ -1114,12 +1115,38 @@ test("#1348 (3a): a failed refresh is RETURNED, labelled, so `main` can say whic
   const dir = tmpDirForFile("reviewer-token-tick-fail-");
   const tree = (label: string) => join(dir, label);
   mkdirSync(tree("reviewer-1"));
-  const failures = refreshLiveReviewerTokens([{ label: "reviewer-1" }], {}, APP, { tree, now: NOW_MS, script: stubMinter(dir, { fail: true }).script });
+  const failures = refreshLiveReviewerTokens([{ label: "reviewer-1" }], {}, (t) => ensureReviewerToken(t, APP, { now: NOW_MS, script: stubMinter(dir, { fail: true }).script }), { tree });
   assert.equal(failures.length, 1);
   assert.match(failures[0], /^reviewer-1: the reviewer's app token could not be minted: .*stub refusal/);
 });
 
-test("#1348 (3b): THE TICK CALLS IT: `main` refreshes through `refreshLiveReviewerTokens` once, with the registry and the app (a SOURCE pin on placement: `main` is not driven whole by any test)", () => {
+test("#1348 (3b): `main` hands `deliver` the refresh, once, and the same minter the spawn uses (a SOURCE pin on this one wire: `main` is not driven whole by any test)", () => {
   const source = readFileSync(new URL("./wake.ts", import.meta.url), "utf8");
-  assert.equal(source.split("refreshLiveReviewerTokens(agents, reviewerRegistry, reviewerApp)").length - 1, 1, "one call, in `main`");
+  assert.equal(source.split("reviewerRefresh: (live) => refreshLiveReviewerTokens(live, reviewerRegistry, reviewerMint),").length - 1, 1, "one wire, in `main`");
+  assert.equal(source.split("reviewerToken: reviewerMint,").length - 1, 1, "the spawn's minter is the same one");
+});
+
+test("#1348 (4): an UNREADABLE host declaration is NOT 'no app': the reviewer's app is unknown, and every mint is refused by name, with no directory made", () => {
+  const dir = tmpDirForFile("reviewer-token-unreadable-");
+  const tree = join(dir, "tree");
+  mkdirSync(tree);
+  const app = reviewerAppOf(() => { throw new Error("the declaration cannot be read: /nowhere/host.json"); });
+  assert.ok("unknown" in app, "the app is unknown, not null");
+  const why = reviewerTokenMinter(app)(tree);
+  assert.match(why ?? "", /cannot be read, so the reviewer's app is unknown: the declaration cannot be read/);
+  assert.equal(existsSync(join(tree, "node_modules")), false, "nothing was minted into, or made in, the tree");
+});
+
+test("#1348 (4a): a host that declares the reviewer on user accounts has NO app, and mints nothing (as before)", () => {
+  const app = reviewerAppOf(() => ({}) as ReturnType<typeof homeHostConfig>);
+  assert.deepEqual(app, { app: null });
+  assert.equal(reviewerTokenMinter(app)(join(tmpDirForFile("reviewer-token-user-"), "tree")), null);
+});
+
+test("#1348 (5): THE TICK REFRESHES: `deliver` asks for the live reviewers' tokens every tick, even with no order in it, and returns what they could not get", () => {
+  const w = world();
+  const seen: string[][] = [];
+  const out = deliver([], [{ label: "reviewer-1", status: "idle" }], ROSTER, { ...w.deps, reviewerRefresh: (live) => { seen.push(live.map((a) => a.label)); return ["reviewer-1: stub refusal"]; } });
+  assert.deepEqual(seen, [["reviewer-1"]], "one refresh, for the live reviewer");
+  assert.deepEqual(out.tokenFailures, ["reviewer-1: stub refusal"]);
 });

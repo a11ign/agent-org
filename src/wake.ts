@@ -1136,16 +1136,27 @@ export const REVIEWER_TOKEN_REFRESH_SECONDS = 1800;
 const APP_TOKEN_SCRIPT = fileURLToPath(new URL("./app-token.ts", import.meta.url));
 const APP_TOKEN_MINT_TIMEOUT_MS = 30_000;
 
-/** The reviewer's app, or `null` when `host.json` does not declare the reviewer as one: nothing is minted and `host/gh` takes the account, as before. */
-export function reviewerAppIdentity(): AppIdentity | null {
-  let host: ReturnType<typeof homeHostConfig>;
+/** The reviewer's app as the host declares it: `app` is `null` when the reviewer takes a user account (nothing is minted, as before); `unknown` is the reason the declaration could not be read. */
+export type ReviewerApp = { app: AppIdentity | null; } | { unknown: string; };
+
+/**
+ * agent-org#1348: `homeHostConfig` REFUSES and never defaults, so an UNREADABLE declaration is not "no app" -- the reviewer's app is unknown, and a mint for it
+ * is refused by name ({@link reviewerTokenMinter}). Reading the declaration is `read`, so a test can make it fail.
+ */
+export function reviewerAppOf(read: () => ReturnType<typeof homeHostConfig> = homeHostConfig): ReviewerApp {
+  let declared: ReturnType<typeof homeHostConfig>;
   try {
-    host = homeHostConfig();
-  } catch {
-    return null;
+    declared = read();
+  } catch (cause) {
+    return { unknown: `the host's declaration cannot be read, so the reviewer's app is unknown: ${firstLine(cause instanceof Error ? cause.message : String(cause))}` };
   }
-  const identity = roleIdentity(host, "reviewer");
-  return identity.mode === "github-apps" ? identity : null;
+  const identity = roleIdentity(declared, "reviewer");
+  return { app: identity.mode === "github-apps" ? identity : null };
+}
+
+/** The mint for a reviewer's token in `tree`: {@link ensureReviewerToken}, or the reason it cannot be asked when the app is unknown. */
+export function reviewerTokenMinter(app: ReviewerApp): (tree: string) => string | null {
+  return (tree) => ("unknown" in app ? app.unknown : ensureReviewerToken(tree, app.app));
 }
 
 /**
@@ -1206,13 +1217,13 @@ function hasNoAgent(agent: { status?: string; }) {
  * @returns one line per failed refresh, labelled, for the caller to say; empty when every token is good.
  */
 export function refreshLiveReviewerTokens(
-  agents: { label: string; }[], registry: Record<string, ReviewerEntry>, app: AppIdentity | null,
-  { tree = reviewCheckoutPath, exists = existsSync, now, script }: { tree?: (label: string) => string, exists?: (path: string) => boolean, now?: number, script?: string } = {},
+  agents: { label: string; }[], registry: Record<string, ReviewerEntry>, mint: (tree: string) => string | null,
+  { tree = reviewCheckoutPath, exists = existsSync }: { tree?: (label: string) => string, exists?: (path: string) => boolean } = {},
 ): string[] {
   const failures: string[] = [];
   for (const label of liveReviewers(agents)) {
     if (registry[label]?.trust === OUTSIDE || !exists(tree(label))) continue;
-    const why = ensureReviewerToken(tree(label), app, { now, script });
+    const why = mint(tree(label));
     if (why !== null) failures.push(`${label}: ${why}`);
   }
   return failures;
@@ -5869,7 +5880,7 @@ function noteClaimOrders(claimOrders: ClaimOrders | undefined, { gateOrder, targ
 export function deliver(orders: readonly { session: string; causeKey: string; prompt: string; cause?: string; title?: string; replaces?: { branch: string; }[]; resume?: boolean; outageNow?: boolean; startFresh?: boolean; briefRole?: string; trust?: ReviewTrust; }[], agents: { label: string; status: string; }[], roster: string[],
   { run = defaultRun, record, counts, ineligibleReason, env, registerSpawn, drained, claimable, claimer, memory, hostLoad, claimRefused, oneShot, ceoOneShot,
     launch, reviewerEnv, reviewerToken, registerReviewer, checkout, registry, unavailable, sleep, contextRoot, codexConfig, clock, relane, goneSeats, claimOrders, toolchain,
-    now = Date.now, serve, accountPause, endRun }: {
+    reviewerRefresh, now = Date.now, serve, accountPause, endRun }: {
           run?: (args: string[]) => string; record?: (key: string, recipient?: string, noClear?: boolean, at?: number) => void;
           /** agent-org#1392: writes the RESET that ends a capped cause's run when its absent seat is started again (see `isAbsentReviewerSeat`). */
           endRun?: (causeKey: string, at: number) => void;
@@ -5883,7 +5894,9 @@ export function deliver(orders: readonly { session: string; causeKey: string; pr
           sleep?: (ms: number) => void; contextRoot?: string; clock?: OrderClock;
           relane?: { deferredSince: Map<string, number>; now: number; }; goneSeats?: ReadonlyMap<string, string>; now?: () => number;
           claimOrders?: ClaimOrders; toolchain?: ToolchainGate;
-      } & Partial<ReviewerDeps> = {}): { sent: string[]; refused: string[]; stuck: string[]; outaged: string[]; settled: string[]; goneSeats: Map<string, string>; } {
+          /** agent-org#1348: keeps each live reviewer's token past its margin, every tick; returns the reason each refresh failed, labelled. */
+          reviewerRefresh?: (live: { label: string; status: string; }[]) => string[];
+      } & Partial<ReviewerDeps> = {}): { sent: string[]; refused: string[]; stuck: string[]; outaged: string[]; settled: string[]; goneSeats: Map<string, string>; tokenFailures: string[]; } {
   const sent = [];
   const refused = [];
   const settled: string[] = [];
@@ -5894,6 +5907,9 @@ export function deliver(orders: readonly { session: string; causeKey: string; pr
   const outaged: string[] = [];
   const live = agents.filter((a) => !gone.has(a.label)).map((a) => ({ ...a }));
   let spawned = 0;
+  // agent-org#1348: THE TICK KEEPS EACH LIVE REVIEWER'S TOKEN PAST ITS MARGIN, here at the top of every tick and not only when an order is delivered, so a
+  // reviewer that is running through a quiet stretch does not reach its expiry with nothing refreshing it.
+  const tokenFailures = reviewerRefresh?.(agents) ?? [];
   // agent-org#1025: ONLY `agent start` IS TIMED, and only the spawn paths below use this `run`; the context and prompt calls keep the caller's.
   const starts = startBudgetOf(now);
   const spawnRun = starts.timed(run);
@@ -5995,7 +6011,7 @@ export function deliver(orders: readonly { session: string; causeKey: string; pr
       ? `${target.label} <- ${order.causeKey} (STARTED ${target.profile.model}/${target.profile.effort})`
       : `${target.label} <- ${order.causeKey}${noClear ? NO_CLEAR_NOTE : ""}${note === null ? "" : ` [${note}]`}${continuationNote(continuation)}`);
   }
-  return { sent, refused, stuck, outaged, settled, goneSeats: gone };
+  return { sent, refused, stuck, outaged, settled, goneSeats: gone, tokenFailures };
 }
 
 /**
@@ -8928,11 +8944,11 @@ async function main() {
   // A SEAT THE FIRST DELIVERY FOUND ENDED IS ENDED FOR THE SECOND (#3568): one `agent_not_found` per label per tick, not one per order.
   // agent-org#1348: a live reviewer's token is refreshed BEFORE it expires, so `host/gh` in its sandbox never has to mint with the key. An outside
   // reviewer has no app, so it gets none; a failed refresh says so, and the token there is kept until it runs out.
-  const reviewerApp = reviewerAppIdentity();
+  const reviewerMint = reviewerTokenMinter(reviewerAppOf());
   const reviewerRegistry: Record<string, ReviewerEntry> = readReviewerRegistry(reviewerPathsFrom(ledgerPath).registry);
-  for (const why of refreshLiveReviewerTokens(agents, reviewerRegistry, reviewerApp)) process.stderr.write(`wake: ${why}\n`);
-  const { sent, refused: gateRefused, stuck, outaged, settled } = deliver(ready, free, roster, { record, unavailable, clock, relane: relaneFacts(ledgerPath),
-    reviewerToken: (tree) => ensureReviewerToken(tree, reviewerApp),
+  const { sent, refused: gateRefused, stuck, outaged, settled, tokenFailures } = deliver(ready, free, roster, { record, unavailable, clock, relane: relaneFacts(ledgerPath),
+    reviewerToken: reviewerMint,
+    reviewerRefresh: (live) => refreshLiveReviewerTokens(live, reviewerRegistry, reviewerMint),
     serve: (order) => served.get(order.causeKey) ?? null, accountPause,
     goneSeats: handed.goneSeats,
     claimOrders: claimOrdersIn(claimOrdersPath(ledgerPath)),
@@ -8944,6 +8960,7 @@ async function main() {
     registerReviewer: (session, trust) => registerReviewer(reviewerPathsFrom(ledgerPath), session, Date.now(), trust),
     registry: () => readReviewerRegistry(reviewerPathsFrom(ledgerPath).registry),
     endRun: (causeKey, at) => writeFileSync(ledgerPath, `${at}\t${RESET}\t${causeKey}\n`, { flag: "a" }) });
+  for (const why of tokenFailures) process.stderr.write(`wake: ${why}\n`);
   finishTick({ handed, sent, gateRefused: [...gateRefused, ...releasesNotDone], stuck, outaged, ledgerPath, unavailable, settled });
 }
 
