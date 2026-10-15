@@ -23,7 +23,7 @@ name: release
 # `id-token: write`, and GitHub checks a called workflow's job permissions against the caller's when the workflow is LOADED, not against a job's `if:`: a caller that withholds it fails
 # the whole call before any job runs. The publish authenticates with that OIDC token alone, which is npm's trusted publishing: NO registry token and no secret is stored or passed, and
 # the trusted-publisher entry on npmjs.com for `@a11ign/agent-org` names THIS file (repository `a11ign/agent-org`, workflow `release.yml`, environment `npm-publish`), because the token
-# names the CALLING file: renaming it breaks the publish. The environment is restricted to `main`. The pair is pinned by `release-triggers-itself.test.ts`: the grant is on the call
+# names the CALLING file: renaming it breaks the publish. The `npm-publish` environment's deployment branches must be limited to `main` (a repository setting, owner-only, not in this tree). The pair is pinned by `release-triggers-itself.test.ts`: the grant is on the call
 # only, and only beside `kind: npm`. Not run before merge: the first run on `main` is its reading, and a refusal there is the entry or the environment missing, which is the owner's.
 #
 # THE CONSUMER IS CHECKED BEFORE THE TAG (a11ign/a11ign#4407 b, #4412). v0.88.0 renamed `src/*.mjs` to `.ts` and was tagged, and every a11ign pull request's `acceptance / run` then threw
