@@ -17,6 +17,9 @@
 // THE JOIN. A routing is its REQUEST line and the outcome lines written after it for the same `use` and `id`, up to the next request for that id. The request is the routing; an
 // outcome written later closes nothing else, and a later request starts a new routing of its own.
 
+import { ESCALATE_TURNS } from "./engineer-escalation.ts";
+import { WINDOW_TOO_SMALL_COMPACTIONS } from "./engineer-route.ts";
+
 /** The flat floor every question has now: the routing's own floor (`engineer-route.ts`). The host's `triage.minConfidence` defaults to 0.9, which is a separate floor. */
 export const FLAT_FLOOR = 0.7;
 /** The share of answers at or above a floor that must be right for the floor to be set there. */
@@ -29,10 +32,10 @@ export const FLOOR_GRID: readonly number[] = Object.freeze(Array.from({ length: 
 /** The outcome label a first pass that merged writes (`recordRouteOutcome`'s). The one verdict that is right. */
 export const FIRST_PASS_MERGED = "merged-first-pass";
 const WRONG_OUTCOMES: ReadonlySet<string> = new Set(["not-first-pass", "escalated"]);
-/** The most compactions one session may take and still have had a window big enough. Mirrors `WINDOW_TOO_SMALL_COMPACTIONS` (engineer-route.ts), which this module does not import. */
-export const COMPACTIONS_TOO_MANY = 2;
-/** The most turns one session may take and still be a first pass. Mirrors `ESCALATE_TURNS` (engineer-escalation.ts), the cap a session escalates at. */
-export const TURNS_TOO_MANY = 300;
+/** The most compactions one session may take and still have had a window big enough: the cap past which engineer-route.ts writes `window too small`. */
+export const COMPACTIONS_TOO_MANY = WINDOW_TOO_SMALL_COMPACTIONS;
+/** The most turns one session may take and still be a first pass: the cap a session escalates at (engineer-escalation.ts). */
+export const TURNS_TOO_MANY = ESCALATE_TURNS;
 
 /** Right (`true`), wrong (`false`), or no verdict (`undefined`) for one outcome label. */
 export function verdictOf(outcome: string): boolean | undefined {
