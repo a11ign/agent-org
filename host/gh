@@ -65,6 +65,35 @@ if [ "$1 $2" = "pr create" ] && [ -z "${A11Y_PR_OPEN:-}" ]; then
   exit 1
 fi
 
+# --- #1510: A WHOLE-BOARD LISTING IS REFUSED, NOT PRICED AFTER THE FACT -------------------------------------------------
+#
+# `gh project item-list` returns every item on a board: one `--limit 50` call is about 52 points of the GraphQL pool that every manager shares
+# (measured 2026-10-15: the pool's counter moved 2 -> 54 across one call). A call with no `--limit`, or with one over 50, is refused here, BEFORE
+# gh-real and BEFORE the ledger (so it writes no line), and names the helper that reads one row or the whole board without the pool's cost.
+# A `--limit` of 50 or less is allowed, and its line is priced off the pool's counter (`pool_debug`). It binds every caller of this wrapper:
+# no repository code runs `project item-list`, so there is no caller to exempt.
+item_list_limit_ok() { # argv
+  seen=0; bad=0; want=
+  for a; do
+    if [ -n "$want" ]; then v=$a; want=
+    else
+      case $a in
+        --limit|-L) want=1; continue ;;
+        --limit=*) v=${a#--limit=} ;;
+        -L*) v=${a#-L} ;;
+        *) continue ;;
+      esac
+    fi
+    seen=1
+    case $v in ''|*[!0-9]*) bad=1 ;; *) [ "${#v}" -le 3 ] && [ "$v" -ge 1 ] && [ "$v" -le 50 ] || bad=1 ;; esac
+  done
+  [ "$seen" = 1 ] && [ "$bad" = 0 ] && [ -z "$want" ]
+}
+if [ "$1 $2" = "project item-list" ] && ! item_list_limit_ok "$@"; then
+  echo "gh: refusing 'gh project item-list' without '--limit' of 50 or less: listing a whole board spends the GraphQL pool every manager shares. For one row run 'agent-org row-file --promote=<n>'; for the whole board, the gate's 'board-snapshot'." >&2
+  exit 1
+fi
+
 # --- #3466: THE CALL LEDGER -- which call spends which pool, so the burner can be NAMED -------------------------
 #
 # One TAB-separated line per call, appended to `$GH_CONFIG_DIR/gh-calls.tsv` (the account's own config dir, so a
@@ -135,12 +164,36 @@ POOL_COUNTER
   return 0
 }
 
+# (agent-org#1510) `gh project` has no `-i`, so a listing's counter is read off the debug head `GH_DEBUG=api` makes gh-real print to stderr: one block per request,
+# `* Request at` to `* Request took`, with the response's `X-Ratelimit-*` headers in it. The LAST graphql response's counter is the pool's after the call. The blocks
+# are taken out of the caller's stderr only when every `Request at` has its `Request took` (`balanced`); otherwise the stderr is left as gh wrote it.
+pool_debug() { # stderr-copy
+  counter=$(awk -v out="$1.body" '
+    function reset() { g = 0; u = ""; r = "" }
+    BEGIN { printf "" > out }
+    /^\* Request at / { inside = 1; opens++; reset(); next }
+    inside && /^\* Request took/ { inside = 0; closes++; if (g && u ~ /^[0-9]+$/ && r ~ /^[0-9]+$/) { lu = u; lr = r }; next }
+    inside { h = $0; sub(/\r$/, "", h); if (h ~ /^< X-Ratelimit-Resource: *graphql/) g = 1; if (h ~ /^< X-Ratelimit-Used:/) { u = $3; sub(/\r$/, "", u) } if (h ~ /^< X-Ratelimit-Reset:/) { r = $3; sub(/\r$/, "", r) }; next }
+    { print > out }
+    END { print (opens > 0 && opens == closes && !inside ? 1 : 0), lu, lr; close(out) }' "$1" 2>/dev/null)
+  case $counter in
+    1\ *) mv "$1.body" "$1" 2>/dev/null
+      IFS=' ' read -r _ pool_used pool_reset <<POOL_DEBUG
+$counter
+POOL_DEBUG
+      ;;
+    *) rm -f "$1.body" ;;
+  esac
+  return 0
+}
+
 ledger_record() { # status stdout-copy first-arg second-arg
   [ "${A11Y_GH_LEDGER:-}" = off ] && return 0
   cfg=${GH_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gh}
   file=${A11Y_GH_LEDGER:-$cfg/gh-calls.tsv}
   case "$3 $4" in
     "api graphql") resource=graphql ;;
+    "project item-list") resource=graphql ;; # #1510: a listing is known to spend the graphql pool, so its line is priced (`pool_used`), not `graphql?`
     api\ *) resource=core ;;
     pr\ *|issue\ *|project\ *|repo\ *|label\ *|discussion\ *) resource='graphql?' ;;
     *) resource=other ;;
@@ -896,10 +949,18 @@ if [ "$queue_on" = 1 ]; then
     if cat <&3 > "$stdin_copy" 2>/dev/null; then exec 3<&-; exec 3< "$stdin_copy"; else stdin_copy=; fi
   fi
 fi
+# (agent-org#1510) A `project item-list` is asked with `GH_DEBUG=api` (exported for the child alone, and unset below), so its response headers reach its stderr and
+# `pool_debug` reads the pool's counter off them. Not when the caller already set `GH_DEBUG`: its stderr is its own.
+pool_dbg=0
+if [ "$1 $2" = "project item-list" ] && [ -z "${GH_DEBUG:-}" ]; then
+  if [ -z "$errcopy" ]; then errcopy=$(mktemp "${TMPDIR:-/tmp}/gh-err.XXXXXX" 2>/dev/null) || errcopy=; fi
+  if [ -n "$errcopy" ]; then pool_dbg=1; export GH_DEBUG=api; fi
+fi
 if [ -n "$errcopy" ]; then
   if [ -n "$copy" ]; then "$GH_REAL" "$@" <&3 3<&- > "$copy" 2> "$errcopy" & else "$GH_REAL" "$@" <&3 3<&- 2> "$errcopy" & fi
 elif [ -n "$copy" ]; then "$GH_REAL" "$@" <&3 3<&- > "$copy" & else "$GH_REAL" "$@" <&3 3<&- & fi
 child=$!
+[ "$pool_dbg" = 1 ] && unset GH_DEBUG
 exec 3<&-
 trap 'kill -TERM "$child" 2>/dev/null' TERM INT HUP
 wait "$child"
@@ -909,6 +970,7 @@ kill -0 "$child" 2>/dev/null && { wait "$child"; status=$?; }
 trap - TERM INT HUP
 [ "$cond_on" = 1 ] && etag_settle
 [ "$pool_i" = 1 ] && pool_counter "$copy"
+[ "$pool_dbg" = 1 ] && pool_debug "$errcopy"
 [ -n "$copy" ] && cat "$copy"
 [ -n "$errcopy" ] && cat "$errcopy" >&2
 ledger_record "$status" "$copy" "$ledger_a" "$ledger_b" 2>/dev/null || :
