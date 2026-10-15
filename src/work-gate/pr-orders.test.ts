@@ -1,4 +1,4 @@
-// no-token: a11ign#5528, agent-org#1538 -- nothing here runs `gh`; the pull requests are literal objects and the chairman's write is a fake `run`.
+// no-token: gh -- nothing here runs `gh`; the pull requests are literal objects and the chairman's write is a fake `run`.
 /**
  * a11ign#5528, agent-org#1538: A CHECK WHOSE REMEDY IS A REVIEW IS NOT A CODE FAILURE.
  *
