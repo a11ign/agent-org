@@ -54,7 +54,7 @@ import { verifyCheckoutOf, withVerifyStamps } from "./verify-stamp.ts"; // #3215
 import { CAUSES, JUDGMENT_CAUSES, START_CAUSES } from "./cause-declaration.ts";
 import { NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL } from "./project-vocabulary.ts";
 import { readTrunkRed } from "./trunk-red.ts";
-import { requiredWhenNeeded, fileOutsideIdleTriage } from "./work-gate/pr-orders.ts";
+import { requiredWhenNeeded, fileOutsideIdleTriage, fileReviewGatedHuman } from "./work-gate/pr-orders.ts";
 import { prOwnerRoutingFlagOn } from "./work-gate/tick.ts";
 import { declaredIdentities } from "./review-trust.ts";
 
@@ -118,7 +118,7 @@ import { reviewerAuthTick } from "./work-gate/causes/org-health-reviewer-auth.ts
 import { baseTipWhenRed } from "./work-gate/causes/pr-checks.ts";
 import { readReenqueueState } from "./work-gate/causes/pr-ejected.ts";
 import { holdHolderOrdersNow } from "./work-gate/causes/pr-holds.ts";
-import { stampLookup, withEvidenceLabelAges, withPatchIds } from "./work-gate/causes/pr-reviews.ts";
+import { stampLookup, withEvidenceLabelAges, withPatchIds, withCheckMarkers } from "./work-gate/causes/pr-reviews.ts";
 import { EXIT, claimedCommentsForClock, defaultRun, draining, readBranchPrsOfUnclaimed, readClaimedRowComments, readPrs, readReadyRows,
   readRowBranches, readWithFirstWaveTogether, releaseBehindNow, repoNow, runBatch, otherScopesForTick, eventUnreadForTick, rememberOtherScopesRead, primaryDue, primaryLanes } from "./work-gate/reads.ts";
 import { type Pacing, orgHealthSkipped, pacedUnread, pacingNow, pacingOn, primaryRefusedLanes, primaryUnread } from "./work-gate/pacing.ts";
@@ -649,7 +649,7 @@ function main() {
   // pay for it twice on exactly the red tick this row is about.
   const required = endGateSpan("required", requiredWhenNeeded(openPrs));
   const baseTip = endGateSpan("baseTip", baseTipWhenRed(openPrs)), armingSplit = endGateSpan("arming", readArmingOf(openPrs, required)); // #3019: BEFORE the arguments -- ejected PRs are stamped onto `prs` and leave `unarmed`; agent-org#488: the gate arms a lone unarmed one here
-  const decideArgs = { primaryDrift, primaryPaced: !primaryRead, prs: endGateSpan("withStaleRefusals", withStaleRefusals(endGateSpan("withVerifyStamps", withVerifyStamps(endGateSpan("withEjections", withEjections(endGateSpan("withWaitingEdges", withWaitingEdges(endGateSpan("withPrOwners", withPrOwners(endGateSpan("withEvidenceLabelAges", withEvidenceLabelAges(endGateSpan("withPatchIds", withPatchIds(openPrs, defaultRun, required)))), allOpen, stampLookup(), { agents: liveWorkspaceLabels, ended: endedSessionLabels })), allOpen, { dir: REVIEWER_STATE_DIR })), armingSplit?.ejections)), { checkout: verifyCheckoutOf("") })), required)), readyRows: rows, promotableRows: promotableRows ?? [],
+  const decideArgs = { primaryDrift, primaryPaced: !primaryRead, prs: endGateSpan("withStaleRefusals", withStaleRefusals(endGateSpan("withVerifyStamps", withVerifyStamps(endGateSpan("withEjections", withEjections(endGateSpan("withWaitingEdges", withWaitingEdges(endGateSpan("withPrOwners", withPrOwners(endGateSpan("withEvidenceLabelAges", withEvidenceLabelAges(endGateSpan("withPatchIds", withPatchIds(withCheckMarkers(openPrs, defaultRun, required), defaultRun, required)))), allOpen, stampLookup(), { agents: liveWorkspaceLabels, ended: endedSessionLabels })), allOpen, { dir: REVIEWER_STATE_DIR })), armingSplit?.ejections)), { checkout: verifyCheckoutOf("") })), required)), readyRows: rows, promotableRows: promotableRows ?? [],
     chairmanBlocked: chairmanBlocked ?? [], prFiles, drain, required, baseTip, waitFacts: waitReads?.facts ?? null,
     epics: epicRowsOf(allOpen),
     answerOwed: rowsOwingAnswers({ openRows: allOpen, openPrs, closedRows: closedAnswerRows(closedRows) }),
@@ -678,6 +678,7 @@ function main() {
     offBoard: endGateSpan("settleOffBoard", settleOffBoardRows(offBoard, { openRows: allOpen, portFor: boardingPortOf })), callCountSignals: endGateSpan("callCountSignals", rowCallCountSignals(allOpen, liveClaudeTurns(), claimedComments, { waitClearedAt: readWaitClearedAt })), bareAnswerLabels: endGateSpan("bareAnswerLabels", bareAnswerLabelOrders(withAnswerLabel([...allOpen, ...openPrs]), defaultRun, Date.now())), answerGiven: endGateSpan("answerGiven", answerGivenOrders(allOpen)), labJobs: endGateSpan("labJobs", labJobRecordsOrSay()), ...endGateSpan("engineerShare", engineerShareReads(allOpen)) }; const decided = endGateSpan("decide", withStalePrimaryNotice(decideAndTap(decideArgs), primaryDrift)); // #2711, #2729, #3632; `main` is at its 90-line limit
   const others = endGateSpan("otherScopes", otherScopeTicks(drain, otherScopes, openPrs, homeRowsOf(allOpen))); // #4386: `homeRowsOf` -- so an agent-org pull request is owned by the worker its branch names. #2618: the OTHER declared repositories -- none for one project, whose orders are what they were
   endGateSpan("tickFailures", recordTickFailures({ trunkRed: decideArgs.trunkRed, keyedTrunkReds: others.map((tick) => ({ repo: tick.repo, red: tick.trunkRed })), prs: decideArgs.prs }));
+  endGateSpan("reviewGatedHuman", fileReviewGatedHuman(decideArgs.prs, { required, run: defaultRun, log: (line) => process.stderr.write(line) })); // agent-org#1538: the chairman's brief for a PR whose check names a human
   endGateSpan("resolverDefects", fileResolverDefects([...resolverDefectsOf(decideArgs.prs, allOpen), ...others.flatMap((tick) => tick.defects)])); // #4386: a fallback order for a PR that named a live claimant files its own defect, once per PR
   const outageNow = outageThisTick({ prs, readyRows, promotableRows, chairmanBlocked, openRows: openRowsRead, claimedComments, offBoard, others, primaryRead });
   const incident = endGateSpan("incident", holdForIncidentNow(githubStatus, [...decided, ...others.flatMap((tick) => tick.orders)], { prs: [...openPrs, ...pullRequestsOfOthers(otherScopes)], required }));

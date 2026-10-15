@@ -42,6 +42,7 @@ const DIGEST = Object.freeze({ severity: "digest", bound: CHURN_BOUND });
 export const ORG_HEALTH_CLASSES: Readonly<Record<string, { severity: "page"; } | { severity: "digest"; bound: number; }>> = Object.freeze({
   "no-merge-while-work-exists": PAGE,
   "red-pr-unattended": PAGE,
+  "review-gated-unasked": PAGE, // agent-org#1538: a red PR whose checks ask for a review, with no reviewer ordered for two hours; PAGE because it is the one seat that clears it, not yet asked
   "ready-row-refused": PAGE,
   "primary-not-at-main": PAGE,
   "primary-milestone-idle": PAGE,

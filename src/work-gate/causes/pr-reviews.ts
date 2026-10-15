@@ -5,7 +5,8 @@ import { loadLanes, inLane, MANAGERS_APP_LOGINS } from "../../lane-ownership.ts"
 import { holdersOf } from "../../pr-hold-state.ts";
 import { decidedBy } from "../../claim-stall.ts";
 import { worktreeOwner } from "../../worktree-owner.ts";
-import { HOLD_RED_JOBS } from "../pr-orders.ts";
+import { HOLD_RED_JOBS, reviewGateOf } from "../pr-orders.ts";
+import { checkMarkersOf } from "../review-gate.ts";
 import { BLOCKING_REVIEW_STATES, REVIEW_STATE, blockingChecks, checksSettledGreen, draftCandidates, mergeCandidates, reviewStateOf } from "../pr-state.ts";
 import { PROJECT_GIT, capturingStderr, defaultRun, defaultSpawn, repoNow } from "../reads.ts";
 import { HOUR_MS, labelsOf, sessionOf } from "../vocabulary.ts";
@@ -272,7 +273,8 @@ function redOnlyFromAnyHold(pr: any, onHead: any[]) {
  */
 export function reviewableHead(pr: any, required: string[] | null = null): string | null {
   const onHead = newestPerName(pr?.statusCheckRollup);
-  if (checksSettledGreen(blockingChecks(onHead, required)) !== true && !redOnlyFromAnyHold(pr, onHead)) return null;
+  // a11ign#5528: a review-gated red is asked at its head too, so the reviewer it names is ordered there
+  if (checksSettledGreen(blockingChecks(onHead, required)) !== true && reviewGateOf(pr, required) === null && !redOnlyFromAnyHold(pr, onHead)) return null;
   return String(pr.headRefOid ?? "") || null;
 }
 
@@ -386,6 +388,35 @@ export function withPatchIds(prs: any[], run: (args: string[]) => string = defau
     const entries = [head, ...others].map((oid) => ([oid, readPatchId(oid, base, run)] as const));
     const known = entries.filter(([, id]) => id !== null);
     return known.length > 0 ? withFailingChecks({ ...pr, patchIds: Object.fromEntries(known) }, run) : pr;
+  });
+}
+
+/**
+ * a11ign#5528: the check runs at one commit as the REST API gives them, each with its `output.summary` (where a check says what clears it), or `null`
+ * when the read was refused. The list is read per red pull request only (`withCheckMarkers`), so a green one pays nothing.
+ */
+function readCheckRunSummaries(commit: string, run: (args: string[]) => string = defaultRun): { id: number; name: string; summary: unknown }[] | null {
+  try {
+    const out = capturingStderr(run)(["api", `repos/${repoNow()}/commits/${commit}/check-runs?per_page=100`, "--paginate",
+      "--jq", ".check_runs[] | {id, name, summary: .output.summary}"]);
+    return out.split("\n").filter((l) => l.trim() !== "").map((l) => JSON.parse(l));
+  } catch (error) {
+    noteRefusedRead(error, { path: `repos/${repoNow()}/commits/<sha>/check-runs`, ofASha: true });
+    return null;
+  }
+}
+
+/**
+ * a11ign#5528, agent-org#1538: THE MARKERS OF A RED PULL REQUEST'S CHECKS, read at its head: `checkMarkers` (name -> `review` | `human`, from the
+ * `Cleared-by:` line of each newest run's summary) and `checkMarkersHead` (the head they were read at, which `reviewGateOf` compares). Only a
+ * pull request whose blocking set is settled red pays the read; a refused read leaves it unmarked, which is red, as it was before the marker.
+ */
+export function withCheckMarkers(prs: any[], run: (args: string[]) => string = defaultRun, required: string[] | null = null) {
+  return prs.map((pr) => {
+    const head = String(pr?.headRefOid ?? "");
+    if (!head || checksSettledGreen(blockingChecks(newestPerName(pr?.statusCheckRollup ?? []), required)) !== false) return pr;
+    const runs = readCheckRunSummaries(head, run);
+    return runs === null ? pr : { ...pr, checkMarkers: checkMarkersOf(runs), checkMarkersHead: head };
   });
 }
 

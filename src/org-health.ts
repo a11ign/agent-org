@@ -15,6 +15,8 @@
 //   red-pr-unattended           M = 120 min p95.7 of 462 red->next-run ages; at most 2.50 episodes/day (an upper bound)
 //   ready-row-refused           75 ticks    NOT A PERCENTILE: the #2845 counter is 13 hours old, so it is structural -- 15 ticks for
 //                                           `product-manager` plus one 2-hour judgment window; the row says to re-measure
+//   review-gated-unasked        120 min     a red PR whose every failing check names a review as its remedy (`Cleared-by: review`, a11ign#5528) and no reviewer was
+//                                           ordered at its head: the gate has the check's answer and asked nobody. THE 2 HOURS IS THE CHAIRMAN'S (a11ign#5528: red ten hours unasked).
 //   primary-not-at-main         60 min      9 episodes in 14 days: seven of one tick and two of 20 h and 24 h (0.14/day)
 //
 // THE TWO ADDED BY #2937 (the chairman's own list):
@@ -232,6 +234,7 @@ export const SIGNALS = Object.freeze({
   FLEET_IDLE: "fleet-idle-while-work-waits",
   COPIES: "copies-drifted",
   OVERDUE: "overdue",
+  REVIEW_GATED_UNASKED: "review-gated-unasked",
   STALE_WAIT: "stale-wait",
   WAIT_WITHOUT_REASON: "wait-without-reason",
   ORDER_STALLED: "order-deferred-too-long",
@@ -314,6 +317,12 @@ export function noMergeReading({ now, lastMergedAt, lastMergedIn = null, work }:
  */
 export type RedPr = { number: number | string, owner: string | null, redSince: number | null, ownerCommentAts: number[] };
 
+/** agent-org#1538 (a11ign#5528): one open PR whose red is review-gated. `redSince` is as `RedPr`'s; `reviewerOrdered` is whether a reviewer was ordered at its head. */
+export type ReviewGatedPr = { number: number | string, redSince: number | null, reviewerOrdered: boolean };
+
+/** agent-org#1538: a review-gated red this long with no reviewer ordered at its head is unasked. The bound is the chairman's (2 hours, a11ign#5528). */
+export const REVIEW_GATED_MINUTES = 120;
+
 /**
  * WHEN DID THIS PULL REQUEST'S BREAKAGE BEGIN, or `null` when it has none to date (#2956). RED IS DECIDED ONCE, BY `red-pr.ts`
  * (`isBrokenRed`, #2954), and the question is asked of it here and not re-answered: `pr-checks-failing` excuses a hold only when the
@@ -360,6 +369,28 @@ export function redPrReading({ now, redPrs }: { now: number; redPrs: RedPr[] | n
   const more = tripped.length > MAX_NAMED ? `, and ${tripped.length - MAX_NAMED} more` : "";
   return { signal: SIGNALS.RED_PR, status: "tripped", firstTrippedAt: first, discriminator: `${SIGNALS.RED_PR}@${hourOf(first)}`,
     detail: `${tripped.length} PR(s) red over ${RED_PR_MINUTES} min with no comment from their owner since: ${named.join("; ")}${more}` };
+}
+
+/**
+ * SIGNAL: A REVIEW-GATED RED PR NOBODY WAS ASKED TO CLEAR (agent-org#1538, a11ign#5528). A check that names a review as its remedy is answered by a
+ * reviewer, not by its author, so a red with no reviewer ordered at its head is the gate sitting on its own answer. `prs` is `null` for a refused
+ * PR read (unknown, never clear); a PR with no check time cannot be dated and makes the answer unknown unless another PR trips.
+ */
+export function reviewGatedUnaskedReading({ now, prs }: { now: number; prs: ReviewGatedPr[] | null; }): Reading {
+  if (prs === null) return unknown(SIGNALS.REVIEW_GATED_UNASKED, "the open pull requests could not be read");
+  const unasked = prs.filter((pr) => !pr.reviewerOrdered);
+  const tripped = unasked.filter((pr) => pr.redSince !== null && now - pr.redSince >= REVIEW_GATED_MINUTES * MS_PER_MINUTE)
+    .sort((a, b) => (a.redSince as number) - (b.redSince as number));
+  if (tripped.length === 0) {
+    const undated = unasked.filter((pr) => pr.redSince === null);
+    return undated.length === 0 ? clear(SIGNALS.REVIEW_GATED_UNASKED)
+      : unknown(SIGNALS.REVIEW_GATED_UNASKED, `${undated.length} review-gated red PR(s) carried no check time, so how long they have been red is not known`);
+  }
+  const first = (tripped[0].redSince as number) + REVIEW_GATED_MINUTES * MS_PER_MINUTE;
+  const named = tripped.slice(0, MAX_NAMED).map((pr) => `#${pr.number} (red ${ageText(pr.redSince as number, now)}, no reviewer ordered at its head)`);
+  const more = tripped.length > MAX_NAMED ? `, and ${tripped.length - MAX_NAMED} more` : "";
+  return { signal: SIGNALS.REVIEW_GATED_UNASKED, status: "tripped", firstTrippedAt: first, discriminator: `${SIGNALS.REVIEW_GATED_UNASKED}@${hourOf(first)}`,
+    detail: `${tripped.length} PR(s) red over ${REVIEW_GATED_MINUTES} min whose failing checks name a review as the remedy, with no reviewer ordered: ${named.join("; ")}${more}` };
 }
 
 /**
@@ -2179,6 +2210,8 @@ export function milestoneClockReading({ now, fact }: { now: number; fact: Milest
  */
 export function orgHealthReadings(facts: {
         now: number; lastMergedAt: number | null; lastMergedIn?: string | null; work: { greenPrs: number; claimableRows: number; } | null; redPrs: RedPr[] | null;
+        /** agent-org#1538: the review-gated red PRs and whether each was asked; OMITTED is "does not ask", `null` a refused read */
+        reviewGated?: ReviewGatedPr[] | null;
         refusals: Record<string, { reason: string; ticks: number; }> | null;
         drift: { behind: number; ahead: number; dirty: string[]; } | null; primarySince: number | null;
         fleet?: FleetCaptures | null; waiting?: FleetWaiting | null; copies?: CopyPair[] | null; overdue?: { items: OverdueCandidate[] | null; unread?: string[]; };
@@ -2211,6 +2244,7 @@ export function orgHealthReadings(facts: {
   if (facts.fleet !== undefined) readings.push(fleetIdleReading({ now: facts.now, fleet: facts.fleet, waiting: facts.waiting ?? null }));
   if (facts.copies !== undefined) readings.push(copyDriftReading({ pairs: facts.copies }));
   if (facts.overdue !== undefined) readings.push(overdueReading({ now: facts.now, ...facts.overdue }));
+  if (facts.reviewGated !== undefined) readings.push(reviewGatedUnaskedReading({ now: facts.now, prs: facts.reviewGated }));
   if (facts.waits !== undefined) {
     readings.push(staleWaitReading({ now: facts.now, stale: facts.waits?.stale ?? null }),
       waitWithoutReasonReading({ now: facts.now, bare: facts.waits?.bare ?? null, manual: facts.waits?.manual }));
@@ -2265,6 +2299,9 @@ const REMEDY = (Object.freeze({
     + "`awaiting-author-draft` is its author's to mark ready, `unarmed` is `product-manager`'s, `held-on-purpose` is a hold or a freeze that may have outlived its "
     + "reason (read its `Waiting-for:`, and lift it if the condition is true). The owner may already have been ordered and nothing came of it: READ WHY "
     + "(`gh pr view <n>`), then unstick it, re-lane it by putting the label of a session that can on it, or close it if it is abandoned.",
+  [SIGNALS.REVIEW_GATED_UNASKED]: "A red PR whose failing checks name a review as their remedy has had no reviewer ordered at its head for over two hours. The "
+    + "gate has the answer and asked nobody: read why (`gh pr checks <n>`, and the `Cleared-by:` line each named check's summary carries), then order a reviewer "
+    + "by hand, or re-lane the PR to a session that can, or make the check name a different remedy if the review is the wrong one.",
   [SIGNALS.STALE_WAIT]: "Each wait named still stands although the condition it declared is true: the reason is gone and the wait is a stall, not "
     + "health. The setter was ordered with the exact field to remove and did not. Remove it yourself (`pnpm run pr:hold -- <n> --session=<s> --release` "
     + "for a hold, `gh issue edit <n> --remove-label <label>` for a label, or the `Waiting-for:` line), or re-lane the item to a session that will.",
