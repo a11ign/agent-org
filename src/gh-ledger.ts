@@ -656,16 +656,78 @@ export function alarmLine(alarm: PoolAlarm, nowMs: number): string {
   return [isoOf(nowMs), alarm.account, "incident", "", "0", alarmCommand(alarm.resource), NONE, said.replace(/[\t\n]/g, " "), NONE].join("\t");
 }
 
+// --- #1517: THE SESSION ALARM -- which session spends a burst, named BEFORE the pool is near its line ----------------------
+
+/** A session that spends more than this many points in ten minutes is named (agent-org#1517). A manager's drain was a burst the hour's 70% line saw too late. */
+export const SESSION_POINTS = 500;
+export const SESSION_WINDOW_MS = 10 * 60_000;
+const SESSION_ALARM_COMMAND = "session-500-10min";
+
+export type SessionAlarm = { account: string; session: string; used: number; endedAt: string; top: { caller: string; command: string; points: number }[] };
+
 /**
- * Appends one incident line per pool past the line, at most once an hour per pool: the ledger already holds the last one, so the check
- * reads the ledger and no state file is kept. A ledger that is not there is nothing to alarm on.
+ * THE SESSIONS THAT SPENT MORE THAN `limit` POINTS IN SOME TEN-MINUTE WINDOW of the last hour, one per account and session, with the top callers of
+ * that window. A line is counted at its settled cost (`settle`): a priced call is its movement off the pool's counter, and a line with no counter is its
+ * floor of one. A line with no session (`-`, from before the session was kept) is no session and is counted nowhere here.
+ * The window is the ten minutes ending at a line's own time, `(end - window, end]`. Exactly `limit` is not over it.
+ * @param {LedgerEntry[]} entries @param {{ nowMs?: number, limit?: number, windowMs?: number }} [where]
+ */
+export function sessionAlarms(entries: LedgerEntry[], { nowMs = Date.now(), limit = SESSION_POINTS, windowMs = SESSION_WINDOW_MS }: { nowMs?: number; limit?: number; windowMs?: number; } = {}): SessionAlarm[] {
+  const sessions = new Map<string, { account: string; session: string; events: { at: number; caller: string; command: string; points: number }[] }>();
+  for (const e of settle(entries)) {
+    const at = Date.parse(e.time);
+    if (!e.sessionId || poolOf(e) === null || !(at > nowMs - HOUR_MS && at <= nowMs)) continue;
+    const key = `${e.account}\t${e.sessionId}`;
+    const session = sessions.get(key) ?? { account: e.account, session: e.sessionId, events: [] };
+    session.events.push({ at, caller: callerScript(e.caller), command: e.command, points: spend(e) });
+    sessions.set(key, session);
+  }
+  const alarms: SessionAlarm[] = [];
+  for (const { account, session, events } of sessions.values()) {
+    events.sort((a, b) => a.at - b.at);
+    let first = 0;
+    let sum = 0;
+    let worst: SessionAlarm | null = null;
+    for (let last = 0; last < events.length; last += 1) {
+      sum += events[last].points;
+      while (events[first].at <= events[last].at - windowMs) sum -= events[first++].points;
+      if (sum > limit && (worst === null || sum > worst.used)) {
+        const byCaller = new Map<string, { caller: string; command: string; points: number }>();
+        for (const e of events.slice(first, last + 1)) {
+          const row = byCaller.get(`${e.caller}\t${e.command}`) ?? { caller: e.caller, command: e.command, points: 0 };
+          row.points += e.points;
+          byCaller.set(`${e.caller}\t${e.command}`, row);
+        }
+        worst = { account, session, used: sum, endedAt: isoOf(events[last].at), top: [...byCaller.values()].sort((a, b) => b.points - a.points).slice(0, TOP_IN_ALARM) };
+      }
+    }
+    if (worst !== null) alarms.push(worst);
+  }
+  return alarms.sort((a, b) => `${a.account}/${a.session}`.localeCompare(`${b.account}/${b.session}`));
+}
+
+/** The session alarm as ONE ledger line: resource `incident`, the command names the rule, the session in the session column, and the callers in the caller field. */
+export function sessionAlarmLine(alarm: SessionAlarm, nowMs: number): string {
+  const callers = alarm.top.map((t) => `${t.caller} [${t.command}] ${t.points}`).join("; ");
+  const said = `session ${alarm.session} spent ${alarm.used} points in the ten minutes ending ${alarm.endedAt} (more than ${SESSION_POINTS}); top callers: ${callers}`;
+  return [isoOf(nowMs), alarm.account, "incident", "", "0", SESSION_ALARM_COMMAND, NONE, said.replace(/[\t\n]/g, " "), alarm.session].join("\t");
+}
+
+/**
+ * Appends one incident line per pool past the line, and one per session past `SESSION_POINTS` in a ten-minute window, at most once an hour per pool
+ * and per session: the ledger already holds the last one, so the check reads the ledger and no state file is kept. A ledger that is not there is
+ * nothing to alarm on.
  * @param {string} ledgerPath @param {number} nowMs @returns {string[]} the lines written
  */
 export function recordPoolAlarms(ledgerPath: string, nowMs: number): string[] {
   if (!existsSync(ledgerPath)) return [];
   const entries = parseLedger(readFileSync(ledgerPath, "utf8"));
   const recently = (a: PoolAlarm) => entries.some((e) => e.resource === "incident" && e.account === a.account && e.command === alarmCommand(a.resource) && Date.parse(e.time) > nowMs - HOUR_MS);
-  const lines = poolAlarms(entries, { nowMs }).filter((a) => !recently(a)).map((a) => alarmLine(a, nowMs));
+  const sessionRecently = (a: SessionAlarm) => entries.some((e) => e.resource === "incident" && e.account === a.account && e.sessionId === a.session && e.command === SESSION_ALARM_COMMAND && Date.parse(e.time) > nowMs - HOUR_MS);
+  const lines = [
+    ...poolAlarms(entries, { nowMs }).filter((a) => !recently(a)).map((a) => alarmLine(a, nowMs)),
+    ...sessionAlarms(entries, { nowMs }).filter((a) => !sessionRecently(a)).map((a) => sessionAlarmLine(a, nowMs)),
+  ];
   if (lines.length > 0) appendFileSync(ledgerPath, `${lines.join("\n")}\n`);
   return lines;
 }

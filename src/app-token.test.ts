@@ -260,8 +260,9 @@ test("#4900: ROUTING BY ROLE: no workspace is the scheduler, a workspace is a wo
   h.seed("scheduler", "ghs_scheduler"); h.seed("workers", "ghs_workers"); h.seed("managers", "ghs_managers");
   const gate = h.run({ GH_CONFIG_DIR: WORKERS_CFG(h) }, "pr", "list");
   const worker = h.run({ HERDR_WORKSPACE_ID: "w3" }, "pr", "list");
-  const manager = h.run({ HERDR_WORKSPACE_ID: "w6" }, "pr", "list");
-  const spawned = h.run({ HERDR_WORKSPACE_ID: "w9", GH_CONFIG_DIR: LEADS_CFG(h) }, "pr", "list");
+  // a manager's list is the gate's snapshot unless it names a --limit of 50 or less and a light --json (#1517): the managers' calls are that form
+  const manager = h.run({ HERDR_WORKSPACE_ID: "w6" }, "pr", "list", "--json", "number", "--limit", "30");
+  const spawned = h.run({ HERDR_WORKSPACE_ID: "w9", GH_CONFIG_DIR: LEADS_CFG(h) }, "pr", "list", "--json", "number", "--limit", "30");
   assert.deepEqual([gate, worker, manager, spawned].map((r) => tokenOf(r.stdout)), ["ghs_scheduler", "ghs_workers", "ghs_managers", "ghs_managers"]);
   assert.equal(h.mints(), 0, "every token was served from the file: no process was started");
 });
@@ -402,7 +403,7 @@ test("#4900: the minter is handed the role's declared app, quoted for `sh`: an i
   const h = host(wrapperFor({ ...THREE_APPS, workers: { mode: "github-apps", appId: "4242", keyPath: awkward, installationId: "99" } }));
   h.run({ HERDR_WORKSPACE_ID: "w3" }, "pr", "list");
   assert.equal(h.handed(), `4242|${awkward}|99|workers`);
-  h.run({ HERDR_WORKSPACE_ID: "w6", GH_CONFIG_DIR: "" }, "pr", "list");
+  h.run({ HERDR_WORKSPACE_ID: "w6", GH_CONFIG_DIR: "" }, "pr", "list", "--json", "number", "--limit", "30");
   assert.equal(h.handed(), "id-managers|/nonexistent-4900/managers.pem||managers", "the other role's app, and no installation when none is declared");
 });
 

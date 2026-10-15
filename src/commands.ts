@@ -78,6 +78,7 @@ export const COMMANDS = {
   "close-rows-for-merged-pr": "close-rows-for-merged-pr.ts",
   "close-rows-sweep": "close-rows-sweep.ts",
   "closes-mismatch-check": "closes-mismatch-check.ts",
+  "gate-snapshot-read": "gate-snapshot-read.ts",
   "hand-fix-ledger": "hand-fix-ledger.ts",
   "merge-guard": "merge-guard.ts",
   "merge-queue": "merge-queue.ts",
