@@ -2,6 +2,10 @@ The first line of `host:check` and of `host:install` names the project checkout 
 
 Acceptance: `node --test src/host-units-project-checkout.test.ts`
 
+The test imports `host-units.ts`, and that module's `addedOnSomeRef` reads `git log --all` through the import closure, so this run needs the full history the checkout would otherwise lack.
+
+History: full
+
 Mutation: the reading line dropped from `hostUnitsInstall` failed 1 test; the `ORPHAN` loop emptied failed 1 test; the `PROJECT UNITS EMPTY` guard made `return []` failed 1 test (the positive control). `src/host-units.ts` restored byte-identical each time (`diff` against a copy).
 
 Measured: `ℹ pass 3` / `ℹ fail 0` for the Acceptance file. `pnpm run typecheck` exits 0. `node --test src/packaging/host-units.test.ts` passes 181 of 181, and the other host-units test files pass (`host-units-event-receiver`, `host-tool-install`). Every test file that references `host-units.ts`, `hostUnitsInstall`, `driftReport` or `host:check` ran against this tree and against a `git archive` of HEAD: the failing names on this tree are a subset of the failing names on HEAD (38 against 40, the two extra on HEAD being `#3485` and the `--arm` case, which fail only in the archive), so nothing new fails.
