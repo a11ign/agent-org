@@ -2297,7 +2297,7 @@ export function orgHealthTick(facts: Parameters<typeof orgHealthReadings>[0], { 
 //   tracked file because THE GATE TURNS IT OFF, and a write to a file of the primary checkout would trip `primary-not-at-main` and could not land past the merge queue.
 //   THE SIGNALS: each tick appends ONE SAMPLE of the standard signals (`MACHINERY_SIGNALS`); a signal the tick could not read is `null`, which is not zero and is never counted as clean.
 //   THE CANARY: the tick a flag is read `on` with no `onAt` starts it. The hour BEFORE is read from the samples already recorded; the hour AFTER is read as it fills. A signal whose after-count reaches
-//   `degradeFactor` times its before-rate (and `minRise` more) turns the flag OFF, files an incident carrying both readings, and orders `ceo`. Counts only grow, so a degraded reading half way through the hour is
+//   `degradeFactor` times its before-rate, or the day's hourly mean if that is higher (a11ign#5444), and `minRise` more, turns the flag OFF, files an incident carrying both readings, and orders `ceo`. Counts only grow, so a degraded reading half way through the hour is
 //   degraded at its end, and the revert need not wait for the hour.
 //   THE EXPIRY (`expireSuppressions`): a suppression that keeps an order from its holder for `suppressionMinutes` with no claimed row working its reason hands the holder the reason and the original order.
 // =====================================================================================================================
@@ -2325,6 +2325,8 @@ export const UNQUEUED_MINUTES = 15;
 const CANARY_ORDER_HOURS = 2;
 /** The samples kept: the hour before and the hour after, and one more hour for a flag turned on late in a tick. */
 const SAMPLE_WINDOWS_KEPT = 3;
+/** The day a canary's baseline is read over (a11ign#5444): one quiet hour is not the org's norm, so the bar also takes the day's hourly mean. A day that is less than half recorded is unread. */
+const BASELINE_MS = 24 * MS_PER_HOUR;
 
 export type CanaryOptions = { enabled: boolean, windowMinutes: number, degradeFactor: number, minRise: number, suppressionMinutes: number };
 /** ON BY DEFAULT, because it protects any adopter (the row, change 4). */
@@ -2404,7 +2406,8 @@ const oneDecimal = (n: number): number => Math.round(n * 10) / 10;
 
 /**
  * ONE SIGNAL, BEFORE AND AFTER. `before` is the count per window of the hour before `onAt`, scaled by how much of that hour was recorded (and UNKNOWN when less than half of it was: a rate from ten minutes
- * is not a baseline). DEGRADED when the after-count so far reaches `degradeFactor` times that and `minRise` more. Because the count only grows, degraded at minute 20 is degraded at minute 60.
+ * is not a baseline). The BASELINE is the higher of that and the trailing day's hourly mean before `onAt` (a11ign#5444; the day is read only when half of it was recorded). DEGRADED when the after-count so far reaches
+ * `degradeFactor` times the baseline and `minRise` more. Because the count only grows, degraded at minute 20 is degraded at minute 60.
  * A signal read as `null` for the whole of a window is UNKNOWN, which is neither degraded nor clean.
  */
 export function signalReading({ signal, samples, onAt, now, options }: { signal: string; samples: CanarySample[]; onAt: number; now: number; options: CanaryOptions; }): SignalReading {
@@ -2416,10 +2419,16 @@ export function signalReading({ signal, samples, onAt, now, options }: { signal:
     return { signal, status: "unknown", before: null, after: after.sum, detail: `${minutes(before.coveredMs)} of the ${options.windowMinutes} min before was recorded, which is not a baseline` };
   }
   const perWindow = (before.sum * windowMs) / before.coveredMs;
-  const limit = Math.max(perWindow * options.degradeFactor, perWindow + options.minRise);
+  // ONE QUIET HOUR IS NOT THE NORM (a11ign#5444): a zero hour set the bar at 3, the org's own base rate, so three ordinary refusals reverted a flag that cannot touch a claim.
+  // The bar is built from the higher of the hour and the day's hourly mean; a day less than half recorded is no baseline, and the hour alone stands.
+  const day = windowOf(samples, signal, [onAt - BASELINE_MS, onAt]);
+  const dayPerWindow = day.coveredMs >= BASELINE_MS / 2 ? (day.sum * windowMs) / day.coveredMs : null;
+  const baseline = Math.max(perWindow, dayPerWindow ?? 0);
+  const limit = Math.max(baseline * options.degradeFactor, baseline + options.minRise);
   const status = after.sum >= limit ? "degraded" : now - onAt >= windowMs && after.coveredMs === 0 ? "unknown" : "ok";
   const why = status === "degraded" ? `reached ${oneDecimal(limit)} (${options.degradeFactor}x and +${options.minRise})` : status === "unknown" ? "was not read in the hour after" : `stayed under ${oneDecimal(limit)}`;
-  return { signal, status, before: oneDecimal(perWindow), after: after.sum, detail: `${oneDecimal(perWindow)} in the hour before, ${after.sum} since (${minutes(now - onAt)} min): ${why}` };
+  const hour = dayPerWindow !== null && dayPerWindow > perWindow ? `${oneDecimal(perWindow)} in the hour before; 24 h mean ${oneDecimal(dayPerWindow)}/h is the baseline` : `${oneDecimal(perWindow)} in the hour before`;
+  return { signal, status, before: oneDecimal(perWindow), after: after.sum, detail: `${hour}, ${after.sum} since (${minutes(now - onAt)} min): ${why}` };
 }
 
 /**
@@ -2543,7 +2552,9 @@ function advance({ state, facts, now, options }: { state: CanaryState; facts: Ca
   const windowMs = options.windowMinutes * MS_PER_MINUTE;
   const since = state.samples.at(-1)?.to ?? now - windowMs; // the first sample backfills one window of the events it can date
   const { values, memo } = machineryValues({ facts, since, now, memo: state.memo });
-  const samples = [...state.samples, { from: since, to: now, values }].filter((sample) => sample.to > now - SAMPLE_WINDOWS_KEPT * windowMs);
+  // The day's baseline needs a day of samples (a11ign#5444), and a flag's watched hour sits inside it.
+  const kept = Math.max(SAMPLE_WINDOWS_KEPT * windowMs, BASELINE_MS + windowMs);
+  const samples = [...state.samples, { from: since, to: now, values }].filter((sample) => sample.to > now - kept);
   const flags = Object.fromEntries(Object.entries(state.flags).map(([name, record]) => [name, evaluateFlag({ record, samples, now, options })]));
   return { flags, samples, memo };
 }
