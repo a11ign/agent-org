@@ -82,6 +82,8 @@ export const ORG_HEALTH_CLASSES: Readonly<Record<string, { severity: "page"; } |
   "flag-without-a-switch": DIGEST, // agent-org#1135: a list named once a day to its first reader, `product-manager`, who files each switch row; `ceo` reading it again adds a turn and not a decision
   "queue-entry-no-run": DIGEST, // agent-org#1195: the day's count of re-queues, and an incident for a repeat; `product-manager` reads it first and is not quieted, and a queue that stays stuck also pages `no-merge-while-work-exists`
   "queue-head-age": DIGEST, // agent-org#1195: the position-1 entry past ten minutes, one order per day and pull request; it rides the next order rather than waking `ceo`, because a queue that stays stuck also pages `no-merge-while-work-exists`
+  "required-red-on-5xx": DIGEST, // agent-org#1218: the day's count of 5xx reruns is a measurement, never a page
+  "manual-reruns": DIGEST, // agent-org#1218: a person's rerun of a 5xx the detector did not answer; read in the digest
 });
 
 type Suppression = { at: number, class: string, key: string, count: number, why: string };
