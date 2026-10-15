@@ -8,15 +8,16 @@
  *
  * FAIL CLOSED: a record that cannot be read holds with no end, and a flag that cannot be read is not off, so a recorded pause still holds under it.
  */
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ACCOUNT_LIMIT_FLAG, UNREADABLE_RECORD, accountLimitFlag, accountLimitLogPath, nextLimit, pauseRefusal, pausedNow, readAccountLimits, tickAccountLimit,
   writeAccountLimits, ACCOUNT_LIMIT_FILE, type AccountLimit } from "./account-limit.ts";
 import { claimStalledOrders } from "./claim-stall.ts";
-import { deliver as settlingDeliver } from "./wake.ts";
+import { deliver as settlingDeliver, freeLimitMenuSeats, limitMenuTick } from "./wake.ts";
+import { isLimitMenu, tellBlocked } from "./worker-state.ts";
 import { INSIDE } from "./review-trust.ts";
 import { startedPanes } from "./packaging/started-pane.ts";
 import { CANARY_STATE_FILE, emptyCanaryState, withMachineryFlag, type CanaryState } from "./org-health.ts";
@@ -265,3 +266,243 @@ test("a claimed row is not released by claim-stall while the account is limited,
 // --- DONE-WHEN 1, THE MUTATION: the spawn refusal is the thing that holds the first test ----------------------------------------------------
 // `deliver` refuses a non-reviewer order at `targetFor` while `accountPause` is set. Remove that check and the limited test above starts the
 // engineer and the Claude decision seat, and goes red; restored, it is green again.
+
+// --- agent-org#1412: A SEAT PARKED ON THE LIMIT MENU IS FREED ONCE ITS RESET HAS PASSED, AND IS NOT TOLD THE DECLARE-OR-DECIDE TEXT ------------
+// The menu's wording is the row's quote; no capture of the real screen exists in the repo, so the fixture is that quote, not a recording.
+
+/** The menu as the row quotes it: the question, and the two options the detector needs on the screen. */
+const MENU = "What do you want to do?\n  1. Stop and wait for limit to reset\n  2. Wait here\n  3. Switch to usage credits";
+const SESSION = "11111111-2222-3333-4444-555555555555";
+/** Said at 08:00Z, so its reset is 11:00Z (NOW is before it, PAST after it). */
+const SAID = "You've hit your session limit · resets 11am (UTC)";
+const WRITTEN = Date.parse("2026-10-13T08:00:00Z");
+const PAST = Date.parse("2026-10-13T12:00:00Z");
+
+const quiet = () => {};
+
+/** Every directory the menu tests make, removed when the file is done: the run checks that nothing is left in TMPDIR. */
+const madeDirs: string[] = [];
+after(() => { for (const dir of madeDirs) rmSync(dir, { recursive: true, force: true }); });
+function madeDir(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  madeDirs.push(dir);
+  return dir;
+}
+
+/** A home whose transcript for {@link SESSION} last says `text`, written at `writtenAt`. */
+function homeSaying(text: string, writtenAt: number): string {
+  const home = madeDir("limit-menu-home-");
+  mkdirSync(join(home, ".claude", "projects", "proj"), { recursive: true });
+  writeFileSync(join(home, ".claude", "projects", "proj", `${SESSION}.jsonl`),
+    `${JSON.stringify({ type: "assistant", timestamp: new Date(writtenAt).toISOString(), message: { content: text } })}\n`);
+  return home;
+}
+
+/** A herdr for one seat: `agent get` names a claude session, `agent read` shows `pane` (throws for `null`), and every `send-keys` is recorded. */
+function seatHerdr(pane: string | null, { refuseKeys = false }: { refuseKeys?: boolean } = {}) {
+  const calls: string[] = [];
+  const run = (args: string[]) => {
+    calls.push(args.join(" "));
+    if (args.includes("get")) return JSON.stringify({ result: { agent: { agent: "claude", agent_session: { value: SESSION } } } });
+    if (args.includes("read")) {
+      if (pane === null) throw new Error("no pane");
+      return pane;
+    }
+    if (args.includes("send-keys") && refuseKeys) throw new Error("send-keys refused");
+    return "{}";
+  };
+  return { run, keys: () => calls.filter((c) => c.includes("send-keys")) };
+}
+
+test("the limit menu needs BOTH of its options on the screen: a quote of one is not the menu, and a pane that could not be read is not", () => {
+  assert.equal(isLimitMenu(MENU), true);
+  assert.equal(isLimitMenu("1. Stop and wait for limit to reset"), false);
+  assert.equal(isLimitMenu(null), false);
+});
+
+test("CONTROL: a blocked seat on the limit menu whose reset has passed gets exactly one `esc`, and the freeing is said once", () => {
+  const herdr = seatHerdr(MENU);
+  const said: string[] = [];
+  const freed = freeLimitMenuSeats(agents({ "worker-1": "blocked" }), { run: herdr.run, home: homeSaying(SAID, WRITTEN), now: PAST,
+    say: (line) => said.push(line), state: flagOn(true) });
+  assert.deepEqual(freed, ["worker-1"]);
+  assert.deepEqual(herdr.keys(), ["--session org agent send-keys worker-1 esc"], "the one key is `esc`: never `enter`, never a digit");
+  assert.deepEqual(said, ["freed 1 seats from the limit menu: worker-1"]);
+});
+
+test("a menu seat whose reset has NOT come is left alone: no key, and nothing said", () => {
+  const herdr = seatHerdr(MENU);
+  const said: string[] = [];
+  const freed = freeLimitMenuSeats(agents({ "worker-1": "blocked" }), { run: herdr.run, home: homeSaying(SAID, WRITTEN), now: NOW,
+    say: (line) => said.push(line), state: flagOn(true) });
+  assert.deepEqual(freed, []);
+  assert.deepEqual(herdr.keys(), []);
+  assert.deepEqual(said, []);
+});
+
+test("a blocked seat on another question, not the menu, gets neither `esc` nor limit handling, even with a past reset", () => {
+  const herdr = seatHerdr("Which branch should I use?\n(y/n)");
+  const freed = freeLimitMenuSeats(agents({ "worker-1": "blocked" }), { run: herdr.run, home: homeSaying(SAID, WRITTEN), now: PAST, say: quiet,
+    state: flagOn(true) });
+  assert.deepEqual(freed, []);
+  assert.deepEqual(herdr.keys(), []);
+});
+
+test("only a `blocked` seat is freed: a working seat that shows the menu is not touched", () => {
+  const herdr = seatHerdr(MENU);
+  const freed = freeLimitMenuSeats(agents({ "worker-1": "working" }), { run: herdr.run, home: homeSaying(SAID, WRITTEN), now: PAST, say: quiet,
+    state: flagOn(true) });
+  assert.deepEqual(freed, []);
+  assert.deepEqual(herdr.keys(), []);
+});
+
+test("a menu seat whose last word is no longer the limit message (it has answered since) is not freed", () => {
+  const herdr = seatHerdr(MENU);
+  const freed = freeLimitMenuSeats(agents({ "worker-1": "blocked" }), { run: herdr.run, home: homeSaying("Done.", WRITTEN), now: PAST, say: quiet,
+    state: flagOn(true) });
+  assert.deepEqual(freed, []);
+  assert.deepEqual(herdr.keys(), []);
+});
+
+test("the flag OFF frees nothing, even a menu seat with a past reset; a pane that cannot be read frees nothing", () => {
+  const off = seatHerdr(MENU);
+  assert.deepEqual(freeLimitMenuSeats(agents({ "worker-1": "blocked" }), { run: off.run, home: homeSaying(SAID, WRITTEN), now: PAST, say: quiet,
+    state: flagOn(false) }), []);
+  assert.deepEqual(off.keys(), []);
+  const unreadable = seatHerdr(null);
+  assert.deepEqual(freeLimitMenuSeats(agents({ "worker-1": "blocked" }), { run: unreadable.run, home: homeSaying(SAID, WRITTEN), now: PAST, say: quiet,
+    state: flagOn(true) }), []);
+  assert.deepEqual(unreadable.keys(), []);
+});
+
+test("a seat whose `esc` is refused is not counted as freed, and nothing is said", () => {
+  const herdr = seatHerdr(MENU, { refuseKeys: true });
+  const said: string[] = [];
+  const freed = freeLimitMenuSeats(agents({ "worker-1": "blocked" }), { run: herdr.run, home: homeSaying(SAID, WRITTEN), now: PAST,
+    say: (line) => said.push(line), state: flagOn(true) });
+  assert.deepEqual(freed, []);
+  assert.deepEqual(said, []);
+});
+
+// --- THE SAME SEAT, TOLD BY THE TICK: a menu seat is not sent the declare-or-decide text, and is not reported untold ----------------------
+
+test("CONTROL: a blocked worker on the limit menu is neither told nor reported untold, in one tick or the next", () => {
+  const path = join(madeDir("blocked-told-"), "blocked-told.json");
+  const sent: string[] = [];
+  const reported: string[] = [];
+  const roster = [{ label: "worker-1", status: "blocked" }];
+  const tell = () => tellBlocked({ roster, path, send: (label) => sent.push(label), report: (line) => reported.push(line),
+    onLimitMenu: (label) => label === "worker-1" });
+  assert.deepEqual(tell(), { sent: [], untold: [] });
+  assert.deepEqual(tell(), { sent: [], untold: [] });
+  assert.deepEqual(sent, [], "no declare-or-decide text is typed into the menu");
+  assert.deepEqual(reported, [], "no `stopped on a question` repeat");
+});
+
+test("a blocked worker NOT on the menu is still told, once: the menu skip does not swallow the ordinary stall", () => {
+  const path = join(madeDir("blocked-told-"), "blocked-told.json");
+  const sent: string[] = [];
+  const roster = [{ label: "worker-2", status: "blocked" }];
+  const result = tellBlocked({ roster, path, send: (label) => sent.push(label), onLimitMenu: () => false });
+  assert.deepEqual(sent, ["worker-2"]);
+  assert.deepEqual(result, { sent: ["worker-2"], untold: [] });
+});
+
+// --- THE TICK'S OWN STEP, AND THE DEFAULT READERS: `limitMenuTick` is what `main` calls; a fake `herdr` on PATH answers the production reads -------
+
+/** The state directory a tick writes its record to: a fresh, empty one, so the record is the test's own. */
+const tickDir = () => madeDir("limit-menu-state-");
+
+/**
+ * Runs `body` with a `herdr` first on PATH and HOME set to `home`, so the production readers (`defaultRun`, `paneOf`) run as they do in a tick. The fake
+ * answers `agent get` with a claude session, `agent read` with `pane`, and logs every call; it returns the body's result with those calls.
+ */
+function withFakeHerdr<T>(pane: string, home: string, body: () => T): { result: T; calls: string[] } {
+  const bin = madeDir("limit-menu-bin-");
+  const log = join(bin, "calls.log");
+  const paneFile = join(bin, "pane.txt");
+  const got = JSON.stringify({ result: { agent: { agent: "claude", agent_session: { value: SESSION } } } });
+  writeFileSync(paneFile, pane);
+  writeFileSync(join(bin, "herdr"), [
+    "#!/bin/sh",
+    `echo "$*" >> "${log}"`,
+    'case "$*" in',
+    `  *" get "*) echo '${got}' ;;`,
+    `  *" read "*) cat "${paneFile}" ;;`,
+    "esac",
+    "",
+  ].join("\n"), { mode: 0o755 });
+  const saved = { PATH: process.env.PATH, HOME: process.env.HOME };
+  process.env.PATH = `${bin}:${saved.PATH ?? ""}`;
+  process.env.HOME = home;
+  try {
+    const result = body();
+    return { result, calls: existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : [] };
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+test("CONTROL, through the tick's own step: a menu seat whose reset has passed gets exactly one `esc`, no pause holds, and the freeing is said once", () => {
+  const herdr = seatHerdr(MENU);
+  const said: string[] = [];
+  const pause = limitMenuTick(agents({ "worker-1": "blocked" }), { now: PAST, run: herdr.run, home: homeSaying(SAID, WRITTEN), dir: tickDir(),
+    say: (line) => said.push(line), state: flagOn(true) });
+  assert.equal(pause, null, "the reset has passed, so no account pause holds");
+  assert.deepEqual(herdr.keys(), ["--session org agent send-keys worker-1 esc"], "the one key is `esc`");
+  assert.deepEqual(said, ["freed 1 seats from the limit menu: worker-1"]);
+});
+
+test("through the tick's own step: before the reset the pause holds, the menu seat is left alone, and no key is sent", () => {
+  const herdr = seatHerdr(MENU);
+  const said: string[] = [];
+  const pause = limitMenuTick(agents({ "worker-1": "blocked" }), { now: NOW, run: herdr.run, home: homeSaying(SAID, WRITTEN), dir: tickDir(),
+    say: (line) => said.push(line), state: flagOn(true) });
+  assert.equal(pause?.limitedUntil, RESET, "the account pause holds until the reset");
+  assert.deepEqual(herdr.keys(), [], "no key is sent to the seat while the pause holds");
+  assert.equal(said.length, 1, "only the pause's entering is said, not the freeing");
+  assert.match(said[0], /^Claude allowance spent on/);
+});
+
+test("through the tick's own step: with the flag OFF nothing is freed and no pause holds, whatever the menu shows", () => {
+  const herdr = seatHerdr(MENU);
+  const pause = limitMenuTick(agents({ "worker-1": "blocked" }), { now: PAST, run: herdr.run, home: homeSaying(SAID, WRITTEN), dir: tickDir(),
+    say: quiet, state: flagOn(false) });
+  assert.equal(pause, null);
+  assert.deepEqual(herdr.keys(), []);
+});
+
+test("the default herdr readers, through a fake `herdr` on PATH: the tick frees a menu seat whose reset has passed with exactly one `esc`", () => {
+  const said: string[] = [];
+  const { result, calls } = withFakeHerdr(MENU, homeSaying(SAID, WRITTEN), () => limitMenuTick(agents({ "worker-1": "blocked" }),
+    { now: PAST, dir: tickDir(), say: (line) => said.push(line), state: flagOn(true) }));
+  assert.equal(result, null);
+  assert.deepEqual(calls.filter((call) => call.includes(" send-keys ")), ["--session org agent send-keys worker-1 esc"],
+    "the production reader names the seat, and the only key is `esc`");
+  assert.deepEqual(said, ["freed 1 seats from the limit menu: worker-1"]);
+});
+
+test("the default pane reader, through a fake `herdr` on PATH: a blocked worker on the menu is neither told nor untold, and one on another question is told once", () => {
+  const tell = (pane: string) => withFakeHerdr(pane, homeSaying(SAID, WRITTEN), () => {
+    const path = join(madeDir("blocked-told-"), "blocked-told.json");
+    const sent: string[] = [];
+    const roster = [{ label: "worker-1", status: "blocked" }];
+    const first = tellBlocked({ roster, path, send: (label) => sent.push(label), report: quiet });
+    const second = tellBlocked({ roster, path, send: (label) => sent.push(label), report: quiet });
+    return { sent, first, second };
+  });
+  const onMenu = tell(MENU);
+  assert.deepEqual(onMenu.result, { sent: [], first: { sent: [], untold: [] }, second: { sent: [], untold: [] } });
+  const otherQuestion = tell("Which branch should I use?\n(y/n)");
+  assert.deepEqual(otherQuestion.result.sent, ["worker-1"], "the ordinary stall is told once");
+  assert.equal(otherQuestion.calls.some((call) => call.includes(" read worker-1")), true, "the pane is read through the default reader");
+});
+
+test("#1412 THE TICK CALLS IT: `main` takes its pause from `limitMenuTick`, and no second copy of the freeing sits beside it (a SOURCE pin on placement only: `main` is not driven whole by any test)", () => {
+  const source = readFileSync(new URL("./wake.ts", import.meta.url), "utf8");
+  assert.equal(source.split("const accountPause = limitMenuTick(agents);").length - 1, 1, "one call, in `main`");
+  assert.doesNotMatch(source, /if \(accountPause === null\) freeLimitMenuSeats/, "the freeing is not called from `main` a second way");
+});
