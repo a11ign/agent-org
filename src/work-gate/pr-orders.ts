@@ -41,6 +41,7 @@ import { createRow } from "../ticket-port/approved-unqueued-reads.ts";
 import { readRowsByLabel } from "../ticket-port/rows-by-label.ts";
 import { ensureTriageLabel } from "../ticket-port/outside-idle-writes.ts";
 import { boardFiledRow } from "../ticket-port/board-filed-row.ts";
+import { briefChairmanOnPull } from "../ticket-port/chairman-brief.ts";
 import { labelsOf, sessionOf, conflictStateOf, CONFLICT_STATE, reviewStateOf, BLOCKING_REVIEW_STATES, checksSettledGreen, conclusionOf, stillRunning, anyChecksRed, requiredCheckNames,
   blockingChecks, reviewableHead, reviewWait, verdictAmong, awaitingEvidence, AWAITING_EVIDENCE_LABEL,
   AWAITING_EVIDENCE_QUIET_HOURS, AWAITING_EVIDENCE_QUIET_MS, HOUR_MS, REVIEW_STATE, CHAIRMAN_LOGINS } from "../work-gate.ts";
@@ -1635,8 +1636,7 @@ export function fileReviewGatedHuman(prs: any[], { required, run, log }: {
     const brief = reviewGatedHumanBrief(pr);
     if ((pr.comments ?? []).some((c: any) => String(c?.body ?? "").includes(brief.marker))) continue;
     try {
-      run(["pr", "edit", String(pr.number), "--repo", pr.repo, "--add-label", NEEDS_CHAIRMAN_LABEL]);
-      run(["pr", "comment", String(pr.number), "--repo", pr.repo, "--body", brief.body]);
+      briefChairmanOnPull({ repo: pr.repo, number: pr.number, label: NEEDS_CHAIRMAN_LABEL, body: brief.body, run });
       count++;
     } catch (error) {
       log(`review-gated-human: could not brief #${pr.number} (${String((error as Error).message).split("\n")[0]}); the next tick retries\n`);
