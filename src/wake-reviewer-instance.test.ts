@@ -1084,6 +1084,17 @@ test("#1348 (2c): a FAILED refresh keeps the token that is there, and says why",
   assert.deepEqual(readdirSync(tokens), ["reviewer.token"], "and the scratch directory is removed");
 });
 
+test("#1348 (2e): a cache that cannot be written is a NAMED refusal, not a throw: a checkout that is a file mints nothing and the tick goes on", () => {
+  const dir = tmpDirForFile("reviewer-token-enotdir-");
+  const tree = join(dir, "tree");
+  writeFileSync(tree, "not a checkout\n");
+  const stub = stubMinter(dir);
+  const why = ensureReviewerToken(tree, APP, { now: NOW_MS, script: stub.script });
+  assert.match(why ?? "", /could not be refreshed: .*ENOTDIR/);
+  assert.deepEqual(stub.calls(), [], "the minter is never asked when the cache cannot be made");
+  assert.equal(readFileSync(tree, "utf8"), "not a checkout\n", "and the checkout file is left as it was");
+});
+
 test("#1348 (2d): a host that does not declare the reviewer as an app mints NOTHING and makes no directory", () => {
   const dir = tmpDirForFile("reviewer-token-none-");
   const tree = join(dir, "tree");

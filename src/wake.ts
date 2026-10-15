@@ -1163,23 +1163,28 @@ export function reviewerTokenMinter(app: ReviewerApp): (tree: string) => string 
  * Make sure the reviewer's token in `tree` lasts past {@link REVIEWER_TOKEN_REFRESH_SECONDS}, minting one when it does not. The minter writes into a
  * SCRATCH directory that is renamed over the token only when it succeeds, so a failed refresh keeps the token there is. Its key is passed to the
  * minter's environment and to nothing else: the reviewer's environment names the token directory and never the key.
+ * A filesystem failure in the cache (a checkout that is a file, a read-only disk) is a named reason too, not a throw: the tick must not die on it.
  * @returns `null` when the token is good (or there is no app to mint for), else the reason it is not, for the caller to say.
  */
 export function ensureReviewerToken(tree: string, app: AppIdentity | null, { now = Date.now(), script = APP_TOKEN_SCRIPT }: { now?: number, script?: string } = {}): string | null {
   if (app === null) return null;
   const dir = reviewerTokenDir(tree);
-  if (!tokenNeedsRefresh({ cacheDir: dir, role: "reviewer", now: now / 1000, marginSeconds: REVIEWER_TOKEN_REFRESH_SECONDS })) return null;
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const scratch = mkdtempSync(join(dir, "mint-"));
   try {
-    const minted = spawnSync(process.execPath, [script, "reviewer"], { encoding: "utf8", timeout: APP_TOKEN_MINT_TIMEOUT_MS, stdio: ["ignore", "ignore", "pipe"],
-      env: { PATH: process.env.PATH ?? "", A11Y_APP_ID: app.appId, A11Y_APP_KEY_PATH: app.keyPath, A11Y_APP_TOKEN_DIR: scratch,
-        ...(app.installationId === undefined ? {} : { A11Y_APP_INSTALLATION_ID: app.installationId }) } });
-    if (minted.status !== 0) return `the reviewer's app token could not be minted: ${firstLine(minted.stderr || minted.error || "no reason was given")}`;
-    renameSync(join(scratch, "reviewer.token"), join(dir, "reviewer.token"));
-    return null;
-  } finally {
-    rmSync(scratch, { recursive: true, force: true });
+    if (!tokenNeedsRefresh({ cacheDir: dir, role: "reviewer", now: now / 1000, marginSeconds: REVIEWER_TOKEN_REFRESH_SECONDS })) return null;
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const scratch = mkdtempSync(join(dir, "mint-"));
+    try {
+      const minted = spawnSync(process.execPath, [script, "reviewer"], { encoding: "utf8", timeout: APP_TOKEN_MINT_TIMEOUT_MS, stdio: ["ignore", "ignore", "pipe"],
+        env: { PATH: process.env.PATH ?? "", A11Y_APP_ID: app.appId, A11Y_APP_KEY_PATH: app.keyPath, A11Y_APP_TOKEN_DIR: scratch,
+          ...(app.installationId === undefined ? {} : { A11Y_APP_INSTALLATION_ID: app.installationId }) } });
+      if (minted.status !== 0) return `the reviewer's app token could not be minted: ${firstLine(minted.stderr || minted.error || "no reason was given")}`;
+      renameSync(join(scratch, "reviewer.token"), join(dir, "reviewer.token"));
+      return null;
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  } catch (cause) {
+    return `the reviewer's token cache at ${dir} could not be refreshed: ${firstLine(cause instanceof Error ? cause.message : String(cause))}`;
   }
 }
 
