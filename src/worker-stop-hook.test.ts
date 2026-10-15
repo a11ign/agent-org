@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { FAILURE_LEDGER_FILE, parseFailureLedger } from "./failure-ledger.ts";
+import type { Gh } from "./worker-state.ts";
 import type { Seams, StopPr } from "./worker-stop-hook.ts";
 
 // agent-org#1147: THE PROJECT THIS FILE RUNS AGAINST IS A RECORDED ONE (`org-health.test.ts`'s #3233 rule). The hook's imports reach `board-snapshot-scope.ts`, which reads the
@@ -27,6 +28,7 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
 const { WORKER_STATE_DIR, readDeclarations, writeDeclaration } = await import("./worker-state.ts");
+const { ANSWER_PREFIX, SESSION_PREFIX } = await import("./project-vocabulary.ts");
 const { MAX_REFUSALS, STOP_HOOK_BOUND_KIND, STOP_HOOK_DIR, claimedRowOf, main, runHook } = await import("./worker-stop-hook.ts");
 
 const T0 = Date.parse("2026-10-11T09:00:00Z");
@@ -49,8 +51,18 @@ test.after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force:
 /** The refusal fixture, with `over` changed. `prs` is what the repository lists. */
 function seams(dir: string, over: Omit<Partial<Seams>, "prs"> & { prs?: StopPr[] } = {}): Seams {
   const { prs = [], ...rest } = over;
-  return { session: SESSION, trackers: TRACKERS, stateDir: dir, now: T0, prs: () => prs, owns, ...rest };
+  return { session: SESSION, trackers: TRACKERS, stateDir: dir, now: T0, prs: () => prs, owns, gh: fakeGh([]), answerPrefix: ANSWER_PREFIX, sessionPrefix: SESSION_PREFIX, ...rest };
 }
+/** The `gh` the bound writes through, every call recorded in `calls`: the row is read OPEN, CLOSED, or not at all (`row`), and the writes answer nothing. */
+function fakeGh(calls: string[][], row: "open" | "closed" | "unreadable" = "open"): Gh {
+  return (args) => {
+    calls.push(args);
+    if (args[0] !== "issue" || args[1] !== "view") return "";
+    if (row === "unreadable") throw Object.assign(new Error("HTTP 502"), { stderr: "HTTP 502" });
+    return JSON.stringify({ state: row === "open" ? "OPEN" : "CLOSED", labels: [] });
+  };
+}
+const declaredOf = (dir: string) => readDeclarations(`${dir}/${WORKER_STATE_DIR}`)?.byClaimant.get(SESSION);
 const declare = (dir: string, atMinutes: number, state: "done" | "waiting-ci" = "waiting-ci") =>
   writeDeclaration(`${dir}/${WORKER_STATE_DIR}`, { session: SESSION, state, at: T0 + atMinutes * MIN, ...(state === "done" ? {} : { pr: { number: 901 } }) });
 const countFile = (dir: string) => `${dir}/${STOP_HOOK_DIR}/${SESSION}.json`;
@@ -93,18 +105,50 @@ test("the twins of the allowances still refuse: a declaration older than the tur
   assert.equal(runHook(OFF, seams(stateDir(), { prs: [{ number: 7, state: "OPEN", headRefName: "agent/other-row-852", title: "Other (agent-org#852)", labels: [] }] })).code, 2, "another row's pull request");
 });
 
-test("BOUNDED: the third consecutive refusal for one row is not issued; the stop is allowed and ONE failure-ledger line is written", () => {
+test("BOUNDED: the third consecutive refusal for one row is not issued; the stop is allowed, ONE failure-ledger line is written, and the row is declared blocked for product-manager", () => {
   const dir = stateDir();
+  const calls: string[][] = [];
+  const gh = fakeGh(calls);
   assert.equal(MAX_REFUSALS, 2);
-  assert.equal(runHook(OFF, seams(dir)).code, 2);
-  assert.equal(runHook(OFF, seams(dir)).code, 2);
+  assert.equal(runHook(OFF, seams(dir, { gh })).code, 2);
+  assert.equal(runHook(OFF, seams(dir, { gh })).code, 2);
   assert.deepEqual(ledgerEntries(dir), [], "nothing is on the ledger while the hook is still refusing");
-  const third = runHook(OFF, seams(dir, { now: T0 + 5 * MIN }));
+  assert.equal(calls.length, 0, "nothing is written to GitHub while the hook is still refusing");
+  const third = runHook(OFF, seams(dir, { now: T0 + 5 * MIN, gh }));
   assert.equal(third.code, 0, "the bound");
   assert.match(third.say.join("\n"), /ALLOWED/);
   const lines = ledgerEntries(dir);
   assert.equal(lines.length, 1);
   assert.deepEqual(lines[0], { classKey: STOP_HOOK_BOUND_KIND, at: T0 + 5 * MIN, ref: `${REPO}#853` });
+  assert.deepEqual(declaredOf(dir), { session: SESSION, state: "blocked", at: T0 + 5 * MIN, row: 853, repo: REPO, to: "product-manager", reason: `ended its turn after ${MAX_REFUSALS} refusals of worker:stop-hook with no pull request and no declaration; nothing says what it was waiting for` }, "the declaration the refusal named, made for the worker");
+  assert.ok(calls.some((args) => args.join(" ") === `issue edit 853 --repo ${REPO} --add-label ${ANSWER_PREFIX}product-manager`), "the answer label is put on the row");
+  assert.ok(calls.some((args) => args[0] === "issue" && args[1] === "comment" && args[2] === "853"), "the reason is posted on the row");
+});
+
+test("at the bound, a row that cannot be read or is closed gets no declaration: the stop is still allowed, the ledger line is still written, and the failure is said", () => {
+  for (const row of ["unreadable", "closed"] as const) {
+    const dir = stateDir();
+    const calls: string[][] = [];
+    const gh = fakeGh(calls, row);
+    runHook(OFF, seams(dir, { gh }));
+    runHook(OFF, seams(dir, { gh }));
+    const third = runHook(OFF, seams(dir, { now: T0 + 5 * MIN, gh }));
+    assert.equal(third.code, 0, row);
+    assert.match(third.say.join("\n"), /NOT DECLARED/, row);
+    assert.equal(declaredOf(dir), undefined, `${row}: nothing is declared`);
+    assert.equal(ledgerEntries(dir).length, 1, `${row}: the ledger line is still written`);
+    assert.ok(!calls.some((args) => args[0] === "label" || args.includes("--add-label") || args[1] === "comment"), `${row}: nothing is labelled or commented`);
+  }
+});
+
+test("the bound writes NO declaration when the worker has an open pull request at the same count", () => {
+  const dir = stateDir();
+  mkdirSync(`${dir}/${STOP_HOOK_DIR}`, { recursive: true });
+  writeFileSync(countFile(dir), `${JSON.stringify({ row: "agent-org#853", refusals: MAX_REFUSALS })}\n`);
+  const calls: string[][] = [];
+  assert.deepEqual(runHook(OFF, seams(dir, { prs: [PR_OF_THE_ROW], gh: fakeGh(calls) })), { code: 0, say: [] });
+  assert.deepEqual(calls, [], "nothing is written to GitHub");
+  assert.equal(declaredOf(dir), undefined, "no declaration");
 });
 
 test("a satisfied turn clears the run, a different row starts one, and a refusal never touches worker-state/", () => {

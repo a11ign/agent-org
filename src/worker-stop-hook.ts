@@ -21,14 +21,22 @@
 // loop. The count lives in `worker-stop-hook/<session>.json`, NOT in `worker-state/`: `readDeclarations` reads every `*.json` there as a declaration and would list
 // a count as an unreadable one. A satisfied turn (a declaration, a pull request) clears it, and so "in a row" means in a row.
 //
-// IT FAILS OPEN, OUT LOUD. The declarations directory unreadable, the board unreadable, the count file unreadable or unwritable, a payload that is not JSON: each
-// ALLOWS the stop and says why on stderr (absence is not proof, and a hook that refuses on what it could not read refuses every worker the day GitHub is down).
+// AT THE BOUND THE ROW IS ROUTED, NOT ONLY LOGGED (a11ign#5478). The ledger line routes nothing, so the bound also makes the `blocked` declaration the refusal named,
+// on the worker's behalf, through `worker:state blocked`'s own path (`resolveBlockedRow`, `applyBlocked`, `writeDeclaration`): the row carries
+// `answer:product-manager` and the reason, and the gate reads it. It is written last, after the row is read and labelled, so a declaration the row does not carry is
+// never on disk. The bound is unchanged: the stop is allowed either way.
+//
+// IT FAILS OPEN, OUT LOUD. The declarations directory unreadable, the board unreadable, the count file unreadable or unwritable, a payload that is not JSON, a
+// declaration the row cannot take (unreadable, closed, a refused label): each ALLOWS the stop and says why on stderr (absence is not proof, and a hook that refuses
+// on what it could not read refuses every worker the day GitHub is down).
 // KNOWN LIMIT: the pull request is looked for in the ROW'S repository. A row whose work goes to another repository reads as having none, and is refused up to
 // the bound and then allowed; the declaration is the way out, and it is what the message names.
 import { mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { FAILURE_LEDGER_FILE, recordFailure } from "./failure-ledger.ts";
-import { WORKER_STATE_DIR, isWorkerSession, lastDeliveredTo, readDeclarations } from "./worker-state.ts";
+import type { Declaration, Gh } from "./worker-state.ts";
+import { DEFAULT_ANSWERER, WORKER_STATE_DIR, applyBlocked, ghRowLook, isWorkerSession, lastDeliveredTo, readDeclarations, resolveBlockedRow, writeDeclaration } from "./worker-state.ts";
+import { githubTicketAdapter } from "./ticket-port/github-adapter.ts";
 
 /** Refusals in a row for one claimed row before the stop is allowed. The chairman's number (a11ign#4957): two. */
 export const MAX_REFUSALS = 2;
@@ -54,8 +62,8 @@ export const isContinuing = (payload: HookPayload): boolean => payload.stop_hook
 /** The ownership question, as `pr-ownership.ts`'s `ownsPr` asks it; a seam so the pure half needs no project declaration. */
 export type OwnsPr = (claim: { row: number; branch: null; session: string; trackerRepo: string; soleHolder: true }, pr: StopPr) => boolean;
 
-/** Everything the hook reads from outside itself. `prs` THROWS when the board could not be read, which is not "no pull requests". */
-export type Seams = { session: string | null; trackers: readonly TrackerRef[]; stateDir: string; now: number; prs: (repo: string) => StopPr[]; owns: OwnsPr };
+/** Everything the hook reads from outside itself. `prs` THROWS when the board could not be read, which is not "no pull requests". `gh` is what the bound writes the declaration through, and the two prefixes are the project's labels (`project-vocabulary.ts`), passed in so the pure half does not load the project. */
+export type Seams = { session: string | null; trackers: readonly TrackerRef[]; stateDir: string; now: number; prs: (repo: string) => StopPr[]; owns: OwnsPr; gh: Gh; answerPrefix: string; sessionPrefix: string };
 
 export type HookResult = { code: 0 | 2; say: string[] };
 
@@ -117,6 +125,29 @@ function wakeLedgerText(path: string): string {
   }
 }
 
+/**
+ * The `blocked` declaration the bound makes for the worker, through the path `worker:state blocked` takes: the row is read (refused when it is closed or cannot be
+ * read), the answer label and the reason are written by `applyBlocked`, and the declaration is written last. Returns the reason it could not be made, or null.
+ * Never throws: a failure is a said allowance, as every other read in this file.
+ */
+function declareAtBound(session: string, claim: { key: string; row: number }, seams: Seams): string | null {
+  const declaration: Declaration = {
+    session, state: "blocked", at: seams.now, row: claim.row, rowKey: claim.key, to: DEFAULT_ANSWERER,
+    reason: `ended its turn after ${MAX_REFUSALS} refusals of worker:stop-hook with no pull request and no declaration; nothing says what it was waiting for`,
+  };
+  try {
+    const resolved = resolveBlockedRow(declaration, { trackers: seams.trackers, look: ghRowLook(seams.gh), sessionLabel: `${seams.sessionPrefix}${session}` });
+    if ("refused" in resolved) return resolved.refused.why;
+    const tracker = resolved.declaration.repo as string;
+    const writer = githubTicketAdapter({ run: seams.gh, scope: tracker });
+    const applied = applyBlocked(resolved.declaration, { gh: seams.gh, tracker, answerPrefix: seams.answerPrefix, writer });
+    writeDeclaration(`${seams.stateDir}/${WORKER_STATE_DIR}`, applied.declaration);
+    return null;
+  } catch (err: any) {
+    return String(err?.stderr ?? err?.message ?? err).split("\n")[0];
+  }
+}
+
 /** The reason a refused turn is told, naming BOTH commands: the pull request when the work is pushed, a `blocked` declaration when it cannot go on. */
 function refusal(key: string, row: number, repo: string, refusals: number): string {
   const word = rowWord(key, row);
@@ -173,7 +204,8 @@ export function runHook(payload: HookPayload, seams: Seams): HookResult {
   if (refusals >= MAX_REFUSALS) {
     const ledger = `${stateDir}/${FAILURE_LEDGER_FILE}`;
     const recorded = recordFailure({ logPath: ledger, classKey: STOP_HOOK_BOUND_KIND, ref: `${claim.repo}#${claim.row}`, now: seams.now, report: () => undefined });
-    return allow(`worker:stop-hook: ${session} was refused ${refusals} times for ${claim.repo}#${claim.row} and ended its turn on no pull request and no declaration anyway; the stop is ALLOWED${recorded.refused === null ? ` and ${STOP_HOOK_BOUND_KIND} is on the failure ledger` : ` (NOT RECORDED: ${recorded.refused})`}.`);
+    const declared = declareAtBound(session, claim, seams);
+    return allow(`worker:stop-hook: ${session} was refused ${refusals} times for ${claim.repo}#${claim.row} and ended its turn on no pull request and no declaration anyway; the stop is ALLOWED${recorded.refused === null ? ` and ${STOP_HOOK_BOUND_KIND} is on the failure ledger` : ` (NOT RECORDED: ${recorded.refused})`}, and ${declared === null ? `the row is declared blocked and routed to ${DEFAULT_ANSWERER}` : `NOT DECLARED (${declared}): the row is not routed by this hook`}.`);
   }
   const failed = writeRefusals(countPath, { row, refusals: refusals + 1 });
   if (failed !== null) return allow(`worker:stop-hook: ${countPath} could not be written (${failed}), so the stop of ${session} is ALLOWED: a refusal that cannot be counted would not be bounded.`);
@@ -214,15 +246,17 @@ async function liveSeams(argv: string[], env: NodeJS.ProcessEnv): Promise<Seams>
   const { homeProjectDeclaration } = await import("./project-config.ts");
   const { execFileSync } = await import("node:child_process");
   const { ownsPr } = await import("./pr-ownership.ts");
+  const { ANSWER_PREFIX, SESSION_PREFIX } = await import("./project-vocabulary.ts");
+  const gh: Gh = (args) => execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 20_000 });
   return {
     session, stateDir: stateEntryPath(""), now: Date.now(), trackers: homeProjectDeclaration().tracker,
     prs: (repo) => {
-      const listed = JSON.parse(execFileSync("gh", ["pr", "list", "--repo", repo, "--state", "all", "--limit", "100", "--json", "number,state,headRefName,title,labels"],
-        { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 20_000 }));
+      const listed = JSON.parse(gh(["pr", "list", "--repo", repo, "--state", "all", "--limit", "100", "--json", "number,state,headRefName,title,labels"]));
       if (!Array.isArray(listed)) throw new Error("`gh pr list` did not print a list");
       return listed as StopPr[];
     },
     owns: (claim, pr) => ownsPr(claim, pr) !== null,
+    gh, answerPrefix: ANSWER_PREFIX, sessionPrefix: SESSION_PREFIX,
   };
 }
 
