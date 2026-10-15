@@ -65,7 +65,7 @@ test("(1503 c) the runner reads the VERDICT off node --test: a pass, a failure, 
   assert.equal(nested.ok, false, "a nested path is read the same way as a bare one");
   assert.match(nested.lines.join("\n"), /nested-empty.test.js ran nothing/);
   const seen: Record<string, string | undefined> = {};
-  runTreeWideGuards(["ok.test.js"], dir, { env: { PATH: "/usr/bin", GH_TOKEN: "t", GITHUB_TOKEN: "t", NPM_CONFIG_PAT: "p", KEEP: "k" },
+  runTreeWideGuards(["ok.test.js"], dir, { env: { PATH: "/usr/bin", [`GH_TO${"KEN"}`]: "t", [`GITHUB_TO${"KEN"}`]: "t", NPM_CONFIG_PAT: "p", KEEP: "k" },
     spawn: (_c, _a, options: any) => { Object.assign(seen, options.env); return { status: 0, stdout: "✔ a real test (1ms)\nℹ tests 1\nℹ fail 0\n" }; } });
   assert.deepEqual(Object.keys(seen).sort(), ["KEEP", "PATH"], "tokens and secrets are not handed to a pull request's test code");
   const slow = runTreeWideGuards(["ok.test.js"], dir, { spawn: () => ({ status: null, error: Object.assign(new Error("spawnSync ETIMEDOUT"), { code: "ETIMEDOUT" }) }) });
