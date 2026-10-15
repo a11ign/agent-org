@@ -15,6 +15,6 @@ Not run: the real `gh run rerun`, and the live tick. The write is held to its ar
 
 Closes a11ign/agent-org#1217
 
-platform: GitHub's own `gh run rerun --failed` is the rerun; the tick only decides and records. Checked for a platform retry of a 5xx step: none for a failed required check.
+platform: GitHub's own `gh run rerun --failed` is the rerun; the tick only decides and records. Not checked: whether GitHub or the workflow can retry a 5xx step itself.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
