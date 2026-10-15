@@ -87,6 +87,8 @@ import { openIncidentsOf } from "./ticket-port/open-incidents.ts";
 import { closeIncident, closedIncidentsOf, createIncident, jobLogOf } from "./ticket-port/release-incidents.ts";
 // A LEAF too (it imports `newest-check-run.ts` and `pr-hold-state.ts`, which import nothing): the ONE decider of what counts as red.
 import { brokenChecks } from "./red-pr.ts";
+// A LEAF too (`node:*` only): the account pause record, read here and by `account-limit.ts` (a11ign#5497), so the canary holds the hour the gate paused.
+import { ACCOUNT_LIMIT_FLAG, pauseRecorded } from "./account-limit-record.ts";
 // A LEAF too: the closed grammar of what a declared wait is waiting FOR (#2996), and the two ages that bound how long one may stand unexplained.
 import { MANUAL_WAIT_HOURS, PARKED_LABEL, STALE_WAIT_GRACE_MINUTES, isItemWait, namedDoneWhens, parseWaits, pastGrace } from "./wait-condition.ts";
 import { holdersOf } from "./pr-hold-state.ts";
@@ -2366,8 +2368,11 @@ export function readCanaryOptions({ path = hostConfigPath(), read = (file) => re
   }
 }
 
-/** One tick's reading of each signal over the span `from`..`to`; `null` is "not read", never zero. */
-export type CanarySample = { from: number, to: number, values: Record<string, number | null> };
+/**
+ * One tick's reading of each signal over the span `from`..`to`; `null` is "not read", never zero. `held` (a11ign#5497) is set when the account pause held Claude work at
+ * that tick: a stock read in a held hour is the pause's doing, not the norm, so that hour is no baseline.
+ */
+export type CanarySample = { from: number, to: number, values: Record<string, number | null>, held?: true };
 export type SignalReading = { signal: string, status: "degraded" | "ok" | "unknown", before: number | null, after: number, detail: string };
 export type FlagRecord = {
   on: boolean, signals: string[], onAt: number | null, verdict: "watching" | "passed" | "reverted" | null, decidedAt: number | null, readings: SignalReading[], incident: string | null,
@@ -2415,6 +2420,11 @@ export function signalReading({ signal, samples, onAt, now, options }: { signal:
   const before = windowOf(samples, signal, [onAt - windowMs, onAt]);
   const after = windowOf(samples, signal, [onAt, now]);
   const minutes = (ms: number) => Math.round(ms / MS_PER_MINUTE);
+  // A HELD HOUR IS NO BASELINE (a11ign#5497): while the account pause held every Claude order, `wakes-held` read 0 for the whole hour, and the hour after the pause read any steady
+  // stock as a surge. Only the hour BEFORE is read here: a pause that begins inside the hour after the flag is on is what the flag exists to catch.
+  if (samples.some((sample) => sample.held === true && sample.from < onAt && sample.to > onAt - windowMs)) {
+    return { signal, status: "unknown", before: null, after: after.sum, detail: `not a baseline: the account pause held Claude work in the ${options.windowMinutes} min before` };
+  }
   if (before.coveredMs < windowMs / 2) {
     return { signal, status: "unknown", before: null, after: after.sum, detail: `${minutes(before.coveredMs)} of the ${options.windowMinutes} min before was recorded, which is not a baseline` };
   }
@@ -2442,7 +2452,9 @@ export function evaluateFlag({ record, samples, now, options }: { record: FlagRe
   const onAt = started.onAt as number;
   const readings = started.signals.map((signal) => signalReading({ signal, samples, onAt, now, options }));
   if (readings.some((reading) => reading.status === "degraded")) return { ...started, on: false, verdict: "reverted", decidedAt: now, readings };
-  if (now - onAt >= options.windowMinutes * MS_PER_MINUTE) return { ...started, verdict: "passed", decidedAt: now, readings };
+  // Every signal UNKNOWN at the hour's end is not PASSED (a11ign#5497): nothing was read, so nothing was clean. It stays WATCHING, and its readings say why.
+  const nothingRead = readings.length > 0 && readings.every((reading) => reading.status === "unknown");
+  if (now - onAt >= options.windowMinutes * MS_PER_MINUTE && !nothingRead) return { ...started, verdict: "passed", decidedAt: now, readings };
   return { ...started, verdict: "watching", readings };
 }
 
@@ -2548,13 +2560,13 @@ function filedIncident({ name, record, io }: { name: string; record: FlagRecord;
 }
 
 /** @returns the state with this tick's sample appended and every flag evaluated, and the flags that moved to a verdict this tick. */
-function advance({ state, facts, now, options }: { state: CanaryState; facts: CanaryFacts; now: number; options: CanaryOptions; }): CanaryState {
+function advance({ state, facts, now, options, held }: { state: CanaryState; facts: CanaryFacts; now: number; options: CanaryOptions; held: boolean; }): CanaryState {
   const windowMs = options.windowMinutes * MS_PER_MINUTE;
   const since = state.samples.at(-1)?.to ?? now - windowMs; // the first sample backfills one window of the events it can date
   const { values, memo } = machineryValues({ facts, since, now, memo: state.memo });
   // The day's baseline needs a day of samples (a11ign#5444), and a flag's watched hour sits inside it.
   const kept = Math.max(SAMPLE_WINDOWS_KEPT * windowMs, BASELINE_MS + windowMs);
-  const samples = [...state.samples, { from: since, to: now, values }].filter((sample) => sample.to > now - kept);
+  const samples = [...state.samples, { from: since, to: now, values, ...(held ? { held: true as const } : {}) }].filter((sample) => sample.to > now - kept);
   const flags = Object.fromEntries(Object.entries(state.flags).map(([name, record]) => [name, evaluateFlag({ record, samples, now, options })]));
   return { flags, samples, memo };
 }
@@ -2571,7 +2583,9 @@ export function machineryCanaryTick({ now, facts, suppressed, dir, options, io }
   const path = `${dir}/${CANARY_STATE_FILE}`;
   try {
     const before = parseCanaryState(io.read(path));
-    const moved = advance({ state: before, facts, now, options });
+    // The account pause holds the hour it covers (a11ign#5497): the flag is read from `before`, the state the tick starts with, so it is not unknown here.
+    const held = machineryFlagOn(before, ACCOUNT_LIMIT_FLAG) && pauseRecorded(now, dir) !== null;
+    const moved = advance({ state: before, facts, now, options, held });
     const flags = Object.fromEntries(Object.entries(moved.flags).map(([name, record]) => {
       const incident = filedIncident({ name, record, io });
       return [name, incident === null ? record : { ...record, incident }];

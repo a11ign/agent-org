@@ -19,29 +19,22 @@
  * ENTERING AND LEAVING are each said ONCE, as one line and one record in `account-limit.ndjson`. Nothing is said per tick. The pure transition
  * ({@link nextLimit}) decides which, and the tick writes them. THE TIME IS AN ARGUMENT everywhere, so the rules are pinned without waiting for one.
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { machineryFlagOn, type CanaryState } from "./org-health.ts";
 import { readReenqueueState } from "./work-gate/causes/pr-ejected.ts";
 import { REVIEWER_STATE_DIR } from "./work-gate/vocabulary.ts";
+import { ACCOUNT_LIMIT_FILE, ACCOUNT_LIMIT_FLAG, UNREADABLE_PAUSE, UNREADABLE_RECORD, pauseRecorded, readAccountLimits, type AccountLimit, type AccountLimits } from "./account-limit-record.ts";
 
-export const ACCOUNT_LIMIT_FLAG = "gate.accountLimitPause";
-/** The record of each account's pause, keyed by account. */
-export const ACCOUNT_LIMIT_FILE = "account-limit.json";
+// The record and its reader live in `account-limit-record.ts`, a leaf the canary reads too; re-exported here so the gate's importers keep their names.
+export { ACCOUNT_LIMIT_FILE, ACCOUNT_LIMIT_FLAG, UNREADABLE_RECORD, pausedAt, readAccountLimits, type AccountLimit, type AccountLimits } from "./account-limit-record.ts";
+
 /** One line per entering or leaving: the record the chairman's line is written from. */
 export const ACCOUNT_LIMIT_LOG = "account-limit.ndjson";
-/** The `seenOn` of a pause held because the record cannot be read. It is never written: it holds until the file is repaired, or the flag is switched off. */
-export const UNREADABLE_RECORD = "unreadable record";
-
-export type AccountLimit = { limitedUntil: number; seenOn: string; text: string; };
-export type AccountLimits = Record<string, AccountLimit>;
 export type LimitEvent = { kind: "enter" | "leave"; account: string; at: number; limitedUntil: number; seenOn: string; text: string; line: string; };
 /** Whether the flag is on, off, or unknown because the canary state it is read from cannot be read. */
 export type FlagReading = "on" | "off" | "unknown";
-
-/** The pause held while the record cannot be read: no end, so it holds until the file is repaired or the flag is switched off. */
-const UNREADABLE_PAUSE: AccountLimit = { limitedUntil: Infinity, seenOn: UNREADABLE_RECORD, text: `${ACCOUNT_LIMIT_FILE} cannot be read` };
 
 /**
  * The flag, read from the canary state at `dir` (or the `state` a test gives). `unknown` when that state cannot be read, which the flag's own reader reports
@@ -58,38 +51,12 @@ export function accountLimitFlag(dir: string = REVIEWER_STATE_DIR, state?: Canar
   }
 }
 
-/**
- * The records held, keyed by account: `{}` when there is no file. `null` when the file cannot be read or is not a record, which is NOT the same as no
- * pause: the caller holds Claude work (see {@link pausedNow}).
- */
-export function readAccountLimits(path: string): AccountLimits | null {
-  if (!existsSync(path)) return {};
-  try {
-    const parsed = JSON.parse(readFileSync(path, "utf8"));
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    return Object.values(parsed).every(isLimit) ? parsed as AccountLimits : null;
-  } catch {
-    return null;
-  }
-}
-
-function isLimit(value: unknown): value is AccountLimit {
-  const limit = value as AccountLimit;
-  return typeof limit === "object" && limit !== null && Number.isFinite(limit.limitedUntil) && typeof limit.seenOn === "string" && typeof limit.text === "string";
-}
-
 /** Written whole, to a sibling file renamed into place, so a reader never sees half a record. */
 export function writeAccountLimits(path: string, limits: AccountLimits): void {
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.tmp`;
   writeFileSync(tmp, `${JSON.stringify(limits, null, 2)}\n`);
   renameSync(tmp, path);
-}
-
-/** The pause that holds at `now` for an account, or `null`: a record whose reset has passed holds nothing. */
-export function pausedAt(limits: AccountLimits, now: number, account: string = homedir()): AccountLimit | null {
-  const limit = limits[account];
-  return limit !== undefined && limit.limitedUntil > now ? limit : null;
 }
 
 /**
@@ -99,9 +66,7 @@ export function pausedAt(limits: AccountLimits, now: number, account: string = h
  */
 export function pausedNow(now: number, dir: string = REVIEWER_STATE_DIR, state?: CanaryState, account: string = homedir()): AccountLimit | null {
   if (accountLimitFlag(dir, state) === "off") return null;
-  const limits = readAccountLimits(join(dir, ACCOUNT_LIMIT_FILE));
-  if (limits === null) return UNREADABLE_PAUSE;
-  return pausedAt(limits, now, account);
+  return pauseRecorded(now, dir, account);
 }
 
 /** The state directory's log of entering and leaving, appended to by the tick. */
