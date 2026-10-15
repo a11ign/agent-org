@@ -552,6 +552,9 @@ function requeue(call: QueuedCall, resetAtS: number) {
 
 export type RunResult = { status: number | null; stderr: string };
 export type RunQueued = (call: QueuedCall, argv: string[]) => RunResult;
+/** (#1518) The refused pool's `x-ratelimit-remaining` for a call's account, read by the gate (it owns the one pool reader); null when no answer. This file cannot read it: it is a leaf. */
+export type PoolLeftOf = (call: QueuedCall, stderr: string) => number | null;
+const NO_READING: PoolLeftOf = () => null;
 export type RetryEvent = "completed" | "requeued" | "failed";
 export type RetryOutcome = { id: string; command: string; event: RetryEvent; detail: string };
 
@@ -569,7 +572,7 @@ function runFollowUps(call: QueuedCall, run: RunQueued): string[] {
 }
 
 /** One due call, made once. A refusal for a rate limit is waited out again; any OTHER failure ends it, since the same call would fail the same way. */
-function attemptCall(call: QueuedCall, { nowMs, run }: { nowMs: number; run: RunQueued; }): RetryOutcome {
+function attemptCall(call: QueuedCall, { nowMs, run, poolLeftOf }: { nowMs: number; run: RunQueued; poolLeftOf: PoolLeftOf; }): RetryOutcome {
   const command = commandOf(call.argv);
   if (nowMs - call.queuedAtS * 1000 > MAX_QUEUED_AGE_MS) {
     failEntry(call, `queued ${new Date(call.queuedAtS * 1000).toISOString()}, more than ${MAX_QUEUED_AGE_MS / HOUR_MS} hours before this retry: a write that old is not made on a guess`);
@@ -582,8 +585,10 @@ function attemptCall(call: QueuedCall, { nowMs, run }: { nowMs: number; run: Run
     return { id: call.id, command, event: "completed", detail: failures.length === 0 ? `after ${call.attempts + 1} attempt(s)` : `after ${call.attempts + 1} attempt(s); follow-up(s) FAILED: ${failures.join("; ")}` };
   }
   if (r.status !== null && refusalKind(r.stderr) !== null) {
+    // (#1518) FILED AS THE POOL READS NOW, as `host/gh` files it: an hourly phrase with calls left is secondary. The pool is read only for an hourly phrase.
+    const kind = refusalKind(r.stderr, SECONDARY_REFUSAL.test(r.stderr) ? null : poolLeftOf(call, r.stderr)) ?? call.kind;
     const wait = Math.min(RETRY_CAP_SECONDS, RETRY_BASE_SECONDS * 2 ** (call.attempts + 1));
-    requeue(call, Math.floor(nowMs / 1000) + wait);
+    requeue({ ...call, kind }, Math.floor(nowMs / 1000) + wait);
     return { id: call.id, command, event: "requeued", detail: `refused again (${firstLine(r.stderr)}); next attempt in ${wait}s` };
   }
   const why = r.status === null ? `no exit status (${firstLine(r.stderr) || "timed out or was killed"}): it may have been sent, so it is not made again` : `exit ${r.status}: ${firstLine(r.stderr)}`;
@@ -596,8 +601,8 @@ function attemptCall(call: QueuedCall, { nowMs, run }: { nowMs: number; run: Run
  * is over; the call itself is the question, and a refusal costs nothing.
  * @param {string} dir a queue directory @param {{ nowMs: number, run: RunQueued, limit?: number }} deps
  */
-export function retryDue(dir: string, { nowMs, run, limit = MAX_RETRIES_PER_TICK }: { nowMs: number; run: RunQueued; limit?: number; }): RetryOutcome[] {
-  return dueCalls(readQueue(dir), nowMs).slice(0, limit).map((call) => attemptCall(call, { nowMs, run }));
+export function retryDue(dir: string, { nowMs, run, poolLeftOf = NO_READING, limit = MAX_RETRIES_PER_TICK }: { nowMs: number; run: RunQueued; poolLeftOf?: PoolLeftOf; limit?: number; }): RetryOutcome[] {
+  return dueCalls(readQueue(dir), nowMs).slice(0, limit).map((call) => attemptCall(call, { nowMs, run, poolLeftOf }));
 }
 
 /** The real run: `gh` as the account whose queue this is, from the directory it was asked in, with its stdin, as its session and workspace (so a comment carries the role that wrote it). */
@@ -745,16 +750,16 @@ export const accountDirs = (home: string = homedir()) => [join(home, "workers", 
 /**
  * ONCE PER TICK: make every queued call whose reset has passed, write the 70% incident for any pool past it. Returns the lines for the tick log, none when nothing
  * was queued and nothing alarmed. A queue that cannot be read is said, never skipped silently, and the ledger and the other account are still read.
- * @param {{ home?: string, nowMs?: number, run?: RunQueued }} [deps]
+ * @param {{ home?: string, nowMs?: number, run?: RunQueued, poolLeftOf?: PoolLeftOf }} [deps]
  */
-export function ghQueueTick({ home = process.env.A11Y_GH_QUEUE_HOME ?? homedir(), nowMs = Date.now(), run = spawnQueued }: { home?: string; nowMs?: number; run?: RunQueued; } = {}): string[] {
+export function ghQueueTick({ home = process.env.A11Y_GH_QUEUE_HOME ?? homedir(), nowMs = Date.now(), run = spawnQueued, poolLeftOf = NO_READING }: { home?: string; nowMs?: number; run?: RunQueued; poolLeftOf?: PoolLeftOf; } = {}): string[] {
   if (process.env.A11Y_GH_QUEUE === "off") return [];
   const said: string[] = [];
   for (const dir of [...accountDirs(home), join(home, ".config", "gh")]) {
     const isAccount = accountDirs(home).includes(dir);
     try {
       if (isAccount) {
-        for (const o of retryDue(join(dir, QUEUE_DIR), { nowMs, run })) said.push(`gh-queue: ${o.event} ${o.id} [${o.command}] in ${dir}: ${o.detail}`);
+        for (const o of retryDue(join(dir, QUEUE_DIR), { nowMs, run, poolLeftOf })) said.push(`gh-queue: ${o.event} ${o.id} [${o.command}] in ${dir}: ${o.detail}`);
       }
       for (const line of recordPoolAlarms(join(dir, "gh-calls.tsv"), nowMs)) said.push(`gh-queue: pool alarm in ${dir}: ${line.split("\t")[7]}`);
     } catch (error) {

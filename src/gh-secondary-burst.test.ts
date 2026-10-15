@@ -9,7 +9,10 @@
  *       (4) starts in one window (1 s here, `A11Y_GH_PACE_WINDOW_MS`, 60 s by default). The control is the same calls with the bound lifted, and it overlaps.
  *       The starts are read from the wrapper's own record of its admissions, not from the stub's clock: a stub starts a little after its admission,
  *       by a lag that a loaded host makes longer than the window;
- *   (c) a read refused for a secondary limit is not asked again that tick, and the next tick asks (`readUnlessRefused`, as #1523 pinned it).
+ *   (c) a read refused for a secondary limit is not asked again that tick, and the next tick asks (`readUnlessRefused`, as #1523 pinned it);
+ *   (d) a queued call the gate RETRIES and sees refused again is filed as the refused pool reads now (`retryDue`, through `attemptCall`): secondary
+ *       with calls left, primary at zero, and the pool is read once for an hourly phrase only;
+ *   (e) the gate's reader (`queuedPoolLeft`) sends the wrapper's probe as the entry's own account, and reads the pool it answers, or nothing.
  */
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
@@ -18,7 +21,8 @@ import { spawn, spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpDir, tmpDirForFile } from "./lib/tmp-fixture.ts";
-import { QUEUE_DIR, readQueue, refusalKind } from "./gh-ledger.ts";
+import { QUEUE_DIR, readQueue, refusalKind, retryDue } from "./gh-ledger.ts";
+import { queuedPoolLeft } from "./work-gate/tick.ts";
 import { GRAPHQL_POOL_PROBE } from "./api-pool.ts";
 import { poolProbeAnswer as probeOf } from "./packaging/rows-by-label-fixtures.ts";
 import { forgetRefusedReads, readUnlessRefused } from "./ticket-port/rows-by-label.ts";
@@ -203,4 +207,60 @@ test("(c) a read refused for a secondary limit is not asked again that tick, and
   forgetRefusedReads();
   assert.match(attempt() ?? "", /secondary rate limit/);
   assert.equal(reads, afterFirst + 1, "the next tick sends the read again");
+});
+
+// ---- (d) the gate's RETRY files a refusal as the pool reads NOW --------------------------------------------------------
+
+/** A queued call as `host/gh` writes it, filed `primary`: the kind its first refusal had when the pool was at zero. */
+function queuedCall(dir: string) {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "1000000-1.argv"), ["issue", "comment", "7", "--body", "x"].map((a) => `${a}\0`).join(""));
+  writeFileSync(join(dir, "1000000-1.meta"), "queuedAt\t1000000\nresetAt\t1000600\nattempts\t0\nkind\tprimary\nresource\tgraphql\ncwd\t\nworkspace\t-\nsession\t-\n");
+  return readQueue(dir)[0];
+}
+
+for (const [name, stderr, left, kind, reads] of [
+  ["(d) a queued call refused AGAIN by an hourly limit with calls left is SECONDARY when the gate retries it", INSTALLATION_REFUSAL, 4560, "secondary", 1],
+  ["(d) POSITIVE CONTROL: the same retry with the pool at zero stays PRIMARY", INSTALLATION_REFUSAL, 0, "primary", 1],
+  ["(d) a secondary phrase on a retry is SECONDARY, and the pool is not read for it", SECONDARY_REFUSAL, 4560, "secondary", 0],
+] as const) {
+  test(name, () => {
+    const dir = join(tmpDirForFile("gh-secondary-retry-"), QUEUE_DIR);
+    queuedCall(dir);
+    const asked: string[] = [];
+    const outcomes = retryDue(dir, {
+      nowMs: 1_000_600_000,
+      run: () => ({ status: 1, stderr }),
+      poolLeftOf: (_call, text) => { asked.push(text); return left; },
+    });
+    assert.equal(outcomes[0].event, "requeued", outcomes[0].detail);
+    assert.equal(readQueue(dir)[0].kind, kind, "the requeued entry carries the kind the refusal has now");
+    assert.equal(asked.length, reads, "the pool is read once for an hourly phrase, never for a secondary one");
+  });
+}
+
+// ---- (e) the gate's reader asks the refused pool AS the entry's account --------------------------------------------------
+
+test("(e) the gate's pool reader sends the wrapper's probe as the entry's account, and reads the pool it answers, or nothing", () => {
+  const root = tmpDir("gh-secondary-reader-");
+  const bin = join(root, "bin");
+  mkdirSync(bin);
+  const log = join(root, "calls.log");
+  const answer = join(root, "answer");
+  writeFileSync(answer, probeOf(4560));
+  writeFileSync(join(bin, "gh"), ["#!/bin/sh", `echo "$GH_CONFIG_DIR $*" >> "${log}"`, `cat "${answer}"`, ""].join("\n"), { mode: 0o755 });
+  const cfg = join(root, "cfg");
+  const call = queuedCall(join(cfg, QUEUE_DIR));
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${bin}:${savedPath}`;
+  try {
+    assert.equal(queuedPoolLeft(call, INSTALLATION_REFUSAL), 4560, "the core pool's reading");
+    assert.equal(readFileSync(log, "utf8").split("\n")[0], `${cfg} api user -i`, "the core probe, as the account whose queue this is");
+    assert.equal(queuedPoolLeft(call, "GraphQL: API rate limit exceeded for user ID 1"), 4560, "a GraphQL refusal reads the GraphQL pool");
+    assert.match(readFileSync(log, "utf8"), /api graphql/, "and sends the GraphQL probe");
+    writeFileSync(answer, "");
+    assert.equal(queuedPoolLeft(call, INSTALLATION_REFUSAL), null, "no answer is no reading, never a zero");
+  } finally {
+    process.env.PATH = savedPath;
+  }
 });
