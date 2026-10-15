@@ -65,6 +65,7 @@ import {
   declaredRegionFiles, extractLabeledSection, regionCovers, trackedTopLevelDirs,
 } from "./region-paths.ts";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { pnpmCliInvocation } from "./lib/npm-cli-executable.ts";
 import { existsSync, globSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -3912,7 +3913,10 @@ export function checkoutPullRequestMerge({ repoRoot, scratch, git = (args, cwd) 
  * The `prepare` of {@link checkoutPullRequestMerge}: the checkout's own lockfile, installed from the host's store with NO network and NO lifecycle scripts,
  * so what runs next is the pull request's command and nothing an install pulled in. A tree that is not a pnpm workspace has no lockfile and needs none.
  */
-export function installPullRequestCheckout({ run = (cwd: string) => { execFileSync("pnpm", ["install", "--frozen-lockfile", "--offline", "--ignore-scripts"], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }); }, exists = existsSync }: {
+export function installPullRequestCheckout({ run = (cwd: string) => {
+  const pnpm = pnpmCliInvocation(["install", "--frozen-lockfile", "--offline", "--ignore-scripts"]); // the helper, not a bare `pnpm` (no-npm-spawn.test.ts: `pnpm.cmd` on Windows)
+  execFileSync(pnpm.command, pnpm.args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+}, exists = existsSync }: {
   run?: (cwd: string) => void; exists?: (path: string) => boolean;
 } = {}): (cwd: string) => void {
   return (cwd) => { if (exists(join(cwd, "pnpm-lock.yaml"))) run(cwd); };
