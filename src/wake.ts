@@ -47,7 +47,9 @@ import { HAIKU_DEFAULT_CI_FAILURES, haikuDefaultOn, routeEngineer, type Routed }
 import { DEFAULT_CAPS, ESCALATION_KIND, ESCALATION_USE, claimFacts, escalationLogLine, escalationNote, haikuStarts, isHaiku, shouldEscalate, transcriptCounts } from "./engineer-escalation.ts";
 import { decisionLogPathFrom, decisionSwitchesPath, readSwitches } from "./decision-provider.ts";
 import { printDiagnostic, processState } from "./triage-provider.ts";
-import { classifyCiFailure, classLine, classNote, failingAssertionLines, notesTheOrder, readCiFailure, type Gh } from "./ci-failure-class.ts";
+import { classifyCiFailure, classLine, classNote, failingAssertionLines, notesTheOrder, readCiFailure, type CiFailure, type Gh } from "./ci-failure-class.ts";
+import { CI_RERUN_LEDGER_FILE, CI_RERUN_ON_5XX, rerunLedgerLine, rerunRedOn5xx } from "./ci-rerun-on-5xx.ts";
+import { redRunOfHead, rerunFailedJobsOf } from "./ticket-port/ci-reads.ts";
 import { depthEffort, depthLine, readDepthState, reviewDepth, type Depth } from "./review-depth.ts";
 import { profileFor, agentArgs, haikuTierProfile, type TierProfile, armOf, ARM, CALM_FINISH_PARAGRAPH, tripsArmOf, TRIPS_ARM, ROUND_TRIPS_PARAGRAPH } from "./worker-profile.ts";
 import { JUDGMENT_CAUSES, ANSWER_PREFIX, LAUNCH_PLACEHOLDER, REVIEWER_REGISTRY_FILE, readReviewerRegistry, scopesOf,
@@ -6842,11 +6844,43 @@ function redPullRequestOf(order: Enrichable): { repo: string; number: number; he
 }
 
 /**
+ * agent-org#1217 (follow-up to #1180): A REQUIRED CHECK RED ON A GITHUB 5xx IS RERUN ONCE, here, through the ticket port. Returns the note the order gains, or `null` for today's route:
+ * the flag is off (nothing is read, so OFF is byte for byte), the decider says `owner`, or the red could not be read. `rerun` says the jobs were rerun and the order has nothing left to ask;
+ * a refused rerun is `owner` with its reason as the note. Never throws: a rerun that cannot be made leaves the order as the gate wrote it.
+ */
+function rerunRedOnServerError(red: { repo: string; number: number; head8: string }, failure: CiFailure, { gh, flags, ledgerPath, now }: { gh: Gh; flags: { readonly enabled: boolean }; ledgerPath: string; now: number }): { rerun: boolean; note: string } | null {
+  if (!flags.enabled) return null;
+  let seat: ReturnType<typeof redRunOfHead>;
+  try {
+    seat = redRunOfHead(red.repo, red.number, red.head8, gh);
+  } catch (err) {
+    process.stderr.write(`wake: could not read the run of pull request ${red.number} to rerun it (${firstLine(err)}) -- the order as the gate wrote it.\n`);
+    return null;
+  }
+  if (seat === null) return null;
+  const decision = rerunRedOn5xx({ log: failure.errorLines.join("\n"), conclusion: seat.conclusion, rerunsOnThisHead: failure.rerunAlready }, flags);
+  if (decision.action !== "rerun") return null;
+  try {
+    rerunFailedJobsOf(red.repo, seat.runId, gh);
+  } catch (err) {
+    return { rerun: false, note: `The tick tried to rerun this check's failed jobs, because its last error was a GitHub 5xx, and GitHub refused: ${firstLine(err)}. The failure is yours.` };
+  }
+  const line = rerunLedgerLine(red.repo, seat.runId, red.head8, decision);
+  process.stderr.write(`wake: ${line}\n`);
+  try {
+    appendFileSync(`${dirname(ledgerPath)}/${CI_RERUN_LEDGER_FILE}`, `${now}\t${line}\n`);
+  } catch (err) {
+    process.stderr.write(`wake: could not write the rerun ledger line for run ${seat.runId} (${firstLine(err)}); the rerun was requested.\n`);
+  }
+  return { rerun: true, note: "The tick has rerun this check's failed jobs once itself, because the last error in the log was a GitHub 5xx, not your code. Change nothing; if the check is red again at this head, the failure is yours." };
+}
+
+/**
  * `ci-failure-class` (#4632) for each settled-red order. The class and the route go in the journal line whoever chose; the ORDER's text gains them only when the PROVIDER chose, or when a rule
  * says WAIT for a pin bump (#5151, `notesTheOrder`), so otherwise with no provider the order is the gate's, byte for byte. `read` and `classify` are seams for a test.
  */
-export async function withCiFailureClass<T extends Enrichable>(orders: readonly T[], deps: EnrichDeps & { read?: typeof readCiFailure; classify?: typeof classifyCiFailure; now?: number }): Promise<T[]> {
-  const { gh = defaultGh, read = readCiFailure, classify = classifyCiFailure, now = Date.now() } = deps;
+export async function withCiFailureClass<T extends Enrichable>(orders: readonly T[], deps: EnrichDeps & { read?: typeof readCiFailure; classify?: typeof classifyCiFailure; now?: number; rerunFlags?: { readonly enabled: boolean } }): Promise<T[]> {
+  const { gh = defaultGh, read = readCiFailure, classify = classifyCiFailure, now = Date.now(), rerunFlags = CI_RERUN_ON_5XX } = deps;
   const notes = new Map<string, string>();
   const reds = orders.filter((o) => redPullRequestOf(o) !== null);
   // The cap bounds what CLASSIFYING costs (a provider may be asked). A re-fail beyond it is not classified, but it is still told what failed: reading one log is not a provider call, and
@@ -6865,11 +6899,16 @@ export async function withCiFailureClass<T extends Enrichable>(orders: readonly 
       const red = redPullRequestOf(order)!;
       const failure = read(red, gh, now);
       if (failure === null) return;
+      const rerunning = rerunRedOnServerError(red, failure, { gh, flags: rerunFlags, ledgerPath: deps.ledgerPath, now });
+      if (rerunning?.rerun) {
+        notes.set(order.causeKey, rerunning.note);
+        return;
+      }
       const decision = await classify(failure, enrichDecisionDeps(deps, order.causeKey));
       process.stderr.write(`wake: ${order.causeKey} ${classLine(decision)}\n`);
       // A same-head re-fail (agent-org#1185) is told WHAT failed whoever chose the class: the order exists because a rerun did not clear it, so "fix it" with nothing to read is half an order.
       const named = red.refail ? refailNote(failure.errorLines) : null;
-      const note = [notesTheOrder(decision) ? classNote(decision) : null, named].filter((part): part is string => part !== null).join("\n\n");
+      const note = [rerunning?.note ?? null, notesTheOrder(decision) ? classNote(decision) : null, named].filter((part): part is string => part !== null).join("\n\n");
       if (note !== "") notes.set(order.causeKey, note);
     } catch (err) {
       process.stderr.write(`wake: could not classify ${order.causeKey} (${firstLine(err)}) -- the order as the gate wrote it.\n`);

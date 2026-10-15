@@ -1,7 +1,7 @@
 // agent-org#1180 (a11ign#928, chairman): a required check red on a GitHub 5xx is rerun ONCE by the org itself, without a manager turn, and the rerun is recorded.
 // THE DECIDER IS PURE. `rerunOn5xx` reads the failed job's log and the run's facts and answers `rerun` or `owner`; it reads and writes nothing.
 // THE WRITE IS NOT HERE. This file holds no command: the committed call baseline (`gh-call-ratchet.test.ts`) does not let a new file name a tracker
-// call, and the reads and writes of the code host belong in `src/ticket-port/`. A `rerun` is handed to the port by the tick, which sits outside this Region.
+// call, and the reads and writes of the code host belong in `src/ticket-port/` (`rerunFailedJobsOf`). A `rerun` is handed to the port by the tick (`withCiFailureClass`, agent-org#1217).
 // THE ONCE BOUND is the run's own attempt count: a rerun makes attempt 2, and the caller passes `rerunsOnThisHead` from it (`readCiFailure`'s `rerunAlready`), so a second red on the head is the owner's.
 import { ERROR_LINE, LOG_TIMESTAMP, NOT_THE_FAILURE } from "./ci-failure-class.ts";
 
@@ -41,6 +41,9 @@ export function rerunRedOn5xx(
   return rerunOn5xx({ log, conclusion, rerunsOnThisHead });
 }
 
-/** The one line a rerun writes to the ledger, counted by the org health signal `required-red-on-5xx` (`checks rerun on 5xx`). */
+/** The file beside the delivery ledger that holds {@link rerunLedgerLine}s, one `<epochMs>\t<line>` each: not the delivery ledger, whose lines the restart recovery reads as deliveries to a session. */
+export const CI_RERUN_LEDGER_FILE = "ci-reruns-on-5xx";
+
+/** The one line a rerun writes to the ledger, counted by the org health signal `required-red-on-5xx` (`checks rerun on 5xx`). One line: the log's own error text may carry a tab. */
 export const rerunLedgerLine = (repo: string, runId: number, head8: string, decision: Rerun5xxDecision): string =>
-  `checks rerun on 5xx: ${repo} run ${runId} head ${head8}: ${decision.reason}`;
+  `checks rerun on 5xx: ${repo} run ${runId} head ${head8}: ${decision.reason}`.replace(/\s+/g, " ");
