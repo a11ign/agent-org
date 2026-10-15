@@ -387,7 +387,7 @@ test("3: a not-convinced whose first line names (environment) is refused before 
   const { status, calls, stderr } = runDoor({ head: AFTER_MERGE_OF_MAIN, verdict: "not-convinced", opener: ENVIRONMENT_REFUSAL });
   assert.equal(status, EXIT_MALFORMED);
   assert.deepEqual(calls, [], "not one `gh` call, not even a read");
-  assert.match(stderr, /an environment failure is not a verdict: hand the row to orchestrator/);
+  assert.match(stderr, /an environment failure is not a verdict unless it quotes the command that failed/, "agent-org#1398: the hand-off is the verdict file");
 });
 
 test("3 CONTROL: the same text under `convinced` is not refused for the word", () => {

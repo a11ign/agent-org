@@ -11,7 +11,7 @@ Adapted from the `code-review` skill in mattpocock/skills (MIT; see LICENSE). Th
 
 - **Diff:** `git diff origin/main...HEAD` in the review checkout (three-dot, so it is against the merge base). Get the changed paths with `--name-only`.
 - **Row:** the issue the PR closes (`Closes #N` or `Closes <owner>/<repo>#N`), read with `gh issue view`. Its `## Done-when`, `## Change`, `## Region` and `## Acceptance` sections are the spec.
-- **Acceptance:** run the Acceptance command. If it cannot run for an environmental reason, follow the role doc's hand-off.
+- **Acceptance:** run the Acceptance command. An Acceptance that fails as written is `not convinced`, and `(environment)` is only for a failure that disappears outside your sandbox (see Verdict). You have no Issues write, so the verdict file is your hand-off, not a label on the row.
 - **Prompt-supplied inputs:** when the prompt hands you the diff and the row as files and says nothing may be posted or run, read those instead, run no `gh` and post nothing. If the tree has no `.git`, search it with `grep -rn` where this skill says `git grep`. An Acceptance the prompt says was not run is not held against the PR, but its tests are still read.
 
 Review the three axes separately and report them separately. One axis passing never excuses another failing.
@@ -72,6 +72,8 @@ Review the three axes separately and report them separately. One axis passing ne
 - an existing helper is duplicated.
 
 Otherwise the verdict is **convinced**, with the nits listed. Nits alone never make a `not convinced`; a defect on any axis always does.
+
+**An Acceptance that fails as written is `not convinced`**, on the head, from the checkout you hold. Quote the command in backticks with its last lines. `(environment)` is only for a failure that disappears outside your sandbox, that is, the same command passes in CI or in the lab; the verdict then names the command that showed it, quoted. The door refuses an `(environment)` verdict that quotes no command, and the verdict file is the hand-off the reviewer can perform.
 
 **After the role doc's first line, write the body as three sections: `## Spec` (holding the item table), `## Tests and correctness` and `## Standards`.**
 - Give `file:line` for every finding.
