@@ -27,11 +27,12 @@
 // prompt into a bare shell. But declining SILENTLY is the defect the org already had once: the
 // lead-orchestrator brief records 2026-09-08, when "every session went idle at 20:52Z and nothing woke
 // anyone for ten" hours. So an order with nowhere to go exits ATTENTION and names the session, every time.
-import { homeHostConfig } from "./host-config.ts";
+import { homeHostConfig, roleIdentity } from "./host-config.ts";
+import { tokenNeedsRefresh, type AppIdentity } from "./app-token.ts"; // agent-org#1348: the reviewer's token is minted here, unsandboxed, and read by `host/gh`
 import { carriedKeys, digestDue, digestPathFrom, flushOrders, namesRedMain, readDigest, ridingDigest, routeOrders, settleRidden } from "./triage-route.ts";
 import { execFileSync, spawnSync } from "node:child_process";
 import { pathToFileURL, fileURLToPath } from "node:url";
-import { readFileSync, writeFileSync, appendFileSync, mkdirSync, realpathSync, existsSync, readdirSync, openSync, readSync, closeSync,
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, mkdtempSync, realpathSync, renameSync, existsSync, readdirSync, openSync, readSync, closeSync,
   fstatSync, statSync, lstatSync, readlinkSync, symlinkSync, rmSync } from "node:fs";
 import { homedir, loadavg, availableParallelism } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -1118,8 +1119,57 @@ type ReviewerEntry = { spawnedAt: number; trust?: ReviewTrust; };
 export function reviewerEnvironment(session: string, override: Record<string, string> = {}, tree: string = reviewCheckoutPath(session)): Record<string, string> {
   const repo = reviewedRepositoryOf(session);
   return { GH_CONFIG_DIR: REVIEWER_GH_CONFIG_DIR, AGENT_ORG_GH_ROLE: "reviewer", A11Y_REVIEWER_SESSION: session,
-    npm_config_cache: `${tree}/node_modules/.cache/npm`, A11Y_APP_TOKEN_DIR: `${tree}/node_modules/.cache/app-tokens`,
+    npm_config_cache: `${tree}/node_modules/.cache/npm`, A11Y_APP_TOKEN_DIR: reviewerTokenDir(tree),
     ...(repo === null ? {} : { GH_REPO: repo, [HOST_CONFIG_ENV]: hostConfigPath() }), ...override };
+}
+
+/** Where the reviewer's token lives in its tree: `host/gh` reads `reviewer.token` here, and {@link ensureReviewerToken} writes it. */
+export const reviewerTokenDir = (tree: string) => `${tree}/node_modules/.cache/app-tokens`;
+
+/**
+ * THE REVIEWER'S APP TOKEN IS MINTED BY WAKE, NOT BY THE SANDBOX (agent-org#1348). The key is `-rw-------` for the user a workspace-write sandbox
+ * runs as, so a reviewer that mints for itself can read it. Wake runs unsandboxed: it mints into the instance's token directory BEFORE the pane
+ * opens, and again on a tick when the token has less than {@link REVIEWER_TOKEN_REFRESH_SECONDS} left. `host/gh` uses the file while it lasts
+ * and mints only when it is stale, which the refresh keeps from happening.
+ */
+export const REVIEWER_TOKEN_REFRESH_SECONDS = 1800;
+const APP_TOKEN_SCRIPT = fileURLToPath(new URL("./app-token.ts", import.meta.url));
+const APP_TOKEN_MINT_TIMEOUT_MS = 30_000;
+
+/** The reviewer's app, or `null` when `host.json` does not declare the reviewer as one: nothing is minted and `host/gh` takes the account, as before. */
+export function reviewerAppIdentity(): AppIdentity | null {
+  let host: ReturnType<typeof homeHostConfig>;
+  try {
+    host = homeHostConfig();
+  } catch {
+    return null;
+  }
+  const identity = roleIdentity(host, "reviewer");
+  return identity.mode === "github-apps" ? identity : null;
+}
+
+/**
+ * Make sure the reviewer's token in `tree` lasts past {@link REVIEWER_TOKEN_REFRESH_SECONDS}, minting one when it does not. The minter writes into a
+ * SCRATCH directory that is renamed over the token only when it succeeds, so a failed refresh keeps the token there is. Its key is passed to the
+ * minter's environment and to nothing else: the reviewer's environment names the token directory and never the key.
+ * @returns `null` when the token is good (or there is no app to mint for), else the reason it is not, for the caller to say.
+ */
+export function ensureReviewerToken(tree: string, app: AppIdentity | null, { now = Date.now(), script = APP_TOKEN_SCRIPT }: { now?: number, script?: string } = {}): string | null {
+  if (app === null) return null;
+  const dir = reviewerTokenDir(tree);
+  if (!tokenNeedsRefresh({ cacheDir: dir, role: "reviewer", now: now / 1000, marginSeconds: REVIEWER_TOKEN_REFRESH_SECONDS })) return null;
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const scratch = mkdtempSync(join(dir, "mint-"));
+  try {
+    const minted = spawnSync(process.execPath, [script, "reviewer"], { encoding: "utf8", timeout: APP_TOKEN_MINT_TIMEOUT_MS, stdio: ["ignore", "ignore", "pipe"],
+      env: { PATH: process.env.PATH ?? "", A11Y_APP_ID: app.appId, A11Y_APP_KEY_PATH: app.keyPath, A11Y_APP_TOKEN_DIR: scratch,
+        ...(app.installationId === undefined ? {} : { A11Y_APP_INSTALLATION_ID: app.installationId }) } });
+    if (minted.status !== 0) return `the reviewer's app token could not be minted: ${firstLine(minted.stderr || minted.error || "no reason was given")}`;
+    renameSync(join(scratch, "reviewer.token"), join(dir, "reviewer.token"));
+    return null;
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 }
 
 /**
@@ -1913,9 +1963,9 @@ export function repointedForReviewer(order: { session: string; prompt: string; }
  *
  * @param deps `cwd` is the verified checkout
  */
-function spawnReviewer(order: { session: string; cause?: string; causeKey?: string; reviewDepth?: Depth; trust?: ReviewTrust; }, agents: { label: string; status: string; }[], { run = defaultRun, env, cwd, registry, codexConfig }: {
+function spawnReviewer(order: { session: string; cause?: string; causeKey?: string; reviewDepth?: Depth; trust?: ReviewTrust; }, agents: { label: string; status: string; }[], { run = defaultRun, env, cwd, registry, codexConfig, token }: {
         run?: (args: string[]) => string; env?: Record<string, string>; cwd: string;
-        registry?: Record<string, ReviewerEntry>; codexConfig?: () => string | null;
+        registry?: Record<string, ReviewerEntry>; codexConfig?: () => string | null; token?: (tree: string) => string | null;
     }): { label: string; workspace: string; profile: { kind: string; model: string; effort: string; }; } |
 { refusal: string; } {
   // #1311: AN ORDER THAT DOES NOT SAY WHETHER ITS PULL REQUEST IS INSIDE IS NOT STARTED. The trust is decided where the order is made (`review-trust.ts`);
@@ -1924,6 +1974,9 @@ function spawnReviewer(order: { session: string; cause?: string; causeKey?: stri
   const reviewer = spawnableReviewer(order, agents, registry);
   if ("refusal" in reviewer) return reviewer;
   const outside = order.trust === OUTSIDE;
+  // agent-org#1348: THE TOKEN IS IN THE TREE BEFORE THE PANE OPENS, so the reviewer reads it and never the key. An outside reviewer has no app.
+  const minted = outside || token === undefined ? null : token(cwd);
+  if (minted !== null) return { refusal: `no reviewer spawn for "${reviewer.session}": ${minted}` };
   const pane = openPane(run, reviewer.session, outside ? outsideReviewerEnvironment(reviewer.session, reviewedRepositoryOf(reviewer.session))
     : reviewerEnvironment(reviewer.session, env, cwd), cwd);
   if ("refusal" in pane) return pane;
@@ -1997,7 +2050,7 @@ function codexTrustNote(session: string, err: unknown, read: () => string | null
 }
 
 /** `codexConfig` reads the reviewer's codex config, a seam so a test can hold either answer */
-export type ReviewerDeps = {run: (args: string[]) => string, reviewerEnv?: Record<string, string>, checkout?: CheckoutDeps, registry?: () => Record<string, ReviewerEntry>, registerReviewer?: (session: string, trust?: ReviewTrust) => void, memory?: () => string | null, codexConfig?: () => string | null, startHold?: () => string | null};
+export type ReviewerDeps = {run: (args: string[]) => string, reviewerEnv?: Record<string, string>, reviewerToken?: (tree: string) => string | null, checkout?: CheckoutDeps, registry?: () => Record<string, ReviewerEntry>, registerReviewer?: (session: string, trust?: ReviewTrust) => void, memory?: () => string | null, codexConfig?: () => string | null, startHold?: () => string | null};
 
 /**
  * WHY NO REVIEW CHECKOUT CAN BE MADE FOR THIS INSTANCE, or `null` when one can (#2618, lifted for a declared key by #2969). A tree is
@@ -2057,7 +2110,7 @@ function reviewerTarget(order: { session: string; cause?: string; causeKey?: str
   const carried = withReviewCheckout(order, checkout, pr);
   if (!("refusal" in routed)) return { label: routed.label, reviewer: true, order: carried };
   const spawn = spawnReviewer(order, live, { run: deps.run, env: deps.reviewerEnv, cwd: checkout.path,
-    registry: deps.registry?.(), codexConfig: deps.codexConfig });
+    registry: deps.registry?.(), codexConfig: deps.codexConfig, token: deps.reviewerToken });
   if ("refusal" in spawn) return { refusal: `${routed.refusal}; ${spawn.refusal}` };
   // REGISTERED BEFORE THE PROMPT, as the engineer path does: a refused prompt leaves the process running.
   deps.registerReviewer?.(spawn.label, order.trust);
@@ -5797,7 +5850,7 @@ function noteClaimOrders(claimOrders: ClaimOrders | undefined, { gateOrder, targ
  */
 export function deliver(orders: readonly { session: string; causeKey: string; prompt: string; cause?: string; title?: string; replaces?: { branch: string; }[]; resume?: boolean; outageNow?: boolean; startFresh?: boolean; briefRole?: string; trust?: ReviewTrust; }[], agents: { label: string; status: string; }[], roster: string[],
   { run = defaultRun, record, counts, ineligibleReason, env, registerSpawn, drained, claimable, claimer, memory, hostLoad, claimRefused, oneShot, ceoOneShot,
-    launch, reviewerEnv, registerReviewer, checkout, registry, unavailable, sleep, contextRoot, codexConfig, clock, relane, goneSeats, claimOrders, toolchain,
+    launch, reviewerEnv, reviewerToken, registerReviewer, checkout, registry, unavailable, sleep, contextRoot, codexConfig, clock, relane, goneSeats, claimOrders, toolchain,
     now = Date.now, serve, accountPause, endRun }: {
           run?: (args: string[]) => string; record?: (key: string, recipient?: string, noClear?: boolean, at?: number) => void;
           /** agent-org#1392: writes the RESET that ends a capped cause's run when its absent seat is started again (see `isAbsentReviewerSeat`). */
@@ -5859,7 +5912,7 @@ export function deliver(orders: readonly { session: string; causeKey: string; pr
       continue;
     }
     const target = targetFor(order, live, roster, { run: spawnRun, spawned, ineligibleReason, env, registerSpawn, drained, startHold: starts.hold,
-      claimable, claimer, memory, hostLoad, claimRefused, oneShot, ceoOneShot, reviewerEnv, registerReviewer, checkout, registry, codexConfig, relane, goneSeats: gone, toolchain, accountPause });
+      claimable, claimer, memory, hostLoad, claimRefused, oneShot, ceoOneShot, reviewerEnv, reviewerToken, registerReviewer, checkout, registry, codexConfig, relane, goneSeats: gone, toolchain, accountPause });
     if ("refusal" in target) {
       const left = endedSeatLine(order, gone);
       if (left === null) refused.push(`${order.causeKey}: ${target.refusal}`); else settled.push(left);
@@ -8855,7 +8908,17 @@ async function main() {
     decisionDeps: { host, switchesPath: decisionSwitchesPath(PRIMARY_CHECKOUT), logPath: decisionLogPathFrom(ledgerPath) }, accountPause,
   });
   // A SEAT THE FIRST DELIVERY FOUND ENDED IS ENDED FOR THE SECOND (#3568): one `agent_not_found` per label per tick, not one per order.
+  // agent-org#1348: a live reviewer's token is refreshed BEFORE it expires, so `host/gh` in its sandbox never has to mint with the key. An outside
+  // reviewer has no app, so it gets none; a failed refresh says so, and the token there is kept until it runs out.
+  const reviewerApp = reviewerAppIdentity();
+  const reviewerRegistry: Record<string, ReviewerEntry> = readReviewerRegistry(reviewerPathsFrom(ledgerPath).registry);
+  for (const label of liveReviewers(agents)) {
+    if (reviewerRegistry[label]?.trust === OUTSIDE || !existsSync(reviewCheckoutPath(label))) continue;
+    const why = ensureReviewerToken(reviewCheckoutPath(label), reviewerApp);
+    if (why !== null) process.stderr.write(`wake: ${label}: ${why}\n`);
+  }
   const { sent, refused: gateRefused, stuck, outaged, settled } = deliver(ready, free, roster, { record, unavailable, clock, relane: relaneFacts(ledgerPath),
+    reviewerToken: (tree) => ensureReviewerToken(tree, reviewerApp),
     serve: (order) => served.get(order.causeKey) ?? null, accountPause,
     goneSeats: handed.goneSeats,
     claimOrders: claimOrdersIn(claimOrdersPath(ledgerPath)),
