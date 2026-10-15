@@ -114,8 +114,10 @@ export function settle(entries: LedgerEntry[]): LedgerEntry[] {
   });
   for (const indices of byAccount.values()) {
     indices.sort((a, b) => Date.parse(out[a].time) - Date.parse(out[b].time) || a - b);
-    let reset: number | undefined;
-    let before = 0;
+    // One baseline PER RESET WINDOW, not per account: a token's window resets on its own clock, and one account (`app:scheduler`) runs several
+    // at once (2026-10-15 16Z: four reset epochs in one hour, 123 switches among 776 readings). A single baseline restarted on every switch,
+    // so most readings were baselines and read as floor (#1482).
+    const before: Map<number, number> = new Map();
     let gap: number[] = [];
     for (const i of indices) {
       const e = out[i];
@@ -123,14 +125,13 @@ export function settle(entries: LedgerEntry[]): LedgerEntry[] {
         gap.push(i);
         continue;
       }
-      if (e.reset !== reset) {
-        reset = e.reset;
-        before = e.used; // the baseline: this line and what led up to it stay at their floor
-        gap = [];
+      const last = before.get(e.reset);
+      before.set(e.reset, Math.max(last ?? 0, e.used));
+      if (last === undefined) {
+        gap = []; // the baseline: this line and what led up to it stay at their floor
         continue;
       }
-      const moved = Math.max(0, e.used - before);
-      before = Math.max(before, e.used);
+      const moved = Math.max(0, e.used - last);
       const unknown = [...gap, i].filter((j) => out[j].cost === null);
       const left = Math.max(0, moved - [...gap, i].reduce((sum, j) => sum + (out[j].cost ?? 0), 0));
       if (unknown.length === 0) {
@@ -139,7 +140,7 @@ export function settle(entries: LedgerEntry[]): LedgerEntry[] {
         const share = Math.floor(left / unknown.length);
         const extra = left - share * unknown.length;
         // the closing reading takes the remainder first: it is the one call whose own movement is in the figure
-        const order = [i, ...gap.filter((j) => out[j].cost === null)];
+        const order = [i, ...gap].filter((j) => out[j].cost === null);
         order.forEach((j, n) => {
           out[j].cost = share + (n < extra ? 1 : 0);
           out[j].settled = unknown.length === 1 ? "read" : "shared";

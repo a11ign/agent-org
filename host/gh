@@ -176,6 +176,12 @@ ledger_record() { # status stdout-copy first-arg second-arg
 #
 # `script()` is `gh-ledger.ts` `callerScript` in awk, and `gh-ledger.test.ts` feeds both the same callers so they cannot drift apart
 # unseen: a session's shell, else the first `name.ext` of the command line past any `--import` preload, else its first word.
+#
+# (#1482) The dropped lines are SETTLED here, as `gh-ledger.ts` `settle` settles a ledger, before they are summed: a graphql reading takes the movement of
+# its own reset window since that window's last reading, shared between the counter-less lines before it and itself, so an hour of a rolled-up trim keeps
+# the points the pool's counter moved and not the one-point floor. The baseline is per reset window and per account (one account can run several windows
+# at once, agent-org#1482), and a dropped line before its window's first reading stays a floor. Settling sees the dropped lines only: the first reading a
+# trim leaves in the ledger has no earlier reading to be measured from, so that boundary is a floor too, and the rollup never says so.
 rollup_dropped() { # ledger-file dropped-bytes
   { cat "$1.hourly" 2>/dev/null; head -c "$2" "$1"; } | awk -F'\t' '
     function script(c,   u, w) {
@@ -185,12 +191,39 @@ rollup_dropped() { # ledger-file dropped-bytes
       sub("^ +", "", u); split(u, w, / +/)
       return w[1] != "" ? w[1] : "unknown"
     }
-    NF == 6 || NF == 7 { k = $1 "\t" $2 "\t" $3 "\t" (NF == 7 ? $7 : ""); calls[k] += $4; read[k] += $5; floor[k] += $6 }
+    NF == 6 || NF == 7 { k = $1 "\t" $2 "\t" $3 "\t" (NF == 7 ? $7 : ""); calls[k] += $4; read[k] += $5; floor[k] += $6; next }
     NF >= 8 && $1 ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]/ {
-      res = $3; sub(/\?$/, "", res); k = substr($1, 1, 13) "\t" $2 "\t" res "\t" script($8)
-      calls[k] += 1; if ($4 != "") read[k] += $4
-      floor[k] += ($4 != "" ? $4 : (res == "graphql" ? 1 : 0)) }
-    END { for (k in calls) {
+      n += 1; t[n] = $1; acct[n] = $2; res[n] = $3; sub(/\?$/, "", res[n]); cs[n] = script($8); cost[n] = $4
+      if (res[n] == "graphql" && NF >= 12 && $(NF - 1) ~ /^[0-9]+$/ && $NF ~ /^[0-9]+$/) { counted[n] = 1; used[n] = $(NF - 1) + 0; rst[n] = $NF }
+    }
+    END {
+      for (i = 1; i <= n; i += 1) if (cost[i] != "") { hc[i] = 1; ec[i] = cost[i] + 0 }
+      for (i = 1; i <= n; i += 1) {
+        if (res[i] != "graphql") continue
+        if (!counted[i]) { gap[acct[i]] = gap[acct[i]] " " i; continue }
+        key = acct[i] SUBSEP rst[i]
+        if (!(key in last)) { last[key] = used[i]; gap[acct[i]] = ""; continue }
+        moved = used[i] - last[key]; if (moved < 0) moved = 0
+        if (used[i] > last[key]) last[key] = used[i]
+        m = split(gap[acct[i]] " " i, mem, " "); gap[acct[i]] = ""
+        left = moved
+        for (j = 1; j <= m; j += 1) if (hc[mem[j]]) left -= ec[mem[j]]
+        if (left < 0) left = 0
+        u = 0
+        if (!hc[i]) ord[++u] = i
+        for (j = 1; j < m; j += 1) if (!hc[mem[j]]) ord[++u] = mem[j]
+        if (u > 0) {
+          share = int(left / u); extra = left - share * u
+          for (j = 1; j <= u; j += 1) { ec[ord[j]] = share + (j <= extra ? 1 : 0); hc[ord[j]] = 1; sh[ord[j]] = (u > 1) }
+        }
+      }
+      for (i = 1; i <= n; i += 1) {
+        k = substr(t[i], 1, 13) "\t" acct[i] "\t" res[i] "\t" cs[i]
+        calls[k] += 1
+        if (hc[i] && !sh[i]) read[k] += ec[i]
+        floor[k] += (hc[i] ? ec[i] : (res[i] == "graphql" ? 1 : 0))
+      }
+      for (k in calls) {
       split(k, p, "\t")
       printf "%s\t%s\t%s\t%d\t%d\t%d", p[1], p[2], p[3], calls[k], read[k], floor[k]
       if (p[4] != "") printf "\t%s", p[4]
