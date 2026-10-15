@@ -25,8 +25,29 @@ export const ORG_SESSION = "org";
 /** Which herdr session a call is made in. Absent means {@link ORG_SESSION}. */
 export type SessionOption = { session?: string };
 
+/** The answers an ENDED seat gives a probe: the seat or its pane is gone, which every caller reads as `unknown` / `false` / gone. */
+const GONE_CODES = ["agent_not_found", "pane_not_found"];
+
+/**
+ * Runs one `herdr` probe. The child's stderr is captured, not inherited: a probe of an ended seat is refused with {@link GONE_CODES} once per
+ * probe per tick, and that expected answer must not reach the tick's journal (agent-org#1487). The captured stderr rides on the thrown error
+ * (`err.stderr`) for the callers that read it; any other refusal is still written to this process's stderr, so it stays in the journal.
+ *
+ * @param {string[]} args
+ * @param {number} [timeout]
+ */
+export function herdrRun(args: string[], timeout: number = 30_000): string {
+  try {
+    return execFileSync("herdr", args, { encoding: "utf8", timeout, stdio: ["ignore", "pipe", "pipe"] });
+  } catch (err) {
+    const stderr = String((err as { stderr?: unknown } | null)?.stderr ?? "");
+    if (stderr && !GONE_CODES.some((code) => stderr.includes(code))) process.stderr.write(stderr);
+    throw err;
+  }
+}
+
 /** @param {string[]} args */
-const defaultRun = (args: string[]) => execFileSync("herdr", args, { encoding: "utf8", timeout: 30_000 });
+const defaultRun = (args: string[]) => herdrRun(args);
 
 /** Where the paneless line goes by default: the stderr the gate's own `GATE:` lines go to. */
 const defaultSay = (line: string) => process.stderr.write(`${line}\n`);
