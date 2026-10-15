@@ -18,11 +18,11 @@
 // A RUN THAT HANDS ITS TICKET BACK IS PARKED, NOT CLOSED. On `needs-human`, `wrong-repo` or `no-outcome` its workspace stays open and holds no
 // slot, so the person can answer the agent in its terminal. An agent seen working again has been answered: its outcome file is moved aside, so
 // the stop hook asks for a new one, and the run is live again. Close ends a parked run's workspace; a workspace closed by hand is noticed.
-import { execFile, execFileSync, spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { availableParallelism, homedir, loadavg } from "node:os";
 import { join } from "node:path";
-import { agentStartArgs, closedNote, herdrReason, openPane, readAgents } from "../herdr-agents.ts";
+import { agentStartArgs, closedNote, herdrReason, herdrRun, openPane, readAgents } from "../herdr-agents.ts";
 import { HANDED_BACK, hasPlan, isParked } from "./board-view.ts";
 import {
   finish, isLive, markResumed, markRunning, markStarting, nextStarts, observe, park, planDone, recordBlockers, recordPullStates, recordRepos, recordTrackerStates,
@@ -48,7 +48,7 @@ const MISSES_TO_GONE = 2;
 
 export type Herdr = (args: string[], timeoutMs?: number) => string;
 
-const defaultHerdr: Herdr = (args, timeoutMs = 30_000) => execFileSync("herdr", args, { encoding: "utf8", timeout: timeoutMs });
+const defaultHerdr: Herdr = (args, timeoutMs = 30_000) => herdrRun(args, timeoutMs);
 
 /** herdr for the one slow call, `agent start`, so a start does not stop the board answering. */
 export type HerdrAsync = (args: string[], timeoutMs: number) => Promise<string>;

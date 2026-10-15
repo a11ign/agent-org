@@ -18,6 +18,7 @@ import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { recordFailures } from "./failure-ledger.ts";
+import { herdrRun } from "./herdr-agents.ts";
 import { sandboxGitEnv } from "./lib/git-env.ts";
 
 export const HARD_CRASH_CLASS = "host-hard-crash";
@@ -345,7 +346,7 @@ async function realPorts(host: HostFile, home: string): Promise<Ports> {
   const seenPath = join(stateDir, "crash-recover-seen.json");
   const primary = host.projects?.[0]?.checkout ?? "";
   const tool = host.tool ?? "";
-  const herdrRun = (args: string[]) => execFileSync("herdr", ["--session", "org", ...args], { encoding: "utf8", timeout: 320_000 });
+  const herdrOrg = (args: string[]) => herdrRun(["--session", "org", ...args], 320_000);
   const run = (cmd: string, args: string[]) => { try { return execFileSync(cmd, args, { encoding: "utf8", timeout: 60_000 }); } catch { return ""; } };
   const failureLog = join(stateDir, "failure-ledger");
   const wakeCommand = (verb: string, args: string[]) => execFileSync("node", [join(tool, "src/bin.ts"), verb, ...args], { cwd: primary, timeout: 120_000 });
@@ -360,8 +361,8 @@ async function realPorts(host: HostFile, home: string): Promise<Ports> {
     seenPath,
     readSeen: () => readJson(seenPath, []),
     writeSeen: (seen) => { mkdirSync(stateDir, { recursive: true }); writeFileAtomic(seenPath, `${JSON.stringify(seen)}\n`); },
-    herdrAgents: () => JSON.parse(herdrRun(["agent", "list"])).result.agents,
-    herdr: (args) => { herdrRun(args); },
+    herdrAgents: () => JSON.parse(herdrOrg(["agent", "list"])).result.agents,
+    herdr: (args) => { herdrOrg(args); },
     seatProfiles: () => {
       const roster = readJson<{ live?: ({ name: string } & LaunchProfile)[] }>(join(primary, ".agent-org/roles/sessions.json"), {});
       return new Map((roster.live ?? []).map((s) => [s.name, { model: s.model, effort: s.effort, autocompact: s.autocompact }]));

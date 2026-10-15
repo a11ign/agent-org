@@ -15,10 +15,10 @@
 //
 // A LEAF: only node builtins at load. The command's own reads (the project declaration, herdr, the host's state directory) are imported inside `main`,
 // because `claim-stall.ts` and the gate import this file for the reading and must not pay for them.
-import { execFileSync } from "node:child_process";
 import { mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { MANAGER_SEATS, decidedBy } from "./decided-by.ts";
+import { herdrRun } from "./herdr-agents.ts";
 import type { BlockerWriter } from "./ticket-port/port.ts";
 import { TRACKER, githubTicketAdapter } from "./ticket-port/github-adapter.ts";
 
@@ -281,7 +281,7 @@ export function isLimitMenu(pane: string | null): boolean {
 /** The recent screen of a seat, or `null` when herdr cannot give it. */
 function paneOf(label: string): string | null {
   try {
-    return execFileSync("herdr", ["--session", "org", "agent", "read", label, "--source", "recent", "--lines", "40"], { encoding: "utf8", timeout: 30_000 });
+    return herdrRun(["--session", "org", "agent", "read", label, "--source", "recent", "--lines", "40"]);
   } catch {
     return null;
   }
