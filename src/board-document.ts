@@ -28,7 +28,7 @@ import { collect, readSetIsNotMain, ROOT, REPO, MILESTONE, HOURS_MS, issues, out
   realPageCaptureAge, worstVerdict } from "./board-data.ts";
 import { foundByChairmanLine } from "./found-by-chairman.ts";
 import { toHtml } from "./board-markdown.ts";
-import { editionDay, publishEdition, todaysEditionExists } from "./board-discussion.ts";
+import { editionDay, editionUrlIfPublished, outsideBoardOn, publishEdition, scheduledRunFindsWorkDone, todaysEditionExists } from "./board-discussion.ts";
 import { productHome, PRODUCT_HOME_SOURCE } from "@a11ign/toolchain/lib/product-home";
 import { HOME_CHECKOUT } from "./project-config.ts";
 
@@ -1085,6 +1085,12 @@ function main() {
 
   const late = argv.includes("--late-edition");
   const discussion = argv.includes("--discussion");
+  // THE SECOND ACTOR DOES NOTHING (agent-org#1574, behind `outside.board`): the edition is updated in place, so a second scheduled run would rewrite the document the first published.
+  const published = discussion && scheduledRunFindsWorkDone({ on: outsideBoardOn() }) ? editionUrlIfPublished({ day: editionDay() }) : null;
+  if (published) {
+    process.stdout.write(`${published} (outside.board: already published; nothing written)\n`);
+    return;
+  }
   const summary = requireSummary(argv.includes("--pdf") || argv.includes("--release") || discussion || late);
   const lateAt = late ? requireLateEditionPermitted(summary) : undefined;
   const d = collect(flagOf("--since") ?? new Date(Date.now() - 24 * HOURS_MS).toISOString());
