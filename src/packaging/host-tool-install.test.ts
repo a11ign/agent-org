@@ -32,6 +32,7 @@ import { HostConfigRefusal, homeHostConfig, parseBeforeTick, parseHostConfig, re
 import { handoffQueuePath, keptClaimsPath, ledgerPathFrom, reviewerPathsFrom, sparePathsFrom } from "../wake.ts";
 import { updateTool } from "../update-tool.ts";
 import { sandboxGitEnv, withGitSandbox } from "@a11ign/toolchain/lib/git-sandbox";
+import { trackedTopLevelDirs } from "../region-paths.ts";
 
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 
@@ -71,6 +72,10 @@ function refusal(fn: () => unknown): HostConfigRefusal {
 }
 
 // --- 1. the reader: `tool`, `stateDir`, and a project's `beforeTick` ---------------------------------------------------------------
+
+/** #1650: these subtests assert the tool-form units under a11ign's `a11ign-` prefix (docs/project-tree-dependency.md, row 1650). The fixture's `units.prefix` is `fixture-`, so no `a11ign-*` unit is shipped there and the rendered text is empty. */
+const SKIP_FIXTURE = trackedTopLevelDirs().includes("packages") ? false
+  : "the fixture's units.prefix is fixture-, so no a11ign-* unit is shipped there: these subtests render a11ign-work-tick.service and its siblings, which only the a11ign checkout ships";
 
 test("#2793: `tool` and `stateDir` are read when present, and the KEY IS ABSENT when they are not", () => {
   const without = parse(acmeHost());
@@ -148,7 +153,7 @@ const workTickOf = (host: ReturnType<typeof parse>) => shippedUnitText("acme-wor
 /** The lines of `a` that are not lines of `b`, comments left out: what a form ADDED, in order. */
 const linesOnlyIn = (a: string, b: string) => a.split("\n").filter((line) => line !== "" && !line.startsWith("#") && !b.split("\n").includes(line));
 
-test("#2793: with NO `tool` the work-tick unit is today's text BYTE FOR BYTE -- a11ign's, and any host's", () => {
+test("#2793: with NO `tool` the work-tick unit is today's text BYTE FOR BYTE -- a11ign's, and any host's", { skip: SKIP_FIXTURE }, () => {
   assert.equal(Object.hasOwn(plainA11ignHost as object, "tool"), false, "POSITIVE CONTROL: the host asked here names no tool, so this is the plain render");
   assert.equal(homeHostConfig().stateDir, undefined, "and no stateDir: a11ign's host.json declares none");
   assert.equal(sha256(shippedUnitText("a11ign-work-tick.service", { host: plainA11ignHost }) ?? ""), TODAYS_WORK_TICK_SHA, "the unit's plain render, unchanged");
@@ -298,7 +303,7 @@ test("#2974: a repository that is not owner/name is refused naming the field, be
   });
 });
 
-test("#2974: a11ign's own declaration puts `GH_REPO=a11ign/a11ign` on all four services it installs from the tool", () => {
+test("#2974: a11ign's own declaration puts `GH_REPO=a11ign/a11ign` on all four services it installs from the tool", { skip: SKIP_FIXTURE }, () => {
   const toolHost = { ...homeHostConfig(), projects: [{ id: homeHostConfig().primary, checkout: REPO_ROOT.replace(/\/$/, "") }], tool: "/home/agent/repos/agent-org" } as never;
   for (const name of TOOL_SERVICES) {
     const lines = nonComment(shippedUnitText(`a11ign-${name}.service`, { host: toolHost }) ?? "");
@@ -306,7 +311,7 @@ test("#2974: a11ign's own declaration puts `GH_REPO=a11ign/a11ign` on all four s
   }
 });
 
-test("#2974: the gh-identity check still SEES a unit in tool form -- the population does not lose its work-tick", () => {
+test("#2974: the gh-identity check still SEES a unit in tool form -- the population does not lose its work-tick", { skip: SKIP_FIXTURE }, () => {
   // `unitEntryPoints` resolved `node src/work-tick.ts` against the project and found nothing, so the unit that spends the most rate limit
   // dropped out of `unitsSpendingGh` without a failure. a11ign's real host with a `tool` injected, so this holds before and after its host.json says one.
   // Its project is THIS run's checkout, not the host's absolute path, which a CI runner does not have: the tool form reads each project's `beforeTick`.

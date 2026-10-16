@@ -27,6 +27,7 @@ import { CAUSES, JUDGMENT_CAUSES, START_CAUSES, PROFILES, TOOL_CAUSE_DECLARATION
   from "../cause-declaration.ts";
 import { HOME_CHECKOUT, ProjectDeclarationRefusal } from "../project-config.ts";
 import { parseRolesDir, homeRolesDir, roleBriefPath } from "../project-roles.ts";
+import { trackedTopLevelDirs } from "../region-paths.ts";
 
 // A mutation reaches into a shape the fixture's own type would otherwise pretend is optional, the same
 // tradeoff `project-config.test.ts` accepts for the identical reason.
@@ -34,6 +35,10 @@ import { parseRolesDir, homeRolesDir, roleBriefPath } from "../project-roles.ts"
 type Loose = any;
 
 // --- 1a. `declareCause`: ONE declaration, and it refuses rather than defaulting -------------------------
+
+/** #1650: these subtests compare the cause lists with a11ign's project-declared causes (docs/project-tree-dependency.md, row 1650). The fixture declares no cause module, so the list is the tool's own and lacks those causes (`fleet-batch-due` among them); the fixture test above pins the tool's 30. */
+const SKIP_FIXTURE = trackedTopLevelDirs().includes("packages") ? false
+  : "the fixture declares no cause module, so the list is the tool's own and lacks a11ign's project causes (fleet-batch-due and lab-job-finished among them): these subtests assert a11ign's list, which only the a11ign checkout declares";
 
 test("declareCause builds a frozen {cause, group, profile}", () => {
   const decl = declareCause("x", GROUPS.ACTION, { kind: "claude", model: "sonnet", effort: "high", why: "because" });
@@ -127,19 +132,19 @@ const EXPECTED_JUDGMENT = ["answer-given", "awaiting-evidence-stale", "backlog-a
 const EXPECTED_START = ["blocked-unexaminable", "epic-finished", "epic-unfiled", "fleet-batch-due",
   "lane-backlog-unpromoted", "org-stalled", "ready-queue-empty", "ready-row-unclaimed", "unclaimed-blocker-cleared"];
 
-test("CAUSES (re-exported by work-gate.ts) equals the recorded list, by value", () => {
+test("CAUSES (re-exported by work-gate.ts) equals the recorded list, by value", { skip: SKIP_FIXTURE }, () => {
   assert.deepEqual([...CAUSES].sort(), [...EXPECTED_CAUSES].sort());
 });
 
-test("JUDGMENT_CAUSES (re-exported by work-gate.ts) equals the recorded list, by value", () => {
+test("JUDGMENT_CAUSES (re-exported by work-gate.ts) equals the recorded list, by value", { skip: SKIP_FIXTURE }, () => {
   assert.deepEqual([...JUDGMENT_CAUSES].sort(), [...EXPECTED_JUDGMENT].sort());
 });
 
-test("START_CAUSES (re-exported by work-gate.ts) equals today's 9, by value", () => {
+test("START_CAUSES (re-exported by work-gate.ts) equals today's 9, by value", { skip: SKIP_FIXTURE }, () => {
   assert.deepEqual([...START_CAUSES].sort(), [...EXPECTED_START].sort());
 });
 
-test("PROFILES (re-exported by worker-profile.ts) has one entry per cause, each with kind/model/effort/why", () => {
+test("PROFILES (re-exported by worker-profile.ts) has one entry per cause, each with kind/model/effort/why", { skip: SKIP_FIXTURE }, () => {
   assert.deepEqual(Object.keys(PROFILES).sort(), [...EXPECTED_CAUSES].sort());
   for (const [cause, profile] of Object.entries(PROFILES)) {
     assert.ok(["claude", "codex"].includes(profile.kind), `${cause}'s kind`);
@@ -150,7 +155,7 @@ test("PROFILES (re-exported by worker-profile.ts) has one entry per cause, each 
 });
 
 // POSITIVE CONTROL: a declaration that lost `fleet-batch-due` cannot equal the recorded lists above.
-test("POSITIVE CONTROL: the a11ign cause list is asserted to contain `fleet-batch-due`", () => {
+test("POSITIVE CONTROL: the a11ign cause list is asserted to contain `fleet-batch-due`", { skip: SKIP_FIXTURE }, () => {
   assert.ok(CAUSES.includes("fleet-batch-due"));
   assert.ok(JUDGMENT_CAUSES.includes("fleet-batch-due"));
   assert.ok(START_CAUSES.includes("fleet-batch-due"));

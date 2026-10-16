@@ -222,7 +222,8 @@ test("the heading, the seven-day window and the already-posted rule are still th
   assert.match(SCRIPT.text, /const date = window\.since\.slice\(0, "YYYY-MM-DD"\.length\);/);
 });
 
-test("the script pin RAN: under the acceptance command's AGENT_ORG_HOST the project's script is found", { skip: process.env.AGENT_ORG_HOST ? false : "AGENT_ORG_HOST is unset, so the pin above may legitimately skip" }, () => {
+// #1650: the fixture project has no scripts/ci-health.ts, so the pin above skips there, and this meta test skips with it: the named reason is the missing script, not the host.
+test("the script pin RAN: under the acceptance command's AGENT_ORG_HOST the project's script is found", { skip: process.env.AGENT_ORG_HOST ? (SCRIPT === null ? "#1650: AGENT_ORG_HOST names a checkout with no scripts/ci-health.ts (the fixture project), so the pin above skips there by design" : false) : "AGENT_ORG_HOST is unset, so the pin above may legitimately skip" }, () => {
   assert.ok(SCRIPT, "AGENT_ORG_HOST is set but its primary checkout has no scripts/ci-health.ts: the pin above skipped");
 });
 

@@ -47,6 +47,7 @@ import { labelsOutOfRelease, saysOutOfRelease } from "../row-file.ts";
 import { laneReason } from "../row-claim/runner-rule.ts";
 import { resourcePatternsFrom } from "../acceptance-commands.ts";
 import { NEEDS_CHAIRMAN } from "../messaging/sources/requests.ts";
+import { trackedTopLevelDirs } from "../region-paths.ts";
 import {
   IN_PROGRESS_LABEL as SUMMARY_IN_PROGRESS, NEEDS_CHAIRMAN_LABEL as SUMMARY_NEEDS_CHAIRMAN, READY_LABEL as SUMMARY_READY,
 } from "../messaging/sources/summary.ts";
@@ -57,6 +58,10 @@ import {
 type Loose = any;
 
 // --- 1. a11ign's own values, one assertion per constant ---
+
+/** #1650: these subtests assert a11ign's shared-resource vocabulary (docs/project-tree-dependency.md, row 1650). The fixture's project.json declares `vocabulary.resources: []`, so the list is empty there, and a11ign's 15 patterns are read from its own declaration. */
+const SKIP_FIXTURE = trackedTopLevelDirs().includes("packages") ? false
+  : "the fixture's vocabulary.resources is [], so the 15 a11ign patterns are absent there: these subtests read a11ign's declared vocabulary, which only the a11ign checkout carries";
 
 test("a11ign's vocabulary holds each of the nine labels the row names", () => {
   assert.equal(READY_LABEL, "ready");
@@ -83,7 +88,7 @@ test("a11ign's vocabulary holds today's remaining label, milestone, lane-file an
   assert.equal(FLEET_QUESTION, "Does the acceptance need the fleet or the lab");
 });
 
-test("a11ign's vocabulary holds all 15 shared-resource patterns, each with its reason and its `named` flag", () => {
+test("a11ign's vocabulary holds all 15 shared-resource patterns, each with its reason and its `named` flag", { skip: SKIP_FIXTURE }, () => {
   assert.equal(RESOURCES.length, 15);
   assert.equal(RESOURCES.filter((r) => r.named).length, 5,
     "systemctl, systemd, the Proxmox key, the corpus remote and \"on the lab\" are NAMED, not invoked");
@@ -308,7 +313,7 @@ test("a fixture project's DIFFERENT lane prefix changes what the lane rule reads
   assert.match(own, /ceo/);
 });
 
-test("with an EMPTY resources list, an Acceptance may run a `fleet:` command a11ign's declaration refuses", () => {
+test("with an EMPTY resources list, an Acceptance may run a `fleet:` command a11ign's declaration refuses", { skip: SKIP_FIXTURE }, () => {
   const home = resourcePatternsFrom(RESOURCES);
   const second = resourcePatternsFrom(parseVocabulary(SECOND_VOCABULARY).resources);
   assert.ok(home.patterns.some(([pattern]) => pattern.test("fleet:status")), "a11ign's declaration refuses fleet:status");

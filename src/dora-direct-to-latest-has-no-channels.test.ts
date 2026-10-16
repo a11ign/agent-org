@@ -15,6 +15,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { dora, measureRepository, renderDora } from "./dora.ts";
 import { homeProjectDeclaration } from "./project-config.ts";
+import { trackedTopLevelDirs } from "./region-paths.ts";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Any = any;
@@ -61,7 +62,11 @@ const fromRegistry = (repository: Any) => DIST_TAGS[packageOf(repository)];
 const measure = (repository: Any, options: Options) => measureRepository(repository, readersOf(options), NOW) as Any;
 const WIDGETS = { repo: "acme/widgets", release: { kind: "npm", package: "widgets" }, releasablePaths: ["src/"] };
 
-test("(a) the population: five npm repositories, and exactly the four that publish straight to `latest` read `undefined`", () => {
+/** #1650: these subtests read the npm population from the project's `dora` declaration (docs/project-tree-dependency.md, row 1650). The fixture declares `dora: []`, so there is no package to read, and a11ign's declaration carries the five npm repositories. */
+const SKIP_FIXTURE = trackedTopLevelDirs().includes("packages") ? false
+  : "the fixture's project declares dora: [], so the npm population is empty: these subtests read a11ign's declared npm repositories, which only the a11ign checkout carries";
+
+test("(a) the population: five npm repositories, and exactly the four that publish straight to `latest` read `undefined`", { skip: SKIP_FIXTURE }, () => {
   const population = npmEntries();
   assert.ok(population.length >= 5, `the declaration lists ${population.length} npm repositories; the row's transcript has five`);
   assert.deepEqual(population.map(packageOf).sort(), Object.keys(DIST_TAGS).sort(), "the fixtures must be the declaration's packages, one each");
@@ -75,7 +80,7 @@ test("(a) the population: five npm repositories, and exactly the four that publi
   assert.equal(next.qualified, null);
 });
 
-test("(a2) the reason names it, in the report's words, and is not the missing-record remedy", () => {
+test("(a2) the reason names it, in the report's words, and is not the missing-record remedy", { skip: SKIP_FIXTURE }, () => {
   const worker = npmEntries().find((repository) => packageOf(repository) === "@a11ign/screenreader-worker");
   const reading = measure(worker, { distTags: fromRegistry });
   const why = "its releases publish straight to `latest`: it has no `next` channel";

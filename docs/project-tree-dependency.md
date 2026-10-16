@@ -393,8 +393,8 @@ The 43 files still unresolved (the Open section's "188 unresolved subtests (43 f
 | `src/unsplit-done-when-post-merge.test.ts` | `packages/` Region at 18 (`createIssue` at 133) | project-content, pure | Not guarded; open |
 | `src/packaging/row-file-refuses-unreadable-wait.test.ts` | `COMPLETE_BODY` Region | project-content | Not guarded; open |
 | `src/packaging/board-appendix-gate-record.test.ts` | `docs/board/reported` gate records | project-content | Not guarded; open |
-| `src/packaging/persistent-seat-running.test.ts` | a persistent seat named `RECIPIENT` in the roster (test at 261) | declaration, pure | Not skipped; open |
-| `src/packaging/reconstitution-drill.test.ts` | `HOME_CHECKOUT` in 3 live tests | needs-real-project, pure | Not skipped; open |
+| `src/packaging/persistent-seat-running.test.ts` | a persistent seat named `RECIPIENT` in the roster (test at 261) | declaration, pure | Skipped in agent-org#1650 (the fixture's liaison is not `persistent`) |
+| `src/packaging/reconstitution-drill.test.ts` | `HOME_CHECKOUT` in 3 live tests | needs-real-project, pure | The two failing tests are skipped in agent-org#1650; the other three are not skipped and pass on the fixture |
 | `src/packaging/multi-board-gate.test.ts` | declared brief path in pinned prompts | declaration | Not skipped; open |
 | `src/packaging/fyi-does-not-wake-a-seat.test.ts` | roster must know `ceo` and `liaison` | declaration | Not skipped; open |
 | `src/packaging/worktree-owner.test.ts` | `HOME_CHECKOUT` as a git repo with a HEAD commit | project-content | Not guarded; open |
@@ -425,6 +425,38 @@ Open, not done in this row:
 - The four families above were run on the fixture: `VERDICT pass: 323 tests in 4 files (13 skipped)`, EXIT=0, against 336 tests with 13 failing before the skips. The earlier count of 13 failing subtests is the same 13 now skipped.
 
 Incident. The whole-suite fixture run was started during measurement and was stopped. Before it stopped, it queued real handoff orders into the live herdr org session: IDs `c2036934`, `1516692d`, `cabdb946`, `fc954679`, `52694a80`, `db2bf7e4`, `99a0a706`, `503f5815`, and `55a766ed` (to reviewer-2754). Some were queued twice. The test file that triggered them is not identified. They are not retracted: retracting is destructive and awaits approval. No further suite-wide run, and no run of a wake, prompt-session, messaging, or runtime test, was done after it.
+
+## The fifteen Region files against the fixture (agent-org#1650)
+
+The row's Region is fifteen files. Its Acceptance is a committed copy of the fixture, with `AGENT_ORG_HOST` pointed at its `host.json`, and `rstest` over those fifteen paths (the PR body has the exact command). A bare `rstest` with no file list runs every `src/**/*.test.ts`, which reaches the live herdr org (the incident above), so it was not run.
+
+Before any change, on this branch's base `ff498ea4`: `VERDICT fail: 54 of 286 tests failed in 15 files` (the run record holds 287 tests, 54 failing). After: `VERDICT pass: 232 tests in 15 files (55 skipped)`, and the run record has 0 failing. The 55 skips are 54 new ones plus `ci-health-liveness`'s `the heading, the seven-day window…` skip, which was in the source before this row.
+
+On a11ign's own checkout, with `AGENT_ORG_HOST` at its host declaration and no fixture, the same fifteen files give `VERDICT pass: 287 tests in 15 files`, with no skips. Every guard below evaluates to `false` there, because a11ign's `packages/` tree is tracked.
+
+Every skip is a subtest, guarded `{ skip: SKIP_FIXTURE }` where `SKIP_FIXTURE = trackedTopLevelDirs().includes("packages") ? false : "<reason>"`, as in agent-org#1604. The reason is named in the file beside the guard. The guard is not the fixture's content: nothing is added to `src/packaging/fixtures/project-tree/`.
+
+| File | Skipped | Why the fixture cannot pass it (reason in the file) |
+|---|---|---|
+| `src/ceo-one-shot.test.ts` | 9 | The fixture's `project.json` has one tracker key (`""`), so a spare named `worker-agent-org-914` names no spare; `vocabulary.resources` is `[]`, so `FLEET_LAB_PATTERNS` is empty. |
+| `src/orchestrator-one-shot.test.ts` | 10 | The same two declarations, for the same reason (agent-org#832). |
+| `src/ci-health-liveness.test.ts` | 1 | The pin runs `scripts/ci-health.ts`, which the fixture does not ship. A meta test skips with it, its reason naming the missing script. |
+| `src/event-tunnel.test.ts` | 1 | The #5197 test reads `events.tunnel` from the host `AGENT_ORG_HOST` names. The fixture's `host.json` declares no `events`. It skips only when the named host declares no funnel; a host that does still runs it. |
+| `src/dora-release-commit.test.ts` | 5 | The fixture's `project.json` has `dora: []`, so there is no repository population to read. |
+| `src/dora-direct-to-latest-has-no-channels.test.ts` | 2 | The same `dora: []`. |
+| `src/host-kernel.test.ts` | 4 | The fixture ships `fixture-kernel-reboot.*` units (`units.prefix` is `fixture-`); these assert `a11ign-kernel-reboot.*`. |
+| `src/packaging/host-tool-install.test.ts` | 3 | The same `units.prefix`: no `a11ign-*` unit is shipped, so the render is empty. |
+| `src/packaging/org-retro.test.ts` | 3 | The fixture's `ci.yml` has no `deliberateRefusals` job, and its `ceo.md` has no "The daily retrospective" section. |
+| `src/packaging/persistent-seat-running.test.ts` | 1 | The fixture's `sessions.json` does not mark the liaison `persistent`, so the messaging recipient is not a checked seat there. |
+| `src/packaging/project-roles.test.ts` | 5 | The fixture declares no cause module, so a11ign's project causes (`fleet-batch-due` among them) are absent. The test that the tool's 30 causes stand alone with no project cause is not skipped, and passes. |
+| `src/packaging/project-vocabulary.test.ts` | 2 | The fixture's `vocabulary.resources` is `[]`: the 15 a11ign patterns are absent, and `home` refuses no `fleet:` command. |
+| `src/packaging/reconstitution-drill.test.ts` | 2 | The drill refuses the fixture because `.agent-org/roles/README.md` is absent there, by design. |
+| `src/packaging/shadow-window-arm.test.ts` | 4 | The same `units.prefix`: the shadow pair and the live work-tick pair are `fixture-*`, so the `a11ign-*` names these read are not shipped. |
+| `src/packaging/worker-profile.test.ts` | 2 | The fixture declares no cause module, so `PROFILES` lacks a11ign's project causes; and its `.claude/rules/` has no `agent-practices.md` to read the policy from. |
+
+Candidate tracker rows, not filed (the row's Done-when asks for one per moved file, and filing is outward-facing): the fixture's `units.prefix` and `dora` and `vocabulary` declarations (for `host-kernel`, `host-tool-install`, `shadow-window-arm`, `dora-*`, `project-vocabulary`); the drill's roles README; and the `ceo.md` section and `ci.yml` job the retro reads. The rows for the moved files wait on product-manager.
+
+Not covered: the other families that touch the fixture are in the #1604 section and the table in its "Open" list; this row does not change them.
 
 ## Open
 

@@ -26,6 +26,7 @@ import { PROFILES } from "../worker-profile.ts";
 import { HOME_CHECKOUT, HOST_ENV } from "../project-config.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { connectionOf, readsRowsByLabel, readsRowsSince, sinceAnswer } from "./rows-by-label-fixtures.ts";
+import { trackedTopLevelDirs } from "../region-paths.ts";
 
 const HOUR_MS = 3_600_000;
 const NOW = Date.parse("2026-10-02T00:00:00Z");
@@ -54,6 +55,10 @@ const JOURNAL = [
   tick("2026-10-01T10:06:00+00:00", ["SHELVED row #2937: blocked by #2936 -- declared on the row"]),
   tick("2026-10-01T10:08:00+00:00", [IDLE_OFFER(2824), "RELEASED #3 (worker-3, blocked): nothing kept", "RELEASED #4 (worker-4, gone): worktree KEPT at /y"]),
 ].join("\n");
+
+/** #1650: these subtests read a11ign's own ci.yml or ceo.md (docs/project-tree-dependency.md, row 1650). The fixture's ci.yml has no `deliberateRefusals` job, and its ceo.md has no "The daily retrospective" section, so the section and the bounds are absent there. */
+const SKIP_FIXTURE = trackedTopLevelDirs().includes("packages") ? false
+  : "the fixture's ci.yml has no deliberateRefusals job and its ceo.md has no \"The daily retrospective\" section: these subtests read a11ign's own text, which only the a11ign checkout carries";
 
 test("idle minutes: a tick that offered a Ready row nobody could take counts TWO minutes, once however many offers it held", () => {
   const idle = idleStats(journalLines(JOURNAL, WINDOW));
@@ -138,7 +143,7 @@ test("isBrokenRed: a hold's own two red jobs are HELD, not red; a real red besid
   assert.equal(isHeldRed(labelled([HOLD], [check("ts / run", "SUCCESS", "2026-10-01T19:00:00Z")])), false, "...so the held line is for held RED PRs");
 });
 
-test("the hold's two jobs are the jobs ci.yml defines, and the same two the gate's own exemption uses", () => {
+test("the hold's two jobs are the jobs ci.yml defines, and the same two the gate's own exemption uses", { skip: SKIP_FIXTURE }, () => {
   const ci = readFileSync(join(HOME_CHECKOUT, ".github/workflows/ci.yml"), "utf8");
   assert.deepEqual([...HOLD_OWN_JOBS], [...HOLD_RED_JOBS], "red-pr.ts is a leaf and cannot import pr-orders.ts, so the copy is pinned here");
   for (const job of HOLD_OWN_JOBS) assert.match(ci, new RegExp(`\\n {2}${job}:\\n`), `${job} is a job in ci.yml`);
@@ -352,7 +357,7 @@ function section(markdown: string, heading: string): string | null {
 
 const CEO_ROLE = readFileSync(join(HOME_CHECKOUT, ".agent-org/roles/ceo.md"), "utf8");
 
-test("ceo.md names the duty IN ITS OWN SECTION, not merely somewhere in the file", () => {
+test("ceo.md names the duty IN ITS OWN SECTION, not merely somewhere in the file", { skip: SKIP_FIXTURE }, () => {
   const own = section(CEO_ROLE, "The daily retrospective");
   assert.notEqual(own, null, "the section exists -- the positive control for the extraction itself");
   assert.ok(own!.includes(CLASS_FIX_INSTRUCTION), "the class-fix instruction, verbatim, in the section");
@@ -365,7 +370,7 @@ test("ceo.md names the duty IN ITS OWN SECTION, not merely somewhere in the file
   assert.equal(section("## Other\nfind the CLASS and file a `ready` row for the class fix\n", "The daily retrospective"), null);
 });
 
-test("ceo.md states a bound for EVERY number the report trends, citing the 2026-10-02 baseline on #928", () => {
+test("ceo.md states a bound for EVERY number the report trends, citing the 2026-10-02 baseline on #928", { skip: SKIP_FIXTURE }, () => {
   const own = section(CEO_ROLE, "The daily retrospective");
   assert.notEqual(own, null);
   const missing = NUMBERS.filter((n) => !own!.includes(`\`${n.id}\``)).map((n) => n.id);
