@@ -1,6 +1,8 @@
 // The feedback on one pull request that ticket mode's board answers on its own: the newest review, conversation comment and inline comment
 // from anyone but the board's own account, and its failing checks. Read through an injected `run` (`gh`, as the caller hands it in). This file
 // names no `gh` and spawns nothing: `ticket-port.test.ts` (#484) holds the port to that, and the spawn stays with whoever owns the runner.
+// Which checks are red is `red-pr.ts`'s to decide (#2956), so this file asks it.
+import { brokenChecks } from "../red-pr.ts";
 
 /** What the board reads of one pull request. Times are epoch milliseconds, or null when there is none. */
 export type PullFeedback = Readonly<{
@@ -25,20 +27,19 @@ const QUERY = `query($owner: String!, $repo: String!, $number: Int!) { repositor
   reviewThreads(last: ${LAST}) { nodes { comments(last: 20) { nodes { createdAt author { login } } } } }
   commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
     __typename
-    ... on CheckRun { name conclusion completedAt isRequired(pullRequestNumber: $number) }
+    ... on CheckRun { name conclusion startedAt completedAt detailsUrl isRequired(pullRequestNumber: $number) }
     ... on StatusContext { context state createdAt isRequired(pullRequestNumber: $number) }
   } } } } } }
 } } }`;
 
 /** A review is feedback when it asks for something: an approval or a dismissed review is not. */
 const FEEDBACK_REVIEWS: ReadonlySet<string> = new Set(["COMMENTED", "CHANGES_REQUESTED"]);
-/** A check run's conclusions that mean it failed. A cancelled run is left out: a newer run of the same check usually replaced it. */
-const FAILED_RUNS: ReadonlySet<string> = new Set(["FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"]);
+/** The states of a commit status that mean it failed, read as a check run's conclusion so `red-pr.ts` can decide on it. */
 const FAILED_STATUSES: ReadonlySet<string> = new Set(["FAILURE", "ERROR"]);
 
 type Login = { login?: string } | null;
-type Check = { __typename?: string; name?: string; context?: string; conclusion?: string | null; state?: string; completedAt?: string | null;
-  createdAt?: string; isRequired?: boolean };
+type Check = { __typename?: string; name?: string; context?: string; conclusion?: string | null; state?: string; startedAt?: string | null;
+  completedAt?: string | null; createdAt?: string; detailsUrl?: string | null; isRequired?: boolean };
 
 /** The owner, repository and number of a GitHub pull request's web address, or null for any other address. */
 export function pullOf(url: string): { owner: string; repo: string; number: number } | null {
@@ -62,22 +63,16 @@ const time = (value: string | null | undefined): number | null => {
 };
 
 /**
- * Each check on the head commit, newest per name, that failed. A pull request with required checks counts only those. One with none counts
- * every check, because then nothing tells a gate from the rest, and the worker is told to leave every check passing.
+ * Each check on the head commit, newest per name, that failed, as `red-pr.ts` decides it. A pull request with required checks counts only those.
+ * One with none counts every check, because then nothing tells a gate from the rest, and the worker is told to leave every check passing. A
+ * commit status is read as a check run: its context is its name, its failure its conclusion, and its time its completion.
  */
 function failingChecks(contexts: readonly Check[]): { name: string; at: number | null }[] {
-  const newest = new Map<string, Check>();
-  for (const check of contexts) {
-    const name = check.name ?? check.context ?? "";
-    const at = (c: Check) => time(c.completedAt ?? c.createdAt) ?? 0;
-    const seen = newest.get(name);
-    if (seen === undefined || at(check) >= at(seen)) newest.set(name, check);
-  }
-  const checks = [...newest.values()];
-  const counted = checks.some((check) => check.isRequired === true) ? checks.filter((check) => check.isRequired === true) : checks;
-  return counted
-    .filter((check) => (check.__typename === "StatusContext" ? FAILED_STATUSES.has(check.state ?? "") : FAILED_RUNS.has(check.conclusion ?? "")))
-    .map((check) => ({ name: check.name ?? check.context ?? "", at: time(check.completedAt ?? check.createdAt) }));
+  const counted = contexts.some((check) => check.isRequired === true) ? contexts.filter((check) => check.isRequired === true) : contexts;
+  const asRuns = counted.map((check) => (check.__typename === "StatusContext"
+    ? { name: check.context ?? "", conclusion: FAILED_STATUSES.has(check.state ?? "") ? "FAILURE" : check.state, completedAt: check.createdAt }
+    : check));
+  return brokenChecks({ statusCheckRollup: asRuns, labels: [] }).map(({ name, failedAt }) => ({ name, at: Number.isNaN(failedAt) ? null : failedAt }));
 }
 
 /**
