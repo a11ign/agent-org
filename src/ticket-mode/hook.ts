@@ -15,14 +15,16 @@
 // `tickets.deny` adds this machine's own command refusals. The pool copies both beside the outcome file. A refusal is exit 2 with the reason on
 // stderr, which Claude Code hands back to the model. A REVIEW RUN, which a person started by approving the pull requests, may mark THOSE
 // pull requests ready: the pool leaves `review-run` beside the outcome file naming them, no worker may write it, and nothing else of the
-// person's is lifted.
+// person's is lifted. A PUBLISH RUN, which a person started by pressing Publish, may run the `post-pr-to-slack` skill and call the connectors
+// the host file's `tickets.publish.connectors` names: the pool leaves `publish-run` beside its outcome file naming them, which no worker may
+// write either, and merging, reviewing, force-pushing and running a workflow stay refused.
 //
 // IT FAILS OPEN, OUT LOUD, for a payload or a count it cannot read: a hook that refused on what it could not read would stop every worker.
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { DenyRule } from "./settings.ts";
-import { CONNECTORS_FILE, DENY_FILE, OUTCOME_FILE, REVIEW_FILE, STOP_COUNT_FILE } from "./worker-files.ts";
+import { CONNECTORS_FILE, DENY_FILE, OUTCOME_FILE, PUBLISH_FILE, REVIEW_FILE, STOP_COUNT_FILE } from "./worker-files.ts";
 
 export type HookResult = Readonly<{ code: 0 | 2; say: readonly string[] }>;
 
@@ -59,8 +61,8 @@ function readyRefusal(approved: readonly string[]): Refusal {
     why: "marking a pull request ready is the person's, except a review run's own approved pull requests, by URL" };
 }
 
-/** The review mark is the board's: a worker that wrote it would lift a refusal. */
-const MARK_REFUSAL: Refusal = { pattern: new RegExp(`\\b${REVIEW_FILE}\\b`), why: `${REVIEW_FILE} is the board's to write` };
+/** The review and publish marks are the board's: a worker that wrote one would lift a refusal. */
+const MARK_REFUSAL: Refusal = { pattern: new RegExp(`\\b(?:${REVIEW_FILE}|${PUBLISH_FILE})\\b`), why: `${REVIEW_FILE} and ${PUBLISH_FILE} are the board's to write` };
 const FILE_TOOLS: ReadonlySet<string> = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 
 const SKILL_REFUSALS: readonly Refusal[] = [
@@ -69,16 +71,18 @@ const SKILL_REFUSALS: readonly Refusal[] = [
 
 /**
  * The PreToolUse verdict for one tool call. `machine` holds this machine's own Bash refusals, after the built-in ones, and `connectors` the
- * connector tool names it allows. `approved` names the pull requests a review run may mark ready, by URL: none for any other run. PURE.
+ * connector tool names it allows. `approved` names the pull requests a review run may mark ready, by URL: none for any other run. `publish`
+ * holds the connector tool names a publish run may call as well, and is null for any other run, which may not announce a pull request. PURE.
  */
 export function toolVerdict(toolName: string, input: Record<string, unknown>, machine: readonly Refusal[] = [], connectors: readonly RegExp[] = [],
-  approved: readonly string[] = []): HookResult {
+  approved: readonly string[] = [], publish: readonly RegExp[] | null = null): HookResult {
   if (toolName.startsWith("mcp__")) {
-    return connectors.some((pattern) => pattern.test(toolName)) ? ALLOW : refuse(`${toolName} is a connector this machine's tickets.connectors does not allow`);
+    const allowed = [...connectors, ...(publish ?? [])];
+    return allowed.some((pattern) => pattern.test(toolName)) ? ALLOW : refuse(`${toolName} is a connector this machine's tickets.connectors does not allow`);
   }
   if (toolName === "Skill") {
     const skill = String(input.skill ?? input.name ?? "");
-    const hit = SKILL_REFUSALS.find(({ pattern }) => pattern.test(skill));
+    const hit = publish === null ? SKILL_REFUSALS.find(({ pattern }) => pattern.test(skill)) : undefined;
     return hit ? refuse(`the ${skill} skill is refused: ${hit.why}`) : ALLOW;
   }
   if (FILE_TOOLS.has(toolName)) return MARK_REFUSAL.pattern.test(String(input.file_path ?? input.notebook_path ?? "")) ? refuse(MARK_REFUSAL.why) : ALLOW;
@@ -130,6 +134,21 @@ export function approvedPulls(ticketDir: string): string[] {
   }
 }
 
+/**
+ * The connector tool names a publish run may call, from the board's publish mark beside the outcome file, or null when there is no mark, or
+ * none it can read: then the run is no publish run.
+ */
+export function publishConnectors(ticketDir: string): RegExp[] | null {
+  const file = join(ticketDir, PUBLISH_FILE);
+  if (!existsSync(file)) return null;
+  try {
+    const { connectors } = JSON.parse(readFileSync(file, "utf8")) as { connectors?: unknown };
+    return Array.isArray(connectors) ? connectors.map((pattern) => new RegExp(String(pattern))) : null;
+  } catch {
+    return null;
+  }
+}
+
 /** The Stop verdict: allowed once the outcome file is there, refused with its path otherwise, up to {@link MAX_STOP_REFUSALS} in a row. */
 export function stopVerdict(ticketDir: string, { exists = existsSync, read = (p: string) => readFileSync(p, "utf8"), write = (p: string, t: string) => writeFileSync(p, t) }: {
   exists?: (path: string) => boolean; read?: (path: string) => string; write?: (path: string, text: string) => void;
@@ -156,7 +175,8 @@ export function main(stdin: string, argv: string[]): HookResult {
     const payload = JSON.parse(stdin) as { tool_name?: string; tool_input?: Record<string, unknown> };
     const { refusals, note } = machineRefusals(ticketDir);
     const allowed = machineConnectors(ticketDir);
-    const verdict = toolVerdict(String(payload.tool_name ?? ""), payload.tool_input ?? {}, refusals, allowed.connectors, approvedPulls(ticketDir));
+    const verdict = toolVerdict(String(payload.tool_name ?? ""), payload.tool_input ?? {}, refusals, allowed.connectors, approvedPulls(ticketDir),
+      publishConnectors(ticketDir));
     const notes = [note, allowed.note].filter((n): n is string => n !== undefined);
     return notes.length === 0 ? verdict : { ...verdict, say: [...notes, ...verdict.say] };
   } catch (err) {

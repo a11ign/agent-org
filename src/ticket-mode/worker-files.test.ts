@@ -1,7 +1,7 @@
 // no-token: gh -- pure builders
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { batchPlanBriefText, briefText, firstPrompt, planBriefText, workerFlags, workerSettings } from "./worker-files.ts";
+import { batchPlanBriefText, briefText, firstPrompt, planBriefText, publishBriefText, reviewBriefText, reviewPrompt, workerFlags, workerSettings } from "./worker-files.ts";
 import type { Blocker, Ticket } from "./source.ts";
 
 const ticket = { key: "NBF-1270", title: "Refresh Data gives no feedback", description: "Clicking does nothing visible.", url: "https://linear.app/x/issue/NBF-1270",
@@ -186,4 +186,47 @@ test("a run stacked on its blockers is told to branch from one, link its pull re
   }
   assert.match(text, /This ticket waited until each of these was done:\n\n- NBF-5, Done: no pull request linked\n/, "only the blockers it waited for");
   assert.equal(briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w" }).includes("## Stack on"), false);
+});
+
+const reviewed = [{ repo: "nbl-ui-netbox", url: "https://github.com/x/nbl-ui-netbox/pull/806" }];
+const review = (feedback?: string) => reviewBriefText({ ticket, folder: "/work/.tickets/NBF-1270", ticketDir: "/state/tickets/NBF-1270", prs: reviewed, resumed: true,
+  ...(feedback === undefined ? {} : { feedback }) });
+
+test("a review round waits for checks in the foreground, each call under 10 minutes, and never ends its turn or a background task to wait", () => {
+  for (const brief of [review(), review("New review feedback on https://github.com/x/nbl-ui-netbox/pull/806, the newest from alice.")]) {
+    assert.ok(brief.includes("`gh pr checks <url> --watch --interval 30`"), "a blocking command that returns when the checks finish");
+    assert.match(brief, /Keep each Bash call under 10 minutes, and run it again until what you wait for has finished or 30 minutes have passed\./);
+    assert.match(brief, /Never end your turn to wait, and never wait with `run_in_background` or a background task/);
+  }
+});
+
+test("a round the board started on new feedback names it, marks nothing ready, and writes reviewed only with the last commit's checks passing", () => {
+  const feedback = "New review feedback on https://github.com/x/nbl-ui-netbox/pull/806, the newest from alice.";
+  const brief = review(feedback);
+  assert.match(brief, /^# NBF-1270: feedback round for Refresh Data gives no feedback\n/);
+  assert.ok(brief.includes(`> ${feedback}`), "what started the round, quoted");
+  assert.match(brief, /do not run `gh pr ready`/);
+  assert.equal(/1\. Mark each pull request ready/.test(brief), false);
+  assert.match(brief, /Write `reviewed` only when every finding is answered and every check passed on the last commit you pushed\./);
+  assert.match(review(), /1\. Mark each pull request ready with `gh pr ready <url>`\./, "POSITIVE CONTROL: a person's approval still marks them ready");
+  assert.equal(reviewPrompt("/d", "feedback"), "New feedback reached this ticket's pull requests. Read /d/brief.md and follow it.");
+  assert.equal(reviewPrompt("/d", "asked"), "A person asked you to answer the feedback on this ticket's pull requests. Read /d/brief.md and follow it.");
+  assert.equal(reviewPrompt("/d"), "A person reviewed this ticket's pull requests and approved them. Read /d/brief.md and follow it.");
+});
+
+test("a publish run's brief fills in the pull requests one per line and its folder, and names the links file and the outcome it ends on", () => {
+  const prs = [reviewed[0], { repo: "nbl-ui-platform", url: "https://github.com/x/nbl-ui-platform/pull/9" }];
+  const brief = publishBriefText({ dir: "/state/tickets/publish/p1", prs, run: "Run the post-pr-to-slack skill on these pull requests, all in one go: {prs}. Then write {dir}/published.json" });
+  assert.ok(brief.includes(`all in one go: ${prs[0].url}\n${prs[1].url}. Then write /state/tickets/publish/p1/published.json`));
+  assert.ok(brief.includes('{ "links": ["<message url>"] }'));
+  assert.ok(brief.includes("`/state/tickets/publish/p1/outcome.json`"));
+  assert.ok(brief.includes('{ "kind": "published" }'));
+});
+
+test("a round a person asked for with Respond to review says so, answers the current feedback, and marks nothing ready", () => {
+  const brief = reviewBriefText({ ticket, folder: "/work/.tickets/NBF-1270", ticketDir: "/state/tickets/NBF-1270", prs: reviewed, resumed: true, asked: true });
+  assert.match(brief, /^# NBF-1270: feedback round for /);
+  assert.match(brief, /A person asked you to answer the current feedback on your pull requests: their reviews, comments and failing checks\. You wrote these/);
+  assert.match(brief, /do not run `gh pr ready`/);
+  assert.equal(brief.includes("the board started this round"), false);
 });

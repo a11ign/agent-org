@@ -72,6 +72,10 @@
   .icon { width: 16px; height: 16px; margin-top: 2px; display: block; }
   .icon svg { width: 16px; height: 16px; display: block; }
   .st-queued, .st-blocked { color: var(--st-queued); } .st-working { color: var(--st-progress); } .st-needs-you { color: var(--st-needs); }
+  .st-published { color: var(--st-done); }
+  .action-respond { display: inline-flex; align-items: center; gap: 4px; } .action-respond .action-icon { color: var(--st-review); display: inline-flex; }
+  .action-respond svg { width: 12px; height: 12px; }
+  .run .publish-tick { font-size: 12px; display: flex; gap: 4px; align-items: center; }
   .st-planning { color: var(--st-review); } .st-awaiting-review { color: var(--st-review); } .st-reviewing { color: var(--st-progress); } .st-ready-to-merge { color: var(--st-done); } .st-completed { color: var(--st-done); } .st-failed { color: var(--st-failed); } .st-cancelled { color: var(--st-cancelled); }
   .runs .run .st-working svg, .runs .run .st-planning svg, .runs .run .st-reviewing svg { animation: spin 1.1s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -160,6 +164,8 @@
       <button class="primary" id="toggle-pause"></button>
       <span id="max-note" class="hint"></span>
       <button class="small" id="change-max" type="button">Change</button>
+      <button class="primary" id="publish" type="button" hidden></button>
+      <span id="publish-note" class="hint" role="status"></span>
     </div>
     <div class="runs">
       <nav class="filters" id="filters" aria-label="Filter runs by status"></nav>
@@ -180,7 +186,7 @@
 // The decisions (what shows, how it groups, what can be selected, what status a run has and what it offers) are board-view.ts's, tested there.
 // This page only draws what they return and wires the clicks.
 import {
-  APPROVE_TITLE, PRIORITY_NAMES, RUN_STATUSES, pullsOf, flatten, groupByStatus, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, queueLabel, recall, remember, runActions, runStatus,
+  APPROVE_TITLE, RESPOND_TITLE, PRIORITY_NAMES, RUN_STATUSES, publishable, publishLabel, publishNote, pullsOf, flatten, groupByStatus, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, queueLabel, recall, remember, runActions, runStatus,
   runChoiceLabel, runsShown, unplannedCount, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, waitsOn, workersLabel,
 } from "/board-view.js";
 
@@ -193,6 +199,8 @@ const $ = (id) => document.getElementById(id);
 const storage = (() => { try { return window.localStorage; } catch { return null; } })();
 const state = {
   tickets: [], parents: [], queue: { entries: [], max: 3, paused: true }, selected: new Set(), terminal: null,
+  // Whether this machine publishes (the host file's `tickets.publish`), and the runs ticked for the next Publish.
+  publishing: false, toPublish: new Set(),
   // The model and effort the settings give a ticket queued from now on, and the parts the Pick footer chose otherwise for the next batch only.
   choice: { model: "", effort: "", planModel: "", planEffort: "" }, batch: {},
   // Whether this board plans a ticket with no plan before it runs: the machine names a planner and its tracker takes plans.
@@ -353,13 +361,16 @@ const ICONS = {
   "awaiting-review": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="4.5" cy="3.5" r="1.8" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="4.5" cy="12.5" r="1.8" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="11.5" cy="12.5" r="1.8" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M4.5 5.3v5.4M11.5 10.7V6.5a2 2 0 0 0-2-2H7.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
   "reviewing": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-opacity=".25" stroke-width="2"/><path d="M8 2a6 6 0 0 1 6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
   "ready-to-merge": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="4.5" cy="3.5" r="1.8" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="4.5" cy="12.5" r="1.8" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="11.5" cy="12.5" r="1.8" fill="currentColor" stroke="currentColor" stroke-width="1.6"/><path d="M4.5 5.3v5.4M11.5 10.7V6.5a2 2 0 0 0-2-2H7.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
+  "published": '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 7.5L14 2l-3.5 12-3-4.5z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M7.5 9.5L14 2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
   "completed": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7" fill="currentColor"/><path d="M4.8 8.2l2.2 2.2 4.2-4.6" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   "failed": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7" fill="currentColor"/><path d="M5.6 5.6l4.8 4.8M10.4 5.6l-4.8 4.8" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/></svg>',
   "cancelled": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="2"/><path d="M4 12L12 4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
 };
 const LABEL = Object.fromEntries(RUN_STATUSES.map(({ status, label }) => [status, label]));
-const ACTION_LABEL = { remove: "Remove", stop: "Stop", retry: "Retry", close: "Close", approve: "Approve" };
-const ACTION_TITLE = { approve: APPROVE_TITLE };
+const ACTION_LABEL = { remove: "Remove", stop: "Stop", retry: "Retry", close: "Close", approve: "Approve", respond: "Respond to review" };
+const ACTION_TITLE = { approve: APPROVE_TITLE, respond: RESPOND_TITLE };
+// Respond to review carries a reply arrow, in the reviewing colour, so it reads apart from Approve.
+const ACTION_ICON = { respond: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 3.5L2.5 7.5l4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M2.8 7.5H9a4.5 4.5 0 0 1 4.5 4.5v.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>' };
 
 // The filter rail marks In progress, Planning and Reviewing with a still dot: a spinner there turns for as long as any run works.
 const DOT = '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5" fill="currentColor"/></svg>';
@@ -385,7 +396,13 @@ function row(e) {
   const o = e.outcome;
   const actions = el("div", { className: "actions" });
   for (const verb of runActions(e)) {
-    const b = el("button", { className: "small", textContent: ACTION_LABEL[verb], ...(ACTION_TITLE[verb] ? { title: ACTION_TITLE[verb] } : {}) });
+    const b = el("button", { className: `small action-${verb}`, ...(ACTION_TITLE[verb] ? { title: ACTION_TITLE[verb] } : {}) });
+    if (ACTION_ICON[verb]) {
+      const icon = el("span", { className: "action-icon" });
+      icon.innerHTML = ACTION_ICON[verb];
+      b.append(icon);
+    }
+    b.append(ACTION_LABEL[verb]);
     b.addEventListener("click", () => call("POST", `/api/queue/${e.ticket.key}/${verb}`).then((q) => { state.queue = q; render(); }, report));
     actions.append(b);
   }
@@ -393,7 +410,15 @@ function row(e) {
   const terminal = link ? el("a", { className: "terminal", href: link, target: "_blank", rel: "noreferrer" }, "Open terminal") : null;
   const pulls = pullsOf(e);
   const prs = pulls.length > 0 ? el("div", { className: "meta" }, ...pulls.flatMap((pr, i) => [i ? " · " : "", el("a", { href: pr.url, target: "_blank", rel: "noreferrer" }, `${pr.repo} #${pr.url.split("/").pop()}`)])) : null;
-  const reason = !o ? null : o.kind === "wrong-repo" ? `Belongs in: ${o.where}` : o.kind === "needs-human" || o.kind === "crashed" ? o.reason : o.kind === "no-outcome" ? "Stopped without writing an outcome" : null;
+  const reason = e.handedBack ? e.handedBack : !o ? null : o.kind === "wrong-repo" ? `Belongs in: ${o.where}` : o.kind === "needs-human" || o.kind === "crashed" ? o.reason : o.kind === "no-outcome" ? "Stopped without writing an outcome" : null;
+  const message = e.published && e.published.link ? el("a", { className: "terminal", href: e.published.link, target: "_blank", rel: "noreferrer" }, "Slack message") : null;
+  let tick = null;
+  if (state.publishing && publishable(e, state.queue.publish)) {
+    const box = el("input", { type: "checkbox", checked: state.toPublish.has(e.ticket.key) });
+    box.setAttribute("aria-label", `Publish ${e.ticket.key}`);
+    box.addEventListener("change", () => { state.toPublish = toggled(state.toPublish, e.ticket.key); renderBoard(); });
+    tick = el("label", { className: "publish-tick" }, box, "Publish");
+  }
   const repos = e.repos && e.repos.length > 0 ? e.repos.join(", ") : e.phase === "queued" ? "the worker chooses the repo" : "choosing a repo";
   const when = e.startedAt ? `${e.phase === "finished" ? "ran" : "running"} ${length((e.finishedAt ?? Date.now()) - e.startedAt)}, started ${since(e.startedAt)} ago` : `queued ${since(e.queuedAt)} ago`;
   const tokens = e.tokens ? ` · ${Math.round(e.tokens.input / 1000)}k in / ${Math.round(e.tokens.output / 1000)}k out` : "";
@@ -407,10 +432,12 @@ function row(e) {
       stacked.length > 0 ? el("div", { className: "meta" }, stackNote(stacked)) : null,
       reason ? el("div", { className: "meta" }, reason) : null,
       isParked(e) ? el("div", { className: "waiting" }, "Still open: answer the agent in its terminal and the run carries on") : null),
-    el("div", { className: "side" }, terminal, prs, actions));
+    el("div", { className: "side" }, tick, terminal, message, prs, actions));
 }
 
 function renderBoard() {
+  // A run that left Ready to merge, or that a publish run now holds, can no longer be ticked.
+  state.toPublish = new Set(state.queue.entries.filter((e) => state.toPublish.has(e.ticket.key) && publishable(e, state.queue.publish)).map((e) => e.ticket.key));
   const counts = statusCounts(state.queue.entries);
   const choose = (filter) => { state.runFilter = filter; remember(storage, "ticket-mode.run-filter", new Set(filter ? [filter] : [])); renderBoard(); };
   const filter = (label, status, n, icon) => {
@@ -425,6 +452,10 @@ function renderBoard() {
   $("runs").replaceChildren(...(runs.length > 0 ? runs.map(row)
     : [el("div", { className: "empty" }, state.runFilter ? `No runs are ${LABEL[state.runFilter].toLowerCase()}.` : "Nothing queued yet. Pick tickets on the Pick tab.")]));
   $("max-note").textContent = workersLabel(state.queue.max);
+  $("publish").hidden = !state.publishing;
+  $("publish").textContent = publishLabel(state.toPublish.size);
+  $("publish").disabled = state.toPublish.size === 0;
+  $("publish-note").textContent = state.publishing ? publishNote(state.queue.publish) ?? "" : "";
   const paused = state.queue.paused !== false;
   $("pool-state").textContent = paused ? "Workers paused: nothing queued will start" : "Workers started: queued tickets start as slots free up";
   $("pool-state").className = `state ${paused ? "paused" : "started"}`;
@@ -520,6 +551,7 @@ function setup(config) {
   for (const id of ["model", "batch-model", "planModel"]) $(id).replaceChildren(...config.models.map((m) => el("option", { value: m, textContent: m })));
   for (const id of ["effort", "batch-effort", "planEffort"]) $(id).replaceChildren(...config.efforts.map((x) => el("option", { value: x, textContent: x })));
   state.planner = config.planner === true;
+  state.publishing = config.publish === true;
   $("planning-settings").hidden = !state.planner;
   $("plan-first").checked = true;
 }
@@ -558,6 +590,8 @@ $("queue").addEventListener("click", async () => {
     render();
   } catch (err) { report(err); }
 });
+$("publish").addEventListener("click", () => call("POST", "/api/publish", { keys: [...state.toPublish] })
+  .then((q) => { state.queue = q; state.toPublish = new Set(); report(null); render(); }, report));
 $("toggle-pause").addEventListener("click", () => call("POST", "/api/paused", { paused: state.queue.paused === false }).then((q) => { state.queue = q; render(); }, report));
 for (const id of ["open-settings", "change-choice", "change-max"]) $(id).addEventListener("click", () => { openSettings().catch(report); });
 for (const part of ["model", "effort"]) {

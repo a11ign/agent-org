@@ -5,8 +5,11 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, symlinkSync, utimesSync
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { runStatus } from "./board-view.ts";
-import { batchDir, batchFolder, countTokens, createPool, findFolderSession, findTranscript, herdrName, isStartDialog, parseOutcome, ticketDir, ticketFolder, worktreesIn } from "./pool.ts";
-import { approve, emptyQueue, enqueue, finish, retry, setPaused, type Queue } from "./queue.ts";
+import {
+  batchDir, batchFolder, countTokens, createPool, feedbackSince, findFolderSession, findTranscript, herdrName, isStartDialog, parseOutcome, publishDir, publishResult,
+  ticketDir, ticketFolder, worktreesIn,
+} from "./pool.ts";
+import { approve, emptyQueue, enqueue, finish, queuePublish, respond, retry, setPaused, type Queue } from "./queue.ts";
 import { parseTicketSettings } from "./settings.ts";
 import type { Ticket, TicketSource } from "./source.ts";
 
@@ -35,8 +38,8 @@ function herdr(status: Map<string, string>, screen: { text: string } = { text: "
 
 /** `parents` gives a ticket its parent's key. A ticket without one is shaped as a run queued before tickets carried a parent. */
 function setup(max = 2, keys = ["NBF-1", "NBF-2", "NBF-3"], tickets: Record<string, unknown> = {},
-  { source: tracker = source, parents = {}, planFirst = [], batch = false, pluginRecord }:
-    { source?: TicketSource; parents?: Record<string, string>; planFirst?: string[]; batch?: boolean; pluginRecord?: string } = {}) {
+  { source: tracker = source, parents = {}, planFirst = [], batch = false, pluginRecord, gh }:
+    { source?: TicketSource; parents?: Record<string, string>; planFirst?: string[]; batch?: boolean; pluginRecord?: string; gh?: (args: string[]) => string } = {}) {
   const root = tmpDir("ticket-pool-");
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox", "nbl-ui-platform-libs": "/repos/libs" }, stateDir: join(root, "state"), tickets });
   const queued = keys.map((key) => (key in parents ? { ...ticket(key), parent: parents[key] } : ticket(key)));
@@ -47,7 +50,7 @@ function setup(max = 2, keys = ["NBF-1", "NBF-2", "NBF-3"], tickets: Record<stri
   const screen = { text: "" };
   const h = herdr(status, screen);
   const pool = createPool(store, { settings, source: tracker, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: h.run, hostFile: "/work/.agent-org/host.json", now: () => 100, load: () => ({ load: 1, cores: 14 }), transcriptsRoot: join(root, "transcripts"), wait: async () => {},
-    pluginRecord: pluginRecord ?? join(root, "no-plugin-record.json") });
+    pluginRecord: pluginRecord ?? join(root, "no-plugin-record.json"), ...(gh ? { gh } : {}) });
   const entry = (key: string) => queue.entries.find((e) => e.ticket.key === key)!;
   return { settings, pool, status, h, entry, store, root, screen };
 }
@@ -171,11 +174,11 @@ test("a run ends on its outcome file once the agent is idle; idle before it ever
   assert.equal(entry("NBF-1").session, "session-t-nbf-1", "the session it ran in is kept, for a review run to resume");
 });
 
-const approvedPr = { repo: "nbl-ui-netbox", url: "https://github.com/x/pull/1" };
+const approvedPr = { repo: "nbl-ui-netbox", url: "https://github.com/x/nbl-ui-netbox/pull/1" };
 
 /** A pool whose one run, NBF-1, ended with a draft pull request in a session herdr called `session-t-nbf-1`, then was approved. */
-async function approvedRun(tickets: Record<string, unknown> = {}, { transcript = true } = {}) {
-  const ctx = setup(1, ["NBF-1"], tickets);
+async function approvedRun(tickets: Record<string, unknown> = {}, { transcript = true, gh }: { transcript?: boolean; gh?: (args: string[]) => string } = {}) {
+  const ctx = setup(1, ["NBF-1"], tickets, gh ? { gh } : {});
   const { pool, status, settings, root, store } = ctx;
   await pool.tick();
   status.set(herdrName("NBF-1"), "idle");
@@ -1197,4 +1200,246 @@ test("a run whose blocker has an open pull request in its planned repository sta
   const brief = readFileSync(join(ticketDir(settings, "NBF-2"), "brief.md"), "utf8");
   assert.ok(brief.includes(`- NBF-1: ${draft}, on branch \`nbf-1-fit\``), brief);
   assert.ok(brief.includes("ticket:worktree nbl-ui-netbox --from <branch>"));
+});
+
+/** A review run, NBF-1, that ended with no outcome after it was seen working, and parked: its worker waited by ending its turn (NBF-1463). */
+async function parkedReview() {
+  const ctx = await approvedRun();
+  ctx.status.set(herdrName("NBF-1"), "working");
+  await ctx.pool.tick();
+  ctx.status.set(herdrName("NBF-1"), "idle");
+  await ctx.pool.tick();
+  assert.deepEqual([ctx.entry("NBF-1").outcome?.kind, ctx.entry("NBF-1").workspace], ["no-outcome", "w2"], "parked mid-review");
+  return ctx;
+}
+
+test("a parked review run whose worker wrote reviewed between two looks, never seen working, settles Ready to merge and closes its workspace", async () => {
+  const { pool, entry, dir, h } = await parkedReview();
+  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "reviewed" }));
+  await pool.tick();
+  assert.deepEqual(entry("NBF-1").outcome, { kind: "reviewed", prs: [approvedPr] });
+  assert.equal(runStatus(entry("NBF-1")), "ready-to-merge");
+  assert.equal(entry("NBF-1").workspace, undefined);
+  assert.equal(closes(h, "w2"), 1);
+  assert.ok(existsSync(join(dir, "outcome.json")), "the outcome is read where the worker wrote it, not moved aside");
+});
+
+test("a parked run stays parked on an outcome file written before it parked, and on the one it parked on", async () => {
+  const { pool, entry, dir } = await parkedReview();
+  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "reviewed" }));
+  utimesSync(join(dir, "outcome.json"), 0.05, 0.05);
+  await pool.tick();
+  assert.deepEqual([entry("NBF-1").outcome?.kind, entry("NBF-1").phase], ["no-outcome", "finished"], "a file older than the parking is not the run's new outcome");
+  const handed = await endedOn({ kind: "needs-human", reason: "which colour?" });
+  await handed.pool.tick();
+  assert.deepEqual([handed.entry("NBF-1").outcome, handed.entry("NBF-1").workspace], [{ kind: "needs-human", reason: "which colour?" }, "w1"], "the outcome it parked on");
+});
+
+test("a parked run seen working after it wrote a new outcome keeps that outcome, and ends on it once idle", async () => {
+  const { pool, entry, dir, status } = await parkedReview();
+  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "reviewed" }));
+  status.set(herdrName("NBF-1"), "working");
+  await pool.tick();
+  assert.equal(entry("NBF-1").phase, "running");
+  assert.ok(existsSync(join(dir, "outcome.json")), "not moved aside: it is the run's new outcome");
+  status.set(herdrName("NBF-1"), "idle");
+  await pool.tick();
+  assert.equal(runStatus(entry("NBF-1")), "ready-to-merge");
+});
+
+/** A gh that acts as `worker-bot` and answers each pull request's feedback read from `pulls`, by number; a number it has no answer for is refused. */
+function ghFor(pulls: Record<number, unknown>) {
+  const calls: string[][] = [];
+  const run = (args: string[]) => {
+    calls.push(args);
+    if (args[1] === "user") return "worker-bot\n";
+    const number = Number(args.find((arg) => arg.startsWith("number="))?.slice("number=".length));
+    if (!(number in pulls)) throw new Error("gh exited 1");
+    return JSON.stringify({ data: { repository: { pullRequest: pulls[number] } } });
+  };
+  return { run, calls };
+}
+const at = (ms: number) => new Date(ms).toISOString();
+const feedbackPull = ({ state = "OPEN", reviews = [] as unknown[], comments = [] as unknown[], checks = [] as unknown[] } = {}) =>
+  ({ state, reviews: { nodes: reviews }, comments: { nodes: comments }, reviewThreads: { nodes: [] }, commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: checks } } } }] } });
+
+/** NBF-1 Ready to merge at 100, its review run ended, watched with `gh`. */
+async function readyRun(gh: (args: string[]) => string, tickets: Record<string, unknown> = {}) {
+  const ctx = await approvedRun(tickets, { gh });
+  ctx.status.set(herdrName("NBF-1"), "idle");
+  writeFileSync(join(ctx.dir, "outcome.json"), JSON.stringify({ kind: "reviewed" }));
+  await ctx.pool.tick();
+  ctx.status.delete(herdrName("NBF-1"));
+  assert.deepEqual([runStatus(ctx.entry("NBF-1")), ctx.entry("NBF-1").finishedAt], ["ready-to-merge", 100]);
+  return ctx;
+}
+/** Let the tick that a feedback round wakes, which `watchFeedback` does not wait for, start the round. */
+const roundStarted = async () => { for (let i = 0; i < 50; i += 1) await new Promise((resolve) => setImmediate(resolve)); };
+
+test("new review feedback on a run Ready to merge starts a feedback round that resumes its worker and names the feedback; its own account's does not", async () => {
+  const gh = ghFor({ 1: feedbackPull({
+    reviews: [{ state: "COMMENTED", submittedAt: at(300), author: { login: "worker-bot" } }, { state: "CHANGES_REQUESTED", submittedAt: at(200), author: { login: "a11ign-reviewer" } }],
+  }) });
+  const { pool, entry, dir, h } = await readyRun(gh.run);
+  h.calls.length = 0;
+  pool.watchFeedback();
+  await roundStarted();
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").rounds, entry("NBF-1").review], ["running", 1, [approvedPr]]);
+  assert.equal(entry("NBF-1").feedback, `New review feedback on ${approvedPr.url}, the newest from a11ign-reviewer.`);
+  const start = h.calls.find((args) => args.includes("start"))!;
+  const tail = start.slice(start.indexOf("--") + 1);
+  assert.equal(tail[0], `New feedback reached this ticket's pull requests. Read ${dir}/brief.md and follow it.`);
+  assert.deepEqual(tail.slice(tail.indexOf("--resume"), tail.indexOf("--resume") + 2), ["--resume", "session-t-nbf-1"]);
+  assert.match(readFileSync(join(dir, "brief.md"), "utf8"), /feedback round for NBF-1/);
+  assert.equal(gh.calls.filter((args) => args[1] === "user").length, 1, "the account is read once");
+});
+
+test("feedback from before the run's last round ended, from the workers' own account, or on a pull request that could not be read starts no round", async () => {
+  for (const [why, pulls] of [
+    ["older than the round", { 1: feedbackPull({ comments: [{ createdAt: at(50), author: { login: "alice" } }] }) }],
+    ["the workers' own", { 1: feedbackPull({ comments: [{ createdAt: at(500), author: { login: "worker-bot" } }] }) }],
+    ["merged since", { 1: feedbackPull({ state: "MERGED", comments: [{ createdAt: at(500), author: { login: "alice" } }] }) }],
+    ["could not ask", {}],
+  ] as const) {
+    const gh = ghFor(pulls);
+    const { pool, entry } = await readyRun(gh.run);
+    pool.watchFeedback();
+    await roundStarted();
+    assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").rounds], ["finished", undefined], why);
+  }
+});
+
+test("a check that failed on the head commit after the round ended starts a round naming it, and a run the board does not watch is never read", async () => {
+  const gh = ghFor({ 1: feedbackPull({ checks: [{ __typename: "CheckRun", name: "typecheck", conclusion: "FAILURE", completedAt: at(400), isRequired: false }] }) });
+  const { pool, entry } = await readyRun(gh.run);
+  pool.watchFeedback();
+  assert.equal(entry("NBF-1").feedback, `typecheck failed on the head commit of ${approvedPr.url}.`);
+  const unwatched = ghFor({});
+  const { pool: other } = setup(1, ["NBF-1"], {}, { gh: unwatched.run });
+  other.watchFeedback();
+  assert.deepEqual(unwatched.calls, [], "nothing Ready to merge: GitHub is not asked, not even who the workers are");
+});
+
+test("what triggers a round names each pull request's new feedback and failed checks, and nothing older than the round", () => {
+  const read = { state: "open" as const, feedbackAt: 200, authors: ["alice", "bob"], failing: ["typecheck", "suite"], failedAt: 300 };
+  assert.equal(feedbackSince([{ url: "u1", read }], 100), "New review feedback on u1, the newest from alice.\ntypecheck, suite failed on the head commit of u1.");
+  assert.equal(feedbackSince([{ url: "u1", read }], 250), "typecheck, suite failed on the head commit of u1.");
+  assert.equal(feedbackSince([{ url: "u1", read }], 300), null);
+  assert.equal(feedbackSince([{ url: "u1", read: { ...read, state: "closed" } }], 100), null);
+});
+
+const PUBLISH = { publish: { run: "Run the post-pr-to-slack skill on these pull requests, all in one go: {prs}. Then write {dir}/published.json",
+  connectors: ["^mcp__plugin_slack_slack__slack_send_message$"] } };
+
+/** NBF-1 Ready to merge on a machine that publishes, Publish pressed for it, and the publish run started. */
+async function publishing() {
+  const ctx = await readyRun(ghFor({}).run, PUBLISH);
+  const { pool, store, settings } = ctx;
+  store.set(setPaused(queuePublish(store.get(), ["NBF-1"], 300), true));
+  ctx.h.calls.length = 0;
+  await pool.tick();
+  const publish = store.get().publish!;
+  return { ...ctx, publish, name: herdrName(`publish-${publish.id}`), pdir: publishDir(settings, publish.id) };
+}
+
+test("Publish starts one publish run in a folder of its own, on haiku at low effort, with the hook's mark naming the connectors only it may call", async () => {
+  const { h, publish, pdir } = await publishing();
+  assert.equal(publish.phase, "running", "it starts though workers are paused");
+  const start = h.calls.find((args) => args.includes("start"))!;
+  const tail = start.slice(start.indexOf("--") + 1);
+  assert.equal(tail[0], `Read ${pdir}/brief.md and follow it.`);
+  assert.ok(tail.join(" ").includes("--model haiku --effort low"));
+  assert.deepEqual(JSON.parse(readFileSync(join(pdir, "publish-run"), "utf8")), { connectors: PUBLISH.publish.connectors });
+  assert.ok(readFileSync(join(pdir, "brief.md"), "utf8").includes(`all in one go: ${approvedPr.url}. Then write ${pdir}/published.json`));
+});
+
+test("a publish run that writes published marks each run it posted Published, linking the first message, and closes its workspace", async () => {
+  const { pool, status, entry, h, store, name, pdir, publish } = await publishing();
+  status.set(name, "working");
+  await pool.tick();
+  writeFileSync(join(pdir, "published.json"), JSON.stringify({ links: ["https://x.slack.com/archives/C1/p1", "https://x.slack.com/archives/C2/p2"] }));
+  writeFileSync(join(pdir, "outcome.json"), JSON.stringify({ kind: "published" }));
+  status.set(name, "idle");
+  await pool.tick();
+  assert.deepEqual(entry("NBF-1").published, { link: "https://x.slack.com/archives/C1/p1", at: 100 });
+  assert.equal(runStatus(entry("NBF-1")), "published");
+  assert.equal(store.get().publish?.phase, "finished");
+  assert.equal(closes(h, publish.workspace!), 1);
+});
+
+test("a publish run that fails leaves its runs Ready to merge and says why", async () => {
+  for (const [outcome, links, why] of [
+    [{ kind: "needs-human", reason: "no channel for nbl-ui-netbox" }, null, "no channel for nbl-ui-netbox"],
+    [{ kind: "published" }, null, "does not hold"],
+    [{ kind: "published" }, { links: ["not a link"] }, "does not hold"],
+  ] as const) {
+    const { pool, status, entry, store, name, pdir } = await publishing();
+    status.set(name, "working");
+    await pool.tick();
+    if (links !== null) writeFileSync(join(pdir, "published.json"), JSON.stringify(links));
+    writeFileSync(join(pdir, "outcome.json"), JSON.stringify(outcome));
+    status.set(name, "idle");
+    await pool.tick();
+    assert.equal(runStatus(entry("NBF-1")), "ready-to-merge", why);
+    assert.match(store.get().publish?.failure ?? "", new RegExp(why));
+  }
+});
+
+test("a publish run's outcome is read with its links file: needs-human and any other kind are failures, and links must be web addresses", () => {
+  const dir = tmpDir("ticket-publish-result-");
+  assert.deepEqual(publishResult("{", dir), { failure: "its outcome file could not be read: {" });
+  assert.deepEqual(publishResult("null", dir), { failure: "its outcome file could not be read: null" });
+  assert.deepEqual(publishResult(JSON.stringify({ kind: "reviewed" }), dir), { failure: 'it wrote the outcome "reviewed", which a publish run cannot end on' });
+  writeFileSync(join(dir, "published.json"), JSON.stringify({ links: [] }));
+  assert.deepEqual(publishResult(JSON.stringify({ kind: "published" }), dir), { links: [] }, "a channel that gave no link still published");
+});
+
+test("a parked run that wrote a new outcome while a dialog waits on a person is left for the person, and settles once its agent is idle", async () => {
+  const { pool, entry, dir, status } = await parkedReview();
+  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "reviewed" }));
+  status.set(herdrName("NBF-1"), "blocked");
+  await pool.tick();
+  assert.deepEqual([entry("NBF-1").outcome?.kind, entry("NBF-1").workspace], ["no-outcome", "w2"]);
+  status.set(herdrName("NBF-1"), "idle");
+  await pool.tick();
+  assert.equal(runStatus(entry("NBF-1")), "ready-to-merge");
+});
+
+test("Respond to review resumes the worker, told a person asked it to answer the feedback", async () => {
+  const { pool, entry, dir, h, store } = await readyRun(ghFor({}).run);
+  store.set(respond(store.get(), "NBF-1", 300));
+  h.calls.length = 0;
+  await pool.tick();
+  const start = h.calls.find((args) => args.includes("start"))!;
+  const tail = start.slice(start.indexOf("--") + 1);
+  assert.equal(entry("NBF-1").phase, "running");
+  assert.equal(tail[0], `A person asked you to answer the feedback on this ticket's pull requests. Read ${dir}/brief.md and follow it.`);
+  assert.deepEqual(tail.slice(tail.indexOf("--resume"), tail.indexOf("--resume") + 2), ["--resume", "session-t-nbf-1"]);
+  assert.match(readFileSync(join(dir, "brief.md"), "utf8"), /A person asked you to answer the current feedback/);
+});
+
+test("a publish run that never ends is failed after 30 minutes, so it does not hold its slot and every later Publish for ever", async () => {
+  const { pool, status, entry, store, name, publish } = await publishing();
+  status.set(name, "idle");
+  await pool.tick();
+  assert.equal(store.get().publish?.phase, "running", "idle before it ever worked is not an end");
+  store.set({ ...store.get(), publish: { ...store.get().publish!, startedAt: 100 - 30 * 60_000 - 1 } });
+  await pool.tick();
+  assert.deepEqual([store.get().publish?.phase, store.get().publish?.failure], ["finished", "it did not finish within 30 minutes"]);
+  assert.equal(runStatus(entry("NBF-1")), "ready-to-merge");
+  assert.ok(publish.workspace);
+});
+
+test("a publish run that stops without an outcome, or whose workspace is gone, fails and says so", async () => {
+  const stopped = await publishing();
+  stopped.status.set(stopped.name, "working");
+  await stopped.pool.tick();
+  stopped.status.set(stopped.name, "idle");
+  await stopped.pool.tick();
+  assert.equal(stopped.store.get().publish?.failure, "it stopped without writing an outcome");
+  const gone = await publishing();
+  gone.status.delete(gone.name);
+  await gone.pool.tick();
+  await gone.pool.tick();
+  assert.equal(gone.store.get().publish?.failure, "its herdr workspace is gone");
 });

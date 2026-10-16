@@ -210,7 +210,8 @@ function tagCutAt(tag: string, { git, gh, repo }: { git: (args: string[]) => str
   }
 }
 
-const defaultGh = (args: string[]): string => execFileSync("gh", args, { encoding: "utf8", timeout: GIT_TIMEOUT_MS, maxBuffer: GH_MAX_BUFFER, stdio: ["ignore", "pipe", "pipe"] });
+/** `gh` with a 30 s cut and its output as text. Exported so ticket mode reads GitHub through a spawn that is already counted (`gh-call-ratchet.test.ts`). */
+export const defaultGh = (args: string[]): string => execFileSync("gh", args, { encoding: "utf8", timeout: GIT_TIMEOUT_MS, maxBuffer: GH_MAX_BUFFER, stdio: ["ignore", "pipe", "pipe"] });
 
 /** READING 1, THE TOOL CHECKOUT: the release tag it sits at (`liveToolVersion`, which is the board line's reader and is CALLED, not rewritten), else "at no release" and its commit. */
 export function readToolCheckout({ tool }: { tool: string; }, { git = gitIn(tool) }: { git?: (args: string[]) => string; } = {}): RunnerFact {

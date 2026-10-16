@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { isParked } from "./board-view.ts";
 import {
-  amend, approve, batchPlanDone, emptyQueue, enqueue, finish, isLive, leaveBatch, loadQueue, markResumed, markRunning, markStarting, nextStarts, observe, park,
+  amend, approve, respond, batchPlanDone, feedbackRound, MAX_FEEDBACK_ROUNDS, markPublishRunning, markPublishStarting, publishDone, publishFailed, publishStarts, queuePublish, emptyQueue, enqueue, finish, isLive, leaveBatch, loadQueue, markResumed, markRunning, markStarting, nextStarts, observe, park,
   recordBlockers, recordRepos, planDone, PLAN_BATCH_MAX, recordPullStates, recordTrackerStates, remove, retry, saveQueue, setMax, setPaused, unpark, unreadBlockerKeys, unsettledKeys, type Queue,
 } from "./queue.ts";
 import type { Ticket } from "./source.ts";
@@ -242,8 +242,8 @@ test("approve queues a run's open pull requests again, at the end, as a review r
   const a = queue.entries.find((e) => e.ticket.key === "A");
   assert.deepEqual(keys(queue), ["B", "A"]);
   assert.deepEqual(a, { ticket: ticket("A"), repos: [], model: "opus", effort: "high", session: "s1", review: [pr], phase: "queued", queuedAt: 9 });
-  const again = approve(endedWith({ kind: "reviewed", prs: [pr] }), "A", 9).entries.find((e) => e.ticket.key === "A");
-  assert.deepEqual(again?.review, [pr], "reviewed pull requests can have another round");
+  const ready = endedWith({ kind: "reviewed", prs: [pr] });
+  assert.deepEqual(approve(ready, "A", 9), ready, "pull requests ready already are not approved again: Respond to review is theirs");
 });
 
 test("approve reviews only the pull requests still open, and leaves a run with none open alone", () => {
@@ -280,4 +280,92 @@ test("a review run that failed is retried as a review run, and a reviewed one is
   assert.deepEqual([retried?.phase, retried?.review, retried?.session], ["queued", [pr], "s1"]);
   const reviewed = endedWith({ kind: "reviewed", prs: [pr] });
   assert.deepEqual(retry(reviewed, "A", 12), reviewed);
+});
+
+const readyToMerge = (fields: Record<string, unknown> = {}) => endedWith({ kind: "reviewed", prs: [pr] }, { review: [pr], pullStates: { [pr.url]: "open" }, ...fields });
+const a = (queue: Queue) => queue.entries.find((e) => e.ticket.key === "A")!;
+
+test("new feedback on a run Ready to merge queues a review round at the end that answers it, resuming the worker and keeping its Slack link", () => {
+  const published = { link: "https://slack/1", at: 4 };
+  const queue = feedbackRound(readyToMerge({ published }), "A", "New review feedback on x", 9);
+  assert.deepEqual(keys(queue), ["B", "A"]);
+  assert.deepEqual(a(queue), { ticket: ticket("A"), repos: [], model: "opus", effort: "high", session: "s1", published, review: [pr], phase: "queued", queuedAt: 9,
+    feedback: "New review feedback on x", rounds: 1 });
+});
+
+test("a run the board does not watch gets no round: awaiting a person's review, parked, merged, or handed back", () => {
+  const live = markRunning(markStarting(enqueue(emptyQueue(3), [ticket("A")], choice, 1), "A", 2), "A", "w1", "w1:p1");
+  for (const [why, queue] of [
+    ["awaiting review", endedWith({ kind: "draft-pr", prs: [pr] })], ["live", live], ["parked", park(live, "A", { kind: "no-outcome" }, 3)],
+    ["merged", readyToMerge({ pullStates: { [pr.url]: "merged" } })], ["handed back", readyToMerge({ handedBack: "x" })],
+  ] as const) assert.deepEqual(feedbackRound(queue, "A", "f", 9), queue, why);
+});
+
+test("after three rounds of its own, the next feedback hands the run to a person, whose Respond to review lets the board carry on", () => {
+  assert.equal(MAX_FEEDBACK_ROUNDS, 3);
+  const third = readyToMerge({ rounds: 2 });
+  assert.equal(a(feedbackRound(third, "A", "f", 9)).rounds, 3, "the third round still starts");
+  const fourth = feedbackRound(readyToMerge({ rounds: 3 }), "A", "a failing check", 9);
+  assert.deepEqual([a(fourth).phase, a(fourth).outcome?.kind], ["finished", "reviewed"], "it is not queued, and keeps its pull requests");
+  assert.match(a(fourth).handedBack ?? "", /keep getting feedback: the board answered 3 rounds on its own and stopped\. Respond to review starts another\. The latest: a failing check/);
+  assert.deepEqual(approve(fourth, "A", 10), fourth, "its pull requests are ready: Approve is for drafts");
+  const asked = a(respond(fourth, "A", 10));
+  assert.deepEqual([asked.phase, asked.rounds, asked.handedBack, asked.feedback, asked.asked], ["queued", undefined, undefined, undefined, true],
+    "Respond to review starts the count again");
+});
+
+test("Publish queues one run for the ticked runs Ready to merge with their open pull requests, refusing any other run and a second publish", () => {
+  const ready = readyToMerge();
+  const queued = queuePublish(ready, ["A"], 36);
+  assert.deepEqual(queued.publish, { id: "p10", keys: ["A"], prs: [pr], phase: "queued", queuedAt: 36 });
+  assert.throws(() => queuePublish(queued, ["A"], 37), /a publish run is under way/);
+  assert.throws(() => queuePublish(ready, ["B"], 37), /B is not Ready to merge/);
+  assert.throws(() => queuePublish(readyToMerge({ published: { link: null, at: 1 } }), ["A"], 37), /A is not Ready to merge/, "no double posting");
+  assert.throws(() => queuePublish(ready, [], 37), /tick at least one/);
+  assert.doesNotThrow(() => queuePublish(publishFailed(queued, "x", 40), ["A"], 41), "a finished publish run is no bar to the next");
+});
+
+test("a publish run holds a slot while it is live, starts while workers are paused, and its result marks its runs Published or leaves them as they were", () => {
+  const queued = queuePublish(setPaused(readyToMerge(), true), ["A"], 36);
+  assert.equal(publishStarts(queued), true, "the person just asked for it");
+  assert.equal(publishStarts({ ...queued, max: 0 }), false, "but it needs a free slot");
+  const running = markPublishRunning(markPublishStarting(queued, 37), "w9", "w9:p1");
+  assert.equal(nextStarts({ ...setPaused(enqueue(running, [ticket("C"), ticket("D")], choice, 38), false), max: 2 }, 1, 8).length, 1, "it holds one of two slots");
+  const done = publishDone(running, ["https://slack/1", "https://slack/2"], 50);
+  assert.deepEqual(a(done).published, { link: "https://slack/1", at: 50 }, "the first link");
+  assert.deepEqual([done.publish?.phase, done.publish?.workspace], ["finished", undefined]);
+  const failed = publishFailed(running, "no channel for nbl-ui-netbox", 50);
+  assert.deepEqual([a(failed).published, failed.publish?.failure], [undefined, "no channel for nbl-ui-netbox"]);
+  const path = join(tmpDir("ticket-queue-publish-"), "queue.json");
+  saveQueue(path, done);
+  assert.deepEqual(loadQueue(path, 3).publish, done.publish, "the publish run survives a restart of the board");
+});
+
+test("Respond to review queues a round now on a run Ready to merge or Published, resuming the worker, and leaves drafts, parked and merged runs alone", () => {
+  const published = { link: "https://slack/1", at: 4 };
+  const queue = respond(readyToMerge({ published, rounds: 2 }), "A", 9);
+  assert.deepEqual(keys(queue), ["B", "A"]);
+  assert.deepEqual(a(queue), { ticket: ticket("A"), repos: [], model: "opus", effort: "high", session: "s1", published, review: [pr], phase: "queued", queuedAt: 9, asked: true });
+  const live = markRunning(markStarting(enqueue(emptyQueue(3), [ticket("A")], choice, 1), "A", 2), "A", "w1", "w1:p1");
+  for (const [why, q] of [
+    ["a draft", endedWith({ kind: "draft-pr", prs: [pr] })], ["parked", park(live, "A", { kind: "no-outcome" }, 3)], ["live", live],
+    ["holding a workspace", readyToMerge({ workspace: "w1" })], ["merged", readyToMerge({ pullStates: { [pr.url]: "merged" } })], ["completed in the tracker", recordTrackerStates(readyToMerge(), new Map([["A", "completed"]]))],
+  ] as const) assert.deepEqual(respond(q, "A", 9), q, why);
+});
+
+test("a review round that failed is retried as the same round: its feedback, its asking and its count of the board's own rounds stay", () => {
+  const round = feedbackRound(readyToMerge({ rounds: 1 }), "A", "f", 9);
+  const crashed = finish(markRunning(markStarting(round, "A", 10), "A", "w2", "w2:p1"), "A", { kind: "crashed", reason: "x" }, 11);
+  const retried = a(retry(crashed, "A", 12));
+  assert.deepEqual([retried.feedback, retried.rounds, retried.review], ["f", 2, [pr]], "the cap cannot be escaped by a retry");
+  const asked = respond(readyToMerge(), "A", 9);
+  const failed = finish(markRunning(markStarting(asked, "A", 10), "A", "w2", "w2:p1"), "A", { kind: "crashed", reason: "x" }, 11);
+  assert.equal(a(retry(failed, "A", 12)).asked, true);
+});
+
+test("Publish posts each ticked run once, and a run queued for another round while it posts is still Published", () => {
+  assert.deepEqual(queuePublish(readyToMerge(), ["A", "A"], 36).publish?.prs, [pr], "a run ticked twice is posted once");
+  const publishing = markPublishRunning(markPublishStarting(queuePublish(readyToMerge(), ["A"], 36), 37), "w9", "w9:p1");
+  const meanwhile = respond(publishing, "A", 40);
+  assert.deepEqual(a(publishDone(meanwhile, ["https://slack/1"], 50)).published, { link: "https://slack/1", at: 50 });
 });

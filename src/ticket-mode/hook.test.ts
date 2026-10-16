@@ -6,7 +6,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { MAX_STOP_REFUSALS, main, stopVerdict, toolVerdict } from "./hook.ts";
+import { MAX_STOP_REFUSALS, main, publishConnectors, stopVerdict, toolVerdict } from "./hook.ts";
 
 const bash = (command: string) => toolVerdict("Bash", { command }).code;
 
@@ -158,4 +158,38 @@ test("a worker may link its pull request into a stack with the literal `gh stack
     assert.equal(bash(refused), 2, refused);
   }
   assert.match(toolVerdict("Bash", { command: "gh stack push" }).say[0], /a stack's pushes, rebases and merges are the person's: a worker runs only `gh stack link`/);
+});
+
+const SLACK = /^mcp__plugin_slack_slack__slack_send_message$/;
+
+test("a publish run may announce pull requests, with the skill and the connectors its mark names, and nothing else of the person's is lifted", () => {
+  const publish = (tool: string, input: Record<string, unknown> = {}) => toolVerdict(tool, input, [], [], [], [SLACK]).code;
+  assert.equal(publish("Skill", { skill: "post-pr-to-slack" }), 0);
+  assert.equal(publish("mcp__plugin_slack_slack__slack_send_message"), 0);
+  assert.equal(toolVerdict("Skill", { skill: "post-pr-to-slack" }, [], [], [], []).code, 0, "a publish run whose mark names no connector may still run the skill");
+  assert.equal(toolVerdict("Skill", { skill: "post-pr-to-slack" }).code, 2, "POSITIVE CONTROL: any other run is refused it");
+  assert.equal(toolVerdict("mcp__plugin_slack_slack__slack_send_message", {}).code, 2, "POSITIVE CONTROL: and the connector");
+  assert.equal(publish("mcp__plugin_slack_slack__slack_send_message_draft"), 2, "a connector the mark does not name");
+  assert.equal(publish("mcp__claude_ai_Gmail__create_draft"), 2);
+  for (const refused of ["gh pr merge 12 --squash", "gh pr review 12 --approve", "git push --force origin b", "gh workflow run ci.yml", "gh pr ready 12"]) {
+    assert.equal(publish("Bash", { command: refused }), 2, refused);
+  }
+});
+
+test("the hook treats a run as a publish run while the board's publish mark is beside its outcome file, and an unreadable mark lifts nothing", () => {
+  const dir = tmpDir("ticket-hook-publish-");
+  const call = (tool_name: string, tool_input: Record<string, unknown> = {}) => main(JSON.stringify({ tool_name, tool_input }), ["pre-tool-use", dir]).code;
+  assert.equal(publishConnectors(dir), null);
+  assert.equal(call("Skill", { skill: "post-pr-to-slack" }), 2, "no mark: refused");
+  writeFileSync(join(dir, "publish-run"), "not json");
+  assert.equal(call("Skill", { skill: "post-pr-to-slack" }), 2, "a mark it cannot read lifts nothing");
+  writeFileSync(join(dir, "publish-run"), `${JSON.stringify({ connectors: [SLACK.source] })}\n`);
+  assert.equal(call("Skill", { skill: "post-pr-to-slack" }), 0);
+  assert.equal(call("mcp__plugin_slack_slack__slack_send_message"), 0);
+});
+
+test("no worker may write the publish mark, by a command or a file tool, since it would lift a refusal", () => {
+  assert.equal(bash("echo '{}' > /state/tickets/NBF-1/publish-run"), 2);
+  assert.equal(toolVerdict("Write", { file_path: "/state/tickets/NBF-1/publish-run", content: "{}" }).code, 2);
+  assert.equal(toolVerdict("Write", { file_path: "/state/tickets/publish/p1/published.json", content: "{}" }).code, 0, "POSITIVE CONTROL: the links file is the run's");
 });

@@ -18,7 +18,7 @@ test("only `clones` is required, every repository in it is offered, and every ot
 
 test("the `tickets` block and `stateDir` override the defaults", () => {
   const settings = parseTicketSettings({ clones, stateDir: "/state", tickets: { max: 5, port: 5000, herdrSession: "nbl", worktreeRoot: "/wt", linearKey: { path: "/keys/linear" } } });
-  assert.deepEqual({ ...settings, clones: undefined }, { clones: undefined, max: 5, port: 5000, herdrSession: "nbl", worktreeRoot: "/wt", stateDir: "/state", linearKey: { path: "/keys/linear" }, brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, workingState: null, connectors: [] });
+  assert.deepEqual({ ...settings, clones: undefined }, { clones: undefined, max: 5, port: 5000, herdrSession: "nbl", worktreeRoot: "/wt", stateDir: "/state", linearKey: { path: "/keys/linear" }, brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, workingState: null, connectors: [], publish: null });
 });
 
 test("a machine can add notes to every brief and refuse commands of its own", () => {
@@ -94,6 +94,20 @@ test("a machine names the state a ticket moves to as a worker starts it, and an 
   assert.equal(parseTicketSettings({ clones }, "/home/me").workingState, null, "none by default, so no ticket is moved");
   assert.throws(() => parseTicketSettings({ clones, tickets: { workingState: " " } }, "/home/me"), /tickets\.workingState/);
   assert.equal(parseTicketSettings({ clones, tickets: { workingState: " In Progress " } }, "/home/me").workingState, "In Progress", "spaces around the name are dropped");
+});
+
+test("a machine names how a person's chosen pull requests are published, on haiku at low effort unless it says otherwise, with connectors of its own", () => {
+  const run = "Run the post-pr-to-slack skill on these pull requests, all in one go: {prs}. Then write {dir}/published.json";
+  const connectors = ["^mcp__plugin_slack_slack__slack_send_message$"];
+  assert.deepEqual(parseTicketSettings({ clones, tickets: { publish: { run, connectors } } }).publish, { run, model: "haiku", effort: "low", connectors });
+  assert.deepEqual(parseTicketSettings({ clones, tickets: { publish: { run, model: "sonnet", effort: "medium" } } }).publish, { run, model: "sonnet", effort: "medium", connectors: [] });
+  assert.equal(parseTicketSettings({ clones }).publish, null, "a machine that names none publishes nothing");
+  for (const [publish, field] of [
+    [{ run: "post {prs}" }, "tickets.publish"], [{ run: "write {dir}" }, "tickets.publish"], ["post", "tickets.publish"],
+    [{ run, model: "two words" }, "tickets.publish.model"], [{ run, connectors: ["slack"] }, "tickets.publish.connectors[0]"],
+  ] as const) {
+    assert.throws(() => parseTicketSettings({ clones, tickets: { publish } }), (err: unknown) => err instanceof TicketSettingsRefusal && err.field === field, JSON.stringify(publish));
+  }
 });
 
 test("a bad field is refused by its name", () => {
