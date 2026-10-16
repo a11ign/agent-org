@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-A merged option a consumer never set is an incident two hours after the merge (agent-org#839, class `closed-on-merge-not-outcome`, a11ign/a11ign#4953 ask 2). agent-org#873's refusal stops a CLOSE while the consumer's declaration lacks the value; this is the detector for when it was not in force or was passed with `Closes: none`. `inert-option-incident.ts` (a pure leaf, the shape of `merged-row-open-incident.ts`) reads the `Consumer-declaration:` lines of each merged pull request's added acceptance file through `consumer-declaration.ts`'s parser and the consumer's file at its default branch; a key that is not the value 120 minutes after `mergedAt` is one ledger line of the EXISTING kind `closed-on-merge-not-outcome` (ref `<repo>#<pr>:<key>`), and a file that cannot be read is `unknown`, never an incident. `org-retro.ts` reads it with the existing `lookupConsumerFile` (no new `gh` call site) and the daily report names the file, key, wanted and found value and the switch row.
