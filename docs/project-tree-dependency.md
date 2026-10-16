@@ -348,7 +348,7 @@ Results:
 
 Acceptance (the row's five-file command, copy committed) before any change: `VERDICT fail: 26 of 83 tests failed in 5 files` (`auto-arm-token.test.ts` 7, `public-claim.test.ts` 12, `row-filing-guidance.test.ts` 7). `primary-checkout-guard.test.ts` and `shared-stash-guard.test.ts` passed unchanged.
 
-After: `VERDICT pass: 57 tests in 5 files (26 skipped)`, EXIT=0. `tsc --noEmit` exits 0.
+After: `VERDICT pass: 57 tests in 5 files (26 skipped)`, EXIT=0. The CI-runnable block in `.acceptance/agent~agent-org-stands-alone-agent-org-1604.md` leaves out the two token-needing files: `VERDICT pass: 32 tests in 3 files (26 skipped)`, EXIT=0. `tsc --noEmit` exits 0.
 
 Skips. Each is `{ skip: SKIP_FIXTURE }` on a `test(` call, where `SKIP_FIXTURE` is `false` wherever `trackedTopLevelDirs()` lists `packages/`, and otherwise a named reason. The skip markers were checked against the TypeScript AST, so each sits on a real call header.
 
