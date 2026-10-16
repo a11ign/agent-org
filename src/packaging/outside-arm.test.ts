@@ -19,6 +19,7 @@ import { spawnSync } from "node:child_process";
 import { parse as parseYaml } from "yaml";
 import { OUTSIDE_ARM_FLAG, outsideArmOn } from "../arm-pr.ts";
 import { outsideArmListArgs, outsideArmPass, outsideArmVerdict, openPullRequestsQueryArgs, type OutsideArmPr } from "../auto-arm-sweep.ts";
+import { armedQueryArgs } from "../pr-armed-state.ts";
 import { settleOutsideArm } from "../work-gate/pr-orders.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 
@@ -88,6 +89,8 @@ function ghOf(w: World) {
     w.reads += 1;
     if (args.join(" ") === outsideArmListArgs(REPO).join(" ")) return JSON.stringify(w.prs);
     if (args.join(" ") === openPullRequestsQueryArgs(REPO).join(" ")) return JSON.stringify(w.prs.map((pr) => ({ number: pr.number, isDraft: pr.isDraft, autoMergeRequest: w.armed.has(pr.number) ? { enabledAt: "t" } : null })));
+    const readBack = w.prs.find((pr) => args.join(" ") === armedQueryArgs({ number: pr.number, repo: REPO }).join(" "));
+    if (readBack) return JSON.stringify({ merged: false, autoMergeRequest: w.armed.has(readBack.number) ? { enabledAt: "t" } : null, mergeQueueEntry: null });
     if (args[0] === "pr" && args[1] === "ready") { w.writes.push(`ready ${args[2]}`); w.prs = w.prs.map((pr) => (String(pr.number) === args[2] ? { ...pr, isDraft: false } : pr)); return ""; }
     throw new Error(`unexpected gh ${args.join(" ")}`);
   };
