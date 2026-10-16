@@ -39,7 +39,7 @@ import { readRulings, unreadableLine, rulingTick } from "../ruling-record.ts";
 import { homeProjectDeclaration } from "../project-config.ts";
 import { readReleaseFacts, registryDistTags, remoteTagExists, splitHeldOnSatisfied, heldOnSatisfiedOrders, umbrellaEdges, umbrellaEdgeOrders } from "./held-on-satisfied-orders.ts";
 import { referencesOf, releaseReferencesOf, waitItemOf, staleWaits, bareWaits, manualWaits, parseWaits, liftableHolds, isItemWait } from "../wait-condition.ts";
-import { stallReasonOf, ownerOfPr, reviewGateOf } from "./pr-orders.ts";
+import { stallReasonOf, ownerOfPr, reviewGateOf, reviewHeadsOf } from "./pr-orders.ts";
 import { claimedScopesOf, scopeAddedReadings, scopeAddedOrders } from "./scope-added-orders.ts"; // #4759
 import { idleHoldIncidents, idleHoldOrders } from "./idle-hold-incidents.ts"; // #571
 import { forgetReads, readWithFirstWaveTogether, webhookMode } from "./reads.ts";
@@ -461,16 +461,21 @@ const lastMerge = (read: number | { at: number; repo: string; } | null): { lastM
 
 /**
  * agent-org#1538: THE RED PULL REQUESTS WHOSE CHECKS ASK FOR A REVIEW (`Cleared-by: review`), each with whether a reviewer is already ordered at its
- * head's subject. `review-gated-unasked` reads this: a review-gated red with no reviewer order is the gate failing to ask the one seat that clears it.
+ * CURRENT head: an order for the subject whose key is the one `draftOrder` gives this head (`reviewHeadsOf`, the patch id when it is known). An order
+ * keyed on an older head does not count, so a pull request that moved since its reviewer was ordered is listed until a reviewer is ordered again.
+ * `review-gated-unasked` reads this: a review-gated red with no reviewer order is the gate failing to ask the one seat that clears it.
  * `reviewGateOf` is the gate's own reading, so a PR the gate would route as a code failure is never listed here.
  */
-export function reviewGatedFacts(prs: any[], decided: { cause: string; subject: string; }[], required: string[] | null) {
-  const ordered = new Set(decided.filter((order) => order.cause === "draft-awaiting-verdict").map((order) => order.subject));
-  return prs.filter((pr) => reviewGateOf(pr, required) === "review").map((pr) => ({
-    number: pr.number,
-    redSince: redSinceOf(pr),
-    reviewerOrdered: ordered.has(`pr-${subjectRef(pr.repoKey, pr.number)}`),
-  }));
+export function reviewGatedFacts(prs: any[], decided: { cause: string; subject: string; causeKey?: string; }[], required: string[] | null) {
+  return prs.filter((pr) => reviewGateOf(pr, required) === "review").map((pr) => {
+    const subject = `pr-${subjectRef(pr.repoKey, pr.number)}`;
+    const key = reviewHeadsOf(pr, String(pr.headRefOid), "settled").key;
+    return {
+      number: pr.number,
+      redSince: redSinceOf(pr),
+      reviewerOrdered: decided.some((order) => order.cause === "draft-awaiting-verdict" && order.subject === subject && String(order.causeKey ?? "").split("/").pop() === key),
+    };
+  });
 }
 
 /**

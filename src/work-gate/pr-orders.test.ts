@@ -113,8 +113,16 @@ test("review-gated-unasked: a red review-gated pull request with no reviewer ord
   const facts = reviewGatedFacts([pr], [], REQUIRED);
   assert.deepEqual(facts.map((f) => f.number), [5528]);
   assert.equal(facts[0].reviewerOrdered, false);
-  const ordered = reviewGatedFacts([pr], [{ cause: "draft-awaiting-verdict", subject: `pr-${subjectRef(pr.repoKey, pr.number)}` }], REQUIRED);
-  assert.equal(ordered[0].reviewerOrdered, true);
+  const subject = `pr-${subjectRef(pr.repoKey, pr.number)}`;
+  const orderAt = (head: string) => ({ cause: "draft-awaiting-verdict", subject, causeKey: `agent-x/draft-awaiting-verdict/${subject}/${head.slice(0, 8)}` });
+  assert.equal(reviewGatedFacts([pr], [orderAt(HEAD)], REQUIRED)[0].reviewerOrdered, true);
+
+  // A head that moved since the reviewer was ordered: the order at the old head is not an order at the new one, so the detector trips.
+  const moved = pullRequest({ head: MOVED, markersHead: MOVED });
+  assert.equal(reviewGatedFacts([moved], [orderAt(HEAD)], REQUIRED)[0].reviewerOrdered, false, "an order at the old head is not counted at the new one");
+  assert.equal(reviewGatedFacts([moved], [orderAt(MOVED)], REQUIRED)[0].reviewerOrdered, true, "an order at the new head is counted");
+  const movedFacts = reviewGatedFacts([moved], [orderAt(HEAD)], REQUIRED);
+  assert.equal(reviewGatedUnaskedReading({ now: NOW, prs: movedFacts.map((f) => ({ ...f, redSince: NOW - 3 * HOUR })) }).status, "tripped");
   assert.equal(REVIEW_GATED_MINUTES, 120);
 
   const twoHoursAgo = NOW - 2 * HOUR - 1000;

@@ -1657,7 +1657,7 @@ export type ReviewHeads = {head8: string, key: string, all: string[], wait: "set
  * The key a pull request's review orders carry, and the heads a verdict may sit at (#3045). A VERDICT IS VALID FOR A PATCH, NOT A SHA:
  * `key` is the patch id when `withPatchIds` read it and the head otherwise, which is this gate's behaviour before #2176.
  */
-function reviewHeadsOf(pr: any, head: string, wait: "settled" | "running"): ReviewHeads {
+export function reviewHeadsOf(pr: any, head: string, wait: "settled" | "running"): ReviewHeads {
   const patch = pr?.patchIds?.[head];
   return { head8: head.slice(0, 8), key: typeof patch === "string" ? patch.slice(0, 8) : head.slice(0, 8), all: equivalentHeads(pr), wait };
 }
