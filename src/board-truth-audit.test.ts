@@ -305,6 +305,24 @@ test("switch-row titles naming different flags are not near-duplicates (agent-or
   assert.deepEqual(found({ openRows: [a, notOfTheForm(5242, "Switch on the flag of agent-org #1167 (class a11ign#928)")] }, QUESTIONS.DUPLICATE), [5242], "only one title is of the form (its reference is not written `<repo>#<n>`): words decide");
 });
 
+/** The sibling rows of the `agent-org stands alone` epic as filed on 2026-10-16: one template, one function each. @param {string} fn */
+const standsAloneTitle = (fn: string) => `agent-org stands alone (${fn}): the a11ign half is deleted after a clean canary`;
+
+test("sibling rows of the agent-org stands-alone epic naming different functions are not near-duplicates (agent-org#1583)", () => {
+  const [trunk, board] = [row(5606, ["ready"], { title: standsAloneTitle("trunk") }), row(5608, ["ready"], { title: standsAloneTitle("board report") })];
+  // POSITIVE CONTROL for the line below: the pair clears the word threshold on its own (0.80), so the empty result is the function rule and not a short title.
+  assert.ok(similarity(wordsOf(trunk.title), wordsOf(board.title)) >= DUPLICATE_SIMILARITY, "the two real titles clear the word threshold on their own");
+  assert.deepEqual(found({ openRows: [trunk, board] }, QUESTIONS.DUPLICATE), [], "#5606 and #5608 are two rows for two functions");
+  assert.deepEqual(found({ openRows: [board], closedRows: [{ ...trunk, state: "CLOSED", stateReason: "COMPLETED" }] }, QUESTIONS.DUPLICATE), [], "against a closed row of another function");
+  // the same function is still one row: the later of two is the duplicate, whatever the case of the function name
+  assert.deepEqual(found({ openRows: [trunk, row(5610, ["ready"], { title: standsAloneTitle("trunk") })] }, QUESTIONS.DUPLICATE), [5610]);
+  assert.deepEqual(found({ openRows: [trunk, row(5610, ["ready"], { title: standsAloneTitle("Trunk") })] }, QUESTIONS.DUPLICATE), [5610], "a function name is compared lower-cased");
+  // a title not of the form is compared by words alone, whether or not the other title is of it
+  const notOfTheForm = (number: number, title: string) => row(number, ["ready"], { title });
+  assert.deepEqual(found({ openRows: [board, notOfTheForm(5611, standsAloneTitle("trunk").replace("agent-org stands alone (trunk):", "agent-org stands alone trunk:"))] }, QUESTIONS.DUPLICATE), [5611], "only one title is of the form: words decide");
+  assert.deepEqual(found({ openRows: [notOfTheForm(5612, standsAloneTitle("trunk").replace("(trunk):", "trunk:")), notOfTheForm(5613, standsAloneTitle("board report").replace("(board report):", "board report:"))] }, QUESTIONS.DUPLICATE), [5613], "neither title is of the form: words decide");
+});
+
 /** The pair as it stood on 2026-10-10: the build a11ign#4488 and the verify row the pipeline filed for it (`verify-row.ts`), #4901. @param {string} title */
 const verifyRowOf = (title: string) => `## Done-when\n\n1. The reading holds.\n\nNot-before: 2026-10-11T00:00:00Z\nVerifies: #4488\n\n<!-- verify-row: build #4488 -->\n`;
 
