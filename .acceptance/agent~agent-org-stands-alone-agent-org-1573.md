@@ -16,7 +16,8 @@ Revert: set `outside.arm` to `false` (or delete the key) in the project's `.agen
 
 Outside-Region: src/work-gate/tick.ts — the one call site: `readArmingOf` calls `settleOutsideArm` first, and imports it.
 Outside-Region: src/packaging/outside-arm.test.ts — the new test of the flag, the verdict, the second actor and the workflow.
-Outside-Region: src/packaging/project-vocabulary.test.ts — declares `"ready"` in `auto-arm-sweep.ts` as GitHub's `gh pr ready` verb, as it does for `work-gate/orders.ts`.
+Outside-Region: src/packaging/project-vocabulary.test.ts — declares `"ready"` in `ticket-port/outside-arm-calls.ts` as GitHub's `gh pr ready` verb, as it does for `work-gate/orders.ts`.
+Outside-Region: src/ticket-port/outside-arm-calls.ts — the two new `gh` call shapes (the open-PR list, `pr ready`) go through the port, because `gh-call-ratchet.test.ts` refuses a new shape in baselined `auto-arm-sweep.ts`; the baseline is not raised.
 Outside-Region: .changeset/agent-org-stands-alone-arm-1573.md — the entry a project that pins a tag reads.
 
 platform: GitHub's scheduled workflows and Octo STS (the sweep's token) are used; GitHub has no native arm-on-event for another repository, and the host gate already ticks every 2 minutes.

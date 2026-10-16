@@ -90,6 +90,8 @@ import { SESSION_PREFIX, BLOCKED_LABEL } from "./project-vocabulary.ts";
 import { armedFromApi, armedQueryArgs, ejectionVerdict } from "./pr-armed-state.ts";
 // #3544: THE BLOCKER DECIDER IS `arm-pr`'s, IMPORTED -- a second copy is the one place the two doors could disagree about order.
 import { announceBlocked, armDecision, blockerVerdict, outsideArmOn, runArmPr, EXIT as ARM_EXIT } from "./arm-pr.ts";
+import { outsideArmListArgs as portListArgs, readyPullRequest } from "./ticket-port/outside-arm-calls.ts";
+import { pullRequestFieldsOf } from "./ticket-port/pull-request-fields.ts";
 import { crossRepoRedVerdict } from "./cross-repo-red.ts";
 // agent-org#1501: `arm-pr`'s deliberate refusal, asked again here for the reason the authorship one is (#3254).
 import { deliberateRefusalVerdict } from "./deliberate-refusal.ts";
@@ -475,7 +477,7 @@ export function outsideArmVerdict(pr: OutsideArmPr, armed: boolean | null): Outs
 }
 
 /** The `gh` arguments of the policy read: every field {@link outsideArmVerdict} decides on except the armed state, which is {@link openPullRequestsQueryArgs}'s. */
-export const outsideArmListArgs = (repo: string): string[] => ["pr", "list", "--repo", repo, "--state", "open", "--limit", String(CANDIDATE_LIMIT), "--json", "number,state,isDraft,baseRefName,isCrossRepository,reviewDecision,labels"];
+export const outsideArmListArgs = (repo: string): string[] => portListArgs(repo, CANDIDATE_LIMIT);
 
 /** What one pass did, by pull request number. `failed` is a pull request the home tried to arm and could not: it is named, never counted. `cannotAsk` is a list that could not be read, which is INCONCLUSIVE and never "nothing to do". */
 export type OutsideArmResult = { armed: number[]; readied: number[]; left: Array<{ number: number; why: string; }>; failed: number[]; cannotAsk: boolean; };
@@ -507,7 +509,7 @@ export function outsideArmPass({ repo, switchesPath, on = outsideArmOn(switchesP
     const verdict = outsideArmVerdict(pr, armedBy.get(Number(pr.number)) ?? null);
     if (verdict.act === "leave") { result.left.push({ number: pr.number, why: verdict.why }); continue; }
     try {
-      if (verdict.act === "ready-and-arm") { run(["pr", "ready", String(pr.number), "--repo", repo]); result.readied.push(pr.number); }
+      if (verdict.act === "ready-and-arm") { readyPullRequest({ number: pr.number, repo, run }); result.readied.push(pr.number); }
       const code = arm(pr.number);
       if (code !== ARM_EXIT.DONE) throw new Error(`arm-pr exited ${code}`);
       result.armed.push(pr.number);
@@ -575,7 +577,7 @@ function main() {
       continue;
     }
 
-    if (outside && gh(["pr", "view", number, "--repo", repo, "--json", "isCrossRepository", "-q", ".isCrossRepository"]) !== "false") {
+    if (outside && pullRequestFieldsOf({ repo, number: Number(number), fields: "isCrossRepository", run: gh })?.isCrossRepository !== false) {
       console.log(`SWEEP: #${number} SKIPPED -- its head is in a fork, or whether it is was not read`);
       continue;
     }

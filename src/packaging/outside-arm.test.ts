@@ -208,7 +208,12 @@ test("the workflow reads the flag BEFORE it mints, mints only when it is on, sco
   assert.equal(sweep[arm].env?.GITHUB_REPOSITORY, "a11ign/a11ign");
   assert.equal(doc.jobs["outside-sweep"].permissions?.["id-token"], "write");
   const stalled = doc.jobs["outside-stalled"];
-  assert.equal(stalled.permissions?.["id-token"], undefined, "the report only reads, so it mints nothing");
+  assert.equal(stalled.permissions?.["id-token"], "write");
+  const stalledMint = stalled.steps.findIndex((s) => s.id === "octo-sts"), stalledRun = stalled.steps.findIndex((s) => (s.run ?? "").includes("queue-stalled.ts"));
+  assert.ok(stalled.steps.findIndex((s) => s.id === "flag") < stalledMint && stalledMint < stalledRun, "flag, then mint, then report");
+  assert.equal(stalled.steps[stalledMint].if, "steps.flag.outputs.on == 'true'");
+  assert.equal(stalled.steps[stalledMint].with?.identity, "outside-arm");
+  assert.equal(stalled.steps[stalledRun].env?.GH_TOKEN, "${{ steps.octo-sts.outputs.token }}", "the report holds the minted token, never `github.token`");
   assert.ok(stalled.steps.some((s) => s.id === "flag") && stalled.steps.filter((s) => (s.run ?? "").includes("queue-stalled.ts")).every((s) => s.if === "steps.flag.outputs.on == 'true'"));
   // CONTROL for the reading above: the project's own `arm` job IS a job that mints and has no flag step, so the checks are not vacuous.
   assert.ok(doc.jobs.arm.steps.some((s) => s.id === "octo-sts") && !doc.jobs.arm.steps.some((s) => s.id === "flag"));
