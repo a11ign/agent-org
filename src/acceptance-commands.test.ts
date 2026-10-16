@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { acceptanceSourceOf, acceptanceSourceOfThisPullRequest, checkoutPullRequestMerge, ciInputOf, installPullRequestCheckout, orgSideAcceptanceEligibility, orgSideAcceptanceVerdict, prAuthorFromEnv, runCiBodyReports,
+import { acceptanceSourceOf, acceptanceSourceOfThisPullRequest, checkoutPullRequestMerge, ciInputOf, installPullRequestCheckout, orgSideAcceptanceEligibility, orgSideAcceptanceVerdict, OUTSIDE_ACCEPTANCE_FLAG, outsideAcceptanceOn, prAuthorFromEnv, runCiBodyReports, shadowAcceptanceVerdict,
   thisPullRequestInput } from "./acceptance-commands.ts";
 import { INSIDE, reviewTrustOf } from "./review-trust.ts";
 import { acceptanceGateOf, greenUnarmedOrders } from "./work-gate/pr-orders.ts";
@@ -366,4 +366,56 @@ test("(1502 h) gateUnarmedOnAcceptance: OFF by default reads and runs nothing; O
   assert.deepEqual(on.armable, [2, 3, 4], "the org says nothing of what it does not run");
   assert.deepEqual(on.withheld.map((w) => w.number), [1]);
   assert.deepEqual(gateUnarmedOnAcceptance([1], { openPrs: prs, scope: BASE, env: { [ACCEPTANCE_GATE_SWITCH_ENV]: "yes" }, declared: DECLARED, verdictOf }).armable, [1], "only the word `on` turns it on");
+});
+
+const ON = { [OUTSIDE_ACCEPTANCE_FLAG]: true };
+const reportOf = (ok: boolean) => ({ report: () => ({ ok, lines: ["ACCEPTANCE: RAN node --test x"] }) });
+
+test("(1579 a) the flag is `outside.acceptance`, and only a literal true turns it on: absent, false and every other value are off", () => {
+  assert.equal(OUTSIDE_ACCEPTANCE_FLAG, "outside.acceptance");
+  assert.equal(outsideAcceptanceOn({ "outside.acceptance": true }), true, "POSITIVE CONTROL");
+  for (const off of [{}, { "outside.acceptance": false }, { "outside.acceptance": "true" }, { "outside.acceptance": 1 }, { "duplicate-row": true }, null, undefined]) {
+    assert.equal(outsideAcceptanceOn(off as never), false, JSON.stringify(off));
+  }
+});
+
+test("(1579 b) OFF the home does nothing: no checkout, no report, no release, whatever the pull request", () => {
+  for (const switches of [{}, { [OUTSIDE_ACCEPTANCE_FLAG]: false }, undefined]) {
+    const { calls, seams } = guardedSeams();
+    assert.deepEqual(shadowAcceptanceVerdict(agentPr(), { ...seams, switches }), { on: false });
+    assert.deepEqual(calls, { checkout: 0, report: 0, release: 0 });
+  }
+  const { calls, seams } = guardedSeams();
+  assert.equal(shadowAcceptanceVerdict(agentPr(), { ...seams, switches: ON }).on, true, "CONTROL: the same seams run when the flag is on");
+  assert.deepEqual(calls, { checkout: 1, report: 1, release: 1 });
+});
+
+test("(1579 c) ON is SHADOW: a failing verdict blocks nothing, and is compared with the job's by pass or fail alone", () => {
+  const cases: ["pass" | "fail" | null, boolean, string][] = [["pass", true, "agree"], ["fail", false, "agree"], ["pass", false, "disagree"], ["fail", true, "disagree"], [null, true, "not-compared"]];
+  for (const [job, ok, agreement] of cases) {
+    const shadow = shadowAcceptanceVerdict(agentPr(), { ...guardedSeams().seams, ...reportOf(ok), switches: ON, job });
+    assert.ok(shadow.on);
+    assert.equal(shadow.blocks, false, "a shadow verdict holds nothing, even a fail");
+    assert.equal(shadow.agreement, agreement, `${job} vs ${ok}`);
+  }
+});
+
+test("(1579 d) a fork or an outside author runs NOTHING from its body even with the flag on, and is never compared", () => {
+  for (const [name, over] of INELIGIBLE) {
+    const { calls, seams } = guardedSeams();
+    const shadow = shadowAcceptanceVerdict(agentPr(over), { ...seams, switches: ON, job: "pass" });
+    assert.ok(shadow.on);
+    assert.equal(shadow.verdict.kind, "not-run", name);
+    assert.equal(shadow.agreement, "not-compared", name);
+    assert.deepEqual(calls, { checkout: 0, report: 0, release: 0 }, name);
+  }
+});
+
+test("(1579 e) the rows' labels reach the report, as the job's class report needs them; none handed is none handed", () => {
+  const seen: unknown[] = [];
+  const rowLabels = () => ["defect"];
+  const report = (input: { rowLabels?: unknown; }) => { seen.push(input.rowLabels); return { ok: true, lines: [] }; };
+  orgSideAcceptanceVerdict(agentPr(), { ...guardedSeams().seams, report, rowLabels });
+  orgSideAcceptanceVerdict(agentPr(), { ...guardedSeams().seams, report });
+  assert.deepEqual(seen, [rowLabels, undefined]);
 });

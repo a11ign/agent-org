@@ -3859,9 +3859,9 @@ export type OrgSideVerdict = { kind: "pass" | "fail" | "not-run"; head: string |
  * @param prepare makes that directory runnable (its dependencies installed). A throw is `not-run`, NEVER `fail`: a checkout that could not be prepared
  *   says nothing about the pull request, and a fresh worktree has no `node_modules` (the first real run, a11ign#5555, failed `rstest not found` for that reason)
  */
-export function orgSideAcceptanceVerdict(pr: OrgSidePullRequest | null | undefined, { byDeclaredIdentity, baseRepo, checkout, prepare = () => {}, report = defaultOrgSideReport, release = () => {} }: {
+export function orgSideAcceptanceVerdict(pr: OrgSidePullRequest | null | undefined, { byDeclaredIdentity, baseRepo, checkout, prepare = () => {}, report = defaultOrgSideReport, release = () => {}, rowLabels }: {
   byDeclaredIdentity: (pr: OrgSidePullRequest) => boolean; baseRepo: string; checkout: (head: string, number: number) => string; prepare?: (cwd: string) => void;
-  report?: (input: BodyReportInput, cwd: string) => { ok: boolean; lines: string[]; }; release?: (cwd: string) => void;
+  report?: (input: BodyReportInput, cwd: string) => { ok: boolean; lines: string[]; }; release?: (cwd: string) => void; rowLabels?: BodyReportInput["rowLabels"];
 }): OrgSideVerdict {
   const eligibility = orgSideAcceptanceEligibility(pr, { byDeclaredIdentity, baseRepo });
   if (!eligibility.eligible) return { kind: "not-run", head: null, lines: [], why: `not run on the org side: ${eligibility.reason}` };
@@ -3882,11 +3882,40 @@ export function orgSideAcceptanceVerdict(pr: OrgSidePullRequest | null | undefin
     } catch (error) {
       return { kind: "not-run", head, lines: [], why: `not run: the checkout at ${head.slice(0, 8)} could not be prepared (${String((error as Error).message ?? error).split("\n")[0].slice(0, 160)})` };
     }
-    result = report(thisPullRequestInput(pr.body, cwd, String(pr.author?.login), { run: (command) => runAcceptanceCommand(command, { cwd }) }), cwd);
+    result = report(thisPullRequestInput(pr.body, cwd, String(pr.author?.login), { run: (command) => runAcceptanceCommand(command, { cwd }), ...(rowLabels === undefined ? {} : { rowLabels }) }), cwd);
   } finally {
     release(cwd);
   }
   return { kind: result.ok ? "pass" : "fail", head, lines: result.lines, why: result.ok ? `acceptance passed at ${head.slice(0, 8)}` : `acceptance FAILED at ${head.slice(0, 8)}` };
+}
+
+/**
+ * agent-org#1579 (the epic "agent-org stands alone", a11ign#928): THE OUTSIDE HOME OF a11ign's `acceptance` JOB, SHIPPED OFF, AND SHADOW WHEN ON.
+ *
+ * The flag is `outside.acceptance` in the project's `.agent-org/decisions.json`; the caller reads it with `decision-provider.ts`'s `readSwitches` (absent = off) and hands
+ * the record here, so this file imports no reader that reaches `gh` (the #1502 note on `byDeclaredIdentity` is the same reason). OFF: nothing is checked out, run or read.
+ * ON: the verdict {@link orgSideAcceptanceVerdict} gives is RECORDED beside the job's, and `blocks` is the literal `false`: a shadow verdict arms nothing and holds nothing,
+ * and the job stays in `gate`'s `needs`. Revert is the flag set `false`.
+ *
+ * THE FIRST READ (what the job does that the outside home did not, a11ign#928 section 3 named the commands and not their equivalence): the job's `class` report reads the labels of
+ * the rows a pull request closes (`ACCEPTANCE_ROW_LABELS`), and the #1502 verdict handed it no reader, so it said NOT CHECKED where the job said pass or fail. `rowLabels` is now a seam of the verdict.
+ * Not built here, said so: the job's Dependabot wait for a body is moot (only `agent/*` by a declared identity is eligible) and its `History: full` deepen is moot in the host's full clone.
+ */
+export const OUTSIDE_ACCEPTANCE_FLAG = "outside.acceptance";
+export const outsideAcceptanceOn = (switches: Readonly<Record<string, unknown>> | null | undefined): boolean => switches?.[OUTSIDE_ACCEPTANCE_FLAG] === true;
+
+/** `agree`: the same pass or fail as the job. `disagree`: the two differ, which the canary counts. `not-compared`: the home did not run, or the job's verdict was not read. */
+export type ShadowAcceptance =
+  | { on: false; }
+  | { on: true; blocks: false; verdict: OrgSideVerdict; job: "pass" | "fail" | null; agreement: "agree" | "disagree" | "not-compared"; };
+
+export function shadowAcceptanceVerdict(pr: OrgSidePullRequest | null | undefined, { switches, job = null, ...seams }: {
+  switches: Readonly<Record<string, unknown>> | null | undefined; job?: "pass" | "fail" | null;
+} & Parameters<typeof orgSideAcceptanceVerdict>[1]): ShadowAcceptance {
+  if (!outsideAcceptanceOn(switches)) return { on: false };
+  const verdict = orgSideAcceptanceVerdict(pr, seams);
+  const agreement = verdict.kind === "not-run" || job === null ? "not-compared" : verdict.kind === job ? "agree" : "disagree";
+  return { on: true, blocks: false, verdict, job, agreement };
 }
 
 const defaultOrgSideReport = (input: BodyReportInput) => runCiBodyReports(input);
