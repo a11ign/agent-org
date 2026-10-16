@@ -2,10 +2,10 @@ Switches the work-gate family's five files (`src/packaging/work-gate.test.ts`, `
 
 Acceptance:
 ```bash
-node_modules/.bin/tsc --noEmit -p tsconfig.json && node_modules/.bin/rstest run --config scripts/rstest/rstest.config.ts src/packaging/work-gate.test.ts src/packaging/work-gate-awaiting-evidence.test.ts src/work-gate-cross-repo-pr-owner.test.ts src/packaging/cross-repo-red-refusal.test.ts src/packaging/cross-repo-red-disarms.test.ts
+node_modules/.bin/tsc --noEmit -p tsconfig.json && node_modules/.bin/rstest run --config scripts/rstest/rstest.config.ts src/packaging/work-gate-awaiting-evidence.test.ts src/work-gate-cross-repo-pr-owner.test.ts src/packaging/cross-repo-red-refusal.test.ts src/packaging/cross-repo-red-disarms.test.ts
 ```
 
-The row's own Acceptance runs the same five files against the fixture project. It names the Proxmox key (`A11Y_PVE_KEY`, in the `env -u` list, as the row amended it), so CI's acceptance job refuses it and it is not in the block above. It was run on this host and gave `VERDICT pass: 442 tests in 5 files`:
+The block above runs four of the five files and typecheck. `work-gate.test.ts` is left out because it reaches `history` through `shippedUnits` (`host-units.ts:2490`), and CI's acceptance job refuses a command that needs history when the body does not grant it (`History: full`, which this PR declares). The row's own Acceptance runs all five files against the fixture project; it also names the Proxmox key (`A11Y_PVE_KEY`, in the `env -u` list, as the row amended it), so CI's acceptance job refuses it too. It was run on this host and gave `VERDICT pass: 442 tests in 5 files`:
 ```bash
 d=$(mktemp -d) && cp -r src/packaging/fixtures/project-tree/. "$d" && git -C "$d" init -q && sed -i "s|@@PROJECT@@|$d|" "$d/.agent-org/host.json" && env -u A11Y_CONTROL_HOST_FILE -u A11Y_PVE_KEY AGENT_ORG_HOST="$d/.agent-org/host.json" node_modules/.bin/rstest run --config scripts/rstest/rstest.config.ts src/packaging/work-gate.test.ts src/packaging/work-gate-awaiting-evidence.test.ts src/work-gate-cross-repo-pr-owner.test.ts src/packaging/cross-repo-red-refusal.test.ts src/packaging/cross-repo-red-disarms.test.ts
 ```
