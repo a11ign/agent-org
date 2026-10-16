@@ -57,7 +57,7 @@ test("the rule with no provider: red on main is another repository, a rate limit
 });
 
 test("each class has its own route, and a flaky failure is rerun once and never a second time", () => {
-  assert.deepEqual(CI_FAILURE_CLASSES.map((c) => routeFor(c, false)), ["owner", "rerun-once", "cross-repo-incident", "rerun-after-reset", "wait-for-pin-bump", "push-or-update-branch"]);
+  assert.deepEqual(CI_FAILURE_CLASSES.map((c) => routeFor(c, false)), ["owner", "rerun-once", "cross-repo-incident", "rerun-after-reset", "push-or-update-branch"]);
   assert.equal(routeFor("flaky", true), "owner");
   // the already-rerun fact moves only the flaky class
   for (const c of CI_FAILURE_CLASSES.filter((k) => k !== "flaky")) assert.equal(routeFor(c, true), routeFor(c, false));
@@ -92,22 +92,22 @@ test("use switched off: the rule, no request; the same inputs switched on ask th
   assert.equal(on.net.calls.length, 1);
 });
 
-test("provider on: its class and route win, for each of the six classes (the fifth and sixth are offered only with their facts)", async () => {
+test("provider on: its class and route win, for each of the five classes (the fifth is offered only with its fact)", async () => {
   for (const klass of CI_FAILURE_CLASSES) {
     const { deps, net } = rig({ reply: { body: answer(klass) } });
-    const out = await classifyCiFailure(failure({ waitsOnPinBump: true, staleMergeRef: true }), deps);
+    const out = await classifyCiFailure(failure({ staleMergeRef: true }), deps);
     assert.deepEqual([out.klass, out.route, out.via, out.fellBack, out.confidence], [klass, routeFor(klass, false), "jev", false, 0.95]);
     assert.equal(net.calls.length, 1);
   }
 });
 
-test("provider on: the request carries the trimmed state and the four criteria (five with the pin fact), and never an agent-written body", async () => {
+test("provider on: the request carries the trimmed state and the four criteria (five with the stale-merge-ref fact), and never an agent-written body", async () => {
   const { deps, net } = rig();
   await classifyCiFailure(failure({ redOnOtherPrs: true }), deps);
   const sent = net.calls[0].body;
   assert.deepEqual(Object.keys(sent.state).sort(), ["errorLines", "readsOutsideRepository", "rateLimitOrRunnerLost", "redOnMain", "redOnOtherPrs"].sort());
   assert.equal(sent.state.redOnOtherPrs, true);
-  assert.deepEqual(Object.keys(sent.questions.class.criteria), CI_FAILURE_CLASSES.filter((klass) => klass !== "waiting-on-pin-bump" && klass !== "stale-merge-ref"));
+  assert.deepEqual(Object.keys(sent.questions.class.criteria), CI_FAILURE_CLASSES.filter((klass) => klass !== "stale-merge-ref"));
 });
 
 test("a flaky answer on a run already rerun routes to the owner and keeps the class", async () => {
@@ -161,8 +161,8 @@ test("the line the order and the log carry names the class, the route and who ch
   assert.equal(classLine(jev), "CI failure class: flaky -> rerun-once (provider)");
 });
 
-test("the classes are the four the first row named and the one #5151 added", () => {
-  const names: CiFailureClass[] = ["own-defect", "flaky", "another-repository-changed", "infrastructure", "waiting-on-pin-bump", "stale-merge-ref"];
+test("the classes are the four the first row named and the one #1524 added", () => {
+  const names: CiFailureClass[] = ["own-defect", "flaky", "another-repository-changed", "infrastructure", "stale-merge-ref"];
   assert.deepEqual([...CI_FAILURE_CLASSES], names);
 });
 
@@ -425,29 +425,6 @@ test("#5098 the roll-up is no cause: by its name, by the step it fails, and by t
   assert.deepEqual(readSignature(checkOf("ci-ok"), jobRun("Check results", "##[error]boom"))?.line, "boom", "positive control: the same step and a real error is read");
 });
 
-// ---------------------------------------------------------------------------------------------------
-// #5151: a copy carried ahead of the pin WAITS for the bump pull request; it is not its holder's defect.
-
-test("#5151 the rule: a copy waiting on the bump is its own class, after a lost runner and before main", () => {
-  assert.equal(fallbackClass(failure({ waitsOnPinBump: true })), "waiting-on-pin-bump");
-  assert.equal(fallbackClass(failure({ waitsOnPinBump: true, redOnMain: true })), "waiting-on-pin-bump");
-  assert.equal(fallbackClass(failure({ waitsOnPinBump: true, rateLimitOrRunnerLost: true })), "infrastructure");
-  // negative controls: absent and false are today's classifier
-  assert.equal(fallbackClass(failure()), "own-defect");
-  assert.equal(fallbackClass(failure({ waitsOnPinBump: false, redOnMain: true })), "another-repository-changed");
-  assert.equal(routeFor("waiting-on-pin-bump", true), "wait-for-pin-bump");
-});
-
-test("#5151 the provider is never offered the wait class without its fact, and cannot choose it", async () => {
-  const without = rig({ reply: { body: answer("waiting-on-pin-bump") } });
-  const out = await classifyCiFailure(failure(), without.deps);
-  assert.ok(!Object.keys(without.net.calls[0].body.questions.class.criteria).includes("waiting-on-pin-bump"));
-  assert.equal(out.klass, "own-defect", "an answer outside the offered classes is the rule's");
-  const withFact = rig({ reply: { body: answer("waiting-on-pin-bump") } });
-  assert.equal((await classifyCiFailure(failure({ waitsOnPinBump: true }), withFact.deps)).klass, "waiting-on-pin-bump");
-  assert.equal(withFact.net.calls[0].body.state.waitsOnPinBump, true);
-});
-
 type RedWorld = { log?: string; checks?: { name: string; job: string }[] };
 
 /** A `gh` over a repository with one red pull request: its checks and their logs. */
@@ -469,13 +446,11 @@ function redGh(world: RedWorld = {}) {
   return { read, asked };
 }
 
-test("the roll-up `gate` is not the log read, whichever order the checks list in, and no pin is read (there is none)", () => {
+test("the roll-up `gate` is not the log read, whichever order the checks list in", () => {
   const gateFirst = redGh({ checks: [{ name: "gate", job: "667" }, { name: "suite", job: "666" }] });
   const out = readCiFailure(PR, gateFirst.read, NOW);
-  assert.equal(out?.waitsOnPinBump, undefined, "absent, not false: nothing reads a pin now, so the object is the one it was before #5151");
   assert.equal(fallbackClass(out!), "own-defect");
   assert.ok(gateFirst.asked.every((path) => !path.includes("/jobs/667/")), "the roll-up's log names no cause and is not read");
-  assert.ok(gateFirst.asked.every((path) => !path.includes("/contents/")), "no file of the pull request is read for a pin");
 });
 
 // ---------------------------------------------------------------------------------------------------

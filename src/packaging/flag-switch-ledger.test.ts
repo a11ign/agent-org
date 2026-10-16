@@ -50,8 +50,6 @@ const ledger = await import("../flag-switch-ledger.ts");
 const { discoverFlags, declaresKey, unsetFlags, mergeOf, readFlagLedger, readFlagSwitchesFor, readCanaryState, canaryAbsentFlags, otherTrackerRepos, owedRowsOf, CANARY_ABSENT_MS, FLAGS_WITH_ANOTHER_HOME } = ledger;
 const { SIGNALS, CANARY_STATE_FILE, emptyCanaryState, withMachineryFlag, flagSwitchReading, orgHealthOrders, orgHealthReadings } = await import("../org-health.ts");
 const { FLAG_REGISTRY } = await import("../machinery-flag.ts");
-const { buildReport, renderReport } = await import("../org-retro.ts");
-const { PIN_BUMP_FLAG } = await import("../pin-bump-measure.ts");
 const { ORG_HEALTH_CLASSES } = await import("../work-gate/org-health-suppression.ts");
 const { orgHealthNow } = await import("../work-gate/org-health.ts");
 
@@ -119,15 +117,6 @@ test("(2) both declared shapes decide a flag: nested (host.json) and flat dotted
   assert.equal(declaresKey({ workers: [true] }, "workers.haikuBrief"), false);
   assert.equal(declaresKey(null, "workers.haikuBrief"), false);
   assert.equal(declaresKey("text", "workers.haikuBrief"), false);
-});
-
-test("(2) the pin/bump count's flag is listed in FLAGS_WITH_ANOTHER_HOME, and the flag-OFF daily report carries no pin/bump line (agent-org#1245)", () => {
-  assert.ok(Object.hasOwn(FLAGS_WITH_ANOTHER_HOME, PIN_BUMP_FLAG), "a flag `machinery:flag` switches names its other home");
-  assert.ok(FLAG_REGISTRY.includes(PIN_BUMP_FLAG), "and it is one the registry lists");
-  const reads = { merged: [], openPrs: [], journal: "", ledger: "", turns: [], handFixes: null };
-  const off = renderReport(buildReport(reads, Date.parse("2026-10-12T12:00:00Z")));
-  assert.equal(renderReport(buildReport({ ...reads, pinBump: null }, Date.parse("2026-10-12T12:00:00Z"))), off, "the OFF report is the report it was, with no reading in it");
-  assert.doesNotMatch(off, /Hand-filed pin or bump rows/, "the flag OFF report names no pin/bump figure");
 });
 
 test("(2) FLAGS_WITH_ANOTHER_HOME is exactly the flags `machinery:flag` switches, and every key in it is a flag the code ships", () => {
