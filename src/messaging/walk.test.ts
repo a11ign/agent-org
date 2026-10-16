@@ -36,6 +36,8 @@ const BRIEF_HEAD = [
   "How long: two minutes.",
   "Unblocks: worker-6 is serving on its address again",
   "Not the chairman's Claude session because: it is a machine, not a session.",
+  // The hand steps below are refused without the route shown (a11ign#4405, requests.ts): the play was run and its failure is read here.
+  "Ansible tried: patch.yml -l worker-6, failed: https://github.com/a11ign/agent-org/issues/4405#issuecomment-1",
 ];
 const THREE_STEPS = [
   "Steps:",
