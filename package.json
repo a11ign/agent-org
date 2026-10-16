@@ -42,7 +42,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "rstest run --config scripts/rstest/rstest.config.ts",
+    "test": "node scripts/test-entry.ts",
     "changeset": "pnpm dlx @changesets/cli@3.0.1",
     "messaging:listen": "node src/messaging/listen.ts",
     "messaging:chats": "node src/messaging/chats.ts",
