@@ -17,8 +17,18 @@ name: auto-arm
 # and a branch editing this job could mint a write token. The job has no checkout and runs nothing the pull request wrote: it reads the event's
 # number, draft flag, head repository and labels. The policy pins `job_workflow_ref` to `@refs/heads/main`.
 #
-# NOT COPIED, AND WHY: the sweep, the stalled report and update-branch jobs of the original call a11ign's own scripts and need its board; this
-# repository holds only the tool. They are added when something here needs them, not before.
+# NOT COPIED, AND WHY: the update-branch job of the original calls a11ign's own scripts and needs its board; this repository holds only the tool. It is added when something here needs it,
+# not before. The sweep and the stalled report are here for ANOTHER reason, below.
+
+# THE OUTSIDE HOME OF a11ign's ARMING (agent-org#1573, the epic "agent-org stands alone", a11ign/a11ign#928), SHIPPED OFF. a11ign's own `auto-arm.yml` runs the tool's `arm-pr`, `auto-arm-sweep`
+# and `queue-stalled` ON a11ign, which is the org's process acting on a project and so must run from outside it before it can leave. `outside-sweep` and `outside-stalled` are those two commands,
+# on a schedule, run from THIS repository's tool against a11ign's checkout; the pull-request event and the approval are the host gate's (`settleOutsideArm`, src/work-gate/pr-orders.ts).
+# THE FLAG IS a11ign's, NOT THIS REPOSITORY'S: `outside.arm` in a11ign's `.agent-org/decisions.json`, read through the same reader as every other key (absent = off). OFF, each job checks out,
+# reads that one file (before any token is minted) and ends green having read and written nothing else. ON, it acts beside a11ign's own jobs and finds their work done (the sweep lists only the unarmed). The revert is the key
+# `false`; a11ign's jobs are still running, so nothing stops arming.
+# WHICH TOKEN: the sweep ARMS, so it mints (Octo STS, `scope: a11ign/a11ign`, identity `outside-arm`) for the reason `arm` above does, and there is NO fallback to `github.token`. The policy is
+# a11ign's (its `outside-arm` Octo STS policy, read from a11ign's default branch; a11ign/a11ign#5619) and is filed as its own row, so until it lands a mint is a red `outside-sweep` step that says so. The
+# stalled report only READS, and holds the same minted token (the test of a11ign/a11ign#4199 allows `github.token` in no job but `relay`). A schedule runs `main`'s copy of this file, which is what the policy pins (`job_workflow_ref` at `@refs/heads/main`).
 
 # AN APPROVING REVIEW MARKS A DRAFT READY AND ARMS IT, WITH NO WORKER TURN (a11ign/a11ign#4969, chairman 2026-10-11). `arm` ignores drafts and no
 # event of its own fires on a review, so a draft approved while still a draft waited for a worker to flip it (agent-org#782: 117 minutes).
@@ -33,6 +43,10 @@ on:
     types: [opened, ready_for_review, reopened, synchronize]
   pull_request_review:
     types: [submitted]
+  # agent-org#1573: the outside home's two scheduled jobs. A cron is not a promise (GitHub disables scheduled workflows after 60 days without repository activity, and this repository is never idle that
+  # long), and the pull-request event is not what this runs on: that is the gate's, every two minutes.
+  schedule:
+    - cron: "7,22,37,52 * * * *"
   workflow_dispatch:
     inputs:
       pr:
@@ -135,3 +149,99 @@ jobs:
           esac
           echo "AUTO-ARM: arming #${PULL_REQUEST} in ${REPOSITORY} with the Octo STS token"
           gh pr merge "$PULL_REQUEST" --repo "$REPOSITORY" --auto --merge
+
+  # agent-org#1573. THE TOOL IS THIS CHECKOUT AND THE PROJECT IS a11ign's, side by side, because the tool serves the repository it is run in (`resolveHomeCheckout`, the standalone layout): `cd project`
+  # makes a11ign the home checkout, and the flag is its `.agent-org/decisions.json`. `--ignore-scripts`: nothing the install runs is wanted here.
+  outside-sweep:
+    if: github.event_name == 'schedule' && github.repository == 'a11ign/agent-org'
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+    concurrency:
+      group: outside-arm-sweep
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: tool
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: a11ign/a11ign
+          path: project
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.21.0
+      - name: Install the tool's dependencies (no scripts)
+        working-directory: tool
+        run: npx --yes pnpm@10.34.5 install --frozen-lockfile --ignore-scripts
+      # THE FLAG IS READ BEFORE ANYTHING IS MINTED: off, there is no token, no policy needed and nothing written.
+      - name: Is `outside.arm` on in a11ign's decisions.json? (the tool's own reader; absent is off)
+        id: flag
+        working-directory: project
+        run: echo "on=$(node ../tool/src/arm-pr.ts --outside-arm-state=.agent-org/decisions.json)" >> "$GITHUB_OUTPUT"
+      - name: Mint the arming token for a11ign (Octo STS, a11ign's `outside-arm.sts.yaml`) -- the token is minted, never borrowed (agent-org#1573)
+        if: steps.flag.outputs.on == 'true'
+        id: octo-sts
+        uses: octo-sts/action@f603d3be9d8dd9871a265776e625a27b00effe05 # v1.1.1
+        with:
+          scope: a11ign/a11ign
+          identity: outside-arm
+      - name: Arm every open, non-draft, unheld, tested, same-repository pull request against main that nothing has armed -- only when a11ign's `outside.arm` is on
+        if: steps.flag.outputs.on == 'true'
+        working-directory: project
+        env:
+          GH_TOKEN: ${{ steps.octo-sts.outputs.token }}
+          GITHUB_REPOSITORY: a11ign/a11ign
+        run: |
+          status=0
+          node ../tool/src/auto-arm-sweep.ts --outside-switches=.agent-org/decisions.json || status=$?
+          if [ "$status" -eq 2 ]; then
+            echo "::error::CANNOT_ASK (exit 2): the outside sweep could not LIST a11ign's open pull requests, so it examined none. The standing queue is UNKNOWN, not drained."
+          fi
+          exit "$status"
+
+  outside-stalled:
+    if: github.event_name == 'schedule' && github.repository == 'a11ign/agent-org'
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: tool
+          persist-credentials: false
+      # `queue-stalled` runs `git merge-tree` of every open head against `origin/main`, so it needs the history; it is the project's, whole.
+      - uses: actions/checkout@v7
+        with:
+          repository: a11ign/a11ign
+          path: project
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.21.0
+      - name: Install the tool's dependencies (no scripts)
+        working-directory: tool
+        run: npx --yes pnpm@10.34.5 install --frozen-lockfile --ignore-scripts
+      - name: Is `outside.arm` on in a11ign's decisions.json? (the tool's own reader; absent is off)
+        id: flag
+        working-directory: project
+        run: echo "on=$(node ../tool/src/arm-pr.ts --outside-arm-state=.agent-org/decisions.json)" >> "$GITHUB_OUTPUT"
+      # The report only READS, but `auto-arm-octo-sts.test.ts` (a11ign/a11ign#4199) allows `github.token` in no job here but `relay`, so it holds the same minted token as the sweep, after the same flag.
+      - name: Mint the token for a11ign (Octo STS, a11ign's `outside-arm` policy) -- the token is minted, never borrowed (agent-org#1573)
+        if: steps.flag.outputs.on == 'true'
+        id: octo-sts
+        uses: octo-sts/action@f603d3be9d8dd9871a265776e625a27b00effe05 # v1.1.1
+        with:
+          scope: a11ign/a11ign
+          identity: outside-arm
+      - name: Report every armed, green pull request of a11ign that cannot merge as-is against main -- only when a11ign's `outside.arm` is on
+        if: steps.flag.outputs.on == 'true'
+        working-directory: project
+        env:
+          GH_TOKEN: ${{ steps.octo-sts.outputs.token }}
+          GITHUB_REPOSITORY: a11ign/a11ign
+        run: node ../tool/src/queue-stalled.ts --outside-switches=.agent-org/decisions.json
