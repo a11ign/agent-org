@@ -1,0 +1,11 @@
+# (agent-org#1600) Fixture workflow: the smallest valid file a reader of `.github/workflows/ci.yml` finds. Not a real pipeline.
+name: ci
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo fixture project

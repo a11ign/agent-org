@@ -1,0 +1,11 @@
+# (agent-org#1600) Fixture workflow: the smallest valid file a reader of `.github/workflows/trunk.yml` finds. Not a real pipeline.
+name: trunk
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  trunk:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo fixture project

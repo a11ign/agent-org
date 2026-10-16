@@ -1,0 +1,12 @@
+{
+  "name": "fixture-project",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The fixture project agent-org's suite runs against (agent-org#1600). Not a real project.",
+  "type": "module",
+  "scripts": {
+    "test": "echo fixture project: no tests",
+    "lint": "echo fixture project: no lint",
+    "typecheck": "echo fixture project: no typecheck"
+  }
+}

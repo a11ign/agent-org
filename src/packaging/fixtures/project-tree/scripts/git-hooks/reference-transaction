@@ -1,0 +1,121 @@
+#!/bin/sh
+# AN UNLABELLED STASH IS REFUSED, BECAUSE THE STASH IS SHARED ACROSS EVERY WORKTREE (#290).
+#
+# `refs/stash` lives in the COMMON git directory — the same one that makes branches and reflogs shared,
+# and the same fact this repository already records for a branch surviving its worktree's deletion. So a
+# stash made in one worktree is visible and poppable from every other, `git stash list` does not say which
+# worktree a stash came from, and `git stash pop` takes the top of a shared pile.
+#
+# Measured 2026-09-07: `orchestrator` stashed their own change, checked out `origin/main` to test whether
+# a failure was pre-existing, switched back, and `git stash pop` returned SOMEBODY ELSE'S uncommitted work
+# — a 95-line diff plus a new test file, `worker-audit`'s #280, with nothing on it saying whose it was.
+# Their own stash was consumed in the same operation. Nothing was lost, and only because they read a diff
+# they did not recognise. A `pop` followed by `commit -a` would have put another worker's half-finished
+# work into an unrelated branch, which is the incident CLAUDE.md opens the shared-checkout section with.
+#
+# WHY THIS HOOK AND NOT `pre-commit`. Git has no pre-stash hook, and `pre-commit` cannot see a stash at
+# all — a stash is a ref update, not a commit. `reference-transaction` is the only hook that observes one,
+# and it can REFUSE: exiting non-zero in the `prepared` phase aborts the transaction and the working tree
+# keeps the change. Verified rather than assumed, because it decided the whole design.
+#
+# IT REFUSES CREATION ONLY, NEVER `pop`, `drop` OR `clear`. The first version refused every `refs/stash`
+# transaction and broke `git stash clear` — which is how you discover that this hook sees far more than
+# the operation you had in mind. The discriminator is that a push CREATES a commit while pop/drop move
+# the ref to one ALREADY IN ITS REFLOG, so a stash you are removing is never mistaken for one you are
+# making. Deleting the ref (`new` all zeros) is likewise not a creation.
+#
+# `A11Y_STASH_ANY=1 git stash push` overrides, and says so — the escape hatch is named because a guard
+# that stops work and offers no route out gets bypassed and then not consulted at all.
+#
+# POP/DROP/CLEAR ARE WARNED, NOT REFUSED, EXCEPT ONE CASE (#1872 first, narrowed by #1896). Git gives
+# this hook no reliable way to know a mismatched pop is WRONG in general -- only that the entry it is
+# about to consume was made on a branch other than the one checked out here, which is exactly the fact
+# `agent-org stash:whose` would have shown had someone thought to run it first. That stays a warning: the
+# same false-positive problem that ruled out refusing pop in #305 (a mismatched-but-idle branch could be
+# anything -- renamed, merged, its worktree long gone).
+#
+# BUT ONE CONDITION HAS NO PLAUSIBLE FALSE POSITIVE: the named branch checked out in ANOTHER worktree
+# RIGHT NOW. #1866 and the incident on #1896 itself were both exactly this -- the victim worktree was
+# live, on that branch, at the moment of the pop -- and `git worktree list --porcelain` answers it
+# directly, so this one case is REFUSED rather than warned.
+[ "$1" = "prepared" ] || exit 0
+
+ZERO=0000000000000000000000000000000000000000
+
+# The worktree path where $1 (a branch name) is checked out RIGHT NOW, if that is not THIS worktree --
+# empty otherwise. `git worktree list --porcelain`'s blocks are the only place git names which branch a
+# worktree currently has out; nothing else can answer "is this branch live elsewhere".
+checked_out_elsewhere() {
+  self=$(git rev-parse --show-toplevel 2>/dev/null) || return 0
+  git worktree list --porcelain 2>/dev/null | awk -v branch="refs/heads/$1" -v self="$self" '
+    /^worktree / { path = substr($0, 10) }
+    /^branch /   { if ($2 == branch && path != self) { print path; exit } }
+  '
+}
+
+# The entry a pop/drop/clear is about to discard is $old (refs/stash moves off it, to the next entry down
+# or to nothing at all). Say nothing for a same-branch pop or a subject the #290 parser cannot read (an
+# unlabelled legacy stash predating that guard) -- "I could not tell" must not be spelled the same as
+# "found a mismatch". For a genuine mismatch: REFUSE (exit 1) when the named branch is checked out in a
+# different worktree right now, otherwise warn exactly as before.
+check_other_branch() {
+  subject=$(git log -1 --format=%s "$1" 2>/dev/null) || return 0
+  case "$subject" in
+    "WIP on "*": "*) branch=${subject#"WIP on "}; branch=${branch%%:*} ;;
+    "On "*": "*) branch=${subject#"On "}; branch=${branch%%:*} ;;
+    *) return 0 ;;
+  esac
+  current=$(git symbolic-ref --quiet --short HEAD 2>/dev/null)
+  [ "$branch" = "$current" ] && return 0
+
+  live=$(checked_out_elsewhere "$branch")
+  if [ -n "$live" ]; then
+    echo "REFUSED: this stash was made on '$branch', and that branch is checked out RIGHT NOW in" >&2
+    echo "  $live -- not this worktree ('${current:-<detached>}'). Taking it here would pull a live" >&2
+    echo "  worktree's own uncommitted work out from under it (#1866/#1896)." >&2
+    echo "  \`agent-org stash:whose\` lists what is left in the pile and whose branch it names." >&2
+    return 1
+  fi
+
+  echo "WARNING: the stash you just removed was made on '$branch', not '${current:-<detached>}'." >&2
+  echo "  \`refs/stash\` is shared across every worktree -- this may not have been yours to take." >&2
+  echo "  \`agent-org stash:whose\` lists what is left in the pile and whose branch it names." >&2
+}
+
+while read -r old new ref; do
+  [ "$ref" = "refs/stash" ] || continue
+
+  if [ "$new" = "$ZERO" ]; then                         # last entry gone, or `clear`: not a creation
+    check_other_branch "$old" || exit 1
+    continue
+  fi
+
+  [ -n "$A11Y_STASH_ANY" ] && continue
+
+  # Already in the reflog => this ref is MOVING to an existing entry (pop/drop), not gaining a new one.
+  short=$(git rev-parse --short=7 "$new" 2>/dev/null) || continue
+  if git reflog refs/stash 2>/dev/null | grep -q "^${short} "; then
+    check_other_branch "$old" || exit 1
+    continue
+  fi
+
+  # `git stash push` writes "WIP on <branch>: ..."; `push -m <msg>` writes "On <branch>: <msg>".
+  # So the default subject IS the absence of a label, read off the object rather than off argv — which
+  # this hook never sees.
+  case "$(git log -1 --format=%s "$new" 2>/dev/null)" in
+    "WIP on "*)
+      echo "REFUSED: this stash carries no message, and the stash is SHARED between all worktrees." >&2
+      echo "  \`refs/stash\` is in the common git dir, so every worktree sees this pile and \`pop\` takes" >&2
+      echo "  the top of it. On 2026-09-07 that returned another agent's 95-line uncommitted change." >&2
+      echo "" >&2
+      echo "  Name it, and \`git stash list\` says whose it is:" >&2
+      echo "      git stash push -m \"$(git symbolic-ref --quiet --short HEAD 2>/dev/null || echo '<branch>'): what this is\"" >&2
+      echo "" >&2
+      echo "  \`agent-org stash:whose\` lists every stash with the branch it was made on." >&2
+      echo "  Deliberate exception: A11Y_STASH_ANY=1 git stash push" >&2
+      exit 1
+      ;;
+  esac
+done
+
+exit 0
