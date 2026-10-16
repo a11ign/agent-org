@@ -15,7 +15,7 @@
 import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { sandboxGitEnv } from "./lib/git-env.ts";
@@ -128,9 +128,24 @@ for (let index = 0; index < TAGS; index += 1) {
   if (index % 2 === 0) git(cloneDir, "tag", `v${index}`);
   else git(cloneDir, "tag", "-a", "-m", `v${index}`, `v${index}`);
 }
+/**
+ * (#1623) A CLONE WITH NO TAGS, MADE AGAIN ONCE IF ITS DIRECTORY WAS REMOVED WHILE GIT WAS WRITING IT. Run 38911039522 failed at import with git's
+ * `failed to copy file to '.../no-tags/.git/objects/64/...': No such file or directory`, so the file ran no case, and the teardown found `no-tags` gone. A clone
+ * that fails that way is removed and made again; any other failure, or a second one, is thrown as it is.
+ */
+function cloneWithoutTags(from: string, to: string, clone: (from: string, to: string) => void = (src, dst) => execFileSync("git", ["clone", "-q", "--no-tags", src, dst], { env: sandboxGitEnv(), stdio: ["ignore", "ignore", "pipe"] })): void {
+  for (let attempt = 1; ; attempt += 1) {
+    rmSync(to, { recursive: true, force: true });
+    try { clone(from, to); return; } catch (error) {
+      const removedUnderIt = /failed to copy file to .*: No such file or directory/.test(String((error as { stderr?: unknown }).stderr ?? error));
+      if (attempt >= 2 || !removedUnderIt) throw error;
+    }
+  }
+}
+
 /** A clone that has the history and none of the tags, with the full one as its `origin`: the first tag asked fetches them. */
 const bareDir = join(scratch, "no-tags");
-execFileSync("git", ["clone", "-q", "--no-tags", cloneDir, bareDir], { env: sandboxGitEnv() });
+cloneWithoutTags(cloneDir, bareDir);
 
 /** `readRepository` over the fixture's tags with `commitOf` standing for `gh api .../commits/<tag>`; returns what that was asked for and the commits the releases ended up with. */
 function readTags({ clones, rows = releaseRows(TAGS) }: { clones: Record<string, string>; rows?: Any[] }) {
@@ -225,4 +240,39 @@ test("a directory that cannot be removed does not stop the others, and is named 
   assert.deepEqual([...made], [stuck], "only the one that failed stays registered, for the exit fallback");
   removeAll(made);
   assert.ok(!existsSync(stuck));
+});
+
+// (#1623) THE CLONE'S DIRECTORY REMOVED WHILE GIT WRITES IT: made again once, and anything else is thrown as it is.
+test("a clone whose directory is removed while git writes it is made again once, and the second clone is the whole history", () => {
+  const made = join(scratch, "removed-while-written");
+  let calls = 0;
+  cloneWithoutTags(cloneDir, made, (src, dst) => {
+    calls += 1;
+    if (calls > 1) {
+      execFileSync("git", ["clone", "-q", "--no-tags", src, dst], { env: sandboxGitEnv() });
+      return;
+    }
+    mkdirSync(join(dst, ".git", "objects", "64"), { recursive: true });
+    throw Object.assign(new Error("Command failed"), { stderr: Buffer.from(`fatal: failed to copy file to '${dst}/.git/objects/64/2165ec9c474d50279dd78b9ae0e6b2a18bbe16': No such file or directory\n`) });
+  });
+  assert.equal(calls, 2, "the removal is made good with one more clone");
+  assert.equal(git(made, "rev-parse", "HEAD"), chain[TAGS - 1]);
+  assert.equal(git(made, "tag", "--list"), "", "--no-tags: the clone holds none of the tags");
+});
+
+test("a clone that fails any other way, or fails with the removal twice, is thrown as it is, and the removal is tried at most twice", () => {
+  let calls = 0;
+  const denied = () => {
+    calls += 1;
+    throw Object.assign(new Error("Command failed\nfatal: repository not found"), { stderr: Buffer.from("fatal: repository not found\n") });
+  };
+  assert.throws(() => cloneWithoutTags(cloneDir, join(scratch, "denied"), denied), /repository not found/);
+  assert.equal(calls, 1, "the control: a failure that is not the removal is not made again");
+  calls = 0;
+  const removedTwice = () => {
+    calls += 1;
+    throw Object.assign(new Error("Command failed\nfatal: failed to copy file to 'x': No such file or directory"), { stderr: Buffer.from("fatal: failed to copy file to 'x': No such file or directory\n") });
+  };
+  assert.throws(() => cloneWithoutTags(cloneDir, join(scratch, "twice"), removedTwice), /No such file or directory/);
+  assert.equal(calls, 2);
 });
