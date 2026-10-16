@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { parse as parseYaml } from "yaml";
 import { alreadyReported, findingKey, JOBS, OUTSIDE_NIGHTLY_FLAG, outsideNightlyOn, RECENT_MINUTES, runJobs, type Deps } from "./outside-nightly.ts";
 import { closeOnePr } from "./close-rows-sweep.ts";
 import type { VerifyEffects } from "./verify-row.ts";
@@ -124,6 +125,22 @@ test("5. watch: a comment read that fails posts anyway and says so; a post that 
   assert.equal(runJobs(["watch"], AS_WATCH, refused.deps(1, RED)), 1, "a finding nobody was told of is not a pass");
 });
 
+test("5b. watch: a comment read that answers with records that are not comments is a read that failed: it posts anyway, says so, and does not crash", () => {
+  for (const answer of [`[[{"body":"${RED.trim()}"}]]`, "[[null]]", `[["MAIN IS RED"]]`, `[[{"body":7,"issue_url":"https://api.github.com/repos/o/r/issues/928"}]]`]) {
+    const posted: string[] = [];
+    const said: string[] = [];
+    const gh: Deps["gh"] = (args) => {
+      if (args[0] === "api") return answer;
+      posted.push(args[args.indexOf("--body") + 1]);
+      return "";
+    };
+    const deps: Deps = { run: () => ({ code: 1, output: RED }), gh, now: () => Date.UTC(2026, 9, 16, 11, 52), print: (line) => { said.push(line); } };
+    assert.equal(runJobs(["watch"], AS_WATCH, deps), 0, answer);
+    assert.deepEqual(posted, [RED], `not knowing is not 'already said': ${answer}`);
+    assert.match(said.join("\n"), /could not read #928's recent comments/, answer);
+  }
+});
+
 test("6. every selected job runs even when an earlier one failed, the first non-zero is the exit, and each runs its own command against the repository named", () => {
   const ran: string[] = [];
   const envs: Record<string, string>[] = [];
@@ -192,4 +209,32 @@ test("8. closeRowsSweep: the first actor closes the row and files its verify row
   assert.deepEqual([closes, filed], [[4630], [9001]], "POSITIVE CONTROL: the first actor closed the row and filed its verify row");
   assert.deepEqual(sweep(), { failed: [], unsettled: [], skipped: [] });
   assert.deepEqual([closes, filed], [[4630], [9001]], "the second actor closed nothing and filed nothing");
+});
+
+// The workflow is the one place the flag, the token and the clocks meet, and `workflow-paths.ts` only checks that the paths it names exist. These are the properties a change to it must not lose.
+test("9. the workflow: read-only by default, the id-token only on the one job, the token minted and used only when the flag reads true, never the repository's own token, and the clocks after the project's", () => {
+  const text = readFileSync(join(SRC, "..", ".github", "workflows", "outside-nightly.yml"), "utf8");
+  const workflow = parseYaml(text) as { on: { schedule: { cron: string }[] }; permissions: Record<string, string>; env: Record<string, string>; jobs: Record<string, { permissions: Record<string, string>; steps: { id?: string; if?: string; uses?: string; run?: string; with?: Record<string, string>; env?: Record<string, string> }[] }> };
+  assert.deepEqual(workflow.permissions, { contents: "read" });
+  assert.deepEqual(workflow.on.schedule.map((entry) => entry.cron), ["47 6 * * *", "52 * * * *"], "after the project's 06:17 and :37, off the hour");
+  const jobs = Object.values(workflow.jobs);
+  assert.equal(jobs.length, 1);
+  assert.deepEqual(jobs[0].permissions, { contents: "read", "id-token": "write" });
+  const { steps } = jobs[0];
+  const flag = steps.find((step) => step.id === "flag");
+  assert.match(flag?.run ?? "", /outside-nightly --read-flag >> "\$GITHUB_OUTPUT"/);
+  const octo = steps.find((step) => step.uses?.startsWith("octo-sts/action@"));
+  assert.equal(octo?.if, "steps.flag.outputs.on == 'true'", "no token is minted while the flag is off");
+  assert.equal(octo?.with?.scope, "${{ env.PROJECT_REPOSITORY }}");
+  assert.equal(octo?.with?.identity, "outside-nightly");
+  const runs = steps.filter((step) => /outside-nightly --repo=/.test(step.run ?? ""));
+  assert.equal(runs.length, 2, "the nightly job and the hourly jobs");
+  for (const step of runs) {
+    assert.match(step.if ?? "", /^steps\.flag\.outputs\.on == 'true' && /, "a run is gated on the flag");
+    assert.equal(step.env?.GH_TOKEN, "${{ steps.octo.outputs.token }}", "acts with the exchanged token");
+  }
+  assert.equal(workflow.env.PROJECT_REPOSITORY, "a11ign/a11ign");
+  assert.doesNotMatch(JSON.stringify(workflow), /github\.token|secrets\.GITHUB_TOKEN/, "there is no fallback to this repository's own token");
+  const project = steps.find((step) => step.with?.path === "project");
+  assert.equal(project?.with?.["persist-credentials"], false, "the project checkout keeps no credential");
 });

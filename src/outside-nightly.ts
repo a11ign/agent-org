@@ -85,7 +85,9 @@ function recentComments(repo: string, issue: number, { gh, now }: Pick<Deps, "gh
     }
   };
   const comments = commentsSince({ repo, since: now() - RECENT_MINUTES * 60_000, run: read });
-  return comments === null ? null : comments.filter((comment) => comment.issue_url.endsWith(`/issues/${issue}`)).map((comment) => comment.body);
+  // A list of lists is the shape `commentsSince` checks; what is IN the lists is checked here, and a record that is not a comment makes the whole read not-known rather than a crash that posts nothing.
+  if (comments === null || !comments.every((comment) => typeof comment === "object" && comment !== null && typeof comment.issue_url === "string" && typeof comment.body === "string")) return null;
+  return comments.filter((comment) => comment.issue_url.endsWith(`/issues/${issue}`)).map((comment) => comment.body);
 }
 
 /**
