@@ -348,15 +348,19 @@ Results:
 
 Acceptance (the row's five-file command, copy committed) before any change: `VERDICT fail: 26 of 83 tests failed in 5 files` (`auto-arm-token.test.ts` 7, `public-claim.test.ts` 12, `row-filing-guidance.test.ts` 7). `primary-checkout-guard.test.ts` and `shared-stash-guard.test.ts` passed unchanged.
 
-After: `VERDICT pass: 57 tests in 5 files (26 skipped)`, EXIT=0. The CI-runnable block in `.acceptance/agent~agent-org-stands-alone-agent-org-1604.md` leaves out the two token-needing files: `VERDICT pass: 32 tests in 3 files (26 skipped)`, EXIT=0. `tsc --noEmit` exits 0.
+After: `VERDICT pass: 57 tests in 5 files (26 skipped)`, EXIT=0. That is the five-file run before the four remaining families were skipped; those four are run below. The CI-runnable block in `.acceptance/agent~agent-org-stands-alone-agent-org-1604.md` leaves out the two token-needing files: `VERDICT pass: 32 tests in 3 files (26 skipped)`, EXIT=0. `tsc --noEmit` exits 0.
 
-Skips. Each is `{ skip: SKIP_FIXTURE }` on a `test(` call, where `SKIP_FIXTURE` is `false` wherever `trackedTopLevelDirs()` lists `packages/`, and otherwise a named reason. The skip markers were checked against the TypeScript AST, so each sits on a real call header.
+Skips. Each is `{ skip: SKIP_FIXTURE }` on a `test(` call, where `SKIP_FIXTURE` is `false` wherever `trackedTopLevelDirs()` lists `packages/`, and otherwise a named reason. `live-tree-independence.test.ts` takes the same guard on its existing `SKIP` constant, so it keeps `skipReason(...)` on a checkout that has `packages/`. The skip markers were checked against the TypeScript AST, so each sits on a real call header.
 
 | Subtest file | Subtests skipped | Reader | Class |
 |---|---|---|---|
 | `src/packaging/auto-arm-token.test.ts` | 7 of 22 (#4198 arm and sweep, MUTATION TARGET, contents, secrets read, stored-token name, `issues: write`, #2358/#4198/#4486) | `.github/workflows/auto-arm.yml` of the checkout; the fixture's copy is 9 lines with no arm or sweep jobs | project-content |
 | `src/packaging/public-claim.test.ts` | 12 of 27 | the public claim block, README claim, and recorded gate entries; the fixture has none of them. The "most recently recorded gate entry" test passes and is not skipped | project-content |
 | `src/packaging/row-filing-guidance.test.ts` | 7 of 9 | `docs/row-filing.md`, a one-line stub in the fixture | project-content |
+| `src/packaging/acceptance-commands.test.ts` | 8 of 307 (#353 RESOURCE ban and CORPUS ban, #1860 corpus-backup, REFUSED-command report pair, #2099 declared hand-run green, #2118 hand-run beside refusal, #2192 real tree, #3058 `cd` tail) | the `RESOURCES` declaration in a11ign's `.agent-org/project.json` (the first six) and a11ign's tracked `packages/` tree (#2192 and the `cd` tail) | declaration (6), project-content (2) |
+| `src/packaging/late-edition.test.ts` | 1 of 11 (the document says it is late, in its own header) | the board-document renderer reads `packages/cli/package.json` for a11ign's CLI version; the fixture has none (ENOENT) | project-content |
+| `src/packaging/tracker-leak-refusal.test.ts` | 2 of 14 (#891 editRefusal and the no-PATCH test) | the `pct exec` leak pattern, declared in a11ign's `.agent-org/project.json` `leakPatterns` (`src/lib/leak-patterns.ts`); the fixture declares none | declaration |
+| `src/packaging/live-tree-independence.test.ts` | 2 of 4 (#3233 converted files at two a11ign commits, and its POSITIVE CONTROL) | a11ign's two commits, which need a laid-out a11ign clone; the fixture has no `packages/` tree (`SKIP`, not `SKIP_FIXTURE`) | needs-real-project |
 | `src/packaging/wake-engineer-brief.test.ts` | 5 of 14 | the engineer brief and `packages/lab/CLAUDE.md`, `packages/judge/CLAUDE.md` | tests-project |
 | `src/packaging/owned-path-signoff.test.ts` | 3 of 12 | the two real pull request bodies (#584, #613) and the owner's owned-path list | tests-project |
 | `src/packaging/wake.test.ts` | 1 of 151 (line 467) | the live roster `.agent-org/roles/sessions.json` | needs-real-project |
@@ -416,7 +420,9 @@ Open, not done in this row:
 
 - The five `Not guarded; open` project-content files above, and `ci-health-liveness`, `board-appendix-gate-record`, `worktree-owner`, and `row-claim-session-eligibility` 659. None is in the Acceptance's five files, so none is run here.
 - The `declaration` rows marked `Not skipped; unverified` need a fixture `project.json` and a run to confirm.
-- `acceptance-commands` (8 failing, runtime), `tracker-leak-refusal` (2, runtime), `live-tree-independence` (2, runtime; its only reader sits in the `UNCONVERTED_CONTROL` template literal, so the edit was reverted), and `late-edition` (1, `packages/cli/package.json`) are not skipped.
+- `acceptance-commands` (8), `tracker-leak-refusal` (2), `live-tree-independence` (2), and `late-edition` (1) are skipped with the named readers in the table above. Their `UNCONVERTED_CONTROL` template literal in `live-tree-independence` is untouched: its one reader sits there, so no edit reaches it.
+- Judgment for product-manager/ceo, not changed here: the #353 RESOURCE-ban test passes only when the project declaration names the ban patterns. A project whose `project.json` declares no `RESOURCES` classifies `npm run fleet:deploy` as runnable. Whether a project with no declaration should refuse fleet commands by default is a classifier decision, not a test one.
+- The four families above were run on the fixture: `VERDICT pass: 323 tests in 4 files (13 skipped)`, EXIT=0, against 336 tests with 13 failing before the skips. The earlier count of 13 failing subtests is the same 13 now skipped.
 
 Incident. The whole-suite fixture run was started during measurement and was stopped. Before it stopped, it queued real handoff orders into the live herdr org session: IDs `c2036934`, `1516692d`, `cabdb946`, `fc954679`, `52694a80`, `db2bf7e4`, `99a0a706`, `503f5815`, and `55a766ed` (to reviewer-2754). Some were queued twice. The test file that triggered them is not identified. They are not retracted: retracting is destructive and awaits approval. No further suite-wide run, and no run of a wake, prompt-session, messaging, or runtime test, was done after it.
 

@@ -44,6 +44,11 @@ import { homeProjectDeclaration } from "../project-config.ts";
 import { fileRefusalReason, createIssue } from "../row-file.ts";
 import { checkBody } from "../pr-open.ts";
 import { editRefusal, editComment, digest } from "../tracker-comment.ts";
+import { trackedTopLevelDirs } from "../region-paths.ts";
+
+/** #1604: these subtests read a11ign's own leak pattern, the live `pct exec` bridge, declared in a11ign's `.agent-org/project.json` `leakPatterns` (docs/project-tree-dependency.md, row 1604). The fixture declares none, so the leak is not named there, and the subtests skip. */
+const SKIP_FIXTURE = trackedTopLevelDirs().includes("packages") ? false
+  : "the fixture declares no leakPatterns: the `pct exec` leak is a11ign's own declaration in .agent-org/project.json, so these assert a11ign's tracker guard";
 
 const NEVER_RUN = () => { throw new Error("must never RUN a command for a body this test expects refused"); };
 
@@ -166,7 +171,7 @@ test("#891 ACCEPTANCE: pr-open's checkBody refuses a leaking body and never runs
   assert.match(result.lines.join("\n"), /a named SSH private key file/);
 });
 
-test("#891 ACCEPTANCE: tracker-comment's editRefusal refuses a leaking `next`, independent of --expect", () => {
+test("#891 ACCEPTANCE: tracker-comment's editRefusal refuses a leaking `next`, independent of --expect", { skip: SKIP_FIXTURE }, () => {
   const refusal = editRefusal({ current: "old text", expect: undefined,
     next: "run pct exec 121 -- diagnose" });
   assert.ok(refusal);
@@ -174,7 +179,7 @@ test("#891 ACCEPTANCE: tracker-comment's editRefusal refuses a leaking `next`, i
 });
 
 test("#891 ACCEPTANCE: no comment is ever PATCHed for a leaking replacement, even with a correct --expect "
-  + "digest -- the PATCH call is never reached", () => {
+  + "digest -- the PATCH call is never reached", { skip: SKIP_FIXTURE }, () => {
   const calls: string[][] = [];
   const run = (args: string[]) => {
     calls.push(args);

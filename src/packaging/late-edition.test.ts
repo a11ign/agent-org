@@ -21,6 +21,11 @@ import {
   LATE_EDITION_EARLIEST, LATE_EDITION_CUTOFF,
 } from "../board-document.ts";
 import { foundByChairman } from "../found-by-chairman.ts";
+import { trackedTopLevelDirs } from "../region-paths.ts";
+
+/** #1604: the renderer reads `packages/cli/package.json` for a11ign's CLI version (docs/project-tree-dependency.md, row 1604), which the fixture project does not have, so this subtest skips there. */
+const SKIP_FIXTURE = trackedTopLevelDirs().includes("packages") ? false
+  : "document() reads packages/cli/package.json, a11ign's CLI version, which the fixture project does not have";
 
 const ok = {
   summary: { text: "Written at 08:05 on 9 September.\n\nSomething happened." },
@@ -35,7 +40,7 @@ test("a summary written at 08:05, no release, 08:25 London: it renders", () => {
   assert.equal(lateEditionRefusal(ok), null);
 });
 
-test("the document says of ITSELF that it is late, in its own header", () => {
+test("the document says of ITSELF that it is late, in its own header", { skip: SKIP_FIXTURE }, () => {
   const base = {
     since: "2026-01-01T00:00:00Z", all: [], open: [], closed: [], milestones: [], release: null,
     merges: [], unpushed: 0, strays: [], latestGate: null, gateIsFresh: false, foundByChairman: foundByChairman([], new Date()),

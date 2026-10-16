@@ -34,6 +34,11 @@ import {
   declaredFleetAnswer,
 } from "../acceptance-commands.ts";
 import { withGitSandbox, sandboxGitEnv } from "@a11ign/toolchain/lib/git-sandbox";
+import { trackedTopLevelDirs } from "../region-paths.ts";
+
+/** #1604: these subtests read a11ign's own resource and corpus ban (the `RESOURCES` declaration in `.agent-org/project.json`), its tracked `packages/` tree and its `REAL_FILE` twin (docs/project-tree-dependency.md, row 1604). The fixture declares a different list and has no `packages/` tree, so they skip there and run wherever the tracked `packages/` tree is present. */
+const SKIP_FIXTURE = trackedTopLevelDirs().includes("packages") ? false
+  : "the fixture's project declaration names no fleet, lab or corpus ban and has no packages/ tree: these assert a11ign's own resource list and tracked paths";
 
 // THE PROJECT THE CLASSIFIER READS IS BUILT BELOW, NOT BORROWED (#3233). Every command here is classified against the cwd's
 // `package.json`, its test files and its git index, and this file used to read a11ign's: which test declares `// requires:`, what
@@ -192,7 +197,7 @@ test("classifyCommand: an ordinary test/build command is runnable", () => {
     { verdict: "runnable" });
 });
 
-test("classifyCommand: THE #353 RESOURCE BAN -- every fleet/lab pattern is refused, named", () => {
+test("classifyCommand: THE #353 RESOURCE BAN -- every fleet/lab pattern is refused, named", { skip: SKIP_FIXTURE }, () => {
   const cases = [
     "npm run fleet:deploy",
     "npm run lab:job -- -e job=capture",
@@ -252,7 +257,7 @@ test("classifyCommand: a command that merely MENTIONS a banned word without the 
     { verdict: "runnable" });
 });
 
-test("classifyCommand: #1860 a genuine corpus-backup invocation is still refused, named", () => {
+test("classifyCommand: #1860 a genuine corpus-backup invocation is still refused, named", { skip: SKIP_FIXTURE }, () => {
   for (const command of [
     "node packages/lab/scripts/corpus-backup.mjs",
     "npm run corpus:backup",
@@ -395,7 +400,7 @@ test("acceptanceReport: a command that exits zero passes the report", () => {
   assert.match(report.lines[0], /^ACCEPTANCE: RAN .* -> pass \(exit 0\)$/);
 });
 
-test("acceptanceReport: a REFUSED command never calls run(), and does not fail the report on its own", () => {
+test("acceptanceReport: a REFUSED command never calls run(), and does not fail the report on its own", { skip: SKIP_FIXTURE }, () => {
   // PAIRED WITH A RUNNABLE COMMAND since 2026-09-09. A section in which NOTHING ran now fails on its own,
   // because 55 of the 145 PRs merged that day reported success having executed no command. This test's
   // subject is unchanged: a refused command must never EXECUTE, and must not by itself sink a section
@@ -412,7 +417,7 @@ test("acceptanceReport: a REFUSED command never calls run(), and does not fail t
   assert.match(report.lines[0], /^ACCEPTANCE: REFUSED npm run fleet:deploy -> /);
 });
 
-test("acceptanceReport: REFUSED and a real failure together -- the real failure decides, REFUSED is still just named", () => {
+test("acceptanceReport: REFUSED and a real failure together -- the real failure decides, REFUSED is still just named", { skip: SKIP_FIXTURE }, () => {
   const body = "Acceptance:\nnpm run fleet:deploy\nnode -e \"process.exit(1)\"\n";
   const report = acceptanceReport(body, (cmd) => (cmd.includes("fleet") ? 0 : 1));
   assert.equal(report.ok, false, "the real, runnable command failing must still fail the whole report");
@@ -2938,7 +2943,7 @@ test("#2099 CONTROL: the SAME body without the declaration is the failure this r
 
 test("#2099: the declaration silences EXECUTED NOTHING only when EVERY command is a declared hand-run -- a fleet "
   + "refusal beside it keeps the section red, or the declaration becomes the line people add to turn a check "
-  + "green", () => {
+  + "green", { skip: SKIP_FIXTURE }, () => {
   const body = `## Acceptance\n\nHand-run: ${HAND_RUN_REASON}\n\n\`\`\`\n${HAND_RUN_GH}\nnpm run fleet:status\n\`\`\`\n`;
   const report = acceptanceReport(body, () => 0);
   const joined = report.lines.join("\n");
@@ -3240,7 +3245,7 @@ test("#2118: A PARTIAL HAND-RUN IS UNTOUCHED, both directions -- `handRun < comm
 });
 
 test("#2118: a declared hand-run BESIDE AN UNDECLARED REFUSAL keeps EXECUTED NOTHING and never reports NO "
-  + "HAND-RUN OUTPUT -- two different faults must not print the same word", () => {
+  + "HAND-RUN OUTPUT -- two different faults must not print the same word", { skip: SKIP_FIXTURE }, () => {
   // `ran === 0` but `handRun < commands.length`: the fleet line was refused on its own facts and nobody
   // declared it. The fault is that the section declares nothing this job can run, which is EXECUTED
   // NOTHING's subject; the evidence rule has no business speaking here, and pasting a run does not help.
@@ -3736,7 +3741,7 @@ function trackedTestFileWithAbsentTypo() {
   return { twin, typo: `packages/agent-org/src/${basename(twin)}` };
 }
 
-test("#2192: on a REAL tree, #2068's own body is refused and names the real test file", () => {
+test("#2192: on a REAL tree, #2068's own body is refused and names the real test file", { skip: SKIP_FIXTURE }, () => {
   assert.ok(existsSync(REAL_FILE), "this test reads a real tree with repo-relative paths, so it runs from the project root");
   const { twin, typo } = trackedTestFileWithAbsentTypo();
   const reason = acceptancePathsReason(copiedIntoBoth(typo), "row-file", { regionEntries: [typo] });
@@ -3906,7 +3911,7 @@ test("#3058: a runnable tail is runnable behind a `cd`, exactly as the bare line
     { verdict: "runnable" }, "a quoted directory is the same leading `cd`");
 });
 
-test("#3058: a refused tail keeps its refusal behind a `cd` -- the fleet, the corpus and the missing credential", () => {
+test("#3058: a refused tail keeps its refusal behind a `cd` -- the fleet, the corpus and the missing credential", { skip: SKIP_FIXTURE }, () => {
   const noToken = { capabilities: NO_CAPABILITIES };
   for (const [tail, deps] of [
     ["npm run fleet:status", {}],
