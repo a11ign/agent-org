@@ -1,0 +1,14 @@
+{
+  "_owner": "ceo",
+  "_why": "(agent-org#1600) A RECORDED, MINIMAL lanes file for the fixture project: one review-only lane over the pipeline, in the shape a11ign's `docs/lane-ownership.json` has.",
+  "lanes": [
+    {
+      "lane": "the pipeline",
+      "owner": "ceo",
+      "branchPrefixes": ["ceo/", "revert/"],
+      "paths": [".github/workflows/"],
+      "why": "trunk health and the merge queue.",
+      "reviewOnly": true
+    }
+  ]
+}
