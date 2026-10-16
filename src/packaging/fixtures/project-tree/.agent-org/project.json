@@ -7,7 +7,8 @@
   ],
   "code": [
     { "key": "", "repo": "a11ign/a11ign" },
-    { "key": "agent-org", "repo": "a11ign/agent-org" }
+    { "key": "agent-org", "repo": "a11ign/agent-org" },
+    { "key": "lab", "repo": "a11ign/lab" }
   ],
   "dora": [],
   "units": {
