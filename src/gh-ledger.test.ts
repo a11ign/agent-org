@@ -16,7 +16,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { tmpDir, tmpDirForFile } from "./lib/tmp-fixture.ts";
 import {
   ALARM_FRACTION, NO_CALLER, NO_VERDICT, POOL_POINTS, QUEUED_EXIT, QUEUE_DIR, alarmLine, attachFollowUps, callerScript, dueCalls, ghQueueTick, parseLedger, parseRollup,
-  perHour, perHourCallers, poolAlarms, readGroups, readQueue, recordPoolAlarms, refusalKind, renderByRead, retryDue, rollupPathOf, settle, verdictOf, type QueuedCall, type RunQueued,
+  perHour, perHourCallers, poolAlarms, readGroups, readQueue, recordPoolAlarms, refusalKind, renderByQuery, renderByRead, retryDue, rollupPathOf, settle, topQueries, topSpender, verdictOf, UNNAMED_QUERY, type QueuedCall, type RunQueued,
 } from "./gh-ledger.ts";
 
 const WRAPPER_TEXT = readFileSync(fileURLToPath(new URL("../host/gh", import.meta.url)), "utf8");
@@ -652,4 +652,83 @@ test("#1482: another window's BASELINE between a counter-less line and the next 
   const settled = settle(entries);
   assert.deepEqual(settled.map((e) => e.cost), [null, 2, null, 2, 30]);
   assert.deepEqual(settled.map((e) => e.settled), [undefined, "shared", undefined, "shared", "read"]);
+});
+
+// ---- agent-org#1618: a ledger line names the read -------------------------------------------------------------------------------------------------------------------------------
+
+const ISSUE_CLOSERS = '{ repository(owner: "a11ign", name: "agent-org") { issue(number: 7) { closedByPullRequestsReferences(first: 20) { nodes { number state mergedAt } } } } }';
+const commandsOf = (ledger: string) => parseLedger(readFileSync(ledger, "utf8")).map((e) => e.command);
+
+test("agent-org#1618: the wrapper names the read an `api graphql` call made, in the command field, and the reader takes the name off it", () => {
+  const h = host();
+  assert.equal(h.run({}, "", "api", "graphql", "-f", `query=${ISSUE_CLOSERS}`).status, 0);
+  assert.equal(h.run({}, "", "api", "graphql", "-f", "query=query ClosedRows($o:String!){ repository(owner:$o){ issues(first:100){ nodes{ id } } } }", "-f", "o=a").status, 0);
+  assert.equal(h.run({}, "", "api", "graphql", "-F", "query=query{ rateLimit{cost} repositoryOwner(login:\"x\"){ projectV2(number:3){ items(first:100){ nodes{ id } } } } }").status, 0);
+  const file = join(h.root, "q.graphql");
+  writeFileSync(file, "{ viewer { login } }");
+  assert.equal(h.run({}, "", "api", "graphql", "-F", `query=@${file}`).status, 0);
+  assert.equal(h.run({}, "", "pr", "list").status, 0);
+  assert.deepEqual(commandsOf(h.ledger), [
+    "api graphql repository.issue.closedByPullRequestsReferences",
+    "api graphql ClosedRows",
+    "api graphql repositoryOwner.projectV2.items",
+    "api graphql viewer",
+    "pr list",
+  ]);
+  const entries = parseLedger(readFileSync(h.ledger, "utf8"));
+  assert.deepEqual(entries.map((e) => e.query), ["repository.issue.closedByPullRequestsReferences", "ClosedRows", "repositoryOwner.projectV2.items", "viewer", undefined], "`pr list` carries no query key");
+  assert.equal(entries[0].resource, "graphql", "naming the read leaves the call priced as the pool's");
+});
+
+test("agent-org#1618: a graphql call whose body the wrapper cannot read stays `api graphql` -- never a guess -- and a name cannot carry a tab or text of the query", () => {
+  const h = host();
+  const body = join(h.root, "body.json");
+  writeFileSync(body, JSON.stringify({ query: ISSUE_CLOSERS }));
+  assert.equal(h.run({}, "", "api", "graphql", "--input", body).status, 0);
+  assert.equal(h.run({}, "", "api", "graphql", "-F", "query=@/nonexistent/q.graphql").status, 0);
+  assert.equal(h.run({}, "", "api", "graphql", "-f", "query=this is not a query").status, 0);
+  assert.equal(h.run({}, "", "api", "graphql", "-f", "query={ evil\tfield\n(x:\"; rm -rf /\") { a } }").status, 0);
+  const lines = readFileSync(h.ledger, "utf8").trimEnd().split("\n");
+  assert.equal(lines.length, 4, "one call, one line, whatever the query held");
+  assert.deepEqual(commandsOf(h.ledger).slice(0, 3), ["api graphql", "api graphql", "api graphql"]);
+  assert.ok(commandsOf(h.ledger)[3].split(" ").every((w, i) => i < 2 || /^[A-Za-z0-9_.]*$/.test(w)), "only identifiers reach the line");
+  assert.ok(lines.every((l) => l.split("\t").length === 12), "the field count is the one every older reader expects");
+});
+
+test("agent-org#1618: a line from before the name was kept still parses, as the unnamed read", () => {
+  const old = ["2026-10-16T13:00:00Z", "app:scheduler", "graphql", "", "0", "api graphql", "-", "node /x/src/work-gate.ts", "-", "-", "10", "99"].join("\t");
+  const fresh = ["2026-10-16T13:00:01Z", "app:scheduler", "graphql", "", "0", "api graphql repository.issues", "-", "node /x/src/work-gate.ts", "-", "-", "12", "99"].join("\t");
+  const [a, b] = parseLedger(`${old}\n${fresh}\n`);
+  assert.deepEqual([a.command, a.query, a.used, a.reset], ["api graphql", undefined, 10, 99], "the old line is the entry it always was");
+  assert.deepEqual([b.command, b.query, b.used, b.reset], ["api graphql repository.issues", "repository.issues", 12, 99], "the counter is still taken off the END of a named line");
+});
+
+test("agent-org#1618: topQueries ranks the reads by points inside the window, counts a nameless call as such, and `topSpender` says which read", () => {
+  const T = (min: number) => new Date(NOW - min * 60_000).toISOString().replace(/\.\d{3}Z$/, "Z");
+  const line = (min: number, command: string, cost: number | "") => [T(min), ACCOUNT, "graphql", cost, "0", command, "w1", "node /x/src/work-gate.ts", "-"].join("\t");
+  const entries = parseLedger([
+    line(30, "api graphql repository.issues", 4), line(29, "api graphql repository.issues", 4), line(28, "api graphql viewer", 1),
+    line(27, "api graphql", 2), line(26, "pr list", 1), line(200, "api graphql repository.issues", 500),
+  ].join("\n"));
+  const rows = topQueries(entries, { account: ACCOUNT, since: NOW - 60 * 60_000, until: NOW });
+  assert.deepEqual(rows.map((r) => [r.query, r.calls, r.points]), [["repository.issues", 2, 8], [UNNAMED_QUERY, 1, 2], ["viewer", 1, 1]], "`pr list` is not a graphql call by name, and the old call outside the window is not counted");
+  assert.deepEqual(topQueries(entries, { account: "someone-else" }), []);
+  const spender = topSpender(entries, { account: ACCOUNT, now: NOW });
+  assert.match(`${spender?.command}`, /^api graphql repository\.issues$/, "the spender is the read, not `api graphql`");
+  const text = renderByQuery(rows, { account: ACCOUNT, since: NOW - 60 * 60_000, until: NOW });
+  assert.match(text, /4 graphql calls, 11 points in .*account a11ign-ai-workers\n/);
+  assert.match(text, /8 pts .*2 calls .*repository\.issues\n/);
+  assert.match(renderByQuery([]), /no graphql calls/);
+});
+
+test("agent-org#1618: `--by-query` is the command that prints the table for a window", () => {
+  const h = host();
+  assert.equal(h.run({}, "", "api", "graphql", "-f", `query=${ISSUE_CLOSERS}`).status, 0);
+  const run = (...flags: string[]) => spawnSync(process.execPath, [LEDGER_CLI, h.ledger, "--by-query", ...flags], { encoding: "utf8" });
+  const all = run();
+  assert.equal(all.status, 0, all.stderr);
+  assert.match(all.stdout, /1 graphql calls, 1 points/);
+  assert.match(all.stdout, /repository\.issue\.closedByPullRequestsReferences\n$/);
+  assert.match(run("--since", "2999-01-01T00:00:00Z").stdout, /no graphql calls/, "the window bounds the table");
+  assert.equal(run("--since", "not a time").status, 2);
 });

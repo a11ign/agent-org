@@ -16,6 +16,8 @@ import { sandboxGitEnv } from "./lib/git-env.ts";
 import * as unpark from "./unpark-satisfied.ts";
 import { COMMENT_MARKER, NOT_PICKABLE_BESIDE_READY, PARKED, commentFor, githubIo, ineligibility, mergedClosersOf, readSatisfaction, reportUnpark, unparkSatisfied, unparkingWaits } from "./unpark-satisfied.ts";
 import { workGateSource } from "./lib/work-gate-source.ts";
+import { budgetOf, meteredRun } from "./gh-conditional.ts";
+import { BUDGET_DEFER_MS, BUDGET_REFUSAL, DEFERRED_FILE, fileDeferral, type Deferral } from "./unpark-satisfied.ts";
 
 const NOW = Date.parse("2026-10-11T00:05:00Z");
 const PASSED = "2026-10-11T00:00:00Z";
@@ -352,4 +354,83 @@ test("(#4202) PIN: every script the gate starts that carries a launch guard is r
   assert.deepEqual(children, ["host-units.ts", "row-file.ts", "update-primary.ts"]);
   assert.deepEqual(guarded, ["row-file.ts"], "a new guarded child needs the owned worktree too: add it here and run it from tickWorktree()");
   assert.match(read("./unpark-satisfied.ts"), /spawnSync\(process\.execPath, \[ROW_FILE_ENTRY[^\n]*cwd: launch\.dir/, "row-file is spawned from the owned worktree");
+});
+
+// ---- agent-org#1618: a refusal for budget waits; any other refusal is asked again ------------------------------------------------------------------------------------------------------
+
+const DUE = `${COMPLETE}\nNot-before: ${PASSED}\n`;
+/** A deferral kept in memory, the seam `unparkSatisfied` takes; `held` is what a later tick would read. */
+const memoryDeferral = (): Deferral & { held: Map<number, number> } => {
+  const held = new Map<number, number>();
+  return { held, until: (n) => held.get(n) ?? null, hold: (n, at) => { held.set(n, at); } };
+};
+/** An io whose first read goes through the gate's real meter at `cap` points, so the refusal is the text `gh-conditional.ts` really throws; `asked` counts the reads attempted. */
+const meteredWorld = (cap: number) => {
+  const w = world({ rows: { 40: ["parked"] } });
+  const metered = githubIo(meteredRun(() => JSON.stringify({ labels: [{ name: "parked" }], state: "OPEN" }), budgetOf({ cap })));
+  let asked = 0;
+  const io: import("./unpark-satisfied.ts").UnparkIo = { ...w.io, readLabels: (n) => { asked += 1; return metered.readLabels(n); } };
+  return { io, asked: () => asked, w };
+};
+
+test("(#1618) the refusal the meter throws is read as a budget refusal, and a failure of GitHub is not", () => {
+  assert.throws(() => meteredRun(() => "", budgetOf({ cap: 0 }))(["issue", "view", "40"]), (error: Error) => BUDGET_REFUSAL.test(error.message));
+  assert.equal(BUDGET_REFUSAL.test("HTTP 502 on readLabels #30"), false, "the positive control for the pattern: it does not match everything");
+});
+
+test("(#1618) a row refused for budget is deferred, not an error, and is NOT asked again on the next tick", () => {
+  const defer = memoryDeferral();
+  const { io, asked } = meteredWorld(0);
+  const row = tickRow(40, ["parked"], { body: DUE });
+  const first = unparkSatisfied({ rows: [row], facts: factsOf({}), now: NOW }, io, defer);
+  assert.deepEqual([first.errors, first.unparked, asked()], [[], [], 1], "asked once, refused, and no error");
+  assert.deepEqual(first.deferred?.map((d) => [d.number, d.until]), [[40, NOW + BUDGET_DEFER_MS]]);
+  const lines: string[] = [];
+  reportUnpark(first, (line) => lines.push(line));
+  assert.equal(lines.length, 1, "said once");
+  assert.match(lines[0], /^DEFERRED unpark #40: gate-budget: refused `gh issue view` at 0\/0 points; not asked again until 2026-10-11T00:20:00\.000Z\n$/, "with the time, and not as COULD NOT");
+  assert.ok(!lines.some((l) => /COULD NOT/.test(l)));
+  const second = unparkSatisfied({ rows: [row], facts: factsOf({}), now: NOW + 150_000 }, io, defer);
+  assert.deepEqual([second.errors, second.deferred, asked()], [[], undefined, 1], "the next tick asks nothing: the read count did not move");
+  const later = unparkSatisfied({ rows: [row], facts: factsOf({}), now: NOW + BUDGET_DEFER_MS + 1 }, io, defer);
+  assert.equal(asked(), 2, "POSITIVE CONTROL: once the wait is over the row IS asked again, so the silence above was the deferral and not a pass that cannot ask");
+  assert.equal(later.deferred?.length, 1);
+});
+
+test("(#1618) a refusal for ANY OTHER reason is an error and is asked again on the next tick", () => {
+  const defer = memoryDeferral();
+  const w = world({ rows: { 41: ["parked"] }, fail: { readLabels: [41] } });
+  const row = tickRow(41, ["parked"], { body: DUE });
+  const first = unparkSatisfied({ rows: [row], facts: factsOf({}), now: NOW }, w.io, defer);
+  assert.deepEqual([first.errors.map((e) => e.number), first.deferred, defer.held.size], [[41], undefined, 0], "an error, nothing held");
+  const second = unparkSatisfied({ rows: [row], facts: factsOf({}), now: NOW + 150_000 }, w.io, defer);
+  assert.deepEqual([second.errors.map((e) => e.number), w.calls.filter((c) => c === "readLabels 41").length], [[41], 2], "asked again, and as loud as the first time");
+  const lines: string[] = [];
+  reportUnpark(second, (line) => lines.push(line));
+  assert.match(lines.join(""), /COULD NOT unpark #41: HTTP 502/);
+});
+
+test("(#1618) with no deferral given a budget refusal is the error it was", () => {
+  const { io } = meteredWorld(0);
+  const result = unparkSatisfied({ rows: [tickRow(40, ["parked"], { body: DUE })], facts: factsOf({}), now: NOW }, io);
+  assert.deepEqual([result.errors.length, result.deferred], [1, undefined]);
+  assert.match(result.errors[0].message, BUDGET_REFUSAL);
+});
+
+test("(#1618) the deferral is kept in a file a LATER TICK (another process) reads, per repository, and past entries are dropped when one is written", () => {
+  const dir = mkdtempSync(join(tmpdir(), "unpark-deferred-"));
+  const path = join(dir, DEFERRED_FILE);
+  try {
+    const horizon = Date.now() + BUDGET_DEFER_MS;
+    fileDeferral(path, "a11ign/agent-org").hold(40, horizon);
+    assert.equal(fileDeferral(path, "a11ign/agent-org").until(40), horizon, "a new instance (the next tick) reads it");
+    assert.equal(fileDeferral(path, "a11ign/other").until(40), null, "another repository's row 40 is not held");
+    assert.equal(fileDeferral(path, "a11ign/agent-org").until(41), null);
+    fileDeferral(path, "a11ign/agent-org").hold(42, 1);
+    fileDeferral(path, "a11ign/agent-org").hold(43, horizon);
+    assert.deepEqual(Object.keys(JSON.parse(readFileSync(path, "utf8"))).sort(), ["a11ign/agent-org#40", "a11ign/agent-org#43"], "42 was past when 43 was written, so it is gone");
+    assert.equal(fileDeferral(join(dir, "absent.json"), "a11ign/agent-org").until(40), null, "no file is nothing held");
+    writeFileSync(join(dir, "torn.json"), "{ not json");
+    assert.equal(fileDeferral(join(dir, "torn.json"), "a11ign/agent-org").until(40), null, "a torn file is nothing held, never a throw in the tick");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

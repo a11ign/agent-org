@@ -27,7 +27,7 @@ import { CORE_POOL_PROBE } from "./ticket-port/core-pool-probe.ts";
  * (agent-org#1420) `moved` is set by `settle` on the reading that closed a movement: the whole of what the counter moved since its window's last reading, placed or not,
  * which is what the hourly rollup keeps as the hour's counter.
  */
-export type LedgerEntry = {time: string, account: string, resource: string, cost: number | null, status: number, command: string, workspace: string, caller: string, sessionId?: string, cache?: string, used?: number, reset?: number, settled?: "read" | "shared", unplaced?: number, moved?: number};
+export type LedgerEntry = {time: string, account: string, resource: string, cost: number | null, status: number, command: string, query?: string, workspace: string, caller: string, sessionId?: string, cache?: string, used?: number, reset?: number, settled?: "read" | "shared", unplaced?: number, moved?: number};
 
 const FIELDS = 8;
 const NO_SESSION = "-";
@@ -42,6 +42,9 @@ const PRELOAD = /--import(?:=|\s+)\S+/g;
 const HARNESS_SHELL = /\/shell-snapshots\/snapshot-/;
 /** What a session's shell is called: its snapshot file, `snapshot-zsh-<ms>-<id>.sh`, is one per session process and says nothing of what ran (#3590). */
 export const SESSION_SHELL = "(a session's shell)";
+
+/** (agent-org#1618) `host/gh` widens the command of an `api graphql` call with the name of the read (`api graphql repository.issue.closedByPullRequestsReferences`); a line from before it says `api graphql` and no more. */
+const GRAPHQL_QUERY = /^api graphql (\S+)$/;
 
 /**
  * One ledger line, or null for a line that is not one (a half line left by a trim or a crash is skipped, never guessed at).
@@ -59,8 +62,9 @@ export function parseLine(line: string): LedgerEntry | null {
   const shaped = f.length >= FIELDS + 4 && COUNTER.test(f[f.length - 2]) && COUNTER.test(f[f.length - 1]);
   const counted = shaped && /^\d+$/.test(f[f.length - 2]) && /^\d+$/.test(f[f.length - 1]);
   const cache = f.length > FIELDS + 1 ? f.slice(FIELDS + 1, shaped ? -2 : undefined).join("\t") : undefined;
+  const query = GRAPHQL_QUERY.exec(f[5])?.[1];
   return { time: f[0], account: f[1], resource: f[2], cost: f[3] === "" ? null : Number(f[3]), status,
-    command: f[5], workspace: f[6], caller: f[FIELDS - 1], ...(sessionId === NO_SESSION || sessionId === "" ? {} : { sessionId }),
+    command: f[5], ...(query === undefined ? {} : { query }), workspace: f[6], caller: f[FIELDS - 1], ...(sessionId === NO_SESSION || sessionId === "" ? {} : { sessionId }),
     ...(cache === undefined ? {} : { cache }),
     ...(counted ? { used: Number(f[f.length - 2]), reset: Number(f[f.length - 1]) } : {}) };
 }
@@ -196,6 +200,44 @@ export function renderReport(entries: LedgerEntry[], where: { account?: string; 
   const table = rows.map((r) =>
     `${String(r.points).padStart(7)} pts (${String(r.measured).padStart(6)} read)  ${String(r.calls).padStart(6)} calls  ` +
     `${String(r.failed).padStart(4)} failed  ${r.caller}  [${r.command}]`);
+  return `${head}${table.join("\n")}\n`;
+}
+
+/** What a graphql call is called when its line names no read: written by a `host/gh` from before the name was kept, or a call whose body was not in its arguments. Never given a guess. */
+export const UNNAMED_QUERY = "(query not named)";
+
+/**
+ * (agent-org#1618) WHICH READ SPENT IT: the graphql calls grouped by the read they made (`LedgerEntry.query`), whoever the caller, ranked by points. `calls` and `points` are the
+ * same figures `topCallers` gives (`settle`d, with the one-point floor for a call nobody read); a call whose line names no read is `UNNAMED_QUERY`, so a table that
+ * does not add up to the pool says so in a row and not in a footnote. Only `api graphql` calls carry a name; `resource` defaults to graphql for that reason.
+ * @param {LedgerEntry[]} entries @param {{account?: string, resource?: string, limit?: number, since?: number, until?: number}} [where] `since`/`until` bound the window in epoch ms
+ */
+export function topQueries(entries: LedgerEntry[], { account, resource = "graphql", limit = DEFAULT_TOP, since = -Infinity, until = Infinity }: { account?: string; resource?: string; limit?: number; since?: number; until?: number; } = {}) {
+  const byQuery: Map<string, { query: string; calls: number; points: number; measured: number; failed: number; }> = new Map();
+  for (const e of settle(entries)) {
+    const at = Date.parse(e.time);
+    if (at < since || at > until) continue;
+    if (account !== undefined && e.account !== account) continue;
+    if (e.resource.replace(/\?$/, "") !== resource || !e.command.startsWith("api graphql")) continue;
+    const query = e.query ?? UNNAMED_QUERY;
+    const row = byQuery.get(query) ?? { query, calls: 0, points: 0, measured: 0, failed: 0 };
+    row.calls += 1;
+    row.points += points(e);
+    row.measured += readCost(e);
+    row.failed += e.status === 0 ? 0 : 1;
+    byQuery.set(query, row);
+  }
+  return [...byQuery.values()].sort((a, b) => b.points - a.points || b.calls - a.calls || a.query.localeCompare(b.query)).slice(0, limit);
+}
+
+/** @param {ReturnType<typeof topQueries>} rows @param {{account?: string, since?: number, until?: number}} [where] */
+export function renderByQuery(rows: ReturnType<typeof topQueries>, where: { account?: string; since?: number; until?: number; } = {}): string {
+  const window = `${where.since === undefined || where.since === -Infinity ? "the start of the ledger" : new Date(where.since).toISOString()} .. ${where.until === undefined || where.until === Infinity ? "its end" : new Date(where.until).toISOString()}`;
+  if (rows.length === 0) return `gh ledger by query: no graphql calls in ${window}${where.account ? `, account ${where.account}` : ""}\n`;
+  const total = rows.reduce((sum, r) => sum + r.points, 0);
+  const calls = rows.reduce((sum, r) => sum + r.calls, 0);
+  const head = `gh ledger by query: ${calls} graphql calls, ${total} points in ${window}${where.account ? `, account ${where.account}` : ""}\n`;
+  const table = rows.map((r) => `${String(r.points).padStart(7)} pts (${String(r.measured).padStart(6)} read)  ${String(r.calls).padStart(6)} calls  ${String(r.failed).padStart(4)} failed  ${r.query}`);
   return `${head}${table.join("\n")}\n`;
 }
 
@@ -879,13 +921,16 @@ export function renderByRead(report: ReadReport, where: { account?: string; reso
 
 /** @param {string[]} argv */
 function cliOptions(argv: string[]) {
-  const out: { file?: string; account?: string; resource?: string; limit?: number; perHour?: boolean; byRead?: boolean; } = {};
+  const out: { file?: string; account?: string; resource?: string; limit?: number; perHour?: boolean; byRead?: boolean; byQuery?: boolean; since?: number; until?: number; } = {};
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === "--account") out.account = argv[++i];
     else if (argv[i] === "--resource") out.resource = argv[++i];
     else if (argv[i] === "--top") out.limit = Number(argv[++i]);
     else if (argv[i] === "--per-hour") out.perHour = true;
     else if (argv[i] === "--by-read") out.byRead = true;
+    else if (argv[i] === "--by-query") out.byQuery = true;
+    else if (argv[i] === "--since") out.since = Date.parse(argv[++i]);
+    else if (argv[i] === "--until") out.until = Date.parse(argv[++i]);
     else out.file = argv[i];
   }
   return out;
@@ -895,14 +940,21 @@ function cliOptions(argv: string[]) {
 const readIfThere = (path: string): string => (existsSync(path) ? readFileSync(path, "utf8") : "");
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const { file, perHour: hourly, byRead, ...where } = cliOptions(process.argv.slice(2));
+  const { file, perHour: hourly, byRead, byQuery, since, until, ...where } = cliOptions(process.argv.slice(2));
   if (file === undefined) {
-    console.error("usage: node src/gh-ledger.ts <path to gh-calls.tsv> [--account <login>] [--resource graphql|core] [--top <n>] [--per-hour] [--by-read]  (--per-hour --top <n>: each hour's top <n> callers; --by-read: the reads grouped by caller, subcommand, repository and digest, with their misses by why)");
+    console.error("usage: node src/gh-ledger.ts <path to gh-calls.tsv> [--account <login>] [--resource graphql|core] [--top <n>] [--per-hour] [--by-read] [--by-query [--since <iso>] [--until <iso>]]  (--by-query: the graphql calls grouped by the read they made; --per-hour --top <n>: each hour's top <n> callers; --by-read: the reads grouped by caller, subcommand, repository and digest, with their misses by why)");
     process.exit(2);
   }
   const entries = parseLedger(readFileSync(file, "utf8"));
   const rollup = parseRollup(readIfThere(rollupPathOf(file)));
-  if (byRead) {
+  if ([since, until].some((t) => t !== undefined && Number.isNaN(t))) {
+    console.error("gh-ledger: --since and --until take a time such as 2026-10-16T13:00:00Z");
+    process.exit(2);
+  }
+  if (byQuery) {
+    const window = { ...(since === undefined ? {} : { since }), ...(until === undefined ? {} : { until }) };
+    process.stdout.write(renderByQuery(topQueries(entries, { ...where, ...window }), { account: where.account, ...window }));
+  } else if (byRead) {
     process.stdout.write(renderByRead(readGroups(entries, where), where));
   } else {
     process.stdout.write(hourly

@@ -216,7 +216,7 @@ ledger_record() { # status stdout-copy first-arg second-arg
   caller=${LEDGER_CALLER:-$(tr '\0\t\n' '   ' < "/proc/$PPID/cmdline" | sed -E 's/--import(=|[[:space:]]+)[^[:space:]]+//g' | cut -c1-160)}
   session=$(session_id)
   now=${A11Y_GH_LEDGER_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
-  printf '%s\t%s\t%s\t%s\t%s\t%s %s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$now" "${account:-unknown}" "$resource" "$cost" "$1" "$3" "$4" \
+  printf '%s\t%s\t%s\t%s\t%s\t%s %s%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$now" "${account:-unknown}" "$resource" "$cost" "$1" "$3" "$4" "${ledger_query:+ $ledger_query}" \
     "${HERDR_WORKSPACE_ID:--}" "$caller" "${session:--}" "${cache_note:--}" "${pool_used:--}" "${pool_reset:--}" >> "$file" || return 0
   max=${A11Y_GH_LEDGER_MAX_BYTES:-2097152}
   if [ "$(wc -c < "$file")" -gt "$max" ]; then
@@ -347,6 +347,66 @@ graphql_body_mutates() {
     grep -q mutation "$f" 2>/dev/null && return 0
   done
   return 1
+}
+
+# (agent-org#1618) NAMES THE READ an `api graphql` call made, for the ledger's command field (`api graphql <name>`): 31 such calls a tick were one opaque line each, so
+# the gate's whole graphql budget was spent by reads nobody could tell apart. The name is the operation's own (`query Name(...)`), else the path of the FIRST selection that
+# has children, to four levels, skipping `rateLimit` and stopping at `nodes`/`edges`/`node`/`pageInfo` (`repository.issue.closedByPullRequestsReferences`). The document is
+# the `query=` field (`-f`/`-F`/`--field`/`--raw-field`, `@file` read for the two that read one); a call with its body in `--input`, or one that does not parse, prints
+# NOTHING and the command stays `api graphql`, which is the line an older wrapper wrote and every reader still takes. The characters are `[A-Za-z0-9_.]` by construction,
+# so a name can neither add a field to the TAB line nor carry anything of the query's text beyond identifiers.
+graphql_query_name() {
+  gq_prev=; gq_doc=
+  for gq_a; do
+    gq_v=
+    case "$gq_prev" in -f|--raw-field) case "$gq_a" in query=*) gq_v=$gq_a ;; esac ;; -F|--field) case "$gq_a" in query=*) gq_v=$gq_a ;; esac ;; esac
+    case "$gq_a" in --field=query=*|--raw-field=query=*) gq_v=${gq_a#*=} ;; esac
+    if [ -n "$gq_v" ]; then
+      gq_doc=${gq_v#query=}
+      case "$gq_prev$gq_a" in -F*|--field*) case "$gq_doc" in @*) gq_doc=$(cat "${gq_doc#@}" 2>/dev/null) ;; esac ;; esac
+    fi
+    gq_prev=$gq_a
+  done
+  [ -n "$gq_doc" ] || return 0
+  printf '%s\n' "$gq_doc" | awk '
+    function flush(t) {
+      if (dots) { dots = 0; if (t == "on") { skipnext = 1; frag = 1 }; return }
+      if (d == 0) { if (t == "query" || t == "mutation" || t == "subscription") kw = 1; else if (kw && opname == "") opname = t; return }
+      if (skipnext) { skipnext = 0; return }
+      pend = t
+    }
+    { sub(/#.*/, ""); gsub(/"[^"]*"/, "\"\""); doc = doc $0 " " }
+    END {
+      n = length(doc); d = 0; pd = 0; tok = ""; pend = ""
+      for (i = 1; i <= n; i++) {
+        c = substr(doc, i, 1)
+        if (c ~ /[A-Za-z0-9_]/ && pd == 0) { tok = tok c; continue }
+        if (tok != "") { flush(tok); tok = "" }
+        if (pd > 0) { if (c == "(") pd++; else if (c == ")") pd--; continue }
+        if (c == "(") pd = 1
+        else if (c == ".") dots = 1
+        else if (c == ":") pend = ""
+        else if (c == "@") skipnext = 1
+        else if (c == "{") {
+          if (d == 0) onchain[1] = 1
+          else if (frag) { onchain[d + 1] = onchain[d]; stop[d + 1] = stop[d]; isfrag[d + 1] = 1 }
+          else if (onchain[d] && !stop[d] && pend != "" && pend != "rateLimit") {
+            stop[d] = 1
+            if (pend == "nodes" || pend == "edges" || pend == "node" || pend == "pageInfo") onchain[d + 1] = 0
+            else { chain[++clen] = pend; onchain[d + 1] = 1 }
+          } else onchain[d + 1] = 0
+          d++; pend = ""; frag = 0
+        } else if (c == "}") {
+          if (isfrag[d] && stop[d]) stop[d - 1] = 1
+          stop[d] = 0; isfrag[d] = 0; d--; pend = ""; if (d < 0) exit
+        }
+      }
+      if (opname != "") { print substr(opname, 1, 80); exit }
+      out = ""
+      for (k = 1; k <= clen && k <= 4; k++) out = out (k > 1 ? "." : "") chain[k]
+      print substr(out, 1, 80)
+    }' 2>/dev/null
+  return 0
 }
 
 # Sets `class` to read | write | neutral for the arguments given.
@@ -1035,6 +1095,8 @@ if [ "$class" = read ] && [ "${A11Y_GH_READ_CACHE:-}" != off ] && [ ! -t 1 ]; th
   cache_on=1
 fi
 ledger_a=$1; ledger_b=$2
+ledger_query=
+[ "$1 $2" = "api graphql" ] && ledger_query=$(graphql_query_name "$@")
 
 # stdout is captured for the one call that can carry a cost and for a read that may be stored, and only when it is not a terminal.
 copy=
