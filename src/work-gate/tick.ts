@@ -24,6 +24,7 @@ import { readJsonObject, writeJsonObject } from "../claim-stall.ts";
 import { requiredWhenNeeded, perPullRequestOrders, greenUnarmedOrders, type UnarmedFacts, reviewBlockedOrders, stalledPrOrders,
   STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr, ROW_REVIEW_SKILL_FLAG, PR_OWNER_ROUTING_FLAG, withholdOutsideFollowUps, routeDeadOwnerRefusals, reviewOnlyRefs, SAME_HEAD_REFAIL_FLAG, acceptanceGateOf, firstRefusalOf, treeWideGuardVerdict, settleOutsideArm, settleOutsideRefusals } from "./pr-orders.ts";
 import { treeWideGuardFilesIn, runTreeWideGuards, outsideGuardsOn, shadowGuardsVerdict, guardSweepJobOf } from "../lib/tree-wide-guard-org-side.ts"; // agent-org#1503, #1580
+import { outsideOwnedPathsOn, ownedPathsVerdict, ownedPathsJobOf, shadowOwnedPathsVerdict } from "../owned-path-signoff.ts"; // agent-org#1598
 import { readFileSync } from "node:fs";
 import { newestPerName } from "../newest-check-run.ts";
 import { decisionSwitchesPath, readSwitches } from "../decision-provider.ts";
@@ -1448,7 +1449,8 @@ export function gateUnarmedOnAcceptance(unarmed: number[], { openPrs, scope, env
   const guardsOn = env[TREE_WIDE_GUARDS_SWITCH_ENV] === "on";
   if (unarmed.length === 0) return { armable: unarmed, withheld: [] };
   const shadowGuards = !guardsOn && outsideGuardsOn(outsideSwitches());
-  if (!acceptanceOn && !guardsOn && !shadowGuards) return { armable: unarmed, withheld: [] };
+  const shadowOwned = outsideOwnedPathsOn(outsideSwitches());
+  if (!acceptanceOn && !guardsOn && !shadowGuards && !shadowOwned) return { armable: unarmed, withheld: [] };
   const byDeclaredIdentity = (pr: any) => reviewTrustOf(pr, declared) === INSIDE;
   const file = join(stateDir, "acceptance-verdicts.json");
   const remembered: Record<string, OrgSideVerdict> = readJsonObject(file);
@@ -1480,11 +1482,19 @@ export function gateUnarmedOnAcceptance(unarmed: number[], { openPrs, scope, env
     if (shadow.on) log(`outside-guards: SHADOW #${pr.number} ${shadow.verdict.kind} (${shadow.verdict.why}) beside the job's ${shadow.job ?? "unread"}: ${shadow.agreement}; blocks nothing.\n`);
     return null;
   };
+  /** agent-org#1598: the outside home of `ownedPaths`, SHADOW only. Recorded in the log and returns nothing: it is not a family of the gate, so it never withholds an arming. */
+  const eligibleOf = (pr: any) => orgSideAcceptanceEligibility(pr, { byDeclaredIdentity, baseRepo: scope });
+  const shadowOwnedOf = (pr: any): void => {
+    const shadow = shadowOwnedPathsVerdict(pr, { switches: outsideSwitches(), verdictOf: (p) => ownedPathsVerdict(p, { eligible: eligibleOf }), job: ownedPathsJobOf(newestPerName(pr?.statusCheckRollup ?? [])) });
+    if (shadow.on) log(`outside-ownedpaths: SHADOW #${pr.number} ${shadow.verdict.kind} (${shadow.verdict.why}) beside the job's ${shadow.job ?? "unread"}: ${shadow.agreement}; blocks nothing.\n`);
+  };
   const gated = acceptanceGateOf(unarmed, {
     prOf: (number) => openPrs.find((pr) => Number(pr.number) === number),
-    gateOf: (pr) => (orgSideAcceptanceEligibility(pr, { byDeclaredIdentity, baseRepo: scope }).eligible
-      ? (shadowGuards ? shadowOf(pr) : firstRefusalOf([...(acceptanceOn ? [acceptance(pr)] : []), ...(guardsOn ? [guards(pr)] : [])]))
-      : null),
+    gateOf: (pr) => {
+      if (!eligibleOf(pr).eligible) return null;
+      if (shadowOwned) shadowOwnedOf(pr);
+      return shadowGuards ? shadowOf(pr) : firstRefusalOf([...(acceptanceOn ? [acceptance(pr)] : []), ...(guardsOn ? [guards(pr)] : [])]);
+    },
   });
   for (const { number, why } of gated.withheld) log(`acceptance-gate: #${number} is NOT armed -- ${why}.\n`);
   return gated;
