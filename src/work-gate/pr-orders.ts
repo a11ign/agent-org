@@ -35,12 +35,13 @@ export { DEPENDENCY_BOT_LOGIN } from "../dependency-bot-login.ts";
 // #2619 (child 3d of #69): the `session:` prefix and the `blocked` label, moved to the project's
 // declared vocabulary. (The `"ready"` action `kind` a few lines below is `gh pr ready`'s draft-status
 // flip -- a built-in GitHub PR field, not this project's `ready` row label -- so it stays a literal.)
-import { SESSION_PREFIX, BLOCKED_LABEL, BACKLOG_LABEL, OUT_OF_RELEASE_LABEL } from "../project-vocabulary.ts";
+import { SESSION_PREFIX, BLOCKED_LABEL, BACKLOG_LABEL, OUT_OF_RELEASE_LABEL, NEEDS_CHAIRMAN_LABEL } from "../project-vocabulary.ts";
 import { PROJECT_NUMBER, PROJECT_OWNER } from "../board-snapshot-scope.ts";
 import { createRow } from "../ticket-port/approved-unqueued-reads.ts";
 import { readRowsByLabel } from "../ticket-port/rows-by-label.ts";
 import { ensureTriageLabel } from "../ticket-port/outside-idle-writes.ts";
 import { boardFiledRow } from "../ticket-port/board-filed-row.ts";
+import { briefChairmanOnPull } from "../ticket-port/chairman-brief.ts";
 import { labelsOf, sessionOf, conflictStateOf, CONFLICT_STATE, reviewStateOf, BLOCKING_REVIEW_STATES, checksSettledGreen, conclusionOf, stillRunning, anyChecksRed, requiredCheckNames,
   blockingChecks, reviewableHead, reviewWait, verdictAmong, awaitingEvidence, AWAITING_EVIDENCE_LABEL,
   AWAITING_EVIDENCE_QUIET_HOURS, AWAITING_EVIDENCE_QUIET_MS, HOUR_MS, REVIEW_STATE, CHAIRMAN_LOGINS } from "../work-gate.ts";
@@ -70,6 +71,27 @@ const REVIEWER_DOOR = "$HOME/reviewer/bin/pr-review-verdict";
 export function redOnlyBySupersededRun(blocking: any[], head: any[]) {
   const red = blocking.filter((c) => checksSettledGreen([c]) === false);
   return red.length > 0 && red.every((c) => conclusionOf(c) === NO_VERDICT.toUpperCase()) && head.some(stillRunning);
+}
+
+/**
+ * a11ign#5528, agent-org#1538: THE ACT THAT CLEARS A RED PULL REQUEST, when every failing blocking check names one. `review` is a reviewer's
+ * verdict; `human` is a person's act, which the gate does not order a reviewer for (`fileReviewGatedHuman` asks the chairman instead).
+ *
+ * THE MARKER IS READ FOR THE HEAD IT WAS READ AT (`checkMarkersHead`): a head that moved since is unmarked until its own checks are read, so a
+ * review of the old head never clears the new one. A failing check with no marker, or a red set with any unmarked member, is `null`, and that
+ * pull request is red exactly as before (`failingChecksOrder`). A superseded-run red is `null` for the same reason it is not red there.
+ *
+ * @returns `review`, `human`, or `null` for "not review-gated"
+ */
+export function reviewGateOf(pr: any, required: string[] | null = null): "review" | "human" | null {
+  const onHead = newestPerName(pr?.statusCheckRollup ?? []);
+  const blocking = blockingChecks(onHead, required);
+  if (checksSettledGreen(blocking) !== false || redOnlyBySupersededRun(blocking, onHead)) return null;
+  const markers = pr?.checkMarkersHead === pr?.headRefOid ? (pr?.checkMarkers ?? {}) : {};
+  const failing = blocking.filter((c) => checksSettledGreen([c]) === false);
+  const acts: (string | undefined)[] = failing.map((c) => markers[String(c?.name ?? "")]);
+  if (acts.length === 0 || acts.some((act) => act === undefined)) return null;
+  return acts.includes("human") ? "human" : "review";
 }
 
 /**
@@ -201,6 +223,8 @@ function conflictOrder(pr: any, { session, standing, ownership }: { session: str
 export function stallReasonOf(pr: any, required: string[] | null = null, nowMs: number = Date.now()): string {
   if (!armabilityOf({ labels: labelsOf(pr) }).arm || awaitingEvidence(pr)) return STALL_REASON.HELD_ON_PURPOSE;
   const settled = settledChecksOf(pr, required);
+  // a11ign#5528: a red whose every failing check names a review (or a human) as its remedy is a wait on that act, not a failure of the code
+  if (settled === false && reviewGateOf(pr, required) !== null) return pr?.isDraft === true ? STALL_REASON.AWAITING_AUTHOR_DRAFT : STALL_REASON.AWAITING_REVIEW;
   if (settled === false) return STALL_REASON.RED;
   if (conflictStateOf(pr) === CONFLICT_STATE.CONFLICTING) return STALL_REASON.CONFLICTED;
   if (settled !== true) return hungCheckOf(pr, required, nowMs) ? STALL_REASON.HUNG_CHECK : STALL_REASON.PROGRESSING;
@@ -1027,6 +1051,8 @@ function failingChecksOrder(pr: any, required: string[] | null = null, baseTip: 
   const blocking = blockingChecks(onHead, required);
   if (checksSettledGreen(blocking) !== false) return null;
   if (redOnlyBySupersededRun(blocking, onHead)) return null;
+  // a11ign#5528: a review-gated red is a reviewer's question (`draftOrder`), never the author's `pr-checks-failing`
+  if (reviewGateOf(pr, required) !== null) return null;
   const head = String(pr.headRefOid ?? "");
   if (!head) return null;
   const head8 = head.slice(0, 8);
@@ -1577,6 +1603,49 @@ export function fileOutsideIdleTriage(prs: any[], { declared, nowMs, run, log, e
 }
 
 /**
+ * a11ign#5528, agent-org#1538: THE BRIEF A HUMAN-GATED RED RAISES. The check names a person's act as its remedy, so no reviewer is ordered (`draftOrder`)
+ * and the chairman is asked instead: the brief carries the changed files, the reason, and the marker that makes filing once per head.
+ */
+export function reviewGatedHumanBrief(pr: any): { marker: string; body: string } {
+  const ref = subjectRef(pr.repoKey, pr.number);
+  const marker = `<!-- review-gated-human:${ref}@${String(pr.headRefOid ?? "").slice(0, 8)} -->`;
+  const names = Object.entries(pr.checkMarkers ?? {}).filter(([, act]) => act === "human").map(([name]) => `\`${name}\``);
+  const files = Array.isArray(pr.files) ? pr.files : [];
+  const diff = files.length === 0 ? "The changed files could not be read." : files.map((f: any) => `- \`${f.path}\` (+${f.additions ?? 0} -${f.deletions ?? 0})`).join("\n");
+  return { marker, body: [
+    marker,
+    `BRIEF for the chairman: pull request ${ref} (https://github.com/${pr.repo}/pull/${pr.number}) is red, and what clears it is a person's act: ${names.join(", ")} says \`Cleared-by: human\`.`,
+    "",
+    "The diff:",
+    diff,
+    "",
+    "No reviewer was ordered for it, because a reviewer cannot clear this. Filing this brief woke no session.",
+  ].join("\n") };
+}
+
+/**
+ * Files the chairman's brief for each human-gated red pull request that has none at its head, and returns how many it filed. The label goes
+ * on before the comment, so a comment that fails leaves the label to be tried again on the next tick under the same marker.
+ */
+export function fileReviewGatedHuman(prs: any[], { required, run, log }: {
+  required: string[] | null; run: GhRun; log: (line: string) => void;
+}): number {
+  let count = 0;
+  for (const pr of prs) {
+    if (reviewGateOf(pr, required) !== "human") continue;
+    const brief = reviewGatedHumanBrief(pr);
+    if ((pr.comments ?? []).some((c: any) => String(c?.body ?? "").includes(brief.marker))) continue;
+    try {
+      briefChairmanOnPull({ repo: pr.repo, number: pr.number, label: NEEDS_CHAIRMAN_LABEL, body: brief.body, run });
+      count++;
+    } catch (error) {
+      log(`review-gated-human: could not brief #${pr.number} (${String((error as Error).message).split("\n")[0]}); the next tick retries\n`);
+    }
+  }
+  return count;
+}
+
+/**
  * `head8` is the head a reviewer would be reading; `key` is what the ORDER is keyed on -- the first eight characters of the PATCH id
  * (#3045), so an update-branch, a rebase or an amend, which make a new head with the same work, keep the key. It is `head8` only when
  * the patch could not be read. `all` is every full head whose patch equals the current head's, current first (`equivalentHeads`). `wait` is
@@ -1588,7 +1657,7 @@ export type ReviewHeads = {head8: string, key: string, all: string[], wait: "set
  * The key a pull request's review orders carry, and the heads a verdict may sit at (#3045). A VERDICT IS VALID FOR A PATCH, NOT A SHA:
  * `key` is the patch id when `withPatchIds` read it and the head otherwise, which is this gate's behaviour before #2176.
  */
-function reviewHeadsOf(pr: any, head: string, wait: "settled" | "running"): ReviewHeads {
+export function reviewHeadsOf(pr: any, head: string, wait: "settled" | "running"): ReviewHeads {
   const patch = pr?.patchIds?.[head];
   return { head8: head.slice(0, 8), key: typeof patch === "string" ? patch.slice(0, 8) : head.slice(0, 8), all: equivalentHeads(pr), wait };
 }
@@ -1665,6 +1734,8 @@ function draftOrder(pr: any, required: string[] | null = null, baseTip: { sha: s
   // never reach the reviewer lane below, which requires green.
   const red = failingChecksOrder(pr, required, baseTip, { sameHeadRefail: flags.sameHeadRefail });
   if (red) return red;
+  // a11ign#5528: a check that a PERSON clears is the chairman's, so no reviewer is ordered for it. `fileReviewGatedHuman` files the brief.
+  if (reviewGateOf(pr, required) === "human") return null;
   const wait = reviewWait(pr, required);
   const head = wait === "settled" ? reviewableHead(pr, required) : unchangedRunningHead(pr, wait);
   if (!head || !wait) return null;

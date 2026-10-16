@@ -5,7 +5,8 @@ import { loadLanes, inLane, MANAGERS_APP_LOGINS } from "../../lane-ownership.ts"
 import { holdersOf } from "../../pr-hold-state.ts";
 import { decidedBy } from "../../claim-stall.ts";
 import { worktreeOwner } from "../../worktree-owner.ts";
-import { HOLD_RED_JOBS } from "../pr-orders.ts";
+import { HOLD_RED_JOBS, reviewGateOf } from "../pr-orders.ts";
+import { checkMarkersOf } from "../review-gate.ts";
 import { BLOCKING_REVIEW_STATES, REVIEW_STATE, blockingChecks, checksSettledGreen, draftCandidates, mergeCandidates, reviewStateOf } from "../pr-state.ts";
 import { PROJECT_GIT, capturingStderr, defaultRun, defaultSpawn, repoNow } from "../reads.ts";
 import { HOUR_MS, labelsOf, sessionOf } from "../vocabulary.ts";
@@ -272,7 +273,8 @@ function redOnlyFromAnyHold(pr: any, onHead: any[]) {
  */
 export function reviewableHead(pr: any, required: string[] | null = null): string | null {
   const onHead = newestPerName(pr?.statusCheckRollup);
-  if (checksSettledGreen(blockingChecks(onHead, required)) !== true && !redOnlyFromAnyHold(pr, onHead)) return null;
+  // a11ign#5528: a review-gated red is asked at its head too, so the reviewer it names is ordered there
+  if (checksSettledGreen(blockingChecks(onHead, required)) !== true && reviewGateOf(pr, required) === null && !redOnlyFromAnyHold(pr, onHead)) return null;
   return String(pr.headRefOid ?? "") || null;
 }
 
@@ -390,6 +392,42 @@ export function withPatchIds(prs: any[], run: (args: string[]) => string = defau
 }
 
 /**
+ * THE ONE READ OF A COMMIT'S CHECK RUNS, filtered by `jq`: `readFailingChecks` and `readCheckRunSummaries` both go through it, so this file
+ * holds one such call (the gh-call ratchet counts call sites and admits no rise).
+ */
+function checkRunsAt(commit: string, jq: string, run: (args: string[]) => string): string {
+  return capturingStderr(run)(["api", `repos/${repoNow()}/commits/${commit}/check-runs?per_page=100`, "--paginate", "--jq", jq]);
+}
+
+/**
+ * a11ign#5528: the check runs at one commit as the REST API gives them, each with its `output.summary` (where a check says what clears it), or `null`
+ * when the read was refused. The list is read per red pull request only (`withCheckMarkers`), so a green one pays nothing.
+ */
+function readCheckRunSummaries(commit: string, run: (args: string[]) => string = defaultRun): { id: number; name: string; summary: unknown }[] | null {
+  try {
+    const out = checkRunsAt(commit, ".check_runs[] | {id, name, summary: .output.summary}", run);
+    return out.split("\n").filter((l) => l.trim() !== "").map((l) => JSON.parse(l));
+  } catch (error) {
+    noteRefusedRead(error, { path: `repos/${repoNow()}/commits/<sha>/check-runs`, ofASha: true });
+    return null;
+  }
+}
+
+/**
+ * a11ign#5528, agent-org#1538: THE MARKERS OF A RED PULL REQUEST'S CHECKS, read at its head: `checkMarkers` (name -> `review` | `human`, from the
+ * `Cleared-by:` line of each newest run's summary) and `checkMarkersHead` (the head they were read at, which `reviewGateOf` compares). Only a
+ * pull request whose blocking set is settled red pays the read; a refused read leaves it unmarked, which is red, as it was before the marker.
+ */
+export function withCheckMarkers(prs: any[], run: (args: string[]) => string = defaultRun, required: string[] | null = null) {
+  return prs.map((pr) => {
+    const head = String(pr?.headRefOid ?? "");
+    if (!head || checksSettledGreen(blockingChecks(newestPerName(pr?.statusCheckRollup ?? []), required)) !== false) return pr;
+    const runs = readCheckRunSummaries(head, run);
+    return runs === null ? pr : { ...pr, checkMarkers: checkMarkersOf(runs), checkMarkersHead: head };
+  });
+}
+
+/**
  * a11ign#3199: THE NAMES OF THE CHECK RUNS THAT CONCLUDED `failure` AT ONE COMMIT, or `null` when the read was refused. `[]` is a real answer
  * (nothing failed there) and `null` is "not known": a refusal is never read as green, because a refusal lifted on an unread check would
  * hand a refused pull request back to a reviewer on a guess.
@@ -398,8 +436,7 @@ export function withPatchIds(prs: any[], run: (args: string[]) => string = defau
  */
 export function readFailingChecks(commit: string, run: (args: string[]) => string = defaultRun): string[] | null {
   try {
-    const out = capturingStderr(run)(["api", `repos/${repoNow()}/commits/${commit}/check-runs?per_page=100`, "--paginate",
-      "--jq", '.check_runs[] | select(.conclusion == "failure") | .name']);
+    const out = checkRunsAt(commit, '.check_runs[] | select(.conclusion == "failure") | .name', run);
     return [...new Set(out.split("\n").map((l) => l.trim()).filter((l) => l !== ""))];
   } catch (error) {
     noteRefusedRead(error, { path: `repos/${repoNow()}/commits/<sha>/check-runs`, ofASha: true });

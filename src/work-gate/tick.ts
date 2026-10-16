@@ -39,7 +39,7 @@ import { primaryStaleOrders } from "./causes/org-health-host-drift.ts";
 import { baseTipWhenRed, shouldBeMerging } from "./causes/pr-checks.ts";
 import { readEjections, readReenqueueState, requeueEjected } from "./causes/pr-ejected.ts";
 import { patchUnchangedSince, pipelineCodeownerReviewMissing, pipelineCodeownerReviewOrders, refusalCommitOf, reviewBlocked, withEvidenceLabelAges,
-  withPatchIds } from "./causes/pr-reviews.ts";
+  withPatchIds, withCheckMarkers } from "./causes/pr-reviews.ts";
 import { REVIEW_STATE, reviewStateOf } from "./pr-state.ts";
 import { EXIT, branchesToReplace, conditionalFor, defaultRun, holdTickBudget, inRepo, isGhRun, readArming, readClaimedRowComments, readElsewherePrs, readOpenRows,
   readPromotableRows, readPrs, readReadyRows, readWithFirstWaveTogether, repoNow, restReadsOfTick, runBatch, standingFor, isGateProcess } from "./reads.ts";
@@ -684,7 +684,7 @@ export function recordTickFailures({ trunkRed, prs, keyedTrunkReds = [], stateDi
 function codeReadings(openPrs: any[], scope: Scope, trunkRed: ReturnType<typeof readScopeTrunkRed> = readScopeTrunkRed(scope)) {
   const required = requiredWhenNeeded(openPrs);
   const split = readArmingOf(openPrs, required);
-  return { prs: withStaleRefusals(withVerifyStamps(withEjections(withEvidenceLabelAges(withPatchIds(openPrs, defaultRun, required)), split?.ejections), { checkout: verifyCheckoutOf(scope.key) }), required), required, baseTip: baseTipWhenRed(openPrs),
+  return { prs: withStaleRefusals(withVerifyStamps(withEjections(withEvidenceLabelAges(withPatchIds(withCheckMarkers(openPrs, defaultRun, required), defaultRun, required)), split?.ejections), { checkout: verifyCheckoutOf(scope.key) }), required), required, baseTip: baseTipWhenRed(openPrs),
     unarmed: split === null ? null : split.unarmed,
     trunkRed };
 }

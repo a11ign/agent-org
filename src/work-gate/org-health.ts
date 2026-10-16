@@ -14,6 +14,7 @@
 // import and its one caller stay together. `work-gate.ts` re-exports every name this file exports that it exported before.
 import { REPO_CHECKOUT, HOUR_MS, fleetBatchRows, defaultRun, repoNow, MAX_ROW_ORDERS_PER_TICK,
   shouldBeMerging, scopesOf, labelsOf, sessionOf, REVIEWER_STATE_DIR, dispatchedLabJobsOrSay, redPrFacts, partitionUnclaimed, openBlockers, rowKind, productRegionsOf } from "../work-gate.ts";
+import { redSinceOf } from "../org-health.ts";
 import { declaredRegionFiles, regionCovers, splitRegionEntry } from "../region-paths.ts";
 import { ORG_TRACKER_REPO } from "../row-tracker.ts";
 import { READY_LABEL, CLAIM_LABEL } from "../claim-labels.ts";
@@ -38,7 +39,7 @@ import { readRulings, unreadableLine, rulingTick } from "../ruling-record.ts";
 import { homeProjectDeclaration } from "../project-config.ts";
 import { readReleaseFacts, registryDistTags, remoteTagExists, splitHeldOnSatisfied, heldOnSatisfiedOrders, umbrellaEdges, umbrellaEdgeOrders } from "./held-on-satisfied-orders.ts";
 import { referencesOf, releaseReferencesOf, waitItemOf, staleWaits, bareWaits, manualWaits, parseWaits, liftableHolds, isItemWait } from "../wait-condition.ts";
-import { stallReasonOf, ownerOfPr } from "./pr-orders.ts";
+import { stallReasonOf, ownerOfPr, reviewGateOf, reviewHeadsOf } from "./pr-orders.ts";
 import { claimedScopesOf, scopeAddedReadings, scopeAddedOrders } from "./scope-added-orders.ts"; // #4759
 import { idleHoldIncidents, idleHoldOrders } from "./idle-hold-incidents.ts"; // #571
 import { forgetReads, readWithFirstWaveTogether, webhookMode } from "./reads.ts";
@@ -459,6 +460,25 @@ export function releaseRepositories(): string[] {
 const lastMerge = (read: number | { at: number; repo: string; } | null): { lastMergedAt: number | null; lastMergedIn: string | null; } => (read !== null && typeof read === "object" ? { lastMergedAt: read.at, lastMergedIn: read.repo } : { lastMergedAt: read, lastMergedIn: null });
 
 /**
+ * agent-org#1538: THE RED PULL REQUESTS WHOSE CHECKS ASK FOR A REVIEW (`Cleared-by: review`), each with whether a reviewer is already ordered at its
+ * CURRENT head: an order for the subject whose key is the one `draftOrder` gives this head (`reviewHeadsOf`, the patch id when it is known). An order
+ * keyed on an older head does not count, so a pull request that moved since its reviewer was ordered is listed until a reviewer is ordered again.
+ * `review-gated-unasked` reads this: a review-gated red with no reviewer order is the gate failing to ask the one seat that clears it.
+ * `reviewGateOf` is the gate's own reading, so a PR the gate would route as a code failure is never listed here.
+ */
+export function reviewGatedFacts(prs: any[], decided: { cause: string; subject: string; causeKey?: string; }[], required: string[] | null) {
+  return prs.filter((pr) => reviewGateOf(pr, required) === "review").map((pr) => {
+    const subject = `pr-${subjectRef(pr.repoKey, pr.number)}`;
+    const key = reviewHeadsOf(pr, String(pr.headRefOid), "settled").key;
+    return {
+      number: pr.number,
+      redSince: redSinceOf(pr),
+      reviewerOrdered: decided.some((order) => order.cause === "draft-awaiting-verdict" && order.subject === subject && String(order.causeKey ?? "").split("/").pop() === key),
+    };
+  });
+}
+
+/**
  * #2936: THE ORG-HEALTH TICK over what `main` already holds. Reads ONE new thing, the last merge (`GH_READS`); every other fact is a
  * value the tick computed for `decide`: the PRs with their owners, `required`, the offered rows, the #2845 streaks and the primary's
  * drift. `prsRead`/`readyRead` are the RAW reads, `null` for a refusal, because `decideArgs` carries them coalesced to `[]` and
@@ -523,6 +543,7 @@ export function orgHealthNow({ prsRead, keyedPrsRead = [], readyRead, openRowsRe
     ...lastMerge(lastMergedAt()),
     work: prsRead !== null && readyRead !== null ? workThatCouldLand(decideArgs, { holdStands, stale }) : null,
     redPrs: prsRead === null ? null : redPrFacts(withoutHeld(prs, held), decided, { holdStands }),
+    reviewGated: prsRead === null ? null : reviewGatedFacts(withoutHeld(prs, held), decided, required),
     overdue: overdueFacts({ prsRead, openRowsRead, claimedComments, required, now,
       holders: holdersForClock({ openRowsRead, claimFacts, now, readHolderAgents }) }),
     refusals: claimRefusals ?? null,
