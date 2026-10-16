@@ -58,7 +58,6 @@ import { unwaitedStockRows, unwaitedLines, ghTrackerReader } from "./unwaited-st
 import { untieredReadyRows, untieredLines, ghReadyReader, untieredOffer, untieredSweepKey, parseUntieredMemory, UNTIERED_MEMORY_FILE, type UntieredRow } from "./untiered-ready-rows.ts";
 import { HAIKU_TIER_LABEL } from "./worker-profile.ts";
 // THE "UNDERSPECIFIED" FEEDBACK LOOP (a11ign#5117): a leaf, so the retro stays importable before any install.
-// THE PIN/BUMP COUNT (agent-org#1245): the leaf that counts it, and the one flag that puts it on #928 (`machinery:flag`, default OFF).
 import { UNNAMED_FIELD, underspecifiedLines, underspecifiedReading, underspecifiedStops, type UnderspecifiedReading } from "./spec-lint.ts";
 import { commentsSince } from "./ticket-port/comments-since.ts";
 import { readRowsByLabel } from "./ticket-port/rows-by-label.ts"; // #5076: the claimed rows and the merged list are connections, never a search

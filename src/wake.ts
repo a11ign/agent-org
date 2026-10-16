@@ -7164,7 +7164,7 @@ function rerunRedOnServerError(red: { repo: string; number: number; head8: strin
 
 /**
  * `ci-failure-class` (#4632) for each settled-red order. The class and the route go in the journal line whoever chose; the ORDER's text gains them only when the PROVIDER chose, or when a rule
- * says WAIT for a pin bump (#5151, `notesTheOrder`), so otherwise with no provider the order is the gate's, byte for byte. `read` and `classify` are seams for a test.
+ * names a route a rerun cannot clear (#1524, `notesTheOrder`), so otherwise with no provider the order is the gate's, byte for byte. `read` and `classify` are seams for a test.
  */
 export async function withCiFailureClass<T extends Enrichable>(orders: readonly T[], deps: EnrichDeps & { read?: typeof readCiFailure; classify?: typeof classifyCiFailure; now?: number; rerunFlags?: { readonly enabled: boolean } }): Promise<T[]> {
   const { gh = defaultGh, read = readCiFailure, classify = classifyCiFailure, now = Date.now(), rerunFlags = CI_RERUN_ON_5XX } = deps;
