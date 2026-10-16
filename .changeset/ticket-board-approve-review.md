@@ -1,0 +1,5 @@
+---
+"agent-org": minor
+---
+
+The ticket board has an Approve action for a run whose pull requests await review or are ready to merge. A person who has reviewed the pull requests presses it, and the ticket is queued again as a review run. The review run resumes the worker that wrote the code, in its own Claude session, which the board now saves when a run ends; a run that ended before this release resumes the newest session Claude Code kept for the ticket's folder, and a fresh worker starts only when there is none. It marks each pull request ready, waits up to 30 minutes for its checks and its review, fixes and answers what they find, pushes, and waits for the checks on that push. A review run may run `gh pr ready`, which every other worker is still refused. It ends Ready to merge, which needs every check passing on the last commit, or hands the run back as Needs you. A live review run shows as Reviewing. The new optional `tickets.review` names a markdown file added to every review run's brief: which checks must pass and which reviewer to wait for on this machine.

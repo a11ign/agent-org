@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { isParked } from "./board-view.ts";
 import {
-  amend, emptyQueue, enqueue, finish, isLive, loadQueue, markResumed, markRunning, markStarting, nextStarts, observe, park, recordBlockers, recordRepos,
+  amend, approve, emptyQueue, enqueue, finish, isLive, loadQueue, markResumed, markRunning, markStarting, nextStarts, observe, park, recordBlockers, recordRepos,
   planDone, recordPullStates, recordTrackerStates, remove, retry, saveQueue, setMax, setPaused, unpark, unreadBlockerKeys, unsettledKeys, type Queue,
 } from "./queue.ts";
 import type { Ticket } from "./source.ts";
@@ -176,4 +176,64 @@ test("finish drops the workspace and pane, and markResumed makes a parked run li
   assert.deepEqual([a.phase, a.outcome, a.finishedAt, a.trackerState, a.pullStates, a.workspace, a.pane, a.seenWorking],
     ["running", undefined, undefined, undefined, undefined, "w1", "w1:p1", true]);
   assert.equal(unpark(running, "A").entries[0].workspace, "w1", "unpark leaves a live run's workspace alone");
+});
+
+const pr = { repo: "app", url: "https://github.com/x/app/pull/1" };
+
+/** A queue whose one run, A, ended with `outcome` after a worker in session `s1`. */
+function endedWith(outcome: Parameters<typeof finish>[2], fields: Record<string, unknown> = {}): Queue {
+  const queue = markRunning(markStarting(enqueue(emptyQueue(3), [ticket("A"), ticket("B")], choice, 1), "A", 2), "A", "w1", "w1:p1");
+  const ended = finish(queue, "A", outcome, 3, { tokens: { input: 1, output: 2 }, session: "s1" });
+  return { ...ended, entries: ended.entries.map((e) => (e.ticket.key === "A" ? { ...e, ...fields } : e)) };
+}
+
+test("a run that ends records the Claude session its worker used, so a review run can resume it", () => {
+  const [a] = endedWith({ kind: "draft-pr", prs: [pr] }).entries;
+  assert.equal(a.session, "s1");
+  assert.deepEqual(a.tokens, { input: 1, output: 2 });
+});
+
+test("approve queues a run's open pull requests again, at the end, as a review run that keeps the worker's session and nothing of the run", () => {
+  const queue = approve(endedWith({ kind: "draft-pr", prs: [pr] }, { pullStates: { [pr.url]: "open" } }), "A", 9);
+  const a = queue.entries.find((e) => e.ticket.key === "A");
+  assert.deepEqual(keys(queue), ["B", "A"]);
+  assert.deepEqual(a, { ticket: ticket("A"), repos: [], model: "opus", effort: "high", session: "s1", review: [pr], phase: "queued", queuedAt: 9 });
+  const again = approve(endedWith({ kind: "reviewed", prs: [pr] }), "A", 9).entries.find((e) => e.ticket.key === "A");
+  assert.deepEqual(again?.review, [pr], "reviewed pull requests can have another round");
+});
+
+test("approve reviews only the pull requests still open, and leaves a run with none open alone", () => {
+  const merged = { repo: "lib", url: "https://github.com/x/lib/pull/2" };
+  const queue = endedWith({ kind: "draft-pr", prs: [pr, merged] }, { pullStates: { [pr.url]: "open", [merged.url]: "merged" } });
+  assert.deepEqual(approve(queue, "A", 9).entries.find((e) => e.ticket.key === "A")?.review, [pr]);
+  const none = endedWith({ kind: "draft-pr", prs: [] });
+  assert.deepEqual(approve(none, "A", 9), none, "a draft outcome naming no pull request has nothing to review");
+});
+
+test("a retried run that is not a review run starts a fresh worker, and an ended run never keeps an earlier worker's session", () => {
+  const handed = endedWith({ kind: "needs-human", reason: "?" });
+  const retried = retry(handed, "A", 4);
+  assert.equal(retried.entries.find((e) => e.ticket.key === "A")?.session, undefined);
+  const rerun = finish(markRunning(markStarting(handed, "A", 5), "A", "w2", "w2:p1"), "A", { kind: "draft-pr", prs: [pr] }, 6);
+  assert.equal(rerun.entries.find((e) => e.ticket.key === "A")?.session, undefined, "herdr never named run 2's session, and run 1's is not its");
+});
+
+test("approve leaves alone a run that is not an open result: live, handed back, parked, or settled", () => {
+  const draft = endedWith({ kind: "draft-pr", prs: [pr] });
+  const live = markRunning(markStarting(enqueue(emptyQueue(3), [ticket("A")], choice, 1), "A", 2), "A", "w1", "w1:p1");
+  const parked = park(live, "A", { kind: "needs-human", reason: "?" }, 3);
+  for (const [why, queue] of [
+    ["live", live], ["handed back", endedWith({ kind: "needs-human", reason: "?" })], ["parked", parked],
+    ["merged", { ...draft, entries: draft.entries.map((e) => ({ ...e, pullStates: { [pr.url]: "merged" as const } })) }],
+    ["completed in the tracker", recordTrackerStates(draft, new Map([["A", "completed"]]))],
+  ] as const) assert.deepEqual(approve(queue, "A", 9), queue, why);
+});
+
+test("a review run that failed is retried as a review run, and a reviewed one is a result, not retried", () => {
+  const review = approve(endedWith({ kind: "draft-pr", prs: [pr] }), "A", 9);
+  const crashed = finish(markRunning(markStarting(review, "A", 10), "A", "w2", "w2:p1"), "A", { kind: "crashed", reason: "x" }, 11);
+  const retried = retry(crashed, "A", 12).entries.find((e) => e.ticket.key === "A");
+  assert.deepEqual([retried?.phase, retried?.review, retried?.session], ["queued", [pr], "s1"]);
+  const reviewed = endedWith({ kind: "reviewed", prs: [pr] });
+  assert.deepEqual(retry(reviewed, "A", 12), reviewed);
 });

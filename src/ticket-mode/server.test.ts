@@ -191,6 +191,18 @@ test("the board's queue starts paused, and Start and Pause go through the API", 
   assert.equal(b.store.get().paused, true);
 });
 
+test("approve queues a finished run's draft pull requests again as a review run", async () => {
+  const b = board();
+  await b.api("GET", "/api/tickets", {});
+  await b.api("POST", "/api/queue", { keys: ["NBF-1"], model: "sonnet", effort: "high" });
+  const pr = { repo: "app", url: "https://github.com/x/app/pull/1" };
+  b.store.set({ ...b.store.get(), entries: b.store.get().entries.map((e) => ({ ...e, phase: "finished" as const, outcome: { kind: "draft-pr" as const, prs: [pr] } })) });
+  await b.api("POST", "/api/queue/NBF-1/approve", {});
+  const [entry] = b.store.get().entries;
+  assert.deepEqual([entry.phase, entry.review], ["queued", [pr]]);
+  assert.ok(b.ticks.includes("tick"), "approving wakes the pool");
+});
+
 test("remove, stop, close and max go through the board", async () => {
   const b = board();
   await b.api("GET", "/api/tickets", {});

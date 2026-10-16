@@ -69,6 +69,38 @@ function withDeny(deny: string, command: string) {
   return main(JSON.stringify({ tool_name: "Bash", tool_input: { command } }), ["pre-tool-use", dir]);
 }
 
+test("a review run may mark ready the pull requests the person approved, by URL, and nothing else of the person's is lifted", () => {
+  const url = "https://github.com/x/app/pull/1";
+  const review = (command: string) => toolVerdict("Bash", { command }, [], [], [url]).code;
+  assert.equal(review(`gh pr ready ${url}`), 0);
+  assert.equal(review(`gh pr ready ${url}2`), 2, "a pull request whose URL only starts with an approved one");
+  assert.equal(review("gh pr ready https://github.com/x/app/pull/7"), 2, "a pull request the person did not approve");
+  assert.equal(review("gh pr ready 1"), 2, "a pull request named by number only");
+  assert.equal(review(`gh pr ready ${url} --undo`), 2, "turning one back into a draft");
+  for (const refused of ["gh pr merge 12 --squash", "gh pr review 12 --approve", "gh pr edit 12 --add-reviewer x", "gh workflow run ci.yml", "git push --force origin x"]) {
+    assert.equal(review(refused), 2, refused);
+  }
+  assert.equal(bash("gh pr ready 12"), 2, "POSITIVE CONTROL: any other run is refused it");
+});
+
+test("the hook treats a run as a review run while the pool's review mark is beside its outcome file", () => {
+  const dir = tmpDir("ticket-hook-review-");
+  const ready = () => main(JSON.stringify({ tool_name: "Bash", tool_input: { command: "gh pr ready 5" } }), ["pre-tool-use", dir]).code;
+  assert.equal(ready(), 2, "no mark: refused");
+  writeFileSync(join(dir, "review-run"), "[]\n");
+  assert.equal(ready(), 2, "a mark naming no pull request allows none");
+  writeFileSync(join(dir, "review-run"), `${JSON.stringify([{ repo: "app", url: "https://github.com/x/app/pull/5" }])}\n`);
+  const named = main(JSON.stringify({ tool_name: "Bash", tool_input: { command: "gh pr ready https://github.com/x/app/pull/5" } }), ["pre-tool-use", dir]).code;
+  assert.equal(named, 0);
+});
+
+test("no worker may write the review mark, by a command or a file tool, since it would lift a refusal", () => {
+  assert.equal(bash("echo '[]' > /state/tickets/NBF-1/review-run"), 2);
+  assert.equal(toolVerdict("Write", { file_path: "/state/tickets/NBF-1/review-run", content: "[]" }).code, 2);
+  assert.equal(toolVerdict("Edit", { file_path: "/state/tickets/NBF-1/review-run.md" }).code, 2);
+  assert.equal(toolVerdict("Write", { file_path: "/state/tickets/NBF-1/outcome.json", content: "{}" }).code, 0, "POSITIVE CONTROL: the outcome file is the worker's");
+});
+
 test("this machine's own refusals apply after the built-in ones, each with its own reason", () => {
   const deny = JSON.stringify([{ pattern: "\\bnpm\\s+run\\s+(dev|preview)\\b(?!:atomic)", reason: "a fixed port collides with other workers" }]);
   const refused = withDeny(deny, "npm run dev -w packages/ui-netbox");

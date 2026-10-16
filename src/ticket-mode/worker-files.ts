@@ -9,6 +9,7 @@
 // decides where the work lands, and makes a worktree there with `ticket:worktree`. Each repository's `CLAUDE.md`/`AGENTS.md` names how to install,
 // test and typecheck it, which is where any engineer looks, so nothing about a repository is declared here or in the host file.
 import type { DenyRule } from "./settings.ts";
+import type { PullRequest } from "./queue.ts";
 import type { Blocker, Ticket } from "./source.ts";
 
 /** The file a worker writes last, and the one thing the pool and the stop hook read to know a run has ended. */
@@ -22,6 +23,13 @@ export const STOP_COUNT_FILE = "stop-refusals";
 export const DENY_FILE = "deny.json";
 /** The host file's `tickets.connectors`, copied beside the outcome file, where the PreToolUse hook reads it. */
 export const CONNECTORS_FILE = "connectors.json";
+/**
+ * Present beside the outcome file while the run is a REVIEW RUN, one a person started by approving its pull requests. It lets the PreToolUse
+ * hook allow `gh pr ready`, which only that person's approval makes the worker's to run.
+ */
+export const REVIEW_FILE = "review-run";
+/** How long a review run waits for a pull request's checks or its review before it hands the run back. */
+export const REVIEW_WAIT_MINUTES = 30;
 
 /** What a worker does when a skill its brief names is missing: a copy of the skill's files, read by hand, is not the skill and its helpers. */
 const MISSING_SKILL = "If a skill this brief names is not available in this session, write a `needs-human` outcome naming it, rather than following a copy of its files.";
@@ -219,6 +227,58 @@ A person may answer you here after a \`needs-human\` or \`wrong-repo\` outcome. 
 `;
 }
 
+/**
+ * A review run's brief, as markdown: the person approved `prs`, so mark each ready, see it through its checks and its review, and fix what they
+ * find. `reviewNotes` is the host file's `tickets.review`, how this machine's pull requests are checked and reviewed, and `notes` its
+ * `tickets.brief`. `resumed` is true when the worker is the one that wrote the code, resumed with its own conversation.
+ */
+export function reviewBriefText({ ticket, folder, ticketDir, prs, notes, reviewNotes, connectors = [], resumed }: {
+  ticket: Ticket; folder: string; ticketDir: string; prs: readonly PullRequest[]; notes?: string; reviewNotes?: string;
+  connectors?: readonly string[]; resumed: boolean;
+}): string {
+  const list = prs.map(({ repo, url }) => `- ${url}, worked in \`${folder}/${repo}\``).join("\n");
+  const who = resumed
+    ? "You wrote these pull requests earlier in this conversation."
+    : "Another worker wrote these pull requests, and its conversation could not be found: read each pull request's diff and the ticket before you change anything.";
+  const wait = REVIEW_WAIT_MINUTES;
+  return `# ${ticket.key}: review round for ${ticket.title}
+
+A person reviewed your draft pull requests and approved them. ${who} You are unattended again: nobody will answer a question, so decide, do the work, and end by writing the outcome file below.
+
+## The ticket
+
+${ticket.url}
+
+## The pull requests
+
+${list}
+
+## What to do
+
+1. Mark each pull request ready with \`gh pr ready <url>\`.
+2. Wait for each one's checks and its review, as "How this machine reviews" says. Look every few minutes, and wait at most ${wait} minutes for each. If a check or the review has not finished by then, write a \`needs-human\` outcome that names what you waited for.
+3. Read every review comment and every failed check. Fix each real finding in the worktree, with a test that fails without the fix where the finding is about behaviour. A finding you judge wrong is not fixed: say why in your reply instead. Run the repository's checks on what you changed.
+4. Commit with a conventional commit message, and push. Never force-push.
+5. Reply on each pull request with one comment: each finding, and what you did about it.
+6. Wait at most ${wait} minutes for the checks on the commit you pushed. If one fails, fix it, push, and wait again. Do not wait for a second review: the person approves again for another round.
+
+Never merge, approve, request a review, force-push, run a workflow, or post to Slack. Those are the person's.
+
+${MISSING_SKILL}
+${connectorsText(connectors)}${reviewNotes?.trim() ? `\n## How this machine reviews\n\n${reviewNotes.trim()}\n` : ""}${notes?.trim() ? `\n## On this machine\n\n${notes.trim()}\n` : ""}
+## The outcome file
+
+Write \`${ticketDir}/${OUTCOME_FILE}\` as the last thing you do, with exactly one of:
+
+\`\`\`json
+{ "kind": "reviewed" }
+{ "kind": "needs-human", "reason": "<what a person must decide or provide>" }
+\`\`\`
+
+Write \`reviewed\` only when every pull request is ready, every finding is answered, and every check passed on its last commit. A person may answer you here after a \`needs-human\` outcome. If one does, carry on with what they said, and write the outcome file again as the last thing you do.
+`;
+}
+
 /** The hook command a settings file names: this tool's `ticket:hook`, by absolute path, so it runs without the tool on `PATH`. */
 export type HookCommand = Readonly<{ node: string; bin: string }>;
 
@@ -242,13 +302,21 @@ export function workerSettings({ model, ticketDir, readDirs, hook, plugins = [] 
   };
 }
 
-/** The flags after the first prompt. `--disallowedTools` is last, so a list never swallows a flag after it (`wake.ts`'s seat flags say why). */
-export function workerFlags({ name, model, effort, addDirs }: { name: string; model: string; effort: string; addDirs: readonly string[] }): string[] {
-  return ["--model", model, "--effort", effort, "--name", name, ...addDirs.flatMap((dir) => ["--add-dir", dir]),
+/**
+ * The flags after the first prompt. `resume` is a Claude session to continue, the worker's own conversation, rather than a new one.
+ * `--disallowedTools` is last, so a list never swallows a flag after it (`wake.ts`'s seat flags say why).
+ */
+export function workerFlags({ name, model, effort, addDirs, resume }: { name: string; model: string; effort: string; addDirs: readonly string[]; resume?: string }): string[] {
+  return [...(resume ? ["--resume", resume] : []), "--model", model, "--effort", effort, "--name", name, ...addDirs.flatMap((dir) => ["--add-dir", dir]),
     "--dangerously-skip-permissions", "--disallowedTools", "AskUserQuestion"];
 }
 
 /** The first prompt: a pointer to the brief, short enough that no quoting or argument limit can cut it. */
 export function firstPrompt(ticketDir: string): string {
   return `Read ${ticketDir}/${BRIEF_FILE} and follow it.`;
+}
+
+/** A review run's first prompt, which a resumed worker reads after its own earlier turns. */
+export function reviewPrompt(ticketDir: string): string {
+  return `A person reviewed this ticket's pull requests and approved them. Read ${ticketDir}/${BRIEF_FILE} and follow it.`;
 }

@@ -18,8 +18,13 @@
 // A RUN THAT HANDS ITS TICKET BACK IS PARKED, NOT CLOSED. On `needs-human`, `wrong-repo` or `no-outcome` its workspace stays open and holds no
 // slot, so the person can answer the agent in its terminal. An agent seen working again has been answered: its outcome file is moved aside, so
 // the stop hook asks for a new one, and the run is live again. Close ends a parked run's workspace; a workspace closed by hand is noticed.
+//
+// A REVIEW RUN RESUMES THE WORKER THAT WROTE THE CODE. A person who approves a run's pull requests queues the ticket again as a review run
+// (`approve`). It starts in the same ticket folder with `claude --resume` on the session the first run ended in, so it keeps that worker's
+// context, and a brief that has it mark the pull requests ready and see them through their checks and review. A run whose session was not
+// recorded resumes the newest transcript Claude Code kept for that folder, and a fresh worker starts only when there is none.
 import { execFile, spawn } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { availableParallelism, homedir, loadavg } from "node:os";
 import { join } from "node:path";
 import { agentStartArgs, closedNote, herdrReason, herdrRun, openPane, readAgents } from "../herdr-agents.ts";
@@ -34,8 +39,8 @@ import { unreachablePlugins } from "./plugins.ts";
 import { TICKET_ENV } from "./worktree-command.ts";
 import { HOST_FILE_ENV, type TicketSettings } from "./settings.ts";
 import {
-  BRIEF_FILE, CONNECTORS_FILE, DENY_FILE, OUTCOME_FILE, PLAN_DIR, PLANNING_DENY, PREVIOUS_OUTCOME_FILE, STOP_COUNT_FILE, briefText, firstPrompt, planBriefText, workerFlags,
-  workerSettings, type HookCommand, type ParentTicket,
+  BRIEF_FILE, CONNECTORS_FILE, DENY_FILE, OUTCOME_FILE, PLAN_DIR, PLANNING_DENY, PREVIOUS_OUTCOME_FILE, REVIEW_FILE, STOP_COUNT_FILE, briefText, firstPrompt,
+  planBriefText, reviewBriefText, reviewPrompt, workerFlags, workerSettings, type HookCommand, type ParentTicket,
 } from "./worker-files.ts";
 
 /** herdr waits on Claude's start; a slow one has been measured past 30 s (`wake.ts`'s start budget), so a start gets 90. */
@@ -146,6 +151,8 @@ export function parseOutcome(text: string): Outcome {
       return { kind: "draft-pr", prs: value.prs.map((pr: Record<string, unknown>) => ({ repo: String(pr.repo ?? ""), url: String(pr.url ?? "") })) };
     }
     if (value.kind === "planned") return { kind: "planned" };
+    // A review run's pull requests are the ones the person approved, which the pool holds: `settle` puts them in.
+    if (value.kind === "reviewed") return { kind: "reviewed", prs: [] };
     if (value.kind === "wrong-repo") return { kind: "wrong-repo", where: String(value.where ?? "") };
     if (value.kind === "needs-human") return { kind: "needs-human", reason: String(value.reason ?? "") };
   } catch {
@@ -166,6 +173,40 @@ export function findTranscript(root: string, sessionId: string): string | null {
     if (existsSync(file)) return file;
   }
   return null;
+}
+
+/** Claude Code's name for a folder's project: every character but a letter or a digit becomes `-`. */
+const projectName = (folder: string): string => folder.replace(/[^A-Za-z0-9]/g, "-");
+
+/** The bytes of a transcript read to find the folder its session ran in, which Claude Code records on its first messages. */
+const TRANSCRIPT_HEAD_BYTES = 65_536;
+
+function headOf(file: string): string {
+  const fd = openSync(file, "r");
+  try {
+    const buffer = Buffer.alloc(TRANSCRIPT_HEAD_BYTES);
+    return buffer.toString("utf8", 0, readSync(fd, buffer, 0, buffer.length, 0));
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * The id of the newest Claude session that ran in `folder`, or null. A worker starts in its ticket's folder, and Claude Code files its session
+ * under that folder's own project (seen 2026-10-16: `-Users-…-work--tickets-NBF-1463`, each transcript recording that folder as its `cwd`).
+ * Only that project is read, and a session is taken only when its transcript records `folder`: the newest is the ticket's latest worker.
+ */
+export function findFolderSession(root: string, folder: string): string | null {
+  const dir = join(root, projectName(folder));
+  if (!existsSync(dir)) return null;
+  const cwd = `"cwd":${JSON.stringify(folder)}`;
+  let newest: { id: string; at: number } | null = null;
+  for (const name of readdirSync(dir).filter((n) => n.endsWith(".jsonl"))) {
+    const file = join(dir, name);
+    const at = statSync(file).mtimeMs;
+    if ((newest === null || at > newest.at) && headOf(file).includes(cwd)) newest = { id: name.slice(0, -".jsonl".length), at };
+  }
+  return newest?.id ?? null;
 }
 
 /** Input and output tokens in one transcript. Input counts cache reads and writes, which are what a run spends. */
@@ -234,14 +275,26 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     return count >= MISSES_TO_GONE;
   }
 
-  /** The host file's `tickets.brief`, read for each run so an edit reaches the next worker. Throws naming the setting when it cannot be read. */
-  function machineNotes(): string | undefined {
-    if (settings.brief === null) return undefined;
+  /**
+   * A notes file the host file names (`tickets.brief`, `tickets.review`), read for each run so an edit reaches the next worker. Throws naming the
+   * setting when it cannot be read.
+   */
+  function notesFile(path: string | null, setting: string): string | undefined {
+    if (path === null) return undefined;
     try {
-      return readFileSync(settings.brief, "utf8");
+      return readFileSync(path, "utf8");
     } catch {
-      throw new Error(`tickets.brief names ${settings.brief}, which cannot be read`);
+      throw new Error(`${setting} names ${path}, which cannot be read`);
     }
+  }
+
+  /**
+   * The Claude session a review run resumes: the one its last run ended in, while its transcript is still there, or else the newest one Claude
+   * Code kept for the ticket's folder. Undefined when there is none, and the review run starts a fresh worker.
+   */
+  function sessionToResume(entry: Entry): string | undefined {
+    if (entry.session !== undefined && findTranscript(transcripts, entry.session) !== null) return entry.session;
+    return findFolderSession(transcripts, ticketFolder(settings, entry.ticket.key)) ?? undefined;
   }
 
   /**
@@ -269,7 +322,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
    * (under `worktreeRoot`), so the worker starts with the workspace's own `CLAUDE.md` around it, and it is no repository itself: the worker makes
    * its worktrees inside it with `ticket:worktree` once it has decided where the work lands. Throws, with the reason, when any of it cannot be made, and before making any of it when a plugin the worker needs would not load in that folder.
    */
-  async function prepare(entry: Entry): Promise<{ folder: string; dir: string }> {
+  async function prepare(entry: Entry): Promise<{ folder: string; dir: string; resume?: string }> {
     const ticket = await current(entry.ticket);
     const dir = ticketDir(settings, ticket.key);
     const folder = ticketFolder(settings, ticket.key);
@@ -277,13 +330,20 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     const unreachable = unreachablePlugins(settings.plugins, folder, { record: deps.pluginRecord });
     if (unreachable.length > 0) throw new Error(unreachable.join(" "));
     mkdirSync(dir, { recursive: true });
-    // An earlier run's outcome and stop count would end this run before it began.
-    for (const file of [OUTCOME_FILE, STOP_COUNT_FILE]) rmSync(join(dir, file), { force: true });
+    // An earlier run's outcome and stop count would end this run before it began, and an earlier review run's mark would let it mark pull
+    // requests ready.
+    for (const file of [OUTCOME_FILE, STOP_COUNT_FILE, REVIEW_FILE]) rmSync(join(dir, file), { force: true });
     const attachments = await source.download(ticket, dir);
     const parent = await parentOf(ticket, dir);
-    const notes = machineNotes();
+    const notes = notesFile(settings.brief, "tickets.brief");
     const connectors = settings.connectors;
-    if (isPlanning(entry) && settings.planner) {
+    let resume: string | undefined;
+    if (entry.review !== undefined) {
+      resume = sessionToResume(entry);
+      writeFileSync(join(dir, BRIEF_FILE), reviewBriefText({ ticket, folder, ticketDir: dir, prs: entry.review, notes, reviewNotes: notesFile(settings.review, "tickets.review"),
+        connectors, resumed: resume !== undefined }));
+      writeFileSync(join(dir, REVIEW_FILE), `${JSON.stringify(entry.review)}\n`);
+    } else if (isPlanning(entry) && settings.planner) {
       // An earlier attempt's files would be attached as this one's.
       const planDir = join(dir, PLAN_DIR);
       rmSync(planDir, { recursive: true, force: true });
@@ -299,11 +359,11 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     mkdirSync(join(folder, ".claude"), { recursive: true });
     writeFileSync(join(folder, SETTINGS_FILE),
       `${JSON.stringify(workerSettings({ model: runChoice(entry).model, ticketDir: dir, readDirs: Object.values(settings.clones), hook, plugins: settings.plugins }), null, 2)}\n`);
-    return { folder, dir };
+    return { folder, dir, ...(resume ? { resume } : {}) };
   }
 
   /** Open the workspace and start Claude in it. Returns the workspace and its pane, or throws with herdr's reason after closing anything it opened. */
-  async function start(entry: Entry, folder: string, dir: string): Promise<{ workspace: string; pane: string }> {
+  async function start(entry: Entry, folder: string, dir: string, resume?: string): Promise<{ workspace: string; pane: string }> {
     const key = entry.ticket.key;
     const name = herdrName(key);
     const run = (args: string[]) => herdr(args);
@@ -312,7 +372,8 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     const opened = openPane(run, name, env, folder, session);
     if ("refusal" in opened) throw new Error(opened.refusal);
     const { model, effort } = runChoice(entry);
-    const tail = [firstPrompt(dir), ...workerFlags({ name: key, model, effort, addDirs: [dir] })];
+    const prompt = entry.review === undefined ? firstPrompt(dir) : reviewPrompt(dir);
+    const tail = [prompt, ...workerFlags({ name: key, model, effort, addDirs: [dir], resume })];
     try {
       await herdrAsync(agentStartArgs(name, "claude", opened.pane, tail, session), START_TIMEOUT_MS);
     } catch (err) {
@@ -400,6 +461,10 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
 
   /** A run wrote its outcome: a planning run's plan is attached, and any other outcome ends the run. */
   function settle(entry: Entry, outcome: Outcome): void {
+    if (outcome.kind === "reviewed") {
+      if (entry.review === undefined) return end(entry, { kind: "needs-human", reason: "the worker wrote a reviewed outcome, but its run was not a review run" });
+      return end(entry, { kind: "reviewed", prs: entry.review });
+    }
     if (outcome.kind !== "planned") return end(entry, outcome);
     if (!isPlanning(entry)) return end(entry, { kind: "needs-human", reason: "the worker wrote a planned outcome, but its run was not a planning run" });
     // Nothing waits on the attach, so its own failure is caught here rather than left to stop the board.
@@ -461,7 +526,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     if (entry.workspace && !parks) closedNote((args) => herdr(args), entry.workspace, session);
     const id = entry.workspace === undefined ? undefined : claudeSessions.get(entry.workspace);
     const tokens = countTokens(id === undefined ? null : findTranscript(transcripts, id));
-    update((queue) => (parks ? park : finish)(queue, entry.ticket.key, outcome, now(), tokens));
+    update((queue) => (parks ? park : finish)(queue, entry.ticket.key, outcome, now(), { tokens, ...(id === undefined ? {} : { session: id }) }));
     misses.delete(entry.ticket.key);
     answered.delete(herdrName(entry.ticket.key));
   }
@@ -507,8 +572,8 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
           update((queue) => planDone(queue, entry.ticket.key, false));
           continue;
         }
-        const { folder, dir } = await prepare(entry);
-        const { workspace, pane } = await start(entry, folder, dir);
+        const { folder, dir, resume } = await prepare(entry);
+        const { workspace, pane } = await start(entry, folder, dir, resume);
         // Stopped while it was starting: the stop is the person's last word, so the workspace it raced is closed and the run stays stopped.
         if (store.get().entries.find((e) => e.ticket.key === entry.ticket.key)?.phase !== "starting") {
           closedNote((args) => herdr(args), workspace, session);
