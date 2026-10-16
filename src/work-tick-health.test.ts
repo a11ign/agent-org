@@ -24,7 +24,7 @@ import { workGateSource } from "./lib/work-gate-source.ts";
 import { TICK_KILLED, TICK_MARKER_FILE, TICK_OVERRAN, TICK_RECORD_FILE, TICK_RECORD_MARKER, TICK_RECORD_TABLE_ROWS, TICK_SLOW_SECONDS, clearOwnMarker,
   deliverTickOrders, isSlowTick, killedTickOrders, parseCostLines, percentile, readKilledTick, readMarker, readTickRecordState, recordSlowTick, renderTickRecord,
   slowThresholdSeconds, standingRowFor, tickHealthLine, tickHealthOf, tickMarkerPath, tickRecordOf, tickRecordTargetFrom, tickRecordUnwrittenLine, tickWallIsHigh,
-  overranWakesOf, TICK_RECORD_ROW_TITLE, tickRecordRowBody, writeStartMarker, type CostLine, type RecordIo } from "./work-tick-health.ts";
+  overranWakesOf, TICK_RECORD_ROW_TITLE, tickRecordRowBody, phaseMarker, writeStartMarker, type CostLine, type RecordIo } from "./work-tick-health.ts";
 
 const SRC = fileURLToPath(new URL(".", import.meta.url));
 const PRELOAD = join(SRC, "lib", "crash-exit.ts");
@@ -267,7 +267,7 @@ test("#3567: no marker is no killed tick, and a marker whose process ENDED is on
   const path = join(dir, TICK_MARKER_FILE);
   assert.equal(readKilledTick(path), null, "CONTROL: nothing there");
   writeStartMarker(path, { at: START, pid: deadPid() });
-  assert.deepEqual(readKilledTick(path), { at: START, pid: readMarker(path)?.pid, unreadable: false });
+  assert.deepEqual(readKilledTick(path), { at: START, pid: readMarker(path)?.pid, unreadable: false, phase: null, phaseAt: null });
 }));
 
 test("#3567: a marker whose process is still ALIVE is a tick running beside this one, not a killed one", () => inDir((dir) => {
@@ -299,7 +299,7 @@ test("#3567: a tick clears only ITS OWN marker", () => inDir((dir) => {
 test("#3567: a killed tick's order names when it started and how long it ran at most, once per start time", () => {
   assert.deepEqual(killedTickOrders(null, { foundAt: START, costPath: COST_PATH }), [], "CONTROL: no marker, no order");
   const found = START + 613_000;
-  const [order] = killedTickOrders({ at: START, pid: 1, unreadable: false }, { foundAt: found, costPath: COST_PATH });
+  const [order] = killedTickOrders({ at: START, pid: 1, unreadable: false, phase: null, phaseAt: null }, { foundAt: found, costPath: COST_PATH });
   assert.equal(order.session, "ceo");
   assert.equal(order.subject, TICK_KILLED);
   assert.match(order.prompt, /started at 2026-10-04T21:40:04\.000Z never finished/);
@@ -307,10 +307,65 @@ test("#3567: a killed tick's order names when it started and how long it ran at 
   assert.equal(order.causeKey, `ceo/${TICK_OVERRAN}/${TICK_KILLED}-${START}`);
 });
 
+test("#1542: a killed tick's marker names the phase it was in, and the order says how long it had been in it", () => inDir((dir) => {
+  const path = join(dir, TICK_MARKER_FILE);
+  // The real writer: `phaseMarker` stamps `phaseAt` with the clock, so the finding instant is read off the marker and 511 s is added to it.
+  phaseMarker(path, { at: START, pid: deadPid() })("recover");
+  const marker = readKilledTick(path);
+  assert.equal(marker?.phase, "recover");
+  const foundAt = (marker?.phaseAt ?? NaN) + 511_000;
+  const [order] = killedTickOrders(marker, { foundAt, costPath: COST_PATH });
+  assert.match(order.prompt, /recover/);
+  assert.match(order.prompt, /8 m 31 s/);
+  assert.match(order.prompt, /It was in phase "recover" for at most 8 m 31 s/);
+  assert.equal(order.causeKey, `ceo/${TICK_OVERRAN}/${TICK_KILLED}-${START}`);
+}));
+
+test("#1542: a marker with only `{at,pid}` gets today's prompt, said to name no phase, under the same causeKey", () => inDir((dir) => {
+  const path = join(dir, TICK_MARKER_FILE);
+  writeStartMarker(path, { at: START, pid: deadPid() });
+  const marker = readKilledTick(path);
+  assert.equal(marker?.phase, null, "CONTROL: an older marker names no phase");
+  const [order] = killedTickOrders(marker, { foundAt: START + 613_000, costPath: COST_PATH });
+  assert.match(order.prompt, /No phase was recorded, so the marker cannot say where it was killed\./);
+  assert.match(order.prompt, /A killed tick writes no cost line, so look at the ones before it:/, "today's advice is kept");
+  assert.doesNotMatch(order.prompt, /It was in phase/);
+  assert.equal(order.causeKey, `ceo/${TICK_OVERRAN}/${TICK_KILLED}-${START}`);
+}));
+
+test("#1542: a marker is replaced WHOLE at each boundary through a temporary file, and a refused write leaves the old one whole", () => inDir((dir) => {
+  const path = join(dir, TICK_MARKER_FILE);
+  const temporary = `${path}.${process.pid}.tmp`;
+  writeStartMarker(path, { at: START, pid: 4242, phase: "gate", phaseAt: START });
+  mkdirSync(temporary); // a directory where the temporary file goes: the write is refused before the rename
+  assert.throws(() => writeStartMarker(path, { at: START, pid: 4242, phase: "version", phaseAt: START + 1 }));
+  assert.equal(readMarker(path)?.phase, "gate", "CONTROL: the refused write left the marker as it was, whole");
+  rmSync(temporary, { recursive: true });
+  writeStartMarker(path, { at: START, pid: 4242, phase: "version", phaseAt: START + 1 });
+  assert.equal(readMarker(path)?.phase, "version");
+  assert.equal(readMarker(path)?.phaseAt, START + 1);
+  assert.deepEqual(readdirSync(dir).filter((name) => name.endsWith(".tmp")), [], "the rename leaves no temporary file behind");
+}));
+
+test("#1542: a phase write that cannot be made does not throw, is SAID once, and the tick goes on", () => inDir((dir) => {
+  const said: string[] = [];
+  const blocker = join(dir, "not-a-directory");
+  writeFileSync(blocker, "");
+  const phase = phaseMarker(join(blocker, TICK_MARKER_FILE), { at: START, pid: 4242 }, (text) => said.push(text));
+  assert.doesNotThrow(() => phase("gate"));
+  assert.doesNotThrow(() => phase("wake"));
+  assert.equal(said.length, 1, "said once, not per phase");
+  assert.match(said[0], /TICK PHASE NOT RECORDED at .*A killed tick will not say which phase it was in\./);
+  const good: string[] = [];
+  phaseMarker(join(dir, "fine", TICK_MARKER_FILE), { at: START, pid: 4242 }, (text) => good.push(text))("gate");
+  assert.deepEqual(good, [], "CONTROL: a marker that can be written says nothing");
+  assert.equal(readMarker(join(dir, "fine", TICK_MARKER_FILE))?.phase, "gate");
+}));
+
 // --- DELIVERY ----------------------------------------------------------------------------------------------------------------------------------
 
 test("#3567: delivery hands `wake` one JSON line per order, and a `wake` that refuses is SAID, never swallowed", () => {
-  const [order] = killedTickOrders({ at: START, pid: 1, unreadable: false }, { foundAt: START + 613_000, costPath: COST_PATH });
+  const [order] = killedTickOrders({ at: START, pid: 1, unreadable: false, phase: null, phaseAt: null }, { foundAt: START + 613_000, costPath: COST_PATH });
   const said: string[] = [];
   const seen: { input: string }[] = [];
   const fake = (status: number) => ((_node: string, _args: string[], options: { input: string }) => { seen.push(options); return { status, stdout: "", stderr: "" }; }) as unknown as typeof spawnSync;
@@ -380,6 +435,7 @@ test("#3567, through the tick: a tick SIGKILLed mid-run leaves its marker, and t
   const killed = tick.runUntilKilled(4000);
   assert.equal(killed.signal, "SIGKILL");
   assert.equal(existsSync(tick.marker), true, "a killed tick cannot clear its marker, and that is the whole signal");
+  assert.notEqual(readMarker(tick.marker)?.phase, null, "the marker names the phase the killed tick had begun (agent-org#1542)");
   assert.deepEqual(tick.delivered(), [], "and it told nobody, which is why the next one must");
 
   const next = tick.run();
@@ -388,6 +444,7 @@ test("#3567, through the tick: a tick SIGKILLed mid-run leaves its marker, and t
   assert.equal(delivered.length, 1, JSON.stringify(delivered));
   assert.equal(delivered[0].subject, TICK_KILLED);
   assert.equal(delivered[0].session, "ceo");
+  assert.match(delivered[0].prompt, /It was in phase "/, "the order names the phase");
   assert.equal(existsSync(tick.marker), false, "read, and cleared");
 
   assert.equal(tick.run().status, 0);
