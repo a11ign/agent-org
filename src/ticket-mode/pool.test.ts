@@ -1,12 +1,12 @@
 // no-token: gh -- herdr, git, Linear and the clock are all injected; nothing is spawned
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { runStatus } from "./board-view.ts";
-import { countTokens, createPool, findTranscript, herdrName, isStartDialog, parseOutcome, ticketDir, ticketFolder, worktreesIn } from "./pool.ts";
-import { emptyQueue, enqueue, finish, retry, setPaused, type Queue } from "./queue.ts";
+import { countTokens, createPool, findFolderSession, findTranscript, herdrName, isStartDialog, parseOutcome, ticketDir, ticketFolder, worktreesIn } from "./pool.ts";
+import { approve, emptyQueue, enqueue, finish, retry, setPaused, type Queue } from "./queue.ts";
 import { parseTicketSettings } from "./settings.ts";
 import type { Ticket, TicketSource } from "./source.ts";
 
@@ -167,6 +167,92 @@ test("a run ends on its outcome file once the agent is idle; idle before it ever
   assert.deepEqual(entry("NBF-1").tokens, { input: 3, output: 4 });
   assert.deepEqual(entry("NBF-1").outcome, { kind: "draft-pr", prs: [{ repo: "nbl-ui-netbox", url: "https://github.com/x/pull/1" }] });
   assert.deepEqual([entry("NBF-1").workspace, entry("NBF-1").pane], [undefined, undefined], "its workspace was closed");
+  assert.equal(entry("NBF-1").session, "session-t-nbf-1", "the session it ran in is kept, for a review run to resume");
+});
+
+const approvedPr = { repo: "nbl-ui-netbox", url: "https://github.com/x/pull/1" };
+
+/** A pool whose one run, NBF-1, ended with a draft pull request in a session herdr called `session-t-nbf-1`, then was approved. */
+async function approvedRun(tickets: Record<string, unknown> = {}, { transcript = true } = {}) {
+  const ctx = setup(1, ["NBF-1"], tickets);
+  const { pool, status, settings, root, store } = ctx;
+  await pool.tick();
+  status.set(herdrName("NBF-1"), "idle");
+  writeFileSync(join(ticketDir(settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "draft-pr", prs: [approvedPr] }));
+  if (transcript) {
+    mkdirSync(join(root, "transcripts", "-Users-me-work"), { recursive: true });
+    writeFileSync(join(root, "transcripts", "-Users-me-work", "session-t-nbf-1.jsonl"), "{}\n");
+  }
+  await pool.tick();
+  status.delete(herdrName("NBF-1"));
+  store.set(approve(store.get(), "NBF-1", 200));
+  ctx.h.calls.length = 0;
+  await pool.tick();
+  const start = ctx.h.calls.find((args) => args.includes("start"))!;
+  return { ...ctx, tail: start.slice(start.indexOf("--") + 1), dir: ticketDir(settings, "NBF-1") };
+}
+
+test("an approved run starts a review run that resumes the worker's own session, told it was approved, with the machine's review notes", async () => {
+  const notes = join(tmpDir("ticket-review-notes-"), "review.md");
+  writeFileSync(notes, "Wait for the github-actions[bot] comment that starts \"Claude finished\".\n");
+  const { tail, dir, entry } = await approvedRun({ review: notes });
+  assert.equal(entry("NBF-1").phase, "running");
+  assert.equal(tail[0], `A person reviewed this ticket's pull requests and approved them. Read ${dir}/brief.md and follow it.`);
+  assert.deepEqual(tail.slice(tail.indexOf("--resume"), tail.indexOf("--resume") + 2), ["--resume", "session-t-nbf-1"]);
+  const brief = readFileSync(join(dir, "brief.md"), "utf8");
+  assert.match(brief, /review round for NBF-1/);
+  assert.match(brief, /You wrote these pull requests earlier in this conversation\./);
+  assert.ok(brief.includes(approvedPr.url));
+  assert.match(brief, /## How this machine reviews\n\nWait for the github-actions\[bot\] comment/);
+  assert.ok(existsSync(join(dir, "review-run")), "the hook's mark that this run may mark its pull requests ready");
+});
+
+test("a review run whose worker's session is gone starts a fresh worker, told to read the pull requests first", async () => {
+  const { tail, dir } = await approvedRun({}, { transcript: false });
+  assert.equal(tail.includes("--resume"), false);
+  assert.match(readFileSync(join(dir, "brief.md"), "utf8"), /Another worker wrote these pull requests/);
+});
+
+test("a review run ends Ready to merge with the pull requests the person approved, and the next run of the ticket loses the review mark", async () => {
+  const { pool, status, entry, dir, store } = await approvedRun();
+  status.set(herdrName("NBF-1"), "idle");
+  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "reviewed" }));
+  await pool.tick();
+  assert.deepEqual(entry("NBF-1").outcome, { kind: "reviewed", prs: [approvedPr] });
+  assert.equal(runStatus(entry("NBF-1")), "ready-to-merge");
+  store.set(retry(finish(store.get(), "NBF-1", { kind: "crashed", reason: "x" }, 300), "NBF-1", 301));
+  status.delete(herdrName("NBF-1"));
+  const plain = { ...entry("NBF-1"), review: undefined };
+  store.set({ ...store.get(), entries: [plain] });
+  await pool.tick();
+  assert.equal(existsSync(join(dir, "review-run")), false, "a run that is not a review run may not mark pull requests ready");
+});
+
+test("a reviewed outcome from a run that was not a review run hands the run back", async () => {
+  const { pool, status, entry, settings } = setup(1, ["NBF-1"]);
+  await pool.tick();
+  status.set(herdrName("NBF-1"), "idle");
+  writeFileSync(join(ticketDir(settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "reviewed" }));
+  await pool.tick();
+  assert.equal(entry("NBF-1").outcome?.kind, "needs-human");
+});
+
+test("a ticket folder's newest session is found in that folder's own project, by the folder its transcript records", () => {
+  const root = tmpDir("ticket-sessions-");
+  const folder = "/Users/me/work/.tickets/NBF-1";
+  const own = "-Users-me-work--tickets-NBF-1";
+  const write = (project: string, id: string, cwd: string, at: number) => {
+    mkdirSync(join(root, project), { recursive: true });
+    const file = join(root, project, `${id}.jsonl`);
+    writeFileSync(file, `${JSON.stringify({ type: "summary" })}\n${JSON.stringify({ cwd, message: {} })}\n`);
+    utimesSync(file, at, at);
+  };
+  write(own, "old", folder, 1_000);
+  write(own, "new", folder, 2_000);
+  write(own, "moved-in", "/Users/me/work/.tickets/NBF-1/app", 3_000);
+  write("-Users-me-work", "from-above", folder, 4_000);
+  assert.equal(findFolderSession(root, folder), "new");
+  assert.equal(findFolderSession(root, "/Users/me/work/.tickets/NBF-9"), null);
 });
 
 test("working then idle with no outcome is `no-outcome`; a workspace gone from two listings is `crashed`", async () => {

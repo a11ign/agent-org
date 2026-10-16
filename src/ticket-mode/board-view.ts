@@ -28,6 +28,8 @@ export type ViewEntry = Readonly<{
   plan?: Readonly<{ model: string; effort: string }>;
   /** Its plan was written by a planning run, not agreed with a person. */
   planned?: boolean;
+  /** Set on a review run: the pull requests a person approved. */
+  review?: readonly Readonly<{ url: string }>[];
 }>;
 
 /** A ticket that blocks a queued one: its key, and its state's type and name in the tracker. */
@@ -219,16 +221,19 @@ export function remember(storage: Storage | null, name: string, values: Readonly
 }
 
 /** A run's status on the board, after GitHub's Actions runs: each has its own icon and filter. */
-export type RunStatus = "needs-you" | "working" | "planning" | "blocked" | "queued" | "awaiting-review" | "completed" | "failed" | "cancelled";
+export type RunStatus =
+  "needs-you" | "working" | "planning" | "reviewing" | "blocked" | "queued" | "awaiting-review" | "ready-to-merge" | "completed" | "failed" | "cancelled";
 
 /** Every status, in the order the filters list them: what needs a person first, what is settled last. */
 export const RUN_STATUSES: readonly Readonly<{ status: RunStatus; label: string }>[] = [
   { status: "needs-you", label: "Needs you" },
   { status: "working", label: "In progress" },
   { status: "planning", label: "Planning" },
+  { status: "reviewing", label: "Reviewing" },
   { status: "blocked", label: "Blocked" },
   { status: "queued", label: "Queued" },
   { status: "awaiting-review", label: "Awaiting review" },
+  { status: "ready-to-merge", label: "Ready to merge" },
   { status: "completed", label: "Completed" },
   { status: "failed", label: "Failed" },
   { status: "cancelled", label: "Cancelled" },
@@ -239,6 +244,15 @@ export const RUN_STATUSES: readonly Readonly<{ status: RunStatus; label: string 
  * board shows such a run as Needs you, and the pool parks it rather than closing its workspace, so the person can answer the agent there.
  */
 export const HANDED_BACK: ReadonlySet<string> = new Set(["needs-human", "wrong-repo", "no-outcome"]);
+
+/** Outcomes that are a run's result, pull requests to show for it: a draft one, or one a review run saw through its review. */
+export const RESULT_KINDS: ReadonlySet<string> = new Set(["draft-pr", "reviewed"]);
+
+/** The pull requests a run is about: its result's, or, for a review run that has none yet, the ones the person approved. */
+export function pullsOf<T extends Readonly<{ url: string }>>(entry: Readonly<{ outcome?: Readonly<{ kind: string; prs?: readonly T[] }>; review?: readonly T[] }>): readonly T[] {
+  const { outcome } = entry;
+  return outcome !== undefined && RESULT_KINDS.has(outcome.kind) ? (outcome.prs ?? []) : (entry.review ?? []);
+}
 
 /**
  * A finished run's status from its pull requests alone, once each has merged or closed: completed when any merged, cancelled when every one
@@ -271,11 +285,12 @@ export function waitsOn(entry: ViewEntry, entries: readonly ViewEntry[]): ViewBl
  */
 export function runStatus(entry: ViewEntry, entries: readonly ViewEntry[] = []): RunStatus {
   if (entry.phase === "queued") return waitsOn(entry, entries).length > 0 ? "blocked" : "queued";
-  if (entry.phase !== "finished") return entry.waiting ? "needs-you" : entry.plan ? "planning" : "working";
+  if (entry.phase !== "finished") return entry.waiting ? "needs-you" : entry.plan ? "planning" : entry.review ? "reviewing" : "working";
   if (entry.trackerState === "completed") return "completed";
   if (entry.trackerState === "canceled" || entry.trackerState === "duplicate") return "cancelled";
   const kind = entry.outcome?.kind ?? "";
   if (kind === "draft-pr") return settledByPulls(entry) ?? "awaiting-review";
+  if (kind === "reviewed") return settledByPulls(entry) ?? "ready-to-merge";
   if (HANDED_BACK.has(kind)) return "needs-you";
   return kind === "stopped" ? "cancelled" : "failed";
 }
@@ -297,17 +312,23 @@ export function runsShown<T extends ViewEntry>(entries: readonly T[], filter: Ru
 export const isParked = (entry: ViewEntry): boolean => entry.phase === "finished" && entry.workspace !== undefined;
 
 /** What a person can do to a run from the board. */
-export type RunAction = "remove" | "stop" | "retry" | "close";
+export type RunAction = "remove" | "stop" | "retry" | "close" | "approve";
+
+/** Why a person presses Approve, shown as its tooltip. */
+export const APPROVE_TITLE = "Human review approved: mark the pull requests ready, then see them through their checks and review";
 
 /**
  * The actions a run offers. A queued run can be removed and a live one stopped. A finished run that kept its workspace (parked) can be closed,
- * and only once it is closed can it be retried. A draft pull request and a completed ticket are results, so they are not retried.
+ * and only once it is closed can it be retried. Pull requests awaiting review, or reviewed and ready to merge, are results: they are not retried,
+ * and a person who has reviewed them approves them, which starts a review round. A completed ticket offers nothing.
  */
 export function runActions(entry: ViewEntry): RunAction[] {
   if (entry.phase === "queued") return ["remove"];
   if (entry.phase !== "finished") return ["stop"];
   if (isParked(entry)) return ["close"];
-  return entry.outcome === undefined || entry.outcome.kind === "draft-pr" || runStatus(entry) === "completed" ? [] : ["retry"];
+  const status = runStatus(entry);
+  if (status === "awaiting-review" || status === "ready-to-merge") return ["approve"];
+  return entry.outcome === undefined || RESULT_KINDS.has(entry.outcome.kind) || status === "completed" ? [] : ["retry"];
 }
 
 /**

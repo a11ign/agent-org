@@ -24,7 +24,7 @@ import { browserSessions, browserSessionsPath, SESSION_SECONDS, type BrowserSess
 import { linearSource, readLinearKey } from "./linear.ts";
 import { createPairing, PAIR_MINUTES, type Pairing } from "./pairing.ts";
 import { createPool, type PoolDeps } from "./pool.ts";
-import { amend, enqueue, loadQueue, remove, retry, saveQueue, setMax, setPaused, type Queue, type RunChoice } from "./queue.ts";
+import { amend, approve, enqueue, loadQueue, remove, retry, saveQueue, setMax, setPaused, type Queue, type RunChoice } from "./queue.ts";
 import { readTicketSettings, type TicketSettings } from "./settings.ts";
 import type { Ticket, TicketSource } from "./source.ts";
 
@@ -225,12 +225,13 @@ export function createBoard(deps: BoardDeps) {
       wake();
       return [200, queue];
     }
-    const action = /^\/api\/queue\/([A-Za-z0-9_-]+)\/(amend|remove|retry|stop|close)$/.exec(path);
+    const action = /^\/api\/queue\/([A-Za-z0-9_-]+)\/(amend|remove|retry|approve|stop|close)$/.exec(path);
     if (method === "POST" && action) {
       const [, key, verb] = action;
       if (verb === "amend") store.set(amend(queue, key, validChange(body, ["model", "effort"])));
       if (verb === "remove") store.set(remove(queue, key));
       if (verb === "retry") store.set(retry(queue, key, now()));
+      if (verb === "approve") store.set(approve(queue, key, now()));
       if (verb === "stop") pool.stop(key);
       if (verb === "close") pool.close(key);
       wake();

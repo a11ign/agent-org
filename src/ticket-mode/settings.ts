@@ -39,6 +39,8 @@ export type TicketSettings = Readonly<{
   linearKey: KeySource;
   /** A markdown file added to every worker's brief, or null. */
   brief: string | null;
+  /** A markdown file added to every review run's brief, or null: how this machine's pull requests are checked and reviewed. */
+  review: string | null;
   deny: readonly DenyRule[];
   /** Claude Code plugins every worker runs with, as `name@marketplace`, installed on this machine already. */
   plugins: readonly string[];
@@ -204,6 +206,7 @@ export function parseTicketSettings(host: unknown, home: string = homedir()): Ti
     stateDir,
     linearKey: keySource(tickets.linearKey),
     brief: tickets.brief === undefined ? null : absolutePath(tickets.brief, "tickets.brief"),
+    review: tickets.review === undefined ? null : absolutePath(tickets.review, "tickets.review"),
     deny: denyRules(tickets.deny),
     plugins: pluginList(tickets.plugins),
     terminal: terminalTemplate(tickets.terminal),

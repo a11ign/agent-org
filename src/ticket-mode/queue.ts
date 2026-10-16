@@ -9,12 +9,17 @@
 // the only writer of the file, which it replaces whole by rename, so a reader never sees half of one.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { isParked, settledByPulls, waitsOn } from "./board-view.ts";
+import { isParked, pullsOf, RESULT_KINDS, settledByPulls, waitsOn } from "./board-view.ts";
 import type { Blocker, PullState, Ticket } from "./source.ts";
 
-/** How a finished run ended. A worker writes the first four; the pool decides the rest. */
+/** A pull request a run opened: the repository it is in and its web address. */
+export type PullRequest = Readonly<{ repo: string; url: string }>;
+
+/** How a finished run ended. A worker writes the first five; the pool decides the rest. */
 export type Outcome =
-  | Readonly<{ kind: "draft-pr"; prs: readonly Readonly<{ repo: string; url: string }>[] }>
+  | Readonly<{ kind: "draft-pr"; prs: readonly PullRequest[] }>
+  /** A review run marked its pull requests ready, answered their review and left their checks passing. */
+  | Readonly<{ kind: "reviewed"; prs: readonly PullRequest[] }>
   | Readonly<{ kind: "planned" }>
   | Readonly<{ kind: "wrong-repo"; where: string }>
   | Readonly<{ kind: "needs-human"; reason: string }>
@@ -57,6 +62,10 @@ export type Entry = Readonly<{
   pullStates?: Readonly<Record<string, PullState>>;
   /** The tickets that block this one, as last read while it is queued; unset until the tracker has been asked. */
   blockers?: readonly Blocker[];
+  /** The Claude session the run's worker used, saved when the run ended, so a review run can resume the worker that wrote the code. */
+  session?: string;
+  /** Set on a review run: the pull requests a person approved, which the run marks ready and sees through their review. See {@link approve}. */
+  review?: readonly PullRequest[];
 }>;
 
 /**
@@ -104,10 +113,31 @@ export function remove(queue: Queue, key: string): Queue {
  */
 export function retry(queue: Queue, key: string, now: number): Queue {
   const entry = find(queue, key);
-  if (entry === undefined || entry.phase !== "finished" || entry.outcome?.kind === "draft-pr" || isParked(entry)) return queue;
-  const { ticket, repos, model, effort, plan, planned } = entry;
-  const retried: Entry = { ticket, repos, model, effort, ...(plan ? { plan } : {}), ...(planned ? { planned } : {}), phase: "queued", queuedAt: now };
+  if (entry === undefined || entry.phase !== "finished" || isResult(entry) || isParked(entry)) return queue;
+  const { ticket, repos, model, effort, plan, planned, session, review } = entry;
+  // A review run that failed is retried as a review run, resuming the same worker, so it does not start the ticket over. Any other run starts
+  // a fresh worker, whose session replaces this one.
+  const retried: Entry = { ticket, repos, model, effort, ...(plan ? { plan } : {}), ...(planned ? { planned } : {}),
+    ...(review ? { review, ...(session ? { session } : {}) } : {}), phase: "queued", queuedAt: now };
   return { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== key), retried] };
+}
+
+/** A run whose outcome is its result, pull requests to show for it: retried, they would only be made again. */
+const isResult = (entry: Entry): boolean => RESULT_KINDS.has(entry.outcome?.kind ?? "");
+
+/**
+ * A person reviewed a finished run's pull requests and approved them: the ticket goes back on the queue, at the end, as a REVIEW RUN. It resumes
+ * the worker that wrote the code (its `session`), marks the pull requests ready, waits for their checks and review, and fixes what they find.
+ * Only its pull requests still open are reviewed. A run with none open, or one parked or settled by its tracker, is left alone.
+ */
+export function approve(queue: Queue, key: string, now: number): Queue {
+  const entry = find(queue, key);
+  if (entry === undefined || entry.phase !== "finished" || !isResult(entry) || isParked(entry) || SETTLED.has(entry.trackerState ?? "")) return queue;
+  const prs = pullsOf(entry).filter(({ url }) => entry.pullStates?.[url] !== "merged" && entry.pullStates?.[url] !== "closed");
+  if (prs.length === 0) return queue;
+  const { ticket, repos, model, effort, planned, session } = entry;
+  const review: Entry = { ticket, repos, model, effort, ...(planned ? { planned } : {}), ...(session ? { session } : {}), review: prs, phase: "queued", queuedAt: now };
+  return { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== key), review] };
 }
 
 export function setPaused(queue: Queue, paused: boolean): Queue {
@@ -141,18 +171,27 @@ export function observe(queue: Queue, key: string, status: string): Queue {
   }));
 }
 
-function ended(entry: Entry, outcome: Outcome, now: number, tokens?: Entry["tokens"]): Entry {
-  return { ...entry, phase: "finished", outcome, finishedAt: now, waiting: false, ...(tokens ? { tokens } : {}) };
+/** What the pool learned of a run as it ended: the tokens it spent and the Claude session it ran in. */
+export type RunRecord = Readonly<{ tokens?: Entry["tokens"]; session?: string }>;
+
+/**
+ * A run that ended. Its session is the one it ran in. Where the pool did not learn it, a review run keeps the session it resumed, and any
+ * other run has none, so an earlier worker's session is never taken for this one's.
+ */
+function ended(entry: Entry, outcome: Outcome, now: number, { tokens, session }: RunRecord): Entry {
+  const ranIn = session ?? (entry.review ? entry.session : undefined);
+  const { session: _earlier, ...rest } = entry;
+  return { ...rest, phase: "finished", outcome, finishedAt: now, waiting: false, ...(tokens ? { tokens } : {}), ...(ranIn ? { session: ranIn } : {}) };
 }
 
 /** The run has ended and its workspace is gone. */
-export function finish(queue: Queue, key: string, outcome: Outcome, now: number, tokens?: Entry["tokens"]): Queue {
-  return replace(queue, key, (entry) => ({ ...ended(entry, outcome, now, tokens), workspace: undefined, pane: undefined }));
+export function finish(queue: Queue, key: string, outcome: Outcome, now: number, record: RunRecord = {}): Queue {
+  return replace(queue, key, (entry) => ({ ...ended(entry, outcome, now, record), workspace: undefined, pane: undefined }));
 }
 
 /** The run has ended and keeps its workspace and pane, where a person can answer its agent. */
-export function park(queue: Queue, key: string, outcome: Outcome, now: number, tokens?: Entry["tokens"]): Queue {
-  return replace(queue, key, (entry) => ended(entry, outcome, now, tokens));
+export function park(queue: Queue, key: string, outcome: Outcome, now: number, record: RunRecord = {}): Queue {
+  return replace(queue, key, (entry) => ended(entry, outcome, now, record));
 }
 
 /**

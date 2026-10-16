@@ -18,7 +18,7 @@ test("only `clones` is required, every repository in it is offered, and every ot
 
 test("the `tickets` block and `stateDir` override the defaults", () => {
   const settings = parseTicketSettings({ clones, stateDir: "/state", tickets: { max: 5, port: 5000, herdrSession: "nbl", worktreeRoot: "/wt", linearKey: { path: "/keys/linear" } } });
-  assert.deepEqual({ ...settings, clones: undefined }, { clones: undefined, max: 5, port: 5000, herdrSession: "nbl", worktreeRoot: "/wt", stateDir: "/state", linearKey: { path: "/keys/linear" }, brief: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, workingState: null, connectors: [] });
+  assert.deepEqual({ ...settings, clones: undefined }, { clones: undefined, max: 5, port: 5000, herdrSession: "nbl", worktreeRoot: "/wt", stateDir: "/state", linearKey: { path: "/keys/linear" }, brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, workingState: null, connectors: [] });
 });
 
 test("a machine can add notes to every brief and refuse commands of its own", () => {
@@ -26,6 +26,10 @@ test("a machine can add notes to every brief and refuse commands of its own", ()
   const settings = parseTicketSettings({ clones, tickets: { brief: "/work/.agent-org/worker-notes.md", deny } }, "/home/me");
   assert.equal(settings.brief, "/work/.agent-org/worker-notes.md");
   assert.deepEqual(settings.deny, deny);
+});
+
+test("a machine can say how its pull requests are reviewed, in notes added to every review run's brief", () => {
+  assert.equal(parseTicketSettings({ clones, tickets: { review: "/work/.agent-org/review-notes.md" } }, "/home/me").review, "/work/.agent-org/review-notes.md");
 });
 
 test("a machine names the plugins its workers run with, each as name@marketplace", () => {
@@ -100,6 +104,7 @@ test("a bad field is refused by its name", () => {
   assert.equal(field({ clones, tickets: { herdrSession: "has space" } }), "tickets.herdrSession");
   assert.equal(field({ clones, tickets: { linearKey: { keychain: "x", path: "/y" } } }), "tickets.linearKey");
   assert.equal(field({ clones, tickets: { brief: "notes.md" } }), "tickets.brief", "a relative path");
+  assert.equal(field({ clones, tickets: { review: "review.md" } }), "tickets.review", "a relative path");
   assert.equal(field({ clones, tickets: { plugins: ["nbl-ui"] } }), "tickets.plugins", "a plugin with no marketplace");
   assert.equal(field({ clones, tickets: { plugins: "nbl-ui@applied-ai" } }), "tickets.plugins", "one plugin, not a list");
   assert.equal(field({ clones, tickets: { deny: { pattern: "x", reason: "y" } } }), "tickets.deny", "one rule, not a list");

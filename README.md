@@ -98,7 +98,7 @@ takes them one each. `agent-org ticket:serve` starts a board on `127.0.0.1` and 
   ticket then goes back on the queue where it was, and its run is told the plan was not agreed with a person, so its pull request lists
   each decision the plan made for you. A plan the tracker will not take ends the run for you, with its files kept.
 - **Board.** Every run in one list, newest activity first, each with a status icon after GitHub's Actions runs, and a filter per status
-  with its count: Needs you, In progress, Planning, Blocked, Queued, Awaiting review, Completed, Failed and Cancelled. A run is Completed once the tracker
+  with its count: Needs you, In progress, Planning, Reviewing, Blocked, Queued, Awaiting review, Ready to merge, Completed, Failed and Cancelled. A run is Completed once the tracker
   completes its ticket, or once its pull requests have merged, as Linear's GitHub integration reports them. Linear completes a ticket on a
   merge only where its team's workflow says so. A run whose pull requests all closed unmerged is Cancelled. The board asks every two minutes. A run can be removed
   while queued, stopped while running, and retried once it has failed. The number of workers at once is set in Settings, and a change takes effect straight away. On a machine
@@ -107,6 +107,13 @@ takes them one each. `agent-org ticket:serve` starts a board on `127.0.0.1` and 
   and holds no slot, so you can answer the agent in its terminal. Once the agent works again the run is In progress again, its old outcome
   is moved to `outcome.prev.json`, and the worker must write a new one before it stops. Close shuts a parked run's workspace and keeps its
   outcome, and a parked run is retried only once it is closed.
+- **Approve, once you have reviewed the pull requests.** A run Awaiting review, or Ready to merge, offers Approve. It queues the ticket again
+  as a review run, which resumes the worker that wrote the code in its own Claude session: the board saves it when a run ends, and for an
+  older run takes the newest session Claude Code kept for the ticket's folder, starting a fresh worker only when there is none. The review run
+  marks each pull request ready, which only a review run may do, waits up to 30 minutes for its checks and its review, fixes and answers what
+  they find, pushes, and waits for the checks on that push. It ends Ready to merge only when every check passed on the last commit, and
+  otherwise hands the run back as Needs you. It handles one round: approve again for another. `tickets.review` says what a review is on this
+  machine.
 - **Blocked until what blocks it is done.** A queued run whose ticket the tracker marks "blocked by" another waits, as Blocked, naming what
   it waits on, and holds no slot, while a run queued after it with nothing blocking it starts first. A blocker lets go once the tracker
   completes it, or, when it is on the queue itself, once its run is Completed, which its pull requests merging is enough for. A canceled or
@@ -154,6 +161,7 @@ a worker can choose from:
 | `tickets.worktreeRoot` | `<stateDir>/tickets/worktrees` |
 | `tickets.linearKey` | `{ "keychain": "agent-org-linear" }` (macOS Keychain service), or `{ "path": "/abs/file" }` |
 | `tickets.brief` | none. A markdown file added to every worker's brief under "On this machine", read again for each run: how workers share the machine, such as the command that starts a dev server without taking a fixed port |
+| `tickets.review` | none. A markdown file added to every review run's brief under "How this machine reviews", read again for each run: which checks must pass and which reviewer to wait for once a pull request is marked ready |
 | `tickets.plugins` | none. `["name@marketplace", ...]`: Claude Code plugins every worker runs with, installed for the user (`--scope user`). A worker starts in its ticket's folder, which is a project of its own, so a plugin installed only for another project would be missing: the board refuses to start a run until each one is installed for the user, and names the command |
 | `tickets.deny` | none. `[{ "pattern": "<regular expression>", "reason": "<why>" }]`: Bash commands the hook refuses as well as its own, each matched against the whole command, with the reason the worker is told |
 | `tickets.connectors` | none, and every connector is refused. `["^mcp__<connector>__<tools>", ...]`: regular expressions, each anchored with `^mcp__`, for the connector tools a worker may call, matched against the tool's name. Linear's reads through the claude.ai connector: `["^mcp__claude_ai_Linear__(get\\|list\\|search\\|extract)_"]`. The brief names them, so a worker can read its ticket's parent and blockers |

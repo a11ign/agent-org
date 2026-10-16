@@ -598,6 +598,29 @@ test("a row offers only the actions its state allows, and a completed run is not
   assert.ok(runRows(p).find((r) => r.text().includes("D-1"))!.text().includes("nbl-ui-netbox #12"), "the draft's pull request is linked by repo and number");
 });
 
+test("a draft pull request awaiting review offers Approve, titled as a person's approval, which goes to the board", async () => {
+  const p = await page(new Map(), { entries: RUNS });
+  const approve = runRows(p).find((r) => r.text().includes("D-1"))!.all().find((n) => n.tag === "button") as Node_ & { title?: string };
+  assert.equal(approve.textContent, "Approve");
+  assert.match(approve.title ?? "", /^Human review approved/);
+  approve.fire("click");
+  await settle();
+  assert.ok(p.posts.some((x) => x.path === "/api/queue/D-1/approve"));
+});
+
+test("a review run reads as Reviewing while it works, and its reviewed pull requests as Ready to merge, still linked", async () => {
+  const prs = [{ repo: "nbl-ui-netbox", url: "https://github.com/x/y/pull/12" }];
+  const p = await page(new Map(), { entries: [
+    entry("V-1", { phase: "running", startedAt: 5, review: prs }),
+    entry("V-2", { phase: "finished", startedAt: 2, finishedAt: 7, outcome: { kind: "reviewed", prs } }),
+  ] });
+  const row = (key: string) => runRows(p).find((r) => r.text().includes(key))!;
+  assert.equal(row("V-1").children[0].className, "icon st-reviewing");
+  assert.ok(row("V-1").text().includes("nbl-ui-netbox #12"), "the pull requests under review stay linked while it works");
+  assert.equal(row("V-2").children[0].className, "icon st-ready-to-merge");
+  assert.ok(row("V-2").text().includes("nbl-ui-netbox #12"));
+});
+
 test("a live or parked run links its terminal when the machine serves one, and a parked run offers Close, which goes to the board", async () => {
   const runs = [
     entry("R-1", { phase: "running", startedAt: 5, workspace: "w1", pane: "w1:p1" }),
