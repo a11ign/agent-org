@@ -25,6 +25,9 @@ import { holdsOn, isHeldRed, isWaitingRed } from "../red-pr.ts";
 import { sharedFileOrders } from "./shared-file-orders.ts";
 import { REPO } from "../project-identity.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
+import { decisionSwitchesPath } from "../decision-provider.ts";
+// agent-org#1573: the outside home's pass is the sweep module's (it owns the armed read and `arm-pr`'s command); only a call, never a load-time read, so the cycle note above holds.
+import { outsideArmPass, type OutsideArmPr, type OutsideArmResult } from "../auto-arm-sweep.ts";
 import { VERIFY_STATE } from "../verify-stamp.ts";
 import { equivalentHeads } from "../review-verdict.ts";
 import type { OrgSideVerdict } from "../acceptance-commands.ts"; // agent-org#1502: a type, so no load-time edge into the file that has a cycle with the gate
@@ -626,6 +629,26 @@ export function greenUnarmedOrders(facts: number[] | UnarmedFacts | null, scope:
       + "PR you merely skip stays in the set and this order returns unchanged.",
     causeKey: `product-manager/pr-green-unarmed/${key}`,
   }];
+}
+
+/**
+ * agent-org#1573: THE HOST GATE'S HALF OF THE OUTSIDE HOME OF ARMING -- the PR event and the approval, behind `outside.arm` in the project's `decisions.json` (shipped OFF).
+ *
+ * The project's `arm` job arms a pull request on the event that opens, readies or pushes it, and `arm-approved` readies and arms a draft an approving review has reached. The gate sees both
+ * as STATE on its next tick (two minutes): an open, unarmed, unheld, non-fork pull request against `main`, or the same draft with `reviewDecision == APPROVED`. `settleUnarmedPrs` is not
+ * that: it arms only a GREEN candidate and only when another candidate is armed, so a pull request whose checks are still running (the job armed it at once) waits for them, and an
+ * approved draft is nobody's. This is the pass `outsideArmVerdict` describes, over the list the tick already holds, and it asks the API once for the armed state.
+ *
+ * IDEMPOTENT BY STATE: a pull request the project's job armed first reads armed here, and the pass writes nothing for it. Off, absent, or unreadable: no read and no write at all.
+ *
+ * @param openPrs the tick's open list (`gh pr list` objects)
+ * @param scope the repository these pull requests are in
+ */
+export function settleOutsideArm(openPrs: any[], { scope, run, log, switchesPath = decisionSwitchesPath(HOME_CHECKOUT), on }: {
+  scope: string; run: (args: string[]) => string; log: (line: string) => void; switchesPath?: string; on?: boolean;
+}): OutsideArmResult {
+  const prs: OutsideArmPr[] = openPrs.map((pr) => ({ number: pr.number, isDraft: pr.isDraft, baseRefName: pr.baseRefName, isCrossRepository: pr.isCrossRepository, reviewDecision: pr.reviewDecision, labels: pr.labels }));
+  return outsideArmPass({ repo: scope, switchesPath, prs, run, log: (line) => log(`${line}\n`), ...(on === undefined ? {} : { on }) });
 }
 
 /**

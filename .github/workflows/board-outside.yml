@@ -1,0 +1,174 @@
+name: board-outside
+
+# THE OUTSIDE HOME OF THE BOARD REPORT (agent-org#1574, of "agent-org stands alone"; chairman's direction on a11ign/a11ign#928). a11ign's CI posts the daily edition (`board-report.yml`: `board:report`,
+# `board:document`) and warns about a missing summary (`board-summary-check.yml`: `board:summary-check`). That is the org's process acting ON a11ign, so it has to run from outside a11ign before it
+# can leave it. This is that home, SHIPPED OFF: nothing in a11ign changes, and until a11ign's `.agent-org/decisions.json` says `"outside.board": true` every run below ends at its first gate.
+#
+# THE FLAG IS READ BY THE TOOL, from the a11ign checkout, by the reader every other decision key uses (`board-discussion --outside-on`): an absent file, an absent key and a malformed file are all OFF.
+# The switch is a11ign/a11ign#5605; the revert is that key false, and a11ign's own workflows are still scheduled the whole time.
+#
+# ON MEANS BESIDE, NOT INSTEAD, AND THE SECOND ACTOR DOES NOTHING. The tool's commands find the day's edition already written on a SCHEDULED run and exit 0 without writing (the report asks for the
+# `# Board report — <day>` comment, the document for the day's Discussion, the summary check for its `no summary for <day>` marker). That is in the commands, not in this file, so it holds in
+# whichever order the two schedules fire: a11ign's job runs the same newest release tag. A `workflow_dispatch` is a person asking and is never skipped. These crons sit a few minutes away from
+# a11ign's (:08 against :13 for the edition, :17 against :15 and :47 against :45 for the summary check) so the two are rarely in the same minute; the check is a read then a write, not a lock,
+# and a GitHub that bunches two schedules can still make both write (the cost is a second comment on the report issue, or a second Discussion, which the next republish refuses by name).
+#
+# THE TOOL IS THE NEWEST STABLE RELEASE TAG, never `main`: the edition prints `agent-org v<tag>` from the tag at the tool checkout's HEAD (`readToolVersionLine`), so a document that equals a11ign's own for
+# the canary's three runs has to come from the tool a11ign's job runs. No stable tag REFUSES. A tag that predates `--outside-on` does not know the flag, and that is the same answer as off.
+# The tool needs no `node_modules` for these commands: they import `node:` built-ins and each other only.
+#
+# a11ign/a11ign IS PUBLIC, so its checkout needs no token. The WRITES (the comment, the Discussion) are made with an OCTO STS token minted for a11ign/a11ign (`outside-board`); the trust policy is READ FROM
+# a11ign's default branch, so it is a11ign's file (a11ign/agent-org#1581) and until it is there the mint step is a red step that names itself. There is NO fallback to `GITHUB_TOKEN`: this repository's token
+# cannot write a11ign's issues. The mint runs only once the flag has been read ON, so a switched-off run mints nothing.
+#
+# 08:00, 07:15 AND 07:45 LONDON, YEAR ROUND: GitHub schedules in UTC only, so each is scheduled twice and the first step gates on London's actual clock, exactly as a11ign's two workflows do. The
+# wrong-half run exits SUCCESSFULLY and says so; a red mark for behaving correctly is how a signal gets ignored. The 07:45 refusal exits 1 on a missing summary, as a11ign's does.
+
+on:
+  schedule:
+    - cron: "8 7 * * *"
+    - cron: "8 8 * * *"
+    - cron: "17 6 * * *"
+    - cron: "17 7 * * *"
+    - cron: "47 6 * * *"
+    - cron: "47 7 * * *"
+  workflow_dispatch:
+    inputs:
+      republish:
+        description: >-
+          Re-render TODAY'S edition outside the 08:00 London hour. Only permitted when today's edition Discussion already exists, as in a11ign's `board-report.yml`: it REPLACES a document
+          the board has and can never create one they should not have yet.
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  act:
+    runs-on: ubuntu-latest
+    # One edition per day, and one actor of this home at a time. A re-run updates the same Discussion rather than racing it.
+    concurrency:
+      group: board-outside
+      cancel-in-progress: false
+    # The job's own token holds only the OIDC request Octo STS needs; the writes come from the minted token, whose grant is a11ign's `outside-board.sts.yaml`.
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      PROJECT_REPOSITORY: a11ign/a11ign
+    steps:
+      - id: mode
+        name: Which run is this in London?
+        env:
+          EVENT: ${{ github.event_name }}
+          REPUBLISH: ${{ inputs.republish }}
+        run: |
+          LONDON=$(TZ=Europe/London date +%H:%M)
+          case "$LONDON" in
+            08:*) MODE=report ;;
+            07:1*) MODE=reminder ;;
+            07:4*) MODE=refuse ;;
+            *) MODE=none ;;
+          esac
+          # A dispatch is a republish or nothing: the hour gate treats replacing today's document and publishing at the wrong hour alike, and only the first is permitted.
+          if [ "$EVENT" = workflow_dispatch ]; then
+            if [ "$REPUBLISH" = true ]; then MODE=republish; else MODE=none; fi
+          fi
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "London reads $LONDON; mode: $MODE"
+          [ "$MODE" != none ] || echo "Not a run of this workflow's pair. Doing nothing, successfully."
+
+      # THE PROJECT'S `main`, WITH ITS WHOLE HISTORY: the merge count reads `git log --merges --since`, and a shallow clone reports whatever depth happened to be there.
+      - name: The project, a11ign/a11ign at main
+        if: steps.mode.outputs.mode != 'none'
+        uses: actions/checkout@v7
+        with:
+          repository: a11ign/a11ign
+          ref: main
+          path: project
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: The tool, this repository with its tags
+        if: steps.mode.outputs.mode != 'none'
+        uses: actions/checkout@v7
+        with:
+          path: tool
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: The tool at the newest stable release tag, with `agent-org` on PATH
+        if: steps.mode.outputs.mode != 'none'
+        run: |
+          set -euo pipefail
+          tag=$(git -C tool tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)
+          if [ -z "$tag" ]; then
+            echo "::error::BOARD-OUTSIDE: this repository has no stable release tag, and the tool is never run from a branch (the edition prints the tag it ran)"
+            exit 1
+          fi
+          git -C tool checkout --detach "$tag"
+          mkdir -p "$RUNNER_TEMP/bin"
+          ln -s "$GITHUB_WORKSPACE/tool/src/bin.ts" "$RUNNER_TEMP/bin/agent-org"
+          chmod +x tool/src/bin.ts
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          echo "BOARD-OUTSIDE: the tool is $tag"
+
+      # EXIT 0 IS ON; ANYTHING ELSE IS OFF, and the status is printed. A tag that does not know the flag exits 2 (an unknown flag), which is off until a release carries the flag.
+      - id: flag
+        name: Is outside.board on in the project's decisions.json?
+        if: steps.mode.outputs.mode != 'none'
+        working-directory: project
+        run: |
+          status=0
+          agent-org board-discussion --outside-on || status=$?
+          if [ "$status" -eq 0 ]; then
+            echo "on=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "on=false" >> "$GITHUB_OUTPUT"
+            echo "BOARD-OUTSIDE: outside.board is off (status $status): nothing to do. Doing nothing, successfully."
+          fi
+
+      - id: octo-sts
+        name: Mint the project token (Octo STS, a11ign's `outside-board.sts.yaml`) -- no fallback to `GITHUB_TOKEN`
+        if: steps.flag.outputs.on == 'true'
+        uses: octo-sts/action@f603d3be9d8dd9871a265776e625a27b00effe05 # v1.1.1
+        with:
+          scope: ${{ env.PROJECT_REPOSITORY }}
+          identity: outside-board
+
+      # REPUBLISH: THE ONE WAY PAST THE HOUR GATE, AND IT CANNOT CREATE AN EDITION (a11ign's `board-report.yml`, #1290): `--exists` exits 1 when the edition is absent and 2 when GitHub could not be asked.
+      - name: Republish is permitted only over an edition that exists
+        if: steps.flag.outputs.on == 'true' && steps.mode.outputs.mode == 'republish'
+        working-directory: project
+        env:
+          GH_TOKEN: ${{ steps.octo-sts.outputs.token }}
+        run: |
+          if ! agent-org board-discussion --exists; then
+            echo "REFUSING: today's edition could not be confirmed to exist, so this would CREATE an edition outside 08:00 London rather than replace one." >&2
+            exit 1
+          fi
+
+      # THE SUMMARY GATES THE EDITION: no committed summary for today, no edition. The two commands are a11ign's own, run from the project's directory so the tool serves a11ign.
+      - name: Publish the edition
+        if: steps.flag.outputs.on == 'true' && (steps.mode.outputs.mode == 'report' || steps.mode.outputs.mode == 'republish')
+        working-directory: project
+        env:
+          GH_TOKEN: ${{ steps.octo-sts.outputs.token }}
+        run: |
+          agent-org board:report --post --issue=20
+          agent-org board:document --discussion
+
+      - name: 07:15 reminder -- is today's summary written? (reports and exits 0)
+        if: steps.flag.outputs.on == 'true' && steps.mode.outputs.mode == 'reminder'
+        working-directory: project
+        env:
+          GH_TOKEN: ${{ steps.octo-sts.outputs.token }}
+        run: agent-org board:summary-check --post --reminder
+
+      - name: 07:45 refusal -- today's summary must exist
+        if: steps.flag.outputs.on == 'true' && steps.mode.outputs.mode == 'refuse'
+        working-directory: project
+        env:
+          GH_TOKEN: ${{ steps.octo-sts.outputs.token }}
+        run: agent-org board:summary-check --post

@@ -43,6 +43,9 @@ import { deliberateRefusalVerdict } from "./deliberate-refusal.ts";
 import { createHash } from "node:crypto";
 import { dequeuePullRequestOf } from "./ticket-port/queue-entry-reads.ts";
 import { disableAutoMergeOf, readDisarmSeat } from "./ticket-port/auto-merge-disarm.ts";
+// agent-org#1573: THE FLAG'S READER IS THE DECISION SWITCHES', the one every `decisions.json` key is read through (absent file = off; a file that cannot be used = off, said once).
+import { readSwitches } from "./decision-provider.ts";
+import { printDiagnostic, processState } from "./triage-provider.ts";
 
 /**
  * EXIT CODES ARE THE CONTRACT. `auto-arm.yml`'s `arm` step goes red on any non-zero, so each code's job is to tell the
@@ -87,6 +90,17 @@ export function armDecision(labels: string[] | null): { arm: boolean; reason: st
     return { arm: false, reason: "could not read this PR's labels -- REFUSING to arm. Unreadable is not unheld" };
   }
   return armabilityOf({ labels });
+}
+
+/** agent-org#1573: THE KEY IN A PROJECT'S `.agent-org/decisions.json` THAT LETS AGENT-ORG ARM THAT PROJECT'S PULL REQUESTS FROM OUTSIDE IT. Absent is off; the project's own arming job runs beside it either way. */
+export const OUTSIDE_ARM_FLAG = "outside.arm";
+
+/**
+ * agent-org#1573: IS THE OUTSIDE HOME OF ARMING SWITCHED ON for the project whose `decisions.json` is at `switchesPath`? Read through `readSwitches`, so an absent file is off
+ * and a file that is not an object of booleans is off with one line naming it. Only the literal `true` is on: a string, a number or a missing key is not a switch.
+ */
+export function outsideArmOn(switchesPath: string, { read = readFileSync, diagnostic = printDiagnostic, state = processState }: { read?: typeof readFileSync; diagnostic?: (line: string) => void; state?: typeof processState; } = {}): boolean {
+  return (readSwitches(switchesPath, { diagnostic, state, read }) as Record<string, boolean | undefined>)[OUTSIDE_ARM_FLAG] === true;
 }
 
 /**
@@ -1223,7 +1237,13 @@ export function runArmPr({ argv, env, run = defaultRun, sleep = defaultSleep, lo
 }
 
 function main() {
-  refuseUnknownFlags(["--pr=", "--repo="], { entry: import.meta.url, command: "node packages/agent-org/src/arm-pr.ts" });
+  refuseUnknownFlags(["--pr=", "--repo=", "--outside-arm-state="], { entry: import.meta.url, command: "node packages/agent-org/src/arm-pr.ts" });
+  // agent-org#1573: `--outside-arm-state=<decisions.json>` prints `true` or `false` and arms nothing: what a workflow asks BEFORE it mints a token, through the reader every switch uses.
+  const switchesPath = flagValue(process.argv, "outside-arm-state");
+  if (switchesPath !== undefined) {
+    console.log(String(outsideArmOn(switchesPath)));
+    return;
+  }
   process.exitCode = runArmPr({ argv: process.argv, env: process.env });
 }
 

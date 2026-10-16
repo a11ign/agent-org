@@ -212,6 +212,8 @@ const DECLARED_NON_VOCABULARY_HITS: Declaration[] = [
   // `work-gate/pr-orders.ts`: `{ kind: "ready", ... }` is the action kind for `gh pr ready` (GitHub's own draft -> ready-for-review CLI verb),
   // not the row `ready` label.
   ...nonVocabulary("work-gate/pr-orders.ts", ['"ready"'], "the action kind for `gh pr ready`, GitHub's own verb"),
+  // `auto-arm-sweep.ts` (agent-org#1573): `run(["pr", "ready", ...])` -- the same CLI verb, for an approved draft the outside home readies before it arms.
+  ...nonVocabulary("ticket-port/outside-arm-calls.ts", ['"ready"'], "GitHub's own `gh pr ready` CLI verb, not the row `ready` label"),
   // `ticket-mode/board-view.ts` (agent-org#1383): the ticket board's own `RunStatus` member `"blocked"`, which the board's run state names; it is never the `blocked` GitHub label.
   ...nonVocabulary("ticket-mode/board-view.ts", ['"blocked"'], "the ticket board's own RunStatus member, never the `blocked` label"),
   // `ticket-mode/linear.ts`: `"backlog"` and `"triage"` are Linear's own state TYPES, read to decide whether a planned ticket moves to the planner's state; never the board's `backlog` column.

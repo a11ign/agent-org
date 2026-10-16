@@ -26,7 +26,7 @@ import {
   REPO, MILESTONE, HOURS_MS, MINUTE_MS, MEDIAN, READ_SET,
   gh, git, issues, milestone, mergeState, misAuthored, reported, daysUntil, readSetIsNotMain, countable,
   conflictMetrics, readyRows} from "./board-data.ts";
-import { editionDay } from "./board-discussion.ts";
+import { editionDay, editionTitle, outsideBoardOn, scheduledRunFindsWorkDone } from "./board-discussion.ts";
 import { liveToolVersion } from "./lib/tool-version.ts";
 import { homeProjectDeclaration } from "./project-config.ts";
 import { claimsFromEvents, labelEventsByIssue, parseEventLines } from "./claim-provenance.ts";
@@ -669,10 +669,35 @@ export function render(d: any, now: Date = new Date(), readVersion: () => string
   return L.join("\n");
 }
 
+/** The window a posted edition is looked for in. An edition is one comment per day, and 48 hours reaches back past London's midnight whatever hour the run is. */
+const POSTED_LOOKBACK_MS = 48 * HOURS_MS;
+
+/**
+ * Is the date's edition already a comment on the report issue? It is the comment whose first line is the title `render` writes (`# Board report — <day>`). A failed read answers false:
+ * the post that follows is the same API, so a GitHub that cannot be asked fails there, loudly, and a skip on a failed read would publish nothing and call it done.
+ * @param {{ day: string, issue: string, now?: Date, run?: (args: string[]) => string }} opts
+ */
+export function editionPosted({ day, issue, now = new Date(), run = gh }: { day: string; issue: string; now?: Date; run?: (args: string[]) => string; }): boolean {
+  const since = new Date(now.getTime() - POSTED_LOOKBACK_MS).toISOString();
+  const title = `# ${editionTitle(day)}`;
+  try {
+    const found = run(["api", "--paginate", `repos/${REPO}/issues/${issue}/comments?since=${since}&per_page=100`, "--jq", `[.[] | select(.body | startswith(${JSON.stringify(title)}))] | length`]);
+    return found.split("\n").some((count) => Number(count) > 0);
+  } catch {
+    return false;
+  }
+}
+
 function main() {
   refuseUnknownFlags(["--post", "--issue", "--since", "--allow-dirty-read-set"],
     { entry: import.meta.url, command: "pnpm run board:report" });
   const post = argv.includes("--post");
+  // THE SECOND ACTOR DOES NOTHING (agent-org#1574, behind `outside.board`): before anything is collected, because collecting is the minute this skip exists to save.
+  const issueToPost = flag("--issue");
+  if (post && issueToPost && scheduledRunFindsWorkDone({ on: outsideBoardOn() }) && editionPosted({ day: editionDay(), issue: issueToPost })) {
+    process.stdout.write(`outside.board: the ${editionDay()} edition is already on issue ${issueToPost}; nothing posted\n`);
+    return;
+  }
 
   const since = flag("--since") ?? new Date(Date.now() - 24 * HOURS_MS).toISOString();
   const body = render(facts(since, `commits and closures since ${since}`));

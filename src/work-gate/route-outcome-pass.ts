@@ -24,6 +24,7 @@ import { decisionLogPathFrom, decisionSwitchesPath, readSwitches } from "../deci
 import { ESCALATION_USE } from "../engineer-escalation.ts";
 import { windowReadings } from "../engineer-route.ts";
 import { stateEntryPath } from "../host-config.ts";
+import { outsideTrunkOnHost } from "../outside-trunk.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 import { recordClosedRow, ROUTE_OUTCOMES, type ClosedRowDeps, type RouteOutcome } from "../route-outcome.ts";
 import { printDiagnostic, processState } from "../triage-provider.ts";
@@ -191,11 +192,13 @@ export function readStoreFor(path: string, prefixes: readonly string[], chunkByt
  * is owed an outcome. It is the ONE call the gate makes (beside `stripClosedClaims`, #3883), behind that pass's own complete-listing condition. Never throws: a tick that failed here
  * would hold every other order.
  * @param gh `gh` as the gate holds it, for the closed rows' one list
+ * @param readSwitchesOf the host's switches, and @param outside the outside trunk's call: the live ones by default, and a test's own so that the call is read from what it does
  */
-export function recordRouteOutcomesOnHost(listed: boolean, { gh }: { gh: (args: string[]) => string }): RouteOutcomePassResult {
+export function recordRouteOutcomesOnHost(listed: boolean, { gh, readSwitchesOf = () => readSwitches(decisionSwitchesPath(HOME_CHECKOUT), { diagnostic: printDiagnostic, state: processState, read: readFileSync }), outside = outsideTrunkOnHost }: { gh: (args: string[]) => string; readSwitchesOf?: () => Readonly<Record<string, boolean | undefined>>; outside?: typeof outsideTrunkOnHost }): RouteOutcomePassResult {
   try {
     const say = printDiagnostic;
-    const switches = readSwitches(decisionSwitchesPath(HOME_CHECKOUT), { diagnostic: say, state: processState, read: readFileSync });
+    const switches = readSwitchesOf();
+    outside(switches); // agent-org#1576: the project's trunk jobs from this side, behind `outside.trunk` (off: nothing runs). The switches are the ones read above, so off costs no read.
     return routeOutcomePass({ listed, closedRows: (from, to) => readClosedRows(from, to, gh),
       events: (prefixes) => {
         try {

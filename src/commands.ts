@@ -85,6 +85,7 @@ export const COMMANDS = {
   "org-retro": "org-retro.ts",
   "org-watch": "org-watch.ts",
   "outside-reports": "outside-reports.ts",
+  "outside-trunk": "outside-trunk.ts",
   "owned-path-signoff": "owned-path-signoff.ts",
   "parent-recheck-summary": "parent-recheck-summary.ts",
   "prune-tmp": "prune-tmp.ts",
