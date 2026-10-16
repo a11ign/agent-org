@@ -2,7 +2,7 @@ The outside home of acceptance reads the flag `outside.acceptance` and ships OFF
 
 Acceptance:
 ```bash
-cd ~/repos/agent-org && git grep -l -F outside.acceptance -- src
+cd /home/agent/repos/agent-org && git grep -l -F outside.acceptance -- src
 ```
 
 Closes a11ign/agent-org#1579
