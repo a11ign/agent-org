@@ -24,6 +24,7 @@ import { decisionLogPathFrom, decisionSwitchesPath, readSwitches } from "../deci
 import { ESCALATION_USE } from "../engineer-escalation.ts";
 import { windowReadings } from "../engineer-route.ts";
 import { stateEntryPath } from "../host-config.ts";
+import { outsideTrunkOnHost } from "../outside-trunk.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 import { recordClosedRow, ROUTE_OUTCOMES, type ClosedRowDeps, type RouteOutcome } from "../route-outcome.ts";
 import { printDiagnostic, processState } from "../triage-provider.ts";
@@ -196,6 +197,7 @@ export function recordRouteOutcomesOnHost(listed: boolean, { gh }: { gh: (args: 
   try {
     const say = printDiagnostic;
     const switches = readSwitches(decisionSwitchesPath(HOME_CHECKOUT), { diagnostic: say, state: processState, read: readFileSync });
+    outsideTrunkOnHost(switches); // agent-org#1576: the project's trunk jobs from this side, behind `outside.trunk` (off: nothing runs). The switches are the ones read above, so off costs no read.
     return routeOutcomePass({ listed, closedRows: (from, to) => readClosedRows(from, to, gh),
       events: (prefixes) => {
         try {
