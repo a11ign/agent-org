@@ -9,7 +9,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import {
-  CLASS_REPEAT_WINDOW_MS, FAILURE_CLASSES_PATH, groupByClass, parseFailureClasses, readClassRepeat,
+  CLASS_REPEAT_WINDOW_MS, FAILURE_CLASSES_PATH, groupByClass, parseFailureClasses, readClassRepeat, type ClassRepeatFact,
 } from "./class-repeat.ts";
 import { SIGNALS, classRepeatReadings, orgHealthOrders, orgHealthReadings, orgHealthTick } from "./org-health.ts";
 import { HOME_CHECKOUT } from "./project-config.ts";
@@ -280,6 +280,60 @@ test("countedSince is per class: another kind's refs before its line still repea
   const fact = countedRepeats([refLine("other-kind", "2026-10-08T12:00:00Z", "a"), refLine("other-kind", "2026-10-08T12:10:00Z", "b")]);
   assert.ok(!("unreadable" in fact) && Array.isArray(fact.ledger));
   assert.deepEqual(fact.ledger.map(({ classKey }) => classKey), ["other-kind"], "a class with no countedSince counts every ref it has");
+});
+
+// agent-org#1551 (a11ign/a11ign#4690, #5156, #5166 and two the detector wrote for a step pull request that said its row stays open): a ref a person has read as NOT the class is
+// left out of its count. The ledger keeps the line; the index says which refs are no occurrence.
+const NOT_FINISHABLE_REFS = ["a11ign/a11ign#4690", "a11ign/a11ign#5156", "a11ign/a11ign#5166", "a11ign/a11ign#5409@a11ign/.github#4", "a11ign/a11ign#5462@a11ign/a11ign#5538"];
+const FALSE_REFS = NOT_FINISHABLE_REFS.slice(3);
+const NOT_FINISHABLE_LINES = NOT_FINISHABLE_REFS.map((ref, i) => refLine("row-not-finishable", `2026-10-08T12:${10 + i}:00Z`, ref));
+const notFinishableIndex = (notOccurrences?: unknown) => JSON.stringify({ classes: [{ id: "row-not-finishable", name: "the row not finishable", guard: "the row-finishable check", guardNote: null,
+  ...(notOccurrences === undefined ? {} : { notOccurrences }) }] });
+const listed = (refs: string[]) => refs.map((ref) => ({ ref, reason: "the step pull request said its row stays open, so the row was finishable" }));
+/** the refs a class reads as in the repeats, `undefined` when it is not a repeat at all */
+const refsOf = (fact: ClassRepeatFact, classKey = "row-not-finishable") => {
+  assert.ok(!("unreadable" in fact) && Array.isArray(fact.ledger), "the ledger is read");
+  return fact.ledger.find((repeat) => repeat.classKey === classKey)?.refs;
+};
+
+test("a ref listed in notOccurrences is no occurrence of its class: 3 refs with the list, 5 with it absent as today (agent-org#1551)", () => {
+  assert.deepEqual(refsOf(countedRepeats(NOT_FINISHABLE_LINES, notFinishableIndex(listed(FALSE_REFS)))), NOT_FINISHABLE_REFS.slice(0, 3), "the three real refs remain, in order");
+  assert.deepEqual(refsOf(countedRepeats(NOT_FINISHABLE_LINES, notFinishableIndex())), NOT_FINISHABLE_REFS, "absent, every ref counts, as it always did");
+});
+
+test("a ref listed under one class is still counted under another that carries it too: the exclusion is per class (agent-org#1551)", () => {
+  const index = JSON.stringify({ classes: [
+    { id: "row-not-finishable", name: "the row not finishable", guard: "the row-finishable check", guardNote: null, notOccurrences: listed(FALSE_REFS) },
+    { id: "other-kind", name: "another kind", guard: null, guardNote: "none in force" },
+  ] });
+  const fact = countedRepeats([...NOT_FINISHABLE_LINES, refLine("other-kind", "2026-10-08T12:20:00Z", FALSE_REFS[0]), refLine("other-kind", "2026-10-08T12:21:00Z", "a11ign/a11ign#9")], index);
+  assert.deepEqual(refsOf(fact, "other-kind"), [FALSE_REFS[0], "a11ign/a11ign#9"], "the other class lists nothing, so the ref counts under it");
+  assert.deepEqual(refsOf(fact), NOT_FINISHABLE_REFS.slice(0, 3), "and it is still left out of the class that lists it");
+});
+
+test("a listed ref that is not in the ledger is no error and changes nothing (agent-org#1551)", () => {
+  assert.deepEqual(refsOf(countedRepeats(NOT_FINISHABLE_LINES, notFinishableIndex(listed([...FALSE_REFS, "a11ign/a11ign#9999"])))), NOT_FINISHABLE_REFS.slice(0, 3));
+});
+
+test("a notOccurrences that is not a list of { ref, reason } strings makes the whole index a stated gap (agent-org#1551)", () => {
+  const malformed = [
+    "a11ign/a11ign#5409",
+    [{ ref: "a11ign/a11ign#5409" }],
+    [{ ref: 5409, reason: "a number is no ref" }],
+    [{ ref: "a11ign/a11ign#5409", reason: "" }],
+    [null],
+  ];
+  for (const notOccurrences of malformed) assert.equal(parseFailureClasses(notFinishableIndex(notOccurrences)), null, `refused: ${JSON.stringify(notOccurrences)}`);
+  assert.deepEqual(parseFailureClasses(notFinishableIndex(listed(FALSE_REFS)))?.[0].notOccurrences, listed(FALSE_REFS), "a well-formed list is read as given");
+  assert.equal(parseFailureClasses(notFinishableIndex())?.[0].notOccurrences, undefined, "absent is no list at all");
+  assert.ok("unreadable" in countedRepeats(NOT_FINISHABLE_LINES, notFinishableIndex(FALSE_REFS)), "read through the gate, the index is a stated gap, not 5 refs and not no repeat");
+});
+
+test("listing all but one ref of a class reads as no repeat: the order is not raised for one (agent-org#1551)", () => {
+  assert.equal(refsOf(countedRepeats(NOT_FINISHABLE_LINES, notFinishableIndex(listed(NOT_FINISHABLE_REFS.slice(1))))), undefined, "one ref left is one occurrence");
+  const pair = [refLine("other-kind", "2026-10-08T12:20:00Z", "a"), refLine("other-kind", "2026-10-08T12:21:00Z", "b")];
+  const pairIndex = JSON.stringify({ classes: [{ id: "other-kind", name: "another kind", guard: null, guardNote: "none in force", notOccurrences: listed(["a"]) }] });
+  assert.equal(refsOf(countedRepeats(pair, pairIndex), "other-kind"), undefined, "two refs with one listed is one occurrence");
 });
 
 const REAL = join(HOME_CHECKOUT, FAILURE_CLASSES_PATH);

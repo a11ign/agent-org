@@ -44,8 +44,11 @@ const ROW_PROJECTION = "[.[] | {number, state, closed_at, title, pull_request: (
 /**
  * `countedSince` (agent-org#1316, a11ign/a11ign#5282) is the time from which the class's ledger refs COUNT: an earlier ref is the defect the guard fixed, not a repeat of it. Absent
  * means every ref counts, as it always did.
+ *
+ * `notOccurrences` (agent-org#1551) lists the ledger refs a person has read as NOT an occurrence of the class, each with the reason. Use `countedSince` when the guard fixed the
+ * defect, and `notOccurrences` when the ref was never the class (a detector's false positive): the ledger is append-only, so only the index can take such a ref out of the count.
  */
-export type FailureClass = { id: string, name: string, guard: string | null, guardNote: string | null, kinds?: string[], countedSince?: number };
+export type FailureClass = { id: string, name: string, guard: string | null, guardNote: string | null, kinds?: string[], countedSince?: number, notOccurrences?: { ref: string, reason: string }[] };
 /** a CLOSED row and the class ids its `class:` labels name; `closedAt` is epoch ms */
 export type ClassRow = { number: number, closedAt: number | null, classes: string[] };
 /** a ledger kind seen with two or more DISTINCT refs (`repeatsIn`), `refs` oldest first, and when the newest of them was recorded (epoch ms) */
@@ -76,8 +79,19 @@ const declaredCountedSince = (value: unknown): { countedSince?: number } | "inva
 };
 
 /**
- * THE INDEX, parsed. `null` is text that is not an index (a bad parse, no `classes` list, an entry without a string `id`, a `countedSince` that is not a time): a stated gap,
- * since an index read as empty would call every class label an unknown class.
+ * An entry's optional `notOccurrences` (agent-org#1551): the ledger refs a person has read as NOT the class, each with the reason. Absent when none are declared. A value that is
+ * present and is not a list of `{ ref, reason }` non-empty strings is `"invalid"`, which makes the whole index a stated gap: read as absent it puts the false refs back, and read as
+ * empty it would hide a real repeat.
+ */
+const declaredNotOccurrences = (value: unknown): { notOccurrences?: { ref: string, reason: string }[] } | "invalid" => {
+  if (value === undefined) return {};
+  const wellFormed = Array.isArray(value) && value.every((n) => typeof n?.ref === "string" && n.ref !== "" && typeof n?.reason === "string" && n.reason !== "");
+  return wellFormed ? { notOccurrences: value as { ref: string, reason: string }[] } : "invalid";
+};
+
+/**
+ * THE INDEX, parsed. `null` is text that is not an index (a bad parse, no `classes` list, an entry without a string `id`, a `countedSince` that is not a time, a `notOccurrences`
+ * that is not a list of `{ ref, reason }`): a stated gap, since an index read as empty would call every class label an unknown class.
  * @param {string} text @returns {FailureClass[] | null}
  */
 export function parseFailureClasses(text: string): FailureClass[] | null {
@@ -85,9 +99,11 @@ export function parseFailureClasses(text: string): FailureClass[] | null {
     const classes = JSON.parse(text)?.classes;
     if (!Array.isArray(classes) || !classes.every((c) => typeof c?.id === "string" && c.id !== "")) return null;
     const counted = classes.map((c) => declaredCountedSince(c.countedSince));
-    if (counted.includes("invalid")) return null;
+    const excluded = classes.map((c) => declaredNotOccurrences(c.notOccurrences));
+    if (counted.includes("invalid") || excluded.includes("invalid")) return null;
     return classes.map((c, i) => ({ id: c.id, name: String(c.name ?? ""), guard: typeof c.guard === "string" ? c.guard : null,
-      guardNote: typeof c.guardNote === "string" ? c.guardNote : null, ...declaredKinds(c.kinds), ...(counted[i] as { countedSince?: number }) }));
+      guardNote: typeof c.guardNote === "string" ? c.guardNote : null, ...declaredKinds(c.kinds), ...(counted[i] as { countedSince?: number }),
+      ...(excluded[i] as { notOccurrences?: { ref: string, reason: string }[] }) }));
   } catch {
     return null;
   }
@@ -253,14 +269,19 @@ export function newestOccurrence(group: ClassGroup): { at: number | null, key: s
  * THE LEDGER'S REPEATS (#4450): every kind seen with two or more distinct refs, OVER ALL TIME, as a closed-row count is. The ledger is a file the host keeps: an absent file is a ledger with
  * no events (`[]`), and one that is there and cannot be read is `{ unreadable }`, which is never "no repeats".
  * A CLASS'S REFS COUNT FROM ITS `countedSince` (agent-org#1316): a ref recorded before it is the defect the guard has since fixed, so it is no occurrence of the class, and a class
- * with one ref after the guard and one before is no repeat. Read per kind from the index, whose ids are the kinds (`groupByClass` matches a ledger repeat by the same id).
+ * with one ref after the guard and one before is no repeat. A ref a class lists in `notOccurrences` (agent-org#1551) is left out of THAT class's entries the same way: the ledger
+ * file keeps the line as the record, and a ref listed under one class still counts under another. Read per kind from the index, whose ids are the kinds (`groupByClass` matches a
+ * ledger repeat by the same id).
  * @param {{ ledgerPath: string, read: (path: string) => string, now: number, index: FailureClass[] }} input
  */
 function readLedgerRepeats({ ledgerPath, read, now, index }: { ledgerPath: string, read: (path: string) => string, now: number, index: FailureClass[] }): LedgerRepeat[] | { unreadable: string } {
   try {
     const countedSince = new Map(index.flatMap((c) => (c.countedSince === undefined ? [] : [[c.id, c.countedSince] as const])));
+    // `class\tref`, the pair the failure ledger itself keys by: a ref holds no tab (`recordFailure` refuses one)
+    const notOccurrence = new Set(index.flatMap((c) => (c.notOccurrences ?? []).map(({ ref }) => `${c.id}\t${ref}`)));
     const entries = parseFailureLedger(read(ledgerPath), ledgerPath)
-      .filter((entry) => entry.at <= now && entry.at >= (countedSince.get(entry.classKey) ?? Number.NEGATIVE_INFINITY));
+      .filter((entry) => entry.at <= now && entry.at >= (countedSince.get(entry.classKey) ?? Number.NEGATIVE_INFINITY))
+      .filter((entry) => !notOccurrence.has(`${entry.classKey}\t${entry.ref}`));
     return repeatsIn(entries, { windowMs: Number.POSITIVE_INFINITY, now }).map(({ classKey, refs }) => ({
       classKey, refs, newestAt: Math.max(...entries.filter((entry) => entry.classKey === classKey).map((entry) => entry.at)),
     }));
