@@ -85,6 +85,19 @@ describe("(b) the same brief with its Ansible line is sent", () => {
     assert.equal(event, null);
     assert.match(String(problem), /^alert not sent:/);
   });
+
+  test("a malformed Ansible line is not the route shown: no playbook, no worker, or a failure with no run is refused", () => {
+    for (const line of [
+      "Ansible tried: failed: x",
+      "Ansible tried: nonsense failed: x",
+      "Ansible tried: patch.yml -l the box, failed: x",
+      "Ansible tried: patch.yml, failed: x",
+    ]) {
+      const { event, problem } = decide(`Ask: press Restart now on worker 15`, line, ...REQUIRED);
+      assert.equal(event, null, `${line} must be refused`);
+      assert.match(String(problem), /^alert not sent:/, line);
+    }
+  });
 });
 
 describe("(c) a worker named in a decision, with no hand act, is sent unchanged", () => {

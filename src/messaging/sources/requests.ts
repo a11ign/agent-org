@@ -84,8 +84,8 @@ const HAND_ACTS: RegExp[] = [
   /\bat (?:the|its|a) console\b/i,
 ];
 const ANSIBLE_LABEL = "Ansible tried";
-/** The route is shown by a line naming the run and its failure: `Ansible tried: patch.yml -l a11y-worker-15, failed: <log path or comment url>` */
-const ANSIBLE_FAILED = /\bfailed:\s*\S/i;
+/** The route is shown by a line naming the run (playbook, `-l` worker) and its failure: `Ansible tried: patch.yml -l a11y-worker-15, failed: <log path or comment url>` */
+const ANSIBLE_FAILED = /^\S+\s+-l\s+\S*worker[ -]?\d+\S*\s*,\s*failed:\s*\S/i;
 
 const STEPS_HEADER = /^[ \t]*(?:[-*>][ \t]+)?(?:\*\*|__)?Steps(?:\*\*|__)?[ \t]*:(?:\*\*|__)?[ \t]*$/im;
 const STEP_ITEM = /^[ \t]*(?:\d+[.)]|[-*])[ \t]+(\S.*)$/;
