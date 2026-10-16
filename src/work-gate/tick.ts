@@ -23,7 +23,7 @@ import { recordIgnoredChairmanLabels, recordTickFailures as recordFailuresOf } f
 import { readJsonObject, writeJsonObject } from "../claim-stall.ts";
 import { requiredWhenNeeded, perPullRequestOrders, greenUnarmedOrders, type UnarmedFacts, reviewBlockedOrders, stalledPrOrders,
   STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr, ROW_REVIEW_SKILL_FLAG, PR_OWNER_ROUTING_FLAG, withholdOutsideFollowUps, routeDeadOwnerRefusals, reviewOnlyRefs, SAME_HEAD_REFAIL_FLAG, acceptanceGateOf, firstRefusalOf, treeWideGuardVerdict, settleOutsideArm, settleOutsideRefusals } from "./pr-orders.ts";
-import { treeWideGuardFilesIn, runTreeWideGuards, outsideGuardsOn, shadowGuardsVerdict, guardSweepJobOf } from "../lib/tree-wide-guard-org-side.ts"; // agent-org#1503, #1580
+import { treeWideGuardFilesIn, runTreeWideGuards, outsideGuardsOn, shadowGuardsVerdict, guardSweepJobOf, namedJobOf } from "../lib/tree-wide-guard-org-side.ts"; // agent-org#1503, #1580, #1579
 import { outsideOwnedPathsOn, ownedPathsVerdict, ownedPathsJobOf, shadowOwnedPathsVerdict } from "../owned-path-signoff.ts"; // agent-org#1598
 import { readFileSync } from "node:fs";
 import { newestPerName } from "../newest-check-run.ts";
@@ -1427,16 +1427,8 @@ export const TREE_WIDE_GUARDS_SWITCH_ENV = "A11IGN_PR_TREE_WIDE_GUARDS_BY_GATE";
 /** How many org-side runs (acceptance commands and guard runs together) one tick may RUN; the rest are withheld "deferred" and run on a later tick, so one tick is never the length of a suite times a queue. */
 export const MAX_ACCEPTANCE_RUNS_PER_TICK = 2;
 
-/**
- * agent-org#1579: the a11ign `acceptance` job's verdict on a head, read off the rollup narrowed to the newest run per name, as `guardSweepJobOf` reads `guardSweep`:
- * `pass` on SUCCESS, `fail` when `isBrokenRed` says the check is red, and `null` for everything else, which the shadow reads as not-compared, never as agreement.
- */
-export function acceptanceJobOf(rollup: { name?: string; conclusion?: string | null; }[] | null | undefined): "pass" | "fail" | null {
-  const run = (rollup ?? []).find((check) => /(^|[\s/])acceptance$/.test(String(check?.name ?? "")));
-  if (run === undefined) return null;
-  if (isBrokenRed({ statusCheckRollup: [run] })) return "fail";
-  return String(run.conclusion ?? "").toUpperCase() === "SUCCESS" ? "pass" : null;
-}
+/** agent-org#1579: the a11ign `acceptance` job's verdict on a head (see `namedJobOf`); `null` is read by the shadow as not-compared, never as agreement. */
+export const acceptanceJobOf = (rollup: { name?: string; conclusion?: string | null; }[] | null | undefined): "pass" | "fail" | null => namedJobOf(rollup, "acceptance");
 
 /**
  * agent-org#1502 (ADR 0045 cut c): THE ORG-SIDE VERDICTS GATE ARMING. Of the unarmed candidates, the same-repository `agent/*` ones by a declared
