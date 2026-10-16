@@ -525,7 +525,7 @@ export function outsideArmPass({ repo, switchesPath, on = outsideArmOn(switchesP
     const restoreDraft = () => {
       if (!readiedHere) return;
       try {
-        run(["pr", "ready", String(pr.number), "--repo", repo, "--undo"]);
+        readyPullRequest({ number: pr.number, repo, run, undo: true });
         result.readied = result.readied.filter((number) => number !== pr.number);
         log(`OUTSIDE-ARM: #${pr.number} put back to a draft -- it was readied for an arm that did not happen`);
       } catch (cause) {
