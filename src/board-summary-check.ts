@@ -513,18 +513,21 @@ export function statedWritingTime(text: string, now: Date | string): { stated: s
  * in the same function. It does one thing at one level of abstraction, which is the rule the limit exists
  * to enforce rather than the number itself.
  *
- * @param {{ day: string, issue: string, reminder: boolean }} arg
+ * THIS IS ALSO WHAT MAKES THE SECOND ACTOR DO NOTHING when `outside.board` is on (agent-org#1574): the project's own job and the outside home both run it, the marker is read from the issue and
+ * not from either actor's memory, so whichever runs second finds the warning posted. Exported with an injected `run` so a test drives both orders.
+ *
+ * @param {{ day: string, issue: string, reminder: boolean, run?: (args: string[]) => string }} arg
  * @returns {boolean} whether a comment was written (false = already reported for this date)
  */
-function postAbsence({ day, issue, reminder }: { day: string; issue: string; reminder: boolean; }): boolean {
+export function postAbsence({ day, issue, reminder, run = gh }: { day: string; issue: string; reminder: boolean; run?: (args: string[]) => string; }): boolean {
   const marker = `no summary for ${day}`;
-  const existing = gh(["issue", "view", issue, "--repo", REPO, "--json", "comments",
+  const existing = run(["issue", "view", issue, "--repo", REPO, "--json", "comments",
     "--jq", ".comments[].body"]);
   if (existing.includes(marker)) {
     console.error("(already reported for this date; not commenting again)");
     return false;
   }
-  gh(["issue", "comment", issue, "--repo", REPO, "--body",
+  run(["issue", "comment", issue, "--repo", REPO, "--body",
     `**There is ${marker} (${day}), so today's 08:00 edition will refuse and no document will be `
     + "published.**\n\nThe summary is written by hand, by design: a summary a machine assembled from the "
     + "sections below it is what the board explicitly forbade, so there is no fallback and this warning "

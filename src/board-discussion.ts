@@ -17,10 +17,13 @@
 // filed to remove, one level down.
 //
 //   node packages/agent-org/src/board-discussion.ts --exists     the workflow's republish precondition
-import { realpathSync } from "node:fs";
+//   node packages/agent-org/src/board-discussion.ts --outside-on  exit 0 when the project has switched `outside.board` on, 1 when not (agent-org#1574)
+import { readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { refuseUnknownFlags } from "./lib/cli-flags.ts";
-import { gh, REPO } from "./board-data.ts";
+import { gh, REPO, ROOT } from "./board-data.ts";
+import { decisionSwitchesPath, readSwitches } from "./decision-provider.ts";
+import { printDiagnostic, processState } from "./triage-provider.ts";
 
 export const EDITION_CATEGORY_SLUG = "board-editions";
 
@@ -147,13 +150,51 @@ export function todaysEditionExists({ day, run = gh, warn = (line) => console.er
   }
 }
 
+/**
+ * THE OUTSIDE HOME OF THE BOARD (agent-org#1574, of "agent-org stands alone"). `outside.board` in the project's `.agent-org/decisions.json`, read by the reader every other key uses, so
+ * an absent file, an absent key and a malformed file are all OFF. ON means a scheduled workflow in agent-org's own repository acts on the project's board beside the project's own job.
+ */
+export const OUTSIDE_BOARD_FLAG = "outside.board";
+
+export function outsideBoardOn({ path = decisionSwitchesPath(ROOT), diagnostic = printDiagnostic, read = readFileSync }: { path?: string; diagnostic?: (line: string) => void; read?: typeof readFileSync; } = {}): boolean {
+  const switches: Readonly<Record<string, boolean | undefined>> = readSwitches(path, { diagnostic, state: processState, read });
+  return switches[OUTSIDE_BOARD_FLAG] === true;
+}
+
+/**
+ * THE SECOND ACTOR DOES NOTHING, AND ONLY A SCHEDULED RUN IS ONE. With the flag on, two schedules write the same day's edition (the project's job and the outside home), and whichever runs
+ * second finds it written. A `workflow_dispatch` is a person asking for the work (the republish path replaces a document on purpose), and a run outside Actions has no event: neither is skipped.
+ * With the flag off nothing changes for anyone, which is the shipped state.
+ * @param {{ on: boolean, env?: Record<string, string | undefined> }} opts
+ */
+export const scheduledRunFindsWorkDone = ({ on, env = process.env }: { on: boolean; env?: Record<string, string | undefined>; }): boolean => on && env.GITHUB_EVENT_NAME === "schedule";
+
+/**
+ * The URL of the date's edition Discussion, or null when there is none OR GitHub could not be asked. A failed ask is "not found" here, unlike {@link todaysEditionExists}: that one stops a
+ * late edition from creating a second document, and this one decides whether to skip work, where skipping on a failed read would publish nothing and say it was done.
+ * @param {{ day: string, run?: Run }} opts
+ */
+export function editionUrlIfPublished({ day, run = gh }: { day: string; run?: Run; }): string | null {
+  try {
+    return lookUpEdition({ day, run }).edition?.url ?? null;
+  } catch {
+    return null;
+  }
+}
+
 const EXIT_ABSENT = 1;
 const EXIT_CANNOT_ASK = 2;
+const EXIT_OFF = 1;
 
 function main() {
-  refuseUnknownFlags(["--exists"], { entry: import.meta.url, command: "node packages/agent-org/src/board-discussion.ts" });
+  refuseUnknownFlags(["--exists", "--outside-on"], { entry: import.meta.url, command: "node packages/agent-org/src/board-discussion.ts" });
+  if (process.argv.includes("--outside-on")) {
+    const on = outsideBoardOn();
+    console.error(`${OUTSIDE_BOARD_FLAG} is ${on ? "on" : "off"} in ${decisionSwitchesPath(ROOT)}`);
+    process.exit(on ? 0 : EXIT_OFF);
+  }
   if (!process.argv.includes("--exists")) {
-    console.error("usage: node packages/agent-org/src/board-discussion.ts --exists");
+    console.error("usage: node packages/agent-org/src/board-discussion.ts --exists | --outside-on");
     process.exit(EXIT_CANNOT_ASK);
   }
   const day = editionDay();
