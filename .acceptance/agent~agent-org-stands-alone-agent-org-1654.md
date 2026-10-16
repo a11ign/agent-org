@@ -5,7 +5,13 @@ Acceptance:
 node -e 'const r=require("child_process").spawnSync("git",["grep","-l","-E","waitsOnPinBump|waiting-on-pin-bump|wait-for-pin-bump|project-ref-bump|pin-bump-measure","--",".github","src"],{encoding:"utf8"});process.exit(r.stdout.trim()?1:0)'
 ```
 
-Outside-Region: src/machinery-flag.ts, src/flag-switch-ledger.ts, src/packaging/machinery-flag-switch.test.ts, src/packaging/flag-switch-ledger.test.ts, src/spec-lint.test.ts, src/pin-bump-measure.test.ts: they import `pin-bump-measure.ts` or name its flag `retro.pinBump`, which the Acceptance's `pin-bump-measure` pattern reaches, so the measure cannot go without them. The route `wait-for-pin-bump` lived in `ci-failure-class.ts` (in the Region), not in the wake routing.
+Outside-Region: src/machinery-flag.ts — imported `PIN_BUMP_FLAG` from the deleted measure and listed `retro.pinBump` in the flag registry.
+Outside-Region: src/flag-switch-ledger.ts — carried the `retro.pinBump` entry of the flags with another home.
+Outside-Region: src/packaging/machinery-flag-switch.test.ts — imported the deleted measure for the flag and tested switching it; the registry list loses the flag.
+Outside-Region: src/packaging/flag-switch-ledger.test.ts — imported the deleted measure for the flag and tested the flag-OFF report; the map test stays.
+Outside-Region: src/spec-lint.test.ts — passed the removed `pinBumpOn` seam to the retro classes.
+Outside-Region: src/pin-bump-measure.test.ts — the test of the deleted measure; it goes with its subject.
+Note: the route `wait-for-pin-bump` lived in `ci-failure-class.ts` (in the Region), not in the wake routing.
 
 Mutation: `// waitsOnPinBump` appended to `src/machinery-flag.ts` -> the command exits 1 (file restored from a copy, `diff` empty, exits 0 again). In `src/ci-failure-class.ts`, `notesTheOrder` without its `push-or-update-branch` arm -> the rewritten `src/wake-ci-class-review-depth.test.ts` test fails (1 of 43 in the two CI-class files) and nothing else (restored from a copy, `diff` empty).
 
