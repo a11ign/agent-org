@@ -34,8 +34,6 @@ import { printDiagnostic, processState } from "./triage-provider.ts";
 export const OUTSIDE_TRUNK_SWITCH = "outside.trunk";
 /** The least time between two runs from the host gate; the scheduled workflow and `--force` ignore it. */
 export const INTERVAL_MS = 10 * 60_000;
-/** Commits kept owed between runs; past this the oldest are dropped, said. */
-export const MAX_OWED = 200;
 /** Names a file for the state, for a runner that has no host declaration (the scheduled workflow) and keeps the file between runs itself. */
 export const STATE_PATH_ENV = "OUTSIDE_TRUNK_STATE";
 /** The commits looked at when nothing says how long it has been (a first run, or a runner with no state). */
@@ -112,9 +110,9 @@ export function outsideTrunk(deps: OutsideTrunkDeps): OutsideTrunkResult {
     const answered = commitChecks(sha).map((check) => note(deps.run(check)));
     if (answered.every((o) => o.code === 0 || o.code === 1)) checked[sha] = true;
   }
-  const stillOwed = owed.filter((sha) => checked[sha] !== true);
-  const kept = stillOwed.slice(-MAX_OWED);
-  if (kept.length < stillOwed.length) deps.say(`outside-trunk: ${stillOwed.length - kept.length} commits owed a check were dropped (more than ${MAX_OWED} owed); the oldest are not asked`);
+  // NONE IS DROPPED: a commit stays owed until a verdict answers it. The ones asked and not answered go to the back, so a commit that cannot be asked does not take the slots of the
+  // ones behind it run after run.
+  const kept = [...owed.slice(asked.length), ...asked.filter((sha) => checked[sha] !== true)];
   note(deps.run({ name: "board:liveness", script: "board-schedule-liveness.ts", args: ["--post"] }));
   deps.writeState({ at: deps.now, checked, owed: kept });
   return { ran: true, outcomes, skipped: owed.length - asked.length };

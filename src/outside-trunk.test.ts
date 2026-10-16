@@ -10,7 +10,7 @@ import { closeOnePr } from "./close-rows-sweep.ts";
 import { COMMANDS } from "./commands.ts";
 import { tmpDir } from "./lib/tmp-fixture.ts";
 import { recordRouteOutcomesOnHost } from "./work-gate/route-outcome-pass.ts";
-import { INTERVAL_MS, MAX_OWED, MAX_SHAS_PER_RUN, OUTSIDE_TRUNK_SWITCH, STATE_PATH_ENV, commitChecks, exitCodeOf, liveDeps, outsideTrunk, outsideTrunkOn, windowMinutes, type Check, type Outcome, type OutsideTrunkDeps, type OutsideTrunkState } from "./outside-trunk.ts";
+import { INTERVAL_MS, MAX_SHAS_PER_RUN, OUTSIDE_TRUNK_SWITCH, STATE_PATH_ENV, commitChecks, exitCodeOf, liveDeps, outsideTrunk, outsideTrunkOn, windowMinutes, type Check, type Outcome, type OutsideTrunkDeps, type OutsideTrunkState } from "./outside-trunk.ts";
 
 const NOW = 10_000_000_000;
 const ON = { [OUTSIDE_TRUNK_SWITCH]: true };
@@ -161,16 +161,20 @@ test("7b. AN UNANSWERED COMMIT OUTLIVES THE WINDOW: `at` moves on every run, so 
   assert.deepEqual(state()?.owed, [], "and it is no longer owed");
 });
 
-test("7c. THE OWED LIST IS BOUNDED: past MAX_OWED the oldest are dropped and the line says so", () => {
-  const many = Array.from({ length: MAX_OWED + 3 }, (_, i) => sha(i + 1));
-  const never: Record<string, number | null> = {};
-  for (const s of many) never[`trunk-revert-guard ${s.slice(0, 10)}`] = 2;
-  const { deps, said, state } = rig({ commits: many, answers: never });
-  // Only MAX_SHAS_PER_RUN are asked, so the rest stay owed unasked; the cap is the bound on what is carried.
+test("7c. NO OWED COMMIT IS DROPPED, AND ONE THAT CANNOT BE ASKED DOES NOT STARVE THE REST: a long backlog is kept whole, and the unanswerable ones go to the back", () => {
+  const many = Array.from({ length: 250 }, (_, i) => sha(i + 1));
+  const stuck = new Set(many.slice(0, MAX_SHAS_PER_RUN));
+  const answers: Record<string, number | null> = {};
+  for (const s of stuck) answers[`trunk-revert-guard ${s.slice(0, 10)}`] = 2;
+  const { deps, said, state, ran } = rig({ commits: many, answers });
   outsideTrunk(deps);
-  assert.equal(state()?.owed.length, MAX_OWED);
-  assert.deepEqual(state()?.owed.slice(-1), [sha(MAX_OWED + 3)], "the newest are kept");
-  assert.match(said.join("\n"), /3 commits owed a check were dropped/);
+  assert.equal(state()?.owed.length, 250, "every commit is still owed or answered: 250 asked-or-waiting, none dropped (5 asked and stuck, 245 waiting)");
+  assert.deepEqual(said.filter((l) => /dropped/.test(l)), []);
+  assert.deepEqual(state()?.owed.slice(-MAX_SHAS_PER_RUN), [...stuck], "the stuck ones went to the back");
+  ran.length = 0;
+  outsideTrunk({ ...deps, force: true, now: NOW + 1 });
+  const asked = names(ran).filter((n) => n.startsWith("trunk-revert-guard"));
+  assert.deepEqual(asked, many.slice(MAX_SHAS_PER_RUN, 2 * MAX_SHAS_PER_RUN).map((s) => `trunk-revert-guard ${s.slice(0, 10)}`), "the next run asks the ones behind, not the stuck five again");
 });
 
 test("7d. THE STATE FILE: OUTSIDE_TRUNK_STATE names it with no host declaration, it round-trips owed, and an unreadable one is said, not silent", () => {
