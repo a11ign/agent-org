@@ -182,7 +182,7 @@ export function carryBranch(repoRoot: string, branch: string, { run = defaultRun
       // Identity PER COMMAND, never `git config` -- the same discipline `test-support/git-sandbox.ts`
       // documents at length for the identical reason: a config WRITE lands wherever GIT_DIR currently
       // resolves to, and a per-command `-c` cannot write config anywhere by construction.
-      run("git", ["-c", "user.name=row-carry", "-c", "user.email=row-carry@a11y-witness.invalid",
+      run("git", ["-c", "user.name=row-carry", "-c", "user.email=row-carry@agent-org.invalid",
         "merge", "origin/main", "--no-edit"], { cwd: dir });
     } catch (error) {
       return { carried: false, reason: `merge failed -- ${errMsg(error)}` };

@@ -6856,7 +6856,7 @@ export function sayToolchainRefusal({ run = defaultGh, post = guardedGh, warn = 
  * checkout, and the directory its linked worktrees (`role-<name>`, `wt-<row>`) sit beside it in.
  */
 export const HOST_REPOS = "/home/agent/repos";
-export const PRIMARY_CHECKOUT = `${HOST_REPOS}/a11y-witness`;
+export const PRIMARY_CHECKOUT = HOME_CHECKOUT;
 
 /** Where `row-claim` lives, resolved from THIS file: the claim a spawn runs is the code the tick itself runs. */
 const ROW_CLAIM = fileURLToPath(new URL("./row-claim.ts", import.meta.url));
@@ -6870,7 +6870,7 @@ const SLUG_MAX_CHARS = 40;
 
 /**
  * The host's directory layout under one root: the linked worktrees AND the primary checkout beside them
- * (`PRIMARY_CHECKOUT` is `${HOST_REPOS}/a11y-witness`). `--worktrees-dir` moves the whole of it, because the claim's
+ * (`PRIMARY_CHECKOUT` is `HOME_CHECKOUT`). `--worktrees-dir` moves the whole of it, because the claim's
  * `git fetch` runs IN the primary, which a CI runner does not have at the host's path (`spawnSync git ENOENT`).
  */
 function layoutUnder(root: string) {

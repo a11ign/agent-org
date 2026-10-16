@@ -1552,7 +1552,7 @@ function acceptancePathToken(rawToken: string): string | null {
  *
  *   a GLOB          `packages/lab/src/**\/*.test.ts` is expanded by a runner. Nothing can `stat` it, and
  *                   neither of the two remedies a refusal would offer applies to it.
- *   NO EXTENSION    `origin/main`, `a11ign/a11y-witness`, `.venv/bin/python` are path-SHAPED and name no
+ *   NO EXTENSION    `origin/main`, `owner/repo`, `.venv/bin/python` are path-SHAPED and name no
  *                   file in this tree. The same `\.[A-Za-z]{2,4}` discipline `pathInProse` already uses.
  *   AN UNTRACKED    `runs/model-candidate/acceptance-report.json` (#1929's own Acceptance) is PRODUCED by
  *   TOP-LEVEL DIR   the two commands above it, and `runs/` is gitignored -- so it can never exist in a
@@ -1748,7 +1748,7 @@ function primaryCheckoutOfHost(): string | null {
 
 /**
  * #4322: AN ACCEPTANCE THAT `cd`s INTO THIS PROJECT'S OWN PRIMARY CHECKOUT IS REFUSED. CI has no such path (#4318 died three times on
- * `cd: /home/agent/repos/a11y-witness: No such file or directory`), and on the host it reads the PRIMARY checkout, which carries the change
+ * `cd: <a checkout>: No such file or directory`), and on the host it reads the PRIMARY checkout, which carries the change
  * only after the merge, so the line passes or fails for the wrong tree. The runner's working directory already is the repository.
  *
  * A `cd` into ANOTHER repository's checkout is not this check's business (the `Hand-run:` convention, unchanged), and a body that

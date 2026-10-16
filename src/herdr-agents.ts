@@ -246,7 +246,7 @@ export function agentStartArgs(name: string, kind: string, pane: string, agentTa
  * answers `{"type":"ok"}`.
  *
  * THE PANE STARTS IN A NAMED DIRECTORY WHEN THE CALLER HAS ONE (#2405, #2401). Without `--cwd` herdr's default is
- * `/home/agent/repos/a11y-witness`, the PRIMARY checkout, which is the one directory `launchGate` (#1352) refuses
+ * the PRIMARY checkout, which is the one directory `launchGate` (#1352) refuses
  * every policy script from -- so a spawned engineer began in the place it was forbidden to work, and its order
  * then named a directory that usually did not exist. The spawner has claimed the row by now (`spawnWorker`), so
  * the worktree exists and the agent's cwd is its unit of work; it never touches the primary and never borrows a
