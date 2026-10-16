@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { OUTSIDE_REFUSALS_FLAG, outsideRefusalsOn, type DeliberateRefusal } from "../deliberate-refusal.ts";
 import { MAX_REFUSAL_SHADOWS_PER_TICK, REFUSALS_JOB, REFUSALS_SHADOW_FILE, refusalsJobVerdict, settleOutsideRefusals } from "../work-gate/pr-orders.ts";
 import { ORG_LOGINS } from "../messaging/sources/readers.ts";
+import { workGateSource } from "../lib/work-gate-source.ts";
 
 const REPO = "a11ign/a11ign";
 const dir = mkdtempSync(join(tmpdir(), "outside-refusals-"));
@@ -166,7 +167,7 @@ test("a record file that cannot be read records nothing and says so, rather than
 });
 
 test("the host gate calls the pass once per tick, right after the arming one", () => {
-  const tick = readFileSync(new URL("../work-gate/tick.ts", import.meta.url), "utf8");
+  const tick = workGateSource();
   const calls = tick.match(/settleOutsideRefusals\(openPrs, \{[^}]*\}\)/g) ?? [];
   assert.equal(calls.length, 1);
   assert.ok(tick.indexOf("settleOutsideArm(openPrs") < tick.indexOf("settleOutsideRefusals(openPrs"));
