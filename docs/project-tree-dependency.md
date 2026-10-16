@@ -174,6 +174,21 @@ Filed in agent-org's tracker (`row-file --tracker=agent-org`), chained: each row
 
 The 10 tests-the-project subtests that move to a11ign's packages are not filed here; they need a row in a11ign's tracker.
 
+## The wake family against the fixture (agent-org#1601)
+
+Acceptance run on the row's branch with the fixture copy, before the change: `VERDICT fail: 4 of 33 tests failed in 3 files`. The other 29 pass, `wake-order-shape.test.ts` among them. Each of the four failing subtests, with the reader its failure points at:
+
+| Subtest file | Subtest | Reader | What the fixture lacks | Class | Resolution |
+|---|---|---|---|---|---|
+| `src/packaging/fyi-does-not-wake-a-seat.test.ts` | #3562 only a lead seat holds an FYI, and only an order that declares no decision | `isLeadSeat` (`src/wake.ts`) reads `.agent-org/roles/sessions.json`, `live` | No `liaison` entry; `isLeadSeat("liaison")` is false. a11ign's roster has one | declaration | `liaison` entry added to the fixture `sessions.json`, with `.agent-org/roles/liaison.md` beside the other briefs |
+| `src/reviewer/reviewer-setup.test.ts` | the shipped reviewer recipe symlinks no whole node_modules, and still builds its own @a11ign links | `.agent-org/roles/reviewer.md` (`ROLE_DOC`) | The fixture brief is a stub. The emptiness check passes on it; its positive control (`ln -sfn .*\.venv`) fails | project content | Moved to `src/reviewer/reviewer-recipe.test.ts`, byte for byte; still runs against a11ign |
+| `src/reviewer/reviewer-setup.test.ts` | known-gaps §48 records the accepted exposure | `docs/known-gaps.md` §48 (`KNOWN_GAPS`) | No §48. The fixture file has three lines | project content | Moved to `src/reviewer/reviewer-recipe.test.ts`, byte for byte |
+| `src/reviewer/reviewer-setup.test.ts` | the reviewer role document says the rules stop accident, not a wall, and points at §48 | `.agent-org/roles/reviewer.md`, section "What your sandbox rules are, and are not" | No such section | project content | Moved to `src/reviewer/reviewer-recipe.test.ts`, byte for byte |
+
+The §48 record and the recipe are a11ign's decisions and text. The fixture's own brief says it "carries no project's rules", so they are not copied into the fixture, and the tests are not skipped or weakened on it. The `liaison` entry is a declaration the fixture carries. The product-manager ruled on this split (2026-10-16).
+
+After the change the fixture run is `VERDICT pass: 28 tests in 3 files`: the 33 less the five subtests that moved (the three project-reading tests, and the two pure control tests of the helper they depend on). `reviewer-recipe.test.ts` run with no fixture variable, so against a11ign's own host, passes 5 of 5, and no coverage is lost. Row 5 moves that file to a11ign.
+
 ## Open
 
 - The 188 unresolved subtests (43 files) need their test bodies read. Row 5 carries that.
