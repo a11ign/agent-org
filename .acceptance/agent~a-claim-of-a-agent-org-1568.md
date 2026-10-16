@@ -12,6 +12,13 @@ Acceptance: `AGENT_ORG_HOST=/home/agent/repos/a11y-witness/.agent-org/host.json 
 
 Closes a11ign/agent-org#1568
 
+Flag: none -- the old behaviour is the defect (a claimed row reads `backlog` beside `in-progress`), so there is no old path to keep behind a flag; it is undone by reverting this pull request.
+Health-signals: claims-refused
+Revert: revert this pull request; the claim's label set returns to keeping `backlog`.
+
+Outside-Region: src/state-label-exactly-one.test.ts -- the same label set's refusal test; a stateless plain decline now lands in `backlog`, so the test's expectation moves with it.
+Outside-Region: .changeset/a-claim-of-a-backlog-row-leaves-backlog-off.md -- the entry a project that pins a tag reads.
+
 platform: n/a (no GitHub, pnpm, systemd or git feature records a row's state label set; the labels are this repository's own)
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
