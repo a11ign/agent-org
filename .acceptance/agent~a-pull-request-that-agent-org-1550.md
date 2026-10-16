@@ -20,6 +20,8 @@ Measured: `node --test src/merged-row-open-incident.test.ts` prints `ℹ tests 2
 
 Closes a11ign/agent-org#1550
 
+Outside-Region: .github/PULL_REQUEST_TEMPLATE.md — the row asks for the step rule in the file that teaches the closing line; agent-org has no rules file for that (`src/packaging/rules-files.ts`), so the PR template, the file authors read for it, carries one sentence.
+
 `pnpm run typecheck` exits 0.
 
 `pnpm test` (the whole suite): 11,883 tests; the run had 114 failures in 27 files. One of them, `close-rows-full-form`, was my first draft of the template breaking the closing parse; that is fixed and the file passes 11 of 11. The other 113 (26 files) fail identically with `main`'s reader in place, so the reader is not their cause. They are environmental and unrelated to this change: GitHub 502s in the work-gate reads, and a host-config placeholder in `host-install-agent-org-launcher`.
