@@ -8,6 +8,7 @@ import path from "node:path";
 // twice shape this repo keeps paying for.
 import { reported } from "../board-data.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
+import { trackedTopLevelDirs } from "../region-paths.ts";
 
 /* THE PUBLIC CLAIM CANNOT OUTLIVE ITS MEASUREMENT.
  *
@@ -147,7 +148,11 @@ function unsourcedFigures(file: string, block: string, gates: string, read = rea
   return figuresIn(block).filter((n) => !sourced(n));
 }
 
-test("every figure in the public claim is sourceable from a recorded gate result", () => {
+/** #1604: these subtests read a11ign's own public claim block, README, CLAUDE.md and docs/board/reported records (docs/project-tree-dependency.md, row 1604). The fixture project carries none of them, so they skip there and run wherever the tracked `packages/` tree is present. */
+const SKIP_FIXTURE = trackedTopLevelDirs().includes("packages") ? false
+  : "the fixture has no public claim block, README claim or recorded gate entries: these assert a11ign's own published measurements, which only the a11ign checkout carries";
+
+test("every figure in the public claim is sourceable from a recorded gate result", { skip: SKIP_FIXTURE }, () => {
   const gates = recordedGateOutput();
   const unsourced = [...new Set(CLAIM_FILES.flatMap((file) => unsourcedFigures(file, claimBlockIn(file), gates)))];
 
@@ -188,7 +193,7 @@ test("a cited measurement record sources a figure only when it exists, is headed
   assert.deepEqual(unsourcedFigures("README.md", sentence("./docs/gone.md", "105"), "", read), ["105"]);
 });
 
-test("the live claim cites a measurement record where the project says it did (the control that the source above is read)", () => {
+test("the live claim cites a measurement record where the project says it did (the control that the source above is read)", { skip: SKIP_FIXTURE }, () => {
   // `docs/try-it.md` carries 105 and 460 sourced only by `docs/capture-cost.md`; if that link or the record's
   // heading goes, the figures fall back to the gate entries and the sourcing test above is the one that fails.
   const block = claimBlockIn("docs/try-it.md");
@@ -196,14 +201,14 @@ test("the live claim cites a measurement record where the project says it did (t
     "docs/try-it.md's claim block no longer cites a 'Measured <date>' record, so this control has nothing to read");
 });
 
-test("the claim never says 'no false positives'", () => {
+test("the claim never says 'no false positives'", { skip: SKIP_FIXTURE }, () => {
   // Ruled by the chief executive 2026-09-06: that phrase claims something about the WEB, and what was
   // measured is a corpus. The denominator is part of the claim.
   assert.doesNotMatch(claimText(), /no false positives/i,
     "the claim must state what was measured and on what, never the unbounded phrase");
 });
 
-test("every population the claim mentions carries the denominator it was measured on", () => {
+test("every population the claim mentions carries the denominator it was measured on", { skip: SKIP_FIXTURE }, () => {
   // Per FILE, not over the concatenation: a denominator present in the README and missing from
   // try-it.md must fail, and a joined string cannot see that.
   for (const file of CLAIM_FILES) assertDenominators(claimBlockIn(file), file);
@@ -363,7 +368,7 @@ function assertRealPageAsOfDate(claim: string, file: string): void {
   // withdrawn, or states no real-page figure at all -- covered above
 }
 
-test("a public claim stating a real-page figure carries its as-of date beside it", () => {
+test("a public claim stating a real-page figure carries its as-of date beside it", { skip: SKIP_FIXTURE }, () => {
   for (const file of CLAIM_FILES) assertRealPageAsOfDate(claimBlockIn(file), file);
 });
 
@@ -425,7 +430,7 @@ test("PROOF (#1599 M2): a stale figure quoted beside an undated withdrawal does 
     "synthetic"));
 });
 
-test("the claim block is reachable from the README a stranger opens", () => {
+test("the claim block is reachable from the README a stranger opens", { skip: SKIP_FIXTURE }, () => {
   // A guard over a block nobody renders is a guard over nothing.
   const readme = readFileSync(path.join(REPO, "README.md"), "utf8");
   assert.match(readme, /## What this tool claims, with the number it was measured on/,
@@ -490,7 +495,7 @@ function assertReadingCopies(copies: { readme: string; claude: string; record: s
     + `reading (${anchor[0]}) as its current one. Move it in the same change that moved the README's.`);
 }
 
-test("the calibration reading is the same pair in README, CLAUDE.md and the record", () => {
+test("the calibration reading is the same pair in README, CLAUDE.md and the record", { skip: SKIP_FIXTURE }, () => {
   assertReadingCopies({
     readme: claimBlockIn("README.md"),
     claude: readFileSync(path.join(REPO, "CLAUDE.md"), "utf8"),
@@ -760,7 +765,7 @@ function assertMeasuredClaimSourced(file: string): void {
     + "NOT_A_MEASURED_CLAIM with a reason.");
 }
 
-test("every claim-like sentence OUTSIDE the block is sourceable, or classified with a reason", () => {
+test("every claim-like sentence OUTSIDE the block is sourceable, or classified with a reason", { skip: SKIP_FIXTURE }, () => {
   // A signature this specific finding NOTHING would mean the scan broke, not that the docs are suddenly
   // clean of measurement prose -- twelve matched by hand in README.md alone during this unit's original
   // survey, plus try-it.md:73 once #338 taught the scan the numeric-transition shape.
@@ -772,7 +777,7 @@ test("every claim-like sentence OUTSIDE the block is sourceable, or classified w
   for (const file of CLAIM_FILES) assertMeasuredClaimSourced(file);
 });
 
-test("every classification still matches a real sentence, so none excuses a problem that moved", () => {
+test("every classification still matches a real sentence, so none excuses a problem that moved", { skip: SKIP_FIXTURE }, () => {
   // The vacuity guard. An entry keyed on text that no longer appears excuses nothing while making the
   // list look like coverage -- and this file's own history is the argument: an exemption held "1,398" on
   // a premise that later stopped being true, and kept a stale number in the public claim while the test
@@ -844,7 +849,7 @@ test("PROOF: a numeric transition matches with no OUTCOME word, and a version-li
 });
 
 
-test("every file carrying a CLAIM block is IN the list, so one cannot be added unguarded", () => {
+test("every file carrying a CLAIM block is IN the list, so one cannot be added unguarded", { skip: SKIP_FIXTURE }, () => {
   // "So the list is the guard" -- this file's own header, and the acknowledged hole in it: a new public
   // claim is protected only if somebody remembers to add its file here. That is a rule a human has to
   // remember, which this repo's own doctrine says does not happen.
@@ -1007,7 +1012,7 @@ function assertDurationClaimSourced(file: string): void {
     + "do not promise a duration at all.");
 }
 
-test("every time/duration promise outside the claim block is sourced, disclosed, or classified", () => {
+test("every time/duration promise outside the claim block is sourced, disclosed, or classified", { skip: SKIP_FIXTURE }, () => {
   for (const file of CLAIM_FILES) assertDurationClaimSourced(file);
 });
 
@@ -1021,7 +1026,7 @@ test("PROOF: a dated duration promise is sourced only by a record that exists, a
     "a link to a record that does not exist sources nothing");
 });
 
-test("every duration classification still matches a real sentence", () => {
+test("every duration classification still matches a real sentence", { skip: SKIP_FIXTURE }, () => {
   // The vacuity guard, same shape as the one above for NOT_A_MEASURED_CLAIM.
   const text = CLAIM_FILES
     .flatMap((file) => durationClaimParagraphsOutsideBlocks(file).map((p) => p.text))

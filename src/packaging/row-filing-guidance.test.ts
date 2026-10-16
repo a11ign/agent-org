@@ -19,7 +19,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { declaredRegionFiles } from "../region-paths.ts";
+import { declaredRegionFiles, trackedTopLevelDirs } from "../region-paths.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 
 const GUIDANCE = join(HOME_CHECKOUT, "docs/row-filing.md");
@@ -69,7 +69,11 @@ test("moving the exclusion under its own heading is what actually removes the de
     "the Region declares only what the change touches once the exclusion is a section of its own");
 });
 
-test("the guidance states both rules, each with the mechanism rather than only the instruction", () => {
+/** #1604: these subtests read a11ign's own `docs/row-filing.md` (docs/project-tree-dependency.md, row 1604). The fixture project's copy is a one-line stub, so they skip there and run wherever the tracked `packages/` tree is present. */
+const SKIP_FIXTURE = trackedTopLevelDirs().includes("packages") ? false
+  : "the fixture's docs/row-filing.md is a one-line stub: these assert a11ign's own filing guidance text, which only the a11ign checkout carries";
+
+test("the guidance states both rules, each with the mechanism rather than only the instruction", { skip: SKIP_FIXTURE }, () => {
   const text = guidance();
 
   assert.match(text, /no negation grammar/i,
@@ -104,7 +108,7 @@ test("the guidance states both rules, each with the mechanism rather than only t
  */
 const flat = () => guidance().replace(/\s+/g, " ");
 
-test("#1163: the acceptance rule says which POPULATION the files come from, not only that files are named", () => {
+test("#1163: the acceptance rule says which POPULATION the files come from, not only that files are named", { skip: SKIP_FIXTURE }, () => {
   const text = flat();
 
   assert.match(text, /a transcript names the files a defect is IN/i,
@@ -118,7 +122,7 @@ test("#1163: the acceptance rule says which POPULATION the files come from, not 
     + "rule above is held to, which carries `declaredRegionFiles` for the reader to run");
 });
 
-test("#1163: `out-of-release` is stated as answering ONE question, with importance said elsewhere", () => {
+test("#1163: `out-of-release` is stated as answering ONE question, with importance said elsewhere", { skip: SKIP_FIXTURE }, () => {
   const text = flat();
 
   assert.match(text, /answers one question/i, "the whole point is the singular");
@@ -137,7 +141,7 @@ test("#1163: `out-of-release` is stated as answering ONE question, with importan
     + "weakening -- if this ever fails the assertions above are passing on a normalisation artefact");
 });
 
-test("#1163: the guidance says the milestone description is COMPARED, not merely that it agrees", () => {
+test("#1163: the guidance says the milestone description is COMPARED, not merely that it agrees", { skip: SKIP_FIXTURE }, () => {
   const text = flat();
 
   assert.match(text, /guidanceDrift/,
@@ -162,7 +166,7 @@ const RULE_A_NOT_A_SHAPE = /never a grep for an implementation shape/i;
 const RULE_B_SHELF_LIFE = /a measurement taken against live `origin` has a shelf life/i;
 const RULE_B_NAMES_THE_REF = /names the ref it used and states whether that ref is expected to survive/i;
 
-test("#2037: an open-check is a behaviour that flips, with why a shape's green proves nothing", () => {
+test("#2037: an open-check is a behaviour that flips, with why a shape's green proves nothing", { skip: SKIP_FIXTURE }, () => {
   const text = flat();
 
   assert.match(text, RULE_A_FLIPS, "the instruction itself -- what the filer is being asked to write down");
@@ -178,7 +182,7 @@ test("#2037: an open-check is a behaviour that flips, with why a shape's green p
     "and that this generalises past row bodies -- it is the same error in a test assertion");
 });
 
-test("#2037: a reading against live origin names its ref, and says whether the ref should survive", () => {
+test("#2037: a reading against live origin names its ref, and says whether the ref should survive", { skip: SKIP_FIXTURE }, () => {
   const text = flat();
 
   assert.match(text, RULE_B_SHELF_LIFE, "the property of the measurement, not a complaint about staleness");
@@ -195,7 +199,7 @@ test("#2037: a reading against live origin names its ref, and says whether the r
     + "Acceptance rules above are held to, each of which carries its own check");
 });
 
-test("#2037 MUTATION: removing OR inverting either rule must go red", () => {
+test("#2037 MUTATION: removing OR inverting either rule must go red", { skip: SKIP_FIXTURE }, () => {
   const text = flat();
 
   // The inversion direction is the one that matters. A guard that merely checks the words "open-check" or

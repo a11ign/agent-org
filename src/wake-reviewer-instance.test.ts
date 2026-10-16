@@ -22,6 +22,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HOME_CHECKOUT } from "./project-config.ts";
+import { trackedTopLevelDirs } from "./region-paths.ts";
 import {
   deliver, route, spawnableRole, SPAWN_CAUSES,
   REVIEWER_CAUSES, REVIEWER_GH_CONFIG_DIR, reviewerEnvironment, spawnableReviewer, isReviewerOrder,
@@ -704,8 +705,12 @@ function section(text: string, heading: RegExp): string {
   return end === -1 ? rest : rest.slice(0, end);
 }
 
+/** #1604: this subtest reads a11ign's own `reviewer.md` brief (docs/project-tree-dependency.md, row 1604). The fixture project's copy is a stub, so it skips there and runs wherever the tracked `packages/` tree is present. */
+const SKIP_FIXTURE = trackedTopLevelDirs().includes("packages") ? false
+  : "the fixture's reviewer.md is a stub: this asserts a11ign's own reviewer brief text, which only the a11ign checkout carries";
+
 test("#2498 (3): `reviewer.md` pins the rule for a verdict whose Acceptance did not execute -- environmental is never "
-  + "`not runnable`, a `convinced` names the CI run it relies on, and an environment that still fails posts NO review (#3049)", () => {
+  + "`not runnable`, a `convinced` names the CI run it relies on, and an environment that still fails posts NO review (#3049)", { skip: SKIP_FIXTURE }, () => {
   const doc = readFileSync(join(HOME_CHECKOUT, ".agent-org/roles/reviewer.md"), "utf8");
   const rule = section(doc, /^## A verdict whose Acceptance did not execute/m).replace(/\s+/g, " ");
   assert.match(rule, /never says the Acceptance is "not runnable" for an ENVIRONMENTAL reason/);

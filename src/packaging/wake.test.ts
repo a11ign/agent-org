@@ -31,6 +31,7 @@ import { route, undelivered, parseOrders, readLedger, deliver as settlingDeliver
   blockedSessions }
   from "../wake.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
+import { trackedTopLevelDirs } from "../region-paths.ts";
 import { copyToolAndProject, importClosure } from "./copied-tool-fixture.ts";
 import { isLiveSession } from "../arm-pr.ts";
 import { afterGate, GATE, EXIT as TICK_EXIT } from "../work-tick.ts";
@@ -459,7 +460,11 @@ const STANDING = ["worker-capture", "worker-judge", "worker-tooling"];
 const SPARES = ["worker-4", "worker-5", "worker-6", "worker-7", "worker-8"];
 const REAL_ROSTER = engineerRoles();
 
-test("#2279 / #2505: the roster is sessions.json's engineer addresses -- NONE since the standing three retired -- and the spares are one FAMILY", () => {
+/** #1604: this subtest reads the live roster in the project's `.agent-org/roles/sessions.json` (docs/project-tree-dependency.md, row 1604). It skips where the project's roster is not a11ign's, and runs wherever the tracked `packages/` tree is present. */
+const SKIP_FIXTURE = trackedTopLevelDirs().includes("packages") ? false
+  : "this reads the project's live engineer roster, which the fixture project does not hold as a11ign's own: it asserts a11ign's roster, which only the a11ign checkout carries";
+
+test("#2279 / #2505: the roster is sessions.json's engineer addresses -- NONE since the standing three retired -- and the spares are one FAMILY", { skip: SKIP_FIXTURE }, () => {
   assert.deepEqual(REAL_ROSTER, [],
     "#2505: the three standing engineers are retired, so no address is listed and every engineer is a spare");
   const live = (JSON.parse(readFileSync(
