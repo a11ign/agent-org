@@ -11,7 +11,9 @@ The outside home of the board report, shipped OFF behind `outside.board` (agent-
 
 **Evidence.** `src/packaging/board-outside.test.ts` 12 of 12. The skip is driven through the real commands with a fake `gh` first on PATH, in both directions: flag on + scheduled + done writes nothing (report: one read, no comment; document: no mutation); not done, a dispatch, flag off and no event each go on. `npx tsc --noEmit -p tsconfig.json` exits 0; `node .github/scripts/workflow-paths.ts` and `leak-scan.ts` pass. `rstest run --changed=origin/main` printed `108 of 7340 tests failed in 437 files`; the same 108 fail at `origin/main` (22 files, work-gate / pr-owner / org-health, compared batch by batch on a detached `origin/main` worktree: 47+20+11+6+4+20, identical on both trees).
 
-Acceptance: `cd ~/repos/agent-org && git grep -l -F outside.board -- src`
+Acceptance: `git grep -l -F outside.board -- src`
+
+(The row's command without its `cd ~/repos/agent-org &&`: the runner already runs in the PR's worktree top level, and a `~` is not a path it rewrites.)
 
 Closes a11ign/agent-org#1574
 
