@@ -40,9 +40,10 @@ const BASH_REFUSALS: readonly Refusal[] = [
   { pattern: /\bgh\s+workflow\s+run\b/, why: "running a workflow is the person's" },
   { pattern: /\bgit\s+push\b[^\n;&|]*(\s--force(-with-lease)?\b|\s-f\b|\s\+\S)/, why: "a force push rewrites what someone may have read" },
   { pattern: /\bassumego\b/, why: "it prints credentials into the session" },
-  // `gh stack link` only records which pull request a worker's sits on. Every other subcommand pushes, rebases or merges a whole stack, run as
-  // `gh stack`, through `gh extension exec stack`, or as the extension's own `gh-stack`.
-  { pattern: /(?:\bgh\s+stack|\bgh\s+extension\s+exec\s+stack|\bgh-stack)\b(?!\s+link\b)/,
+  // `gh stack link` only records which pull request a worker's sits on. Every other subcommand pushes, rebases or merges a whole stack. The
+  // contract allows the literal `gh stack link` alone, so the extension's other spellings (`gh extension exec stack`, `gh-stack`) are refused
+  // whatever follows them.
+  { pattern: /\bgh\s+stack\b(?!\s+link\b)|\bgh\s+extension\s+exec\s+stack\b|\bgh-stack\b/,
     why: "a stack's pushes, rebases and merges are the person's: a worker runs only `gh stack link`" },
 ];
 
