@@ -1163,8 +1163,8 @@ export function recordClaimRefusal(refusal: string, { logPath = stateEntryPath(F
 
 /**
  * #2151: THE WHOLE LABEL LIST a claim leaves the row carrying, computed from `labels` as read immediately
- * before the write: everything it already holds stays, `ready` goes, and each of `add` joins unless the
- * row has it. Pure.
+ * before the write: everything it already holds stays, `ready` and `backlog` go (a claim leaves the row in
+ * exactly one state, `in-progress`), and each of `add` joins unless the row has it. Pure.
  *
  * KEEPING what is there is what makes the `dispatched -> started` resume safe as a SET: the row already
  * holds `in-progress`, `session:<me>` and `was-ready` (its `ready` went at the dispatch), so they are
@@ -1174,7 +1174,7 @@ export function recordClaimRefusal(refusal: string, { logPath = stateEntryPath(F
  * @returns {string[]}
  */
 export function labelSetForClaim(labels: readonly string[], add: readonly string[]): string[] {
-  const kept = labels.filter((l) => l !== READY_LABEL);
+  const kept = labels.filter((l) => l !== READY_LABEL && l !== BACKLOG_LABEL);
   return [...kept, ...add.filter((l) => !kept.includes(l))];
 }
 
@@ -2560,7 +2560,7 @@ function writeDeclineLabels(issueNumber: number, removeLabels: string[], addLabe
  * was. `isClosed` wins over every other reason to add a label (#752): a closed row has no lane to go back
  * to, so neither `wasReady` nor `blockedReason` may add anything once it is true.
  * @param {{ isClosed: boolean, wasReady: boolean, blockedReason: string | undefined, answer?: string, keepsState?: boolean }} facts
- * `keepsState` is a state label the decline does not remove (a row claimed from `backlog` still carries it).
+ * `keepsState` is a state label the claim kept and the decline does not remove (a claim since agent-org#1568 keeps only the non-`ready`/`backlog` ones).
  * @returns {{ restoreReady: boolean, addLabels: string[] }}
  */
 function declineAddLabels({ isClosed, wasReady, blockedReason, answer, keepsState = false }: { isClosed: boolean; wasReady: boolean; blockedReason: string | undefined; answer?: string; keepsState?: boolean; }): { restoreReady: boolean; addLabels: string[]; } {
@@ -2572,7 +2572,11 @@ function declineAddLabels({ isClosed, wasReady, blockedReason, answer, keepsStat
   // `ready` beside `answer:` WOULD be offered (the prefix is not in `NOT_STARTABLE`), and `blocked` has no referent.
   if (answer) return { restoreReady: false, addLabels: [`${ANSWER_LABEL_PREFIX}${answer}`, ...(keepsState ? [] : [BACKLOG_LABEL])] };
   const restoreReady = wasReady && !blockedReason;
-  return { restoreReady, addLabels: blockedReason ? [BLOCKED_LABEL] : restoreReady ? [READY_LABEL] : [] };
+  if (blockedReason) return { restoreReady, addLabels: [BLOCKED_LABEL] };
+  if (restoreReady) return { restoreReady, addLabels: [READY_LABEL] };
+  // The claim took `backlog` off a row claimed from it (`labelSetForClaim`), so a release with no other state puts it back: a
+  // released row left with no state label trips `row-without-exactly-one-state`. A row that still holds one keeps it.
+  return { restoreReady, addLabels: keepsState ? [] : [BACKLOG_LABEL] };
 }
 
 /**
