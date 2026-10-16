@@ -1568,13 +1568,34 @@ const DEPENDENCY_BOT_WORKER_CAUSES: readonly string[] = Object.freeze(["pr-check
  * @param prs the open pull requests, which say who each one's author is
  * @param declared the identities the org declares, the same reading `perPullRequestOrders` takes
  */
-export function withholdOutsideFollowUps(orders: any[], prs: any[], declared: DeclaredIdentities): any[] {
+export function withholdOutsideFollowUps(orders: any[], prs: any[], declared: DeclaredIdentities, ownerless: any[] = []): any[] {
   const withheld = new Set([...reviewOnlyRefs(prs, declared)].map((ref) => `pr-${ref}`));
   const botRefs = new Set(prs.filter((pr) => ownerOfPr(pr).source === "dependency-bot").map((pr) => `pr-${subjectRef(pr.repoKey, pr.number)}`));
+  const asked = new Set(ownerless.map((pr) => `pr-${subjectRef(pr.repoKey, pr.number)}`));
   return orders.flatMap((order) => {
     if (botRefs.has(order.subject) && order.session === UNOWNED_PR_SESSION && DEPENDENCY_BOT_WORKER_CAUSES.includes(order.cause)) return [toDependencyBotWorker(order)];
+    if (asked.has(order.subject) && OWNERLESS_ASK_CAUSES.includes(order.cause)) return [toOrchestrator(order)];
     return !withheld.has(order.subject) || REVIEW_CAUSES.includes(order.cause) ? [order] : [];
   });
+}
+
+/** agent-org#1648: `prs.ownerlessAsk` (`machinery-canary.json`, DEFAULT OFF). With it on, a red pull request the chairman opened with no session on it keeps its red build's order, addressed to `OWNERLESS_ASK_SESSION` instead of being withheld. */
+export const OWNERLESS_ASK_FLAG = "prs.ownerlessAsk";
+/** The reader an ownerless red pull request is asked of: `orchestrator` can re-lane it to a session that should fix it, or close it. */
+export const OWNERLESS_ASK_SESSION = "orchestrator";
+/** The one cause the ownerless ask keeps. A red build is the only order that says something is broken and nobody is fixing it. */
+const OWNERLESS_ASK_CAUSES: readonly string[] = Object.freeze(["pr-checks-failing"]);
+/** The stall reasons that are a red build: the PR's own red check, the queue's ejection, and a build that never finished. */
+const RED_STALL_REASONS: readonly string[] = Object.freeze([STALL_REASON.RED, STALL_REASON.EJECTED, STALL_REASON.HUNG_CHECK]);
+
+/** agent-org#1648: the open pull requests no session is named on (`ownerOfPr` is `chairman-author`) that are red, ejected or hung. PURE. */
+export function ownerlessRedPrs(prs: any[], required: string[] | null = null, nowMs: number = Date.now()): any[] {
+  return (prs ?? []).filter((pr) => pr && ownerOfPr(pr).source === "chairman-author" && RED_STALL_REASONS.includes(stallReasonOf(pr, required, nowMs)));
+}
+
+/** agent-org#1648: the order re-addressed to the reader of an ownerless pull request. Its causeKey moves with the session, as `toDependencyBotWorker`'s does. */
+function toOrchestrator(order: any) {
+  return { ...order, session: OWNERLESS_ASK_SESSION, causeKey: order.causeKey.replace(`${UNOWNED_PR_SESSION}/`, `${OWNERLESS_ASK_SESSION}/`) };
 }
 
 /**

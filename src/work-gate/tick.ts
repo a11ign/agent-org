@@ -22,7 +22,7 @@ import { readTrunkRed, trunkOfCodeRepository, trunkRedOrders } from "../trunk-re
 import { recordIgnoredChairmanLabels, recordTickFailures as recordFailuresOf } from "../failure-recorders.ts";
 import { readJsonObject, writeJsonObject } from "../claim-stall.ts";
 import { requiredWhenNeeded, perPullRequestOrders, greenUnarmedOrders, type UnarmedFacts, reviewBlockedOrders, stalledPrOrders,
-  STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr, ROW_REVIEW_SKILL_FLAG, PR_OWNER_ROUTING_FLAG, withholdOutsideFollowUps, routeDeadOwnerRefusals, reviewOnlyRefs, SAME_HEAD_REFAIL_FLAG, acceptanceGateOf, firstRefusalOf, treeWideGuardVerdict, settleOutsideArm, settleOutsideRefusals } from "./pr-orders.ts";
+  STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr, ROW_REVIEW_SKILL_FLAG, PR_OWNER_ROUTING_FLAG, OWNERLESS_ASK_FLAG, ownerlessRedPrs, withholdOutsideFollowUps, routeDeadOwnerRefusals, reviewOnlyRefs, SAME_HEAD_REFAIL_FLAG, acceptanceGateOf, firstRefusalOf, treeWideGuardVerdict, settleOutsideArm, settleOutsideRefusals } from "./pr-orders.ts";
 import { treeWideGuardFilesIn, runTreeWideGuards, outsideGuardsOn, shadowGuardsVerdict, guardSweepJobOf, namedJobOf } from "../lib/tree-wide-guard-org-side.ts"; // agent-org#1503, #1580, #1579
 import { outsideOwnedPathsOn, ownedPathsVerdict, ownedPathsJobOf, shadowOwnedPathsVerdict } from "../owned-path-signoff.ts"; // agent-org#1598
 import { readFileSync } from "node:fs";
@@ -274,8 +274,8 @@ export function blockerClearedReading(rows: any[], today: string = todayIso(), n
  */
 export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = [], prFiles = [],
   drain = false, required = null, epics = [], answerOwed = [], openRows = [], unarmed = null,
-  claimedComments = [], rowBranches, branchPrs, hostDrift, primaryDrift, closings, claimFacts, trunkRed, baseTip, claimStalls, offBoard, key, repo, callCountSignals, bareAnswerLabels, labJobs, claimRefusals, nowMs, recheck, rowReviewSkill, prOwnerRouting, sameHeadRefail, answerGiven, engineerStarts, projectDeclaration, shareLog, shareMemory, offerHierarchy, waitFacts, identities, primaryPaced = false, primaryUnread = false }: {
-        prs: any[]; readyRows: any[]; promotableRows?: any[]; chairmanBlocked?: any[]; nowMs?: number; recheck?: boolean; rowReviewSkill?: boolean; prOwnerRouting?: boolean; sameHeadRefail?: boolean;
+  claimedComments = [], rowBranches, branchPrs, hostDrift, primaryDrift, closings, claimFacts, trunkRed, baseTip, claimStalls, offBoard, key, repo, callCountSignals, bareAnswerLabels, labJobs, claimRefusals, nowMs, recheck, rowReviewSkill, prOwnerRouting, ownerlessAsk, sameHeadRefail, answerGiven, engineerStarts, projectDeclaration, shareLog, shareMemory, offerHierarchy, waitFacts, identities, primaryPaced = false, primaryUnread = false }: {
+        prs: any[]; readyRows: any[]; promotableRows?: any[]; chairmanBlocked?: any[]; nowMs?: number; recheck?: boolean; rowReviewSkill?: boolean; prOwnerRouting?: boolean; ownerlessAsk?: boolean; sameHeadRefail?: boolean;
         /** agent-org#1401: the primary's tracker lanes were skipped by pacing this tick (`work-gate.ts`), so the open rows are not a read the shelf can be stocked from. */
         primaryPaced?: boolean;
         /** #4405: the primary's Ready rows or open rows were NOT read this tick (refused, or paced), so `hierarchyOrders` keeps the chairman refusal ledger as it was. */
@@ -304,6 +304,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
     prompt: string; causeKey: string;
 }[] {
   const ownerRouting = prOwnerRoutingFlagOn(prOwnerRouting); // #1325: read ONCE, for the review-blocked set below and the last step
+  const ownerless = ownerRouting && ownerlessAskFlagOn(ownerlessAsk) ? ownerlessRedPrs(prs, required, nowMs) : []; // agent-org#1648: read ONCE, with the routing it is withheld by
   // FIRST, BEFORE EVERY OTHER CAUSE (#2356): a red `main` outranks even `answer-owed` -- see `trunkRedOrders`.
   // `answer-owed` says another session is ALREADY STOPPED waiting on them, which outranks any standing question.
   const orders = [...trunkRedOrders(trunkRed), ...primaryStaleOrders(primaryDrift), ...answerOrders(answerOwed)]; // #2781: a stale primary next, every order below is given from its code
@@ -395,7 +396,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // without classifying it is caught by `work-gate.test.ts` rather than silently surviving a window.
   // #1325: LAST, over EVERY cause, because the PR causes come from six producers. With the flag on, an outside or chairman-authored pull request keeps its review.
   // #1370: the rejected review on a dead owner's pull request goes to a fresh worker, after the withholding (which never touches a worker's pull request).
-  const routed = ownerRouting ? routeDeadOwnerRefusals(withholdOutsideFollowUps(orders, prs, identities ?? declaredIdentities()), prs) : orders;
+  const routed = ownerRouting ? routeDeadOwnerRefusals(withholdOutsideFollowUps(orders, prs, identities ?? declaredIdentities(), ownerless), prs) : orders;
   return drain ? routed.filter((o) => !START_CAUSES.includes(o.cause)) : routed;
 }
 
@@ -446,6 +447,24 @@ export function recheckFlagOn(asked?: boolean, read: () => CanaryState = () => r
  */
 export function prOwnerRoutingFlagOn(asked?: boolean, read: () => CanaryState = () => readReenqueueState(REVIEWER_STATE_DIR, () => undefined)): boolean {
   return asked ?? machineryFlagOn(read(), PR_OWNER_ROUTING_FLAG);
+}
+
+/**
+ * agent-org#1648: `OWNERLESS_ASK_FLAG` (`prs.ownerlessAsk`), read where the orders are decided, as `prOwnerRoutingFlagOn` is. Absent, unreadable or malformed is OFF: a chairman's red pull request is withheld as it was.
+ * @param [asked] the reading a caller already has; a test passes it so the answer does not move with the host's state directory
+ * @param [read] the flag's state, as `prOwnerRoutingFlagOn` reads it
+ */
+export function ownerlessAskFlagOn(asked?: boolean, read: () => CanaryState = () => readReenqueueState(REVIEWER_STATE_DIR, () => undefined)): boolean {
+  return asked ?? machineryFlagOn(read(), OWNERLESS_ASK_FLAG);
+}
+
+/**
+ * agent-org#1648: the numbers of the red, chairman-opened pull requests NO ORDER REACHES. With `prs.ownerlessAsk` and `prs.ownerRouting` both on, every one is asked of `OWNERLESS_ASK_SESSION`, so none is unreached. `null` when the pull requests are unread.
+ */
+export function ownerlessUnreached(prs: any[] | null, required: string[] | null): number[] | null {
+  if (prs === null) return null;
+  if (ownerlessAskFlagOn() && prOwnerRoutingFlagOn()) return [];
+  return ownerlessRedPrs(prs, required).map((pr) => pr.number);
 }
 
 /**
