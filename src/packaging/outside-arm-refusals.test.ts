@@ -230,6 +230,23 @@ test("#1622 (13) base not main in the list: the pass leaves it, and `arm-pr` is 
   assert.equal(out.calls.some((args) => args[0] === "pr" && args[1] === "view"), false, "no arm-pr read");
 });
 
+// --- agent-org#1628: an approved draft is readied before `arm-pr` can refuse it ---------------------------------------------------------
+
+test("#1628 an approved draft that `arm-pr` refuses (a hold only it reads) is not left ready: it is put back to a draft", () => {
+  const out = drive({ list: { isDraft: true, reviewDecision: "APPROVED" }, view: { labels: ["hold:ceo"] } });
+  assertRefused("approved draft", out, /hold/i);
+  const ready = out.writes.filter((line) => line.startsWith("pr ready"));
+  assert.deepEqual(ready, ["pr ready 7 --repo a11ign/a11ign", "pr ready 7 --repo a11ign/a11ign --undo"], "readied, then put back, in that order");
+  assert.deepEqual(out.result.readied, [], "not counted as readied");
+});
+
+test("#1628 CONTROL: an approved draft that `arm-pr` arms stays ready and is not put back", () => {
+  const out = drive({ list: { isDraft: true, reviewDecision: "APPROVED" } });
+  assert.deepEqual(out.result.armed, [7], out.lines.join("\n"));
+  assert.deepEqual(out.result.readied, [7]);
+  assert.equal(out.writes.some((line) => line.includes("--undo")), false, "no put-back");
+});
+
 // --- the positive control -------------------------------------------------------------------------------------------------------------------
 
 test("#1622 CONTROL: an armable pull request IS armed, and only after its read-back says so", () => {

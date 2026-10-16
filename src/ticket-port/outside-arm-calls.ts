@@ -7,7 +7,7 @@ const LIST_FIELDS = "number,state,isDraft,baseRefName,isCrossRepository,reviewDe
 /** The arguments that list `repo`'s open pull requests, at most `limit`, with the fields the outside verdict needs. */
 export const outsideArmListArgs = (repo: string, limit: number): string[] => ["pr", "list", "--repo", repo, "--state", "open", "--limit", String(limit), "--json", LIST_FIELDS];
 
-/** The write that readies an approved draft. A refused `run` THROWS, and the caller decides what the throw means. */
-export function readyPullRequest({ number, repo, run }: { number: number; repo: string; run: (args: string[]) => string }): void {
-  run(["pr", "ready", String(number), "--repo", repo]);
+/** The write that readies an approved draft, or with `undo` puts it back to a draft (agent-org#1628). A refused `run` THROWS, and the caller decides what the throw means. */
+export function readyPullRequest({ number, repo, run, undo = false }: { number: number; repo: string; run: (args: string[]) => string; undo?: boolean }): void {
+  run(["pr", "ready", String(number), "--repo", repo, ...(undo ? ["--undo"] : [])]);
 }
