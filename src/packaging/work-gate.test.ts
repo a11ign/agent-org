@@ -34,7 +34,7 @@ import { TOOL_ROOT, copyToolAndProject, importClosure, toolFile } from "./copied
 import { judgePin, type Declaration } from "../lib/pin-ratchet.ts";
 import { deriveClosureRequirements, createClosureMemo } from "../acceptance-commands.ts";
 import { patchIdOfDiff } from "../review-verdict.ts";
-import { MAX_ROW_ORDERS_PER_TICK, readCommitShas, readPatchId, withPatchIds, decide, checksSettledGreen, readPrs, OPEN_PRS_FIRST_PAGE, OPEN_PRS_LIMIT, readReadyRows, EXIT, CAUSES,
+import { MAX_ROW_ORDERS_PER_TICK, readCommitShas, readPatchId, withPatchIds, decide as decideOnHost, checksSettledGreen, readPrs, OPEN_PRS_FIRST_PAGE, OPEN_PRS_LIMIT, readReadyRows, EXIT, CAUSES,
   comparablePrFiles, START_CAUSES, draining, DRAIN_MARKER, stalledOrder, performActions,
   blockingChecks, anyChecksRed, requiredCheckNames, readBaseTip, baseTipWhenRed, ownerOf, NOT_PICKABLE, NOT_STARTABLE,
   ROUTED_TO, readPromotableRows, GH_READS, partitionUnclaimed, openRowState, waitingBreakdown,
@@ -89,7 +89,7 @@ const HEAD = "abc12345deadbeefcafe000011112222";
 
 /** @param n PR number @param rollup its checks @param comments its comments */
 function draft(n: number, rollup: unknown[], comments: { body: string }[] = []) {
-  return { number: n, isDraft: true, headRefOid: HEAD, statusCheckRollup: rollup,
+  return { number: n, isDraft: true, headRefOid: HEAD, statusCheckRollup: rollup, isCrossRepository: false,
     author: { login: "worker-judge" }, comments, labels: [] };
 }
 
@@ -262,13 +262,6 @@ test("#2296: oldest-first holds within each group, priority and not", () => {
   assert.deepEqual(offered(rows), ["row-30", "row-80", "row-20", "row-70"]);
 });
 
-test("#2296: the label reorders offers and does NOT grant a claim -- a shelved `priority` row stays shelved", () => {
-  const shelved = { ...regionRow(1452, ".github/workflows/release.yml"),
-    labels: [{ name: "ready" }, { name: "priority" }] };
-  assert.deepEqual(offered([shelved], { prFiles: [prTouching(1695, ".github/workflows/release.yml")] }), []);
-  const held = priorityRow(1453, "priority", "in-progress");
-  assert.deepEqual(offered([held]), []);
-});
 
 // --- #2293: what the label does NOT override, beyond #2296's shelved and claimed cases ---
 test("#2293 a `priority` row keeps its lane owner, and an `answer:` shelf still hides it", () => {
@@ -652,23 +645,7 @@ const SHARED_FILE = "docs/messaging.md";
 
 const prTouching = (n: number, ...files: string[]) => ({ number: n, files, changedFiles: files.length });
 
-test("a row whose Region overlaps an open PR is NOT offered -- B4 would only refuse the claim", () => {
-  const orders = decide({ prs: [], readyRows: [regionRow(1452, ".github/workflows/release.yml")],
-    prFiles: [prTouching(1695, ".github/workflows/release.yml")] });
-  assert.deepEqual(orders.filter((o: { cause: string }) => o.cause === "ready-row-unclaimed"), [],
-    "offering it costs a whole session turn to reach the answer this comparison already has");
-});
 
-/**
- * THE POSITIVE CONTROL for every assertion above. A `partitionUnclaimed` that shelved everything would
- * satisfy each "not offered" case perfectly and would recruit nobody, ever -- this file's own header
- * names that shape one level up.
- */
-test("the SAME row IS offered when no open PR touches its Region", () => {
-  const orders = decide({ prs: [], readyRows: [regionRow(1452, ".github/workflows/release.yml")],
-    prFiles: [prTouching(1695, "packages/lab/src/packaging/something.test.ts")] });
-  assert.deepEqual(orders.map((o: { subject: string }) => o.subject), ["row-1452"]);
-});
 
 // --- #2237: the order names a launch directory `launchGate` ACCEPTS ---
 //
@@ -740,30 +717,7 @@ test("#2237 DONE-WHEN 4: both flags stay named -- row-claim refuses when given o
   assert.match(prompt, /--worktree=\.\.\/wt-9001/);
 });
 
-test("NO REGION is cannot-ask, not no-overlap -- the row is still offered, as row-claim would grant it", () => {
-  const row = { number: 77, labels: [{ name: "ready" }], body: "a row with no template fields at all" };
-  const orders = decide({ prs: [], readyRows: [row],
-    prFiles: [prTouching(1695, ".github/workflows/release.yml")] });
-  assert.deepEqual(orders.map((o: { subject: string }) => o.subject), ["row-77"],
-    "row-claim skips B4 on a Region-less row rather than refusing it; disagreeing here would shelve "
-    + "rows the claim would grant, and nothing would ever say so");
-});
 
-/**
- * #1419: `gh pr list --json files` returns each PR's first 100 files and never says so. At claim time a
- * list shorter than its own count is a REFUSAL, which is right when the cost of guessing is two sessions
- * in one file. Here it must FAIL OPEN -- one paginated PR would otherwise shelve the entire queue, and
- * the gate would report a starved queue as a quiet one.
- */
-test("a TRUNCATED pull-request file list is dropped from the comparison, never read as an overlap", () => {
-  const raw = [{ number: 1695, changedFiles: 113, files: [{ path: ".github/workflows/release.yml" }] }];
-  assert.deepEqual(comparablePrFiles(raw), [], "113 changed files, 1 listed -- not comparable");
-  const orders = decide({ prs: [], readyRows: [regionRow(1452, ".github/workflows/release.yml")],
-    prFiles: comparablePrFiles(raw) });
-  assert.deepEqual(orders.map((o: { subject: string }) => o.subject), ["row-1452"],
-    "the gate fails open and row-claim still refuses at claim time -- shelving can only ever REMOVE a "
-    + "wake that would have ended in a refusal");
-});
 
 test("comparablePrFiles reads gh's own shape: a file list is objects carrying a path", () => {
   assert.deepEqual(comparablePrFiles([{ number: 9, changedFiles: 2,
@@ -785,33 +739,8 @@ test("comparablePrFiles reads gh's own shape: a file list is objects carrying a 
 const prClosingRow = (n: number, closes: number[], ...files: string[]) =>
   ({ number: n, files, changedFiles: files.length, closes });
 
-test("#2101 a row is OFFERED although an open PR holds its whole Region, when that PR declares `Closes #<row>`", () => {
-  const orders = decide({ prs: [], readyRows: [regionRow(2076, SHARED_FILE)],
-    prFiles: [prClosingRow(2077, [2076], SHARED_FILE)] });
-  assert.deepEqual(orders.map((o: { subject: string }) => o.subject), ["row-2076"],
-    "a row and its own pull request are one piece of work, and one piece of work cannot collide with itself");
-});
 
-test("#2101 NEGATIVE: the same row is still SHELVED behind a PR declaring another row, and behind one " +
-  "declaring nothing -- B4 stays unconditional about two SESSIONS in one file", () => {
-  const row = regionRow(2076, SHARED_FILE);
-  const other = decide({ prs: [], readyRows: [row],
-    prFiles: [prClosingRow(2077, [2084], SHARED_FILE)] });
-  assert.deepEqual(other.filter((o: { cause: string }) => o.cause === "ready-row-unclaimed"), []);
-  const undeclared = decide({ prs: [], readyRows: [row],
-    prFiles: [prTouching(2077, SHARED_FILE)] });
-  assert.deepEqual(undeclared.filter((o: { cause: string }) => o.cause === "ready-row-unclaimed"), []);
-});
 
-test("#2101 the shelving REPORT names the same two, and stops naming the row's own PR", () => {
-  const row = regionRow(2076, SHARED_FILE);
-  assert.deepEqual(partitionUnclaimed([row],
-    [prClosingRow(2077, [2076], SHARED_FILE)]).blocked, [],
-  "a row withheld with no session able to unblock it is the deadlock itself");
-  const [withheld] = partitionUnclaimed([row],
-    [prTouching(2077, SHARED_FILE)]).blocked;
-  assert.match(withheld.reason, /overlaps #2077/);
-});
 
 test("#2101 comparablePrFiles reads the declaration off the body gh already returns, never a second call", () => {
   assert.deepEqual(comparablePrFiles([
@@ -890,34 +819,8 @@ const heldPrClosing = (closes: number[], held = true) => ({ ...prClosingRow(2376
 const shelved = (row: unknown, prFiles: { number: number; files: string[]; changedFiles: number }[], openRows: unknown[]) =>
   partitionUnclaimed([row], prFiles, { openRows }).blocked.map((b: { number: number }) => b.number);
 
-test("#2493 THE POSITIVE: a held PR whose every closed row is blockedBy the asking row does not shelve it", () => {
-  const row = regionRow(2399, HELD_REGION);
-  const openRows = [edgeRow(2359, 2399)];
-  assert.deepEqual(shelved(row, [heldPrClosing([2359])], openRows), []);
-  const orders = decide({ prs: [], readyRows: [row], prFiles: [heldPrClosing([2359])], openRows });
-  assert.deepEqual(orders.filter((o: { cause: string }) => o.cause === "ready-row-unclaimed")
-    .map((o: { subject: string }) => o.subject), ["row-2399"], "offered, as `row-claim` would grant it");
-});
 
-test("#2493 NEGATIVES, through the gate: no edge, an edge to another row, no hold, and an unread row all SHELVE", () => {
-  const row = regionRow(2399, HELD_REGION);
-  assert.deepEqual(shelved(row, [heldPrClosing([2359])], [edgeRow(2359)]), [2399], "held, no edge");
-  assert.deepEqual(shelved(row, [heldPrClosing([2359])], [edgeRow(2359, 2084)]), [2399], "an edge to ANOTHER row");
-  assert.deepEqual(shelved(row, [heldPrClosing([2359], false)], [edgeRow(2359, 2399)]), [2399], "an edge but no `hold:`");
-  assert.deepEqual(shelved(row, [heldPrClosing([2359])], []), [2399], "the closed row is not among those read: not excluded");
-  assert.deepEqual(partitionUnclaimed([row], [heldPrClosing([2359])]).blocked.map((b: { number: number }) => b.number),
-    [2399], "`openRows` absent excludes nothing, so every caller that does not pass it is unchanged");
-  assert.match(partitionUnclaimed([row], [heldPrClosing([2359], false)], { openRows: [edgeRow(2359, 2399)] }).blocked[0].reason,
-    /overlaps #2376/);
-});
 
-test("#2493 a held PR closing NOTHING, or closing TWO rows with one edge missing, still shelves", () => {
-  const row = regionRow(2399, HELD_REGION);
-  assert.deepEqual(shelved(row, [heldPrClosing([])], [edgeRow(2359, 2399)]), [2399], "`Closes: none` waits on nothing");
-  assert.deepEqual(shelved(row, [heldPrClosing([2359, 2360])], [edgeRow(2359, 2399), edgeRow(2360, 2084)]), [2399]);
-  assert.deepEqual(shelved(row, [heldPrClosing([2359, 2360])], [edgeRow(2359, 2399), edgeRow(2360, 2399)]), [],
-    "the control: with both edges present the same PR is excluded");
-});
 
 test("#2493 `held` comes off the `labels` readPrs already returns, and only a `hold:` label is a hold", () => {
   const raw = (labels: string[]) => [{ number: 2376, changedFiles: 1, files: [{ path: "a.ts" }],
@@ -939,18 +842,6 @@ test("#2493 blockersFromRows answers from the open rows already read, and `null`
   assert.equal(blockersFromRows(null)(2359), null);
 });
 
-/** #2493 done-when 5: the ready audit's line lives in the role brief, pinned so deleting it is red. */
-test("#2493: product-manager's brief says `SOLE HOLDER IS A HELD PR`, and what to read next, in ONE bullet", () => {
-  const brief = readFileSync(join(HOME_CHECKOUT, ".agent-org/roles/product-manager.md"), "utf8");
-  // THE BULLET, SLICED: a whole-file `includes` is satisfied by any second copy of the phrase elsewhere.
-  const start = brief.indexOf("- **A ready audit that names a B4 holder");
-  assert.ok(start >= 0, "the bullet is gone");
-  const bullet = brief.slice(start, brief.indexOf("\n- **", start + 1));
-  assert.match(bullet, /`SOLE HOLDER IS A HELD PR`/);
-  assert.match(bullet, /only holder carries `hold:`/, "the condition that makes the line true");
-  assert.match(bullet, /FIRST audit/, "the point of the row: the cycle is named at the first reading, not the fifth");
-  assert.match(bullet, /--add-blocked-by/, "and the remedy is the edge, which is data, not a comment");
-});
 
 /**
  * #2084: THE NAMED CONTROL FOR `reviewStateOf`'s `UNREADABLE` STATE, and the reason it lives here.
@@ -973,23 +864,7 @@ test("#2084 `reviewDecision` rides on readPrs's existing field list -- another f
     "`pr-review-blocked` goes silently empty without it, and an empty cause looks exactly like a healthy queue");
 });
 
-test("prFiles omitted means no overlap is KNOWABLE, so every row is offered exactly as before", () => {
-  const orders = decide({ prs: [], readyRows: [regionRow(1452, ".github/workflows/release.yml")] });
-  assert.deepEqual(orders.map((o: { subject: string }) => o.subject), ["row-1452"],
-    "a caller that cannot read files must never be worse off than one that never asked");
-});
 
-test("the empty-shelf order says WHY the pool is empty, and BLOCKED is not the same as LANED", () => {
-  const orders = decide({ prs: [], readyRows: [regionRow(1320, ".github/workflows/release.yml")],
-    promotableRows: [{ number: 800, labels: [{ name: "backlog" }] }],
-    prFiles: [prTouching(1695, ".github/workflows/release.yml")] });
-  const [shelf] = orders.filter((o: { cause: string }) => o.cause === "ready-queue-empty");
-  assert.match(shelf.prompt, /1 unlaned row\(s\) blocked \(#1320: overlaps #1695/);
-  assert.doesNotMatch(shelf.prompt, /belong to a lane/,
-    "no row here is laned -- saying so sends product-manager to an owner who has nothing to answer");
-  assert.match(shelf.prompt, /NOT rows to promote past/,
-    "a blocked row is waiting on a pull request; promoting over the same files just moves the refusal");
-});
 
 /**
  * #1885: `emptyShelfOrder` used to hardcode the PR-overlap sentence for every `poolBlocked` entry, even
@@ -1019,7 +894,7 @@ test("a row shelved on a declared blockedBy wait is named by ITS OWN reason, not
  * needed a reviewer verdict and a ready-marking to LAND. So the test that matters here is the pair --
  * what a drain withholds, and what it must keep delivering.
  */
-const inFlight = () => [draft(1705, GREEN), { number: 1706, isDraft: true, headRefOid: HEAD,
+const inFlight = () => [draft(1705, GREEN), { number: 1706, isDraft: true, isCrossRepository: false, headRefOid: HEAD,
   statusCheckRollup: GREEN, author: { login: "worker-tooling" }, labels: [],
   comments: [{ body: `Review of #1706 at \`${HEAD}\`, by reviewer: convinced` }] }];
 
@@ -1055,108 +930,6 @@ test("drain OFF changes nothing, so the flag cannot cost anything when it is not
   assert.deepEqual(decide({ ...state }), decide({ ...state, drain: false }));
 });
 
-/**
- * THE PARTITION MUST BE TOTAL, and this is the assertion that makes adding a cause a DECISION. A new
- * cause that nobody classifies defaults to surviving a drain -- so a future `claim-abandoned-row` would
- * quietly start new work inside a transfer window and nothing would say so. Spelling the other half out
- * means this test fails the moment `CAUSES` grows, and the author has to answer which kind it is.
- */
-test("every cause is classified as START or FINISH -- a new one cannot default into a window", () => {
-  const finish = CAUSES.filter((c: string) => !START_CAUSES.includes(c)).sort();
-  assert.deepEqual([...START_CAUSES].sort(),
-    ["blocked-unexaminable", "epic-finished", "epic-unfiled", "fleet-batch-due",
-      "lane-backlog-unpromoted", "org-stalled", "ready-queue-empty", "ready-row-unclaimed",
-      "unclaimed-blocker-cleared"]);
-  // #2139: `unclaimed-blocker-cleared` is START, and it is `blocker-cleared`'s own argument read the
-  // other way. The partition turns on whether the row is work in flight, and the ONLY difference between
-  // the two causes is the claim -- which is exactly where that line falls. Nobody holds this row, so
-  // promoting it is the org TAKING ON work, and a window is for landing what is already begun.
-  // #1969: `pr-green-unarmed` is FINISH. A drain stops the org TAKING ON work and must not stop it
-  // finishing what is in flight -- and a green, unheld, unarmed pull request is the most finished work
-  // there is. Withholding it during a window would strand exactly the PRs the window is waiting to land.
-  // #2110: `claimed-row-amended` is FINISH, and a drain is where withholding it would cost most -- a
-  // window exists to LAND what is in flight, and a constraint that goes unread during one is a build
-  // finished against a rule nobody applied.
-  // #2031: `row-branch-unshipped` is FINISH, and a drain is where withholding it would cost MOST rather
-  // than least. Step 2 of #63's history-purge runbook force-pushes a rewritten history, and every
-  // unlanded branch on `origin` at that moment is stranded by it -- a window exists so the org can find
-  // out what is still in flight before that happens. It also starts no work: the work already exists.
-  // #2174: `host-units-stale` is FINISH, and a drain is the window where withholding it would cost MOST.
-  // A drain does not stop the org running -- the work tick that EMITS this cause is itself one of the
-  // units that can go stale, and step 2 of #63's history-purge runbook force-pushes a rewritten history
-  // to the very checkout a unit's `WorkingDirectory=` names. It also starts no work by the partition's
-  // own definition: its subject is a machine that is already wrong, not a row anybody has yet to pick up,
-  // and the action is minutes rather than a build.
-  // #2356: `trunk-red` is FINISH, and a drain is a window where withholding it costs most. A red `main` is
-  // the branch every in-flight pull request lands on, so a window waiting to land them is waiting on the
-  // fix; and it takes on nothing new -- the work is repairing what was already merged.
-  // #2209: `pr-merge-conflict` is FINISH, for `pr-review-blocked`'s argument: a green, unheld pull request
-  // that cannot merge is finished work that cannot land, and a window waits on exactly those.
-  // #2365: `verdict-comment-unreviewed` is FINISH: its subject is a green, unheld pull request whose verdict
-  // exists and cannot merge, which is finished work a window is waiting to land.
-  // #2401: `reviewer-auth-failed` is FINISH: a reviewer that cannot authenticate is the reason in-flight pull
-  // requests cannot land, and a window waiting to land them is waiting on the login. It starts no work.
-  // #2163: `disk-headroom-low` is FINISH: it starts no work, and a drain is precisely when nobody is looking, so a full
-  // disk that a window silenced would be found by the first session to fail with ENOSPC, which is the outage it exists for.
-  // #2084: `pr-review-blocked` is FINISH, and it is `pr-green-unarmed`'s own argument one surface over.
-  // A pull request that is green, unheld and refused by GitHub's `reviewDecision` is finished work that
-  // cannot land -- it is the most in-flight thing there is, and it takes on nothing. Withholding it during
-  // a window would strand precisely the pull requests the window is waiting to land, which is the failure
-  // `START_CAUSES` was split out to prevent.
-  // #2416: `awaiting-evidence-stale` is FINISH: its subject is a pull request already open and waiting on a run,
-  // which a window that is landing in-flight work cares about, and it takes on nothing new.
-  // #2470: `claim-stalled` is FINISH, and an ACTION cause (in `JUDGMENT_CAUSES` neither): its subject is a row a session already
-  // holds, which a drain exists to land, and a release only returns the row to a pool that a drain already withholds.
-  // #2075: `row-off-board` is FINISH, and a JUDGMENT cause. Boarding a row takes on no work -- the row is already filed, and
-  // what is wrong is that the chairman's view cannot see it -- and rows are still filed during a drain.
-  // #1959: `pr-codeowner-review-missing` is FINISH, `pr-review-blocked`'s own argument one surface over: a
-  // pull request CODEOWNERS assigns to `ceo` with no approval from `ceo` is finished work that cannot land
-  // once #1756's flip turns the gap into a hard merge block, and a drain is the window where leaving it
-  // unreviewed would cost most. It starts no work: the pull request already exists.
-  // #2691: `row-call-count-signal` is FINISH, and a JUDGMENT cause. Its subject is a row a session already
-  // holds -- the plainest case of work in flight there is -- and reading the signal starts no new work:
-  // `product-manager` deciding to split, or not, is a judgment over a row that already exists.
-  // #2711: `answer-label-unexplained` is FINISH, and an ACTION cause (in `JUDGMENT_CAUSES` neither):
-  // `claim-stalled`'s own argument -- its subject is a row a session already holds, which a drain exists to
-  // land, and the two remedies (post the question, remove the label) start no new work.
-  // #2791: `ready-row-incomplete` is FINISH, and a JUDGMENT cause. It starts no work -- it asks `product-manager` to
-  // AMEND a row so a later claim can succeed, which a window has no reason to hold back.
-  // #2729: `lab-job-finished` is FINISH, and a JUDGMENT cause. Its subject is a row a session already holds and the
-  // result of a job that session already dispatched -- the plainest work in flight there is -- and it starts nothing:
-  // it replaces the holder polling `lab:status`. A window that withheld it would leave the holder to poll again.
-  // #2781: `primary-stale` is FINISH, and an ACTION cause: it starts no work, it tells `ceo` the gate is running from old code, and
-  // a drain is when withholding it would cost most (the drain window ends in a force-push to this very checkout).
-  // #2823: `closes-unresolved-repo-wide` is FINISH, and a JUDGMENT cause. Its subject is pull requests already open whose
-  // declared rows GitHub will not close, which the post-merge closer covers -- it starts no work, it names a fault to a reader.
-  // #2848: `repeating-log-line` and `backlog-aged-unpromoted` are FINISH, and JUDGMENT causes. Neither starts work: one names a fault
-  // in the tick's own journal and the other asks `product-manager` to decide about a row already filed, and a drain is when
-  // nobody reads the journal.
-  // #2938: `org-retrospective` is FINISH too. It starts no work -- it asks `ceo` to LOOK at how the org is doing, and a drain is when
-  // that is most worth doing, so a window must not withhold it.
-  // #2845: `ready-row-unclaimable` is FINISH too. It starts no work -- it asks `product-manager` to unstick a row the claim keeps
-  // refusing -- and a drain is when a stuck row most needs to be seen, since the pool's engineers are withheld anyway.
-  // #3567: `tick-overran` is FINISH, and a JUDGMENT cause. It starts no work -- it tells `ceo` that a tick was KILLED (agent-org#1208: a slow one is recorded on a
-  // standing row and wakes nobody) -- and a drain is when nobody is looking at the tick, so a window must not withhold the one signal that says the tick is the
-  // thing that stopped.
-  // #2936: `org-health` is FINISH, and a JUDGMENT cause. It starts no work -- it tells `ceo` that nothing is landing, a red PR is unattended, a row
-  // is refused or the primary is stale -- and a drain is exactly when an org that is not landing anything should be told.
-  // #636: `ready-rows-untiered` is FINISH too. It starts no work -- it asks `product-manager` to put a tier decision on rows already ready -- and a drain is
-  // when a stock of undecided rows should still be swept, since nothing is claiming them anyway.
-  // #3632: `answer-given` is FINISH, and a JUDGMENT cause. Its subject is a row the asking session already holds, and it starts no work: it tells the claimant
-  // its question was answered, once, which a drain exists to land -- and a drain is when the answerer's reply most needs to reach the asker.
-  // #4970: `hold-holder-idle` is FINISH, and an ACTION cause. It starts no work -- it wakes the session that holds an approved pull request, then asks the seat that
-  // decides about it -- and a drain is when a held pull request most needs releasing, since nothing else is landing.
-  // agent-org#1060: `row-closed-under-open-half` is FINISH, and a JUDGMENT cause. It starts no work -- it asks `product-manager` to reopen a row another half's merge
-  // closed while this half is still open -- and it has its own cause so `ready-row-unclaimable` keeps the one meaning, a refused claim.
-  assert.deepEqual(finish, ["answer-given", "answer-label-unexplained", "answer-owed", "awaiting-evidence-stale", "backlog-aged-unpromoted", "blocker-cleared", "chairman-answered", "chairman-blocked",
-    "claim-stalled", "claimed-row-amended", "closes-unresolved-repo-wide", "disk-headroom-low", "draft-awaiting-verdict", "draft-convinced-not-ready", "hold-holder-idle", "host-units-stale",
-    "lab-job-finished", "org-health", "org-retrospective", "pr-approval-not-counted", "pr-checks-failing", "pr-codeowner-review-missing", "pr-green-unarmed", "pr-merge-conflict", "pr-review-blocked", "primary-stale", "ready-row-incomplete", "ready-row-unclaimable", "ready-rows-untiered", "repeating-log-line", "reviewer-auth-failed",
-    "row-branch-unshipped", "row-call-count-signal", "row-closed-under-open-half", "row-off-board", "tick-overran", "trunk-red", "verdict-comment-unreviewed", "verdict-not-convinced",
-    "verified-close"]);
-  for (const cause of START_CAUSES) {
-    assert.ok(CAUSES.includes(cause), `${cause} is withheld by a drain but no longer exists`);
-  }
-});
 
 test("the drain switch is a FILE, because turning a window on and off is an ssh away", () => {
   assert.match(DRAIN_MARKER, /\/\.cache\/a11ign\/drain$/,
@@ -1295,7 +1068,7 @@ const rollupOf = (entries: [string, string][]) => entries.map(([name, conclusion
 }));
 
 test("a red check that cannot block the merge wakes nobody", () => {
-  const pr = { number: 1750, isDraft: false, headRefOid: "7a9d8340aaaaaaaa", author: { login: "x" },
+  const pr = { number: 1750, isDraft: false, isCrossRepository: false, headRefOid: "7a9d8340aaaaaaaa", author: { login: "x" },
     labels: [{ name: "session:worker-capture" }], comments: [],
     statusCheckRollup: rollupOf([["gate", "SUCCESS"], ["ts / run", "SUCCESS"], ["sweep", "FAILURE"]]) };
   // THE WAKE THIS TEST IS ABOUT is the author's `pr-checks-failing`. It used to assert `[]`, which also said "no reviewer is asked" -- the
@@ -1307,48 +1080,13 @@ test("a red check that cannot block the merge wakes nobody", () => {
     "a11ign#3597: and the reviewer IS asked, which an unrequired red check no longer prevents");
 });
 
-test("a red check that CAN block the merge still wakes its session", () => {
-  // THE POSITIVE CONTROL. #1650 is why `failingChecksOrder` exists: a `changeset` failure sat unattended
-  // while its own session was idle. Narrowing what counts as red must not reopen that.
-  const pr = { number: 1650, isDraft: false, headRefOid: "deadbeefcafe0000", author: { login: "x" },
-    labels: [{ name: "session:worker-capture" }], comments: [],
-    statusCheckRollup: rollupOf([["gate", "FAILURE"], ["sweep", "SUCCESS"]]) };
-  const [order] = decide({ prs: [pr], readyRows: [], required: ["gate"] }) as { cause: string,
-    session: string }[];
-  assert.equal(order.cause, "pr-checks-failing");
-  assert.equal(order.session, "worker-capture", "and it goes to the session named on the PR");
-});
 
-test("#2538 the pr-checks-failing order keeps its (a)/(b)/(c) triage and drops the tail the preamble already says", () => {
-  const pr = { number: 1650, isDraft: false, headRefOid: "deadbeefcafe0000", author: { login: "x" },
-    labels: [{ name: "session:worker-capture" }], comments: [],
-    statusCheckRollup: rollupOf([["gate", "FAILURE"]]) };
-  const [order] = decide({ prs: [pr], readyRows: [], required: ["gate"] }) as { prompt: string }[];
-  for (const kept of ["(a) a real defect on your branch", "(b) a run that tested a `main` since fixed", "(c) a check that could not ASK"]) {
-    assert.ok(order.prompt.includes(kept), `the triage is useful and stays: ${kept}`);
-  }
-  assert.ok(order.prompt.endsWith("Read the failing job to see which."), "and the order now ends where the triage does");
-  assert.doesNotMatch(order.prompt, /nobody answers|not yours to fix/, "the closing 'say so on the PR' repeated the preamble");
-});
 
-test("an UNREADABLE required set counts every check, exactly as before it existed", () => {
-  // `null` is "could not be read", NOT "nothing is required". Conflating them would make the gate go
-  // permanently silent on red PRs the first time an API read failed -- trading a wasted turn for the
-  // failure this whole function was written to stop.
-  const pr = { number: 1750, isDraft: false, headRefOid: "7a9d8340aaaaaaaa", author: { login: "x" },
-    labels: [{ name: "session:worker-capture" }], comments: [],
-    statusCheckRollup: rollupOf([["gate", "SUCCESS"], ["sweep", "FAILURE"]]) };
-  const orders = decide({ prs: [pr], readyRows: [], required: null });
-  assert.equal(orders.length, 1, "fail OPEN: an unreadable required set must never silence a red PR");
-  assert.deepEqual(blockingChecks([{ name: "sweep" }], null), [{ name: "sweep" }],
-    "null considers everything");
-  assert.deepEqual(blockingChecks([{ name: "sweep" }, { name: "gate" }], ["gate"]), [{ name: "gate" }]);
-});
 
 test("a PR carrying none of the required checks is not reported as red", () => {
   // If `gate` never ran, there is no required check to be red about. The rollup is not empty, but the
   // BLOCKING rollup is -- and `checksSettledGreen([])` is `null` (unknowable), never `false`.
-  const pr = { number: 99, isDraft: false, headRefOid: "aaaaaaaabbbbbbbb", author: { login: "x" },
+  const pr = { number: 99, isDraft: false, isCrossRepository: false, headRefOid: "aaaaaaaabbbbbbbb", author: { login: "x" },
     labels: [], comments: [], statusCheckRollup: rollupOf([["sweep", "FAILURE"]]) };
   assert.deepEqual(decide({ prs: [pr], readyRows: [], required: ["gate"] }), []);
 });
@@ -1375,15 +1113,6 @@ test("a CANCELLED required check wakes nobody while another run on the head is s
     "and the unreadable-required path agrees");
 });
 
-test("a CANCELLED required check with nothing else running is still red and still reaches its author", () => {
-  // THE POSITIVE CONTROL, and #1605's caveat: a cancelled `gate` that is genuinely the last word held a PR
-  // BLOCKED. Without this, a predicate that ignored CANCELLED altogether would pass the test above.
-  const settled = cancelledGateWhile({ status: "COMPLETED", conclusion: "SUCCESS" });
-  const [order] = decide({ prs: [settled], readyRows: [], required: ["gate"] }) as { cause: string,
-    session: string }[];
-  assert.equal(order?.cause, "pr-checks-failing", "nothing is in flight, so nobody else will ever answer it");
-  assert.equal(order.session, "worker-capture");
-});
 
 test("a real FAILURE beside a CANCELLED one is red even while something runs -- #1916", () => {
   const running = [{ name: "ts / run", status: "IN_PROGRESS" }];
@@ -1419,78 +1148,10 @@ test("a PR red ONLY from its addressee's own hold generates no failing-checks or
   }
 });
 
-test("the same two red jobs WITHOUT the hold still order -- the null is the exemption, not an empty rollup", () => {
-  // THE POSITIVE CONTROL (clause 4), and also "the hold is removed": the order comes back on the next tick.
-  for (const required of [["gate"], null]) {
-    const [order, ...rest] = failingOrders(heldPr([]), required);
-    assert.equal(rest.length, 0);
-    assert.equal(order?.session, "ceo");
-    assert.equal(order?.causeKey, "ceo/pr-checks-failing/pr-2376/b7fd42fe");
-  }
-});
 
-test("a THIRD red job ends the exemption, so a real failure under a hold still reaches its session", () => {
-  const real: [string, string][] = [["deliberateRefusals", "FAILURE"], ["gate", "FAILURE"], ["ts / run", "FAILURE"]];
-  for (const required of [["gate"], null]) {
-    const [order] = failingOrders(heldPr(["hold:product-manager"], real), required);
-    assert.equal(order?.causeKey, "ceo/pr-checks-failing/pr-2376/b7fd42fe",
-      `required=${JSON.stringify(required)}: with gate the only REQUIRED check, reading the blocking set alone `
-      + "would have called this the hold's doing");
-  }
-  const noHoldRed: [string, string][] = [["gate", "FAILURE"], ["changeset", "FAILURE"]];
-  assert.equal(failingOrders(heldPr(["hold:product-manager"], noHoldRed), ["gate"]).length, 1,
-    "a hold does not excuse a red gate whose cause is not the hold (deliberateRefusals is green here)");
-});
 
-test("ANY session's hold answers a PR red only from it, the owner's too -- #2993 narrows #2400's clause 1", () => {
-  // #2400 clause 1 ("a hold by anyone else is not an answer from the session being asked") was written for a hold the ADDRESSEE placed.
-  // For a hold the addressee is the SUBJECT of, the order asks "fix your build" and nothing in the build is broken (#2990, five orders).
-  assert.deepEqual(failingOrders(heldPr(["hold:ceo"]), ["gate"]), [], "unowned and held by ceo, who is the last answer");
-  assert.deepEqual(failingOrders(heldPr(["hold:worker-9"]), ["gate"]), [], "unowned and held by somebody: that is the answer");
-  const labelled = (labels: string[], checks: [string, string][] = HELD_RED) => heldPr(["session:worker-5", ...labels], checks);
-  const real: [string, string][] = [["deliberateRefusals", "FAILURE"], ["gate", "FAILURE"], ["ts / run", "FAILURE"]];
-  for (const required of [["gate"], null]) {
-    const where = `required=${JSON.stringify(required)}`;
-    // (1) a foreign hold, owner worker-5: no order
-    assert.deepEqual(failingOrders(labelled(["hold:ceo"]), required), [], `(1) worker-5's PR held by ceo ${where}`);
-    assert.deepEqual(failingOrders(labelled(["hold:product-manager"]), required), [], `(1) held by product-manager ${where}`);
-    assert.deepEqual(failingOrders(labelled(["hold:worker-5"]), required), [], `worker-5 holding its own PR ${where}`);
-    assert.deepEqual(failingOrders(labelled(["hold:ceo", "hold:worker-5"]), required), [], `two holders ${where}`);
-    // (2) a third red job under the same foreign hold still reaches the owner
-    const [order, ...rest] = failingOrders(labelled(["hold:ceo"], real), required);
-    assert.equal(rest.length, 0);
-    assert.equal(order?.session, "worker-5", `(2) a real ts / run failure under a foreign hold ${where}`);
-    // (3) the hold removed, same two red jobs: the null above is the exemption, not an empty rollup
-    assert.equal(failingOrders(labelled([]), required)[0]?.session, "worker-5", `(3) no hold ${where}`);
-  }
-});
 
-/**
- * #2935: A ROW-ROUTED ORDER IS QUIET UNDER A HOLD. #2882 addressed an unlabelled red PR to the session holding its row (`rowOwner`), so
- * the hold of the session it went to before that change stopped matching and #2883 was re-ordered every tick. Since #2993 no hold has to
- * match anybody: the exemption still ends with either key (a third red job, or the hold removed).
- */
-test("a rowOwner-routed PR under any hold generates no order; a third red job or no hold brings it back -- #2935/#2993", () => {
-  const routed = (labels: string[], checks: [string, string][] = HELD_RED) =>
-    ({ ...heldPr(labels, checks), rowOwner: { session: "worker-2879", row: 2879, source: "closes" } });
-  for (const required of [["gate"], null]) {
-    assert.deepEqual(failingOrders(routed(["hold:product-manager"]), required), [],
-      `hold:product-manager, row held by worker-2879 (required=${JSON.stringify(required)})`);
-    assert.deepEqual(failingOrders(routed(["hold:worker-2879"]), required), [], "the row holder's own hold");
-    assert.deepEqual(failingOrders(routed(["hold:ceo"]), required), [], "somebody else's hold (#2993)");
-    const real: [string, string][] = [["deliberateRefusals", "FAILURE"], ["gate", "FAILURE"], ["ts / run", "FAILURE"]];
-    assert.equal(failingOrders(routed(["hold:product-manager"], real), required)[0]?.session, "worker-2879", "third job red");
-    assert.equal(failingOrders(routed([]), required)[0]?.session, "worker-2879", "hold removed");
-  }
-  const labelled = { ...heldPr(["session:worker-5", "hold:product-manager"]), rowOwner: { session: "worker-2879", row: 2879, source: "closes" } };
-  assert.deepEqual(failingOrders(labelled, ["gate"]), [], "a labelled PR under product-manager's hold: no order either (#2993)");
-});
 
-test("HOLD_RED_JOBS names the jobs ci.yml defines, so the exemption cannot go stale on a rename", () => {
-  const ci = readFileSync(join(HOME_CHECKOUT, ".github/workflows/ci.yml"), "utf8");
-  assert.deepEqual([...HOLD_RED_JOBS], ["deliberateRefusals", "gate"]);
-  for (const job of HOLD_RED_JOBS) assert.match(ci, new RegExp(`\\n {2}${job}:\\n`), `${job} is a job in ci.yml`);
-});
 
 /**
  * #2709: THE HOLD'S OWN RED MUST NOT BLOCK THE REVIEW QUESTION EITHER. `redOnlyFromHoldOf` (above) already
@@ -1530,45 +1191,7 @@ test("#2709: a hold does not excuse a REAL red check outside HOLD_RED_JOBS from 
     "no reviewer is asked while a real check is red");
 });
 
-/**
- * Clauses 3 and 5: the escalation is read off what `deliver` is HANDED, so an order never emitted cannot reach the
- * breaker at all. The wake half is driven with the ledger already at the cap, which is #2376's state.
- */
-test("a held PR at the cap stops appearing in stuck, and a real failure under the same hold still escalates -- #2400", () => {
-  const at = (checkNames: [string, string][], labels = ["hold:product-manager"]) => {
-    const orders = failingOrders(heldPr(labels, checkNames), ["gate"]);
-    const counts = new Map(orders.map((o) => [o.causeKey, MAX_DELIVERIES]));
-    const calls: string[][] = [];
-    const { sent, stuck } = deliver(orders, [], [], { counts, run: () => { throw new Error("nothing may be sent"); } });
-    const labelled = escalateStuck(stuck, (a: string[]) => { calls.push(a); return ""; }, () => {});
-    return { orders, sent, stuck, labelled, calls };
-  };
-  const held = at(HELD_RED);
-  assert.deepEqual([held.orders, held.stuck, held.labelled, held.calls], [[], [], [], []],
-    "no order, so no stuck line, so no escalation label");
-  const real = at([["deliberateRefusals", "FAILURE"], ["gate", "FAILURE"], ["changeset", "FAILURE"]]);
-  assert.equal(real.orders.length, 1, "POSITIVE CONTROL: the order exists");
-  assert.equal(real.stuck.length, 1, "and at the cap it is stuck, by the ordinary count");
-  assert.deepEqual(real.labelled, [2376]);
-  assert.deepEqual(real.calls, [["issue", "edit", "2376", "--add-label", "answer:ceo"]]);
-});
 
-test("a PR held by SOMEBODY ELSE at the cap is not stuck and gets no needs:chairman -- #2993", () => {
-  const foreign = ["session:worker-5", "hold:ceo"];
-  const at = (checkNames: [string, string][]) => {
-    const orders = failingOrders(heldPr(foreign, checkNames), ["gate"]);
-    const counts = new Map(orders.map((o) => [o.causeKey, MAX_DELIVERIES]));
-    const calls: string[][] = [];
-    const { stuck } = deliver(orders, [], [], { counts, run: () => { throw new Error("nothing may be sent"); } });
-    const labelled = escalateStuck(stuck, (a: string[]) => { calls.push(a); return ""; }, () => {});
-    return { orders, stuck, labelled, calls };
-  };
-  const held = at(HELD_RED);
-  assert.deepEqual([held.orders, held.stuck, held.labelled, held.calls], [[], [], [], []], "(4) a foreign hold: nothing to escalate");
-  const real = at([["deliberateRefusals", "FAILURE"], ["gate", "FAILURE"], ["ts / run", "FAILURE"]]);
-  assert.equal(real.orders[0]?.session, "worker-5", "POSITIVE CONTROL: the owner is still ordered on a real failure");
-  assert.equal(real.stuck.length, 1, "and at the cap it is stuck, by the ordinary count");
-});
 
 test("the expensive question is asked only when something is red", () => {
   const green = { statusCheckRollup: rollupOf([["gate", "SUCCESS"]]) };
@@ -1591,7 +1214,7 @@ const BRANCH_ANSWER = (contexts: string[] | null, isProtected = true) =>
  */
 const RED_CI = { name: "ci", status: "COMPLETED", conclusion: "FAILURE", startedAt: "2026-09-23T09:07:00Z" };
 const RED_2087 = {
-  number: 2087, isDraft: true, headRefOid: "06a5230817c14f3f6dedf986c7d722201e1333eb",
+  number: 2087, isDraft: true, isCrossRepository: false, headRefOid: "06a5230817c14f3f6dedf986c7d722201e1333eb",
   statusCheckRollup: [RED_CI],
   author: { login: "worker-judge" }, comments: [], labels: [{ name: "session:worker-judge" }],
 };
@@ -2075,48 +1698,6 @@ test("a row carrying answer:<session> is not promotable (#1899): it is already r
   assert.deepEqual(orders, [], "both rows are already correctly parked -- the shelf is genuinely empty");
 });
 
-/**
- * THE BOUNDED-WINDOW INVARIANT, GUARDED -- the hole `reviewer` found in #1769 and could not post.
- *
- * #1769 narrowed "red" to the required checks and called `newestPerName` at the read site to satisfy
- * `local/bounded-window-reads`. `reviewer` then MUTATED that call away -- passing the raw rollup -- and
- * ALL 65 TESTS STAYED GREEN. The lint rule caught it at authoring time; nothing caught it at test time,
- * so a future edit that dropped the narrowing would ship silently.
- *
- * WHAT THE REGRESSION WOULD DO: `statusCheckRollup` UNIONS superseded runs, so a check that failed at
- * 10:00 and succeeded at 11:00 appears TWICE. Read raw, the old FAILURE makes a green pull request look
- * red and the gate wakes its session to "fix the cause on that branch" -- exactly the wasted prompt
- * #1769 exists to stop, arriving through the fix for it. `merge-queue.ts` had this defect until #634.
- *
- * The verdict never reached the PR: #1769 merged while the review was running, and `reviewer` correctly
- * refused to comment on a closed pull request. It was relayed by the chairman instead.
- */
-test("a SUPERSEDED red run does not wake anyone -- the newest run per name is what counts", () => {
-  const twice = { number: 1, isDraft: false, headRefOid: "abc12345aaaaaaaa", author: { login: "x" },
-    labels: [{ name: "session:worker-capture" }],
-    // A verdict at head, so the only order this fixture can produce is the red one (#2176).
-    comments: [{ body: "Review of #1 at `abc12345`, by `reviewer`: convinced." }],
-    statusCheckRollup: [
-      { __typename: "CheckRun", name: "gate", status: "COMPLETED", conclusion: "FAILURE",
-        completedAt: "2026-09-19T10:00:00Z" },
-      { __typename: "CheckRun", name: "gate", status: "COMPLETED", conclusion: "SUCCESS",
-        completedAt: "2026-09-19T11:00:00Z" },
-    ] };
-  assert.deepEqual(decide({ prs: [twice], readyRows: [], required: ["gate"] }), [],
-    "the 11:00 SUCCESS supersedes the 10:00 FAILURE -- reading the union reports a green PR as red");
-
-  // AND THE POSITIVE CONTROL, or the assertion above passes for a version that reports nothing at all:
-  // reverse the times and the newest run IS the failure, which must still wake its session.
-  const newestIsRed = { ...twice, statusCheckRollup: [
-    { __typename: "CheckRun", name: "gate", status: "COMPLETED", conclusion: "SUCCESS",
-      completedAt: "2026-09-19T10:00:00Z" },
-    { __typename: "CheckRun", name: "gate", status: "COMPLETED", conclusion: "FAILURE",
-      completedAt: "2026-09-19T11:00:00Z" },
-  ] };
-  const [order] = decide({ prs: [newestIsRed], readyRows: [], required: ["gate"] }) as
-    { cause: string }[];
-  assert.equal(order?.cause, "pr-checks-failing", "a genuinely red newest run must still be reported");
-});
 
 /**
  * "TWO `GH` CALLS, NO MODEL" IS THIS ORG'S SHORTHAND FOR THE GATE, AND IT WAS WRONG.
@@ -3159,15 +2740,6 @@ test("#1941: the order tells orchestrator how to LEAVE the set, not just to work
     "the prompt says why it arrived now, so the reader does not defer it to tonight out of habit");
 });
 
-test("#1941: the retired timer's units are gone from the shipped host set", () => {
-  // The clock is the thing being removed; leaving the unit in `packages/agent-org/host/` would let
-  // `host:install` put it straight back, and the org would have both a timer and a gate cause firing the
-  // same batch at two different cadences.
-  const units = shippedUnits();
-  assert.ok(!units.some((u: string) => u.startsWith("a11ign-fleet-gated-nightly")),
-    `a11ign-fleet-gated-nightly.* must not ship any more -- found ${units.join(", ")}`);
-  assert.ok(units.includes("a11ign-work-tick.timer"), "POSITIVE CONTROL: the tick's own units still ship");
-});
 
 // --- #2027: the fleet batch could not see a waiting condition -------------------------------------
 //
@@ -4887,6 +4459,7 @@ const DECLARED_HISTORY_POPULATION: Declaration[] = [
   { name: "persistent-seat-running.test.ts", reason: "#3539: imports `host-units.ts` for `persistentSeatDrift` and the report, the same edge `host-units.test.ts` has; its pull request declares `History: full`" },
   { name: "reviewer-door-install.test.ts", reason: "#3316: imports `host-units.ts` for `hostUnitDrift` and the door install, the same edge `host-units.test.ts` has; its pull request declares `History: full`" },
   { name: "shadow-window-arm.test.ts", reason: "#2867: imports `host-units.ts` for the rendered shadow-window unit texts and the installer, the same edge; declares `History: full`" },
+  { name: "work-gate-a11ign-readers.test.ts", reason: "#1602: imports `host-units.ts` for `shippedUnits` (#1941's units test), the same edge `host-units.test.ts` has; its pull request declares `History: full`" },
   { name: "work-gate.test.ts", reason: "this very file: it spawns the gate and reads commit history" },
   { name: "work-tick-crash-exit.test.ts", reason: "#3038: imports `host-units.ts` for the rendered `work-tick` unit's ExecStart, the same edge `host-tool-install.test.ts` has" },
 ];
@@ -5038,7 +4611,7 @@ test("#2174: a drift value that is not a list is 'not asked', never a crash", ()
  * holding, and until #2084 no line of this repository read it.
  */
 function ready(n: number, reviewDecision: string | null | undefined, labels: string[] = []) {
-  const pr: Record<string, unknown> = { number: n, isDraft: false, headRefOid: HEAD,
+  const pr: Record<string, unknown> = { number: n, isDraft: false, isCrossRepository: false, headRefOid: HEAD,
     statusCheckRollup: [{ name: "gate", status: "COMPLETED", conclusion: "SUCCESS" }],
     author: { login: "a11ign-ai-workers" },
     comments: [{ body: `Review of #${n} at \`${HEAD.slice(0, 8)}\`, by \`reviewer\`: convinced.` }],
@@ -5443,6 +5016,10 @@ const verdictAt = (n: number, oid: string, word: string) =>
 /** A green, NON-draft pull request -- the shape #2104 had -- with an optional commit chain attached. */
 // #1311: a same-repository pull request by a declared worker is INSIDE; the identities are the test's own, not the host's.
 const DECLARED = { exact: ["a11ign-ai-workers"], pattern: [] };
+// The same identities for every `decide` here, so no test reads the host to learn who the org declares: the logins the drafts below are
+// written by. An explicit `identities:` still wins, which is how the #1311 tests pin their own.
+const TEST_IDENTITIES = { exact: ["a11ign-ai-workers", "worker-judge", "worker-1", "worker-tooling"], pattern: [] };
+const decide = (args: Parameters<typeof decideOnHost>[0]) => decideOnHost({ identities: TEST_IDENTITIES, ...args });
 function readyPr(n: number, head: string, extra: Record<string, unknown> = {}) {
   return { number: n, isDraft: false, headRefOid: head, statusCheckRollup: GREEN, isCrossRepository: false,
     author: { login: "a11ign-ai-workers" }, comments: [], labels: [{ name: "session:worker-judge" }], ...extra };
@@ -5856,7 +5433,7 @@ test("#3093: the order for an ended-label PR goes to ceo, and says the label nam
 // --- #2492: answer:<session> on a PULL REQUEST woke nobody, because `gh issue list` does not return PRs ---
 
 /** A PR as `readPrs` returns one: `isDraft` and `headRefOid` present, `state` absent (it asks `--state open`). */
-const prWithLabels = (n: number, ...names: string[]) => ({ number: n, isDraft: false, headRefOid: "abc123",
+const prWithLabels = (n: number, ...names: string[]) => ({ number: n, isDraft: false, isCrossRepository: false, headRefOid: "abc123",
   labels: names.map((name) => ({ name })) });
 
 test("#2492 DONE-WHEN 1: a PR carrying answer:worker-tooling emits ONE order, worker-tooling/answer-owed/row-<n>, through decide", () => {

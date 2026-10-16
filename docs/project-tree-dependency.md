@@ -167,7 +167,7 @@ Filed in agent-org's tracker (`row-file --tracker=agent-org`), chained: each row
 |---|---|---|---|
 | 1 | https://github.com/a11ign/agent-org/issues/1600 | none | Fixture project tree and declaration (`src/packaging/fixtures/project-tree/`) |
 | 2 | https://github.com/a11ign/agent-org/issues/1601 | 1600 | Wake family to the fixture |
-| 3 | https://github.com/a11ign/agent-org/issues/1602 | 1601 | Work-gate family to the fixture |
+| 3 | https://github.com/a11ign/agent-org/issues/1602 | 1601 | Work-gate family to the fixture (section below) |
 | 4 | https://github.com/a11ign/agent-org/issues/1603 | 1602 | Row-file and filing-gate family, after reading the unnamed readers |
 | 5 | https://github.com/a11ign/agent-org/issues/1604 | 1603 | Remaining families, the 43 unresolved files, and the 10 tests-the-project and 14 needs-real-project subtests |
 | 6 | https://github.com/a11ign/agent-org/issues/1593 | 1590, 1600 to 1604 | Delete `PROJECT_REF` (already filed) |
@@ -188,6 +188,49 @@ Acceptance run on the row's branch with the fixture copy, before the change: `VE
 The §48 record and the recipe are a11ign's decisions and text. The fixture's own brief says it "carries no project's rules", so they are not copied into the fixture, and the tests are not skipped or weakened on it. The `liaison` entry is a declaration the fixture carries. The product-manager ruled on this split (2026-10-16).
 
 After the change the fixture run is `VERDICT pass: 28 tests in 3 files`: the 33 less the five subtests that moved (the three project-reading tests, and the two pure control tests of the helper they depend on). `reviewer-recipe.test.ts` run with no fixture variable, so against a11ign's own host, passes 5 of 5, and no coverage is lost. Row 5 moves that file to a11ign.
+
+## The work-gate family against the fixture (agent-org#1602)
+
+Acceptance run on the row's branch with the fixture copy, before the change: `VERDICT fail: 71 of 470 tests failed in 5 files` (work-gate 48, awaiting-evidence 1, cross-repo-pr-owner 8, cross-repo-red-refusal 8, cross-repo-red-disarms 6). Three causes were fixed in the tests or the fixture, and the rest moved:
+
+- **Test data, not the fixture.** The tests' pull-request literals lacked `isCrossRepository`, which `decide` reads as "outside" unless it is `false` (`src/review-trust.ts:111`). Production `readPrs` always supplies it, so the literals now do too. The tests pin `decide`'s identities to a test-owned list (#1311), as `work-gate-cross-repo-pr-owner.test.ts` does with `DECLARED`.
+- **Fixture declaration.** `.agent-org/project.json` declares `lab` (`a11ign/lab`) under `code`. `legSourceOf` (`src/cross-repo-red.ts:98`) reads it, and every cross-repo-red test needed it. This is the only fixture file the row changes.
+- **Moved, byte for byte.** Twenty-eight top-level subtests read a fact the fixture tree cannot supply. They are in `src/packaging/work-gate-a11ign-readers.test.ts`, which runs in the default suite against a11ign's checkout. Nothing is skipped or weakened. Each subtest's reader is named below.
+
+The fixture run after the change is `VERDICT pass: 442 tests in 5 files`: the 470 less the 28 that moved. `work-gate-a11ign-readers.test.ts` is declared in `DECLARED_HISTORY_POPULATION` (`work-gate.test.ts`), because it imports the same `host-units.ts` edge as the other entries there.
+
+| Subtest | Original line | Reader | What the fixture lacks | Class | Resolution |
+|---|---|---|---|---|---|
+| #2296 a shelved `priority` row stays shelved | 265 | `declaredRegionFiles` (`src/region-paths.ts`) reads `git ls-files` in the project | Acceptance copies the tree and runs `git init` but stages nothing, so no top-level directory is tracked and `.github/workflows/release.yml` declares nothing | git index | Moved |
+| a row whose Region overlaps an open PR is NOT offered | 655 | same | same | git index | Moved |
+| the SAME row IS offered when no open PR touches its Region (positive control) | 667 | same | same | git index | Moved, with its negatives |
+| NO REGION is cannot-ask, not no-overlap | 743 | same | same | git index | Moved |
+| a TRUNCATED pull-request file list is dropped from the comparison | 758 | same | same | git index | Moved |
+| #2101 a row is OFFERED although an open PR holds its Region, when that PR declares `Closes` | 788 | same (`docs/messaging.md`) | same | git index | Moved |
+| #2101 NEGATIVE: the same row is still SHELVED | 795 | same | same | git index | Moved |
+| #2101 the shelving REPORT names the same two | 806 | same | same | git index | Moved |
+| #2493 THE POSITIVE: a held PR closing only the asking row does not shelve it | 893 | same | same | git index | Moved |
+| #2493 NEGATIVES, through the gate | 902 | same | same | git index | Moved |
+| #2493 a held PR closing NOTHING, or closing two rows with one edge missing | 914 | same | same | git index | Moved |
+| prFiles omitted means every row is offered | 976 | same | same | git index | Moved |
+| the empty-shelf order says WHY the pool is empty | 982 | same | same | git index | Moved |
+| #2493 product-manager's brief says `SOLE HOLDER IS A HELD PR` | 943 | `.agent-org/roles/product-manager.md`, the bullet's text | The fixture brief is a stub without that bullet | project content | Moved; the brief is a11ign's text and is not copied into the fixture |
+| every cause is classified as START or FINISH | 1064 | `START_CAUSES` (`src/cause-declaration.ts:734`) | On the fixture host `fleet-batch-due` is not in the START list the test pins | host configuration, not traced further | Moved |
+| a red check that CAN block the merge still wakes its session | 1310 | `decide`'s owner routing for `session:worker-capture` | The fixture roster (`roles/sessions.json`) holds `worker-<n>` from 4 and no `worker-capture`; the order routes elsewhere, so none is returned to the test | session roster | Moved |
+| #2538 the pr-checks-failing order keeps its (a)/(b)/(c) triage | 1322 | same | same | session roster | Moved |
+| an UNREADABLE required set counts every check | 1334 | same, with the required set | same | session roster | Moved |
+| a CANCELLED required check with nothing else running still reaches its author | 1378 | same | same | session roster | Moved |
+| the same two red jobs WITHOUT the hold still order | 1422 | same | same | session roster | Moved |
+| a THIRD red job ends the exemption | 1432 | same | same | session roster | Moved |
+| ANY session's hold answers a PR red only from it | 1445 | same | same | session roster | Moved |
+| a rowOwner-routed PR under any hold generates no order | 1473 | same | same | session roster | Moved |
+| HOLD_RED_JOBS names the jobs ci.yml defines | 1489 | `.github/workflows/ci.yml`, read at test line 1490 | The fixture `ci.yml` has one job, `ci`; a11ign's defines the `deliberateRefusals` and the other jobs `HOLD_RED_JOBS` names | project content | Moved |
+| a held PR at the cap stops appearing in stuck (positive control) | 1537 | same as 1310 | same | session roster | Moved |
+| a PR held by SOMEBODY ELSE at the cap is not stuck (positive control) | 1556 | same as 1310 | same | session roster | Moved |
+| a SUPERSEDED red run does not wake anyone | 2094 | same as 1310 | same | session roster | Moved |
+| #1941 the retired timer's units are gone from the shipped host set | 3162 | `shippedUnits` (`src/host-units.ts`) | The fixture host does not ship a11ign's unit set, so the positive control (the tick's own units still ship) fails | host configuration | Moved |
+
+The "session roster" class is inferred from the failure, not traced line by line: the fixture roster has no `worker-capture` seat, and the test's order comes back `undefined` where it expects one. Each of these fails at HEAD too on this sandbox's default host (`VERDICT fail: 38 of 416 tests failed` for the unchanged `work-gate.test.ts`, 11 of them in this group), so the sandbox cannot show them green. They are expected to pass on a11ign's own host in CI, where the roster and CI jobs exist, but this row did not verify that.
 
 ## Open
 

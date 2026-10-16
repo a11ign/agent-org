@@ -14,7 +14,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { decide, CAUSES, JUDGMENT_CAUSES, START_CAUSES, GH_READS, withPatchIds, reviewBlocked,
+import { decide as decideOnHost, CAUSES, JUDGMENT_CAUSES, START_CAUSES, GH_READS, withPatchIds, reviewBlocked,
   readEvidenceLabelledAt, withEvidenceLabelAges, awaitingEvidenceStaleOrders, AWAITING_EVIDENCE_LABEL,
   AWAITING_EVIDENCE_QUIET_MS } from "../work-gate.ts";
 import { PROFILES } from "../worker-profile.ts";
@@ -29,9 +29,13 @@ const HOUR = 3_600_000;
 const NOW = Date.parse("2026-09-25T12:00:00Z");
 const ago = (hours: number) => new Date(NOW - hours * HOUR).toISOString();
 
+// The identities are the test's own, not the host's (#1311): every draft here is written by `worker-judge`, a declared worker.
+const TEST_IDENTITIES = { exact: ["a11ign-ai-workers", "worker-judge"], pattern: [] };
+const decide = (args: Parameters<typeof decideOnHost>[0]) => decideOnHost({ identities: TEST_IDENTITIES, ...args });
+
 /** A draft; `labelled` puts the label on it. */
 function draft(n: number, rollup: unknown[], opts: { labelled?: boolean; comments?: Record<string, unknown>[] } = {}) {
-  return { number: n, isDraft: true, headRefOid: HEAD, statusCheckRollup: rollup,
+  return { number: n, isDraft: true, headRefOid: HEAD, statusCheckRollup: rollup, isCrossRepository: false,
     author: { login: "worker-judge" }, comments: opts.comments ?? [],
     labels: opts.labelled ? [{ name: AWAITING_EVIDENCE_LABEL }] : [] };
 }
@@ -94,7 +98,7 @@ test("#2416: a labelled pull request costs no patch read; an unlabelled one stil
 
 /** A green, unheld, ready pull request GitHub's review requirement is holding. */
 function readyAwaitingReview(n: number, labelNames: string[], decision = "REVIEW_REQUIRED") {
-  return { number: n, isDraft: false, headRefOid: HEAD, reviewDecision: decision,
+  return { number: n, isDraft: false, headRefOid: HEAD, reviewDecision: decision, isCrossRepository: false,
     statusCheckRollup: [{ name: "gate", status: "COMPLETED", conclusion: "SUCCESS" }],
     author: { login: "a11ign-ai-workers" }, comments: [], labels: labelNames.map((name) => ({ name })) };
 }
