@@ -86,3 +86,34 @@ export function runTreeWideGuards(files: string[], cwd: string, { env = process.
   if (!ok && lines.length === 0) lines.push(`exit ${String(result.status)}${timedOut ? " (timed out)" : ""}${result.error === undefined ? "" : `: ${result.error.message.slice(0, 160)}`}`);
   return { ok, lines, ran, timedOut };
 }
+
+/**
+ * agent-org#1580 (the epic "agent-org stands alone", a11ign#928): THE OUTSIDE HOME OF a11ign's `guardSweep` JOB, SHIPPED OFF, AND SHADOW WHEN ON.
+ *
+ * The flag is `outside.guards` in the project's `.agent-org/decisions.json`; the caller reads it with `decision-provider.ts`'s `readSwitches` (absent = off) and hands the
+ * record here, so this file imports no reader that reaches `gh` (it must still load with no `node_modules`). OFF: `verdictOf` is never called, so nothing is checked out,
+ * discovered or run. ON: the verdict it returns (`treeWideGuardVerdict` in the caller) is RECORDED beside the job's, and `blocks` is the literal `false`: a shadow verdict
+ * arms nothing and holds nothing, and `guardSweep` stays in `gate`'s `needs`. Revert is the flag set `false`.
+ *
+ * THE FIRST READ (a11ign#928 section 3 named the commands, not their equivalence): the discovery and the run above ARE the job's (`declareTreeWideGuard()` is its own
+ * membership), so the receiver of every guard still marked in a project is this home, by the marker, and the tool names no project file. The sorting of the population
+ * into org-only, product and dead is the project's to do on the guards it marks (a11ign#5615 is the switch row); a guard it unmarks is no longer in this population.
+ */
+export const OUTSIDE_GUARDS_FLAG = "outside.guards";
+export const outsideGuardsOn = (switches: Readonly<Record<string, unknown>> | null | undefined): boolean => switches?.[OUTSIDE_GUARDS_FLAG] === true;
+
+type GuardVerdict = import("../acceptance-commands.ts").OrgSideVerdict;
+
+/** `agree`: the same pass or fail as the job. `disagree`: the two differ, which the canary counts. `not-compared`: the home did not run to an end, or the job's verdict was not read. */
+export type ShadowGuards =
+  | { on: false; }
+  | { on: true; blocks: false; verdict: GuardVerdict; job: "pass" | "fail" | null; agreement: "agree" | "disagree" | "not-compared"; };
+
+export function shadowGuardsVerdict<PR>(pr: PR, { switches, job = null, verdictOf }: {
+  switches: Readonly<Record<string, unknown>> | null | undefined; job?: "pass" | "fail" | null; verdictOf: (pr: PR) => GuardVerdict;
+}): ShadowGuards {
+  if (!outsideGuardsOn(switches)) return { on: false };
+  const verdict = verdictOf(pr);
+  const agreement = verdict.kind === "not-run" || job === null ? "not-compared" : verdict.kind === job ? "agree" : "disagree";
+  return { on: true, blocks: false, verdict, job, agreement };
+}
