@@ -64,7 +64,9 @@ export function declaredIdentities({ host = declaredHost(), configDirs = [] }: {
   const pattern: RegExp[] = [DEPENDENCY_BOT_LOGIN, AUTOMATION_WRITER_LOGIN];
   const dirs = [...configDirs, REVIEWER_GH_CONFIG_DIR];
   if (host !== null) {
-    dirs.push(host.gh.workers, host.gh.leads);
+    // The roles' `gh` config directories are `<dir>/gh`, as the wrapper and `declaredGhAccount` read them; the bare `<dir>` holds no
+    // `hosts.yml`, and reading it left `a11ign-ai-workers` undeclared, so its pull requests were reviewed as a stranger's.
+    dirs.push(join(host.gh.workers, "gh"), join(host.gh.leads, "gh"));
     for (const role of GITHUB_ROLES) {
       const identity = roleIdentity(host, role);
       if (identity.mode === "github-apps" && identity.slug) pattern.push(appLogin(identity.slug));
