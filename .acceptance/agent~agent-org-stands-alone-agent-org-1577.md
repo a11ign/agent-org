@@ -12,7 +12,7 @@ Mutation (each restored byte-identical from a scratchpad copy, `diff` clean): fl
 
 Evidence: `src/outside-nightly.test.ts` 8 of 8; the whole suite under `rstest` from this clone: 26 files fail, the environment's 26 (none touches this change; `gh-call-ratchet` and `private-tmp`, which this change first tripped, now pass); `tsc --noEmit` clean; `.github/scripts/workflow-paths.ts` and `leak-scan.ts` clean. Measured at this head.
 
-Acceptance: `cd ~/repos/agent-org && git grep -l -F outside.nightly -- src`
+Acceptance: `git grep -l -F outside.nightly -- src`
 
 Closes a11ign/agent-org#1577.
 
