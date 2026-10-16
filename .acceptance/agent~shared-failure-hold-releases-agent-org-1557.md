@@ -12,7 +12,7 @@ Measured here: the command above printed `VERDICT pass: 34 tests in 1 file` afte
 
 Decision (fix (a) from the row): the hold waits for the row to close; the bound is the gate log line, not an order to one session. Making the log line an order to the row's owner would need a new order vocabulary in the tick's caller, which is outside this Region; if the owner must be woken rather than logged, that is a new row.
 
-Outside-Region: none. `git diff --stat` touches only `src/ci-failure-class.ts` and `src/ci-failure-class.test.ts`, and the source's net change is +3 lines (17 added, 14 removed): the removed lines are the `young`/`expired` branch and its reason text, the added ones the rule's comment, the bound's log line and its test-visible wording.
+Outside-Region: `src/packaging/work-gate-shared-failure.test.ts` — the test `#5098 A HOLD EXPIRES` pinned the removed release (an unclaimed row woken at 16 minutes); CI's shard 4 failed on it, the only failing test of 2,829 in that run. It now asserts the held outcome at 16 minutes and keeps the claimed-row case. The source change is in `src/ci-failure-class.ts` and `src/ci-failure-class.test.ts`, its net change +3 lines (17 added, 14 removed): the removed lines are the `young`/`expired` branch and its reason text, the added ones the rule's comment, the bound's log line and its test-visible wording. A changeset, `.changeset/an-open-unclaimed-incident-row-holds-its-prs.md`, is a patch entry, as the `changeset-required` job asks for any change under `src/`.
 
 platform: nothing reimplemented; this is a rule change in the existing `standingOf` and the existing tick log.
 

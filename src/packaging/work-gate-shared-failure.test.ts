@@ -213,7 +213,7 @@ test("#5098 CLOSING THE INCIDENT RELEASES THE HOLDS AT ONCE, and the signature i
   assert.equal(filed(joined), 1);
 });
 
-test("#5098 A HOLD EXPIRES: past 15 minutes with no CLAIMED incident row the holder is woken with the failing job's own line", () => {
+test("#5098 A HOLD WAITS FOR ITS ROW (#1557): past 15 minutes, an open row still holds its PRs until it closes, claimed or not", () => {
   const first = fakeGh(SETUP);
   tick(bothOrders, bothRed, first);
   const body = String(rowFor(first).body);
@@ -221,10 +221,7 @@ test("#5098 A HOLD EXPIRES: past 15 minutes with no CLAIMED incident row the hol
   const young = fakeGh({ ...SETUP, rows: [row(14, ["ci-shared-failure"])] });
   assert.deepEqual(tick(bothOrders, bothRed, young), [], "14 minutes: still held");
   const old = fakeGh({ ...SETUP, rows: [row(16, ["ci-shared-failure"])] });
-  const out = tick(bothOrders, bothRed, old);
-  assert.deepEqual(subjects(out), ["pr-control#61", "pr-control#62"], "16 minutes, unclaimed: both are woken");
-  assert.match(out[0].prompt, /not claimed within 15 minutes/);
-  assert.match(out[0].prompt, /npm ERR! # Not Found - GET https:\/\/registry\/agent-org-#\.#\.#\.tgz/);
+  assert.deepEqual(tick(bothOrders, bothRed, old), [], "16 minutes, unclaimed: still held, no worker is woken");
   const claimed = fakeGh({ ...SETUP, rows: [row(16, ["ci-shared-failure", "in-progress", "session:worker-9"])] });
   assert.deepEqual(tick(bothOrders, bothRed, claimed), [], "16 minutes but CLAIMED: held");
   assert.equal(filed(claimed) + filed(old), 0, "an open row is joined, never refiled");
