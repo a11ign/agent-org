@@ -6,12 +6,13 @@
 // the project's script keeps that contract, which is the project's own test. Mutations are in the PR's `.acceptance/` file.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
+import { parse } from "yaml";
 import { COMMANDS } from "./commands.ts";
-import { OUTSIDE_REPORTS_SWITCH, REPORTS, declaredReport, exitCodeOf, outsideReport, outsideReportsOn, scriptPathUsable, type OutsideReportsDeps } from "./outside-reports.ts";
+import { OUTSIDE_REPORTS_SWITCH, REPORTS, declaredReport, exitCodeOf, liveDeps, outsideReport, outsideReportsOn, scriptPathUsable, type OutsideReportsDeps } from "./outside-reports.ts";
 
 const ON = { [OUTSIDE_REPORTS_SWITCH]: true };
 const declaration = (reports: unknown): string => JSON.stringify({ units: { reports } });
@@ -141,14 +142,74 @@ test("7. the command is registered, its script exists, and declaredReport reads 
   assert.equal(declaredReport(JSON.stringify({ units: {} }), "ci-health"), "undeclared", "no reports block at all is undeclared, not a fault");
 });
 
-test("8. the workflow is shipped off twice and names no project: a variable gates the job, the host reports are not in it, and it runs the command", () => {
-  // The header comments say why (and name the epic's issue); what is checked is the workflow itself.
-  const text = readFileSync(new URL("../.github/workflows/org-reports.yml", import.meta.url), "utf8").split("\n").filter((line) => !line.trimStart().startsWith("#")).join("\n");
-  assert.match(text, /if: \$\{\{ vars\.OUTSIDE_REPORTS_PROJECT != '' \}\}/);
-  assert.match(text, /repository: \$\{\{ vars\.OUTSIDE_REPORTS_PROJECT \}\}/);
-  assert.match(text, /outside-reports "\$report"/);
-  assert.doesNotMatch(text, /a11ign/i, "no project is named in the workflow");
-  assert.match(text, /options: \[ci-health, outsider-verdict\]/, "a dispatch offers the runner reports only");
-  for (const name of Object.keys(REPORTS).filter((n) => REPORTS[n].where === "host")) assert.doesNotMatch(text, new RegExp(`(report|options).*${name}`), `${name} is a host report`);
-  assert.doesNotMatch(text, /pull_request|push:/, "schedule and dispatch only");
+test("8. THE LIVE READ: the flag comes from the project's own .agent-org/decisions.json, and the declaration and script from the same checkout -- true runs, false and absent do nothing", () => {
+  // Nothing is injected but the checkout: the switch file, the declaration and the child are the real reads.
+  const project = (decisions: string | null) => {
+    const { dir } = fixtureProject();
+    mkdirSync(join(dir, ".agent-org"));
+    writeFileSync(join(dir, ".agent-org/project.json"), declaration({ "ci-health": { script: "scripts/report.mjs", args: [] } }));
+    if (decisions !== null) writeFileSync(join(dir, ".agent-org/decisions.json"), decisions);
+    return dir;
+  };
+  const posts = (dir: string) => (existsSync(join(dir, "posted.txt")) ? readFileSync(join(dir, "posted.txt"), "utf8").split("\n").filter(Boolean) : []);
+  const quietly = { say: () => {} };
+  const on = project(JSON.stringify({ [OUTSIDE_REPORTS_SWITCH]: true }));
+  const result = outsideReport("ci-health", [], { ...liveDeps(quietly.say, on), say: quietly.say });
+  assert.equal(result.ran && result.code, 0, "the flag is read from the checkout's decisions.json, so the script runs");
+  assert.deepEqual(posts(on), ["2026-10-05"]);
+  for (const [what, decisions] of [["false", JSON.stringify({ [OUTSIDE_REPORTS_SWITCH]: false })], ["absent key", JSON.stringify({ "routing.haikuDefault": true })], ["no file", null], ["unreadable", "not json"]] as const) {
+    const off = project(decisions);
+    const refused = outsideReport("ci-health", [], liveDeps(quietly.say, off));
+    assert.deepEqual(refused, { ran: false, why: "off" }, what);
+    assert.deepEqual(posts(off), [], `${what}: the script did not run`);
+  }
+});
+
+type Step = { uses?: string; run?: string; env?: Record<string, string>; with?: Record<string, unknown> };
+const workflow = parse(readFileSync(new URL("../.github/workflows/org-reports.yml", import.meta.url), "utf8"));
+const steps: Step[] = workflow.jobs.report.steps;
+const TOKEN = "secrets.OUTSIDE_REPORTS_TOKEN";
+
+test("9. the workflow is shipped off twice, names no project, and runs on schedule and dispatch only", () => {
+  assert.equal(workflow.jobs.report.if, "${{ vars.OUTSIDE_REPORTS_PROJECT != '' }}");
+  assert.deepEqual(Object.keys(workflow.on).sort(), ["schedule", "workflow_dispatch"], "nothing a change can trip");
+  assert.deepEqual(workflow.permissions, { contents: "read" });
+  assert.ok(steps.some((step) => step.uses?.startsWith("actions/checkout") && step.with?.repository === "${{ vars.OUTSIDE_REPORTS_PROJECT }}"), "the project is the variable");
+  assert.doesNotMatch(JSON.stringify(workflow), /a11ign/i, "no project is named in the workflow (the header comments name the epic's issue; the parsed workflow has no comments)");
+  const options: string[] = workflow.on.workflow_dispatch.inputs.report.options;
+  assert.deepEqual(options, Object.keys(REPORTS).filter((name) => REPORTS[name].where === "runner"), "a dispatch offers the runner reports only, none of the host ones");
+});
+
+test("10. THE TOKEN IS NOT LEFT WHERE THE PROJECT'S INSTALL CAN READ IT: no checkout persists credentials, and the token reaches the report step alone", () => {
+  const checkouts = steps.filter((step) => step.uses?.startsWith("actions/checkout"));
+  assert.equal(checkouts.length, 2);
+  for (const step of checkouts) assert.equal(step.with?.["persist-credentials"], false, `${JSON.stringify(step.with)} must not persist its credential into .git/config`);
+  const last = steps.length - 1;
+  steps.forEach((step, index) => {
+    const mentionsToken = JSON.stringify(step).includes(TOKEN);
+    if (step.uses?.startsWith("actions/checkout") && step.with?.repository !== undefined) assert.equal(mentionsToken, true, "CONTROL: the project checkout is where the token is spent");
+    else assert.equal(mentionsToken, index === last, `step ${index} (${step.uses ?? step.run?.split("\n")[0]}): the token is in the report step and nowhere else`);
+  });
+  const install = steps.findIndex((step) => step.run?.includes("pnpm install"));
+  assert.ok(install > 0 && install < last, "CONTROL: the project's install runs before the report step, which is why a persisted credential would be readable");
+});
+
+test("11. the report step picks the report from the trigger: the daily cron is the verdict, any other schedule is CI health, and a dispatch names its own", () => {
+  const dir = mkdtempSync(join(tmpdir(), "org-reports-step-"));
+  made.push(dir);
+  mkdirSync(join(dir, "bin"));
+  mkdirSync(join(dir, "project"));
+  writeFileSync(join(dir, "bin/node"), '#!/bin/sh\necho "node $*"\n');
+  chmodSync(join(dir, "bin/node"), 0o755);
+  const run = steps[steps.length - 1].run ?? "";
+  const crons: string[] = workflow.on.schedule.map((entry: { cron: string }) => entry.cron);
+  const daily = crons.filter((cron) => /^\d+ \d+ \* \* \*$/.test(cron));
+  assert.equal(daily.length, 1, "exactly one daily cron, and it is the verdict's");
+  const chosen = (schedule: string, dispatched: string) =>
+    spawnSync("bash", ["-e", "-c", run], { cwd: join(dir, "project"), encoding: "utf8", env: { PATH: `${join(dir, "bin")}:${process.env.PATH}`, SCHEDULE: schedule, DISPATCHED: dispatched } }).stdout.trim();
+  assert.equal(chosen(daily[0], ""), 'node ../tool/src/bin.ts outside-reports outsider-verdict');
+  for (const cron of crons.filter((cron) => cron !== daily[0])) assert.equal(chosen(cron, ""), "node ../tool/src/bin.ts outside-reports ci-health", cron);
+  assert.equal(chosen("", "ci-health"), "node ../tool/src/bin.ts outside-reports ci-health", "a dispatch of ci-health");
+  assert.equal(chosen("", "outsider-verdict"), "node ../tool/src/bin.ts outside-reports outsider-verdict", "a dispatch of the verdict");
+  assert.equal(chosen(daily[0], "ci-health"), "node ../tool/src/bin.ts outside-reports ci-health", "a dispatch wins over the schedule it was run beside");
 });

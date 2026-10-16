@@ -113,18 +113,18 @@ export function exitCodeOf(result: OutsideReportsResult): number {
 /** The first line a child printed, stderr before stdout (a refusal is on stderr), so the line says the verdict and the log keeps the rest. */
 const firstLine = (text: string): string => text.split("\n").map((line) => line.trim()).find((line) => line !== "") ?? "";
 
-/** The live reads: the project's checkout, its declaration, and its script as a child run there. */
-export function liveDeps(say: (line: string) => void = printDiagnostic): OutsideReportsDeps {
+/** The live reads: the project's checkout (`root`, the home checkout unless a test names another), its declaration, and its script as a child run there. */
+export function liveDeps(say: (line: string) => void = printDiagnostic, root: string = HOME_CHECKOUT): OutsideReportsDeps {
   return {
-    switches: readSwitches(decisionSwitchesPath(HOME_CHECKOUT), { diagnostic: say, state: processState, read: readFileSync }),
+    switches: readSwitches(decisionSwitchesPath(root), { diagnostic: say, state: processState, read: readFileSync }),
     onRunner: process.env.GITHUB_ACTIONS === "true",
     say,
     declaration: () => {
-      try { return readFileSync(join(HOME_CHECKOUT, PROJECT_DECLARATION_PATH), "utf8"); } catch { return null; }
+      try { return readFileSync(join(root, PROJECT_DECLARATION_PATH), "utf8"); } catch { return null; }
     },
-    scriptExists: (script) => existsSync(join(HOME_CHECKOUT, script)),
+    scriptExists: (script) => existsSync(join(root, script)),
     run: (declared, extra) => {
-      const child = spawnSync(process.execPath, [join(HOME_CHECKOUT, declared.script), ...declared.args, ...extra], { cwd: HOME_CHECKOUT, encoding: "utf8", timeout: CHILD_TIMEOUT_MS, stdio: ["ignore", "pipe", "pipe"] });
+      const child = spawnSync(process.execPath, [join(root, declared.script), ...declared.args, ...extra], { cwd: root, encoding: "utf8", timeout: CHILD_TIMEOUT_MS, stdio: ["ignore", "pipe", "pipe"] });
       // The child's own output is the report's record (the table it posted, "already posted"): pass it on whole, then add the one line that says how it ended.
       if (child.stdout) process.stdout.write(child.stdout);
       if (child.stderr) process.stderr.write(child.stderr);

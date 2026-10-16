@@ -42,12 +42,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-        with: { path: tool }
+        with: { path: tool, persist-credentials: false }
+      # The project's token is NOT left in the checkout's git config: `pnpm install` below runs the project's and its dependencies' lifecycle scripts, and a persisted credential is readable
+      # by every one of them. The token reaches only the last step, as `GH_TOKEN`.
       - uses: actions/checkout@v7
         with:
           repository: ${{ vars.OUTSIDE_REPORTS_PROJECT }}
           token: ${{ secrets.OUTSIDE_REPORTS_TOKEN }}
           path: project
+          persist-credentials: false
       - uses: actions/setup-node@v7
         with: { node-version: 24.21.0 }
       - name: The tool's dependencies
