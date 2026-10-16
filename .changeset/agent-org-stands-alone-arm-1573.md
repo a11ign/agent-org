@@ -1,5 +1,0 @@
----
-"agent-org": minor
----
-
-The outside home of arming, behind the flag `outside.arm` in a project's `.agent-org/decisions.json` (absent = off, shipped OFF; agent-org#1573, the epic "agent-org stands alone"). ON, agent-org arms the project's open pull requests from outside it, beside the project's own `arm` / `arm-approved` / `sweep` / `stalled` jobs, which keep running and find their work done. The host gate arms an open, unheld, non-draft, same-repository pull request against `main` that nothing has armed, before its checks are green (`settleOutsideArm`, called first in `readArmingOf`), and readies then arms a draft an approving review has reached; `auto-arm.yml` gains the scheduled jobs `outside-sweep` and `outside-stalled`, which read the flag before anything is minted. `auto-arm-sweep` and `queue-stalled` take `--outside-switches=<decisions.json>`, and `arm-pr --outside-arm-state=<decisions.json>` prints `true` or `false`. The sweep's mint also needs the project's Octo STS policy for the identity `outside-arm` (a11ign/a11ign#5619).
