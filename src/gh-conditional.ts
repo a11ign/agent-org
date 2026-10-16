@@ -20,7 +20,9 @@ export const REST_CONDITIONAL_MARKER = "gate-rest-conditional";
 /** Where the kept ETags live between ticks: a directory of its own, so the trace publisher's store is never read as the gate's. */
 export const GATE_VALIDATORS_DIR = "gate-conditional";
 
-/** A tick may spend this many GraphQL points before the rest of its reads are refused (the row's "a tick stops at its cap"). */
+/** A tick may spend this many GraphQL points before the rest of its reads are refused (the row's "a tick stops at its cap").
+ * Kept at 60 on a measurement (agent-org#1620, a11ign/agent-org#1618): the scheduler account spent about 74% of the 5,000-point hour, so a higher cap
+ * has no pool to pay for it, and `repository.issues` was 55% of the points (agent-org#1636 cuts it). */
 export const TICK_POINTS_CAP = 60;
 
 /**
