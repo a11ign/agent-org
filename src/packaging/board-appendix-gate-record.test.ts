@@ -23,7 +23,11 @@ import { isConformanceGate, reported, worstVerdict } from "../board-data.ts";
 export const WALK_SCOPE = ["docs", ".agent-org"];
 await declareWalkScope(import.meta.url);
 
-test("#429, ON THE TRACKED RECORD: the appendix slot holds a conformance gate that carries a verdict, or nothing", () => {
+/** A checkout whose record holds no gate has nothing for the slot to hold, so this subtest skips there with that reason rather than asserting over nothing. The acceptance fixture's record is empty by design (its `gates/` holds only `.gitkeep`). */
+const SKIP_NO_GATE = reported().gates.length > 0 ? false
+  : "the checkout's board record holds no gate (the acceptance fixture's is empty by design: its gates/ holds only .gitkeep), so the appendix slot has nothing to hold";
+
+test("#429, ON THE TRACKED RECORD: the appendix slot holds a conformance gate that carries a verdict, or nothing", { skip: SKIP_NO_GATE }, () => {
   // Not a fixture. On `origin/main` before this fix the slot read the newest entry of ANY kind, which on
   // 2026-09-11 was `#659 step 1 -- replay of the three captures...`, an operational note with no verdict
   // line at all. The board's "Most recent automated check result" was a diagnostic, while the 2026-09-07

@@ -35,6 +35,11 @@ import { join } from "node:path";
 import {
   extractAcceptanceSection, extractRefutationSection, acceptanceReport, classifyCommand,
 } from "../acceptance-commands.ts";
+import { RESOURCES } from "../project-vocabulary.ts";
+
+/** The resource ban is a11ign's own (`vocabulary.resources` of its declaration, which the acceptance fixture leaves empty by design), so with none declared there is no fleet/lab/corpus refusal to assert. */
+const SKIP_NO_RESOURCES = RESOURCES.length > 0 ? false
+  : "the project declares no vocabulary.resources (the acceptance fixture has none by design), so there is no fleet/lab/corpus refusal to assert";
 
 // --- extractRefutationSection: same parser, a different field name ---
 
@@ -141,7 +146,7 @@ test("acceptanceReport: a stated Refutation: none is ok:true and names the reaso
 });
 
 test("acceptanceReport: a REFUSED Refutation: command (fleet/lab/corpus) never calls run(), "
-  + "and does not fail the report on its own", () => {
+  + "and does not fail the report on its own", { skip: SKIP_NO_RESOURCES }, () => {
   let called = false;
   const body = 'Acceptance: node -e "process.exit(0)"\nRefutation:\nnpm run fleet:deploy\n';
   const report = acceptanceReport(body, (cmd) => { if (cmd.includes("fleet")) called = true; return 0; });

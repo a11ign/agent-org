@@ -3,7 +3,8 @@
   "schema": 1,
   "beforeTick": "agent-org primary:update",
   "tracker": [
-    { "key": "", "repo": "a11ign/a11ign", "board": { "owner": "a11ign", "number": 1 } }
+    { "key": "", "repo": "a11ign/a11ign", "board": { "owner": "a11ign", "number": 1 } },
+    { "key": "agent-org", "repo": "a11ign/agent-org", "board": { "owner": "a11ign", "number": 2 } }
   ],
   "code": [
     { "key": "", "repo": "a11ign/a11ign" },

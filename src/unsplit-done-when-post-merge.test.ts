@@ -15,7 +15,7 @@ import { createIssue } from "./row-file.ts";
 import { liveCheckItems, unfinishableItems, unsplitDoneWhenRefusal } from "./unsplit-done-when.ts";
 
 const NOW = new Date("2026-10-10T20:40:00Z");
-const HEAD = "## Region\n\npackages/lab/src/packaging/foo.ts\n\n## Acceptance\n\n```\nnpx tsx --test src/foo.test.ts\n```\n\n## Open-check\n\n```\ngit grep -n foo origin/main | wc -l\n0\n```\n\n";
+const HEAD = "## Region\n\nscripts/foo.ts\n\n## Acceptance\n\n```\nnpx tsx --test src/foo.test.ts\n```\n\n## Open-check\n\n```\ngit grep -n foo origin/main | wc -l\n0\n```\n\n";
 const bodyWith = (doneWhen: string, extra = "") => `${HEAD}## Done-when\n\n${doneWhen}\n\n${extra}`;
 const findings = (body: string, declared = {}) => unfinishableItems(body, { now: NOW, declared });
 const kindsOf = (body: string, declared = {}) => findings(body, declared).map((item) => item.kind);
