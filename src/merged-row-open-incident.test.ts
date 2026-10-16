@@ -94,6 +94,45 @@ test("a bare #n is the pull request's own repository's row, not the tracker's (t
   assert.equal(incidents([home], [merged({ body: "Closes #4001" })]).length, 1);
 });
 
+// #1550: a pull request that is a STEP of a row, and says the row stays open, names that row only through `Closes: none`. A `Part of` or `Refs` line says it is a step.
+// THE BODY BELOW is a11ign/a11ign#5538 as `gh pr view 5538 --repo a11ign/a11ign` returned it on 2026-10-16, copied, not retyped.
+const ADR_0045_BODY = [
+  "ADR 0045 amended on the chairman's direction (a11ign#928, comment 6195402434): no registry publish of agent-org from this organisation, \"a declared version\" includes a pnpm git dependency pinned to a tag or commit, nothing hard-codes `@a11ign` as agent-org's scope, and the end state is that a11ign's CI needs no agent-org. Items 1 to 4 of the proposed section are marked superseded and kept; the cuts point at the re-scoped rows #5459 to #5462.",
+  "",
+  "Closes: none — amends ADR 0045 on the chairman's direction; the rows that carry it out are #5459 to #5462, which stay open.",
+  "",
+  "Acceptance file: `.acceptance/agent~adr-0045-no-registry.md` (ADR 0044).",
+  "",
+  "🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+].join("\n");
+
+test("a step's `Part of` line frees the row its `Closes: none` reason names: a11ign/a11ign#5538 as it stands, and with the line added (twin: without it)", () => {
+  const step: NamingPr = { repo: "a11ign/a11ign", number: 5538, body: ADR_0045_BODY, headRefName: "agent/adr-0045-no-registry", mergedAt: ago(31) };
+  const rowFiveFourSixTwo = row({ repo: "a11ign/a11ign", number: 5462 });
+  assert.equal(incidents([rowFiveFourSixTwo], [step]).length, 1, "as it stands, the reason names #5462 and that is its deliverable");
+  assert.deepEqual(incidents([rowFiveFourSixTwo], [{ ...step, body: `${ADR_0045_BODY}\n\nPart of #5462` }]), []);
+});
+
+test("a `Closes` list is never freed by a `Part of` line: a pull request cannot both close a row and be part of it (twin: the list alone)", () => {
+  assert.equal(incidents([row()], [merged({ body: `Closes ${TRACKER}#4001\nPart of ${TRACKER}#4001` })]).length, 1);
+  assert.equal(incidents([row({ repo: CODE })], [merged({ body: "Closes #4001\nPart of #4001" })]).length, 1);
+});
+
+test("a `Part of` line frees only the row it names: the reason's other row is still the deliverable (twin: the line names that row)", () => {
+  const other = row({ repo: "o/other", number: 9 });
+  const finish = (step: string) => merged({ body: `Closes: none -- finishes the move in o/other#9\n${step}`, headRefName: "agent/unrelated-1" });
+  assert.equal(incidents([other], [finish("Part of #7")]).length, 1);
+  assert.deepEqual(incidents([other], [finish("Part of o/other#9")]), []);
+});
+
+test("`Refs` is read as `Part of`; a reference in prose with neither word, or the word inside the reason, is not a step (twin: the prose one is freed by neither)", () => {
+  const reason = `Closes: none -- the deliverable of ${TRACKER}#4001`;
+  assert.deepEqual(incidents([row()], [merged({ body: `${reason}\nRefs ${TRACKER}#4001`, headRefName: "agent/unrelated-1" })]), []);
+  for (const body of [`${reason}\nStep 2 of ${TRACKER}#4001, see also the thread.`, `Closes: none -- part of ${TRACKER}#4001`]) {
+    assert.equal(incidents([row()], [merged({ body, headRefName: "agent/unrelated-1" })]).length, 1, body);
+  }
+});
+
 test("the NEWEST naming merge decides: a merge 10 minutes ago is inside the grace even beside an old one (twin: it is 40)", () => {
   const old = merged({ number: 5 }, 3000);
   assert.deepEqual(incidents([row()], [old, merged({ number: 8 }, 10)]), []);

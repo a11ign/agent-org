@@ -43,15 +43,28 @@ export function referencesInReason(reason: string): RowRef[] {
   return [...reason.matchAll(NAMED_IN_REASON)].map((match) => ({ repo: match[1] ?? null, number: Number(match[2]) }));
 }
 
+/** A `Part of <ref>` or `Refs <ref>` line: the form a step writes beside its `Closes: none` to say it advances a row and does not finish it (#1550). */
+const STEP_LINE = /^[ \t]*(?:part of|refs)\b([^\n]*)/gim;
+
+/** The rows a body names as a step of, not as its finish: the references on its `Part of` and `Refs` lines. */
+function stepReferences(body: string): RowRef[] {
+  return [...body.matchAll(STEP_LINE)].flatMap((match) => referencesInReason(match[1]));
+}
+
 /**
  * THE ROWS A PULL REQUEST NAMES AS ITS DELIVERABLE: the `Closes` list, or a `Closes: none` line that names a row in its reason. Nothing else is read: `Refs #7`, `Part of #7`,
  * a row mentioned in prose and a branch are not a declaration, which is the reference-only case that is no incident. A malformed or missing `Closes` names nothing.
  * A bare number is the pull request's own repository's, as GitHub reads it.
+ * #1550: a `Closes: none` reason that names a row a `Part of` or `Refs` line ALSO names is a step of that row, not its finish, so that row is freed. A `Closes` list is never
+ * filtered (a pull request cannot both close a row and be part of it), and a row the step line does not name is still the deliverable.
  */
 function deliverableKeys(pr: NamingPr): Set<string> {
   const declaration = extractClosesDeclaration(pr.body);
-  const references: RowRef[] = declaration.kind === "closes" ? closesReferences(declaration) : declaration.kind === "none" ? referencesInReason(declaration.reason) : [];
-  return new Set(references.map((reference) => keyOf({ repo: reference.repo ?? pr.repo, number: reference.number })));
+  const keyed = (references: RowRef[]): string[] => references.map((reference) => keyOf({ repo: reference.repo ?? pr.repo, number: reference.number }));
+  if (declaration.kind === "closes") return new Set(keyed(closesReferences(declaration)));
+  if (declaration.kind !== "none") return new Set();
+  const steps = new Set(keyed(stepReferences(pr.body ?? "")));
+  return new Set(keyed(referencesInReason(declaration.reason)).filter((key) => !steps.has(key)));
 }
 
 type ReadPr = { pr: NamingPr, keys: Set<string> };
