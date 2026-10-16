@@ -25,7 +25,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { bareKeyedRegionReason, regionRefusalReason, declaresRelease, outOfReleaseArgv, labelsOutOfRelease, OUT_OF_RELEASE, OUT_OF_RELEASE_MILESTONE }
   from "../row-file.ts";
-import { declaredRegionFiles, NOT_A_COMMIT } from "../region-paths.ts";
+import { declaredRegionFiles, NOT_A_COMMIT, trackedTopLevelDirs } from "../region-paths.ts";
 import { startability, subjectAndRegionFacts } from "../row-reachability.ts";
 import { declarationDisagreement, extractAcceptanceSection, fleetOrLabAcceptance, untrimmedFleetMention } from "../acceptance-commands.ts";
 import { tmpdir } from "node:os";
@@ -41,6 +41,14 @@ import { filedByLine } from "../row-claim.ts";
 import { REPO } from "../project-identity.ts";
 import { connectionOf, readsRowsByLabel } from "./rows-by-label-fixtures.ts";
 import { withGitSandbox } from "@a11ign/toolchain/lib/git-sandbox";
+import { RESOURCES } from "../project-vocabulary.ts";
+
+/** #1603: the packages/ rows read the project's own tracked `packages/` tree (docs/project-tree-dependency.md, row 1603). Skipped only where that tree is absent. */
+const SKIP_NO_PACKAGES = trackedTopLevelDirs().includes("packages") ? false
+  : "the project checkout has no tracked packages/ tree: this reader is agent-org's own product tree and belongs to row 5 of this series";
+
+/** #1603: the fleet/lab routing rows read the project's own `vocabulary.resources` (docs/project-tree-dependency.md, row 1603). Skipped only where the project declares none. */
+const SKIP_NO_RESOURCES = RESOURCES.length === 0 ? "the project declares no vocabulary.resources, so there is no fleet/lab routing to read: this reader is agent-org's own resources list and belongs to row 5 of this series" : false;
 
 const CLI = fileURLToPath(new URL("../row-file.ts", import.meta.url));
 /**
@@ -156,7 +164,7 @@ test("a body with only Open-check missing is refused, naming exactly that field"
   assert.doesNotMatch(reason as string, /missing Region/);
 });
 
-test("a complete body is not refused", () => {
+test("a complete body is not refused", { skip: SKIP_NO_PACKAGES }, () => {
   assert.equal(fileRefusalReason(COMPLETE_BODY), null);
 });
 
@@ -482,7 +490,7 @@ function happyDeps(session: string, label: string, overrides: Record<string, unk
 
 test("ACCEPTANCE: a complete body with --session= files -- spawnGh receives the body WITH Filed-by "
   + "appended and --session stripped, but NO --label at all: the board label is added later, never at "
-  + "creation time (see #844's own header for why)", () => {
+  + "creation time (see #844's own header for why)", { skip: SKIP_NO_PACKAGES }, () => {
   const argv = ["--title", "a real row", "--body", COMPLETE_BODY, "--session=worker-contracts", ...RELEASE];
   let called: string[] | null = null;
   const code = createIssue(argv, {
@@ -502,7 +510,7 @@ test("ACCEPTANCE: a complete body with --session= files -- spawnGh receives the 
 test("#844 ACCEPTANCE, MUTATION TARGET: the board label is added via a SEPARATE gh issue edit call, "
   + "AFTER the Status move succeeds, never before -- the exact ordering #867's own live dogfooding run "
   + "proved necessary: a `ready` label present before the item has a Status makes the row itself the "
-  + "shape #747's board-safety floor refuses, on its own snapshot, every time", () => {
+  + "shape #747's board-safety floor refuses, on its own snapshot, every time", { skip: SKIP_NO_PACKAGES }, () => {
   const argv = ["--title", "a real row", "--body", COMPLETE_BODY, "--session=worker-contracts", ...RELEASE, "--ready"];
   const order: string[] = [];
   const code = createIssue(argv, {
@@ -520,7 +528,7 @@ test("#844 ACCEPTANCE, MUTATION TARGET: the board label is added via a SEPARATE 
 });
 
 test("ACCEPTANCE: the issue is added to Project 2 and its Status is moved to match the label, both "
-  + "AFTER a successful gh issue create", () => {
+  + "AFTER a successful gh issue create", { skip: SKIP_NO_PACKAGES }, () => {
   const argv = ["--title", "a real row", "--body", COMPLETE_BODY, "--session=worker-contracts", ...RELEASE];
   const projectCalls: string[][] = [];
   const moveCalls: [number, string][] = [];
@@ -539,7 +547,7 @@ test("ACCEPTANCE: the issue is added to Project 2 and its Status is moved to mat
 });
 
 test("ACCEPTANCE, MUTATION TARGET: the issue number and https URL are read back and printed only after "
-  + "every check confirms -- prints exactly the issue's own URL", () => {
+  + "every check confirms -- prints exactly the issue's own URL", { skip: SKIP_NO_PACKAGES }, () => {
   const argv = ["--title", "a real row", "--body", COMPLETE_BODY, "--session=worker-contracts", ...RELEASE];
   let printed = "";
   const original = process.stdout.write;
@@ -555,7 +563,7 @@ test("ACCEPTANCE, MUTATION TARGET: the issue number and https URL are read back 
 
 test("#883 ACCEPTANCE: a MULTI-LANE Region derives and applies BOTH lane labels through the whole "
   + "createIssue flow -- ensureLabels is asked to create both, and both are added in the same edit call "
-  + "as the board label", () => {
+  + "as the board label", { skip: SKIP_NO_PACKAGES }, () => {
   const argv = ["--title", "a real row", "--body", COMPLETE_BODY, "--session=worker-contracts", ...RELEASE];
   // Two synthetic lanes both genuinely covering COMPLETE_BODY's own Region path
   // (packages/lab/src/packaging/foo.ts) by prefix, so this exercises real matching end to end rather
@@ -614,7 +622,7 @@ test("ACCEPTANCE: an incomplete body still refuses even with --session= present 
   assert.equal(called, false, "gh issue create must never run when the body is incomplete");
 });
 
-test("a gh failure (non-zero exit) is surfaced as this tool's own exit code, not swallowed as success", () => {
+test("a gh failure (non-zero exit) is surfaced as this tool's own exit code, not swallowed as success", { skip: SKIP_NO_PACKAGES }, () => {
   const argv = ["--title", "x", "--body", COMPLETE_BODY, "--session=worker-contracts", ...RELEASE];
   const code = createIssue(argv, {
     spawnGh: () => { throw Object.assign(new Error("gh failed"), { status: 7 }); },
@@ -624,14 +632,14 @@ test("a gh failure (non-zero exit) is surfaced as this tool's own exit code, not
 });
 
 test("#844 ACCEPTANCE: gh issue create succeeding but printing something that is not a real issue URL "
-  + "is refused distinctly -- filed, but unboardable and unverifiable", () => {
+  + "is refused distinctly -- filed, but unboardable and unverifiable", { skip: SKIP_NO_PACKAGES }, () => {
   const argv = ["--title", "x", "--body", COMPLETE_BODY, "--session=worker-contracts", ...RELEASE];
   const code = createIssue(argv, { spawnGh: () => "not a url at all", run: afterRun("") });
   assert.equal(code, 2);
 });
 
 test("#844 ACCEPTANCE: a failure adding the issue to Project 2 is refused distinctly (exit 2), naming "
-  + "the issue number and the hand-recovery command -- it is NOT reported as a plain success", () => {
+  + "the issue number and the hand-recovery command -- it is NOT reported as a plain success", { skip: SKIP_NO_PACKAGES }, () => {
   const argv = ["--title", "x", "--body", COMPLETE_BODY, "--session=worker-contracts", ...RELEASE];
   let stderr = "";
   const original = process.stderr.write;
@@ -655,7 +663,7 @@ test("#844 ACCEPTANCE: a failure adding the issue to Project 2 is refused distin
 });
 
 test("#844 ACCEPTANCE, MUTATION TARGET: a Status move that does not succeed is refused distinctly "
-  + "(exit 2), never reported as filed cleanly", () => {
+  + "(exit 2), never reported as filed cleanly", { skip: SKIP_NO_PACKAGES }, () => {
   const argv = ["--title", "x", "--body", COMPLETE_BODY, "--session=worker-contracts", ...RELEASE];
   const code = createIssue(argv, {
     ...happyDeps("worker-contracts", "backlog"),
@@ -665,7 +673,7 @@ test("#844 ACCEPTANCE, MUTATION TARGET: a Status move that does not succeed is r
 });
 
 test("#844 ACCEPTANCE: a label-add failure AFTER a successful Status move is refused distinctly (exit "
-  + "2), naming the issue number and the Status already set, never reported as filed cleanly", () => {
+  + "2), naming the issue number and the Status already set, never reported as filed cleanly", { skip: SKIP_NO_PACKAGES }, () => {
   const argv = ["--title", "x", "--body", COMPLETE_BODY, "--session=worker-contracts", ...RELEASE];
   let stderr = "";
   const original = process.stderr.write;
@@ -688,7 +696,7 @@ test("#844 ACCEPTANCE: a label-add failure AFTER a successful Status move is ref
 
 test("#844 ACCEPTANCE, MUTATION TARGET: everything succeeds but the READ-BACK disagrees (e.g. the label "
   + "did not actually stick) -- refused distinctly (exit 2), naming what is missing, never reported as "
-  + "filed cleanly on the strength of the write calls alone", () => {
+  + "filed cleanly on the strength of the write calls alone", { skip: SKIP_NO_PACKAGES }, () => {
   const argv = ["--title", "x", "--body", COMPLETE_BODY, "--session=worker-contracts", ...RELEASE];
   let stderr = "";
   const original = process.stderr.write;
@@ -807,7 +815,7 @@ test("#1011: the refusal names BOTH doors and the milestones that actually exist
   assert.match(message, /nothing was sent to GitHub/);
 });
 
-test("#1011 FOLLOWABILITY: filing again with the refusal's OWN suggestion passes", () => {
+test("#1011 FOLLOWABILITY: filing again with the refusal's OWN suggestion passes", { skip: SKIP_NO_PACKAGES }, () => {
   // This repo's rule is that following a refusal exactly must pass. Read the milestone out of the message
   // the tool printed, put it back on the command line, and file again.
   const suggested = /--milestone <one of "([^"]+)"/.exec(milestoneRefusal(["CI reset", "Road to version one"]));
@@ -818,7 +826,7 @@ test("#1011 FOLLOWABILITY: filing again with the refusal's OWN suggestion passes
   assert.ok((created as unknown as string[]).includes(suggested![1]));
 });
 
-test("#1011: `--label out-of-release` with no milestone is ALLOWED -- the deliberate escape", () => {
+test("#1011: `--label out-of-release` with no milestone is ALLOWED -- the deliberate escape", { skip: SKIP_NO_PACKAGES }, () => {
   const { code } = fileWith(["--title", "a real row", "--body", COMPLETE_BODY,
     "--session=worker-contracts", "--label", "out-of-release"],
   { ...READ_BACK_OUT_OF_RELEASE,
@@ -830,7 +838,7 @@ test("#1011: `--label out-of-release` with no milestone is ALLOWED -- the delibe
   assert.equal(code, 0);
 });
 
-test("#1011: a milestone GITHUB DID NOT APPLY is named by the read-back -- the #1003 half", () => {
+test("#1011: a milestone GITHUB DID NOT APPLY is named by the read-back -- the #1003 half", { skip: SKIP_NO_PACKAGES }, () => {
   // `gh` accepting a flag is not evidence the field is set: a flag nobody reads is this repo's own
   // recorded defect (silently discarded, the default runs, success reported). Only a fresh read says.
   const { code } = fileWith(["--title", "a real row", "--body", COMPLETE_BODY,
@@ -1178,14 +1186,14 @@ test("#1193 clause 5: a top-level directory keeps producing exactly one warning"
  * THE PATTERN LIST IS NOT RETYPED HERE EITHER. `fleetOrLabAcceptance` reuses `FLEET_LAB_PATTERNS`, which
  * is the resource ban every role file below `ceo` and `orchestrator` already carries.
  */
-test("#1241: a pathless row whose acceptance reaches the fleet gets lane:orchestrator", () => {
+test("#1241: a pathless row whose acceptance reaches the fleet gets lane:orchestrator", { skip: SKIP_NO_RESOURCES }, () => {
   const body = "## Region\n\nits deliverable is not a commit\n\n## Acceptance\n\n```\n"
     + "npm run fleet:provision -- --limit=a11y-worker-2\n```\n";
   assert.match(String(fleetOrLabAcceptance(body)), /reaches the fleet/,
     "a fleet command in the acceptance names the row's owner, where the Region names nobody");
 });
 
-test("#1241: the lab is its own reason, and an ordinary row gets neither", () => {
+test("#1241: the lab is its own reason, and an ordinary row gets neither", { skip: SKIP_NO_RESOURCES }, () => {
   const lab = "## Acceptance\n\n```\nnpm run lab:job -- -e job=train\n```\n";
   assert.match(String(fleetOrLabAcceptance(lab)), /reaches the lab/,
     "the reason is the matched pattern's own, not a generic 'needs hardware'");
@@ -1194,7 +1202,7 @@ test("#1241: the lab is its own reason, and an ordinary row gets neither", () =>
     "an ordinary acceptance must not route a row away from the engineer who can run it");
 });
 
-test("#1241: it reads the COMMANDS list, and a prose line IS one of those", () => {
+test("#1241: it reads the COMMANDS list, and a prose line IS one of those", { skip: SKIP_NO_RESOURCES }, () => {
   // `extractAcceptanceSection` returns `{kind, commands}`, not a string -- my first version tested the
   // regexes against the object, which stringifies and matches nothing, so `npm run fleet:provision`
   // returned null. Reading `commands` fixed that.
@@ -1226,7 +1234,7 @@ test("#1241: it reads the COMMANDS list, and a prose line IS one of those", () =
  * **A lane deriver answering null for a row that is NOT lane:any looks exactly like one answering null
  * for a row that is** — and it becomes the thing a reader trusts instead of the body.
  */
-test("#1241: the two rows this was filed on are both routed", () => {
+test("#1241: the two rows this was filed on are both routed", { skip: SKIP_NO_RESOURCES }, () => {
   const systemdRow = "## Acceptance\n\n1. A systemd USER timer on `agents` at 07:10 London running "
     + "`gh workflow run board-report.yml`.\n";
   const labRow = "## Acceptance\n\n**Not a test.** This row closes when:\n\n1. A destination exists.\n"
@@ -1237,7 +1245,7 @@ test("#1241: the two rows this was filed on are both routed", () => {
     "#1042's shape: a destination somebody provisions and a verify only the lab can run");
 });
 
-test("#1241: a clause below the first line is still read", () => {
+test("#1241: a clause below the first line is still read", { skip: SKIP_NO_RESOURCES }, () => {
   // The defect above in one assertion: the fleet command is in clause 3, and the first line is prose.
   const body = "## Acceptance\n\n**Not a test.** It closes when:\n\n1. A thing exists.\n"
     + "2. Another thing.\n3. `npm run fleet:status` reports every box green.\n";
@@ -1261,14 +1269,14 @@ const ROW_1911_ACCEPTANCE = "## Acceptance\n\n```bash\n"
   + "- One asserts that the script exits 2 with the `fleet.env` refusal when `A11Y_PVE_KEY` is absent.\n"
   + "- One asserts that the fetch-failure refusal carries text that the failing command wrote only to stdout.\n";
 
-test("#1912: #1911's Acceptance -- the Proxmox key named only in a bullet -- derives no fleet/lab reason", () => {
+test("#1912: #1911's Acceptance -- the Proxmox key named only in a bullet -- derives no fleet/lab reason", { skip: SKIP_NO_RESOURCES }, () => {
   assert.equal(fleetOrLabAcceptance(ROW_1911_ACCEPTANCE), null,
     "a bullet saying what a unit test asserts about the key is not the row using the key");
   assert.match(String(untrimmedFleetMention(ROW_1911_ACCEPTANCE)?.reason), /Proxmox key/,
     "the one case the bullet rule can get wrong is reported, never silent");
 });
 
-test("#1912: the same name in a fence or a numbered clause still routes", () => {
+test("#1912: the same name in a fence or a numbered clause still routes", { skip: SKIP_NO_RESOURCES }, () => {
   const fenced = "## Acceptance\n\n```bash\nssh -i \"$A11Y_PVE_KEY\" root@pve true\n```\n";
   const numbered = "## Acceptance\n\n1. `A11Y_PVE_KEY` opens a shell on the Proxmox host.\n";
   const fencedBullet = "## Acceptance\n\n```yaml\n- systemctl --user enable board.timer\n```\n";
@@ -1280,7 +1288,7 @@ test("#1912: the same name in a fence or a numbered clause still routes", () => 
     "a dash inside a code fence is YAML, not a bullet");
 });
 
-test("#1912: an INVOCATION in a bullet still routes -- only named things are read as a test's subject", () => {
+test("#1912: an INVOCATION in a bullet still routes -- only named things are read as a test's subject", { skip: SKIP_NO_RESOURCES }, () => {
   const body = "## Acceptance\n\nThe run passes and includes:\n- `npm run fleet:status` reports every box green\n";
   assert.match(String(fleetOrLabAcceptance(body)), /reaches the fleet/,
     "`fleet:status` in any sentence is somebody running it; the bullet rule is for the five named patterns");
@@ -1292,7 +1300,7 @@ const WRAPPED_1911 = "## Acceptance\n\n```bash\nnpx rstest run\n```\n\nThe run p
   + "- One asserts that the script exits 2 with the `fleet.env` refusal when\n"
   + "  `A11Y_PVE_KEY` is absent.\n";
 
-test("#1914: a WRAPPED bullet is prose on every line -- its continuation does not route", () => {
+test("#1914: a WRAPPED bullet is prose on every line -- its continuation does not route", { skip: SKIP_NO_RESOURCES }, () => {
   const lazy = WRAPPED_1911.replace("\n  `A11Y_PVE_KEY`", "\n`A11Y_PVE_KEY`");
   const secondParagraph = WRAPPED_1911.replace("\n  `A11Y_PVE_KEY`", "\n\n  `A11Y_PVE_KEY`");
   assert.notEqual(lazy, WRAPPED_1911, "the lazy-continuation replacement landed");
@@ -1303,7 +1311,7 @@ test("#1914: a WRAPPED bullet is prose on every line -- its continuation does no
   }
 });
 
-test("#1914: a bullet item ENDS at a numbered clause, a heading, or a blank line then unindented text", () => {
+test("#1914: a bullet item ENDS at a numbered clause, a heading, or a blank line then unindented text", { skip: SKIP_NO_RESOURCES }, () => {
   const bullet = "## Acceptance\n\n- One asserts the refusal.\n";
   const numbered = bullet + "1. `A11Y_PVE_KEY` opens a shell on the Proxmox host.\n";
   const paragraph = bullet + "\n`A11Y_PVE_KEY` opens a shell on the Proxmox host.\n";
@@ -1313,7 +1321,7 @@ test("#1914: a bullet item ENDS at a numbered clause, a heading, or a blank line
   }
 });
 
-test("#1914: a fence ENDS the bullet item -- an unindented sentence after the closing fence is read", () => {
+test("#1914: a fence ENDS the bullet item -- an unindented sentence after the closing fence is read", { skip: SKIP_NO_RESOURCES }, () => {
   const body = "## Acceptance\n\n- the run passes\n```bash\nnpm test\n```\n`A11Y_PVE_KEY` is set on the lab host.\n";
   assert.match(String(fleetOrLabAcceptance(body)), /Proxmox key/, body);
   assert.equal(untrimmedFleetMention(body), null, "and no bullet warning: that sentence was never a bullet");
@@ -1349,7 +1357,7 @@ function fileCapturingStderr(body: string, labels: string[]) {
   }
 }
 
-test("#1912: createIssue files a fleet-Acceptance row with lane:orchestrator and without lane:any, and says why", () => {
+test("#1912: createIssue files a fleet-Acceptance row with lane:orchestrator and without lane:any, and says why", { skip: SKIP_NO_PACKAGES }, () => {
   const body = COMPLETE_BODY.replace("npx tsx --test x", "npm run fleet:status");
   assert.notEqual(body, COMPLETE_BODY, "the Acceptance replacement landed");
   const { code, stderr, ensured } = fileCapturingStderr(body, ["backlog", "lane:orchestrator"]);
@@ -1379,7 +1387,7 @@ const ROW_1984_SPAN = "## Acceptance\n\n```\nnpx rstest run --include packages/l
   + "**Not in scope:** the `A11IGN_BOT_TOKEN` secret and whether it should be a machine user; what the\n"
   + "check *works* as opposed to which token it is; and the three systemd units, done in #1982.\n";
 
-test("#1988: a NAMED pattern only in the scope-disclaiming paragraph does not route the row", () => {
+test("#1988: a NAMED pattern only in the scope-disclaiming paragraph does not route the row", { skip: SKIP_NO_RESOURCES }, () => {
   const body = COMPLETE_BODY.replace("## Acceptance\n\n```\nnpx tsx --test x\n```\n", ROW_1984_SPAN);
   assert.notEqual(body, COMPLETE_BODY, "the Acceptance replacement landed");
   assert.equal(fleetOrLabAcceptance(body), null,
@@ -1397,7 +1405,7 @@ test("#1988: a NAMED pattern only in the scope-disclaiming paragraph does not ro
  * two bodies below differ by exactly that clause, so the assertion pair is about the clause and not
  * about two unrelated fixtures.
  */
-test("#1988: a Done-when clause naming hardware still routes, before or after the same disclaimer", () => {
+test("#1988: a Done-when clause naming hardware still routes, before or after the same disclaimer", { skip: SKIP_NO_RESOURCES }, () => {
   const disclaimer = "**Not in scope:** the three systemd units, done in #1982.\n";
   const clause = "**Done when** it holds:\n\n1. A systemd USER timer on `agents` runs the report.\n";
   const span = (middle: string) => `## Acceptance\n\n\`\`\`\nnpx rstest run\n\`\`\`\n\n${middle}`;
@@ -1416,7 +1424,7 @@ test("#1988: a Done-when clause naming hardware still routes, before or after th
     + "positive control for that null, in the same run and over the same disclaimer");
 });
 
-test("#1988: an INVOCATION in the disclaimer still routes -- only NAMED things are trimmed", () => {
+test("#1988: an INVOCATION in the disclaimer still routes -- only NAMED things are trimmed", { skip: SKIP_NO_RESOURCES }, () => {
   // The bound in the other direction, and it is a judgement this row makes rather than inherits. #1912
   // settled it for bullets on the same ground: `fleet:status` in a sentence is still somebody running
   // `fleet:status`, while a NAMED thing -- a unit, a variable, a place -- may be a test's subject or the
@@ -1428,7 +1436,7 @@ test("#1988: an INVOCATION in the disclaimer still routes -- only NAMED things a
     "a colon-suffixed script name is an invocation wherever it appears; the trim is for the five named patterns");
 });
 
-test("#1988: createIssue on a disclaimer-only systemd mention files lane:any and NAMES the trim", () => {
+test("#1988: createIssue on a disclaimer-only systemd mention files lane:any and NAMES the trim", { skip: SKIP_NO_PACKAGES }, () => {
   const body = COMPLETE_BODY.replace("## Acceptance\n\n```\nnpx tsx --test x\n```\n", ROW_1984_SPAN);
   const { code, stderr, ensured } = fileCapturingStderr(body, ["backlog", "lane:any"]);
   assert.equal(code, 0, stderr);
@@ -1441,7 +1449,7 @@ test("#1988: createIssue on a disclaimer-only systemd mention files lane:any and
   assert.doesNotMatch(stderr, /lane:orchestrator added/);
 });
 
-test("#1914: createIssue on a bullet-only Proxmox mention files lane:any and WARNS on stderr", () => {
+test("#1914: createIssue on a bullet-only Proxmox mention files lane:any and WARNS on stderr", { skip: SKIP_NO_PACKAGES }, () => {
   const body = COMPLETE_BODY.replace("## Acceptance\n\n```\nnpx tsx --test x\n```\n", WRAPPED_1911);
   assert.notEqual(body, COMPLETE_BODY, "the Acceptance replacement landed");
   const { code, stderr, ensured } = fileCapturingStderr(body, ["backlog", "lane:any"]);
@@ -1582,7 +1590,7 @@ function fileWatching(argv: string[], overrides: Record<string, unknown> = {},
 const FILER = ["--title", "a real row", "--body", COMPLETE_BODY, "--session=worker-contracts", ...RELEASE];
 const lanesIn = (labels: readonly string[]) => [...new Set(labels.filter((l) => l.startsWith("lane:")))];
 
-test("#1322 ACCEPTANCE (case 1): an explicit lane that DIFFERS from the derived one refuses before filing, naming both", () => {
+test("#1322 ACCEPTANCE (case 1): an explicit lane that DIFFERS from the derived one refuses before filing, naming both", { skip: SKIP_NO_PACKAGES }, () => {
   // `happyDeps` derives `lane:any` for COMPLETE_BODY -- the #1313 shape: typed `lane:orchestrator`, derived `lane:any`.
   for (const spelling of [["--label=lane:orchestrator"], ["--label", "lane:orchestrator"], ["-l", "lane:orchestrator"],
     ["--label", "out-of-release,lane:orchestrator"], ["--label=Lane:Orchestrator"]]) {
@@ -1594,7 +1602,7 @@ test("#1322 ACCEPTANCE (case 1): an explicit lane that DIFFERS from the derived 
   }
 });
 
-test("#1322 CONTROL (case 1): an explicit lane EQUAL to the derived one files, with exactly one lane label", () => {
+test("#1322 CONTROL (case 1): an explicit lane EQUAL to the derived one files, with exactly one lane label", { skip: SKIP_NO_PACKAGES }, () => {
   const { code, created, added } = fileWatching([...FILER, "--label=lane:any"],
     { fetchLabels: () => ({ number: 900, title: "a real row", labels: ["backlog", "lane:any"] }) });
   assert.equal(code, 0);
@@ -1607,7 +1615,7 @@ test("#1322 CONTROL (case 1): an explicit lane EQUAL to the derived one files, w
   assert.deepEqual(labelValuesFromArgv(shouted.created ?? []), [], "and it does not reach gh issue create beside the derived one");
 });
 
-test("#1322 ACCEPTANCE (case 2): `--label=ready` boards Ready and is never `backlog` too", () => {
+test("#1322 ACCEPTANCE (case 2): `--label=ready` boards Ready and is never `backlog` too", { skip: SKIP_NO_PACKAGES }, () => {
   for (const spelling of [["--label=ready"], ["--label", "ready"], ["-l", "ready,lane:any"], ["--label=Ready"]]) {
     const { code, created, added, moved } = fileWatching([...FILER, ...spelling], {
       fetchBoardStatus: () => "Ready",
@@ -1621,14 +1629,14 @@ test("#1322 ACCEPTANCE (case 2): `--label=ready` boards Ready and is never `back
   }
 });
 
-test("#1322 CONTROL (case 2): no board flag at all still files `backlog`", () => {
+test("#1322 CONTROL (case 2): no board flag at all still files `backlog`", { skip: SKIP_NO_PACKAGES }, () => {
   const { code, added, moved } = fileWatching(FILER);
   assert.equal(code, 0);
   assert.deepEqual(moved, ["Backlog"]);
   assert.ok(added.includes("backlog") && !added.includes("ready"));
 });
 
-test("#1322: `ready` and `backlog` together refuse, in any mix of --ready and --label", () => {
+test("#1322: `ready` and `backlog` together refuse, in any mix of --ready and --label", { skip: SKIP_NO_PACKAGES }, () => {
   for (const both of [["--ready", "--label", "backlog"], ["--label=ready,backlog"], ["-l", "backlog", "--label=ready"],
     ["--ready", "--label=Backlog"]]) {
     const { code, created, said } = fileWatching([...FILER, ...both]);
@@ -1638,7 +1646,7 @@ test("#1322: `ready` and `backlog` together refuse, in any mix of --ready and --
   }
 });
 
-test("#1322: the board and lane labels never reach `gh issue create`; every other label does, in its own spelling", () => {
+test("#1322: the board and lane labels never reach `gh issue create`; every other label does, in its own spelling", { skip: SKIP_NO_PACKAGES }, () => {
   // The untouched occurrence is spelled `-l`, NOT `--label`: the rewrite itself emits `--label`, so a rewrite that
   // rebuilt every occurrence would pass a `--label` assertion (worker-capture's review of #1381).
   const { code, created } = fileWatching([...FILER, "-l", "out-of-release", "--label=backlog,lane:any,docs"],
@@ -1710,7 +1718,7 @@ function lanesAppliedBy(cell: (typeof LANE_CELLS)[number], typed: string[]) {
   }
 }
 
-test("#2147: the lanes a filing applies are the derived set exactly, and never `lane:any` beside an owned lane", () => {
+test("#2147: the lanes a filing applies are the derived set exactly, and never `lane:any` beside an owned lane", { skip: SKIP_NO_PACKAGES }, () => {
   let filed = 0;
   for (const cell of LANE_CELLS) {
     for (const typed of TYPED_LANES) {
@@ -1748,7 +1756,7 @@ const milestoneIn = (argv: readonly string[] | null) => {
   return at < 0 ? null : (argv ?? [])[at + 1];
 };
 
-test("#1393 ACCEPTANCE: every spelling gh takes files with the Out of release milestone, the filer's label spelling unchanged", () => {
+test("#1393 ACCEPTANCE: every spelling gh takes files with the Out of release milestone, the filer's label spelling unchanged", { skip: SKIP_NO_PACKAGES }, () => {
   assert.deepEqual(UNRELEASED.includes("--milestone"), false, "the filer declares no milestone of its own");
   // `-l=` is a real spelling: `gh issue list -l=ready` returns exactly `--label ready`'s rows (5655847590 on #1393).
   for (const spelling of [["--label", "out-of-release,docs"], ["--label=Out-of-release"], ["-l=out-of-release"]]) {
@@ -1762,7 +1770,7 @@ test("#1393 ACCEPTANCE: every spelling gh takes files with the Out of release mi
   }
 });
 
-test("#1393 CONTROL: `--label out-of-release` still files with the milestone, and no label is still refused", () => {
+test("#1393 CONTROL: `--label out-of-release` still files with the milestone, and no label is still refused", { skip: SKIP_NO_PACKAGES }, () => {
   const exact = fileWatching([...UNRELEASED, "--label", "out-of-release"], READ_BACK_OUT_OF_RELEASE,
     OUT_OF_RELEASE_MILESTONE);
   assert.equal(exact.code, 0);
@@ -1775,7 +1783,7 @@ test("#1393 CONTROL: `--label out-of-release` still files with the milestone, an
   assert.equal(other.code, 1, "a label that is not out-of-release declares nothing either");
 });
 
-test("#1962 ACCEPTANCE, DRIVEN: `--milestone \"Out of release\"` alone files WITH the label -- the shape that filed #1960", () => {
+test("#1962 ACCEPTANCE, DRIVEN: `--milestone \"Out of release\"` alone files WITH the label -- the shape that filed #1960", { skip: SKIP_NO_PACKAGES }, () => {
   // Driven through `createIssue`, asserting the argv that reaches `gh`: `outOfReleaseArgv` returning the
   // right array proves nothing about what this tool files if the result is dropped on the way (#1393's
   // own lesson -- one of two copies fixed files the row with the other half missing).
@@ -1793,7 +1801,7 @@ test("#1962 ACCEPTANCE, DRIVEN: `--milestone \"Out of release\"` alone files WIT
   }
 });
 
-test("#1962 CONTROL: a REAL milestone gets no `out-of-release` label -- the direction that must not weaken", () => {
+test("#1962 CONTROL: a REAL milestone gets no `out-of-release` label -- the direction that must not weaken", { skip: SKIP_NO_PACKAGES }, () => {
   // `FILER` declares `--milestone \"CI reset\"`: a row squarely IN the release. Labelling it out of release
   // would be the same drift pointing the other way, and this is the assertion that says the fix reads the
   // milestone's VALUE rather than the flag's presence.
@@ -1803,7 +1811,7 @@ test("#1962 CONTROL: a REAL milestone gets no `out-of-release` label -- the dire
     "no label at all: the board and lane labels land after the Status move, and this row is not out of release");
 });
 
-test("#1962 CONTROL: the MILESTONE this tool added is read back too, not only the one the filer typed", () => {
+test("#1962 CONTROL: the MILESTONE this tool added is read back too, not only the one the filer typed", { skip: SKIP_NO_PACKAGES }, () => {
   // The mirror of the test below, and the reason the read-back reads `filedArgv` rather than `argv`:
   // a filing that says `out-of-release` by label alone asks for the `Out of release` milestone because
   // `outOfReleaseArgv` ADDS it. Expecting only what the filer typed expects `null` here, checks nothing,
@@ -1815,7 +1823,7 @@ test("#1962 CONTROL: the MILESTONE this tool added is read back too, not only th
   assert.match(said, /missing: the milestone/, "and the refusal names the half that did not stick");
 });
 
-test("#1962 CONTROL: a label the read-back does NOT find is REFUSED, not reported as filed", () => {
+test("#1962 CONTROL: a label the read-back does NOT find is REFUSED, not reported as filed", { skip: SKIP_NO_PACKAGES }, () => {
   // The positive control for the read-back added by this row: with the fixture answering a row that came
   // back WITHOUT `out-of-release`, `row-file` must refuse rather than print the URL. `gh` accepting
   // `--label` is not evidence the label is on the row -- #1011's own finding, one field across.
@@ -1884,7 +1892,7 @@ const ROW_OPEN_CHECK = "## Open-check\n\n```\ngh issue view 735 --json state\n``
 const withAcceptance = (acceptance: string) => ROW_REGION + acceptance + ROW_OPEN_CHECK;
 const NONE_REASON = "a docs row with nothing to run";
 
-test("#1488 ACCEPTANCE: a heading followed by an `Acceptance: none` line (the 22-row shape) is REFUSED, naming both lines", () => {
+test("#1488 ACCEPTANCE: a heading followed by an `Acceptance: none` line (the 22-row shape) is REFUSED, naming both lines", { skip: SKIP_NO_PACKAGES }, () => {
   const body = withAcceptance(`## Acceptance\n\nAcceptance: none — ${NONE_REASON}\n\n`);
   assert.equal(extractAcceptanceSection(body).kind, "duplicate", "the fixture must be the parser's DUPLICATE case");
   const reason = fileRefusalReason(body);
@@ -1894,7 +1902,7 @@ test("#1488 ACCEPTANCE: a heading followed by an `Acceptance: none` line (the 22
   assert.ok((reason as string).includes(`line 7: \`Acceptance: none — ${NONE_REASON}\``), reason as string);
 });
 
-test("#1488: an Acceptance section the parser reads as MISSING is refused, in both shapes the template check lets through", () => {
+test("#1488: an Acceptance section the parser reads as MISSING is refused, in both shapes the template check lets through", { skip: SKIP_NO_PACKAGES }, () => {
   for (const acceptance of ["## Acceptance: none\n\n", "## Acceptance\n\n<!-- nothing yet -->\n\n"]) {
     const body = withAcceptance(acceptance);
     assert.equal(extractAcceptanceSection(body).kind, "missing", `fixture: ${JSON.stringify(acceptance)}`);
@@ -1903,7 +1911,7 @@ test("#1488: an Acceptance section the parser reads as MISSING is refused, in bo
   }
 });
 
-test("#1488 CONTROL: the one-header forms are accepted -- a heading with a command block, and `## Acceptance: none — <reason>`", () => {
+test("#1488 CONTROL: the one-header forms are accepted -- a heading with a command block, and `## Acceptance: none — <reason>`", { skip: SKIP_NO_PACKAGES }, () => {
   assert.equal(extractAcceptanceSection(COMPLETE_BODY).kind, "commands");
   assert.equal(fileRefusalReason(COMPLETE_BODY), null);
   const inlineNone = withAcceptance(`## Acceptance: none — ${NONE_REASON}\n\n`);
@@ -1911,7 +1919,7 @@ test("#1488 CONTROL: the one-header forms are accepted -- a heading with a comma
   assert.equal(fileRefusalReason(inlineNone), null);
 });
 
-test("#1488: the refusal is FOLLOWABLE -- the refused body, collapsed to the one header it names, files", () => {
+test("#1488: the refusal is FOLLOWABLE -- the refused body, collapsed to the one header it names, files", { skip: SKIP_NO_PACKAGES }, () => {
   const refused = withAcceptance(`## Acceptance\n\nAcceptance: none — ${NONE_REASON}\n\n`);
   assert.ok(fileRefusalReason(refused));
   const followed = refused.replace(`## Acceptance\n\nAcceptance: none — ${NONE_REASON}`, `## Acceptance: none — ${NONE_REASON}`);
@@ -1949,7 +1957,7 @@ test("#1488: the check CALLS the parser and keeps no copy of its rule -- it refu
 
 const HAND_RUN_GH_ROW = "gh api repos/a11ign/a11ign/branches/main/protection --jq '.enforce_admins.enabled'";
 
-test("#2099: a row whose Acceptance is an UNDECLARED `gh` command is refused by `fileRefusalReason`, quoting it", () => {
+test("#2099: a row whose Acceptance is an UNDECLARED `gh` command is refused by `fileRefusalReason`, quoting it", { skip: SKIP_NO_PACKAGES }, () => {
   const reason = String(fileRefusalReason(withAcceptance(`## Acceptance\n\n\`\`\`\n${HAND_RUN_GH_ROW}\n\`\`\`\n\n`)));
   assert.match(reason, /^row-file: REFUSING to file --/);
   assert.ok(reason.includes(HAND_RUN_GH_ROW), `the refusal quotes the command: ${reason}`);
@@ -1957,7 +1965,7 @@ test("#2099: a row whose Acceptance is an UNDECLARED `gh` command is refused by 
 });
 
 test("#2099 CONTROL: the SAME row carrying the declaration files clean -- the ruling is DECLARE, not refuse, "
-  + "because a blanket refusal refuses a CORRECT row (#2084 is the live one)", () => {
+  + "because a blanket refusal refuses a CORRECT row (#2084 is the live one)", { skip: SKIP_NO_PACKAGES }, () => {
   const body = withAcceptance("## Acceptance\n\nHand-run: whoever holds the admin credential, which CI has not\n\n"
     + `\`\`\`\n${HAND_RUN_GH_ROW}\n\`\`\`\n\n`);
   assert.equal(fileRefusalReason(body), null,
@@ -2026,7 +2034,7 @@ function fakeRow(options: {
 
 test("#2111 ACCEPTANCE, MUTATION TARGET: the Status moves first, and the labels are then written by "
   + "EXACTLY ONE request that SETS the whole list -- no `--add-label`/`--remove-label` pair anywhere, "
-  + "because one `gh issue edit` invocation carrying both is one COMMAND and not one write (#677)", () => {
+  + "because one `gh issue edit` invocation carrying both is one COMMAND and not one write (#677)", { skip: SKIP_NO_PACKAGES }, () => {
   const { row, deps, labelWrites } = fakeRow();
   const order: string[] = [];
   const code = promoteRow(["--promote=2111", "--session=worker-capture"], {
@@ -2049,7 +2057,7 @@ test("#2111 ACCEPTANCE, MUTATION TARGET: the Status moves first, and the labels 
 
 test("#2111 ACCEPTANCE, MUTATION TARGET, FAILURE INJECTION: when the label write FAILS the row's labels "
   + "are UNTOUCHED -- neither the both-labels state this row is about nor the neither-label one -- and "
-  + "the act says so at exit 2 rather than reporting a promotion", () => {
+  + "the act says so at exit 2 rather than reporting a promotion", { skip: SKIP_NO_PACKAGES }, () => {
   // The reviewer's blocker, made a test: the first version could not express this case, because a pair of
   // label operations has a partial outcome and a single set replacement does not.
   const { row, deps, labelWrites } = fakeRow({ failLabelWrite: true });
@@ -2075,7 +2083,7 @@ test("#2111 ACCEPTANCE, MUTATION TARGET, FAILURE INJECTION: when the label write
 
 test("#2111 ACCEPTANCE, FAILURE INJECTION: the RECOVERY -- a second run after a failed label write "
   + "promotes the row and leaves exactly the intended list, so Status-first has a real repair behind it "
-  + "rather than an ordering argument", () => {
+  + "rather than an ordering argument", { skip: SKIP_NO_PACKAGES }, () => {
   const failing = fakeRow({ failLabelWrite: true });
   assert.equal(promoteRow(["--promote=2111"], failing.deps), 2);
   // The same row, in the state that failure left it: Status Ready, labels untouched.
@@ -2086,7 +2094,7 @@ test("#2111 ACCEPTANCE, FAILURE INJECTION: the RECOVERY -- a second run after a 
 });
 
 test("#2111 ACCEPTANCE, FAILURE INJECTION: if the endpoint APPENDED instead of replacing, the read-back "
-  + "refuses to report a promotion -- the replacement semantics are checked rather than trusted", () => {
+  + "refuses to report a promotion -- the replacement semantics are checked rather than trusted", { skip: SKIP_NO_PACKAGES }, () => {
   const { row, deps } = fakeRow({ additiveLabelWrite: true });
   const code = promoteRow(["--promote=2111"], deps);
   assert.equal(code, 2, "`backlog` survived the write, and the middle clause of the read-back asks exactly that");
@@ -2096,7 +2104,7 @@ test("#2111 ACCEPTANCE, FAILURE INJECTION: if the endpoint APPENDED instead of r
 
 test("#2111 ACCEPTANCE, MUTATION TARGET: a claim landing between the gate and the write is REFUSED, "
   + "never written over -- a set write computed from the older read would erase the claim's own labels "
-  + "to add `ready`", () => {
+  + "to add `ready`", { skip: SKIP_NO_PACKAGES }, () => {
   // The cost of a whole-list write, paid for by re-reading immediately before it. `onStatusMove` is the
   // window: the Project round trip is where a concurrent claim actually fits.
   const { row, deps, labelWrites } = fakeRow({
@@ -2120,7 +2128,7 @@ test("#2111 ACCEPTANCE: labelSetForPromotion is the whole list -- `ready` in, `b
 });
 
 test("#2111 ACCEPTANCE: promotionLabelsSettled is what stops an already-Ready row being written at all -- "
-  + "a set write that changes nothing is still a write, and a write can still clobber", () => {
+  + "a set write that changes nothing is still a write, and a write can still clobber", { skip: SKIP_NO_PACKAGES }, () => {
   assert.equal(promotionLabelsSettled(["ready", "lane:any"]), true);
   assert.equal(promotionLabelsSettled(["backlog", "ready"]), false, "the half-promoted state is not settled");
   assert.equal(promotionLabelsSettled(["backlog"]), false);
@@ -2132,7 +2140,7 @@ test("#2111 ACCEPTANCE: promotionLabelsSettled is what stops an already-Ready ro
 });
 
 test("#2111 ACCEPTANCE: a row already carrying BOTH labels is repaired by the one write, and reported "
-  + "promoted once the read-back confirms it", () => {
+  + "promoted once the read-back confirms it", { skip: SKIP_NO_PACKAGES }, () => {
   const { row, deps, labelWrites } = fakeRow({ labels: ["backlog", "ready", "lane:any"] });
   assert.equal(promoteRow(["--promote=2050"], deps), 0);
   assert.deepEqual(labelWrites()[0], ["api", "--method", "PUT", `repos/${REPO}/issues/2050/labels`,
@@ -2146,7 +2154,7 @@ test("#2111 ACCEPTANCE: a row already carrying BOTH labels is repaired by the on
  * named as the control -- the refusal tests underneath are only meaningful beside it.
  */
 test("#2111 ACCEPTANCE, MUTATION TARGET: a well-formed row is NOT refused -- the control for the "
-  + "claimability refusal, which would otherwise pass by refusing every promotion", () => {
+  + "claimability refusal, which would otherwise pass by refusing every promotion", { skip: SKIP_NO_PACKAGES }, () => {
   const { row, deps } = fakeRow();
   assert.equal(promoteRow(["--promote=2111", "--session=worker-capture"], deps), 0,
     "COMPLETE_BODY carries Region, Acceptance and Open-check, so nothing may refuse it");
@@ -2166,7 +2174,7 @@ test("#2111 ACCEPTANCE, MUTATION TARGET: a row whose body is missing a required 
 });
 
 test("#2111: the claimability refusal is the SAME rule the claim side enforces, named through "
-  + "templateFieldsReason and fileRefusalReason rather than re-derived here", () => {
+  + "templateFieldsReason and fileRefusalReason rather than re-derived here", { skip: SKIP_NO_PACKAGES }, () => {
   // The refusal quotes the claim-side rule verbatim, including the issue number, so a session reading it
   // is reading the message `row-claim` would print if they claimed the row instead.
   const missingOpenCheck = "## Region\n\nx.ts\n\n## Acceptance\n\n```\nnpx tsx --test x\n```\n";
@@ -2180,7 +2188,7 @@ test("#2111: the claimability refusal is the SAME rule the claim side enforces, 
 });
 
 test("#2111 ACCEPTANCE: the read-back refuses to report success when `backlog` is still on the row -- "
-  + "the one clause that asks whether something LEFT", () => {
+  + "the one clause that asks whether something LEFT", { skip: SKIP_NO_PACKAGES }, () => {
   const code = promoteRow(["--promote=2111"], {
     ...fakeRow().deps,
     // The write went out; the read-back still sees `backlog`. Before this row nothing asked.
@@ -2458,7 +2466,7 @@ const row2174 = (answer: string | null) => COMPLETE_BODY
   + (answer === null ? "" : `\n${FLEET_SECTION(answer)}`);
 const DECLARES_NO = "**No.** Pure body-parsing and its tests.";
 
-test("#2175: a row answering No is NOT routed by a named pattern in a numbered clause -- #2174's own text", () => {
+test("#2175: a row answering No is NOT routed by a named pattern in a numbered clause -- #2174's own text", { skip: SKIP_NO_RESOURCES }, () => {
   assert.notEqual(row2174(null), COMPLETE_BODY, "the Acceptance replacement landed");
   assert.match(String(fleetOrLabAcceptance(row2174(null))), /drives systemd on the control host/,
     "THE CONTROL, over the same body: without the declaration the numbered clause routes, as it always has");
@@ -2466,7 +2474,7 @@ test("#2175: a row answering No is NOT routed by a named pattern in a numbered c
     "the row said No, and a test double named in a numbered clause is not the row driving systemd");
 });
 
-test("#2175: a row answering Yes IS routed even when no pattern matches anywhere in it", () => {
+test("#2175: a row answering Yes IS routed even when no pattern matches anywhere in it", { skip: SKIP_NO_RESOURCES }, () => {
   const body = COMPLETE_BODY + `\n${FLEET_SECTION("Yes — cannot start until the orchestrator frees a worker")}`;
   assert.match(String(fleetOrLabAcceptance(body)), /declared.*need the fleet or the lab/,
     "the direction that failed silently: nothing in the body matched, so the deriver answered null and "
@@ -2477,7 +2485,7 @@ test("#2175: a row answering Yes IS routed even when no pattern matches anywhere
     "when a pattern ALSO matches, the specific reason wins over the generic declared one");
 });
 
-test("#2175: a body with no answer, or one that is not an unambiguous No or Yes, derives exactly as before", () => {
+test("#2175: a body with no answer, or one that is not an unambiguous No or Yes, derives exactly as before", { skip: SKIP_NO_RESOURCES }, () => {
   const forms = [null, "Partly — offline step given above, fleet step named as what remains",
     "The lab only -- `training:generate` touches no worker."];
   for (const answer of forms) {
@@ -2489,14 +2497,14 @@ test("#2175: a body with no answer, or one that is not an unambiguous No or Yes,
   assert.equal(fleetOrLabAcceptance(plain), null, "and a body no pattern matches still answers null");
 });
 
-test("#2175: an INVOCATION under a No still routes -- the declaration outranks only the five named patterns", () => {
+test("#2175: an INVOCATION under a No still routes -- the declaration outranks only the five named patterns", { skip: SKIP_NO_RESOURCES }, () => {
   const body = COMPLETE_BODY.replace("npx tsx --test x", "npm run fleet:status") + `\n${FLEET_SECTION(DECLARES_NO)}`;
   assert.match(String(fleetOrLabAcceptance(body)), /reaches the fleet/,
     "`fleet:status` in an Acceptance is somebody running it whatever the row says (#1912's ground); a "
     + "row that says No and runs it is the disagreement worth a human's eye, and under-routing it is silent");
 });
 
-test("#2175: a disagreement between the declaration and the patterns is NAMED, whichever way it resolved", () => {
+test("#2175: a disagreement between the declaration and the patterns is NAMED, whichever way it resolved", { skip: SKIP_NO_RESOURCES }, () => {
   assert.equal(untrimmedFleetMention(row2174(DECLARES_NO)), null,
     "under a declared No the DECLARATION decided; the bullet/disclaimer reader must not also speak, and if it did "
     + "it would name the wrong trim -- a numbered clause is not a bullet. (`createIssue` masks this by printing "
@@ -2519,7 +2527,7 @@ test("#2175: a disagreement between the declaration and the patterns is NAMED, w
   "Yes and a pattern matched agree");
 });
 
-test("#2175: createIssue on #2174's shape files lane:any and SAYS the declaration decided it", () => {
+test("#2175: createIssue on #2174's shape files lane:any and SAYS the declaration decided it", { skip: SKIP_NO_PACKAGES }, () => {
   const { code, stderr, ensured } = fileCapturingStderr(row2174(DECLARES_NO), ["backlog", "lane:any"]);
   assert.equal(code, 0, stderr);
   assert.deepEqual(ensured, ["backlog", "lane:any"],
@@ -2531,7 +2539,7 @@ test("#2175: createIssue on #2174's shape files lane:any and SAYS the declaratio
     "one line, and the right trim: the bullet and disclaimer warnings would send the filer to the wrong fix");
 });
 
-test("#2175: createIssue on a Yes with no pattern files lane:orchestrator, without lane:any, and says why", () => {
+test("#2175: createIssue on a Yes with no pattern files lane:orchestrator, without lane:any, and says why", { skip: SKIP_NO_PACKAGES }, () => {
   const body = COMPLETE_BODY + `\n${FLEET_SECTION("Yes — cannot start until the orchestrator frees a worker")}`;
   const { code, stderr, ensured } = fileCapturingStderr(body, ["backlog", "lane:orchestrator"]);
   assert.equal(code, 0, stderr);
@@ -2539,7 +2547,7 @@ test("#2175: createIssue on a Yes with no pattern files lane:orchestrator, witho
   assert.match(stderr, /lane:orchestrator added -- the row declares "Yes" to "Does the acceptance need the fleet or the lab\?", though no pattern/);
 });
 
-test("#2175: createIssue on a No that still runs an invocation routes it AND prints the disagreement", () => {
+test("#2175: createIssue on a No that still runs an invocation routes it AND prints the disagreement", { skip: SKIP_NO_PACKAGES }, () => {
   const body = COMPLETE_BODY.replace("npx tsx --test x", "npm run fleet:status") + `\n${FLEET_SECTION(DECLARES_NO)}`;
   const { code, stderr, ensured } = fileCapturingStderr(body, ["backlog", "lane:orchestrator"]);
   assert.equal(code, 0, stderr);

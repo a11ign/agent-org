@@ -15,6 +15,11 @@ import assert from "node:assert/strict";
 import { sessionEligibilityReason, claimRow, CLAIM_LABEL } from "../row-claim.ts";
 import { forgetRefusedReads } from "../ticket-port/rows-by-label.ts";
 import { connectionOf, readsRowsByLabel } from "./rows-by-label-fixtures.ts";
+import { trackedTopLevelDirs } from "../region-paths.ts";
+
+/** #1603: the packages/ rows read the project's own tracked `packages/` tree (docs/project-tree-dependency.md, row 1603). Skipped only where that tree is absent. */
+const SKIP_NO_PACKAGES = trackedTopLevelDirs().includes("packages") ? false
+  : "the project checkout has no tracked packages/ tree: this reader is agent-org's own product tree and belongs to row 5 of this series";
 
 // #5039: a read refused for a rate limit is remembered for the life of the process, and the test below that throws `gh: rate limited` from
 // EVERY call would otherwise refuse the label read of every test after it.
@@ -147,7 +152,7 @@ test("#476's own acceptance shape: the same session with that PR MERGED is allow
   assert.equal(sessionEligibilityReason(455, "worker-judge", { run }), null);
 });
 
-test("#462's own acceptance shape: a CONSTRUCTED region overlap refuses, end to end", () => {
+test("#462's own acceptance shape: a CONSTRUCTED region overlap refuses, end to end", { skip: SKIP_NO_PACKAGES }, () => {
   const run = routedRun({
     issueViewBody: "Region: `packages/agent-org/src/merge-guard.ts`.",
     prList: JSON.stringify([{ number: 406, changedFiles: 1, files: [{ path: "packages/agent-org/src/merge-guard.ts" }] }]),
@@ -459,7 +464,7 @@ test("#989: --blocked-by cannot excuse a row IN BUILD, and says why rather than 
 });
 
 test("MUTATION TARGET: --blocked-by given while the refusal is B4 (file overlap), not B2, must not apply "
-  + "-- the override is specific to the claimant's own PR being unhealthy", () => {
+  + "-- the override is specific to the claimant's own PR being unhealthy", { skip: SKIP_NO_PACKAGES }, () => {
   const body = "## Region\n\n`packages/agent-org/src/merge-guard.ts`.\n\n## Acceptance\n\nSomething checkable.\n\n"
     + "## Open-check\n\nSomething runnable.\n";
   const run = (cmd: string, args: string[]): string => {
