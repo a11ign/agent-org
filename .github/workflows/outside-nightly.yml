@@ -1,0 +1,77 @@
+# outside-nightly -- the project's nightly org jobs, run from here (agent-org#1577; epic a11ign/a11ign#5602, "agent-org stands alone"). SHIPPED OFF.
+#
+# The project's `nightly.yml` runs four org jobs: `ready-audit`, `gateSweep`, `closeRowsSweep` and `watch`. That is the org's process acting on the project, so it runs from outside the project before it leaves it.
+# `agent-org outside-nightly` (src/outside-nightly.ts) runs them, in a checkout of the project so the tool reads the project's declaration as it reads any customer's, and ONLY when the project's
+# `.agent-org/decisions.json` says `"outside.nightly": true`. Absent, `false` or unreadable is off: the first step says `on=false`, no token is minted, and nothing is acted on.
+#
+# THE CLOCKS SIT AFTER THE PROJECT'S (06:47 against 06:17, :52 against :37), so the project's job is the first actor and this is the second, which finds the work done and does nothing (the tests in
+# src/outside-nightly.test.ts drive each pair). Off the hour, as the project's own crons are (a11ign/a11ign#965).
+#
+# THE TOKEN is an Octo STS exchange for the project's repository, identity `outside-nightly`, whose trust policy lives in the PROJECT's own chainguard directory, named `outside-nightly` (the issuing
+# repository holds the policy; it is filed as its own row on agent-org#1577). It is minted only when the flag is on, so shipping this file needs no policy and a switch before the policy exists is a red run
+# here and nothing in the project. There is deliberately no fallback to `github.token`: that token is THIS repository's and would read and write the wrong one.
+#
+# THE PROJECT IS NAMED HERE AND NOWHERE IN src/: `PROJECT_REPOSITORY` below is this workflow's one declaration of whom it serves (the precedent is project-ref-bump.yml), and the tool is handed it as a flag.
+name: outside-nightly
+
+on:
+  schedule:
+    - cron: "47 6 * * *"   # the nightly job: ready-audit, after the project's 06:17
+    - cron: "52 * * * *"   # the hourly jobs: gateSweep, closeRowsSweep, watch, after the project's :37
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PROJECT_REPOSITORY: a11ign/a11ign
+  REPORT_ISSUE: "928"     # the project's standing row, where `watch` reports
+
+concurrency:
+  group: outside-nightly-${{ github.event.schedule || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  home:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write   # the Octo STS exchange below and nothing else
+    steps:
+      - uses: actions/checkout@v7
+      - name: The project, read-only and public, with no credential kept (its declaration is the only thing read from it)
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.PROJECT_REPOSITORY }}
+          ref: main
+          path: project
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with: { node-version: 24 }
+      # The tool's own install, the consumer's form (a11ign's `agent-org-newest-tag` runs the same): the lockfile, exact, no scripts.
+      - name: Install the tool
+        run: npx pnpm@10.34.5 install --frozen-lockfile --ignore-scripts
+      - name: Is the outside home switched on for the project?
+        id: flag
+        working-directory: project
+        run: node "$GITHUB_WORKSPACE/src/bin.ts" outside-nightly --read-flag >> "$GITHUB_OUTPUT"
+      - name: Exchange this run's identity for a token that acts on the project (Octo STS)
+        if: steps.flag.outputs.on == 'true'
+        id: octo
+        uses: octo-sts/action@f603d3be9d8dd9871a265776e625a27b00effe05   # v1.1.1
+        with:
+          scope: ${{ env.PROJECT_REPOSITORY }}
+          identity: outside-nightly
+      - name: The nightly job
+        if: steps.flag.outputs.on == 'true' && github.event.schedule == '47 6 * * *'
+        working-directory: project
+        env:
+          GH_TOKEN: ${{ steps.octo.outputs.token }}
+        run: node "$GITHUB_WORKSPACE/src/bin.ts" outside-nightly --repo="$PROJECT_REPOSITORY" --only=ready-audit --report-issue="$REPORT_ISSUE"
+      - name: The hourly jobs
+        if: steps.flag.outputs.on == 'true' && github.event.schedule != '47 6 * * *'
+        working-directory: project
+        env:
+          GH_TOKEN: ${{ steps.octo.outputs.token }}
+        run: node "$GITHUB_WORKSPACE/src/bin.ts" outside-nightly --repo="$PROJECT_REPOSITORY" --only=gateSweep,closeRowsSweep,watch --report-issue="$REPORT_ISSUE"
