@@ -7,7 +7,7 @@
 // #2181: WHERE DO THIS TREE'S `@a11ign/*` ACTUALLY RESOLVE? The question a green suite cannot answer.
 //
 // Measured on the agent host 2026-09-23: 42 of 56 linked worktrees resolve `@a11ign/agent-org` to
-// `/home/agent/repos/a11y-witness/packages/agent-org` -- the PRIMARY checkout -- because their whole
+// `<primary checkout>/packages/agent-org` -- the PRIMARY checkout -- because their whole
 // `node_modules` is a symlink to the primary's. A test in such a tree that imports `@a11ign/agent-org`
 // reads `main`, while the file the branch changed sits untouched beside it. `worker-judge` reproduced
 // both directions on `wt-1561`: with the symlink, `npm run test:all` gave 7,253 passed / 0 failed at a

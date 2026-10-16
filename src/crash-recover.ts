@@ -408,7 +408,10 @@ export function withLaunchFlags(ports: Ports, tool: string): Ports {
 
 export async function main(): Promise<number> {
   const home = homedir();
-  const host = readJson<HostFile>(process.env.AGENT_ORG_HOST ?? join(home, "repos/a11y-witness/.agent-org/host.json"), {});
+  // The default host path is the home checkout's, resolved here and only as a path (never parsed as a declaration), so the import stays out of the
+  // top of the file: the boot this runs on may not have the declarations yet.
+  const { HOST_DECLARATION, resolveHomeCheckout } = await import("./project-config.ts");
+  const host = readJson<HostFile>(process.env.AGENT_ORG_HOST ?? join(resolveHomeCheckout(), HOST_DECLARATION), {});
   if (!crashRecoverEnabled(host)) { process.stderr.write("crash-recover: host.crashRecover is false; nothing done\n"); return 0; }
   const ports = await realPorts(host, home);
   const report = await recover(withLaunchFlags(ports, host.tool ?? ""));

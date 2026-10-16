@@ -31,7 +31,7 @@
 //
 // **A RUNNER IS NOT THIS HOST.** With `CI` set the command runs as it is: no slot and no renice.
 //
-// THE TWO ENTRY POINTS: `pnpm run verify` (a11y-witness's `scripts/verify.mjs` calls {@link runUnderSlot} on ITSELF, so the whole run takes one slot however many steps it runs beside each
+// THE TWO ENTRY POINTS: `pnpm run verify` (the project's `scripts/verify.mjs` calls {@link runUnderSlot} on ITSELF, so the whole run takes one slot however many steps it runs beside each
 // other), and the full agent-org suite, `node src/suite-slots.ts suite`, which did not exist as one command. `node src/suite-slots.ts run -- <command>` is the same for any other full run.
 
 import { spawn } from "node:child_process";
