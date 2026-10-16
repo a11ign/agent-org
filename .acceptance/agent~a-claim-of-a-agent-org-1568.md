@@ -16,8 +16,7 @@ Flag: none -- the old behaviour is the defect (a claimed row reads `backlog` bes
 Health-signals: claims-refused
 Revert: revert this pull request; the claim's label set returns to keeping `backlog`.
 
-Outside-Region: src/state-label-exactly-one.test.ts -- the same label set's refusal test; a stateless plain decline now lands in `backlog`, so the test's expectation moves with it.
-Outside-Region: .changeset/a-claim-of-a-backlog-row-leaves-backlog-off.md -- the entry a project that pins a tag reads.
+Outside-Region: src/state-label-exactly-one.test.ts — the same label set's refusal test; a stateless plain decline now lands in `backlog`, so the test's expectation moves with it.
 
 platform: n/a (no GitHub, pnpm, systemd or git feature records a row's state label set; the labels are this repository's own)
 
