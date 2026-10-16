@@ -86,7 +86,8 @@ export type BoardRow = { number: number, title?: string, body?: string, state?: 
 /** `mergedAt` is absent when a read omitted it */
 export type MergedPr = { number: number, body?: string, mergedAt?: string | null };
 /** `repo` (#1280) is the tracker's `owner/name`, the repository a qualified `Closes owner/name#n` must name to close one of its rows. `others` (#4080) is what each KEYED tracker answered; absent with one declared tracker */
-export type BoardFacts = { now: number, repo?: string, openRows: BoardRow[], closedRows: BoardRow[] | null, mergedPrs: MergedPr[] | null, liveSessions: string[] | null, waitFacts: import("./wait-condition.ts").WaitFacts | null, others?: OtherTracker[], proseEvidence?: ProseEvidence | null, roadmaps?: RowRoadmaps | null, epicChildren?: EpicChildren | null };
+/** `epicChildrenWhy` (a11ign/agent-org#1564) is what made `epicChildren` `null`, so the question it leaves unread names its cause. */
+export type BoardFacts = { now: number, repo?: string, openRows: BoardRow[], closedRows: BoardRow[] | null, mergedPrs: MergedPr[] | null, liveSessions: string[] | null, waitFacts: import("./wait-condition.ts").WaitFacts | null, others?: OtherTracker[], proseEvidence?: ProseEvidence | null, roadmaps?: RowRoadmaps | null, epicChildren?: EpicChildren | null, epicChildrenWhy?: string };
 /**
  * The closed children of each open epic whose children are all closed (a11ign/agent-org#881), `byEpic` by the epic's number, each with its body. `rulings` is the login that posted each
  * `Chairman-ruling:` URL a non-build child carries, `null` for a URL that is not a comment's own, so a ruling that cannot be verified does not count.
@@ -636,7 +637,8 @@ export function boardTruthAudit(facts: BoardFacts): { findings: Finding[]; unrea
 function askAll(facts: BoardFacts): { findings: Finding[]; unread: string[]; filing: number; merging: number; } {
   const readers = facts.epicChildren === undefined ? READERS : [...READERS, ...CHILD_READERS];
   const findings = readers.flatMap(([, ask]) => ask(facts)).sort((a, b) => a.number - b.number || a.question.localeCompare(b.question));
-  return { findings, unread: readers.filter(([, , read]) => !read(facts)).map(([question]) => question), filing: rowsBeingFiled(facts.openRows, facts).length,
+  const unread = readers.filter(([, , read]) => !read(facts)).map(([question]) => question === CHILD_QUESTIONS.OUTCOME_CLOSED && facts.epicChildrenWhy ? `${question} (${facts.epicChildrenWhy})` : question);
+  return { findings, unread, filing: rowsBeingFiled(facts.openRows, facts).length,
     merging: mergedClosers(facts).merging.length };
 }
 
@@ -699,7 +701,7 @@ export function readBoardFacts(repo: string, { run = gh, agents = readAgents, no
   const roadmaps = readRoadmaps(repo, openRows, run);
   const epicChildren = readEpicChildren(repo, openRows, run);
   const others = trackers.filter((tracker) => tracker.key !== "").map((tracker) => readOtherTracker(tracker, { run, now, liveSessions }));
-  return { now, repo, openRows, closedRows, mergedPrs, liveSessions, waitFacts, roadmaps, epicChildren, ...(others.length > 0 && { others }) };
+  return { now, repo, openRows, closedRows, mergedPrs, liveSessions, waitFacts, roadmaps, ...epicChildren, ...(others.length > 0 && { others }) };
 }
 
 /**
@@ -811,10 +813,13 @@ function readRoadmaps(repo: string, openRows: BoardRow[], run: (args: string[]) 
  * THE CHILDREN OF EACH OPEN EPIC WHOSE CHILDREN ARE ALL CLOSED (a11ign/agent-org#881), read through the ticket port (ADR 0046): one `readItem` for the epic, one per child for its title,
  * body and state (`done` is a closed child), and one `gh api` read per `Chairman-ruling:` URL that a non-build child carries, for its author. Nothing is read for an epic that is not all
  * closed, or for a build row's ruling lines (no question asks them). A refused read, or a child list of exactly the port's cap (it may be cut short), THROWS inside and is `null` (UNREAD):
- * an empty list would say the outcome agrees with its children, and a ruling that could not be read is not a ruling that is missing.
- * @param {string} repo `owner/name` @param {BoardRow[]} openRows @param {(args: string[]) => string} run @returns {EpicChildren | null}
+ * an empty list would say the outcome agrees with its children, and a ruling that could not be read is not a ruling that is missing. The null carries the thrown message as `epicChildrenWhy`, so the
+ * question it leaves unread says what failed (a11ign/agent-org#1564).
+ * A CHILD IS READ THROUGH THE PORT SCOPED TO ITS OWN REPOSITORY (a11ign/agent-org#1564): the port answers only for the scope it was built for, so a child of an epic in another repository
+ * is `null` through the epic's port, and the whole question went unread every tick.
+ * @param {string} repo `owner/name` @param {BoardRow[]} openRows @param {(args: string[]) => string} run @returns {{ epicChildren: EpicChildren } | { epicChildren: null, epicChildrenWhy: string }}
  */
-function readEpicChildren(repo: string, openRows: BoardRow[], run: (args: string[]) => string): EpicChildren | null {
+function readEpicChildren(repo: string, openRows: BoardRow[], run: (args: string[]) => string): { epicChildren: EpicChildren } | { epicChildren: null, epicChildrenWhy: string } {
   const port = githubTicketAdapter({ run, scope: repo });
   const byEpic: Record<number, BoardRow[]> = {};
   const rulings: Record<string, string | null> = {};
@@ -822,12 +827,12 @@ function readEpicChildren(repo: string, openRows: BoardRow[], run: (args: string
     for (const epic of openRows.filter(epicAllClosed)) {
       const parent = port.readItem({ tracker: TRACKER, scope: repo, id: epic.number });
       if (parent === null || parent.relations.children.length >= PORT_CHILDREN_CAP) {
-        throw new Error(`epic children: #${epic.number} came back without all of its children`);
+        throw new Error(`#${epic.number} came back without all of its children`);
       }
       const items: TicketItem[] = [];
       for (const ref of parent.relations.children) {
-        const item = port.readItem(ref);
-        if (item === null) throw new Error(`epic children: a child of #${epic.number} could not be read`);
+        const item = githubTicketAdapter({ run, scope: ref.scope }).readItem(ref);
+        if (item === null) throw new Error(`a child of #${epic.number}, ${ref.scope}#${ref.id}, was not returned by the ticket port`);
         items.push(item);
       }
       const closed: BoardRow[] = items.filter((item) => item.state === "done")
@@ -837,10 +842,10 @@ function readEpicChildren(repo: string, openRows: BoardRow[], run: (args: string
         for (const url of rulingUrlsOf(child.body)) rulings[url] ??= authorOfComment(url, run);
       }
     }
-  } catch {
-    return null;
+  } catch (error) {
+    return { epicChildren: null, epicChildrenWhy: (error instanceof Error ? error.message : String(error)).split("\n")[0] };
   }
-  return { byEpic, rulings };
+  return { epicChildren: { byEpic, rulings } };
 }
 
 /**
