@@ -87,7 +87,7 @@ import { SESSION_PREFIX, BLOCKED_LABEL } from "./project-vocabulary.ts";
 // held. The rule was written here and `arm-pr.ts`'s refusal path did not call it, which is the third
 // row of the same shape (#1729, #2004, #2046) -- so it moved out to a module with no imports, and this
 // file is now one of its readers rather than its owner.
-import { armedFromApi, armedQueryArgs, ejectionVerdict } from "./pr-armed-state.ts";
+import { armedFromApi, armedQueryArgs, armedReason, ejectionVerdict } from "./pr-armed-state.ts";
 // #3544: THE BLOCKER DECIDER IS `arm-pr`'s, IMPORTED -- a second copy is the one place the two doors could disagree about order.
 import { announceBlocked, armDecision, blockerVerdict, outsideArmOn, runArmPr, EXIT as ARM_EXIT } from "./arm-pr.ts";
 import { outsideArmListArgs as portListArgs, readyPullRequest } from "./ticket-port/outside-arm-calls.ts";
@@ -462,7 +462,9 @@ export type OutsideArmVerdict = { act: "arm" | "ready-and-arm" | "leave"; why: s
  * a refusal, never a pass: absence is not proof that the head is the repository's own. The order is `arm-approved`'s, so a line in a log says the same thing from either actor.
  */
 export function outsideArmVerdict(pr: OutsideArmPr, armed: boolean | null): OutsideArmVerdict {
-  const labels = (pr.labels ?? []).map((label) => (typeof label === "string" ? label : label.name));
+  // agent-org#1622: an unread label list is not an unheld one (`armDecision` refuses null, and so does the job's own read). The pass says so before any write.
+  if (!Array.isArray(pr.labels)) return { act: "leave", why: "its labels were not read" };
+  const labels = pr.labels.map((label) => (typeof label === "string" ? label : label.name));
   if (pr.state !== undefined && pr.state !== "OPEN") return { act: "leave", why: `the pull request is ${pr.state}` };
   if (pr.baseRefName !== "main") return { act: "leave", why: `its base is ${pr.baseRefName ?? "unread"}, not main` };
   if (pr.isCrossRepository !== false) return { act: "leave", why: pr.isCrossRepository === true ? "its head is in a fork" : "whether its head is in a fork was not read" };
@@ -488,8 +490,12 @@ export type OutsideArmResult = { armed: number[]; readied: number[]; left: Array
  * return is `null`, which {@link outsideArmVerdict} refuses. Each pull request is armed through `arm-pr`'s own command (`runArmPr`: the hold, authorship, ejection, blocker and
  * red-leg checks and the session label are all its), and `armed` is read back by the next pass, not trusted from an exit code (#1022).
  */
-export function outsideArmPass({ repo, switchesPath, on = outsideArmOn(switchesPath), prs, run = gh, log = console.log, arm = (number) => runArmPr({ argv: [`--pr=${number}`, `--repo=${repo}`], env: {}, run: (_cmd, args) => run(args), sleep: () => "ok", log, error: log }) }: {
-  repo: string; switchesPath: string; on?: boolean; prs?: OutsideArmPr[]; run?: (ghArgs: string[]) => string; log?: (line: string) => void; arm?: (number: number) => number;
+export function outsideArmPass({ repo, switchesPath, on = outsideArmOn(switchesPath), prs, run = gh, log = console.log, lanes, arm = (number, say) => runArmPr({ argv: [`--pr=${number}`, `--repo=${repo}`], env: {}, run: (_cmd, args) => run(args), sleep: () => "ok", log: say, error: say, lanes }) }: {
+  repo: string; switchesPath: string; on?: boolean; prs?: OutsideArmPr[]; run?: (ghArgs: string[]) => string; log?: (line: string) => void;
+  /** The project's lanes, handed to `arm-pr` as it is handed to it in a job. Omitted, `arm-pr` reads the home checkout's own file. */
+  lanes?: { lanes: import("./lane-ownership.ts").Lane[]; } | null;
+  /** `say` is where `arm-pr` writes its lines; the pass keeps them, so a refusal it made is named by the line `arm-pr` wrote, not by a guess. */
+  arm?: (number: number, say: (line: string) => void) => number;
 }): OutsideArmResult {
   const result: OutsideArmResult = { armed: [], readied: [], left: [], failed: [], cannotAsk: false };
   if (!on) return result;
@@ -508,16 +514,41 @@ export function outsideArmPass({ repo, switchesPath, on = outsideArmOn(switchesP
   for (const pr of listed) {
     const verdict = outsideArmVerdict(pr, armedBy.get(Number(pr.number)) ?? null);
     if (verdict.act === "leave") { result.left.push({ number: pr.number, why: verdict.why }); continue; }
+    // agent-org#1622: `arm-pr` exits DONE for a deliberate refusal as it does for an arm, so the exit code is not the answer. THE ANSWER IS THE READ-BACK, and a refusal is
+    // named by the line `arm-pr` wrote for it. Nothing here says "armed" without the read-back saying so.
+    const said: string[] = [];
+    const sayArm = (line: string) => { said.push(line); log(line); };
+    const failed = (why: string) => { result.failed.push(pr.number); log(`OUTSIDE-ARM: #${pr.number} COULD NOT ARM -- ${why}`); };
     try {
       if (verdict.act === "ready-and-arm") { readyPullRequest({ number: pr.number, repo, run }); result.readied.push(pr.number); }
-      const code = arm(pr.number);
+      const code = arm(pr.number, sayArm);
       if (code !== ARM_EXIT.DONE) throw new Error(`arm-pr exited ${code}`);
-      result.armed.push(pr.number);
-      log(`OUTSIDE-ARM: #${pr.number} ${verdict.act === "ready-and-arm" ? "readied and " : ""}armed -- ${verdict.why}`);
     } catch (cause) {
-      result.failed.push(pr.number);
-      log(`OUTSIDE-ARM: #${pr.number} COULD NOT ARM -- ${cause instanceof Error ? cause.message : cause}`);
+      failed(cause instanceof Error ? cause.message : String(cause));
+      continue;
     }
+    let node: Parameters<typeof armedFromApi>[0];
+    try {
+      node = JSON.parse(run(armedQueryArgs({ number: pr.number, repo })));
+    } catch (cause) {
+      failed(`arm-pr exited ${ARM_EXIT.DONE}, and the read-back could not say whether it took: ${cause instanceof Error ? cause.message : cause}`);
+      continue;
+    }
+    // A MERGED pull request reads as armed (`armedFromApi` counts the three states), but a merge this pass did not make is not an arm this pass made:
+    // it is named as settled below, and "armed" is said only when `arm-pr` said so too.
+    const armedHere = armedFromApi(node) && (node?.merged !== true || said.some((line) => line.startsWith(`arm-pr: armed #${pr.number} -- `)));
+    if (armedHere) {
+      result.armed.push(pr.number);
+      log(`OUTSIDE-ARM: #${pr.number} ${verdict.act === "ready-and-arm" ? "readied and " : ""}armed -- read back: ${armedReason(node)}`);
+      continue;
+    }
+    const refusal = said.find((line) => line.startsWith(`arm-pr: NOT arming #${pr.number} -- `));
+    if (refusal !== undefined) {
+      result.left.push({ number: pr.number, why: refusal });
+      log(`OUTSIDE-ARM: #${pr.number} NOT ARMED -- ${refusal}`);
+      continue;
+    }
+    failed(`arm-pr exited ${ARM_EXIT.DONE}, the read-back shows it is not armed, and arm-pr named no refusal for it`);
   }
   return result;
 }
