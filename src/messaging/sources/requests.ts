@@ -25,6 +25,7 @@
 // is current (`position`, which the watcher reads from the ledger and this leaf is handed), and the position is NOT in the event's `state`, so a step advancing is never an "update" of the ask.
 
 import { parsePlaceholders } from "../placeholders.ts";
+import { homeProjectDeclaration } from "../../project-config.ts";
 
 export const NEEDS_CHAIRMAN = "needs:chairman";
 /** More rows than this waiting on one person is itself the finding; and a list this long may have been cut, so it is refused (see above). */
@@ -272,7 +273,7 @@ function handActProblem(body: string, walk: Walk | null): string | null {
   const sends = asked.some((text) => WORKER_NAME.test(text) && HAND_ACTS.some((act) => act.test(text)));
   if (!sends) return null;
   if (ANSIBLE_FAILED.test(briefLinePattern(ANSIBLE_LABEL).exec(body)?.[1] ?? "")) return null;
-  return `alert not sent: the brief sends him to a worker by hand and shows no Ansible route. The fleet is managed through Ansible (a11ign/a11ign#4405), so no person presses anything on a worker: name the run and its failure on a line "${ANSIBLE_LABEL}: <playbook> -l <worker>, failed: <log path or comment url>", or file an Ansible row instead`;
+  return `alert not sent: the brief sends him to a worker by hand and shows no Ansible route. The fleet is managed through Ansible (${homeProjectDeclaration().tracker[0].repo}#4405), so no person presses anything on a worker: name the run and its failure on a line "${ANSIBLE_LABEL}: <playbook> -l <worker>, failed: <log path or comment url>", or file an Ansible row instead`;
 }
 
 /** Returns why no alert is sent, in words the log can show on its own */

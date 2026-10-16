@@ -26,7 +26,8 @@ export const MIN_UNDER_FLOOR_SHARE = 0.3;
 /** The ledger class every improvement row carries as `class:provider-low-confidence`. */
 export const CLASS_ID = "provider-low-confidence";
 const CLASS_LABEL = `class:${CLASS_ID}`;
-const CLASS_LABEL_DESCRIPTION = "A question the decision provider is often unsure of: its improvement row (a11ign/a11ign#4750)";
+/** A bare `#N` names a row of the home tracker, which the label and the row are filed into; the declaration is not read here, since `--question` answers on a host with no project. */
+const CLASS_LABEL_DESCRIPTION = "A question the decision provider is often unsure of: its improvement row (#4750)";
 /** The session a row is filed as when the caller names none: the gate that will run this. */
 const FILER_SESSION = "work-gate";
 /** `gh issue list` is asked for this many rows; a listing that fills it may be cut short, so it is refused rather than read as complete. */
@@ -106,13 +107,13 @@ export function improvementBody(row: ConfidenceRow, reading: ConfidenceReading):
     `**The provider was held back by its floor on ${row.underFloor} of ${row.asked} decisions (${percent(row.underFloorShare)}) for \`${key}\`**, between ${day(reading.since)} and ${day(reading.until)}: `
       + `a mean confidence of ${number(row.meanConfidence)} and a median of ${number(row.medianConfidence)} against ${floor}. Each held-back answer took the deterministic rule instead, `
       + "so the provider is asked on this question and not used.", "",
-    `The bar is MORE than ${percent(MIN_UNDER_FLOOR_SHARE)} of at least ${MIN_DECISIONS} decisions, and a refusal, a 422 or a timeout is not counted (a11ign/a11ign#4750, use 2 of #4627). `
+    `The bar is MORE than ${percent(MIN_UNDER_FLOOR_SHARE)} of at least ${MIN_DECISIONS} decisions, and a refusal, a 422 or a timeout is not counted (#4750, use 2 of #4627). `
       + "Filed by the filer that read the decision log; nobody had to notice.", "",
     "The provider stays OPTIONAL (chairman, #4627): this row changes the question's wording and state, never whether a provider is needed.", "",
     "The repository is `a11ign/agent-org`; paths are relative to its root.", "",
     "## Region", "", "```", ...regionFiles(row.use).map((file) => `${REPO_KEY}:${file}`), "```", "",
     "## Change", "",
-    "The improvement method is TypeSafe's own guidance (its `confidence` page and the consistency cookbooks for Noul and Choice), as a11ign/a11ign#4751 applied it to the routing questions:", "",
+    "The improvement method is TypeSafe's own guidance (its `confidence` page and the consistency cookbooks for Noul and Choice), as #4751 applied it to the routing questions:", "",
     "1. **Structured `criteria`:** each option carries `what`, `not_for` and `examples`, in place of a one-line description.",
     "2. **A score's `levels`** each carry a `summary` and `signals` (the observable features of a row at that level).",
     "3. **Examples from OUR closed rows,** whose correct answer is now known from the outcome, each cited by row number; at least two per option, none invented.",

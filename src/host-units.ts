@@ -1316,7 +1316,7 @@ function humanAccountDeclared(deps: Parameters<typeof unitsSpendingGh>[0] & { hu
       return [{ unit, problem: "DECLARES THE HUMAN ACCOUNT",
         detail: `it sets \`GH_CONFIG_DIR=${dir}\`, the person's own login (which has ADMIN). No agent acts as `
           + `the chairman unless something explicitly asks (#1950): use \`${workersDirectory(deps)}/gh\` `
-          + `(a11ign-ai-workers) or \`${leadsDirectory(deps)}/gh\` (a11ign-ai-leads, write on a11ign/a11ign and `
+          + `(a11ign-ai-workers) or \`${leadsDirectory(deps)}/gh\` (a11ign-ai-leads, write on ${homeProjectDeclaration().repo} and `
           + "a11ign/corpus-backups), or add the unit to HUMAN_ACCOUNT_ALLOWED in host-units.ts with the "
           + "ruling that says why." }];
     });

@@ -81,6 +81,7 @@ import { HostConfigRefusal, homeHostConfig } from "./host-config.ts"; // #4322
 // #2619 (child 3d of #69): the shared-resource ban and the template's field/question names -- a
 // project's own values, moved out of this file's `FLEET_LAB_PATTERNS`/`FLEET_QUESTION`.
 import { RESOURCES, FLEET_QUESTION, ACCEPTANCE_FIELD, CLOSES_FIELD } from "./project-vocabulary.ts";
+import { homeProjectDeclaration } from "./project-config.ts";
 
 export type Classification = { verdict: "runnable" } | { verdict: "refused", reason: string } | { verdict: "prose", reason: string };
 export type Section = { kind: "missing" } | { kind: "none", reason: string } | { kind: "commands", commands: string[] } | { kind: "duplicate", occurrences: { line: number, text: string }[] };
@@ -2272,7 +2273,7 @@ function commandTable(): CommandTable | null {
   }
   if (loaded === null || typeof loaded.COMMANDS !== "object" || loaded.COMMANDS === null) {
     throw new Error("src/commands.ts exists but exports no `COMMANDS` object (command name -> program file under "
-      + "src/), which is what the acceptance classifier reads `agent-org <command>` through (a11ign/a11ign#3063)");
+      + "src/), which is what the acceptance classifier reads `agent-org <command>` through (" + homeProjectDeclaration().tracker[0].repo + "#3063)");
   }
   return loaded.COMMANDS;
 }

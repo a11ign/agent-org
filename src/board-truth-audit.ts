@@ -905,6 +905,6 @@ export function postDaysTable({ audit, day, repo, run = gh, now = Date.now(), re
   const comments = proseAudit(prose);
   if (comments.unread.length > 0) return "unread";
   const whole = { ...audit, findings: [...audit.findings, ...comments.findings] };
-  run(["issue", "comment", TABLE_ROW, "--repo", repo, "--body", `${boardTruthTable(whole, day)}\n\n_Read by the work-gate tick, once per edition day (a11ign/a11ign#4045)._`]);
+  run(["issue", "comment", TABLE_ROW, "--repo", repo, "--body", `${boardTruthTable(whole, day)}\n\n_Read by the work-gate tick, once per edition day (${homeProjectDeclaration().tracker[0].repo}#4045)._`]);
   return "posted";
 }

@@ -36,6 +36,7 @@ import type { QueuePort } from "./converse.ts";
 import { createInbound } from "./inbound.ts";
 import { createLedger, describeError } from "./ledger.ts";
 import { defaultLedgerPath } from "./state.ts";
+import { homeProjectDeclaration } from "../project-config.ts";
 
 export const EXIT = Object.freeze({ ok: 0, red: 1, refused: 2, degraded: 3 });
 export const TAKEN_WITHIN_MS = 10 * 60_000;
@@ -232,7 +233,7 @@ export function reportText(verdict: { result: string; stage: string | null; deta
     `agent-org messaging:selftest, ${version}: the chairman's path (listen, queue, seat, back) is ${head}.`,
     verdict.detail,
     "The chairman was sent nothing and has not been told: this is a check, and the recorder took the acknowledgement.",
-    "Reading: `pnpm exec agent-org messaging:selftest` walks it again and prints the stages. Row: a11ign/a11ign#3540.",
+    "Reading: `pnpm exec agent-org messaging:selftest` walks it again and prints the stages. Row: " + homeProjectDeclaration().tracker[0].repo + "#3540.",
   ].join("\n");
 }
 

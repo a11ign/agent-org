@@ -25,7 +25,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { homeHostConfig } from "./host-config.ts";
 import { sandboxGitEnv } from "./lib/git-env.ts";
-import { HOME_CHECKOUT } from "./project-config.ts";
+import { HOME_CHECKOUT, homeProjectDeclaration } from "./project-config.ts";
 
 export const VERIFY_STATE = Object.freeze({ GREEN: "green", RED: "red", NO_VERIFY: "no-verify" });
 
@@ -183,5 +183,5 @@ export function verifyCommand(bodyFile: string | null) {
  */
 export function verifyRefusalLine(reading: VerifyReading, { bodyFile }: { bodyFile: string | null; }) {
   return `pr-open: REFUSED -- a READY pull request needs a green verify stamp for this head and this body, and ${reading.reasons.join("; ")}. `
-    + `Run \`${verifyCommand(bodyFile)}\`, then open again; a DRAFT opens without one. Nothing was sent (a11ign/a11ign#3215).`;
+    + `Run \`${verifyCommand(bodyFile)}\`, then open again; a DRAFT opens without one. Nothing was sent (${homeProjectDeclaration().tracker[0].repo}#3215).`;
 }

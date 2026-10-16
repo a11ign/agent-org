@@ -21,6 +21,7 @@ import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
 import { refuseUnknownFlags } from "./lib/cli-flags.ts";
+import { homeProjectDeclaration } from "./project-config.ts";
 
 /** Exit codes are the contract: 0 nothing needs attention, 1 something does, 2 could not ask. */
 export const EXIT = { QUIET: 0, ATTENTION: 1, CANNOT_ASK: 2 };
@@ -709,7 +710,7 @@ export function watchReport({ colour }: { colour: ReturnType<typeof mainColour>;
 
 function main() {
   const { weekly } = parseArgs();
-  const repo = process.env.GITHUB_REPOSITORY ?? "a11ign/a11ign";
+  const repo = process.env.GITHUB_REPOSITORY ?? homeProjectDeclaration().repo;
   const colour = mainColour({ repo });
   if (weekly) {
     process.stdout.write(`${renderTable({

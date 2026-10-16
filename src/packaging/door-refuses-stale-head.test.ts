@@ -15,12 +15,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const DOOR = fileURLToPath(new URL("../reviewer/pr-review-verdict.sh", import.meta.url));
+const PROJECT_CONFIG = fileURLToPath(new URL("../project-config.ts", import.meta.url));
+const PROJECT_LIB = fileURLToPath(new URL("../lib", import.meta.url));
 
 const EXIT_MALFORMED = 2;
 const EXIT_SECOND_REVIEW = 3;
@@ -188,6 +190,44 @@ const namingNothingIsMalformed: Case = (door) => {
   assert.match(stderr, /names no commit/);
 };
 
+/** (e) `GH_REPO` unset: the door reads the repository from the declaration beside its parent. The fixture names a repository that is NOT the
+ * literal the door used to carry (`a11ign/a11ign`), so a door that falls back to that literal posts to the wrong repository and fails here. */
+const DECLARED_FIXTURE = "fixture-owner/declared-repo";
+
+/** Copies the door under `<tmp>/reviewer/`, beside a `project-config.ts` that names `declared` (and no such file when `declared` is undefined). */
+function doorBeside(door: string, declared: string | undefined): { copy: string; dir: string } {
+  const dir = mkdtempSync(join(tmpdir(), "door-repo-"));
+  mkdirSync(join(dir, "reviewer"));
+  const copy = join(dir, "reviewer", "pr-review-verdict.sh");
+  writeFileSync(copy, readFileSync(door, "utf8"));
+  if (declared !== undefined) writeFileSync(join(dir, "project-config.ts"), `export function homeProjectDeclaration() { return { tracker: [{ repo: "${declared}" }] }; }\n`);
+  return { copy, dir };
+}
+
+const postsToTheDeclaredRepository: Case = (door) => {
+  const { copy, dir } = doorBeside(door, DECLARED_FIXTURE);
+  try {
+    const { status, calls, stderr } = runDoor(copy, { head: MOVED_ON, opener: openerNaming(MOVED_ON) });
+    assert.equal(status, 0, stderr);
+    assert.equal(posted(calls).length, 1, "the review posted");
+    assert.match(posted(calls)[0], new RegExp(`^pr review 7 --repo ${DECLARED_FIXTURE} `), "to the repository the declaration names");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+const refusesWithoutADeclaration: Case = (door) => {
+  const { copy, dir } = doorBeside(door, undefined);
+  try {
+    const { status, calls, stderr } = runDoor(copy, { head: MOVED_ON, opener: openerNaming(MOVED_ON) });
+    assert.equal(status, EXIT_MALFORMED, stderr);
+    assert.match(stderr, /the project declaration cannot be read/);
+    assert.deepEqual(calls, [], "nothing was sent to `gh`");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
 const CASES: Record<string, Case> = {
   "(a) the named sha equals the head, so the review posts": namedIsHead,
   "(b) the named sha is an earlier head with a different patch: refused, exit 5, names the head": namedIsAnEarlierDifferentPatch,
@@ -198,6 +238,8 @@ const CASES: Record<string, Case> = {
   "(d) CONTROL: a review naming an equal-patch commit refuses a second wherever it was attached": secondReviewAtAnEqualNamedPatchIsRefused,
   "(d) FALLBACK: a body naming no commit is read at commit_id": bodyNamingNothingFallsBackToCommitId,
   "a verdict line naming no commit is malformed and sends nothing": namingNothingIsMalformed,
+  "(e) GH_REPO unset: the review posts to the repository the declaration names, not a literal": postsToTheDeclaredRepository,
+  "(e) GH_REPO unset: a declaration that cannot be read refuses, exit 2, and sends nothing": refusesWithoutADeclaration,
 };
 
 for (const [name, run] of Object.entries(CASES)) test(name, () => run(DOOR));
@@ -218,7 +260,7 @@ const MUTANTS: Mutant[] = [
   { name: "any named sha other than the head is refused, whatever its patch", from: '[[ "$named_pid" != "$HEAD_PID" ]] || return 0', to: ":",
     breaks: [AT_DOOR("(c) the named sha")] },
   { name: "the head is refused as moved even when the verdict names it", from: 'same_commit "$named" "$PR_HEAD" && return 0', to: 'same_commit "$named" "$PR_HEAD" && exit 5',
-    breaks: Object.keys(CASES).filter((k) => /\(a\)|\(d\) (a review headed|CONTROL|FALLBACK)/.test(k)) },
+    breaks: Object.keys(CASES).filter((k) => /\(a\)|\(d\) (a review headed|CONTROL|FALLBACK)|\(e\) GH_REPO unset: the review posts/.test(k)) },
   { name: "the named commit is compared only when it is spelt exactly as the head", from: 'local a="${1,,}" b="${2,,}"', to: 'local a="$1" b="$2"; [[ "$a" == "$b" ]] && return 0; return 1',
     breaks: [AT_DOOR("(a) the named sha equals the head")] },
   { name: "the second-review refusal reads commit_id, not the body", from: '((.body | split("\\n")[0] | capture("(^|[^A-Za-z0-9_])(at|of)\\\\s+`(?<sha>[0-9a-fA-F]{7,40})`")? | .sha) // .commit_id)', to: ".commit_id",
@@ -227,6 +269,8 @@ const MUTANTS: Mutant[] = [
     breaks: [AT_DOOR("(d) FALLBACK")] },
   { name: "a verdict line naming no commit is posted unchecked", from: '[[ -n "$named" ]] ||', to: "true ||",
     breaks: [AT_DOOR("naming no commit is malformed")] },
+  { name: "GH_REPO unset falls back to the literal the door used to carry", from: 'REPO="${GH_REPO:-}"', to: 'REPO="${GH_REPO:-a11ign/a11ign}"',
+    breaks: [AT_DOOR("(e) GH_REPO unset: the review posts"), AT_DOOR("(e) GH_REPO unset: a declaration")] },
   { name: "a named diff that will not read counts as unchanged", from: '|| undetermined "the diff at ${named:0:8}, the commit the verdict names, would not read"', to: "|| return 0",
     breaks: [AT_DOOR("diff will not read")] },
 ];
@@ -240,8 +284,13 @@ test("each mutant breaks exactly the cases that guard its place, and the cases p
   const source = readFileSync(DOOR, "utf8");
   const dir = mkdtempSync(join(tmpdir(), "door-mutant-"));
   try {
+    // With GH_REPO unset the door reads its repository from `../project-config.ts`: each mutant keeps that neighbour (a link to the real
+    // reader and its `lib`), so a case fails on its mutation and not on a declaration missing beside a copy in a temporary directory.
+    mkdirSync(join(dir, "reviewer"));
+    symlinkSync(PROJECT_CONFIG, join(dir, "project-config.ts"));
+    symlinkSync(PROJECT_LIB, join(dir, "lib"));
     for (const { name, from, to, breaks } of MUTANTS) {
-      const mutated = join(dir, "pr-review-verdict.sh");
+      const mutated = join(dir, "reviewer", "pr-review-verdict.sh");
       writeFileSync(mutated, source.replace(from, () => to));
       const failing = Object.entries(CASES).filter(([, run]) => {
         try { run(mutated); return false; } catch { return true; }

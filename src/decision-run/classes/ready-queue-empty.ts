@@ -17,6 +17,7 @@
 import type { ItemRef, TicketItem } from "../../ticket-port/port.ts";
 import type { BriefQuestion } from "../brief.ts";
 import type { DecisionAction, DecisionClass, DecisionOrder } from "../registry.ts";
+import { homeProjectDeclaration } from "../../project-config.ts";
 
 export const CAUSE = "ready-queue-empty";
 export const NONE_PROMOTABLE = "none-promotable";
@@ -56,10 +57,10 @@ const SCHEMA = {
 } as const;
 
 /** The repository each tracker key of a row mention (`#7`, `agent-org#7`) names. An unknown key is no item, and so no action. */
-export const SCOPES: Readonly<Record<string, string>> = { "": "a11ign/a11ign", "agent-org": "a11ign/agent-org" };
+export const SCOPES: Readonly<Record<string, string>> = { "": homeProjectDeclaration().tracker[0].repo, "agent-org": "a11ign/agent-org" };
 
 /** The tracker's record issue a queue-level order is served on, as `org-health` does: the order names a queue, not a row (`a11ign#928`). */
-export const RECORD_ITEM: ItemRef = { tracker: "github", scope: "a11ign/a11ign", id: 928 };
+export const RECORD_ITEM: ItemRef = { tracker: "github", scope: homeProjectDeclaration().tracker[0].repo, id: 928 };
 
 /** The head the order hands the run: a `Head: <sha>` line in its prompt. An order that names none leaves `promote` unavailable. */
 export const HEAD_PATTERN = /^\s*(?:main\s+)?head:\s*`?([0-9a-f]{7,40})`?\s*$/im;

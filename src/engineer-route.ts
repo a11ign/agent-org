@@ -333,7 +333,7 @@ export function fallbackRoute(row: Pick<RouteRow, "body">): Route {
 }
 
 const SONNET_MEDIUM: TierProfile = Object.freeze({ kind: "claude", model: "sonnet", effort: MEDIUM_EFFORT, autocompactWindow: AUTOCOMPACT_WINDOW_TOKENS,
-  why: "a small row with a command Acceptance (a11ign/a11ign#4629): medium effort is enough to build it" });
+  why: "a small row with a command Acceptance (" + homeProjectDeclaration().tracker[0].repo + "#4629): medium effort is enough to build it" });
 
 // --- the guard against paying more than the fallback (#4764) ---
 
@@ -513,7 +513,7 @@ function sizeOf(row: RouteRow, provided: Provided | null, deps: RouteDeps): Sizi
 function profileAt(routed: Routed, tokens: number): TierProfile | null {
   if (routed.profile !== null) return { ...routed.profile, autocompactWindow: tokens };
   if (tokens === AUTOCOMPACT_WINDOW_TOKENS) return null;
-  return ordinaryTierProfile({ autocompactWindow: tokens, why: `the ordinary profile at a ${windowLabel(tokens)} window (a11ign/a11ign#4738)` });
+  return ordinaryTierProfile({ autocompactWindow: tokens, why: `the ordinary profile at a ${windowLabel(tokens)} window (${homeProjectDeclaration().tracker[0].repo}#4738)` });
 }
 
 /** THE ROUTE WITH ITS WINDOW. {@link clampWindow} has the last word, so a Haiku route is at its ceiling whatever the Region size or the provider says. */
