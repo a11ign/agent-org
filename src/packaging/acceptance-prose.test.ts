@@ -1,3 +1,4 @@
+// no-token: gh -- `GH_TOKEN` appears only as the string example of a leading assignment; this file spawns no `gh` and reads no token
 /**
  * #446: THE ACCEPTANCE RUNNER EXECUTES PROSE.
  *
