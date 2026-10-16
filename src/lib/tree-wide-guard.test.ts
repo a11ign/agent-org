@@ -163,7 +163,8 @@ test("(1503 f) the tick: the guards switch is its own; only `on` runs them; and 
   const asked: string[] = [];
   const guardsOf = (pr: any): OrgSideVerdict => { asked.push(`g${pr.number}`); return { kind: "fail", head: pr.headRefOid, lines: ["✖ leak"], why: "tree-wide guards FAILED" }; };
   const verdictOf = (pr: any): OrgSideVerdict => { asked.push(`a${pr.number}`); return { kind: "pass", head: pr.headRefOid, lines: [], why: "acceptance passed" }; };
-  const common = { openPrs: prs, scope: BASE, declared: DECLARED, verdictOf, guardsOf, log: () => {} };
+  // the host's own decisions file may carry `outside.acceptance` (a11ign#5613): this pins the env switches, so the outside switches are handed empty
+  const common = { openPrs: prs, scope: BASE, declared: DECLARED, verdictOf, guardsOf, log: () => {}, outsideSwitches: () => ({}) };
   assert.deepEqual(gateUnarmedOnAcceptance([1, 2, 3], { ...common, env: {} }), { armable: [1, 2, 3], withheld: [] });
   assert.deepEqual(asked, [], "both off: neither family was asked");
   const only = gateUnarmedOnAcceptance([1, 2, 3], { ...common, env: { [TREE_WIDE_GUARDS_SWITCH_ENV]: "on" } });

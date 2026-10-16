@@ -30,7 +30,7 @@ import { newestPerName } from "../newest-check-run.ts";
 import { decisionSwitchesPath, readSwitches } from "../decision-provider.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 import { printDiagnostic, processState } from "../triage-provider.ts";
-import { checkoutPullRequestMerge, orgSideAcceptanceEligibility, orgSideAcceptanceVerdict, installPullRequestCheckout, releasePullRequestCheckout, type OrgSideVerdict } from "../acceptance-commands.ts"; // agent-org#1502
+import { checkoutPullRequestMerge, orgSideAcceptanceEligibility, orgSideAcceptanceVerdict, installPullRequestCheckout, releasePullRequestCheckout, outsideAcceptanceOn, shadowAcceptanceVerdict, type OrgSideVerdict } from "../acceptance-commands.ts"; // agent-org#1502, #1579
 import { labJobFinishedOrders, readLabJobRecords, readDispatchedLabJobs } from "./lab-job-orders.ts";
 import { classAndKeyOf as orgHealthClassAndKey } from "./org-health-suppression.ts";
 import { TABLE_ROW as STANDING_ROW } from "../board-truth-audit.ts";
@@ -1428,6 +1428,17 @@ export const TREE_WIDE_GUARDS_SWITCH_ENV = "A11IGN_PR_TREE_WIDE_GUARDS_BY_GATE";
 export const MAX_ACCEPTANCE_RUNS_PER_TICK = 2;
 
 /**
+ * agent-org#1579: the a11ign `acceptance` job's verdict on a head, read off the rollup narrowed to the newest run per name, as `guardSweepJobOf` reads `guardSweep`:
+ * `pass` on SUCCESS, `fail` when `isBrokenRed` says the check is red, and `null` for everything else, which the shadow reads as not-compared, never as agreement.
+ */
+export function acceptanceJobOf(rollup: { name?: string; conclusion?: string | null; }[] | null | undefined): "pass" | "fail" | null {
+  const run = (rollup ?? []).find((check) => /(^|[\s/])acceptance$/.test(String(check?.name ?? "")));
+  if (run === undefined) return null;
+  if (isBrokenRed({ statusCheckRollup: [run] })) return "fail";
+  return String(run.conclusion ?? "").toUpperCase() === "SUCCESS" ? "pass" : null;
+}
+
+/**
  * agent-org#1502 (ADR 0045 cut c): THE ORG-SIDE VERDICTS GATE ARMING. Of the unarmed candidates, the same-repository `agent/*` ones by a declared
  * identity (`orgSideAcceptanceEligibility`, and ONLY those) get each switched-on family run on the host, in a checkout of the pull request's merge ref, and
  * are armed only on a `pass` of every one AT THEIR CURRENT HEAD; the rest of the unarmed are returned untouched. A verdict is remembered by head (`pass` and
@@ -1448,9 +1459,11 @@ export function gateUnarmedOnAcceptance(unarmed: number[], { openPrs, scope, env
   const acceptanceOn = env[ACCEPTANCE_GATE_SWITCH_ENV] === "on";
   const guardsOn = env[TREE_WIDE_GUARDS_SWITCH_ENV] === "on";
   if (unarmed.length === 0) return { armable: unarmed, withheld: [] };
-  const shadowGuards = !guardsOn && outsideGuardsOn(outsideSwitches());
-  const shadowOwned = outsideOwnedPathsOn(outsideSwitches());
-  if (!acceptanceOn && !guardsOn && !shadowGuards && !shadowOwned) return { armable: unarmed, withheld: [] };
+  const switches = outsideSwitches();
+  const shadowGuards = !guardsOn && outsideGuardsOn(switches);
+  const shadowAcceptance = !acceptanceOn && outsideAcceptanceOn(switches);
+  const shadowOwned = outsideOwnedPathsOn(switches);
+  if (!acceptanceOn && !guardsOn && !shadowGuards && !shadowAcceptance && !shadowOwned) return { armable: unarmed, withheld: [] };
   const byDeclaredIdentity = (pr: any) => reviewTrustOf(pr, declared) === INSIDE;
   const file = join(stateDir, "acceptance-verdicts.json");
   const remembered: Record<string, OrgSideVerdict> = readJsonObject(file);
@@ -1478,22 +1491,32 @@ export function gateUnarmedOnAcceptance(unarmed: number[], { openPrs, scope, env
       discover: (cwd) => treeWideGuardFilesIn(cwd), run: (files, cwd) => runTreeWideGuards(files, cwd), release: releasePullRequestCheckout({ repoRoot }) }));
   /** agent-org#1580: the outside home's SHADOW. The verdict is recorded in the log, `blocks` is false, and the gate is handed `null` (the org said nothing), so it arms exactly as without the flag. */
   const shadowOf = (pr: any): null => {
-    const shadow = shadowGuardsVerdict(pr, { switches: outsideSwitches(), verdictOf: guards, job: guardSweepJobOf(newestPerName(pr?.statusCheckRollup ?? [])) });
+    const shadow = shadowGuardsVerdict(pr, { switches, verdictOf: guards, job: guardSweepJobOf(newestPerName(pr?.statusCheckRollup ?? [])) });
     if (shadow.on) log(`outside-guards: SHADOW #${pr.number} ${shadow.verdict.kind} (${shadow.verdict.why}) beside the job's ${shadow.job ?? "unread"}: ${shadow.agreement}; blocks nothing.\n`);
     return null;
   };
   /** agent-org#1598: the outside home of `ownedPaths`, SHADOW only. Recorded in the log and returns nothing: it is not a family of the gate, so it never withholds an arming. */
   const eligibleOf = (pr: any) => orgSideAcceptanceEligibility(pr, { byDeclaredIdentity, baseRepo: scope });
   const shadowOwnedOf = (pr: any): void => {
-    const shadow = shadowOwnedPathsVerdict(pr, { switches: outsideSwitches(), verdictOf: (p) => ownedPathsVerdict(p, { eligible: eligibleOf }), job: ownedPathsJobOf(newestPerName(pr?.statusCheckRollup ?? [])) });
+    const shadow = shadowOwnedPathsVerdict(pr, { switches, verdictOf: (p) => ownedPathsVerdict(p, { eligible: eligibleOf }), job: ownedPathsJobOf(newestPerName(pr?.statusCheckRollup ?? [])) });
     if (shadow.on) log(`outside-ownedpaths: SHADOW #${pr.number} ${shadow.verdict.kind} (${shadow.verdict.why}) beside the job's ${shadow.job ?? "unread"}: ${shadow.agreement}; blocks nothing.\n`);
+  };
+  /** agent-org#1579: the outside home of the acceptance family's SHADOW. The verdict is the one `acceptance` remembers by head, so a shadow costs no more run than the gate would; blocks nothing. */
+  const shadowAcceptanceOf = (pr: any): null => {
+    const shadow = shadowAcceptanceVerdict(pr, { switches, job: acceptanceJobOf(newestPerName(pr?.statusCheckRollup ?? [])), verdictOf: acceptance, byDeclaredIdentity, baseRepo: scope,
+      checkout: checkout(), prepare: installPullRequestCheckout(), release: releasePullRequestCheckout({ repoRoot }) });
+    if (shadow.on) log(`outside-acceptance: SHADOW #${pr.number} ${shadow.verdict.kind} (${shadow.verdict.why}) beside the job's ${shadow.job ?? "unread"}: ${shadow.agreement}; blocks nothing.\n`);
+    return null;
   };
   const gated = acceptanceGateOf(unarmed, {
     prOf: (number) => openPrs.find((pr) => Number(pr.number) === number),
     gateOf: (pr) => {
       if (!eligibleOf(pr).eligible) return null;
+      // The shadows log and return nothing; the real families below decide alone, so a switched-on gate is never skipped because a shadow is on beside it.
       if (shadowOwned) shadowOwnedOf(pr);
-      return shadowGuards ? shadowOf(pr) : firstRefusalOf([...(acceptanceOn ? [acceptance(pr)] : []), ...(guardsOn ? [guards(pr)] : [])]);
+      if (shadowGuards) shadowOf(pr);
+      if (shadowAcceptance) shadowAcceptanceOf(pr);
+      return firstRefusalOf([...(acceptanceOn ? [acceptance(pr)] : []), ...(guardsOn ? [guards(pr)] : [])]);
     },
   });
   for (const { number, why } of gated.withheld) log(`acceptance-gate: #${number} is NOT armed -- ${why}.\n`);

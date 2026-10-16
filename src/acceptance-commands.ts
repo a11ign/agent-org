@@ -3910,11 +3910,13 @@ export type ShadowAcceptance =
   | { on: false; }
   | { on: true; blocks: false; verdict: OrgSideVerdict; job: "pass" | "fail" | null; agreement: "agree" | "disagree" | "not-compared"; };
 
-export function shadowAcceptanceVerdict(pr: OrgSidePullRequest | null | undefined, { switches, job = null, ...seams }: {
+export function shadowAcceptanceVerdict(pr: OrgSidePullRequest | null | undefined, { switches, job = null, verdictOf, ...seams }: {
   switches: Readonly<Record<string, unknown>> | null | undefined; job?: "pass" | "fail" | null;
+  /** agent-org#1579: a caller that remembers verdicts by head (the gate's `familyOf`) hands its own; `seams` are then not used. */
+  verdictOf?: (pr: OrgSidePullRequest | null | undefined) => OrgSideVerdict;
 } & Parameters<typeof orgSideAcceptanceVerdict>[1]): ShadowAcceptance {
   if (!outsideAcceptanceOn(switches)) return { on: false };
-  const verdict = orgSideAcceptanceVerdict(pr, seams);
+  const verdict = verdictOf === undefined ? orgSideAcceptanceVerdict(pr, seams) : verdictOf(pr);
   const agreement = verdict.kind === "not-run" || job === null ? "not-compared" : verdict.kind === job ? "agree" : "disagree";
   return { on: true, blocks: false, verdict, job, agreement };
 }
