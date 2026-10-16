@@ -361,12 +361,12 @@ Skips. Each is `{ skip: SKIP_FIXTURE }` on a `test(` call, where `SKIP_FIXTURE` 
 | `src/packaging/late-edition.test.ts` | 1 of 11 (the document says it is late, in its own header) | the board-document renderer reads `packages/cli/package.json` for a11ign's CLI version; the fixture has none (ENOENT) | project-content |
 | `src/packaging/tracker-leak-refusal.test.ts` | 2 of 14 (#891 editRefusal and the no-PATCH test) | the `pct exec` leak pattern, declared in a11ign's `.agent-org/project.json` `leakPatterns` (`src/lib/leak-patterns.ts`); the fixture declares none | declaration |
 | `src/packaging/live-tree-independence.test.ts` | 2 of 4 (#3233 converted files at two a11ign commits, and its POSITIVE CONTROL) | a11ign's two commits, which need a laid-out a11ign clone; the fixture has no `packages/` tree (`SKIP`, not `SKIP_FIXTURE`) | needs-real-project |
-| `src/packaging/wake-engineer-brief.test.ts` | 5 of 14 | the engineer brief and `packages/lab/CLAUDE.md`, `packages/judge/CLAUDE.md` | tests-project |
+| `src/packaging/wake-engineer-brief.test.ts` | 11 of 16 | the engineer brief, `packages/lab/CLAUDE.md`, `packages/judge/CLAUDE.md`, and the live roster `.agent-org/roles/sessions.json` | tests-project |
 | `src/packaging/owned-path-signoff.test.ts` | 3 of 12 | the two real pull request bodies (#584, #613) and the owner's owned-path list | tests-project |
 | `src/packaging/wake.test.ts` | 1 of 151 (line 467) | the live roster `.agent-org/roles/sessions.json` | needs-real-project |
 | `src/wake-reviewer-instance.test.ts` | 1 of 63 (line 712) | `reviewer.md` | needs-real-project |
 
-The last two rows, and `wake-engineer-brief` and `owned-path-signoff`, are not in the Acceptance's five files. Their skips are from reading the test bodies; they were not run here, because those files reach the org multiplexer (see the incident below). `wake-engineer-brief` has one failing subtest in the configuration-3 table that no reader identifies, so 5 of 6 are skipped.
+The last two rows, and `wake-engineer-brief` and `owned-path-signoff`, are not in the Acceptance's five files. Their skips are from reading the test bodies; they were not run here, because those files reach the org multiplexer (see the incident below). `wake-engineer-brief` was the one file of the four where the fixture run was still red: six subtests failed there (the roster assertions at lines 77 and 204, and the four nested-`CLAUDE.md` checks at lines 219 and 234), and they are now skipped with the same guard, `11 of 16` in all. The five that run (lines 50, 55, 66, 95, 117) do not read a11ign's files. That fixture run was the reviewer's (`6 of 11` failed, `5` skipped before this change); it was not re-run here.
 
 The 43 files still unresolved (the Open section's "188 unresolved subtests (43 files)"). Reader and class come from reading each file's imports, helpers, and literal paths (a keyword pass for the files marked "none found"). `Action` says what the file does now.
 

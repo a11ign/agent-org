@@ -13,7 +13,7 @@ Measured, on this branch on top of `agent-org` `main` `5ef96aec`:
 
 Not covered, named:
 - The whole-suite fixture run was not completed. A run during measurement queued real handoff orders into the live herdr org session and was stopped; those orders are not retracted and await approval. Details are in the doc's incident paragraph.
-- Skips in `wake.test.ts`, `wake-reviewer-instance.test.ts`, `wake-engineer-brief.test.ts` and `owned-path-signoff.test.ts` are from reading their bodies and were not run, because those files reach the org multiplexer.
+- Skips in `wake.test.ts`, `wake-reviewer-instance.test.ts` and `owned-path-signoff.test.ts` are from reading their bodies and were not run, because those files reach the org multiplexer. `wake-engineer-brief.test.ts` (11 of 16 skipped) is token-free, but it was not re-run here after the change.
 - Still open: the tests-the-project and needs-real-project subtests in the other families, listed in the doc.
 
 Closes: a11ign/agent-org#1604

@@ -35,9 +35,9 @@ const BRIEF_LINE = new RegExp(ENGINEER_BRIEF.replaceAll(".", "\\."));
 
 // --- done-when 2: `addressed()` names the brief for every engineer role and for NO other --------------------------
 
-/** #1604: these subtests read a11ign's own engineer brief and its nested CLAUDE.md files (docs/project-tree-dependency.md, row 1604). The fixture project has none of them, so they skip there and run wherever the tracked `packages/` tree is present. */
+/** #1604: these subtests read a11ign's own engineer brief, its nested CLAUDE.md files and its live roster (docs/project-tree-dependency.md, row 1604). The fixture project has none of them, so they skip there and run wherever the tracked `packages/` tree is present. */
 const SKIP_FIXTURE = trackedTopLevelDirs().includes("packages") ? false
-  : "the fixture project has no engineer brief and no packages/lab or packages/judge CLAUDE.md: these assert a11ign's own briefs, which only the a11ign checkout carries";
+  : "the fixture project has no engineer brief, no packages/lab or packages/judge CLAUDE.md, and a roster of its own: these assert a11ign's own briefs and live roster, which only the a11ign checkout carries";
 
 test("an engineer label's first message names the engineer brief", { skip: SKIP_FIXTURE }, () => {
   assert.equal(ENGINEER_BRIEF, `${ROLES_DIR}/engineer.md`);
@@ -74,7 +74,7 @@ test("the singletons and a reviewer are NOT told, whatever roster is supplied or
   }
 });
 
-test("#2505: sessions.json lists NO standing engineer address, so the roster READ is empty and the family is the population", () => {
+test("#2505: sessions.json lists NO standing engineer address, so the roster READ is empty and the family is the population", { skip: SKIP_FIXTURE }, () => {
   const engineers = engineerRoles();
   // The population is derived a SECOND way -- every live name that is not a singleton (`SINGLETONS`, the roster's own
   // non-engineer roles, with the three the test above names asserted among them) -- and compared by EQUALITY, so a
@@ -201,7 +201,7 @@ const namesIn = (text: string) => [
     .filter((m) => Number(m[1]) >= from).map((m) => m[0])),
 ];
 
-test("the name matcher notices a session name, and only as a word (its own positive control)", () => {
+test("the name matcher notices a session name, and only as a word (its own positive control)", { skip: SKIP_FIXTURE }, () => {
   assert.deepEqual(namesIn("hand it to `orchestrator`, then worker-4."), ["orchestrator", "worker-4"]);
   assert.deepEqual(namesIn("and worker-40, a family member nobody listed"), ["worker-40"]);
   assert.deepEqual(namesIn("`worker-ctl.sh up`, the worker-fleet package, worker-3, worker-4abc, ceo-ish, preceo"), []);
@@ -216,7 +216,7 @@ test("the nested-rules list is not empty (the positive control for the two tests
 });
 
 for (const { file, heading, governs } of NESTED) {
-  test(`${file}: the addition names the paths it governs in its first lines`, () => {
+  test(`${file}: the addition names the paths it governs in its first lines`, { skip: SKIP_FIXTURE }, () => {
     const text = read(file);
     const at = text.search(heading);
     assert.ok(at >= 0, `the section exists in ${file}`);
@@ -231,7 +231,7 @@ for (const { file, heading, governs } of NESTED) {
     }
   });
 
-  test(`${file}: names no session, standing or retired`, () => {
+  test(`${file}: names no session, standing or retired`, { skip: SKIP_FIXTURE }, () => {
     assert.deepEqual(namesIn(read(file)), []);
   });
 }
