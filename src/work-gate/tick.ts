@@ -22,7 +22,7 @@ import { readTrunkRed, trunkOfCodeRepository, trunkRedOrders } from "../trunk-re
 import { recordIgnoredChairmanLabels, recordTickFailures as recordFailuresOf } from "../failure-recorders.ts";
 import { readJsonObject, writeJsonObject } from "../claim-stall.ts";
 import { requiredWhenNeeded, perPullRequestOrders, greenUnarmedOrders, type UnarmedFacts, reviewBlockedOrders, stalledPrOrders,
-  STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr, ROW_REVIEW_SKILL_FLAG, PR_OWNER_ROUTING_FLAG, withholdOutsideFollowUps, routeDeadOwnerRefusals, reviewOnlyRefs, SAME_HEAD_REFAIL_FLAG, acceptanceGateOf, firstRefusalOf, treeWideGuardVerdict, settleOutsideArm } from "./pr-orders.ts";
+  STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr, ROW_REVIEW_SKILL_FLAG, PR_OWNER_ROUTING_FLAG, withholdOutsideFollowUps, routeDeadOwnerRefusals, reviewOnlyRefs, SAME_HEAD_REFAIL_FLAG, acceptanceGateOf, firstRefusalOf, treeWideGuardVerdict, settleOutsideArm, settleOutsideRefusals } from "./pr-orders.ts";
 import { treeWideGuardFilesIn, runTreeWideGuards, outsideGuardsOn, shadowGuardsVerdict, guardSweepJobOf } from "../lib/tree-wide-guard-org-side.ts"; // agent-org#1503, #1580
 import { readFileSync } from "node:fs";
 import { newestPerName } from "../newest-check-run.ts";
@@ -1393,12 +1393,16 @@ function withWithheld(settled: number[] | UnarmedFacts, withheld: { number: numb
  * agent-org#488: THE ARMING READ OF ONE TICK, ITS EJECTIONS AND WHAT THE GATE DID ABOUT THE UNARMED ONES -- `readEjections(readUnarmed(...))` as it was, with
  * `settleUnarmedPrs` between that and the order. `null` is a refused read, as before. The revert is the `unarmed:` line below.
  */
-export function readArmingOf(openPrs: any[], required: string[] | null, { scope = repoNow(), run = defaultRun, portFor = armingPortOf, env = process.env, log, state, now = Date.now() }: {
+export function readArmingOf(openPrs: any[], required: string[] | null, { scope = repoNow(), run = defaultRun, portFor = armingPortOf, env = process.env, log, state, now = Date.now(), refusals = {} }: {
   scope?: string; run?: (args: string[]) => string; portFor?: (scope: string) => ArmingPort; env?: Record<string, string | undefined>; log?: (line: string) => void; state?: CanaryState; now?: number;
+  /** agent-org#1578: the seams of the shadow pass (`on`, `stateDir`, `switchesPath`, `verdictOf`), for a test that runs the tick's own chain; the tick passes none. */
+  refusals?: Partial<Parameters<typeof settleOutsideRefusals>[1]>;
 } = {}) {
   const say = log ?? ((line: string) => process.stderr.write(line));
   // agent-org#1573: THE OUTSIDE HOME OF ARMING, FIRST: behind `outside.arm` in the project's `decisions.json` (absent = off, and then nothing is read or written). What it arms leaves the unarmed list below.
   settleOutsideArm(openPrs, { scope, run, log: say });
+  // agent-org#1578: THE OUTSIDE HOME OF THE DELIBERATE REFUSALS, behind `outside.refusals` (absent = off). SHADOW: it records beside the project's job and returns nothing this function acts on.
+  settleOutsideRefusals(openPrs, { scope, run, log: say, stateDir: REVIEWER_STATE_DIR, ...refusals });
   const candidates = shouldBeMerging(openPrs, required);
   const reading = readArming(candidates, run);
   const split = readEjections(reading === null ? null : reading.unarmed, run);

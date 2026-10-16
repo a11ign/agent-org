@@ -1,7 +1,11 @@
 // agent-org#1501 (ADR 0045 cut c; a11ign/a11ign#5460): THE HOST GATE'S RECEIVING SIDE of what a11ign's `deliberateRefusals` job refused. It lives in its own file, not
 // in `closes-mismatch-check.ts`, because that file is imported by the work gate's reads and this one imports the merge guard: the two in one file made an import
 // cycle that left `work-gate/reads.ts` asking for its own budget before it was initialised.
+import { readFileSync } from "node:fs";
 import { acceptanceSourceOf } from "./acceptance-commands.ts";
+// agent-org#1578: THE FLAG'S READER IS THE DECISION SWITCHES', the one every `decisions.json` key is read through (absent file = off; a file that cannot be used = off, said once).
+import { readSwitches } from "./decision-provider.ts";
+import { printDiagnostic, processState } from "./triage-provider.ts";
 import { sourceLine } from "./acceptance-file.ts";
 import { lookup, lookupClosingIssues, lookupRecentClosesPrs } from "./merge-guard/lookups.ts";
 import { mergeSafetyVerdict, lookupTestsFirstFacts } from "./merge-guard/safety-verdict.ts";
@@ -11,6 +15,14 @@ import { ORG_LOGINS } from "./messaging/sources/readers.ts";
 import {
   closesVerdictOf, lookupClaimedRowsOfTrackers, lookupOpenClaimedRows, trackerReposFor, type ClosesFacts,
 } from "./closes-mismatch-check.ts";
+
+/** agent-org#1578: THE KEY IN A PROJECT'S `.agent-org/decisions.json` THAT LETS AGENT-ORG ASK, FROM OUTSIDE THE PROJECT, WHAT ITS `deliberateRefusals` JOB ASKS. Absent is off; ON is SHADOW: the verdict is recorded and blocks nothing. */
+export const OUTSIDE_REFUSALS_FLAG = "outside.refusals";
+
+/** Is the outside home of the deliberate refusals switched on for the project whose `decisions.json` is at `switchesPath`? Only the literal `true` is on, as for `outside.arm`. */
+export function outsideRefusalsOn(switchesPath: string, { read = readFileSync, diagnostic = printDiagnostic, state = processState }: { read?: typeof readFileSync; diagnostic?: (line: string) => void; state?: typeof processState; } = {}): boolean {
+  return (readSwitches(switchesPath, { diagnostic, state, read }) as Record<string, boolean | undefined>)[OUTSIDE_REFUSALS_FLAG] === true;
+}
 
 export type DeliberateRefusal = { kind: "clear"; } | { kind: "refused" | "cannot-ask"; why: string; };
 

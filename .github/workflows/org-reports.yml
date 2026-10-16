@@ -1,0 +1,76 @@
+name: org-reports
+
+# THE OUTSIDE HOME OF A PROJECT'S RUNNER-SIDE REPORTS (agent-org#1582, epic "agent-org stands alone", a11ign/a11ign#928): the weekly CI-health table and the outsider verdict. `src/outside-reports.ts`
+# has the header: it runs the project's own report scripts, named by the project's `units.reports`, behind `outside.reports` in the PROJECT's `.agent-org/decisions.json`, and does nothing
+# while that key is absent.
+#
+# TWO OF THE FOUR REPORTS ARE NOT HERE, ON PURPOSE. `token-cost` reads the session transcripts on the host's disk (a runner has none and would post zero calls) and `weekly-review` files through
+# a credential a runner's own token is not, so both are HOST jobs (`agent-org outside-reports token-cost|weekly-review`), and the command refuses them under Actions.
+#
+# SHIPPED OFF TWICE. The job is skipped while the repository variable `OUTSIDE_REPORTS_PROJECT` (`owner/name` of the project) is unset, so no project is named in this file, and when it is set the
+# command still reads the flag and does nothing until it is true. Both revert the same way: unset the variable, or set the flag to `false`; the project's own workflows stay scheduled throughout.
+#
+# BESIDE, NOT INSTEAD: the project's scripts are idempotent per period (the week's heading, the ISO week's row, the version's row), so whichever of the pair fires second finds the work done and
+# posts nothing. The crons sit a few minutes away from the project's (CI health: Monday :43 there, :58 here), so the two are rarely in the same minute. `OUTSIDE_REPORTS_TOKEN` is a token for the
+# project: it comments on the report issue and files the regression row. `schedule` and `workflow_dispatch` only, so nothing here can be tripped by a change.
+on:
+  schedule:
+    # CI health, three Monday slots as the project's own (GitHub drops or delays scheduled starts; every slot stays on Monday because the window is read from the run's UTC day).
+    - cron: "58 6 * * 1"
+    - cron: "58 11 * * 1"
+    - cron: "58 16 * * 1"
+    # The outsider verdict, daily as the project's own (`43 5`). The project's `workflow_run` after a release has no counterpart here: a run of another repository's workflow is not an event this one can hear.
+    - cron: "58 5 * * *"
+  workflow_dispatch:
+    inputs:
+      report:
+        description: The report to run now (a dispatch is idempotent for the period, like a schedule).
+        type: choice
+        options: [ci-health, outsider-verdict]
+        default: ci-health
+
+permissions:
+  contents: read
+
+concurrency:
+  group: org-reports
+  cancel-in-progress: false
+
+jobs:
+  report:
+    if: ${{ vars.OUTSIDE_REPORTS_PROJECT != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with: { path: tool, persist-credentials: false }
+      # The project's token is NOT left in the checkout's git config: `pnpm install` below runs the project's and its dependencies' lifecycle scripts, and a persisted credential is readable
+      # by every one of them. The token reaches only the last step, as `GH_TOKEN`.
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ vars.OUTSIDE_REPORTS_PROJECT }}
+          token: ${{ secrets.OUTSIDE_REPORTS_TOKEN }}
+          path: project
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with: { node-version: 24.21.0 }
+      - name: The tool's dependencies
+        working-directory: tool
+        run: npm install --omit=dev --ignore-scripts --no-package-lock
+      # The project's scripts import its own packages, so the project is installed as its own job installs it.
+      - uses: pnpm/action-setup@v6
+        with: { package_json_file: project/package.json }
+      - name: The project's dependencies
+        working-directory: project
+        run: pnpm install --frozen-lockfile
+      - name: Run the report (does nothing while the flag is off)
+        working-directory: project
+        env:
+          GH_TOKEN: ${{ secrets.OUTSIDE_REPORTS_TOKEN }}
+          SCHEDULE: ${{ github.event.schedule }}
+          DISPATCHED: ${{ inputs.report }}
+        run: |
+          # The daily cron is the verdict; every other schedule is CI health; a dispatch names its own.
+          report=ci-health
+          if [ "$SCHEDULE" = "58 5 * * *" ]; then report=outsider-verdict; fi
+          if [ -n "$DISPATCHED" ]; then report="$DISPATCHED"; fi
+          node ../tool/src/bin.ts outside-reports "$report"

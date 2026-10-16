@@ -389,6 +389,23 @@ function namesDifferentFlags(row: BoardRow, other: BoardRow): boolean {
 }
 
 /**
+ * The `<function>` a sibling row of the `agent-org stands alone` epic names in `agent-org stands alone (<function>): ...`, lower-cased; `undefined` for any other title.
+ * @param {string | undefined} title @returns {string | undefined}
+ */
+const standsAloneFunctionOf = (title: string | undefined): string | undefined => /^\s*agent-org stands alone \(([^()]+)\):/i.exec(String(title ?? ""))?.[1].trim().toLowerCase();
+
+/**
+ * Two `agent-org stands alone` titles that name different functions are two rows (agent-org#1583): the epic's rows are filed from two templates, and the function is one or two words of a
+ * ~14-word title, so `(trunk)` and `(board report)` share 12 of 15 words (0.80, over `DUPLICATE_SIMILARITY`) and each new sibling re-trips the audit. A title not of the form, or two naming the
+ * same function, are compared by words alone.
+ * @param {BoardRow} row @param {BoardRow} other @returns {boolean}
+ */
+function namesDifferentFunctions(row: BoardRow, other: BoardRow): boolean {
+  const [a, b] = [standsAloneFunctionOf(row.title), standsAloneFunctionOf(other.title)];
+  return a !== undefined && b !== undefined && a !== b;
+}
+
+/**
  * The build a pipeline verify row names: its `Verifies: #n` line or its `<!-- verify-row: build #n -->` marker (`verify-row.ts` writes both). A reader of the body, so a row that names no build is `[]`.
  * @param {string | undefined} body @returns {number[]}
  */
@@ -406,7 +423,7 @@ function verifiesOrVerifiedBy(row: BoardRow, other: BoardRow): boolean {
 /** @param {BoardRow} row @param {BoardRow} other @returns {boolean} */
 function nearDuplicates(row: BoardRow, other: BoardRow): boolean {
   const [a, b] = [wordsOf(row.title), wordsOf(other.title)];
-  return a.size >= DUPLICATE_MIN_WORDS && b.size >= DUPLICATE_MIN_WORDS && similarity(a, b) >= DUPLICATE_SIMILARITY && !namesDifferentRepos(row, other) && !namesDifferentFailureClasses(row, other) && !namesDifferentFlags(row, other) && !verifiesOrVerifiedBy(row, other);
+  return a.size >= DUPLICATE_MIN_WORDS && b.size >= DUPLICATE_MIN_WORDS && similarity(a, b) >= DUPLICATE_SIMILARITY && !namesDifferentRepos(row, other) && !namesDifferentFailureClasses(row, other) && !namesDifferentFlags(row, other) && !namesDifferentFunctions(row, other) && !verifiesOrVerifiedBy(row, other);
 }
 
 /** @param {BoardRow} row @param {Map<number, BoardRow>} known @returns {Finding[]} */
