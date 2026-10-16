@@ -160,7 +160,7 @@ test("row-file does not report a defect row filed when the read-back lacks the l
   assert.match(filed.said, /missing: the `defect` label/);
 });
 
-const FILING_BODY = "## Region\n\npackages/lab/src/packaging/foo.ts\n\n## Acceptance\n\n```\nnpx tsx --test x\n```\n\n## Open-check\n\n```\ngh issue view 735 --json state\n```\n";
+const FILING_BODY = "## Region\n\nscripts/foo.ts\n\n## Acceptance\n\n```\nnpx tsx --test x\n```\n\n## Open-check\n\n```\ngh issue view 735 --json state\n```\n";
 const FILED_URL = "https://github.com/a11ign/a11ign/issues/900";
 
 /** `createIssue` with every seam a fake, returning what reached `gh issue create` and what was made. */

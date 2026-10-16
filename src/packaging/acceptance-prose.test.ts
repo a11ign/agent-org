@@ -1,3 +1,4 @@
+// no-token: gh -- `GH_TOKEN` appears only as the string example of a leading assignment; this file spawns no `gh` and reads no token
 /**
  * #446: THE ACCEPTANCE RUNNER EXECUTES PROSE.
  *
@@ -19,6 +20,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { classifyCommand, acceptanceReport } from "../acceptance-commands.ts";
+import { RESOURCES } from "../project-vocabulary.ts";
+
+/** The resource ban is a11ign's own (`vocabulary.resources` of its declaration, which the acceptance fixture leaves empty by design), so with none declared there is no fleet/lab/corpus refusal to assert. */
+const SKIP_NO_RESOURCES = RESOURCES.length > 0 ? false
+  : "the project declares no vocabulary.resources (the acceptance fixture has none by design), so there is no fleet/lab/corpus refusal to assert";
 
 /** A fake `commandExists` that only ever finds the named tokens -- deterministic, independent of $PATH. */
 function onlyResolves(...names: string[]) {
@@ -88,7 +94,7 @@ test("classifyCommand: a bare assignment with NOTHING after it is prose (no real
 
 // --- fleet/lab/corpus refusals still take priority -- a real executable that this job must not run ---
 
-test("classifyCommand: fleet/lab/corpus patterns are still REFUSED, never reclassified as prose", () => {
+test("classifyCommand: fleet/lab/corpus patterns are still REFUSED, never reclassified as prose", { skip: SKIP_NO_RESOURCES }, () => {
   // `npm` genuinely resolves -- the existing refusal must fire before the executable check ever runs.
   const result = classifyCommand("npm run fleet:deploy", { commandExists: onlyResolves("npm") });
   assert.equal(result.verdict, "refused");

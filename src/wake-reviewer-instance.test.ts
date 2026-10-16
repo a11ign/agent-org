@@ -972,7 +972,11 @@ function idleMeminfo(dir: string) {
   return path;
 }
 
-test("#2401 THE WAKE ENTRY: a started reviewer instance is REGISTERED with its start time, in a file of its own", () => {
+/** The real tick links the review tree's dependencies from ITS checkout's `node_modules`, so this subtest needs a checkout that has them installed. The acceptance fixture is a project tree with none, and its checkout is what the spawned tick reads, so it skips there. */
+const SKIP_NO_INSTALLED_DEPENDENCIES = existsSync(join(HOME_CHECKOUT, "node_modules")) ? false
+  : "the tick's checkout (the fixture project in the acceptance run) has no node_modules, so the review tree has no dependencies to link from it";
+
+test("#2401 THE WAKE ENTRY: a started reviewer instance is REGISTERED with its start time, in a file of its own", { skip: SKIP_NO_INSTALLED_DEPENDENCIES }, () => {
   const dir = mkdtempSync(join(tmpdir(), "wake-rv-reg-"));
   try {
     const ledger = join(dir, "wake-ledger");

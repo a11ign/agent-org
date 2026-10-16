@@ -22,6 +22,7 @@ const findingsWith = (exists: (path: unknown) => boolean) => missingUnitPrograms
   read: (() => UNIT_TEXT) as never,
   exists,
   home: HOME,
+  units: { prefix: "a11ign-", boardReportWorkflow: "", own: [] },
 });
 
 test("#1112 POSITIVE CONTROL: a `%h` script that is there is NOT reported", () => {
