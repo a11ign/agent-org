@@ -13,6 +13,19 @@ Measured at this head: `node --test src/owned-path-signoff-outside.test.ts` prin
 
 Mutation: each applied to the source, run over `src/owned-path-signoff-outside.test.ts`, restored from a copy and `diff`ed identical. Flag always on: 3 red (a, e, g). Flag never on: 3 red (a, e, g). Eligibility skipped in `ownedPathsVerdict` (an outside pull request is asked): 1 red (d). Tick records the shadow before the eligibility check: 1 red (g). Tick hands the gate the shadow verdict (blocks): 1 red (g). Job name wrong in `ownedPathsJobOf`: 2 red (f, g).
 
+## First read: the paths the home covers, compared with the job's (Done-when 1)
+
+Existing outside equivalent of the job's two steps (diff against the base, `owned-path-signoff`): none, built here. Paths read from the project's `docs/owned-path-facts.json` at its `origin/main` `866ea9fc9` (the file, not a copy), `owned` list:
+
+| Path in `owned` | The job covers | The home covers | Evidence |
+|---|---|---|---|
+| `packages/nvda-worker/` | yes | yes | test `(1598 h)` refuses an unsigned agent PR over `packages/nvda-worker/x.ts` |
+| `packages/scorer/models/` | yes | yes | same, `packages/scorer/models/x.ts` |
+| `packages/lab/src/training/capture-cache.mjs` | yes | yes | same, the bare file path |
+| `packages/evidence/src/verify.ts` | yes | yes | same, the bare file path |
+
+Both read the list through the same `loadFacts` and match with the same `isOwned`, so the sets are equal by construction, and a path added to the file is covered by both on the next run. Test `(1598 h)` loops over whatever the file lists (and asserts the list is not empty), so it is not pinned to these four. The one difference is the file's source: the job reads it from the PR's merge ref, the home from the home checkout (named in `src/owned-path-signoff.ts`'s comment). The job's own diff is `git diff --name-only origin/<base>...HEAD`; the home uses the payload's `files`, and a list cut short (`changedFiles` larger) is `not-run`, never a pass.
+
 Outside-Region: src/work-gate/tick.ts (the one caller that reads `outside.guards` today and so records the shadow verdict, as #1580 did); src/owned-path-signoff-outside.test.ts (the tests for the Region file)
 
 platform: `readSwitches` is the existing reader; `signoffVerdict` and `loadFacts` are the job's own, reused. The open-pull-request payload already carries `files`, `changedFiles` and `body`, so no `git diff` is run.
