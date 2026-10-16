@@ -22,6 +22,7 @@ import { outsideArmListArgs, outsideArmPass, outsideArmVerdict, openPullRequests
 import { armedQueryArgs } from "../pr-armed-state.ts";
 import { settleOutsideArm } from "../work-gate/pr-orders.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
+import { loadLanes, ownsReviewOnlyLane, type Lane } from "../lane-ownership.ts";
 
 const REPO = "a11ign/a11ign";
 const dir = mkdtempSync(join(tmpdir(), "outside-arm-"));
@@ -249,4 +250,38 @@ test("the workflow reads the flag BEFORE it mints, mints only when it is on, sco
   assert.ok(stalled.steps.some((s) => s.id === "flag") && stalled.steps.filter((s) => (s.run ?? "").includes("queue-stalled.ts")).every((s) => s.if === "steps.flag.outputs.on == 'true'"));
   // CONTROL for the reading above: the project's own `arm` job IS a job that mints and has no flag step, so the checks are not vacuous.
   assert.ok(doc.jobs.arm.steps.some((s) => s.id === "octo-sts") && !doc.jobs.arm.steps.some((s) => s.id === "flag"));
+});
+
+// --- 5. the lanes the pass is handed are the lanes `arm-pr` judges authorship by -----------------------------------------------------------
+
+test("agent-org#1627: `arm-pr` under the pass judges authorship from the lanes the caller passed, not from the home checkout's file", () => {
+  const LEADS = "a11ign-ai-leads";
+  const PIPELINE: Lane = { lane: "the pipeline", owner: "ceo", branchPrefixes: ["ceo/"], paths: [".github/workflows/"], why: "trunk health", reviewOnly: true };
+  // The one read that proves authorship was judged: the changed-file list is read only when the author owns a review-only lane (`authorshipVerdict`).
+  const drive = (lanes?: { lanes: Lane[]; } | null) => {
+    const w = world([OPEN]);
+    const gh = ghOf(w);
+    let filesRead = false;
+    const run = (args: string[]): string => {
+      if (args[0] === "pr" && args[1] === "view") return JSON.stringify({ labels: [], body: "", state: "OPEN", author: { login: LEADS } });
+      if (args[0] === "api" && args[2]?.endsWith("/files")) { filesRead = true; return ".github/workflows/ci.yml\n"; }
+      return gh(args);
+    };
+    const lines: string[] = [];
+    const result = outsideArmPass({ repo: REPO, switchesPath: on, run, log: (l) => lines.push(l), ...(lanes === undefined ? {} : { lanes }) });
+    return { result, lines: lines.join("\n"), filesRead };
+  };
+  const home = loadLanes();
+  assert.ok(ownsReviewOnlyLane(LEADS, home), "PRECONDITION: the home checkout's file makes this author a lane owner, so the passed lanes below DIFFER from it");
+
+  const passedEmpty = drive({ lanes: [] });
+  assert.equal(passedEmpty.filesRead, false, "lanes passed with no lane: the home file's lane is not consulted");
+  assert.doesNotMatch(passedEmpty.lines, /review-only lane|pipeline/i, "no lane refusal under the passed lanes");
+
+  const passedLane = drive({ lanes: [PIPELINE] });
+  assert.equal(passedLane.filesRead, true, "CONTROL: lanes passed that own the author make arm-pr read the changed files");
+  assert.deepEqual(passedLane.result.armed, [], "and a pipeline file by that author is not armed");
+  assert.match(passedLane.lines, /lane|pipeline/i, "and the refusal names the lane");
+
+  assert.equal(drive().filesRead, true, "CONTROL: omitted, `arm-pr` falls back to the home checkout's file (the default this row is about)");
 });
