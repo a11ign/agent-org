@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { stripComments } from "./local-import-closure.ts";
 import { sandboxGitEnv } from "./git-env.ts";
 import { pnpmCliInvocation } from "./npm-cli-executable.ts";
+import { isBrokenRed } from "../red-pr.ts";
 
 /** The marker's specifiers: the toolchain's, and the tool's own declared export a travelling guard may still import. Read off COMMENT-STRIPPED source, so a
  *  specifier spelled in a comment or a string is not a declaration. */
@@ -102,12 +103,14 @@ export function runTreeWideGuards(files: string[], cwd: string, { env = process.
 export const OUTSIDE_GUARDS_FLAG = "outside.guards";
 export const outsideGuardsOn = (switches: Readonly<Record<string, unknown>> | null | undefined): boolean => switches?.[OUTSIDE_GUARDS_FLAG] === true;
 
-/** The a11ign `guardSweep` job's verdict on a head, read off the pull request's check rollup already narrowed to the newest run per name: `pass` on SUCCESS, `fail` on FAILURE or TIMED_OUT,
+/** The a11ign `guardSweep` job's verdict on a head, read off the pull request's check rollup already narrowed to the newest run per name: `pass` on SUCCESS, `fail` when `isBrokenRed` says the check is red,
  *  and `null` for everything else (absent, still running, skipped, cancelled), which the comparison reads as not-compared, never as agreement. */
 export function guardSweepJobOf(rollup: { name?: string; conclusion?: string | null; }[] | null | undefined): "pass" | "fail" | null {
   const run = (rollup ?? []).find((check) => /(^|[\s/])guardSweep$/.test(String(check?.name ?? "")));
-  const conclusion = String(run?.conclusion ?? "").toUpperCase();
-  return conclusion === "SUCCESS" ? "pass" : conclusion === "FAILURE" || conclusion === "TIMED_OUT" ? "fail" : null;
+  if (run === undefined) return null;
+  // red is `isBrokenRed`'s to say (#2956 ONE DECIDER), asked of this one check alone so another check's failure is not the job's
+  if (isBrokenRed({ statusCheckRollup: [run] })) return "fail";
+  return String(run.conclusion ?? "").toUpperCase() === "SUCCESS" ? "pass" : null;
 }
 
 type GuardVerdict = import("../acceptance-commands.ts").OrgSideVerdict;
