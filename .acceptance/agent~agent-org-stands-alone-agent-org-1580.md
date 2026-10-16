@@ -7,11 +7,13 @@ cd /home/agent/repos/agent-org && git grep -l -F outside.guards -- src
 
 Closes a11ign/agent-org#1580
 
-Measured at this head: `node --test src/lib/tree-wide-guard.test.ts` printed `tests 10 / pass 10 / fail 0` (three new, `(1580 a)` to `(1580 c)`); `pnpm run typecheck` exits 0; `node -e "import('./src/lib/tree-wide-guard-org-side.ts')"` loads.
+Wired: `gateUnarmedOnAcceptance` (`src/work-gate/tick.ts`) reads the project's switches only when no guards switch is on, runs `shadowGuardsVerdict` over the existing guards family, logs `outside-guards: SHADOW #n <kind>` and hands the gate `null`, so arming is exactly as without the flag; test `(1580 d)`.
 
-Mutation: each applied to `src/lib/tree-wide-guard-org-side.ts` over `tree-wide-guard.test.ts`, restored from a copy, `cmp` identical. Flag always on: 2 red. Flag never on: 3 red. `blocks` true on a fail: 1 red.
+Measured at this head (earlier line superseded): `node --test src/lib/tree-wide-guard.test.ts` printed `tests 11 / pass 11 / fail 0` (four new, `(1580 a)` to `(1580 d)`); the other `src/work-gate/*.test.ts` print 2 failures that also fail without this change (measured by stashing it); `pnpm run typecheck` exits 0; `node -e "import('./src/lib/tree-wide-guard-org-side.ts')"` loads.
 
-Outside-Region: src/lib/tree-wide-guard.test.ts (the tests for the Region file)
+Mutation: each applied to `src/lib/tree-wide-guard-org-side.ts` over `tree-wide-guard.test.ts`, restored from a copy, `cmp` identical. Flag always on: 2 red. Flag never on: 3 red. `blocks` true on a fail: 1 red. The tick handing the gate the shadow verdict instead of `null`: 1 red (`d`).
+
+Outside-Region: src/lib/tree-wide-guard.test.ts (the tests for the Region file); src/work-gate/tick.ts (the one caller that reads `outside.guards` and records the shadow verdict)
 
 platform: `readSwitches` is the existing reader; the discovery and run are #1503's, reused.
 

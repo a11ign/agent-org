@@ -209,3 +209,19 @@ test("(1580 c) ON is SHADOW: a failing verdict blocks nothing, and is compared w
     assert.equal(shadow.agreement, agreement, `${kind} vs ${job}`);
   }
 });
+
+test("(1580 d) the tick: `outside.guards` records a shadow verdict beside the job's and arms exactly as it would without it; off, nothing is asked", () => {
+  const prs = [agentPr({ number: 1 }), agentPr({ number: 2, headRefName: "feature/y" })];
+  const asked: string[] = [];
+  const said: string[] = [];
+  const guardsOf = (pr: any): OrgSideVerdict => { asked.push(`g${pr.number}`); return { kind: "fail", head: pr.headRefOid, lines: ["✖ leak"], why: "tree-wide guards FAILED" }; };
+  const common = { openPrs: prs, scope: BASE, declared: DECLARED, guardsOf, env: {}, log: (line: string) => { said.push(line); } };
+  for (const switches of [{}, { [OUTSIDE_GUARDS_FLAG]: false }]) {
+    assert.deepEqual(gateUnarmedOnAcceptance([1, 2], { ...common, outsideSwitches: () => switches }), { armable: [1, 2], withheld: [] });
+    assert.deepEqual(asked, [], "off: the guards were not asked for");
+  }
+  const on = gateUnarmedOnAcceptance([1, 2], { ...common, outsideSwitches: () => ON });
+  assert.deepEqual(asked, ["g1"], "on: the eligible agent pull request only");
+  assert.deepEqual(on, { armable: [1, 2], withheld: [] }, "a failing SHADOW verdict withholds nothing");
+  assert.ok(said.some((line) => /outside-guards: SHADOW #1 fail/.test(line)), said.join("|"));
+});
