@@ -26,41 +26,14 @@
  */
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync, mkdtempSync, realpathSync,
-  existsSync, writeFileSync, cpSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { spawnSync } from "node:child_process";
-import { join, dirname, relative } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { shippedUnits } from "../host-units.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
-import { TOOL_ROOT, copyToolAndProject, importClosure, toolFile } from "./copied-tool-fixture.ts";
-import { judgePin, type Declaration } from "../lib/pin-ratchet.ts";
+import { TOOL_ROOT } from "./copied-tool-fixture.ts";
+import { type Declaration } from "../lib/pin-ratchet.ts";
 import { deriveClosureRequirements, createClosureMemo } from "../acceptance-commands.ts";
-import { patchIdOfDiff } from "../review-verdict.ts";
-import { MAX_ROW_ORDERS_PER_TICK, readCommitShas, readPatchId, withPatchIds, decide as decideOnHost, checksSettledGreen, readPrs, OPEN_PRS_FIRST_PAGE, OPEN_PRS_LIMIT, readReadyRows, EXIT, CAUSES,
-  comparablePrFiles, START_CAUSES, draining, DRAIN_MARKER, stalledOrder, performActions,
-  blockingChecks, anyChecksRed, requiredCheckNames, readBaseTip, baseTipWhenRed, ownerOf, NOT_PICKABLE, NOT_STARTABLE,
-  ROUTED_TO, readPromotableRows, GH_READS, partitionUnclaimed, openRowState, waitingBreakdown,
-  deadMansSwitch, hostDriftOrders, JUDGMENT_CAUSES,
-  shouldBeMerging as shouldBeMergingPrs, conflictedPrs, conflictStateOf, mergeConflictOrders,
-  unfiledEpics, epicOrders, finishedEpics, finishedEpicOrders, fleetBatchRows, fleetBatchOrders,
-  partitionFleetBatch, FLEET_GATED_SELECTOR, blockersFromRows, blockerClearedOrders, unclaimedBlockerClearedOrders, unclaimedClearings,
-  anyBlockerClearingCandidate,
-  promotionAskWindow, readRecentlyClosed, PROMOTION_ASK_OFFSETS_MS,
-  PROMOTION_ASK_PERIOD_MS, PROMOTION_ASK_WINDOW_MS, HOUR_MS,
-  claimedRowAmendedOrders, constraintsAfterClaim, amendmentsOn, readClaimedRowComments,
-  CONSTRAINT_COMMENT_MARKER, CONSTRAINT_BODY_PREFIX,
-  epicRowsOf, doneWhenLines, answersOwed, answerOrders,
-  readOpenRows, withAnswerLabel, rowsOwingAnswers, readClosedAnswerRows, withoutEndedAnswerSessions, endedSessionLabels,
-  withEndedLabels, withPrOwners, ownerOfPr,
-  blockedWithoutReferent, blockedReferentOrders, CHAIRMAN_LABEL, PARKED_LABEL,
-  ANSWER_PREFIX, redOnlyBySupersededRun, cannotAskReport,
-  readRowBranches, readWorktreeStamps, rowBranchOrders, GIT_READS,
-  reviewStateOf, reviewBlocked, reviewBlockedOrders, REVIEW_STATE, HOLD_RED_JOBS, reviewableHead,
-  readRowsOffBoard, rowsOffBoard, rowOffBoardOrders, rowsOffBoardOrSay, ROW_OFF_BOARD_GRACE_MS,
-  refusedReadCount, SHARED_OUTAGE_READS, sharedReadOutage, markOutageReads,
-  pipelineCodeownerReviewMissing, bareAnswerLabelOrders, readRowTimeline }
+import { decide as decideOnHost, CAUSES, comparablePrFiles, START_CAUSES, blockingChecks, requiredCheckNames, partitionUnclaimed, unclaimedBlockerClearedOrders, answerOrders, withAnswerLabel, withoutEndedAnswerSessions, withPrOwners, ownerOfPr, ANSWER_PREFIX, reviewBlocked, reviewBlockedOrders, HOLD_RED_JOBS }
   from "../work-gate.ts";
 import { SESSION_PREFIX } from "../project-vocabulary.ts";
 import { forgetRefusedReads } from "../ticket-port/rows-by-label.ts";
@@ -71,24 +44,14 @@ beforeEach(() => forgetRefusedReads());
 // can assert what the membership BUYS rather than only that the name is in the list. `wake.ts` runs
 // nothing on import (its `main()` is behind an `import.meta.url` guard) and these three are pure, so this
 // costs the `no-token` promise at the top of this file nothing.
-import { readLedger, undelivered, addressed, WAKE_TTL_MS, JUDGMENT_TTL_MS, deliver, escalateStuck,
-  MAX_DELIVERIES, deliveryCounts } from "../wake.ts";
+import { addressed, deliver, escalateStuck, MAX_DELIVERIES } from "../wake.ts";
 // #2237: the decider that REFUSES a launch, so the order's named launch directory is checked against it
 // rather than read by a reviewer. Pure over an injected filesystem.
-import { primaryLaunchRefusal, launchCheckoutOf }
-  from "../board-snapshot-scope.ts";
 
 // Each check carries a NAME because the caller narrows with newestPerName, which keys on it -- a fixture
 // without one is dropped, and the gate would read every PR as having no checks at all.
-import { closesUnresolvedOrders, closesUnresolvedPrs, primaryStaleOrders, withStalePrimaryNotice } from "../work-gate.ts";
-import { tmpDir } from "../lib/tmp-fixture.ts";
-import { workGateSource } from "../lib/work-gate-source.ts";
 // #5050: the gate's label lists are GraphQL connections, not `issue list`, so a fake answers them in the connection's shape (`rows-by-label-fixtures.ts`).
-import { connectionOf, readsClosedAnswerRows, closedAnswerConnection, readsRecentlyClosed, recentlyClosedConnection, readsRowsByLabel,
-  type FakeRow } from "./rows-by-label-fixtures.ts";
 const GREEN = [{ name: "ci", status: "COMPLETED", conclusion: "SUCCESS" }];
-const RED = [{ name: "ci", status: "COMPLETED", conclusion: "FAILURE" }];
-const PENDING = [{ name: "ci", status: "IN_PROGRESS", conclusion: null }];
 const HEAD = "abc12345deadbeefcafe000011112222";
 
 /** @param n PR number @param rollup its checks @param comments its comments */
