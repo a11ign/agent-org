@@ -34,6 +34,10 @@ import { printDiagnostic, processState } from "./triage-provider.ts";
 export const OUTSIDE_TRUNK_SWITCH = "outside.trunk";
 /** The least time between two runs from the host gate; the scheduled workflow and `--force` ignore it. */
 export const INTERVAL_MS = 10 * 60_000;
+/** Commits kept owed between runs; past this the oldest are dropped, said. */
+export const MAX_OWED = 200;
+/** Names a file for the state, for a runner that has no host declaration (the scheduled workflow) and keeps the file between runs itself. */
+export const STATE_PATH_ENV = "OUTSIDE_TRUNK_STATE";
 /** The commits looked at when nothing says how long it has been (a first run, or a runner with no state). */
 export const DEFAULT_WINDOW_MINUTES = 60;
 const MIN_WINDOW_MINUTES = 30;
@@ -47,7 +51,8 @@ const CANNOT_ASK = 2;
 /** One script, by file name beside this one, and its arguments. */
 export type Check = { name: string; script: string; args: string[] };
 export type Outcome = { name: string; code: number | null; line: string };
-export type OutsideTrunkState = { at: number; checked: Record<string, true> };
+/** `owed` is the commits asked and not answered (a could-not-ask, a timeout, or past the per-run cap), kept by name because the window moves on and would lose them. */
+export type OutsideTrunkState = { at: number; checked: Record<string, true>; owed: string[] };
 export type OutsideTrunkResult = { ran: false; why: "off" | "paced" | "commits-unreadable" } | { ran: true; outcomes: Outcome[]; skipped: number };
 export type OutsideTrunkDeps = {
   switches: Readonly<Record<string, boolean | undefined>>;
@@ -93,9 +98,12 @@ export function outsideTrunk(deps: OutsideTrunkDeps): OutsideTrunkResult {
     deps.say(`outside-trunk: the commits of the last ${window}m could not be read, so nothing ran and nothing was marked answered`);
     return { ran: false, why: "commits-unreadable" };
   }
+  // The commits owed from earlier runs come first and are asked whether or not the window still reaches them: `at` moves on every run, so a commit left out of `checked` would
+  // otherwise fall out of `git log --since` and never be asked again.
   const checked: Record<string, true> = {};
   for (const sha of commits) if (state?.checked[sha] === true) checked[sha] = true;
-  const owed = commits.filter((sha) => checked[sha] !== true);
+  const everyone = [...new Set([...(state?.owed ?? []), ...commits])];
+  const owed = everyone.filter((sha) => checked[sha] !== true);
   const asked = owed.slice(0, MAX_SHAS_PER_RUN);
   const outcomes: Outcome[] = [];
   const note = (outcome: Outcome): Outcome => { deps.say(`outside-trunk: ${outcome.line}`); outcomes.push(outcome); return outcome; };
@@ -104,8 +112,11 @@ export function outsideTrunk(deps: OutsideTrunkDeps): OutsideTrunkResult {
     const answered = commitChecks(sha).map((check) => note(deps.run(check)));
     if (answered.every((o) => o.code === 0 || o.code === 1)) checked[sha] = true;
   }
+  const stillOwed = owed.filter((sha) => checked[sha] !== true);
+  const kept = stillOwed.slice(-MAX_OWED);
+  if (kept.length < stillOwed.length) deps.say(`outside-trunk: ${stillOwed.length - kept.length} commits owed a check were dropped (more than ${MAX_OWED} owed); the oldest are not asked`);
   note(deps.run({ name: "board:liveness", script: "board-schedule-liveness.ts", args: ["--post"] }));
-  deps.writeState({ at: deps.now, checked });
+  deps.writeState({ at: deps.now, checked, owed: kept });
   return { ran: true, outcomes, skipped: owed.length - asked.length };
 }
 
@@ -125,24 +136,36 @@ const firstLine = (text: string): string => text.split("\n").map((line) => line.
 /** The live reads: the project's checkout, its repository from the home declaration, and the state file beside the wake ledger. */
 export function liveDeps(over: Partial<Pick<OutsideTrunkDeps, "switches" | "force" | "say">> = {}): OutsideTrunkDeps {
   const say = over.say ?? printDiagnostic;
-  const statePath = stateEntryPath("outside-trunk");
+  const statePath = (): string => process.env[STATE_PATH_ENV] ?? stateEntryPath("outside-trunk");
   return {
     switches: over.switches ?? readSwitches(decisionSwitchesPath(HOME_CHECKOUT), { diagnostic: say, state: processState, read: readFileSync }),
     force: over.force,
     now: Date.now(),
     say,
     readState: () => {
+      let text: string;
       try {
-        const parsed = JSON.parse(readFileSync(statePath, "utf8")) as Partial<OutsideTrunkState>;
-        return typeof parsed.at === "number" && typeof parsed.checked === "object" && parsed.checked !== null ? { at: parsed.at, checked: parsed.checked } : null;
-      } catch {
+        text = readFileSync(statePath(), "utf8");
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") say(`outside-trunk: the state could not be read (${firstLine(String(err))}), so it runs as a first run`);
         return null;
       }
+      try {
+        const parsed = JSON.parse(text) as Partial<OutsideTrunkState>;
+        if (typeof parsed.at === "number" && typeof parsed.checked === "object" && parsed.checked !== null) {
+          return { at: parsed.at, checked: parsed.checked, owed: Array.isArray(parsed.owed) ? parsed.owed.filter((sha): sha is string => typeof sha === "string") : [] };
+        }
+      } catch {
+        // falls to the line below
+      }
+      say("outside-trunk: the state file is not a state, so it runs as a first run");
+      return null;
     },
     writeState: (state) => {
       try {
-        if (!existsSync(dirname(statePath))) mkdirSync(dirname(statePath), { recursive: true });
-        writeFileSync(statePath, JSON.stringify(state));
+        const path = statePath();
+        if (!existsSync(dirname(path))) mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, JSON.stringify(state));
       } catch (err) {
         say(`outside-trunk: the state could not be written (${firstLine(String(err))}), so the next run asks the same commits again`);
       }

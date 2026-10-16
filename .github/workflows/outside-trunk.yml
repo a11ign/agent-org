@@ -39,8 +39,17 @@ jobs:
       - name: The tool's dependencies
         working-directory: tool
         run: npm install --omit=dev --ignore-scripts --no-package-lock
+      # THE STATE IS KEPT BETWEEN RUNS BY THE CACHE, not by a host: a runner has no `host.json`, so `OUTSIDE_TRUNK_STATE` names the file and each run restores the newest one and saves its own
+      # (the key carries the run id, so a run never finds its own key and always saves). It holds the commits answered and the commits still owed; a lost cache is a first run (the default window).
+      - name: The state of the last run
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/outside-trunk-state
+          key: outside-trunk-state-${{ github.run_id }}
+          restore-keys: outside-trunk-state-
       - name: Close the rows merged lately, check the new commits, and ask whether the board still arrives (does nothing while the flag is off)
         working-directory: project
         env:
           GH_TOKEN: ${{ secrets.OUTSIDE_TRUNK_TOKEN }}
+          OUTSIDE_TRUNK_STATE: ${{ runner.temp }}/outside-trunk-state/state.json
         run: node ../tool/src/bin.ts outside-trunk --force

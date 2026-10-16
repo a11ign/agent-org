@@ -4,12 +4,13 @@
 // the second actor beside the first. `closeOnePr` is the REAL one over a fake `gh` that remembers what it closed, so "finds the work done and does nothing" is read from the sweep
 // the job also runs, not from a stand-in. Mutations are in the PR's `.acceptance/` file.
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { test } from "node:test";
 import { closeOnePr } from "./close-rows-sweep.ts";
 import { COMMANDS } from "./commands.ts";
-import { workGateSource } from "./lib/work-gate-source.ts";
-import { INTERVAL_MS, MAX_SHAS_PER_RUN, OUTSIDE_TRUNK_SWITCH, commitChecks, exitCodeOf, outsideTrunk, outsideTrunkOn, windowMinutes, type Check, type Outcome, type OutsideTrunkDeps, type OutsideTrunkState } from "./outside-trunk.ts";
+import { tmpDir } from "./lib/tmp-fixture.ts";
+import { recordRouteOutcomesOnHost } from "./work-gate/route-outcome-pass.ts";
+import { INTERVAL_MS, MAX_OWED, MAX_SHAS_PER_RUN, OUTSIDE_TRUNK_SWITCH, STATE_PATH_ENV, commitChecks, exitCodeOf, liveDeps, outsideTrunk, outsideTrunkOn, windowMinutes, type Check, type Outcome, type OutsideTrunkDeps, type OutsideTrunkState } from "./outside-trunk.ts";
 
 const NOW = 10_000_000_000;
 const ON = { [OUTSIDE_TRUNK_SWITCH]: true };
@@ -56,7 +57,7 @@ test("2. ON runs the sweep, then each commit's revert guard and liveness, then t
   assert.deepEqual(ran[1].args, [`--merge=${sha(1)}`]);
   assert.deepEqual(ran[2].args, [`--sha=${sha(1)}`]);
   assert.deepEqual(ran.at(-1)?.args, ["--post"]);
-  assert.deepEqual(written, [{ at: NOW, checked: { [sha(1)]: true, [sha(2)]: true } }]);
+  assert.deepEqual(written, [{ at: NOW, checked: { [sha(1)]: true, [sha(2)]: true }, owed: [] }]);
 });
 
 test("3. THE SECOND ACTOR DOES NOTHING TWICE: the same commits asked again run the sweep and the board check and no commit check", () => {
@@ -123,6 +124,7 @@ test("6. A COMMIT IS ANSWERED ONLY BY VERDICTS: a refusal (1) is an answer, a co
   const timedOut = rig({ answers: { [`trunk-revert-guard ${sha(1).slice(0, 10)}`]: null } });
   outsideTrunk(timedOut.deps);
   assert.equal(timedOut.state()?.checked[sha(1)], undefined, "a child with no exit code is not an answer");
+  assert.deepEqual(timedOut.state()?.owed, [sha(1)], "and it is kept owed by name");
 });
 
 test("7. A LONG WINDOW IS TAKEN IN PARTS: only MAX_SHAS_PER_RUN commits are asked and the rest are reported skipped, then asked next run", () => {
@@ -135,6 +137,63 @@ test("7. A LONG WINDOW IS TAKEN IN PARTS: only MAX_SHAS_PER_RUN commits are aske
   const second = outsideTrunk({ ...deps, force: true, now: NOW + 1 });
   assert.equal(second.ran && second.skipped, 0);
   assert.deepEqual(names(ran).filter((n) => n.startsWith("trunk-revert-guard")), many.slice(MAX_SHAS_PER_RUN).map((s) => `trunk-revert-guard ${s.slice(0, 10)}`));
+});
+
+test("7b. AN UNANSWERED COMMIT OUTLIVES THE WINDOW: `at` moves on every run, so the commit is kept owed by name and asked again after a real `git log --since` would no longer reach it", () => {
+  const minute = 60_000;
+  const committedAt: Record<string, number> = { [sha(1)]: NOW - 20 * minute, [sha(2)]: NOW - 19 * minute };
+  // The commits the way the live read gives them: those newer than the window, oldest first.
+  const reach = (clock: () => number) => (minutes: number): string[] => Object.keys(committedAt).filter((s) => committedAt[s] >= clock() - minutes * minute);
+  const failing = { [`workflow:liveness ${sha(2).slice(0, 10)}`]: 2 } as Record<string, number | null>;
+  const { deps, ran, state } = rig({ answers: failing });
+  let clock = NOW;
+  deps.commits = reach(() => clock);
+  outsideTrunk(deps);
+  assert.deepEqual(state()?.owed, [sha(2)], "the run that could not ask left the commit owed");
+  const later = NOW + 3 * 3_600_000;
+  clock = later;
+  assert.deepEqual(deps.commits(windowMinutes(NOW, later)), [], "CONTROL: three hours on, the window no longer reaches either commit (what the live read does)");
+  ran.length = 0;
+  failing[`workflow:liveness ${sha(2).slice(0, 10)}`] = 0;
+  outsideTrunk({ ...deps, force: true, now: later });
+  assert.deepEqual(names(ran).filter((n) => n.includes(sha(2).slice(0, 10))), [`trunk-revert-guard ${sha(2).slice(0, 10)}`, `workflow:liveness ${sha(2).slice(0, 10)}`], "it is asked again though no window reaches it");
+  assert.deepEqual(names(ran).filter((n) => n.includes(sha(1).slice(0, 10))), [], "the answered commit is not");
+  assert.deepEqual(state()?.owed, [], "and it is no longer owed");
+});
+
+test("7c. THE OWED LIST IS BOUNDED: past MAX_OWED the oldest are dropped and the line says so", () => {
+  const many = Array.from({ length: MAX_OWED + 3 }, (_, i) => sha(i + 1));
+  const never: Record<string, number | null> = {};
+  for (const s of many) never[`trunk-revert-guard ${s.slice(0, 10)}`] = 2;
+  const { deps, said, state } = rig({ commits: many, answers: never });
+  // Only MAX_SHAS_PER_RUN are asked, so the rest stay owed unasked; the cap is the bound on what is carried.
+  outsideTrunk(deps);
+  assert.equal(state()?.owed.length, MAX_OWED);
+  assert.deepEqual(state()?.owed.slice(-1), [sha(MAX_OWED + 3)], "the newest are kept");
+  assert.match(said.join("\n"), /3 commits owed a check were dropped/);
+});
+
+test("7d. THE STATE FILE: OUTSIDE_TRUNK_STATE names it with no host declaration, it round-trips owed, and an unreadable one is said, not silent", () => {
+  const dir = tmpDir("outside-trunk-state-");
+  const path = `${dir}/state.json`;
+  const saved = process.env[STATE_PATH_ENV];
+  process.env[STATE_PATH_ENV] = path;
+  try {
+    const said: string[] = [];
+    const live = liveDeps({ switches: ON, say: (line) => said.push(line) });
+    assert.equal(live.readState(), null, "no file is a first run, quietly");
+    assert.deepEqual(said, []);
+    live.writeState({ at: 5, checked: { [sha(1)]: true }, owed: [sha(2)] });
+    assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { at: 5, checked: { [sha(1)]: true }, owed: [sha(2)] });
+    assert.deepEqual(live.readState(), { at: 5, checked: { [sha(1)]: true }, owed: [sha(2)] });
+    writeFileSync(path, "{not json");
+    assert.equal(live.readState(), null);
+    assert.match(said.join("\n"), /state file is not a state/, "CONTROL: a file that is there and unreadable is said");
+    writeFileSync(path, JSON.stringify({ at: 5, checked: {} }));
+    assert.deepEqual(live.readState(), { at: 5, checked: {}, owed: [] }, "a state from before `owed` reads with none owed");
+  } finally {
+    if (saved === undefined) delete process.env[STATE_PATH_ENV]; else process.env[STATE_PATH_ENV] = saved;
+  }
 });
 
 test("8. COMMITS THAT CANNOT BE READ: nothing runs, nothing is written, and the line says so", () => {
@@ -169,7 +228,20 @@ test("11. WIRING: every script the checks name exists beside the module and is a
     assert.ok(Object.values(COMMANDS).includes(script), `${script} is a registered command`);
   }
   assert.equal(COMMANDS["outside-trunk"], "outside-trunk.ts");
-  const gate = workGateSource();
-  assert.match(gate, /^\s*outsideTrunkOnHost\(switches\);/m, "the host gate calls the home with the switches it already read");
   assert.equal(OUTSIDE_TRUNK_SWITCH, "outside.trunk");
+});
+
+test("12. THE GATE'S CALL IS MADE: the host pass hands the home the switches it read, once per tick, on and off alike, and a listing it did not complete does not stop it", () => {
+  for (const switches of [{ [OUTSIDE_TRUNK_SWITCH]: true }, {}]) {
+    for (const listed of [true, false]) {
+      const handed: unknown[] = [];
+      let reads = 0;
+      const result = recordRouteOutcomesOnHost(listed, { gh: () => { throw new Error("gh was asked"); }, readSwitchesOf: () => { reads++; return switches; }, outside: (given) => { handed.push(given); } });
+      assert.equal(reads, 1, "the switches are read once and shared");
+      assert.deepEqual(handed, [switches], "the home got the very switches that were read");
+      assert.deepEqual(result, { written: [], owed: 0 });
+    }
+  }
+  const failed = recordRouteOutcomesOnHost(true, { gh: () => "", readSwitchesOf: () => ON, outside: () => { throw new Error("the home blew up"); } });
+  assert.deepEqual(failed, { written: [], owed: 0 }, "CONTROL: a home that throws is caught by the pass's own guard and the tick goes on");
 });
