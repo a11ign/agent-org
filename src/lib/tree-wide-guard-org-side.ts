@@ -102,6 +102,14 @@ export function runTreeWideGuards(files: string[], cwd: string, { env = process.
 export const OUTSIDE_GUARDS_FLAG = "outside.guards";
 export const outsideGuardsOn = (switches: Readonly<Record<string, unknown>> | null | undefined): boolean => switches?.[OUTSIDE_GUARDS_FLAG] === true;
 
+/** The a11ign `guardSweep` job's verdict on a head, read off the pull request's check rollup already narrowed to the newest run per name: `pass` on SUCCESS, `fail` on FAILURE or TIMED_OUT,
+ *  and `null` for everything else (absent, still running, skipped, cancelled), which the comparison reads as not-compared, never as agreement. */
+export function guardSweepJobOf(rollup: { name?: string; conclusion?: string | null; }[] | null | undefined): "pass" | "fail" | null {
+  const run = (rollup ?? []).find((check) => /(^|[\s/])guardSweep$/.test(String(check?.name ?? "")));
+  const conclusion = String(run?.conclusion ?? "").toUpperCase();
+  return conclusion === "SUCCESS" ? "pass" : conclusion === "FAILURE" || conclusion === "TIMED_OUT" ? "fail" : null;
+}
+
 type GuardVerdict = import("../acceptance-commands.ts").OrgSideVerdict;
 
 /** `agree`: the same pass or fail as the job. `disagree`: the two differ, which the canary counts. `not-compared`: the home did not run to an end, or the job's verdict was not read. */

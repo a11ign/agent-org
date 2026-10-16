@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { OUTSIDE_GUARDS_FLAG, declaresTreeWideGuard, outsideGuardsOn, runTreeWideGuards, shadowGuardsVerdict, treeWideGuardFilesIn } from "./tree-wide-guard-org-side.ts";
+import { OUTSIDE_GUARDS_FLAG, declaresTreeWideGuard, guardSweepJobOf, outsideGuardsOn, runTreeWideGuards, shadowGuardsVerdict, treeWideGuardFilesIn } from "./tree-wide-guard-org-side.ts";
 import { sandboxGitEnv } from "./git-env.ts";
 import { tmpDir } from "./tmp-fixture.ts";
 import { acceptanceGateOf, firstRefusalOf, treeWideGuardVerdict } from "../work-gate/pr-orders.ts";
@@ -215,6 +215,7 @@ test("(1580 d) the tick: `outside.guards` records a shadow verdict beside the jo
   const asked: string[] = [];
   const said: string[] = [];
   const guardsOf = (pr: any): OrgSideVerdict => { asked.push(`g${pr.number}`); return { kind: "fail", head: pr.headRefOid, lines: ["✖ leak"], why: "tree-wide guards FAILED" }; };
+  const rollup = (conclusion: string) => [{ name: "guardSweep", conclusion, completedAt: "2026-10-16T10:00:00Z" }, { name: "ts", conclusion: "FAILURE", completedAt: "2026-10-16T10:00:00Z" }];
   const common = { openPrs: prs, scope: BASE, declared: DECLARED, guardsOf, env: {}, log: (line: string) => { said.push(line); } };
   for (const switches of [{}, { [OUTSIDE_GUARDS_FLAG]: false }]) {
     assert.deepEqual(gateUnarmedOnAcceptance([1, 2], { ...common, outsideSwitches: () => switches }), { armable: [1, 2], withheld: [] });
@@ -223,5 +224,19 @@ test("(1580 d) the tick: `outside.guards` records a shadow verdict beside the jo
   const on = gateUnarmedOnAcceptance([1, 2], { ...common, outsideSwitches: () => ON });
   assert.deepEqual(asked, ["g1"], "on: the eligible agent pull request only");
   assert.deepEqual(on, { armable: [1, 2], withheld: [] }, "a failing SHADOW verdict withholds nothing");
-  assert.ok(said.some((line) => /outside-guards: SHADOW #1 fail/.test(line)), said.join("|"));
+  assert.ok(said.some((line) => /outside-guards: SHADOW #1 fail.*beside the job's unread: not-compared/.test(line)), said.join("|"));
+  said.length = 0;
+  for (const [conclusion, expected] of [["SUCCESS", "pass: disagree"], ["FAILURE", "fail: agree"], ["IN_PROGRESS", "unread: not-compared"]]) {
+    gateUnarmedOnAcceptance([1], { ...common, openPrs: [agentPr({ number: 1, statusCheckRollup: rollup(conclusion) })], outsideSwitches: () => ON });
+    assert.ok(said.pop()?.includes(`beside the job's ${expected}`), `${conclusion} -> ${expected}`);
+  }
+});
+
+test("(1580 e) the job's verdict is the `guardSweep` check alone: its conclusion maps to pass/fail, and absence, a pending run or another check's failure is null", () => {
+  assert.equal(guardSweepJobOf([{ name: "guardSweep", conclusion: "SUCCESS" }]), "pass", "POSITIVE CONTROL");
+  assert.equal(guardSweepJobOf([{ name: "ci / guardSweep", conclusion: "FAILURE" }]), "fail");
+  assert.equal(guardSweepJobOf([{ name: "guardSweep", conclusion: "TIMED_OUT" }]), "fail");
+  for (const rollup of [[], null, undefined, [{ name: "guardSweep", conclusion: "" }], [{ name: "guardSweep", conclusion: "CANCELLED" }], [{ name: "ts", conclusion: "SUCCESS" }], [{ name: "notguardSweep", conclusion: "SUCCESS" }]]) {
+    assert.equal(guardSweepJobOf(rollup as never), null, JSON.stringify(rollup));
+  }
 });

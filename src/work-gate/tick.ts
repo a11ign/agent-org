@@ -23,8 +23,9 @@ import { recordIgnoredChairmanLabels, recordTickFailures as recordFailuresOf } f
 import { readJsonObject, writeJsonObject } from "../claim-stall.ts";
 import { requiredWhenNeeded, perPullRequestOrders, greenUnarmedOrders, type UnarmedFacts, reviewBlockedOrders, stalledPrOrders,
   STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr, ROW_REVIEW_SKILL_FLAG, PR_OWNER_ROUTING_FLAG, withholdOutsideFollowUps, routeDeadOwnerRefusals, reviewOnlyRefs, SAME_HEAD_REFAIL_FLAG, acceptanceGateOf, firstRefusalOf, treeWideGuardVerdict, settleOutsideArm } from "./pr-orders.ts";
-import { treeWideGuardFilesIn, runTreeWideGuards, outsideGuardsOn, shadowGuardsVerdict } from "../lib/tree-wide-guard-org-side.ts"; // agent-org#1503, #1580
+import { treeWideGuardFilesIn, runTreeWideGuards, outsideGuardsOn, shadowGuardsVerdict, guardSweepJobOf } from "../lib/tree-wide-guard-org-side.ts"; // agent-org#1503, #1580
 import { readFileSync } from "node:fs";
+import { newestPerName } from "../newest-check-run.ts";
 import { decisionSwitchesPath, readSwitches } from "../decision-provider.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 import { printDiagnostic, processState } from "../triage-provider.ts";
@@ -1471,8 +1472,8 @@ export function gateUnarmedOnAcceptance(unarmed: number[], { openPrs, scope, env
       discover: (cwd) => treeWideGuardFilesIn(cwd), run: (files, cwd) => runTreeWideGuards(files, cwd), release: releasePullRequestCheckout({ repoRoot }) }));
   /** agent-org#1580: the outside home's SHADOW. The verdict is recorded in the log, `blocks` is false, and the gate is handed `null` (the org said nothing), so it arms exactly as without the flag. */
   const shadowOf = (pr: any): null => {
-    const shadow = shadowGuardsVerdict(pr, { switches: outsideSwitches(), verdictOf: guards });
-    if (shadow.on) log(`outside-guards: SHADOW #${pr.number} ${shadow.verdict.kind} (${shadow.verdict.why}); blocks nothing.\n`);
+    const shadow = shadowGuardsVerdict(pr, { switches: outsideSwitches(), verdictOf: guards, job: guardSweepJobOf(newestPerName(pr?.statusCheckRollup ?? [])) });
+    if (shadow.on) log(`outside-guards: SHADOW #${pr.number} ${shadow.verdict.kind} (${shadow.verdict.why}) beside the job's ${shadow.job ?? "unread"}: ${shadow.agreement}; blocks nothing.\n`);
     return null;
   };
   const gated = acceptanceGateOf(unarmed, {
