@@ -50,7 +50,8 @@
 //      see the workflow step for what treats it as one)
 //   2  a lookup failed. INCONCLUSIVE, never "fine".
 import { execFileSync } from "node:child_process";
-import { refuseUnknownFlags } from "./lib/cli-flags.ts";
+import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
+import { outsideArmOn } from "./arm-pr.ts";
 import { sandboxGitEnv } from "./lib/git-env.ts";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -391,7 +392,13 @@ function reportExaminedPr(result: ReturnType<typeof examinePr>, sinks: { stalled
 }
 
 function main() {
-  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/queue-stalled.ts" });
+  refuseUnknownFlags(["--outside-switches="], { entry: import.meta.url, command: "node packages/agent-org/src/queue-stalled.ts" });
+  // agent-org#1573: RUN FROM OUTSIDE THE PROJECT, the report is made only when the project's `decisions.json` switches `outside.arm` ON; it reads and reports, so the flag only decides whether the second copy exists.
+  const switchesPath = flagValue(process.argv, "outside-switches");
+  if (switchesPath !== undefined && !outsideArmOn(switchesPath)) {
+    console.log(`QUEUE: outside.arm is off (${switchesPath}), so the outside home examines nothing. The project's own report is unaffected.`);
+    process.exit(EXIT.EXAMINED);
+  }
 
   const repo = process.env.GITHUB_REPOSITORY;
   if (!repo) {
