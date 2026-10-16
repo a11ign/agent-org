@@ -7,18 +7,19 @@
 // blind hour. `a11ign-trace-ingest.timer` runs THIS FILE every five minutes: it ingests (`trace -- --ingest`, in a child, so a failing ingest cannot stop the check that follows
 // it) and then asks the question below.
 //
-// "WORKING" IS A TRANSCRIPT THAT GAINED A MESSAGE INSIDE THE WINDOW AND PAST THE HOLD-BACK, which needs no GitHub call: nobody working means silence is not an outage, and the same eleven-minute-old
-// store with every transcript quiet for an hour is NOT stale. A message inside the hold-back is not counted (see THE HOLD-BACK below). A TOUCHED FILE IS NOT A MESSAGE (a11ign/a11ign#928, three false incidents on 2026-10-10): a session that has finished its last message
-// still rewrites its `last-prompt` and `cost-state` lines, which carry no timestamp and no message, so its file moves while it produces no turn. The test is therefore the timestamp of the
-// newest `assistant`/`user` line (a Codex rollout's `response_item`), and the file's mtime is only the cheap "could it hold one" filter in front of reading it.
-// THE NEWEST MESSAGE AND THE NEWEST TURN ARE BOTH READ FROM THE TAIL of the file, not from all of it: the store is 537 MB and the question is asked every five minutes. The turn read goes
-// back past the tail only while what it has found is older than the window (a11ign/agent-org#709: after a cold start the file's end holds the oldest turns).
-//
-// THE HOLD-BACK, measured (a11ign/agent-org#836, 2026-10-11). The ingest holds back every message written in the last `QUIET_MS` (5 minutes, store.ts) and turns it on a later run, so a
-// session that goes quiet and then speaks again has messages NEWER than the store's newest turn that no turn can exist for yet: 37 were held back at 05:53:12Z while the store was current, and
-// the 05:58 ingest turned them. The check therefore counts a message as work the ingest is OWED a turn for only once it is past the hold-back. A message still inside the hold-back is not
-// evidence of an outage, however recent, so such a burst reads not stale until one of its messages is five minutes old. A healthy store reads about five minutes old right after an ingest.
-// THE CLOCK IS READ BEFORE THE INGEST (a11ign/agent-org#1091, see `ingestThenCheck`): the ingest held a message back against ITS start, so the check judges "past the hold-back" against that same reading.
+// THE RULE, WHAT IS OWED (a11ign/agent-org#1570, metrics-outage repeat of 2026-10-16). STALE is not "no turn anywhere for ten minutes": a long tool call is a session that writes no
+// message for ten minutes and is healthy, and the store's newest turn is then ten minutes old with nothing owed. The ingest is OWED a turn for a message it has had two runs to turn:
+// the hold-back (`QUIET_MS`, store.ts) keeps a message out of the run that reads it, so it is turned on the run after, one interval (five minutes, the unit's timer) later. A message
+// is owed once it was past the hold-back at the PREVIOUS run, i.e. `QUIET_MS + INGEST_EVERY_MS` (ten minutes) old now. The store is STALE when a transcript's newest owed message has
+// NO turn of its own in the store. Only a turn-producing message is one: a Claude `assistant` line with its `message.usage` (the store builds a turn from it), or a Codex
+// `token_usage_record`. A tool call's result is a `user` line that produces no turn, so a call that runs for ten minutes owes nothing until its own turn is due.
+// A TOUCHED FILE IS NOT A MESSAGE (a11ign/a11ign#928, three false incidents on 2026-10-10): a session that has finished its last message still rewrites its `last-prompt` and
+// `cost-state` lines, which carry no timestamp and no message, so its file moves while it produces no turn. The test reads the timestamp of the line, never the file's mtime,
+// and the mtime is only the cheap "could it hold one" filter in front of reading it.
+// THE OWED MESSAGE IS READ FROM THE TAIL of each transcript, and the store's turns are read from ITS tail, back until every owed message is answered: the store is 537 MB and the question is
+// asked every five minutes (a11ign/agent-org#709: after a cold start the file's end holds the oldest turns, so the read goes on until each owed message's turn turns up or the file is exhausted).
+// A message is owed only inside a window (`OWED_WINDOW_MS`) of the ten-minute mark: an owed message older than that is not evidence that the ingest is failing now.
+// THE CLOCK IS READ BEFORE THE INGEST (a11ign/agent-org#1091, see `ingestThenCheck`): the ingest held a message back against ITS start, so the check judges "owed" against that same reading.
 //
 // ONE INCIDENT PER EPISODE. An episode OPENS the first run the store is stale and ENDS only when a `turn` is inside the window again: a run that finds the store old and nobody
 // working changes nothing, so an outage that spans a quiet hour is one incident and not two. Each of the two effects (the comment on the standing row, the order to the owning seat)
@@ -26,14 +27,21 @@
 import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { rolloutId } from "./codex-turns.ts";
 import { QUIET_MS } from "./store.ts";
 
-/** The chairman's number: no `turn` for this long while a session is working. Also how recent a transcript's newest message must be to count as working, once it is past the hold-back. */
+/** The chairman's number: how old a message may be, and still be the one a `turn` is owed for, and how recent a transcript's newest message must be to count as working. */
 export const STALE_AFTER_MS = 10 * 60 * 1000;
 const MS_PER_MINUTE = 60 * 1000;
 const MINUTES_PER_HOUR = 60;
+/** The ingest timer's interval (host-units.ts runs this unit every five minutes): one run holds a message back, the next one turns it. */
+export const INGEST_EVERY_MS = 5 * MS_PER_MINUTE;
+/** A message is owed a turn once it was past the hold-back at the PREVIOUS run: the hold-back plus one interval before the check (ten minutes). */
+export const OWED_AFTER_MS = QUIET_MS + INGEST_EVERY_MS;
+/** Owed messages are looked for this far back from `OWED_AFTER_MS` and no further: a message older than the window is not evidence that the ingest is failing now. */
+const OWED_WINDOW_MS = STALE_AFTER_MS;
 /** The tail read first, and the largest chunk the read grows to while the newest turn found is older than the window or none is found (a long run of `gh_call`s, a cold start's old turns). */
 const TAIL_FIRST_BYTES = 1024 * 1024;
 const TAIL_LAST_BYTES = 32 * 1024 * 1024;
@@ -55,7 +63,9 @@ export const INCIDENT_CLASS = "metrics-outage";
 export const SENDER = "a11ign-trace-ingest.service";
 
 export type TranscriptRoot = { dir: string; depth: number; optional?: boolean };
-export type Freshness = { newestTurnAt: number | null; ageMs: number | null; working: boolean; stale: boolean };
+/** A message the ingest is owed a turn for: a turn-producing line of the transcript `transcript` (the key the store's turn carries) at `at`. */
+export type Owed = { transcript: string; at: number };
+export type Freshness = { newestTurnAt: number | null; ageMs: number | null; working: boolean; unmet: Owed[]; stale: boolean };
 export type Episode = { open: boolean; since: number | null; commented: boolean; ordered: boolean };
 
 /** Where a transcript lives, as `trace.ts` reads them: Claude Code at `projects/<project>/<id>.jsonl`, Codex at `sessions/<year>/<month>/<day>/rollout-*.jsonl`; Codex may be absent. */
@@ -75,9 +85,29 @@ export function transcriptRoots(home: string = homedir()): TranscriptRoot[] {
 export function newestTurnAt(storePath: string, now: number = Date.now()): number | null {
   if (!existsSync(storePath)) return null;
   const inWindow = now - STALE_AFTER_MS;
+  let newest: number | null = null;
+  for (const lines of linesFromEnd(storePath)) {
+    for (const line of lines) {
+      if (!line.includes(TURN_KIND)) continue;
+      try {
+        const { at } = JSON.parse(line);
+        if (typeof at === "number" && (newest === null || at > newest)) newest = at;
+      } catch {
+        // the line being written
+      }
+    }
+    if (newest !== null && newest >= inWindow) return newest;
+  }
+  return newest;
+}
+
+/**
+ * The whole lines of a store, a chunk at a time from its END: each yield is one chunk's lines in file order, the newest chunk first. A chunk that does not begin the file begins
+ * in the middle of a line, which the chunk before it finishes, so a line is yielded only whole. Stopping early closes the file.
+ */
+function* linesFromEnd(storePath: string): Generator<string[]> {
   const fd = openSync(storePath, "r");
   try {
-    let newest: number | null = null;
     let end = fstatSync(fd).size;
     let carry: Buffer = Buffer.alloc(0); // the head of the line the chunk after this one (nearer the end) began in the middle of
     for (let window = TAIL_FIRST_BYTES; end > 0; window = Math.min(window * 2, TAIL_LAST_BYTES)) {
@@ -88,21 +118,27 @@ export function newestTurnAt(storePath: string, now: number = Date.now()): numbe
       const firstBreak = start > 0 ? bytes.indexOf(10) : -1; // a chunk that does not begin the file begins in the middle of a line, which the chunk before it finishes
       carry = start > 0 ? bytes.subarray(0, firstBreak < 0 ? bytes.length : firstBreak) : Buffer.alloc(0);
       const whole = start > 0 ? (firstBreak < 0 ? "" : bytes.toString("utf8", firstBreak + 1)) : bytes.toString("utf8");
-      for (const line of whole.split("\n")) {
-        if (!line.includes(TURN_KIND)) continue;
-        try {
-          const { at } = JSON.parse(line);
-          if (typeof at === "number" && (newest === null || at > newest)) newest = at;
-        } catch {
-          // the line being written
-        }
-      }
-      if (newest !== null && newest >= inWindow) return newest;
+      yield whole.split("\n");
       end = start;
     }
-    return newest;
   } finally {
     closeSync(fd);
+  }
+}
+
+/** Every `turn` line of the store, newest chunk first, as its time and the transcript it was built from (absent for a turn that has none). */
+function* turnsFromEnd(storePath: string): Generator<{ at: number; transcript?: string }> {
+  for (const lines of linesFromEnd(storePath)) {
+    for (const line of lines) {
+      if (!line.includes(TURN_KIND)) continue;
+      let turn: any;
+      try {
+        turn = JSON.parse(line);
+      } catch {
+        continue; // the line being written
+      }
+      if (typeof turn?.at === "number") yield { at: turn.at, transcript: turn.transcript };
+    }
   }
 }
 
@@ -113,6 +149,11 @@ export function newestTurnAt(storePath: string, now: number = Date.now()): numbe
  * skipped and the read goes on back, so a tail that holds only messages inside the hold-back grows to the owed message behind them.
  */
 export function newestMessageAt(path: string, by: number = Infinity): number | null {
+  return newestLineAt(path, by, (record) => MESSAGE_TYPES.has(record?.type))?.at ?? null;
+}
+
+/** The newest line of a transcript that `wanted` accepts and that is at or before `by`, with its time, read from the tail as `newestMessageAt` reads it; `null` when none is found. */
+function newestLineAt(path: string, by: number, wanted: (record: any) => boolean): { at: number; record: any } | null {
   const fd = openSync(path, "r");
   try {
     const size = fstatSync(fd).size;
@@ -122,14 +163,14 @@ export function newestMessageAt(path: string, by: number = Infinity): number | n
       readSync(fd, bytes, 0, length, size - length);
       const lines = bytes.toString("utf8").split("\n");
       if (length < size) lines.shift(); // a window that does not begin the file begins in the middle of a line
-      let newest: number | null = null;
+      let newest: { at: number; record: any } | null = null;
       for (const line of lines) {
         if (!line.includes("\"timestamp\"")) continue;
         try {
           const record = JSON.parse(line);
-          if (!MESSAGE_TYPES.has(record?.type) || typeof record.timestamp !== "string") continue;
+          if (!wanted(record) || typeof record.timestamp !== "string") continue;
           const at = Date.parse(record.timestamp);
-          if (!Number.isNaN(at) && at <= by && (newest === null || at > newest)) newest = at;
+          if (!Number.isNaN(at) && at <= by && (newest === null || at > newest.at)) newest = { at, record };
         } catch {
           // the line being written
         }
@@ -139,6 +180,74 @@ export function newestMessageAt(path: string, by: number = Infinity): number | n
   } finally {
     closeSync(fd);
   }
+}
+
+/** A line the ingest turns into a `turn`: a Claude `assistant` line with its `message.usage` (the store builds the turn from it), or a Codex `token_usage_record` with its `response_id`. A user line, a tool's result included, makes no turn. */
+const producesTurn = (record: any): boolean => (record?.type === "assistant" && !!record.message?.usage) || (record?.type === "token_usage_record" && !!record.payload?.usage && !!record.payload?.response_id);
+
+/**
+ * The message of one transcript the ingest is owed a turn for, or `null`: its newest turn-producing line at or before the ten-minute mark, when that line is inside the window.
+ * The file's mtime is only the cheap filter (a message written before the window cannot be inside it); the line's own timestamp is the test.
+ */
+function owedOf(path: string, now: number): Owed | null {
+  const since = now - OWED_AFTER_MS - OWED_WINDOW_MS;
+  const modified = statSync(path, { throwIfNoEntry: false })?.mtimeMs ?? 0;
+  if (modified < since) return null;
+  let found: { at: number; record: any } | null;
+  try {
+    found = newestLineAt(path, now - OWED_AFTER_MS, producesTurn);
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException)?.code === "ENOENT") return null; // gone between the listing and the read
+    throw cause;
+  }
+  if (found === null || found.at < since) return null;
+  // a Claude transcript's turns are keyed by the file's name (store.ts `transcriptId`); a Codex rollout's by its uuid, and one with no uuid has no key and is not owed
+  const transcript = found.record.type === "assistant" ? basename(path, ".jsonl") : rolloutId(path);
+  return transcript ? { transcript, at: found.at } : null;
+}
+
+/** Every `.jsonl` a root holds at its depth, as `sessionsWorking` walks them; an optional root that is absent holds none. */
+function* transcriptPaths(roots: TranscriptRoot[]): Generator<string> {
+  const walk = function* (dir: string, depth: number): Generator<string> {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (depth > 0) {
+        if (entry.isDirectory()) yield* walk(path, depth - 1);
+      } else if (entry.name.endsWith(".jsonl")) {
+        yield path;
+      }
+    }
+  };
+  for (const { dir, depth, optional } of roots) {
+    if (optional && !existsSync(dir)) continue;
+    yield* walk(dir, depth);
+  }
+}
+
+/** The messages the ingest is owed a turn for, one at most per transcript: the newest owed message of each transcript under `roots` (see `owedOf`). */
+export function owedTurns({ roots, now }: { roots: TranscriptRoot[]; now: number; }): Owed[] {
+  const owed: Owed[] = [];
+  for (const path of transcriptPaths(roots)) {
+    const message = owedOf(path, now);
+    if (message !== null) owed.push(message);
+  }
+  return owed;
+}
+
+/**
+ * The owed messages the store has no turn for: each transcript's turn is looked for from the store's end, until a turn of that transcript at or after its owed message turns up
+ * (a turn is built from the transcript's last line of the message, so it is never older than the message), or the store is exhausted. A store that is absent holds none of them.
+ */
+export function unmetOwed(storePath: string, owed: Owed[]): Owed[] {
+  const unmet = new Map(owed.map((message) => [message.transcript, message]));
+  if (unmet.size > 0 && existsSync(storePath)) {
+    for (const turn of turnsFromEnd(storePath)) {
+      const message = turn.transcript === undefined ? undefined : unmet.get(turn.transcript);
+      if (message !== undefined && turn.at >= message.at) unmet.delete(message.transcript);
+      if (unmet.size === 0) break;
+    }
+  }
+  return [...unmet.values()];
 }
 
 /**
@@ -167,11 +276,12 @@ export function sessionsWorking({ roots, now, windowMs = STALE_AFTER_MS }: { roo
   return roots.some(({ dir, depth, optional }) => (optional && !existsSync(dir) ? false : written(dir, depth)));
 }
 
-/** Stale is old AND somebody working (a settled message in the window, see `sessionsWorking`). `ageMs` is `null` for a store with no turn at all, which is older than any window and so stale while anyone is working. */
-export function storeFreshness({ storePath, now, working }: { storePath: string; now: number; working: boolean; }): Freshness {
+/** Stale is an owed message with no turn (`unmet`, see the header). `ageMs` is `null` for a store with no turn at all; that alone is not stale, since an owed message is what makes it so. */
+export function storeFreshness({ storePath, now, roots }: { storePath: string; now: number; roots: TranscriptRoot[]; }): Freshness {
   const newest = newestTurnAt(storePath, now);
   const ageMs = newest === null ? null : Math.max(0, now - newest);
-  return { newestTurnAt: newest, ageMs, working, stale: working && (ageMs === null || ageMs > STALE_AFTER_MS) };
+  const unmet = unmetOwed(storePath, owedTurns({ roots, now }));
+  return { newestTurnAt: newest, ageMs, working: sessionsWorking({ roots, now }), unmet, stale: unmet.length > 0 };
 }
 
 const minutesOf = (ms: number) => Math.floor(ms / MS_PER_MINUTE);
@@ -182,19 +292,21 @@ export function freshnessLine(reading: Freshness): string {
   const newest = reading.newestTurnAt === null || reading.ageMs === null ? "the store holds no turn event" : `newest turn ${new Date(reading.newestTurnAt).toISOString()} (${howLong(reading.ageMs)} ago)`;
   const span = `written in the last ${minutesOf(STALE_AFTER_MS)} minutes and past the ${minutesOf(QUIET_MS)}-minute hold-back`;
   const who = reading.working ? `a session is working (a message ${span})` : `no session is working (no message ${span})`;
-  return `trace store: ${newest}; ${who}: ${reading.stale ? `STALE (no turn for ${minutesOf(STALE_AFTER_MS)} minutes while a session works)` : "not stale"}`;
+  const oldest = reading.unmet.reduce((min, message) => Math.min(min, message.at), Infinity);
+  const stale = reading.unmet.length === 0 ? "not stale" : `STALE (${reading.unmet.length} message${reading.unmet.length === 1 ? "" : "s"} owed a turn ${reading.unmet.length === 1 ? "has" : "have"} none; the oldest is from ${new Date(oldest).toISOString()})`;
+  return `trace store: ${newest}; ${who}: ${stale}`;
 }
 
 export const NO_EPISODE: Episode = Object.freeze({ open: false, since: null, commented: false, ordered: false });
 
 /**
- * PURE. The episode after this reading. A turn inside the window ends it. Old with nobody working changes nothing (it neither opens one nor closes the one that is open).
- * Old with somebody working opens one, once: an open episode stays as it is, `since` and the effects already sent included.
+ * PURE. The episode after this reading. A stale store (an owed message with no turn) opens one, once: an open episode stays as it is, `since` and the effects already sent included.
+ * A store that is not stale and has a turn inside the window ends it. Otherwise the reading changes nothing: a quiet store with no owed message is neither an incident nor its end.
  */
 export function advance(previous: Episode, reading: Freshness, now: number): Episode {
+  if (reading.stale) return previous.open ? previous : { open: true, since: now, commented: false, ordered: false };
   if (reading.ageMs !== null && reading.ageMs <= STALE_AFTER_MS) return NO_EPISODE;
-  if (!reading.stale) return previous;
-  return previous.open ? previous : { open: true, since: now, commented: false, ordered: false };
+  return previous;
 }
 
 /** The comment on the standing row: a marker line first, so a reader can find the episode, then what to look at. */
@@ -202,7 +314,7 @@ export function incidentComment(reading: Freshness, since: number): string {
   return `<!-- trace-freshness: stale since ${new Date(since).toISOString()} -->\n`
     + `**The trace store is stale** (class \`${INCIDENT_CLASS}\`, a11ign/a11ign#4437). ${freshnessLine(reading)}.\n\n`
     + "Look at `systemctl --user status a11ign-trace-ingest.service` and `journalctl --user -u a11ign-trace-ingest.service -n 50`, and run `trace -- --freshness`. "
-    + `The ingest runs every five minutes, so this is posted once for the episode and not again until the store has had a turn inside ${minutesOf(STALE_AFTER_MS)} minutes and has gone stale after that.`;
+    + `The ingest runs every five minutes, so this is posted once for the episode and not again until the store has turned what it is owed, has been current since, and has gone stale again.`;
 }
 
 /** The order to the owning seat, whose `Class:` line is the one `prompt:session` records it under. */
@@ -256,8 +368,8 @@ function writeEpisode(path: string, episode: Episode) {
  * ONE CHECK: the episode this reading leaves, written BEFORE the effects (a run killed between the two raises it again, and does not lose it), then each effect that has not landed,
  * then the episode with what landed. `raised` names the effects sent this run.
  */
-export async function checkAndRaise({ storePath, now, working, effects }: { storePath: string; now: number; working: boolean; effects: Effects; }): Promise<{ reading: Freshness; episode: Episode; raised: string[]; }> {
-  const reading = storeFreshness({ storePath, now, working });
+export async function checkAndRaise({ storePath, now, roots, effects }: { storePath: string; now: number; roots: TranscriptRoot[]; effects: Effects; }): Promise<{ reading: Freshness; episode: Episode; raised: string[]; }> {
+  const reading = storeFreshness({ storePath, now, roots });
   const path = episodeFileFor(storePath);
   const episode = advance(readEpisode(path, effects.log), reading, now);
   writeEpisode(path, episode);
@@ -296,8 +408,8 @@ function hostEffects(log: (line: string) => void): Effects {
 }
 
 /**
- * ONE RUN OF THE UNIT: the clock is read ONCE, BEFORE the ingest, and that reading is the `now` of both `sessionsWorking` and `storeFreshness` (a11ign/agent-org#1091). The ingest
- * holds a message back against the clock it started on, so a message is "owed a turn" only if it was `QUIET_MS` old at THAT reading. A `now` taken after the ingest returns is later by
+ * ONE RUN OF THE UNIT: the clock is read ONCE, BEFORE the ingest, and that reading is the `now` of `storeFreshness` (a11ign/agent-org#1091). The ingest
+ * holds a message back against the clock it started on, so a message is "owed a turn" only if it was `OWED_AFTER_MS` old at THAT reading. A `now` taken after the ingest returns is later by
  * what the ingest took, and a message that was held back by design (4:58 old at the start) is 5:18 old at the check and is counted as owed: a false STALE for a session that spoke once after
  * a quiet spell, whose worst-case turn latency (the hold-back plus the five-minute timer) is already the whole ten-minute window. The reading is therefore as of the ingest's start; an
  * ingest that runs long makes it older, and the next run, five minutes on, reads again. `clock` and `ingest` are injected so a test can move time during the ingest.
@@ -305,7 +417,7 @@ function hostEffects(log: (line: string) => void): Effects {
 export async function ingestThenCheck<Ingested>({ storePath, roots, effects, ingest, clock = Date.now }: { storePath: string; roots: TranscriptRoot[]; effects: Effects; ingest: () => Ingested; clock?: () => number; }): Promise<{ reading: Freshness; raised: string[]; ingested: Ingested; }> {
   const now = clock();
   const ingested = ingest();
-  const { reading, raised } = await checkAndRaise({ storePath, now, working: sessionsWorking({ roots, now }), effects });
+  const { reading, raised } = await checkAndRaise({ storePath, now, roots, effects });
   return { reading, raised, ingested };
 }
 

@@ -36,7 +36,7 @@ import { eventsOfCodexSession } from "./codex-turns.ts";
 import { TICK_COST_FILE, tickHealthLine, tickHealthOf } from "../work-tick-health.ts"; // a leaf: the tick's own record, read here for the two health signals (agent-org#1208)
 import { ghCallLines, ghIngestLines, ingestGhCalls } from "./gh-calls.ts";
 import { countingGh, readGithubEvents } from "./github-events.ts";
-import { freshnessLine, sessionsWorking, STALE_AFTER_MS, storeFreshness, transcriptRoots } from "./freshness.ts";
+import { freshnessLine, storeFreshness, transcriptRoots } from "./freshness.ts";
 import { fingerprint, HEAD_BYTES, loadState, planRead, saveState, stateFileFor } from "./ingest-state.ts";
 import type { Carry, FileState, IngestState } from "./ingest-state.ts";
 import type { GhCallsReport } from "./gh-calls.ts";
@@ -1398,8 +1398,7 @@ async function mainIngest() {
 function mainFreshness() {
   const { store: storePath } = parseIngestArgs(process.argv.slice(2));
   const now = Date.now();
-  const working = sessionsWorking({ roots: transcriptRoots(homedir()), now, windowMs: STALE_AFTER_MS });
-  const reading = storeFreshness({ storePath, now, working });
+  const reading = storeFreshness({ storePath, now, roots: transcriptRoots(homedir()) });
   console.log(freshnessLine(reading));
   if (reading.stale) process.exitCode = 1;
 }

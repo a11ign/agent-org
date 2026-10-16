@@ -5,7 +5,7 @@
 //
 // A NEW SHAPE GOES IN THE GENERATOR (`schedule()` below), not in a fixture of `freshness.test.ts`: a fixture is one hand-written store, and a fixture is not a substitute for
 // the generator, which is what found the shapes that the fixtures missed. Every schedule is a seed, so a failure replays with the same seed (`SEEDS`), and the test names
-// its seed. The check is not made quieter here: `STALE_AFTER_MS` and the working rule are what `freshness.ts` says, and this file asserts `stale: false`, nothing softer.
+// its seed. The check is not made quieter here: `OWED_AFTER_MS` and the owed rule are what `freshness.ts` says, and this file asserts `stale: false`, nothing softer.
 //
 // THE SHAPES: #704 (a session that finished and only rewrote `last-prompt` and `cost-state`: it is not working, so it must not be stale) and #709 (a cold start, the state
 // file deleted mid-schedule: the next ingest reads from byte 0 and the store must still report the work as fresh). No shape is excluded. The #836 shape (a session that goes
@@ -13,7 +13,7 @@
 // apart) were false alarms of `freshness.ts` until the hold-back fix (#836, merged as #856): with that fix every healthy schedule reads not stale, so each was excluded here and
 // the exclusions came out together. Any stale reading on a healthy schedule fails this file.
 //
-// THE POSITIVE CONTROL: the same schedules with ingest stopped for fifteen minutes while messages keep arriving must read STALE at the ten-minute mark. Without it, a check
+// THE POSITIVE CONTROL: the same schedules with ingest stopped for fifteen minutes while messages keep arriving must read STALE at the fifteen-minute mark. Without it, a check
 // that could never say STALE would pass every test here.
 //
 // MUTATION CHECK (a11ign/agent-org#837): restore the pre-#704 working test (a file's mtime, not its newest message) and the pre-#709 tail read (no going further back in
@@ -26,7 +26,7 @@ import { appendFileSync, mkdirSync, rmSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { stateFileFor } from "./ingest-state.ts";
-import { freshnessLine, sessionsWorking, storeFreshness } from "./freshness.ts";
+import { freshnessLine, storeFreshness } from "./freshness.ts";
 import type { Freshness } from "./freshness.ts";
 import { ingestTranscripts } from "./trace.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
@@ -165,7 +165,7 @@ function driver(s: Schedule) {
     pending = [...pending, ...lines].sort((a, b) => a.at - b.at);
   };
   const ingest = (now: number) => ingestTranscripts({ root: w.root, codexRoot: w.codexRoot, since: 0, ledger: [], rowRepo: ROW_REPO, storePath: w.storePath, now });
-  const check = (now: number): Freshness => storeFreshness({ storePath: w.storePath, now, working: sessionsWorking({ roots: [{ dir: w.root, depth: 1 }], now }) });
+  const check = (now: number): Freshness => storeFreshness({ storePath: w.storePath, now, roots: [{ dir: w.root, depth: 1 }] });
   return { w, write, queue, ingest, check };
 }
 
@@ -186,18 +186,22 @@ for (const seed of SEEDS) {
   });
 }
 
-test("POSITIVE CONTROL: with ingest stopped for fifteen minutes while messages keep arriving, every schedule is STALE at the ten-minute mark", () => {
+test("POSITIVE CONTROL: with ingest stopped for fifteen minutes while messages keep arriving, every schedule is STALE at the fifteen-minute mark", () => {
   for (const seed of SEEDS) {
     const s = schedule(seed);
     const d = driver(s);
     const stop = FIRST_TICK + 3 * TICK;
     d.write(stop);
     d.ingest(stop);
+    // a message every two minutes after the stop: at stop+15m the newest message at least ten minutes old is the one written at stop+4m (or a schedule's message just after it), which is
+    // owed a turn and has none, and the ones from stop+6m to stop+10m are past the hold-back, so the session is working
     const keepAlive: Line[] = Array.from({ length: 8 }, (_, k) => ({ at: stop + (k + 1) * 2 * MINUTE, text: block(iso(stop + (k + 1) * 2 * MINUTE), `keep_${seed}_${k}`) }));
     d.queue(keepAlive);
-    d.write(stop + 10 * MINUTE);
-    const reading = d.check(stop + 10 * MINUTE);
-    assert.equal(reading.working, true, `seed ${seed}: messages kept arriving, so a session is working at the ten-minute mark`);
-    assert.equal(reading.stale, true, `seed ${seed}: ingest was stopped for fifteen minutes, so the stored turn is older than the window: ${freshnessLine(reading)}`);
+    d.write(stop + 15 * MINUTE);
+    const reading = d.check(stop + 15 * MINUTE);
+    assert.equal(reading.working, true, `seed ${seed}: messages kept arriving, so a session is working at the fifteen-minute mark`);
+    assert.equal(reading.stale, true, `seed ${seed}: ingest was stopped for fifteen minutes, and messages written after the stop are owed turns: ${freshnessLine(reading)}`);
+    assert.equal(reading.unmet.length, 1, `seed ${seed}: one transcript, so one owed message`);
+    assert.ok(reading.unmet[0].at >= stop + 4 * MINUTE && reading.unmet[0].at <= stop + 5 * MINUTE, `seed ${seed}: the owed message is the newest ten minutes old, written after the stop: ${reading.unmet[0].at - stop}ms after it`);
   }
 });
