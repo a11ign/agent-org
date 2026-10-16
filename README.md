@@ -108,22 +108,41 @@ takes them one each. `agent-org ticket:serve` starts a board on `127.0.0.1` and 
   says why. A run that ends any other way ends every ticket of the batch that way. Stop on any ticket stops the whole run, and Retry plans
   a ticket again on its own.
 - **Board.** Every run in one list, newest activity first, each with a status icon after GitHub's Actions runs, and a filter per status
-  with its count: Needs you, In progress, Planning, Reviewing, Blocked, Queued, Awaiting review, Ready to merge, Completed, Failed and Cancelled. A run is Completed once the tracker
+  with its count: Needs you, In progress, Planning, Reviewing, Blocked, Queued, Awaiting review, Ready to merge, Published, Completed, Failed and Cancelled. A run is Completed once the tracker
   completes its ticket, or once its pull requests have merged, as Linear's GitHub integration reports them. Linear completes a ticket on a
   merge only where its team's workflow says so. A run whose pull requests all closed unmerged is Cancelled. The board asks every two minutes. A run can be removed
   while queued, stopped while running, and retried once it has failed. The number of workers at once is set in Settings, and a change takes effect straight away. On a machine
   that sets `tickets.terminal`, a live or parked run has an Open terminal link to its agent's terminal in the browser.
 - **Parked, not closed, when a run needs you.** A run that ends `needs-human`, `wrong-repo` or with no outcome keeps its herdr workspace
   and holds no slot, so you can answer the agent in its terminal. Once the agent works again the run is In progress again, its old outcome
-  is moved to `outcome.prev.json`, and the worker must write a new one before it stops. Close shuts a parked run's workspace and keeps its
+  is moved to `outcome.prev.json`, and the worker must write a new one before it stops. A worker that writes a new outcome file after its
+  run parked, even between two of the board's looks, ends the run on it once its agent is idle. Close shuts a parked run's workspace and keeps its
   outcome, and a parked run is retried only once it is closed.
-- **Approve, once you have reviewed the pull requests.** A run Awaiting review, or Ready to merge, offers Approve. It queues the ticket again
+- **Approve, once you have reviewed the drafts.** A run Awaiting review offers Approve. It queues the ticket again
   as a review run, which resumes the worker that wrote the code in its own Claude session: the board saves it when a run ends, and for an
   older run takes the newest session Claude Code kept for the ticket's folder, starting a fresh worker only when there is none. The review run
   marks each pull request ready, which only a review run may do, waits up to 30 minutes for its checks and its review, fixes and answers what
-  they find, pushes, and waits for the checks on that push. It ends Ready to merge only when every check passed on the last commit, and
-  otherwise hands the run back as Needs you. It handles one round: approve again for another. `tickets.review` says what a review is on this
-  machine.
+  they find, pushes, and waits for the checks on that push. It waits in the foreground, with blocking commands such as
+  `gh pr checks <url> --watch --interval 30`, and never by ending its turn: a turn that ends without an outcome reads as a run that stopped.
+  It ends Ready to merge only when every check passed on the last commit, and otherwise hands the run back as Needs you. `tickets.review` says
+  what a review is on this machine.
+- **Watched once Ready to merge, and answered on its own.** Every 3 minutes the board reads the open pull requests of each run Ready to merge
+  or Published. A review that comments or requests changes, a conversation comment or an inline comment newer than the run's last round, from
+  anyone but the GitHub account the workers use (`gh api user`), queues another review round. So does a check that failed on the head commit
+  since then: the required checks, or every check where none is required. The round resumes the same worker, names what started it, and has
+  the worker fix what is right with a test, answer what is wrong with evidence, push, and wait for the checks. The board starts at most 3 such
+  rounds. The next trigger hands the run to you as Needs you, saying its pull requests keep getting feedback. Feedback that arrived while a
+  round was running is not answered twice. Merged or closed pull requests are never watched.
+- **Respond to review, for pull requests that are ready already.** A run Ready to merge, Published, or handed back after the board's 3 rounds,
+  offers Respond to review. It queues a review round straight away, resuming the same worker, told that you asked it to answer the current
+  feedback: reviews, comments and failing checks. It starts the count of the board's own rounds again, so watching carries on after it.
+- **Publish, once a run is Ready to merge.** On a machine that sets `tickets.publish`, each run Ready to merge has a Publish tick, and
+  "Publish selected (N)" publishes every ticked run in one press. Nothing else can be ticked: nothing reaches a channel before you approved it
+  and it passed its review and checks, and a Published run is never posted twice. The press starts one publish run, in its own folder
+  `<stateDir>/tickets/publish/<id>`, holding one slot, on `tickets.publish.model` and `effort`. It starts even while workers are paused,
+  because you just asked for it. It writes `published.json`, `{ "links": ["<message url>"] }`, and the outcome `published`. Each run it
+  posted then shows Published, with a link to the first message, stays watched, and still turns Completed when its pull requests merge. A
+  publish run that fails, or takes over 30 minutes, leaves its runs Ready to merge, and the Board says why.
 - **Blocked until what blocks it is done.** A queued run whose ticket the tracker marks "blocked by" another waits, as Blocked, naming what
   it waits on, and holds no slot, while a run queued after it with nothing blocking it starts first. A blocker lets go once the tracker
   completes it, or, when it is on the queue itself, once its run is Completed, which its pull requests merging is enough for. A canceled or
@@ -158,8 +177,9 @@ ticket's move to the planner's state, and a batch's order as "blocks" relations.
 **What a worker may not do** is enforced by `ticket:hook`, which the ticket folder's `.claude/settings.local.json` names, so a session herdr
 resumes after a restart keeps it. A stop with no outcome file is refused twice in a row. These are refused outright: a pull request that
 is not a draft, `gh pr ready`, `merge` and `review`, requesting a reviewer, `gh workflow run`, a force push, every `gh stack` command but
-`gh stack link`, and every MCP connector the
-machine does not name in `tickets.connectors`. A worker runs with the person's connectors, Slack and mail among them, so a machine names
+`gh stack link`, the `post-pr-to-slack` skill, and every MCP connector the
+machine does not name in `tickets.connectors`. Only a publish run may run that skill and call the connectors `tickets.publish.connectors`
+names: the board leaves a `publish-run` mark in its folder, which no worker may write, as it leaves `review-run` for a review run. A worker runs with the person's connectors, Slack and mail among them, so a machine names
 only the tools its workers need, such as its tracker's reads. A machine adds its own refusals with `tickets.deny`.
 
 **Configuration** is machine facts only, in the host file `$AGENT_ORG_HOST` names. Only `clones` is required, and it lists every repository
@@ -185,6 +205,7 @@ a worker can choose from:
 | `tickets.terminal` | none, and the board shows no terminal link. A web address that serves a run's terminal, with `{workspace}`, `{pane}` and `{key}` filled in per run: for [herdr web ui](https://github.com/devswha/herdr-web-ui) serving the `tickets` session on port 7318, `"http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal"` |
 | `tickets.plan` | none, and the board marks no ticket. A regular expression that the name of a file uploaded to a ticket matches when the file is the ticket's plan. NBL's create-ticket names a plan `<KEY>-0001-plan-<slug>.md`: `"-plan-[^/]*\\.md$"`. A bare `plan` would also match `floorplan.png` |
 | `tickets.planner` | none, and the board plans nothing. Needs `tickets.plan`. `{ "run": "<instruction>", "state": "<state>" }`: what a planning run is told, with `{key}` and `{dir}` filled in per run (the ticket, and the folder its plan's files go in), and the tracker state a planned ticket moves to if it has not started. An instruction that names `{keys}` instead plans the tickets queued together in one run: `{keys}` is their keys, separated by a comma and a space, and `{dir}` the run's one plan folder. A ticket planned alone gets its own key there. One that names only `{key}` plans every ticket alone. A team with no state of that name keeps the ticket's state, and the board's log says so, because teams name their states differently. NBL: `{ "run": "Run the nbl-ui:create-ticket skill with this request: unattended: plan {key} into {dir}", "state": "Planned" }`, or `plan {keys} into {dir}` to plan in batches |
+| `tickets.publish` | none, and the board shows no Publish tick or button. `{ "run": "<instruction>", "model": "haiku", "effort": "low", "connectors": ["^mcp__..."] }`: what a publish run is told, with `{prs}` (the ticked runs' open pull requests, one per line) and `{dir}` (its folder) filled in, the model and effort it runs on, and the connector tools it alone may call, each anchored with `^mcp__`, such as the one that sends a Slack message. NBL: `{ "run": "Run the post-pr-to-slack skill on these pull requests, all in one go: {prs}. Then write {dir}/published.json" }` with its Slack send tool in `connectors` |
 | `tickets.workingState` | none, and no ticket is moved. The tracker state a ticket moves to as a worker starts implementing it, if it has not started yet: `"In Progress"`. A planning run moves nothing. A team with no state of that name keeps the ticket's state, and the board's log says so |
 | `stateDir` | `~/.local/state/agent-org`: the queue, each ticket's brief, attachments and outcome |
 

@@ -1,5 +1,5 @@
 // @ts-check
-// A LEAF (`pr-hold-state.ts` imports only the leaf `wait-condition.ts`, and `newest-check-run.ts` nothing): `org-retro.ts` is a leaf `work-gate.ts` imports before any
+// A LEAF (`hold-label.ts` and `newest-check-run.ts` import nothing): `org-retro.ts` is a leaf `work-gate.ts` imports before any
 // build, so this file may not reach `work-gate/pr-orders.ts`, which imports `work-gate.ts` back.
 //
 // IS THIS PULL REQUEST BROKEN, OR RED ON PURPOSE? (#2954, ceo's retrospective of 2026-10-02). `deliberateRefusals` fails BY DESIGN on a PR
@@ -9,7 +9,7 @@
 //
 // ONE DECIDER, `isBrokenRed`, so the report's count and its `held` line cannot disagree about what a hold excuses.
 import { newestPerName } from "./newest-check-run.ts";
-import { holdersOf } from "./pr-hold-state.ts";
+import { holdersOf } from "./hold-label.ts";
 
 /** The conclusions that make a check red. A check still running, skipped or neutral is not red. */
 export const RED_CONCLUSIONS = new Set(["FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ACTION_REQUIRED"]);

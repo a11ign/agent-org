@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, isParked, parentKeys, parentTick, ticketCount, projectCounts, queueLabel, recall, remember, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, selectable, statusCounts, terminalLink, toggled, waitsOn, repoOfPull, stackedOn, stackNote,
-  PRIORITY_NAMES, hasPlan, missingPlan, planChoiceOf, planCounts, priorityCounts, prioritiesOf, runChoiceLabel, unplannedCount, visibleTickets, workItems,
+  PRIORITY_NAMES, hasPlan, isWatched, publishable, publishLabel, publishNote, missingPlan, planChoiceOf, planCounts, priorityCounts, prioritiesOf, runChoiceLabel, unplannedCount, visibleTickets, workItems,
   type ViewEntry, type ViewTicket,
 } from "./board-view.ts";
 
@@ -268,7 +268,7 @@ test("every status is counted, a status with no runs at zero, and the filters li
   assert.equal(counts.get("queued"), 2);
   assert.equal(counts.get("failed"), 1);
   assert.equal(counts.get("completed"), 0);
-  assert.deepEqual(RUN_STATUSES.map(({ status }) => status), ["needs-you", "working", "planning", "reviewing", "blocked", "queued", "awaiting-review", "ready-to-merge", "completed", "failed", "cancelled"]);
+  assert.deepEqual(RUN_STATUSES.map(({ status }) => status), ["needs-you", "working", "planning", "reviewing", "blocked", "queued", "awaiting-review", "ready-to-merge", "published", "completed", "failed", "cancelled"]);
 });
 
 const blocker = (key: string, state: string, status = state) => ({ key, state, status });
@@ -346,7 +346,7 @@ test("a run offers what its state allows: Remove queued, Stop live, Close parked
   const open = "https://github.com/x/y/pull/1";
   const draft = { outcome: { kind: "draft-pr", prs: [{ url: open }] }, pullStates: { [open]: "open" } };
   assert.deepEqual(runActions(run("finished", draft)), ["approve"], "a draft pull request is the result: it is approved, not retried");
-  assert.deepEqual(runActions(run("finished", { ...draft, outcome: { kind: "reviewed", prs: [{ url: open }] } })), ["approve"], "a reviewed one can have another round");
+  assert.deepEqual(runActions(run("finished", { ...draft, outcome: { kind: "reviewed", prs: [{ url: open }] } })), ["respond"], "a reviewed one answers its feedback: its pull requests are ready already");
   assert.deepEqual(runActions(run("finished", { ...draft, pullStates: { [open]: "merged" } })), [], "merged pull requests are done");
   assert.deepEqual(runActions(run("finished", { ...draft, trackerState: "canceled" })), [], "a canceled ticket is done");
   assert.deepEqual(runActions(run("finished", { outcome: { kind: "crashed" }, trackerState: "completed" })), [], "a completed ticket is done");
@@ -435,4 +435,45 @@ test("a pull request's repository is read from its GitHub URL, and anything else
   assert.equal(repoOfPull("https://github.com/acme/nbl-ui-netbox/pull/12"), "nbl-ui-netbox");
   assert.equal(repoOfPull("https://github.com/acme/nbl-ui-netbox/issues/12"), null);
   assert.equal(repoOfPull("https://gitlab.com/acme/nbl-ui-netbox/pull/12"), null);
+});
+
+const shipped = (fields: Partial<ViewEntry> = {}): ViewEntry =>
+  ({ ticket: { key: "NBF-1" }, phase: "finished", outcome: { kind: "reviewed", prs: [{ url: "https://github.com/x/a/pull/1" }] }, ...fields });
+
+test("a reviewed run is Published once a publish run posted it, and still Completed once its pull requests merge", () => {
+  assert.equal(runStatus(shipped()), "ready-to-merge");
+  assert.equal(runStatus(shipped({ published: { link: "https://slack/1" } })), "published");
+  assert.equal(runStatus(shipped({ published: { link: null }, pullStates: { "https://github.com/x/a/pull/1": "merged" } })), "completed");
+  assert.equal(runStatus(shipped({ handedBack: "keeps getting feedback" })), "needs-you", "the board stopped answering feedback on its own");
+  assert.deepEqual(runActions(shipped()), ["respond"], "ready pull requests are answered, not approved again");
+  assert.deepEqual(runActions(shipped({ published: { link: null } })), ["respond"]);
+  assert.deepEqual(runActions(shipped({ handedBack: "keeps getting feedback" })), ["respond"], "a person's Respond to review lets the board carry on");
+  assert.deepEqual(runActions(shipped({ outcome: { kind: "draft-pr", prs: [] } })), ["approve"], "Approve is for drafts");
+});
+
+test("only a run Ready to merge can be ticked for Publish: not one published, parked, awaiting review, or held by the publish run under way", () => {
+  assert.equal(publishable(shipped()), true);
+  assert.equal(publishable(shipped({ published: { link: null } })), false, "no double posting");
+  assert.equal(publishable(shipped({ outcome: { kind: "draft-pr", prs: [] } })), false, "nothing reaches Slack before a person approved it");
+  assert.equal(publishable(shipped({ workspace: "w1" })), false, "parked");
+  assert.equal(publishable(shipped(), { keys: ["NBF-1"], phase: "running" }), false);
+  assert.equal(publishable(shipped(), { keys: ["NBF-1"], phase: "finished", failure: "x" }), true, "a failed publish leaves it Ready to merge");
+  assert.equal(publishLabel(2), "Publish selected (2)");
+});
+
+test("the Board says a publish run is under way, or why it failed, and nothing once it published", () => {
+  assert.equal(publishNote(undefined), null);
+  assert.equal(publishNote({ keys: ["A", "B"], phase: "running" }), "Publishing 2 runs");
+  assert.equal(publishNote({ keys: ["A"], phase: "finished", failure: "no channel" }), "Publishing 1 run failed: no channel");
+  assert.equal(publishNote({ keys: ["A"], phase: "finished" }), null);
+});
+
+test("the board watches a run Ready to merge or Published with a pull request open, and no other", () => {
+  assert.equal(isWatched(shipped()), true);
+  assert.equal(isWatched(shipped({ published: { link: null } })), true);
+  assert.equal(isWatched(shipped({ pullStates: { "https://github.com/x/a/pull/1": "closed" } })), false, "closed or merged pull requests are never watched");
+  assert.equal(isWatched(shipped({ outcome: { kind: "draft-pr", prs: [{ url: "https://github.com/x/a/pull/1" }] } })), false, "awaiting a person's review");
+  assert.equal(isWatched(shipped({ workspace: "w1" })), false, "parked");
+  assert.equal(isWatched(shipped({ handedBack: "x" })), false, "handed to a person");
+  assert.equal(isWatched(shipped({ outcome: { kind: "reviewed", prs: [] } })), false, "a run with no pull request has nothing to watch");
 });

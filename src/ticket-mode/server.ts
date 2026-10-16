@@ -24,7 +24,7 @@ import { browserSessions, browserSessionsPath, SESSION_SECONDS, type BrowserSess
 import { linearSource, readLinearKey } from "./linear.ts";
 import { createPairing, PAIR_MINUTES, type Pairing } from "./pairing.ts";
 import { createPool, type PoolDeps } from "./pool.ts";
-import { amend, approve, enqueue, loadQueue, remove, retry, saveQueue, setMax, setPaused, type PlanFirst, type Queue, type RunChoice } from "./queue.ts";
+import { amend, approve, enqueue, loadQueue, queuePublish, remove, respond, retry, saveQueue, setMax, setPaused, type PlanFirst, type Queue, type RunChoice } from "./queue.ts";
 import { plansInBatches, readTicketSettings, type TicketSettings } from "./settings.ts";
 import type { Ticket, TicketSource } from "./source.ts";
 
@@ -43,6 +43,8 @@ const API_BODY_BYTES = 64 * 1024;
 const TICK_MS = 30_000;
 /** How often the tracker is asked whether finished runs' tickets are done. A merge is not urgent news, and every read is a Linear request. */
 const TRACKER_MS = 120_000;
+/** How often the open pull requests of runs Ready to merge are read for new feedback. Each is one GitHub request per pull request. */
+const FEEDBACK_MS = 180_000;
 const MODELS = ["opus", "sonnet", "haiku"];
 const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 
@@ -54,7 +56,7 @@ export type BoardDeps = Readonly<{
   key: string;
   queuePath: string;
   choicePath: string;
-  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "reconcile" | "ensureSession" | "refreshTracker">;
+  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback">;
   pairing?: Pairing;
   sessions?: BrowserSessions;
   poolDeps?: Omit<PoolDeps, "settings" | "source" | "hook">;
@@ -182,7 +184,8 @@ export function createBoard(deps: BoardDeps) {
 
   async function api(method: string, path: string, body: Json): Promise<[number, unknown]> {
     if (method === "GET" && path === "/api/config") {
-      return [200, { models: MODELS, efforts: EFFORTS, choice: readChoice(deps.choicePath), max: queue.max, terminal: settings.terminal, plan: settings.plan, planner: plans }];
+      return [200, { models: MODELS, efforts: EFFORTS, choice: readChoice(deps.choicePath), max: queue.max, terminal: settings.terminal, plan: settings.plan, planner: plans,
+        publish: settings.publish !== null }];
     }
     if (method === "GET" && path === "/api/tickets") {
       const tickets = await source.assigned();
@@ -218,6 +221,12 @@ export function createBoard(deps: BoardDeps) {
       writeChoice(deps.choicePath, choice);
       return [200, { choice }];
     }
+    if (method === "POST" && path === "/api/publish") {
+      if (settings.publish === null) throw new Error("this machine names no tickets.publish, so it publishes nothing");
+      store.set(queuePublish(queue, Array.isArray(body.keys) ? body.keys.map(String) : [], now()));
+      wake();
+      return [200, queue];
+    }
     if (method === "POST" && path === "/api/paused") {
       if (typeof body.paused !== "boolean") throw new Error("paused must be true or false");
       store.set(setPaused(queue, body.paused));
@@ -229,13 +238,14 @@ export function createBoard(deps: BoardDeps) {
       wake();
       return [200, queue];
     }
-    const action = /^\/api\/queue\/([A-Za-z0-9_-]+)\/(amend|remove|retry|approve|stop|close)$/.exec(path);
+    const action = /^\/api\/queue\/([A-Za-z0-9_-]+)\/(amend|remove|retry|approve|respond|stop|close)$/.exec(path);
     if (method === "POST" && action) {
       const [, key, verb] = action;
       if (verb === "amend") store.set(amend(queue, key, validChange(body, ["model", "effort"])));
       if (verb === "remove") store.set(remove(queue, key));
       if (verb === "retry") store.set(retry(queue, key, now()));
       if (verb === "approve") store.set(approve(queue, key, now()));
+      if (verb === "respond") store.set(respond(queue, key, now()));
       if (verb === "stop") pool.stop(key);
       if (verb === "close") pool.close(key);
       wake();
@@ -334,6 +344,13 @@ async function serve(): Promise<void> {
   setInterval(() => { void board.pool.tick(); }, TICK_MS);
   void board.pool.refreshTracker();
   setInterval(() => { void board.pool.refreshTracker(); }, TRACKER_MS);
+  setInterval(() => {
+    try {
+      board.pool.watchFeedback();
+    } catch (err) {
+      process.stderr.write(`ticket:serve: the pull requests' feedback could not be read: ${String((err as Error)?.message ?? err)}\n`);
+    }
+  }, FEEDBACK_MS);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {

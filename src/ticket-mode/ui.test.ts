@@ -54,8 +54,8 @@ const TICKETS = [
 ];
 
 /** Run the page's script against a fake document, with `storage` as its localStorage. Resolves once the first render has happened. */
-type PageOptions = { config?: Record<string, unknown>; entries?: unknown[]; tickets?: unknown[]; parents?: unknown[]; refused?: string[] };
-async function page(storage: Map<string, string>, { config = {}, entries = [], tickets = TICKETS, parents = [], refused = [] }: PageOptions = {}) {
+type PageOptions = { config?: Record<string, unknown>; entries?: unknown[]; tickets?: unknown[]; parents?: unknown[]; refused?: string[]; publish?: unknown };
+async function page(storage: Map<string, string>, { config = {}, entries = [], tickets = TICKETS, parents = [], refused = [], publish }: PageOptions = {}) {
   const byId = new Map<string, Node_>();
   const posts: { path: string; body: any }[] = [];
   const document = {
@@ -77,7 +77,7 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
       "/api/choice": () => { saved = { ...saved, ...body }; return { choice: saved }; },
       "/api/max": () => { max = body.max; return { entries, max, paused: true }; },
     };
-    const value = answers[path]?.() ?? { entries, max, paused: true };
+    const value = answers[path]?.() ?? { entries, max, paused: true, ...(publish ? { publish } : {}) };
     return { ok: true, json: async () => value, statusText: "" };
   };
   const localStorage = { getItem: (k: string) => storage.get(k) ?? null, setItem: (k: string, v: string) => { storage.set(k, v); } };
@@ -600,7 +600,7 @@ test("each filter shows its count, and choosing one shows only its runs and is r
 
 test("a row offers only the actions its state allows, and a completed run is not retried", async () => {
   const p = await page(new Map(), { entries: RUNS });
-  const buttons = (key: string) => runRows(p).find((r) => r.text().includes(key))!.all().filter((n) => n.tag === "button").map((b) => b.textContent);
+  const buttons = (key: string) => runRows(p).find((r) => r.text().includes(key))!.all().filter((n) => n.tag === "button").map((b) => b.text());
   assert.deepEqual(buttons("Q-1"), ["Remove"]);
   assert.deepEqual(buttons("R-1"), ["Stop"]);
   assert.deepEqual(buttons("F-1"), ["Retry"]);
@@ -611,8 +611,8 @@ test("a row offers only the actions its state allows, and a completed run is not
 test("a draft pull request awaiting review offers Approve, titled as a person's approval, which goes to the board", async () => {
   const p = await page(new Map(), { entries: RUNS });
   const approve = runRows(p).find((r) => r.text().includes("D-1"))!.all().find((n) => n.tag === "button") as Node_ & { title?: string };
-  assert.equal(approve.textContent, "Approve");
-  assert.match(approve.title ?? "", /^Human review approved/);
+  assert.equal(approve.text(), "Approve");
+  assert.match(approve.title ?? "", /^Drafts reviewed and approved/);
   approve.fire("click");
   await settle();
   assert.ok(p.posts.some((x) => x.path === "/api/queue/D-1/approve"));
@@ -646,7 +646,7 @@ test("a live or parked run links its terminal when the machine serves one, and a
   assert.equal(link("F-1"), undefined, "a run with no workspace has no terminal");
   assert.ok(row("P-1").text().includes("Still open"), "a parked run says it can still be answered");
   const close = row("P-1").all().find((n) => n.tag === "button")!;
-  assert.equal(close.textContent, "Close");
+  assert.equal(close.text(), "Close");
   close.fire("click");
   await settle();
   assert.ok(p.posts.some((x) => x.path === "/api/queue/P-1/close"));
@@ -713,4 +713,62 @@ test("a planning run is Planning on the Board, and its row names the planning mo
   const [row] = runRows(p);
   assert.equal(row.children[0].className, "icon st-planning");
   assert.match(row.text(), /Planning · .*plan on opus\/max, then sonnet\/high/);
+});
+
+const SHIPPED = [{ repo: "nbl-ui-netbox", url: "https://github.com/x/y/pull/12" }];
+const PUBLISHABLE = [
+  entry("P-1", { phase: "finished", startedAt: 2, finishedAt: 7, outcome: { kind: "reviewed", prs: SHIPPED } }),
+  entry("P-2", { phase: "finished", startedAt: 2, finishedAt: 8, outcome: { kind: "reviewed", prs: SHIPPED } }),
+  entry("P-3", { phase: "finished", startedAt: 2, finishedAt: 9, outcome: { kind: "reviewed", prs: SHIPPED }, published: { link: "https://x.slack.com/archives/C1/p1", at: 9 } }),
+  entry("D-1", { phase: "finished", startedAt: 2, finishedAt: 6, outcome: { kind: "draft-pr", prs: SHIPPED } }),
+];
+const tickFor = (p: Page, key: string) => runRows(p).find((r) => r.text().includes(key))!.all().find((n) => n.tag === "input");
+
+test("on a machine that publishes, each run Ready to merge has a Publish tick, and one press publishes every ticked run together", async () => {
+  const p = await page(new Map(), { config: { publish: true }, entries: PUBLISHABLE });
+  assert.equal(p.$("publish").hidden, false);
+  assert.deepEqual([p.$("publish").textContent, p.$("publish").disabled], ["Publish selected (0)", true]);
+  assert.equal(tickFor(p, "P-3"), undefined, "a published run has no tick: no double posting");
+  assert.equal(tickFor(p, "D-1"), undefined, "nothing reaches Slack before a person approved it and it passed review");
+  tickFor(p, "P-1")!.fire("change");
+  tickFor(p, "P-2")!.fire("change");
+  assert.equal(p.$("publish").textContent, "Publish selected (2)");
+  p.$("publish").fire("click");
+  await settle();
+  assert.deepEqual(p.posts.filter((x) => x.path === "/api/publish").map((x) => x.body), [{ keys: ["P-1", "P-2"] }]);
+});
+
+test("a Published run reads as Published and links its Slack message, and a machine that publishes nothing shows no tick and no button", async () => {
+  const p = await page(new Map(), { config: { publish: true }, entries: PUBLISHABLE });
+  const published = runRows(p).find((r) => r.text().includes("P-3"))!;
+  assert.equal(published.children[0].className, "icon st-published");
+  const link = published.all().find((n) => n.text() === "Slack message") as Node_ & { href?: string };
+  assert.equal(link.href, "https://x.slack.com/archives/C1/p1");
+  const off = await page(new Map(), { entries: PUBLISHABLE });
+  assert.equal(off.$("publish").hidden, true);
+  assert.equal(tickFor(off, "P-1"), undefined);
+});
+
+test("the Board says why the last publish run failed", async () => {
+  const p = await page(new Map(), { config: { publish: true }, entries: PUBLISHABLE });
+  assert.equal(p.$("publish-note").textContent, "");
+  const failed = await page(new Map(), { config: { publish: true }, entries: PUBLISHABLE, publish: { keys: ["P-1"], phase: "finished", failure: "no channel" } });
+  assert.equal(failed.$("publish-note").textContent, "Publishing 1 run failed: no channel");
+});
+
+test("a run Ready to merge, Published, or handed back by the board offers Respond to review with its reply icon, and a draft offers Approve alone", async () => {
+  const p = await page(new Map(), { entries: [...PUBLISHABLE,
+    entry("H-1", { phase: "finished", startedAt: 2, finishedAt: 5, outcome: { kind: "reviewed", prs: SHIPPED }, handedBack: "keeps getting feedback" })] });
+  const actions = (key: string) => runRows(p).find((r) => r.text().includes(key))!.all().filter((n) => n.tag === "button") as (Node_ & { title?: string })[];
+  for (const key of ["P-1", "P-3", "H-1"]) {
+    const [respond] = actions(key);
+    assert.deepEqual(actions(key).map((b) => b.text()), ["Respond to review"], key);
+    assert.match(respond.title ?? "", /^Answer the feedback on these ready pull requests/);
+    assert.ok(respond.all().some((n) => n.className === "action-icon"), "the reply icon");
+  }
+  assert.deepEqual(actions("D-1").map((b) => b.text()), ["Approve"]);
+  assert.match(actions("D-1")[0].title ?? "", /^Drafts reviewed and approved/);
+  actions("P-1")[0].fire("click");
+  await settle();
+  assert.ok(p.posts.some((x) => x.path === "/api/queue/P-1/respond"));
 });

@@ -20,7 +20,7 @@ function board(port = 4747, ticketSettings: Record<string, unknown> = {}) {
   const ticks: string[] = [];
   const pool = {
     tick: async () => { ticks.push("tick"); }, stop: (key: string) => { ticks.push(`stop ${key}`); }, close: (key: string) => { ticks.push(`close ${key}`); },
-    reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {},
+    reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {},
   };
   const made = createBoard({ settings, source, key: KEY, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7 });
   return { ...made, ticks, dir };
@@ -40,7 +40,7 @@ test("/api/parents reads the parents of the person's tickets that are not the pe
     },
     download: async () => [],
   };
-  const pool = { tick: async () => {}, stop: () => {}, close: () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {} };
+  const pool = { tick: async () => {}, stop: () => {}, close: () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {} };
   const { api } = createBoard({ settings, source, key: KEY, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7 });
   await api("GET", "/api/tickets", {});
   const [status, parents] = await api("GET", "/api/parents", {}) as [number, Ticket[]];
@@ -120,7 +120,7 @@ function planningBoard(attachPlan: TicketSource["attachPlan"] | null = async () 
     tickets: { plan: "-plan-[^/]*\\.md$", planner: { run, state: "Planned" } } });
   const planned = { ...ticket("NBF-1"), uploads: ["NBF-1-0001-plan-x.md"] };
   const source: TicketSource = { assigned: async () => [planned, ticket("NBF-2"), ticket("NBF-3")], read: async () => null, download: async () => [], ...(attachPlan ? { attachPlan } : {}) };
-  const pool = { tick: async () => {}, stop: () => {}, close: () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {} };
+  const pool = { tick: async () => {}, stop: () => {}, close: () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {} };
   return createBoard({ settings, source, key: KEY, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7 });
 }
 
@@ -211,6 +211,39 @@ test("approve queues a finished run's draft pull requests again as a review run"
   const [entry] = b.store.get().entries;
   assert.deepEqual([entry.phase, entry.review], ["queued", [pr]]);
   assert.ok(b.ticks.includes("tick"), "approving wakes the pool");
+});
+
+test("Respond to review queues a review round of a run whose pull requests are ready, through the board", async () => {
+  const b = board();
+  await b.api("GET", "/api/tickets", {});
+  await b.api("POST", "/api/queue", { keys: ["NBF-1"], model: "sonnet", effort: "high" });
+  const pr = { repo: "app", url: "https://github.com/x/app/pull/1" };
+  b.store.set({ ...b.store.get(), entries: b.store.get().entries.map((e) => ({ ...e, phase: "finished" as const, outcome: { kind: "reviewed" as const, prs: [pr] } })) });
+  await b.api("POST", "/api/queue/NBF-1/respond", {});
+  const [entry] = b.store.get().entries;
+  assert.deepEqual([entry.phase, entry.review, entry.asked], ["queued", [pr], true]);
+  assert.ok(b.ticks.includes("tick"), "responding wakes the pool");
+});
+
+test("Publish queues one publish run for the ticked runs Ready to merge on a machine that publishes, and is refused on one that does not", async () => {
+  const run = "Post {prs}, then write {dir}/published.json";
+  for (const [publish, expected] of [[{ run }, true], [undefined, false]] as const) {
+    const b = board(4747, publish ? { publish } : {});
+    const [, config] = await b.api("GET", "/api/config", {}) as [number, { publish: boolean }];
+    assert.equal(config.publish, expected);
+    await b.api("GET", "/api/tickets", {});
+    await b.api("POST", "/api/queue", { keys: ["NBF-1"], model: "sonnet", effort: "high" });
+    const pr = { repo: "app", url: "https://github.com/x/app/pull/1" };
+    b.store.set({ ...b.store.get(), entries: b.store.get().entries.map((e) => ({ ...e, phase: "finished" as const, outcome: { kind: "reviewed" as const, prs: [pr] } })) });
+    if (!expected) {
+      await assert.rejects(b.api("POST", "/api/publish", { keys: ["NBF-1"] }), /names no tickets.publish/);
+      continue;
+    }
+    await b.api("POST", "/api/publish", { keys: ["NBF-1"] });
+    assert.deepEqual([b.store.get().publish?.keys, b.store.get().publish?.prs], [["NBF-1"], [pr]]);
+    assert.ok(b.ticks.includes("tick"), "publishing wakes the pool");
+    await assert.rejects(b.api("POST", "/api/publish", { keys: ["NBF-1"] }), /a publish run is under way/);
+  }
 });
 
 test("remove, stop, close and max go through the board", async () => {

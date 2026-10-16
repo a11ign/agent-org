@@ -1,0 +1,8 @@
+A ticket-mode run Ready to merge, or Published, is watched for new feedback on its open pull requests, and a review round that resumes its worker is queued for it, at most 3 times before it is handed to a person (`feedbackRound`, `MAX_FEEDBACK_ROUNDS` in `src/ticket-mode/queue.ts`; `watchFeedback` and `feedbackSince` in `pool.ts`; `isWatched` in `board-view.ts`; the reads in `src/ticket-port/pull-feedback.ts`, called every 3 minutes by `server.ts`). Respond to review queues such a round on a person's press and starts the count again (`respond` in `queue.ts`, `POST /api/queue/<key>/respond` in `server.ts`, `runActions` and `RESPOND_TITLE` in `board-view.ts`), and Approve is offered on drafts only. Publish starts one publish run for the ticked runs Ready to merge (`queuePublish`, `publishDone`, `publishFailed` in `queue.ts`; `startPublish`, `watchPublish` and `publishResult` in `pool.ts`; `publishBriefText` in `worker-files.ts`; `tickets.publish` in `settings.ts`; `POST /api/publish`; the Publish tick and button in `ui.html`), and only it may use `post-pr-to-slack` and the connectors `tickets.publish.connectors` names (`toolVerdict` and the `publish-run` mark in `hook.ts`). A review round waits in the foreground (`reviewBriefText`), and a parked run that writes a new outcome is settled with it (`watchParked`, `newOutcome` in `pool.ts`).
+
+Acceptance:
+```bash
+npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode src/ticket-port/pull-feedback.test.ts
+```
+
+Consumer-declaration: none -- an optional host key, two new board actions and a watch of pull requests a person already approved; nothing is posted before a person ticks a run Ready to merge and presses Publish, and every other run's refusals are unchanged.

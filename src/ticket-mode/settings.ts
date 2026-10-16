@@ -7,7 +7,7 @@
 // `deny`, `plugins` and `connectors` say how workers behave on this machine, for example how they share its dev servers with each other and with
 // the person, and which of the person's connectors they may call.
 // The optional `terminal` says where this machine serves a worker's terminal in a browser, if it does, and the optional `plan` how the board
-// recognises a ticket's plan among the files uploaded to it.
+// recognises a ticket's plan among the files uploaded to it. The optional `publish` says how a person's chosen pull requests are announced.
 //
 // READ RAW, AS `haiku-brief.ts` READS ITS KEY. `readHostConfig` ignores unknown keys, so `tickets` is inert to every existing reader, and this
 // module does not teach the strict reader a block only ticket mode uses. It imports neither `host-config.ts` nor `project-config.ts`: both
@@ -56,6 +56,18 @@ export type TicketSettings = Readonly<{
    * The connector tools a worker may call, as regular expressions matched against the tool's name, each anchored at its start with `^mcp__`.
    * Every other connector stays refused. None by default.
    */
+  connectors: readonly string[];
+  /** How a person's chosen pull requests are published once they are ready to merge, or null when this machine publishes none. */
+  publish: Publisher | null;
+}>;
+
+/** What a publish run is told, on what, and which connectors it alone may call. */
+export type Publisher = Readonly<{
+  /** The publish run's instruction, with `{prs}`, the pull requests one per line, and `{dir}`, the folder its files go in, filled in per run. */
+  run: string;
+  model: string;
+  effort: string;
+  /** The connector tools a publish run may call beside `connectors`, as regular expressions anchored with `^mcp__`, such as Slack's send. */
   connectors: readonly string[];
 }>;
 
@@ -162,15 +174,33 @@ const CONNECTOR_SHAPE = "a regular expression anchored at the tool's name, such 
  * Each pattern must start `^mcp__`, so it is read from the start of a connector tool's name. An unanchored one, such as `Linear`, would also let
  * through any other connector whose tool name happens to contain it.
  */
-function connectorPatterns(value: unknown): readonly string[] {
+function connectorPatterns(value: unknown, list = "tickets.connectors"): readonly string[] {
   if (value === undefined) return [];
-  if (!Array.isArray(value)) throw new TicketSettingsRefusal("tickets.connectors", `must be a list, each ${CONNECTOR_SHAPE}`);
+  if (!Array.isArray(value)) throw new TicketSettingsRefusal(list, `must be a list, each ${CONNECTOR_SHAPE}`);
   return Object.freeze(value.map((pattern: unknown, i) => {
-    const field = `tickets.connectors[${i}]`;
+    const field = `${list}[${i}]`;
     if (typeof pattern !== "string" || !pattern.startsWith("^mcp__")) throw new TicketSettingsRefusal(field, `must be ${CONNECTOR_SHAPE}, not ${JSON.stringify(pattern)}`);
     refuseUnlessRegularExpression(pattern, field);
     return pattern;
   }));
+}
+
+const PUBLISHER_SHAPE = "must be { \"run\": \"<the publish run's instruction, naming {prs} and {dir}>\", \"model\": \"<optional, haiku>\", \"effort\": \"<optional, low>\", \"connectors\": [\"^mcp__...\"] }";
+
+/** A model's or an effort's name: one word. */
+function word(value: unknown, field: string, fallback: string): string {
+  if (value === undefined) return fallback;
+  if (typeof value !== "string" || !/^[\w.-]+$/.test(value)) throw new TicketSettingsRefusal(field, `must be one word, such as "${fallback}", not ${JSON.stringify(value)}`);
+  return value;
+}
+
+function publisherOf(value: unknown): Publisher | null {
+  if (value === undefined) return null;
+  if (!isObject(value) || typeof value.run !== "string" || !value.run.includes("{prs}") || !value.run.includes("{dir}")) {
+    throw new TicketSettingsRefusal("tickets.publish", PUBLISHER_SHAPE);
+  }
+  return Object.freeze({ run: value.run, model: word(value.model, "tickets.publish.model", "haiku"), effort: word(value.effort, "tickets.publish.effort", "low"),
+    connectors: connectorPatterns(value.connectors, "tickets.publish.connectors") });
 }
 
 function denyRules(value: unknown): readonly DenyRule[] {
@@ -220,6 +250,7 @@ export function parseTicketSettings(host: unknown, home: string = homedir()): Ti
     planner: plannerOf(tickets.planner, plan),
     workingState: stateName(tickets.workingState, "tickets.workingState"),
     connectors: connectorPatterns(tickets.connectors),
+    publish: publisherOf(tickets.publish),
   });
 }
 

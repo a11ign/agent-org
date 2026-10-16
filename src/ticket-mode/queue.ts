@@ -9,7 +9,7 @@
 // the only writer of the file, which it replaces whole by rename, so a reader never sees half of one.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { isParked, pullsOf, RESULT_KINDS, settledByPulls, waitsOn } from "./board-view.ts";
+import { isParked, isPublishing, isWatched, openPulls, RESULT_KINDS, runStatus, settledByPulls, waitsOn } from "./board-view.ts";
 import type { Blocker, PullState, Ticket } from "./source.ts";
 
 /** A pull request a run opened: the repository it is in and its web address. */
@@ -74,13 +74,43 @@ export type Entry = Readonly<{
   session?: string;
   /** Set on a review run: the pull requests a person approved, which the run marks ready and sees through their review. See {@link approve}. */
   review?: readonly PullRequest[];
+  /** Set on a review round the board started on its own: the new feedback it answers. See {@link feedbackRound}. */
+  feedback?: string;
+  /** Set on a review round a person asked for with Respond to review: it answers the pull requests' current feedback. See {@link respond}. */
+  asked?: boolean;
+  /** How many rounds the board has started on its own since a person last approved: at most {@link MAX_FEEDBACK_ROUNDS}. */
+  rounds?: number;
+  /** Set when the board stopped answering new feedback on its own and handed the run to a person: why. A person's Approve clears it. */
+  handedBack?: string;
+  /** Set once a publish run posted its pull requests: the first message's web address, or null when it gave none, and when. */
+  published?: Readonly<{ link: string | null; at: number }>;
+}>;
+
+/**
+ * The board's PUBLISH RUN: a short run that posts the pull requests of the runs a person ticked, all in one go, with the host file's
+ * `tickets.publish`. One at a time. It holds a worker slot while it is live, and keeps its last result, so the board can say why one failed.
+ */
+export type PublishRun = Readonly<{
+  id: string;
+  /** The runs it publishes, by ticket key, and their open pull requests. */
+  keys: readonly string[];
+  prs: readonly PullRequest[];
+  phase: Phase;
+  queuedAt: number;
+  startedAt?: number;
+  finishedAt?: number;
+  workspace?: string;
+  pane?: string;
+  seenWorking?: boolean;
+  /** Why it failed, once it has: the runs stay Ready to merge. */
+  failure?: string;
 }>;
 
 /**
  * `paused`: no queued entry starts while it is true. A new queue starts PAUSED, so queueing is never also starting: a person can queue tickets
  * before what the workers need is ready (a dev environment, a merge) and start them on the board when it is.
  */
-export type Queue = Readonly<{ entries: readonly Entry[]; max: number; paused: boolean }>;
+export type Queue = Readonly<{ entries: readonly Entry[]; max: number; paused: boolean; publish?: PublishRun }>;
 
 export type RunChoice = Readonly<{ model: string; effort: string }>;
 
@@ -140,11 +170,14 @@ export function remove(queue: Queue, key: string): Queue {
 export function retry(queue: Queue, key: string, now: number): Queue {
   const entry = find(queue, key);
   if (entry === undefined || entry.phase !== "finished" || isResult(entry) || isParked(entry)) return queue;
-  const { ticket, repos, model, effort, plan, planned, session, review } = entry;
-  // A review run that failed is retried as a review run, resuming the same worker, so it does not start the ticket over. Any other run starts
-  // a fresh worker, whose session replaces this one. A ticket of a batch is planned again on its own.
+  const { ticket, repos, model, effort, plan, planned, session, review, published, feedback, asked, rounds } = entry;
+  // A review run that failed is retried as the same review round, resuming the same worker, so it does not start the ticket over, and a round
+  // the board started still counts towards its cap. Any other run starts a fresh worker, whose session replaces this one. A ticket of a batch
+  // is planned again on its own.
+  const round = { ...(session ? { session } : {}), ...(published ? { published } : {}), ...(feedback !== undefined ? { feedback } : {}), ...(asked ? { asked } : {}),
+    ...(rounds !== undefined ? { rounds } : {}) };
   const retried: Entry = { ticket, repos, model, effort, ...(plan ? { plan } : {}), ...(planned ? { planned } : {}),
-    ...(review ? { review, ...(session ? { session } : {}) } : {}), phase: "queued", queuedAt: now };
+    ...(review ? { review, ...round } : {}), phase: "queued", queuedAt: now };
   return { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== key), retried] };
 }
 
@@ -152,18 +185,113 @@ export function retry(queue: Queue, key: string, now: number): Queue {
 const isResult = (entry: Entry): boolean => RESULT_KINDS.has(entry.outcome?.kind ?? "");
 
 /**
- * A person reviewed a finished run's pull requests and approved them: the ticket goes back on the queue, at the end, as a REVIEW RUN. It resumes
- * the worker that wrote the code (its `session`), marks the pull requests ready, waits for their checks and review, and fixes what they find.
- * Only its pull requests still open are reviewed. A run with none open, or one parked or settled by its tracker, is left alone.
+ * A person reviewed a finished run's DRAFT pull requests and approved them: the ticket goes back on the queue, at the end, as a REVIEW RUN. It
+ * resumes the worker that wrote the code (its `session`), marks the pull requests ready, waits for their checks and review, and fixes what they
+ * find. Only its pull requests still open are reviewed. A run with none open, one parked or settled by its tracker, and one whose pull requests
+ * are ready already ({@link respond} is theirs) are left alone.
  */
 export function approve(queue: Queue, key: string, now: number): Queue {
   const entry = find(queue, key);
-  if (entry === undefined || entry.phase !== "finished" || !isResult(entry) || isParked(entry) || SETTLED.has(entry.trackerState ?? "")) return queue;
-  const prs = pullsOf(entry).filter(({ url }) => entry.pullStates?.[url] !== "merged" && entry.pullStates?.[url] !== "closed");
-  if (prs.length === 0) return queue;
-  const { ticket, repos, model, effort, planned, session } = entry;
-  const review: Entry = { ticket, repos, model, effort, ...(planned ? { planned } : {}), ...(session ? { session } : {}), review: prs, phase: "queued", queuedAt: now };
-  return { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== key), review] };
+  if (entry === undefined || entry.outcome?.kind !== "draft-pr" || !reviewable(entry)) return queue;
+  return { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== key), reviewRound(entry, openPulls(entry), now)] };
+}
+
+/**
+ * A person asked the worker to answer the current feedback on pull requests that are ready already: a run Ready to merge, Published, or handed
+ * back because it reached the cap on rounds the board starts on its own. The ticket goes back on the queue, at the end, as a review round that
+ * resumes the same worker, and the count of the board's own rounds begins again, so watching carries on after it.
+ */
+export function respond(queue: Queue, key: string, now: number): Queue {
+  const entry = find(queue, key);
+  if (entry === undefined || entry.outcome?.kind !== "reviewed" || !reviewable(entry)) return queue;
+  return { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== key), { ...reviewRound(entry, openPulls(entry), now), asked: true }] };
+}
+
+/** A finished run a person can start a review round of: it holds no workspace, the tracker has not settled it, and a pull request is open. */
+const reviewable = (entry: Entry): boolean =>
+  entry.phase === "finished" && !isParked(entry) && !SETTLED.has(entry.trackerState ?? "") && openPulls(entry).length > 0;
+
+/** A review run of `entry`'s ticket for `prs`, queued at `now`, resuming its worker. A Slack message already posted for them stays its link. */
+function reviewRound(entry: Entry, prs: readonly PullRequest[], now: number): Entry {
+  const { ticket, repos, model, effort, planned, session, published } = entry;
+  return { ticket, repos, model, effort, ...(planned ? { planned } : {}), ...(session ? { session } : {}), ...(published ? { published } : {}), review: prs,
+    phase: "queued", queuedAt: now };
+}
+
+/** The most review rounds the board starts on its own, on new feedback, between two of a person's approvals. */
+export const MAX_FEEDBACK_ROUNDS = 3;
+
+/**
+ * New feedback reached a watched run's pull requests after its last round ended (`feedback` says what): the ticket goes back on the queue, at
+ * the end, as a review round that answers it, resuming the same worker. After {@link MAX_FEEDBACK_ROUNDS} such rounds since a person last
+ * approved, the next trigger hands the run to a person instead, who approves again to let the board carry on. A run the board does not watch
+ * ({@link isWatched}) is left alone.
+ */
+export function feedbackRound(queue: Queue, key: string, feedback: string, now: number): Queue {
+  const entry = find(queue, key);
+  if (entry === undefined || entry.phase !== "finished" || !isWatched(entry)) return queue;
+  const rounds = entry.rounds ?? 0;
+  if (rounds >= MAX_FEEDBACK_ROUNDS) {
+    const handedBack = `The pull requests keep getting feedback: the board answered ${rounds} rounds on its own and stopped. Respond to review starts another. The latest: ${feedback}`;
+    return replace(queue, key, (e) => ({ ...e, handedBack }));
+  }
+  const round: Entry = { ...reviewRound(entry, openPulls(entry), now), feedback, rounds: rounds + 1 };
+  return { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== key), round] };
+}
+
+/**
+ * A person ticked runs Ready to merge and pressed Publish: one publish run is queued for all of them, with their open pull requests. Refused,
+ * naming why, while another publish run is under way, and for a run that is not on the queue or not Ready to merge.
+ */
+export function queuePublish(queue: Queue, keys: readonly string[], now: number): Queue {
+  if (isPublishing(queue.publish)) throw new Error("a publish run is under way: wait for it to finish");
+  const ticked = [...new Set(keys)];
+  if (ticked.length === 0) throw new Error("tick at least one run Ready to merge");
+  const entries = ticked.map((key) => {
+    const entry = find(queue, key);
+    if (entry === undefined || entry.phase !== "finished" || runStatus(entry) !== "ready-to-merge" || isParked(entry)) {
+      throw new Error(`${key} is not Ready to merge, so it cannot be published`);
+    }
+    return entry;
+  });
+  return { ...queue, publish: { id: `p${now.toString(36)}`, keys: ticked, prs: entries.flatMap(openPulls), phase: "queued", queuedAt: now } };
+}
+
+/** Change the publish run, if there is one. */
+const replacePublish = (queue: Queue, change: (publish: PublishRun) => PublishRun): Queue =>
+  (queue.publish === undefined ? queue : { ...queue, publish: change(queue.publish) });
+
+export const markPublishStarting = (queue: Queue, now: number): Queue => replacePublish(queue, (p) => ({ ...p, phase: "starting", startedAt: now }));
+
+export const markPublishRunning = (queue: Queue, workspace: string, pane: string): Queue =>
+  replacePublish(queue, (p) => ({ ...p, phase: "running", workspace, pane }));
+
+/** What herdr says the publish run's agent is doing: `working` marks it seen, so a later `idle` is a finished turn. */
+export const observePublish = (queue: Queue, status: string): Queue =>
+  replacePublish(queue, (p) => ({ ...p, seenWorking: p.seenWorking === true || status === "working" }));
+
+/**
+ * The publish run ended with its messages posted: each run it published is Published, linking the first message, a run that went back on the
+ * queue for another round while it posted included.
+ */
+export function publishDone(queue: Queue, links: readonly string[], now: number): Queue {
+  const { publish } = queue;
+  if (publish === undefined) return queue;
+  const published = { link: links[0] ?? null, at: now };
+  const ended: PublishRun = { ...withoutWorkspace(publish), phase: "finished", finishedAt: now };
+  return { ...queue, publish: ended, entries: queue.entries.map((e) => (publish.keys.includes(e.ticket.key) ? { ...e, published } : e)) };
+}
+
+/** The publish run failed: its runs stay as they were, and the board says why. */
+export const publishFailed = (queue: Queue, failure: string, now: number): Queue =>
+  replacePublish(queue, (p) => ({ ...withoutWorkspace(p), phase: "finished", finishedAt: now, failure }));
+
+/** A publish run that has ended holds no workspace: it is closed. */
+const withoutWorkspace = ({ workspace: _closed, pane: _gone, ...publish }: PublishRun): PublishRun => publish;
+
+/** Whether the queued publish run starts now: it has a slot of its own free. It does not wait on Pause, because a person just asked for it. */
+export function publishStarts(queue: Queue): boolean {
+  return queue.publish?.phase === "queued" && slotsHeld(queue) < queue.max;
 }
 
 export function setPaused(queue: Queue, paused: boolean): Queue {
@@ -293,7 +421,7 @@ export function recordTrackerStates(queue: Queue, states: ReadonlyMap<string, st
  */
 export function nextStarts(queue: Queue, load: number, cores: number): Entry[] {
   if (queue.paused || load > cores) return [];
-  const free = queue.max - new Set(queue.entries.filter(isLive).map(runOf)).size;
+  const free = queue.max - slotsHeld(queue);
   const runs = new Set<string>();
   return queue.entries.filter((entry) => {
     if (entry.phase !== "queued" || waitsOn(entry, queue.entries).length > 0) return false;
@@ -302,6 +430,10 @@ export function nextStarts(queue: Queue, load: number, cores: number): Entry[] {
     return true;
   });
 }
+
+/** The slots live runs hold: one per run, and one for a live publish run. */
+const slotsHeld = (queue: Queue): number =>
+  new Set(queue.entries.filter(isLive).map(runOf)).size + (queue.publish !== undefined && LIVE.has(queue.publish.phase) ? 1 : 0);
 
 /** The run an entry starts in, for counting slots: its batch's, which every ticket in the batch shares, or else its own. */
 const runOf = (entry: Entry): string => entry.batch ?? entry.ticket.key;
@@ -314,7 +446,7 @@ export function emptyQueue(max: number): Queue {
 export function loadQueue(path: string, max: number): Queue {
   if (!existsSync(path)) return emptyQueue(max);
   const parsed = JSON.parse(readFileSync(path, "utf8")) as Queue;
-  return { entries: parsed.entries ?? [], max: parsed.max ?? max, paused: parsed.paused ?? true };
+  return { entries: parsed.entries ?? [], max: parsed.max ?? max, paused: parsed.paused ?? true, ...(parsed.publish ? { publish: parsed.publish } : {}) };
 }
 
 /** Replace the file whole: write beside it, then rename over it. */

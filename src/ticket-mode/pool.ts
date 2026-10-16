@@ -29,25 +29,42 @@
 // (`approve`). It starts in the same ticket folder with `claude --resume` on the session the first run ended in, so it keeps that worker's
 // context, and a brief that has it mark the pull requests ready and see them through their checks and review. A run whose session was not
 // recorded resumes the newest transcript Claude Code kept for that folder, and a fresh worker starts only when there is none.
+//
+// A PARKED RUN THAT WRITES A NEW OUTCOME HAS ENDED AGAIN. A worker woken in its parked workspace, by a person or by a task of its own, can work
+// for seconds between two looks and write its outcome without the pool ever seeing it `working`. So an outcome file written after the run
+// parked, other than the one it parked on, settles the run as if it had been resumed and had finished.
+//
+// A RUN READY TO MERGE IS WATCHED. Every few minutes (`watchFeedback`) the board reads the open pull requests of each run Ready to merge or
+// Published (`readPullFeedback`, through `gh`). A review, a conversation comment or an inline comment newer than the run's last round, from
+// anyone but the account the workers use, or a check failing on the head commit since then, queues another review round that resumes the same
+// worker to answer it (`feedbackRound`), up to three before a person must approve again.
+//
+// A PERSON'S PUBLISH STARTS ONE PUBLISH RUN. It posts the pull requests of every run ticked, all in one go, with the host file's
+// `tickets.publish`, in a folder of its own (`publishDir`), holding one slot. Only it may run the `post-pr-to-slack` skill and the connectors
+// `tickets.publish.connectors` names (`hook.ts`). When it writes `published`, each run it posted shows Published with a link to the message.
 import { execFile, spawn } from "node:child_process";
 import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { availableParallelism, homedir, loadavg } from "node:os";
 import { join } from "node:path";
 import { agentStartArgs, closedNote, herdrReason, herdrRun, openPane, readAgents } from "../herdr-agents.ts";
 import { parseOrder, type Order } from "./batch-order.ts";
-import { HANDED_BACK, hasPlan, isParked, stackedOn } from "./board-view.ts";
+import { readOwnLogin, readPullFeedback, type PullFeedback } from "../ticket-port/pull-feedback.ts";
+import { defaultGh } from "../lib/tool-version-agreement.ts";
+import { HANDED_BACK, hasPlan, isParked, isWatched, openPulls, stackedOn } from "./board-view.ts";
 import {
-  batchPlanDone, finish, isLive, leaveBatch, markResumed, markRunning, markStarting, nextStarts, observe, park, planDone, recordBlockers, recordPullStates, recordRepos,
-  recordTrackerStates, unpark, unreadBlockerKeys, unsettledKeys,
-  type Entry, type Outcome, type Queue, type RunChoice,
+  batchPlanDone, feedbackRound, finish, isLive, leaveBatch, markPublishRunning, markPublishStarting, markResumed, markRunning, markStarting, nextStarts, observe,
+  observePublish, park, planDone, publishDone, publishFailed, publishStarts, recordBlockers, recordPullStates, recordRepos, recordTrackerStates, unpark,
+  unreadBlockerKeys, unsettledKeys,
+  type Entry, type Outcome, type PublishRun, type Queue, type RunChoice,
 } from "./queue.ts";
 import type { Ticket, TicketSource } from "./source.ts";
 import { unreachablePlugins } from "./plugins.ts";
 import { TICKET_ENV } from "./worktree-command.ts";
 import { HOST_FILE_ENV, plansInBatches, type TicketSettings } from "./settings.ts";
 import {
-  BRIEF_FILE, CONNECTORS_FILE, DENY_FILE, ORDER_FILE, OUTCOME_FILE, PLAN_DIR, PLANNING_DENY, PREVIOUS_OUTCOME_FILE, QUESTION_FILE, REVIEW_FILE, STOP_COUNT_FILE,
-  batchPlanBriefText, briefText, firstPrompt, planBriefText, reviewBriefText, reviewPrompt, workerFlags, workerSettings,
+  BRIEF_FILE, CONNECTORS_FILE, DENY_FILE, ORDER_FILE, OUTCOME_FILE, PLAN_DIR, PLANNING_DENY, PREVIOUS_OUTCOME_FILE, PUBLISH_FILE, PUBLISHED_FILE, QUESTION_FILE,
+  REVIEW_FILE, STOP_COUNT_FILE,
+  batchPlanBriefText, briefText, firstPrompt, planBriefText, publishBriefText, reviewBriefText, reviewPrompt, workerFlags, workerSettings,
   type BatchTicket, type HookCommand, type ParentTicket,
 } from "./worker-files.ts";
 
@@ -58,6 +75,8 @@ const SETTINGS_FILE = ".claude/settings.local.json";
 const PLAN_FILE_BYTES = 1_000_000;
 /** How much of a batch ticket's `QUESTION.md` becomes the reason its run hands it to a person. */
 const QUESTION_CHARS = 500;
+/** The longest a publish run may take. Posting a few messages takes a minute or two. */
+const PUBLISH_LIMIT_MS = 30 * 60_000;
 /** Listings in a row a run may be missing from before its workspace counts as gone: a running run is then crashed, and a parked one unparked. */
 const MISSES_TO_GONE = 2;
 
@@ -99,6 +118,8 @@ export type PoolDeps = Readonly<{
   startServer?: (session: string) => void;
   /** Wait between looks at a just-started server or agent. */
   wait?: (ms: number) => Promise<void>;
+  /** `gh`, for the feedback on the pull requests of runs Ready to merge. */
+  gh?: (args: string[]) => string;
 }>;
 
 /** The pool holds the queue through these two, so the server stays its one writer. */
@@ -114,6 +135,15 @@ export const batchDir = (settings: TicketSettings, batch: string): string => joi
 
 /** The folder a batch's planning run starts in, among the person's repositories as a ticket's is. */
 export const batchFolder = (settings: TicketSettings, batch: string): string => join(settings.worktreeRoot, batch);
+
+/** Where a publish run keeps its brief, its outcome and the links to what it posted. */
+export const publishDir = (settings: TicketSettings, id: string): string => join(settings.stateDir, "tickets", "publish", id);
+
+/** The folder every publish run starts in, one at a time: it reads no repository. */
+export const publishFolder = (settings: TicketSettings): string => join(settings.worktreeRoot, "publish");
+
+/** Where a run lives: the herdr name of its workspace and agent, the folder holding its brief and outcome, and the folder its agent starts in. */
+type RunPlace = Readonly<{ name: string; dir: string; folder: string }>;
 
 /** The repositories a worker has made worktrees in: the folder's directories that hold a git worktree. */
 export function worktreesIn(folder: string): string[] {
@@ -244,6 +274,42 @@ export function countTokens(file: string | null): { input: number; output: numbe
   return { input, output };
 }
 
+/**
+ * How a publish run ended, from its outcome file's text and the links file in `dir` beside it, which this reads: the messages it posted, or why
+ * it failed. A `published` outcome needs the links file, a list of web addresses, which may be empty.
+ */
+export function publishResult(outcomeText: string, dir: string): Readonly<{ links: readonly string[] } | { failure: string }> {
+  let outcome: Record<string, unknown> | null = null;
+  try {
+    outcome = JSON.parse(outcomeText) as Record<string, unknown> | null;
+  } catch {
+    // reported below
+  }
+  if (outcome === null || typeof outcome !== "object") return { failure: `its outcome file could not be read: ${outcomeText.slice(0, 200)}` };
+  if (outcome.kind === "needs-human") return { failure: String(outcome.reason ?? "it handed the run back") };
+  if (outcome.kind !== "published") return { failure: `it wrote the outcome ${JSON.stringify(outcome.kind)}, which a publish run cannot end on` };
+  const path = join(dir, PUBLISHED_FILE);
+  try {
+    const links = (JSON.parse(readFileSync(path, "utf8")) as { links?: unknown }).links;
+    if (Array.isArray(links) && links.every((link) => typeof link === "string" && /^https:\/\/\S+$/.test(link))) return { links };
+  } catch {
+    // falls through to the refusal below
+  }
+  return { failure: `it wrote published, but ${path} does not hold { "links": ["https://..."] }` };
+}
+
+/**
+ * What new feedback, if any, reached a run's pull requests after `since`, the end of its last round, as the round's brief names it: the newest
+ * comments and who left them, and the checks that failed. Null when nothing is newer. PURE.
+ */
+export function feedbackSince(reads: readonly Readonly<{ url: string; read: PullFeedback }>[], since: number): string | null {
+  const lines = reads.filter(({ read }) => read.state === "open").flatMap(({ url, read }) => [
+    ...(read.feedbackAt !== null && read.feedbackAt > since ? [`New review feedback on ${url}, the newest from ${read.authors[0] ?? "someone"}.`] : []),
+    ...(read.failedAt !== null && read.failedAt > since ? [`${read.failing.join(", ")} failed on the head commit of ${url}.`] : []),
+  ]);
+  return lines.length === 0 ? null : lines.join("\n");
+}
+
 export function createPool(store: QueueStore, deps: PoolDeps) {
   const { settings, source, hook } = deps;
   const hostFile = deps.hostFile ?? process.env[HOST_FILE_ENV];
@@ -253,6 +319,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
   const wait = deps.wait ?? defaultWait;
   const now = deps.now ?? Date.now;
   const transcripts = deps.transcriptsRoot ?? join(homedir(), ".claude", "projects");
+  const gh = deps.gh ?? defaultGh;
   const session = { session: settings.herdrSession };
   const misses = new Map<string, number>();
   const answered = new Map<string, number>();
@@ -295,7 +362,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
    * Where the run an entry is in lives: the herdr name of its workspace and agent, the folder holding its brief and outcome, and the folder its
    * agent starts in. A ticket of a batch is in its batch's run, which is the only way a live or parked entry keeps its batch.
    */
-  const runPlace = (entry: Entry): Readonly<{ name: string; dir: string; folder: string }> => (entry.batch === undefined
+  const runPlace = (entry: Entry): RunPlace => (entry.batch === undefined
     ? { name: herdrName(entry.ticket.key), dir: ticketDir(settings, entry.ticket.key), folder: ticketFolder(settings, entry.ticket.key) }
     : { name: herdrName(entry.batch), dir: batchDir(settings, entry.batch), folder: batchFolder(settings, entry.batch) });
 
@@ -370,7 +437,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     if (entry.review !== undefined) {
       resume = sessionToResume(entry);
       writeFileSync(join(dir, BRIEF_FILE), reviewBriefText({ ticket, folder, ticketDir: dir, prs: entry.review, notes, reviewNotes: notesFile(settings.review, "tickets.review"),
-        connectors, resumed: resume !== undefined }));
+        connectors, resumed: resume !== undefined, feedback: entry.feedback, asked: entry.asked === true }));
       writeFileSync(join(dir, REVIEW_FILE), `${JSON.stringify(entry.review)}\n`);
     } else if (isPlanning(entry) && settings.planner) {
       writeFileSync(join(dir, BRIEF_FILE), planBriefText({ ticket, ticketDir: dir, planDir: emptyPlanDir(dir), attachments, parent, clones: settings.clones, run: settings.planner.run,
@@ -394,9 +461,9 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     const unreachable = unreachablePlugins(settings.plugins, folder, { record: deps.pluginRecord });
     if (unreachable.length > 0) throw new Error(unreachable.join(" "));
     mkdirSync(dir, { recursive: true });
-    // An earlier run's outcome and stop count would end this run before it began, and an earlier review run's mark would let it mark pull
-    // requests ready.
-    for (const file of [OUTCOME_FILE, STOP_COUNT_FILE, REVIEW_FILE]) rmSync(join(dir, file), { force: true });
+    // An earlier run's outcome and stop count would end this run before it began, and an earlier review or publish run's mark would lift a
+    // refusal for it.
+    for (const file of [OUTCOME_FILE, STOP_COUNT_FILE, REVIEW_FILE, PUBLISH_FILE]) rmSync(join(dir, file), { force: true });
   }
 
   /** The run's plan folder, made empty: an earlier attempt's files would be attached as this one's. */
@@ -441,31 +508,37 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
   /** Open the workspace and start Claude in it. Returns the workspace and its pane, or throws with herdr's reason after closing anything it opened. */
   async function start(entry: Entry, folder: string, dir: string, resume?: string): Promise<{ workspace: string; pane: string }> {
     const runId = entry.batch ?? entry.ticket.key;
-    const { name } = runPlace(entry);
-    const run = (args: string[]) => herdr(args);
     // The worker's shell carries its ticket, its branch and the host file, which `ticket:worktree` reads. A batch's run has no one ticket, and
     // makes no worktree.
     const env = { ...(entry.batch === undefined ? { [TICKET_ENV.key]: runId, [TICKET_ENV.branch]: entry.ticket.branch } : {}), ...(hostFile ? { [TICKET_ENV.host]: hostFile } : {}) };
-    const opened = openPane(run, name, env, folder, session);
-    if ("refusal" in opened) throw new Error(opened.refusal);
     const { model, effort } = runChoice(entry);
-    const prompt = entry.review === undefined ? firstPrompt(dir) : reviewPrompt(dir);
-    const tail = [prompt, ...workerFlags({ name: runId, model, effort, addDirs: [dir], resume })];
+    const cause = entry.asked ? "asked" : entry.feedback !== undefined ? "feedback" : "approved";
+    const prompt = entry.review === undefined ? firstPrompt(dir) : reviewPrompt(dir, cause);
+    return startAgent({ ...runPlace(entry), folder }, env, [prompt, ...workerFlags({ name: runId, model, effort, addDirs: [dir], resume })], runId);
+  }
+
+  /**
+   * Open a workspace named `place.name` in `place.folder`, with `env` in its shell, and start Claude in it with `tail` after the command. Returns
+   * the workspace and its pane, or throws with herdr's reason, naming `what`, after closing anything it opened.
+   */
+  async function startAgent(place: RunPlace, env: Record<string, string>, tail: readonly string[], what: string): Promise<{ workspace: string; pane: string }> {
+    const run = (args: string[]) => herdr(args);
+    const opened = openPane(run, place.name, env, place.folder, session);
+    if ("refusal" in opened) throw new Error(opened.refusal);
     try {
-      await herdrAsync(agentStartArgs(name, "claude", opened.pane, tail, session), START_TIMEOUT_MS);
+      await herdrAsync(agentStartArgs(place.name, "claude", opened.pane, [...tail], session), START_TIMEOUT_MS);
     } catch (err) {
       // A start can outlast its timeout and still succeed: ask the listing before calling it a failure.
-      const listed = readAgents(run, session)?.find((agent) => agent.label === name);
+      const listed = readAgents(run, session)?.find((agent) => agent.label === place.name);
       if (listed === undefined || listed.status === "unknown") {
-        throw new Error(`herdr could not start Claude for ${runId} (${herdrRefusal(err)})${closedNote(run, opened.workspace, session)}`);
+        throw new Error(`herdr could not start Claude for ${what} (${herdrRefusal(err)})${closedNote(run, opened.workspace, session)}`);
       }
     }
     return { workspace: opened.workspace, pane: opened.pane };
   }
 
   /** Answer a start dialog on this run's pane, if one is showing and the run has answers left. True when it answered. */
-  function answerStartDialog(entry: Entry): boolean {
-    const { name, folder } = runPlace(entry);
+  function answerStartDialog({ name, folder }: RunPlace): boolean {
     const count = answered.get(name) ?? 0;
     if (count >= MAX_DIALOG_ANSWERS) return false;
     let screen: string;
@@ -488,6 +561,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     for (const [workspace, id] of readSessionIds()) claudeSessions.set(workspace, id);
     watchRunning(status);
     watchParked(status);
+    watchPublish(status);
   }
 
   /**
@@ -509,7 +583,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
       misses.delete(name);
       const repos = worktreesIn(folder);
       if (repos.join("\n") !== entry.repos.join("\n")) update((queue) => recordRepos(queue, key, repos));
-      if (!["working", "idle", "done"].includes(seen) && answerStartDialog(entry)) continue;
+      if (!["working", "idle", "done"].includes(seen) && answerStartDialog(runPlace(entry))) continue;
       updateEach(runMembers(entry), (queue, member) => observe(queue, member, seen));
       const current = store.get().entries.find((e) => e.ticket.key === key) ?? entry;
       const outcomePath = join(dir, OUTCOME_FILE);
@@ -518,7 +592,10 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     }
   }
 
-  /** Each parked run's status, from the same listing: one whose agent works again resumes, and one whose workspace is gone is unparked. */
+  /**
+   * Each parked run's status, from the same listing: one whose agent works again resumes, one that wrote a new outcome has ended again, and one
+   * whose workspace is gone is unparked.
+   */
   function watchParked(status: ReadonlyMap<string, string>): void {
     const watched = new Set<string>();
     for (const entry of store.get().entries.filter(isParked)) {
@@ -534,15 +611,36 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
         continue;
       }
       misses.delete(name);
-      if (seen === "working") resume(entry);
+      const fresh = newOutcome(entry);
+      if (seen === "working") (fresh === null ? resume : markLive)(entry);
+      else if (fresh !== null && (seen === "idle" || seen === "done")) {
+        markLive(entry);
+        settle(store.get().entries.find((e) => e.ticket.key === entry.ticket.key) ?? entry, fresh);
+      }
     }
   }
 
-  /** A person answered a parked run: move its outcome aside and clear the stop count, so the stop hook asks for a new outcome, and mark it live. */
+  /**
+   * The outcome a parked run's worker wrote after the run parked, or null. A file written before then, or one that says what the run parked on,
+   * is the old outcome: the run parked on it.
+   */
+  function newOutcome(entry: Entry): Outcome | null {
+    const path = join(runPlace(entry).dir, OUTCOME_FILE);
+    if (!existsSync(path) || statSync(path).mtimeMs <= (entry.finishedAt ?? 0)) return null;
+    const outcome = parseOutcome(readFileSync(path, "utf8"));
+    return JSON.stringify(outcome) === JSON.stringify(entry.outcome) ? null : outcome;
+  }
+
+  /** A person answered a parked run: move its outcome aside, so the stop hook asks for a new one, and mark it live. */
   function resume(entry: Entry): void {
     const { dir } = runPlace(entry);
     if (existsSync(join(dir, OUTCOME_FILE))) renameSync(join(dir, OUTCOME_FILE), join(dir, PREVIOUS_OUTCOME_FILE));
-    rmSync(join(dir, STOP_COUNT_FILE), { force: true });
+    markLive(entry);
+  }
+
+  /** Mark a parked run live again with a fresh stop count. An outcome file written since it parked stays: it is the run's new outcome. */
+  function markLive(entry: Entry): void {
+    rmSync(join(runPlace(entry).dir, STOP_COUNT_FILE), { force: true });
     updateEach(runMembers(entry), markResumed);
   }
 
@@ -723,12 +821,12 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
   }
 
   /** Just after a start, answer the start dialogs as they appear, rather than one per tick: a few short waits, then the tick takes over. */
-  async function settleStart(entry: Entry): Promise<void> {
+  async function settleStart(place: RunPlace): Promise<void> {
     for (let attempt = 0; attempt < 6; attempt += 1) {
       await wait(1500);
-      const status = readAgents((args) => herdr(args), session)?.find((agent) => agent.label === runPlace(entry).name)?.status;
+      const status = readAgents((args) => herdr(args), session)?.find((agent) => agent.label === place.name)?.status;
       if (status === "working" || status === "idle" || status === "done") return;
-      answerStartDialog(entry);
+      answerStartDialog(place);
     }
   }
 
@@ -766,6 +864,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
       for (const member of batch) begun.add(member.ticket.key);
       await (batch.length > 1 ? startBatch(batch) : startOne(entry));
     }
+    if (publishStarts(store.get())) await startPublish();
   }
 
   const phaseOf = (key: string) => store.get().entries.find((e) => e.ticket.key === key)?.phase;
@@ -796,7 +895,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
       if (stoppedWhileStarting(entry.ticket.key, workspace)) return;
       update((queue) => markRunning(queue, entry.ticket.key, workspace, pane));
       if (!isPlanning(entry)) moveTicketToWorkingState(entry.ticket.key);
-      await settleStart(entry);
+      await settleStart(runPlace(entry));
     } catch (err) {
       update((queue) => finish(queue, entry.ticket.key, crashed(err), now()));
     }
@@ -825,7 +924,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
       // A stop of any ticket while it was starting stopped the whole batch.
       if (stoppedWhileStarting(lead.ticket.key, workspace)) return;
       updateEach(members, (queue, key) => markRunning(queue, key, workspace, pane));
-      await settleStart(lead);
+      await settleStart(runPlace(lead));
     } catch (err) {
       updateEach(batch.filter(({ ticket }) => phaseOf(ticket.key) === "starting"), (queue, key) => finish(queue, key, crashed(err), now()));
     }
@@ -854,6 +953,69 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
   function stop(key: string): void {
     const entry = store.get().entries.find((e) => e.ticket.key === key && isLive(e));
     if (entry !== undefined) end(entry, { kind: "stopped" });
+  }
+
+  /** Where a publish run lives. Its herdr name is its id's, which no ticket's key can be. */
+  const publishPlace = (publish: PublishRun): RunPlace =>
+    ({ name: herdrName(`publish-${publish.id}`), dir: publishDir(settings, publish.id), folder: publishFolder(settings) });
+
+  /**
+   * Start the queued publish run: its brief, its mark for the hook naming the connectors only it may call, and its settings file, then its
+   * agent, on the publish model and effort. A start that fails ends it failed, saying why, and its runs stay as they were.
+   */
+  async function startPublish(): Promise<void> {
+    const queued = store.get().publish;
+    const publisher = settings.publish;
+    if (queued === undefined) return;
+    update((queue) => markPublishStarting(queue, now()));
+    try {
+      if (publisher === null) throw new Error("this machine names no tickets.publish");
+      const place = publishPlace(queued);
+      clearRunDir(place.folder, place.dir);
+      rmSync(join(place.dir, PUBLISHED_FILE), { force: true });
+      writeFileSync(join(place.dir, BRIEF_FILE), publishBriefText({ dir: place.dir, prs: queued.prs, run: publisher.run }));
+      writeFileSync(join(place.dir, PUBLISH_FILE), `${JSON.stringify({ connectors: publisher.connectors })}\n`);
+      writeFileSync(join(place.dir, DENY_FILE), `${JSON.stringify(settings.deny)}\n`);
+      writeFileSync(join(place.dir, CONNECTORS_FILE), `${JSON.stringify(settings.connectors)}\n`);
+      mkdirSync(join(place.folder, ".claude"), { recursive: true });
+      writeFileSync(join(place.folder, SETTINGS_FILE),
+        `${JSON.stringify(workerSettings({ model: publisher.model, ticketDir: place.dir, readDirs: [], hook, plugins: settings.plugins }), null, 2)}\n`);
+      const tail = [firstPrompt(place.dir), ...workerFlags({ name: `publish-${queued.id}`, model: publisher.model, effort: publisher.effort, addDirs: [place.dir] })];
+      const { workspace, pane } = await startAgent(place, {}, tail, "the publish run");
+      update((queue) => markPublishRunning(queue, workspace, pane));
+      await settleStart(place);
+    } catch (err) {
+      update((queue) => publishFailed(queue, messageOf(err).split("\n")[0], now()));
+    }
+  }
+
+  /** The publish run's status, from the same listing as the ticket runs': it ends once its outcome file is there and its agent is idle or done. */
+  function watchPublish(status: ReadonlyMap<string, string>): void {
+    const publish = store.get().publish;
+    if (publish?.phase !== "running") return;
+    const place = publishPlace(publish);
+    // A publish run holds a slot, and no other can start while it is under way, so one that never ends must not hold them for ever.
+    if (now() - (publish.startedAt ?? now()) > PUBLISH_LIMIT_MS) return endPublish(publish, { failure: `it did not finish within ${PUBLISH_LIMIT_MS / 60_000} minutes` });
+    const seen = status.get(place.name);
+    if (seen === undefined || seen === "unknown") {
+      if (missedAgain(place.name)) endPublish(publish, { failure: seen === undefined ? "its herdr workspace is gone" : "herdr finds no agent in its workspace" });
+      return;
+    }
+    misses.delete(place.name);
+    if (!["working", "idle", "done"].includes(seen) && answerStartDialog(place)) return;
+    update((queue) => observePublish(queue, seen));
+    const outcomePath = join(place.dir, OUTCOME_FILE);
+    if ((seen === "idle" || seen === "done") && existsSync(outcomePath)) endPublish(publish, publishResult(readFileSync(outcomePath, "utf8"), place.dir));
+    else if (seen === "done" || (seen === "idle" && store.get().publish?.seenWorking === true)) endPublish(publish, { failure: "it stopped without writing an outcome" });
+  }
+
+  /** Close the publish run's workspace and record how it ended: each of its runs Published, or why it failed. */
+  function endPublish(publish: PublishRun, result: Readonly<{ links: readonly string[] } | { failure: string }>): void {
+    const { name } = publishPlace(publish);
+    if (publish.workspace) closedNote((args) => herdr(args), publish.workspace, session);
+    misses.delete(name);
+    answered.delete(name);
+    update((queue) => ("links" in result ? publishDone(queue, result.links, now()) : publishFailed(queue, result.failure, now())));
   }
 
   /** Close a parked run's workspace. Its outcome and its worktrees stay. Throws with herdr's reason when herdr refuses, so the run stays parked. */
@@ -885,6 +1047,10 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     }
     for (const entry of store.get().entries.filter(isParked)) {
       if (!listed.has(runPlace(entry).name)) update((queue) => unpark(queue, entry.ticket.key));
+    }
+    const publish = store.get().publish;
+    if (publish !== undefined && (publish.phase === "starting" || (publish.phase === "running" && !listed.has(publishPlace(publish).name)))) {
+      update((queue) => publishFailed(queue, "the pool restarted while it was running", now()));
     }
   }
 
@@ -950,7 +1116,37 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     }
   }
 
-  return { tick, stop, close, reconcile, ensureSession, refreshTracker };
+  /** The account the workers act as on GitHub, read once: feedback it wrote is the worker's own, never a reason for another round. */
+  let ownLogin: string | null = null;
+
+  /**
+   * Read the open pull requests of each run the board watches, and queue a review round for each run whose pull requests got new feedback
+   * since its last round ended: a review, a comment or an inline comment by anyone but the workers' account, or a check that failed since then.
+   * A run whose pull request could not be read is asked again next time, and one merged or closed since is left alone.
+   */
+  function watchFeedback(): void {
+    const watched = store.get().entries.filter((entry) => entry.phase === "finished" && isWatched(entry));
+    if (watched.length === 0) return;
+    ownLogin ??= readOwnLogin(gh);
+    const self = ownLogin;
+    if (self === null) return log("the GitHub account the workers use could not be read, so no pull request's feedback was read");
+    let queued = false;
+    for (const entry of watched) {
+      const reads = openPulls(entry).map((pr) => ({ url: pr.url, read: readPullFeedback(pr.url, self, gh) }));
+      const unread = reads.filter(({ read }) => read === null).map(({ url }) => url);
+      if (unread.length > 0) {
+        log(`${entry.ticket.key}: the feedback on ${unread.join(", ")} could not be read, so it was not checked; the next watch asks again`);
+        continue;
+      }
+      const trigger = feedbackSince(reads as { url: string; read: PullFeedback }[], entry.finishedAt ?? 0);
+      if (trigger === null) continue;
+      update((queue) => feedbackRound(queue, entry.ticket.key, trigger, now()));
+      queued = true;
+    }
+    if (queued) void tick();
+  }
+
+  return { tick, stop, close, reconcile, ensureSession, refreshTracker, watchFeedback };
 }
 
 export type Pool = ReturnType<typeof createPool>;

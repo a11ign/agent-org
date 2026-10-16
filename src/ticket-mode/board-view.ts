@@ -32,6 +32,10 @@ export type ViewEntry = Readonly<{
   review?: readonly Readonly<{ url: string }>[];
   /** The repository its batch's planner said its work lands in, or null when it named none. */
   plannedRepo?: string | null;
+  /** Set once a publish run posted its pull requests: the first message's web address, or null when it gave none. */
+  published?: Readonly<{ link: string | null }>;
+  /** Set when the board stopped answering new feedback on its own and handed the run to a person: why. */
+  handedBack?: string;
 }>;
 
 /**
@@ -227,7 +231,8 @@ export function remember(storage: Storage | null, name: string, values: Readonly
 
 /** A run's status on the board, after GitHub's Actions runs: each has its own icon and filter. */
 export type RunStatus =
-  "needs-you" | "working" | "planning" | "reviewing" | "blocked" | "queued" | "awaiting-review" | "ready-to-merge" | "completed" | "failed" | "cancelled";
+  "needs-you" | "working" | "planning" | "reviewing" | "blocked" | "queued" | "awaiting-review" | "ready-to-merge" | "published" | "completed" | "failed"
+  | "cancelled";
 
 /** Every status, in the order the filters list them: what needs a person first, what is settled last. */
 export const RUN_STATUSES: readonly Readonly<{ status: RunStatus; label: string }>[] = [
@@ -239,6 +244,7 @@ export const RUN_STATUSES: readonly Readonly<{ status: RunStatus; label: string 
   { status: "queued", label: "Queued" },
   { status: "awaiting-review", label: "Awaiting review" },
   { status: "ready-to-merge", label: "Ready to merge" },
+  { status: "published", label: "Published" },
   { status: "completed", label: "Completed" },
   { status: "failed", label: "Failed" },
   { status: "cancelled", label: "Cancelled" },
@@ -257,6 +263,12 @@ export const RESULT_KINDS: ReadonlySet<string> = new Set(["draft-pr", "reviewed"
 export function pullsOf<T extends Readonly<{ url: string }>>(entry: Readonly<{ outcome?: Readonly<{ kind: string; prs?: readonly T[] }>; review?: readonly T[] }>): readonly T[] {
   const { outcome } = entry;
   return outcome !== undefined && RESULT_KINDS.has(outcome.kind) ? (outcome.prs ?? []) : (entry.review ?? []);
+}
+
+/** The run's pull requests that are still open, as last read: neither merged nor closed. */
+export function openPulls<T extends Readonly<{ url: string }>>(entry: Readonly<{ outcome?: Readonly<{ kind: string; prs?: readonly T[] }>; review?: readonly T[];
+  pullStates?: Readonly<Record<string, string>> }>): T[] {
+  return pullsOf(entry).filter(({ url }) => entry.pullStates?.[url] !== "merged" && entry.pullStates?.[url] !== "closed");
 }
 
 /**
@@ -337,7 +349,7 @@ export function runStatus(entry: ViewEntry, entries: readonly ViewEntry[] = []):
   if (entry.trackerState === "canceled" || entry.trackerState === "duplicate") return "cancelled";
   const kind = entry.outcome?.kind ?? "";
   if (kind === "draft-pr") return settledByPulls(entry) ?? "awaiting-review";
-  if (kind === "reviewed") return settledByPulls(entry) ?? "ready-to-merge";
+  if (kind === "reviewed") return settledByPulls(entry) ?? (entry.handedBack !== undefined ? "needs-you" : entry.published ? "published" : "ready-to-merge");
   if (HANDED_BACK.has(kind)) return "needs-you";
   return kind === "stopped" ? "cancelled" : "failed";
 }
@@ -359,23 +371,61 @@ export function runsShown<T extends ViewEntry>(entries: readonly T[], filter: Ru
 export const isParked = (entry: ViewEntry): boolean => entry.phase === "finished" && entry.workspace !== undefined;
 
 /** What a person can do to a run from the board. */
-export type RunAction = "remove" | "stop" | "retry" | "close" | "approve";
+export type RunAction = "remove" | "stop" | "retry" | "close" | "approve" | "respond";
 
-/** Why a person presses Approve, shown as its tooltip. */
-export const APPROVE_TITLE = "Human review approved: mark the pull requests ready, then see them through their checks and review";
+/** Why a person presses Approve, shown as its tooltip: the drafts are reviewed. */
+export const APPROVE_TITLE = "Drafts reviewed and approved: mark the pull requests ready, then see them through their checks and review";
+
+/** Why a person presses Respond to review, shown as its tooltip: the pull requests are ready, and have feedback to answer. */
+export const RESPOND_TITLE = "Answer the feedback on these ready pull requests now: their reviews, comments and failing checks";
 
 /**
  * The actions a run offers. A queued run can be removed and a live one stopped. A finished run that kept its workspace (parked) can be closed,
- * and only once it is closed can it be retried. Pull requests awaiting review, or reviewed and ready to merge, are results: they are not retried,
- * and a person who has reviewed them approves them, which starts a review round. A completed ticket offers nothing.
+ * and only once it is closed can it be retried. Pull requests are results, and are not retried. Drafts awaiting review offer Approve, which
+ * marks them ready. Ready ones (Ready to merge, Published, or handed back after the board's own rounds) offer Respond to review, which answers
+ * their feedback now. A completed ticket offers nothing.
  */
 export function runActions(entry: ViewEntry): RunAction[] {
   if (entry.phase === "queued") return ["remove"];
   if (entry.phase !== "finished") return ["stop"];
   if (isParked(entry)) return ["close"];
   const status = runStatus(entry);
-  if (status === "awaiting-review" || status === "ready-to-merge") return ["approve"];
+  if (status === "awaiting-review") return ["approve"];
+  if (status === "ready-to-merge" || status === "published" || (status === "needs-you" && entry.handedBack !== undefined)) return ["respond"];
   return entry.outcome === undefined || RESULT_KINDS.has(entry.outcome.kind) || status === "completed" ? [] : ["retry"];
+}
+
+/**
+ * Whether the board watches a run's pull requests for new feedback: it is Ready to merge or Published, holds no workspace, and has a pull
+ * request still open. Merged or closed pull requests are never watched.
+ */
+export function isWatched(entry: ViewEntry): boolean {
+  const status = runStatus(entry);
+  return (status === "ready-to-merge" || status === "published") && !isParked(entry) && openPulls(entry).length > 0;
+}
+
+/** The fields of the board's publish run that the page reads. */
+export type ViewPublish = Readonly<{ keys: readonly string[]; phase: string; failure?: string }>;
+
+/** Whether the publish run is still to finish: queued, starting or running. */
+export const isPublishing = (publish: ViewPublish | undefined): boolean => publish !== undefined && publish.phase !== "finished";
+
+/**
+ * A run can be ticked for Publish only once it is Ready to merge: a person approved its pull requests and they passed their review and checks.
+ * A published run, a parked one, and one the publish run in progress holds are not.
+ */
+export const publishable = (entry: ViewEntry, publish?: ViewPublish): boolean =>
+  runStatus(entry) === "ready-to-merge" && !isParked(entry) && !(isPublishing(publish) && publish?.keys.includes(entry.ticket.key));
+
+/** The Publish button's words for `count` ticked runs. */
+export const publishLabel = (count: number): string => `Publish selected (${count})`;
+
+/** What the Board says about the last publish run: that it is under way, or why it failed. Null once it published, and when there is none. */
+export function publishNote(publish: ViewPublish | undefined): string | null {
+  if (publish === undefined) return null;
+  const runs = `${publish.keys.length} run${publish.keys.length === 1 ? "" : "s"}`;
+  if (isPublishing(publish)) return `Publishing ${runs}`;
+  return publish.failure === undefined ? null : `Publishing ${runs} failed: ${publish.failure}`;
 }
 
 /**

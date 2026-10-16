@@ -31,6 +31,19 @@ export const CONNECTORS_FILE = "connectors.json";
 export const REVIEW_FILE = "review-run";
 /** How long a review run waits for a pull request's checks or its review before it hands the run back. */
 export const REVIEW_WAIT_MINUTES = 30;
+/**
+ * Present beside a PUBLISH RUN's outcome file, written by the board: the connector tool names it may call, as `{ "connectors": [...] }`. It lets
+ * the PreToolUse hook allow the `post-pr-to-slack` skill and those connectors, which only a person's Publish makes a run's to use.
+ */
+export const PUBLISH_FILE = "publish-run";
+/** What a publish run writes beside its outcome file: the messages it posted, as `{ "links": ["<message url>", ...] }`. */
+export const PUBLISHED_FILE = "published.json";
+
+/**
+ * How a review run waits. A worker that ended its turn to wait was read as a run that stopped: the Stop hook let the third stop through, the
+ * agent went idle with no outcome, and the board parked the run mid-review (NBF-1463, 2026-10-16). So it waits in the foreground.
+ */
+const FOREGROUND_WAIT = `Wait in the foreground, with blocking commands, such as \`gh pr checks <url> --watch --interval 30\`. Keep each Bash call under 10 minutes, and run it again until what you wait for has finished or ${REVIEW_WAIT_MINUTES} minutes have passed. Never end your turn to wait, and never wait with \`run_in_background\` or a background task: the board reads a turn that ends without an outcome file as a run that stopped.`;
 
 /** What a worker does when a skill its brief names is missing: a copy of the skill's files, read by hand, is not the skill and its helpers. */
 const MISSING_SKILL = "If a skill this brief names is not available in this session, write a `needs-human` outcome naming it, rather than following a copy of its files.";
@@ -343,20 +356,24 @@ A person may answer you here after a \`needs-human\` or \`wrong-repo\` outcome. 
 /**
  * A review run's brief, as markdown: the person approved `prs`, so mark each ready, see it through its checks and its review, and fix what they
  * find. `reviewNotes` is the host file's `tickets.review`, how this machine's pull requests are checked and reviewed, and `notes` its
- * `tickets.brief`. `resumed` is true when the worker is the one that wrote the code, resumed with its own conversation.
+ * `tickets.brief`. `resumed` is true when the worker is the one that wrote the code, resumed with its own conversation. `feedback` is set on a
+ * round the board started on its own: the new feedback on the pull requests, which are ready already, that the round answers. `asked` is set
+ * on a round a person asked for with Respond to review: it answers the ready pull requests' current feedback.
  */
-export function reviewBriefText({ ticket, folder, ticketDir, prs, notes, reviewNotes, connectors = [], resumed }: {
+export function reviewBriefText({ ticket, folder, ticketDir, prs, notes, reviewNotes, connectors = [], resumed, feedback, asked = false }: {
   ticket: Ticket; folder: string; ticketDir: string; prs: readonly PullRequest[]; notes?: string; reviewNotes?: string;
-  connectors?: readonly string[]; resumed: boolean;
+  connectors?: readonly string[]; resumed: boolean; feedback?: string; asked?: boolean;
 }): string {
   const list = prs.map(({ repo, url }) => `- ${url}, worked in \`${folder}/${repo}\``).join("\n");
   const who = resumed
     ? "You wrote these pull requests earlier in this conversation."
     : "Another worker wrote these pull requests, and its conversation could not be found: read each pull request's diff and the ticket before you change anything.";
-  const wait = REVIEW_WAIT_MINUTES;
-  return `# ${ticket.key}: review round for ${ticket.title}
+  const round = asked ? answerRound(who, "A person asked you to answer the current feedback on your pull requests: their reviews, comments and failing checks.")
+    : feedback === undefined ? approvedRound(who)
+    : answerRound(who, `New feedback reached your pull requests after your last round, so the board started this round to answer it.\n\nThis started the round:\n\n${quoted(feedback)}`);
+  return `# ${ticket.key}: ${round.title} for ${ticket.title}
 
-A person reviewed your draft pull requests and approved them. ${who} You are unattended again: nobody will answer a question, so decide, do the work, and end by writing the outcome file below.
+${round.opening}
 
 ## The ticket
 
@@ -368,12 +385,9 @@ ${list}
 
 ## What to do
 
-1. Mark each pull request ready with \`gh pr ready <url>\`.
-2. Wait for each one's checks and its review, as "How this machine reviews" says. Look every few minutes, and wait at most ${wait} minutes for each. If a check or the review has not finished by then, write a \`needs-human\` outcome that names what you waited for.
-3. Read every review comment and every failed check. Fix each real finding in the worktree, with a test that fails without the fix where the finding is about behaviour. A finding you judge wrong is not fixed: say why in your reply instead. Run the repository's checks on what you changed.
-4. Commit with a conventional commit message, and push. Never force-push.
-5. Reply on each pull request with one comment: each finding, and what you did about it.
-6. Wait at most ${wait} minutes for the checks on the commit you pushed. If one fails, fix it, push, and wait again. Do not wait for a second review: the person approves again for another round.
+${round.steps}
+
+${FOREGROUND_WAIT}
 
 Never merge, approve, request a review, force-push, run a workflow, or post to Slack. Those are the person's.
 
@@ -388,7 +402,81 @@ Write \`${ticketDir}/${OUTCOME_FILE}\` as the last thing you do, with exactly on
 { "kind": "needs-human", "reason": "<what a person must decide or provide>" }
 \`\`\`
 
-Write \`reviewed\` only when every pull request is ready, every finding is answered, and every check passed on its last commit. A person may answer you here after a \`needs-human\` outcome. If one does, carry on with what they said, and write the outcome file again as the last thing you do.
+${round.reviewed} A person may answer you here after a \`needs-human\` outcome. If one does, carry on with what they said, and write the outcome file again as the last thing you do.
+`;
+}
+
+type Round = Readonly<{ title: string; opening: string; steps: string; reviewed: string }>;
+
+/** The round a person started by approving the draft pull requests: mark them ready, then see them through their checks and review. */
+function approvedRound(who: string): Round {
+  const wait = REVIEW_WAIT_MINUTES;
+  return {
+    title: "review round",
+    opening: `A person reviewed your draft pull requests and approved them. ${who} You are unattended again: nobody will answer a question, so decide, do the work, and end by writing the outcome file below.`,
+    steps: `1. Mark each pull request ready with \`gh pr ready <url>\`.
+2. Wait for each one's checks and its review, as "How this machine reviews" says. Wait at most ${wait} minutes for each. If a check or the review has not finished by then, write a \`needs-human\` outcome that names what you waited for.
+3. Read every review comment and every failed check. Fix each real finding in the worktree, with a test that fails without the fix where the finding is about behaviour. A finding you judge wrong is not fixed: say why in your reply instead. Run the repository's checks on what you changed.
+4. Commit with a conventional commit message, and push. Never force-push.
+5. Reply on each pull request with one comment: each finding, and what you did about it.
+6. Wait at most ${wait} minutes for the checks on the commit you pushed. If one fails, fix it, push, and wait again. Do not wait for a second review: the board starts another round when new feedback comes.`,
+    reviewed: "Write `reviewed` only when every pull request is ready, every finding is answered, and every check passed on its last commit.",
+  };
+}
+
+/**
+ * A round that answers the feedback on pull requests that are ready already: one the board started on new feedback, or one a person asked for.
+ * `why` says which, and what started it.
+ */
+function answerRound(who: string, why: string): Round {
+  const wait = REVIEW_WAIT_MINUTES;
+  const [first, ...rest] = why.split("\n\n");
+  return {
+    title: "feedback round",
+    opening: [`${first} ${who} You are unattended: nobody will answer a question, so decide, do the work, and end by writing the outcome file below.`, ...rest].join("\n\n"),
+    steps: `1. Read that feedback and everything else on each pull request since your last reply: its reviews, its conversation comments, its inline review comments and its failed checks. The pull requests are ready already: do not run \`gh pr ready\`.
+2. Fix each finding that is right in the worktree, with a test that fails without the fix where the finding is about behaviour. A finding you judge wrong is not fixed: answer it with the evidence instead. Run the repository's checks on what you changed.
+3. Commit with a conventional commit message, and push. Never force-push.
+4. Reply on each pull request with one comment: each finding, and what you did about it.
+5. Wait at most ${wait} minutes for the checks on the commit you pushed. If one fails, fix it, push, and wait again.`,
+    reviewed: "Write `reviewed` only when every finding is answered and every check passed on the last commit you pushed.",
+  };
+}
+
+/**
+ * A publish run's brief, as markdown: post the pull requests a person chose with this machine's instruction, and write down the messages it
+ * posted. `run` is the host file's `tickets.publish.run`, with the pull requests, one per line, and the run's folder filled in.
+ */
+export function publishBriefText({ dir, prs, run }: { dir: string; prs: readonly PullRequest[]; run: string }): string {
+  const urls = prs.map(({ url }) => url);
+  return `# Publish ${urls.length} pull request${urls.length === 1 ? "" : "s"}
+
+You are an unattended publisher. A person chose these pull requests on the board and pressed Publish. Nobody will answer a question.
+
+${urls.map((url) => `- ${url}`).join("\n")}
+
+## What to do
+
+${run.replaceAll("{prs}", urls.join("\n")).replaceAll("{dir}", dir)}
+
+Post each pull request once. Change no code, and open, edit or merge no pull request.
+
+${MISSING_SKILL}
+
+## The files you write
+
+Write \`${dir}/${PUBLISHED_FILE}\` once the messages are posted, with the web address of each message you posted:
+
+\`\`\`json
+{ "links": ["<message url>"] }
+\`\`\`
+
+Then write \`${dir}/${OUTCOME_FILE}\` as the last thing you do, with exactly one of:
+
+\`\`\`json
+{ "kind": "published" }
+{ "kind": "needs-human", "reason": "<what stopped you posting, and what was posted already>" }
+\`\`\`
 `;
 }
 
@@ -429,7 +517,16 @@ export function firstPrompt(ticketDir: string): string {
   return `Read ${ticketDir}/${BRIEF_FILE} and follow it.`;
 }
 
+/** Why a review round started, which its first prompt says: a person approved the drafts, the board saw new feedback, or a person asked. */
+export type RoundCause = "approved" | "feedback" | "asked";
+
+const ROUND_CAUSES: Readonly<Record<RoundCause, string>> = {
+  approved: "A person reviewed this ticket's pull requests and approved them.",
+  feedback: "New feedback reached this ticket's pull requests.",
+  asked: "A person asked you to answer the feedback on this ticket's pull requests.",
+};
+
 /** A review run's first prompt, which a resumed worker reads after its own earlier turns. */
-export function reviewPrompt(ticketDir: string): string {
-  return `A person reviewed this ticket's pull requests and approved them. Read ${ticketDir}/${BRIEF_FILE} and follow it.`;
+export function reviewPrompt(ticketDir: string, cause: RoundCause = "approved"): string {
+  return `${ROUND_CAUSES[cause]} Read ${ticketDir}/${BRIEF_FILE} and follow it.`;
 }
