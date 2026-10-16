@@ -16,9 +16,9 @@ import { join } from "node:path";
 import { OUTSIDE_REFUSALS_FLAG, outsideRefusalsOn, type DeliberateRefusal } from "../deliberate-refusal.ts";
 import { MAX_REFUSAL_SHADOWS_PER_TICK, REFUSALS_JOB, REFUSALS_SHADOW_FILE, refusalsJobVerdict, settleOutsideRefusals } from "../work-gate/pr-orders.ts";
 import { ORG_LOGINS } from "../messaging/sources/readers.ts";
-import { workGateSource } from "../lib/work-gate-source.ts";
+import { readArmingOf } from "../work-gate/tick.ts";
 
-const REPO = "a11ign/a11ign";
+const REPO = "owner/project";
 const dir = mkdtempSync(join(tmpdir(), "outside-refusals-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
 let n = 0;
@@ -166,9 +166,22 @@ test("a record file that cannot be read records nothing and says so, rather than
   assert.equal(existsSync(stateDir), false);
 });
 
-test("the host gate calls the pass once per tick, right after the arming one", () => {
-  const tick = workGateSource();
-  const calls = tick.match(/settleOutsideRefusals\(openPrs, \{[^}]*\}\)/g) ?? [];
-  assert.equal(calls.length, 1);
-  assert.ok(tick.indexOf("settleOutsideArm(openPrs") < tick.indexOf("settleOutsideRefusals(openPrs"));
+test("the host gate's own chain, `readArmingOf`, runs the pass once, records, and arms and orders exactly what it did with the flag off", () => {
+  const prs = [{ ...pr(7), isDraft: false, labels: [], statusCheckRollup: [jobRun("SUCCESS"), { name: "gate", status: "COMPLETED", conclusion: "SUCCESS" }] }];
+  const gh = (args: string[]): string => (args.some((arg) => arg.includes("timelineItems"))
+    ? JSON.stringify({ mergeQueueEntry: null, timelineItems: { nodes: [] } })
+    : JSON.stringify([{ number: 7, isDraft: false, merged: false, autoMergeRequest: { enabledAt: "2026-10-10T11:00:00Z" }, mergeQueueEntry: null }]));
+  const tick = (refusals: Record<string, unknown>) => readArmingOf(prs, ["gate"], {
+    scope: REPO, run: gh, env: {}, log: (line: string) => { lines.push(line); }, portFor: (() => { throw new Error("no port expected"); }) as never, refusals,
+  });
+  const stateDir = fresh(), asked: number[] = [];
+  const offResult = tick({ stateDir, on: false, verdictOf: verdicts({}, asked) });
+  assert.deepEqual(asked, [], "off: the pass asked nothing");
+  assert.equal(existsSync(stateDir), false, "off: the pass wrote nothing");
+  const onResult = tick({ stateDir, on: true, verdictOf: verdicts({ 7: { kind: "refused", why: "the head is not the branch tip" } }, asked) });
+  assert.deepEqual(asked, [7], "on: the tick asked once");
+  assert.deepEqual(records(stateDir).map((r) => [r.number, r.home, r.job, r.agreement]), [[7, "refuse", "pass", "disagree"]], "on: the tick recorded the disagreement");
+  assert.deepEqual(onResult, offResult, "the verdict changed nothing the tick returned: SHADOW blocks nothing");
+  tick({ stateDir, on: true, verdictOf: verdicts({}, asked) });
+  assert.deepEqual(asked, [7], "a second tick over the same head asks nothing");
 });
