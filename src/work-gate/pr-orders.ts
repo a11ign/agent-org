@@ -17,6 +17,7 @@
 // `work-gate.ts` re-exports every name this file exports that it exported before, so a caller of the gate
 // is unchanged. Imports below are relative and leaf-shaped, the property the gate's own header states.
 import { join } from "node:path";
+import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { newestPerName } from "../newest-check-run.ts";
 import { reviewerSeat, subjectMention, subjectRef } from "../review-attribution.ts";
 import { NO_VERDICT } from "../merge-guard/checks-rule.ts";
@@ -28,6 +29,9 @@ import { HOME_CHECKOUT } from "../project-config.ts";
 import { decisionSwitchesPath } from "../decision-provider.ts";
 // agent-org#1573: the outside home's pass is the sweep module's (it owns the armed read and `arm-pr`'s command); only a call, never a load-time read, so the cycle note above holds.
 import { outsideArmPass, type OutsideArmPr, type OutsideArmResult } from "../auto-arm-sweep.ts";
+// agent-org#1578: the shadow verdict is the one the arming doors already ask (agent-org#1501); only a call, never a load-time read.
+import { deliberateRefusalVerdict, outsideRefusalsOn } from "../deliberate-refusal.ts";
+import { ORG_LOGINS } from "../messaging/sources/readers.ts";
 import { VERIFY_STATE } from "../verify-stamp.ts";
 import { equivalentHeads } from "../review-verdict.ts";
 import type { OrgSideVerdict } from "../acceptance-commands.ts"; // agent-org#1502: a type, so no load-time edge into the file that has a cycle with the gate
@@ -649,6 +653,88 @@ export function settleOutsideArm(openPrs: any[], { scope, run, log, switchesPath
 }): OutsideArmResult {
   const prs: OutsideArmPr[] = openPrs.map((pr) => ({ number: pr.number, isDraft: pr.isDraft, baseRefName: pr.baseRefName, isCrossRepository: pr.isCrossRepository, reviewDecision: pr.reviewDecision, labels: pr.labels }));
   return outsideArmPass({ repo: scope, switchesPath, prs, run, log: (line) => log(`${line}\n`), ...(on === undefined ? {} : { on }) });
+}
+
+/** agent-org#1578: the project's own job, whose verdict the home is read beside. */
+export const REFUSALS_JOB = "deliberateRefusals";
+/** How many shadow verdicts one tick may compute: each is several `gh` reads, and a pull request not reached waits for the next tick. */
+export const MAX_REFUSAL_SHADOWS_PER_TICK = 3;
+/** The record file, in the gate's state directory: one JSON line per pull request head, which is what the canary counts. */
+export const REFUSALS_SHADOW_FILE = "outside-refusals-shadow.jsonl";
+
+export type RefusalsShadow = {
+  repo: string; number: number; head: string; at: string;
+  /** What the home says, and the reason line it would give (`clear` when it passes). */
+  home: "pass" | "refuse"; reason: string;
+  /** What the project's job said at this head. */
+  job: "pass" | "refuse";
+  agreement: "agree" | "disagree";
+};
+
+/**
+ * agent-org#1578: WHAT THE PROJECT'S `deliberateRefusals` JOB SAID AT THIS HEAD, from the check rollup the tick already holds (no extra read). `null` is "not said yet or said nothing usable":
+ * no run, a run still going, a cancelled one, or a conclusion this does not know. A skipped job is a pass, as `gate` counts it. Absence is never a pass.
+ */
+export function refusalsJobVerdict(pr: { statusCheckRollup?: unknown; }): "pass" | "refuse" | null {
+  const run = newestPerName(Array.isArray(pr?.statusCheckRollup) ? pr.statusCheckRollup as any[] : []).find((check: any) => check?.name === REFUSALS_JOB) as { status?: string; conclusion?: string; } | undefined;
+  if (!run || run.status !== "COMPLETED") return null;
+  const conclusion = String(run.conclusion ?? "").toUpperCase();
+  if (conclusion === "SUCCESS" || conclusion === "SKIPPED" || conclusion === "NEUTRAL") return "pass";
+  if (conclusion === "FAILURE" || conclusion === "TIMED_OUT" || conclusion === "ACTION_REQUIRED" || conclusion === "STARTUP_FAILURE") return "refuse";
+  return null;
+}
+
+/**
+ * agent-org#1578: THE HOST GATE'S HOME OF a11ign's `deliberateRefusals` JOB, behind `outside.refusals` in the project's `decisions.json` (shipped OFF). ON IS SHADOW.
+ *
+ * For each open, same-repository pull request by an org identity (ADR 0045 D4: an outside contributor never meets the org's process) whose job has SETTLED at its current head, the
+ * home asks the verdict the arming doors already ask (`deliberateRefusalVerdict`: `mergeSafetyVerdict` and `closesVerdictOf`, the job's own commands) and appends it to
+ * {@link REFUSALS_SHADOW_FILE} beside the job's. It returns nothing the gate acts on: a disagreement is a line in the log and a record, never a hold, a label or a refusal to arm.
+ * IDEMPOTENT BY RECORD: a head already in the file is not asked again, so the second pass over the same tick writes nothing. Off or unreadable: no read and no write at all.
+ */
+export function settleOutsideRefusals(openPrs: any[], { scope, run, log, switchesPath = decisionSwitchesPath(HOME_CHECKOUT), on, stateDir, now = () => new Date().toISOString(), verdictOf = deliberateRefusalVerdict }: {
+  scope: string; run: (args: string[]) => string; log: (line: string) => void; stateDir: string; switchesPath?: string; on?: boolean; now?: () => string; verdictOf?: typeof deliberateRefusalVerdict;
+}): { recorded: RefusalsShadow[]; } {
+  const result: { recorded: RefusalsShadow[]; } = { recorded: [] };
+  if (!(on ?? outsideRefusalsOn(switchesPath))) return result;
+  const file = join(stateDir, REFUSALS_SHADOW_FILE);
+  let seen: Set<string>;
+  try {
+    seen = new Set();
+    for (const line of readFileSync(file, "utf8").split("\n")) {
+      if (line === "") continue;
+      const entry = JSON.parse(line);
+      seen.add(`${entry.repo}#${entry.number}@${entry.head}`);
+    }
+  } catch (cause) {
+    if ((cause as { code?: string; })?.code !== "ENOENT") { log(`OUTSIDE-REFUSALS: COULD NOT READ ${file} (${String((cause as Error)?.message ?? cause).split("\n")[0].slice(0, 120)}), so nothing was recorded this tick.\n`); return result; }
+    seen = new Set();
+  }
+  let asked = 0;
+  for (const pr of openPrs) {
+    const head = String(pr?.headRefOid ?? "");
+    const author = pr?.author?.login;
+    if (head === "" || pr?.isCrossRepository !== false || typeof author !== "string" || !ORG_LOGINS.includes(author)) continue;
+    if (seen.has(`${scope}#${pr.number}@${head}`)) continue;
+    const job = refusalsJobVerdict(pr);
+    if (job === null) continue;
+    if (asked >= MAX_REFUSAL_SHADOWS_PER_TICK) break;
+    asked++;
+    const verdict = verdictOf({ number: pr.number, repo: scope, run, author });
+    const home: "pass" | "refuse" = verdict.kind === "clear" ? "pass" : "refuse";
+    const reason = verdict.kind === "clear" ? "clear" : `${verdict.kind === "cannot-ask" ? "CANNOT ASK: " : ""}${verdict.why}`;
+    const record: RefusalsShadow = { repo: scope, number: Number(pr.number), head, at: now(), home, reason, job, agreement: home === job ? "agree" : "disagree" };
+    try {
+      mkdirSync(stateDir, { recursive: true });
+      appendFileSync(file, `${JSON.stringify(record)}\n`);
+    } catch (cause) {
+      log(`OUTSIDE-REFUSALS: COULD NOT RECORD #${pr.number} (${String((cause as Error)?.message ?? cause).split("\n")[0].slice(0, 120)}).\n`);
+      continue;
+    }
+    result.recorded.push(record);
+    log(`OUTSIDE-REFUSALS: #${pr.number}@${head.slice(0, 8)} home=${home} job=${job} ${record.agreement.toUpperCase()}${home === "refuse" ? ` -- ${reason.split("\n")[0].slice(0, 200)}` : ""}\n`);
+  }
+  return result;
 }
 
 /**
