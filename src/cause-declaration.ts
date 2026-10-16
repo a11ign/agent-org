@@ -580,6 +580,16 @@ export const TOOL_CAUSE_DECLARATIONS = Object.freeze([
     why: "the gate has read the hold, its holder's status and what was declared; the output is a release or a field naming the wait, "
       + "or a decision on the pull request with its reason written there",
   }),
+  declareCause("verified-close", GROUPS.JUDGMENT, {
+    kind: "claude",
+    // SONNET AND MEDIUM (#1536). The gate has already read the claimant's own VERIFIED note and the idle interval; the output is
+    // one close with a comment naming each Done-when item and its reading, or a statement of which item is not met. That is a
+    // judgment over the row's own stated criteria, not a build, so `blocker-cleared`'s `high` would be paid for nothing.
+    model: "sonnet",
+    effort: "medium",
+    why: "the gate has read the claimant's VERIFIED note and its idle interval; the output is one close naming each Done-when "
+      + "item and its reading, or the item that is not met, by a judgment over the row's own stated criteria",
+  }),
   declareCause("row-off-board", GROUPS.JUDGMENT, {
     kind: "claude",
     model: "sonnet",
