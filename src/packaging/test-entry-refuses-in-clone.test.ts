@@ -21,7 +21,7 @@ const SUITE_ARGS = "run --config scripts/rstest/rstest.config.ts";
 const STUB_EXIT = 3;
 
 /** The laid-out command, copied from the line of `ci.yml` that runs the suite, so the refusal is checked against CI and not against this file's own copy. */
-const ciCommand = (readFileSync(CI, "utf8").match(/node_modules\/\.bin\/rstest run --config packages\/agent-org\/scripts\/rstest\/rstest\.config\.ts/) ?? [])[0];
+const ciCommand = (readFileSync(CI, "utf8").match(/node_modules\/\.bin\/rstest run --config scripts\/rstest\/rstest\.config\.ts/) ?? [])[0];
 
 /** Copies the entry to `<root>/scripts/test-entry.ts`, under a `package.json` that makes it an ES module the way this tool's own is. */
 function entryAt(root: string): string {
@@ -43,6 +43,7 @@ function stubDir(scratch: string): string {
 function runEntry(entry: string, scratch: string, extra: Record<string, string> = {}) {
   const env: Record<string, string> = { ...process.env, PATH: `${stubDir(scratch)}${delimiter}${process.env.PATH ?? ""}`, ...extra } as Record<string, string>;
   if (!("AGENT_ORG_TOOL_REPO" in extra)) delete env.AGENT_ORG_TOOL_REPO;
+  if (!("AGENT_ORG_HOST" in extra)) delete env.AGENT_ORG_HOST;
   const child = spawnSync(process.execPath, [entry], { env, encoding: "utf8" });
   return { status: child.status, output: `${child.stdout}${child.stderr}` };
 }
@@ -72,6 +73,18 @@ test("a laid project by AGENT_ORG_TOOL_REPO starts the suite as before, with the
   try {
     const entry = entryAt(join(scratch, "clone"));
     const { status, output } = runEntry(entry, scratch, { AGENT_ORG_TOOL_REPO: join(scratch, "checkout") });
+    assert.equal(status, STUB_EXIT, output);
+    assert.ok(output.includes(`STUB rstest ${SUITE_ARGS}`), output);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("a host declaration by AGENT_ORG_HOST (the fixture project CI names) is laid, and starts the suite", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "test-entry-host-"));
+  try {
+    const entry = entryAt(join(scratch, "clone"));
+    const { status, output } = runEntry(entry, scratch, { AGENT_ORG_HOST: join(scratch, "project", ".agent-org", "host.json") });
     assert.equal(status, STUB_EXIT, output);
     assert.ok(output.includes(`STUB rstest ${SUITE_ARGS}`), output);
   } finally {

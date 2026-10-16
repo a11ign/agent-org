@@ -61,15 +61,17 @@ jobs:
       - name: Leak scan -- refuses a private LAN IPv4 address or a named SSH key file anywhere in the tree
         if: matrix.shard == 1
         run: node .github/scripts/leak-scan.ts
-      # THE FIXTURE PROJECT (agent-org#1593): the committed fixture, copied out of the checkout so a test that writes into the project writes into a scratch directory, `git init`ed (the suite reads
+      # THE FIXTURE PROJECT (agent-org#1593): the committed fixture, copied out of the checkout so a test that writes into the project writes into a scratch directory, `git init`ed and COMMITTED (the suite reads
       # `git ls-files` and history of the project it is pointed at), and named by the host declaration it carries, whose `@@PROJECT@@` is the copy's path. `AGENT_ORG_HOST` reaches every later step.
       - name: The fixture project the suite runs against, and the host declaration that names it
         run: |
           project="$RUNNER_TEMP/project"
           mkdir "$project"
           cp -r src/packaging/fixtures/project-tree/. "$project"
-          git -C "$project" init -q
           sed -i "s|@@PROJECT@@|$project|" "$project/.agent-org/host.json"
+          git -C "$project" init -q
+          git -C "$project" add -A
+          git -C "$project" -c user.name=fixture -c user.email=fixture@example.invalid commit -q -m "the fixture project"
           echo "AGENT_ORG_HOST=$project/.agent-org/host.json" >> "$GITHUB_ENV"
       # `yaml` and `typescript` are the tool's own; `@rstest/core` and `@a11ign/toolchain` are the runner (a11ign/a11ign#3738). The ranges repeat `package.json`'s devDependencies,
       # because this job installs by name and not from it: move them together.
