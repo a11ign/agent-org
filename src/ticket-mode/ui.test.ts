@@ -545,6 +545,16 @@ test("the runs view lists every run with its status icon, most recently active f
   assert.deepEqual(icons, ["icon st-completed", "icon st-awaiting-review", "icon st-needs-you", "icon st-working", "icon st-failed", "icon st-queued"]);
 });
 
+test("a run stacked on its blocker's open pull request is Queued, and says what it is stacked on", async () => {
+  const pr = "https://github.com/x/libs/pull/3";
+  const runs = [entry("APP-1", { phase: "queued", plannedRepo: "libs", blockers: [{ key: "LIB-1", state: "started", status: "In Review", branch: "lib-1", pulls: { [pr]: "open" } }] })];
+  const p = await page(new Map(), { entries: runs });
+  const row = runRows(p)[0];
+  assert.equal(row.children[0].className, "icon st-queued");
+  assert.match(row.text(), /Stacked on LIB-1 #3/);
+  assert.equal(row.text().includes("Waits on"), false);
+});
+
 test("a run waiting on a blocker is Blocked, with its own filter, and names what it waits on", async () => {
   const runs = [
     entry("APP-1", { phase: "queued", blockers: [{ key: "LIB-1", state: "started", status: "In Review" }] }),

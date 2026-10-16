@@ -1184,3 +1184,17 @@ test("a ticket's folder that is a link is not read, and a folder the board canno
     assert.match(ended?.kind === "needs-human" ? ended.reason : "", /^the plans could not be attached \(EACCES/, key);
   }
 });
+
+test("a run whose blocker has an open pull request in its planned repository starts stacked on it, and one with no planned repository waits", async () => {
+  const draft = "https://github.com/acme/nbl-ui-netbox/pull/12";
+  const tracker: TicketSource = { ...source, blockers: async (keys) => new Map(keys.map((key) => [key, key === "NBF-1" ? []
+    : [{ key: "NBF-1", state: "started", status: "In Review", branch: "nbf-1-fit", pulls: { [draft]: "open" as const } }]])) };
+  const { pool, entry, settings, store } = setup(3, ["NBF-2", "NBF-3"], {}, { source: tracker });
+  store.set({ ...store.get(), entries: store.get().entries.map((e) => (e.ticket.key === "NBF-2" ? { ...e, plannedRepo: "nbl-ui-netbox" } : e)) });
+  await pool.tick();
+  assert.deepEqual([entry("NBF-2").phase, entry("NBF-3").phase], ["running", "queued"], "NBF-3 has no planned repository, so it waits as before");
+  assert.equal(runStatus(entry("NBF-3"), store.get().entries), "blocked");
+  const brief = readFileSync(join(ticketDir(settings, "NBF-2"), "brief.md"), "utf8");
+  assert.ok(brief.includes(`- NBF-1: ${draft}, on branch \`nbf-1-fit\``), brief);
+  assert.ok(brief.includes("ticket:worktree nbl-ui-netbox --from <branch>"));
+});

@@ -57,3 +57,20 @@ test("the command needs its repository, and the ticket and branch the pool start
   assert.equal(refused.code, 1);
   assert.match(refused.out, /not one of this machine's repositories/);
 });
+
+test("--from makes the ticket's worktree from another branch, and a malformed --from is refused before git runs", async () => {
+  const settings = machine();
+  const remote = join(settings.clones["repo-a"], "..", "remote");
+  gitSync(remote, ["checkout", "-q", "-b", "nbf-1-fit"]);
+  gitSync(remote, ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "--allow-empty", "-m", "on nbf-1-fit"]);
+  gitSync(remote, ["checkout", "-q", "develop"]);
+  const env = { [TICKET_ENV.key]: "NBF-2", [TICKET_ENV.branch]: "nbf-2-zoom" };
+  const made = await main(["repo-a", "--from", "nbf-1-fit"], env, () => settings);
+  assert.equal(made.code, 0, made.out);
+  assert.match(made.out, /\(branch nbf-2-zoom, from nbf-1-fit\)/);
+  assert.equal(gitSync(join(settings.worktreeRoot, "NBF-2", "repo-a"), ["log", "-1", "--format=%s"]).trim(), "on nbf-1-fit");
+  for (const argv of [["repo-a", "--from"], ["repo-a", "--from", "--upload-pack=x"], ["repo-a", "--onto", "b"], ["repo-a", "--from", "b", "extra"]]) {
+    const refused = await main(argv, env, () => settings);
+    assert.deepEqual([refused.code, refused.out], [2, "usage: ticket:worktree <repo> [--from <branch>]"], argv.join(" "));
+  }
+});

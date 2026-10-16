@@ -30,12 +30,13 @@ export function parseDefaultBranch(lsRemote: string): string {
 }
 
 /**
- * A worktree of `clone` at `path` on a new `branch`, from the remote's default branch, freshly fetched. REFUSES, starting nothing, when the branch
- * already exists in the clone or the path is taken.
+ * A worktree of `clone` at `path` on a new `branch`, from the remote's default branch, freshly fetched, or from the remote's branch `from`, such
+ * as the branch of a ticket this one is stacked on. REFUSES, starting nothing, when the branch already exists in the clone or the path is taken.
  */
-export async function addWorktree({ repo, clone, path, branch }: { repo: string; clone: string; path: string; branch: string }, git: Git = defaultGit): Promise<Prepared> {
+export async function addWorktree({ repo, clone, path, branch, from }: { repo: string; clone: string; path: string; branch: string; from?: string },
+  git: Git = defaultGit): Promise<Prepared> {
   if (existsSync(path)) throw new Error(`${repo}: ${path} already exists; a run that was cut short left it, so remove it or retry under another name`);
-  const base = parseDefaultBranch(await git(clone, ["ls-remote", "--symref", "origin", "HEAD"]));
+  const base = from ?? parseDefaultBranch(await git(clone, ["ls-remote", "--symref", "origin", "HEAD"]));
   await git(clone, ["fetch", "--quiet", "origin", base]);
   const exists = await git(clone, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]).then(() => true, () => false);
   if (exists) throw new Error(`${repo}: branch ${branch} already exists in ${clone}; it is earlier work, so it is not reused`);

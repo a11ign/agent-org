@@ -243,10 +243,10 @@ export function linearSource({ key, fetch: request = fetch }: { key: string; fet
 
     async blockers(keys) {
       // Linear stores "A blocks B" once, on A: B reads its blockers as the inverse relations of type `blocks`.
-      type Related = { inverseRelations: { nodes: { type: string; issue: { identifier: string; state: { type: string; name: string } } & Attached }[] } };
-      const found = await eachIssue<Related>(keys, `inverseRelations { nodes { type issue { identifier state { type name } ${ATTACHED_PULLS} } } }`);
+      type Related = { inverseRelations: { nodes: { type: string; issue: { identifier: string; branchName: string; state: { type: string; name: string } } & Attached }[] } };
+      const found = await eachIssue<Related>(keys, `inverseRelations { nodes { type issue { identifier branchName state { type name } ${ATTACHED_PULLS} } } }`);
       return new Map([...found].map(([key, node]) => [key, node.inverseRelations.nodes.filter(({ type }) => type === "blocks")
-        .map(({ issue }): Blocker => ({ key: issue.identifier, state: issue.state.type, status: issue.state.name, pulls: linkedPulls(issue) }))]));
+        .map(({ issue }): Blocker => ({ key: issue.identifier, state: issue.state.type, status: issue.state.name, branch: issue.branchName, pulls: linkedPulls(issue) }))]));
     },
 
     async attachPlan(identifier, files, state) {

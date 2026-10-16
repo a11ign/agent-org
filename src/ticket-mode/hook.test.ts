@@ -147,3 +147,14 @@ test("the command a settings file names runs: `node bin.ts ticket:hook pre-tool-
   assert.equal(result.status, 2, result.stderr);
   assert.match(result.stderr, /the person's/);
 });
+
+test("a worker may link its pull request into a stack, and every other gh stack command is the person's", () => {
+  for (const link of ["gh stack link https://github.com/o/r/pull/1 https://github.com/o/r/pull/2", "gh extension exec stack link a b", "gh-stack link a b"]) {
+    assert.equal(bash(link), 0, link);
+  }
+  for (const refused of ["gh stack push", "gh stack sync", "gh stack merge", "gh stack rebase --upstack", "gh stack", "cd r && gh stack submit",
+    "gh extension exec stack push", "gh-stack push", "gh stack link a b; gh stack push"]) {
+    assert.equal(bash(refused), 2, refused);
+  }
+  assert.match(toolVerdict("Bash", { command: "gh stack push" }).say[0], /a stack's pushes, rebases and merges are the person's: a worker runs only `gh stack link`/);
+});

@@ -30,10 +30,15 @@ export type ViewEntry = Readonly<{
   planned?: boolean;
   /** Set on a review run: the pull requests a person approved. */
   review?: readonly Readonly<{ url: string }>[];
+  /** The repository its batch's planner said its work lands in, or null when it named none. */
+  plannedRepo?: string | null;
 }>;
 
-/** A ticket that blocks a queued one: its key, and its state's type and name in the tracker. */
-export type ViewBlocker = Readonly<{ key: string; state: string; status: string }>;
+/**
+ * A ticket that blocks a queued one: its key, its state's type and name in the tracker, and, where the tracker gave them, its branch and the state
+ * of each pull request it links, by URL.
+ */
+export type ViewBlocker = Readonly<{ key: string; state: string; status: string; branch?: string; pulls?: Readonly<Record<string, string>> }>;
 
 /** Where a browser keeps the view's settings between visits; `localStorage` in the page. */
 export type Storage = Readonly<{ getItem(name: string): string | null; setItem(name: string, value: string): void }>;
@@ -267,18 +272,60 @@ export function settledByPulls(entry: ViewEntry): RunStatus | null {
 /**
  * The blockers still holding a queued run back, given every run on the queue. A blocker lets go once the tracker completes it, or, when it is on
  * the queue itself, once its run is completed, which its pull requests merging is enough for. A canceled or duplicate blocker never lets go: the
- * work it promised will not come, so a person decides. Waiting is not on order: an unblocked run queued later starts first.
+ * work it promised will not come, so a person decides. Waiting is not on order: an unblocked run queued later starts first. A blocker the run can
+ * be stacked on ({@link stackedOn}) does not hold it back.
  */
 export function waitsOn(entry: ViewEntry, entries: readonly ViewEntry[]): ViewBlocker[] {
-  return (entry.blockers ?? []).filter((blocker) => {
-    if (blocker.state === "completed") return false;
-    const run = entries.find((e) => e.ticket.key === blocker.key);
-    return run === undefined || run.phase !== "finished" || runStatus(run) !== "completed";
+  return (entry.blockers ?? []).filter((blocker) => !isDone(blocker, entries) && stackPull(blocker, entry.plannedRepo) === null);
+}
+
+/** Whether a blocker is done: the tracker completed it, or its run on the queue is Completed. */
+function isDone(blocker: ViewBlocker, entries: readonly ViewEntry[]): boolean {
+  if (blocker.state === "completed") return true;
+  const run = entries.find((e) => e.ticket.key === blocker.key);
+  return run !== undefined && run.phase === "finished" && runStatus(run) === "completed";
+}
+
+/** The repository and number of a GitHub pull request, from its URL's `/<owner>/<repo>/pull/<n>`, or null for any other URL. PURE. */
+function parsePull(url: string): Readonly<{ repo: string; number: string }> | null {
+  const match = /^https:\/\/github\.com\/[^/]+\/([^/]+)\/pull\/(\d+)\/?$/.exec(url);
+  return match === null ? null : { repo: match[1], number: match[2] };
+}
+
+/** The repository a GitHub pull request is in, or null for a URL that is not one. */
+export const repoOfPull = (url: string): string | null => parsePull(url)?.repo ?? null;
+
+/**
+ * The URL of a blocker's open pull request (a draft is open) in `repo`, or null when it has none there, or no repository is named. A canceled or
+ * duplicate blocker has none to stack on, because the work it promised will not come, and nor has one whose branch is unknown.
+ */
+function stackPull(blocker: ViewBlocker, repo: string | null | undefined): string | null {
+  if (!blocker.branch || blocker.state === "canceled" || blocker.state === "duplicate") return null;
+  return Object.entries(blocker.pulls ?? {}).find(([url, state]) => state === "open" && repoOfPull(url) === repo)?.[0] ?? null;
+}
+
+/** A blocker a run starts on top of: its key, its open pull request, the repository that is in, which is the run's, and its branch. */
+export type StackBase = Readonly<{ key: string; url: string; repo: string; branch: string }>;
+
+/**
+ * The blockers a run starts on top of rather than waits for. A blocker not yet done is one when the run's planner placed its work in a
+ * repository where the blocker has an open pull request: the run branches from the blocker's branch, and its pull request is stacked on the
+ * blocker's. A run with no planned repository stacks on nothing, and a finished run is stacked on nothing any more.
+ */
+export function stackedOn(entry: ViewEntry, entries: readonly ViewEntry[]): StackBase[] {
+  const repo = entry.plannedRepo;
+  if (entry.phase === "finished" || !repo) return [];
+  return (entry.blockers ?? []).flatMap((blocker) => {
+    const url = isDone(blocker, entries) ? null : stackPull(blocker, repo);
+    return url === null || !blocker.branch ? [] : [{ key: blocker.key, url, repo, branch: blocker.branch }];
   });
 }
 
+/** What the board says about a run stacked on its blockers, such as "Stacked on NBF-1 #12". */
+export const stackNote = (bases: readonly StackBase[]): string => `Stacked on ${bases.map(({ key, url }) => `${key} #${parsePull(url)?.number ?? url}`).join(", ")}`;
+
 /**
- * A run's status. A queued run is blocked while a ticket that blocks it is not done (`entries` is the whole queue, for {@link waitsOn}). The
+ * A run's status. A queued run is blocked while a ticket that blocks it is not done, and cannot be stacked on (`entries` is the whole queue, for {@link waitsOn}). The
  * tracker's word wins once the run has finished: a ticket it completed is done and one it canceled is cancelled, whatever the run ended in. Then
  * its pull requests: Linear completes a ticket on a merge only where its team's workflow says so, so a run whose pull requests merged is done
  * even while its ticket is still in progress. Before either, the outcome decides.

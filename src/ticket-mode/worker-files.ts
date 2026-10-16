@@ -8,6 +8,7 @@
 // THE WORKER CHOOSES THE REPOSITORY AND FINDS ITS COMMANDS. It starts in the ticket's own folder beside the person's repositories, reads the ticket,
 // decides where the work lands, and makes a worktree there with `ticket:worktree`. Each repository's `CLAUDE.md`/`AGENTS.md` names how to install,
 // test and typecheck it, which is where any engineer looks, so nothing about a repository is declared here or in the host file.
+import type { StackBase } from "./board-view.ts";
 import type { DenyRule } from "./settings.ts";
 import type { PullRequest } from "./queue.ts";
 import type { Blocker, Ticket } from "./source.ts";
@@ -108,6 +109,28 @@ This ticket waited until each of these was done:
 ${blockers.map((blocker) => `- ${blocker.key}, ${blocker.status}: ${pulls(blocker)}`).join("\n")}
 
 If your work depends on something one of them releases, such as a new package version, check that the release is out before you rely on it, for example with \`gh release list --repo <owner>/<repo>\` or the package registry. A release can follow its merge by some minutes: wait for it rather than fail.
+`;
+}
+
+/**
+ * The section naming the blockers this run is stacked on, or nothing for a run stacked on none. Each is not merged yet, but has an open pull
+ * request in the repository where the run's plan puts its work, so the worker branches from it and stacks its own pull request on it. The
+ * branch is the tracker's, which a person may not have used, so the worker checks it against the pull request.
+ */
+function stackText(bases: readonly StackBase[], worktreeCommand: string): string {
+  const [first] = bases;
+  if (first === undefined) return "";
+  const { repo } = first;
+  return `
+## Stack on the work you wait for
+
+These tickets block this one and are not merged yet. Each has an open pull request in \`${repo}\`, where your plan puts this ticket's work:
+
+${bases.map(({ key, url, branch }) => `- ${key}: ${url}, on branch \`${branch}\``).join("\n")}
+
+1. Build on the one your plan says this ticket builds on, or on the last one listed when the plan does not say. Check its branch with \`gh pr view <its pull request url> --json headRefName\`, and use that one where it differs from the branch above. Make your worktree from it: \`${worktreeCommand} ${repo} --from <branch>\`.
+2. After you open your own draft pull request, stack it on that one, bottom first: \`gh stack link <its pull request url> <your pull request url>\`. Run no other \`gh stack\` command.
+3. Say in your pull request body which pull request yours is stacked on.
 `;
 }
 
@@ -255,12 +278,15 @@ Write \`planned\` once every ticket has its plan files or its \`${QUESTION_FILE}
 /**
  * The brief, as markdown. `worktreeCommand` is the full command line that makes a worktree, short of the repository's name. `notes` is the host
  * file's `tickets.brief`, how workers behave on this machine, and `connectors` its `tickets.connectors`. `blockers` are the tickets this one
- * waited on.
+ * waited on, and `stackedOn` the ones it starts on top of.
  */
-export function briefText({ ticket, folder, ticketDir, attachments, parent = null, blockers = [], clones, worktreeCommand, notes, connectors = [], planned = false }: {
+export function briefText({ ticket, folder, ticketDir, attachments, parent = null, blockers = [], stackedOn = [], clones, worktreeCommand, notes,
+  connectors = [], planned = false }: {
   ticket: Ticket; folder: string; ticketDir: string; attachments: readonly string[]; parent?: ParentTicket | null; blockers?: readonly Blocker[];
-  clones: Readonly<Record<string, string>>; worktreeCommand: string; notes?: string; connectors?: readonly string[]; planned?: boolean;
+  stackedOn?: readonly StackBase[]; clones: Readonly<Record<string, string>>; worktreeCommand: string; notes?: string;
+  connectors?: readonly string[]; planned?: boolean;
 }): string {
+  const stacked = new Set(stackedOn.map(({ key }) => key));
   const repos = Object.entries(clones).map(([name, path]) => `- \`${name}\` at \`${path}\``).join("\n");
   return `# ${ticket.key}: ${ticket.title}
 
@@ -275,7 +301,7 @@ ${ticket.description.trim() || "(no description)"}
 ## Files from the ticket
 
 ${filesText(attachments)}
-${parentText(parent)}${blockersText(blockers)}
+${parentText(parent)}${blockersText(blockers.filter(({ key }) => !stacked.has(key)))}${stackText(stackedOn, worktreeCommand)}
 ## Where the work lands: you decide
 
 You are in this ticket's own folder, \`${folder}\`. These are the repositories on this machine, checked out by the person you work for. Read them, but never commit or change branches in them:
