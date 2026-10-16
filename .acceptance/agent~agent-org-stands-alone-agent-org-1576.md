@@ -26,7 +26,7 @@ Acceptance: `git grep -l -F outside.trunk -- src && AGENT_ORG_HOST=/home/agent/r
 Closes a11ign/agent-org#1576
 
 Flag: outside.trunk
-Health-signals: none -- the flag ships OFF and the canary reads the `outside-trunk:` lines of the gate and the workflow against the project's job results.
+Health-signals: blind-ticks, wakes-held
 Revert: set `outside.trunk` to `false` in the project's `.agent-org/decisions.json` (or unset `OUTSIDE_TRUNK_PROJECT`); the project's jobs run either way.
 
 Outside-Region: src/outside-trunk.ts — the home itself; the row's Region lists the existing files it calls and the gate path, and the flag has to be read in a new module.
