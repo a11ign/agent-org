@@ -22,7 +22,7 @@ import { readTrunkRed, trunkOfCodeRepository, trunkRedOrders } from "../trunk-re
 import { recordIgnoredChairmanLabels, recordTickFailures as recordFailuresOf } from "../failure-recorders.ts";
 import { readJsonObject, writeJsonObject } from "../claim-stall.ts";
 import { requiredWhenNeeded, perPullRequestOrders, greenUnarmedOrders, type UnarmedFacts, reviewBlockedOrders, stalledPrOrders,
-  STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr, ROW_REVIEW_SKILL_FLAG, PR_OWNER_ROUTING_FLAG, withholdOutsideFollowUps, routeDeadOwnerRefusals, reviewOnlyRefs, SAME_HEAD_REFAIL_FLAG, acceptanceGateOf, firstRefusalOf, treeWideGuardVerdict } from "./pr-orders.ts";
+  STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr, ROW_REVIEW_SKILL_FLAG, PR_OWNER_ROUTING_FLAG, withholdOutsideFollowUps, routeDeadOwnerRefusals, reviewOnlyRefs, SAME_HEAD_REFAIL_FLAG, acceptanceGateOf, firstRefusalOf, treeWideGuardVerdict, settleOutsideArm } from "./pr-orders.ts";
 import { treeWideGuardFilesIn, runTreeWideGuards } from "../lib/tree-wide-guard-org-side.ts"; // agent-org#1503
 import { checkoutPullRequestMerge, orgSideAcceptanceEligibility, orgSideAcceptanceVerdict, installPullRequestCheckout, releasePullRequestCheckout, type OrgSideVerdict } from "../acceptance-commands.ts"; // agent-org#1502
 import { labJobFinishedOrders, readLabJobRecords, readDispatchedLabJobs } from "./lab-job-orders.ts";
@@ -1391,11 +1391,13 @@ function withWithheld(settled: number[] | UnarmedFacts, withheld: { number: numb
 export function readArmingOf(openPrs: any[], required: string[] | null, { scope = repoNow(), run = defaultRun, portFor = armingPortOf, env = process.env, log, state, now = Date.now() }: {
   scope?: string; run?: (args: string[]) => string; portFor?: (scope: string) => ArmingPort; env?: Record<string, string | undefined>; log?: (line: string) => void; state?: CanaryState; now?: number;
 } = {}) {
+  const say = log ?? ((line: string) => process.stderr.write(line));
+  // agent-org#1573: THE OUTSIDE HOME OF ARMING, FIRST: behind `outside.arm` in the project's `decisions.json` (absent = off, and then nothing is read or written). What it arms leaves the unarmed list below.
+  settleOutsideArm(openPrs, { scope, run, log: say });
   const candidates = shouldBeMerging(openPrs, required);
   const reading = readArming(candidates, run);
   const split = readEjections(reading === null ? null : reading.unarmed, run);
   if (reading === null || split === null) return null;
-  const say = log ?? ((line: string) => process.stderr.write(line));
   // a11ign#5125: BEFORE the orders -- an ejection that was not the PR's own is armed here and leaves `ejections`, so no owner is woken for it; the rest are today's `ejected` orders.
   const requeued = requeueEjected(split.ejections, { prs: openPrs, scope, run, portFor, state: state ?? readReenqueueState(), now, log: say, evidence: split.evidence });
   // agent-org#1502: the org-side acceptance verdict decides WHICH of the unarmed the gate may arm; the ones it withholds are named in the order, never armed.

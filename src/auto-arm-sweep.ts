@@ -75,7 +75,7 @@
 //   1  at least one PR could not be armed. NAMED, never counted.
 //   2  a lookup failed. INCONCLUSIVE, never "fine".
 import { execFileSync } from "node:child_process";
-import { refuseUnknownFlags } from "./lib/cli-flags.ts";
+import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { armabilityOf, HOLD_PREFIX } from "./pr-hold-state.ts";
@@ -89,7 +89,7 @@ import { SESSION_PREFIX, BLOCKED_LABEL } from "./project-vocabulary.ts";
 // file is now one of its readers rather than its owner.
 import { armedFromApi, armedQueryArgs, ejectionVerdict } from "./pr-armed-state.ts";
 // #3544: THE BLOCKER DECIDER IS `arm-pr`'s, IMPORTED -- a second copy is the one place the two doors could disagree about order.
-import { announceBlocked, blockerVerdict } from "./arm-pr.ts";
+import { announceBlocked, armDecision, blockerVerdict, outsideArmOn, runArmPr, EXIT as ARM_EXIT } from "./arm-pr.ts";
 import { crossRepoRedVerdict } from "./cross-repo-red.ts";
 // agent-org#1501: `arm-pr`'s deliberate refusal, asked again here for the reason the authorship one is (#3254).
 import { deliberateRefusalVerdict } from "./deliberate-refusal.ts";
@@ -447,6 +447,79 @@ export function armFailureVerdict({ number, repo, cause }: { number: string; rep
     line: `SWEEP: #${number} FAILED TO ARM -- ${cause instanceof Error ? cause.message : cause}` };
 }
 
+/**
+ * agent-org#1573 (the outside home of arming, flag `outside.arm`, shipped OFF): WHAT A PULL REQUEST IS, TO THE ARMER THAT RUNS BESIDE THE PROJECT'S OWN ARMING JOB.
+ * `labels` are names or `{ name }` objects (`gh pr list --json labels` gives the second); `armed` is {@link armedFromApi}'s answer, read apart because `gh pr list` has no merge-queue field.
+ */
+export type OutsideArmPr = { number: number; state?: string; isDraft?: boolean; baseRefName?: string; isCrossRepository?: boolean; reviewDecision?: string | null; labels?: Array<string | { name: string; }>; };
+export type OutsideArmVerdict = { act: "arm" | "ready-and-arm" | "leave"; why: string; };
+
+/**
+ * PURE. WHAT THE HOME DOES WITH ONE PULL REQUEST, ON THE REFUSALS OF THE PROJECT'S `arm` AND `arm-approved` JOBS: not open, not against `main`, a head in a fork, held, already armed
+ * (the second actor finds the work done and does nothing), and a draft is armed only when an approving review marks it ready first (`arm-approved`). A field the read did not carry is
+ * a refusal, never a pass: absence is not proof that the head is the repository's own. The order is `arm-approved`'s, so a line in a log says the same thing from either actor.
+ */
+export function outsideArmVerdict(pr: OutsideArmPr, armed: boolean | null): OutsideArmVerdict {
+  const labels = (pr.labels ?? []).map((label) => (typeof label === "string" ? label : label.name));
+  if (pr.state !== undefined && pr.state !== "OPEN") return { act: "leave", why: `the pull request is ${pr.state}` };
+  if (pr.baseRefName !== "main") return { act: "leave", why: `its base is ${pr.baseRefName ?? "unread"}, not main` };
+  if (pr.isCrossRepository !== false) return { act: "leave", why: pr.isCrossRepository === true ? "its head is in a fork" : "whether its head is in a fork was not read" };
+  const hold = armDecision(labels);
+  if (!hold.arm) return { act: "leave", why: hold.reason };
+  if (armed === null) return { act: "leave", why: "whether it is armed was not read" };
+  if (armed) return { act: "leave", why: "already armed" };
+  if (pr.isDraft !== true) return { act: "arm", why: "open, unheld, against main and not armed" };
+  return pr.reviewDecision === "APPROVED"
+    ? { act: "ready-and-arm", why: "an approved draft: ready it, then arm" }
+    : { act: "leave", why: `a draft that is not approved (reviewDecision ${pr.reviewDecision || "empty"})` };
+}
+
+/** The `gh` arguments of the policy read: every field {@link outsideArmVerdict} decides on except the armed state, which is {@link openPullRequestsQueryArgs}'s. */
+export const outsideArmListArgs = (repo: string): string[] => ["pr", "list", "--repo", repo, "--state", "open", "--limit", String(CANDIDATE_LIMIT), "--json", "number,state,isDraft,baseRefName,isCrossRepository,reviewDecision,labels"];
+
+/** What one pass did, by pull request number. `failed` is a pull request the home tried to arm and could not: it is named, never counted. `cannotAsk` is a list that could not be read, which is INCONCLUSIVE and never "nothing to do". */
+export type OutsideArmResult = { armed: number[]; readied: number[]; left: Array<{ number: number; why: string; }>; failed: number[]; cannotAsk: boolean; };
+
+/**
+ * agent-org#1573: ONE PASS OF THE OUTSIDE HOME OVER THE OPEN PULL REQUESTS OF `repo`, behind the flag. OFF OR UNREADABLE READS NOTHING AND WRITES NOTHING.
+ * `prs` may be handed in by a caller that already holds the policy fields (the gate does); `armed` is read once, with the sweep's own query. A pull request the armed read did not
+ * return is `null`, which {@link outsideArmVerdict} refuses. Each pull request is armed through `arm-pr`'s own command (`runArmPr`: the hold, authorship, ejection, blocker and
+ * red-leg checks and the session label are all its), and `armed` is read back by the next pass, not trusted from an exit code (#1022).
+ */
+export function outsideArmPass({ repo, switchesPath, on = outsideArmOn(switchesPath), prs, run = gh, log = console.log, arm = (number) => runArmPr({ argv: [`--pr=${number}`, `--repo=${repo}`], env: {}, run: (_cmd, args) => run(args), sleep: () => "ok", log, error: log }) }: {
+  repo: string; switchesPath: string; on?: boolean; prs?: OutsideArmPr[]; run?: (ghArgs: string[]) => string; log?: (line: string) => void; arm?: (number: number) => number;
+}): OutsideArmResult {
+  const result: OutsideArmResult = { armed: [], readied: [], left: [], failed: [], cannotAsk: false };
+  if (!on) return result;
+  let listed: OutsideArmPr[];
+  let armedBy: Map<number, boolean>;
+  try {
+    listed = prs ?? JSON.parse(run(outsideArmListArgs(repo)));
+    const nodes = JSON.parse(run(openPullRequestsQueryArgs(repo)));
+    if (!Array.isArray(listed) || !Array.isArray(nodes)) throw new Error("a read did not return a list");
+    armedBy = new Map(nodes.map((node: { number: number | string; }) => [Number(node?.number), armedFromApi(node as Parameters<typeof armedFromApi>[0])]));
+  } catch (cause) {
+    log(`OUTSIDE-ARM: COULD NOT ASK -- ${cause instanceof Error ? cause.message : cause}. Nothing was armed this pass.`);
+    result.cannotAsk = true;
+    return result;
+  }
+  for (const pr of listed) {
+    const verdict = outsideArmVerdict(pr, armedBy.get(Number(pr.number)) ?? null);
+    if (verdict.act === "leave") { result.left.push({ number: pr.number, why: verdict.why }); continue; }
+    try {
+      if (verdict.act === "ready-and-arm") { run(["pr", "ready", String(pr.number), "--repo", repo]); result.readied.push(pr.number); }
+      const code = arm(pr.number);
+      if (code !== ARM_EXIT.DONE) throw new Error(`arm-pr exited ${code}`);
+      result.armed.push(pr.number);
+      log(`OUTSIDE-ARM: #${pr.number} ${verdict.act === "ready-and-arm" ? "readied and " : ""}armed -- ${verdict.why}`);
+    } catch (cause) {
+      result.failed.push(pr.number);
+      log(`OUTSIDE-ARM: #${pr.number} COULD NOT ARM -- ${cause instanceof Error ? cause.message : cause}`);
+    }
+  }
+  return result;
+}
+
 /** Blocks for `ms`. `main()` is synchronous end to end, like every `gh` call it makes. @param {number} ms */
 function sleepSync(ms: number) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT)), 0, 0, ms);
@@ -456,12 +529,20 @@ function sleepSync(ms: number) {
 const gh = (args: string[]) => execFileSync("gh", args, { encoding: "utf8" }).trim();
 
 function main() {
-  refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/auto-arm-sweep.ts" });
+  refuseUnknownFlags(["--outside-switches="], { entry: import.meta.url, command: "node packages/agent-org/src/auto-arm-sweep.ts" });
 
   const repo = process.env.GITHUB_REPOSITORY;
   if (!repo) {
     console.error("CANNOT ASK: GITHUB_REPOSITORY is unset, so there is no repo to sweep.");
     process.exit(EXIT.CANNOT_ASK);
+  }
+  // agent-org#1573: RUN FROM OUTSIDE THE PROJECT, the sweep acts only when the project's `decisions.json` switches `outside.arm` ON, and in that mode it also refuses a fork's head
+  // (the project's own jobs refuse it in their `if:`; this sweep has no such line). Without the flag it is the sweep it has always been.
+  const switchesPath = flagValue(process.argv, "outside-switches");
+  const outside = switchesPath !== undefined;
+  if (outside && !outsideArmOn(switchesPath)) {
+    console.log(`SWEEP: outside.arm is off for ${repo} (${switchesPath}), so the outside home does nothing. The project's own sweep is unaffected.`);
+    process.exit(EXIT.DRAINED);
   }
 
   let candidates;
@@ -494,6 +575,10 @@ function main() {
       continue;
     }
 
+    if (outside && gh(["pr", "view", number, "--repo", repo, "--json", "isCrossRepository", "-q", ".isCrossRepository"]) !== "false") {
+      console.log(`SWEEP: #${number} SKIPPED -- its head is in a fork, or whether it is was not read`);
+      continue;
+    }
     const { arm, reason } = decideAndWarn({ number, labels, checkRunCount });
     // #3254: `arm-pr`'s refusal, asked again here, or this sweep would arm on the same event what `arm-pr` just refused.
     const refusal = arm ? refusalBeforeArming({ number, repo, author, prBody, run: gh }) : ({ kind: "clear" } as { kind: "clear" });
