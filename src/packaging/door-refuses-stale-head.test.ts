@@ -15,12 +15,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const DOOR = fileURLToPath(new URL("../reviewer/pr-review-verdict.sh", import.meta.url));
+const PROJECT_CONFIG = fileURLToPath(new URL("../project-config.ts", import.meta.url));
+const PROJECT_LIB = fileURLToPath(new URL("../lib", import.meta.url));
 
 const EXIT_MALFORMED = 2;
 const EXIT_SECOND_REVIEW = 3;
@@ -240,8 +242,13 @@ test("each mutant breaks exactly the cases that guard its place, and the cases p
   const source = readFileSync(DOOR, "utf8");
   const dir = mkdtempSync(join(tmpdir(), "door-mutant-"));
   try {
+    // With GH_REPO unset the door reads its repository from `../project-config.ts`: each mutant keeps that neighbour (a link to the real
+    // reader and its `lib`), so a case fails on its mutation and not on a declaration missing beside a copy in a temporary directory.
+    mkdirSync(join(dir, "reviewer"));
+    symlinkSync(PROJECT_CONFIG, join(dir, "project-config.ts"));
+    symlinkSync(PROJECT_LIB, join(dir, "lib"));
     for (const { name, from, to, breaks } of MUTANTS) {
-      const mutated = join(dir, "pr-review-verdict.sh");
+      const mutated = join(dir, "reviewer", "pr-review-verdict.sh");
       writeFileSync(mutated, source.replace(from, () => to));
       const failing = Object.entries(CASES).filter(([, run]) => {
         try { run(mutated); return false; } catch { return true; }

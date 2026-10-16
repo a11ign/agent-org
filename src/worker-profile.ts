@@ -32,6 +32,7 @@ import { extractRegionSection } from "./region-paths.ts";
 import { extractAcceptanceSection } from "./acceptance-commands.ts";
 import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
 import { PROFILES } from "./cause-declaration.ts";
+import { homeProjectDeclaration } from "./project-config.ts";
 
 /** The effort levels the `claude` CLI accepts. A value outside this set is a typo, not a preference. */
 export const CLAUDE_EFFORTS = Object.freeze(["low", "medium", "high", "xhigh", "max"]);
@@ -199,7 +200,7 @@ export function haikuTierProfile(row: { number: number; labels: readonly string[
     return null;
   }
   return { kind: "claude", model: HAIKU_MODEL_ID, effort: HAIKU_EFFORT, autocompactWindow: HAIKU_AUTOCOMPACT_WINDOW_TOKENS,
-    why: `${HAIKU_TIER_LABEL} trial (a11ign/a11ign#4382): a mechanical row with a command Acceptance, in about 30,000 tokens of working room` };
+    why: `${HAIKU_TIER_LABEL} trial (${homeProjectDeclaration().tracker[0].repo}#4382): a mechanical row with a command Acceptance, in about 30,000 tokens of working room` };
 }
 
 // #2750 (chairman's 2026-09-28 token-cost reading, ceo's ruling): FIVE MORE TOOLS a per-row Claude

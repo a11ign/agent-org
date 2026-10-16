@@ -2323,7 +2323,7 @@ const REMEDY = (Object.freeze({
     + "and after it a copy that is still there is stale (`pnpm install` in that worktree, or remove it). A `ci` runner names the version the last `ci.yml` run on `main` used: its lockfile's, or the tag its resolver step printed.",
   [SIGNALS.NODE_CANNOT_STRIP]: "Each `node` named cannot strip types (`process.features.typescript` is not `strip` or `transform`, or the binary could not be run), so any unit or script that runs a `.ts` "
     + "file with it dies at start: ADR 0043 Decision 8 chose upstream Node 24 for exactly this. READ `/usr/bin/node -p process.features.typescript` (and the path named), then reinstall upstream Node 24 "
-    + "for the agent user (a11ign/a11ign#4388) or correct the `ExecStart` that names the wrong binary: a distro `nodejs +dfsg` package is the usual cause and it comes back with an apt upgrade. A host action for `orchestrator`.",
+    + "for the agent user (" + homeProjectDeclaration().tracker[0].repo + "#4388) or correct the `ExecStart` that names the wrong binary: a distro `nodejs +dfsg` package is the usual cause and it comes back with an apt upgrade. A host action for `orchestrator`.",
   [SIGNALS.SWEEP_OVERDUE]: "A declared repository has gone unread for longer than the sweep promises, so the pull requests and rows in it wait unseen. Find why its whole read "
     + "is not landing (a refused read or a paced skip in this tick's log, or the webhook queue that should have named it), then FIX IT: the next whole read stamps the repository and clears this.",
   [SIGNALS.TEAM_ACCESS]: "An org team holds a level on a repository that the project's declaration (`teamAccess.declaration` in `.agent-org/project.json`) does not give: `admin` anywhere it reaches, "

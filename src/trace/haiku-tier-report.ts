@@ -24,6 +24,7 @@ import { defaultStore } from "./otel-receiver.ts";
 import { HAIKU_MODEL_ID, HAIKU_TIER_LABEL } from "../worker-profile.ts";
 import { REPO } from "../project-identity.ts";
 import { asListJson, readRowsSince, SINCE_PAGE_SIZE, type SinceRead } from "../ticket-port/rows-since.ts";
+import { homeProjectDeclaration } from "../project-config.ts";
 
 export const MIN_RATE_ROWS = 8;
 export const WINDOW_HOURS = 72;
@@ -218,7 +219,7 @@ export function reportLines({ closed, events, now }: { closed: ClosedRow[]; even
   const closers = { haiku: closersOf(inWindow.filter((row) => row.haiku)), other: closersOf(inWindow.filter((row) => !row.haiku)) };
   const verdicts = stopRule({ haiku, other, closedInWindow: haiku.length, started, now });
   const verdictText = (v: Verdict): string => `${v.tripped === null ? "UNREADABLE" : v.tripped ? "STOP" : "ok"}  ${v.line}`;
-  return [`${HAIKU_TIER_LABEL} trial report (a11ign/a11ign#4382), window from ${started === null ? "no Haiku worker yet" : new Date(started).toISOString()} to ${new Date(now).toISOString()}`,
+  return [`${HAIKU_TIER_LABEL} trial report (${homeProjectDeclaration().tracker[0].repo}#4382), window from ${started === null ? "no Haiku worker yet" : new Date(started).toISOString()} to ${new Date(now).toISOString()}`,
     `${HAIKU_TIER_LABEL} rows:`, ...groupLines(summarise(haiku), closers.haiku), ...effortLines(haiku),
     "other rows closed in the same window:", ...groupLines(summarise(other), closers.other), ...effortLines(other),
     "stop rule (STOP: set enabled to false in src/haiku-tier.json; UNREADABLE decides nothing):", ...verdicts.map(verdictText)];

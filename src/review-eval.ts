@@ -20,6 +20,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { homeProjectDeclaration } from "./project-config.ts";
 
 export type Label = "convinced" | "not convinced";
 
@@ -39,7 +40,7 @@ export const SETS: Readonly<Record<string, readonly EvalPr[]>> = Object.freeze({
     { repo: "a11ign/agent-org", number: 1100, label: "convinced" },
     { repo: "a11ign/agent-org", number: 1149, label: "convinced" },
     { repo: "a11ign/agent-org", number: 1078, label: "convinced" },
-    { repo: "a11ign/a11ign", number: 5289, label: "convinced" },
+    { repo: homeProjectDeclaration().tracker[0].repo, number: 5289, label: "convinced" },
   ] satisfies EvalPr[]),
 });
 

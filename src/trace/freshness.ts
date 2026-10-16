@@ -31,6 +31,7 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { rolloutId } from "./codex-turns.ts";
 import { QUIET_MS } from "./store.ts";
+import { homeProjectDeclaration } from "../project-config.ts";
 
 /** The chairman's number: how old a message may be, and still be the one a `turn` is owed for, and how recent a transcript's newest message must be to count as working. */
 export const STALE_AFTER_MS = 10 * 60 * 1000;
@@ -312,7 +313,7 @@ export function advance(previous: Episode, reading: Freshness, now: number): Epi
 /** The comment on the standing row: a marker line first, so a reader can find the episode, then what to look at. */
 export function incidentComment(reading: Freshness, since: number): string {
   return `<!-- trace-freshness: stale since ${new Date(since).toISOString()} -->\n`
-    + `**The trace store is stale** (class \`${INCIDENT_CLASS}\`, a11ign/a11ign#4437). ${freshnessLine(reading)}.\n\n`
+    + `**The trace store is stale** (class \`${INCIDENT_CLASS}\`, ${homeProjectDeclaration().tracker[0].repo}#4437). ${freshnessLine(reading)}.\n\n`
     + "Look at `systemctl --user status a11ign-trace-ingest.service` and `journalctl --user -u a11ign-trace-ingest.service -n 50`, and run `trace -- --freshness`. "
     + `The ingest runs every five minutes, so this is posted once for the episode and not again until the store has turned what it is owed, has been current since, and has gone stale again.`;
 }
@@ -321,7 +322,7 @@ export function incidentComment(reading: Freshness, since: number): string {
 export function incidentOrder(reading: Freshness, since: number): string {
   return `Class: ${INCIDENT_CLASS}\n\n`
     + `The trace store has stopped being written (stale since ${new Date(since).toISOString()}). ${freshnessLine(reading)}.\n\n`
-    + `It is yours as the owning seat (chairman, a11ign/a11ign#4437: "restore ingest and backfill"). Read \`journalctl --user -u a11ign-trace-ingest.service -n 50\` for why the ingest is not landing turns, `
+    + `It is yours as the owning seat (chairman, ${homeProjectDeclaration().tracker[0].repo}#4437: "restore ingest and backfill"). Read \`journalctl --user -u a11ign-trace-ingest.service -n 50\` for why the ingest is not landing turns, `
     + `and say what you found on #${INCIDENT_ROW}. You are told once for this episode; the unit stays quiet until the store has recovered and gone stale again.`;
 }
 

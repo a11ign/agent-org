@@ -44,15 +44,23 @@
 #                               IS `.../reviews/reviewer-<n>` for THIS pull request (#2528); where it cannot, the review
 #                               still posts, UNATTRIBUTED and loudly.
 #        GH_REPO                the repository the pull request lives in, `owner/name` (#2952). Unset or empty, the door
-#                               keeps `a11ign/a11ign`, so every existing caller is unchanged. It names the review, the
-#                               attribution status and the review read-back alike; anything not `owner/name` is refused.
+#                               reads the first tracker's repository from the project declaration (`project-config.ts`),
+#                               which is the same answer every existing caller gets; with no declaration it refuses. It
+#                               names the review, the attribution status and the review read-back alike; anything not
+#                               `owner/name` is refused.
 set -euo pipefail
 
 # ONE REPOSITORY FOR ALL THREE `gh` CALLS, FROM THE SAME ENVIRONMENT VARIABLE `gh` ITSELF READS. The org now opens pull
 # requests in `a11ign/agent-org` as well, and a door that posts to a literal could only ever review the first
 # repository (#2952). REFUSED BEFORE ANY `gh` CALL when it is not `owner/name`: a typo here would post an approval
-# to a repository nobody meant, and a review cannot be taken back.
-REPO="${GH_REPO:-a11ign/a11ign}"
+# to a repository nobody meant, and a review cannot be taken back. With no `GH_REPO` the repository is read from the
+# project declaration by the tool's own `project-config.ts` (the file beside this directory's parent), not written here.
+REPO="${GH_REPO:-}"
+if [[ -z "$REPO" ]]; then
+  DOOR_DIR="$(cd "$(dirname "$0")" && pwd)"
+  REPO="$(node --no-warnings -e 'import(require("node:url").pathToFileURL(process.argv[1]).href).then((m) => process.stdout.write(m.homeProjectDeclaration().tracker[0].repo))' "$DOOR_DIR/../project-config.ts")" || {
+    echo "pr-review-verdict: GH_REPO is unset and the project declaration cannot be read, so the repository is unknown" >&2; exit 2; }
+fi
 [[ "$REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || {
   echo "pr-review-verdict: GH_REPO must be owner/name, got '$REPO'" >&2; exit 2; }
 # ONE SPELLING WITH `attributionContext` IN review-attribution.ts. A shell writer and a JS reader cannot

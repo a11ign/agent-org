@@ -5,7 +5,8 @@
  *
  * Test files may name the project -- they are fixtures of what the code reads -- and so may `src/packaging/fixtures`, which holds the host
  * declarations those tests load. Everything else under `src` is refused on a hit, and a line that moves the name into a comment or a renamed
- * constant is still a hit, because the guard reads the text, not the syntax.
+ * constant is still a hit, because the guard reads the text, not the syntax. The home repository's name (`a11ign/a11ign`, #1607) is refused the
+ * same way on a non-comment line; a comment may name it, as a row reference, since a comment is not read as code.
  *
  * THE FILES ARE WHAT THIS REPOSITORY COMMITS, under `src`. In CI the suite runs in a copy laid into a project (ci.yml's `suite`), and that copy
  * also holds the lab's siblings (`packaging/rehearsal-currency.ts` and others): lab's files, not this repository's, which the guard refused for
@@ -30,6 +31,7 @@ await declareWalkScope(import.meta.url);
 
 const SRC = dirname(fileURLToPath(import.meta.url));
 const NAME = /a11y-witness/;
+const REPO_NAME = /a11ign\/a11ign/;
 const FIXTURES = "packaging/fixtures";
 /** Enough files that a walk which found nothing would be obvious; the tree holds several hundred. */
 const WALK_FLOOR = 100;
@@ -52,6 +54,23 @@ const namingLines = (text: string): string[] => text.split("\n")
 test("#1591 no non-test, non-fixture source names the project it serves", () => {
   const hits = sourceFiles().flatMap((rel) => namingLines(readFileSync(join(SRC, rel), "utf8")).map((hit) => `${rel}:${hit}`));
   assert.deepEqual(hits, []);
+});
+
+/** A comment line: its first text opens `//`, a block (`/*`), a block's ` *` continuation, or a shell `#`. */
+const isComment = (line: string): boolean => /^\s*(\/\/|\/\*|\*|#)/.test(line);
+
+/** The lines of `text` that name `a11ign/a11ign` outside a comment, as `line: text` (#1607: the repository is read from the declaration). */
+const codeRepoLines = (text: string): string[] => text.split("\n")
+  .flatMap((line, index) => (REPO_NAME.test(line) && !isComment(line) ? [`${index + 1}: ${line.trim()}`] : []));
+
+test("#1607 no non-comment line of non-test, non-fixture source names a11ign/a11ign", () => {
+  const hits = sourceFiles().flatMap((rel) => codeRepoLines(readFileSync(join(SRC, rel), "utf8")).map((hit) => `${rel}:${hit}`));
+  assert.deepEqual(hits, []);
+});
+
+test("#1607 POSITIVE CONTROL: a code line naming a11ign/a11ign is refused, and a comment line naming it is not", () => {
+  const fixture = "const HOME = \"a11ign/a11ign#4679\";\n// the row a11ign/a11ign#4679 says so";
+  assert.deepEqual(codeRepoLines(fixture), ["1: const HOME = \"a11ign/a11ign#4679\";"]);
 });
 
 test("#1591 CONTROL: the walk reaches the source tree, not an empty path", () => {

@@ -66,7 +66,7 @@ import { walkPosition } from "./walk.ts";
 import { FAILURE_LEDGER_FILE, recordFailures, type FailureEvent } from "../failure-ledger.ts";
 import { readUnitsDeclaration, stateEntryPath } from "../host-config.ts";
 import { CANARY_STATE_FILE, machineryFlagOn, parseCanaryState } from "../org-health.ts";
-import { HOME_CHECKOUT } from "../project-config.ts";
+import { HOME_CHECKOUT, homeProjectDeclaration } from "../project-config.ts";
 import { readAgents } from "../herdr-agents.ts";
 import { completionPath } from "../lib/tick-completion.ts";
 import { isBrokenRed } from "../red-pr.ts";
@@ -473,7 +473,7 @@ function refusalToStart({ config, env, github, providers }: { config: MessagingO
     return { code: EXIT.refused, message: "no GitHub account is declared (GH_CONFIG_DIR, or an agent workspace); refusing to read as whoever `gh` last logged in as (#1967)" };
   }
   if (providers[config.provider] === undefined) {
-    return { code: EXIT.failed, message: `messaging.provider is "${config.provider}" and this program has no implementation of it yet (row 3, a11ign/a11ign#2902)` };
+    return { code: EXIT.failed, message: `messaging.provider is "${config.provider}" and this program has no implementation of it yet (row 3, ${homeProjectDeclaration().tracker[0].repo}#2902)` };
   }
   return null;
 }

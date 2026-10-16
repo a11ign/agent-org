@@ -20,11 +20,11 @@
     },
     {
       "pattern": "^agent-org vN\\.N\\.N( \\(H\\))?$",
-      "reason": "the tick's version banner (a11ign/a11ign#3443): update-tool.ts prints `agent-org vX.Y.Z (<sha>)` and work-tick.ts prints `agent-org vX.Y.Z` on EVERY tick so a journal read says which release made each decision. It is a position reading, the twin of the checkout lines below, and 37 consecutive ticks of it were offered to orchestrator on 2026-10-04 (a11ign/a11ign#3497). The faulting forms print different lines, `agent-org (at no release tag: <sha>)` and `agent-org (version unreadable: ...)`, and neither is allowlisted."
+      "reason": "the tick's version banner (row #3443): update-tool.ts prints `agent-org vX.Y.Z (<sha>)` and work-tick.ts prints `agent-org vX.Y.Z` on EVERY tick so a journal read says which release made each decision. It is a position reading, the twin of the checkout lines below, and 37 consecutive ticks of it were offered to orchestrator on 2026-10-04 (row #3497). The faulting forms print different lines, `agent-org (at no release tag: <sha>)` and `agent-org (version unreadable: ...)`, and neither is allowlisted."
     },
     {
       "pattern": "^github-status: operational \\(call N ms\\)\\.$",
-      "reason": "the gate's reading of githubstatus.com, written on EVERY tick (work-gate.ts `holdForIncidentNow`, a11ign/a11ign#3723) so the cost of the call is in the journal: the CLEAR state, the one it is in whenever GitHub has no incident. It is a position reading, the twin of the version banner, and 30 consecutive ticks of it were offered to orchestrator on 2026-10-06. The other two states print different lines, `github-status: UNKNOWN (...)` (the status page could not be read) and `GITHUB INCIDENT: ...` (a runner outage is holding orders), and neither is allowlisted."
+      "reason": "the gate's reading of githubstatus.com, written on EVERY tick (work-gate.ts `holdForIncidentNow`, row #3723) so the cost of the call is in the journal: the CLEAR state, the one it is in whenever GitHub has no incident. It is a position reading, the twin of the version banner, and 30 consecutive ticks of it were offered to orchestrator on 2026-10-06. The other two states print different lines, `github-status: UNKNOWN (...)` (the status page could not be read) and `GITHUB INCIDENT: ...` (a runner outage is holding orders), and neither is allowlisted."
     },
     {
       "pattern": "^primary checkout detached at origin/main \\(H\\)$",
@@ -32,7 +32,7 @@
     },
     {
       "pattern": "^> (aNign-monorepo@N\\.N\\.N primary:update( /\\S+)?|node( --import tsx)? packages/agent-org/src/update-primary\\.(mjs|ts)|agent-org primary:update)$",
-      "reason": "the package manager's echo of the ExecStartPre command, written on every tick by the runner itself. npm printed `> name@version script`; pnpm, which the tick unit runs since a11ign/a11ign#2974's cut-over 3, appends the checkout path (`... primary:update <primary checkout>`), and the entry's `$` anchor rejected that form: 75 consecutive ticks were offered to orchestrator on 2026-10-02. The SECOND line pnpm prints is the script body: `node packages/agent-org/src/update-primary.ts` until a11ign/a11ign#3097's cut-over 4, `agent-org primary:update` since, and that body was offered after 30 ticks on 2026-10-03."
+      "reason": "the package manager's echo of the ExecStartPre command, written on every tick by the runner itself. npm printed `> name@version script`; pnpm, which the tick unit runs since row #2974's cut-over 3, appends the checkout path (`... primary:update <primary checkout>`), and the entry's `$` anchor rejected that form: 75 consecutive ticks were offered to orchestrator on 2026-10-02. The SECOND line pnpm prints is the script body: `node packages/agent-org/src/update-primary.ts` until row #3097's cut-over 4, `agent-org primary:update` since, and that body was offered after 30 ticks on 2026-10-03."
     },
     {
       "pattern": "^claim-stall: tracker `\\S+` \\(\\S+\\): N claimed rows, N evaluated\\.$",
@@ -40,7 +40,7 @@
     },
     {
       "pattern": "^gate-rest: N of N conditional reads answered N$",
-      "reason": "src/work-gate/tick.ts's tickReadingLines (a11ign/a11ign#5169), printed on EVERY tick the gate runs with the conditional-read flag on: `gate-rest: N of N conditional reads answered 304`, how many of the gate's REST list reads came back `304 Not Modified` and were answered from the kept body (the ETag cache working). It is the figure the live hour is measured from, so it repeats by design, and the count moves with the reads while normaliseLine turns every number to N. A refused read prints a different tail, which is not allowlisted."
+      "reason": "src/work-gate/tick.ts's tickReadingLines (row #5169), printed on EVERY tick the gate runs with the conditional-read flag on: `gate-rest: N of N conditional reads answered 304`, how many of the gate's REST list reads came back `304 Not Modified` and were answered from the kept body (the ETag cache working). It is the figure the live hour is measured from, so it repeats by design, and the count moves with the reads while normaliseLine turns every number to N. A refused read prints a different tail, which is not allowlisted."
     },
     {
       "pattern": "^read memo: N identical read\\(s\\) answered from memory, N distinct answer\\(s\\) held at the end of the tick\\.$",

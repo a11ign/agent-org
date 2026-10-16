@@ -17,7 +17,7 @@ import { decisionLogPathFrom, decisionSwitchesPath, readSwitches, type DecisionD
 import { matchFailureClass, recordLabelOutcome, type ClassMatch, type Incident } from "./class-match.ts";
 import { homeHostConfig, stateEntryPath, type HostConfig } from "./host-config.ts";
 import { processState } from "./triage-provider.ts";
-import { HOME_CHECKOUT } from "./project-config.ts";
+import { HOME_CHECKOUT, homeProjectDeclaration } from "./project-config.ts";
 
 /** Where the index lives under the project checkout. */
 export const FAILURE_CLASSES_PATH = ".agent-org/failure-classes.json";
@@ -300,7 +300,7 @@ const FILED_CLASSES_STATE = "class-repeat-filed.json";
 /** The session a class row is filed as: the gate that found the repeat. */
 const FILER_SESSION = "work-gate";
 /** Why `row-file` may run from the primary checkout the gate lives in: `launchGate` prints this, so the exception is in the log and not in somebody's memory. */
-const LAUNCH_REASON = "class-repeat files the class row from the gate's own checkout (a11ign/a11ign#4451)";
+const LAUNCH_REASON = "class-repeat files the class row from the gate's own checkout (" + homeProjectDeclaration().tracker[0].repo + "#4451)";
 const CLASS_LABEL_DESCRIPTION = "Closed rows carrying this label are instances of one failure class (.agent-org/failure-classes.json)";
 
 type Remembered = Record<string, { row: string, covers: string, at: string }>;
@@ -363,7 +363,7 @@ export function classRowBody(group: ClassGroup): string {
   return [
     "## What it is", "",
     `Failure class \`${group.id}\` (${entry.name}) has now happened ${occurrencesOf(group)} times, and a second occurrence means its guard failed (or was never in force). Its guard: ${guard}.`,
-    "Filed by the work gate the tick the second occurrence was seen (a11ign/a11ign#4451, move 1b of #4437); nobody has to remember to.", "",
+    "Filed by the work gate the tick the second occurrence was seen (" + homeProjectDeclaration().tracker[0].repo + "#4451, move 1b of #4437); nobody has to remember to.", "",
     "## Occurrences", "", ...occurrenceLines(group), "",
     "## Region", "", "```", FAILURE_CLASSES_PATH, "```", "",
     "## Change", "",

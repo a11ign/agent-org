@@ -49,6 +49,7 @@ import { CLAIM_LABEL, READY_LABEL } from "./claim-labels.ts";
 import { ANSWER_PREFIX, BACKLOG_LABEL, BLOCKED_LABEL, NEEDS_CHAIRMAN_LABEL } from "./project-vocabulary.ts";
 import { REPO } from "./project-identity.ts";
 import { templateFieldsReason } from "./row-claim/template-fields-rule.ts";
+import { homeProjectDeclaration } from "./project-config.ts";
 
 /** The label `work-gate.ts` exports as `PARKED_LABEL`; restated because that file imports this one. `unpark-satisfied.test.ts` pins the two equal. */
 export const PARKED = "parked";
@@ -152,7 +153,7 @@ const when = (at: number | null): string => (at === null ? "not dated (read true
 /** @param {{ to: string, conditions: Condition[], why: string | null, now: number }} input @returns {string} the one comment a transition writes */
 export function commentFor({ to, conditions, why, now }: { to: string; conditions: Condition[]; why: string | null; now: number; }): string {
   const lines = conditions.map((c) => `- \`${c.text}\` -- true since ${when(c.since)}`);
-  const head = `${COMMENT_MARKER}\n**Un-parked by the tick** (a11ign/a11ign#4050): every condition this row declared is now true, read at ${new Date(now).toISOString()}.\n\n${lines.join("\n")}\n\n`;
+  const head = `${COMMENT_MARKER}\n**Un-parked by the tick** (${homeProjectDeclaration().tracker[0].repo}#4050): every condition this row declared is now true, read at ${new Date(now).toISOString()}.\n\n${lines.join("\n")}\n\n`;
   if (to === READY_LABEL) return `${head}It passed the checks a \`${READY_LABEL}\` row must pass, so it is promoted: \`${PARKED}\` -> \`${READY_LABEL}\`.`;
   return `${head}It does NOT pass the check a \`${READY_LABEL}\` row must pass: ${why}\n\nSo it is \`${BACKLOG_LABEL}\` with \`${ANSWER_PREFIX}${PRODUCT_MANAGER}\`, not offered half-formed. Fix that, then promote it (\`row-file --promote=<n>\`) and remove the answer label.`;
 }

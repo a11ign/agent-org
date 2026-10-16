@@ -1,5 +1,5 @@
 {
-  "source": "a11ign/a11ign#4074: the printed sheet is comment 6062884024, the labels (by product-manager, 2026-10-08) are comment 6062884551. FROZEN: the sample is deterministic only for an unchanged store (2,265 wakes in the Open-check, 2,248 in the draw), so the sampler is never re-run to rebuild this.",
+  "source": "row #4074: the printed sheet is comment 6062884024, the labels (by product-manager, 2026-10-08) are comment 6062884551. FROZEN: the sample is deterministic only for an unchanged store (2,265 wakes in the Open-check, 2,248 in the draw), so the sampler is never re-run to rebuild this.",
   "definitions": {
     "wake": "the event asks for a judgment or a row write that nobody else will make.",
     "digest": "true but not urgent, or something the same seat can read in one batch (the repeating detectors: `pr-codeowner-review-missing`, `org-health` overdue lists, `pr-review-blocked`, `row-call-count-signal`, and `pr-checks-failing` when it goes to `ceo` and `product-manager` is first reader).",

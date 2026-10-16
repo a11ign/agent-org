@@ -21,6 +21,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { TOOL_DRIFT_KIND } from "./agent-tool-update.ts";
 import { DEFAULT_ANSWERER, isLimitMenu, isWorkerSession } from "./worker-state.ts";
+import { homeProjectDeclaration } from "./project-config.ts";
 
 /** Which dialog each session was last raised for, by label. Beside the blocked-told memory in the state directory. */
 export const PANE_DIALOG_RAISED_FILE = "pane-dialog-raised.json";
@@ -166,7 +167,7 @@ export function dialogOwner(label: string): string {
 export function dialogOrder({ label, owner, dialog }: { label: string; owner: string; dialog: Dialog }): string {
   const read = `\`herdr --session org agent read ${label} --source recent\``;
   return `Class: ${TOOL_DRIFT_KIND}\n\n`
-    + `INCIDENT: ${label} is showing a menu or dialog that is waiting for a choice, and nobody is answering it (a11ign/a11ign#4437: an agent session never meets a dialog).\n`
+    + `INCIDENT: ${label} is showing a menu or dialog that is waiting for a choice, and nobody is answering it (${homeProjectDeclaration().tracker[0].repo}#4437: an agent session never meets a dialog).\n`
     + `Question: ${dialog.question}\n`
     + `Choices:\n${dialog.choices.map((choice, i) => `  ${i + 1}. ${choice}`).join("\n")}\n`
     + `Pane: ${label}; read it with ${read}.\n`
