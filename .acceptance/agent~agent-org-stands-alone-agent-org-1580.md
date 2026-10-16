@@ -11,6 +11,8 @@ Measured at this head: `node --test src/lib/tree-wide-guard.test.ts` printed `te
 
 Mutation: each applied to `src/lib/tree-wide-guard-org-side.ts` over `tree-wide-guard.test.ts`, restored from a copy, `cmp` identical. Flag always on: 2 red. Flag never on: 3 red. `blocks` true on a fail: 1 red.
 
+Outside-Region: src/lib/tree-wide-guard.test.ts (the tests for the Region file)
+
 platform: `readSwitches` is the existing reader; the discovery and run are #1503's, reused.
 
 Consumer-declaration: none -- the flag is absent in every declaration, so nothing changes.
