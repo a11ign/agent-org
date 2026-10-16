@@ -134,14 +134,14 @@ test("`rowsBeingFiled` names exactly the rows the grace excused, so a reader can
 // --- the decline path never writes a row to no state --------------------------------------------------------------------------------
 
 /** `releaseBoard` of `work-gate-claim-stalled.test.ts`: REACTIVE, because the decline re-reads the row after its edit. */
-function board(labels: string[], state = "OPEN") {
+function board(labels: string[], state = "OPEN", landsAdds = true) {
   const held = { labels: [...labels], state };
   const edits: { removed: string[], added: string[] }[] = [];
   const run = (_cmd: string, args: string[]) => {
     if (args[1] === "edit") {
       const changed = (flag: string) => args.flatMap((a, i) => (a === flag ? [args[i + 1]] : []));
       edits.push({ removed: changed("--remove-label"), added: changed("--add-label") });
-      held.labels = [...held.labels.filter((l) => !changed("--remove-label").includes(l)), ...changed("--add-label")];
+      held.labels = [...held.labels.filter((l) => !changed("--remove-label").includes(l)), ...(landsAdds ? changed("--add-label") : [])];
       return "";
     }
     // agent-org#1302: the row's labels and state are read over REST, `gh api repos/<repo>/issues/<n>`, whose state is lower case
@@ -188,9 +188,13 @@ test("a blocked, a closed and a plain decline keep their present outcome", () =>
 });
 
 test("the re-read REFUSES to report DECLINED over an open row left with no state, and a closed one is let through", () => {
-  const stateless = ["in-progress", "started", "session:worker-7", "lane:any"]; // never ready, no other state: the plain decline adds nothing
-  const b = board(stateless);
-  assert.throws(() => decline(b), /NO state label.*#3942/s);
+  const stateless = ["in-progress", "started", "session:worker-7", "lane:any"]; // never ready, no other state: the plain decline asks for `backlog`
+  // agent-org#1568: the plain decline now writes `backlog` itself, so the re-read's refusal is for a write that did not land
+  const b = board(stateless, "OPEN", false);
+  assert.throws(() => decline(b), /did NOT durably land.*still missing backlog/s);
+  const landed = board(stateless);
+  assert.equal(decline(landed).declined, true);
+  assert.deepEqual(landed.held.labels.filter((l) => STATE_LABELS.includes(l)), ["backlog"], "agent-org#1568: a release with no state puts `backlog` back");
   assert.equal(decline(board(stateless, "CLOSED")).declined, true, "CONTROL: the same labels on a closed row decline");
   assert.equal(decline(board([...stateless, "backlog"])).declined, true, "CONTROL: with a state beside the claim the same decline lands");
 });

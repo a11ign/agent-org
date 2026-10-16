@@ -31,7 +31,7 @@ import { PROJECT_NUMBER, PROJECT_OWNER } from "./board-snapshot.ts";
 import { CLAIM_RECORD_MARKER } from "./claim-labels.ts";
 import {
   NO_BOARD_DECLARED, claimCloneFor, claimLineFor, claimRecordComment, claimRow, claimWithWorktree, declineRow, dispatchRow, latestCheckFor,
-  moveProjectStatus, recordCheck, recordConflict, scopeHash, claimRecordFrom, trackerClaimRefusal, type Tracker,
+  moveProjectStatus, recordCheck, recordConflict, scopeHash, claimRecordFrom, trackerClaimRefusal, labelSetForClaim, type Tracker,
 } from "./row-claim.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -263,6 +263,22 @@ test("CONTROL: a decline with NO tracker releases the first tracker's issue and 
   assert.deepEqual(gh.first().labels, ["ready"]);
   assert.deepEqual(gh.second().labels, ["in-progress", "session:worker-agent-org-575"]);
   assert.equal("tracker" in ((moves[0] as { opts: object }).opts), false);
+});
+
+test("agent-org#1568: a claim of a `backlog` row leaves exactly `in-progress` as its state, and keeps the lane and fleet labels it holds", () => {
+  assert.deepEqual(labelSetForClaim(["backlog", "lane:orchestrator"], ["in-progress", "started"]), ["lane:orchestrator", "in-progress", "started"]);
+  assert.deepEqual(labelSetForClaim(["ready", "fleet-gated", "lane:orchestrator"], ["in-progress"]), ["fleet-gated", "lane:orchestrator", "in-progress"],
+    "CONTROL: a `ready` row still drops `ready`, and labels that are not a state are kept");
+});
+
+test("agent-org#1568: a release of a row claimed from `backlog` puts `backlog` back and leaves no `in-progress`", () => {
+  const record = claimRecordComment({ session: SESSION, branch: "agent/x-agent-org-575", worktree: "../wt-agent-org-575" });
+  const gh = fakeGithub({ first: ["ready"], second: ["in-progress", "started", `session:${SESSION}`] });
+  gh.second().comments.push(record);
+  const result = declineRow(ROW, SESSION, { run: gh.run, tracker: TRACKER, keepWorktree: true });
+  assert.deepEqual(result, { declined: true, restoredReady: false, blocked: false, closed: false, statusMoved: true });
+  assert.deepEqual(gh.second().labels, ["backlog"], "the released row is back in `backlog` and holds no claim");
+  assert.deepEqual(gh.first().labels, ["ready"], "the first tracker's row 575 is untouched");
 });
 
 // --- 4. the board move --------------------------------------------------------------------------------------------------------
