@@ -4,7 +4,11 @@ agent-org names no project in its non-test source. The 15 files that named `a11y
 
 `walk-scope.ts`'s `Symbol.for` keys are renamed `agent-org.walk-scope`. The a11y-witness monorepo's own copy (`packages/guards/src/walk-scope.ts`) uses the old key, so a process that loads both copies no longer shares that state. Not verified whether any process does.
 
-Acceptance: `cd ~/repos/agent-org && ! git grep -q -E 'a11y-witness' -- src ':!*.test.ts' ':!*.test.mjs' ':!src/packaging/fixtures'`
+Acceptance: `AGENT_ORG_HOST=/home/agent/repos/a11y-witness/.agent-org/host.json node --test src/no-project-names.test.ts`
+
+Measured: 4 pass, 0 fail. This is the guard, which asserts the row's check (the first test) and its controls. The guard needs `AGENT_ORG_HOST` set, as every test in this repository does; without it the tool refuses to guess a checkout.
+
+Row acceptance (authoritative on the row, recorded here for the reviewer; not run by this job, because the job refuses a line that begins with `!` and one that begins with `cd`): `cd ~/repos/agent-org && ! git grep -q -E 'a11y-witness' -- src ':!*.test.ts' ':!*.test.mjs' ':!src/packaging/fixtures'`. Its result on this branch: exit 0.
 
 Mutation (`node --test src/no-project-names.test.ts`, each file restored with `cp` from a backup and `diff`ed against it):
 - a planted `// a11y-witness planted` line appended to `src/wake.ts`: exit 1, the main test fails and names `wake.ts:9066`; the three controls pass.
