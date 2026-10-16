@@ -7,8 +7,9 @@
  * declarations those tests load. Everything else under `src` is refused on a hit, and a line that moves the name into a comment or a renamed
  * constant is still a hit, because the guard reads the text, not the syntax.
  *
- * THE TREE IS WHAT GIT TRACKS, the same tree the row's `git grep` reads. A file left untracked on a runner's disk (a stray from an earlier job)
- * is not source, and a walk of the disk would refuse it for a name it does not own (agent-org#1611's CI, 2026-10-16).
+ * THE FILES ARE WHAT HEAD COMMITS, under `src`. A file a runner left on its disk or its index (a stray from an earlier job, never committed) is
+ * not source, and a walk of the disk or of the index would refuse it for a name it does not own (agent-org#1611's CI, 2026-10-16). The text of
+ * each committed file is read from the disk, so an edit that has not been committed yet is still scanned.
  *
  * POSITIVE CONTROLS: a fixture string that contains the name is refused by the same scan (so the scan can see the name), the walk reaches
  * a floor of files (so a path that read as empty would not pass), and the fixtures the exemption names do hold the name (so the exemption is
@@ -21,6 +22,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { declareWalkScope } from "./lib/walk-scope.ts";
+import { sandboxGitEnv } from "./lib/git-env.ts";
 
 export const WALK_SCOPE = ["src"];
 await declareWalkScope(import.meta.url);
@@ -31,8 +33,9 @@ const FIXTURES = "packaging/fixtures";
 /** Enough files that a walk which found nothing would be obvious; the tree holds several hundred. */
 const WALK_FLOOR = 100;
 
-/** Every file git tracks under `src` (relative to it). `git ls-files` run in `src` lists only that subtree, with paths relative to it. */
-const trackedFiles = (): string[] => execFileSync("git", ["ls-files", "-z"], { cwd: SRC, encoding: "utf8" }).split("\0").filter(Boolean);
+/** Every file HEAD commits under `src` (relative to it). `git ls-tree` run in `src` lists only that subtree, with paths relative to it. */
+const trackedFiles = (): string[] => execFileSync("git", ["ls-tree", "-r", "-z", "--name-only", "HEAD"], { cwd: SRC, encoding: "utf8", env: sandboxGitEnv() })
+  .split("\0").filter(Boolean);
 
 /** Every tracked file under `src`, excluding the test files and the fixtures. */
 const sourceFiles = (): string[] => trackedFiles()
