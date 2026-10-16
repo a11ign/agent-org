@@ -583,10 +583,10 @@ type HierarchyOrder = { session: string; cause: string; subject: string; discrim
  * recipient and the words are what differ, the profile asked of the woken session does not. All three are idempotent on their `causeKey`.
  * @param {OfferHierarchy | undefined} hierarchy @param {{ blocked: { number: number, reason: string }[], yielding: Yielding[], openRows: any[], prs: any[] }} facts
  */
-export function hierarchyOrders(hierarchy: OfferHierarchy | undefined, { blocked, yielding, openRows, prs }: { blocked: RefusedRow[]; yielding: Yielding[]; openRows: any[]; prs: any[]; }): HierarchyOrder[] {
+export function hierarchyOrders(hierarchy: OfferHierarchy | undefined, { blocked, yielding, openRows, prs, laneUnread = false }: { blocked: RefusedRow[]; yielding: Yielding[]; openRows: any[]; prs: any[]; laneUnread?: boolean; }): HierarchyOrder[] {
   if (hierarchy === undefined) return [];
   return [
-    ...chairmanRefusedOrders(hierarchy, blocked, [...openRows, ...prs]),
+    ...chairmanRefusedOrders(hierarchy, blocked, [...openRows, ...prs], laneUnread),
     ...(hierarchy.ignored ?? []).map(ignoredLabelOrder),
     ...(hierarchy.emergencyIgnored ?? []).map(emergencyIgnoredOrder),
     ...yielding.flatMap((entry) => entry.holders.flatMap((holder) => yieldOrder(entry.row, holder, { openRows, prs }))),
@@ -609,8 +609,12 @@ type RefusalLedger = Record<string, { digest: string; deliveredAt: string; }>;
  * comment answers is told exactly as it always was: the ledger only ever SILENCES on an answer, so an unanswered refusal is never dropped. The ledger is rewritten
  * to the rows refused THIS tick (a row no longer refused is forgotten, so its next refusal is a first telling). A ledger that cannot be written is said and the tell
  * stays on: the next tick re-tells, which is the old behaviour and never a silence.
+ *
+ * #4405: A TICK THAT DID NOT READ THE PRIMARY'S LANES (`laneUnread`) FORGETS NOTHING. Its `blocked` is not the shelf: a refused Ready-rows read leaves it empty, and a
+ * paced open-rows read leaves no blocker open to be seen. A row missing from such a tick is not a row that cleared, so its entry is carried forward; and a blocker
+ * closing is not said on that tick either (`openAndPrs` is not a read to clear it from). Only a read tick that does not refuse the row forgets it.
  */
-function chairmanRefusedOrders(hierarchy: OfferHierarchy, blocked: RefusedRow[], openAndPrs: any[]): HierarchyOrder[] {
+function chairmanRefusedOrders(hierarchy: OfferHierarchy, blocked: RefusedRow[], openAndPrs: any[], laneUnread: boolean): HierarchyOrder[] {
   const refused = blocked.filter((row) => hierarchy.chairmanRows?.has(row.number));
   const memory = hierarchy.refusals;
   if (memory === undefined) return refused.map(legacyChairmanRefusedOrder);
@@ -625,12 +629,13 @@ function chairmanRefusedOrders(hierarchy: OfferHierarchy, blocked: RefusedRow[],
     const sameReason = entry !== undefined && entry.digest === digest;
     const answeredAt = sameReason ? memory.answeredAt(row, entry.deliveredAt) : null;
     const answered = answeredAt !== null && Date.parse(answeredAt) > Date.parse(entry.deliveredAt);
-    const silenced = answered && !blockerClosed(row, openAndPrs);
+    const silenced = answered && (laneUnread || !blockerClosed(row, openAndPrs));
     if (silenced) { ledger[ref] = entry; continue; }
     const firstTelling = entry === undefined || entry.digest !== digest || answered;
     ledger[ref] = firstTelling ? { digest, deliveredAt: new Date(memory.now).toISOString() } : entry;
     orders.push(chairmanRefusedOrder(row, digest, answered));
   }
+  if (laneUnread) for (const [ref, entry] of Object.entries(before)) if (ledger[ref] === undefined) ledger[ref] = entry;
   if (JSON.stringify(ledger) !== JSON.stringify(before)) {
     try {
       writeJsonObject(path, ledger);

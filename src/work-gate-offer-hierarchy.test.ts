@@ -12,6 +12,8 @@ import { parseProjectDeclaration } from "./project-config.ts";
 import { tmpDir } from "./lib/tmp-fixture.ts";
 import { chairmanRowAnsweredByCeo } from "./work-gate/causes/rows-offer.ts";
 import { stuckSubjectOf } from "./wake.ts";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 const DECLARATION = {
   code: [{ key: "", repo: "a11ign/a11ign" }, { key: "agent-org", repo: "a11ign/agent-org" }],
@@ -152,6 +154,49 @@ test("#1456: with CHAIRMAN_REFUSAL_FLAG off there is no ledger and the refusal i
   assert.ok(off[0]?.causeKey.startsWith("ceo/chairman-row-refused/20-"), "the key is main's, with no repository segment");
   assert.equal(offerHierarchyNow([], [], { run: () => "", stateDir: dir, now: 0, refusedOnce: false }).refusals, undefined, "off: nothing reads the answer");
   assert.notEqual(offerHierarchyNow([], [], { run: () => "", stateDir: dir, now: 0, refusedOnce: true }).refusals, undefined, "on: the ledger is wired");
+});
+
+test("#4405: a tick that did not read the primary's lanes keeps the refusal ledger; only a read tick that does not refuse the row forgets it", () => {
+  const T0 = Date.parse("2026-10-15T22:00:00Z");
+  const MIN = 60_000;
+  const reason = "blocked by #5311 -- declared on the row, and it clears itself";
+  const open = [{ number: 5311 }];
+  const ceoAt = (minutes: number) => new Date(T0 + minutes * MIN).toISOString();
+  // `laneUnread` is the tick saying it did not read the primary's lanes (`decide`'s `primaryUnread`, from a refused Ready-rows read or a paced open-rows read): its `blocked` is not the shelf.
+  const tickIn = (stateDir: string, { refused = true, laneUnread = false, why = reason, answeredAt = null, openRows = open, now }: { refused?: boolean; laneUnread?: boolean; why?: string; answeredAt?: string | null; openRows?: { number: number; }[]; now: number; }) => hierarchyOrders(
+    { chairmanRows: new Set([20]), refusals: { stateDir, now, answeredAt: () => answeredAt } },
+    { blocked: refused ? [{ number: 20, reason: why }] : [], yielding: [], openRows, prs: [], laneUnread });
+  const told = (orders: { causeKey: string; }[]) => orders.filter((o) => o.causeKey.startsWith("ceo/chairman-row-refused/")).length;
+
+  // (a) tick 1 refuses row 20; tick 2 did not read the lane, so row 20 is not in `blocked`; tick 3 refuses it again for the same reason, and ceo has answered since tick 1: NO order.
+  const dirA = tmpDir("chairman-refusal-unread-");
+  assert.equal(told(tickIn(dirA, { now: T0 })), 1, "tick 1: the first refusal is told");
+  assert.equal(told(tickIn(dirA, { refused: false, laneUnread: true, now: T0 + 10 * MIN })), 0, "tick 2: the lane was not read, so nothing is told");
+  assert.equal(told(tickIn(dirA, { now: T0 + 20 * MIN, answeredAt: ceoAt(5) })), 0, "tick 3: refused again, ceo answered since tick 1 -- no order, because tick 2's silence was not a clearing");
+
+  // (a') an unread tick that still lists row 20 refused, with no open rows read, cannot say the blocker closed: the ceo-answered row is not told on it.
+  const dirE = tmpDir("chairman-refusal-blocker-");
+  assert.equal(told(tickIn(dirE, { now: T0 })), 1, "tick 1: the first refusal is told");
+  assert.equal(told(tickIn(dirE, { laneUnread: true, openRows: [], now: T0 + 10 * MIN, answeredAt: ceoAt(5) })), 0, "tick 2: refused on an unread tick with no open rows read -- the blocker reads closed only because nothing was read, so nothing is told");
+
+  // (b) the same, but tick 2 READ the lane and did not refuse row 20: the entry is forgotten, so tick 3 is a first telling.
+  const dirB = tmpDir("chairman-refusal-read-");
+  assert.equal(told(tickIn(dirB, { now: T0 })), 1, "tick 1: the first refusal is told");
+  assert.equal(told(tickIn(dirB, { refused: false, now: T0 + 10 * MIN })), 0, "tick 2: the lane was read and row 20 is not refused");
+  assert.equal(told(tickIn(dirB, { now: T0 + 20 * MIN, answeredAt: ceoAt(5) })), 1, "tick 3: a first telling, as it always was");
+
+  // (c) an unread tick in between does not hide a changed reason: tick 3 is told.
+  const dirC = tmpDir("chairman-refusal-digest-");
+  assert.equal(told(tickIn(dirC, { now: T0 })), 1, "tick 1: the first refusal is told");
+  assert.equal(told(tickIn(dirC, { refused: false, laneUnread: true, now: T0 + 10 * MIN })), 0, "tick 2: the lane was not read");
+  assert.equal(told(tickIn(dirC, { why: "blocked by #5312 -- declared on the row, and it clears itself", now: T0 + 20 * MIN, answeredAt: ceoAt(5) })), 1, "tick 3: a changed reason is told");
+
+  // (d) a ledger that cannot be written (its directory is a file) re-tells on every tick, as it always did.
+  const dirD = tmpDir("chairman-refusal-unwritable-");
+  const notADir = join(dirD, "not-a-dir");
+  writeFileSync(notADir, "");
+  assert.equal(told(tickIn(notADir, { now: T0 })), 1, "tick 1: told");
+  assert.equal(told(tickIn(notADir, { now: T0 + 10 * MIN, answeredAt: ceoAt(5) })), 1, "tick 2: told again, because nothing was remembered");
 });
 
 test("a chairman row is offered over an open pull request that closes no chairman row, and not over one that does", () => {

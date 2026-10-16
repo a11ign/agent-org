@@ -268,10 +268,12 @@ export function blockerClearedReading(rows: any[], today: string = todayIso(), n
  */
 export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = [], prFiles = [],
   drain = false, required = null, epics = [], answerOwed = [], openRows = [], unarmed = null,
-  claimedComments = [], rowBranches, branchPrs, hostDrift, primaryDrift, closings, claimFacts, trunkRed, baseTip, claimStalls, offBoard, key, repo, callCountSignals, bareAnswerLabels, labJobs, claimRefusals, nowMs, recheck, rowReviewSkill, prOwnerRouting, sameHeadRefail, answerGiven, engineerStarts, projectDeclaration, shareLog, shareMemory, offerHierarchy, waitFacts, identities, primaryPaced = false }: {
+  claimedComments = [], rowBranches, branchPrs, hostDrift, primaryDrift, closings, claimFacts, trunkRed, baseTip, claimStalls, offBoard, key, repo, callCountSignals, bareAnswerLabels, labJobs, claimRefusals, nowMs, recheck, rowReviewSkill, prOwnerRouting, sameHeadRefail, answerGiven, engineerStarts, projectDeclaration, shareLog, shareMemory, offerHierarchy, waitFacts, identities, primaryPaced = false, primaryUnread = false }: {
         prs: any[]; readyRows: any[]; promotableRows?: any[]; chairmanBlocked?: any[]; nowMs?: number; recheck?: boolean; rowReviewSkill?: boolean; prOwnerRouting?: boolean; sameHeadRefail?: boolean;
         /** agent-org#1401: the primary's tracker lanes were skipped by pacing this tick (`work-gate.ts`), so the open rows are not a read the shelf can be stocked from. */
         primaryPaced?: boolean;
+        /** #4405: the primary's Ready rows or open rows were NOT read this tick (refused, or paced), so `hierarchyOrders` keeps the chairman refusal ledger as it was. */
+        primaryUnread?: boolean;
         prFiles?: { number: number; files: string[]; changedFiles: number; }[];
         drain?: boolean; required?: string[] | null; epics?: any[]; answerOwed?: any[];
         key?: string; repo?: string; openRows?: any[]; unarmed?: number[] | UnarmedFacts | null;
@@ -322,7 +324,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   const { offerable, blocked, yielding } = partitionUnclaimed(readyRows, prFiles, { rowBranches, branchPrs, openRows, chairmanRows: chairmanRowsOf(offerHierarchy), waitFacts });
   orders.push(...rowBranchOrders(readyRows, rowBranches, prs, branchPrs), ...incompleteRowOrders(readyRows)); // #2791, #3010, #3892
   orders.push(...rowOrders(offeredByShare(offerable, { starts: engineerStarts, declaration: projectDeclaration, shareLog, shareMemory, chairmanRows: chairmanRowsOf(offerHierarchy), emergencyRows: offerHierarchy?.emergencyRows, paced: primaryPaced }), branchesToReplace(rowBranches, branchPrs), offerHierarchy), ...unclaimableRowOrders(offerable, claimRefusals)); // #2845: the offer, and its refusal
-  orders.push(...hierarchyOrders(offerHierarchy, { blocked, yielding, openRows, prs })); // #4524: what the hierarchy says to the chairman's reader and to the holders it was offered over
+  orders.push(...hierarchyOrders(offerHierarchy, { blocked, yielding, openRows, prs, laneUnread: primaryUnread })); // #4524: what the hierarchy says to the chairman's reader and to the holders it was offered over
 
   // #2139: AHEAD OF BOTH BACKLOG SURVEYS AND BEHIND EVERY OFFER, because it is neither. It names ONE row
   // and the exact set that cleared, which outranks `ready-queue-empty` and `lane-backlog-unpromoted`
