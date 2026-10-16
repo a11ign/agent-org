@@ -386,6 +386,39 @@ function ghSaid(cause: unknown): string {
 }
 
 /**
+ * agent-org#1562: a 404 on the row read is a row NOT IN THAT TRACKER, which is what a row of another tracker reads as when its number is given to the first
+ * (#1538 is an agent-org row, read in the primary's repository). Named on a second line, so the ledger's first line, the refusal's cause, is unchanged. It is a hint and
+ * NOT a kind change: GitHub also answers 404 for a repository this token cannot see, so the refusal stays `claim-refused` and says both readings.
+ * `declaration` is read from the process's checkout when not given, and an unreadable declaration names no tracker rather than guessing one.
+ * @param {number} issueNumber @param {string} repo @param {unknown} cause the error a failed `gh` call threw
+ * @param {{ tracker: readonly Tracker[] }} [declaration]
+ * @returns {string} "\n…", or "" when the read was not a 404 or no other tracker is declared
+ */
+function missingRowHint(issueNumber: number, repo: string, cause: unknown, declaration?: { tracker: readonly Tracker[]; }): string {
+  const stderr = String((cause as { stderr?: unknown })?.stderr ?? "");
+  if (!/\bHTTP 404\b/.test(`${stderr}\n${(cause as Error)?.message ?? ""}`)) return "";
+  const known = declaration ?? readableHomeDeclaration();
+  if (known === undefined) return "";
+  const others = known.tracker.filter((tracker) => tracker.repo !== repo).map((tracker) => trackerSpelling(tracker));
+  const elsewhere = others.length === 0 ? "no other tracker is declared" : `the other declared trackers are ${others.join(", ")}`;
+  return `\n#${issueNumber} does not exist in ${repo}, or this token cannot see it; ${elsewhere}. If the row is in one of them, claim it with that tracker's \`--tracker=\` key.`;
+}
+
+/** agent-org#1562: the declaration of this checkout, or `undefined` when it cannot be read (the refusal then names nothing, which is the honest answer). */
+function readableHomeDeclaration(): { tracker: readonly Tracker[]; } | undefined {
+  try {
+    return homeProjectDeclaration();
+  } catch {
+    return undefined;
+  }
+}
+
+/** agent-org#1562: a declared tracker as a caller spells it: its repository, and the `--tracker=` key that names it (the empty key is `--tracker=`). */
+function trackerSpelling(tracker: Tracker): string {
+  return tracker.key === "" ? `\`${tracker.repo}\` (the empty key, \`--tracker=\`)` : `\`${tracker.repo}\` (\`--tracker=${tracker.key}\`)`;
+}
+
+/**
  * Reads an issue's CURRENT labels from the real board. Injectable `run`, the same seam
  * `install-git-hooks.mjs` uses, so this is testable without a network call or a real repo.
  *
@@ -399,14 +432,14 @@ function ghSaid(cause: unknown): string {
  * @param {{ run?: typeof defaultRun, repo?: string }} [deps]
  * @returns {IssueClaim}
  */
-export function fetchLabels(issueNumber: number, { run = defaultRun, repo = REPO }: { run?: typeof defaultRun; repo?: string; } = {}): IssueClaim {
+export function fetchLabels(issueNumber: number, { run = defaultRun, repo = REPO, declaration }: { run?: typeof defaultRun; repo?: string; declaration?: { tracker: readonly Tracker[]; }; } = {}): IssueClaim {
   let raw: string;
   try {
     // agent-org#1302: REST, not `gh issue view` (GraphQL). An exhausted GraphQL pool refused every claim it read; REST is another pool (#1113).
     raw = run("gh", ["api", `repos/${repo}/issues/${issueNumber}`]);
   } catch (cause) {
     throw new Error(`row-claim: could not read issue #${issueNumber} from ${repo} -- refusing to guess `
-      + `whether it is claimed${ghSaid(cause)}. ${(cause as Error).message}`, { cause });
+      + `whether it is claimed${ghSaid(cause)}. ${(cause as Error).message}${missingRowHint(issueNumber, repo, cause, declaration)}`, { cause });
   }
   let parsed: unknown;
   try {
@@ -1565,7 +1598,24 @@ export function trackerFor(key: string, declaration: { tracker: readonly Tracker
   if (found) return { ok: true, tracker: found };
   const declared = declaration.tracker.map((tracker) => (tracker.key === "" ? "the empty key" : `\`${tracker.key}\``)).join(", ");
   return { ok: false, reason: `no tracker with key \`${key}\` is declared in ${PROJECT_DECLARATION_PATH} (declared: ${declared}); `
-    + "nothing is defaulted to another tracker's row of the same number" };
+    + "nothing is defaulted to another tracker's row of the same number" + undeclaredKeyHint(key, declaration) };
+}
+
+/**
+ * agent-org#1562: a key that is not declared but IS a declared repository's `owner/repo`, name or owner is a caller who knows the repository and not the key
+ * (`a11ign/agent-org` for `agent-org`; the primary's repository for the empty key). An exact `owner/repo` names one tracker and is the only thing named; otherwise
+ * every tracker whose name or owner matches is listed and none is picked, because an owner can own two declared repositories.
+ * @param {string} key @param {{ tracker: readonly Tracker[] }} declaration
+ * @returns {string} "; …", or "" when no declared repository matches the key
+ */
+function undeclaredKeyHint(key: string, declaration: { tracker: readonly Tracker[]; }): string {
+  const exact = declaration.tracker.filter((tracker) => tracker.repo === key);
+  const matches = exact.length > 0 ? exact : declaration.tracker.filter((tracker) => {
+    const [owner, name] = tracker.repo.split("/");
+    return key === owner || key === name;
+  });
+  if (matches.length === 0) return "";
+  return `; \`${key}\` names a declared repository: ${matches.map((tracker) => trackerSpelling(tracker)).join(", and ")}`;
 }
 
 /**
