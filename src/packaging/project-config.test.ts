@@ -275,19 +275,26 @@ function filesCarryingTheLiteral(srcDir: string): string[] {
   return found.sort();
 }
 
-/** Each is a surface a later row of #69 moves (3f: units; 3e: the verdict script). A file that joins them is declared HERE, beside its reason. */
-const DECLARED_CARRIERS: Declaration[] = [
-  { name: "host-units.ts", reason: "the units' own templates name the repository; row 3f of #69 moves them" },
-  { name: "org-watch.ts", reason: "a later row of #69 moves it" },
-  { name: "reviewer/pr-review-verdict.sh", reason: "the verdict script; row 3e of #69 moves it" },
-  { name: "review-eval.ts", reason: "agent-org#1268: the eval's labelled set IS recorded pull requests of two named repositories, so the set names them; it is data the eval replays, not a declaration the tool reads" },
-  { name: "decision-run/classes/ready-queue-empty.ts", reason: "a row mention (`#7`, `agent-org#7`) names one of the project's two trackers, and the queue is served on the record issue (#910)" },
-];
+/**
+ * Each is a surface a later row of #69 moves. A file that joins them is declared HERE, beside its reason. Empty since #1607: the tool's
+ * non-test source names the repository only in row references, so no file carries the bare literal to declare.
+ */
+const DECLARED_CARRIERS: Declaration[] = [];
+
+test("#1607 POSITIVE CONTROL: the carrier scan counts a bare literal and not a row reference", () => {
+  // The scan on a fixture where the answer is known, so an empty answer on the real tree cannot pass for a scan that finds nothing.
+  const dir = mkdtempSync(join(tmpdir(), "carrier-scan-"));
+  try {
+    writeFileSync(join(dir, "bare.ts"), `const home = "${A11IGN_LITERAL}";\n`);
+    writeFileSync(join(dir, "reference.ts"), `// history: ${A11IGN_LITERAL}#1607\n`);
+    assert.deepEqual(filesCarryingTheLiteral(dir), ["bare.ts"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test("a file that newly carries the literal is DECLARED with a reason, against the base this change merges into", () => {
   const carriers = filesCarryingTheLiteral(join(TOOL_ROOT, "src"));
-  // Positive control: the scan finds what is known to be there, so an empty answer cannot pass for "none was added".
-  assert.ok(carriers.length > 0, "the scan found nothing: it is reading the wrong tree");
   const { undeclared, judged } = judgePin({
     repo: TOOL_ROOT, paths: ["src"], scan: (root) => filesCarryingTheLiteral(join(root, "src")), current: carriers, declared: DECLARED_CARRIERS,
   });
