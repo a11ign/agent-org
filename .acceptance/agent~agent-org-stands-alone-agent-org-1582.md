@@ -18,10 +18,10 @@ Closes a11ign/agent-org#1582
 
 Mutation: seven, each applied to `src/outside-reports.ts`, restored from a copy (`diff` identical) and each red in the test that owns it. Flag always on: 1 red (the off case). Flag always off: 6 red. Host report allowed on a runner: 1 red. Host report refused everywhere: 3 red. A path that climbs out of the project allowed: 1 red. An undeclared report still run: 1 red. The script's exit swallowed: 1 red.
 
-Outside-Region: src/outside-reports.ts -- the command the workflow runs; the row asks for the home, and a workflow alone has nothing to call.
-Outside-Region: src/outside-reports.test.ts -- the tests, the second actor included.
-Outside-Region: src/commands.ts -- registers the command.
-Outside-Region: .changeset/outside-reports-home-1582.md -- the entry a project that pins a tag reads.
+Outside-Region: src/outside-reports.ts — the command the workflow runs; the row asks for the home, and a workflow alone has nothing to call.
+Outside-Region: src/outside-reports.test.ts — the tests, the second actor included.
+Outside-Region: src/commands.ts — registers the command.
+Outside-Region: .changeset/outside-reports-home-1582.md — the entry a project that pins a tag reads.
 
 Flag: outside.reports
 Health-signals: wakes-held
