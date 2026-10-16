@@ -18,6 +18,8 @@ The row's controls (a)-(e) are the test file's first four new tests, run by the 
 
 Measured: `node --test src/merged-row-open-incident.test.ts` prints `ℹ tests 28`, `ℹ pass 28`, `ℹ fail 0` at this head. Against `main`'s reader, the three controls that depend on the step line go red and the other 25 pass. Five mutants of the new reader each turn at least one control red, and the reader is restored byte-identical after each.
 
+Mutation: five on `src/merged-row-open-incident.ts`, each red, with the reader restored byte-identical after each (a copy in the scratchpad and `diff`): steps never subtracted (3 red); every reason row freed (4 red); the step line never matches (3 red); the step line matches inside prose (1 red); the closing list also filtered by steps (1 red).
+
 Closes a11ign/agent-org#1550
 
 Outside-Region: .github/PULL_REQUEST_TEMPLATE.md — the row asks for the step rule in the file that teaches the closing line; agent-org has no rules file for that (`src/packaging/rules-files.ts`), so the PR template, the file authors read for it, carries one sentence.
