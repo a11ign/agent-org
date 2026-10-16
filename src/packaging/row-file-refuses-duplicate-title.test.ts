@@ -17,6 +17,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendFiledBy, createIssue, duplicateTitleRefusal, promoteRow, titleFromArgv } from "../row-file.ts";
 import { connectionOf, readsRowsByLabel } from "./rows-by-label-fixtures.ts";
+import { trackedTopLevelDirs } from "../region-paths.ts";
+
+/** #1603: the packages/ rows read the project's own tracked `packages/` tree (docs/project-tree-dependency.md, row 1603). Skipped only where that tree is absent. */
+const SKIP_NO_PACKAGES = trackedTopLevelDirs().includes("packages") ? false
+  : "the project checkout has no tracked packages/ tree: this reader is agent-org's own product tree and belongs to row 5 of this series";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SESSION = "product-manager";
@@ -81,7 +86,7 @@ function filing(argv: string[], deps: Parameters<typeof createIssue>[1]) {
   }
 }
 
-test("1. THE LAYOUT CASE: the same title filed twice while the first is open is refused on the second run, naming the first row, with zero creates after", () => {
+test("1. THE LAYOUT CASE: the same title filed twice while the first is open is refused on the second run, naming the first row, with zero creates after", { skip: SKIP_NO_PACKAGES }, () => {
   const stub = tracker([]);
   const first = filing(file(TITLE), stub.deps);
   assert.equal(first.code, 0, `the first filing goes through: ${first.stderr}`);
@@ -95,7 +100,7 @@ test("1. THE LAYOUT CASE: the same title filed twice while the first is open is 
   assert.match(second.stderr, /Nothing was filed/);
 });
 
-test("2. POSITIVE CONTROL: a title one word apart is NOT refused, and the tool did ask (one list call, in this tracker, open rows, limit 200, no search)", () => {
+test("2. POSITIVE CONTROL: a title one word apart is NOT refused, and the tool did ask (one list call, in this tracker, open rows, limit 200, no search)", { skip: SKIP_NO_PACKAGES }, () => {
   const stub = tracker([{ number: 4222, title: TITLE, state: "OPEN" }]);
   const result = filing(file(`${TITLE} again`), stub.deps);
   assert.equal(result.code, 0, result.stderr);
@@ -109,14 +114,14 @@ test("2. POSITIVE CONTROL: a title one word apart is NOT refused, and the tool d
   assert.ok(!args.includes("--search") && !args.includes("--label"), "a plain list, which is no search (#5074)");
 });
 
-test("3. a title equal to a CLOSED row's is not refused (a reopened-and-refiled row is legitimate)", () => {
+test("3. a title equal to a CLOSED row's is not refused (a reopened-and-refiled row is legitimate)", { skip: SKIP_NO_PACKAGES }, () => {
   const stub = tracker([{ number: 4222, title: TITLE, state: "CLOSED" }]);
   const result = filing(file(TITLE), stub.deps);
   assert.equal(result.code, 0, result.stderr);
   assert.equal(stub.creates(), 1);
 });
 
-test("4. a title differing only in case or surrounding space IS refused", () => {
+test("4. a title differing only in case or surrounding space IS refused", { skip: SKIP_NO_PACKAGES }, () => {
   for (const variant of [TITLE.toUpperCase(), `  ${TITLE}  `, `${TITLE}\t`, TITLE.replace(/ /g, "  ")]) {
     const stub = tracker([{ number: 4222, title: TITLE, state: "OPEN" }]);
     const result = filing(file(variant), stub.deps);
@@ -126,7 +131,7 @@ test("4. a title differing only in case or surrounding space IS refused", () => 
   }
 });
 
-test("5. a failed list read REFUSES rather than files, and says so (CANNOT_ASK, never \"no duplicate\")", () => {
+test("5. a failed list read REFUSES rather than files, and says so (CANNOT_ASK, never \"no duplicate\")", { skip: SKIP_NO_PACKAGES }, () => {
   for (const [name, run] of [
     ["an outage", () => { throw new Error("HTTP 502"); }],
     ["output that is not JSON", () => "Bad gateway"],
@@ -152,7 +157,7 @@ test("6. the title is read in every spelling gh takes, and a filing with no titl
   assert.equal(stub.calls.length, 0, "no title, no call");
 });
 
-test("7. `--allow-same-title` files the second row, asks nothing, and is not passed on to `gh issue create`", () => {
+test("7. `--allow-same-title` files the second row, asks nothing, and is not passed on to `gh issue create`", { skip: SKIP_NO_PACKAGES }, () => {
   const stub = tracker([{ number: 4222, title: TITLE, state: "OPEN" }]);
   let filedArgv: string[] = [];
   const spawnGh = (filed: string[]) => { filedArgv = filed; return stub.deps.spawnGh(filed); };

@@ -10,6 +10,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parse } from "yaml";
 import { fileRefusalReason, parseSpecYaml, specBlockFlagOf, specBlockRefusal } from "../row-file.ts";
+import { trackedTopLevelDirs } from "../region-paths.ts";
+
+/** #1603: the packages/ rows read the project's own tracked `packages/` tree (docs/project-tree-dependency.md, row 1603). Skipped only where that tree is absent. */
+const SKIP_NO_PACKAGES = trackedTopLevelDirs().includes("packages") ? false
+  : "the project checkout has no tracked packages/ tree: this reader is agent-org's own product tree and belongs to row 5 of this series";
 
 const ROW = "## Region\n\npackages/lab/src/packaging/foo.ts\n\n"
   + "## Acceptance\n\n```\nnpx tsx --test x\n```\n\n"
@@ -35,12 +40,12 @@ const refusal = (block: string) => fileRefusalReason(withSpec(block), { specBloc
 /** `COMPLETE` with the top-level field `name` (and its indented lines) cut out. */
 const without = (name: string) => COMPLETE.replace(new RegExp(`^${name}:.*\\n(?:[ ]+.*\\n)*`, "m"), "");
 
-test("the control block is fileable on its own, and the hand parser agrees with yaml about it", () => {
+test("the control block is fileable on its own, and the hand parser agrees with yaml about it", { skip: SKIP_NO_PACKAGES }, () => {
   assert.equal(refusal(COMPLETE), null);
   assert.equal(fileRefusalReason(ROW, { specBlock: true }), null, "the control row is fileable without a spec");
 });
 
-test("a block missing each required field is refused naming the field path", () => {
+test("a block missing each required field is refused naming the field path", { skip: SKIP_NO_PACKAGES }, () => {
   for (const [name, path] of [["files", "files"], ["tests", "tests"], ["run", "run"], ["out_of_scope", "out_of_scope"]] as const) {
     const reason = String(refusal(without(name)));
     assert.match(reason, new RegExp(`${path}: missing`), name);
@@ -49,14 +54,14 @@ test("a block missing each required field is refused naming the field path", () 
   assert.match(String(refusal(COMPLETE.replace(/^ {2}cases:\n(?: {4}.*\n| {6}.*\n)+/m, ""))), /tests\.cases: missing/);
 });
 
-test("an empty field is refused naming the field path", () => {
+test("an empty field is refused naming the field path", { skip: SKIP_NO_PACKAGES }, () => {
   assert.match(String(refusal(COMPLETE.replace(/^run: .*$/m, "run:"))), /run: empty/);
   assert.match(String(refusal(COMPLETE.replace(/^files:\n(?: {2}.*\n)+/m, "files: []\n"))), /files: empty/);
   assert.match(String(refusal(COMPLETE.replace("given: a build row whose spec block is complete", "given: ''"))), /tests\.cases\[0\]\.given: empty/);
   assert.match(String(refusal(COMPLETE.replace(/^out_of_scope:\n(?: {2}.*\n)+/m, "out_of_scope: \"\"\n"))), /out_of_scope: empty/);
 });
 
-test("a `then` that asserts nothing is refused, with the case index in its path", () => {
+test("a `then` that asserts nothing is refused, with the case index in its path", { skip: SKIP_NO_PACKAGES }, () => {
   for (const vacuous of ["", "works", "Works.", "correct", "as expected", "ok", "OK"]) {
     const block = COMPLETE.replace("then: 'the refusal names `run` and says it is missing'", `then: "${vacuous}"`);
     assert.match(String(refusal(block)), /tests\.cases\[1\]\.then: (empty|`[a-z ]+` asserts nothing)/, JSON.stringify(vacuous));
@@ -64,29 +69,29 @@ test("a `then` that asserts nothing is refused, with the case index in its path"
   assert.equal(refusal(COMPLETE.replace("then: it is accepted with no refusal", "then: it works as the table says")), null, "a longer sentence that merely contains `works` asserts something");
 });
 
-test("more than one spec block is refused", () => {
+test("more than one spec block is refused", { skip: SKIP_NO_PACKAGES }, () => {
   const reason = String(fileRefusalReason(`${withSpec(COMPLETE)}\n\`\`\`spec\n${COMPLETE}\`\`\`\n`, { specBlock: true }));
   assert.match(reason, /2 `spec` fences; a build row carries ONE/);
 });
 
-test("a spec fence that is never closed, and YAML that does not read, are refused rather than passed", () => {
+test("a spec fence that is never closed, and YAML that does not read, are refused rather than passed", { skip: SKIP_NO_PACKAGES }, () => {
   assert.match(String(fileRefusalReason(`${ROW}\n\`\`\`spec\nfiles:\n  - a\n`, { specBlock: true })), /never closed/);
   assert.match(String(refusal("files: [a\nrun: x\n")), /does not read as YAML/);
   assert.match(String(refusal("files:\n  - a\n files2: b\n")), /does not read as YAML|missing/);
 });
 
-test("NEGATIVE CONTROL: a valid block with the optional fields absent passes, and with them present and filled passes", () => {
+test("NEGATIVE CONTROL: a valid block with the optional fields absent passes, and with them present and filled passes", { skip: SKIP_NO_PACKAGES }, () => {
   assert.equal(refusal(COMPLETE), null);
   assert.equal(refusal(`${COMPLETE}errors:\n  - a bad path is refused with its name\nexamples:\n  - "run: x"\n`), null);
   assert.match(String(refusal(`${COMPLETE}errors:\n`)), /errors: present but empty/);
 });
 
-test("the exemption: a row with no spec fence, or a spec shown inside another fence, passes", () => {
+test("the exemption: a row with no spec fence, or a spec shown inside another fence, passes", { skip: SKIP_NO_PACKAGES }, () => {
   assert.equal(fileRefusalReason(ROW, { specBlock: true }), null);
   assert.equal(fileRefusalReason(`${ROW}\n\`\`\`\`md\n\`\`\`spec\nfiles: []\n\`\`\`\n\`\`\`\`\n`, { specBlock: true }), null);
 });
 
-test("the flag off passes everything; the flag is on only when exactly true", () => {
+test("the flag off passes everything; the flag is on only when exactly true", { skip: SKIP_NO_PACKAGES }, () => {
   assert.equal(fileRefusalReason(withSpec("files: []\n"), { specBlock: false }), null);
   assert.equal(specBlockRefusal(withSpec("files: []\n"), false), null);
   assert.notEqual(specBlockRefusal(withSpec("files: []\n"), true), null);
