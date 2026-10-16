@@ -1133,7 +1133,11 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     let queued = false;
     for (const entry of watched) {
       const reads = openPulls(entry).map((pr) => ({ url: pr.url, read: readPullFeedback(pr.url, self, gh) }));
-      if (reads.some(({ read }) => read === null)) continue;
+      const unread = reads.filter(({ read }) => read === null).map(({ url }) => url);
+      if (unread.length > 0) {
+        log(`${entry.ticket.key}: the feedback on ${unread.join(", ")} could not be read, so it was not checked; the next watch asks again`);
+        continue;
+      }
       const trigger = feedbackSince(reads as { url: string; read: PullFeedback }[], entry.finishedAt ?? 0);
       if (trigger === null) continue;
       update((queue) => feedbackRound(queue, entry.ticket.key, trigger, now()));

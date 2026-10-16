@@ -1303,9 +1303,10 @@ test("feedback from before the run's last round ended, from the workers' own acc
   ] as const) {
     const gh = ghFor(pulls);
     const { pool, entry } = await readyRun(gh.run);
-    pool.watchFeedback();
-    await roundStarted();
+    const logged = await captureStderr(async () => { pool.watchFeedback(); await roundStarted(); });
     assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").rounds], ["finished", undefined], why);
+    const said = logged.some((line) => line.includes(`NBF-1: the feedback on ${approvedPr.url} could not be read, so it was not checked`));
+    assert.equal(said, why === "could not ask", `${why}: an unread pull request is said in the board's log, and only that`);
   }
 });
 
