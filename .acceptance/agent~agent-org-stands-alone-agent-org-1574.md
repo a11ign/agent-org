@@ -21,6 +21,7 @@ Mutation: seven, each restored from a copy (`diff` byte-identical) and each red 
 
 Outside-Region: src/packaging/board-outside.test.ts — the new test: the flag, the second actor through the commands, the workflow's shape.
 Outside-Region: .github/workflows/board-outside.yml — the home itself, which the row asks for ("a scheduled workflow in agent-org's own repository").
+Outside-Region: docs/gh-call-baseline.json — `src/board-report.ts` 4 → 5 calls: the one read of the report issue's comments (`editionPosted`) that the second actor needs; a rise is visible here by design (`gh-call-ratchet`).
 Outside-Region: .changeset/the-outside-home-of-the-board-report-off.md — the entry a project that pins a tag reads.
 
 Flag: outside.board

@@ -37,7 +37,7 @@
     },
     "src/board-report.ts": {
       "spawns": 0,
-      "calls": 4
+      "calls": 5
     },
     "src/board-schedule-liveness.ts": {
       "spawns": 0,

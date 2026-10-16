@@ -11,11 +11,11 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { tmpDir } from "../lib/tmp-fixture.ts";
 import { parse as parseYaml } from "yaml";
 import { HOME_CHECKOUT } from "../project-config.ts";
 import { editionUrlIfPublished, outsideBoardOn, scheduledRunFindsWorkDone, OUTSIDE_BOARD_FLAG, editionTitle } from "../board-discussion.ts";
@@ -25,7 +25,7 @@ import { postAbsence } from "../board-summary-check.ts";
 const SRC = fileURLToPath(new URL("..", import.meta.url));
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const DAY = "2026-10-16";
-const scratch = () => mkdtempSync(join(tmpdir(), "board-outside-"));
+const scratch = () => tmpDir("board-outside-");
 
 // ---------------------------------------------------------------- the flag
 
@@ -35,7 +35,6 @@ function flagWith(contents: string | null): { on: boolean; said: string[] } {
   if (contents !== null) writeFileSync(path, contents);
   const said: string[] = [];
   const on = outsideBoardOn({ path, diagnostic: (line) => said.push(line) });
-  rmSync(dir, { recursive: true, force: true });
   return { on, said };
 }
 
@@ -106,15 +105,17 @@ test("#1574: the summary check posts once however many actors run it, in either 
 
 // ---------------------------------------------------------------- the commands, run for real against a fake gh
 
-/** A project the tool serves: a git repository holding the real project's declaration and the switches under test, with a fake `gh` first on PATH that logs every call. */
+/** A project the tool serves: a directory holding the real project's declaration and the switches under test, with a fake `gh` first on PATH that logs every call. */
 function runCommand(program: string, args: string[], { flag, event, posted, edition }: { flag: boolean; event: string | undefined; posted: boolean; edition: boolean; }) {
   const project = scratch();
   mkdirSync(join(project, ".agent-org"));
   // Everything the declaration names (roles, plugins) is the real project's, linked; only the switches are the test's own.
   for (const name of readdirSync(join(HOME_CHECKOUT, ".agent-org"))) if (name !== "decisions.json") symlinkSync(join(HOME_CHECKOUT, ".agent-org", name), join(project, ".agent-org", name));
   writeFileSync(join(project, ".agent-org", "decisions.json"), JSON.stringify({ "outside.board": flag }));
-  spawnSync("git", ["init", "-q"], { cwd: project });
+  // The tool serves the project the HOST file names, in whichever layout it runs (the monorepo's `beside` would otherwise answer first): a host file of one project, this one.
   const bin = scratch();
+  const host = join(scratch(), "host.json");
+  writeFileSync(host, JSON.stringify({ schema: 1, home: project, binDir: bin, gh: { workers: bin, leads: bin, leadsHeader: [], leadsWorkspaces: [] }, primary: "test", projects: [{ id: "test", checkout: project }] }));
   const log = join(bin, "calls.log");
   const answers = {
     comments: posted ? "1\n" : "0\n",
@@ -133,12 +134,10 @@ else if (joined.includes("discussions(")) process.stdout.write(answers.editions)
 else { process.stderr.write("fake gh: unrouted " + joined.slice(0, 80) + "\\n"); process.exit(1); }
 `);
   chmodSync(join(bin, "gh"), 0o755);
-  const env: Record<string, string | undefined> = { ...process.env, PATH: `${bin}:${process.env.PATH}`, GH_TOKEN: "none", AGENT_ORG_HOST: undefined };
+  const env: Record<string, string | undefined> = { ...process.env, PATH: `${bin}:${process.env.PATH}`, GH_TOKEN: "none", AGENT_ORG_HOST: host };
   if (event === undefined) delete env.GITHUB_EVENT_NAME; else env.GITHUB_EVENT_NAME = event;
   const done = spawnSync(process.execPath, [join(SRC, program), ...args], { cwd: project, env: env as NodeJS.ProcessEnv, encoding: "utf8" });
   const calls = existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean) : [];
-  rmSync(project, { recursive: true, force: true });
-  rmSync(bin, { recursive: true, force: true });
   return { status: done.status, out: done.stdout, err: done.stderr, calls };
 }
 
