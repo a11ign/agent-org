@@ -24,7 +24,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -111,10 +111,14 @@ function fixtureProject(): string {
   // `cause-declaration.ts` requires the plugin the declaration names at import. a11ign's imports the product's `src` by relative
   // path, which a second project does not have, so the fixture project brings a plugin of its own, declaring no causes.
   cpSync(join(REPO, ".agent-org/roles"), join(checkout, ".agent-org/roles"), { recursive: true }); // `project-roles.ts` refuses a project without its role briefs
-  // The plugin goes where the copied declaration names it: CI pins the project at a ref that may still say `causes.mjs`.
-  const pluginPath = join(checkout, ".agent-org", JSON.parse(readFileSync(join(checkout, ".agent-org/project.json"), "utf8")).causes.module);
-  mkdirSync(dirname(pluginPath), { recursive: true });
-  writeFileSync(pluginPath, "export const causeDeclarations = [];\n");
+  // The plugin goes where the copied declaration names it: CI pins the project at a ref that may still say `causes.mjs`. A declaration with no
+  // `causes` key (the fixture's) names none, and an absent key is read as no causes (`cause-declaration.ts`), so there is nothing to bring.
+  const causes = JSON.parse(readFileSync(join(checkout, ".agent-org/project.json"), "utf8")).causes;
+  if (causes !== undefined) {
+    const pluginPath = join(checkout, ".agent-org", causes.module);
+    mkdirSync(dirname(pluginPath), { recursive: true });
+    writeFileSync(pluginPath, "export const causeDeclarations = [];\n");
+  }
   writeFileSync(join(checkout, "docs/lane-ownership.json"), JSON.stringify(FIXTURE_LANES));
   writeFileSync(join(checkout, "docs/owned-path-facts.json"), JSON.stringify(FIXTURE_FACTS));
   writeFileSync(join(checkout, FIXTURE_ROOT_FILE), "x\n");
@@ -151,13 +155,18 @@ type Module = {
   name: string; file: string; answer: string; expectedInFixture: (checkout: string) => unknown; expectedInTree: unknown;
 };
 
+// The project's owned-path facts as `loadFacts()` reads them in-tree. A project that declares none (the fixture) answers `null`, CANNOT_ASK
+// (`owned-path-signoff.ts`), and that is the expectation there: it follows the file, and does not assume it is there.
+const TREE_FACTS = join(REPO, "docs/owned-path-facts.json");
+const TREE_OWNED = existsSync(TREE_FACTS) ? JSON.parse(readFileSync(TREE_FACTS, "utf8")).owned : null;
+
 const MODULES: Module[] = [
   { name: "board-data ROOT", file: "board-data.ts", answer: "m.ROOT",
     expectedInFixture: (checkout) => checkout, expectedInTree: REPO },
   { name: "lane-ownership loadLanes()", file: "lane-ownership.ts", answer: "m.loadLanes()?.lanes.map((l) => l.lane)",
     expectedInFixture: () => ["fixture-lane"], expectedInTree: JSON.parse(readFileSync(join(REPO, "docs/lane-ownership.json"), "utf8")).lanes.map((l: { lane: string }) => l.lane) },
-  { name: "owned-path-signoff loadFacts()", file: "owned-path-signoff.ts", answer: "m.loadFacts()?.owned",
-    expectedInFixture: () => FIXTURE_FACTS.owned, expectedInTree: JSON.parse(readFileSync(join(REPO, "docs/owned-path-facts.json"), "utf8")).owned },
+  { name: "owned-path-signoff loadFacts()", file: "owned-path-signoff.ts", answer: "m.loadFacts()?.owned ?? null",
+    expectedInFixture: () => FIXTURE_FACTS.owned, expectedInTree: TREE_OWNED },
   { name: "region-paths rootFilesOnMain()", file: "region-paths.ts", answer: `m.rootFilesOnMain().files.has(${JSON.stringify(FIXTURE_ROOT_FILE)})`,
     expectedInFixture: () => true, expectedInTree: false },
   { name: "wake REPO_ROOT", file: "wake.ts", answer: "m.REPO_ROOT",
