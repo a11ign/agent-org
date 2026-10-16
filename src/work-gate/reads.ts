@@ -1494,9 +1494,12 @@ function readOpenRowsAsListed(run: (args: string[]) => string): any[] | null {
     // `body` and `blockedBy` as well; asking once and filtering twice keeps the unconditional call
     // count where `GH_READS` says it is. #4048: `createdAt` RIDES IT TOO, so `stateLabelFindings` can tell a row being filed from one in no state. #4042: `subIssuesSummary` RIDES THIS READ so the epic causes
     // (`epicRowsOf`) are answered from rows already in hand on every tick, not by a second call.
-    const parsed = JSON.parse(run(["issue", "list", "--state", "open", "--limit", "500",
-      "--json", "number,title,labels,body,blockedBy,milestone,updatedAt,subIssuesSummary,createdAt"]));
-    return Array.isArray(parsed) ? parsed : null;
+    const answer = run(["issue", "list", "--state", "open", "--limit", "500",
+      "--json", "number,title,labels,body,blockedBy,milestone,updatedAt,subIssuesSummary,createdAt"]);
+    const parsed = JSON.parse(answer);
+    if (Array.isArray(parsed)) return parsed;
+    // agent-org#1624: an answer that parses but is not a list is a refusal too, and it was the one `null` here that said nothing (three silent ticks, 2026-10-15/16).
+    throw new Error(`the answer was not a list: ${JSON.stringify(String(answer).slice(0, 120))}`);
   } catch (cause) {
     // agent-org#1401: the refusal is said WITH gh's reason, so the journal names it; a silent `null` left the 19:35:53Z and 19:55:01Z ticks without one.
     process.stderr.write(`NOTE: the open rows could not be read (${said(cause)}); read as refused\n`);
