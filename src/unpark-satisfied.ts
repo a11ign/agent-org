@@ -35,11 +35,18 @@
 // (a11ign/a11ign#4159 twice, #4182, #4183). The guard is right and stays as it is; the tick runs the child from `tickWorktree()`, a linked worktree it owns, and the log line says which one.
 // The other children the tick starts (`update-primary --drift`, `host-units --json`) carry no launch guard and need none; `unpark-satisfied.test.ts` pins that list from the source.
 //
+// A REFUSAL FOR BUDGET WAITS (agent-org#1618, from a11ign#928's `api-pool-low`): the tick holds its GraphQL reads to a per-tick cap (`gh-conditional.ts`), the un-park's two reads come late in the tick, and
+// a tick that has spent its cap refuses them with `gate-budget: refused ...`. The row stayed parked, the next tick asked again, and was refused again: 20 `COULD NOT unpark` lines for two rows in an hour,
+// each retry paying the reads that WERE admitted before the refusal for nothing. A refusal of that one shape is now a DEFERRAL: the row is not asked again for `BUDGET_DEFER_MS`, kept in a file beside the
+// tick's other state (each tick is its own process, so a held row has to be kept somewhere a later tick reads), and the log says so once, with the time. A refusal for ANY OTHER reason is the error it always was,
+// and asked again next tick. Nothing was written when a read is refused (both reads precede the first write in `transition`), so a deferred row is exactly as it was.
+//
 // A LEAF AT LOAD TIME: no import of `work-gate.ts` (which imports this), so the gate's `run` is passed in.
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { stateEntryPath } from "./host-config.ts";
 import { sandboxGitEnv } from "./lib/git-env.ts";
 import { PARKED_LABEL, conditionHolds, declaredWaitsOf, isItemWait, waitFieldsOf, waitItemOf } from "./wait-condition.ts";
 import { machineryFlagOn, type CanaryState } from "./org-health.ts";
@@ -157,8 +164,57 @@ export function commentFor({ to, conditions, why, now }: { to: string; condition
   return `${head}It does NOT pass the check a \`${READY_LABEL}\` row must pass: ${why}\n\nSo it is \`${BACKLOG_LABEL}\` with \`${ANSWER_PREFIX}${PRODUCT_MANAGER}\`, not offered half-formed. Fix that, then promote it (\`row-file --promote=<n>\`) and remove the answer label.`;
 }
 
+/** The refusal `gh-conditional.ts` throws for a read past the tick's cap (`refusalOf`): `gate-budget: refused \`gh <cause>\` at n/60 points`. Restated because the budget is the gate's; `unpark-satisfied.test.ts` makes `meteredRun` throw one and reads it with this. */
+export const BUDGET_REFUSAL = /^gate-budget: refused /;
+/** How long a row refused for budget is left alone: about six ticks (the tick runs some 26 times an hour), so a row waits minutes and not forever, and an hour holds four attempts and not twenty. */
+export const BUDGET_DEFER_MS = 15 * 60_000;
+/** The state entry that remembers a deferral between ticks, one object of `<repo>#<number>` to the epoch ms the row may be asked again. */
+export const DEFERRED_FILE = "unpark-deferred.json";
+
+/** Which rows are held for budget: `until` is when row `number` may be asked again (`null` when it is not held), `hold` records a deferral. */
+export type Deferral = { until: (number: number) => number | null, hold: (number: number, untilMs: number) => void };
+
 export type Unparked = { number: number, to: string, why: string | null };
-export type UnparkResult = { unparked: Unparked[], unread: { number: number, reason: string }[], errors: { number: number, message: string }[] };
+/** `deferred` is present only when a row was refused for budget this pass, so a pass that deferred nothing is the object it always was. */
+export type UnparkResult = { unparked: Unparked[], unread: { number: number, reason: string }[], errors: { number: number, message: string }[], deferred?: { number: number, message: string, until: number }[] };
+
+/**
+ * THE DEFERRALS OF ONE REPOSITORY, in a file. Read on first use and written whenever a row is held (entries already past are dropped then, so the file does not grow); a file that cannot be read is
+ * "nothing is held", and one that cannot be written leaves the row to be asked again next tick, which is what happened before this existed, said on stderr rather than swallowed.
+ * @param {string} [path] @param {string} [repo] @param {{ read: (path: string) => string, write: (path: string, text: string) => void }} [io] a seam for a test
+ * @returns {Deferral}
+ */
+export function fileDeferral(
+  path?: string,
+  repo: string = REPO,
+  io: { read: (path: string) => string; write: (path: string, text: string) => void } = { read: (p) => readFileSync(p, "utf8"), write: (p, text) => { writeFileSync(`${p}.tmp`, text); renameSync(`${p}.tmp`, p); } },
+): Deferral {
+  let loaded: Record<string, number> | null = null;
+  const where = () => path ?? stateEntryPath(DEFERRED_FILE);
+  const load = (): Record<string, number> => {
+    if (loaded !== null) return loaded;
+    try {
+      const parsed = JSON.parse(io.read(where()));
+      loaded = Object.fromEntries(Object.entries(parsed ?? {}).filter((entry): entry is [string, number] => Number.isFinite(entry[1])));
+    } catch {
+      loaded = {};
+    }
+    return loaded;
+  };
+  return {
+    until: (number) => load()[`${repo}#${number}`] ?? null,
+    hold: (number, untilMs) => {
+      const now = Date.now();
+      const kept = Object.fromEntries(Object.entries(load()).filter(([, until]) => until > now));
+      loaded = { ...kept, [`${repo}#${number}`]: untilMs };
+      try {
+        io.write(where(), `${JSON.stringify(loaded)}\n`);
+      } catch (cause) {
+        process.stderr.write(`unpark-satisfied: could not keep the deferral of ${repo}#${number} (${cause instanceof Error ? cause.message.split("\n")[0] : cause}); it is asked again next tick\n`);
+      }
+    },
+  };
+}
 
 /** @param {any} row @param {string[]} labels the row's tick object now says what the world does, so a later reader of the same list (the board audit) does not count it again */
 function reflect(row: any, labels: string[]) {
@@ -195,20 +251,28 @@ function transition(row: any, conditions: Condition[], io: UnparkIo, now: number
 /**
  * UN-PARK EVERY PARKED ROW WHOSE EVERY CONDITION IS TRUE. A failure on one row is an error NAMING that row and the pass goes on: a refused read is never a skipped row nobody hears about,
  * and never stops the others.
- * @param {{ rows: any[], facts: import("./wait-condition.ts").WaitFacts, now: number }} input @param {UnparkIo} io @returns {UnparkResult}
+ * A row `defer` holds is not asked at all until its time, and a refusal for budget (`BUDGET_REFUSAL`) holds the row for `BUDGET_DEFER_MS` instead of being an error; with no `defer` a refusal is an error as it was.
+ * @param {{ rows: any[], facts: import("./wait-condition.ts").WaitFacts, now: number }} input @param {UnparkIo} io @param {Deferral} [defer] @returns {UnparkResult}
  */
-export function unparkSatisfied({ rows, facts, now }: { rows: any[]; facts: import("./wait-condition.ts").WaitFacts; now: number; }, io: UnparkIo): UnparkResult {
+export function unparkSatisfied({ rows, facts, now }: { rows: any[]; facts: import("./wait-condition.ts").WaitFacts; now: number; }, io: UnparkIo, defer?: Deferral): UnparkResult {
   const result: UnparkResult = { unparked: [], unread: [], errors: [] };
   for (const row of rows) {
     const number = Number(row.number);
     const satisfaction = readSatisfaction(row, facts, now, io.closedAt);
     if (satisfaction.verdict === "unread") result.unread.push({ number, reason: satisfaction.reason });
     if (satisfaction.verdict !== "satisfied") continue;
+    if ((defer?.until(number) ?? 0) > now) continue;
     try {
       const done = transition(row, satisfaction.conditions, io, now);
       if (done) result.unparked.push(done);
     } catch (error) {
-      result.errors.push({ number, message: error instanceof Error ? error.message.split("\n")[0] : String(error) });
+      const message = error instanceof Error ? error.message.split("\n")[0] : String(error);
+      if (defer !== undefined && BUDGET_REFUSAL.test(message)) {
+        defer.hold(number, now + BUDGET_DEFER_MS);
+        result.deferred = [...(result.deferred ?? []), { number, message, until: now + BUDGET_DEFER_MS }];
+      } else {
+        result.errors.push({ number, message });
+      }
     }
   }
   return result;
@@ -217,6 +281,7 @@ export function unparkSatisfied({ rows, facts, now }: { rows: any[]; facts: impo
 /** @param {UnparkResult} result @param {(line: string) => void} log */
 export function reportUnpark(result: UnparkResult, log: (line: string) => void) {
   for (const { number, to, why } of result.unparked) log(`DID unpark #${number} -> ${to}${why === null ? "" : ` (answer:${PRODUCT_MANAGER}: ${why.split("\n")[0]})`} -- every condition it declared is true\n`);
+  for (const { number, message, until } of result.deferred ?? []) log(`DEFERRED unpark #${number}: ${message}; not asked again until ${new Date(until).toISOString()}\n`);
   for (const { number, message } of result.errors) log(`COULD NOT unpark #${number}: ${message}\n`);
 }
 
@@ -317,15 +382,15 @@ export function promoteViaModule(number: number, worktree: () => TickWorktree = 
  * THE TICK'S SEAM: wrap the wait read (`waitTickFacts`) so that the facts it just read are acted on once, before anything else in the tick reads the rows. `null` (a refused read) un-parks nothing.
  * @template T
  * @param {(input: { prsRead: any[] | null, openRowsRead: any[] | null, now: number }) => T | null} readWaits
- * @param {{ run: (args: string[]) => string, log?: (line: string) => void, io?: UnparkIo }} deps
+ * @param {{ run: (args: string[]) => string, log?: (line: string) => void, io?: UnparkIo, defer?: Deferral }} deps `defer` defaults to the state file when the real `gh` is used (no `io` given)
  * @returns {(input: { prsRead: any[] | null, openRowsRead: any[] | null, now: number }) => T | null}
  */
-export function unparkingWaits<T>(readWaits: (input: { prsRead: any[] | null; openRowsRead: any[] | null; now: number; }) => T | null, { run, log = (line) => process.stderr.write(line), io = githubIo(run) }: { run: (args: string[]) => string; log?: (line: string) => void; io?: UnparkIo; }): (input: { prsRead: any[] | null; openRowsRead: any[] | null; now: number; }) => T | null {
+export function unparkingWaits<T>(readWaits: (input: { prsRead: any[] | null; openRowsRead: any[] | null; now: number; }) => T | null, { run, log = (line) => process.stderr.write(line), io, defer = io === undefined ? fileDeferral() : undefined }: { run: (args: string[]) => string; log?: (line: string) => void; io?: UnparkIo; defer?: Deferral; }): (input: { prsRead: any[] | null; openRowsRead: any[] | null; now: number; }) => T | null {
   return (input) => {
     const waits = readWaits(input);
     if (waits === null || !Array.isArray(input.openRowsRead)) return waits;
     const { facts } = ((waits as unknown) as { facts: import("./wait-condition.ts").WaitFacts });
-    reportUnpark(unparkSatisfied({ rows: input.openRowsRead, facts, now: input.now }, io), log);
+    reportUnpark(unparkSatisfied({ rows: input.openRowsRead, facts, now: input.now }, io ?? githubIo(run), defer), log);
     return waits;
   };
 }
@@ -339,7 +404,7 @@ export const AUTO_UNPARK_FLAG = "rows.autoUnpark";
  * answer from the home one; a reference the facts do not hold is unknown, which keeps the row parked. A failed read names the tracker and the pass goes on with the others.
  * @param {{ state: import("./org-health.ts").CanaryState, scopes: { repo: string, rows: any[] | null }[], facts: import("./wait-condition.ts").WaitFacts | null, now: number, run: (args: string[]) => string, log: (line: string) => void }} input
  */
-export function unparkOtherTrackers({ state, scopes, facts, now, run, log }: { state: CanaryState; scopes: { repo: string; rows: any[] | null; }[]; facts: WaitFacts | null; now: number; run: (args: string[]) => string; log: (line: string) => void; }): void {
+export function unparkOtherTrackers({ state, scopes, facts, now, run, log, deferralOf = (repo) => fileDeferral(undefined, repo) }: { state: CanaryState; scopes: { repo: string; rows: any[] | null; }[]; facts: WaitFacts | null; now: number; run: (args: string[]) => string; log: (line: string) => void; deferralOf?: (repo: string) => Deferral; }): void {
   if (!machineryFlagOn(state, AUTO_UNPARK_FLAG)) return;
   for (const { repo, rows } of scopes) {
     if (!Array.isArray(rows)) {
@@ -347,7 +412,7 @@ export function unparkOtherTrackers({ state, scopes, facts, now, run, log }: { s
       continue;
     }
     const tagged = rows.map((row) => ({ ...row, repoKey: repo, repo }));
-    const result = unparkSatisfied({ rows: tagged, facts: facts ?? { items: {} }, now }, githubIo(run, { repo }));
+    const result = unparkSatisfied({ rows: tagged, facts: facts ?? { items: {} }, now }, githubIo(run, { repo }), deferralOf(repo));
     reportUnpark(result, log);
     for (const { number, reason } of result.unread) log(`unpark-satisfied: ${repo}#${number} is parked and NOT un-parked: ${reason}\n`);
   }
