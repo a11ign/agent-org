@@ -19,7 +19,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // THE PROJECT THIS RUNS AGAINST IS A RECORDED ONE (#4685; `claimed-region-overlap.test.ts`'s shape): the host file is set FIRST and the tool
-// imported AFTER it, so a project that declares no second tracker -- the one CI pins at `PROJECT_REF` declares only `""` -- cannot move this
+// imported AFTER it, so a project that declares no second tracker -- the fixture project CI runs against declares only `""` -- cannot move this
 // file's verdict. The keyed cases need a tracker KEY that is declared, because a name for an undeclared key is refused (`familyMember`).
 // The fixture is the overlap rule's recorded project with ONE tracker added, the one the machinery's own rows are in.
 const SCRATCH = mkdtempSync(join(tmpdir(), "wake-spawn-worktree-"));

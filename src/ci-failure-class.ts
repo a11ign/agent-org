@@ -44,8 +44,8 @@ export type CiFailureFacts = {
   rateLimitOrRunnerLost: boolean;
   rerunAlready: boolean;
   /**
-   * #5151: the only red check is a copy whose header cites a project commit this repository's `PROJECT_REF` has not reached, and an open bump pull request's pin reaches it. Absent is `false`,
-   * so a caller that does not read it is today's classifier.
+   * #5151: the only red check is a copy ahead of the project commit CI was pinned to, and an open bump pull request reaches it. Nothing sets it since agent-org#1593 deleted the pin
+   * (CI runs against the fixture project, not a11ign at a commit), so it is absent in every real read; the class and route it selects are kept until a row removes them. Absent is `false`.
    */
   waitsOnPinBump?: boolean;
   /**
@@ -222,67 +222,7 @@ function redOnOtherPrsNow(runs: readonly WorkflowRun[], { workflow, branch, now 
   return runs.some((run) => run.name === workflow && run.conclusion === "failure" && run.head_branch !== branch && run.head_branch !== "main" && recent(run, now));
 }
 
-// ---- #5151: A COPY CARRIED AHEAD OF THE PIN WAITS FOR THE BUMP, IT IS NOT ITS HOLDER'S DEFECT
-// `ci.yml` pins the project (`PROJECT_REF`) and `copies-drifted` compares each `src/lib` copy with ITS ORIGINAL AT THAT PIN. A pull request that carries a copy to the project's newer commit (its
-// header says `at <sha>`) is right and red until the pin moves, and a worker stopped on it twice in a day (agent-org#878, #884, #1055). `project-ref-bump.yml` opens the pull request that moves
-// the pin; this reads the three things that make "wait" true and each of which can be false: the failure names the drift, the cited commit is one the pin lacks, and an OPEN bump pull request's
-// pin has it. A flag-off bump workflow opens none, so no holder is told to wait for a bump that is not coming.
-
-/** The branch `project-ref-bump.yml` opens its one pull request from; `project-ref-bump-workflow.test.ts` fails if the two names drift. */
-export const PIN_BUMP_BRANCH = "bot/project-ref-bump";
-/** The repository `PROJECT_REF` names, as `ci.yml`'s own checkout does: the project's own, read from its declaration (#2616). */
-export const PROJECT_REPOSITORY = REPO;
-const CI_WORKFLOW = ".github/workflows/ci.yml";
-/** The line `ci-pins-the-project.test.ts` holds to a full commit sha. */
-const PIN_LINE = /^ {2}PROJECT_REF: ([0-9a-f]{40})\s*$/m;
-/** A copy's header: `// COPIED FROM \`<original>\` at <sha>`, the project commit the copy was last carried to. */
-const COPIED_AT = /^\/\/ COPIED FROM `[^`]+` at ([0-9a-f]{7,40})\b/m;
-/** `org-health`'s discriminator, `copies-drifted@<copy>,<copy>`, which a test asserting a tick prints whole. The log is read raw: no line of it need match {@link ERROR_LINE}. */
-const DRIFTED_COPIES = /\bcopies-drifted@([\w@./-]+(?:,[\w@./-]+)*)/g;
-/** More copies than this are not read one by one: a failure that wide is not a bump's to excuse. */
-const MAX_COPIES_READ = 5;
 const ROLL_UP_CHECK = /(^|[\s/])gate$/i;
-
-const pinIn = (workflow: string): string | null => PIN_LINE.exec(workflow)?.[1] ?? null;
-/** A file of `repo` at `ref`, through the one `["api", path]` reader of this file: the contents API's `content` is base64 (the ratchet in `gh-call-ratchet.test.ts` holds the count of call shapes). */
-const rawFile = (gh: Gh, { repo, path, ref }: { repo: string; path: string; ref: string }): string =>
-  Buffer.from(String(json(gh, `repos/${repo}/contents/${path}?ref=${ref}`)?.content ?? ""), "base64").toString("utf8");
-/** Does `head` contain `base`: `compare` reads `ahead` or `identical` (the project is public, so the same token reads it). `per_page=1` keeps the commits list to the one. */
-const reaches = (gh: Gh, { base, head }: { base: string; head: string }): boolean =>
-  ["ahead", "identical"].includes(String(json(gh, `repos/${PROJECT_REPOSITORY}/compare/${base}...${head}?per_page=1`)?.status ?? ""));
-
-/** The pin of the open bump pull request, or `null` when none is open (the workflow is off, or has nothing newer). */
-function openBumpPin(gh: Gh, repo: string): string | null {
-  const open = json(gh, `repos/${repo}/pulls?state=open&head=${repo.split("/")[0]}:${PIN_BUMP_BRANCH}`);
-  const sha = open?.[0]?.head?.sha;
-  return typeof sha === "string" ? pinIn(rawFile(gh, { repo, path: CI_WORKFLOW, ref: sha })) : null;
-}
-
-/**
- * IS THIS RED PULL REQUEST ONLY WAITING FOR THE PIN TO MOVE. Every named copy cites a project commit the head's pin lacks and the open bump's pin has; anything else, including a read that
- * cannot be made, is `false` and the order is today's. The bump is read LAST so a log with no drift costs no request.
- */
-export function readPinWait({ repo, sha, log }: { repo: string; sha: string; log: string }, gh: Gh): boolean {
-  const copies = [...new Set([...log.matchAll(DRIFTED_COPIES)].flatMap((named) => named[1].split(",")))];
-  if (copies.length === 0 || copies.length > MAX_COPIES_READ) return false;
-  const pin = pinIn(rawFile(gh, { repo, path: CI_WORKFLOW, ref: sha }));
-  const target = pin === null ? null : openBumpPin(gh, repo);
-  if (pin === null || target === null) return false;
-  return copies.every((path) => {
-    const cited = COPIED_AT.exec(rawFile(gh, { repo, path, ref: sha }))?.[1];
-    return cited !== undefined && !reaches(gh, { base: cited, head: pin }) && reaches(gh, { base: cited, head: target });
-  });
-}
-
-/** {@link readPinWait} for a caller that cannot afford its failure: a refused read says so once and reads `false`, so the class is the one the facts alone give. */
-function pinWaitOrFalse(read: { repo: string; sha: string; log: string }, gh: Gh): boolean {
-  try {
-    return readPinWait(read, gh);
-  } catch (error) {
-    process.stderr.write(`ci-failure-class: could not read the pin of ${read.repo}@${read.sha.slice(0, 8)} (${String((error as Error).message).split("\n")[0]}); not treated as waiting on a bump.\n`);
-    return false;
-  }
-}
 
 /**
  * IS THE RATE-LIMIT OR LOST-RUNNER TEXT THE CAUSE OF THIS RED CHECK (#1166). With `assertionsOnly` and a failing assertion named, only those lines are read: the text a passing test
@@ -296,7 +236,7 @@ export function rateLimitOrLostRunner(log: string, { assertionsOnly }: { asserti
 /**
  * THE FACTS OF ONE RED PULL REQUEST, or `null` when they could not be read or there is nothing red at the head the order names (the head moved, or the red check is not an Actions job).
  * The first failing check that is not the roll-up `gate` is the one classified (the roll-up's log names no cause, #5151): a pull request with several red checks is told about the first,
- * and the order's own text still lists them all. `waitsOnPinBump` is read only when that check is the ONLY red one besides the roll-up.
+ * and the order's own text still lists them all.
  * @param now an injected clock, so "at the same time" is testable
  * @param flags {@link CI_CLASS}: the rate-limit read of the failing assertions (#1166); the default is today's read of the whole log
  */
@@ -325,8 +265,6 @@ export function readCiFailure({ repo, number, head8 }: RedPullRequest, gh: Gh, n
     readsOutsideRepository: errorLines.some((line) => READS_OUTSIDE.test(line)),
     rateLimitOrRunnerLost: rateLimitOrLostRunner(log, flags),
     rerunAlready: Number(run.run_attempt ?? 1) > 1,
-    // present only when true: a failure that is not waiting on a bump is the object it was before #5151, key for key
-    ...(causes.length === 1 && pinWaitOrFalse({ repo, sha, log }, gh) ? { waitsOnPinBump: true } : {}),
     // present only when true, for the same reason (#1524): read from the whole log, where the acceptance gate's line is
     ...(STALE_MERGE_REF.test(log) ? { staleMergeRef: true } : {}),
   };

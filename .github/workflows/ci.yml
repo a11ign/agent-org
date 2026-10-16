@@ -5,42 +5,20 @@ name: ci
 # are, so the one context a non-admin can read as required carries both (the last job of this file says why).
 #
 # `suite` (what `gate` was before #3986) RUNS THE TOOL'S WHOLE TEST SUITE (a11ign/a11ign#2973, cut-over 2 of 6), because after the cut this repository is the only place the tool's
-# tests can run and "fix forward, no rollback copy" is safe only with a gate that can go red. The suite cannot run in this tree alone: the tool reads
-# `.agent-org/project.json` and walks the project it is pointed at, and when that was tried here without one, 158 of 464 subtests failed and 60 of
-# 125 modules did not import, all for that reason. So the job takes ROUTE (a) of the row: it checks out the project under test,
-# a11ign/a11ign (public) at $PROJECT_REF, into `project/`, puts this checkout's tool where the tool lives in a project (`project/packages/agent-org`)
-# and runs the suite from the project's root. Route (b), a fixture project inside this repository (ADR 0040 decision 8), does not exist yet, and the
-# suite reads the project's real tree (its rules files, its `.agent-org/`, its git history) in ways a fixture would have to reproduce.
-#
-# WHAT `gate` CANNOT PROVE (decision 8's limit): it proves the tool against ONE project, a11ign, at the ref named below -- not against any other
-# project's declaration -- and the project moves on its own, so a red `gate` would be the project's change and not the pull request's: #3097 turned every pull request
-# here red for about 50 minutes that way (a11ign/a11ign#3886). PROJECT_REF is therefore a FULL COMMIT SHA, which separates the two.
-#
-# BUMPING `PROJECT_REF` IS A PULL REQUEST, and the only way the project's changes reach this repository's CI: Dependabot cannot read a commit pin, so
-# `renovate.json` carries a regex rule for the `PROJECT_REF` line below (a11ign/a11ign#5153), and `src/ci-pins-the-project.test.ts` holds the value to a full commit sha and nothing else.
-# The order is fixed: the project bumps nothing, this repository bumps the pin when it wants to read a newer project (Renovate opens the pull request,
-# on `bot/project-ref-bump`, and this repository's own `gate` decides it), and a red `gate` is this repository's own. `control` and `lab` pin `CORE_REF` the same way.
-#
-# THE TESTS' SIBLINGS COME FROM THE LAB: the tool's tests were extracted from the lab package (`project/packages/lab/src/packaging/`), where they sat beside helper
-# modules and fixtures that were not extracted. a11ign/a11ign deleted that package (#3505) and takes a11ign/lab as a pinned tag, so the job lays the lab at the tag the project's
-# `layers.json` pins AT `PROJECT_REF` (the project's own `project/scripts/lay-layer.ts`) and copies those siblings (never a test) beside the tests, without overwriting anything this repository has.
+# tests can run and "fix forward, no rollback copy" is safe only with a gate that can go red. The tool reads `.agent-org/project.json` and walks the project it is pointed at,
+# so the job points it at THIS REPOSITORY'S OWN FIXTURE PROJECT (`src/packaging/fixtures/project-tree/`, agent-org#1600 to #1604), copied to a temporary directory and `git init`ed,
+# with `AGENT_ORG_HOST` naming the host declaration inside it. The suite runs from this checkout's root. No other repository is checked out: agent-org stands alone (agent-org#1593;
+# a11ign/a11ign#5429), so a change in a11ign cannot turn a pull request here red, and a red `gate` is this repository's own. The tests that read a fact only a11ign's tree holds
+# (its role briefs, its `packages/`, its `known-gaps.md`) skip where that tree is absent, each naming its reader, or live in a test file that runs against a11ign's checkout on the host.
 #
 # NODE IS PINNED TO 24.21.0, NOT `24`, and it must be 24: Node 24 strips types itself, and a `.ts` run by a plain `node` (every ExecStart, every package script, `leak-scan.ts`'s import) needs it
 # (a11ign/a11ign#4389; the distro 22 cannot). The pin was 22.22.1 because on 22.23.3 the suite's tree-walking observer saw the old loader probe `<name>.mts` beside every import: the loader is gone, so that
 # cause is too. Move the pin only by re-running the suite on the new version (24.21.0: 7583 tests, the 33 failures all fail on main too).
 #
-# NAMING A PATH THAT LIVES IN THE PROJECT: `workflow-paths.ts` refuses a workflow path (`packages/...`, `scripts/...`) that is not in THIS
-# repository, so a path in the project is written with the `project/` prefix, or carries the marker `# in-project` at the end of its line.
-#
 # EVERY TEST THE SUITE HOLDS RUNS, UNDER ONE RUNNER, RSTEST (a11ign/a11ign#3738, #3958): a step compares the files rstest lists with the files on disk, so a test file its `include` does not reach fails the job.
 # The run reports `skipped 1` (the test that needs the `codex` binary, which skips itself).
 # Four tests whose premise was the monorepo's directory layout were once skipped by name (a11ign/a11ign#2973) and are now fixed in the tests (#3002):
 # an exclusion is a test that does not run, so a defect in what it guards would have gone unseen.
-
-env:
-  # a11ign/a11ign at the commit the tool's suite was last run against (54947391e, 2026-10-11, the a11ign/a11ign#5144 merge, the originals of `src/lib/cli-flags.ts` and `src/lib/git-env.ts` that `copies-drifted` compares agent-org's copies against (agent-org#1055, agent-org#1049); before it eaebb69cd, 2026-10-11, the a11ign/a11ign#4960 merge, which carries the `ceo.md` bound for `idleClaimedHours` that `org-retro.test.ts` reads (agent-org#862, advanced by agent-org#884); before it 1d11a3726, 2026-10-09, which contains #4287's Octo STS `auto-arm.yml` that `auto-arm-token.test.ts` pins (a11ign/a11ign#4288); before it 4649f4d93, 2026-10-08, the #4177 merge, which carries the `ceo.md` bound for `unwaitedStockRows` that `org-retro.test.ts` requires (#4175); before it 4da77f552, after #4089 rewrote `examples/workflow.yml`; moved from 9915703d6 of 2026-10-06 because `public-claim.test.ts` reads that
-  # file and no allow-list entry matches both versions). A sha and never a branch: a branch moves under a pull request that did not touch it.
-  PROJECT_REF: a9ae7147dba6c891844ec6ea16e41e6594c4292d
 
 on:
   pull_request:
@@ -83,20 +61,18 @@ jobs:
       - name: Leak scan -- refuses a private LAN IPv4 address or a named SSH key file anywhere in the tree
         if: matrix.shard == 1
         run: node .github/scripts/leak-scan.ts
-      - name: The project under test -- a11ign/a11ign at PROJECT_REF, read-only, no token beyond the job's own read-only one
-        uses: actions/checkout@v7
-        with:
-          repository: a11ign/a11ign
-          ref: ${{ env.PROJECT_REF }}
-          path: project
-          # The suite reads the project's git history (merge-base, branch tips, recorded commits), so a shallow clone would fail it for the wrong reason.
-          fetch-depth: 0
-          persist-credentials: false
-      # THE LAB, LAID BY THE PROJECT'S OWN COMMAND (a11ign/a11ign#3505, `project/scripts/lay-layer.ts`): `lab` left the project's tree for the pinned tag `layers.json` declares at `PROJECT_REF`, and this lays its
-      # `src/` (less its tests), scripts, baselines, `rule-ownership.json` and `CLAUDE.md` at `project/packages/lab`, where the tests' siblings and the tests that read the lab by path expect them.
-      - name: The lab at the tag the project pins, laid at project/packages/lab
-        working-directory: project
-        run: node scripts/lay-layer.ts lab # in-project
+      # THE FIXTURE PROJECT (agent-org#1593): the committed fixture, copied out of the checkout so a test that writes into the project writes into a scratch directory, `git init`ed and COMMITTED (the suite reads
+      # `git ls-files` and history of the project it is pointed at), and named by the host declaration it carries, whose `@@PROJECT@@` is the copy's path. `AGENT_ORG_HOST` reaches every later step.
+      - name: The fixture project the suite runs against, and the host declaration that names it
+        run: |
+          project="$RUNNER_TEMP/project"
+          mkdir "$project"
+          cp -r src/packaging/fixtures/project-tree/. "$project"
+          sed -i "s|@@PROJECT@@|$project|" "$project/.agent-org/host.json"
+          git -C "$project" init -q
+          git -C "$project" add -A
+          git -C "$project" -c user.name=fixture -c user.email=fixture@example.invalid commit -q -m "the fixture project"
+          echo "AGENT_ORG_HOST=$project/.agent-org/host.json" >> "$GITHUB_ENV"
       # `yaml` and `typescript` are the tool's own; `@rstest/core` and `@a11ign/toolchain` are the runner (a11ign/a11ign#3738). The ranges repeat `package.json`'s devDependencies,
       # because this job installs by name and not from it: move them together.
       # `@a11ign/toolchain` is EXACT, not a range (a11ign/a11ign#4308): 0.1.6 was published with no `dist/`, so the `^0.1.2` install resolved it and every `merge_group` run failed with
@@ -105,47 +81,35 @@ jobs:
       # `@rspack/binding-linux-x64-gnu` is the native binding `rstest` runs on. It is an OPTIONAL dependency of `@rspack/binding`, and this install is by name with no lockfile, so npm can leave it out
       # without failing the install: the suite then exits on `Cannot find module '@rspack/binding-linux-x64-gnu'` before it lists a test file (merge_group runs 38804076077 and 38804306712, 2026-10-15).
       # So the binding is named at the version the first install resolved. It is a second install of the whole set, not an install of the binding alone: an install that names only the binding prunes the rest.
-      - name: Install the tool's dependencies where the project's root would hold them
+      - name: Install the tool's dependencies
         run: |
           npm install --no-save --no-package-lock "yaml@^2.9.0" "typescript@^6.0.3" "@rstest/core@^0.12.3" "@a11ign/toolchain@0.7.1"
           BINDING=$(node -p "require('./node_modules/@rspack/binding/package.json').version")
           npm install --no-save --no-package-lock "yaml@^2.9.0" "typescript@^6.0.3" "@rstest/core@^0.12.3" "@a11ign/toolchain@0.7.1" "@rspack/binding-linux-x64-gnu@$BINDING"
-          mv node_modules project/node_modules
-      - name: Put this checkout's tool where the tool lives in a project, and the tests' siblings beside the tests
-        run: |
-          rm -rf project/packages/agent-org
-          mkdir project/packages/agent-org
-          cp -r src host scripts docs .github CHANGELOG.md package.json LICENSE README.md .gitignore renovate.json project/packages/agent-org/
-          rsync -a --ignore-existing --exclude='*.test.ts' --exclude='*.test.mjs' project/packages/lab/src/packaging/ project/packages/agent-org/src/packaging/
-          # The project deleted `project/packages/agent-org` (a11ign/a11ign#2976) and loads the tool by path (`toolModule`, a11ign/a11ign#3534). The fixture that once needed its static import
-          # rewritten to reach the tool (`board-document-chrome-resolver.test.ts`) is this repository's own now, and imports `../board-document.mjs` as it stands: nothing to rewrite.
-          # The tool's tests list the project's files with `git ls-files`. The laid-out copy joins the project checkout's index so they see the tool as they did when it was tracked.
-          git -C project add --force --intent-to-add packages/agent-org # in-project
       # WHAT THE BODY DECLARES MUST MATCH WHAT GITHUB WILL CLOSE, FOR THIS REPOSITORY'S OWN PULL REQUESTS (a11ign/agent-org#863). The check ran only in a11ign/a11ign's `ci.yml`, whose
       # `prRepo` defaults to a11ign/a11ign, so an agent-org pull request was never put to it: a11ign/a11ign#4904 and #4906 were both agent-org pull requests (#782, #770) closed on merge and not
       # on outcome, and the refusal agent-org#838 builds could not have reached them. It is a step of `suite` and not a job of its own because `gate` already needs `suite` (a skipped or failed
-      # step is a `suite` that is not `success`), and because only here is the tool laid in a project: it resolves the project's declaration at import and REFUSES, naming the field, from a bare
-      # checkout of this repository. The SECOND ARGUMENT is the point: left off, the check judges the pull request number against a11ign/a11ign, a different pull request, and says "REFUSED" about
+      # step is a `suite` that is not `success`), and because only here is a project declared: it resolves the project's declaration at import and REFUSES, naming the field, from a bare
+      # checkout of this repository, so it runs under the fixture's `AGENT_ORG_HOST` set above. The SECOND ARGUMENT is the point: left off, the check judges the pull request number against a11ign/a11ign, a different pull request, and says "REFUSED" about
       # a body that is right here (measured 2026-10-11: #856's own body, refused without it and `ok` with it).
       # `pull_request` only: a `merge_group` or `push` run has no pull request body or number, and the pull request's own run decided before it entered the queue. `edited` is in `on:`, so a
       # body edit re-runs it. The body goes by `env:` and never argv, which is the CLI's own rule (an author's text is one opaque string). Lookup failure exits 2 (CANNOT ASK) and fails the job:
       # the check does not go quiet when the API is unwell.
       - name: The declared Closes matches what GitHub will actually close, for this repository's own pull requests (agent-org#863)
         if: github.event_name == 'pull_request' && matrix.shard == 1
-        working-directory: project
         env:
           GH_TOKEN: ${{ github.token }}
           PR_BODY: ${{ github.event.pull_request.body }}
-        run: node packages/agent-org/src/closes-mismatch-check.ts ${{ github.event.pull_request.number }} ${{ github.repository }} # in-project
+        run: node src/closes-mismatch-check.ts ${{ github.event.pull_request.number }} ${{ github.repository }}
       - name: pnpm, which `packaging/installed-layout.test.ts` installs the tool through as a project would (a runner image carries npm, not pnpm)
         run: npm install --global pnpm@10.34.5
-      # THE RUNNER IS RSTEST (a11ign/a11ign#3738, ADR 0043 Decision 3, #3549 item 3). `scripts/rstest/rstest.config.ts` is a thin call into `@a11ign/toolchain`'s shared config, run from the
-      # project's root as the `node --test` line was, with the config named by its laid-out path. The build cache is on in CI only (the package's `isCi`), keyed on this repository's two inputs
-      # (there is no lockfile here: the install above is by name) and printed HIT or MISS; rstest writes it under the config's root, which is the tool's directory in the project, in `node_modules/.cache/rstest-*`.
+      # THE RUNNER IS RSTEST (a11ign/a11ign#3738, ADR 0043 Decision 3, #3549 item 3). `scripts/rstest/rstest.config.ts` is a thin call into `@a11ign/toolchain`'s shared config, run from this
+      # checkout's root. The build cache is on in CI only (the package's `isCi`), keyed on this repository's two inputs
+      # (there is no lockfile here: the install above is by name) and printed HIT or MISS; rstest writes it under the config's root, which is this checkout, in `node_modules/.cache/rstest-*`.
       - uses: actions/cache@v6
         id: rstest-build-cache
         with:
-          path: project/packages/agent-org/node_modules/.cache/rstest-*
+          path: node_modules/.cache/rstest-*
           # One cache per shard: a shard builds only its own files, and a key the four shared would keep whichever shard saved first.
           key: rstest-build-${{ runner.os }}-shard-${{ matrix.shard }}-of-${{ strategy.job-total }}-${{ hashFiles('package.json', 'scripts/rstest/rstest.config.ts') }}
       - name: rstest build cache HIT or MISS, printed so the run log can be quoted
@@ -155,36 +119,30 @@ jobs:
       # silently does not run.
       - name: Every test file is run by rstest
         if: matrix.shard == 1
-        working-directory: project
         env:
           SHARDS: ${{ strategy.job-total }}
         run: |
           # `comm` needs its inputs in the order `sort` made, and the two disagree about punctuation in a UTF-8 locale: byte order for both.
           export LC_ALL=C
           rstest=node_modules/.bin/rstest
-          config=packages/agent-org/scripts/rstest/rstest.config.ts # in-project
+          config=scripts/rstest/rstest.config.ts
           # NO_COLOR: with CI set rstest colours the list even into a pipe (the path's directory dim, the name cyan), and an escape code in front of `src/` matches nothing.
           listed=$(NO_COLOR=1 $rstest list --config "$config" --filesOnly | grep -E '^src/.*\.test\.(ts|mjs)$' | sort)
-          ondisk=$(cd packages/agent-org && find src -name '*.test.ts' -o -name '*.test.mjs' | sort) # in-project
+          ondisk=$(find src -name '*.test.ts' -o -name '*.test.mjs' | sort)
           echo "on disk: $(echo "$ondisk" | wc -l); rstest: $(echo "$listed" | wc -l)"
           missing=$(comm -23 <(echo "$ondisk") <(echo "$listed"))
           [ -z "$missing" ] || { echo "run by NO runner:"; echo "$missing"; exit 1; }
           # THE SHARDS TOGETHER ARE EVERY FILE, EACH ONCE: a file no shard lists would never run, and one two shards list would run twice.
           sharded=$(for i in $(seq 1 "$SHARDS"); do NO_COLOR=1 $rstest list --config "$config" --filesOnly --shard "$i/$SHARDS" | grep -E '^src/.*\.test\.(ts|mjs)$'; done | sort)
           [ "$sharded" = "$listed" ] || { echo "the shards do not list every file exactly once:"; diff <(echo "$listed") <(echo "$sharded"); exit 1; }
-      - name: The tool's suite under rstest -- this shard's share of every *.test.ts and *.test.mjs, run from the project's root, with --trace
-        working-directory: project
+      - name: The tool's suite under rstest -- this shard's share of every *.test.ts and *.test.mjs, run from this checkout's root, with --trace
         env:
-          # The copy above has no `.git`, so a pinned population cannot read its base from where it sits. This is the checkout it was copied from, and the one place
-          # that names it (`TOOL_REPO_ENV` in `lib/pin-ratchet.mjs`); without it the pins are judged STRICTLY, every entry declared and nothing grandfathered.
-          AGENT_ORG_TOOL_REPO: ${{ github.workspace }}
           SHARD: ${{ matrix.shard }}
           SHARDS: ${{ strategy.job-total }}
-        run: node_modules/.bin/rstest run --config packages/agent-org/scripts/rstest/rstest.config.ts --trace --shard "$SHARD/$SHARDS" # in-project
+        run: node_modules/.bin/rstest run --config scripts/rstest/rstest.config.ts --trace --shard "$SHARD/$SHARDS"
       # A CACHE THAT IS NEVER WRITTEN RESTORES NOTHING AND STILL READS GREEN (a11ign/a11ign#1319): the build cache is on, so the directory must now hold files, or the HIT or MISS line above describes
       # a cache that does not exist.
       - name: rstest build cache must hold files after the tests
-        working-directory: project/packages/agent-org # in-project
         run: |
           files=$( (find node_modules/.cache -path 'node_modules/.cache/rstest-*' -type f 2>/dev/null || true) | wc -l)
           echo "files under node_modules/.cache/rstest-* after the tests: $files"
@@ -197,7 +155,7 @@ jobs:
         with:
           name: rstest-trace-${{ matrix.shard }}
           # `.rstest` is a hidden directory, which neither `**` nor the action's default reaches: the first run of this step matched no file, said so in a warning, and uploaded nothing.
-          path: project/packages/agent-org/.rstest/trace-*.summary.md
+          path: .rstest/trace-*.summary.md
           include-hidden-files: true
           if-no-files-found: warn
 
