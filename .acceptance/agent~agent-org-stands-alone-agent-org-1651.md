@@ -1,8 +1,8 @@
-The CI-runnable block, limited to the two files of this change. Their skips fire wherever a11ign's tracked `packages/` tree is absent, which is the case in this repository's own CI. The row's fixture run (a temporary copy of `src/packaging/fixtures/project-tree/`, committed, with `AGENT_ORG_HOST` pointed at it) is the verbatim command recorded in the PR body, not here: `pr:open` refuses a `mktemp` wrapper. The per-file reasons and the control run are in `docs/project-tree-dependency.md`, section "The two a11ign-reader files against the fixture (agent-org#1651)".
+The CI-runnable block, limited to the files of this change that the acceptance job can run. `work-gate-a11ign-readers.test.ts` reads `history` through `shippedUnits()` (`host-units.ts`), which that job does not have, so it is not in the block. Its skips are checked by the row's fixture run, recorded in the PR body. The reviewer file's skips fire wherever a11ign's tracked `packages/` tree is absent, which is the case in this repository's own CI. The row's fixture run (a temporary copy of `src/packaging/fixtures/project-tree/`, committed, with `AGENT_ORG_HOST` pointed at it) is the verbatim command recorded in the PR body, not here: `pr:open` refuses a `mktemp` wrapper. The per-file reasons and the control run are in `docs/project-tree-dependency.md`, section "The two a11ign-reader files against the fixture (agent-org#1651)".
 
 Acceptance:
 ```bash
-node_modules/.bin/tsc --noEmit -p tsconfig.json && node_modules/.bin/rstest run --config scripts/rstest/rstest.config.ts src/packaging/work-gate-a11ign-readers.test.ts src/reviewer/reviewer-recipe.test.ts
+node_modules/.bin/tsc --noEmit -p tsconfig.json && node_modules/.bin/rstest run --config scripts/rstest/rstest.config.ts src/reviewer/reviewer-recipe.test.ts
 ```
 
 Measured, on this branch on top of `agent-org` `main` `ff498ea4`:
@@ -13,6 +13,7 @@ Measured, on this branch on top of `agent-org` `main` `ff498ea4`:
 
 Not covered, named:
 - The 11 failures on a11ign's tree (above). The local tree's `sessions.json` has `worker-capture` but neither `worker-5` nor `worker-2879`, which the failing assertions name; that is a lead, not a conclusion.
+- `work-gate-a11ign-readers.test.ts` is not in the CI block, because the acceptance job has no `history` (see above). Only the fixture run covers it.
 - The two files were not moved to a11ign. A move needs a row in a11ign's tracker, which has not been filed.
 
 Closes: a11ign/agent-org#1651
