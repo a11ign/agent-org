@@ -363,7 +363,8 @@ export function classNote(decision: CiFailureDecision): string {
 //      WHAT "SHARED" MEANS (#5098): the failure is OUTSIDE every PR's diff. A setup or install step is (the runner and the registry are not the PR's); anything else is shared only when
 //      both PRs fail in ONE file that NEITHER changes (nor changes the source its test covers). The roll-up job (`gate`) is never read: it is red whenever any job is, and says nothing.
 //   1b. {@link standingOf}: a hold is not a state, it is a reading of the incident row. A CLOSED row releases its holds at once and its signature stays quiet for {@link QUIET_AFTER_CLOSE_MS}
-//      unless a PR the row never named joins; an OPEN row holds for {@link HOLD_MAX_MS} and past that only while it is CLAIMED, and the released order carries the failing job's own line.
+//      unless a PR the row never named joins; an OPEN row holds its pull requests until it closes, claimed or not (#1557: the 15-minute release woke every held worker at once for a row nobody had claimed),
+//      and an unclaimed one past {@link HOLD_MAX_MS} is named in the gate's log so the one line says who is waiting. A released order carries the failing job's own line.
 //   2. {@link refreshFixed}: when the pull request closing an incident row has MERGED, every PR it notes is updated from main (`PUT /pulls/{n}/update-branch`), so CI runs against the fix
 //      with no worker turn. A refusal (a conflict) is written on the row as `Refresh-failed:`, which stops that PR being held: its worker gets the order again.
 //   3. The detector: an open PR whose red check failed BEFORE the fix merged, named like the incident's check, and still behind 10 minutes after the merge, is read, and refreshed
@@ -390,7 +391,7 @@ const TEST_FAILURE = /^(?:##\[error\]|FAIL\b|not ok\b)/;
 export const LOG_TIMESTAMP = /^\d{4}-\d\d-\d\dT[\d:.]+Z\s*/;
 const FILE_WINDOW_LINES = 30;
 const SOURCE_FILE = /((?:[\w@.-]+\/)*[\w@.-]+\.(?:tsx?|mts|cts|jsx?|mjs|cjs|py|rb|go|rs|sh|ya?ml|json))\b/;
-/** A hold older than this with no CLAIMED incident row wakes its holder (#5098): 15 minutes is the time an engineer has to take the row. */
+/** An OPEN incident row older than this with no claim is named in the gate's log (#1557). It does NOT release its holds: a hold waits for the row to close. */
 export const HOLD_MAX_MS = 15 * 60 * 1000;
 /** A closed incident's signature is not filed again for this long, unless a PR the row never named joins it. */
 export const QUIET_AFTER_CLOSE_MS = 24 * 60 * 60 * 1000;
@@ -523,17 +524,16 @@ function changedFiles(pr: RedPr, run: Run): string[] | null {
 }
 
 export type HeldOrder = { subject: string; session: string; key: string };
-export type ReleasedOrder = { subject: string; session: string; key: string; why: "closed" | "expired" | "unrecorded"; line: string };
+export type ReleasedOrder = { subject: string; session: string; key: string; why: "closed" | "unrecorded"; line: string };
 /**
- * What the rows say about a group: hold it (no row yet, a young row, a claimed row), or release it because its row was closed, outlived {@link HOLD_MAX_MS} unclaimed, or could not
- * be filed (a hold with no row behind it is exactly the hold #5098 forbids).
+ * What the rows say about a group: hold it (no row yet, or an open row), or release it because its row was closed or could not be filed (a hold with no row behind it is
+ * exactly the hold #5098 forbids).
  */
 export type Standing = { hold: true } | { hold: false; why: ReleasedOrder["why"]; row?: number };
 type OrderLike = { cause?: string; subject?: string; session?: string; discriminator?: string; prompt?: string };
 
 const RELEASE_REASON: Readonly<Record<ReleasedOrder["why"], string>> = {
   closed: "its incident row was closed",
-  expired: `its incident row was not claimed within ${HOLD_MAX_MS / 60_000} minutes`,
   unrecorded: "its incident row could not be filed",
 };
 const releasedWords = (group: SharedGroup, standing: Extract<Standing, { hold: false }>): string =>
@@ -599,16 +599,13 @@ export const readRows = (run: Run, state: "open" | "closed"): IncidentRow[] =>
 
 /**
  * WHAT THE ROWS SAY ABOUT `group` (#5098). The hold used to be recomputed from the live reds every tick, so closing the row released nothing: the same signature matched again, no OPEN
- * row carried its marker, and a fresh row was filed. A hold is now a reading of the row: an OPEN row holds while it is young or CLAIMED (`in-progress`); a row CLOSED within
- * {@link QUIET_AFTER_CLOSE_MS} releases at once, unless a PR it never named has joined. An unreadable time is never young (the order goes out, as it always did).
+ * row carried its marker, and a fresh row was filed. A hold is now a reading of the row: an OPEN row holds until it closes, whatever its age and whether or not it is claimed (#1557: an
+ * unclaimed row released every held worker at 15 minutes, which is the wake-up this file exists to stop). A row CLOSED within {@link QUIET_AFTER_CLOSE_MS} releases at once, unless a PR
+ * it never named has joined.
  */
 export function standingOf(group: SharedGroup, { open, closed, nowMs }: { open: readonly IncidentRow[]; closed: readonly IncidentRow[]; nowMs: number }): Standing {
   const marker = markerOf(group.key);
-  const row = open.find((r) => r.body.includes(marker));
-  if (row !== undefined) {
-    const young = nowMs - Date.parse(String(row.createdAt)) < HOLD_MAX_MS;
-    return young || (row.labels ?? []).includes(CLAIM_LABEL) ? { hold: true } : { hold: false, why: "expired", row: row.number };
-  }
+  if (open.some((r) => r.body.includes(marker))) return { hold: true };
   const quiet = closed.find((r) => r.body.includes(marker) && nowMs - Date.parse(String(r.closedAt)) < QUIET_AFTER_CLOSE_MS
     && group.noted.every((ref) => listOf(r.body, PRS_LINE).includes(ref)));
   return quiet === undefined ? { hold: true } : { hold: false, why: "closed", row: quiet.number };
@@ -616,7 +613,7 @@ export function standingOf(group: SharedGroup, { open, closed, nowMs }: { open: 
 
 const bodyOf = (group: SharedGroup, prs: readonly string[]): string => [
   `A failure shared by ${prs.length} open pull request(s), found by the gate: one incident, and the workers of these PRs are not woken for it.`, "",
-  "SIGNAL for `orchestrator`: this row carries no claimable work. It is on the board at Backlog so the failure is visible; the pull requests it names are the work.", "",
+  "SIGNAL for `orchestrator`: the pull requests this row names are HELD until it closes, so the fix to the shared failure is the work. It is on the board at Backlog so the failure is visible and can be routed.", "",
   `Check: ${group.signature.check}`, `Step: ${group.signature.step}`, `First error line: ${group.signature.line}`, "",
   `Shared-failure-prs: ${prs.join(", ")}`, "",
   "When the pull request that closes this row MERGES, the gate updates each PR above from main so CI runs against the fix. Close this row with the fix's `Closes`.", markerOf(group.key),
@@ -786,6 +783,12 @@ export function sharedFailureTick<O extends OrderLike>(
     const out = holdSharedFailures(pending, { prs: deps.prs, run: deps.run, refused: [...refused, ...refusedOf([...rows.open, ...rows.closed])], standing });
     if (out.held.length > 0) log(`ci-shared-failure: holding ${out.held.length} red order(s) of a shared failure:${out.held.map((h) => ` ${h.subject}`).join("")}\n`);
     if (out.released.length > 0) log(`ci-shared-failure: released ${out.released.length} red order(s), their hold is over:${out.released.map((r) => ` ${r.subject} (${r.why})`).join("")}\n`);
+    for (const key of new Set(out.held.map((h) => h.key))) { // #1557: one line per held incident that nobody has claimed past the bound; the holds themselves wait for it to close
+      const row = rows.open.find((r) => r.body.includes(markerOf(key)));
+      if (row !== undefined && !(row.labels ?? []).includes(CLAIM_LABEL) && nowMs - Date.parse(String(row.createdAt)) >= HOLD_MAX_MS) {
+        log(`ci-shared-failure: incident #${row.number} has been open ${HOLD_MAX_MS / 60_000} minutes with no claim; its held pull requests wait for it to close, and no worker is woken\n`);
+      }
+    }
     return { orders: out.orders, held: out.held, released: out.released, refreshed };
   } catch (error) {
     log(`ci-shared-failure: could not run (${String((error as Error).message).split("\n")[0]}); the orders go out as they were\n`);
