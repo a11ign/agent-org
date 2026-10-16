@@ -12,12 +12,12 @@ import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, chmodSync 
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { deliver as settlingDeliver, engineerRoles }
   from "../wake.ts";
 import { spareRoles, spareInstances, spareDecision, cycleVerdict, consecutiveClean, endFinishedSpares, spawnEnvironment,
-  readSpareCycles, sparePathsFrom, registerSpawn, spareWorktrees, SPARE_CLAIM_BOUND_MS, WORKERS_GH_CONFIG_DIR }
+  readSpareCycles, sparePathsFrom, registerSpawn, spareWorktrees, SPARE_CLAIM_BOUND_MS, WORKERS_GH_CONFIG_DIR, PRIMARY_CHECKOUT }
   from "../wake.ts";
 import { startedPanes, STUB_STARTED_PANE } from "./started-pane.ts";
 import { hostConfigPath } from "../host-config.ts"; // #850: the pane carries the host the gate resolved
@@ -360,7 +360,7 @@ test("#2323 THE WAKE ENTRY: a spawn is REGISTERED, so the teardown can tell a fi
   const dir = mkdtempSync(join(tmpdir(), "wake-spawn-reg-"));
   try {
     const ledger = join(dir, "wake-ledger");
-    mkdirSync(join(dir, "repos", "a11y-witness"), { recursive: true });   // the primary, where the claim's `git fetch` runs
+    mkdirSync(join(dir, "repos", basename(PRIMARY_CHECKOUT)), { recursive: true });   // the primary, where the claim's `git fetch` runs
     const herdrLog = join(dir, "herdr-calls");
     writeFileSync(join(dir, "herdr"), "#!/bin/sh\necho \"$*\" >> " + herdrLog + "\ncase \"$*\" in\n  *'workspace list') printf '%s' '{\"result\":{\"workspaces\":[]}}' ;;\n"
       + "  *'workspace create'*) printf '%s' '{\"result\":{\"root_pane\":{\"pane_id\":\"wB:p1\"},\"workspace\":{\"workspace_id\":\"wB\"}}}' ;;\n"
@@ -384,7 +384,7 @@ test("#2323 THE WAKE ENTRY: a spawn is REGISTERED, so the teardown can tell a fi
     assert.match(ran.stdout, /WOKE worker-4 <- engineers\/ready-row-unclaimed\/2131 \(STARTED sonnet\/high\)/, ran.stderr);
     // #2405: the claim's `git fetch` runs in the primary the flag moved, not the host's -- which a CI runner has not got
     // (`spawnSync git ENOENT`, 2026-09-24), and which this run would otherwise pass on by finding on a host that has.
-    assert.equal(readFileSync(fetchedIn, "utf8").trim(), join(dir, "repos", "a11y-witness"));
+    assert.equal(readFileSync(fetchedIn, "utf8").trim(), join(dir, "repos", basename(PRIMARY_CHECKOUT)));
     // #2405: THE WIRING -- `main` hands `deliver` the claimer, so the pane opens in the worktree the claim made.
     assert.match(readFileSync(herdrLog, "utf8"), new RegExp(`workspace create .*--cwd ${join(dir, "repos", "wt-2131")}( |$)`, "m"));
     const registry = JSON.parse(readFileSync(sparePathsFrom(ledger).registry, "utf8"));

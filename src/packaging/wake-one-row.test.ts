@@ -15,10 +15,10 @@ import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, chmodSync 
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { route, deliver, withSpareInstances, engineerRoles, engineerEligibility, spawnClaimer, spentSeen, isSpareRole,
   cycleVerdict, consecutiveClean, cyclesReport, endFinishedSpares, readSpareCycles, sparePathsFrom, registerSpawn,
-  settleAbsentInstance, drainInForce, spareInstances } from "../wake.ts";
+  settleAbsentInstance, drainInForce, spareInstances, PRIMARY_CHECKOUT } from "../wake.ts";
 import { startedPanes, STUB_STARTED_PANE } from "./started-pane.ts";
 
 const T0 = Date.UTC(2026, 8, 25, 0, 0, 0);
@@ -243,7 +243,7 @@ function tickWith(registry: Record<string, unknown> | null, listed: string) {
   const dir = mkdtempSync(join(tmpdir(), "wake-one-row-"));
   try {
     const ledger = join(dir, "wake-ledger");
-    mkdirSync(join(dir, "repos", "a11y-witness"), { recursive: true });
+    mkdirSync(join(dir, "repos", basename(PRIMARY_CHECKOUT)), { recursive: true });
     const seen = join(dir, "registry-at-claim");
     writeFileSync(join(dir, "herdr"), `#!/bin/sh\ncase "$*" in\n  *'workspace list') printf '%s' '{"result":{"workspaces":[${listed}]}}' ;;\n`
       + "  *'workspace create'*) printf '%s' '{\"result\":{\"root_pane\":{\"pane_id\":\"wB:p1\"},\"workspace\":{\"workspace_id\":\"wB\"}}}' ;;\n"
