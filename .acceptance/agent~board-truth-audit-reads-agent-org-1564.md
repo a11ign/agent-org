@@ -1,0 +1,7 @@
+The board-truth audit reads an all-closed epic's children through the ticket port scoped to each child's own repository, not the epic's. An epic in `a11ign/agent-org` whose children live in another repository (a11ign#4505's children, agent-org#483..#914) was UNREAD on every tick: the epic's port answers only for its own scope, so each child read came back `null`, and the bare `catch` turned the whole read into `null`. `outcome-closed-by-non-build-row` is now asked of those children.
+
+A child whose read still fails leaves the question UNREAD, and the unread entry now names the cause: the thrown message is recorded as `epicChildrenWhy`, and `askAll` names the question with it, for example `outcome-closed-by-non-build-row (a child of #900, a/c#902, was not returned by the ticket port)`. The org-health wording is unchanged.
+
+Tests: `src/board-truth-audit.test.ts`, the `#1564` block (3 tests: 1 positive control, 2 and 3 negative controls). Control 1 is an all-closed epic in `a/b` whose children are in `a/c`, with a fake `gh` that answers a child only for its own repository; it fails on the previous `src/board-truth-audit.ts` and passes now. Control 2 refuses one cross-repository child: the epic is still `null` and the unread entry names `a/c#902`. Control 3 is children all in the epic's own repository, which reads as before.
+
+Acceptance: `AGENT_ORG_HOST=~/repos/a11y-witness/.agent-org/host.json node --test src/board-truth-audit.test.ts`

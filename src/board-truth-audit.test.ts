@@ -734,21 +734,25 @@ test("#881 (5) an epic not asked is not judged, and a failed read is UNREAD, nev
   assert.deepEqual(failed.findings.filter((f) => f.question === CHILD_QUESTIONS.OUTCOME_CLOSED), []);
 });
 
-/** An item's node as the ticket port's item query answers it: its sub-issues are `subIssues`, and every other field the adapter reads is empty. */
-const itemNode881 = (item: any, subIssues: any[]) => ({
+/** An item's node as the ticket port's item query answers it: its sub-issues are `subIssues`, each in the repository `scopeOf` names (`a/b` when it names none), and every other field the adapter reads is empty. */
+const itemNode881 = (item: any, subIssues: any[], scopeOf: Record<number, string> = {}) => ({
   number: item.number, title: item.title, body: item.body, state: item.state, createdAt: "2026-10-01T00:00:00Z",
   labels: { nodes: [] }, projectItems: { nodes: [] }, parent: null, blockedBy: { nodes: [] }, closedByPullRequestsReferences: { nodes: [] }, timelineItems: { nodes: [] },
-  subIssues: { nodes: subIssues.map((c) => ({ number: c.number, repository: { nameWithOwner: "a/b" } })) },
+  subIssues: { nodes: subIssues.map((c) => ({ number: c.number, repository: { nameWithOwner: scopeOf[c.number] ?? "a/b" } })) },
 });
-/** A `gh` fake for the children read through the ticket port: EPIC_881's item answers its children as sub-issues, each child answers its own node, a comment answers its author, and anything else is the roadmap read. */
-const epicRun881 = (children: any[], authors: Record<string, string> = {}, asked: string[] = []) => (args: string[]) => {
+/** The value of one `gh` argument, such as `owner=a` (a11ign/agent-org#1564). */
+const argOf881 = (args: string[], name: string) => args.find((a) => a.startsWith(`${name}=`))?.slice(name.length + 1);
+/** A `gh` fake for the children read through the ticket port: EPIC_881's item answers its children as sub-issues, each child answers its own node only when it is asked of the repository it lives in (`scopeOf`, `a/b` when it names none) and is not `refused`, a comment answers its author, and anything else is the roadmap read. */
+const epicRun881 = (children: any[], authors: Record<string, string> = {}, asked: string[] = [], scopeOf: Record<number, string> = {}, refused: number[] = []) => (args: string[]) => {
   asked.push(args.join(" "));
   const query = String(args.find((a) => a.startsWith("query=")) ?? "");
-  const number = Number(args.find((a) => a.startsWith("number="))?.slice("number=".length));
+  const number = Number(argOf881(args, "number"));
+  const repo = `${argOf881(args, "owner")}/${argOf881(args, "name")}`;
   if (query.includes("subIssues(first: 50)")) {
-    if (number === EPIC_881.number) return JSON.stringify({ data: { repository: { issue: itemNode881(EPIC_881, children) } } });
+    if (number === EPIC_881.number) return JSON.stringify({ data: { repository: { issue: itemNode881(EPIC_881, children, scopeOf) } } });
     const child = children.find((c) => c.number === number);
-    return JSON.stringify({ data: { repository: { issue: child === undefined ? null : itemNode881(child, []) } } });
+    const answers = child !== undefined && !refused.includes(number) && repo === (scopeOf[number] ?? "a/b");
+    return JSON.stringify({ data: { repository: { issue: answers ? itemNode881(child, []) : null } } });
   }
   const comment = /^repos\/a\/b\/issues\/comments\/(\d+)$/.exec(args[1] ?? "");
   if (args[0] === "api" && comment) return `${authors[comment[1]] ?? ""}\n`;
@@ -783,4 +787,37 @@ test("#881 (7) the reader asks only an all-closed open epic, and a refused or cu
     return epicRun881([ruledSpike])(args);
   };
   assert.equal(readBoardFacts("a/b", { run: noAuthor, agents: () => ORG_SEATS, now: NOW, trackers: [HOME_TRACKER], openRows: [EPIC_881], waitFacts: { items: {} } }).epicChildren, null, "a ruling that cannot be read is UNREAD too");
+});
+
+// --- #1564: an epic's children are read in their own repository, and an UNREAD question names its cause ------------------------
+
+const boardOf1564 = (run: (args: string[]) => string) => readBoardFacts("a/b", { run, agents: () => ORG_SEATS, now: NOW, trackers: [HOME_TRACKER], openRows: [EPIC_881], waitFacts: { items: {} } });
+
+test("#1564 (1) POSITIVE CONTROL: an all-closed epic in a/b whose children are in a/c is read, and each child is asked of a/c", () => {
+  const asked: string[] = [];
+  const board = boardOf1564(epicRun881([SPIKE_881, DOCS_881], {}, asked, { 901: "a/c", 902: "a/c" }));
+  assert.ok(board.epicChildren !== null, "a child in another repository is read, not UNREAD");
+  assert.deepEqual(board.epicChildren?.byEpic[900].map((c) => c.number), [901, 902]);
+  assert.ok(asked.some((a) => a.includes("owner=a") && a.includes("name=c") && a.includes("number=901")), "the child is asked of its own repository");
+  const audit = boardTruthAudit(board);
+  assert.deepEqual(audit.findings.filter((f) => f.question === CHILD_QUESTIONS.OUTCOME_CLOSED).map((f) => f.field), ["`Chairman-ruling:` line on #901", "`Chairman-ruling:` line on #902"]);
+  assert.ok(!audit.unread.some((u) => u.startsWith(CHILD_QUESTIONS.OUTCOME_CLOSED)), "the question is asked, so it is not unread");
+});
+
+test("#1564 (2) NEGATIVE CONTROL: a child whose read is refused still leaves the epic UNREAD, and the question names that child", () => {
+  const board = boardOf1564(epicRun881([SPIKE_881, DOCS_881], {}, [], { 901: "a/c", 902: "a/c" }, [902]));
+  assert.equal(board.epicChildren, null);
+  assert.equal(board.epicChildrenWhy, "a child of #900, a/c#902, was not returned by the ticket port");
+  const audit = boardTruthAudit(board);
+  assert.ok(audit.unread.includes(`${CHILD_QUESTIONS.OUTCOME_CLOSED} (a child of #900, a/c#902, was not returned by the ticket port)`), audit.unread.join(" | "));
+  assert.deepEqual(audit.findings.filter((f) => f.question === CHILD_QUESTIONS.OUTCOME_CLOSED), [], "a refused read is never a clean reading");
+  assert.match(boardTruthTable(audit, DAY), /NOT READ, so not counted as agreeing: outcome-closed-by-non-build-row \(a child of #900, a\/c#902, was not returned by the ticket port\)/);
+});
+
+test("#1564 (3) NEGATIVE CONTROL: children all in the epic's own repository are read as before, and nothing is named", () => {
+  const asked: string[] = [];
+  const board = boardOf1564(epicRun881([SPIKE_881, DOCS_881], {}, asked));
+  assert.deepEqual(board.epicChildren?.byEpic[900].map((c) => c.number), [901, 902]);
+  assert.equal(board.epicChildrenWhy, undefined);
+  assert.ok(asked.some((a) => a.includes("owner=a") && a.includes("name=b") && a.includes("number=901")), "a child in a/b is asked of a/b");
 });
