@@ -6,12 +6,12 @@ The row's Region is `src/work-gate/tick.ts` and `src/work-gate/outside-acceptanc
 
 Measured: `AGENT_ORG_HOST=/home/agent/repos/a11y-witness/.agent-org/host.json node --test src/work-gate/outside-acceptance-shadow.test.ts src/acceptance-commands.test.ts src/lib/tree-wide-guard.test.ts` prints `ℹ tests 47`, `ℹ pass 47`, `ℹ fail 0`. `pnpm run typecheck` exits 0. Mutations on copies: removing the shadow call fails 6 tests; the verdict ignoring the flag fails `(1579 b)` and `(1579 vii)`; a guard shadow returning early (the pre-existing fault) fails `(1579 viii)` and `(1579 ix)`.
 
-Split out: done-when 3 (the first `outside-acceptance: SHADOW #n` line from the host's gate, quoted on a11ign#5613) is its own row, a11ign/agent-org#1646, because it needs the host and cannot be run from this worktree; this PR does not claim it. The Acceptance command as written runs in `~/repos/agent-org`, which is a different checkout without this change, so there the new file is absent and only the 25 `acceptance-commands` tests run.
+Split out: done-when 3 (the first `outside-acceptance: SHADOW #n` line from the host's gate, quoted on a11ign#5613) is its own row, a11ign/agent-org#1646, because it needs the host and cannot be run from this worktree; this PR does not claim it. The Acceptance command runs in this PR's worktree (`~/repos/wt-agent-org-1612`), not `~/repos/agent-org`. That is a deviation from the row's written command, disclosed here: the written command ran in the primary clone at `91da8e72`, which has no part of this change, so the new file was absent and `(1502 h)` failed on the old test (no hermetic seam). From the worktree the command prints `ℹ tests 35`, `ℹ pass 35`, `ℹ fail 0`.
 
 Acceptance:
 
 ```bash
-cd ~/repos/agent-org && AGENT_ORG_HOST=/home/agent/repos/a11y-witness/.agent-org/host.json node --test src/work-gate/outside-acceptance-shadow.test.ts src/acceptance-commands.test.ts
+cd ~/repos/wt-agent-org-1612 && AGENT_ORG_HOST=/home/agent/repos/a11y-witness/.agent-org/host.json node --test src/work-gate/outside-acceptance-shadow.test.ts src/acceptance-commands.test.ts
 ```
 
 Closes a11ign/agent-org#1612
