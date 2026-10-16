@@ -1,11 +1,11 @@
 // no-token: gh -- herdr, git, Linear and the clock are all injected; nothing is spawned
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { runStatus } from "./board-view.ts";
-import { countTokens, createPool, findFolderSession, findTranscript, herdrName, isStartDialog, parseOutcome, ticketDir, ticketFolder, worktreesIn } from "./pool.ts";
+import { batchDir, batchFolder, countTokens, createPool, findFolderSession, findTranscript, herdrName, isStartDialog, parseOutcome, ticketDir, ticketFolder, worktreesIn } from "./pool.ts";
 import { approve, emptyQueue, enqueue, finish, retry, setPaused, type Queue } from "./queue.ts";
 import { parseTicketSettings } from "./settings.ts";
 import type { Ticket, TicketSource } from "./source.ts";
@@ -35,11 +35,12 @@ function herdr(status: Map<string, string>, screen: { text: string } = { text: "
 
 /** `parents` gives a ticket its parent's key. A ticket without one is shaped as a run queued before tickets carried a parent. */
 function setup(max = 2, keys = ["NBF-1", "NBF-2", "NBF-3"], tickets: Record<string, unknown> = {},
-  { source: tracker = source, parents = {}, planFirst = [], pluginRecord }: { source?: TicketSource; parents?: Record<string, string>; planFirst?: string[]; pluginRecord?: string } = {}) {
+  { source: tracker = source, parents = {}, planFirst = [], batch = false, pluginRecord }:
+    { source?: TicketSource; parents?: Record<string, string>; planFirst?: string[]; batch?: boolean; pluginRecord?: string } = {}) {
   const root = tmpDir("ticket-pool-");
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox", "nbl-ui-platform-libs": "/repos/libs" }, stateDir: join(root, "state"), tickets });
   const queued = keys.map((key) => (key in parents ? { ...ticket(key), parent: parents[key] } : ticket(key)));
-  const plan = planFirst.length === 0 ? null : { keys: new Set(planFirst), choice: { model: "opus", effort: "max" } };
+  const plan = planFirst.length === 0 ? null : { keys: new Set(planFirst), choice: { model: "opus", effort: "max" }, batch };
   let queue: Queue = setPaused(enqueue(emptyQueue(max), queued, { model: "sonnet", effort: "high" }, 0, plan), false);
   const store = { get: () => queue, set: (next: Queue) => { queue = next; } };
   const status = new Map<string, string>();
@@ -885,4 +886,301 @@ test("a tracker that throws before it answers the move cannot stop the run, and 
   const { pool, entry } = setup(1, ["NBF-1"], { workingState: "In Progress" });
   await pool.tick();
   assert.equal(entry("NBF-1").phase, "running", "a source without the move starts the run as before");
+});
+
+const BATCH_PLANNER = { plan: "-plan-[^/]*\\.md$", planner: { run: "Run the planner with: unattended: plan {keys} into {dir}", state: "Planned" } };
+/** The batch `setup` queues its tickets in: `enqueue`'s first batch at the time 0. */
+const BATCH = "b0-0";
+/** A tracker that takes plans and records the blockers the board adds, reading them back as Linear would. */
+function batchTracker(base: TicketSource = source) {
+  const attached: string[] = [];
+  const relations = new Map<string, string[]>();
+  const tracker: TicketSource = {
+    ...base,
+    attachPlan: async (key) => { attached.push(key); return null; },
+    addBlockers: async (key, blockerKeys) => { relations.set(key, [...(relations.get(key) ?? []), ...blockerKeys]); },
+    blockers: async (keys) => new Map(keys.map((key) => [key, (relations.get(key) ?? []).map((blocker) => ({ key: blocker, state: "unstarted", status: "Planned", pulls: {} }))])),
+  };
+  return { tracker, attached, relations };
+}
+/** Write a file, making its folder. */
+const put = (path: string, text: string) => {
+  mkdirSync(join(path, ".."), { recursive: true });
+  writeFileSync(path, text);
+};
+
+test("the tickets queued together are planned by one run in one slot: each shows Planning on the run's workspace and pane, and one agent starts", async () => {
+  const { tracker } = batchTracker({ ...source, download: async (t, dir) => [join(dir, `attachment-1-${t.key}.png`)] });
+  const { pool, h, entry, settings, store } = setup(2, ["NBF-1", "NBF-2", "NBF-3", "NBF-4"], BATCH_PLANNER, { source: tracker, planFirst: ["NBF-1", "NBF-2", "NBF-3"], batch: true });
+  await pool.tick();
+  for (const key of ["NBF-1", "NBF-2", "NBF-3"]) {
+    assert.deepEqual([entry(key).phase, entry(key).workspace, entry(key).pane, runStatus(entry(key), store.get().entries)], ["running", "w1", "w1:p1", "planning"], key);
+  }
+  assert.deepEqual([entry("NBF-4").phase, entry("NBF-4").workspace], ["running", "w2"], "the batch held one of the two slots, so NBF-4 took the other");
+  const starts = h.calls.filter((args) => args.includes("start"));
+  assert.equal(starts.length, 2);
+  assert.ok(starts[0].includes(herdrName(BATCH)), "the batch's run is named after the batch, not one of its tickets");
+  const dir = batchDir(settings, BATCH);
+  const brief = readFileSync(join(dir, "brief.md"), "utf8");
+  assert.match(brief, /^# Plan 3 tickets together: NBF-1, NBF-2, NBF-3\n/);
+  assert.ok(brief.includes(`Run the planner with: unattended: plan NBF-1, NBF-2, NBF-3 into ${join(dir, "plan")}`));
+  assert.ok(brief.includes(join(ticketDir(settings, "NBF-2"), "attachment-1-NBF-2.png")), "each ticket's files are downloaded into its own folder, as a run of its own has them");
+  const tail = starts[0].slice(starts[0].indexOf("--") + 1);
+  assert.equal(tail[0], `Read ${dir}/brief.md and follow it.`);
+  assert.deepEqual([tail[tail.indexOf("--model") + 1], tail[tail.indexOf("--effort") + 1]], ["opus", "max"], "the planning model and effort");
+  const written = JSON.parse(readFileSync(join(batchFolder(settings, BATCH), ".claude", "settings.local.json"), "utf8"));
+  assert.ok(written.hooks.Stop[0].hooks[0].args.includes(dir), "the stop hook reads the run's outcome file, in the batch's folder");
+  const deny = JSON.parse(readFileSync(join(dir, "deny.json"), "utf8")) as { pattern: string }[];
+  assert.ok(deny.some(({ pattern }) => new RegExp(pattern).test("git commit -m plan")), "the planning refusals hold for a batch too");
+  const create = h.calls.find((args) => args.includes("create"))!;
+  assert.equal(create.some((arg) => arg.startsWith("AGENT_ORG_TICKET=")), false, "a batch's run has no one ticket to make a worktree for");
+});
+
+test("a batch's planned outcome attaches each ticket's plan, hands back the one it asked about and the one it wrote nothing for, and records the order as blockers", async () => {
+  const { tracker, attached, relations } = batchTracker();
+  const keys = ["NBF-1", "NBF-2", "NBF-3", "NBF-4", "NBF-5"];
+  const { pool, h, status, entry, settings, store } = setup(1, keys, BATCH_PLANNER, { source: tracker, planFirst: keys, batch: true });
+  await pool.tick();
+  const plan = join(batchDir(settings, BATCH), "plan");
+  put(join(plan, "NBF-1", "NBF-1-0001-plan-libs.md"), "# Libs\n");
+  put(join(plan, "NBF-2", "NBF-2-0001-plan-netbox.md"), "# Netbox\n");
+  put(join(plan, "NBF-3", "QUESTION.md"), `\nWhich of the two layouts does the design mean? ${"x".repeat(600)}`);
+  mkdirSync(join(plan, "NBF-4"));
+  put(join(plan, "order.json"), JSON.stringify({ "NBF-1": { repo: "nbl-ui-platform-libs", after: [] }, "NBF-2": { repo: "nbl-ui-netbox", after: ["NBF-1"] },
+    "NBF-3": { repo: null, after: [] }, "NBF-4": { repo: null, after: [] } }));
+  writeFileSync(join(batchDir(settings, BATCH), "outcome.json"), JSON.stringify({ kind: "planned" }));
+  status.set(herdrName(BATCH), "idle");
+  await pool.tick();
+  await settled();
+  assert.deepEqual(attached, ["NBF-1", "NBF-2"]);
+  assert.deepEqual([...relations], [["NBF-2", ["NBF-1"]]], "NBF-1 blocks NBF-2, as the order said");
+  assert.ok(h.calls.some((args) => args.includes("close") && args.includes("w1")), "the run's workspace is closed");
+  const asked = entry("NBF-3").outcome;
+  assert.equal(asked?.kind, "needs-human");
+  const reason = asked?.kind === "needs-human" ? asked.reason : "";
+  assert.ok(reason.startsWith("the planner needs a person: Which of the two layouts does the design mean? x"), reason);
+  assert.equal(reason.length, "the planner needs a person: ".length + 500, "the question's first 500 characters");
+  for (const key of ["NBF-4", "NBF-5"]) {
+    const empty = entry(key).outcome;
+    assert.match(empty?.kind === "needs-human" ? empty.reason : "", new RegExp(`the planning run wrote nothing for ${key}: no plan and no QUESTION\\.md`), "an empty folder, or none");
+  }
+  assert.deepEqual(["NBF-1", "NBF-2"].map((key) => [entry(key).phase, entry(key).plan, entry(key).planned, entry(key).plannedRepo, entry(key).batch]),
+    [["queued", undefined, true, "nbl-ui-platform-libs", undefined], ["queued", undefined, true, "nbl-ui-netbox", undefined]]);
+  await pool.tick();
+  assert.equal(entry("NBF-1").phase, "running", "the next pass reads the blockers again and starts NBF-1");
+  assert.deepEqual([entry("NBF-2").blockers?.map((b) => b.key), runStatus(entry("NBF-2"), store.get().entries)], [["NBF-1"], "blocked"], "NBF-2 waits on NBF-1, as Linear now says");
+});
+
+test("an order.json that fails its checks records no blockers and is logged, and the plans are still attached", async () => {
+  const { tracker, attached, relations } = batchTracker();
+  const written = await captureStderr(async () => {
+    const { pool, status, entry, settings } = setup(1, ["NBF-1", "NBF-2"], BATCH_PLANNER, { source: tracker, planFirst: ["NBF-1", "NBF-2"], batch: true });
+    await pool.tick();
+    const plan = join(batchDir(settings, BATCH), "plan");
+    put(join(plan, "NBF-1", "NBF-1-0001-plan-a.md"), "# A\n");
+    put(join(plan, "NBF-2", "NBF-2-0001-plan-b.md"), "# B\n");
+    put(join(plan, "order.json"), JSON.stringify({ "NBF-1": { repo: "a", after: ["NBF-2"] }, "NBF-2": { repo: "b", after: ["NBF-1"] } }));
+    writeFileSync(join(batchDir(settings, BATCH), "outcome.json"), JSON.stringify({ kind: "planned" }));
+    status.set(herdrName(BATCH), "idle");
+    await pool.tick();
+    await settled();
+    assert.deepEqual(["NBF-1", "NBF-2"].map((key) => [entry(key).planned, entry(key).plannedRepo]), [[true, null], [true, null]]);
+  });
+  assert.deepEqual([attached, [...relations]], [["NBF-1", "NBF-2"], []]);
+  assert.ok(written.some((line) => /order\.json was not used, so no order was recorded: its order goes round in a cycle: NBF-1 -> NBF-2 -> NBF-1/.test(line)), written.join(""));
+});
+
+test("a batch's run that hands back hands back every ticket on its one workspace, which a person answers once and closes once", async () => {
+  const { tracker } = batchTracker();
+  const { pool, status, entry, settings, h } = setup(1, ["NBF-1", "NBF-2"], BATCH_PLANNER, { source: tracker, planFirst: ["NBF-1", "NBF-2"], batch: true });
+  await pool.tick();
+  const dir = batchDir(settings, BATCH);
+  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "needs-human", reason: "which design?" }));
+  status.set(herdrName(BATCH), "idle");
+  await pool.tick();
+  for (const key of ["NBF-1", "NBF-2"]) assert.deepEqual([entry(key).outcome, entry(key).workspace], [{ kind: "needs-human", reason: "which design?" }, "w1"], key);
+  status.set(herdrName(BATCH), "working");
+  await pool.tick();
+  assert.deepEqual(["NBF-1", "NBF-2"].map((key) => entry(key).phase), ["running", "running"], "answered once, both are live again");
+  assert.ok(existsSync(join(dir, "outcome.prev.json")), "the run's own outcome is moved aside");
+  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "needs-human", reason: "still unsure" }));
+  status.set(herdrName(BATCH), "idle");
+  await pool.tick();
+  pool.close("NBF-2");
+  assert.deepEqual(["NBF-1", "NBF-2"].map((key) => [entry(key).workspace, entry(key).outcome?.kind]), [[undefined, "needs-human"], [undefined, "needs-human"]]);
+  assert.equal(h.calls.filter((args) => args.includes("close")).length, 1, "the one workspace is closed once");
+});
+
+test("only a batch's run is watched: its tickets without an agent are never crashed, and every one crashes when the run's workspace is gone", async () => {
+  const { tracker } = batchTracker();
+  const { pool, status, entry } = setup(1, ["NBF-1", "NBF-2"], BATCH_PLANNER, { source: tracker, planFirst: ["NBF-1", "NBF-2"], batch: true });
+  await pool.tick();
+  status.set(herdrName(BATCH), "working");
+  for (let i = 0; i < 3; i += 1) await pool.tick();
+  pool.reconcile();
+  assert.deepEqual(["NBF-1", "NBF-2"].map((key) => entry(key).phase), ["running", "running"], "no listing names NBF-2's own agent, and it lives on");
+  status.delete(herdrName(BATCH));
+  await pool.tick();
+  assert.deepEqual(["NBF-1", "NBF-2"].map((key) => entry(key).phase), ["running", "running"], "one listing without it is one miss, counted once for the run");
+  await pool.tick();
+  assert.deepEqual(["NBF-1", "NBF-2"].map((key) => entry(key).outcome), Array(2).fill({ kind: "crashed", reason: "its herdr workspace is gone" }));
+  assert.deepEqual([entry("NBF-1").tokens, entry("NBF-2").tokens], [{ input: 0, output: 0 }, undefined], "the run's tokens are counted once, on the ticket it was watched through");
+});
+
+test("stopping any ticket of a batch stops its whole run, and a retried ticket is planned again on its own", async () => {
+  const { tracker } = batchTracker();
+  const { pool, h, entry, settings, store } = setup(1, ["NBF-1", "NBF-2", "NBF-3"], BATCH_PLANNER, { source: tracker, planFirst: ["NBF-1", "NBF-2", "NBF-3"], batch: true });
+  await pool.tick();
+  pool.stop("NBF-2");
+  assert.deepEqual(["NBF-1", "NBF-2", "NBF-3"].map((key) => entry(key).outcome?.kind), ["stopped", "stopped", "stopped"]);
+  assert.equal(h.calls.filter((args) => args.includes("close")).length, 1, "their one workspace is closed once");
+  store.set(retry(store.get(), "NBF-2", 200));
+  await pool.tick();
+  assert.deepEqual([entry("NBF-2").phase, entry("NBF-2").batch, entry("NBF-2").workspace], ["running", undefined, "w2"]);
+  assert.ok(h.calls.filter((args) => args.includes("start")).at(-1)!.includes(herdrName("NBF-2")), "its own run, named after it");
+  assert.match(readFileSync(join(ticketDir(settings, "NBF-2"), "brief.md"), "utf8"), /^# Plan NBF-2: NBF-2\n/);
+});
+
+test("a machine whose planner names only {key} plans each ticket of a batch alone, and a batch left with one ticket to plan plans it alone", async () => {
+  const { pool, h, entry } = setup(3, ["NBF-1", "NBF-2"], PLANNER, { source: batchTracker().tracker, planFirst: ["NBF-1", "NBF-2"], batch: true });
+  await pool.tick();
+  assert.deepEqual(["NBF-1", "NBF-2"].map((key) => [entry(key).workspace, entry(key).batch]), [["w1", undefined], ["w2", undefined]]);
+  assert.ok(h.calls.some((args) => args.includes("start") && args.includes(herdrName("NBF-2"))));
+  const reached: TicketSource = { ...batchTracker().tracker, read: async (key) => (key === "NBF-1" ? { ...ticket(key), uploads: ["NBF-1-0001-plan-x.md"] } : null) };
+  const second = setup(3, ["NBF-1", "NBF-2"], BATCH_PLANNER, { source: reached, planFirst: ["NBF-1", "NBF-2"], batch: true });
+  await second.pool.tick();
+  assert.deepEqual([second.entry("NBF-1").plan, second.entry("NBF-1").batch], [undefined, undefined], "NBF-1's plan reached it, so it is worked from that");
+  assert.deepEqual([second.entry("NBF-2").batch, second.entry("NBF-2").phase], [undefined, "running"]);
+  assert.ok(second.h.calls.some((args) => args.includes("start") && args.includes(herdrName("NBF-2"))), "NBF-2 is planned alone, in its own run");
+});
+
+test("a batch's run is answered at its own folder's trust dialog, and a QUESTION.md that is a link is not read", async () => {
+  const { tracker } = batchTracker();
+  const { pool, status, entry, settings, h, screen } = setup(1, ["NBF-1", "NBF-2"], BATCH_PLANNER, { source: tracker, planFirst: ["NBF-1", "NBF-2"], batch: true });
+  await pool.tick();
+  status.set(herdrName(BATCH), "blocked");
+  screen.text = TRUST(batchFolder(settings, BATCH));
+  await pool.tick();
+  assert.deepEqual(h.calls.find((args) => args.includes("send-keys")), ["--session", "tickets", "agent", "send-keys", herdrName(BATCH), "down", "enter"]);
+  const plan = join(batchDir(settings, BATCH), "plan");
+  const secret = join(settings.stateDir, "secret.txt");
+  put(secret, "lin_api_secret");
+  mkdirSync(join(plan, "NBF-1"), { recursive: true });
+  symlinkSync(secret, join(plan, "NBF-1", "QUESTION.md"));
+  put(join(plan, "NBF-2", "NBF-2-0001-plan-b.md"), "# B\n");
+  writeFileSync(join(batchDir(settings, BATCH), "outcome.json"), JSON.stringify({ kind: "planned" }));
+  status.set(herdrName(BATCH), "idle");
+  await pool.tick();
+  await settled();
+  const outcome = entry("NBF-1").outcome;
+  const reason = outcome?.kind === "needs-human" ? outcome.reason : "";
+  assert.match(reason, /QUESTION\.md, which is not a plain file/);
+  assert.equal(reason.includes("lin_api_secret"), false);
+  assert.equal(entry("NBF-2").planned, true, "one ticket's question does not stop the others");
+});
+
+test("a batch's ticket queued again while a pass reads blockers waits for the next pass's read, so it never starts before the order it was just given", async () => {
+  const { tracker, relations } = batchTracker();
+  let recorded: () => void = () => {};
+  const orderRecorded = new Promise<void>((resolve) => { recorded = resolve; });
+  const racing: TicketSource = {
+    ...tracker,
+    addBlockers: async (key, keys) => { await tracker.addBlockers!(key, keys); recorded(); },
+    // The read this pass makes for NBF-3 answers only once the batch's plans are attached and its tickets queued again.
+    blockers: async (keys) => {
+      if (keys.includes("NBF-3")) {
+        await orderRecorded;
+        await settled();
+      }
+      return tracker.blockers!(keys);
+    },
+  };
+  const { pool, status, entry, settings, store } = setup(3, ["NBF-1", "NBF-2"], BATCH_PLANNER, { source: racing, planFirst: ["NBF-1", "NBF-2"], batch: true });
+  await pool.tick();
+  const plan = join(batchDir(settings, BATCH), "plan");
+  put(join(plan, "NBF-1", "NBF-1-0001-plan-a.md"), "# A\n");
+  put(join(plan, "NBF-2", "NBF-2-0001-plan-b.md"), "# B\n");
+  put(join(plan, "order.json"), JSON.stringify({ "NBF-1": { repo: "a", after: [] }, "NBF-2": { repo: "b", after: ["NBF-1"] } }));
+  writeFileSync(join(batchDir(settings, BATCH), "outcome.json"), JSON.stringify({ kind: "planned" }));
+  status.set(herdrName(BATCH), "idle");
+  store.set(enqueue(store.get(), [ticket("NBF-3")], { model: "sonnet", effort: "high" }, 50));
+  await pool.tick();
+  assert.deepEqual([...relations], [["NBF-2", ["NBF-1"]]]);
+  assert.deepEqual(["NBF-1", "NBF-2", "NBF-3"].map((key) => entry(key).phase), ["queued", "queued", "running"], "only the ticket whose blockers this pass read starts");
+  await pool.tick();
+  assert.deepEqual([entry("NBF-1").phase, runStatus(entry("NBF-2"), store.get().entries)], ["running", "blocked"]);
+});
+
+test("a batch whose start fails crashes every ticket of it, and a stop while it starts stops them all and closes the workspace its start raced", async () => {
+  const failing = { ...batchTracker().tracker, download: async (t: Ticket) => { if (t.key === "NBF-2") throw new Error("Linear answered 500\nmore"); return []; } };
+  const broken = setup(1, ["NBF-1", "NBF-2"], BATCH_PLANNER, { source: failing, planFirst: ["NBF-1", "NBF-2"], batch: true });
+  await broken.pool.tick();
+  assert.deepEqual(["NBF-1", "NBF-2"].map((key) => broken.entry(key).outcome), Array(2).fill({ kind: "crashed", reason: "Linear answered 500" }));
+  const root = tmpDir("ticket-batch-race-");
+  const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox" }, stateDir: root, tickets: BATCH_PLANNER });
+  let queue: Queue = setPaused(enqueue(emptyQueue(1), [ticket("NBF-1"), ticket("NBF-2")], { model: "sonnet", effort: "high" }, 0,
+    { keys: new Set(["NBF-1", "NBF-2"]), choice: { model: "opus", effort: "max" }, batch: true }), false);
+  const store = { get: () => queue, set: (next: Queue) => { queue = next; } };
+  const h = herdr(new Map());
+  let pool: ReturnType<typeof createPool>;
+  // The person presses Stop on the second ticket while the batch's Claude is starting.
+  const herdrAsync = async (args: string[]) => { pool.stop("NBF-2"); return h.run(args); };
+  pool = createPool(store, { settings, source: batchTracker().tracker, hook: { node: "n", bin: "b" }, herdr: h.run, herdrAsync, wait: async () => {}, load: () => ({ load: 0, cores: 1 }),
+    pluginRecord: join(root, "none.json") });
+  await pool.tick();
+  assert.deepEqual(queue.entries.map((e) => e.outcome), [{ kind: "stopped" }, { kind: "stopped" }]);
+  assert.ok(h.calls.some((args) => args.includes("close") && args.includes("w1")), "the raced workspace is closed");
+});
+
+/** Run a batch of NBF-1 and NBF-2 to a planned outcome, after `write` has filled its plan folder. Returns the setup and the board's log. */
+async function plannedBatch(tracker: TicketSource, write: (plan: string) => void) {
+  let ran: ReturnType<typeof setup> | undefined;
+  const written = await captureStderr(async () => {
+    ran = setup(1, ["NBF-1", "NBF-2"], BATCH_PLANNER, { source: tracker, planFirst: ["NBF-1", "NBF-2"], batch: true });
+    await ran.pool.tick();
+    write(join(batchDir(ran.settings, BATCH), "plan"));
+    writeFileSync(join(batchDir(ran.settings, BATCH), "outcome.json"), JSON.stringify({ kind: "planned" }));
+    ran.status.set(herdrName(BATCH), "idle");
+    await ran.pool.tick();
+    await settled();
+  });
+  return { ...ran!, written };
+}
+const ORDERED = (plan: string) => {
+  put(join(plan, "NBF-1", "NBF-1-0001-plan-a.md"), "# A\n");
+  put(join(plan, "NBF-2", "NBF-2-0001-plan-b.md"), "# B\n");
+  put(join(plan, "order.json"), JSON.stringify({ "NBF-1": { repo: "a", after: [] }, "NBF-2": { repo: "b", after: ["NBF-1"] } }));
+};
+
+test("a relation the tracker refuses is logged and the plans stand, and a tracker that cannot record an order is not asked", async () => {
+  const refusing = { ...batchTracker().tracker, addBlockers: async () => { throw new Error("Linear answered 400"); } };
+  const refused = await plannedBatch(refusing, ORDERED);
+  assert.ok(refused.written.includes("ticket:serve: NBF-1 could not be recorded as blocking NBF-2: Linear answered 400\n"), refused.written.join(""));
+  assert.deepEqual(["NBF-1", "NBF-2"].map((key) => [refused.entry(key).planned, refused.entry(key).plannedRepo]), [[true, "a"], [true, "b"]]);
+  const { addBlockers: _none, ...plain } = batchTracker().tracker;
+  const unordered = await plannedBatch(plain, ORDERED);
+  assert.deepEqual(["NBF-1", "NBF-2"].map((key) => unordered.entry(key).planned), [true, true]);
+});
+
+test("a ticket's folder that is a link is not read, and a folder the board cannot read hands every ticket of the batch back", async () => {
+  const { tracker, attached } = batchTracker();
+  const linked = await plannedBatch(tracker, (plan) => {
+    const elsewhere = join(plan, "..", "..", "elsewhere");
+    put(join(elsewhere, "NBF-1-0001-plan-secret.md"), "lin_api_secret");
+    mkdirSync(plan, { recursive: true });
+    symlinkSync(elsewhere, join(plan, "NBF-1"));
+    put(join(plan, "NBF-2", "NBF-2-0001-plan-b.md"), "# B\n");
+  });
+  const outcome = linked.entry("NBF-1").outcome;
+  assert.match(outcome?.kind === "needs-human" ? outcome.reason : "", /NBF-1, which is not a plain folder/);
+  assert.deepEqual(attached, ["NBF-2"], "nothing behind the link is uploaded");
+  const locked = await plannedBatch(batchTracker().tracker, (plan) => {
+    put(join(plan, "NBF-1", "NBF-1-0001-plan-a.md"), "# A\n");
+    chmodSync(join(plan, "NBF-1"), 0o000);
+  });
+  chmodSync(join(batchDir(locked.settings, BATCH), "plan", "NBF-1"), 0o755);
+  for (const key of ["NBF-1", "NBF-2"]) {
+    const ended = locked.entry(key).outcome;
+    assert.match(ended?.kind === "needs-human" ? ended.reason : "", /^the plans could not be attached \(EACCES/, key);
+  }
 });

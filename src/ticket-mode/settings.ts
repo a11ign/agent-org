@@ -61,7 +61,10 @@ export type TicketSettings = Readonly<{
 
 /** What a planning run is told, and where its plan leaves the ticket. */
 export type Planner = Readonly<{
-  /** The planning worker's instruction, with `{key}` and `{dir}` filled in per run: the ticket, and the folder its plan files go in. */
+  /**
+   * The planning worker's instruction, with `{key}` or `{keys}`, and `{dir}`, filled in per run: the tickets it plans, and the folder their plan
+   * files go in. One that names `{keys}` plans the tickets queued together in one run: see {@link plansInBatches}.
+   */
   run: string;
   /** The tracker state a ticket moves to once its plan is attached, if it has not started, or null to leave its state alone. */
   state: string | null;
@@ -130,12 +133,15 @@ function planPattern(value: unknown): string | null {
   return value;
 }
 
-const PLANNER_SHAPE = "must be { \"run\": \"<the planning worker's instruction, naming {key} and {dir}>\", \"state\": \"<optional: the state a planned ticket moves to>\" }";
+const PLANNER_SHAPE = "must be { \"run\": \"<the planning worker's instruction, naming {key} or {keys}, and {dir}>\", \"state\": \"<optional: the state a planned ticket moves to>\" }";
+
+/** Whether the planner plans the tickets queued together in one run: its instruction names `{keys}`. One that names only `{key}` plans each alone. */
+export const plansInBatches = (planner: Planner | null): boolean => planner?.run.includes("{keys}") === true;
 
 /** A planner needs the plan pattern, which is how the board knows which tickets already have a plan. */
 function plannerOf(value: unknown, plan: string | null): Planner | null {
   if (value === undefined) return null;
-  if (!isObject(value) || typeof value.run !== "string" || !value.run.includes("{key}") || !value.run.includes("{dir}")) {
+  if (!isObject(value) || typeof value.run !== "string" || !/\{keys?\}/.test(value.run) || !value.run.includes("{dir}")) {
     throw new TicketSettingsRefusal("tickets.planner", PLANNER_SHAPE);
   }
   const state = stateName(value.state, "tickets.planner.state");

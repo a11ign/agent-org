@@ -42,6 +42,14 @@ export type Entry = Readonly<{
   plan?: RunChoice;
   /** Its plan was written by a planning run, which decided for the person: the pull request says what it decided. */
   planned?: boolean;
+  /**
+   * The batch it is planned in: the tickets one press of Queue planned first, {@link PLAN_BATCH_MAX} at most, which one planning run plans
+   * together. While a batch's run is live or parked, every ticket in it holds the run's workspace and pane. Dropped once its plan is attached,
+   * on a retry, and when it starts without the rest of its batch.
+   */
+  batch?: string;
+  /** The repository its batch's planner said its work lands in, or null when it named none. Unset for a ticket planned alone. */
+  plannedRepo?: string | null;
   phase: Phase;
   queuedAt: number;
   startedAt?: number;
@@ -86,15 +94,33 @@ function replace(queue: Queue, key: string, change: (entry: Entry) => Entry): Qu
 
 const find = (queue: Queue, key: string): Entry | undefined => queue.entries.find((entry) => entry.ticket.key === key);
 
+/** The most tickets one planning run plans. A larger batch is split into runs of this many, in queue order. */
+export const PLAN_BATCH_MAX = 8;
+
+/** Which tickets one press of Queue plans first, and on what. `batch` plans them together, {@link PLAN_BATCH_MAX} to a run. */
+export type PlanFirst = Readonly<{ keys: ReadonlySet<string>; choice: RunChoice; batch?: boolean }>;
+
 /**
  * Add each ticket not already on the queue, after the last entry. A ticket already there is left as it is. Each ticket `planFirst` names is
- * planned, on its model and effort, before it is worked.
+ * planned, on its model and effort, before it is worked. With `planFirst.batch`, the ones added are batched in runs of up to
+ * {@link PLAN_BATCH_MAX}, in queue order, and a run of one is no batch.
  */
-export function enqueue(queue: Queue, tickets: readonly Ticket[], choice: RunChoice, now: number,
-  planFirst: Readonly<{ keys: ReadonlySet<string>; choice: RunChoice }> | null = null): Queue {
+export function enqueue(queue: Queue, tickets: readonly Ticket[], choice: RunChoice, now: number, planFirst: PlanFirst | null = null): Queue {
   const fresh = tickets.filter((ticket) => find(queue, ticket.key) === undefined);
+  const planned = fresh.filter((ticket) => planFirst?.keys.has(ticket.key)).map((ticket) => ticket.key);
+  const batches = new Map<string, string>();
+  for (let start = 0; planFirst?.batch === true && start < planned.length; start += PLAN_BATCH_MAX) {
+    const run = planned.slice(start, start + PLAN_BATCH_MAX);
+    if (run.length > 1) for (const key of run) batches.set(key, `b${now}-${start / PLAN_BATCH_MAX}`);
+  }
   const plan = (ticket: Ticket) => (planFirst?.keys.has(ticket.key) ? { plan: planFirst.choice } : {});
-  return { ...queue, entries: [...queue.entries, ...fresh.map((ticket): Entry => ({ ticket, repos: [], ...choice, ...plan(ticket), phase: "queued", queuedAt: now }))] };
+  const batch = (ticket: Ticket) => (batches.has(ticket.key) ? { batch: batches.get(ticket.key) } : {});
+  return { ...queue, entries: [...queue.entries, ...fresh.map((ticket): Entry => ({ ticket, repos: [], ...choice, ...plan(ticket), ...batch(ticket), phase: "queued", queuedAt: now }))] };
+}
+
+/** The ticket is planned on its own, without the rest of its batch. */
+export function leaveBatch(queue: Queue, key: string): Queue {
+  return replace(queue, key, ({ batch: _left, ...entry }) => entry);
 }
 
 /** Change a queued entry's model or effort. An entry that has started keeps what it started with. */
@@ -116,7 +142,7 @@ export function retry(queue: Queue, key: string, now: number): Queue {
   if (entry === undefined || entry.phase !== "finished" || isResult(entry) || isParked(entry)) return queue;
   const { ticket, repos, model, effort, plan, planned, session, review } = entry;
   // A review run that failed is retried as a review run, resuming the same worker, so it does not start the ticket over. Any other run starts
-  // a fresh worker, whose session replaces this one.
+  // a fresh worker, whose session replaces this one. A ticket of a batch is planned again on its own.
   const retried: Entry = { ticket, repos, model, effort, ...(plan ? { plan } : {}), ...(planned ? { planned } : {}),
     ...(review ? { review, ...(session ? { session } : {}) } : {}), phase: "queued", queuedAt: now };
   return { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== key), retried] };
@@ -203,6 +229,14 @@ export function planDone(queue: Queue, key: string, unattended = true): Queue {
     ({ ticket, repos, model, effort, ...(unattended ? { planned: true } : {}), phase: "queued", queuedAt, ...(blockers ? { blockers } : {}) }));
 }
 
+/**
+ * A ticket planned in a batch has its plan, as {@link planDone}, with the repository its planner said its work lands in. Its blockers are read
+ * again before it starts, because the board has just written its batch's order to the tracker.
+ */
+export function batchPlanDone(queue: Queue, key: string, repo: string | null): Queue {
+  return replace(planDone(queue, key), key, ({ blockers: _stale, ...entry }) => ({ ...entry, plannedRepo: repo }));
+}
+
 /** A person answered a parked run's agent, which is working again: the run is live once more, and its old outcome and tracker state are dropped. */
 export function markResumed(queue: Queue, key: string): Queue {
   return replace(queue, key, (entry) => (isParked(entry)
@@ -255,13 +289,22 @@ export function recordTrackerStates(queue: Queue, states: ReadonlyMap<string, st
 /**
  * The queued entries to start now, in queue order: none while the queue is paused or the host is loaded past its cores (`wake.ts`'s `hostLoadRefusal` rule, where
  * exactly equal does not refuse), and otherwise as many as the free slots allow. An entry still waiting on a blocker is passed over, and holds
- * no slot.
+ * no slot. A batch is one run, so its tickets take one slot between them, live or starting.
  */
 export function nextStarts(queue: Queue, load: number, cores: number): Entry[] {
   if (queue.paused || load > cores) return [];
-  const free = queue.max - queue.entries.filter(isLive).length;
-  return queue.entries.filter((entry) => entry.phase === "queued" && waitsOn(entry, queue.entries).length === 0).slice(0, Math.max(0, free));
+  const free = queue.max - new Set(queue.entries.filter(isLive).map(runOf)).size;
+  const runs = new Set<string>();
+  return queue.entries.filter((entry) => {
+    if (entry.phase !== "queued" || waitsOn(entry, queue.entries).length > 0) return false;
+    if (!runs.has(runOf(entry)) && runs.size >= free) return false;
+    runs.add(runOf(entry));
+    return true;
+  });
 }
+
+/** The run an entry starts in, for counting slots: its batch's, which every ticket in the batch shares, or else its own. */
+const runOf = (entry: Entry): string => entry.batch ?? entry.ticket.key;
 
 export function emptyQueue(max: number): Queue {
   return { entries: [], max, paused: true };

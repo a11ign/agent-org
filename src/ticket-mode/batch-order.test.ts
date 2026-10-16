@@ -1,0 +1,38 @@
+// no-token: gh -- pure parsing of a file's text
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { parseOrder } from "./batch-order.ts";
+
+const batch = ["NBF-1", "NBF-2", "NBF-3"];
+const refusalOf = (value: unknown): string => {
+  const read = parseOrder(typeof value === "string" ? value : JSON.stringify(value), batch);
+  return "refusal" in read ? read.refusal : "accepted";
+};
+
+test("an order names each ticket's repository and the tickets of the batch it waits on, once each", () => {
+  const read = parseOrder(JSON.stringify({
+    "NBF-1": { repo: "nbl-ui-platform-libs", after: [] },
+    "NBF-2": { repo: "nbl-ui-netbox", after: ["NBF-1", "NBF-1"] },
+    "NBF-3": { repo: null, after: ["NBF-1", "NBF-2"] },
+  }), batch);
+  assert.ok("order" in read);
+  assert.deepEqual([...read.order], [
+    ["NBF-1", { repo: "nbl-ui-platform-libs", after: [] }],
+    ["NBF-2", { repo: "nbl-ui-netbox", after: ["NBF-1"] }],
+    ["NBF-3", { repo: null, after: ["NBF-1", "NBF-2"] }],
+  ]);
+  assert.ok("order" in parseOrder(JSON.stringify({ "NBF-1": { repo: null, after: [] } }), batch), "a ticket left out has no place, and the rest still count");
+});
+
+test("an order is refused whole for a key outside the batch, a ticket that waits on itself, a cycle or a malformed entry", () => {
+  assert.equal(refusalOf({ "NBF-9": { repo: null, after: [] } }), "it names NBF-9, which is not in the batch");
+  assert.equal(refusalOf({ "NBF-1": { repo: null, after: ["NBF-9"] } }), "NBF-1 waits on NBF-9, which is not in the batch");
+  assert.equal(refusalOf({ "NBF-1": { repo: null, after: ["NBF-1"] } }), "NBF-1 waits on itself");
+  assert.equal(refusalOf({ "NBF-1": { repo: null, after: ["NBF-3"] }, "NBF-2": { repo: null, after: ["NBF-1"] }, "NBF-3": { repo: null, after: ["NBF-2"] } }),
+    "its order goes round in a cycle: NBF-1 -> NBF-3 -> NBF-2 -> NBF-1");
+  assert.equal(refusalOf({ "NBF-1": { repo: 3, after: [] } }), "its entry for NBF-1 is not { \"repo\": \"<repository>\" or null, \"after\": [\"<key>\", ...] }");
+  assert.match(refusalOf({ "NBF-1": { repo: null, after: "NBF-2" } }), /^its entry for NBF-1 is not/);
+  assert.match(refusalOf({ "NBF-1": { repo: null } }), /^its entry for NBF-1 is not/);
+  assert.equal(refusalOf([]), "it is not one object keyed by ticket");
+  assert.equal(refusalOf("{ not json"), "it is not JSON");
+});

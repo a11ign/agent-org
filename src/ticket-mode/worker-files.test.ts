@@ -1,7 +1,7 @@
 // no-token: gh -- pure builders
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { briefText, firstPrompt, planBriefText, workerFlags, workerSettings } from "./worker-files.ts";
+import { batchPlanBriefText, briefText, firstPrompt, planBriefText, workerFlags, workerSettings } from "./worker-files.ts";
 import type { Ticket } from "./source.ts";
 
 const ticket = { key: "NBF-1270", title: "Refresh Data gives no feedback", description: "Clicking does nothing visible.", url: "https://linear.app/x/issue/NBF-1270",
@@ -136,7 +136,39 @@ test("a planning run is refused git's writes, a pull request and a worktree, and
 test("both briefs tell a worker to stop for a person when a skill they name is missing, not to follow a copy of it", () => {
   const work = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones: { a: "/a" }, worktreeCommand: "wt" });
   const plan = planBriefText({ ticket, ticketDir: "/d", planDir: "/d/plan", attachments: [], clones: { a: "/a" }, run: "plan {key} into {dir}" });
-  for (const brief of [work, plan]) {
+  const batch = batchPlanBriefText({ tickets: [{ ticket, attachments: [], parent: null }], runDir: "/d", planDir: "/d/plan", clones: { a: "/a" }, run: "plan {keys} into {dir}" });
+  for (const brief of [work, plan, batch]) {
     assert.match(brief, /If a skill this brief names is not available in this session, write a `needs-human` outcome naming it, rather than following a copy of its files\./);
+  }
+});
+
+test("a single planning run's brief fills {keys} with its one ticket, so a batch planner's instruction plans a ticket alone as before", () => {
+  const plan = planBriefText({ ticket, ticketDir: "/d", planDir: "/d/plan", attachments: [], clones, run: "unattended: plan {keys} into {dir}" });
+  assert.ok(plan.includes("unattended: plan NBF-1270 into /d/plan"));
+});
+
+test("a batch's brief lists every ticket with its files and parent, fills {keys} and {dir}, and states the folder-per-ticket and order.json contract", () => {
+  const other = { ...ticket, key: "NBF-1271", title: "Toast on refresh", description: "## Acceptance\nA toast shows.", url: "https://linear.app/x/issue/NBF-1271", parent: null } as Ticket;
+  const parent = { ticket: { ...ticket, key: "NBF-1200", title: "Refresh epic", description: "Every refresh tells the person.", url: "https://linear.app/x/issue/NBF-1200" } as Ticket,
+    attachments: ["/state/tickets/NBF-1270/parent/attachment-1-NBF-1200-0001-plan-epic.md"] };
+  const brief = batchPlanBriefText({
+    tickets: [{ ticket, attachments: ["/state/tickets/NBF-1270/attachment-1.png"], parent }, { ticket: other, attachments: [], parent: null }],
+    runDir: "/state/tickets/batches/b1-0", planDir: "/state/tickets/batches/b1-0/plan", clones, run: "Run the planner: unattended: plan {keys} into {dir}",
+    notes: "Use dev:atomic.", connectors: ["^mcp__claude_ai_Linear__get_"],
+  });
+  assert.match(brief, /^# Plan 2 tickets together: NBF-1270, NBF-1271\n/);
+  assert.ok(brief.includes("Run the planner: unattended: plan NBF-1270, NBF-1271 into /state/tickets/batches/b1-0/plan"), "the keys comma-and-space separated, and the run's one folder");
+  for (const part of ["## NBF-1270: Refresh Data gives no feedback\n\nhttps://linear.app/x/issue/NBF-1270\n\n> Clicking does nothing visible.",
+    "- `/state/tickets/NBF-1270/attachment-1.png`", "### NBF-1270 is part of NBF-1200: Refresh epic", "> Every refresh tells the person.",
+    "- `/state/tickets/NBF-1270/parent/attachment-1-NBF-1200-0001-plan-epic.md`", "## NBF-1271: Toast on refresh", "> ## Acceptance\n> A toast shows.",
+    "### Files from NBF-1271\n\nNone.", "- `nbl-ui-netbox` at `/work/nbl-ui-netbox`", "## On this machine\n\nUse dev:atomic.", "## Connectors"]) {
+    assert.ok(brief.includes(part), part);
+  }
+  assert.equal(brief.includes("NBF-1271 is part of"), false, "a ticket with no parent has no parent section");
+  for (const part of ["`/state/tickets/batches/b1-0/plan/<KEY>/`", "a `QUESTION.md`", "`/state/tickets/batches/b1-0/plan/order.json`",
+    "{ \"<KEY>\": { \"repo\": \"<repository>\", \"after\": [\"<KEY>\", ...] } }", "or `null` for a ticket with a question", "never the ticket itself, and make no cycle",
+    "A question about one ticket does not stop the others", "Write `/state/tickets/batches/b1-0/outcome.json` as the last thing you do, after every plan, question and `order.json`",
+    "{ \"kind\": \"planned\" }", "change no code"]) {
+    assert.ok(brief.includes(part), part);
   }
 });

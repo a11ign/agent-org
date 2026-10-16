@@ -97,6 +97,16 @@ takes them one each. `agent-org ticket:serve` starts a board on `127.0.0.1` and 
   When it writes `planned`, the board attaches the files it left to the ticket and moves an unstarted ticket to the planner's state. The
   ticket then goes back on the queue where it was, and its run is told the plan was not agreed with a person, so its pull request lists
   each decision the plan made for you. A plan the tracker will not take ends the run for you, with its files kept.
+- **Queued together, planned together.** When `tickets.planner.run` names `{keys}`, the tickets one press of Queue plans first are one
+  batch, and one planning run plans them, at most 8 to a run: a larger batch splits into runs of 8, in queue order. Tickets queued at
+  different times are never batched. Every ticket of the batch shows as Planning, all linking to the run's one terminal, and the batch holds
+  one worker slot. The run writes a folder per ticket in its plan folder, holding that ticket's plan files or a `QUESTION.md`, and an
+  `order.json` giving each ticket's repository and the tickets of the batch it waits on. When it writes `planned`, each ticket with plan
+  files has them attached and is queued again to be worked. A ticket with a question, or with nothing, ends as Needs you, and the others
+  carry on. The board records the order in the tracker as "blocks" relations, so a ticket that waits on another shows as Blocked until it
+  is done. An order that names a ticket outside the batch, a ticket waiting on itself or a cycle records no relation, and the board's log
+  says why. A run that ends any other way ends every ticket of the batch that way. Stop on any ticket stops the whole run, and Retry plans
+  a ticket again on its own.
 - **Board.** Every run in one list, newest activity first, each with a status icon after GitHub's Actions runs, and a filter per status
   with its count: Needs you, In progress, Planning, Reviewing, Blocked, Queued, Awaiting review, Ready to merge, Completed, Failed and Cancelled. A run is Completed once the tracker
   completes its ticket, or once its pull requests have merged, as Linear's GitHub integration reports them. Linear completes a ticket on a
@@ -136,8 +146,8 @@ reasoning reviews the diff, read only, for behaviour it changed but meant to kee
 acceptance criterion and each decision that binds the ticket, and backs each behaviour its pull request body claims with an assertion of
 exactly that behaviour, run on the base. The worker reads each repository's `CLAUDE.md`/`AGENTS.md` for its commands,
 opens a DRAFT pull request per repository it changed, and writes an outcome file: `draft-pr`, `wrong-repo` (the fix belongs in none of them)
-or `needs-human`. A worker writes nothing to Linear. The board writes only a planning run's files, attached to its ticket, and the
-ticket's move to the planner's state.
+or `needs-human`. A worker writes nothing to Linear. The board writes only a planning run's files, attached to its ticket, the
+ticket's move to the planner's state, and a batch's order as "blocks" relations.
 
 **What a worker may not do** is enforced by `ticket:hook`, which the ticket folder's `.claude/settings.local.json` names, so a session herdr
 resumes after a restart keeps it. A stop with no outcome file is refused twice in a row. These are refused outright: a pull request that
@@ -167,7 +177,7 @@ a worker can choose from:
 | `tickets.connectors` | none, and every connector is refused. `["^mcp__<connector>__<tools>", ...]`: regular expressions, each anchored with `^mcp__`, for the connector tools a worker may call, matched against the tool's name. Linear's reads through the claude.ai connector: `["^mcp__claude_ai_Linear__(get\\|list\\|search\\|extract)_"]`. The brief names them, so a worker can read its ticket's parent and blockers |
 | `tickets.terminal` | none, and the board shows no terminal link. A web address that serves a run's terminal, with `{workspace}`, `{pane}` and `{key}` filled in per run: for [herdr web ui](https://github.com/devswha/herdr-web-ui) serving the `tickets` session on port 7318, `"http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal"` |
 | `tickets.plan` | none, and the board marks no ticket. A regular expression that the name of a file uploaded to a ticket matches when the file is the ticket's plan. NBL's create-ticket names a plan `<KEY>-0001-plan-<slug>.md`: `"-plan-[^/]*\\.md$"`. A bare `plan` would also match `floorplan.png` |
-| `tickets.planner` | none, and the board plans nothing. Needs `tickets.plan`. `{ "run": "<instruction>", "state": "<state>" }`: what a planning run is told, with `{key}` and `{dir}` filled in per run (the ticket, and the folder its plan's files go in), and the tracker state a planned ticket moves to if it has not started. A team with no state of that name keeps the ticket's state, and the board's log says so, because teams name their states differently. NBL: `{ "run": "Run the nbl-ui:create-ticket skill with this request: unattended: plan {key} into {dir}", "state": "Planned" }` |
+| `tickets.planner` | none, and the board plans nothing. Needs `tickets.plan`. `{ "run": "<instruction>", "state": "<state>" }`: what a planning run is told, with `{key}` and `{dir}` filled in per run (the ticket, and the folder its plan's files go in), and the tracker state a planned ticket moves to if it has not started. An instruction that names `{keys}` instead plans the tickets queued together in one run: `{keys}` is their keys, separated by a comma and a space, and `{dir}` the run's one plan folder. A ticket planned alone gets its own key there. One that names only `{key}` plans every ticket alone. A team with no state of that name keeps the ticket's state, and the board's log says so, because teams name their states differently. NBL: `{ "run": "Run the nbl-ui:create-ticket skill with this request: unattended: plan {key} into {dir}", "state": "Planned" }`, or `plan {keys} into {dir}` to plan in batches |
 | `tickets.workingState` | none, and no ticket is moved. The tracker state a ticket moves to as a worker starts implementing it, if it has not started yet: `"In Progress"`. A planning run moves nothing. A team with no state of that name keeps the ticket's state, and the board's log says so |
 | `stateDir` | `~/.local/state/agent-org`: the queue, each ticket's brief, attachments and outcome |
 

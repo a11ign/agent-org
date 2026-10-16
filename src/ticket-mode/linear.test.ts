@@ -306,3 +306,34 @@ test("an attachment Linear answers with success false is a refusal, not an attac
   const { fetch } = linear([planning("backlog"), signed(1), notDone], { "https://storage.example/upload-1?sig=1": { status: 200 } });
   await assert.rejects(linearSource({ key: "k", fetch }).attachPlan!("NBF-1", [plan], "Planned"), /Linear did not attach NBF-1-0001-plan-fit-to-view\.md/);
 });
+
+/** Linear's answer to the read of the blocked ticket: its id, and the tickets already recorded as blocking it. */
+const blocked = (...blockers: string[]) => ({ data: { issues: { nodes: [{ id: "uuid-blocked", inverseRelations: { nodes: [
+  ...blockers.map((identifier) => ({ type: "blocks", issue: { identifier } })),
+  { type: "related", issue: { identifier: "NBF-3" } },
+] } }] } } });
+const created = (success: boolean) => ({ data: { issueRelationCreate: { success } } });
+
+test("addBlockers() records each blocker Linear does not have yet as blocking the ticket, on the blocker, with the blocked ticket as the related one", async () => {
+  const { fetch, requests } = linear([blocked("NBF-1"), { data: { k0: { nodes: [{ id: "uuid-2" }] }, k1: { nodes: [{ id: "uuid-3" }] } } }, created(true), created(true)]);
+  await linearSource({ key: "k", fetch }).addBlockers!("NBF-4", ["NBF-1", "NBF-2", "NBF-3", "NBF-2"]);
+  const bodies = requests.map((r) => JSON.parse(String(r.init.body)));
+  assert.match(bodies[0].query, /inverseRelations \{ nodes \{ type issue \{ identifier \} \} \}/, "it reads what Linear has first");
+  assert.deepEqual(bodies[1].variables, { t0: "NBF", n0: 2, t1: "NBF", n1: 3 }, "a related ticket is no blocker, so NBF-3 is still recorded, and NBF-1 already is");
+  const made = bodies.filter((b) => /issueRelationCreate/.test(b.query));
+  assert.match(made[0].query, /issueRelationCreate\(input: \{ issueId: \$issueId, relatedIssueId: \$relatedIssueId, type: blocks \}\) \{ success \}/);
+  assert.deepEqual(made.map((b) => b.variables), [{ issueId: "uuid-2", relatedIssueId: "uuid-blocked" }, { issueId: "uuid-3", relatedIssueId: "uuid-blocked" }]);
+});
+
+test("addBlockers() makes nothing when Linear has every relation already, so a cut-off attempt can be repeated", async () => {
+  const { fetch, requests } = linear([blocked("NBF-1", "NBF-2")]);
+  await linearSource({ key: "k", fetch }).addBlockers!("NBF-4", ["NBF-1", "NBF-2"]);
+  assert.equal(requests.length, 1, "only read");
+});
+
+test("addBlockers() is refused when Linear answers success false, and when it has no ticket by either key", async () => {
+  await assert.rejects(linearSource({ key: "k", fetch: linear([blocked(), { data: { k0: { nodes: [{ id: "uuid-2" }] } } }, created(false)]).fetch }).addBlockers!("NBF-4", ["NBF-2"]),
+    /Linear did not record that NBF-2 blocks NBF-4/);
+  await assert.rejects(linearSource({ key: "k", fetch: linear([{ data: { issues: { nodes: [] } } }]).fetch }).addBlockers!("NBF-404", ["NBF-2"]), /Linear has no ticket NBF-404/);
+  await assert.rejects(linearSource({ key: "k", fetch: linear([blocked(), { data: { k0: { nodes: [] } } }]).fetch }).addBlockers!("NBF-4", ["NBF-404"]), /Linear has no ticket NBF-404/);
+});

@@ -3,7 +3,7 @@
 //
 // A PERSONAL KEY, NOT AN APP. A Linear agent app is installed by a workspace admin, which a person on a work account cannot do, so ticket mode reads
 // as the person: their key, their assigned tickets. It writes only what a planning run hands the board: the plan's files, attached to the ticket,
-// and the ticket's move to the planner's state. Workers write nothing. Linear's own GitHub integration links each pull request, because the
+// the ticket's move to the planner's state, and a batch's order as "blocks" relations. Workers write nothing. Linear's own GitHub integration links each pull request, because the
 // worker's branch is the ticket's `branchName`.
 //
 // THE KEY NEVER LEAVES THIS MODULE. It is read once, from the macOS Keychain or a file the host file names, and sent only to api.linear.app and uploads.linear.app.
@@ -220,6 +220,25 @@ export function linearSource({ key, fetch: request = fetch }: { key: string; fet
     async pullStates(keys) {
       const found = await eachIssue<Attached>(keys, ATTACHED_PULLS);
       return new Map([...found].map(([key, node]) => [key, linkedPulls(node)]));
+    },
+
+    async addBlockers(identifier, blockerKeys) {
+      type Blocked = { id: string; inverseRelations: { nodes: { type: string; issue: { identifier: string } }[] } };
+      const found = await issue<Blocked>(identifier, "id inverseRelations { nodes { type issue { identifier } } }");
+      if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
+      const already = new Set(found.inverseRelations.nodes.filter(({ type }) => type === "blocks").map(({ issue: blocker }) => blocker.identifier));
+      const missing = [...new Set(blockerKeys)].filter((key) => !already.has(key));
+      if (missing.length === 0) return;
+      const ids = await eachIssue<{ id: string }>(missing, "id");
+      for (const key of missing) {
+        const blocker = ids.get(key);
+        if (blocker === undefined) throw new Error(`Linear has no ticket ${key}`);
+        // "A blocks B" is stored on A, with B as the related issue: the same relation `blockers` reads back from B.
+        const { issueRelationCreate }: { issueRelationCreate: { success: boolean } } = await query(
+          "mutation($issueId: String!, $relatedIssueId: String!) { issueRelationCreate(input: { issueId: $issueId, relatedIssueId: $relatedIssueId, type: blocks }) { success } }",
+          { issueId: blocker.id, relatedIssueId: found.id });
+        if (!issueRelationCreate.success) throw new Error(`Linear did not record that ${key} blocks ${identifier}`);
+      }
     },
 
     async blockers(keys) {
