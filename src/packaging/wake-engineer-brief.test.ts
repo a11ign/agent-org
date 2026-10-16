@@ -18,6 +18,7 @@ import { dirname, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { addressed, deliver, engineerRoles, ENGINEER_BRIEF } from "../wake.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
+import { trackedTopLevelDirs } from "../region-paths.ts";
 import { startedPanes } from "./started-pane.ts";
 
 const ROOT = HOME_CHECKOUT;
@@ -34,7 +35,11 @@ const BRIEF_LINE = new RegExp(ENGINEER_BRIEF.replaceAll(".", "\\."));
 
 // --- done-when 2: `addressed()` names the brief for every engineer role and for NO other --------------------------
 
-test("an engineer label's first message names the engineer brief", () => {
+/** #1604: these subtests read a11ign's own engineer brief, its nested CLAUDE.md files and its live roster (docs/project-tree-dependency.md, row 1604). The fixture project has none of them, so they skip there and run wherever the tracked `packages/` tree is present. */
+const SKIP_FIXTURE = trackedTopLevelDirs().includes("packages") ? false
+  : "the fixture project has no engineer brief, no packages/lab or packages/judge CLAUDE.md, and a roster of its own: these assert a11ign's own briefs and live roster, which only the a11ign checkout carries";
+
+test("an engineer label's first message names the engineer brief", { skip: SKIP_FIXTURE }, () => {
   assert.equal(ENGINEER_BRIEF, `${ROLES_DIR}/engineer.md`);
   assert.ok(existsSync(`${ROOT}/${ENGINEER_BRIEF}`), "the file the line names exists");
   const message = addressed(ORDER, "worker-6", { engineers: ["worker-6"] });
@@ -69,7 +74,7 @@ test("the singletons and a reviewer are NOT told, whatever roster is supplied or
   }
 });
 
-test("#2505: sessions.json lists NO standing engineer address, so the roster READ is empty and the family is the population", () => {
+test("#2505: sessions.json lists NO standing engineer address, so the roster READ is empty and the family is the population", { skip: SKIP_FIXTURE }, () => {
   const engineers = engineerRoles();
   // The population is derived a SECOND way -- every live name that is not a singleton (`SINGLETONS`, the roster's own
   // non-engineer roles, with the three the test above names asserted among them) -- and compared by EQUALITY, so a
@@ -139,7 +144,7 @@ const families = (block: string) => [...block.matchAll(/`(?:pnpm run )?([a-z]+:[
 /** The one command #1828 lets a routed pool run; it is never copied into the shared brief (#1817). */
 const EXCEPTION = "lab:job";
 
-test("#2505: the two briefs the ban was derived from are GONE, and the engineer brief names every family the row measured", () => {
+test("#2505: the two briefs the ban was derived from are GONE, and the engineer brief names every family the row measured", { skip: SKIP_FIXTURE }, () => {
   // The positive control for the deletion: the two files were the source until #2505, and a test that read a missing
   // file would crash rather than say so. That they are absent is asserted, not assumed.
   for (const gone of ["worker-capture.md", "worker-judge.md"]) {
@@ -155,7 +160,7 @@ test("#2505: the two briefs the ban was derived from are GONE, and the engineer 
   assert.ok(!derived.includes(EXCEPTION), "and the exception a routed pool holds is not among them");
 });
 
-test("the engineer brief carries the ban with NO exception, and never the words `lab:job`", () => {
+test("the engineer brief carries the ban with NO exception, and never the words `lab:job`", { skip: SKIP_FIXTURE }, () => {
   const brief = read(ENGINEER_BRIEF);
   assert.ok(!brief.includes(EXCEPTION), "the exception is a privilege of a routed pool, not of every engineer");
   assert.match(brief, /total, with no exception/i);
@@ -164,7 +169,7 @@ test("the engineer brief carries the ban with NO exception, and never the words 
 
 // --- done-when 5: the `brief` field is honest ---------------------------------------------------------------------
 
-test("the family points at the engineer brief, and every live engineer's brief exists", () => {
+test("the family points at the engineer brief, and every live engineer's brief exists", { skip: SKIP_FIXTURE }, () => {
   const brief = (name: string) => SESSIONS.live.find((s) => s.name === name)?.brief;
   const shared = `${ROLES_DIR}/engineer.md`;
   assert.ok(shared === ENGINEER_BRIEF, "the field's path is the one addressed() names");
@@ -196,7 +201,7 @@ const namesIn = (text: string) => [
     .filter((m) => Number(m[1]) >= from).map((m) => m[0])),
 ];
 
-test("the name matcher notices a session name, and only as a word (its own positive control)", () => {
+test("the name matcher notices a session name, and only as a word (its own positive control)", { skip: SKIP_FIXTURE }, () => {
   assert.deepEqual(namesIn("hand it to `orchestrator`, then worker-4."), ["orchestrator", "worker-4"]);
   assert.deepEqual(namesIn("and worker-40, a family member nobody listed"), ["worker-40"]);
   assert.deepEqual(namesIn("`worker-ctl.sh up`, the worker-fleet package, worker-3, worker-4abc, ceo-ish, preceo"), []);
@@ -206,12 +211,12 @@ test("the name matcher notices a session name, and only as a word (its own posit
   assert.ok(!SESSION_NAMES.includes("worker-<n>") && FAMILIES.length === 1, "the family is matched as a rule");
 });
 
-test("the nested-rules list is not empty (the positive control for the two tests below, which a loop over nothing passes)", () => {
+test("the nested-rules list is not empty (the positive control for the two tests below, which a loop over nothing passes)", { skip: SKIP_FIXTURE }, () => {
   assert.ok(NESTED.length > 0, "at least one nested CLAUDE.md is checked");
 });
 
 for (const { file, heading, governs } of NESTED) {
-  test(`${file}: the addition names the paths it governs in its first lines`, () => {
+  test(`${file}: the addition names the paths it governs in its first lines`, { skip: SKIP_FIXTURE }, () => {
     const text = read(file);
     const at = text.search(heading);
     assert.ok(at >= 0, `the section exists in ${file}`);
@@ -226,7 +231,7 @@ for (const { file, heading, governs } of NESTED) {
     }
   });
 
-  test(`${file}: names no session, standing or retired`, () => {
+  test(`${file}: names no session, standing or retired`, { skip: SKIP_FIXTURE }, () => {
     assert.deepEqual(namesIn(read(file)), []);
   });
 }

@@ -23,6 +23,7 @@ import { join } from "node:path";
 
 import { signoffVerdict, isOwned, loadFacts } from "../owned-path-signoff.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
+import { trackedTopLevelDirs } from "../region-paths.ts";
 
 const FACTS = {
   owned: ["packages/nvda-worker/", "packages/scorer/models/"],
@@ -106,7 +107,11 @@ test("CONTRADICTING states for the same fact across two lines is a real finding,
 
 // --- verified against REAL PR bodies, not synthesised fixtures (#584, #613) ---
 
-test("real body: #584 (guest-paths-are-measured) states all four owned-path-facts on packages/nvda-worker/", () => {
+/** #1604: these subtests read a11ign's own pull request bodies and owned-path list (docs/project-tree-dependency.md, row 1604). The fixture project has neither, so they skip there and run wherever the tracked `packages/` tree is present. */
+const SKIP_FIXTURE = trackedTopLevelDirs().includes("packages") ? false
+  : "the fixture project has no packages/ tree, so the recorded pull request bodies #584 and #613 and the owner's owned-path list do not exist there: these assert a11ign's own records";
+
+test("real body: #584 (guest-paths-are-measured) states all four owned-path-facts on packages/nvda-worker/", { skip: SKIP_FIXTURE }, () => {
   const body = readFileSync(join(HOME_CHECKOUT, "packages/lab/src/packaging/fixtures/pr-584-body.md"), "utf8");
   const real = loadFacts();
   assert.ok(real);
@@ -116,7 +121,7 @@ test("real body: #584 (guest-paths-are-measured) states all four owned-path-fact
   assert.equal(v.code, 0, `expected SIGNED against #584's real body, got: ${v.reasons.join(" | ")}`);
 });
 
-test("real body: #613 (profile-identity-is-a-key) states all four owned-path-facts on packages/nvda-worker/", () => {
+test("real body: #613 (profile-identity-is-a-key) states all four owned-path-facts on packages/nvda-worker/", { skip: SKIP_FIXTURE }, () => {
   const body = readFileSync(join(HOME_CHECKOUT, "packages/lab/src/packaging/fixtures/pr-613-body.md"), "utf8");
   const real = loadFacts();
   assert.ok(real);
@@ -142,7 +147,7 @@ test("owned matching respects directory boundaries", () => {
     ["packages/lab/src/training/capture-cache.mjs"]), true, "a bare file path matches exactly");
 });
 
-test("THE REAL LIST LOADS, and it is the owner's rather than this file's", () => {
+test("THE REAL LIST LOADS, and it is the owner's rather than this file's", { skip: SKIP_FIXTURE }, () => {
   // The mechanism must not carry its own copy: `ceo` ruled the list IS orchestrator's expression of
   // ownership, so a second spelling here would drift from the thing it represents.
   const real = loadFacts();

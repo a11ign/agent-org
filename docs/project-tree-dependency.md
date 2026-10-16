@@ -344,9 +344,91 @@ Results:
 | `src/packaging/spec-block-refusal.test.ts` | the exemption: a row with no spec fence, or a spec shown inside another fence, p | tracked top-level dir `packages/` of the project checkout (git ls-files in HOME_CHECKOUT = $AGENT_ORG_HOST primary checkout); fixture has no packages/ | tests-project | Skipped: `SKIP_NO_PACKAGES` |
 | `src/packaging/spec-block-refusal.test.ts` | the flag off passes everything; the flag is on only when exactly true | tracked top-level dir `packages/` of the project checkout (git ls-files in HOME_CHECKOUT = $AGENT_ORG_HOST primary checkout); fixture has no packages/ | tests-project | Skipped: `SKIP_NO_PACKAGES` |
 
+## The remaining families against the fixture (agent-org#1604)
+
+Acceptance (the row's five-file command, copy committed) before any change: `VERDICT fail: 26 of 83 tests failed in 5 files` (`auto-arm-token.test.ts` 7, `public-claim.test.ts` 12, `row-filing-guidance.test.ts` 7). `primary-checkout-guard.test.ts` and `shared-stash-guard.test.ts` passed unchanged.
+
+After: `VERDICT pass: 57 tests in 5 files (26 skipped)`, EXIT=0. That is the five-file run before the four remaining families were skipped; those four are run below. The CI-runnable block in `.acceptance/agent~agent-org-stands-alone-agent-org-1604.md` leaves out the two token-needing files, and also `public-claim.test.ts`: `pr:open` refuses that line because `public-claim` reaches `board-data.ts:96` through `reported`, which needs a token. On the fixture, the same two files give `VERDICT pass: 17 tests in 2 files (14 skipped)`, EXIT=0. The three-file block gave `VERDICT pass: 32 tests in 3 files (26 skipped)`, EXIT=0, before `public-claim` was taken out. `tsc --noEmit` exits 0.
+
+Skips. Each is `{ skip: SKIP_FIXTURE }` on a `test(` call, where `SKIP_FIXTURE` is `false` wherever `trackedTopLevelDirs()` lists `packages/`, and otherwise a named reason. `live-tree-independence.test.ts` takes the same guard on its existing `SKIP` constant, so it keeps `skipReason(...)` on a checkout that has `packages/`. The skip markers were checked against the TypeScript AST, so each sits on a real call header.
+
+| Subtest file | Subtests skipped | Reader | Class |
+|---|---|---|---|
+| `src/packaging/auto-arm-token.test.ts` | 7 of 22 (#4198 arm and sweep, MUTATION TARGET, contents, secrets read, stored-token name, `issues: write`, #2358/#4198/#4486) | `.github/workflows/auto-arm.yml` of the checkout; the fixture's copy is 9 lines with no arm or sweep jobs | project-content |
+| `src/packaging/public-claim.test.ts` | 12 of 27 | the public claim block, README claim, and recorded gate entries; the fixture has none of them. The "most recently recorded gate entry" test passes and is not skipped | project-content |
+| `src/packaging/row-filing-guidance.test.ts` | 7 of 9 | `docs/row-filing.md`, a one-line stub in the fixture | project-content |
+| `src/packaging/acceptance-commands.test.ts` | 8 of 307 (#353 RESOURCE ban and CORPUS ban, #1860 corpus-backup, REFUSED-command report pair, #2099 declared hand-run green, #2118 hand-run beside refusal, #2192 real tree, #3058 `cd` tail) | the `RESOURCES` declaration in a11ign's `.agent-org/project.json` (the first six) and a11ign's tracked `packages/` tree (#2192 and the `cd` tail) | declaration (6), project-content (2) |
+| `src/packaging/late-edition.test.ts` | 1 of 11 (the document says it is late, in its own header) | the board-document renderer reads `packages/cli/package.json` for a11ign's CLI version; the fixture has none (ENOENT) | project-content |
+| `src/packaging/tracker-leak-refusal.test.ts` | 2 of 14 (#891 editRefusal and the no-PATCH test) | the `pct exec` leak pattern, declared in a11ign's `.agent-org/project.json` `leakPatterns` (`src/lib/leak-patterns.ts`); the fixture declares none | declaration |
+| `src/packaging/live-tree-independence.test.ts` | 2 of 4 (#3233 converted files at two a11ign commits, and its POSITIVE CONTROL) | a11ign's two commits, which need a laid-out a11ign clone; the fixture has no `packages/` tree (`SKIP`, not `SKIP_FIXTURE`) | needs-real-project |
+| `src/packaging/wake-engineer-brief.test.ts` | 11 of 16 | the engineer brief, `packages/lab/CLAUDE.md`, `packages/judge/CLAUDE.md`, and the live roster `.agent-org/roles/sessions.json` | tests-project |
+| `src/packaging/owned-path-signoff.test.ts` | 3 of 12 | the two real pull request bodies (#584, #613) and the owner's owned-path list | tests-project |
+| `src/packaging/wake.test.ts` | 1 of 151 (line 467) | the live roster `.agent-org/roles/sessions.json` | needs-real-project |
+| `src/wake-reviewer-instance.test.ts` | 1 of 63 (line 712) | `reviewer.md` | needs-real-project |
+
+The last two rows, and `wake-engineer-brief` and `owned-path-signoff`, are not in the Acceptance's five files. Their skips are from reading the test bodies; they were not run here, because those files reach the org multiplexer (see the incident below). `wake-engineer-brief` was the one file of the four where the fixture run was still red: six subtests failed there (the roster assertions at lines 77 and 204, and the four nested-`CLAUDE.md` checks at lines 219 and 234), and they are now skipped with the same guard, `11 of 16` in all. The five that run (lines 50, 55, 66, 95, 117) do not read a11ign's files. That fixture run was the reviewer's (`6 of 11` failed, `5` skipped before this change); it was not re-run here.
+
+The 43 files still unresolved (the Open section's "188 unresolved subtests (43 files)"). Reader and class come from reading each file's imports, helpers, and literal paths (a keyword pass for the files marked "none found"). `Action` says what the file does now.
+
+| File | Reader | Class | Action |
+|---|---|---|---|
+| `src/packaging/row-file.test.ts` | `SKIP_NO_PACKAGES`, `SKIP_NO_RESOURCES` (1603); `declaredRegionFiles`; tool-source reads | tests-project, declaration, pure | Guarded (1603) |
+| `src/orchestrator-one-shot.test.ts` | `RESOURCES` hash pin | declaration | Not skipped; unverified on the fixture |
+| `src/ceo-one-shot.test.ts` | `RESOURCES` hash pin | declaration | Not skipped; unverified on the fixture |
+| `src/packaging/spec-block-refusal.test.ts` | `packages/lab/...` Region | tests-project | Guarded (1603) |
+| `src/packaging/row-file-refuses-duplicate-title.test.ts` | `packages/` Region | tests-project | Guarded (1603) |
+| `src/packaging/row-claim-session-eligibility.test.ts` | `packages/` Region at 155, 467 (guarded), and `SPLIT_REGION_FILE` at 659 | tests-project (3), pure (rest) | 659 group not guarded; open |
+| `src/packaging/cross-repo-red-refusal.test.ts` | `homeProjectDeclaration().code` | declaration | Not skipped; unverified |
+| `src/packaging/cross-repo-red-disarms.test.ts` | the default in `cross-repo-red.ts:132` | declaration | Not skipped; unverified |
+| `src/work-gate-one-wave.test.ts` | `homeProjectDeclaration()` | declaration | Not skipped; unverified |
+| `src/work-gate-other-scopes-concurrent.test.ts` | `homeProjectDeclaration()` | declaration | Not skipped; unverified |
+| `src/dora-direct-to-latest-has-no-channels.test.ts` | `homeProjectDeclaration().dora` | declaration | Not skipped; unverified |
+| `src/packaging/project-roles.test.ts` | roles, causes, profiles; absence check on `packages/agent-org/docs/roles` | declaration, pure | Not skipped; the absence check passes on the fixture |
+| `src/packaging/project-vocabulary.test.ts` | `.agent-org/project.json`; `RESOURCES.length === 15` and `named === 5` | declaration | Not skipped; the pins are a11ign's numbers |
+| `src/ci-health-liveness.test.ts` | `scripts/ci-health.ts` (2 tests) | project-content | Not guarded; open |
+| `src/event-tunnel.test.ts` | live-host test, already guarded | declaration, pure | Live test already guarded |
+| `src/work-gate-truncated-pr-files.test.ts` | `docs/messaging.md` Region | project-content | Not guarded; open |
+| `src/defect-class-line.test.ts` | `packages/` Region at 163 | project-content | Not guarded; open |
+| `src/unsplit-done-when.test.ts` | `packages/` Region at 18 (`createIssue` at 87) | project-content, pure | Not guarded; open |
+| `src/unsplit-done-when-post-merge.test.ts` | `packages/` Region at 18 (`createIssue` at 133) | project-content, pure | Not guarded; open |
+| `src/packaging/row-file-refuses-unreadable-wait.test.ts` | `COMPLETE_BODY` Region | project-content | Not guarded; open |
+| `src/packaging/board-appendix-gate-record.test.ts` | `docs/board/reported` gate records | project-content | Not guarded; open |
+| `src/packaging/persistent-seat-running.test.ts` | a persistent seat named `RECIPIENT` in the roster (test at 261) | declaration, pure | Not skipped; open |
+| `src/packaging/reconstitution-drill.test.ts` | `HOME_CHECKOUT` in 3 live tests | needs-real-project, pure | Not skipped; open |
+| `src/packaging/multi-board-gate.test.ts` | declared brief path in pinned prompts | declaration | Not skipped; open |
+| `src/packaging/fyi-does-not-wake-a-seat.test.ts` | roster must know `ceo` and `liaison` | declaration | Not skipped; open |
+| `src/packaging/worktree-owner.test.ts` | `HOME_CHECKOUT` as a git repo with a HEAD commit | project-content | Not guarded; open |
+| `src/duplicate-row.test.ts` | tracked `docs/` (the 1603 section's record) | project-content | Classified pure by keyword pass; corrected here. Passes once the copy is committed |
+| `src/packaging/host-install-agent-org-launcher.test.ts` | its own `host-units` fixture | pure | None needed |
+| `src/packaging/acceptance-exit-code.test.ts` | tmp dirs; inert path strings | pure | None needed |
+| `src/packaging/acceptance-prose.test.ts` | literals, injected `commandExists` | pure | None needed |
+| `src/packaging/release-tag-on-merge.test.ts` | the tool's own checkout | pure | None needed |
+| `src/packaging/wake-order-shape.test.ts` | tool source | pure | None needed |
+| `src/tmp-fixtures-are-removed.test.ts` | the tool's own tests | pure | None needed |
+| `src/packaging/queue-stalled.test.ts` | the tool's own script; git in the tool repo | pure | None needed |
+| `src/packaging/pr-stall-reason.test.ts` | import-time `project.json` read in `work-gate.ts` | pure | None needed |
+| `src/packaging/verdict-valid-while-patch-unchanged.test.ts` | the tool's own source | pure | None needed |
+| `src/decision-run/classes/answer-owed.test.ts` | tmp dirs | pure | None needed |
+| `src/work-gate-github-incident.test.ts` | none found | pure (keyword pass) | None needed |
+| `src/work-gate-runner-start-red.test.ts` | none found | pure (keyword pass) | None needed |
+| `src/work-gate-unordered-review-pr.test.ts` | none found | pure (keyword pass) | None needed |
+| `src/pr-approved-not-counted-cause.test.ts` | none found | pure (keyword pass) | None needed |
+| `src/work-gate-checkless-pr.test.ts` | none found | pure (keyword pass) | None needed |
+| `src/work/gate/shared-file-orders-recheck-switch.test.ts` | none found | pure (keyword pass) | None needed |
+
+Open, not done in this row:
+
+- The five `Not guarded; open` project-content files above, and `ci-health-liveness`, `board-appendix-gate-record`, `worktree-owner`, and `row-claim-session-eligibility` 659. None is in the Acceptance's five files, so none is run here.
+- The `declaration` rows marked `Not skipped; unverified` need a fixture `project.json` and a run to confirm.
+- `acceptance-commands` (8), `tracker-leak-refusal` (2), `live-tree-independence` (2), and `late-edition` (1) are skipped with the named readers in the table above. Their `UNCONVERTED_CONTROL` template literal in `live-tree-independence` is untouched: its one reader sits there, so no edit reaches it.
+- Judgment for product-manager/ceo, not changed here: the #353 RESOURCE-ban test passes only when the project declaration names the ban patterns. A project whose `project.json` declares no `RESOURCES` classifies `npm run fleet:deploy` as runnable. Whether a project with no declaration should refuse fleet commands by default is a classifier decision, not a test one.
+- The four families above were run on the fixture: `VERDICT pass: 323 tests in 4 files (13 skipped)`, EXIT=0, against 336 tests with 13 failing before the skips. The earlier count of 13 failing subtests is the same 13 now skipped.
+
+Incident. The whole-suite fixture run was started during measurement and was stopped. Before it stopped, it queued real handoff orders into the live herdr org session: IDs `c2036934`, `1516692d`, `cabdb946`, `fc954679`, `52694a80`, `db2bf7e4`, `99a0a706`, `503f5815`, and `55a766ed` (to reviewer-2754). Some were queued twice. The test file that triggered them is not identified. They are not retracted: retracting is destructive and awaits approval. No further suite-wide run, and no run of a wake, prompt-session, messaging, or runtime test, was done after it.
+
 ## Open
 
-- The 188 unresolved subtests (43 files) need their test bodies read. Row 5 carries that.
+- The 188 unresolved subtests (43 files) need their test bodies read. The 43-file table above covers the files; the per-subtest decisions are row 5's, except the 1604 items listed under "Open, not done in this row".
 - The configuration-3 role briefs came from a11ign, not from a fixture. Row 1 writes minimal fixture briefs and reruns to confirm the 22 files cleared here still clear.
 - The 514 import-time refusals in configuration 1 are measured, but the fix (a root `.agent-org/project.json`) is a hypothesis until row 1 runs.
 - The 14 "needs the real project / runtime" subtests and the 10 "tests the project" subtests are named but not decided. The decision is row 5's.

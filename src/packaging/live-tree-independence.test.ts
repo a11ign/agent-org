@@ -25,6 +25,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { sandboxGitEnv } from "../lib/git-env.ts";
+import { trackedTopLevelDirs } from "../region-paths.ts";
 
 const run = promisify(execFile);
 
@@ -219,7 +220,8 @@ function projectAt(ref: string): string {
   return project;
 }
 
-const SKIP = skipReason(HOST_CLONE, [FIRST_REF, SECOND_REF]);
+const SKIP = trackedTopLevelDirs().includes("packages") ? skipReason(HOST_CLONE, [FIRST_REF, SECOND_REF])
+  : "the fixture project has no packages/ tree: this pair asserts a11ign's own two commits, and this checkout's tool is laid into clones of them";
 const RUN_MS = 30 * 60_000;
 
 test("#3233: the converted files take the same verdicts at the two a11ign commits, and every one is green", { skip: SKIP, timeout: RUN_MS }, async () => {

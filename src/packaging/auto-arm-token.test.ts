@@ -22,6 +22,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { HOME_CHECKOUT } from "../project-config.ts";
+import { trackedTopLevelDirs } from "../region-paths.ts";
 import { parse as parseYaml } from "yaml";
 import { runArmPr, EXIT, looksPoolRefused, refusalScope } from "../arm-pr.ts";
 import { shouldBeMerging, readUnarmed, greenUnarmedOrders, CAUSES }
@@ -55,7 +56,11 @@ const jobs = () => (parseYaml(readFileSync(WORKFLOW, "utf8")) as { jobs: Record<
 /** The two jobs that arm, and so the two that hold a minted token (`stalled` only reads, and keeps `github.token`). */
 const MINTING_JOBS = ["arm", "sweep"] as const;
 
-test("#4198: arm and sweep mint the arming token with octo-sts/action, pinned to its commit, for the auto-arm identity", () => {
+/** #1604: these subtests read a11ign's own `.github/workflows/auto-arm.yml` (docs/project-tree-dependency.md, row 1604). The fixture project's copy is a stub with no #4198 arm or sweep jobs, so they skip there and run wherever the tracked `packages/` tree is present. */
+const SKIP_FIXTURE = trackedTopLevelDirs().includes("packages") ? false
+  : "the fixture's auto-arm.yml is a stub with no #4198 arm or sweep jobs: this asserts a11ign's own arming workflow, which only the a11ign checkout carries";
+
+test("#4198: arm and sweep mint the arming token with octo-sts/action, pinned to its commit, for the auto-arm identity", { skip: SKIP_FIXTURE }, () => {
   for (const jobName of MINTING_JOBS) {
     const mint = jobs()[jobName]?.steps.find((s) => s.uses?.startsWith("octo-sts/action@"));
     assert.ok(mint, `${jobName} must mint with octo-sts/action`);
@@ -64,7 +69,7 @@ test("#4198: arm and sweep mint the arming token with octo-sts/action, pinned to
   }
 });
 
-test("MUTATION TARGET (#4198): the step that reads the minted token comes AFTER the step that mints it, in both jobs", () => {
+test("MUTATION TARGET (#4198): the step that reads the minted token comes AFTER the step that mints it, in both jobs", { skip: SKIP_FIXTURE }, () => {
   for (const jobName of MINTING_JOBS) {
     const steps = jobs()[jobName]?.steps ?? [];
     const mint = steps.findIndex((s) => s.uses?.startsWith("octo-sts/action@"));
@@ -74,14 +79,14 @@ test("MUTATION TARGET (#4198): the step that reads the minted token comes AFTER 
   }
 });
 
-test("#4198: arm and sweep hold contents: read and id-token: write and nothing else -- the writes come from the minted token", () => {
+test("#4198: arm and sweep hold contents: read and id-token: write and nothing else -- the writes come from the minted token", { skip: SKIP_FIXTURE }, () => {
   for (const jobName of MINTING_JOBS) {
     assert.deepEqual(jobs()[jobName]?.permissions, { contents: "read", "id-token": "write" }, `${jobName}: permissions`);
   }
 });
 
 test("#4198 MUTATION TARGET: NO step of arm or sweep reads secrets.* or github.token, anywhere in the step -- the fallback is #416's "
-  + "defect restored quietly -- and `stalled`, which only reads, keeps github.token", () => {
+  + "defect restored quietly -- and `stalled`, which only reads, keeps github.token", { skip: SKIP_FIXTURE }, () => {
   for (const jobName of MINTING_JOBS) {
     for (const step of jobs()[jobName]?.steps ?? []) {
       assert.doesNotMatch(JSON.stringify(step), /github\.token|secrets\./,
@@ -93,7 +98,7 @@ test("#4198 MUTATION TARGET: NO step of arm or sweep reads secrets.* or github.t
     "POSITIVE CONTROL for the scan above: `stalled` is the one job that keeps GITHUB_TOKEN, so the pattern can find it");
 });
 
-test("#4198: the stored-token name is gone from auto-arm.yml's parsed jobs -- no step maps A11IGN_BOT_TOKEN or FALLBACK_TOKEN", () => {
+test("#4198: the stored-token name is gone from auto-arm.yml's parsed jobs -- no step maps A11IGN_BOT_TOKEN or FALLBACK_TOKEN", { skip: SKIP_FIXTURE }, () => {
   const names = Object.values(jobs()).flatMap((job) => job.steps.flatMap((s) => Object.keys(s.env ?? {})));
   assert.ok(names.includes("GH_TOKEN"), "POSITIVE CONTROL: the scan sees the env names the jobs do set");
   assert.deepEqual(names.filter((n) => n === SECRET_NAME || n === "FALLBACK_TOKEN"), []);
@@ -106,7 +111,7 @@ test("A11IGN_BOT_TOKEN never appears as a bare CLI argument anywhere in the work
     + "as an explicit --token flag or similar, which would put the value on a process command line");
 });
 
-test("issues: write is NOT added for this -- #333 already measured that granting it changes nothing", () => {
+test("issues: write is NOT added for this -- #333 already measured that granting it changes nothing", { skip: SKIP_FIXTURE }, () => {
   const doc = parseYaml(readFileSync(WORKFLOW, "utf8")) as { permissions: Record<string, string> };
   // The permission already exists for #298's own reason (a bot-merge case predating this fix) and this
   // test does not assert its absence -- only that this PR's own change did not ADD it a second time or
@@ -155,7 +160,7 @@ function secretsRead(workflow: string): string[] {
   return secretsIn(readFileSync(join(WORKFLOWS, workflow), "utf8"));
 }
 
-test("#2358/#4198/#4486: neither nightly.yml nor auto-arm.yml reads a stored secret at all", () => {
+test("#2358/#4198/#4486: neither nightly.yml nor auto-arm.yml reads a stored secret at all", { skip: SKIP_FIXTURE }, () => {
   // auto-arm.yml was 3 until #3046 deleted its `update-branch` job (#3070), 2 until #4198 replaced both with an
   // Octo STS mint, and nightly.yml was 2 until #4195 did the same for its ready-audit step and 1 until #4486
   // retired the settings table's stored-token read (a hand-run read now, named in a11ign's known-gaps §60).
