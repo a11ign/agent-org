@@ -12,14 +12,17 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { HostConfig } from "./host-config.ts";
 import { perPullRequestOrders } from "./work-gate/pr-orders.ts";
 import { deliver, spawnInvocation, postOutsideVerdictsOf, reviewerEnvironment } from "./wake.ts";
 import { DEPENDENCY_BOT_LOGIN } from "./dependency-bot-login.ts";
 import { reviewerDoorPath } from "./reviewer-door-path.ts";
 import { startedPanes } from "./packaging/started-pane.ts";
 import {
-  AUTOMATION_WRITER_LOGIN, INSIDE, OUTSIDE, REVIEWER_GH_CONFIG_DIR, isDeclaredLogin, outsidePrompt, outsideReviewArgs,
+  AUTOMATION_WRITER_LOGIN, INSIDE, OUTSIDE, REVIEWER_GH_CONFIG_DIR, declaredIdentities, isDeclaredLogin, outsidePrompt, outsideReviewArgs,
   outsideReviewerEnvironment,
   outsideVerdictBlock, postOutsideVerdict, postOutsideVerdicts, reviewTrustOf, type DeclaredIdentities, type DoorRun, type ReviewTrust,
 } from "./review-trust.ts";
@@ -361,4 +364,22 @@ test("#1311: the gate reads ONLY the outside reviewers' panes, and posts their v
   assert.equal(doorCalls[0].env.GH_CONFIG_DIR, REVIEWER_GH_CONFIG_DIR);
   assert.equal(doorCalls[0].body, `**Review of #7002 at \`${HEAD8}\`\nAcceptance: read, not run.\n`);
   assert.deepEqual(lines, [`posted the convinced verdict for #7002 at ${HEAD8} from outside reviewer reviewer-7002`]);
+});
+
+test("the workers' and leads' accounts are declared from their `gh` config directories (`<dir>/gh`), so a worker's pull request is the org's own", () => {
+  const root = mkdtempSync(join(tmpdir(), "declared-identities-"));
+  try {
+    for (const [dir, login] of [["workers", "org-workers"], ["leads", "org-leads"]]) {
+      mkdirSync(join(root, dir, "gh"), { recursive: true });
+      writeFileSync(join(root, dir, "gh", "hosts.yml"), `github.com:\n    user: ${login}\n    git_protocol: https\n`);
+    }
+    const host = { gh: { workers: join(root, "workers"), leads: join(root, "leads"), leadsHeader: [], leadsWorkspaces: [] } } as unknown as HostConfig;
+    const declared = declaredIdentities({ host });
+    assert.equal(isDeclaredLogin("org-workers", declared), true, JSON.stringify(declared.exact));
+    assert.equal(isDeclaredLogin("org-leads", declared), true, JSON.stringify(declared.exact));
+    assert.equal(reviewTrustOf({ isCrossRepository: false, author: { login: "org-workers" } }, declared), INSIDE);
+    assert.equal(reviewTrustOf({ isCrossRepository: false, author: { login: "a-stranger" } }, declared), OUTSIDE);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
