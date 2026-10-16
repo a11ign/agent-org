@@ -67,6 +67,26 @@ const MISSING_HINTS = new Map([
   [NOT_HIS_CLAUDE, "a brief that offers no choice is a request for him alone, so it must say why his own Claude session cannot do it"],
 ]);
 
+/**
+ * **A BRIEF MAY NOT SEND THE CHAIRMAN TO A WORKER'S CONSOLE (a11ign/a11ign#4405; agent-org#1566).** The chairman's rule, 2026-10-16: no person presses
+ * anything on a worker, the fleet is managed through Ansible. An `Ask:` or a `Steps:` item that names a worker AND one of these acts is refused, unless the
+ * brief shows the Ansible route was run and how it failed. ONE LIST, so a new verb is one line with its own control (`requests-hand-act.test.ts`).
+ * The false positive this accepts: an ask that names a worker and uses one of these words as a decision (`whether to restart worker 4`) is refused until
+ * its Ansible line is there, which is the cheaper error than a brief that sends him to a console.
+ */
+const WORKER_NAME = /\bworker[ -]\d+\b/i;
+const HAND_ACTS: RegExp[] = [
+  /\bpress(?:es|ed|ing)?\b/i,
+  /\bclick(?:s|ed|ing)?\b/i,
+  /\brestart(?:s|ed|ing)?\b/i,
+  /\bpower(?:s|ed|ing)?\s+(?:[\w-]+\s+){0,2}(?:on|off|up)\b/i,
+  /\blog(?:s|ged)?\s+in\b/i,
+  /\bat (?:the|its|a) console\b/i,
+];
+const ANSIBLE_LABEL = "Ansible tried";
+/** The route is shown by a line naming the run and its failure: `Ansible tried: patch.yml -l a11y-worker-15, failed: <log path or comment url>` */
+const ANSIBLE_FAILED = /\bfailed:\s*\S/i;
+
 const STEPS_HEADER = /^[ \t]*(?:[-*>][ \t]+)?(?:\*\*|__)?Steps(?:\*\*|__)?[ \t]*:(?:\*\*|__)?[ \t]*$/im;
 const STEP_ITEM = /^[ \t]*(?:\d+[.)]|[-*])[ \t]+(\S.*)$/;
 const VERIFY_LINE = /^[ \t]*(?:[-*>][ \t]+)?(?:\*\*|__)?Verify(?:\*\*|__)?[ \t]*:[ \t]*(?:\*\*|__)?[ \t]*(\S.*)$/i;
@@ -246,6 +266,15 @@ function requestState(briefLines: string[], options: ChairmanOption[], walk: Wal
   return [...briefLines, ...options.map((option) => `${option.id}=${option.label}`), ...steps].join("\n");
 }
 
+/** Returns why a brief that sends him to a worker's console is refused, or null. `body`: the whole comment; `walk`: the procedure, when the brief is one */
+function handActProblem(body: string, walk: Walk | null): string | null {
+  const asked = [plainLine(briefLinePattern("Ask").exec(body)?.[1] ?? ""), ...(walk?.steps ?? []).map((step) => step.text)];
+  const sends = asked.some((text) => WORKER_NAME.test(text) && HAND_ACTS.some((act) => act.test(text)));
+  if (!sends) return null;
+  if (ANSIBLE_FAILED.test(briefLinePattern(ANSIBLE_LABEL).exec(body)?.[1] ?? "")) return null;
+  return `alert not sent: the brief sends him to a worker by hand and shows no Ansible route. The fleet is managed through Ansible (a11ign/a11ign#4405), so no person presses anything on a worker: name the run and its failure on a line "${ANSIBLE_LABEL}: <playbook> -l <worker>, failed: <log path or comment url>", or file an Ansible row instead`;
+}
+
 /** Returns why no alert is sent, in words the log can show on its own */
 function refusalReason(brief: RowComment | null, missing: string[]): string {
   if (brief === null) return `alert not sent: the row has no brief for the chairman from an org account, so nothing says what he is to do`;
@@ -274,6 +303,8 @@ export function requestEvent({ repo, row, now, position = 1 }: { repo: string; r
   if (missing.length > 0) return { event: null, options: [], walk: null, act: null, problem: refusalReason(brief, missing) };
   const refused = stepsProblem ?? (walk !== null && options.length > 0 ? "steps: a brief is a procedure or a choice, not both" : null);
   if (refused !== null) return { event: null, options: [], walk: null, act: null, problem: `alert not sent: ${refused}` };
+  const handAct = handActProblem(brief.body, walk);
+  if (handAct !== null) return { event: null, options: [], walk: null, act: null, problem: handAct };
   // A procedure has its own keyboard (Done, Stuck), so an act named beside one draws nothing and is not shown as if it did.
   const act = walk === null ? parseChairmanAct(brief.body) : null;
   return {
