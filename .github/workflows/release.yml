@@ -14,8 +14,11 @@ name: release
 #
 # THE PIN IS A FULL SHA, because a tag or a branch would let a push to toolchain change what this repository releases with no pull request here; Dependabot's `github-actions`
 # entry moves it in a pull request that is reviewed. THE INPUTS: `kind: tag` (no registry, and no OIDC token is minted), `gate-check: gate` (ci.yml's required check),
-# `node-version` as this file always ran, and, because agent-org has no lockfile and no `packageManager`, `pnpm-version` and `changesets-version` (the shared workflow refuses
-# a repository with neither a `packageManager` nor a `pnpm-version`, and runs `pnpm dlx @changesets/cli@<changesets-version>`, which is the version package.json's `changeset` script names).
+# `node-version` as this file always ran, `pnpm-version` and `changesets-version`. agent-org has a tracked `pnpm-lock.yaml` and NO `packageManager`, and the shared workflow reads the two inputs differently
+# for that (`release-per-merge.yml` at the pinned sha: "pnpm itself comes from `packageManager`, else from the `pnpm-version` input, and a repository with neither is refused by name"; "With [a lockfile],
+# `version` runs `pnpm install --frozen-lockfile` and the repository's own `changeset`. Without, it ... runs `pnpm dlx @changesets/cli@<changesets-version>`"). So `pnpm-version` is LIVE, because there is no
+# `packageManager`; `changesets-version` is IGNORED while the lockfile stands, and is the fallback that would run if it were removed, so it names the `@changesets/cli` the lockfile installs (3.0.1, also
+# package.json's `changeset` script). `release-tag-on-merge.test.ts` pins both and fails if the lockfile stops locking that version or a `packageManager` appears.
 #
 # `id-token: write` IS HELD BY THE CALL, AND NOTHING IS MINTED WITH IT (ceo review of a11ign/agent-org#352). The called file's `publish` job asks for `id-token: write`, and GitHub checks a
 # called workflow's job permissions against the caller's when the workflow is LOADED, not against a job's `if:`: a caller that withholds it fails the whole call before any job runs,
