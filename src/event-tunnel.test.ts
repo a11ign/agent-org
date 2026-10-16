@@ -329,7 +329,16 @@ test("#5197: the chairman's subscription list is the ten the row names", () => {
 
 // THE LIVE HOST. `AGENT_ORG_HOST` is the declaration the row's Acceptance names; in the tool's own CI it is unset (the other tests use a fixture project), and that is the one reason
 // this test is skipped. The tests above always run, so the skip hides the live reading only, and the Acceptance command is where it is made.
-test("#5197: the REAL host declaration opens the funnel and its unit renders", { skip: LIVE === undefined || !existsSync(LIVE) ? "AGENT_ORG_HOST does not name a host declaration: the live reading is the row's Acceptance" : false }, () => {
+/** #1650: the fixture's host.json is a recorded copy with no `events` block, so the live reading has nothing to open there. A declaration that cannot be read is NOT skipped: the test runs and reports the parse error. */
+const DECLARES_FUNNEL = (() => {
+  try {
+    return LIVE !== undefined && existsSync(LIVE) && parseHostConfig(readFileSync(LIVE, "utf8"), LIVE).events?.tunnel !== undefined;
+  } catch {
+    return true;
+  }
+})();
+
+test("#5197: the REAL host declaration opens the funnel and its unit renders", { skip: LIVE === undefined || !existsSync(LIVE) ? "AGENT_ORG_HOST does not name a host declaration: the live reading is the row's Acceptance" : DECLARES_FUNNEL ? false : "#1650: the host AGENT_ORG_HOST names declares no `events.tunnel` (the fixture's host.json has no events block): the live reading is a11ign's own declaration, and the row's Acceptance on a host that declares one" }, () => {
   const real = parseHostConfig(readFileSync(LIVE as string, "utf8"), LIVE as string);
   assert.equal(real.events?.tunnel, "tailscale-funnel", "the host declares `events.tunnel: tailscale-funnel`");
   assert.ok(real.events?.publicUrl?.startsWith("https://") && real.events.publicUrl.endsWith(".ts.net" + new URL(real.events.publicUrl).pathname));

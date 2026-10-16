@@ -14,6 +14,7 @@ import { DRAIN_BOUND_MS, DRAIN_POLL_MS, REBOOT_ARGV, REBOOT_SERVICE, TICK_TIMER,
   readBackOwed, rebootReport, recordStore, runPrivileged, stillOlderFinding } from "./host-kernel.ts";
 import { driftReport, shippedUnitText, shippedUnits, unitDrift, unitState } from "./host-units.ts";
 import { homeHostConfig } from "./host-config.ts";
+import { trackedTopLevelDirs } from "./region-paths.ts";
 
 const NOW = Date.parse("2026-10-08T12:00:00Z");
 const HOUR = 3_600_000;
@@ -60,6 +61,10 @@ function host(over: {
 }
 const sudoCalls = (calls: string[][]) => calls.filter((argv) => argv[0] === "sudo");
 const timerCalls = (calls: string[][], verb: any) => calls.filter((argv) => argv[2] === verb && argv[3] === TICK_TIMER);
+
+/** #1650: these subtests assert the pair under a11ign's `a11ign-` unit prefix (docs/project-tree-dependency.md, row 1650). The fixture's `units.prefix` is `fixture-`, so the shipped pair is `fixture-kernel-reboot.*` and none of these names is shipped there. */
+const SKIP_FIXTURE = trackedTopLevelDirs().includes("packages") ? false
+  : "the fixture's units.prefix is fixture-, so the shipped pair is fixture-kernel-reboot.*: these subtests assert the a11ign-kernel-reboot.* names that only a11ign's prefix ships";
 
 describe("the note: version order, and what a refused read is", () => {
   test("running 7.0.0-34 over installed 7.0.0-38 gives the note, named as the row words it", () => {
@@ -380,14 +385,14 @@ describe("the scheduled reboot: the shipped unit pair (#4053)", () => {
   const toolHost = ({ ...untooled, projects: [{ id: home.primary, checkout: project }], tool: "/tool" } as any);
   const text = (unit: string, host: any = toolHost) => String(shippedUnitText(unit, { host }));
 
-  test("both units ship and render, and the service is the name the drain excuses (the positive control for every pin below)", () => {
+  test("both units ship and render, and the service is the name the drain excuses (the positive control for every pin below)", { skip: SKIP_FIXTURE }, () => {
     assert.deepEqual(shippedUnits().filter((u) => u.includes("kernel-reboot")).sort(), [SERVICE, TIMER]);
     assert.equal(SERVICE, REBOOT_SERVICE, "whatHolds excuses this name; a rename that misses one of them makes every scheduled run defer");
     assert.match(text(SERVICE), /^\[Service\]$/m);
     assert.match(text(TIMER), /^\[Timer\]$/m);
   });
 
-  test("the service's ExecStart is exactly `--reboot` -- one ExecStart, the module, and no other flag", () => {
+  test("the service's ExecStart is exactly `--reboot` -- one ExecStart, the module, and no other flag", { skip: SKIP_FIXTURE }, () => {
     const starts = text(SERVICE).split("\n").filter((line) => /^ExecStart=/.test(line));
     assert.equal(starts.length, 1);
     assert.equal(starts[0], "ExecStart=%h/.local/bin/node src/host-kernel.ts --reboot", "the tool form");
@@ -397,7 +402,7 @@ describe("the scheduled reboot: the shipped unit pair (#4053)", () => {
     assert.doesNotMatch(text(SERVICE), /^\[Install\]/m, "a boot must not start a reboot");
   });
 
-  test("the timer says exactly `ceo`'s hour, and carries no `Requires=`, so `host:install`'s `enable --now` cannot reboot the host", () => {
+  test("the timer says exactly `ceo`'s hour, and carries no `Requires=`, so `host:install`'s `enable --now` cannot reboot the host", { skip: SKIP_FIXTURE }, () => {
     assert.match(text(TIMER), /^OnCalendar=\*-\*-\* 05:30:00 Europe\/London$/m);
     assert.equal(text(TIMER).split("\n").filter((l) => /^OnCalendar=/.test(l)).length, 1);
     assert.doesNotMatch(text(TIMER), /^Requires=/m);
@@ -405,7 +410,7 @@ describe("the scheduled reboot: the shipped unit pair (#4053)", () => {
     assert.match(text(TIMER), /^WantedBy=timers\.target$/m);
   });
 
-  test("host:check finds the pair CURRENT once installed; a missing, edited or untouched-but-different copy is reported", () => {
+  test("host:check finds the pair CURRENT once installed; a missing, edited or untouched-but-different copy is reported", { skip: SKIP_FIXTURE }, () => {
     const installedDir = join(scratch, "installed");
     mkdirSync(installedDir, { recursive: true });
     const systemctl = (args: string[]) => (args[0] === "is-enabled" ? "enabled" : "active");

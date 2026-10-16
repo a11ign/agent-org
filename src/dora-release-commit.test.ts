@@ -16,6 +16,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { commitFromAttestations, isNameReservation, measureRepository, npmReleasesFrom } from "./dora.ts";
 import { homeProjectDeclaration } from "./project-config.ts";
+import { trackedTopLevelDirs } from "./region-paths.ts";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Any = any;
@@ -60,7 +61,11 @@ function readers(options: { tags?: Record<string, string>; attestations?: Record
 
 const npmEntries = (): Any[] => (homeProjectDeclaration().dora as Any[]).filter((entry) => entry.release.kind === "npm");
 
-test("the population is derived from the declaration and holds the three repositories of the retro", () => {
+/** #1650: these subtests read the npm population from the project's `dora` declaration (docs/project-tree-dependency.md, row 1650). The fixture declares `dora: []`, so there is no release to read, and a11ign's declaration carries the three repositories of the retro. */
+const SKIP_FIXTURE = trackedTopLevelDirs().includes("packages") ? false
+  : "the fixture's project declares dora: [], so the npm population is empty: these subtests read a11ign's declared repositories, which only the a11ign checkout carries";
+
+test("the population is derived from the declaration and holds the three repositories of the retro", { skip: SKIP_FIXTURE }, () => {
   const repos = npmEntries().map((entry) => entry.repo);
   for (const expected of ["a11ign/screenreader-worker", "a11ign/screenreader-fleet", "a11ign/documents"]) assert.ok(repos.includes(expected), `${expected} is declared`);
 });
@@ -83,7 +88,7 @@ test("(2) a version with no gitHead and no tag takes its commit from the attesta
   }
 });
 
-test("(2b) a tag that resolves wins, and the attestation is not asked for", () => {
+test("(2b) a tag that resolves wins, and the attestation is not asked for", { skip: SKIP_FIXTURE }, () => {
   const [repository] = npmEntries();
   const { calls, commits } = readers({ tags: { "v0.1.0": GIT_HEAD }, attestations: { "0.1.0": attestationsFor(ATTESTED) } });
   const releases = npmReleasesFrom({ document: registryDocument({}), repository, since: SINCE, commits });
@@ -114,7 +119,7 @@ test("(4) Lead time prints a number once the commit is placed: the same world as
   }
 });
 
-test("(5) a name reservation is not a release for any metric, and is never looked up", () => {
+test("(5) a name reservation is not a release for any metric, and is never looked up", { skip: SKIP_FIXTURE }, () => {
   const [repository] = npmEntries();
   const { calls, commits } = readers({ attestations: { "0.1.0": attestationsFor(ATTESTED) } });
   const releases = npmReleasesFrom({ document: registryDocument({}), repository, since: SINCE, commits });
@@ -125,7 +130,7 @@ test("(5) a name reservation is not a release for any metric, and is never looke
   assert.deepEqual([isNameReservation("0.0.0-reserved.0"), isNameReservation("0.0.0-stage"), isNameReservation("0.1.0"), isNameReservation("0.0.1"), isNameReservation("1.0.0-rc.1")], [true, true, false, false, false]);
 });
 
-test("(5b) a package that holds only reservations is `no release yet`, not a release of nothing", () => {
+test("(5b) a package that holds only reservations is `no release yet`, not a release of nothing", { skip: SKIP_FIXTURE }, () => {
   const [repository] = npmEntries();
   const document = { versions: { "0.0.0-reserved.0": {} }, time: { "0.0.0-reserved.0": PUBLISHED } };
   const releases = npmReleasesFrom({ document, repository, since: SINCE, commits: readers({}).commits });
@@ -133,7 +138,7 @@ test("(5b) a package that holds only reservations is `no release yet`, not a rel
   assert.equal((measureRepository(repository, { ...world(releases, repository), mergedPrs: () => [] }, NOW) as Any).status, "no release yet");
 });
 
-test("(6) a release older than the window is not looked up at all", () => {
+test("(6) a release older than the window is not looked up at all", { skip: SKIP_FIXTURE }, () => {
   const [repository] = npmEntries();
   const { calls, commits } = readers({ attestations: { "0.1.0": attestationsFor(ATTESTED) } });
   const document = { versions: { "0.1.0": {} }, time: { "0.1.0": "2026-08-01T00:00:00.000Z" } };

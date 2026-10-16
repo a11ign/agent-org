@@ -29,6 +29,7 @@ import { HARD_STOP_MS, WINDOW_TICKS, armWindow, readRecordRows, readWindowMarker
 import { SHADOW_WINDOW_MARKER, tapShadowReads } from "../shadow-reads.ts";
 import { homeHostConfig } from "../host-config.ts";
 import { sandboxGitEnv } from "../lib/git-env.ts";
+import { trackedTopLevelDirs } from "../region-paths.ts";
 
 const RUNNER = fileURLToPath(new URL("../shadow-window.ts", import.meta.url));
 const REPO_SRC = fileURLToPath(new URL("..", import.meta.url));
@@ -55,7 +56,11 @@ const directives = (unit: string) => unit.split("\n").filter((line) => line.trim
 
 // --- 1. the unit pair ---------------------------------------------------------------------------------------------------------------
 
-test("the shadow pair is shipped as two templates, classified as the tool's, and renders beside the work-tick pair", () => {
+/** #1650: these subtests assert the shadow pair and the live work-tick pair under a11ign's `a11ign-` unit prefix (docs/project-tree-dependency.md, row 1650). The fixture's `units.prefix` is `fixture-`, so the shipped units are `fixture-*` and no `a11ign-*` unit exists to read or install. */
+const SKIP_FIXTURE = trackedTopLevelDirs().includes("packages") ? false
+  : "the fixture's units.prefix is fixture-, so the shipped units are fixture-* and no a11ign-* unit exists: these subtests assert the a11ign-shadow-window and a11ign-work-tick units that only a11ign's prefix ships";
+
+test("the shadow pair is shipped as two templates, classified as the tool's, and renders beside the work-tick pair", { skip: SKIP_FIXTURE }, () => {
   assert.ok(TOOL_ENTRIES.includes("shadow-window.service.in") && TOOL_ENTRIES.includes("shadow-window.timer.in"));
   const names = shippedUnits();
   for (const name of ["a11ign-shadow-window.service", "a11ign-shadow-window.timer", "a11ign-work-tick.service", "a11ign-work-tick.timer"]) {
@@ -70,7 +75,7 @@ test("the shadow pair is shipped as two templates, classified as the tool's, and
   assert.match(shippedUnitText("a11ign-work-tick.timer") ?? "", /^OnUnitActiveSec=2min$/m, "POSITIVE CONTROL: the live timer says the same line, so the equality above is of two real lines");
 });
 
-test("installing the pair changes no byte of the work-tick unit: it matches today's digest AND a rendering of the host directory without the pair", () => {
+test("installing the pair changes no byte of the work-tick unit: it matches today's digest AND a rendering of the host directory without the pair", { skip: SKIP_FIXTURE }, () => {
   const withoutPair = mkdtempSync(join(tmpdir(), "a11y-shadow-arm-without-"));
   try {
     for (const name of readdirSync(SHIPPED_DIR)) {
@@ -101,7 +106,7 @@ function succeeds(unit: string, status: number): boolean {
   return status === 0 || listed.includes(status);
 }
 
-test("a failing shadow run fails the SHADOW service and not the live tick: no coupling, and the same exit 2 is a success only for the live unit", () => {
+test("a failing shadow run fails the SHADOW service and not the live tick: no coupling, and the same exit 2 is a success only for the live unit", { skip: SKIP_FIXTURE }, () => {
   const shadow = shippedUnitText("a11ign-shadow-window.service") ?? "";
   const live = shippedUnitText("a11ign-work-tick.service") ?? "";
   const live2 = succeeds(live, 2), shadow2 = succeeds(shadow, 2);
@@ -115,7 +120,7 @@ test("a failing shadow run fails the SHADOW service and not the live tick: no co
   assert.deepEqual(directives(shippedUnitText(TIMER) ?? "").filter((line) => /work-tick/.test(line)), [], "nor does its timer");
 });
 
-test("the rendered service carries memory and CPU caps, the swap cap that makes the memory cap hold, and the host declaration", () => {
+test("the rendered service carries memory and CPU caps, the swap cap that makes the memory cap hold, and the host declaration", { skip: SKIP_FIXTURE }, () => {
   const service = shippedUnitText("a11ign-shadow-window.service") ?? "";
   for (const key of ["MemoryHigh", "MemoryMax", "CPUQuota", "TasksMax"]) assert.match(service, new RegExp(`^${key}=\\S+$`, "m"), `${key} is present`);
   assert.match(service, /^MemorySwapMax=0$/m, "MemoryMax alone let a runaway put 7.9 GB into swap for 19 s (measured 2026-10-01)");

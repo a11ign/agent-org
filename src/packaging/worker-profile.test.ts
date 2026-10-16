@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { workGateSource } from "../lib/work-gate-source.ts";
 import { readLoadedRules } from "./rules-files.ts";
+import { trackedTopLevelDirs } from "../region-paths.ts";
 import { PROFILES, EFFORTS, MODELS, profileFor, agentArgs, AUTOCOMPACT_WINDOW_TOKENS,
   AUTO_COMPACT_TRIGGER_MARGIN_TOKENS, MEASURED_FRESH_WORKER_BASE_TOKENS, PER_ROW_DISALLOWED_TOOLS,
   WORKER_SETTINGS_PATH }
@@ -55,7 +56,11 @@ function profileOf(got: Profile | Refusal): Profile {
  * THE CONTROL ON THE WHOLE TABLE. Every other test here reads `PROFILES`, so an empty one would pass
  * them all having routed nothing -- and this file's subject is precisely that nothing is left unrouted.
  */
-test("every cause work-gate can actually emit has a profile, and nothing else does", () => {
+/** #1650: these subtests read the routing table's causes against a11ign's project declaration and its `.claude/rules/agent-practices.md` (docs/project-tree-dependency.md, row 1650). The fixture declares no cause module, so a11ign's project causes are absent from PROFILES; and its `.claude/rules` carries no agent-practices.md, so the policy text is not there to read. */
+const SKIP_FIXTURE = trackedTopLevelDirs().includes("packages") ? false
+  : "the fixture declares no cause module, so a11ign's project causes (lab-job-finished among them) are absent from PROFILES; and its .claude/rules has no agent-practices.md to read the policy from";
+
+test("every cause work-gate can actually emit has a profile, and nothing else does", { skip: SKIP_FIXTURE }, () => {
   const emitted = [...GATE.matchAll(/cause: "([a-z-]+)"/g)].map((m) => m[1]).sort();
   assert.ok(emitted.length > 0, "read no causes out of work-gate.ts -- this guard cannot see its population");
   assert.ok(emitted.includes("trunk-red"), "and it must have read the second emitter, `trunk-red.ts`, too");
@@ -82,7 +87,7 @@ test("an unknown cause is REFUSED, never defaulted -- both defaults hide", () =>
  * workers. This asserts the tie rather than the wording: if the rule is ever relaxed to allow opus by
  * default, this test is where that shows up.
  */
-test("the routing policy this table implements is still the one in agent-practices.md", () => {
+test("the routing policy this table implements is still the one in agent-practices.md", { skip: SKIP_FIXTURE }, () => {
   assert.match(PRACTICES, /`model="sonnet"` for analysis and judgment over gathered material/);
   assert.match(PRACTICES, /`model="opus"` only for multi-step reasoning that a cheaper tier has measurably got wrong/);
 });

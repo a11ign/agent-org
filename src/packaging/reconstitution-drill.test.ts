@@ -17,12 +17,17 @@ import { join } from "node:path";
 import { runDrill } from "../reconstitution-drill.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
+import { trackedTopLevelDirs } from "../region-paths.ts";
 
 // THE PROJECT THE TOOL SERVES, not the working directory: the roster, the first messages and the memory index live in the project's
 // `.agent-org/roles/`, and the tool's own checkout holds none. In the project's layout the two are the same directory.
 const REAL_CHECKOUT = HOME_CHECKOUT;
 
-test("the drill runs against this checkout and produces a message for every roster agent", () => {
+/** #1650: these subtests run the reconstitution drill against the real checkout, which must carry .agent-org/roles/README.md. The fixture project has no roles/README.md, so the drill refuses there by design. */
+const SKIP_FIXTURE = trackedTopLevelDirs().includes("packages") ? false
+  : "the fixture project has no .agent-org/roles/README.md, so the drill refuses against it by design; these subtests need a11ign's roles README";
+
+test("the drill runs against this checkout and produces a message for every roster agent", { skip: SKIP_FIXTURE }, () => {
   const report = runDrill(REAL_CHECKOUT);
   assert.ok(report.ok, "the drill refused against the real checkout -- .agent-org/roles/README.md must be unreadable");
   // A floor, not a target -- same reasoning as roles-readme.test.ts's own roster guard: the organisation
@@ -34,7 +39,7 @@ test("the drill runs against this checkout and produces a message for every rost
   }
 });
 
-test("every agent's composed message includes the memory section, when memory exists", () => {
+test("every agent's composed message includes the memory section, when memory exists", { skip: SKIP_FIXTURE }, () => {
   const report = runDrill(REAL_CHECKOUT);
   assert.ok(report.ok, "the drill refused against the real checkout");
   assert.ok((report.memoryEntryCount ?? 0) > 0,

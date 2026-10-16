@@ -23,6 +23,7 @@ import { readStandIns, writeStandIn } from "./row-claim/lane-stand-in.ts";
 import { ONE_SHOT_SPAWN_CAUSES, createOrchestratorOneShot, orchestratorOneShotEnabled, withOrchestratorOneShot } from "./orchestrator-one-shot.ts";
 import { startedPanes } from "./packaging/started-pane.ts";
 import { workGateSource } from "./lib/work-gate-source.ts";
+import { trackedTopLevelDirs } from "./region-paths.ts";
 
 const STANDING = ["worker-capture", "worker-judge", "worker-tooling"];
 const held = STANDING.map((label) => ({ label, status: "working" }));
@@ -79,6 +80,10 @@ function drive(orders: readonly object[], { path, body = PLAIN_BODY, live = [], 
   return { ...h, got, ready, heldAtClaim };
 }
 
+/** #1650: these subtests drive a spawn for agent-org#832 or read the vocabulary the fixture declares empty. The fixture has ONE tracker (key ""), so `worker-agent-org-832` names no spare (arm-pr.ts `familyMember`) and the spawn is refused; its `vocabulary.resources` is `[]`, so FLEET_LAB_PATTERNS is empty and `fleetOrLabAcceptance` matches nothing. a11ign's declarations carry both, and the subtests run there. */
+const SKIP_FIXTURE = trackedTopLevelDirs().includes("packages") ? false
+  : "the fixture declares ONE tracker (key \"\"), so worker-agent-org-832 names no spare family member and the spawn is refused; its vocabulary.resources is [], so FLEET_LAB_PATTERNS is empty and fleetOrLabAcceptance matches no command";
+
 test("flag OFF: the order is byte-identical to the order at origin/main, and so is what deliver does with it", () => {
   assert.ok(Buffer.byteLength(GATE_ORDER_LITERAL) > 100, "the pinned literal is not empty, so an empty order cannot pass");
   assert.equal(JSON.stringify(GATE_ORDER), GATE_ORDER_LITERAL, "the fixture IS the literal");
@@ -97,7 +102,7 @@ test("flag OFF: the order is byte-identical to the order at origin/main, and so 
   }
 });
 
-test("flag ON: the order is addressed to engineers with the sibling cause and briefRole orchestrator, and the prompt names orchestrator.md and not engineer.md", () => {
+test("flag ON: the order is addressed to engineers with the sibling cause and briefRole orchestrator, and the prompt names orchestrator.md and not engineer.md", { skip: SKIP_FIXTURE }, () => {
   const on = withOrchestratorOneShot([GATE_ORDER], LANE(PLAIN_BODY))[0] as typeof GATE_ORDER & { briefRole: string };
   assert.equal(on.session, "engineers");
   assert.equal(on.cause, ONE_SHOT_SPAWN_CAUSES[0]);
@@ -121,7 +126,7 @@ test("flag ON: the order is addressed to engineers with the sibling cause and br
   }
 });
 
-test("flag ON, a fleet-or-lab row is never converted, with a run live or not: its order keeps the standing orchestrator and no pane is opened", () => {
+test("flag ON, a fleet-or-lab row is never converted, with a run live or not: its order keeps the standing orchestrator and no pane is opened", { skip: SKIP_FIXTURE }, () => {
   assert.notEqual(fleetOrLabAcceptance(FLEET_BODY), null, "premise: the fixture's Acceptance names a FLEET_LAB_PATTERNS command");
   assert.equal(fleetOrLabAcceptance(PLAIN_BODY), null, "premise: and the plain one does not");
   const s = scratch();
@@ -142,7 +147,7 @@ test("flag ON, a fleet-or-lab row is never converted, with a run live or not: it
   }
 });
 
-test("flag ON, a fleet-gated row, or one whose Acceptance reaches the fleet or lab, keeps the gate's order; a plain row is converted; an unreadable row and no reader keep it too", () => {
+test("flag ON, a fleet-gated row, or one whose Acceptance reaches the fleet or lab, keeps the gate's order; a plain row is converted; an unreadable row and no reader keep it too", { skip: SKIP_FIXTURE }, () => {
   const sessionOf = (lane: object) => (withOrchestratorOneShot([GATE_ORDER], lane as never)[0] as { session: string }).session;
   assert.equal(sessionOf(LANE(PLAIN_BODY)), "engineers", "THE CONTROL: a plain row IS converted, so the lane still works");
   assert.equal(sessionOf(LANE(PLAIN_BODY, ["fleet-gated"])), "orchestrator", "a fleet-gated label keeps the gate's order");
@@ -153,7 +158,7 @@ test("flag ON, a fleet-gated row, or one whose Acceptance reaches the fleet or l
   assert.equal(sessionOf({ ...LANE(PLAIN_BODY), enabled: () => false }), "orchestrator", "the flag OFF: the gate's order, as before");
 });
 
-test("flag ON: an IDLE standing engineer is never given the one-shot order; the row's own seat is started instead", () => {
+test("flag ON: an IDLE standing engineer is never given the one-shot order; the row's own seat is started instead", { skip: SKIP_FIXTURE }, () => {
   const s = scratch();
   try {
     const idle = [{ label: "worker-capture", status: "idle" }];
@@ -173,7 +178,7 @@ test("flag ON: an IDLE standing engineer is never given the one-shot order; the 
   }
 });
 
-test("flag ON: a row under a future Fleet-hold-until is held; one whose hold has passed is not", () => {
+test("flag ON: a row under a future Fleet-hold-until is held; one whose hold has passed is not", { skip: SKIP_FIXTURE }, () => {
   const s = scratch();
   try {
     const future = `${PLAIN_BODY}\nFleet-hold-until: 2999-01-01T00:00:00Z\n`;
@@ -190,7 +195,7 @@ test("flag ON: a row that cannot be read is held, not guessed", () => {
   assert.match(String(h.hold({ key: "agent-org", number: 832 }, SEAT, [])), /could not be read \(gh: rate limited\).*held, not guessed/);
 });
 
-test("SPAWN_CAUSES is still exactly [\"ready-row-unclaimed\"], and a fixture copy that adds the new cause to it fails the check", () => {
+test("SPAWN_CAUSES is still exactly [\"ready-row-unclaimed\"], and a fixture copy that adds the new cause to it fails the check", { skip: SKIP_FIXTURE }, () => {
   const problems = (source: string) => (source.includes('export const SPAWN_CAUSES = Object.freeze(["ready-row-unclaimed"]);') ? [] : ["SPAWN_CAUSES is not exactly [\"ready-row-unclaimed\"]"]);
   assert.deepEqual([...SPAWN_CAUSES], ["ready-row-unclaimed"]);
   assert.ok(!SPAWN_CAUSES.some((cause) => ONE_SHOT_SPAWN_CAUSES.includes(cause)), "the two lists share no cause");
@@ -206,7 +211,7 @@ test("SPAWN_CAUSES is still exactly [\"ready-row-unclaimed\"], and a fixture cop
   assert.notDeepEqual(spawnableRole({ session: "engineers", causeKey: KEY, cause: "ready-row-unclaimed" }, [], STANDING), { role: SEAT }, "the control: an engineer order takes the free standing address");
 });
 
-test("flag ON: the spawn path writes a record naming the seat, the row and orchestrator BEFORE the claim, and the REAL laneReason honours that record", () => {
+test("flag ON: the spawn path writes a record naming the seat, the row and orchestrator BEFORE the claim, and the REAL laneReason honours that record", { skip: SKIP_FIXTURE }, () => {
   const s = scratch();
   const live = ["ceo", "product-manager", "orchestrator", "liaison"];
   const labels = ["lane:orchestrator", "in-progress"];
@@ -226,7 +231,7 @@ test("flag ON: the spawn path writes a record naming the seat, the row and orche
   }
 });
 
-test("flag ON, the claim refused: the record is taken back, so none outlives a seat that never ran", () => {
+test("flag ON, the claim refused: the record is taken back, so none outlives a seat that never ran", { skip: SKIP_FIXTURE }, () => {
   const s = scratch();
   try {
     const run = drive([GATE_ORDER], { path: s.path, refuseClaim: true });
@@ -238,7 +243,7 @@ test("flag ON, the claim refused: the record is taken back, so none outlives a s
   }
 });
 
-test("flag OFF: no record is written (the writer is not called); the control that ignores the flag calls it", () => {
+test("flag OFF: no record is written (the writer is not called); the control that ignores the flag calls it", { skip: SKIP_FIXTURE }, () => {
   const s = scratch();
   try {
     const noRecordWhenOff = (enabledInTransform: boolean) => {
@@ -292,7 +297,7 @@ const PINNED = {
   "FLEET_LAB_PATTERNS values": "bc781e8411db5a05fd4fbbfa75affd684e56b4039081f28865859bd1be33c860",
 };
 
-test("ROUTED_TO, FLEET_LAB_PATTERNS and fleetOrLabAcceptance are byte-identical to origin/main; an edited fixture fails the check", () => {
+test("ROUTED_TO, FLEET_LAB_PATTERNS and fleetOrLabAcceptance are byte-identical to origin/main; an edited fixture fails the check", { skip: SKIP_FIXTURE }, () => {
   const workGate = workGateSource();
   const acceptance = readFileSync(new URL("./acceptance-commands.ts", import.meta.url), "utf8");
   assert.deepEqual(untouchedRules(workGate, acceptance), PINNED);
