@@ -2,12 +2,12 @@
 /**
  * (#3233) NO LISTED TEST CHANGES ITS VERDICT WHEN A11IGN'S `main` MOVES.
  *
- * agent-org's `gate` job reads a11ign at `PROJECT_REF: main`, so a11ign merging between a pull request's own run and its queue run turned the queue
+ * agent-org's `gate` job once read a11ign at a branch (`main`), so a11ign merging between a pull request's own run and its queue run turned the queue
  * red for a change that did not touch it (agent-org #77 and #79: 16 tests, run 37083070668 and 37083324475, at a11ign `95cb57e3`, where the pull
  * requests' own runs had read `fa359250` and were green). The cause was 18 test files that asserted a11ign's LIVE checkout.
  *
  * THE PROPERTY, MEASURED: this checkout's tool is laid into a clone of a11ign at each of a durable pair of commits (#3097, which repointed every
- * workflow to `agent-org <command>`, lies between them), exactly as `ci.yml`'s `gate` job lays it out, and each converted file runs from the project's
+ * workflow to `agent-org <command>`, lies between them), exactly as `ci.yml`'s `gate` job laid it out when it read a11ign (it reads none now, agent-org#1593), and each converted file runs from the project's
  * root. Both runs must give the SAME verdict for every test, and every verdict must be green.
  *
  * THE POSITIVE CONTROL: `UNCONVERTED_CONTROL` is a test that DOES name a11ign's tree. It is written into each laid-out project and must be green at the
