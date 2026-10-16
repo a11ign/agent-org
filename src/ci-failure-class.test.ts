@@ -321,6 +321,35 @@ test("shared failure: a log that cannot be read, a hung check and a PR with a se
   assert.deepEqual(out.orders.map((o) => o.subject), ["pr-2"]);
 });
 
+test("#1557 POSITIVE: an open, UNCLAIMED incident row 16 minutes old (the shape of #5228) holds its four red PRs, wakes none, and is named in the log", () => {
+  const numbers = [4969, 4977, 5001, 5008];
+  const gh = ghFake({ jobs: Object.fromEntries(numbers.map((n, i) => [11 + i, installJob()])) });
+  const prs = numbers.map((n, i) => redPr(n, 11 + i));
+  const orders = numbers.map(redOrder);
+  sharedFailureTick(orders, { prs, run: gh.run, log }); // files the row now
+  const logs: string[] = [];
+  const later = sharedFailureTick(orders, { prs, run: gh.run, log: (line) => logs.push(line), nowMs: Date.now() + 16 * 60_000 });
+  assert.equal(gh.issues.length, 1, "one row, not joined to a second");
+  assert.deepEqual(later.orders, [], "no worker is woken for the row's failure at 16 minutes");
+  assert.deepEqual(later.released, []);
+  assert.equal(later.held.length, 4);
+  assert.match(logs.join(""), new RegExp(`incident #${gh.issues[0].number} has been open 15 minutes with no claim`));
+});
+
+test("#1557 NEGATIVE: an incident row CLOSED by its fix releases its four held PRs at once, naming the row", () => {
+  const numbers = [4969, 4977, 5001, 5008];
+  const gh = ghFake({ jobs: Object.fromEntries(numbers.map((n, i) => [11 + i, installJob()])) });
+  const prs = numbers.map((n, i) => redPr(n, 11 + i));
+  const orders = numbers.map(redOrder);
+  sharedFailureTick(orders, { prs, run: gh.run, log });
+  gh.issues[0].state = "closed";
+  gh.issues[0].closedAt = new Date().toISOString();
+  const after = sharedFailureTick(orders, { prs, run: gh.run, log, nowMs: Date.now() + 60_000 });
+  assert.equal(after.orders.length, 4, "the closed row's holds are over: each worker is told the failure is its own to read");
+  assert.equal(after.released.length, 4);
+  assert.ok(after.orders.every((o) => String((o as { prompt?: string }).prompt).includes(`SHARED-FAILURE HOLD RELEASED (#${gh.issues[0].number}: its incident row was closed)`)));
+});
+
 test("the fix refreshes its victims: merging the incident's PR updates both branches, once, with no worker turn", () => {
   const body = ["Check: checks", "First error line: npm ERR! # Not Found - GET https://registry/agent-org-#.#.#.tgz", "Shared-failure-prs: a11ign/a11ign#4969, a11ign/a11ign#4977"].join("\n");
   const closedBy = [{ number: 5004, repository: { nameWithOwner: "a11ign/agent-org" } }];
