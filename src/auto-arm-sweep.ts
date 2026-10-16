@@ -519,19 +519,22 @@ export function outsideArmPass({ repo, switchesPath, on = outsideArmOn(switchesP
     const said: string[] = [];
     const sayArm = (line: string) => { said.push(line); log(line); };
     const failed = (why: string) => { result.failed.push(pr.number); log(`OUTSIDE-ARM: #${pr.number} COULD NOT ARM -- ${why}`); };
+    let code: number;
     try {
       if (verdict.act === "ready-and-arm") { readyPullRequest({ number: pr.number, repo, run }); result.readied.push(pr.number); }
-      const code = arm(pr.number, sayArm);
-      if (code !== ARM_EXIT.DONE) throw new Error(`arm-pr exited ${code}`);
+      code = arm(pr.number, sayArm);
     } catch (cause) {
       failed(cause instanceof Error ? cause.message : String(cause));
       continue;
     }
+    // agent-org#1626: A NONZERO EXIT IS NOT "NOT ARMED". `arm-pr` exits 1 (the retired-session label refusal), 3 (ARMED_THEN_LABEL_FAILED) and 4 (JUMP_UNCONFIRMED) AFTER its arm write,
+    // so the pull request may be armed; exit 1 is also the authorship refusal BEFORE any write. Every exit is read back, and what GitHub says is what the pass reports.
+    const exited = code === ARM_EXIT.DONE ? "" : `arm-pr exited ${code}${said.length > 0 ? ` (${said[said.length - 1]})` : ""}`;
     let node: Parameters<typeof armedFromApi>[0];
     try {
       node = JSON.parse(run(armedQueryArgs({ number: pr.number, repo })));
     } catch (cause) {
-      failed(`arm-pr exited ${ARM_EXIT.DONE}, and the read-back could not say whether it took: ${cause instanceof Error ? cause.message : cause}`);
+      failed(`${exited || `arm-pr exited ${ARM_EXIT.DONE}`}, and the read-back could not say whether it took: ${cause instanceof Error ? cause.message : cause}`);
       continue;
     }
     // A MERGED pull request reads as armed (`armedFromApi` counts the three states), but a merge this pass did not make is not an arm this pass made:
@@ -539,9 +542,11 @@ export function outsideArmPass({ repo, switchesPath, on = outsideArmOn(switchesP
     const armedHere = armedFromApi(node) && (node?.merged !== true || said.some((line) => line.startsWith(`arm-pr: armed #${pr.number} -- `)));
     if (armedHere) {
       result.armed.push(pr.number);
-      log(`OUTSIDE-ARM: #${pr.number} ${verdict.act === "ready-and-arm" ? "readied and " : ""}armed -- read back: ${armedReason(node)}`);
+      log(`OUTSIDE-ARM: #${pr.number} ${verdict.act === "ready-and-arm" ? "readied and " : ""}armed -- read back: ${armedReason(node)}${exited ? `. BUT ${exited}` : ""}`);
       continue;
     }
+    // Not armed on the read-back after a nonzero exit: the exit is the cause (a refusal before the write, or a failure that left nothing armed), and it is named with what GitHub says.
+    if (exited) { failed(`${exited}; read back: NOT ARMED`); continue; }
     const refusal = said.find((line) => line.startsWith(`arm-pr: NOT arming #${pr.number} -- `));
     if (refusal !== undefined) {
       result.left.push({ number: pr.number, why: refusal });

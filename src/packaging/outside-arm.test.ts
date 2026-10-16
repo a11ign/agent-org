@@ -153,6 +153,35 @@ test("a read that fails is COULD NOT ASK and arms nothing; an arm that fails is 
   assert.equal(refusing.cannotAsk, false);
 });
 
+test("agent-org#1626: an `arm-pr` that writes the arm and then exits nonzero is READ BACK, and the pass reports what GitHub says, not COULD NOT ARM alone", () => {
+  // The three exits `arm-pr` takes AFTER its arm write (src/arm-pr.ts EXIT): 1 the retired-session label refusal, 3 ARMED_THEN_LABEL_FAILED, 4 JUMP_UNCONFIRMED.
+  for (const [code, line] of [[1, "arm-pr: retired session label"], [3, "arm-pr: labelling failed AFTER the arm step. #7 IS ARMED"], [4, "arm-pr: the jump is not confirmed"]] as const) {
+    const w = world([OPEN]);
+    const lines: string[] = [];
+    const arm = (number: number, say: (l: string) => void): number => { w.writes.push(`arm ${number}`); w.armed.add(number); say(`arm-pr: armed #${number} -- open`); say(line); return code; };
+    const result = outsideArmPass({ repo: REPO, switchesPath: on, run: ghOf(w), arm, log: (l) => lines.push(l) });
+    assert.deepEqual(result.armed, [7], `exit ${code}: GitHub says armed`);
+    assert.deepEqual(result.failed, [], `exit ${code}: not reported as a failure to arm`);
+    const out = lines.join("\n");
+    assert.match(out, new RegExp(`OUTSIDE-ARM: #7 armed -- read back: .*BUT arm-pr exited ${code} \\(${line}\\)`), `exit ${code}: the exit is named beside the read-back`);
+    assert.doesNotMatch(out, /COULD NOT ARM/, `exit ${code}`);
+  }
+  // CONTROL, the other direction: the same exit 1 BEFORE any write (the authorship refusal) leaves GitHub unarmed, and the pass says so.
+  const w = world([OPEN]);
+  const lines: string[] = [];
+  const refused = outsideArmPass({ repo: REPO, switchesPath: on, run: ghOf(w), arm: (n, say) => { say(`arm-pr: NOT arming #${n} -- authored into a review-only lane`); return 1; }, log: (l) => lines.push(l) });
+  assert.deepEqual(refused.armed, []);
+  assert.deepEqual(refused.failed, [7]);
+  assert.match(lines.join("\n"), /COULD NOT ARM -- arm-pr exited 1 \(arm-pr: NOT arming #7 .*\); read back: NOT ARMED/);
+  // A read-back that throws after a nonzero exit says it could not tell, and names the exit.
+  const unread: string[] = [];
+  const readBack = armedQueryArgs({ number: 7, repo: REPO }).join(" ");
+  const blind = outsideArmPass({ repo: REPO, switchesPath: on, run: (args) => { if (args.join(" ") === readBack) throw new Error("boom"); return ghOf(w)(args); }, arm: () => 3, log: (l) => unread.push(l) });
+  assert.deepEqual(blind.armed, []);
+  assert.deepEqual(blind.failed, [7]);
+  assert.match(unread.join("\n"), /COULD NOT ARM -- arm-pr exited 3, and the read-back could not say whether it took: boom/);
+});
+
 test("the gate's half takes the tick's list as it is (label objects, no `state`), and off asks GitHub nothing", () => {
   const w = world([OPEN]);
   const tickList = [{ number: 7, isDraft: false, baseRefName: "main", isCrossRepository: false, reviewDecision: "", labels: [{ name: "agent" }], body: "ignored" }];
