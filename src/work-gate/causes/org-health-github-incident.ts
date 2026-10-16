@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { newestPerName } from "../../newest-check-run.ts";
 import { sharedFailureTick, type RedPr } from "../../ci-failure-class.ts";
 import { subjectRef } from "../../review-attribution.ts";
-import { machineryCanaryTick, readCanaryOptions, realCanaryIo, readClaimRefusals, type ReleaseRuns, type Suppression, type CanaryIo } from "../../org-health.ts";
+import { machineryCanaryTick, machineryFlagOn, readCanaryOptions, realCanaryIo, readClaimRefusals, type ReleaseRuns, type Suppression, type CanaryIo } from "../../org-health.ts";
 import { type UnarmedFacts, hungCheckOf } from "../pr-orders.ts";
 import { blockingChecks, checksSettledGreen } from "../pr-state.ts";
 import { defaultRun, repoNow } from "../reads.ts";
@@ -13,8 +13,10 @@ import { REVIEWER_STATE_DIR } from "../vocabulary.ts";
 import { accountAuthoringTimes, type AuthorLedger } from "../../gh-author-fallback.ts";
 import { GITHUB_ROLES, type GithubRole } from "../../app-token.ts";
 import { homeHostConfig, roleIdentity, type HostConfig } from "../../host-config.ts";
-import { REVIEWER_GH_CONFIG_DIR } from "../../review-trust.ts";
+import { REVIEWER_GH_CONFIG_DIR, VERDICT_DELIVERY_FLAG } from "../../review-trust.ts";
 import { GITHUB_STATUS_URL } from "../github-status-url.ts";
+import { pullReadOf, verdictUndeliveredNow } from "../../verdict-delivery.ts";
+import { readReenqueueState } from "./pr-ejected.ts";
 
 // ---- #3723: GITHUB'S OWN STATUS, READ ONCE A TICK, AND WHAT A RUNNER OUTAGE HOLDS ---------------------------------------------------------------
 
@@ -320,14 +322,23 @@ export function authorFallbackTimes({ host = homeHostConfig(), reviewerDir = REV
   return accountAuthoringTimes(ledgers, declared);
 }
 
-export function machineryCanaryNow({ unread, unarmed, releaseRuns, suppressions, stranded = [], ownerless, authorFallbacks, ejectedNetwork, now = Date.now(), dir = REVIEWER_STATE_DIR, run = defaultRun, io }: {
-  unread: string[] | null; unarmed: number[] | UnarmedFacts | null; releaseRuns: ReleaseRuns | null; suppressions?: Suppression[]; stranded?: number[]; ownerless?: number[] | null; authorFallbacks?: number[] | null; ejectedNetwork?: number[] | null; now?: number; dir?: string; run?: typeof defaultRun; io?: CanaryIo;
+export function machineryCanaryNow({ unread, unarmed, releaseRuns, suppressions, stranded = [], ownerless, authorFallbacks, ejectedNetwork, conflictingIdle = null, now = Date.now(), dir = REVIEWER_STATE_DIR, run = defaultRun, repo = repoNow(), io }: {
+  unread: string[] | null; unarmed: number[] | UnarmedFacts | null; releaseRuns: ReleaseRuns | null; suppressions?: Suppression[]; stranded?: number[]; ownerless?: number[] | null; authorFallbacks?: number[] | null; ejectedNetwork?: number[] | null;
+  /** agent-org#1649: the conflicting pull requests whose owner is idle this tick (`conflictingIdlePrs`); `null` is not read */
+  conflictingIdle?: number[] | null; now?: number; dir?: string; run?: typeof defaultRun; repo?: string; io?: CanaryIo;
 }): any[] {
   const { options, problem } = readCanaryOptions();
   if (problem !== null) process.stderr.write(`machinery-canary: ${problem}; the defaults stand.\n`);
   const unarmedNumbers = unarmed === null ? null : Array.isArray(unarmed) ? unarmed : unarmed.numbers; // the gate's bare list or the counted facts: either way, the numbers
   const numbers = unarmedNumbers === null ? null : [...unarmedNumbers, ...stranded]; // a11ign#5125: an ejection that was not the PR's own and left it out of the queue is approved-and-unqueued too
   const fileIncident = (title: string, body: string) => run(["issue", "create", "--title", title, "--label", "incident", "--body", body]);
+  // agent-org#1649: the verdicts an outside reviewer wrote and that have not reached their pull request, reconciled against GitHub (a refused read is unread)
+  let verdictUndelivered: number[] | null = null;
+  try {
+    verdictUndelivered = verdictUndeliveredNow({ on: machineryFlagOn(readReenqueueState(dir), VERDICT_DELIVERY_FLAG), dir, pull: pullReadOf(run, repo) });
+  } catch {
+    verdictUndelivered = null;
+  }
   return machineryCanaryTick({ now, dir, options, suppressed: suppressions, io: io ?? realCanaryIo({ fileIncident }),
-    facts: { claimRefusals: readClaimRefusals(), unread, deferredWakes: deferredWakeCount(dir), unarmed: numbers, releaseRuns, ownerless: ownerless ?? null, authorFallbacks: authorFallbacks ?? null, ejectedNetwork: ejectedNetwork ?? null } }); // agent-org#1648: a red chairman pull request no order reaches; agent-org#1666: the account's authoring calls
+    facts: { claimRefusals: readClaimRefusals(), unread, deferredWakes: deferredWakeCount(dir), unarmed: numbers, releaseRuns, ownerless: ownerless ?? null, authorFallbacks: authorFallbacks ?? null, ejectedNetwork: ejectedNetwork ?? null, verdictUndelivered, conflictingIdle } }); // agent-org#1648: a red chairman pull request no order reaches; agent-org#1666: the account's authoring calls
 }

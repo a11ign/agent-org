@@ -39,7 +39,7 @@ import { ANSWER_PREFIX } from "./waiting-condition.ts";
 import { declaredClosedRows } from "./row-claim/file-overlap-rule.ts";
 import { declaredGhAccount } from "./gh-identity.ts";
 import { repeatingLinesTick } from "./repeating-lines.ts";
-import { readToolAgreement, fileReleaseIncidents, type ReleaseRuns, type CanaryState } from "./org-health.ts";
+import { readToolAgreement, fileReleaseIncidents, machineryFlagOn, type ReleaseRuns, type CanaryState } from "./org-health.ts";
 import { stateEntryPath } from "./host-config.ts";
 import { TICK_COST_FILE, TICK_RECORD_FILE, readTickRecordState, tickHealthOf, type TickHealth } from "./work-tick-health.ts"; // agent-org#1208: the tick's own record, read by the gate for its `org-health` lines
 import { readFlagSwitchesFor } from "./flag-switch-ledger.ts"; // agent-org#1135: the gate is the one caller that reads the project's declarations; `orgHealthNow` otherwise does not ask
@@ -54,9 +54,9 @@ import { verifyCheckoutOf, withVerifyStamps } from "./verify-stamp.ts"; // #3215
 import { CAUSES, JUDGMENT_CAUSES, START_CAUSES } from "./cause-declaration.ts";
 import { NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL } from "./project-vocabulary.ts";
 import { readTrunkRed } from "./trunk-red.ts";
-import { requiredWhenNeeded, fileOutsideIdleTriage, fileReviewGatedHuman } from "./work-gate/pr-orders.ts";
+import { requiredWhenNeeded, fileOutsideIdleTriage, fileReviewGatedHuman, ownerOfPr } from "./work-gate/pr-orders.ts";
 import { prOwnerRoutingFlagOn, ownerlessUnreached } from "./work-gate/tick.ts";
-import { declaredIdentities } from "./review-trust.ts";
+import { declaredIdentities, VERDICT_DELIVERY_FLAG } from "./review-trust.ts";
 
 export { redOnlyBySupersededRun, mergeConflictOrders, greenUnarmedOrders, reviewBlockedOrders, HOLD_RED_JOBS,
   stallReasonOf, stallOrderOf, stalledPrOrders, STALL_REASON, STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr,
@@ -141,6 +141,7 @@ import { anyBlockerClearingCandidate, blockerClearedReading, boardingPortOf, cla
 import { REVIEWER_STATE_DIR, type Scope, comparablePrFiles, labelsOf, scopesOf } from "./work-gate/vocabulary.ts";
 import { endGateSpan } from "./lib/spawn-census.ts";
 import { repeatedOrdersTick } from "./order-verify.ts";
+import { conflictingIdleNow } from "./verdict-delivery.ts"; // agent-org#1649
 export { openRowState, workingClaims, waitingBreakdown, stalledOrder, performActions } from "./work-gate/orders.ts";
 export { CHAIN_WAIT_FLAG, CHAIN_WAIT_FILE, CHAIN_WAIT_MINUTES, CHAIN_WAIT_ESCALATION_SESSION, blockedReasonOf, chainWaitsOf, advanceChainWaits,
   chainWaitWakeText, chainWaitEscalationText, chainWaitOrder, chainWaitOrders } from "./work-gate/causes/org-health-chain-wait.ts";
@@ -705,7 +706,7 @@ function main() {
   endGateSpan("chairmanAsks+holdHolders");
   // #1329: THE CANARY COUNTS REFUSED LANES ONLY. A repository the gate skipped BY DESIGN (paced, or no event named it) is not blind, so it
   // stays out of `blind-ticks`; it is still named on the PARTIAL line below, which is where a skipped lane is reported.
-  const lanes = tickLanes({ prs, readyRows, others, pacedSkips, primaryRefused: primaryRefusedLanes({ promotableRows, chairmanBlocked, openRowsRead }, primaryRead), unarmed: armingSplit === null ? null : armingSplit.unarmed, releaseRuns: releaseSeen.runs ?? null, suppressions: incident.suppressions, stranded: armingSplit?.stranded ?? [], ownerless: ownerlessUnreached(prs, required), authorFallbacks: authorFallbackTimes(), ejectedNetwork: armingSplit === null ? null : armingSplit.networkNotRequeued.flatMap((ejection) => (ejection.at === null ? [] : [ejection.at])) }); // agent-org#1648: a red chairman pull request no order reaches; agent-org#1666: the account's authoring calls, from the ledgers
+  const lanes = tickLanes({ prs, readyRows, others, pacedSkips, primaryRefused: primaryRefusedLanes({ promotableRows, chairmanBlocked, openRowsRead }, primaryRead), unarmed: armingSplit === null ? null : armingSplit.unarmed, releaseRuns: releaseSeen.runs ?? null, suppressions: incident.suppressions, stranded: armingSplit?.stranded ?? [], ownerless: ownerlessUnreached(prs, required), authorFallbacks: authorFallbackTimes(), conflictingIdle: conflictingIdleNow({ on: machineryFlagOn(reenqueueState, VERDICT_DELIVERY_FLAG), prs, agents: herdrListing, ownerOf: ownerOfPr }), ejectedNetwork: armingSplit === null ? null : armingSplit.networkNotRequeued.flatMap((ejection) => (ejection.at === null ? [] : [ejection.at])) }); // agent-org#1648: a red chairman pull request no order reaches; agent-org#1666: the account's authoring calls, from the ledgers
   orders.push(...lanes.orders); endGateSpan("machineryCanary"); // a11ign#5100, a11ign#5125
   endGateSpan("approvedUnqueued", approvedUnqueuedNow({ prs: prs === null ? null : [...prs, ...pullRequestsOfOthers(otherScopes)], repos: homeProjectDeclaration().tracker.map((t) => t.repo), repo: repoNow(), stateDir: REVIEWER_STATE_DIR, run: defaultRun })); // agent-org#893: the daily reading on #928; never throws, adds no order
   // FIRST OF ALL, AND ON PURPOSE (#2163): `wake` delivers in this order and records each delivery with a write, so

@@ -58,9 +58,11 @@ import { JUDGMENT_CAUSES, ANSWER_PREFIX, LAUNCH_PLACEHOLDER, REVIEWER_REGISTRY_F
   from "./work-gate.ts";
 import { reviewerInstance, subjectMention } from "./review-attribution.ts";
 import { reviewerDoorPath } from "./reviewer-door-path.ts";
-import { INSIDE, OUTSIDE, REVIEWER_GH_CONFIG_DIR, outsideReviewArgs, outsideReviewerEnvironment, postOutsideVerdicts, type DoorRun, type ReviewTrust } from "./review-trust.ts";
+import { INSIDE, OUTSIDE, REVIEWER_GH_CONFIG_DIR, VERDICT_DELIVERY_FLAG, outsideReviewArgs, outsideReviewerEnvironment, outsideVerdictBlock, postOutsideVerdicts, type DoorRun, type ReviewTrust } from "./review-trust.ts";
+import { recordWrittenVerdicts } from "./verdict-delivery.ts"; // agent-org#1649
 // A LEAF, and where the stall bound lives (#3448): the waker's deferral limit and the signal raised for a wait over it are one number.
-import { ORDER_STALL_MINUTES, SIGNALS, orderStallReading, panePromptReading, orgHealthOrders, type CanaryState } from "./org-health.ts";
+import { ORDER_STALL_MINUTES, SIGNALS, orderStallReading, panePromptReading, orgHealthOrders, machineryFlagOn, type CanaryState } from "./org-health.ts";
+import { readReenqueueState } from "./work-gate/causes/pr-ejected.ts";
 import { REVIEWER_STATE_DIR } from "./work-gate/vocabulary.ts";
 // #2688: THE SAME INSTRUMENT #928's OFFLINE REPORT IS BUILT FROM, READ LIVE INSTEAD OF ONLY REPORTED --
 // no new metric, only this one read at delivery time.
@@ -8260,14 +8262,28 @@ export function outsidePaneReader(run: (args: string[]) => string): (label: stri
  * the outside entries, and only those: an inside reviewer posts its own verdict through the door as it always did. The door runs with the
  * reviewer's identity (`reviewerEnvironment`), which the sandboxed reviewer never had.
  */
-export function postOutsideVerdictsOf(registry: Record<string, ReviewerEntry>, run: (args: string[]) => string, doorRun?: DoorRun): string[] {
+export function postOutsideVerdictsOf(registry: Record<string, ReviewerEntry>, run: (args: string[]) => string, doorRun?: DoorRun, dir: string = REVIEWER_STATE_DIR): string[] {
   const outside = Object.entries(registry).flatMap(([session, entry]) => {
     if (entry.trust !== OUTSIDE) return [];
     const pr = reviewerInstance(session)?.number ?? null;
     return pr === null ? [] : [{ session, pr }];
   });
   if (outside.length === 0) return [];
-  return postOutsideVerdicts({ outside, read: outsidePaneReader(run), env: (session) => reviewerEnvironment(session), door: reviewerDoorPath(), run: doorRun });
+  // agent-org#1649: each pane is read ONCE a tick. With `reviews.verdictDelivery` OFF nothing is recorded and no bulleted block is read: the verdict signal reads
+  // nothing, and the panes are read as they always were. ON, the bulleted blocks are recorded (the signal's clock starts when a verdict is first seen) and posted.
+  const panes = new Map<string, string | null>();
+  const read = (session: string): string | null => {
+    if (!panes.has(session)) panes.set(session, outsidePaneReader(run)(session));
+    return panes.get(session) ?? null;
+  };
+  const delivery = machineryFlagOn(readReenqueueState(dir), VERDICT_DELIVERY_FLAG);
+  const written = delivery ? outside.flatMap(({ session, pr }) => {
+    const verdict = outsideVerdictBlock(read(session), pr, { bulleted: true });
+    return verdict === null ? [] : [{ session, pr, head: verdict.head, verdict: verdict.verdict }];
+  }) : [];
+  const recorded = delivery ? recordWrittenVerdicts({ dir, written, now: Date.now() }) : null;
+  const lines = postOutsideVerdicts({ outside, read, env: (session) => reviewerEnvironment(session), door: reviewerDoorPath(), run: doorRun, delivery });
+  return recorded === null ? lines : [recorded, ...lines];
 }
 
 /**

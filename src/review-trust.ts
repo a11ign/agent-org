@@ -164,20 +164,33 @@ export function outsidePrompt(pr: { number: number | string; author?: { login?: 
 export type OutsideVerdict = { head: string; verdict: "convinced" | "not-convinced"; body: string; };
 
 /**
+ * agent-org#1649: THE FLAG THAT CLOSES THE GAP BETWEEN A WRITTEN VERDICT AND THE PULL REQUEST. OFF: the gate's pane reader is the strict one it always was.
+ * ON: the gate reads a bulleted block (see `outsideVerdictBlock`) and posts it through the door. Read where the verdict is posted, by `postOutsideVerdicts`.
+ */
+export const VERDICT_DELIVERY_FLAG = "reviews.verdictDelivery";
+
+/** Codex panes put a bullet in front of the first line of a final message (`• BEGIN ...`); a control line is matched without it. */
+const PANE_BULLET = /^[•●]\s+/;
+
+/**
  * THE LAST COMPLETE VERDICT BLOCK FOR `pr` IN A PANE'S TEXT, or `null` when there is none. A block that never closes is not a verdict, and
  * the prompt's own template (`<n>`, `<full head sha>`) cannot match, since the head must be forty hex digits. The head is the block's own;
  * the door refuses it when the pull request has moved on, so this reader need not know the current head.
+ * `bulleted` reads a block whose BEGIN line carries the pane's bullet (agent-org#1649: the strict reader rejected a verdict the reviewer had
+ * written, so the door was never called and the verdict reached no pull request). Off, the reader is as it was.
  */
-export function outsideVerdictBlock(paneText: string | null, pr: number | string): OutsideVerdict | null {
+export function outsideVerdictBlock(paneText: string | null, pr: number | string, { bulleted = false }: { bulleted?: boolean; } = {}): OutsideVerdict | null {
   if (paneText === null) return null;
   const lines = paneText.split("\n").map((line) => line.trim());
+  // THE BULLET IS STRIPPED FROM THE CONTROL LINES ONLY, so a body that uses a bullet of its own is posted as written.
+  const control = (line: string) => (bulleted ? line.replace(PANE_BULLET, "") : line);
   const begin = new RegExp(`^BEGIN REVIEW VERDICT #${pr} at ([0-9a-f]{40})$`);
   const end = `END REVIEW VERDICT #${pr}`;
   let found: OutsideVerdict | null = null;
   for (let i = 0; i < lines.length; i++) {
-    const opened = begin.exec(lines[i]);
+    const opened = begin.exec(control(lines[i]));
     if (opened === null) continue;
-    const closing = lines.indexOf(end, i + 1);
+    const closing = lines.findIndex((line, at) => at > i && control(line) === end);
     if (closing === -1) continue;
     const inner = lines.slice(i + 1, closing).filter((line) => line !== "");
     const word = /^verdict: (convinced|not-convinced)$/.exec(inner[0] ?? "");
@@ -234,13 +247,15 @@ const postedOutside = new Set<string>();
  * ONE TICK'S PASS OVER THE OUTSIDE REVIEWERS: for each live one, read its pane, and post the verdict block it wrote for its pull request (once
  * per head). It returns one line per verdict it posted or refused, for the tick's log. A pane that cannot be read is no verdict, not a refusal.
  */
-export function postOutsideVerdicts({ outside, read, env, door, run }: {
+export function postOutsideVerdicts({ outside, read, env, door, run, delivery = false }: {
   outside: readonly { session: string; pr: number; }[]; read: (session: string) => string | null;
   env: (session: string) => Record<string, string>; door: string; run?: DoorRun;
+  /** `reviews.verdictDelivery` (agent-org#1649): ON reads a bulleted block too; OFF is the strict reader, as before */
+  delivery?: boolean;
 }): string[] {
   const lines: string[] = [];
   for (const { session, pr } of outside) {
-    const verdict = outsideVerdictBlock(read(session), pr);
+    const verdict = outsideVerdictBlock(read(session), pr, { bulleted: delivery });
     if (verdict === null) continue;
     const key = `${session}@${verdict.head}`;
     if (postedOutside.has(key)) continue;
