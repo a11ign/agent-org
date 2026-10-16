@@ -6,7 +6,7 @@ the change works. The repository is PUBLIC: nothing in this body or the diff may
 
 Closes a11ign/a11ign#
 
-<!-- The row lives in a11ign/a11ign, so name it in the full form: the short one points at an issue of THIS repository. A PR that finishes no row replaces the line with the opt-out and a reason (`pr-open` names the exact words). -->
+<!-- The row lives in a11ign/a11ign, so name it in the full form: the short one points at an issue of THIS repository. A PR that finishes no row replaces the line with the opt-out and a reason (`pr-open` names the exact words). A PR that is a STEP of a row, and leaves the row open, keeps the opt-out line as it is and also writes a `Part of a11ign/a11ign#N` (or `Refs a11ign/a11ign#N`) line naming each row it advances, so that row is not read as finished by it (a11ign/agent-org#1550). -->
 
 ## What changes, and why
 
