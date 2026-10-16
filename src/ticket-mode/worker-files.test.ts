@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { batchPlanBriefText, briefText, firstPrompt, planBriefText, workerFlags, workerSettings } from "./worker-files.ts";
-import type { Ticket } from "./source.ts";
+import type { Blocker, Ticket } from "./source.ts";
 
 const ticket = { key: "NBF-1270", title: "Refresh Data gives no feedback", description: "Clicking does nothing visible.", url: "https://linear.app/x/issue/NBF-1270",
   branch: "nbf-1270-refresh", status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 3, parent: "NBF-1200" } as Ticket;
@@ -171,4 +171,19 @@ test("a batch's brief lists every ticket with its files and parent, fills {keys}
     "{ \"kind\": \"planned\" }", "change no code"]) {
     assert.ok(brief.includes(part), part);
   }
+});
+
+test("a run stacked on its blockers is told to branch from one, link its pull request onto it, and say which, and they leave the waited-on list", () => {
+  const draft = "https://github.com/o/nbl-ui-netbox/pull/12";
+  const blockers: Blocker[] = [{ key: "NBF-1", state: "started", status: "In Review", branch: "nbf-1-fit", pulls: { [draft]: "open" as const } },
+    { key: "NBF-5", state: "completed", status: "Done", pulls: {} }];
+  const text = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "node bin.ts ticket:worktree", blockers,
+    stackedOn: [{ key: "NBF-1", url: draft, repo: "nbl-ui-netbox", branch: "nbf-1-fit" }] });
+  for (const part of ["## Stack on the work you wait for", "open pull request in `nbl-ui-netbox`", `- NBF-1: ${draft}, on branch \`nbf-1-fit\``,
+    "`node bin.ts ticket:worktree nbl-ui-netbox --from <branch>`", "`gh pr view <its pull request url> --json headRefName`", "or on the last one listed when the plan does not say",
+    "`gh stack link <its pull request url> <your pull request url>`", "Run no other `gh stack` command", "which pull request yours is stacked on"]) {
+    assert.ok(text.includes(part), part);
+  }
+  assert.match(text, /This ticket waited until each of these was done:\n\n- NBF-5, Done: no pull request linked\n/, "only the blockers it waited for");
+  assert.equal(briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w" }).includes("## Stack on"), false);
 });

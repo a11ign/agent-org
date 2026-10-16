@@ -34,8 +34,11 @@ export type Ticket = Readonly<{
 /** A pull request's state as the tracker last saw it. A draft, or one in review, is `open`. */
 export type PullState = "open" | "merged" | "closed";
 
-/** A ticket that blocks another, as the tracker last saw it: its state's type and name, and the state of each pull request it links, by URL. */
-export type Blocker = Readonly<{ key: string; state: string; status: string; pulls: Readonly<Record<string, PullState>> }>;
+/**
+ * A ticket that blocks another, as the tracker last saw it: its state's type and name, the branch it links pull requests by, and the state of each
+ * pull request it links, by URL. `branch` is absent from a blocker read before it was recorded.
+ */
+export type Blocker = Readonly<{ key: string; state: string; status: string; branch?: string; pulls: Readonly<Record<string, PullState>> }>;
 
 export interface TicketSource {
   /** Every unfinished ticket assigned to the person whose key this is. Throws when the tracker cannot be asked. */

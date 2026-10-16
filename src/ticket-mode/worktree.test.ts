@@ -75,3 +75,17 @@ test("a generated file is excluded once through the clone's shared exclude, and 
   await excludeFromGit(path, generated, { git, append: (_p, line) => appended.push(line) });
   assert.deepEqual(appended, [], "already ignored, so nothing is appended");
 });
+
+test("a worktree stacked on another ticket's work is made from that branch, freshly fetched, and a retry keeps it", async () => {
+  const { clone, root } = remoteAndClone();
+  const remote = join(clone, "..", "remote");
+  gitSync(remote, ["checkout", "-q", "-b", "nbf-1-fit"]);
+  commit(remote, "on nbf-1-fit");
+  gitSync(remote, ["checkout", "-q", "develop"]);
+  const path = worktreePath(root, "NBF-2", "repo-a");
+  const made = await addWorktree({ repo: "repo-a", clone, path, branch: "nbf-2-zoom", from: "nbf-1-fit" }, git);
+  assert.equal(made.base, "nbf-1-fit");
+  assert.equal(gitSync(path, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), "nbf-2-zoom");
+  assert.equal(gitSync(path, ["log", "-1", "--format=%s"]).trim(), "on nbf-1-fit", "the clone had never fetched that branch");
+  assert.equal((await reuseWorktree({ repo: "repo-a", clone, path, branch: "nbf-2-zoom" }, git)).path, path);
+});

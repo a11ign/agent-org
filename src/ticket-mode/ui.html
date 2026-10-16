@@ -181,7 +181,7 @@
 // This page only draws what they return and wires the clicks.
 import {
   APPROVE_TITLE, PRIORITY_NAMES, RUN_STATUSES, pullsOf, flatten, groupByStatus, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, queueLabel, recall, remember, runActions, runStatus,
-  runChoiceLabel, runsShown, unplannedCount, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, waitsOn, workersLabel,
+  runChoiceLabel, runsShown, unplannedCount, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, waitsOn, workersLabel,
 } from "/board-view.js";
 
 const el = (tag, props = {}, ...children) => {
@@ -381,6 +381,7 @@ function length(ms) {
 function row(e) {
   const status = runStatus(e, state.queue.entries);
   const waits = waitsOn(e, state.queue.entries);
+  const stacked = stackedOn(e, state.queue.entries);
   const o = e.outcome;
   const actions = el("div", { className: "actions" });
   for (const verb of runActions(e)) {
@@ -403,6 +404,7 @@ function row(e) {
       el("div", { className: "meta" }, `${LABEL[status]} · ${repos} · ${runChoiceLabel(e)} · ${when}${tokens}`),
       e.waiting ? el("div", { className: "waiting" }, "Waiting on a person") : null,
       waits.length > 0 ? el("div", { className: "meta" }, `Waits on ${waits.map((b) => `${b.key} (${b.status})`).join(", ")}`) : null,
+      stacked.length > 0 ? el("div", { className: "meta" }, stackNote(stacked)) : null,
       reason ? el("div", { className: "meta" }, reason) : null,
       isParked(e) ? el("div", { className: "waiting" }, "Still open: answer the agent in its terminal and the run carries on") : null),
     el("div", { className: "side" }, terminal, prs, actions));

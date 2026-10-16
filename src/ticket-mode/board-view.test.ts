@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, isParked, parentKeys, parentTick, ticketCount, projectCounts, queueLabel, recall, remember, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, selectable, statusCounts, terminalLink, toggled, waitsOn,
+  HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, isParked, parentKeys, parentTick, ticketCount, projectCounts, queueLabel, recall, remember, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, selectable, statusCounts, terminalLink, toggled, waitsOn, repoOfPull, stackedOn, stackNote,
   PRIORITY_NAMES, hasPlan, missingPlan, planChoiceOf, planCounts, priorityCounts, prioritiesOf, runChoiceLabel, unplannedCount, visibleTickets, workItems,
   type ViewEntry, type ViewTicket,
 } from "./board-view.ts";
@@ -400,4 +400,39 @@ test("a run's row names its model and effort, and a ticket still to be planned n
   assert.equal(runChoiceLabel({ ticket: { key: "A" }, phase: "queued", model: "sonnet", effort: "high" }), "sonnet/high");
   assert.equal(runChoiceLabel({ ticket: { key: "A" }, phase: "queued", model: "sonnet", effort: "high", plan: { model: "opus", effort: "max" } }), "plan on opus/max, then sonnet/high");
   assert.equal(runChoiceLabel({ ticket: { key: "A" }, phase: "running", model: "sonnet", effort: "high", planned: true }), "sonnet/high on an unattended plan");
+});
+
+test("a blocker with an open pull request in the run's planned repository is stacked on, not waited for, and any other blocker still holds the run", () => {
+  const draft = "https://github.com/acme/nbl-ui-netbox/pull/12";
+  const elsewhere = "https://github.com/acme/nbl-ui-platform-libs/pull/7";
+  const stackable = { key: "NBF-1", state: "started", status: "In Review", branch: "nbf-1-fit", pulls: { [draft]: "open" } };
+  const otherRepo = { key: "NBF-2", state: "started", status: "In Review", branch: "nbf-2", pulls: { [elsewhere]: "open" } };
+  const merged = { key: "NBF-3", state: "started", status: "In Review", branch: "nbf-3", pulls: { "https://github.com/acme/nbl-ui-netbox/pull/13": "merged" } };
+  const notStarted = { key: "NBF-4", state: "unstarted", status: "Todo", branch: "nbf-4", pulls: {} };
+  const waiting = run({ ticket: { key: "NBF-9" }, phase: "queued", plannedRepo: "nbl-ui-netbox", blockers: [stackable, otherRepo, merged, notStarted] });
+  assert.deepEqual(stackedOn(waiting, [waiting]), [{ key: "NBF-1", url: draft, repo: "nbl-ui-netbox", branch: "nbf-1-fit" }]);
+  assert.deepEqual(waitsOn(waiting, [waiting]).map((b) => b.key), ["NBF-2", "NBF-3", "NBF-4"], "another repository's, a merged-only or no pull request still holds it");
+  const onlyStackable = run({ ticket: { key: "NBF-9" }, phase: "queued", plannedRepo: "nbl-ui-netbox", blockers: [stackable] });
+  assert.equal(runStatus(onlyStackable, [onlyStackable]), "queued", "a run stacked on every blocker it has is ready to start");
+  const unplanned = run({ ticket: { key: "NBF-9" }, phase: "queued", blockers: [stackable] });
+  assert.deepEqual([stackedOn(unplanned, [unplanned]), runStatus(unplanned, [unplanned])], [[], "blocked"], "a run with no planned repository never stacks");
+  for (const state of ["canceled", "duplicate"]) {
+    const gone = run({ ticket: { key: "NBF-9" }, phase: "queued", plannedRepo: "nbl-ui-netbox", blockers: [{ ...stackable, state }] });
+    assert.deepEqual([stackedOn(gone, [gone]), runStatus(gone, [gone])], [[], "blocked"], `a ${state} blocker's work will not come`);
+  }
+  const { branch: _unknown, ...noBranch } = stackable;
+  const unbranched = run({ ticket: { key: "NBF-9" }, phase: "queued", plannedRepo: "nbl-ui-netbox", blockers: [noBranch] });
+  assert.deepEqual([stackedOn(unbranched, [unbranched]), runStatus(unbranched, [unbranched])], [[], "blocked"], "a blocker whose branch is unknown cannot be built on");
+  const finished = run({ ticket: { key: "NBF-9" }, phase: "finished", plannedRepo: "nbl-ui-netbox", blockers: [stackable] });
+  assert.deepEqual(stackedOn(finished, [finished]), [], "a finished run is stacked on nothing any more");
+  const done = run({ ticket: { key: "NBF-9" }, phase: "queued", plannedRepo: "nbl-ui-netbox", blockers: [{ ...stackable, state: "completed" }] });
+  assert.deepEqual(stackedOn(done, [done]), [], "a blocker that is done is not stacked on: there is nothing to wait for");
+  assert.equal(stackNote(stackedOn(waiting, [waiting])), "Stacked on NBF-1 #12");
+  assert.equal(stackNote([{ key: "NBF-1", url: `${draft}/`, repo: "nbl-ui-netbox", branch: "b" }]), "Stacked on NBF-1 #12", "a URL with a trailing slash keeps its number");
+});
+
+test("a pull request's repository is read from its GitHub URL, and anything else names none", () => {
+  assert.equal(repoOfPull("https://github.com/acme/nbl-ui-netbox/pull/12"), "nbl-ui-netbox");
+  assert.equal(repoOfPull("https://github.com/acme/nbl-ui-netbox/issues/12"), null);
+  assert.equal(repoOfPull("https://gitlab.com/acme/nbl-ui-netbox/pull/12"), null);
 });

@@ -130,6 +130,12 @@ takes them one each. `agent-org ticket:serve` starts a board on `127.0.0.1` and 
   duplicate blocker never lets go, so a person decides. The blockers are read before a run first starts, and nothing starts while the tracker
   cannot say; they are read again every two minutes, so a relation changed in the tracker counts. A run that waited names its blockers and
   their pull requests in its brief, and checks that any release it depends on is out before relying on it.
+- **Stacked on its blocker when both land in one repository.** A queued run whose planner recorded its repository (a ticket planned in a
+  batch) does not wait for a blocker that has an open pull request, a draft included, in that same repository. It starts on top of it
+  instead, and the board says "Stacked on NBF-1 #12". The brief names each such blocker's pull request and branch. The worker makes its
+  worktree from the branch it builds on with `ticket:worktree <repo> --from <branch>`, opens its draft pull request, and runs
+  `gh stack link <blocker's pull request> <its own>`. This holds for every "blocked by", whoever recorded it. A run with no planned
+  repository, or a blocker with no open pull request there, waits as before.
 - **Paused until you start it.** A new queue is paused, so queueing a ticket never also starts it: queue what you want, then press
   Start workers on the Board when what the workers need is ready. Pause stops new starts and leaves running workers alone, and the
   choice survives a restart of the board.
@@ -137,8 +143,8 @@ takes them one each. `agent-org ticket:serve` starts a board on `127.0.0.1` and 
 Each run starts in the ticket's own folder, `<worktreeRoot>/<ticket>`, among the repositories `clones` lists, in one herdr workspace of
 ticket mode's own session (never the org's). The worker reads its ticket and decides where the work lands, which a model can do from what a
 ticket says and a rule cannot, then makes its worktree there with `ticket:worktree <repo>`. That command keeps the branch rules in code: the
-ticket's own branch (`branchName` in Linear, so Linear links the pull request), from the remote's default branch as `ls-remote` reports it,
-never an existing branch, and the same worktree again on a retry. The board shows the repositories once the worker has made them. Its brief
+ticket's own branch (`branchName` in Linear, so Linear links the pull request), from the remote's default branch as `ls-remote` reports it
+(or, with `--from <branch>`, from the branch of a blocker it is stacked on), never an existing branch, and the same worktree again on a retry. The board shows the repositories once the worker has made them. Its brief
 is written from the ticket as Linear has it when the run starts, on the branch it was queued with. The brief carries the files on the
 ticket, both those its description links to and those attached beside it, such as a plan. When the ticket is part of a parent ticket, the
 brief also carries the parent's description, quoted, and the parent's files. Before it commits, a subagent that has not seen the worker's
@@ -151,7 +157,8 @@ ticket's move to the planner's state, and a batch's order as "blocks" relations.
 
 **What a worker may not do** is enforced by `ticket:hook`, which the ticket folder's `.claude/settings.local.json` names, so a session herdr
 resumes after a restart keeps it. A stop with no outcome file is refused twice in a row. These are refused outright: a pull request that
-is not a draft, `gh pr ready`, `merge` and `review`, requesting a reviewer, `gh workflow run`, a force push, and every MCP connector the
+is not a draft, `gh pr ready`, `merge` and `review`, requesting a reviewer, `gh workflow run`, a force push, every `gh stack` command but
+`gh stack link`, and every MCP connector the
 machine does not name in `tickets.connectors`. A worker runs with the person's connectors, Slack and mail among them, so a machine names
 only the tools its workers need, such as its tracker's reads. A machine adds its own refusals with `tickets.deny`.
 

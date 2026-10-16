@@ -7,8 +7,9 @@
 // `worker-stop-hook.ts` does: the nbl-ui plugin's own Stop gates block once and then let the next stop through on that flag, and a hook that also
 // honoured it would let a worker end on that second stop with no outcome. Its own count is what bounds it.
 //
-// PRE-TOOL-USE: WHAT ONLY A PERSON DOES. A worker opens a DRAFT pull request and stops. Marking it ready, requesting a review, merging, force-pushing,
-// running a workflow and posting to Slack are the person's, and so is every connector the machine does not name. A worker runs with the person's
+// PRE-TOOL-USE: WHAT ONLY A PERSON DOES. A worker opens a DRAFT pull request, links it into a stack with `gh stack link` when its brief says so,
+// and stops. Marking it ready, requesting a review, merging, force-pushing, running a workflow, posting to Slack and any other `gh stack`
+// command are the person's, and so is every connector the machine does not name. A worker runs with the person's
 // connectors, Slack and mail among them, so a connector is refused unless the host file's `tickets.connectors` lets its tool name through: a
 // machine whose tickets live in Linear names Linear's reads, and its worker can read a ticket's parent and blockers there. The host file's
 // `tickets.deny` adds this machine's own command refusals. The pool copies both beside the outcome file. A refusal is exit 2 with the reason on
@@ -39,6 +40,11 @@ const BASH_REFUSALS: readonly Refusal[] = [
   { pattern: /\bgh\s+workflow\s+run\b/, why: "running a workflow is the person's" },
   { pattern: /\bgit\s+push\b[^\n;&|]*(\s--force(-with-lease)?\b|\s-f\b|\s\+\S)/, why: "a force push rewrites what someone may have read" },
   { pattern: /\bassumego\b/, why: "it prints credentials into the session" },
+  // `gh stack link` only records which pull request a worker's sits on. Every other subcommand pushes, rebases or merges a whole stack. The
+  // contract allows the literal `gh stack link` alone, so the extension's other spellings (`gh extension exec stack`, `gh-stack`) are refused
+  // whatever follows them.
+  { pattern: /\bgh\s+stack\b(?!\s+link\b)|\bgh\s+extension\s+exec\s+stack\b|\bgh-stack\b/,
+    why: "a stack's pushes, rebases and merges are the person's: a worker runs only `gh stack link`" },
 ];
 
 const escape = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

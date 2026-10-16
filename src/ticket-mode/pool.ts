@@ -35,7 +35,7 @@ import { availableParallelism, homedir, loadavg } from "node:os";
 import { join } from "node:path";
 import { agentStartArgs, closedNote, herdrReason, herdrRun, openPane, readAgents } from "../herdr-agents.ts";
 import { parseOrder, type Order } from "./batch-order.ts";
-import { HANDED_BACK, hasPlan, isParked } from "./board-view.ts";
+import { HANDED_BACK, hasPlan, isParked, stackedOn } from "./board-view.ts";
 import {
   batchPlanDone, finish, isLive, leaveBatch, markResumed, markRunning, markStarting, nextStarts, observe, park, planDone, recordBlockers, recordPullStates, recordRepos,
   recordTrackerStates, unpark, unreadBlockerKeys, unsettledKeys,
@@ -377,7 +377,8 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
         notes, connectors }));
     } else {
       const worktreeCommand = `${hook.node} ${hook.bin} ticket:worktree`;
-      writeFileSync(join(dir, BRIEF_FILE), briefText({ ticket, folder, ticketDir: dir, attachments, parent, blockers: entry.blockers, clones: settings.clones, worktreeCommand,
+      writeFileSync(join(dir, BRIEF_FILE), briefText({ ticket, folder, ticketDir: dir, attachments, parent, blockers: entry.blockers,
+        stackedOn: stackedOn(entry, store.get().entries), clones: settings.clones, worktreeCommand,
         notes, connectors, planned: entry.planned === true }));
     }
     writeRunFiles(entry, folder, dir);
