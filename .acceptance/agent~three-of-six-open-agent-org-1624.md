@@ -1,0 +1,15 @@
+The open-rows read (`readOpenRows`, `src/work-gate/reads.ts`) returns `null` on four paths, and the journal of agent-org#1401 named the cause on three of them only. The one that said nothing was an answer that PARSED but was not a list: `readOpenRowsAsListed` ended in `return Array.isArray(parsed) ? parsed : null;`, a `null` with no line on stderr. A non-list answer now throws inside the same `try` as a refused call, so the existing catch writes `NOTE: the open rows could not be read (the answer was not a list: <the answer's first 120 characters>); read as refused`. A `null` still means what it meant: the claim-stall consumer (`claimStallsNow`, `src/work-gate/claim-stall-tick.ts`) prints `NO claim was evaluated this tick` for it, unchanged. The other null paths already said their cause: a refused list read (gh's reason), a refused conditional read (`NOTE: the conditional read of ... failed`, then the listed read's own line), and the pacing skip (`the open rows were skipped by pacing this tick`, a line of its own in `claimStallsNow`). `claim-stall-tick.ts` and `tick.ts` are not changed: `readOpenRows` runs in the same tick, before `claimStallsNow` prints the stall line.
+
+Acceptance: `node --test src/work-gate/open-rows-null-said.test.ts` (4 tests). Before the change: 2 fail (the non-list test and the conditional test) and said `''`. After: `ℹ tests 4, pass 4, fail 0`. The fourth test is the positive control (a `[]` answer is returned and nothing is said), so the negative cannot pass by accident.
+
+Mutation: `src/work-gate/reads.ts` backed up by `cp` to the scratchpad, the new throw replaced by the old silent line (`return Array.isArray(parsed) ? parsed : null;`) by a `node` script, the acceptance command run, then the backup copied back and proven identical with `diff` (no output, `RESTORED_IDENTICAL`). Result: 2 failing tests, the non-list test and the conditional test; the refused-call control and the list control still pass.
+
+Regression: `node --test` over `src/packaging/gate-graphql-pacing.test.ts`, `src/gh-conditional.test.ts`, `src/packaging/work-gate-scopes-and-due-index.test.ts` and `src/packaging/work-gate.test.ts`: `ℹ tests 506, pass 469, fail 37` with the change, and `ℹ tests 502, pass 465, fail 37` at HEAD (`git show HEAD:src/work-gate/reads.ts` in place, then restored and proven identical). The 37 are the same `pr-checks-failing` tests at both, all predating this change; none touches open rows. The four new tests add to the pass count only.
+
+Typecheck: `pnpm run typecheck` exits 0. This repository has no `lint` or `verify` script in `package.json`, so neither was run. `pnpm test` refuses to run outside a laid project in this worktree, so the rstest suite was not run here; the regression files above were run directly with `node --test`.
+
+Closes a11ign/agent-org#1624
+
+platform: linux, Node v24.21.0; the test is pure over a fake `run` and a fake REST `ask` (a tmpdir for the conditional read's cache), so no `gh`, network, or host state is reached.
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
