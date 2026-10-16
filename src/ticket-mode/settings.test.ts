@@ -1,7 +1,7 @@
 // no-token: gh -- nothing here spawns anything; the host file is handed in as text
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { HOST_FILE_ENV, parseTicketSettings, readTicketSettings, TicketSettingsRefusal } from "./settings.ts";
+import { HOST_FILE_ENV, parseTicketSettings, plansInBatches, readTicketSettings, TicketSettingsRefusal } from "./settings.ts";
 
 const clones = { "nbl-ui-netbox": "/repos/nbl-ui-netbox", "nbl-ui-platform": "/repos/nbl-ui-platform", "platform-monorepo": "/repos/platform-monorepo" };
 
@@ -62,6 +62,14 @@ test("a machine names how a ticket with no plan is planned first, and where the 
   assert.equal(parseTicketSettings({ clones, tickets: { plan } }, "/home/me").planner, null, "none by default, so the board plans nothing");
 });
 
+test("a planner that names {keys} plans the tickets queued together in one run, and one that names only {key} plans each alone", () => {
+  const plan = "-plan-[^/]*\\.md$";
+  const planner = (run: string) => parseTicketSettings({ clones, tickets: { plan, planner: { run } } }, "/home/me").planner;
+  assert.equal(plansInBatches(planner("unattended: plan {keys} into {dir}")), true);
+  assert.equal(plansInBatches(planner("unattended: plan {key} into {dir}")), false);
+  assert.equal(plansInBatches(null), false, "a machine with no planner plans nothing, together or alone");
+});
+
 test("a planner is refused without the ticket and folder it is given, without a plan pattern, and with an empty state", () => {
   const plan = "-plan-[^/]*\\.md$";
   const refused = (tickets: Record<string, unknown>) => {
@@ -73,7 +81,9 @@ test("a planner is refused without the ticket and folder it is given, without a 
     }
     return "accepted";
   };
-  assert.match(refused({ plan, planner: { run: "plan {key}" } }), /^tickets\.planner: .*naming \{key\} and \{dir\}/);
+  assert.match(refused({ plan, planner: { run: "plan {key}" } }), /^tickets\.planner: .*naming \{key\} or \{keys\}, and \{dir\}/);
+  assert.match(refused({ plan, planner: { run: "plan {keys}" } }), /^tickets\.planner: /, "a batch planner needs the folder too");
+  assert.match(refused({ plan, planner: { run: "plan into {dir}" } }), /^tickets\.planner: /, "and a planner names what it plans");
   assert.match(refused({ plan, planner: "plan {key} into {dir}" }), /^tickets\.planner: /);
   assert.match(refused({ planner: { run: "plan {key} into {dir}" } }), /^tickets\.planner: .*needs tickets\.plan/);
   assert.match(refused({ plan, planner: { run: "plan {key} into {dir}", state: "" } }), /^tickets\.planner\.state: /);

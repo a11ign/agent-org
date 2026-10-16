@@ -114,12 +114,12 @@ test("planning has its own model and effort in the settings, opus at high until 
 });
 
 /** A board whose machine plans, over a tracker that takes plans: NBF-1 has a plan of its own and NBF-2 has none. */
-function planningBoard(attachPlan: TicketSource["attachPlan"] | null = async () => null) {
+function planningBoard(attachPlan: TicketSource["attachPlan"] | null = async () => null, run = "plan {key} into {dir}") {
   const dir = tmpDir("ticket-server-planning-");
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/r/netbox" }, stateDir: dir,
-    tickets: { plan: "-plan-[^/]*\\.md$", planner: { run: "plan {key} into {dir}", state: "Planned" } } });
+    tickets: { plan: "-plan-[^/]*\\.md$", planner: { run, state: "Planned" } } });
   const planned = { ...ticket("NBF-1"), uploads: ["NBF-1-0001-plan-x.md"] };
-  const source: TicketSource = { assigned: async () => [planned, ticket("NBF-2")], read: async () => null, download: async () => [], ...(attachPlan ? { attachPlan } : {}) };
+  const source: TicketSource = { assigned: async () => [planned, ticket("NBF-2"), ticket("NBF-3")], read: async () => null, download: async () => [], ...(attachPlan ? { attachPlan } : {}) };
   const pool = { tick: async () => {}, stop: () => {}, close: () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {} };
   return createBoard({ settings, source, key: KEY, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7 });
 }
@@ -132,6 +132,16 @@ test("queueing with plan first plans each ticket without a plan of its own, on t
   assert.deepEqual(queue.entries.map((e: any) => [e.ticket.key, e.model, e.plan ?? null]), [["NBF-1", "sonnet", null], ["NBF-2", "sonnet", { model: "opus", effort: "max" }]]);
   const [, config] = await b.api("GET", "/api/config", {}) as [number, any];
   assert.equal(config.planner, true, "the page is told this board plans");
+});
+
+test("the tickets one press of Queue plans first are one batch when the planner names {keys}, and each is planned alone when it names only {key}", async () => {
+  for (const [run, batches] of [["plan {keys} into {dir}", ["b7-0", "b7-0"]], ["plan {key} into {dir}", [null, null]]] as const) {
+    const b = planningBoard(async () => null, run);
+    await b.api("GET", "/api/tickets", {});
+    const [, queue] = await b.api("POST", "/api/queue", { keys: ["NBF-1", "NBF-2", "NBF-3"], model: "sonnet", effort: "high", plan: true }) as [number, any];
+    assert.deepEqual(queue.entries.slice(1).map((e: any) => e.batch ?? null), batches, run);
+    assert.equal(queue.entries[0].batch, undefined, "a ticket with a plan of its own is in no batch");
+  }
 });
 
 test("queueing without plan first, or on a board that does not plan, plans nothing", async () => {

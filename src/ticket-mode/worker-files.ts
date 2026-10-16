@@ -36,6 +36,10 @@ const MISSING_SKILL = "If a skill this brief names is not available in this sess
 
 /** The folder in the ticket's own directory that a planning run writes its plan's files in, for the board to attach. */
 export const PLAN_DIR = "plan";
+/** What a batch planning run leaves in a ticket's folder, in place of its plan, when only a person can settle the plan. */
+export const QUESTION_FILE = "QUESTION.md";
+/** A batch planning run's order: each ticket's repository, and the tickets of the batch it waits on (`batch-order.ts`). */
+export const ORDER_FILE = "order.json";
 
 /** What a planning run may not do, beside the machine's own refusals: it reads the repositories and changes none. */
 export const PLANNING_DENY: readonly DenyRule[] = Object.freeze([
@@ -62,7 +66,6 @@ function filesText(attachments: readonly string[]): string {
 function parentText(parent: ParentTicket | null): string {
   if (parent === null) return "";
   const { ticket, attachments } = parent;
-  const quoted = (ticket.description.trim() || "(no description)").split("\n").map((line) => `> ${line}`.trimEnd()).join("\n");
   return `
 ## The parent ticket
 
@@ -72,7 +75,7 @@ ${ticket.url}
 
 Your ticket is one part of ${ticket.key}, and its description covers every part. Do only your ticket's part, and follow each decision of the parent's that applies to it.
 
-${quoted}
+${quoted(ticket.description)}
 
 ### Files from ${ticket.key}
 
@@ -114,6 +117,16 @@ function plannedText(planned: boolean): string {
   return "Your plan was written by an unattended planning run, not agreed with a person. Put each decision it says it made without a person in your pull request body, under the heading \"Decisions made without a person\", so the reviewer checks each one against the code.\n\n";
 }
 
+/** The host file's `tickets.planner.run` with the tickets it plans, comma-separated, and the folder their plans go in filled in. */
+const plannerInstruction = (run: string, keys: readonly string[], dir: string): string =>
+  run.replaceAll("{keys}", keys.join(", ")).replaceAll("{key}", keys.join(", ")).replaceAll("{dir}", dir);
+
+/** The repositories a planning run reads, as a list. */
+const reposText = (clones: Readonly<Record<string, string>>): string => Object.entries(clones).map(([name, path]) => `- \`${name}\` at \`${path}\``).join("\n");
+
+/** A description quoted, so its own headings cannot read as the brief's. */
+const quoted = (description: string): string => (description.trim() || "(no description)").split("\n").map((line) => `> ${line}`.trimEnd()).join("\n");
+
 /**
  * The planning run's brief, as markdown: plan the ticket with this machine's planner, change no code, and leave the plan's files in `planDir`
  * for the board to attach. `run` is the host file's `tickets.planner.run`, with the ticket and the folder filled in.
@@ -122,8 +135,8 @@ export function planBriefText({ ticket, ticketDir, planDir, attachments, parent 
   ticket: Ticket; ticketDir: string; planDir: string; attachments: readonly string[]; parent?: ParentTicket | null;
   clones: Readonly<Record<string, string>>; run: string; notes?: string; connectors?: readonly string[];
 }): string {
-  const repos = Object.entries(clones).map(([name, path]) => `- \`${name}\` at \`${path}\``).join("\n");
-  const instruction = run.replaceAll("{key}", ticket.key).replaceAll("{dir}", planDir);
+  const repos = reposText(clones);
+  const instruction = plannerInstruction(run, [ticket.key], planDir);
   return `# Plan ${ticket.key}: ${ticket.title}
 
 You are an unattended planner. Nobody will answer a question. Plan this ticket, and change no code: make no worktree, commit, push or pull request. A worker implements the plan once the board has attached it to the ticket.
@@ -162,6 +175,80 @@ Write \`${ticketDir}/${OUTCOME_FILE}\` as the last thing you do, with exactly on
 \`\`\`
 
 Write \`planned\` only when the plan's files are in \`${planDir}\`. A person may answer you here after a \`needs-human\` outcome. If one does, finish the plan with what they said, and write the outcome file again as the last thing you do.
+`;
+}
+
+/** One ticket of a batch, as its planning brief names it: the ticket, its downloaded files, and the ticket it is part of. */
+export type BatchTicket = Readonly<{ ticket: Ticket; attachments: readonly string[]; parent: ParentTicket | null }>;
+
+/** One ticket's section of a batch's brief. Its description is quoted, as a parent's is, so its headings cannot read as the brief's. */
+function batchTicketText({ ticket, attachments, parent }: BatchTicket): string {
+  const parentPart = parent === null ? "" : `
+### ${ticket.key} is part of ${parent.ticket.key}: ${parent.ticket.title}
+
+${parent.ticket.url}
+
+${quoted(parent.ticket.description)}
+
+#### Files from ${parent.ticket.key}
+
+${filesText(parent.attachments)}
+`;
+  return `
+## ${ticket.key}: ${ticket.title}
+
+${ticket.url}
+
+${quoted(ticket.description)}
+
+### Files from ${ticket.key}
+
+${filesText(attachments)}
+${parentPart}`;
+}
+
+/**
+ * A batch planning run's brief, as markdown: plan every ticket in `tickets` in one run, change no code, and leave a folder of plan files (or a
+ * question) per ticket, and the batch's order, in `planDir`. `runDir` holds the run's outcome file. `run` is the host file's
+ * `tickets.planner.run`, with the tickets and the folder filled in.
+ */
+export function batchPlanBriefText({ tickets, runDir, planDir, clones, run, notes, connectors = [] }: {
+  tickets: readonly BatchTicket[]; runDir: string; planDir: string; clones: Readonly<Record<string, string>>; run: string; notes?: string; connectors?: readonly string[];
+}): string {
+  const keys = tickets.map(({ ticket }) => ticket.key);
+  return `# Plan ${keys.length} tickets together: ${keys.join(", ")}
+
+You are an unattended planner. Nobody will answer a question. A person queued these tickets together, so they are likely linked: plan them as one batch, and change no code. Make no worktree, commit, push or pull request. A worker implements each plan once the board has attached it to its ticket.
+${tickets.map(batchTicketText).join("")}
+## The repositories on this machine
+
+Read them to plan, but never change them, commit in them or change their branches:
+
+${reposText(clones)}
+
+## What to do
+
+${plannerInstruction(run, keys, planDir)}
+
+${MISSING_SKILL}
+
+## Where the plans go
+
+Write everything in \`${planDir}\`, and nowhere else:
+
+- \`${planDir}/<KEY>/\` for each ticket above holds that ticket's plan files, or a \`${QUESTION_FILE}\` when only a person can settle its plan. The board attaches each plan file to its own ticket under its file name. Write only markdown files there, each 1 MB or less: anything else stops the board attaching that ticket's plan. A question about one ticket does not stop the others, so plan the rest.
+- \`${planDir}/${ORDER_FILE}\` is one object with an entry for each ticket: \`{ "<KEY>": { "repo": "<repository>", "after": ["<KEY>", ...] } }\`. \`repo\` is the repository the ticket's work lands in, by its name in the list above, or \`null\` for a ticket with a question. \`after\` names the tickets of this batch whose work it needs first. Name only tickets of this batch, never the ticket itself, and make no cycle. The board records each one in the tracker as blocking the ticket, so its worker starts only once they are done.
+${connectorsText(connectors)}${notes?.trim() ? `\n## On this machine\n\n${notes.trim()}\n` : ""}
+## The outcome file
+
+Write \`${runDir}/${OUTCOME_FILE}\` as the last thing you do, after every plan, question and \`${ORDER_FILE}\`, with exactly one of:
+
+\`\`\`json
+{ "kind": "planned" }
+{ "kind": "needs-human", "reason": "<the question only a person can answer, and why the evidence does not settle it>" }
+\`\`\`
+
+Write \`planned\` once every ticket has its plan files or its \`${QUESTION_FILE}\`. A \`needs-human\` outcome hands every ticket of the batch back to a person, so write it only when no ticket can be planned without one. A person may answer you here after a \`needs-human\` outcome. If one does, finish the plans with what they said, and write the outcome file again as the last thing you do.
 `;
 }
 

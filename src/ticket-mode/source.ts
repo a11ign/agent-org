@@ -76,4 +76,9 @@ export interface TicketSource {
    * otherwise. A source without it moves nothing. Throws when the tracker refuses.
    */
   moveToWorkingState?(key: string, state: string): Promise<string | null>;
+  /**
+   * Record in the tracker that each of `blockerKeys` blocks the ticket `key`, as "blocked by" reads it back. A relation the tracker already has
+   * is not made again, so an attempt that was cut off can be repeated. A source without it records no order. Throws when the tracker refuses.
+   */
+  addBlockers?(key: string, blockerKeys: readonly string[]): Promise<void>;
 }

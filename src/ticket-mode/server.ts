@@ -24,8 +24,8 @@ import { browserSessions, browserSessionsPath, SESSION_SECONDS, type BrowserSess
 import { linearSource, readLinearKey } from "./linear.ts";
 import { createPairing, PAIR_MINUTES, type Pairing } from "./pairing.ts";
 import { createPool, type PoolDeps } from "./pool.ts";
-import { amend, approve, enqueue, loadQueue, remove, retry, saveQueue, setMax, setPaused, type Queue, type RunChoice } from "./queue.ts";
-import { readTicketSettings, type TicketSettings } from "./settings.ts";
+import { amend, approve, enqueue, loadQueue, remove, retry, saveQueue, setMax, setPaused, type PlanFirst, type Queue, type RunChoice } from "./queue.ts";
+import { plansInBatches, readTicketSettings, type TicketSettings } from "./settings.ts";
 import type { Ticket, TicketSource } from "./source.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -168,12 +168,16 @@ export function createBoard(deps: BoardDeps) {
   /** Whether this board plans a ticket first: the machine names a planner, and the tracker can take the plan it writes. */
   const plans = settings.planner !== null && settings.plan !== null && source.attachPlan !== undefined;
 
-  /** Which of `tickets` to plan before they are worked, and on what: each without a plan of its own, when this board plans at all. */
-  function planFirst(tickets: readonly Ticket[]): Readonly<{ keys: ReadonlySet<string>; choice: RunChoice }> | null {
+  /**
+   * Which of `tickets` to plan before they are worked, and on what: each without a plan of its own, when this board plans at all. They are
+   * planned together when the planner plans batches.
+   */
+  function planFirst(tickets: readonly Ticket[]): PlanFirst | null {
     if (!plans || settings.plan === null) return null;
     const pattern = new RegExp(settings.plan);
     const { planModel, planEffort } = readChoice(deps.choicePath);
-    return { keys: new Set(tickets.filter((ticket) => !hasPlan(ticket, pattern)).map((ticket) => ticket.key)), choice: { model: planModel, effort: planEffort } };
+    return { keys: new Set(tickets.filter((ticket) => !hasPlan(ticket, pattern)).map((ticket) => ticket.key)), choice: { model: planModel, effort: planEffort },
+      batch: plansInBatches(settings.planner) };
   }
 
   async function api(method: string, path: string, body: Json): Promise<[number, unknown]> {

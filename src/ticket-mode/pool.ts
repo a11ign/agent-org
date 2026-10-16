@@ -19,6 +19,12 @@
 // slot, so the person can answer the agent in its terminal. An agent seen working again has been answered: its outcome file is moved aside, so
 // the stop hook asks for a new one, and the run is live again. Close ends a parked run's workspace; a workspace closed by hand is noticed.
 //
+// TICKETS QUEUED TOGETHER ARE PLANNED BY ONE RUN. Where the planner's instruction names `{keys}`, the tickets one press of Queue plans first
+// form a batch (`enqueue`), and one planning run plans it, in a folder of its own (`batchDir`). Every ticket of the batch shows that run's
+// workspace and pane, and the batch holds one slot. Only the run's agent is watched, and how it ends is how each of them ends, except
+// `planned`: then each ticket's own folder of the plan folder decides, its plan attached or its question handed to a person, and the batch's
+// `order.json` is recorded in the tracker as "blocks" relations before any of them can start (`attachBatch`).
+//
 // A REVIEW RUN RESUMES THE WORKER THAT WROTE THE CODE. A person who approves a run's pull requests queues the ticket again as a review run
 // (`approve`). It starts in the same ticket folder with `claude --resume` on the session the first run ended in, so it keeps that worker's
 // context, and a brief that has it mark the pull requests ready and see them through their checks and review. A run whose session was not
@@ -28,19 +34,21 @@ import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, rea
 import { availableParallelism, homedir, loadavg } from "node:os";
 import { join } from "node:path";
 import { agentStartArgs, closedNote, herdrReason, herdrRun, openPane, readAgents } from "../herdr-agents.ts";
+import { parseOrder, type Order } from "./batch-order.ts";
 import { HANDED_BACK, hasPlan, isParked } from "./board-view.ts";
 import {
-  finish, isLive, markResumed, markRunning, markStarting, nextStarts, observe, park, planDone, recordBlockers, recordPullStates, recordRepos, recordTrackerStates,
-  unpark, unreadBlockerKeys, unsettledKeys,
+  batchPlanDone, finish, isLive, leaveBatch, markResumed, markRunning, markStarting, nextStarts, observe, park, planDone, recordBlockers, recordPullStates, recordRepos,
+  recordTrackerStates, unpark, unreadBlockerKeys, unsettledKeys,
   type Entry, type Outcome, type Queue, type RunChoice,
 } from "./queue.ts";
 import type { Ticket, TicketSource } from "./source.ts";
 import { unreachablePlugins } from "./plugins.ts";
 import { TICKET_ENV } from "./worktree-command.ts";
-import { HOST_FILE_ENV, type TicketSettings } from "./settings.ts";
+import { HOST_FILE_ENV, plansInBatches, type TicketSettings } from "./settings.ts";
 import {
-  BRIEF_FILE, CONNECTORS_FILE, DENY_FILE, OUTCOME_FILE, PLAN_DIR, PLANNING_DENY, PREVIOUS_OUTCOME_FILE, REVIEW_FILE, STOP_COUNT_FILE, briefText, firstPrompt,
-  planBriefText, reviewBriefText, reviewPrompt, workerFlags, workerSettings, type HookCommand, type ParentTicket,
+  BRIEF_FILE, CONNECTORS_FILE, DENY_FILE, ORDER_FILE, OUTCOME_FILE, PLAN_DIR, PLANNING_DENY, PREVIOUS_OUTCOME_FILE, QUESTION_FILE, REVIEW_FILE, STOP_COUNT_FILE,
+  batchPlanBriefText, briefText, firstPrompt, planBriefText, reviewBriefText, reviewPrompt, workerFlags, workerSettings,
+  type BatchTicket, type HookCommand, type ParentTicket,
 } from "./worker-files.ts";
 
 /** herdr waits on Claude's start; a slow one has been measured past 30 s (`wake.ts`'s start budget), so a start gets 90. */
@@ -48,6 +56,8 @@ const START_TIMEOUT_MS = 90_000;
 const SETTINGS_FILE = ".claude/settings.local.json";
 /** The largest file a planning run's plan may hold. A plan is prose; anything bigger is not one. */
 const PLAN_FILE_BYTES = 1_000_000;
+/** How much of a batch ticket's `QUESTION.md` becomes the reason its run hands it to a person. */
+const QUESTION_CHARS = 500;
 /** Listings in a row a run may be missing from before its workspace counts as gone: a running run is then crashed, and a parked one unparked. */
 const MISSES_TO_GONE = 2;
 
@@ -98,6 +108,12 @@ export const ticketDir = (settings: TicketSettings, key: string): string => join
 
 /** The folder a ticket's worker starts in, and makes its worktrees in: `<worktreeRoot>/<key>`. */
 export const ticketFolder = (settings: TicketSettings, key: string): string => join(settings.worktreeRoot, key);
+
+/** Where a batch's planning run keeps its brief, its outcome and its plan folder. A ticket's own files stay in its {@link ticketDir}. */
+export const batchDir = (settings: TicketSettings, batch: string): string => join(settings.stateDir, "tickets", "batches", batch);
+
+/** The folder a batch's planning run starts in, among the person's repositories as a ticket's is. */
+export const batchFolder = (settings: TicketSettings, batch: string): string => join(settings.worktreeRoot, batch);
 
 /** The repositories a worker has made worktrees in: the folder's directories that hold a git worktree. */
 export function worktreesIn(folder: string): string[] {
@@ -243,8 +259,12 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
   /** A line in the board's log, which is its standard error. */
   const log = (line: string): void => { process.stderr.write(`ticket:serve: ${line}\n`); };
   const messageOf = (err: unknown): string => String((err as Error)?.message ?? err);
-  /** The planning runs whose plans are being attached, so a tick that sees the same outcome file meanwhile does not attach them again. */
+  /** How a run that could not start ended: crashed, with the first line of its error. */
+  const crashed = (err: unknown): Outcome => ({ kind: "crashed", reason: messageOf(err).split("\n")[0] });
+  /** The planning runs whose plans are being attached, by herdr name, so a tick that sees the same outcome file meanwhile does not attach them again. */
   const attaching = new Set<string>();
+  /** Whether this machine plans the tickets queued together in one run. */
+  const batches = plansInBatches(settings.planner);
 
   /** A run is a planning run while its entry still needs its plan and this machine has a planner. */
   const isPlanning = (entry: Entry): boolean => entry.plan !== undefined && settings.planner !== null;
@@ -267,11 +287,26 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     }
   }
   const update = (change: (queue: Queue) => Queue) => store.set(change(store.get()));
+  /** Apply `change` to each of `entries` in turn. */
+  const updateEach = (entries: readonly Entry[], change: (queue: Queue, key: string) => Queue) =>
+    update((queue) => entries.reduce((next, entry) => change(next, entry.ticket.key), queue));
 
-  /** Count one more listing in a row that `key` was missing from. True once that reaches {@link MISSES_TO_GONE}. */
-  function missedAgain(key: string): boolean {
-    const count = (misses.get(key) ?? 0) + 1;
-    misses.set(key, count);
+  /**
+   * Where the run an entry is in lives: the herdr name of its workspace and agent, the folder holding its brief and outcome, and the folder its
+   * agent starts in. A ticket of a batch is in its batch's run, which is the only way a live or parked entry keeps its batch.
+   */
+  const runPlace = (entry: Entry): Readonly<{ name: string; dir: string; folder: string }> => (entry.batch === undefined
+    ? { name: herdrName(entry.ticket.key), dir: ticketDir(settings, entry.ticket.key), folder: ticketFolder(settings, entry.ticket.key) }
+    : { name: herdrName(entry.batch), dir: batchDir(settings, entry.batch), folder: batchFolder(settings, entry.batch) });
+
+  /** The entries in `entry`'s run, as the queue has them now: every ticket of its batch in the same phase and workspace, or else the entry alone. */
+  const runMembers = (entry: Entry): Entry[] => (entry.batch === undefined ? [entry]
+    : store.get().entries.filter((e) => e.batch === entry.batch && e.phase === entry.phase && e.workspace === entry.workspace));
+
+  /** Count one more listing in a row that the run named `name` was missing from. True once that reaches {@link MISSES_TO_GONE}. */
+  function missedAgain(name: string): boolean {
+    const count = (misses.get(name) ?? 0) + 1;
+    misses.set(name, count);
     return count >= MISSES_TO_GONE;
   }
 
@@ -326,13 +361,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     const ticket = await current(entry.ticket);
     const dir = ticketDir(settings, ticket.key);
     const folder = ticketFolder(settings, ticket.key);
-    // A worker without its plugins runs without the skills and guards its brief counts on, so it is not started at all.
-    const unreachable = unreachablePlugins(settings.plugins, folder, { record: deps.pluginRecord });
-    if (unreachable.length > 0) throw new Error(unreachable.join(" "));
-    mkdirSync(dir, { recursive: true });
-    // An earlier run's outcome and stop count would end this run before it began, and an earlier review run's mark would let it mark pull
-    // requests ready.
-    for (const file of [OUTCOME_FILE, STOP_COUNT_FILE, REVIEW_FILE]) rmSync(join(dir, file), { force: true });
+    clearRunDir(folder, dir);
     const attachments = await source.download(ticket, dir);
     const parent = await parentOf(ticket, dir);
     const notes = notesFile(settings.brief, "tickets.brief");
@@ -344,43 +373,90 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
         connectors, resumed: resume !== undefined }));
       writeFileSync(join(dir, REVIEW_FILE), `${JSON.stringify(entry.review)}\n`);
     } else if (isPlanning(entry) && settings.planner) {
-      // An earlier attempt's files would be attached as this one's.
-      const planDir = join(dir, PLAN_DIR);
-      rmSync(planDir, { recursive: true, force: true });
-      mkdirSync(planDir, { recursive: true });
-      writeFileSync(join(dir, BRIEF_FILE), planBriefText({ ticket, ticketDir: dir, planDir, attachments, parent, clones: settings.clones, run: settings.planner.run, notes, connectors }));
+      writeFileSync(join(dir, BRIEF_FILE), planBriefText({ ticket, ticketDir: dir, planDir: emptyPlanDir(dir), attachments, parent, clones: settings.clones, run: settings.planner.run,
+        notes, connectors }));
     } else {
       const worktreeCommand = `${hook.node} ${hook.bin} ticket:worktree`;
       writeFileSync(join(dir, BRIEF_FILE), briefText({ ticket, folder, ticketDir: dir, attachments, parent, blockers: entry.blockers, clones: settings.clones, worktreeCommand,
         notes, connectors, planned: entry.planned === true }));
     }
+    writeRunFiles(entry, folder, dir);
+    return { folder, dir, ...(resume ? { resume } : {}) };
+  }
+
+  /**
+   * Make a run's folder ready, with nothing left of an earlier run in it. Throws, before making any of it, when a plugin the worker needs would
+   * not load in the folder its agent starts in.
+   */
+  function clearRunDir(folder: string, dir: string): void {
+    // A worker without its plugins runs without the skills and guards its brief counts on, so it is not started at all.
+    const unreachable = unreachablePlugins(settings.plugins, folder, { record: deps.pluginRecord });
+    if (unreachable.length > 0) throw new Error(unreachable.join(" "));
+    mkdirSync(dir, { recursive: true });
+    // An earlier run's outcome and stop count would end this run before it began, and an earlier review run's mark would let it mark pull
+    // requests ready.
+    for (const file of [OUTCOME_FILE, STOP_COUNT_FILE, REVIEW_FILE]) rmSync(join(dir, file), { force: true });
+  }
+
+  /** The run's plan folder, made empty: an earlier attempt's files would be attached as this one's. */
+  function emptyPlanDir(dir: string): string {
+    const planDir = join(dir, PLAN_DIR);
+    rmSync(planDir, { recursive: true, force: true });
+    mkdirSync(planDir, { recursive: true });
+    return planDir;
+  }
+
+  /** Beside a run's brief, its copy of this machine's refusals and its connectors, and in the folder its agent starts in, its settings file. */
+  function writeRunFiles(entry: Entry, folder: string, dir: string): void {
     writeFileSync(join(dir, DENY_FILE), `${JSON.stringify(isPlanning(entry) ? [...settings.deny, ...PLANNING_DENY] : settings.deny)}\n`);
     writeFileSync(join(dir, CONNECTORS_FILE), `${JSON.stringify(settings.connectors)}\n`);
     mkdirSync(join(folder, ".claude"), { recursive: true });
     writeFileSync(join(folder, SETTINGS_FILE),
       `${JSON.stringify(workerSettings({ model: runChoice(entry).model, ticketDir: dir, readDirs: Object.values(settings.clones), hook, plugins: settings.plugins }), null, 2)}\n`);
-    return { folder, dir, ...(resume ? { resume } : {}) };
+  }
+
+  /**
+   * A batch's run folder, its brief and its files, for the tickets in `members`, the first of which is in the batch. Each ticket's files are
+   * downloaded into its own {@link ticketDir}, as a run of its own would have them. Throws, with the reason, when any of it cannot be made.
+   */
+  async function prepareBatch(members: readonly Entry[]): Promise<{ folder: string; dir: string }> {
+    const [lead] = members;
+    const { dir, folder } = runPlace(lead);
+    if (settings.planner === null) throw new Error("this machine names no planner");
+    clearRunDir(folder, dir);
+    const tickets: BatchTicket[] = [];
+    for (const member of members) {
+      const ticket = await current(member.ticket);
+      const own = ticketDir(settings, ticket.key);
+      mkdirSync(own, { recursive: true });
+      tickets.push({ ticket, attachments: await source.download(ticket, own), parent: await parentOf(ticket, own) });
+    }
+    writeFileSync(join(dir, BRIEF_FILE), batchPlanBriefText({ tickets, runDir: dir, planDir: emptyPlanDir(dir), clones: settings.clones, run: settings.planner.run,
+      notes: notesFile(settings.brief, "tickets.brief"), connectors: settings.connectors }));
+    writeRunFiles(lead, folder, dir);
+    return { folder, dir };
   }
 
   /** Open the workspace and start Claude in it. Returns the workspace and its pane, or throws with herdr's reason after closing anything it opened. */
   async function start(entry: Entry, folder: string, dir: string, resume?: string): Promise<{ workspace: string; pane: string }> {
-    const key = entry.ticket.key;
-    const name = herdrName(key);
+    const runId = entry.batch ?? entry.ticket.key;
+    const { name } = runPlace(entry);
     const run = (args: string[]) => herdr(args);
-    // The worker's shell carries its ticket, its branch and the host file, which `ticket:worktree` reads.
-    const env = { [TICKET_ENV.key]: key, [TICKET_ENV.branch]: entry.ticket.branch, ...(hostFile ? { [TICKET_ENV.host]: hostFile } : {}) };
+    // The worker's shell carries its ticket, its branch and the host file, which `ticket:worktree` reads. A batch's run has no one ticket, and
+    // makes no worktree.
+    const env = { ...(entry.batch === undefined ? { [TICKET_ENV.key]: runId, [TICKET_ENV.branch]: entry.ticket.branch } : {}), ...(hostFile ? { [TICKET_ENV.host]: hostFile } : {}) };
     const opened = openPane(run, name, env, folder, session);
     if ("refusal" in opened) throw new Error(opened.refusal);
     const { model, effort } = runChoice(entry);
     const prompt = entry.review === undefined ? firstPrompt(dir) : reviewPrompt(dir);
-    const tail = [prompt, ...workerFlags({ name: key, model, effort, addDirs: [dir], resume })];
+    const tail = [prompt, ...workerFlags({ name: runId, model, effort, addDirs: [dir], resume })];
     try {
       await herdrAsync(agentStartArgs(name, "claude", opened.pane, tail, session), START_TIMEOUT_MS);
     } catch (err) {
       // A start can outlast its timeout and still succeed: ask the listing before calling it a failure.
       const listed = readAgents(run, session)?.find((agent) => agent.label === name);
       if (listed === undefined || listed.status === "unknown") {
-        throw new Error(`herdr could not start Claude for ${key} (${herdrRefusal(err)})${closedNote(run, opened.workspace, session)}`);
+        throw new Error(`herdr could not start Claude for ${runId} (${herdrRefusal(err)})${closedNote(run, opened.workspace, session)}`);
       }
     }
     return { workspace: opened.workspace, pane: opened.pane };
@@ -388,7 +464,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
 
   /** Answer a start dialog on this run's pane, if one is showing and the run has answers left. True when it answered. */
   function answerStartDialog(entry: Entry): boolean {
-    const name = herdrName(entry.ticket.key);
+    const { name, folder } = runPlace(entry);
     const count = answered.get(name) ?? 0;
     if (count >= MAX_DIALOG_ANSWERS) return false;
     let screen: string;
@@ -397,7 +473,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     } catch {
       return false;
     }
-    if (!isStartDialog(screen, ticketFolder(settings, entry.ticket.key))) return false;
+    if (!isStartDialog(screen, folder)) return false;
     herdr(["--session", settings.herdrSession, "agent", "send-keys", name, "down", "enter"]);
     answered.set(name, count + 1);
     return true;
@@ -413,22 +489,29 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     watchParked(status);
   }
 
-  /** Each running run's status, from one listing (label -> status): record its repositories, answer a start dialog, or end it. */
+  /**
+   * Each running run's status, from one listing (label -> status): record its repositories, answer a start dialog, or end it. A batch's run is
+   * watched once, through its first ticket: the others have no agent of their own.
+   */
   function watchRunning(status: ReadonlyMap<string, string>): void {
+    const watched = new Set<string>();
     for (const entry of store.get().entries.filter((e) => e.phase === "running")) {
       const key = entry.ticket.key;
-      const seen = status.get(herdrName(key));
+      const { name, dir, folder } = runPlace(entry);
+      if (watched.has(name)) continue;
+      watched.add(name);
+      const seen = status.get(name);
       if (seen === undefined || seen === "unknown") {
-        if (missedAgain(key)) end(entry, { kind: "crashed", reason: seen === undefined ? "its herdr workspace is gone" : "herdr finds no agent in its workspace" });
+        if (missedAgain(name)) end(entry, { kind: "crashed", reason: seen === undefined ? "its herdr workspace is gone" : "herdr finds no agent in its workspace" });
         continue;
       }
-      misses.delete(key);
-      const repos = worktreesIn(ticketFolder(settings, key));
+      misses.delete(name);
+      const repos = worktreesIn(folder);
       if (repos.join("\n") !== entry.repos.join("\n")) update((queue) => recordRepos(queue, key, repos));
       if (!["working", "idle", "done"].includes(seen) && answerStartDialog(entry)) continue;
-      update((queue) => observe(queue, key, seen));
+      updateEach(runMembers(entry), (queue, member) => observe(queue, member, seen));
       const current = store.get().entries.find((e) => e.ticket.key === key) ?? entry;
-      const outcomePath = join(ticketDir(settings, key), OUTCOME_FILE);
+      const outcomePath = join(dir, OUTCOME_FILE);
       if ((seen === "idle" || seen === "done") && existsSync(outcomePath)) settle(current, parseOutcome(readFileSync(outcomePath, "utf8")));
       else if (seen === "done" || (seen === "idle" && current.seenWorking === true)) end(current, { kind: "no-outcome" });
     }
@@ -436,27 +519,30 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
 
   /** Each parked run's status, from the same listing: one whose agent works again resumes, and one whose workspace is gone is unparked. */
   function watchParked(status: ReadonlyMap<string, string>): void {
+    const watched = new Set<string>();
     for (const entry of store.get().entries.filter(isParked)) {
-      const key = entry.ticket.key;
-      const seen = status.get(herdrName(key));
+      const { name } = runPlace(entry);
+      if (watched.has(name)) continue;
+      watched.add(name);
+      const seen = status.get(name);
       if (seen === undefined) {
-        if (missedAgain(key)) {
-          misses.delete(key);
-          update((queue) => unpark(queue, key));
+        if (missedAgain(name)) {
+          misses.delete(name);
+          updateEach(runMembers(entry), unpark);
         }
         continue;
       }
-      misses.delete(key);
-      if (seen === "working") resume(key);
+      misses.delete(name);
+      if (seen === "working") resume(entry);
     }
   }
 
   /** A person answered a parked run: move its outcome aside and clear the stop count, so the stop hook asks for a new outcome, and mark it live. */
-  function resume(key: string): void {
-    const dir = ticketDir(settings, key);
+  function resume(entry: Entry): void {
+    const { dir } = runPlace(entry);
     if (existsSync(join(dir, OUTCOME_FILE))) renameSync(join(dir, OUTCOME_FILE), join(dir, PREVIOUS_OUTCOME_FILE));
     rmSync(join(dir, STOP_COUNT_FILE), { force: true });
-    update((queue) => markResumed(queue, key));
+    updateEach(runMembers(entry), markResumed);
   }
 
   /** A run wrote its outcome: a planning run's plan is attached, and any other outcome ends the run. */
@@ -468,7 +554,8 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     if (outcome.kind !== "planned") return end(entry, outcome);
     if (!isPlanning(entry)) return end(entry, { kind: "needs-human", reason: "the worker wrote a planned outcome, but its run was not a planning run" });
     // Nothing waits on the attach, so its own failure is caught here rather than left to stop the board.
-    attachPlan(entry).catch((err) => log(`${entry.ticket.key}'s plan: ${messageOf(err)}`));
+    const attach = entry.batch === undefined ? attachPlan(entry) : attachBatch(entry);
+    attach.catch((err) => log(`${entry.batch ?? entry.ticket.key}'s plan: ${messageOf(err)}`));
   }
 
   /** Whether the run `entry` was taken from is still the run on the queue: not stopped, retried or started again since. */
@@ -498,10 +585,12 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
    */
   async function attachPlan(entry: Entry): Promise<void> {
     const key = entry.ticket.key;
-    if (attaching.has(key)) return;
-    attaching.add(key);
+    const { name } = runPlace(entry);
+    if (attaching.has(name)) return;
+    attaching.add(name);
     const planDir = join(ticketDir(settings, key), PLAN_DIR);
     try {
+      // Not through `attachFiles`: its extra step would queue the ticket again only after this pass has filled its slots.
       const found = planFiles(planDir);
       if ("refusal" in found) return end(entry, { kind: "needs-human", reason: found.refusal });
       if (source.attachPlan === undefined) return end(entry, { kind: "needs-human", reason: `this tracker takes no plans: attach the files in ${planDir} by hand` });
@@ -510,32 +599,133 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
       // Stopped, or stopped and started again, while its plan was attached: the person's last word stands, and a newer run is not touched.
       if (!sameRun(entry)) return;
       if (entry.workspace) closedNote((args) => herdr(args), entry.workspace, session);
-      misses.delete(key);
-      answered.delete(herdrName(key));
+      misses.delete(name);
+      answered.delete(name);
       update((queue) => planDone(queue, key));
     } catch (err) {
-      if (sameRun(entry)) end(entry, { kind: "needs-human", reason: `the plan could not be attached (${String((err as Error)?.message ?? err)}): its files are in ${planDir}` });
+      if (sameRun(entry)) end(entry, { kind: "needs-human", reason: `the plan could not be attached (${messageOf(err)}): its files are in ${planDir}` });
     } finally {
-      attaching.delete(key);
+      attaching.delete(name);
     }
   }
 
-  /** Record how a run ended. One that hands its ticket back keeps its workspace (parked); any other has its workspace closed. */
+  /** Attach the plan files in `dir` to the ticket `key`. Null once they are attached, or else the outcome that hands the ticket to a person. */
+  async function attachFiles(key: string, dir: string): Promise<Outcome | null> {
+    const found = planFiles(dir);
+    if ("refusal" in found) return { kind: "needs-human", reason: found.refusal };
+    if (source.attachPlan === undefined) return { kind: "needs-human", reason: `this tracker takes no plans: attach the files in ${dir} by hand` };
+    try {
+      const note = await source.attachPlan(key, found.files, settings.planner?.state ?? null);
+      if (note !== null) log(note);
+      return null;
+    } catch (err) {
+      return { kind: "needs-human", reason: `the plan could not be attached (${messageOf(err)}): its files are in ${dir}` };
+    }
+  }
+
+  /**
+   * Attach each plan a batch's run left to its own ticket, and queue that ticket again to be worked. A ticket the run asked a question about, or
+   * wrote nothing for, ends for a person, and the others carry on. The batch's order is recorded in the tracker first, so no ticket of the batch
+   * starts before its blockers are there to be read.
+   */
+  async function attachBatch(entry: Entry): Promise<void> {
+    const { name, dir } = runPlace(entry);
+    if (attaching.has(name)) return;
+    attaching.add(name);
+    const members = runMembers(entry);
+    const planDir = join(dir, PLAN_DIR);
+    try {
+      const handedBack = new Map<string, Outcome>();
+      for (const { ticket: { key } } of members) {
+        const outcome = await planOneOfBatch(key, join(planDir, key));
+        if (outcome !== null) handedBack.set(key, outcome);
+      }
+      const order = await recordOrder(planDir, members.map(({ ticket }) => ticket.key));
+      // Stopped, or stopped and started again, while its plans were attached: the person's last word stands, and a newer run is not touched.
+      const still = members.filter(sameRun);
+      if (still.length === 0) return;
+      if (entry.workspace) closedNote((args) => herdr(args), entry.workspace, session);
+      misses.delete(name);
+      answered.delete(name);
+      updateEach(still, (queue, key) => {
+        const outcome = handedBack.get(key);
+        return outcome === undefined ? batchPlanDone(queue, key, order.get(key)?.repo ?? null) : finish(queue, key, outcome, now());
+      });
+    } catch (err) {
+      const [still] = members.filter(sameRun);
+      if (still !== undefined) end(still, { kind: "needs-human", reason: `the plans could not be attached (${messageOf(err)}): their files are in ${planDir}` });
+    } finally {
+      attaching.delete(name);
+    }
+  }
+
+  /**
+   * Attach one batch ticket's plan from its folder, `dir`. Null once it is attached, or else the outcome that hands the ticket to a person. The
+   * unattended run made the folder and everything in it, so a link is never followed: it could point the board at a secret, which the board
+   * would then upload or show.
+   */
+  async function planOneOfBatch(key: string, dir: string): Promise<Outcome | null> {
+    const nothing: Outcome = { kind: "needs-human", reason: `the planning run wrote nothing for ${key}: no plan and no ${QUESTION_FILE} in ${dir}` };
+    if (!existsSync(dir)) return nothing;
+    if (!lstatSync(dir).isDirectory()) return { kind: "needs-human", reason: `the planner left ${dir}, which is not a plain folder` };
+    const question = join(dir, QUESTION_FILE);
+    if (existsSync(question)) {
+      if (!lstatSync(question).isFile()) return { kind: "needs-human", reason: `the planner left ${question}, which is not a plain file` };
+      return { kind: "needs-human", reason: `the planner needs a person: ${readFileSync(question, "utf8").trim().slice(0, QUESTION_CHARS)}` };
+    }
+    return readdirSync(dir).length === 0 ? nothing : attachFiles(key, dir);
+  }
+
+  /**
+   * Read a batch's order from its plan folder and record it in the tracker: each ticket blocked by the tickets of the batch it waits on. An order
+   * that fails its checks records nothing and is logged, and so is a relation the tracker refuses: the plans stand without them. Returns the
+   * order, empty when there is none to use.
+   */
+  async function recordOrder(planDir: string, keys: readonly string[]): Promise<Order> {
+    const path = join(planDir, ORDER_FILE);
+    if (!existsSync(path) || !lstatSync(path).isFile()) {
+      log(`the planning run of ${keys.join(", ")} wrote no ${ORDER_FILE} as a plain file, so their order was not recorded`);
+      return new Map();
+    }
+    const read = parseOrder(readFileSync(path, "utf8"), keys);
+    if ("refusal" in read) {
+      log(`${path} was not used, so no order was recorded: ${read.refusal}`);
+      return new Map();
+    }
+    const add = source.addBlockers?.bind(source);
+    for (const [key, { after }] of read.order) {
+      if (add === undefined || after.length === 0) continue;
+      try {
+        await add(key, after);
+      } catch (err) {
+        log(`${after.join(", ")} could not be recorded as blocking ${key}: ${messageOf(err)}`);
+      }
+    }
+    return read.order;
+  }
+
+  /**
+   * Record how a run ended, for every ticket in it. One that hands its tickets back keeps its workspace (parked); any other has its workspace
+   * closed.
+   */
   function end(entry: Entry, outcome: Outcome): void {
     const parks = entry.workspace !== undefined && HANDED_BACK.has(outcome.kind);
     if (entry.workspace && !parks) closedNote((args) => herdr(args), entry.workspace, session);
     const id = entry.workspace === undefined ? undefined : claudeSessions.get(entry.workspace);
     const tokens = countTokens(id === undefined ? null : findTranscript(transcripts, id));
-    update((queue) => (parks ? park : finish)(queue, entry.ticket.key, outcome, now(), { tokens, ...(id === undefined ? {} : { session: id }) }));
-    misses.delete(entry.ticket.key);
-    answered.delete(herdrName(entry.ticket.key));
+    const { name } = runPlace(entry);
+    const record = id === undefined ? {} : { session: id };
+    // A batch's run spent its tokens once, so they are recorded on the ticket it was watched through, and not counted again on each of the rest.
+    updateEach(runMembers(entry), (queue, key) => (parks ? park : finish)(queue, key, outcome, now(), key === entry.ticket.key ? { ...record, tokens } : record));
+    misses.delete(name);
+    answered.delete(name);
   }
 
   /** Just after a start, answer the start dialogs as they appear, rather than one per tick: a few short waits, then the tick takes over. */
   async function settleStart(entry: Entry): Promise<void> {
     for (let attempt = 0; attempt < 6; attempt += 1) {
       await wait(1500);
-      const status = readAgents((args) => herdr(args), session)?.find((agent) => agent.label === herdrName(entry.ticket.key))?.status;
+      const status = readAgents((args) => herdr(args), session)?.find((agent) => agent.label === runPlace(entry).name)?.status;
       if (status === "working" || status === "idle" || status === "done") return;
       answerStartDialog(entry);
     }
@@ -563,28 +753,80 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     } catch {
       return;
     }
+    // A batch is planned together only while this machine's planner plans batches: otherwise each of its tickets is planned alone.
+    if (!batches) updateEach(store.get().entries.filter((e) => e.phase === "queued" && e.batch !== undefined), leaveBatch);
     const { load, cores } = (deps.load ?? (() => ({ load: loadavg()[0], cores: availableParallelism() })))();
-    for (const entry of nextStarts(store.get(), load, cores)) {
-      update((queue) => markStarting(queue, entry.ticket.key, now()));
-      try {
-        if (isPlanning(entry) && await planReached(entry.ticket)) {
-          // A plan reached the ticket since it was queued, such as one a person attached or an earlier attempt left: it is worked from that.
-          update((queue) => planDone(queue, entry.ticket.key, false));
-          continue;
-        }
-        const { folder, dir, resume } = await prepare(entry);
-        const { workspace, pane } = await start(entry, folder, dir, resume);
-        // Stopped while it was starting: the stop is the person's last word, so the workspace it raced is closed and the run stays stopped.
-        if (store.get().entries.find((e) => e.ticket.key === entry.ticket.key)?.phase !== "starting") {
-          closedNote((args) => herdr(args), workspace, session);
-          continue;
-        }
-        update((queue) => markRunning(queue, entry.ticket.key, workspace, pane));
-        if (!isPlanning(entry)) moveTicketToWorkingState(entry.ticket.key);
-        await settleStart(entry);
-      } catch (err) {
-        update((queue) => finish(queue, entry.ticket.key, { kind: "crashed", reason: String((err as Error)?.message ?? err).split("\n")[0] }, now()));
+    // A run queued again while this pass read the blockers, such as a batch's ticket whose order was just recorded, waits for the next pass's read.
+    const starts = nextStarts(store.get(), load, cores).filter((entry) => entry.blockers !== undefined);
+    const begun = new Set<string>();
+    for (const entry of starts) {
+      if (begun.has(entry.ticket.key)) continue;
+      const batch = entry.batch === undefined ? [entry] : starts.filter((e) => e.batch === entry.batch);
+      for (const member of batch) begun.add(member.ticket.key);
+      await (batch.length > 1 ? startBatch(batch) : startOne(entry));
+    }
+  }
+
+  const phaseOf = (key: string) => store.get().entries.find((e) => e.ticket.key === key)?.phase;
+
+  /**
+   * Whether the run `key` is in was stopped while it was starting. The stop is the person's last word, so the workspace its start raced is closed
+   * and the run stays stopped.
+   */
+  function stoppedWhileStarting(key: string, workspace: string): boolean {
+    if (phaseOf(key) === "starting") return false;
+    closedNote((args) => herdr(args), workspace, session);
+    return true;
+  }
+
+  /** Start one run for one ticket, the rest of its batch, if it had one, being started already or waiting on a blocker. */
+  async function startOne(queued: Entry): Promise<void> {
+    if (queued.batch !== undefined) update((queue) => leaveBatch(queue, queued.ticket.key));
+    const { batch: _alone, ...entry } = queued;
+    update((queue) => markStarting(queue, entry.ticket.key, now()));
+    try {
+      if (isPlanning(entry) && await planReached(entry.ticket)) {
+        // A plan reached the ticket since it was queued, such as one a person attached or an earlier attempt left: it is worked from that.
+        update((queue) => planDone(queue, entry.ticket.key, false));
+        return;
       }
+      const { folder, dir, resume } = await prepare(entry);
+      const { workspace, pane } = await start(entry, folder, dir, resume);
+      if (stoppedWhileStarting(entry.ticket.key, workspace)) return;
+      update((queue) => markRunning(queue, entry.ticket.key, workspace, pane));
+      if (!isPlanning(entry)) moveTicketToWorkingState(entry.ticket.key);
+      await settleStart(entry);
+    } catch (err) {
+      update((queue) => finish(queue, entry.ticket.key, crashed(err), now()));
+    }
+  }
+
+  /**
+   * Start one planning run for the tickets of a batch that are ready, in queue order. A ticket whose plan reached it since it was queued is
+   * worked from that plan, and leaves the batch. Fewer than two left are each planned alone. A start that fails, such as a tracker that cannot
+   * be read for one ticket, crashes every ticket of the batch, and a retry plans each one alone.
+   */
+  async function startBatch(batch: readonly Entry[]): Promise<void> {
+    updateEach(batch, (queue, key) => markStarting(queue, key, now()));
+    try {
+      const members: Entry[] = [];
+      for (const entry of batch) {
+        if (await planReached(entry.ticket)) update((queue) => planDone(queue, entry.ticket.key, false));
+        else members.push(entry);
+      }
+      if (members.length < 2) {
+        for (const member of members) await startOne(member);
+        return;
+      }
+      const [lead] = members;
+      const { folder, dir } = await prepareBatch(members);
+      const { workspace, pane } = await start(lead, folder, dir);
+      // A stop of any ticket while it was starting stopped the whole batch.
+      if (stoppedWhileStarting(lead.ticket.key, workspace)) return;
+      updateEach(members, (queue, key) => markRunning(queue, key, workspace, pane));
+      await settleStart(lead);
+    } catch (err) {
+      updateEach(batch.filter(({ ticket }) => phaseOf(ticket.key) === "starting"), (queue, key) => finish(queue, key, crashed(err), now()));
     }
   }
 
@@ -622,8 +864,8 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     } catch (err) {
       throw new Error(`herdr could not close ${key}'s workspace (${herdrRefusal(err)})`);
     }
-    misses.delete(key);
-    update((queue) => unpark(queue, key));
+    misses.delete(runPlace(entry).name);
+    updateEach(runMembers(entry), unpark);
   }
 
   /**
@@ -636,12 +878,12 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     if (agents === null) return;
     const listed = new Set(agents.map((agent) => agent.label));
     for (const entry of store.get().entries.filter(isLive)) {
-      if (entry.phase === "starting" || !listed.has(herdrName(entry.ticket.key))) {
+      if (entry.phase === "starting" || !listed.has(runPlace(entry).name)) {
         update((queue) => finish(queue, entry.ticket.key, { kind: "crashed", reason: "the pool restarted while it was running" }, now()));
       }
     }
     for (const entry of store.get().entries.filter(isParked)) {
-      if (!listed.has(herdrName(entry.ticket.key))) update((queue) => unpark(queue, entry.ticket.key));
+      if (!listed.has(runPlace(entry).name)) update((queue) => unpark(queue, entry.ticket.key));
     }
   }
 

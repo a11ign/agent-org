@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { isParked } from "./board-view.ts";
 import {
-  amend, approve, emptyQueue, enqueue, finish, isLive, loadQueue, markResumed, markRunning, markStarting, nextStarts, observe, park, recordBlockers, recordRepos,
-  planDone, recordPullStates, recordTrackerStates, remove, retry, saveQueue, setMax, setPaused, unpark, unreadBlockerKeys, unsettledKeys, type Queue,
+  amend, approve, batchPlanDone, emptyQueue, enqueue, finish, isLive, leaveBatch, loadQueue, markResumed, markRunning, markStarting, nextStarts, observe, park,
+  recordBlockers, recordRepos, planDone, PLAN_BATCH_MAX, recordPullStates, recordTrackerStates, remove, retry, saveQueue, setMax, setPaused, unpark, unreadBlockerKeys, unsettledKeys, type Queue,
 } from "./queue.ts";
 import type { Ticket } from "./source.ts";
 
@@ -49,6 +49,50 @@ test("a retried planning run plans again, and a retried planned run keeps its ma
   queue = planDone(queue, "A");
   queue = retry(finish(markStarting(queue, "A", 5), "A", { kind: "crashed", reason: "herdr refused" }, 6), "A", 7);
   assert.deepEqual([queue.entries[0].plan, queue.entries[0].planned], [undefined, true]);
+});
+
+const batched = { choice: planChoice, batch: true };
+
+test("the tickets one press of Queue plans first are one batch, of 8 at most in queue order, and a run of one is no batch", () => {
+  const tickets = Array.from({ length: 10 }, (_, i) => ticket(`T${i + 1}`));
+  let queue = enqueue(emptyQueue(3), [ticket("OLD")], choice, 1, { keys: new Set(["OLD"]), ...batched });
+  queue = enqueue(queue, [ticket("OLD"), ...tickets, ticket("WORK")], choice, 2, { keys: new Set(["OLD", ...tickets.map((t) => t.key)]), ...batched });
+  const batchOf = (key: string) => queue.entries.find((e) => e.ticket.key === key)!.batch;
+  assert.equal(PLAN_BATCH_MAX, 8);
+  assert.deepEqual(tickets.slice(0, 8).map((t) => batchOf(t.key)), Array(8).fill("b2-0"), "the first 8, in queue order");
+  assert.deepEqual(tickets.slice(8).map((t) => batchOf(t.key)), ["b2-1", "b2-1"], "the rest are the next run");
+  assert.equal(batchOf("OLD"), undefined, "a ticket queued at another time, alone, is never batched with them");
+  assert.equal(batchOf("WORK"), undefined, "a ticket not planned first is in no batch");
+  const nine = enqueue(emptyQueue(3), tickets.slice(0, 9), choice, 3, { keys: new Set(tickets.map((t) => t.key)), ...batched });
+  assert.equal(nine.entries[8].batch, undefined, "the ninth of nine is planned alone");
+  const alone = enqueue(emptyQueue(3), tickets.slice(0, 2), choice, 4, { keys: new Set(["T1", "T2"]), choice: planChoice });
+  assert.deepEqual(alone.entries.map((e) => e.batch), [undefined, undefined], "a planner that does not batch plans each alone");
+});
+
+test("a batch is one run: its tickets take one slot between them, starting or running, and a full queue starts none of a new batch", () => {
+  const plan = { keys: new Set(["A", "B", "C"]), ...batched };
+  let queue = setPaused(enqueue(emptyQueue(1), [ticket("A"), ticket("B"), ticket("C"), ticket("D")], choice, 1, plan), false);
+  assert.deepEqual(nextStarts(queue, 0, 14).map((e) => e.ticket.key), ["A", "B", "C"], "one slot holds the whole batch, and D waits");
+  queue = setMax(markStarting(markStarting(queue, "A", 2), "B", 2), 3);
+  assert.deepEqual(nextStarts(queue, 0, 14).map((e) => e.ticket.key), ["C", "D"], "two tickets of a starting batch take one slot of three, and C, left behind, takes one of its own");
+  queue = ["A", "B"].reduce((q, key) => markRunning(q, key, "w1", "w1:p1"), queue);
+  assert.deepEqual(nextStarts(setMax(queue, 1), 0, 14), [], "a running batch fills the only slot");
+});
+
+test("a ticket of a batch leaves it when it starts alone, when its plan is attached, and when it is retried", () => {
+  const plan = { keys: new Set(["A", "B"]), ...batched };
+  let queue = enqueue(emptyQueue(3), [ticket("A"), ticket("B")], choice, 1, plan);
+  assert.deepEqual([leaveBatch(queue, "A").entries[0].batch, leaveBatch(queue, "A").entries[1].batch], [undefined, "b1-0"]);
+  queue = recordBlockers(queue, new Map([["A", []], ["B", []]]));
+  queue = ["A", "B"].reduce((q, key) => markRunning(markStarting(q, key, 2), key, "w1", "w1:p1"), queue);
+  const done = batchPlanDone(queue, "A", "nbl-ui-netbox");
+  const [a] = done.entries;
+  assert.deepEqual({ phase: a.phase, batch: a.batch, plan: a.plan, planned: a.planned, plannedRepo: a.plannedRepo, blockers: a.blockers },
+    { phase: "queued", batch: undefined, plan: undefined, planned: true, plannedRepo: "nbl-ui-netbox", blockers: undefined });
+  assert.deepEqual(unreadBlockerKeys(done), ["A"], "its blockers are read again, since its batch's order was just recorded");
+  assert.equal(batchPlanDone(queue, "B", null).entries[1].plannedRepo, null, "a ticket the planner named no repository for records none");
+  const retried = retry(finish(queue, "B", { kind: "crashed", reason: "gone" }, 3), "B", 4).entries.find((e) => e.ticket.key === "B")!;
+  assert.deepEqual([retried.batch, retried.plan], [undefined, planChoice], "a retried ticket of a batch is planned again, alone");
 });
 
 test("the repositories a worker made worktrees in are recorded on its entry", () => {
