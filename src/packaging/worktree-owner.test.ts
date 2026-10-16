@@ -130,7 +130,10 @@ test("#1128: `--stamp` with no A11Y_SESSION REFUSES and writes nothing", () => {
   } finally { rmSync(base, { recursive: true, force: true }); }
 });
 
-test("#1128: a stamped worktree still reads CLEAN to `git status --porcelain`", () => {
+// The entry this test drives is the project's own `.gitignore`. A project with none (the fixture commits a bare tree) has no ignore rule for the
+// stamp to be checked against, so the test is skipped by name there; wherever the project has a `.gitignore`, it runs.
+const PROJECT_HAS_GITIGNORE = existsSync(join(REPO, ".gitignore"));
+(PROJECT_HAS_GITIGNORE ? test : test.skip)("#1128: a stamped worktree still reads CLEAN to `git status --porcelain`", () => {
   // NOT COSMETIC. `prune-worktrees.ts`'s `isWorkingTreeClean` is exactly `git status --porcelain`, which
   // counts untracked files -- so an unignored stamp would make every stamped tree read dirty and no tree
   // would ever be reported safe to delete again. The remedy is the `.gitignore` entry, and this drives it

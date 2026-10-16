@@ -6,7 +6,8 @@
  * read a fact that tree cannot supply -- its git index (`declaredRegionFiles` reads `git ls-files`, and the Acceptance
  * copies the tree without staging it), a11ign's roster (`worker-capture`), its CI job names (`ci.yml`), its shipped units,
  * or the text of a role brief. Each is moved here whole, byte-for-byte, with the reader named in
- * `docs/project-tree-dependency.md`. Nothing is skipped or weakened: they run in the default suite against a11ign's checkout.
+ * `docs/project-tree-dependency.md`. Against a11ign's checkout they run in the default suite; against the fixture each one skips with
+ * the reason `SKIP_FIXTURE` names (#1651), and nothing is weakened.
  */
 /**
  * #912: THE TICK IS A SCRIPT, AND THESE ARE THE ANSWERS IT MUST NOT GET WRONG.
@@ -37,9 +38,18 @@ import { decide as decideOnHost, CAUSES, comparablePrFiles, START_CAUSES, blocki
   from "../work-gate.ts";
 import { SESSION_PREFIX } from "../project-vocabulary.ts";
 import { forgetRefusedReads } from "../ticket-port/rows-by-label.ts";
+import { trackedTopLevelDirs } from "../region-paths.ts";
 // #5050: the gate remembers a rate-limit refusal for the PROCESS, and a test here fakes one (`rate limited`), so without this every later list read answers `null`
 // with no call made -- a failure far from its cause.
 beforeEach(() => forgetRefusedReads());
+
+/**
+ * #1651: these subtests read a11ign's own checkout -- its roster, its cause plugins, its CI job names, its shipped host units and its role
+ * briefs (docs/project-tree-dependency.md, row 1651). The fixture project carries none of them, so they skip there and run wherever the
+ * tracked `packages/` tree is present.
+ */
+const SKIP_FIXTURE = trackedTopLevelDirs().includes("packages") ? false
+  : "the fixture project is not a11ign's checkout: these read a11ign's roster (worker-capture, worker-5, worker-2879), its fleet-batch-due cause, its ci.yml, its shipped host units or a role brief, none of which the fixture tree carries";
 // #2182: the SHIPPED reader that decides whether a delivered cause is still live, imported so this file
 // can assert what the membership BUYS rather than only that the name is in the list. `wake.ts` runs
 // nothing on import (its `main()` is behind an `import.meta.url` guard) and these three are pure, so this
@@ -389,7 +399,7 @@ test("#2493 a held PR closing NOTHING, or closing TWO rows with one edge missing
 
 
 /** #2493 done-when 5: the ready audit's line lives in the role brief, pinned so deleting it is red. */
-test("#2493: product-manager's brief says `SOLE HOLDER IS A HELD PR`, and what to read next, in ONE bullet", () => {
+test("#2493: product-manager's brief says `SOLE HOLDER IS A HELD PR`, and what to read next, in ONE bullet", { skip: SKIP_FIXTURE }, () => {
   const brief = readFileSync(join(HOME_CHECKOUT, ".agent-org/roles/product-manager.md"), "utf8");
   // THE BULLET, SLICED: a whole-file `includes` is satisfied by any second copy of the phrase elsewhere.
   const start = brief.indexOf("- **A ready audit that names a B4 holder");
@@ -447,7 +457,7 @@ const inFlight = () => [draft(1705, GREEN), { number: 1706, isDraft: true, isCro
  * quietly start new work inside a transfer window and nothing would say so. Spelling the other half out
  * means this test fails the moment `CAUSES` grows, and the author has to answer which kind it is.
  */
-test("every cause is classified as START or FINISH -- a new one cannot default into a window", () => {
+test("every cause is classified as START or FINISH -- a new one cannot default into a window", { skip: SKIP_FIXTURE }, () => {
   const finish = CAUSES.filter((c: string) => !START_CAUSES.includes(c)).sort();
   assert.deepEqual([...START_CAUSES].sort(),
     ["blocked-unexaminable", "epic-finished", "epic-unfiled", "fleet-batch-due",
@@ -571,7 +581,7 @@ const rollupOf = (entries: [string, string][]) => entries.map(([name, conclusion
 }));
 
 
-test("a red check that CAN block the merge still wakes its session", () => {
+test("a red check that CAN block the merge still wakes its session", { skip: SKIP_FIXTURE }, () => {
   // THE POSITIVE CONTROL. #1650 is why `failingChecksOrder` exists: a `changeset` failure sat unattended
   // while its own session was idle. Narrowing what counts as red must not reopen that.
   const pr = { number: 1650, isDraft: false, isCrossRepository: false, headRefOid: "deadbeefcafe0000", author: { login: "x" },
@@ -583,7 +593,7 @@ test("a red check that CAN block the merge still wakes its session", () => {
   assert.equal(order.session, "worker-capture", "and it goes to the session named on the PR");
 });
 
-test("#2538 the pr-checks-failing order keeps its (a)/(b)/(c) triage and drops the tail the preamble already says", () => {
+test("#2538 the pr-checks-failing order keeps its (a)/(b)/(c) triage and drops the tail the preamble already says", { skip: SKIP_FIXTURE }, () => {
   const pr = { number: 1650, isDraft: false, isCrossRepository: false, headRefOid: "deadbeefcafe0000", author: { login: "x" },
     labels: [{ name: "session:worker-capture" }], comments: [],
     statusCheckRollup: rollupOf([["gate", "FAILURE"]]) };
@@ -595,7 +605,7 @@ test("#2538 the pr-checks-failing order keeps its (a)/(b)/(c) triage and drops t
   assert.doesNotMatch(order.prompt, /nobody answers|not yours to fix/, "the closing 'say so on the PR' repeated the preamble");
 });
 
-test("an UNREADABLE required set counts every check, exactly as before it existed", () => {
+test("an UNREADABLE required set counts every check, exactly as before it existed", { skip: SKIP_FIXTURE }, () => {
   // `null` is "could not be read", NOT "nothing is required". Conflating them would make the gate go
   // permanently silent on red PRs the first time an API read failed -- trading a wasted turn for the
   // failure this whole function was written to stop.
@@ -625,7 +635,7 @@ const cancelledGateWhile = (live: Record<string, unknown>) => ({ number: 1924, i
   ] });
 
 
-test("a CANCELLED required check with nothing else running is still red and still reaches its author", () => {
+test("a CANCELLED required check with nothing else running is still red and still reaches its author", { skip: SKIP_FIXTURE }, () => {
   // THE POSITIVE CONTROL, and #1605's caveat: a cancelled `gate` that is genuinely the last word held a PR
   // BLOCKED. Without this, a predicate that ignored CANCELLED altogether would pass the test above.
   const settled = cancelledGateWhile({ status: "COMPLETED", conclusion: "SUCCESS" });
@@ -651,7 +661,7 @@ const failingOrders = (pr: unknown, required: string[] | null) =>
     .filter((o) => o.cause === "pr-checks-failing");
 
 
-test("the same two red jobs WITHOUT the hold still order -- the null is the exemption, not an empty rollup", () => {
+test("the same two red jobs WITHOUT the hold still order -- the null is the exemption, not an empty rollup", { skip: SKIP_FIXTURE }, () => {
   // THE POSITIVE CONTROL (clause 4), and also "the hold is removed": the order comes back on the next tick.
   for (const required of [["gate"], null]) {
     const [order, ...rest] = failingOrders(heldPr([]), required);
@@ -661,7 +671,7 @@ test("the same two red jobs WITHOUT the hold still order -- the null is the exem
   }
 });
 
-test("a THIRD red job ends the exemption, so a real failure under a hold still reaches its session", () => {
+test("a THIRD red job ends the exemption, so a real failure under a hold still reaches its session", { skip: SKIP_FIXTURE }, () => {
   const real: [string, string][] = [["deliberateRefusals", "FAILURE"], ["gate", "FAILURE"], ["ts / run", "FAILURE"]];
   for (const required of [["gate"], null]) {
     const [order] = failingOrders(heldPr(["hold:product-manager"], real), required);
@@ -674,7 +684,7 @@ test("a THIRD red job ends the exemption, so a real failure under a hold still r
     "a hold does not excuse a red gate whose cause is not the hold (deliberateRefusals is green here)");
 });
 
-test("ANY session's hold answers a PR red only from it, the owner's too -- #2993 narrows #2400's clause 1", () => {
+test("ANY session's hold answers a PR red only from it, the owner's too -- #2993 narrows #2400's clause 1", { skip: SKIP_FIXTURE }, () => {
   // #2400 clause 1 ("a hold by anyone else is not an answer from the session being asked") was written for a hold the ADDRESSEE placed.
   // For a hold the addressee is the SUBJECT of, the order asks "fix your build" and nothing in the build is broken (#2990, five orders).
   assert.deepEqual(failingOrders(heldPr(["hold:ceo"]), ["gate"]), [], "unowned and held by ceo, who is the last answer");
@@ -702,7 +712,7 @@ test("ANY session's hold answers a PR red only from it, the owner's too -- #2993
  * the hold of the session it went to before that change stopped matching and #2883 was re-ordered every tick. Since #2993 no hold has to
  * match anybody: the exemption still ends with either key (a third red job, or the hold removed).
  */
-test("a rowOwner-routed PR under any hold generates no order; a third red job or no hold brings it back -- #2935/#2993", () => {
+test("a rowOwner-routed PR under any hold generates no order; a third red job or no hold brings it back -- #2935/#2993", { skip: SKIP_FIXTURE }, () => {
   const routed = (labels: string[], checks: [string, string][] = HELD_RED) =>
     ({ ...heldPr(labels, checks), rowOwner: { session: "worker-2879", row: 2879, source: "closes" } });
   for (const required of [["gate"], null]) {
@@ -718,7 +728,7 @@ test("a rowOwner-routed PR under any hold generates no order; a third red job or
   assert.deepEqual(failingOrders(labelled, ["gate"]), [], "a labelled PR under product-manager's hold: no order either (#2993)");
 });
 
-test("HOLD_RED_JOBS names the jobs ci.yml defines, so the exemption cannot go stale on a rename", () => {
+test("HOLD_RED_JOBS names the jobs ci.yml defines, so the exemption cannot go stale on a rename", { skip: SKIP_FIXTURE }, () => {
   const ci = readFileSync(join(HOME_CHECKOUT, ".github/workflows/ci.yml"), "utf8");
   assert.deepEqual([...HOLD_RED_JOBS], ["deliberateRefusals", "gate"]);
   for (const job of HOLD_RED_JOBS) assert.match(ci, new RegExp(`\\n {2}${job}:\\n`), `${job} is a job in ci.yml`);
@@ -744,7 +754,7 @@ const holdOwnPr = (checks: [string, string][] = HELD_RED) => ({ number: 2649, is
  * Clauses 3 and 5: the escalation is read off what `deliver` is HANDED, so an order never emitted cannot reach the
  * breaker at all. The wake half is driven with the ledger already at the cap, which is #2376's state.
  */
-test("a held PR at the cap stops appearing in stuck, and a real failure under the same hold still escalates -- #2400", () => {
+test("a held PR at the cap stops appearing in stuck, and a real failure under the same hold still escalates -- #2400", { skip: SKIP_FIXTURE }, () => {
   const at = (checkNames: [string, string][], labels = ["hold:product-manager"]) => {
     const orders = failingOrders(heldPr(labels, checkNames), ["gate"]);
     const counts = new Map(orders.map((o) => [o.causeKey, MAX_DELIVERIES]));
@@ -763,7 +773,7 @@ test("a held PR at the cap stops appearing in stuck, and a real failure under th
   assert.deepEqual(real.calls, [["issue", "edit", "2376", "--add-label", "answer:ceo"]]);
 });
 
-test("a PR held by SOMEBODY ELSE at the cap is not stuck and gets no needs:chairman -- #2993", () => {
+test("a PR held by SOMEBODY ELSE at the cap is not stuck and gets no needs:chairman -- #2993", { skip: SKIP_FIXTURE }, () => {
   const foreign = ["session:worker-5", "hold:ceo"];
   const at = (checkNames: [string, string][]) => {
     const orders = failingOrders(heldPr(foreign, checkNames), ["gate"]);
@@ -930,7 +940,7 @@ const gated = (n: number, ...extra: string[]) => ({ number: n,
  * The verdict never reached the PR: #1769 merged while the review was running, and `reviewer` correctly
  * refused to comment on a closed pull request. It was relayed by the chairman instead.
  */
-test("a SUPERSEDED red run does not wake anyone -- the newest run per name is what counts", () => {
+test("a SUPERSEDED red run does not wake anyone -- the newest run per name is what counts", { skip: SKIP_FIXTURE }, () => {
   const twice = { number: 1, isDraft: false, isCrossRepository: false, headRefOid: "abc12345aaaaaaaa", author: { login: "x" },
     labels: [{ name: "session:worker-capture" }],
     // A verdict at head, so the only order this fixture can produce is the red one (#2176).
@@ -1187,7 +1197,7 @@ const batchRow = (n: number, milestone: string | null = ON_PATH) => ({
 
 
 
-test("#1941: the retired timer's units are gone from the shipped host set", () => {
+test("#1941: the retired timer's units are gone from the shipped host set", { skip: SKIP_FIXTURE }, () => {
   // The clock is the thing being removed; leaving the unit in `packages/agent-org/host/` would let
   // `host:install` put it straight back, and the org would have both a timer and a gate cause firing the
   // same batch at two different cadences.

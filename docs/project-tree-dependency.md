@@ -458,6 +458,21 @@ Candidate tracker rows, not filed (the row's Done-when asks for one per moved fi
 
 Not covered: the other families that touch the fixture are in the #1604 section and the table in its "Open" list; this row does not change them.
 
+## The two a11ign-reader files against the fixture (agent-org#1651)
+
+Acceptance (the row's two-file command, run verbatim) before any change: `VERDICT fail: 18 of 33 tests failed in 2 files`. Every failure is a read of a11ign's own checkout (its roster, its `fleet-batch-due` cause, `ci.yml`, its shipped host units, its reviewer and engineer briefs, `known-gaps.md` §48) or a `decide` case routed to a11ign's sessions (`worker-capture`, `worker-5`, `worker-2879`).
+
+After: `VERDICT pass: 15 tests in 2 files (18 skipped)`, EXIT=0. The 15 that run are the 13 work-gate tests and the 2 reviewer tests that do not read a11ign's checkout, unchanged.
+
+Skips. Each is `{ skip: SKIP_FIXTURE }` on a `test(` call, the guard `wake-engineer-brief.test.ts` uses (`trackedTopLevelDirs()` lists `packages/` on a11ign's checkout, and otherwise the named reason applies).
+
+| Subtest file | Subtests skipped | Reader | Class |
+|---|---|---|---|
+| `src/packaging/work-gate-a11ign-readers.test.ts` | 15 of 28 | a11ign's roster (`worker-capture`, `worker-5`, `worker-2879`), its `fleet-batch-due` cause, its `ci.yml`, its shipped host units, and the product-manager brief | tests-project |
+| `src/reviewer/reviewer-recipe.test.ts` | 3 of 5 | a11ign's `.agent-org/roles/reviewer.md` and `docs/known-gaps.md` §48 (the fixture's brief is a stub; its known-gaps has no §48) | tests-project |
+
+Control on a11ign's checkout. `AGENT_ORG_HOST=/home/agent/repos/a11y-witness/.agent-org/host.json` (a local a11ign tree that tracks `packages/`): the guard is `false`, so `skippedTests: 0`, and `VERDICT fail: 11 of 33 tests failed in 2 files`. The 11 are all `decide`-based and have the same messages as the fixture baseline (`undefined !== 'ceo'`, `- 'worker-5'`, `- 'worker-2879'`, a missing `pr-checks-failing` for author `x`). The local tree's `sessions.json` has `worker-capture` but neither `worker-5` nor `worker-2879`. Those 11 are not caused by the guard, which is off on that tree. Their cause is not established here, and they are not fixed in this row.
+
 ## Open
 
 - The 188 unresolved subtests (43 files) need their test bodies read. The 43-file table above covers the files; the per-subtest decisions are row 5's, except the 1604 items listed under "Open, not done in this row".
