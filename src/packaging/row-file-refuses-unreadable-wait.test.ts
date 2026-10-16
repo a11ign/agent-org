@@ -14,6 +14,7 @@ import { execFileSync } from "node:child_process";
 import { fileRefusalReason, promoteRefusalReason } from "../row-file.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 import { WAIT_STATES, parseWaits } from "../wait-condition.ts";
+import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 
 const COMPLETE_BODY = "## Region\n\nscripts/foo.ts\n\n"
   + "## Acceptance\n\n```\nnpx tsx --test x\n```\n\n"
@@ -57,7 +58,7 @@ test("2. POSITIVE CONTROL: every form the gate reads, and `manual`, is accepted,
 /** `--promote=` reads the Region's top-level directory on `origin/main` of the checkout (#855), and the acceptance fixture is a fresh `git init` with no remote, so there is no `origin/main` to read. */
 const SKIP_NO_ORIGIN = (() => {
   try {
-    execFileSync("git", ["-C", HOME_CHECKOUT, "rev-parse", "--verify", "--quiet", "origin/main"], { stdio: "ignore" });
+    execFileSync("git", ["-C", HOME_CHECKOUT, "rev-parse", "--verify", "--quiet", "origin/main"], { stdio: "ignore", env: sandboxGitEnv() });
     return false;
   } catch {
     return "the checkout has no origin/main, so `--promote=` cannot read the Region's directory on it (#855); the file-filing half of the positive control still runs";
