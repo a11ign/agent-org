@@ -8,7 +8,7 @@
 # src/outside-nightly.test.ts drive each pair). Off the hour, as the project's own crons are (a11ign/a11ign#965).
 #
 # THE TOKEN is an Octo STS exchange for the project's repository, identity `outside-nightly`, whose trust policy lives in the PROJECT's own chainguard directory, named `outside-nightly` (the issuing
-# repository holds the policy; it is filed as its own row on agent-org#1577). It is minted only when the flag is on, so shipping this file needs no policy and a switch before the policy exists is a red run
+# repository holds the policy; filed as a11ign/a11ign#5624). It is minted only when the flag is on, so shipping this file needs no policy and a switch before the policy exists is a red run
 # here and nothing in the project. There is deliberately no fallback to `github.token`: that token is THIS repository's and would read and write the wrong one.
 #
 # THE PROJECT IS NAMED HERE AND NOWHERE IN src/: `PROJECT_REPOSITORY` below is this workflow's one declaration of whom it serves (the precedent is project-ref-bump.yml), and the tool is handed it as a flag.
