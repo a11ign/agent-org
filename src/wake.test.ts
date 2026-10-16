@@ -10,7 +10,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { deliver as settlingDeliver, MAX_SPAWNS_PER_TICK } from "./wake.ts";
+import { deliver as settlingDeliver, MAX_SPAWNS_PER_TICK, withOneShotLanes } from "./wake.ts";
 import { startedPanes } from "./packaging/started-pane.ts";
 
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
@@ -100,4 +100,30 @@ test("#1520: a row-less pull request is never asked about a claim, since it has 
   assert.equal(asked, 0, "claimable was not consulted");
   assert.equal(got.sent.length, 1, got.refused.join("\n"));
   assert.equal(herdr.started().length, 1);
+});
+
+/**
+ * #1533: the tick hands the orchestrator's one-shot lane its row readers, as it does the ceo's. With them a plain ready `lane:orchestrator` row becomes an order to
+ * `engineers` with `briefRole: "orchestrator"`; a `fleet-gated` row keeps the gate's order. Before the readers were passed, every row kept the gate's order.
+ */
+const ORCHESTRATOR_ORDER = (row: number) => ({
+  session: "orchestrator", cause: "ready-row-unclaimed", causeKey: `orchestrator/ready-row-unclaimed/agent-org#${row}`,
+  prompt: `Ready row agent-org#${row} is unclaimed. Claim it as \`<you>\`.\n`,
+});
+const PLAIN_ROW = { body: "## Acceptance\n\n```bash\nnpx rstest run src/x.test.ts\n```\n", labels: [] as string[] };
+const GATED_ROW = { ...PLAIN_ROW, labels: ["fleet-gated"] };
+
+test("#1533 CONTROL: with the flag OFF, the tick's ready orders come back as the very array they were", () => {
+  const orders = [ORCHESTRATOR_ORDER(832), ORCHESTRATOR_ORDER(833)];
+  assert.equal(withOneShotLanes(orders, { enabled: () => false, readRow: () => PLAIN_ROW }), orders);
+});
+
+test("#1533: with the flag ON, a plain ready orchestrator row is converted, and a fleet-gated one keeps the gate's order", () => {
+  const readRow = (row: number) => (row === 833 ? GATED_ROW : PLAIN_ROW);
+  const [plain, gated] = withOneShotLanes([ORCHESTRATOR_ORDER(832), ORCHESTRATOR_ORDER(833)], { enabled: () => true, readRow });
+
+  assert.equal(plain.session, "engineers");
+  assert.equal((plain as { briefRole?: string }).briefRole, "orchestrator");
+  assert.equal(plain.causeKey, ORCHESTRATOR_ORDER(832).causeKey, "the row the claim reads is the gate's own");
+  assert.deepEqual(gated, ORCHESTRATOR_ORDER(833), "the gate's order stands");
 });

@@ -7069,6 +7069,17 @@ function readRowForTier(row: number, key = ""): RowForTier {
   return { labels: (read.labels as { name: string }[]).map((l) => l.name), body: String(read.body ?? ""), title: String(read.title ?? "") };
 }
 
+/**
+ * #1533: THE TWO ONE-SHOT LANES' WRAPPERS, each handed the row readers the tick reads with. A wrapper given no reader converts NO row (it fails closed), which is what the
+ * orchestrator's lane did after #1527 until this passed them; `readRow` is a parameter so a test stubs the read, and the tick takes the default.
+ */
+export function withOneShotLanes<T extends { session: string; cause?: string; causeKey: string; }>(orders: readonly T[], { enabled, readRow = readRowForTier }: {
+  enabled?: () => boolean;
+  readRow?: (row: number, key?: string) => RowForTier;
+} = {}): readonly T[] {
+  return withCeoOneShot(withOrchestratorOneShot(orders, { enabled, rowOf: rowRefOfOrder, readRow }), { enabled, rowOf: rowRefOfOrder, readRow });
+}
+
 /** How many of the tick's start orders are routed ahead: a tick starts one engineer (`MAX_SPAWNS_PER_TICK`) and a chairman row may start more, so this is not the whole shelf. */
 export const ROUTE_AHEAD = 3;
 
@@ -8984,8 +8995,7 @@ async function main() {
   const host = hostOrEmpty();
   // #4888: `ci-failure-class` and `review-depth` are asked here, of the orders about to be delivered.
   // #832: a ready `lane:orchestrator` row becomes a one-shot run's order HERE, after the ledger's reads, when `workers.orchestratorOneShot` is on; off, `ready` is the same array.
-  const ready = withCeoOneShot(withOrchestratorOneShot(await withReviewDepth(await withCiFailureClass(todo, { host, ledgerPath }), { host, ledgerPath })),
-    { rowOf: rowRefOfOrder, readRow: readRowForTier });
+  const ready = withOneShotLanes(await withReviewDepth(await withCiFailureClass(todo, { host, ledgerPath }), { host, ledgerPath }));
   const routes = await routesForStarts(ready, { host, ledgerPath });
   // agent-org#904: AN ORDER WHOSE CLASS THE PROJECT SET TO `run` IS SERVED HERE, BEFORE `deliver`, because `deliver` is synchronous and a run is not. A project with no `.agent-org/seats.json`,
   // or whose classes are all `seat`, gets an empty map after one file read, and `deliver` below is then called exactly as it was.
