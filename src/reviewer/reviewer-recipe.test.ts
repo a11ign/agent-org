@@ -13,9 +13,17 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { HOME_CHECKOUT } from "../project-config.ts";
+import { trackedTopLevelDirs } from "../region-paths.ts";
 
 const ROLE_DOC = join(HOME_CHECKOUT, ".agent-org/roles/reviewer.md");
 const KNOWN_GAPS = join(HOME_CHECKOUT, "docs/known-gaps.md");
+
+/**
+ * #1651: these three read a11ign's own reviewer brief and known-gaps.md (docs/project-tree-dependency.md, row 1651). The fixture
+ * project's brief is a stub and its known-gaps.md has no §48, so they skip there and run wherever the tracked `packages/` tree is present.
+ */
+const SKIP_FIXTURE = trackedTopLevelDirs().includes("packages") ? false
+  : "the fixture project is not a11ign's checkout: its reviewer brief is a stub and its known-gaps.md has no §48, so these read a11ign's own reviewer.md and known-gaps.md, which the fixture tree does not carry";
 
 /** Split a shell line into words, dropping quotes; enough for the `ln` lines a recipe carries. */
 function words(line: string): string[] {
@@ -65,7 +73,7 @@ test("a per-entry link, a comment naming the refused line and prose are NOT read
   }
 });
 
-test("the shipped reviewer recipe symlinks no whole node_modules, and still builds its own @a11ign links", () => {
+test("the shipped reviewer recipe symlinks no whole node_modules, and still builds its own @a11ign links", { skip: SKIP_FIXTURE }, () => {
   const text = readFileSync(ROLE_DOC, "utf8");
   assert.deepEqual(wholeTreeNodeModulesLinks(text), []);
   // Positive control for the emptiness above: the recipe still carries `ln` lines at all, and the hybrid's
@@ -94,7 +102,7 @@ function knownGapsSection48(): string {
   return next === -1 ? rest : rest.slice(0, next);
 }
 
-test("known-gaps §48 records the accepted exposure: the compound form, the reason no shim helps, who, and the change condition", () => {
+test("known-gaps §48 records the accepted exposure: the compound form, the reason no shim helps, who, and the change condition", { skip: SKIP_FIXTURE }, () => {
   const section = knownGapsSection48();
   // Positive control: the slice is the §48 body, not an empty string that every `notMatch` below would pass.
   assert.ok(section.length > MIN_SECTION_CHARS, "the §48 slice is implausibly short");
@@ -112,7 +120,7 @@ test("known-gaps §48 records the accepted exposure: the compound form, the reas
   assert.match(section, /plain form stays forbidden/, "the negative control the row asks to keep");
 });
 
-test("the reviewer role document says the rules stop accident, not a wall, and points at §48", () => {
+test("the reviewer role document says the rules stop accident, not a wall, and points at §48", { skip: SKIP_FIXTURE }, () => {
   const text = readFileSync(ROLE_DOC, "utf8");
   const start = text.indexOf("## What your sandbox rules are, and are not");
   assert.notEqual(start, -1, "reviewer.md lost the section");
