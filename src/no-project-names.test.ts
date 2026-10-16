@@ -7,9 +7,10 @@
  * declarations those tests load. Everything else under `src` is refused on a hit, and a line that moves the name into a comment or a renamed
  * constant is still a hit, because the guard reads the text, not the syntax.
  *
- * THE FILES ARE WHAT HEAD COMMITS, under `src`. A file a runner left on its disk or its index (a stray from an earlier job, never committed) is
- * not source, and a walk of the disk or of the index would refuse it for a name it does not own (agent-org#1611's CI, 2026-10-16). The text of
- * each committed file is read from the disk, so an edit that has not been committed yet is still scanned.
+ * THE FILES ARE WHAT THIS REPOSITORY COMMITS, under `src`. In CI the suite runs in a copy laid into a project (ci.yml's `suite`), and that copy
+ * also holds the lab's siblings (`packaging/rehearsal-currency.ts` and others): lab's files, not this repository's, which the guard refused for
+ * a name lab owns (agent-org#1611's CI, 2026-10-16). The list is read from the checkout the copy was made from (`$GITHUB_WORKSPACE`, when set);
+ * the text of each listed file is read from the copy, so an uncommitted edit to a committed file is still scanned.
  *
  * POSITIVE CONTROLS: a fixture string that contains the name is refused by the same scan (so the scan can see the name), the walk reaches
  * a floor of files (so a path that read as empty would not pass), and the fixtures the exemption names do hold the name (so the exemption is
@@ -33,8 +34,11 @@ const FIXTURES = "packaging/fixtures";
 /** Enough files that a walk which found nothing would be obvious; the tree holds several hundred. */
 const WALK_FLOOR = 100;
 
+/** The checkout whose committed files are the source: this one, or in CI the workspace the suite's copy was laid out from. */
+const OWN_SRC = process.env.GITHUB_WORKSPACE ? join(process.env.GITHUB_WORKSPACE, "src") : SRC;
+
 /** Every file HEAD commits under `src` (relative to it). `git ls-tree` run in `src` lists only that subtree, with paths relative to it. */
-const trackedFiles = (): string[] => execFileSync("git", ["ls-tree", "-r", "-z", "--name-only", "HEAD"], { cwd: SRC, encoding: "utf8", env: sandboxGitEnv() })
+const trackedFiles = (): string[] => execFileSync("git", ["ls-tree", "-r", "-z", "--name-only", "HEAD"], { cwd: OWN_SRC, encoding: "utf8", env: sandboxGitEnv() })
   .split("\0").filter(Boolean);
 
 /** Every tracked file under `src`, excluding the test files and the fixtures. */
