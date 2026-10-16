@@ -16,8 +16,10 @@
 // only in it when something the gate already reads can prove it: the row kinds are `waiting-condition.ts`'s own (the gate asks it
 // through `declaredWait`, never a second copy), the pull-request kinds are facts on the `pr list` payload and the herdr listing.
 import { listingIsComplete } from "./herdr-agents.ts";
+import { CLAIM_LABEL } from "./claim-labels.ts";
 import { ANSWER_PREFIX, NEEDS_CHAIRMAN_LABEL } from "./project-vocabulary.ts";
 import { reviewerSeat, subjectMention } from "./review-attribution.ts";
+import { DEFAULT_ANSWERER } from "./decided-by.ts";
 import type { DeclarationReading } from "./worker-state.ts";
 
 const MINUTE_MS = 60_000;
@@ -334,4 +336,42 @@ export function redCheckNudgePrompt({ row, branch, idleMinutes, red, nudge }: { 
     + `FIX THE RED CHECK NOW. Read the failing run, fix the cause, commit and push \`${branch ?? "your branch"}\`. Run what CI runs before you push. `
     + "`waiting-ci` and `waiting-review` do NOT excuse you while a check is red: a failed check is yours to fix and nothing you wait for will fix it.\n"
     + unansweredNudgeNote(nudge);
+}
+
+// --- A ROW THE CLAIMANT ALREADY READ AS DONE -----------------------------------------------------------------------------
+//
+// An idle claimant that left its own `VERIFIED` (or "Done-when ... met") note on an `in-progress` row has finished the work and stopped before
+// closing it: nobody closes it, and the claim holds the row. After the note has stood VERIFIED_CLOSE_MINUTES, the gate orders the row closed, to
+// `product-manager`, which is the reader that closes rows (`engineer.md`). The order names the note, so the close is checkable by whoever reads it.
+// PURE, and it reads the claim and the comments the gate already has.
+
+/** How long a VERIFIED note from an idle claimant stands before the gate orders its row closed. */
+export const VERIFIED_CLOSE_MINUTES = 15;
+
+/** Who closes a row the claimant read as done: the same reader a worker's `blocked` is routed to (`DEFAULT_ANSWERER`, from the leaf `decided-by.ts`). */
+export const VERIFIED_CLOSER = DEFAULT_ANSWERER;
+
+/** A note that says the work is verified: the word VERIFIED, or a Done-when line that says it is met. */
+const VERIFIED_NOTE = /\bVERIFIED\b|Done-when[^\n]*\bmet\b/i;
+
+export type VerifiedCloseOrder = { kind: "close"; row: number; claimant: string; to: string; note: string; verifiedAt: number; idleMs: number };
+
+/**
+ * PURE. IS THIS ROW ONE THE GATE ORDERS CLOSED. Every condition must hold: the row is `in-progress`; its claimant is idle (`idleSince` is the start of
+ * the idle run, `null` when the claimant is not idle); and a comment by the claimant's account, made since the claim, says VERIFIED or that the
+ * Done-when items are met, and has stood for at least {@link VERIFIED_CLOSE_MINUTES}. The newest such comment is the one the order names.
+ * The claimant's account is the claim's author (`claimRecordOf`), the same attribution the claim itself uses: sessions share an account.
+ * @param {{ row: number, labels: string[], claimant: string, claim: { at: number, author: string | null } | null, comments: { url: string, body: string, createdAt: string, author?: { login?: string } | null }[], idleSince: number | null }} facts
+ * @param {{ now: number }} ctx
+ * @returns {VerifiedCloseOrder | null}
+ */
+export function verifiedCloseOrder(facts: { row: number; labels: string[]; claimant: string; claim: { at: number; author: string | null } | null; comments: { url?: string; id?: string; body: string; createdAt: string; author?: { login?: string } | null }[]; idleSince: number | null }, ctx: { now: number }): VerifiedCloseOrder | null {
+  const { claim, idleSince } = facts;
+  if (!facts.labels.includes(CLAIM_LABEL) || claim === null || claim.author === null || idleSince === null) return null;
+  const notes = facts.comments.filter((c) => c.author?.login === claim.author && Date.parse(c.createdAt) >= claim.at && VERIFIED_NOTE.test(c.body));
+  const newest = notes.at(-1);
+  if (newest === undefined) return null;
+  const verifiedAt = Date.parse(newest.createdAt);
+  if (ctx.now - verifiedAt < VERIFIED_CLOSE_MINUTES * MINUTE_MS) return null;
+  return { kind: "close", row: facts.row, claimant: facts.claimant, to: VERIFIED_CLOSER, note: newest.url ?? newest.id ?? "", verifiedAt, idleMs: ctx.now - idleSince };
 }

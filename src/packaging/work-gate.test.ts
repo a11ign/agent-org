@@ -1151,7 +1151,8 @@ test("every cause is classified as START or FINISH -- a new one cannot default i
   assert.deepEqual(finish, ["answer-given", "answer-label-unexplained", "answer-owed", "awaiting-evidence-stale", "backlog-aged-unpromoted", "blocker-cleared", "chairman-answered", "chairman-blocked",
     "claim-stalled", "claimed-row-amended", "closes-unresolved-repo-wide", "disk-headroom-low", "draft-awaiting-verdict", "draft-convinced-not-ready", "hold-holder-idle", "host-units-stale",
     "lab-job-finished", "org-health", "org-retrospective", "pr-approval-not-counted", "pr-checks-failing", "pr-codeowner-review-missing", "pr-green-unarmed", "pr-merge-conflict", "pr-review-blocked", "primary-stale", "ready-row-incomplete", "ready-row-unclaimable", "ready-rows-untiered", "repeating-log-line", "reviewer-auth-failed",
-    "row-branch-unshipped", "row-call-count-signal", "row-closed-under-open-half", "row-off-board", "tick-overran", "trunk-red", "verdict-comment-unreviewed", "verdict-not-convinced"]);
+    "row-branch-unshipped", "row-call-count-signal", "row-closed-under-open-half", "row-off-board", "tick-overran", "trunk-red", "verdict-comment-unreviewed", "verdict-not-convinced",
+    "verified-close"]);
   for (const cause of START_CAUSES) {
     assert.ok(CAUSES.includes(cause), `${cause} is withheld by a drain but no longer exists`);
   }

@@ -15,8 +15,10 @@ import { familyNumber } from "../arm-pr.ts";
 import { CLAIM_LABEL } from "../claim-labels.ts";
 import { gitRun, pathExists, statMtime, readStallState, writeStallState, readJsonObject, writeJsonObject, STALL_STATE_FILE, nextStallState,
   claimStalledOrders, readHerdrRestart, claimFactsFrom, readClaim, readLabelEvents, nudgeDeliveredAt, nudgeKey, closedClaimOrders,
-  restartNotices, recordStalledNudges, AGENT_SESSIONS_FILE, Unreadable } from "../claim-stall.ts";
+  restartNotices, recordStalledNudges, AGENT_SESSIONS_FILE, Unreadable, withRedChecks } from "../claim-stall.ts";
 import { subjectMention, subjectRef } from "../review-attribution.ts";
+import { claimRecordOf } from "../claim-record.ts";
+import { idleClaimantReading, verifiedCloseOrder, type VerifiedCloseOrder } from "../idle-claimant.ts";
 import { FAILURE_LEDGER_FILE } from "../failure-ledger.ts";
 import { readAgents, readAgentSessions } from "../herdr-agents.ts";
 import { NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL, SESSION_PREFIX } from "../project-vocabulary.ts";
@@ -260,7 +262,7 @@ function evaluateClaims({ rows, claimedComments, openPrs, mergedPrs, elsewhere, 
   const shared = { openPrs, mergedPrs, elsewhere, repo, now, log, declarations, watching, ledger: wakeLedger, restart: restartFor(everyHeld, restartAt),
     agents: agentsFor(everyHeld, agents), heldBy: rowsPerSession(everyHeld) };
   const homeBefore = unscoped(before);
-  const home = homeUnread ? { readings: [], skipped: new Map<number, string>() }
+  const home = homeUnread ? { readings: [], skipped: new Map<number, string>(), closes: [] }
     : readClaims({ ...shared, held, byRow: commentsByRow(claimedComments), key: "", trackerRepo: homeProjectDeclaration().tracker[0].repo, io, before: homeBefore, waitFacts });
   if (!homeUnread) onFacts?.(movesOfTick(home));
   const others = readable.map((unit) => {
@@ -292,7 +294,7 @@ function evaluateClaims({ rows, claimedComments, openPrs, mergedPrs, elsewhere, 
   const homeTold = homeUnread ? { orders: [], after: unscoped(acked) }
     : restartNotices({ readings: home.readings, sessions, acked: unscoped(acked), delivered: (key) => nudgeDeliveredAt(wakeLedger(), key) !== null });
   const ackedAfter: Record<string, string> = { ...homeTold.after };
-  const orders = [...(homeUnread ? [] : claimStalledOrders(home.readings, now)), ...homeTold.orders];
+  const orders = [...(homeUnread ? [] : claimStalledOrders(home.readings, now)), ...homeTold.orders, ...home.closes];
   for (const unit of units) {
     const { key, repo: trackerRepo } = unit.tracker;
     const prefix = `${key}#`;
@@ -301,7 +303,7 @@ function evaluateClaims({ rows, claimedComments, openPrs, mergedPrs, elsewhere, 
     const told = restartNotices({ readings: mine.readings, sessions, acked: scopedView(acked, prefix),
       delivered: (causeKey) => nudgeDeliveredAt(wakeLedger(), scopedCauseKey(key, causeKey)) !== null });
     scopedInto(ackedAfter, prefix, told.after);
-    for (const order of [...claimStalledOrders(mine.readings, now), ...told.orders]) orders.push(namespacedOrder(order, key, trackerRepo));
+    for (const order of [...claimStalledOrders(mine.readings, now), ...told.orders, ...mine.closes]) orders.push(namespacedOrder(order, key, trackerRepo));
   }
   for (const [slot, value] of Object.entries(acked)) {
     if (slot.includes(SCOPE_MARK) && !(slot in ackedAfter) && !units.some((unit) => slot.startsWith(`${unit.tracker.key}${SCOPE_MARK}`))) ackedAfter[slot] = value;
@@ -431,10 +433,12 @@ function readClaims({ held, byRow, openPrs, mergedPrs, elsewhere, io, repo, now,
         waitFacts: WaitFacts | null;
         /** the machinery flags the canary is still watching at this tick (`canaryWatching`), `null` when its file could not be read */
         watching: ReadonlySet<string> | null;
-    }): { readings: { facts: import("../claim-stall.ts").ClaimFacts; reading: import("../claim-stall.ts").Reading; }[]; skipped: Map<number, string>; } {
+    }): { readings: { facts: import("../claim-stall.ts").ClaimFacts; reading: import("../claim-stall.ts").Reading; }[]; skipped: Map<number, string>; closes: import("../claim-stall.ts").StallOrder[]; } {
   const readings: { facts: import("../claim-stall.ts").ClaimFacts; reading: import("../claim-stall.ts").Reading; }[] = [];
   // the rows whose facts could not be built, with the reason `claimFactsFrom` gave (#3451)
   const skipped: Map<number, string> = new Map();
+  // (agent-org#1536) the rows whose holder is idle since its own VERIFIED note, ordered closed to `product-manager` (`verifiedCloseOf`)
+  const closes: import("../claim-stall.ts").StallOrder[] = [];
   // another tracker's lines name its rows as `agent-org#476` and say which tracker they are of; the home tracker's are as they were
   const where = key === "" ? "" : `[${key}] `;
   const mention = (row: number) => subjectMention({ repoKey: key, number: row });
@@ -469,8 +473,43 @@ function readClaims({ held, byRow, openPrs, mergedPrs, elsewhere, io, repo, now,
       log(`claim-stall: ${where}${mention(facts.row)} (${session}) is GONE from herdr's own listing -- releasing.\n`);
     }
     readings.push({ facts, reading });
+    const verified = verifiedCloseOf({ row: facts.row, labels: labelsOf(row), session, facts, comments: byRow.get(Number(row.number)) ?? [], agents, now });
+    if (verified !== null) closes.push(verifiedCloseOrderOf(verified, { session, subject: mention(facts.row), now }));
   }
-  return { readings, skipped };
+  return { readings, skipped, closes };
+}
+
+/**
+ * (agent-org#1536) THE GATE'S READING OF ONE CLAIMED ROW for the verified close: `verifiedCloseOrder`'s, fed the holder's idle run the way the claim-stall reading
+ * has it -- `idleClaimantReading` on the same facts and herdr's listing. `idleSince` is the row's last move, as `org-health.ts` gives it, so an idle holder's run
+ * is at least that long. A holder that is busy, waiting on a declared field, or whose listing could not be read is not idle, and its row is not ordered closed.
+ */
+function verifiedCloseOf({ row, labels, session, facts, comments, agents, now }: { row: number; labels: string[]; session: string; facts: import("../claim-stall.ts").ClaimFacts;
+  comments: any[]; agents: { label: string; status: string; }[] | null; now: number; }): VerifiedCloseOrder | null {
+  // a commit or push git will not answer for is not a move that can be dated, so the row is not ordered closed this tick (as `movesOfTick` skips it)
+  let lastMove: number;
+  try {
+    lastMove = Math.max(facts.claimedAt, facts.comment ?? 0, facts.commit() ?? 0, facts.push() ?? 0);
+  } catch (err) {
+    if (err instanceof Unreadable) return null;
+    throw err;
+  }
+  const idle = idleClaimantReading({ session, prs: withRedChecks(facts.ownPrs), built: facts.nothing !== true, waitKinds: facts.waitKind ? [facts.waitKind] : [] },
+    { now, agents, idleSince: lastMove });
+  if (idle.kind !== "watching" && idle.kind !== "stall") return null;
+  return verifiedCloseOrder({ row, labels, claimant: session, claim: claimRecordOf(comments), comments, idleSince: idle.since }, { now });
+}
+
+/**
+ * (agent-org#1536) THE ORDER a {@link VerifiedCloseOrder} becomes: a prompt to `product-manager` (the reader that closes rows the claimant read as done), naming the
+ * note and how long it has stood, so the close is checkable by whoever reads it. `discriminator` is the note, so a new note is a new order and the same one is not repeated.
+ */
+function verifiedCloseOrderOf(close: VerifiedCloseOrder, { session, subject, now }: { session: string; subject: string; now: number; }): import("../claim-stall.ts").StallOrder {
+  const minutes = Math.floor((now - close.verifiedAt) / 60_000);
+  return { session: close.to, cause: "verified-close", subject, discriminator: close.note, causeKey: `verified-close:${close.row}`,
+    prompt: `${subject} IS CLAIMED BY ${session}, WHICH WROTE "VERIFIED" (OR ITS DONE-WHEN ITEMS AS MET) ON IT ${minutes} MINUTES AGO AT ${close.note}, AND HAS BEEN IDLE SINCE. `
+      + `THE ROW IS YOURS TO CLOSE: read each Done-when item against that note and the comments it names. If every item is met, close the row (\`gh issue close\`) with a comment that names `
+      + "each item and the comment holding its reading. If one is not met, say which, and do not close it." };
 }
 
 /**

@@ -94,11 +94,11 @@ test("declaredCauses combines lists and REFUSES a cause declared twice", () => {
 
 test("the tool's own causes name NO project cause: `fleet-batch-due` is not among them", () => {
   const tool = causesOf(TOOL_CAUSE_DECLARATIONS);
-  assert.equal(tool.length, 46,
-    "45 tool causes today -- ADR 0040 measured 28 at `46b59abf0`; `pr-codeowner-review-missing` (#1959), "
+  assert.equal(tool.length, 47,
+    "46 tool causes today -- ADR 0040 measured 28 at `46b59abf0`; `pr-codeowner-review-missing` (#1959), "
     + "`row-call-count-signal` (#2691), `answer-label-unexplained` (#2711) and `ready-row-incomplete` (#2791) "
     + "and `closes-unresolved-repo-wide` (#2823) and `primary-stale` (#2781), then `repeating-log-line` and `backlog-aged-unpromoted` (#2848) "
-    + "and `ready-row-unclaimable` (#2845), then `org-retrospective` (#2938), then `org-health` (#2936), then `chairman-answered` (#3390), then `tick-overran` (#3567), then `answer-given` (#3632), then `ready-rows-untiered` (#636), then `hold-holder-idle` (#4970), then `pr-approval-not-counted` (#1249), then `row-closed-under-open-half` (agent-org#1060), are the eighteen that landed after that snapshot");
+    + "and `ready-row-unclaimable` (#2845), then `org-retrospective` (#2938), then `org-health` (#2936), then `chairman-answered` (#3390), then `tick-overran` (#3567), then `answer-given` (#3632), then `ready-rows-untiered` (#636), then `hold-holder-idle` (#4970), then `pr-approval-not-counted` (#1249), then `row-closed-under-open-half` (agent-org#1060), then `verified-close` (agent-org#1536), are the nineteen that landed after that snapshot");
   assert.ok(!tool.includes("fleet-batch-due"), "the ONE project cause must not be tool code");
 });
 
@@ -117,12 +117,12 @@ const EXPECTED_CAUSES = ["answer-given", "answer-label-unexplained", "answer-owe
   "pr-codeowner-review-missing", "pr-green-unarmed", "pr-merge-conflict", "pr-review-blocked", "primary-stale",
   "ready-queue-empty", "ready-row-incomplete", "ready-row-unclaimable", "ready-row-unclaimed", "ready-rows-untiered", "repeating-log-line", "reviewer-auth-failed", "row-branch-unshipped",
   "row-call-count-signal", "row-closed-under-open-half", "row-off-board", "tick-overran", "trunk-red", "unclaimed-blocker-cleared",
-  "verdict-comment-unreviewed", "verdict-not-convinced"];
+  "verdict-comment-unreviewed", "verdict-not-convinced", "verified-close"];
 
 const EXPECTED_JUDGMENT = ["answer-given", "awaiting-evidence-stale", "backlog-aged-unpromoted", "blocked-unexaminable", "blocker-cleared",
   "chairman-answered", "chairman-blocked", "claimed-row-amended", "closes-unresolved-repo-wide", "disk-headroom-low", "epic-finished", "epic-unfiled", "fleet-batch-due",
   "lab-job-finished", "lane-backlog-unpromoted", "org-health", "org-retrospective", "org-stalled", "ready-queue-empty", "ready-row-incomplete", "ready-row-unclaimable", "ready-rows-untiered", "repeating-log-line", "reviewer-auth-failed",
-  "row-branch-unshipped", "row-call-count-signal", "row-closed-under-open-half", "row-off-board", "tick-overran", "unclaimed-blocker-cleared"];
+  "row-branch-unshipped", "row-call-count-signal", "row-closed-under-open-half", "row-off-board", "tick-overran", "unclaimed-blocker-cleared", "verified-close"];
 
 const EXPECTED_START = ["blocked-unexaminable", "epic-finished", "epic-unfiled", "fleet-batch-due",
   "lane-backlog-unpromoted", "org-stalled", "ready-queue-empty", "ready-row-unclaimed", "unclaimed-blocker-cleared"];
