@@ -23,7 +23,12 @@ import { recordIgnoredChairmanLabels, recordTickFailures as recordFailuresOf } f
 import { readJsonObject, writeJsonObject } from "../claim-stall.ts";
 import { requiredWhenNeeded, perPullRequestOrders, greenUnarmedOrders, type UnarmedFacts, reviewBlockedOrders, stalledPrOrders,
   STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr, ROW_REVIEW_SKILL_FLAG, PR_OWNER_ROUTING_FLAG, withholdOutsideFollowUps, routeDeadOwnerRefusals, reviewOnlyRefs, SAME_HEAD_REFAIL_FLAG, acceptanceGateOf, firstRefusalOf, treeWideGuardVerdict, settleOutsideArm } from "./pr-orders.ts";
-import { treeWideGuardFilesIn, runTreeWideGuards } from "../lib/tree-wide-guard-org-side.ts"; // agent-org#1503
+import { treeWideGuardFilesIn, runTreeWideGuards, outsideGuardsOn, shadowGuardsVerdict, guardSweepJobOf } from "../lib/tree-wide-guard-org-side.ts"; // agent-org#1503, #1580
+import { readFileSync } from "node:fs";
+import { newestPerName } from "../newest-check-run.ts";
+import { decisionSwitchesPath, readSwitches } from "../decision-provider.ts";
+import { HOME_CHECKOUT } from "../project-config.ts";
+import { printDiagnostic, processState } from "../triage-provider.ts";
 import { checkoutPullRequestMerge, orgSideAcceptanceEligibility, orgSideAcceptanceVerdict, installPullRequestCheckout, releasePullRequestCheckout, type OrgSideVerdict } from "../acceptance-commands.ts"; // agent-org#1502
 import { labJobFinishedOrders, readLabJobRecords, readDispatchedLabJobs } from "./lab-job-orders.ts";
 import { classAndKeyOf as orgHealthClassAndKey } from "./org-health-suppression.ts";
@@ -1407,6 +1412,9 @@ export function readArmingOf(openPrs: any[], required: string[] | null, { scope 
   return { unarmed, ejections: requeued.remaining, stranded: requeued.stranded };
 }
 
+/** agent-org#1580: the switches of the project this tool serves; absent or unusable is `{}`, which is every flag off. */
+const outsideSwitchesOfHome = () => readSwitches(decisionSwitchesPath(HOME_CHECKOUT), { diagnostic: printDiagnostic, state: processState, read: readFileSync });
+
 /** agent-org#1502: where the org-side acceptance gate is switched ON. OPT-IN, unlike `GREEN_UNARMED_SWITCH_ENV`: it runs a command the pull request names, on the host. */
 export const ACCEPTANCE_GATE_SWITCH_ENV = "A11IGN_PR_ACCEPTANCE_BY_GATE";
 /** agent-org#1503: where the org-side TREE-WIDE GUARDS are switched ON. A second, independent switch: it runs the pull request's own test files, on the host. */
@@ -1426,13 +1434,17 @@ export const MAX_ACCEPTANCE_RUNS_PER_TICK = 2;
  *
  * @returns `armable` for `settleUnarmedPrs`, `withheld` for the order
  */
-export function gateUnarmedOnAcceptance(unarmed: number[], { openPrs, scope, env = process.env, declared = declaredIdentities(), verdictOf, guardsOf, stateDir = REVIEWER_STATE_DIR, log = (line: string) => process.stderr.write(line) }: {
+export function gateUnarmedOnAcceptance(unarmed: number[], { openPrs, scope, env = process.env, declared = declaredIdentities(), verdictOf, guardsOf, stateDir = REVIEWER_STATE_DIR, log = (line: string) => process.stderr.write(line), outsideSwitches = outsideSwitchesOfHome }: {
   openPrs: any[]; scope: string; env?: Record<string, string | undefined>; declared?: DeclaredIdentities; verdictOf?: (pr: any) => OrgSideVerdict;
+  /** agent-org#1580: the project's `.agent-org/decisions.json` switches, read only when something could use them. `outside.guards` ON records a SHADOW guard verdict and arms nothing. */
+  outsideSwitches?: () => Readonly<Record<string, unknown>>;
   guardsOf?: (pr: any) => OrgSideVerdict; stateDir?: string; log?: (line: string) => void;
 }): { armable: number[]; withheld: { number: number; why: string; }[]; } {
   const acceptanceOn = env[ACCEPTANCE_GATE_SWITCH_ENV] === "on";
   const guardsOn = env[TREE_WIDE_GUARDS_SWITCH_ENV] === "on";
-  if ((!acceptanceOn && !guardsOn) || unarmed.length === 0) return { armable: unarmed, withheld: [] };
+  if (unarmed.length === 0) return { armable: unarmed, withheld: [] };
+  const shadowGuards = !guardsOn && outsideGuardsOn(outsideSwitches());
+  if (!acceptanceOn && !guardsOn && !shadowGuards) return { armable: unarmed, withheld: [] };
   const byDeclaredIdentity = (pr: any) => reviewTrustOf(pr, declared) === INSIDE;
   const file = join(stateDir, "acceptance-verdicts.json");
   const remembered: Record<string, OrgSideVerdict> = readJsonObject(file);
@@ -1458,10 +1470,16 @@ export function gateUnarmedOnAcceptance(unarmed: number[], { openPrs, scope, env
   const guards = guardsOf ?? familyOf("tree-wide-guards", "tree-wide guards are deferred to a later tick (the per-tick run limit)", (pr) =>
     treeWideGuardVerdict(pr, { eligible: (p) => orgSideAcceptanceEligibility(p, { byDeclaredIdentity, baseRepo: scope }), checkout: checkout(), prepare: installPullRequestCheckout(),
       discover: (cwd) => treeWideGuardFilesIn(cwd), run: (files, cwd) => runTreeWideGuards(files, cwd), release: releasePullRequestCheckout({ repoRoot }) }));
+  /** agent-org#1580: the outside home's SHADOW. The verdict is recorded in the log, `blocks` is false, and the gate is handed `null` (the org said nothing), so it arms exactly as without the flag. */
+  const shadowOf = (pr: any): null => {
+    const shadow = shadowGuardsVerdict(pr, { switches: outsideSwitches(), verdictOf: guards, job: guardSweepJobOf(newestPerName(pr?.statusCheckRollup ?? [])) });
+    if (shadow.on) log(`outside-guards: SHADOW #${pr.number} ${shadow.verdict.kind} (${shadow.verdict.why}) beside the job's ${shadow.job ?? "unread"}: ${shadow.agreement}; blocks nothing.\n`);
+    return null;
+  };
   const gated = acceptanceGateOf(unarmed, {
     prOf: (number) => openPrs.find((pr) => Number(pr.number) === number),
     gateOf: (pr) => (orgSideAcceptanceEligibility(pr, { byDeclaredIdentity, baseRepo: scope }).eligible
-      ? firstRefusalOf([...(acceptanceOn ? [acceptance(pr)] : []), ...(guardsOn ? [guards(pr)] : [])])
+      ? (shadowGuards ? shadowOf(pr) : firstRefusalOf([...(acceptanceOn ? [acceptance(pr)] : []), ...(guardsOn ? [guards(pr)] : [])]))
       : null),
   });
   for (const { number, why } of gated.withheld) log(`acceptance-gate: #${number} is NOT armed -- ${why}.\n`);
