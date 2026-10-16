@@ -519,11 +519,25 @@ export function outsideArmPass({ repo, switchesPath, on = outsideArmOn(switchesP
     const said: string[] = [];
     const sayArm = (line: string) => { said.push(line); log(line); };
     const failed = (why: string) => { result.failed.push(pr.number); log(`OUTSIDE-ARM: #${pr.number} COULD NOT ARM -- ${why}`); };
+    // agent-org#1628: THE READY WRITE COMES BEFORE `arm-pr` CAN REFUSE, SO A REFUSAL LEAVES A DRAFT THE APPROVAL NEVER ASKED TO BE READY. What this pass readied it puts back to a draft
+    // whenever the pull request is not armed; a failed put-back is named, never swallowed. A pull request whose armed state is unknown (a failed read-back) is left as it is.
+    let readiedHere = false;
+    const restoreDraft = () => {
+      if (!readiedHere) return;
+      try {
+        run(["pr", "ready", String(pr.number), "--repo", repo, "--undo"]);
+        result.readied = result.readied.filter((number) => number !== pr.number);
+        log(`OUTSIDE-ARM: #${pr.number} put back to a draft -- it was readied for an arm that did not happen`);
+      } catch (cause) {
+        log(`OUTSIDE-ARM: #${pr.number} COULD NOT PUT BACK TO A DRAFT -- it stays ready and unarmed: ${cause instanceof Error ? cause.message : cause}`);
+      }
+    };
     let code: number;
     try {
-      if (verdict.act === "ready-and-arm") { readyPullRequest({ number: pr.number, repo, run }); result.readied.push(pr.number); }
+      if (verdict.act === "ready-and-arm") { readyPullRequest({ number: pr.number, repo, run }); readiedHere = true; result.readied.push(pr.number); }
       code = arm(pr.number, sayArm);
     } catch (cause) {
+      restoreDraft();
       failed(cause instanceof Error ? cause.message : String(cause));
       continue;
     }
@@ -546,6 +560,7 @@ export function outsideArmPass({ repo, switchesPath, on = outsideArmOn(switchesP
       continue;
     }
     // Not armed on the read-back after a nonzero exit: the exit is the cause (a refusal before the write, or a failure that left nothing armed), and it is named with what GitHub says.
+    restoreDraft();
     if (exited) { failed(`${exited}; read back: NOT ARMED`); continue; }
     const refusal = said.find((line) => line.startsWith(`arm-pr: NOT arming #${pr.number} -- `));
     if (refusal !== undefined) {
