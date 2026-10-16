@@ -82,7 +82,8 @@ test("(4) FLAG ON: a CANCELLED earlier run is not a failure that was reported, s
 });
 
 test("(5) decide passes the reading through, and the flag's reader follows `machinery:flag`", () => {
-  const keyOf = (sameHeadRefail: boolean) => red(decide({ prs: [prOf(SECOND)], readyRows: [], nowMs: NOW, sameHeadRefail }) as Order[])[0].causeKey;
+  // prOwnerRouting pinned OFF: an omitted reading is the host's `prs.ownerRouting` (#1325), ON here, and the fixture PR has no `isCrossRepository: false`, so it reads as outside and its red is withheld.
+  const keyOf = (sameHeadRefail: boolean) => red(decide({ prs: [prOf(SECOND)], readyRows: [], nowMs: NOW, sameHeadRefail, prOwnerRouting: false }) as Order[])[0].causeKey;
   assert.equal(keyOf(true), `${KEY}/refail-1`, "on");
   assert.equal(keyOf(false), KEY, "off");
   const dir = tmpDir("same-head-refail-flag-");

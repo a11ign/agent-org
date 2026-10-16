@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# THE PRIMARY CHECKOUT MAY ONLY BE DETACHED AT origin/main -- issue #126. See `pre-commit`'s identical
+# guard for the three incidents that forced this and why `.git` being a real directory (never a branch
+# name or an absolute path) is what identifies the primary.
+#
+# `post-checkout` CANNOT VETO the checkout that already happened -- git gives this hook no such power,
+# unlike `pre-commit`. So it self-corrects instead: the instant a checkout in the primary lands anywhere
+# but detached at `origin/main`, this immediately checks back out to detached `origin/main` and says why,
+# rather than leaving a stray branch to sit there until `assertFleetRunsThisCheckout` hashes it into a
+# capture run nobody intended.
+#
+# git's own arguments: $1 the PREVIOUS HEAD, $2 the NEW HEAD, $3 "1" for a branch checkout, "0" for a
+# file-level one (`git checkout -- path`), which never moves HEAD and is not this hook's business.
+set -euo pipefail
+
+NEW_HEAD="${2:-}"
+IS_BRANCH_CHECKOUT="${3:-0}"
+
+[ "$IS_BRANCH_CHECKOUT" = "1" ] || exit 0
+
+# ASKED OF AN EXPLICIT MARK, never inferred from the tree -- see `lib/is-primary-checkout.sh` for the
+# incident (#198): `.git` being a directory is true of EVERY clone, so this hook travelled to the lab with
+# a `git pull` and broke every `lab:job -e ref=<branch>`.
+. "$(dirname "$0")/lib/is-primary-checkout.sh"
+is_primary_checkout || exit 0
+
+if [ -n "${A11Y_PRIMARY_CHECKOUT_REASON:-}" ]; then
+  echo "post-checkout: leaving the primary checked out as-is, overridden: $A11Y_PRIMARY_CHECKOUT_REASON" >&2
+  exit 0
+fi
+
+ORIGIN_MAIN="$(git rev-parse --verify -q refs/remotes/origin/main || true)"
+# Nothing to enforce against yet -- a checkout before the first `git fetch` ever ran. Not an error: there
+# is no origin/main ref to have disagreed with.
+[ -n "$ORIGIN_MAIN" ] || exit 0
+
+BRANCH="$(git symbolic-ref --short -q HEAD || true)"
+
+if [ -n "$BRANCH" ] || [ "$NEW_HEAD" != "$ORIGIN_MAIN" ]; then
+  echo "post-checkout: REFUSING — the primary checkout may only be detached at origin/main." >&2
+  if [ -n "$BRANCH" ]; then
+    echo "  it just landed on branch '$BRANCH'; resetting to detached origin/main ($ORIGIN_MAIN)." >&2
+  else
+    echo "  it just detached at $NEW_HEAD, which is not origin/main ($ORIGIN_MAIN); resetting." >&2
+  fi
+  echo "  If this is deliberate: A11Y_PRIMARY_CHECKOUT_REASON=\"<why>\" git checkout ... — the reason is" >&2
+  echo "  printed, not just the override, so a deliberate exception is in the log rather than in" >&2
+  echo "  somebody's memory." >&2
+  git checkout --detach "$ORIGIN_MAIN" --quiet
+  exit 1
+fi

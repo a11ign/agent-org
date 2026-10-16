@@ -21,7 +21,7 @@
 // It is a comment: no build breaks, no test fails, no guard fires, and `--shortstat` reads
 // `12 insertions(+), 2 deletions(-)` either way.
 //
-// The same take would also have reverted four `@a11ign/*` imports to `@a11y-witness/*` -- and that one is
+// The same take would also have reverted four `@a11ign/*` imports to the scope they had before the rename -- and that one is
 // NOT silent: the old scope is `MODULE_NOT_FOUND` and the file is `.ts`, so `tsc` catches it at pre-push.
 // **That asymmetry is the whole design constraint.** A rescue's dangerous reverts are precisely the ones
 // the build cannot see, so this tool must not lean on the build, and reporting "it typechecks" would be

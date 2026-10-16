@@ -111,7 +111,7 @@ export const WHOLE_REPOSITORY = "(the whole repository)";
  * share this state, only the first installs, and the second reuses the first's UNWRAPPED `fs` functions: its
  * own lookups would otherwise be recorded as the guard's reads.
  */
-const STATE: { observedReads: Set<string>; installed: boolean; originals?: Record<string, any>; } = (globalThis as any)[Symbol.for("a11y-witness.walk-scope")] ??= {
+const STATE: { observedReads: Set<string>; installed: boolean; originals?: Record<string, any>; } = (globalThis as any)[Symbol.for("agent-org.walk-scope")] ??= {
   observedReads: new Set(), installed: false };
 
 const unbounded = (how: string) => `${WHOLE_REPOSITORY} -- ${how}`;
@@ -356,7 +356,7 @@ function recordSpawn(file: unknown, rest: unknown[]) {
 }
 
 // REGISTERED, so a wrapper installed by one copy of this module is recognised by the other (#1349).
-const OBSERVED = Symbol.for("a11y-witness.walk-scope: this function records before it calls through");
+const OBSERVED = Symbol.for("agent-org.walk-scope: this function records before it calls through");
 
 /** Is `fn` one of this module's wrappers? The exhaustiveness test asks this of every function it finds. */
 export function isObserved(fn: unknown) {

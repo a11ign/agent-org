@@ -23,7 +23,9 @@ import { addressed, engineerRoles, launchAdvice, HOST_REPOS, PRIMARY_CHECKOUT, E
 import { HOME_CHECKOUT } from "./project-config.ts";
 import { SPARE_FAMILIES } from "./arm-pr.ts";
 
-const PATH_RE = /\/home\/agent\/repos\/[^\s`),;]+/g;
+// Any absolute path in the text: the host's repos directory and the primary checkout are both declared by the host, and a CI runner's primary is
+// not under /home/agent/repos, so `paths` keeps the two it counts by name and not by a fixed prefix.
+const PATH_RE = /\/[^\s`),;]+/g;
 
 /** The gate's own order for one Ready row -- the real `decide`, so a reworded gate is judged, not a copy of it. */
 const gateOrder = () => {
@@ -37,7 +39,8 @@ const gateOrder = () => {
 // THE BRIEF'S OWN ABSOLUTE PATH IS NOT A WORKTREE (#850): the engineer is sent to read it by its path in the home project, so it is the one
 // host path in the text that names no directory to work in, and it is left out of what is counted here.
 const BRIEF_PATH = join(HOME_CHECKOUT, ENGINEER_BRIEF);
-const paths = (text: string) => (text.match(PATH_RE) ?? []).filter((path) => path !== BRIEF_PATH);
+const paths = (text: string) => (text.match(PATH_RE) ?? [])
+  .filter((path) => (path.startsWith(`${HOST_REPOS}/`) || path.startsWith(PRIMARY_CHECKOUT)) && path !== BRIEF_PATH);
 
 test("#2405 the gate names NO directory: it leaves the placeholder, because only wake knows who took the order", () => {
   const { prompt } = gateOrder();

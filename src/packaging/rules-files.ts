@@ -3,7 +3,7 @@
  *
  * The tests here that tie a mechanism to a rule ("the flag the refusal quotes is in the rules", "the routing table
  * implements the model policy") read the rules of the project agent-org SERVES, because agent-org carries no
- * `.claude/rules/` of its own. They used to import this module from the a11y-witness monorepo, where
+ * `.claude/rules/` of its own. They used to import this module from the monorepo that carried it, where
  * `rules-files.ts` named the six files; that list is the project's to keep (`content-preservation.test.ts` there
  * holds it to the directory in both directions), so it is NOT copied here, where it would be a second list that drifts.
  *

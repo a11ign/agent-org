@@ -49,6 +49,8 @@ import { resolve } from "node:path";
 import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
 import { HOME_CHECKOUT } from "./project-config.ts";
 import { isAcceptancePath } from "./acceptance-file.ts";
+import { isBrokenRed } from "./red-pr.ts";
+import type { OrgSideVerdict } from "./acceptance-commands.ts"; // a type only: no load-time edge into the file that has a cycle with the gate
 
 const EXIT = { SIGNED: 0, REFUSED: 1, CANNOT_ASK: 2 };
 const REPO = HOME_CHECKOUT;
@@ -200,6 +202,73 @@ export function signoffVerdict({ changed, body, facts }: {
     );
   }
   return { code: EXIT.REFUSED, reasons };
+}
+
+/**
+ * agent-org#1598 (the epic "agent-org stands alone", a11ign#928; a11ign#5549 ruled OPTION 2): THE OUTSIDE HOME OF a project's `ownedPaths` JOB, SHIPPED OFF, AND SHADOW WHEN ON.
+ *
+ * The job does two things: `git diff --name-only origin/<base>...HEAD` and `owned-path-signoff --diff --body`. THE FIRST READ: the outside has no equivalent of either ("none, built
+ * here"), and needs no checkout for the first, because the open-pull-request payload the gate already reads carries `files` (and `changedFiles`, which says when the list is cut short)
+ * and `body`. The owned paths are NOT copied: {@link loadFacts} reads the project's `docs/owned-path-facts.json` at the home checkout, so every path in its `owned` list is covered by
+ * construction, and a path added there is covered the next tick. Not the same check as the one a11ign#5044 names (that covers `.github/workflows/`).
+ *
+ * The flag is `outside.ownedPaths` in the project's `.agent-org/decisions.json`; the caller reads it with `decision-provider.ts`'s `readSwitches` (absent = off) and hands the record
+ * here. OFF: nothing is read or asked. ON: the verdict is RECORDED beside the job's and `blocks` is the literal `false`: a shadow verdict arms nothing and holds nothing, and the job
+ * stays in `gate`'s `needs`. Revert is the flag set `false`. ADR 0045 D4: AGENT pull requests only; an outside pull request meets no sign-off request (it is `not-run` before the facts are read).
+ *
+ * KNOWN DIVERGENCES, for the canary's explanations: the job reads the facts file from the pull request's merge ref and this reads the home checkout's, so a pull request that edits the
+ * facts file can differ; a pull request whose file list the payload cut short is `not-run`, never a pass.
+ */
+export const OUTSIDE_OWNED_PATHS_FLAG = "outside.ownedPaths";
+export const outsideOwnedPathsOn = (switches: Readonly<Record<string, unknown>> | null | undefined): boolean => switches?.[OUTSIDE_OWNED_PATHS_FLAG] === true;
+
+/** The project's `ownedPaths` job's verdict on a head, read off the pull request's check rollup already narrowed to the newest run per name: `pass` on SUCCESS, `fail` when `isBrokenRed`
+ *  says the check is red, and `null` for everything else (absent, running, skipped for a prose-only body edit, cancelled), which the comparison reads as not-compared, never as agreement. */
+export function ownedPathsJobOf(rollup: { name?: string; conclusion?: string | null; }[] | null | undefined): "pass" | "fail" | null {
+  const run = (rollup ?? []).find((check) => /(^|[\s/])ownedPaths$/.test(String(check?.name ?? "")));
+  if (run === undefined) return null;
+  if (isBrokenRed({ statusCheckRollup: [run] })) return "fail"; // red is `isBrokenRed`'s to say (#2956 ONE DECIDER), asked of this one check alone
+  return String(run.conclusion ?? "").toUpperCase() === "SUCCESS" ? "pass" : null;
+}
+
+/**
+ * The org-side verdict of ONE pull request's owned-path sign-off: {@link signoffVerdict} over the payload's `files` and `body`. `eligible` is INJECTED (`orgSideAcceptanceEligibility`
+ * bound), so an outside pull request is `not-run` BEFORE `facts` is called: it meets no sign-off request. A file list shorter than `changedFiles`, a body that is not text, and facts that
+ * cannot be read are `not-run` (the check could not ask), never `pass`.
+ */
+export function ownedPathsVerdict(pr: any, { eligible, facts = () => loadFacts() }: {
+  eligible: (pr: any) => { eligible: true; } | { eligible: false; reason: string; };
+  facts?: () => { owned: string[]; facts: { id: string; states: string[]; }[]; } | null;
+}): OrgSideVerdict {
+  const refused = eligible(pr);
+  if (!refused.eligible) return { kind: "not-run", head: null, lines: [], why: `owned-path sign-off not asked on the org side: ${refused.reason}` };
+  const head = typeof pr?.headRefOid === "string" && pr.headRefOid !== "" ? pr.headRefOid : null;
+  const notRun = (why: string): OrgSideVerdict => ({ kind: "not-run", head, lines: [], why: `owned-path sign-off not run: ${why}` });
+  if (head === null) return notRun("the pull request's head was not read");
+  if (typeof pr?.body !== "string") return notRun("the pull request's body was not read");
+  const files = pr?.files;
+  if (!Array.isArray(files) || files.some((file: any) => typeof file?.path !== "string")) return notRun("the pull request's file list was not read");
+  if (!Number.isInteger(pr?.changedFiles) || pr.changedFiles > files.length) return notRun(`the file list is cut short (${files.length} of ${String(pr?.changedFiles)})`);
+  const verdict = signoffVerdict({ changed: files.map((file: any) => String(file.path)), body: pr.body, facts: facts() });
+  const short = head.slice(0, 8);
+  if (verdict.code === EXIT.CANNOT_ASK) return { kind: "not-run", head, lines: verdict.reasons, why: `owned-path sign-off could not be asked at ${short}` };
+  return verdict.code === EXIT.SIGNED
+    ? { kind: "pass", head, lines: [], why: `owned-path sign-off satisfied at ${short}` }
+    : { kind: "fail", head, lines: verdict.reasons, why: `owned-path sign-off REFUSED at ${short}` };
+}
+
+/** `agree`: the same pass or fail as the job. `disagree`: the two differ, which the canary counts. `not-compared`: the home did not run to an end, or the job's verdict was not read. */
+export type ShadowOwnedPaths =
+  | { on: false; }
+  | { on: true; blocks: false; verdict: OrgSideVerdict; job: "pass" | "fail" | null; agreement: "agree" | "disagree" | "not-compared"; };
+
+export function shadowOwnedPathsVerdict<PR>(pr: PR, { switches, job = null, verdictOf }: {
+  switches: Readonly<Record<string, unknown>> | null | undefined; job?: "pass" | "fail" | null; verdictOf: (pr: PR) => OrgSideVerdict;
+}): ShadowOwnedPaths {
+  if (!outsideOwnedPathsOn(switches)) return { on: false };
+  const verdict = verdictOf(pr);
+  const agreement = verdict.kind === "not-run" || job === null ? "not-compared" : verdict.kind === job ? "agree" : "disagree";
+  return { on: true, blocks: false, verdict, job, agreement };
 }
 
 /** @param {string | undefined} path @returns {string | null} */

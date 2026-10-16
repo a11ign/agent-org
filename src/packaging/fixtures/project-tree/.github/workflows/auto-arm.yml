@@ -1,0 +1,9 @@
+# (agent-org#1600) Fixture workflow: the smallest valid file a reader of `.github/workflows/auto-arm.yml` finds. Not a real pipeline.
+name: auto-arm
+on:
+  pull_request:
+jobs:
+  auto-arm:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo fixture project

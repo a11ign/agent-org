@@ -74,7 +74,8 @@ test("(1) ON changes nothing for a hold that is still a sequence, which is the c
 });
 
 test("(2) decide passes the reading through: `recheck: true` orders the release, `false` does not, and the order is the one perPullRequestOrders made", () => {
-  const ordersOf = (recheck: boolean) => decide({ prs: HELD(), readyRows: [], nowMs: NOW, recheck }) as Order[];
+  // prOwnerRouting pinned OFF: an omitted reading is the host's `prs.ownerRouting` (#1325), ON here, and the fixture PRs have no `isCrossRepository: false`, so the held PR reads as outside and its release is withheld.
+  const ordersOf = (recheck: boolean) => decide({ prs: HELD(), readyRows: [], nowMs: NOW, recheck, prOwnerRouting: false }) as Order[];
   assert.equal(releases(ordersOf(true)).length, 1, "on");
   assert.equal(releases(ordersOf(false)).length, 0, "off");
 });

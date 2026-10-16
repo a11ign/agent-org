@@ -1,0 +1,39 @@
+{
+  "_what": "(agent-org#1600) The declaration of the FIXTURE PROJECT agent-org's suite runs against in place of a11ign's tree (agent-org#1590, docs/project-tree-dependency.md). The smallest declaration the tool's readers accept, in the shape a11ign's has. A fixture, never a11ign's live file: a11ign adding a repository, a role or a unit must not move this suite's verdict.",
+  "schema": 1,
+  "beforeTick": "agent-org primary:update",
+  "tracker": [
+    { "key": "", "repo": "a11ign/a11ign", "board": { "owner": "a11ign", "number": 1 } }
+  ],
+  "code": [
+    { "key": "", "repo": "a11ign/a11ign" },
+    { "key": "agent-org", "repo": "a11ign/agent-org" }
+  ],
+  "dora": [],
+  "units": {
+    "prefix": "fixture-",
+    "boardReportWorkflow": "board-report.yml",
+    "ciHealthWorkflow": "ci.yml",
+    "ciHealthIssue": 1,
+    "own": [
+      "fixture-corpus-release-nightly.service",
+      "fixture-corpus-release-nightly.timer"
+    ]
+  },
+  "roles": { "dir": ".agent-org/roles" },
+  "leakPatterns": [],
+  "vocabulary": {
+    "labels": {
+      "backlog": "backlog",
+      "needsChairman": "needs:chairman",
+      "outOfRelease": "out-of-release",
+      "blocked": "blocked"
+    },
+    "prefixes": { "lane": "lane:", "session": "session:", "answer": "answer:" },
+    "milestones": { "roadToVersionOne": "Road to version one", "outOfRelease": "Out of release" },
+    "lanesFile": "docs/lane-ownership.json",
+    "templateFields": { "acceptance": "Acceptance", "closes": "Closes", "fleet": "Fleet" },
+    "fleetQuestion": "Does the acceptance need the fleet or the lab",
+    "resources": []
+  }
+}

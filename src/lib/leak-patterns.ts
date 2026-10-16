@@ -4,7 +4,7 @@
 //
 //   - the TWO GENERIC patterns stay here, because they are true of any public repository: a private LAN IPv4 address and a named SSH private
 //     key file. They are the floor every project gets.
-//   - the TWO a11ign-SPECIFIC ones (`.config/a11y-witness/...`, a live `pct exec`) moved to `.agent-org/project.json`'s `leakPatterns`, read
+//   - the TWO a11ign-SPECIFIC ones (`.config/<project>/...`, a live `pct exec`) moved to `.agent-org/project.json`'s `leakPatterns`, read
 //     through `project-config.mjs`, so a project that is not a11ign is not held to a11ign's paths and a11ign is held to exactly the four it
 //     was. The union of the two lists equals the product's set, which the test asserts by name and by source.
 //   - `allLeaksIn`, `leakRefusalReason`, `bodyFromArgv` and `assertNoLeakInArgv` are the original's text, unchanged; the two declared-writer

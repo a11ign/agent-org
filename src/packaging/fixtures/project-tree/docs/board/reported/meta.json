@@ -1,0 +1,5 @@
+{
+  "//": "(agent-org#1600) Fixture: a board-reported directory with no recorded gate and no achievement, so a reader finds the directory and nothing in it to dispute.",
+  "staleAfterHours": 24,
+  "achievements": []
+}

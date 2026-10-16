@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+# Refuse to commit work that probably is not mine.
+#
+# Two agents share this checkout and this branch. `git add -A` cannot tell my edits from
+# someone else's in-flight ones, and it does not ask: a commit titled "fix(doctor)" once
+# carried 19 files, 16 of them another agent's half-finished dataset work, and pushed it.
+# Nothing was lost, but their work landed in main when they had not chosen to land it and the
+# message described none of it.
+#
+# The useful signal in a shared tree is TIME. Files I am working on were touched minutes ago;
+# a file last modified an hour ago, staged by a bulk add, is almost certainly someone else's.
+# So this blocks on staleness, and on sheer breadth as a second net.
+#
+# Override when the breadth is real and intended:
+#   A11Y_COMMIT_ALL=1 git commit ...
+set -euo pipefail
+
+# THE PRIMARY CHECKOUT IS READ-ONLY EXCEPT FAST-FORWARD -- issue #126, ruled by `ceo` after three real
+# incidents in one night: a worktree left on a branch, `lab:collect-promotion` committed there because
+# nothing marks the boundary between producing an artefact and committing it, and a failed `cd` into a
+# deleted merge worktree silently falling back here. None was carelessness -- the rule was known and
+# written in a role file, and it broke anyway three times because nothing could REFUSE.
+#
+# It matters mechanically, not territorially. `assertFleetRunsThisCheckout` hashes the WORKING TREE, so a
+# stray branch or a half-resolved merge here makes a capture run stamp itself against code that never
+# existed -- best case a refused run, worst case one that passes and should not have. And a worktree whose
+# `node_modules` is still a SYMLINK to this checkout's (the pre-pnpm layout, #57) reads this checkout's
+# `dist`, so a branch parked here silently changes what every such tree compiles and tests against. A tree
+# with its own `pnpm install` is not exposed to that.
+#
+# IDENTIFIED BY AN EXPLICIT LOCAL MARK, never by branch name, an absolute path, or the shape of `.git`.
+#
+# It used to ask whether `.git` is a directory -- the mechanism `prune-worktrees.mjs`'s
+# `isPrimaryWorktree` uses, and CORRECT for that function's question (within one repo, primary worktree or
+# linked one?). It does not answer THIS question, because a real `.git` directory is true of every ordinary
+# clone: the lab's, a worker's, a colleague's. `post-checkout` carried the identical predicate and #198 is
+# what it cost. See `lib/is-primary-checkout.sh`.
+. "$(dirname "$0")/lib/is-primary-checkout.sh"
+if is_primary_checkout; then
+  if [ -n "${A11Y_PRIMARY_COMMIT_REASON:-}" ]; then
+    echo "pre-commit: committing in the PRIMARY checkout, overridden: $A11Y_PRIMARY_COMMIT_REASON" >&2
+  else
+    echo "pre-commit: REFUSING — this is the fleet-driving checkout; commit in a worktree." >&2
+    echo "If this is deliberate: A11Y_PRIMARY_COMMIT_REASON=\"<why>\" git commit ... — the reason is" >&2
+    echo "printed, not just the override, so a deliberate exception is in the log rather than in" >&2
+    echo "somebody's memory." >&2
+    exit 1
+  fi
+fi
+
+[ "${A11Y_COMMIT_ALL:-0}" = "1" ] && exit 0
+
+STALE_MIN="${A11Y_STALE_MIN:-30}"   # a staged file untouched this long is suspicious
+MAX_FILES="${A11Y_MAX_FILES:-12}"   # ... as is a commit this wide
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -z "$staged" ] && exit 0
+count=$(printf '%s\n' "$staged" | wc -l | tr -d ' ')
+
+# #1314: THE REFUSAL'S OWN FIRST REMEDY MUST PASS. It says "Commit explicit paths instead: git commit path/one
+# path/two", and that commit read the same staged mtimes and was refused identically whenever the stale files
+# WERE the ones named (measured 2026-09-13: #1303's two-file fix, 37 minutes old, got through only with
+# A11Y_COMMIT_ALL=1). A guard whose remedy is refused teaches the override.
+#
+# `git commit <paths>` (the default --only form) builds a TEMPORARY index holding HEAD plus exactly the named
+# paths and hands this hook GIT_INDEX_FILE=.git/next-index-<pid>.lock. Plain `git commit`, `-a` and `-i`
+# hand it .git/index or .git/index.lock, whose staged set can carry swept-in files. Measured on git 2.53.0 in
+# a sandbox: with a swept-in file already staged, `git commit named.txt` showed this hook only named.txt and
+# left the swept file staged and uncommitted. So every file in a next-index commit was named on the command
+# line, and staleness -- a guess at "not the committer's own" -- has nothing left to guess about. The breadth
+# check below still applies. The index file's name is git's implementation, not its documented interface,
+# which is why pre-commit-hook.test.ts drives a REAL git commit through this hook rather than setting the
+# variable by hand: a git that names it differently fails those tests instead of silently refusing again.
+named_paths_only=0
+case "$(basename "${GIT_INDEX_FILE:-}")" in
+  next-index-*.lock) named_paths_only=1 ;;
+esac
+
+stale=""
+while IFS= read -r f; do
+  [ -f "$f" ] || continue
+  # Minutes since last modification, via stat's epoch seconds. GNU form FIRST, not BSD: GNU coreutils'
+  # `-f` means "filesystem status" (a different mode entirely) and happily exits 0 printing filesystem
+  # info -- Namelen, Block size, Inodes -- instead of failing, so `stat -f %m || stat -c %Y` never reaches
+  # the correct fallback on Linux, and the garbage multi-line "mtime" later reaches an arithmetic context
+  # containing the bareword `File`, which bash's arithmetic evaluator reads as a variable reference and
+  # `set -u` refuses as unbound. BSD stat (macOS) does the safe thing here: an unrecognised `-c` is a real
+  # error ("illegal option"), so the fallback fires correctly in that direction. Found running this hook's
+  # own test suite in CI for the first time -- `pre-commit-hook.test.ts` had never actually run on Linux
+  # before the ts/docs jobs split out of one shared, earlier-failing job.
+  mtime=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0)
+  [ "$mtime" = 0 ] && continue
+  age_min=$(( ( $(date +%s) - mtime ) / 60 ))
+  [ "$age_min" -ge "$STALE_MIN" ] && stale="$stale  $f (last touched ${age_min}m ago)"$'\n'
+done <<< "$staged"
+
+if [ -n "$stale" ] && [ "$named_paths_only" = 0 ]; then
+  echo "pre-commit: refusing — staged files nobody has touched in ${STALE_MIN}m+:" >&2
+  printf '%s' "$stale" >&2
+  echo "In a shared checkout that usually means another agent's in-flight work got swept in." >&2
+  echo "Commit explicit paths instead:  git commit path/one path/two" >&2
+  echo "Or, if this breadth is deliberate:  A11Y_COMMIT_ALL=1 git commit ..." >&2
+  exit 1
+fi
+
+# #1422: THE BREADTH REFUSAL'S OWN REMEDY MUST PASS TOO. It says "Name the paths you mean", and naming them was refused
+# by this same count: a `git commit` naming 13 files hands this hook a next-index commit holding exactly those 13, so
+# `$count` is 13. Reproduced on git 2.53.0 in a sandbox (#1422's first comment): the path commit and a plain commit of
+# the same files were refused with identical text. The breadth net exists to catch files swept in by a bulk add, and a
+# next-index commit carries only what was named (`named_paths_only`, #1314 above), so the count is skipped there. A
+# plain commit, `-i` and `-a` still see the whole index, and are still refused.
+if [ "$count" -gt "$MAX_FILES" ] && [ "$named_paths_only" = 0 ]; then
+  echo "pre-commit: refusing — $count files staged (limit $MAX_FILES):" >&2
+  printf '%s\n' "$staged" | sed 's/^/  /' >&2
+  echo "Name the paths you mean, or set A11Y_COMMIT_ALL=1 if the breadth is deliberate." >&2
+  exit 1
+fi
+
+# `cmd | head` (or `| tail`, `| grep`) reports the STATUS TOOL's exit code, not the piped command's --
+# issue #180, measured twice in one night, once an hour after the first was diagnosed and warned about.
+# Scoped to files where this shape gets BAKED IN and runs repeatedly (shell scripts, CI/ansible YAML,
+# this hook itself, package.json) -- not .md, where the exact same text is usually the rule being
+# DOCUMENTED, not committed. `A11Y_ALLOW_PIPED_EXIT_STATUS=1` overrides.
+if [ "${A11Y_ALLOW_PIPED_EXIT_STATUS:-0}" != "1" ]; then
+  # Resolved relative to THIS script, never `git rev-parse --show-toplevel` -- the hook is exercised in
+  # `pre-commit-hook.test.ts` against a disposable sandbox repo whose toplevel is not this checkout, and
+  # the guard script only exists here.
+  guard_script="$(cd "$(dirname "$0")/../.." && pwd)/packages/guards/src/piped-exit-status-guard.ts"
+  hazard_hits=""
+  guard_errors=""
+  # #1642: ONE GUARD PROCESS PER COMMIT, not one per staged line. Measured on a 14-core Mac: 37ms of node
+  # startup per spawn, so a commit touching a 200-line workflow paid ~7.4 SECONDS before this guard did any
+  # work at all, and the test that drives this hook thirteen times took 41s. Batched, 20 lines cost 52ms
+  # against 626ms. The check itself was never the expense; the process was.
+  #
+  # TWO PARALLEL FILES, payload and label, so the Nth verdict still names the Nth line's file and text --
+  # the guard answers in input order and this is what lets the report stay exactly as specific as it was.
+  guard_in="$(mktemp)"; guard_ctx="$(mktemp)"; guard_out="$(mktemp)"
+  while IFS= read -r f; do
+    case "$f" in
+      *.sh|*.yml|*.yaml|package.json|scripts/git-hooks/*) ;;
+      *) continue ;;
+    esac
+    [ -f "$f" ] || continue
+    while IFS= read -r line; do
+      case "$line" in
+        +++*) continue ;;
+        +*)
+          added="${line#+}"
+          [ -z "$added" ] && continue
+          printf '%s\n' "$added" >> "$guard_in"
+          printf '%s\n' "  $f: $added" >> "$guard_ctx"
+          ;;
+      esac
+    done <<< "$(git diff --cached -U0 --no-color -- "$f")"
+  done <<< "$staged"
+
+  if [ -s "$guard_in" ]; then
+    guard_status=0
+    node "$guard_script" < "$guard_in" > "$guard_out" 2>&1 || guard_status=$?
+    # A SHORT ANSWER IS NO ANSWER. If the guard died partway (an unresolvable import throws before its own
+    # entry point, #535) the verdict file has fewer lines than the input, and every line it did not reach
+    # is "I could not tell" -- never a pass. Counted rather than assumed, so a truncated run fails closed
+    # exactly as a per-line spawn that exited non-zero used to.
+    want=$(wc -l < "$guard_in"); got=$(wc -l < "$guard_out")
+    if [ "$got" -ne "$want" ]; then
+      guard_errors="$(sed 's/$/\n    -> guard produced no verdict for this line/' "$guard_ctx")"$'\n'
+    else
+      n=0
+      while IFS= read -r verdict; do
+        n=$((n+1))
+        ctx="$(sed -n "${n}p" "$guard_ctx")"
+        case "$verdict" in
+          REFUSE:*) hazard_hits="$hazard_hits$ctx"$'\n' ;;
+          ALLOW:*)  : ;;
+          *) guard_errors="$guard_errors$ctx"$'\n''    -> '"$verdict (exit $guard_status)"$'\n' ;;
+        esac
+      done < "$guard_out"
+    fi
+  fi
+  rm -f "$guard_in" "$guard_ctx" "$guard_out"
+
+  # A GUARD THAT CANNOT RUN FAILS CLOSED HERE, DELIBERATELY -- checked first, before the hazard report, so
+  # a broken guard never gets read as "no hazards found" either. This is a judgment call, not a fact: the
+  # pre-push hook's corpus-dependent checks SKIP LOUDLY when `runs/` is absent, and that is right for THEM
+  # because a fresh worktree with no corpus is an EXPECTED, permanent shape, not a defect to fix. This
+  # guard's own trigger (no `node_modules` yet) was expected too, but the underlying #180 hazard it exists
+  # to catch is a real, if rare, correctness bug -- and a guard whose failure mode is "silently stop
+  # checking" is worse than one that stops the commit and says so loudly. `A11Y_ALLOW_PIPED_EXIT_STATUS=1`
+  # is the same override either way, since a broken guard and a false-positive guard cost the committer the
+  # identical thing: time spent on something that is not actually blocking their work.
+  if [ -n "$guard_errors" ]; then
+    echo "pre-commit: refusing — the piped-exit-status guard could not examine a staged line" >&2
+    echo "(this is a GUARD FAILURE, not a hazard finding):" >&2
+    printf '%s' "$guard_errors" >&2
+    echo "Fix the guard (packages/guards/src/piped-exit-status-guard.ts), or set" >&2
+    echo "A11Y_ALLOW_PIPED_EXIT_STATUS=1 if you must commit before it is fixed." >&2
+    exit 1
+  fi
+
+  if [ -n "$hazard_hits" ]; then
+    echo "pre-commit: refusing — a newly staged line pipes into head/tail/grep and then reads \$?," >&2
+    echo "which names the STATUS TOOL's exit code, not the piped command's (issue #180):" >&2
+    printf '%s' "$hazard_hits" >&2
+    echo "Fix the line, or set A11Y_ALLOW_PIPED_EXIT_STATUS=1 if this is a false positive." >&2
+    exit 1
+  fi
+fi

@@ -101,7 +101,7 @@ import { moveProjectStatus } from "./row-claim.ts";
 import { scopedStatus } from "./board-snapshot.ts";
 import { realpathSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
-// RELATIVE, never `@a11y-witness/worker-fleet/cli-flags`: this job runs with `actions/checkout` and
+// RELATIVE, never a package specifier such as `@scope/worker-fleet/cli-flags`: this job runs with `actions/checkout` and
 // nothing else -- no `pnpm install`, no build -- so the package specifier would resolve to a `dist/` that does
 // not exist there. #330 and #331 are what that circular bootstrap costs. `cli-flags.ts` imports only
 // `node:path`, `node:fs` and `node:url`.

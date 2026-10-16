@@ -75,7 +75,7 @@ const NEXT_TARGET_MINUTES = 30;
 const LATEST_TARGET_MINUTES = MINUTES_PER_DAY;
 
 /**
- * The line a promotion leaves in its Release's notes: written by a11y-witness's `release.yml` (`promotion-record`) and read by `scripts/release-promote.mjs`, which this leaf
+ * The line a promotion leaves in its Release's notes: written by the code repository's `release.yml` (`promotion-record`) and read by `scripts/release-promote.mjs`, which this leaf
  * cannot import. `dora-channels.test.ts` pins it against the line the workflow prints, so a change to one side that misses the other is a red test and not a silent `unknown`.
  */
 const PROMOTION_LINE = /^Promoted to latest: (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z) \(qualification read on [0-9a-f]{40}\)$/m;

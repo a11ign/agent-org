@@ -73,3 +73,18 @@ test("TWIN: a note that does not say VERIFIED or Done-when met orders nothing", 
 test("the bound is the detector's 15 minutes, inclusive: a note exactly 15 minutes old orders the close", () => {
   assert.equal(closesOf(tick(fixture({ noteMinutes: 15 }))).length, 1);
 });
+
+// a11ign#5311 (agent-org#1596): the claimant's account is shared by every seat, and a note can say VERIFIED while it refuses the close. Neither is the claimant's VERIFIED note.
+test("a comment by another seat, marked decided-by product-manager on the shared account, orders nothing, though it says Done-when met and refuses nothing", () => {
+  assert.deepEqual(closesOf(tick(fixture({ note: "Done-when items 1 and 2 met, per the hold-over.\n<!-- decided-by: product-manager -->" }))), []);
+});
+
+test("a claimant's own note that says NOT CLOSING and a Done-when item NOT met orders nothing, even with VERIFIED in it", () => {
+  assert.deepEqual(closesOf(tick(fixture({ note: "VERIFIED the tests, but NOT CLOSING: Done-when 2 NOT met." }))), []);
+});
+
+test("POSITIVE CONTROL (d-marked): the claimant's own self-marked VERIFIED note, 16 minutes old, still orders the close", () => {
+  const closes = closesOf(tick(fixture({ note: "VERIFIED: Done-when 1 met.\n<!-- decided-by: " + SESSION + " -->" })));
+  assert.equal(closes.length, 1, "the self-marked note is the claimant's");
+  assert.match(closes[0].prompt, /IC_note/);
+});

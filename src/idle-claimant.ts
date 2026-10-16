@@ -19,7 +19,7 @@ import { listingIsComplete } from "./herdr-agents.ts";
 import { CLAIM_LABEL } from "./claim-labels.ts";
 import { ANSWER_PREFIX, NEEDS_CHAIRMAN_LABEL } from "./project-vocabulary.ts";
 import { reviewerSeat, subjectMention } from "./review-attribution.ts";
-import { DEFAULT_ANSWERER } from "./decided-by.ts";
+import { DEFAULT_ANSWERER, decidedBy } from "./decided-by.ts";
 import type { DeclarationReading } from "./worker-state.ts";
 
 const MINUTE_MS = 60_000;
@@ -354,12 +354,24 @@ export const VERIFIED_CLOSER = DEFAULT_ANSWERER;
 /** A note that says the work is verified: the word VERIFIED, or a Done-when line that says it is met. */
 const VERIFIED_NOTE = /\bVERIFIED\b|Done-when[^\n]*\bmet\b/i;
 
+/** A note that refuses the close, whatever else it says: `NOT closing`, or an item `not met`. Matched anywhere in the body, so the refusal wins on a doubt. */
+const REFUSAL_NOTE = /\bNOT closing\b|\bnot met\b/i;
+
+/**
+ * The claimant's own VERIFIED note: its `decided-by` marker is absent or names the claimant (sessions share one account, so the account alone does not
+ * say whose note it is), it says VERIFIED or that a Done-when item is met, and it refuses nothing.
+ */
+function isVerifiedNoteOf(body: string, claimant: string): boolean {
+  const seat = decidedBy(body);
+  return (seat === null || seat === claimant) && VERIFIED_NOTE.test(body) && !REFUSAL_NOTE.test(body);
+}
+
 export type VerifiedCloseOrder = { kind: "close"; row: number; claimant: string; to: string; note: string; verifiedAt: number; idleMs: number };
 
 /**
  * PURE. IS THIS ROW ONE THE GATE ORDERS CLOSED. Every condition must hold: the row is `in-progress`; its claimant is idle (`idleSince` is the start of
- * the idle run, `null` when the claimant is not idle); and a comment by the claimant's account, made since the claim, says VERIFIED or that the
- * Done-when items are met, and has stood for at least {@link VERIFIED_CLOSE_MINUTES}. The newest such comment is the one the order names.
+ * the idle run, `null` when the claimant is not idle); and a comment by the claimant's account, made since the claim, is the claimant's VERIFIED note
+ * ({@link isVerifiedNoteOf}) and has stood for at least {@link VERIFIED_CLOSE_MINUTES}. The newest such comment is the one the order names.
  * The claimant's account is the claim's author (`claimRecordOf`), the same attribution the claim itself uses: sessions share an account.
  * @param {{ row: number, labels: string[], claimant: string, claim: { at: number, author: string | null } | null, comments: { url: string, body: string, createdAt: string, author?: { login?: string } | null }[], idleSince: number | null }} facts
  * @param {{ now: number }} ctx
@@ -368,7 +380,7 @@ export type VerifiedCloseOrder = { kind: "close"; row: number; claimant: string;
 export function verifiedCloseOrder(facts: { row: number; labels: string[]; claimant: string; claim: { at: number; author: string | null } | null; comments: { url?: string; id?: string; body: string; createdAt: string; author?: { login?: string } | null }[]; idleSince: number | null }, ctx: { now: number }): VerifiedCloseOrder | null {
   const { claim, idleSince } = facts;
   if (!facts.labels.includes(CLAIM_LABEL) || claim === null || claim.author === null || idleSince === null) return null;
-  const notes = facts.comments.filter((c) => c.author?.login === claim.author && Date.parse(c.createdAt) >= claim.at && VERIFIED_NOTE.test(c.body));
+  const notes = facts.comments.filter((c) => c.author?.login === claim.author && Date.parse(c.createdAt) >= claim.at && isVerifiedNoteOf(c.body, facts.claimant));
   const newest = notes.at(-1);
   if (newest === undefined) return null;
   const verifiedAt = Date.parse(newest.createdAt);
