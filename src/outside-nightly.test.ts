@@ -4,9 +4,9 @@
 // twice), and the property the epic asks of every clock function, that THE SECOND ACTOR FINDS THE WORK DONE AND DOES NOTHING. That last is driven against each of the three sweeps with the project's job as the
 // first actor and the home as the second: POSITIVE CONTROL, NAMED (an emptiness assertion points at where its population is): each case first shows the first actor DID act, so "the second did nothing" is
 // not the world having nothing to do.
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -16,7 +16,13 @@ import { closeOnePr } from "./close-rows-sweep.ts";
 import type { VerifyEffects } from "./verify-row.ts";
 
 const SRC = fileURLToPath(new URL(".", import.meta.url));
-const scratch = (name: string) => mkdtempSync(join(tmpdir(), `outside-nightly-${name}-`));
+const made: string[] = [];
+const scratch = (name: string) => {
+  const dir = mkdtempSync(join(tmpdir(), `outside-nightly-${name}-`));
+  made.push(dir);
+  return dir;
+};
+after(() => { for (const dir of made) rmSync(dir, { recursive: true, force: true }); });
 
 /** A project directory whose `.agent-org/decisions.json` is `text` (absent when `undefined`). */
 function project(text: string | undefined) {
@@ -52,14 +58,17 @@ test("2. a finding is the same finding an hour later, and a different finding is
 });
 
 /** A report issue as a list of comments with the time each was written; `gh` answers the two calls `postReport` makes. */
-function issue928(comments: { at: number; body: string }[], { readFails = false, postFails = false } = {}) {
+function issue928(comments: { at: number; body: string; issue?: number }[], { readFails = false, postFails = false } = {}) {
   const posted: string[] = [];
   let clock = Date.UTC(2026, 9, 16, 11, 52);
+  const issueUrl = (n: number) => `https://api.github.com/repos/o/r/issues/${n}`;
   const gh: Deps["gh"] = (args) => {
     if (args[0] === "api") {
       if (readFails) throw new Error("HTTP 502");
-      const since = Date.parse(/since=([^&]+)/.exec(args[1])?.[1] ?? "");
-      return JSON.stringify(comments.filter((c) => c.at >= since).map((c) => c.body));
+      const since = Date.parse(/since=([^&]+)/.exec(args.join(" "))?.[1] ?? "");
+      // `--paginate --slurp`: one array per page.
+      const page = comments.map((c) => ({ body: c.body, created_at: new Date(c.at).toISOString(), issue_url: issueUrl(c.issue ?? 928) }));
+      return JSON.stringify([page.filter((c) => Date.parse(c.created_at) >= since)]);
     }
     if (args[0] === "issue" && args[1] === "comment") {
       if (postFails) throw new Error("HTTP 403");
@@ -99,6 +108,10 @@ test("4. watch: the project's job being the first actor is the same as the home 
   const stale = issue928([{ at: Date.UTC(2026, 9, 16, 11, 52) - (RECENT_MINUTES + 10) * 60_000, body: RED }]);
   runJobs(["watch"], AS_WATCH, stale.deps(1, RED));
   assert.deepEqual(stale.posted, [RED], "an hour-old comment is not 'already said': the first actor did not come this hour");
+
+  const elsewhere = issue928([{ at: Date.UTC(2026, 9, 16, 11, 37), body: RED, issue: 7 }]);
+  runJobs(["watch"], AS_WATCH, elsewhere.deps(1, RED));
+  assert.deepEqual(elsewhere.posted, [RED], "the same words on another issue are not the report issue's");
 });
 
 test("5. watch: a comment read that fails posts anyway and says so; a post that fails is a failed job", () => {

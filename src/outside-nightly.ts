@@ -20,12 +20,15 @@
 //
 // Exit codes: 0 off, or every job's command exited 0 (the `watch` job's is the posting's: a finding is the report's business and not a failed job, as in the project's own step); otherwise the first non-zero a job
 // returned. Every selected job runs even when an earlier one failed, because the four ask different questions.
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { decisionSwitchesPath, readSwitches } from "./decision-provider.ts";
 import { flagValue, refuseUnknownFlags } from "./lib/cli-flags.ts";
+import { gh as runGh } from "./merge-guard/lookups.ts";
+import { commentsSince } from "./ticket-port/comments-since.ts";
+import { commentOnIssue } from "./ticket-port/issue-comment.ts";
 import { printDiagnostic, processState } from "./triage-provider.ts";
 
 export const OUTSIDE_NIGHTLY_FLAG = "outside.nightly";
@@ -63,20 +66,26 @@ export type Deps = {
   /** Runs one `agent-org` command with `env` over the process's own, returning its exit code and everything it printed. */
   run: (argv: readonly string[], env: Record<string, string>) => { code: number; output: string };
   /** `gh <args>`, returning stdout; throws on a non-zero exit. */
-  gh: (args: readonly string[]) => string;
+  gh: (args: string[]) => string;
   now: () => number;
   print: (line: string) => void;
 };
 
-/** The comment bodies on `issue` written in the last {@link RECENT_MINUTES} minutes, or `null` when they could not be read: not-known is not none. */
+/**
+ * The comment bodies on `issue` written in the last {@link RECENT_MINUTES} minutes, or `null` when they could not be read: not-known is not none. The read is the repository's comments since then
+ * (one paginated call, `commentsSince`), and the issue is picked out of them by the comment's own `issue_url`.
+ */
 function recentComments(repo: string, issue: number, { gh, now }: Pick<Deps, "gh" | "now">): string[] | null {
-  const since = new Date(now() - RECENT_MINUTES * 60_000).toISOString();
-  try {
-    const parsed: unknown = JSON.parse(gh(["api", `repos/${repo}/issues/${issue}/comments?since=${since}&per_page=100`, "--jq", "[.[].body]"]));
-    return Array.isArray(parsed) && parsed.every((body) => typeof body === "string") ? parsed : null;
-  } catch {
-    return null;
-  }
+  const read = (args: string[]): unknown[] | null => {
+    try {
+      const pages: unknown = JSON.parse(gh(args));
+      return Array.isArray(pages) ? pages : null;
+    } catch {
+      return null;
+    }
+  };
+  const comments = commentsSince({ repo, since: now() - RECENT_MINUTES * 60_000, run: read });
+  return comments === null ? null : comments.filter((comment) => comment.issue_url.endsWith(`/issues/${issue}`)).map((comment) => comment.body);
 }
 
 /**
@@ -92,7 +101,7 @@ function postReport(report: string, repo: string, issue: number, deps: Deps): nu
   }
   if (recent === null) deps.print(`OUTSIDE-NIGHTLY: watch: could not read #${issue}'s recent comments, so whether this is already said is unknown -- posting it.`);
   try {
-    deps.gh(["issue", "comment", String(issue), "--repo", repo, "--body", report]);
+    commentOnIssue({ repo, issue, body: report, run: deps.gh });
     deps.print(`OUTSIDE-NIGHTLY: watch: posted the finding on #${issue}.`);
     return 0;
   } catch (cause) {
@@ -123,7 +132,7 @@ const liveDeps: Deps = {
     const done = spawnSync(process.execPath, [BIN, ...argv], { env: { ...process.env, ...env }, encoding: "utf8" });
     return { code: done.status ?? 1, output: `${done.stdout ?? ""}${done.stderr ?? ""}` };
   },
-  gh: (args) => execFileSync("gh", [...args], { encoding: "utf8" }),
+  gh: runGh,
   now: () => Date.now(),
   print: (line) => console.log(line),
 };
