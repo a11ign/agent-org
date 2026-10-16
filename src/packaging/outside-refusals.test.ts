@@ -1,3 +1,5 @@
+// no-token: lookup
+// agent-org#1578: the real verdict is reached once, with an injected `run` that always throws; every other case injects `verdictOf`, so no token is read and none is needed.
 /**
  * agent-org#1578: THE OUTSIDE HOME OF a11ign's `deliberateRefusals` JOB, FLAG `outside.refusals`, SHIPPED OFF, SHADOW WHEN ON.
  *
