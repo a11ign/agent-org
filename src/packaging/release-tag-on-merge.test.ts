@@ -23,7 +23,7 @@
  *     `release-triggers-itself.test.ts` for the permissions.
  * What stays HERE is what only this repository's call can get wrong: that it IS a call (one job, no steps of its own, no secrets), that the workflow it calls is pinned by a
  * FULL sha (a tag or branch would let a push to toolchain change what is released here), and the inputs: `kind: tag`, the gate this repository's required check is named,
- * and the pnpm and changesets versions a repository with no lockfile has to name. Each property is ALSO run on a copy with exactly that thing broken.
+ * and the pnpm version a repository with no `packageManager` has to name (and the changesets version a repository with no lockfile would). Each property is ALSO run on a copy with exactly that thing broken.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -38,12 +38,7 @@ const REPO = fileURLToPath(new URL("../../", import.meta.url));
 const read = (path: string): string => readFileSync(`${REPO}${path}`, "utf8");
 const REAL = parse(read(".github/workflows/release.yml")) as Workflow;
 const CI = parse(read(".github/workflows/ci.yml")) as Workflow;
-const PACKAGE = JSON.parse(read("package.json")) as { packageManager?: string; scripts: Record<string, string> };
-
-/** The premise below is "no lockfile", and `pnpm-lock.yaml` is tracked, so the premise is stale and the test is skipped with that reason. It runs again if the lockfile is ever removed. release.yml (outside this file's Region) still says "no lockfile" and pins pnpm and changesets, so the stale comments and pins are a release-owner decision. */
-const SKIP_LOCKFILE_PREMISE = existsSync(`${REPO}pnpm-lock.yaml`)
-  ? "the repository now has a pnpm-lock.yaml, so the 'no lockfile, no packageManager' premise of the pinned pnpm and changesets versions is stale; release.yml still says 'no lockfile' and needs a release-owner decision"
-  : false;
+const PACKAGE = JSON.parse(read("package.json")) as PackageJson;
 
 const SHARED = /^a11ign\/toolchain\/\.github\/workflows\/release-per-merge\.yml@[0-9a-f]{40}$/;
 
@@ -70,14 +65,14 @@ function callProblems(w: Workflow): string[] {
   return problems;
 }
 
-/** What the call asks for: tags only, ci.yml's required check as the gate, the node this file always ran, and the two versions a repository with no lockfile must name. */
+/** What the call asks for: tags only, ci.yml's required check as the gate, the node this file always ran, and the two versions the call names (pnpm-version is read here; changesets-version only where there is no lockfile, see `lockfileProblems`). */
 function inputProblems(w: Workflow): string[] {
   const inputs = inputsOf(w);
   const problems: string[] = [];
   if (inputs["kind"] !== "tag") problems.push(`kind is '${inputs["kind"]}', not 'tag': agent-org publishes to no registry`);
   if (inputs["gate-check"] !== "gate") problems.push(`gate-check is '${inputs["gate-check"]}', not the required check 'gate'`);
   if (inputs["node-version"] !== "22.22.1") problems.push(`node-version is '${inputs["node-version"]}', not the 22.22.1 the release has always run`);
-  if (!/^\d+\.\d+\.\d+$/.test(String(inputs["pnpm-version"] ?? ""))) problems.push(`pnpm-version is '${inputs["pnpm-version"]}': with no lockfile and no packageManager the shared workflow refuses the run`);
+  if (!/^\d+\.\d+\.\d+$/.test(String(inputs["pnpm-version"] ?? ""))) problems.push(`pnpm-version is '${inputs["pnpm-version"]}': with no packageManager the shared workflow refuses the run`);
   if (inputs["changesets-version"] !== scriptChangesets()) problems.push(`changesets-version is '${inputs["changesets-version"]}', not the '${scriptChangesets()}' package.json's \`changeset\` script runs`);
   if ("dist-tag" in inputs) problems.push("a `dist-tag` is set, and `kind: tag` publishes nothing for it to name");
   return problems;
@@ -86,18 +81,28 @@ function inputProblems(w: Workflow): string[] {
 /** The gate the call waits for is a job ci.yml has: an absent one would be waited for until the 45 minutes were out. */
 const gateProblems = (w: Workflow): string[] => (CI.jobs[String(inputsOf(w)["gate-check"])] ? [] : [`ci.yml has no job named '${inputsOf(w)["gate-check"]}', and the called workflow would wait out its time for a check that never comes`]);
 
-/** The repository has no lockfile and no packageManager, which is why the call names the pnpm: if either appears the input is ignored or argues with it, and this says so. */
-function lockfileProblems(): string[] {
+interface PackageJson { packageManager?: string; scripts: Record<string, string>; dependencies?: Record<string, string>; devDependencies?: Record<string, string> }
+
+/**
+ * What the shared workflow does with the pins depends on the repository, read at the pinned toolchain sha (`release-per-merge.yml` lines 33-36, `scripts/release-per-merge.mjs` `pnpmSetup` and `changesetVersionInCi`):
+ *   - `pnpm-version` is read ONLY where package.json has no `packageManager`, and a repository with neither is refused. agent-org has a lockfile and still no `packageManager`, so the input is live;
+ *   - `changesets-version` is read ONLY where there is no lockfile (`pnpm dlx @changesets/cli@<it>`). With a lockfile the workflow runs `pnpm install --frozen-lockfile` and the repository's own `pnpm exec changeset`, so
+ *     the input is a fallback that does nothing today, and what must be true instead is that the CLI it would fetch is the one the repository installs: a dependency, at that version, in the lockfile.
+ * `lockfile` is the text of pnpm-lock.yaml, or undefined where there is none.
+ */
+function lockfileProblems(w: Workflow, pkg: PackageJson, lockfile: string | undefined): string[] {
+  const inputs = inputsOf(w);
   const problems: string[] = [];
-  if (PACKAGE.packageManager !== undefined) problems.push("package.json now has a packageManager: the shared workflow reads that and ignores the pnpm-version input, so drop the input");
-  try {
-    readFileSync(`${REPO}pnpm-lock.yaml`);
-    problems.push("there is now a pnpm-lock.yaml: the shared workflow installs from it and runs the repository's own changeset, and ignores changesets-version");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("could not look for pnpm-lock.yaml", { cause: error });
-  }
+  if (pkg.packageManager !== undefined) problems.push("package.json now has a packageManager: the shared workflow reads that and ignores the pnpm-version input, so drop the input");
+  if (lockfile === undefined) return problems;
+  const version = String(inputs["changesets-version"] ?? "");
+  const declared = pkg.devDependencies?.["@changesets/cli"] ?? pkg.dependencies?.["@changesets/cli"];
+  if (declared !== version) problems.push(`there is a pnpm-lock.yaml, so the shared workflow runs the repository's own changeset and ignores changesets-version '${version}', and package.json declares @changesets/cli '${declared}', not that version`);
+  if (!lockfile.includes(`'@changesets/cli@${version}'`)) problems.push(`there is a pnpm-lock.yaml and it does not lock @changesets/cli@${version}, the CLI the repository's own changeset would run`);
   return problems;
 }
+
+const readLockfile = (): string | undefined => (existsSync(`${REPO}pnpm-lock.yaml`) ? read("pnpm-lock.yaml") : undefined);
 
 const PROPERTIES: Array<[string, (w: Workflow) => string[]]> = [["call", callProblems], ["inputs", inputProblems], ["gate", gateProblems]];
 const problemsOf = (w: Workflow): string[] => PROPERTIES.flatMap(([name, check]) => check(w).map((p) => `${name}: ${p}`));
@@ -106,8 +111,19 @@ test("the real release.yml is a tag-only call of the shared workflow, and has no
   assert.deepEqual(problemsOf(REAL), []);
 });
 
-test("the call names pnpm and changesets itself because the repository has neither a lockfile nor a packageManager, and says when that stops being true", { skip: SKIP_LOCKFILE_PREMISE }, () => {
-  assert.deepEqual(lockfileProblems(), []);
+test("the call names pnpm because package.json has no packageManager, and the changesets it names is the one the lockfile installs; it says when either stops being true", () => {
+  assert.deepEqual(lockfileProblems(REAL, PACKAGE, readLockfile()), []);
+});
+
+test("positive control: the premise test above runs on this tree (a tracked lockfile, no packageManager) and each broken premise is refused", () => {
+  const lockfile = readLockfile();
+  assert.ok(lockfile !== undefined, "pnpm-lock.yaml is tracked, so the lockfile branch of the premise test is the one that runs");
+  assert.equal(PACKAGE.packageManager, undefined);
+  const broken = (mutate: (pkg: PackageJson, lock: string | undefined) => [PackageJson, string | undefined]): string[] => lockfileProblems(REAL, ...mutate(structuredClone(PACKAGE), lockfile));
+  assert.ok(broken((pkg, lock) => [{ ...pkg, packageManager: "pnpm@10.34.5" }, lock]).some((p) => p.includes("packageManager")), "a packageManager is not refused");
+  assert.ok(broken((pkg, lock) => [{ ...pkg, devDependencies: {} }, lock]).some((p) => p.includes("declares @changesets/cli")), "a package.json without @changesets/cli is not refused");
+  assert.ok(broken((pkg) => [pkg, "lockfileVersion: '9.0'\n"]).some((p) => p.includes("does not lock @changesets/cli")), "a lockfile without the CLI is not refused");
+  assert.deepEqual(broken((pkg) => [{ ...pkg, devDependencies: {} }, undefined]), [], "with no lockfile the changeset comes from dlx, and the inputs property owns the version");
 });
 
 test("positive control: the properties are about something (a pinned call, a changesets version the script names, and a gate job that exists)", () => {
