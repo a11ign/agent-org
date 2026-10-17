@@ -2499,6 +2499,7 @@ export const MACHINERY_SIGNALS = Object.freeze({
   GH_AUTHOR_FALLBACK: "gh-author-fallback", // agent-org#1666: an account-attributed pr create/merge/review in the ledgers, at most ten minutes old (`gh-author-fallback.ts`)
   VERDICT_WRITTEN_UNDELIVERED: "verdict-written-undelivered",
   CONFLICTING_PR_WORKER_IDLE: "conflicting-pr-worker-idle",
+  SESSION_PR_CLASSED_OUTSIDE: "session-pr-classed-outside", // agent-org#1667: a same-repository pull request with a `session:` label classed OUTSIDE for SESSION_PR_OUTSIDE_MINUTES (`outside-session-pr.ts`)
 });
 export const STANDARD_MACHINERY_SIGNALS: readonly string[] = Object.freeze(Object.values(MACHINERY_SIGNALS));
 /** The signals no source in this tool reads yet: recorded as `null` every tick, so a change that names one is told it is UNKNOWN and not that it passed. */
@@ -2513,6 +2514,8 @@ export const UNQUEUED_MINUTES = 15;
 export const VERDICT_UNDELIVERED_MINUTES = 15;
 /** How long a conflicting pull request may wait on an idle owner before it counts toward `conflicting-pr-worker-idle` (agent-org#1649). */
 export const CONFLICT_IDLE_MINUTES = 15;
+/** How long a same-repository pull request with a `session:` label may be classed OUTSIDE before `session-pr-classed-outside` counts it (agent-org#1667). */
+export const SESSION_PR_OUTSIDE_MINUTES = 10;
 /** How long a canary's revert order is repeated, as every org-health order is: two hours, then it is the incident that carries it. */
 const CANARY_ORDER_HOURS = 2;
 /** The samples kept: the hour before and the hour after, and one more hour for a flag turned on late in a tick. */
@@ -2661,6 +2664,8 @@ export type CanaryFacts = {
   verdictUndelivered?: number[] | null;
   /** agent-org#1649: the numbers of the conflicting pull requests whose owner is idle this tick; absent or `null` is unread */
   conflictingIdle?: number[] | null;
+  /** agent-org#1667: the numbers of the same-repository pull requests with a `session:` label that are classed OUTSIDE this tick (`sessionPrOutsideNow`); absent or `null` is unread */
+  sessionPrOutside?: number[] | null;
 };
 
 /** The standard signals of one tick over `(since, now]`. A pull request counts as unqueued once the memo has seen it unarmed for `UNQUEUED_MINUTES`; the memo is returned with the departed dropped. */
@@ -2670,21 +2675,25 @@ export function machineryValues({ facts, since, now, memo }: { facts: CanaryFact
   // A refused read says nothing about the clocks (#1332): when `unarmed` is unread they are kept, not restarted.
   // agent-org#1649: a conflicting pull request's clock is kept the same way `unarmed:`'s is. A verdict's clock is the time it was written, on the record.
   const conflicting = facts.conflictingIdle ?? null;
+  const outside = facts.sessionPrOutside ?? null; // agent-org#1667: its own clock, kept the same way the conflict clock is
   const written = facts.verdictUndelivered ?? null;
-  const kept = Object.fromEntries(Object.entries(memo).filter(([key]) => !(facts.unarmed !== null && key.startsWith("unarmed:")) && !(facts.ownerless != null && key.startsWith("ownerless:")) && !(conflicting !== null && key.startsWith("conflict:"))));
+  const kept = Object.fromEntries(Object.entries(memo).filter(([key]) => !(facts.unarmed !== null && key.startsWith("unarmed:")) && !(facts.ownerless != null && key.startsWith("ownerless:")) && !(conflicting !== null && key.startsWith("conflict:")) && !(outside !== null && key.startsWith("outside:"))));
   const clocks = (keys: string[]) => Object.fromEntries(keys.map((key) => [key, memo[key] ?? now]));
   const seen = clocks((facts.unarmed ?? []).map((pr) => `unarmed:${pr}`));
   const ownerlessSeen = clocks((facts.ownerless ?? []).map((pr) => `ownerless:${pr}`)); // agent-org#1648: its own clock, the same as `unarmed`'s
   const idleSeen = conflicting === null ? null : clocks(conflicting.map((pr) => `conflict:${pr}`)); // agent-org#1649: its own clock, the same as `unarmed`'s
+  const outsideSeen = outside === null ? null : clocks(outside.map((pr) => `outside:${pr}`)); // agent-org#1667: its own clock
   const aged = (clock: Record<string, number>, minutes = UNQUEUED_MINUTES) => Object.values(clock).filter((first) => now - first >= minutes * MS_PER_MINUTE).length;
   const unqueued = facts.unarmed === null ? null : aged(seen);
   const idleConflicts = idleSeen === null ? null : aged(idleSeen, CONFLICT_IDLE_MINUTES);
+  const classedOutside = outsideSeen === null ? null : aged(outsideSeen, SESSION_PR_OUTSIDE_MINUTES); // agent-org#1667
   const undelivered = written === null ? null : written.filter((at) => now - at >= VERDICT_UNDELIVERED_MINUTES * MS_PER_MINUTE).length;
   return {
-    memo: { ...kept, ...seen, ...ownerlessSeen, ...idleSeen },
+    memo: { ...kept, ...seen, ...ownerlessSeen, ...idleSeen, ...outsideSeen },
     values: {
       [MACHINERY_SIGNALS.VERDICT_WRITTEN_UNDELIVERED]: undelivered,
       [MACHINERY_SIGNALS.CONFLICTING_PR_WORKER_IDLE]: idleConflicts,
+      [MACHINERY_SIGNALS.SESSION_PR_CLASSED_OUTSIDE]: classedOutside,
       [MACHINERY_SIGNALS.CLAIMS_REFUSED]: facts.claimRefusals === null ? null : facts.claimRefusals.filter((refusal) => inSpan(refusal.at)).length,
       [MACHINERY_SIGNALS.BLIND_TICKS]: facts.unread === null ? null : facts.unread.length > 0 ? 1 : 0,
       [MACHINERY_SIGNALS.WAKES_HELD]: facts.deferredWakes,

@@ -320,12 +320,14 @@ export function authorFallbackTimes({ host = homeHostConfig(), reviewerDir = REV
   return accountAuthoringTimes(ledgers, declared);
 }
 
-export function machineryCanaryNow({ unread, unarmed, releaseRuns, suppressions, stranded = [], ownerless, authorFallbacks, ejectedNetwork, conflictingIdle = null, verdictUndelivered = null, now = Date.now(), dir = REVIEWER_STATE_DIR, run = defaultRun, io }: {
+export function machineryCanaryNow({ unread, unarmed, releaseRuns, suppressions, stranded = [], ownerless, authorFallbacks, ejectedNetwork, conflictingIdle = null, verdictUndelivered = null, sessionPrOutside = null, now = Date.now(), dir = REVIEWER_STATE_DIR, run = defaultRun, io }: {
   unread: string[] | null; unarmed: number[] | UnarmedFacts | null; releaseRuns: ReleaseRuns | null; suppressions?: Suppression[]; stranded?: number[]; ownerless?: number[] | null; authorFallbacks?: number[] | null; ejectedNetwork?: number[] | null;
   /** agent-org#1649: the conflicting pull requests whose owner is idle this tick (`conflictingIdlePrs`); `null` is not read */
   conflictingIdle?: number[] | null;
   /** agent-org#1649: the times the verdicts an outside reviewer wrote and that have not reached their pull request (`verdictUndeliveredNow`, read by the gate); `null` is not read */
-  verdictUndelivered?: number[] | null; now?: number; dir?: string; run?: typeof defaultRun; io?: CanaryIo;
+  verdictUndelivered?: number[] | null;
+  /** agent-org#1667: the numbers of the same-repository pull requests with a `session:` label classed OUTSIDE this tick (`sessionPrOutsideNow`); `null` is not read */
+  sessionPrOutside?: number[] | null; now?: number; dir?: string; run?: typeof defaultRun; io?: CanaryIo;
 }): any[] {
   const { options, problem } = readCanaryOptions();
   if (problem !== null) process.stderr.write(`machinery-canary: ${problem}; the defaults stand.\n`);
@@ -333,5 +335,5 @@ export function machineryCanaryNow({ unread, unarmed, releaseRuns, suppressions,
   const numbers = unarmedNumbers === null ? null : [...unarmedNumbers, ...stranded]; // a11ign#5125: an ejection that was not the PR's own and left it out of the queue is approved-and-unqueued too
   const fileIncident = (title: string, body: string) => run(["issue", "create", "--title", title, "--label", "incident", "--body", body]);
   return machineryCanaryTick({ now, dir, options, suppressed: suppressions, io: io ?? realCanaryIo({ fileIncident }),
-    facts: { claimRefusals: readClaimRefusals(), unread, deferredWakes: deferredWakeCount(dir), unarmed: numbers, releaseRuns, ownerless: ownerless ?? null, authorFallbacks: authorFallbacks ?? null, ejectedNetwork: ejectedNetwork ?? null, verdictUndelivered, conflictingIdle } }); // agent-org#1648: a red chairman pull request no order reaches; agent-org#1666: the account's authoring calls
+    facts: { claimRefusals: readClaimRefusals(), unread, deferredWakes: deferredWakeCount(dir), unarmed: numbers, releaseRuns, ownerless: ownerless ?? null, authorFallbacks: authorFallbacks ?? null, ejectedNetwork: ejectedNetwork ?? null, verdictUndelivered, conflictingIdle, sessionPrOutside } }); // agent-org#1648: a red chairman pull request no order reaches; agent-org#1666: the account's authoring calls
 }

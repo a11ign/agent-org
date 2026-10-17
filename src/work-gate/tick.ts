@@ -23,6 +23,7 @@ import { recordIgnoredChairmanLabels, recordTickFailures as recordFailuresOf } f
 import { readJsonObject, writeJsonObject } from "../claim-stall.ts";
 import { requiredWhenNeeded, perPullRequestOrders, greenUnarmedOrders, type UnarmedFacts, reviewBlockedOrders, stalledPrOrders,
   STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr, ROW_REVIEW_SKILL_FLAG, PR_OWNER_ROUTING_FLAG, OWNERLESS_ASK_FLAG, ownerlessRedPrs, ownerlessAsks, ownerlessUnarmedOrders, withholdOutsideFollowUps, routeDeadOwnerRefusals, reviewOnlyRefs, SAME_HEAD_REFAIL_FLAG, acceptanceGateOf, firstRefusalOf, treeWideGuardVerdict, settleOutsideArm, settleOutsideRefusals } from "./pr-orders.ts";
+import { SESSION_PR_OUTSIDE_FLAG, sessionPrVerdictWakes } from "./outside-session-pr.ts"; // agent-org#1667
 import { treeWideGuardFilesIn, runTreeWideGuards, outsideGuardsOn, shadowGuardsVerdict, guardSweepJobOf, namedJobOf } from "../lib/tree-wide-guard-org-side.ts"; // agent-org#1503, #1580, #1579
 import { outsideOwnedPathsOn, ownedPathsVerdict, ownedPathsJobOf, shadowOwnedPathsVerdict } from "../owned-path-signoff.ts"; // agent-org#1598
 import { readFileSync } from "node:fs";
@@ -268,14 +269,15 @@ export function blockerClearedReading(rows: any[], today: string = todayIso(), n
  *        It carries no `= ...` default for `rowBranches`'s reason.
  *        `rowReviewSkill` is `ROW_REVIEW_SKILL_FLAG`'s reading (agent-org#1268), read the same way (`rowReviewSkillFlagOn`): OMITTED READS THE FLAG, and a test passes it.
  *        `prOwnerRouting` is `PR_OWNER_ROUTING_FLAG`'s reading (agent-org#1325), read the same way (`prOwnerRoutingFlagOn`): OMITTED READS THE FLAG, and a test passes it.
+ *        `outsideSessionPr` is `SESSION_PR_OUTSIDE_FLAG`'s reading (agent-org#1667), read the same way (`outsideSessionPrFlagOn`): OMITTED READS THE FLAG, and a test passes it.
  *        `sameHeadRefail` is `SAME_HEAD_REFAIL_FLAG`'s reading (agent-org#1185), read the same way (`sameHeadRefailFlagOn`).
  *        `claimFacts` is the claim-stall tick's reading of every claimed row (#3451) -- what `blockerClearedOrders` drops an order on. OMITTED MEANS NOT ASKED, so no drop;
  *        `null` is a tick that read no claim. It carries no `= undefined` default for `rowBranches`'s reason.
  */
 export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = [], prFiles = [],
   drain = false, required = null, epics = [], answerOwed = [], openRows = [], unarmed = null,
-  claimedComments = [], rowBranches, branchPrs, hostDrift, primaryDrift, closings, claimFacts, trunkRed, baseTip, claimStalls, offBoard, key, repo, callCountSignals, bareAnswerLabels, labJobs, claimRefusals, nowMs, recheck, rowReviewSkill, prOwnerRouting, ownerlessAsk, sameHeadRefail, answerGiven, engineerStarts, projectDeclaration, shareLog, shareMemory, offerHierarchy, waitFacts, identities, primaryPaced = false, primaryUnread = false }: {
-        prs: any[]; readyRows: any[]; promotableRows?: any[]; chairmanBlocked?: any[]; nowMs?: number; recheck?: boolean; rowReviewSkill?: boolean; prOwnerRouting?: boolean; ownerlessAsk?: boolean; sameHeadRefail?: boolean;
+  claimedComments = [], rowBranches, branchPrs, hostDrift, primaryDrift, closings, claimFacts, trunkRed, baseTip, claimStalls, offBoard, key, repo, callCountSignals, bareAnswerLabels, labJobs, claimRefusals, nowMs, recheck, rowReviewSkill, prOwnerRouting, ownerlessAsk, outsideSessionPr, sameHeadRefail, answerGiven, engineerStarts, projectDeclaration, shareLog, shareMemory, offerHierarchy, waitFacts, identities, primaryPaced = false, primaryUnread = false }: {
+        prs: any[]; readyRows: any[]; promotableRows?: any[]; chairmanBlocked?: any[]; nowMs?: number; recheck?: boolean; rowReviewSkill?: boolean; prOwnerRouting?: boolean; ownerlessAsk?: boolean; outsideSessionPr?: boolean; sameHeadRefail?: boolean;
         /** agent-org#1401: the primary's tracker lanes were skipped by pacing this tick (`work-gate.ts`), so the open rows are not a read the shelf can be stocked from. */
         primaryPaced?: boolean;
         /** #4405: the primary's Ready rows or open rows were NOT read this tick (refused, or paced), so `hierarchyOrders` keeps the chairman refusal ledger as it was. */
@@ -304,6 +306,8 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
     prompt: string; causeKey: string;
 }[] {
   const ownerRouting = prOwnerRoutingFlagOn(prOwnerRouting); // #1325: read ONCE, for the review-blocked set below and the last step
+  // agent-org#1667: read ONCE, with the routing it is withheld by, as the asks are. OFF keeps the empty set, so nothing is kept that was withheld.
+  const wakes = ownerRouting && outsideSessionPrFlagOn(outsideSessionPr) ? sessionPrVerdictWakes(prs, identities ?? declaredIdentities()) : new Set<string>();
   const asks = ownerRouting && ownerlessAskFlagOn(ownerlessAsk) ? ownerlessAsks(prs, required, nowMs, identities ?? declaredIdentities()) : new Map(); // agent-org#1648, #1671: read ONCE, with the routing it is withheld by
   // FIRST, BEFORE EVERY OTHER CAUSE (#2356): a red `main` outranks even `answer-owed` -- see `trunkRedOrders`.
   // `answer-owed` says another session is ALREADY STOPPED waiting on them, which outranks any standing question.
@@ -396,7 +400,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // without classifying it is caught by `work-gate.test.ts` rather than silently surviving a window.
   // #1325: LAST, over EVERY cause, because the PR causes come from six producers. With the flag on, an outside or chairman-authored pull request keeps its review.
   // #1370: the rejected review on a dead owner's pull request goes to a fresh worker, after the withholding (which never touches a worker's pull request).
-  const routed = ownerRouting ? routeDeadOwnerRefusals(withholdOutsideFollowUps(orders, prs, identities ?? declaredIdentities(), asks), prs) : orders;
+  const routed = ownerRouting ? routeDeadOwnerRefusals(withholdOutsideFollowUps(orders, prs, identities ?? declaredIdentities(), asks, wakes), prs) : orders;
   // agent-org#1671: AFTER the drain filter. An approved pull request out of the queue is the ask itself, and nothing about it is withheld.
   return [...(drain ? routed.filter((o) => !START_CAUSES.includes(o.cause)) : routed), ...ownerlessUnarmedOrders(asks)];
 }
@@ -457,6 +461,15 @@ export function prOwnerRoutingFlagOn(asked?: boolean, read: () => CanaryState = 
  */
 export function ownerlessAskFlagOn(asked?: boolean, read: () => CanaryState = () => readReenqueueState(REVIEWER_STATE_DIR, () => undefined)): boolean {
   return asked ?? machineryFlagOn(read(), OWNERLESS_ASK_FLAG);
+}
+
+/**
+ * agent-org#1667: `SESSION_PR_OUTSIDE_FLAG` (`reviews.outsideSessionPr`), read where the orders are decided, as `ownerlessAskFlagOn` is. Absent, unreadable or malformed is OFF: a session's same-repository pull request is withheld as it was.
+ * @param [asked] the reading a caller already has; a test passes it so the answer does not move with the host's state directory
+ * @param [read] the flag's state, as `ownerlessAskFlagOn` reads it
+ */
+export function outsideSessionPrFlagOn(asked?: boolean, read: () => CanaryState = () => readReenqueueState(REVIEWER_STATE_DIR, () => undefined)): boolean {
+  return asked ?? machineryFlagOn(read(), SESSION_PR_OUTSIDE_FLAG);
 }
 
 /**
