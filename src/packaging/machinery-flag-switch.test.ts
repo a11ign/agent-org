@@ -14,7 +14,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { main, FLAG_REGISTRY } from "../machinery-flag.ts";
-import { CANARY_STATE_FILE, emptyCanaryState, machineryFlagOn, parseCanaryState, withMachineryFlag, type CanaryState } from "../org-health.ts";
+import { BOARD_TRUTH_PAIR_FLAG, CANARY_STATE_FILE, emptyCanaryState, machineryFlagOn, parseCanaryState, withMachineryFlag, type CanaryState } from "../org-health.ts"; // agent-org#1670
 import { readReenqueueState, REENQUEUE_EJECTED_FLAG, REENQUEUE_INFRA_FLAG } from "../work-gate/causes/pr-ejected.ts";
 import { CHAIN_WAIT_FLAG } from "../work-gate/causes/org-health-chain-wait.ts";
 import { CLOSED_UNDER_HALF_FLAG } from "../work-gate/causes/rows-closed-under-half.ts";
@@ -63,7 +63,7 @@ test("(1) `on` makes the reader read the flag ON, `off` makes it read OFF, and t
 
 test("(1) the other registered flags are switched on and read through their own readers' flag name", () => {
   const dir = tmpDir("machinery-flag-switch-");
-  for (const name of [REENQUEUE_INFRA_FLAG, CHAIN_WAIT_FLAG, CLOSED_UNDER_HALF_FLAG, AUTO_UNPARK_FLAG, QUEUE_ENTRY_NO_RUN_FLAG, RECHECK_FLAG, OPEN_PR_HOLD_FLAG, REFUSE_ASKING_ANNOUNCEMENTS_FLAG, ROW_REVIEW_SKILL_FLAG, SAME_HEAD_REFAIL_FLAG, CHAIRMAN_REFUSAL_FLAG, OWNERLESS_ASK_FLAG, REFUSE_AUTHOR_FALLBACK_FLAG, VERDICT_DELIVERY_FLAG, SESSION_PR_OUTSIDE_FLAG]) assert.equal(run(dir, ["on", name, `--session=${SESSION}`]).code, 0);
+  for (const name of [REENQUEUE_INFRA_FLAG, CHAIN_WAIT_FLAG, CLOSED_UNDER_HALF_FLAG, AUTO_UNPARK_FLAG, QUEUE_ENTRY_NO_RUN_FLAG, RECHECK_FLAG, OPEN_PR_HOLD_FLAG, REFUSE_ASKING_ANNOUNCEMENTS_FLAG, ROW_REVIEW_SKILL_FLAG, SAME_HEAD_REFAIL_FLAG, CHAIRMAN_REFUSAL_FLAG, OWNERLESS_ASK_FLAG, REFUSE_AUTHOR_FALLBACK_FLAG, VERDICT_DELIVERY_FLAG, SESSION_PR_OUTSIDE_FLAG, BOARD_TRUTH_PAIR_FLAG]) assert.equal(run(dir, ["on", name, `--session=${SESSION}`]).code, 0);
   const state = JSON.parse(readFileSync(join(dir, CANARY_STATE_FILE), "utf8")) as CanaryState;
   assert.equal(machineryFlagOn(state, CHAIN_WAIT_FLAG), true);
   assert.equal(machineryFlagOn(state, CLOSED_UNDER_HALF_FLAG), true);
@@ -80,7 +80,8 @@ test("(1) the other registered flags are switched on and read through their own 
   assert.equal(machineryFlagOn(state, REFUSE_AUTHOR_FALLBACK_FLAG), true, "gh.refuseFallbackAuthor is switched by the command, which the wrapper's `author_refusal_on` then reads (agent-org#1666)");
   assert.equal(machineryFlagOn(state, VERDICT_DELIVERY_FLAG), true, "reviews.verdictDelivery is switched by the command, which `wake` then reads (agent-org#1649)");
   assert.equal(machineryFlagOn(state, SESSION_PR_OUTSIDE_FLAG), true, "reviews.outsideSessionPr is switched by the command, which `outsideSessionPrFlagOn` then reads (agent-org#1667)");
-  assert.deepEqual(FLAG_REGISTRY, [REENQUEUE_EJECTED_FLAG, REENQUEUE_INFRA_FLAG, CHAIN_WAIT_FLAG, CLOSED_UNDER_HALF_FLAG, AUTO_UNPARK_FLAG, QUEUE_ENTRY_NO_RUN_FLAG, RECHECK_FLAG, OPEN_PR_HOLD_FLAG, REFUSE_ASKING_ANNOUNCEMENTS_FLAG, PACING_FLAG, ROW_REVIEW_SKILL_FLAG, ACCOUNT_LIMIT_FLAG, SAME_HEAD_REFAIL_FLAG, PR_OWNER_ROUTING_FLAG, CHAIRMAN_REFUSAL_FLAG, OWNERLESS_ASK_FLAG, REFUSE_AUTHOR_FALLBACK_FLAG, VERDICT_DELIVERY_FLAG, SESSION_PR_OUTSIDE_FLAG], "the registry is the eighteen flags a module reads");
+  assert.equal(machineryFlagOn(state, BOARD_TRUTH_PAIR_FLAG), true, "orgHealth.boardTruthPairKey is switched by the command, which `boardTruthPairOffers` then reads (agent-org#1670)");
+  assert.deepEqual(FLAG_REGISTRY, [REENQUEUE_EJECTED_FLAG, REENQUEUE_INFRA_FLAG, CHAIN_WAIT_FLAG, CLOSED_UNDER_HALF_FLAG, AUTO_UNPARK_FLAG, QUEUE_ENTRY_NO_RUN_FLAG, RECHECK_FLAG, OPEN_PR_HOLD_FLAG, REFUSE_ASKING_ANNOUNCEMENTS_FLAG, PACING_FLAG, ROW_REVIEW_SKILL_FLAG, ACCOUNT_LIMIT_FLAG, SAME_HEAD_REFAIL_FLAG, PR_OWNER_ROUTING_FLAG, CHAIRMAN_REFUSAL_FLAG, OWNERLESS_ASK_FLAG, REFUSE_AUTHOR_FALLBACK_FLAG, VERDICT_DELIVERY_FLAG, SESSION_PR_OUTSIDE_FLAG, BOARD_TRUTH_PAIR_FLAG], "the registry is the nineteen flags a module reads");
 });
 
 test("(2) a name no module reads is refused, and nothing is written", () => {
