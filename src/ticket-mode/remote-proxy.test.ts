@@ -69,7 +69,7 @@ test("the instance is sent its own host, the key and the JSON body over the tunn
 
 test("only the routes the page calls are passed on, by the method it calls them with, so a pairing code there is never asked for", async () => {
   for (const path of ["/api/config", "/api/tickets", "/api/parents", "/api/pick", "/api/queue"]) assert.equal(passedOn("GET", path), true, path);
-  for (const path of ["/api/queue", "/api/choice", "/api/publish", "/api/paused", "/api/max", "/api/queue/NBF-1/approve", "/api/queue/NBF-1/stop", "/api/queue/NBF-1/dismiss"]) {
+  for (const path of ["/api/queue", "/api/queue-children", "/api/choice", "/api/publish", "/api/paused", "/api/max", "/api/queue/NBF-1/approve", "/api/queue/NBF-1/stop", "/api/queue/NBF-1/dismiss"]) {
     assert.equal(passedOn("POST", path), true, path);
   }
   for (const [method, path] of [["POST", "/api/pair-code"], ["POST", "/api/pair-code/"], ["POST", "/api/queue/NBF-1/../../pair-code"], ["GET", "/api/profiles"],
@@ -83,6 +83,20 @@ test("only the routes the page calls are passed on, by the method it calls them 
     [403, { error: "POST /api/pair-code is not passed on to an instance" }]);
   assert.deepEqual(await proxy(remotes, "gone", { method: "GET", path: "/api/queue", body: null }, counting), [404, { error: "no connection gone" }]);
   assert.equal(sent, 0);
+});
+
+test("A11-76: Queue its children is passed on to an instance over SSH, with its body, and only as a POST", async () => {
+  assert.equal(passedOn("POST", "/api/queue-children"), true);
+  assert.equal(passedOn("GET", "/api/queue-children"), false, "it is a write, never a read");
+  const sent: { method: string; path: string; body: string | null }[] = [];
+  const recording: Forward = async (_target, request) => { sent.push(request); return { status: 200, body: JSON.stringify({ keys: ["A11-25"], note: null, queue: { entries: [] } }) }; };
+  const body = JSON.stringify({ key: "A11-24", model: "opus", effort: "high", plan: false });
+  const answer = await proxy(fixed(overSsh("/s")).remotes, "personal", { method: "POST", path: "/api/queue-children", body }, recording);
+  assert.deepEqual(answer, [200, { keys: ["A11-25"], note: null, queue: { entries: [] } }]);
+  assert.deepEqual(sent, [{ method: "POST", path: "/api/queue-children", body }]);
+  const refused: Forward = async () => ({ status: 400, body: JSON.stringify({ error: "A11-30 has no open sub-issues: queue it as it is" }) });
+  assert.deepEqual(await proxy(fixed(overSsh("/s")).remotes, "personal", { method: "POST", path: "/api/queue-children", body }, refused),
+    [400, { error: "A11-30 has no open sub-issues: queue it as it is" }], "the instance's refusal reaches the page as it was");
 });
 
 test("an unreachable connection, an instance that does not answer and a refused key are each answered in words, and the key is read again after a refusal", async () => {

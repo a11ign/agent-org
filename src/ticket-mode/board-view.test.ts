@@ -6,7 +6,7 @@ import {
   remember, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, selectable, shownStatus,
   statusCounts, terminalLink, toggled, waitsOn, repoOfPull, stackedOn, stackNote, PRIORITY_NAMES, hasPlan, isBeingPublished, isWatched, publishable,
   publishLabel, publishNote, publishTerminalLink, missingPlan, planChoiceOf, planCounts, priorityCounts, prioritiesOf, runChoiceLabel,
-  unplannedCount, visibleTickets, workItems, apiBase, chosenConnection, connectionLabel, safeHref,
+  unplannedCount, visibleTickets, workItems, childrenNote, isParentTicket, openChildCount, apiBase, chosenConnection, connectionLabel, safeHref,
   type ViewEntry, type ViewPublish, type ViewTicket,
 } from "./board-view.ts";
 
@@ -207,6 +207,20 @@ test("a parent that is not the person's heads its shown children in its own stat
 test("a ticket already on the queue cannot be selected again", () => {
   assert.equal(selectable(TICKETS[0], [{ ticket: { key: "NBF-1" }, phase: "queued" }]), false);
   assert.equal(selectable(TICKETS[1], [{ ticket: { key: "NBF-1" }, phase: "queued" }]), true);
+});
+
+test("A11-76: a ticket the tracker says has open sub-issues is a parent: not selectable, not work, and counted; with none open it is ordinary again", () => {
+  const epic = { ...TICKETS[0], children: ["NBF-2", "NBF-3"] };
+  const settled = { ...TICKETS[0], children: [] };
+  assert.equal(isParentTicket(epic), true);
+  assert.equal(openChildCount(epic), 2);
+  assert.equal(childrenNote(epic), "Parent · 2 open sub-issues");
+  assert.equal(childrenNote({ ...epic, children: ["NBF-2"] }), "Parent · 1 open sub-issue");
+  assert.equal(selectable(epic, []), false, "never picked, even with none of its sub-issues in the list");
+  assert.deepEqual(workItems([epic, TICKETS[1]]).map((x) => x.key), [TICKETS[1].key]);
+  assert.equal(isParentTicket(settled), false);
+  assert.equal(selectable(settled, []), true);
+  assert.equal(isParentTicket(TICKETS[1]), false, "a ticket read without sub-issues is ordinary");
 });
 
 test("toggling adds or removes a value and leaves the old set alone", () => {

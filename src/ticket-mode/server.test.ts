@@ -351,3 +351,67 @@ test("A11-69: the board says which tickets the Pick view lists, and why it is em
   assert.match((await team.api("GET", "/api/pick", {}) as [number, { empty: string }])[1].empty, /^Team A11 has no open tickets/);
   assert.equal(asked, 1, "a team's list names no person, so none is asked for");
 });
+
+/** A board over a tracker with an epic, A11-24, whose open sub-issues are A11-27, A11-25 and A11-26, and an epic of epics, A11-40. */
+function epicBoard(blockers: TicketSource["blockers"] | null) {
+  const reads: string[] = [];
+  const tickets = new Map<string, Ticket>([
+    ["A11-24", { ...ticket("A11-24"), children: ["A11-27", "A11-25", "A11-26"] }],
+    ["A11-25", ticket("A11-25")], ["A11-26", ticket("A11-26")], ["A11-27", ticket("A11-27")],
+    ["A11-30", { ...ticket("A11-30"), children: [] }],
+    ["A11-40", { ...ticket("A11-40"), children: ["A11-24", "A11-41"] }], ["A11-41", ticket("A11-41")],
+  ]);
+  const source: TicketSource = {
+    assigned: async () => [tickets.get("A11-24")!, tickets.get("A11-25")!, tickets.get("A11-30")!],
+    read: async (key) => { reads.push(key); return tickets.get(key) ?? null; },
+    download: async () => [],
+    ...(blockers ? { blockers } : {}),
+  };
+  return { ...board(4747, {}, { source }), reads };
+}
+
+test("A11-76: the queue refuses a parent with a 400 that says why, over HTTP, and queues the same ticket once its sub-issues are done", async () => {
+  const b = epicBoard(null);
+  await b.api("GET", "/api/tickets", {});
+  await assert.rejects(b.api("POST", "/api/queue", { keys: ["A11-25", "A11-24"], model: "opus", effort: "high" }),
+    /A11-24 has 3 open sub-issues \(A11-27, A11-25, A11-26\): a parent is not queued.*Queue its children instead/);
+  assert.deepEqual(b.store.get().entries, [], "nothing of the request is queued, not even the ordinary ticket beside the parent");
+  const [, queue] = await b.api("POST", "/api/queue", { keys: ["A11-30"], model: "opus", effort: "high" }) as [number, any];
+  assert.deepEqual(queue.entries.map((e: any) => e.ticket.key), ["A11-30"], "an epic with no sub-issue open is an ordinary ticket");
+  const source: TicketSource = { assigned: async () => [], read: async (key) => (key === "A11-24" ? { ...ticket(key), children: ["A11-25"] } : null), download: async () => [] };
+  await overHttp(async (base) => {
+    const refused = await fetch(`${base}/api/queue`, { method: "POST", headers: keyed, body: JSON.stringify({ keys: ["A11-24"], model: "opus", effort: "high" }) });
+    assert.equal(refused.status, 400);
+    assert.match((await refused.json() as { error: string }).error, /^A11-24 has 1 open sub-issue \(A11-25\): a parent is not queued/);
+  }, { source });
+});
+
+test("A11-76: Queue its children queues a parent's open sub-issues in their blocking order, read afresh, and wakes the pool", async () => {
+  const asked: string[][] = [];
+  const b = epicBoard(async (keys) => {
+    asked.push([...keys]);
+    return new Map([["A11-25", [{ key: "A11-27", state: "started", status: "In Progress", pulls: {} }]], ["A11-26", []], ["A11-27", [{ key: "A11-26", state: "unstarted", status: "Todo", pulls: {} }]]]);
+  });
+  await b.api("GET", "/api/tickets", {});
+  const [status, answer] = await b.api("POST", "/api/queue-children", { key: "A11-24", model: "sonnet", effort: "max" }) as [number, any];
+  assert.equal(status, 200);
+  assert.deepEqual(answer.keys, ["A11-26", "A11-27", "A11-25"]);
+  assert.equal(answer.note, null, "the order is the tracker's, so nothing needs saying");
+  assert.deepEqual(answer.queue.entries.map((e: any) => [e.ticket.key, e.model, e.effort]), [["A11-26", "sonnet", "max"], ["A11-27", "sonnet", "max"], ["A11-25", "sonnet", "max"]]);
+  assert.deepEqual(asked, [["A11-27", "A11-25", "A11-26"]], "the blockers of every child, in one read");
+  assert.deepEqual(b.reads, ["A11-24", "A11-26", "A11-27"], "the parent is read afresh, and a child the list holds (A11-25) is not read again");
+  assert.deepEqual(b.ticks, ["tick"]);
+});
+
+test("A11-76: Queue its children goes by identifier where the tracker gives no order, says so, leaves out a child that is itself a parent, and refuses a ticket with none open", async () => {
+  const b = epicBoard(null);
+  const [, plain] = await b.api("POST", "/api/queue-children", { key: "A11-24", model: "opus", effort: "high" }) as [number, any];
+  assert.deepEqual(plain.keys, ["A11-25", "A11-26", "A11-27"]);
+  assert.equal(plain.note, "the tracker gives no blocking order, so they are queued in identifier order");
+  const [, nested] = await b.api("POST", "/api/queue-children", { key: "A11-40", model: "opus", effort: "high" }) as [number, any];
+  assert.deepEqual(nested.keys, ["A11-41"]);
+  assert.match(nested.note, /A11-24 is itself a parent, so not queued: queue its children from its own row/);
+  await assert.rejects(b.api("POST", "/api/queue-children", { key: "A11-30", model: "opus", effort: "high" }), /^Error: A11-30 has no open sub-issues: queue it as it is$/);
+  await assert.rejects(b.api("POST", "/api/queue-children", { key: "A11-404", model: "opus", effort: "high" }), /no ticket A11-404/);
+  await assert.rejects(b.api("POST", "/api/queue-children", { key: "A11-24", model: "gpt", effort: "high" }), /model must be one of/);
+});

@@ -128,7 +128,12 @@ takes them one each. Ticket mode is two services, both on `127.0.0.1`:
 - **Pick.** Your assigned Linear tickets that are not done or canceled, grouped by status the way Linear shows them, with Select All per
   group and for the page. A ticket sits under its parent, whatever its own status. A parent folds the tickets under it away, and starts folded.
   Its checkbox picks every ticket under it that is not on the queue, never the parent itself, and shows part ticked when only some are picked.
-  A parent that is not yours, such as an epic someone else owns, says so. Filter by Linear project or priority (several of each at once) or by search, and fold any status group; each is remembered in the
+  A parent that is not yours, such as an epic someone else owns, says so. A ticket Linear says has open sub-issues (not completed, canceled
+  or a duplicate, read with the list in the same request) is a parent too, even when none of them is in your list: it is marked "Parent",
+  counts them, has no checkbox, and offers Queue its children instead. That queues its open sub-issues, on the footer's model and effort,
+  in the order their "blocked by" relations give, or in identifier order where Linear gives none, which the page then says. A sub-issue
+  that is itself a parent is left out and named. The instance refuses a parent on `/api/queue` with a 400 saying why, whatever asked, and
+  once every sub-issue is done or canceled the ticket is an ordinary one again. Filter by Linear project or priority (several of each at once) or by search, and fold any status group; each is remembered in the
   browser. On a machine that sets `tickets.plan`, a ticket with no plan of its own is marked, so you can attach one before a worker starts it.
   The mark is muted when the ticket's parent has a plan, because a worker is briefed with its parent's plan too. An epic is never marked or
   counted, because no worker starts one. A Plan filter, also remembered, shows only the tickets with a plan, or only those without, each

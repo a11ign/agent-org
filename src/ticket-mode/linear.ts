@@ -25,7 +25,12 @@ const PAGE = 100;
 const STATE_BATCH = 25;
 /** A ticket's attachments: Linear's first page of 50, read the same way for the board's list and for a worker's download. */
 const ATTACHMENTS = "attachments(first: 50) { nodes { url title } }";
-const ISSUE_FIELDS = `identifier title description url branchName priority state { name position } team { key } project { name } parent { identifier } ${ATTACHMENTS}`;
+/**
+ * A ticket's open sub-issues, by key: Linear's first page of 50, filtered by state type as the Pick list is, so a sub-issue finished, canceled or
+ * a duplicate does not count and an epic whose parts are all done reads as an ordinary ticket. Read with the list, in the same request.
+ */
+const OPEN_CHILDREN = 'children(first: 50, filter: { state: { type: { nin: ["completed", "canceled", "duplicate"] } } }) { nodes { identifier } }';
+const ISSUE_FIELDS = `identifier title description url branchName priority state { name position } team { key } project { name } parent { identifier } ${OPEN_CHILDREN} ${ATTACHMENTS}`;
 /** A file name that is safe as it stands: no folder, and an extension. A plan's attachment title is one. */
 const FILE_NAME = /^[\w.-]+\.\w{1,8}$/;
 
@@ -50,6 +55,8 @@ export function readLinearKey(source: KeySource, security: (args: string[]) => s
 type IssueNode = {
   identifier: string; title: string; description: string | null; url: string; branchName: string; priority: number;
   state: { name: string; position: number }; team: { key: string }; project: { name: string } | null; parent: { identifier: string } | null;
+  /** Absent from an answer to a query that did not ask for it: such a ticket is read as having none. */
+  children?: { nodes: { identifier: string }[] };
 } & Attachments;
 
 type Attachments = { attachments?: { nodes: { url: string; title: string }[] } };
@@ -65,6 +72,7 @@ function toTicket(node: IssueNode): Ticket {
     key: node.identifier, title: node.title, description: node.description ?? "", url: node.url, branch: node.branchName,
     status: node.state.name, statusOrder: node.state.position, team: node.team.key, project: node.project?.name ?? null, priority: node.priority,
     parent: node.parent?.identifier ?? null,
+    children: (node.children?.nodes ?? []).map(({ identifier }) => identifier),
     uploads: uploadsIn(node).map(({ title }) => title),
   });
 }
@@ -121,7 +129,7 @@ const OPEN = 'state: { type: { nin: ["completed", "canceled", "duplicate"] } }';
  * The query the Pick view's list is read with, for the host file's `tickets.pick`. PURE.
  *
  * `"assigned"` is the query the board has always sent, kept as it was, character for character: a machine that names no `tickets.pick` asks
- * Linear exactly what it asked before the setting existed. A team or a project reads `issues` with that team's key or that project's name added
+ * Linear exactly what it asked before the setting existed, but for the fields every list reads, which grew each ticket's open sub-issues (A11-76). A team or a project reads `issues` with that team's key or that project's name added
  * to the same state filter, a page of the same size at a time. Both are passed as variables, never written into the query's text.
  */
 export function pickQuery(scope: PickScope): PickQuery {

@@ -25,6 +25,13 @@ export type Ticket = Readonly<{
   /** The key of the ticket this one is part of, whose plan may bind it, or `null`. */
   parent: string | null;
   /**
+   * The keys of its sub-issues that are still open: not completed, canceled or a duplicate. A ticket with one is a PARENT, an epic with nothing
+   * of its own to build, so it is never queued itself: the board offers to queue these instead (A11-76). Read in the same request as the
+   * ticket, never one request per ticket. Once every sub-issue is done or canceled it is empty, and the ticket is an ordinary one again. Absent
+   * from a ticket stored on the queue before they were read, and from a source that does not read them, which leaves every ticket ordinary.
+   */
+  children?: readonly string[];
+  /**
    * The names of the files uploaded to it, as the tracker titles them. A link to elsewhere, such as a pull request, is not one. Absent from a
    * ticket stored on the queue before they were read, and from a source that does not read them.
    */

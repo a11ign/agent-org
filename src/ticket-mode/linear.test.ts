@@ -56,6 +56,24 @@ test("each ticket names the files uploaded to it, read in the same request as th
   assert.equal(requests.length, 1, "read with the list, not one request per ticket");
 });
 
+test("A11-76: each ticket carries its open sub-issues, read with the list in the same request, counting none finished, canceled or a duplicate", async () => {
+  const { fetch, requests } = linear([{ data: { viewer: { assignedIssues: { nodes: [
+    node("A11-24", { children: { nodes: [{ identifier: "A11-25" }, { identifier: "A11-26" }] } }),
+    node("A11-30", { children: { nodes: [] } }),
+    node("A11-31"),
+  ], pageInfo: { hasNextPage: false, endCursor: null } } } } }]);
+  const [epic, done, unread] = await linearSource({ key: "k", fetch }).assigned();
+  assert.deepEqual(epic.children, ["A11-25", "A11-26"], "a parent names its open sub-issues, so the board counts them");
+  assert.deepEqual(done.children, [], "an epic whose sub-issues are all done or canceled has none open, and is an ordinary ticket again");
+  assert.deepEqual(unread.children, [], "an answer that holds no children reads as none");
+  assert.equal(requests.length, 1, "read with the list, not one request per ticket");
+  const { query } = JSON.parse(String(requests[0].init.body));
+  assert.ok(query.includes('children(first: 50, filter: { state: { type: { nin: ["completed", "canceled", "duplicate"] } } }) { nodes { identifier } }'),
+    "Linear filters the sub-issues by their state's type, as the list itself is filtered");
+  const read = linear([{ data: { issues: { nodes: [node("A11-24", { children: { nodes: [{ identifier: "A11-25" }] } })] } } }]);
+  assert.deepEqual((await linearSource({ key: "k", fetch: read.fetch }).read("A11-24"))?.children, ["A11-25"], "a ticket read by key carries them too");
+});
+
 test("read() finds a ticket by its team and number, returns null for a key Linear has no ticket for, and throws when Linear cannot be asked", async () => {
   const found = linear([{ data: { issues: { nodes: [node("NBF-1270")] } } }]);
   assert.equal((await linearSource({ key: "k", fetch: found.fetch }).read("NBF-1270"))?.title, "Title NBF-1270");
@@ -338,8 +356,9 @@ test("addBlockers() is refused when Linear answers success false, and when it ha
   await assert.rejects(linearSource({ key: "k", fetch: linear([blocked(), { data: { k0: { nodes: [] } } }]).fetch }).addBlockers!("NBF-4", ["NBF-404"]), /Linear has no ticket NBF-404/);
 });
 
-/** The fields every list reads, as the board has always read them. */
-const FIELDS = "identifier title description url branchName priority state { name position } team { key } project { name } parent { identifier } attachments(first: 50) { nodes { url title } }";
+/** The fields every list reads, as the board has always read them, and each ticket's open sub-issues since A11-76. */
+const FIELDS = "identifier title description url branchName priority state { name position } team { key } project { name } parent { identifier } "
+  + 'children(first: 50, filter: { state: { type: { nin: ["completed", "canceled", "duplicate"] } } }) { nodes { identifier } } attachments(first: 50) { nodes { url title } }';
 
 test("A11-69: with no tickets.pick, the Pick view's list is asked for exactly as it was before the setting", async () => {
   const before = `query($after: String) { viewer { assignedIssues(first: 100, after: $after, filter: { state: { type: { nin: ["completed", "canceled", "duplicate"] } } }) {
