@@ -74,6 +74,24 @@ test("#1245: the adverb BEFORE `convinced` negates too -- the gap worker-capture
     "a distant `not` must not negate -- three words is the bound, and this is the case that sets it");
 });
 
+test("agent-org#1659: a HYPHEN joins a negated verdict as a space does -- `not-convinced` is a refusal, not an approval", () => {
+  // `not\s+` needed whitespace, so `not-convinced` matched only the bare word (`\b` falls between `-` and
+  // `c`) and read as an APPROVAL. Reviewers do write the hyphen form: the parser's own return type names
+  // `not-convinced`. The positives and the negative controls are in ONE test, so neither can pass alone.
+  for (const body of ["not-convinced", "Not-Convinced", "NOT-CONVINCED", "not-convinced at `abc1234`", "not-yet-convinced"]) {
+    assert.equal(reviewVerdict(body).verdict, "not-convinced", `"${body}" is a refusal`);
+  }
+  assert.equal(reviewVerdict("not-convinced at abc").word, "not-convinced",
+    "the word that decided it is returned in the hyphen form, as it was written");
+  // Negative controls: the spellings that already read right must still read right.
+  assert.equal(reviewVerdict("convinced").verdict, "convinced", "a bare approval is still an approval");
+  assert.equal(reviewVerdict("NOT CONVINCED at abc").verdict, "not-convinced", "the spaced form is unchanged");
+  assert.equal(reviewVerdict("un-convinced").verdict, "not-convinced", "the `un-?convinced` arm is unchanged");
+  // The three-word bound holds with hyphens too: four words between `not` and `convinced` is not a negation.
+  assert.equal(reviewVerdict("this does not-mean the reviewer was convinced").verdict, "convinced",
+    "a distant hyphenated `not` must not negate -- the bound is counted in words, not separators");
+});
+
 // --- #1259: the head and the author, which a clock needs as much as the word ---
 
 // VERBATIM, the first three lines of worker-judge's two comments on #1244 (5652508877 at 09:42:49Z and
