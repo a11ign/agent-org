@@ -20,7 +20,7 @@ test("only `clones` is required, every repository in it is offered, and every ot
 
 test("the `tickets` block and `stateDir` override the defaults", () => {
   const settings = parseTicketSettings({ clones, stateDir: "/state", tickets: { max: 5, port: 5000, herdrSession: "nbl", worktreeRoot: "/wt", linearKey: { path: "/keys/linear" } } });
-  assert.deepEqual({ ...settings, clones: undefined }, { clones: undefined, max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", worktreeRoot: "/wt", stateDir: "/state", linearKey: { path: "/keys/linear" }, brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, workingState: null, connectors: [], publish: null, drafts: true, reviewer: null, pick: "assigned", stallMinutes: 30 });
+  assert.deepEqual({ ...settings, clones: undefined }, { clones: undefined, max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", worktreeRoot: "/wt", stateDir: "/state", linearKey: { path: "/keys/linear" }, brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, workingState: null, connectors: [], publish: null, drafts: true, prReview: null, reviewer: null, pick: "assigned", stallMinutes: 30 });
 });
 
 test("the page's port is its own: it can be moved, and is refused when it is the instance's", () => {
@@ -139,6 +139,22 @@ test("a drafts or reviewer value of the wrong shape is refused by its name", () 
   assert.equal(field({ drafts: 0 }), "tickets.drafts");
   assert.equal(field({ reviewer: "codex" }), "tickets.reviewer");
   assert.equal(field({ reviewer: true }), "tickets.reviewer");
+});
+
+test("A11-86: the pre-PR review skill is named by its name or plugin:name, is null when absent, and any other shape is refused by name", () => {
+  assert.equal(parseTicketSettings({ clones }).prReview, null, "absent is no pre-PR review");
+  assert.equal(parseTicketSettings({ clones, tickets: { prReview: "a11ign:clean-code-review" } }).prReview, "a11ign:clean-code-review");
+  assert.equal(parseTicketSettings({ clones, tickets: { prReview: "clean-code-review" } }).prReview, "clean-code-review");
+  const field = (prReview: unknown) => {
+    try {
+      parseTicketSettings({ clones, tickets: { prReview } }, "/home/me");
+    } catch (err) {
+      assert.ok(err instanceof TicketSettingsRefusal);
+      return err.field;
+    }
+    return "accepted";
+  };
+  for (const refused of ["", 3, "a b", "a:b:c", ":review", "a11ign:"]) assert.equal(field(refused), "tickets.prReview", JSON.stringify(refused));
 });
 
 test("a bad field is refused by its name", () => {

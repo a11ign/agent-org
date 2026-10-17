@@ -16,8 +16,9 @@ import { QUEUED_EXIT as EXIT_QUEUED } from "../gh-ledger.ts";
 import { REPO } from "../project-identity.ts";
 import { parseTicketSettings } from "./settings.ts";
 import type { Ticket, TicketSource } from "./source.ts";
-import { readTicketContext, ticketClosesReport, treeKeyUnder, type TicketContext } from "./pr-open-ticket.ts";
+import { preReviewReport, readTicketContext, ticketBodyReports, ticketClosesReport, treeKeyUnder, type TicketContext } from "./pr-open-ticket.ts";
 import { READY_FILE } from "./worker-files.ts";
+import { CI_BODY_REPORTS } from "../acceptance-commands.ts";
 
 const KEY = "A11-74";
 const BRANCH = "admin/a11-74-propen-works-in-ticket-mode-it-reads-the-ticket-through-the";
@@ -32,7 +33,7 @@ const BODY = `Refs ${KEY}\n\nMutation: none -- these tests drive the ticket chec
 
 /** The run a test starts from: a ready machine (`tickets.drafts: false`), so a create needs no `--draft`, and a test of drafts says otherwise. */
 const ticket = (over: Partial<TicketContext> = {}): TicketContext => ({
-  key: KEY, branch: BRANCH, folder: FOLDER, treeKey: "agent-org", regionText: REGION, readyRun: true, hasChangesets: false, ...over,
+  key: KEY, branch: BRANCH, folder: FOLDER, treeKey: "agent-org", regionText: REGION, readyRun: true, prReview: null, hasChangesets: false, ...over,
 });
 
 /** `git` in a ticket's tree: the diff's files and the added ones, the tree's root, and its checked-out branch. */
@@ -247,6 +248,39 @@ test("A11-74: the run's folder and drafts setting come from the host file named 
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+const SKILL = "a11ign:clean-code-review";
+
+test("A11-86: with tickets.prReview set, the body must record the review in a Pre-PR review line naming that skill, and another skill's line is no record of it", () => {
+  assert.equal(preReviewReport(`Refs ${KEY}\n\n- Pre-PR review: ${SKILL} ran on the whole diff; it changed: the test name.\n`, SKILL).ok, true, "POSITIVE CONTROL: the line a worker writes passes");
+  assert.equal(preReviewReport(`Refs ${KEY}\n\nPre-PR review: ${SKILL} ran on the whole diff; it changed: nothing.\n`, SKILL).ok, true, "a line at the start, with no list marker");
+  const missing = preReviewReport(`Refs ${KEY}\n`, SKILL);
+  assert.equal(missing.ok, false);
+  assert.match(missing.lines[0], /^PR-REVIEW: MISSING -- .*Nothing was sent to GitHub/);
+  assert.equal(preReviewReport(`Refs ${KEY}\n\nPre-PR review: clean-code-review ran; it changed: nothing\n`, SKILL).ok, false, "a line naming the unprefixed skill");
+  assert.equal(preReviewReport(`Refs ${KEY}\n\nPre-PR review: ${SKILL}-v2 ran; it changed: nothing\n`, SKILL).ok, false, "a line naming a longer skill, which only starts with this one");
+  assert.equal(preReviewReport(`Refs ${KEY}\n\nPre-PR review: ran ${SKILL}.\n`, SKILL).ok, true, "the name ends a sentence, and still names the skill");
+  assert.equal(preReviewReport(`Refs ${KEY}\n\n**Pre-PR review:** \`${SKILL}\` ran on the whole diff; it changed: nothing.\n`, SKILL).ok, true, "markdown around the label and the name");
+  assert.equal(preReviewReport(`Refs ${KEY}\n\nthe Pre-PR review: ${SKILL} ran\n`, SKILL).ok, false, "a line that does not start with the label is not one");
+});
+
+test("A11-86: the body reports are CI's own unless the machine names a pre-PR review skill, and then the review's record is one more, last", () => {
+  const names = (reports: readonly { name: string }[]) => reports.map(({ name }) => name);
+  assert.deepEqual(names(ticketBodyReports(KEY, null)), names(CI_BODY_REPORTS), "absent, the list is CI's, as before");
+  assert.deepEqual(names(ticketBodyReports(KEY, SKILL)), [...names(CI_BODY_REPORTS), "pr-review"]);
+  const last = ticketBodyReports(KEY, SKILL).at(-1)!;
+  assert.equal(last.report({ body: `Refs ${KEY}\n` } as never).ok, false, "the record is checked in the create's body");
+});
+
+test("A11-86: the run's context carries the machine's pre-PR review skill, and none when the host file names none", async () => {
+  const tracker: TicketSource = { assigned: async () => [], download: async () => [], read: async () => ({ key: KEY, title: "t", description: "", url: "", branch: BRANCH,
+    status: "", statusOrder: 0, team: "A11", project: null, priority: 3, parent: null }) };
+  const env = { AGENT_ORG_TICKET: KEY, AGENT_ORG_TICKET_BRANCH: BRANCH };
+  const context = (tickets: Record<string, unknown>) => readTicketContext(env, { settings: () => parseTicketSettings({ clones: { "agent-org": TREE }, tickets }),
+    source: () => tracker, git: gitFor(), exists: () => false });
+  assert.equal((await context({ prReview: SKILL })).prReview, SKILL);
+  assert.equal((await context({})).prReview, null, "POSITIVE CONTROL: absent is no review");
 });
 
 test("A11-74: a create that is held without an arm says nothing about an arm, because none was held with it", () => {

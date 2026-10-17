@@ -99,7 +99,7 @@ import {
 } from "./reviewer-port.ts";
 import {
   BRIEF_FILE, CONNECTORS_FILE, DENY_FILE, ORDER_FILE, OUTCOME_FILE, PLAN_DIR, PLANNING_DENY, PREVIOUS_OUTCOME_FILE, PUBLISH_FILE, PUBLISHED_FILE, QUESTION_FILE,
-  READY_FILE, REVIEW_FILE, STOP_COUNT_FILE, WORKING_STOP_FILE,
+  PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, READY_FILE, REVIEW_FILE, STOP_COUNT_FILE, WORKING_STOP_FILE,
   batchPlanBriefText, briefText, conflictLine, firstPrompt, planBriefText, publishBriefText, reviewBriefText, reviewPrompt, workerFlags, workerSettings,
   type BatchTicket, type HookCommand, type ParentTicket,
 } from "./worker-files.ts";
@@ -550,7 +550,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     if (entry.review !== undefined) {
       resume = sessionToResume(entry);
       writeFileSync(join(dir, BRIEF_FILE), reviewBriefText({ ticket, folder, ticketDir: dir, prs: entry.review, notes, reviewNotes: notesFile(settings.review, "tickets.review"),
-        connectors, resumed: resume !== undefined, feedback: entry.feedback, asked: entry.asked === true }));
+        connectors, resumed: resume !== undefined, feedback: entry.feedback, asked: entry.asked === true, prReview: settings.prReview }));
       writeFileSync(join(dir, REVIEW_FILE), `${JSON.stringify(entry.review)}\n`);
     } else if (isPlanning(entry) && settings.planner) {
       writeFileSync(join(dir, BRIEF_FILE), planBriefText({ ticket, ticketDir: dir, planDir: emptyPlanDir(dir), attachments, parent, clones: settings.clones, run: settings.planner.run,
@@ -560,7 +560,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
       const prOpenCommand = `${hook.node} ${hook.bin} pr:open`;
       writeFileSync(join(dir, BRIEF_FILE), briefText({ ticket, folder, ticketDir: dir, attachments, parent, blockers: entry.blockers,
         stackedOn: stackedOn(entry, store.get().entries), clones: settings.clones, worktreeCommand, prOpenCommand,
-        notes, connectors, planned: entry.planned === true, drafts: settings.drafts }));
+        notes, connectors, planned: entry.planned === true, drafts: settings.drafts, prReview: settings.prReview }));
     }
     writeRunFiles(entry, folder, dir);
     return { folder, dir, ...(resume ? { resume } : {}) };
@@ -576,8 +576,10 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     if (unreachable.length > 0) throw new Error(unreachable.join(" "));
     mkdirSync(dir, { recursive: true });
     // An earlier run's outcome and stop count would end this run before it began, and an earlier review or publish run's mark would lift a
-    // refusal for it.
-    for (const file of [OUTCOME_FILE, STOP_COUNT_FILE, WORKING_STOP_FILE, REVIEW_FILE, PUBLISH_FILE]) rmSync(join(dir, file), { force: true });
+    // refusal for it. An earlier run's pre-PR review log would say the skill ran on commits this run has not made (A11-86).
+    for (const file of [OUTCOME_FILE, STOP_COUNT_FILE, WORKING_STOP_FILE, REVIEW_FILE, PUBLISH_FILE, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE]) {
+      rmSync(join(dir, file), { force: true });
+    }
   }
 
   /** The run's plan folder, made empty: an earlier attempt's files would be attached as this one's. */
@@ -595,6 +597,9 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     // A fresh ticket run on a machine with `tickets.drafts: false` may open its pull request ready; no other run, and no machine that keeps drafts, may.
     if (!settings.drafts && entry.review === undefined && !isPlanning(entry)) writeFileSync(join(dir, READY_FILE), "\n");
     else rmSync(join(dir, READY_FILE), { force: true });
+    // The pre-PR review skill is the gate's for a worker's pushes and a review run's, which push fixes; a planning run pushes nothing.
+    if (settings.prReview !== null && !isPlanning(entry)) writeFileSync(join(dir, PR_REVIEW_FILE), `${JSON.stringify(settings.prReview)}\n`);
+    else rmSync(join(dir, PR_REVIEW_FILE), { force: true });
     mkdirSync(join(folder, ".claude"), { recursive: true });
     writeFileSync(join(folder, SETTINGS_FILE),
       `${JSON.stringify(workerSettings({ model: runChoice(entry).model, ticketDir: dir, readDirs: Object.values(settings.clones), hook, plugins: settings.plugins }), null, 2)}\n`);

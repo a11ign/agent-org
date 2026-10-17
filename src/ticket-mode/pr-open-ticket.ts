@@ -38,6 +38,8 @@ export type TicketContext = Readonly<{
   regionText: string;
   /** Whether the machine opens pull requests ready (`tickets.drafts: false`), which the pool marks beside the run's outcome file. */
   readyRun: boolean;
+  /** The pre-PR review skill the machine names (`tickets.prReview`), which the body must say ran, or null for none. */
+  prReview: string | null;
   /** Whether the tree is a repository that releases with changesets: it has `.changeset/config.json`. */
   hasChangesets: boolean;
 }>;
@@ -86,6 +88,7 @@ export async function readTicketContext(env: TicketEnv, { settings = () => hostS
     treeKey: tree === null ? null : treeKeyUnder(ticketFolder(host, key), tree),
     regionText,
     readyRun: exists(join(ticketDir(host, key), READY_FILE)),
+    prReview: host.prReview,
     hasChangesets: tree !== null && exists(join(tree, ".changeset", "config.json")),
   };
 }
@@ -290,11 +293,30 @@ export function ticketClosesReport(body: string, key: string): { ok: boolean; li
 
 const refuse = (line: string): { ok: boolean; lines: string[]; } => ({ ok: false, lines: [line] });
 
+/** A `Pre-PR review:` line, at the start of a line or after a list marker, as a worker writes it: the skill's name and what it changed. */
+const PRE_REVIEW_LINE = /^\s*(?:[-*]\s+)?(?:\*\*|__)?Pre-PR review:(?:\*\*|__)?\s*(\S.*)$/gm;
+
+/**
+ * THE PRE-PR REVIEW, recorded: the body says the machine's pre-PR review skill ran on the whole diff, in a `Pre-PR review:` line that names it (A11-86).
+ * A line that names another skill, or none, is no record of this one, so the create is refused and nothing is sent.
+ * @param {string} body @param {string} skill the skill the machine names
+ * @returns {{ ok: boolean, lines: string[] }}
+ */
+export function preReviewReport(body: string, skill: string): { ok: boolean; lines: string[]; } {
+  // A word, not a substring: `a11ign:clean-code-review-v2` is another skill, as the hook's exact match reads it. Backticks and bold marks around it are markdown.
+  const named = [...body.matchAll(PRE_REVIEW_LINE)].some(([, rest]) => rest.replace(/[`*]/g, "").split(/[\s;,()]+/).some((word) => word.replace(/\.$/, "") === skill));
+  if (named) return { ok: true, lines: [`PR-REVIEW: ${skill} -- the body records that it ran`] };
+  return refuse(`PR-REVIEW: MISSING -- the body needs a \`Pre-PR review: ${skill} ran on the whole diff; it changed: <what, or nothing>\` line, since this machine `
+    + `requires that review before a pull request (A11-86). Nothing was sent to GitHub.`);
+}
+
 /**
  * The body reports `checkBody` runs for a ticket: CI's own list, with its `closes` report replaced by the ticket's. Every other report, the acceptance
- * one first, is CI's unchanged; `class` prints NOT CHECKED, since a ticket has no labels a row would.
- * @param {string} key @returns {BodyReport[]}
+ * one first, is CI's unchanged; `class` prints NOT CHECKED, since a ticket has no labels a row would. When the machine names a pre-PR review skill, the body
+ * must record that it ran, last; with none, the list is exactly the one without it.
+ * @param {string} key @param {string | null} prReview @returns {BodyReport[]}
  */
-export function ticketBodyReports(key: string): BodyReport[] {
-  return CI_BODY_REPORTS.map((report) => (report.name === "closes" ? { name: report.name, report: ({ body }) => ticketClosesReport(body, key) } : report));
+export function ticketBodyReports(key: string, prReview: string | null): BodyReport[] {
+  const reports: BodyReport[] = CI_BODY_REPORTS.map((report) => (report.name === "closes" ? { name: report.name, report: ({ body }) => ticketClosesReport(body, key) } : report));
+  return prReview === null ? reports : [...reports, { name: "pr-review", report: ({ body }) => preReviewReport(body, prReview) }];
 }
