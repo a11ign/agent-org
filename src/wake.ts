@@ -2443,7 +2443,7 @@ function noteAbsence({ session, pr, event, ticks, complete, agentless }: { sessi
  * pull request's teardown "left running" on every tick for as long as they lived. Each close is tried even after one fails, so a
  * retry has less to do, and the instance stays registered until all are gone.
  */
-function closeReviewer(session: string, deps: { run: (args: string[]) => string; warn: (line: string) => void; }) {
+export function closeReviewer(session: string, deps: { run: (args: string[]) => string; warn: (line: string) => void; }) {
   const ids = workspaceIdsOf(deps.run, session);
   if (ids.length === 0) {
     deps.warn(`reviewer teardown: "${session}" is finished but no workspace is listed under its label -- left running.`);
@@ -7434,8 +7434,16 @@ export function spareWorktrees({ role, rows, repoRoot, run = defaultGit }: { rol
       merge: tree.branch === null ? detachedMergeStatus(tree.path, { run }) : mergeStatus(repoRoot, tree.branch, { run }) }));
 }
 
-const defaultGit = (cmd: string, args: string[], opts?: object) =>
+export const defaultGit = (cmd: string, args: string[], opts?: object) =>
   execFileSync(cmd, args, { encoding: "utf8", timeout: 30_000, ...opts, env: sandboxGitEnv() });
+
+/**
+ * The paths a review checkout has uncommitted changes in, as `git status --porcelain` names them: the tree's own changes, and each untracked path it holds.
+ * It throws when git cannot read the tree, so a caller that removes a tree never removes one it could not inspect.
+ */
+export function uncommittedPathsOf(path: string, git: (cmd: string, args: string[], opts?: object) => string = defaultGit): string[] {
+  return git("git", ["-C", path, "status", "--porcelain"]).split("\n").filter((line) => line !== "").map((line) => line.slice(3));
+}
 
 /**
  * The facts `endFinishedSpares` reads through, every one injected so the tick's teardown is tested without a host. `heldRows` and `rowState` answer `null` when GitHub could not be asked -- never `[]`, never a state.

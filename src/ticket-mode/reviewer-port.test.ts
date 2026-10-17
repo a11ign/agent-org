@@ -8,7 +8,7 @@ import { INSIDE } from "../review-trust.ts";
 import { REPO } from "../project-identity.ts";
 import { runActions, runStatus } from "./board-view.ts";
 import { createPool, herdrName, ticketDir } from "./pool.ts";
-import { REVIEWER_LOGIN, REVIEW_CAUSE, atomicReviewerPort, loadReviewerGate, type ReviewerPort, type ReviewerRef } from "./reviewer-port.ts";
+import { REVIEWER_LOGIN, REVIEW_CAUSE, atomicReviewerPort, loadReviewerGate, readPullState, type ReviewerPort, type ReviewerRef } from "./reviewer-port.ts";
 import { emptyQueue, enqueue, setPaused, type Queue } from "./queue.ts";
 import { parseTicketSettings } from "./settings.ts";
 import type { Ticket, TicketSource } from "./source.ts";
@@ -31,7 +31,7 @@ function herdr(status: Map<string, string>) {
       return JSON.stringify({ result: { root_pane: { pane_id: `w${next}:p1` }, workspace: { workspace_id: `w${next}` } } });
     }
     if (args.includes("agent") && args.includes("list")) return JSON.stringify({ result: { agents: [...status].map(([label]) => ({ name: null, workspace_id: `w${label.replace(/\D/g, "")}`, agent_session: { value: `session-${label}` } })) } });
-    if (args.includes("list")) return JSON.stringify({ result: { workspaces: [...status].map(([label, s]) => ({ label, agent_status: s })) } });
+    if (args.includes("list")) return JSON.stringify({ result: { workspaces: [...status].map(([label, s]) => ({ label, workspace_id: `w${label.replace(/\D/g, "")}`, agent_status: s })) } });
     return JSON.stringify({ type: "ok" });
   };
   return { run, calls };
@@ -39,13 +39,13 @@ function herdr(status: Map<string, string>) {
 
 const GREEN = [{ name: "gate", status: "COMPLETED", conclusion: "SUCCESS" }];
 
-/** The pull request as GitHub answers it: `head` is its commit, `reviews` its reviews, `outside` whether its author is outside the org, `checks` its checks (green by default). */
-function ghFor(pr: { head: string; reviews?: unknown[]; outside?: boolean; checks?: unknown[] }) {
+/** The pull request as GitHub answers it: `head` is its commit, `reviews` its reviews, `outside` whether its author is outside the org, `checks` its checks (green by default), `state` its state (open by default). */
+function ghFor(pr: { head: string; reviews?: unknown[]; outside?: boolean; checks?: unknown[]; state?: string }) {
   const calls: string[][] = [];
   const run = (args: string[]) => {
     calls.push(args);
     if (args[1] === "user") return "worker-bot\n";
-    if (args[0] === "pr") return JSON.stringify({ headRefOid: pr.head, reviews: pr.reviews ?? [], author: { login: "worker-bot" }, isCrossRepository: pr.outside === true,
+    if (args[0] === "pr") return JSON.stringify({ state: pr.state ?? "OPEN", headRefOid: pr.head, reviews: pr.reviews ?? [], author: { login: "worker-bot" }, isCrossRepository: pr.outside === true,
       isDraft: false, statusCheckRollup: pr.checks ?? GREEN });
     const number = Number(args.find((arg) => arg.startsWith("number="))?.slice("number=".length));
     if (number !== 7) throw new Error("gh exited 1");
@@ -61,6 +61,7 @@ function fakePort() {
   const port: ReviewerPort = {
     start(ref) { starts.push(ref); return { label: "reviewer-7" }; },
     live: () => false,
+    close: () => ({ state: "gone" }), retire: () => ({ retired: true, report: null }), listedPulls: () => [],
   };
   return { port, starts };
 }
@@ -214,4 +215,143 @@ test("a port given the heads a pool remembers is live for the head its reviewer 
   const port = atomicReviewerPort({ session: "tickets", run: herd.run, gh: ghFor({ head: "h1" }).run, declared: DECLARED, heads });
   assert.equal(port.live({ pr: PR_URL, head: "h1" }), true, "live for the remembered head");
   assert.equal(port.live({ pr: PR_URL, head: "h2" }), false, "not live for a head it was not started for");
+});
+
+/**
+ * A port over a herdr that lists `status`, for the close and the teardown. Its checkout's uncommitted paths are `paths`, or the read fails, and its
+ * removal answers `removal`; nothing is removed and no git runs. `events` names each close, each git read and each removal, in the order they happen.
+ */
+function teardownPort(status: Map<string, string>, { paths = [] as string[], pathsFail = false, removal = null as string | null } = {}) {
+  const herd = herdr(status);
+  const events: string[] = [];
+  const removed: { pr: number; session: string; key: string }[] = [];
+  const heads = new Map([["reviewer-7", "h1"]]);
+  const port = atomicReviewerPort({ session: "tickets", run: (args) => { if (args.includes("close")) events.push("close"); return herd.run(args); },
+    gh: ghFor({ head: "h1" }).run, declared: DECLARED, heads, exists: () => true,
+    uncommittedPaths: () => { events.push("read"); if (pathsFail) throw new Error("fatal: not a git repository"); return paths; },
+    removeCheckout: ({ pr, session, key }) => { events.push("removed"); removed.push({ pr, session: String(session), key: String(key) }); return removal; } });
+  return { port, herd, events, removed, heads };
+}
+
+test("a reviewer is closed once its verdict is posted: its workspace closes, and its checkout is kept", async () => {
+  await loadReviewerGate();
+  const made = teardownPort(new Map([["reviewer-7", "idle"]]));
+  assert.deepEqual(made.port.close({ pr: PR_URL, head: "h1" }), { state: "closed" });
+  assert.deepEqual(made.herd.calls.filter((args) => args.includes("close")), [["--session", "tickets", "workspace", "close", "w7"]]);
+  assert.deepEqual(made.removed, [], "the checkout is kept for the next reviewer of the seat");
+  assert.equal(made.heads.get("reviewer-7"), "h1", "the head it was started for is still remembered");
+});
+
+test("close waits for a reviewer still working: nothing closes, and it answers busy", async () => {
+  await loadReviewerGate();
+  const made = teardownPort(new Map([["reviewer-7", "working"]]));
+  assert.deepEqual(made.port.close({ pr: PR_URL, head: "h1" }), { state: "busy" });
+  assert.equal(made.herd.calls.some((args) => args.includes("close")), false, "no workspace is closed");
+});
+
+test("close answers gone for a reviewer herdr no longer lists, and closes nothing", async () => {
+  await loadReviewerGate();
+  const made = teardownPort(new Map());
+  assert.deepEqual(made.port.close({ pr: PR_URL, head: "h1" }), { state: "gone" });
+  assert.equal(made.herd.calls.some((args) => args.includes("close")), false);
+});
+
+test("close closes nothing for a head the seat's reviewer was not started for", async () => {
+  await loadReviewerGate();
+  const made = teardownPort(new Map([["reviewer-7", "idle"]]));
+  const answer = made.port.close({ pr: PR_URL, head: "h2" });
+  assert.match("refusal" in answer ? answer.refusal : "", /was not started for h2/);
+  assert.equal(made.herd.calls.some((args) => args.includes("close")), false, "no workspace is closed");
+});
+
+test("retire closes every workspace under the seat's label, then removes its checkout, and forgets the head", async () => {
+  await loadReviewerGate();
+  const made = teardownPort(new Map([["reviewer-7", "idle"]]));
+  assert.deepEqual(made.port.retire(PR_URL), { retired: true, report: null });
+  assert.deepEqual(made.events, ["close", "read", "removed"], "the workspace first, then the checkout");
+  assert.deepEqual(made.removed, [{ pr: 7, session: "reviewer-7", key: "" }]);
+  assert.equal(made.heads.has("reviewer-7"), false, "the head is forgotten once the checkout is gone");
+});
+
+test("retire on a pull request whose seat has no workspace removes only its checkout", async () => {
+  await loadReviewerGate();
+  const made = teardownPort(new Map());
+  assert.deepEqual(made.port.retire(PR_URL), { retired: true, report: null });
+  assert.equal(made.herd.calls.some((args) => args.includes("close")), false);
+  assert.deepEqual(made.removed, [{ pr: 7, session: "reviewer-7", key: "" }]);
+});
+
+test("retire on a reviewer still working refuses, and removes nothing", async () => {
+  await loadReviewerGate();
+  const made = teardownPort(new Map([["reviewer-7", "working"]]));
+  const answer = made.port.retire(PR_URL);
+  assert.match("refusal" in answer ? answer.refusal : "", /still working/);
+  assert.deepEqual(made.removed, []);
+  assert.equal(made.heads.get("reviewer-7"), "h1");
+});
+
+test("a checkout with uncommitted changes is reported, naming the seat, the head and the paths, and is removed", async () => {
+  await loadReviewerGate();
+  const made = teardownPort(new Map([["reviewer-7", "idle"]]), { paths: ["src/a.ts", "node_modules/x"] });
+  const answer = made.port.retire(PR_URL);
+  assert.ok("retired" in answer, "the pull request is retired");
+  assert.match(answer.report ?? "", /^reviewer teardown: reviewer-7 for https:\/\/github\.com\/[^ ]+\/pull\/7 at h1 had 2 uncommitted change\(s\) in .+\/reviewer-7, discarded with the checkout: src\/a\.ts, node_modules\/x$/);
+  assert.equal(made.removed.length, 1, "and the checkout is removed with them");
+});
+
+test("a report of uncommitted changes names the first 20 paths and how many more there were", async () => {
+  await loadReviewerGate();
+  const paths = Array.from({ length: 23 }, (_, i) => `f${i}.ts`);
+  const made = teardownPort(new Map([["reviewer-7", "idle"]]), { paths });
+  const answer = made.port.retire(PR_URL);
+  const report = "retired" in answer ? answer.report ?? "" : "";
+  assert.match(report, /had 23 uncommitted change\(s\)/);
+  assert.match(report, /: f0\.ts, .*, f19\.ts and 3 more$/);
+  assert.equal(report.includes("f20.ts"), false, "the paths past the twentieth are counted, not named");
+});
+
+test("a clean checkout is removed with no report", async () => {
+  await loadReviewerGate();
+  const made = teardownPort(new Map([["reviewer-7", "idle"]]), { paths: [] });
+  assert.deepEqual(made.port.retire(PR_URL), { retired: true, report: null });
+  assert.equal(made.removed.length, 1);
+});
+
+test("a checkout whose changes cannot be read is kept, and the head is remembered for the next sweep", async () => {
+  await loadReviewerGate();
+  const made = teardownPort(new Map([["reviewer-7", "idle"]]), { pathsFail: true });
+  const answer = made.port.retire(PR_URL);
+  assert.match("refusal" in answer ? answer.refusal : "", /could not be read, so it is kept/);
+  assert.deepEqual(made.removed, [], "nothing is removed that could not be inspected");
+  assert.equal(made.heads.get("reviewer-7"), "h1");
+});
+
+test("a removal that fails is a refusal, keeps the head, and reports no discard", async () => {
+  await loadReviewerGate();
+  const made = teardownPort(new Map([["reviewer-7", "idle"]]), { paths: ["a.ts"], removal: "could not remove /home/x/reviews/reviewer-7 (busy)" });
+  const answer = made.port.retire(PR_URL);
+  assert.match("refusal" in answer ? answer.refusal : "", /could not remove .* \(busy\)/);
+  assert.equal(made.heads.get("reviewer-7"), "h1", "the head is kept, so the next sweep retries");
+});
+
+test("listedPulls names the pull request of each reviewer workspace the session lists, and of no other workspace", async () => {
+  await loadReviewerGate();
+  const made = teardownPort(new Map([["reviewer-7", "idle"], ["NBF-1", "idle"], ["reviewer-2", "idle"]]));
+  assert.deepEqual(made.port.listedPulls(), [PR_URL]);
+});
+
+test("readPullState reads a pull request's state as GitHub names it, and null for one it cannot read", async () => {
+  const answers: (string | Error)[] = [JSON.stringify({ state: "MERGED" }), JSON.stringify({ state: "OPEN" }), JSON.stringify({ state: "CLOSED" }), JSON.stringify({}), new Error("gh exited 1")];
+  const gh = (args: string[]) => {
+    assert.deepEqual(args.slice(0, 2), ["pr", "view"]);
+    const answer = answers.shift()!;
+    if (answer instanceof Error) throw answer;
+    return answer;
+  };
+  assert.equal(readPullState(PR_URL, gh), "MERGED");
+  assert.equal(readPullState(PR_URL, gh), "OPEN");
+  assert.equal(readPullState(PR_URL, gh), "CLOSED");
+  assert.equal(readPullState(PR_URL, gh), null, "an answer with no state is unread");
+  assert.equal(readPullState(PR_URL, gh), null, "a refused read is unread");
+  assert.equal(readPullState("https://example.com/not-a-pull", gh), null, "a url that is no pull request is unread");
 });

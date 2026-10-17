@@ -13,6 +13,7 @@ const port = (answer: ReturnType<ReviewerPort["start"]>, live = false) => {
   const p: ReviewerPort = {
     live: ({ pr, head }) => { calls.push(`live ${pr}@${head}`); return live; },
     start: ({ pr, head }) => { calls.push(`start ${pr}@${head}`); return answer; },
+    close: () => ({ state: "gone" }), retire: () => ({ retired: true, report: null }), listedPulls: () => [],
   };
   return { p, calls };
 };

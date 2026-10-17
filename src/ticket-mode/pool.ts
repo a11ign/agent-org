@@ -62,6 +62,11 @@
 // the pool ever sends answer a start dialog, and only on a run this pool started itself, until its agent is first seen up (`startedHere`): a
 // pane it adopted is never one it is starting. A reviewer is recorded as started before it is started, so a restart in between never starts it
 // twice, and one herdr still lists for its head is adopted. `agent-org update` does not restart the instance while a run is live (`update.ts`).
+//
+// A REVIEWER IS CLOSED AFTER ITS VERDICT, AND RETIRED WITH ITS PULL REQUEST (A11-81). The port closes the reviewer for a head once the verdict on that head
+// is posted, and only once it is not working: its checkout stays, since a head that moves re-points it. `releaseReviewers`, on the server's own sweep, retires
+// each reviewer whose pull request has merged or closed: its workspaces, then its review checkout (uncommitted changes reported first), then what the pool
+// remembers of it. A pull request whose state cannot be read is asked again, and nothing is forgotten until its checkout is gone.
 import { execFile, spawn } from "node:child_process";
 import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { availableParallelism, homedir, loadavg } from "node:os";
@@ -82,8 +87,8 @@ import { unreachablePlugins } from "./plugins.ts";
 import { TICKET_ENV } from "./worktree-command.ts";
 import { HOST_FILE_ENV, plansInBatches, type TicketSettings } from "./settings.ts";
 import {
-  REVIEWER_LOGIN, atomicReviewerPort, readReviewState, readReviewerMemory, reviewerRefusal, reviewVerdict, reviewerMemoryPath, withoutReviewerReviews, writeReviewerMemory,
-  type ReviewerMemory, type ReviewerPort,
+  REVIEWER_LOGIN, atomicReviewerPort, readPullState, readReviewState, readReviewerMemory, reviewerRefusal, reviewVerdict, reviewerMemoryPath, withoutReviewerReviews, writeReviewerMemory,
+  type ReviewerMemory, type ReviewerPort, type ReviewerRef,
 } from "./reviewer-port.ts";
 import {
   BRIEF_FILE, CONNECTORS_FILE, DENY_FILE, ORDER_FILE, OUTCOME_FILE, PLAN_DIR, PLANNING_DENY, PREVIOUS_OUTCOME_FILE, PUBLISH_FILE, PUBLISHED_FILE, QUESTION_FILE,
@@ -414,6 +419,8 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
   const reviewer = !reviewerOn || gateRefusal !== null ? undefined : deps.reviewerPort ?? atomicReviewerPort({ session: settings.herdrSession, run: herdr, gh, heads: reviewerMemory.heads });
   /** The `url@head` keys a reviewer was started for, and whose not-convinced verdict already asked the worker for a round. */
   const { started: reviewerStarted, resumed: reviewerResumed } = reviewerMemory;
+  /** The reviewers whose verdict is posted but whose workspace would not close yet (a reviewer still working), by `url@head`, which `releaseReviewers` asks again. */
+  const closing = new Map<string, ReviewerRef>();
   /** The feedback a worker answers is read without the reviewer's own reviews, so its verdict never moves `feedbackAt`. */
   const feedbackGh = settings.reviewer === null ? gh : withoutReviewerReviews(gh);
   /** Writes what the reviewers remember. A file that cannot be written is said, and the reviewers carry on for this run. */
@@ -1381,8 +1388,10 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
         continue;
       }
       const key = `${url}@${state.head}`;
-      // A head whose checks have not settled green gets no reviewer yet: this watch passes it by, and the next one asks again.
-      if (state.settled && !reviewerStarted.has(key)) {
+      // A head whose checks have not settled green gets no reviewer yet: this watch passes it by, and the next one asks again. Nor does a pull
+      // request GitHub does not show open: a merged one's memory is forgotten once it is retired (`releaseReviewers`), and a tracker that still reads
+      // it open must not start a reviewer for it again.
+      if (state.settled && !reviewerStarted.has(key) && readPullState(url, gh) === "OPEN") {
         // Recorded BEFORE the start, so an instance stopped while the reviewer starts never starts it again for this head; a refusal un-records
         // it. One herdr already lists for this head (started by an instance that stopped before it could record it) is adopted, not started.
         reviewerStarted.add(key);
@@ -1398,6 +1407,17 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
           rememberReviewers();
         }
       }
+      // Once its verdict is posted, the reviewer for this head closes: its workspace goes, and its checkout stays (`close`). One still working is kept
+      // in `closing`, which `releaseReviewers` asks again: a not-convinced verdict starts a round below, and no watch reads this run until it ends.
+      if (reviewVerdict(state.reviews, state.head) !== null && reviewer.live({ pr: url, head: state.head })) {
+        const ref = { pr: url, head: state.head };
+        const answer = reviewer.close(ref);
+        if ("refusal" in answer) {
+          log(answer.refusal);
+          closing.delete(key);
+        } else if (answer.state === "busy") closing.set(key, ref);
+        else closing.delete(key);
+      }
       if (reviewVerdict(state.reviews, state.head) === "not-convinced" && !reviewerResumed.has(key)) {
         reviewerResumed.add(key);
         rememberReviewers();
@@ -1407,7 +1427,53 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     return lines;
   }
 
-  return { tick, stop, close, dismiss, remove, reconcile, ensureSession, refreshTracker, watchFeedback };
+  /** Drops what the pool remembers of a pull request: its `url@head` keys (started, resumed) and any verdict still awaiting its close. */
+  function forgetPull(url: string): void {
+    const ofPull = (key: string) => key.startsWith(`${url}@`);
+    for (const key of [...reviewerStarted, ...reviewerResumed]) {
+      if (ofPull(key)) {
+        reviewerStarted.delete(key);
+        reviewerResumed.delete(key);
+      }
+    }
+    for (const key of [...closing.keys()]) if (ofPull(key)) closing.delete(key);
+    rememberReviewers();
+  }
+
+  /**
+   * The reviewers of pull requests that have merged or closed, and of the verdicts still awaiting a close, asked on the server's own sweep (every
+   * `FEEDBACK_MS`), not on `watchFeedback`: a merged run leaves the watch, and a `ticket:review` reviewer has no run at all. Each pull request the pool
+   * remembers, and each the session lists, has its state read: a merged or closed one is retired (its workspaces, then its checkout, then what is
+   * remembered of it), while an open one is left, and one whose state cannot be read is asked again next sweep.
+   */
+  function releaseReviewers(): void {
+    if (reviewer === undefined) return;
+    for (const [key, ref] of [...closing]) {
+      const answer = reviewer.close(ref);
+      if ("refusal" in answer) log(answer.refusal);
+      if ("refusal" in answer || answer.state !== "busy") closing.delete(key);
+    }
+    const pulls = new Set([...reviewerStarted].map((key) => key.slice(0, key.lastIndexOf("@"))));
+    for (const url of reviewer.listedPulls()) pulls.add(url);
+    for (const url of pulls) {
+      const state = readPullState(url, gh);
+      if (state === null) {
+        log(`${url}: its state could not be read, so its reviewer is kept; the next sweep asks again`);
+        continue;
+      }
+      if (state === "OPEN") continue;
+      const answer = reviewer.retire(url);
+      if ("refusal" in answer) {
+        log(answer.refusal);
+        continue;
+      }
+      if (answer.report !== null) log(answer.report);
+      // Forgotten only now that its workspaces and its checkout are gone: until then the next sweep retries it.
+      forgetPull(url);
+    }
+  }
+
+  return { tick, stop, close, dismiss, remove, reconcile, ensureSession, refreshTracker, watchFeedback, releaseReviewers };
 }
 
 export type Pool = ReturnType<typeof createPool>;
