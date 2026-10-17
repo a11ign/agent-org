@@ -116,6 +116,11 @@ export type Entry = Readonly<{
    * empty name in a list stands for files the watch could not read, which holds the whole repository (`board-view.ts`'s `pathsOverlap`).
    */
   pullFiles?: Readonly<Record<string, readonly string[]>>;
+  /**
+   * Why a reviewer's verdict is not on one of the run's pull requests (A11-83): its reviewer ended without a review at the head, and the pool could
+   * not post the verdict file it wrote. Set as the watch finds it, and cleared once a review at that head is on the pull request. The board shows it.
+   */
+  verdictNotPosted?: string;
   /** The Claude session the run's worker used, saved when the run ended, so a review run can resume the worker that wrote the code. */
   session?: string;
   /** Set on a review run: the pull requests a person approved, which the run marks ready and sees through their review. See {@link approve}. */
@@ -593,6 +598,15 @@ export const unreadPaths = (queue: Queue): Entry[] => queue.entries.filter(paths
 /** Record the files a finished run's open pull requests change, by URL, as the watch read them. */
 export function recordPullFiles(queue: Queue, key: string, files: Readonly<Record<string, readonly string[]>>): Queue {
   return replace(queue, key, (entry) => (entry.phase === "finished" ? { ...entry, pullFiles: files } : entry));
+}
+
+/** Record why a finished run's reviewer verdict is not on its pull request (A11-83), or clear it with `undefined` once one is. */
+export function recordVerdictNotPosted(queue: Queue, key: string, reason: string | undefined): Queue {
+  return replace(queue, key, (entry) => {
+    if (entry.phase !== "finished") return entry;
+    const { verdictNotPosted: _previous, ...rest } = entry;
+    return reason === undefined ? rest : { ...rest, verdictNotPosted: reason };
+  });
 }
 
 /** Record the tickets that block each queued run, for each run the tracker was asked about. A run that has started keeps what it started with. */
