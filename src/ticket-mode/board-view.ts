@@ -11,6 +11,8 @@
 /** The fields of a ticket the board shows. */
 export type ViewTicket = Readonly<{
   key: string; title: string; status: string; statusOrder: number; priority: number; project: string | null; parent?: string | null; uploads?: readonly string[];
+  /** The keys of its open sub-issues, as the tracker last read them: see `source.ts`. */
+  children?: readonly string[];
 }>;
 
 /**
@@ -70,10 +72,31 @@ export function planChoiceOf(remembered: ReadonlySet<string>): PlanChoice | null
   return choice === "with" || choice === "without" ? choice : null;
 }
 
-/** The tickets a worker can be given: every one that no other ticket sits under. An epic is not work for a worker. */
+/** How many open sub-issues the tracker says the ticket has, whether or not any of them is in the list. */
+export const openChildCount = (ticket: ViewTicket): number => ticket.children?.length ?? 0;
+
+/**
+ * A ticket the tracker says has open sub-issues: an epic, with nothing of its own to build. It is never queued itself, so it has no checkbox of
+ * its own, and the board offers {@link QUEUE_CHILDREN} instead. Its sub-issues need not be in the list: an epic assigned to the person whose
+ * parts are someone else's, or another team's, is still an epic, and a worker given one ends in Needs you with nothing to do (A11-76). One whose
+ * sub-issues are all done or canceled has none open, and is an ordinary ticket again.
+ */
+export const isParentTicket = (ticket: ViewTicket): boolean => openChildCount(ticket) > 0;
+
+/** The button a parent offers in place of queueing it, and what it does. */
+export const QUEUE_CHILDREN = "Queue its children";
+export const QUEUE_CHILDREN_TITLE = "Queue this ticket's open sub-issues, in the order their blocking relations give, or by identifier where they give none";
+
+/** What a parent's row says of its open sub-issues. PURE. */
+export const childrenNote = (ticket: ViewTicket): string => {
+  const n = openChildCount(ticket);
+  return `Parent · ${n} open sub-issue${n === 1 ? "" : "s"}`;
+};
+
+/** The tickets a worker can be given: every one that no other ticket sits under, and none the tracker says has open sub-issues. An epic is not work for a worker. */
 export function workItems<T extends ViewTicket>(tickets: readonly T[]): T[] {
   const parents = new Set(tickets.flatMap((t) => (t.parent ? [t.parent] : [])));
-  return tickets.filter((t) => !parents.has(t.key));
+  return tickets.filter((t) => !parents.has(t.key) && !isParentTicket(t));
 }
 
 /**
@@ -189,8 +212,9 @@ export const ticketCount = (nodes: readonly TicketNode[]): number => nodes.reduc
 export const parentKeys = (nodes: readonly TicketNode[]): string[] =>
   nodes.flatMap((n) => (n.children.length > 0 ? [n.ticket.key, ...parentKeys(n.children)] : []));
 
-/** A ticket can be selected when it is not on the queue already. */
-export const selectable = (ticket: ViewTicket, entries: readonly ViewEntry[]): boolean => !entries.some((e) => e.ticket.key === ticket.key);
+/** A ticket can be selected when it is not on the queue already, and is not a parent: the queue refuses one (`queue.ts`'s `refuseParents`). */
+export const selectable = (ticket: ViewTicket, entries: readonly ViewEntry[]): boolean =>
+  !isParentTicket(ticket) && !entries.some((e) => e.ticket.key === ticket.key);
 
 /**
  * A parent's checkbox: the keys of the tickets under it, at any depth, that can still be picked, ticked when every one is selected and part

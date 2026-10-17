@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { isParked } from "./board-view.ts";
 import {
-  amend, approve, respond, batchPlanDone, dismiss, feedbackRound, MAX_FEEDBACK_ROUNDS, markPublishRunning, markPublishStarting, publishDone, publishFailed, publishStarts, queuePublish, emptyQueue, enqueue, finish, isLive, leaveBatch, loadQueue, markResumed, markRunning, markStarting, nextStarts, observe, park,
+  amend, approve, byIdentifier, childOrder, refuseParents, respond, batchPlanDone, dismiss, feedbackRound, MAX_FEEDBACK_ROUNDS, markPublishRunning, markPublishStarting, publishDone, publishFailed, publishStarts, queuePublish, emptyQueue, enqueue, finish, isLive, leaveBatch, loadQueue, markResumed, markRunning, markStarting, nextStarts, observe, park,
   recordBlockers, recordRepos, planDone, PLAN_BATCH_MAX, recordPullStates, recordTrackerStates, remove, retry, saveQueue, setMax, setPaused, unpark, unreadBlockerKeys, unsettledKeys, type Queue,
 } from "./queue.ts";
 import type { Ticket } from "./source.ts";
@@ -402,4 +402,31 @@ test("a run the publish run under way is posting is not dismissed until the publ
   const publishing = queuePublish(readyToMerge(), ["A"], 36);
   assert.equal(dismiss(publishing, "A"), publishing);
   assert.deepEqual(keys(dismiss(publishDone(publishing, ["https://slack/1"], 40), "A")), ["B"]);
+});
+
+test("A11-76: the queue refuses a parent, a ticket with open sub-issues, whole and naming why, and takes it once its sub-issues are all done", () => {
+  const epic = { ...ticket("A11-24"), children: ["A11-25", "A11-26"] };
+  const before = enqueue(emptyQueue(3), [ticket("A")], choice, 1);
+  assert.throws(() => enqueue(before, [ticket("B"), epic], choice, 2),
+    /^Error: A11-24 has 2 open sub-issues \(A11-25, A11-26\): a parent is not queued, because it has nothing of its own to build\. Queue its children instead$/);
+  assert.throws(() => refuseParents([{ ...ticket("A11-9"), children: ["A11-10"] }]), /A11-9 has 1 open sub-issue \(A11-10\)/);
+  const settled = enqueue(before, [ticket("B"), { ...epic, children: [] }], choice, 2);
+  assert.deepEqual(keys(settled), ["A", "B", "A11-24"], "an epic whose sub-issues are all done or canceled is queued as any ticket is");
+  assert.deepEqual(keys(enqueue(before, [ticket("C")], choice, 2)), ["A", "C"], "a ticket read before sub-issues were (no children field) is ordinary");
+});
+
+test("A11-76: a parent's children are queued in their blocking order, siblings first, and by identifier where nothing orders them", () => {
+  const blockers = new Map([["A11-25", [{ key: "A11-27" }]], ["A11-27", [{ key: "A11-26" }, { key: "OTHER-1" }]], ["A11-26", []]]);
+  assert.deepEqual(childOrder(["A11-25", "A11-26", "A11-27", "A11-100"], blockers), { keys: ["A11-26", "A11-27", "A11-25", "A11-100"], note: null },
+    "A11-26 blocks A11-27, which blocks A11-25; a blocker that is not a sibling orders nothing; A11-100 is free and last by identifier");
+  const queued = enqueue(emptyQueue(3), childOrder(["A11-25", "A11-26", "A11-27"], blockers).keys.map(ticket), choice, 1);
+  assert.deepEqual(keys(queued), ["A11-26", "A11-27", "A11-25"], "the queue runs them in that order");
+});
+
+test("A11-76: with no blocking relations to read, a parent's children go in identifier order, and the note says so; a cycle is named", () => {
+  assert.deepEqual(childOrder(["A11-10", "A11-9", "A11-100", "A11-9"], null),
+    { keys: ["A11-9", "A11-10", "A11-100"], note: "the tracker gives no blocking order, so they are queued in identifier order" });
+  const cycle = childOrder(["A-3", "A-1", "A-2"], new Map([["A-1", [{ key: "A-2" }]], ["A-2", [{ key: "A-1" }]], ["A-3", []]]));
+  assert.deepEqual(cycle, { keys: ["A-3", "A-1", "A-2"], note: "the blocking relations among A-1, A-2 go round in a cycle, so those are queued in identifier order" });
+  assert.ok(byIdentifier("A11-9", "A11-10") < 0 && byIdentifier("B-1", "A-2") > 0);
 });

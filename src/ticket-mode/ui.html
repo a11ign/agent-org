@@ -107,6 +107,7 @@
   .no-plan { display: inline-flex; vertical-align: -2px; margin-right: 6px; color: var(--warn); }
   .no-plan.covered { color: var(--muted); }
   .no-plan svg { width: 14px; height: 14px; }
+  .row .queue-children { margin-left: 8px; }
 </style>
 </head>
 <body>
@@ -158,6 +159,7 @@
     <div class="chips" id="projects"></div>
     <div class="chips" id="priorities"></div>
     <div class="chips" id="plans" hidden></div>
+    <div id="children-note" class="notice" role="status" hidden></div>
     <div id="paused-note" class="notice" hidden>Workers are paused. Tickets you queue wait on the Board until you start workers there.</div>
     <div id="groups"></div>
   </section>
@@ -189,7 +191,7 @@
 // The decisions (what shows, how it groups, what can be selected, what status a run has and what it offers) are board-view.ts's, tested there.
 // This page only draws what they return and wires the clicks.
 import {
-  APPROVE_TITLE, DISMISS_TITLE, RESPOND_TITLE, PRIORITY_NAMES, RUN_STATUSES, publishable, publishLabel, publishNote, publishTerminalLink, pullsOf, flatten, groupByStatus, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, queueLabel, recall, remember, runActions, shownStatus, apiBase, chosenConnection, connectionLabel, safeHref, runStatus,
+  APPROVE_TITLE, DISMISS_TITLE, RESPOND_TITLE, QUEUE_CHILDREN, QUEUE_CHILDREN_TITLE, childrenNote, isParentTicket, PRIORITY_NAMES, RUN_STATUSES, publishable, publishLabel, publishNote, publishTerminalLink, pullsOf, flatten, groupByStatus, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, queueLabel, recall, remember, runActions, shownStatus, apiBase, chosenConnection, connectionLabel, safeHref, runStatus,
   runChoiceLabel, runsShown, unplannedCount, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, waitsOn, workersLabel,
 } from "/board-view.js";
 
@@ -292,6 +294,30 @@ function planMark(t) {
   return mark;
 }
 
+/** The Queue its children button for a parent, or nothing for a ticket with no open sub-issues. */
+function childrenButton(t) {
+  if (!isParentTicket(t)) return null;
+  const button = el("button", { className: "small queue-children", type: "button", textContent: QUEUE_CHILDREN, title: QUEUE_CHILDREN_TITLE });
+  button.addEventListener("click", (event) => { event.stopPropagation(); queueChildren(t).catch(report); });
+  return button;
+}
+
+/**
+ * Queue a parent's open sub-issues, on the footer's model and effort, planned first as the footer says. The instance reads them and their order;
+ * the note it answers with, such as an order that is not the tracker's, is shown above the list.
+ */
+async function queueChildren(t) {
+  const { model, effort } = batchChoice(state.choice, state.batch);
+  const plan = Boolean(state.planner && state.plan && $("plan-first").checked);
+  const answer = await call("POST", "/api/queue-children", { key: t.key, model, effort, plan });
+  state.queue = answer.queue;
+  const queued = answer.keys.length === 0 ? `None of ${t.key}'s sub-issues could be queued.` : `Queued ${t.key}'s children: ${answer.keys.join(", ")}.`;
+  $("children-note").textContent = answer.note ? `${queued} Note: ${answer.note}.` : queued;
+  $("children-note").hidden = false;
+  report(null);
+  render();
+}
+
 function renderPick() {
   renderProjects();
   renderPriorities();
@@ -319,7 +345,8 @@ function renderPick() {
     const box = el("div", { className: `group${expanded ? "" : " collapsed"}` }, head);
     // A ticket under its parent is indented, and names its own status, which can differ from the section's. A parent folds the tickets under
     // it away, and its checkbox picks them rather than itself; one that is not the person's says so. Only a ticket a worker can be given carries
-    // the no-plan mark: an epic is never started.
+    // the no-plan mark: an epic is never started. A ticket the tracker says has open sub-issues is a parent even when none of them is in the
+    // list: it is marked, counts them, has no checkbox to tick, and offers Queue its children instead (A11-76).
     const titleCell = (t, depth, { arrow = null, mark = null, note = null } = {}) => el("span", {}, arrow, mark,
       el("a", { href: safeHref(t.url), target: "_blank", rel: "noreferrer" }, t.title), depth > 0 ? el("span", { className: "sub" }, ` · ${t.status}`) : null, note);
     const pill = (text) => el("span", { className: "pill" }, text);
@@ -339,10 +366,16 @@ function renderPick() {
         arrow.setAttribute("aria-expanded", String(open));
         arrow.addEventListener("click", () => setOpenParents(toggled(state.openParents, t.key)));
         const count = ticketCount(children);
-        place(el("div", { className: `row parent${context ? " context" : ""}${nested}` }, tick, keyCell,
-          titleCell(t, depth, { arrow, note: el("span", { className: "sub" }, ` · ${count} ticket${count === 1 ? "" : "s"} under it`) }),
+        const note = el("span", { className: "sub" }, ` · ${count} ticket${count === 1 ? "" : "s"} under it`, isParentTicket(t) ? ` · ${childrenNote(t)}` : null, childrenButton(t));
+        place(el("div", { className: `row parent${context ? " context" : ""}${nested}` }, tick, keyCell, titleCell(t, depth, { arrow, note }),
           pill(projectOf(t)), pill(context ? "Not assigned to you" : standing)), depth);
         if (open) for (const child of children) add(child, depth + 1);
+        return;
+      }
+      if (isParentTicket(t)) {
+        const tick = el("input", { type: "checkbox", checked: false, disabled: true, title: "A parent is not queued: queue its children" });
+        place(el("div", { className: `row parent epic${taken ? " taken" : ""}${nested}` }, tick, keyCell,
+          titleCell(t, depth, { note: el("span", { className: "sub" }, ` · ${childrenNote(t)}`, childrenButton(t)) }), pill(projectOf(t)), pill("Parent")), depth);
         return;
       }
       const tick = el("input", { type: "checkbox", checked: state.selected.has(t.key), disabled: Boolean(taken) });
@@ -638,6 +671,7 @@ async function load() {
   state.selected = new Set();
   state.toPublish = new Set();
   state.parents = [];
+  $("children-note").hidden = true;
   report(null);
   setup(await call("GET", "/api/config"));
   [state.tickets, state.queue] = await Promise.all([call("GET", "/api/tickets"), call("GET", "/api/queue")]);

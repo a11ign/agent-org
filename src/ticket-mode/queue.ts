@@ -138,11 +138,64 @@ export const PLAN_BATCH_MAX = 8;
 export type PlanFirst = Readonly<{ keys: ReadonlySet<string>; choice: RunChoice; batch?: boolean }>;
 
 /**
+ * Refuse a PARENT: a ticket the tracker says has open sub-issues. An epic has nothing of its own to build, so a worker given one plans it, runs,
+ * and ends in Needs you with nothing done; one was queued, planned and run twice before this rule (A11-76). The board hides a parent's checkbox,
+ * but the page is not the only caller of the API, so the queue holds the rule itself. The reason names each parent, how many sub-issues it has
+ * open, and what to do instead. A ticket whose sub-issues are all done or canceled has none open and is queued as any other. PURE.
+ */
+export function refuseParents(tickets: readonly Ticket[]): void {
+  const parents = tickets.filter((ticket) => (ticket.children?.length ?? 0) > 0);
+  if (parents.length === 0) return;
+  const named = parents.map(({ key, children = [] }) => `${key} has ${children.length} open sub-issue${children.length === 1 ? "" : "s"} (${children.join(", ")})`);
+  throw new Error(`${named.join("; ")}: a parent is not queued, because it has nothing of its own to build. Queue its children instead`);
+}
+
+/** Two tracker keys in identifier order: by team, then by number as a number, so `A11-9` comes before `A11-10`. PURE. */
+export function byIdentifier(a: string, b: string): number {
+  const [, teamA = a, numberA = "0"] = /^(.*)-(\d+)$/.exec(a) ?? [];
+  const [, teamB = b, numberB = "0"] = /^(.*)-(\d+)$/.exec(b) ?? [];
+  return teamA.localeCompare(teamB) || Number(numberA) - Number(numberB) || a.localeCompare(b);
+}
+
+/** The order a parent's children are queued in, and what the board says about how it was found. */
+export type ChildOrder = Readonly<{ keys: readonly string[]; note: string | null }>;
+
+/**
+ * The order to queue a parent's open sub-issues in. PURE.
+ *
+ * BLOCKING ORDER WHERE THE TRACKER GIVES ONE. `blockers` is the tracker's "blocked by" for each child, as `TicketSource.blockers` reads it, or
+ * null for a source that cannot say. A child blocked by a sibling goes after that sibling; a blocker that is not one of the siblings orders
+ * nothing here, because the queue holds a run back on it anyway (`board-view.ts`'s `waitsOn`). Among children free to go, identifier order
+ * decides, so the same relations always give the same order. Where the tracker gives no order at all, or its relations go round in a cycle,
+ * the rest go in identifier order and the note says so, so the person is never told an order is the tracker's when it is not.
+ */
+export function childOrder(children: readonly string[], blockers: ReadonlyMap<string, readonly Pick<Blocker, "key">[]> | null): ChildOrder {
+  const keys = [...new Set(children)].sort(byIdentifier);
+  if (blockers === null) return { keys, note: "the tracker gives no blocking order, so they are queued in identifier order" };
+  const siblings = new Set(keys);
+  const waitsFor = new Map(keys.map((key) => [key, new Set((blockers.get(key) ?? []).map(({ key: blocker }) => blocker).filter((b) => siblings.has(b) && b !== key))]));
+  const ordered: string[] = [];
+  const left = new Set(keys);
+  while (left.size > 0) {
+    const free = [...left].find((key) => [...waitsFor.get(key)!].every((blocker) => !left.has(blocker)));
+    if (free === undefined) {
+      const rest = [...left];
+      return { keys: [...ordered, ...rest], note: `the blocking relations among ${rest.join(", ")} go round in a cycle, so those are queued in identifier order` };
+    }
+    ordered.push(free);
+    left.delete(free);
+  }
+  return { keys: ordered, note: null };
+}
+
+/**
  * Add each ticket not already on the queue, after the last entry. A ticket already there is left as it is. Each ticket `planFirst` names is
  * planned, on its model and effort, before it is worked. With `planFirst.batch`, the ones added are batched in runs of up to
- * {@link PLAN_BATCH_MAX}, in queue order, and a run of one is no batch.
+ * {@link PLAN_BATCH_MAX}, in queue order, and a run of one is no batch. A parent is refused, whole, before anything is added: see
+ * {@link refuseParents}.
  */
 export function enqueue(queue: Queue, tickets: readonly Ticket[], choice: RunChoice, now: number, planFirst: PlanFirst | null = null): Queue {
+  refuseParents(tickets.filter((ticket) => find(queue, ticket.key) === undefined));
   const fresh = tickets.filter((ticket) => find(queue, ticket.key) === undefined);
   const planned = fresh.filter((ticket) => planFirst?.keys.has(ticket.key)).map((ticket) => ticket.key);
   const batches = new Map<string, string>();

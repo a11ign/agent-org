@@ -23,7 +23,7 @@ import { pickEmptyText, pickLabel } from "./pick-scope.ts";
 import { API_BODY_BYTES, readJson, refusal, sameSecret, sendJson, type Json } from "./local-http.ts";
 import { createPool, startsReviewers, type PoolDeps } from "./pool.ts";
 import { loadReviewerGate } from "./reviewer-port.ts";
-import { amend, approve, enqueue, loadQueue, queuePublish, remove, respond, retry, saveQueue, setMax, setPaused, type PlanFirst, type Queue, type RunChoice } from "./queue.ts";
+import { amend, approve, childOrder, enqueue, loadQueue, queuePublish, remove, respond, retry, saveQueue, setMax, setPaused, type PlanFirst, type Queue, type RunChoice } from "./queue.ts";
 import { plansInBatches, readTicketSettings, type TicketSettings } from "./settings.ts";
 import type { Ticket, TicketSource } from "./source.ts";
 
@@ -166,6 +166,32 @@ export function createBoard(deps: BoardDeps) {
       store.set(enqueue(queue, tickets, choice, now(), body.plan === true ? planFirst(tickets) : null));
       wake();
       return [200, queue];
+    }
+    if (method === "POST" && path === "/api/queue-children") {
+      // A parent is never queued itself (`queue.ts`'s `refuseParents`): this queues its open sub-issues in its place (A11-76). The parent is
+      // read afresh, so a sub-issue finished since the list was read is not queued; one the list holds is not read again. The order is the
+      // tracker's blocking relations among them where it can say, or identifier order, which the answer's note then names. A sub-issue that
+      // is itself a parent is left out, and named: its own row offers its children. One already on the queue keeps its place.
+      const choice = validRunChoice(body);
+      const key = String(body.key ?? "");
+      const parent = await source.read(key);
+      if (parent === null) throw new Error(`no ticket ${key}`);
+      const children = parent.children ?? [];
+      if (children.length === 0) throw new Error(`${key} has no open sub-issues: queue it as it is`);
+      const order = childOrder(children, source.blockers ? await source.blockers(children) : null);
+      const read: Ticket[] = [];
+      for (const child of order.keys) {
+        const ticket = known.get(child) ?? await source.read(child);
+        if (ticket === null) throw new Error(`no ticket ${child}, a sub-issue of ${key}`);
+        read.push(ticket);
+      }
+      const nested = read.filter((ticket) => (ticket.children?.length ?? 0) > 0).map((ticket) => ticket.key);
+      const tickets = read.filter((ticket) => !nested.includes(ticket.key));
+      store.set(enqueue(queue, tickets, choice, now(), body.plan === true ? planFirst(tickets) : null));
+      wake();
+      const left = nested.length === 0 ? null : `${nested.join(", ")} ${nested.length === 1 ? "is itself a parent" : "are themselves parents"}, so not queued: queue ${nested.length === 1 ? "its" : "their"} children from ${nested.length === 1 ? "its" : "their"} own row`;
+      const note = [order.note, left].filter((part) => part !== null).join("; ") || null;
+      return [200, { queue, keys: tickets.map((ticket) => ticket.key), note }];
     }
     if (method === "POST" && path === "/api/choice") {
       // Only the part named is changed, so two pages open at once cannot undo each other's other half.
