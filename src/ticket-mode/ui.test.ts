@@ -1,18 +1,21 @@
-// no-token: gh -- the page's own script runs against a fake DOM and a canned fetch, with the tested board-view module as its import; no browser, no socket
+// no-token: gh -- the page's own script runs against a fake DOM and a canned fetch, with the tested board-view and label-filters modules as its imports; no browser, no socket
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import * as view from "./board-view.ts";
+import * as labelFilters from "./label-filters.ts";
 
 /**
- * The page's module script, run as the browser would run it but in a `vm` context: its one import (`/board-view.js`, which the server sends as
- * `board-view.ts` with the types stripped) is supplied from the tested module itself, and its top-level `await` runs inside an async wrapper.
+ * The page's module script, run as the browser would run it but in a `vm` context: its imports (`/board-view.js` and `/label-filters.js`,
+ * which the server sends as `board-view.ts` and `label-filters.ts` with the types stripped) are supplied from the tested modules themselves,
+ * and its top-level `await` runs inside an async wrapper.
  */
 const MODULE = /<script type="module">([\s\S]*)<\/script>/.exec(readFileSync(new URL("./ui.html", import.meta.url), "utf8"))![1];
-const IMPORT = /^import \{[^}]*\} from "\/board-view\.js";$/m;
-if (!IMPORT.test(MODULE)) throw new Error("the page's script no longer imports /board-view.js as this test expects");
-const SCRIPT = `(async () => {\n${MODULE.replace(IMPORT, "")}\n})();`;
+const IMPORTS = /^import \{[^}]*\} from "\/(board-view|label-filters)\.js";$/gm;
+const imported = [...MODULE.matchAll(IMPORTS)].map((m) => m[1]).sort();
+if (imported.join() !== "board-view,label-filters") throw new Error(`the page's script imports ${imported.join() || "nothing"}, not /board-view.js and /label-filters.js as this test expects`);
+const SCRIPT = `(async () => {\n${MODULE.replace(IMPORTS, "")}\n})();`;
 
 class Node_ {
   children: Node_[] = [];
@@ -21,6 +24,7 @@ class Node_ {
   parent: Node_ | null = null;
   className = "";
   textContent = "";
+  title = "";
   value = "";
   checked = false;
   hidden = false;
@@ -95,7 +99,7 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
     return { ok: true, json: async () => value, statusText: "" };
   };
   const localStorage = { getItem: (k: string) => storage.get(k) ?? null, setItem: (k: string, v: string) => { storage.set(k, v); } };
-  runInNewContext(SCRIPT, { ...view, document, fetch, window: { localStorage }, setInterval: () => 0, Date, JSON, Object, Array, Set, Map, String, Number, Boolean, Math });
+  runInNewContext(SCRIPT, { ...view, ...labelFilters, document, fetch, window: { localStorage }, setInterval: () => 0, Date, JSON, Object, Array, Set, Map, String, Number, Boolean, Math });
   for (let i = 0; i < 10; i++) await settle();
   const $ = (id: string) => document.getElementById(id);
   const groups = () => $("groups").children;
@@ -1005,4 +1009,56 @@ test("A11-76: a parent shown with its sub-issues under it offers Queue its child
   const epic = rowFor(p, "E-1");
   assert.ok(epic.text().includes("1 ticket under it · Parent · 2 open sub-issues"), epic.text());
   assert.ok(epic.all().some((n) => n.tag === "button" && n.textContent === view.QUEUE_CHILDREN));
+});
+
+const LABELLED = [
+  { key: "L-1", title: "one", status: "Backlog", statusOrder: 0, priority: 2, project: "Alpha", url: "", labels: [{ name: "Fleet", group: "Goal" }, { name: "Bug", group: null }] },
+  { key: "L-2", title: "two", status: "Backlog", statusOrder: 0, priority: 2, project: "Beta", url: "", labels: [{ name: "Ticket mode", group: "Goal" }] },
+  { key: "L-3", title: "three", status: "Backlog", statusOrder: 0, priority: 2, project: "Alpha", url: "", labels: [{ name: "Fleet", group: "Goal" }] },
+  { key: "L-4", title: "four", status: "Backlog", statusOrder: 0, priority: 2, project: "Alpha", url: "" },
+];
+
+test("a row of chips for each label group, named after it, and a Labels row for the labels in no group, each chip with its count", async () => {
+  const p = await page(new Map(), { tickets: LABELLED });
+  const rows = p.$("label-rows").children;
+  assert.deepEqual(rows.map((r) => r.children[0].text()), ["Goal", "Labels"], "each row is named after its group");
+  for (const chipText of ["All", "Fleet2", "Ticket mode1", "(no Goal)1"]) assert.ok(rows[0].text().includes(chipText), `a chip with its count: ${chipText}`);
+  for (const chipText of ["Bug1", "(no label)3"]) assert.ok(rows[1].text().includes(chipText), `a chip with its count: ${chipText}`);
+  assert.equal(rows[0].children[1].getAttribute("aria-pressed"), "true", "All is pressed while nothing in the row is chosen");
+});
+
+test("a list with no labels shows no label row, and a list with no label outside a group shows no Labels row", async () => {
+  assert.deepEqual((await page(new Map())).$("label-rows").children, []);
+  const grouped = await page(new Map(), { tickets: LABELLED.slice(1) });
+  assert.deepEqual(grouped.$("label-rows").children.map((r) => r.children[0].text()), ["Goal"]);
+});
+
+test("label chips choose several at once within a row, combine with AND across rows and with the project row, All clears the row, and the choice is kept", async () => {
+  const storage = new Map<string, string>();
+  const p = await page(storage, { tickets: LABELLED });
+  const rowChip = (row: number, name: string) => p.$("label-rows").children[row].children.find((c) => c.tag === "button" && (c.children[0]?.text() ?? c.textContent) === name)!;
+  rowChip(0, "Fleet").fire("click");
+  assert.deepEqual(p.shownKeys(), ["L-1", "L-3"]);
+  rowChip(0, "Ticket mode").fire("click");
+  assert.deepEqual(p.shownKeys(), ["L-1", "L-2", "L-3"], "a second chip in the row adds its tickets");
+  rowChip(1, "Bug").fire("click");
+  assert.deepEqual(p.shownKeys(), ["L-1"], "rows combine with AND");
+  rowChip(1, "All").fire("click");
+  p.chip("Beta").fire("click");
+  assert.deepEqual(p.shownKeys(), ["L-2"], "and with the project row");
+  p.chip("All projects").fire("click");
+  assert.equal(JSON.parse(storage.get("ticket-mode.labels")!).length, 2, "the Goal row's two choices are remembered");
+  const again = await page(storage, { tickets: LABELLED });
+  assert.deepEqual(again.shownKeys(), ["L-1", "L-2", "L-3"], "a new page starts from the remembered choice");
+  const clear = again.$("label-rows").children[0].children.find((c) => c.tag === "button" && (c.children[0]?.text() ?? c.textContent) === "All")!;
+  clear.fire("click");
+  assert.deepEqual(again.shownKeys(), ["L-1", "L-2", "L-3", "L-4"]);
+  assert.equal(storage.get("ticket-mode.labels"), "[]");
+});
+
+test("each ticket row shows its group labels as small tags, titled with their group, and not its labels in no group", async () => {
+  const p = await page(new Map(), { tickets: LABELLED });
+  const row = p.$("groups").all().find((n) => n.className.startsWith("row") && n.children[1].text() === "L-1")!;
+  const tags = row.all().filter((n) => n.className === "tag");
+  assert.deepEqual(tags.map((t) => [t.text(), t.title]), [["Fleet", "Goal"]]);
 });

@@ -33,6 +33,8 @@ const PAGE = join(HERE, "ui.html");
 const PAIR_PAGE = join(HERE, "pair.html");
 /** The page's logic, written in TypeScript so its tests run it, and sent to the browser with the types stripped. */
 const VIEW = join(HERE, "board-view.ts");
+/** The Pick view's label filters, sent the same way. Each module the page imports is one the browser can run as it is: it imports nothing. */
+const LABEL_FILTERS = join(HERE, "label-filters.ts");
 const COOKIE = "ticket_session";
 /** The most a pairing request may send. It is read before the request is known to be anyone's, so it is kept small. */
 const PAIR_BODY_BYTES = 1024;
@@ -54,6 +56,14 @@ export type UiDeps = Readonly<{
 export function boardViewScript(read: (path: string) => string = (path) => readFileSync(path, "utf8")): string {
   return stripTypeScriptTypes(read(VIEW));
 }
+
+/** `label-filters.ts` as the browser can run it, as `boardViewScript` sends `board-view.ts`. */
+export function labelFiltersScript(read: (path: string) => string = (path) => readFileSync(path, "utf8")): string {
+  return stripTypeScriptTypes(read(LABEL_FILTERS));
+}
+
+/** The page's modules, by the path it imports each from. */
+const SCRIPTS: Readonly<Record<string, () => string>> = { "/board-view.js": () => boardViewScript(), "/label-filters.js": () => labelFiltersScript() };
 
 /**
  * What the request is paired by: the board key in its `x-ticket-token` header, a paired browser's session in its cookie when it sends no
@@ -118,9 +128,10 @@ export function createUi(deps: UiDeps) {
       if (by !== "key") return sendJson(response, 403, { error: "a pairing code is made with the board key: run agent-org ticket:pair" });
       return sendJson(response, 200, { code: pairing.mint(), minutes: PAIR_MINUTES });
     }
-    if (request.method === "GET" && url.pathname === "/board-view.js") {
+    const script = request.method === "GET" && Object.hasOwn(SCRIPTS, url.pathname) ? SCRIPTS[url.pathname] : undefined;
+    if (script !== undefined) {
       response.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-store" });
-      return void response.end(boardViewScript());
+      return void response.end(script());
     }
     if (request.method === "GET" && url.pathname === "/") return sendHtml(response, PAGE);
     if (request.method === "GET" && url.pathname === "/api/connections") {

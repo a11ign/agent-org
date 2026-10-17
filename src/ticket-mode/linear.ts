@@ -11,7 +11,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { basename, extname, join } from "node:path";
 import type { KeySource, PickScope } from "./settings.ts";
-import type { Blocker, PullState, Ticket, TicketSource } from "./source.ts";
+import type { Blocker, PullState, Ticket, TicketLabel, TicketSource } from "./source.ts";
 
 export const LINEAR_API = "https://api.linear.app/graphql";
 /** Linear stores uploads here, and only a request carrying the key may read one. */
@@ -30,7 +30,12 @@ const ATTACHMENTS = "attachments(first: 50) { nodes { url title } }";
  * a duplicate does not count and an epic whose parts are all done reads as an ordinary ticket. Read with the list, in the same request.
  */
 const OPEN_CHILDREN = 'children(first: 50, filter: { state: { type: { nin: ["completed", "canceled", "duplicate"] } } }) { nodes { identifier } }';
-const ISSUE_FIELDS = `identifier title description url branchName priority state { name position } team { key } project { name } parent { identifier } ${OPEN_CHILDREN} ${ATTACHMENTS}`;
+/**
+ * A ticket's labels, each with the label group above it (Linear's parent label), so the Pick view can make a filter row of each group: Linear's
+ * first page of 50, which no ticket comes near. Read with the list, in the same request. Only a group's name is read, as only its name is shown.
+ */
+const LABELS = "labels(first: 50) { nodes { name parent { name } } }";
+const ISSUE_FIELDS = `identifier title description url branchName priority state { name position } team { key } project { name } parent { identifier } ${OPEN_CHILDREN} ${ATTACHMENTS} ${LABELS}`;
 /** A file name that is safe as it stands: no folder, and an extension. A plan's attachment title is one. */
 const FILE_NAME = /^[\w.-]+\.\w{1,8}$/;
 
@@ -57,6 +62,8 @@ type IssueNode = {
   state: { name: string; position: number }; team: { key: string }; project: { name: string } | null; parent: { identifier: string } | null;
   /** Absent from an answer to a query that did not ask for it: such a ticket is read as having none. */
   children?: { nodes: { identifier: string }[] };
+  /** Absent from an answer to a query that did not ask for them: such a ticket is read as having none. */
+  labels?: { nodes: { name: string; parent: { name: string } | null }[] };
 } & Attachments;
 
 type Attachments = { attachments?: { nodes: { url: string; title: string }[] } };
@@ -74,6 +81,7 @@ function toTicket(node: IssueNode): Ticket {
     parent: node.parent?.identifier ?? null,
     children: (node.children?.nodes ?? []).map(({ identifier }) => identifier),
     uploads: uploadsIn(node).map(({ title }) => title),
+    labels: (node.labels?.nodes ?? []).map(({ name, parent }): TicketLabel => Object.freeze({ name, group: parent?.name ?? null })),
   });
 }
 
@@ -129,7 +137,7 @@ const OPEN = 'state: { type: { nin: ["completed", "canceled", "duplicate"] } }';
  * The query the Pick view's list is read with, for the host file's `tickets.pick`. PURE.
  *
  * `"assigned"` is the query the board has always sent, kept as it was, character for character: a machine that names no `tickets.pick` asks
- * Linear exactly what it asked before the setting existed, but for the fields every list reads, which grew each ticket's open sub-issues (A11-76). A team or a project reads `issues` with that team's key or that project's name added
+ * Linear exactly what it asked before the setting existed, but for the fields every list reads, which grew each ticket's open sub-issues (A11-76) and then its labels with their groups. A team or a project reads `issues` with that team's key or that project's name added
  * to the same state filter, a page of the same size at a time. Both are passed as variables, never written into the query's text.
  */
 export function pickQuery(scope: PickScope): PickQuery {

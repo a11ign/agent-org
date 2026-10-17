@@ -5,6 +5,13 @@
 // operation or an asynchronous adapter is a ruling for `ceo` (its header). Ticket mode is not the gate. It needs two reads and a download, all
 // asynchronous over HTTP, so it states its own small contract here rather than stretching the port's. Linear (`linear.ts`) is the first source.
 
+/**
+ * A label on a ticket, and the GROUP it belongs to: the label above it, where the tracker nests labels, or `null` for a label that stands alone.
+ * Linear calls a group a parent label, and keeps its child labels exclusive, so a ticket has at most one label of each group; the board relies
+ * on nothing of that, and filters a ticket with two as having both.
+ */
+export type TicketLabel = Readonly<{ name: string; group: string | null }>;
+
 /** One ticket as the board shows it and a worker is briefed with it. */
 export type Ticket = Readonly<{
   /** The tracker's identifier, e.g. `NBF-1270`. */
@@ -36,6 +43,12 @@ export type Ticket = Readonly<{
    * ticket stored on the queue before they were read, and from a source that does not read them.
    */
   uploads?: readonly string[];
+  /**
+   * Its labels, each with its group, for the Pick view's label filters. Read in the same request as the ticket, never one request per ticket.
+   * Absent from a ticket stored on the queue before they were read, and from a source that does not read them, which leaves the Pick view with
+   * no label rows: a tracker without labels needs nothing here.
+   */
+  labels?: readonly TicketLabel[];
 }>;
 
 /** A pull request's state as the tracker last saw it. A draft, or one in review, is `open`. */

@@ -74,6 +74,22 @@ test("A11-76: each ticket carries its open sub-issues, read with the list in the
   assert.deepEqual((await linearSource({ key: "k", fetch: read.fetch }).read("A11-24"))?.children, ["A11-25"], "a ticket read by key carries them too");
 });
 
+test("each ticket carries its labels, each with its label group, read with the list in the same request; a label with no group has a null group", async () => {
+  const { fetch, requests } = linear([{ data: { viewer: { assignedIssues: { nodes: [
+    node("A11-40", { labels: { nodes: [{ name: "Fleet", parent: { name: "Goal" } }, { name: "Bug", parent: null }] } }),
+    node("A11-41", { labels: { nodes: [] } }),
+    node("A11-42"),
+  ], pageInfo: { hasNextPage: false, endCursor: null } } } } }]);
+  const [labelled, bare, unread] = await linearSource({ key: "k", fetch }).assigned();
+  assert.deepEqual(labelled.labels, [{ name: "Fleet", group: "Goal" }, { name: "Bug", group: null }], "a child label names its group; a label on its own names none");
+  assert.deepEqual(bare.labels, [], "a ticket with no labels has none");
+  assert.deepEqual(unread.labels, [], "an answer that holds no labels reads as none");
+  assert.equal(requests.length, 1, "read with the list, not one request per ticket");
+  assert.ok(JSON.parse(String(requests[0].init.body)).query.includes("labels(first: 50) { nodes { name parent { name } } }"), "each label's group is its parent label");
+  const read = linear([{ data: { issues: { nodes: [node("A11-40", { labels: { nodes: [{ name: "Ticket mode", parent: { name: "Goal" } }] } })] } } }]);
+  assert.deepEqual((await linearSource({ key: "k", fetch: read.fetch }).read("A11-40"))?.labels, [{ name: "Ticket mode", group: "Goal" }], "a ticket read by key carries them too");
+});
+
 test("read() finds a ticket by its team and number, returns null for a key Linear has no ticket for, and throws when Linear cannot be asked", async () => {
   const found = linear([{ data: { issues: { nodes: [node("NBF-1270")] } } }]);
   assert.equal((await linearSource({ key: "k", fetch: found.fetch }).read("NBF-1270"))?.title, "Title NBF-1270");
@@ -356,9 +372,14 @@ test("addBlockers() is refused when Linear answers success false, and when it ha
   await assert.rejects(linearSource({ key: "k", fetch: linear([blocked(), { data: { k0: { nodes: [] } } }]).fetch }).addBlockers!("NBF-4", ["NBF-404"]), /Linear has no ticket NBF-404/);
 });
 
-/** The fields every list reads, as the board has always read them, and each ticket's open sub-issues since A11-76. */
+/**
+ * The fields every list reads, as the board has always read them, each ticket's open sub-issues since A11-76, and its labels with their groups
+ * since the Pick view filters by label group. Each addition is a field of the same request, never a request of its own, and is changed here on
+ * purpose: this pin is what notices a field list that grew or shrank by accident.
+ */
 const FIELDS = "identifier title description url branchName priority state { name position } team { key } project { name } parent { identifier } "
-  + 'children(first: 50, filter: { state: { type: { nin: ["completed", "canceled", "duplicate"] } } }) { nodes { identifier } } attachments(first: 50) { nodes { url title } }';
+  + 'children(first: 50, filter: { state: { type: { nin: ["completed", "canceled", "duplicate"] } } }) { nodes { identifier } } attachments(first: 50) { nodes { url title } } '
+  + "labels(first: 50) { nodes { name parent { name } } }";
 
 test("A11-69: with no tickets.pick, the Pick view's list is asked for exactly as it was before the setting", async () => {
   const before = `query($after: String) { viewer { assignedIssues(first: 100, after: $after, filter: { state: { type: { nin: ["completed", "canceled", "duplicate"] } } }) {
