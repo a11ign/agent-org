@@ -369,3 +369,10 @@ test("Publish posts each ticked run once, and a run queued for another round whi
   const meanwhile = respond(publishing, "A", 40);
   assert.deepEqual(a(publishDone(meanwhile, ["https://slack/1"], 50)).published, { link: "https://slack/1", at: 50 });
 });
+
+test("a ready pull request run is not approved: approve changes nothing, since only a draft waits for an Approve", () => {
+  const pr = { repo: "nbl-ui-netbox", url: "https://github.com/x/nbl-ui-netbox/pull/1" };
+  const ready = endedWith({ kind: "ready-pr", prs: [pr] }, { pullStates: { [pr.url]: "open" } });
+  assert.equal(approve(ready, "A", 9), ready, "the same queue back");
+  assert.equal(ready.entries.find((e) => e.ticket.key === "A")?.outcome?.kind, "ready-pr");
+});

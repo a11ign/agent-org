@@ -61,9 +61,10 @@ import type { Ticket, TicketSource } from "./source.ts";
 import { unreachablePlugins } from "./plugins.ts";
 import { TICKET_ENV } from "./worktree-command.ts";
 import { HOST_FILE_ENV, plansInBatches, type TicketSettings } from "./settings.ts";
+import { REVIEWER_LOGIN, atomicReviewerPort, readReviewState, reviewVerdict, withoutReviewer, type ReviewerPort } from "./reviewer-port.ts";
 import {
   BRIEF_FILE, CONNECTORS_FILE, DENY_FILE, ORDER_FILE, OUTCOME_FILE, PLAN_DIR, PLANNING_DENY, PREVIOUS_OUTCOME_FILE, PUBLISH_FILE, PUBLISHED_FILE, QUESTION_FILE,
-  REVIEW_FILE, STOP_COUNT_FILE,
+  READY_FILE, REVIEW_FILE, STOP_COUNT_FILE,
   batchPlanBriefText, briefText, firstPrompt, planBriefText, publishBriefText, reviewBriefText, reviewPrompt, workerFlags, workerSettings,
   type BatchTicket, type HookCommand, type ParentTicket,
 } from "./worker-files.ts";
@@ -120,6 +121,8 @@ export type PoolDeps = Readonly<{
   wait?: (ms: number) => Promise<void>;
   /** `gh`, for the feedback on the pull requests of runs Ready to merge. */
   gh?: (args: string[]) => string;
+  /** The reviewer a machine with `tickets.reviewer: "atomic"` starts for each ready head; ignored on a machine that names none. */
+  reviewerPort?: ReviewerPort;
 }>;
 
 /** The pool holds the queue through these two, so the server stays its one writer. */
@@ -195,6 +198,9 @@ export function parseOutcome(text: string): Outcome {
     const value = JSON.parse(text) as Record<string, unknown>;
     if (value.kind === "draft-pr" && Array.isArray(value.prs)) {
       return { kind: "draft-pr", prs: value.prs.map((pr: Record<string, unknown>) => ({ repo: String(pr.repo ?? ""), url: String(pr.url ?? "") })) };
+    }
+    if (value.kind === "ready-pr" && Array.isArray(value.prs)) {
+      return { kind: "ready-pr", prs: value.prs.map((pr: Record<string, unknown>) => ({ repo: String(pr.repo ?? ""), url: String(pr.url ?? "") })) };
     }
     if (value.kind === "planned") return { kind: "planned" };
     // A review run's pull requests are the ones the person approved, which the pool holds: `settle` puts them in.
@@ -332,6 +338,11 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
   const attaching = new Set<string>();
   /** Whether this machine plans the tickets queued together in one run. */
   const batches = plansInBatches(settings.planner);
+  /** The reviewer a machine with `tickets.reviewer` starts for each ready head: the atomic one unless the caller injected another. */
+  const reviewer = settings.reviewer === null ? undefined : deps.reviewerPort ?? atomicReviewerPort({ session: settings.herdrSession, run: herdr, gh });
+  /** The `url@head` keys a reviewer was started for, and whose not-convinced verdict already asked the worker for a round. */
+  const reviewerStarted = new Set<string>();
+  const reviewerResumed = new Set<string>();
 
   /** A run is a planning run while its entry still needs its plan and this machine has a planner. */
   const isPlanning = (entry: Entry): boolean => entry.plan !== undefined && settings.planner !== null;
@@ -446,7 +457,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
       const worktreeCommand = `${hook.node} ${hook.bin} ticket:worktree`;
       writeFileSync(join(dir, BRIEF_FILE), briefText({ ticket, folder, ticketDir: dir, attachments, parent, blockers: entry.blockers,
         stackedOn: stackedOn(entry, store.get().entries), clones: settings.clones, worktreeCommand,
-        notes, connectors, planned: entry.planned === true }));
+        notes, connectors, planned: entry.planned === true, drafts: settings.drafts }));
     }
     writeRunFiles(entry, folder, dir);
     return { folder, dir, ...(resume ? { resume } : {}) };
@@ -478,6 +489,9 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
   function writeRunFiles(entry: Entry, folder: string, dir: string): void {
     writeFileSync(join(dir, DENY_FILE), `${JSON.stringify(isPlanning(entry) ? [...settings.deny, ...PLANNING_DENY] : settings.deny)}\n`);
     writeFileSync(join(dir, CONNECTORS_FILE), `${JSON.stringify(settings.connectors)}\n`);
+    // A fresh ticket run on a machine with `tickets.drafts: false` may open its pull request ready; no other run, and no machine that keeps drafts, may.
+    if (!settings.drafts && entry.review === undefined && !isPlanning(entry)) writeFileSync(join(dir, READY_FILE), "\n");
+    else rmSync(join(dir, READY_FILE), { force: true });
     mkdirSync(join(folder, ".claude"), { recursive: true });
     writeFileSync(join(folder, SETTINGS_FILE),
       `${JSON.stringify(workerSettings({ model: runChoice(entry).model, ticketDir: dir, readDirs: Object.values(settings.clones), hook, plugins: settings.plugins }), null, 2)}\n`);
@@ -1138,12 +1152,45 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
         log(`${entry.ticket.key}: the feedback on ${unread.join(", ")} could not be read, so it was not checked; the next watch asks again`);
         continue;
       }
-      const trigger = feedbackSince(reads as { url: string; read: PullFeedback }[], entry.finishedAt ?? 0);
-      if (trigger === null) continue;
-      update((queue) => feedbackRound(queue, entry.ticket.key, trigger, now()));
+      // With a reviewer on, its own reviews are not the feedback a worker answers: its verdict is read by `reviewerLines`, which asks for a round
+      // only on requested changes.
+      const own = reviewer === undefined ? reads as { url: string; read: PullFeedback }[]
+        : reads.map(({ url, read }) => ({ url, read: withoutReviewer(read as PullFeedback) }));
+      const lines = [feedbackSince(own, entry.finishedAt ?? 0), ...reviewerLines(openPulls(entry).map((pr) => pr.url))]
+        .filter((line): line is string => line !== null);
+      if (lines.length === 0) continue;
+      update((queue) => feedbackRound(queue, entry.ticket.key, lines.join("\n"), now()));
       queued = true;
     }
     if (queued) void tick();
+  }
+
+  /**
+   * The reviewer for each open pull request of a watched run, when the machine starts one: started once per head (`reviewerStarted`, and the port
+   * says whether one is live for that head), and the first `not-convinced` verdict on each head asks the worker to answer it (`reviewerResumed`).
+   * Returns the lines a round's brief says it answers, and none for `convinced` or a head with no verdict yet.
+   */
+  function reviewerLines(urls: readonly string[]): string[] {
+    if (reviewer === undefined) return [];
+    const lines: string[] = [];
+    for (const url of urls) {
+      const state = readReviewState(url, gh);
+      if (state === null) {
+        log(`${url}: its reviewer could not be checked, the next watch asks again`);
+        continue;
+      }
+      const key = `${url}@${state.head}`;
+      if (!reviewerStarted.has(key) && !reviewer.live({ pr: url, head: state.head })) {
+        const started = reviewer.start({ pr: url, head: state.head });
+        if ("refusal" in started) log(started.refusal);
+        else reviewerStarted.add(key);
+      }
+      if (reviewVerdict(state.reviews, state.head) === "not-convinced" && !reviewerResumed.has(key)) {
+        reviewerResumed.add(key);
+        lines.push(`${REVIEWER_LOGIN} requested changes on ${url} at ${state.head}: fix what its review found, then push.`);
+      }
+    }
+    return lines;
   }
 
   return { tick, stop, close, reconcile, ensureSession, refreshTracker, watchFeedback };

@@ -62,7 +62,17 @@ export type TicketSettings = Readonly<{
   connectors: readonly string[];
   /** How a person's chosen pull requests are published once they are ready to merge, or null when this machine publishes none. */
   publish: Publisher | null;
+  /**
+   * Whether a worker opens its pull request as a draft, for a person to mark ready on the board. `false` opens it ready: the run goes straight to
+   * review, with no Approve step. True by default.
+   */
+  drafts: boolean;
+  /** The reviewer this machine starts for each ready pull request: `"atomic"` for the gate's codex reviewer, or null for none. */
+  reviewer: Reviewer | null;
 }>;
+
+/** The reviewers a machine may start for a ready pull request. */
+export type Reviewer = "atomic";
 
 /** What a publish run is told, on what, and which connectors it alone may call. */
 export type Publisher = Readonly<{
@@ -223,6 +233,20 @@ function denyRules(value: unknown): readonly DenyRule[] {
  * The settings, from the host file's parsed JSON. PURE: the caller reads the file.
  * @param home the user's home directory, for the default state directory
  */
+/** `tickets.drafts`: true, or false for a worker to open its pull request ready. Absent is true. Any other value is refused by name. */
+function draftsOf(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (typeof value !== "boolean") throw new TicketSettingsRefusal("tickets.drafts", `must be true or false, not ${JSON.stringify(value)}`);
+  return value;
+}
+
+/** `tickets.reviewer`: `"atomic"`, or absent for no reviewer. Any other value is refused by name. */
+function reviewerOf(value: unknown): Reviewer | null {
+  if (value === undefined) return null;
+  if (value !== "atomic") throw new TicketSettingsRefusal("tickets.reviewer", `must be "atomic" or absent, not ${JSON.stringify(value)}`);
+  return value;
+}
+
 export function parseTicketSettings(host: unknown, home: string = homedir()): TicketSettings {
   if (!isObject(host)) throw new TicketSettingsRefusal("(root)", "must be a JSON object");
   const clones = host.clones;
@@ -258,6 +282,8 @@ export function parseTicketSettings(host: unknown, home: string = homedir()): Ti
     workingState: stateName(tickets.workingState, "tickets.workingState"),
     connectors: connectorPatterns(tickets.connectors),
     publish: publisherOf(tickets.publish),
+    drafts: draftsOf(tickets.drafts),
+    reviewer: reviewerOf(tickets.reviewer),
   });
 }
 

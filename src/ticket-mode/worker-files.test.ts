@@ -230,3 +230,19 @@ test("a round a person asked for with Respond to review says so, answers the cur
   assert.match(brief, /do not run `gh pr ready`/);
   assert.equal(brief.includes("the board started this round"), false);
 });
+
+test("a drafts-on brief opens a draft: step 6 is the draft pull request word for word, and its outcome example is draft-pr", () => {
+  const brief = briefText({ ticket, folder: "/work/.tickets/NBF-1270", ticketDir: "/state/tickets/NBF-1270", attachments: [], clones, worktreeCommand: "/node /tool/src/bin.ts ticket:worktree" });
+  assert.ok(brief.includes(`6. Push the branch and open ONE DRAFT pull request per repository you changed: \`gh pr create --draft\`, titled \`<type>(<scope>): <what changed>\`. The body links ${ticket.url}, says what changed and how you verified it, and, when the change is visible, shows it: take screenshots with what this machine provides (see "On this machine" when there is such a section), or else end the body with "Screenshot pending". A pull request that needs another repository's unmerged one says so in its body.`));
+  assert.equal(brief, briefText({ ticket, folder: "/work/.tickets/NBF-1270", ticketDir: "/state/tickets/NBF-1270", attachments: [], clones, worktreeCommand: "/node /tool/src/bin.ts ticket:worktree", drafts: true }), "an absent flag is the same as true");
+  assert.ok(brief.includes(`{ "kind": "draft-pr", "prs": [{ "repo": "<repo>", "url": "<pull request url>" }] }`));
+  assert.equal(brief.includes("ready-pr"), false);
+});
+
+test("a drafts-off brief opens a ready pull request: its command has no --draft, and its outcome example is ready-pr", () => {
+  const brief = briefText({ ticket, folder: "/work/.tickets/NBF-1270", ticketDir: "/state/tickets/NBF-1270", attachments: [], clones, worktreeCommand: "/node /tool/src/bin.ts ticket:worktree", drafts: false });
+  assert.ok(brief.includes("6. Push the branch and open ONE READY pull request per repository you changed: `gh pr create`, titled `<type>(<scope>): <what changed>`."));
+  assert.equal(brief.includes("--draft"), false, "no draft anywhere in the brief");
+  assert.ok(brief.includes(`{ "kind": "ready-pr", "prs": [{ "repo": "<repo>", "url": "<pull request url>" }] }`));
+  assert.equal(brief.includes("draft-pr"), false);
+});
