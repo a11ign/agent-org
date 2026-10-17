@@ -1,28 +1,36 @@
-// no-token: gh -- the tunnel is a fixed link; the one "remote board" listens on a Unix socket in a temporary directory for a test's length
+// no-token: gh -- each connection is a fixed target; the one "instance" listens on a Unix socket in a temporary directory for a test's length
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type IncomingHttpHeaders } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { Unreachable, type Link, type Remotes } from "./remote.ts";
-import { forwardHeaders, passedOn, proxy, type Forward } from "./remote-proxy.ts";
+import { createServer as createTcpServer } from "node:net";
+import type { Connection, Connections, Target } from "./connections.ts";
+import { localTerminal, Unreachable } from "./remote.ts";
+import { forwardHeaders, httpForward, passedOn, proxy, type Forward } from "./remote-proxy.ts";
 
 const KEY = "b".repeat(48);
 const TERMINAL = "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal";
 
-/** Remotes that always reach `link`, or always fail with `reason`, counting each `forget`. */
-function fixed(link: Link | string) {
+const PERSONAL: Connection = { name: "personal", kind: "ssh", ssh: "agents", agentOrg: "agent-org" };
+
+/** The target of an ssh connection whose tunnel is `socket`, and whose terminal is forwarded to `terminalLocal`. */
+const overSsh = (socket: string, terminalLocal: number | null = null): Target =>
+  ({ key: KEY, host: "127.0.0.1:4747", address: { socket }, terminal: (template) => localTerminal(template, terminalLocal) });
+
+/** Connections whose one, `connection`, always reaches `target`, or always fails with `reason`, counting each `forget`. */
+function fixed(target: Target | string, connection: Connection = PERSONAL) {
   const counts = { forgot: 0 };
-  const remotes = {
-    has: () => true,
-    reach: async () => { if (typeof link === "string") throw new Unreachable(link); return link; },
+  const connections = {
+    get: (name: string) => (name === connection.name ? connection : undefined),
+    reach: async () => { if (typeof target === "string") throw new Unreachable(target); return target; },
     forget: () => { counts.forgot += 1; },
     close: () => {},
-  } as unknown as Remotes;
-  return { remotes, counts };
+  } as Connections;
+  return { remotes: connections, counts };
 }
 
-test("the remote board is sent its own host, the key and the JSON body over the tunnel's socket, and never the browser's cookie or origin", async () => {
+test("the instance is sent its own host, the key and the JSON body over the tunnel's socket, and never the browser's cookie or origin", async () => {
   const seen: { method?: string; url?: string; headers: IncomingHttpHeaders; body: string }[] = [];
   const server = createServer((req, res) => {
     let body = "";
@@ -38,7 +46,7 @@ test("the remote board is sent its own host, the key and the JSON body over the 
   const socket = join(dir, "board.sock");
   await new Promise<void>((done, fail) => { server.on("error", fail); server.listen(socket, done); });
   try {
-    const { remotes } = fixed({ port: 4747, key: KEY, terminal: TERMINAL, socket, terminalLocal: 50002 });
+    const { remotes } = fixed(overSsh(socket, 50002));
     const posted = await proxy(remotes, "personal", { method: "POST", path: "/api/paused", body: JSON.stringify({ paused: false }) });
     assert.deepEqual(posted, [200, { entries: [], max: 2, paused: false }]);
     assert.equal(seen[0].headers.host, "127.0.0.1:4747", "the remote's DNS-rebinding guard sees its own host");
@@ -56,7 +64,7 @@ test("the remote board is sent its own host, the key and the JSON body over the 
     await new Promise<void>((done) => server.close(() => done()));
     rmSync(dir, { recursive: true, force: true });
   }
-  assert.deepEqual(Object.keys(forwardHeaders({ port: 1, key: KEY }, null)).sort(), ["accept", "host", "x-ticket-token"], "nothing else is sent");
+  assert.deepEqual(Object.keys(forwardHeaders({ host: "127.0.0.1:1", key: KEY }, null)).sort(), ["accept", "host", "x-ticket-token"], "nothing else is sent");
 });
 
 test("only the routes the page calls are passed on, by the method it calls them with, so a pairing code there is never asked for", async () => {
@@ -70,24 +78,58 @@ test("only the routes the page calls are passed on, by the method it calls them 
   }
   let sent = 0;
   const counting: Forward = async () => { sent += 1; return { status: 200, body: "{}" }; };
-  const { remotes } = fixed({ port: 4747, key: KEY, terminal: null, socket: "/s", terminalLocal: null });
+  const { remotes } = fixed(overSsh("/s"));
   assert.deepEqual(await proxy(remotes, "personal", { method: "POST", path: "/api/pair-code?x=1", body: null }, counting),
-    [403, { error: "POST /api/pair-code is not passed on to another machine's board" }]);
+    [403, { error: "POST /api/pair-code is not passed on to an instance" }]);
+  assert.deepEqual(await proxy(remotes, "gone", { method: "GET", path: "/api/queue", body: null }, counting), [404, { error: "no connection gone" }]);
   assert.equal(sent, 0);
 });
 
-test("an unreachable remote, a board that does not answer and a refused key are each answered in words, and the key is read again after a refusal", async () => {
+test("an unreachable connection, an instance that does not answer and a refused key are each answered in words, and the key is read again after a refusal", async () => {
   const failing = fixed("agents: Permission denied (publickey).");
   assert.deepEqual(await proxy(failing.remotes, "personal", { method: "GET", path: "/api/queue", body: null }), [502, { error: "cannot reach personal over SSH: agents: Permission denied (publickey)." }]);
-  const up = fixed({ port: 4747, key: KEY, terminal: null, socket: "/s", terminalLocal: null });
+  const up = fixed(overSsh("/s"));
   const silent: Forward = async () => { throw new Error("socket hang up"); };
   assert.deepEqual(await proxy(up.remotes, "personal", { method: "GET", path: "/api/queue", body: null }, silent),
-    [502, { error: "cannot reach personal's board through SSH: socket hang up. Is agent-org ticket:serve running there?" }]);
+    [502, { error: "cannot reach personal's instance over SSH: socket hang up. Is agent-org ticket:serve running there?" }]);
   const refused: Forward = async () => ({ status: 401, body: "{\"error\":\"this browser is not paired\"}" });
   const [status, value] = await proxy(up.remotes, "personal", { method: "GET", path: "/api/queue", body: null }, refused);
   assert.equal(status, 502);
-  assert.match((value as { error: string }).error, /^cannot reach personal over SSH: its board refused the key/);
+  assert.match((value as { error: string }).error, /^cannot reach personal over SSH: its instance refused the key/);
   assert.equal(up.counts.forgot, 1);
   const garbled: Forward = async () => ({ status: 200, body: "<html>" });
-  assert.deepEqual(await proxy(up.remotes, "personal", { method: "GET", path: "/api/queue", body: null }, garbled), [502, { error: "personal's board answered with something that is not JSON" }]);
+  assert.deepEqual(await proxy(up.remotes, "personal", { method: "GET", path: "/api/queue", body: null }, garbled), [502, { error: "personal's instance answered with something that is not JSON" }]);
+});
+
+test("an instance at an address is sent the address's own host and the key, and a lab that cannot be reached names its address", async () => {
+  const seen: IncomingHttpHeaders[] = [];
+  const server = createServer((req, res) => { seen.push(req.headers); res.writeHead(200, { "Content-Type": "application/json" }); res.end("{\"entries\":[]}"); });
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  const { port } = server.address() as { port: number };
+  try {
+    const local: Connection = { name: "work", kind: "local" };
+    const target: Target = { key: KEY, host: `127.0.0.1:${port}`, address: { origin: `http://127.0.0.1:${port}` }, terminal: (template) => template };
+    assert.deepEqual(await proxy(fixed(target, local).remotes, "work", { method: "GET", path: "/api/queue", body: null }), [200, { entries: [] }]);
+    assert.equal(seen[0].host, `127.0.0.1:${port}`);
+    assert.equal(seen[0]["x-ticket-token"], KEY);
+  } finally {
+    await new Promise<void>((done) => server.close(() => done()));
+  }
+  const lab: Connection = { name: "lab", kind: "https", origin: "https://agents.example.ts.net", keyFile: "/k" };
+  assert.deepEqual(await proxy(fixed("/k can be read by other users (mode 644): run chmod 600 on it", lab).remotes, "lab", { method: "GET", path: "/api/queue", body: null }),
+    [502, { error: "cannot reach lab at https://agents.example.ts.net: /k can be read by other users (mode 644): run chmod 600 on it" }]);
+});
+
+test("an https instance is reached over TLS: a server that does not speak it fails the call rather than receive the key in the clear", async () => {
+  const received: Buffer[] = [];
+  const plain = createTcpServer((socket) => { socket.on("data", (chunk: Buffer) => { received.push(chunk); socket.destroy(); }); });
+  await new Promise<void>((done) => plain.listen(0, "127.0.0.1", done));
+  const { port } = plain.address() as { port: number };
+  try {
+    const target: Target = { key: KEY, host: `127.0.0.1:${port}`, address: { origin: `https://127.0.0.1:${port}` }, terminal: () => null };
+    await assert.rejects(httpForward(target, { method: "GET", path: "/api/queue", body: null }));
+    assert.equal(Buffer.concat(received).toString("latin1").includes(KEY), false, "the key was never sent before the TLS handshake");
+  } finally {
+    await new Promise<void>((done) => plain.close(() => done()));
+  }
 });

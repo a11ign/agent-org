@@ -1,11 +1,11 @@
 // @ts-check
-// module: the SSH tunnel to another machine's board -- read its key once per connection, and hold the connection open
+// module: the SSH tunnel to another machine's instance -- read its key once per connection, and hold the connection open
 //
-// THIS BOARD OPENS THE CONNECTION ITSELF. For a remote profile it runs `ssh <target> agent-org ticket:remote-info`, which prints the remote
-// board's port, key and terminal address, then `ssh -N` forwarding a Unix socket here to that board's port, and a free port on this machine's
+// THE PAGE'S SERVICE OPENS THE CONNECTION ITSELF. For an ssh connection it runs `ssh <target> agent-org ticket:remote-info`, which prints the
+// remote instance's port, key and terminal address, then `ssh -N` forwarding a Unix socket here to that instance's port, and a free port on this machine's
 // 127.0.0.1 to its terminal service when it serves one. Both run with BatchMode and no TTY, so a prompt for a password fails rather than
 // hangs, and with no connection sharing, agent or X11 forwarding, so the person's ssh config cannot keep a forward alive past `stop`. A tunnel
-// that drops is opened again, slower each time it fails, until the board closes. `remote-proxy.ts` passes the page's calls through it.
+// that drops is opened again, slower each time it fails, until the service closes. `remote-proxy.ts` passes the page's calls through it.
 //
 // THE BOARD'S FORWARD IS A SOCKET IN A DIRECTORY ONLY THIS USER CAN ENTER, NOT A PORT. A port picked free and then bound by ssh seconds later
 // can be taken first by another process, which would then be sent the key. The terminal's forward is a port, because the browser opens it.
@@ -19,7 +19,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { RemoteProfile } from "./profiles.ts";
+import type { SshConnection } from "./connections.ts";
 
 /** How a process ended: its exit code, null when a signal ended it, and the end of what it wrote to stderr. */
 export type Exit = Readonly<{ code: number | null; stderr: string }>;
@@ -38,10 +38,10 @@ export type Runner = Readonly<{
   listening(path: string): Promise<boolean>;
 }>;
 
-/** What `ticket:remote-info` prints: the remote board's port, its key, and its terminal address template or null. */
+/** What `ticket:remote-info` prints: the remote instance's port, its key, and its terminal address template or null. */
 export type RemoteInfo = Readonly<{ port: number; key: string; terminal: string | null }>;
 
-/** An open tunnel to a remote board: what it answers as, the socket here that reaches it, and the port here that reaches its terminal. */
+/** An open tunnel to a remote instance: what it answers as, the socket here that reaches it, and the port here that reaches its terminal. */
 export type Link = RemoteInfo & Readonly<{ socket: string; terminalLocal: number | null }>;
 
 /** A remote that cannot be reached now, and why, in words a person can act on. */
@@ -71,15 +71,15 @@ export function redact(text: string): string {
   return line.replace(/[0-9a-fA-F]{32,}|(?=[A-Za-z_-]*[0-9])[0-9A-Za-z_-]{32,}/g, "[redacted]").slice(0, REASON_CHARS);
 }
 
-/** The argv that reads the remote board's port, key and terminal. The key comes back on stdout, never goes out on argv. */
-export function infoArgv(profile: RemoteProfile): string[] {
-  return ["ssh", ...INFO_OPTIONS, "--", profile.ssh, `${profile.agentOrg} ticket:remote-info`];
+/** The argv that reads the remote instance's port, key and terminal. The key comes back on stdout, never goes out on argv. */
+export function infoArgv(connection: SshConnection): string[] {
+  return ["ssh", ...INFO_OPTIONS, "--", connection.ssh, `${connection.agentOrg} ticket:remote-info`];
 }
 
-/** The argv of the tunnel: `socket` here to the remote board, and `terminal`'s local port to its terminal service when it has one. */
-export function tunnelArgv(profile: RemoteProfile, socket: string, remote: number, terminal: Readonly<{ local: number; remote: number }> | null): string[] {
+/** The argv of the tunnel: `socket` here to the remote instance, and `terminal`'s local port to its terminal service when it has one. */
+export function tunnelArgv(connection: SshConnection, socket: string, remote: number, terminal: Readonly<{ local: number; remote: number }> | null): string[] {
   const forwards = [`${socket}:127.0.0.1:${remote}`, ...(terminal === null ? [] : [`127.0.0.1:${terminal.local}:127.0.0.1:${terminal.remote}`])];
-  return ["ssh", ...TUNNEL_OPTIONS, ...forwards.flatMap((forward) => ["-L", forward]), "--", profile.ssh];
+  return ["ssh", ...TUNNEL_OPTIONS, ...forwards.flatMap((forward) => ["-L", forward]), "--", connection.ssh];
 }
 
 /**
@@ -102,7 +102,7 @@ export function parseRemoteInfo(stdout: string): RemoteInfo {
 /** Why reading the remote's info failed, from how `ssh` ended. */
 function infoFailure(exit: Exit): string {
   if (exit.code === null) return "ssh did not answer in time";
-  if (exit.code === 127) return "agent-org is not on the PATH of a non-interactive shell there: set agentOrg in the profile to its full path";
+  if (exit.code === 127) return "agent-org is not on the PATH of a non-interactive shell there: set agentOrg in the connection to its full path";
   const said = redact(exit.stderr);
   return said === "" ? `ssh exited ${exit.code}` : said;
 }
@@ -142,27 +142,27 @@ type State =
   | { kind: "up"; link: Link; tunnel: Tunnel }
   | { kind: "down"; reason: string; cancel: () => void };
 
-/** The tunnels to `profiles`, each opened the first time it is reached and held open until `close`. */
-export function createRemotes(profiles: readonly RemoteProfile[], options: Options = {}) {
+/** The tunnels to `connections`, each opened the first time it is reached and held open until `close`. */
+export function createRemotes(connections: readonly SshConnection[], options: Options = {}) {
   const runner = options.runner ?? processRunner();
   const log = options.log ?? ((line: string) => process.stderr.write(`${line}\n`));
   const schedule = options.schedule ?? ((fn: () => void, ms: number) => { const timer = setTimeout(fn, ms); timer.unref(); return () => clearTimeout(timer); });
   const upMs = options.upMs ?? UP_MS;
-  const byName = new Map(profiles.map((profile) => [profile.name, profile]));
-  const states = new Map<string, State>(profiles.map((profile) => [profile.name, { kind: "idle" }]));
+  const byName = new Map(connections.map((connection) => [connection.name, connection]));
+  const states = new Map<string, State>(connections.map((connection) => [connection.name, { kind: "idle" }]));
   const failures = new Map<string, number>();
   /** Every tunnel started and not yet ended, opening or open, so `close` stops one still opening too. */
   const live = new Set<Tunnel>();
   let closed = false;
 
-  async function open(profile: RemoteProfile): Promise<{ link: Link; tunnel: Tunnel }> {
-    const read = await runner.run(infoArgv(profile), INFO_MS);
+  async function open(connection: SshConnection): Promise<{ link: Link; tunnel: Tunnel }> {
+    const read = await runner.run(infoArgv(connection), INFO_MS);
     if (read.code !== 0) throw new Unreachable(infoFailure(read));
     const info = parseRemoteInfo(read.stdout);
     const remoteTerminal = terminalPort(info.terminal);
     const terminalLocal = remoteTerminal === null ? null : await runner.freePort();
     const socket = runner.privateSocket();
-    const tunnel = runner.start(tunnelArgv(profile, socket.path, info.port, remoteTerminal === null || terminalLocal === null ? null : { local: terminalLocal, remote: remoteTerminal }));
+    const tunnel = runner.start(tunnelArgv(connection, socket.path, info.port, remoteTerminal === null || terminalLocal === null ? null : { local: terminalLocal, remote: remoteTerminal }));
     live.add(tunnel);
     const ended: { exit: Exit | null } = { exit: null };
     void tunnel.exited.then((exit) => {
@@ -183,53 +183,53 @@ export function createRemotes(profiles: readonly RemoteProfile[], options: Optio
     }
   }
 
-  /** Mark `profile` down for `reason`, and try again later, later each time it fails in a row. The log says so once per run of failures. */
-  function down(profile: RemoteProfile, reason: string): void {
-    const count = (failures.get(profile.name) ?? 0) + 1;
-    failures.set(profile.name, count);
+  /** Mark `connection` down for `reason`, and try again later, later each time it fails in a row. The log says so once per run of failures. */
+  function down(connection: SshConnection, reason: string): void {
+    const count = (failures.get(connection.name) ?? 0) + 1;
+    failures.set(connection.name, count);
     const delay = Math.min(LAST_RETRY_MS, FIRST_RETRY_MS * 2 ** (count - 1));
-    if (count === 1) log(`ticket:serve: cannot reach ${profile.name} over SSH: ${reason}. Trying again, up to once a minute`);
-    const cancel = schedule(() => { if (!closed && states.get(profile.name)?.kind === "down") void connect(profile).catch(() => {}); }, delay);
-    states.set(profile.name, { kind: "down", reason, cancel });
+    if (count === 1) log(`ticket:ui: cannot reach ${connection.name} over SSH: ${reason}. Trying again, up to once a minute`);
+    const cancel = schedule(() => { if (!closed && states.get(connection.name)?.kind === "down") void connect(connection).catch(() => {}); }, delay);
+    states.set(connection.name, { kind: "down", reason, cancel });
   }
 
-  function connect(profile: RemoteProfile): Promise<Link> {
-    const pending = open(profile).then(({ link, tunnel }) => {
+  function connect(connection: SshConnection): Promise<Link> {
+    const pending = open(connection).then(({ link, tunnel }) => {
       if (closed) {
         tunnel.stop();
-        throw new Unreachable("the board is closing");
+        throw new Unreachable("the service is closing");
       }
-      failures.delete(profile.name);
-      states.set(profile.name, { kind: "up", link, tunnel });
-      log(`ticket:serve: ${profile.name} is reached over SSH`);
+      failures.delete(connection.name);
+      states.set(connection.name, { kind: "up", link, tunnel });
+      log(`ticket:ui: ${connection.name} is reached over SSH`);
       void tunnel.exited.then((exit) => {
-        const now = states.get(profile.name);
+        const now = states.get(connection.name);
         if (closed || now?.kind !== "up" || now.link !== link) return;
-        down(profile, `the tunnel dropped: ${redact(exit.stderr) || `ssh exited ${exit.code}`}`);
+        down(connection, `the tunnel dropped: ${redact(exit.stderr) || `ssh exited ${exit.code}`}`);
       });
       return link;
     }, (err: unknown) => {
       const reason = err instanceof Unreachable ? err.message : redact(String((err as Error)?.message ?? err));
-      if (!closed) down(profile, reason);
+      if (!closed) down(connection, reason);
       throw new Unreachable(reason);
     });
-    states.set(profile.name, { kind: "connecting", pending });
+    states.set(connection.name, { kind: "connecting", pending });
     return pending;
   }
 
   return {
-    /** Whether `name` is a remote profile. */
+    /** Whether `name` is a remote connection. */
     has: (name: string): boolean => byName.has(name),
     /** The open tunnel to `name`, opened now when it has none. THROWS `Unreachable` with the reason when it cannot be reached. */
     async reach(name: string): Promise<Link> {
-      const profile = byName.get(name);
-      if (profile === undefined) throw new Unreachable(`no remote profile ${name}`);
-      if (closed) throw new Unreachable("the board is closing");
+      const connection = byName.get(name);
+      if (connection === undefined) throw new Unreachable(`no ssh connection ${name}`);
+      if (closed) throw new Unreachable("the service is closing");
       const state = states.get(name)!;
       if (state.kind === "up") return state.link;
       if (state.kind === "connecting") return state.pending;
       if (state.kind === "down") throw new Unreachable(state.reason);
-      return connect(profile);
+      return connect(connection);
     },
     /** Close `name`'s tunnel, so the next request reads its key again: the remote refused the one held. */
     forget(name: string): void {

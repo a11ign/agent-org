@@ -10,6 +10,7 @@ test("only `clones` is required, every repository in it is offered, and every ot
   assert.deepEqual(Object.keys(settings.clones), ["nbl-ui-netbox", "nbl-ui-platform", "platform-monorepo"]);
   assert.equal(settings.max, 3);
   assert.equal(settings.port, 4747);
+  assert.equal(settings.uiPort, 4748);
   assert.equal(settings.herdrSession, "tickets", "never the org's own session");
   assert.equal(settings.stateDir, "/home/me/.local/state/agent-org");
   assert.equal(settings.worktreeRoot, "/home/me/.local/state/agent-org/tickets/worktrees");
@@ -18,7 +19,12 @@ test("only `clones` is required, every repository in it is offered, and every ot
 
 test("the `tickets` block and `stateDir` override the defaults", () => {
   const settings = parseTicketSettings({ clones, stateDir: "/state", tickets: { max: 5, port: 5000, herdrSession: "nbl", worktreeRoot: "/wt", linearKey: { path: "/keys/linear" } } });
-  assert.deepEqual({ ...settings, clones: undefined }, { clones: undefined, max: 5, port: 5000, herdrSession: "nbl", worktreeRoot: "/wt", stateDir: "/state", linearKey: { path: "/keys/linear" }, brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, workingState: null, connectors: [], publish: null });
+  assert.deepEqual({ ...settings, clones: undefined }, { clones: undefined, max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", worktreeRoot: "/wt", stateDir: "/state", linearKey: { path: "/keys/linear" }, brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, workingState: null, connectors: [], publish: null });
+});
+
+test("the page's port is its own: it can be moved, and is refused when it is the instance's", () => {
+  assert.equal(parseTicketSettings({ clones, tickets: { uiPort: 5001 } }).uiPort, 5001);
+  assert.throws(() => parseTicketSettings({ clones, tickets: { port: 5001, uiPort: 5001 } }), /tickets\.uiPort` in the host file must differ from tickets\.port, which is 5001 too/);
 });
 
 test("a machine can add notes to every brief and refuse commands of its own", () => {

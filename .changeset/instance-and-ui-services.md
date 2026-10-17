@@ -1,0 +1,5 @@
+---
+"agent-org": minor
+---
+
+Ticket mode is now two services. `agent-org ticket:serve` is the instance: the queue, workers, herdr, the tracker and the `/api/...` routes on 127.0.0.1, answering only to its key, with no page and no pairing. The new `agent-org ticket:ui` serves the page on its own port, `tickets.uiPort` (4748 by default), pairs browsers, and passes a paired browser's `/c/<connection>/api/...` calls to the chosen instance with that instance's key and its own `Host`. The instances it shows come from `~/.config/agent-org/connections.json`: `{ "local": true }` for this machine's, `{ "ssh": "<target>" }` over the existing SSH tunnel, and `{ "https": "<address>", "keyFile": "<path>" }` for one exposed behind TLS, where plain http to another host is refused and the key file must be mode 600. With no file the page shows this machine's instance. A `profiles.json` is read as the connections file, with a log line, until the next major version. `ticket:pair` now asks `ticket:ui` for its code. Open the board at the page's port after upgrading: the instance's port no longer serves it.

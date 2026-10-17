@@ -508,16 +508,16 @@ export function runChoiceLabel(entry: ViewEntry): string {
 /** `url` when it is an http or https address, and "" otherwise, so a link a remote board sends can never run script in this page. */
 export const safeHref = (url: unknown): string => (typeof url === "string" && /^https?:\/\//i.test(url) ? url : "");
 
-/** A board the header's switcher offers: its profile's name, and whether it is this machine's own. */
-export type ViewProfile = Readonly<{ name: string; local: boolean }>;
+/** An instance the header's switcher offers: its connection's name, and how it is reached. */
+export type ViewConnection = Readonly<{ name: string; kind: "local" | "ssh" | "https" }>;
 
-/** The profile to show: the one this browser remembers while the board still lists it, this machine's own otherwise, and null with no profiles. */
-export function chosenProfile(profiles: readonly ViewProfile[], remembered: string | null): ViewProfile | null {
-  return profiles.find((profile) => profile.name === remembered) ?? profiles.find((profile) => profile.local) ?? null;
+/** The connection to show: the one this browser remembers while it is still listed, this machine's otherwise, then the first, and null with none. */
+export function chosenConnection(connections: readonly ViewConnection[], remembered: string | null): ViewConnection | null {
+  return connections.find((c) => c.name === remembered) ?? connections.find((c) => c.kind === "local") ?? connections[0] ?? null;
 }
 
-/** Where a profile's API is: this board's own at `/api`, and another machine's under `/p/<profile>`, which this board passes on over SSH. */
-export const apiBase = (profile: ViewProfile | null): string => (profile === null || profile.local ? "" : `/p/${encodeURIComponent(profile.name)}`);
+/** Where a connection's API is: under `/c/<connection>`, which the page's service passes on to that instance. */
+export const apiBase = (connection: ViewConnection | null): string => (connection === null ? "" : `/c/${encodeURIComponent(connection.name)}`);
 
-/** What the switcher calls a profile. */
-export const profileLabel = (profile: ViewProfile): string => (profile.local ? `${profile.name} (this machine)` : profile.name);
+/** What the switcher calls a connection. */
+export const connectionLabel = (connection: ViewConnection): string => (connection.kind === "local" ? `${connection.name} (this machine)` : connection.name);

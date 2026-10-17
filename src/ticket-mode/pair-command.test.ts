@@ -7,11 +7,11 @@ import { pairingCode } from "./pair-command.ts";
 import { parseTicketSettings } from "./settings.ts";
 
 function machine() {
-  const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/r/netbox" }, stateDir: tmpDir("ticket-pair-"), tickets: { port: 4848 } });
+  const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/r/netbox" }, stateDir: tmpDir("ticket-pair-"), tickets: { uiPort: 4848 } });
   return { settings, key: boardKey(boardKeyPath(settings.stateDir)) };
 }
 
-test("ticket:pair asks this machine's board for a code with the key from its file", async () => {
+test("ticket:pair asks this machine's board page for a code with the key from its file", async () => {
   const { settings, key } = machine();
   const asked: { url: string; init?: RequestInit }[] = [];
   const answer = async (url: string | URL | Request, init?: RequestInit) => {
@@ -27,12 +27,12 @@ test("ticket:pair asks this machine's board for a code with the key from its fil
 test("ticket:pair says so when no board is running, or the board refuses the key", async () => {
   const { settings } = machine();
   const down = async () => { throw new TypeError("fetch failed"); };
-  await assert.rejects(pairingCode(settings, down as typeof fetch), /no board answers on 127\.0\.0\.1:4848: start it with agent-org ticket:serve/);
+  await assert.rejects(pairingCode(settings, down as typeof fetch), /no board page answers on 127\.0\.0\.1:4848: start it with agent-org ticket:ui/);
   const refuses = async () => new Response("{}", { status: 401 });
   await assert.rejects(pairingCode(settings, refuses as typeof fetch), /refused \(401\)/);
 });
 
 test("ticket:pair before any board has started says how to start one", async () => {
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/r/netbox" }, stateDir: tmpDir("ticket-pair-none-") });
-  await assert.rejects(pairingCode(settings, (async () => { throw new Error("not asked"); }) as typeof fetch), /does not exist: start the board once/);
+  await assert.rejects(pairingCode(settings, (async () => { throw new Error("not asked"); }) as typeof fetch), /does not exist: start the instance once/);
 });

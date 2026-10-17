@@ -1,51 +1,33 @@
 #!/usr/bin/env node
 // @ts-check
-// command: ticket:serve -- ticket mode's board on 127.0.0.1: pick your assigned tickets, queue them to repositories, and watch the pool work them
+// command: ticket:serve -- ticket mode's instance on 127.0.0.1: the queue, the pool of workers and their API, with no page. `ticket:ui` is the page
 //
-// THE BOARD IS THE QUEUE'S ONE WRITER. The page, and anything else that talks to this API, asks the server to change the queue; the server applies
-// the pure transition (`queue.ts`), saves the file and wakes the pool. The pool runs in this process.
+// THE INSTANCE IS THE QUEUE'S ONE WRITER. The page's service, and anything else that talks to this API, asks the server to change the queue;
+// the server applies the pure transition (`queue.ts`), saves the file and wakes the pool. The pool runs in this process.
 //
-// IT IS REACHABLE FROM THIS MACHINE ONLY, AND ONLY BY WHAT HAS PAIRED. It binds 127.0.0.1, and nothing secret goes in a URL. A script on this
-// machine reads the board's key from its mode-600 file (`board-key.ts`) and sends it as `x-ticket-token`. A browser is shown a pairing page,
-// where a one-time code that `ticket:pair` prints (`pairing.ts`) gets it a session of its own as an HttpOnly cookie that lasts a year
-// (`browser-sessions.ts`). A `Host` that is not this server's is refused, which stops a DNS-rebinding page from reaching it, and a write from
-// another origin is refused. The Linear key never leaves this process.
-//
-// IT CAN SHOW ANOTHER MACHINE'S BOARD. With a profiles file (`profiles.ts`), a paired browser's call to `/p/<profile>/api/...` is passed over
-// SSH to that machine's own board (`remote.ts`, `remote-proxy.ts`), which keeps its own queue, workers and limit. The page never talks to the remote itself.
-import { createHash, timingSafeEqual } from "node:crypto";
-import { execFileSync } from "node:child_process";
+// IT SERVES NO PAGE, AND ANSWERS ONLY TO ITS KEY. It binds 127.0.0.1, and nothing secret goes in a URL. A script on this machine reads the
+// instance's key from its mode-600 file (`board-key.ts`) and sends it as `x-ticket-token`. So does the page's service (`ui-server.ts`), which a
+// browser pairs with, for this machine or for another one it reaches over SSH or https. A browser's cookie opens nothing here. A `Host` that
+// is not this server's is refused, which stops a DNS-rebinding page from reaching it, and a write from another origin is refused. The Linear
+// key never leaves this process.
 import { existsSync, readFileSync, realpathSync, writeFileSync, mkdirSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { stripTypeScriptTypes } from "node:module";
 import { constants } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { refuseUnknownFlags } from "../lib/cli-flags.ts";
 import { boardKey, boardKeyPath } from "./board-key.ts";
 import { hasPlan } from "./board-view.ts";
-import { browserSessions, browserSessionsPath, SESSION_SECONDS, type BrowserSessions } from "./browser-sessions.ts";
 import { linearSource, readLinearKey } from "./linear.ts";
-import { createPairing, PAIR_MINUTES, type Pairing } from "./pairing.ts";
+import { readJson, refusal, sameSecret, sendJson, type Json } from "./local-http.ts";
 import { createPool, type PoolDeps } from "./pool.ts";
-import { profilesPath, readProfiles, type ProfilesRead, type RemoteProfile } from "./profiles.ts";
-import { createRemotes, type Remotes } from "./remote.ts";
-import { httpForward, proxy, type Forward } from "./remote-proxy.ts";
 import { amend, approve, enqueue, loadQueue, queuePublish, remove, respond, retry, saveQueue, setMax, setPaused, type PlanFirst, type Queue, type RunChoice } from "./queue.ts";
 import { plansInBatches, readTicketSettings, type TicketSettings } from "./settings.ts";
 import type { Ticket, TicketSource } from "./source.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const PAGE = join(HERE, "ui.html");
-/** What a browser that has not paired is shown, in place of the board. */
-const PAIR_PAGE = join(HERE, "pair.html");
-/** The page's logic, written in TypeScript so its tests run it, and sent to the browser with the types stripped. */
-const VIEW = join(HERE, "board-view.ts");
 const BIN = join(HERE, "..", "bin.ts");
-const COOKIE = "ticket_session";
-/** The most a pairing request may send. It is read before the request is known to be anyone's, so it is kept small. */
-const PAIR_BODY_BYTES = 1024;
-/** The most any other request may send. The largest is a queue of ticket keys. */
+/** The most a request may send. The largest is a queue of ticket keys. */
 const API_BODY_BYTES = 64 * 1024;
 const TICK_MS = 30_000;
 /** How often the tracker is asked whether finished runs' tickets are done. A merge is not urgent news, and every read is a Linear request. */
@@ -55,8 +37,6 @@ const FEEDBACK_MS = 180_000;
 const MODELS = ["opus", "sonnet", "haiku"];
 const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 
-type Json = Record<string, unknown>;
-
 export type BoardDeps = Readonly<{
   settings: TicketSettings;
   source: TicketSource;
@@ -64,58 +44,14 @@ export type BoardDeps = Readonly<{
   queuePath: string;
   choicePath: string;
   pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback">;
-  pairing?: Pairing;
-  sessions?: BrowserSessions;
   poolDeps?: Omit<PoolDeps, "settings" | "source" | "hook">;
   now?: () => number;
-  /** The profiles file as read. None means no switcher, as before profiles existed. */
-  profiles?: ProfilesRead;
-  remotes?: Remotes;
-  forward?: Forward;
 }>;
 
-/** A call to a remote profile's API: `/p/<profile>/api/...`. */
-const REMOTE_PATH = /^\/p\/([A-Za-z0-9_-]+)(\/api\/.*)$/;
-
-/** `board-view.ts` as the browser can run it: Node's own type stripping, so what the tests ran is what the page runs. */
-export function boardViewScript(read: (path: string) => string = (path) => readFileSync(path, "utf8")): string {
-  return stripTypeScriptTypes(read(VIEW));
-}
-
-/**
- * What the request is paired by: the board's key in its `x-ticket-token` header, a paired browser's session in its cookie when it sends no
- * header, or nothing.
- */
-export function pairedBy(request: Pick<IncomingMessage, "headers">, key: string, sessions: Pick<BrowserSessions, "holds">): "key" | "browser" | null {
+/** Whether the request carries the instance's key in its `x-ticket-token` header. A cookie is never read. */
+export function holdsKey(request: Pick<IncomingMessage, "headers">, key: string): boolean {
   const header = request.headers["x-ticket-token"];
-  if (header !== undefined) return sameSecret(String(header), key) ? "key" : null;
-  const cookie = String(request.headers.cookie ?? "").split(";").map((part) => part.trim()).find((part) => part.startsWith(`${COOKIE}=`))?.slice(COOKIE.length + 1);
-  return cookie !== undefined && sessions.holds(cookie) ? "browser" : null;
-}
-
-/** Whether `given` is `expected`, in time that does not depend on where they differ. Comparing digests makes any two inputs the same length. */
-function sameSecret(given: string, expected: string): boolean {
-  const digest = (value: string) => createHash("sha256").update(value).digest();
-  return timingSafeEqual(digest(given), digest(expected));
-}
-
-function sendJson(response: ServerResponse, status: number, value: unknown, headers: Record<string, string> = {}): void {
-  response.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store", ...headers });
-  response.end(JSON.stringify(value));
-}
-
-function sendHtml(response: ServerResponse, path: string): void {
-  response.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Content-Security-Policy": "default-src 'self'; style-src 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data:" });
-  response.end(readFileSync(path, "utf8"));
-}
-
-/** Why a request is refused before it is read, or `null`. PURE over the request's headers and this server's port. */
-export function refusal(request: Pick<IncomingMessage, "headers" | "method">, port: number): string | null {
-  const hosts = [`127.0.0.1:${port}`, `localhost:${port}`];
-  if (!hosts.includes(String(request.headers.host ?? ""))) return "this server answers only to its own host";
-  const origin = request.headers.origin;
-  if (request.method !== "GET" && origin !== undefined && !hosts.map((host) => `http://${host}`).includes(String(origin))) return "a write from another origin";
-  return null;
+  return header !== undefined && sameSecret(String(header), key);
 }
 
 /** The settings' choices: the model and effort a ticket queued from now on runs with, and those a ticket planned first is planned with. */
@@ -173,14 +109,10 @@ function validChange<P extends keyof SavedChoice>(body: Json, parts: readonly P[
 export function createBoard(deps: BoardDeps) {
   const { settings, source, key } = deps;
   const now = deps.now ?? Date.now;
-  const pairing = deps.pairing ?? createPairing(now);
-  const sessions = deps.sessions ?? browserSessions(browserSessionsPath(settings.stateDir), now);
   let queue: Queue = loadQueue(deps.queuePath, settings.max);
   const store = { get: () => queue, set: (next: Queue) => { queue = next; saveQueue(deps.queuePath, next); } };
   const pool = deps.pool ?? createPool(store, { ...deps.poolDeps, settings, source, hook: { node: process.execPath, bin: BIN } });
   let known = new Map<string, Ticket>();
-  const profiles = deps.profiles ?? { profiles: [], refusal: null };
-  const remotes = deps.remotes ?? createRemotes(profiles.profiles.filter((profile): profile is RemoteProfile => !profile.local));
 
   const wake = () => { void pool.tick(); };
   /** Whether this board plans a ticket first: the machine names a planner, and the tracker can take the plan it writes. */
@@ -202,9 +134,6 @@ export function createBoard(deps: BoardDeps) {
     if (method === "GET" && path === "/api/config") {
       return [200, { models: MODELS, efforts: EFFORTS, choice: readChoice(deps.choicePath), max: queue.max, terminal: settings.terminal, plan: settings.plan, planner: plans,
         publish: settings.publish !== null }];
-    }
-    if (method === "GET" && path === "/api/profiles") {
-      return [200, { profiles: profiles.profiles.map(({ name, local }) => ({ name, local })), refusal: profiles.refusal }];
     }
     if (method === "GET" && path === "/api/tickets") {
       const tickets = await source.assigned();
@@ -273,55 +202,13 @@ export function createBoard(deps: BoardDeps) {
     return [404, { error: `no route ${method} ${path}` }];
   }
 
-  /** What a request that has not paired may do: see the pairing page, and trade a live code at `POST /pair` for a session of its own. */
-  async function pairBrowser(request: IncomingMessage, response: ServerResponse, path: string): Promise<void> {
-    if (request.method === "GET" && path === "/") return sendHtml(response, PAIR_PAGE);
-    if (request.method !== "POST" || path !== "/pair") {
-      return sendJson(response, 401, { error: `this browser is not paired: open http://127.0.0.1:${settings.port}/ and type the code agent-org ticket:pair prints` });
-    }
-    let body: Json;
-    try {
-      body = await readJson(request, PAIR_BODY_BYTES);
-    } catch (err) {
-      // Not a pairing request at all, so it spends none of the live code's tries.
-      return sendJson(response, 400, { error: String((err as Error)?.message ?? err) });
-    }
-    if (!pairing.redeem(body.code)) return sendJson(response, 401, { error: "That code is wrong, used or out of date. Run agent-org ticket:pair for a new one." });
-    sendJson(response, 200, { paired: true }, { "Set-Cookie": `${COOKIE}=${sessions.open()}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_SECONDS}` });
-  }
-
-  /** A paired browser's call to a remote profile's board, passed over SSH. A script holding this board's key is not passed on. */
-  async function proxyRemote(request: IncomingMessage, response: ServerResponse, by: "key" | "browser", name: string, path: string): Promise<void> {
-    if (!remotes.has(name)) return sendJson(response, 404, { error: `no remote profile ${name}` });
-    if (by !== "browser") return sendJson(response, 403, { error: "only a paired browser is passed on to another machine's board" });
-    let body: string | null;
-    try {
-      body = request.method === "POST" ? JSON.stringify(await readJson(request, API_BODY_BYTES)) : null;
-    } catch (err) {
-      return sendJson(response, 400, { error: String((err as Error)?.message ?? err) });
-    }
-    const [status, value] = await proxy(remotes, name, { method: request.method ?? "GET", path, body }, deps.forward ?? httpForward);
-    sendJson(response, status, value);
-  }
-
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const refused = refusal(request, settings.port);
     if (refused !== null) return sendJson(response, 403, { error: refused });
+    if (!holdsKey(request, key)) {
+      return sendJson(response, 401, { error: "this is an agent-org instance, which serves no page and answers only to its key: open the board with agent-org ticket:ui" });
+    }
     const url = new URL(request.url ?? "/", `http://127.0.0.1:${settings.port}`);
-    const by = pairedBy(request, key, sessions);
-    if (by === null) return pairBrowser(request, response, url.pathname);
-    // A code pairs a new browser, so only the key makes one. A browser's session, which can reach another port's server, cannot.
-    if (request.method === "POST" && url.pathname === "/api/pair-code") {
-      if (by !== "key") return sendJson(response, 403, { error: "a pairing code is made with the board's key: run agent-org ticket:pair" });
-      return sendJson(response, 200, { code: pairing.mint(), minutes: PAIR_MINUTES });
-    }
-    if (request.method === "GET" && url.pathname === "/board-view.js") {
-      response.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-store" });
-      return void response.end(boardViewScript());
-    }
-    if (request.method === "GET" && url.pathname === "/") return sendHtml(response, PAGE);
-    const remote = REMOTE_PATH.exec(url.pathname);
-    if (remote !== null) return proxyRemote(request, response, by, remote[1], `${remote[2]}${url.search}`);
     try {
       const body = request.method === "POST" ? await readJson(request, API_BODY_BYTES) : {};
       const [status, value] = await api(request.method ?? "GET", url.pathname, body);
@@ -331,55 +218,31 @@ export function createBoard(deps: BoardDeps) {
     }
   }
 
-  return { handle, api, pool, store, remotes };
-}
-
-/** A request's JSON object, or `{}` when it has no body. REFUSES a body over `limit` bytes, and one that is not a JSON object. */
-async function readJson(request: IncomingMessage, limit: number): Promise<Json> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of request) {
-    size += (chunk as Buffer).length;
-    if (size > limit) throw new Error(`a request body over ${limit} bytes`);
-    chunks.push(chunk as Buffer);
-  }
-  if (chunks.length === 0) return {};
-  const value: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("a request body must be a JSON object");
-  return value as Json;
+  return { handle, api, pool, store };
 }
 
 async function serve(): Promise<void> {
+  // `--no-open` opened no browser when the instance served the page. It is still taken, so a script that passes it keeps working.
   refuseUnknownFlags(["--no-open"], { entry: import.meta.url, command: "agent-org ticket:serve" });
   const settings = readTicketSettings();
   const source = linearSource({ key: readLinearKey(settings.linearKey) });
   const key = boardKey(boardKeyPath(settings.stateDir));
   const dir = join(settings.stateDir, "tickets");
-  const pairing = createPairing();
-  const profiles = readProfiles(profilesPath());
-  if (profiles.refusal !== null) process.stderr.write(`ticket:serve: ${profiles.refusal}\n`);
-  const board = createBoard({ settings, source, key, pairing, profiles, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json") });
-  // Every tunnel this board opened ends with it.
-  process.on("exit", () => board.remotes.close());
+  const board = createBoard({ settings, source, key, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json") });
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => process.exit(128 + constants.signals[signal]));
   await board.pool.ensureSession();
   board.pool.reconcile();
-  // One request's failure ends that request, never the board.
+  // One request's failure ends that request, never the instance.
   const server = createServer((request, response) => {
     board.handle(request, response).catch((err) => {
       process.stderr.write(`ticket:serve: ${request.method} ${request.url?.split("?")[0]}: ${String((err as Error)?.message ?? err)}\n`);
       if (response.headersSent) response.destroy();
-      else sendJson(response, 500, { error: "the board failed to answer" });
+      else sendJson(response, 500, { error: "the instance failed to answer" });
     });
   });
   server.listen(settings.port, "127.0.0.1", () => {
-    const url = `http://127.0.0.1:${settings.port}/`;
-    // A code is printed only to a person's terminal. Run detached, the board's output goes to a log, which a code has no reason to sit in.
-    const pair = process.stdout.isTTY
-      ? `pair a browser with code ${pairing.mint()} (once, within ${PAIR_MINUTES} minutes), or run agent-org ticket:pair for a new one`
-      : "pair a browser: run agent-org ticket:pair, and type the code it prints";
-    process.stdout.write(`ticket mode: ${url}\n  ${pair}\n  watch the workers: herdr session attach ${settings.herdrSession}\n  worktrees under ${settings.worktreeRoot}\n`);
-    if (!process.argv.includes("--no-open") && process.platform === "darwin") execFileSync("open", [url]);
+    process.stdout.write(`ticket mode instance: 127.0.0.1:${settings.port}, which serves no page\n  open the board: agent-org ticket:ui\n`
+      + `  watch the workers: herdr session attach ${settings.herdrSession}\n  worktrees under ${settings.worktreeRoot}\n`);
   });
   setInterval(() => { void board.pool.tick(); }, TICK_MS);
   void board.pool.refreshTracker();
