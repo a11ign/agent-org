@@ -15,11 +15,11 @@ Projected hourly `repository.issues` (INFERRED, not measured on the host): 2,043
 
 Acceptance: `node --test src/packaging/closed-answer-ended-labels.test.ts`
 
-The file has 6 tests: filtered names asked; the control asks all; all-ended reads nothing and answers `[]` not `null`; a live+ended row still comes back; the keep serves inside the age, re-asks at it and on other labels; a refusal is not kept and no conditional keeps nothing.
+The file has 7 tests: filtered names asked; the control asks all; all-ended reads nothing and answers `[]` not `null`; a live+ended row still comes back; the keep serves inside the age, re-asks at it and on other labels; a refusal is not kept and no conditional keeps nothing; the follow-ups use the one herdr listing they hold.
 
-Measured: `ℹ tests 6, pass 6, fail 0` for the command above, run in the worktree; `pnpm run typecheck` exits 0. `pnpm test`: 78 of 12154 failed, and the same files fail with the same counts on a `git archive` of `HEAD` (checked per file with `node --test`), except the two mine (fixed) and `queue-stalled` (3 on base, 2 here, flaky).
+Measured: `ℹ tests 7, pass 7, fail 0` for the command above, run in the worktree; `pnpm run typecheck` exits 0. `pnpm test`: 78 of 12154 failed, and the same files fail with the same counts on a `git archive` of `HEAD` (checked per file with `node --test`), except the two mine (fixed) and `queue-stalled` (3 on base, 2 here, flaky).
 
-Mutation: one exact change each, source backed up with `cp` and restored with `cp` and `diff` clean. Keep never served: 1 failing (the keep test). Signature ignored: 1 (keep test). Max age removed: 1 (keep test). Ended-label filter off: 3 (filter, all-ended, keep). Unmutated: 6 pass. Not mutated: saving a `null`, guarded only by the refusal test asking again.
+Mutation: one exact change each, source backed up with `cp` and restored with `cp` and `diff` clean. Keep never served: 1 failing (the keep test). Signature ignored: 1 (keep test). Max age removed: 1 (keep test). Ended-label filter off: 3 (filter, all-ended, keep). Unmutated: 7 pass. The follow-ups handing `endedAnswerSessionTest` no listing (a second herdr read): 1 failing (the listing test). Not mutated: saving a `null`, guarded only by the refusal test asking again.
 
 NOT DONE, host-side and after merge (cannot be run from this session): `node src/gh-ledger.ts <gh-calls.tsv of app:scheduler ledger> --account app:scheduler --by-query --since <1 h after the host runs the change>` posted on a11ign/agent-org#1618 and #1620, with `repository.issues` under 1,000 pts.
 
