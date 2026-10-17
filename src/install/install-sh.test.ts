@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sandboxGitEnv } from "../lib/git-env.ts";
@@ -135,4 +135,30 @@ test("install.sh refuses to move a checkout with changes to tracked files", () =
   const result = install(home, path, repo);
   assert.equal(result.status, 1);
   assert.match(result.stderr, /changes to tracked files/);
+});
+
+test("install.sh installs a release's dependencies with pnpm, and puts the checkout back when that install fails", () => {
+  const { root, home, repo, path } = fixture();
+  assert.equal(install(home, path, repo).status, 0);
+  const work = join(root, "work");
+  const git = (args: string[]) => execFileSync("git", args, { cwd: work, env: sandboxGitEnv({ GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" }), stdio: "pipe" });
+  writeFileSync(join(work, "package.json"), `${JSON.stringify({ name: "agent-org", type: "module", dependencies: { leftpad: "^1.0.0" } })}\n`);
+  writeFileSync(join(work, "src", "bin.ts"), "console.log(\"fixture v0.12.0\");\n");
+  git(["add", "-A"]);
+  git(["-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "v0.12.0"]);
+  git(["tag", "v0.12.0"]);
+  git(["push", "--quiet", repo, "v0.12.0"]);
+  const pnpm = join(root, "pnpm-bin");
+  mkdirSync(pnpm);
+  writeFileSync(join(pnpm, "pnpm"), `#!/bin/sh\necho "$@" > "${join(root, "pnpm-args")}"\n[ -f "${join(root, "pnpm-fails")}" ] && exit 1\nexit 0\n`, { mode: 0o755 });
+  writeFileSync(join(root, "pnpm-fails"), "");
+  const failed = install(home, `${pnpm}:${path}`, repo);
+  assert.equal(failed.status, 1);
+  assert.match(failed.stderr, /installing the dependencies failed/);
+  assert.match(launch(home, path), /^fixture v0\.10\.0 /);
+  rmSync(join(root, "pnpm-fails"));
+  const passed = install(home, `${pnpm}:${path}`, repo);
+  assert.equal(passed.status, 0, passed.stderr);
+  assert.equal(readFileSync(join(root, "pnpm-args"), "utf8").trim(), "install --prod --no-frozen-lockfile --ignore-scripts --ignore-workspace --silent");
+  assert.equal(launch(home, path), "fixture v0.12.0");
 });

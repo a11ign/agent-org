@@ -10,7 +10,7 @@ function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
   return {
     env: { AGENT_ORG_HOST: "/home/me/.agent-org/host.json" }, home: "/home/me",
     nodeVersion: () => "v24.7.0", which: (name) => `/home/me/.local/bin/${name}`,
-    readFile: () => HOST, readKey: () => KEY, instanceState: () => "running", answers: async (port) => port === 4800,
+    readFile: () => HOST, readKey: () => KEY, mode: () => 0o600, instanceState: () => "running", answers: async (port) => port === 4800,
     ...over,
   };
 }
@@ -53,4 +53,11 @@ test("doctor tells a key it cannot read, and a running service that does not ans
   assert.equal(checks.service.ok, true);
   assert.equal(checks.answering.ok, false);
   assert.match(report(Object.values(checks)), /FAIL {2}answering: nothing answers on http:\/\/127\.0\.0\.1:4800\n {6}fix: read the service's log/);
+});
+
+test("doctor fails a key file other users can read, and names the chmod", async () => {
+  const host = JSON.stringify({ clones: { netbox: "/src/netbox" }, tickets: { linearKey: { path: "/home/me/.agent-org/linear.key" } } });
+  const checks = byName(await diagnose(deps({ readFile: () => host, mode: () => 0o644 })));
+  assert.equal(checks["tracker key"].ok, false);
+  assert.equal(checks["tracker key"].fix, "chmod 600 /home/me/.agent-org/linear.key");
 });

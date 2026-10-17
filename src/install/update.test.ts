@@ -94,3 +94,11 @@ test("update refuses a tag that is not a release, --version with --channel main,
   assert.throws(() => update({ version: undefined, channel: "main" }, d), /changes to tracked files/);
   assert.throws(() => update({ version: undefined, channel: "release" }, d), /uncommitted changes/);
 });
+
+test("update --channel main puts the checkout back when main's dependencies fail to install", () => {
+  const { checkout, git } = installed();
+  const { deps: d, restarted } = deps(checkout, git, { instance: "running" });
+  assert.throws(() => update({ version: undefined, channel: "main" }, { ...d, installInPlace: () => { throw new Error("pnpm failed"); } }), /stays at/);
+  assert.equal(at(git), "v0.1.0");
+  assert.deepEqual(restarted, []);
+});

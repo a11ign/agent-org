@@ -12,13 +12,14 @@
 //
 // NO SECRET IS IN A UNIT. The unit names the host file, and the board reads the tracker key from where the host file says.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { COMMANDS } from "../commands.ts";
 import { agentOrgHome, hostFilePath, TOOL_ROOT, type Env } from "./paths.ts";
+import { writeAtomic } from "./write-atomic.ts";
 
 /** Service name -> the `agent-org` command it runs, and the arguments after it. */
 export const SERVICE_COMMANDS = Object.freeze({
@@ -56,18 +57,10 @@ const defaultRun: Run = (file, args) => {
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 };
 
-/** Write through a temporary file and a rename, so a unit is never read half written. */
-function writeAtomic(path: string, text: string) {
-  mkdirSync(dirname(path), { recursive: true });
-  const temporary = `${path}.${process.pid}.tmp`;
-  writeFileSync(temporary, text, { mode: 0o644 });
-  renameSync(temporary, path);
-}
-
 export function defaultServiceDeps(): ServiceDeps {
   return Object.freeze({
     platform: process.platform, env: process.env, home: homedir(), uid: userInfo().uid, node: process.execPath, toolRoot: TOOL_ROOT,
-    run: defaultRun, exists: existsSync, write: writeAtomic, commands: COMMANDS,
+    run: defaultRun, exists: existsSync, write: (path, text) => writeAtomic(path, text, 0o644), commands: COMMANDS,
   });
 }
 
@@ -79,8 +72,15 @@ export function serviceName(word: string | undefined): ServiceName {
 }
 
 const escapeXml = (text: string) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-/** A systemd value in double quotes: `%` is a specifier, and `\` and `"` are the quoting's own. */
-const systemdQuoted = (text: string) => `"${text.replace(/\\/g, "\\\\").replace(/"/g, "\\\"").replace(/%/g, "%%")}"`;
+/** A systemd value in double quotes: `%` is a specifier, `$` a variable, and `\` and `"` are the quoting's own. */
+const systemdQuoted = (text: string) => `"${text.replace(/\\/g, "\\\\").replace(/"/g, "\\\"").replace(/%/g, "%%").replace(/\$/g, "$$$$")}"`;
+
+/**
+ * The PATH a service runs with: the caller's, without a relative or empty entry and without a project's `node_modules/.bin`, which `pnpm run` and `npx`
+ * put first and which would then answer for `git`, `gh` and `claude` in every run.
+ */
+export const servicePath = (path: string | undefined) =>
+  (path ?? "").split(":").filter((dir) => dir.startsWith("/") && !/\/node_modules\/\.bin\/?$/.test(dir)).join(":") || "/usr/local/bin:/usr/bin:/bin";
 
 export type Unit = { manager: "launchd" | "systemd"; id: string; path: string; text: string; log: string | null };
 
@@ -90,19 +90,19 @@ export function unitFor(name: ServiceName, deps: ServiceDeps): Unit {
   if (!Object.hasOwn(deps.commands, command)) {
     throw new ServiceRefusal(`the ${name} service runs \`agent-org ${command}\`, which this version of agent-org does not have. Run \`agent-org update\` for a version that does.`);
   }
-  if (/[\n\r]/.test([deps.node, deps.toolRoot, hostFilePath(deps.env, deps.home), deps.env.PATH ?? ""].join(""))) {
-    throw new ServiceRefusal("a path holds a line break, which no unit file can carry");
-  }
   const argv = [deps.node, join(deps.toolRoot, "src", "bin.ts"), command, ...args];
   const environment: Record<string, string> = {
     AGENT_ORG_HOST: hostFilePath(deps.env, deps.home),
     AGENT_ORG_HOME: agentOrgHome(deps.env, deps.home),
     // `herdr`, `claude`, `gh` and `git` are found on the PATH of the person who started it: a service gets no login shell's.
-    PATH: deps.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
+    PATH: servicePath(deps.env.PATH),
   };
+  const log = join(agentOrgHome(deps.env, deps.home), "logs", `${name}.log`);
+  if ([...argv, ...Object.values(environment), log].some((value) => /[\n\r]/.test(value))) {
+    throw new ServiceRefusal("a path holds a line break, which no unit file can carry");
+  }
   if (deps.platform === "darwin") {
     const id = `io.github.agent-org.${name}`;
-    const log = join(agentOrgHome(deps.env, deps.home), "logs", `${name}.log`);
     const strings = (values: string[]) => values.map((value) => `    <string>${escapeXml(value)}</string>`).join("\n");
     const env = Object.entries(environment).map(([key, value]) => `    <key>${key}</key>\n    <string>${escapeXml(value)}</string>`).join("\n");
     const text = `<?xml version="1.0" encoding="UTF-8"?>
@@ -194,7 +194,7 @@ export function startService(name: ServiceName, deps: ServiceDeps): Unit {
   if (!deps.exists(hostFile)) throw new ServiceRefusal(`there is no host file at ${hostFile}. Run \`agent-org onboard\` first.`);
   deps.write(unit.path, unit.text);
   if (unit.manager === "launchd") {
-    mkdirSync(dirname(unit.log as string), { recursive: true });
+    mkdirSync(dirname(unit.log as string), { recursive: true, mode: 0o700 });
     const target = launchdTarget(unit, deps);
     must(deps.run("launchctl", ["enable", target]), `launchctl enable ${target}`);
     // A loaded agent keeps the plist it was loaded with, so it is booted out and in again to read the one just written.

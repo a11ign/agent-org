@@ -11,9 +11,9 @@
 // which does not echo, or into a mode-600 file from a prompt that does not echo. It then reads the key back to check it is there, and says WHERE
 // it is, never what it is.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, isAbsolute, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { Writable } from "node:stream";
 import { parseArgs } from "node:util";
@@ -22,6 +22,7 @@ import { readLinearKey } from "../ticket-mode/linear.ts";
 import type { KeySource } from "../ticket-mode/settings.ts";
 import { agentOrgHome, hostFilePath, type Env } from "./paths.ts";
 import { defaultServiceDeps, startService } from "./service.ts";
+import { writeAtomic } from "./write-atomic.ts";
 
 export const DEFAULT_KEYCHAIN_SERVICE = "agent-org-linear";
 
@@ -83,6 +84,12 @@ function readHost(path: string, deps: OnboardDeps): Record<string, unknown> {
   return parsed as Record<string, unknown>;
 }
 
+/** A Keychain service name is printed in a command to paste, so it is held to characters a shell reads as they are. */
+function keychainService(name: string): string {
+  if (!/^[A-Za-z0-9._-]+$/.test(name)) throw new OnboardRefusal(`\`${name}\` is not a Keychain service name: use letters, digits, \`.\`, \`_\` and \`-\``);
+  return name;
+}
+
 const describe = (source: KeySource) => ("keychain" in source ? `the Keychain service ${source.keychain}` : `the file ${source.path}`);
 
 function keyReadable(source: KeySource, deps: OnboardDeps): boolean {
@@ -96,7 +103,7 @@ function keyReadable(source: KeySource, deps: OnboardDeps): boolean {
 
 async function chooseKeySource(options: OnboardOptions, existing: unknown, deps: OnboardDeps): Promise<KeySource> {
   if (options.keychain !== undefined && options.keyFile !== undefined) throw new OnboardRefusal("give --linear-keychain or --linear-key-file, not both");
-  if (options.keychain !== undefined) return { keychain: options.keychain };
+  if (options.keychain !== undefined) return { keychain: keychainService(options.keychain) };
   if (options.keyFile !== undefined) {
     const path = expandHome(options.keyFile, deps.home);
     if (!isAbsolute(path)) throw new OnboardRefusal("--linear-key-file must be an absolute path");
@@ -108,7 +115,7 @@ async function chooseKeySource(options: OnboardOptions, existing: unknown, deps:
   const answer = (await deps.ask(`Where is the Linear key read from? A Keychain service name, or an absolute file path [${"keychain" in fallback ? fallback.keychain : fallback.path}]: `)).trim();
   if (answer === "") return fallback;
   const path = expandHome(answer, deps.home);
-  return isAbsolute(path) ? { path } : { keychain: answer };
+  return isAbsolute(path) ? { path } : { keychain: keychainService(answer) };
 }
 
 /** Store a key where `source` says, by a prompt that does not echo. Only called with a person at the terminal. */
@@ -156,14 +163,6 @@ export async function onboard(options: OnboardOptions, deps: OnboardDeps): Promi
   return hostFile;
 }
 
-/** Write a file through a temporary one and a rename, mode 600, making its directory (mode 700) when it is missing. */
-function writePrivate(path: string, text: string) {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = `${path}.${process.pid}.tmp`;
-  writeFileSync(temporary, text, { mode: 0o600 });
-  renameSync(temporary, path);
-}
-
 /** A readline whose output can be muted, so what is typed after the question is not echoed. */
 async function askHidden(question: string): Promise<string> {
   let muted = false;
@@ -203,7 +202,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
         const result = spawnSync("security", ["add-generic-password", "-U", "-a", process.env.USER ?? "", "-s", service, "-w"], { stdio: "inherit" });
         if (result.status !== 0) throw new OnboardRefusal(`security add-generic-password exited ${result.status}`);
       },
-      readFile: (path) => readFileSync(path, "utf8"), writeFile: writePrivate,
+      readFile: (path) => readFileSync(path, "utf8"), writeFile: (path, text) => writeAtomic(path, text, 0o600),
       isDirectory: (path) => existsSync(path) && statSync(path).isDirectory(),
       startService: () => {
         const unit = startService("instance", services);

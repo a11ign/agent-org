@@ -6,7 +6,7 @@
 // not the one running this. The tracker key is read to prove it is there, and never printed. The service is asked twice: whether it is registered,
 // and whether its port answers, because a registered service can still be a crashed one.
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { request } from "node:http";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -30,6 +30,8 @@ export type DoctorDeps = Readonly<{
   which: (name: string) => string | null;
   readFile: (path: string) => string;
   readKey: (source: KeySource) => string;
+  /** A file's permission bits, or null when it cannot be read. */
+  mode: (path: string) => number | null;
   instanceState: () => ServiceState;
   /** Whether something answers HTTP on 127.0.0.1:`port`. */
   answers: (port: number) => Promise<boolean>;
@@ -68,6 +70,11 @@ function keyCheck(settings: TicketSettings | null, deps: DoctorDeps): Check {
   const where = "keychain" in source ? `Keychain service ${source.keychain}` : source.path;
   try {
     deps.readKey(source);
+    const file = "keychain" in source ? null : source.path;
+    const mode = file === null ? null : deps.mode(file);
+    if (mode !== null && (mode & 0o077) !== 0) {
+      return failed("tracker key", `${file} can be read by other users (mode ${(mode & 0o777).toString(8)})`, `chmod 600 ${file}`);
+    }
     return ok("tracker key", `readable from ${where}`);
   } catch {
     return failed("tracker key", `nothing readable at ${where}`, "keychain" in source
@@ -136,6 +143,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
       return result.status === 0 ? result.stdout.trim() : null;
     },
     which: (name) => which(name), readFile: (path) => readFileSync(path, "utf8"), readKey: (source) => readLinearKey(source),
+    mode: (path) => { try { return statSync(path).mode & 0o777; } catch { return null; } },
     instanceState: () => serviceState("instance", services), answers,
   });
   console.log(report(checks));

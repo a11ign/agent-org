@@ -46,7 +46,13 @@ export function update({ version, channel }: { version: string | undefined; chan
     }
     deps.git(["fetch", "--quiet", "origin", "main"]);
     deps.git(["checkout", "--detach", "--quiet", "FETCH_HEAD"]);
-    deps.installInPlace();
+    try {
+      deps.installInPlace();
+    } catch (err) {
+      // Back where it was, so the services and the launcher keep running a tree whose dependencies are in place.
+      deps.git(["checkout", "--detach", "--quiet", before]);
+      throw new UpdateRefusal(`installing main's dependencies failed, so the checkout stays at ${before}: ${(err as Error).message}`);
+    }
     deps.out.log(`agent-org main (${deps.git(["rev-parse", "HEAD"]).trim()})`);
   } else {
     deps.out.log(updateTool(deps.root, deps.git, version ?? LATEST, () => [], deps.installForTag));

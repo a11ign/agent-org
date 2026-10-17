@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { COMMANDS } from "../commands.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { main, serviceState, startService, stopService, unitFor, type RunResult, type ServiceDeps } from "./service.ts";
+import { main, servicePath, serviceState, startService, stopService, unitFor, type RunResult, type ServiceDeps } from "./service.ts";
 
 type Answer = (args: string[]) => RunResult;
 const done = (stdout = ""): RunResult => ({ status: 0, stdout, stderr: "" });
@@ -91,4 +91,16 @@ test("start refuses without a host file, and an unknown service or platform, wit
   assert.match(errors[0], /Run `agent-org onboard` first/);
   assert.match(errors[1], /`board` is not a service/);
   assert.match(errors[2], /this machine is win32/);
+});
+
+test("a unit escapes $ and % for systemd, and refuses a line break in any value it carries", () => {
+  const { deps: d } = deps("linux", {}, { toolRoot: "/opt/a$b%c" });
+  assert.match(unitFor("instance", d).text, /^ExecStart="\/opt\/node\/bin\/node" "\/opt\/a\$\$b%%c\/src\/bin\.ts"/m);
+  const broken = deps("linux", {}, { env: { AGENT_ORG_HOME: "/x\n[Service]\nExecStartPre=/bin/false" } }).deps;
+  assert.throws(() => unitFor("instance", broken), /line break/);
+});
+
+test("the service's PATH keeps absolute entries and drops a project's node_modules/.bin", () => {
+  assert.equal(servicePath("/p/node_modules/.bin::relative:/opt/bin:/usr/bin"), "/opt/bin:/usr/bin");
+  assert.equal(servicePath(undefined), "/usr/local/bin:/usr/bin:/bin");
 });

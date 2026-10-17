@@ -19,6 +19,13 @@ RELEASE_TAG='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
 say() { printf 'agent-org install: %s\n' "$*"; }
 fail() { printf 'agent-org install: %s\n' "$*" >&2; exit 1; }
 
+# Put the checkout back where it was before this run, when it was anywhere.
+restore() {
+  if [ -n "$1" ]; then
+    git -C "$CHECKOUT" -c advice.detachedHead=false checkout --quiet --detach "$1" || true
+  fi
+}
+
 usage() {
   cat <<'EOF'
 Usage: install.sh [--version vX.Y.Z]
@@ -30,7 +37,7 @@ EOF
 
 # Everything runs from main, called on the last line, so a download cut short by the network runs nothing.
 main() {
-  local version="" tag node_version node_major launcher temporary pnpm_cmd
+  local version="" tag node_version node_major launcher temporary pnpm_cmd previous has_dependencies
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --version) [ "$#" -ge 2 ] || fail "--version needs a tag, such as v0.3.0"; version="$2"; shift 2 ;;
@@ -43,8 +50,9 @@ main() {
     fail "--version $version is not a release tag such as v0.3.0"
   fi
 
+  # The launcher holds these paths in single quotes, and the PATH line it prints holds BIN_DIR in double quotes.
   case "$AGENT_ORG_HOME$BIN_DIR" in
-    *"'"*|*$'\n'*) fail "AGENT_ORG_HOME and AGENT_ORG_BIN_DIR must not hold a quote or a line break" ;;
+    *"'"*|*'"'*|*'$'*|*'`'*|*\\*|*$'\n'*) fail "AGENT_ORG_HOME and AGENT_ORG_BIN_DIR must not hold a quote, \$, a backquote, a backslash or a line break" ;;
   esac
   case "$AGENT_ORG_HOME" in /*) ;; *) fail "AGENT_ORG_HOME must be an absolute path, and it is $AGENT_ORG_HOME" ;; esac
   case "$BIN_DIR" in /*) ;; *) fail "AGENT_ORG_BIN_DIR must be an absolute path, and it is $BIN_DIR" ;; esac
@@ -63,8 +71,7 @@ main() {
   fi
 
   if [ ! -d "$AGENT_ORG_HOME" ]; then
-    mkdir -p "$AGENT_ORG_HOME"
-    chmod 700 "$AGENT_ORG_HOME"
+    (umask 077 && mkdir -p "$AGENT_ORG_HOME")
   fi
   if [ -d "$CHECKOUT/.git" ]; then
     if [ -n "$(git -C "$CHECKOUT" status --porcelain --untracked-files=no)" ]; then
@@ -76,7 +83,7 @@ main() {
     fail "$CHECKOUT exists and is not a git checkout. Move it away, then run this again."
   else
     say "cloning $REPO_URL into $CHECKOUT"
-    git clone --quiet --no-checkout "$REPO_URL" "$CHECKOUT"
+    git clone --quiet --no-checkout -- "$REPO_URL" "$CHECKOUT"
   fi
 
   if [ -n "$version" ]; then
@@ -88,26 +95,38 @@ main() {
     [ -n "$tag" ] || fail "$REPO_URL has no release tag yet"
     tag="v$tag"
   fi
+  # A checkout that was at a release before this run goes back to it when the dependency install fails, so the launcher keeps running that release.
+  previous="$(git -C "$CHECKOUT" rev-parse --quiet --verify HEAD 2>/dev/null || true)"
   git -C "$CHECKOUT" -c advice.detachedHead=false checkout --quiet --detach "refs/tags/$tag"
-  say "agent-org $tag is at $CHECKOUT"
 
   # The release's runtime dependencies, when its package.json declares any. pnpm is the tool's package manager; Node 24 ships corepack, which runs it.
-  if (cd "$CHECKOUT" && node -e 'process.exit(Object.keys(require("./package.json").dependencies ?? {}).length > 0 ? 0 : 1)'); then
-    say "installing the release's dependencies"
-    if command -v pnpm >/dev/null 2>&1; then
-      pnpm_cmd=(pnpm)
-    elif command -v corepack >/dev/null 2>&1; then
-      pnpm_cmd=(corepack pnpm)
-    else
-      fail "the release needs its dependencies installed, and neither pnpm nor corepack is on PATH. Install pnpm (https://pnpm.io/installation), then run this again."
-    fi
-    (cd "$CHECKOUT" && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 "${pnpm_cmd[@]}" install --prod --no-frozen-lockfile --ignore-scripts --ignore-workspace --silent) \
-      || fail "installing the dependencies failed. Fix what pnpm printed above, then run this again."
-  fi
+  has_dependencies=0
+  (cd "$CHECKOUT" && node -e 'process.exit(Object.keys(require("./package.json").dependencies ?? {}).length > 0 ? 10 : 0)') || has_dependencies=$?
+  case "$has_dependencies" in
+    0) ;;
+    10)
+      say "installing the release's dependencies"
+      if command -v pnpm >/dev/null 2>&1; then
+        pnpm_cmd=(pnpm)
+      elif command -v corepack >/dev/null 2>&1; then
+        pnpm_cmd=(corepack pnpm)
+      else
+        restore "$previous"
+        fail "the release needs its dependencies installed, and neither pnpm nor corepack is on PATH. Install pnpm (https://pnpm.io/installation), then run this again."
+      fi
+      if ! (cd "$CHECKOUT" && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 "${pnpm_cmd[@]}" install --prod --no-frozen-lockfile --ignore-scripts --ignore-workspace --silent); then
+        restore "$previous"
+        fail "installing the dependencies failed. Fix what pnpm printed above, then run this again."
+      fi
+      ;;
+    *) restore "$previous"; fail "could not read $CHECKOUT/package.json (node exited $has_dependencies)" ;;
+  esac
+  say "agent-org $tag is at $CHECKOUT"
 
   mkdir -p "$BIN_DIR"
   launcher="$BIN_DIR/agent-org"
   temporary="$(mktemp "$BIN_DIR/.agent-org.XXXXXX")"
+  trap 'rm -f "$temporary"' EXIT
   cat >"$temporary" <<EOF
 #!/bin/sh
 # The agent-org command, written by agent-org's install.sh. Running install.sh again rewrites it.
@@ -121,6 +140,7 @@ exec node '$CHECKOUT/src/bin.ts' "\$@"
 EOF
   chmod 755 "$temporary"
   mv -f "$temporary" "$launcher"
+  trap - EXIT
   say "wrote $launcher"
 
   case ":$PATH:" in

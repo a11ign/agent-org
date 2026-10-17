@@ -90,3 +90,8 @@ test("onboard refuses to write over a host file that is not JSON", async () => {
   writeFileSync(join(home, ".agent-org", "host.json"), "{ not json");
   await assert.rejects(onboard(options({ repos: [repo] }), d), /is not valid JSON, so onboard will not write over it/);
 });
+
+test("onboard refuses a Keychain service name a shell would not read as it is", async () => {
+  const { deps: d, repo } = deps();
+  await assert.rejects(onboard(options({ repos: [repo], keychain: "x; touch pwned" }), d), /is not a Keychain service name/);
+});
