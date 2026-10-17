@@ -12,11 +12,14 @@
  * MUTATIONS (the row's Done-when, run by hand and recorded on the row): (a) withholding the ownerless red build instead of asking it turns the first
  * test red; (b) asking a pull request that has a live `session:` label turns the label control red; (c) the signal reading 14 minutes as 15 turns the
  * clock test red.
+ *
+ * agent-org#1671: the ask also reaches a pull request under `ceo` or `owner-gone`, and an approved one out of the queue past `UNQUEUED_MINUTES`, and a green
+ * ejection kept as the owner's. Each order names the pull request, its owner source and the minutes, and an OUTSIDE pull request is never asked under `ceo`.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { decide } from "../work-gate.ts";
-import { OWNERLESS_ASK_FLAG, OWNERLESS_ASK_SESSION } from "../work-gate/pr-orders.ts";
+import { OWNERLESS_ASK_FLAG, OWNERLESS_ASK_SESSION, ownerOfPr } from "../work-gate/pr-orders.ts";
 import { ownerlessAskFlagOn } from "../work-gate/tick.ts";
 import { FLAG_REGISTRY } from "../machinery-flag.ts";
 import { DEPENDENCY_BOT_LOGIN } from "../dependency-bot-login.ts";
@@ -24,7 +27,7 @@ import { MACHINERY_SIGNALS, UNQUEUED_MINUTES, STANDARD_MACHINERY_SIGNALS, emptyC
 import { type DeclaredIdentities } from "../review-trust.ts";
 import { CHAIRMAN_LOGINS } from "../work-gate/vocabulary.ts";
 
-type Order = { session: string; cause: string; subject?: string; causeKey: string; };
+type Order = { session: string; cause: string; subject?: string; causeKey: string; prompt: string; };
 type Pr = Record<string, unknown>;
 
 const NOW = Date.parse("2026-10-16T17:04:00Z");
@@ -91,10 +94,70 @@ test("CONTROL: a live `session:` label keeps today's order, and the ask adds not
   assert.equal(asked(withAsk).length, 0, "nothing is addressed to orchestrator");
 });
 
-test("CONTROL: a red pull request a declared worker opened is never asked, flag on", () => {
-  const prs = [prOf(1641, ORG_AUTHOR)];
-  assert.deepEqual(onSubject(decided(prs, true), 1641), onSubject(decided(prs, false), 1641));
-  assert.equal(asked(decided(prs, true)).length, 0);
+test("CEO: an unlabelled red pull request no session owns is asked of orchestrator, and its prompt names the source and the minutes", () => {
+  const prs = [prOf(1645, ORG_AUTHOR)];
+  assert.equal(ownerOfPr(prs[0]).source, "ceo", "a declared worker's pull request with no label falls to the ceo rung");
+  const ask = asked(decided(prs, true))[0];
+  assert.ok(ask, "the ceo-owned red build is asked of orchestrator");
+  assert.equal(ask.cause, "pr-checks-failing");
+  assert.ok(ask.prompt.includes("owner source is `ceo`"), `the prompt names the owner source: ${ask.prompt}`);
+  assert.ok(ask.prompt.includes("64 min"), `the prompt names the minutes the red build has held (16:00 to 17:04): ${ask.prompt}`);
+  assert.equal(onSubject(decided(prs, false), 1645).some((o) => o.session === "ceo" && o.cause === "pr-checks-failing"), true, "flag off: the ceo still gets the red build, as before");
+});
+
+test("CONTROL: an OUTSIDE red pull request under ceo is never asked, flag on", () => {
+  const prs = [prOf(1646, { isCrossRepository: true, author: { login: "someone-outside" } })];
+  assert.equal(ownerOfPr(prs[0]).source, "ceo");
+  assert.equal(asked(decided(prs, true)).length, 0, "its author is not ours to wake: reviewOnlyRefs withholds it, and the ask does not take it");
+});
+
+test("OWNER-GONE: a red pull request whose owner is gone is asked of orchestrator, and flag off keeps it with product-manager", () => {
+  const prs = [prOf(1647, { ...ORG_AUTHOR, closingRowsClosed: true })];
+  assert.equal(ownerOfPr(prs[0]).source, "owner-gone");
+  const ask = asked(decided(prs, true))[0];
+  assert.ok(ask, "the owner-gone red build is asked of orchestrator");
+  assert.ok(ask.prompt.includes("owner source is `owner-gone`"), `the prompt names the owner source: ${ask.prompt}`);
+  assert.ok(ask.prompt.includes("64 min"), `the prompt names the minutes: ${ask.prompt}`);
+  assert.ok(ask.causeKey.startsWith(`${OWNERLESS_ASK_SESSION}/pr-checks-failing/`), `the causeKey moves off product-manager: ${ask.causeKey}`);
+  const off = onSubject(decided(prs, false), 1647);
+  assert.ok(off.some((o) => o.session === "product-manager" && o.cause === "pr-checks-failing"), "flag off: the dead owner's red build still goes to product-manager, as before");
+});
+
+test("APPROVED: an approved pull request out of the queue past UNQUEUED_MINUTES is asked of orchestrator, naming the minutes", () => {
+  const approved = { armed: false, reviewDecision: "APPROVED", statusCheckRollup: GREEN, reviews: [{ state: "APPROVED", submittedAt: "2026-10-16T16:30:00Z" }] };
+  const prs = [prOf(1652, approved)];
+  const ask = asked(decided(prs, true))[0];
+  assert.ok(ask, "34 minutes approved and unqueued is past 15: asked");
+  assert.equal(ask.cause, "pr-green-unarmed");
+  assert.ok(ask.prompt.includes("owner source is `chairman-author`"), `the prompt names the owner source: ${ask.prompt}`);
+  assert.ok(ask.prompt.includes("34 min"), `the prompt names the minutes approved: ${ask.prompt}`);
+  assert.equal(asked(decided(prs, true, false)).length, 0, "routing off: the ask is not read, so nothing is asked");
+  assert.equal(asked(decided(prs, false)).length, 0, "flag off: nothing is asked");
+  assert.equal(onSubject(decided(prs, true), 1652).filter((o) => o.session === OWNERLESS_ASK_SESSION).length, 1, "exactly one order to orchestrator for the pull request");
+});
+
+test("CONTROL: an approved pull request inside UNQUEUED_MINUTES is not asked yet", () => {
+  const prs = [prOf(1654, { armed: false, reviewDecision: "APPROVED", statusCheckRollup: GREEN, reviews: [{ state: "APPROVED", submittedAt: "2026-10-16T16:59:00Z" }] })];
+  assert.equal(asked(decided(prs, true)).length, 0, "5 minutes approved is inside the clock");
+});
+
+test("CLOCK: an approved pull request is asked at 15 minutes and one second, and not at 14 minutes and a half", () => {
+  const approvedAt = (submittedAt: string) => [prOf(1656, { armed: false, reviewDecision: "APPROVED", statusCheckRollup: GREEN, reviews: [{ state: "APPROVED", submittedAt }] })];
+  assert.equal(asked(decided(approvedAt("2026-10-16T16:49:30Z"), true)).length, 0, "14 minutes 30 seconds approved is inside UNQUEUED_MINUTES");
+  assert.equal(asked(decided(approvedAt("2026-10-16T16:48:59Z"), true)).length, 1, "15 minutes 1 second approved is past UNQUEUED_MINUTES");
+});
+
+test("GREEN EJECTION: a green pull request the queue ejected, with no label, is asked of orchestrator; with a live label it is not", () => {
+  // A queue ejection follows an approval: REVIEW_REQUIRED would read as AWAITING_REVIEW before EJECTED (`stallReasonOf`), so the fixture is approved.
+  const ejection = { removedAt: "2026-10-16T16:40:00Z" };
+  const approvedReviews = { reviewDecision: "APPROVED", reviews: [{ state: "APPROVED", submittedAt: "2026-10-16T16:30:00Z" }] };
+  const unlabelled = [prOf(1653, { ...CHAIRMAN_AUTHOR, ...approvedReviews, statusCheckRollup: GREEN, ejection })];
+  const ask = asked(decided(unlabelled, true))[0];
+  assert.ok(ask, "the green ejection is asked of orchestrator");
+  assert.ok(ask.prompt.includes("24 min"), `the prompt names the minutes since the ejection: ${ask.prompt}`);
+  assert.ok(decided(unlabelled, false, false).some((o) => o.subject === "pr-agent-org#1653" && o.cause === "pr-checks-failing"), "routing off: the ejection order exists");
+  const labelled = [prOf(1655, { ...CHAIRMAN_AUTHOR, ...approvedReviews, statusCheckRollup: GREEN, ejection, labels: [{ name: "session:worker-agent-org-1655" }] })];
+  assert.equal(asked(decided(labelled, true)).length, 0, "a live session label keeps the ejection with its owner");
 });
 
 test("CONTROL: flag OFF leaves every order as it was, the ownerless pull request's included", () => {

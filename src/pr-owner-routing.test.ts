@@ -54,7 +54,7 @@ const verdictComment = (number: number, verdict: string) => ({
   body: [`**Review of #${number} at \`${HEAD.slice(0, 8)}\``, `${verdict}: the acceptance is not met.`].join("\n"),
 });
 
-const decided = (prs: Pr[], prOwnerRouting: boolean) => decide({ prs, readyRows: [], nowMs: NOW, required: REQUIRED, identities: IDENTITIES, prOwnerRouting }) as Order[];
+const decided = (prs: Pr[], prOwnerRouting: boolean) => decide({ prs, readyRows: [], nowMs: NOW, required: REQUIRED, identities: IDENTITIES, prOwnerRouting, ownerlessAsk: false }) as Order[];
 const onlySubject = (orders: Order[], number: number) => orders.filter((o) => o.subject === `pr-agent-org#${number}`);
 
 test("the flag is read by the machinery's own switch, and absent or off is OFF", () => {

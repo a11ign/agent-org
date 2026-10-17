@@ -418,7 +418,7 @@ test("a RED DRAFT counts too -- it can never reach the reviewer lane, which requ
 
 test("an unlabelled red pull request falls to ceo, the last rung of ownerOfPr, rather than being dropped", () => {
   const pr = { ...draft(52, RED), isDraft: false, labels: [] };
-  assert.deepEqual(decide({ prs: [pr], readyRows: [] })
+  assert.deepEqual(decide({ prs: [pr], readyRows: [], ownerlessAsk: false })
     .map((o: { session: string }) => o.session), ["ceo"]);
 });
 
@@ -5421,12 +5421,12 @@ test("#3093: `main` hands withPrOwners the LIVE herdr and ledger readers", () =>
 test("#3093: the order for an ended-label PR goes to ceo, and says the label names an ENDED session and asks to re-lane or close", () => {
   const [pr] = withPrOwners([{ ...draft(55, RED), isDraft: false, labels: [{ name: "session:worker-3064" }] }], [], () => null,
     { agents: () => ["ceo"], ended: () => new Map([["worker-3064", ENDED_AT]]) });
-  const [order] = decide({ prs: [pr], readyRows: [] });
+  const [order] = decide({ prs: [pr], readyRows: [], ownerlessAsk: false });
   assert.equal(order.session, "ceo");
   assert.match(order.prompt, /its `session:` label names `worker-3064`, which has ENDED/);
   assert.match(order.prompt, /Re-lane it .*or close it/);
   assert.doesNotMatch(order.prompt, /It carries your session label/);
-  const untouched = decide({ prs: [{ ...draft(55, RED), isDraft: false, labels: [{ name: "session:worker-3064" }] }], readyRows: [] });
+  const untouched = decide({ prs: [{ ...draft(55, RED), isDraft: false, labels: [{ name: "session:worker-3064" }] }], readyRows: [], ownerlessAsk: false });
   assert.equal(untouched[0].session, "worker-3064", "THE CONTROL: with the label not ended, the same PR still orders to its owner");
 });
 

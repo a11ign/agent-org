@@ -56,7 +56,7 @@ const readings = {
 function failingOrders(prs: Fixture[], rows: Fixture[]) {
   const read = { prs, readyRows: [], promotableRows: [], chairmanBlocked: [], openRows: [], codeRepo: AGENT_ORG, trackerRepo: undefined,
     home: { rows, repo: HOME } } as unknown as Parameters<typeof scopeTick>[2];
-  const tick = scopeTick(scope, false, read, readings, DECLARED);
+  const tick = scopeTick(scope, false, read, readings, DECLARED, false);
   return { orders: tick.orders.filter((order: Fixture) => order.cause === "pr-checks-failing"), defects: tick.defects };
 }
 
@@ -122,7 +122,7 @@ test("(6) two different claimants across the lines are a split, not a guess", ()
 
 test("(7) a scope that declares no primary rows is returned as it was: nothing is invented from rows nobody read", () => {
   const read = { prs: [pr436()], readyRows: [], promotableRows: [], chairmanBlocked: [], openRows: [], codeRepo: AGENT_ORG, trackerRepo: undefined } as unknown as Parameters<typeof scopeTick>[2];
-  const [order] = scopeTick(scope, false, read, readings, DECLARED).orders.filter((o: Fixture) => o.cause === "pr-checks-failing");
+  const [order] = scopeTick(scope, false, read, readings, DECLARED, false).orders.filter((o: Fixture) => o.cause === "pr-checks-failing");
   assert.equal(order.session, "ceo");
 });
 
