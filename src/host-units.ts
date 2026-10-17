@@ -2263,15 +2263,20 @@ export function startupGhWrapper({ err = (l) => process.stderr.write(l), ...deps
   if (divergence !== null) {
     err(`ERROR gh wrapper: ${divergence}\n`);
     const { target, mode, expected } = ghWrapperFile({ ...deps, host });
-    try {
-      if (expected === null) throw new Error("the shipped copy could not be read");
-      writeGhWrapper({ target, mode, text: expected, host, read: deps.read });
-      rerendered = target;
-      err(`re-rendered ${target} from host.json: ${divergence}\n`);
-    } catch (cause) {
-      refused = String((cause as Error)?.message ?? cause).split("\n")[0];
-      err(`ERROR gh wrapper NOT re-rendered: ${refused}. The instance starts anyway, and no App token is minted until \`agent-org host:install\` is run.\n`);
+    // A start never CREATES the wrapper: a missing file is what `host:install` is for, as the tick has always said (`rerenderGhWrapper`).
+    if (textOf(target, deps.read ?? readFileSync) === null) {
+      refused = `there is no wrapper at ${target}, and a start does not create the file every agent's PATH resolves`;
+    } else {
+      try {
+        if (expected === null) throw new Error("the shipped copy could not be read");
+        writeGhWrapper({ target, mode, text: expected, host, read: deps.read });
+        rerendered = target;
+        err(`re-rendered ${target} from host.json: ${divergence}\n`);
+      } catch (cause) {
+        refused = String((cause as Error)?.message ?? cause).split("\n")[0];
+      }
     }
+    if (refused !== null) err(`ERROR gh wrapper NOT re-rendered: ${refused}. The instance starts anyway, and no App token is minted until \`agent-org host:install\` is run.\n`);
   }
   const mints = appRolesOf(host).map((role) => ({ role, failure: mintFailure(role, { host, run: deps.run }) }));
   for (const { role, failure } of mints) {

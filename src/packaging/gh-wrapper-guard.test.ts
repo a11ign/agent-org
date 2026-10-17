@@ -217,3 +217,15 @@ test("A11-84 START-UP: the mint probe takes the run it is given, and makes one m
   startupGhWrapper({ host: h.host(["workers"]), err: () => {}, run: (script) => { calls.push(script); return ok(script, "workers", {}); } });
   assert.equal(calls.length, 1, "one mint for the one declared role");
 });
+
+test("A11-84 START-UP: a start never CREATES a missing wrapper, as the tick never has, and says how to install it", () => {
+  const root = tmpDir("gh-wrapper-guard-missing-");
+  const host = hostOf(root, ["workers"]);
+  const target = join(root, "bin", "gh");
+  const said: string[] = [];
+  const reading = startupGhWrapper({ host, err: (line) => said.push(line), run: ok });
+  assert.equal(existsSync(target), false, "nothing was created");
+  assert.equal(reading.rerendered, null);
+  assert.match(reading.refused ?? "", /there is no wrapper at .*\/bin\/gh, and a start does not create/);
+  assert.match(said.join(""), /ERROR gh wrapper NOT re-rendered: there is no wrapper at .*\/bin\/gh/);
+});

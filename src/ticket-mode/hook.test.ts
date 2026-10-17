@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -281,4 +281,23 @@ test("A11-84: the pool's protected-paths file is read beside the outcome file, a
   writeFileSync(join(dir, PROTECTED_FILE), JSON.stringify(PROTECTED));
   const payload = JSON.stringify({ tool_name: "Write", tool_input: { file_path: `${HOME_BIN}/gh` } });
   assert.equal(main(payload, ["pre-tool-use", dir]).code, 2, "end to end: the hook reads the copy and refuses the write");
+});
+
+test("A11-84 CONTROL: a read that names the wrapper, or a host command as an argument, is allowed: only a command that writes the file is refused", () => {
+  for (const read of [`grep -n install ${HOME_BIN}/gh`, `ls -ln ${HOME_BIN}/gh`, `cp ${HOME_BIN}/gh /tmp/x`, "grep -n \"host:install\" AGENTS.md", "grep -rn hostUnitsInstall src/"]) {
+    assert.equal(commandWrites(read), 0, read);
+  }
+});
+
+test("A11-84: the protected list is resolved as a write is, so a write through a symbolic link into the bin directory is refused", () => {
+  const dir = tmpDir("hook-symlink-");
+  const real = join(dir, "real");
+  const link = join(dir, "link");
+  mkdirSync(real);
+  symlinkSync(real, link);
+  writeFileSync(join(dir, PROTECTED_FILE), JSON.stringify([join(link, "gh")]));
+  const throughRealDir = JSON.stringify({ tool_name: "Write", tool_input: { file_path: join(real, "gh") } });
+  assert.equal(main(throughRealDir, ["pre-tool-use", dir]).code, 2, "the real directory's file is the protected one");
+  const throughLink = JSON.stringify({ tool_name: "Write", tool_input: { file_path: join(link, "gh") } });
+  assert.equal(main(throughLink, ["pre-tool-use", dir]).code, 2, "and the same file named through the link is refused too");
 });

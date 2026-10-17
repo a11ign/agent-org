@@ -80,7 +80,7 @@ const MARK_REFUSAL: Refusal = { pattern: new RegExp(`\\b(?:${REVIEW_FILE}|${PUBL
 const FILE_TOOLS: ReadonlySet<string> = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 
 /** The commands that install the host's programs, which write its `gh` wrapper and launcher: the host's to run (A11-84). */
-const HOST_INSTALL_REFUSAL: Refusal = { pattern: /\bhost:install\b|\bhost:check\b[^\n;&|]*--install\b|\bhost-units\.ts\b[^\n;&|]*--install\b|\bhost(?:Identity|Units)Install\b/,
+const HOST_INSTALL_REFUSAL: Refusal = { pattern: /(?:\b(?:pnpm|agent-org)\s+(?:run\s+)?|^\s*)host:install\b|\bhost:check\b[^\n;&|]*--install\b|\bhost-units\.ts\b[^\n;&|]*--install\b|\bhost(?:Identity|Units)Install\s*\(/,
   why: "installing the host's programs is the host's: `host:install` writes its gh wrapper and launcher" };
 
 /**
@@ -92,8 +92,18 @@ function protectedWriteRefusal(paths: readonly string[]): Refusal {
   const names = paths.flatMap((path) => path.startsWith(`${home}/`)
     ? [escape(path), escape(`~${path.slice(home.length)}`), escape(`$HOME${path.slice(home.length)}`)] : [escape(path)]);
   const named = names.length === 0 ? "(?!)" : `(?:${names.join("|")})(?![\\w.-])`;
-  const verbs = String.raw`(?:>>?|\btee\b|\bcp\b|\bmv\b|\binstall\b|\bln\b|\brm\b|\bchmod\b|\bsed\s+-i\b|\btruncate\b|\bdd\b[^\n;&|]*\bof=)`;
-  return { pattern: new RegExp(`${verbs}[^\\n;&|]*${named}`),
+  // A verb counts only at the head of a command, so `grep install ~/.local/bin/gh` is a read. `cp`, `mv`, `install` and `ln` write their LAST argument, so
+  // a protected path as their source is a read; the others change or remove the file wherever it sits.
+  const head = String.raw`(?:^|[;&|(\n]|\$\()\s*(?:sudo\s+)?`;
+  const lastArgument = String.raw`\s*(?=[;&|)\n]|$)`;
+  const alternatives = [
+    String.raw`${head}(?:cp|mv|install|ln)\b[^\n;&|]*\s${named}${lastArgument}`,
+    String.raw`${head}(?:rm|chmod|truncate|tee)\b[^\n;&|]*${named}`,
+    String.raw`${head}sed\s+-i\b[^\n;&|]*${named}`,
+    String.raw`\bdd\b[^\n;&|]*\bof=${named}`,
+    String.raw`>>?\s*${named}`,
+  ];
+  return { pattern: new RegExp(alternatives.join("|")),
     why: `${paths.join(", ")} ${paths.length === 1 ? "is" : "are"} the host's ${paths.length === 1 ? "program" : "programs"}, which a worker may not write` };
 }
 
@@ -177,7 +187,8 @@ export function protectedFiles(ticketDir: string): string[] {
   if (!existsSync(file)) return [];
   try {
     const paths = JSON.parse(readFileSync(file, "utf8")) as unknown;
-    return Array.isArray(paths) ? paths.map(String) : [];
+    // Resolved as a write tool's path is (`resolveWritePath`), so a symbolic link to the bin directory names the same files.
+    return Array.isArray(paths) ? paths.map((path) => resolveWritePath(String(path))) : [];
   } catch {
     return [];
   }
