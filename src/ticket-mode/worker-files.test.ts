@@ -208,6 +208,7 @@ test("a review round waits for checks in the foreground, each call under 10 minu
     assert.ok(brief.includes("`gh pr checks <url> --watch --interval 30`"), "a blocking command that returns when the checks finish");
     assert.match(brief, /Keep each Bash call under 10 minutes, and run it again until what you wait for has finished or 30 minutes have passed\./);
     assert.match(brief, /Never end your turn to wait, and never wait with `run_in_background` or a background task/);
+    assert.match(brief, /The one background wait the brief allows is a Monitor on a process you started detached \(with `nohup`, `&`, `setsid` or a unit\)/, "a detached process is waited on by a Monitor, the one background wait the brief allows");
   }
 });
 
@@ -299,9 +300,15 @@ test("A11-70: a batch's brief names the host file's clones keys as the only repo
 test("A11-80: a worker may end a turn on working only while its own background work runs and will wake it, and never to park a question", () => {
   const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
   assert.ok(brief.includes('{ "kind": "working", "reason": "<what of yours is still running in the background, and what you do when it wakes you>" }'), "working is one of the outcomes");
-  assert.match(brief, /Write `working` only while your own background work \(a shell, a Monitor or a task you started\) is genuinely still running and will wake you when it finishes/);
+  assert.match(brief, /Write `working` only while your own background work \(a background shell or a Monitor\) is genuinely still running and will wake you when it finishes/);
   assert.match(brief, /Never write `working` to park a question or to wait on a person: that is `needs-human`/);
   assert.match(brief, /write the outcome file again with how the run ended, or with `working` again if more of it is still running/);
+});
+
+test("A11-85: the brief says how to wait on a process started detached: a Monitor on its PID or its log, never a bare claim of working", () => {
+  const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
+  assert.match(brief, /A process you started detached is not background work of yours until a Monitor holds it: it wakes nothing when it ends, so arm a Monitor on its PID or its log \(`until ! kill -0 <pid>; do sleep 5; done`\) before you write `working`/);
+  assert.match(brief, /A `working` with no shell or Monitor running is refused: nothing will wake you\./);
 });
 
 // A11-82: a pull request that conflicts with its base is merged first, and a planner says where its work lands and what paths it touches.

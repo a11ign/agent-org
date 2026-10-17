@@ -9,7 +9,7 @@ import {
   batchDir, batchFolder, countTokens, createPool, feedbackSince, findFolderSession, findTranscript, herdrName, herdrServerCommand, isStartDialog, parseOutcome, publishDir, publishResult,
   ticketDir, ticketFolder, worktreesIn,
 } from "./pool.ts";
-import { approve, emptyQueue, enqueue, finish, queuePublish, recordPullStates, respond, retry, setPaused, type Queue } from "./queue.ts";
+import { approve, BACKGROUND_GONE_MS, emptyQueue, enqueue, finish, queuePublish, recordPullStates, respond, retry, setPaused, type Queue } from "./queue.ts";
 import { parseTicketSettings } from "./settings.ts";
 import { REVIEWER_LOGIN, loadReviewerGate, readReviewerMemory, reviewerMemoryPath, type RepostAnswer, type ReviewerPort, type ReviewerRef, type ReviewerSettled } from "./reviewer-port.ts";
 import type { Ticket, TicketSource } from "./source.ts";
@@ -2218,7 +2218,8 @@ test("A11-80: a working outcome is read with its reason and does not end the run
 
 test("A11-80: a working run idle with no newer outcome for tickets.stallMinutes is marked stalled, once, and is neither ended nor prompted", async () => {
   let clock = 100;
-  const { pool, status, entry, settings, h } = setup(1, ["NBF-1"], { stallMinutes: 30 }, { now: () => clock });
+  const { pool, status, entry, settings, h, screen } = setup(1, ["NBF-1"], { stallMinutes: 30 }, { now: () => clock });
+  screen.text = PANE("1 shell");  // a shell of its own still runs, so the background rule does not stall it first
   await pool.tick();
   status.set(herdrName("NBF-1"), "working");
   await pool.tick();
@@ -2238,6 +2239,87 @@ test("A11-80: a working run idle with no newer outcome for tickets.stallMinutes 
   status.set(herdrName("NBF-1"), "working");
   await pool.tick();
   assert.equal(entry("NBF-1").working?.stalled, undefined, "its work woke it: the stall is cleared");
+});
+
+/** A pane's bottom lines as Claude Code draws them: its status line counts the background work given (`1 shell, 1 monitor`), or none. */
+const PANE = (counts = "") => `❯\n────\n  5h ╸─────── 5%\n  ⏵⏵ bypass permissions on${counts ? ` · ${counts}` : ""}`;
+const resumes = (h: { calls: string[][] }) => h.calls.filter((args) => args.includes("prompt")).length;
+
+/** NBF-1 wrote `working`, and went idle with its pane showing `screen`: the clock moves on with `advance`. */
+async function idleWithWork(screen: string, { refuseRead = false }: { refuseRead?: boolean } = {}) {
+  let clock = 100;
+  const made = setup(1, ["NBF-1"], { stallMinutes: 30 }, { now: () => clock });
+  await made.pool.tick();
+  made.status.set(herdrName("NBF-1"), "working");
+  await made.pool.tick();
+  writeFileSync(join(ticketDir(made.settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "working", reason: "the roll is still running" }));
+  made.status.set(herdrName("NBF-1"), "idle");
+  made.screen.text = screen;
+  if (refuseRead) made.h.refused.add("read");
+  await made.pool.tick();
+  return { ...made, advance: (ms: number) => { clock += ms; } };
+}
+
+test("A11-85: a working run whose pane shows no background work for BACKGROUND_GONE_MS is marked stalled and prompted once, not before", async () => {
+  const { pool, entry, h, advance } = await idleWithWork(PANE());
+  advance(BACKGROUND_GONE_MS - 1);
+  await pool.tick();
+  assert.equal(entry("NBF-1").working?.stalled, undefined, "not before the background time");
+  const calls = h.calls.length;
+  advance(1);
+  const logged = await captureStderr(async () => { await pool.tick(); await pool.tick(); });
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").working?.stalled, entry("NBF-1").working?.stallReason], ["running", true, "background work gone"]);
+  assert.equal(runStatus(entry("NBF-1")), "working", "still In progress, not ended");
+  assert.deepEqual(h.calls.slice(calls).filter((args) => args.includes("prompt")),
+    [["--session", "tickets", "agent", "prompt", herdrName("NBF-1"), "your background work is gone; check it and carry on"]], "prompted once, with the resume text");
+  assert.equal(logged.filter((line) => line.includes("NBF-1 wrote working with no background work running")).length, 1, "said once");
+  assert.equal(h.calls.slice(calls).some((args) => args.includes("send-keys") || args.includes("close")), false, "no key sent and nothing closed");
+});
+
+test("A11-85: a pane that shows a shell or a Monitor is not stalled however long the worker sits idle with it", async () => {
+  const { pool, entry, h, advance } = await idleWithWork(PANE("1 shell, 1 monitor"));
+  advance(BACKGROUND_GONE_MS * 2);
+  await pool.tick();
+  assert.deepEqual([entry("NBF-1").working?.stalled, entry("NBF-1").working?.resumed], [undefined, undefined]);
+  assert.equal(resumes(h), 0, "not prompted");
+});
+
+test("A11-85: a pane that cannot be read leaves the thirty-minute rule to decide alone: no background stall, no prompt", async () => {
+  const { pool, entry, h, advance } = await idleWithWork(PANE(), { refuseRead: true });
+  advance(BACKGROUND_GONE_MS * 2);
+  await pool.tick();
+  assert.equal(entry("NBF-1").working?.stalled, undefined, "not stalled by its background work");
+  assert.equal(resumes(h), 0, "not prompted");
+  advance(30 * 60_000);
+  await pool.tick();
+  assert.deepEqual([entry("NBF-1").working?.stalled, entry("NBF-1").working?.stallReason], [true, undefined], "the thirty-minute rule stalls it, by idleness");
+});
+
+test("A11-85: background work seen again clears the mark, so a later gone is a new one; a second working with nothing running is not prompted again", async () => {
+  const { pool, entry, h, screen, advance, settings } = await idleWithWork(PANE());
+  advance(BACKGROUND_GONE_MS);
+  await pool.tick();
+  assert.equal(resumes(h), 1, "the first gone is prompted");
+  screen.text = PANE("1 shell");
+  await pool.tick();
+  assert.deepEqual([entry("NBF-1").working?.stalled, entry("NBF-1").working?.resumed], [undefined, undefined], "seen again: the mark is cleared");
+  const outcome = join(ticketDir(settings, "NBF-1"), "outcome.json");
+  writeFileSync(outcome, JSON.stringify({ kind: "working", reason: "the second play is running" }));
+  const later = new Date(Date.now() + 60_000);
+  utimesSync(outcome, later, later);
+  screen.text = PANE();
+  await pool.tick();
+  advance(BACKGROUND_GONE_MS);
+  await pool.tick();
+  assert.equal(entry("NBF-1").working?.stalled, true, "a fresh working note with nothing running is stalled again");
+  assert.equal(resumes(h), 2, "and prompted: the mark was cleared by real work");
+  writeFileSync(outcome, JSON.stringify({ kind: "working", reason: "a third play, still nothing running" }));
+  utimesSync(outcome, new Date(later.getTime() + 60_000), new Date(later.getTime() + 60_000));
+  await pool.tick();
+  advance(BACKGROUND_GONE_MS);
+  await pool.tick();
+  assert.equal(entry("NBF-1").working?.stalled, true, "stalled again");
+  assert.equal(resumes(h), 2, "not prompted again without real work between");
 });
 
 test("A11-80: a parked run whose worker, woken between two looks, writes working is live again with that note, not ended", async () => {

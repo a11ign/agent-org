@@ -45,7 +45,11 @@
 // board showed Needs you though nothing was asked of the person, and parked a run that carried on by itself. It writes `working` instead. The
 // pool records its reason as the run's latest note and leaves the run running, holding its slot and watched as before: the outcome it writes
 // when its work wakes it replaces the note and ends the run as usual. An agent that sits idle with no newer outcome for `tickets.stallMinutes`
-// is marked stalled on the board, so a run whose work never woke it is still noticed; nothing is ended and no key is sent.
+// is marked stalled on the board, so a run whose work never woke it is still noticed; nothing is ended and no key is sent; the one prompt says the background work is gone (A11-85).
+//
+// A `working` RUN WITH NOTHING TO WAKE IT IS STALLED IN MINUTES, NOT THIRTY (A11-85). The board reads the run's pane for the background work its status
+// line counts (`· 1 shell, 1 monitor`). An idle run whose pane shows none for `BACKGROUND_GONE_MS` is marked stalled, and told once, with
+// `BACKGROUND_GONE_PROMPT`, to check its background work and carry on. A pane that cannot be read leaves the thirty-minute rule to decide alone.
 //
 // A RUN READY TO MERGE IS WATCHED. Every few minutes (`watchFeedback`) the board reads the open pull requests of each finished run (`readPullFeedback`,
 // through `gh`). A review, a conversation comment or an inline comment newer than the run's last round, from anyone but the account the workers
@@ -87,7 +91,7 @@ import {
   batchPlanDone, clearMove, dismiss as dismissFinished, feedbackRound, finish, isLive, leaveBatch, markPublishRunning, markPublishStarting, markResumed, markRunning, markStarting, nextStarts,
   observe, noteWorking, observePublish, park, pathsUnread, planDone, publishDone, publishFailed, publishStarts, recordBlockers, recordMove, recordPaths, recordPullFiles,
   recordPullStates, recordRepos, recordTrackerStates, recordVerdictNotPosted, remove as removeQueued, unpark, unreadBlockerKeys, unreadPaths, unsettledKeys, watchWorking,
-  type Entry, type Outcome, type PublishRun, type Queue, type RunChoice, type WrittenOutcome,
+  BACKGROUND_GONE, BACKGROUND_GONE_MS, type Background, type Entry, type Outcome, type PublishRun, type Queue, type RunChoice, type WrittenOutcome,
 } from "./queue.ts";
 import type { Ticket, TicketSource } from "./source.ts";
 import { unreachablePlugins } from "./plugins.ts";
@@ -104,6 +108,7 @@ import {
   type BatchTicket, type HookCommand, type ParentTicket,
 } from "./worker-files.ts";
 import { ticketDir, ticketFolder } from "./ticket-paths.ts";
+import { paneBackgroundWork } from "./background-work.ts";
 
 /** herdr waits on Claude's start; a slow one has been measured past 30 s (`wake.ts`'s start budget), so a start gets 90. */
 const START_TIMEOUT_MS = 90_000;
@@ -127,6 +132,9 @@ const NO_VERDICT_FILE = "the reviewer ended without writing a verdict file";
 export type Herdr =(args: string[], timeoutMs?: number) => string;
 
 const defaultHerdr: Herdr = (args, timeoutMs = 30_000) => herdrRun(args, timeoutMs);
+
+/** What the board tells a worker whose run is idle with no background work to wake it, once (A11-85). */
+const BACKGROUND_GONE_PROMPT = "your background work is gone; check it and carry on";
 
 /** herdr for the one slow call, `agent start`, so a start does not stop the board answering. */
 export type HerdrAsync = (args: string[], timeoutMs: number) => Promise<string>;
@@ -781,11 +789,40 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
 
   /** Move a working run's idle clock on `seen`, and log once when the run is first marked stalled. Nothing is ended and no key is sent. */
   function watchStall(entry: Entry, seen: string): void {
-    const before = store.get().entries.find((e) => e.ticket.key === entry.ticket.key)?.working?.stalled === true;
-    updateEach(runMembers(entry), (queue, member) => watchWorking(queue, member, seen, now(), stallMs));
+    const before = store.get().entries.find((e) => e.ticket.key === entry.ticket.key)?.working;
+    const wasResumed = before?.resumed === true;
+    const background = seen === "working" ? null : paneBackground(entry);
+    updateEach(runMembers(entry), (queue, member) => watchWorking(queue, member, seen, now(), stallMs, background));
     const note = store.get().entries.find((e) => e.ticket.key === entry.ticket.key)?.working;
-    if (!before && note?.stalled === true) {
-      log(`${entry.batch ?? entry.ticket.key} has been idle for ${settings.stallMinutes} minutes or more since it wrote working, with no newer outcome: ${note.reason}`);
+    if (before?.stalled !== true && note?.stalled === true) {
+      const who = entry.batch ?? entry.ticket.key;
+      log(note.stallReason === BACKGROUND_GONE
+        ? `${who} wrote working with no background work running for ${BACKGROUND_GONE_MS / 60_000} minutes, so nothing will wake it: marked stalled, and told once to check its background work: ${note.reason}`
+        : `${who} has been idle for ${settings.stallMinutes} minutes or more since it wrote working, with no newer outcome: ${note.reason}`);
+    }
+    if (!wasResumed && note?.resumed === true) promptBackgroundGone(entry);
+  }
+
+  /**
+   * The background work a run's pane shows, as the board's {@link Background}: `live` when its status line counts a shell or a Monitor, `none` when
+   * it counts neither, and null when herdr cannot read the pane, so the thirty-minute rule decides alone.
+   */
+  function paneBackground(entry: Entry): Background {
+    if (entry.pane === undefined) return null;
+    try {
+      const counts = paneBackgroundWork(herdr(["--session", settings.herdrSession, "pane", "read", entry.pane, "--source", "visible", "--lines", "6"]));
+      return counts.shells + counts.monitors > 0 ? "live" : "none";
+    } catch {
+      return null;
+    }
+  }
+
+  /** Tell a run's worker, once, that its background work is gone: it checks it and carries on. A refusal is said, and nothing else is sent. */
+  function promptBackgroundGone(entry: Entry): void {
+    try {
+      herdr(["--session", settings.herdrSession, "agent", "prompt", runPlace(entry).name, BACKGROUND_GONE_PROMPT]);
+    } catch (err) {
+      log(`${entry.batch ?? entry.ticket.key} could not be told its background work is gone: ${herdrReason(err)}`);
     }
   }
 

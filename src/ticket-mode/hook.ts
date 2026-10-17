@@ -7,10 +7,13 @@
 // `worker-stop-hook.ts` does: the nbl-ui plugin's own Stop gates block once and then let the next stop through on that flag, and a hook that also
 // honoured it would let a worker end on that second stop with no outcome. Its own count is what bounds it.
 //
-// A `working` OUTCOME LETS ONE STOP THROUGH (A11-80). A worker whose own background work runs on writes `{ "kind": "working", ... }` and ends its
-// turn; the pool keeps the run running. When that work wakes it, the file still says `working`, so a stop on the SAME file (the time recorded in
-// `working-stop` when it was let through) is refused like a missing outcome, with the same count: the worker says how the run stands now, or
-// writes `working` again while more of its work is running.
+// A `working` OUTCOME LETS ONE STOP THROUGH, AND ONLY WHILE SOMETHING WILL WAKE THE WORKER (A11-80, A11-85). A worker whose own background work runs on
+// writes `{ "kind": "working", ... }` and ends its turn; the pool keeps the run running. The stop is let through only if the session's transcript
+// (`transcript_path`, in the Stop payload) shows a background shell or Monitor still live (`background-work.ts`). With none, it is refused, so a
+// worker that detached a process and waited on nothing is told to wait in the foreground or arm a Monitor on it. A transcript it cannot read is
+// let through OUT LOUD, and the board's stall check is the backstop. When that work wakes it, the file still says `working`, so a stop on the SAME
+// file (the time recorded in `working-stop` when it was let through) is refused like a missing outcome, with the same count: the worker says how the
+// run stands now, or writes `working` again while more of its work is running.
 //
 // PRE-TOOL-USE: WHAT ONLY A PERSON DOES. A worker opens a DRAFT pull request, links it into a stack with `gh stack link` when its brief says so,
 // and stops. Marking it ready, requesting a review, merging, force-pushing, running a workflow, posting to Slack and any other `gh stack`
@@ -36,6 +39,7 @@ import { existsSync, readFileSync, realpathSync, statSync, writeFileSync } from 
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { liveBackgroundWork } from "./background-work.ts";
 import type { DenyRule } from "./settings.ts";
 import { CONNECTORS_FILE, DENY_FILE, OUTCOME_FILE, PROTECTED_FILE, PUBLISH_FILE, READY_FILE, REVIEW_FILE, STOP_COUNT_FILE, WORKING_STOP_FILE } from "./worker-files.ts";
 
@@ -45,6 +49,9 @@ export const MAX_STOP_REFUSALS = 2;
 
 const ALLOW: HookResult = { code: 0, say: [] };
 const refuse = (reason: string): HookResult => ({ code: 2, say: [`ticket-mode: ${reason}`] });
+
+/** What a `working` outcome is refused with when the session has no live background work to wake it (A11-85). */
+const NOTHING_WAKES = "nothing is running that will wake you; wait in the foreground or arm a Monitor on the process (its PID or its log)";
 
 type Refusal = Readonly<{ pattern: RegExp; why: string }>;
 
@@ -231,13 +238,28 @@ function isWorking(text: string): boolean {
 }
 
 /**
+ * The background work the session's transcript shows as live: its count, or the reason it could not be read (the Stop payload named no transcript,
+ * or the file is not there or not readable). A transcript that cannot be read is not a refusal: the caller allows the stop out loud.
+ */
+function liveWork(transcriptPath: string | undefined, read: (path: string) => string): { live: number; unreadable?: string } {
+  if (transcriptPath === undefined) return { live: 0, unreadable: "the Stop payload names no transcript_path" };
+  try {
+    const work = liveBackgroundWork(read(transcriptPath));
+    return { live: work.shells.length + work.monitors.length };
+  } catch (err) {
+    return { live: 0, unreadable: `${transcriptPath}: ${String((err as Error)?.message ?? err).split("\n")[0]}` };
+  }
+}
+
+/**
  * The Stop verdict: allowed once the outcome file is there, refused with its path otherwise, up to {@link MAX_STOP_REFUSALS} in a row. A `working`
- * outcome allows one stop; a later stop on the same file, by its time, is refused the same way, so a worker its background work woke says how
- * the run stands now.
+ * outcome allows one stop, and only while the session has live background work to wake it (`transcriptPath`); a later stop on the same file, by its
+ * time, is refused the same way, so a worker its background work woke says how the run stands now.
  */
 export function stopVerdict(ticketDir: string, { exists = existsSync, read = (p: string) => readFileSync(p, "utf8"), write = (p: string, t: string) => writeFileSync(p, t),
-  mtime = (p: string) => statSync(p).mtimeMs }: {
+  mtime = (p: string) => statSync(p).mtimeMs, transcriptPath }: {
   exists?: (path: string) => boolean; read?: (path: string) => string; write?: (path: string, text: string) => void; mtime?: (path: string) => number;
+  transcriptPath?: string;
 } = {}): HookResult {
   const outcome = join(ticketDir, OUTCOME_FILE);
   const counter = join(ticketDir, STOP_COUNT_FILE);
@@ -245,12 +267,23 @@ export function stopVerdict(ticketDir: string, { exists = existsSync, read = (p:
   let ask = `write ${outcome} before you stop, with one of the outcomes your brief lists, such as { "kind": "needs-human", "reason": "..." }.`;
   if (exists(outcome)) {
     const working = isWorking(read(outcome)) ? String(mtime(outcome)) : null;
-    if (working === null || !exists(stamp) || read(stamp).trim() !== working) {
-      if (working !== null) write(stamp, working);
+    if (working === null) {
       write(counter, "0");
       return ALLOW;
     }
-    ask = `${outcome} still says working from before your background work woke you: write it again with how the run stands now, or with { "kind": "working", "reason": "..." } again if more of your own work is still running.`;
+    if (!exists(stamp) || read(stamp).trim() !== working) {
+      const work = liveWork(transcriptPath, read);
+      if (work.unreadable === undefined && work.live === 0) {
+        ask = `${NOTHING_WAKES}. ${outcome} says working, but none of your background work is running: wait for the work in the foreground, or write the outcome the run ended on.`;
+      } else {
+        // Let through, with its time stamped, so a stop on this same file is refused once its work has woken the worker.
+        write(stamp, working);
+        write(counter, "0");
+        return work.unreadable === undefined ? ALLOW : { code: 0, say: [`ticket:hook: could not read the transcript (${work.unreadable}), so working is ALLOWED.`] };
+      }
+    } else {
+      ask = `${outcome} still says working from before your background work woke you: write it again with how the run stands now, or with { "kind": "working", "reason": "..." } again if more of your own work is still running.`;
+    }
   }
   const refused = exists(counter) ? Number.parseInt(read(counter), 10) || 0 : 0;
   if (refused >= MAX_STOP_REFUSALS) {
@@ -261,11 +294,21 @@ export function stopVerdict(ticketDir: string, { exists = existsSync, read = (p:
   return refuse(ask);
 }
 
+/** The transcript a Stop payload names, where Claude Code writes the session, or undefined when the payload names none it can read. */
+function transcriptOf(stdin: string): string | undefined {
+  try {
+    const path = (JSON.parse(stdin) as { transcript_path?: unknown } | null)?.transcript_path;
+    return typeof path === "string" && path !== "" ? path : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function main(stdin: string, argv: string[]): HookResult {
   const [event, ticketDir] = argv;
   if ((event !== "stop" && event !== "pre-tool-use") || !ticketDir) return { code: 0, say: [`ticket:hook: usage is ticket:hook stop|pre-tool-use <ticket dir>, so this call is ALLOWED.`] };
   try {
-    if (event === "stop") return stopVerdict(ticketDir);
+    if (event === "stop") return stopVerdict(ticketDir, { transcriptPath: transcriptOf(stdin) });
     const payload = JSON.parse(stdin) as { tool_name?: string; tool_input?: Record<string, unknown> };
     const { refusals, note } = machineRefusals(ticketDir);
     const allowed = machineConnectors(ticketDir);
