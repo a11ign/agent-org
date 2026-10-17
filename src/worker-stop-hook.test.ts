@@ -53,13 +53,13 @@ function seams(dir: string, over: Omit<Partial<Seams>, "prs"> & { prs?: StopPr[]
   const { prs = [], ...rest } = over;
   return { session: SESSION, trackers: TRACKERS, stateDir: dir, now: T0, prs: () => prs, owns, gh: fakeGh([]), answerPrefix: ANSWER_PREFIX, sessionPrefix: SESSION_PREFIX, ...rest };
 }
-/** The `gh` the bound writes through, every call recorded in `calls`: the row is read OPEN, CLOSED, or not at all (`row`) with `comments` on it, and the writes answer nothing. */
-function fakeGh(calls: string[][], row: "open" | "closed" | "unreadable" = "open", comments: object[] = []): Gh {
+/** The `gh` the bound writes through, every call recorded in `calls`: the row is read OPEN, CLOSED, or not at all (`row`) with `comments` and `labels` on it, and the writes answer nothing. */
+function fakeGh(calls: string[][], row: "open" | "closed" | "unreadable" = "open", comments: object[] = [], labels: string[] = []): Gh {
   return (args) => {
     calls.push(args);
     if (args[0] !== "issue" || args[1] !== "view") return "";
     if (row === "unreadable") throw Object.assign(new Error("HTTP 502"), { stderr: "HTTP 502" });
-    return JSON.stringify({ state: row === "open" ? "OPEN" : "CLOSED", labels: [], comments });
+    return JSON.stringify({ state: row === "open" ? "OPEN" : "CLOSED", labels: labels.map((name) => ({ name })), comments });
   };
 }
 const declaredOf = (dir: string) => readDeclarations(`${dir}/${WORKER_STATE_DIR}`)?.byClaimant.get(SESSION);
@@ -159,6 +159,48 @@ test("negative controls for the ruling at the bound: a ruling older than the wor
   runHook(OFF, seams(reviewer, { gh: reviewerGh }));
   runHook(OFF, seams(reviewer, { now: T0 + 5 * MIN, gh: reviewerGh }));
   assert.ok(reviewerCalls.some((args) => args.join(" ") === `issue edit 853 --repo ${REPO} --add-label ${ANSWER_PREFIX}product-manager`), "a reviewer's comment is not a ruling");
+});
+
+/** A `BLOCKED` comment the worker left on the row, owing an answer to `to`, with the reason as `applyLabel` writes it. */
+const blockedComment = (createdAt: number, id: number, reason: string, to = "product-manager") =>
+  commentAt(createdAt, id, `BLOCKED (\`${SESSION}\`, declared with \`worker:state\`): ${reason}\n\nOwed by \`${to}\`; the row carries \`${ANSWER_PREFIX}${to}\`.`);
+const answeredReason = (earlier: string) => `second bound after an answered block (${earlier}); the turn ended again with no pull request and no declaration`;
+
+test("POSITIVE CONTROL (agent-org#1687): at the bound, a block the answer has since cleared is named in the declared reason, and the repeat says so on the row", () => {
+  const dir = stateDir();
+  const calls: string[][] = [];
+  const gh = fakeGh(calls, "open", [blockedComment(T0 - 60 * MIN, 1, "row-file refuses the milestone step")]);
+  runHook(OFF, seams(dir, { gh }));
+  runHook(OFF, seams(dir, { gh }));
+  assert.equal(runHook(OFF, seams(dir, { now: T0 + 5 * MIN, gh })).code, 0, "the bound");
+  assert.equal(declaredOf(dir)?.reason, answeredReason("row-file refuses the milestone step"), "the declared reason names the answered block");
+  assert.ok(calls.some((args) => args.join(" ") === `issue edit 853 --repo ${REPO} --add-label ${ANSWER_PREFIX}product-manager`), "no ruling on that block, so the answer is owed again");
+  const posted = calls.find((args) => args[0] === "issue" && args[1] === "comment");
+  assert.ok(String(posted?.at(-1)).includes(answeredReason("row-file refuses the milestone step")), "the row's comment carries the same reason");
+});
+
+test("the answered-block reason quotes the first line of a longer reason only, and keeps today's text for a block still owed an answer and for one whose time cannot be read", () => {
+  const longer = stateDir();
+  const longerGh = fakeGh([], "open", [blockedComment(T0 - 60 * MIN, 1, "row-file refuses the milestone step\nthe second line of the reason")]);
+  runHook(OFF, seams(longer, { gh: longerGh }));
+  runHook(OFF, seams(longer, { gh: longerGh }));
+  runHook(OFF, seams(longer, { now: T0 + 5 * MIN, gh: longerGh }));
+  assert.equal(declaredOf(longer)?.reason, answeredReason("row-file refuses the milestone step"), "only the first line is quoted");
+  const owed = stateDir();
+  const owedCalls: string[][] = [];
+  const owedGh = fakeGh(owedCalls, "open", [blockedComment(T0 - 60 * MIN, 1, "row-file refuses the milestone step")], [`${ANSWER_PREFIX}product-manager`]);
+  runHook(OFF, seams(owed, { gh: owedGh }));
+  runHook(OFF, seams(owed, { gh: owedGh }));
+  runHook(OFF, seams(owed, { now: T0 + 5 * MIN, gh: owedGh }));
+  assert.equal(declaredOf(owed)?.reason, BOUND_REASON, "the label is still on the row: no answer has come, so today's text");
+  const unread = stateDir();
+  const unreadGh = fakeGh([], "open", [{ ...blockedComment(T0 - 60 * MIN, 1, "row-file refuses the milestone step"), createdAt: "not a time" }]);
+  runHook(OFF, seams(unread, { gh: unreadGh }));
+  runHook(OFF, seams(unread, { gh: unreadGh }));
+  const third = runHook(OFF, seams(unread, { now: T0 + 5 * MIN, gh: unreadGh }));
+  assert.equal(third.code, 0, "the declaration is still made: an unreadable earlier block withholds only the enrichment");
+  assert.equal(declaredOf(unread)?.reason, BOUND_REASON, "its time cannot be read, so today's text");
+  assert.equal(ledgerEntries(unread).length, 1, "the ledger line is still written");
 });
 
 test("at the bound, a row that cannot be read or is closed gets no declaration: the stop is still allowed, the ledger line is still written, and the failure is said", () => {

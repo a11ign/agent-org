@@ -34,8 +34,8 @@
 import { mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { FAILURE_LEDGER_FILE, recordFailure } from "./failure-ledger.ts";
-import type { Declaration, Gh } from "./worker-state.ts";
-import { DEFAULT_ANSWERER, WORKER_STATE_DIR, applyBlocked, ghRowLook, isWorkerSession, lastDeliveredTo, readDeclarations, resolveBlockedRow, writeDeclaration } from "./worker-state.ts";
+import type { Declaration, Gh, RowComment, RowLook } from "./worker-state.ts";
+import { DEFAULT_ANSWERER, WORKER_STATE_DIR, applyBlocked, ghRowLook, isWorkerSession, lastDeliveredTo, readDeclarations, resolveBlockedRow, rulingOn, writeDeclaration } from "./worker-state.ts";
 import { githubTicketAdapter } from "./ticket-port/github-adapter.ts";
 
 /** Refusals in a row for one claimed row before the stop is allowed. The chairman's number (a11ign#4957): two. */
@@ -126,21 +126,62 @@ function wakeLedgerText(path: string): string {
 }
 
 /**
+ * THE BLOCK THIS SESSION ALREADY DECLARED AND THE ANSWER HAS SINCE CLEARED (class stop-hook-bound, agent-org#1687): the newest `BLOCKED` comment the worker left
+ * on the row that owes an answer (`Owed by \`<to>\``), when `answer:<to>` is no longer on the row. Its reason is the FIRST line of that comment, so a long reason is
+ * quoted by its first line only. `null` when there is no such comment, when the label is still there (no answer has come), or when the comment's time cannot be
+ * read (the bound then says what it always said: it cannot tell which block is newest).
+ * @param {RowComment[]} comments @param {string} session @param {string[]} labels the row's labels @param {string} answerPrefix
+ * @returns {{ reason: string, to: string } | null}
+ */
+export function answeredBlockOf(comments: RowComment[], session: string, labels: string[], answerPrefix: string): { reason: string; to: string } | null {
+  const header = `BLOCKED (\`${session}\`, declared with \`worker:state\`): `;
+  let newest: { at: number; reason: string; to: string } | null = null;
+  for (const comment of comments) {
+    const owed = /\n\nOwed by `([^`]+)`; the row carries `/.exec(comment.body);
+    const first = comment.body.split("\n")[0];
+    if (owed === null || !first.startsWith(header)) continue;
+    const at = Date.parse(comment.createdAt);
+    if (Number.isNaN(at)) return null;
+    if (newest === null || at > newest.at) newest = { at, reason: first.slice(header.length), to: owed[1] };
+  }
+  if (newest === null || labels.includes(`${answerPrefix}${newest.to}`)) return null;
+  return { reason: newest.reason, to: newest.to };
+}
+
+/** The reason the bound declares: today's text, or, after a block that was answered, that block's first line named (agent-org#1687). */
+const boundReason = (answered: { reason: string } | null): string =>
+  answered === null
+    ? `ended its turn after ${MAX_REFUSALS} refusals of worker:stop-hook with no pull request and no declaration; nothing says what it was waiting for`
+    : `second bound after an answered block (${answered.reason}); the turn ended again with no pull request and no declaration`;
+
+/**
  * The `blocked` declaration the bound makes for the worker, through the path `worker:state blocked` takes: the row is read (refused when it is closed or cannot be
  * read), the answer label and the reason are written by `applyBlocked`, and the declaration is written last. Returns the reason it could not be made, or null.
  * Never throws: a failure is a said allowance, as every other read in this file.
  */
 function declareAtBound(session: string, claim: { key: string; row: number }, seams: Seams): string | null {
-  const declaration: Declaration = {
-    session, state: "blocked", at: seams.now, row: claim.row, rowKey: claim.key, to: DEFAULT_ANSWERER,
-    reason: `ended its turn after ${MAX_REFUSALS} refusals of worker:stop-hook with no pull request and no declaration; nothing says what it was waiting for`,
+  // the row's labels come from the same read as its comments: whether the earlier block was answered is a label question
+  let labels: string[] = [];
+  const look: RowLook = (repo, number) => {
+    const fact = ghRowLook(seams.gh)(repo, number);
+    labels = fact?.labels ?? [];
+    return fact;
   };
+  const declaration: Declaration = { session, state: "blocked", at: seams.now, row: claim.row, rowKey: claim.key, to: DEFAULT_ANSWERER };
   try {
-    const resolved = resolveBlockedRow(declaration, { trackers: seams.trackers, look: ghRowLook(seams.gh), sessionLabel: `${seams.sessionPrefix}${session}` });
+    const resolved = resolveBlockedRow(declaration, { trackers: seams.trackers, look, sessionLabel: `${seams.sessionPrefix}${session}` });
     if ("refused" in resolved) return resolved.refused.why;
     const tracker = resolved.declaration.repo as string;
+    const answered = answeredBlockOf(resolved.comments, session, labels, seams.answerPrefix);
+    const written: Declaration = { ...resolved.declaration, reason: boundReason(answered) };
+    // A ruling on the block the repeat restates is not answered by the repeat (agent-org#1493). `applyBlocked` checks the ruling against the NEW reason, which no
+    // manager has seen, so the check against the reason the earlier block gave is made here: a ruled repeat writes the declaration and no label and no comment.
+    if (answered !== null && rulingOn(resolved.comments, { ...written, reason: answered.reason }) !== null) {
+      writeDeclaration(`${seams.stateDir}/${WORKER_STATE_DIR}`, written);
+      return null;
+    }
     const writer = githubTicketAdapter({ run: seams.gh, scope: tracker });
-    const applied = applyBlocked(resolved.declaration, { gh: seams.gh, tracker, answerPrefix: seams.answerPrefix, writer, comments: resolved.comments });
+    const applied = applyBlocked(written, { gh: seams.gh, tracker, answerPrefix: seams.answerPrefix, writer, comments: resolved.comments });
     writeDeclaration(`${seams.stateDir}/${WORKER_STATE_DIR}`, applied.declaration);
     return null;
   } catch (err: any) {
