@@ -11,7 +11,7 @@ import {
 } from "./pool.ts";
 import { approve, emptyQueue, enqueue, finish, queuePublish, recordPullStates, respond, retry, setPaused, type Queue } from "./queue.ts";
 import { parseTicketSettings } from "./settings.ts";
-import { REVIEWER_LOGIN, loadReviewerGate, readReviewerMemory, reviewerMemoryPath, type ReviewerPort, type ReviewerRef } from "./reviewer-port.ts";
+import { REVIEWER_LOGIN, loadReviewerGate, readReviewerMemory, reviewerMemoryPath, type RepostAnswer, type ReviewerPort, type ReviewerRef, type ReviewerSettled } from "./reviewer-port.ts";
 import type { Ticket, TicketSource } from "./source.ts";
 
 const ticket = (key: string) => ({ key, title: key, description: "", url: `https://linear.app/x/${key}`, branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
@@ -1968,10 +1968,15 @@ const REVIEWING = { reviewer: "atomic", drafts: false };
 /** The teardown a fake reviewer port does not exercise: nothing is closed, retired or listed. */
 const idleTeardown: Pick<ReviewerPort, "close" | "retire" | "listedPulls"> = { close: () => ({ state: "gone" }), retire: () => ({ retired: true, report: null }), listedPulls: () => [] };
 
+/** The verdict a fake reviewer port does not exercise (A11-83): its reviewer is still working, so nothing is posted, prompted or said. */
+const idleVerdict: Pick<ReviewerPort, "settled" | "verdictFileOf" | "repostVerdict" | "reprompt"> = {
+  settled: () => "working", verdictFileOf: () => null, repostVerdict: () => ({ posted: true }), reprompt: () => ({ prompted: true }),
+};
+
 /** A reviewer port that records each start and reports none live, so only the pool's own once-per-head memory stops a second start. */
 function fakeReviewer() {
   const starts: ReviewerRef[] = [];
-  const port: ReviewerPort = { start(ref) { starts.push(ref); return { label: "reviewer-7" }; }, live: () => false, ...idleTeardown };
+  const port: ReviewerPort = { start(ref) { starts.push(ref); return { label: "reviewer-7" }; }, live: () => false, ...idleTeardown, ...idleVerdict };
   return { port, starts };
 }
 
@@ -2003,7 +2008,7 @@ test("a restarted pool starts no second reviewer on a head it already reviewed",
 test("a reviewer is recorded before it starts: an instance stopped while it started one starts no second one after the restart", async () => {
   const starts: ReviewerRef[] = [];
   // The instance stops inside `start`, after the reviewer's workspace is open and before `start` returns.
-  const port: ReviewerPort = { start(ref) { starts.push(ref); throw new Error("SIGTERM"); }, live: () => false, ...idleTeardown };
+  const port: ReviewerPort = { start(ref) { starts.push(ref); throw new Error("SIGTERM"); }, live: () => false, ...idleTeardown, ...idleVerdict };
   const ctx = await readyRun(ghFor({ 1: feedbackPull() }).run, REVIEWING, port);
   assert.throws(() => ctx.pool.watchFeedback(), /SIGTERM/);
   assert.ok(readReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir)).memory.started.has(`${approvedPr.url}@h1`), "on disk before the start");
@@ -2015,7 +2020,7 @@ test("a reviewer is recorded before it starts: an instance stopped while it star
 test("a reviewer herdr still lists for the head is adopted, not started, and stays adopted across a restart", async () => {
   const starts: ReviewerRef[] = [];
   let listed = true;
-  const port: ReviewerPort = { start(ref) { starts.push(ref); return { label: "reviewer-7" }; }, live: ({ head }) => listed && head === "h1", ...idleTeardown };
+  const port: ReviewerPort = { start(ref) { starts.push(ref); return { label: "reviewer-7" }; }, live: ({ head }) => listed && head === "h1", ...idleTeardown, ...idleVerdict };
   const ctx = await readyRun(ghFor({ 1: feedbackPull() }).run, REVIEWING, port);
   ctx.pool.watchFeedback();
   await roundStarted();
@@ -2030,7 +2035,7 @@ test("a reviewer herdr still lists for the head is adopted, not started, and sta
 test("a reviewer start the port refuses is not remembered, so the next watch tries again", async () => {
   const starts: ReviewerRef[] = [];
   let refuse = true;
-  const port: ReviewerPort = { start(ref) { starts.push(ref); return refuse ? { refusal: "herdr did not list the session" } : { label: "reviewer-7" }; }, live: () => false, ...idleTeardown };
+  const port: ReviewerPort = { start(ref) { starts.push(ref); return refuse ? { refusal: "herdr did not list the session" } : { label: "reviewer-7" }; }, live: () => false, ...idleTeardown, ...idleVerdict };
   const ctx = await readyRun(ghFor({ 1: feedbackPull() }).run, REVIEWING, port);
   await captureStderr(async () => { ctx.pool.watchFeedback(); await roundStarted(); });
   assert.equal(readReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir)).memory.started.size, 0);
@@ -2266,6 +2271,7 @@ function reviewerWith({ closeAnswers = ["closed"], retire = () => ({ retired: tr
     },
     retire(pr) { retired.push(pr); return retire(pr); },
     listedPulls,
+    ...idleVerdict,
   };
   return { port, starts, closes, retired };
 }
@@ -2402,4 +2408,160 @@ test("a reviewer is not started for a pull request that has merged, even one the
   ctx.pool.watchFeedback();
   await roundStarted();
   assert.deepEqual(starts, [], "no reviewer is started for a merged pull request");
+});
+
+// A11-83: a reviewer that ended without its verdict on its head. The pool posts the verdict file again, prompts a reviewer that wrote none, and says on
+// the run what is still not posted, with the attempts bounded and remembered.
+
+/**
+ * A reviewer port whose reviewer has ended without a review on its head: `settled` answers `settled`, its verdict file is `file`, and each repost
+ * answers the next of `reposts`. `posts` and `prompts` record what the pool asked, in order.
+ */
+function unpostedReviewer({ file = "/work/verdict-1.md" as string | null, reposts = [] as RepostAnswer[], settled = "ended" as ReviewerSettled } = {}) {
+  const starts: ReviewerRef[] = [];
+  const posts: { ref: ReviewerRef; file: string }[] = [];
+  const prompts: ReviewerRef[] = [];
+  const answers = [...reposts];
+  const port: ReviewerPort = {
+    start(ref) { starts.push(ref); return { label: "reviewer-7" }; },
+    live: () => false,
+    ...idleTeardown,
+    settled: () => settled,
+    verdictFileOf: () => file,
+    repostVerdict(ref, path) { posts.push({ ref, file: path }); return answers.shift() ?? { refusal: "no answer was set", final: false }; },
+    reprompt(ref) { prompts.push(ref); return { prompted: true }; },
+  };
+  return { port, starts, posts, prompts };
+}
+
+/** The pool's view of the verdict NBF-1's pull request is missing, which is what each test below starts from: no review by the reviewer at `h1`. */
+const NOT_POSTED = "verdict not posted";
+
+test("a reviewer that ended with its verdict file written and no review at its head has the file posted again, once, and nothing more once it is on the pull request", async () => {
+  const reviews: unknown[] = [];
+  const made = unpostedReviewer({ reposts: [{ posted: true }] });
+  const ctx = await readyRun(ghFor({ 1: feedbackPull({ reviews }) }).run, REVIEWING, made.port);
+  ctx.pool.watchFeedback();
+  await roundStarted();
+  assert.deepEqual(made.starts.map((ref) => ref.head), ["h1"], "the reviewer for h1 is started");
+  assert.deepEqual(made.posts, [], "a reviewer started in this watch is not judged before it has begun");
+  ctx.pool.watchFeedback();
+  await roundStarted();
+  assert.deepEqual(made.posts, [{ ref: { pr: approvedPr.url, head: "h1" }, file: "/work/verdict-1.md" }], "the verdict file is posted again");
+  reviews.push(reviewOn(REVIEWER_LOGIN, "APPROVED", "h1"));
+  ctx.pool.watchFeedback();
+  await roundStarted();
+  assert.equal(made.posts.length, 1, "a review at the head is on the pull request: nothing is posted again");
+  assert.equal(ctx.entry("NBF-1").verdictNotPosted, undefined, "and nothing is said of the run");
+});
+
+test("a repost refused once and posted on the next watch leaves exactly one posting, and the attempts are forgotten once the review is on the pull request", async () => {
+  const reviews: unknown[] = [];
+  const made = unpostedReviewer({ reposts: [{ refusal: "the reviewer App token could not be minted: no key", final: false }, { posted: true }] });
+  const ctx = await readyRun(ghFor({ 1: feedbackPull({ reviews }) }).run, REVIEWING, made.port);
+  for (let watch = 0; watch < 3; watch += 1) {
+    ctx.pool.watchFeedback();
+    await roundStarted();
+  }
+  assert.equal(made.posts.length, 2, "one refused and one posted");
+  assert.equal(ctx.entry("NBF-1").verdictNotPosted, undefined, "one refusal is not yet something to say on the run");
+  assert.equal(readReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir)).memory.reposts.get(`${approvedPr.url}@h1`)?.attempts, 2, "the attempts are remembered on disk");
+  reviews.push(reviewOn(REVIEWER_LOGIN, "APPROVED", "h1"));
+  ctx.pool.watchFeedback();
+  await roundStarted();
+  assert.equal(readReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir)).memory.reposts.size, 0, "and forgotten once the review is on the pull request");
+});
+
+test("three refusals surface `verdict not posted: <reason>` on the run, and nothing is posted again, even after a restart", async () => {
+  const reason = "the reviewer App token could not be minted: no key file at /keys/reviewer.pem (exit 1)";
+  const made = unpostedReviewer({ reposts: [1, 2, 3].map(() => ({ refusal: reason, final: false })) });
+  const ctx = await readyRun(ghFor({ 1: feedbackPull() }).run, REVIEWING, made.port);
+  for (let watch = 0; watch < 4; watch += 1) {
+    ctx.pool.watchFeedback();
+    await roundStarted();
+  }
+  assert.equal(made.posts.length, 3, "three attempts, and no more");
+  assert.equal(ctx.entry("NBF-1").verdictNotPosted, `${NOT_POSTED}: ${reason}`, "the third refusal is said on the run");
+  ctx.restart().watchFeedback();
+  await roundStarted();
+  assert.equal(made.posts.length, 3, "a restarted pool does not reset the attempts");
+  assert.equal(ctx.entry("NBF-1").verdictNotPosted, `${NOT_POSTED}: ${reason}`, "and the run keeps saying it");
+});
+
+test("a verdict the door refuses for good is said at once, and is not posted again", async () => {
+  const reason = "#7 already has a review at an equal patch: APPROVED at 2026-10-16T10:00:00Z";
+  const made = unpostedReviewer({ reposts: [{ refusal: reason, final: true }] });
+  const ctx = await readyRun(ghFor({ 1: feedbackPull() }).run, REVIEWING, made.port);
+  ctx.pool.watchFeedback();
+  await roundStarted();
+  ctx.pool.watchFeedback();
+  await roundStarted();
+  assert.equal(ctx.entry("NBF-1").verdictNotPosted, `${NOT_POSTED}: ${reason}`);
+  ctx.pool.watchFeedback();
+  await roundStarted();
+  assert.equal(made.posts.length, 1, "a refusal the door would repeat is not asked again");
+});
+
+test("a reviewer that ended with no verdict file is prompted once, and the second look with no file says so on the run", async () => {
+  const made = unpostedReviewer({ file: null });
+  const ctx = await readyRun(ghFor({ 1: feedbackPull() }).run, REVIEWING, made.port);
+  ctx.pool.watchFeedback();
+  await roundStarted();
+  ctx.pool.watchFeedback();
+  await roundStarted();
+  assert.deepEqual(made.prompts, [{ pr: approvedPr.url, head: "h1" }], "prompted once, as a reviewer that has just started is");
+  assert.equal(ctx.entry("NBF-1").verdictNotPosted, undefined, "the first look says nothing yet");
+  ctx.pool.watchFeedback();
+  await roundStarted();
+  assert.equal(ctx.entry("NBF-1").verdictNotPosted, `${NOT_POSTED}: the reviewer ended without writing a verdict file`);
+  assert.equal(made.prompts.length, 1, "and is not prompted again");
+  assert.deepEqual(made.posts, [], "nothing is posted without a file");
+});
+
+test("a reviewer still working is left alone: no repost, prompt or line on the run, and a review already at the head triggers nothing", async () => {
+  const working = unpostedReviewer({ settled: "working" });
+  const ctx = await readyRun(ghFor({ 1: feedbackPull() }).run, REVIEWING, working.port);
+  for (let watch = 0; watch < 3; watch += 1) {
+    ctx.pool.watchFeedback();
+    await roundStarted();
+  }
+  assert.deepEqual([working.posts, working.prompts], [[], []], "nothing is posted or prompted while it works");
+  assert.equal(ctx.entry("NBF-1").verdictNotPosted, undefined);
+
+  const reviewed = unpostedReviewer();
+  const approved = await readyRun(ghFor({ 1: feedbackPull({ reviews: [reviewOn(REVIEWER_LOGIN, "APPROVED", "h1")] }) }).run, REVIEWING, reviewed.port);
+  for (let watch = 0; watch < 2; watch += 1) {
+    approved.pool.watchFeedback();
+    await roundStarted();
+  }
+  assert.deepEqual([reviewed.posts, reviewed.prompts], [[], []], "the negative control: a verdict on the head is on the pull request, so nothing is done");
+  assert.equal(approved.entry("NBF-1").verdictNotPosted, undefined);
+});
+
+test("a head that moved is not unposted: nothing is posted for the head the reviewer was started for", async () => {
+  const made = unpostedReviewer({ reposts: [{ posted: true }] });
+  const pulls: Record<number, unknown> = { 1: feedbackPull() };
+  const ctx = await readyRun(ghFor(pulls).run, REVIEWING, made.port);
+  ctx.pool.watchFeedback();
+  await roundStarted();
+  pulls[1] = feedbackPull({ head: "h2" });
+  ctx.pool.watchFeedback();
+  await roundStarted();
+  assert.deepEqual(made.posts, [], "the reviewer for h1 is not asked to post at h2");
+  assert.equal(ctx.entry("NBF-1").verdictNotPosted, undefined);
+});
+
+test("a review the reviewer posted at its head and a person dismissed is posted, so nothing is re-posted over the dismissal", async () => {
+  const made = unpostedReviewer({ reposts: [{ posted: true }] });
+  const reviews: unknown[] = [];
+  const ctx = await readyRun(ghFor({ 1: feedbackPull({ reviews }) }).run, REVIEWING, made.port);
+  ctx.pool.watchFeedback();
+  await roundStarted();
+  reviews.push(reviewOn(REVIEWER_LOGIN, "DISMISSED", "h1"));
+  for (let watch = 0; watch < 2; watch += 1) {
+    ctx.pool.watchFeedback();
+    await roundStarted();
+  }
+  assert.deepEqual([made.posts, made.prompts], [[], []], "the reviewer's dismissed review is on the pull request: its verdict is not unposted");
+  assert.equal(ctx.entry("NBF-1").verdictNotPosted, undefined);
 });

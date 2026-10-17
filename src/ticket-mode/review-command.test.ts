@@ -14,6 +14,7 @@ const port = (answer: ReturnType<ReviewerPort["start"]>, live = false) => {
     live: ({ pr, head }) => { calls.push(`live ${pr}@${head}`); return live; },
     start: ({ pr, head }) => { calls.push(`start ${pr}@${head}`); return answer; },
     close: () => ({ state: "gone" }), retire: () => ({ retired: true, report: null }), listedPulls: () => [],
+    settled: () => "working", verdictFileOf: () => null, repostVerdict: () => ({ posted: true }), reprompt: () => ({ prompted: true }),
   };
   return { p, calls };
 };

@@ -39,6 +39,9 @@
 #        5  REFUSED: the head moved since you reviewed it (#3640). The opener names the commit reviewed and the pull request's head now
 #           has a DIFFERENT patch. `gh pr review` has no commit option and attaches to whatever the head is, so posting would hand
 #           `reviewDecision` an approval of a patch the text does not describe. Nothing was posted; the message names the head to review.
+#        6  NOT POSTED: the post failed on its one retry (A11-83). The first post was refused for the reviewer's App token (not minted, or rejected
+#           with HTTP 401); only those two causes are retried, after the failed-mint memo is cleared, so a failure of any other kind is not retried
+#           and the first failure's own exit is kept. The one line names the retry's cause. Nothing was posted, and the door is safe to run again.
 # Env:   A11Y_REVIEWER_SESSION  the org session name posting this review (`reviewer-<n>` for pull request n, #2401).
 #                               Unset, the door derives `reviewer-<n>` from the checkout it runs in when that checkout
 #                               IS `.../reviews/reviewer-<n>` for THIS pull request (#2528); where it cannot, the review
@@ -345,9 +348,58 @@ refuse_second_review() {
   done <<<"$reviews"
 }
 
+# THE POST, AND ONE RETRY FOR A TOKEN THAT WAS NOT MINTED OR WAS REJECTED (A11-83). A verdict the reviewer's token could not post was lost before: the
+# reviewer ended its turn with the verdict only in its file, and the pull request showed no review. The one cause a retry can cure is the token,
+# so the retry is for the wrapper's refusal (`app_refuse` in host/gh) and for HTTP 401 only. The failed-mint memo is cleared first, or the retry
+# would be the memo's refusal and not a mint. Anything else is not retried: nothing was posted and the failure is the answer.
+EXIT_NOT_POSTED=6
+TOKEN_CAUSE='gh: refused: the reviewer call is NOT sent as the account|HTTP 401|Bad credentials'
+
+# `$1` the file the call's stderr went to. Prints the cause in words for a failed mint or a rejected token, and fails for any other error.
+token_cause() {
+  local line why
+  line="$(grep -m 1 -E "$TOKEN_CAUSE" "$1")" || return 1
+  if [[ "$line" == *"gh: refused:"* ]]; then
+    why="${line#*app-token reviewer failed for App }"
+    echo "the reviewer App token could not be minted: ${why#*: }"
+  else
+    echo "the reviewer token was rejected (HTTP 401)"
+  fi
+}
+
+# One call to post the review. Its stderr goes to `$1`, and then to the terminal as it always did.
+post_once() {
+  local status=0
+  gh pr review "$n" --repo "$REPO" "$flag" --body "$body" 2>"$1" || status=$?
+  cat "$1" >&2
+  return "$status"
+}
+
+post_review() {
+  local err status cause
+  err="$(mktemp)"
+  post_once "$err" && { rm -f "$err"; return 0; }
+  status=$?
+  if ! cause="$(token_cause "$err")"; then rm -f "$err"; exit "$status"; fi
+  rm -f "$err"
+  echo "pr-review-verdict: $cause. Asking for the reviewer's token once more (A11-83)." >&2
+  [[ -z "${A11Y_APP_TOKEN_DIR:-}" ]] || rm -f "$A11Y_APP_TOKEN_DIR/reviewer.failed"
+  err="$(mktemp)"
+  post_once "$err" && {
+    rm -f "$err"
+    echo "pr-review-verdict: posted on the second mint of the reviewer token (A11-83)." >&2
+    return 0
+  }
+  status=$?
+  cause="$(token_cause "$err")" || cause="the review call failed (exit $status)"
+  rm -f "$err"
+  echo "pr-review-verdict: NOT POSTED. $cause" >&2
+  exit "$EXIT_NOT_POSTED"
+}
+
 read_pull_request
 refuse_stale_head
 refuse_second_review
 
-gh pr review "$n" --repo "$REPO" "$flag" --body "$body"
+post_review
 attribute || true

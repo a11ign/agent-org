@@ -1,14 +1,14 @@
 // no-token: gh -- herdr, git and the clock are all injected; nothing is spawned
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { INSIDE } from "../review-trust.ts";
+import { INSIDE, type DoorRun } from "../review-trust.ts";
 import { REPO } from "../project-identity.ts";
 import { runActions, runStatus } from "./board-view.ts";
 import { createPool, herdrName, ticketDir } from "./pool.ts";
-import { REVIEWER_LOGIN, REVIEW_CAUSE, atomicReviewerPort, loadReviewerGate, readPullState, type ReviewerPort, type ReviewerRef } from "./reviewer-port.ts";
+import { REVIEWER_LOGIN, REVIEW_CAUSE, atomicReviewerPort, loadReviewerGate, readPullState, readReviewerMemory, verdictFileIn, writeReviewerMemory, type ReviewerPort, type ReviewerRef } from "./reviewer-port.ts";
 import { emptyQueue, enqueue, setPaused, type Queue } from "./queue.ts";
 import { parseTicketSettings } from "./settings.ts";
 import type { Ticket, TicketSource } from "./source.ts";
@@ -62,6 +62,7 @@ function fakePort() {
     start(ref) { starts.push(ref); return { label: "reviewer-7" }; },
     live: () => false,
     close: () => ({ state: "gone" }), retire: () => ({ retired: true, report: null }), listedPulls: () => [],
+    settled: () => "working", verdictFileOf: () => null, repostVerdict: () => ({ posted: true }), reprompt: () => ({ prompted: true }),
   };
   return { port, starts };
 }
@@ -354,4 +355,128 @@ test("readPullState reads a pull request's state as GitHub names it, and null fo
   assert.equal(readPullState(PR_URL, gh), null, "an answer with no state is unread");
   assert.equal(readPullState(PR_URL, gh), null, "a refused read is unread");
   assert.equal(readPullState("https://example.com/not-a-pull", gh), null, "a url that is no pull request is unread");
+});
+
+// A11-83: a reviewer that ended without its verdict on the pull request. The verdict file is found by what it says, posted again through the
+// door with its token minted first, and a reviewer that ended with no file is prompted again.
+
+/** The heads the verdict tests use: hex, as the door and the verdict parser read them. */
+const H1 = "a1".repeat(20);
+const H2 = "c3".repeat(20);
+
+/** The verdict line a reviewer writes for pull request 7 at `head`, as the door reads it. */
+const verdictLine = (head: string, word: string) => `**Review of #7 at \`${head.slice(0, 8)}\`, by reviewer-7: ${word} (CI run 41)**`;
+
+/** An atomic port over a checkout `tree`, whose reviewer is listed as `status`, recording each mint and door run in order. */
+function verdictPort(tree: string, { status = new Map([["reviewer-7", "idle"]]), mint = (() => null) as (path: string) => string | null, door = (() => {}) as DoorRun } = {}) {
+  const order: string[] = [];
+  const herd = herdr(status);
+  const port = atomicReviewerPort({ session: "tickets", run: herd.run, gh: ghFor({ head: "h1" }).run, declared: DECLARED, heads: new Map([["reviewer-7", "h1"]]),
+    checkoutOf: () => tree,
+    mint: (path) => { order.push(`mint ${path}`); return mint(path); },
+    door: (file, args, env) => { order.push("door"); door(file, args, env); } });
+  return { port, herd, order };
+}
+
+test("a verdict file is found by what it says, in the checkout or one folder down, for the head it names, and the newest one wins", async () => {
+  await loadReviewerGate();
+  const tree = tmpDir("reviewer-tree-");
+  mkdirSync(join(tree, "sub"));
+  mkdirSync(join(tree, "node_modules"));
+  writeFileSync(join(tree, "notes.md"), "not a verdict\n");
+  writeFileSync(join(tree, "old-head.md"), `${verdictLine(H2, "convinced")}\n`);
+  writeFileSync(join(tree, "node_modules", "skipped.md"), `${verdictLine(H1, "convinced")}\n`);
+  writeFileSync(join(tree, "verdict-7.md"), `${verdictLine(H1, "convinced")}\n`);
+  utimesSync(join(tree, "verdict-7.md"), new Date(1_000), new Date(1_000));
+  writeFileSync(join(tree, "sub", "verdict.md"), `${verdictLine(H1, "not convinced")}\n`);
+  assert.equal(verdictFileIn(tree, 7, H1), join(tree, "sub", "verdict.md"), "the newer of the two files for the head, one folder down");
+  assert.equal(verdictFileIn(tree, 7, H2), join(tree, "old-head.md"), "a file for the head it names");
+  assert.equal(verdictFileIn(tree, 8, H1), null, "none for another pull request");
+  assert.equal(verdictFileIn(join(tree, "missing"), 7, H1), null, "none in a checkout that is not there");
+});
+
+test("a verdict file is posted again through the door: the token is minted first, and the door is given the word the file opens with", async () => {
+  await loadReviewerGate();
+  const tree = tmpDir("reviewer-repost-");
+  const file = join(tree, "verdict-7.md");
+  writeFileSync(file, `${verdictLine(H1, "not convinced")}\n\nfindings\n`);
+  const doorCalls: { file: string; args: string[]; env: Record<string, string> }[] = [];
+  const made = verdictPort(tree, { door: (path, args, env) => { doorCalls.push({ file: path, args, env }); } });
+  assert.deepEqual(made.port.repostVerdict({ pr: PR_URL, head: H1 }, file), { posted: true });
+  assert.deepEqual(made.order, [`mint ${tree}`, "door"], "the token is minted before the door posts");
+  assert.deepEqual(doorCalls.map((call) => call.args), [["7", "not-convinced", file]]);
+  assert.equal(doorCalls[0].env.A11Y_REVIEWER_SESSION, "reviewer-7", "the door posts with the reviewer's own identity");
+  assert.equal(doorCalls[0].env.A11Y_APP_TOKEN_DIR, join(tree, "node_modules", ".cache", "app-tokens"), "from the token directory the reviewer reads");
+});
+
+test("a token that will not mint stops the repost before the door runs, and its reason is the refusal, which a later attempt may cure", async () => {
+  await loadReviewerGate();
+  const tree = tmpDir("reviewer-mint-");
+  const file = join(tree, "verdict-7.md");
+  writeFileSync(file, `${verdictLine(H1, "convinced")}\n\nbody\n`);
+  const doorCalls: string[][] = [];
+  const made = verdictPort(tree, { mint: () => "the reviewer's app token could not be minted: no key", door: (_path, args) => { doorCalls.push(args); } });
+  assert.deepEqual(made.port.repostVerdict({ pr: PR_URL, head: H1 }, file), { refusal: "the reviewer's app token could not be minted: no key", final: false });
+  assert.deepEqual(doorCalls, [], "the door is not run without a token");
+});
+
+test("a door refusal is said with the door's own last line: a refusal a repost would repeat is final, and one for the token is not", async () => {
+  await loadReviewerGate();
+  const tree = tmpDir("reviewer-refused-");
+  const file = join(tree, "verdict-7.md");
+  writeFileSync(file, `${verdictLine(H1, "convinced")}\n\nbody\n`);
+  for (const [status, reason, final] of [
+    [5, "The head moved since you reviewed it: your verdict names a1a1a1a1.", true],
+    [3, "#7 already has a review at an equal patch: APPROVED", true],
+    [6, "the reviewer App token could not be minted: no key", false],
+  ] as const) {
+    const made = verdictPort(tree, { door: () => { throw Object.assign(new Error("door"), { status, stderr: `pr-review-verdict: NOT POSTED. ${reason}\n` }); } });
+    assert.deepEqual(made.port.repostVerdict({ pr: PR_URL, head: H1 }, file), { refusal: reason, final }, `door exit ${status}`);
+  }
+});
+
+test("a verdict file that names another head, or no verdict, is not posted", async () => {
+  await loadReviewerGate();
+  const tree = tmpDir("reviewer-wrong-");
+  const file = join(tree, "verdict-7.md");
+  writeFileSync(file, `${verdictLine(H2, "convinced")}\n\nbody\n`);
+  const made = verdictPort(tree);
+  assert.deepEqual(made.port.repostVerdict({ pr: PR_URL, head: H1 }, file), { refusal: `the verdict file ${file} does not open with a verdict for ${H1.slice(0, 8)}`, final: true });
+  assert.deepEqual(made.order, [], "nothing is minted or posted");
+});
+
+test("settled reads the reviewer for its head: working while its agent works, ended once it is idle, and gone when herdr lists none for the head", async () => {
+  await loadReviewerGate();
+  const status = new Map([["reviewer-7", "working"]]);
+  const made = verdictPort(tmpDir("reviewer-settled-"), { status });
+  const ref = { pr: PR_URL, head: "h1" };
+  assert.equal(made.port.settled(ref), "working");
+  status.set("reviewer-7", "idle");
+  assert.equal(made.port.settled(ref), "ended");
+  status.set("reviewer-7", "unknown");
+  assert.equal(made.port.settled(ref), "ended", "no agent in the pane: its process exited");
+  status.delete("reviewer-7");
+  assert.equal(made.port.settled(ref), "gone");
+  assert.equal(made.port.settled({ pr: PR_URL, head: H2 }), "gone", "and for a head it was not started for");
+});
+
+test("reprompt sends the gate's verdict prompt to the seat's agent again, naming the head", async () => {
+  await loadReviewerGate();
+  const made = verdictPort(tmpDir("reviewer-prompt-"));
+  assert.deepEqual(made.port.reprompt({ pr: PR_URL, head: "h1" }), { prompted: true });
+  const prompt = made.herd.calls.find((args) => args.includes("prompt"))!;
+  assert.deepEqual(prompt.slice(0, 5), ["--session", "tickets", "agent", "prompt", "reviewer-7"]);
+  assert.ok(prompt[5].includes("`h1`"), "the prompt names the head it is for");
+});
+
+test("the re-posts a pool remembers are kept on disk, and a memory file from before them reads with none", () => {
+  const path = join(tmpDir("reviewer-memory-"), "reviewers.json");
+  const memory = { heads: new Map([["reviewer-7", "h1"]]), started: new Set([`${PR_URL}@h1`]), resumed: new Set<string>(),
+    reposts: new Map([[`${PR_URL}@h1`, { attempts: 2, reason: "no key" }]]) };
+  writeReviewerMemory(path, memory);
+  assert.deepEqual(readReviewerMemory(path), { memory, unreadable: false });
+  writeFileSync(path, JSON.stringify({ heads: {}, started: [], resumed: [] }));
+  assert.deepEqual(readReviewerMemory(path), { memory: { heads: new Map(), started: new Set(), resumed: new Set(), reposts: new Map() }, unreadable: false });
+  writeFileSync(path, JSON.stringify({ heads: {}, started: [], resumed: [], reposts: { k: { attempts: "two" } } }));
+  assert.equal(readReviewerMemory(path).unreadable, true, "a malformed count is unreadable, never read as nothing remembered");
 });

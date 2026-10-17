@@ -49,6 +49,8 @@ export type ViewEntry = Readonly<{
   handedBack?: string;
   /** Set while a running run's worker last said its own background work is still running: its reason, and whether it has stalled. */
   working?: Readonly<{ reason: string; stalled?: boolean }>;
+  /** Set while a reviewer's verdict on one of the run's pull requests is not posted, and the reason it is not (A11-83). */
+  verdictNotPosted?: string;
 }>;
 
 /** A pull request as a run records it: its web address, and the repository it is in, which is the name `clones` gives it. */
@@ -519,6 +521,14 @@ export function workingNote(entry: ViewEntry): Readonly<{ text: string; stalled:
   return note.stalled === true
     ? { text: `Stalled: idle with no newer outcome since it said: ${note.reason}`, stalled: true }
     : { text: note.reason, stalled: false };
+}
+
+/**
+ * The line the board shows for a finished run whose reviewer's verdict is not on one of its pull requests (A11-83), or null when every verdict is.
+ * The run's status does not change for it: a person reads the reason and decides, as the pool does not retry past its attempts.
+ */
+export function verdictNote(entry: ViewEntry): string | null {
+  return entry.phase === "finished" && entry.verdictNotPosted !== undefined ? entry.verdictNotPosted : null;
 }
 
 /**

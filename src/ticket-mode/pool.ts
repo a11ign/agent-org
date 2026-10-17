@@ -86,7 +86,7 @@ import { CONCLUDED, HANDED_BACK, hasPlan, isBeingPublished, isParked, isWatched,
 import {
   batchPlanDone, clearMove, dismiss as dismissFinished, feedbackRound, finish, isLive, leaveBatch, markPublishRunning, markPublishStarting, markResumed, markRunning, markStarting, nextStarts,
   observe, noteWorking, observePublish, park, pathsUnread, planDone, publishDone, publishFailed, publishStarts, recordBlockers, recordMove, recordPaths, recordPullFiles,
-  recordPullStates, recordRepos, recordTrackerStates, remove as removeQueued, unpark, unreadBlockerKeys, unreadPaths, unsettledKeys, watchWorking,
+  recordPullStates, recordRepos, recordTrackerStates, recordVerdictNotPosted, remove as removeQueued, unpark, unreadBlockerKeys, unreadPaths, unsettledKeys, watchWorking,
   type Entry, type Outcome, type PublishRun, type Queue, type RunChoice, type WrittenOutcome,
 } from "./queue.ts";
 import type { Ticket, TicketSource } from "./source.ts";
@@ -94,8 +94,8 @@ import { unreachablePlugins } from "./plugins.ts";
 import { TICKET_ENV } from "./worktree-command.ts";
 import { HOST_FILE_ENV, plansInBatches, type TicketSettings } from "./settings.ts";
 import {
-  REVIEWER_LOGIN, atomicReviewerPort, readPullState, readReviewState, readReviewerMemory, reviewerRefusal, reviewVerdict, reviewerMemoryPath, withoutReviewerReviews, writeReviewerMemory,
-  type ReviewerMemory, type ReviewerPort, type ReviewerRef,
+  REVIEWER_LOGIN, atomicReviewerPort, readPullState, readReviewState, readReviewerMemory, reviewerRefusal, reviewPostedAt, reviewVerdict, reviewerMemoryPath, withoutReviewerReviews, writeReviewerMemory,
+  type Repost, type ReviewerMemory, type ReviewerPort, type ReviewerRef,
 } from "./reviewer-port.ts";
 import {
   BRIEF_FILE, CONNECTORS_FILE, DENY_FILE, ORDER_FILE, OUTCOME_FILE, PLAN_DIR, PLANNING_DENY, PREVIOUS_OUTCOME_FILE, PUBLISH_FILE, PUBLISHED_FILE, QUESTION_FILE,
@@ -116,8 +116,15 @@ const QUESTION_CHARS = 500;
 const PUBLISH_LIMIT_MS = 30 * 60_000;
 /** Listings in a row a run may be missing from before its workspace counts as gone: a running run is then crashed, and a parked one unparked. */
 const MISSES_TO_GONE = 2;
+/**
+ * The attempts the pool makes to post a reviewer's verdict that is not on its pull request, per head (A11-83): a re-post of the verdict file, or the
+ * one prompt to a reviewer that ended without a file. Past them the failure is said on the run, and nothing is posted again: a review cannot be taken back.
+ */
+export const MAX_REPOST_ATTEMPTS = 3;
+/** What a run says when its reviewer ended without writing a verdict file for its head (A11-83). */
+const NO_VERDICT_FILE = "the reviewer ended without writing a verdict file";
 
-export type Herdr = (args: string[], timeoutMs?: number) => string;
+export type Herdr =(args: string[], timeoutMs?: number) => string;
 
 const defaultHerdr: Herdr = (args, timeoutMs = 30_000) => herdrRun(args, timeoutMs);
 
@@ -420,14 +427,14 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
   const reviewerFile = reviewerMemoryPath(settings.stateDir);
   const remembered = reviewerOn ? readReviewerMemory(reviewerFile) : undefined;
   if (remembered?.unreadable) log(`${reviewerFile} cannot be read, so the reviewers started before this restart are not remembered`);
-  const reviewerMemory: ReviewerMemory = remembered?.memory ?? { heads: new Map(), started: new Set(), resumed: new Set() };
+  const reviewerMemory: ReviewerMemory = remembered?.memory ?? { heads: new Map(), started: new Set(), resumed: new Set(), reposts: new Map() };
   /** A machine that asks for reviewers on a host the gate does not load on (no `primary`) starts none: said once here, and no reviewer is ever read. */
   const gateRefusal = reviewerOn ? reviewerRefusal() : null;
   if (gateRefusal !== null) log(`tickets.reviewer is set, but no reviewer starts: ${gateRefusal}`);
   /** The reviewer a machine with `tickets.reviewer` starts for each settled head: the atomic one unless the caller injected another. */
   const reviewer = !reviewerOn || gateRefusal !== null ? undefined : deps.reviewerPort ?? atomicReviewerPort({ session: settings.herdrSession, run: herdr, gh, heads: reviewerMemory.heads });
   /** The `url@head` keys a reviewer was started for, and whose not-convinced verdict already asked the worker for a round. */
-  const { started: reviewerStarted, resumed: reviewerResumed } = reviewerMemory;
+  const { started: reviewerStarted, resumed: reviewerResumed, reposts: reviewerReposts } = reviewerMemory;
   /** The reviewers whose verdict is posted but whose workspace would not close yet (a reviewer still working), by `url@head`, which `releaseReviewers` asks again. */
   const closing = new Map<string, ReviewerRef>();
   /** The feedback a worker answers is read without the reviewer's own reviews, so its verdict never moves `feedbackAt`. */
@@ -1414,7 +1421,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
       if (JSON.stringify(files) !== JSON.stringify(entry.pullFiles ?? {})) update((queue) => recordPullFiles(queue, entry.ticket.key, files));
       if (!isWatched(entry)) continue;
       // A reviewer's verdict is read by `reviewerLines`, which asks for a round only on requested changes; its reviews are not feedback here.
-      const lines = [feedbackSince(readable, entry.finishedAt ?? 0), ...reviewerLines(openPulls(entry).map((pr) => pr.url))]
+      const lines = [feedbackSince(readable, entry.finishedAt ?? 0), ...reviewerLines(entry, openPulls(entry).map((pr) => pr.url))]
         .filter((line): line is string => line !== null);
       if (lines.length === 0) continue;
       update((queue) => feedbackRound(queue, entry.ticket.key, lines.join("\n"), now()));
@@ -1424,13 +1431,54 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
   }
 
   /**
+   * A reviewer that ended without a review at its head on its pull request (A11-83): the verdict file it wrote is posted again through the door, and a
+   * reviewer that ended with no file is prompted once. Every attempt is remembered per head (`reviewerReposts`), and `MAX_REPOST_ATTEMPTS` is the most
+   * there are: past them, and when the door refuses a repost for good, the failure is what the run says. Returns that line, or null while there is
+   * nothing to say: the reviewer is still working, or an attempt is still to come. Nothing is attempted while the reviewer is working.
+   */
+  function unpostedVerdict(port: ReviewerPort, url: string, head: string, key: string): string | null {
+    const ref = { pr: url, head };
+    const repost = reviewerReposts.get(key) ?? { attempts: 0 };
+    const surfaced = (reason: string) => `verdict not posted: ${reason}`;
+    const recordRepost = (next: Repost) => {
+      reviewerReposts.set(key, next);
+      rememberReviewers();
+    };
+    if (repost.attempts >= MAX_REPOST_ATTEMPTS) return surfaced(repost.reason ?? "the verdict is not on the pull request");
+    if (port.settled(ref) === "working") return null;
+    const file = port.verdictFileOf(ref);
+    if (file === null) {
+      // Nothing to post. The reviewer is prompted once, as a reviewer that has just started is; a second look with no file is the failure.
+      if (repost.attempts > 0) return surfaced(NO_VERDICT_FILE);
+      recordRepost({ attempts: 1, reason: NO_VERDICT_FILE });
+      const prompted = port.reprompt(ref);
+      if ("refusal" in prompted) log(`${url}: ${prompted.refusal}`);
+      return null;
+    }
+    const answer = port.repostVerdict(ref, file);
+    if ("posted" in answer) {
+      // Counted until a review at this head is on the pull request: the next watch clears the count, and a repost is not made again meanwhile.
+      recordRepost({ attempts: repost.attempts + 1 });
+      log(`${url}: posted the verdict file ${file} for ${head.slice(0, 8)} through the verdict door`);
+      return null;
+    }
+    const attempts = answer.final ? MAX_REPOST_ATTEMPTS : repost.attempts + 1;
+    recordRepost({ attempts, reason: answer.refusal });
+    log(`${url}: the verdict at ${head.slice(0, 8)} is not posted (${answer.final ? "not retried" : `attempt ${attempts} of ${MAX_REPOST_ATTEMPTS}`}): ${answer.refusal}`);
+    return attempts >= MAX_REPOST_ATTEMPTS ? surfaced(answer.refusal) : null;
+  }
+
+  /**
    * The reviewer for each open pull request of a watched run, when the machine starts one: started once per head (`reviewerStarted`, and the port
    * says whether one is live for that head), and the first `not-convinced` verdict on each head asks the worker to answer it (`reviewerResumed`).
-   * Returns the lines a round's brief says it answers, and none for `convinced` or a head with no verdict yet.
+   * Returns the lines a round's brief says it answers, and none for `convinced` or a head with no verdict yet. A reviewer that ended without its verdict
+   * on the pull request is looked at first (`unpostedVerdict`), so a reviewer started in this watch is not judged before it has begun.
+   * The run records what is still not posted (`verdictNotPosted`), and that is cleared once every pull request has its verdict.
    */
-  function reviewerLines(urls: readonly string[]): string[] {
+  function reviewerLines(entry: Entry, urls: readonly string[]): string[] {
     if (reviewer === undefined) return [];
     const lines: string[] = [];
+    const unposted: string[] = [];
     for (const url of urls) {
       const state = readReviewState(url, gh);
       if (state === null) {
@@ -1438,6 +1486,12 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
         continue;
       }
       const key = `${url}@${state.head}`;
+      if (reviewPostedAt(state.reviews, state.head)) {
+        if (reviewerReposts.delete(key)) rememberReviewers();
+      } else if (reviewerStarted.has(key)) {
+        const said = unpostedVerdict(reviewer, url, state.head, key);
+        if (said !== null) unposted.push(said);
+      }
       // A head whose checks have not settled green gets no reviewer yet: this watch passes it by, and the next one asks again. Nor does a pull
       // request GitHub does not show open: a merged one's memory is forgotten once it is retired (`releaseReviewers`), and a tracker that still reads
       // it open must not start a reviewer for it again.
@@ -1474,16 +1528,25 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
         lines.push(`${REVIEWER_LOGIN} requested changes on ${url} at ${state.head}: fix what its review found, then push.`);
       }
     }
+    // Said on the run when it changes, so the board shows what is not posted and the log says it once.
+    const said = unposted.length > 0 ? unposted.join("; ") : undefined;
+    if (said !== entry.verdictNotPosted) {
+      if (said !== undefined) log(`${entry.ticket.key}: ${said}`);
+      update((queue) => recordVerdictNotPosted(queue, entry.ticket.key, said));
+    }
     return lines;
   }
 
-  /** Drops what the pool remembers of a pull request: its `url@head` keys (started, resumed) and any verdict still awaiting its close. */
+  /**
+   * Drops what the pool remembers of a pull request: its `url@head` keys (started, resumed, re-posts) and any verdict still awaiting its close.
+   */
   function forgetPull(url: string): void {
     const ofPull = (key: string) => key.startsWith(`${url}@`);
-    for (const key of [...reviewerStarted, ...reviewerResumed]) {
+    for (const key of [...reviewerStarted, ...reviewerResumed, ...reviewerReposts.keys()]) {
       if (ofPull(key)) {
         reviewerStarted.delete(key);
         reviewerResumed.delete(key);
+        reviewerReposts.delete(key);
       }
     }
     for (const key of [...closing.keys()]) if (ofPull(key)) closing.delete(key);

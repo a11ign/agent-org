@@ -7,7 +7,7 @@ import { isParked, runStatus } from "./board-view.ts";
 import {
   amend, approve, byIdentifier, childOrder, refuseParents, respond, batchPlanDone, dismiss, feedbackRound, MAX_FEEDBACK_ROUNDS, markPublishRunning, markPublishStarting, publishDone, publishFailed, publishStarts, queuePublish, emptyQueue, enqueue, finish, isLive, leaveBatch, liveRunCount, loadQueue, markResumed, markRunning, markStarting, nextStarts, observe, park,
   clearMove, noteWorking, recordBlockers, recordMove, recordRepos, planDone, watchWorking, PLAN_BATCH_MAX, recordPullStates, recordTrackerStates, remove, retry, saveQueue, setMax, setPaused, unpark, unreadBlockerKeys, unsettledKeys, type Queue,
-  pathsUnread, recordPaths, recordPullFiles, unreadPaths,
+  pathsUnread, recordPaths, recordPullFiles, recordVerdictNotPosted, unreadPaths,
 } from "./queue.ts";
 import type { Blocker, Ticket } from "./source.ts";
 
@@ -558,4 +558,16 @@ test("A11-82: paths are recorded on queued runs only, and the files of a pull re
   const finished = recordPullFiles(endedWith({ kind: "draft-pr", prs: [pr] }), "A", { [pr.url]: ["src/c.ts"] });
   assert.deepEqual(a(finished).pullFiles, { [pr.url]: ["src/c.ts"] });
   assert.equal(recordPullFiles(enqueue(emptyQueue(2), [ticket("A")], choice, 1), "A", { [pr.url]: ["x"] }).entries[0].pullFiles, undefined, "a queued run has no pull request to read");
+});
+
+test("a verdict that is not on a finished run's pull request is recorded on the run, and cleared once a review is on it", () => {
+  const pr = { repo: "nbl-ui-netbox", url: "https://github.com/x/nbl-ui-netbox/pull/1" };
+  const finished = endedWith({ kind: "draft-pr", prs: [pr] });
+  const said = recordVerdictNotPosted(finished, "A", "verdict not posted: the reviewer ended without writing a verdict file");
+  assert.equal(a(said).verdictNotPosted, "verdict not posted: the reviewer ended without writing a verdict file");
+  const cleared = recordVerdictNotPosted(said, "A", undefined);
+  assert.equal("verdictNotPosted" in a(cleared), false, "cleared: the key is gone, not left undefined");
+  assert.deepEqual(a(cleared), a(finished), "and the run is otherwise as it was");
+  const queued = enqueue(emptyQueue(2), [ticket("A")], choice, 1);
+  assert.equal("verdictNotPosted" in recordVerdictNotPosted(queued, "A", "x").entries[0], false, "a queued run has no pull request to say of");
 });

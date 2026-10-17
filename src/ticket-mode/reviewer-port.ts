@@ -8,17 +8,18 @@
 // in the tickets' herdr session. Nothing here copies that code: it is imported, teardown included. The reviewer posts as `a11ign-reviewer`, and its
 // verdict is what the pool reads back to decide whether the worker goes round again.
 
-import { existsSync, readFileSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, mkdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { reviewerInstance, reviewerSeat } from "../review-attribution.ts";
 import { ORG_SESSION, firstLine, readAgents, type ListedAgent } from "../herdr-agents.ts";
 import { pullRequestFieldsOf } from "../ticket-port/pull-request-fields.ts";
-import type { ReviewTrust } from "../review-trust.ts";
+import { headMatches, reviewVerdict as verdictOfText } from "../review-verdict.ts";
+import type { DoorRun, ReviewTrust } from "../review-trust.ts";
 
 /** The gate's modules: its reviewer, its trust rules, its verdict prompt, and the org's declaration. */
 type GateModules = {
   wake: typeof import("../wake.ts"); trust: typeof import("../review-trust.ts"); config: typeof import("../project-config.ts");
-  identity: typeof import("../project-identity.ts"); orders: typeof import("../work-gate/pr-orders.ts");
+  identity: typeof import("../project-identity.ts"); orders: typeof import("../work-gate/pr-orders.ts"); doorPath: typeof import("../reviewer-door-path.ts");
 };
 
 /** What `loadReviewerGate` found: the modules, or the refusal that keeps them from loading on this host. Null until it has run. */
@@ -31,8 +32,8 @@ let gate: { ok: true; modules: GateModules } | { ok: false; refusal: unknown } |
  */
 export async function loadReviewerGate(): Promise<void> {
   if (gate !== null) return;
-  gate = await Promise.all([import("../wake.ts"), import("../review-trust.ts"), import("../project-config.ts"), import("../project-identity.ts"), import("../work-gate/pr-orders.ts")]).then(
-    ([wake, trust, config, identity, orders]) => ({ ok: true as const, modules: { wake, trust, config, identity, orders } }),
+  gate = await Promise.all([import("../wake.ts"), import("../review-trust.ts"), import("../project-config.ts"), import("../project-identity.ts"), import("../work-gate/pr-orders.ts"), import("../reviewer-door-path.ts")]).then(
+    ([wake, trust, config, identity, orders, doorPath]) => ({ ok: true as const, modules: { wake, trust, config, identity, orders, doorPath } }),
     (refusal: unknown) => ({ ok: false as const, refusal }),
   );
 }
@@ -73,7 +74,32 @@ export type ReviewerPort = Readonly<{
   close(ref: ReviewerRef): CloseAnswer;
   retire(pr: string): RetireAnswer;
   listedPulls(): readonly string[];
+  /** Whether the reviewer for `ref` is still working, has ended its turn, or is not there (A11-83). */
+  settled(ref: ReviewerRef): ReviewerSettled;
+  /** The verdict file the reviewer wrote for `ref` in its checkout, or null when it wrote none (A11-83). */
+  verdictFileOf(ref: ReviewerRef): string | null;
+  /** Posts a verdict file through the verdict door for `ref`, minting the reviewer's token first (A11-83). */
+  repostVerdict(ref: ReviewerRef, file: string): RepostAnswer;
+  /** Sends the reviewer its verdict prompt again, for a reviewer that ended without writing a verdict file (A11-83). */
+  reprompt(ref: ReviewerRef): PromptAnswer;
 }>;
+
+/** Where a reviewer stands: `working` while its turn runs, `ended` when it has finished its turn (or its agent has exited), `gone` when herdr lists none for its head. */
+export type ReviewerSettled = "working" | "ended" | "gone";
+
+/**
+ * What `repostVerdict` answers: `posted`, or a refusal naming why the verdict is not on the pull request. `final` is set where a later attempt would
+ * only be refused the same way (the door's exits for a malformed call, a second review at an equal patch, and a moved head); the pool stops there.
+ */
+export type RepostAnswer = Readonly<{ posted: true }> | Readonly<{ refusal: string; final: boolean }>;
+/** What `reprompt` answers: `prompted`, or a refusal naming why the prompt was not sent. */
+export type PromptAnswer = Readonly<{ prompted: true }> | Readonly<{ refusal: string }>;
+
+/** The statuses herdr shows for a reviewer whose turn is over: idle or done, or no agent at all (its process exited). */
+const ENDED_STATUSES: readonly string[] = ["idle", "done", "unknown"];
+
+/** The door's exits a repost cannot cure: 2 (a malformed call), 3 (a second review at an equal patch) and 5 (the head moved). */
+const FINAL_DOOR_EXITS: readonly number[] = [2, 3, 5];
 
 /**
  * What `close` answers: `closed` (the workspace under the seat's label is closed), `gone` (herdr lists none: nothing to close), or `busy` (one is still
@@ -179,6 +205,15 @@ export function reviewVerdict(reviews: readonly Review[], head: string): "convin
 }
 
 /**
+ * Whether the reviewer has a review on `head` that was posted, in any state the door posts, including one a person dismissed (A11-83). A dismissed
+ * review is one the reviewer posted: re-posting its verdict would undo the dismissal, so the verdict is not unposted. A review on an earlier head says
+ * nothing about this one.
+ */
+export function reviewPostedAt(reviews: readonly Review[], head: string): boolean {
+  return reviews.some((r) => r.author === REVIEWER_LOGIN && r.commit === head && (r.state === "APPROVED" || r.state === "CHANGES_REQUESTED" || r.state === "DISMISSED"));
+}
+
+/**
  * `gh`, answering a feedback read without the reviewer's own reviews, comments and review-thread comments. They are not feedback a worker
  * answers, and `feedbackOf` would otherwise take their times into `feedbackAt`. Everything else in the answer passes through unchanged.
  */
@@ -209,17 +244,24 @@ export function reviewerMemoryPath(stateDir: string): string {
 }
 
 /**
- * What a pool remembers of its reviewers across a restart: the head each seat's reviewer was started for (`heads`, by seat label), the reviewers
- * started (`started`, `url@head`), and the verdicts a worker was asked to answer (`resumed`, `url@head`). The pool holds it and the port reads `heads`.
+ * What a re-post of a reviewer's verdict has done for one `url@head` (A11-83): how many attempts were made, and the reason the last one was refused.
+ * Kept on disk, so a restart does not reset the count.
  */
-export type ReviewerMemory = { heads: Map<string, string>; started: Set<string>; resumed: Set<string> };
+export type Repost = { attempts: number; reason?: string };
+
+/**
+ * What a pool remembers of its reviewers across a restart: the head each seat's reviewer was started for (`heads`, by seat label), the reviewers
+ * started (`started`, `url@head`), the verdicts a worker was asked to answer (`resumed`, `url@head`), and the re-posts of a verdict not on its pull request
+ * (`reposts`, `url@head`). The pool holds it and the port reads `heads`.
+ */
+export type ReviewerMemory = { heads: Map<string, string>; started: Set<string>; resumed: Set<string>; reposts: Map<string, Repost> };
 
 /**
  * The memory on disk. A file that is not there is nothing remembered yet; one that is there and is not what `writeReviewerMemory` writes is
  * `unreadable`, and is also nothing remembered. Neither throws.
  */
 export function readReviewerMemory(path: string): { memory: ReviewerMemory; unreadable: boolean } {
-  const nothing = (unreadable: boolean) => ({ memory: { heads: new Map<string, string>(), started: new Set<string>(), resumed: new Set<string>() }, unreadable });
+  const nothing = (unreadable: boolean) => ({ memory: { heads: new Map<string, string>(), started: new Set<string>(), resumed: new Set<string>(), reposts: new Map<string, Repost>() }, unreadable });
   let text: string;
   try {
     text = readFileSync(path, "utf8");
@@ -229,11 +271,17 @@ export function readReviewerMemory(path: string): { memory: ReviewerMemory; unre
   try {
     const data = JSON.parse(text);
     const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every((item) => typeof item === "string");
+    // `reposts` is absent in a file written before A11-83: nothing was re-posted then.
+    const reposts: Record<string, unknown> = data?.reposts ?? {};
+    const repost = (value: any) => value !== null && typeof value === "object" && Number.isInteger(value.attempts) && value.attempts >= 0
+      && (value.reason === undefined || typeof value.reason === "string");
     if (data === null || typeof data !== "object" || data.heads === null || typeof data.heads !== "object"
-      || !Object.values(data.heads).every((head) => typeof head === "string") || !strings(data.started) || !strings(data.resumed)) {
+      || !Object.values(data.heads).every((head) => typeof head === "string") || !strings(data.started) || !strings(data.resumed)
+      || reposts === null || typeof reposts !== "object" || !Object.values(reposts).every(repost)) {
       throw new Error("not a reviewer memory");
     }
-    return { memory: { heads: new Map(Object.entries(data.heads) as [string, string][]), started: new Set(data.started), resumed: new Set(data.resumed) }, unreadable: false };
+    return { memory: { heads: new Map(Object.entries(data.heads) as [string, string][]), started: new Set(data.started), resumed: new Set(data.resumed),
+      reposts: new Map(Object.entries(reposts) as [string, Repost][]) }, unreadable: false };
   } catch {
     return nothing(true);
   }
@@ -242,8 +290,66 @@ export function readReviewerMemory(path: string): { memory: ReviewerMemory; unre
 /** Writes the memory whole, through a temporary file renamed over the last one, so a write that stops midway leaves that last one. */
 export function writeReviewerMemory(path: string, memory: ReviewerMemory): void {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(`${path}.tmp`, JSON.stringify({ heads: Object.fromEntries(memory.heads), started: [...memory.started], resumed: [...memory.resumed] }));
+  writeFileSync(`${path}.tmp`, JSON.stringify({ heads: Object.fromEntries(memory.heads), started: [...memory.started], resumed: [...memory.resumed],
+    // Written only when there is one, so a file for a pool that re-posted nothing reads as it always did.
+    ...(memory.reposts.size > 0 ? { reposts: Object.fromEntries(memory.reposts) } : {}) }));
   renameSync(`${path}.tmp`, path);
+}
+
+/** The first line of a file, read from its first 512 bytes, or null when it cannot be read. */
+function firstLineOfFile(path: string): string | null {
+  let fd: number | null = null;
+  try {
+    fd = openSync(path, "r");
+    const buffer = Buffer.alloc(512);
+    return buffer.subarray(0, readSync(fd, buffer, 0, buffer.length, 0)).toString("utf8").split("\n", 1)[0];
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) closeSync(fd);
+  }
+}
+
+/** The files directly in `dir`, by path, and none when it cannot be listed. */
+function filesIn(dir: string): string[] {
+  try {
+    return readdirSync(dir, { withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => join(dir, entry.name));
+  } catch {
+    return [];
+  }
+}
+
+/** The folders directly in `dir` a reviewer's files may be in: not dot-folders, and not `node_modules`. */
+function foldersIn(dir: string): string[] {
+  try {
+    return readdirSync(dir, { withFileTypes: true }).filter((entry) => entry.isDirectory() && !entry.name.startsWith(".") && entry.name !== "node_modules")
+      .map((entry) => join(dir, entry.name));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * THE VERDICT FILE A REVIEWER WROTE FOR `head` (A11-83). The role file asks the reviewer to write its verdict to a file and post it through the door,
+ * and names no path, so the file is found by what it says: the newest file, at the checkout's top or one folder down, whose first line is the verdict
+ * line for pull request `number` at `head` (`headMatches`, a prefix either way). Null when there is none.
+ */
+export function verdictFileIn(tree: string, number: number, head: string): string | null {
+  let found: { path: string; at: number } | null = null;
+  for (const path of [...filesIn(tree), ...foldersIn(tree).flatMap(filesIn)]) {
+    const line = firstLineOfFile(path);
+    if (line === null || !line.startsWith(`**Review of #${number} at `)) continue;
+    const verdict = verdictOfText(line);
+    if ((verdict.verdict !== "convinced" && verdict.verdict !== "not-convinced") || !headMatches(verdict.head, head)) continue;
+    let at: number;
+    try {
+      at = statSync(path).mtimeMs;
+    } catch {
+      continue;  // removed since it was listed: not a file to post
+    }
+    if (found === null || at > found.at) found = { path, at };
+  }
+  return found?.path ?? null;
 }
 
 /**
@@ -254,13 +360,31 @@ export function writeReviewerMemory(path: string, memory: ReviewerMemory): void 
  * head it has not reviewed. It refuses a head whose checks have not settled green: the gate's verdict is asked only of settled checks.
  */
 export function atomicReviewerPort({ session, run, gh, declared = reviewerGate().trust.declaredIdentities(), spawn = reviewerGate().wake.spawnReviewer, checkout = reviewerGate().wake.prepareReviewCheckout, heads = new Map<string, string>(),
-  removeCheckout = reviewerGate().wake.removeReviewCheckout, uncommittedPaths = reviewerGate().wake.uncommittedPathsOf, exists = existsSync }: {
+  removeCheckout = reviewerGate().wake.removeReviewCheckout, uncommittedPaths = reviewerGate().wake.uncommittedPathsOf, exists = existsSync,
+  checkoutOf = reviewerGate().wake.reviewCheckoutPath, mint = reviewerTokenMintOf, door = reviewerGate().trust.runDoor }: {
   session: string; run: (args: string[]) => string; gh: (args: string[]) => string; declared?: DeclaredIdentities;
   spawn?: typeof import("../wake.ts").spawnReviewer; checkout?: typeof import("../wake.ts").prepareReviewCheckout; heads?: Map<string, string>;
   removeCheckout?: typeof import("../wake.ts").removeReviewCheckout; uncommittedPaths?: (path: string) => string[]; exists?: (path: string) => boolean;
+  /** Where a seat's reviewer keeps its checkout, which holds the verdict file it wrote. */
+  checkoutOf?: (label: string) => string;
+  /** Mints the reviewer's token in a checkout: the reason it could not, or null when it has one. */
+  mint?: (tree: string) => string | null;
+  /** Runs the verdict door with the reviewer's environment: throws on a non-zero exit, with the door's stderr. */
+  door?: DoorRun;
 }): ReviewerPort {
   const herdr = (args: string[]) => run(args[0] === "--session" && args[1] === ORG_SESSION ? ["--session", session, ...args.slice(2)] : args);
   const listed = (): ListedAgent[] | null => readAgents(run, { session });
+
+  /** The gate's own verdict prompt, for a seat's repository, sent to the seat's agent: the same words the gate sends a reviewer for a ready pull request. */
+  const sendPrompt = (seat: { label: string; key: string }, state: ReviewState, head: string): { sent: true } | { refusal: string } => {
+    const words = reviewerGate().orders.awaitingVerdictPrompt({ ...state.view, repoKey: seat.key }, reviewerGate().orders.reviewHeadsOf(state.view, head, "settled"));
+    try {
+      run(["--session", session, "agent", "prompt", seat.label, words]);
+      return { sent: true };
+    } catch (err) {
+      return { refusal: err instanceof Error ? err.message.split("\n")[0] : String(err) };
+    }
+  };
 
   /** Closes every workspace under a seat's label, as the gate's teardown does; a refusal names what would not close. */
   const closeAll = (pr: string, label: string): Readonly<{ state: "closed" }> | Readonly<{ refusal: string }> => {
@@ -289,7 +413,7 @@ export function atomicReviewerPort({ session, run, gh, declared = reviewerGate()
     start({ pr, head }) {
       const seat = seatOf(pr);
       if ("refusal" in seat) return seat;
-      const { trust, orders } = reviewerGate();
+      const { trust } = reviewerGate();
       const state = readReviewState(pr, gh, declared);
       if (state === null) return { refusal: `no reviewer for ${pr}: the pull request could not be read` };
       if (state.trust !== trust.INSIDE) return { refusal: `no reviewer for ${pr}: its author is outside the org, and the tickets' reviewer starts for the org's own pull requests only` };
@@ -305,15 +429,49 @@ export function atomicReviewerPort({ session, run, gh, declared = reviewerGate()
       const started = spawn({ session: seat.label, cause: REVIEW_CAUSE, causeKey: `${pr}@${head}`, trust: trust.INSIDE },
         agents.filter((agent) => agent.label !== seat.label), { run: herdr, cwd: tree.path });
       if ("refusal" in started) return started;
-      // The gate's own verdict prompt, for this seat's repository: the same words the gate sends a reviewer for a ready pull request.
-      const prompt = orders.awaitingVerdictPrompt({ ...state.view, repoKey: seat.key }, orders.reviewHeadsOf(state.view, head, "settled"));
-      try {
-        run(["--session", session, "agent", "prompt", seat.label, prompt]);
-      } catch (err) {
-        return { refusal: `no reviewer for ${pr}: ${err instanceof Error ? err.message.split("\n")[0] : String(err)}` };
-      }
+      const prompted = sendPrompt(seat, state, head);
+      if ("refusal" in prompted) return { refusal: `no reviewer for ${pr}: ${prompted.refusal}` };
       heads.set(seat.label, head);
       return { label: seat.label };
+    },
+    settled({ pr, head }) {
+      const seat = seatOf(pr);
+      if ("refusal" in seat || heads.get(seat.label) !== head) return "gone";
+      const agents = listed();
+      // herdr did not say what is running, so the reviewer is working as far as anyone can tell: nothing is said of it on a guess.
+      if (agents === null) return "working";
+      const holders = agents.filter((agent) => agent.label === seat.label);
+      if (holders.length === 0) return "gone";
+      return holders.every((agent) => ENDED_STATUSES.includes(agent.status)) ? "ended" : "working";
+    },
+    verdictFileOf({ pr, head }) {
+      const seat = seatOf(pr);
+      return "refusal" in seat ? null : verdictFileIn(checkoutOf(seat.label), seat.number, head);
+    },
+    repostVerdict({ pr, head }, file) {
+      const seat = seatOf(pr);
+      if ("refusal" in seat) return { refusal: seat.refusal, final: true };
+      const word = verdictWordOf(file, head);
+      if (word === null) return { refusal: `the verdict file ${file} does not open with a verdict for ${head.slice(0, 8)}`, final: true };
+      const tree = checkoutOf(seat.label);
+      // The token first: the door posts as the reviewer App, and a token that is stale or missing is the failure this repost is for.
+      const minted = mint(tree);
+      if (minted !== null) return { refusal: minted, final: false };
+      try {
+        door(reviewerGate().doorPath.reviewerDoorPath(), [String(seat.number), word, file], reviewerGate().wake.reviewerEnvironment(seat.label, {}, tree));
+        return { posted: true };
+      } catch (err) {
+        const status = (err as { status?: number | null }).status ?? null;
+        return { refusal: doorReason(err, status), final: status !== null && FINAL_DOOR_EXITS.includes(status) };
+      }
+    },
+    reprompt({ pr, head }) {
+      const seat = seatOf(pr);
+      if ("refusal" in seat) return seat;
+      const state = readReviewState(pr, gh, declared);
+      if (state === null) return { refusal: `no reprompt for ${pr}: the pull request could not be read` };
+      const sent = sendPrompt(seat, state, head);
+      return "refusal" in sent ? { refusal: `no reprompt for ${pr}: ${sent.refusal}` } : { prompted: true };
     },
     close({ pr, head }) {
       const seat = seatOf(pr);
@@ -359,6 +517,28 @@ export function atomicReviewerPort({ session, run, gh, declared = reviewerGate()
       });
     },
   };
+}
+
+/** The reviewer's token mint in a checkout, as the gate's own refresh makes it (A11-83): the reason it cannot, or null when the reviewer has a token. */
+function reviewerTokenMintOf(tree: string): string | null {
+  const { wake } = reviewerGate();
+  return wake.reviewerTokenMinter(wake.reviewerAppOf())(tree);
+}
+
+/** The verdict word of a verdict file whose opener is a verdict for `head`, and null for any other file (A11-83). */
+function verdictWordOf(file: string, head: string): "convinced" | "not-convinced" | null {
+  const line = firstLineOfFile(file);
+  if (line === null) return null;
+  const verdict = verdictOfText(line);
+  if (verdict.verdict !== "convinced" && verdict.verdict !== "not-convinced") return null;
+  return headMatches(verdict.head, head) ? verdict.verdict : null;
+}
+
+/** The door's last line for a failed post, without its prefix: the reason the verdict is not on the pull request (A11-83). */
+function doorReason(err: unknown, status: number | null): string {
+  const lines = String((err as { stderr?: unknown }).stderr ?? "").split("\n").map((line) => line.trim()).filter(Boolean);
+  const last = lines.at(-1);
+  return last === undefined ? `the verdict door exited ${status ?? "without a status"}` : last.replace(/^pr-review-verdict: (NOT POSTED\. )?/, "");
 }
 
 /** Closes the workspace a label holds in the session, if herdr lists it. */
