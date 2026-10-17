@@ -565,8 +565,8 @@ test("a source that cannot read states never marks a run completed", async () =>
 });
 
 /** Run NBF-1 until it ends on `outcome` (null for none), and return the setup. */
-async function endedOn(outcome: Record<string, unknown> | null, max = 1, keys = ["NBF-1"]) {
-  const made = setup(max, keys);
+async function endedOn(outcome: Record<string, unknown> | null, max = 1, keys = ["NBF-1"], tickets: Record<string, unknown> = {}, options: NonNullable<Parameters<typeof setup>[3]> = {}) {
+  const made = setup(max, keys, tickets, options);
   await made.pool.tick();
   made.status.set(herdrName("NBF-1"), "working");
   await made.pool.tick();
@@ -881,9 +881,33 @@ function startTracker(note: string | null = null, failure: string | null = null)
   const tracker: TicketSource = { ...source, moveToWorkingState: async (key, state) => {
     moved.push(`${key} ${state}`);
     if (failure !== null) throw new Error(failure);
-    return note;
+    return { moved: note === null ? { from: "Todo", to: state } : null, note };
   } };
   return { tracker, moved };
+}
+
+/**
+ * A tracker that keeps each ticket's state by name, as Linear does: a ticket still in Todo moves to the working state, and a restore moves it back
+ * only while it is still there. `control.refuseRestore` is the message a restore is refused with, while it is set, and `control.hold` keeps a restore
+ * waiting until it resolves.
+ */
+function stateTracker() {
+  const current = new Map([["NBF-1", "Todo"]]);
+  const control = { refuseRestore: null as string | null, hold: null as Promise<void> | null };
+  const tracker: TicketSource = { ...source,
+    moveToWorkingState: async (key, state) => {
+      const from = current.get(key) ?? "Todo";
+      if (from !== "Todo") return { moved: null, note: null };
+      current.set(key, state);
+      return { moved: { from, to: state }, note: null };
+    },
+    restoreState: async (key, move) => {
+      if (control.hold !== null) await control.hold;
+      if (control.refuseRestore !== null) throw new Error(control.refuseRestore);
+      if (current.get(key) === move.to) current.set(key, move.from);
+      return null;
+    } };
+  return { tracker, current, control };
 }
 
 test("a ticket moves to the working state as its worker starts, and a planning run moves nothing", async () => {
@@ -932,7 +956,195 @@ test("a tracker that throws before it answers the move cannot stop the run, and 
   assert.equal(entry("NBF-1").phase, "running", "a source without the move starts the run as before");
 });
 
-const BATCH_PLANNER = { plan: "-plan-[^/]*\\.md$", planner: { run: "Run the planner with: unattended: plan {keys} into {dir}", state: "Planned" } };
+test("a run that is stopped puts its ticket back in the state the board moved it out of", async () => {
+  const { tracker, current } = stateTracker();
+  const { pool, entry } = setup(1, ["NBF-1"], { workingState: "In Progress" }, { source: tracker });
+  await pool.tick();
+  await settled();
+  assert.equal(current.get("NBF-1"), "In Progress");
+  pool.stop("NBF-1");
+  await settled();
+  assert.deepEqual([current.get("NBF-1"), entry("NBF-1").movedFrom], ["Todo", undefined]);
+});
+
+test("a run a restart crashes puts its ticket back at the next tracker refresh, not before", async () => {
+  const { tracker, current } = stateTracker();
+  const { pool, status, entry, restart } = setup(1, ["NBF-1"], { workingState: "In Progress" }, { source: tracker });
+  await pool.tick();
+  await settled();
+  status.delete(herdrName("NBF-1"));
+  const restarted = restart();
+  restarted.reconcile();
+  await settled();
+  assert.equal(entry("NBF-1").outcome?.kind, "crashed");
+  assert.equal(current.get("NBF-1"), "In Progress", "nothing is put back until the tracker is asked again");
+  await restarted.refreshTracker();
+  assert.deepEqual([current.get("NBF-1"), entry("NBF-1").movedFrom], ["Todo", undefined]);
+});
+
+test("a run that checked its ticket puts the ticket back at once", async () => {
+  const { tracker, current } = stateTracker();
+  const { entry } = await endedOn({ kind: "checked", reason: "nothing to change" }, 1, ["NBF-1"], { workingState: "In Progress" }, { source: tracker });
+  await settled();
+  assert.deepEqual([current.get("NBF-1"), entry("NBF-1").movedFrom], ["Todo", undefined]);
+});
+
+test("a run that hands its ticket back keeps the ticket In Progress while it is parked, and Dismiss puts it back and takes the run off", async () => {
+  for (const outcome of [{ kind: "needs-human", reason: "which colour?" }, { kind: "wrong-repo", where: "netbox" }, null]) {
+    const { tracker, current } = stateTracker();
+    const parked = await endedOn(outcome, 1, ["NBF-1"], { workingState: "In Progress" }, { source: tracker });
+    await settled();
+    assert.equal(current.get("NBF-1"), "In Progress", `POSITIVE CONTROL: parked while ${JSON.stringify(outcome)}`);
+    await parked.pool.dismiss("NBF-1");
+    assert.deepEqual([current.get("NBF-1"), parked.store.get().entries], ["Todo", []], JSON.stringify(outcome));
+  }
+});
+
+test("a parked run that is closed keeps its ticket In Progress, and a refresh does not put it back: the run is still on the board", async () => {
+  const { tracker, current } = stateTracker();
+  const parked = await endedOn({ kind: "needs-human", reason: "which colour?" }, 1, ["NBF-1"], { workingState: "In Progress" }, { source: tracker });
+  parked.pool.close("NBF-1");
+  await parked.pool.refreshTracker();
+  assert.deepEqual([current.get("NBF-1"), parked.entry("NBF-1").phase, parked.entry("NBF-1").movedFrom?.from], ["In Progress", "finished", "Todo"]);
+});
+
+test("removing a queued retry that carries the record puts its ticket back, and the retry carries the record from the parked run", async () => {
+  const { tracker, current } = stateTracker();
+  const parked = await endedOn({ kind: "needs-human", reason: "which colour?" }, 1, ["NBF-1"], { workingState: "In Progress" }, { source: tracker });
+  parked.pool.close("NBF-1");
+  parked.store.set(retry(parked.store.get(), "NBF-1", 200));
+  assert.deepEqual([parked.entry("NBF-1").phase, parked.entry("NBF-1").movedFrom], ["queued", { from: "Todo", to: "In Progress" }]);
+  await parked.pool.remove("NBF-1");
+  assert.deepEqual([current.get("NBF-1"), parked.store.get().entries], ["Todo", []]);
+});
+
+test("removing a queued review round restores nothing, even where it still holds the record of its run", async () => {
+  const { tracker, current } = stateTracker();
+  const made = await endedOn({ kind: "draft-pr", prs: [{ repo: "nbl-ui-netbox", url: "https://github.com/x/pull/2" }] }, 1, ["NBF-1"], { workingState: "In Progress" }, { source: tracker });
+  const run = made.entry("NBF-1");
+  made.store.set({ ...made.store.get(), entries: [{ ...run, phase: "queued", outcome: undefined, review: [{ repo: "nbl-ui-netbox", url: "https://github.com/x/pull/2" }] }] });
+  await made.pool.remove("NBF-1");
+  assert.deepEqual([current.get("NBF-1"), made.store.get().entries], ["In Progress", []]);
+});
+
+test("a run that opened a pull request keeps its ticket where it is when it is dismissed: the tracker's integration owns the state from there", async () => {
+  const { tracker, current } = stateTracker();
+  const made = await endedOn({ kind: "draft-pr", prs: [{ repo: "nbl-ui-netbox", url: "https://github.com/x/pull/2" }] }, 1, ["NBF-1"], { workingState: "In Progress" }, { source: tracker });
+  await settled();
+  assert.equal(current.get("NBF-1"), "In Progress");
+  await made.pool.dismiss("NBF-1");
+  assert.deepEqual([current.get("NBF-1"), made.store.get().entries], ["In Progress", []]);
+});
+
+test("a person who moved the ticket since the run started keeps it where they put it: the board leaves it alone and clears its record", async () => {
+  const stopped = stateTracker();
+  const run = setup(1, ["NBF-1"], { workingState: "In Progress" }, { source: stopped.tracker });
+  await run.pool.tick();
+  await settled();
+  stopped.current.set("NBF-1", "Done");
+  run.pool.stop("NBF-1");
+  await settled();
+  assert.deepEqual([stopped.current.get("NBF-1"), run.entry("NBF-1").movedFrom], ["Done", undefined]);
+
+  const parked = stateTracker();
+  const made = await endedOn({ kind: "needs-human", reason: "which colour?" }, 1, ["NBF-1"], { workingState: "In Progress" }, { source: parked.tracker });
+  parked.current.set("NBF-1", "In Review");
+  await made.pool.dismiss("NBF-1");
+  assert.deepEqual([parked.current.get("NBF-1"), made.store.get().entries], ["In Review", []]);
+});
+
+test("a restore the tracker refuses is logged at the run's end and kept, the next refresh puts the ticket back, and Dismiss throws and keeps the run", async () => {
+  const { tracker, current, control } = stateTracker();
+  control.refuseRestore = "Linear answered 500";
+  let made!: Awaited<ReturnType<typeof endedOn>>;
+  const written = await captureStderr(async () => {
+    made = await endedOn({ kind: "checked", reason: "nothing to change" }, 1, ["NBF-1"], { workingState: "In Progress" }, { source: tracker });
+    await settled();
+  });
+  assert.ok(written.includes("ticket:serve: NBF-1 could not be put back to Todo: Linear answered 500\n"), written.join(""));
+  assert.equal(made.entry("NBF-1").movedFrom?.from, "Todo", "the record is kept for the next try");
+  control.refuseRestore = null;
+  await made.pool.refreshTracker();
+  assert.deepEqual([current.get("NBF-1"), made.entry("NBF-1").movedFrom], ["Todo", undefined]);
+
+  const refused = stateTracker();
+  const parked = await endedOn({ kind: "needs-human", reason: "which colour?" }, 1, ["NBF-1"], { workingState: "In Progress" }, { source: refused.tracker });
+  refused.control.refuseRestore = "Linear answered 500";
+  await assert.rejects(parked.pool.dismiss("NBF-1"), /NBF-1 could not be put back to Todo: Linear answered 500/);
+  assert.deepEqual([parked.entry("NBF-1").phase, parked.entry("NBF-1").workspace], ["finished", "w1"], "the run stays on the board, parked and answerable");
+  assert.equal(closes(parked.h, "w1"), 0, "its workspace is not closed for a restore that did not happen");
+  refused.control.refuseRestore = null;
+  await parked.pool.dismiss("NBF-1");
+  assert.deepEqual([refused.current.get("NBF-1"), parked.store.get().entries], ["Todo", []]);
+});
+
+test("Remove of a queued retry whose ticket the tracker refuses to put back throws, and the run stays queued", async () => {
+  const { tracker, control } = stateTracker();
+  const parked = await endedOn({ kind: "needs-human", reason: "which colour?" }, 1, ["NBF-1"], { workingState: "In Progress" }, { source: tracker });
+  parked.pool.close("NBF-1");
+  parked.store.set(retry(parked.store.get(), "NBF-1", 200));
+  control.refuseRestore = "Linear answered 500";
+  await assert.rejects(parked.pool.remove("NBF-1"), /NBF-1 could not be put back to Todo: Linear answered 500/);
+  assert.equal(parked.entry("NBF-1").phase, "queued");
+});
+
+test("no tick starts a queued run while Remove puts its ticket back, so the run Remove takes off is the one that was queued", async () => {
+  const { tracker, current, control } = stateTracker();
+  const parked = await endedOn({ kind: "needs-human", reason: "which colour?" }, 1, ["NBF-1"], { workingState: "In Progress" }, { source: tracker });
+  parked.pool.close("NBF-1");
+  parked.store.set(retry(parked.store.get(), "NBF-1", 200));
+  const starts = () => parked.h.calls.filter((args) => args.includes("start")).length;
+  const before = starts();
+  let release!: () => void;
+  control.hold = new Promise<void>((resolve) => { release = resolve; });
+  const removing = parked.pool.remove("NBF-1");
+  await settled();
+  await parked.pool.tick();
+  assert.equal(starts(), before, "the queued run is not started while its ticket is being put back");
+  control.hold = null;
+  release();
+  await removing;
+  assert.deepEqual([current.get("NBF-1"), parked.store.get().entries], ["Todo", []]);
+});
+
+test("a retried run that finds its ticket already started keeps the record its first run made", async () => {
+  const { tracker, current } = stateTracker();
+  const parked = await endedOn({ kind: "needs-human", reason: "which colour?" }, 1, ["NBF-1"], { workingState: "In Progress" }, { source: tracker });
+  parked.pool.close("NBF-1");
+  parked.store.set(retry(parked.store.get(), "NBF-1", 200));
+  await parked.pool.tick();
+  await settled();
+  assert.deepEqual([parked.entry("NBF-1").phase, current.get("NBF-1"), parked.entry("NBF-1").movedFrom], ["running", "In Progress", { from: "Todo", to: "In Progress" }]);
+});
+
+test("a restore that comes before the move has resolved waits for it, and puts the ticket back only after it", async () => {
+  const calls: string[] = [];
+  const states = new Map([["NBF-1", "Todo"]]);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const tracker: TicketSource = { ...source,
+    moveToWorkingState: async (key, state) => {
+      await gate;
+      calls.push(`move ${state}`);
+      states.set(key, state);
+      return { moved: { from: "Todo", to: state }, note: null };
+    },
+    restoreState: async (key, move) => {
+      calls.push(`restore ${move.from}`);
+      if (states.get(key) === move.to) states.set(key, move.from);
+      return null;
+    } };
+  const { pool, entry } = setup(1, ["NBF-1"], { workingState: "In Progress" }, { source: tracker });
+  await pool.tick();
+  pool.stop("NBF-1");
+  await settled();
+  assert.deepEqual(calls, [], "the restore waits while the move is still on its way");
+  release();
+  await settled();
+  assert.deepEqual([calls, states.get("NBF-1"), entry("NBF-1").movedFrom], [["move In Progress", "restore Todo"], "Todo", undefined]);
+});
+
+const BATCH_PLANNER = { plan:"-plan-[^/]*\\.md$", planner: { run: "Run the planner with: unattended: plan {keys} into {dir}", state: "Planned" } };
 /** The batch `setup` queues its tickets in: `enqueue`'s first batch at the time 0. */
 const BATCH = "b0-0";
 /** A tracker that takes plans and records the blockers the board adds, reading them back as Linear would. */
@@ -1697,12 +1909,12 @@ test("a parked run whose worker then writes checked or planned has its workspace
 
 test("Dismiss takes a finished run off the board, closing its workspace when it is still open, and keeps the run's files", async () => {
   const parked = await endedOn({ kind: "needs-human", reason: "which colour?" });
-  parked.pool.dismiss("NBF-1");
+  await parked.pool.dismiss("NBF-1");
   assert.deepEqual(parked.h.calls.at(-1), ["--session", "tickets", "workspace", "close", "w1"], "its open workspace is closed first");
   assert.deepEqual(parked.store.get().entries, [], "and the run is gone from the board");
   const closed = await endedOn({ kind: "checked", reason: "nothing to change" });
   const calls = closed.h.calls.length;
-  closed.pool.dismiss("NBF-1");
+  await closed.pool.dismiss("NBF-1");
   assert.equal(closed.h.calls.length, calls, "a run whose workspace is closed already asks nothing of herdr");
   assert.deepEqual(closed.store.get().entries, []);
   assert.ok(existsSync(join(ticketDir(closed.settings, "NBF-1"), "outcome.json")), "the run's files stay: only the board's record goes");
@@ -1711,13 +1923,13 @@ test("Dismiss takes a finished run off the board, closing its workspace when it 
 test("Dismiss is refused for a queued or live run, and a refused close leaves a parked run on the board, parked", async () => {
   const { pool, entry, h } = setup(1, ["NBF-1", "NBF-2"]);
   await pool.tick();
-  assert.throws(() => pool.dismiss("NBF-1"), /NBF-1 is still running: Stop it first/);
-  assert.throws(() => pool.dismiss("NBF-2"), /NBF-2 is queued, not finished: Remove takes it off the queue/);
+  await assert.rejects(pool.dismiss("NBF-1"), /NBF-1 is still running: Stop it first/);
+  await assert.rejects(pool.dismiss("NBF-2"), /NBF-2 is queued, not finished: Remove takes it off the queue/);
   assert.deepEqual([entry("NBF-1").phase, entry("NBF-2").phase], ["running", "queued"]);
   assert.equal(closes(h, "w1"), 0, "a live run's workspace is Stop's to close");
   const parked = await endedOn({ kind: "needs-human", reason: "which colour?" });
   parked.h.refused.add("close");
-  assert.throws(() => parked.pool.dismiss("NBF-1"), /herdr could not close NBF-1's workspace/);
+  await assert.rejects(parked.pool.dismiss("NBF-1"), /herdr could not close NBF-1's workspace/);
   assert.deepEqual([parked.entry("NBF-1").phase, parked.entry("NBF-1").workspace], ["finished", "w1"]);
 });
 
@@ -1728,7 +1940,7 @@ test("Dismissing one ticket of a parked batch closes the batch's one workspace, 
   writeFileSync(join(batchDir(settings, BATCH), "outcome.json"), JSON.stringify({ kind: "needs-human", reason: "which design?" }));
   status.set(herdrName(BATCH), "idle");
   await pool.tick();
-  pool.dismiss("NBF-1");
+  await pool.dismiss("NBF-1");
   assert.deepEqual(store.get().entries.map((e) => e.ticket.key), ["NBF-2"]);
   assert.deepEqual([entry("NBF-2").workspace, entry("NBF-2").outcome?.kind], [undefined, "needs-human"]);
   assert.equal(closes(h, "w1"), 1);

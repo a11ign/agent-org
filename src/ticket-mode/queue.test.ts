@@ -6,7 +6,7 @@ import { tmpDir } from "../lib/tmp-fixture.ts";
 import { isParked } from "./board-view.ts";
 import {
   amend, approve, byIdentifier, childOrder, refuseParents, respond, batchPlanDone, dismiss, feedbackRound, MAX_FEEDBACK_ROUNDS, markPublishRunning, markPublishStarting, publishDone, publishFailed, publishStarts, queuePublish, emptyQueue, enqueue, finish, isLive, leaveBatch, liveRunCount, loadQueue, markResumed, markRunning, markStarting, nextStarts, observe, park,
-  noteWorking, recordBlockers, recordRepos, planDone, watchWorking, PLAN_BATCH_MAX, recordPullStates, recordTrackerStates, remove, retry, saveQueue, setMax, setPaused, unpark, unreadBlockerKeys, unsettledKeys, type Queue,
+  clearMove, noteWorking, recordBlockers, recordMove, recordRepos, planDone, watchWorking, PLAN_BATCH_MAX, recordPullStates, recordTrackerStates, remove, retry, saveQueue, setMax, setPaused, unpark, unreadBlockerKeys, unsettledKeys, type Queue,
 } from "./queue.ts";
 import type { Ticket } from "./source.ts";
 
@@ -280,6 +280,24 @@ test("a review run that failed is retried as a review run, and a reviewed one is
   assert.deepEqual([retried?.phase, retried?.review, retried?.session], ["queued", [pr], "s1"]);
   const reviewed = endedWith({ kind: "reviewed", prs: [pr] });
   assert.deepEqual(retry(reviewed, "A", 12), reviewed);
+});
+
+test("a move the board made is recorded on its run once, the first one kept, and a retry carries it over", () => {
+  const started = markRunning(markStarting(enqueue(emptyQueue(3), [ticket("A")], choice, 1), "A", 2), "A", "w1", "w1:p1");
+  const moved = { from: "Todo", to: "In Progress" };
+  const recorded = recordMove(started, "A", moved);
+  assert.deepEqual(recorded.entries[0].movedFrom, moved);
+  assert.deepEqual(recordMove(recorded, "A", { from: "Done", to: "In Progress" }).entries[0].movedFrom, moved, "a second move does not replace the record");
+  assert.deepEqual(recordMove(started, "B", moved), started, "a run that is not on the queue records nothing");
+  const crashed = finish(recorded, "A", { kind: "crashed", reason: "x" }, 4);
+  assert.deepEqual(retry(crashed, "A", 5).entries[0].movedFrom, moved, "a retried run finds its ticket started, so the record is all there is");
+});
+
+test("clearing a move drops the record and leaves the run as it was", () => {
+  const ended = endedWith({ kind: "checked", reason: "r" });
+  const cleared = clearMove(recordMove(ended, "A", { from: "Todo", to: "In Progress" }), "A");
+  assert.equal(cleared.entries[0].movedFrom, undefined);
+  assert.deepEqual([cleared.entries[0].phase, cleared.entries[0].outcome], ["finished", { kind: "checked", reason: "r" }]);
 });
 
 const readyToMerge = (fields: Record<string, unknown> = {}) => endedWith({ kind: "reviewed", prs: [pr] }, { review: [pr], pullStates: { [pr.url]: "open" }, ...fields });

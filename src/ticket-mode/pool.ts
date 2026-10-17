@@ -70,11 +70,11 @@ import { agentStartArgs, closedNote, herdrReason, herdrRun, openPane, readAgents
 import { parseOrder, unknownRepos, type Order } from "./batch-order.ts";
 import { readOwnLogin, readPullFeedback, type PullFeedback } from "../ticket-port/pull-feedback.ts";
 import { defaultGh } from "../lib/tool-version-agreement.ts";
-import { CONCLUDED, HANDED_BACK, hasPlan, isBeingPublished, isParked, isWatched, openPulls, stackedOn } from "./board-view.ts";
+import { CONCLUDED, HANDED_BACK, hasPlan, isBeingPublished, isParked, isWatched, openPulls, RESULT_KINDS, stackedOn } from "./board-view.ts";
 import {
-  batchPlanDone, dismiss as dismissFinished, feedbackRound, finish, isLive, leaveBatch, markPublishRunning, markPublishStarting, markResumed, markRunning, markStarting, nextStarts, observe,
-  noteWorking, observePublish, park, planDone, publishDone, publishFailed, publishStarts, recordBlockers, recordPullStates, recordRepos, recordTrackerStates, unpark,
-  unreadBlockerKeys, unsettledKeys, watchWorking,
+  batchPlanDone, clearMove, dismiss as dismissFinished, feedbackRound, finish, isLive, leaveBatch, markPublishRunning, markPublishStarting, markResumed, markRunning, markStarting, nextStarts,
+  observe, noteWorking, observePublish, park, planDone, publishDone, publishFailed, publishStarts, recordBlockers, recordMove, recordPullStates, recordRepos, recordTrackerStates,
+  remove as removeQueued, unpark, unreadBlockerKeys, unsettledKeys, watchWorking,
   type Entry, type Outcome, type PublishRun, type Queue, type RunChoice, type WrittenOutcome,
 } from "./queue.ts";
 import type { Ticket, TicketSource } from "./source.ts";
@@ -396,6 +396,10 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
   const crashed = (err: unknown): Outcome => ({ kind: "crashed", reason: messageOf(err).split("\n")[0] });
   /** The planning runs whose plans are being attached, by herdr name, so a tick that sees the same outcome file meanwhile does not attach them again. */
   const attaching = new Set<string>();
+  /** The moves to the working state still on their way to the tracker, by ticket key: a restore of the ticket waits for its move. */
+  const pendingMoves = new Map<string, Promise<void>>();
+  /** The queued runs Remove is putting the ticket back for, by ticket key: no tick starts one of them while it is taken off the queue. */
+  const removing = new Set<string>();
   /** Whether this machine plans the tickets queued together in one run. */
   const batches = plansInBatches(settings.planner);
   /** Drafts are worked on before anyone reviews them, so a machine with `drafts` on starts no reviewer. */
@@ -942,6 +946,8 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     const record = id === undefined ? {} : { session: id };
     // A batch's run spent its tokens once, so they are recorded on the ticket it was watched through, and not counted again on each of the rest.
     updateEach(runMembers(entry), (queue, key) => (parks ? park : finish)(queue, key, outcome, now(), key === entry.ticket.key ? { ...record, tokens } : record));
+    // A run that is not handed back gives its ticket back now. A parked one keeps it In Progress while a person may answer it.
+    if (!HANDED_BACK.has(outcome.kind)) for (const member of runMembers(entry)) void restoreAndLog(member.ticket.key);
     misses.delete(name);
     answered.delete(name);
     startedHere.delete(name);
@@ -989,7 +995,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     const starts = nextStarts(store.get(), load, cores).filter((entry) => entry.blockers !== undefined);
     const begun = new Set<string>();
     for (const entry of starts) {
-      if (begun.has(entry.ticket.key)) continue;
+      if (begun.has(entry.ticket.key) || removing.has(entry.ticket.key)) continue;
       const batch = entry.batch === undefined ? [entry] : starts.filter((e) => e.batch === entry.batch);
       for (const member of batch) begun.add(member.ticket.key);
       await (batch.length > 1 ? startBatch(batch) : startOne(entry));
@@ -1061,17 +1067,57 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
   }
 
   /**
-   * Tell the tracker a worker has started on the ticket, by moving it to this machine's working state. Nothing waits on it and nothing turns
-   * on it, so a failure is written to the board's log rather than stopping the run.
+   * Tell the tracker a worker has started on the ticket, by moving it to this machine's working state, and keep the state it moved it out of on
+   * the run, so the board can put it back. Nothing waits on the move and nothing turns on it, so a failure is written to the board's log rather
+   * than stopping the run. The move is kept in `pendingMoves` until it has resolved, so a restore that comes first waits for it.
    */
   function moveTicketToWorkingState(key: string): void {
     const { workingState } = settings;
     const move = source.moveToWorkingState?.bind(source);
     if (workingState === null || move === undefined) return;
     // Started inside a promise, so even a source that throws before it answers cannot reach the run.
-    Promise.resolve().then(() => move(key, workingState))
-      .then((note) => { if (note !== null) log(note); }, (err) => log(`${key} could not be moved to ${workingState}: ${messageOf(err)}`));
+    const pending: Promise<void> = Promise.resolve().then(() => move(key, workingState))
+      .then(({ moved, note }) => {
+        if (moved !== null) update((queue) => recordMove(queue, key, moved));
+        if (note !== null) log(note);
+      }, (err) => log(`${key} could not be moved to ${workingState}: ${messageOf(err)}`));
+    pendingMoves.set(key, pending);
+    void pending.then(() => { if (pendingMoves.get(key) === pending) pendingMoves.delete(key); });
   }
+
+  /**
+   * Put a ticket the board moved back in the state it came from, for a run that ended without a pull request. Only while the ticket is still in
+   * the state the board moved it to: a person who has moved it since is left to it. Either way the record goes, once the tracker has answered.
+   * Waits for the move that recorded it, which may still be on its way to the tracker. Throws, with the tracker's reason, when the tracker refuses,
+   * and keeps the record, so the next pass tries again.
+   */
+  async function restoreWorkingState(key: string): Promise<void> {
+    await pendingMoves.get(key);
+    const entry = store.get().entries.find((e) => e.ticket.key === key);
+    // A run that opened a pull request is never put back: the tracker's own integration takes its ticket from there. Nor is a review round.
+    if (entry?.movedFrom === undefined || entry.review !== undefined || RESULT_KINDS.has(entry.outcome?.kind ?? "")) return;
+    const restore = source.restoreState?.bind(source);
+    if (restore !== undefined) {
+      let note: string | null;
+      try { note = await restore(key, entry.movedFrom); }
+      catch (err) { throw new Error(`${key} could not be put back to ${entry.movedFrom.from}: ${messageOf(err)}`); }
+      if (note !== null) log(note);
+    }
+    update((queue) => clearMove(queue, key));
+  }
+
+  /**
+   * Put back the tickets of finished runs that ended without a pull request and still hold the record of a move: a restore the tracker refused, or a
+   * run a restart crashed. A handed-back run keeps its ticket In Progress while a person may still answer its agent, so it is left alone here, and
+   * Dismiss or a later retry settles it.
+   */
+  async function restoreStranded(): Promise<void> {
+    const stranded = store.get().entries.filter((e) => e.phase === "finished" && e.movedFrom !== undefined && !isParked(e) && !HANDED_BACK.has(e.outcome?.kind ?? ""));
+    for (const { ticket } of stranded) await restoreAndLog(ticket.key);
+  }
+
+  /** {@link restoreWorkingState}, with a refusal written to the board's log: a caller that nothing waits on, and the next pass tries again. */
+  const restoreAndLog = (key: string): Promise<void> => restoreWorkingState(key).catch((err) => log(messageOf(err)));
 
   /** Whether the ticket has a plan of its own in the tracker now. */
   async function planReached(queued: Ticket): Promise<boolean> {
@@ -1164,11 +1210,12 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
   }
 
   /**
-   * Dismiss a finished run: close its workspace if it is still open (parked), then take it off the board. The ticket, its branch, its worktrees
-   * and its pull requests are left as they are. Throws, naming why, for a run that is queued or live, or that the publish run under way is
-   * posting, and with herdr's reason when the workspace cannot be closed, so the run stays on the board, parked, for another try.
+   * Dismiss a finished run: put its ticket back where the board found it, close its workspace if it is still open (parked), then take it off the
+   * board. The ticket, its branch, its worktrees and its pull requests are left as they are. Throws, naming why, for a run that is queued or live,
+   * or that the publish run under way is posting, with herdr's reason when the workspace cannot be closed, and with the tracker's reason when the
+   * ticket cannot be put back. The run stays on the board in either case, for another try.
    */
-  function dismiss(key: string): void {
+  async function dismiss(key: string): Promise<void> {
     const queue = store.get();
     const entry = queue.entries.find((e) => e.ticket.key === key);
     if (entry === undefined) return;
@@ -1176,8 +1223,25 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     if (entry.phase !== "finished") throw new Error(`${key} is still running: Stop it first, then dismiss it`);
     if (isBeingPublished(entry, queue.publish)) throw new Error(`${key}'s pull requests are being published: dismiss it once the publish run has ended`);
     // A batch's parked tickets share one workspace: closing it unparks them all, and only this one leaves the board.
+    // The ticket goes back first: a refused restore then leaves the run exactly as it was, parked and answerable. A refused close after it leaves the
+    // ticket where it was put, and the run on the board, for Dismiss to try again.
+    await restoreWorkingState(key);
     if (isParked(entry)) close(key);
     update((next) => dismissFinished(next, key));
+  }
+
+  /**
+   * Take a queued run off the queue. A queued run that carries the record of a move puts its ticket back first, so Remove never leaves a ticket In
+   * Progress with no run on the board. No tick starts that run while its ticket is put back, so the run Remove takes off is the one that was
+   * queued. Throws, with the tracker's reason, when the ticket cannot be put back, and the run stays queued for another try.
+   */
+  async function remove(key: string): Promise<void> {
+    if (store.get().entries.some((e) => e.ticket.key === key && e.phase === "queued" && e.movedFrom !== undefined)) {
+      removing.add(key);
+      try { await restoreWorkingState(key); }
+      finally { removing.delete(key); }
+    }
+    update((queue) => removeQueued(queue, key));
   }
 
   /**
@@ -1251,19 +1315,22 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
       // the tracker could not be asked: the next refresh asks again
     }
     const keys = unsettledKeys(store.get());
-    if (keys.length === 0) return;
-    try {
-      if (source.stateTypes !== undefined) {
-        const states = await source.stateTypes(keys);
-        update((queue) => recordTrackerStates(queue, states));
+    if (keys.length > 0) {
+      try {
+        if (source.stateTypes !== undefined) {
+          const states = await source.stateTypes(keys);
+          update((queue) => recordTrackerStates(queue, states));
+        }
+        if (source.pullStates !== undefined) {
+          const pulls = await source.pullStates(keys);
+          update((queue) => recordPullStates(queue, pulls));
+        }
+      } catch {
+        // the tracker could not be asked: the next refresh asks again
       }
-      if (source.pullStates !== undefined) {
-        const pulls = await source.pullStates(keys);
-        update((queue) => recordPullStates(queue, pulls));
-      }
-    } catch {
-      // the tracker could not be asked: the next refresh asks again
     }
+    // Last, so a restore the tracker is slow to answer delays none of the reads above.
+    await restoreStranded();
   }
 
   /** The account the workers act as on GitHub, read once: feedback it wrote is the worker's own, never a reason for another round. */
@@ -1340,7 +1407,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     return lines;
   }
 
-  return { tick, stop, close, dismiss, reconcile, ensureSession, refreshTracker, watchFeedback };
+  return { tick, stop, close, dismiss, remove, reconcile, ensureSession, refreshTracker, watchFeedback };
 }
 
 export type Pool = ReturnType<typeof createPool>;
