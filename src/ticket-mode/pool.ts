@@ -61,7 +61,10 @@ import type { Ticket, TicketSource } from "./source.ts";
 import { unreachablePlugins } from "./plugins.ts";
 import { TICKET_ENV } from "./worktree-command.ts";
 import { HOST_FILE_ENV, plansInBatches, type TicketSettings } from "./settings.ts";
-import { REVIEWER_LOGIN, atomicReviewerPort, readReviewState, reviewVerdict, withoutReviewer, type ReviewerPort } from "./reviewer-port.ts";
+import {
+  REVIEWER_LOGIN, atomicReviewerPort, readReviewState, readReviewerMemory, reviewVerdict, reviewerMemoryPath, withoutReviewerReviews, writeReviewerMemory,
+  type ReviewerMemory, type ReviewerPort,
+} from "./reviewer-port.ts";
 import {
   BRIEF_FILE, CONNECTORS_FILE, DENY_FILE, ORDER_FILE, OUTCOME_FILE, PLAN_DIR, PLANNING_DENY, PREVIOUS_OUTCOME_FILE, PUBLISH_FILE, PUBLISHED_FILE, QUESTION_FILE,
   READY_FILE, REVIEW_FILE, STOP_COUNT_FILE,
@@ -338,11 +341,25 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
   const attaching = new Set<string>();
   /** Whether this machine plans the tickets queued together in one run. */
   const batches = plansInBatches(settings.planner);
-  /** The reviewer a machine with `tickets.reviewer` starts for each ready head: the atomic one unless the caller injected another. */
-  const reviewer = settings.reviewer === null ? undefined : deps.reviewerPort ?? atomicReviewerPort({ session: settings.herdrSession, run: herdr, gh });
+  /** Drafts are worked on before anyone reviews them, so a machine with `drafts` on starts no reviewer. */
+  const reviewerOn = settings.reviewer !== null && !settings.drafts;
+  /** What the reviewers remember across a restart, read once here: nothing when the file is missing, and said once when it cannot be read. */
+  const reviewerFile = reviewerMemoryPath(settings.stateDir);
+  const remembered = reviewerOn ? readReviewerMemory(reviewerFile) : undefined;
+  if (remembered?.unreadable) log(`${reviewerFile} cannot be read, so the reviewers started before this restart are not remembered`);
+  const reviewerMemory: ReviewerMemory = remembered?.memory ?? { heads: new Map(), started: new Set(), resumed: new Set() };
+  /** The reviewer a machine with `tickets.reviewer` starts for each settled head: the atomic one unless the caller injected another. */
+  const reviewer = !reviewerOn ? undefined : deps.reviewerPort ?? atomicReviewerPort({ session: settings.herdrSession, run: herdr, gh, heads: reviewerMemory.heads });
   /** The `url@head` keys a reviewer was started for, and whose not-convinced verdict already asked the worker for a round. */
-  const reviewerStarted = new Set<string>();
-  const reviewerResumed = new Set<string>();
+  const { started: reviewerStarted, resumed: reviewerResumed } = reviewerMemory;
+  /** The feedback a worker answers is read without the reviewer's own reviews, so its verdict never moves `feedbackAt`. */
+  const feedbackGh = settings.reviewer === null ? gh : withoutReviewerReviews(gh);
+  /** Writes what the reviewers remember. A file that cannot be written is said, and the reviewers carry on for this run. */
+  const rememberReviewers = (): void => {
+    if (!reviewerOn) return;
+    try { writeReviewerMemory(reviewerFile, reviewerMemory); }
+    catch (err) { log(`${reviewerFile} cannot be written, so a restart may start a reviewer again: ${messageOf(err)}`); }
+  };
 
   /** A run is a planning run while its entry still needs its plan and this machine has a planner. */
   const isPlanning = (entry: Entry): boolean => entry.plan !== undefined && settings.planner !== null;
@@ -1146,17 +1163,15 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     if (self === null) return log("the GitHub account the workers use could not be read, so no pull request's feedback was read");
     let queued = false;
     for (const entry of watched) {
-      const reads = openPulls(entry).map((pr) => ({ url: pr.url, read: readPullFeedback(pr.url, self, gh) }));
+      const reads = openPulls(entry).map((pr) => ({ url: pr.url, read: readPullFeedback(pr.url, self, feedbackGh) }));
       const unread = reads.filter(({ read }) => read === null).map(({ url }) => url);
       if (unread.length > 0) {
         log(`${entry.ticket.key}: the feedback on ${unread.join(", ")} could not be read, so it was not checked; the next watch asks again`);
         continue;
       }
-      // With a reviewer on, its own reviews are not the feedback a worker answers: its verdict is read by `reviewerLines`, which asks for a round
-      // only on requested changes.
-      const own = reviewer === undefined ? reads as { url: string; read: PullFeedback }[]
-        : reads.map(({ url, read }) => ({ url, read: withoutReviewer(read as PullFeedback) }));
-      const lines = [feedbackSince(own, entry.finishedAt ?? 0), ...reviewerLines(openPulls(entry).map((pr) => pr.url))]
+      // A reviewer's verdict is read by `reviewerLines`, which asks for a round only on requested changes; its reviews are not feedback here.
+      const readable = reads.filter((pull): pull is { url: string; read: PullFeedback } => pull.read !== null);
+      const lines = [feedbackSince(readable, entry.finishedAt ?? 0), ...reviewerLines(openPulls(entry).map((pr) => pr.url))]
         .filter((line): line is string => line !== null);
       if (lines.length === 0) continue;
       update((queue) => feedbackRound(queue, entry.ticket.key, lines.join("\n"), now()));
@@ -1180,13 +1195,15 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
         continue;
       }
       const key = `${url}@${state.head}`;
-      if (!reviewerStarted.has(key) && !reviewer.live({ pr: url, head: state.head })) {
+      // A head whose checks have not settled green gets no reviewer yet: this watch passes it by, and the next one asks again.
+      if (state.settled && !reviewerStarted.has(key) && !reviewer.live({ pr: url, head: state.head })) {
         const started = reviewer.start({ pr: url, head: state.head });
         if ("refusal" in started) log(started.refusal);
-        else reviewerStarted.add(key);
+        else { reviewerStarted.add(key); rememberReviewers(); }
       }
       if (reviewVerdict(state.reviews, state.head) === "not-convinced" && !reviewerResumed.has(key)) {
         reviewerResumed.add(key);
+        rememberReviewers();
         lines.push(`${REVIEWER_LOGIN} requested changes on ${url} at ${state.head}: fix what its review found, then push.`);
       }
     }

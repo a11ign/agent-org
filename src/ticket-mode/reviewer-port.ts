@@ -6,6 +6,8 @@
 // in the tickets' herdr session. Nothing here copies that code: it is imported. The reviewer posts as `a11ign-reviewer`, and its verdict is what
 // the pool reads back to decide whether the worker goes round again.
 
+import { readFileSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { spawnReviewer, prepareReviewCheckout } from "../wake.ts";
 import { reviewerSeat } from "../review-attribution.ts";
 import { declaredIdentities, INSIDE, reviewTrustOf, type ReviewTrust } from "../review-trust.ts";
@@ -13,7 +15,7 @@ import { ORG_SESSION, readAgents, type ListedAgent } from "../herdr-agents.ts";
 import { homeProjectDeclaration } from "../project-config.ts";
 import { REPO } from "../project-identity.ts";
 import { pullRequestFieldsOf } from "../ticket-port/pull-request-fields.ts";
-import type { PullFeedback } from "../ticket-port/pull-feedback.ts";
+import { awaitingVerdictPrompt, REVIEW_PULL_FIELDS, reviewHeadsOf, settledGreenOf } from "../work-gate/pr-orders.ts";
 
 /** The account the gate's reviewer posts as. Its reviews are the reviewer's, never the feedback a worker answers. */
 export const REVIEWER_LOGIN = "a11ign-reviewer";
@@ -30,8 +32,11 @@ export type ReviewerPort = Readonly<{
   live(ref: ReviewerRef): boolean;
 }>;
 
-/** What the pool reads of a pull request's reviewer: its head, whether the org's own, and the reviews on it. */
-export type ReviewState = Readonly<{ head: string; trust: ReviewTrust; reviews: readonly Review[] }>;
+/**
+ * What the pool reads of a pull request's reviewer: its head, whether the org's own, the reviews on it, whether its checks have settled green, and
+ * the pull request as the gate's verdict prompt reads it (`view`).
+ */
+export type ReviewState = Readonly<{ head: string; trust: ReviewTrust; reviews: readonly Review[]; settled: boolean; view: Readonly<Record<string, any>> }>;
 type Review = Readonly<{ author: string; state: string; commit: string; at: number }>;
 
 /** The pull request's repository (`owner/name`) and number, or null for a url that is none. */
@@ -47,12 +52,12 @@ function repoKeyOf(repository: string): string | null {
 }
 
 /** The reviewer's seat for a pull request: `reviewer-<n>` in the primary, `reviewer-<key>-<n>` elsewhere, or a refusal naming why it has none. */
-function seatOf(url: string): { label: string; number: number } | { refusal: string } {
+function seatOf(url: string): { label: string; number: number; key: string } | { refusal: string } {
   const pull = pullOf(url);
   if (pull === null) return { refusal: `no reviewer for ${url}: it is not a pull request url` };
   const key = repoKeyOf(pull.repository);
   if (key === null) return { refusal: `no reviewer for ${url}: ${pull.repository} is not a repository the project declares` };
-  return { label: reviewerSeat({ repoKey: key, number: pull.number }), number: pull.number };
+  return { label: reviewerSeat({ repoKey: key, number: pull.number }), number: pull.number, key };
 }
 
 /**
@@ -62,14 +67,15 @@ function seatOf(url: string): { label: string; number: number } | { refusal: str
 export function readReviewState(url: string, gh: (args: string[]) => string, declared: ReturnType<typeof declaredIdentities> = declaredIdentities()): ReviewState | null {
   const pull = pullOf(url);
   if (pull === null) return null;
-  const pr = pullRequestFieldsOf({ repo: pull.repository, number: pull.number, fields: "headRefOid,reviews,author,isCrossRepository", run: gh });
+  const pr = pullRequestFieldsOf({ repo: pull.repository, number: pull.number, fields: REVIEW_PULL_FIELDS, run: gh });
   try {
     if (typeof pr?.headRefOid !== "string") return null;
     const reviews: Review[] = (pr.reviews ?? []).map((r: { author?: { login?: string }; state?: string; commit?: { oid?: string }; submittedAt?: string }) => ({
       author: String(r.author?.login ?? ""), state: String(r.state ?? ""), commit: String(r.commit?.oid ?? ""),
       at: Date.parse(String(r.submittedAt ?? "")) || 0,
     }));
-    return { head: pr.headRefOid, trust: reviewTrustOf(pr, declared), reviews };
+    const settled = settledGreenOf(pr);
+    return { head: pr.headRefOid, trust: reviewTrustOf(pr, declared), reviews, settled, view: { ...pr, number: pull.number } };
   } catch {
     return null;
   }
@@ -86,31 +92,85 @@ export function reviewVerdict(reviews: readonly Review[], head: string): "convin
 }
 
 /**
- * A pull request's feedback read without the reviewer's own reviews, which are not feedback a worker answers. `feedbackAt` is the newest of
- * everyone's, and the reviewer's is not separated from it: where a person's feedback is older than the reviewer's verdict, it stays set.
+ * `gh`, answering a feedback read without the reviewer's own reviews, comments and review-thread comments. They are not feedback a worker
+ * answers, and `feedbackOf` would otherwise take their times into `feedbackAt`. Everything else in the answer passes through unchanged.
  */
-export function withoutReviewer(read: PullFeedback): PullFeedback {
-  const authors = read.authors.filter((author) => author !== REVIEWER_LOGIN);
-  return { ...read, authors, feedbackAt: authors.length === 0 ? null : read.feedbackAt };
+export function withoutReviewerReviews(gh: (args: string[]) => string): (args: string[]) => string {
+  return (args) => {
+    const answer = gh(args);
+    let data: any;
+    try {
+      data = JSON.parse(answer);
+    } catch {
+      return answer;
+    }
+    const pull = data?.data?.repository?.pullRequest;
+    if (pull === null || typeof pull !== "object") return answer;
+    const keep = (connection: any) => Array.isArray(connection?.nodes) ? { ...connection, nodes: connection.nodes.filter((node: any) => node?.author?.login !== REVIEWER_LOGIN) } : connection;
+    pull.reviews = keep(pull.reviews);
+    pull.comments = keep(pull.comments);
+    if (Array.isArray(pull.reviewThreads?.nodes)) {
+      pull.reviewThreads = { ...pull.reviewThreads, nodes: pull.reviewThreads.nodes.map((thread: any) => thread?.comments ? { ...thread, comments: keep(thread.comments) } : thread) };
+    }
+    return JSON.stringify(data);
+  };
 }
 
-/** What the reviewer is asked to do. A stub modelled on the outside reviewer's prompt: the gate's own reviewer prompt is not wired here yet. */
-function reviewerPrompt(url: string, head: string): string {
-  return `You review the pull request ${url} at commit ${head}. Read the change and its checks, then post one verdict on that commit: convinced (approve) or not-convinced (request changes), and say why in the review.`;
+/** Where a pool keeps what it remembers of its reviewers: `tickets/reviewers.json` under the state directory. */
+export function reviewerMemoryPath(stateDir: string): string {
+  return join(stateDir, "tickets", "reviewers.json");
+}
+
+/**
+ * What a pool remembers of its reviewers across a restart: the head each seat's reviewer was started for (`heads`, by seat label), the reviewers
+ * started (`started`, `url@head`), and the verdicts a worker was asked to answer (`resumed`, `url@head`). The pool holds it and the port reads `heads`.
+ */
+export type ReviewerMemory = { heads: Map<string, string>; started: Set<string>; resumed: Set<string> };
+
+/**
+ * The memory on disk. A file that is not there is nothing remembered yet; one that is there and is not what `writeReviewerMemory` writes is
+ * `unreadable`, and is also nothing remembered. Neither throws.
+ */
+export function readReviewerMemory(path: string): { memory: ReviewerMemory; unreadable: boolean } {
+  const nothing = (unreadable: boolean) => ({ memory: { heads: new Map<string, string>(), started: new Set<string>(), resumed: new Set<string>() }, unreadable });
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (error) {
+    return nothing((error as NodeJS.ErrnoException).code !== "ENOENT");
+  }
+  try {
+    const data = JSON.parse(text);
+    const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every((item) => typeof item === "string");
+    if (data === null || typeof data !== "object" || data.heads === null || typeof data.heads !== "object"
+      || !Object.values(data.heads).every((head) => typeof head === "string") || !strings(data.started) || !strings(data.resumed)) {
+      throw new Error("not a reviewer memory");
+    }
+    return { memory: { heads: new Map(Object.entries(data.heads) as [string, string][]), started: new Set(data.started), resumed: new Set(data.resumed) }, unreadable: false };
+  } catch {
+    return nothing(true);
+  }
+}
+
+/** Writes the memory whole, through a temporary file renamed over the last one, so a write that stops midway leaves that last one. */
+export function writeReviewerMemory(path: string, memory: ReviewerMemory): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(`${path}.tmp`, JSON.stringify({ heads: Object.fromEntries(memory.heads), started: [...memory.started], resumed: [...memory.resumed] }));
+  renameSync(`${path}.tmp`, path);
 }
 
 /**
  * The atomic adapter: the gate's codex reviewer, started in the tickets' herdr `session`. The gate's functions name the org's session, so the calls
  * they make are retargeted to `session` here, and nothing else about them changes. It refuses a pull request whose author is not the org's own
  * (`review-trust.ts`): the gate's verdict door and pane reader run only in the org's session, so an outside reviewer has no place to post from.
- * The head each reviewer was started for is kept in memory, so a restart of the pool starts a reviewer again for a head it already reviewed.
+ * The head each reviewer was started for is in `heads` (by seat label), which the pool keeps across a restart, so a restart starts a reviewer again only for a
+ * head it has not reviewed. It refuses a head whose checks have not settled green: the gate's verdict is asked only of settled checks.
  */
-export function atomicReviewerPort({ session, run, gh, declared = declaredIdentities(), spawn = spawnReviewer, checkout = prepareReviewCheckout }: {
+export function atomicReviewerPort({ session, run, gh, declared = declaredIdentities(), spawn = spawnReviewer, checkout = prepareReviewCheckout, heads = new Map<string, string>() }: {
   session: string; run: (args: string[]) => string; gh: (args: string[]) => string; declared?: ReturnType<typeof declaredIdentities>;
-  spawn?: typeof spawnReviewer; checkout?: typeof prepareReviewCheckout;
+  spawn?: typeof spawnReviewer; checkout?: typeof prepareReviewCheckout; heads?: Map<string, string>;
 }): ReviewerPort {
   const herdr = (args: string[]) => run(args[0] === "--session" && args[1] === ORG_SESSION ? ["--session", session, ...args.slice(2)] : args);
-  const heads = new Map<string, string>();
   const listed = (): ListedAgent[] | null => readAgents(run, { session });
 
   return {
@@ -125,6 +185,7 @@ export function atomicReviewerPort({ session, run, gh, declared = declaredIdenti
       if (state === null) return { refusal: `no reviewer for ${pr}: the pull request could not be read` };
       if (state.trust !== INSIDE) return { refusal: `no reviewer for ${pr}: its author is outside the org, and the tickets' reviewer starts for the org's own pull requests only` };
       if (state.head !== head) return { refusal: `no reviewer for ${pr}: its head moved to ${state.head}, so ${head} is no longer to be reviewed` };
+      if (!state.settled) return { refusal: `no reviewer for ${pr}: its checks at ${head} have not settled green` };
       const agents = listed();
       if (agents === null) return { refusal: `no reviewer for ${pr}: herdr did not list the ${session} session` };
       // A reviewer still holding the label is one for an earlier head: its workspace is closed before the next one starts under the same label.
@@ -135,8 +196,10 @@ export function atomicReviewerPort({ session, run, gh, declared = declaredIdenti
       const started = spawn({ session: seat.label, cause: REVIEW_CAUSE, causeKey: `${pr}@${head}`, trust: INSIDE },
         agents.filter((agent) => agent.label !== seat.label), { run: herdr, cwd: tree.path });
       if ("refusal" in started) return started;
+      // The gate's own verdict prompt, for this seat's repository: the same words the gate sends a reviewer for a ready pull request.
+      const prompt = awaitingVerdictPrompt({ ...state.view, repoKey: seat.key }, reviewHeadsOf(state.view, head, "settled"));
       try {
-        run(["--session", session, "agent", "prompt", seat.label, reviewerPrompt(pr, head)]);
+        run(["--session", session, "agent", "prompt", seat.label, prompt]);
       } catch (err) {
         return { refusal: `no reviewer for ${pr}: ${err instanceof Error ? err.message.split("\n")[0] : String(err)}` };
       }

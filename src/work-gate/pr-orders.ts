@@ -1884,12 +1884,23 @@ export function reviewHeadsOf(pr: any, head: string, wait: "settled" | "running"
   return { head8: head.slice(0, 8), key: typeof patch === "string" ? patch.slice(0, 8) : head.slice(0, 8), all: equivalentHeads(pr), wait };
 }
 
+/** The fields a reviewer reads a pull request by: its head, its reviews and author, and the rollup `settledGreenOf` reads. */
+export const REVIEW_PULL_FIELDS = "headRefOid,reviews,author,isCrossRepository,isDraft,statusCheckRollup";
+
+/**
+ * Whether a pull request's own checks have settled green, read off its rollup narrowed to the newest run per name (the way `checksSettledGreen`
+ * asks). A pending check, or no check at all, is not settled green.
+ */
+export function settledGreenOf(pr: any): boolean {
+  return checksSettledGreen(newestPerName(Array.isArray(pr?.statusCheckRollup) ? pr.statusCheckRollup : [])) === true;
+}
+
 /**
  * The wording of the re-review order, TRUE OF WHICHEVER STATE THE PULL REQUEST IS IN (#2176). It used to
  * say "Draft" unconditionally, which is a false statement to a reviewer about the ready pull request this
  * cause now reaches.
  */
-function awaitingVerdictPrompt(pr: any, { head8, key, all, wait }: ReviewHeads, rowReviewSkill = false) {
+export function awaitingVerdictPrompt(pr: any, { head8, key, all, wait }: ReviewHeads, rowReviewSkill = false) {
   const state = pr.isDraft ? "Draft" : "Ready (not a draft)";
   const checks = wait === "settled" ? "has settled green checks and no verdict at that head"
     : "has no verdict at that head, and its checks are re-running on a head that adds no work to the one before it";
