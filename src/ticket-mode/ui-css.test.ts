@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 
@@ -48,15 +48,18 @@ function measure(chrome: string, reducedMotion: boolean): Readonly<Record<(typeo
   const dir = tmpDir("ticket-ui-css-");
   const file = join(dir, "page.html");
   writeFileSync(file, PAGE);
-  // Chrome keeps its own scratch directories in TMPDIR, so they go inside the test's directory, which is removed with it.
-  const scratch = join(dir, "scratch");
-  mkdirSync(scratch);
-  const flags = ["--headless=new", "--disable-gpu", "--no-sandbox", `--user-data-dir=${join(dir, "profile")}`, ...(reducedMotion ? ["--force-prefers-reduced-motion"] : [])];
-  const run = spawnSync(chrome, [...flags, "--dump-dom", `file://${file}`], { encoding: "utf8", env: { ...process.env, TMPDIR: scratch }, timeout: 60_000, killSignal: "SIGKILL" });
-  assert.equal(run.status, 0, `Chrome exited ${run.status} (signal ${run.signal}): ${run.stderr.slice(-1500)}`);
-  const out = /<pre id="out">([^<]*)<\/pre>/.exec(run.stdout)?.[1];
-  assert.ok(out, `Chrome printed no measurement: ${run.stdout.slice(0, 500)}`);
-  return JSON.parse(out);
+  // Chrome puts a socket in its TMPDIR and aborts when that path is over 107 characters, which the suite's own TMPDIR on the CI runner is.
+  const scratch = mkdtempSync(join("/tmp", "ui-css-"));
+  try {
+    const flags = ["--headless=new", "--disable-gpu", "--no-sandbox", `--user-data-dir=${join(dir, "profile")}`, ...(reducedMotion ? ["--force-prefers-reduced-motion"] : [])];
+    const run = spawnSync(chrome, [...flags, "--dump-dom", `file://${file}`], { encoding: "utf8", env: { ...process.env, TMPDIR: scratch }, timeout: 60_000, killSignal: "SIGKILL" });
+    assert.equal(run.status, 0, `Chrome exited ${run.status} (signal ${run.signal}): ${run.stderr.slice(-1500)}`);
+    const out = /<pre id="out">([^<]*)<\/pre>/.exec(run.stdout)?.[1];
+    assert.ok(out, `Chrome printed no measurement: ${run.stdout.slice(0, 500)}`);
+    return JSON.parse(out);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
 }
 
 test("a Publishing run's icon has the colour of In progress and its ring turns, and a Ready to merge icon does neither", (t) => {
