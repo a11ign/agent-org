@@ -103,14 +103,15 @@ test("#1520: a row-less pull request is never asked about a claim, since it has 
 });
 
 /**
- * #1533: the tick hands the orchestrator's one-shot lane its row readers, as it does the ceo's. With them a plain ready `lane:orchestrator` row becomes an order to
+ * #1533: the tick hands the orchestrator's one-shot lane its row readers, as it does the ceo's. With them a plain ready `lane:orchestrator` PATH row becomes an order to
  * `engineers` with `briefRole: "orchestrator"`; a `fleet-gated` row keeps the gate's order. Before the readers were passed, every row kept the gate's order.
+ * A row is a path row only when its Region declares a file (agent-org#1714), so the plain fixture declares one.
  */
 const ORCHESTRATOR_ORDER = (row: number) => ({
   session: "orchestrator", cause: "ready-row-unclaimed", causeKey: `orchestrator/ready-row-unclaimed/agent-org#${row}`,
   prompt: `Ready row agent-org#${row} is unclaimed. Claim it as \`<you>\`.\n`,
 });
-const PLAIN_ROW = { body: "## Acceptance\n\n```bash\nnpx rstest run src/x.test.ts\n```\n", labels: [] as string[] };
+const PLAIN_ROW = { body: "## Region\n\nREADME.md\n\n## Acceptance\n\n```bash\nnpx rstest run src/x.test.ts\n```\n", labels: [] as string[] };
 const GATED_ROW = { ...PLAIN_ROW, labels: ["fleet-gated"] };
 
 test("#1533 CONTROL: with the flag OFF, the tick's ready orders come back as the very array they were", () => {

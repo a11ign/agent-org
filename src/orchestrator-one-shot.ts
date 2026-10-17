@@ -9,8 +9,11 @@
 // session, the standing `orchestrator`, as it does with the flag OFF. A spawned seat has no inventory and no control host, so it cannot reach the plane and only ends on the stop hook's bound.
 // A row whose body cannot be read keeps the gate's order too (fail closed). The claim of a converted row is recorded under `orchestrator` (#947's `laneReason`), and a row under a future
 // `Fleet-hold-until` is held. It does not edit `ROUTED_TO`, `FLEET_LAB_PATTERNS` or `fleetOrLabAcceptance`.
+//
+// WHICH ROWS, PATH-LESS (a11ign/agent-org#1714). A row whose body is not a PATH row keeps the gate's order too: its Region names no file, or says its deliverable is not a commit
+// (`isPathRow`, the ceo lane's predicate, imported and not copied). A seat spawned for such a row has no file to commit, so it can only end on the stop hook's bound (#1646).
 import { fleetOrLabAcceptance } from "./acceptance-commands.ts";
-import { oneShotFactory, type OneShot, type OneShotRow } from "./ceo-one-shot.ts";
+import { isPathRow, oneShotFactory, type OneShot, type OneShotRow } from "./ceo-one-shot.ts";
 
 const orchestrator = oneShotFactory({
   tag: "orchestrator-one-shot",
@@ -43,11 +46,13 @@ export const isOneShotOrder = orchestrator.isOrder;
  * @param enabled the flag's reading; a parameter so a test hands it a stated value
  * @param rowOf the row an order is about (`wake.ts`'s `rowRefOfOrder`); a parameter, so this module does not import the file that imports it
  * @param readRow the row's labels and body, one read; THROWS when it cannot (that order then keeps the gate's session)
+ * @param rootFiles the tree's root files, as {@link isPathRow} takes them; a parameter so a test names its own, and the default is the project's `origin/main`
  */
-export function withOrchestratorOneShot<T extends { session: string; cause?: string; }>(orders: readonly T[], { enabled, rowOf, readRow }: {
+export function withOrchestratorOneShot<T extends { session: string; cause?: string; }>(orders: readonly T[], { enabled, rowOf, readRow, rootFiles }: {
   enabled?: () => boolean;
   rowOf?: (order: T) => OneShotRow | null;
   readRow?: (row: number, key?: string) => { body: string; labels?: readonly string[]; };
+  rootFiles?: Set<string>;
 } = {}): readonly T[] {
   return orchestrator.withOneShot(orders, {
     enabled: enabled ?? orchestratorOneShotEnabled,
@@ -57,7 +62,7 @@ export function withOrchestratorOneShot<T extends { session: string; cause?: str
       if (row === null) return false;
       try {
         const { body, labels = [] } = readRow(row.number, row.key);
-        return !labels.includes("fleet-gated") && fleetOrLabAcceptance(body) === null;
+        return !labels.includes("fleet-gated") && fleetOrLabAcceptance(body) === null && isPathRow(body, { rootFiles });
       } catch {
         return false;
       }
