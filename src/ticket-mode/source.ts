@@ -60,6 +60,12 @@ export type PullState = "open" | "merged" | "closed";
  */
 export type Blocker = Readonly<{ key: string; state: string; status: string; branch?: string; pulls: Readonly<Record<string, PullState>> }>;
 
+/**
+ * A state move the board made on a ticket, by the state NAMES the tracker shows: the state the ticket was in before, and the one it moved it to.
+ * The board keeps it on the run, so it can put the ticket back.
+ */
+export type StateMove = Readonly<{ from: string; to: string }>;
+
 export interface TicketSource {
   /**
    * Every unfinished ticket the Pick view lists: by default those assigned to the person whose key this is, or, where the host file's
@@ -103,10 +109,17 @@ export interface TicketSource {
   attachPlan?(key: string, files: readonly string[], state: string | null): Promise<string | null>;
   /**
    * Move the ticket to the state named `state` as a worker starts implementing it, when it has not started yet. A ticket already started, or
-   * finished, is left where it is. A team with no state of that name keeps the ticket's state, and the returned note says so; it is null
-   * otherwise. A source without it moves nothing. Throws when the tracker refuses.
+   * finished, is left where it is, and `moved` is null. When it moves, `moved` is the state it was in and the one it is in now, so the board can
+   * put it back. A team with no state of that name keeps the ticket's state, and the returned note says so; the note is null otherwise. A source
+   * without it moves nothing. Throws when the tracker refuses.
    */
-  moveToWorkingState?(key: string, state: string): Promise<string | null>;
+  moveToWorkingState?(key: string, state: string): Promise<Readonly<{ moved: StateMove | null; note: string | null }>>;
+  /**
+   * Put a ticket the board moved back in the state it was in, `move.from`, but only while it is still in `move.to`: a person who has moved it
+   * since has moved it on, and it is left alone. A team that no longer has the state `move.from` keeps the ticket's state, and the returned note
+   * says so; the note is null otherwise. A source without it cannot undo a move. Throws when the tracker refuses.
+   */
+  restoreState?(key: string, move: StateMove): Promise<string | null>;
   /**
    * Record in the tracker that each of `blockerKeys` blocks the ticket `key`, as "blocked by" reads it back. A relation the tracker already has
    * is not made again, so an attempt that was cut off can be repeated. A source without it records no order. Throws when the tracker refuses.
