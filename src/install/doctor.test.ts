@@ -74,6 +74,22 @@ test("doctor asks each service's state by its own name, and a stopped ui does no
   assert.equal(checks["instance service"].ok, true);
   assert.equal(checks["instance answering"].ok, true);
   assert.equal(checks["ui service"].ok, false);
-  assert.equal(checks["ui service"].fix, "run `agent-org start ui`");
-  assert.equal(checks["ui answering"].ok, false);
+  assert.equal(checks["ui service"].fix, "stop the one started by hand, then run `agent-org start ui`, so it starts at login and restarts after a crash");
+  assert.equal(checks["ui answering"].ok, true, "it answers on its port, started by hand, and saying nothing answers would be false");
+});
+
+test("the reverse: an unregistered instance does not hide behind a running ui", async () => {
+  const checks = byName(await diagnose(deps({ serviceState: (name) => (name === "ui" ? "running" : "not-registered") })));
+  assert.equal(checks["instance service"].ok, false);
+  assert.equal(checks["ui service"].ok, true);
+  assert.equal(checks["ui answering"].ok, true);
+});
+
+test("a service neither registered nor answering is told to start, and its port is still asked", async () => {
+  const asked: number[] = [];
+  const checks = byName(await diagnose(deps({ serviceState: () => "not-registered", answers: async (port) => { asked.push(port); return false; } })));
+  assert.deepEqual(asked, [4800, 4801]);
+  assert.equal(checks["instance service"].fix, "run `agent-org start instance`");
+  assert.equal(checks["instance answering"].ok, false);
+  assert.match(checks["instance answering"].detail, /nothing answers on http:\/\/127\.0\.0\.1:4800/);
 });
