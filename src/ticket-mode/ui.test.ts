@@ -1062,3 +1062,17 @@ test("each ticket row shows its group labels as small tags, titled with their gr
   const tags = row.all().filter((n) => n.className === "tag");
   assert.deepEqual(tags.map((t) => [t.text(), t.title]), [["Fleet", "Goal"]]);
 });
+
+test("A11-80: a run whose worker wrote working shows In progress with its reason, not Needs you, and a stalled one is flagged", async () => {
+  const p = await page(new Map(), { entries: [
+    entry("W-1", { phase: "running", startedAt: 2, workspace: "w1", pane: "w1:p1", working: { reason: "the Ansible roll is still running", at: 3 } }),
+    entry("W-2", { phase: "running", startedAt: 2, workspace: "w2", pane: "w2:p1", working: { reason: "waiting on the second play", at: 3, stalled: true } })] });
+  const row = (key: string) => runRows(p).find((r) => r.text().includes(key))!;
+  assert.equal(row("W-1").children[0].className, "icon st-working");
+  assert.ok(row("W-1").text().includes("the Ansible roll is still running"), "its reason is the run's latest note");
+  assert.equal(row("W-1").all().some((n) => n.className === "waiting stalled"), false);
+  assert.equal(filterButton(p, "Needs you").children.find((c) => c.className === "n")?.text(), "0");
+  assert.equal(row("W-2").children[0].className, "icon st-working", "a stalled run is still In progress");
+  const flag = row("W-2").all().find((n) => n.className === "waiting stalled");
+  assert.equal(flag?.text(), "Stalled: idle with no newer outcome since it said: waiting on the second play");
+});

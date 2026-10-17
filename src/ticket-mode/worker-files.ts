@@ -20,6 +20,11 @@ export const PREVIOUS_OUTCOME_FILE = "outcome.prev.json";
 export const BRIEF_FILE = "brief.md";
 /** The stop hook's count of refused stops in a row, beside the outcome file. */
 export const STOP_COUNT_FILE = "stop-refusals";
+/**
+ * The time of the `working` outcome the stop hook last let a stop through on, beside the outcome file. A later stop on that same file is a turn
+ * its background work woke and that ended without saying how the run stands, so the hook asks for a new outcome.
+ */
+export const WORKING_STOP_FILE = "working-stop";
 /** The host file's `tickets.deny`, copied beside the outcome file, where the PreToolUse hook reads it. */
 export const DENY_FILE = "deny.json";
 /** The host file's `tickets.connectors`, copied beside the outcome file, where the PreToolUse hook reads it. */
@@ -64,6 +69,13 @@ const PARENT_ONLY_PLAN = "A ticket that is only a parent, an epic whose work is 
  * answer, so a worker that only found nothing to change must not write it: that is `checked`, which ends the run without asking anyone.
  */
 const CHECKED_OR_NEEDS_HUMAN = "Write `checked` when you looked at what the ticket asks and nothing needs to change: it is already done, the problem it describes is not there, or the ticket is only a parent whose work is all in its child tickets (name them, so the person queues them). Say in its reason what you checked and what you found. Write `needs-human` only for a real question or decision that only the person can make: it asks them for an answer, and the run waits for one.";
+
+/**
+ * When a worker writes `working` rather than `needs-human` (A11-80). A worker that ends its turn while its own background work runs on, a long
+ * Ansible run watched by a Monitor say, must still write an outcome, and `needs-human` put the run in Needs you though nothing was asked of
+ * anyone. `working` keeps the run In progress, with its reason as the run's note. It is never a way to park a question: that is `needs-human`.
+ */
+const WORKING_OR_NEEDS_HUMAN = "Write `working` only while your own background work (a shell, a Monitor or a task you started) is genuinely still running and will wake you when it finishes. Say in its reason what is running and what you will do when it ends. The board keeps the run In progress, and marks it stalled if you stay idle too long with no newer outcome. When the work wakes you, finish, and write the outcome file again with how the run ended, or with `working` again if more of it is still running. Never write `working` to park a question or to wait on a person: that is `needs-human`.";
 
 /** The folder in the ticket's own directory that a planning run writes its plan's files in, for the board to attach. */
 export const PLAN_DIR = "plan";
@@ -377,9 +389,12 @@ Write \`${ticketDir}/${OUTCOME_FILE}\` as the last thing you do, with exactly on
 { "kind": "wrong-repo", "where": "<the repository or service the fix belongs in, and why>" }
 { "kind": "checked", "reason": "<what you checked, what you found, and why nothing needs to change>" }
 { "kind": "needs-human", "reason": "<what a person must decide or provide>" }
+{ "kind": "working", "reason": "<what of yours is still running in the background, and what you do when it wakes you>" }
 \`\`\`
 
 ${CHECKED_OR_NEEDS_HUMAN}
+
+${WORKING_OR_NEEDS_HUMAN}
 
 A person may answer you here after a \`needs-human\` or \`wrong-repo\` outcome. If one does, carry on with what they said, and write the outcome file again as the last thing you do.
 `;

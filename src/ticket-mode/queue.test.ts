@@ -6,7 +6,7 @@ import { tmpDir } from "../lib/tmp-fixture.ts";
 import { isParked } from "./board-view.ts";
 import {
   amend, approve, byIdentifier, childOrder, refuseParents, respond, batchPlanDone, dismiss, feedbackRound, MAX_FEEDBACK_ROUNDS, markPublishRunning, markPublishStarting, publishDone, publishFailed, publishStarts, queuePublish, emptyQueue, enqueue, finish, isLive, leaveBatch, liveRunCount, loadQueue, markResumed, markRunning, markStarting, nextStarts, observe, park,
-  recordBlockers, recordRepos, planDone, PLAN_BATCH_MAX, recordPullStates, recordTrackerStates, remove, retry, saveQueue, setMax, setPaused, unpark, unreadBlockerKeys, unsettledKeys, type Queue,
+  noteWorking, recordBlockers, recordRepos, planDone, watchWorking, PLAN_BATCH_MAX, recordPullStates, recordTrackerStates, remove, retry, saveQueue, setMax, setPaused, unpark, unreadBlockerKeys, unsettledKeys, type Queue,
 } from "./queue.ts";
 import type { Ticket } from "./source.ts";
 
@@ -443,4 +443,31 @@ test("the live runs are the starting and running ones, a batch counted once, and
   assert.equal(liveRunCount(queue), 3);
   queue = finish(queue, "B", { kind: "stopped" }, 5);
   assert.equal(liveRunCount({ ...queue, publish: { ...queue.publish!, phase: "finished" } }), 1);
+});
+
+test("A11-80: a working note keeps a running run running; only a newer one replaces it, and the outcome the run ends on drops it", () => {
+  const running = markRunning(markStarting(enqueue(emptyQueue(1), [ticket("A")], choice, 0), "A", 1), "A", "w1", "w1:p1");
+  const noted = noteWorking(running, "A", "the roll is still running", 50, 60);
+  const a = (q: Queue) => q.entries[0];
+  assert.deepEqual([a(noted).phase, a(noted).working], ["running", { reason: "the roll is still running", at: 50, idleSince: 60 }]);
+  assert.deepEqual(a(noteWorking(noted, "A", "again", 50, 99)).working, a(noted).working, "the same file read again changes nothing");
+  assert.deepEqual(a(noteWorking(noted, "A", "the second play is running", 70, 80)).working, { reason: "the second play is running", at: 70, idleSince: 80 });
+  const ended = finish(noted, "A", { kind: "draft-pr", prs: [] }, 90);
+  assert.deepEqual([a(ended).phase, a(ended).working], ["finished", undefined], "the outcome it ended on replaces the note");
+  assert.equal(a(noteWorking(ended, "A", "late", 95, 96)).working, undefined, "a working outcome never touches a run that is not running");
+});
+
+test("A11-80: a working run idle with no newer outcome for the stall time is marked stalled, and working again clears the clock", () => {
+  const running = markRunning(markStarting(enqueue(emptyQueue(1), [ticket("A")], choice, 0), "A", 1), "A", "w1", "w1:p1");
+  const stall = 30 * 60_000;
+  const noted = noteWorking(running, "A", "the roll is still running", 50, 1000);
+  const note = (q: Queue) => q.entries[0].working;
+  assert.equal(note(watchWorking(noted, "A", "idle", 1000 + stall - 1, stall))?.stalled, undefined, "not yet");
+  const stalled = watchWorking(noted, "A", "idle", 1000 + stall, stall);
+  assert.equal(note(stalled)?.stalled, true);
+  assert.equal(stalled.entries[0].phase, "running", "a stall ends nothing");
+  const woke = watchWorking(stalled, "A", "working", 1000 + stall + 5, stall);
+  assert.deepEqual(note(woke), { reason: "the roll is still running", at: 50 }, "its work woke it: no idle clock, no stall");
+  assert.equal(note(watchWorking(woke, "A", "idle", 1000 + stall + 10, stall))?.idleSince, 1000 + stall + 10, "idle again starts the clock again");
+  assert.deepEqual(watchWorking(running, "A", "idle", 1e9, stall), running, "a run with no note has no stall");
 });

@@ -38,6 +38,8 @@ export type ViewEntry = Readonly<{
   published?: Readonly<{ link: string | null }>;
   /** Set when the board stopped answering new feedback on its own and handed the run to a person: why. */
   handedBack?: string;
+  /** Set while a running run's worker last said its own background work is still running: its reason, and whether it has stalled. */
+  working?: Readonly<{ reason: string; stalled?: boolean }>;
 }>;
 
 /**
@@ -386,6 +388,19 @@ export function runStatus(entry: ViewEntry, entries: readonly ViewEntry[] = []):
   if (HANDED_BACK.has(kind)) return "needs-you";
   if (kind === "checked") return "checked";
   return kind === "stopped" ? "cancelled" : "failed";
+}
+
+/**
+ * The note a running run shows from its worker's `working` outcome: its reason, which says what of its own is still running, or, once its agent
+ * has sat idle with no newer outcome for `tickets.stallMinutes`, that it has stalled, with that reason. Null for any other run. The run's status
+ * stays In progress either way: nothing is asked of a person, and a stalled run is only flagged so it is not forgotten.
+ */
+export function workingNote(entry: ViewEntry): Readonly<{ text: string; stalled: boolean }> | null {
+  const note = entry.working;
+  if (entry.phase !== "running" || note === undefined) return null;
+  return note.stalled === true
+    ? { text: `Stalled: idle with no newer outcome since it said: ${note.reason}`, stalled: true }
+    : { text: note.reason, stalled: false };
 }
 
 /**
