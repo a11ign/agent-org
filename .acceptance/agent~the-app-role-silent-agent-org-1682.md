@@ -1,0 +1,11 @@
+A silent role's report names the failed mint's reason. `appRoleSilent` (`src/app-role-silent.ts`) returns, for each silent role, the newest `app-token <role>` `incident` line at or after the role's last app line (its reason, exit status and time), or `null`; `tickAppRoleSilent` (`src/host-units.ts`) prints it on its stderr line, or `no app-token incident in the ledger`. `incident` lines are still not counted as calls, and the `ref` (`<role>@<lastApp or never>`) and `FailureEvent` are unchanged.
+
+History: full
+
+Acceptance: `cd /home/agent/repos/wt-agent-org-1682 && grep -q "carries the mint's reason" src/app-role-silent.test.ts && node_modules/.bin/rstest run --config scripts/rstest/rstest.config.ts src/app-role-silent.test.ts`
+
+Mutation: the gate `mint.at >= last` made to always pass (`mint !== null`) fails `a silent role's report carries the mint's reason` at the NEGATIVE control (an incident from before the last app line); the file was restored byte-identical (`diff` against a saved copy).
+
+Measured: on this change `VERDICT pass: 19 tests in 1 file`. The base commit's test file declares 18 tests (counted by grep, not run). Run against the base `src/app-role-silent.ts` and `src/host-units.ts`, 4 of 19 fail: the three existing tests that now assert `mint`, plus the new one. `pnpm run typecheck` exits 0. Every test file that imports `host-units.ts` or `app-role-silent.ts` was run one at a time under the CI suite's fixture host (`AGENT_ORG_HOST` set to a copy of `src/packaging/fixtures/project-tree/`, as `.github/workflows/ci.yml` sets it): 37 of 38 pass. The one failure, `src/packaging/host-install-agent-org-launcher.test.ts` test 3 (`HostConfigRefusal`: `a11ign-event-receiver.service: \`@@eventsPort@@\` is a placeholder no value fills`), fails identically on the base commit `ca416f02` in a detached worktree, so it is not this change. The full `pnpm test` is not run here: from this checkout it refuses without a laid project, and CI's `suite` job is its run.
+
+Closes a11ign/agent-org#1682

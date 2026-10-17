@@ -52,7 +52,7 @@ import { codexClientDaemonDrift } from "./codex-drift.ts";
 import { HOME_CHECKOUT, PROJECT_DECLARATION_PATH, ProjectDeclarationRefusal, homeProjectDeclaration } from "./project-config.ts";
 import { CLAUDE_EFFORTS, DECLARED_CLAUDE_MODELS, HAIKU_MODEL_ID, HAIKU_TIER_LABEL } from "./worker-profile.ts";
 import { REPO } from "./project-identity.ts";
-import { appRoleSilent, appRoleSilentEvents, type LedgerSource, type SilentRole } from "./app-role-silent.ts";
+import { appRoleSilent, appRoleSilentEvents, type LedgerSource, type MintFailure, type SilentRole } from "./app-role-silent.ts";
 import { FAILURE_LEDGER_FILE, recordFailures } from "./failure-ledger.ts";
 import { readAgents, absentSeats, herdrRun } from "./herdr-agents.ts";
 import { persistentEntries, persistentRoles, roleBriefPath } from "./project-roles.ts";
@@ -2251,6 +2251,10 @@ export function recordIdentityProof(role: GithubRole, reading: IdentityProofRead
   return file;
 }
 
+/** The mint's reason as the report names it: the failed mint's time, reason and exit status, or the reading that the ledger holds none (an absence, not a failure). */
+const mintReport = (mint: MintFailure | null): string => mint === null ? "no app-token incident in the ledger"
+  : `the mint failed at ${mint.at}: ${mint.reason}${mint.exit === null ? "" : ` (exit ${mint.exit})`}`;
+
 /**
  * THE DETECTOR FOR THE CASE WHERE THE RE-RENDER DID NOT TAKE EFFECT (agent-org#790): a role `host.json` declares `github-apps` whose calls, for ten minutes, were none of them as its app
  * (a mint that fails falls back to the shared account by design, so the wrapper works and the app is silently not in use). Reads each account's call ledger, asks `appRoleSilent`, and
@@ -2277,8 +2281,8 @@ export function tickAppRoleSilent({ host = homeHostConfig(), now = Date.now(), r
       }
     });
     const silent = appRoleSilent(sources, declared, now);
-    for (const { role, calls, lastApp } of silent) {
-      err(`app-role-silent: ${role} is declared github-apps and made ${calls} call(s) in 10 minutes, none as app:${role} (its last app line: ${lastApp ?? "none in the ledger"})\n`);
+    for (const { role, calls, lastApp, mint } of silent) {
+      err(`app-role-silent: ${role} is declared github-apps and made ${calls} call(s) in 10 minutes, none as app:${role} (its last app line: ${lastApp ?? "none in the ledger"}); ${mintReport(mint)}\n`);
     }
     if (silent.length > 0) record({ logPath: logPath ?? stateEntryPath(FAILURE_LEDGER_FILE, { host }), events: appRoleSilentEvents(silent), now });
     return silent;

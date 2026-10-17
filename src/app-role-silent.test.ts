@@ -1,4 +1,6 @@
 // no-token: none -- reads and writes temp directories and the fixture project; the wrapper is rendered, never run, and nothing here reaches `gh`, `herdr` or `git`
+// requires: history
+// (the tests import `host-units.ts`, which reads git history to say where an orphaned unit came from)
 //
 // agent-org#790: A MERGED `github.identity` SWITCH TAKES EFFECT ON THE NEXT TICK, AND A DECLARED APP ROLE WITH NO APP CALLS IS AN INCIDENT. Two halves, each with its control:
 //   1. the re-render: a wrapper whose identity block lacks what `host.json` declares is written again, ALONE; one whose block already matches is not written at all;
@@ -24,15 +26,15 @@ const WORKER_LOGIN = "a11ign-ai-workers";
 const LEADS_LOGIN = "a11ign-ai-leads";
 
 /** One ledger line as `host/gh` writes it: time, account, resource, cost, status, command, workspace, caller, session. */
-const line = (at: string, account: string, { workspace = "w9", resource = "core", command = "pr list" } = {}) =>
-  [at, account, resource, "", "0", command, workspace, "node work-gate.ts", "-"].join("\t");
+const line = (at: string, account: string, { workspace = "w9", resource = "core", command = "pr list", caller = "node work-gate.ts" } = {}) =>
+  [at, account, resource, "", "0", command, workspace, caller, "-"].join("\t");
 const workers = (...lines: string[]): LedgerSource => ({ role: "workers", lines });
 const managers = (...lines: string[]): LedgerSource => ({ role: "managers", lines });
 const names = (found: ReturnType<typeof appRoleSilent>) => found.map((f) => f.role);
 
 test("#790 POSITIVE: a declared role with calls in the window and no `app:<role>` line is silent", () => {
   const found = appRoleSilent([workers(line(ago(2 * MIN), WORKER_LOGIN), line(ago(MIN), WORKER_LOGIN))], ["workers"], NOW);
-  assert.deepEqual(found, [{ role: "workers", calls: 2, lastApp: null }]);
+  assert.deepEqual(found, [{ role: "workers", calls: 2, lastApp: null, mint: null }]);
 });
 
 test("#790 NEGATIVE: the same role with one `app:<role>` line in the window is not", () => {
@@ -55,7 +57,7 @@ test("#790: THE WINDOW IS TEN MINUTES: a call 9:59 ago counts, a call exactly 10
 
 test("#790: an app line older than the window does not rescue a role whose calls in the window were none of them as the app, and is named as its last", () => {
   const found = appRoleSilent([workers(line(ago(40 * MIN), "app:workers"), line(ago(MIN), WORKER_LOGIN))], ["workers"], NOW);
-  assert.deepEqual(found, [{ role: "workers", calls: 1, lastApp: ago(40 * MIN) }]);
+  assert.deepEqual(found, [{ role: "workers", calls: 1, lastApp: ago(40 * MIN), mint: null }]);
 });
 
 test("#790 NEGATIVE: a role the host declares `user-accounts` is never returned, whatever its calls", () => {
@@ -144,6 +146,49 @@ test("#790 tick: a ledger that does not exist is no call, one that cannot be rea
   const denied = (() => { throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" }); }) as never;
   assert.deepEqual(tickAppRoleSilent({ host, now: NOW, read: denied, record, err: (l) => said.push(l) }), []);
   assert.match(said.join(""), /could not read .*workers\/gh\/gh-calls\.tsv: EACCES/);
+});
+
+// ---- the mint's reason (agent-org#1682) -------------------------------------------------------------------------------------------
+
+const MINT_CALLER = "app-token workers failed, fell back to the account: could not read the key /scratch/workers.pem (exit 2)";
+const mintLine = (at: string, { command = "app-token workers", caller = MINT_CALLER } = {}) => line(at, WORKER_LOGIN, { resource: "incident", command, caller });
+/** The stderr the tick prints for one role's ledger, with its incidents and app lines as given. */
+const reportOf = (workerLines: string[]) => {
+  const root = tmpDir("app-role-silent-mint-reason-");
+  ledgerFiles(root, { workers: workerLines });
+  const said: string[] = [];
+  const silent = tickAppRoleSilent({ host: hostOf(root, ["workers"]), now: NOW, logPath: "/ledger/failure-ledger", err: (l) => said.push(l),
+    record: (() => ({ appended: 1, skipped: 0, refused: null })) as never });
+  return { silent, said: said.join("") };
+};
+
+test("a silent role's report carries the mint's reason", () => {
+  // POSITIVE: a failed mint in the window, after the role's last app line, is named with its reason, exit status and time.
+  const failed = reportOf([line(ago(2 * MIN), WORKER_LOGIN), mintLine(ago(MIN))]);
+  assert.deepEqual(failed.silent.map((s) => s.mint), [{ at: ago(MIN), reason: "could not read the key /scratch/workers.pem", exit: 2 }]);
+  assert.ok(failed.said.includes(`the mint failed at ${ago(MIN)}: could not read the key /scratch/workers.pem (exit 2)`), failed.said);
+
+  // NEGATIVE: a failed mint from BEFORE the role's last app line is not this silence's reason, so it is not named.
+  const before = reportOf([mintLine(ago(50 * MIN)), line(ago(40 * MIN), "app:workers"), line(ago(MIN), WORKER_LOGIN)]);
+  assert.deepEqual(before.silent.map((s) => s.mint), [null]);
+  assert.ok(before.said.includes("no app-token incident in the ledger"), before.said);
+  assert.ok(!before.said.includes("could not read the key"), before.said);
+
+  // NO INCIDENT: a silent role with no failed mint is said so, which is a reading and not a failure.
+  const none = reportOf([line(ago(MIN), WORKER_LOGIN)]);
+  assert.deepEqual(none.silent.map((s) => s.mint), [null]);
+  assert.ok(none.said.includes("no app-token incident in the ledger"), none.said);
+
+  // CONTROL: an incident naming another role is not this role's mint.
+  const other = reportOf([mintLine(ago(MIN), { command: "app-token managers" }), line(ago(MIN), WORKER_LOGIN)]);
+  assert.deepEqual(other.silent.map((s) => s.mint), [null]);
+
+  // THE REF IS UNCHANGED: the episode names the role and its last app line, so a failed mint neither adds to it nor moves it.
+  const refOf = (workerLines: string[]) => appRoleSilentEvents(appRoleSilent([workers(...workerLines)], ["workers"], NOW));
+  assert.deepEqual(refOf([mintLine(ago(2 * MIN)), line(ago(MIN), WORKER_LOGIN)]), [{ classKey: APP_ROLE_SILENT, ref: "workers@never" }]);
+  assert.deepEqual(refOf([line(ago(MIN), WORKER_LOGIN)]), [{ classKey: APP_ROLE_SILENT, ref: "workers@never" }]);
+  assert.deepEqual(refOf([line(ago(50 * MIN), "app:workers"), mintLine(ago(2 * MIN)), line(ago(MIN), WORKER_LOGIN)]),
+    [{ classKey: APP_ROLE_SILENT, ref: `workers@${ago(50 * MIN)}` }]);
 });
 
 // ---- the re-render ----------------------------------------------------------------------------------------------------------------
