@@ -55,11 +55,14 @@ const TICKETS = [
 
 /** Run the page's script against a fake document, with `storage` as its localStorage. Resolves once the first render has happened. */
 type PageOptions = { config?: Record<string, unknown>; entries?: unknown[]; tickets?: unknown[]; parents?: unknown[]; refused?: string[]; publish?: unknown;
-  profiles?: unknown; errors?: Record<string, string> };
-async function page(storage: Map<string, string>, { config = {}, entries = [], tickets = TICKETS, parents = [], refused = [], publish, profiles, errors = {} }: PageOptions = {}) {
+  profiles?: unknown; errors?: Record<string, string>; hold?: Record<string, unknown> };
+async function page(storage: Map<string, string>, { config = {}, entries = [], tickets = TICKETS, parents = [], refused = [], publish, profiles, errors = {}, hold = {} }: PageOptions = {}) {
   const byId = new Map<string, Node_>();
   const posts: { path: string; body: any }[] = [];
   const requested: string[] = [];
+  // A path in `hold` answers its value only once the test calls `release`, as a slow remote does.
+  let release!: () => void;
+  const gate = new Promise<void>((done) => { release = done; });
   const document = {
     getElementById: (id: string) => { if (!byId.has(id)) byId.set(id, new Node_(`#${id}`)); return byId.get(id)!; },
     createElement: (tag: string) => new Node_(tag),
@@ -72,6 +75,10 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
     const body = init.body === undefined ? undefined : JSON.parse(init.body);
     if (init.method === "POST") posts.push({ path, body });
     requested.push(path);
+    if (path in hold) {
+      await gate;
+      return { ok: true, json: async () => hold[path], statusText: "" };
+    }
     if (refused.includes(path)) return { ok: false, json: async () => ({ error: errors[path] ?? `${path} refused` }), statusText: "" };
     // A remote profile's board answers as this one does, under its prefix.
     const answers: Record<string, () => unknown> = {
@@ -98,7 +105,7 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
     saved = { ...saved, ...change };
     max = workers ?? max;
   };
-  return { $, groups, shownKeys, chip, posts, saveElsewhere, requested };
+  return { $, groups, shownKeys, chip, posts, saveElsewhere, requested, release };
 }
 
 /** Let the page's pending fetches and their handlers run. */
@@ -840,4 +847,17 @@ test("a run's links that are not http addresses, as a remote board could send, a
   const anchors = p.$("runs").all().filter((n) => n.tag === "a") as (Node_ & { href?: string })[];
   assert.ok(anchors.length >= 2, "the ticket and its terminal are drawn");
   assert.deepEqual(anchors.map((a) => a.href), anchors.map(() => ""));
+});
+
+test("an answer from the board shown before a switch is dropped, so it never lands on the board chosen after it", async () => {
+  const storage = new Map([["ticket-mode.profile", JSON.stringify(["personal"])]]);
+  const p = await page(storage, { profiles: WORK_AND_PERSONAL, hold: { "/p/personal/api/tickets": [ticketIn("P-9")] } });
+  p.$("profile").value = "work";
+  p.$("profile").fire("change");
+  for (let i = 0; i < 10; i++) await settle();
+  assert.deepEqual(p.shownKeys(), ["T-1", "T-2", "T-3", "T-4"]);
+  p.release();
+  for (let i = 0; i < 10; i++) await settle();
+  assert.deepEqual(p.shownKeys(), ["T-1", "T-2", "T-3", "T-4"], "personal's late tickets did not replace work's");
+  assert.equal(p.$("error").textContent, "", "and dropping it is not an error");
 });

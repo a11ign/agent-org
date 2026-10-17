@@ -224,9 +224,9 @@ const everyOpen = (statuses) => statuses.length > 0 && statuses.every((status) =
 
 // What a call answers once another board has been chosen: it is dropped, so one board's answer never lands on another's view.
 const STALE = new Error("another board was chosen");
-async function call(method, path, body, base = apiBase(state.profile)) {
+async function call(method, path, body) {
   const chosen = state.profile;
-  const response = await fetch(`${base}${path}`, { method, headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
+  const response = await fetch(`${apiBase(chosen)}${path}`, { method, headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
   const value = await response.json();
   if (state.profile !== chosen) throw STALE;
   if (!response.ok) throw new Error(value.error || response.statusText);
@@ -646,7 +646,7 @@ $("profile").addEventListener("change", () => {
 });
 
 try {
-  const listed = await call("GET", "/api/profiles", undefined, "").catch(() => null);
+  const listed = await call("GET", "/api/profiles").catch(() => null);
   state.profiles = Array.isArray(listed?.profiles) ? listed.profiles : [];
   state.profile = chosenProfile(state.profiles, [...recall(storage, "ticket-mode.profile")][0] ?? null);
   renderProfiles(listed?.refusal);

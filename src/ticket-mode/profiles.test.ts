@@ -34,6 +34,8 @@ test("a profiles file is refused by the rule it breaks", () => {
     [{ w: { local: true, ssh: "agents" } }, /is local, so it takes no ssh/],
     [{ w: { local: true }, p: {} }, /ssh must be an ssh target/],
     [{ w: { local: true }, p: { ssh: "-oProxyCommand=touch /tmp/x" } }, /ssh must be an ssh target.*not starting with -/],
+    [{ w: { local: true }, p: { ssh: "-v" } }, /ssh must be an ssh target/],
+    [{ w: { local: true }, p: { ssh: "-Jjump" } }, /ssh must be an ssh target/],
     [{ w: { local: true }, p: { ssh: "agents;id" } }, /ssh must be an ssh target/],
     [{ w: { local: true }, p: { ssh: "$(id)" } }, /ssh must be an ssh target/],
     [{ w: { local: true }, p: { ssh: "agents host" } }, /ssh must be an ssh target/],
