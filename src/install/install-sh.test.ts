@@ -141,7 +141,7 @@ test("install.sh refuses to move a checkout with changes to tracked files", () =
   assert.match(result.stderr, /changes to tracked files/);
 });
 
-test("install.sh installs a release's dependencies with pnpm, and puts the checkout back when that install fails", () => {
+test("install.sh installs a release's dependencies with the pinned pnpm through corepack, not the pnpm on PATH, and puts the checkout back when that install fails", () => {
   const { root, home, repo, path } = fixture();
   assert.equal(install(home, path, repo).status, 0);
   const work = join(root, "work");
@@ -154,15 +154,16 @@ test("install.sh installs a release's dependencies with pnpm, and puts the check
   git(["push", "--quiet", repo, "v0.12.0"]);
   const pnpm = join(root, "pnpm-bin");
   mkdirSync(pnpm);
-  writeFileSync(join(pnpm, "pnpm"), `#!/bin/sh\necho "$@" > "${join(root, "pnpm-args")}"\n[ -f "${join(root, "pnpm-fails")}" ] && exit 1\nexit 0\n`, { mode: 0o755 });
+  writeFileSync(join(pnpm, "corepack"), `#!/bin/sh\necho "$@" > "${join(root, "pnpm-args")}"\n[ -f "${join(root, "pnpm-fails")}" ] && exit 1\nexit 0\n`, { mode: 0o755 });
   writeFileSync(join(root, "pnpm-fails"), "");
-  const failed = install(home, `${pnpm}:${path}`, repo);
+  const corepack = { AGENT_ORG_COREPACK: join(pnpm, "corepack") };
+  const failed = install(home, path, repo, [], corepack);
   assert.equal(failed.status, 1);
   assert.match(failed.stderr, /installing the dependencies failed/);
   assert.match(launch(home, path), /^fixture v0\.10\.0 /);
   rmSync(join(root, "pnpm-fails"));
-  const passed = install(home, `${pnpm}:${path}`, repo);
+  const passed = install(home, path, repo, [], corepack);
   assert.equal(passed.status, 0, passed.stderr);
-  assert.equal(readFileSync(join(root, "pnpm-args"), "utf8").trim(), "install --prod --no-frozen-lockfile --ignore-scripts --ignore-workspace --silent");
+  assert.equal(readFileSync(join(root, "pnpm-args"), "utf8").trim(), "pnpm@10.34.5 install --prod --no-frozen-lockfile --ignore-scripts --ignore-workspace --silent");
   assert.equal(launch(home, path), "fixture v0.12.0");
 });

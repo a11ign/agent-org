@@ -7,7 +7,8 @@ import { join } from "node:path";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import type { ServiceName, ServiceState } from "./service.ts";
-import { update, type UpdateDeps } from "./update.ts";
+import { dependencyInstalls, update, type UpdateDeps } from "./update.ts";
+import { pinnedPnpm } from "./pnpm.ts";
 
 const ENV = sandboxGitEnv({ GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" });
 const gitIn = (cwd: string) => (args: string[]) => execFileSync("git", args, { cwd, env: ENV, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
@@ -101,4 +102,41 @@ test("update --channel main puts the checkout back when main's dependencies fail
   assert.throws(() => update({ version: undefined, channel: "main" }, { ...d, installInPlace: () => { throw new Error("pnpm failed"); } }), /stays at/);
   assert.equal(at(git), "v0.1.0");
   assert.deepEqual(restarted, []);
+});
+
+const failing = { state: "failed" as const, names: ["@a11ign/toolchain"], command: "pnpm install", reason: "Cannot find module pnpm.cjs" };
+
+test("a failed install on the release the checkout is already at refuses, saying it is already there", () => {
+  const { checkout, git } = installed();
+  git(["fetch", "--quiet", "--tags", "origin"]);
+  git(["checkout", "--quiet", "--detach", "refs/tags/v0.10.0"]);
+  const { deps: d } = deps(checkout, git, {});
+  assert.throws(() => update({ version: undefined, channel: "release" }, { ...d, installForTag: () => failing }),
+    /^Error: agent-org is already at v0\.10\.0, but installing its dependencies failed: Cannot find module pnpm\.cjs\. Run `agent-org doctor`/);
+});
+
+test("a failed install on a newer release refuses, saying where the checkout stays, and restarts nothing", () => {
+  const { checkout, git } = installed();
+  const before = git(["rev-parse", "HEAD"]).trim();
+  const { deps: d, restarted } = deps(checkout, git, { instance: "running" });
+  assert.throws(() => update({ version: undefined, channel: "release" }, { ...d, installForTag: () => failing }),
+    new RegExp(`agent-org stays at ${before}, not moved to v0\\.10\\.0, because installing its dependencies failed`));
+  assert.equal(at(git), "v0.1.0");
+  assert.deepEqual(restarted, []);
+});
+
+test("the default installs run the pinned pnpm through corepack, for a release and for main, never the pnpm on PATH", () => {
+  const ran: { file: string; args: string[] }[] = [];
+  const exec = (file: string, args: string[]) => { ran.push({ file, args }); return ""; };
+  // A release whose package.json needs one dependency, which this checkout does not have installed.
+  const git = (args: string[]) => {
+    if (args[0] === "ls-tree") return "package.json\n";
+    if (args[0] === "show") return JSON.stringify({ dependencies: args[1].startsWith("refs/tags/") ? { "@a11ign/toolchain": "^1.0.0" } : {} });
+    return "";
+  };
+  const installs = dependencyInstalls(tmpDir("update-wiring-"), git, exec);
+  installs.installForTag("v0.10.0");
+  installs.installInPlace();
+  const pinned = pinnedPnpm(["install", "--prod", "--no-frozen-lockfile", "--ignore-scripts", "--ignore-workspace"]);
+  assert.deepEqual(ran, [pinned, pinned].map(({ command, args }) => ({ file: command, args })));
 });
