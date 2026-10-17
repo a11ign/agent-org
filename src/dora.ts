@@ -17,7 +17,8 @@
 // TWO CHANNELS, TWO MORE READINGS (#3949, outcome 3 of #3911): a merge is published to `next` and the fleet's verdict moves `latest` to it later. The registry's `time` map lists
 // a version's publish time whatever dist-tag it went to, so lead time above is MERGE-TO-`next` with no change. What `time` does not record is when a dist-tag MOVED, so:
 //   5. Lead time, `next` to `latest`: a version's publish to the `Promoted to latest: <time>` line the promotion leaves in its GitHub Release's notes (readable with no token).
-//      A version never promoted is counted at its CURRENT age and marked unpromoted, as an unreleased merge is: a 14-day wait is a number.
+//      A version never promoted is counted at its CURRENT age and marked unpromoted, as an unreleased merge is: a 14-day wait is a number. A version never promoted that
+//      `latest` has since moved PAST (an older version, by version order) is `superseded` instead: not a wait, counted apart, and out of the median and max (#1669).
 //   6. Versions qualified: versions `latest` has pointed at, over versions published, in the same window (`MIN_RELEASES_FOR_A_RATE` caveat, as the failure rate has).
 // A version whose record cannot be read (no Release for it, or `latest` names it and its Release records no time) makes both `unknown`, never 0 and never a guess.
 // A PACKAGE WITH NO `next` HAS NO CHANNELS TO READ (#4040): its dist-tags are asked first, and one that names none publishes straight to `latest`, so both channel readings are
@@ -79,6 +80,8 @@ const LATEST_TARGET_MINUTES = MINUTES_PER_DAY;
  * cannot import. `dora-channels.test.ts` pins it against the line the workflow prints, so a change to one side that misses the other is a red test and not a silent `unknown`.
  */
 const PROMOTION_LINE = /^Promoted to latest: (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z) \(qualification read on [0-9a-f]{40}\)$/m;
+/** A plain version, the only shape `versionOrder` orders: a pre-release is not guessed at. */
+const VERSION = /^(\d+)\.(\d+)\.(\d+)$/;
 /** `gh pr list --json files` returns the first 100: a pull request showing that many may have touched more, so it is treated as releasable. */
 const FILES_PAGE = 100;
 const SHA_LENGTH = 40;
@@ -508,29 +511,57 @@ export function promotionTimeFrom(body: string): string | null {
 }
 
 /**
- * How long a version waited between `next` and `latest`: to the promotion when it has one, else to now (`unpromoted`). `unknown` when the record cannot say which.
+ * How long a version waited between `next` and `latest`: to the promotion when it has one, else to now (`unpromoted`, the one genuinely waiting). A version never
+ * promoted that `latest` has moved past is `superseded`: it was never going to be promoted, so it is no wait at any age (#1669). `unknown` when the record cannot say which.
  */
-export type Wait = { id: string, state: "promoted" | "unpromoted", minutes: number } | { id: string, state: "unknown", why: string };
+export type Wait = { id: string, state: "promoted" | "unpromoted", minutes: number } | { id: string, state: "superseded" } | { id: string, state: "unknown", why: string };
 
-/** @param {{ release: Release & { at: number }, records: PromotionRecords, now: number }} input @returns {Wait} */
-function waitOf({ release, records, now }: { release: Release & { at: number; }; records: PromotionRecords; now: number; }): Wait {
+/**
+ * Which of two versions is the older, in version order (`1.9.0` before `1.10.0`, which the text of the two does not say). `null` when either is not a plain
+ * `MAJOR.MINOR.PATCH`: a reader that cannot order two ids says so, and never guesses at a pre-release.
+ * @param {string} a @param {string} b @returns {number | null}
+ */
+function versionOrder(a: string, b: string): number | null {
+  const x = VERSION.exec(a);
+  const y = VERSION.exec(b);
+  if (x === null || y === null) return null;
+  for (let part = 1; part <= 3; part += 1) {
+    const difference = Number(x[part]) - Number(y[part]);
+    if (difference !== 0) return Math.sign(difference);
+  }
+  return 0;
+}
+
+/**
+ * The wait of ONE version. Exported so the superseded rule is read where it is written, and tested without a whole repository around it.
+ * @param {{ release: Release & { at: number }, records: PromotionRecords, now: number }} input @returns {Wait}
+ */
+export function waitOf({ release, records, now }: { release: Release & { at: number; }; records: PromotionRecords; now: number; }): Wait {
   const { id } = release;
   if (!Object.hasOwn(records.notes, id)) return { id, state: "unknown", why: "it has no GitHub Release to read a promotion record from" };
   const promotedAt = promotionTimeFrom(records.notes[id]);
   if (promotedAt === null) {
-    return id === records.latest ? { id, state: "unknown", why: "`latest` names it and its Release records no time" }
-      : { id, state: "unpromoted", minutes: (now - release.at) / MS_PER_MINUTE };
+    if (id === records.latest) return { id, state: "unknown", why: "`latest` names it and its Release records no time" };
+    const order = records.latest === null ? 1 : versionOrder(id, records.latest);
+    if (order === null) return { id, state: "unknown", why: `its version or the version \`latest\` names (${records.latest}) is not a plain MAJOR.MINOR.PATCH` };
+    return order < 0 ? { id, state: "superseded" } : { id, state: "unpromoted", minutes: (now - release.at) / MS_PER_MINUTE };
   }
   const minutes = (Date.parse(promotedAt) - release.at) / MS_PER_MINUTE;
   return minutes < 0 ? { id, state: "unknown", why: "its record says `latest` moved before it was published" } : { id, state: "promoted", minutes };
 }
 
-/** @param {Wait[]} waits the versions of the window @returns {object} `next` -> `latest`, the median and maximum over every version, the unpromoted at their current age */
+/**
+ * @param {Wait[]} waits the versions of the window
+ * @returns {object} `next` -> `latest`: the median and maximum over the promoted and the waiting (the waiting at their current age), the waiting counted apart, and the
+ * superseded counted apart and in neither (#1669). Nothing to measure is `undefined` with the reason, never a 0 or a `-Infinity` maximum.
+ */
 function promotionLeadTime(waits: Wait[]): object {
-  const minutes = waits.flatMap((wait) => (wait.state === "unknown" ? [] : [wait.minutes]));
+  const minutes = waits.flatMap((wait) => (wait.state === "promoted" || wait.state === "unpromoted" ? [wait.minutes] : []));
   const unpromoted = waits.flatMap((wait) => (wait.state === "unpromoted" ? [wait.minutes] : []));
-  return { medianMinutes: median(minutes), maxMinutes: Math.max(...minutes), versions: waits.length, unpromoted: unpromoted.length,
-    oldestUnpromotedMinutes: unpromoted.length === 0 ? null : Math.max(...unpromoted), undefinedBecause: null };
+  const superseded = waits.filter((wait) => wait.state === "superseded").length;
+  return { medianMinutes: median(minutes), maxMinutes: minutes.length === 0 ? null : Math.max(...minutes), versions: waits.length, unpromoted: unpromoted.length, superseded,
+    oldestUnpromotedMinutes: unpromoted.length === 0 ? null : Math.max(...unpromoted),
+    undefinedBecause: minutes.length === 0 ? "every version in the window was overtaken by `latest`: none is promoted or waiting, so there is no wait to measure" : null };
 }
 
 /** @param {Wait[]} waits the versions of the window @returns {object} the share of them `latest` has pointed at */
@@ -783,7 +814,8 @@ function leadText(b: any): string {
 /** @param {any} b @returns {string} */
 function promotionText(b: any): string {
   const unpromoted = b.unpromoted === 0 ? "" : `, ${b.unpromoted} UNPROMOTED (counted at current age; oldest ${duration(b.oldestUnpromotedMinutes)})`;
-  return `median ${duration(b.medianMinutes)}, max ${duration(b.maxMinutes)} over ${b.versions} version${b.versions === 1 ? "" : "s"}${unpromoted}`;
+  const superseded = b.superseded === 0 ? "" : `, ${b.superseded} superseded (overtaken by \`latest\`: not a wait, out of the median and max)`;
+  return `median ${duration(b.medianMinutes)}, max ${duration(b.maxMinutes)} over ${b.versions} version${b.versions === 1 ? "" : "s"}${unpromoted}${superseded}`;
 }
 
 /** @param {any} b @returns {string} */
