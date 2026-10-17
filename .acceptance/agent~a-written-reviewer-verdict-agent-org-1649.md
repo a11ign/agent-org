@@ -18,7 +18,7 @@ A written reviewer verdict that never reaches its pull request, and a conflictin
 **Measured.**
 - `src/packaging/verdict-delivery.test.ts`: 10 of 10 pass. Tests (1)–(8) cover the drop, the flag, the record, the conflict, the signals, the wake side, the flag gate, and the fourteen/fifteen-minute edge.
 - `pnpm run typecheck`: exit 0.
-- Affected set (the 235 test files in the scratchpad's `affected.txt`, run before test (8) was added; (8) sits in the row's own file only): 71 of 3833 tests fail, all of them failing on the baseline export too. The baseline export (HEAD, no `.git`) has 72 of 3824; its one extra failure is `mergeTreeConflict ... own head vs. own head is trivially clean`, which needs a git repository and fails only in the export. No new failure.
+- Affected set, after the rebase onto `origin/main` (48ac9b46): the 372 test files that name the changed modules, 73 of 6102 tests fail. The same 73 tests fail on a detached `origin/main` worktree (73 of 6092). No new failure. The first run after the rebase had one more, `work-gate-size` "no cause module imports another cause module": the incident module imported `readReenqueueState` from `pr-ejected.ts`; the flag is now read at the gate and passed in, and the rule passes.
 
 **Mutation:** eight, each red in the test named, each restore byte-identical (the file is copied to the scratchpad before the sed and `cmp`'d after the restore). A to G ran against the nine-test file; H against the ten-test file:
 

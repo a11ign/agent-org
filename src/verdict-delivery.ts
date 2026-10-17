@@ -144,10 +144,15 @@ export function reconcileLedgerNow({ dir, pull }: { dir: string; pull: (pr: numb
 
 /**
  * THE GATE'S SIDE, FLAG-GATED: with `reviews.verdictDelivery` OFF nothing is read and the answer is `null` (unread), so the canary keeps its clocks and
- * trips nothing. The row's rule: with the flag off, neither signal reads anything.
+ * trips nothing. The row's rule: with the flag off, neither signal reads anything. A write that fails is unread too, and never throws to the tick.
  */
 export function verdictUndeliveredNow({ on, dir, pull }: { on: boolean; dir: string; pull: (pr: number) => PullRead; }): number[] | null {
-  return on ? reconcileLedgerNow({ dir, pull }) : null;
+  if (!on) return null;
+  try {
+    return reconcileLedgerNow({ dir, pull });
+  } catch {
+    return null;
+  }
 }
 
 /** The conflicting pull requests whose owner is idle, read only while `reviews.verdictDelivery` is ON; `null` when it is OFF or the pull requests are unread. */

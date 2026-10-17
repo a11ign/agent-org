@@ -141,7 +141,7 @@ import { anyBlockerClearingCandidate, blockerClearedReading, boardingPortOf, cla
 import { REVIEWER_STATE_DIR, type Scope, comparablePrFiles, labelsOf, scopesOf } from "./work-gate/vocabulary.ts";
 import { endGateSpan } from "./lib/spawn-census.ts";
 import { repeatedOrdersTick } from "./order-verify.ts";
-import { conflictingIdleNow } from "./verdict-delivery.ts"; // agent-org#1649
+import { conflictingIdleNow, pullReadOf, verdictUndeliveredNow } from "./verdict-delivery.ts"; // agent-org#1649
 export { openRowState, workingClaims, waitingBreakdown, stalledOrder, performActions } from "./work-gate/orders.ts";
 export { CHAIN_WAIT_FLAG, CHAIN_WAIT_FILE, CHAIN_WAIT_MINUTES, CHAIN_WAIT_ESCALATION_SESSION, blockedReasonOf, chainWaitsOf, advanceChainWaits,
   chainWaitWakeText, chainWaitEscalationText, chainWaitOrder, chainWaitOrders } from "./work-gate/causes/org-health-chain-wait.ts";
@@ -706,7 +706,9 @@ function main() {
   endGateSpan("chairmanAsks+holdHolders");
   // #1329: THE CANARY COUNTS REFUSED LANES ONLY. A repository the gate skipped BY DESIGN (paced, or no event named it) is not blind, so it
   // stays out of `blind-ticks`; it is still named on the PARTIAL line below, which is where a skipped lane is reported.
-  const lanes = tickLanes({ prs, readyRows, others, pacedSkips, primaryRefused: primaryRefusedLanes({ promotableRows, chairmanBlocked, openRowsRead }, primaryRead), unarmed: armingSplit === null ? null : armingSplit.unarmed, releaseRuns: releaseSeen.runs ?? null, suppressions: incident.suppressions, stranded: armingSplit?.stranded ?? [], ownerless: ownerlessUnreached(prs, required), authorFallbacks: authorFallbackTimes(), conflictingIdle: conflictingIdleNow({ on: machineryFlagOn(reenqueueState, VERDICT_DELIVERY_FLAG), prs, agents: herdrListing, ownerOf: ownerOfPr }), ejectedNetwork: armingSplit === null ? null : armingSplit.networkNotRequeued.flatMap((ejection) => (ejection.at === null ? [] : [ejection.at])) }); // agent-org#1648: a red chairman pull request no order reaches; agent-org#1666: the account's authoring calls, from the ledgers
+  // agent-org#1649: the verdict reading and the conflicting-pull-request reading are both read only while `reviews.verdictDelivery` is ON
+  const verdictDeliveryOn = machineryFlagOn(reenqueueState, VERDICT_DELIVERY_FLAG);
+  const lanes = tickLanes({ prs, readyRows, others, pacedSkips, primaryRefused: primaryRefusedLanes({ promotableRows, chairmanBlocked, openRowsRead }, primaryRead), unarmed: armingSplit === null ? null : armingSplit.unarmed, releaseRuns: releaseSeen.runs ?? null, suppressions: incident.suppressions, stranded: armingSplit?.stranded ?? [], ownerless: ownerlessUnreached(prs, required), authorFallbacks: authorFallbackTimes(), conflictingIdle: conflictingIdleNow({ on: verdictDeliveryOn, prs, agents: herdrListing, ownerOf: ownerOfPr }), verdictUndelivered: verdictUndeliveredNow({ on: verdictDeliveryOn, dir: REVIEWER_STATE_DIR, pull: pullReadOf(defaultRun, repoNow()) }), ejectedNetwork: armingSplit === null ? null : armingSplit.networkNotRequeued.flatMap((ejection) => (ejection.at === null ? [] : [ejection.at])) }); // agent-org#1648: a red chairman pull request no order reaches; agent-org#1666: the account's authoring calls, from the ledgers
   orders.push(...lanes.orders); endGateSpan("machineryCanary"); // a11ign#5100, a11ign#5125
   endGateSpan("approvedUnqueued", approvedUnqueuedNow({ prs: prs === null ? null : [...prs, ...pullRequestsOfOthers(otherScopes)], repos: homeProjectDeclaration().tracker.map((t) => t.repo), repo: repoNow(), stateDir: REVIEWER_STATE_DIR, run: defaultRun })); // agent-org#893: the daily reading on #928; never throws, adds no order
   // FIRST OF ALL, AND ON PURPOSE (#2163): `wake` delivers in this order and records each delivery with a write, so
