@@ -8,7 +8,7 @@ import { INSIDE } from "../review-trust.ts";
 import { REPO } from "../project-identity.ts";
 import { runActions, runStatus } from "./board-view.ts";
 import { createPool, herdrName, ticketDir } from "./pool.ts";
-import { REVIEWER_LOGIN, REVIEW_CAUSE, atomicReviewerPort, type ReviewerPort, type ReviewerRef } from "./reviewer-port.ts";
+import { REVIEWER_LOGIN, REVIEW_CAUSE, atomicReviewerPort, loadReviewerGate, type ReviewerPort, type ReviewerRef } from "./reviewer-port.ts";
 import { emptyQueue, enqueue, setPaused, type Queue } from "./queue.ts";
 import { parseTicketSettings } from "./settings.ts";
 import type { Ticket, TicketSource } from "./source.ts";
@@ -80,6 +80,7 @@ function setup(gh: (args: string[]) => string, port: ReviewerPort, tickets: Reco
 
 /** NBF-1 run to a ready pull request: its worker wrote a `ready-pr` outcome and ended, with its transcript where a round would resume it. */
 async function readyPrRun(gh: (args: string[]) => string, port: ReviewerPort, tickets?: Record<string, unknown>) {
+  await loadReviewerGate();
   const made = setup(gh, port, tickets);
   mkdirSync(join(made.root, "transcripts", "-Users-me-work"), { recursive: true });
   writeFileSync(join(made.root, "transcripts", "-Users-me-work", "session-t-nbf-1.jsonl"), "{}\n");
@@ -150,7 +151,8 @@ test("a not-convinced verdict resumes the same worker for a round with the revie
   }
 });
 
-test("the atomic reviewer refuses a pull request whose author is outside the org, and starts nothing", () => {
+test("the atomic reviewer refuses a pull request whose author is outside the org, and starts nothing", async () => {
+  await loadReviewerGate();
   const herd = herdr(new Map());
   const spawned: unknown[] = [];
   const port = atomicReviewerPort({ session: "tickets", run: herd.run, gh: ghFor({ head: "h1", outside: true }).run, declared: DECLARED,
@@ -162,7 +164,8 @@ test("the atomic reviewer refuses a pull request whose author is outside the org
   assert.equal(herd.calls.some((args) => args.includes("prompt")), false, "no prompt is sent");
 });
 
-test("the atomic reviewer starts the gate's reviewer in the tickets' session for an org pull request, and is live for its head only", () => {
+test("the atomic reviewer starts the gate's reviewer in the tickets' session for an org pull request, and is live for its head only", async () => {
+  await loadReviewerGate();
   const listed = new Map<string, string>();
   const herd = herdr(listed);
   const spawned: { order: unknown; cwd: unknown }[] = [];
@@ -179,7 +182,8 @@ test("the atomic reviewer starts the gate's reviewer in the tickets' session for
   assert.equal(port.live({ pr: PR_URL, head: "h2" }), false, "not live for a head it was not started for");
 });
 
-test("the reviewer is asked the gate's own verdict prompt for the pull request and its head, which names the reviewer role file", () => {
+test("the reviewer is asked the gate's own verdict prompt for the pull request and its head, which names the reviewer role file", async () => {
+  await loadReviewerGate();
   const herd = herdr(new Map());
   const port = atomicReviewerPort({ session: "tickets", run: herd.run, gh: ghFor({ head: "h1" }).run, declared: DECLARED,
     spawn: (order) => ({ label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }),
@@ -190,7 +194,8 @@ test("the reviewer is asked the gate's own verdict prompt for the pull request a
     + "Review it per .agent-org/roles/reviewer.md and post the verdict as it says.");
 });
 
-test("the atomic reviewer starts nothing for a head whose checks have not settled green", () => {
+test("the atomic reviewer starts nothing for a head whose checks have not settled green", async () => {
+  await loadReviewerGate();
   const herd = herdr(new Map());
   const spawned: unknown[] = [];
   const checks = [{ name: "gate", status: "IN_PROGRESS", conclusion: null }];
@@ -202,7 +207,8 @@ test("the atomic reviewer starts nothing for a head whose checks have not settle
   assert.deepEqual(spawned, []);
 });
 
-test("a port given the heads a pool remembers is live for the head its reviewer was started for, across a restart", () => {
+test("a port given the heads a pool remembers is live for the head its reviewer was started for, across a restart", async () => {
+  await loadReviewerGate();
   const herd = herdr(new Map([["reviewer-7", "working"]]));
   const heads = new Map([["reviewer-7", "h1"]]);
   const port = atomicReviewerPort({ session: "tickets", run: herd.run, gh: ghFor({ head: "h1" }).run, declared: DECLARED, heads });

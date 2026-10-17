@@ -11,7 +11,7 @@ import {
 } from "./pool.ts";
 import { approve, emptyQueue, enqueue, finish, queuePublish, respond, retry, setPaused, type Queue } from "./queue.ts";
 import { parseTicketSettings } from "./settings.ts";
-import { REVIEWER_LOGIN, reviewerMemoryPath, type ReviewerPort, type ReviewerRef } from "./reviewer-port.ts";
+import { REVIEWER_LOGIN, loadReviewerGate, reviewerMemoryPath, type ReviewerPort, type ReviewerRef } from "./reviewer-port.ts";
 import type { Ticket, TicketSource } from "./source.ts";
 
 const ticket = (key: string) => ({ key, title: key, description: "", url: `https://linear.app/x/${key}`, branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
@@ -1279,6 +1279,7 @@ const GATE_GREEN = { name: "gate", status: "COMPLETED", conclusion: "SUCCESS" };
 
 /** NBF-1 Ready to merge at 100, its review run ended, watched with `gh`. */
 async function readyRun(gh: (args: string[]) => string, tickets: Record<string, unknown> = {}, reviewerPort?: ReviewerPort) {
+  await loadReviewerGate();
   const ctx = await approvedRun(tickets, { gh, reviewerPort });
   ctx.status.set(herdrName("NBF-1"), "idle");
   writeFileSync(join(ctx.dir, "outcome.json"), JSON.stringify({ kind: "reviewed" }));

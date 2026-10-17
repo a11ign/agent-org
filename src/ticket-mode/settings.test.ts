@@ -1,6 +1,7 @@
 // no-token: gh -- nothing here spawns anything; the host file is handed in as text
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { join } from "node:path";
 import { HOST_FILE_ENV, parseTicketSettings, plansInBatches, readTicketSettings, TicketSettingsRefusal } from "./settings.ts";
 
 const clones = { "nbl-ui-netbox": "/repos/nbl-ui-netbox", "nbl-ui-platform": "/repos/nbl-ui-platform", "platform-monorepo": "/repos/platform-monorepo" };
@@ -178,9 +179,21 @@ test("a bad field is refused by its name", () => {
   assert.equal(field({ clones }), "accepted", "POSITIVE CONTROL: a valid file is not refused");
 });
 
-test("the host file is the one $AGENT_ORG_HOST names, and an unset variable or an unreadable file is refused by name", () => {
-  assert.throws(() => readTicketSettings({}), (err: TicketSettingsRefusal) => err.field === HOST_FILE_ENV);
-  assert.throws(() => readTicketSettings({ [HOST_FILE_ENV]: "/nope" }, () => { throw new Error("ENOENT"); }), /cannot be read/);
+test("with $AGENT_ORG_HOST unset or empty, the host file is ~/.agent-org/host.json", () => {
+  const home = "/home/me";
+  for (const env of [{}, { [HOST_FILE_ENV]: "" }]) {
+    const seen: string[] = [];
+    const read = readTicketSettings(env, (path) => { seen.push(path); return JSON.stringify({ clones }); }, home);
+    assert.deepEqual(seen, [join(home, ".agent-org", "host.json")], JSON.stringify(env));
+    assert.equal(Object.keys(read.clones).length, 3);
+  }
+  assert.throws(() => readTicketSettings({}, () => { throw new Error("ENOENT"); }, home), (err: TicketSettingsRefusal) => err.field === HOST_FILE_ENV && /\.agent-org\/host\.json, which cannot be read/.test(err.message));
+});
+
+test("a set $AGENT_ORG_HOST is the file it names, and an unreadable one is refused by name and never falls back to ~/.agent-org", () => {
+  const seen: string[] = [];
+  assert.throws(() => readTicketSettings({ [HOST_FILE_ENV]: "/nope" }, (path) => { seen.push(path); throw new Error("ENOENT"); }, "/home/me"), /cannot be read/);
+  assert.deepEqual(seen, ["/nope"]);
   assert.throws(() => readTicketSettings({ [HOST_FILE_ENV]: "/h" }, () => "{not json"), /not valid JSON/);
   const read = readTicketSettings({ [HOST_FILE_ENV]: "/h" }, () => JSON.stringify({ clones, projects: [], primary: "x", gh: {} }));
   assert.equal(Object.keys(read.clones).length, 3, "the org's own host keys sit beside `clones` and are ignored");

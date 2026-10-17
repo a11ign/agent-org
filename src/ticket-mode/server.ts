@@ -20,7 +20,8 @@ import { boardKey, boardKeyPath } from "./board-key.ts";
 import { hasPlan } from "./board-view.ts";
 import { linearSource, readLinearKey } from "./linear.ts";
 import { API_BODY_BYTES, readJson, refusal, sameSecret, sendJson, type Json } from "./local-http.ts";
-import { createPool, type PoolDeps } from "./pool.ts";
+import { createPool, startsReviewers, type PoolDeps } from "./pool.ts";
+import { loadReviewerGate } from "./reviewer-port.ts";
 import { amend, approve, enqueue, loadQueue, queuePublish, remove, respond, retry, saveQueue, setMax, setPaused, type PlanFirst, type Queue, type RunChoice } from "./queue.ts";
 import { plansInBatches, readTicketSettings, type TicketSettings } from "./settings.ts";
 import type { Ticket, TicketSource } from "./source.ts";
@@ -223,6 +224,8 @@ async function serve(): Promise<void> {
   // `--no-open` opened no browser when the instance served the page. It is still taken, so a script that passes it keeps working.
   refuseUnknownFlags(["--no-open"], { entry: import.meta.url, command: "agent-org ticket:serve" });
   const settings = readTicketSettings();
+  // The gate's modules load only for an instance that starts reviewers, and before its pool is made, which reads them (`reviewer-port.ts`).
+  if (startsReviewers(settings)) await loadReviewerGate();
   const source = linearSource({ key: readLinearKey(settings.linearKey) });
   const key = boardKey(boardKeyPath(settings.stateDir));
   const dir = join(settings.stateDir, "tickets");

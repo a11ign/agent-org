@@ -287,10 +287,9 @@ export function parseTicketSettings(host: unknown, home: string = homedir()): Ti
   });
 }
 
-/** The settings from the file `$AGENT_ORG_HOST` names. REFUSES naming the variable when it is unset, and the file when it cannot be read. */
-export function readTicketSettings(env: Record<string, string | undefined> = process.env, read: (path: string) => string = (path) => readFileSync(path, "utf8")): TicketSettings {
-  const path = env[HOST_FILE_ENV];
-  if (path === undefined || path === "") throw new TicketSettingsRefusal(HOST_FILE_ENV, "is unset: point it at a host file holding at least `clones`");
+/** The settings from the file `$AGENT_ORG_HOST` names, or from `~/.agent-org/host.json` when it is unset or empty. REFUSES naming the file when it cannot be read. */
+export function readTicketSettings(env: Record<string, string | undefined> = process.env, read: (path: string) => string = (path) => readFileSync(path, "utf8"), home: string = homedir()): TicketSettings {
+  const path = env[HOST_FILE_ENV] || join(home, ".agent-org", "host.json");
   let text: string;
   try {
     text = read(path);
