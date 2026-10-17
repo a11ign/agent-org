@@ -74,6 +74,8 @@ export function serviceName(word: string | undefined): ServiceName {
 const escapeXml = (text: string) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 /** A systemd value in double quotes: `%` is a specifier, `$` a variable, and `\` and `"` are the quoting's own. */
 const systemdQuoted = (text: string) => `"${text.replace(/\\/g, "\\\\").replace(/"/g, "\\\"").replace(/%/g, "%%").replace(/\$/g, "$$$$")}"`;
+/** A systemd path with no quotes, as `WorkingDirectory=` takes it: systemd reads a quote as part of the path and refuses the unit. Only `%` is a specifier there. */
+const systemdPath = (text: string) => text.replace(/%/g, "%%");
 
 /**
  * The PATH a service runs with: the caller's, without a relative or empty entry and without a project's `node_modules/.bin`, which `pnpm run` and `pnpm exec`
@@ -147,7 +149,7 @@ After=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=${systemdQuoted(deps.toolRoot)}
+WorkingDirectory=${systemdPath(deps.toolRoot)}
 ExecStart=${argv.map(systemdQuoted).join(" ")}
 ${Object.entries(environment).map(([key, value]) => `Environment=${systemdQuoted(`${key}=${value}`)}`).join("\n")}
 # Exit 2 is a refusal (a host file that does not parse, a port in use), which a restart does not mend.
