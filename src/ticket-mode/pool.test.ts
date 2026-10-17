@@ -39,9 +39,9 @@ function herdr(status: Map<string, string>, screen: { text: string } = { text: "
 
 /** `parents` gives a ticket its parent's key. A ticket without one is shaped as a run queued before tickets carried a parent. */
 function setup(max = 2, keys = ["NBF-1", "NBF-2", "NBF-3"], tickets: Record<string, unknown> = {},
-  { source: tracker = source, parents = {}, planFirst = [], batch = false, pluginRecord, gh, reviewerPort }:
+  { source: tracker = source, parents = {}, planFirst = [], batch = false, pluginRecord, gh, reviewerPort, now = () => 100 }:
     { source?: TicketSource; parents?: Record<string, string>; planFirst?: string[]; batch?: boolean; pluginRecord?: string; gh?: (args: string[]) => string;
-      reviewerPort?: ReviewerPort } = {}) {
+      reviewerPort?: ReviewerPort; now?: () => number } = {}) {
   const root = tmpDir("ticket-pool-");
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox", "nbl-ui-platform-libs": "/repos/libs" }, stateDir: join(root, "state"), tickets });
   const queued = keys.map((key) => (key in parents ? { ...ticket(key), parent: parents[key] } : ticket(key)));
@@ -51,7 +51,7 @@ function setup(max = 2, keys = ["NBF-1", "NBF-2", "NBF-3"], tickets: Record<stri
   const status = new Map<string, string>();
   const screen = { text: "" };
   const h = herdr(status, screen);
-  const deps = { settings, source: tracker, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: h.run, hostFile: "/work/.agent-org/host.json", now: () => 100, load: () => ({ load: 1, cores: 14 }), transcriptsRoot: join(root, "transcripts"), wait: async () => {},
+  const deps = { settings, source: tracker, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: h.run, hostFile: "/work/.agent-org/host.json", now, load: () => ({ load: 1, cores: 14 }), transcriptsRoot: join(root, "transcripts"), wait: async () => {},
     pluginRecord: pluginRecord ?? join(root, "no-plugin-record.json"), ...(gh ? { gh } : {}), ...(reviewerPort ? { reviewerPort } : {}) };
   const pool = createPool(store, deps);
   const entry = (key: string) => queue.entries.find((e) => e.ticket.key === key)!;
@@ -1749,4 +1749,55 @@ test("A11-70: a batch ticket placed in a repository that is no clone is given no
   for (const part of ["`a11y-witness`", "not one of this machine's clones (`nbl-ui-netbox`, `nbl-ui-platform-libs`)", "Retry"]) assert.ok(reason.includes(part), reason);
   ran.store.set(retry(ran.store.get(), "NBF-2", 99));
   assert.deepEqual([ran.entry("NBF-2").phase, ran.entry("NBF-2").plan, ran.entry("NBF-2").planned], ["queued", undefined, true], "Retry works it, without planning it again");
+});
+
+test("A11-80: a working outcome is read with its reason and does not end the run: it stays In progress, holds its slot and is watched", async () => {
+  assert.deepEqual(parseOutcome(JSON.stringify({ kind: "working", reason: "the roll is still running" })), { kind: "working", reason: "the roll is still running" });
+  const { pool, status, entry, settings, h } = await endedOn({ kind: "working", reason: "the roll is still running" }, 1, ["NBF-1", "NBF-2"]);
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").outcome, entry("NBF-1").working?.reason], ["running", undefined, "the roll is still running"]);
+  assert.equal(runStatus(entry("NBF-1")), "working", "In progress, not Needs you");
+  assert.deepEqual([entry("NBF-1").workspace, closes(h, "w1")], ["w1", 0], "its workspace stays, as a live run's");
+  assert.equal(entry("NBF-2").phase, "queued", "it still holds the one slot");
+  await pool.tick();
+  assert.equal(entry("NBF-1").phase, "running", "reading the same file again ends nothing");
+  status.set(herdrName("NBF-1"), "working");
+  await pool.tick();
+  assert.equal(entry("NBF-1").phase, "running", "its Monitor woke it");
+  const prs = [{ repo: "nbl-ui-netbox", url: "https://github.com/o/nbl-ui-netbox/pull/7" }];
+  writeFileSync(join(ticketDir(settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "draft-pr", prs }));
+  status.set(herdrName("NBF-1"), "idle");
+  await pool.tick();
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").outcome, entry("NBF-1").working], ["finished", { kind: "draft-pr", prs }, undefined], "the later outcome replaces the note");
+  assert.equal(entry("NBF-2").phase, "running", "and the slot it freed is filled");
+});
+
+test("A11-80: a working run idle with no newer outcome for tickets.stallMinutes is marked stalled, once, and is neither ended nor prompted", async () => {
+  let clock = 100;
+  const { pool, status, entry, settings, h } = setup(1, ["NBF-1"], { stallMinutes: 30 }, { now: () => clock });
+  await pool.tick();
+  status.set(herdrName("NBF-1"), "working");
+  await pool.tick();
+  writeFileSync(join(ticketDir(settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "working", reason: "the roll is still running" }));
+  status.set(herdrName("NBF-1"), "idle");
+  await pool.tick();
+  clock += 30 * 60_000 - 1;
+  await pool.tick();
+  assert.equal(entry("NBF-1").working?.stalled, undefined, "not before the stall time");
+  const calls = h.calls.length;
+  clock += 1;
+  const logged = await captureStderr(async () => { await pool.tick(); await pool.tick(); });
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").working?.stalled, entry("NBF-1").working?.reason], ["running", true, "the roll is still running"]);
+  assert.equal(runStatus(entry("NBF-1")), "working", "still In progress");
+  assert.equal(logged.filter((line) => line.includes("NBF-1 has been idle for 30 minutes or more since it wrote working")).length, 1, "said once");
+  assert.equal(h.calls.slice(calls).some((args) => args.includes("send-keys") || args.includes("close")), false, "no key sent and nothing closed");
+  status.set(herdrName("NBF-1"), "working");
+  await pool.tick();
+  assert.equal(entry("NBF-1").working?.stalled, undefined, "its work woke it: the stall is cleared");
+});
+
+test("A11-80: a parked run whose worker, woken between two looks, writes working is live again with that note, not ended", async () => {
+  const { pool, entry, settings } = await endedOn({ kind: "needs-human", reason: "which colour?" });
+  writeFileSync(join(ticketDir(settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "working", reason: "rebuilding with the colour the person chose" }));
+  await pool.tick();
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").outcome, entry("NBF-1").working?.reason], ["running", undefined, "rebuilding with the colour the person chose"]);
 });

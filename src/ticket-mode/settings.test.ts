@@ -20,7 +20,7 @@ test("only `clones` is required, every repository in it is offered, and every ot
 
 test("the `tickets` block and `stateDir` override the defaults", () => {
   const settings = parseTicketSettings({ clones, stateDir: "/state", tickets: { max: 5, port: 5000, herdrSession: "nbl", worktreeRoot: "/wt", linearKey: { path: "/keys/linear" } } });
-  assert.deepEqual({ ...settings, clones: undefined }, { clones: undefined, max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", worktreeRoot: "/wt", stateDir: "/state", linearKey: { path: "/keys/linear" }, brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, workingState: null, connectors: [], publish: null, drafts: true, reviewer: null, pick: "assigned" });
+  assert.deepEqual({ ...settings, clones: undefined }, { clones: undefined, max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", worktreeRoot: "/wt", stateDir: "/state", linearKey: { path: "/keys/linear" }, brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, workingState: null, connectors: [], publish: null, drafts: true, reviewer: null, pick: "assigned", stallMinutes: 30 });
 });
 
 test("the page's port is its own: it can be moved, and is refused when it is the instance's", () => {
@@ -156,6 +156,7 @@ test("a bad field is refused by its name", () => {
   assert.equal(field({ clones: { netbox: "relative/path" } }), "clones.netbox");
   assert.equal(field({ clones, tickets: { max: 0 } }), "tickets.max");
   assert.equal(field({ clones, tickets: { max: 2.5 } }), "tickets.max");
+  for (const stallMinutes of [0, -5, 1.5, "30", null]) assert.equal(field({ clones, tickets: { stallMinutes } }), "tickets.stallMinutes", JSON.stringify(stallMinutes));
   assert.equal(field({ clones, tickets: { herdrSession: "has space" } }), "tickets.herdrSession");
   assert.equal(field({ clones, tickets: { linearKey: { keychain: "x", path: "/y" } } }), "tickets.linearKey");
   assert.equal(field({ clones, tickets: { brief: "notes.md" } }), "tickets.brief", "a relative path");
@@ -211,4 +212,10 @@ test("A11-69: a tickets.pick of any other shape is refused by its name", () => {
     assert.throws(() => parseTicketSettings({ clones, tickets: { pick } }),
       (err: unknown) => err instanceof TicketSettingsRefusal && err.field === "tickets.pick" && /must be "assigned", \{ "team"/.test(err.message), JSON.stringify(pick));
   }
+});
+
+test("A11-80: a machine names how long a working run may sit idle before the board marks it stalled, 30 minutes by default", () => {
+  assert.equal(parseTicketSettings({ clones }, "/home/me").stallMinutes, 30);
+  assert.equal(parseTicketSettings({ clones, tickets: { stallMinutes: 90 } }, "/home/me").stallMinutes, 90);
+  assert.throws(() => parseTicketSettings({ clones, tickets: { stallMinutes: 0 } }), /`tickets\.stallMinutes` in the host file must be a whole number of 1 or more, not 0/);
 });

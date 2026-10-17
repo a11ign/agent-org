@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpDir } from "../lib/tmp-fixture.ts";
@@ -202,4 +202,25 @@ test("a drafts-off run may open a ready pull request and a drafts-on run may not
   assert.equal(ready("gh pr ready 12"), 2, "marking a pull request ready is still refused");
   assert.equal(toolVerdict("Write", { file_path: "/state/tickets/NBF-1/ready-run", content: "\n" }).code, 2, "no worker writes the ready mark with a file tool");
   assert.equal(bash("touch /state/tickets/NBF-1/ready-run"), 2, "no worker writes the ready mark with a command");
+});
+
+test("A11-80: a working outcome lets one stop through; a later stop on the same file is refused until it is written again, at most twice", () => {
+  const dir = tmpDir("ticket-hook-working-");
+  const outcome = join(dir, "outcome.json");
+  writeFileSync(outcome, JSON.stringify({ kind: "working", reason: "the Ansible roll is still running; a Monitor wakes me" }));
+  utimesSync(outcome, 1000, 1000);
+  assert.equal(stopVerdict(dir).code, 0, "the stop hook accepts working: the worker ends its turn while its own work runs");
+  const woken = stopVerdict(dir);
+  assert.equal(woken.code, 2, "its background work woke it, and it stopped on the same working outcome");
+  assert.match(woken.say[0], /still says working from before your background work woke you/);
+  writeFileSync(outcome, JSON.stringify({ kind: "working", reason: "the second play is still running" }));
+  utimesSync(outcome, 2000, 2000);
+  assert.equal(stopVerdict(dir).code, 0, "working written again, while more of its work runs, lets the stop through");
+  writeFileSync(outcome, JSON.stringify({ kind: "needs-human", reason: "the roll failed on host 3" }));
+  utimesSync(outcome, 2000, 2000);
+  assert.equal(stopVerdict(dir).code, 0, "a final outcome lets every stop through, whatever its time");
+  assert.equal(stopVerdict(dir).code, 0);
+  writeFileSync(outcome, JSON.stringify({ kind: "working", reason: "r" }));
+  utimesSync(outcome, 3000, 3000);
+  assert.deepEqual(Array.from({ length: MAX_STOP_REFUSALS + 2 }, () => stopVerdict(dir).code), [0, 2, 2, 0], "bounded by the same count as a missing outcome");
 });

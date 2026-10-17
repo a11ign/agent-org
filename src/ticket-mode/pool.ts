@@ -40,6 +40,13 @@
 // for seconds between two looks and write its outcome without the pool ever seeing it `working`. So an outcome file written after the run
 // parked, other than the one it parked on, settles the run as if it had been resumed and had finished.
 //
+// A RUN WHOSE OWN BACKGROUND WORK IS STILL RUNNING IS NOT OVER (A11-80). A worker that ends a turn while a shell, a Monitor or a task of its own
+// runs on (a long Ansible run, say) must still write an outcome file for the stop hook, and `needs-human` was the only one that fitted: the
+// board showed Needs you though nothing was asked of the person, and parked a run that carried on by itself. It writes `working` instead. The
+// pool records its reason as the run's latest note and leaves the run running, holding its slot and watched as before: the outcome it writes
+// when its work wakes it replaces the note and ends the run as usual. An agent that sits idle with no newer outcome for `tickets.stallMinutes`
+// is marked stalled on the board, so a run whose work never woke it is still noticed; nothing is ended and no key is sent.
+//
 // A RUN READY TO MERGE IS WATCHED. Every few minutes (`watchFeedback`) the board reads the open pull requests of each run Ready to merge or
 // Published (`readPullFeedback`, through `gh`). A review, a conversation comment or an inline comment newer than the run's last round, from
 // anyone but the account the workers use, or a check failing on the head commit since then, queues another review round that resumes the same
@@ -66,9 +73,9 @@ import { defaultGh } from "../lib/tool-version-agreement.ts";
 import { CONCLUDED, HANDED_BACK, hasPlan, isBeingPublished, isParked, isWatched, openPulls, stackedOn } from "./board-view.ts";
 import {
   batchPlanDone, dismiss as dismissFinished, feedbackRound, finish, isLive, leaveBatch, markPublishRunning, markPublishStarting, markResumed, markRunning, markStarting, nextStarts, observe,
-  observePublish, park, planDone, publishDone, publishFailed, publishStarts, recordBlockers, recordPullStates, recordRepos, recordTrackerStates, unpark,
-  unreadBlockerKeys, unsettledKeys,
-  type Entry, type Outcome, type PublishRun, type Queue, type RunChoice,
+  noteWorking, observePublish, park, planDone, publishDone, publishFailed, publishStarts, recordBlockers, recordPullStates, recordRepos, recordTrackerStates, unpark,
+  unreadBlockerKeys, unsettledKeys, watchWorking,
+  type Entry, type Outcome, type PublishRun, type Queue, type RunChoice, type WrittenOutcome,
 } from "./queue.ts";
 import type { Ticket, TicketSource } from "./source.ts";
 import { unreachablePlugins } from "./plugins.ts";
@@ -80,7 +87,7 @@ import {
 } from "./reviewer-port.ts";
 import {
   BRIEF_FILE, CONNECTORS_FILE, DENY_FILE, ORDER_FILE, OUTCOME_FILE, PLAN_DIR, PLANNING_DENY, PREVIOUS_OUTCOME_FILE, PUBLISH_FILE, PUBLISHED_FILE, QUESTION_FILE,
-  READY_FILE, REVIEW_FILE, STOP_COUNT_FILE,
+  READY_FILE, REVIEW_FILE, STOP_COUNT_FILE, WORKING_STOP_FILE,
   batchPlanBriefText, briefText, firstPrompt, planBriefText, publishBriefText, reviewBriefText, reviewPrompt, workerFlags, workerSettings,
   type BatchTicket, type HookCommand, type ParentTicket,
 } from "./worker-files.ts";
@@ -230,8 +237,11 @@ function herdrRefusal(err: unknown): string {
   return herdrReason(err);
 }
 
-/** The outcome a worker wrote, or `needs-human` saying the file could not be read. PURE over the file's text. */
-export function parseOutcome(text: string): Outcome {
+/**
+ * The outcome a worker wrote, or `needs-human` saying the file could not be read. A `working` one is not how the run ended: `settle` records it as
+ * the run's latest note. PURE over the file's text.
+ */
+export function parseOutcome(text: string): WrittenOutcome {
   try {
     const value = JSON.parse(text) as Record<string, unknown>;
     if (value.kind === "draft-pr" && Array.isArray(value.prs)) {
@@ -246,6 +256,7 @@ export function parseOutcome(text: string): Outcome {
     if (value.kind === "reviewed") return { kind: "reviewed", prs: [] };
     if (value.kind === "wrong-repo") return { kind: "wrong-repo", where: String(value.where ?? "") };
     if (value.kind === "needs-human") return { kind: "needs-human", reason: String(value.reason ?? "") };
+    if (value.kind === "working") return { kind: "working", reason: String(value.reason ?? "") };
   } catch {
     // falls through to the unreadable outcome below
   }
@@ -368,6 +379,8 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
   const now = deps.now ?? Date.now;
   const transcripts = deps.transcriptsRoot ?? join(homedir(), ".claude", "projects");
   const gh = deps.gh ?? defaultGh;
+  /** How long a run with a working note may sit idle with no newer outcome before the board marks it stalled. */
+  const stallMs = settings.stallMinutes * 60_000;
   const session = { session: settings.herdrSession };
   const misses = new Map<string, number>();
   const answered = new Map<string, number>();
@@ -538,7 +551,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     mkdirSync(dir, { recursive: true });
     // An earlier run's outcome and stop count would end this run before it began, and an earlier review or publish run's mark would lift a
     // refusal for it.
-    for (const file of [OUTCOME_FILE, STOP_COUNT_FILE, REVIEW_FILE, PUBLISH_FILE]) rmSync(join(dir, file), { force: true });
+    for (const file of [OUTCOME_FILE, STOP_COUNT_FILE, WORKING_STOP_FILE, REVIEW_FILE, PUBLISH_FILE]) rmSync(join(dir, file), { force: true });
   }
 
   /** The run's plan folder, made empty: an earlier attempt's files would be attached as this one's. */
@@ -668,7 +681,11 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
       updateEach(runMembers(entry), (queue, member) => observe(queue, member, seen));
       const current = store.get().entries.find((e) => e.ticket.key === key) ?? entry;
       const outcomePath = join(dir, OUTCOME_FILE);
-      if ((seen === "idle" || seen === "done") && existsSync(outcomePath)) settle(current, parseOutcome(readFileSync(outcomePath, "utf8")));
+      if ((seen === "idle" || seen === "done") && existsSync(outcomePath)) {
+        settle(current, parseOutcome(readFileSync(outcomePath, "utf8")));
+        // A run still running after its outcome was read wrote `working`: its idle clock runs, and may mark it stalled.
+        if (sameRun(current)) watchStall(current, seen);
+      } else if (seen === "working") watchStall(current, seen);
       else if (seen === "done" || (seen === "idle" && current.seenWorking === true)) end(current, { kind: "no-outcome" });
     }
   }
@@ -705,7 +722,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
    * The outcome a parked run's worker wrote after the run parked, or null. A file written before then, or one that says what the run parked on,
    * is the old outcome: the run parked on it.
    */
-  function newOutcome(entry: Entry): Outcome | null {
+  function newOutcome(entry: Entry): WrittenOutcome | null {
     const path = join(runPlace(entry).dir, OUTCOME_FILE);
     if (!existsSync(path) || statSync(path).mtimeMs <= (entry.finishedAt ?? 0)) return null;
     const outcome = parseOutcome(readFileSync(path, "utf8"));
@@ -725,8 +742,29 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     updateEach(runMembers(entry), markResumed);
   }
 
-  /** A run wrote its outcome: a planning run's plan is attached, and any other outcome ends the run. */
-  function settle(entry: Entry, outcome: Outcome): void {
+  /**
+   * A run's agent wrote `working`: its reason becomes the run's latest note, for every ticket in the run, and the run carries on. The file's own
+   * time says whether it is newer than the note recorded, so reading the same file on every tick changes nothing.
+   */
+  function noteStillWorking(entry: Entry, reason: string): void {
+    const path = join(runPlace(entry).dir, OUTCOME_FILE);
+    const at = existsSync(path) ? statSync(path).mtimeMs : now();
+    updateEach(runMembers(entry), (queue, member) => noteWorking(queue, member, reason, at, now()));
+  }
+
+  /** Move a working run's idle clock on `seen`, and log once when the run is first marked stalled. Nothing is ended and no key is sent. */
+  function watchStall(entry: Entry, seen: string): void {
+    const before = store.get().entries.find((e) => e.ticket.key === entry.ticket.key)?.working?.stalled === true;
+    updateEach(runMembers(entry), (queue, member) => watchWorking(queue, member, seen, now(), stallMs));
+    const note = store.get().entries.find((e) => e.ticket.key === entry.ticket.key)?.working;
+    if (!before && note?.stalled === true) {
+      log(`${entry.batch ?? entry.ticket.key} has been idle for ${settings.stallMinutes} minutes or more since it wrote working, with no newer outcome: ${note.reason}`);
+    }
+  }
+
+  /** A run wrote its outcome: `working` is recorded as its note and the run carries on, a planning run's plan is attached, and any other outcome ends the run. */
+  function settle(entry: Entry, outcome: WrittenOutcome): void {
+    if (outcome.kind === "working") return noteStillWorking(entry, outcome.reason);
     if (outcome.kind === "reviewed") {
       if (entry.review === undefined) return end(entry, { kind: "needs-human", reason: "the worker wrote a reviewed outcome, but its run was not a review run" });
       return end(entry, { kind: "reviewed", prs: entry.review });

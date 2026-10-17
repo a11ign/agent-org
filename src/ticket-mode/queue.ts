@@ -34,6 +34,24 @@ export type Outcome =
   | Readonly<{ kind: "crashed"; reason: string }>
   | Readonly<{ kind: "stopped" }>;
 
+/**
+ * What a worker may write that is NOT how its run ended: `working` says its own background work (a shell, a Monitor or a task) is still running
+ * and will wake it, so the turn it ends is not the run's end. The pool keeps such a run In progress and records the reason as its
+ * {@link WorkingNote}; the next outcome the worker writes replaces it as usual. It is never a {@link Outcome}, so no finished run holds one.
+ */
+export type WorkingOutcome = Readonly<{ kind: "working"; reason: string }>;
+
+/** Anything a worker can leave in its outcome file: how its run ended, or that it is still working in the background. */
+export type WrittenOutcome = Outcome | WorkingOutcome;
+
+/**
+ * A running run's latest note, from a `working` outcome: the reason it gave, and `at`, when it wrote the file, so only a newer one replaces it.
+ * `idleSince` is when its agent was last seen settling into idle with this note and no newer outcome, and is dropped while the agent works.
+ * `stalled` is set once the agent has stayed idle like that for `tickets.stallMinutes`: the board says so, so a run whose background work never
+ * woke it, or that forgot its final outcome, is still noticed. Being stalled ends nothing and prompts nobody.
+ */
+export type WorkingNote = Readonly<{ reason: string; at: number; idleSince?: number; stalled?: boolean }>;
+
 export type Phase = "queued" | "starting" | "running" | "finished";
 
 export type Entry = Readonly<{
@@ -91,6 +109,8 @@ export type Entry = Readonly<{
   handedBack?: string;
   /** Set once a publish run posted its pull requests: the first message's web address, or null when it gave none, and when. */
   published?: Readonly<{ link: string | null; at: number }>;
+  /** Set while a running run's worker last said its background work is still running: see {@link WorkingNote}. Dropped when the run ends. */
+  working?: WorkingNote;
 }>;
 
 /**
@@ -406,6 +426,35 @@ export function observe(queue: Queue, key: string, status: string): Queue {
   }));
 }
 
+/**
+ * A running run's worker wrote a `working` outcome at `at`: record its reason as the run's latest note, with its agent idle since `now`, and keep
+ * the run running. A note no newer than the one recorded changes nothing, so the stall clock is not reset by reading the same file again. A run
+ * that is not running is left alone: a `working` outcome never ends, parks or revives one.
+ */
+export function noteWorking(queue: Queue, key: string, reason: string, at: number, now: number): Queue {
+  return replace(queue, key, (entry) => (entry.phase !== "running" || (entry.working !== undefined && at <= entry.working.at) ? entry
+    : { ...entry, working: { reason, at, idleSince: now } }));
+}
+
+/**
+ * What herdr says a running run with a working note is doing, at `now`. Working clears the idle clock and the stall: its background work woke it.
+ * Idle or done starts the clock when it is not running already, and marks the run stalled once it has run for `stallMs`. Any other status, and a
+ * run with no note, changes nothing.
+ */
+export function watchWorking(queue: Queue, key: string, status: string, now: number, stallMs: number): Queue {
+  return replace(queue, key, (entry) => {
+    const note = entry.working;
+    if (entry.phase !== "running" || note === undefined) return entry;
+    if (status === "working") {
+      const { idleSince: _woke, stalled: _cleared, ...awake } = note;
+      return { ...entry, working: awake };
+    }
+    if (status !== "idle" && status !== "done") return entry;
+    const idleSince = note.idleSince ?? now;
+    return { ...entry, working: { ...note, idleSince, ...(now - idleSince >= stallMs ? { stalled: true } : {}) } };
+  });
+}
+
 /** What the pool learned of a run as it ended: the tokens it spent and the Claude session it ran in. */
 export type RunRecord = Readonly<{ tokens?: Entry["tokens"]; session?: string }>;
 
@@ -415,7 +464,8 @@ export type RunRecord = Readonly<{ tokens?: Entry["tokens"]; session?: string }>
  */
 function ended(entry: Entry, outcome: Outcome, now: number, { tokens, session }: RunRecord): Entry {
   const ranIn = session ?? (entry.review ? entry.session : undefined);
-  const { session: _earlier, ...rest } = entry;
+  // A working note is a running run's: the outcome it ended on replaces it.
+  const { session: _earlier, working: _note, ...rest } = entry;
   return { ...rest, phase: "finished", outcome, finishedAt: now, waiting: false, ...(tokens ? { tokens } : {}), ...(ranIn ? { session: ranIn } : {}) };
 }
 

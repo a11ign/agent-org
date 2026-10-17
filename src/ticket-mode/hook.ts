@@ -7,6 +7,11 @@
 // `worker-stop-hook.ts` does: the nbl-ui plugin's own Stop gates block once and then let the next stop through on that flag, and a hook that also
 // honoured it would let a worker end on that second stop with no outcome. Its own count is what bounds it.
 //
+// A `working` OUTCOME LETS ONE STOP THROUGH (A11-80). A worker whose own background work runs on writes `{ "kind": "working", ... }` and ends its
+// turn; the pool keeps the run running. When that work wakes it, the file still says `working`, so a stop on the SAME file (the time recorded in
+// `working-stop` when it was let through) is refused like a missing outcome, with the same count: the worker says how the run stands now, or
+// writes `working` again while more of its work is running.
+//
 // PRE-TOOL-USE: WHAT ONLY A PERSON DOES. A worker opens a DRAFT pull request, links it into a stack with `gh stack link` when its brief says so,
 // and stops. Marking it ready, requesting a review, merging, force-pushing, running a workflow, posting to Slack and any other `gh stack`
 // command are the person's, and so is every connector the machine does not name. A worker runs with the person's
@@ -23,11 +28,11 @@
 // (`gh pr create` without `--draft`) only then. Without that mark, the draft refusal applies to every run, as before. No worker may write the mark.
 //
 // IT FAILS OPEN, OUT LOUD, for a payload or a count it cannot read: a hook that refused on what it could not read would stop every worker.
-import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { DenyRule } from "./settings.ts";
-import { CONNECTORS_FILE, DENY_FILE, OUTCOME_FILE, PUBLISH_FILE, READY_FILE, REVIEW_FILE, STOP_COUNT_FILE } from "./worker-files.ts";
+import { CONNECTORS_FILE, DENY_FILE, OUTCOME_FILE, PUBLISH_FILE, READY_FILE, REVIEW_FILE, STOP_COUNT_FILE, WORKING_STOP_FILE } from "./worker-files.ts";
 
 export type HookResult = Readonly<{ code: 0 | 2; say: readonly string[] }>;
 
@@ -154,22 +159,44 @@ export function publishConnectors(ticketDir: string): RegExp[] | null {
   }
 }
 
-/** The Stop verdict: allowed once the outcome file is there, refused with its path otherwise, up to {@link MAX_STOP_REFUSALS} in a row. */
-export function stopVerdict(ticketDir: string, { exists = existsSync, read = (p: string) => readFileSync(p, "utf8"), write = (p: string, t: string) => writeFileSync(p, t) }: {
-  exists?: (path: string) => boolean; read?: (path: string) => string; write?: (path: string, text: string) => void;
+/** Whether an outcome file's text is a `working` outcome. Text that is not JSON is not one: the pool reads it as it reads any outcome. PURE. */
+function isWorking(text: string): boolean {
+  try {
+    return (JSON.parse(text) as { kind?: unknown } | null)?.kind === "working";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The Stop verdict: allowed once the outcome file is there, refused with its path otherwise, up to {@link MAX_STOP_REFUSALS} in a row. A `working`
+ * outcome allows one stop; a later stop on the same file, by its time, is refused the same way, so a worker its background work woke says how
+ * the run stands now.
+ */
+export function stopVerdict(ticketDir: string, { exists = existsSync, read = (p: string) => readFileSync(p, "utf8"), write = (p: string, t: string) => writeFileSync(p, t),
+  mtime = (p: string) => statSync(p).mtimeMs }: {
+  exists?: (path: string) => boolean; read?: (path: string) => string; write?: (path: string, text: string) => void; mtime?: (path: string) => number;
 } = {}): HookResult {
   const outcome = join(ticketDir, OUTCOME_FILE);
   const counter = join(ticketDir, STOP_COUNT_FILE);
+  const stamp = join(ticketDir, WORKING_STOP_FILE);
+  let ask = `write ${outcome} before you stop, with one of the outcomes your brief lists, such as { "kind": "needs-human", "reason": "..." }.`;
   if (exists(outcome)) {
-    write(counter, "0");
-    return ALLOW;
+    const working = isWorking(read(outcome)) ? String(mtime(outcome)) : null;
+    if (working === null || !exists(stamp) || read(stamp).trim() !== working) {
+      if (working !== null) write(stamp, working);
+      write(counter, "0");
+      return ALLOW;
+    }
+    ask = `${outcome} still says working from before your background work woke you: write it again with how the run stands now, or with { "kind": "working", "reason": "..." } again if more of your own work is still running.`;
   }
   const refused = exists(counter) ? Number.parseInt(read(counter), 10) || 0 : 0;
   if (refused >= MAX_STOP_REFUSALS) {
-    return { code: 0, say: [`ticket-mode: ${refused} stops in a row without ${outcome}, so this one is allowed and the board records no outcome.`] };
+    const what = exists(outcome) ? `on the same working outcome in ${outcome}, so this one is allowed and the board keeps the run in progress` : `without ${outcome}, so this one is allowed and the board records no outcome`;
+    return { code: 0, say: [`ticket-mode: ${refused} stops in a row ${what}.`] };
   }
   write(counter, String(refused + 1));
-  return refuse(`write ${outcome} before you stop, with one of the outcomes your brief lists, such as { "kind": "needs-human", "reason": "..." }.`);
+  return refuse(ask);
 }
 
 export function main(stdin: string, argv: string[]): HookResult {

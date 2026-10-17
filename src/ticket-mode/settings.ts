@@ -72,6 +72,11 @@ export type TicketSettings = Readonly<{
   reviewer: Reviewer | null;
   /** Which tickets the Pick view lists. `"assigned"` by default. */
   pick: PickScope;
+  /**
+   * How many minutes a run whose worker wrote `working` may sit idle with no newer outcome before the board marks it stalled: its background work
+   * should have woken it by then. Marking it ends nothing. 30 by default.
+   */
+  stallMinutes: number;
 }>;
 
 /**
@@ -311,6 +316,7 @@ export function parseTicketSettings(host: unknown, home: string = homedir()): Ti
     drafts: draftsOf(tickets.drafts),
     reviewer: reviewerOf(tickets.reviewer),
     pick: pickOf(tickets.pick),
+    stallMinutes: positiveInteger(tickets.stallMinutes, "tickets.stallMinutes", 30),
   });
 }
 

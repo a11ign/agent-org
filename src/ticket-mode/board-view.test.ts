@@ -6,7 +6,7 @@ import {
   remember, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, selectable, shownStatus,
   statusCounts, terminalLink, toggled, waitsOn, repoOfPull, stackedOn, stackNote, PRIORITY_NAMES, hasPlan, isBeingPublished, isWatched, publishable,
   publishLabel, publishNote, publishTerminalLink, missingPlan, planChoiceOf, planCounts, priorityCounts, prioritiesOf, runChoiceLabel,
-  unplannedCount, visibleTickets, workItems, childrenNote, isParentTicket, openChildCount, apiBase, chosenConnection, connectionLabel, safeHref,
+  unplannedCount, visibleTickets, workItems, workingNote, childrenNote, isParentTicket, openChildCount, apiBase, chosenConnection, connectionLabel, safeHref,
   type ViewEntry, type ViewPublish, type ViewTicket,
 } from "./board-view.ts";
 
@@ -612,4 +612,17 @@ test("a finished run being published offers no Dismiss until the publish run has
   assert.deepEqual(runActions(shipped(), { ...publish, keys: ["NBF-2"] }), ["respond", "dismiss"], "another run's publish holds nothing here");
   assert.equal(runActions(run({ phase: "queued" })).includes("dismiss"), false);
   assert.equal(runActions(run({ phase: "running", workspace: "w1" })).includes("dismiss"), false);
+});
+
+test("A11-80: a running run whose worker wrote working is In progress, not Needs you, with its reason as its note, and stalled says so", () => {
+  const working = { ticket: { key: "NBF-1" }, phase: "running", workspace: "w1", working: { reason: "the roll is still running" } } satisfies ViewEntry;
+  assert.equal(runStatus(working), "working", "In progress");
+  assert.equal(statusCounts([working]).get("needs-you"), 0);
+  assert.equal(isParked(working), false, "it holds its workspace as a live run, not parked");
+  assert.deepEqual(workingNote(working), { text: "the roll is still running", stalled: false });
+  const stalled = { ...working, working: { reason: "the roll is still running", stalled: true } };
+  assert.equal(runStatus(stalled), "working", "a stall is flagged, not a status change");
+  assert.deepEqual(workingNote(stalled), { text: "Stalled: idle with no newer outcome since it said: the roll is still running", stalled: true });
+  assert.equal(workingNote({ ticket: { key: "NBF-1" }, phase: "running" }), null);
+  assert.equal(workingNote({ ...working, phase: "finished" }), null, "a finished run's note is its outcome's");
 });

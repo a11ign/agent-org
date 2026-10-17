@@ -272,3 +272,11 @@ test("A11-70: a batch's brief names the host file's clones keys as the only repo
     assert.ok(brief.includes(part), part);
   }
 });
+
+test("A11-80: a worker may end a turn on working only while its own background work runs and will wake it, and never to park a question", () => {
+  const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w" });
+  assert.ok(brief.includes('{ "kind": "working", "reason": "<what of yours is still running in the background, and what you do when it wakes you>" }'), "working is one of the outcomes");
+  assert.match(brief, /Write `working` only while your own background work \(a shell, a Monitor or a task you started\) is genuinely still running and will wake you when it finishes/);
+  assert.match(brief, /Never write `working` to park a question or to wait on a person: that is `needs-human`/);
+  assert.match(brief, /write the outcome file again with how the run ended, or with `working` again if more of it is still running/);
+});
