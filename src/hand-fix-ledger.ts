@@ -413,8 +413,8 @@ export function assertBaseIsLive({ git, gh: runGh, repo, base }: { git: Run; gh:
 }
 
 /**
- * THE READ over git and GitHub: one Change per merged pull request (its author plus every non-merge commit it carried)
- * and one per commit that no merge groups. The commits a merge carries are `<first parent>..<second parent>`, read
+ * THE READ over git and GitHub: one Change per merged pull request (its author, when GitHub reads one, plus every non-merge commit it
+ * carried; a null author is silence, not an actor, #1672) and one per commit that no merge groups. The commits a merge carries are `<first parent>..<second parent>`, read
  * locally; their LOGINS come from the commits API.
  * `git` runs in `checkout`, the PROJECT's (`HOME_CHECKOUT`), whatever directory the process works in (#3363).
  * @param {{ checkout?: string, git?: Run, gh?: Run, repo?: string, base?: string }} [seams]
@@ -431,7 +431,7 @@ export function gatherChanges({ checkout = HOME_CHECKOUT, git = gitIn(checkout),
       const pr = number === null ? undefined : prs.get(number);
       const key = number === null ? `commit:${commit.sha}` : `pr:${number}`;
       const change = changes.get(key) ?? { key, number, title: pr?.title ?? commit.subject, at: commit.at,
-        author: pr ? pr.author : null, actors: pr ? [pr.author] : [], body: pr ? pr.body : null };
+        author: pr ? pr.author : null, actors: pr?.author ? [pr.author] : [], body: pr ? pr.body : null };
       for (const sha of carriedShas(git, commit)) change.actors.push(logins.get(sha) ?? null);
       changes.set(key, change);
     }
