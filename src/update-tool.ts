@@ -60,7 +60,7 @@ import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { pnpmCliInvocation } from "./lib/npm-cli-executable.ts";
 import { LATEST, chooseReleaseTag, compareReleaseTags, isReleaseTag } from "./lib/release-tag.ts";
 import { gitIn } from "./lib/tool-version.ts";
-import { isPrimaryWorktree } from "./prune-worktrees.ts";
+import { isPrimaryWorktree } from "./lib/primary-worktree.ts";
 
 /** The directory this file is in, real-pathed: the tool is reached through a symlink on some hosts, and git resolves the real one. */
 const HERE = dirname(realpathSync(fileURLToPath(import.meta.url)));
