@@ -13,9 +13,13 @@ The change (two cuts, both in the closed answer read):
 
 Projected hourly `repository.issues` (INFERRED, not measured on the host): 2,043 - 33 pts x 28 ticks ~= 1,035 after cut 1, ~850 with the 5-minute keep on top. The measured number is Done-when (2), below.
 
-Acceptance (tests): `node --test src/packaging/closed-answer-ended-labels.test.ts` -- 6 tests, 6 pass (filtered names asked; the control asks all; all-ended reads nothing and answers `[]` not `null`; a live+ended row still comes back; the keep serves inside the age, re-asks at it and on other labels; a refusal is not kept and no conditional keeps nothing). `pnpm run typecheck` exits 0.
+Acceptance: `node --test src/packaging/closed-answer-ended-labels.test.ts`
 
-Mutation (one exact change, backed up with `cp`, restored with `cp` and `diff` clean each time): keep never served -> 1 failing (the keep test); signature ignored -> 1 (keep test); max age removed -> 1 (keep test); ended-label filter off -> 3 (filter, all-ended, keep). Unmutated: 6 pass. Not mutated: "a `null` is saved" is guarded by the refusal test only through the second read asking again.
+The file has 6 tests: filtered names asked; the control asks all; all-ended reads nothing and answers `[]` not `null`; a live+ended row still comes back; the keep serves inside the age, re-asks at it and on other labels; a refusal is not kept and no conditional keeps nothing.
+
+Measured: `ℹ tests 6, pass 6, fail 0` for the command above, run in the worktree; `pnpm run typecheck` exits 0. `pnpm test`: 78 of 12154 failed, and the same files fail with the same counts on a `git archive` of `HEAD` (checked per file with `node --test`), except the two mine (fixed) and `queue-stalled` (3 on base, 2 here, flaky).
+
+Mutation: one exact change each, source backed up with `cp` and restored with `cp` and `diff` clean. Keep never served: 1 failing (the keep test). Signature ignored: 1 (keep test). Max age removed: 1 (keep test). Ended-label filter off: 3 (filter, all-ended, keep). Unmutated: 6 pass. Not mutated: saving a `null`, guarded only by the refusal test asking again.
 
 NOT DONE, host-side and after merge (cannot be run from this session): `node src/gh-ledger.ts <gh-calls.tsv of app:scheduler ledger> --account app:scheduler --by-query --since <1 h after the host runs the change>` posted on a11ign/agent-org#1618 and #1620, with `repository.issues` under 1,000 pts.
 
