@@ -2,7 +2,7 @@
 // module: Linear as a ticket source -- GraphQL over an injected `fetch`, with a personal API key
 //
 // A PERSONAL KEY, NOT AN APP. A Linear agent app is installed by a workspace admin, which a person on a work account cannot do, so ticket mode reads
-// as the person: their key, their assigned tickets. It writes only what a planning run hands the board: the plan's files, attached to the ticket,
+// as the person: their key, and by default their assigned tickets (`tickets.pick` can widen the list to a team or a project). It writes only what a planning run hands the board: the plan's files, attached to the ticket,
 // the ticket's move to the planner's state, and a batch's order as "blocks" relations. Workers write nothing. Linear's own GitHub integration links each pull request, because the
 // worker's branch is the ticket's `branchName`.
 //
@@ -10,7 +10,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { basename, extname, join } from "node:path";
-import type { KeySource } from "./settings.ts";
+import type { KeySource, PickScope } from "./settings.ts";
 import type { Blocker, PullState, Ticket, TicketSource } from "./source.ts";
 
 export const LINEAR_API = "https://api.linear.app/graphql";
@@ -108,7 +108,42 @@ export function downloadName(n: number, link: string, title: string | null, cont
   return `attachment-${n}${extension}`;
 }
 
-export function linearSource({ key, fetch: request = fetch }: { key: string; fetch?: Fetch }): TicketSource {
+/** One page of a list of tickets, as Linear answers it. */
+type Connection = { nodes: IssueNode[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } };
+
+/** How the Pick view's list is read: the query, its variables beside the page cursor `after`, and where the page sits in the answer. */
+export type PickQuery = Readonly<{ text: string; variables: Readonly<Record<string, string>>; page: (data: unknown) => Connection }>;
+
+/** The state filter every list shares: no ticket finished, canceled, or a duplicate, which Linear types on its own. */
+const OPEN = 'state: { type: { nin: ["completed", "canceled", "duplicate"] } }';
+
+/**
+ * The query the Pick view's list is read with, for the host file's `tickets.pick`. PURE.
+ *
+ * `"assigned"` is the query the board has always sent, kept as it was, character for character: a machine that names no `tickets.pick` asks
+ * Linear exactly what it asked before the setting existed. A team or a project reads `issues` with that team's key or that project's name added
+ * to the same state filter, a page of the same size at a time. Both are passed as variables, never written into the query's text.
+ */
+export function pickQuery(scope: PickScope): PickQuery {
+  if (scope === "assigned") {
+    return {
+      text: `query($after: String) { viewer { assignedIssues(first: ${PAGE}, after: $after, filter: { state: { type: { nin: ["completed", "canceled", "duplicate"] } } }) {
+            nodes { ${ISSUE_FIELDS} } pageInfo { hasNextPage endCursor } } } }`,
+      variables: {},
+      page: (data) => (data as { viewer: { assignedIssues: Connection } }).viewer.assignedIssues,
+    };
+  }
+  const [name, type, filter] = "team" in scope
+    ? ["team", "String!", "team: { key: { eq: $team } }"] as const : ["project", "String!", "project: { name: { eq: $project } }"] as const;
+  return {
+    text: `query($after: String, $${name}: ${type}) { issues(first: ${PAGE}, after: $after, filter: { ${filter}, ${OPEN} }) {
+            nodes { ${ISSUE_FIELDS} } pageInfo { hasNextPage endCursor } } }`,
+    variables: { [name]: "team" in scope ? scope.team : scope.project },
+    page: (data) => (data as { issues: Connection }).issues,
+  };
+}
+
+export function linearSource({ key, fetch: request = fetch, pick = "assigned" }: { key: string; fetch?: Fetch; pick?: PickScope }): TicketSource {
   async function query<T>(text: string, variables: Record<string, unknown>): Promise<T> {
     const response = await request(LINEAR_API, {
       method: "POST",
@@ -194,17 +229,20 @@ export function linearSource({ key, fetch: request = fetch }: { key: string; fet
 
   return {
     async assigned() {
+      const list = pickQuery(pick);
       const tickets: Ticket[] = [];
       let after: string | null = null;
       do {
-        const data: { viewer: { assignedIssues: { nodes: IssueNode[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } } } } = await query(
-          `query($after: String) { viewer { assignedIssues(first: ${PAGE}, after: $after, filter: { state: { type: { nin: ["completed", "canceled", "duplicate"] } } }) {
-            nodes { ${ISSUE_FIELDS} } pageInfo { hasNextPage endCursor } } } }`, { after });
-        const page = data.viewer.assignedIssues;
+        const page = list.page(await query<unknown>(list.text, { ...list.variables, after }));
         tickets.push(...page.nodes.map(toTicket));
         after = page.pageInfo.hasNextPage ? page.pageInfo.endCursor : null;
       } while (after !== null);
       return tickets;
+    },
+
+    async viewer() {
+      const { viewer }: { viewer: { name: string | null; email: string | null } } = await query("query { viewer { name email } }", {});
+      return viewer.name || viewer.email || "the key's user";
     },
 
     async read(identifier) {

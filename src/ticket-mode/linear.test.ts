@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { LINEAR_API, downloadName, linearSource, pullState, readLinearKey, uploadLinks } from "./linear.ts";
+import { LINEAR_API, downloadName, linearSource, pickQuery, pullState, readLinearKey, uploadLinks } from "./linear.ts";
 import type { Ticket } from "./source.ts";
 
 const node = (identifier: string, extra: Record<string, unknown> = {}) => ({
@@ -336,4 +336,42 @@ test("addBlockers() is refused when Linear answers success false, and when it ha
     /Linear did not record that NBF-2 blocks NBF-4/);
   await assert.rejects(linearSource({ key: "k", fetch: linear([{ data: { issues: { nodes: [] } } }]).fetch }).addBlockers!("NBF-404", ["NBF-2"]), /Linear has no ticket NBF-404/);
   await assert.rejects(linearSource({ key: "k", fetch: linear([blocked(), { data: { k0: { nodes: [] } } }]).fetch }).addBlockers!("NBF-4", ["NBF-404"]), /Linear has no ticket NBF-404/);
+});
+
+/** The fields every list reads, as the board has always read them. */
+const FIELDS = "identifier title description url branchName priority state { name position } team { key } project { name } parent { identifier } attachments(first: 50) { nodes { url title } }";
+
+test("A11-69: with no tickets.pick, the Pick view's list is asked for exactly as it was before the setting", async () => {
+  const before = `query($after: String) { viewer { assignedIssues(first: 100, after: $after, filter: { state: { type: { nin: ["completed", "canceled", "duplicate"] } } }) {
+            nodes { ${FIELDS} } pageInfo { hasNextPage endCursor } } } }`;
+  for (const source of [(fetch: typeof globalThis.fetch) => linearSource({ key: "k", fetch }), (fetch: typeof globalThis.fetch) => linearSource({ key: "k", fetch, pick: "assigned" })]) {
+    const { fetch, requests } = linear([{ data: { viewer: { assignedIssues: { nodes: [node("NBF-1")], pageInfo: { hasNextPage: false, endCursor: null } } } } }]);
+    assert.deepEqual((await source(fetch).assigned()).map((t) => t.key), ["NBF-1"]);
+    assert.equal(String(requests[0].init.body), JSON.stringify({ query: before, variables: { after: null } }), "the same request, byte for byte");
+  }
+});
+
+test("A11-69: a team or a project lists every open ticket of it, whoever it is assigned to, a page at a time, with the name sent as a variable", async () => {
+  for (const [pick, filter, variables] of [
+    [{ team: "A11" }, "team: { key: { eq: $team } }", { team: "A11" }],
+    [{ project: "Witness \"GA\"" }, "project: { name: { eq: $project } }", { project: "Witness \"GA\"" }],
+  ] as const) {
+    const { fetch, requests } = linear([
+      { data: { issues: { nodes: [node("A11-1"), node("A11-2")], pageInfo: { hasNextPage: true, endCursor: "c1" } } } },
+      { data: { issues: { nodes: [node("A11-3")], pageInfo: { hasNextPage: false, endCursor: null } } } },
+    ]);
+    const tickets = await linearSource({ key: "k", fetch, pick }).assigned();
+    assert.deepEqual(tickets.map((t) => t.key), ["A11-1", "A11-2", "A11-3"]);
+    const [first, second] = requests.map(({ init }) => JSON.parse(String(init.body)));
+    assert.ok(first.query.includes(`issues(first: 100, after: $after, filter: { ${filter}, state: { type: { nin: ["completed", "canceled", "duplicate"] } } })`), first.query);
+    assert.equal(first.query.includes("viewer"), false, "not the key's own tickets");
+    assert.equal(first.query.includes("Witness"), false, "the name is never written into the query");
+    assert.deepEqual([first.variables, second.variables], [{ ...variables, after: null }, { ...variables, after: "c1" }]);
+  }
+  assert.equal(pickQuery({ team: "A11" }).text.includes(FIELDS), true, "the same fields as the key's own list");
+});
+
+test("A11-69: viewer() names the key's person by name, or by email when Linear has no name", async () => {
+  assert.equal(await linearSource({ key: "k", fetch: linear([{ data: { viewer: { name: "Dan Beck", email: "dan@example.com" } } }]).fetch }).viewer!(), "Dan Beck");
+  assert.equal(await linearSource({ key: "k", fetch: linear([{ data: { viewer: { name: "", email: "dan@example.com" } } }]).fetch }).viewer!(), "dan@example.com");
 });

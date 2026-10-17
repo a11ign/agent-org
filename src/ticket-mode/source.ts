@@ -41,8 +41,16 @@ export type PullState = "open" | "merged" | "closed";
 export type Blocker = Readonly<{ key: string; state: string; status: string; branch?: string; pulls: Readonly<Record<string, PullState>> }>;
 
 export interface TicketSource {
-  /** Every unfinished ticket assigned to the person whose key this is. Throws when the tracker cannot be asked. */
+  /**
+   * Every unfinished ticket the Pick view lists: by default those assigned to the person whose key this is, or, where the host file's
+   * `tickets.pick` names a team or a project, every one of that team or project, whoever it is assigned to. Throws when the tracker cannot be asked.
+   */
   assigned(): Promise<readonly Ticket[]>;
+  /**
+   * The name of the person whose key this is, for the Pick view to say whose tickets it found none of. A source without it is named as "you".
+   * Throws when the tracker cannot be asked.
+   */
+  viewer?(): Promise<string>;
   /** One ticket by key, or `null` when the tracker has none by that key. Throws when the tracker cannot be asked. */
   read(key: string): Promise<Ticket | null>;
   /**

@@ -263,3 +263,12 @@ test("both planning briefs say a ticket that is only a parent gets a plan saying
     assert.ok(brief.includes("names the child tickets that hold its work, and suggests the person queues those children instead of a run on it."));
   }
 });
+
+test("A11-70: a batch's brief names the host file's clones keys as the only repositories order.json may name, or null", () => {
+  const brief = batchPlanBriefText({ tickets: [{ ticket, attachments: [], parent: null }], runDir: "/d", planDir: "/d/plan",
+    clones: { a11ign: "/repos/a11y-witness", "agent-org": "/repos/agent-org" }, run: "plan {keys} into {dir}" });
+  for (const part of ["It must be exactly one of these names, which are the host file's `clones` keys: `a11ign`, `agent-org`.", "or `null` for a ticket with a question",
+    "A name is not the folder its checkout sits in", "the board refuses any other name"]) {
+    assert.ok(brief.includes(part), part);
+  }
+});

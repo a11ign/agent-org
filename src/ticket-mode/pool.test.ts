@@ -1109,7 +1109,7 @@ test("a batch's ticket queued again while a pass reads blockers waits for the ne
   const plan = join(batchDir(settings, BATCH), "plan");
   put(join(plan, "NBF-1", "NBF-1-0001-plan-a.md"), "# A\n");
   put(join(plan, "NBF-2", "NBF-2-0001-plan-b.md"), "# B\n");
-  put(join(plan, "order.json"), JSON.stringify({ "NBF-1": { repo: "a", after: [] }, "NBF-2": { repo: "b", after: ["NBF-1"] } }));
+  put(join(plan, "order.json"), JSON.stringify({ "NBF-1": { repo: "nbl-ui-platform-libs", after: [] }, "NBF-2": { repo: "nbl-ui-netbox", after: ["NBF-1"] } }));
   writeFileSync(join(batchDir(settings, BATCH), "outcome.json"), JSON.stringify({ kind: "planned" }));
   status.set(herdrName(BATCH), "idle");
   store.set(enqueue(store.get(), [ticket("NBF-3")], { model: "sonnet", effort: "high" }, 50));
@@ -1158,14 +1158,14 @@ async function plannedBatch(tracker: TicketSource, write: (plan: string) => void
 const ORDERED = (plan: string) => {
   put(join(plan, "NBF-1", "NBF-1-0001-plan-a.md"), "# A\n");
   put(join(plan, "NBF-2", "NBF-2-0001-plan-b.md"), "# B\n");
-  put(join(plan, "order.json"), JSON.stringify({ "NBF-1": { repo: "a", after: [] }, "NBF-2": { repo: "b", after: ["NBF-1"] } }));
+  put(join(plan, "order.json"), JSON.stringify({ "NBF-1": { repo: "nbl-ui-platform-libs", after: [] }, "NBF-2": { repo: "nbl-ui-netbox", after: ["NBF-1"] } }));
 };
 
 test("a relation the tracker refuses is logged and the plans stand, and a tracker that cannot record an order is not asked", async () => {
   const refusing = { ...batchTracker().tracker, addBlockers: async () => { throw new Error("Linear answered 400"); } };
   const refused = await plannedBatch(refusing, ORDERED);
   assert.ok(refused.written.includes("ticket:serve: NBF-1 could not be recorded as blocking NBF-2: Linear answered 400\n"), refused.written.join(""));
-  assert.deepEqual(["NBF-1", "NBF-2"].map((key) => [refused.entry(key).planned, refused.entry(key).plannedRepo]), [[true, "a"], [true, "b"]]);
+  assert.deepEqual(["NBF-1", "NBF-2"].map((key) => [refused.entry(key).planned, refused.entry(key).plannedRepo]), [[true, "nbl-ui-platform-libs"], [true, "nbl-ui-netbox"]]);
   const { addBlockers: _none, ...plain } = batchTracker().tracker;
   const unordered = await plannedBatch(plain, ORDERED);
   assert.deepEqual(["NBF-1", "NBF-2"].map((key) => unordered.entry(key).planned), [true, true]);
@@ -1657,4 +1657,21 @@ test("Dismissing one ticket of a parked batch closes the batch's one workspace, 
   assert.deepEqual(store.get().entries.map((e) => e.ticket.key), ["NBF-2"]);
   assert.deepEqual([entry("NBF-2").workspace, entry("NBF-2").outcome?.kind], [undefined, "needs-human"]);
   assert.equal(closes(h, "w1"), 1);
+});
+
+test("A11-70: a batch ticket placed in a repository that is no clone is given none and handed to a person by name, and the rest of its order stands", async () => {
+  const { tracker, attached, relations } = batchTracker();
+  const ran = await plannedBatch(tracker, (plan) => {
+    put(join(plan, "NBF-1", "NBF-1-0001-plan-a.md"), "# A\n");
+    put(join(plan, "NBF-2", "NBF-2-0001-plan-b.md"), "# B\n");
+    put(join(plan, "order.json"), JSON.stringify({ "NBF-1": { repo: "nbl-ui-netbox", after: [] }, "NBF-2": { repo: "a11y-witness", after: ["NBF-1"] } }));
+  });
+  assert.deepEqual([attached, [...relations]], [["NBF-1", "NBF-2"], [["NBF-2", ["NBF-1"]]]], "both plans are attached, and the wait is recorded");
+  assert.deepEqual([ran.entry("NBF-1").phase, ran.entry("NBF-1").plannedRepo], ["queued", "nbl-ui-netbox"], "a known repository is kept");
+  const refused = ran.entry("NBF-2");
+  assert.deepEqual([refused.phase, refused.plannedRepo, refused.planned, refused.plan], ["finished", null, true, undefined], "never stored, and planned");
+  const reason = refused.outcome?.kind === "needs-human" ? refused.outcome.reason : "";
+  for (const part of ["`a11y-witness`", "not one of this machine's clones (`nbl-ui-netbox`, `nbl-ui-platform-libs`)", "Retry"]) assert.ok(reason.includes(part), reason);
+  ran.store.set(retry(ran.store.get(), "NBF-2", 99));
+  assert.deepEqual([ran.entry("NBF-2").phase, ran.entry("NBF-2").plan, ran.entry("NBF-2").planned], ["queued", undefined, true], "Retry works it, without planning it again");
 });

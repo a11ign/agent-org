@@ -20,7 +20,7 @@ test("only `clones` is required, every repository in it is offered, and every ot
 
 test("the `tickets` block and `stateDir` override the defaults", () => {
   const settings = parseTicketSettings({ clones, stateDir: "/state", tickets: { max: 5, port: 5000, herdrSession: "nbl", worktreeRoot: "/wt", linearKey: { path: "/keys/linear" } } });
-  assert.deepEqual({ ...settings, clones: undefined }, { clones: undefined, max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", worktreeRoot: "/wt", stateDir: "/state", linearKey: { path: "/keys/linear" }, brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, workingState: null, connectors: [], publish: null, drafts: true, reviewer: null });
+  assert.deepEqual({ ...settings, clones: undefined }, { clones: undefined, max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", worktreeRoot: "/wt", stateDir: "/state", linearKey: { path: "/keys/linear" }, brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, workingState: null, connectors: [], publish: null, drafts: true, reviewer: null, pick: "assigned" });
 });
 
 test("the page's port is its own: it can be moved, and is refused when it is the instance's", () => {
@@ -197,4 +197,18 @@ test("a set $AGENT_ORG_HOST is the file it names, and an unreadable one is refus
   assert.throws(() => readTicketSettings({ [HOST_FILE_ENV]: "/h" }, () => "{not json"), /not valid JSON/);
   const read = readTicketSettings({ [HOST_FILE_ENV]: "/h" }, () => JSON.stringify({ clones, projects: [], primary: "x", gh: {} }));
   assert.equal(Object.keys(read.clones).length, 3, "the org's own host keys sit beside `clones` and are ignored");
+});
+
+test("A11-69: the Pick view lists the key's own tickets unless tickets.pick names a team, by its key, or a project, by its name", () => {
+  assert.equal(parseTicketSettings({ clones }).pick, "assigned", "absent is the key's own tickets, as before the setting");
+  assert.equal(parseTicketSettings({ clones, tickets: { pick: "assigned" } }).pick, "assigned");
+  assert.deepEqual(parseTicketSettings({ clones, tickets: { pick: { team: "a11" } } }).pick, { team: "A11" }, "a team key is upper-cased, as Linear stores it");
+  assert.deepEqual(parseTicketSettings({ clones, tickets: { pick: { project: " Witness GA " } } }).pick, { project: "Witness GA" });
+});
+
+test("A11-69: a tickets.pick of any other shape is refused by its name", () => {
+  for (const pick of ["all", "", 3, null, [], {}, { team: "" }, { team: "A-11" }, { project: "  " }, { team: "A11", project: "Witness" }, { team: "A11", extra: true }, { assigned: true }]) {
+    assert.throws(() => parseTicketSettings({ clones, tickets: { pick } }),
+      (err: unknown) => err instanceof TicketSettingsRefusal && err.field === "tickets.pick" && /must be "assigned", \{ "team"/.test(err.message), JSON.stringify(pick));
+  }
 });
