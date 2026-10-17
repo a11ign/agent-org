@@ -119,6 +119,39 @@ test("the table of a day with wakes names the figures and its place against the 
   assert.doesNotMatch(text, /\*\*0 manager wakes\*\*/);
 });
 
+test("the first table is pinned byte for byte: the cause table is added under it and changes none of its cells", () => {
+  const table = [
+    "| session | turns | unpriced | usd (PRICES) | usd (cache reads at $0.20/M) | wakes | wrote | no-op | escalated | outcome unknown | served by run | servedBy absent |",
+    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    "| ceo | 2 | 0 | $10.50 | $10.40 | 3 | 1 | 1 | 0 | 1 | 1 | 1 |",
+    "| product-manager | 1 | 0 | $20.00 | $20.00 | 2 | 1 | 0 | 1 | 0 | 1 | 0 |",
+    "| orchestrator | 0 | 0 | $0.00 | $0.00 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |",
+    "| total | 3 | 0 | $30.50 | $30.40 | 5 | 2 | 1 | 1 | 1 | 2 | 1 |",
+  ].join("\n");
+  const text = renderReading(managerSpendReading(ON_DAY, { day: DAY }));
+  assert.ok(text.includes(table), text);
+  assert.ok(text.includes("| cause | wakes | served by run | share of wakes |\n| --- | ---: | ---: | ---: |\n| (no cause) | 5 | 2 | 100.0% |"), text);
+});
+
+test("POSITIVE CONTROL: the day's wakes group by cause, one served by a run, one by a seat and one with no cause, and their rows add up to the day's wakes", () => {
+  const byCause = [
+    wake("ceo", at(DAY, 1), { cause: "row-call-count-signal", outcome: "wrote", servedBy: "run" }),
+    wake("ceo", at(DAY, 2), { cause: "pr-review-blocked", outcome: "no-op", servedBy: "seat" }),
+    wake("product-manager", at(DAY, 3), { cause: "pr-review-blocked", outcome: "escalated", servedBy: "seat" }),
+    wake("product-manager", at(DAY, 4), { outcome: "wrote", servedBy: "seat" }),
+  ];
+  const reading = managerSpendReading(byCause, { day: DAY });
+  assert.deepEqual(reading.causes.map((c) => [c.cause, c.wakes, c.servedByRun, c.share]), [["pr-review-blocked", 2, 0, 0.5], [null, 1, 0, 0.25], ["row-call-count-signal", 1, 1, 0.25]]);
+  assert.equal(reading.causes.reduce((sum, c) => sum + c.wakes, 0), reading.total.wakes);
+  const text = renderReading(reading);
+  assert.match(text, /^Wakes by cause, largest first \(the rows add up to the 4 wakes\):$/m);
+  assert.match(text, /^\| pr-review-blocked \| 2 \| 0 \| 50\.0% \|$/m);
+  assert.match(text, /^\| \(no cause\) \| 1 \| 0 \| 25\.0% \|$/m);
+  assert.match(text, /^\| row-call-count-signal \| 1 \| 1 \| 25\.0% \|$/m);
+  assert.deepEqual(managerSpendReading([], { day: DAY }).causes, []);
+  assert.doesNotMatch(renderReading(managerSpendReading([], { day: DAY })), /Wakes by cause/);
+});
+
 test("the subcommand: its word is only a command in first place, and its arguments are checked", () => {
   assert.equal(isManagerSpend(["--", "manager-spend", "--day", DAY]), true);
   assert.equal(isManagerSpend(["--cause", "manager-spend"]), false);
