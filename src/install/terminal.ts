@@ -55,6 +55,15 @@ export function loopbackPort(template: unknown): number | null {
   return match ? Number(match[1]) : null;
 }
 
+/**
+ * `tickets.terminal` as the board hands it to the page. Served on the tailnet, a stored address on this machine's loopback, or none, is replaced by
+ * the tailnet's address, and another machine's address is kept. The stored value itself stays as it is: `terminalTarget` reads the port from it.
+ */
+export function effectiveTerminal(stored: string | null, tailnetAddress: string | null): string | null {
+  if (tailnetAddress === null || (stored !== null && loopbackPort(stored) === null)) return stored;
+  return tailnetAddress;
+}
+
 /** The session and port the terminal service serves, from the host file's JSON: `tickets.herdrSession`, and the port `tickets.terminal` names. */
 export function terminalTarget(host: unknown): { session: string; port: number } {
   const tickets = typeof host === "object" && host !== null && !Array.isArray(host) ? (host as Record<string, unknown>).tickets : undefined;

@@ -1,7 +1,18 @@
 // no-token: none -- pure functions over strings; nothing is read or run
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { herdrConfigDir, herdrSocket, loopbackPort, pluginRoot, terminalAddress, terminalProgram, terminalTarget } from "./terminal.ts";
+import { effectiveTerminal, herdrConfigDir, herdrSocket, loopbackPort, pluginRoot, terminalAddress, terminalProgram, terminalTarget } from "./terminal.ts";
+
+test("on the tailnet, the board's terminal address is the tailnet's, unless the stored one names another machine", () => {
+  const tailnet = "https://agents.tail1234.ts.net:9444/?ws={workspace}&pane={pane}&view=terminal";
+  const other = "https://other.example.ts.net:9444/?ws={workspace}&pane={pane}&view=terminal";
+  assert.equal(effectiveTerminal(null, tailnet), tailnet);
+  assert.equal(effectiveTerminal(terminalAddress(7318), tailnet), tailnet);
+  assert.equal(effectiveTerminal("http://localhost:7400/?ws={workspace}&pane={pane}&view=terminal", tailnet), tailnet);
+  assert.equal(effectiveTerminal(other, tailnet), other);
+  assert.equal(effectiveTerminal(terminalAddress(7318), null), terminalAddress(7318), "without a tailnet address, the stored one is handed over");
+  assert.equal(terminalTarget({ tickets: { terminal: "http://127.0.0.1:7400/?ws={workspace}&pane={pane}&view=terminal" } }).port, 7400, "the stored loopback port is still the terminal's");
+});
 
 test("herdr web ui's directory is read from herdr's plugins.json, and an absent or foreign file gives none", () => {
   const root = "/home/agent/.config/herdr/plugins/github/devswha.herdr-web-ui-210f619d6b7b";

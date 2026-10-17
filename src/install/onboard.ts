@@ -35,7 +35,7 @@ import { readLinearKey } from "../ticket-mode/linear.ts";
 import type { KeySource } from "../ticket-mode/settings.ts";
 import { agentOrgHome, hostFilePath, hostPointerPath, readOrNull, type Env } from "./paths.ts";
 import { ensureBun } from "./bun.ts";
-import { defaultServiceDeps, ServiceRefusal, startService, updateChannelPath, type RunResult, type ServiceName, type Unit, type UpdateChannel } from "./service.ts";
+import { defaultServiceDeps, ServiceRefusal, startService, TailnetRefusal, updateChannelPath, type RunResult, type ServiceName, type Started, type UpdateChannel } from "./service.ts";
 import { DEFAULT_TERMINAL_PORT, herdrConfigDir, pluginRoot, TERMINAL_PLUGIN, terminalAddress } from "./terminal.ts";
 import { writeAtomic } from "./write-atomic.ts";
 
@@ -170,13 +170,15 @@ export function onboardServices(terminal: boolean, autoUpdate: boolean): Service
 const REQUIRED: readonly ServiceName[] = ["instance", "ui"];
 
 /** Start `names`, in order. @returns one line per service */
-export function startServices(names: readonly ServiceName[], start: (name: ServiceName) => Unit): string {
+export function startServices(names: readonly ServiceName[], start: (name: ServiceName) => Started): string {
   return names.map((name) => {
     try {
       const unit = start(name);
-      return `started the ${name} service (${unit.manager} ${unit.id})`;
+      return `started the ${name} service (${unit.manager} ${unit.id})${unit.address === null ? "" : `, on the tailnet at ${unit.address}`}`;
     } catch (err) {
       if (REQUIRED.includes(name) || !(err instanceof ServiceRefusal)) throw err;
+      // A service that started on loopback and that the tailnet does not reach is running: its message says so, and is said as it is.
+      if (err instanceof TailnetRefusal) return err.message;
       return `did not start the ${name} service: ${err.message}`;
     }
   }).join("\n");

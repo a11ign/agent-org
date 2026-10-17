@@ -15,6 +15,7 @@ function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
     readFile: () => HOST, readKey: () => KEY, mode: () => 0o600, serviceState: () => "running", answers: async (port) => port === 4800 || port === 4801,
     pnpmVersion: () => "10.34.5",
     healthy: async (port) => port === 7318, unitProblem: () => null, mcpList: () => MCP_LIST,
+    tailscale: () => ({ status: 1, stdout: "", stderr: "not used" }), tailnetAnswers: async () => false,
     ...over,
   };
 }
@@ -160,4 +161,52 @@ test("doctor reports the auto-update service as registered or not", async () => 
   const off = byName(await diagnose(deps({ serviceState: (name) => (name === "auto-update" ? "not-registered" : "running") })))["auto-update service"];
   assert.equal(off.ok, false);
   assert.equal(off.fix, "run `agent-org start auto-update`");
+});
+
+const TAILNET_STATUS = JSON.stringify({ BackendState: "Running", Self: { DNSName: "agents.tail1234.ts.net.", TailscaleIPs: ["100.64.0.7"] } });
+const SERVED_HOST = JSON.stringify({ clones: { netbox: "/src/netbox" }, tickets: { port: 4800, uiPort: 4801, linearKey: { keychain: "agent-org-linear" }, terminal: TERMINAL, serve: "tailscale" } });
+/** `tailscale serve status --json` with this board's entries on 9443 and 9444, and Funnel off for both. */
+const SERVE_HERE = JSON.stringify({ Web: { "agents.tail1234.ts.net:9443": { Handlers: { "/": { Proxy: "http://127.0.0.1:4801" } } }, "agents.tail1234.ts.net:9444": { Handlers: { "/": { Proxy: "http://127.0.0.1:7318" } } } } });
+
+/** This machine served on the tailnet: `tailscale status` says it is Running, and `tailscale serve status` answers `serve`. */
+function tailnetDeps(serve: string, over: Partial<DoctorDeps> = {}): DoctorDeps {
+  return deps({ readFile: () => SERVED_HOST, tailscale: (args) => ({ status: 0, stdout: args[0] === "status" ? TAILNET_STATUS : serve, stderr: "" }), tailnetAnswers: async () => true, ...over });
+}
+
+test("with tickets.serve, doctor checks each served port's entry, that it is not on Funnel, and that it answers under the machine's name", async () => {
+  const checks = byName(await diagnose(tailnetDeps(SERVE_HERE)));
+  for (const name of ["tailscale", "ui tailnet entry", "ui tailnet only", "ui tailnet answering", "terminal tailnet entry", "terminal tailnet only", "terminal tailnet answering"]) {
+    assert.equal(checks[name]?.ok, true, name);
+  }
+  assert.equal(checks["ui tailnet entry"].detail, "https://agents.tail1234.ts.net:9443/ serves 127.0.0.1:4801");
+});
+
+test("a served port with no entry, another entry, or Funnel on it fails with its fix", async () => {
+  const none = byName(await diagnose(tailnetDeps("{}")));
+  assert.equal(none["ui tailnet entry"].ok, false);
+  assert.equal(none["ui tailnet entry"].fix, "run `agent-org start ui`");
+  const funnel = byName(await diagnose(tailnetDeps(JSON.stringify({ ...JSON.parse(SERVE_HERE), AllowFunnel: { "agents.tail1234.ts.net:9443": true } }))));
+  assert.equal(funnel["ui tailnet only"].ok, false);
+  assert.match(funnel["ui tailnet only"].fix ?? "", /tailscale funnel --https=9443 off/);
+  assert.equal(funnel["ui tailnet entry"].ok, true, "its entry is still there: only Funnel is wrong");
+  const foreign = byName(await diagnose(tailnetDeps(JSON.stringify({ Web: { "agents.tail1234.ts.net:9443": { Handlers: { "/": { Proxy: "http://127.0.0.1:9999" } } } } }))));
+  assert.match(foreign["ui tailnet entry"].detail, /serves http:\/\/127\.0\.0\.1:9999 instead/);
+  assert.match(foreign["ui tailnet entry"].fix ?? "", /set `tickets\.servePorts\.ui` to a port nothing serves/);
+});
+
+test("a node that is not Running, or no tailscale at all, is the one tailscale failure, with its fix", async () => {
+  const stopped = byName(await diagnose(tailnetDeps(SERVE_HERE, { tailscale: () => ({ status: 0, stdout: JSON.stringify({ BackendState: "Stopped", Self: { DNSName: "agents.tail1234.ts.net." } }), stderr: "" }) })));
+  assert.equal(stopped.tailscale.ok, false);
+  assert.equal(stopped.tailscale.detail, "Tailscale is Stopped, not Running");
+  assert.equal(stopped.tailscale.fix, "run `sudo tailscale up`, and turn MagicDNS on in the admin console");
+  const absent = byName(await diagnose(tailnetDeps(SERVE_HERE, { tailscale: () => ({ status: null, stdout: "", stderr: "ENOENT" }) })));
+  assert.equal(absent.tailscale.detail, "tailscale is not on PATH");
+});
+
+test("a served port that does not answer under the machine's name fails, and without tickets.serve tailscale is not asked", async () => {
+  const silent = byName(await diagnose(tailnetDeps(SERVE_HERE, { tailnetAnswers: async () => false })));
+  assert.equal(silent["terminal tailnet answering"].ok, false);
+  assert.equal(silent["ui tailnet answering"].detail, "nothing answers https://agents.tail1234.ts.net:9443/");
+  const plain = byName(await diagnose(deps({ tailscale: () => { throw new Error("tailscale is asked only with tickets.serve"); } })));
+  assert.equal(plain.tailscale, undefined);
 });

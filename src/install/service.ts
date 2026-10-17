@@ -29,6 +29,8 @@ import { COMMANDS } from "../commands.ts";
 import { agentOrgHome, hostFilePath, hostGhConfigDir, readOrNull, TOOL_ROOT, type Env } from "./paths.ts";
 import { findBun } from "./bun.ts";
 import { herdrConfigDir, pluginRoot, TERMINAL_PLUGIN, terminalProgram, terminalTarget } from "./terminal.ts";
+import { serveOf, ticketsBlock, TicketSettingsRefusal, uiPortOf, type ServePorts } from "../ticket-mode/settings.ts";
+import { noName, notRunning, parseServeStatus, parseStatus, portState, refused, removeArgv, serveArgv, serveStatusArgv, statusArgv, TAILSCALE_MISSING } from "../ticket-mode/tailnet.ts";
 import { writeAtomic } from "./write-atomic.ts";
 
 /** Service name -> the `agent-org` command it runs, and the arguments after it. */
@@ -66,9 +68,20 @@ export type ServiceDeps = Readonly<{
   read: (path: string) => string | null;
   write: (path: string, text: string) => void;
   commands: Readonly<Record<string, string>>;
+  /** The person who started the service, whose `tailscale` the serve step needs as the operator. */
+  user: string;
 }>;
 
 export class ServiceRefusal extends Error {}
+
+/** A served service that started on loopback, and whose tailnet entry was then refused: it runs, and is not on the tailnet. */
+export class TailnetRefusal extends ServiceRefusal {}
+
+/** A service the tailnet serves: `ui` or `terminal`, its tailnet HTTPS port, and the loopback port it listens on and `tailscale serve` proxies to. */
+type Served = Readonly<{ name: "ui" | "terminal"; port: number; local: number }>;
+
+/** What `startService` returns: the unit, and the tailnet address it is served at, or null when it is served on loopback only. */
+export type Started = Unit & Readonly<{ address: string | null }>;
 
 const defaultRun: Run = (file, args) => {
   const result = spawnSync(file, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
@@ -80,6 +93,7 @@ export function defaultServiceDeps(): ServiceDeps {
   return Object.freeze({
     platform: process.platform, env: process.env, home: homedir(), uid: userInfo().uid, node: process.execPath, toolRoot: TOOL_ROOT,
     run: defaultRun, exists: existsSync, read: readOrNull, write: (path, text) => writeAtomic(path, text, 0o644), commands: COMMANDS,
+    user: userInfo().username,
   });
 }
 
@@ -310,11 +324,96 @@ export function serviceState(name: ServiceName, deps: ServiceDeps): ServiceState
   return deps.run("systemctl", ["--user", "is-active", unit.id]).stdout.trim() === "active" ? "running" : "stopped";
 }
 
-/** Write the unit, register it to start at login, and start it. Starting a service that runs already leaves it running. */
-export function startService(name: ServiceName, deps: ServiceDeps): Unit {
+/**
+ * The host file's JSON object, read tolerantly: null when it cannot be read or is not an object. A service that is not on the tailnet needs none of it,
+ * so a host file that does not parse changes nothing for the page, which refuses it on its own run.
+ */
+function hostObject(deps: ServiceDeps): Record<string, unknown> | null {
+  const text = deps.read(hostFilePath(deps.env, deps.home, deps.read));
+  if (text === null) return null;
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Which tailnet port `name` is served on, and the loopback port it listens on, from `tickets.serve`. Null when the service is not served: the instance
+ * and auto-update never are, and neither is a host file without `tickets.serve`. A `tickets.serve` or `tickets.servePorts` that is not valid is refused by name.
+ */
+function servedAt(name: ServiceName, deps: ServiceDeps): Served | null {
+  if (name !== "ui" && name !== "terminal") return null;
+  const host = hostObject(deps);
+  if (host === null) return null;
+  const tickets = ticketsBlock(host);
+  let ports: ServePorts | null;
+  try {
+    ports = serveOf(tickets);
+  } catch (err) {
+    if (err instanceof TicketSettingsRefusal) throw new ServiceRefusal(err.message);
+    throw err;
+  }
+  if (ports === null) return null;
+  return { name, port: ports[name], local: name === "ui" ? uiPortOf(tickets) : terminalTarget(host).port };
+}
+
+/**
+ * Refuses before anything starts, when this machine cannot be served on the tailnet: tailscale is installed, Running and has a DNS name. Returns the
+ * name the board answers to. Each refusal names its fix.
+ */
+function tailnetName(deps: ServiceDeps): string {
+  const status = deps.run("tailscale", statusArgv());
+  if (status.status === null) throw new ServiceRefusal(TAILSCALE_MISSING);
+  const self = status.status === 0 ? parseStatus(status.stdout) : null;
+  if (self === null) throw new ServiceRefusal(refused(status, statusArgv(), deps.user));
+  if (!self.running) throw new ServiceRefusal(notRunning(self));
+  if (self.name === null) throw new ServiceRefusal(noName);
+  return self.name;
+}
+
+/** Refuses a tailnet port that is public (Funnel is on for it) or that another entry serves: the board never replaces either. */
+function refuseTakenPort(served: Served, dns: string, deps: ServiceDeps): void {
+  const args = serveStatusArgv();
+  const result = deps.run("tailscale", args);
+  const entries = result.status === 0 ? parseServeStatus(result.stdout) : null;
+  if (entries === null) throw new ServiceRefusal(refused(result, args, deps.user));
+  const state = portState(entries, dns, served.port, served.local);
+  const setting = `tickets.servePorts.${served.name}`;
+  if (state.funnel) throw new ServiceRefusal(`port ${served.port} is on Funnel, which makes it public, and the board is never served on Funnel: set \`${setting}\` to a port nothing serves`);
+  if (state.kind === "foreign") throw new ServiceRefusal(`port ${served.port} already serves ${state.proxy ?? "another entry"} on the tailnet, and the board will not replace it: set \`${setting}\` to a port nothing serves`);
+}
+
+/**
+ * Removes this service's own tailnet entry, once the service has stopped. Only that port's entry is removed, and only when it still proxies to this
+ * service: no other entry, Funnel or not, is named in any command.
+ */
+function removeServe(served: Served, deps: ServiceDeps): void {
+  const left = `the ${served.name} service is stopped, but its tailscale serve entry on port ${served.port} was not removed`;
+  const status = deps.run("tailscale", statusArgv());
+  const self = status.status === 0 ? parseStatus(status.stdout) : null;
+  if (self === null || self.name === null) throw new ServiceRefusal(`${left}: ${self === null ? refused(status, statusArgv(), deps.user) : noName}`);
+  const serve = deps.run("tailscale", serveStatusArgv());
+  const entries = serve.status === 0 ? parseServeStatus(serve.stdout) : null;
+  if (entries === null) throw new ServiceRefusal(`${left}: ${refused(serve, serveStatusArgv(), deps.user)}`);
+  if (portState(entries, self.name, served.port, served.local).kind !== "ours") return;
+  const args = removeArgv(served.port);
+  const removed = deps.run("tailscale", args);
+  if (removed.status !== 0) throw new ServiceRefusal(`${left}: ${refused(removed, args, deps.user)}. \`tailscale serve --https=${served.port} off\` removes it`);
+}
+
+/**
+ * Write the unit, register it to start at login, and start it. Starting a service that runs already leaves it running. A page or terminal that
+ * `tickets.serve` puts on the tailnet is checked first (nothing starts on a refusal), then started, then given its tailnet entry.
+ */
+export function startService(name: ServiceName, deps: ServiceDeps): Started {
   const unit = unitFor(name, deps);
   const hostFile = hostFilePath(deps.env, deps.home, deps.read);
   if (!deps.exists(hostFile)) throw new ServiceRefusal(`there is no host file at ${hostFile}. Run \`agent-org onboard\` first.`);
+  const served = servedAt(name, deps);
+  const dns = served === null ? null : tailnetName(deps);
+  if (served !== null && dns !== null) refuseTakenPort(served, dns, deps);
   if (unit.companion !== null) deps.write(unit.companion.path, unit.companion.text);
   deps.write(unit.path, unit.text);
   if (unit.manager === "launchd") {
@@ -329,10 +428,17 @@ export function startService(name: ServiceName, deps: ServiceDeps): Unit {
     must(deps.run("systemctl", ["--user", "enable", unit.id]), `systemctl --user enable ${unit.id}`);
     must(deps.run("systemctl", ["--user", "restart", unit.id]), `systemctl --user restart ${unit.id}`);
   }
-  return unit;
+  if (served === null || dns === null) return { ...unit, address: null };
+  const args = serveArgv(served.port, served.local);
+  const result = deps.run("tailscale", args);
+  if (result.status !== 0) throw new TailnetRefusal(`the ${name} service started on 127.0.0.1, but the tailnet does not reach it: ${refused(result, args, deps.user)}`);
+  return { ...unit, address: `https://${dns}:${served.port}/` };
 }
 
-/** Stop the service and keep it from starting at login. The unit file stays, so `start` and `doctor` still find it. */
+/**
+ * Stop the service and keep it from starting at login. The unit file stays, so `start` and `doctor` still find it. A page or terminal that
+ * `tickets.serve` puts on the tailnet then loses its own tailnet entry, and nothing else.
+ */
 export function stopService(name: ServiceName, deps: ServiceDeps): void {
   const unit = unitFor(name, deps);
   if (!deps.exists(unit.path)) throw new ServiceRefusal(`the ${name} service is not registered. \`agent-org start ${name}\` registers and starts it.`);
@@ -343,6 +449,8 @@ export function stopService(name: ServiceName, deps: ServiceDeps): void {
   } else {
     must(deps.run("systemctl", ["--user", "disable", "--now", unit.id]), `systemctl --user disable --now ${unit.id}`);
   }
+  const served = servedAt(name, deps);
+  if (served !== null) removeServe(served, deps);
 }
 
 /**
@@ -387,7 +495,8 @@ export function main(argv: string[], deps: ServiceDeps = defaultServiceDeps(), o
     if (action === "start") {
       const unit = startService(name, deps);
       const journal = unit.companion === null ? unit.id : basename(unit.companion.path);
-      out.log(`started the ${name} service (${unit.manager} ${unit.id})${unit.log ? `, logging to ${unit.log}` : `, logging to \`journalctl --user -u ${journal}\``}`);
+      const tailnet = unit.address === null ? "" : `, on the tailnet at ${unit.address}`;
+      out.log(`started the ${name} service (${unit.manager} ${unit.id})${tailnet}${unit.log ? `, logging to ${unit.log}` : `, logging to \`journalctl --user -u ${journal}\``}`);
       return 0;
     }
     if (action === "stop") {

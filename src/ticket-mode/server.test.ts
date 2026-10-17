@@ -418,3 +418,22 @@ test("A11-76: Queue its children goes by identifier where the tracker gives no o
   await assert.rejects(b.api("POST", "/api/queue-children", { key: "A11-404", model: "opus", effort: "high" }), /no ticket A11-404/);
   await assert.rejects(b.api("POST", "/api/queue-children", { key: "A11-24", model: "gpt", effort: "high" }), /model must be one of/);
 });
+
+const LOOPBACK_TERMINAL = "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal";
+const tailnetTerminalOf = (port: number) => `https://agents.tail1234.ts.net:${port}/?ws={workspace}&pane={pane}&view=terminal`;
+const terminalOf = async (b: ReturnType<typeof board>) => ((await b.api("GET", "/api/config", {}))[1] as { terminal: string | null }).terminal;
+const NAMED = async () => "agents.tail1234.ts.net";
+
+test("with tickets.serve, the page is handed the tailnet's terminal address, unless the stored one names another machine", async () => {
+  assert.equal(await terminalOf(board(4747, { serve: "tailscale", terminal: LOOPBACK_TERMINAL }, { tailnet: NAMED })), tailnetTerminalOf(9444), "a loopback address is replaced");
+  assert.equal(await terminalOf(board(4747, { serve: "tailscale" }, { tailnet: NAMED })), tailnetTerminalOf(9444), "an absent address is the tailnet's");
+  assert.equal(await terminalOf(board(4747, { serve: "tailscale", servePorts: { terminal: 9555 } }, { tailnet: NAMED })), tailnetTerminalOf(9555), "the terminal's tailnet port is servePorts.terminal");
+  const other = "https://other.example.ts.net/?ws={workspace}&pane={pane}&view=terminal";
+  assert.equal(await terminalOf(board(4747, { serve: "tailscale", terminal: other }, { tailnet: NAMED })), other, "another machine's address is kept");
+  assert.equal(await terminalOf(board(4747, { serve: "tailscale", terminal: LOOPBACK_TERMINAL }, { tailnet: async () => null })), LOOPBACK_TERMINAL, "a name that cannot be read hands over the stored address");
+  assert.equal(await terminalOf(board(4747, { terminal: LOOPBACK_TERMINAL }, { tailnet: NAMED })), LOOPBACK_TERMINAL, "without tickets.serve nothing changes");
+});
+
+test("the instance answers no tailnet Host: it is reached on its loopback alone", () => {
+  assert.match(refusal({ headers: { host: "agents.tail1234.ts.net:4747" }, method: "GET" }, 4747) ?? "", /answers only to its own host/);
+});

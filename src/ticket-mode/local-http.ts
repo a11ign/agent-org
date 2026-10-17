@@ -5,18 +5,24 @@
 // refused. A secret is compared in time that does not depend on where it differs. A body is read up to a limit, and must be a JSON object.
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { tailnetHosts, tailnetOrigins, type Tailnet } from "./tailnet.ts";
 
 export type Json = Record<string, unknown>;
 
 /** The most an API request may send. The largest is a queue of ticket keys. */
 export const API_BODY_BYTES = 64 * 1024;
 
-/** Why a request is refused before it is read, or `null`. PURE over the request's headers and this server's port. */
-export function refusal(request: Pick<IncomingMessage, "headers" | "method">, port: number): string | null {
-  const hosts = [`127.0.0.1:${port}`, `localhost:${port}`];
+/**
+ * Why a request is refused before it is read, or `null`. PURE over the request's headers, this server's port and, when the page is served on the
+ * tailnet, that tailnet: its `Host` and `Origin` may also name it, and nothing else does.
+ */
+export function refusal(request: Pick<IncomingMessage, "headers" | "method">, port: number, tailnet?: Tailnet): string | null {
+  const loopback = [`127.0.0.1:${port}`, `localhost:${port}`];
+  const hosts = [...loopback, ...(tailnet === undefined ? [] : tailnetHosts(tailnet))];
   if (!hosts.includes(String(request.headers.host ?? ""))) return "this server answers only to its own host";
   const origin = request.headers.origin;
-  if (request.method !== "GET" && origin !== undefined && !hosts.map((host) => `http://${host}`).includes(String(origin))) return "a write from another origin";
+  const origins = [...loopback.map((host) => `http://${host}`), ...(tailnet === undefined ? [] : tailnetOrigins(tailnet))];
+  if (request.method !== "GET" && origin !== undefined && !origins.includes(String(origin))) return "a write from another origin";
   return null;
 }
 
