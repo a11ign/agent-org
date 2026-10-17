@@ -6,7 +6,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { COMMANDS } from "../commands.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { main, servicePath, serviceState, startService, stopService, unitFor, type RunResult, type ServiceDeps } from "./service.ts";
+import { main, servicePath, serviceState, startService, stopService, unitFor, unitProblem, type RunResult, type ServiceDeps } from "./service.ts";
 
 type Answer = (args: string[]) => RunResult;
 const done = (stdout = ""): RunResult => ({ status: 0, stdout, stderr: "" });
@@ -18,7 +18,7 @@ function deps(platform: NodeJS.Platform, answers: Record<string, Answer> = {}, o
   const calls: string[] = [];
   const value: ServiceDeps = {
     platform, env: { PATH: "/opt/bin:/usr/bin" }, home, uid: 501, node: "/opt/node/bin/node", toolRoot: "/opt/agent-org", commands: COMMANDS,
-    exists: (path) => files.has(path), write: (path, text) => { files.set(path, text); },
+    exists: (path) => files.has(path), read: (path) => files.get(path) ?? null, write: (path, text) => { files.set(path, text); },
     run: (file, args) => {
       calls.push([file, ...args].join(" "));
       return (answers[`${file} ${args[0]}`] ?? (() => done()))(args);
@@ -185,4 +185,137 @@ test("the launchd plist is byte-identical to before the linux unit changed", () 
 </dict>
 </plist>
 `);
+});
+
+// THE WEB TERMINAL (A11-66): herdr web ui's supervisor under bun, on loopback, attached to the tickets session's own socket.
+const ROOT = "/u/.config/herdr/plugins/github/devswha.herdr-web-ui-210f619d6b7b";
+function withTerminal(platform: NodeJS.Platform, host: Record<string, unknown> = {}, answers: Record<string, Answer> = {}) {
+  const made = deps(platform, answers);
+  made.files.set(join(made.home, ".agent-org", "host.json"), JSON.stringify({ clones: { a: "/src/a" }, ...host }));
+  made.files.set(join(made.home, ".config", "herdr", "plugins.json"), JSON.stringify([{ plugin_id: "devswha.herdr-web-ui", plugin_root: ROOT }]));
+  made.files.set(join(made.home, ".bun", "bin", "bun"), "");
+  return made;
+}
+
+test("the terminal unit runs the plugin's supervisor with bun, on 127.0.0.1:7318, attached by HERDR_SOCKET to the tickets session", () => {
+  const { deps: d, home } = withTerminal("linux");
+  const unit = unitFor("terminal", d);
+  assert.equal(unit.id, "agent-org-terminal.service");
+  assert.match(unit.text, new RegExp(`^ExecStart="${home}/\\.bun/bin/bun" "${ROOT}/server/supervisor\\.ts"$`, "m"));
+  assert.match(unit.text, new RegExp(`^WorkingDirectory=${ROOT}$`, "m"));
+  for (const line of [
+    "PORT=7318", "HOST=127.0.0.1", `HERDR_SOCKET=${home}/.config/herdr/sessions/tickets/herdr.sock`, `HERDR_PLUGIN_ROOT=${ROOT}`,
+    `HERDR_PLUGIN_STATE_DIR=${home}/.local/state/herdr-web-ui-tickets`, `HERDR_PLUGIN_CONFIG_DIR=${home}/.config/herdr-web-ui-tickets`, "HERDR_WEB_TELEMETRY=0",
+    `PATH=${home}/.bun/bin:/opt/bin:/usr/bin`,
+  ]) assert.ok(unit.text.includes(`Environment="${line}"`), `missing ${line}`);
+  assert.doesNotMatch(unit.text, /HERDR_SOCKET_PATH/, "the plugin reads HERDR_SOCKET; HERDR_SOCKET_PATH alone attached to herdr's default session");
+  assert.doesNotMatch(unit.text, /RestartPreventExitStatus/, "exit 2 is agent-org's refusal, not bun's");
+});
+
+test("the terminal serves the host file's herdr session, on the port its tickets.terminal names, and the launchd agent carries the same", () => {
+  const host = { tickets: { herdrSession: "work", terminal: "http://127.0.0.1:7400/?ws={workspace}&pane={pane}&view=terminal" } };
+  const { deps: d, home } = withTerminal("linux", host);
+  const text = unitFor("terminal", d).text;
+  assert.ok(text.includes(`Environment="HERDR_SOCKET=${home}/.config/herdr/sessions/work/herdr.sock"`));
+  assert.ok(text.includes(`Environment="PORT=7400"`));
+  assert.ok(text.includes(`Environment="HERDR_PLUGIN_STATE_DIR=${home}/.local/state/herdr-web-ui-work"`));
+  const plist = unitFor("terminal", withTerminal("darwin", host).deps);
+  assert.equal(plist.id, "io.github.agent-org.terminal");
+  assert.match(plist.text, /<key>HERDR_SOCKET<\/key>\n {4}<string>[^<]*\/sessions\/work\/herdr\.sock<\/string>/);
+  assert.match(plist.text, /<key>RunAtLoad<\/key>\n {2}<true\/>/);
+});
+
+test("the terminal is refused, naming the fix, without the plugin or without bun, and then reads as not registered", () => {
+  const noPlugin = withTerminal("linux");
+  noPlugin.files.delete(join(noPlugin.home, ".config", "herdr", "plugins.json"));
+  assert.throws(() => unitFor("terminal", noPlugin.deps), /herdr plugin install devswha\/herdr-web-ui --yes/);
+  assert.equal(serviceState("terminal", noPlugin.deps), "not-registered");
+  const noBun = withTerminal("linux");
+  noBun.files.delete(join(noBun.home, ".bun", "bin", "bun"));
+  assert.throws(() => unitFor("terminal", noBun.deps), /runs on bun, and this machine has none/);
+  const bunOnPath = withTerminal("linux");
+  bunOnPath.files.delete(join(bunOnPath.home, ".bun", "bin", "bun"));
+  bunOnPath.files.set("/opt/bin/bun", "");
+  assert.match(unitFor("terminal", bunOnPath.deps).text, /^ExecStart="\/opt\/bin\/bun" /m);
+});
+
+test("start, stop and status take the terminal by name", () => {
+  const { deps: d, calls } = withTerminal("linux", {}, { "systemctl --user": (args) => done(args[1] === "is-active" ? "active\n" : "") });
+  const lines: string[] = [];
+  const out = { log: (line: string) => lines.push(line), error: (line: string) => lines.push(line) };
+  assert.equal(main(["start", "terminal"], d, out), 0);
+  assert.ok(calls.includes("systemctl --user restart agent-org-terminal.service"));
+  assert.equal(main(["status", "terminal"], d, out), 0);
+  assert.equal(main(["stop", "terminal"], d, out), 0);
+  assert.ok(calls.includes("systemctl --user disable --now agent-org-terminal.service"));
+  assert.match(lines[1], /^terminal: running \(systemd agent-org-terminal\.service\)$/);
+});
+
+// AUTO-UPDATE: `agent-org update` every hour, so a merged fix reaches the instance without a person.
+test("auto-update on systemd is a timer and the oneshot service it starts; start writes both and enables the timer", () => {
+  const { deps: d, files, calls, home } = deps("linux");
+  const unit = startService("auto-update", d);
+  assert.equal(unit.id, "agent-org-auto-update.timer");
+  assert.match(unit.text, /^OnCalendar=\*-\*-\* \*:00:00$/m);
+  assert.match(unit.text, /^Unit=agent-org-auto-update\.service$/m);
+  assert.match(unit.text, /^WantedBy=timers\.target$/m);
+  const service = files.get(join(home, ".config", "systemd", "user", "agent-org-auto-update.service")) ?? "";
+  assert.match(service, /^Type=oneshot$/m);
+  assert.match(service, /^ExecStart="\/opt\/node\/bin\/node" "\/opt\/agent-org\/src\/bin\.ts" "update"$/m);
+  assert.match(service, /^Environment="AGENT_ORG_HOST=/m);
+  assert.deepEqual(calls, ["systemctl --user daemon-reload", "systemctl --user enable agent-org-auto-update.timer", "systemctl --user restart agent-org-auto-update.timer"]);
+});
+
+test("auto-update follows main when the update-channel file says so, and on launchd runs every hour, not at load", () => {
+  const linux = deps("linux");
+  linux.files.set(join(linux.home, ".agent-org", "update-channel"), "main\n");
+  assert.match(unitFor("auto-update", linux.deps).companion?.text ?? "", /"update" "--channel" "main"$/m);
+  const { deps: d, files, home } = deps("darwin", { "launchctl print": () => done("state = not running\n") });
+  files.set(join(home, ".agent-org", "update-channel"), "nonsense");
+  const plist = unitFor("auto-update", d);
+  assert.match(plist.text, /<key>StartInterval<\/key>\n {2}<integer>3600<\/integer>\n {2}<key>RunAtLoad<\/key>\n {2}<false\/>/);
+  assert.doesNotMatch(plist.text, /KeepAlive|--channel/);
+  files.set(plist.path, plist.text);
+  assert.equal(serviceState("auto-update", d), "running", "a loaded interval job is between runs, not stopped");
+});
+
+// A11-67: a unit systemd loads as bad-setting is said, with the line it refused, and start is the fix.
+test("a unit systemd reads as bad-setting is said with the line systemd-analyze refused, and status names start as the fix", () => {
+  const refused = "/u/.config/systemd/user/agent-org-instance.service:6: WorkingDirectory= path is not absolute, ignoring: \"/home/agent/repos/agent-org\"";
+  const { deps: d, files } = deps("linux", {
+    "systemctl --user": (args) => done(args[1] === "show" ? "bad-setting\n" : args[1] === "is-active" ? "inactive\n" : ""),
+    "systemd-analyze --user": () => ({ status: 1, stdout: "", stderr: `${refused}\nagent-org-instance.service: Unit configuration has fatal error, unit will not be started.\nunrelated line\n` }),
+  });
+  assert.equal(unitProblem("instance", d), null, "an unregistered unit has no load state to report");
+  files.set(unitFor("instance", d).path, "[Service]\nWorkingDirectory=\"/home/agent/repos/agent-org\"\n");
+  const problem = unitProblem("instance", d) ?? "";
+  assert.match(problem, /^systemd reads agent-org-instance\.service as bad-setting: /);
+  assert.ok(problem.includes("WorkingDirectory= path is not absolute"));
+  assert.ok(!problem.includes("unrelated line"));
+  const lines: string[] = [];
+  assert.equal(main(["status"], d, { log: (line: string) => lines.push(line), error: (line: string) => lines.push(line) }), 3);
+  assert.match(lines[0], /^instance: stopped \(systemd agent-org-instance\.service\)\. systemd reads .* as bad-setting: .*`agent-org start instance` writes the unit again$/);
+});
+
+test("a loaded unit, and any unit under launchd, has no load problem", () => {
+  const { deps: d, files } = deps("linux", { "systemctl --user": () => done("loaded\n") });
+  files.set(unitFor("instance", d).path, "");
+  assert.equal(unitProblem("instance", d), null);
+  const mac = deps("darwin");
+  mac.files.set(unitFor("instance", mac.deps).path, "");
+  assert.equal(unitProblem("instance", mac.deps), null);
+});
+
+test("the terminal refuses, naming the host file, one it cannot read or that is not a JSON object, and never falls back to tickets on 7318", () => {
+  for (const [text, reason] of [[null, /cannot be read/], ["{ not json", /is not valid JSON/], ["[1]", /does not hold a JSON object/]] as const) {
+    const made = withTerminal("linux");
+    const hostFile = join(made.home, ".agent-org", "host.json");
+    if (text === null) made.files.delete(hostFile);
+    else made.files.set(hostFile, text);
+    assert.throws(() => unitFor("terminal", made.deps), (err: Error) => reason.test(err.message) && err.message.includes(hostFile));
+    const errors: string[] = [];
+    assert.equal(main(["start", "terminal"], made.deps, { log: () => {}, error: (line: string) => errors.push(line) }), 2);
+    assert.ok(!made.files.has(join(made.home, ".config", "systemd", "user", "agent-org-terminal.service")), "no unit is written on the defaults");
+    assert.equal(serviceState("terminal", made.deps), "not-registered");
+  }
 });

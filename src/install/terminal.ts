@@ -1,0 +1,89 @@
+// @ts-check
+// module: the web terminal ticket mode links each run to -- herdr web ui, serving the `tickets.herdrSession` herdr session on 127.0.0.1
+//
+// THE BOARD LINKS A RUN TO ITS LIVE WORKER ONLY WHEN `tickets.terminal` IS SET AND SOMETHING SERVES IT (A11-66). Until this module, a person did
+// that by hand: install bun, `herdr plugin install devswha/herdr-web-ui`, write a unit that runs the plugin's supervisor against the tickets session,
+// and write `tickets.terminal`. On the agents host, on 2026-10-17, that took one unit and one wrong variable: the plugin reads `HERDR_SOCKET`, and a
+// unit that set only `HERDR_SOCKET_PATH` attached to herdr's DEFAULT session, failed its own health check and restarted in a loop. So the variable is
+// named here once, and a test pins it.
+//
+// One service per machine, for the one session ticket mode runs in, on loopback only: another machine's board reaches it through the SSH tunnel
+// `ticket:ui` already opens (README, "Connect a second machine over SSH"). The plugin's state and config directories carry the session's name, so
+// they never share a file with a web ui a person runs for herdr's default session.
+//
+// PURE: what is installed is read by the caller and passed in.
+import { isAbsolute, join } from "node:path";
+import type { Env } from "./paths.ts";
+
+/** The plugin, as `herdr plugin install` takes it, and as herdr's `plugins.json` names it. */
+export const TERMINAL_PLUGIN = "devswha/herdr-web-ui";
+export const TERMINAL_PLUGIN_ID = "devswha.herdr-web-ui";
+export const DEFAULT_TERMINAL_PORT = 7318;
+export const DEFAULT_HERDR_SESSION = "tickets";
+
+/** herdr's own directory: `$XDG_CONFIG_HOME/herdr` when that is absolute, `~/.config/herdr` otherwise, on macOS as on Linux. */
+export function herdrConfigDir(env: Env, home: string): string {
+  const xdg = env.XDG_CONFIG_HOME;
+  return join(xdg !== undefined && isAbsolute(xdg) ? xdg : join(home, ".config"), "herdr");
+}
+
+/** The socket of the herdr session `session`: `<herdr>/sessions/<session>/herdr.sock`. */
+export const herdrSocket = (env: Env, home: string, session: string) => join(herdrConfigDir(env, home), "sessions", session, "herdr.sock");
+
+/** The plugin's installed directory, from the text of herdr's `plugins.json`, or null when it is not installed or the file is not herdr's. */
+export function pluginRoot(pluginsJson: string | null): string | null {
+  if (pluginsJson === null) return null;
+  let plugins: unknown;
+  try {
+    plugins = JSON.parse(pluginsJson);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(plugins)) return null;
+  const entry = plugins.find((plugin) => typeof plugin === "object" && plugin !== null && plugin.plugin_id === TERMINAL_PLUGIN_ID);
+  const root = entry?.plugin_root;
+  return typeof root === "string" && isAbsolute(root) ? root : null;
+}
+
+/** The `tickets.terminal` onboard writes for a terminal service on `port`. */
+export const terminalAddress = (port: number) => `http://127.0.0.1:${port}/?ws={workspace}&pane={pane}&view=terminal`;
+
+/** The port of a `tickets.terminal` on this machine's loopback, or null for one served anywhere else (or not a web address at all). */
+export function loopbackPort(template: unknown): number | null {
+  if (typeof template !== "string") return null;
+  const match = /^http:\/\/(?:127\.0\.0\.1|localhost):(\d+)(?:[/?]|$)/.exec(template.replace(/\{[a-z]+\}/g, "x"));
+  return match ? Number(match[1]) : null;
+}
+
+/** The session and port the terminal service serves, from the host file's JSON: `tickets.herdrSession`, and the port `tickets.terminal` names. */
+export function terminalTarget(host: unknown): { session: string; port: number } {
+  const tickets = typeof host === "object" && host !== null && !Array.isArray(host) ? (host as Record<string, unknown>).tickets : undefined;
+  const block = typeof tickets === "object" && tickets !== null && !Array.isArray(tickets) ? (tickets as Record<string, unknown>) : {};
+  const session = typeof block.herdrSession === "string" && /^[A-Za-z0-9_-]+$/.test(block.herdrSession) ? block.herdrSession : DEFAULT_HERDR_SESSION;
+  return { session, port: loopbackPort(block.terminal) ?? DEFAULT_TERMINAL_PORT };
+}
+
+export type TerminalProgram = Readonly<{ argv: string[]; environment: Record<string, string>; workingDirectory: string }>;
+
+/** What the terminal service runs: the plugin's supervisor under bun, on loopback, attached to `session`'s socket. PURE. */
+export function terminalProgram({ env, home, session, port, root, bun, path }: {
+  env: Env; home: string; session: string; port: number; root: string; bun: string; path: string;
+}): TerminalProgram {
+  const bunDir = bun.slice(0, bun.lastIndexOf("/"));
+  return {
+    argv: [bun, join(root, "server", "supervisor.ts")],
+    workingDirectory: root,
+    environment: {
+      PORT: String(port),
+      HOST: "127.0.0.1",
+      // HERDR_SOCKET, not HERDR_SOCKET_PATH: the plugin reads this one, and without it attaches to herdr's default session.
+      HERDR_SOCKET: herdrSocket(env, home, session),
+      HERDR_PLUGIN_ROOT: root,
+      HERDR_PLUGIN_STATE_DIR: join(home, ".local", "state", `herdr-web-ui-${session}`),
+      HERDR_PLUGIN_CONFIG_DIR: join(home, ".config", `herdr-web-ui-${session}`),
+      HERDR_WEB_TELEMETRY: "0",
+      // The supervisor starts its own children with `bun`, so bun's directory is first.
+      PATH: path.split(":").includes(bunDir) ? path : `${bunDir}:${path}`,
+    },
+  };
+}

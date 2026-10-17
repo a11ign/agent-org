@@ -1,11 +1,24 @@
 #!/usr/bin/env node
 // @ts-check
-// command: onboard -- write the host file (the repositories the instance offers, where the tracker key is read from) and start the instance and ui services
+// command: onboard -- write the host file (the repositories the instance offers, where the tracker key is read from), set up the web terminal, Linear's MCP and auto-update, and start the services
 //
 // IT ASKS FOR WHAT NO FLAG GAVE, and only at a terminal. `--repo <name>=<path>` (repeated) names the checkouts a worker can choose from, and
 // `--linear-keychain <service>` or `--linear-key-file <path>` names where the Linear key is read from. Without a terminal, what no flag gave is
-// kept from the existing host file or refused by name. A host file that holds other keys keeps them: onboard writes `clones` and `tickets.linearKey`
-// and nothing else.
+// kept from the existing host file or refused by name. A host file that holds other keys keeps them: onboard writes `clones`, `tickets.linearKey`,
+// and `tickets.terminal` and `tickets.connectors` where they are absent, and nothing else.
+//
+// IT SETS UP WHAT TICKET MODE NEEDS TO WORK OUT OF THE BOX, each of which was done by hand on the agents host on 2026-10-17:
+//   - THE WEB TERMINAL (A11-66). The board links a run to its live worker only when `tickets.terminal` is set and herdr web ui serves the tickets
+//     session. Onboard installs bun when the machine has none (`bun.ts`: no `unzip`, no `sudo`), installs the plugin with
+//     `herdr plugin install devswha/herdr-web-ui --yes`, writes `tickets.terminal` when it is absent, and starts the `terminal` service. A step
+//     that fails is said with its reason and leaves `tickets.terminal` unwritten, so the board never links to a terminal nothing serves.
+//   - LINEAR FOR THE WORKERS (A11-71). Workers and planners read their ticket, its parent and its blockers through Linear's MCP. With a readable
+//     key and no `linear` MCP yet, onboard registers Linear's for Claude Code at user scope, authenticated by that key, and lets the workers call
+//     its read and comment tools (`LINEAR_CONNECTORS`). The key goes to `claude` as an argument and is never printed: a message that would carry
+//     it carries `<key>` instead.
+//   - THE HOST FILE'S PATH, in `<home>/host-file` (A11-68), so a shell with no `AGENT_ORG_HOST`, such as `ssh <machine> agent-org ...`, finds it.
+//   - AUTO-UPDATE: the `auto-update` service runs `agent-org update` every hour, which restarts the services only when the checkout moved.
+//     `--no-auto-update` leaves it unregistered, and `--update-channel main` makes it follow `main` instead of releases.
 //
 // IT NEVER ECHOES A KEY. It stores one only when none is readable and a person is at the terminal: into the Keychain by `security`'s own prompt,
 // which does not echo, or into a mode-600 file from a prompt that does not echo. It then reads the key back to check it is there, and says WHERE
@@ -20,17 +33,28 @@ import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { readLinearKey } from "../ticket-mode/linear.ts";
 import type { KeySource } from "../ticket-mode/settings.ts";
-import { agentOrgHome, hostFilePath, type Env } from "./paths.ts";
-import { defaultServiceDeps, SERVICE_NAMES, startService, type ServiceName, type Unit } from "./service.ts";
+import { agentOrgHome, hostFilePath, hostPointerPath, readOrNull, type Env } from "./paths.ts";
+import { ensureBun } from "./bun.ts";
+import { defaultServiceDeps, ServiceRefusal, startService, updateChannelPath, type RunResult, type ServiceName, type Unit, type UpdateChannel } from "./service.ts";
+import { DEFAULT_TERMINAL_PORT, herdrConfigDir, pluginRoot, TERMINAL_PLUGIN, terminalAddress } from "./terminal.ts";
 import { writeAtomic } from "./write-atomic.ts";
 
 export const DEFAULT_KEYCHAIN_SERVICE = "agent-org-linear";
+export const LINEAR_MCP_URL = "https://mcp.linear.app/mcp";
+/** Linear's MCP tools a worker may call: its reads, and a comment on its own ticket. Never a save of an issue, a state or a relation. */
+export const LINEAR_CONNECTORS = Object.freeze(["^mcp__linear__(get|list|search|extract)_", "^mcp__linear__save_comment$"]);
 
 export type OnboardOptions = Readonly<{
   repos: readonly string[];
   keychain: string | undefined;
   keyFile: string | undefined;
   start: boolean;
+  /** Set up the web terminal (`--no-terminal` leaves it alone). */
+  terminal: boolean;
+  /** Register the auto-update service (`--no-auto-update` does not). */
+  autoUpdate: boolean;
+  /** The channel auto-update follows, written to `<home>/update-channel`; undefined leaves the file as it is. */
+  updateChannel: UpdateChannel | undefined;
 }>;
 
 export type OnboardDeps = Readonly<{
@@ -48,7 +72,14 @@ export type OnboardDeps = Readonly<{
   readFile: (path: string) => string;
   writeFile: (path: string, text: string) => void;
   isDirectory: (path: string) => boolean;
-  startService: () => string;
+  /** The `bun` this machine has, installed into `~/.bun/bin` when it has none. */
+  ensureBun: () => Promise<{ path: string; installed: boolean }>;
+  /** The text of herdr's `plugins.json`, or null. */
+  herdrPlugins: () => string | null;
+  /** Run a program (`herdr`, `claude`) with `env` added to this process's, and say what it returned. */
+  run: (file: string, args: string[], env?: Env) => RunResult;
+  /** Start the named services, in order. @returns one line per service */
+  startServices: (names: readonly ServiceName[]) => string;
   out: Pick<Console, "log">;
 }>;
 
@@ -130,17 +161,83 @@ async function storeKey(source: KeySource, deps: OnboardDeps) {
   deps.writeFile(source.path, `${key}\n`);
 }
 
-/** Start every service, the instance and the ui, in that order. @returns one line per service started */
-export function startServices(start: (name: ServiceName) => Unit): string {
-  return SERVICE_NAMES.map((name) => {
-    const unit = start(name);
-    return `started the ${name} service (${unit.manager} ${unit.id})`;
+/** The services onboard starts: the instance and the ui always, then the terminal when it is set up and auto-update unless opted out. */
+export function onboardServices(terminal: boolean, autoUpdate: boolean): ServiceName[] {
+  return ["instance", "ui", ...(terminal ? ["terminal" as const] : []), ...(autoUpdate ? ["auto-update" as const] : [])];
+}
+
+/** The services onboard REQUIRES: one of these refusing to start fails onboard, and any other is said and passed over. */
+const REQUIRED: readonly ServiceName[] = ["instance", "ui"];
+
+/** Start `names`, in order. @returns one line per service */
+export function startServices(names: readonly ServiceName[], start: (name: ServiceName) => Unit): string {
+  return names.map((name) => {
+    try {
+      const unit = start(name);
+      return `started the ${name} service (${unit.manager} ${unit.id})`;
+    } catch (err) {
+      if (REQUIRED.includes(name) || !(err instanceof ServiceRefusal)) throw err;
+      return `did not start the ${name} service: ${err.message}`;
+    }
   }).join("\n");
+}
+
+/** `text` with every occurrence of `secret` replaced by `<key>`, for a message a program that was handed the key may echo. */
+const scrub = (text: string, secret: string) => (secret === "" ? text : text.split(secret).join("<key>"));
+const firstLine = (result: RunResult) => (result.stderr || result.stdout).trim().split("\n")[0] || `exit ${result.status}`;
+
+/**
+ * Install bun and herdr web ui when they are missing. @returns whether the terminal service can run. A step that fails is said, with why,
+ * and answers false: the web terminal is a convenience, and an install without it still runs tickets.
+ */
+async function setUpTerminal(deps: OnboardDeps): Promise<boolean> {
+  try {
+    const bun = await deps.ensureBun();
+    if (bun.installed) deps.out.log(`installed bun at ${bun.path}, for the web terminal`);
+    if (pluginRoot(deps.herdrPlugins()) === null) {
+      const bunDir = bun.path.slice(0, bun.path.lastIndexOf("/"));
+      // The plugin's build runs `bun install`, so bun's directory leads the PATH it runs with.
+      const installed = deps.run("herdr", ["plugin", "install", TERMINAL_PLUGIN, "--yes"], { PATH: `${bunDir}:${deps.env.PATH ?? "/usr/bin:/bin"}` });
+      if (installed.status !== 0) throw new OnboardRefusal(`\`herdr plugin install ${TERMINAL_PLUGIN} --yes\` failed: ${firstLine(installed)}`);
+      if (pluginRoot(deps.herdrPlugins()) === null) throw new OnboardRefusal(`herdr installed ${TERMINAL_PLUGIN}, but its plugins.json does not list it`);
+      deps.out.log(`installed the herdr plugin ${TERMINAL_PLUGIN}, the web terminal`);
+    }
+    return true;
+  } catch (err) {
+    deps.out.log(`the web terminal is not set up: ${(err as Error).message}. The board shows no terminal link until it is; fix that, then run \`agent-org onboard\` again.`);
+    return false;
+  }
+}
+
+/** Register Linear's MCP for Claude Code at user scope, unless a `linear` MCP is there already. Says what it did, never the key. */
+function registerLinearMcp(source: KeySource, deps: OnboardDeps) {
+  if (deps.run("claude", ["mcp", "get", "linear"]).status === 0) {
+    deps.out.log("Claude Code has a `linear` MCP already, so onboard left it as it is");
+    return;
+  }
+  const key = deps.readKey(source).trim();
+  const added = deps.run("claude", ["mcp", "add", "--scope", "user", "--transport", "http", "linear", LINEAR_MCP_URL, "--header", `Authorization: Bearer ${key}`]);
+  deps.out.log(added.status === 0
+    ? `registered Linear's MCP for Claude Code (user scope), authenticated by the key in ${describe(source)}`
+    : `could not register Linear's MCP for Claude Code: ${scrub(firstLine(added), key)}. Workers cannot read Linear until it is; run \`agent-org onboard\` again, or \`claude mcp add --scope user --transport http linear ${LINEAR_MCP_URL} --header "Authorization: Bearer <key>"\``);
+}
+
+/** `tickets.connectors` with Linear's read and comment tools added where absent. A value that is not a list is left for the board to refuse. */
+function withLinearConnectors(connectors: unknown): unknown {
+  if (connectors === undefined) return [...LINEAR_CONNECTORS];
+  if (!Array.isArray(connectors)) return connectors;
+  return [...connectors, ...LINEAR_CONNECTORS.filter((pattern) => !connectors.includes(pattern))];
 }
 
 /** Write the host file and start the services. @returns the host file's path */
 export async function onboard(options: OnboardOptions, deps: OnboardDeps): Promise<string> {
-  const hostFile = hostFilePath(deps.env, deps.home);
+  const hostFile = hostFilePath(deps.env, deps.home, (path) => {
+    try {
+      return deps.readFile(path);
+    } catch {
+      return null;
+    }
+  });
   const host = readHost(hostFile, deps);
   const tickets = (typeof host.tickets === "object" && host.tickets !== null && !Array.isArray(host.tickets) ? host.tickets : {}) as Record<string, unknown>;
   const clones: Record<string, string> = typeof host.clones === "object" && host.clones !== null ? { ...(host.clones as Record<string, string>) } : {};
@@ -160,14 +257,23 @@ export async function onboard(options: OnboardOptions, deps: OnboardDeps): Promi
   if (!keyReadable(source, deps) && deps.interactive) await storeKey(source, deps);
   const readable = keyReadable(source, deps);
 
-  deps.writeFile(hostFile, `${JSON.stringify({ ...host, clones, tickets: { ...tickets, linearKey: source } }, null, 2)}\n`);
+  const terminal = options.terminal && await setUpTerminal(deps);
+  const next: Record<string, unknown> = { ...tickets, linearKey: source };
+  // An existing address is kept: it may name another port, or a terminal served elsewhere.
+  if (terminal && next.terminal === undefined) next.terminal = terminalAddress(DEFAULT_TERMINAL_PORT);
+  if (readable) next.connectors = withLinearConnectors(next.connectors);
+
+  deps.writeFile(hostFile, `${JSON.stringify({ ...host, clones, tickets: next }, null, 2)}\n`);
+  deps.writeFile(hostPointerPath(deps.env, deps.home), `${hostFile}\n`);
+  if (options.updateChannel !== undefined) deps.writeFile(updateChannelPath(deps.env, deps.home), `${options.updateChannel}\n`);
   deps.out.log(`wrote ${hostFile}: ${Object.keys(clones).length} repositories (${Object.keys(clones).sort().join(", ")})`);
   deps.out.log(readable
     ? `the Linear key is readable from ${describe(source)}`
     : `NO LINEAR KEY is readable from ${describe(source)}. ${"keychain" in source
       ? `Store one with: security add-generic-password -a "$USER" -s ${source.keychain} -w`
       : `Write it to ${source.path} with mode 600`}, then run \`agent-org doctor\`.`);
-  if (options.start) deps.out.log(deps.startService());
+  if (readable) registerLinearMcp(source, deps);
+  if (options.start) deps.out.log(deps.startServices(onboardServices(terminal, options.autoUpdate)));
   return hostFile;
 }
 
@@ -199,11 +305,21 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
   try {
     const { values } = parseArgs({
       args: process.argv.slice(2), strict: true,
-      options: { repo: { type: "string", multiple: true, default: [] }, "linear-keychain": { type: "string" }, "linear-key-file": { type: "string" }, "no-start": { type: "boolean", default: false } },
+      options: {
+        repo: { type: "string", multiple: true, default: [] }, "linear-keychain": { type: "string" }, "linear-key-file": { type: "string" },
+        "no-start": { type: "boolean", default: false }, "no-terminal": { type: "boolean", default: false },
+        "no-auto-update": { type: "boolean", default: false }, "update-channel": { type: "string" },
+      },
     });
+    const channel = values["update-channel"];
+    if (channel !== undefined && channel !== "release" && channel !== "main") throw new OnboardRefusal(`--update-channel ${channel} is not release or main`);
     const services = defaultServiceDeps();
-    await onboard({ repos: values.repo, keychain: values["linear-keychain"], keyFile: values["linear-key-file"], start: !values["no-start"] }, {
-      env: process.env, home: homedir(), platform: process.platform, interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
+    const home = homedir();
+    await onboard({
+      repos: values.repo, keychain: values["linear-keychain"], keyFile: values["linear-key-file"], start: !values["no-start"],
+      terminal: !values["no-terminal"], autoUpdate: !values["no-auto-update"], updateChannel: channel,
+    }, {
+      env: process.env, home, platform: process.platform, interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
       ask, askHidden, readKey: (source) => readLinearKey(source),
       storeInKeychain: (service) => {
         // `security` prompts for the password itself when `-w` is last and has no value, and does not echo it.
@@ -212,7 +328,22 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
       },
       readFile: (path) => readFileSync(path, "utf8"), writeFile: (path, text) => writeAtomic(path, text, 0o600),
       isDirectory: (path) => existsSync(path) && statSync(path).isDirectory(),
-      startService: () => startServices((name) => startService(name, services)),
+      ensureBun: () => ensureBun({
+        home, env: process.env, platform: process.platform, arch: process.arch, exists: existsSync,
+        download: async (url) => {
+          const response = await fetch(url);
+          if (!response.ok) throw new OnboardRefusal(`${url} answered ${response.status}`);
+          return Buffer.from(await response.arrayBuffer());
+        },
+        writeExecutable: (path, data) => writeAtomic(path, data, 0o755),
+      }),
+      herdrPlugins: () => readOrNull(join(herdrConfigDir(process.env, home), "plugins.json")),
+      run: (file, args, env = {}) => {
+        const result = spawnSync(file, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...env }, timeout: 600_000 });
+        if (result.error) return { status: null, stdout: "", stderr: result.error.message };
+        return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+      },
+      startServices: (names) => startServices(names, (name) => startService(name, services)),
       out: console,
     });
   } catch (err) {

@@ -1,10 +1,16 @@
 #!/usr/bin/env node
 // @ts-check
-// command: doctor -- check an install: Node, the launcher on PATH, the host file, herdr, the tracker key and the instance service, each with its fix
+// command: doctor -- check an install: Node, the launcher on PATH, the host file, herdr, the tracker key, Linear's MCP and each service, each with its fix
 //
 // EACH CHECK SAYS WHAT IT FOUND AND, WHEN IT FAILED, THE ONE THING TO DO. `node` is the one on PATH, because that is the one the launcher runs, and
-// not the one running this. The tracker key is read to prove it is there, and never printed. The service is asked twice: whether it is registered,
-// and whether its port answers, because a registered service can still be a crashed one.
+// not the one running this. The tracker key is read to prove it is there, and never printed. A service is asked twice: whether it is registered,
+// and whether its port answers, because a registered service can still be a crashed one. A unit systemd refuses to load (`bad-setting`, A11-67)
+// is said with the line systemd refused, because `is-active` reads it only as stopped.
+//
+// THE WEB TERMINAL (A11-66) is checked as the board uses it: `tickets.terminal` is set and on this machine's loopback, the terminal service is
+// registered, and herdr web ui answers `/api/health` on the port that address names. A `tickets.terminal` served by another machine is that
+// machine's to check. Linear's MCP (A11-71) is read from `claude mcp list`, which connects to each server, so "connected" is a real answer.
+// The auto-update service is checked for being registered: it runs once an hour, so it has no port.
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { request } from "node:http";
@@ -16,7 +22,8 @@ import { readLinearKey } from "../ticket-mode/linear.ts";
 import { parseTicketSettings, type KeySource, type TicketSettings } from "../ticket-mode/settings.ts";
 import { hostFilePath, type Env } from "./paths.ts";
 import { pinnedPnpm, TOOL_PNPM_VERSION } from "./pnpm.ts";
-import { defaultServiceDeps, SERVICE_NAMES, serviceState, type ServiceName, type ServiceState } from "./service.ts";
+import { defaultServiceDeps, serviceState, unitProblem, type ServiceName, type ServiceState } from "./service.ts";
+import { DEFAULT_TERMINAL_PORT, loopbackPort } from "./terminal.ts";
 
 export const MIN_NODE_MAJOR = 24;
 
@@ -36,6 +43,12 @@ export type DoctorDeps = Readonly<{
   serviceState: (name: ServiceName) => ServiceState;
   /** Whether something answers HTTP on 127.0.0.1:`port`. */
   answers: (port: number) => Promise<boolean>;
+  /** Whether 127.0.0.1:`port` answers `/api/health` with a 2xx: herdr web ui's own health route. */
+  healthy: (port: number) => Promise<boolean>;
+  /** Why the service manager will not load `name`'s unit, or null when it loads. */
+  unitProblem: (name: ServiceName) => string | null;
+  /** What `claude mcp list` printed, or null when it could not run. */
+  mcpList: () => string | null;
   /** What `--version` the pinned pnpm prints, run as install and update run it, or null when it cannot run. */
   pnpmVersion: () => string | null;
 }>;
@@ -61,7 +74,13 @@ function pnpmCheck(deps: DoctorDeps): Check {
 }
 
 function hostCheck(deps: DoctorDeps): { check: Check; settings: TicketSettings | null } {
-  const path = hostFilePath(deps.env, deps.home);
+  const path = hostFilePath(deps.env, deps.home, (file) => {
+    try {
+      return deps.readFile(file);
+    } catch {
+      return null;
+    }
+  });
   let text: string;
   try {
     text = deps.readFile(path);
@@ -95,13 +114,24 @@ function keyCheck(settings: TicketSettings | null, deps: DoctorDeps): Check {
   }
 }
 
+/** Linear's MCP, which workers and planners read their tickets through, connected for Claude Code. */
+function linearMcpCheck(deps: DoctorDeps): Check {
+  const listed = deps.mcpList();
+  const add = "run `agent-org onboard`, which registers it with the Linear key, or `claude mcp add --scope user --transport http linear https://mcp.linear.app/mcp --header \"Authorization: Bearer <key>\"`";
+  if (listed === null) return failed("linear mcp", "`claude mcp list` could not run", "install Claude Code and put `claude` on PATH, then run `agent-org onboard`");
+  const line = listed.split("\n").find((entry) => entry.startsWith("linear:"));
+  if (line === undefined) return failed("linear mcp", "Claude Code has no `linear` MCP, so workers cannot read their tickets", add);
+  return /Connected/.test(line) ? ok("linear mcp", line.trim())
+    : failed("linear mcp", line.trim(), "`claude mcp get linear` says why; a key that changed is fixed by `claude mcp remove linear --scope user`, then `agent-org onboard`");
+}
+
 /** Every check, in the order a person fixes them. */
 export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
   const { check: host, settings } = hostCheck(deps);
   const launcher = deps.which("agent-org");
   const herdr = deps.which("herdr");
-  const ports: Record<ServiceName, number> = { instance: settings?.port ?? 4747, ui: settings?.uiPort ?? 4748 };
-  const services = await Promise.all(SERVICE_NAMES.map((name) => serviceChecks(name, ports[name], deps)));
+  const instance = await serviceChecks("instance", settings?.port ?? 4747, deps);
+  const ui = await serviceChecks("ui", settings?.uiPort ?? 4748, deps);
   return [
     nodeCheck(deps),
     pnpmCheck(deps),
@@ -111,7 +141,40 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
     host,
     herdr === null ? failed("herdr", "`herdr` is not on PATH", "install herdr, which runs the workers' terminals, and put it on PATH") : ok("herdr", herdr),
     keyCheck(settings, deps),
-    ...services.flat(),
+    linearMcpCheck(deps),
+    ...instance,
+    ...ui,
+    ...await terminalChecks(settings, deps),
+    registeredCheck("auto-update", deps, "it runs `agent-org update` every hour"),
+  ];
+}
+
+/** Whether `name` is registered, and loads: a unit systemd refuses is said with the line it refused. */
+function registeredCheck(name: ServiceName, deps: DoctorDeps, what = ""): Check {
+  const problem = deps.unitProblem(name);
+  if (problem !== null) return failed(`${name} service`, problem, `run \`agent-org start ${name}\`, which writes the unit again`);
+  const state = deps.serviceState(name);
+  return state === "not-registered"
+    ? failed(`${name} service`, `the ${name} service is not registered`, `run \`agent-org start ${name}\``)
+    : ok(`${name} service`, `the ${name} service is registered and ${state}${what === "" ? "" : `: ${what}`}`);
+}
+
+/** `tickets.terminal` points at this machine's terminal service, which is registered and answers its health route. */
+async function terminalChecks(settings: TicketSettings | null, deps: DoctorDeps): Promise<Check[]> {
+  const address = settings?.terminal ?? null;
+  const onboard = "run `agent-org onboard`, which installs herdr web ui, writes `tickets.terminal` and starts the terminal service";
+  if (address !== null && loopbackPort(address) === null) return [ok("terminal address", `tickets.terminal is ${address}, served by another machine`)];
+  const port = loopbackPort(address) ?? DEFAULT_TERMINAL_PORT;
+  const registered = registeredCheck("terminal", deps);
+  const answering = await deps.healthy(port);
+  return [
+    address === null
+      ? failed("terminal address", "tickets.terminal is not set, so the board links no run to its terminal", onboard)
+      : ok("terminal address", `tickets.terminal is ${address}`),
+    registered.ok ? registered : { ...registered, fix: `${registered.fix}; if it refuses, ${onboard}` },
+    answering
+      ? ok("terminal answering", `http://127.0.0.1:${port}/api/health answers`)
+      : failed("terminal answering", `nothing answers http://127.0.0.1:${port}/api/health`, "read the terminal service's log (`journalctl --user -u agent-org-terminal` on Linux, `~/.agent-org/logs/terminal.log` on macOS), then run `agent-org start terminal`"),
   ];
 }
 
@@ -120,6 +183,7 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
  * registered, and saying nothing answers then sends the person after a problem they do not have.
  */
 async function serviceChecks(name: ServiceName, port: number, deps: DoctorDeps): Promise<Check[]> {
+  const problem = deps.unitProblem(name);
   const state = deps.serviceState(name);
   const answering = await deps.answers(port);
   const start = `run \`agent-org start ${name}\``;
@@ -128,7 +192,8 @@ async function serviceChecks(name: ServiceName, port: number, deps: DoctorDeps):
       `stop the one started by hand, then ${start}, so it starts at login and restarts after a crash`)
     : failed(`${name} service`, `the ${name} service is not registered`, start);
   return [
-    state === "not-registered" ? notRegistered : ok(`${name} service`, `the ${name} service is registered and ${state}`),
+    problem !== null ? failed(`${name} service`, problem, `${start}, which writes the unit again`)
+      : state === "not-registered" ? notRegistered : ok(`${name} service`, `the ${name} service is registered and ${state}`),
     answering
       ? ok(`${name} answering`, `http://127.0.0.1:${port} answers`)
       : failed(`${name} answering`, `nothing answers on http://127.0.0.1:${port}`, state === "running" ? `read the service's log, then ${start} to restart it` : start),
@@ -148,11 +213,13 @@ function which(name: string, env: Env = process.env): string | null {
 
 const ANSWER_TIMEOUT_MS = 2000;
 
-function answers(port: number): Promise<boolean> {
+/** Whether 127.0.0.1:`port` answers `path`: with anything, or with a 2xx when `healthy`. */
+function answers(port: number, path = "/", healthy = false): Promise<boolean> {
   return new Promise((done) => {
-    const call = request({ host: "127.0.0.1", port, path: "/", method: "GET", timeout: ANSWER_TIMEOUT_MS }, (response) => {
+    const call = request({ host: "127.0.0.1", port, path, method: "GET", timeout: ANSWER_TIMEOUT_MS }, (response) => {
       response.resume();
-      done(true);
+      const status = response.statusCode ?? 0;
+      done(!healthy || (status >= 200 && status < 300));
     });
     call.on("timeout", () => call.destroy());
     call.on("error", () => done(false));
@@ -171,7 +238,13 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
     },
     which: (name) => which(name), readFile: (path) => readFileSync(path, "utf8"), readKey: (source) => readLinearKey(source),
     mode: (path) => { try { return statSync(path).mode & 0o777; } catch { return null; } },
-    serviceState: (name) => serviceState(name, services), answers,
+    serviceState: (name) => serviceState(name, services), answers: (port) => answers(port),
+    healthy: (port) => answers(port, "/api/health", true),
+    unitProblem: (name) => unitProblem(name, services),
+    mcpList: () => {
+      const result = spawnSync("claude", ["mcp", "list"], { encoding: "utf8", timeout: 60_000 });
+      return result.status === 0 ? result.stdout : null;
+    },
     pnpmVersion: () => {
       const { command, args } = pinnedPnpm(["--version"]);
       const result = spawnSync(command, args, { encoding: "utf8", timeout: 120_000, env: { ...process.env, COREPACK_ENABLE_DOWNLOAD_PROMPT: "0" } });

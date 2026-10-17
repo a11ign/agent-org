@@ -7,7 +7,7 @@ import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 /** @param mode the file's mode, and the directory's when it has to be made is 700 for a private file and 755 otherwise */
-export function writeAtomic(path: string, text: string, mode: number) {
+export function writeAtomic(path: string, text: string | Uint8Array, mode: number) {
   mkdirSync(dirname(path), { recursive: true, mode: (mode & 0o077) === 0 ? 0o700 : 0o755 });
   const temporary = `${path}.${randomBytes(6).toString("hex")}.tmp`;
   try {
