@@ -1,3 +1,4 @@
+// no-token: gh -- every input is injected (the canary and pairs IO, the audit fixture, the pure pair step); the file imports org-health.ts for its constants and functions but calls no gh and never reaches isAppLogin
 /**
  * agent-org#1670: THE BOARD-DISAGREES ORDER IS KEYED PER (ROW, QUESTION) PAIR, BEHIND `orgHealth.boardTruthPairKey` (default OFF).
  *
