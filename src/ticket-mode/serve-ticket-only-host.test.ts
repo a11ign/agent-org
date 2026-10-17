@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
-import { chmodSync, cpSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -61,14 +61,47 @@ function primaryHost(root: string): Record<string, unknown> {
   return { schema: 1, home: root, binDir: join(root, "bin"), primary: "fixture", projects: [{ id: "fixture", checkout }], gh: { workers: join(root, "workers"), leads: join(root, "leads"), leadsHeader: [], leadsWorkspaces: [] } };
 }
 
+/** The gate's modules, by their place under `src/`: the ones `reviewer-port.ts` loads, and nothing else loads them. */
+const GATE_FILES = ["wake.ts", "review-trust.ts", "project-config.ts", "project-identity.ts", "work-gate/pr-orders.ts"];
+
+/**
+ * A module loaded before the entry, which writes each gate module it resolves to `loads.txt` under `root`. The module itself is not changed: the
+ * hook only records what the process asks for, so a load the entry never makes leaves nothing there.
+ */
+function loadRecorder(root: string): { preload: string; loads: string } {
+  const preload = join(root, "record-loads.mjs");
+  const loads = join(root, "loads.txt");
+  writeFileSync(preload, `import { registerHooks } from "node:module";
+import { appendFileSync } from "node:fs";
+const GATE = ${JSON.stringify(GATE_FILES.map((file) => `/src/${file}`))};
+registerHooks({ resolve(specifier, context, nextResolve) {
+  const resolved = nextResolve(specifier, context);
+  if (GATE.some((suffix) => resolved.url.endsWith(suffix))) appendFileSync(${JSON.stringify(loads)}, resolved.url + "\\n");
+  return resolved;
+} });
+`);
+  return { preload, loads };
+}
+
+/** The gate's modules a recorded run loaded, by their place under `src/`, each once. None when nothing was loaded. */
+function gateLoads(loads: string): string[] {
+  if (!existsSync(loads)) return [];
+  const urls = new Set(readFileSync(loads, "utf8").split("\n").filter((line) => line !== ""));
+  return [...urls].map((url) => url.slice(url.indexOf("/src/") + "/src/".length)).sort();
+}
+
 type Outcome = { code: number | null; stdout: string; stderr: string; started: boolean };
 
-/** Runs `ticket:serve` as the CLI does and waits for it to start (then stops it) or to exit. `host` null leaves `AGENT_ORG_HOST` unset. Refuses after a timeout, so a hang fails the test. */
-function runServe(host: string | null, root: string, home: string = process.env.HOME ?? root): Promise<Outcome> {
-  const childEnv: Record<string, string | undefined> = { ...process.env, HOME: home, PATH: `${fakeHerdr(root)}:${process.env.PATH}` };
+/**
+ * Runs `ticket:serve` as the CLI does and waits for it to start (then stops it) or to exit. `host` null leaves `AGENT_ORG_HOST` unset. `options.home` is
+ * HOME, and `options.preload` a module loaded before the entry. Refuses after a timeout, so a hang fails the test.
+ */
+function runServe(host: string | null, root: string, options: { home?: string; preload?: string } = {}): Promise<Outcome> {
+  const childEnv: Record<string, string | undefined> = { ...process.env, HOME: options.home ?? process.env.HOME ?? root, PATH: `${fakeHerdr(root)}:${process.env.PATH}` };
   if (host === null) delete childEnv[HOST_FILE_ENV];
   else childEnv[HOST_FILE_ENV] = host;
-  const child: ChildProcess = spawn(process.execPath, [SERVER], { env: childEnv, cwd: root, stdio: ["ignore", "pipe", "pipe"] });
+  const args = [...(options.preload === undefined ? [] : ["--import", pathToFileURL(options.preload).href]), SERVER];
+  const child: ChildProcess = spawn(process.execPath, args, { env: childEnv, cwd: root, stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "";
   let stderr = "";
   child.stdout?.on("data", (chunk) => { stdout += chunk; });
@@ -119,21 +152,64 @@ test("ticket:serve with tickets.reviewer set on a host file with only clones and
   }
 });
 
-test("importing reviewer-port.ts with no primary in the host file does not throw", async () => {
-  const root = tmpDir("serve-import-no-primary-");
-  const host = await hostFile(root, {}, { reviewer: "atomic", drafts: false });
-  const code = `await import(${JSON.stringify(pathToFileURL(REVIEWER_PORT).href)}); process.stdout.write("imported\\n");`;
-  const outcome = await new Promise<{ code: number | null; stdout: string; stderr: string }>((done) => {
-    const child = spawn(process.execPath, ["--input-type=module", "-e", code], { env: { ...process.env, AGENT_ORG_HOST: host }, cwd: root, stdio: ["ignore", "pipe", "pipe"] });
+/** Runs `code` as an ES module in a child with `AGENT_ORG_HOST` set to `host`, after `preload` if given. */
+function runModule(code: string, root: string, host: string, preload?: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  const args = [...(preload === undefined ? [] : ["--import", pathToFileURL(preload).href]), "--input-type=module", "-e", code];
+  return new Promise((done) => {
+    const child = spawn(process.execPath, args, { env: { ...process.env, AGENT_ORG_HOST: host }, cwd: root, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => { stdout += chunk; });
     child.stderr.on("data", (chunk) => { stderr += chunk; });
     child.on("exit", (exitCode) => done({ code: exitCode, stdout, stderr }));
   });
+}
+
+const PORT_URL = JSON.stringify(pathToFileURL(REVIEWER_PORT).href);
+
+test("loading the gate on a host with no primary keeps its refusal: reviewerRefusal names primary, and nothing throws", async () => {
+  const root = tmpDir("serve-import-no-primary-");
+  const host = await hostFile(root, {}, { reviewer: "atomic", drafts: false });
+  const outcome = await runModule(`const port = await import(${PORT_URL}); await port.loadReviewerGate(); process.stdout.write("refusal: " + port.reviewerRefusal() + "\\n");`, root, host);
   assert.equal(outcome.code, 0, outcome.stderr);
-  assert.equal(outcome.stdout, "imported\n");
+  assert.match(outcome.stdout, /^refusal: .*primary/m);
   assert.doesNotMatch(outcome.stderr, /ProjectDeclarationRefusal/);
+});
+
+test("importing reviewer-port.ts loads none of the gate's modules, even on a host with primary", async () => {
+  const root = tmpDir("serve-import-loads-");
+  const host = await hostFile(root, primaryHost(root));
+  const recorder = loadRecorder(root);
+  const outcome = await runModule(`await import(${PORT_URL});`, root, host, recorder.preload);
+  assert.equal(outcome.code, 0, outcome.stderr);
+  assert.deepEqual(gateLoads(recorder.loads), [], "no gate module is loaded at import");
+});
+
+test("loading the gate loads all of its modules, which is what a machine that starts reviewers does before its pool is made", async () => {
+  const root = tmpDir("serve-gate-loads-");
+  const host = await hostFile(root, primaryHost(root));
+  const recorder = loadRecorder(root);
+  const outcome = await runModule(`const port = await import(${PORT_URL}); await port.loadReviewerGate();`, root, host, recorder.preload);
+  assert.equal(outcome.code, 0, outcome.stderr);
+  assert.deepEqual(gateLoads(recorder.loads), [...GATE_FILES].sort(), "every gate module is loaded once the gate is asked for");
+});
+
+test("ticket:serve on a host with primary and no tickets.reviewer loads none of the gate's modules", async () => {
+  const root = tmpDir("serve-no-reviewer-loads-");
+  const host = await hostFile(root, primaryHost(root));
+  const recorder = loadRecorder(root);
+  const outcome = await runServe(host, root, { preload: recorder.preload });
+  assert.equal(outcome.started, true, outcome.stderr);
+  assert.deepEqual(gateLoads(recorder.loads), [], "an instance that starts no reviewer never loads the gate");
+});
+
+test("ticket:serve with tickets.reviewer on and drafts off loads the gate's modules before it starts", async () => {
+  const root = tmpDir("serve-reviewer-loads-");
+  const host = await hostFile(root, primaryHost(root), { reviewer: "atomic", drafts: false });
+  const recorder = loadRecorder(root);
+  const outcome = await runServe(host, root, { preload: recorder.preload });
+  assert.equal(outcome.started, true, outcome.stderr);
+  assert.deepEqual(gateLoads(recorder.loads), [...GATE_FILES].sort(), "an instance that starts reviewers loads the gate");
 });
 
 test("ticket:serve with AGENT_ORG_HOST unset reads ~/.agent-org/host.json and starts on it", async () => {
@@ -142,7 +218,7 @@ test("ticket:serve with AGENT_ORG_HOST unset reads ~/.agent-org/host.json and st
   mkdirSync(join(home, ".agent-org"), { recursive: true });
   const host = await hostFile(root, {});
   writeFileSync(join(home, ".agent-org", "host.json"), readFileSync(host, "utf8"));
-  const outcome = await runServe(null, root, home);
+  const outcome = await runServe(null, root, { home });
   assert.equal(outcome.started, true, outcome.stderr);
   assert.doesNotMatch(outcome.stderr, STACK);
 });

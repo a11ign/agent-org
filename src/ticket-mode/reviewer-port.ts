@@ -13,29 +13,43 @@ import { ORG_SESSION, readAgents, type ListedAgent } from "../herdr-agents.ts";
 import { pullRequestFieldsOf } from "../ticket-port/pull-request-fields.ts";
 import type { ReviewTrust } from "../review-trust.ts";
 
+/** The gate's modules: its reviewer, its trust rules, its verdict prompt, and the org's declaration. */
+type GateModules = {
+  wake: typeof import("../wake.ts"); trust: typeof import("../review-trust.ts"); config: typeof import("../project-config.ts");
+  identity: typeof import("../project-identity.ts"); orders: typeof import("../work-gate/pr-orders.ts");
+};
+
+/** What `loadReviewerGate` found: the modules, or the refusal that keeps them from loading on this host. Null until it has run. */
+let gate: { ok: true; modules: GateModules } | { ok: false; refusal: unknown } | null = null;
+
 /**
- * The gate's modules: its reviewer, its trust rules, its verdict prompt, and the org's declaration. Importing them names the declaration the org's
- * `primary` makes, so a host with no `primary` cannot import them. The import is awaited here and its refusal KEPT rather than thrown: a machine that
- * starts no reviewer never asks for the gate, and one that does is told why by `reviewerRefusal`.
+ * Loads the gate's modules. Importing them names the declaration the org's `primary` makes, so a host with no `primary` cannot load them, and the
+ * refusal is KEPT rather than thrown: `reviewerRefusal` says it. Nothing loads them at import, so a machine that starts no reviewer never does. The
+ * instance calls this only when it starts reviewers (`startsReviewers`, in `pool.ts`), before it makes its pool.
  */
-const gate = await Promise.all([import("../wake.ts"), import("../review-trust.ts"), import("../project-config.ts"), import("../project-identity.ts"), import("../work-gate/pr-orders.ts")]).then(
-  ([wake, trust, config, identity, orders]) => ({ ok: true as const, wake, trust, config, identity, orders }),
-  (refusal: unknown) => ({ ok: false as const, refusal }),
-);
+export async function loadReviewerGate(): Promise<void> {
+  if (gate !== null) return;
+  gate = await Promise.all([import("../wake.ts"), import("../review-trust.ts"), import("../project-config.ts"), import("../project-identity.ts"), import("../work-gate/pr-orders.ts")]).then(
+    ([wake, trust, config, identity, orders]) => ({ ok: true as const, modules: { wake, trust, config, identity, orders } }),
+    (refusal: unknown) => ({ ok: false as const, refusal }),
+  );
+}
 
 type DeclaredIdentities = ReturnType<typeof import("../review-trust.ts").declaredIdentities>;
 
-/** Why the gate does not load on this host, or null when it does. A machine that asks for reviewers starts none while this is set. */
+/** Why the gate does not load on this host, or null when it does. A machine that asks for reviewers starts none while this is set. Needs `loadReviewerGate` first. */
 export function reviewerRefusal(): string | null {
+  if (gate === null) throw new Error("the gate is not loaded: loadReviewerGate runs before a pool with reviewers is made");
   if (gate.ok) return null;
   const { refusal } = gate;
   return refusal instanceof Error ? refusal.message.split("\n")[0] : String(refusal);
 }
 
-/** The gate's modules. Only a machine that starts reviewers reads them, and `reviewerRefusal` says first whether they load. */
-function reviewerGate() {
+/** The gate's modules, once `loadReviewerGate` has read them. Throws the refusal when they do not load on this host. */
+function reviewerGate(): GateModules {
+  if (gate === null) throw new Error("the gate is not loaded: loadReviewerGate runs first");
   if (!gate.ok) throw gate.refusal;
-  return gate;
+  return gate.modules;
 }
 
 /** The account the gate's reviewer posts as. Its reviews are the reviewer's, never the feedback a worker answers. */

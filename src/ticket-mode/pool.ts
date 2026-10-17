@@ -319,6 +319,9 @@ export function feedbackSince(reads: readonly Readonly<{ url: string; read: Pull
   return lines.length === 0 ? null : lines.join("\n");
 }
 
+/** Whether a machine with these settings starts reviewers: `tickets.reviewer` is set and `drafts` is off. Only such an instance loads the gate (`reviewer-port.ts`). */
+export const startsReviewers = (settings: TicketSettings): boolean => settings.reviewer !== null && !settings.drafts;
+
 export function createPool(store: QueueStore, deps: PoolDeps) {
   const { settings, source, hook } = deps;
   const hostFile = deps.hostFile ?? process.env[HOST_FILE_ENV];
@@ -342,7 +345,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
   /** Whether this machine plans the tickets queued together in one run. */
   const batches = plansInBatches(settings.planner);
   /** Drafts are worked on before anyone reviews them, so a machine with `drafts` on starts no reviewer. */
-  const reviewerOn = settings.reviewer !== null && !settings.drafts;
+  const reviewerOn = startsReviewers(settings);
   /** What the reviewers remember across a restart, read once here: nothing when the file is missing, and said once when it cannot be read. */
   const reviewerFile = reviewerMemoryPath(settings.stateDir);
   const remembered = reviewerOn ? readReviewerMemory(reviewerFile) : undefined;
