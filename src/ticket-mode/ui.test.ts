@@ -573,6 +573,16 @@ test("a run stacked on its blocker's open pull request is Queued, and says what 
   assert.equal(row.text().includes("Waits on"), false);
 });
 
+test("A11-77: a run its planner held until a blocker merges is Blocked, says it waits for that merge, and is not stacked on the open pull request", async () => {
+  const pr = "https://github.com/x/libs/pull/3";
+  const runs = [entry("APP-1", { phase: "queued", plannedRepo: "libs", waitMerged: ["LIB-1"], blockers: [{ key: "LIB-1", state: "started", status: "In Review", branch: "lib-1", pulls: { [pr]: "open" } }] })];
+  const p = await page(new Map(), { entries: runs });
+  const row = runRows(p)[0];
+  assert.equal(row.children[0].className, "icon st-blocked");
+  assert.match(row.text(), /Waits for LIB-1 to merge/);
+  assert.equal(row.text().includes("Stacked on"), false);
+});
+
 test("a run waiting on a blocker is Blocked, with its own filter, and names what it waits on", async () => {
   const runs = [
     entry("APP-1", { phase: "queued", blockers: [{ key: "LIB-1", state: "started", status: "In Review" }] }),

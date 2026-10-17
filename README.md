@@ -178,6 +178,12 @@ takes them one each. Ticket mode is two services, both on `127.0.0.1`:
   is moved to `outcome.prev.json`, and the worker must write a new one before it stops. A worker that writes a new outcome file after its
   run parked, even between two of the board's looks, ends the run on it once its agent is idle. Close shuts a parked run's workspace and keeps its
   outcome, and a parked run is retried only once it is closed.
+- **The ticket goes back when its run ends without a pull request.** When a run moves its ticket to `tickets.workingState`, the board keeps the
+  state the ticket came from on the run. A run that is stopped, crashes or checks its ticket, or a queued run that is removed, puts the ticket
+  back in that state. A run that ends `needs-human`, `wrong-repo` or with no outcome keeps the ticket In Progress while it is parked, and Dismiss
+  puts it back, but Close does not. A run that opened a pull request is never put back: the tracker's own integration moves its ticket from there.
+  A person who has moved the ticket since is left to it, and the record goes. A restore the tracker refuses is logged, and the board tries it again
+  on its next refresh, while Remove and Dismiss say why and leave the run where it is.
 - **Still working, not Needs you, while a worker's own background work runs.** A worker that ends a turn while a shell, a Monitor or a task
   of its own is still running and will wake it (a long Ansible run, say) writes `{ "kind": "working", "reason": "..." }`. The run stays In
   progress, holding its slot, with that reason as its note, and the outcome it writes when its work wakes it replaces the note and ends the
@@ -221,7 +227,11 @@ takes them one each. Ticket mode is two services, both on `127.0.0.1`:
   instead, and the board says "Stacked on NBF-1 #12". The brief names each such blocker's pull request and branch. The worker makes its
   worktree from the branch it builds on with `ticket:worktree <repo> --from <branch>`, opens its draft pull request, and runs
   `gh stack link <blocker's pull request> <its own>`. This holds for every "blocked by", whoever recorded it. A run with no planned
-  repository, or a blocker with no open pull request there, waits as before.
+  repository, or a blocker with no open pull request there, waits as before. A planner that says a ticket waits until its blocker
+  merges, rather than stacking on it, sets `"wait": "merged"` on that ticket's entry in `order.json`. The ticket stays Blocked, and the
+  board says "Waits for NBF-1 to merge", until the blocker's pull request merges, then it starts on the default branch. Stacking is for
+  code that builds on the blocker's diff. Merged is for work that needs the blocker's change live, such as fleet state, a deployed or
+  released package, or a published artifact. Left out, `wait` means stacked.
 - **Paused until you start it.** A new queue is paused, so queueing a ticket never also starts it: queue what you want, then press
   Start workers on the Board when what the workers need is ready. Pause stops new starts and leaves running workers alone, and the
   choice survives a restart of the board.
@@ -279,7 +289,7 @@ a worker can choose from:
 | `tickets.reviewer` | none, and no reviewer is started. `"atomic"`: for each ready head of a watched run's pull request, the board starts the gate's codex reviewer (the same code the org's reviewer runs, started in the `tickets` herdr session), once per head. It posts as `a11ign-reviewer`, and a pull request whose author is outside the org gets none. A `CHANGES_REQUESTED` on the head resumes the same worker for a round, at most 3 (`MAX_FEEDBACK_ROUNDS`), and an approval resumes nothing. Any other value refuses the board's start, naming the setting. Its prompt is still a stub in this change, so until it is the gate's own, a reviewer may post no verdict and the run waits with no round. Canary: one `reviewer-<n>` workspace per ready head in the `tickets` session, not one per watch; a reviewer's workspace closes within one watch of its verdict, and a merged or closed pull request's workspace and `~/reviews/<seat>` checkout are gone within one sweep (every 3 minutes), a line naming any uncommitted changes discarded with the checkout; a `no reviewer for <url>` line in the board's log names a refusal; each ready pull request has one review from `a11ign-reviewer` on its head. Revert: remove the line. Reviewers already running finish, and the sweep closes their workspaces and removes their checkouts once their pull requests have merged or closed. For a pull request that no run owns (for example one a person opened for a run that ended `needs-human`), `agent-org ticket:review <pull request url>` starts the same reviewer at its current head, with the same refusals. |
 | `tickets.pick` | `"assigned"`: the Pick view lists the open tickets assigned to the person whose Linear key the board reads with, as it always has, with the same request. `{ "team": "<key>" }` (a team's key is the start of its tickets' keys, such as `A11`) or `{ "project": "<name>" }` (as Linear spells it): the Pick view lists every open ticket of that team or project, whoever it is assigned to, or nobody. Open is the same as for `"assigned"`: not completed, canceled or a duplicate. Anything else refuses the board's start, naming the setting. An empty Pick view says why and names this setting. Canary: the Pick view's count reads `open in team <key>` or `open in project <name>`, and lists the tickets nobody is assigned to. Revert: remove the line |
 | `tickets.stallMinutes` | `30`. How many minutes a run whose worker wrote `working` may sit idle with no newer outcome before its row on the board says Stalled, with the worker's note. It ends nothing and prompts nobody, and the agent working again clears it. A whole number of 1 or more; anything else refuses the board's start, naming the setting. Canary: a `<key> has been idle for <n> minutes or more since it wrote working` line in the board's log, once per stall. Revert: remove the line |
-| `tickets.workingState` | none, and no ticket is moved. The tracker state a ticket moves to as a worker starts implementing it, if it has not started yet: `"In Progress"`. A planning run moves nothing. A team with no state of that name keeps the ticket's state, and the board's log says so |
+| `tickets.workingState` | none, and no ticket is moved. The tracker state a ticket moves to as a worker starts implementing it, if it has not started yet: `"In Progress"`. A planning run moves nothing. A team with no state of that name keeps the ticket's state, and the board's log says so. The ticket goes back to the state it came from when its run ends without a pull request (see the run list) |
 | `stateDir` | `~/.local/state/agent-org`: the queue, each ticket's brief, attachments and outcome |
 
 The Linear key is a personal API key, so ticket mode reads as you and needs no workspace admin. On macOS, store it once with

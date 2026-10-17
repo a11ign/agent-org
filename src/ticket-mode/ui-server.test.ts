@@ -39,7 +39,7 @@ async function instance() {
   const stateDir = tmpDir("ticket-ui-state-");
   const key = boardKey(boardKeyPath(stateDir));
   const seen: IncomingMessage["headers"][] = [];
-  const pool = { tick: async () => {}, stop: () => {}, close: () => {}, dismiss: () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {}, releaseReviewers: () => {} };
+  const pool = { tick: async () => {}, stop: () => {}, close: () => {}, dismiss: async () => {}, remove: async () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {}, releaseReviewers: () => {} };
   const source: TicketSource = { assigned: async () => [{ ...ticket("NBF-1"), labels: LABELS }], read: async () => null, download: async () => [] };
   const served = await listen((port) => {
     const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/r/netbox" }, stateDir, tickets: { port, terminal: "http://127.0.0.1:7318/?ws={workspace}" } });

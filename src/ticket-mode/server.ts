@@ -23,7 +23,7 @@ import { pickEmptyText, pickLabel } from "./pick-scope.ts";
 import { API_BODY_BYTES, readJson, refusal, sameSecret, sendJson, type Json } from "./local-http.ts";
 import { createPool, startsReviewers, type PoolDeps } from "./pool.ts";
 import { loadReviewerGate } from "./reviewer-port.ts";
-import { amend, approve, childOrder, enqueue, loadQueue, queuePublish, remove, respond, retry, saveQueue, setMax, setPaused, type PlanFirst, type Queue, type RunChoice } from "./queue.ts";
+import { amend, approve, childOrder, enqueue, loadQueue, queuePublish, respond, retry, saveQueue, setMax, setPaused, type PlanFirst, type Queue, type RunChoice } from "./queue.ts";
 import { plansInBatches, readTicketSettings, type TicketSettings } from "./settings.ts";
 import type { Ticket, TicketSource } from "./source.ts";
 
@@ -43,7 +43,7 @@ export type BoardDeps = Readonly<{
   key: string;
   queuePath: string;
   choicePath: string;
-  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers">;
+  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers">;
   poolDeps?: Omit<PoolDeps, "settings" | "source" | "hook">;
   now?: () => number;
 }>;
@@ -222,14 +222,15 @@ export function createBoard(deps: BoardDeps) {
     if (method === "POST" && action) {
       const [, key, verb] = action;
       if (verb === "amend") store.set(amend(queue, key, validChange(body, ["model", "effort"])));
-      if (verb === "remove") store.set(remove(queue, key));
+      // The pool's, like Dismiss: a queued run's ticket is put back before the run leaves the queue.
+      if (verb === "remove") await pool.remove(key);
       if (verb === "retry") store.set(retry(queue, key, now()));
       if (verb === "approve") store.set(approve(queue, key, now()));
       if (verb === "respond") store.set(respond(queue, key, now()));
       if (verb === "stop") pool.stop(key);
       if (verb === "close") pool.close(key);
       // The pool's, like Close: a parked run's workspace is closed before the run leaves the board.
-      if (verb === "dismiss") pool.dismiss(key);
+      if (verb === "dismiss") await pool.dismiss(key);
       wake();
       return [200, queue];
     }

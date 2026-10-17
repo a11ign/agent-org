@@ -11,7 +11,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { basename, extname, join } from "node:path";
 import type { KeySource, PickScope } from "./settings.ts";
-import type { Blocker, PullState, Ticket, TicketLabel, TicketSource } from "./source.ts";
+import type { Blocker, PullState, StateMove, Ticket, TicketLabel, TicketSource } from "./source.ts";
 
 export const LINEAR_API = "https://api.linear.app/graphql";
 /** Linear stores uploads here, and only a request carrying the key may read one. */
@@ -206,17 +206,23 @@ export function linearSource({ key, fetch: request = fetch, pick = "assigned" }:
 
   /**
    * Move the ticket to its team's state named `state`, when its state's type is one of `from`. Teams name their states differently, so a team
-   * without one of that name keeps the ticket's current state, and the returned note says so; it is null otherwise.
+   * without one of that name keeps the ticket's current state, and the returned note says so. `moved` is the state it moved from, and null when
+   * it did not move.
    */
-  async function moveTo(identifier: string, found: Stateful, state: string, from: ReadonlySet<string>): Promise<string | null> {
-    if (!from.has(found.state.type)) return null;
+  async function moveTo(identifier: string, found: Stateful, state: string, from: ReadonlySet<string>): Promise<Readonly<{ moved: StateMove | null; note: string | null }>> {
+    if (!from.has(found.state.type)) return { moved: null, note: null };
     const target = found.team.states.nodes.find(({ name }) => name === state);
-    if (target === undefined) return `${identifier}'s team has no state named ${state}, so it stays in ${found.state.name}`;
+    if (target === undefined) return { moved: null, note: `${identifier}'s team has no state named ${state}, so it stays in ${found.state.name}` };
+    await setState(identifier, found.id, target.id, state);
+    return { moved: { from: found.state.name, to: state }, note: null };
+  }
+
+  /** Set the ticket `id` to the state `stateId`, which is named `state` for the error that says so. */
+  async function setState(identifier: string, id: string, stateId: string, state: string): Promise<void> {
     const { issueUpdate }: { issueUpdate: { success: boolean } } = await query(
-      "mutation($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }", { id: found.id, stateId: target.id });
+      "mutation($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }", { id, stateId });
     // Linear can answer a mutation it did not carry out with success false and no error, so the answer is read, not assumed.
     if (!issueUpdate.success) throw new Error(`Linear did not move ${identifier} to ${state}`);
-    return null;
   }
 
   /** Upload the markdown file at `path` and attach it to the ticket `issueId` under `title`. */
@@ -311,13 +317,25 @@ export function linearSource({ key, fetch: request = fetch, pick = "assigned" }:
         const title = basename(path);
         if (!attached.has(title)) await attachFile(found.id, path, title);
       }
-      return state === null ? null : moveTo(identifier, found, state, BEFORE_PLANNING);
+      return state === null ? null : (await moveTo(identifier, found, state, BEFORE_PLANNING)).note;
     },
 
     async moveToWorkingState(identifier, state) {
       const found = await issue<Stateful>(identifier, STATEFUL);
       if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
       return moveTo(identifier, found, state, BEFORE_WORK);
+    },
+
+    async restoreState(identifier, move) {
+      const found = await issue<Stateful>(identifier, STATEFUL);
+      // A ticket Linear no longer has has nothing to put back, and must not hold its run on the board for ever.
+      if (found === null) return `Linear has no ticket ${identifier}, so nothing was put back to ${move.from}`;
+      // Only while the ticket is still where the board put it: a person who has moved it since has moved it on, and that is theirs to keep.
+      if (found.state.name !== move.to) return null;
+      const target = found.team.states.nodes.find(({ name }) => name === move.from);
+      if (target === undefined) return `${identifier}'s team has no state named ${move.from}, so it stays in ${found.state.name}`;
+      await setState(identifier, found.id, target.id, move.from);
+      return null;
     },
 
     async download(ticket, dir) {
