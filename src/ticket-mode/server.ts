@@ -10,11 +10,15 @@
 // where a one-time code that `ticket:pair` prints (`pairing.ts`) gets it a session of its own as an HttpOnly cookie that lasts a year
 // (`browser-sessions.ts`). A `Host` that is not this server's is refused, which stops a DNS-rebinding page from reaching it, and a write from
 // another origin is refused. The Linear key never leaves this process.
+//
+// IT CAN SHOW ANOTHER MACHINE'S BOARD. With a profiles file (`profiles.ts`), a paired browser's call to `/p/<profile>/api/...` is passed over
+// SSH to that machine's own board (`remote.ts`, `remote-proxy.ts`), which keeps its own queue, workers and limit. The page never talks to the remote itself.
 import { createHash, timingSafeEqual } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, writeFileSync, mkdirSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { stripTypeScriptTypes } from "node:module";
+import { constants } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { refuseUnknownFlags } from "../lib/cli-flags.ts";
@@ -24,6 +28,9 @@ import { browserSessions, browserSessionsPath, SESSION_SECONDS, type BrowserSess
 import { linearSource, readLinearKey } from "./linear.ts";
 import { createPairing, PAIR_MINUTES, type Pairing } from "./pairing.ts";
 import { createPool, type PoolDeps } from "./pool.ts";
+import { profilesPath, readProfiles, type ProfilesRead, type RemoteProfile } from "./profiles.ts";
+import { createRemotes, type Remotes } from "./remote.ts";
+import { httpForward, proxy, type Forward } from "./remote-proxy.ts";
 import { amend, approve, enqueue, loadQueue, queuePublish, remove, respond, retry, saveQueue, setMax, setPaused, type PlanFirst, type Queue, type RunChoice } from "./queue.ts";
 import { plansInBatches, readTicketSettings, type TicketSettings } from "./settings.ts";
 import type { Ticket, TicketSource } from "./source.ts";
@@ -61,7 +68,14 @@ export type BoardDeps = Readonly<{
   sessions?: BrowserSessions;
   poolDeps?: Omit<PoolDeps, "settings" | "source" | "hook">;
   now?: () => number;
+  /** The profiles file as read. None means no switcher, as before profiles existed. */
+  profiles?: ProfilesRead;
+  remotes?: Remotes;
+  forward?: Forward;
 }>;
+
+/** A call to a remote profile's API: `/p/<profile>/api/...`. */
+const REMOTE_PATH = /^\/p\/([A-Za-z0-9_-]+)(\/api\/.*)$/;
 
 /** `board-view.ts` as the browser can run it: Node's own type stripping, so what the tests ran is what the page runs. */
 export function boardViewScript(read: (path: string) => string = (path) => readFileSync(path, "utf8")): string {
@@ -165,6 +179,8 @@ export function createBoard(deps: BoardDeps) {
   const store = { get: () => queue, set: (next: Queue) => { queue = next; saveQueue(deps.queuePath, next); } };
   const pool = deps.pool ?? createPool(store, { ...deps.poolDeps, settings, source, hook: { node: process.execPath, bin: BIN } });
   let known = new Map<string, Ticket>();
+  const profiles = deps.profiles ?? { profiles: [], refusal: null };
+  const remotes = deps.remotes ?? createRemotes(profiles.profiles.filter((profile): profile is RemoteProfile => !profile.local));
 
   const wake = () => { void pool.tick(); };
   /** Whether this board plans a ticket first: the machine names a planner, and the tracker can take the plan it writes. */
@@ -186,6 +202,9 @@ export function createBoard(deps: BoardDeps) {
     if (method === "GET" && path === "/api/config") {
       return [200, { models: MODELS, efforts: EFFORTS, choice: readChoice(deps.choicePath), max: queue.max, terminal: settings.terminal, plan: settings.plan, planner: plans,
         publish: settings.publish !== null }];
+    }
+    if (method === "GET" && path === "/api/profiles") {
+      return [200, { profiles: profiles.profiles.map(({ name, local }) => ({ name, local })), refusal: profiles.refusal }];
     }
     if (method === "GET" && path === "/api/tickets") {
       const tickets = await source.assigned();
@@ -271,6 +290,20 @@ export function createBoard(deps: BoardDeps) {
     sendJson(response, 200, { paired: true }, { "Set-Cookie": `${COOKIE}=${sessions.open()}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_SECONDS}` });
   }
 
+  /** A paired browser's call to a remote profile's board, passed over SSH. A script holding this board's key is not passed on. */
+  async function proxyRemote(request: IncomingMessage, response: ServerResponse, by: "key" | "browser", name: string, path: string): Promise<void> {
+    if (!remotes.has(name)) return sendJson(response, 404, { error: `no remote profile ${name}` });
+    if (by !== "browser") return sendJson(response, 403, { error: "only a paired browser is passed on to another machine's board" });
+    let body: string | null;
+    try {
+      body = request.method === "POST" ? JSON.stringify(await readJson(request, API_BODY_BYTES)) : null;
+    } catch (err) {
+      return sendJson(response, 400, { error: String((err as Error)?.message ?? err) });
+    }
+    const [status, value] = await proxy(remotes, name, { method: request.method ?? "GET", path, body }, deps.forward ?? httpForward);
+    sendJson(response, status, value);
+  }
+
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const refused = refusal(request, settings.port);
     if (refused !== null) return sendJson(response, 403, { error: refused });
@@ -287,6 +320,8 @@ export function createBoard(deps: BoardDeps) {
       return void response.end(boardViewScript());
     }
     if (request.method === "GET" && url.pathname === "/") return sendHtml(response, PAGE);
+    const remote = REMOTE_PATH.exec(url.pathname);
+    if (remote !== null) return proxyRemote(request, response, by, remote[1], `${remote[2]}${url.search}`);
     try {
       const body = request.method === "POST" ? await readJson(request, API_BODY_BYTES) : {};
       const [status, value] = await api(request.method ?? "GET", url.pathname, body);
@@ -296,7 +331,7 @@ export function createBoard(deps: BoardDeps) {
     }
   }
 
-  return { handle, api, pool, store };
+  return { handle, api, pool, store, remotes };
 }
 
 /** A request's JSON object, or `{}` when it has no body. REFUSES a body over `limit` bytes, and one that is not a JSON object. */
@@ -321,7 +356,12 @@ async function serve(): Promise<void> {
   const key = boardKey(boardKeyPath(settings.stateDir));
   const dir = join(settings.stateDir, "tickets");
   const pairing = createPairing();
-  const board = createBoard({ settings, source, key, pairing, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json") });
+  const profiles = readProfiles(profilesPath());
+  if (profiles.refusal !== null) process.stderr.write(`ticket:serve: ${profiles.refusal}\n`);
+  const board = createBoard({ settings, source, key, pairing, profiles, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json") });
+  // Every tunnel this board opened ends with it.
+  process.on("exit", () => board.remotes.close());
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => process.exit(128 + constants.signals[signal]));
   await board.pool.ensureSession();
   board.pool.reconcile();
   // One request's failure ends that request, never the board.
