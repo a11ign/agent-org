@@ -5,7 +5,7 @@ import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import type { KeySource } from "../ticket-mode/settings.ts";
-import { onboard, type OnboardDeps, type OnboardOptions } from "./onboard.ts";
+import { onboard, startServices, type OnboardDeps, type OnboardOptions } from "./onboard.ts";
 
 const KEY = "lin_api_SECRETSECRETSECRET";
 const options = (over: Partial<OnboardOptions> = {}): OnboardOptions => ({ repos: [], keychain: undefined, keyFile: undefined, start: true, ...over });
@@ -94,4 +94,14 @@ test("onboard refuses to write over a host file that is not JSON", async () => {
 test("onboard refuses a Keychain service name a shell would not read as it is", async () => {
   const { deps: d, repo } = deps();
   await assert.rejects(onboard(options({ repos: [repo], keychain: "x; touch pwned" }), d), /is not a Keychain service name/);
+});
+
+test("onboard's start starts the instance and the ui service, in that order", () => {
+  const started: string[] = [];
+  const lines = startServices((name) => {
+    started.push(name);
+    return { manager: "systemd", id: `agent-org-${name}.service`, path: `/u/agent-org-${name}.service`, text: "", log: null };
+  });
+  assert.deepEqual(started, ["instance", "ui"]);
+  assert.equal(lines, "started the instance service (systemd agent-org-instance.service)\nstarted the ui service (systemd agent-org-ui.service)");
 });

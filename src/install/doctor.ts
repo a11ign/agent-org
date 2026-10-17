@@ -15,7 +15,7 @@ import { pathToFileURL } from "node:url";
 import { readLinearKey } from "../ticket-mode/linear.ts";
 import { parseTicketSettings, type KeySource, type TicketSettings } from "../ticket-mode/settings.ts";
 import { hostFilePath, type Env } from "./paths.ts";
-import { defaultServiceDeps, serviceState, type ServiceState } from "./service.ts";
+import { defaultServiceDeps, SERVICE_NAMES, serviceState, type ServiceName, type ServiceState } from "./service.ts";
 
 export const MIN_NODE_MAJOR = 24;
 
@@ -32,7 +32,7 @@ export type DoctorDeps = Readonly<{
   readKey: (source: KeySource) => string;
   /** A file's permission bits, or null when it cannot be read. */
   mode: (path: string) => number | null;
-  instanceState: () => ServiceState;
+  serviceState: (name: ServiceName) => ServiceState;
   /** Whether something answers HTTP on 127.0.0.1:`port`. */
   answers: (port: number) => Promise<boolean>;
 }>;
@@ -88,9 +88,8 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
   const { check: host, settings } = hostCheck(deps);
   const launcher = deps.which("agent-org");
   const herdr = deps.which("herdr");
-  const state = deps.instanceState();
-  const port = settings?.port ?? 4747;
-  const answering = state === "running" && await deps.answers(port);
+  const ports: Record<ServiceName, number> = { instance: settings?.port ?? 4747, ui: settings?.uiPort ?? 4748 };
+  const services = await Promise.all(SERVICE_NAMES.map((name) => serviceChecks(name, ports[name], deps)));
   return [
     nodeCheck(deps),
     launcher === null
@@ -99,12 +98,22 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
     host,
     herdr === null ? failed("herdr", "`herdr` is not on PATH", "install herdr, which runs the workers' terminals, and put it on PATH") : ok("herdr", herdr),
     keyCheck(settings, deps),
+    ...services.flat(),
+  ];
+}
+
+/** Whether `name` is registered, and whether its port answers. */
+async function serviceChecks(name: ServiceName, port: number, deps: DoctorDeps): Promise<Check[]> {
+  const state = deps.serviceState(name);
+  const answering = state === "running" && await deps.answers(port);
+  const start = `run \`agent-org start ${name}\``;
+  return [
     state === "not-registered"
-      ? failed("service", "the instance service is not registered", "run `agent-org start`")
-      : ok("service", `the instance service is registered and ${state}`),
+      ? failed(`${name} service`, `the ${name} service is not registered`, start)
+      : ok(`${name} service`, `the ${name} service is registered and ${state}`),
     answering
-      ? ok("answering", `http://127.0.0.1:${port} answers`)
-      : failed("answering", `nothing answers on http://127.0.0.1:${port}`, state === "running" ? "read the service's log, then `agent-org start` to restart it" : "run `agent-org start`"),
+      ? ok(`${name} answering`, `http://127.0.0.1:${port} answers`)
+      : failed(`${name} answering`, `nothing answers on http://127.0.0.1:${port}`, state === "running" ? `read the service's log, then ${start} to restart it` : start),
   ];
 }
 
@@ -144,7 +153,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
     },
     which: (name) => which(name), readFile: (path) => readFileSync(path, "utf8"), readKey: (source) => readLinearKey(source),
     mode: (path) => { try { return statSync(path).mode & 0o777; } catch { return null; } },
-    instanceState: () => serviceState("instance", services), answers,
+    serviceState: (name) => serviceState(name, services), answers,
   });
   console.log(report(checks));
   process.exitCode = checks.every((check) => check.ok) ? 0 : 1;
