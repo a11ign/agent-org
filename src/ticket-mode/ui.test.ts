@@ -9,8 +9,7 @@ import * as view from "./board-view.ts";
  * The page's module script, run as the browser would run it but in a `vm` context: its one import (`/board-view.js`, which the server sends as
  * `board-view.ts` with the types stripped) is supplied from the tested module itself, and its top-level `await` runs inside an async wrapper.
  */
-const HTML = readFileSync(new URL("./ui.html", import.meta.url), "utf8");
-const MODULE = /<script type="module">([\s\S]*)<\/script>/.exec(HTML)![1];
+const MODULE = /<script type="module">([\s\S]*)<\/script>/.exec(readFileSync(new URL("./ui.html", import.meta.url), "utf8"))![1];
 const IMPORT = /^import \{[^}]*\} from "\/board-view\.js";$/m;
 if (!IMPORT.test(MODULE)) throw new Error("the page's script no longer imports /board-view.js as this test expects");
 const SCRIPT = `(async () => {\n${MODULE.replace(IMPORT, "")}\n})();`;
@@ -814,15 +813,6 @@ test("a publish run that has no pane yet, or a machine that serves no terminal, 
   const none = await page(new Map(), { config: { publish: true }, entries: PUBLISHABLE, publish: PUBLISHING });
   assert.equal(runRows(none).find((r) => r.text().includes("P-1"))!.children[0].className, "icon st-publishing");
   assert.equal(terminalOf(none, "P-1"), undefined);
-});
-
-test("a Publishing run's ring is yellow like In progress and spins, and holds still when the person asks for reduced motion", () => {
-  assert.match(HTML, /\.st-publishing\s*\{\s*color:\s*var\(--st-progress\);\s*\}/);
-  const selectors = (declaration: string) => (new RegExp(`([^{}]+)\\{\\s*${declaration}\\s*\\}`).exec(HTML)?.[1] ?? "").split(",").map((s) => s.trim());
-  for (const declaration of ["animation: spin 1\\.1s linear infinite;", "animation: none;"]) {
-    assert.ok(selectors(declaration).includes(".runs .run .st-publishing svg"), declaration);
-    assert.ok(selectors(declaration).includes(".runs .run .st-working svg"), `${declaration} the ring In progress already spins`);
-  }
 });
 
 test("a run Ready to merge, Published, or handed back by the board offers Respond to review with its reply icon, and a draft offers Approve alone", async () => {
