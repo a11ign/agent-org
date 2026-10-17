@@ -2,14 +2,16 @@
 // module: the tickets' reviewer -- starts the gate's codex reviewer on a ready pull request, once per head, behind a port the pool holds
 //
 // THE PORT IS THE POOL'S ONLY SEAM: `start` a reviewer for one pull request at one head, and `live`, whether one is running for that head.
+// It also `close`s a reviewer once its verdict is posted, `retire`s a pull request's reviewer and checkout once the pull request has merged or
+// closed, and `held` lists the reviewer workspaces the session holds, for one a `ticket:review` start left that the pool does not remember.
 // The atomic adapter starts the gate's own reviewer, `spawnReviewer` in `wake.ts` with its trust rules (`review-trust.ts`) and its verdict door,
-// in the tickets' herdr session. Nothing here copies that code: it is imported. The reviewer posts as `a11ign-reviewer`, and its verdict is what
-// the pool reads back to decide whether the worker goes round again.
+// in the tickets' herdr session. Nothing here copies that code: it is imported, teardown included. The reviewer posts as `a11ign-reviewer`, and its
+// verdict is what the pool reads back to decide whether the worker goes round again.
 
-import { readFileSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { reviewerSeat } from "../review-attribution.ts";
-import { ORG_SESSION, readAgents, type ListedAgent } from "../herdr-agents.ts";
+import { reviewerInstance, reviewerSeat } from "../review-attribution.ts";
+import { ORG_SESSION, firstLine, readAgents, type ListedAgent } from "../herdr-agents.ts";
 import { pullRequestFieldsOf } from "../ticket-port/pull-request-fields.ts";
 import type { ReviewTrust } from "../review-trust.ts";
 
@@ -61,11 +63,42 @@ export const REVIEW_CAUSE = "draft-awaiting-verdict";
 /** A pull request at one head: its url, and the commit the reviewer reads and the verdict is on. */
 export type ReviewerRef = Readonly<{ pr: string; head: string }>;
 
-/** The port: start a reviewer for a ready pull request at its head, or refuse naming why; and say whether one is live for that head. */
+/**
+ * The port: start a reviewer for a ready pull request at its head, or refuse naming why; say whether one is live for that head; close it once its
+ * verdict is posted; retire a pull request's reviewer once it has merged or closed; and list the pull requests whose reviewer workspaces the session holds.
+ */
 export type ReviewerPort = Readonly<{
   start(ref: ReviewerRef): Readonly<{ label: string }> | Readonly<{ refusal: string }>;
   live(ref: ReviewerRef): boolean;
+  close(ref: ReviewerRef): CloseAnswer;
+  retire(pr: string): RetireAnswer;
+  listedPulls(): readonly string[];
 }>;
+
+/**
+ * What `close` answers: `closed` (the workspace under the seat's label is closed), `gone` (herdr lists none: nothing to close), or `busy` (one is still
+ * working: asked again), or a refusal naming why.
+ */
+export type CloseAnswer = Readonly<{ state: "closed" | "gone" | "busy" }> | Readonly<{ refusal: string }>;
+/**
+ * What `retire` answers: `retired`, with the report of the uncommitted changes its checkout is removed with (null when it had none, or none could be
+ * seen), or a refusal naming the step that did not happen. A refusal leaves whatever is not yet removed in place for the next sweep.
+ */
+export type RetireAnswer = Readonly<{ retired: true; report: string | null }> | Readonly<{ refusal: string }>;
+
+/** How many changed paths a discard report names before it says how many more there were. */
+const REPORTED_PATHS = 20;
+
+/**
+ * The log line a retire writes for the uncommitted changes its checkout is removed with: the first {@link REPORTED_PATHS} paths, then how many
+ * more there were. Null when there were none.
+ */
+function discardReport({ label, pr, head, path, paths }: { label: string; pr: string; head: string; path: string; paths: readonly string[] }): string | null {
+  if (paths.length === 0) return null;
+  const shown = paths.slice(0, REPORTED_PATHS).join(", ");
+  const more = paths.length > REPORTED_PATHS ? ` and ${paths.length - REPORTED_PATHS} more` : "";
+  return `reviewer teardown: ${label} for ${pr} at ${head} had ${paths.length} uncommitted change(s) in ${path}, discarded with the checkout: ${shown}${more}`;
+}
 
 /**
  * What the pool reads of a pull request's reviewer: its head, whether the org's own, the reviews on it, whether its checks have settled green, and
@@ -85,6 +118,12 @@ function repoKeyOf(repository: string): string | null {
   const { config, identity } = reviewerGate();
   if (repository === identity.REPO) return "";
   return config.homeProjectDeclaration().code.find((code) => code.repo === repository)?.key ?? null;
+}
+
+/** The repository a key names: the reverse of {@link repoKeyOf}, and `null` for a key the project does not declare. */
+function repositoryOfKey(key: string): string | null {
+  const { config, identity } = reviewerGate();
+  return key === "" ? identity.REPO : config.homeProjectDeclaration().code.find((code) => code.key === key)?.repo ?? null;
 }
 
 /** The reviewer's seat for a pull request: `reviewer-<n>` in the primary, `reviewer-<key>-<n>` elsewhere, or a refusal naming why it has none. */
@@ -116,6 +155,17 @@ export function readReviewState(url: string, gh: (args: string[]) => string, dec
   } catch {
     return null;
   }
+}
+
+/**
+ * The pull request's state as GitHub names it, `OPEN`, `MERGED` or `CLOSED`, or null when it does not say. A merged or closed pull request is the one
+ * `retire` is for; an unreadable one is nothing to act on.
+ */
+export function readPullState(url: string, gh: (args: string[]) => string): string | null {
+  const pull = pullOf(url);
+  if (pull === null) return null;
+  const state = pullRequestFieldsOf({ repo: pull.repository, number: pull.number, fields: "state", run: gh })?.state;
+  return state === "OPEN" || state === "MERGED" || state === "CLOSED" ? state : null;
 }
 
 /**
@@ -203,12 +253,33 @@ export function writeReviewerMemory(path: string, memory: ReviewerMemory): void 
  * The head each reviewer was started for is in `heads` (by seat label), which the pool keeps across a restart, so a restart starts a reviewer again only for a
  * head it has not reviewed. It refuses a head whose checks have not settled green: the gate's verdict is asked only of settled checks.
  */
-export function atomicReviewerPort({ session, run, gh, declared = reviewerGate().trust.declaredIdentities(), spawn = reviewerGate().wake.spawnReviewer, checkout = reviewerGate().wake.prepareReviewCheckout, heads = new Map<string, string>() }: {
+export function atomicReviewerPort({ session, run, gh, declared = reviewerGate().trust.declaredIdentities(), spawn = reviewerGate().wake.spawnReviewer, checkout = reviewerGate().wake.prepareReviewCheckout, heads = new Map<string, string>(),
+  removeCheckout = reviewerGate().wake.removeReviewCheckout, git = reviewerGate().wake.defaultGit, exists = existsSync }: {
   session: string; run: (args: string[]) => string; gh: (args: string[]) => string; declared?: DeclaredIdentities;
   spawn?: typeof import("../wake.ts").spawnReviewer; checkout?: typeof import("../wake.ts").prepareReviewCheckout; heads?: Map<string, string>;
+  removeCheckout?: typeof import("../wake.ts").removeReviewCheckout; git?: (cmd: string, args: string[], opts?: object) => string; exists?: (path: string) => boolean;
 }): ReviewerPort {
   const herdr = (args: string[]) => run(args[0] === "--session" && args[1] === ORG_SESSION ? ["--session", session, ...args.slice(2)] : args);
   const listed = (): ListedAgent[] | null => readAgents(run, { session });
+
+  /** Closes every workspace under a seat's label, as the gate's teardown does; a refusal names what would not close. */
+  const closeAll = (pr: string, label: string): Readonly<{ state: "closed" }> | Readonly<{ refusal: string }> => {
+    const problems: string[] = [];
+    const closed = reviewerGate().wake.closeReviewer(label, { run: herdr, warn: (line) => problems.push(line) });
+    return closed ? { state: "closed" } : { refusal: `no close for ${pr}: ${problems.join(" ") || `${label} would not close`}` };
+  };
+
+  /**
+   * The uncommitted paths in a checkout, none when it is gone. A `status` that fails is a refusal: a tree that could not be read is kept, never removed.
+   */
+  const uncommittedOf = (path: string): { paths: string[] } | { refusal: string } => {
+    if (!exists(path)) return { paths: [] };
+    try {
+      return { paths: git("git", ["-C", path, "status", "--porcelain"]).split("\n").filter((line) => line !== "").map((line) => line.slice(3)) };
+    } catch (err) {
+      return { refusal: `the changes in ${path} could not be read, so it is kept (${firstLine(err)})` };
+    }
+  };
 
   return {
     live({ pr, head }) {
@@ -243,6 +314,49 @@ export function atomicReviewerPort({ session, run, gh, declared = reviewerGate()
       }
       heads.set(seat.label, head);
       return { label: seat.label };
+    },
+    close({ pr, head }) {
+      const seat = seatOf(pr);
+      if ("refusal" in seat) return seat;
+      if (heads.get(seat.label) !== head) return { refusal: `no close for ${pr}: ${seat.label} was not started for ${head}` };
+      const agents = listed();
+      if (agents === null) return { refusal: `no close for ${pr}: herdr did not list the ${session} session` };
+      const holders = agents.filter((agent) => agent.label === seat.label);
+      if (holders.length === 0) return { state: "gone" };
+      // A reviewer posts its verdict and then finishes its turn: closing it mid-turn would cut that turn off, so it waits for the next look.
+      if (holders.some((agent) => agent.status === "working")) return { state: "busy" };
+      // The checkout is kept: a head that moves re-points it, and the next reviewer for this seat uses it.
+      return closeAll(pr, seat.label);
+    },
+    retire(pr) {
+      const seat = seatOf(pr);
+      if ("refusal" in seat) return seat;
+      const { wake } = reviewerGate();
+      const agents = listed();
+      if (agents === null) return { refusal: `no retire for ${pr}: herdr did not list the ${session} session` };
+      const holders = agents.filter((agent) => agent.label === seat.label);
+      if (holders.some((agent) => agent.status === "working")) return { refusal: `no retire for ${pr}: ${seat.label} is still working, and is retired once it is not` };
+      // The workspaces first, since nothing may be reading the tree when it goes; the checkout only once every workspace under the label has closed.
+      if (holders.length > 0) {
+        const closed = closeAll(pr, seat.label);
+        if ("refusal" in closed) return closed;
+      }
+      const path = wake.reviewCheckoutPath(seat.label);
+      const uncommitted = uncommittedOf(path);
+      if ("refusal" in uncommitted) return { refusal: `no retire for ${pr}: ${uncommitted.refusal}` };
+      const head = heads.get(seat.label) ?? "an unrecorded head";
+      const left = removeCheckout({ pr: seat.number, session: seat.label, key: seat.key });
+      if (left !== null) return { refusal: `no retire for ${pr}: ${left}` };
+      heads.delete(seat.label);
+      // The discard is reported only once it has happened: a removal that fails keeps the tree and says nothing was discarded.
+      return { retired: true, report: discardReport({ label: seat.label, pr, head, path, paths: uncommitted.paths }) };
+    },
+    listedPulls() {
+      return (listed() ?? []).flatMap((agent) => {
+        const instance = reviewerInstance(agent.label);
+        const repository = instance === null ? null : repositoryOfKey(instance.key);
+        return instance === null || repository === null ? [] : [`https://github.com/${repository}/pull/${instance.number}`];
+      });
     },
   };
 }

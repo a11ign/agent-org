@@ -43,7 +43,7 @@ export type BoardDeps = Readonly<{
   key: string;
   queuePath: string;
   choicePath: string;
-  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback">;
+  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers">;
   poolDeps?: Omit<PoolDeps, "settings" | "source" | "hook">;
   now?: () => number;
 }>;
@@ -288,6 +288,14 @@ async function serve(): Promise<void> {
       board.pool.watchFeedback();
     } catch (err) {
       process.stderr.write(`ticket:serve: the pull requests' feedback could not be read: ${String((err as Error)?.message ?? err)}\n`);
+    }
+  }, FEEDBACK_MS);
+  // Its own sweep, not `watchFeedback`'s: that one returns early when no run is watched, and a merged run is no longer watched.
+  setInterval(() => {
+    try {
+      board.pool.releaseReviewers();
+    } catch (err) {
+      process.stderr.write(`ticket:serve: the reviewers of merged or closed pull requests could not be released: ${String((err as Error)?.message ?? err)}\n`);
     }
   }, FEEDBACK_MS);
 }

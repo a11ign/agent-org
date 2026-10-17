@@ -22,7 +22,7 @@ function board(port = 4747, ticketSettings: Record<string, unknown> = {}, extra:
   const pool = {
     tick: async () => { ticks.push("tick"); }, stop: (key: string) => { ticks.push(`stop ${key}`); }, close: (key: string) => { ticks.push(`close ${key}`); },
     dismiss: (key: string) => { ticks.push(`dismiss ${key}`); },
-    reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {},
+    reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {}, releaseReviewers: () => {},
   };
   const made = createBoard({ settings, source, key: KEY, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7, ...extra });
   return { ...made, ticks, dir };
@@ -42,7 +42,7 @@ test("/api/parents reads the parents of the person's tickets that are not the pe
     },
     download: async () => [],
   };
-  const pool = { tick: async () => {}, stop: () => {}, close: () => {}, dismiss: () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {} };
+  const pool = { tick: async () => {}, stop: () => {}, close: () => {}, dismiss: () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {}, releaseReviewers: () => {} };
   const { api } = createBoard({ settings, source, key: KEY, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7 });
   await api("GET", "/api/tickets", {});
   const [status, parents] = await api("GET", "/api/parents", {}) as [number, Ticket[]];
@@ -112,7 +112,7 @@ function planningBoard(attachPlan: TicketSource["attachPlan"] | null = async () 
     tickets: { plan: "-plan-[^/]*\\.md$", planner: { run, state: "Planned" } } });
   const planned = { ...ticket("NBF-1"), uploads: ["NBF-1-0001-plan-x.md"] };
   const source: TicketSource = { assigned: async () => [planned, ticket("NBF-2"), ticket("NBF-3")], read: async () => null, download: async () => [], ...(attachPlan ? { attachPlan } : {}) };
-  const pool = { tick: async () => {}, stop: () => {}, close: () => {}, dismiss: () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {} };
+  const pool = { tick: async () => {}, stop: () => {}, close: () => {}, dismiss: () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {}, releaseReviewers: () => {} };
   return createBoard({ settings, source, key: KEY, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7 });
 }
 

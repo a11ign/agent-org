@@ -2443,7 +2443,7 @@ function noteAbsence({ session, pr, event, ticks, complete, agentless }: { sessi
  * pull request's teardown "left running" on every tick for as long as they lived. Each close is tried even after one fails, so a
  * retry has less to do, and the instance stays registered until all are gone.
  */
-function closeReviewer(session: string, deps: { run: (args: string[]) => string; warn: (line: string) => void; }) {
+export function closeReviewer(session: string, deps: { run: (args: string[]) => string; warn: (line: string) => void; }) {
   const ids = workspaceIdsOf(deps.run, session);
   if (ids.length === 0) {
     deps.warn(`reviewer teardown: "${session}" is finished but no workspace is listed under its label -- left running.`);
@@ -7434,7 +7434,7 @@ export function spareWorktrees({ role, rows, repoRoot, run = defaultGit }: { rol
       merge: tree.branch === null ? detachedMergeStatus(tree.path, { run }) : mergeStatus(repoRoot, tree.branch, { run }) }));
 }
 
-const defaultGit = (cmd: string, args: string[], opts?: object) =>
+export const defaultGit = (cmd: string, args: string[], opts?: object) =>
   execFileSync(cmd, args, { encoding: "utf8", timeout: 30_000, ...opts, env: sandboxGitEnv() });
 
 /**
