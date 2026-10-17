@@ -35,7 +35,7 @@ A written reviewer verdict that never reaches its pull request, and a conflictin
 
 **Not run here.** The row's rehearsal on the agents host (the switch row for `reviews.verdictDelivery`, run through `machinery:flag` and quoted on the row) cannot be run from this session: the agents host is unavailable.
 
-Acceptance: `cd ~/repos/agent-org && node_modules/.bin/rstest run --config scripts/rstest/rstest.config.ts src/packaging/verdict-delivery.test.ts`
+Acceptance: `node_modules/.bin/rstest run --config scripts/rstest/rstest.config.ts src/packaging/verdict-delivery.test.ts`
 
 Closes: a11ign/agent-org#1649
 
