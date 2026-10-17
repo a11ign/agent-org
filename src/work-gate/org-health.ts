@@ -523,10 +523,12 @@ export function orgHealthNow({ prsRead, keyedPrsRead = [], readyRead, openRowsRe
       readTickHealth?: () => import("../work-tick-health.ts").TickHealth | null | undefined;
       /** agent-org#1418: each declared repository's last whole read; OMITTED is "does not ask", and only the live gate (`work-gate.ts`) asks, on a webhook host */
       readSweeps?: () => SweepFact | undefined;
+      /** agent-org#1667: the named classed-OUTSIDE pull requests for the `session-pr-classed-outside` reading; OMITTED is "does not ask", and only the live gate (`work-gate.ts`) hands it over */
+      readSessionPrOutside?: () => import("../org-health.ts").SessionPrOutsideFact | undefined;
   } = {}) {
   const { now = Date.now(), lastMergedAt = () => readLatestMerge(defaultRun, mergeRepositories()), readCaptures = (at) => readFleetCaptures({ now: at }), log, readCopies, readRefusals,
     readLabJobs = dispatchedLabJobsOrSay, readWaits = waitTickFacts, release, readHolderAgents = readAgents, readToolAgreement = () => undefined, readNodeStrips = () => undefined, readReleaseRuns = () => undefined, readReleaseFailures = () => undefined, raiseReleaseIncidents = () => {}, readFleetBuildIncident = () => undefined, readReleaseBehind = () => undefined, readClassRepeat = () => undefined,
-    teamAccess = () => readTeamAccess(defaultRun), readBoardTruth = () => undefined, readFlagSwitches = () => undefined, readTickRecord = () => undefined, readTickHealth = () => undefined, readSweeps = () => undefined,
+    teamAccess = () => readTeamAccess(defaultRun), readBoardTruth = () => undefined, readFlagSwitches = () => undefined, readTickRecord = () => undefined, readTickHealth = () => undefined, readSweeps = () => undefined, readSessionPrOutside,
     readMilestoneMoves: readMoves = io.lastMergedAt === undefined ? readMilestoneMoves : undefined } = io; // #4295: the real exact-start read exactly when the merge read is real
   const { prs, required, primaryDrift, claimRefusals, claimFacts } = decideArgs;
   // #2996: THE WAITS ARE READ BEFORE THE READINGS, because a hold's excuse is now a question about its condition. `null` is a refused
@@ -569,6 +571,7 @@ export function orgHealthNow({ prsRead, keyedPrsRead = [], readyRead, openRowsRe
     ...tickRecordFact(readTickRecord()), // agent-org#1208
     ...sweepsFact(readSweeps()), // agent-org#1418
     ...tickHealthFact(readTickHealth()),
+    ...(readSessionPrOutside && { sessionPrOutside: readSessionPrOutside() }), // agent-org#1667
     ...boardTruthFact({ openRowsRead, claimedComments, waitFacts: waits?.facts ?? null, now }, readBoardTruth), // #4045
   };
   // #5157: the ledger is the HOST'S unless a caller hands over its own; the lab-jobs test passes `() => []`, so a busy host cannot trip it

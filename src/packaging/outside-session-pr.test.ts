@@ -19,7 +19,7 @@ import { decide } from "../work-gate.ts";
 import { outsideSessionPrFlagOn } from "../work-gate/tick.ts";
 import { SESSION_PR_OUTSIDE_FLAG, classedOutsideSessionPrs, onlyNoAcceptanceRun, sessionPrOutsideNow, sessionPrVerdictWakes } from "../work-gate/outside-session-pr.ts";
 import { FLAG_REGISTRY } from "../machinery-flag.ts";
-import { MACHINERY_SIGNALS, SESSION_PR_OUTSIDE_MINUTES, STANDARD_MACHINERY_SIGNALS, emptyCanaryState, machineryValues, withMachineryFlag } from "../org-health.ts";
+import { MACHINERY_SIGNALS, SESSION_PR_OUTSIDE_MINUTES, STANDARD_MACHINERY_SIGNALS, emptyCanaryState, machineryValues, sessionPrOutsideReading, sessionPrOutsideReadings, withMachineryFlag } from "../org-health.ts";
 import { OUTSIDE, INSIDE, reviewTrustOf, type DeclaredIdentities } from "../review-trust.ts";
 import { CHAIRMAN_LOGINS } from "../work-gate/vocabulary.ts";
 import { SESSION_PREFIX } from "../project-vocabulary.ts";
@@ -130,7 +130,7 @@ test("FLAG OFF: the orders of an ordinary tick are unchanged by the flag, a red 
 
 test("SIGNAL: the reader names a classed pull request only with the flag on, and null when the pull requests are unread", () => {
   const prs = [prOf(1647)];
-  assert.deepEqual(sessionPrOutsideNow({ on: true, prs, declared: IDENTITIES }), [1647]);
+  assert.deepEqual(sessionPrOutsideNow({ on: true, prs, declared: IDENTITIES }), [{ number: 1647, author: "worker-account-1667", session: SESSION }]);
   assert.equal(sessionPrOutsideNow({ on: false, prs, declared: IDENTITIES }), null, "flag off is null, so the canary keeps its clocks and trips nothing");
   assert.equal(sessionPrOutsideNow({ on: true, prs: null, declared: IDENTITIES }), null, "unread is null, not zero");
 });
@@ -146,6 +146,28 @@ test("CLOCK: the signal counts a pull request classed OUTSIDE at 10 minutes and 
   assert.equal(at9.values[MACHINERY_SIGNALS.SESSION_PR_CLASSED_OUTSIDE], 0, "at 9 minutes it does not trip");
   const at10 = machineryValues({ facts: facts([1647]), since: T0 + 9 * 60_000, now: T0 + 10 * 60_000, memo: first.memo });
   assert.equal(at10.values[MACHINERY_SIGNALS.SESSION_PR_CLASSED_OUTSIDE], 1, "at 10 minutes it trips");
+});
+
+test("NAMED READING: a classed pull request trips at 10 minutes, named by author and session; at 9 it is clear; OFF is no reading; unread is unknown", () => {
+  const named = (since: number, number = 1647) => ({ number, author: "worker-account-1667", session: SESSION, since });
+  const at = (minutes: number) => NOW - minutes * 60_000;
+  const tripped = sessionPrOutsideReadings({ now: NOW, enabled: true, prs: [named(at(11))] });
+  assert.equal(tripped.length, 1);
+  assert.equal(tripped[0].status, "tripped", "POSITIVE CONTROL: a pull request classed OUTSIDE for 11 minutes trips");
+  assert.equal(tripped[0].signal, MACHINERY_SIGNALS.SESSION_PR_CLASSED_OUTSIDE);
+  assert.match(tripped[0].detail, /#1647 by worker-account-1667 as worker-agent-org-1667, 11 min/, "the detail names the pull request, its author and its session");
+  assert.equal(sessionPrOutsideReadings({ now: NOW, enabled: true, prs: [named(at(9))] })[0].status, "clear", "NEGATIVE CONTROL: at 9 minutes it is clear");
+  assert.deepEqual(sessionPrOutsideReadings({ now: NOW, enabled: false, prs: [named(at(11))] }), [], "OFF gives no reading at all, so no order");
+  assert.equal(sessionPrOutsideReadings({ now: NOW, enabled: true, prs: null })[0].status, "unknown", "a refused read is unknown, not clear");
+});
+
+test("NAMED READING, CONTROL: a declared-login pull request beside a classed one is not named", () => {
+  const prs = [prOf(1647), prOf(1648, { ...DECLARED_AUTHOR })];
+  const named = sessionPrOutsideNow({ on: true, prs, declared: IDENTITIES }) ?? [];
+  const reading = sessionPrOutsideReading({ now: NOW, prs: named.map((pr) => ({ ...pr, since: NOW - 11 * 60_000 })) });
+  assert.equal(reading.status, "tripped");
+  assert.match(reading.detail, /#1647 by/, "POSITIVE CONTROL: the undeclared-author pull request is named");
+  assert.doesNotMatch(reading.detail, /#1648/, "NEGATIVE CONTROL: the declared-author pull request is not named");
 });
 
 test("CLOCK: a pull request classed OUTSIDE by a declared-login or a fork is never counted", () => {

@@ -1077,6 +1077,29 @@ export function approvedRequiredReadings({ now, enabled, prs }: ApprovedRequired
   return [approvedRequiredReading({ now, prs })];
 }
 
+/** agent-org#1667: `enabled` is `reviews.outsideSessionPr`'s decision; `prs` names each same-repository pull request with a `session:` label that is classed OUTSIDE, and `since` is when the canary first saw it so (`now` while the canary keeps no clock yet). `null` is a refused read. */
+export type SessionPrOutsideFact = { enabled: boolean, prs: { number: number; author: string; session: string; since: number; }[] | null };
+
+/** agent-org#1667, THE NAMED READING OF `session-pr-classed-outside`: a pull request classed OUTSIDE for `SESSION_PR_OUTSIDE_MINUTES` trips, named by author and session, so `ceo` reads whose it is. */
+export function sessionPrOutsideReading({ now, prs }: { now: number; prs: SessionPrOutsideFact["prs"]; }): Reading {
+  const signal = MACHINERY_SIGNALS.SESSION_PR_CLASSED_OUTSIDE;
+  if (prs === null) return unknown(signal, "the open pull requests could not be read, so the ones classed OUTSIDE are not known");
+  const window = SESSION_PR_OUTSIDE_MINUTES * MS_PER_MINUTE;
+  const tripped = prs.filter((pr) => now - pr.since >= window).sort((a, b) => a.since - b.since);
+  if (tripped.length === 0) return clear(signal);
+  const first = tripped[0].since + window;
+  const named = tripped.slice(0, MAX_NAMED).map((pr) => `#${pr.number} by ${pr.author} as ${pr.session}, ${Math.floor((now - pr.since) / MS_PER_MINUTE)} min`);
+  const more = tripped.length > MAX_NAMED ? `, and ${tripped.length - MAX_NAMED} more` : "";
+  return { signal, status: "tripped", firstTrippedAt: first, discriminator: `${signal}@${hourOf(first)}`,
+    detail: `${tripped.length} same-repository PR(s) with a session: label classed OUTSIDE for ${SESSION_PR_OUTSIDE_MINUTES} min or more: ${named.join("; ")}${more}` };
+}
+
+/** The reading when `reviews.outsideSessionPr` is ON; NONE when it is OFF, so the shipped-OFF change adds no order to any tick. */
+export function sessionPrOutsideReadings({ now, enabled, prs }: SessionPrOutsideFact & { now: number; }): Reading[] {
+  if (!enabled) return [];
+  return [sessionPrOutsideReading({ now, prs })];
+}
+
 /**
  * SIGNAL 11: A POOL IS BELOW `POOL_LOW_FRACTION` OF ITS LIMIT (#3448). A session that meets an exhausted pool sleeps on the reset, and three standing seats did at
  * once on 2026-10-04 with nothing in the org knowing why its inbox was three orders deep. The reading names the account, the pool and the reset, because "low"
@@ -2239,6 +2262,8 @@ export function orgHealthReadings(facts: {
         approvedDirty?: ApprovedDirtyFacts;
         /** agent-org#1248: the approved-REVIEW_REQUIRED reading. `enabled` is `health.approvedRequired`'s decision; OFF gives no reading, so the caller may always pass it. */
         approvedRequired?: ApprovedRequiredFacts;
+        /** agent-org#1667: the named classed-OUTSIDE pull requests. `enabled` is `reviews.outsideSessionPr`'s decision; OFF gives no reading, so the caller may always pass it. */
+        sessionPrOutside?: SessionPrOutsideFact;
     }): Reading[] {
   const readings = [noMergeReading(facts), redPrReading(facts), refusedRowReading(facts),
     primaryReading({ now: facts.now, drift: facts.drift, since: facts.primarySince })];
@@ -2275,6 +2300,7 @@ export function orgHealthReadings(facts: {
   if (facts.tickHealth !== undefined) readings.push(tickWallReading({ day: isoOf(facts.now).slice(0, 10), health: facts.tickHealth }));
   if (facts.approvedDirty !== undefined) readings.push(...approvedDirtyReadings({ now: facts.now, ...facts.approvedDirty }));
   if (facts.approvedRequired !== undefined) readings.push(...approvedRequiredReadings({ now: facts.now, ...facts.approvedRequired }));
+  if (facts.sessionPrOutside !== undefined) readings.push(...sessionPrOutsideReadings({ now: facts.now, ...facts.sessionPrOutside }));
   return readings;
 }
 

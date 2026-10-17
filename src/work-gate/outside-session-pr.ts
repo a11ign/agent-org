@@ -9,8 +9,8 @@
  * Two readers, both read only while `reviews.outsideSessionPr` is ON (`SESSION_PR_OUTSIDE_FLAG`), OFF is every order and signal as it was:
  *   - `sessionPrVerdictWakes`: the pull requests whose verdict at the current head is a not-convinced one whose ONLY finding is that no CI
  *     Acceptance run is available. `withholdOutsideFollowUps` keeps that one order, addressed to the reader (`ownerOfPr`).
- *   - `sessionPrOutsideNow`: the numbers of the classed-OUTSIDE pull requests, for `session-pr-classed-outside`, which counts each one that has
- *     been so classed for `SESSION_PR_OUTSIDE_MINUTES` (the clock is kept in the canary's memo, as `conflicting-pr-worker-idle`'s is).
+ *   - `sessionPrOutsideNow`: the classed-OUTSIDE pull requests, named, for the reading `session-pr-classed-outside` (`orgHealthReadings`), and for
+ *     the canary, which counts each one that has been so classed for `SESSION_PR_OUTSIDE_MINUTES` (the clock is kept in the canary's memo).
  *
  * Pure: nothing here reads the host's state directory or reaches `gh`. The flag is read by the caller (`outsideSessionPrFlagOn`, in `tick.ts`).
  */
@@ -75,14 +75,17 @@ export function sessionPrVerdictWakes(prs: any[], declared: DeclaredIdentities):
   return wakes;
 }
 
+/** A classed-OUTSIDE pull request as the signal and its named reading state it: the number, the author's login and the session its label names. */
+export type SessionPrOutside = { number: number; author: string; session: string; };
+
 /**
- * agent-org#1667, the signal's reader: the numbers of the pull requests `classedOutsideSessionPrs` names, READ ONLY WHILE THE FLAG IS ON. `null`
- * when it is OFF or the pull requests are unread, so the canary keeps its clocks and trips nothing (as `conflictingIdleNow` does).
+ * agent-org#1667, the signal's reader: the pull requests `classedOutsideSessionPrs` names, READ ONLY WHILE THE FLAG IS ON. `null` when it is OFF or
+ * the pull requests are unread, so the canary keeps its clocks and trips nothing (as `conflictingIdleNow` does), and the named reading is unknown.
  * @param on the flag's reading
  * @param prs the pull requests the gate reads, or `null` when they are unread
  * @param declared the identities the host declares
  */
-export function sessionPrOutsideNow({ on, prs, declared }: { on: boolean; prs: any[] | null; declared: DeclaredIdentities; }): number[] | null {
+export function sessionPrOutsideNow({ on, prs, declared }: { on: boolean; prs: any[] | null; declared: DeclaredIdentities; }): SessionPrOutside[] | null {
   if (!on || prs === null) return null;
-  return classedOutsideSessionPrs(prs, declared).map((pr) => pr.number);
+  return classedOutsideSessionPrs(prs, declared).map((pr) => ({ number: pr.number, author: String(pr.author?.login ?? ""), session: String(sessionOf(pr)) }));
 }
