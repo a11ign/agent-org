@@ -22,7 +22,7 @@ import { readTrunkRed, trunkOfCodeRepository, trunkRedOrders } from "../trunk-re
 import { recordIgnoredChairmanLabels, recordTickFailures as recordFailuresOf } from "../failure-recorders.ts";
 import { readJsonObject, writeJsonObject } from "../claim-stall.ts";
 import { requiredWhenNeeded, perPullRequestOrders, greenUnarmedOrders, type UnarmedFacts, reviewBlockedOrders, stalledPrOrders,
-  STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr, ROW_REVIEW_SKILL_FLAG, PR_OWNER_ROUTING_FLAG, OWNERLESS_ASK_FLAG, ownerlessRedPrs, withholdOutsideFollowUps, routeDeadOwnerRefusals, reviewOnlyRefs, SAME_HEAD_REFAIL_FLAG, acceptanceGateOf, firstRefusalOf, treeWideGuardVerdict, settleOutsideArm, settleOutsideRefusals } from "./pr-orders.ts";
+  STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr, ROW_REVIEW_SKILL_FLAG, PR_OWNER_ROUTING_FLAG, OWNERLESS_ASK_FLAG, ownerlessRedPrs, ownerlessAsks, ownerlessUnarmedOrders, withholdOutsideFollowUps, routeDeadOwnerRefusals, reviewOnlyRefs, SAME_HEAD_REFAIL_FLAG, acceptanceGateOf, firstRefusalOf, treeWideGuardVerdict, settleOutsideArm, settleOutsideRefusals } from "./pr-orders.ts";
 import { treeWideGuardFilesIn, runTreeWideGuards, outsideGuardsOn, shadowGuardsVerdict, guardSweepJobOf, namedJobOf } from "../lib/tree-wide-guard-org-side.ts"; // agent-org#1503, #1580, #1579
 import { outsideOwnedPathsOn, ownedPathsVerdict, ownedPathsJobOf, shadowOwnedPathsVerdict } from "../owned-path-signoff.ts"; // agent-org#1598
 import { readFileSync } from "node:fs";
@@ -304,7 +304,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
     prompt: string; causeKey: string;
 }[] {
   const ownerRouting = prOwnerRoutingFlagOn(prOwnerRouting); // #1325: read ONCE, for the review-blocked set below and the last step
-  const ownerless = ownerRouting && ownerlessAskFlagOn(ownerlessAsk) ? ownerlessRedPrs(prs, required, nowMs) : []; // agent-org#1648: read ONCE, with the routing it is withheld by
+  const asks = ownerRouting && ownerlessAskFlagOn(ownerlessAsk) ? ownerlessAsks(prs, required, nowMs, identities ?? declaredIdentities()) : new Map(); // agent-org#1648, #1671: read ONCE, with the routing it is withheld by
   // FIRST, BEFORE EVERY OTHER CAUSE (#2356): a red `main` outranks even `answer-owed` -- see `trunkRedOrders`.
   // `answer-owed` says another session is ALREADY STOPPED waiting on them, which outranks any standing question.
   const orders = [...trunkRedOrders(trunkRed), ...primaryStaleOrders(primaryDrift), ...answerOrders(answerOwed)]; // #2781: a stale primary next, every order below is given from its code
@@ -396,8 +396,9 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // without classifying it is caught by `work-gate.test.ts` rather than silently surviving a window.
   // #1325: LAST, over EVERY cause, because the PR causes come from six producers. With the flag on, an outside or chairman-authored pull request keeps its review.
   // #1370: the rejected review on a dead owner's pull request goes to a fresh worker, after the withholding (which never touches a worker's pull request).
-  const routed = ownerRouting ? routeDeadOwnerRefusals(withholdOutsideFollowUps(orders, prs, identities ?? declaredIdentities(), ownerless), prs) : orders;
-  return drain ? routed.filter((o) => !START_CAUSES.includes(o.cause)) : routed;
+  const routed = ownerRouting ? routeDeadOwnerRefusals(withholdOutsideFollowUps(orders, prs, identities ?? declaredIdentities(), asks), prs) : orders;
+  // agent-org#1671: AFTER the drain filter. An approved pull request out of the queue is the ask itself, and nothing about it is withheld.
+  return [...(drain ? routed.filter((o) => !START_CAUSES.includes(o.cause)) : routed), ...ownerlessUnarmedOrders(asks)];
 }
 
 /**
@@ -644,7 +645,7 @@ function repositoryNote(scope: Scope) {
  * #4386: `home` is the PRIMARY tracker's open rows and repository, which a scope with NO tracker of its own (agent-org's) takes its pull requests' owners from.
  * @returns `defects`: the pull requests the ladder could not own though they name a live claimant; `trunkRed`: the scope's `main` as read, for the failure ledger (#4475), and `repo`: the code repository it is the `main` of (agent-org#674: a green reading carries no repository of its own, and the ledger ends a standing red by it)
  */
-export function scopeTick(scope: Scope, drain: boolean, read: ReturnType<typeof readLanes> & { siblingPrs?: any[]; home?: HomeRows; } = readLanes(scope), readings: { code: typeof codeReadings; tracker: (lists: { allOpen: any[]; rows: any[]; }) => Omit<ReturnType<typeof trackerReadings>, "chairmanRows"> & { chairmanRows?: Set<number>; }; } = { code: codeReadings, tracker: trackerReadings }, identities?: DeclaredIdentities): { orders: any[]; blocked: any[]; refused: string[]; defects: ResolverDefect[]; trunkRed: ReturnType<typeof readScopeTrunkRed>; repo: string | undefined; } {
+export function scopeTick(scope: Scope, drain: boolean, read: ReturnType<typeof readLanes> & { siblingPrs?: any[]; home?: HomeRows; } = readLanes(scope), readings: { code: typeof codeReadings; tracker: (lists: { allOpen: any[]; rows: any[]; }) => Omit<ReturnType<typeof trackerReadings>, "chairmanRows"> & { chairmanRows?: Set<number>; }; } = { code: codeReadings, tracker: trackerReadings }, identities?: DeclaredIdentities, ownerlessAsk?: boolean): { orders: any[]; blocked: any[]; refused: string[]; defects: ResolverDefect[]; trunkRed: ReturnType<typeof readScopeTrunkRed>; repo: string | undefined; } {
   const { prs, readyRows, promotableRows, chairmanBlocked, openRows } = read;
   const refused = [
     ...(prs === null ? [`the pull-request list of ${scope.code?.repo}`] : []),
@@ -666,7 +667,7 @@ export function scopeTick(scope: Scope, drain: boolean, read: ReturnType<typeof 
     openRows: allOpen, claimedComments: tracker.claimedComments, unarmed: code.unarmed, closings: tracker.closings, trunkRed: code.trunkRed,
     // #1085: a keyed tracker's chairman rows are offered first, as a home row's are (#4524); a scope with no tracker has none to ask about
     offerHierarchy: tracker.chairmanRows === undefined ? undefined : { chairmanRows: tracker.chairmanRows },
-    key: scope.key, repo: scope.code?.repo ?? scope.tracker?.repo, identities });
+    key: scope.key, repo: scope.code?.repo ?? scope.tracker?.repo, identities, ownerlessAsk });
   return { orders: orders.map((order) => ({ ...order, prompt: `${order.prompt}${repositoryNote(scope)}` })),
     blocked: partitionUnclaimed(rows, prFiles, { rowBranches: null, openRows: allOpen }).blocked, refused, defects: owned.defects, trunkRed: code.trunkRed, repo: scope.code?.repo };
 }

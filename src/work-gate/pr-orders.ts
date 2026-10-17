@@ -29,6 +29,8 @@ import { HOME_CHECKOUT } from "../project-config.ts";
 import { decisionSwitchesPath } from "../decision-provider.ts";
 // agent-org#1573: the outside home's pass is the sweep module's (it owns the armed read and `arm-pr`'s command); only a call, never a load-time read, so the cycle note above holds.
 import { outsideArmPass, type OutsideArmPr, type OutsideArmResult } from "../auto-arm-sweep.ts";
+// agent-org#1671: called at decide time only, never read at load time, so the cycle the header describes holds.
+import { approvedSince, UNQUEUED_MINUTES } from "../approved-unqueued.ts";
 // agent-org#1578: the shadow verdict is the one the arming doors already ask (agent-org#1501); only a call, never a load-time read.
 import { deliberateRefusalVerdict, outsideRefusalsOn } from "../deliberate-refusal.ts";
 import { ORG_LOGINS } from "../messaging/sources/readers.ts";
@@ -1567,14 +1569,16 @@ const DEPENDENCY_BOT_WORKER_CAUSES: readonly string[] = Object.freeze(["pr-check
  * @param orders every order `decide` has made, in the order it made them
  * @param prs the open pull requests, which say who each one's author is
  * @param declared the identities the org declares, the same reading `perPullRequestOrders` takes
+ * @param asks the ownerless asks of this tick (`ownerlessAsks`), keyed by subject. An order for an asked pull request is re-addressed to the reader, as
+ *   long as it is the cause that ask is for: a red build's `pr-checks-failing`, or an approved pull request's `pr-green-unarmed`
  */
-export function withholdOutsideFollowUps(orders: any[], prs: any[], declared: DeclaredIdentities, ownerless: any[] = []): any[] {
+export function withholdOutsideFollowUps(orders: any[], prs: any[], declared: DeclaredIdentities, asks: Map<string, OwnerlessAsk> = new Map()): any[] {
   const withheld = new Set([...reviewOnlyRefs(prs, declared)].map((ref) => `pr-${ref}`));
   const botRefs = new Set(prs.filter((pr) => ownerOfPr(pr).source === "dependency-bot").map((pr) => `pr-${subjectRef(pr.repoKey, pr.number)}`));
-  const asked = new Set(ownerless.map((pr) => `pr-${subjectRef(pr.repoKey, pr.number)}`));
   return orders.flatMap((order) => {
     if (botRefs.has(order.subject) && order.session === UNOWNED_PR_SESSION && DEPENDENCY_BOT_WORKER_CAUSES.includes(order.cause)) return [toDependencyBotWorker(order)];
-    if (asked.has(order.subject) && OWNERLESS_ASK_CAUSES.includes(order.cause)) return [toOrchestrator(order)];
+    const ask = asks.get(order.subject);
+    if (ask && order.cause === (CAUSE_OF_STALL as Record<string, string>)[ask.reason]) return [toOrchestrator(order, ask)];
     return !withheld.has(order.subject) || REVIEW_CAUSES.includes(order.cause) ? [order] : [];
   });
 }
@@ -1583,19 +1587,105 @@ export function withholdOutsideFollowUps(orders: any[], prs: any[], declared: De
 export const OWNERLESS_ASK_FLAG = "prs.ownerlessAsk";
 /** The reader an ownerless red pull request is asked of: `orchestrator` can re-lane it to a session that should fix it, or close it. */
 export const OWNERLESS_ASK_SESSION = "orchestrator";
-/** The one cause the ownerless ask keeps. A red build is the only order that says something is broken and nobody is fixing it. */
-const OWNERLESS_ASK_CAUSES: readonly string[] = Object.freeze(["pr-checks-failing"]);
 /** The stall reasons that are a red build: the PR's own red check, the queue's ejection, and a build that never finished. */
 const RED_STALL_REASONS: readonly string[] = Object.freeze([STALL_REASON.RED, STALL_REASON.EJECTED, STALL_REASON.HUNG_CHECK]);
+/**
+ * agent-org#1671: the owner sources the ask reaches. `ceo` is nobody named and `owner-gone` a dead owner; `chairman-author` is the #1648 case. A dependency
+ * bot's pull request keeps its worker (#1368), and an automation writer's keeps its own rung.
+ */
+const OWNERLESS_ASK_SOURCES: readonly string[] = Object.freeze(["chairman-author", "ceo", "owner-gone"]);
 
-/** agent-org#1648: the open pull requests no session is named on (`ownerOfPr` is `chairman-author`) that are red, ejected or hung. PURE. */
-export function ownerlessRedPrs(prs: any[], required: string[] | null = null, nowMs: number = Date.now()): any[] {
-  return (prs ?? []).filter((pr) => pr && ownerOfPr(pr).source === "chairman-author" && RED_STALL_REASONS.includes(stallReasonOf(pr, required, nowMs)));
+/**
+ * agent-org#1648, widened by agent-org#1671: WHY one pull request is asked of `OWNERLESS_ASK_SESSION`, and since when. `reason` is the stall it is asked for,
+ * `source` the owner rung it was found under, `minutes` how long that has held (`null` when no time was read), `mention` the pull request's name.
+ */
+export type OwnerlessAsk = { reason: string; source: string; minutes: number | null; mention: string; number: number; repo: string; };
+
+/**
+ * agent-org#1648, widened by agent-org#1671: the ask for ONE pull request, or `null`. The pull request must carry no session (owner source `chairman-author`,
+ * `ceo` or `owner-gone`) and be one of: red, ejected or hung (`RED_STALL_REASONS`), or approved and out of the queue for MORE than `UNQUEUED_MINUTES`.
+ * An OUTSIDE pull request is never asked under `ceo` or `owner-gone`: its author is not ours to wake, and `reviewOnlyRefs` withholds it. PURE.
+ */
+export function ownerlessAskOf(pr: any, required: string[] | null, nowMs: number, declared: DeclaredIdentities = declaredIdentities()): OwnerlessAsk | null {
+  if (!pr) return null;
+  const { source } = ownerOfPr(pr);
+  if (!OWNERLESS_ASK_SOURCES.includes(source)) return null;
+  if (source !== "chairman-author" && reviewTrustOf(pr, declared) === OUTSIDE) return null;
+  const reason = stallReasonOf(pr, required, nowMs);
+  const mention = subjectMention(pr);
+  if (RED_STALL_REASONS.includes(reason)) {
+    const since = stalledSinceMs(pr, reason, required, nowMs);
+    return { reason, source, minutes: since === null ? null : minutesBetween(since, nowMs), mention, number: pr.number, repo: pr.repo };
+  }
+  if (reason !== STALL_REASON.UNARMED) return null;
+  const approved = approvedSince(pr.reviews);
+  if (approved === null || nowMs - approved <= UNQUEUED_MINUTES * MS_PER_MINUTE) return null;
+  return { reason, source, minutes: minutesBetween(approved, nowMs), mention, number: pr.number, repo: pr.repo };
 }
 
-/** agent-org#1648: the order re-addressed to the reader of an ownerless pull request. Its causeKey moves with the session, as `toDependencyBotWorker`'s does. */
-function toOrchestrator(order: any) {
-  return { ...order, session: OWNERLESS_ASK_SESSION, causeKey: order.causeKey.replace(`${UNOWNED_PR_SESSION}/`, `${OWNERLESS_ASK_SESSION}/`) };
+/** agent-org#1671: the moment a red, ejected or hung pull request's stall began, in ms, or `null` when no time was read. */
+function stalledSinceMs(pr: any, reason: string, required: string[] | null, nowMs: number): number | null {
+  const at = reason === STALL_REASON.EJECTED ? pr.ejection?.removedAt
+    : reason === STALL_REASON.HUNG_CHECK ? hungCheckOf(pr, required, nowMs)?.startedAt
+    : failingRunStartedAt(blockingChecks(newestPerName(pr?.statusCheckRollup ?? []), required));
+  const ms = Date.parse(String(at ?? ""));
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/** agent-org#1671: whole minutes from `sinceMs` to `nowMs`, never negative. */
+function minutesBetween(sinceMs: number, nowMs: number): number {
+  return Math.max(0, Math.floor((nowMs - sinceMs) / MS_PER_MINUTE));
+}
+
+/** agent-org#1648: the open pull requests the ask reaches (`ownerlessAskOf` is not `null`). This is the population `ownerless-pr-unreached` counts. PURE. */
+export function ownerlessRedPrs(prs: any[], required: string[] | null = null, nowMs: number = Date.now(), declared: DeclaredIdentities = declaredIdentities()): any[] {
+  return (prs ?? []).filter((pr) => ownerlessAskOf(pr, required, nowMs, declared) !== null);
+}
+
+/**
+ * agent-org#1671: THE ASKS OF ONE TICK, keyed by the subject each order carries (`pr-<ref>`), so `withholdOutsideFollowUps` can re-address the order and
+ * say why. PURE.
+ */
+export function ownerlessAsks(prs: any[], required: string[] | null = null, nowMs: number = Date.now(), declared: DeclaredIdentities = declaredIdentities()): Map<string, OwnerlessAsk> {
+  return new Map((prs ?? []).flatMap((pr) => {
+    const ask = ownerlessAskOf(pr, required, nowMs, declared);
+    return ask ? [[`pr-${subjectRef(pr.repoKey, pr.number)}`, ask] as const] : [];
+  }));
+}
+
+/**
+ * agent-org#1648, #1671: the order re-addressed to the reader of an ownerless pull request. Its causeKey moves with the session, as `toDependencyBotWorker`'s
+ * does, from the session the order was made to (`ceo`, or `product-manager` for a dead owner). Its prompt OPENS WITH the ask: the pull request, the owner source
+ * it was found under and the minutes it has held, so the reader needs no history to act on it.
+ */
+function toOrchestrator(order: any, ask: OwnerlessAsk) {
+  return { ...order, session: OWNERLESS_ASK_SESSION, prompt: `${askSentence(ask)} ${order.prompt}`, causeKey: order.causeKey.replace(`${order.session}/`, `${OWNERLESS_ASK_SESSION}/`) };
+}
+
+/** agent-org#1671: the sentence that opens every ask: the pull request, its owner source and how long it has held. */
+function askSentence(ask: OwnerlessAsk): string {
+  const held = ask.minutes === null ? "for a time no read gives" : `for ${ask.minutes} min`;
+  const state = ask.reason === STALL_REASON.UNARMED ? "approved and out of the merge queue" : "stalled on its own checks";
+  return `ASKED OF YOU, the reader, because no live session owns ${ask.mention}: its owner source is \`${ask.source}\`, and it has been ${state} ${held}.`;
+}
+
+/**
+ * agent-org#1671: THE ORDER FOR AN APPROVED PULL REQUEST OUT OF THE QUEUE, addressed to `OWNERLESS_ASK_SESSION`, one per asked pull request. `decide` makes no
+ * per-pull-request order for `pr-green-unarmed`: `greenUnarmedOrders` makes ONE order for the machine, to product-manager, naming every unarmed pull request at once.
+ * So an approved pull request nobody owns would otherwise reach no reader it could act for. The aggregate is left as it was. Nothing here is withheld, because the
+ * ask IS the order. PURE.
+ */
+export function ownerlessUnarmedOrders(asks: Map<string, OwnerlessAsk>): { session: string; cause: string; subject: string; discriminator: string; prompt: string; causeKey: string; }[] {
+  const cause = (CAUSE_OF_STALL as Record<string, string>)[STALL_REASON.UNARMED];
+  return [...asks].filter(([, ask]) => ask.reason === STALL_REASON.UNARMED).map(([subject, ask]) => ({
+    session: OWNERLESS_ASK_SESSION,
+    cause,
+    subject,
+    discriminator: STALL_REASON.UNARMED,
+    prompt: `${askSentence(ask)} It is green on every required check and not held, and nothing has armed it. Arm it with `
+      + `\`node packages/agent-org/src/arm-pr.ts --pr=${ask.number} --repo=${ask.repo}\` if it should merge, or put a \`hold:\` label on it if it should not.`,
+    causeKey: `${OWNERLESS_ASK_SESSION}/${cause}/${subject}`,
+  }));
 }
 
 /**
