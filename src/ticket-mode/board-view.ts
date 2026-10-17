@@ -504,3 +504,20 @@ export function runChoiceLabel(entry: ViewEntry): string {
   if (entry.plan) return `plan on ${entry.plan.model}/${entry.plan.effort}, then ${run}`;
   return entry.planned ? `${run} on an unattended plan` : run;
 }
+
+/** `url` when it is an http or https address, and "" otherwise, so a link a remote board sends can never run script in this page. */
+export const safeHref = (url: unknown): string => (typeof url === "string" && /^https?:\/\//i.test(url) ? url : "");
+
+/** A board the header's switcher offers: its profile's name, and whether it is this machine's own. */
+export type ViewProfile = Readonly<{ name: string; local: boolean }>;
+
+/** The profile to show: the one this browser remembers while the board still lists it, this machine's own otherwise, and null with no profiles. */
+export function chosenProfile(profiles: readonly ViewProfile[], remembered: string | null): ViewProfile | null {
+  return profiles.find((profile) => profile.name === remembered) ?? profiles.find((profile) => profile.local) ?? null;
+}
+
+/** Where a profile's API is: this board's own at `/api`, and another machine's under `/p/<profile>`, which this board passes on over SSH. */
+export const apiBase = (profile: ViewProfile | null): string => (profile === null || profile.local ? "" : `/p/${encodeURIComponent(profile.name)}`);
+
+/** What the switcher calls a profile. */
+export const profileLabel = (profile: ViewProfile): string => (profile.local ? `${profile.name} (this machine)` : profile.name);
