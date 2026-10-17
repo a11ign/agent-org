@@ -108,7 +108,7 @@ takes them one each. `agent-org ticket:serve` starts a board on `127.0.0.1` and 
   says why. A run that ends any other way ends every ticket of the batch that way. Stop on any ticket stops the whole run, and Retry plans
   a ticket again on its own.
 - **Board.** Every run in one list, newest activity first, each with a status icon after GitHub's Actions runs, and a filter per status
-  with its count: Needs you, In progress, Planning, Reviewing, Blocked, Queued, Awaiting review, Ready to merge, Published, Completed, Failed and Cancelled. A run is Completed once the tracker
+  with its count: Needs you, In progress, Planning, Reviewing, Blocked, Queued, Awaiting review, Ready to merge, Publishing, Published, Completed, Failed and Cancelled. A run is Completed once the tracker
   completes its ticket, or once its pull requests have merged, as Linear's GitHub integration reports them. Linear completes a ticket on a
   merge only where its team's workflow says so. A run whose pull requests all closed unmerged is Cancelled. The board asks every two minutes. A run can be removed
   while queued, stopped while running, and retried once it has failed. The number of workers at once is set in Settings, and a change takes effect straight away. On a machine
@@ -140,7 +140,8 @@ takes them one each. `agent-org ticket:serve` starts a board on `127.0.0.1` and 
   "Publish selected (N)" publishes every ticked run in one press. Nothing else can be ticked: nothing reaches a channel before you approved it
   and it passed its review and checks, and a Published run is never posted twice. The press starts one publish run, in its own folder
   `<stateDir>/tickets/publish/<id>`, holding one slot, on `tickets.publish.model` and `effort`. It starts even while workers are paused,
-  because you just asked for it. It writes `published.json`, `{ "links": ["<message url>"] }`, and the outcome `published`. Each run it
+  because you just asked for it. While it works, each run it posts shows Publishing, with the spinning ring and, on a machine that sets
+  `tickets.terminal`, an Open terminal link to the publish run's own terminal. It writes `published.json`, `{ "links": ["<message url>"] }`, and the outcome `published`. Each run it
   posted then shows Published, with a link to the first message, stays watched, and still turns Completed when its pull requests merge. A
   publish run that fails, or takes over 30 minutes, leaves its runs Ready to merge, and the Board says why.
 - **Blocked until what blocks it is done.** A queued run whose ticket the tracker marks "blocked by" another waits, as Blocked, naming what

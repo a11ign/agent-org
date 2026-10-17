@@ -333,7 +333,7 @@ test("a publish run holds a slot while it is live, starts while workers are paus
   assert.equal(nextStarts({ ...setPaused(enqueue(running, [ticket("C"), ticket("D")], choice, 38), false), max: 2 }, 1, 8).length, 1, "it holds one of two slots");
   const done = publishDone(running, ["https://slack/1", "https://slack/2"], 50);
   assert.deepEqual(a(done).published, { link: "https://slack/1", at: 50 }, "the first link");
-  assert.deepEqual([done.publish?.phase, done.publish?.workspace], ["finished", undefined]);
+  assert.deepEqual([done.publish?.phase, done.publish?.workspace, done.publish?.pane], ["finished", undefined, undefined]);
   const failed = publishFailed(running, "no channel for nbl-ui-netbox", 50);
   assert.deepEqual([a(failed).published, failed.publish?.failure], [undefined, "no channel for nbl-ui-netbox"]);
   const path = join(tmpDir("ticket-queue-publish-"), "queue.json");

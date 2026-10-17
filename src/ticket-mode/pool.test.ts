@@ -1354,6 +1354,11 @@ test("Publish starts one publish run in a folder of its own, on haiku at low eff
   assert.ok(readFileSync(join(pdir, "brief.md"), "utf8").includes(`all in one go: ${approvedPr.url}. Then write ${pdir}/published.json`));
 });
 
+test("a started publish run records its workspace and pane, which the board's page links for each run it posts", async () => {
+  const { publish } = await publishing();
+  assert.deepEqual([publish.workspace, publish.pane], ["w3", "w3:p1"]);
+});
+
 test("a publish run that writes published marks each run it posted Published, linking the first message, and closes its workspace", async () => {
   const { pool, status, entry, h, store, name, pdir, publish } = await publishing();
   status.set(name, "working");

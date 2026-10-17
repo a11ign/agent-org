@@ -2,9 +2,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, isParked, parentKeys, parentTick, ticketCount, projectCounts, queueLabel, recall, remember, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, selectable, statusCounts, terminalLink, toggled, waitsOn, repoOfPull, stackedOn, stackNote,
-  PRIORITY_NAMES, hasPlan, isWatched, publishable, publishLabel, publishNote, missingPlan, planChoiceOf, planCounts, priorityCounts, prioritiesOf, runChoiceLabel, unplannedCount, visibleTickets, workItems,
-  type ViewEntry, type ViewTicket,
+  HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, isParked, parentKeys, parentTick, ticketCount, projectCounts, queueLabel, recall, remember, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, selectable, shownStatus, statusCounts, terminalLink, toggled, waitsOn, repoOfPull, stackedOn, stackNote,
+  PRIORITY_NAMES, hasPlan, isBeingPublished, isWatched, publishable, publishLabel, publishNote, publishTerminalLink, missingPlan, planChoiceOf, planCounts, priorityCounts, prioritiesOf, runChoiceLabel, unplannedCount, visibleTickets, workItems,
+  type ViewEntry, type ViewPublish, type ViewTicket,
 } from "./board-view.ts";
 
 const t = (key: string, status: string, statusOrder: number, priority: number, project: string | null, title = key): ViewTicket =>
@@ -268,7 +268,7 @@ test("every status is counted, a status with no runs at zero, and the filters li
   assert.equal(counts.get("queued"), 2);
   assert.equal(counts.get("failed"), 1);
   assert.equal(counts.get("completed"), 0);
-  assert.deepEqual(RUN_STATUSES.map(({ status }) => status), ["needs-you", "working", "planning", "reviewing", "blocked", "queued", "awaiting-review", "ready-to-merge", "published", "completed", "failed", "cancelled"]);
+  assert.deepEqual(RUN_STATUSES.map(({ status }) => status), ["needs-you", "working", "planning", "reviewing", "blocked", "queued", "awaiting-review", "ready-to-merge", "publishing", "published", "completed", "failed", "cancelled"]);
 });
 
 const blocker = (key: string, state: string, status = state) => ({ key, state, status });
@@ -459,6 +459,72 @@ test("only a run Ready to merge can be ticked for Publish: not one published, pa
   assert.equal(publishable(shipped(), { keys: ["NBF-1"], phase: "running" }), false);
   assert.equal(publishable(shipped(), { keys: ["NBF-1"], phase: "finished", failure: "x" }), true, "a failed publish leaves it Ready to merge");
   assert.equal(publishLabel(2), "Publish selected (2)");
+});
+
+const publishRun = (fields: Partial<ViewPublish> = {}): ViewPublish => ({ keys: ["NBF-1"], phase: "running", ...fields });
+
+test("the publish run still to finish is posting only the runs it names", () => {
+  for (const phase of ["queued", "starting", "running"]) assert.equal(isBeingPublished(shipped(), publishRun({ phase })), true, phase);
+  assert.equal(isBeingPublished(shipped(), publishRun({ phase: "finished" })), false, "a finished publish run posts nothing");
+  assert.equal(isBeingPublished(shipped({ ticket: { key: "NBF-2" } }), publishRun()), false, "a run it does not name");
+  assert.equal(isBeingPublished(shipped(), undefined), false, "no publish run");
+});
+
+test("a run Ready to merge is shown as Publishing while the publish run posts it, and is Ready to merge, Published or Completed by what happens next", () => {
+  assert.equal(shownStatus(shipped(), publishRun({ phase: "queued" })), "publishing", "from the press, before it starts");
+  assert.equal(shownStatus(shipped(), publishRun({ phase: "starting" })), "publishing");
+  assert.equal(shownStatus(shipped(), publishRun()), "publishing");
+  assert.equal(shownStatus(shipped(), publishRun({ keys: ["NBF-2"] })), "ready-to-merge", "a run it does not post is as it was");
+  assert.equal(shownStatus(shipped(), undefined), "ready-to-merge");
+  assert.equal(shownStatus(shipped(), publishRun({ phase: "finished", failure: "no channel" })), "ready-to-merge", "a failed publish run leaves it Ready to merge");
+  const done = shipped({ published: { link: "https://slack/1" } });
+  assert.equal(shownStatus(done, publishRun({ phase: "finished" })), "published", "a publish run that posted it");
+  assert.equal(shownStatus(done, publishRun()), "published", "a run already Published is never Publishing");
+  const merged = shipped({ pullStates: { "https://github.com/x/a/pull/1": "merged" } });
+  assert.equal(shownStatus(merged, publishRun()), "completed", "its pull requests merging settles it, whatever the publish run is doing");
+  assert.equal(shownStatus(shipped({ handedBack: "keeps getting feedback" }), publishRun()), "needs-you", "a run handed to a person is theirs");
+  assert.equal(shownStatus(shipped({ trackerState: "completed" }), publishRun()), "completed", "the tracker's word wins");
+});
+
+test("only a run Ready to merge is shown as Publishing: a draft, a live run and a failed one keep their own status", () => {
+  const publish = publishRun();
+  assert.equal(shownStatus(shipped({ outcome: { kind: "draft-pr", prs: [] } }), publish), "awaiting-review");
+  assert.equal(shownStatus(shipped({ phase: "running", review: [{ url: "https://github.com/x/a/pull/1" }] }), publish), "reviewing", "a review round on a run being published");
+  assert.equal(shownStatus(shipped({ phase: "queued" }), publish), "queued");
+  assert.equal(shownStatus(shipped({ outcome: { kind: "crashed" } }), publish), "failed");
+});
+
+test("the run's own status is Ready to merge while it is Publishing: the pool and what a run offers go by it", () => {
+  assert.equal(runStatus(shipped()), "ready-to-merge");
+  assert.deepEqual(runActions(shipped()), ["respond"]);
+  assert.equal(isWatched(shipped()), true, "the board still watches its pull requests");
+});
+
+test("Publishing is counted and filtered like every status, and a run keeps its own status without the publish run", () => {
+  const second = shipped({ ticket: { key: "NBF-2" } });
+  const third = shipped({ ticket: { key: "NBF-3" } });
+  const publish = publishRun({ keys: ["NBF-1", "NBF-2"] });
+  const counts = statusCounts([shipped(), second, third], publish);
+  assert.deepEqual([counts.get("publishing"), counts.get("ready-to-merge")], [2, 1]);
+  assert.deepEqual(runsShown([shipped(), second, third], "publishing", publish).map((e) => e.ticket.key), ["NBF-1", "NBF-2"]);
+  assert.deepEqual(runsShown([shipped(), second, third], "ready-to-merge", publish).map((e) => e.ticket.key), ["NBF-3"]);
+  assert.deepEqual([statusCounts([shipped()]).get("publishing"), statusCounts([shipped()]).get("ready-to-merge")], [0, 1]);
+  assert.deepEqual(runsShown([shipped()], "publishing").map((e) => e.ticket.key), []);
+});
+
+test("every run the publish run posts links its terminal, in the machine's template, filled with the publish run's workspace and pane", () => {
+  const template = "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal&key={key}";
+  const publish = publishRun({ workspace: "w9", pane: "w9:p1" });
+  assert.equal(publishTerminalLink(template, shipped(), publish), "http://127.0.0.1:7318/?ws=w9&pane=w9%3Ap1&view=terminal&key=NBF-1");
+  assert.equal(publishTerminalLink(template, shipped({ ticket: { key: "NBF-2" } }), { ...publish, keys: ["NBF-1", "NBF-2"] }), "http://127.0.0.1:7318/?ws=w9&pane=w9%3Ap1&view=terminal&key=NBF-2", "each run's own key");
+  assert.equal(publishTerminalLink(template, shipped({ ticket: { key: "NBF-2" } }), publish), null, "a run it does not post");
+  assert.equal(publishTerminalLink(template, shipped({ published: { link: null } }), publish), null, "a run that does not show Publishing");
+  assert.equal(publishTerminalLink(template, shipped({ phase: "running", review: [{ url: "https://github.com/x/a/pull/1" }] }), publish), null, "a review round has its own terminal");
+  assert.equal(publishTerminalLink(template, shipped(), { ...publish, phase: "finished" }), null, "a publish run that ended");
+  assert.equal(publishTerminalLink(template, shipped(), undefined), null, "no publish run");
+  assert.equal(publishTerminalLink(null, shipped(), publish), null, "the machine serves no terminal");
+  assert.equal(publishTerminalLink(template, shipped(), publishRun({ phase: "queued" })), null, "no pane until it starts");
+  assert.equal(publishTerminalLink(template, shipped(), publishRun({ workspace: "w9" })), null, "a workspace without a pane");
 });
 
 test("the Board says a publish run is under way, or why it failed, and nothing once it published", () => {

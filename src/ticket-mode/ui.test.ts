@@ -9,7 +9,8 @@ import * as view from "./board-view.ts";
  * The page's module script, run as the browser would run it but in a `vm` context: its one import (`/board-view.js`, which the server sends as
  * `board-view.ts` with the types stripped) is supplied from the tested module itself, and its top-level `await` runs inside an async wrapper.
  */
-const MODULE = /<script type="module">([\s\S]*)<\/script>/.exec(readFileSync(new URL("./ui.html", import.meta.url), "utf8"))![1];
+const HTML = readFileSync(new URL("./ui.html", import.meta.url), "utf8");
+const MODULE = /<script type="module">([\s\S]*)<\/script>/.exec(HTML)![1];
 const IMPORT = /^import \{[^}]*\} from "\/board-view\.js";$/m;
 if (!IMPORT.test(MODULE)) throw new Error("the page's script no longer imports /board-view.js as this test expects");
 const SCRIPT = `(async () => {\n${MODULE.replace(IMPORT, "")}\n})();`;
@@ -754,6 +755,74 @@ test("the Board says why the last publish run failed", async () => {
   assert.equal(p.$("publish-note").textContent, "");
   const failed = await page(new Map(), { config: { publish: true }, entries: PUBLISHABLE, publish: { keys: ["P-1"], phase: "finished", failure: "no channel" } });
   assert.equal(failed.$("publish-note").textContent, "Publishing 1 run failed: no channel");
+});
+
+const TERMINAL = "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal";
+const PUBLISHING = { keys: ["P-1", "P-2"], phase: "running", workspace: "w9", pane: "w9:p1" };
+const terminalOf = (p: Page, key: string) =>
+  runRows(p).find((r) => r.text().includes(key))!.all().find((n) => n.className === "terminal" && n.text() === "Open terminal") as (Node_ & { href?: string; target?: string }) | undefined;
+
+test("each run the publish run is posting is Publishing, with the spinning ring, and cannot be ticked again", async () => {
+  const p = await page(new Map(), { config: { publish: true, terminal: TERMINAL }, entries: PUBLISHABLE, publish: PUBLISHING });
+  const publishing = (key: string) => runRows(p).find((r) => r.text().includes(key))!;
+  for (const key of ["P-1", "P-2"]) {
+    const icon = publishing(key).children[0] as Node_ & { innerHTML: string };
+    assert.equal(icon.className, "icon st-publishing", key);
+    assert.equal(icon.attrs["aria-label"], "Publishing", key);
+    assert.match(icon.innerHTML, /<path d="M8 2a6 6 0 0 1 6 6"/, `${key}: the arc that spins`);
+    assert.match(publishing(key).text(), /Publishing · /, key);
+    assert.equal(tickFor(p, key), undefined, `${key}: a run the publish run holds cannot be ticked again`);
+  }
+  assert.equal(publishing("P-3").children[0].className, "icon st-published", "a run it does not post keeps its status");
+  assert.equal(p.$("publish-note").textContent, "Publishing 2 runs");
+});
+
+test("each Publishing run links the publish run's own pane, and no other run does", async () => {
+  const p = await page(new Map(), { config: { publish: true, terminal: TERMINAL }, entries: PUBLISHABLE, publish: PUBLISHING });
+  for (const key of ["P-1", "P-2"]) {
+    assert.equal(terminalOf(p, key)?.href, "http://127.0.0.1:7318/?ws=w9&pane=w9%3Ap1&view=terminal", key);
+    assert.equal(terminalOf(p, key)?.target, "_blank", `${key}: it opens in its own tab`);
+  }
+  assert.equal(terminalOf(p, "P-3"), undefined, "a run it does not post");
+  assert.equal(terminalOf(p, "D-1"), undefined);
+});
+
+test("the Publishing filter counts the runs being posted and shows them, with a still dot in the rail", async () => {
+  const p = await page(new Map(), { config: { publish: true, terminal: TERMINAL }, entries: PUBLISHABLE, publish: PUBLISHING });
+  assert.equal(filterButton(p, "Publishing").children.at(-1)!.text(), "2");
+  assert.equal(filterButton(p, "Ready to merge").children.at(-1)!.text(), "0");
+  const rail = filterButton(p, "Publishing").children[0] as Node_ & { innerHTML: string };
+  assert.equal(rail.className, "icon st-publishing", "it keeps the status's colour");
+  assert.match(rail.innerHTML, /<circle cx="8" cy="8" r="5" fill="currentColor"\/>/);
+  assert.doesNotMatch(rail.innerHTML, /<path/, "no arc to turn");
+  filterButton(p, "Publishing").fire("click");
+  assert.deepEqual(runRows(p).map((r) => r.text().match(/P-\d/)![0]).sort(), ["P-1", "P-2"]);
+});
+
+test("once the publish run ends, its runs are Ready to merge again with no terminal, and the Board says why when it failed", async () => {
+  const failed = await page(new Map(), { config: { publish: true, terminal: TERMINAL }, entries: PUBLISHABLE, publish: { keys: ["P-1", "P-2"], phase: "finished", failure: "no channel" } });
+  assert.deepEqual(["P-1", "P-2"].map((key) => runRows(failed).find((r) => r.text().includes(key))!.children[0].className), ["icon st-ready-to-merge", "icon st-ready-to-merge"]);
+  assert.equal(terminalOf(failed, "P-1"), undefined);
+  assert.equal(filterButton(failed, "Publishing").children.at(-1)!.text(), "0");
+  assert.equal(failed.$("publish-note").textContent, "Publishing 2 runs failed: no channel");
+});
+
+test("a publish run that has no pane yet, or a machine that serves no terminal, leaves its runs Publishing with no terminal link", async () => {
+  const starting = await page(new Map(), { config: { publish: true, terminal: TERMINAL }, entries: PUBLISHABLE, publish: { keys: ["P-1"], phase: "queued" } });
+  assert.equal(runRows(starting).find((r) => r.text().includes("P-1"))!.children[0].className, "icon st-publishing");
+  assert.equal(terminalOf(starting, "P-1"), undefined);
+  const none = await page(new Map(), { config: { publish: true }, entries: PUBLISHABLE, publish: PUBLISHING });
+  assert.equal(runRows(none).find((r) => r.text().includes("P-1"))!.children[0].className, "icon st-publishing");
+  assert.equal(terminalOf(none, "P-1"), undefined);
+});
+
+test("a Publishing run's ring is yellow like In progress and spins, and holds still when the person asks for reduced motion", () => {
+  assert.match(HTML, /\.st-publishing\s*\{\s*color:\s*var\(--st-progress\);\s*\}/);
+  const selectors = (declaration: string) => (new RegExp(`([^{}]+)\\{\\s*${declaration}\\s*\\}`).exec(HTML)?.[1] ?? "").split(",").map((s) => s.trim());
+  for (const declaration of ["animation: spin 1\\.1s linear infinite;", "animation: none;"]) {
+    assert.ok(selectors(declaration).includes(".runs .run .st-publishing svg"), declaration);
+    assert.ok(selectors(declaration).includes(".runs .run .st-working svg"), `${declaration} the ring In progress already spins`);
+  }
 });
 
 test("a run Ready to merge, Published, or handed back by the board offers Respond to review with its reply icon, and a draft offers Approve alone", async () => {
