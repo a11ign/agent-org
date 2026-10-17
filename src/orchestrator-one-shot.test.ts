@@ -37,12 +37,21 @@ const GATE_ORDER_LITERAL = '{"session":"orchestrator","cause":"ready-row-unclaim
   + '"subject":"row-agent-org-832","title":"A lane:orchestrator row runs as a one-shot session","discriminator":"agent-org#832",'
   + '"prompt":"Ready row agent-org#832 is unclaimed: A lane:orchestrator row runs as a one-shot session. Claim it as `<you>`.\\n"}';
 const SEAT = "worker-agent-org-832";
-const PLAIN_BODY = "## Acceptance\n\n```bash\nnpx rstest run src/x.test.ts\n```\n";
-const FLEET_BODY = "## Acceptance\n\n```bash\npnpm run lab:status\n```\n";
+/** A PATH row: its Region declares a file the tree has at its root, so there is something to commit. */
+const PLAIN_BODY = "## Region\n\nREADME.md\n\n## Acceptance\n\n```bash\nnpx rstest run src/x.test.ts\n```\n";
+const FLEET_BODY = "## Region\n\nREADME.md\n\n## Acceptance\n\n```bash\npnpm run lab:status\n```\n";
+/** A PATH-LESS row, in the shape of agent-org#1646: its Region names no file, and its Acceptance is a plain `grep` of a log. */
+const PATHLESS_BODY = "## Region\n\nNone in a repository: it needs host access (orchestrator); a worktree session cannot do it.\n\n## Acceptance\n\n```bash\ngrep -q SHADOW host.log\n```\n";
+/** A decision row: its Region says the deliverable is not a commit, so there is no path to follow. */
+const DECISION_BODY = "## Region\n\nIts deliverable is not a commit: the orchestrator decides.\n\n## Acceptance\n\n```bash\nnpx rstest run src/x.test.ts\n```\n";
+/** A row whose body has no Region section at all. */
+const NO_REGION_BODY = "## Acceptance\n\n```bash\nnpx rstest run src/x.test.ts\n```\n";
+/** The tree's root files, as `isPathRow` takes them: a parameter, so no test reads `origin/main`. */
+const ROOT_FILES = new Set(["README.md"]);
 /** The row the order's `causeKey` names, as `wake.ts`'s `rowRefOfOrder` reads it. */
 const ROW_OF = () => ({ key: "agent-org", number: 832 });
 /** The lane's reader for a row of the given body and labels, with the flag ON. */
-const LANE = (body: string, labels: string[] = []) => ({ enabled: () => true, rowOf: ROW_OF, readRow: () => ({ body, labels }) });
+const LANE = (body: string, labels: string[] = []) => ({ enabled: () => true, rowOf: ROW_OF, rootFiles: ROOT_FILES, readRow: () => ({ body, labels }) });
 
 /** A scratch directory and its record file; removed by the caller's `finally`. */
 function scratch() {
@@ -75,7 +84,7 @@ function drive(orders: readonly object[], { path, body = PLAIN_BODY, live = [], 
     release: () => "", tier: () => null,
   };
   const oneShot = createOrchestratorOneShot({ readRow: () => ({ body }), path, write });
-  const ready = withOrchestratorOneShot(orders as { session: string; cause?: string }[], { enabled: () => enabled, rowOf: ROW_OF, readRow: () => ({ body }) });
+  const ready = withOrchestratorOneShot(orders as { session: string; cause?: string }[], { enabled: () => enabled, rowOf: ROW_OF, rootFiles: ROOT_FILES, readRow: () => ({ body }) });
   const got = deliver(ready as never, [...held, ...live], STANDING, { sleep: () => {}, run: h.run, claimer, oneShot, claimable: () => null });
   return { ...h, got, ready, heldAtClaim };
 }
@@ -156,6 +165,19 @@ test("flag ON, a fleet-gated row, or one whose Acceptance reaches the fleet or l
   assert.equal(sessionOf({ ...LANE(PLAIN_BODY), readRow: () => { throw new Error("gh: rate limited"); } }), "orchestrator", "an unreadable row keeps it");
   assert.equal(sessionOf({ enabled: () => true }), "orchestrator", "no reader handed: nothing is converted");
   assert.equal(sessionOf({ ...LANE(PLAIN_BODY), enabled: () => false }), "orchestrator", "the flag OFF: the gate's order, as before");
+});
+
+test("a path-less lane:orchestrator row keeps the gate's order: a Region naming no file, a Region that says the deliverable is not a commit, or no Region at all", { skip: SKIP_FIXTURE }, () => {
+  const sessionOf = (body: string) => (withOrchestratorOneShot([GATE_ORDER], LANE(body))[0] as { session: string }).session;
+  assert.equal(fleetOrLabAcceptance(PATHLESS_BODY), null, "premise: its Acceptance names no fleet or lab command, so only its Region decides");
+  assert.equal(sessionOf(PATHLESS_BODY), "orchestrator", "THE agent-org#1646 SHAPE: a Region naming no file keeps the gate's order");
+  assert.equal(sessionOf(DECISION_BODY), "orchestrator", "a Region that says the deliverable is not a commit keeps it");
+  assert.equal(sessionOf(NO_REGION_BODY), "orchestrator", "a body with no Region section keeps it");
+  assert.equal(sessionOf(PLAIN_BODY), "engineers", "THE CONTROL: a row whose Region declares a file IS converted, as before");
+  // The predicate is the ceo lane's, imported and not copied (agent-org#1714, done-when 2).
+  const source = readFileSync(new URL("./orchestrator-one-shot.ts", import.meta.url), "utf8");
+  assert.match(source, /import \{ isPathRow, oneShotFactory, /);
+  assert.doesNotMatch(source, /function isPathRow\(/);
 });
 
 test("flag ON: an IDLE standing engineer is never given the one-shot order; the row's own seat is started instead", { skip: SKIP_FIXTURE }, () => {
