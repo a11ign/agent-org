@@ -145,13 +145,16 @@ takes them one each. Ticket mode is two services, both on `127.0.0.1`:
   with its count: Needs you, In progress, Planning, Reviewing, Blocked, Queued, Awaiting review, Ready to merge, Publishing, Published, Completed, Failed and Cancelled. A run is Completed once the tracker
   completes its ticket, or once its pull requests have merged, as Linear's GitHub integration reports them. Linear completes a ticket on a
   merge only where its team's workflow says so. A run whose pull requests all closed unmerged is Cancelled. The board asks every two minutes. A run can be removed
-  while queued, stopped while running, and retried once it has failed. The number of workers at once is set in Settings, and a change takes effect straight away. On a machine
+  while queued, stopped while running, and retried once it has failed. Dismiss takes a finished run off the board and closes its workspace, keeping the ticket, its branches and its pull requests; the board then stops watching those pull requests. A run whose ticket is closed in Linear, or has become a parent of sub-issues, is offered Dismiss with the reason, and is never dismissed on its own. The number of workers at once is set in Settings, and a change takes effect straight away. On a machine
   that sets `tickets.terminal`, a live or parked run has an Open terminal link to its agent's terminal in the browser.
-- **Parked, not closed, when a run needs you.** A run that ends `needs-human`, `wrong-repo` or with no outcome keeps its herdr workspace
+- **Parked, not closed, when a run needs you.** A run that ends `wrong-repo` or with no outcome keeps its herdr workspace
   and holds no slot, so you can answer the agent in its terminal. Once the agent works again the run is In progress again, its old outcome
   is moved to `outcome.prev.json`, and the worker must write a new one before it stops. A worker that writes a new outcome file after its
   run parked, even between two of the board's looks, ends the run on it once its agent is idle. Close shuts a parked run's workspace and keeps its
   outcome, and a parked run is retried only once it is closed.
+- **Closed, and resumed, when a run asks for you.** A run that ends `needs-human` closes its workspace once the outcome is recorded, with its
+  Claude session saved. Retry resumes that session, and the worker is told the reason it gave. Answer it in the resumed run's terminal, or edit
+  the ticket before you press Retry.
 - **Approve, once you have reviewed the drafts.** A run Awaiting review offers Approve. It queues the ticket again
   as a review run, which resumes the worker that wrote the code in its own Claude session: the board saves it when a run ends, and for an
   older run takes the newest session Claude Code kept for the ticket's folder, starting a fresh worker only when there is none. The review run

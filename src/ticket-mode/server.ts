@@ -42,7 +42,7 @@ export type BoardDeps = Readonly<{
   key: string;
   queuePath: string;
   choicePath: string;
-  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback">;
+  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback">;
   poolDeps?: Omit<PoolDeps, "settings" | "source" | "hook">;
   now?: () => number;
 }>;
@@ -185,7 +185,7 @@ export function createBoard(deps: BoardDeps) {
       wake();
       return [200, queue];
     }
-    const action = /^\/api\/queue\/([A-Za-z0-9_-]+)\/(amend|remove|retry|approve|respond|stop|close)$/.exec(path);
+    const action = /^\/api\/queue\/([A-Za-z0-9_-]+)\/(amend|remove|retry|approve|respond|stop|close|dismiss)$/.exec(path);
     if (method === "POST" && action) {
       const [, key, verb] = action;
       if (verb === "amend") store.set(amend(queue, key, validChange(body, ["model", "effort"])));
@@ -195,6 +195,7 @@ export function createBoard(deps: BoardDeps) {
       if (verb === "respond") store.set(respond(queue, key, now()));
       if (verb === "stop") pool.stop(key);
       if (verb === "close") pool.close(key);
+      if (verb === "dismiss") pool.dismiss(key);
       wake();
       return [200, queue];
     }

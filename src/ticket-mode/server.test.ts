@@ -21,7 +21,7 @@ function board(port = 4747, ticketSettings: Record<string, unknown> = {}, extra:
   const ticks: string[] = [];
   const pool = {
     tick: async () => { ticks.push("tick"); }, stop: (key: string) => { ticks.push(`stop ${key}`); }, close: (key: string) => { ticks.push(`close ${key}`); },
-    reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {},
+    dismiss: (key: string) => { ticks.push(`dismiss ${key}`); }, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {},
   };
   const made = createBoard({ settings, source, key: KEY, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7, ...extra });
   return { ...made, ticks, dir };
@@ -41,7 +41,7 @@ test("/api/parents reads the parents of the person's tickets that are not the pe
     },
     download: async () => [],
   };
-  const pool = { tick: async () => {}, stop: () => {}, close: () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {} };
+  const pool = { tick: async () => {}, stop: () => {}, close: () => {}, dismiss: () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {} };
   const { api } = createBoard({ settings, source, key: KEY, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7 });
   await api("GET", "/api/tickets", {});
   const [status, parents] = await api("GET", "/api/parents", {}) as [number, Ticket[]];
@@ -111,7 +111,7 @@ function planningBoard(attachPlan: TicketSource["attachPlan"] | null = async () 
     tickets: { plan: "-plan-[^/]*\\.md$", planner: { run, state: "Planned" } } });
   const planned = { ...ticket("NBF-1"), uploads: ["NBF-1-0001-plan-x.md"] };
   const source: TicketSource = { assigned: async () => [planned, ticket("NBF-2"), ticket("NBF-3")], read: async () => null, download: async () => [], ...(attachPlan ? { attachPlan } : {}) };
-  const pool = { tick: async () => {}, stop: () => {}, close: () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {} };
+  const pool = { tick: async () => {}, stop: () => {}, close: () => {}, dismiss: () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {} };
   return createBoard({ settings, source, key: KEY, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7 });
 }
 
@@ -254,6 +254,21 @@ test("remove, stop, close and max go through the board", async () => {
   assert.ok(b.ticks.includes("stop NBF-2"));
   assert.ok(b.ticks.includes("close NBF-2"), "a parked run's workspace is the pool's to close");
   assert.equal(b.store.get().max, 5);
+});
+
+test("dismiss goes through the board to the pool, which decides whether it may; a refusal reaches the page as its reason", async () => {
+  const b = board();
+  await b.api("GET", "/api/tickets", {});
+  await b.api("POST", "/api/queue", { keys: ["NBF-1", "NBF-2"], model: "sonnet", effort: "high" });
+  await b.api("POST", "/api/queue/NBF-2/dismiss", {});
+  assert.deepEqual(b.ticks.filter((tick) => tick.startsWith("dismiss")), ["dismiss NBF-2"]);
+  const pool = { tick: async () => {}, stop: () => {}, close: () => {}, dismiss: () => { throw new Error("NBF-1 is queued: remove it"); }, reconcile: () => {},
+    ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {} };
+  const refusing = board(4747, {}, { pool });
+  await refusing.api("GET", "/api/tickets", {});
+  await refusing.api("POST", "/api/queue", { keys: ["NBF-1"], model: "sonnet", effort: "high" });
+  await assert.rejects(refusing.api("POST", "/api/queue/NBF-1/dismiss", {}), /NBF-1 is queued: remove it/);
+  assert.equal(refusing.store.get().entries.length, 1, "the queue is left as it was");
 });
 
 test("the page is given the machine's terminal address, or null when it serves none", async () => {

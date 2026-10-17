@@ -15,9 +15,11 @@
 // and refused anything that would (`PLANNING_DENY`). When it writes `planned`, the board attaches the files it left in the ticket's `plan` folder
 // and queues the ticket again to be worked, where it was. A plan the tracker will not take ends the run for a person, with its files kept.
 //
-// A RUN THAT HANDS ITS TICKET BACK IS PARKED, NOT CLOSED. On `needs-human`, `wrong-repo` or `no-outcome` its workspace stays open and holds no
-// slot, so the person can answer the agent in its terminal. An agent seen working again has been answered: its outcome file is moved aside, so
-// the stop hook asks for a new one, and the run is live again. Close ends a parked run's workspace; a workspace closed by hand is noticed.
+// A RUN THAT HANDS ITS TICKET BACK IS PARKED ONLY WHERE A PERSON MUST SEE ITS AGENT. On `wrong-repo` or `no-outcome` its workspace stays open and
+// holds no slot, so the person can answer the agent in its terminal. On `needs-human` the workspace is closed once the outcome is recorded, with
+// the worker's session saved, and Retry resumes that session with the reason it gave (`resumePrompt`). An agent seen working again has been
+// answered: its outcome file is moved aside, so the stop hook asks for a new one, and the run is live again. Close ends a parked run's workspace;
+// a workspace closed by hand is noticed. Dismiss takes a finished run off the board and closes its workspace, when it has one.
 //
 // TICKETS QUEUED TOGETHER ARE PLANNED BY ONE RUN. Where the planner's instruction names `{keys}`, the tickets one press of Queue plans first
 // form a batch (`enqueue`), and one planning run plans it, in a folder of its own (`batchDir`). Every ticket of the batch shows that run's
@@ -50,11 +52,11 @@ import { agentStartArgs, closedNote, herdrReason, herdrRun, openPane, readAgents
 import { parseOrder, type Order } from "./batch-order.ts";
 import { readOwnLogin, readPullFeedback, type PullFeedback } from "../ticket-port/pull-feedback.ts";
 import { defaultGh } from "../lib/tool-version-agreement.ts";
-import { HANDED_BACK, hasPlan, isParked, isWatched, openPulls, stackedOn } from "./board-view.ts";
+import { hasPlan, isParked, isPublishing, isWatched, openPulls, PARKS, stackedOn } from "./board-view.ts";
 import {
-  batchPlanDone, feedbackRound, finish, isLive, leaveBatch, markPublishRunning, markPublishStarting, markResumed, markRunning, markStarting, nextStarts, observe,
-  observePublish, park, planDone, publishDone, publishFailed, publishStarts, recordBlockers, recordPullStates, recordRepos, recordTrackerStates, unpark,
-  unreadBlockerKeys, unsettledKeys,
+  batchPlanDone, dismiss as dismissEntry, feedbackRound, finish, isLive, leaveBatch, markPublishRunning, markPublishStarting, markResumed, markRunning, markStarting,
+  nextStarts, observe, observePublish, park, planDone, publishDone, publishFailed, publishStarts, recordBlockers, recordPullStates, recordRepos, recordTrackerParents,
+  recordTrackerStates, unpark, unreadBlockerKeys, unsettledKeys,
   type Entry, type Outcome, type PublishRun, type Queue, type RunChoice,
 } from "./queue.ts";
 import type { Ticket, TicketSource } from "./source.ts";
@@ -68,7 +70,7 @@ import {
 import {
   BRIEF_FILE, CONNECTORS_FILE, DENY_FILE, ORDER_FILE, OUTCOME_FILE, PLAN_DIR, PLANNING_DENY, PREVIOUS_OUTCOME_FILE, PUBLISH_FILE, PUBLISHED_FILE, QUESTION_FILE,
   READY_FILE, REVIEW_FILE, STOP_COUNT_FILE,
-  batchPlanBriefText, briefText, firstPrompt, planBriefText, publishBriefText, reviewBriefText, reviewPrompt, workerFlags, workerSettings,
+  batchPlanBriefText, briefText, firstPrompt, planBriefText, publishBriefText, resumePrompt, reviewBriefText, reviewPrompt, workerFlags, workerSettings,
   type BatchTicket, type HookCommand, type ParentTicket,
 } from "./worker-files.ts";
 
@@ -482,6 +484,8 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
         stackedOn: stackedOn(entry, store.get().entries), clones: settings.clones, worktreeCommand,
         notes, connectors, planned: entry.planned === true, drafts: settings.drafts }));
     }
+    // A run that handed its ticket back as needs-human resumes its worker, and its brief is written as for a fresh run of its kind.
+    if (entry.resumes !== undefined) resume = sessionToResume(entry);
     writeRunFiles(entry, folder, dir);
     return { folder, dir, ...(resume ? { resume } : {}) };
   }
@@ -550,7 +554,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     const env = { ...(entry.batch === undefined ? { [TICKET_ENV.key]: runId, [TICKET_ENV.branch]: entry.ticket.branch } : {}), ...(hostFile ? { [TICKET_ENV.host]: hostFile } : {}) };
     const { model, effort } = runChoice(entry);
     const cause = entry.asked ? "asked" : entry.feedback !== undefined ? "feedback" : "approved";
-    const prompt = entry.review === undefined ? firstPrompt(dir) : reviewPrompt(dir, cause);
+    const prompt = entry.review !== undefined ? reviewPrompt(dir, cause) : entry.resumes !== undefined ? resumePrompt(dir, entry.resumes) : firstPrompt(dir);
     return startAgent({ ...runPlace(entry), folder }, env, [prompt, ...workerFlags({ name: runId, model, effort, addDirs: [dir], resume })], runId);
   }
 
@@ -841,12 +845,16 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
   }
 
   /**
-   * Record how a run ended, for every ticket in it. One that hands its tickets back keeps its workspace (parked); any other has its workspace
-   * closed.
+   * Record how a run ended, for every ticket in it. One that hands its ticket back where a person must answer its agent (`PARKS`) keeps its
+   * workspace; any other, `needs-human` included, has its workspace closed.
    */
   function end(entry: Entry, outcome: Outcome): void {
-    const parks = entry.workspace !== undefined && HANDED_BACK.has(outcome.kind);
-    if (entry.workspace && !parks) closedNote((args) => herdr(args), entry.workspace, session);
+    const parks = entry.workspace !== undefined && PARKS.has(outcome.kind);
+    if (entry.workspace && !parks) {
+      const closing = closedNote((args) => herdr(args), entry.workspace, session);
+      // A workspace herdr refuses to close is one the run no longer holds, so the board's log is the only place the person hears of it.
+      if (closing.includes("could NOT")) log(`${entry.ticket.key}${closing}`);
+    }
     const id = entry.workspace === undefined ? undefined : claudeSessions.get(entry.workspace);
     const tokens = countTokens(id === undefined ? null : findTranscript(transcripts, id));
     const { name } = runPlace(entry);
@@ -1059,13 +1067,36 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
   function close(key: string): void {
     const entry = store.get().entries.find((e) => e.ticket.key === key && isParked(e));
     if (entry?.workspace === undefined) return;
+    closeParked(entry, entry.workspace);
+  }
+
+  /**
+   * Close the workspace `workspace` a parked run holds, and unpark every run of its batch. Throws with herdr's reason when herdr refuses, so the
+   * run stays parked.
+   */
+  function closeParked(entry: Entry, workspace: string): void {
     try {
-      herdr(["--session", settings.herdrSession, "workspace", "close", entry.workspace]);
+      herdr(["--session", settings.herdrSession, "workspace", "close", workspace]);
     } catch (err) {
-      throw new Error(`herdr could not close ${key}'s workspace (${herdrRefusal(err)})`);
+      throw new Error(`herdr could not close ${entry.ticket.key}'s workspace (${herdrRefusal(err)})`);
     }
     misses.delete(runPlace(entry).name);
     updateEach(runMembers(entry), unpark);
+  }
+
+  /**
+   * Take a finished run off the board, closing its workspace first when it is parked. Refused, naming why, for a run that is live, queued, not on
+   * the board, or named by a publish run still under way. Nothing else is touched: no tracker write, no branch and no pull request.
+   */
+  function dismiss(key: string): void {
+    const { entries, publish } = store.get();
+    const entry = entries.find((e) => e.ticket.key === key);
+    if (entry === undefined) throw new Error(`${key} is not on the board`);
+    if (isLive(entry)) throw new Error(`${key} is running: stop it first`);
+    if (entry.phase === "queued") throw new Error(`${key} is queued: remove it`);
+    if (isPublishing(publish) && publish?.keys.includes(key)) throw new Error(`${key} is being published`);
+    if (entry.workspace !== undefined) closeParked(entry, entry.workspace);
+    update((queue) => dismissEntry(queue, key));
   }
 
   /**
@@ -1148,6 +1179,10 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
         const pulls = await source.pullStates(keys);
         update((queue) => recordPullStates(queue, pulls));
       }
+      if (source.parentKeys !== undefined) {
+        const parents = await source.parentKeys(keys);
+        update((queue) => recordTrackerParents(queue, keys, parents));
+      }
     } catch {
       // the tracker could not be asked: the next refresh asks again
     }
@@ -1216,7 +1251,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     return lines;
   }
 
-  return { tick, stop, close, reconcile, ensureSession, refreshTracker, watchFeedback };
+  return { tick, stop, close, dismiss, reconcile, ensureSession, refreshTracker, watchFeedback };
 }
 
 export type Pool = ReturnType<typeof createPool>;

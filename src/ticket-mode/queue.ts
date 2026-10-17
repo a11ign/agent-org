@@ -9,7 +9,7 @@
 // the only writer of the file, which it replaces whole by rename, so a reader never sees half of one.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { isParked, isPublishing, isWatched, openPulls, RESULT_KINDS, runStatus, settledByPulls, waitsOn } from "./board-view.ts";
+import { isParked, isPublishing, isWatched, openPulls, RESULT_KINDS, runStatus, SETTLED_TYPES, settledByPulls, waitsOn } from "./board-view.ts";
 import type { Blocker, PullState, Ticket } from "./source.ts";
 
 /** A pull request a run opened: the repository it is in and its web address. */
@@ -68,6 +68,8 @@ export type Entry = Readonly<{
   tokens?: Readonly<{ input: number; output: number }>;
   /** The ticket's state type in the tracker once the run has finished, as last read. */
   trackerState?: string;
+  /** Whether the ticket is the parent of sub-issues in the tracker once the run has finished, as last read. See {@link recordTrackerParents}. */
+  trackerParent?: boolean;
   /** The state of each of the ticket's pull requests by URL once the run has finished, as last read: a run whose pull requests merged is done. */
   pullStates?: Readonly<Record<string, PullState>>;
   /** The tickets that block this one, as last read while it is queued; unset until the tracker has been asked. */
@@ -84,6 +86,11 @@ export type Entry = Readonly<{
   rounds?: number;
   /** Set when the board stopped answering new feedback on its own and handed the run to a person: why. A person's Approve clears it. */
   handedBack?: string;
+  /**
+   * Set on a run retried after its worker handed its ticket back as `needs-human`: the reason it gave. Its worker resumes the session it recorded,
+   * and its first prompt quotes the reason. Set only where the retry is not a review run's. See {@link retry}.
+   */
+  resumes?: string;
   /** Set once a publish run posted its pull requests: the first message's web address, or null when it gave none, and when. */
   published?: Readonly<{ link: string | null; at: number }>;
 }>;
@@ -166,6 +173,14 @@ export function remove(queue: Queue, key: string): Queue {
 }
 
 /**
+ * Take a finished entry off the board. Its ticket, branches and pull requests are untouched, and so are its worktrees: only the pool closes a
+ * parked run's workspace, before it calls this. A queued or live entry stays: remove and stop take those.
+ */
+export function dismiss(queue: Queue, key: string): Queue {
+  return { ...queue, entries: queue.entries.filter((entry) => entry.ticket.key !== key || entry.phase !== "finished") };
+}
+
+/**
  * Put a finished entry back at the end of the queue. A draft pull request is not retried: it is the result. Nor is a parked run, until its
  * workspace is closed: a second workspace would take the same herdr name.
  */
@@ -174,12 +189,13 @@ export function retry(queue: Queue, key: string, now: number): Queue {
   if (entry === undefined || entry.phase !== "finished" || isResult(entry) || isParked(entry)) return queue;
   const { ticket, repos, model, effort, plan, planned, session, review, published, feedback, asked, rounds } = entry;
   // A review run that failed is retried as the same review round, resuming the same worker, so it does not start the ticket over, and a round
-  // the board started still counts towards its cap. Any other run starts a fresh worker, whose session replaces this one. A ticket of a batch
-  // is planned again on its own.
+  // the board started still counts towards its cap. A run that handed its ticket back as needs-human resumes the worker that wrote it, with the
+  // reason it gave. Any other run starts a fresh worker, whose session replaces this one. A ticket of a batch is planned again on its own.
   const round = { ...(session ? { session } : {}), ...(published ? { published } : {}), ...(feedback !== undefined ? { feedback } : {}), ...(asked ? { asked } : {}),
     ...(rounds !== undefined ? { rounds } : {}) };
+  const resumes = entry.outcome?.kind === "needs-human" && review === undefined ? entry.outcome.reason : undefined;
   const retried: Entry = { ticket, repos, model, effort, ...(plan ? { plan } : {}), ...(planned ? { planned } : {}),
-    ...(review ? { review, ...round } : {}), phase: "queued", queuedAt: now };
+    ...(review ? { review, ...round } : {}), ...(resumes !== undefined ? { resumes, ...(session ? { session } : {}) } : {}), phase: "queued", queuedAt: now };
   return { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== key), retried] };
 }
 
@@ -211,7 +227,7 @@ export function respond(queue: Queue, key: string, now: number): Queue {
 
 /** A finished run a person can start a review round of: it holds no workspace, the tracker has not settled it, and a pull request is open. */
 const reviewable = (entry: Entry): boolean =>
-  entry.phase === "finished" && !isParked(entry) && !SETTLED.has(entry.trackerState ?? "") && openPulls(entry).length > 0;
+  entry.phase === "finished" && !isParked(entry) && !SETTLED_TYPES.has(entry.trackerState ?? "") && openPulls(entry).length > 0;
 
 /** A review run of `entry`'s ticket for `prs`, queued at `now`, resuming its worker. A Slack message already posted for them stays its link. */
 function reviewRound(entry: Entry, prs: readonly PullRequest[], now: number): Entry {
@@ -370,7 +386,8 @@ export function batchPlanDone(queue: Queue, key: string, repo: string | null): Q
 /** A person answered a parked run's agent, which is working again: the run is live once more, and its old outcome and tracker state are dropped. */
 export function markResumed(queue: Queue, key: string): Queue {
   return replace(queue, key, (entry) => (isParked(entry)
-    ? { ...entry, phase: "running", outcome: undefined, finishedAt: undefined, trackerState: undefined, pullStates: undefined, waiting: false, seenWorking: true }
+    ? { ...entry, phase: "running", outcome: undefined, finishedAt: undefined, trackerState: undefined, trackerParent: undefined, pullStates: undefined, waiting: false,
+      seenWorking: true }
     : entry));
 }
 
@@ -379,12 +396,9 @@ export function unpark(queue: Queue, key: string): Queue {
   return replace(queue, key, (entry) => (isParked(entry) ? { ...entry, workspace: undefined, pane: undefined } : entry));
 }
 
-/** The tracker states a finished run can end in, after which its ticket is not read again. */
-const SETTLED = new Set(["completed", "canceled", "duplicate"]);
-
 /** The keys of finished runs that neither the tracker nor their pull requests have settled yet: the ones worth asking about again. */
 export function unsettledKeys(queue: Queue): string[] {
-  return queue.entries.filter((entry) => entry.phase === "finished" && !SETTLED.has(entry.trackerState ?? "") && settledByPulls(entry) === null)
+  return queue.entries.filter((entry) => entry.phase === "finished" && !SETTLED_TYPES.has(entry.trackerState ?? "") && settledByPulls(entry) === null)
     .map((entry) => entry.ticket.key);
 }
 
@@ -414,6 +428,15 @@ export function recordTrackerStates(queue: Queue, states: ReadonlyMap<string, st
     const state = states.get(entry.ticket.key);
     return entry.phase === "finished" && state !== undefined ? { ...entry, trackerState: state } : entry;
   }) };
+}
+
+/**
+ * Record whether each finished run whose ticket the tracker was asked about (`asked`) is the parent of sub-issues: `parents` names those that are.
+ * A run the tracker was not asked about keeps what it had.
+ */
+export function recordTrackerParents(queue: Queue, asked: readonly string[], parents: ReadonlySet<string>): Queue {
+  return { ...queue, entries: queue.entries.map((entry) =>
+    entry.phase === "finished" && asked.includes(entry.ticket.key) ? { ...entry, trackerParent: parents.has(entry.ticket.key) } : entry) };
 }
 
 /**

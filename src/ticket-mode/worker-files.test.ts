@@ -120,7 +120,7 @@ test("the flags end with --disallowedTools, so its list swallows no flag after i
 
 test("the brief tells the worker that a person may answer it after it hands the ticket back, and that it then writes a new outcome", () => {
   const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w" });
-  assert.match(brief, /A person may answer you here after a `needs-human` or `wrong-repo` outcome\. If one does, carry on with what they said, and write the outcome file again/);
+  assert.match(brief, /A person may answer you here after a `wrong-repo` outcome, or resume you with Retry after a `needs-human` one: your first prompt then says why you stopped\. If one does, carry on with what they said, and write the outcome file again/);
 });
 
 test("a planning run is refused git's writes, a pull request and a worktree, and keeps git's reads", async () => {

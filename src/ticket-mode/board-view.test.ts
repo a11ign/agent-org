@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, isParked, parentKeys, parentTick, ticketCount, projectCounts, queueLabel, recall,
+  HANDED_BACK, NO_PROJECT, PARKS, RUN_STATUSES, dismissNote, flatten, groupByStatus, isParked, parentKeys, parentTick, ticketCount, projectCounts, queueLabel, recall,
   remember, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, selectable, shownStatus,
   statusCounts, terminalLink, toggled, waitsOn, repoOfPull, stackedOn, stackNote, PRIORITY_NAMES, hasPlan, isBeingPublished, isWatched, publishable,
   publishLabel, publishNote, publishTerminalLink, missingPlan, planChoiceOf, planCounts, priorityCounts, prioritiesOf, runChoiceLabel,
@@ -338,21 +338,21 @@ test("the Queue button says what it will do", () => {
   assert.equal(queueLabel(1, 1), "Queue 1 ticket, planning it first");
 });
 
-test("a run offers what its state allows: Remove queued, Stop live, Close parked, Retry once closed, Approve for open pull requests", () => {
+test("a run offers what its state allows: Remove queued, Stop live, Close parked, Retry once closed, Approve for open pull requests, Dismiss every finished run last", () => {
   const run = (phase: string, fields: Partial<ViewEntry> = {}): ViewEntry => ({ ticket: { key: "NBF-1" }, phase, ...fields });
   const handedBack = { outcome: { kind: "needs-human" } };
   assert.deepEqual(runActions(run("queued")), ["remove"]);
   assert.deepEqual(runActions(run("starting")), ["stop"]);
   assert.deepEqual(runActions(run("running", { workspace: "w1", pane: "w1:p1" })), ["stop"]);
-  assert.deepEqual(runActions(run("finished", { ...handedBack, workspace: "w1", pane: "w1:p1" })), ["close"], "its workspace is still open, so no retry yet");
-  assert.deepEqual(runActions(run("finished", handedBack)), ["retry"]);
+  assert.deepEqual(runActions(run("finished", { ...handedBack, workspace: "w1", pane: "w1:p1" })), ["close", "dismiss"], "its workspace is still open, so no retry yet");
+  assert.deepEqual(runActions(run("finished", handedBack)), ["retry", "dismiss"], "a handed-back run it can retry is dismissed too");
   const open = "https://github.com/x/y/pull/1";
   const draft = { outcome: { kind: "draft-pr", prs: [{ url: open }] }, pullStates: { [open]: "open" } };
-  assert.deepEqual(runActions(run("finished", draft)), ["approve"], "a draft pull request is the result: it is approved, not retried");
-  assert.deepEqual(runActions(run("finished", { ...draft, outcome: { kind: "reviewed", prs: [{ url: open }] } })), ["respond"], "a reviewed one answers its feedback: its pull requests are ready already");
-  assert.deepEqual(runActions(run("finished", { ...draft, pullStates: { [open]: "merged" } })), [], "merged pull requests are done");
-  assert.deepEqual(runActions(run("finished", { ...draft, trackerState: "canceled" })), [], "a canceled ticket is done");
-  assert.deepEqual(runActions(run("finished", { outcome: { kind: "crashed" }, trackerState: "completed" })), [], "a completed ticket is done");
+  assert.deepEqual(runActions(run("finished", draft)), ["approve", "dismiss"], "a draft pull request is the result: it is approved, not retried");
+  assert.deepEqual(runActions(run("finished", { ...draft, outcome: { kind: "reviewed", prs: [{ url: open }] } })), ["respond", "dismiss"], "a reviewed one answers its feedback: its pull requests are ready already");
+  assert.deepEqual(runActions(run("finished", { ...draft, pullStates: { [open]: "merged" } })), ["dismiss"], "merged pull requests are done");
+  assert.deepEqual(runActions(run("finished", { ...draft, trackerState: "canceled" })), ["dismiss"], "a canceled ticket is done");
+  assert.deepEqual(runActions(run("finished", { outcome: { kind: "crashed" }, trackerState: "completed" })), ["dismiss"], "a completed ticket is done");
 });
 
 test("a review run shows as Reviewing while it works, and its reviewed pull requests as Ready to merge until they merge", () => {
@@ -370,8 +370,26 @@ test("a parked run is a finished one that kept its workspace, and every outcome 
   assert.equal(isParked({ ticket: { key: "NBF-1" }, phase: "running", workspace: "w1" }), false, "a live run is not parked");
   assert.equal(isParked({ ticket: { key: "NBF-1" }, phase: "finished" }), false, "a closed run is not parked");
   for (const kind of HANDED_BACK) {
-    assert.equal(runStatus({ ticket: { key: "NBF-1" }, phase: "finished", outcome: { kind } }), "needs-you", `${kind} parks the run, so the board must ask for a person`);
+    assert.equal(runStatus({ ticket: { key: "NBF-1" }, phase: "finished", outcome: { kind } }), "needs-you", `${kind} hands the run back, so the board must ask for a person`);
   }
+});
+
+test("only wrong-repo and no-outcome keep a handed-back run's workspace: needs-human closes it, so Retry can resume its session", () => {
+  assert.deepEqual([...PARKS].sort(), ["no-outcome", "wrong-repo"]);
+  assert.ok([...PARKS].every((kind) => HANDED_BACK.has(kind)), "a parked outcome is handed back");
+  assert.equal(PARKS.has("needs-human"), false, "its workspace is closed when the outcome is recorded");
+});
+
+test("a finished run offers Dismiss with a note when its ticket is closed in Linear or now a parent, and none otherwise", () => {
+  const finished = (fields: Partial<ViewEntry> = {}): ViewEntry => ({ ticket: { key: "NBF-1" }, phase: "finished", outcome: { kind: "draft-pr", prs: [] }, ...fields });
+  for (const trackerState of ["completed", "canceled", "duplicate"]) {
+    assert.equal(dismissNote(finished({ trackerState })), "Its ticket is closed in Linear", trackerState);
+  }
+  assert.equal(dismissNote(finished({ trackerParent: true })), "Its ticket is now a parent of sub-issues");
+  assert.equal(dismissNote(finished({ trackerParent: true, trackerState: "started" })), "Its ticket is now a parent of sub-issues");
+  assert.equal(dismissNote(finished({ trackerState: "started", trackerParent: false })), null, "a ticket in progress that is no parent is simply dismissable");
+  assert.equal(dismissNote(finished()), null);
+  assert.deepEqual(runActions(finished({ trackerParent: true })), ["approve", "dismiss"], "the note adds emphasis, never a removal: Dismiss is offered as before");
 });
 
 test("a run's terminal link fills the machine's template with its workspace, pane and key, encoded, and there is none without both", () => {
@@ -448,10 +466,10 @@ test("a reviewed run is Published once a publish run posted it, and still Comple
   assert.equal(runStatus(shipped({ published: { link: "https://slack/1" } })), "published");
   assert.equal(runStatus(shipped({ published: { link: null }, pullStates: { "https://github.com/x/a/pull/1": "merged" } })), "completed");
   assert.equal(runStatus(shipped({ handedBack: "keeps getting feedback" })), "needs-you", "the board stopped answering feedback on its own");
-  assert.deepEqual(runActions(shipped()), ["respond"], "ready pull requests are answered, not approved again");
-  assert.deepEqual(runActions(shipped({ published: { link: null } })), ["respond"]);
-  assert.deepEqual(runActions(shipped({ handedBack: "keeps getting feedback" })), ["respond"], "a person's Respond to review lets the board carry on");
-  assert.deepEqual(runActions(shipped({ outcome: { kind: "draft-pr", prs: [] } })), ["approve"], "Approve is for drafts");
+  assert.deepEqual(runActions(shipped()), ["respond", "dismiss"], "ready pull requests are answered, not approved again");
+  assert.deepEqual(runActions(shipped({ published: { link: null } })), ["respond", "dismiss"]);
+  assert.deepEqual(runActions(shipped({ handedBack: "keeps getting feedback" })), ["respond", "dismiss"], "a person's Respond to review lets the board carry on");
+  assert.deepEqual(runActions(shipped({ outcome: { kind: "draft-pr", prs: [] } })), ["approve", "dismiss"], "Approve is for drafts");
 });
 
 test("only a run Ready to merge can be ticked for Publish: not one published, parked, awaiting review, or held by the publish run under way", () => {
@@ -499,7 +517,7 @@ test("only a run Ready to merge is shown as Publishing: a draft, a live run and 
 
 test("the run's own status is Ready to merge while it is Publishing: the pool and what a run offers go by it", () => {
   assert.equal(runStatus(shipped()), "ready-to-merge");
-  assert.deepEqual(runActions(shipped()), ["respond"]);
+  assert.deepEqual(runActions(shipped()), ["respond", "dismiss"]);
   assert.equal(isWatched(shipped()), true, "the board still watches its pull requests");
 });
 
@@ -571,10 +589,10 @@ test("a ready pull request run is awaiting review with no Approve, watched while
   const pr = { repo: "nbl-ui-netbox", url: "https://github.com/x/nbl-ui-netbox/pull/1" };
   const ready = run({ outcome: { kind: "ready-pr", prs: [pr] } });
   assert.equal(runStatus(ready), "awaiting-review");
-  assert.deepEqual(runActions(ready), [], "no Approve: the reviewer is the review");
+  assert.deepEqual(runActions(ready), ["dismiss"], "no Approve: the reviewer is the review");
   assert.equal(isWatched(ready), true, "its feedback is watched");
   assert.equal(isWatched(run({ outcome: { kind: "ready-pr", prs: [pr] }, pullStates: { [pr.url]: "closed" } })), false, "a closed one is not watched");
   const draft = run({ outcome: { kind: "draft-pr", prs: [pr] } });
-  assert.deepEqual(runActions(draft), ["approve"], "POSITIVE CONTROL: a draft run is still approved");
+  assert.deepEqual(runActions(draft), ["approve", "dismiss"], "POSITIVE CONTROL: a draft run is still approved");
   assert.equal(isWatched(draft), false);
 });

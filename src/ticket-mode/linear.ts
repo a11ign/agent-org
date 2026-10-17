@@ -222,6 +222,12 @@ export function linearSource({ key, fetch: request = fetch }: { key: string; fet
       return new Map([...found].map(([key, node]) => [key, linkedPulls(node)]));
     },
 
+    async parentKeys(keys) {
+      // One sub-issue is enough to make the ticket a parent, so only the first is read.
+      const found = await eachIssue<{ children: { nodes: { id: string }[] } }>(keys, "children(first: 1) { nodes { id } }");
+      return new Set([...found].filter(([, node]) => node.children.nodes.length > 0).map(([key]) => key));
+    },
+
     async addBlockers(identifier, blockerKeys) {
       type Blocked = { id: string; inverseRelations: { nodes: { type: string; issue: { identifier: string } }[] } };
       const found = await issue<Blocked>(identifier, "id inverseRelations { nodes { type issue { identifier } } }");

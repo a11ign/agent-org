@@ -62,6 +62,11 @@ export interface TicketSource {
    */
   pullStates?(keys: readonly string[]): Promise<ReadonlyMap<string, Readonly<Record<string, PullState>>>>;
   /**
+   * The keys, among `keys`, whose ticket is the parent of at least one sub-issue. A parent is offered for Dismiss once its run has finished, since
+   * its work is done in its children. A source without it never marks a ticket a parent. Throws when the tracker cannot be asked.
+   */
+  parentKeys?(keys: readonly string[]): Promise<ReadonlySet<string>>;
+  /**
    * The tickets that block each key's ticket, by key, as the tracker records "blocked by". A key the tracker has no ticket for is left out. A
    * source without it never holds a queued run back. Throws when the tracker cannot be asked.
    */

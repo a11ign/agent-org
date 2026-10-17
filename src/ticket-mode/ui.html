@@ -76,6 +76,7 @@
   .st-publishing { color: var(--st-progress); } .st-published { color: var(--st-done); }
   .action-respond { display: inline-flex; align-items: center; gap: 4px; } .action-respond .action-icon { color: var(--st-review); display: inline-flex; }
   .action-respond svg { width: 12px; height: 12px; }
+  .action-dismiss.due { border-color: var(--accent); color: var(--accent); font-weight: 600; }
   .run .publish-tick { font-size: 12px; display: flex; gap: 4px; align-items: center; }
   .st-planning { color: var(--st-review); } .st-awaiting-review { color: var(--st-review); } .st-reviewing { color: var(--st-progress); } .st-ready-to-merge { color: var(--st-done); } .st-completed { color: var(--st-done); } .st-failed { color: var(--st-failed); } .st-cancelled { color: var(--st-cancelled); }
   .runs .run .st-working svg, .runs .run .st-planning svg, .runs .run .st-reviewing svg, .runs .run .st-publishing svg { animation: spin 1.1s linear infinite; }
@@ -189,7 +190,7 @@
 // The decisions (what shows, how it groups, what can be selected, what status a run has and what it offers) are board-view.ts's, tested there.
 // This page only draws what they return and wires the clicks.
 import {
-  APPROVE_TITLE, RESPOND_TITLE, PRIORITY_NAMES, RUN_STATUSES, publishable, publishLabel, publishNote, publishTerminalLink, pullsOf, flatten, groupByStatus, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, queueLabel, recall, remember, runActions, shownStatus, apiBase, chosenConnection, connectionLabel, safeHref, runStatus,
+  APPROVE_TITLE, DISMISS_TITLE, RESPOND_TITLE, PRIORITY_NAMES, dismissNote, RUN_STATUSES, publishable, publishLabel, publishNote, publishTerminalLink, pullsOf, flatten, groupByStatus, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, queueLabel, recall, remember, runActions, shownStatus, apiBase, chosenConnection, connectionLabel, safeHref, runStatus,
   runChoiceLabel, runsShown, unplannedCount, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, waitsOn, workersLabel,
 } from "/board-view.js";
 
@@ -378,8 +379,8 @@ const ICONS = {
   "cancelled": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="2"/><path d="M4 12L12 4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
 };
 const LABEL = Object.fromEntries(RUN_STATUSES.map(({ status, label }) => [status, label]));
-const ACTION_LABEL = { remove: "Remove", stop: "Stop", retry: "Retry", close: "Close", approve: "Approve", respond: "Respond to review" };
-const ACTION_TITLE = { approve: APPROVE_TITLE, respond: RESPOND_TITLE };
+const ACTION_LABEL = { remove: "Remove", stop: "Stop", retry: "Retry", close: "Close", approve: "Approve", respond: "Respond to review", dismiss: "Dismiss" };
+const ACTION_TITLE = { approve: APPROVE_TITLE, respond: RESPOND_TITLE, dismiss: DISMISS_TITLE };
 // Respond to review carries a reply arrow, in the reviewing colour, so it reads apart from Approve.
 const ACTION_ICON = { respond: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 3.5L2.5 7.5l4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M2.8 7.5H9a4.5 4.5 0 0 1 4.5 4.5v.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>' };
 
@@ -406,8 +407,11 @@ function row(e) {
   const stacked = stackedOn(e, state.queue.entries);
   const o = e.outcome;
   const actions = el("div", { className: "actions" });
+  // A run whose ticket is closed or now a parent is offered Dismiss, and the button is emphasised; it is never dismissed on its own.
+  const offer = dismissNote(e);
   for (const verb of runActions(e)) {
-    const b = el("button", { className: `small action-${verb}`, ...(ACTION_TITLE[verb] ? { title: ACTION_TITLE[verb] } : {}) });
+    const due = verb === "dismiss" && offer !== null;
+    const b = el("button", { className: `small action-${verb}${due ? " due" : ""}`, ...(ACTION_TITLE[verb] ? { title: ACTION_TITLE[verb] } : {}) });
     if (ACTION_ICON[verb]) {
       const icon = el("span", { className: "action-icon" });
       icon.innerHTML = ACTION_ICON[verb];
@@ -442,6 +446,7 @@ function row(e) {
       waits.length > 0 ? el("div", { className: "meta" }, `Waits on ${waits.map((b) => `${b.key} (${b.status})`).join(", ")}`) : null,
       stacked.length > 0 ? el("div", { className: "meta" }, stackNote(stacked)) : null,
       reason ? el("div", { className: "meta" }, reason) : null,
+      offer ? el("div", { className: "meta" }, offer) : null,
       isParked(e) ? el("div", { className: "waiting" }, "Still open: answer the agent in its terminal and the run carries on") : null),
     el("div", { className: "side" }, tick, terminal, message, prs, actions));
 }

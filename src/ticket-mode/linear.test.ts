@@ -201,6 +201,23 @@ const planFiles = () => {
   return [plan, adr];
 };
 
+test("parentKeys() returns the keys whose ticket has sub-issues, in one aliased request, reading one child at most", async () => {
+  const { fetch, requests } = linear([{ data: {
+    k0: { nodes: [{ identifier: "NBF-1270", children: { nodes: [{ id: "c1" }] } }] },
+    k1: { nodes: [{ identifier: "NBF-1271", children: { nodes: [] } }] },
+    k2: { nodes: [] },
+  } }]);
+  const parents = await linearSource({ key: "lin_api_secret", fetch }).parentKeys!(["NBF-1270", "NBF-1271", "NBF-9999"]);
+  assert.deepEqual([...parents], ["NBF-1270"], "a ticket with no sub-issues is not a parent, and one Linear has no ticket for is not either");
+  assert.equal(requests.length, 1, "one request for the whole batch");
+  assert.match(JSON.parse(String(requests[0].init.body)).query, /children\(first: 1\) \{ nodes \{ id \} \}/);
+});
+
+test("parentKeys() throws when Linear cannot be asked, so a refused read changes nothing", async () => {
+  const { fetch } = linear([{ errors: [{ message: "Authentication required" }] }]);
+  await assert.rejects(linearSource({ key: "lin_api_secret", fetch }).parentKeys!(["NBF-1270"]), /Authentication required/);
+});
+
 test("attachPlan() uploads each file to the address Linear signs, without the key, attaches it under its own name, and moves an unstarted ticket to the planner's state", async () => {
   const files = planFiles();
   const { fetch, requests } = linear([planning("backlog"), signed(1), done, signed(2), done, done], {

@@ -22,8 +22,8 @@ export type TicketNode<T extends ViewTicket = ViewTicket> = Readonly<{ ticket: T
 /** The fields of a queue entry the board reads. */
 export type ViewEntry = Readonly<{
   ticket: Readonly<{ key: string }>; phase: string; outcome?: Readonly<{ kind: string; prs?: readonly Readonly<{ url: string }>[] }>; waiting?: boolean;
-  trackerState?: string; pullStates?: Readonly<Record<string, string>>; queuedAt?: number; startedAt?: number; finishedAt?: number; workspace?: string;
-  pane?: string; blockers?: readonly ViewBlocker[]; model?: string; effort?: string;
+  trackerState?: string; trackerParent?: boolean; pullStates?: Readonly<Record<string, string>>; queuedAt?: number; startedAt?: number; finishedAt?: number;
+  workspace?: string; pane?: string; blockers?: readonly ViewBlocker[]; model?: string; effort?: string;
   /** Set while the ticket still needs its plan: the model and effort its planning run uses. */
   plan?: Readonly<{ model: string; effort: string }>;
   /** Its plan was written by a planning run, not agreed with a person. */
@@ -253,9 +253,18 @@ export const RUN_STATUSES: readonly Readonly<{ status: RunStatus; label: string 
 
 /**
  * Outcomes that hand the ticket back to a person: the worker could not decide, the work belongs elsewhere, or it stopped without saying. The
- * board shows such a run as Needs you, and the pool parks it rather than closing its workspace, so the person can answer the agent there.
+ * board shows such a run as Needs you. Of these, {@link PARKS} are the ones the pool keeps parked rather than closing their workspace.
  */
 export const HANDED_BACK: ReadonlySet<string> = new Set(["needs-human", "wrong-repo", "no-outcome"]);
+
+/**
+ * Outcomes whose run keeps its workspace, so the person can answer the agent there. `needs-human` is not one: its workspace closes once the
+ * outcome is recorded, and Retry resumes the worker's session with the reason it gave. A `wrong-repo` or no outcome has nothing to resume from.
+ */
+export const PARKS: ReadonlySet<string> = new Set(["wrong-repo", "no-outcome"]);
+
+/** The tracker's state types that settle a ticket: once one holds, the ticket is not read again and its run is done or cancelled. */
+export const SETTLED_TYPES: ReadonlySet<string> = new Set(["completed", "canceled", "duplicate"]);
 
 /** Outcomes that are a run's result, pull requests to show for it: a draft one, or one a review run saw through its review. */
 export const RESULT_KINDS: ReadonlySet<string> = new Set(["draft-pr", "ready-pr", "reviewed"]);
@@ -381,7 +390,7 @@ export function runsShown<T extends ViewEntry>(entries: readonly T[], filter: Ru
 export const isParked = (entry: ViewEntry): boolean => entry.phase === "finished" && entry.workspace !== undefined;
 
 /** What a person can do to a run from the board. */
-export type RunAction = "remove" | "stop" | "retry" | "close" | "approve" | "respond";
+export type RunAction = "remove" | "stop" | "retry" | "close" | "approve" | "respond" | "dismiss";
 
 /** Why a person presses Approve, shown as its tooltip: the drafts are reviewed. */
 export const APPROVE_TITLE = "Drafts reviewed and approved: mark the pull requests ready, then see them through their checks and review";
@@ -390,14 +399,35 @@ export const APPROVE_TITLE = "Drafts reviewed and approved: mark the pull reques
 export const RESPOND_TITLE = "Answer the feedback on these ready pull requests now: their reviews, comments and failing checks";
 
 /**
+ * Why a person presses Dismiss, shown as its tooltip: what it removes, and what it leaves. Its pull requests get no more review rounds, which is
+ * the one thing it stops.
+ */
+export const DISMISS_TITLE = "Remove this run from the board and close its workspace. The ticket, its branches and its pull requests are kept, and the board no longer watches its pull requests";
+
+/**
+ * The note that offers Dismiss for a finished run whose ticket is no longer needed: closed in the tracker, or made the parent of sub-issues. A run
+ * with no such reason still offers Dismiss, with no note. Null when there is none.
+ */
+export function dismissNote(entry: ViewEntry): string | null {
+  if (SETTLED_TYPES.has(entry.trackerState ?? "")) return "Its ticket is closed in Linear";
+  if (entry.trackerParent === true) return "Its ticket is now a parent of sub-issues";
+  return null;
+}
+
+/**
  * The actions a run offers. A queued run can be removed and a live one stopped. A finished run that kept its workspace (parked) can be closed,
  * and only once it is closed can it be retried. Pull requests are results, and are not retried. Drafts awaiting review offer Approve, which
  * marks them ready. Ready ones (Ready to merge, Published, or handed back after the board's own rounds) offer Respond to review, which answers
- * their feedback now. A completed ticket offers nothing.
+ * their feedback now. A completed ticket offers nothing. Every finished run offers Dismiss last, whatever else it offers.
  */
 export function runActions(entry: ViewEntry): RunAction[] {
   if (entry.phase === "queued") return ["remove"];
   if (entry.phase !== "finished") return ["stop"];
+  return [...finishedActions(entry), "dismiss"];
+}
+
+/** The actions of a finished run other than Dismiss, which every finished run offers. */
+function finishedActions(entry: ViewEntry): RunAction[] {
   if (isParked(entry)) return ["close"];
   const status = runStatus(entry);
   if (status === "awaiting-review" && entry.outcome?.kind === "draft-pr") return ["approve"];

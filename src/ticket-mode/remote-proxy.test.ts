@@ -69,11 +69,11 @@ test("the instance is sent its own host, the key and the JSON body over the tunn
 
 test("only the routes the page calls are passed on, by the method it calls them with, so a pairing code there is never asked for", async () => {
   for (const path of ["/api/config", "/api/tickets", "/api/parents", "/api/queue"]) assert.equal(passedOn("GET", path), true, path);
-  for (const path of ["/api/queue", "/api/choice", "/api/publish", "/api/paused", "/api/max", "/api/queue/NBF-1/approve", "/api/queue/NBF-1/stop"]) {
+  for (const path of ["/api/queue", "/api/choice", "/api/publish", "/api/paused", "/api/max", "/api/queue/NBF-1/approve", "/api/queue/NBF-1/stop", "/api/queue/NBF-1/dismiss"]) {
     assert.equal(passedOn("POST", path), true, path);
   }
   for (const [method, path] of [["POST", "/api/pair-code"], ["POST", "/api/pair-code/"], ["POST", "/api/queue/NBF-1/../../pair-code"], ["GET", "/api/profiles"],
-    ["DELETE", "/api/queue"], ["GET", "/api/paused"], ["POST", "/api/queue/NBF-1/drop"]]) {
+    ["DELETE", "/api/queue"], ["GET", "/api/paused"], ["POST", "/api/queue/NBF-1/drop"], ["POST", "/api/queue/NBF-1/dismiss/x"]]) {
     assert.equal(passedOn(method, path), false, `${method} ${path}`);
   }
   let sent = 0;

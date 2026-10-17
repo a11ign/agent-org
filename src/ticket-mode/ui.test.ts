@@ -615,9 +615,26 @@ test("a row offers only the actions its state allows, and a completed run is not
   const buttons = (key: string) => runRows(p).find((r) => r.text().includes(key))!.all().filter((n) => n.tag === "button").map((b) => b.text());
   assert.deepEqual(buttons("Q-1"), ["Remove"]);
   assert.deepEqual(buttons("R-1"), ["Stop"]);
-  assert.deepEqual(buttons("F-1"), ["Retry"]);
-  assert.deepEqual(buttons("M-1"), []);
+  assert.deepEqual(buttons("F-1"), ["Retry", "Dismiss"]);
+  assert.deepEqual(buttons("M-1"), ["Dismiss"], "a completed ticket's run is dismissed, and offers nothing else");
   assert.ok(runRows(p).find((r) => r.text().includes("D-1"))!.text().includes("nbl-ui-netbox #12"), "the draft's pull request is linked by repo and number");
+});
+
+test("a finished run whose ticket is closed or a parent emphasises Dismiss and says why; Dismiss posts to the board and removes nothing else", async () => {
+  const runs = [entry("M-1", { phase: "finished", startedAt: 2, finishedAt: 8, trackerState: "completed", outcome: { kind: "draft-pr", prs: [] } }),
+    entry("P-1", { phase: "finished", startedAt: 2, finishedAt: 9, trackerParent: true, outcome: { kind: "reviewed", prs: [] } }),
+    entry("F-1", { phase: "finished", startedAt: 2, finishedAt: 3, outcome: { kind: "crashed", reason: "herdr refused" } })];
+  const p = await page(new Map(), { entries: runs });
+  const dismiss = (key: string) => runRows(p).find((r) => r.text().includes(key))!.all().find((n) => n.tag === "button" && n.text() === "Dismiss") as Node_ & { className: string; title?: string };
+  assert.ok(runRows(p).find((r) => r.text().includes("M-1"))!.text().includes("Its ticket is closed in Linear"), "the closed ticket's note");
+  assert.ok(runRows(p).find((r) => r.text().includes("P-1"))!.text().includes("Its ticket is now a parent of sub-issues"), "the parent's note");
+  assert.equal(runRows(p).find((r) => r.text().includes("F-1"))!.text().includes("Its ticket"), false, "a run with no such reason has no note");
+  assert.match(dismiss("M-1").className, /\bdue\b/, "emphasised");
+  assert.doesNotMatch(dismiss("F-1").className, /\bdue\b/, "not emphasised: the board never offers it more strongly without a reason");
+  assert.match(dismiss("F-1").title ?? "", /^Remove this run from the board/, "its tooltip says what it removes and what it keeps");
+  dismiss("F-1").fire("click");
+  await settle();
+  assert.ok(p.posts.some((x) => x.path === "/api/queue/F-1/dismiss"));
 });
 
 test("a draft pull request awaiting review offers Approve, titled as a person's approval, which goes to the board", async () => {
@@ -833,11 +850,11 @@ test("a run Ready to merge, Published, or handed back by the board offers Respon
   const actions = (key: string) => runRows(p).find((r) => r.text().includes(key))!.all().filter((n) => n.tag === "button") as (Node_ & { title?: string })[];
   for (const key of ["P-1", "P-3", "H-1"]) {
     const [respond] = actions(key);
-    assert.deepEqual(actions(key).map((b) => b.text()), ["Respond to review"], key);
+    assert.deepEqual(actions(key).map((b) => b.text()), ["Respond to review", "Dismiss"], key);
     assert.match(respond.title ?? "", /^Answer the feedback on these ready pull requests/);
     assert.ok(respond.all().some((n) => n.className === "action-icon"), "the reply icon");
   }
-  assert.deepEqual(actions("D-1").map((b) => b.text()), ["Approve"]);
+  assert.deepEqual(actions("D-1").map((b) => b.text()), ["Approve", "Dismiss"]);
   assert.match(actions("D-1")[0].title ?? "", /^Drafts reviewed and approved/);
   actions("P-1")[0].fire("click");
   await settle();

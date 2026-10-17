@@ -6,7 +6,8 @@ import { tmpDir } from "../lib/tmp-fixture.ts";
 import { isParked } from "./board-view.ts";
 import {
   amend, approve, respond, batchPlanDone, feedbackRound, MAX_FEEDBACK_ROUNDS, markPublishRunning, markPublishStarting, publishDone, publishFailed, publishStarts, queuePublish, emptyQueue, enqueue, finish, isLive, leaveBatch, loadQueue, markResumed, markRunning, markStarting, nextStarts, observe, park,
-  recordBlockers, recordRepos, planDone, PLAN_BATCH_MAX, recordPullStates, recordTrackerStates, remove, retry, saveQueue, setMax, setPaused, unpark, unreadBlockerKeys, unsettledKeys, type Queue,
+  recordBlockers, recordRepos, planDone, PLAN_BATCH_MAX, recordPullStates, recordTrackerParents, recordTrackerStates, dismiss, remove, retry, saveQueue, setMax, setPaused, unpark,
+  unreadBlockerKeys, unsettledKeys, type Queue,
 } from "./queue.ts";
 import type { Ticket } from "./source.ts";
 
@@ -200,13 +201,13 @@ test("a finished run records its pull requests' states, and one they settle is n
 test("a parked run keeps its workspace and pane, holds no slot, and is not retried until its workspace is closed", () => {
   let queue = setPaused(enqueue(emptyQueue(1), [ticket("A"), ticket("B")], choice, 1), false);
   queue = markRunning(markStarting(queue, "A", 2), "A", "w1", "w1:p1");
-  queue = park(queue, "A", { kind: "needs-human", reason: "which colour?" }, 5);
+  queue = park(queue, "A", { kind: "wrong-repo", where: "netbox" }, 5);
   const a = () => queue.entries.find((e) => e.ticket.key === "A")!;
   assert.deepEqual([a().phase, a().workspace, a().pane, isParked(a()), isLive(a())], ["finished", "w1", "w1:p1", true, false]);
   assert.deepEqual(nextStarts(queue, 0, 14).map((e) => e.ticket.key), ["B"], "a parked run holds no slot");
   assert.equal(retry(queue, "A", 9), queue, "a second workspace would take the same herdr name");
   queue = unpark(queue, "A");
-  assert.deepEqual([a().workspace, a().pane, a().outcome?.kind, isParked(a())], [undefined, undefined, "needs-human", false], "closing keeps the outcome");
+  assert.deepEqual([a().workspace, a().pane, a().outcome?.kind, isParked(a())], [undefined, undefined, "wrong-repo", false], "closing keeps the outcome");
   assert.deepEqual(keys(retry(queue, "A", 9)), ["B", "A"]);
 });
 
@@ -255,9 +256,9 @@ test("approve reviews only the pull requests still open, and leaves a run with n
 });
 
 test("a retried run that is not a review run starts a fresh worker, and an ended run never keeps an earlier worker's session", () => {
+  const crashed = endedWith({ kind: "crashed", reason: "herdr refused" });
+  assert.equal(retry(crashed, "A", 4).entries.find((e) => e.ticket.key === "A")?.session, undefined);
   const handed = endedWith({ kind: "needs-human", reason: "?" });
-  const retried = retry(handed, "A", 4);
-  assert.equal(retried.entries.find((e) => e.ticket.key === "A")?.session, undefined);
   const rerun = finish(markRunning(markStarting(handed, "A", 5), "A", "w2", "w2:p1"), "A", { kind: "draft-pr", prs: [pr] }, 6);
   assert.equal(rerun.entries.find((e) => e.ticket.key === "A")?.session, undefined, "herdr never named run 2's session, and run 1's is not its");
 });
@@ -375,4 +376,38 @@ test("a ready pull request run is not approved: approve changes nothing, since o
   const ready = endedWith({ kind: "ready-pr", prs: [pr] }, { pullStates: { [pr.url]: "open" } });
   assert.equal(approve(ready, "A", 9), ready, "the same queue back");
   assert.equal(ready.entries.find((e) => e.ticket.key === "A")?.outcome?.kind, "ready-pr");
+});
+
+test("a run that handed its ticket back as needs-human is retried to resume its session, with the reason it gave", () => {
+  const retried = retry(endedWith({ kind: "needs-human", reason: "which colour?" }), "A", 4).entries.find((e) => e.ticket.key === "A");
+  assert.deepEqual([retried?.phase, retried?.session, retried?.resumes], ["queued", "s1", "which colour?"]);
+  const unrecorded = finish(markRunning(markStarting(enqueue(emptyQueue(3), [ticket("A")], choice, 1), "A", 2), "A", "w1", "w1:p1"), "A", { kind: "needs-human", reason: "?" }, 3);
+  const again = retry(unrecorded, "A", 4).entries.find((e) => e.ticket.key === "A");
+  assert.deepEqual([again?.session, again?.resumes], [undefined, "?"], "without a recorded session it still resumes from the reason, in a worker of its own");
+});
+
+test("a review round that handed back as needs-human is retried as the review round it was, not as a resume", () => {
+  const review = approve(endedWith({ kind: "draft-pr", prs: [pr] }), "A", 9);
+  const handed = finish(markRunning(markStarting(review, "A", 10), "A", "w2", "w2:p1"), "A", { kind: "needs-human", reason: "x" }, 11, { session: "s2" });
+  const retried = retry(handed, "A", 12).entries.find((e) => e.ticket.key === "A");
+  assert.deepEqual([retried?.review, retried?.session, retried?.resumes], [[pr], "s2", undefined]);
+});
+
+test("dismiss takes a finished run off the board and nothing else; a queued or live run is left for remove and stop", () => {
+  assert.deepEqual(keys(dismiss(endedWith({ kind: "draft-pr", prs: [pr] }), "A")), ["B"]);
+  assert.deepEqual(keys(dismiss(endedWith({ kind: "draft-pr", prs: [pr] }), "Z")), ["A", "B"], "a key not on the board changes nothing");
+  const queued = enqueue(emptyQueue(3), [ticket("A"), ticket("B")], choice, 1);
+  assert.deepEqual(keys(dismiss(queued, "A")), ["A", "B"], "a queued run is removed, not dismissed");
+  const live = markRunning(markStarting(queued, "A", 2), "A", "w1", "w1:p1");
+  assert.deepEqual(keys(dismiss(live, "A")), ["A", "B"], "a live run is stopped, not dismissed");
+});
+
+test("the parents among the tickets asked about are recorded on their finished runs; a run not asked about keeps what it had", () => {
+  let queue = finish(markRunning(markStarting(enqueue(emptyQueue(3), [ticket("A"), ticket("B")], choice, 1), "A", 2), "A", "w1", "w1:p1"), "A", { kind: "crashed", reason: "x" }, 3);
+  queue = finish(markRunning(markStarting(queue, "B", 4), "B", "w2", "w2:p1"), "B", { kind: "crashed", reason: "y" }, 5);
+  const parent = (key: string) => queue.entries.find((e) => e.ticket.key === key)?.trackerParent;
+  queue = recordTrackerParents(queue, ["A"], new Set(["A"]));
+  assert.deepEqual([parent("A"), parent("B")], [true, undefined], "B was not asked about");
+  queue = recordTrackerParents(queue, ["A", "B"], new Set());
+  assert.deepEqual([parent("A"), parent("B")], [false, false], "asked, and no sub-issues: not a parent");
 });

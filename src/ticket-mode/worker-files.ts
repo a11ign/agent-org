@@ -215,7 +215,7 @@ Write \`${ticketDir}/${OUTCOME_FILE}\` as the last thing you do, with exactly on
 { "kind": "needs-human", "reason": "<the question only a person can answer, and why the evidence does not settle it>" }
 \`\`\`
 
-Write \`planned\` only when the plan's files are in \`${planDir}\`. A person may answer you here after a \`needs-human\` outcome. If one does, finish the plan with what they said, and write the outcome file again as the last thing you do.
+Write \`planned\` only when the plan's files are in \`${planDir}\`. A person may answer you here after a \`wrong-repo\` outcome, or resume you with Retry after a \`needs-human\` one: your first prompt then says why you stopped. If one does, finish the plan with what they said, and write the outcome file again as the last thing you do.
 `;
 }
 
@@ -289,7 +289,7 @@ Write \`${runDir}/${OUTCOME_FILE}\` as the last thing you do, after every plan, 
 { "kind": "needs-human", "reason": "<the question only a person can answer, and why the evidence does not settle it>" }
 \`\`\`
 
-Write \`planned\` once every ticket has its plan files or its \`${QUESTION_FILE}\`. A \`needs-human\` outcome hands every ticket of the batch back to a person, so write it only when no ticket can be planned without one. A person may answer you here after a \`needs-human\` outcome. If one does, finish the plans with what they said, and write the outcome file again as the last thing you do.
+Write \`planned\` once every ticket has its plan files or its \`${QUESTION_FILE}\`. A \`needs-human\` outcome hands every ticket of the batch back to a person, so write it only when no ticket can be planned without one. A person may resume you with Retry after a \`needs-human\` outcome: your first prompt then says why you stopped. If one does, finish the plans with what they said, and write the outcome file again as the last thing you do.
 `;
 }
 
@@ -359,7 +359,7 @@ Write \`${ticketDir}/${OUTCOME_FILE}\` as the last thing you do, with exactly on
 { "kind": "needs-human", "reason": "<what a person must decide or provide>" }
 \`\`\`
 
-A person may answer you here after a \`needs-human\` or \`wrong-repo\` outcome. If one does, carry on with what they said, and write the outcome file again as the last thing you do.
+A person may answer you here after a \`wrong-repo\` outcome, or resume you with Retry after a \`needs-human\` one: your first prompt then says why you stopped. If one does, carry on with what they said, and write the outcome file again as the last thing you do.
 `;
 }
 
@@ -412,7 +412,7 @@ Write \`${ticketDir}/${OUTCOME_FILE}\` as the last thing you do, with exactly on
 { "kind": "needs-human", "reason": "<what a person must decide or provide>" }
 \`\`\`
 
-${round.reviewed} A person may answer you here after a \`needs-human\` outcome. If one does, carry on with what they said, and write the outcome file again as the last thing you do.
+${round.reviewed} A person may resume you with Retry after a \`needs-human\` outcome: your first prompt then says why you stopped. If one does, carry on with what they said, and write the outcome file again as the last thing you do.
 `;
 }
 
@@ -539,4 +539,15 @@ const ROUND_CAUSES: Readonly<Record<RoundCause, string>> = {
 /** A review run's first prompt, which a resumed worker reads after its own earlier turns. */
 export function reviewPrompt(ticketDir: string, cause: RoundCause = "approved"): string {
   return `${ROUND_CAUSES[cause]} Read ${ticketDir}/${BRIEF_FILE} and follow it.`;
+}
+
+/** The most of a handed-back reason a resume prompt quotes: it is a command-line argument, which a long one would cut. */
+const REASON_CHARS = 500;
+
+/**
+ * A resumed run's first prompt, for a ticket whose last run handed it back as `needs-human`: the reason, quoted, and the brief read again. The
+ * worker answers from its own earlier turns, and a person may have answered in its terminal or edited the ticket since.
+ */
+export function resumePrompt(ticketDir: string, reason: string): string {
+  return `The last run handed this ticket back, with the reason ${JSON.stringify(reason.slice(0, REASON_CHARS))}. Read ${ticketDir}/${BRIEF_FILE} again and follow it.`;
 }
