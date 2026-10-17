@@ -233,7 +233,7 @@ ${PARENT_ONLY_PLAN}
 
 ${MISSING_SKILL}
 
-The plan's files go in \`${planDir}\`, and nowhere else. The board attaches each one to the ticket under its file name. Write only markdown files there, each 1 MB or less: anything else stops the board attaching any of them.
+The plan's files go in \`${planDir}\`, and nowhere else. The board attaches each one to the ticket under its file name. Write only markdown files there, each 1 MB or less: anything else stops the board attaching any of them. ${regionInstruction(clones)}
 ${connectorsText(connectors)}${notes?.trim() ? `\n## On this machine\n\n${notes.trim()}\n` : ""}
 ## The outcome file
 
@@ -308,7 +308,7 @@ ${MISSING_SKILL}
 
 Write everything in \`${planDir}\`, and nowhere else:
 
-- \`${planDir}/<KEY>/\` for each ticket above holds that ticket's plan files, or a \`${QUESTION_FILE}\` when only a person can settle its plan. The board attaches each plan file to its own ticket under its file name. Write only markdown files there, each 1 MB or less: anything else stops the board attaching that ticket's plan. A question about one ticket does not stop the others, so plan the rest.
+- \`${planDir}/<KEY>/\` for each ticket above holds that ticket's plan files, or a \`${QUESTION_FILE}\` when only a person can settle its plan. The board attaches each plan file to its own ticket under its file name. Write only markdown files there, each 1 MB or less: anything else stops the board attaching that ticket's plan. A question about one ticket does not stop the others, so plan the rest. ${regionInstruction(clones)}
 - \`${planDir}/${ORDER_FILE}\` is one object with an entry for each ticket: \`{ "<KEY>": { "repo": "<repository>", "after": ["<KEY>", ...], "wait": "stacked" or "merged" } }\`, where \`wait\` is optional. \`repo\` is the repository the ticket's work lands in, or \`null\` for a ticket with a question. It must be exactly one of these names, which are the host file's \`clones\` keys: ${cloneNames(clones)}. A name is not the folder its checkout sits in, so never take a \`repo\` from a path: the board refuses any other name, and hands that ticket to a person. \`after\` names the tickets of this batch whose work it needs first. Name only tickets of this batch, never the ticket itself, and make no cycle. The board records each one in the tracker as blocking the ticket, and its worker starts only once they are done, or, where it stacks on one, on that one's branch.
 
 How \`wait\` says how a ticket waits on each ticket in its \`after\`:
@@ -330,20 +330,32 @@ Write \`planned\` once every ticket has its plan files or its \`${QUESTION_FILE}
 `;
 }
 
-/** Step 6 of the brief: how the worker opens its pull requests, as a draft (the default) or ready for review (`tickets.drafts: false`). */
-function openPullRequestStep(drafts: boolean, url: string): string {
-  return `6. Push the branch and open ONE ${drafts ? "DRAFT" : "READY"} pull request per repository you changed: \`gh pr create${drafts ? " --draft" : ""}\`, titled \`<type>(<scope>): <what changed>\`. The body links ${url}, says what changed and how you verified it, and, when the change is visible, shows it: take screenshots with what this machine provides (see "On this machine" when there is such a section), or else end the body with "Screenshot pending". A pull request that needs another repository's unmerged one says so in its body.`;
+/**
+ * Step 6 of the brief: how the worker opens its pull requests, as a draft (the default) or ready for review (`tickets.drafts: false`). The command is
+ * `pr:open`, which checks the body and the diff against the ticket before it sends anything (A11-74); `gh pr create` is not used.
+ */
+function openPullRequestStep(drafts: boolean, ticket: Ticket, prOpenCommand: string): string {
+  return `6. Push the branch and open ONE ${drafts ? "DRAFT" : "READY"} pull request per repository you changed: write its body to a file, then run \`${prOpenCommand} create${drafts ? " --draft" : ""} --title "<type>(<scope>): <what changed>" --body-file <file>\`. The body links ${ticket.url}, says \`Refs ${ticket.key}\` (or \`Closes ${ticket.key}\` only when the ticket's done-when is fully met), says what changed and how you verified it, and, when the change is visible, shows it: take screenshots with what this machine provides (see "On this machine" when there is such a section), or else end the body with "Screenshot pending". It carries an \`Outside-Region: <path> — <reason>\` line for each path outside the plan's \`## Region\`, and either a changeset or a \`no-release: <reason>\` line. A pull request that needs another repository's unmerged one says so in its body. If \`pr:open\` refuses, fix what it names and run it again. Exit code 3 means the pull request exists: do not run it again, and run only the step its message names.`;
 }
 
 /**
- * The brief, as markdown. `worktreeCommand` is the full command line that makes a worktree, short of the repository's name. `notes` is the host
+ * The planner's instruction for the `## Region` section a plan ends with, which `pr:open` reads to check each pull request's diff (A11-74). A plan without
+ * one is still accepted: `pr:open` says the Region was not checked.
+ */
+function regionInstruction(clones: Readonly<Record<string, string>>): string {
+  return `End each plan with a \`## Region\` section listing every path the work will change, one per line, inside a fenced code block. When the work spans more than one repository, prefix each path with \`<repo>:\`, the repository's name among the host file's \`clones\` (${cloneNames(clones)}).`;
+}
+
+/**
+ * The brief, as markdown. `worktreeCommand` is the full command line that makes a worktree, short of the repository's name, and `prOpenCommand` the one
+ * that opens a pull request (`pr:open`). `notes` is the host
  * file's `tickets.brief`, how workers behave on this machine, and `connectors` its `tickets.connectors`. `blockers` are the tickets this one
  * waited on, and `stackedOn` the ones it starts on top of. `drafts` false (`tickets.drafts`) has the worker open its pull requests ready for review.
  */
-export function briefText({ ticket, folder, ticketDir, attachments, parent = null, blockers = [], stackedOn = [], clones, worktreeCommand, notes,
+export function briefText({ ticket, folder, ticketDir, attachments, parent = null, blockers = [], stackedOn = [], clones, worktreeCommand, prOpenCommand, notes,
   connectors = [], planned = false, drafts = true }: {
   ticket: Ticket; folder: string; ticketDir: string; attachments: readonly string[]; parent?: ParentTicket | null; blockers?: readonly Blocker[];
-  stackedOn?: readonly StackBase[]; clones: Readonly<Record<string, string>>; worktreeCommand: string; notes?: string;
+  stackedOn?: readonly StackBase[]; clones: Readonly<Record<string, string>>; worktreeCommand: string; prOpenCommand: string; notes?: string;
   connectors?: readonly string[]; planned?: boolean; drafts?: boolean;
 }): string {
   const stacked = new Set(stackedOn.map(({ key }) => key));
@@ -379,7 +391,7 @@ ${plannedText(planned)}1. Find the cause in the code. Fix it, with a test that f
 3. Check your diff against what was asked. List each acceptance criterion in the ticket. Add each decision in its files, its parent's description and its parent's files that applies to this ticket. Find where your diff meets each one, and finish any it misses. If you leave one unmet on purpose, say which and why in the pull request body.
 4. Check what your pull request body will claim. For each behaviour it says you fixed, kept or changed, name the test assertion that checks exactly that behaviour, not a neighbouring value. Run it on the base: a fix must fail there, and a kept behaviour must pass there too. Claim nothing you have no such assertion for, or say it is unchecked.
 5. Commit with a conventional commit message.
-${openPullRequestStep(drafts, ticket.url)}
+${openPullRequestStep(drafts, ticket, prOpenCommand)}
 7. If a design gate asks for a design check, decline it with "unattended worker, no design tool access" and say so in the pull request body.
 
 Never mark a pull request ready, request a review, merge, force-push, run a workflow, or post to Slack. Those are the person's.

@@ -10,10 +10,10 @@ const clones = { "nbl-ui-netbox": "/work/nbl-ui-netbox", "nbl-ui-platform-libs":
 
 test("the brief carries the ticket, every repository to choose from, the worktree command, the draft rule and the outcome file's path", () => {
   const brief = briefText({ ticket, folder: "/work/.tickets/NBF-1270", ticketDir: "/state/tickets/NBF-1270", attachments: ["/state/tickets/NBF-1270/attachment-1.png"],
-    clones, worktreeCommand: "/node /tool/src/bin.ts ticket:worktree" });
+    clones, worktreeCommand: "/node /tool/src/bin.ts ticket:worktree", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
   for (const part of [ticket.url, ticket.description, "`nbl-ui-netbox` at `/work/nbl-ui-netbox`", "`nbl-ui-platform-libs` at `/work/nbl-ui-platform-libs`",
     "/node /tool/src/bin.ts ticket:worktree <repo>", "/work/.tickets/NBF-1270/<repo>", "nbf-1270-refresh", "never commit or change branches in them",
-    "gh pr create --draft", "/state/tickets/NBF-1270/outcome.json", "attachment-1.png", "wrong-repo", "needs-human", "CLAUDE.md"]) {
+    "/node /tool/src/bin.ts pr:open create --draft", "/state/tickets/NBF-1270/outcome.json", "attachment-1.png", "wrong-repo", "needs-human", "CLAUDE.md"]) {
     assert.ok(brief.includes(part), `the brief names ${part}`);
   }
 });
@@ -22,7 +22,7 @@ test("a parent's description is quoted under its own heading, with its files, an
   const parentTicket = { ...ticket, key: "NBF-1200", title: "Feedback across the app", url: "https://linear.app/x/issue/NBF-1200",
     description: "Every button gives feedback.\n\n## Acceptance criteria\n\n- [ ] every app", parent: null } as Ticket;
   const brief = (parent?: { ticket: Ticket; attachments: string[] }) =>
-    briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], parent, clones, worktreeCommand: "w" });
+    briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], parent, clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
   const withParent = brief({ ticket: parentTicket, attachments: ["/d/parent/attachment-1-NBF-1200-0001-plan.md"] });
   for (const part of ["## The parent ticket\n\nNBF-1200: Feedback across the app", "https://linear.app/x/issue/NBF-1200", "Do only your ticket's part",
     "> Every button gives feedback.\n>\n> ## Acceptance criteria\n>\n> - [ ] every app", "### Files from NBF-1200", "`/d/parent/attachment-1-NBF-1200-0001-plan.md`"]) {
@@ -33,14 +33,14 @@ test("a parent's description is quoted under its own heading, with its files, an
 });
 
 test("the ticket's files come with the order to read them first, and a ticket with none says so", () => {
-  const brief = (attachments: string[]) => briefText({ ticket, folder: "/f", ticketDir: "/d", attachments, clones, worktreeCommand: "w" });
+  const brief = (attachments: string[]) => briefText({ ticket, folder: "/f", ticketDir: "/d", attachments, clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
   assert.ok(brief(["/d/attachment-1-NBF-1270-0001-plan.md"]).includes(
     "## Files from the ticket\n\nRead every file here before you start. A plan among them is the agreed approach, so follow it.\n\n- `/d/attachment-1-NBF-1270-0001-plan.md`"));
   assert.ok(brief([]).includes("## Files from the ticket\n\nNone.\n"));
 });
 
 test("before it commits, a fresh subagent reviews the diff for changed behaviour, and every claim in the body has an assertion run on the base", () => {
-  const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w" });
+  const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
   const commit = brief.indexOf("Commit with a conventional commit message");
   const review = brief.indexOf("start a subagent that has not seen your reasoning");
   const claims = brief.indexOf("Check what your pull request body will claim.");
@@ -54,7 +54,7 @@ test("before it commits, a fresh subagent reviews the diff for changed behaviour
 });
 
 test("the worker checks its diff against every criterion and binding decision before it commits", () => {
-  const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w" });
+  const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
   const check = brief.indexOf("Check your diff against what was asked.");
   assert.ok(check > 0, "the brief has the check");
   assert.ok(check < brief.indexOf("Commit with a conventional commit message"), "it comes before the commit, so what it finds is fixed in it");
@@ -64,7 +64,7 @@ test("the worker checks its diff against every criterion and binding decision be
 });
 
 test("the connectors a machine allows are named in the brief, and a machine that allows none adds no section", () => {
-  const brief = (connectors?: string[]) => briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", connectors });
+  const brief = (connectors?: string[]) => briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open", connectors });
   assert.match(brief(["^mcp__claude_ai_Linear__(get|list)_"]), /## Connectors\n\nThis machine lets you call the connector tools whose names match `\^mcp__claude_ai_Linear__\(get\|list\)_`\. .*the tickets that block it/);
   assert.equal(brief().includes("## Connectors"), false);
   assert.equal(brief([]).includes("## Connectors"), false);
@@ -72,7 +72,7 @@ test("the connectors a machine allows are named in the brief, and a machine that
 
 test("a ticket that waited names each blocker, its status and its pull requests, and one that waited on none has no such section", () => {
   const brief = (blockers?: { key: string; state: string; status: string; pulls: Record<string, "open" | "merged" | "closed"> }[]) =>
-    briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", blockers });
+    briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open", blockers });
   const text = brief([{ key: "NBF-1944", state: "started", status: "In Review", pulls: { "https://github.com/o/libs/pull/8": "merged" } }, { key: "NBF-1", state: "completed", status: "Done", pulls: {} }]);
   assert.match(text, /- NBF-1944, In Review: https:\/\/github\.com\/o\/libs\/pull\/8 \(merged\)\n- NBF-1, Done: no pull request linked/);
   assert.match(text, /`gh release list --repo <owner>\/<repo>`/);
@@ -81,7 +81,7 @@ test("a ticket that waited names each blocker, its status and its pull requests,
 });
 
 test("the machine's notes join the brief under their own heading, and a machine with none adds no heading", () => {
-  const brief = (notes?: string) => briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", notes });
+  const brief = (notes?: string) => briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open", notes });
   assert.ok(brief("Start apps with `npm run dev:atomic`.\n").includes("## On this machine\n\nStart apps with `npm run dev:atomic`.\n\n## The outcome file"));
   assert.equal(brief().includes("## On this machine"), false);
   assert.equal(brief("  \n").includes("## On this machine"), false, "an empty notes file adds nothing");
@@ -94,7 +94,7 @@ test("a machine's plugins are enabled in the worker's own settings, and none are
 });
 
 test("the brief asks for screenshots of a visible change, with the machine's own tools or a stated gap", () => {
-  const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w" });
+  const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
   assert.match(brief, /when the change is visible, shows it/);
   assert.match(brief, /"Screenshot pending"/);
   assert.equal(brief.includes("no browser"), false, "a worker may have one: the machine says how in its notes");
@@ -119,7 +119,7 @@ test("the flags end with --disallowedTools, so its list swallows no flag after i
 });
 
 test("the brief tells the worker that a person may answer it after it hands the ticket back, and that it then writes a new outcome", () => {
-  const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w" });
+  const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
   assert.match(brief, /A person may answer you here after a `needs-human` or `wrong-repo` outcome\. If one does, carry on with what they said, and write the outcome file again/);
 });
 
@@ -134,7 +134,7 @@ test("a planning run is refused git's writes, a pull request and a worktree, and
 });
 
 test("both briefs tell a worker to stop for a person when a skill they name is missing, not to follow a copy of it", () => {
-  const work = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones: { a: "/a" }, worktreeCommand: "wt" });
+  const work = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones: { a: "/a" }, worktreeCommand: "wt", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
   const plan = planBriefText({ ticket, ticketDir: "/d", planDir: "/d/plan", attachments: [], clones: { a: "/a" }, run: "plan {key} into {dir}" });
   const batch = batchPlanBriefText({ tickets: [{ ticket, attachments: [], parent: null }], runDir: "/d", planDir: "/d/plan", clones: { a: "/a" }, run: "plan {keys} into {dir}" });
   for (const brief of [work, plan, batch]) {
@@ -188,7 +188,7 @@ test("a run stacked on its blockers is told to branch from one, link its pull re
   const draft = "https://github.com/o/nbl-ui-netbox/pull/12";
   const blockers: Blocker[] = [{ key: "NBF-1", state: "started", status: "In Review", branch: "nbf-1-fit", pulls: { [draft]: "open" as const } },
     { key: "NBF-5", state: "completed", status: "Done", pulls: {} }];
-  const text = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "node bin.ts ticket:worktree", blockers,
+  const text = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "node bin.ts ticket:worktree", prOpenCommand: "/node /tool/src/bin.ts pr:open", blockers,
     stackedOn: [{ key: "NBF-1", url: draft, repo: "nbl-ui-netbox", branch: "nbf-1-fit" }] });
   for (const part of ["## Stack on the work you wait for", "open pull request in `nbl-ui-netbox`", `- NBF-1: ${draft}, on branch \`nbf-1-fit\``,
     "`node bin.ts ticket:worktree nbl-ui-netbox --from <branch>`", "`gh pr view <its pull request url> --json headRefName`", "or on the last one listed when the plan does not say",
@@ -196,7 +196,7 @@ test("a run stacked on its blockers is told to branch from one, link its pull re
     assert.ok(text.includes(part), part);
   }
   assert.match(text, /This ticket waited until each of these was done:\n\n- NBF-5, Done: no pull request linked\n/, "only the blockers it waited for");
-  assert.equal(briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w" }).includes("## Stack on"), false);
+  assert.equal(briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open" }).includes("## Stack on"), false);
 });
 
 const reviewed = [{ repo: "nbl-ui-netbox", url: "https://github.com/x/nbl-ui-netbox/pull/806" }];
@@ -242,24 +242,36 @@ test("a round a person asked for with Respond to review says so, answers the cur
   assert.equal(brief.includes("the board started this round"), false);
 });
 
-test("a drafts-on brief opens a draft: step 6 is the draft pull request word for word, and its outcome example is draft-pr", () => {
-  const brief = briefText({ ticket, folder: "/work/.tickets/NBF-1270", ticketDir: "/state/tickets/NBF-1270", attachments: [], clones, worktreeCommand: "/node /tool/src/bin.ts ticket:worktree" });
-  assert.ok(brief.includes(`6. Push the branch and open ONE DRAFT pull request per repository you changed: \`gh pr create --draft\`, titled \`<type>(<scope>): <what changed>\`. The body links ${ticket.url}, says what changed and how you verified it, and, when the change is visible, shows it: take screenshots with what this machine provides (see "On this machine" when there is such a section), or else end the body with "Screenshot pending". A pull request that needs another repository's unmerged one says so in its body.`));
-  assert.equal(brief, briefText({ ticket, folder: "/work/.tickets/NBF-1270", ticketDir: "/state/tickets/NBF-1270", attachments: [], clones, worktreeCommand: "/node /tool/src/bin.ts ticket:worktree", drafts: true }), "an absent flag is the same as true");
+test("both planner briefs ask for a Region section that lists the paths the work will change, prefixed by repository when there is more than one", () => {
+  const plan = planBriefText({ ticket, ticketDir: "/d", planDir: "/d/plan", attachments: [], clones: { a: "/a", b: "/b" }, run: "plan {key} into {dir}" });
+  const batch = batchPlanBriefText({ tickets: [{ ticket, attachments: [], parent: null }], runDir: "/d", planDir: "/d/plan", clones: { a: "/a", b: "/b" }, run: "plan {keys} into {dir}" });
+  for (const brief of [plan, batch]) {
+    assert.ok(brief.includes("End each plan with a `## Region` section listing every path the work will change, one per line, inside a fenced code block."), "the Region section is asked for, fenced");
+    assert.ok(brief.includes("prefix each path with `<repo>:`"), "a multi-repository plan prefixes each path");
+    assert.ok(brief.includes("(`a`, `b`)"), "the repositories a prefix may name are the host file's clones");
+  }
+});
+
+test("a drafts-on brief opens a draft: step 6 runs pr:open with --draft, names the ticket's keys, and its outcome example is draft-pr", () => {
+  const brief = briefText({ ticket, folder: "/work/.tickets/NBF-1270", ticketDir: "/state/tickets/NBF-1270", attachments: [], clones, worktreeCommand: "/node /tool/src/bin.ts ticket:worktree", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
+  assert.ok(brief.includes(`6. Push the branch and open ONE DRAFT pull request per repository you changed: write its body to a file, then run \`/node /tool/src/bin.ts pr:open create --draft --title "<type>(<scope>): <what changed>" --body-file <file>\`. The body links ${ticket.url}, says \`Refs NBF-1270\` (or \`Closes NBF-1270\` only when the ticket's done-when is fully met), says what changed and how you verified it,`));
+  assert.ok(brief.includes("`Outside-Region: <path> — <reason>`"), "a path outside the plan's Region is declared in the body");
+  assert.equal(brief.includes("gh pr create"), false, "the brief no longer tells a worker to open its pull request with gh");
+  assert.equal(brief, briefText({ ticket, folder: "/work/.tickets/NBF-1270", ticketDir: "/state/tickets/NBF-1270", attachments: [], clones, worktreeCommand: "/node /tool/src/bin.ts ticket:worktree", prOpenCommand: "/node /tool/src/bin.ts pr:open", drafts: true }), "an absent flag is the same as true");
   assert.ok(brief.includes(`{ "kind": "draft-pr", "prs": [{ "repo": "<repo>", "url": "<pull request url>" }] }`));
   assert.equal(brief.includes("ready-pr"), false);
 });
 
 test("a drafts-off brief opens a ready pull request: its command has no --draft, and its outcome example is ready-pr", () => {
-  const brief = briefText({ ticket, folder: "/work/.tickets/NBF-1270", ticketDir: "/state/tickets/NBF-1270", attachments: [], clones, worktreeCommand: "/node /tool/src/bin.ts ticket:worktree", drafts: false });
-  assert.ok(brief.includes("6. Push the branch and open ONE READY pull request per repository you changed: `gh pr create`, titled `<type>(<scope>): <what changed>`."));
+  const brief = briefText({ ticket, folder: "/work/.tickets/NBF-1270", ticketDir: "/state/tickets/NBF-1270", attachments: [], clones, worktreeCommand: "/node /tool/src/bin.ts ticket:worktree", prOpenCommand: "/node /tool/src/bin.ts pr:open", drafts: false });
+  assert.ok(brief.includes("6. Push the branch and open ONE READY pull request per repository you changed: write its body to a file, then run `/node /tool/src/bin.ts pr:open create --title \"<type>(<scope>): <what changed>\" --body-file <file>`."));
   assert.equal(brief.includes("--draft"), false, "no draft anywhere in the brief");
   assert.ok(brief.includes(`{ "kind": "ready-pr", "prs": [{ "repo": "<repo>", "url": "<pull request url>" }] }`));
   assert.equal(brief.includes("draft-pr"), false);
 });
 
 test("a worker may end on checked when nothing needs to change, and is told needs-human is only for what the person alone can decide", () => {
-  const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w" });
+  const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
   assert.ok(brief.includes('{ "kind": "checked", "reason": "<what you checked, what you found, and why nothing needs to change>" }'), "checked is one of the outcomes");
   assert.match(brief, /Write `checked` when you looked at what the ticket asks and nothing needs to change/);
   assert.match(brief, /the ticket is only a parent whose work is all in its child tickets \(name them, so the person queues them\)/);
@@ -285,7 +297,7 @@ test("A11-70: a batch's brief names the host file's clones keys as the only repo
 });
 
 test("A11-80: a worker may end a turn on working only while its own background work runs and will wake it, and never to park a question", () => {
-  const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w" });
+  const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
   assert.ok(brief.includes('{ "kind": "working", "reason": "<what of yours is still running in the background, and what you do when it wakes you>" }'), "working is one of the outcomes");
   assert.match(brief, /Write `working` only while your own background work \(a shell, a Monitor or a task you started\) is genuinely still running and will wake you when it finishes/);
   assert.match(brief, /Never write `working` to park a question or to wait on a person: that is `needs-human`/);

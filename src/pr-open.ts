@@ -34,6 +34,12 @@
 // A PULL REQUEST ON A CLAIMED ROW'S BRANCH CANNOT DECLARE `Closes: none` (agent-org#744): the same refusal CI's closes-mismatch check makes, read
 // from every declared tracker, told here before anything is sent. Wired in the entry block, like the Region's.
 //
+// A TICKET-MODE RUN (`AGENT_ORG_TICKET`, A11-74) HAS A TICKET IN THE TRACKER AND NO ROW, CLAIM OR SESSION. The entry block reads the ticket first
+// (`ticket-mode/pr-open-ticket.ts`), and the checks it makes are that module's: the Region from the ticket's description and plan files, `Refs <KEY>`
+// or `Closes <KEY>` in place of `Closes #N`, the owner the run itself, the machine's drafts setting from its ready mark, and a changeset. Nothing is
+// armed or labelled, because a ticket worker never merges. A ticket that cannot be read refuses the create. With `AGENT_ORG_TICKET` unset, none of
+// this runs, and the row's checks are the ones above.
+//
 // EXIT CODES (#1479). A caller must be able to tell a refusal from a partial success, because they need
 // opposite next steps: retry the command, or never retry it.
 //   0  the body passed, `gh pr <mode>` ran, and a ready create was armed.
@@ -52,7 +58,8 @@ import { pathToFileURL } from "node:url";
 import { acceptanceSourceOf, closesReferences, extractAcceptanceSection, extractClosesDeclaration, extractMutationSection, runAcceptanceCommand, runCiBodyReports }
   from "./acceptance-commands.ts";
 import { ACCEPTANCE_DIR, acceptanceFileForBranch, isAcceptancePath, sectionsTextOf, writeAcceptanceFile } from "./acceptance-file.ts";
-import { declaredRegionFiles, regionCovers, regionCoversIn, splitRegionEntry } from "./region-paths.ts";
+import { declaredRegionFiles, splitRegionEntry } from "./region-paths.ts";
+import { outsideRegionDeclarations, regionPassLine, regionRefusalText, standingAgainstRegion } from "./pr-open-region.ts";
 import { homeProjectDeclaration } from "./project-config.ts";
 import { statedRepository } from "./row-file.ts";
 import { leakRefusalReason } from "./lib/leak-patterns.ts";
@@ -71,6 +78,10 @@ import { VERIFY_STATE, readVerifyStamp, verifyRefusalLine } from "./verify-stamp
 import { QUEUED_EXIT, attachFollowUps } from "./gh-ledger.ts";
 import { claimedBranchReport, lookupClaimedRowsOfTrackers, trackerReposFor, type ClaimedRow, type ClaimedRows } from "./closes-mismatch-check.ts";
 import { STANDARD_MACHINERY_SIGNALS } from "./org-health.ts"; // a11ign#5100: the signals a `Health-signals:` line may name
+import { readTicketContext, ticketBodyReports, ticketChecks, type TicketContext } from "./ticket-mode/pr-open-ticket.ts";
+import { TICKET_ENV } from "./ticket-mode/worktree-command.ts";
+
+export { REGION_EXEMPT, outsideRegionDeclarations, standingAgainstRegion } from "./pr-open-region.ts";
 
 // The header's EXIT CODES, named because 1 and 3 ask a caller for opposite next steps.
 export const EXIT_NOTHING_SENT = 1;
@@ -122,13 +133,15 @@ export function acceptanceEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
  * @param {string} body
  * #4123: `rowLabels` is the reader of a closed row's labels, for the `Class:` line a defect row's pull request owes; a caller with none gets
  * `CLASS: NOT CHECKED`, printed. ADR 0044: `readFile` reads the acceptance file the diff adds, from the head's tree (the working directory, by default).
+ * A ticket-mode run passes `reports`, CI's list with its `closes` report replaced for the ticket (A11-74); absent, it is CI's list.
  * @param {{ run?: (command: string) => number, diff?: import("./acceptance-commands.ts").DiffReading,
- *   rowLabels?: import("./acceptance-commands.ts").BodyReportInput["rowLabels"] }} [deps]
+ *   rowLabels?: import("./acceptance-commands.ts").BodyReportInput["rowLabels"], reports?: import("./acceptance-commands.ts").BodyReport[] }} [deps]
  * @returns {{ ok: boolean, lines: string[] }}
  */
-export function checkBody(body: string, { run = runForReal, diff = { ok: false, why: "no diff was handed to checkBody" }, rowLabels, readFile }: {
+export function checkBody(body: string, { run = runForReal, diff = { ok: false, why: "no diff was handed to checkBody" }, rowLabels, readFile, reports }: {
     run?: (command: string) => number; diff?: import("./acceptance-commands.ts").DiffReading;
     rowLabels?: import("./acceptance-commands.ts").BodyReportInput["rowLabels"]; readFile?: (path: string) => string;
+    reports?: import("./acceptance-commands.ts").BodyReport[];
 } = {}): { ok: boolean; lines: string[]; } {
   // #891: checked BEFORE anything else, and returned on its own -- `acceptanceReport` actually RUNS the
   // body's Acceptance command for real, and a body worth refusing for a leak is not worth running
@@ -139,97 +152,9 @@ export function checkBody(body: string, { run = runForReal, diff = { ok: false, 
   const acceptance = acceptanceSourceOf(input);
   const leak = leakRefusalReason(body) ?? leakRefusalReason(sectionsTextOf(acceptance) ?? "");
   if (leak) return { ok: false, lines: [leak] };
-  return runCiBodyReports({ ...input, acceptance });
+  return runCiBodyReports({ ...input, acceptance }, reports);
 }
 
-/**
- * #2417: WHAT NOBODY CHOOSES, EXEMPT FROM THE REGION, AND NAMED SO THE REFUSAL CAN PRINT IT. A row's Region is the
- * author's declaration of what they will change; these three change without anyone deciding to, so a Region naming
- * them would be padding and a refusal over them a false one. One entry per reason, because an author who is told
- * a path is exempt should be told why: an exemption nobody can argue with is a hole nobody can close.
- * `entry` is spelled as `region-paths.ts`'s `regionCovers` reads it: a trailing `/` is a directory.
- */
-export const REGION_EXEMPT = [
-  { entry: "pnpm-lock.yaml",
-    reason: "the package manager rewrites it whenever a dependency moves, so no author chooses its contents" },
-  { entry: "docs/commands.md",
-    reason: "generated from the CLIs' own flags and tracked on purpose (#478); `generated-paths.test.ts` names it the "
-      + "one tracked generated file" },
-  { entry: ACCEPTANCE_DIR,
-    reason: "each pull request adds its own acceptance file, named for its branch (ADR 0044), so a Region that listed it would be "
-      + "padding and a refusal over it a false one" },
-  { entry: ".changeset/",
-    reason: "a PR that changes a package carries a changeset, which its row cannot declare before it is written" },
-];
-
-/** Any line naming the escape, so one that misses the shape is REPORTED rather than silently not clearing a path. */
-const OUTSIDE_REGION_LINE = /^\s*(?:[-*>]\s+)?(?:\*\*|__)?Outside-Region:(?:\*\*|__)?\s*(.*)$/i;
-/** `<path> — <reason>`: an EM DASH, and a reason. A hyphen or two is `Closes: none`'s spelling and does not clear. */
-const OUTSIDE_REGION_SHAPE = /^`?([^\s`]+)`?\s+—\s+(\S.*)$/;
-
-/**
- * #2417: THE ESCAPE -- every `Outside-Region: <path> — <reason>` line in the body. `malformed` keeps the lines that
- * name the escape and miss its shape (a hyphen, no reason), so the refusal can say why one did not clear.
- * @param {string} body
- * @returns {{ declared: { path: string, reason: string }[], malformed: string[] }}
- */
-export function outsideRegionDeclarations(body: string): { declared: { path: string; reason: string; }[]; malformed: string[]; } {
-  const declared: { path: string; reason: string; }[] = [];
-  const malformed: string[] = [];
-  for (const line of body.split(/\r\n|\r|\n/)) {
-    const named = OUTSIDE_REGION_LINE.exec(line);
-    if (!named) continue;
-    const shape = OUTSIDE_REGION_SHAPE.exec(named[1].trim());
-    if (shape) declared.push({ path: shape[1], reason: shape[2].trim() });
-    else malformed.push(line.trim());
-  }
-  return { declared, malformed };
-}
-
-/**
- * #2417: WHERE ONE CHANGED FILE STANDS AGAINST THE REGION -- the Region first, then the exempt set, then a declared
- * escape, so a path in the Region is never counted as an escape the author did not need to write.
- * #2617: `treeKey` is the declared key of the repository THIS tree is (default the first), so `nvda-worker:src/x.ts` in a Region covers
- * `src/x.ts` of that repository's tree and of no other -- and a bare entry is the first repository's, as it always was.
- * @param {string} file
- * @param {{ region: readonly string[], declared: readonly { path: string }[], treeKey?: string }} against
- * @returns {"inside" | "exempt" | "declared" | "outside"}
- */
-export function standingAgainstRegion(file: string, { region, declared, treeKey = "" }: { region: readonly string[]; declared: readonly { path: string; }[]; treeKey?: string; }): "inside" | "exempt" | "declared" | "outside" {
-  if (region.some((entry) => regionCoversIn(entry, treeKey, file))) return "inside";
-  if (REGION_EXEMPT.some(({ entry }) => regionCovers(entry, file))) return "exempt";
-  if (declared.some(({ path }) => regionCovers(path, file))) return "declared";
-  return "outside";
-}
-
-/**
- * The refusal, whole, so an author never learns the escape or the exempt set from a SECOND refusal.
- * @param {{ rows: string, outside: string[], region: readonly string[], base: string, malformed: string[] }} at
- * @returns {string}
- */
-function regionRefusalText({ rows, outside, region, base, malformed }: { rows: string; outside: string[]; region: readonly string[]; base: string; malformed: string[]; }): string {
-  const ignored = malformed.map((line) => `\n  IGNORED, not the declared shape (an em dash and a reason are required): ${line}`);
-  return `pr-open: REFUSED -- ${outside.length} path(s) changed outside ${rows}'s Region (the diff read is `
-    + `${base}...HEAD; \`git fetch origin\` first if that ref is stale):\n`
-    + outside.map((file) => `  ${file}`).join("\n")
-    + `\nThe Region it was read against: ${region.length > 0 ? region.join(", ") : "(names no path)"}.`
-    + "\nIf the change really belongs in this PR, say so, one line per path, in the PR body (the em dash is required, "
-    + "and a hyphen does not clear it):\n  Outside-Region: <path> — <reason>"
-    + `${ignored.join("")}\nExempt without a line, because nobody chooses them:\n`
-    + REGION_EXEMPT.map(({ entry, reason }) => `  ${entry} -- ${reason}`).join("\n")
-    + "\nNothing was sent to GitHub (#2417).";
-}
-
-/**
- * The one line a passing check prints, so a green reading is not silence either.
- * @param {{ rows: string, changed: string[], standing: string[], base: string }} at
- * @returns {string}
- */
-function regionPassLine({ rows, changed, standing, base }: { rows: string; changed: string[]; standing: string[]; base: string; }): string {
-  const count = (kind: string) => standing.filter((s) => s === kind).length;
-  return `REGION: ${changed.length} changed path(s) against ${rows}'s Region (${base}...HEAD): ${count("inside")} inside, `
-    + `${count("exempt")} exempt, ${count("declared")} cleared by an Outside-Region line.`;
-}
 
 /**
  * The union of the Regions of the rows a body closes, read through `region-paths.ts`. A row whose body cannot be
@@ -628,10 +553,10 @@ function attachSteps(steps: string[][], { entry, attach }: { entry: { dir: strin
  * ask a human), and, when the follow-ups could not travel with it, the one thing a person must still do.
  * @param {{ mode: string, branch: string, head: string, entry: { id: string, resetAt: number } | null, attached: string | null }} at
  */
-function heldLine({ mode, branch, head, entry, attached }: { mode: string; branch: string; head: string; entry: { id: string; resetAt: number; } | null; attached: string | null; }): string {
+function heldLine({ mode, branch, head, entry, attached, arm }: { mode: string; branch: string; head: string; entry: { id: string; resetAt: number; } | null; attached: string | null; arm: boolean; }): string {
   const where = branch.startsWith("detached at ") ? `Detached at \`${head}\`` : `Branch \`${branch}\` at \`${head}\``;
   const when = entry === null ? "after the reset" : `as ${entry.id} after ${new Date(entry.resetAt * 1000).toISOString().slice(11, 19)}Z`;
-  const follows = mode === "create" ? " The arm and the session label are held with it and made right after." : "";
+  const follows = mode === "create" && arm ? " The arm and the session label are held with it and made right after." : "";
   const unattached = attached === null ? "" : `\n  NOT ATTACHED: ${attached}; once the PR exists, arm and label it by hand.`;
   return `pr-open: QUEUED, NOT FAILED -- GitHub is rate-limiting this account, so \`gh pr ${mode}\` was NOT sent; the gate holds it and makes it ${when}.${follows} `
     + `${where}. Do NOT rerun pr-open (that is a second copy) and do not ask a human: the work is finished, and the turn may end.${unattached}\n`;
@@ -688,15 +613,16 @@ function branchName(fact: (args: string[], fallback: string) => string) {
  * when something has already gone wrong, so the happy path pays nothing for them.
  * @param {string} mode
  * @param {string[]} rest
+ * `arm` false (a ticket-mode run, which never merges) sends the create and nothing after it: no arm, and no label where `owner` names none.
  * @param {{ run?: (args: string[]) => void, git?: (args: string[]) => string,
- *           err?: (line: string) => void, owner?: () => string | null, labelExists?: (name: string, repo?: string) => boolean }} [deps]
+ *           err?: (line: string) => void, owner?: () => string | null, labelExists?: (name: string, repo?: string) => boolean, arm?: boolean }} [deps]
  * @returns {number} the header's exit code: 0, EXIT_NOTHING_SENT, or EXIT_LANDED_THEN_FAILED
  */
 export function sendToGitHub(mode: string, rest: string[],
-  { run = defaultGh, git = defaultGit, err = writeErr, owner = ownerOfTree, labelExists, queued = readQueuedEntry, attach = attachFollowUps }: {
+  { run = defaultGh, git = defaultGit, err = writeErr, owner = ownerOfTree, labelExists, queued = readQueuedEntry, attach = attachFollowUps, arm = true }: {
       run?: (args: string[]) => void; git?: (args: string[]) => string;
       err?: (line: string) => void; owner?: () => string | null; labelExists?: (name: string, repo?: string) => boolean;
-      queued?: () => { dir: string; id: string; resetAt: number; } | null; attach?: typeof attachFollowUps;
+      queued?: () => { dir: string; id: string; resetAt: number; } | null; attach?: typeof attachFollowUps; arm?: boolean;
   } = {}): number {
   // AN ERROR HANDLER THAT CAN ITSELF ERROR IS THE ONE PLACE A THROW COSTS THE MOST (worker-capture,
   // #1283). Both reads sat here unguarded, so a failing `git` -- a GIT_DIR pointing elsewhere, a stale
@@ -718,9 +644,9 @@ export function sendToGitHub(mode: string, rest: string[],
     run(["pr", mode, ...rest]);
   } catch (error) {
     if ((error as { status?: number })?.status === EXIT_QUEUED) {
-      const steps = mode === "create" ? [...armAfterCreate(mode, rest, branch()), ...labelStepsAfterCreate(mode, rest, { owner: owner(), labelExists, branch: branch() })] : [];
+      const steps = mode === "create" ? [...(arm ? armAfterCreate(mode, rest, branch()) : []), ...labelStepsAfterCreate(mode, rest, { owner: owner(), labelExists, branch: branch() })] : [];
       const entry = queued(); // read once: reading it consumes the file the wrapper left
-      err(heldLine({ mode, branch: branchName(fact), head: head(), entry, attached: attachSteps(steps, { entry, attach }) }));
+      err(heldLine({ mode, branch: branchName(fact), head: head(), entry, attached: attachSteps(steps, { entry, attach }), arm }));
       return EXIT_QUEUED;
     }
     err(`${sendFailureLine({ mode, branch: branchName(fact), head: head(), message: messageOf(error) })}\n`);
@@ -729,7 +655,7 @@ export function sendToGitHub(mode: string, rest: string[],
   // `armAfterCreate` returns a WHOLE `gh` argv (`["pr", "merge", ...]`) and `run` is `gh` with its args as
   // given -- `args.slice(1)` stripped `pr` and spawned `gh merge`, an unknown command, after every ready
   // create since #1277, so the wrapper exited 1 on a PR that already existed.
-  for (const args of armAfterCreate(mode, rest, branch())) {
+  for (const args of arm ? armAfterCreate(mode, rest, branch()) : []) {
     // #1479: the create has LANDED by here, so a failure is a partial success with its own code.
     try {
       run(args);
@@ -1087,7 +1013,7 @@ function verifyStampStep(mode: string, rest: string[], body: string, { verifySta
  */
 export function main(argv: string[] = process.argv.slice(2),
   { run, git, prHead, runAcceptance, runMutation = runForReal, owner, rowBody, rowLabels, labelExists, rootFiles, code, login, lanes,
-    claimedRows, verifyStamp, write, readFile, branchHead, openPulls, out = writeOut, err = writeErr }: {
+    claimedRows, verifyStamp, write, readFile, branchHead, openPulls, ticket, out = writeOut, err = writeErr }: {
           run?: (args: string[]) => void; git?: (args: string[]) => string;
           prHead?: (repo: string, number: string) => { ref: string; oid: string; } | null;
           runAcceptance?: (command: string) => number; runMutation?: (command: string) => number;
@@ -1098,6 +1024,8 @@ export function main(argv: string[] = process.argv.slice(2),
           verifyStamp?: (body: string) => import("./verify-stamp.ts").VerifyReading; write?: (path: string, text: string) => void;
           readFile?: (path: string) => string; branchHead?: (repo: string, branch: string) => string | null;
           openPulls?: (repo: string) => OpenPull[] | null;
+          /** A ticket-mode run's facts (A11-74): its checks read the ticket, and the row's reads (`rowBody`, `claimedRows`, `rowLabels`, `openPulls`) do not run. */
+          ticket?: TicketContext;
           out?: (line: string) => void; err?: (line: string) => void;
       } = {}): number {
   const [mode, ...given] = argv;
@@ -1118,7 +1046,7 @@ export function main(argv: string[] = process.argv.slice(2),
   // #1344: BEFORE checkBody, because checkBody RUNS the Acceptance -- in this working tree, whatever --head says.
   // #2939: and a `Hand-fix:` line the ledger could not read, which it would silently not count. Pure, like the heads.
   const headRefused = headTreeRefusal(mode, rest, { git, crossRepo, branchHead }) ?? editTreeRefusal(mode, rest, { git, prHead })
-    ?? declarationRefusal(body) ?? draftRefusal(mode, rest, body) ?? authorshipRefusal(mode, rest, { git, login, lanes })
+    ?? declarationRefusal(body) ?? (ticket === undefined ? draftRefusal(mode, rest, body) : null) ?? authorshipRefusal(mode, rest, { git, login, lanes })
     ?? machineryRefusal(localDiffReading(rest, git), body); // a11ign#5100: after the cheap pure refusals, so the diff is read only for a body that survived them
   if (headRefused) {
     err(`${headRefused}\n`);
@@ -1126,14 +1054,11 @@ export function main(argv: string[] = process.argv.slice(2),
   }
   const noFile = acceptanceFileStep(body, rest, { git, write, err });
   if (noFile !== null) return noFile;
-  // #2417: before checkBody for the same reason, and before anything is sent.
-  const outsideRegion = regionStep(body, rest, { git, rowBody, rootFiles, code, openPulls: mode === "create" ? openPulls : undefined, out, err });
-  if (outsideRegion !== null) return outsideRegion;
-  // agent-org#744: before checkBody too, for the same reason, and before anything is sent.
-  const keepsRowOpen = claimedRowStep(body, rest, { git, code, claimedRows, out, err });
-  if (keepsRowOpen !== null) return keepsRowOpen;
+  const beforeBody = beforeBodyCheck(mode, rest, body, { ticket, git, rootFiles, rowBody, code, openPulls, claimedRows, out, err });
+  if (beforeBody !== null) return beforeBody;
   const result = checkBody(body, { run: runAcceptance, diff: localDiffReading(rest, git), readFile,
-    rowLabels: rowLabels && ((row) => rowLabels(row.number, row.repo ?? REPO)) }); // #4123: a bare `#N` is the tracker's, as in `rowsNamed`
+    rowLabels: rowLabels && ((row) => rowLabels(row.number, row.repo ?? REPO)), // #4123: a bare `#N` is the tracker's, as in `rowsNamed`
+    reports: ticket === undefined ? undefined : ticketBodyReports(ticket.key) });
   for (const line of result.lines) out(`${line}\n`);
   if (!result.ok) {
     err(`pr-open: REFUSED -- this body would fail CI's own acceptance job; fix it before `
@@ -1145,13 +1070,14 @@ export function main(argv: string[] = process.argv.slice(2),
   if (unverified !== null) return unverified;
   // #2307: only for a body that will be SENT, and never a reason not to send it.
   printMutationReport(body, runMutation, out);
-  const stamped = ownerOfPr({ owner, rowLabels }, { mode, body, rest, err })();
-  const unstamped = unstampableRefusal(mode, stamped);
+  // A ticket run's owner is the run, so no tree is stamped and no session is named: the create is sent with no label and no arm (A11-74).
+  const stamped = ticket === undefined ? ownerOfPr({ owner, rowLabels }, { mode, body, rest, err })() : null;
+  const unstamped = ticket === undefined ? unstampableRefusal(mode, stamped) : null;
   if (unstamped !== null) {
     err(`${unstamped}\n`);
     return EXIT_NOTHING_SENT;
   }
-  return sendToGitHub(mode, rest, { run, git, err, labelExists, owner: () => stamped });
+  return sendToGitHub(mode, rest, { run, git, err, labelExists, owner: () => stamped, arm: ticket === undefined });
 }
 
 /**
@@ -1651,14 +1577,64 @@ function flagAfter(args: string[], flag: string): string | null {
   return i >= 0 && i + 1 < args.length ? args[i + 1] : null;
 }
 
+/**
+ * The checks made before the body is read, in the places they always ran: a row's Region and claim (#2417, agent-org#744), or a ticket run's owner,
+ * draft policy, Region and changeset (A11-74). A refusal is printed and its exit code returned; a passing check prints its note. `null` is "go on".
+ * @param {string} mode @param {string[]} rest @param {string} body
+ * @param {{ ticket?: TicketContext, git?: (args: string[]) => string, rootFiles?: Set<string>, rowBody?: (number: number, repo?: string) => string,
+ *   code?: readonly { key: string, repo: string }[], openPulls?: (repo: string) => OpenPull[] | null, claimedRows?: (prRepo: string) => ClaimedRow[] | ClaimedRows | null,
+ *   out: (line: string) => void, err: (line: string) => void }} deps
+ * @returns {number | null}
+ */
+function beforeBodyCheck(mode: string, rest: string[], body: string, { ticket, git, rootFiles, rowBody, code, openPulls, claimedRows, out, err }: {
+    ticket?: TicketContext; git?: (args: string[]) => string; rootFiles?: Set<string>; rowBody?: (number: number, repo?: string) => string;
+    code?: readonly { key: string; repo: string; }[]; openPulls?: (repo: string) => OpenPull[] | null; claimedRows?: (prRepo: string) => ClaimedRow[] | ClaimedRows | null;
+    out: (line: string) => void; err: (line: string) => void;
+}): number | null {
+  if (ticket === undefined) {
+    return regionStep(body, rest, { git, rowBody, rootFiles, code, openPulls: mode === "create" ? openPulls : undefined, out, err })
+      ?? claimedRowStep(body, rest, { git, code, claimedRows, out, err });
+  }
+  const checked = ticketChecks(mode, rest, body, ticket, { git: git ?? defaultGit, base: `origin/${flagAfter(rest, "--base") ?? "main"}`,
+    diff: localDiffReading(rest, git), rootFiles });
+  for (const note of checked.notes) out(`${note}\n`);
+  if (checked.refusal !== null) {
+    err(`${checked.refusal}\n`);
+    return EXIT_NOTHING_SENT;
+  }
+  return null;
+}
+
+/**
+ * THE CLI'S SEAMS, WIRED FOR WHAT RUNS IT. A row's checks read GitHub. A ticket-mode run (`AGENT_ORG_TICKET`, which the pool sets for every worker)
+ * reads its ticket from the tracker first, and its checks read no row, claim or session: they are `ticket-mode/pr-open-ticket.ts`'s (A11-74).
+ * An unreadable ticket refuses the create before anything is sent, as an unreadable row does.
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {Promise<number>} the header's exit code
+ */
+export async function runFromCli(env: NodeJS.ProcessEnv): Promise<number> {
+  if (!env[TICKET_ENV.key]) {
+    return main(undefined, { rowBody: defaultRowBody, verifyStamp: defaultVerifyStamp,
+      claimedRows: (prRepo) => lookupClaimedRowsOfTrackers(trackerReposFor(prRepo)), branchHead: defaultBranchHead,
+      rowLabels: defaultRowLabels, openPulls: (repo) => openPullsOf(repo, ghRead), labelExists: defaultLabelExists, write: writeAcceptanceFile });
+  }
+  let ticket: TicketContext;
+  try {
+    ticket = await readTicketContext(env, { git: defaultGit });
+  } catch (error) {
+    process.stderr.write(`pr-open: REFUSED -- the ticket could not be read (${messageOf(error).split("\n")[0]}), so the pull request cannot be checked against it. `
+      + "Nothing was sent to GitHub (A11-74).\n");
+    return EXIT_NOTHING_SENT;
+  }
+  return main(undefined, { ticket, verifyStamp: defaultVerifyStamp, branchHead: defaultBranchHead, write: writeAcceptanceFile });
+}
+
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {
   // #1352: IN THE ENTRY BLOCK, NOT IN `main`, because the tests call `main` directly -- in CI's plain clone a refusal
   // inside it would refuse them. From the primary checkout or a plain clone: refuse before anything, nothing sent.
   if (launchGate(`pr-open ${process.argv[2] ?? ""}`.trim())) {
     process.exitCode = EXIT_NOTHING_SENT;
   } else {
-    process.exitCode = main(undefined, { rowBody: defaultRowBody, verifyStamp: defaultVerifyStamp,
-      claimedRows: (prRepo) => lookupClaimedRowsOfTrackers(trackerReposFor(prRepo)), branchHead: defaultBranchHead,
-      rowLabels: defaultRowLabels, openPulls: (repo) => openPullsOf(repo, ghRead), labelExists: defaultLabelExists, write: writeAcceptanceFile });
+    runFromCli(process.env).then((code) => { process.exitCode = code; });
   }
 }
