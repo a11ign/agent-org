@@ -1231,11 +1231,11 @@ export function boardTruthReading({ audit, day = "today" }: { audit: { findings:
  * flag `BOARD_TRUTH_PAIR_FLAG` is OFF. With `offers` given, one tripped reading per pair OFFERED this tick (`boardTruthPairStep`), each keyed on its own pair, so
  * `orgHealthOrders` makes one order per pair; a tick whose disagreeing pairs were all offered already reads CLEAR, because they were said and are not new.
  */
-export function boardTruthReadings({ audit, day = "today", offers }: { audit: Parameters<typeof boardTruthReading>[0]["audit"]; day?: string; offers?: BoardTruthOffer[] | null; }): Reading[] {
+export function boardTruthReadings({ audit, day = "today", offers }: { audit: Parameters<typeof boardTruthTable>[0] | null; day?: string; offers?: BoardTruthOffer[] | null; }): Reading[] {
   if (offers === undefined || offers === null || audit === null || audit.findings.length === 0) return [boardTruthReading({ audit, day })];
   if (offers.length === 0) return [clear(SIGNALS.BOARD_TRUTH)];
   return offers.map((offer) => ({ signal: SIGNALS.BOARD_TRUTH, status: "tripped", firstTrippedAt: null,
-    discriminator: offer.discriminator, detail: `\n${boardTruthTable((audit as any), day)}\n` }));
+    discriminator: offer.discriminator, detail: `\n${boardTruthTable(audit, day)}\n` }));
 }
 
 /** agent-org#1670: the flag that keys the board-disagrees offer on each (row, question) pair. OFF is the set-keyed order `boardTruthReading` has always made. */
@@ -2286,7 +2286,7 @@ export function orgHealthReadings(facts: {
         waits?: { stale: Parameters<typeof staleWaitReading>[0]["stale"]; bare: Parameters<typeof waitWithoutReasonReading>[0]["bare"]; manual: number; } | null;
         /** agent-org#1418: each declared repository's last whole read; OMITTED is "does not ask" (a poll host stamps nothing, so the live gate asks only on a webhook host) */
         sweeps?: SweepFact;
-        pools?: PoolReading[] | null; toolAgreement?: { result: ToolAgreement; } | null; nodeStrips?: NodeStripFact | null; teamAccess?: TeamAccessFact; autoOff?: AutoOffFact; stateRows?: Parameters<typeof stateLabelReading>[0]["rows"]; idle?: import("./idle-with-open-rows.ts").IdleRows; shelvedCircle?: ShelvedCircle[] | null; releaseRuns?: ReleaseRuns | null; releaseFailures?: ReleaseFailureRead[] | null; fleetBuildIncident?: FleetBuildIncident[] | null; releaseBehind?: import("./release-behind-main.ts").RepoFact[] | null; boardTruth?: Parameters<typeof boardTruthReading>[0]["audit"]; /** agent-org#1670: the pairs offered this tick when `BOARD_TRUTH_PAIR_FLAG` is on (`orgHealthTick` makes them); OMITTED keeps the set-keyed reading. */ boardTruthOffers?: BoardTruthOffer[] | null;
+        pools?: PoolReading[] | null; toolAgreement?: { result: ToolAgreement; } | null; nodeStrips?: NodeStripFact | null; teamAccess?: TeamAccessFact; autoOff?: AutoOffFact; stateRows?: Parameters<typeof stateLabelReading>[0]["rows"]; idle?: import("./idle-with-open-rows.ts").IdleRows; shelvedCircle?: ShelvedCircle[] | null; releaseRuns?: ReleaseRuns | null; releaseFailures?: ReleaseFailureRead[] | null; fleetBuildIncident?: FleetBuildIncident[] | null; releaseBehind?: import("./release-behind-main.ts").RepoFact[] | null; boardTruth?: Parameters<typeof boardTruthTable>[0] | null; /** agent-org#1670: the pairs offered this tick when `BOARD_TRUTH_PAIR_FLAG` is on (`orgHealthTick` makes them); OMITTED keeps the set-keyed reading. */ boardTruthOffers?: BoardTruthOffer[] | null;
         classRepeat?: import("./class-repeat.ts").ClassRepeatFact | null; milestoneClock?: Omit<MilestoneClockFact, "endedAt"> | null;
         claimRefusals?: ClaimRefusal[] | null;
         /** agent-org#1218: `readRerunsOn5xx()`'s answer, `null` for an unreadable ledger and OMITTED when the caller does not ask (a default read would put a signal into every tick test, #1073). */
@@ -2537,11 +2537,23 @@ export function realBoardTruthPairIo(): BoardTruthPairIo {
   };
 }
 
-/** @returns the pairs file as it stands: `{}` when absent. A file that is not an object of pairs THROWS, because a pairs state read wrong would offer every standing pair again. */
+/** A pair key is the row number then the question name, as `boardTruthPairOffers` builds it (`5577wait-already-true`). */
+const BOARD_TRUTH_PAIR_KEY = /^\d+[a-z][a-z-]*$/;
+
+/**
+ * @returns the pairs file as it stands: `{}` when absent. A file that is not an object of pairs, or holds an entry that is not `{offers, lastSeen}` (a whole
+ * count of at least 1, a finite clock), THROWS, because a pairs state read wrong would offer every standing pair again, or rewrite a NaN count that offers nothing.
+ */
 function parseBoardTruthPairs(text: string | null): BoardTruthPairs {
   if (text === null || text.trim() === "") return {};
   const raw = JSON.parse(text) as unknown;
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new Error(`${BOARD_TRUTH_PAIRS_FILE} is not an object of pairs`);
+  for (const [pair, seen] of Object.entries(raw)) {
+    const { offers, lastSeen } = (typeof seen === "object" && seen !== null ? seen : {}) as { offers?: unknown; lastSeen?: unknown; };
+    const wellFormed = BOARD_TRUTH_PAIR_KEY.test(pair) && typeof offers === "number" && Number.isInteger(offers) && offers >= 1
+      && typeof lastSeen === "number" && Number.isFinite(lastSeen);
+    if (!wellFormed) throw new Error(`${BOARD_TRUTH_PAIRS_FILE} entry "${pair}" is not {offers, lastSeen} for a row and question`);
+  }
   return raw as BoardTruthPairs;
 }
 

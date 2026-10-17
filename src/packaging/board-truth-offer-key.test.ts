@@ -105,6 +105,34 @@ describe("agent-org#1670: flag ON emits one reading per offered pair", () => {
     assert.equal(boardTruthPairOffers({ audit: empty, now: T0, io, log: () => {} }), undefined);
     assert.deepEqual(boardTruthReadings({ audit, day: DAY, offers: [] }).map((reading) => reading.status), ["clear"]);
   });
+
+  it("a pairs file with a malformed entry makes no order this tick, logs it, and is left as it is", () => {
+    const bad = `${JSON.stringify({ "1x": { offers: "bad", lastSeen: "bad" } })}\n`;
+    const io = memoryIo({ [BOARD_TRUTH_PAIR_FLAG]: true });
+    io.pairs = bad;
+    const said: string[] = [];
+    assert.deepEqual(boardTruthPairOffers({ audit, now: T0, io, log: (line) => said.push(line) }), []);
+    assert.match(said.join(""), /the next tick offers again/);
+    assert.equal(io.pairs, bad, "a malformed state is not rewritten");
+  });
+
+  it("refuses each malformed entry shape: a key that is not row and question, a fractional or zero count, a non-finite clock, a null entry", () => {
+    const malformed = [
+      { "row-one": { offers: 1, lastSeen: T0 } },
+      { "1state-label": { offers: 1.5, lastSeen: T0 } },
+      { "1state-label": { offers: 0, lastSeen: T0 } },
+      { "1state-label": { offers: 1, lastSeen: null } },
+      { "1state-label": null },
+      { "1state-label": [1, 2] },
+    ];
+    for (const entries of malformed) {
+      const text = JSON.stringify(entries);
+      const io = memoryIo({ [BOARD_TRUTH_PAIR_FLAG]: true });
+      io.pairs = text;
+      assert.deepEqual(boardTruthPairOffers({ audit, now: T0, io, log: () => {} }), [], text);
+      assert.equal(io.pairs, text, `${text} is not rewritten`);
+    }
+  });
 });
 
 describe("agent-org#1670: flag OFF is the original set-keyed discriminator, byte for byte", () => {
