@@ -7,6 +7,7 @@ import {
   statusCounts, terminalLink, toggled, waitsOn, waitNote, repoOfPull, stackedOn, stackNote, PRIORITY_NAMES, hasPlan, isBeingPublished, isWatched, publishable,
   publishLabel, publishNote, publishTerminalLink, missingPlan, planChoiceOf, planCounts, priorityCounts, prioritiesOf, runChoiceLabel,
   unplannedCount, visibleTickets, workItems, workingNote, childrenNote, isParentTicket, openChildCount, apiBase, chosenConnection, connectionLabel, safeHref,
+  footprintOf, overlapWait, pathsOverlap,
   type ViewEntry, type ViewPublish, type ViewTicket,
 } from "./board-view.ts";
 
@@ -658,4 +659,77 @@ test("A11-80: a running run whose worker wrote working is In progress, not Needs
   assert.deepEqual(workingNote(stalled), { text: "Stalled: idle with no newer outcome since it said: the roll is still running", stalled: true });
   assert.equal(workingNote({ ticket: { key: "NBF-1" }, phase: "running" }), null);
   assert.equal(workingNote({ ...working, phase: "finished" }), null, "a finished run's note is its outcome's");
+});
+
+// A11-82: a queued run waits on a path another run holds in its repository.
+const pulled = (url: string, repo = "agent-org") => ({ url, repo });
+const holderOf = (key: string, patch: Partial<ViewEntry>): ViewEntry => ({ ticket: { key }, phase: "running", ...patch } as ViewEntry);
+const waitingOn = (paths: string[], patch: Partial<ViewEntry> = {}): ViewEntry => ({ ticket: { key: "APP-2" }, phase: "queued", paths, ...patch } as ViewEntry);
+
+test("A11-82: paths overlap only in one repository: equal, or a directory that holds the other; sibling directories and other repositories do not", () => {
+  assert.equal(pathsOverlap("agent-org:src/ticket-mode/pool.ts", "agent-org:src/ticket-mode/pool.ts"), true);
+  assert.equal(pathsOverlap("agent-org:src/ticket-mode/", "agent-org:src/ticket-mode/pool.ts"), true, "a directory holds its file");
+  assert.equal(pathsOverlap("agent-org:src/ticket-mode/pool.ts", "agent-org:src/"), true, "the directory holds the file on either side");
+  assert.equal(pathsOverlap("agent-org:src/", "agent-org:src/ticket-mode/"), true, "one directory inside another");
+  assert.equal(pathsOverlap("agent-org:src/ticket-mode/", "agent-org:src/ticket-port/"), false, "sibling directories");
+  assert.equal(pathsOverlap("agent-org:src/ticket-mode/pool", "agent-org:src/ticket-mode/pool.ts"), false, "a name is not a prefix of another");
+  assert.equal(pathsOverlap("agent-org:src/ticket-mode/pool.ts", "agent-org:src/ticket-mode/pool.ts/"), false, "a file is not a directory");
+  assert.equal(pathsOverlap("agent-org:src/a.ts", "nbl-ui-netbox:src/a.ts"), false, "different repositories never overlap");
+});
+
+test("A11-82: a run's footprint is its plan's paths and the files each open pull request changes, in that pull request's repository", () => {
+  const run = holderOf("APP-1", {
+    phase: "finished", paths: ["agent-org:src/a.ts"], outcome: { kind: "draft-pr", prs: [pulled("https://github.com/a11ign/agent-org/pull/9"), pulled("https://github.com/a11ign/lab/pull/3", "lab")] },
+    pullStates: {}, pullFiles: { "https://github.com/a11ign/agent-org/pull/9": ["src/b.ts"], "https://github.com/a11ign/lab/pull/3": ["x.ts"] },
+  });
+  assert.deepEqual(footprintOf(run), ["agent-org:src/a.ts", "agent-org:src/b.ts", "lab:x.ts"]);
+  const merged = { ...run, pullStates: { "https://github.com/a11ign/agent-org/pull/9": "merged" as const } };
+  assert.deepEqual(footprintOf(merged), ["agent-org:src/a.ts", "lab:x.ts"], "a merged pull request's files no longer count");
+});
+
+test("A11-82: a queued run waits on a path a live run holds in its repository, names it, and starts once nothing holds it", () => {
+  const live = holderOf("APP-1", { phase: "running", paths: ["agent-org:src/ticket-mode/"] });
+  const waiting = waitingOn(["agent-org:src/ticket-mode/pool.ts"]);
+  assert.deepEqual(overlapWait(waiting, [live, waiting]), { key: "APP-1", pull: null, path: "src/ticket-mode/pool.ts" });
+  assert.equal(runStatus(waiting, [live, waiting]), "blocked");
+  assert.equal(waitNote(waiting, [live, waiting]), "Waits on APP-1: both touch src/ticket-mode/pool.ts");
+  assert.equal(overlapWait(waiting, [waiting]), null, "a queued run holds nothing");
+  assert.equal(runStatus(waiting, [waiting]), "queued");
+  const other = waitingOn(["agent-org:src/ticket-port/a.ts"]);
+  assert.equal(overlapWait(other, [live, other]), null, "a path it does not share does not wait");
+});
+
+test("A11-82: a finished run holds its footprint while its pull request is open, with the number the reason names, and frees it once the pull request merges", () => {
+  const url = "https://github.com/a11ign/agent-org/pull/1736";
+  const draft = holderOf("APP-1", { phase: "finished", paths: ["agent-org:src/ticket-mode/pool.ts"], outcome: { kind: "draft-pr", prs: [pulled(url)] }, pullFiles: { [url]: [] } });
+  const waiting = waitingOn(["agent-org:src/ticket-mode/pool.ts"]);
+  assert.equal(waitNote(waiting, [draft, waiting]), "Waits on APP-1 #1736: both touch src/ticket-mode/pool.ts");
+  const merged = { ...draft, pullStates: { [url]: "merged" as const } };
+  assert.equal(overlapWait(waiting, [merged, waiting]), null);
+  assert.equal(overlapWait(waiting, [{ ...draft, pullStates: { [url]: "closed" as const } }, waiting]), null, "closed unmerged frees it too");
+  const feedbackOnly = holderOf("APP-3", { phase: "finished", paths: [], outcome: { kind: "checked" }, pullFiles: { [url]: ["src/ticket-mode/pool.ts"] } });
+  assert.equal(overlapWait(waiting, [feedbackOnly, waiting]), null, "a finished run with no open pull request holds nothing");
+});
+
+test("A11-82: a run whose ticket ended holds nothing, and a queued review round holds the paths of the pull request it continues", () => {
+  const url = "https://github.com/a11ign/agent-org/pull/2";
+  const waiting = waitingOn(["agent-org:src/a.ts"]);
+  const canceled = holderOf("APP-1", { phase: "finished", paths: ["agent-org:src/a.ts"], trackerState: "canceled", outcome: { kind: "draft-pr", prs: [pulled(url)] }, pullStates: {} });
+  assert.equal(overlapWait(waiting, [canceled, waiting]), null, "a canceled ticket's run is done with its pull request, whatever GitHub says");
+  const round = holderOf("APP-1", { phase: "queued", paths: ["agent-org:src/a.ts"], review: [pulled(url)] });
+  assert.deepEqual(overlapWait(waiting, [round, waiting]), { key: "APP-1", pull: "2", path: "src/a.ts" }, "a queued review round still has its pull request open");
+});
+
+test("A11-82: a run is not held by its own blockers, by a run that is blocked by it, by its own batch, or by a review round, planning run or unread plan", () => {
+  const live = holderOf("APP-1", { phase: "running", paths: ["agent-org:src/a.ts"] });
+  const shared = ["agent-org:src/a.ts"];
+  assert.equal(overlapWait(waitingOn(shared, { blockers: [{ key: "APP-1", state: "started", status: "In Progress", pulls: {} }] }), [live]), null, "its own blocker");
+  assert.equal(overlapWait(waitingOn(shared), [holderOf("APP-1", { phase: "running", paths: shared, blockers: [{ key: "APP-2", state: "unstarted", status: "Todo", pulls: {} }] })]), null,
+    "a run that is blocked by it");
+  assert.equal(overlapWait(waitingOn(shared, { batch: "b1" }), [holderOf("APP-1", { phase: "running", paths: shared, batch: "b1" })]), null, "one batch is one run");
+  assert.equal(overlapWait(waitingOn(shared, { review: [pulled("https://github.com/a11ign/agent-org/pull/1")] }), [live]), null, "a review round is never held");
+  assert.equal(overlapWait(waitingOn(shared, { plan: { model: "opus", effort: "max" } }), [live]), null, "a planning run is never held");
+  assert.equal(overlapWait(waitingOn(undefined as unknown as string[]), [live]), null, "a run whose plan is not read yet is not held by a path");
+  assert.equal(overlapWait(waitingOn([]), [live]), null, "a run whose plan declares no paths is not held by one");
+  assert.equal(overlapWait(waitingOn(shared), [holderOf("APP-1", { phase: "queued", paths: shared })]), null, "a queued run holds nothing");
 });

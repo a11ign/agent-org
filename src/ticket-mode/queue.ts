@@ -9,7 +9,7 @@
 // the only writer of the file, which it replaces whole by rename, so a reader never sees half of one.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { CONCLUDED, isBeingPublished, isParked, isPublishing, isWatched, openPulls, RESULT_KINDS, runStatus, settledByPulls, waitsOn } from "./board-view.ts";
+import { CONCLUDED, isBeingPublished, isParked, isPublishing, isWatched, openPulls, overlapWait, RESULT_KINDS, runStatus, settledByPulls, waitsOn } from "./board-view.ts";
 import type { Blocker, PullState, StateMove, Ticket } from "./source.ts";
 
 /** A pull request a run opened: the repository it is in and its web address. */
@@ -105,6 +105,14 @@ export type Entry = Readonly<{
   pullStates?: Readonly<Record<string, PullState>>;
   /** The tickets that block this one, as last read while it is queued; unset until the tracker has been asked. */
   blockers?: readonly Blocker[];
+  /**
+   * The repository-prefixed paths its plan says its work touches (`repo:path`, `overlap.ts`), as last read while it is queued. Unset until the
+   * plan has been read; empty when the plan declares none. A run's footprint, with the files of its open pull requests, is what a run waits on
+   * ({@link overlapWait}).
+   */
+  paths?: readonly string[];
+  /** The files each of its open pull requests changes, by URL, as the last watch read them: the footprint of a run with a pull request open. */
+  pullFiles?: Readonly<Record<string, readonly string[]>>;
   /** The Claude session the run's worker used, saved when the run ended, so a review run can resume the worker that wrote the code. */
   session?: string;
   /** Set on a review run: the pull requests a person approved, which the run marks ready and sees through their review. See {@link approve}. */
@@ -294,12 +302,12 @@ export function dismiss(queue: Queue, key: string): Queue {
 export function retry(queue: Queue, key: string, now: number): Queue {
   const entry = find(queue, key);
   if (entry === undefined || entry.phase !== "finished" || isResult(entry) || CONCLUDED.has(entry.outcome?.kind ?? "") || isParked(entry)) return queue;
-  const { ticket, repos, model, effort, plan, planned, session, review, published, feedback, asked, rounds, movedFrom } = entry;
+  const { ticket, repos, model, effort, plan, planned, session, review, published, feedback, asked, rounds, movedFrom, paths, plannedRepo, pullFiles } = entry;
   // A review run that failed is retried as the same review round, resuming the same worker, so it does not start the ticket over, and a round
   // the board started still counts towards its cap. Any other run starts a fresh worker, whose session replaces this one. A ticket of a batch
   // is planned again on its own.
   const round = { ...(session ? { session } : {}), ...(published ? { published } : {}), ...(feedback !== undefined ? { feedback } : {}), ...(asked ? { asked } : {}),
-    ...(rounds !== undefined ? { rounds } : {}) };
+    ...(rounds !== undefined ? { rounds } : {}), ...carriedFields({ paths, plannedRepo, pullFiles }) };
   // The record of the board's move is carried over too: a retried run finds its ticket already started, and would move nothing to record again.
   const retried: Entry = { ticket, repos, model, effort, ...(plan ? { plan } : {}), ...(planned ? { planned } : {}), ...(movedFrom ? { movedFrom } : {}),
     ...(review ? { review, ...round } : {}), phase: "queued", queuedAt: now };
@@ -336,18 +344,27 @@ export function respond(queue: Queue, key: string, now: number): Queue {
 const reviewable = (entry: Entry): boolean =>
   entry.phase === "finished" && !isParked(entry) && !SETTLED.has(entry.trackerState ?? "") && openPulls(entry).length > 0;
 
-/** A review run of `entry`'s ticket for `prs`, queued at `now`, resuming its worker. A Slack message already posted for them stays its link. */
+/**
+ * A review run of `entry`'s ticket for `prs`, queued at `now`, resuming its worker. A Slack message already posted for them stays its link, and the
+ * run keeps its footprint: its paths and the files of its pull requests, so it still holds them while it is live.
+ */
 function reviewRound(entry: Entry, prs: readonly PullRequest[], now: number): Entry {
   const { ticket, repos, model, effort, planned, session, published } = entry;
-  return { ticket, repos, model, effort, ...(planned ? { planned } : {}), ...(session ? { session } : {}), ...(published ? { published } : {}), review: prs,
-    phase: "queued", queuedAt: now };
+  return { ticket, repos, model, effort, ...(planned ? { planned } : {}), ...(session ? { session } : {}), ...(published ? { published } : {}),
+    ...carriedFields(entry), review: prs, phase: "queued", queuedAt: now };
 }
+
+/** The fields a review round carries from the run it continues, its paths and pull request files: only those the run has set. PURE. */
+const carriedFields = ({ paths, plannedRepo, pullFiles }: Pick<Entry, "paths" | "plannedRepo" | "pullFiles">) => ({
+  ...(paths ? { paths } : {}), ...(plannedRepo !== undefined ? { plannedRepo } : {}), ...(pullFiles ? { pullFiles } : {}),
+});
 
 /** The most review rounds the board starts on its own, on new feedback, between two of a person's approvals. */
 export const MAX_FEEDBACK_ROUNDS = 3;
 
 /**
- * New feedback reached a watched run's pull requests after its last round ended (`feedback` says what): the ticket goes back on the queue, at
+ * New feedback reached a watched run's pull requests after its last round ended (`feedback` says what), or a pull request conflicts with its base
+ * (`feedback` names it as a conflict): the ticket goes back on the queue, at
  * the end, as a review round that answers it, resuming the same worker. After {@link MAX_FEEDBACK_ROUNDS} such rounds since a person last
  * approved, the next trigger hands the run to a person instead, who approves again to let the board carry on. A run the board does not watch
  * ({@link isWatched}) is left alone.
@@ -550,6 +567,31 @@ export function recordPullStates(queue: Queue, pulls: ReadonlyMap<string, Readon
   }) };
 }
 
+/**
+ * Record the paths each queued run's plan declares, for each run whose plan was read. A run that has started keeps what it started with.
+ */
+export function recordPaths(queue: Queue, paths: ReadonlyMap<string, readonly string[]>): Queue {
+  return { ...queue, entries: queue.entries.map((entry) => {
+    const found = paths.get(entry.ticket.key);
+    return entry.phase === "queued" && found !== undefined ? { ...entry, paths: found } : entry;
+  }) };
+}
+
+/**
+ * Whether a queued run's plan paths are still to be read: a run that is not planning or reviewing, and has not been read yet. A planning run is
+ * never held by a path, and a review round keeps the paths of the run it continues.
+ */
+export const pathsUnread = (entry: Entry): boolean =>
+  entry.phase === "queued" && entry.paths === undefined && entry.plan === undefined && entry.review === undefined;
+
+/** The queued runs whose plan paths have not been read yet. */
+export const unreadPaths = (queue: Queue): Entry[] => queue.entries.filter(pathsUnread);
+
+/** Record the files a finished run's open pull requests change, by URL, as the watch read them. */
+export function recordPullFiles(queue: Queue, key: string, files: Readonly<Record<string, readonly string[]>>): Queue {
+  return replace(queue, key, (entry) => (entry.phase === "finished" ? { ...entry, pullFiles: files } : entry));
+}
+
 /** Record the tickets that block each queued run, for each run the tracker was asked about. A run that has started keeps what it started with. */
 export function recordBlockers(queue: Queue, blockers: ReadonlyMap<string, readonly Blocker[]>): Queue {
   return { ...queue, entries: queue.entries.map((entry) => {
@@ -572,20 +614,27 @@ export function recordTrackerStates(queue: Queue, states: ReadonlyMap<string, st
 
 /**
  * The queued entries to start now, in queue order: none while the queue is paused or the host is loaded past its cores (`wake.ts`'s `hostLoadRefusal` rule, where
- * exactly equal does not refuse), and otherwise as many as the free slots allow. An entry still waiting on a blocker is passed over, and holds
- * no slot. A batch is one run, so its tickets take one slot between them, live or starting.
+ * exactly equal does not refuse), and otherwise as many as the free slots allow. An entry still waiting on a blocker, or on a path another run holds
+ * ({@link overlapWait}), is passed over, and holds no slot. A batch is one run, so its tickets take one slot between them, live or starting.
+ * An entry this call starts holds its paths against the entries after it, as a live run would, so overlapping runs never start in the same pass.
  */
 export function nextStarts(queue: Queue, load: number, cores: number): Entry[] {
   if (queue.paused || load > cores) return [];
   const free = queue.max - slotsHeld(queue);
   const runs = new Set<string>();
+  const started: Entry[] = [];
   return queue.entries.filter((entry) => {
     if (entry.phase !== "queued" || waitsOn(entry, queue.entries).length > 0) return false;
     if (!runs.has(runOf(entry)) && runs.size >= free) return false;
+    if (overlapWait(entry, [...queue.entries, ...started.map(asStarting)]) !== null) return false;
     runs.add(runOf(entry));
+    started.push(entry);
     return true;
   });
 }
+
+/** The entry as it is once a start is recorded: starting, so it holds what a live run holds. */
+const asStarting = (entry: Entry): Entry => ({ ...entry, phase: "starting" });
 
 /** The slots live runs hold: one per run, and one for a live publish run. */
 const slotsHeld = (queue: Queue): number =>

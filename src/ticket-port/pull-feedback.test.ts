@@ -13,8 +13,10 @@ function answering(pull: unknown) {
   return { calls, run: (args: string[]) => { calls.push(args); return JSON.stringify({ data: { repository: { pullRequest: pull } } }); } };
 }
 
-const pullWith = ({ state = "OPEN", reviews = [] as unknown[], comments = [] as unknown[], threads = [] as unknown[], checks = [] as unknown[] } = {}) => ({
-  state, reviews: { nodes: reviews }, comments: { nodes: comments }, reviewThreads: { nodes: threads.map((c) => ({ comments: { nodes: [c] } })) },
+const pullWith = ({ state = "OPEN", reviews = [] as unknown[], comments = [] as unknown[], threads = [] as unknown[], checks = [] as unknown[], mergeable = "MERGEABLE",
+  mergeStateStatus = "CLEAN", base = "main", files = [] as string[] } = {}) => ({
+  state, mergeable, mergeStateStatus, baseRefName: base, files: { nodes: files.map((path) => ({ path })) },
+  reviews: { nodes: reviews }, comments: { nodes: comments }, reviewThreads: { nodes: threads.map((c) => ({ comments: { nodes: [c] } })) },
   commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: checks } } } }] },
 });
 
@@ -29,7 +31,7 @@ test("the newest review, conversation comment or inline comment by anyone but th
     threads: [{ createdAt: at(20), author: { login: "carol" } }],
   }));
   const read = readPullFeedback(URL, "worker-bot", run);
-  assert.deepEqual(read, { state: "open", feedbackAt: ms(20), authors: ["carol", "bob", "a11ign-reviewer"], failing: [], failedAt: null },
+  assert.deepEqual(read, { state: "open", feedbackAt: ms(20), authors: ["carol", "bob", "a11ign-reviewer"], failing: [], failedAt: null, conflicting: false, base: "main", files: [], filesComplete: true },
     "an approval and the workers' own comments are not feedback");
   assert.deepEqual(calls[0].slice(0, 2), ["api", "graphql"]);
   assert.ok(calls[0].includes("owner=netboxlabs") && calls[0].includes("repo=nbl-ui-netbox") && calls[0].includes("number=806"));
@@ -44,6 +46,20 @@ test("the failing checks are the required ones, or every one where none is requi
   assert.deepEqual([unrequired?.failing, unrequired?.failedAt], [["suite", "netlify"], ms(35)], "a re-run that passed replaces the failure it re-ran");
   const required = readPullFeedback(URL, "me", answering(pullWith({ checks: [run("gate", "SUCCESS", 10, true), run("suite", "FAILURE", 30)] })).run);
   assert.deepEqual([required?.failing, required?.failedAt], [[], null], "with a required check, only the required ones count");
+});
+
+test("A11-82: a pull request that conflicts with its base is conflicting, whichever GitHub says it by, and one still being computed is not", () => {
+  const conflicting = (fields: Parameters<typeof pullWith>[0]) => readPullFeedback(URL, "me", answering(pullWith(fields)).run);
+  assert.deepEqual([conflicting({ mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" })?.conflicting, conflicting({ mergeable: "CONFLICTING" })?.conflicting], [true, true]);
+  assert.equal(conflicting({ mergeStateStatus: "DIRTY" })?.conflicting, true, "a DIRTY pull request with a mergeable of its own is still conflicting");
+  for (const state of [{ mergeable: "MERGEABLE" }, { mergeStateStatus: "BEHIND" }, { mergeStateStatus: "BLOCKED" }, { mergeable: "UNKNOWN", mergeStateStatus: "UNKNOWN" }]) {
+    assert.equal(conflicting(state)?.conflicting, false, `${JSON.stringify(state)} is no conflict`);
+  }
+  const read = conflicting({ base: "release/2", files: ["src/ticket-mode/pool.ts", "src/ticket-mode/server.ts"] });
+  assert.deepEqual([read?.base, read?.files], ["release/2", ["src/ticket-mode/pool.ts", "src/ticket-mode/server.ts"]], "the base and the files it changes are read");
+  const many = pullWith({ files: ["a.ts"] });
+  assert.equal(readPullFeedback(URL, "me", answering({ ...many, files: { totalCount: 150, nodes: [{ path: "a.ts" }] } }).run)?.filesComplete, false,
+    "a pull request of more than the files read is partial, and says so");
 });
 
 test("a pull request that cannot be read is null, never no feedback, and a merged or closed one says so", () => {

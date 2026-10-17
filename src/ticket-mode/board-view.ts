@@ -23,7 +23,7 @@ export type TicketNode<T extends ViewTicket = ViewTicket> = Readonly<{ ticket: T
 
 /** The fields of a queue entry the board reads. */
 export type ViewEntry = Readonly<{
-  ticket: Readonly<{ key: string }>; phase: string; outcome?: Readonly<{ kind: string; prs?: readonly Readonly<{ url: string }>[] }>; waiting?: boolean;
+  ticket: Readonly<{ key: string }>; phase: string; outcome?: Readonly<{ kind: string; prs?: readonly PullRef[] }>; waiting?: boolean;
   trackerState?: string; pullStates?: Readonly<Record<string, string>>; queuedAt?: number; startedAt?: number; finishedAt?: number; workspace?: string;
   pane?: string; blockers?: readonly ViewBlocker[]; model?: string; effort?: string;
   /** Set while the ticket still needs its plan: the model and effort its planning run uses. */
@@ -31,9 +31,15 @@ export type ViewEntry = Readonly<{
   /** Its plan was written by a planning run, not agreed with a person. */
   planned?: boolean;
   /** Set on a review run: the pull requests a person approved. */
-  review?: readonly Readonly<{ url: string }>[];
+  review?: readonly PullRef[];
   /** The repository its batch's planner said its work lands in, or null when it named none. */
   plannedRepo?: string | null;
+  /** The batch the run is planned in, or unset for a ticket planned alone: the tickets of one batch are one run. */
+  batch?: string;
+  /** The repository-prefixed paths its plan says its work touches, as last read: unset until read, empty when the plan declares none. */
+  paths?: readonly string[];
+  /** The files each open pull request of the run changes, by URL, as the last watch read them, in the repository the pull request is in. */
+  pullFiles?: Readonly<Record<string, readonly string[]>>;
   /** The tickets of its batch its planner said it waits on to merge, rather than stacking on: the keys of its blockers that must merge first. */
   waitMerged?: readonly string[];
   /** Set once a publish run posted its pull requests: the first message's web address, or null when it gave none. */
@@ -43,6 +49,9 @@ export type ViewEntry = Readonly<{
   /** Set while a running run's worker last said its own background work is still running: its reason, and whether it has stalled. */
   working?: Readonly<{ reason: string; stalled?: boolean }>;
 }>;
+
+/** A pull request as a run records it: its web address, and the repository it is in, which is the name `clones` gives it. */
+export type PullRef = Readonly<{ url: string; repo?: string }>;
 
 /**
  * A ticket that blocks a queued one: its key, its state's type and name in the tracker, and, where the tracker gave them, its branch and the state
@@ -397,20 +406,93 @@ export function stackedOn(entry: ViewEntry, entries: readonly ViewEntry[]): Stac
 /** What the board says about a run stacked on its blockers, such as "Stacked on NBF-1 #12". */
 export const stackNote = (bases: readonly StackBase[]): string => `Stacked on ${bases.map(({ key, url }) => `${key} #${parsePull(url)?.number ?? url}`).join(", ")}`;
 
-/** What the board says about a queued run held back until its blockers merge, such as "Waits for NBF-1 to merge", or null when none is. */
+/**
+ * What the board says about a queued run held back, or null when none holds it: until its blockers merge, such as "Waits for NBF-1 to merge", or
+ * for a path another run holds, such as "Waits on NBF-1 #12: both touch pool.ts".
+ */
 export function waitNote(entry: ViewEntry, entries: readonly ViewEntry[]): string | null {
   const keys = waitsOn(entry, entries).filter((blocker) => waitsToMerge(entry, blocker)).map(({ key }) => key);
-  return keys.length === 0 ? null : `Waits for ${keys.join(", ")} to merge`;
+  if (keys.length > 0) return `Waits for ${keys.join(", ")} to merge`;
+  const overlap = overlapWait(entry, entries);
+  return overlap === null ? null : `Waits on ${overlap.key}${overlap.pull === null ? "" : ` #${overlap.pull}`}: both touch ${overlap.path}`;
+}
+
+/** Split a repository-prefixed path, `<repo>:<path>`, into its repository and its path within it. PURE. */
+const repoPath = (path: string): [string, string] => {
+  const cut = path.indexOf(":");
+  return [path.slice(0, cut), path.slice(cut + 1)];
+};
+
+/**
+ * Whether two repository-prefixed paths touch the same files: they are in one repository, and are equal, or one is a directory (its path ends in
+ * `/`) that holds the other. Sibling directories, and a file and a directory it is not in, do not overlap. PURE.
+ */
+export function pathsOverlap(a: string, b: string): boolean {
+  const [repoA, pathA] = repoPath(a);
+  const [repoB, pathB] = repoPath(b);
+  if (repoA !== repoB) return false;
+  return pathA === pathB || (pathA.endsWith("/") && pathB.startsWith(pathA)) || (pathB.endsWith("/") && pathA.startsWith(pathB));
 }
 
 /**
- * A run's status. A queued run is blocked while a ticket that blocks it is not done, and cannot be stacked on (`entries` is the whole queue, for {@link waitsOn}). The
+ * A run's footprint: the paths its plan says its work touches, and the files each of its open pull requests changes, each in the repository that
+ * pull request is in. PURE.
+ */
+export function footprintOf(entry: ViewEntry): string[] {
+  const changed = openPulls(entry).flatMap(({ url, repo }) => (repo === undefined ? [] : (entry.pullFiles?.[url] ?? []).map((file) => `${repo}:${file}`)));
+  return [...(entry.paths ?? []), ...changed];
+}
+
+/** The tracker's states that end a ticket's work: a run on such a ticket is done, or was dropped, and holds nothing once it is not live. */
+const ENDED_TICKETS: ReadonlySet<string> = new Set(["completed", "canceled", "duplicate"]);
+
+/**
+ * Whether a run holds its footprint against the runs queued behind it: it is live, or it has a pull request still open and its ticket has not
+ * ended. That is a finished run, a draft too, or a queued review round, which keeps the pull requests it continues.
+ */
+const holds = (entry: ViewEntry): boolean => {
+  if (entry.phase === "starting" || entry.phase === "running") return true;
+  const pullsOpen = entry.phase === "finished" || entry.review !== undefined;
+  return pullsOpen && openPulls(entry).length > 0 && !ENDED_TICKETS.has(entry.trackerState ?? "");
+};
+
+/**
+ * Whether a holder is exempt from a queued run: one of its own blockers, or a run that is blocked by it. Those are sequenced on purpose
+ * (`waitsOn`, `stackedOn`), so they are never held against each other.
+ */
+const exempt = (entry: ViewEntry, other: ViewEntry): boolean =>
+  (entry.blockers ?? []).some(({ key }) => key === other.ticket.key) || (other.blockers ?? []).some(({ key }) => key === entry.ticket.key);
+
+/** The run a queued run waits on for a shared path: its key, the number of its first open pull request when it has one, and the path both touch. */
+export type OverlapWait = Readonly<{ key: string; pull: string | null; path: string }>;
+
+/**
+ * Why a queued run waits, for a path it shares with a run already held in its repository (see {@link holds}), or null when it waits on none. A
+ * run is not held by one that is its own batch's, nor by one of whose blockers it is or that is one of its blockers, since those are sequenced on
+ * purpose (`waitsOn`, `stackedOn`). A review round, a conflict round and a planning run are never held, and nor is a run with no paths declared.
+ * `entries` is the whole queue, or the queue with the runs a pass has just chosen counted as starting, so a batch of starts keeps to one another. PURE.
+ */
+export function overlapWait(entry: ViewEntry, entries: readonly ViewEntry[]): OverlapWait | null {
+  const mine = entry.paths ?? [];
+  if (entry.phase !== "queued" || entry.plan !== undefined || entry.review !== undefined || mine.length === 0) return null;
+  for (const other of entries) {
+    if (other.ticket.key === entry.ticket.key || !holds(other) || (entry.batch !== undefined && other.batch === entry.batch) || exempt(entry, other)) continue;
+    const held = footprintOf(other);
+    const path = mine.find((own) => held.some((theirs) => pathsOverlap(own, theirs)));
+    if (path !== undefined) return { key: other.ticket.key, pull: parsePull(openPulls(other)[0]?.url ?? "")?.number ?? null, path: repoPath(path)[1] };
+  }
+  return null;
+}
+
+/**
+ * A run's status. A queued run is blocked while a ticket that blocks it is not done, and cannot be stacked on (`entries` is the whole queue, for {@link waitsOn}),
+ * or while it waits on a path another run holds ({@link overlapWait}). The
  * tracker's word wins once the run has finished: a ticket it completed is done and one it canceled is cancelled, whatever the run ended in. Then
  * its pull requests: Linear completes a ticket on a merge only where its team's workflow says so, so a run whose pull requests merged is done
  * even while its ticket is still in progress. Before either, the outcome decides. It never answers Publishing: that is {@link shownStatus}'s.
  */
 export function runStatus(entry: ViewEntry, entries: readonly ViewEntry[] = []): RunStatus {
-  if (entry.phase === "queued") return waitsOn(entry, entries).length > 0 ? "blocked" : "queued";
+  if (entry.phase === "queued") return waitsOn(entry, entries).length > 0 || overlapWait(entry, entries) !== null ? "blocked" : "queued";
   if (entry.phase !== "finished") return entry.waiting ? "needs-you" : entry.plan ? "planning" : entry.review ? "reviewing" : "working";
   if (entry.trackerState === "completed") return "completed";
   if (entry.trackerState === "canceled" || entry.trackerState === "duplicate") return "cancelled";

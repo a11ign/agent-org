@@ -1,7 +1,7 @@
 // no-token: gh -- pure builders
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { batchPlanBriefText, briefText, firstPrompt, planBriefText, publishBriefText, reviewBriefText, reviewPrompt, workerFlags, workerSettings } from "./worker-files.ts";
+import { CONFLICT_LINE, batchPlanBriefText, briefText, conflictLine, firstPrompt, planBriefText, publishBriefText, reviewBriefText, reviewPrompt, workerFlags, workerSettings } from "./worker-files.ts";
 import type { Blocker, Ticket } from "./source.ts";
 
 const ticket = { key: "NBF-1270", title: "Refresh Data gives no feedback", description: "Clicking does nothing visible.", url: "https://linear.app/x/issue/NBF-1270",
@@ -291,3 +291,48 @@ test("A11-80: a worker may end a turn on working only while its own background w
   assert.match(brief, /Never write `working` to park a question or to wait on a person: that is `needs-human`/);
   assert.match(brief, /write the outcome file again with how the run ended, or with `working` again if more of it is still running/);
 });
+
+// A11-82: a pull request that conflicts with its base is merged first, and a planner says where its work lands and what paths it touches.
+const conflicted = `New feedback reached your pull requests after your last round, so the board started this round to answer it.`;
+const conflictFeedback = `${conflictLine("https://github.com/x/nbl-ui-netbox/pull/806", "main")}`;
+
+test("A11-82: a round whose feedback names a conflict merges the base in first, never rebases or force-pushes, keeps both changes, and numbers the feedback steps after it", () => {
+  assert.equal(conflictLine("https://github.com/x/nbl-ui-netbox/pull/806", "main"), "https://github.com/x/nbl-ui-netbox/pull/806 conflicts with its base branch main.");
+  assert.equal(conflictLine("https://github.com/x/nbl-ui-netbox/pull/806", null), "https://github.com/x/nbl-ui-netbox/pull/806 conflicts with its base branch unknown.");
+  assert.equal(CONFLICT_LINE.test(conflictFeedback), true);
+  const brief = review(conflictFeedback);
+  assert.match(brief, /^1\. The feedback above says a pull request conflicts with its base branch\. Merge the base branch into your branch before anything else: `git fetch`, then `git merge origin\/<base>`/m);
+  assert.match(brief, /Never rebase, and never force-push\. Resolve each conflict keeping both changes' intent, run the repository's own tests, typecheck and lint, and push\./);
+  assert.match(brief, /Say in your reply on that pull request which files conflicted and how each was resolved\./);
+  assert.match(brief, /^2\. Read that feedback/m);
+  assert.match(brief, /^6\. Wait at most 30 minutes/m, "the wait step is last, after the merge");
+  assert.ok(brief.includes(conflicted), "the round says what started it");
+});
+
+test("A11-82: a conflict-free feedback round has no merge step, and a Respond to review round keeps the brief it had", () => {
+  const plain = review("New review feedback on https://github.com/x/nbl-ui-netbox/pull/806, the newest from alice.");
+  assert.equal(plain.includes("git merge"), false, "nothing conflicts, so nothing is merged");
+  assert.match(plain, /^1\. Read that feedback/m);
+  const asked = reviewBriefText({ ticket, folder: "/work/.tickets/NBF-1270", ticketDir: "/state/tickets/NBF-1270", prs: reviewed, resumed: true, asked: true });
+  assert.equal(asked.includes("git merge"), false, "a Respond to review round keeps the brief it had: no merge is named unless the feedback names a conflict");
+  assert.match(asked, /^1\. Read that feedback/m);
+});
+
+test("A11-82: the approved round tells the worker to merge a conflicting base in before it marks anything ready", () => {
+  const brief = reviewBriefText({ ticket, folder: "/work/.tickets/NBF-1270", ticketDir: "/state/tickets/NBF-1270", prs: reviewed, resumed: true });
+  assert.match(brief, /^If a pull request conflicts with its base branch \(`gh pr view <its url> --json mergeable,mergeStateStatus` says CONFLICTING or DIRTY\), merge the base into your branch first/m);
+  assert.ok(brief.indexOf("merge the base into your branch first") < brief.indexOf("1. Mark each pull request ready"), "before step 1");
+});
+
+test("A11-82: both planner briefs tell the planner the ## Paths section, and a batch's brief also tells it to order tickets that touch one area in order.json", () => {
+  const plan = planBriefText({ ticket, ticketDir: "/d", planDir: "/d/plan", attachments: [], clones, run: "plan {key} into {dir}" });
+  const batch = batchPlanBriefText({ tickets: [{ ticket, attachments: [], parent: null }], runDir: "/d", planDir: "/d/plan", clones, run: "plan {keys} into {dir}" });
+  for (const brief of [plan, batch]) {
+    assert.ok(brief.includes("Each plan file ends with a `## Paths` section listing every file or directory its work will change"), "the section");
+    assert.ok(brief.includes("`- \`<repo>:<path>\``"), "its bullet form");
+    assert.ok(brief.includes("The board holds back another ticket whose work touches the same paths"));
+  }
+  assert.match(batch, /Tickets of one repository whose work touches the same area, directly or through a shared module, must be ordered in `order\.json` with `after`/);
+  assert.equal(plan.includes("order.json"), false, "a ticket planned alone writes no order");
+});
+

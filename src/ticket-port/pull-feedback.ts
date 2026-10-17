@@ -15,6 +15,14 @@ export type PullFeedback = Readonly<{
   failing: readonly string[];
   /** When the newest of those failing checks finished. */
   failedAt: number | null;
+  /** Whether it conflicts with its base: GitHub says `CONFLICTING` or `DIRTY`. `UNKNOWN` (still being computed) is not a conflict. */
+  conflicting: boolean;
+  /** The branch it merges into, or null when GitHub does not say. */
+  base: string | null;
+  /** The files it changes, by path within its repository. */
+  files: readonly string[];
+  /** Whether `files` is all of them: GitHub gives at most 100, and a pull request changing more is read in part. */
+  filesComplete: boolean;
 }>;
 
 /** How much of each list one read takes, newest last. Only the newest item of each counts, so a long history is not read. */
@@ -22,6 +30,10 @@ const LAST = 50;
 
 const QUERY = `query($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) {
   state
+  mergeable
+  mergeStateStatus
+  baseRefName
+  files(first: 100) { totalCount nodes { path } }
   reviews(last: ${LAST}) { nodes { state submittedAt author { login } } }
   comments(last: ${LAST}) { nodes { createdAt author { login } } }
   reviewThreads(last: ${LAST}) { nodes { comments(last: 20) { nodes { createdAt author { login } } } } }
@@ -110,5 +122,9 @@ function feedbackOf(pr: Record<string, any>, self: string): PullFeedback {
     authors: [...new Set(items.sort((a, b) => (b.at ?? 0) - (a.at ?? 0)).map(({ author }) => author))],
     failing: failing.map(({ name }) => name),
     failedAt: newest(failing.map(({ at }) => at)),
+    conflicting: pr.mergeable === "CONFLICTING" || pr.mergeStateStatus === "DIRTY",
+    base: typeof pr.baseRefName === "string" ? pr.baseRefName : null,
+    files: (pr.files?.nodes ?? []).map((file: { path: string }) => file.path),
+    filesComplete: (pr.files?.totalCount ?? 0) <= (pr.files?.nodes?.length ?? 0),
   };
 }

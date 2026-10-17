@@ -3,10 +3,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { isParked } from "./board-view.ts";
+import { isParked, runStatus } from "./board-view.ts";
 import {
   amend, approve, byIdentifier, childOrder, refuseParents, respond, batchPlanDone, dismiss, feedbackRound, MAX_FEEDBACK_ROUNDS, markPublishRunning, markPublishStarting, publishDone, publishFailed, publishStarts, queuePublish, emptyQueue, enqueue, finish, isLive, leaveBatch, liveRunCount, loadQueue, markResumed, markRunning, markStarting, nextStarts, observe, park,
   clearMove, noteWorking, recordBlockers, recordMove, recordRepos, planDone, watchWorking, PLAN_BATCH_MAX, recordPullStates, recordTrackerStates, remove, retry, saveQueue, setMax, setPaused, unpark, unreadBlockerKeys, unsettledKeys, type Queue,
+  pathsUnread, recordPaths, recordPullFiles, unreadPaths,
 } from "./queue.ts";
 import type { Blocker, Ticket } from "./source.ts";
 
@@ -507,4 +508,47 @@ test("A11-80: a working run idle with no newer outcome for the stall time is mar
   assert.deepEqual(note(woke), { reason: "the roll is still running", at: 50 }, "its work woke it: no idle clock, no stall");
   assert.equal(note(watchWorking(woke, "A", "idle", 1000 + stall + 10, stall))?.idleSince, 1000 + stall + 10, "idle again starts the clock again");
   assert.deepEqual(watchWorking(running, "A", "idle", 1e9, stall), running, "a run with no note has no stall");
+});
+
+// A11-82: runs that share a path in one repository start in turn, and a review round keeps the footprint of the run it continues.
+test("A11-82: runs that share a path in one repository start in turn: the earlier one starts and the later waits for it, while disjoint and other-repository runs start together", () => {
+  const queued = setPaused(enqueue(emptyQueue(4), [ticket("A"), ticket("B"), ticket("C"), ticket("D")], choice, 1), false);
+  const queue = recordPaths(queued, new Map([["A", ["app:src/pool.ts"]], ["B", ["app:src/"]], ["C", ["lib:src/pool.ts"]], ["D", ["app:docs/"]]]));
+  assert.deepEqual(nextStarts(queue, 0, 14).map((e) => e.ticket.key), ["A", "C", "D"], "B shares src/pool.ts with A, and waits for it in this pass");
+  const running = markRunning(markStarting(queue, "A", 2), "A", "w1", "w1:p1");
+  assert.deepEqual(nextStarts(running, 0, 14).map((e) => e.ticket.key), ["C", "D"], "with A live, B is held, and the rest start");
+  assert.equal(runStatus(running.entries.find((e) => e.ticket.key === "B")!, running.entries), "blocked", "B shows Blocked");
+  const reviewed = finish(running, "A", { kind: "draft-pr", prs: [pr] }, 3);
+  const open = { ...reviewed, entries: reviewed.entries.map((e) => (e.ticket.key === "A" ? { ...e, pullStates: { [pr.url]: "open" as const } } : e)) };
+  assert.deepEqual(nextStarts(open, 0, 14).map((e) => e.ticket.key), ["C", "D"], "a finished run with a pull request open still holds its path");
+  const merged = { ...open, entries: open.entries.map((e) => (e.ticket.key === "A" ? { ...e, pullStates: { [pr.url]: "merged" as const } } : e)) };
+  assert.deepEqual(nextStarts(merged, 0, 14).map((e) => e.ticket.key), ["B", "C", "D"], "once its pull request merges, B starts");
+});
+
+test("A11-82: a queued review round holds its pull requests' paths, so a run that shares one waits for the round, which starts", () => {
+  const queue = recordPaths(feedbackRound(readyToMerge({ paths: ["app:src/a.ts"] }), "A", "f", 9), new Map([["B", ["app:src/a.ts"]]]));
+  assert.deepEqual(nextStarts(setPaused(queue, false), 0, 14).map((e) => e.ticket.key), ["A"], "B, queued first, waits for the round A is");
+});
+
+test("A11-82: a run whose plan is not read yet, or is planning, starts by its own rules: it is not held by a path, and a review round keeps its run's footprint", () => {
+  const queue = feedbackRound(readyToMerge({ paths: ["app:src/a.ts"], plannedRepo: "app", pullFiles: { [pr.url]: ["src/b.ts"] } }), "A", "f", 9);
+  assert.deepEqual([a(queue).paths, a(queue).plannedRepo, a(queue).pullFiles], [["app:src/a.ts"], "app", { [pr.url]: ["src/b.ts"] }], "the round carries the footprint");
+  const retried = retry(endedWith({ kind: "needs-human", reason: "x" }, { review: [pr], paths: ["app:src/a.ts"] }), "A", 9);
+  assert.deepEqual(a(retried).paths, ["app:src/a.ts"], "a retried review round keeps its paths");
+  const plain = retry(endedWith({ kind: "needs-human", reason: "x" }, { paths: ["app:src/a.ts"] }), "A", 9);
+  assert.equal(a(plain).paths, undefined, "a retried run reads its plan again");
+  assert.equal(pathsUnread(a(plain)), true);
+  assert.equal(pathsUnread({ ...a(plain), plan: { model: "opus", effort: "max" } }), false, "a planning run has no paths to read");
+  assert.equal(pathsUnread({ ...a(plain), review: [pr] }), false, "a review round keeps its run's paths");
+});
+
+test("A11-82: paths are recorded on queued runs only, and the files of a pull request on finished runs only", () => {
+  const queued = recordPaths(enqueue(emptyQueue(2), [ticket("A"), ticket("B")], choice, 1), new Map([["A", ["app:a.ts"]], ["B", []]]));
+  assert.deepEqual(queued.entries.map((e) => e.paths), [["app:a.ts"], []], "an empty list is a plan read with no paths");
+  assert.deepEqual(unreadPaths(queued), [], "both are read");
+  const started = recordPaths(markStarting(queued, "A", 2), new Map([["A", ["app:other.ts"]]]));
+  assert.deepEqual(a(started).paths, ["app:a.ts"], "a started run keeps what it started with");
+  const finished = recordPullFiles(endedWith({ kind: "draft-pr", prs: [pr] }), "A", { [pr.url]: ["src/c.ts"] });
+  assert.deepEqual(a(finished).pullFiles, { [pr.url]: ["src/c.ts"] });
+  assert.equal(recordPullFiles(enqueue(emptyQueue(2), [ticket("A")], choice, 1), "A", { [pr.url]: ["x"] }).entries[0].pullFiles, undefined, "a queued run has no pull request to read");
 });
