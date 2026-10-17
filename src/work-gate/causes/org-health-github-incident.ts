@@ -10,8 +10,9 @@ import { type UnarmedFacts, hungCheckOf } from "../pr-orders.ts";
 import { blockingChecks, checksSettledGreen } from "../pr-state.ts";
 import { defaultRun, repoNow } from "../reads.ts";
 import { REVIEWER_STATE_DIR } from "../vocabulary.ts";
-import { accountAuthoringTimes } from "../../gh-author-fallback.ts";
-import { homeHostConfig, type HostConfig } from "../../host-config.ts";
+import { accountAuthoringTimes, type AuthorLedger } from "../../gh-author-fallback.ts";
+import { GITHUB_ROLES, type GithubRole } from "../../app-token.ts";
+import { homeHostConfig, roleIdentity, type HostConfig } from "../../host-config.ts";
 import { REVIEWER_GH_CONFIG_DIR } from "../../review-trust.ts";
 import { GITHUB_STATUS_URL } from "../github-status-url.ts";
 
@@ -298,19 +299,25 @@ export function deferredWakeCount(dir: string, read: (path: string) => string = 
  */
 /**
  * agent-org#1666: the account's authoring calls (`pr create`, `pr merge`, `pr review` sent as the account, not an app) in the three `gh` ledgers: the workers',
- * the managers', and the reviewer's. A ledger that does not exist has no calls; one that exists and cannot be read makes the reading `null` (unread), never a zero.
+ * the managers', and the reviewer's, for the roles `host.json` declares `github-apps` only (a `user-accounts` role's account is its own, not a fallback). A ledger that
+ * does not exist has no calls; one that exists and cannot be read makes the reading `null` (unread), never a zero.
  */
 export function authorFallbackTimes({ host = homeHostConfig(), reviewerDir = REVIEWER_GH_CONFIG_DIR, read = readFileSync }: { host?: HostConfig; reviewerDir?: string; read?: typeof readFileSync; } = {}): number[] | null {
-  const paths = [join(host.gh.workers, "gh", "gh-calls.tsv"), join(host.gh.leads, "gh", "gh-calls.tsv"), join(reviewerDir, "gh-calls.tsv")];
-  const times: number[] = [];
-  for (const path of paths) {
+  const files: { home: GithubRole; path: string; }[] = [
+    { home: "workers", path: join(host.gh.workers, "gh", "gh-calls.tsv") },
+    { home: "managers", path: join(host.gh.leads, "gh", "gh-calls.tsv") },
+    { home: "reviewer", path: join(reviewerDir, "gh-calls.tsv") },
+  ];
+  const ledgers: AuthorLedger[] = [];
+  for (const { home, path } of files) {
     try {
-      times.push(...accountAuthoringTimes(String(read(path, "utf8")).split("\n")));
+      ledgers.push({ home, lines: String(read(path, "utf8")).split("\n") });
     } catch (cause) {
       if ((cause as { code?: string }).code !== "ENOENT") return null;
     }
   }
-  return times;
+  const declared = GITHUB_ROLES.filter((role) => roleIdentity(host, role).mode === "github-apps");
+  return accountAuthoringTimes(ledgers, declared);
 }
 
 export function machineryCanaryNow({ unread, unarmed, releaseRuns, suppressions, stranded = [], ownerless, authorFallbacks, now = Date.now(), dir = REVIEWER_STATE_DIR, run = defaultRun, io }: {

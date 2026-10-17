@@ -18,6 +18,7 @@ import { accountAuthoringTimes, authorFallbackRefusalOn, AUTHOR_FALLBACK_MINUTES
 import { parseLine } from "../gh-ledger.ts";
 import { CANARY_STATE_FILE, machineryValues, MACHINERY_SIGNALS, STANDARD_MACHINERY_SIGNALS } from "../org-health.ts";
 import { parseHostConfig, renderTemplate, templateValues } from "../host-config.ts";
+import { authorFallbackTimes } from "../work-gate/causes/org-health-github-incident.ts";
 import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
 import { SUPPORTED_SCHEMA } from "../project-config.ts";
 
@@ -214,16 +215,53 @@ test("#1666: a read, an app's call, and an incident line are NOT authoring calls
     `${ts}\tapp:workers\tcore\t1\t0\tpr create --title t\tw3\tcaller`,
     `${ts}\t${ACCOUNT}\tincident\t-\t1\tapp-token workers\tw3\tcaller`,
   ];
-  assert.deepEqual(accountAuthoringTimes(lines), [], "POSITIVE CONTROLS ABOVE: none of these is an account's authoring call");
-  assert.deepEqual(accountAuthoringTimes([`${ts}\t${ACCOUNT}\tcore\t1\t0\tpr create --title t\tw3\tcaller`]), [Date.parse(ts)], "and an account's authoring call is");
+  const workers = (ledger: string[]) => [{ home: "workers" as const, lines: ledger }];
+  assert.deepEqual(accountAuthoringTimes(workers(lines), ["workers"]), [], "POSITIVE CONTROLS ABOVE: none of these is an account's authoring call");
+  assert.deepEqual(accountAuthoringTimes(workers([`${ts}\t${ACCOUNT}\tcore\t1\t0\tpr create --title t\tw3\tcaller`]), ["workers"]), [Date.parse(ts)], "and an account's authoring call is");
 });
 
 test("#1666: the wrapper's OFF-switch authoring call is the one the signal counts: the account's line is in the ledger the signal reads", () => {
   const h = host();
   h.canary(null);
   h.run({}, "pr", "create", "--title", "t");
-  const times = accountAuthoringTimes(h.lines());
+  const times = accountAuthoringTimes([{ home: "workers", lines: h.lines() }], ["workers"]);
   assert.equal(times.length, 1, "POSITIVE CONTROL: the fallen-back authoring call is counted, so the signal would trip on it");
   const values = machineryValues({ facts: { claimRefusals: [], unread: [], deferredWakes: 0, unarmed: [], releaseRuns: null, authorFallbacks: times }, since: times[0] - 1, now: times[0] + 60_000, memo: {} });
   assert.equal(values.values[MACHINERY_SIGNALS.GH_AUTHOR_FALLBACK], 1);
+});
+
+// ---- 5. the reader that feeds the signal: the three ledgers, the roles the host declares `github-apps`, and unread --------------------------------------------
+
+const AT = "2026-10-16T21:19:30Z";
+const AT_MS = Date.parse(AT);
+const WORKERS_LEDGER = "/home/h/workers/gh/gh-calls.tsv";
+const LEADS_LEDGER = "/home/h/leads/gh/gh-calls.tsv";
+const REVIEWER_LEDGER = "/home/h/reviewer/gh/gh-calls.tsv";
+const APP = (role: string) => ({ mode: "github-apps", appId: `id-${role}`, keyPath: `/nonexistent-1666/${role}.pem` });
+/** A `read` that serves the files it is given, fails with the code given for the paths named in `fail`, and throws ENOENT for any other path. */
+const ledgerReader = (files: Record<string, string>, fail: Record<string, string> = {}) => ((path: string) => {
+  if (path in fail) throw Object.assign(new Error(`${fail[path]}: ${path}`), { code: fail[path] });
+  if (!(path in files)) throw Object.assign(new Error(`ENOENT: ${path}`), { code: "ENOENT" });
+  return files[path];
+}) as unknown as typeof readFileSync;
+/** An account's authoring line in a workspace (`-` is a call with no workspace id: the scheduler's). */
+const accountCall = (workspace: string, command = "pr create --title t") => `${AT}\t${ACCOUNT}\tcore\t1\t0\t${command}\t${workspace}\tcaller`;
+
+test("#1666: the reader counts an account's authoring call only for a role the host declares github-apps, in each of the three ledgers", () => {
+  const files = {
+    [WORKERS_LEDGER]: [accountCall("w3"), accountCall("-"), `${AT}\tapp:workers\tcore\t1\t0\tpr create --title t\tw3\tcaller`, accountCall("w3", "pr view 9")].join("\n"),
+    [LEADS_LEDGER]: accountCall("w9"),
+    [REVIEWER_LEDGER]: accountCall("w1", "pr review 5 --approve"),
+  };
+  const workersOnly = parse({ github: { identity: { workers: APP("workers") } } });
+  // POSITIVE CONTROL: the workers' account call is a fallback. The scheduler's, the leads' and the reviewer's are user-accounts roles: their account is their own.
+  assert.deepEqual(authorFallbackTimes({ host: workersOnly, reviewerDir: "/home/h/reviewer/gh", read: ledgerReader(files) }), [AT_MS]);
+  const everyRole = parse({ github: { identity: { workers: APP("workers"), managers: APP("managers"), reviewer: APP("reviewer"), scheduler: APP("scheduler") } } });
+  assert.deepEqual(authorFallbackTimes({ host: everyRole, reviewerDir: "/home/h/reviewer/gh", read: ledgerReader(files) }), [AT_MS, AT_MS, AT_MS, AT_MS], "declare the others and each of their account calls is counted: the workers', the scheduler's, the leads' and the reviewer's");
+});
+
+test("#1666: a ledger nobody wrote is no calls, and a ledger that exists and cannot be read is UNREAD (null), never a zero", () => {
+  const h = parse({ github: { identity: { workers: APP("workers") } } });
+  assert.deepEqual(authorFallbackTimes({ host: h, reviewerDir: "/home/h/reviewer/gh", read: ledgerReader({}) }), [], "no ledger written: no calls");
+  assert.equal(authorFallbackTimes({ host: h, reviewerDir: "/home/h/reviewer/gh", read: ledgerReader({}, { [WORKERS_LEDGER]: "EACCES" }) }), null, "an unreadable ledger makes the reading unread");
 });
