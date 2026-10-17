@@ -32,7 +32,10 @@ export type TicketSettings = Readonly<{
   /** Repository name -> its local checkout, as many as the machine has. */
   clones: Readonly<Record<string, string>>;
   max: number;
+  /** The port this machine's instance (`ticket:serve`) listens on, on 127.0.0.1. */
   port: number;
+  /** The port the board's page (`ticket:ui`) listens on, on 127.0.0.1. */
+  uiPort: number;
   herdrSession: string;
   worktreeRoot: string;
   stateDir: string;
@@ -233,10 +236,14 @@ export function parseTicketSettings(host: unknown, home: string = homedir()): Ti
   const session = tickets.herdrSession ?? "tickets";
   if (typeof session !== "string" || !/^[A-Za-z0-9_-]+$/.test(session)) throw new TicketSettingsRefusal("tickets.herdrSession", "must be a herdr session name");
   const plan = planPattern(tickets.plan);
+  const port = positiveInteger(tickets.port, "tickets.port", 4747);
+  const uiPort = positiveInteger(tickets.uiPort, "tickets.uiPort", 4748);
+  if (uiPort === port) throw new TicketSettingsRefusal("tickets.uiPort", `must differ from tickets.port, which is ${port} too`);
   return Object.freeze({
     clones: Object.freeze(repos),
     max: positiveInteger(tickets.max, "tickets.max", 3),
-    port: positiveInteger(tickets.port, "tickets.port", 4747),
+    port,
+    uiPort,
     herdrSession: session,
     worktreeRoot: tickets.worktreeRoot === undefined ? join(stateDir, "tickets", "worktrees") : absolutePath(tickets.worktreeRoot, "tickets.worktreeRoot"),
     stateDir,

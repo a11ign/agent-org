@@ -17,20 +17,28 @@ export function boardKeyPath(stateDir: string): string {
   return join(stateDir, "tickets", "board.key");
 }
 
+/** What to do about a key file that is missing, and about one that is someone else's or holds no key. */
+export type KeyRemedies = Readonly<{ missing: string; remake: string }>;
+
+const OWN_KEY: KeyRemedies = {
+  missing: "start the instance once with agent-org ticket:serve, which makes it",
+  remake: "delete it, and the instance makes a new one at its next start",
+};
+
 /** The key in `path`. REFUSES a missing file, a file a user other than `owner` owns or can read, and one that is not a key. */
-export function readBoardKey(path: string, owner: number | undefined = process.getuid?.()): string {
+export function readBoardKey(path: string, owner: number | undefined = process.getuid?.(), remedies: KeyRemedies = OWN_KEY): string {
   let fd: number;
   try {
     fd = openSync(path, "r");
   } catch {
-    throw new Error(`${path} does not exist: start the board once with agent-org ticket:serve, which makes it`);
+    throw new Error(`${path} does not exist: ${remedies.missing}`);
   }
   try {
     const { mode, uid } = fstatSync(fd);
-    if (uid !== owner) throw new Error(`${path} belongs to another user: delete it, and the board makes a new one at its next start`);
+    if (uid !== owner) throw new Error(`${path} belongs to another user: ${remedies.remake}`);
     if ((mode & 0o077) !== 0) throw new Error(`${path} can be read by other users (mode ${(mode & 0o777).toString(8)}): run chmod 600 on it`);
     const key = readFileSync(fd, "utf8").trim();
-    if (!KEY_SHAPE.test(key)) throw new Error(`${path} does not hold a board key: delete it, and the board makes a new one at its next start`);
+    if (!KEY_SHAPE.test(key)) throw new Error(`${path} does not hold a board key: ${remedies.remake}`);
     return key;
   } finally {
     closeSync(fd);

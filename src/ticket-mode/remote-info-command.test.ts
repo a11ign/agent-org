@@ -19,5 +19,5 @@ test("ticket:remote-info refuses to print the key to a terminal, and refuses a b
   const settings = settingsWith({});
   boardKey(boardKeyPath(settings.stateDir));
   assert.throws(() => remoteInfo(settings, true), /refuses to print it to a terminal/);
-  assert.throws(() => remoteInfo(settingsWith({}), false), /does not exist: start the board once with agent-org ticket:serve/);
+  assert.throws(() => remoteInfo(settingsWith({}), false), /does not exist: start the instance once with agent-org ticket:serve/);
 });

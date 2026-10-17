@@ -55,8 +55,8 @@ const TICKETS = [
 
 /** Run the page's script against a fake document, with `storage` as its localStorage. Resolves once the first render has happened. */
 type PageOptions = { config?: Record<string, unknown>; entries?: unknown[]; tickets?: unknown[]; parents?: unknown[]; refused?: string[]; publish?: unknown;
-  profiles?: unknown; errors?: Record<string, string>; hold?: Record<string, unknown> };
-async function page(storage: Map<string, string>, { config = {}, entries = [], tickets = TICKETS, parents = [], refused = [], publish, profiles, errors = {}, hold = {} }: PageOptions = {}) {
+  connections?: unknown; errors?: Record<string, string>; hold?: Record<string, unknown> };
+async function page(storage: Map<string, string>, { config = {}, entries = [], tickets = TICKETS, parents = [], refused = [], publish, connections, errors = {}, hold = {} }: PageOptions = {}) {
   const byId = new Map<string, Node_>();
   const posts: { path: string; body: any }[] = [];
   const requested: string[] = [];
@@ -80,16 +80,16 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
       return { ok: true, json: async () => hold[path], statusText: "" };
     }
     if (refused.includes(path)) return { ok: false, json: async () => ({ error: errors[path] ?? `${path} refused` }), statusText: "" };
-    // A remote profile's board answers as this one does, under its prefix.
+    // Each connection's instance answers as one instance does, under its prefix.
     const answers: Record<string, () => unknown> = {
-      ...(profiles === undefined ? {} : { "/api/profiles": () => profiles }),
+      ...(connections === undefined ? {} : { "/api/connections": () => connections }),
       "/api/config": () => ({ models: ["opus"], efforts: ["high"], max: 3, ...config, choice: saved }),
       "/api/tickets": () => tickets,
       "/api/parents": () => parents,
       "/api/choice": () => { saved = { ...saved, ...body }; return { choice: saved }; },
       "/api/max": () => { max = body.max; return { entries, max, paused: true }; },
     };
-    const value = (answers[path] ?? answers[path.replace(/^\/p\/[^/]+(?=\/api\/)/, "")])?.() ?? { entries, max, paused: true, ...(publish ? { publish } : {}) };
+    const value = (answers[path] ?? answers[path.replace(/^\/c\/[^/]+(?=\/api\/)/, "")])?.() ?? { entries, max, paused: true, ...(publish ? { publish } : {}) };
     return { ok: true, json: async () => value, statusText: "" };
   };
   const localStorage = { getItem: (k: string) => storage.get(k) ?? null, setItem: (k: string, v: string) => { storage.set(k, v); } };
@@ -844,59 +844,71 @@ test("a run Ready to merge, Published, or handed back by the board offers Respon
   assert.ok(p.posts.some((x) => x.path === "/api/queue/P-1/respond"));
 });
 
-const WORK_AND_PERSONAL = { profiles: [{ name: "work", local: true }, { name: "personal", local: false }], refusal: null };
+const WORK_AND_PERSONAL = { connections: [{ name: "work", kind: "local" }, { name: "personal", kind: "ssh" }], refusal: null };
+const settleAll = async () => { for (let i = 0; i < 10; i++) await settle(); };
 
-test("with no profiles the header shows no switcher, and every call goes to this board", async () => {
-  const p = await page(new Map());
-  assert.equal(p.$("profile-label").hidden, true);
-  assert.equal(p.requested.some((path) => path.startsWith("/p/")), false);
-  const one = await page(new Map(), { profiles: { profiles: [{ name: "work", local: true }], refusal: null } });
-  assert.equal(one.$("profile-label").hidden, true, "one profile is nothing to switch between");
+test("with one connection the header shows no switcher, and every call goes to that instance", async () => {
+  const one = await page(new Map(), { connections: { connections: [{ name: "local", kind: "local" }], refusal: null } });
+  assert.equal(one.$("connection-label").hidden, true, "one connection is nothing to switch between");
+  assert.deepEqual([...new Set(one.requested)].sort(), ["/api/connections", "/c/local/api/config", "/c/local/api/parents", "/c/local/api/queue", "/c/local/api/tickets"]);
 });
 
-test("the switcher lists the profiles, starts on this machine's, and choosing another reads every view from it and is remembered in this browser", async () => {
+test("the switcher lists the connections, starts on this machine's, and choosing another reads every view from it and is remembered in this browser", async () => {
   const storage = new Map<string, string>();
-  const p = await page(storage, { profiles: WORK_AND_PERSONAL });
-  assert.equal(p.$("profile-label").hidden, false);
-  assert.deepEqual(p.$("profile").children.map((o) => o.textContent), ["work (this machine)", "personal"]);
-  assert.equal(p.$("profile").value, "work");
-  assert.deepEqual([...new Set(p.requested)].sort(), ["/api/config", "/api/parents", "/api/profiles", "/api/queue", "/api/tickets"]);
+  const p = await page(storage, { connections: WORK_AND_PERSONAL });
+  assert.equal(p.$("connection-label").hidden, false);
+  assert.deepEqual(p.$("connection").children.map((o) => o.textContent), ["work (this machine)", "personal"]);
+  assert.equal(p.$("connection").value, "work");
+  assert.deepEqual([...new Set(p.requested)].sort(), ["/api/connections", "/c/work/api/config", "/c/work/api/parents", "/c/work/api/queue", "/c/work/api/tickets"]);
   p.requested.length = 0;
-  p.$("profile").value = "personal";
-  p.$("profile").fire("change");
-  for (let i = 0; i < 10; i++) await settle();
-  assert.deepEqual(JSON.parse(storage.get("ticket-mode.profile")!), ["personal"]);
-  assert.deepEqual([...new Set(p.requested)].sort(), ["/p/personal/api/config", "/p/personal/api/parents", "/p/personal/api/queue", "/p/personal/api/tickets"]);
+  p.$("connection").value = "personal";
+  p.$("connection").fire("change");
+  await settleAll();
+  assert.deepEqual(JSON.parse(storage.get("ticket-mode.connection")!), ["personal"]);
+  assert.deepEqual([...new Set(p.requested)].sort(), ["/c/personal/api/config", "/c/personal/api/parents", "/c/personal/api/queue", "/c/personal/api/tickets"]);
   p.$("toggle-pause").fire("click");
   await settle();
-  assert.equal(p.posts.at(-1)!.path, "/p/personal/api/paused", "an action goes to the board shown");
-  const reloaded = await page(storage, { profiles: WORK_AND_PERSONAL });
-  assert.equal(reloaded.$("profile").value, "personal");
-  assert.ok(reloaded.requested.includes("/p/personal/api/tickets"), "the remembered board is read on the next load");
+  assert.equal(p.posts.at(-1)!.path, "/c/personal/api/paused", "an action goes to the instance shown");
+  const reloaded = await page(storage, { connections: WORK_AND_PERSONAL });
+  assert.equal(reloaded.$("connection").value, "personal");
+  assert.ok(reloaded.requested.includes("/c/personal/api/tickets"), "the remembered connection is read on the next load");
 });
 
-test("a remembered profile the board no longer lists falls back to this machine's", async () => {
-  const p = await page(new Map([["ticket-mode.profile", JSON.stringify(["gone"])]]), { profiles: WORK_AND_PERSONAL });
-  assert.equal(p.$("profile").value, "work");
-  assert.equal(p.requested.some((path) => path.startsWith("/p/")), false);
+test("Publish and a run's terminal link work per connection: each goes to, and links through, the connection shown", async () => {
+  const storage = new Map([["ticket-mode.connection", JSON.stringify(["personal"])]]);
+  const runs = [...PUBLISHABLE, entry("R-1", { phase: "running", startedAt: 5, workspace: "w1", pane: "w1:p1" })];
+  const p = await page(storage, { connections: WORK_AND_PERSONAL, entries: runs, config: { publish: true, terminal: "http://127.0.0.1:50001/?ws={workspace}" } });
+  const link = runRows(p).find((r) => r.text().includes("R-1"))!.all().find((n) => n.className === "terminal") as (Node_ & { href?: string }) | undefined;
+  assert.equal(link?.href, "http://127.0.0.1:50001/?ws=w1", "the terminal address the connection's config gave, which the page's service rewrote for it");
+  tickFor(p, "P-1")!.fire("change");
+  p.$("publish").fire("click");
+  await settle();
+  assert.deepEqual(p.posts.filter((x) => x.path.endsWith("/api/publish")).map((x) => [x.path, x.body]), [["/c/personal/api/publish", { keys: ["P-1"] }]]);
 });
 
-test("a remote that cannot be reached is named in the page, and switching back shows this machine's board", async () => {
-  const storage = new Map([["ticket-mode.profile", JSON.stringify(["personal"])]]);
+test("a remembered connection that is no longer listed falls back to this machine's", async () => {
+  const p = await page(new Map([["ticket-mode.connection", JSON.stringify(["gone"])]]), { connections: WORK_AND_PERSONAL });
+  assert.equal(p.$("connection").value, "work");
+  assert.equal(p.requested.some((path) => path.startsWith("/c/gone/")), false);
+});
+
+test("a connection that cannot be reached is named in the page, and switching to another shows that instance's board", async () => {
+  const storage = new Map([["ticket-mode.connection", JSON.stringify(["personal"])]]);
   const reason = "cannot reach personal over SSH: agents: Permission denied (publickey).";
-  const p = await page(storage, { profiles: WORK_AND_PERSONAL, refused: ["/p/personal/api/config"], errors: { "/p/personal/api/config": reason } });
+  const p = await page(storage, { connections: WORK_AND_PERSONAL, refused: ["/c/personal/api/config"], errors: { "/c/personal/api/config": reason } });
   assert.equal(p.$("error").textContent, reason);
-  p.$("profile").value = "work";
-  p.$("profile").fire("change");
-  for (let i = 0; i < 10; i++) await settle();
+  p.$("connection").value = "work";
+  p.$("connection").fire("change");
+  await settleAll();
   assert.equal(p.$("error").textContent, "");
   assert.deepEqual(p.shownKeys(), ["T-1", "T-2", "T-3", "T-4"]);
 });
 
-test("a profiles file the board refused is named above the board, which still shows", async () => {
-  const p = await page(new Map(), { profiles: { profiles: [], refusal: "profiles.json is refused, so only this board is shown: it is not valid JSON" } });
-  assert.equal(p.$("profiles-note").hidden, false);
-  assert.equal(p.$("profiles-note").textContent, "profiles.json is refused, so only this board is shown: it is not valid JSON");
+test("a connections file the service refused is named above the board, which still shows this machine's instance", async () => {
+  const refusal = "connections.json is refused, so only this machine's instance is shown: it is not valid JSON";
+  const p = await page(new Map(), { connections: { connections: [{ name: "local", kind: "local" }], refusal } });
+  assert.equal(p.$("connections-note").hidden, false);
+  assert.equal(p.$("connections-note").textContent, refusal);
   assert.deepEqual(p.shownKeys(), ["T-1", "T-2", "T-3", "T-4"]);
 });
 
@@ -908,11 +920,11 @@ test("a run's links that are not http addresses, as a remote board could send, a
   assert.deepEqual(anchors.map((a) => a.href), anchors.map(() => ""));
 });
 
-test("an answer from the board shown before a switch is dropped, so it never lands on the board chosen after it", async () => {
-  const storage = new Map([["ticket-mode.profile", JSON.stringify(["personal"])]]);
-  const p = await page(storage, { profiles: WORK_AND_PERSONAL, hold: { "/p/personal/api/tickets": [ticketIn("P-9")] } });
-  p.$("profile").value = "work";
-  p.$("profile").fire("change");
+test("an answer from the instance shown before a switch is dropped, so it never lands on the one chosen after it", async () => {
+  const storage = new Map([["ticket-mode.connection", JSON.stringify(["personal"])]]);
+  const p = await page(storage, { connections: WORK_AND_PERSONAL, hold: { "/c/personal/api/tickets": [ticketIn("P-9")] } });
+  p.$("connection").value = "work";
+  p.$("connection").fire("change");
   for (let i = 0; i < 10; i++) await settle();
   assert.deepEqual(p.shownKeys(), ["T-1", "T-2", "T-3", "T-4"]);
   p.release();

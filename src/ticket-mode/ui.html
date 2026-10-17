@@ -13,7 +13,7 @@
   body { margin: 0; font: 14px/1.45 system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); }
   header { display: flex; gap: 16px; align-items: center; height: var(--header); padding: 0 20px; border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 2; }
   header h1 { font-size: 16px; margin: 0 12px 0 0; }
-  header .profile { display: flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted); }
+  header .connection { display: flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted); }
   .tab { background: none; border: 0; padding: 6px 10px; border-radius: 6px; color: var(--muted); cursor: pointer; font: inherit; }
   .tab[aria-selected="true"] { background: var(--bg); color: var(--text); font-weight: 600; }
   main { padding: 16px 20px 120px; }
@@ -112,7 +112,7 @@
 <body>
 <header>
   <h1>Ticket queue</h1>
-  <label class="profile" id="profile-label" hidden>Board <select id="profile" aria-label="Which machine's board to show"></select></label>
+  <label class="connection" id="connection-label" hidden>Instance <select id="connection" aria-label="Which instance to show"></select></label>
   <button class="tab" data-tab="pick" aria-selected="true">Pick</button>
   <button class="tab" data-tab="board" aria-selected="false">Board</button>
   <button class="settings-open" id="open-settings" type="button" aria-haspopup="dialog">
@@ -147,7 +147,7 @@
 </dialog>
 <main>
   <div id="error" class="error" role="alert"></div>
-  <div id="profiles-note" class="notice" hidden></div>
+  <div id="connections-note" class="notice" hidden></div>
   <section id="pick">
     <div class="bar">
       <input id="filter" type="search" placeholder="Filter by key, title or project">
@@ -189,7 +189,7 @@
 // The decisions (what shows, how it groups, what can be selected, what status a run has and what it offers) are board-view.ts's, tested there.
 // This page only draws what they return and wires the clicks.
 import {
-  APPROVE_TITLE, RESPOND_TITLE, PRIORITY_NAMES, RUN_STATUSES, publishable, publishLabel, publishNote, publishTerminalLink, pullsOf, flatten, groupByStatus, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, queueLabel, recall, remember, runActions, shownStatus, apiBase, chosenProfile, profileLabel, safeHref, runStatus,
+  APPROVE_TITLE, RESPOND_TITLE, PRIORITY_NAMES, RUN_STATUSES, publishable, publishLabel, publishNote, publishTerminalLink, pullsOf, flatten, groupByStatus, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, queueLabel, recall, remember, runActions, shownStatus, apiBase, chosenConnection, connectionLabel, safeHref, runStatus,
   runChoiceLabel, runsShown, unplannedCount, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, waitsOn, workersLabel,
 } from "/board-view.js";
 
@@ -215,20 +215,20 @@ const state = {
   // Parents start folded too, so an epic reads as one row until it is opened.
   openParents: recall(storage, "ticket-mode.open-parents"),
   runFilter: [...recall(storage, "ticket-mode.run-filter")][0] ?? null,
-  // The boards the profiles file lists, and the one shown. With no profiles file there are none, and the page shows this board only.
-  profiles: [], profile: null,
+  // The instances the connections file lists, and the one shown. With no connections file there is one, this machine's.
+  connections: [], connection: null,
 };
 const setOpen = (next) => { state.open = next; remember(storage, "ticket-mode.open", next); renderPick(); };
 const setOpenParents = (next) => { state.openParents = next; remember(storage, "ticket-mode.open-parents", next); renderPick(); };
 const everyOpen = (statuses) => statuses.length > 0 && statuses.every((status) => state.open.has(status));
 
-// What a call answers once another board has been chosen: it is dropped, so one board's answer never lands on another's view.
-const STALE = new Error("another board was chosen");
+// What a call answers once another instance has been chosen: it is dropped, so one instance's answer never lands on another's view.
+const STALE = new Error("another instance was chosen");
 async function call(method, path, body) {
-  const chosen = state.profile;
+  const chosen = state.connection;
   const response = await fetch(`${apiBase(chosen)}${path}`, { method, headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
   const value = await response.json();
-  if (state.profile !== chosen) throw STALE;
+  if (state.connection !== chosen) throw STALE;
   if (!response.ok) throw new Error(value.error || response.statusText);
   return value;
 }
@@ -618,16 +618,17 @@ $("model").addEventListener("change", () => saveChoice("model"));
 $("effort").addEventListener("change", () => saveChoice("effort"));
 $("max").addEventListener("change", saveMax);
 
-// The switcher shows only when there is another board to switch to. A profiles file the board refused is named, and this board still shows.
-function renderProfiles(refusal) {
-  $("profile").replaceChildren(...state.profiles.map((p) => el("option", { value: p.name, textContent: profileLabel(p) })));
-  $("profile").value = state.profile ? state.profile.name : "";
-  $("profile-label").hidden = state.profiles.length < 2;
-  $("profiles-note").textContent = refusal || "";
-  $("profiles-note").hidden = !refusal;
+// The switcher shows only when there is another instance to switch to. A connections file the service refused is named, and this machine's
+// instance still shows.
+function renderConnections(refusal) {
+  $("connection").replaceChildren(...state.connections.map((c) => el("option", { value: c.name, textContent: connectionLabel(c) })));
+  $("connection").value = state.connection ? state.connection.name : "";
+  $("connection-label").hidden = state.connections.length < 2;
+  $("connections-note").textContent = refusal || "";
+  $("connections-note").hidden = !refusal;
 }
 
-// The shown board's view, read afresh. Nothing chosen on one board carries over to another.
+// The shown instance's view, read afresh. Nothing chosen on one instance carries over to another.
 async function load() {
   state.selected = new Set();
   state.toPublish = new Set();
@@ -641,17 +642,17 @@ async function load() {
   renderPick();
 }
 
-$("profile").addEventListener("change", () => {
-  state.profile = state.profiles.find((p) => p.name === $("profile").value) ?? state.profile;
-  remember(storage, "ticket-mode.profile", new Set(state.profile ? [state.profile.name] : []));
+$("connection").addEventListener("change", () => {
+  state.connection = state.connections.find((c) => c.name === $("connection").value) ?? state.connection;
+  remember(storage, "ticket-mode.connection", new Set(state.connection ? [state.connection.name] : []));
   load().catch(report);
 });
 
 try {
-  const listed = await call("GET", "/api/profiles").catch(() => null);
-  state.profiles = Array.isArray(listed?.profiles) ? listed.profiles : [];
-  state.profile = chosenProfile(state.profiles, [...recall(storage, "ticket-mode.profile")][0] ?? null);
-  renderProfiles(listed?.refusal);
+  const listed = await call("GET", "/api/connections").catch(() => null);
+  state.connections = Array.isArray(listed?.connections) ? listed.connections : [];
+  state.connection = chosenConnection(state.connections, [...recall(storage, "ticket-mode.connection")][0] ?? null);
+  renderConnections(listed?.refusal);
   await load();
 } catch (err) { report(err); }
 setInterval(() => call("GET", "/api/queue").then((q) => { state.queue = q; renderBoard(); renderPick(); }, report), 5000);

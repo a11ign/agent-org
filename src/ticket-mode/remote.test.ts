@@ -3,11 +3,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, statSync } from "node:fs";
 import { dirname } from "node:path";
-import type { RemoteProfile } from "./profiles.ts";
+import type { SshConnection } from "./connections.ts";
 import { createRemotes, localTerminal, parseRemoteInfo, processRunner, redact, terminalPort, tunnelArgv, Unreachable, type Exit, type Runner } from "./remote.ts";
 
 const KEY = "b".repeat(48);
-const PERSONAL: RemoteProfile = { name: "personal", local: false, ssh: "agents", agentOrg: "agent-org" };
+const PERSONAL: SshConnection = { name: "personal", kind: "ssh", ssh: "agents", agentOrg: "agent-org" };
 const TERMINAL = "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal";
 const INFO = JSON.stringify({ port: 4747, key: KEY, terminal: TERMINAL });
 const SSH = ["-T", "-a", "-x", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ControlMaster=no", "-o", "ControlPath=none"];
@@ -101,7 +101,7 @@ test("a tunnel that drops is marked down with why, the reason is shown until it 
   assert.deepEqual(r.removed, ["/private/s1/board.sock"], "the socket's directory is removed with its tunnel");
   await assert.rejects(r.remotes.reach("personal"), (err: Error) => err instanceof Unreachable && err.message === "the tunnel dropped: Connection to agents closed by remote host.");
   assert.deepEqual(r.timers.map((t) => t.ms), [2000]);
-  assert.match(r.logs.at(-1)!, /^ticket:serve: cannot reach personal over SSH: the tunnel dropped: .*Trying again, up to once a minute$/);
+  assert.match(r.logs.at(-1)!, /^ticket:ui: cannot reach personal over SSH: the tunnel dropped: .*Trying again, up to once a minute$/);
   r.timers[0].fn();
   await settle();
   const again = await r.remotes.reach("personal");
@@ -173,7 +173,7 @@ test("close stops every tunnel, one still opening too, cancels every retry, and 
   assert.equal(r.tunnels[0].stopped, true);
   await settle();
   assert.equal(r.timers.length, 0, "a tunnel stopped by close is not opened again");
-  await assert.rejects(r.remotes.reach("personal"), /the board is closing/);
+  await assert.rejects(r.remotes.reach("personal"), /the service is closing/);
   const opening = remotes({ up: false });
   const reaching = opening.remotes.reach("personal").catch((err: Error) => err);
   await settle();

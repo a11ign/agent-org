@@ -31,7 +31,7 @@ test("a key file another user owns is refused, since that user knows the key", (
 
 test("reading the key before any board has made one says how to make it, and a file that holds no key is refused", () => {
   const dir = tmpDir("board-key-none-");
-  assert.throws(() => readBoardKey(boardKeyPath(dir)), /does not exist: start the board once with agent-org ticket:serve/);
+  assert.throws(() => readBoardKey(boardKeyPath(dir)), /does not exist: start the instance once with agent-org ticket:serve/);
   const junk = join(dir, "junk.key");
   writeFileSync(junk, "not a key\n", { mode: 0o600 });
   assert.throws(() => readBoardKey(junk), /does not hold a board key/);

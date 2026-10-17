@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // @ts-check
-// command: ticket:remote-info -- print this board's port, key and terminal address as JSON, for another machine's board that runs it over ssh
+// command: ticket:remote-info -- print this instance's port, key and terminal address as JSON, for another machine's `ticket:ui` that runs it over ssh
 //
-// THE KEY GOES ONLY TO A PIPE. Another machine's board runs `ssh <this machine> agent-org ticket:remote-info` and reads the JSON from stdout, so
-// the key travels inside the SSH connection and lands in that board's memory. A person who runs this in a terminal would put the key on their
+// THE KEY GOES ONLY TO A PIPE. Another machine's `ticket:ui` runs `ssh <this machine> agent-org ticket:remote-info` and reads the JSON from stdout,
+// so the key travels inside the SSH connection and lands in that service's memory. A person who runs this in a terminal would put the key on their
 // screen, so it refuses when stdout is a terminal.
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";

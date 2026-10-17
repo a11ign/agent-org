@@ -6,7 +6,7 @@ import {
   remember, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, selectable, shownStatus,
   statusCounts, terminalLink, toggled, waitsOn, repoOfPull, stackedOn, stackNote, PRIORITY_NAMES, hasPlan, isBeingPublished, isWatched, publishable,
   publishLabel, publishNote, publishTerminalLink, missingPlan, planChoiceOf, planCounts, priorityCounts, prioritiesOf, runChoiceLabel,
-  unplannedCount, visibleTickets, workItems, apiBase, chosenProfile, profileLabel, safeHref,
+  unplannedCount, visibleTickets, workItems, apiBase, chosenConnection, connectionLabel, safeHref,
   type ViewEntry, type ViewPublish, type ViewTicket,
 } from "./board-view.ts";
 
@@ -547,17 +547,18 @@ test("the board watches a run Ready to merge or Published with a pull request op
   assert.equal(isWatched(shipped({ outcome: { kind: "reviewed", prs: [] } })), false, "a run with no pull request has nothing to watch");
 });
 
-test("the profile shown is the one remembered while it is listed, this machine's otherwise, and its calls go under its prefix unless it is local", () => {
-  const profiles = [{ name: "work", local: true }, { name: "personal", local: false }];
-  assert.deepEqual(chosenProfile(profiles, "personal"), { name: "personal", local: false });
-  assert.deepEqual(chosenProfile(profiles, "gone"), { name: "work", local: true });
-  assert.deepEqual(chosenProfile(profiles, null), { name: "work", local: true });
-  assert.equal(chosenProfile([], "personal"), null);
+test("the connection shown is the one remembered while it is listed, this machine's otherwise, then the first, and every call goes under its prefix", () => {
+  const connections = [{ name: "lab", kind: "https" as const }, { name: "work", kind: "local" as const }, { name: "personal", kind: "ssh" as const }];
+  assert.deepEqual(chosenConnection(connections, "personal"), { name: "personal", kind: "ssh" });
+  assert.deepEqual(chosenConnection(connections, "gone"), { name: "work", kind: "local" });
+  assert.deepEqual(chosenConnection(connections, null), { name: "work", kind: "local" });
+  assert.deepEqual(chosenConnection(connections.filter((c) => c.kind !== "local"), null), { name: "lab", kind: "https" }, "a machine with no instance of its own shows the first");
+  assert.equal(chosenConnection([], null), null);
   assert.equal(apiBase(null), "");
-  assert.equal(apiBase({ name: "work", local: true }), "");
-  assert.equal(apiBase({ name: "personal", local: false }), "/p/personal");
-  assert.equal(profileLabel({ name: "work", local: true }), "work (this machine)");
-  assert.equal(profileLabel({ name: "personal", local: false }), "personal");
+  assert.equal(apiBase({ name: "work", kind: "local" }), "/c/work");
+  assert.equal(apiBase({ name: "personal", kind: "ssh" }), "/c/personal");
+  assert.equal(connectionLabel({ name: "work", kind: "local" }), "work (this machine)");
+  assert.equal(connectionLabel({ name: "lab", kind: "https" }), "lab");
 });
 
 test("a link is kept only when it is an http or https address, so one a remote board sends can never run script in the page", () => {
