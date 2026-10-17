@@ -833,3 +833,11 @@ test("a profiles file the board refused is named above the board, which still sh
   assert.equal(p.$("profiles-note").textContent, "profiles.json is refused, so only this board is shown: it is not valid JSON");
   assert.deepEqual(p.shownKeys(), ["T-1", "T-2", "T-3", "T-4"]);
 });
+
+test("a run's links that are not http addresses, as a remote board could send, are drawn with no address", async () => {
+  const entries = [{ ticket: { key: "R-1", title: "one", url: "javascript:alert(1)" }, status: "running", repos: [], model: "opus", effort: "high", queuedAt: 1, workspace: "w1", pane: "w1:p1" }];
+  const p = await page(new Map(), { entries, config: { terminal: "javascript:alert(2)//{workspace}" } });
+  const anchors = p.$("runs").all().filter((n) => n.tag === "a") as (Node_ & { href?: string })[];
+  assert.ok(anchors.length >= 2, "the ticket and its terminal are drawn");
+  assert.deepEqual(anchors.map((a) => a.href), anchors.map(() => ""));
+});

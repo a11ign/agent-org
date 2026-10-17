@@ -8,7 +8,8 @@ import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { parseTicketSettings } from "./settings.ts";
 import { boardViewScript, createBoard, pairedBy, refusal, type BoardDeps } from "./server.ts";
-import { createRemotes, type Forward, type Runner } from "./remote.ts";
+import { createRemotes, type Runner } from "./remote.ts";
+import type { Forward } from "./remote-proxy.ts";
 import type { Ticket, TicketSource } from "./source.ts";
 
 const ticket = (key: string, title = key) => ({ key, title, description: "", url: "", branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
@@ -381,6 +382,7 @@ function remoteDeps() {
     run: async (argv) => { ran.push(argv); return { code: 0, stdout: JSON.stringify({ port: 4747, key: REMOTE_KEY, terminal: null }), stderr: "" }; },
     start: (argv) => { ran.push(argv); return { exited: new Promise(() => {}), stop: () => {} }; },
     freePort: async () => 50001,
+    privateSocket: () => ({ path: "/private/board.sock", remove: () => {} }),
     listening: async () => true,
   };
   const forwarded: { path: string; method: string; body: string | null; key: string }[] = [];

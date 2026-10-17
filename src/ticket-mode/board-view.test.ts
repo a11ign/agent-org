@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  apiBase, chosenProfile, profileLabel,
+  apiBase, chosenProfile, profileLabel, safeHref,
   HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, isParked, parentKeys, parentTick, ticketCount, projectCounts, queueLabel, recall, remember, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, selectable, statusCounts, terminalLink, toggled, waitsOn, repoOfPull, stackedOn, stackNote,
   PRIORITY_NAMES, hasPlan, isWatched, publishable, publishLabel, publishNote, missingPlan, planChoiceOf, planCounts, priorityCounts, prioritiesOf, runChoiceLabel, unplannedCount, visibleTickets, workItems,
   type ViewEntry, type ViewTicket,
@@ -490,4 +490,10 @@ test("the profile shown is the one remembered while it is listed, this machine's
   assert.equal(apiBase({ name: "personal", local: false }), "/p/personal");
   assert.equal(profileLabel({ name: "work", local: true }), "work (this machine)");
   assert.equal(profileLabel({ name: "personal", local: false }), "personal");
+});
+
+test("a link is kept only when it is an http or https address, so one a remote board sends can never run script in the page", () => {
+  assert.equal(safeHref("https://linear.app/x/issue/NBF-1"), "https://linear.app/x/issue/NBF-1");
+  assert.equal(safeHref("HTTP://127.0.0.1:7318/"), "HTTP://127.0.0.1:7318/");
+  for (const bad of ["javascript:alert(1)", " javascript:alert(1)", "data:text/html,x", "//evil.example", null, undefined, 7]) assert.equal(safeHref(bad), "", String(bad));
 });

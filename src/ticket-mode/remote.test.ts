@@ -1,22 +1,26 @@
-// no-token: gh -- ssh is a fake runner that records argv and plays the tunnel; the one "remote board" is a server on 127.0.0.1 for a test's length
+// no-token: gh -- ssh is a fake runner that records argv and plays the tunnel up, down or failing; nothing is run
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createServer, type IncomingHttpHeaders } from "node:http";
+import { existsSync, statSync } from "node:fs";
+import { dirname } from "node:path";
 import type { RemoteProfile } from "./profiles.ts";
-import { createRemotes, forwardHeaders, httpForward, localTerminal, parseRemoteInfo, proxy, redact, terminalPort, tunnelArgv, Unreachable, type Exit, type Forward, type Link, type Runner } from "./remote.ts";
+import { createRemotes, localTerminal, parseRemoteInfo, processRunner, redact, terminalPort, tunnelArgv, Unreachable, type Exit, type Runner } from "./remote.ts";
 
 const KEY = "b".repeat(48);
 const PERSONAL: RemoteProfile = { name: "personal", local: false, ssh: "agents", agentOrg: "agent-org" };
 const TERMINAL = "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal";
 const INFO = JSON.stringify({ port: 4747, key: KEY, terminal: TERMINAL });
+const SSH = ["-T", "-a", "-x", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ControlMaster=no", "-o", "ControlPath=none"];
 
 type Tunnel = { argv: readonly string[]; stopped: boolean; drop(exit: Exit): void };
 
 /** A runner that runs nothing: it records every argv, answers the info read with `info`, and hands each tunnel to the test to drop. */
-function fakeRunner({ info = { code: 0, stdout: INFO, stderr: "" } as Exit & { stdout: string }, up = true, ports = [50001, 50002, 50003, 50004, 50005, 50006] } = {}) {
+function fakeRunner({ info = { code: 0, stdout: INFO, stderr: "" } as Exit & { stdout: string }, up = true as boolean | (() => boolean) } = {}) {
   const runs: (readonly string[])[] = [];
   const tunnels: Tunnel[] = [];
-  const free = [...ports];
+  const removed: string[] = [];
+  let ports = 50001;
+  let sockets = 0;
   const runner: Runner = {
     run: async (argv) => { runs.push(argv); return info; },
     start(argv) {
@@ -26,10 +30,11 @@ function fakeRunner({ info = { code: 0, stdout: INFO, stderr: "" } as Exit & { s
       tunnels.push(tunnel);
       return { exited, stop: () => { tunnel.stopped = true; drop({ code: null, stderr: "" }); } };
     },
-    freePort: async () => free.shift()!,
-    listening: async () => up,
+    freePort: async () => ports++,
+    privateSocket: () => { const path = `/private/s${++sockets}/board.sock`; return { path, remove: () => { removed.push(path); } }; },
+    listening: async () => (typeof up === "function" ? up() : up),
   };
-  return { runner, runs, tunnels };
+  return { runner, runs, tunnels, removed };
 }
 
 /** Timers the test fires by hand: what is scheduled, after how long, and whether it was cancelled. */
@@ -43,7 +48,7 @@ function fakeTimers() {
   return { timers, schedule };
 }
 
-const settle = () => new Promise((resolve) => setImmediate(resolve));
+const settle = async () => { for (let i = 0; i < 3; i++) await new Promise((resolve) => setImmediate(resolve)); };
 
 function remotes(options: Parameters<typeof fakeRunner>[0] = {}, upMs?: number) {
   const fake = fakeRunner(options);
@@ -53,14 +58,14 @@ function remotes(options: Parameters<typeof fakeRunner>[0] = {}, upMs?: number) 
   return { ...fake, ...clock, logs, remotes: made };
 }
 
-test("a remote is reached by reading its port, key and terminal over ssh once, then forwarding a free local port to each, with BatchMode and no TTY", async () => {
+test("a remote is reached by reading its port, key and terminal over ssh once, then forwarding a private socket to the board and a port to its terminal", async () => {
   const r = remotes();
   const link = await r.remotes.reach("personal");
-  assert.deepEqual(link, { port: 4747, key: KEY, terminal: TERMINAL, local: 50001, terminalLocal: 50002 });
-  assert.deepEqual(r.runs, [["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--", "agents", "agent-org ticket:remote-info"]]);
+  assert.deepEqual(link, { port: 4747, key: KEY, terminal: TERMINAL, socket: "/private/s1/board.sock", terminalLocal: 50001 });
+  assert.deepEqual(r.runs, [["ssh", ...SSH, "-o", "ClearAllForwardings=yes", "--", "agents", "agent-org ticket:remote-info"]]);
   assert.deepEqual(r.tunnels.map((t) => t.argv), [[
-    "ssh", "-N", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
-    "-L", "127.0.0.1:50001:127.0.0.1:4747", "-L", "127.0.0.1:50002:127.0.0.1:7318", "--", "agents",
+    "ssh", "-N", ...SSH, "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "StreamLocalBindMask=0177",
+    "-L", "/private/s1/board.sock:127.0.0.1:4747", "-L", "127.0.0.1:50001:127.0.0.1:7318", "--", "agents",
   ]]);
   assert.equal(await r.remotes.reach("personal"), link, "an open tunnel is reused");
   assert.equal(r.runs.length + r.tunnels.length, 2, "and nothing more is run");
@@ -68,20 +73,23 @@ test("a remote is reached by reading its port, key and terminal over ssh once, t
   assert.equal(everything.includes(KEY), false, "the key is never on a command line or in a log");
 });
 
-test("a remote that serves no terminal, or one off its loopback, gets one forward only", () => {
-  assert.deepEqual(tunnelArgv(PERSONAL, 50001, 4747, null).filter((part) => part.startsWith("127.0.0.1:")), ["127.0.0.1:50001:127.0.0.1:4747"]);
+test("a remote that serves no terminal, or one off its loopback, gets the board's forward only", () => {
+  assert.deepEqual(tunnelArgv(PERSONAL, "/s/board.sock", 4747, null).filter((_, i, all) => all[i - 1] === "-L"), ["/s/board.sock:127.0.0.1:4747"]);
   assert.equal(terminalPort(null), null);
   assert.equal(terminalPort("http://desk.lan:7318/"), null);
 });
 
-test("a remote's terminal address is moved to the local forwarded port, and only when it is on the remote's own loopback", () => {
+test("a remote's terminal address is moved to the local forwarded port only on the remote's own loopback, and one that is not http is dropped", () => {
   assert.equal(terminalPort(TERMINAL), 7318);
   assert.equal(terminalPort("http://localhost/x"), 80);
   assert.equal(terminalPort("https://127.0.0.1?x"), 443);
+  assert.equal(terminalPort("http://127.0.0.1:99999/"), null, "a port ssh would refuse takes no forward");
   assert.equal(terminalPort("http://127.0.0.1.evil.example:7318/"), null, "a host that only starts with the loopback address is not it");
   assert.equal(localTerminal(TERMINAL, 50002), "http://127.0.0.1:50002/?ws={workspace}&pane={pane}&view=terminal");
   assert.equal(localTerminal("http://localhost:7318/{key}", 50002), "http://127.0.0.1:50002/{key}");
   assert.equal(localTerminal("http://desk.lan:7318/", 50002), "http://desk.lan:7318/");
+  assert.equal(localTerminal(TERMINAL, null), null, "a loopback terminal with no tunnel has no link");
+  assert.equal(localTerminal("javascript:alert(1)//127.0.0.1", 50002), null);
   assert.equal(localTerminal(null, 50002), null);
 });
 
@@ -90,30 +98,30 @@ test("a tunnel that drops is marked down with why, the reason is shown until it 
   await r.remotes.reach("personal");
   r.tunnels[0].drop({ code: 255, stderr: "Connection to agents closed by remote host.\n" });
   await settle();
+  assert.deepEqual(r.removed, ["/private/s1/board.sock"], "the socket's directory is removed with its tunnel");
   await assert.rejects(r.remotes.reach("personal"), (err: Error) => err instanceof Unreachable && err.message === "the tunnel dropped: Connection to agents closed by remote host.");
   assert.deepEqual(r.timers.map((t) => t.ms), [2000]);
-  assert.match(r.logs.at(-1)!, /^ticket:serve: cannot reach personal over SSH: the tunnel dropped: .*Trying again in 2 s$/);
+  assert.match(r.logs.at(-1)!, /^ticket:serve: cannot reach personal over SSH: the tunnel dropped: .*Trying again, up to once a minute$/);
   r.timers[0].fn();
   await settle();
-  await settle();
   const again = await r.remotes.reach("personal");
-  assert.equal(again.local, 50003, "a new tunnel on a new port");
+  assert.equal(again.socket, "/private/s2/board.sock", "a new tunnel on a new socket");
   assert.equal(r.runs.length, 2, "the key is read again for the new tunnel");
   r.tunnels[1].drop({ code: 255, stderr: "" });
   await settle();
   assert.deepEqual(r.timers.map((t) => t.ms), [2000, 2000], "an opened tunnel starts the wait over");
 });
 
-test("a remote that keeps failing is tried again later each time, up to a minute", async () => {
+test("a remote that keeps failing is tried again later each time, up to a minute, and logged once per run of failures", async () => {
   const r = remotes({ info: { code: 255, stdout: "", stderr: "ssh: Could not resolve hostname agents: nodename nor servname provided\n" } });
   await assert.rejects(r.remotes.reach("personal"), /Could not resolve hostname agents/);
   for (let i = 0; i < 7; i++) {
     r.timers.at(-1)!.fn();
     await settle();
-    await settle();
   }
   assert.deepEqual(r.timers.map((t) => t.ms), [2000, 4000, 8000, 16000, 32000, 60000, 60000, 60000]);
   assert.equal(r.tunnels.length, 0, "no tunnel is started for a remote whose key cannot be read");
+  assert.equal(r.logs.length, 1);
 });
 
 test("why a remote cannot be read is said in words a person can act on, and never quotes what holds the key", async () => {
@@ -134,6 +142,12 @@ test("why a remote cannot be read is said in words a person can act on, and neve
   }
 });
 
+test("the info is read from the last line, past a login message, and a terminal that is not an http address is dropped", () => {
+  assert.deepEqual(parseRemoteInfo(`Welcome to agents\n\n${JSON.stringify({ port: 4848, key: KEY, terminal: null })}\n`), { port: 4848, key: KEY, terminal: null });
+  assert.equal(parseRemoteInfo(JSON.stringify({ port: 4848, key: KEY, terminal: "javascript:alert(1)" })).terminal, null);
+  assert.equal(parseRemoteInfo(JSON.stringify({ port: 4848, key: KEY, terminal: 7 })).terminal, null);
+});
+
 test("a tunnel that ends before it opens, or never opens, is a reason, and one that never opens is stopped", async () => {
   const early = remotes({ up: false });
   const reaching = early.remotes.reach("personal");
@@ -145,7 +159,14 @@ test("a tunnel that ends before it opens, or never opens, is a reason, and one t
   assert.equal(never.tunnels[0].stopped, true);
 });
 
-test("close stops every tunnel and cancels every retry, and nothing is opened after it", async () => {
+test("a listener that answers just as the tunnel ends is not taken as the tunnel", async () => {
+  let tunnelOf: (() => Tunnel) | null = null;
+  const r = remotes({ up: () => { tunnelOf!().drop({ code: 255, stderr: "lost\n" }); return true; } });
+  tunnelOf = () => r.tunnels[0];
+  await assert.rejects(r.remotes.reach("personal"), /lost/);
+});
+
+test("close stops every tunnel, one still opening too, cancels every retry, and nothing is opened after it", async () => {
   const r = remotes();
   await r.remotes.reach("personal");
   r.remotes.close();
@@ -153,6 +174,12 @@ test("close stops every tunnel and cancels every retry, and nothing is opened af
   await settle();
   assert.equal(r.timers.length, 0, "a tunnel stopped by close is not opened again");
   await assert.rejects(r.remotes.reach("personal"), /the board is closing/);
+  const opening = remotes({ up: false });
+  const reaching = opening.remotes.reach("personal").catch((err: Error) => err);
+  await settle();
+  opening.remotes.close();
+  assert.equal(opening.tunnels[0].stopped, true, "a tunnel still opening is stopped");
+  assert.match(String(await reaching), /ssh exited null|closing/);
   const down = remotes({ info: { code: 255, stdout: "", stderr: "x" } });
   await down.remotes.reach("personal").catch(() => {});
   down.remotes.close();
@@ -166,61 +193,10 @@ test("redact keeps the last line, cuts anything shaped like a key or a token, an
   assert.equal(redact("y ".repeat(400)).length, 300);
 });
 
-test("the remote board is sent its own host, the key and the JSON body, and never the browser's cookie or origin", async () => {
-  const seen: { method?: string; url?: string; headers: IncomingHttpHeaders; body: string }[] = [];
-  const server = createServer((req, res) => {
-    let body = "";
-    req.on("data", (chunk) => { body += chunk; });
-    req.on("end", () => {
-      seen.push({ method: req.method, url: req.url, headers: req.headers, body });
-      res.writeHead(200, { "Content-Type": "application/json", "Set-Cookie": "ticket_session=remote" });
-      res.end(JSON.stringify(req.url === "/api/config" ? { terminal: TERMINAL, max: 2 } : { entries: [], max: 2, paused: false }));
-    });
-  });
-  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
-  const local = (server.address() as { port: number }).port;
-  try {
-    const link: Link = { port: 4747, key: KEY, terminal: TERMINAL, local, terminalLocal: 50002 };
-    const fixed = { has: () => true, reach: async () => link, forget: () => {}, close: () => {} } as unknown as ReturnType<typeof createRemotes>;
-    const posted = await proxy(fixed, "personal", { method: "POST", path: "/api/paused", body: JSON.stringify({ paused: false }) });
-    assert.deepEqual(posted, [200, { entries: [], max: 2, paused: false }]);
-    assert.equal(seen[0].headers.host, "127.0.0.1:4747", "the remote's DNS-rebinding guard sees its own host");
-    assert.equal(seen[0].headers["x-ticket-token"], KEY);
-    assert.equal(seen[0].headers.cookie, undefined);
-    assert.equal(seen[0].headers.origin, undefined);
-    assert.equal(seen[0].body, "{\"paused\":false}");
-    assert.equal(seen[0].method, "POST");
-    const [, config] = await proxy(fixed, "personal", { method: "GET", path: "/api/config", body: null });
-    assert.deepEqual(config, { terminal: "http://127.0.0.1:50002/?ws={workspace}&pane={pane}&view=terminal", max: 2 }, "Open terminal goes through the tunnel too");
-    assert.equal(JSON.stringify([posted, config]).includes(KEY), false, "the key is in no answer");
-  } finally {
-    await new Promise<void>((done) => server.close(() => done()));
-  }
-  assert.deepEqual(Object.keys(forwardHeaders({ port: 1, key: KEY }, null)).sort(), ["accept", "host", "x-ticket-token"], "nothing else is sent");
-});
-
-test("an unreachable remote, a board that does not answer, a refused key and a pairing code are each answered in words, and the key is read again after a refusal", async () => {
-  const reached: Link = { port: 4747, key: KEY, terminal: null, local: 1, terminalLocal: null };
-  let forgot = 0;
-  const failing = { has: () => true, reach: async () => { throw new Unreachable("agents: Permission denied (publickey)."); }, forget: () => {}, close: () => {} } as unknown as ReturnType<typeof createRemotes>;
-  assert.deepEqual(await proxy(failing, "personal", { method: "GET", path: "/api/queue", body: null }), [502, { error: "cannot reach personal over SSH: agents: Permission denied (publickey)." }]);
-  const up = { has: () => true, reach: async () => reached, forget: () => { forgot += 1; }, close: () => {} } as unknown as ReturnType<typeof createRemotes>;
-  const silent: Forward = async () => { throw new Error("socket hang up"); };
-  assert.deepEqual(await proxy(up, "personal", { method: "GET", path: "/api/queue", body: null }, silent),
-    [502, { error: "cannot reach personal's board through SSH: socket hang up. Is agent-org ticket:serve running there?" }]);
-  const refused: Forward = async () => ({ status: 401, body: "{\"error\":\"this browser is not paired\"}" });
-  const [status, value] = await proxy(up, "personal", { method: "GET", path: "/api/queue", body: null }, refused);
-  assert.equal(status, 502);
-  assert.match((value as { error: string }).error, /^cannot reach personal over SSH: its board refused the key/);
-  assert.equal(forgot, 1);
-  let sent = 0;
-  const counting: Forward = async () => { sent += 1; return { status: 200, body: "{}" }; };
-  assert.deepEqual(await proxy(up, "personal", { method: "POST", path: "/api/pair-code", body: null }, counting), [403, { error: "another machine's board is not paired from here: only this board is" }]);
-  assert.equal(sent, 0, "a pairing code for the remote is never asked for");
-  assert.equal(typeof httpForward, "function");
-});
-
-test("parseRemoteInfo takes a port, a key and a terminal or null", () => {
-  assert.deepEqual(parseRemoteInfo(JSON.stringify({ port: 4848, key: KEY, terminal: null })), { port: 4848, key: KEY, terminal: null });
-  assert.throws(() => parseRemoteInfo(JSON.stringify({ port: 4848, key: KEY, terminal: 7 })), /terminal that is not an address/);
+test("the real runner's socket is in a new directory only this user can enter, which remove deletes", () => {
+  const socket = processRunner().privateSocket();
+  const dir = dirname(socket.path);
+  assert.equal(statSync(dir).mode & 0o777, 0o700);
+  socket.remove();
+  assert.equal(existsSync(dir), false);
 });

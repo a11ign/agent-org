@@ -189,7 +189,7 @@
 // The decisions (what shows, how it groups, what can be selected, what status a run has and what it offers) are board-view.ts's, tested there.
 // This page only draws what they return and wires the clicks.
 import {
-  APPROVE_TITLE, RESPOND_TITLE, apiBase, chosenProfile, profileLabel, PRIORITY_NAMES, RUN_STATUSES, publishable, publishLabel, publishNote, pullsOf, flatten, groupByStatus, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, queueLabel, recall, remember, runActions, runStatus,
+  APPROVE_TITLE, RESPOND_TITLE, apiBase, chosenProfile, profileLabel, safeHref, PRIORITY_NAMES, RUN_STATUSES, publishable, publishLabel, publishNote, pullsOf, flatten, groupByStatus, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, queueLabel, recall, remember, runActions, runStatus,
   runChoiceLabel, runsShown, unplannedCount, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, waitsOn, workersLabel,
 } from "/board-view.js";
 
@@ -319,7 +319,7 @@ function renderPick() {
     // it away, and its checkbox picks them rather than itself; one that is not the person's says so. Only a ticket a worker can be given carries
     // the no-plan mark: an epic is never started.
     const titleCell = (t, depth, { arrow = null, mark = null, note = null } = {}) => el("span", {}, arrow, mark,
-      el("a", { href: t.url, target: "_blank", rel: "noreferrer" }, t.title), depth > 0 ? el("span", { className: "sub" }, ` · ${t.status}`) : null, note);
+      el("a", { href: safeHref(t.url), target: "_blank", rel: "noreferrer" }, t.title), depth > 0 ? el("span", { className: "sub" }, ` · ${t.status}`) : null, note);
     const pill = (text) => el("span", { className: "pill" }, text);
     const place = (row, depth) => { if (depth > 0) row.setAttribute("style", `--depth: ${depth}`); box.append(row); };
     const add = (node, depth) => {
@@ -416,11 +416,11 @@ function row(e) {
     actions.append(b);
   }
   const link = terminalLink(state.terminal, e);
-  const terminal = link ? el("a", { className: "terminal", href: link, target: "_blank", rel: "noreferrer" }, "Open terminal") : null;
+  const terminal = link ? el("a", { className: "terminal", href: safeHref(link), target: "_blank", rel: "noreferrer" }, "Open terminal") : null;
   const pulls = pullsOf(e);
-  const prs = pulls.length > 0 ? el("div", { className: "meta" }, ...pulls.flatMap((pr, i) => [i ? " · " : "", el("a", { href: pr.url, target: "_blank", rel: "noreferrer" }, `${pr.repo} #${pr.url.split("/").pop()}`)])) : null;
+  const prs = pulls.length > 0 ? el("div", { className: "meta" }, ...pulls.flatMap((pr, i) => [i ? " · " : "", el("a", { href: safeHref(pr.url), target: "_blank", rel: "noreferrer" }, `${pr.repo} #${pr.url.split("/").pop()}`)])) : null;
   const reason = e.handedBack ? e.handedBack : !o ? null : o.kind === "wrong-repo" ? `Belongs in: ${o.where}` : o.kind === "needs-human" || o.kind === "crashed" ? o.reason : o.kind === "no-outcome" ? "Stopped without writing an outcome" : null;
-  const message = e.published && e.published.link ? el("a", { className: "terminal", href: e.published.link, target: "_blank", rel: "noreferrer" }, "Slack message") : null;
+  const message = e.published && e.published.link ? el("a", { className: "terminal", href: safeHref(e.published.link), target: "_blank", rel: "noreferrer" }, "Slack message") : null;
   let tick = null;
   if (state.publishing && publishable(e, state.queue.publish)) {
     const box = el("input", { type: "checkbox", checked: state.toPublish.has(e.ticket.key) });
@@ -434,7 +434,7 @@ function row(e) {
   return el("div", { className: "run" },
     statusIcon(status),
     el("div", {},
-      el("div", { className: "title" }, el("a", { href: e.ticket.url, target: "_blank", rel: "noreferrer" }, e.ticket.key), ` ${e.ticket.title}`),
+      el("div", { className: "title" }, el("a", { href: safeHref(e.ticket.url), target: "_blank", rel: "noreferrer" }, e.ticket.key), ` ${e.ticket.title}`),
       el("div", { className: "meta" }, `${LABEL[status]} · ${repos} · ${runChoiceLabel(e)} · ${when}${tokens}`),
       e.waiting ? el("div", { className: "waiting" }, "Waiting on a person") : null,
       waits.length > 0 ? el("div", { className: "meta" }, `Waits on ${waits.map((b) => `${b.key} (${b.status})`).join(", ")}`) : null,

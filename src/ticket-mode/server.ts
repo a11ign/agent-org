@@ -12,7 +12,7 @@
 // another origin is refused. The Linear key never leaves this process.
 //
 // IT CAN SHOW ANOTHER MACHINE'S BOARD. With a profiles file (`profiles.ts`), a paired browser's call to `/p/<profile>/api/...` is passed over
-// SSH to that machine's own board (`remote.ts`), which keeps its own queue, workers and limit. The page never talks to the remote itself.
+// SSH to that machine's own board (`remote.ts`, `remote-proxy.ts`), which keeps its own queue, workers and limit. The page never talks to the remote itself.
 import { createHash, timingSafeEqual } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, writeFileSync, mkdirSync } from "node:fs";
@@ -29,7 +29,8 @@ import { linearSource, readLinearKey } from "./linear.ts";
 import { createPairing, PAIR_MINUTES, type Pairing } from "./pairing.ts";
 import { createPool, type PoolDeps } from "./pool.ts";
 import { profilesPath, readProfiles, type ProfilesRead, type RemoteProfile } from "./profiles.ts";
-import { createRemotes, httpForward, proxy, type Forward, type Remotes } from "./remote.ts";
+import { createRemotes, type Remotes } from "./remote.ts";
+import { httpForward, proxy, type Forward } from "./remote-proxy.ts";
 import { amend, approve, enqueue, loadQueue, queuePublish, remove, respond, retry, saveQueue, setMax, setPaused, type PlanFirst, type Queue, type RunChoice } from "./queue.ts";
 import { plansInBatches, readTicketSettings, type TicketSettings } from "./settings.ts";
 import type { Ticket, TicketSource } from "./source.ts";

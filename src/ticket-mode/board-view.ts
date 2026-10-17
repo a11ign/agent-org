@@ -484,6 +484,9 @@ export function runChoiceLabel(entry: ViewEntry): string {
   return entry.planned ? `${run} on an unattended plan` : run;
 }
 
+/** `url` when it is an http or https address, and "" otherwise, so a link a remote board sends can never run script in this page. */
+export const safeHref = (url: unknown): string => (typeof url === "string" && /^https?:\/\//i.test(url) ? url : "");
+
 /** A board the header's switcher offers: its profile's name, and whether it is this machine's own. */
 export type ViewProfile = Readonly<{ name: string; local: boolean }>;
 

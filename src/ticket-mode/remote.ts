@@ -1,22 +1,24 @@
 // @ts-check
-// module: another machine's board, reached over SSH -- read its key once, hold a tunnel to it, and pass a paired browser's API calls through
+// module: the SSH tunnel to another machine's board -- read its key once per connection, and hold the connection open
 //
-// THIS BOARD OPENS THE CONNECTION ITSELF. For a remote profile it runs `ssh <target> agent-org ticket:remote-info` once per connection, which
-// prints the remote board's port, key and terminal address, then `ssh -N` forwarding a free port on this machine's 127.0.0.1 to that board's
-// port, and a second one to its terminal service when it serves one. Both run with BatchMode and no TTY, so a prompt for a password fails
-// rather than hangs. A tunnel that drops is opened again, slower each time it fails, until the board closes.
+// THIS BOARD OPENS THE CONNECTION ITSELF. For a remote profile it runs `ssh <target> agent-org ticket:remote-info`, which prints the remote
+// board's port, key and terminal address, then `ssh -N` forwarding a Unix socket here to that board's port, and a free port on this machine's
+// 127.0.0.1 to its terminal service when it serves one. Both run with BatchMode and no TTY, so a prompt for a password fails rather than
+// hangs, and with no connection sharing, agent or X11 forwarding, so the person's ssh config cannot keep a forward alive past `stop`. A tunnel
+// that drops is opened again, slower each time it fails, until the board closes. `remote-proxy.ts` passes the page's calls through it.
+//
+// THE BOARD'S FORWARD IS A SOCKET IN A DIRECTORY ONLY THIS USER CAN ENTER, NOT A PORT. A port picked free and then bound by ssh seconds later
+// can be taken first by another process, which would then be sent the key. The terminal's forward is a port, because the browser opens it.
 //
 // THE REMOTE KEY STAYS IN THIS PROCESS'S MEMORY. It is never on a command line (ssh carries it back on stdout), never in a log line or an
-// answer to the page, and is sent only in the `x-ticket-token` header the remote board already takes from scripts. A reason that came from
-// the remote is cut of anything shaped like a key before it is shown.
-//
-// THE PAGE NEVER TALKS TO THE REMOTE. The request is rebuilt here with only what the remote needs: its own `Host` (so its DNS-rebinding guard
-// accepts it), the key, and the JSON body. The browser's cookie, which is this board's session, is never sent on.
+// answer to the page. A reason that came from the remote is cut of anything shaped like a key before it is shown.
 //
 // The process runner is injected, so the tests drive every path with a fake that records argv and plays the tunnel up, down or failing.
 import { spawn } from "node:child_process";
-import { request as httpRequest } from "node:http";
+import { mkdtempSync, rmSync } from "node:fs";
 import { connect, createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { RemoteProfile } from "./profiles.ts";
 
 /** How a process ended: its exit code, null when a signal ended it, and the end of what it wrote to stderr. */
@@ -30,30 +32,36 @@ export type Runner = Readonly<{
   start(argv: readonly string[]): Readonly<{ exited: Promise<Exit>; stop(): void }>;
   /** A port on 127.0.0.1 that nothing listens on now. */
   freePort(): Promise<number>;
-  /** Whether something accepts a connection on 127.0.0.1:`port`. */
-  listening(port: number): Promise<boolean>;
+  /** A new Unix socket path in a directory only this user can enter, and what removes the directory. */
+  privateSocket(): Readonly<{ path: string; remove(): void }>;
+  /** Whether something accepts a connection at the Unix socket `path`. */
+  listening(path: string): Promise<boolean>;
 }>;
 
 /** What `ticket:remote-info` prints: the remote board's port, its key, and its terminal address template or null. */
 export type RemoteInfo = Readonly<{ port: number; key: string; terminal: string | null }>;
 
-/** An open tunnel to a remote board: what it answers as, and the ports on this machine that reach it and its terminal. */
-export type Link = RemoteInfo & Readonly<{ local: number; terminalLocal: number | null }>;
+/** An open tunnel to a remote board: what it answers as, the socket here that reaches it, and the port here that reaches its terminal. */
+export type Link = RemoteInfo & Readonly<{ socket: string; terminalLocal: number | null }>;
 
 /** A remote that cannot be reached now, and why, in words a person can act on. */
 export class Unreachable extends Error {}
 
-const SSH_OPTIONS = ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"];
-const TUNNEL_OPTIONS = ["-N", ...SSH_OPTIONS, "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"];
+const SSH_OPTIONS = ["-T", "-a", "-x", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ControlMaster=no", "-o", "ControlPath=none"];
+const INFO_OPTIONS = [...SSH_OPTIONS, "-o", "ClearAllForwardings=yes"];
+const TUNNEL_OPTIONS = ["-N", ...SSH_OPTIONS, "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
+  "-o", "StreamLocalBindMask=0177"];
 const INFO_MS = 30_000;
+const INFO_BYTES = 64 * 1024;
 const UP_MS = 15_000;
 const PROBE_MS = 200;
 const FIRST_RETRY_MS = 2_000;
 const LAST_RETRY_MS = 60_000;
-const FORWARD_MS = 30_000;
 const REASON_CHARS = 300;
+const SOCKET_PATH_BYTES = 100;
 const KEY_SHAPE = /^[0-9a-f]{48}$/;
-const LOOPBACK_ORIGIN = /^(https?):\/\/(?:127\.0\.0\.1|localhost)(?::(\d+))?(?=[/?#]|$)/;
+const LOOPBACK_ORIGIN = /^(https?):\/\/(?:127\.0\.0\.1|localhost)(?::(\d{1,5}))?(?=[/?#]|$)/;
+const WEB_ADDRESS = /^https?:\/\//i;
 
 /** `text` with anything shaped like a key or a token cut out, kept to one short line. */
 export function redact(text: string): string {
@@ -65,28 +73,30 @@ export function redact(text: string): string {
 
 /** The argv that reads the remote board's port, key and terminal. The key comes back on stdout, never goes out on argv. */
 export function infoArgv(profile: RemoteProfile): string[] {
-  return ["ssh", ...SSH_OPTIONS, "--", profile.ssh, `${profile.agentOrg} ticket:remote-info`];
+  return ["ssh", ...INFO_OPTIONS, "--", profile.ssh, `${profile.agentOrg} ticket:remote-info`];
 }
 
-/** The argv of the tunnel: this machine's `local` to the remote board, and `terminal`'s local port to its terminal service when it has one. */
-export function tunnelArgv(profile: RemoteProfile, local: number, remote: number, terminal: Readonly<{ local: number; remote: number }> | null): string[] {
-  const forwards = [`127.0.0.1:${local}:127.0.0.1:${remote}`, ...(terminal === null ? [] : [`127.0.0.1:${terminal.local}:127.0.0.1:${terminal.remote}`])];
+/** The argv of the tunnel: `socket` here to the remote board, and `terminal`'s local port to its terminal service when it has one. */
+export function tunnelArgv(profile: RemoteProfile, socket: string, remote: number, terminal: Readonly<{ local: number; remote: number }> | null): string[] {
+  const forwards = [`${socket}:127.0.0.1:${remote}`, ...(terminal === null ? [] : [`127.0.0.1:${terminal.local}:127.0.0.1:${terminal.remote}`])];
   return ["ssh", ...TUNNEL_OPTIONS, ...forwards.flatMap((forward) => ["-L", forward]), "--", profile.ssh];
 }
 
-/** What `ticket:remote-info` printed. THROWS a reason that never quotes the output, which holds the key. */
+/**
+ * What `ticket:remote-info` printed, read from its last line, so a login message a shell prints first is passed over. A terminal that is not
+ * an http address is dropped. THROWS a reason that never quotes the output, which holds the key.
+ */
 export function parseRemoteInfo(stdout: string): RemoteInfo {
   let value: unknown;
   try {
-    value = JSON.parse(stdout);
+    value = JSON.parse(stdout.trim().split("\n").at(-1) ?? "");
   } catch {
     throw new Unreachable("agent-org ticket:remote-info there printed something that is not JSON: is that machine's agent-org older than this one?");
   }
   const { port, key, terminal } = (value ?? {}) as Record<string, unknown>;
   if (!Number.isInteger(port) || (port as number) < 1 || (port as number) > 65535) throw new Unreachable("agent-org ticket:remote-info there gave no port");
   if (typeof key !== "string" || !KEY_SHAPE.test(key)) throw new Unreachable("agent-org ticket:remote-info there gave no board key");
-  if (terminal !== null && typeof terminal !== "string") throw new Unreachable("agent-org ticket:remote-info there gave a terminal that is not an address");
-  return { port: port as number, key, terminal };
+  return { port: port as number, key, terminal: typeof terminal === "string" && WEB_ADDRESS.test(terminal) ? terminal : null };
 }
 
 /** Why reading the remote's info failed, from how `ssh` ended. */
@@ -97,16 +107,22 @@ function infoFailure(exit: Exit): string {
   return said === "" ? `ssh exited ${exit.code}` : said;
 }
 
-/** The remote port a terminal address template serves on, when it is on the remote's own loopback and so needs a tunnel; null otherwise. */
+/** The remote port a terminal address serves on when it is on the remote's own loopback, and so needs a tunnel. Null otherwise. */
 export function terminalPort(template: string | null): number | null {
   const match = template === null ? null : LOOPBACK_ORIGIN.exec(template);
   if (match === null) return null;
-  return match[2] !== undefined ? Number(match[2]) : match[1] === "https" ? 443 : 80;
+  const port = match[2] !== undefined ? Number(match[2]) : match[1] === "https" ? 443 : 80;
+  return port >= 1 && port <= 65535 ? port : null;
 }
 
-/** `template` with its loopback origin moved to this machine's `local` port, which the tunnel forwards to the remote's terminal service. */
+/**
+ * The terminal address the page is given for a remote: one on the remote's loopback moved to `local`, the port here that the tunnel forwards
+ * to it. One on the remote's loopback with no tunnel, or one that is not an http address, is null, so the page shows no link.
+ */
 export function localTerminal(template: string | null, local: number | null): string | null {
-  if (template === null || local === null || !LOOPBACK_ORIGIN.test(template)) return template;
+  if (template === null || !WEB_ADDRESS.test(template)) return null;
+  if (!LOOPBACK_ORIGIN.test(template)) return template;
+  if (local === null || terminalPort(template) === null) return null;
   return template.replace(LOOPBACK_ORIGIN, (_, scheme: string) => `${scheme}://127.0.0.1:${local}`);
 }
 
@@ -118,10 +134,12 @@ type Options = Readonly<{
   upMs?: number;
 }>;
 
+type Tunnel = ReturnType<Runner["start"]>;
+
 type State =
   | { kind: "idle" }
   | { kind: "connecting"; pending: Promise<Link> }
-  | { kind: "up"; link: Link; stop: () => void }
+  | { kind: "up"; link: Link; tunnel: Tunnel }
   | { kind: "down"; reason: string; cancel: () => void };
 
 /** The tunnels to `profiles`, each opened the first time it is reached and held open until `close`. */
@@ -133,22 +151,31 @@ export function createRemotes(profiles: readonly RemoteProfile[], options: Optio
   const byName = new Map(profiles.map((profile) => [profile.name, profile]));
   const states = new Map<string, State>(profiles.map((profile) => [profile.name, { kind: "idle" }]));
   const failures = new Map<string, number>();
+  /** Every tunnel started and not yet ended, opening or open, so `close` stops one still opening too. */
+  const live = new Set<Tunnel>();
   let closed = false;
 
-  async function open(profile: RemoteProfile): Promise<{ link: Link; tunnel: ReturnType<Runner["start"]> }> {
+  async function open(profile: RemoteProfile): Promise<{ link: Link; tunnel: Tunnel }> {
     const read = await runner.run(infoArgv(profile), INFO_MS);
     if (read.code !== 0) throw new Unreachable(infoFailure(read));
     const info = parseRemoteInfo(read.stdout);
-    const local = await runner.freePort();
     const remoteTerminal = terminalPort(info.terminal);
-    let terminalLocal: number | null = null;
-    while (remoteTerminal !== null && (terminalLocal === null || terminalLocal === local)) terminalLocal = await runner.freePort();
-    const tunnel = runner.start(tunnelArgv(profile, local, info.port, remoteTerminal === null || terminalLocal === null ? null : { local: terminalLocal, remote: remoteTerminal }));
-    let ended: Exit | null = null;
-    void tunnel.exited.then((exit) => { ended = exit; });
+    const terminalLocal = remoteTerminal === null ? null : await runner.freePort();
+    const socket = runner.privateSocket();
+    const tunnel = runner.start(tunnelArgv(profile, socket.path, info.port, remoteTerminal === null || terminalLocal === null ? null : { local: terminalLocal, remote: remoteTerminal }));
+    live.add(tunnel);
+    const ended: { exit: Exit | null } = { exit: null };
+    void tunnel.exited.then((exit) => {
+      ended.exit = exit;
+      live.delete(tunnel);
+      socket.remove();
+    });
+    if (closed) tunnel.stop();
     for (const deadline = Date.now() + upMs; ; await new Promise((done) => setTimeout(done, PROBE_MS))) {
-      if (ended !== null) throw new Unreachable(redact((ended as Exit).stderr) || `ssh exited ${(ended as Exit).code}`);
-      if (await runner.listening(local)) return { link: { ...info, local, terminalLocal }, tunnel };
+      // Listening is read before the exit, so a listener that answered from a tunnel that has since ended is not taken as open.
+      const listening = await runner.listening(socket.path);
+      if (ended.exit !== null) throw new Unreachable(redact(ended.exit.stderr) || `ssh exited ${ended.exit.code}`);
+      if (listening) return { link: { ...info, socket: socket.path, terminalLocal }, tunnel };
       if (Date.now() > deadline) {
         tunnel.stop();
         throw new Unreachable(`the tunnel did not open within ${Math.round(upMs / 1000)} seconds`);
@@ -156,12 +183,12 @@ export function createRemotes(profiles: readonly RemoteProfile[], options: Optio
     }
   }
 
-  /** Mark `profile` down for `reason`, and try again later, later each time it fails in a row. */
+  /** Mark `profile` down for `reason`, and try again later, later each time it fails in a row. The log says so once per run of failures. */
   function down(profile: RemoteProfile, reason: string): void {
     const count = (failures.get(profile.name) ?? 0) + 1;
     failures.set(profile.name, count);
     const delay = Math.min(LAST_RETRY_MS, FIRST_RETRY_MS * 2 ** (count - 1));
-    log(`ticket:serve: cannot reach ${profile.name} over SSH: ${reason}. Trying again in ${Math.round(delay / 1000)} s`);
+    if (count === 1) log(`ticket:serve: cannot reach ${profile.name} over SSH: ${reason}. Trying again, up to once a minute`);
     const cancel = schedule(() => { if (!closed && states.get(profile.name)?.kind === "down") void connect(profile).catch(() => {}); }, delay);
     states.set(profile.name, { kind: "down", reason, cancel });
   }
@@ -173,8 +200,8 @@ export function createRemotes(profiles: readonly RemoteProfile[], options: Optio
         throw new Unreachable("the board is closing");
       }
       failures.delete(profile.name);
-      states.set(profile.name, { kind: "up", link, stop: tunnel.stop });
-      log(`ticket:serve: ${profile.name} is reached over SSH through 127.0.0.1:${link.local}`);
+      states.set(profile.name, { kind: "up", link, tunnel });
+      log(`ticket:serve: ${profile.name} is reached over SSH`);
       void tunnel.exited.then((exit) => {
         const now = states.get(profile.name);
         if (closed || now?.kind !== "up" || now.link !== link) return;
@@ -207,79 +234,20 @@ export function createRemotes(profiles: readonly RemoteProfile[], options: Optio
     /** Close `name`'s tunnel, so the next request reads its key again: the remote refused the one held. */
     forget(name: string): void {
       const state = states.get(name);
-      if (state?.kind === "up") state.stop();
+      if (state?.kind === "up") state.tunnel.stop();
       if (state?.kind === "down") state.cancel();
       if (state !== undefined && state.kind !== "connecting") states.set(name, { kind: "idle" });
     },
-    /** Close every tunnel, and open none again. */
+    /** Close every tunnel, opening or open, and open none again. */
     close(): void {
       closed = true;
-      for (const state of states.values()) {
-        if (state.kind === "up") state.stop();
-        if (state.kind === "down") state.cancel();
-      }
+      for (const tunnel of live) tunnel.stop();
+      for (const state of states.values()) if (state.kind === "down") state.cancel();
     },
   };
 }
 
 export type Remotes = ReturnType<typeof createRemotes>;
-
-/** A request rebuilt for the remote board, and what it answered. */
-export type Forward = (link: Link, request: Readonly<{ method: string; path: string; body: string | null }>) => Promise<Readonly<{ status: number; body: string }>>;
-
-/** The request a remote board is sent: to the tunnel's port, as its own host, with its key, and nothing of the browser's. */
-export function forwardHeaders(link: Pick<Link, "port" | "key">, body: string | null): Record<string, string> {
-  return { host: `127.0.0.1:${link.port}`, "x-ticket-token": link.key, accept: "application/json", ...(body === null ? {} : { "content-type": "application/json", "content-length": String(Buffer.byteLength(body)) }) };
-}
-
-/** Send the request over the tunnel to the remote board. */
-export const httpForward: Forward = (link, { method, path, body }) => new Promise((done, fail) => {
-  const outgoing = httpRequest({ host: "127.0.0.1", port: link.local, method, path, headers: forwardHeaders(link, body), timeout: FORWARD_MS }, (response) => {
-    const chunks: Buffer[] = [];
-    response.on("data", (chunk: Buffer) => chunks.push(chunk));
-    response.on("end", () => done({ status: response.statusCode ?? 502, body: Buffer.concat(chunks).toString("utf8") }));
-    response.on("error", fail);
-  });
-  outgoing.on("timeout", () => outgoing.destroy(new Error(`no answer within ${FORWARD_MS / 1000} seconds`)));
-  outgoing.on("error", fail);
-  outgoing.end(body ?? undefined);
-});
-
-/**
- * A paired browser's API call to remote profile `name`, passed through its tunnel: the status and JSON value to answer with. A remote that
- * cannot be reached answers 502 with "cannot reach <name> over SSH: <reason>". A remote that refuses the key has it read again next time.
- */
-export async function proxy(remotes: Remotes, name: string, request: Readonly<{ method: string; path: string; body: string | null }>, forward: Forward = httpForward): Promise<[number, unknown]> {
-  // The key makes a pairing code there, and a code pairs a browser with that board directly. Only this board is paired.
-  if (/^\/api\/pair-code(?:[/?]|$)/.test(request.path)) return [403, { error: "another machine's board is not paired from here: only this board is" }];
-  let link: Link;
-  try {
-    link = await remotes.reach(name);
-  } catch (err) {
-    return [502, { error: `cannot reach ${name} over SSH: ${err instanceof Unreachable ? err.message : redact(String(err))}` }];
-  }
-  let answer: Readonly<{ status: number; body: string }>;
-  try {
-    answer = await forward(link, request);
-  } catch (err) {
-    return [502, { error: `cannot reach ${name}'s board through SSH: ${redact(String((err as Error)?.message ?? err))}. Is agent-org ticket:serve running there?` }];
-  }
-  if (answer.status === 401) {
-    remotes.forget(name);
-    return [502, { error: `cannot reach ${name} over SSH: its board refused the key read from it, which is read again on the next request` }];
-  }
-  let value: unknown;
-  try {
-    value = JSON.parse(answer.body);
-  } catch {
-    return [502, { error: `${name}'s board answered with something that is not JSON` }];
-  }
-  if (request.path === "/api/config" && answer.status === 200 && value !== null && typeof value === "object") {
-    const config = value as Record<string, unknown>;
-    value = { ...config, terminal: localTerminal(typeof config.terminal === "string" ? config.terminal : null, link.terminalLocal) };
-  }
-  return [answer.status, value];
-}
 
 /** The runner that runs real processes. */
 export function processRunner(): Runner {
@@ -290,11 +258,13 @@ export function processRunner(): Runner {
       const child = launch(argv);
       let stdout = "";
       let stderr = "";
-      child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString("utf8"); });
+      const finish = (exit: Exit & { stdout: string }) => { clearTimeout(timer); done(exit); };
+      child.stdout.on("data", (chunk: Buffer) => { if (stdout.length < INFO_BYTES) stdout += chunk.toString("utf8"); });
       child.stderr.on("data", (chunk: Buffer) => { stderr = (stderr + chunk.toString("utf8")).slice(-TAIL); });
-      const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
-      child.on("error", (err) => { clearTimeout(timer); done({ code: 127, stdout: "", stderr: err.message }); });
-      child.on("close", (code) => { clearTimeout(timer); done({ code, stdout, stderr }); });
+      // A process that ignores the kill, or one whose child holds the pipes open, still ends the wait.
+      const timer = setTimeout(() => { child.kill("SIGKILL"); done({ code: null, stdout: "", stderr }); }, timeoutMs);
+      child.on("error", (err) => finish({ code: 127, stdout: "", stderr: err.message }));
+      child.on("close", (code) => finish({ code, stdout, stderr }));
     }),
     start(argv) {
       const child = launch(argv);
@@ -315,8 +285,15 @@ export function processRunner(): Runner {
         server.close(() => done(port));
       });
     }),
-    listening: (port) => new Promise((done) => {
-      const socket = connect({ host: "127.0.0.1", port });
+    privateSocket() {
+      // mkdtemp makes the directory with mode 700. The socket's own mode is set by ssh's StreamLocalBindMask. A socket's path is cut at 104
+      // bytes on macOS, so a long TMPDIR gives way to /tmp.
+      const base = join(tmpdir(), "agent-org-tunnel-XXXXXX", "board.sock").length <= SOCKET_PATH_BYTES ? tmpdir() : "/tmp";
+      const dir = mkdtempSync(join(base, "agent-org-tunnel-"));
+      return { path: join(dir, "board.sock"), remove: () => rmSync(dir, { recursive: true, force: true }) };
+    },
+    listening: (path) => new Promise((done) => {
+      const socket = connect({ path });
       socket.on("connect", () => { socket.destroy(); done(true); });
       socket.on("error", () => done(false));
     }),

@@ -227,16 +227,18 @@ choice is remembered in that browser. Switching changes only what the page shows
 - With no file, the board shows no switcher and works as it did. A file that is not JSON or breaks a rule above is refused, the board names
   why in its log and on the page, and it shows only its own profile.
 - The board opens the SSH connection itself. It runs `ssh <target> agent-org ticket:remote-info` once per connection, which prints that
-  board's port, key and terminal address as JSON. It then holds `ssh -N` open, forwarding a free port on this machine's `127.0.0.1` to that
-  board's port, and a second one to its terminal service. Both run with `BatchMode=yes` and no TTY, so a key that needs a passphrase not held
-  in an agent fails rather than waits. A tunnel that drops is opened again, after 2 seconds and up to a minute between tries. Every tunnel
-  closes when the board exits.
+  board's port, key and terminal address as JSON. It then holds `ssh -N` open, forwarding a Unix socket in a directory only you can enter to
+  that board's port, and a free port on this machine's `127.0.0.1` to its terminal service. Both run with `BatchMode=yes` and no TTY, so a
+  key that needs a passphrase not held in an agent fails rather than waits. They share no connection, agent or X11 forwarding from your ssh
+  config. A tunnel that drops is opened again, after 2 seconds and up to a minute between tries. Every tunnel
+  closes when the board exits, unless the board is killed with `SIGKILL`, which leaves its `ssh` processes running.
 - The remote board's key stays in this board's memory. It is not written to a file, a command line, a log or the page, and it is sent only in
   the `x-ticket-token` header. Only this board is paired. A paired browser's call to `/p/<profile>/api/...` is passed through the tunnel, as
-  the remote board's own `Host`, so its DNS-rebinding guard accepts it. A script holding this board's key is not passed on, and neither is a
-  request for a pairing code. A remote that cannot be reached is shown on the page as `cannot reach <profile> over SSH: <reason>`.
+  the remote board's own `Host`, so its DNS-rebinding guard accepts it. A script holding this board's key is not passed on. Only the routes the
+  page calls are passed on, so a pairing code is never asked for there. A remote that cannot be reached is shown on the page as `cannot reach <profile> over SSH: <reason>`.
 - Open terminal on a remote run goes through the same SSH connection when that machine's `tickets.terminal` is on its own `127.0.0.1` or
-  `localhost`. The link points at this machine's forwarded port.
+  `localhost`. The link points at this machine's forwarded port. Any process on this machine can reach
+  that port while the tunnel is open, as it can reach the remote's own terminal service from that machine.
 
 A remote machine needs four things. This machine reaches it with `ssh <target>` and no prompt, through a key in an agent or one with no
 passphrase. agent-org is installed there, and a non-interactive `ssh <target> agent-org ticket:remote-info` finds it and its host file,
