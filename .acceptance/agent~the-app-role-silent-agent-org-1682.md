@@ -1,0 +1,11 @@
+A silent role's report names the failed mint's reason. `appRoleSilent` (`src/app-role-silent.ts`) returns, for each silent role, the newest `app-token <role>` `incident` line at or after the role's last app line (its reason, exit status and time), or `null`; `tickAppRoleSilent` (`src/host-units.ts`) prints it on its stderr line, or `no app-token incident in the ledger`. `incident` lines are still not counted as calls, and the `ref` (`<role>@<lastApp or never>`) and `FailureEvent` are unchanged.
+
+Acceptance: `cd ~/repos/agent-org && grep -q "carries the mint's reason" src/app-role-silent.test.ts && node_modules/.bin/rstest run --config scripts/rstest/rstest.config.ts src/app-role-silent.test.ts`
+
+Mutation: the gate `mint.at >= last` made to always pass (`mint !== null`) fails `a silent role's report carries the mint's reason` at the NEGATIVE control (an incident from before the last app line); the file was restored byte-identical (`diff` against a saved copy).
+
+Measured: on the base commit the detector's test file is `18 pass`; on this change `VERDICT pass: 19 tests in 1 file`. Run against the base `src/app-role-silent.ts` and `src/host-units.ts`, the new test fails (4 of 19 fail, the three existing tests that now assert `mint` plus the new one). `pnpm run typecheck` exits 0. Full `pnpm test`: `VERDICT fail: 76 of 12168 tests failed in 736 files`; the two failing files that import `host-units.ts` (`host-install-agent-org-launcher.test.ts`, `live-tree-independence.test.ts`) fail the same 3 of 10 on the base sources, so they are not this change. The other six failing files (`pr-owner-total`, `pr-owner-gone`, `org-health`, `pr-open-requires-verify-stamp`, `multi-board-gate`, `deferred-order-relane`) import none of the changed modules and were not run on base; their failures were not investigated here.
+
+Note: the Acceptance command was run from the worktree (`/home/agent/repos/wt-agent-org-1682`), not `~/repos/agent-org`, which is the same clone's main checkout.
+
+Closes a11ign/agent-org#1682
