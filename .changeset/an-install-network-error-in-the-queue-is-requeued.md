@@ -1,0 +1,5 @@
+---
+"agent-org": minor
+---
+
+The work gate re-queues a merge-queue ejection whose failure was a network error in an install step, once, behind the new machinery flag `queue.reenqueueInfra` (agent-org#1647). A failed merge-group job whose failed step is an install and whose log carries a network signature (`ECONNRESET`, `ETIMEDOUT`, `EAI_AGAIN`, `ENOTFOUND`, `ECONNREFUSED`, a registry 5xx) is read as infrastructure and the pull request is armed again, inside the once-per-head bound the other re-queue keeps; a failure that names a file the pull request changes stays the owner's, and a log with no recognised signature stays `unknown`. The flag is OFF when absent and is switched with `agent-org machinery:flag on queue.reenqueueInfra`. A new health signal, `ejected-network-not-requeued`, counts the ejections of that shape that stay the owner's (the bound is spent, the arm failed, or the flag is off), and the tick's log names each with its error line. `ci.yml` sets `npm_config_fetch_retries` to 5 for every install, so a short outage does not eject a queue entry at all.
