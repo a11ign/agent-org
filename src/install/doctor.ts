@@ -102,15 +102,20 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
   ];
 }
 
-/** Whether `name` is registered, and whether its port answers. */
+/**
+ * Whether `name` is registered, and whether its port answers. The port is asked either way: a service started by hand answers without being
+ * registered, and saying nothing answers then sends the person after a problem they do not have.
+ */
 async function serviceChecks(name: ServiceName, port: number, deps: DoctorDeps): Promise<Check[]> {
   const state = deps.serviceState(name);
-  const answering = state === "running" && await deps.answers(port);
+  const answering = await deps.answers(port);
   const start = `run \`agent-org start ${name}\``;
+  const notRegistered = answering
+    ? failed(`${name} service`, `the ${name} service is not registered, but something answers on port ${port}: probably one started by hand`,
+      `stop the one started by hand, then ${start}, so it starts at login and restarts after a crash`)
+    : failed(`${name} service`, `the ${name} service is not registered`, start);
   return [
-    state === "not-registered"
-      ? failed(`${name} service`, `the ${name} service is not registered`, start)
-      : ok(`${name} service`, `the ${name} service is registered and ${state}`),
+    state === "not-registered" ? notRegistered : ok(`${name} service`, `the ${name} service is registered and ${state}`),
     answering
       ? ok(`${name} answering`, `http://127.0.0.1:${port} answers`)
       : failed(`${name} answering`, `nothing answers on http://127.0.0.1:${port}`, state === "running" ? `read the service's log, then ${start} to restart it` : start),
