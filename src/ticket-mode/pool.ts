@@ -62,7 +62,7 @@ import { unreachablePlugins } from "./plugins.ts";
 import { TICKET_ENV } from "./worktree-command.ts";
 import { HOST_FILE_ENV, plansInBatches, type TicketSettings } from "./settings.ts";
 import {
-  REVIEWER_LOGIN, atomicReviewerPort, readReviewState, readReviewerMemory, reviewVerdict, reviewerMemoryPath, withoutReviewerReviews, writeReviewerMemory,
+  REVIEWER_LOGIN, atomicReviewerPort, readReviewState, readReviewerMemory, reviewerRefusal, reviewVerdict, reviewerMemoryPath, withoutReviewerReviews, writeReviewerMemory,
   type ReviewerMemory, type ReviewerPort,
 } from "./reviewer-port.ts";
 import {
@@ -348,8 +348,11 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
   const remembered = reviewerOn ? readReviewerMemory(reviewerFile) : undefined;
   if (remembered?.unreadable) log(`${reviewerFile} cannot be read, so the reviewers started before this restart are not remembered`);
   const reviewerMemory: ReviewerMemory = remembered?.memory ?? { heads: new Map(), started: new Set(), resumed: new Set() };
+  /** A machine that asks for reviewers on a host the gate does not load on (no `primary`) starts none: said once here, and no reviewer is ever read. */
+  const gateRefusal = reviewerOn ? reviewerRefusal() : null;
+  if (gateRefusal !== null) log(`tickets.reviewer is set, but no reviewer starts: ${gateRefusal}`);
   /** The reviewer a machine with `tickets.reviewer` starts for each settled head: the atomic one unless the caller injected another. */
-  const reviewer = !reviewerOn ? undefined : deps.reviewerPort ?? atomicReviewerPort({ session: settings.herdrSession, run: herdr, gh, heads: reviewerMemory.heads });
+  const reviewer = !reviewerOn || gateRefusal !== null ? undefined : deps.reviewerPort ?? atomicReviewerPort({ session: settings.herdrSession, run: herdr, gh, heads: reviewerMemory.heads });
   /** The `url@head` keys a reviewer was started for, and whose not-convinced verdict already asked the worker for a round. */
   const { started: reviewerStarted, resumed: reviewerResumed } = reviewerMemory;
   /** The feedback a worker answers is read without the reviewer's own reviews, so its verdict never moves `feedbackAt`. */

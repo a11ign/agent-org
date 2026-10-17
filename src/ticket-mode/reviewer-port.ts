@@ -8,14 +8,35 @@
 
 import { readFileSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { spawnReviewer, prepareReviewCheckout } from "../wake.ts";
 import { reviewerSeat } from "../review-attribution.ts";
-import { declaredIdentities, INSIDE, reviewTrustOf, type ReviewTrust } from "../review-trust.ts";
 import { ORG_SESSION, readAgents, type ListedAgent } from "../herdr-agents.ts";
-import { homeProjectDeclaration } from "../project-config.ts";
-import { REPO } from "../project-identity.ts";
 import { pullRequestFieldsOf } from "../ticket-port/pull-request-fields.ts";
-import { awaitingVerdictPrompt, REVIEW_PULL_FIELDS, reviewHeadsOf, settledGreenOf } from "../work-gate/pr-orders.ts";
+import type { ReviewTrust } from "../review-trust.ts";
+
+/**
+ * The gate's modules: its reviewer, its trust rules, its verdict prompt, and the org's declaration. Importing them names the declaration the org's
+ * `primary` makes, so a host with no `primary` cannot import them. The import is awaited here and its refusal KEPT rather than thrown: a machine that
+ * starts no reviewer never asks for the gate, and one that does is told why by `reviewerRefusal`.
+ */
+const gate = await Promise.all([import("../wake.ts"), import("../review-trust.ts"), import("../project-config.ts"), import("../project-identity.ts"), import("../work-gate/pr-orders.ts")]).then(
+  ([wake, trust, config, identity, orders]) => ({ ok: true as const, wake, trust, config, identity, orders }),
+  (refusal: unknown) => ({ ok: false as const, refusal }),
+);
+
+type DeclaredIdentities = ReturnType<typeof import("../review-trust.ts").declaredIdentities>;
+
+/** Why the gate does not load on this host, or null when it does. A machine that asks for reviewers starts none while this is set. */
+export function reviewerRefusal(): string | null {
+  if (gate.ok) return null;
+  const { refusal } = gate;
+  return refusal instanceof Error ? refusal.message.split("\n")[0] : String(refusal);
+}
+
+/** The gate's modules. Only a machine that starts reviewers reads them, and `reviewerRefusal` says first whether they load. */
+function reviewerGate() {
+  if (!gate.ok) throw gate.refusal;
+  return gate;
+}
 
 /** The account the gate's reviewer posts as. Its reviews are the reviewer's, never the feedback a worker answers. */
 export const REVIEWER_LOGIN = "a11ign-reviewer";
@@ -47,8 +68,9 @@ function pullOf(url: string): { repository: string; number: number } | null {
 
 /** The key of a repository the project declares: `""` for the primary's, `null` for one it does not declare, which is no seat at all. */
 function repoKeyOf(repository: string): string | null {
-  if (repository === REPO) return "";
-  return homeProjectDeclaration().code.find((code) => code.repo === repository)?.key ?? null;
+  const { config, identity } = reviewerGate();
+  if (repository === identity.REPO) return "";
+  return config.homeProjectDeclaration().code.find((code) => code.repo === repository)?.key ?? null;
 }
 
 /** The reviewer's seat for a pull request: `reviewer-<n>` in the primary, `reviewer-<key>-<n>` elsewhere, or a refusal naming why it has none. */
@@ -62,20 +84,21 @@ function seatOf(url: string): { label: string; number: number; key: string } | {
 
 /**
  * The pull request's state as the reviewer sees it: its head, whether its author is the org's own (`INSIDE`), and its reviews. Null when GitHub
- * does not say, which the caller reads as no reading rather than as a verdict.
+ * does not say, which the caller reads as no reading rather than as a verdict. It throws the gate's refusal when the gate does not load (`reviewerRefusal`).
  */
-export function readReviewState(url: string, gh: (args: string[]) => string, declared: ReturnType<typeof declaredIdentities> = declaredIdentities()): ReviewState | null {
+export function readReviewState(url: string, gh: (args: string[]) => string, declared: DeclaredIdentities = reviewerGate().trust.declaredIdentities()): ReviewState | null {
   const pull = pullOf(url);
   if (pull === null) return null;
-  const pr = pullRequestFieldsOf({ repo: pull.repository, number: pull.number, fields: REVIEW_PULL_FIELDS, run: gh });
+  const { trust, orders } = reviewerGate();
+  const pr = pullRequestFieldsOf({ repo: pull.repository, number: pull.number, fields: orders.REVIEW_PULL_FIELDS, run: gh });
   try {
     if (typeof pr?.headRefOid !== "string") return null;
     const reviews: Review[] = (pr.reviews ?? []).map((r: { author?: { login?: string }; state?: string; commit?: { oid?: string }; submittedAt?: string }) => ({
       author: String(r.author?.login ?? ""), state: String(r.state ?? ""), commit: String(r.commit?.oid ?? ""),
       at: Date.parse(String(r.submittedAt ?? "")) || 0,
     }));
-    const settled = settledGreenOf(pr);
-    return { head: pr.headRefOid, trust: reviewTrustOf(pr, declared), reviews, settled, view: { ...pr, number: pull.number } };
+    const settled = orders.settledGreenOf(pr);
+    return { head: pr.headRefOid, trust: trust.reviewTrustOf(pr, declared), reviews, settled, view: { ...pr, number: pull.number } };
   } catch {
     return null;
   }
@@ -166,9 +189,9 @@ export function writeReviewerMemory(path: string, memory: ReviewerMemory): void 
  * The head each reviewer was started for is in `heads` (by seat label), which the pool keeps across a restart, so a restart starts a reviewer again only for a
  * head it has not reviewed. It refuses a head whose checks have not settled green: the gate's verdict is asked only of settled checks.
  */
-export function atomicReviewerPort({ session, run, gh, declared = declaredIdentities(), spawn = spawnReviewer, checkout = prepareReviewCheckout, heads = new Map<string, string>() }: {
-  session: string; run: (args: string[]) => string; gh: (args: string[]) => string; declared?: ReturnType<typeof declaredIdentities>;
-  spawn?: typeof spawnReviewer; checkout?: typeof prepareReviewCheckout; heads?: Map<string, string>;
+export function atomicReviewerPort({ session, run, gh, declared = reviewerGate().trust.declaredIdentities(), spawn = reviewerGate().wake.spawnReviewer, checkout = reviewerGate().wake.prepareReviewCheckout, heads = new Map<string, string>() }: {
+  session: string; run: (args: string[]) => string; gh: (args: string[]) => string; declared?: DeclaredIdentities;
+  spawn?: typeof import("../wake.ts").spawnReviewer; checkout?: typeof import("../wake.ts").prepareReviewCheckout; heads?: Map<string, string>;
 }): ReviewerPort {
   const herdr = (args: string[]) => run(args[0] === "--session" && args[1] === ORG_SESSION ? ["--session", session, ...args.slice(2)] : args);
   const listed = (): ListedAgent[] | null => readAgents(run, { session });
@@ -181,9 +204,10 @@ export function atomicReviewerPort({ session, run, gh, declared = declaredIdenti
     start({ pr, head }) {
       const seat = seatOf(pr);
       if ("refusal" in seat) return seat;
+      const { trust, orders } = reviewerGate();
       const state = readReviewState(pr, gh, declared);
       if (state === null) return { refusal: `no reviewer for ${pr}: the pull request could not be read` };
-      if (state.trust !== INSIDE) return { refusal: `no reviewer for ${pr}: its author is outside the org, and the tickets' reviewer starts for the org's own pull requests only` };
+      if (state.trust !== trust.INSIDE) return { refusal: `no reviewer for ${pr}: its author is outside the org, and the tickets' reviewer starts for the org's own pull requests only` };
       if (state.head !== head) return { refusal: `no reviewer for ${pr}: its head moved to ${state.head}, so ${head} is no longer to be reviewed` };
       if (!state.settled) return { refusal: `no reviewer for ${pr}: its checks at ${head} have not settled green` };
       const agents = listed();
@@ -191,13 +215,13 @@ export function atomicReviewerPort({ session, run, gh, declared = declaredIdenti
       // A reviewer still holding the label is one for an earlier head: its workspace is closed before the next one starts under the same label.
       const stale = agents.some((agent) => agent.label === seat.label);
       if (stale) closeWorkspace(run, session, seat.label);
-      const tree = checkout({ pr: seat.number, session: seat.label, trust: INSIDE });
+      const tree = checkout({ pr: seat.number, session: seat.label, trust: trust.INSIDE });
       if ("refusal" in tree) return tree;
-      const started = spawn({ session: seat.label, cause: REVIEW_CAUSE, causeKey: `${pr}@${head}`, trust: INSIDE },
+      const started = spawn({ session: seat.label, cause: REVIEW_CAUSE, causeKey: `${pr}@${head}`, trust: trust.INSIDE },
         agents.filter((agent) => agent.label !== seat.label), { run: herdr, cwd: tree.path });
       if ("refusal" in started) return started;
       // The gate's own verdict prompt, for this seat's repository: the same words the gate sends a reviewer for a ready pull request.
-      const prompt = awaitingVerdictPrompt({ ...state.view, repoKey: seat.key }, reviewHeadsOf(state.view, head, "settled"));
+      const prompt = orders.awaitingVerdictPrompt({ ...state.view, repoKey: seat.key }, orders.reviewHeadsOf(state.view, head, "settled"));
       try {
         run(["--session", session, "agent", "prompt", seat.label, prompt]);
       } catch (err) {
