@@ -1,5 +1,0 @@
----
-"agent-org": minor
----
-
-The Telegram provider can edit a sent message and pin one (a11ign/a11ign#4744, row 2 of 5 of the split of the one chairman chat), so the asks list can tick a resolved ask in place and keep one message of what is open pinned. `capabilities.edit` and `capabilities.pin` are optional booleans: a provider that declares neither is still a provider. `edit({ messageRef, text, audience? })` calls `editMessageText` and returns `{ messageRef, unchanged }`, where Telegram's "message is not modified" is a success reported as `unchanged: true`; it refuses empty text and, as one message, text over 4,096 characters. `pin({ messageRef, audience? })` calls `pinChatMessage` with `disable_notification: true`. Both act in the chat of the `audience` (absent means `ask`), because a message id means something only inside its own chat. `runProviderConformance` asks for them only when declared and reports the checks `skipped` with the reason otherwise; the fake provider implements both (`edits`, `pinned`). Nothing calls `edit` or `pin` yet: the asks list is a later row of the split.
