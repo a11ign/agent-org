@@ -11,7 +11,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  CANARY_STATE_FILE, DEFAULT_CANARY_OPTIONS, MACHINERY_SIGNALS, machineryCanaryTick, machineryFlagOn, parseCanaryState, signalReading, withMachineryFlag,
+  CANARY_STATE_FILE, DEFAULT_CANARY_OPTIONS, MACHINERY_SIGNALS, evaluateFlag, machineryCanaryTick, machineryFlagOn, parseCanaryState, signalReading, withMachineryFlag,
   type CanaryFacts, type CanaryIo, type CanarySample,
 } from "./org-health.ts";
 
@@ -93,4 +93,44 @@ test("#5444 (4) THROUGH THE TICK: a quiet hour after a day at 3 an hour does not
   const reading = state().flags[FLAG].readings.find((r) => r.signal === CLAIMS);
   assert.equal(reading?.status, "ok", reading?.detail);
   assert.match(reading?.detail ?? "", /24 h mean/);
+});
+
+/**
+ * agent-org#1684 (a11ign#5667): A SIGNAL FIRST RECORDED INSIDE THE HOUR BEFORE THE FLAG IS NEW, AND ITS BEFORE IS A NUMBER.
+ *
+ * THE DEFECT, 2026-10-17: `prs.ownerlessAsk` (signal `ownerless-pr-unreached`) was added in the release that turned its flag on, so no hour before `onAt` ever fills and
+ * `before` was `unknown` for ever: the canary could not revert it. A new signal's unrecorded part of the hour before is ZERO events, so the bar is `minRise`.
+ *   (1) 6 of the 60 min before recorded at 0, then a quiet hour: `before` is the number 0, `ok`, and the flag PASSES;
+ *   (2) the same, then `minRise` events in the hour after: `degraded`, and the flag REVERTS;
+ *   (3) NEGATIVE CONTROL: the same 6 minutes, but the signal also has a sample from 3 hours before `onAt`: a gap in an old signal, still `unknown` with `before: null`;
+ *   (4) NEGATIVE: no sample of the signal at all in the hour before: still `unknown`.
+ */
+test("a signal first recorded inside the hour before the flag reads a number for before", () => {
+  const sixMinutesBefore = (value: number | null): CanarySample => ({ from: ON - 6 * MINUTE, to: ON, values: { [CLAIMS]: value } });
+  const quietHour: CanarySample = { from: ON, to: ON + HOUR, values: { [CLAIMS]: 0 } };
+  const reading = (samples: CanarySample[]) => signalReading({ signal: CLAIMS, samples, onAt: ON, now: ON + HOUR, options: OPTIONS });
+
+  // (1) POSITIVE: a number, and the flag passes after a quiet hour.
+  const quiet = reading([sixMinutesBefore(0), quietHour]);
+  assert.equal(quiet.status, "ok", quiet.detail);
+  assert.equal(quiet.before, 0, "the recorded count of the hour before is a number, not `null`");
+  const passed = evaluateFlag({ record: { on: true, signals: [CLAIMS], onAt: ON, verdict: "watching", decidedAt: null, readings: [], incident: null }, samples: [sixMinutesBefore(0), quietHour], now: ON + HOUR, options: OPTIONS });
+  assert.equal(passed.verdict, "passed", JSON.stringify(passed.readings));
+
+  // (2) THE GUARD BITES: `minRise` events in the hour after revert the flag.
+  const storm: CanarySample = { from: ON, to: ON + HOUR, values: { [CLAIMS]: OPTIONS.minRise } };
+  const degraded = reading([sixMinutesBefore(0), storm]);
+  assert.equal(degraded.status, "degraded", degraded.detail);
+  const reverted = evaluateFlag({ record: { on: true, signals: [CLAIMS], onAt: ON, verdict: "watching", decidedAt: null, readings: [], incident: null }, samples: [sixMinutesBefore(0), storm], now: ON + HOUR, options: OPTIONS });
+  assert.equal(reverted.verdict, "reverted", JSON.stringify(reverted.readings));
+
+  // (3) NEGATIVE CONTROL: an OLDER sample makes the 6 minutes a gap in an old signal, which is no baseline.
+  const older: CanarySample = { from: ON - 4 * HOUR, to: ON - 3 * HOUR, values: { [CLAIMS]: 0 } };
+  const gap = reading([older, sixMinutesBefore(0), quietHour]);
+  assert.equal(gap.status, "unknown", gap.detail);
+  assert.equal(gap.before, null);
+
+  // (4) NEGATIVE: nothing of the signal was read in the hour before, so nothing was clean.
+  assert.equal(reading([quietHour]).status, "unknown");
+  assert.equal(reading([sixMinutesBefore(null), quietHour]).status, "unknown");
 });
