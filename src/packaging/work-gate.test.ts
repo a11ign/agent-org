@@ -5283,7 +5283,7 @@ test("#2202: main feeds the closed-row read into `answerOwed` beside the open on
   const source = workGateSource();
   assert.match(source, /answerOwed: rowsOwingAnswers\(\{ openRows: allOpen, openPrs, closedRows: closedAnswerRows\(closedRows\) \}\)/,
     "a closed row owing an answer must reach `decide` -- the open read alone is the defect");
-  assert.match(source, /closedRows: readClosedAnswerRows\(read\),/, "the closed-row read is still made, as one of the follow-ups asked together (#3566)");
+  assert.match(source, /closedRows: readClosedAnswerRows\(read, listWorkspaces === undefined \? null : \(\) => endedAnswerSessionTest\(agents, ended\)\),/, "the closed-row read is still made, as one of the follow-ups asked together (#3566)");
   assert.match(source, /function closedAnswerRows\(rows[^)]*\)[^{]* \{[^]*?NOTE: could not read the closed rows/,
     "a refused read is a line on stderr, never a silent empty list");
 });

@@ -718,7 +718,7 @@ const listPoints = (count: number) => (count > OPEN_PRS_FIRST_PAGE ? PR_LIST_POI
 
 const KEPT_READS_FILE = "kept-reads.json";
 type KeptPr = { readAt: number; pr: any; };
-type KeptRepo = { prs?: Record<string, KeptPr>; rows?: { signature: string; readAt: number; rows: any[]; }; };
+type KeptRepo = { prs?: Record<string, KeptPr>; rows?: { signature: string; readAt: number; rows: any[]; }; answers?: { signature: string; readAt: number; rows: any[]; }; };
 
 const said = (cause: unknown) => String((cause as { message?: string; })?.message ?? cause).split("\n")[0];
 
@@ -865,6 +865,26 @@ function conditionalOpenRows({ run, conditional }: { run: (args: string[]) => st
   if (listing !== null && rows !== null) {
     const named = new Set(rows.map((row) => row?.number));
     if (listing.numbers.every((number) => named.has(number))) saveKept(dir, { ...all, [repo]: { ...all[repo], rows: { signature: listing.signature, readAt: now, rows } } });
+  }
+  return rows;
+}
+
+/**
+ * agent-org#1636: THE CLOSED ROWS AND PULL REQUESTS THAT STILL OWE AN ANSWER ARE KEPT FOR `KEPT_ANSWERS_MAX_AGE_MS`, when `gate.restConditional` is on. They are the dearest list the gate asks
+ * (one GraphQL point per answer label per kind, every tick) and the one that moves least: a row is on it only after it was closed with an `answer:` label kept on it. `signature` is the
+ * labels asked for, so a session that is new (or ended) is asked for at once; the age is the one place this makes a reading later, by at most the age, of a question nobody has answered yet.
+ * `read` is what the gate always made; a `null` (refused) is never kept, and a flag off, or a run that is not `gh`, is `read()` as it was.
+ */
+export const KEPT_ANSWERS_MAX_AGE_MS = 5 * 60_000;
+export function keptClosedAnswers(signature: string, read: () => any[] | null, conditional: ConditionalReads | null): any[] | null {
+  if (conditional === null) return read();
+  const { dir, now, repo } = conditional;
+  const kept = readKept(dir)[repo]?.answers;
+  if (kept !== undefined && Array.isArray(kept.rows) && kept.signature === signature && now - kept.readAt >= 0 && now - kept.readAt < KEPT_ANSWERS_MAX_AGE_MS) return kept.rows;
+  const rows = read();
+  if (rows !== null) {
+    const all = readKept(dir);
+    saveKept(dir, { ...all, [repo]: { ...all[repo], answers: { signature, readAt: now, rows } } });
   }
   return rows;
 }
