@@ -27,7 +27,6 @@ import { AUTO_UNPARK_FLAG } from "../unpark-satisfied.ts";
 import { OPEN_PR_HOLD_FLAG } from "../prune-worktrees.ts";
 import { REFUSE_ASKING_ANNOUNCEMENTS_FLAG } from "../messaging/core.ts";
 import { ACCOUNT_LIMIT_FLAG } from "../account-limit.ts";
-import { PIN_BUMP_FLAG } from "../pin-bump-measure.ts";
 import { SAME_HEAD_REFAIL_FLAG } from "../work-gate/pr-orders.ts";
 
 const SESSION = "worker-agent-org-1061";
@@ -72,19 +71,7 @@ test("(1) the other registered flags are switched on and read through their own 
   assert.equal(machineryFlagOn(state, ROW_REVIEW_SKILL_FLAG), true, "review.rowReviewSkill is switched by the command, which `rowReviewSkillFlagOn` then reads (agent-org#1268)");
   assert.equal(machineryFlagOn(state, SAME_HEAD_REFAIL_FLAG), true, "checks.sameHeadRefail is switched by the command, which `sameHeadRefailFlagOn` then reads (agent-org#1185)");
   assert.equal(machineryFlagOn(state, CHAIRMAN_REFUSAL_FLAG), true, "chairman.refusedOnce is switched by the command, which `offerHierarchyNow` then reads (agent-org#1456)");
-  assert.deepEqual(FLAG_REGISTRY, [REENQUEUE_EJECTED_FLAG, CHAIN_WAIT_FLAG, CLOSED_UNDER_HALF_FLAG, AUTO_UNPARK_FLAG, QUEUE_ENTRY_NO_RUN_FLAG, RECHECK_FLAG, OPEN_PR_HOLD_FLAG, REFUSE_ASKING_ANNOUNCEMENTS_FLAG, PACING_FLAG, ROW_REVIEW_SKILL_FLAG, ACCOUNT_LIMIT_FLAG, PIN_BUMP_FLAG, SAME_HEAD_REFAIL_FLAG, PR_OWNER_ROUTING_FLAG, CHAIRMAN_REFUSAL_FLAG], "the registry is the fifteen flags a module reads");
-});
-
-test("(1) the pin/bump count's flag (agent-org#1245) is registered, default OFF, and switched on and off by the command, which its reader then sees", () => {
-  assert.ok(FLAG_REGISTRY.includes(PIN_BUMP_FLAG), "a flag the retro reads is in the registry");
-  assert.equal(machineryFlagOn(emptyCanaryState(), PIN_BUMP_FLAG), false, "default OFF: a fresh canary state has no record for it");
-  const dir = tmpDir("machinery-flag-switch-");
-  assert.equal(run(dir, ["on", PIN_BUMP_FLAG, `--session=${SESSION}`]).code, 0);
-  const text = readFileSync(join(dir, CANARY_STATE_FILE), "utf8");
-  assert.equal(machineryFlagOn(JSON.parse(text) as CanaryState, PIN_BUMP_FLAG), true);
-  assert.equal(machineryFlagOn(parseCanaryState(text), PIN_BUMP_FLAG), true, "the daily reading's reader sees the switch");
-  assert.equal(run(dir, ["off", PIN_BUMP_FLAG, `--session=${SESSION}`]).code, 0);
-  assert.equal(machineryFlagOn(parseCanaryState(readFileSync(join(dir, CANARY_STATE_FILE), "utf8")), PIN_BUMP_FLAG), false, "off reads OFF again");
+  assert.deepEqual(FLAG_REGISTRY, [REENQUEUE_EJECTED_FLAG, CHAIN_WAIT_FLAG, CLOSED_UNDER_HALF_FLAG, AUTO_UNPARK_FLAG, QUEUE_ENTRY_NO_RUN_FLAG, RECHECK_FLAG, OPEN_PR_HOLD_FLAG, REFUSE_ASKING_ANNOUNCEMENTS_FLAG, PACING_FLAG, ROW_REVIEW_SKILL_FLAG, ACCOUNT_LIMIT_FLAG, SAME_HEAD_REFAIL_FLAG, PR_OWNER_ROUTING_FLAG, CHAIRMAN_REFUSAL_FLAG], "the registry is the fourteen flags a module reads");
 });
 
 test("(2) a name no module reads is refused, and nothing is written", () => {

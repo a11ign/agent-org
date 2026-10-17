@@ -11,7 +11,7 @@
 # repository holds the policy; filed as a11ign/a11ign#5624). It is minted only when the flag is on, so shipping this file needs no policy and a switch before the policy exists is a red run
 # here and nothing in the project. There is deliberately no fallback to `github.token`: that token is THIS repository's and would read and write the wrong one.
 #
-# THE PROJECT IS NAMED HERE AND NOWHERE IN src/: `PROJECT_REPOSITORY` below is this workflow's one declaration of whom it serves (the precedent is project-ref-bump.yml), and the tool is handed it as a flag.
+# THE PROJECT IS NAMED HERE AND NOWHERE IN src/: `PROJECT_REPOSITORY` below is this workflow's one declaration of whom it serves, and the tool is handed it as a flag.
 name: outside-nightly
 
 on:

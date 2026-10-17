@@ -17,9 +17,9 @@ import { boardFiledRow } from "./ticket-port/board-filed-row.ts"; // #5405: the 
 import { readRowsByLabel } from "./ticket-port/rows-by-label.ts"; // #5039
 import { decide, MAX_STATE_BYTES, type DecisionDeps, type Question } from "./decision-provider.ts";
 
-export const CI_FAILURE_CLASSES = Object.freeze(["own-defect", "flaky", "another-repository-changed", "infrastructure", "waiting-on-pin-bump", "stale-merge-ref"] as const);
+export const CI_FAILURE_CLASSES = Object.freeze(["own-defect", "flaky", "another-repository-changed", "infrastructure", "stale-merge-ref"] as const);
 export type CiFailureClass = (typeof CI_FAILURE_CLASSES)[number];
-export const CI_FAILURE_ROUTES = Object.freeze(["owner", "rerun-once", "cross-repo-incident", "rerun-after-reset", "wait-for-pin-bump", "push-or-update-branch"] as const);
+export const CI_FAILURE_ROUTES = Object.freeze(["owner", "rerun-once", "cross-repo-incident", "rerun-after-reset", "push-or-update-branch"] as const);
 export type CiFailureRoute = (typeof CI_FAILURE_ROUTES)[number];
 
 /** At most this many error lines are sent, so the state stays a few fields and never a log. */
@@ -44,11 +44,6 @@ export type CiFailureFacts = {
   rateLimitOrRunnerLost: boolean;
   rerunAlready: boolean;
   /**
-   * #5151: the only red check is a copy ahead of the project commit CI was pinned to, and an open bump pull request reaches it. Nothing sets it since agent-org#1593 deleted the pin
-   * (CI runs against the fixture project, not a11ign at a commit), so it is absent in every real read; the class and route it selects are kept until a row removes them. Absent is `false`.
-   */
-  waitsOnPinBump?: boolean;
-  /**
    * agent-org#1524: the acceptance gate could not read the diff, because the merge commit the run checked out has no parents (a superseded merge). A rerun checks out that same
    * commit, so it cannot clear it. Absent is `false`, so a caller that does not read it is today's classifier.
    */
@@ -66,8 +61,6 @@ export type CiFailureDecision = {
   confidence?: number;
 };
 
-/** The class a copy carried ahead of the pin is in (#5151). The provider is offered it only when {@link CiFailureFacts.waitsOnPinBump} was READ true. */
-const PIN_WAIT = "waiting-on-pin-bump" satisfies CiFailureClass;
 /** The class of a run that checked out a superseded merge commit (agent-org#1524). Offered to the provider only when {@link CiFailureFacts.staleMergeRef} was READ true. */
 const STALE_REF = "stale-merge-ref" satisfies CiFailureClass;
 
@@ -76,7 +69,6 @@ const CRITERIA: Readonly<Record<CiFailureClass, string>> = Object.freeze({
   flaky: "the test passes and fails without a change: a timing, ordering or race error, red on this pull request alone and not on main.",
   "another-repository-changed": "the test reads another repository or a pinned dependency, and that repository changed: the same test is red on main or on other pull requests.",
   infrastructure: "the runner, the network or a rate limit failed, whatever the code did.",
-  [PIN_WAIT]: "the only failure is a copy carried ahead of the pinned project, and the bump pull request that reaches it is open: nothing here is wrong, the pin has not moved yet.",
   [STALE_REF]: "the acceptance gate could not read the diff because the merge commit the run checked out is a superseded one with no parents: the pull request's own change is not what failed, and a rerun checks out the same commit.",
 });
 
@@ -85,20 +77,17 @@ const ROUTES: Readonly<Record<CiFailureClass, CiFailureRoute>> = Object.freeze({
   flaky: "rerun-once",
   "another-repository-changed": "cross-repo-incident",
   infrastructure: "rerun-after-reset",
-  [PIN_WAIT]: "wait-for-pin-bump",
   [STALE_REF]: "push-or-update-branch",
 });
 
 /**
  * THE RULE WITH NO PROVIDER. A rate-limit or runner-lost text is infrastructure FIRST, because a runner lost on `main` too is still not a repository that changed; the same test red on
- * `main` is another repository's change; everything else is the pull request's own defect, which is today's order unchanged. A copy carried ahead of a pin that an open bump pull request
- * will move is {@link PIN_WAIT} (#5151): it comes after the runner, which failed whatever the pin was, and before `main`: a drift that a bump will end is not another repository's incident to file.
- * A superseded merge commit the acceptance gate could not read is {@link STALE_REF} (#1524), placed the same way: after the runner, before `main`, since `main` being red says nothing about it.
+ * `main` is another repository's change; everything else is the pull request's own defect, which is today's order unchanged.
+ * A superseded merge commit the acceptance gate could not read is {@link STALE_REF} (#1524): after the runner, before `main`, since `main` being red says nothing about it.
  */
-export function fallbackClass(facts: Pick<CiFailureFacts, "redOnMain" | "rateLimitOrRunnerLost" | "waitsOnPinBump" | "staleMergeRef">): CiFailureClass {
+export function fallbackClass(facts: Pick<CiFailureFacts, "redOnMain" | "rateLimitOrRunnerLost" | "staleMergeRef">): CiFailureClass {
   if (facts.rateLimitOrRunnerLost) return "infrastructure";
   if (facts.staleMergeRef === true) return STALE_REF;
-  if (facts.waitsOnPinBump === true) return PIN_WAIT;
   return facts.redOnMain ? "another-repository-changed" : "own-defect";
 }
 
@@ -127,14 +116,12 @@ const stateOf = (failure: CiFailure, errorLines: readonly string[]) => ({
   redOnOtherPrs: failure.redOnOtherPrs,
   readsOutsideRepository: failure.readsOutsideRepository,
   rateLimitOrRunnerLost: failure.rateLimitOrRunnerLost,
-  ...(failure.waitsOnPinBump === true ? { waitsOnPinBump: true } : {}),
   ...(failure.staleMergeRef === true ? { staleMergeRef: true } : {}),
 });
 
-/** The classes the provider may pick: {@link PIN_WAIT} only when the fact that authorises it was read, so a provider cannot talk a holder into waiting for a bump that is not coming;
- * {@link STALE_REF} only when its fact was read, so a provider cannot route an ordinary red to a push. */
+/** The classes the provider may pick: {@link STALE_REF} only when its fact was read, so a provider cannot route an ordinary red to a push. */
 const criteriaFor = (failure: CiFailure): Readonly<Record<string, string>> =>
-  Object.fromEntries(Object.entries(CRITERIA).filter(([klass]) => (klass !== PIN_WAIT || failure.waitsOnPinBump === true) && (klass !== STALE_REF || failure.staleMergeRef === true)));
+  Object.fromEntries(Object.entries(CRITERIA).filter(([klass]) => klass !== STALE_REF || failure.staleMergeRef === true));
 
 const isClass = (value: unknown, failure: CiFailure): value is CiFailureClass =>
   typeof value === "string" && Object.hasOwn(criteriaFor(failure), value);
@@ -275,16 +262,15 @@ const ROUTE_WORDS: Readonly<Record<CiFailureRoute, string>> = Object.freeze({
   "rerun-once": "A flaky failure: rerun the failed job ONCE (`gh run rerun <run id> --failed`); red again, it is your defect.",
   "cross-repo-incident": "Another repository or a pinned dependency changed: this is not this pull request's defect, so do not fix it here; file or join the cross-repository incident for the cause.",
   "rerun-after-reset": "The runner or a rate limit failed, not the code: change nothing; rerun the failed job after the limit resets.",
-  "wait-for-pin-bump": "A copy of yours is ahead of the project this repository's CI is pinned to, and the bump pull request that moves the pin is open: do not fix it and do not stop; the branch is updated when the bump merges, and a red AFTER the bump is yours.",
   "push-or-update-branch": "The merge commit this run checked out is a superseded one, not your change: re-push the branch or update it (`update-branch`) so GitHub builds a new merge commit; a rerun reuses the same merge commit and cannot clear it.",
 });
 
 /**
- * Does the order gain {@link classNote}: always when the PROVIDER chose, and when a RULE chose only for a route whose reader would otherwise act wrongly: the route that tells a holder to WAIT
- * (#5151), and the route that tells a holder a rerun cannot clear the red (#1524). Every other rule's class is the gate's own order already ("fix it"), so a note would repeat it.
+ * Does the order gain {@link classNote}: always when the PROVIDER chose, and when a RULE chose only for a route whose reader would otherwise act wrongly: the route that tells a holder a rerun
+ * cannot clear the red (#1524). Every other rule's class is the gate's own order already ("fix it"), so a note would repeat it.
  */
 export const notesTheOrder = (decision: CiFailureDecision): boolean =>
-  decision.via === "jev" || decision.route === "wait-for-pin-bump" || decision.route === "push-or-update-branch";
+  decision.via === "jev" || decision.route === "push-or-update-branch";
 
 /** What the order's text gains when {@link notesTheOrder}: the line, and what the route asks of its reader. */
 export function classNote(decision: CiFailureDecision): string {

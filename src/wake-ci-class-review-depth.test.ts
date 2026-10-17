@@ -146,11 +146,11 @@ test("withCiFailureClass: a provider's class and route ride the order; with no p
   assert.deepEqual(asked, ["#77", "#77"]);
 });
 
-test("#5151 withCiFailureClass: with NO provider, an order whose copy waits on a pin bump still tells its holder to wait; every other rule's class leaves the order as written", async () => {
-  const read = (waits: boolean) => () => ({ ...FACTS, ...(waits ? { waitsOnPinBump: true } : {}) });
-  const [waiting] = await withCiFailureClass([RED_ORDER], { host: {}, ledgerPath: "/nonexistent/ledger", read: read(true), classify: classifying() });
-  assert.match(waiting.prompt, /^PR 77 has FAILING checks\.\n\nCI failure class: waiting-on-pin-bump -> wait-for-pin-bump \(rule/);
-  assert.match(waiting.prompt, /do not fix it and do not stop/);
+test("#1524 withCiFailureClass: with NO provider, an order whose run checked out a superseded merge commit still tells its holder a rerun cannot clear it; every other rule's class leaves the order as written", async () => {
+  const read = (stale: boolean) => () => ({ ...FACTS, ...(stale ? { staleMergeRef: true } : {}) });
+  const [stale] = await withCiFailureClass([RED_ORDER], { host: {}, ledgerPath: "/nonexistent/ledger", read: read(true), classify: classifying() });
+  assert.match(stale.prompt, /^PR 77 has FAILING checks\.\n\nCI failure class: stale-merge-ref -> push-or-update-branch \(rule/);
+  assert.match(stale.prompt, /a rerun reuses the same merge commit/);
   const [own] = await withCiFailureClass([RED_ORDER], { host: {}, ledgerPath: "/nonexistent/ledger", read: read(false), classify: classifying() });
   assert.equal(own.prompt, RED_ORDER.prompt, "the control: the same order without the fact is the gate's");
 });
