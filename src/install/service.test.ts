@@ -1,6 +1,8 @@
 // no-token: none -- `launchctl` and `systemctl` are a recording stand-in, and every unit is written into a temporary HOME
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { COMMANDS } from "../commands.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
@@ -113,4 +115,74 @@ test("a unit escapes $ and % for systemd, and refuses a line break in any value 
 test("the service's PATH keeps absolute entries and drops a project's node_modules/.bin", () => {
   assert.equal(servicePath("/p/node_modules/.bin::relative:/opt/bin:/usr/bin"), "/opt/bin:/usr/bin");
   assert.equal(servicePath(undefined), "/usr/local/bin:/usr/bin:/bin");
+});
+
+test("the linux unit writes WorkingDirectory unquoted, while ExecStart and Environment keep their quotes", () => {
+  const { deps: d } = deps("linux");
+  const unit = unitFor("instance", d);
+  assert.match(unit.text, /^WorkingDirectory=\/opt\/agent-org$/m);
+  assert.match(unit.text, /^ExecStart="\/opt\/node\/bin\/node" /m);
+  assert.match(unit.text, /^Environment="PATH=\/opt\/bin:\/usr\/bin"$/m);
+});
+
+test("a tool root with a space is written as is, and one with % is written %%, both unquoted", () => {
+  const spaced = unitFor("instance", deps("linux", {}, { toolRoot: "/opt/my agent" }).deps);
+  assert.match(spaced.text, /^WorkingDirectory=\/opt\/my agent$/m);
+  const percent = unitFor("instance", deps("linux", {}, { toolRoot: "/opt/a%b" }).deps);
+  assert.match(percent.text, /^WorkingDirectory=\/opt\/a%%b$/m);
+});
+
+// systemd-analyze is the reader systemd itself uses: it refuses a quoted WorkingDirectory as "path is not absolute", so a grep for the quotes alone would not prove the unit starts.
+const systemdAnalyze = spawnSync("systemd-analyze", ["--version"]);
+test("systemd-analyze reads the written unit and reports no WorkingDirectory finding", { skip: systemdAnalyze.error && "systemd-analyze is not on this machine" }, () => {
+  const { deps: d } = deps("linux", {}, { toolRoot: "/opt/a b%c" });
+  const path = join(tmpDir("unit-"), "agent-org-instance.service");
+  writeFileSync(path, unitFor("instance", d).text);
+  const verify = spawnSync("systemd-analyze", ["verify", path], { encoding: "utf8" });
+  assert.equal(verify.error, undefined);
+  assert.doesNotMatch(`${verify.stdout}${verify.stderr}`, /WorkingDirectory/);
+});
+
+test("the launchd plist is byte-identical to before the linux unit changed", () => {
+  const { deps: d } = deps("darwin", {}, { home: "/home/tester", toolRoot: "/opt/agent-org" });
+  assert.equal(unitFor("instance", d).text, `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.github.agent-org.instance</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/node/bin/node</string>
+    <string>/opt/agent-org/src/bin.ts</string>
+    <string>ticket:serve</string>
+    <string>--no-open</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>AGENT_ORG_HOST</key>
+    <string>/home/tester/.agent-org/host.json</string>
+    <key>AGENT_ORG_HOME</key>
+    <string>/home/tester/.agent-org</string>
+    <key>PATH</key>
+    <string>/opt/bin:/usr/bin</string>
+  </dict>
+  <key>WorkingDirectory</key>
+  <string>/opt/agent-org</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>/home/tester/.agent-org/logs/instance.log</string>
+  <key>StandardErrorPath</key>
+  <string>/home/tester/.agent-org/logs/instance.log</string>
+</dict>
+</plist>
+`);
 });
