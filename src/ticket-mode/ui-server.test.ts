@@ -14,10 +14,13 @@ import { httpForward, type Forward } from "./remote-proxy.ts";
 import { createBoard } from "./server.ts";
 import { parseTicketSettings } from "./settings.ts";
 import type { Ticket, TicketSource } from "./source.ts";
-import { boardViewScript, createUi, pairedBy } from "./ui-server.ts";
+import { boardViewScript, createUi, labelFiltersScript, pairedBy } from "./ui-server.ts";
 
 const REMOTE_KEY = "c".repeat(48);
 const ticket = (key: string) => ({ key, title: key, description: "", url: "", branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
+
+/** The labels this machine's instance gives its ticket, which the page reads through a connection like every other field. */
+const LABELS = [{ name: "Fleet", group: "Goal" }, { name: "Bug", group: null }];
 
 /** A server for `handle` on a free port on 127.0.0.1: its base address, and what closes it. */
 async function listen(handle: (port: number) => (req: IncomingMessage, res: ServerResponse) => Promise<void>) {
@@ -37,7 +40,7 @@ async function instance() {
   const key = boardKey(boardKeyPath(stateDir));
   const seen: IncomingMessage["headers"][] = [];
   const pool = { tick: async () => {}, stop: () => {}, close: () => {}, dismiss: () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {} };
-  const source: TicketSource = { assigned: async () => [ticket("NBF-1")], read: async () => null, download: async () => [] };
+  const source: TicketSource = { assigned: async () => [{ ...ticket("NBF-1"), labels: LABELS }], read: async () => null, download: async () => [] };
   const served = await listen((port) => {
     const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/r/netbox" }, stateDir, tickets: { port, terminal: "http://127.0.0.1:7318/?ws={workspace}" } });
     const board = createBoard({ settings, source, key, queuePath: join(stateDir, "queue.json"), choicePath: join(stateDir, "choice.json"), pool, now: () => 7 });
@@ -266,4 +269,31 @@ test("the page's logic is served as JavaScript the browser can import, and it is
   const view = await import(pathToFileURL(file).href);
   const tickets = [{ key: "A-1", title: "x", status: "Backlog", statusOrder: 0, priority: 2, project: "P" }];
   assert.deepEqual(view.visibleTickets(tickets, { projects: new Set(["P"]) }).map((t: { key: string }) => t.key), ["A-1"], "the browser's copy filters as the tested one does");
+});
+
+test("the label filters are served as JavaScript the browser can import, types stripped, and filter as the tested module does", async () => {
+  const script = labelFiltersScript();
+  assert.doesNotMatch(script, /export type |: readonly Labelled\[\]/, "no type annotation reaches the browser");
+  const file = join(tmpDir("ticket-label-filters-"), "label-filters.mjs");
+  writeFileSync(file, script);
+  const filters = await import(pathToFileURL(file).href);
+  const tickets = [{ key: "A-1", labels: [{ name: "Fleet", group: "Goal" }] }, { key: "A-2", labels: [] }];
+  assert.deepEqual(filters.withLabels(tickets, new Set([filters.labelChoice("Goal", "Fleet")])).map((t: { key: string }) => t.key), ["A-1"]);
+});
+
+test("a paired browser gets both of the page's modules, and a ticket's labels reach it through a connection with nothing new passed on", async () => {
+  const u = await ui([WORK]);
+  try {
+    const cookie = await pairedCookie(u.base, u.local.key);
+    for (const path of ["/board-view.js", "/label-filters.js"]) {
+      const served = await fetch(`${u.base}${path}`, { headers: { cookie } });
+      assert.equal(served.status, 200, path);
+      assert.match(String(served.headers.get("content-type")), /^text\/javascript/, path);
+    }
+    assert.equal((await fetch(`${u.base}/label-filters.js`)).status, 401, "an unpaired browser gets no module");
+    const tickets = await (await fetch(`${u.base}/c/work/api/tickets`, { headers: { cookie } })).json() as { labels?: unknown }[];
+    assert.deepEqual(tickets[0].labels, LABELS, "the Pick route the page already reads carries them");
+  } finally {
+    await u.close();
+  }
 });

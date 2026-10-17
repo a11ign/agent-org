@@ -141,7 +141,11 @@ takes them one each. Ticket mode is two services, both on `127.0.0.1`:
   in the order their "blocked by" relations give, or in identifier order where Linear gives none, which the page then says. A sub-issue
   that is itself a parent is left out and named. The instance refuses a parent on `/api/queue` with a 400 saying why, whatever asked, and
   once every sub-issue is done or canceled the ticket is an ordinary one again. Filter by Linear project or priority (several of each at once) or by search, and fold any status group; each is remembered in the
-  browser. On a machine that sets `tickets.plan`, a ticket with no plan of its own is marked, so you can attach one before a worker starts it.
+  browser. Labels filter too: each Linear label group among the listed tickets (a parent label, such as a group "Goal" whose labels say what
+  each ticket is for) gets a row of its own, named after it, with its labels as chips and their counts, and a "(no Goal)" chip for the
+  tickets still without one. The labels in no group share one "Labels" row, shown only when there are any. A row works like the projects:
+  All clears it, several chips show a ticket with any of them, and rows combine with each other and every other filter. The labels are read
+  in the same request as the list, the choice is remembered in the browser, and each ticket shows its group labels as small tags after its title. On a machine that sets `tickets.plan`, a ticket with no plan of its own is marked, so you can attach one before a worker starts it.
   The mark is muted when the ticket's parent has a plan, because a worker is briefed with its parent's plan too. An epic is never marked or
   counted, because no worker starts one. A Plan filter, also remembered, shows only the tickets with a plan, or only those without, each
   under its epic. Queue runs them on the model and effort the footer shows, which start as the default set in Settings. Changing them in

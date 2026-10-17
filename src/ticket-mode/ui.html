@@ -45,6 +45,7 @@
   .row .sub { color: var(--muted); font-size: 12px; }
   .key { font-variant-numeric: tabular-nums; color: var(--muted); }
   .pill { font-size: 12px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+  .tag { font-size: 11px; padding: 0 6px; margin-left: 6px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; vertical-align: 1px; }
   /* Above the sticky status headers (z-index 1), which otherwise paint over it, and its buttons, as they scroll under it. */
   footer { position: fixed; bottom: 0; left: 0; right: 0; z-index: 2; background: var(--panel); border-top: 1px solid var(--line); padding: 10px 20px; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
   footer[hidden] { display: none; }
@@ -159,6 +160,7 @@
     <div class="chips" id="projects"></div>
     <div class="chips" id="priorities"></div>
     <div class="chips" id="plans" hidden></div>
+    <div id="label-rows"></div>
     <div id="children-note" class="notice" role="status" hidden></div>
     <div id="paused-note" class="notice" hidden>Workers are paused. Tickets you queue wait on the Board until you start workers there.</div>
     <div id="groups"></div>
@@ -194,6 +196,8 @@ import {
   APPROVE_TITLE, DISMISS_TITLE, RESPOND_TITLE, QUEUE_CHILDREN, QUEUE_CHILDREN_TITLE, childrenNote, isParentTicket, PRIORITY_NAMES, RUN_STATUSES, publishable, publishLabel, publishNote, publishTerminalLink, pullsOf, flatten, groupByStatus, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, queueLabel, recall, remember, runActions, shownStatus, apiBase, chosenConnection, connectionLabel, safeHref, runStatus,
   runChoiceLabel, runsShown, unplannedCount, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, waitsOn, workersLabel,
 } from "/board-view.js";
+// The label rows: one per label group the listed tickets carry, and one for the labels in no group. label-filters.ts decides them, tested there.
+import { clearedRow, groupTags, labelRows, withLabels } from "/label-filters.js";
 
 const el = (tag, props = {}, ...children) => {
   const node = Object.assign(document.createElement(tag), props);
@@ -216,6 +220,8 @@ const state = {
   plan: null, planChoice: planChoiceOf(recall(storage, "ticket-mode.plan")),
   // Sections start collapsed, so a first visit sees every status and its count before any list.
   open: recall(storage, "ticket-mode.open"), projects: recall(storage, "ticket-mode.projects"), priorities: prioritiesOf(recall(storage, "ticket-mode.priorities")),
+  // The label chips chosen, across every row, each as its group and label (label-filters.ts's labelChoice).
+  labels: recall(storage, "ticket-mode.labels"),
   // Parents start folded too, so an epic reads as one row until it is opened.
   openParents: recall(storage, "ticket-mode.open-parents"),
   runFilter: [...recall(storage, "ticket-mode.run-filter")][0] ?? null,
@@ -243,7 +249,8 @@ const pickableShown = () => groupByStatus(shown(), state.parents).flatMap(([, no
 /** Every section open, and every parent in them. */
 const allOpen = (groups) => everyOpen(groups.map(([status]) => status)) && groups.flatMap(([, nodes]) => parentKeys(nodes)).every((key) => state.openParents.has(key));
 const planFilter = () => (state.plan && state.planChoice ? { pattern: state.plan, choice: state.planChoice } : null);
-const shown = () => visibleTickets(state.tickets, { projects: state.projects, search: $("filter").value, plan: planFilter(), priorities: state.priorities });
+const shown = () => withLabels(visibleTickets(state.tickets, { projects: state.projects, search: $("filter").value, plan: planFilter(), priorities: state.priorities }),
+  state.labels, state.tickets);
 
 function chip(label, pressed, onClick, n) {
   const b = el("button", { className: "chip", type: "button" }, label, n === undefined ? null : el("span", { className: "n" }, String(n)));
@@ -259,6 +266,21 @@ function renderProjects() {
     chip("All projects", state.projects.size === 0, () => choose(new Set())),
     ...counts.map(([name, n]) => chip(name, state.projects.has(name), () => choose(toggled(state.projects, name)), n)));
 }
+
+/**
+ * A row of chips for each label group among the listed tickets, named after it, then one for the labels in no group when there are any. Each
+ * works as the Projects row does: All clears that row, its chips choose several at once, and the rows combine with every other filter.
+ */
+function renderLabels() {
+  const choose = (next) => { state.labels = next; remember(storage, "ticket-mode.labels", next); render(); };
+  $("label-rows").replaceChildren(...labelRows(state.tickets, state.labels).map((row) => el("div", { className: "chips" },
+    el("span", { className: "label" }, row.name),
+    chip("All", row.all, () => choose(clearedRow(state.labels, row.group))),
+    ...row.chips.map((c) => chip(c.text, c.pressed, () => choose(toggled(state.labels, c.choice)), c.count)))));
+}
+
+/** A ticket's labels in a group, as small tags after its title, each titled with its group. */
+const labelTags = (t) => groupTags(t).map(({ name, group }) => el("span", { className: "tag", title: group }, name));
 
 /** The priority chips, counting the tickets a worker can be given, most urgent first. */
 function renderPriorities() {
@@ -322,6 +344,7 @@ function renderPick() {
   renderProjects();
   renderPriorities();
   renderPlans();
+  renderLabels();
   const tickets = shown();
   const free = (t) => selectable(t, state.queue.entries);
   const list = $("groups");
@@ -348,7 +371,7 @@ function renderPick() {
     // the no-plan mark: an epic is never started. A ticket the tracker says has open sub-issues is a parent even when none of them is in the
     // list: it is marked, counts them, has no checkbox to tick, and offers Queue its children instead (A11-76).
     const titleCell = (t, depth, { arrow = null, mark = null, note = null } = {}) => el("span", {}, arrow, mark,
-      el("a", { href: safeHref(t.url), target: "_blank", rel: "noreferrer" }, t.title), depth > 0 ? el("span", { className: "sub" }, ` · ${t.status}`) : null, note);
+      el("a", { href: safeHref(t.url), target: "_blank", rel: "noreferrer" }, t.title), ...labelTags(t), depth > 0 ? el("span", { className: "sub" }, ` · ${t.status}`) : null, note);
     const pill = (text) => el("span", { className: "pill" }, text);
     const place = (row, depth) => { if (depth > 0) row.setAttribute("style", `--depth: ${depth}`); box.append(row); };
     const add = (node, depth) => {
