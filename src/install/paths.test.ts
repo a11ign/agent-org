@@ -9,7 +9,7 @@ import { programEnv } from "../bin.ts";
 import { COMMANDS } from "../commands.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { boardKey, boardKeyPath } from "../ticket-mode/board-key.ts";
-import { hostFilePath, unitHostFile } from "./paths.ts";
+import { hostFilePath, hostGhConfigDir, unitHostFile } from "./paths.ts";
 import { unitFor, type ServiceDeps } from "./service.ts";
 
 const HOME = "/home/me";
@@ -74,4 +74,29 @@ test("ticket:remote-info with an empty environment reads the host file onboard r
   const after = remoteInfo(home);
   assert.equal(after.status, 0, after.stderr);
   assert.equal(JSON.parse(after.stdout).port, 4999);
+});
+
+// The gh identity: a ticket:* command and a service read GitHub as the account the host file declares for workers.
+test("a ticket:* program gets the workers' GH_CONFIG_DIR the host file declares, unless the caller named one", () => {
+  const host = JSON.stringify({ gh: { workers: "/home/agent/workers" } });
+  assert.equal(hostGhConfigDir(host), "/home/agent/workers/gh");
+  assert.equal(hostGhConfigDir(JSON.stringify({ clones: {} })), null);
+  assert.equal(hostGhConfigDir(JSON.stringify({ gh: { workers: "relative" } })), null);
+  assert.equal(hostGhConfigDir(null), null);
+  const read = (path: string) => (path === "/srv/h.json" ? hostGhConfigDir(host) : null);
+  assert.equal(programEnv("ticket:review", {}, () => "/srv/h.json", read).GH_CONFIG_DIR, "/home/agent/workers/gh");
+  assert.equal(programEnv("ticket:review", { AGENT_ORG_HOST: "/srv/h.json", GH_CONFIG_DIR: "/mine/gh" }, () => "/x", read).GH_CONFIG_DIR, "/mine/gh");
+  assert.equal(programEnv("pr:open", {}, () => "/srv/h.json", read).GH_CONFIG_DIR, undefined);
+});
+
+test("the instance unit carries the host file's GH_CONFIG_DIR, and none when neither the host file nor the caller names one", () => {
+  const base = (hostText: string | null, env: Record<string, string> = {}): ServiceDeps => ({
+    platform: "linux", env: { AGENT_ORG_HOST: "/srv/h.json", PATH: "/usr/bin", ...env }, home: HOME, uid: 501, node: "/n/node", toolRoot: "/opt/agent-org", commands: COMMANDS,
+    run: () => ({ status: 0, stdout: "", stderr: "" }), exists: () => false, read: (path) => (path === "/srv/h.json" ? hostText : null), write: () => {},
+  });
+  const declared = JSON.stringify({ gh: { workers: "/home/agent/workers" } });
+  assert.match(unitFor("instance", base(declared, { GH_CONFIG_DIR: "/admin/gh" })).text, /^Environment="GH_CONFIG_DIR=\/home\/agent\/workers\/gh"$/m);
+  assert.match(unitFor("auto-update", base(declared)).companion?.text ?? "", /^Environment="GH_CONFIG_DIR=\/home\/agent\/workers\/gh"$/m);
+  assert.match(unitFor("ui", base("{}", { GH_CONFIG_DIR: "/mine/gh" })).text, /^Environment="GH_CONFIG_DIR=\/mine\/gh"$/m);
+  assert.doesNotMatch(unitFor("instance", base("{}")).text, /GH_CONFIG_DIR/);
 });

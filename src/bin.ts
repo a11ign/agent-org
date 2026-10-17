@@ -13,14 +13,15 @@
 // `ssh <machine> agent-org ticket:remote-info` sets none, so it read `~/.agent-org/host.json`, which on a machine onboarded with another host file
 // does not exist. With the variable unset, the child gets the path `install/paths.ts` resolves (onboard's record, then the instance unit's), the
 // same one `agent-org start` wrote into the unit. Only `ticket:*`: every other program resolves a PROJECT from that variable, and setting it there
-// would change which project it serves.
+// would change which project it serves. With `GH_CONFIG_DIR` unset, it also gets the workers' `gh` account the host file declares
+// (`<gh.workers>/gh`), the one the services run with, so a `ticket:*` command run from a plain shell reads GitHub as the board does.
 import { spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { constants, homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { COMMANDS, FIXED_ARGS } from "./commands.ts";
-import { hostFilePath } from "./install/paths.ts";
+import { hostFilePath, hostGhConfigDir, readOrNull } from "./install/paths.ts";
 
 const REFUSED = 2;
 const SIGNAL_EXIT_BASE = 128;
@@ -53,11 +54,13 @@ function withoutRepeatedFixed(rest: readonly string[], fixed: readonly string[])
 
 /**
  * The environment `name`'s program runs with: the caller's, and for a `ticket:*` command with no `AGENT_ORG_HOST`, that variable set to the host
- * file `hostFile` resolves. PURE over its arguments.
+ * file `hostFile` resolves, and with no `GH_CONFIG_DIR`, the `gh` account `ghConfigDir` reads from that host file. PURE over its arguments.
  */
-export function programEnv(name: string, env: NodeJS.ProcessEnv, hostFile: () => string): NodeJS.ProcessEnv {
-  if (!name.startsWith("ticket:") || (env.AGENT_ORG_HOST ?? "") !== "") return env;
-  return { ...env, AGENT_ORG_HOST: hostFile() };
+export function programEnv(name: string, env: NodeJS.ProcessEnv, hostFile: () => string, ghConfigDir: (hostFile: string) => string | null = () => null): NodeJS.ProcessEnv {
+  if (!name.startsWith("ticket:")) return env;
+  const host = (env.AGENT_ORG_HOST ?? "") !== "" ? env.AGENT_ORG_HOST as string : hostFile();
+  const gh = (env.GH_CONFIG_DIR ?? "") !== "" ? null : ghConfigDir(host);
+  return { ...env, AGENT_ORG_HOST: host, ...(gh === null ? {} : { GH_CONFIG_DIR: gh }) };
 }
 
 /** @returns the program's exit code, 128 + n for a signal n */
@@ -77,7 +80,7 @@ async function main(argv: readonly string[]) {
     process.exitCode = REFUSED;
     return;
   }
-  process.exitCode = await runProgram(plan.run.program, plan.run.args, programEnv(argv[0] ?? "", process.env, () => hostFilePath(process.env, homedir())));
+  process.exitCode = await runProgram(plan.run.program, plan.run.args, programEnv(argv[0] ?? "", process.env, () => hostFilePath(process.env, homedir()), (host) => hostGhConfigDir(readOrNull(host))));
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) await main(process.argv.slice(2));

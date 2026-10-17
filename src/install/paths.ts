@@ -73,3 +73,19 @@ export function hostFilePath(env: Env = process.env, home: string = homedir(), r
   }
   return join(agentOrgHome(env, home), "host.json");
 }
+
+/**
+ * The `gh` account directory the host file declares for workers, `<gh.workers>/gh`, or null when it declares none. An org host routes every `gh`
+ * through a wrapper (`host/gh`) that refuses a call with no workspace id and no `GH_CONFIG_DIR`, so a `ticket:*` command run from a plain shell,
+ * or a service, must name the same account the workers use (measured 2026-10-17: `agent-org ticket:review <pr>` from an ssh shell could not read
+ * the pull request). A laptop's host file declares no `gh`, and its `gh` is the person's own.
+ */
+export function hostGhConfigDir(hostText: string | null): string | null {
+  if (hostText === null) return null;
+  try {
+    const workers = JSON.parse(hostText)?.gh?.workers;
+    return typeof workers === "string" && isAbsolute(workers) ? join(workers, "gh") : null;
+  } catch {
+    return null;
+  }
+}

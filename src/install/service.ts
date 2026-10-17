@@ -26,7 +26,7 @@ import { basename, dirname, join } from "node:path";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { COMMANDS } from "../commands.ts";
-import { agentOrgHome, hostFilePath, readOrNull, TOOL_ROOT, type Env } from "./paths.ts";
+import { agentOrgHome, hostFilePath, hostGhConfigDir, readOrNull, TOOL_ROOT, type Env } from "./paths.ts";
 import { findBun } from "./bun.ts";
 import { herdrConfigDir, pluginRoot, TERMINAL_PLUGIN, terminalProgram, terminalTarget } from "./terminal.ts";
 import { writeAtomic } from "./write-atomic.ts";
@@ -137,12 +137,19 @@ export function updateChannel(deps: Pick<ServiceDeps, "env" | "home" | "read">):
 /** What `name` runs. PURE over `deps`. REFUSES a service the command table lacks, and a terminal whose plugin or bun is not installed. */
 function programFor(name: ServiceName, deps: ServiceDeps): Program {
   const bin = join(deps.toolRoot, "src", "bin.ts");
-  const toolEnvironment = (): Record<string, string> => ({
-    AGENT_ORG_HOST: hostFilePath(deps.env, deps.home, deps.read),
-    AGENT_ORG_HOME: agentOrgHome(deps.env, deps.home),
-    // `herdr`, `claude`, `gh` and `git` are found on the PATH of the person who started it: a service gets no login shell's.
-    PATH: servicePath(deps.env.PATH),
-  });
+  const toolEnvironment = (): Record<string, string> => {
+    const host = hostFilePath(deps.env, deps.home, deps.read);
+    // The workers' `gh` account the host file declares, else the one the person who started it named: an org host's `gh` wrapper refuses a
+    // call that names none, and a service has no workspace id for it to route by.
+    const gh = hostGhConfigDir(deps.read(host)) ?? (deps.env.GH_CONFIG_DIR || null);
+    return {
+      AGENT_ORG_HOST: host,
+      AGENT_ORG_HOME: agentOrgHome(deps.env, deps.home),
+      ...(gh === null ? {} : { GH_CONFIG_DIR: gh }),
+      // `herdr`, `claude`, `gh` and `git` are found on the PATH of the person who started it: a service gets no login shell's.
+      PATH: servicePath(deps.env.PATH),
+    };
+  };
   if (name === "instance" || name === "ui") {
     const { command, args } = SERVICE_COMMANDS[name];
     if (!Object.hasOwn(deps.commands, command)) {
