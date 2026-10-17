@@ -2493,6 +2493,7 @@ export const MACHINERY_SIGNALS = Object.freeze({
   INCIDENTS_NOT_REAL: "incidents-not-real",
   RATE_LIMIT_REFUSALS: "rate-limit-refusals",
   RELEASE_FAILURES: "release-failures",
+  OWNERLESS_PR_UNREACHED: "ownerless-pr-unreached", // agent-org#1648: a red pull request the chairman opened with no session on it, that no order reaches for UNQUEUED_MINUTES
 });
 export const STANDARD_MACHINERY_SIGNALS: readonly string[] = Object.freeze(Object.values(MACHINERY_SIGNALS));
 /** The signals no source in this tool reads yet: recorded as `null` every tick, so a change that names one is told it is UNKNOWN and not that it passed. */
@@ -2641,6 +2642,8 @@ export function evaluateFlag({ record, samples, now, options }: { record: FlagRe
 /** What a tick read: each is `null` when that read was refused or not made, which a sample records as unread. `unarmed` are the numbers of the green, approved pull requests not in the queue. */
 export type CanaryFacts = {
   claimRefusals: ClaimRefusal[] | null; unread: string[] | null; deferredWakes: number | null; unarmed: number[] | null; releaseRuns: ReleaseRuns | null;
+  /** agent-org#1648: the numbers of the red, chairman-opened pull requests no order reaches; `null` (or absent) when unread. */
+  ownerless?: number[] | null;
 };
 
 /** The standard signals of one tick over `(since, now]`. A pull request counts as unqueued once the memo has seen it unarmed for `UNQUEUED_MINUTES`; the memo is returned with the departed dropped. */
@@ -2648,11 +2651,14 @@ export function machineryValues({ facts, since, now, memo }: { facts: CanaryFact
   const inSpan = (at: number) => at > since && at <= now;
   const failedRuns = facts.releaseRuns?.runs.filter((run) => run.conclusion === "failure" && inSpan(Date.parse(run.updatedAt))).length ?? null;
   // A refused read says nothing about the clocks (#1332): when `unarmed` is unread they are kept, not restarted.
-  const kept = Object.fromEntries(Object.entries(memo).filter(([key]) => facts.unarmed === null || !key.startsWith("unarmed:")));
-  const seen = Object.fromEntries((facts.unarmed ?? []).map((pr) => [`unarmed:${pr}`, memo[`unarmed:${pr}`] ?? now]));
-  const unqueued = facts.unarmed === null ? null : Object.values(seen).filter((first) => now - first >= UNQUEUED_MINUTES * MS_PER_MINUTE).length;
+  const kept = Object.fromEntries(Object.entries(memo).filter(([key]) => !(facts.unarmed !== null && key.startsWith("unarmed:")) && !(facts.ownerless != null && key.startsWith("ownerless:"))));
+  const clocks = (keys: string[]) => Object.fromEntries(keys.map((key) => [key, memo[key] ?? now]));
+  const seen = clocks((facts.unarmed ?? []).map((pr) => `unarmed:${pr}`));
+  const ownerlessSeen = clocks((facts.ownerless ?? []).map((pr) => `ownerless:${pr}`)); // agent-org#1648: its own clock, the same as `unarmed`'s
+  const aged = (clock: Record<string, number>) => Object.values(clock).filter((first) => now - first >= UNQUEUED_MINUTES * MS_PER_MINUTE).length;
+  const unqueued = facts.unarmed === null ? null : aged(seen);
   return {
-    memo: { ...kept, ...seen },
+    memo: { ...kept, ...seen, ...ownerlessSeen },
     values: {
       [MACHINERY_SIGNALS.CLAIMS_REFUSED]: facts.claimRefusals === null ? null : facts.claimRefusals.filter((refusal) => inSpan(refusal.at)).length,
       [MACHINERY_SIGNALS.BLIND_TICKS]: facts.unread === null ? null : facts.unread.length > 0 ? 1 : 0,
@@ -2661,6 +2667,7 @@ export function machineryValues({ facts, since, now, memo }: { facts: CanaryFact
       [MACHINERY_SIGNALS.INCIDENTS_NOT_REAL]: null,
       [MACHINERY_SIGNALS.RATE_LIMIT_REFUSALS]: null,
       [MACHINERY_SIGNALS.RELEASE_FAILURES]: failedRuns,
+      [MACHINERY_SIGNALS.OWNERLESS_PR_UNREACHED]: facts.ownerless == null ? null : aged(ownerlessSeen),
     },
   };
 }

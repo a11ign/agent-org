@@ -293,8 +293,8 @@ export function deferredWakeCount(dir: string, read: (path: string) => string = 
  * kept from its holder for 15 minutes. `org-health.ts`'s `machineryCanaryTick` is the logic; this is the facts it is given and the incident it files (`incident` label, as the fleet-build one is).
  * Reads NO new GitHub list: the signals are the lists this tick already read, the local failure ledger and the waker's own file. Never throws.
  */
-export function machineryCanaryNow({ unread, unarmed, releaseRuns, suppressions, stranded = [], now = Date.now(), dir = REVIEWER_STATE_DIR, run = defaultRun, io }: {
-  unread: string[] | null; unarmed: number[] | UnarmedFacts | null; releaseRuns: ReleaseRuns | null; suppressions?: Suppression[]; stranded?: number[]; now?: number; dir?: string; run?: typeof defaultRun; io?: CanaryIo;
+export function machineryCanaryNow({ unread, unarmed, releaseRuns, suppressions, stranded = [], ownerless, now = Date.now(), dir = REVIEWER_STATE_DIR, run = defaultRun, io }: {
+  unread: string[] | null; unarmed: number[] | UnarmedFacts | null; releaseRuns: ReleaseRuns | null; suppressions?: Suppression[]; stranded?: number[]; ownerless?: number[] | null; now?: number; dir?: string; run?: typeof defaultRun; io?: CanaryIo;
 }): any[] {
   const { options, problem } = readCanaryOptions();
   if (problem !== null) process.stderr.write(`machinery-canary: ${problem}; the defaults stand.\n`);
@@ -302,5 +302,5 @@ export function machineryCanaryNow({ unread, unarmed, releaseRuns, suppressions,
   const numbers = unarmedNumbers === null ? null : [...unarmedNumbers, ...stranded]; // a11ign#5125: an ejection that was not the PR's own and left it out of the queue is approved-and-unqueued too
   const fileIncident = (title: string, body: string) => run(["issue", "create", "--title", title, "--label", "incident", "--body", body]);
   return machineryCanaryTick({ now, dir, options, suppressed: suppressions, io: io ?? realCanaryIo({ fileIncident }),
-    facts: { claimRefusals: readClaimRefusals(), unread, deferredWakes: deferredWakeCount(dir), unarmed: numbers, releaseRuns } });
+    facts: { claimRefusals: readClaimRefusals(), unread, deferredWakes: deferredWakeCount(dir), unarmed: numbers, releaseRuns, ownerless: ownerless ?? null } }); // agent-org#1648: a red chairman pull request no order reaches
 }
