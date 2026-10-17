@@ -8,7 +8,7 @@ import {
   amend, approve, byIdentifier, childOrder, refuseParents, respond, batchPlanDone, dismiss, feedbackRound, MAX_FEEDBACK_ROUNDS, markPublishRunning, markPublishStarting, publishDone, publishFailed, publishStarts, queuePublish, emptyQueue, enqueue, finish, isLive, leaveBatch, liveRunCount, loadQueue, markResumed, markRunning, markStarting, nextStarts, observe, park,
   noteWorking, recordBlockers, recordRepos, planDone, watchWorking, PLAN_BATCH_MAX, recordPullStates, recordTrackerStates, remove, retry, saveQueue, setMax, setPaused, unpark, unreadBlockerKeys, unsettledKeys, type Queue,
 } from "./queue.ts";
-import type { Ticket } from "./source.ts";
+import type { Blocker, Ticket } from "./source.ts";
 
 const ticket = (key: string) => ({ key, title: key, description: "", url: "", branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
 const choice = { model: "opus", effort: "high" };
@@ -77,6 +77,25 @@ test("a batch is one run: its tickets take one slot between them, starting or ru
   assert.deepEqual(nextStarts(queue, 0, 14).map((e) => e.ticket.key), ["C", "D"], "two tickets of a starting batch take one slot of three, and C, left behind, takes one of its own");
   queue = ["A", "B"].reduce((q, key) => markRunning(q, key, "w1", "w1:p1"), queue);
   assert.deepEqual(nextStarts(setMax(queue, 1), 0, 14), [], "a running batch fills the only slot");
+});
+
+test("A11-77: a batch's planned ticket keeps the blockers its planner said to wait on to merge, nextStarts holds it until they merge, and a retry drops them", () => {
+  const plan = { keys: new Set(["A", "B", "C"]), ...batched };
+  const pull = "https://github.com/acme/nbl-ui-netbox/pull/12";
+  const open: Blocker = { key: "A", state: "started", status: "In Review", branch: "a", pulls: { [pull]: "open" } };
+  const merged: Blocker = { ...open, pulls: { [pull]: "merged" } };
+  const at = (q: Queue, key: string) => q.entries.find((e) => e.ticket.key === key)!;
+  let queue = enqueue({ ...emptyQueue(3), paused: false }, [ticket("A"), ticket("B"), ticket("C")], choice, 1, plan);
+  queue = batchPlanDone(queue, "B", "nbl-ui-netbox", ["A"]);
+  queue = batchPlanDone(queue, "C", "nbl-ui-netbox");
+  assert.deepEqual([at(queue, "B").waitMerged, at(queue, "C").waitMerged], [["A"], undefined], "set only when the planner named one to wait on");
+  assert.equal(at(queue, "B").plannedRepo, "nbl-ui-netbox");
+  queue = recordBlockers(queue, new Map([["B", [open]]]));
+  assert.deepEqual(nextStarts(queue, 0, 14).map((e) => e.ticket.key), ["A", "C"], "B holds no slot while its blocker's pull request is open, though both are in one repository");
+  queue = recordBlockers(queue, new Map([["B", [merged]]]));
+  assert.deepEqual(nextStarts(queue, 0, 14).map((e) => e.ticket.key), ["A", "B", "C"], "once that pull request has merged, B starts");
+  const retried = retry(finish(queue, "B", { kind: "crashed", reason: "gone" }, 3), "B", 4);
+  assert.deepEqual([at(retried, "B").plannedRepo, at(retried, "B").waitMerged], [undefined, undefined], "a retried run has no planned repository, so it has no mark either");
 });
 
 test("a ticket of a batch leaves it when it starts alone, when its plan is attached, and when it is retried", () => {

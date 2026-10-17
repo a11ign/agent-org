@@ -34,6 +34,8 @@ export type ViewEntry = Readonly<{
   review?: readonly Readonly<{ url: string }>[];
   /** The repository its batch's planner said its work lands in, or null when it named none. */
   plannedRepo?: string | null;
+  /** The tickets of its batch its planner said it waits on to merge, rather than stacking on: the keys of its blockers that must merge first. */
+  waitMerged?: readonly string[];
   /** Set once a publish run posted its pull requests: the first message's web address, or null when it gave none. */
   published?: Readonly<{ link: string | null }>;
   /** Set when the board stopped answering new feedback on its own and handed the run to a person: why. */
@@ -318,13 +320,17 @@ export function settledByPulls(entry: ViewEntry): RunStatus | null {
 
 /**
  * The blockers still holding a queued run back, given every run on the queue. A blocker lets go once the tracker completes it, or, when it is on
- * the queue itself, once its run is completed, which its pull requests merging is enough for. A canceled or duplicate blocker never lets go: the
+ * the queue itself, once its run is completed, which its pull requests merging is enough for. A blocker the planner said to wait on to merge
+ * (`waitMerged`) also lets go once its pull requests have merged ({@link pullsMerged}). A canceled or duplicate blocker never lets go: the
  * work it promised will not come, so a person decides. Waiting is not on order: an unblocked run queued later starts first. A blocker the run can
  * be stacked on ({@link stackedOn}) does not hold it back.
  */
 export function waitsOn(entry: ViewEntry, entries: readonly ViewEntry[]): ViewBlocker[] {
-  return (entry.blockers ?? []).filter((blocker) => !isDone(blocker, entries) && stackPull(blocker, entry.plannedRepo) === null);
+  return (entry.blockers ?? []).filter((blocker) => !isDoneFor(entry, blocker, entries) && stackPullOf(entry, blocker) === null);
 }
+
+/** Whether the planner said the run waits for this blocker to merge, rather than stacking on it: its key is in the run's `waitMerged`. */
+const waitsToMerge = (entry: ViewEntry, blocker: ViewBlocker): boolean => (entry.waitMerged ?? []).includes(blocker.key);
 
 /** Whether a blocker is done: the tracker completed it, or its run on the queue is Completed. */
 function isDone(blocker: ViewBlocker, entries: readonly ViewEntry[]): boolean {
@@ -332,6 +338,21 @@ function isDone(blocker: ViewBlocker, entries: readonly ViewEntry[]): boolean {
   const run = entries.find((e) => e.ticket.key === blocker.key);
   return run !== undefined && run.phase === "finished" && runStatus(run) === "completed";
 }
+
+/**
+ * Whether a blocker's pull requests have merged: at least one has, and none is still open. Linear completes a ticket on a merge only where its
+ * team's workflow says so, so a run the planner held until the merge must not wait on the tracker's word alone. A canceled or duplicate blocker
+ * never lets go, whatever its pull requests did.
+ */
+function pullsMerged(blocker: ViewBlocker): boolean {
+  if (blocker.state === "canceled" || blocker.state === "duplicate") return false;
+  const states = Object.values(blocker.pulls ?? {});
+  return states.includes("merged") && !states.includes("open");
+}
+
+/** Whether a blocker is done for a run: {@link isDone}, and, for one the run waits on to merge, once its pull requests have merged ({@link pullsMerged}). */
+const isDoneFor = (entry: ViewEntry, blocker: ViewBlocker, entries: readonly ViewEntry[]): boolean =>
+  isDone(blocker, entries) || (waitsToMerge(entry, blocker) && pullsMerged(blocker));
 
 /** The repository and number of a GitHub pull request, from its URL's `/<owner>/<repo>/pull/<n>`, or null for any other URL. PURE. */
 function parsePull(url: string): Readonly<{ repo: string; number: string }> | null {
@@ -351,25 +372,36 @@ function stackPull(blocker: ViewBlocker, repo: string | null | undefined): strin
   return Object.entries(blocker.pulls ?? {}).find(([url, state]) => state === "open" && repoOfPull(url) === repo)?.[0] ?? null;
 }
 
+/** The open pull request a run of `entry` can stack on for `blocker`: none when the planner said to wait for the blocker to merge. */
+const stackPullOf = (entry: ViewEntry, blocker: ViewBlocker): string | null =>
+  waitsToMerge(entry, blocker) ? null : stackPull(blocker, entry.plannedRepo);
+
 /** A blocker a run starts on top of: its key, its open pull request, the repository that is in, which is the run's, and its branch. */
 export type StackBase = Readonly<{ key: string; url: string; repo: string; branch: string }>;
 
 /**
  * The blockers a run starts on top of rather than waits for. A blocker not yet done is one when the run's planner placed its work in a
  * repository where the blocker has an open pull request: the run branches from the blocker's branch, and its pull request is stacked on the
- * blocker's. A run with no planned repository stacks on nothing, and a finished run is stacked on nothing any more.
+ * blocker's. A blocker the planner said to wait on to merge is never one. A run with no planned repository stacks on nothing, and a finished run
+ * is stacked on nothing any more.
  */
 export function stackedOn(entry: ViewEntry, entries: readonly ViewEntry[]): StackBase[] {
   const repo = entry.plannedRepo;
   if (entry.phase === "finished" || !repo) return [];
   return (entry.blockers ?? []).flatMap((blocker) => {
-    const url = isDone(blocker, entries) ? null : stackPull(blocker, repo);
+    const url = isDoneFor(entry, blocker, entries) ? null : stackPullOf(entry, blocker);
     return url === null || !blocker.branch ? [] : [{ key: blocker.key, url, repo, branch: blocker.branch }];
   });
 }
 
 /** What the board says about a run stacked on its blockers, such as "Stacked on NBF-1 #12". */
 export const stackNote = (bases: readonly StackBase[]): string => `Stacked on ${bases.map(({ key, url }) => `${key} #${parsePull(url)?.number ?? url}`).join(", ")}`;
+
+/** What the board says about a queued run held back until its blockers merge, such as "Waits for NBF-1 to merge", or null when none is. */
+export function waitNote(entry: ViewEntry, entries: readonly ViewEntry[]): string | null {
+  const keys = waitsOn(entry, entries).filter((blocker) => waitsToMerge(entry, blocker)).map(({ key }) => key);
+  return keys.length === 0 ? null : `Waits for ${keys.join(", ")} to merge`;
+}
 
 /**
  * A run's status. A queued run is blocked while a ticket that blocks it is not done, and cannot be stacked on (`entries` is the whole queue, for {@link waitsOn}). The

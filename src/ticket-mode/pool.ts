@@ -67,7 +67,7 @@ import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, rea
 import { availableParallelism, homedir, loadavg } from "node:os";
 import { join } from "node:path";
 import { agentStartArgs, closedNote, herdrReason, herdrRun, openPane, readAgents } from "../herdr-agents.ts";
-import { parseOrder, unknownRepos, type Order } from "./batch-order.ts";
+import { mergeWaits, parseOrder, unknownRepos, type Order } from "./batch-order.ts";
 import { readOwnLogin, readPullFeedback, type PullFeedback } from "../ticket-port/pull-feedback.ts";
 import { defaultGh } from "../lib/tool-version-agreement.ts";
 import { CONCLUDED, HANDED_BACK, hasPlan, isBeingPublished, isParked, isWatched, openPulls, stackedOn } from "./board-view.ts";
@@ -873,7 +873,8 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
         const outcome = handedBack.get(key);
         const refused = misplaced.get(key);
         if (outcome === undefined && refused !== undefined) return finish(batchPlanDone(queue, key, null), key, { kind: "needs-human", reason: refused }, now());
-        return outcome === undefined ? batchPlanDone(queue, key, order.get(key)?.repo ?? null) : finish(queue, key, outcome, now());
+        const place = order.get(key);
+        return outcome === undefined ? batchPlanDone(queue, key, place?.repo ?? null, mergeWaits(place)) : finish(queue, key, outcome, now());
       });
     } catch (err) {
       const [still] = members.filter(sameRun);

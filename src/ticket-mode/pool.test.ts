@@ -1155,6 +1155,24 @@ test("a batch's ticket queued again while a pass reads blockers waits for the ne
   assert.deepEqual([entry("NBF-1").phase, runStatus(entry("NBF-2"), store.get().entries)], ["running", "blocked"]);
 });
 
+test("A11-77: an order that says a ticket waits on its blocker to merge keeps that mark on the ticket, and only on the ticket that said it", async () => {
+  const { tracker, relations } = batchTracker();
+  const keys = ["NBF-1", "NBF-2", "NBF-3"];
+  const { pool, status, entry, settings } = setup(1, keys, BATCH_PLANNER, { source: tracker, planFirst: keys, batch: true });
+  await pool.tick();
+  const plan = join(batchDir(settings, BATCH), "plan");
+  for (const key of keys) put(join(plan, key, `${key}-0001-plan.md`), `# ${key}\n`);
+  put(join(plan, "order.json"), JSON.stringify({ "NBF-1": { repo: "nbl-ui-platform-libs", after: [] },
+    "NBF-2": { repo: "nbl-ui-netbox", after: ["NBF-1"], wait: "merged" }, "NBF-3": { repo: "nbl-ui-netbox", after: ["NBF-1"], wait: "stacked" } }));
+  writeFileSync(join(batchDir(settings, BATCH), "outcome.json"), JSON.stringify({ kind: "planned" }));
+  status.set(herdrName(BATCH), "idle");
+  await pool.tick();
+  await settled();
+  assert.deepEqual([...relations].sort(), [["NBF-2", ["NBF-1"]], ["NBF-3", ["NBF-1"]]], "the order is recorded as blockers either way");
+  assert.deepEqual(keys.map((key) => [entry(key).plannedRepo, entry(key).waitMerged]),
+    [["nbl-ui-platform-libs", undefined], ["nbl-ui-netbox", ["NBF-1"]], ["nbl-ui-netbox", undefined]], "wait merged is kept, and stacked is the default");
+});
+
 test("a batch whose start fails crashes every ticket of it, and a stop while it starts stops them all and closes the workspace its start raced", async () => {
   const failing = { ...batchTracker().tracker, download: async (t: Ticket) => { if (t.key === "NBF-2") throw new Error("Linear answered 500\nmore"); return []; } };
   const broken = setup(1, ["NBF-1", "NBF-2"], BATCH_PLANNER, { source: failing, planFirst: ["NBF-1", "NBF-2"], batch: true });

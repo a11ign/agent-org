@@ -5,13 +5,26 @@
 // batch's, no ticket waits on itself, and the order has no cycle. A file that fails any check is refused as a whole, and the board writes no
 // relation from it. PURE: the caller reads the file.
 
-/** Where one ticket of a batch stands: the repository its work lands in, or null, and the tickets of the batch it waits on. */
-export type Place = Readonly<{ repo: string | null; after: readonly string[] }>;
+/**
+ * How a ticket waits on the tickets it is `after`: `stacked` starts it on a blocker's open pull request in its repository when it has one, and
+ * `merged` holds it until each of them has merged, then starts it on the default branch.
+ */
+export type Wait = "stacked" | "merged";
+
+/**
+ * Where one ticket of a batch stands: the repository its work lands in, or null, the tickets of the batch it waits on, and how it waits on them.
+ * A file that leaves `wait` out means `stacked`.
+ */
+export type Place = Readonly<{ repo: string | null; after: readonly string[]; wait: Wait }>;
 
 /** A batch's order, by key. A ticket the file leaves out has no entry. */
 export type Order = ReadonlyMap<string, Place>;
 
-const PLACE_SHAPE = "{ \"repo\": \"<repository>\" or null, \"after\": [\"<key>\", ...] }";
+/** The tickets of its batch a ticket waits on to merge, from its place: those of `after` when it says `merged`, none otherwise. PURE. */
+export const mergeWaits = (place: Place | undefined): readonly string[] => (place?.wait === "merged" ? place.after : []);
+
+const PLACE_SHAPE = "{ \"repo\": \"<repository>\" or null, \"after\": [\"<key>\", ...], \"wait\": \"stacked\" or \"merged\" (optional) }";
+const WAITS: readonly unknown[] = ["stacked", "merged"];
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -51,14 +64,15 @@ export function parseOrder(text: string, keys: readonly string[]): { order: Orde
   const order = new Map<string, Place>();
   for (const [key, place] of Object.entries(value)) {
     if (!batch.has(key)) return { refusal: `it names ${key}, which is not in the batch` };
-    if (!isObject(place) || !(place.repo === null || typeof place.repo === "string") || !Array.isArray(place.after) || !place.after.every((k) => typeof k === "string")) {
+    if (!isObject(place) || !(place.repo === null || typeof place.repo === "string") || !Array.isArray(place.after) || !place.after.every((k) => typeof k === "string")
+      || !(place.wait === undefined || WAITS.includes(place.wait))) {
       return { refusal: `its entry for ${key} is not ${PLACE_SHAPE}` };
     }
     const after = place.after as string[];
     const outside = after.find((k) => !batch.has(k));
     if (outside !== undefined) return { refusal: `${key} waits on ${outside}, which is not in the batch` };
     if (after.includes(key)) return { refusal: `${key} waits on itself` };
-    order.set(key, { repo: place.repo, after: [...new Set(after)] });
+    order.set(key, { repo: place.repo, after: [...new Set(after)], wait: (place.wait as Wait | undefined) ?? "stacked" });
   }
   const cycle = cycleIn(order);
   if (cycle !== null) return { refusal: `its order goes round in a cycle: ${cycle.join(" -> ")}` };

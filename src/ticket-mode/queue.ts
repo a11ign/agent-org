@@ -75,6 +75,11 @@ export type Entry = Readonly<{
   batch?: string;
   /** The repository its batch's planner said its work lands in, or null when it named none. Unset for a ticket planned alone. */
   plannedRepo?: string | null;
+  /**
+   * The tickets of its batch its planner said it waits on to merge, rather than stacking on their open pull requests: `wait: "merged"` in the
+   * order. Unset when there are none. A retry drops it with {@link plannedRepo}.
+   */
+  waitMerged?: readonly string[];
   phase: Phase;
   queuedAt: number;
   startedAt?: number;
@@ -489,11 +494,12 @@ export function planDone(queue: Queue, key: string, unattended = true): Queue {
 }
 
 /**
- * A ticket planned in a batch has its plan, as {@link planDone}, with the repository its planner said its work lands in. Its blockers are read
- * again before it starts, because the board has just written its batch's order to the tracker.
+ * A ticket planned in a batch has its plan, as {@link planDone}, with the repository its planner said its work lands in, and the blockers its
+ * planner said to wait on to merge (`waitMerged`, when there are any). Its blockers are read again before it starts, because the board has just
+ * written its batch's order to the tracker.
  */
-export function batchPlanDone(queue: Queue, key: string, repo: string | null): Queue {
-  return replace(planDone(queue, key), key, ({ blockers: _stale, ...entry }) => ({ ...entry, plannedRepo: repo }));
+export function batchPlanDone(queue: Queue, key: string, repo: string | null, waitMerged: readonly string[] = []): Queue {
+  return replace(planDone(queue, key), key, ({ blockers: _stale, ...entry }) => ({ ...entry, plannedRepo: repo, ...(waitMerged.length > 0 ? { waitMerged } : {}) }));
 }
 
 /** A person answered a parked run's agent, which is working again: the run is live once more, and its old outcome and tracker state are dropped. */
