@@ -68,8 +68,8 @@ export function parseOrder(text: string, keys: readonly string[]): { order: Orde
 /**
  * Each ticket `order` places in a repository that is not one of `clones` (the host file's `clones` keys), with why it is refused, by key. PURE.
  *
- * A NAME, NOT A FOLDER. A planner once named a ticket's repository `a11y-witness`, the folder its checkout sits in, where the host file's key for
- * it is `a11ign`, and the board stored a repository that matched no clone: the run stacked on nothing and nothing said why (A11-70). The rest of
+ * A NAME, NOT A FOLDER. A planner once named a ticket's repository by the folder its checkout sits in, where the host file's key for it was
+ * another name, and the board stored a repository that matched no clone: the run stacked on nothing and nothing said why (A11-70). The rest of
  * the order still stands, its blockers included, because the waits it names are between tickets and say nothing about repositories. Only the
  * named repository is refused, and the caller hands that ticket to a person with the reason, as it does a ticket whose plan it cannot use.
  */
