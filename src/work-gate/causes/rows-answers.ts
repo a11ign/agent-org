@@ -176,8 +176,12 @@ export function withoutEndedAnswerSessions(rows: any[], { agents = liveWorkspace
   return isGone === null ? rows : rows.map((row) => dropGoneLabels(row, isGone, say));
 }
 
-/** `endedSessionTest` over the live herdr and the ledgers, said nowhere: the read of the rows asks only for the labels of sessions this does not name. */
-export const endedAnswerSessionTest = () => endedSessionTest({ agents: liveWorkspaceLabels, ended: endedSessionLabels }, () => {});
+/**
+ * `endedSessionTest` said nowhere: the read of the rows asks only for the labels of sessions this does not name. `listing` is a herdr listing the caller already holds (the gate reads
+ * herdr ONCE per tick, so the follow-ups hand theirs and this does not read it again, nor from another moment); without one it reads the live herdr. `null` is a listing that failed.
+ */
+export const endedAnswerSessionTest = (listing?: { label: string; }[] | null, ended: () => Map<string, number> = endedSessionLabels) =>
+  endedSessionTest({ agents: listing === undefined ? liveWorkspaceLabels : () => (listing === null ? null : listing.map((a) => a.label)), ended }, () => {});
 
 /**
  * Has this session ENDED (see above)? `null` when herdr or the ledgers will not say, which classifies NOTHING as gone and says so through `say`.

@@ -11,7 +11,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readClosedAnswerRows, withoutEndedAnswerSessions } from "../work-gate.ts";
+import { readClosedAnswerRows, readOpenRowFollowUps, withoutEndedAnswerSessions } from "../work-gate.ts";
 import { KEPT_ANSWERS_MAX_AGE_MS, type ConditionalReads } from "../work-gate/reads.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { closedAnswerConnection, readsClosedAnswerRows } from "./rows-by-label-fixtures.ts";
@@ -107,4 +107,20 @@ test("#1636: a refused closed answer read is not kept, and no conditional (a tes
   readClosedAnswerRows(run, ended, null);
   readClosedAnswerRows(run, ended, null);
   assert.ok(asked.length >= n + 2 * 3, "with no conditional every call asks");
+});
+
+test("#1636: the follow-ups ask for the closed answers by the herdr listing they already hold, never a second read of herdr", () => {
+  const { run, asked } = fakeRun([]);
+  let listings = 0;
+  const listing = () => { listings++; return [{ label: "ceo", status: "idle" }, { label: "worker-8", status: "idle" }, { label: "reviewer-1", status: "idle" }]; };
+  // worker-9 is absent from the listing AND recorded ended; worker-8 is recorded ended but LISTED, so it is live and still asked for.
+  readOpenRowFollowUps([], run, undefined, listing, () => new Map([["worker-8", 1], ["worker-9", 1]]));
+  assert.equal(listings, 1);
+  const labels = new Set(asked.flatMap((read) => read.names));
+  assert.ok(labels.has("answer:worker-8"), "a listed session is live whatever the ledger says");
+  assert.ok(!labels.has("answer:worker-9"), "an unlisted ended session is not asked for");
+  // A listing that failed classifies nothing as gone: every label is asked for.
+  const none = fakeRun([]);
+  readOpenRowFollowUps([], none.run, undefined, () => null, () => new Map([["worker-9", 1]]));
+  assert.ok(new Set(none.asked.flatMap((read) => read.names)).has("answer:worker-9"));
 });

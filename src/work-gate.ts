@@ -533,11 +533,11 @@ function homeScopeOf(): Scope | undefined {
  * listing only for the live `gh`, as `batch` does: a test's `run` stands for `gh` alone and must not spawn `herdr`.
  */
 export function readOpenRowFollowUps(allOpen: any[], run: (args: string[], repo?: string) => string = defaultRun, batch: typeof runBatch | undefined = run === defaultRun ? runBatch : undefined,
-  listWorkspaces: typeof readAgents | undefined = run === defaultRun ? readAgents : undefined) {
+  listWorkspaces: typeof readAgents | undefined = run === defaultRun ? readAgents : undefined, ended: () => Map<string, number> = endedSessionLabels) {
   const agents = listWorkspaces === undefined ? [] : listWorkspaces();
   return readWithFirstWaveTogether((read) => ({
     claimedComments: claimedRowCommentsWhenHeld(allOpen, read),
-    closedRows: readClosedAnswerRows(read, listWorkspaces === undefined ? null : endedAnswerSessionTest), // agent-org#1636: the ended sessions' labels are not asked for, and only the live `gh` asks herdr
+    closedRows: readClosedAnswerRows(read, listWorkspaces === undefined ? null : () => endedAnswerSessionTest(agents, ended)), // agent-org#1636: the ended sessions' labels are not asked for, by the SAME herdr listing as the claims below (never a second read), and only the live `gh` has one
     closings: closingsWhenRowsCleared(allOpen, read),
     closedClaims: closedClaimsWhenWorkerListed(agents, read),
     closedClaimLabels: closedClaimLabelsWhenListed(listWorkspaces === undefined ? null : agents, read), // #3883: the SAME listing, never a second read of herdr
