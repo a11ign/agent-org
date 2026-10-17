@@ -1,4 +1,4 @@
-// no-token: gh, herdr, git and the clock are all injected; nothing is spawned
+// no-token: gh -- herdr, git and the clock are all injected; nothing is spawned
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
