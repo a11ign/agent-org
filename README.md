@@ -237,10 +237,20 @@ brief also carries the parent's description, quoted, and the parent's files. Bef
 reasoning reviews the diff, read only, for behaviour it changed but meant to keep. The worker then checks its diff against each
 acceptance criterion and each decision that binds the ticket, and backs each behaviour its pull request body claims with an assertion of
 exactly that behaviour, run on the base. The worker reads each repository's `CLAUDE.md`/`AGENTS.md` for its commands,
-opens a DRAFT pull request per repository it changed, and writes an outcome file: `draft-pr`, `wrong-repo` (the fix belongs in none of them),
+opens a DRAFT pull request per repository it changed with `pr:open create --draft`, and writes an outcome file: `draft-pr`, `wrong-repo` (the fix belongs in none of them),
 `checked` (nothing needs to change), `needs-human`, or, for a turn that ends while its own background work runs on, `working`, which does not
 end the run. A worker writes nothing to Linear. The board writes only a planning run's files, attached to its ticket, the
 ticket's move to the planner's state, and a batch's order as "blocks" relations.
+
+**Opening a pull request in ticket mode.** A worker opens each pull request with `pr:open`, which checks it before `gh pr create` sends it. A
+ticket has no GitHub row, so `pr:open` reads the ticket through the tracker instead, and makes the checks a row's pull request gets: the Region,
+read from the ticket's description and its plan files (a `## Region` section listing each path the work changes, one per line, prefixed
+`<repo>:` where the ticket spans repositories); the body's `Refs <KEY>` (or `Closes <KEY>` when the ticket's done-when is fully met) in place of
+`Closes #N`, with `Closes` of any other ticket and `Closes: none` refused; the owner, which is the run and must sit in its own worktree on its
+own branch; the draft policy, from `tickets.drafts` (`--draft` is required when it is true, and refused when it is false, so the pull request
+opens ready); and a changeset in the diff, or a `no-release:` line, in a repository that has `.changeset/config.json`. The acceptance file, the
+body reports and the leak check are the same as for a row. Nothing is armed or labelled, because a ticket worker never merges. A ticket that
+cannot be read refuses the create, and so does a path outside the Region that no `Outside-Region: <path> — <reason>` line clears.
 
 **What a worker may not do** is enforced by `ticket:hook`, which the ticket folder's `.claude/settings.local.json` names, so a session herdr
 resumes after a restart keeps it. A stop with no outcome file is refused twice in a row. These are refused outright: a pull request that

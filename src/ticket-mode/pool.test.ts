@@ -1507,7 +1507,8 @@ test("a drafts-off run's ticket dir carries the ready mark and a brief that open
     const dir = ticketDir(made.settings, "NBF-1");
     const brief = readFileSync(join(dir, "brief.md"), "utf8");
     assert.equal(existsSync(join(dir, "ready-run")), !drafts, `the ready mark with drafts ${drafts}`);
-    assert.equal(brief.includes("gh pr create --draft"), drafts, `the draft command with drafts ${drafts}`);
+    assert.equal(brief.includes("pr:open create --draft"), drafts, `the draft command with drafts ${drafts}`);
+    assert.equal(brief.includes("gh pr create"), false, `no brief sends a worker to gh pr create with drafts ${drafts}`);
     assert.equal(brief.includes("open ONE READY pull request"), !drafts, `the ready step with drafts ${drafts}`);
   }
 });

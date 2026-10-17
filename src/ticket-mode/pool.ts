@@ -91,6 +91,7 @@ import {
   batchPlanBriefText, briefText, firstPrompt, planBriefText, publishBriefText, reviewBriefText, reviewPrompt, workerFlags, workerSettings,
   type BatchTicket, type HookCommand, type ParentTicket,
 } from "./worker-files.ts";
+import { ticketDir, ticketFolder } from "./ticket-paths.ts";
 
 /** herdr waits on Claude's start; a slow one has been measured past 30 s (`wake.ts`'s start budget), so a start gets 90. */
 const START_TIMEOUT_MS = 90_000;
@@ -173,10 +174,7 @@ export type PoolDeps = Readonly<{
 /** The pool holds the queue through these two, so the server stays its one writer. */
 export type QueueStore = Readonly<{ get: () => Queue; set: (queue: Queue) => void }>;
 
-export const ticketDir = (settings: TicketSettings, key: string): string => join(settings.stateDir, "tickets", key);
-
-/** The folder a ticket's worker starts in, and makes its worktrees in: `<worktreeRoot>/<key>`. */
-export const ticketFolder = (settings: TicketSettings, key: string): string => join(settings.worktreeRoot, key);
+export { ticketDir, ticketFolder };
 
 /** Where a batch's planning run keeps its brief, its outcome and its plan folder. A ticket's own files stay in its {@link ticketDir}. */
 export const batchDir = (settings: TicketSettings, batch: string): string => join(settings.stateDir, "tickets", "batches", batch);
@@ -532,8 +530,9 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
         notes, connectors }));
     } else {
       const worktreeCommand = `${hook.node} ${hook.bin} ticket:worktree`;
+      const prOpenCommand = `${hook.node} ${hook.bin} pr:open`;
       writeFileSync(join(dir, BRIEF_FILE), briefText({ ticket, folder, ticketDir: dir, attachments, parent, blockers: entry.blockers,
-        stackedOn: stackedOn(entry, store.get().entries), clones: settings.clones, worktreeCommand,
+        stackedOn: stackedOn(entry, store.get().entries), clones: settings.clones, worktreeCommand, prOpenCommand,
         notes, connectors, planned: entry.planned === true, drafts: settings.drafts }));
     }
     writeRunFiles(entry, folder, dir);
