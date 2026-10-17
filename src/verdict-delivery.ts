@@ -23,6 +23,7 @@ import { dirname, join } from "node:path";
 import { IDLE_STATUSES, type Agent } from "./idle-claimant.ts";
 import { headMatches, verdictAtHead, verdictBearers } from "./review-verdict.ts";
 import { conflictStateOf, CONFLICT_STATE } from "./work-gate/pr-state.ts";
+import { pullRequestFieldsOf } from "./ticket-port/pull-request-fields.ts";
 
 export const VERDICT_LEDGER_FILE = "verdict-written.json";
 
@@ -160,14 +161,11 @@ export function conflictingIdleNow({ on, prs, agents, ownerOf }: { on: boolean; 
   return on && prs !== null ? conflictingIdlePrs({ prs, agents, ownerOf }) : null;
 }
 
-/** `gh pr view` for the reconciliation: the state, the head and the verdict-bearing fields, or `null` when the read was refused. */
+/** The state, the head and the verdict-bearing fields of a pull request through the ticket port, or `null` when the read was refused. */
 export function pullReadOf(run: (args: string[]) => string, repo: string): (pr: number) => PullRead {
   return (pr) => {
-    try {
-      const raw = JSON.parse(run(["pr", "view", String(pr), "--repo", repo, "--json", "state,headRefOid,comments,reviews"])) as Record<string, any>;
-      return { open: raw.state === "OPEN", head: String(raw.headRefOid ?? ""), comments: raw.comments ?? [], reviews: raw.reviews ?? [] };
-    } catch {
-      return null;
-    }
+    const raw = pullRequestFieldsOf({ repo, number: pr, fields: "state,headRefOid,comments,reviews", run });
+    if (raw === null) return null;
+    return { open: raw.state === "OPEN", head: String(raw.headRefOid ?? ""), comments: raw.comments ?? [], reviews: raw.reviews ?? [] };
   };
 }
