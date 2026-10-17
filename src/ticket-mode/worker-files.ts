@@ -53,6 +53,18 @@ const FOREGROUND_WAIT = `Wait in the foreground, with blocking commands, such as
 /** What a worker does when a skill its brief names is missing: a copy of the skill's files, read by hand, is not the skill and its helpers. */
 const MISSING_SKILL = "If a skill this brief names is not available in this session, write a `needs-human` outcome naming it, rather than following a copy of its files.";
 
+/**
+ * What a planner does with a ticket that is only a parent: an epic whose work is all in the tickets under it is not work for one run, so its plan
+ * says so and points the person at the children, rather than planning a run of its own (A11-24, an epic, was handed to a person on 2026-10-17).
+ */
+const PARENT_ONLY_PLAN = "A ticket that is only a parent, an epic whose work is all in the tickets under it, gets no plan for a run of its own. Its plan says that it is only a parent, names the child tickets that hold its work, and suggests the person queues those children instead of a run on it.";
+
+/**
+ * When a worker writes `checked` and when `needs-human`. `needs-human` puts the run in the board's Needs you and keeps its workspace open for an
+ * answer, so a worker that only found nothing to change must not write it: that is `checked`, which ends the run without asking anyone.
+ */
+const CHECKED_OR_NEEDS_HUMAN = "Write `checked` when you looked at what the ticket asks and nothing needs to change: it is already done, the problem it describes is not there, or the ticket is only a parent whose work is all in its child tickets (name them, so the person queues them). Say in its reason what you checked and what you found. Write `needs-human` only for a real question or decision that only the person can make: it asks them for an answer, and the run waits for one.";
+
 /** The folder in the ticket's own directory that a planning run writes its plan's files in, for the board to attach. */
 export const PLAN_DIR = "plan";
 /** What a batch planning run leaves in a ticket's folder, in place of its plan, when only a person can settle the plan. */
@@ -202,6 +214,8 @@ ${repos}
 
 ${instruction}
 
+${PARENT_ONLY_PLAN}
+
 ${MISSING_SKILL}
 
 The plan's files go in \`${planDir}\`, and nowhere else. The board attaches each one to the ticket under its file name. Write only markdown files there, each 1 MB or less: anything else stops the board attaching any of them.
@@ -270,6 +284,8 @@ ${reposText(clones)}
 ## What to do
 
 ${plannerInstruction(run, keys, planDir)}
+
+${PARENT_ONLY_PLAN}
 
 ${MISSING_SKILL}
 
@@ -356,8 +372,11 @@ Write \`${ticketDir}/${OUTCOME_FILE}\` as the last thing you do, with exactly on
 \`\`\`json
 { "kind": "${drafts ? "draft-pr" : "ready-pr"}", "prs": [{ "repo": "<repo>", "url": "<pull request url>" }] }
 { "kind": "wrong-repo", "where": "<the repository or service the fix belongs in, and why>" }
+{ "kind": "checked", "reason": "<what you checked, what you found, and why nothing needs to change>" }
 { "kind": "needs-human", "reason": "<what a person must decide or provide>" }
 \`\`\`
+
+${CHECKED_OR_NEEDS_HUMAN}
 
 A person may answer you here after a \`needs-human\` or \`wrong-repo\` outcome. If one does, carry on with what they said, and write the outcome file again as the last thing you do.
 `;

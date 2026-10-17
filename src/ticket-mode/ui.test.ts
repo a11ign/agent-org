@@ -610,13 +610,13 @@ test("each filter shows its count, and choosing one shows only its runs and is r
   assert.equal(p.$("runs").text(), "No runs are cancelled.");
 });
 
-test("a row offers only the actions its state allows, and a completed run is not retried", async () => {
+test("a row offers only the actions its state allows, a completed run is not retried, and every finished run can be dismissed", async () => {
   const p = await page(new Map(), { entries: RUNS });
   const buttons = (key: string) => runRows(p).find((r) => r.text().includes(key))!.all().filter((n) => n.tag === "button").map((b) => b.text());
   assert.deepEqual(buttons("Q-1"), ["Remove"]);
   assert.deepEqual(buttons("R-1"), ["Stop"]);
-  assert.deepEqual(buttons("F-1"), ["Retry"]);
-  assert.deepEqual(buttons("M-1"), []);
+  assert.deepEqual(buttons("F-1"), ["Retry", "Dismiss"]);
+  assert.deepEqual(buttons("M-1"), ["Dismiss"]);
   assert.ok(runRows(p).find((r) => r.text().includes("D-1"))!.text().includes("nbl-ui-netbox #12"), "the draft's pull request is linked by repo and number");
 });
 
@@ -833,11 +833,11 @@ test("a run Ready to merge, Published, or handed back by the board offers Respon
   const actions = (key: string) => runRows(p).find((r) => r.text().includes(key))!.all().filter((n) => n.tag === "button") as (Node_ & { title?: string })[];
   for (const key of ["P-1", "P-3", "H-1"]) {
     const [respond] = actions(key);
-    assert.deepEqual(actions(key).map((b) => b.text()), ["Respond to review"], key);
+    assert.deepEqual(actions(key).map((b) => b.text()), ["Respond to review", "Dismiss"], key);
     assert.match(respond.title ?? "", /^Answer the feedback on these ready pull requests/);
     assert.ok(respond.all().some((n) => n.className === "action-icon"), "the reply icon");
   }
-  assert.deepEqual(actions("D-1").map((b) => b.text()), ["Approve"]);
+  assert.deepEqual(actions("D-1").map((b) => b.text()), ["Approve", "Dismiss"]);
   assert.match(actions("D-1")[0].title ?? "", /^Drafts reviewed and approved/);
   actions("P-1")[0].fire("click");
   await settle();
@@ -931,4 +931,18 @@ test("an answer from the instance shown before a switch is dropped, so it never 
   for (let i = 0; i < 10; i++) await settle();
   assert.deepEqual(p.shownKeys(), ["T-1", "T-2", "T-3", "T-4"], "personal's late tickets did not replace work's");
   assert.equal(p.$("error").textContent, "", "and dropping it is not an error");
+});
+
+test("a checked run shows Checked with its reason, not Needs you, and its Dismiss, titled as leaving the ticket alone, goes to the board", async () => {
+  const p = await page(new Map(), { entries: [entry("C-1", { phase: "finished", startedAt: 2, finishedAt: 4, outcome: { kind: "checked", reason: "A11-24 is an epic: queue A11-25 and A11-26" } })] });
+  const row = runRows(p).find((r) => r.text().includes("C-1"))!;
+  assert.equal(row.children[0].className, "icon st-checked");
+  assert.ok(row.text().includes("A11-24 is an epic: queue A11-25 and A11-26"), "the reason it finished with");
+  assert.equal(filterButton(p, "Needs you").children.find((c) => c.className === "n")?.text(), "0");
+  const dismiss = row.all().find((n) => n.tag === "button") as Node_ & { title?: string };
+  assert.equal(dismiss.text(), "Dismiss");
+  assert.match(dismiss.title ?? "", /The ticket, its branch and its pull requests are left as they are/);
+  dismiss.fire("click");
+  await settle();
+  assert.ok(p.posts.some((x) => x.path === "/api/queue/C-1/dismiss"));
 });

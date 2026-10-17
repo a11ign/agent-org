@@ -25,7 +25,7 @@ const FORWARD_MS = 30_000;
 const ANSWER_BYTES = 8 * 1024 * 1024;
 const READS = new Set(["/api/config", "/api/tickets", "/api/parents", "/api/queue"]);
 const WRITES = new Set(["/api/queue", "/api/choice", "/api/publish", "/api/paused", "/api/max"]);
-const RUN_ACTION = /^\/api\/queue\/[A-Za-z0-9_-]+\/(amend|remove|retry|approve|respond|stop|close)$/;
+const RUN_ACTION = /^\/api\/queue\/[A-Za-z0-9_-]+\/(amend|remove|retry|approve|respond|stop|close|dismiss)$/;
 
 /** Whether the page may make this call to an instance: one of the routes it calls there, by the method it calls it with. */
 export function passedOn(method: string, pathname: string): boolean {
