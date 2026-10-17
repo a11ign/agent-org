@@ -1,0 +1,5 @@
+Acceptance: `node_modules/.bin/rstest run --config scripts/rstest/rstest.config.ts src/packaging/hand-fix-null-pr-author.test.ts src/packaging/hand-fix-ledger.test.ts`
+
+Mutation: the fix reverted (`actors: pr ? [pr.author] : []`) fails the new file's tests (a) and (c), which assert the null author adds no actor (measured before the fix: `VERDICT fail: 2 of 23 tests failed`, the actors diff `[null, "github-actions[bot]"]` against the expected `["github-actions[bot]"]`, and `[null]` against `[]` for a merge with no carried commit). With the fix: `VERDICT pass: 23 tests in 2 files`.
+
+Adjacent suites, after the fix: `src/packaging/hand-fix-reading-trust.test.ts` (`VERDICT pass: 7 tests in 1 file`), and the five other test files that import the ledger (`src/close-rows-for-merged-pr-closes-none.test.ts`, `src/failure-ledger.test.ts`, `src/packaging/git-reads-name-their-checkout.test.ts`, `src/packaging/no-search-reads.test.ts`, `src/packaging/org-retro.test.ts`: `VERDICT pass: 107 tests in 5 files`). `pnpm run typecheck` exits 0.
