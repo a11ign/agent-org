@@ -11,6 +11,7 @@ import {
 } from "./pool.ts";
 import { approve, emptyQueue, enqueue, finish, queuePublish, respond, retry, setPaused, type Queue } from "./queue.ts";
 import { parseTicketSettings } from "./settings.ts";
+import { REVIEWER_LOGIN, reviewerMemoryPath, type ReviewerPort, type ReviewerRef } from "./reviewer-port.ts";
 import type { Ticket, TicketSource } from "./source.ts";
 
 const ticket = (key: string) => ({ key, title: key, description: "", url: `https://linear.app/x/${key}`, branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
@@ -38,8 +39,9 @@ function herdr(status: Map<string, string>, screen: { text: string } = { text: "
 
 /** `parents` gives a ticket its parent's key. A ticket without one is shaped as a run queued before tickets carried a parent. */
 function setup(max = 2, keys = ["NBF-1", "NBF-2", "NBF-3"], tickets: Record<string, unknown> = {},
-  { source: tracker = source, parents = {}, planFirst = [], batch = false, pluginRecord, gh }:
-    { source?: TicketSource; parents?: Record<string, string>; planFirst?: string[]; batch?: boolean; pluginRecord?: string; gh?: (args: string[]) => string } = {}) {
+  { source: tracker = source, parents = {}, planFirst = [], batch = false, pluginRecord, gh, reviewerPort }:
+    { source?: TicketSource; parents?: Record<string, string>; planFirst?: string[]; batch?: boolean; pluginRecord?: string; gh?: (args: string[]) => string;
+      reviewerPort?: ReviewerPort } = {}) {
   const root = tmpDir("ticket-pool-");
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox", "nbl-ui-platform-libs": "/repos/libs" }, stateDir: join(root, "state"), tickets });
   const queued = keys.map((key) => (key in parents ? { ...ticket(key), parent: parents[key] } : ticket(key)));
@@ -49,10 +51,13 @@ function setup(max = 2, keys = ["NBF-1", "NBF-2", "NBF-3"], tickets: Record<stri
   const status = new Map<string, string>();
   const screen = { text: "" };
   const h = herdr(status, screen);
-  const pool = createPool(store, { settings, source: tracker, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: h.run, hostFile: "/work/.agent-org/host.json", now: () => 100, load: () => ({ load: 1, cores: 14 }), transcriptsRoot: join(root, "transcripts"), wait: async () => {},
-    pluginRecord: pluginRecord ?? join(root, "no-plugin-record.json"), ...(gh ? { gh } : {}) });
+  const deps = { settings, source: tracker, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: h.run, hostFile: "/work/.agent-org/host.json", now: () => 100, load: () => ({ load: 1, cores: 14 }), transcriptsRoot: join(root, "transcripts"), wait: async () => {},
+    pluginRecord: pluginRecord ?? join(root, "no-plugin-record.json"), ...(gh ? { gh } : {}), ...(reviewerPort ? { reviewerPort } : {}) };
+  const pool = createPool(store, deps);
   const entry = (key: string) => queue.entries.find((e) => e.ticket.key === key)!;
-  return { settings, pool, status, h, entry, store, root, screen };
+  /** A pool started over the same queue and state directory, as the board's pool is after a restart. */
+  const restart = () => createPool(store, deps);
+  return { settings, pool, restart, status, h, entry, store, root, screen };
 }
 
 test("a tick starts as many as `max` allows, each in ticket mode's own herdr session, prompt first and the tool list last", async () => {
@@ -177,8 +182,9 @@ test("a run ends on its outcome file once the agent is idle; idle before it ever
 const approvedPr = { repo: "nbl-ui-netbox", url: "https://github.com/x/nbl-ui-netbox/pull/1" };
 
 /** A pool whose one run, NBF-1, ended with a draft pull request in a session herdr called `session-t-nbf-1`, then was approved. */
-async function approvedRun(tickets: Record<string, unknown> = {}, { transcript = true, gh }: { transcript?: boolean; gh?: (args: string[]) => string } = {}) {
-  const ctx = setup(1, ["NBF-1"], tickets, gh ? { gh } : {});
+async function approvedRun(tickets: Record<string, unknown> = {},
+  { transcript = true, gh, reviewerPort }: { transcript?: boolean; gh?: (args: string[]) => string; reviewerPort?: ReviewerPort } = {}) {
+  const ctx = setup(1, ["NBF-1"], tickets, { gh, reviewerPort });
   const { pool, status, settings, root, store } = ctx;
   await pool.tick();
   status.set(herdrName("NBF-1"), "idle");
@@ -1253,6 +1259,12 @@ function ghFor(pulls: Record<number, unknown>) {
   const run = (args: string[]) => {
     calls.push(args);
     if (args[1] === "user") return "worker-bot\n";
+    if (args[0] === "pr") {
+      const pull = pulls[Number(args[2])] as { headRefOid: string; reviews: { nodes: unknown[] }; commits: { nodes: { commit: { statusCheckRollup: { contexts: { nodes: unknown[] } } } }[] } } | undefined;
+      if (pull === undefined) throw new Error("gh exited 1");
+      return JSON.stringify({ headRefOid: pull.headRefOid, reviews: pull.reviews.nodes, author: { login: "worker-bot" }, isCrossRepository: false, isDraft: false,
+        statusCheckRollup: [GATE_GREEN, ...pull.commits.nodes[0].commit.statusCheckRollup.contexts.nodes] });
+    }
     const number = Number(args.find((arg) => arg.startsWith("number="))?.slice("number=".length));
     if (!(number in pulls)) throw new Error("gh exited 1");
     return JSON.stringify({ data: { repository: { pullRequest: pulls[number] } } });
@@ -1260,12 +1272,14 @@ function ghFor(pulls: Record<number, unknown>) {
   return { run, calls };
 }
 const at = (ms: number) => new Date(ms).toISOString();
-const feedbackPull = ({ state = "OPEN", reviews = [] as unknown[], comments = [] as unknown[], checks = [] as unknown[] } = {}) =>
-  ({ state, reviews: { nodes: reviews }, comments: { nodes: comments }, reviewThreads: { nodes: [] }, commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: checks } } } }] } });
+const feedbackPull = ({ state = "OPEN", head = "h1", reviews = [] as unknown[], comments = [] as unknown[], checks = [] as unknown[] } = {}) =>
+  ({ state, headRefOid: head, reviews: { nodes: reviews }, comments: { nodes: comments }, reviewThreads: { nodes: [] }, commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: checks } } } }] } });
+/** The gate's check on a head, green: a reviewer starts only where the checks have settled green. */
+const GATE_GREEN = { name: "gate", status: "COMPLETED", conclusion: "SUCCESS" };
 
 /** NBF-1 Ready to merge at 100, its review run ended, watched with `gh`. */
-async function readyRun(gh: (args: string[]) => string, tickets: Record<string, unknown> = {}) {
-  const ctx = await approvedRun(tickets, { gh });
+async function readyRun(gh: (args: string[]) => string, tickets: Record<string, unknown> = {}, reviewerPort?: ReviewerPort) {
+  const ctx = await approvedRun(tickets, { gh, reviewerPort });
   ctx.status.set(herdrName("NBF-1"), "idle");
   writeFileSync(join(ctx.dir, "outcome.json"), JSON.stringify({ kind: "reviewed" }));
   await ctx.pool.tick();
@@ -1475,4 +1489,109 @@ test("with no tickets.publish, Publish starts no run and posts nothing: the requ
   assert.equal(existsSync(join(publishDir(ctx.settings, publish.id), "brief.md")), false, "no publish run folder is written");
   assert.equal(gh.calls.some((args) => args.some((arg) => ["comment", "review", "create", "edit", "merge"].includes(arg))), false, "GitHub is not written to");
   assert.equal(runStatus(ctx.entry("NBF-1")), "ready-to-merge", "the run stays Ready to merge, unpublished");
+});
+
+/** The tickets with the reviewer on, for a machine that is not drafts. */
+const REVIEWING = { reviewer: "atomic", drafts: false };
+
+/** A reviewer port that records each start and reports none live, so only the pool's own once-per-head memory stops a second start. */
+function fakeReviewer() {
+  const starts: ReviewerRef[] = [];
+  const port: ReviewerPort = { start(ref) { starts.push(ref); return { label: "reviewer-7" }; }, live: () => false };
+  return { port, starts };
+}
+
+/** Ends the feedback round a watch started: its worker is idle and writes a reviewed outcome, which settles the run Ready to merge again. */
+async function finishRound({ pool, status, dir }: { pool: ReturnType<typeof createPool>; status: Map<string, string>; dir: string }) {
+  status.set(herdrName("NBF-1"), "idle");
+  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "reviewed" }));
+  await pool.tick();
+  status.delete(herdrName("NBF-1"));
+}
+
+test("a restarted pool starts no second reviewer on a head it already reviewed", async () => {
+  const { port, starts } = fakeReviewer();
+  const pulls = { 1: feedbackPull() };
+  const gh = ghFor(pulls);
+  const ctx = await readyRun(gh.run, REVIEWING, port);
+  ctx.pool.watchFeedback();
+  await roundStarted();
+  assert.deepEqual(starts.map((ref) => ref.head), ["h1"], "the reviewer starts once for h1");
+  ctx.restart().watchFeedback();
+  await roundStarted();
+  assert.deepEqual(starts.map((ref) => ref.head), ["h1"], "a restarted pool does not start a second reviewer on h1");
+  pulls[1] = feedbackPull({ head: "h2" });
+  ctx.restart().watchFeedback();
+  await roundStarted();
+  assert.deepEqual(starts.map((ref) => ref.head), ["h1", "h2"], "a head it has not reviewed is still reviewed after the restart");
+});
+
+test("a restarted pool asks for no second round for a verdict it already answered", async () => {
+  const { port } = fakeReviewer();
+  const gh = ghFor({ 1: feedbackPull({ reviews: [{ state: "CHANGES_REQUESTED", submittedAt: at(200), author: { login: REVIEWER_LOGIN }, commit: { oid: "h1" } }] }) });
+  const ctx = await readyRun(gh.run, REVIEWING, port);
+  ctx.pool.watchFeedback();
+  await roundStarted();
+  assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds], ["running", 1], "the reviewer's changes are asked for once");
+  await finishRound(ctx);
+  assert.equal(runStatus(ctx.entry("NBF-1")), "ready-to-merge", "the round ends Ready to merge again");
+  ctx.restart().watchFeedback();
+  await roundStarted();
+  assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds], ["finished", 1], "a restarted pool asks no second round for the verdict it already answered");
+});
+
+test("a machine with tickets.drafts true starts no reviewer, and one with tickets.drafts false does", async () => {
+  for (const drafts of [true, false]) {
+    const { port, starts } = fakeReviewer();
+    const gh = ghFor({ 1: feedbackPull() });
+    const ctx = await readyRun(gh.run, { reviewer: "atomic", drafts }, port);
+    gh.calls.length = 0;
+    ctx.pool.watchFeedback();
+    await roundStarted();
+    assert.equal(starts.length, drafts ? 0 : 1, `drafts ${drafts}: the reviewer starts`);
+    assert.equal(gh.calls.some((args) => args[0] === "pr"), !drafts, `drafts ${drafts}: the pull request is read for a reviewer only when drafts is off`);
+  }
+});
+
+test("the reviewer's own review never moves feedbackAt: its comment after the round ended starts no round, and a person's comment after the round still does", async () => {
+  for (const [why, commentAt, rounds] of [["the reviewer's comment alone", 50, undefined], ["a person's comment after the round", 150, 1]] as const) {
+    const gh = ghFor({ 1: feedbackPull({
+      reviews: [{ state: "COMMENTED", submittedAt: at(300), author: { login: REVIEWER_LOGIN }, commit: { oid: "h1" } }],
+      comments: [{ createdAt: at(commentAt), author: { login: "alice" } }],
+    }) });
+    const ctx = await readyRun(gh.run, REVIEWING, fakeReviewer().port);
+    ctx.pool.watchFeedback();
+    await roundStarted();
+    assert.equal(ctx.entry("NBF-1").rounds, rounds, why);
+  }
+});
+
+test("the reviewer's verdict on the head reaches the worker: changes requested starts a round that names the reviewer, and an approval starts none", async () => {
+  for (const [state, rounds] of [["CHANGES_REQUESTED", 1], ["APPROVED", undefined]] as const) {
+    const gh = ghFor({ 1: feedbackPull({ reviews: [{ state, submittedAt: at(200), author: { login: REVIEWER_LOGIN }, commit: { oid: "h1" } }] }) });
+    const ctx = await readyRun(gh.run, REVIEWING, fakeReviewer().port);
+    ctx.pool.watchFeedback();
+    await roundStarted();
+    assert.equal(ctx.entry("NBF-1").rounds, rounds, state);
+    if (rounds !== undefined) assert.ok(ctx.entry("NBF-1").feedback?.includes(`${REVIEWER_LOGIN} requested changes on ${approvedPr.url} at h1`), state);
+  }
+});
+
+test("a reviewer memory file that cannot be read is said once in the board's log, nothing is remembered from it, and a valid one is written over it", async () => {
+  const { port, starts } = fakeReviewer();
+  const ctx = await readyRun(ghFor({ 1: feedbackPull() }).run, REVIEWING, port);
+  ctx.pool.watchFeedback();
+  await roundStarted();
+  assert.equal(starts.length, 1, "the reviewer starts once");
+  writeFileSync(reviewerMemoryPath(ctx.settings.stateDir), "{ not json");
+  const logged = await captureStderr(async () => {
+    ctx.restart().watchFeedback();
+    await roundStarted();
+    ctx.restart().watchFeedback();
+    await roundStarted();
+  });
+  assert.equal(starts.length, 2, "nothing is remembered from the unreadable file, so the restarted pool starts once more; the next restart remembers it");
+  const said = logged.filter((line) => line.includes("cannot be read"));
+  assert.equal(said.length, 1, "said once");
+  assert.ok(said[0].includes("reviewers.json"), "the log names the file");
 });

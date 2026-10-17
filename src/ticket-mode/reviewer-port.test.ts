@@ -37,13 +37,16 @@ function herdr(status: Map<string, string>) {
   return { run, calls };
 }
 
-/** The pull request as GitHub answers it: `head` is its commit, `reviews` its reviews, `outside` whether its author is outside the org. */
-function ghFor(pr: { head: string; reviews?: unknown[]; outside?: boolean }) {
+const GREEN = [{ name: "gate", status: "COMPLETED", conclusion: "SUCCESS" }];
+
+/** The pull request as GitHub answers it: `head` is its commit, `reviews` its reviews, `outside` whether its author is outside the org, `checks` its checks (green by default). */
+function ghFor(pr: { head: string; reviews?: unknown[]; outside?: boolean; checks?: unknown[] }) {
   const calls: string[][] = [];
   const run = (args: string[]) => {
     calls.push(args);
     if (args[1] === "user") return "worker-bot\n";
-    if (args[0] === "pr") return JSON.stringify({ headRefOid: pr.head, reviews: pr.reviews ?? [], author: { login: "worker-bot" }, isCrossRepository: pr.outside === true });
+    if (args[0] === "pr") return JSON.stringify({ headRefOid: pr.head, reviews: pr.reviews ?? [], author: { login: "worker-bot" }, isCrossRepository: pr.outside === true,
+      isDraft: false, statusCheckRollup: pr.checks ?? GREEN });
     const number = Number(args.find((arg) => arg.startsWith("number="))?.slice("number=".length));
     if (number !== 7) throw new Error("gh exited 1");
     const nodes = pr.reviews ?? [];
@@ -173,5 +176,36 @@ test("the atomic reviewer starts the gate's reviewer in the tickets' session for
   assert.equal(port.live({ pr: PR_URL, head: "h1" }), false, "not live until herdr lists its workspace");
   listed.set("reviewer-7", "working");
   assert.equal(port.live({ pr: PR_URL, head: "h1" }), true, "live for the head it was started for");
+  assert.equal(port.live({ pr: PR_URL, head: "h2" }), false, "not live for a head it was not started for");
+});
+
+test("the reviewer is asked the gate's own verdict prompt for the pull request and its head, which names the reviewer role file", () => {
+  const herd = herdr(new Map());
+  const port = atomicReviewerPort({ session: "tickets", run: herd.run, gh: ghFor({ head: "h1" }).run, declared: DECLARED,
+    spawn: (order) => ({ label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }),
+    checkout: () => ({ path: "/work/pr-7", head: "h1" }) });
+  assert.deepEqual(port.start({ pr: PR_URL, head: "h1" }), { label: "reviewer-7" });
+  const prompt = herd.calls.find((args) => args.includes("prompt"))!;
+  assert.equal(prompt[prompt.length - 1], "Ready (not a draft) #7 at `h1` has settled green checks and no verdict at that head. "
+    + "Review it per .agent-org/roles/reviewer.md and post the verdict as it says.");
+});
+
+test("the atomic reviewer starts nothing for a head whose checks have not settled green", () => {
+  const herd = herdr(new Map());
+  const spawned: unknown[] = [];
+  const checks = [{ name: "gate", status: "IN_PROGRESS", conclusion: null }];
+  const port = atomicReviewerPort({ session: "tickets", run: herd.run, gh: ghFor({ head: "h1", checks }).run, declared: DECLARED,
+    spawn: (order) => { spawned.push(order); return { label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }; },
+    checkout: () => ({ path: "/work/pr-7", head: "h1" }) });
+  const started = port.start({ pr: PR_URL, head: "h1" });
+  assert.match("refusal" in started ? started.refusal : "", /have not settled green/);
+  assert.deepEqual(spawned, []);
+});
+
+test("a port given the heads a pool remembers is live for the head its reviewer was started for, across a restart", () => {
+  const herd = herdr(new Map([["reviewer-7", "working"]]));
+  const heads = new Map([["reviewer-7", "h1"]]);
+  const port = atomicReviewerPort({ session: "tickets", run: herd.run, gh: ghFor({ head: "h1" }).run, declared: DECLARED, heads });
+  assert.equal(port.live({ pr: PR_URL, head: "h1" }), true, "live for the remembered head");
   assert.equal(port.live({ pr: PR_URL, head: "h2" }), false, "not live for a head it was not started for");
 });
