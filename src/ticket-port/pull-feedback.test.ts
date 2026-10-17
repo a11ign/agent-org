@@ -1,7 +1,7 @@
 // no-token: gh -- `readPullFeedback` and `readOwnLogin` are handed a stub `run`; nothing here spawns `gh` or needs a token.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { pullOf, readOwnLogin, readPullFeedback } from "./pull-feedback.ts";
+import { MAX_FILE_PAGES, pullOf, readOwnLogin, readPullFeedback } from "./pull-feedback.ts";
 
 const URL = "https://github.com/netboxlabs/nbl-ui-netbox/pull/806";
 const at = (minute: number) => `2026-10-16T12:${String(minute).padStart(2, "0")}:00Z`;
@@ -13,8 +13,10 @@ function answering(pull: unknown) {
   return { calls, run: (args: string[]) => { calls.push(args); return JSON.stringify({ data: { repository: { pullRequest: pull } } }); } };
 }
 
-const pullWith = ({ state = "OPEN", reviews = [] as unknown[], comments = [] as unknown[], threads = [] as unknown[], checks = [] as unknown[] } = {}) => ({
-  state, reviews: { nodes: reviews }, comments: { nodes: comments }, reviewThreads: { nodes: threads.map((c) => ({ comments: { nodes: [c] } })) },
+const pullWith = ({ state = "OPEN", reviews = [] as unknown[], comments = [] as unknown[], threads = [] as unknown[], checks = [] as unknown[], mergeable = "MERGEABLE",
+  mergeStateStatus = "CLEAN", base = "main", files = [] as string[] } = {}) => ({
+  state, mergeable, mergeStateStatus, baseRefName: base, files: { nodes: files.map((path) => ({ path })), pageInfo: { hasNextPage: false, endCursor: null } },
+  reviews: { nodes: reviews }, comments: { nodes: comments }, reviewThreads: { nodes: threads.map((c) => ({ comments: { nodes: [c] } })) },
   commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: checks } } } }] },
 });
 
@@ -29,7 +31,7 @@ test("the newest review, conversation comment or inline comment by anyone but th
     threads: [{ createdAt: at(20), author: { login: "carol" } }],
   }));
   const read = readPullFeedback(URL, "worker-bot", run);
-  assert.deepEqual(read, { state: "open", feedbackAt: ms(20), authors: ["carol", "bob", "a11ign-reviewer"], failing: [], failedAt: null },
+  assert.deepEqual(read, { state: "open", feedbackAt: ms(20), authors: ["carol", "bob", "a11ign-reviewer"], failing: [], failedAt: null, conflicting: false, base: "main", files: [], filesComplete: true },
     "an approval and the workers' own comments are not feedback");
   assert.deepEqual(calls[0].slice(0, 2), ["api", "graphql"]);
   assert.ok(calls[0].includes("owner=netboxlabs") && calls[0].includes("repo=nbl-ui-netbox") && calls[0].includes("number=806"));
@@ -44,6 +46,45 @@ test("the failing checks are the required ones, or every one where none is requi
   assert.deepEqual([unrequired?.failing, unrequired?.failedAt], [["suite", "netlify"], ms(35)], "a re-run that passed replaces the failure it re-ran");
   const required = readPullFeedback(URL, "me", answering(pullWith({ checks: [run("gate", "SUCCESS", 10, true), run("suite", "FAILURE", 30)] })).run);
   assert.deepEqual([required?.failing, required?.failedAt], [[], null], "with a required check, only the required ones count");
+});
+
+test("A11-82: a pull request that conflicts with its base is conflicting, whichever GitHub says it by, and one still being computed is not", () => {
+  const conflicting = (fields: Parameters<typeof pullWith>[0]) => readPullFeedback(URL, "me", answering(pullWith(fields)).run);
+  assert.deepEqual([conflicting({ mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" })?.conflicting, conflicting({ mergeable: "CONFLICTING" })?.conflicting], [true, true]);
+  assert.equal(conflicting({ mergeStateStatus: "DIRTY" })?.conflicting, true, "a DIRTY pull request with a mergeable of its own is still conflicting");
+  for (const state of [{ mergeable: "MERGEABLE" }, { mergeStateStatus: "BEHIND" }, { mergeStateStatus: "BLOCKED" }, { mergeable: "UNKNOWN", mergeStateStatus: "UNKNOWN" }]) {
+    assert.equal(conflicting(state)?.conflicting, false, `${JSON.stringify(state)} is no conflict`);
+  }
+  const read = conflicting({ base: "release/2", files: ["src/ticket-mode/pool.ts", "src/ticket-mode/server.ts"] });
+  assert.deepEqual([read?.base, read?.files], ["release/2", ["src/ticket-mode/pool.ts", "src/ticket-mode/server.ts"]], "the base and the files it changes are read");
+  const paged = (pages: Record<string, unknown>) => (args: string[]) => {
+    const cursor = args.find((arg) => arg.startsWith("cursor="))?.slice("cursor=".length);
+    if (cursor === undefined) return JSON.stringify({ data: { repository: { pullRequest: { ...pullWith(), files: pages.first } } } });
+    if (cursor === "c1") return JSON.stringify({ data: { repository: { pullRequest: { files: pages.second } } } });
+    throw new Error("gh exited 1");
+  };
+  const page = (paths: string[], hasNextPage: boolean, endCursor: string | null) => ({ nodes: paths.map((path) => ({ path })), pageInfo: { hasNextPage, endCursor } });
+  const paging = readPullFeedback(URL, "me", paged({ first: page(["a.ts"], true, "c1"), second: page(["b.ts"], false, null) }));
+  assert.deepEqual([paging?.files, paging?.filesComplete], [["a.ts", "b.ts"], true], "every page is read, and the list is then complete");
+  let calls = 0;
+  const forever = () => {
+    calls += 1;
+    return JSON.stringify({ data: { repository: { pullRequest: { ...pullWith(), files: page(["a.ts"], true, "c1") } } } });
+  };
+  const cut = readPullFeedback(URL, "me", forever);
+  assert.deepEqual([cut?.filesComplete, calls], [false, MAX_FILE_PAGES], "pages past the cap are not read, and the list says it is cut short");
+  assert.equal(readPullFeedback(URL, "me", paged({ first: page(["a.ts"], true, "c1") })), null, "a page that cannot be read is no reading at all");
+  const answered = (files: unknown) => readPullFeedback(URL, "me", () => JSON.stringify({ data: { repository: { pullRequest: { ...pullWith(), files } } } }));
+  for (const [why, files] of [
+    ["missing", undefined], ["null", null], ["not an object", "all of them"], ["without its nodes", { pageInfo: { hasNextPage: false, endCursor: null } }],
+    ["without its pageInfo", { nodes: [{ path: "a.ts" }] }], ["with a pageInfo that does not say if more follow", { nodes: [], pageInfo: {} }],
+    ["with a node that has no path", { nodes: [{}], pageInfo: { hasNextPage: false, endCursor: null } }],
+  ] as const) {
+    assert.equal(answered(files)?.filesComplete, false, `a first page ${why} leaves the files unknown, not none`);
+  }
+  assert.deepEqual([answered(page([], false, null))?.files, answered(page([], false, null))?.filesComplete], [[], true], "a page of no files that says no more follow is a complete, empty list");
+  const brokenSecond = readPullFeedback(URL, "me", paged({ first: page(["a.ts"], true, "c1"), second: { nodes: [{ path: "b.ts" }] } }));
+  assert.deepEqual([brokenSecond?.files, brokenSecond?.filesComplete], [["a.ts"], false], "a later page of another shape adds nothing and leaves the list incomplete");
 });
 
 test("a pull request that cannot be read is null, never no feedback, and a merged or closed one says so", () => {

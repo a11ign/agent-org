@@ -4,12 +4,12 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { runStatus } from "./board-view.ts";
+import { runStatus, waitNote } from "./board-view.ts";
 import {
   batchDir, batchFolder, countTokens, createPool, feedbackSince, findFolderSession, findTranscript, herdrName, herdrServerCommand, isStartDialog, parseOutcome, publishDir, publishResult,
   ticketDir, ticketFolder, worktreesIn,
 } from "./pool.ts";
-import { approve, emptyQueue, enqueue, finish, queuePublish, respond, retry, setPaused, type Queue } from "./queue.ts";
+import { approve, emptyQueue, enqueue, finish, queuePublish, recordPullStates, respond, retry, setPaused, type Queue } from "./queue.ts";
 import { parseTicketSettings } from "./settings.ts";
 import { REVIEWER_LOGIN, loadReviewerGate, readReviewerMemory, reviewerMemoryPath, type ReviewerPort, type ReviewerRef } from "./reviewer-port.ts";
 import type { Ticket, TicketSource } from "./source.ts";
@@ -1537,8 +1537,11 @@ function ghFor(pulls: Record<number, unknown>) {
   return { run, calls };
 }
 const at = (ms: number) => new Date(ms).toISOString();
-const feedbackPull = ({ state = "OPEN", head = "h1", reviews = [] as unknown[], comments = [] as unknown[], checks = [] as unknown[] } = {}) =>
-  ({ state, headRefOid: head, reviews: { nodes: reviews }, comments: { nodes: comments }, reviewThreads: { nodes: [] }, commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: checks } } } }] } });
+const feedbackPull = ({ state = "OPEN", head = "h1", reviews = [] as unknown[], comments = [] as unknown[], checks = [] as unknown[], mergeable = "MERGEABLE",
+  mergeStateStatus = "CLEAN", base = "main", files = [] as string[], more = false } = {}) =>
+  ({ state, headRefOid: head, mergeable, mergeStateStatus, baseRefName: base, files: { pageInfo: { hasNextPage: more, endCursor: more ? "c1" : null }, nodes: files.map((path) => ({ path })) },
+    reviews: { nodes: reviews },
+    comments: { nodes: comments }, reviewThreads: { nodes: [] }, commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: checks } } } }] } });
 /** The gate's check on a head, green: a reviewer starts only where the checks have settled green. */
 const GATE_GREEN = { name: "gate", status: "COMPLETED", conclusion: "SUCCESS" };
 
@@ -1602,11 +1605,212 @@ test("a check that failed on the head commit after the round ended starts a roun
 });
 
 test("what triggers a round names each pull request's new feedback and failed checks, and nothing older than the round", () => {
-  const read = { state: "open" as const, feedbackAt: 200, authors: ["alice", "bob"], failing: ["typecheck", "suite"], failedAt: 300 };
+  const read = { state: "open" as const, feedbackAt: 200, authors: ["alice", "bob"], failing: ["typecheck", "suite"], failedAt: 300, conflicting: false, base: "main", files: [], filesComplete: true };
   assert.equal(feedbackSince([{ url: "u1", read }], 100), "New review feedback on u1, the newest from alice.\ntypecheck, suite failed on the head commit of u1.");
   assert.equal(feedbackSince([{ url: "u1", read }], 250), "typecheck, suite failed on the head commit of u1.");
   assert.equal(feedbackSince([{ url: "u1", read }], 300), null);
   assert.equal(feedbackSince([{ url: "u1", read: { ...read, state: "closed" } }], 100), null);
+});
+
+test("A11-82: a pull request that conflicts with its base names its base on every watch, whatever the round's time, and a closed one is not named", () => {
+  const read = { state: "open" as const, feedbackAt: null, authors: [], failing: [], failedAt: null, conflicting: true, base: "main", files: [], filesComplete: true };
+  const line = "https://github.com/acme/repo/pull/7 conflicts with its base branch main.";
+  assert.equal(feedbackSince([{ url: "https://github.com/acme/repo/pull/7", read }], 900), line, "a conflict is a state, so no time passes it by");
+  assert.equal(feedbackSince([{ url: "https://github.com/acme/repo/pull/7", read: { ...read, state: "merged" as const } }], 0), null);
+});
+
+/**
+ * A tracker whose download writes each ticket's plan file, which declares the paths `paths` gives it as its `## Paths` section. `refuse` runs
+ * before each download, so a test can make the tracker refuse one.
+ */
+function planFiles(paths: Record<string, string[]>, refuse: () => void = () => {}): TicketSource {
+  return { ...source, download: async (ticket, dir) => {
+    refuse();
+    const file = join(dir, `${ticket.key}-plan-x.md`);
+    writeFileSync(file, `## Paths\n${(paths[ticket.key] ?? []).map((path) => `- \`${path}\``).join("\n")}\n`);
+    return [file];
+  } };
+}
+
+/** NBF-1 finished with a draft pull request, watched with `gh` and not approved: a draft is read for its footprint, and never woken. */
+async function draftRun(gh: (args: string[]) => string) {
+  const ctx = setup(1, ["NBF-1"], {}, { gh });
+  await ctx.pool.tick();
+  ctx.status.set(herdrName("NBF-1"), "idle");
+  writeFileSync(join(ticketDir(ctx.settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "draft-pr", prs: [approvedPr] }));
+  await ctx.pool.tick();
+  ctx.status.delete(herdrName("NBF-1"));
+  assert.equal(runStatus(ctx.entry("NBF-1")), "awaiting-review");
+  return ctx;
+}
+
+/** NBF-1 finished with ready pull requests, on a machine that opens them ready, so no Approve comes and the board watches them. */
+async function readyPrRun(gh: (args: string[]) => string) {
+  const ctx = setup(1, ["NBF-1"], { drafts: false }, { gh });
+  await ctx.pool.tick();
+  ctx.status.set(herdrName("NBF-1"), "idle");
+  writeFileSync(join(ticketDir(ctx.settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "ready-pr", prs: [approvedPr] }));
+  await ctx.pool.tick();
+  ctx.status.delete(herdrName("NBF-1"));
+  assert.equal(runStatus(ctx.entry("NBF-1")), "awaiting-review");
+  return ctx;
+}
+
+test("A11-82: a pull request that conflicts with its base resumes its worker once, the round names the conflict and its base, and the brief has the worker merge the base in", async () => {
+  const gh = ghFor({ 1: feedbackPull({ mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" }) });
+  const { pool, entry, dir, h } = await readyRun(gh.run);
+  h.calls.length = 0;
+  pool.watchFeedback();
+  pool.watchFeedback();
+  await roundStarted();
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").rounds, entry("NBF-1").review], ["running", 1, [approvedPr]]);
+  assert.equal(entry("NBF-1").feedback, `${approvedPr.url} conflicts with its base branch main.`);
+  const starts = h.calls.filter((args) => args.includes("start"));
+  assert.equal(starts.length, 1, "the same worker is started once, not once per watch");
+  assert.deepEqual(starts[0].slice(starts[0].indexOf("--resume"), starts[0].indexOf("--resume") + 2), ["--resume", "session-t-nbf-1"]);
+  const brief = readFileSync(join(dir, "brief.md"), "utf8");
+  assert.match(brief, /^1\. The feedback above says a pull request conflicts with its base branch\. Merge the base branch into your branch before anything else: `git fetch`, then `git merge origin\/<base>`/m);
+  assert.match(brief, /Never rebase, and never force-push\. Resolve each conflict keeping both changes' intent/, "never a rebase, and both changes kept");
+  assert.match(brief, /^3\. Fix each finding that is right/m, "the feedback steps follow, renumbered after the merge");
+});
+
+test("A11-82: a conflict on a run awaiting review is a round too, and a draft's read records the files it changes without waking the worker", async () => {
+  const gh = ghFor({ 1: feedbackPull({ mergeable: "CONFLICTING", files: ["src/ticket-mode/pool.ts"] }) });
+  const ready = await readyPrRun(gh.run);
+  ready.pool.watchFeedback();
+  assert.deepEqual([ready.entry("NBF-1").phase, ready.entry("NBF-1").rounds], ["queued", 1], "a ready-pr run waiting for review is watched");
+  const draft = await draftRun(ghFor({ 1: feedbackPull({ mergeable: "CONFLICTING", files: ["src/ticket-mode/pool.ts"] }) }).run);
+  draft.pool.watchFeedback();
+  await roundStarted();
+  assert.deepEqual([draft.entry("NBF-1").phase, draft.entry("NBF-1").rounds, draft.entry("NBF-1").pullFiles], ["finished", undefined, { [approvedPr.url]: ["src/ticket-mode/pool.ts"] }],
+    "a draft is not woken, and its files are kept for the footprint");
+});
+
+test("A11-82: a merged pull request that reads conflicting gets no round, and a run at its cap hands a conflict to a person, whose Respond to review starts again", async () => {
+  const merged = await readyRun(ghFor({ 1: feedbackPull({ state: "MERGED", mergeable: "CONFLICTING" }) }).run);
+  merged.pool.watchFeedback();
+  await roundStarted();
+  assert.deepEqual([merged.entry("NBF-1").phase, merged.entry("NBF-1").rounds], ["finished", undefined], "merged: nothing to resolve");
+
+  const capped = await readyRun(ghFor({ 1: feedbackPull({ mergeable: "CONFLICTING" }) }).run);
+  capped.store.set({ ...capped.store.get(), entries: capped.store.get().entries.map((e) => (e.ticket.key === "NBF-1" ? { ...e, rounds: 3 } : e)) });
+  capped.h.calls.length = 0;
+  capped.pool.watchFeedback();
+  await roundStarted();
+  assert.equal(capped.entry("NBF-1").phase, "finished", "the fourth conflict starts no run");
+  assert.equal(capped.h.calls.filter((args) => args.includes("start")).length, 0);
+  assert.equal(capped.entry("NBF-1").handedBack, `The pull requests keep getting feedback: the board answered 3 rounds on its own and stopped. Respond to review starts another. The latest: ${approvedPr.url} conflicts with its base branch main.`);
+  capped.store.set(respond(capped.store.get(), "NBF-1", 200));
+  await capped.pool.tick();
+  assert.deepEqual([capped.entry("NBF-1").phase, capped.entry("NBF-1").rounds, capped.entry("NBF-1").asked], ["running", undefined, true], "Respond to review starts the count again");
+});
+
+test("A11-82: a run waits on a path a live run holds and starts once that run's pull request merges, while runs sharing no path start beside both", async () => {
+  const planned = setup(3, ["NBF-1", "NBF-2", "NBF-3"], { plan: "-plan-[^/]*\\.md$" }, { source: planFiles({
+    "NBF-1": ["nbl-ui-netbox:src/a.ts"], "NBF-2": ["nbl-ui-netbox:src/"], "NBF-3": ["nbl-ui-platform-libs:src/a.ts"],
+  }) });
+  const { pool, entry, store, status } = planned;
+  await pool.tick();
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-2").phase, entry("NBF-3").phase], ["running", "queued", "running"], "NBF-2 shares src/ with NBF-1; NBF-3 shares no path");
+  assert.equal(runStatus(entry("NBF-2"), store.get().entries), "blocked");
+  assert.equal(waitNote(entry("NBF-2"), store.get().entries), "Waits on NBF-1: both touch src/");
+  status.set(herdrName("NBF-1"), "idle");
+  writeFileSync(join(ticketDir(planned.settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "draft-pr", prs: [approvedPr] }));
+  await pool.tick();
+  status.delete(herdrName("NBF-1"));
+  await pool.tick();
+  assert.equal(entry("NBF-2").phase, "queued", "a draft holds its path until its pull request merges");
+  store.set(recordPullStates(store.get(), new Map([["NBF-1", { [approvedPr.url]: "merged" }]])));
+  await pool.tick();
+  assert.equal(entry("NBF-2").phase, "running", "once it merged, NBF-2 starts");
+});
+
+test("A11-82: a finished run's open pull request holds the files the watch read from it: a run that shares one waits until it merges", async () => {
+  const gh = ghFor({ 1: feedbackPull({ files: ["src/ticket-mode/server.ts"] }) });
+  const { pool, entry, store, status } = setup(1, ["NBF-1", "NBF-2"], { plan: "-plan-[^/]*\\.md$" }, { gh: gh.run, source: planFiles({
+    "NBF-1": ["nbl-ui-netbox:src/a.ts"], "NBF-2": ["nbl-ui-netbox:src/ticket-mode/server.ts"],
+  }) });
+  await pool.tick();
+  assert.equal(entry("NBF-2").phase, "queued", "one slot: NBF-2 waits for it");
+  // NBF-1 ends with its draft open, and the watch reads its files before the next start: NBF-2's own plan names none of them.
+  status.delete(herdrName("NBF-1"));
+  store.set(finish(store.get(), "NBF-1", { kind: "draft-pr", prs: [approvedPr] }, 150));
+  pool.watchFeedback();
+  await pool.tick();
+  assert.equal(entry("NBF-2").phase, "queued", "NBF-1's pull request changes the file NBF-2 changes, so NBF-2 is held");
+  assert.equal(waitNote(entry("NBF-2"), store.get().entries), "Waits on NBF-1 #1: both touch src/ticket-mode/server.ts");
+  store.set(recordPullStates(store.get(), new Map([["NBF-1", { [approvedPr.url]: "closed" }]])));
+  await pool.tick();
+  assert.equal(entry("NBF-2").phase, "running", "a pull request closed unmerged frees the path too");
+});
+
+test("A11-82: a paused queue reads no plan, and reads each one once it is unpaused", async () => {
+  let reads = 0;
+  const tracker = planFiles({ "NBF-1": ["nbl-ui-netbox:src/a.ts"] }, () => { reads += 1; });
+  const { pool, store, entry } = setup(1, ["NBF-1"], { plan: "-plan-[^/]*\\.md$" }, { source: tracker });
+  store.set(setPaused(store.get(), true));
+  await pool.tick();
+  assert.deepEqual([reads, entry("NBF-1").phase], [0, "queued"], "a paused queue starts nothing, so it downloads nothing either");
+  store.set(setPaused(store.get(), false));
+  await pool.tick();
+  assert.equal(entry("NBF-1").phase, "running");
+});
+
+test("A11-82: tickets queued and planned together whose plans share a path, with no order between them, are worked one after the other", async () => {
+  const tracker = batchTracker(planFiles({ "NBF-1": ["nbl-ui-netbox:src/a.ts"], "NBF-2": ["nbl-ui-netbox:src/a.ts"] })).tracker;
+  let ran: ReturnType<typeof setup> | undefined;
+  await captureStderr(async () => {
+    ran = setup(2, ["NBF-1", "NBF-2"], BATCH_PLANNER, { source: tracker, planFirst: ["NBF-1", "NBF-2"], batch: true });
+    await ran.pool.tick();
+    const plan = join(batchDir(ran.settings, BATCH), "plan");
+    put(join(plan, "NBF-1", "NBF-1-0001-plan-a.md"), "# A\n");
+    put(join(plan, "NBF-2", "NBF-2-0001-plan-b.md"), "# B\n");
+    put(join(plan, "order.json"), JSON.stringify({ "NBF-1": { repo: "nbl-ui-netbox", after: [] }, "NBF-2": { repo: "nbl-ui-netbox", after: [] } }));
+    writeFileSync(join(batchDir(ran.settings, BATCH), "outcome.json"), JSON.stringify({ kind: "planned" }));
+    ran.status.set(herdrName(BATCH), "idle");
+    await ran.pool.tick();
+    await settled();
+    await ran.pool.tick();
+  });
+  const { entry, store } = ran!;
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-2").phase], ["running", "queued"], "two slots free, one shared file: the second waits");
+  assert.equal(runStatus(entry("NBF-2"), store.get().entries), "blocked");
+  assert.equal(waitNote(entry("NBF-2"), store.get().entries), "Waits on NBF-1: both touch src/a.ts");
+});
+
+test("A11-82: a pull request whose file list was cut short or never came holds its whole repository, so a run is not started beside it on a guess", async () => {
+  const listed = feedbackPull({ files: ["src/ticket-mode/server.ts"] });
+  for (const [why, pull, phase] of [
+    ["every file was listed and none is NBF-2's: it starts", listed, "running"],
+    ["the files run past the pages read: they are unknown, so NBF-2 waits", feedbackPull({ files: ["src/ticket-mode/server.ts"], more: true }), "queued"],
+    ["the page of files did not come back at all: they are unknown, so NBF-2 waits", { ...listed, files: undefined }, "queued"],
+    ["the page of files came back in another shape: they are unknown, so NBF-2 waits", { ...listed, files: { nodes: "all of them" } }, "queued"],
+  ] as const) {
+    const gh = ghFor({ 1: pull });
+    const { pool, entry, store, status } = setup(1, ["NBF-1", "NBF-2"], { plan: "-plan-[^/]*\\.md$" }, { gh: gh.run, source: planFiles({
+      "NBF-1": ["nbl-ui-netbox:src/a.ts"], "NBF-2": ["nbl-ui-netbox:docs/unrelated.md"],
+    }) });
+    await pool.tick();
+    status.delete(herdrName("NBF-1"));
+    store.set(finish(store.get(), "NBF-1", { kind: "draft-pr", prs: [approvedPr] }, 150));
+    await captureStderr(async () => { pool.watchFeedback(); });
+    await pool.tick();
+    assert.equal(entry("NBF-2").phase, phase, why);
+    if (phase === "queued") assert.equal(waitNote(entry("NBF-2"), store.get().entries), "Waits on NBF-1 #1: both touch docs/unrelated.md");
+  }
+});
+
+test("A11-82: a plan the tracker cannot give starts nothing, so a run is not started beside a run its plan may overlap before that is known", async () => {
+  let down = true;
+  const tracker = planFiles({ "NBF-1": ["nbl-ui-netbox:src/a.ts"], "NBF-2": ["nbl-ui-netbox:src/a.ts"] }, () => {
+    if (down) throw new Error("the attachment link is gone");
+  });
+  const { pool, entry } = setup(2, ["NBF-1", "NBF-2"], { plan: "-plan-[^/]*\\.md$" }, { source: tracker });
+  await pool.tick();
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-2").phase], ["queued", "queued"], "nothing starts while a plan cannot be read");
+  down = false;
+  await pool.tick();
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-2").phase], ["running", "queued"], "read, the second waits for the first");
 });
 
 const PUBLISH = { publish: { run: "Run the post-pr-to-slack skill on these pull requests, all in one go: {prs}. Then write {dir}/published.json",

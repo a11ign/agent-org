@@ -47,10 +47,16 @@
 // when its work wakes it replaces the note and ends the run as usual. An agent that sits idle with no newer outcome for `tickets.stallMinutes`
 // is marked stalled on the board, so a run whose work never woke it is still noticed; nothing is ended and no key is sent.
 //
-// A RUN READY TO MERGE IS WATCHED. Every few minutes (`watchFeedback`) the board reads the open pull requests of each run Ready to merge or
-// Published (`readPullFeedback`, through `gh`). A review, a conversation comment or an inline comment newer than the run's last round, from
-// anyone but the account the workers use, or a check failing on the head commit since then, queues another review round that resumes the same
-// worker to answer it (`feedbackRound`), up to three before a person must approve again.
+// A RUN READY TO MERGE IS WATCHED. Every few minutes (`watchFeedback`) the board reads the open pull requests of each finished run (`readPullFeedback`,
+// through `gh`). A review, a conversation comment or an inline comment newer than the run's last round, from anyone but the account the workers
+// use, or a check failing on the head commit since then, queues another review round that resumes the same worker to answer it (`feedbackRound`),
+// up to three before a person must approve again. So does a pull request that conflicts with its base branch: a conflict is a state, not an event,
+// so it is feedback on every watch until a round clears it. The watch is for runs Ready to merge or Published; a draft's read is kept for its footprint.
+//
+// A RUN WAITS FOR A PATH ANOTHER RUN HOLDS. Ticket mode starts queued runs side by side, so two that touch one file would conflict. A run's footprint
+// is the paths its plan declares (`## Paths`, read from the plan files, `overlap.ts`) and the files its open pull requests change. A run held in its
+// repository (live, or finished with a pull request open) holds that footprint, and a queued run that shares a path with one waits, shown as Blocked
+// with its reason, until the holder's pull request merges or closes. Runs of one pass see each other: the first one chosen holds for the rest.
 //
 // A PERSON'S PUBLISH STARTS ONE PUBLISH RUN. It posts the pull requests of every run ticked, all in one go, with the host file's
 // `tickets.publish`, in a folder of its own (`publishDir`), holding one slot. Only it may run the `post-pr-to-slack` skill and the connectors
@@ -70,16 +76,17 @@
 import { execFile, spawn } from "node:child_process";
 import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { availableParallelism, homedir, loadavg } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { agentStartArgs, closedNote, herdrReason, herdrRun, openPane, readAgents } from "../herdr-agents.ts";
 import { mergeWaits, parseOrder, unknownRepos, type Order } from "./batch-order.ts";
 import { readOwnLogin, readPullFeedback, type PullFeedback } from "../ticket-port/pull-feedback.ts";
+import { parsePaths } from "./overlap.ts";
 import { defaultGh } from "../lib/tool-version-agreement.ts";
 import { CONCLUDED, HANDED_BACK, hasPlan, isBeingPublished, isParked, isWatched, openPulls, RESULT_KINDS, stackedOn } from "./board-view.ts";
 import {
   batchPlanDone, clearMove, dismiss as dismissFinished, feedbackRound, finish, isLive, leaveBatch, markPublishRunning, markPublishStarting, markResumed, markRunning, markStarting, nextStarts,
-  observe, noteWorking, observePublish, park, planDone, publishDone, publishFailed, publishStarts, recordBlockers, recordMove, recordPullStates, recordRepos, recordTrackerStates,
-  remove as removeQueued, unpark, unreadBlockerKeys, unsettledKeys, watchWorking,
+  observe, noteWorking, observePublish, park, pathsUnread, planDone, publishDone, publishFailed, publishStarts, recordBlockers, recordMove, recordPaths, recordPullFiles,
+  recordPullStates, recordRepos, recordTrackerStates, remove as removeQueued, unpark, unreadBlockerKeys, unreadPaths, unsettledKeys, watchWorking,
   type Entry, type Outcome, type PublishRun, type Queue, type RunChoice, type WrittenOutcome,
 } from "./queue.ts";
 import type { Ticket, TicketSource } from "./source.ts";
@@ -93,7 +100,7 @@ import {
 import {
   BRIEF_FILE, CONNECTORS_FILE, DENY_FILE, ORDER_FILE, OUTCOME_FILE, PLAN_DIR, PLANNING_DENY, PREVIOUS_OUTCOME_FILE, PUBLISH_FILE, PUBLISHED_FILE, QUESTION_FILE,
   READY_FILE, REVIEW_FILE, STOP_COUNT_FILE, WORKING_STOP_FILE,
-  batchPlanBriefText, briefText, firstPrompt, planBriefText, publishBriefText, reviewBriefText, reviewPrompt, workerFlags, workerSettings,
+  batchPlanBriefText, briefText, conflictLine, firstPrompt, planBriefText, publishBriefText, reviewBriefText, reviewPrompt, workerFlags, workerSettings,
   type BatchTicket, type HookCommand, type ParentTicket,
 } from "./worker-files.ts";
 import { ticketDir, ticketFolder } from "./ticket-paths.ts";
@@ -359,10 +366,12 @@ export function publishResult(outcomeText: string, dir: string): Readonly<{ link
 
 /**
  * What new feedback, if any, reached a run's pull requests after `since`, the end of its last round, as the round's brief names it: the newest
- * comments and who left them, and the checks that failed. Null when nothing is newer. PURE.
+ * comments and who left them, and the checks that failed; and each pull request that conflicts with its base. Null when nothing is newer. PURE.
  */
 export function feedbackSince(reads: readonly Readonly<{ url: string; read: PullFeedback }>[], since: number): string | null {
   const lines = reads.filter(({ read }) => read.state === "open").flatMap(({ url, read }) => [
+    // A conflict is a state, so its line does not wait for `since`: it is named on every watch until the pull request is clear of it.
+    ...(read.conflicting ? [conflictLine(url, read.base)] : []),
     ...(read.feedbackAt !== null && read.feedbackAt > since ? [`New review feedback on ${url}, the newest from ${read.authors[0] ?? "someone"}.`] : []),
     ...(read.failedAt !== null && read.failedAt > since ? [`${read.failing.join(", ")} failed on the head commit of ${url}.`] : []),
   ]);
@@ -985,21 +994,53 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
   }
 
   /**
+   * The repository-prefixed paths a ticket's plan declares: its `## Paths` sections, read from the plan files the tracker holds for it, each in a
+   * folder of its own so a plan's name never reaches the ticket's brief. None when this machine names no plan. Throws when the tracker refuses.
+   */
+  async function declaredPaths(ticket: Ticket): Promise<readonly string[]> {
+    if (settings.plan === null) return [];
+    const dir = join(ticketDir(settings, ticket.key), "paths");
+    mkdirSync(dir, { recursive: true });
+    const plan = new RegExp(settings.plan);
+    const paths: string[] = [];
+    for (const file of await source.download(ticket, dir)) {
+      if (!plan.test(basename(file)) || statSync(file).size > PLAN_FILE_BYTES) continue;
+      for (const path of parsePaths(readFileSync(file, "utf8"))) {
+        if (!paths.includes(path)) paths.push(path);
+      }
+    }
+    return paths;
+  }
+
+  /**
+   * Read the paths each queued run's plan declares, and record them on the runs. Throws when the tracker refuses a download, and nothing is recorded,
+   * so the next pass asks again: a run is not started before its paths are known, as it is not before its blockers.
+   */
+  async function readPaths(entries: readonly Entry[]): Promise<void> {
+    if (entries.length === 0) return;
+    const found = new Map<string, readonly string[]>();
+    for (const { ticket } of entries) found.set(ticket.key, await declaredPaths(ticket));
+    update((queue) => recordPaths(queue, found));
+  }
+
+  /**
    * Start what there is room for. A run whose blockers have not been read is read first, and none starts while the tracker cannot say, because
-   * starting a run before its blockers are known would start work that waits on another. Each start is recorded before it begins, so a second
-   * tick cannot start it again.
+   * starting a run before its blockers are known would start work that waits on another. Its plan paths are read the same way, so a run is not
+   * started beside a run it overlaps before the overlap is known. Each start is recorded before it begins, so a second tick cannot start it again.
    */
   async function fill(): Promise<void> {
     try {
       await readBlockers(unreadBlockerKeys(store.get()));
+      // A paused queue starts nothing, so it reads no plan either: the plans are read when it is unpaused.
+      if (!store.get().paused) await readPaths(unreadPaths(store.get()));
     } catch {
       return;
     }
     // A batch is planned together only while this machine's planner plans batches: otherwise each of its tickets is planned alone.
     if (!batches) updateEach(store.get().entries.filter((e) => e.phase === "queued" && e.batch !== undefined), leaveBatch);
     const { load, cores } = (deps.load ?? (() => ({ load: loadavg()[0], cores: availableParallelism() })))();
-    // A run queued again while this pass read the blockers, such as a batch's ticket whose order was just recorded, waits for the next pass's read.
-    const starts = nextStarts(store.get(), load, cores).filter((entry) => entry.blockers !== undefined);
+    // A run queued again while this pass read the blockers or the paths, such as a batch's ticket whose order was just recorded, waits for the next pass's read.
+    const starts = nextStarts(store.get(), load, cores).filter((entry) => entry.blockers !== undefined && !pathsUnread(entry));
     const begun = new Set<string>();
     for (const entry of starts) {
       if (begun.has(entry.ticket.key) || removing.has(entry.ticket.key)) continue;
@@ -1344,26 +1385,35 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
   let ownLogin: string | null = null;
 
   /**
-   * Read the open pull requests of each run the board watches, and queue a review round for each run whose pull requests got new feedback
-   * since its last round ended: a review, a comment or an inline comment by anyone but the workers' account, or a check that failed since then.
-   * A run whose pull request could not be read is asked again next time, and one merged or closed since is left alone.
+   * Read the open pull requests of each finished run, and queue a review round for each watched run whose pull requests got new feedback since its
+   * last round ended: a review, a comment or an inline comment by anyone but the workers' account, or a check that failed since then, or a pull
+   * request that conflicts with its base. Every finished run's read records the files its open pull requests change, which is its footprint while
+   * it is held (a draft too). A run whose pull request could not be read is asked again next time, and one merged or closed since is left alone.
    */
   function watchFeedback(): void {
-    const watched = store.get().entries.filter((entry) => entry.phase === "finished" && isWatched(entry));
-    if (watched.length === 0) return;
+    const finished = store.get().entries.filter((entry) => entry.phase === "finished" && openPulls(entry).length > 0);
+    if (finished.length === 0) return;
     ownLogin ??= readOwnLogin(gh);
     const self = ownLogin;
     if (self === null) return log("the GitHub account the workers use could not be read, so no pull request's feedback was read");
     let queued = false;
-    for (const entry of watched) {
+    for (const entry of finished) {
       const reads = openPulls(entry).map((pr) => ({ url: pr.url, read: readPullFeedback(pr.url, self, feedbackGh) }));
       const unread = reads.filter(({ read }) => read === null).map(({ url }) => url);
       if (unread.length > 0) {
         log(`${entry.ticket.key}: the feedback on ${unread.join(", ")} could not be read, so it was not checked; the next watch asks again`);
         continue;
       }
-      // A reviewer's verdict is read by `reviewerLines`, which asks for a round only on requested changes; its reviews are not feedback here.
       const readable = reads.filter((pull): pull is { url: string; read: PullFeedback } => pull.read !== null);
+      const open = readable.filter(({ read }) => read.state === "open");
+      const partial = open.filter(({ read }) => !read.filesComplete).map(({ url }) => url);
+      if (partial.length > 0) log(`${entry.ticket.key}: ${partial.join(", ")} changes more than the 100 files read, so it holds its whole repository`);
+      // The files GitHub did not give are unknown, not untouched: the empty name holds the repository, so no run is started beside it on a guess.
+      const files = Object.fromEntries(open.map(({ url, read }) => [url, read.filesComplete ? read.files : [...read.files, ""]]));
+      // Written only when a file changed, so a watch that finds the same files does not rewrite the queue.
+      if (JSON.stringify(files) !== JSON.stringify(entry.pullFiles ?? {})) update((queue) => recordPullFiles(queue, entry.ticket.key, files));
+      if (!isWatched(entry)) continue;
+      // A reviewer's verdict is read by `reviewerLines`, which asks for a round only on requested changes; its reviews are not feedback here.
       const lines = [feedbackSince(readable, entry.finishedAt ?? 0), ...reviewerLines(openPulls(entry).map((pr) => pr.url))]
         .filter((line): line is string => line !== null);
       if (lines.length === 0) continue;

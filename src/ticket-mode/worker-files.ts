@@ -192,6 +192,14 @@ const cloneNames = (clones: Readonly<Record<string, string>>): string => Object.
 
 const reposText = (clones: Readonly<Record<string, string>>): string => Object.entries(clones).map(([name, path]) => `- \`${name}\` at \`${path}\``).join("\n");
 
+/**
+ * The feedback line for a pull request that conflicts with its base, as `pool.ts` writes it into a round's feedback. `CONFLICT_LINE` finds it there,
+ * so a round whose feedback names a conflict is briefed to merge the base in first.
+ */
+export const conflictLine = (url: string, base: string | null): string => `${url} conflicts with its base branch ${base ?? "unknown"}.`;
+
+export const CONFLICT_LINE = /conflicts with its base branch/;
+
 /** A description quoted, so its own headings cannot read as the brief's. */
 const quoted = (description: string): string => (description.trim() || "(no description)").split("\n").map((line) => `> ${line}`.trimEnd()).join("\n");
 
@@ -234,6 +242,8 @@ ${PARENT_ONLY_PLAN}
 ${MISSING_SKILL}
 
 The plan's files go in \`${planDir}\`, and nowhere else. The board attaches each one to the ticket under its file name. Write only markdown files there, each 1 MB or less: anything else stops the board attaching any of them. ${regionInstruction(clones)}
+
+${PATHS_RULE}
 ${connectorsText(connectors)}${notes?.trim() ? `\n## On this machine\n\n${notes.trim()}\n` : ""}
 ## The outcome file
 
@@ -308,7 +318,7 @@ ${MISSING_SKILL}
 
 Write everything in \`${planDir}\`, and nowhere else:
 
-- \`${planDir}/<KEY>/\` for each ticket above holds that ticket's plan files, or a \`${QUESTION_FILE}\` when only a person can settle its plan. The board attaches each plan file to its own ticket under its file name. Write only markdown files there, each 1 MB or less: anything else stops the board attaching that ticket's plan. A question about one ticket does not stop the others, so plan the rest. ${regionInstruction(clones)}
+- \`${planDir}/<KEY>/\` for each ticket above holds that ticket's plan files, or a \`${QUESTION_FILE}\` when only a person can settle its plan. The board attaches each plan file to its own ticket under its file name. Write only markdown files there, each 1 MB or less: anything else stops the board attaching that ticket's plan. A question about one ticket does not stop the others, so plan the rest. ${regionInstruction(clones)} ${PATHS_RULE}
 - \`${planDir}/${ORDER_FILE}\` is one object with an entry for each ticket: \`{ "<KEY>": { "repo": "<repository>", "after": ["<KEY>", ...], "wait": "stacked" or "merged" } }\`, where \`wait\` is optional. \`repo\` is the repository the ticket's work lands in, or \`null\` for a ticket with a question. It must be exactly one of these names, which are the host file's \`clones\` keys: ${cloneNames(clones)}. A name is not the folder its checkout sits in, so never take a \`repo\` from a path: the board refuses any other name, and hands that ticket to a person. \`after\` names the tickets of this batch whose work it needs first. Name only tickets of this batch, never the ticket itself, and make no cycle. The board records each one in the tracker as blocking the ticket, and its worker starts only once they are done, or, where it stacks on one, on that one's branch.
 
 How \`wait\` says how a ticket waits on each ticket in its \`after\`:
@@ -316,6 +326,7 @@ How \`wait\` says how a ticket waits on each ticket in its \`after\`:
 - With no \`wait\`, or \`"stacked"\`, the ticket is stacked. When its work lands in the same repository as its blocker and that blocker has an open pull request there, the board starts the ticket on that branch and its pull request is stacked on the blocker's. Choose this when the code builds on the blocker's diff.
 - \`"wait": "merged"\` keeps the ticket Blocked until every ticket in its \`after\` has merged, then starts it on the default branch. Choose this when the work needs the blocker's change live rather than in a diff: fleet state, a deployed or released package, a published artifact, or anything a worker checks on the running system.
 - When a plan says "wait until X merges", set \`"wait": "merged"\`, or the board contradicts the plan.
+- Tickets of one repository whose work touches the same area, directly or through a shared module, must be ordered in \`${ORDER_FILE}\` with \`after\`, so the later one stacks on or waits for the earlier one. The board holds back a run whose paths overlap a run already in progress, so this order is what keeps them in turn.
 ${connectorsText(connectors)}${notes?.trim() ? `\n## On this machine\n\n${notes.trim()}\n` : ""}
 ## The outcome file
 
@@ -329,6 +340,12 @@ Write \`${runDir}/${OUTCOME_FILE}\` as the last thing you do, after every plan, 
 Write \`planned\` once every ticket has its plan files or its \`${QUESTION_FILE}\`. A \`needs-human\` outcome hands every ticket of the batch back to a person, so write it only when no ticket can be planned without one. A person may answer you here after a \`needs-human\` outcome. If one does, finish the plans with what they said, and write the outcome file again as the last thing you do.
 `;
 }
+
+/**
+ * What every plan says of the paths its work touches, in a `## Paths` section the board reads (`overlap.ts`): the board holds back a ticket whose
+ * paths overlap a run in progress, so the list must be complete.
+ */
+const PATHS_RULE = "Each plan file ends with a `## Paths` section listing every file or directory its work will change, one bullet each, as `- \`<repo>:<path>\``: `<repo>` is one of the repository names above, and a path ending in `/` names a directory. The board holds back another ticket whose work touches the same paths, so list every path the work changes, and no more.";
 
 /**
  * Step 6 of the brief: how the worker opens its pull requests, as a draft (the default) or ready for review (`tickets.drafts: false`). The command is
@@ -433,9 +450,10 @@ export function reviewBriefText({ ticket, folder, ticketDir, prs, notes, reviewN
   const who = resumed
     ? "You wrote these pull requests earlier in this conversation."
     : "Another worker wrote these pull requests, and its conversation could not be found: read each pull request's diff and the ticket before you change anything.";
-  const round = asked ? answerRound(who, "A person asked you to answer the current feedback on your pull requests: their reviews, comments and failing checks.")
+  const round = asked ? answerRound(who, "A person asked you to answer the current feedback on your pull requests: their reviews, comments and failing checks.", null)
     : feedback === undefined ? approvedRound(who)
-    : answerRound(who, `New feedback reached your pull requests after your last round, so the board started this round to answer it.\n\nThis started the round:\n\n${quoted(feedback)}`);
+    : answerRound(who, `New feedback reached your pull requests after your last round, so the board started this round to answer it.\n\nThis started the round:\n\n${quoted(feedback)}`,
+      CONFLICT_LINE.test(feedback) ? MERGE_FIRST : null);
   return `# ${ticket.key}: ${round.title} for ${ticket.title}
 
 ${round.opening}
@@ -479,7 +497,9 @@ function approvedRound(who: string): Round {
   return {
     title: "review round",
     opening: `A person reviewed your draft pull requests and approved them. ${who} You are unattended again: nobody will answer a question, so decide, do the work, and end by writing the outcome file below.`,
-    steps: `1. Mark each pull request ready with \`gh pr ready <url>\`.
+    steps: `If a pull request conflicts with its base branch (\`gh pr view <its url> --json mergeable,mergeStateStatus\` says CONFLICTING or DIRTY), merge the base into your branch first, as step 1 of a feedback round says: never rebase, and never force-push.
+
+1. Mark each pull request ready with \`gh pr ready <url>\`.
 2. Wait for each one's checks and its review, as "How this machine reviews" says. Wait at most ${wait} minutes for each. If a check or the review has not finished by then, write a \`needs-human\` outcome that names what you waited for.
 3. Read every review comment and every failed check. Fix each real finding in the worktree, with a test that fails without the fix where the finding is about behaviour. A finding you judge wrong is not fixed: say why in your reply instead. Run the repository's checks on what you changed.
 4. Commit with a conventional commit message, and push. Never force-push.
@@ -490,20 +510,29 @@ function approvedRound(who: string): Round {
 }
 
 /**
- * A round that answers the feedback on pull requests that are ready already: one the board started on new feedback, or one a person asked for.
- * `why` says which, and what started it.
+ * The step a round takes first when the feedback names a pull request that conflicts with its base: merge the base in, never rebase. A round the
+ * feedback names no conflict in gets no such step, so its brief is what it was.
  */
-function answerRound(who: string, why: string): Round {
+const MERGE_FIRST = "The feedback above says a pull request conflicts with its base branch. Merge the base branch into your branch before anything else: `git fetch`, then `git merge origin/<base>` in the worktree of each such pull request. Never rebase, and never force-push. Resolve each conflict keeping both changes' intent, run the repository's own tests, typecheck and lint, and push. Say in your reply on that pull request which files conflicted and how each was resolved.";
+
+/**
+ * A round that answers the feedback on pull requests that are ready already: one the board started on new feedback, or one a person asked for.
+ * `why` says which, and what started it. `merge` is the step that merges a conflicting base in first, or null for a round with no conflict.
+ */
+function answerRound(who: string, why: string, merge: string | null): Round {
   const wait = REVIEW_WAIT_MINUTES;
   const [first, ...rest] = why.split("\n\n");
+  const items = [
+    "Read that feedback and everything else on each pull request since your last reply: its reviews, its conversation comments, its inline review comments and its failed checks. The pull requests are ready already: do not run `gh pr ready`.",
+    "Fix each finding that is right in the worktree, with a test that fails without the fix where the finding is about behaviour. A finding you judge wrong is not fixed: answer it with the evidence instead. Run the repository's checks on what you changed.",
+    "Commit with a conventional commit message, and push. Never force-push.",
+    "Reply on each pull request with one comment: each finding, and what you did about it.",
+    `Wait at most ${wait} minutes for the checks on the commit you pushed. If one fails, fix it, push, and wait again.`,
+  ];
   return {
     title: "feedback round",
     opening: [`${first} ${who} You are unattended: nobody will answer a question, so decide, do the work, and end by writing the outcome file below.`, ...rest].join("\n\n"),
-    steps: `1. Read that feedback and everything else on each pull request since your last reply: its reviews, its conversation comments, its inline review comments and its failed checks. The pull requests are ready already: do not run \`gh pr ready\`.
-2. Fix each finding that is right in the worktree, with a test that fails without the fix where the finding is about behaviour. A finding you judge wrong is not fixed: answer it with the evidence instead. Run the repository's checks on what you changed.
-3. Commit with a conventional commit message, and push. Never force-push.
-4. Reply on each pull request with one comment: each finding, and what you did about it.
-5. Wait at most ${wait} minutes for the checks on the commit you pushed. If one fails, fix it, push, and wait again.`,
+    steps: (merge === null ? items : [merge, ...items]).map((item, index) => `${index + 1}. ${item}`).join("\n"),
     reviewed: "Write `reviewed` only when every finding is answered and every check passed on the last commit you pushed.",
   };
 }
