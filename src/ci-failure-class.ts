@@ -186,7 +186,8 @@ export function failingAssertionLines(errorLines: readonly string[]): string[] {
   const named = errorLines.filter((line) => FAILING_ASSERTION.test(line));
   return (named.length > 0 ? named : errorLines.filter((line) => !NOT_THE_FAILURE.test(line))).slice(0, MAX_ASSERTIONS_NAMED).map((line) => line.trim());
 }
-const READS_OUTSIDE = /\b(ENOTFOUND|EAI_AGAIN|ECONNRESET|ETIMEDOUT|ECONNREFUSED)\b|getaddrinfo|could not resolve host|unable to access '?https?:/i;
+/** A network failure by its signature: also what `work-gate/causes/pr-ejected.ts` reads an install step's log by (agent-org#1647). */
+export const READS_OUTSIDE = /\b(ENOTFOUND|EAI_AGAIN|ECONNRESET|ETIMEDOUT|ECONNREFUSED)\b|getaddrinfo|could not resolve host|unable to access '?https?:/i;
 const RED_CONCLUSIONS = new Set(["failure", "timed_out"]);
 const RUN_AND_JOB = /\/actions\/runs\/(\d+)\/job\/(\d+)/;
 // agent-org#1524: the acceptance gate's own words when the merge commit it checked out has no parents, so the diff cannot be read. Both lines it prints say "could not read the diff".

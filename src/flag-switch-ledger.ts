@@ -46,6 +46,7 @@ const OPTIONAL_DECLARATIONS: readonly string[] = Object.freeze(["decisions.json"
  */
 export const FLAGS_WITH_ANOTHER_HOME: Readonly<Record<string, string>> = Object.freeze({
   "queue.reenqueueEjected": "switched by `machinery:flag` (agent-org#1061), which writes the canary state and not a declaration file",
+  "queue.reenqueueInfra": "switched by `machinery:flag` (agent-org#1647), which writes the canary state and not a declaration file",
   "queue.chainWaitWake": "switched by `machinery:flag` (agent-org#1061), which writes the canary state and not a declaration file",
   "rows.closedUnderOpenHalf": "switched by `machinery:flag` (agent-org#1061), which writes the canary state and not a declaration file",
   "rows.autoUnpark": "switched by `machinery:flag` (agent-org#1161), which writes the canary state and not a declaration file",

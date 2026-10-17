@@ -2495,6 +2495,7 @@ export const MACHINERY_SIGNALS = Object.freeze({
   RATE_LIMIT_REFUSALS: "rate-limit-refusals",
   RELEASE_FAILURES: "release-failures",
   OWNERLESS_PR_UNREACHED: "ownerless-pr-unreached", // agent-org#1648: a red pull request the chairman opened with no session on it, that no order reaches for UNQUEUED_MINUTES
+  EJECTED_NETWORK_NOT_REQUEUED: "ejected-network-not-requeued", // agent-org#1647: a queue ejection that stayed the owner's although its install failed on the network (`pr-ejected.ts`)
   GH_AUTHOR_FALLBACK: "gh-author-fallback", // agent-org#1666: an account-attributed pr create/merge/review in the ledgers, at most ten minutes old (`gh-author-fallback.ts`)
 });
 export const STANDARD_MACHINERY_SIGNALS: readonly string[] = Object.freeze(Object.values(MACHINERY_SIGNALS));
@@ -2648,6 +2649,8 @@ export type CanaryFacts = {
   ownerless?: number[] | null;
   /** agent-org#1666: the times (epoch ms) of the account's authoring calls in the ledgers (`accountAuthoringTimes`); `null` (or absent) when unread. */
   authorFallbacks?: number[] | null;
+  /** agent-org#1647: the removal times (epoch ms) of the queue ejections that stayed the owner's although the install failed on the network; `null` (or absent) when the arming read was refused. */
+  ejectedNetwork?: number[] | null;
 };
 
 /** The standard signals of one tick over `(since, now]`. A pull request counts as unqueued once the memo has seen it unarmed for `UNQUEUED_MINUTES`; the memo is returned with the departed dropped. */
@@ -2673,6 +2676,8 @@ export function machineryValues({ facts, since, now, memo }: { facts: CanaryFact
       [MACHINERY_SIGNALS.RELEASE_FAILURES]: failedRuns,
       [MACHINERY_SIGNALS.OWNERLESS_PR_UNREACHED]: facts.ownerless == null ? null : aged(ownerlessSeen),
       // agent-org#1666: counted in the tick whose window holds it, and only while it is at most ten minutes old (a call older than that is not this tick's)
+      // agent-org#1647: counted in the tick whose window holds the removal, so a pull request that stays the owner's for hours is one reading and not one a tick
+      [MACHINERY_SIGNALS.EJECTED_NETWORK_NOT_REQUEUED]: facts.ejectedNetwork == null ? null : facts.ejectedNetwork.filter(inSpan).length,
       [MACHINERY_SIGNALS.GH_AUTHOR_FALLBACK]: facts.authorFallbacks == null ? null : facts.authorFallbacks.filter((at) => inSpan(at) && now - at <= AUTHOR_FALLBACK_MS).length,
     },
   };

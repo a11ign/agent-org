@@ -1434,7 +1434,7 @@ export function readArmingOf(openPrs: any[], required: string[] | null, { scope 
   const gated = gateUnarmedOnAcceptance(split.unarmed, { openPrs, scope, env, ...(log === undefined ? {} : { log }) });
   const settled = settleUnarmedPrs(gated.armable, { armed: reading.armed.length, of: candidates.length, portFor, scope, env, ...(log === undefined ? {} : { log }) });
   const unarmed = gated.withheld.length === 0 ? settled : withWithheld(settled, gated.withheld, { armed: reading.armed.length, of: candidates.length });
-  return { unarmed, ejections: requeued.remaining, stranded: requeued.stranded };
+  return { unarmed, ejections: requeued.remaining, stranded: requeued.stranded, networkNotRequeued: requeued.networkNotRequeued };
 }
 
 /** agent-org#1580: the switches of the project this tool serves; absent or unusable is `{}`, which is every flag off. */

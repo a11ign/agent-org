@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { touchesDiff } from "../../ci-failure-class.ts";
+import { READS_OUTSIDE, touchesDiff } from "../../ci-failure-class.ts";
 import { CANARY_STATE_FILE, UNQUEUED_MINUTES, parseCanaryState, machineryFlagOn, emptyCanaryState, type CanaryState } from "../../org-health.ts";
 import { ejectionQueryArgs, queueEjectionOf } from "../../pr-armed-state.ts";
 import { summarizeTestLog, testIdentity } from "../../parent-recheck-summary.ts";
@@ -113,6 +113,31 @@ const MAX_EJECTION_SUBTESTS = 5;
 /** The machinery flag that lets the gate re-arm an ejection that is not the pull request's own. */
 export const REENQUEUE_EJECTED_FLAG = "queue.reenqueueEjected";
 
+// =====================================================================================================================
+// agent-org#1647: A NETWORK ERROR IN AN INSTALL STEP IS INFRASTRUCTURE, AND THE GATE RE-QUEUES IT ONCE.
+//
+// Measured 2026-10-16: agent-org#1639 was approved and green, and the queue ejected it because the merge group's `typecheck` job failed in its dependency install with `npm error code ECONNRESET` (run 38936509518).
+// A job that fails before any source runs names no file, so `ownershipOfFailure` called it `unknown` and the ejection stayed the owner's for about two hours, until a person re-armed it. The org already knows
+// what a network failure looks like (`READS_OUTSIDE`), so this reads it in the failed log.
+//
+//   THE SHAPE: the failing job's FAILED STEP is an install (its name says `install`) and a line of that step carries `READS_OUTSIDE` or a registry 5xx. The LAST error line is no signature: npm ends on `A complete log
+//   of this run can be found in`, so the whole step is read. A failure that names a file the PR changes is still `own`, and a log with no signature is still `unknown`.
+//   ONCE PER HEAD: the same bound `REQUEUES_PER_HEAD` keeps for the other case. A second `failed_checks` on this head is the owner's, whatever the log says.
+//   NO GREEN-MERGE-GROUP WAIT: that wait answers "is main fixed"; a dropped connection broke nothing on main, and the bound already caps what a wrong reading costs at one queue run.
+//   THE FLAG `queue.reenqueueInfra` (`machinery-canary.json`, default OFF), apart from `queue.reenqueueEjected`: off sends today's order, and nothing is read or written.
+//   THE DETECTOR: an ejection that stays the owner's while its failure is of this shape is never silent. `networkNotRequeued` names it with its error line, the tick says so, and the canary counts it
+//   (`ejected-network-not-requeued`) whether the flag is on (the bound is spent, the arm failed) or off (nothing re-queued it). The reading is of the log the tick already holds: no further call is made.
+// =====================================================================================================================
+
+/** The machinery flag that lets the gate re-arm an ejection whose failure was a network error in an install step. */
+export const REENQUEUE_INFRA_FLAG = "queue.reenqueueInfra";
+
+/** A step that installs: the failed step's name says so (`Install the dev dependencies ...`, `Install the tool's dependencies`). */
+const INSTALL_STEP = /install/i;
+
+/** A registry that answered 5xx: npm prints `npm error code E502` and `npm error 503 Service Unavailable`, and pnpm `ERR_PNPM_FETCH_5xx` / `ERR_PNPM_TARBALL_DOWNLOAD`. `READS_OUTSIDE` is the network half. */
+const REGISTRY_5XX = /\bE5\d\d\b|\b5\d\d (?:Bad Gateway|Service Unavailable|Gateway Time-?out|Internal Server Error)\b|ERR_PNPM_FETCH_5\d\d/i;
+
 const QUEUE_EVENT_TYPES = ["AddedToMergeQueueEvent", "RemovedFromMergeQueueEvent"];
 
 /** The merge queue's own branches, `gh-readonly-queue/<base>/pr-<n>-<sha>`: every merge group run is on one. */
@@ -171,8 +196,11 @@ export function mergeGroupGreenSince(runs: readonly MergeGroupRun[], since: stri
   return red.length === 0 ? { green: true, why: `the newest merge group (${newest.branch}, ${newest.at}) is green` } : { green: false, why: `the newest merge group (${newest.branch}) is red` };
 }
 
-/** One failing job of the ejected run and the source file its log names (`null` when it names none). */
-export type JobFailure = { job: string; file: string | null };
+/**
+ * One failing job of the ejected run and the source file its log names (`null` when it names none). `network` is present only when the failed step is an install and a line of it is a network or registry
+ * failure (agent-org#1647): that line, as the log prints it.
+ */
+export type JobFailure = { job: string; file: string | null; network?: string };
 
 /**
  * PURE. The failing jobs of a `--log-failed` dump (`<job>\t<step>\t<time> <line>`) and the file each names: from the job's first failing line on, the first source file within `FILE_WINDOW_LINES`, with the
@@ -180,15 +208,17 @@ export type JobFailure = { job: string; file: string | null };
  * on the log the order already reads, so the ownership question costs no further call.
  */
 export function jobFailuresOf(log: string): JobFailure[] {
-  const byJob = new Map<string, string[]>();
+  const byJob = new Map<string, { step: string; line: string }[]>();
   for (const raw of log.split("\n")) {
-    const [job, , ...rest] = raw.split("\t");
+    const [job, step, ...rest] = raw.split("\t");
     if (rest.length === 0 || job.trim() === "" || ROLL_UP_JOB.test(job.trim())) continue;
-    byJob.set(job.trim(), [...(byJob.get(job.trim()) ?? []), rest.join("\t").replace(LOG_TIMESTAMP, "")]);
+    byJob.set(job.trim(), [...(byJob.get(job.trim()) ?? []), { step, line: rest.join("\t").replace(LOG_TIMESTAMP, "") }]);
   }
-  return [...byJob.entries()].map(([job, lines]) => {
+  return [...byJob.entries()].map(([job, entries]) => {
+    const lines = entries.map((entry) => entry.line);
     const at = lines.findIndex((line) => FAILING_LINE.test(line));
-    return { job, file: at < 0 ? null : fileNamedIn(lines.slice(at, at + FILE_WINDOW_LINES)) };
+    const network = entries.filter((entry) => INSTALL_STEP.test(entry.step)).map((entry) => entry.line.trim()).find((line) => READS_OUTSIDE.test(line) || REGISTRY_5XX.test(line));
+    return { job, file: at < 0 ? null : fileNamedIn(lines.slice(at, at + FILE_WINDOW_LINES)), ...(network === undefined ? {} : { network }) };
   });
 }
 
@@ -203,11 +233,13 @@ function fileNamedIn(lines: readonly string[]): string | null {
 
 const stemOf = (path: string): string => (path.split("/").at(-1) ?? path).split(".")[0];
 
-export type Ownership = { kind: "outside" | "own" | "unknown"; why: string; };
+/** `infrastructure` (agent-org#1647) carries `line`: the network or registry line that says so. */
+export type Ownership = { kind: "outside" | "own" | "unknown" | "infrastructure"; why: string; line?: string; };
 
 /**
  * PURE. Does the failure of an ejected run sit OUTSIDE the pull request's diff? Every failing job must name a file, and none of those files may be one the PR changes or the one beside it (`touchesDiff`, and the
  * same stem). ONE OWN FILE IS OWN; no failing job, one log that names no file or a diff that could not be listed is UNKNOWN: neither is ever `outside`.
+ * INFRASTRUCTURE (agent-org#1647) is every failing job having failed in an install step on the network or the registry, and it is asked AFTER own: a file the PR changes outranks it.
  */
 export function ownershipOfFailure({ failures, changed }: { failures: readonly JobFailure[]; changed: readonly string[] | null; }): Ownership {
   if (failures.length === 0) return { kind: "unknown", why: "the log names no failing job but the roll-up" };
@@ -216,6 +248,8 @@ export function ownershipOfFailure({ failures, changed }: { failures: readonly J
   const files = failures.flatMap((failure) => (failure.file === null ? [] : [failure.file]));
   const own = files.find((file) => touchesDiff(file, changed) || changed.some((path) => stemOf(path) === stemOf(file)));
   if (own !== undefined) return { kind: "own", why: `it fails in ${own}, which the pull request changes or covers` };
+  const lines = failures.flatMap((failure) => (failure.network === undefined ? [] : [failure.network]));
+  if (lines.length === failures.length) return { kind: "infrastructure", why: `the install step of \`${failures.map((failure) => failure.job).join("`, `")}\` failed on the network or the registry (${lines[0]})`, line: lines[0] };
   if (unnamed !== undefined) return { kind: "unknown", why: `the log of \`${unnamed.job}\` names no file the failure is in` };
   return { kind: "outside", why: `it fails in ${files.join(", ")}, which the pull request does not change` };
 }
@@ -246,26 +280,35 @@ export type RequeueContext = {
   evidence: ReadonlyMap<number, EjectionEvidence>;
 };
 
-export type RequeueOutcome = { remaining: Map<number, EjectionFacts>; requeued: number[]; stranded: number[]; };
+/** An ejection that stays the owner's although its failure is a network error in an install step (agent-org#1647): `at` is the removal's epoch ms, `null` when the timeline did not say. */
+export type NetworkNotRequeued = { number: number; at: number | null; line: string; why: string };
 
-/** What the gate says about one ejection: re-queue it, or keep today's order (`outside` when the failure was shown not to be the PR's own, which is what makes it stranded past the clock). */
-type RequeueDecision = { requeue: true; why: string } | { requeue: false; why: string; outside: boolean };
+export type RequeueOutcome = { remaining: Map<number, EjectionFacts>; requeued: number[]; stranded: number[]; networkNotRequeued: NetworkNotRequeued[]; };
 
-function decideRequeue(number: number, facts: EjectionFacts, ctx: RequeueContext): RequeueDecision {
+/** What the gate says about one ejection: re-queue it, or keep today's order (`outside` when the failure was shown not to be the PR's own, which is what makes it stranded past the clock). `network` is the install line when it was one. */
+type RequeueDecision = { requeue: true; why: string; network?: string; flag: string } | { requeue: false; why: string; outside: boolean; network?: string };
+
+/** Which of the two re-queues are on. The first answers "main was red and is green"; the second "the install lost its connection". */
+type Allowed = { ejected: boolean; infra: boolean };
+
+function decideRequeue(number: number, facts: EjectionFacts, ctx: RequeueContext, allowed: Allowed): RequeueDecision {
   const evidence = ctx.evidence.get(number);
-  const keep = (why: string, outside = false): RequeueDecision => ({ requeue: false, why, outside });
+  const keep = (why: string, outside = false, network?: string): RequeueDecision => ({ requeue: false, why, outside, ...(network === undefined ? {} : { network }) });
   if (evidence === undefined || evidence.log === null) return keep("the failed merge group run's log could not be read, so the failure cannot be placed");
-  if (evidence.failedEntries > REQUEUES_PER_HEAD) return keep(`it has failed the queue ${evidence.failedEntries} times on this head, and the gate re-queues once`);
   const pr = ctx.prs.find((candidate) => Number(candidate?.number) === number);
   const owned = ownershipOfFailure({ failures: jobFailuresOf(evidence.log), changed: changedFilesOf(pr) });
+  const network = owned.kind === "infrastructure" ? owned.line : undefined; // classified BEFORE the bound, so a spent bound is still counted by the detector
+  if (evidence.failedEntries > REQUEUES_PER_HEAD) return keep(`it has failed the queue ${evidence.failedEntries} times on this head, and the gate re-queues once`, false, network);
+  if (owned.kind === "infrastructure") return allowed.infra ? { requeue: true, why: owned.why, network, flag: REENQUEUE_INFRA_FLAG } : keep(`${owned.why}; ${REENQUEUE_INFRA_FLAG} is off`, false, network);
+  if (!allowed.ejected) return keep(owned.why);
   if (owned.kind !== "outside") return keep(owned.why);
   if (evidence.runs === null) return keep(`${owned.why}; the merge group runs could not be listed`, true);
   const green = mergeGroupGreenSince(evidence.runs, facts.removedAt ?? "");
-  return green.green ? { requeue: true, why: `${owned.why}; ${green.why}` } : keep(`${owned.why}; ${green.why}`, true);
+  return green.green ? { requeue: true, why: `${owned.why}; ${green.why}`, flag: REENQUEUE_EJECTED_FLAG } : keep(`${owned.why}; ${green.why}`, true);
 }
 
 /** The arm itself, and the record of it. `null` when the pull request is armed again, else why it is not. */
-function armEjected(number: number, ctx: RequeueContext, why: string): string | null {
+function armEjected(number: number, ctx: RequeueContext, { why, flag }: { why: string; flag: string; }): string | null {
   const pr = ctx.prs.find((candidate) => Number(candidate?.number) === number);
   const blocker = blockerVerdict({ repo: ctx.scope, prBody: pr?.body ?? null, run: (args) => ctx.run(args) });
   if (blocker.kind !== "clear") return blocker.why;
@@ -277,7 +320,7 @@ function armEjected(number: number, ctx: RequeueContext, why: string): string | 
   }
   try {
     ctx.portFor(ctx.scope).postDecision({ tracker: TRACKER, scope: ctx.scope, id: number }, { role: "work-gate", runId: `tick-${ctx.now}`, kind: "pr-ejected-requeued", text:
-      `**work-gate, pr-ejected-requeued:** the merge queue ejected this pull request for \`failed_checks\`, and the failure was not its own: ${why}. The gate armed it again (a11ign#5125, flag \`${REENQUEUE_EJECTED_FLAG}\`). `
+      `**work-gate, pr-ejected-requeued:** the merge queue ejected this pull request for \`failed_checks\`, and the failure was not its own: ${why}. The gate armed it again (${flag === REENQUEUE_INFRA_FLAG ? "agent-org#1647" : "a11ign#5125"}, flag \`${flag}\`). `
       + "It is re-queued once per head: a second ejection on this head is the owner's." });
   } catch (error) {
     ctx.log(`pr-ejected-requeued: #${number} is armed; the record could not be posted (${String((error as Error).message ?? error).split("\n")[0].slice(0, 120)}).\n`);
@@ -287,21 +330,33 @@ function armEjected(number: number, ctx: RequeueContext, why: string): string | 
 
 /**
  * a11ign#5125: RE-QUEUE THE EJECTIONS THAT WERE NOT THE PULL REQUEST'S OWN, and hand back the rest for today's order. `remaining` is `ejections` less the re-queued ones; `stranded` is the not-own ones still out of
- * the queue `UNQUEUED_MINUTES` after the ejection, which the caller counts into `approved-unqueued`. With the flag OFF nothing is read or written and `ejections` comes back whole.
+ * the queue `UNQUEUED_MINUTES` after the ejection, which the caller counts into `approved-unqueued`. With BOTH flags OFF nothing is read or written and `ejections` comes back whole.
+ * agent-org#1647: `networkNotRequeued` is every ejection whose failure was a network error in an install step and that this call did NOT re-queue, flags on or off: it is said in the tick's log with its error line,
+ * and the canary counts it. It is a reading of the log the tick holds, so it costs no call. With only `queue.reenqueueInfra` on, only that kind is acted on and the rest are left untouched and unsaid.
  * Never throws: every refused read is a "keep", and a kept ejection is the owner's order as it was.
  */
 export function requeueEjected(ejections: Map<number, EjectionFacts>, ctx: RequeueContext): RequeueOutcome {
   const remaining = new Map(ejections);
-  const outcome: RequeueOutcome = { remaining, requeued: [], stranded: [] };
-  if (!machineryFlagOn(ctx.state, REENQUEUE_EJECTED_FLAG)) return outcome;
+  const outcome: RequeueOutcome = { remaining, requeued: [], stranded: [], networkNotRequeued: [] };
+  const allowed = { ejected: machineryFlagOn(ctx.state, REENQUEUE_EJECTED_FLAG), infra: machineryFlagOn(ctx.state, REENQUEUE_INFRA_FLAG) };
   for (const [number, facts] of ejections) {
-    const decision = decideRequeue(number, facts, ctx);
-    const failed = decision.requeue ? armEjected(number, ctx, decision.why) : decision.why;
+    const decision = decideRequeue(number, facts, ctx, allowed);
+    if (!allowed.ejected && !(allowed.infra && decision.network !== undefined)) { noteNetwork(number, facts, decision, outcome, ctx); continue; } // today's behaviour, less the detector's reading
+    const failed = decision.requeue ? armEjected(number, ctx, decision) : decision.why;
     if (failed === null) { remaining.delete(number); outcome.requeued.push(number); ctx.log(`pr-ejected-requeued: re-armed #${number} -- ${decision.why}.\n`); continue; }
     ctx.log(`pr-ejected-requeued: #${number} stays the owner's -- ${failed}.\n`);
+    noteNetwork(number, facts, { ...decision, why: failed }, outcome, ctx);
     if (decision.requeue || decision.outside) noteStranded(number, facts, { ctx, outcome, why: failed });
   }
   return outcome;
+}
+
+/** agent-org#1647: the detector. An ejection that stays the owner's while its failure is a network error is recorded, once per tick, with the install line. */
+function noteNetwork(number: number, facts: EjectionFacts, decision: { network?: string; why: string; }, outcome: RequeueOutcome, ctx: RequeueContext): void {
+  if (decision.network === undefined) return;
+  const at = Date.parse(facts.removedAt ?? "");
+  outcome.networkNotRequeued.push({ number, at: Number.isFinite(at) ? at : null, line: decision.network, why: decision.why });
+  ctx.log(`ejected-network-not-requeued: #${number} stays the owner's although its install failed on the network (${decision.network}) -- ${decision.why}.\n`);
 }
 
 /** A not-own ejection still unqueued past the clock is counted, and said once on the pull request; a younger one waits for the next tick. */
