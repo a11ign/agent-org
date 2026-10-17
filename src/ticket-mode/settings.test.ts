@@ -19,7 +19,7 @@ test("only `clones` is required, every repository in it is offered, and every ot
 
 test("the `tickets` block and `stateDir` override the defaults", () => {
   const settings = parseTicketSettings({ clones, stateDir: "/state", tickets: { max: 5, port: 5000, herdrSession: "nbl", worktreeRoot: "/wt", linearKey: { path: "/keys/linear" } } });
-  assert.deepEqual({ ...settings, clones: undefined }, { clones: undefined, max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", worktreeRoot: "/wt", stateDir: "/state", linearKey: { path: "/keys/linear" }, brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, workingState: null, connectors: [], publish: null });
+  assert.deepEqual({ ...settings, clones: undefined }, { clones: undefined, max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", worktreeRoot: "/wt", stateDir: "/state", linearKey: { path: "/keys/linear" }, brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, workingState: null, connectors: [], publish: null, drafts: true, reviewer: null });
 });
 
 test("the page's port is its own: it can be moved, and is refused when it is the instance's", () => {
@@ -114,6 +114,30 @@ test("a machine names how a person's chosen pull requests are published, on haik
   ] as const) {
     assert.throws(() => parseTicketSettings({ clones, tickets: { publish } }), (err: unknown) => err instanceof TicketSettingsRefusal && err.field === field, JSON.stringify(publish));
   }
+});
+
+test("a machine opens its pull requests as drafts unless it says otherwise, and starts no reviewer unless it names one", () => {
+  assert.equal(parseTicketSettings({ clones, tickets: { drafts: false } }).drafts, false);
+  assert.equal(parseTicketSettings({ clones, tickets: { drafts: true } }).drafts, true);
+  assert.equal(parseTicketSettings({ clones }).drafts, true);
+  assert.equal(parseTicketSettings({ clones, tickets: { reviewer: "atomic" } }).reviewer, "atomic");
+  assert.equal(parseTicketSettings({ clones }).reviewer, null);
+});
+
+test("a drafts or reviewer value of the wrong shape is refused by its name", () => {
+  const field = (tickets: Record<string, unknown>) => {
+    try {
+      parseTicketSettings({ clones, tickets }, "/home/me");
+    } catch (err) {
+      assert.ok(err instanceof TicketSettingsRefusal);
+      return err.field;
+    }
+    return "accepted";
+  };
+  assert.equal(field({ drafts: "false" }), "tickets.drafts");
+  assert.equal(field({ drafts: 0 }), "tickets.drafts");
+  assert.equal(field({ reviewer: "codex" }), "tickets.reviewer");
+  assert.equal(field({ reviewer: true }), "tickets.reviewer");
 });
 
 test("a bad field is refused by its name", () => {

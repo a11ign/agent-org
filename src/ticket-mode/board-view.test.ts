@@ -566,3 +566,15 @@ test("a link is kept only when it is an http or https address, so one a remote b
   assert.equal(safeHref("HTTP://127.0.0.1:7318/"), "HTTP://127.0.0.1:7318/");
   for (const bad of ["javascript:alert(1)", " javascript:alert(1)", "data:text/html,x", "//evil.example", null, undefined, 7]) assert.equal(safeHref(bad), "", String(bad));
 });
+
+test("a ready pull request run is awaiting review with no Approve, watched while its pull requests are open; a draft run keeps its Approve", () => {
+  const pr = { repo: "nbl-ui-netbox", url: "https://github.com/x/nbl-ui-netbox/pull/1" };
+  const ready = run({ outcome: { kind: "ready-pr", prs: [pr] } });
+  assert.equal(runStatus(ready), "awaiting-review");
+  assert.deepEqual(runActions(ready), [], "no Approve: the reviewer is the review");
+  assert.equal(isWatched(ready), true, "its feedback is watched");
+  assert.equal(isWatched(run({ outcome: { kind: "ready-pr", prs: [pr] }, pullStates: { [pr.url]: "closed" } })), false, "a closed one is not watched");
+  const draft = run({ outcome: { kind: "draft-pr", prs: [pr] } });
+  assert.deepEqual(runActions(draft), ["approve"], "POSITIVE CONTROL: a draft run is still approved");
+  assert.equal(isWatched(draft), false);
+});

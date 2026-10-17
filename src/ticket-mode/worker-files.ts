@@ -36,6 +36,11 @@ export const REVIEW_WAIT_MINUTES = 30;
  * the PreToolUse hook allow the `post-pr-to-slack` skill and those connectors, which only a person's Publish makes a run's to use.
  */
 export const PUBLISH_FILE = "publish-run";
+/**
+ * Present beside the outcome file of a run on a machine with `tickets.drafts: false`, written by the pool before the worker starts. It lets the
+ * PreToolUse hook allow `gh pr create` without `--draft`: a worker on such a machine opens its pull request ready for review, and no other run may.
+ */
+export const READY_FILE = "ready-run";
 /** What a publish run writes beside its outcome file: the messages it posted, as `{ "links": ["<message url>", ...] }`. */
 export const PUBLISHED_FILE = "published.json";
 
@@ -288,16 +293,21 @@ Write \`planned\` once every ticket has its plan files or its \`${QUESTION_FILE}
 `;
 }
 
+/** Step 6 of the brief: how the worker opens its pull requests, as a draft (the default) or ready for review (`tickets.drafts: false`). */
+function openPullRequestStep(drafts: boolean, url: string): string {
+  return `6. Push the branch and open ONE ${drafts ? "DRAFT" : "READY"} pull request per repository you changed: \`gh pr create${drafts ? " --draft" : ""}\`, titled \`<type>(<scope>): <what changed>\`. The body links ${url}, says what changed and how you verified it, and, when the change is visible, shows it: take screenshots with what this machine provides (see "On this machine" when there is such a section), or else end the body with "Screenshot pending". A pull request that needs another repository's unmerged one says so in its body.`;
+}
+
 /**
  * The brief, as markdown. `worktreeCommand` is the full command line that makes a worktree, short of the repository's name. `notes` is the host
  * file's `tickets.brief`, how workers behave on this machine, and `connectors` its `tickets.connectors`. `blockers` are the tickets this one
- * waited on, and `stackedOn` the ones it starts on top of.
+ * waited on, and `stackedOn` the ones it starts on top of. `drafts` false (`tickets.drafts`) has the worker open its pull requests ready for review.
  */
 export function briefText({ ticket, folder, ticketDir, attachments, parent = null, blockers = [], stackedOn = [], clones, worktreeCommand, notes,
-  connectors = [], planned = false }: {
+  connectors = [], planned = false, drafts = true }: {
   ticket: Ticket; folder: string; ticketDir: string; attachments: readonly string[]; parent?: ParentTicket | null; blockers?: readonly Blocker[];
   stackedOn?: readonly StackBase[]; clones: Readonly<Record<string, string>>; worktreeCommand: string; notes?: string;
-  connectors?: readonly string[]; planned?: boolean;
+  connectors?: readonly string[]; planned?: boolean; drafts?: boolean;
 }): string {
   const stacked = new Set(stackedOn.map(({ key }) => key));
   const repos = Object.entries(clones).map(([name, path]) => `- \`${name}\` at \`${path}\``).join("\n");
@@ -332,7 +342,7 @@ ${plannedText(planned)}1. Find the cause in the code. Fix it, with a test that f
 3. Check your diff against what was asked. List each acceptance criterion in the ticket. Add each decision in its files, its parent's description and its parent's files that applies to this ticket. Find where your diff meets each one, and finish any it misses. If you leave one unmet on purpose, say which and why in the pull request body.
 4. Check what your pull request body will claim. For each behaviour it says you fixed, kept or changed, name the test assertion that checks exactly that behaviour, not a neighbouring value. Run it on the base: a fix must fail there, and a kept behaviour must pass there too. Claim nothing you have no such assertion for, or say it is unchecked.
 5. Commit with a conventional commit message.
-6. Push the branch and open ONE DRAFT pull request per repository you changed: \`gh pr create --draft\`, titled \`<type>(<scope>): <what changed>\`. The body links ${ticket.url}, says what changed and how you verified it, and, when the change is visible, shows it: take screenshots with what this machine provides (see "On this machine" when there is such a section), or else end the body with "Screenshot pending". A pull request that needs another repository's unmerged one says so in its body.
+${openPullRequestStep(drafts, ticket.url)}
 7. If a design gate asks for a design check, decline it with "unattended worker, no design tool access" and say so in the pull request body.
 
 Never mark a pull request ready, request a review, merge, force-push, run a workflow, or post to Slack. Those are the person's.
@@ -344,7 +354,7 @@ ${connectorsText(connectors)}${notes?.trim() ? `\n## On this machine\n\n${notes.
 Write \`${ticketDir}/${OUTCOME_FILE}\` as the last thing you do, with exactly one of:
 
 \`\`\`json
-{ "kind": "draft-pr", "prs": [{ "repo": "<repo>", "url": "<pull request url>" }] }
+{ "kind": "${drafts ? "draft-pr" : "ready-pr"}", "prs": [{ "repo": "<repo>", "url": "<pull request url>" }] }
 { "kind": "wrong-repo", "where": "<the repository or service the fix belongs in, and why>" }
 { "kind": "needs-human", "reason": "<what a person must decide or provide>" }
 \`\`\`

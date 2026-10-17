@@ -193,3 +193,13 @@ test("no worker may write the publish mark, by a command or a file tool, since i
   assert.equal(toolVerdict("Write", { file_path: "/state/tickets/NBF-1/publish-run", content: "{}" }).code, 2);
   assert.equal(toolVerdict("Write", { file_path: "/state/tickets/publish/p1/published.json", content: "{}" }).code, 0, "POSITIVE CONTROL: the links file is the run's");
 });
+
+test("a drafts-off run may open a ready pull request and a drafts-on run may not: the ready mark decides it, and no worker can write it", () => {
+  const ready = (command: string) => toolVerdict("Bash", { command }, [], [], [], null, true).code;
+  assert.equal(bash("gh pr create --title t --body b"), 2, "POSITIVE CONTROL: drafts on refuses a pull request that is not a draft");
+  assert.equal(ready("gh pr create --title t --body b"), 0, "a ready run may open one");
+  assert.equal(ready("gh pr create --draft --title t --body b"), 0, "and a draft");
+  assert.equal(ready("gh pr ready 12"), 2, "marking a pull request ready is still refused");
+  assert.equal(toolVerdict("Write", { file_path: "/state/tickets/NBF-1/ready-run", content: "\n" }).code, 2, "no worker writes the ready mark with a file tool");
+  assert.equal(bash("touch /state/tickets/NBF-1/ready-run"), 2, "no worker writes the ready mark with a command");
+});

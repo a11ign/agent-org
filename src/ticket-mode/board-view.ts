@@ -258,7 +258,7 @@ export const RUN_STATUSES: readonly Readonly<{ status: RunStatus; label: string 
 export const HANDED_BACK: ReadonlySet<string> = new Set(["needs-human", "wrong-repo", "no-outcome"]);
 
 /** Outcomes that are a run's result, pull requests to show for it: a draft one, or one a review run saw through its review. */
-export const RESULT_KINDS: ReadonlySet<string> = new Set(["draft-pr", "reviewed"]);
+export const RESULT_KINDS: ReadonlySet<string> = new Set(["draft-pr", "ready-pr", "reviewed"]);
 
 /** The pull requests a run is about: its result's, or, for a review run that has none yet, the ones the person approved. */
 export function pullsOf<T extends Readonly<{ url: string }>>(entry: Readonly<{ outcome?: Readonly<{ kind: string; prs?: readonly T[] }>; review?: readonly T[] }>): readonly T[] {
@@ -349,7 +349,7 @@ export function runStatus(entry: ViewEntry, entries: readonly ViewEntry[] = []):
   if (entry.trackerState === "completed") return "completed";
   if (entry.trackerState === "canceled" || entry.trackerState === "duplicate") return "cancelled";
   const kind = entry.outcome?.kind ?? "";
-  if (kind === "draft-pr") return settledByPulls(entry) ?? "awaiting-review";
+  if (kind === "draft-pr" || kind === "ready-pr") return settledByPulls(entry) ?? "awaiting-review";
   if (kind === "reviewed") return settledByPulls(entry) ?? (entry.handedBack !== undefined ? "needs-you" : entry.published ? "published" : "ready-to-merge");
   if (HANDED_BACK.has(kind)) return "needs-you";
   return kind === "stopped" ? "cancelled" : "failed";
@@ -400,18 +400,20 @@ export function runActions(entry: ViewEntry): RunAction[] {
   if (entry.phase !== "finished") return ["stop"];
   if (isParked(entry)) return ["close"];
   const status = runStatus(entry);
-  if (status === "awaiting-review") return ["approve"];
+  if (status === "awaiting-review" && entry.outcome?.kind === "draft-pr") return ["approve"];
   if (status === "ready-to-merge" || status === "published" || (status === "needs-you" && entry.handedBack !== undefined)) return ["respond"];
   return entry.outcome === undefined || RESULT_KINDS.has(entry.outcome.kind) || status === "completed" ? [] : ["retry"];
 }
 
 /**
- * Whether the board watches a run's pull requests for new feedback: it is Ready to merge or Published, holds no workspace, and has a pull
- * request still open. Merged or closed pull requests are never watched.
+ * Whether the board watches a run's pull requests for new feedback: it is Ready to merge or Published, or a ready-pr run waiting for review
+ * (opened ready on a machine with `tickets.drafts: false`, with no Approve to come). It holds no workspace, and has a pull request still open.
+ * Merged or closed pull requests are never watched.
  */
 export function isWatched(entry: ViewEntry): boolean {
   const status = runStatus(entry);
-  return (status === "ready-to-merge" || status === "published") && !isParked(entry) && openPulls(entry).length > 0;
+  const waitingReady = status === "awaiting-review" && entry.outcome?.kind === "ready-pr";
+  return (status === "ready-to-merge" || status === "published" || waitingReady) && !isParked(entry) && openPulls(entry).length > 0;
 }
 
 /** The fields of the board's publish run that the page reads: its workspace and pane are set once it runs, and dropped when it ends. */

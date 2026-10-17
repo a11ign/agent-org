@@ -15,9 +15,11 @@ import type { Blocker, PullState, Ticket } from "./source.ts";
 /** A pull request a run opened: the repository it is in and its web address. */
 export type PullRequest = Readonly<{ repo: string; url: string }>;
 
-/** How a finished run ended. A worker writes the first five; the pool decides the rest. */
+/** How a finished run ended. A worker writes the first six; the pool decides the rest. */
 export type Outcome =
   | Readonly<{ kind: "draft-pr"; prs: readonly PullRequest[] }>
+  /** A worker opened its pull requests ready for review, on a machine with `tickets.drafts: false`: there is nothing to approve. */
+  | Readonly<{ kind: "ready-pr"; prs: readonly PullRequest[] }>
   /** A review run marked its pull requests ready, answered their review and left their checks passing. */
   | Readonly<{ kind: "reviewed"; prs: readonly PullRequest[] }>
   | Readonly<{ kind: "planned" }>

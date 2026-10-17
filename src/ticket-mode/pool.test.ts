@@ -1449,3 +1449,30 @@ test("a publish run that stops without an outcome, or whose workspace is gone, f
   await gone.pool.tick();
   assert.equal(gone.store.get().publish?.failure, "its herdr workspace is gone");
 });
+
+test("a drafts-off run's ticket dir carries the ready mark and a brief that opens a ready pull request; a drafts-on run carries neither", async () => {
+  for (const drafts of [false, true]) {
+    const made = setup(1, ["NBF-1"], { drafts });
+    await made.pool.tick();
+    const dir = ticketDir(made.settings, "NBF-1");
+    const brief = readFileSync(join(dir, "brief.md"), "utf8");
+    assert.equal(existsSync(join(dir, "ready-run")), !drafts, `the ready mark with drafts ${drafts}`);
+    assert.equal(brief.includes("gh pr create --draft"), drafts, `the draft command with drafts ${drafts}`);
+    assert.equal(brief.includes("open ONE READY pull request"), !drafts, `the ready step with drafts ${drafts}`);
+  }
+});
+
+test("with no tickets.publish, Publish starts no run and posts nothing: the request fails saying so, and the runs stay Ready to merge", async () => {
+  const gh = ghFor({});
+  const ctx = await readyRun(gh.run);
+  ctx.store.set(setPaused(queuePublish(ctx.store.get(), ["NBF-1"], 300), true));
+  ctx.h.calls.length = 0;
+  gh.calls.length = 0;
+  await ctx.pool.tick();
+  const publish = ctx.store.get().publish!;
+  assert.match(publish.failure ?? "", /tickets\.publish/, "the failure names the setting");
+  assert.equal(ctx.h.calls.some((args) => args.includes("start")), false, "no publish agent starts");
+  assert.equal(existsSync(join(publishDir(ctx.settings, publish.id), "brief.md")), false, "no publish run folder is written");
+  assert.equal(gh.calls.some((args) => args.some((arg) => ["comment", "review", "create", "edit", "merge"].includes(arg))), false, "GitHub is not written to");
+  assert.equal(runStatus(ctx.entry("NBF-1")), "ready-to-merge", "the run stays Ready to merge, unpublished");
+});

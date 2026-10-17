@@ -19,12 +19,15 @@
 // the host file's `tickets.publish.connectors` names: the pool leaves `publish-run` beside its outcome file naming them, which no worker may
 // write either, and merging, reviewing, force-pushing and running a workflow stay refused.
 //
+// On a machine with `tickets.drafts: false` the pool leaves `ready-run` beside the outcome file, and a worker may open its pull request ready
+// (`gh pr create` without `--draft`) only then. Without that mark, the draft refusal applies to every run, as before. No worker may write the mark.
+//
 // IT FAILS OPEN, OUT LOUD, for a payload or a count it cannot read: a hook that refused on what it could not read would stop every worker.
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { DenyRule } from "./settings.ts";
-import { CONNECTORS_FILE, DENY_FILE, OUTCOME_FILE, PUBLISH_FILE, REVIEW_FILE, STOP_COUNT_FILE } from "./worker-files.ts";
+import { CONNECTORS_FILE, DENY_FILE, OUTCOME_FILE, PUBLISH_FILE, READY_FILE, REVIEW_FILE, STOP_COUNT_FILE } from "./worker-files.ts";
 
 export type HookResult = Readonly<{ code: 0 | 2; say: readonly string[] }>;
 
@@ -62,7 +65,8 @@ function readyRefusal(approved: readonly string[]): Refusal {
 }
 
 /** The review and publish marks are the board's: a worker that wrote one would lift a refusal. */
-const MARK_REFUSAL: Refusal = { pattern: new RegExp(`\\b(?:${REVIEW_FILE}|${PUBLISH_FILE})\\b`), why: `${REVIEW_FILE} and ${PUBLISH_FILE} are the board's to write` };
+const MARK_REFUSAL: Refusal = { pattern: new RegExp(`\\b(?:${REVIEW_FILE}|${PUBLISH_FILE}|${READY_FILE})\\b`),
+  why: `${REVIEW_FILE}, ${PUBLISH_FILE} and ${READY_FILE} are the board's to write` };
 const FILE_TOOLS: ReadonlySet<string> = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 
 const SKILL_REFUSALS: readonly Refusal[] = [
@@ -72,10 +76,11 @@ const SKILL_REFUSALS: readonly Refusal[] = [
 /**
  * The PreToolUse verdict for one tool call. `machine` holds this machine's own Bash refusals, after the built-in ones, and `connectors` the
  * connector tool names it allows. `approved` names the pull requests a review run may mark ready, by URL: none for any other run. `publish`
- * holds the connector tool names a publish run may call as well, and is null for any other run, which may not announce a pull request. PURE.
+ * holds the connector tool names a publish run may call as well, and is null for any other run, which may not announce a pull request. `ready` is
+ * true for a run on a machine with `tickets.drafts: false`, which may open its pull request ready rather than as a draft. PURE.
  */
 export function toolVerdict(toolName: string, input: Record<string, unknown>, machine: readonly Refusal[] = [], connectors: readonly RegExp[] = [],
-  approved: readonly string[] = [], publish: readonly RegExp[] | null = null): HookResult {
+  approved: readonly string[] = [], publish: readonly RegExp[] | null = null, ready = false): HookResult {
   if (toolName.startsWith("mcp__")) {
     const allowed = [...connectors, ...(publish ?? [])];
     return allowed.some((pattern) => pattern.test(toolName)) ? ALLOW : refuse(`${toolName} is a connector this machine's tickets.connectors does not allow`);
@@ -88,7 +93,7 @@ export function toolVerdict(toolName: string, input: Record<string, unknown>, ma
   if (FILE_TOOLS.has(toolName)) return MARK_REFUSAL.pattern.test(String(input.file_path ?? input.notebook_path ?? "")) ? refuse(MARK_REFUSAL.why) : ALLOW;
   if (toolName !== "Bash") return ALLOW;
   const command = String(input.command ?? "");
-  if (/\bgh\s+pr\s+create\b/.test(command) && !/--draft\b/.test(command)) return refuse("open the pull request as a draft: `gh pr create --draft`");
+  if (/\bgh\s+pr\s+create\b/.test(command) && !/--draft\b/.test(command) && !ready) return refuse("open the pull request as a draft: `gh pr create --draft`");
   const hit = [...BASH_REFUSALS, readyRefusal(approved), MARK_REFUSAL, ...machine].find(({ pattern }) => pattern.test(command));
   return hit ? refuse(`refused, because ${hit.why}: ${command.split("\n")[0].slice(0, 120)}`) : ALLOW;
 }
@@ -176,7 +181,7 @@ export function main(stdin: string, argv: string[]): HookResult {
     const { refusals, note } = machineRefusals(ticketDir);
     const allowed = machineConnectors(ticketDir);
     const verdict = toolVerdict(String(payload.tool_name ?? ""), payload.tool_input ?? {}, refusals, allowed.connectors, approvedPulls(ticketDir),
-      publishConnectors(ticketDir));
+      publishConnectors(ticketDir), existsSync(join(ticketDir, READY_FILE)));
     const notes = [note, allowed.note].filter((n): n is string => n !== undefined);
     return notes.length === 0 ? verdict : { ...verdict, say: [...notes, ...verdict.say] };
   } catch (err) {
