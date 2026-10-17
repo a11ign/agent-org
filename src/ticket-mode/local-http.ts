@@ -8,6 +8,9 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 export type Json = Record<string, unknown>;
 
+/** The most an API request may send. The largest is a queue of ticket keys. */
+export const API_BODY_BYTES = 64 * 1024;
+
 /** Why a request is refused before it is read, or `null`. PURE over the request's headers and this server's port. */
 export function refusal(request: Pick<IncomingMessage, "headers" | "method">, port: number): string | null {
   const hosts = [`127.0.0.1:${port}`, `localhost:${port}`];

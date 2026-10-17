@@ -85,9 +85,10 @@ takes them one each. Ticket mode is two services, both on `127.0.0.1`:
   a code works once, within 10 minutes, and five wrong codes spend it. The browser then holds a session of its own, as an HttpOnly cookie,
   for a year and across restarts. The service keeps only the sessions' hashes, in `<stateDir>/tickets/browsers.json`, and deleting that file
   unpairs every browser. The service refuses to start on a file that does not hold sessions, rather than unpair every browser silently.
-  Only the board key makes a pairing code, and a request that holds it is passed on to no instance. The key never goes to a browser,
-  because a browser sends its cookies for `127.0.0.1` to every port there. A browser's session opens nothing on an instance. Both files
-  are made with mode 600, and a key file another user owns or can read is refused.
+  Only the board key makes a pairing code. A request that holds it is passed on to no instance, but it can pair a browser, which reaches
+  every connection, so whoever holds the key is trusted as you are. The key never goes to a browser, because a browser sends its cookies
+  for `127.0.0.1` to every port there. An instance ignores a browser's cookie. Both files are made with mode 600, and a key file another
+  user owns or can read is refused.
 
 - **Pick.** Your assigned Linear tickets that are not done or canceled, grouped by status the way Linear shows them, with Select All per
   group and for the page. A ticket sits under its parent, whatever its own status. A parent folds the tickets under it away, and starts folded.
@@ -273,8 +274,8 @@ the key to a terminal. Check the whole path from this machine with `ssh <target>
 which prints `ok` and not the key.
 
 **Connect a second machine over https.** An instance stays on `127.0.0.1` unless you expose it on purpose, behind TLS, on a network you
-trust, such as with `tailscale serve`. The TLS proxy in front of it must send the instance `Host: 127.0.0.1:<port>`, as nginx's
-`proxy_pass` does by default, because the instance refuses any other host. Copy that machine's `<stateDir>/tickets/board.key` to this one,
+trust, such as a private network. The TLS proxy in front of it must send the instance `Host: 127.0.0.1:<port>`, as nginx's
+`proxy_pass` does by default, because the instance refuses any other host. A proxy that passes the original host on is refused. Copy that machine's `<stateDir>/tickets/board.key` to this one,
 `chmod 600` it, and name it as the connection's `keyFile`. Anyone who can reach the address and holds the key can drive that instance, so
 keep the address off the public internet. Open terminal on that machine's runs shows only when its `tickets.terminal` is not on its own
 loopback.

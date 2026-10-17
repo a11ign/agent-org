@@ -21,6 +21,8 @@ export type ForwardAnswer = Readonly<{ status: number; body: string }>;
 export type Forward = (target: Target, request: ForwardRequest) => Promise<ForwardAnswer>;
 
 const FORWARD_MS = 30_000;
+/** The most an instance's answer may hold. The largest is a list of tickets. */
+const ANSWER_BYTES = 8 * 1024 * 1024;
 const READS = new Set(["/api/config", "/api/tickets", "/api/parents", "/api/queue"]);
 const WRITES = new Set(["/api/queue", "/api/choice", "/api/publish", "/api/paused", "/api/max"]);
 const RUN_ACTION = /^\/api\/queue\/[A-Za-z0-9_-]+\/(amend|remove|retry|approve|respond|stop|close)$/;
@@ -43,7 +45,12 @@ export const httpForward: Forward = (target, { method, path, body }) => new Prom
   const options: RequestOptions = { method, headers: forwardHeaders(target, body), timeout: FORWARD_MS };
   const answered = (response: IncomingMessage) => {
     const chunks: Buffer[] = [];
-    response.on("data", (chunk: Buffer) => chunks.push(chunk));
+    let size = 0;
+    response.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > ANSWER_BYTES) return void response.destroy(new Error(`an answer over ${ANSWER_BYTES} bytes`));
+      chunks.push(chunk);
+    });
     response.on("end", () => done({ status: response.statusCode ?? 502, body: Buffer.concat(chunks).toString("utf8") }));
     response.on("error", fail);
   };
@@ -51,7 +58,8 @@ export const httpForward: Forward = (target, { method, path, body }) => new Prom
   if ("socket" in target.address) {
     outgoing = httpRequest({ ...options, socketPath: target.address.socket, path }, answered);
   } else {
-    const url = new URL(path, target.address.origin);
+    // Joined, not resolved against the origin, so a path such as `//elsewhere/...` stays on the instance's host.
+    const url = new URL(`${target.address.origin}${path}`);
     outgoing = (url.protocol === "https:" ? httpsRequest : httpRequest)(url, options, answered);
   }
   outgoing.on("timeout", () => outgoing.destroy(new Error(`no answer within ${FORWARD_MS / 1000} seconds`)));

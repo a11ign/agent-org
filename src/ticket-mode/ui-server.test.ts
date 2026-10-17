@@ -1,7 +1,7 @@
 // no-token: gh -- the instance is a real `createBoard` on 127.0.0.1 with Linear and the pool injected; ssh is a fake runner
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -166,6 +166,33 @@ test("an unpaired request and a script holding the key are passed on to no insta
     const unknown = await fetch(`${u.base}/c/gone/api/queue`, { headers: { cookie } });
     assert.equal(unknown.status, 404);
     assert.match((await unknown.json() as { error: string }).error, /no connection gone/);
+  } finally {
+    await u.close();
+  }
+});
+
+test("another host, a write from another origin, and an encoded path out of the allowlist are refused before any instance is called", async () => {
+  const u = await ui([WORK]);
+  try {
+    const cookie = await pairedCookie(u.base, u.local.key);
+    // fetch sets Host itself, so a DNS-rebound name is sent with node:http.
+    const rebound = await new Promise<{ status: number; body: string }>((done, fail) => {
+      const req = httpRequest(`${u.base}/c/work/api/queue`, { headers: { cookie, host: "evil.example" } }, (res) => {
+        let body = "";
+        res.on("data", (chunk) => { body += chunk; });
+        res.on("end", () => done({ status: res.statusCode ?? 0, body }));
+      });
+      req.on("error", fail);
+      req.end();
+    });
+    assert.equal(rebound.status, 403);
+    assert.match(rebound.body, /answers only to its own host/);
+    const crossSite = await fetch(`${u.base}/c/work/api/paused`, { method: "POST", headers: { cookie, origin: "https://evil.example" }, body: "{}" });
+    assert.equal(crossSite.status, 403);
+    assert.match((await crossSite.json() as { error: string }).error, /a write from another origin/);
+    const escaped = await fetch(`${u.base}/c/work/api/queue/NBF-1/%2e%2e/%2e%2e/pair-code`, { method: "POST", headers: { cookie }, body: "{}" });
+    assert.equal(escaped.status, 403);
+    assert.equal(u.local.seen.length, 0, "this machine's instance was sent nothing");
   } finally {
     await u.close();
   }

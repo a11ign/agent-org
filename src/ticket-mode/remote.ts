@@ -7,7 +7,7 @@
 // hangs, and with no connection sharing, agent or X11 forwarding, so the person's ssh config cannot keep a forward alive past `stop`. A tunnel
 // that drops is opened again, slower each time it fails, until the service closes. `remote-proxy.ts` passes the page's calls through it.
 //
-// THE BOARD'S FORWARD IS A SOCKET IN A DIRECTORY ONLY THIS USER CAN ENTER, NOT A PORT. A port picked free and then bound by ssh seconds later
+// THE INSTANCE'S FORWARD IS A SOCKET IN A DIRECTORY ONLY THIS USER CAN ENTER, NOT A PORT. A port picked free and then bound by ssh seconds later
 // can be taken first by another process, which would then be sent the key. The terminal's forward is a port, because the browser opens it.
 //
 // THE REMOTE KEY STAYS IN THIS PROCESS'S MEMORY. It is never on a command line (ssh carries it back on stdout), never in a log line or an

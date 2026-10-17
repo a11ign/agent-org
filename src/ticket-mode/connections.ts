@@ -71,14 +71,18 @@ function parseConnection(name: string, entry: unknown, home: string): Connection
   if (unknown.length > 0) throw new Error(`connection ${name} has a field no connection takes: ${unknown.join(", ")}`);
   const kinds = ["local", "ssh", "https"].filter((kind) => fields[kind] !== undefined);
   if (kinds.length !== 1) throw new Error(`connection ${name} must name exactly one of local, ssh or https, and names ${kinds.length === 0 ? "none" : kinds.join(" and ")}`);
-  const others = (allowed: readonly string[]) => Object.keys(fields).filter((field) => !allowed.includes(field));
+  /** Refuses a field this kind of connection does not take. */
+  const takesOnly = (allowed: readonly string[], kind: string) => {
+    const others = Object.keys(fields).filter((field) => !allowed.includes(field));
+    if (others.length > 0) throw new Error(`connection ${name} is ${kind}, so it takes no ${others.join(" or ")}`);
+  };
   if (fields.local !== undefined) {
     if (fields.local !== true) throw new Error(`connection ${name}: local must be true, or left out`);
-    if (others(["local"]).length > 0) throw new Error(`connection ${name} is local, so it takes no ${others(["local"]).join(" or ")}`);
+    takesOnly(["local"], "local");
     return { name, kind: "local" };
   }
   if (fields.ssh !== undefined) {
-    if (others(["ssh", "agentOrg"]).length > 0) throw new Error(`connection ${name} is reached over ssh, so it takes no ${others(["ssh", "agentOrg"]).join(" or ")}`);
+    takesOnly(["ssh", "agentOrg"], "reached over ssh");
     if (typeof fields.ssh !== "string" || !SSH_TARGET.test(fields.ssh)) {
       throw new Error(`connection ${name}: ssh must be an ssh target such as "agents" or "me@host", not starting with - and with no spaces or shell characters`);
     }
@@ -86,7 +90,7 @@ function parseConnection(name: string, entry: unknown, home: string): Connection
     if (typeof agentOrg !== "string" || !COMMAND.test(agentOrg)) throw new Error(`connection ${name}: agentOrg must be a plain path to agent-org on that machine`);
     return { name, kind: "ssh", ssh: fields.ssh, agentOrg };
   }
-  if (others(["https", "keyFile"]).length > 0) throw new Error(`connection ${name} is reached over https, so it takes no ${others(["https", "keyFile"]).join(" or ")}`);
+  takesOnly(["https", "keyFile"], "reached over https");
   return { name, kind: "https", origin: instanceOrigin(name, fields.https), keyFile: keyFilePath(name, fields.keyFile, home) };
 }
 

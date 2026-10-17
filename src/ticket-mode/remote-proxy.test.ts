@@ -133,3 +133,22 @@ test("an https instance is reached over TLS: a server that does not speak it fai
     await new Promise<void>((done) => plain.close(() => done()));
   }
 });
+
+test("a path that names another host stays on the instance's, and an answer too big to hold is refused", async () => {
+  const paths: (string | undefined)[] = [];
+  const server = createServer((req, res) => {
+    paths.push(req.url);
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(req.url === "/api/tickets" ? `"${"x".repeat(9 * 1024 * 1024)}"` : "{}");
+  });
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  const { port } = server.address() as { port: number };
+  try {
+    const target: Target = { key: KEY, host: `127.0.0.1:${port}`, address: { origin: `http://127.0.0.1:${port}` }, terminal: () => null };
+    assert.equal((await httpForward(target, { method: "GET", path: "//evil.example/api/queue", body: null })).status, 200);
+    assert.deepEqual(paths, ["//evil.example/api/queue"], "the request reached this instance, not evil.example");
+    await assert.rejects(httpForward(target, { method: "GET", path: "/api/tickets", body: null }), /an answer over 8388608 bytes/);
+  } finally {
+    await new Promise<void>((done) => server.close(() => done()));
+  }
+});

@@ -8,8 +8,9 @@
 //
 // IT IS REACHABLE FROM THIS MACHINE ONLY, AND ONLY BY WHAT HAS PAIRED. It binds 127.0.0.1, and nothing secret goes in a URL. A browser is
 // shown a pairing page, where a one-time code that `ticket:pair` prints (`pairing.ts`) gets it a session of its own as an HttpOnly cookie that
-// lasts a year (`browser-sessions.ts`). `ticket:pair` asks for the code with this machine's board key, which only makes codes here: a script
-// holding it is passed on to no instance. A `Host` that is not this server's is refused, and a write from another origin is refused.
+// lasts a year (`browser-sessions.ts`). `ticket:pair` asks for the code with this machine's board key. A request carrying the key is passed on
+// to no instance, but the key can pair a browser, which reaches every connection: whoever holds it is trusted as the person is. A `Host` that is
+// not this server's is refused, and a write from another origin is refused.
 import { execFileSync } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -21,9 +22,9 @@ import { refuseUnknownFlags } from "../lib/cli-flags.ts";
 import { boardKey, boardKeyPath } from "./board-key.ts";
 import { browserSessions, browserSessionsPath, SESSION_SECONDS, type BrowserSessions } from "./browser-sessions.ts";
 import { createConnections, readConnections, type Connections, type ConnectionsRead } from "./connections.ts";
-import { readJson, refusal, sameSecret, sendJson, type Json } from "./local-http.ts";
+import { API_BODY_BYTES, readJson, refusal, sameSecret, sendJson, type Json } from "./local-http.ts";
 import { createPairing, PAIR_MINUTES, type Pairing } from "./pairing.ts";
-import { httpForward, proxy, type Forward } from "./remote-proxy.ts";
+import { proxy, type Forward } from "./remote-proxy.ts";
 import { readTicketSettings } from "./settings.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -35,8 +36,6 @@ const VIEW = join(HERE, "board-view.ts");
 const COOKIE = "ticket_session";
 /** The most a pairing request may send. It is read before the request is known to be anyone's, so it is kept small. */
 const PAIR_BODY_BYTES = 1024;
-/** The most any other request may send. The largest is a queue of ticket keys. */
-const API_BODY_BYTES = 64 * 1024;
 /** A call to a connection's instance: `/c/<connection>/api/...`. */
 const CONNECTION_PATH = /^\/c\/([A-Za-z0-9_-]+)(\/api\/.*)$/;
 
@@ -104,7 +103,7 @@ export function createUi(deps: UiDeps) {
     } catch (err) {
       return sendJson(response, 400, { error: String((err as Error)?.message ?? err) });
     }
-    const [status, value] = await proxy(connections, name, { method: request.method ?? "GET", path, body }, deps.forward ?? httpForward);
+    const [status, value] = await proxy(connections, name, { method: request.method ?? "GET", path, body }, deps.forward);
     sendJson(response, status, value);
   }
 

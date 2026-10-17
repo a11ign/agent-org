@@ -19,7 +19,7 @@ import { refuseUnknownFlags } from "../lib/cli-flags.ts";
 import { boardKey, boardKeyPath } from "./board-key.ts";
 import { hasPlan } from "./board-view.ts";
 import { linearSource, readLinearKey } from "./linear.ts";
-import { readJson, refusal, sameSecret, sendJson, type Json } from "./local-http.ts";
+import { API_BODY_BYTES, readJson, refusal, sameSecret, sendJson, type Json } from "./local-http.ts";
 import { createPool, type PoolDeps } from "./pool.ts";
 import { amend, approve, enqueue, loadQueue, queuePublish, remove, respond, retry, saveQueue, setMax, setPaused, type PlanFirst, type Queue, type RunChoice } from "./queue.ts";
 import { plansInBatches, readTicketSettings, type TicketSettings } from "./settings.ts";
@@ -27,8 +27,6 @@ import type { Ticket, TicketSource } from "./source.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BIN = join(HERE, "..", "bin.ts");
-/** The most a request may send. The largest is a queue of ticket keys. */
-const API_BODY_BYTES = 64 * 1024;
 const TICK_MS = 30_000;
 /** How often the tracker is asked whether finished runs' tickets are done. A merge is not urgent news, and every read is a Linear request. */
 const TRACKER_MS = 120_000;
