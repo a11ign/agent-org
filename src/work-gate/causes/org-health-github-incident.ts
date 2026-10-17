@@ -320,8 +320,8 @@ export function authorFallbackTimes({ host = homeHostConfig(), reviewerDir = REV
   return accountAuthoringTimes(ledgers, declared);
 }
 
-export function machineryCanaryNow({ unread, unarmed, releaseRuns, suppressions, stranded = [], ownerless, authorFallbacks, now = Date.now(), dir = REVIEWER_STATE_DIR, run = defaultRun, io }: {
-  unread: string[] | null; unarmed: number[] | UnarmedFacts | null; releaseRuns: ReleaseRuns | null; suppressions?: Suppression[]; stranded?: number[]; ownerless?: number[] | null; authorFallbacks?: number[] | null; now?: number; dir?: string; run?: typeof defaultRun; io?: CanaryIo;
+export function machineryCanaryNow({ unread, unarmed, releaseRuns, suppressions, stranded = [], ownerless, authorFallbacks, ejectedNetwork, now = Date.now(), dir = REVIEWER_STATE_DIR, run = defaultRun, io }: {
+  unread: string[] | null; unarmed: number[] | UnarmedFacts | null; releaseRuns: ReleaseRuns | null; suppressions?: Suppression[]; stranded?: number[]; ownerless?: number[] | null; authorFallbacks?: number[] | null; ejectedNetwork?: number[] | null; now?: number; dir?: string; run?: typeof defaultRun; io?: CanaryIo;
 }): any[] {
   const { options, problem } = readCanaryOptions();
   if (problem !== null) process.stderr.write(`machinery-canary: ${problem}; the defaults stand.\n`);
@@ -329,5 +329,5 @@ export function machineryCanaryNow({ unread, unarmed, releaseRuns, suppressions,
   const numbers = unarmedNumbers === null ? null : [...unarmedNumbers, ...stranded]; // a11ign#5125: an ejection that was not the PR's own and left it out of the queue is approved-and-unqueued too
   const fileIncident = (title: string, body: string) => run(["issue", "create", "--title", title, "--label", "incident", "--body", body]);
   return machineryCanaryTick({ now, dir, options, suppressed: suppressions, io: io ?? realCanaryIo({ fileIncident }),
-    facts: { claimRefusals: readClaimRefusals(), unread, deferredWakes: deferredWakeCount(dir), unarmed: numbers, releaseRuns, ownerless: ownerless ?? null, authorFallbacks: authorFallbacks ?? null } }); // agent-org#1648: a red chairman pull request no order reaches; agent-org#1666: the account's authoring calls
+    facts: { claimRefusals: readClaimRefusals(), unread, deferredWakes: deferredWakeCount(dir), unarmed: numbers, releaseRuns, ownerless: ownerless ?? null, authorFallbacks: authorFallbacks ?? null, ejectedNetwork: ejectedNetwork ?? null } }); // agent-org#1648: a red chairman pull request no order reaches; agent-org#1666: the account's authoring calls
 }

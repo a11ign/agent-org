@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { main, FLAG_REGISTRY } from "../machinery-flag.ts";
 import { CANARY_STATE_FILE, emptyCanaryState, machineryFlagOn, parseCanaryState, withMachineryFlag, type CanaryState } from "../org-health.ts";
-import { readReenqueueState, REENQUEUE_EJECTED_FLAG } from "../work-gate/causes/pr-ejected.ts";
+import { readReenqueueState, REENQUEUE_EJECTED_FLAG, REENQUEUE_INFRA_FLAG } from "../work-gate/causes/pr-ejected.ts";
 import { CHAIN_WAIT_FLAG } from "../work-gate/causes/org-health-chain-wait.ts";
 import { CLOSED_UNDER_HALF_FLAG } from "../work-gate/causes/rows-closed-under-half.ts";
 import { CHAIRMAN_REFUSAL_FLAG } from "../work-gate/causes/rows-offer.ts";
@@ -61,7 +61,7 @@ test("(1) `on` makes the reader read the flag ON, `off` makes it read OFF, and t
 
 test("(1) the other registered flags are switched on and read through their own readers' flag name", () => {
   const dir = tmpDir("machinery-flag-switch-");
-  for (const name of [CHAIN_WAIT_FLAG, CLOSED_UNDER_HALF_FLAG, AUTO_UNPARK_FLAG, QUEUE_ENTRY_NO_RUN_FLAG, RECHECK_FLAG, OPEN_PR_HOLD_FLAG, REFUSE_ASKING_ANNOUNCEMENTS_FLAG, ROW_REVIEW_SKILL_FLAG, SAME_HEAD_REFAIL_FLAG, CHAIRMAN_REFUSAL_FLAG, OWNERLESS_ASK_FLAG, REFUSE_AUTHOR_FALLBACK_FLAG]) assert.equal(run(dir, ["on", name, `--session=${SESSION}`]).code, 0);
+  for (const name of [REENQUEUE_INFRA_FLAG, CHAIN_WAIT_FLAG, CLOSED_UNDER_HALF_FLAG, AUTO_UNPARK_FLAG, QUEUE_ENTRY_NO_RUN_FLAG, RECHECK_FLAG, OPEN_PR_HOLD_FLAG, REFUSE_ASKING_ANNOUNCEMENTS_FLAG, ROW_REVIEW_SKILL_FLAG, SAME_HEAD_REFAIL_FLAG, CHAIRMAN_REFUSAL_FLAG, OWNERLESS_ASK_FLAG, REFUSE_AUTHOR_FALLBACK_FLAG]) assert.equal(run(dir, ["on", name, `--session=${SESSION}`]).code, 0);
   const state = JSON.parse(readFileSync(join(dir, CANARY_STATE_FILE), "utf8")) as CanaryState;
   assert.equal(machineryFlagOn(state, CHAIN_WAIT_FLAG), true);
   assert.equal(machineryFlagOn(state, CLOSED_UNDER_HALF_FLAG), true);
@@ -74,8 +74,9 @@ test("(1) the other registered flags are switched on and read through their own 
   assert.equal(machineryFlagOn(state, SAME_HEAD_REFAIL_FLAG), true, "checks.sameHeadRefail is switched by the command, which `sameHeadRefailFlagOn` then reads (agent-org#1185)");
   assert.equal(machineryFlagOn(state, CHAIRMAN_REFUSAL_FLAG), true, "chairman.refusedOnce is switched by the command, which `offerHierarchyNow` then reads (agent-org#1456)");
   assert.equal(machineryFlagOn(state, OWNERLESS_ASK_FLAG), true, "prs.ownerlessAsk is switched by the command, which `ownerlessAskFlagOn` then reads (agent-org#1648)");
+  assert.equal(machineryFlagOn(state, REENQUEUE_INFRA_FLAG), true, "queue.reenqueueInfra is switched by the command, which `requeueEjected` then reads (agent-org#1647)");
   assert.equal(machineryFlagOn(state, REFUSE_AUTHOR_FALLBACK_FLAG), true, "gh.refuseFallbackAuthor is switched by the command, which the wrapper's `author_refusal_on` then reads (agent-org#1666)");
-  assert.deepEqual(FLAG_REGISTRY, [REENQUEUE_EJECTED_FLAG, CHAIN_WAIT_FLAG, CLOSED_UNDER_HALF_FLAG, AUTO_UNPARK_FLAG, QUEUE_ENTRY_NO_RUN_FLAG, RECHECK_FLAG, OPEN_PR_HOLD_FLAG, REFUSE_ASKING_ANNOUNCEMENTS_FLAG, PACING_FLAG, ROW_REVIEW_SKILL_FLAG, ACCOUNT_LIMIT_FLAG, SAME_HEAD_REFAIL_FLAG, PR_OWNER_ROUTING_FLAG, CHAIRMAN_REFUSAL_FLAG, OWNERLESS_ASK_FLAG, REFUSE_AUTHOR_FALLBACK_FLAG], "the registry is the sixteen flags a module reads");
+  assert.deepEqual(FLAG_REGISTRY, [REENQUEUE_EJECTED_FLAG, REENQUEUE_INFRA_FLAG, CHAIN_WAIT_FLAG, CLOSED_UNDER_HALF_FLAG, AUTO_UNPARK_FLAG, QUEUE_ENTRY_NO_RUN_FLAG, RECHECK_FLAG, OPEN_PR_HOLD_FLAG, REFUSE_ASKING_ANNOUNCEMENTS_FLAG, PACING_FLAG, ROW_REVIEW_SKILL_FLAG, ACCOUNT_LIMIT_FLAG, SAME_HEAD_REFAIL_FLAG, PR_OWNER_ROUTING_FLAG, CHAIRMAN_REFUSAL_FLAG, OWNERLESS_ASK_FLAG, REFUSE_AUTHOR_FALLBACK_FLAG], "the registry is the seventeen flags a module reads");
 });
 
 test("(2) a name no module reads is refused, and nothing is written", () => {

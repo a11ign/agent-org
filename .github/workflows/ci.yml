@@ -34,6 +34,13 @@ on:
 permissions:
   contents: read
 
+# EVERY INSTALL IN THIS FILE RETRIES A FAILED FETCH 5 TIMES (agent-org#1647). A merge-group `typecheck` died in its install on `npm error code ECONNRESET` (run 38936509518, 2026-10-16) and the
+# queue ejected an approved, green pull request for a dropped connection. npm retries a fetch twice unless told otherwise (its documented default), and `npm_config_fetch_retries` is the platform's own
+# setting for it: one line covers `npm install`, `npm install --global pnpm` and `npx pnpm@...`, with the backoff between tries npm's own, and no retry loop around each step. A failure that outlasts the
+# retries is the gate's: `work-gate/causes/pr-ejected.ts` reads it as infrastructure and re-queues the pull request once, behind `queue.reenqueueInfra`.
+env:
+  npm_config_fetch_retries: 5
+
 jobs:
   # THE SUITE RUNS AS FOUR SHARDS AT ONCE, through rstest's own `--shard` and a matrix. As one job it took 425 s of a 456 s job for 680 files on one 4-core runner
   # (run 38391781529, 2026-10-13), and most of that is tests that spawn processes, which no worker cap speeds up on a runner they share. rstest splits the files
