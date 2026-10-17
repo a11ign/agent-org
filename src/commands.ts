@@ -58,6 +58,7 @@ export const COMMANDS = {
   "ticket:hook": "ticket-mode/hook.ts",
   "ticket:pair": "ticket-mode/pair-command.ts",
   "ticket:remote-info": "ticket-mode/remote-info-command.ts",
+  "ticket:review": "ticket-mode/review-command.ts",
   "ticket:serve": "ticket-mode/server.ts",
   "ticket:ui": "ticket-mode/ui-server.ts",
   "ticket:worktree": "ticket-mode/worktree-command.ts",
