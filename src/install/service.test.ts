@@ -305,3 +305,17 @@ test("a loaded unit, and any unit under launchd, has no load problem", () => {
   mac.files.set(unitFor("instance", mac.deps).path, "");
   assert.equal(unitProblem("instance", mac.deps), null);
 });
+
+test("the terminal refuses, naming the host file, one it cannot read or that is not a JSON object, and never falls back to tickets on 7318", () => {
+  for (const [text, reason] of [[null, /cannot be read/], ["{ not json", /is not valid JSON/], ["[1]", /does not hold a JSON object/]] as const) {
+    const made = withTerminal("linux");
+    const hostFile = join(made.home, ".agent-org", "host.json");
+    if (text === null) made.files.delete(hostFile);
+    else made.files.set(hostFile, text);
+    assert.throws(() => unitFor("terminal", made.deps), (err: Error) => reason.test(err.message) && err.message.includes(hostFile));
+    const errors: string[] = [];
+    assert.equal(main(["start", "terminal"], made.deps, { log: () => {}, error: (line: string) => errors.push(line) }), 2);
+    assert.ok(!made.files.has(join(made.home, ".config", "systemd", "user", "agent-org-terminal.service")), "no unit is written on the defaults");
+    assert.equal(serviceState("terminal", made.deps), "not-registered");
+  }
+});

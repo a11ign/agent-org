@@ -119,14 +119,22 @@ type Program = Readonly<{
   everySeconds: number | null;
 }>;
 
-/** The host file's JSON, or {} when it cannot be read or parsed: the terminal's session and port have defaults. */
-function hostJson(deps: ServiceDeps): unknown {
-  const text = deps.read(hostFilePath(deps.env, deps.home, deps.read));
+/**
+ * The host file's JSON, which names the terminal's session and port. REFUSES, naming the file, one that cannot be read or is not a JSON object:
+ * a terminal started on the defaults would serve another herdr session and port than the host file means, and say nothing.
+ */
+function hostJson(deps: ServiceDeps): Record<string, unknown> {
+  const path = hostFilePath(deps.env, deps.home, deps.read);
+  const text = deps.read(path);
+  if (text === null) throw new ServiceRefusal(`the terminal service reads its herdr session and port from the host file, and ${path} cannot be read. Run \`agent-org onboard\` first.`);
+  let parsed: unknown;
   try {
-    return text === null ? {} : JSON.parse(text);
+    parsed = JSON.parse(text);
   } catch {
-    return {};
+    throw new ServiceRefusal(`the terminal service reads its herdr session and port from the host file, and ${path} is not valid JSON. Fix it, then start the terminal again.`);
   }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new ServiceRefusal(`${path} does not hold a JSON object, so the terminal service has no herdr session or port to serve`);
+  return parsed as Record<string, unknown>;
 }
 
 /** The channel `auto-update` follows: `main` when `<home>/update-channel` says so, `release` otherwise. */
