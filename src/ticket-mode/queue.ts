@@ -10,7 +10,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { CONCLUDED, isBeingPublished, isParked, isPublishing, isWatched, openPulls, RESULT_KINDS, runStatus, settledByPulls, waitsOn } from "./board-view.ts";
-import type { Blocker, PullState, Ticket } from "./source.ts";
+import type { Blocker, PullState, StateMove, Ticket } from "./source.ts";
 
 /** A pull request a run opened: the repository it is in and its web address. */
 export type PullRequest = Readonly<{ repo: string; url: string }>;
@@ -75,6 +75,11 @@ export type Entry = Readonly<{
   batch?: string;
   /** The repository its batch's planner said its work lands in, or null when it named none. Unset for a ticket planned alone. */
   plannedRepo?: string | null;
+  /**
+   * The tickets of its batch its planner said it waits on to merge, rather than stacking on their open pull requests: `wait: "merged"` in the
+   * order. Unset when there are none. A retry drops it with {@link plannedRepo}.
+   */
+  waitMerged?: readonly string[];
   phase: Phase;
   queuedAt: number;
   startedAt?: number;
@@ -89,6 +94,11 @@ export type Entry = Readonly<{
   waiting?: boolean;
   outcome?: Outcome;
   tokens?: Readonly<{ input: number; output: number }>;
+  /**
+   * The state the board moved the ticket out of when a run started it, and the one it moved it to: the record the board puts the ticket back by
+   * when the run ends without a pull request. Kept until it is put back, so it survives a restart and a retry. See {@link recordMove}.
+   */
+  movedFrom?: StateMove;
   /** The ticket's state type in the tracker once the run has finished, as last read. */
   trackerState?: string;
   /** The state of each of the ticket's pull requests by URL once the run has finished, as last read: a run whose pull requests merged is done. */
@@ -253,6 +263,19 @@ export function remove(queue: Queue, key: string): Queue {
 }
 
 /**
+ * The board moved the ticket out of `move.from` as a run started. The first move is the one kept: a run that starts a ticket already started
+ * moves nothing, and so records nothing, and must not replace or clear what a run recorded.
+ */
+export function recordMove(queue: Queue, key: string, move: StateMove): Queue {
+  return replace(queue, key, (entry) => (entry.movedFrom === undefined ? { ...entry, movedFrom: move } : entry));
+}
+
+/** The board has put the ticket back, or left it where a person put it: its record is no longer needed. */
+export function clearMove(queue: Queue, key: string): Queue {
+  return replace(queue, key, ({ movedFrom: _restored, ...entry }) => entry);
+}
+
+/**
  * Take a finished run off the board: a person has read how it ended and wants it gone. Only the queue's record goes. The ticket, its branch, its
  * worktrees and its pull requests are left as they are, and the ticket can be queued again. A queued run is Remove's and a live one is Stop's, so
  * neither is touched, and nor is a parked one: its workspace is closed first (the pool's `dismiss` does both), so no herdr workspace is left open
@@ -271,13 +294,14 @@ export function dismiss(queue: Queue, key: string): Queue {
 export function retry(queue: Queue, key: string, now: number): Queue {
   const entry = find(queue, key);
   if (entry === undefined || entry.phase !== "finished" || isResult(entry) || CONCLUDED.has(entry.outcome?.kind ?? "") || isParked(entry)) return queue;
-  const { ticket, repos, model, effort, plan, planned, session, review, published, feedback, asked, rounds } = entry;
+  const { ticket, repos, model, effort, plan, planned, session, review, published, feedback, asked, rounds, movedFrom } = entry;
   // A review run that failed is retried as the same review round, resuming the same worker, so it does not start the ticket over, and a round
   // the board started still counts towards its cap. Any other run starts a fresh worker, whose session replaces this one. A ticket of a batch
   // is planned again on its own.
   const round = { ...(session ? { session } : {}), ...(published ? { published } : {}), ...(feedback !== undefined ? { feedback } : {}), ...(asked ? { asked } : {}),
     ...(rounds !== undefined ? { rounds } : {}) };
-  const retried: Entry = { ticket, repos, model, effort, ...(plan ? { plan } : {}), ...(planned ? { planned } : {}),
+  // The record of the board's move is carried over too: a retried run finds its ticket already started, and would move nothing to record again.
+  const retried: Entry = { ticket, repos, model, effort, ...(plan ? { plan } : {}), ...(planned ? { planned } : {}), ...(movedFrom ? { movedFrom } : {}),
     ...(review ? { review, ...round } : {}), phase: "queued", queuedAt: now };
   return { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== key), retried] };
 }
@@ -489,11 +513,12 @@ export function planDone(queue: Queue, key: string, unattended = true): Queue {
 }
 
 /**
- * A ticket planned in a batch has its plan, as {@link planDone}, with the repository its planner said its work lands in. Its blockers are read
- * again before it starts, because the board has just written its batch's order to the tracker.
+ * A ticket planned in a batch has its plan, as {@link planDone}, with the repository its planner said its work lands in, and the blockers its
+ * planner said to wait on to merge (`waitMerged`, when there are any). Its blockers are read again before it starts, because the board has just
+ * written its batch's order to the tracker.
  */
-export function batchPlanDone(queue: Queue, key: string, repo: string | null): Queue {
-  return replace(planDone(queue, key), key, ({ blockers: _stale, ...entry }) => ({ ...entry, plannedRepo: repo }));
+export function batchPlanDone(queue: Queue, key: string, repo: string | null, waitMerged: readonly string[] = []): Queue {
+  return replace(planDone(queue, key), key, ({ blockers: _stale, ...entry }) => ({ ...entry, plannedRepo: repo, ...(waitMerged.length > 0 ? { waitMerged } : {}) }));
 }
 
 /** A person answered a parked run's agent, which is working again: the run is live once more, and its old outcome and tracker state are dropped. */

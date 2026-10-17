@@ -142,6 +142,17 @@ test("both briefs tell a worker to stop for a person when a skill they name is m
   }
 });
 
+test("A11-77: a batch's brief teaches the wait field: stacking for code that builds on the blocker's diff, merged for work that needs its change live", () => {
+  const brief = batchPlanBriefText({ tickets: [{ ticket, attachments: [], parent: null }], runDir: "/d", planDir: "/d/plan", clones: { a: "/a" }, run: "plan {keys} into {dir}" });
+  for (const part of ["\"wait\": \"stacked\" or \"merged\"", "With no `wait`, or `\"stacked\"`, the ticket is stacked", "Choose this when the code builds on the blocker's diff.",
+    "`\"wait\": \"merged\"` keeps the ticket Blocked until every ticket in its `after` has merged, then starts it on the default branch.",
+    "Choose this when the work needs the blocker's change live rather than in a diff: fleet state, a deployed or released package, a published artifact",
+    "When a plan says \"wait until X merges\", set `\"wait\": \"merged\"`, or the board contradicts the plan.",
+    "and its worker starts only once they are done, or, where it stacks on one, on that one's branch."]) {
+    assert.ok(brief.includes(part), part);
+  }
+});
+
 test("a single planning run's brief fills {keys} with its one ticket, so a batch planner's instruction plans a ticket alone as before", () => {
   const plan = planBriefText({ ticket, ticketDir: "/d", planDir: "/d/plan", attachments: [], clones, run: "unattended: plan {keys} into {dir}" });
   assert.ok(plan.includes("unattended: plan NBF-1270 into /d/plan"));
@@ -166,7 +177,7 @@ test("a batch's brief lists every ticket with its files and parent, fills {keys}
   }
   assert.equal(brief.includes("NBF-1271 is part of"), false, "a ticket with no parent has no parent section");
   for (const part of ["`/state/tickets/batches/b1-0/plan/<KEY>/`", "a `QUESTION.md`", "`/state/tickets/batches/b1-0/plan/order.json`",
-    "{ \"<KEY>\": { \"repo\": \"<repository>\", \"after\": [\"<KEY>\", ...] } }", "or `null` for a ticket with a question", "never the ticket itself, and make no cycle",
+    "{ \"<KEY>\": { \"repo\": \"<repository>\", \"after\": [\"<KEY>\", ...], \"wait\": \"stacked\" or \"merged\" } }", "or `null` for a ticket with a question", "never the ticket itself, and make no cycle",
     "A question about one ticket does not stop the others", "Write `/state/tickets/batches/b1-0/outcome.json` as the last thing you do, after every plan, question and `order.json`",
     "{ \"kind\": \"planned\" }", "change no code"]) {
     assert.ok(brief.includes(part), part);

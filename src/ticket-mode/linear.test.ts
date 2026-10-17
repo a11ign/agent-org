@@ -302,27 +302,59 @@ const working = (type: string, name: string) => ({ data: { issues: { nodes: [{
   id: "uuid-1", state: { type, name }, team: { states: { nodes: [{ id: "s-planned", name: "Planned" }, { id: "s-progress", name: "In Progress" }] } },
 }] } } });
 
-test("moveToWorkingState() moves a ticket not yet started, a planned one included, to the working state", async () => {
+test("moveToWorkingState() moves a ticket not yet started, a planned one included, to the working state, and says what it moved from", async () => {
   for (const [type, name] of [["unstarted", "Planned"], ["backlog", "Backlog"], ["triage", "Triage"]]) {
     const { fetch, requests } = linear([working(type, name), done]);
-    assert.equal(await linearSource({ key: "k", fetch }).moveToWorkingState!("NBF-1", "In Progress"), null);
+    assert.deepEqual(await linearSource({ key: "k", fetch }).moveToWorkingState!("NBF-1", "In Progress"), { moved: { from: name, to: "In Progress" }, note: null }, type);
     const update = requests.map((r) => JSON.parse(String(r.init.body))).find((b) => /issueUpdate/.test(b.query));
     assert.deepEqual(update?.variables, { id: "uuid-1", stateId: "s-progress" }, type);
   }
 });
 
-test("moveToWorkingState() leaves a ticket already started or finished where it is", async () => {
+test("moveToWorkingState() leaves a ticket already started or finished where it is, and records no move", async () => {
   for (const [type, name] of [["started", "In Review"], ["completed", "Done"]]) {
     const { fetch, requests } = linear([working(type, name)]);
-    assert.equal(await linearSource({ key: "k", fetch }).moveToWorkingState!("NBF-1", "In Progress"), null);
+    assert.deepEqual(await linearSource({ key: "k", fetch }).moveToWorkingState!("NBF-1", "In Progress"), { moved: null, note: null });
     assert.equal(requests.length, 1, `${type}: only read`);
   }
 });
 
 test("moveToWorkingState() keeps the ticket's state when its team has no state of that name, and says so", async () => {
   const { fetch, requests } = linear([working("unstarted", "Planned")]);
-  assert.equal(await linearSource({ key: "k", fetch }).moveToWorkingState!("NBF-1", "Doing"), "NBF-1's team has no state named Doing, so it stays in Planned");
+  assert.deepEqual(await linearSource({ key: "k", fetch }).moveToWorkingState!("NBF-1", "Doing"), { moved: null, note: "NBF-1's team has no state named Doing, so it stays in Planned" });
   assert.equal(requests.length, 1);
+});
+
+test("restoreState() moves a ticket back to the state the board moved it out of, while it is still in the state the board moved it to", async () => {
+  const { fetch, requests } = linear([working("started", "In Progress"), done]);
+  assert.equal(await linearSource({ key: "k", fetch }).restoreState!("NBF-1", { from: "Planned", to: "In Progress" }), null);
+  const update = requests.map((r) => JSON.parse(String(r.init.body))).find((b) => /issueUpdate/.test(b.query));
+  assert.deepEqual(update?.variables, { id: "uuid-1", stateId: "s-planned" });
+});
+
+test("restoreState() leaves a ticket a person has moved since where it is, and changes nothing", async () => {
+  for (const [type, name] of [["completed", "Done"], ["started", "In Review"]]) {
+    const { fetch, requests } = linear([working(type, name)]);
+    assert.equal(await linearSource({ key: "k", fetch }).restoreState!("NBF-1", { from: "Planned", to: "In Progress" }), null, name);
+    assert.equal(requests.length, 1, `${name}: only read`);
+  }
+});
+
+test("restoreState() keeps the ticket where it is when its team has no state it came from, and says so", async () => {
+  const { fetch, requests } = linear([working("started", "In Progress")]);
+  assert.equal(await linearSource({ key: "k", fetch }).restoreState!("NBF-1", { from: "Doing", to: "In Progress" }), "NBF-1's team has no state named Doing, so it stays in In Progress");
+  assert.equal(requests.length, 1);
+});
+
+test("restoreState() says so, and moves nothing, when Linear has no ticket by that key, so the run it belongs to can leave the board", async () => {
+  const { fetch, requests } = linear([{ data: { issues: { nodes: [] } } }]);
+  assert.equal(await linearSource({ key: "k", fetch }).restoreState!("NBF-1", { from: "Planned", to: "In Progress" }), "Linear has no ticket NBF-1, so nothing was put back to Planned");
+  assert.equal(requests.length, 1, "only read");
+});
+
+test("a restore Linear answers with success false is a refusal, not a restore", async () => {
+  const { fetch } = linear([working("started", "In Progress"), notDone]);
+  await assert.rejects(linearSource({ key: "k", fetch }).restoreState!("NBF-1", { from: "Planned", to: "In Progress" }), /Linear did not move NBF-1 to Planned/);
 });
 
 test("moveToWorkingState() says so when Linear has no ticket by that key", async () => {
