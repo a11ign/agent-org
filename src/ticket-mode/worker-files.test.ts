@@ -246,3 +246,12 @@ test("a drafts-off brief opens a ready pull request: its command has no --draft,
   assert.ok(brief.includes(`{ "kind": "ready-pr", "prs": [{ "repo": "<repo>", "url": "<pull request url>" }] }`));
   assert.equal(brief.includes("draft-pr"), false);
 });
+
+test("A11-70: a batch's brief names the host file's clones keys as the only repositories order.json may name, or null", () => {
+  const brief = batchPlanBriefText({ tickets: [{ ticket, attachments: [], parent: null }], runDir: "/d", planDir: "/d/plan",
+    clones: { a11ign: "/repos/a11y-witness", "agent-org": "/repos/agent-org" }, run: "plan {keys} into {dir}" });
+  for (const part of ["It must be exactly one of these names, which are the host file's `clones` keys: `a11ign`, `agent-org`.", "or `null` for a ticket with a question",
+    "A name is not the folder its checkout sits in", "the board refuses any other name"]) {
+    assert.ok(brief.includes(part), part);
+  }
+});

@@ -19,6 +19,7 @@ import { refuseUnknownFlags } from "../lib/cli-flags.ts";
 import { boardKey, boardKeyPath } from "./board-key.ts";
 import { hasPlan } from "./board-view.ts";
 import { linearSource, readLinearKey } from "./linear.ts";
+import { pickEmptyText, pickLabel } from "./pick-scope.ts";
 import { API_BODY_BYTES, readJson, refusal, sameSecret, sendJson, type Json } from "./local-http.ts";
 import { createPool, startsReviewers, type PoolDeps } from "./pool.ts";
 import { loadReviewerGate } from "./reviewer-port.ts";
@@ -132,7 +133,13 @@ export function createBoard(deps: BoardDeps) {
   async function api(method: string, path: string, body: Json): Promise<[number, unknown]> {
     if (method === "GET" && path === "/api/config") {
       return [200, { models: MODELS, efforts: EFFORTS, choice: readChoice(deps.choicePath), max: queue.max, terminal: settings.terminal, plan: settings.plan, planner: plans,
-        publish: settings.publish !== null }];
+        publish: settings.publish !== null, pick: pickLabel(settings.pick) }];
+    }
+    if (method === "GET" && path === "/api/pick") {
+      // Asked only by a Pick view whose list came back empty, so the name of the key's person costs a request only then. A tracker that cannot
+      // say whose key it is, or cannot be asked, leaves the text saying "you": the empty list still names its setting.
+      const user = settings.pick === "assigned" && source.viewer ? await source.viewer().catch(() => null) : null;
+      return [200, { empty: pickEmptyText(settings.pick, user) }];
     }
     if (method === "GET" && path === "/api/tickets") {
       const tickets = await source.assigned();
@@ -226,7 +233,7 @@ async function serve(): Promise<void> {
   const settings = readTicketSettings();
   // The gate's modules load only for an instance that starts reviewers, and before its pool is made, which reads them (`reviewer-port.ts`).
   if (startsReviewers(settings)) await loadReviewerGate();
-  const source = linearSource({ key: readLinearKey(settings.linearKey) });
+  const source = linearSource({ key: readLinearKey(settings.linearKey), pick: settings.pick });
   const key = boardKey(boardKeyPath(settings.stateDir));
   const dir = join(settings.stateDir, "tickets");
   const board = createBoard({ settings, source, key, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json") });

@@ -331,3 +331,20 @@ test("over HTTP: a request body over 64 KB is refused, even with the key", async
     assert.match((await big.json() as { error: string }).error, /over 65536 bytes/);
   });
 });
+
+test("A11-69: the board says which tickets the Pick view lists, and why it is empty, naming the key's person only when it lists theirs", async () => {
+  const [, config] = await board().api("GET", "/api/config", {}) as [number, { pick: string }];
+  assert.equal(config.pick, "assigned to you");
+  let asked = 0;
+  const named = board(4747, {}, { source: { assigned: async () => [], read: async () => null, download: async () => [], viewer: async () => { asked += 1; return "Dan Beck"; } } });
+  const [status, pick] = await named.api("GET", "/api/pick", {}) as [number, { empty: string }];
+  assert.equal(status, 200);
+  assert.match(pick.empty, /^No open tickets are assigned to Dan Beck,.*tickets\.pick/);
+  const failing = board(4747, {}, { source: { assigned: async () => [], read: async () => null, download: async () => [], viewer: async () => { throw new Error("Linear answered 500"); } } });
+  assert.match((await failing.api("GET", "/api/pick", {}) as [number, { empty: string }])[1].empty, /^No open tickets are assigned to you,/, "a tracker that cannot say whose key it is reads as you");
+  const team = board(4747, { pick: { team: "A11" } }, { source: { assigned: async () => [], read: async () => null, download: async () => [], viewer: async () => { asked += 1; return "x"; } } });
+  const [, teamConfig] = await team.api("GET", "/api/config", {}) as [number, { pick: string }];
+  assert.equal(teamConfig.pick, "open in team A11");
+  assert.match((await team.api("GET", "/api/pick", {}) as [number, { empty: string }])[1].empty, /^Team A11 has no open tickets/);
+  assert.equal(asked, 1, "a team's list names no person, so none is asked for");
+});
