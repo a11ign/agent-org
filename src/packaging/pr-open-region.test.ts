@@ -273,12 +273,14 @@ test("#2417: a body whose `Closes` is missing is left to checkBody's own refusal
 });
 
 test("#2417 WIRING: the shipped entry hands `main` the real row reader, and `main` runs the check before checkBody", () => {
-  assert.match(PR_OPEN_SOURCE, /process\.exitCode = main\(undefined, \{ rowBody: defaultRowBody, verifyStamp: defaultVerifyStamp,/,
-    "without it the guard is off in the CLI, which is the only place it matters");
+  assert.match(PR_OPEN_SOURCE, /return main\(undefined, \{ rowBody: defaultRowBody, verifyStamp: defaultVerifyStamp,/,
+    "without it the guard is off in the CLI, which is the only place it matters (the row seams are `runFromCli`'s, A11-74)");
   const start = PR_OPEN_SOURCE.indexOf("export function main(");
-  const region = PR_OPEN_SOURCE.indexOf("regionStep(body", start);
+  const before = PR_OPEN_SOURCE.indexOf("beforeBodyCheck(mode, rest, body", start);
   const check = PR_OPEN_SOURCE.indexOf("checkBody(body", start);
-  assert.ok(region > 0 && check > region, "the region step precedes checkBody inside main()");
+  assert.ok(before > 0 && check > before, "the checks made before the body is read precede checkBody inside main()");
+  const row = PR_OPEN_SOURCE.indexOf("function beforeBodyCheck(");
+  assert.ok(row > 0 && PR_OPEN_SOURCE.indexOf("regionStep(body", row) > row, "and for a row they are the region step (A11-74 moved it out of main)");
 });
 
 // --- #3083: a row that STATES its repository is read in that repository's tree -------------------------------------
