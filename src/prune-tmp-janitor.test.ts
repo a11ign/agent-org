@@ -150,6 +150,52 @@ test("#3849: a fixture a running process names is REFUSED however old it is, and
   assert.match(report.refused.find((entry) => entry.path === held)!.reason, /a running process holds this/);
 });
 
+// A11-60: the prefixes the 2026-10-17 pile carried, which the list did not name until that day (`FIXTURE_PREFIXES` after its first sixteen).
+const LEAKED = [
+  "installed-layout-", "engineer-route-", "triage-route-", "outside-nightly-project-", "outside-nightly-stub-",
+  "patch-target-", "patch-verdict-", "patch-vars-", "patch-stage-", "patch-naming-", "control-host-run-",
+  "provision-role-", "agreement-", "poll-5xx-", "refusal-owners-step-", "verify-present-agent-org-",
+  "urls-input-", "consumer-gate-pin-remote-", "corpus-verify-", "auto-arm-cross-repo-",
+  "nvda-spec-", "nvda-zip-", "nvda-nospec-",
+];
+
+test("A11-60: each prefix the 2026-10-17 pile carried is a fixture family with a random suffix, and the bare prefix is not", () => {
+  for (const prefix of LEAKED) {
+    assert.equal(familyOf(`${prefix}Ab12Cd`).family, "fixture", `${prefix} with a suffix`);
+    assert.equal(familyOf(prefix).family, "unknown", `${prefix} with nothing after it`);
+  }
+});
+
+test("A11-60: a name next to a leaked prefix, and not under it, is unrecognised", () => {
+  assert.equal(familyOf("patch-targetsAb12Cd").family, "unknown", "the prefix ends at its dash");
+  assert.equal(familyOf("patchtarget-Ab12Cd").family, "unknown", "a name that drops the dash is not the fixture");
+});
+
+test("A11-60: a /tmp of 3N leaked-family fixtures needs three runs, and a fourth finds nothing and says so", () => {
+  const root = fresh("leaked-threeN");
+  for (let i = 0; i < 3 * MAX_REMOVALS_PER_RUN; i += 1) {
+    fixture(root, `${LEAKED[i % LEAKED.length]}${String(i).padStart(4, "0")}`);
+  }
+  for (let pass = 1; pass <= 3; pass += 1) {
+    assert.equal(run(root).removed.length, MAX_REMOVALS_PER_RUN, `run ${pass} removes exactly N`);
+  }
+  assert.equal(readdirSync(root).length, 0);
+  const fourth = run(root);
+  assert.equal(fourth.removed.length, 0);
+  assert.match(formatReport(fourth, false), /nothing to remove: 0 classified path\(s\) found/);
+});
+
+test("A11-60: a leaked-family fixture younger than an hour, or one a process holds, is kept and says why", () => {
+  const root = fresh("leaked-keep");
+  const young = fixture(root, "patch-target-young1", { hoursOld: 0.25 });
+  const held = fixture(root, "installed-layout-held1", { hoursOld: 30 });
+  const report = run(root, { procRoot: procHolding(held) });
+  assert.ok(existsSync(young), "a young fixture stays");
+  assert.ok(existsSync(held), "a held fixture stays");
+  assert.match(report.refused.find((entry) => entry.path === young)!.reason, /less than 1\.0h ago/);
+  assert.match(report.refused.find((entry) => entry.path === held)!.reason, /a running process holds this/);
+});
+
 test("#3849: a file, or a symlink, with a fixture's name is not walked at all", () => {
   const root = fresh("kinds");
   writeFileSync(join(root, "host-units-afile"), "x");

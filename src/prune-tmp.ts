@@ -128,15 +128,33 @@ const FIXTURE_REFUSALS_PRINTED = 10;
 export const FIXTURE_WINDOW_MS = MS_PER_HOUR;
 
 /**
- * The directory-name prefixes the repository's own test fixtures make directly under `/tmp` (`mkdtemp(join(tmpdir(), "<prefix>"))`),
- * each read off the host's measured pile on 2026-10-06 AND found in a test file of this repository, so a name here is a fixture and
- * not a guess. The first seven are the ones #3848 names; the rest are the next largest on that day. A fixture family not listed is
- * UNRECOGNISED and left alone: the private TMPDIR of #3854 is what stops the long tail, this list is only what clears the pile.
+ * The directory-name prefixes the test fixtures on this host make directly under `/tmp` (`mkdtemp(join(tmpdir(), "<prefix>"))`),
+ * each read off the host's measured pile AND found in the file that makes it (a test, or the source it calls), of a repository on this host, so a name here is a fixture and
+ * not a guess. The first seven are the ones #3848 names; the rest of the first group are the next largest on 2026-10-06. The groups
+ * after it were read off the pile of 2026-10-17 (A11-60), one group per repository that makes them, each naming the file that makes it.
+ * A fixture family not listed is UNRECOGNISED and left alone: the private TMPDIR of #3854 is what stops the long tail, this list is
+ * only what clears the pile.
  */
 export const FIXTURE_PREFIXES = [
   "verify-stamp-test-", "pr-review-verdict-", "host-units-", "ingest-state-", "closes-check-", "trace-weekly-", "prune-tmp-fixture-",
   "org-retro-", "watch-cli-", "gh-wrapper-render-", "gh-calls-", "trace-publish-", "close-rows-full-form-", "removal-log-",
   "review-removal-log-", "dora-resumes-",
+  // agent-org: `src/packaging/installed-layout.test.ts`, `src/engineer-route.test.ts`, `src/triage-route.test.ts`, `src/outside-nightly.test.ts`
+  // (which makes `outside-nightly-${name}-`, and the two names on this host are `project` and `stub`)
+  "installed-layout-", "engineer-route-", "triage-route-", "outside-nightly-project-", "outside-nightly-stub-",
+  // control: `src/control-owned/patch-playbook.test.ts`, `src/control-host-install-checkout.test.ts`
+  "patch-target-", "patch-verdict-", "patch-vars-", "patch-stage-", "patch-naming-", "control-host-run-",
+  // the `packages/` monorepo: `packages/control/src/layer-checkouts.ts`, `packages/guards/src/ci-agreement-step-cancelled.test.ts`,
+  // `packages/guards/src/ci-poll-retries-5xx.test.ts`, `scripts/refusal-owners-are-open.test.ts`,
+  // `packages/guards/src/verify-present-agent-org.test.ts`, `packages/cli/src/action/urls-input.test.ts`,
+  // `packages/guards/src/consumer-gate-pin-needed.test.ts`
+  "provision-role-", "agreement-", "poll-5xx-", "refusal-owners-step-", "verify-present-agent-org-",
+  "urls-input-", "consumer-gate-pin-remote-",
+  // lab: `scripts/corpus-release.ts`, `src/packaging/auto-arm-cross-repo-red.test.ts`. Its `src/packaging/refusal-owners-are-open.test.ts` makes
+  // the refusal-owners-step prefix above too, with the `packages/` monorepo.
+  "corpus-verify-", "auto-arm-cross-repo-",
+  // screenreader-worker: `src/screenreader-defaults.test.ts`. `nvda-zip-` also takes the `nvda-zip-empty-` directories, whose name is `nvda-zip-` then `empty-`.
+  "nvda-spec-", "nvda-zip-", "nvda-nospec-",
 ];
 
 /**
