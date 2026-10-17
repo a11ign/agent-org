@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import type { ServiceName, ServiceState } from "./service.ts";
-import { dependencyInstalls, update, type UpdateDeps } from "./update.ts";
+import { dependencyInstalls, readLiveRuns, update, type UpdateDeps } from "./update.ts";
 import { pinnedPnpm } from "./pnpm.ts";
 
 const ENV = sandboxGitEnv({ GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" });
@@ -36,8 +36,9 @@ function installed() {
   return { checkout, git: gitIn(checkout) };
 }
 
-function deps(checkout: string, git: (args: string[]) => string, states: Partial<Record<ServiceName, ServiceState>>) {
+function deps(checkout: string, git: (args: string[]) => string, states: Partial<Record<ServiceName, ServiceState>>, live: number | null = 0) {
   const restarted: ServiceName[] = [];
+  const said: string[] = [];
   const installs: string[] = [];
   const value: UpdateDeps = {
     root: checkout, git,
@@ -45,9 +46,10 @@ function deps(checkout: string, git: (args: string[]) => string, states: Partial
     installInPlace: () => { installs.push("main"); },
     state: (name) => states[name] ?? "not-registered",
     restart: (name) => { restarted.push(name); },
-    out: { log: () => {}, error: () => {} },
+    liveRuns: () => live,
+    out: { log: (line: string) => { said.push(line); }, error: () => {} },
   };
-  return { deps: value, restarted, installs };
+  return { deps: value, restarted, installs, said };
 }
 
 const at = (git: (args: string[]) => string) => git(["show", "HEAD:version.txt"]).trim();
@@ -146,4 +148,38 @@ test("update restarts the services that run this checkout, not the web terminal 
   const { deps: d, restarted } = deps(checkout, git, { instance: "running", ui: "running", terminal: "running", "auto-update": "running" });
   assert.equal(update({ version: undefined, channel: "release" }, d), true);
   assert.deepEqual(restarted, ["instance", "ui"]);
+});
+
+// A11-78: a restart of the instance interrupted a worker mid-turn, and the auto-update timer restarts it every hour a release lands.
+test("update with a live run on the running instance moves nothing and restarts nothing, says it deferred, and --force updates and restarts", () => {
+  const { checkout, git } = installed();
+  const { deps: d, restarted, installs, said } = deps(checkout, git, { instance: "running", ui: "running" }, 2);
+  assert.equal(update({ version: undefined, channel: "release" }, d), false);
+  assert.equal(at(git), "v0.1.0", "the checkout is not moved, so the next hourly run still has a move to make, and restarts then");
+  assert.deepEqual([installs, restarted], [[], []]);
+  assert.match(said.join("\n"), /deferred: 2 runs live/);
+  assert.equal(update({ version: undefined, channel: "release", force: true }, d), true);
+  assert.equal(at(git), "v0.10.0");
+  assert.deepEqual(restarted, ["instance", "ui"]);
+});
+
+test("update is not held back by live runs when the instance is not running, nor when its queue cannot be read", () => {
+  for (const [state, live] of [["stopped", 3], ["running", null], ["running", 0]] as const) {
+    const { checkout, git } = installed();
+    const { deps: d } = deps(checkout, git, { instance: state }, live);
+    assert.equal(update({ version: undefined, channel: "release" }, d), true, `instance ${state}, ${live} live`);
+  }
+});
+
+test("the live runs are read from the queue file in the state directory the host file names, and none is null without a host file", () => {
+  const root = tmpDir("update-live-");
+  const host = join(root, "host.json");
+  const stateDir = join(root, "state");
+  writeFileSync(host, JSON.stringify({ clones: { a: "/r/a" }, stateDir }));
+  mkdirSync(join(stateDir, "tickets"), { recursive: true });
+  const entry = (key: string, phase: string, batch?: string) => ({ ticket: { key }, repos: [], model: "opus", effort: "high", phase, queuedAt: 0, ...(batch ? { batch } : {}) });
+  writeFileSync(join(stateDir, "tickets", "queue.json"), JSON.stringify({ max: 3, paused: false,
+    entries: [entry("A-1", "running"), entry("A-2", "starting"), entry("A-3", "queued"), entry("A-4", "finished"), entry("A-5", "running", "b1"), entry("A-6", "running", "b1")] }));
+  assert.equal(readLiveRuns({ AGENT_ORG_HOST: host, HOME: root }), 3, "two runs and one batch's run; queued and finished are not live");
+  assert.equal(readLiveRuns({ AGENT_ORG_HOST: join(root, "none.json"), HOME: root }), null);
 });

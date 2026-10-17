@@ -23,13 +23,20 @@ Then run these commands:
 | `agent-org start [instance\|ui\|terminal\|auto-update]` | Registers the service to start at login and starts it: a launchd user agent on macOS, a systemd user unit on Linux. The instance service runs `ticket:serve`, the queue and its workers. The ui service runs `ticket:ui`, the page. The terminal service runs herdr web ui for `tickets.herdrSession` on `127.0.0.1`, on the port `tickets.terminal` names (`7318` by default). The auto-update service runs `agent-org update` every hour: a systemd timer on Linux, a launchd `StartInterval` job on macOS. The service is `instance` when you name none. Starting a service writes its unit again, which fixes a unit systemd refused. |
 | `agent-org stop [instance\|ui\|terminal\|auto-update]` | Stops the service and keeps it from starting at login. `agent-org stop auto-update` turns automatic updates off. |
 | `agent-org status [instance\|ui\|terminal\|auto-update]` | Prints whether the service is running, stopped or not registered, and the reason when systemd will not load its unit. It exits 3 when the service is not running. |
-| `agent-org update` | Moves the install to the newest release, or to `--version vX.Y.Z`, and restarts each service that was running. `--channel main` follows `main` instead of releases. It refuses a checkout with changes to tracked files. |
+| `agent-org update` | Moves the install to the newest release, or to `--version vX.Y.Z`, and restarts each service that was running. `--channel main` follows `main` instead of releases. It refuses a checkout with changes to tracked files. While the instance service runs a live run, it moves nothing, prints `deferred: N runs live` and exits 0; `--force` updates and restarts anyway. |
 
 The macOS service writes its log to `~/.agent-org/logs/<service>.log`. On Linux, read it with `journalctl --user -u agent-org-<service>`.
 
 **Kept up to date.** The auto-update service runs `agent-org update` every hour, following `release` or, when `~/.agent-org/update-channel`
 says `main`, `main`. Update restarts the instance and ui services only when the checkout moved, so an hour with nothing new restarts nothing.
-It refuses a checkout with changes to tracked files, as a manual update does.
+It refuses a checkout with changes to tracked files, as a manual update does. It also waits while a worker is starting or mid-turn: with a
+live run on the instance it moves nothing and restarts nothing, says `deferred: N runs live`, and the next hour tries again.
+
+**A restart leaves the workers alone.** The workers run in ticket mode's herdr server, which the instance starts outside its own service (on
+Linux under systemd, in a scope of its own through `systemd-run --user --scope`), so restarting the instance never stops a worker. The instance
+that starts up adopts the runs herdr lists and carries on watching them: it sends their panes no key, no prompt and no second start, and a
+reviewer it started for a head is not started again. A herdr server an older instance started is still inside that instance's service, so the
+first restart after updating to this version still stops it; update waits for no run to be live before it does.
 
 **The host file without `AGENT_ORG_HOST`.** Every command finds the host file in this order: `$AGENT_ORG_HOST`, then the path in
 `~/.agent-org/host-file` (which onboard writes), then the `AGENT_ORG_HOST` in the instance service's unit, then `~/.agent-org/host.json`.

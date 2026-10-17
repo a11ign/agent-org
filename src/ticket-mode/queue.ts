@@ -125,6 +125,15 @@ const LIVE: ReadonlySet<Phase> = new Set(["starting", "running"]);
 
 export const isLive = (entry: Entry): boolean => LIVE.has(entry.phase);
 
+/**
+ * How many runs are live (starting or running): a batch's tickets are one run, and the publish run counts while it is under way. `update` reads
+ * it to leave the instance alone while a worker is mid-turn (A11-78). PURE.
+ */
+export function liveRunCount(queue: Queue): number {
+  const runs = new Set(queue.entries.filter(isLive).map((entry) => entry.batch === undefined ? `ticket:${entry.ticket.key}` : `batch:${entry.batch}`));
+  return runs.size + (queue.publish !== undefined && LIVE.has(queue.publish.phase) ? 1 : 0);
+}
+
 function replace(queue: Queue, key: string, change: (entry: Entry) => Entry): Queue {
   return { ...queue, entries: queue.entries.map((entry) => (entry.ticket.key === key ? change(entry) : entry)) };
 }

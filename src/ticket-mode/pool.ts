@@ -48,6 +48,13 @@
 // A PERSON'S PUBLISH STARTS ONE PUBLISH RUN. It posts the pull requests of every run ticked, all in one go, with the host file's
 // `tickets.publish`, in a folder of its own (`publishDir`), holding one slot. Only it may run the `post-pr-to-slack` skill and the connectors
 // `tickets.publish.connectors` names (`hook.ts`). When it writes `published`, each run it posted shows Published with a link to the message.
+//
+// A RESTART OF THE INSTANCE LEAVES THE WORKERS ALONE (A11-78). The workers run in herdr's server, which this process starts outside its own
+// service (`herdrServerCommand`), so stopping the instance stops only the instance. A pool that starts up re-adopts what herdr lists and the
+// queue file holds (`reconcile`) and carries on watching it: it sends a running worker no key, no prompt and no second start. The only keys
+// the pool ever sends answer a start dialog, and only on a run this pool started itself, until its agent is first seen up (`startedHere`): a
+// pane it adopted is never one it is starting. A reviewer is recorded as started before it is started, so a restart in between never starts it
+// twice, and one herdr still lists for its head is adopted. `agent-org update` does not restart the instance while a run is live (`update.ts`).
 import { execFile, spawn } from "node:child_process";
 import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { availableParallelism, homedir, loadavg } from "node:os";
@@ -103,9 +110,31 @@ const defaultHerdrAsync: HerdrAsync = (args, timeoutMs) => new Promise((resolve,
 
 const defaultWait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** Start a session's headless herdr server, detached, so it outlives this process as the org's does under its own unit. */
+/**
+ * The command that starts a session's headless herdr server so it OUTLIVES THIS PROCESS AND ITS SERVICE (A11-78). PURE.
+ *
+ * `detached` alone is not enough under systemd. A detached child leaves the instance's process group, and launchd, which ends a job's process
+ * group, then leaves it alone; but systemd ends a unit by its CONTROL GROUP, and a child stays in its parent's cgroup whatever its process group.
+ * Measured on a Linux host 2026-10-17: `herdr --session tickets server`, every pane's shell and every worker's `claude` were listed under
+ * `agent-org-instance.service`, so `systemctl --user restart` (which `agent-org update` runs every hour) sent each of them SIGTERM. The server
+ * died, the next instance started a new one, herdr restored the workspaces and resumed each worker with `claude --resume`, and the pane showed
+ * "Interrupted · What should Claude do instead?" with the worker sitting at its prompt; a reviewer the instance had started was gone.
+ *
+ * So under systemd (`INVOCATION_ID`, which systemd sets for every unit it runs) the server is started through `systemd-run --user --scope`,
+ * which moves it into a scope of its own before it runs: it keeps this process's environment, and the instance's unit no longer holds it. A
+ * process started by hand, or by launchd, starts herdr directly, as before.
+ */
+export function herdrServerCommand(session: string, env: Readonly<Record<string, string | undefined>>, platform: NodeJS.Platform): { file: string; args: string[] } {
+  const herdrArgs = ["--session", session, "server"];
+  if (platform !== "linux" || !env.INVOCATION_ID) return { file: "herdr", args: herdrArgs };
+  const unit = `agent-org-herdr-${session.replace(/[^A-Za-z0-9_-]/g, "-")}`;
+  return { file: "systemd-run", args: ["--user", "--scope", "--quiet", "--collect", `--unit=${unit}`, "--description=herdr server for agent-org ticket mode", "herdr", ...herdrArgs] };
+}
+
+/** Start a session's headless herdr server, detached and outside this service, so it outlives this process as the org's does under its own unit. */
 const defaultStartServer = (session: string): void => {
-  spawn("herdr", ["--session", session, "server"], { detached: true, stdio: "ignore" }).unref();
+  const { file, args } = herdrServerCommand(session, process.env, process.platform);
+  spawn(file, args, { detached: true, stdio: "ignore" }).unref();
 };
 
 export type PoolDeps = Readonly<{
@@ -342,6 +371,11 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
   const session = { session: settings.herdrSession };
   const misses = new Map<string, number>();
   const answered = new Map<string, number>();
+  /**
+   * The runs, by herdr name, this pool started and has not yet seen up (`working`, `idle` or `done`): the only panes it may answer a start dialog
+   * on. A pool that starts up holds none, so a worker it adopts is never sent a key, whatever its pane shows (A11-78).
+   */
+  const startedHere = new Set<string>();
   /** A line in the board's log, which is its standard error. */
   const log = (line: string): void => { process.stderr.write(`ticket:serve: ${line}\n`); };
   const messageOf = (err: unknown): string => String((err as Error)?.message ?? err);
@@ -578,11 +612,13 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
         throw new Error(`herdr could not start Claude for ${what} (${herdrRefusal(err)})${closedNote(run, opened.workspace, session)}`);
       }
     }
+    startedHere.add(place.name);
     return { workspace: opened.workspace, pane: opened.pane };
   }
 
   /** Answer a start dialog on this run's pane, if one is showing and the run has answers left. True when it answered. */
   function answerStartDialog({ name, folder }: RunPlace): boolean {
+    if (!startedHere.has(name)) return false;
     const count = answered.get(name) ?? 0;
     if (count >= MAX_DIALOG_ANSWERS) return false;
     let screen: string;
@@ -625,6 +661,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
         continue;
       }
       misses.delete(name);
+      if (["working", "idle", "done"].includes(seen)) startedHere.delete(name);
       const repos = worktreesIn(folder);
       if (repos.join("\n") !== entry.repos.join("\n")) update((queue) => recordRepos(queue, key, repos));
       if (!["working", "idle", "done"].includes(seen) && answerStartDialog(runPlace(entry))) continue;
@@ -744,6 +781,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
       if (entry.workspace) closedNote((args) => herdr(args), entry.workspace, session);
       misses.delete(name);
       answered.delete(name);
+    startedHere.delete(name);
       update((queue) => planDone(queue, key));
     } catch (err) {
       if (sameRun(entry)) end(entry, { kind: "needs-human", reason: `the plan could not be attached (${messageOf(err)}): its files are in ${planDir}` });
@@ -792,6 +830,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
       if (entry.workspace) closedNote((args) => herdr(args), entry.workspace, session);
       misses.delete(name);
       answered.delete(name);
+    startedHere.delete(name);
       updateEach(still, (queue, key) => {
         const outcome = handedBack.get(key);
         const refused = misplaced.get(key);
@@ -867,6 +906,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     updateEach(runMembers(entry), (queue, key) => (parks ? park : finish)(queue, key, outcome, now(), key === entry.ticket.key ? { ...record, tokens } : record));
     misses.delete(name);
     answered.delete(name);
+    startedHere.delete(name);
   }
 
   /** Just after a start, answer the start dialogs as they appear, rather than one per tick: a few short waits, then the tick takes over. */
@@ -874,7 +914,10 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     for (let attempt = 0; attempt < 6; attempt += 1) {
       await wait(1500);
       const status = readAgents((args) => herdr(args), session)?.find((agent) => agent.label === place.name)?.status;
-      if (status === "working" || status === "idle" || status === "done") return;
+      if (status === "working" || status === "idle" || status === "done") {
+        startedHere.delete(place.name);
+        return;
+      }
       answerStartDialog(place);
     }
   }
@@ -1051,6 +1094,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
       return;
     }
     misses.delete(place.name);
+    if (["working", "idle", "done"].includes(seen)) startedHere.delete(place.name);
     if (!["working", "idle", "done"].includes(seen) && answerStartDialog(place)) return;
     update((queue) => observePublish(queue, seen));
     const outcomePath = join(place.dir, OUTCOME_FILE);
@@ -1064,6 +1108,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     if (publish.workspace) closedNote((args) => herdr(args), publish.workspace, session);
     misses.delete(name);
     answered.delete(name);
+    startedHere.delete(name);
     update((queue) => ("links" in result ? publishDone(queue, result.links, now()) : publishFailed(queue, result.failure, now())));
   }
 
@@ -1100,7 +1145,8 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
   /**
    * After a restart: a run the file says is live but herdr does not list is recorded as crashed; one still listed carries on. A run caught
    * between `starting` and `running` has no workspace on record, so it is crashed too: its worktree is kept and it can be retried. A parked run
-   * herdr no longer lists is unparked, keeping its outcome.
+   * herdr no longer lists is unparked, keeping its outcome. It reads herdr's listing and the queue file and nothing else: a run herdr lists is
+   * adopted as it is, its pane sent no key, no prompt and no second start (A11-78).
    */
   function reconcile(): void {
     const agents = readAgents((args) => herdr(args), session);
@@ -1231,10 +1277,21 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
       }
       const key = `${url}@${state.head}`;
       // A head whose checks have not settled green gets no reviewer yet: this watch passes it by, and the next one asks again.
-      if (state.settled && !reviewerStarted.has(key) && !reviewer.live({ pr: url, head: state.head })) {
-        const started = reviewer.start({ pr: url, head: state.head });
-        if ("refusal" in started) log(started.refusal);
-        else { reviewerStarted.add(key); rememberReviewers(); }
+      if (state.settled && !reviewerStarted.has(key)) {
+        // Recorded BEFORE the start, so an instance stopped while the reviewer starts never starts it again for this head; a refusal un-records
+        // it. One herdr already lists for this head (started by an instance that stopped before it could record it) is adopted, not started.
+        reviewerStarted.add(key);
+        rememberReviewers();
+        const adopted = reviewer.live({ pr: url, head: state.head });
+        const started = adopted ? null : reviewer.start({ pr: url, head: state.head });
+        if (started !== null && "refusal" in started) {
+          log(started.refusal);
+          reviewerStarted.delete(key);
+          rememberReviewers();
+        } else if (started !== null) {
+          // The port recorded the head its seat's reviewer was started for: written now, so a restart reads that reviewer as live.
+          rememberReviewers();
+        }
       }
       if (reviewVerdict(state.reviews, state.head) === "not-convinced" && !reviewerResumed.has(key)) {
         reviewerResumed.add(key);

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { isParked } from "./board-view.ts";
 import {
-  amend, approve, byIdentifier, childOrder, refuseParents, respond, batchPlanDone, dismiss, feedbackRound, MAX_FEEDBACK_ROUNDS, markPublishRunning, markPublishStarting, publishDone, publishFailed, publishStarts, queuePublish, emptyQueue, enqueue, finish, isLive, leaveBatch, loadQueue, markResumed, markRunning, markStarting, nextStarts, observe, park,
+  amend, approve, byIdentifier, childOrder, refuseParents, respond, batchPlanDone, dismiss, feedbackRound, MAX_FEEDBACK_ROUNDS, markPublishRunning, markPublishStarting, publishDone, publishFailed, publishStarts, queuePublish, emptyQueue, enqueue, finish, isLive, leaveBatch, liveRunCount, loadQueue, markResumed, markRunning, markStarting, nextStarts, observe, park,
   recordBlockers, recordRepos, planDone, PLAN_BATCH_MAX, recordPullStates, recordTrackerStates, remove, retry, saveQueue, setMax, setPaused, unpark, unreadBlockerKeys, unsettledKeys, type Queue,
 } from "./queue.ts";
 import type { Ticket } from "./source.ts";
@@ -429,4 +429,18 @@ test("A11-76: with no blocking relations to read, a parent's children go in iden
   const cycle = childOrder(["A-3", "A-1", "A-2"], new Map([["A-1", [{ key: "A-2" }]], ["A-2", [{ key: "A-1" }]], ["A-3", []]]));
   assert.deepEqual(cycle, { keys: ["A-3", "A-1", "A-2"], note: "the blocking relations among A-1, A-2 go round in a cycle, so those are queued in identifier order" });
   assert.ok(byIdentifier("A11-9", "A11-10") < 0 && byIdentifier("B-1", "A-2") > 0);
+});
+
+test("the live runs are the starting and running ones, a batch counted once, and the publish run while it is under way", () => {
+  let queue = setPaused(enqueue(emptyQueue(5), [ticket("A"), ticket("B"), ticket("C")], choice, 1), false);
+  assert.equal(liveRunCount(queue), 0, "queued is not live");
+  queue = markRunning(markStarting(queue, "A", 2), "A", "w1", "w1:p1");
+  queue = markStarting(queue, "B", 3);
+  assert.equal(liveRunCount(queue), 2);
+  queue = { ...queue, entries: queue.entries.map((e) => (e.ticket.key === "A" || e.ticket.key === "C" ? { ...e, phase: "running" as const, batch: "b1" } : e)) };
+  assert.equal(liveRunCount(queue), 2, "A and C are one batch's run");
+  queue = { ...queue, publish: { id: "p1", keys: [], prs: [], phase: "running", queuedAt: 4 } };
+  assert.equal(liveRunCount(queue), 3);
+  queue = finish(queue, "B", { kind: "stopped" }, 5);
+  assert.equal(liveRunCount({ ...queue, publish: { ...queue.publish!, phase: "finished" } }), 1);
 });
