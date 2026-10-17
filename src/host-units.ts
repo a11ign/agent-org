@@ -2144,7 +2144,7 @@ const realBinDirectory = () => join(userInfo().homedir, ".local", "bin");
  * THE ONE WRITER OF `gh`: write the routing wrapper `text` to `target`, ATOMICALLY, or refuse and write nothing. Refuses, each with its reason, when
  *   1. the text names no App while `host` declares `github-apps` roles (the render is broken, or the declaration is not the host's);
  *   2. the text names no App and the installed copy names some, unless `allowNoApps` (the downgrade: the incident's case, which `host:install --allow-no-apps` takes);
- *   3. the text runs its minter, or any other path it defaults, from a temporary directory;
+ *   3. (production, not a test run) the text runs its minter from a temporary directory;
  *   4. `under` (a test run) and the target is inside the real home's bin directory.
  * A refusal is a `HostConfigRefusal` and never a partial write. The tick turns it into a note, and the instance's start-up and `doctor` say it.
  * @param {{ target: string, mode: number, text: string, host: Readonly<HostConfig>, allowNoApps?: boolean, under?: boolean, realBin?: string,
@@ -2162,8 +2162,10 @@ export function writeGhWrapper({ target, mode, text, host, allowNoApps = false, 
   if (under && inside !== "" && !inside.startsWith("..") && !isAbsolute(inside)) {
     refuse("a test run may not write the real home's bin directory: a test takes its bin directory from a fixture");
   }
+  // Production only: a test run's fixtures are checkouts in the runner's own temporary directory, so under a test run the real-bin tripwire above is the guard,
+  // and it refuses the one write that matters (the machine's own wrapper).
   const scratch = temporaryDefault(text);
-  if (scratch !== null) refuse(`the wrapper runs ${scratch}, which is in a temporary directory, so it was rendered from a scratch checkout`);
+  if (!under && scratch !== null) refuse(`the wrapper runs ${scratch}, which is in a temporary directory, so it was rendered from a scratch checkout`);
   const rendered = wrapperRoles(text) ?? refuse("the rendered text has no App role table to check");
   const declared = appRolesOf(host);
   if (rendered.length === 0 && declared.length > 0) {

@@ -33,8 +33,12 @@ export const CONNECTORS_FILE = "connectors.json";
 /** The host's own programs a worker may not write (A11-84), copied beside the outcome file, where the PreToolUse hook reads it. */
 export const PROTECTED_FILE = "protected-paths.json";
 
-/** The host's programs in its `binDir` that a worker may not write: the routing `gh` and the launcher `agent-org`. Their writers are the host's (`host:install`). */
-export const protectedPaths = (binDir: string): string[] => [join(binDir, "gh"), join(binDir, "agent-org")];
+/** The host's programs a worker may not write, by name in its bin directory: the routing `gh` and the launcher `agent-org`. Their writers are the host's (`host:install`). */
+export const PROTECTED_PROGRAMS = ["gh", "agent-org"] as const;
+/** The bin directory the installer uses when `host.json` names none. */
+export const defaultBinDir = (home: string): string => join(home, ".local", "bin");
+/** The paths of the host's protected programs in `binDir`. */
+export const protectedPaths = (binDir: string): string[] => PROTECTED_PROGRAMS.map((name) => join(binDir, name));
 /**
  * Present beside the outcome file while the run is a REVIEW RUN, one a person started by approving its pull requests. It lets the PreToolUse
  * hook allow `gh pr ready`, which only that person's approval makes the worker's to run.

@@ -43,6 +43,10 @@ function installed(roles: string[]) {
 
 /** The rendered wrapper for `roles`, as text. */
 const rendered = (root: string, roles: string[]) => shippedScriptText("gh", { host: hostOf(root, roles) }) as string;
+/** The same wrapper with its minter at a shipped checkout's path, outside any temporary directory: what production writes. */
+const shippedCheckout = (text: string) => text
+  .replace(/(A11Y_APP_TOKEN_SCRIPT:-)[^}\n]*\}/, "$1/opt/agent-org/src/app-token.ts}")
+  .replace(/(A11Y_GH_FLAG_SCRIPT:-)[^}\n]*\}/, "$1/opt/agent-org/src/gh-author-fallback.ts}");
 
 /** A write that must not happen: the refusal is what is under test, so a call here is the failure. */
 const noWrite = (() => { throw new Error("a refused wrapper must not be written"); }) as never;
@@ -95,24 +99,35 @@ test("A11-84 DOWNGRADE, ASKED FOR: `host:install --allow-no-apps` writes the no-
   assert.deepEqual(wrapperRoles(h.text()), [], "with the flag, the table is empty, as the host declares");
 });
 
-test("A11-84 REFUSAL 3: a wrapper whose minter runs from /tmp is refused, as a scratch checkout's; a path elsewhere is the control", () => {
+test("A11-84 REFUSAL 3: in production, a wrapper whose minter runs from /tmp is refused, as a scratch checkout's; a path elsewhere is the control", () => {
   const root = tmpDir("gh-wrapper-guard-tmp-");
   const host = hostOf(root, ["workers"]);
   const target = join(root, "bin", "gh");
   const scratch = rendered(root, ["workers"]).replace(/(app_script=\$\{A11Y_APP_TOKEN_SCRIPT:-)[^}\n]*\}/, "$1/tmp/claude-1000/scratch/project/src/app-token.ts}");
   assert.match(scratch, /app_script=\$\{A11Y_APP_TOKEN_SCRIPT:-\/tmp\/claude-1000\/scratch\/project\/src\/app-token\.ts\}/, "the control: the path is rewritten");
-  assert.throws(() => writeGhWrapper({ target, mode: 0o755, text: scratch, host, realBin: join(root, "elsewhere"), under: true, ...noWrites }),
+  assert.throws(() => writeGhWrapper({ target, mode: 0o755, text: scratch, host, realBin: join(root, "elsewhere"), under: false, ...noWrites }),
     /the wrapper runs \/tmp\/claude-1000\/scratch\/project\/src\/app-token\.ts, which is in a temporary directory/);
   assert.equal(existsSync(target), false);
-  const elsewhere = rendered(root, ["workers"]);
-  writeGhWrapper({ target, mode: 0o755, text: elsewhere, host, realBin: join(root, "elsewhere"), under: true });
+  const elsewhere = shippedCheckout(rendered(root, ["workers"]));
+  writeGhWrapper({ target, mode: 0o755, text: elsewhere, host, realBin: join(root, "elsewhere"), under: false });
   assert.equal(readFileSync(target, "utf8"), elsewhere, "POSITIVE CONTROL: the shipped checkout's path is written");
+});
+
+test("A11-84 REFUSAL 3 IS NOT A TEST RUN'S: under a test run a fixture's checkout in a temporary directory renders and is written, and the real bin is still refused", () => {
+  const root = tmpDir("gh-wrapper-guard-fixture-tmp-");
+  const host = hostOf(root, ["workers"]);
+  const scratch = rendered(root, ["workers"]).replace(/(app_script=\$\{A11Y_APP_TOKEN_SCRIPT:-)[^}\n]*\}/, "$1/tmp/claude-1000/scratch/project/src/app-token.ts}");
+  const target = join(root, "bin", "gh");
+  writeGhWrapper({ target, mode: 0o755, text: scratch, host, realBin: join(root, "elsewhere"), under: true });
+  assert.equal(readFileSync(target, "utf8"), scratch, "a fixture's own bin directory takes the fixture's checkout");
+  assert.throws(() => writeGhWrapper({ target: join(userInfo().homedir, ".local", "bin", "gh"), mode: 0o755, text: scratch, host, under: true, ...noWrites }),
+    /a test run may not write the real home's bin directory/, "the machine's own wrapper is still refused under a test run");
 });
 
 test("A11-84 TRIPWIRE: under a test run, the real home's bin directory is refused, found by the account and not by $HOME; a fixture's bin directory is allowed", () => {
   const root = tmpDir("gh-wrapper-guard-tripwire-");
   const host = hostOf(root, ["workers"]);
-  const text = rendered(root, ["workers"]);
+  const text = shippedCheckout(rendered(root, ["workers"]));
   const realTarget = join(userInfo().homedir, ".local", "bin", "gh");
   const realBefore = existsSync(realTarget) ? readFileSync(realTarget, "utf8") : null;
   const saved = process.env.HOME;
