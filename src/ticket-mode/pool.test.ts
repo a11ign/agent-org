@@ -1778,9 +1778,15 @@ test("A11-82: tickets queued and planned together whose plans share a path, with
   assert.equal(waitNote(entry("NBF-2"), store.get().entries), "Waits on NBF-1: both touch src/a.ts");
 });
 
-test("A11-82: a pull request whose file list was cut short holds its whole repository, so a run is not started beside it on a guess", async () => {
-  for (const [more, phase] of [[false, "running"], [true, "queued"]] as const) {
-    const gh = ghFor({ 1: feedbackPull({ files: ["src/ticket-mode/server.ts"], more }) });
+test("A11-82: a pull request whose file list was cut short or never came holds its whole repository, so a run is not started beside it on a guess", async () => {
+  const listed = feedbackPull({ files: ["src/ticket-mode/server.ts"] });
+  for (const [why, pull, phase] of [
+    ["every file was listed and none is NBF-2's: it starts", listed, "running"],
+    ["the files run past the pages read: they are unknown, so NBF-2 waits", feedbackPull({ files: ["src/ticket-mode/server.ts"], more: true }), "queued"],
+    ["the page of files did not come back at all: they are unknown, so NBF-2 waits", { ...listed, files: undefined }, "queued"],
+    ["the page of files came back in another shape: they are unknown, so NBF-2 waits", { ...listed, files: { nodes: "all of them" } }, "queued"],
+  ] as const) {
+    const gh = ghFor({ 1: pull });
     const { pool, entry, store, status } = setup(1, ["NBF-1", "NBF-2"], { plan: "-plan-[^/]*\\.md$" }, { gh: gh.run, source: planFiles({
       "NBF-1": ["nbl-ui-netbox:src/a.ts"], "NBF-2": ["nbl-ui-netbox:docs/unrelated.md"],
     }) });
@@ -1789,7 +1795,7 @@ test("A11-82: a pull request whose file list was cut short holds its whole repos
     store.set(finish(store.get(), "NBF-1", { kind: "draft-pr", prs: [approvedPr] }, 150));
     await captureStderr(async () => { pool.watchFeedback(); });
     await pool.tick();
-    assert.equal(entry("NBF-2").phase, phase, more ? "the files run past the pages read: they are unknown, so NBF-2 waits" : "every file was listed and none is NBF-2's: it starts");
+    assert.equal(entry("NBF-2").phase, phase, why);
     if (phase === "queued") assert.equal(waitNote(entry("NBF-2"), store.get().entries), "Waits on NBF-1 #1: both touch docs/unrelated.md");
   }
 });

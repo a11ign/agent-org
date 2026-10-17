@@ -114,24 +114,33 @@ export function readPullFeedback(url: string, self: string, run: (args: string[]
   }
 }
 
+/** A page of changed files as GitHub gives it: its paths, and whether another page follows. Any other shape is not a page. */
+type FilesPage = { nodes: { path: string }[]; pageInfo: { hasNextPage: boolean; endCursor?: unknown } };
+
+const isFilesPage = (page: any): page is FilesPage =>
+  page !== null && typeof page === "object" && Array.isArray(page.nodes) && page.nodes.every((file: any) => typeof file?.path === "string")
+  && page.pageInfo !== null && typeof page.pageInfo === "object" && typeof page.pageInfo.hasNextPage === "boolean";
+
 /**
  * Every file the pull request changes: the page the first read returned, then the pages after it, one read each, up to {@link MAX_FILE_PAGES}.
- * `complete` is false only when pages remain past that cap. A page that cannot be read throws, so the read is no reading at all: a list cut
- * short is never returned as the whole of it.
+ * `complete` is true only when the last page read says no page follows. A page that is missing or of another shape, the first included, and pages
+ * left past the cap, leave it false with the paths read so far: files not seen are unknown, never none. A page that cannot be read throws, so the
+ * read is no reading at all.
  */
-function changedFiles(pull: { owner: string; repo: string; number: number }, first: Record<string, any> | undefined, run: (args: string[]) => string):
+function changedFiles(pull: { owner: string; repo: string; number: number }, first: unknown, run: (args: string[]) => string):
   { paths: string[]; complete: boolean } {
-  const paths: string[] = (first?.nodes ?? []).map((file: { path: string }) => file.path);
-  let page = first?.pageInfo;
-  for (let pages = 1; page?.hasNextPage === true && typeof page.endCursor === "string" && pages < MAX_FILE_PAGES; pages += 1) {
+  const paths: string[] = [];
+  let page = first;
+  for (let pages = 1; ; pages += 1) {
+    if (!isFilesPage(page)) return { paths, complete: false };
+    paths.push(...page.nodes.map((file) => file.path));
+    if (!page.pageInfo.hasNextPage) return { paths, complete: true };
+    if (pages >= MAX_FILE_PAGES || typeof page.pageInfo.endCursor !== "string") return { paths, complete: false };
     const answer = JSON.parse(run(["api", "graphql", "-f", `query=${FILES_QUERY}`, "-f", `owner=${pull.owner}`, "-f", `repo=${pull.repo}`,
-      "-F", `number=${pull.number}`, "-f", `cursor=${page.endCursor}`]));
-    const next = answer?.data?.repository?.pullRequest?.files;
-    if (next === null || typeof next !== "object") throw new Error("a page of the changed files did not answer");
-    paths.push(...(next.nodes ?? []).map((file: { path: string }) => file.path));
-    page = next.pageInfo;
+      "-F", `number=${pull.number}`, "-f", `cursor=${page.pageInfo.endCursor}`]));
+    page = answer?.data?.repository?.pullRequest?.files;
+    if (page === null || typeof page !== "object") throw new Error("a page of the changed files did not answer");
   }
-  return { paths, complete: page?.hasNextPage !== true };
 }
 
 /** The feedback in one pull request as the query returns it, its files aside. Throws on an answer of another shape, which the caller reads as no reading. */

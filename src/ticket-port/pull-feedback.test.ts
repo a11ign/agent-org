@@ -15,7 +15,7 @@ function answering(pull: unknown) {
 
 const pullWith = ({ state = "OPEN", reviews = [] as unknown[], comments = [] as unknown[], threads = [] as unknown[], checks = [] as unknown[], mergeable = "MERGEABLE",
   mergeStateStatus = "CLEAN", base = "main", files = [] as string[] } = {}) => ({
-  state, mergeable, mergeStateStatus, baseRefName: base, files: { nodes: files.map((path) => ({ path })) },
+  state, mergeable, mergeStateStatus, baseRefName: base, files: { nodes: files.map((path) => ({ path })), pageInfo: { hasNextPage: false, endCursor: null } },
   reviews: { nodes: reviews }, comments: { nodes: comments }, reviewThreads: { nodes: threads.map((c) => ({ comments: { nodes: [c] } })) },
   commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: checks } } } }] },
 });
@@ -74,6 +74,17 @@ test("A11-82: a pull request that conflicts with its base is conflicting, whiche
   const cut = readPullFeedback(URL, "me", forever);
   assert.deepEqual([cut?.filesComplete, calls], [false, MAX_FILE_PAGES], "pages past the cap are not read, and the list says it is cut short");
   assert.equal(readPullFeedback(URL, "me", paged({ first: page(["a.ts"], true, "c1") })), null, "a page that cannot be read is no reading at all");
+  const answered = (files: unknown) => readPullFeedback(URL, "me", () => JSON.stringify({ data: { repository: { pullRequest: { ...pullWith(), files } } } }));
+  for (const [why, files] of [
+    ["missing", undefined], ["null", null], ["not an object", "all of them"], ["without its nodes", { pageInfo: { hasNextPage: false, endCursor: null } }],
+    ["without its pageInfo", { nodes: [{ path: "a.ts" }] }], ["with a pageInfo that does not say if more follow", { nodes: [], pageInfo: {} }],
+    ["with a node that has no path", { nodes: [{}], pageInfo: { hasNextPage: false, endCursor: null } }],
+  ] as const) {
+    assert.equal(answered(files)?.filesComplete, false, `a first page ${why} leaves the files unknown, not none`);
+  }
+  assert.deepEqual([answered(page([], false, null))?.files, answered(page([], false, null))?.filesComplete], [[], true], "a page of no files that says no more follow is a complete, empty list");
+  const brokenSecond = readPullFeedback(URL, "me", paged({ first: page(["a.ts"], true, "c1"), second: { nodes: [{ path: "b.ts" }] } }));
+  assert.deepEqual([brokenSecond?.files, brokenSecond?.filesComplete], [["a.ts"], false], "a later page of another shape adds nothing and leaves the list incomplete");
 });
 
 test("a pull request that cannot be read is null, never no feedback, and a merged or closed one says so", () => {
