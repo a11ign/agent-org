@@ -13,6 +13,7 @@ Outside-Region: src/spec-lint.test.ts — passed the removed `pinBumpOn` seam to
 Outside-Region: src/pin-bump-measure.test.ts — the test of the deleted measure; it goes with its subject.
 Note: the route `wait-for-pin-bump` lived in `ci-failure-class.ts` (in the Region), not in the wake routing.
 
+Outside-Region: src/org-retro-no-pin-bump.test.ts — the new runtime guard for the removal: a canary state still recording `retro.pinBump` adds no retrospective class, and a stray pin/bump reading prints no line.
 Outside-Region: src/wake.ts — one doc comment of `withCiFailureClass` said a rule routes to WAIT for a pin bump; it now names the route that remains (a review found it stale).
 
 Mutation: `// waitsOnPinBump` appended to `src/machinery-flag.ts` -> the command exits 1 (file restored from a copy, `diff` empty, exits 0 again). In `src/ci-failure-class.ts`, `notesTheOrder` without its `push-or-update-branch` arm -> the rewritten `src/wake-ci-class-review-depth.test.ts` test fails (1 of 43 in the two CI-class files) and nothing else (restored from a copy, `diff` empty).
