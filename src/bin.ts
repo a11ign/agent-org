@@ -8,12 +8,19 @@
 //
 // THIS FILE IMPORTS NOTHING FROM THE PROJECT-CONFIG CHAIN, on purpose. Listing the commands and refusing an unknown one must work in a directory
 // that holds no project; only the program that runs reads the declaration, and it refuses by name when there is none.
+//
+// A `ticket:*` PROGRAM IS HANDED THE HOST FILE THE SERVICES USE (A11-68). Ticket mode reads `$AGENT_ORG_HOST`, and a non-interactive
+// `ssh <machine> agent-org ticket:remote-info` sets none, so it read `~/.agent-org/host.json`, which on a machine onboarded with another host file
+// does not exist. With the variable unset, the child gets the path `install/paths.ts` resolves (onboard's record, then the instance unit's), the
+// same one `agent-org start` wrote into the unit. Only `ticket:*`: every other program resolves a PROJECT from that variable, and setting it there
+// would change which project it serves.
 import { spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { constants } from "node:os";
+import { constants, homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { COMMANDS, FIXED_ARGS } from "./commands.ts";
+import { hostFilePath } from "./install/paths.ts";
 
 const REFUSED = 2;
 const SIGNAL_EXIT_BASE = 128;
@@ -44,10 +51,19 @@ function withoutRepeatedFixed(rest: readonly string[], fixed: readonly string[])
   return repeated ? rest.slice(fixed.length) : rest;
 }
 
+/**
+ * The environment `name`'s program runs with: the caller's, and for a `ticket:*` command with no `AGENT_ORG_HOST`, that variable set to the host
+ * file `hostFile` resolves. PURE over its arguments.
+ */
+export function programEnv(name: string, env: NodeJS.ProcessEnv, hostFile: () => string): NodeJS.ProcessEnv {
+  if (!name.startsWith("ticket:") || (env.AGENT_ORG_HOST ?? "") !== "") return env;
+  return { ...env, AGENT_ORG_HOST: hostFile() };
+}
+
 /** @returns the program's exit code, 128 + n for a signal n */
-function runProgram(program: string, args: string[]): Promise<number> {
+function runProgram(program: string, args: string[], env: NodeJS.ProcessEnv): Promise<number> {
   return new Promise((done, fail) => {
-    const child = spawn(process.execPath, [program, ...args], { stdio: "inherit" });
+    const child = spawn(process.execPath, [program, ...args], { stdio: "inherit", env });
     for (const signal of FORWARDED_SIGNALS) process.on(signal, () => child.kill(signal));
     child.on("error", fail);
     child.on("close", (code, signal) => done(code ?? SIGNAL_EXIT_BASE + (signal ? constants.signals[signal as NodeJS.Signals] : 0)));
@@ -61,7 +77,7 @@ async function main(argv: readonly string[]) {
     process.exitCode = REFUSED;
     return;
   }
-  process.exitCode = await runProgram(plan.run.program, plan.run.args);
+  process.exitCode = await runProgram(plan.run.program, plan.run.args, programEnv(argv[0] ?? "", process.env, () => hostFilePath(process.env, homedir())));
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) await main(process.argv.slice(2));

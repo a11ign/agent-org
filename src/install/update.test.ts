@@ -140,3 +140,10 @@ test("the default installs run the pinned pnpm through corepack, for a release a
   const pinned = pinnedPnpm(["install", "--prod", "--no-frozen-lockfile", "--ignore-scripts", "--ignore-workspace"]);
   assert.deepEqual(ran, [pinned, pinned].map(({ command, args }) => ({ file: command, args })));
 });
+
+test("update restarts the services that run this checkout, not the web terminal or the auto-update timer that ran it", () => {
+  const { checkout, git } = installed();
+  const { deps: d, restarted } = deps(checkout, git, { instance: "running", ui: "running", terminal: "running", "auto-update": "running" });
+  assert.equal(update({ version: undefined, channel: "release" }, d), true);
+  assert.deepEqual(restarted, ["instance", "ui"]);
+});

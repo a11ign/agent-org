@@ -5,7 +5,8 @@
 // THE MOVE IS `update-tool.ts`'s, not a second one. `updateTool` fetches the tags, refuses a dirty checkout, picks the newest release tag or the pinned
 // one, puts the release's dependencies in place first and detaches at the tag. `--channel main` follows `origin/main` instead, for a person testing what
 // has merged and not been released. Only this command moves the checkout `install.sh` made, so a running service holds the old modules until it restarts:
-// each service that was RUNNING before the move is restarted after it, and a stopped one is left stopped.
+// each service that was RUNNING before the move is restarted after it, and a stopped one is left stopped. Only the services that run this checkout's
+// code are (`TOOL_SERVICES`): the terminal runs herdr web ui's, and the auto-update timer is what runs this command.
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { parseArgs } from "node:util";
@@ -13,7 +14,7 @@ import { pathToFileURL } from "node:url";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { isReleaseTag, LATEST } from "../lib/release-tag.ts";
 import { installDependencies, updateTool, type DependencyInstall } from "../update-tool.ts";
-import { defaultServiceDeps, restartService, SERVICE_NAMES, serviceState, type ServiceName, type ServiceState } from "./service.ts";
+import { defaultServiceDeps, restartService, serviceState, TOOL_SERVICES, type ServiceName, type ServiceState } from "./service.ts";
 import { TOOL_ROOT } from "./paths.ts";
 import { pinnedPnpm } from "./pnpm.ts";
 
@@ -39,7 +40,7 @@ export function update({ version, channel }: { version: string | undefined; chan
   if (version !== undefined && channel === "main") throw new UpdateRefusal("--version picks a release, and --channel main follows main: give one of them");
   if (version !== undefined && !isReleaseTag(version)) throw new UpdateRefusal(`--version ${version} is not a release tag such as v0.3.0`);
   // Read BEFORE the move: a restart is for a service that ran the old version, and nothing else.
-  const running = SERVICE_NAMES.filter((name) => deps.state(name) === "running");
+  const running = TOOL_SERVICES.filter((name) => deps.state(name) === "running");
   const before = deps.git(["rev-parse", "HEAD"]).trim();
   if (channel === "main") {
     if (deps.git(["status", "--porcelain", "--untracked-files=no"]).trim() !== "") {

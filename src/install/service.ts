@@ -1,10 +1,18 @@
 #!/usr/bin/env node
 // @ts-check
-// command: start, stop and status -- run an agent-org service (`instance` or `ui`) as a launchd user agent on macOS or a systemd user unit on Linux
+// command: start, stop and status -- run an agent-org service (`instance`, `ui`, `terminal` or `auto-update`) as a launchd user agent on macOS or a systemd user unit on Linux
 //
-// A SERVICE IS A NAME AND THE COMMAND IT RUNS, and the command is looked up in `commands.ts`'s table: `instance` runs `ticket:serve` (the queue and
-// the workers) and `ui` runs `ticket:ui` (the page). A service whose command the table does not hold is refused by name, so a checkout older than
-// the split says so and starts nothing.
+// A SERVICE IS A NAME AND THE PROGRAM IT RUNS. `instance` runs `ticket:serve` (the queue and the workers) and `ui` runs `ticket:ui` (the page), each
+// looked up in `commands.ts`'s table: a service whose command the table does not hold is refused by name, so a checkout older than the split says so
+// and starts nothing. `terminal` runs herdr web ui against ticket mode's herdr session (`terminal.ts`), so the board can link each run to its live
+// worker (A11-66). `auto-update` runs `agent-org update` every hour: on a ticket-mode machine nothing else moves this checkout (the org's gate used
+// to), so a merged fix never reached the running instance. Update restarts a service only when the checkout moved, so an hour
+// with nothing new restarts nothing. `agent-org stop auto-update` is the opt-out, and the channel it follows is `<home>/update-channel`
+// (`release`, or `main`), which onboard writes.
+//
+// A UNIT SYSTEMD REFUSES IS SAID, WITH WHY (A11-67). A unit with a setting systemd cannot read loads as `bad-setting` and never starts, and
+// `systemctl is-active` says only `inactive`. `unitProblem` asks systemd for the load state and, for a bad one, asks `systemd-analyze verify` for
+// the line it refused, so `status` and `doctor` print the reason, and the fix is `agent-org start`, which writes the unit again.
 //
 // WHY NOT `host-units.ts`: its templates are rendered from a project's declaration (a unit prefix, the project's checkout, the org's `gh` routing), and
 // `host:install` installs every template it ships. A person running ticket mode on a laptop has no project, and an org host must not start a board
@@ -14,11 +22,13 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { COMMANDS } from "../commands.ts";
-import { agentOrgHome, hostFilePath, TOOL_ROOT, type Env } from "./paths.ts";
+import { agentOrgHome, hostFilePath, readOrNull, TOOL_ROOT, type Env } from "./paths.ts";
+import { findBun } from "./bun.ts";
+import { herdrConfigDir, pluginRoot, TERMINAL_PLUGIN, terminalProgram, terminalTarget } from "./terminal.ts";
 import { writeAtomic } from "./write-atomic.ts";
 
 /** Service name -> the `agent-org` command it runs, and the arguments after it. */
@@ -27,8 +37,15 @@ export const SERVICE_COMMANDS = Object.freeze({
   ui: Object.freeze({ command: "ticket:ui", args: Object.freeze(["--no-open"]) }),
 });
 
-export type ServiceName = keyof typeof SERVICE_COMMANDS;
-export const SERVICE_NAMES = Object.keys(SERVICE_COMMANDS) as ServiceName[];
+export const SERVICE_NAMES = Object.freeze(["instance", "ui", "terminal", "auto-update"] as const);
+export type ServiceName = (typeof SERVICE_NAMES)[number];
+/** The services that run this checkout's code, which `update` restarts once the checkout has moved. The terminal runs the plugin's, and the updater is the one moving it. */
+export const TOOL_SERVICES: readonly ServiceName[] = Object.freeze(["instance", "ui"]);
+/** How often `auto-update` runs `agent-org update`. */
+export const UPDATE_INTERVAL_SECONDS = 3600;
+export type UpdateChannel = "release" | "main";
+/** The file that names the channel `auto-update` follows; absent or anything else is `release`. */
+export const updateChannelPath = (env: Env, home: string) => join(agentOrgHome(env, home), "update-channel");
 export type ServiceState = "not-registered" | "stopped" | "running";
 
 /** What a call to `launchctl` or `systemctl` returned. */
@@ -45,6 +62,8 @@ export type ServiceDeps = Readonly<{
   toolRoot: string;
   run: Run;
   exists: (path: string) => boolean;
+  /** A file's text, or null when it cannot be read: the host file, herdr's plugin list and the update channel are read through it. */
+  read: (path: string) => string | null;
   write: (path: string, text: string) => void;
   commands: Readonly<Record<string, string>>;
 }>;
@@ -60,14 +79,14 @@ const defaultRun: Run = (file, args) => {
 export function defaultServiceDeps(): ServiceDeps {
   return Object.freeze({
     platform: process.platform, env: process.env, home: homedir(), uid: userInfo().uid, node: process.execPath, toolRoot: TOOL_ROOT,
-    run: defaultRun, exists: existsSync, write: (path, text) => writeAtomic(path, text, 0o644), commands: COMMANDS,
+    run: defaultRun, exists: existsSync, read: readOrNull, write: (path, text) => writeAtomic(path, text, 0o644), commands: COMMANDS,
   });
 }
 
 /** The service name a command line gives, `instance` when it gives none. REFUSES any other word. */
 export function serviceName(word: string | undefined): ServiceName {
   if (word === undefined) return "instance";
-  if (Object.hasOwn(SERVICE_COMMANDS, word)) return word as ServiceName;
+  if ((SERVICE_NAMES as readonly string[]).includes(word)) return word as ServiceName;
   throw new ServiceRefusal(`\`${word}\` is not a service. Services: ${SERVICE_NAMES.join(", ")}`);
 }
 
@@ -84,29 +103,101 @@ const systemdPath = (text: string) => text.replace(/%/g, "%%");
 export const servicePath = (path: string | undefined) =>
   (path ?? "").split(":").filter((dir) => dir.startsWith("/") && !/\/node_modules\/\.bin\/?$/.test(dir)).join(":") || "/usr/local/bin:/usr/bin:/bin";
 
-export type Unit = { manager: "launchd" | "systemd"; id: string; path: string; text: string; log: string | null };
+/** A second file a unit needs: the oneshot service a systemd timer starts. */
+export type Companion = { path: string; text: string };
+export type Unit = { manager: "launchd" | "systemd"; id: string; path: string; text: string; log: string | null; companion: Companion | null; interval: boolean };
 
-/** The unit file that runs `name`. PURE over `deps`. REFUSES a platform with neither launchd nor systemd, and a service the command table lacks. */
-export function unitFor(name: ServiceName, deps: ServiceDeps): Unit {
-  const { command, args } = SERVICE_COMMANDS[name];
-  if (!Object.hasOwn(deps.commands, command)) {
-    throw new ServiceRefusal(`the ${name} service runs \`agent-org ${command}\`, which this version of agent-org does not have. Run \`agent-org update\` for a version that does.`);
+/** What a service runs, before it is written for a service manager. */
+type Program = Readonly<{
+  description: string;
+  argv: string[];
+  environment: Record<string, string>;
+  workingDirectory: string;
+  /** Runs `agent-org`, whose exit 2 is a refusal a restart does not mend. */
+  tool: boolean;
+  /** Run every this many seconds, or null to run all the time. */
+  everySeconds: number | null;
+}>;
+
+/** The host file's JSON, or {} when it cannot be read or parsed: the terminal's session and port have defaults. */
+function hostJson(deps: ServiceDeps): unknown {
+  const text = deps.read(hostFilePath(deps.env, deps.home, deps.read));
+  try {
+    return text === null ? {} : JSON.parse(text);
+  } catch {
+    return {};
   }
-  const argv = [deps.node, join(deps.toolRoot, "src", "bin.ts"), command, ...args];
-  const environment: Record<string, string> = {
-    AGENT_ORG_HOST: hostFilePath(deps.env, deps.home),
+}
+
+/** The channel `auto-update` follows: `main` when `<home>/update-channel` says so, `release` otherwise. */
+export function updateChannel(deps: Pick<ServiceDeps, "env" | "home" | "read">): UpdateChannel {
+  return deps.read(updateChannelPath(deps.env, deps.home))?.trim() === "main" ? "main" : "release";
+}
+
+/** What `name` runs. PURE over `deps`. REFUSES a service the command table lacks, and a terminal whose plugin or bun is not installed. */
+function programFor(name: ServiceName, deps: ServiceDeps): Program {
+  const bin = join(deps.toolRoot, "src", "bin.ts");
+  const toolEnvironment = (): Record<string, string> => ({
+    AGENT_ORG_HOST: hostFilePath(deps.env, deps.home, deps.read),
     AGENT_ORG_HOME: agentOrgHome(deps.env, deps.home),
     // `herdr`, `claude`, `gh` and `git` are found on the PATH of the person who started it: a service gets no login shell's.
     PATH: servicePath(deps.env.PATH),
-  };
+  });
+  if (name === "instance" || name === "ui") {
+    const { command, args } = SERVICE_COMMANDS[name];
+    if (!Object.hasOwn(deps.commands, command)) {
+      throw new ServiceRefusal(`the ${name} service runs \`agent-org ${command}\`, which this version of agent-org does not have. Run \`agent-org update\` for a version that does.`);
+    }
+    return { description: `agent-org ${name} service (agent-org ${command})`, argv: [deps.node, bin, command, ...args], environment: toolEnvironment(), workingDirectory: deps.toolRoot, tool: true, everySeconds: null };
+  }
+  if (name === "auto-update") {
+    if (!Object.hasOwn(deps.commands, "update")) throw new ServiceRefusal("the auto-update service runs `agent-org update`, which this version of agent-org does not have");
+    const channel = updateChannel(deps);
+    return {
+      description: `agent-org auto-update: agent-org update${channel === "main" ? " --channel main" : ""}, every hour`,
+      argv: [deps.node, bin, "update", ...(channel === "main" ? ["--channel", "main"] : [])],
+      environment: toolEnvironment(), workingDirectory: deps.toolRoot, tool: true, everySeconds: UPDATE_INTERVAL_SECONDS,
+    };
+  }
+  const root = pluginRoot(deps.read(join(herdrConfigDir(deps.env, deps.home), "plugins.json")));
+  if (root === null) throw new ServiceRefusal(`the terminal service runs herdr web ui, which herdr has not installed. Run \`herdr plugin install ${TERMINAL_PLUGIN} --yes\`, or \`agent-org onboard\`, which does.`);
+  const path = servicePath(deps.env.PATH);
+  const bun = findBun(deps.home, path, deps.exists);
+  if (bun === null) throw new ServiceRefusal("the terminal service runs on bun, and this machine has none in ~/.bun/bin or on PATH. Run `agent-org onboard`, which installs it.");
+  const { session, port } = terminalTarget(hostJson(deps));
+  const program = terminalProgram({ env: deps.env, home: deps.home, session, port, root, bun, path });
+  return { description: `herdr web terminal for the ${session} herdr session, on 127.0.0.1:${port}`, ...program, tool: false, everySeconds: null };
+}
+
+/** The unit file that runs `name`. PURE over `deps`. REFUSES a platform with neither launchd nor systemd, and a service `programFor` refuses. */
+export function unitFor(name: ServiceName, deps: ServiceDeps): Unit {
+  if (deps.platform !== "darwin" && deps.platform !== "linux") {
+    throw new ServiceRefusal(`agent-org runs its services under launchd (macOS) or systemd (Linux), and this machine is ${deps.platform}`);
+  }
+  const { description, argv, environment, workingDirectory, tool, everySeconds } = programFor(name, deps);
   const log = join(agentOrgHome(deps.env, deps.home), "logs", `${name}.log`);
-  if ([...argv, ...Object.values(environment), log].some((value) => /[\n\r]/.test(value))) {
+  if ([...argv, ...Object.values(environment), workingDirectory, log].some((value) => /[\n\r]/.test(value))) {
     throw new ServiceRefusal("a path holds a line break, which no unit file can carry");
   }
   if (deps.platform === "darwin") {
     const id = `io.github.agent-org.${name}`;
     const strings = (values: string[]) => values.map((value) => `    <string>${escapeXml(value)}</string>`).join("\n");
     const env = Object.entries(environment).map(([key, value]) => `    <key>${key}</key>\n    <string>${escapeXml(value)}</string>`).join("\n");
+    // A daemon starts at load and again after a crash; an interval job runs every `everySeconds`, and not at load, so a login is not an update.
+    const schedule = everySeconds === null
+      ? `  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>`
+      : `  <key>StartInterval</key>
+  <integer>${everySeconds}</integer>
+  <key>RunAtLoad</key>
+  <false/>`;
     const text = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -122,16 +213,8 @@ ${strings(argv)}
 ${env}
   </dict>
   <key>WorkingDirectory</key>
-  <string>${escapeXml(deps.toolRoot)}</string>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <dict>
-    <key>SuccessfulExit</key>
-    <false/>
-  </dict>
-  <key>ThrottleInterval</key>
-  <integer>10</integer>
+  <string>${escapeXml(workingDirectory)}</string>
+${schedule}
   <key>StandardOutPath</key>
   <string>${escapeXml(log)}</string>
   <key>StandardErrorPath</key>
@@ -139,30 +222,51 @@ ${env}
 </dict>
 </plist>
 `;
-    return { manager: "launchd", id, path: join(deps.home, "Library", "LaunchAgents", `${id}.plist`), text, log };
+    return { manager: "launchd", id, path: join(deps.home, "Library", "LaunchAgents", `${id}.plist`), text, log, companion: null, interval: everySeconds !== null };
   }
-  if (deps.platform === "linux") {
-    const id = `agent-org-${name}.service`;
-    const text = `[Unit]
-Description=agent-org ${name} service (agent-org ${command})
+  const dir = join(deps.home, ".config", "systemd", "user");
+  const service = `agent-org-${name}.service`;
+  const body = `WorkingDirectory=${systemdPath(workingDirectory)}
+ExecStart=${argv.map(systemdQuoted).join(" ")}
+${Object.entries(environment).map(([key, value]) => `Environment=${systemdQuoted(`${key}=${value}`)}`).join("\n")}`;
+  if (everySeconds !== null) {
+    // A timer and the oneshot service it starts. `OnCalendar` with `Persistent` runs a missed hour once the machine is up again.
+    const timer = `agent-org-${name}.timer`;
+    const serviceText = `[Unit]
+Description=${description}
+
+[Service]
+Type=oneshot
+${body}
+`;
+    const timerText = `[Unit]
+Description=${description}
+
+[Timer]
+OnCalendar=*-*-* *:00:00
+RandomizedDelaySec=600
+Persistent=true
+Unit=${service}
+
+[Install]
+WantedBy=timers.target
+`;
+    return { manager: "systemd", id: timer, path: join(dir, timer), text: timerText, log: null, companion: { path: join(dir, service), text: serviceText }, interval: true };
+  }
+  const text = `[Unit]
+Description=${description}
 After=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=${systemdPath(deps.toolRoot)}
-ExecStart=${argv.map(systemdQuoted).join(" ")}
-${Object.entries(environment).map(([key, value]) => `Environment=${systemdQuoted(`${key}=${value}`)}`).join("\n")}
-# Exit 2 is a refusal (a host file that does not parse, a port in use), which a restart does not mend.
-Restart=on-failure
+${body}
+${tool ? "# Exit 2 is a refusal (a host file that does not parse, a port in use), which a restart does not mend.\n" : ""}Restart=on-failure
 RestartSec=10
-RestartPreventExitStatus=2
-
+${tool ? "RestartPreventExitStatus=2\n" : ""}
 [Install]
 WantedBy=default.target
 `;
-    return { manager: "systemd", id, path: join(deps.home, ".config", "systemd", "user", id), text, log: null };
-  }
-  throw new ServiceRefusal(`agent-org runs its services under launchd (macOS) or systemd (Linux), and this machine is ${deps.platform}`);
+  return { manager: "systemd", id: service, path: join(dir, service), text, log: null, companion: null, interval: false };
 }
 
 /** The unit's place in the manager's namespace: `gui/<uid>/<label>` for launchd. */
@@ -184,6 +288,8 @@ export function serviceState(name: ServiceName, deps: ServiceDeps): ServiceState
   if (!deps.exists(unit.path)) return "not-registered";
   if (unit.manager === "launchd") {
     const printed = deps.run("launchctl", ["print", launchdTarget(unit, deps)]);
+    // An interval job is between runs nearly always: loaded is as running as it gets.
+    if (unit.interval) return printed.status === 0 ? "running" : "stopped";
     return printed.status === 0 && /^\s*state = running\s*$/m.test(printed.stdout) ? "running" : "stopped";
   }
   return deps.run("systemctl", ["--user", "is-active", unit.id]).stdout.trim() === "active" ? "running" : "stopped";
@@ -192,8 +298,9 @@ export function serviceState(name: ServiceName, deps: ServiceDeps): ServiceState
 /** Write the unit, register it to start at login, and start it. Starting a service that runs already leaves it running. */
 export function startService(name: ServiceName, deps: ServiceDeps): Unit {
   const unit = unitFor(name, deps);
-  const hostFile = hostFilePath(deps.env, deps.home);
+  const hostFile = hostFilePath(deps.env, deps.home, deps.read);
   if (!deps.exists(hostFile)) throw new ServiceRefusal(`there is no host file at ${hostFile}. Run \`agent-org onboard\` first.`);
+  if (unit.companion !== null) deps.write(unit.companion.path, unit.companion.text);
   deps.write(unit.path, unit.text);
   if (unit.manager === "launchd") {
     mkdirSync(dirname(unit.log as string), { recursive: true, mode: 0o700 });
@@ -223,6 +330,26 @@ export function stopService(name: ServiceName, deps: ServiceDeps): void {
   }
 }
 
+/**
+ * Why systemd will not load `name`'s unit, or null when it loads (or the service is not registered, or runs under launchd). systemd's load state
+ * says only `bad-setting`; the line it refused is `systemd-analyze verify`'s, such as `WorkingDirectory= path is not absolute`.
+ */
+export function unitProblem(name: ServiceName, deps: ServiceDeps): string | null {
+  let unit: Unit;
+  try {
+    unit = unitFor(name, deps);
+  } catch (err) {
+    if (err instanceof ServiceRefusal) return null;
+    throw err;
+  }
+  if (unit.manager !== "systemd" || !deps.exists(unit.path)) return null;
+  const state = deps.run("systemctl", ["--user", "show", "--property=LoadState", "--value", unit.id]).stdout.trim();
+  if (state !== "bad-setting" && state !== "error") return null;
+  const verify = deps.run("systemd-analyze", ["--user", "verify", unit.path]);
+  const lines = `${verify.stderr}\n${verify.stdout}`.split("\n").map((line) => line.trim()).filter((line) => line.includes(unit.id) && line !== "");
+  return `systemd reads ${unit.id} as ${state}${lines.length > 0 ? `: ${lines.join("; ")}` : ""}`;
+}
+
 /** Restart a registered service, so it loads the tool's checkout again. */
 export function restartService(name: ServiceName, deps: ServiceDeps): void {
   const unit = unitFor(name, deps);
@@ -235,7 +362,7 @@ const STATE_WORDS: Readonly<Record<ServiceState, string>> = { "not-registered": 
 const NOT_RUNNING = 3;
 const REFUSED = 2;
 
-/** `agent-org start|stop|status [instance|ui]`. @returns the exit code */
+/** `agent-org start|stop|status [instance|ui|terminal|auto-update]`. @returns the exit code */
 export function main(argv: string[], deps: ServiceDeps = defaultServiceDeps(), out: Pick<Console, "log" | "error"> = console): number {
   try {
     const { positionals } = parseArgs({ args: argv, allowPositionals: true, strict: true });
@@ -244,7 +371,8 @@ export function main(argv: string[], deps: ServiceDeps = defaultServiceDeps(), o
     const name = serviceName(word);
     if (action === "start") {
       const unit = startService(name, deps);
-      out.log(`started the ${name} service (${unit.manager} ${unit.id})${unit.log ? `, logging to ${unit.log}` : `, logging to \`journalctl --user -u ${unit.id}\``}`);
+      const journal = unit.companion === null ? unit.id : basename(unit.companion.path);
+      out.log(`started the ${name} service (${unit.manager} ${unit.id})${unit.log ? `, logging to ${unit.log}` : `, logging to \`journalctl --user -u ${journal}\``}`);
       return 0;
     }
     if (action === "stop") {
@@ -255,7 +383,8 @@ export function main(argv: string[], deps: ServiceDeps = defaultServiceDeps(), o
     if (action === "status") {
       const state = serviceState(name, deps);
       const unit = unitFor(name, deps);
-      out.log(`${name}: ${STATE_WORDS[state]} (${unit.manager} ${unit.id})`);
+      const problem = unitProblem(name, deps);
+      out.log(`${name}: ${STATE_WORDS[state]} (${unit.manager} ${unit.id})${problem === null ? "" : `. ${problem}. \`agent-org start ${name}\` writes the unit again`}`);
       return state === "running" ? 0 : NOT_RUNNING;
     }
     throw new ServiceRefusal(`\`${action ?? ""}\` is not start, stop or status`);
