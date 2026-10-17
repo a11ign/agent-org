@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // @ts-check
-// command: onboard -- write the host file (the repositories the instance offers, where the tracker key is read from) and register the instance service
+// command: onboard -- write the host file (the repositories the instance offers, where the tracker key is read from) and start the instance and ui services
 //
 // IT ASKS FOR WHAT NO FLAG GAVE, and only at a terminal. `--repo <name>=<path>` (repeated) names the checkouts a worker can choose from, and
 // `--linear-keychain <service>` or `--linear-key-file <path>` names where the Linear key is read from. Without a terminal, what no flag gave is
@@ -21,7 +21,7 @@ import { pathToFileURL } from "node:url";
 import { readLinearKey } from "../ticket-mode/linear.ts";
 import type { KeySource } from "../ticket-mode/settings.ts";
 import { agentOrgHome, hostFilePath, type Env } from "./paths.ts";
-import { defaultServiceDeps, startService } from "./service.ts";
+import { defaultServiceDeps, SERVICE_NAMES, startService } from "./service.ts";
 import { writeAtomic } from "./write-atomic.ts";
 
 export const DEFAULT_KEYCHAIN_SERVICE = "agent-org-linear";
@@ -204,10 +204,10 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
       },
       readFile: (path) => readFileSync(path, "utf8"), writeFile: (path, text) => writeAtomic(path, text, 0o600),
       isDirectory: (path) => existsSync(path) && statSync(path).isDirectory(),
-      startService: () => {
-        const unit = startService("instance", services);
-        return `started the instance service (${unit.manager} ${unit.id})`;
-      },
+      startService: () => SERVICE_NAMES.map((name) => {
+        const unit = startService(name, services);
+        return `started the ${name} service (${unit.manager} ${unit.id})`;
+      }).join("\n"),
       out: console,
     });
   } catch (err) {

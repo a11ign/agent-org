@@ -44,9 +44,19 @@ test("the launchd agent carries the same command, and a path is escaped for XML"
 });
 
 test("a service whose command the table lacks is refused by name, and is not registered", () => {
-  const { deps: d } = deps("linux");
-  assert.throws(() => unitFor("ui", d), /runs `agent-org ui:serve`, which this version of agent-org does not have/);
+  const commands = { ...COMMANDS } as Record<string, string>;
+  delete commands["ticket:ui"];
+  const { deps: d } = deps("linux", {}, { commands });
+  assert.throws(() => unitFor("ui", d), /runs `agent-org ticket:ui`, which this version of agent-org does not have/);
   assert.equal(serviceState("ui", d), "not-registered");
+});
+
+test("start ui writes a unit that runs ticket:ui, and start instance one that runs ticket:serve", () => {
+  const { deps: d, files } = deps("linux");
+  const ui = startService("ui", d);
+  assert.equal(ui.id, "agent-org-ui.service");
+  assert.match(files.get(ui.path) ?? "", /^ExecStart="\/opt\/node\/bin\/node" "\/opt\/agent-org\/src\/bin\.ts" "ticket:ui" "--no-open"$/m);
+  assert.match(files.get(startService("instance", d).path) ?? "", /"ticket:serve" "--no-open"$/m);
 });
 
 test("start writes the unit and enables and starts it; status reads running; stop disables it", () => {

@@ -2,9 +2,9 @@
 // @ts-check
 // command: start, stop and status -- run an agent-org service (`instance` or `ui`) as a launchd user agent on macOS or a systemd user unit on Linux
 //
-// A SERVICE IS A NAME AND THE COMMAND IT RUNS, and the command is looked up in `commands.ts`'s table. `instance` runs `ticket:serve` today. When the
-// board is split into an instance service and a UI service, that change edits `SERVICE_COMMANDS` and the table, and nothing here. A service whose
-// command the table does not hold is refused by name, so `start ui` on a version without the split says so and starts nothing.
+// A SERVICE IS A NAME AND THE COMMAND IT RUNS, and the command is looked up in `commands.ts`'s table: `instance` runs `ticket:serve` (the queue and
+// the workers) and `ui` runs `ticket:ui` (the page). A service whose command the table does not hold is refused by name, so a checkout older than
+// the split says so and starts nothing.
 //
 // WHY NOT `host-units.ts`: its templates are rendered from a project's declaration (a unit prefix, the project's checkout, the org's `gh` routing), and
 // `host:install` installs every template it ships. A person running ticket mode on a laptop has no project, and an org host must not start a board
@@ -24,7 +24,7 @@ import { writeAtomic } from "./write-atomic.ts";
 /** Service name -> the `agent-org` command it runs, and the arguments after it. */
 export const SERVICE_COMMANDS = Object.freeze({
   instance: Object.freeze({ command: "ticket:serve", args: Object.freeze(["--no-open"]) }),
-  ui: Object.freeze({ command: "ui:serve", args: Object.freeze([] as string[]) }),
+  ui: Object.freeze({ command: "ticket:ui", args: Object.freeze(["--no-open"]) }),
 });
 
 export type ServiceName = keyof typeof SERVICE_COMMANDS;
