@@ -231,8 +231,8 @@ export function remember(storage: Storage | null, name: string, values: Readonly
 
 /** A run's status on the board, after GitHub's Actions runs: each has its own icon and filter. */
 export type RunStatus =
-  "needs-you" | "working" | "planning" | "reviewing" | "blocked" | "queued" | "awaiting-review" | "ready-to-merge" | "published" | "completed" | "failed"
-  | "cancelled";
+  "needs-you" | "working" | "planning" | "reviewing" | "blocked" | "queued" | "awaiting-review" | "ready-to-merge" | "publishing" | "published" | "completed"
+  | "failed" | "cancelled";
 
 /** Every status, in the order the filters list them: what needs a person first, what is settled last. */
 export const RUN_STATUSES: readonly Readonly<{ status: RunStatus; label: string }>[] = [
@@ -244,6 +244,7 @@ export const RUN_STATUSES: readonly Readonly<{ status: RunStatus; label: string 
   { status: "queued", label: "Queued" },
   { status: "awaiting-review", label: "Awaiting review" },
   { status: "ready-to-merge", label: "Ready to merge" },
+  { status: "publishing", label: "Publishing" },
   { status: "published", label: "Published" },
   { status: "completed", label: "Completed" },
   { status: "failed", label: "Failed" },
@@ -340,7 +341,7 @@ export const stackNote = (bases: readonly StackBase[]): string => `Stacked on ${
  * A run's status. A queued run is blocked while a ticket that blocks it is not done, and cannot be stacked on (`entries` is the whole queue, for {@link waitsOn}). The
  * tracker's word wins once the run has finished: a ticket it completed is done and one it canceled is cancelled, whatever the run ended in. Then
  * its pull requests: Linear completes a ticket on a merge only where its team's workflow says so, so a run whose pull requests merged is done
- * even while its ticket is still in progress. Before either, the outcome decides.
+ * even while its ticket is still in progress. Before either, the outcome decides. It never answers Publishing: that is {@link shownStatus}'s.
  */
 export function runStatus(entry: ViewEntry, entries: readonly ViewEntry[] = []): RunStatus {
   if (entry.phase === "queued") return waitsOn(entry, entries).length > 0 ? "blocked" : "queued";
@@ -354,17 +355,26 @@ export function runStatus(entry: ViewEntry, entries: readonly ViewEntry[] = []):
   return kind === "stopped" ? "cancelled" : "failed";
 }
 
-/** How many runs have each status. */
-export function statusCounts(entries: readonly ViewEntry[]): Map<RunStatus, number> {
+/**
+ * The status the board shows for a run: its {@link runStatus}, except that a run Ready to merge is Publishing while the board's `publish` run is
+ * posting it. The pool, and what a run offers or is watched for, go by `runStatus`, which still calls that run Ready to merge.
+ */
+export function shownStatus(entry: ViewEntry, publish: ViewPublish | undefined, entries: readonly ViewEntry[] = []): RunStatus {
+  const status = runStatus(entry, entries);
+  return status === "ready-to-merge" && isBeingPublished(entry, publish) ? "publishing" : status;
+}
+
+/** How many runs have each status, as the board shows them. */
+export function statusCounts(entries: readonly ViewEntry[], publish?: ViewPublish): Map<RunStatus, number> {
   const counts = new Map<RunStatus, number>(RUN_STATUSES.map(({ status }) => [status, 0]));
-  for (const status of entries.map((entry) => runStatus(entry, entries))) counts.set(status, (counts.get(status) ?? 0) + 1);
+  for (const status of entries.map((entry) => shownStatus(entry, publish, entries))) counts.set(status, (counts.get(status) ?? 0) + 1);
   return counts;
 }
 
 /** The runs a filter shows (every run for `null`), the most recently active first, as GitHub lists its runs. */
-export function runsShown<T extends ViewEntry>(entries: readonly T[], filter: RunStatus | null): T[] {
+export function runsShown<T extends ViewEntry>(entries: readonly T[], filter: RunStatus | null, publish?: ViewPublish): T[] {
   const latest = (entry: ViewEntry) => entry.finishedAt ?? entry.startedAt ?? entry.queuedAt ?? 0;
-  return entries.filter((entry) => filter === null || runStatus(entry, entries) === filter).sort((a, b) => latest(b) - latest(a));
+  return entries.filter((entry) => filter === null || shownStatus(entry, publish, entries) === filter).sort((a, b) => latest(b) - latest(a));
 }
 
 /** A parked run: a finished one that kept its herdr workspace, so a person can still answer its agent there. It holds no slot. */
@@ -404,18 +414,22 @@ export function isWatched(entry: ViewEntry): boolean {
   return (status === "ready-to-merge" || status === "published") && !isParked(entry) && openPulls(entry).length > 0;
 }
 
-/** The fields of the board's publish run that the page reads. */
-export type ViewPublish = Readonly<{ keys: readonly string[]; phase: string; failure?: string }>;
+/** The fields of the board's publish run that the page reads: its workspace and pane are set once it runs, and dropped when it ends. */
+export type ViewPublish = Readonly<{ keys: readonly string[]; phase: string; failure?: string; workspace?: string; pane?: string }>;
 
 /** Whether the publish run is still to finish: queued, starting or running. */
 export const isPublishing = (publish: ViewPublish | undefined): boolean => publish !== undefined && publish.phase !== "finished";
+
+/** Whether the publish run still to finish is the one posting this run's pull requests. */
+export const isBeingPublished = (entry: ViewEntry, publish: ViewPublish | undefined): boolean =>
+  isPublishing(publish) && publish?.keys.includes(entry.ticket.key) === true;
 
 /**
  * A run can be ticked for Publish only once it is Ready to merge: a person approved its pull requests and they passed their review and checks.
  * A published run, a parked one, and one the publish run in progress holds are not.
  */
 export const publishable = (entry: ViewEntry, publish?: ViewPublish): boolean =>
-  runStatus(entry) === "ready-to-merge" && !isParked(entry) && !(isPublishing(publish) && publish?.keys.includes(entry.ticket.key));
+  runStatus(entry) === "ready-to-merge" && !isParked(entry) && !isBeingPublished(entry, publish);
 
 /** The Publish button's words for `count` ticked runs. */
 export const publishLabel = (count: number): string => `Publish selected (${count})`;
@@ -437,6 +451,13 @@ export function terminalLink(template: string | null, entry: ViewEntry): string 
   const values: Readonly<Record<string, string>> = { workspace: entry.workspace, pane: entry.pane, key: entry.ticket.key };
   return template.replace(/\{(workspace|pane|key)\}/g, (_, name: string) => encodeURIComponent(values[name]));
 }
+
+/**
+ * The web address of the publish run's terminal, which every run that shows Publishing links on its own row: `terminalLink` with the publish
+ * run's workspace and pane in place of the run's own. Null for any other run, and while the publish run has no pane yet.
+ */
+export const publishTerminalLink = (template: string | null, entry: ViewEntry, publish: ViewPublish | undefined): string | null =>
+  shownStatus(entry, publish) === "publishing" ? terminalLink(template, { ...entry, workspace: publish?.workspace, pane: publish?.pane }) : null;
 
 type Choice = Readonly<{ model: string; effort: string }>;
 

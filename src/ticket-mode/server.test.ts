@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { parseTicketSettings } from "./settings.ts";
+import { markPublishRunning, markPublishStarting } from "./queue.ts";
 import { boardViewScript, createBoard, pairedBy, refusal, type BoardDeps } from "./server.ts";
 import { createRemotes, type Runner } from "./remote.ts";
 import type { Forward } from "./remote-proxy.ts";
@@ -246,6 +247,21 @@ test("Publish queues one publish run for the ticked runs Ready to merge on a mac
     assert.ok(b.ticks.includes("tick"), "publishing wakes the pool");
     await assert.rejects(b.api("POST", "/api/publish", { keys: ["NBF-1"] }), /a publish run is under way/);
   }
+});
+
+test("the queue the page reads carries the running publish run's workspace and pane, so each run it posts can link its terminal", async () => {
+  const b = board(4747, { publish: { run: "Post {prs}, then write {dir}/published.json" } });
+  await b.api("GET", "/api/tickets", {});
+  await b.api("POST", "/api/queue", { keys: ["NBF-1"], model: "sonnet", effort: "high" });
+  const pr = { repo: "app", url: "https://github.com/x/app/pull/1" };
+  b.store.set({ ...b.store.get(), entries: b.store.get().entries.map((e) => ({ ...e, phase: "finished" as const, outcome: { kind: "reviewed" as const, prs: [pr] } })) });
+  await b.api("POST", "/api/publish", { keys: ["NBF-1"] });
+  const read = async () => (await b.api("GET", "/api/queue", {}) as [number, { publish: { phase: string; workspace?: string; pane?: string } }])[1].publish;
+  const queued = await read();
+  assert.deepEqual([queued.phase, queued.workspace, queued.pane], ["queued", undefined, undefined], "queued, it has no pane yet");
+  b.store.set(markPublishRunning(markPublishStarting(b.store.get(), 8), "w9", "w9:p1"));
+  const running = await read();
+  assert.deepEqual([running.phase, running.workspace, running.pane], ["running", "w9", "w9:p1"]);
 });
 
 test("remove, stop, close and max go through the board", async () => {
