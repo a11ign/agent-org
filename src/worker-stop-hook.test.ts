@@ -37,8 +37,10 @@ const SESSION = "worker-agent-org-853";
 const TRACKERS = [{ key: "", repo: "a11ign/a11ign" }, { key: "agent-org", repo: "a11ign/agent-org" }];
 const REPO = "a11ign/agent-org";
 const PR_OF_THE_ROW: StopPr = { number: 901, state: "OPEN", headRefName: "agent/a-stop-hook-in-agent-org-853", title: "A Stop hook (agent-org#853)", labels: [{ name: `session:${SESSION}` }] };
-/** `ownsPr`'s rungs that matter here, restated so the pure half needs no project declaration: the head ends `-<row>`, or the title ends with the reference. */
-const owns: Seams["owns"] = (claim, pr) => (pr.headRefName ?? "").endsWith(`-${claim.row}`) || (pr.title ?? "").trimEnd().endsWith(`${claim.trackerRepo}#${claim.row})`);
+/** `ownsPr`'s rungs that matter here, restated so the pure half needs no project declaration: the head ends `-<row>`, or the title ends with the reference, or the body
+ * closes the row by it (`Closes <repo>#<row>`, the rung `liveSeams` adds to `ownsPr`). */
+const owns: Seams["owns"] = (claim, pr) => (pr.headRefName ?? "").endsWith(`-${claim.row}`) || (pr.title ?? "").trimEnd().endsWith(`${claim.trackerRepo}#${claim.row})`)
+  || new RegExp(`^Closes ${claim.trackerRepo}#${claim.row}$`, "m").test(pr.body ?? "");
 
 const dirs: string[] = [];
 function stateDir(): string {
@@ -51,7 +53,7 @@ test.after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force:
 /** The refusal fixture, with `over` changed. `prs` is what the repository lists. */
 function seams(dir: string, over: Omit<Partial<Seams>, "prs"> & { prs?: StopPr[] } = {}): Seams {
   const { prs = [], ...rest } = over;
-  return { session: SESSION, trackers: TRACKERS, stateDir: dir, now: T0, prs: () => prs, owns, gh: fakeGh([]), answerPrefix: ANSWER_PREFIX, sessionPrefix: SESSION_PREFIX, ...rest };
+  return { session: SESSION, trackers: TRACKERS, stateDir: dir, now: T0, prs: () => prs, owns, regionRepos: () => [], gh: fakeGh([]), answerPrefix: ANSWER_PREFIX, sessionPrefix: SESSION_PREFIX, ...rest };
 }
 /** The `gh` the bound writes through, every call recorded in `calls`: the row is read OPEN, CLOSED, or not at all (`row`) with `comments` and `labels` on it, and the writes answer nothing. */
 function fakeGh(calls: string[][], row: "open" | "closed" | "unreadable" = "open", comments: object[] = [], labels: string[] = []): Gh {
@@ -280,6 +282,65 @@ test("the program itself, run as the hook is: stop_hook_active ends in exit 0 an
   const garbled = run("not json");
   assert.equal(garbled.status, 0);
   assert.match(garbled.stderr, /ALLOWED/);
+});
+
+// agent-org#1713: a deliverable whose `## Region` names a file of another code repository is a pull request THERE. The row here is agent-org#853; its Region names the first
+// repository (`a11ign/a11ign`), and the pull request is in that repository and closes the row by its reference.
+const ELSEWHERE = "a11ign/a11ign";
+const CLOSES_THE_ROW: StopPr = { number: 77, state: "OPEN", headRefName: "agent/stop-hook-in-the-hook-repo", title: "Stop hook, in the hook repository", labels: [], body: `Closes ${REPO}#853` };
+/** `prs` answering only for the repositories named in `listed`, every repository asked recorded in `read`. */
+function listing(read: string[], listed: Record<string, StopPr[]>, unreadable: string[] = []): Seams["prs"] {
+  return (repo) => {
+    read.push(repo);
+    if (unreadable.includes(repo)) throw Object.assign(new Error("HTTP 502"), { stderr: "HTTP 502" });
+    return listed[repo] ?? [];
+  };
+}
+
+test("a pull request in another repository of the row's Region satisfies the stop: the Region's repository is read, and the row's own pull request closing the row is found there", () => {
+  const dir = stateDir();
+  const read: string[] = [];
+  const result = runHook(OFF, { ...seams(dir), regionRepos: () => [ELSEWHERE], prs: listing(read, { [ELSEWHERE]: [CLOSES_THE_ROW] }) });
+  assert.deepEqual(result, { code: 0, say: [] }, "no refusal and no bound line");
+  assert.deepEqual(read, [REPO, ELSEWHERE], "the row's tracker, then the repository its Region names");
+  assert.equal(existsSync(countFile(dir)), false, "a satisfied turn writes no refusal count");
+  assert.deepEqual(ledgerEntries(dir), [], "no ledger line");
+});
+
+test("a pull request in a repository the Region does not name does not satisfy the stop, and that repository is never read (positive control for the one above)", () => {
+  const dir = stateDir();
+  const read: string[] = [];
+  const result = runHook(OFF, { ...seams(dir), regionRepos: () => [ELSEWHERE], prs: listing(read, { "a11ign/unnamed": [CLOSES_THE_ROW] }) });
+  assert.equal(result.code, 2, "refused: the row's pull request is not in a repository its Region names");
+  assert.deepEqual(read, [REPO, ELSEWHERE], "the unnamed repository is never asked");
+});
+
+test("an unreadable repository the Region names is a said allowance: the stop is allowed with UNREAD, and it is neither a refusal nor a ledger line", () => {
+  const dir = stateDir();
+  const read: string[] = [];
+  const result = runHook(OFF, { ...seams(dir), regionRepos: () => [ELSEWHERE], prs: listing(read, {}, [ELSEWHERE]) });
+  assert.equal(result.code, 0, "allowed, not refused");
+  assert.match(result.say.join("\n"), /UNREAD/);
+  assert.match(result.say.join("\n"), new RegExp(ELSEWHERE));
+  assert.equal(existsSync(countFile(dir)), false, "no refusal is counted");
+  assert.deepEqual(ledgerEntries(dir), [], "no ledger line");
+});
+
+test("a Region that cannot be read is a said allowance too: the stop is allowed with UNREAD, with no refusal and no ledger line", () => {
+  const dir = stateDir();
+  const result = runHook(OFF, { ...seams(dir), regionRepos: () => { throw Object.assign(new Error("HTTP 502"), { stderr: "HTTP 502" }); } });
+  assert.equal(result.code, 0, "allowed, not refused");
+  assert.match(result.say.join("\n"), /UNREAD/);
+  assert.equal(existsSync(countFile(dir)), false, "no refusal is counted");
+  assert.deepEqual(ledgerEntries(dir), [], "no ledger line");
+});
+
+test("a row whose Region names only its own tracker reads that one repository, as today", () => {
+  const dir = stateDir();
+  const read: string[] = [];
+  const result = runHook(OFF, { ...seams(dir), regionRepos: () => [REPO], prs: listing(read, {}) });
+  assert.equal(result.code, 2, "refused: nothing of the row is open anywhere");
+  assert.deepEqual(read, [REPO], "the own tracker is the only repository read");
 });
 
 test("claimedRowOf: the first tracker's row, another tracker's, and the names that are none", () => {

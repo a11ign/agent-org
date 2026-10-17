@@ -12,8 +12,10 @@
 //   2. whose pane this is -- a session that is not a worker, or a worker whose name carries no declared tracker's row (`worker-capture-2407`), holds no claim here;
 //   3. a FRESH declaration -- `worker-state/<session>.json`, made since the session's last turn began (`lastDeliveredTo`, the gate's own boundary), so the hook and
 //      the gate agree on "fresh". Whether what it names STILL HOLDS is the gate's reading (`declarationReading`) and stays there: the hook asks only "did you say";
-//   4. an own pull request, OPEN or MERGED -- ONE `gh pr list` of the row's repository, owned by the rungs the gate uses (`ownsPr`). A merged one is the row's
-//      deliverable landed (the gate ends the instance), and refusing a turn that follows it would send the worker looking for something to declare.
+//   4. an own pull request, OPEN or MERGED -- ONE `gh pr list` of the row's repository, owned by the rungs the gate uses (`ownsPr`) and the `Closes` rung. A merged one
+//      is the row's deliverable landed (the gate ends the instance), and refusing a turn that follows it would send the worker looking for something to declare.
+//      When the row's repository has none, the code repositories its `## Region` names are asked the same way (agent-org#1713): a deliverable whose Region is in
+//      another repository is its pull request THERE. A repository the Region does not name is never read.
 // A refusal is exit 2 with the reason on stderr, which Claude Code hands back to the model as the reason it may not stop.
 //
 // IT IS BOUNDED (ceo, from the chairman's a11ign#4957): at most TWO refusals in a row for one claimed row, then the stop is allowed and a `stop-hook-bound` line is
@@ -29,8 +31,9 @@
 // IT FAILS OPEN, OUT LOUD. The declarations directory unreadable, the board unreadable, the count file unreadable or unwritable, a payload that is not JSON, a
 // declaration the row cannot take (unreadable, closed, a refused label): each ALLOWS the stop and says why on stderr (absence is not proof, and a hook that refuses
 // on what it could not read refuses every worker the day GitHub is down).
-// KNOWN LIMIT: the pull request is looked for in the ROW'S repository. A row whose work goes to another repository reads as having none, and is refused up to
-// the bound and then allowed; the declaration is the way out, and it is what the message names.
+// KNOWN LIMIT: the pull request is looked for in the ROW'S repository and in the code repositories its `## Region` names. A row whose work goes to a repository its
+// Region does not name reads as having none, and is refused up to the bound and then allowed; the declaration is the way out, and it is what the message names.
+// A Region that cannot be read, or a repository it names that cannot be read, is a said allowance (UNREAD), never a refusal.
 import { mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { FAILURE_LEDGER_FILE, recordFailure } from "./failure-ledger.ts";
@@ -53,8 +56,8 @@ export type HookPayload = { stop_hook_active?: boolean };
 /** A tracker as `project.json` declares it: the key a worker's name carries and the repository its rows live in. */
 export type TrackerRef = { key: string; repo: string };
 
-/** A pull request as `gh pr list --json number,state,headRefName,title,labels` prints it. */
-export type StopPr = { number?: number; state?: string; headRefName?: string; title?: string; labels?: ({ name?: string } | string)[] };
+/** A pull request as `gh pr list --json number,state,headRefName,title,labels,body` prints it, with the `repo` it was listed from (the live read sets it). */
+export type StopPr = { number?: number; state?: string; headRefName?: string; title?: string; labels?: ({ name?: string } | string)[]; body?: string; repo?: string };
 
 /** Claude Code is already continuing because of this hook's last refusal. ONE definition, so the pure half and the entry honour it the same way. */
 export const isContinuing = (payload: HookPayload): boolean => payload.stop_hook_active === true;
@@ -62,8 +65,8 @@ export const isContinuing = (payload: HookPayload): boolean => payload.stop_hook
 /** The ownership question, as `pr-ownership.ts`'s `ownsPr` asks it; a seam so the pure half needs no project declaration. */
 export type OwnsPr = (claim: { row: number; branch: null; session: string; trackerRepo: string; soleHolder: true }, pr: StopPr) => boolean;
 
-/** Everything the hook reads from outside itself. `prs` THROWS when the board could not be read, which is not "no pull requests". `gh` is what the bound writes the declaration through, and the two prefixes are the project's labels (`project-vocabulary.ts`), passed in so the pure half does not load the project. */
-export type Seams = { session: string | null; trackers: readonly TrackerRef[]; stateDir: string; now: number; prs: (repo: string) => StopPr[]; owns: OwnsPr; gh: Gh; answerPrefix: string; sessionPrefix: string };
+/** Everything the hook reads from outside itself. `prs` THROWS when the board could not be read, which is not "no pull requests". `regionRepos` is the code repositories the row's `## Region` names, and THROWS when the row or its Region cannot be read. `gh` is what the bound writes the declaration through, and the two prefixes are the project's labels (`project-vocabulary.ts`), passed in so the pure half does not load the project. */
+export type Seams = { session: string | null; trackers: readonly TrackerRef[]; stateDir: string; now: number; prs: (repo: string) => StopPr[]; regionRepos: (claim: { row: number; repo: string }) => string[]; owns: OwnsPr; gh: Gh; answerPrefix: string; sessionPrefix: string };
 
 export type HookResult = { code: 0 | 2; say: string[] };
 
@@ -238,7 +241,28 @@ export function runHook(payload: HookPayload, seams: Seams): HookResult {
     return allow(`worker:stop-hook: the pull requests of ${claim.repo} could not be read (${String(err?.stderr ?? err?.message ?? err).split("\n")[0]}), so the stop of ${session} is ALLOWED (UNREAD, which is not "no pull request").`);
   }
   const mine = { row: claim.row, branch: null, session, trackerRepo: claim.repo, soleHolder: true } as const;
-  if (prs.some((pr) => (pr.state === "OPEN" || pr.state === "MERGED") && seams.owns(mine, pr))) return satisfied();
+  const ownedByRow = (pr: StopPr): boolean => (pr.state === "OPEN" || pr.state === "MERGED") && seams.owns(mine, pr);
+  if (prs.some(ownedByRow)) return satisfied();
+
+  // agent-org#1713: a deliverable whose `## Region` names a file of another code repository is a pull request THERE. Only the repositories the Region names are asked.
+  let elsewhere: string[];
+  try {
+    elsewhere = seams.regionRepos(claim).filter((repo) => repo !== claim.repo);
+  } catch (err: any) {
+    return allow(`worker:stop-hook: the \`## Region\` of ${claim.repo}#${claim.row} could not be read (${String(err?.stderr ?? err?.message ?? err).split("\n")[0]}), so the stop of ${session} is ALLOWED (UNREAD, which is not "no pull request").`);
+  }
+  const unread: string[] = [];
+  for (const repo of elsewhere) {
+    let listed: StopPr[];
+    try {
+      listed = seams.prs(repo);
+    } catch (err: any) {
+      unread.push(`${repo} (${String(err?.stderr ?? err?.message ?? err).split("\n")[0]})`);
+      continue;
+    }
+    if (listed.some(ownedByRow)) return satisfied();
+  }
+  if (unread.length > 0) return allow(`worker:stop-hook: the pull requests of ${unread.join(", ")} could not be read, so the stop of ${session} is ALLOWED (UNREAD, which is not "no pull request").`);
 
   const refusals = readRefusals(countPath, row);
   if (refusals === null) return allow(`worker:stop-hook: ${countPath} could not be read, so the stop of ${session} is ALLOWED: a refusal that cannot be counted would not be bounded.`);
@@ -287,16 +311,28 @@ async function liveSeams(argv: string[], env: NodeJS.ProcessEnv): Promise<Seams>
   const { homeProjectDeclaration } = await import("./project-config.ts");
   const { execFileSync } = await import("node:child_process");
   const { ownsPr } = await import("./pr-ownership.ts");
+  const { closedRefsOf } = await import("./board-truth-audit.ts");
+  const { declaredRegionFiles, splitRegionEntry } = await import("./region-paths.ts");
   const { ANSWER_PREFIX, SESSION_PREFIX } = await import("./project-vocabulary.ts");
   const gh: Gh = (args) => execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 20_000 });
+  const { code } = homeProjectDeclaration();
   return {
     session, stateDir: stateEntryPath(""), now: Date.now(), trackers: homeProjectDeclaration().tracker,
     prs: (repo) => {
-      const listed = JSON.parse(gh(["pr", "list", "--repo", repo, "--state", "all", "--limit", "100", "--json", "number,state,headRefName,title,labels"]));
+      const listed = JSON.parse(gh(["pr", "list", "--repo", repo, "--state", "all", "--limit", "100", "--json", "number,state,headRefName,title,labels,body"]));
       if (!Array.isArray(listed)) throw new Error("`gh pr list` did not print a list");
-      return listed as StopPr[];
+      return (listed as StopPr[]).map((pr) => ({ ...pr, repo }));
     },
-    owns: (claim, pr) => ownsPr(claim, pr) !== null,
+    // the rungs `ownsPr` reads, and the `Closes` rung it does not: a pull request whose body closes the row by its reference (`Closes a11ign/agent-org#1713`), a bare
+    // `#1713` naming the repository the pull request is listed in
+    owns: (claim, pr) => ownsPr(claim, pr) !== null || closedRefsOf(pr.body).some((ref) => ref.number === claim.row && (ref.repo ?? pr.repo) === claim.trackerRepo),
+    regionRepos: (claim) => {
+      const fact = ghRowLook(gh)(claim.repo, claim.row);
+      if (fact === null) throw new Error(`${claim.repo} has no row ${claim.row}`);
+      // a bare path belongs to the first code repository (`key ""`), as `region-paths.ts` reads it; a key the declaration does not list names no repository here
+      const repos = (declaredRegionFiles(fact.body ?? "") ?? []).map((entry) => code.find((repository) => repository.key === splitRegionEntry(entry).key)?.repo);
+      return [...new Set(repos.filter((repo): repo is string => repo !== undefined))];
+    },
     gh, answerPrefix: ANSWER_PREFIX, sessionPrefix: SESSION_PREFIX,
   };
 }
