@@ -6,12 +6,12 @@ import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { runStatus } from "./board-view.ts";
 import {
-  batchDir, batchFolder, countTokens, createPool, feedbackSince, findFolderSession, findTranscript, herdrName, isStartDialog, parseOutcome, publishDir, publishResult,
+  batchDir, batchFolder, countTokens, createPool, feedbackSince, findFolderSession, findTranscript, herdrName, herdrServerCommand, isStartDialog, parseOutcome, publishDir, publishResult,
   ticketDir, ticketFolder, worktreesIn,
 } from "./pool.ts";
 import { approve, emptyQueue, enqueue, finish, queuePublish, respond, retry, setPaused, type Queue } from "./queue.ts";
 import { parseTicketSettings } from "./settings.ts";
-import { REVIEWER_LOGIN, loadReviewerGate, reviewerMemoryPath, type ReviewerPort, type ReviewerRef } from "./reviewer-port.ts";
+import { REVIEWER_LOGIN, loadReviewerGate, readReviewerMemory, reviewerMemoryPath, type ReviewerPort, type ReviewerRef } from "./reviewer-port.ts";
 import type { Ticket, TicketSource } from "./source.ts";
 
 const ticket = (key: string) => ({ key, title: key, description: "", url: `https://linear.app/x/${key}`, branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
@@ -354,6 +354,41 @@ test("a session whose herdr server does not answer is started once, and waited f
   await pool.ensureSession();
   await pool.ensureSession();
   assert.deepEqual(started, ["tickets"], "started in ticket mode's own session, and only when it did not answer");
+});
+
+// A11-78: `systemctl --user restart` of the instance ended every process in its cgroup, the herdr server it had started and every worker in it.
+test("under systemd the session's herdr server starts in a scope of its own, outside the instance's service; anywhere else herdr starts directly", () => {
+  const systemd = herdrServerCommand("tickets", { INVOCATION_ID: "515de870" }, "linux");
+  assert.equal(systemd.file, "systemd-run");
+  assert.deepEqual(systemd.args.slice(0, 2), ["--user", "--scope"], "a user scope: the server leaves the instance's cgroup and keeps its environment");
+  assert.ok(systemd.args.includes("--unit=agent-org-herdr-tickets"), "named for its session, so `systemctl --user status` finds it");
+  assert.deepEqual(systemd.args.slice(-4), ["herdr", "--session", "tickets", "server"]);
+  assert.ok(herdrServerCommand("a b/c", { INVOCATION_ID: "x" }, "linux").args.includes("--unit=agent-org-herdr-a-b-c"), "a unit name holds no character systemd refuses");
+  assert.deepEqual(herdrServerCommand("tickets", {}, "linux"), { file: "herdr", args: ["--session", "tickets", "server"] }, "started by hand: no unit to leave");
+  assert.deepEqual(herdrServerCommand("tickets", { INVOCATION_ID: "x" }, "darwin"), { file: "herdr", args: ["--session", "tickets", "server"] },
+    "launchd ends a job's process group, which a detached server has left");
+});
+
+test("an instance that starts up sends a live worker's pane nothing: no key, no prompt and no second start, whatever its pane shows", async () => {
+  const { pool, status, h, entry, settings, screen, restart } = setup(1, ["NBF-1"]);
+  await pool.tick();
+  status.set(herdrName("NBF-1"), "working");
+  await pool.tick();
+  // Mid-turn, the worker waits on a prompt, and its pane quotes the trust dialog for its own folder: the worst a restarted pool could misread.
+  status.set(herdrName("NBF-1"), "blocked");
+  screen.text = TRUST(ticketFolder(settings, "NBF-1"));
+  h.calls.length = 0;
+  const next = restart();
+  await next.ensureSession();
+  next.reconcile();
+  for (let i = 0; i < 3; i += 1) await next.tick();
+  const touched = h.calls.filter((args) => ["send-keys", "prompt", "start", "create", "close"].some((verb) => args.includes(verb)));
+  assert.deepEqual(touched, [], "only listings and reads reach herdr");
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").workspace, entry("NBF-1").waiting], ["running", "w1", true], "adopted, and shown waiting on the person");
+  status.set(herdrName("NBF-1"), "idle");
+  writeFileSync(join(ticketDir(settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "draft-pr", prs: [approvedPr] }));
+  await next.tick();
+  assert.equal(entry("NBF-1").outcome?.kind, "draft-pr", "the restarted pool carries on watching it, and records how it ends");
 });
 
 test("a ticket's herdr name is lower case, starts with a letter and fits herdr's 32 characters", () => {
@@ -1525,6 +1560,46 @@ test("a restarted pool starts no second reviewer on a head it already reviewed",
   ctx.restart().watchFeedback();
   await roundStarted();
   assert.deepEqual(starts.map((ref) => ref.head), ["h1", "h2"], "a head it has not reviewed is still reviewed after the restart");
+});
+
+test("a reviewer is recorded before it starts: an instance stopped while it started one starts no second one after the restart", async () => {
+  const starts: ReviewerRef[] = [];
+  // The instance stops inside `start`, after the reviewer's workspace is open and before `start` returns.
+  const port: ReviewerPort = { start(ref) { starts.push(ref); throw new Error("SIGTERM"); }, live: () => false };
+  const ctx = await readyRun(ghFor({ 1: feedbackPull() }).run, REVIEWING, port);
+  assert.throws(() => ctx.pool.watchFeedback(), /SIGTERM/);
+  assert.ok(readReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir)).memory.started.has(`${approvedPr.url}@h1`), "on disk before the start");
+  ctx.restart().watchFeedback();
+  await roundStarted();
+  assert.deepEqual(starts.map((ref) => ref.head), ["h1"], "the reviewer for h1 is started once");
+});
+
+test("a reviewer herdr still lists for the head is adopted, not started, and stays adopted across a restart", async () => {
+  const starts: ReviewerRef[] = [];
+  let listed = true;
+  const port: ReviewerPort = { start(ref) { starts.push(ref); return { label: "reviewer-7" }; }, live: ({ head }) => listed && head === "h1" };
+  const ctx = await readyRun(ghFor({ 1: feedbackPull() }).run, REVIEWING, port);
+  ctx.pool.watchFeedback();
+  await roundStarted();
+  assert.deepEqual(starts, [], "the reviewer already running for h1 is adopted");
+  assert.ok(readReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir)).memory.started.has(`${approvedPr.url}@h1`), "and remembered as started");
+  listed = false;
+  ctx.restart().watchFeedback();
+  await roundStarted();
+  assert.deepEqual(starts, [], "a restart after it finished starts none for h1");
+});
+
+test("a reviewer start the port refuses is not remembered, so the next watch tries again", async () => {
+  const starts: ReviewerRef[] = [];
+  let refuse = true;
+  const port: ReviewerPort = { start(ref) { starts.push(ref); return refuse ? { refusal: "herdr did not list the session" } : { label: "reviewer-7" }; }, live: () => false };
+  const ctx = await readyRun(ghFor({ 1: feedbackPull() }).run, REVIEWING, port);
+  await captureStderr(async () => { ctx.pool.watchFeedback(); await roundStarted(); });
+  assert.equal(readReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir)).memory.started.size, 0);
+  refuse = false;
+  ctx.restart().watchFeedback();
+  await roundStarted();
+  assert.equal(starts.length, 2, "refused once, then started");
 });
 
 test("a restarted pool asks for no second round for a verdict it already answered", async () => {
