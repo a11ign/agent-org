@@ -11,7 +11,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  CANARY_STATE_FILE, DEFAULT_CANARY_OPTIONS, MACHINERY_SIGNALS, evaluateFlag, machineryCanaryTick, machineryFlagOn, parseCanaryState, signalReading, withMachineryFlag,
+  CANARY_STATE_FILE, DEFAULT_CANARY_OPTIONS, MACHINERY_SIGNALS, evaluateFlag, machineryCanaryTick, machineryFlagOn, machineryValues, orgHealthTick, parseCanaryState, signalReading, withMachineryFlag,
   type CanaryFacts, type CanaryIo, type CanarySample,
 } from "./org-health.ts";
 
@@ -133,4 +133,52 @@ test("a signal first recorded inside the hour before the flag reads a number for
   // (4) NEGATIVE: nothing of the signal was read in the hour before, so nothing was clean.
   assert.equal(reading([quietHour]).status, "unknown");
   assert.equal(reading([sixMinutesBefore(null), quietHour]).status, "unknown");
+});
+
+/**
+ * a11ign#5681 (agent-org#1716): THE BOARD TRUTH SIGNAL IS SOURCED, SO A FLAG THAT MAKES BOARD OFFERS CAN BE REVERTED.
+ *
+ * THE DEFECT: `machineryValues` recorded `board-disagrees-with-reality` as `null` every tick, so a flag that made offers noisily never read `degraded` and the canary
+ * could not revert it. The count is the offers the tick made (its tripped readings of the signal); `null` is unknown, and never zero.
+ *   (1) `machineryValues` records the count the tick handed over: 2 offers, 0 offers, and `null` when the audit was not read or not handed over;
+ *   (2) THE BAR: a flag whose only signal this is reads `degraded` once the tick made `minRise` offers after a quiet hour, and `ok` after a quiet one;
+ *   (3) THROUGH THE TICK: `orgHealthTick` hands the count over: one disagreeing row (the pairs flag off) is 1, a clean board is 0, a board not read is `null`.
+ */
+test("board-disagrees-with-reality is a number when the audit was read", () => {
+  const BOARD = MACHINERY_SIGNALS.BOARD_TRUTH;
+  const base: CanaryFacts = { claimRefusals: [], unread: [], deferredWakes: 0, unarmed: [], releaseRuns: { runs: [] } as any };
+  const recorded = (boardTruthOffers: number | null | undefined) =>
+    machineryValues({ facts: { ...base, ...(boardTruthOffers !== undefined && { boardTruthOffers }) }, since: ON - HOUR, now: ON, memo: {} }).values[BOARD];
+
+  // (1) RECORDED
+  assert.equal(recorded(2), 2);
+  assert.equal(recorded(0), 0, "no offer made is a number, zero");
+  assert.equal(recorded(null), null, "the audit was not read: unknown, never zero");
+  assert.equal(recorded(undefined), null, "facts that carry no count are unknown too");
+
+  // (2) THE BAR
+  const sixMinutesBefore = (value: number | null): CanarySample => ({ from: ON - 6 * MINUTE, to: ON, values: { [BOARD]: value } });
+  const quietHour: CanarySample = { from: ON, to: ON + HOUR, values: { [BOARD]: 0 } };
+  const offers: CanarySample = { from: ON, to: ON + HOUR, values: { [BOARD]: OPTIONS.minRise } };
+  const reading = (samples: CanarySample[]) => signalReading({ signal: BOARD, samples, onAt: ON, now: ON + HOUR, options: OPTIONS });
+  assert.equal(reading([sixMinutesBefore(0), quietHour]).status, "ok");
+  assert.equal(reading([sixMinutesBefore(0), offers]).status, "degraded");
+  const record = { on: true, signals: [BOARD], onAt: ON, verdict: "watching" as const, decidedAt: null, readings: [], incident: null };
+  assert.equal(evaluateFlag({ record, samples: [sixMinutesBefore(0), quietHour], now: ON + HOUR, options: OPTIONS }).verdict, "passed");
+  assert.equal(evaluateFlag({ record, samples: [sixMinutesBefore(0), offers], now: ON + HOUR, options: OPTIONS }).verdict, "reverted");
+
+  // (3) THROUGH THE TICK
+  const audit = { findings: [{ question: "wait-already-true", number: 5577, field: "status", detail: "", route: "" }], unread: [] };
+  const quiet = { now: ON, lastMergedAt: ON - MINUTE, work: { greenPrs: 0, claimableRows: 0 }, redPrs: [], refusals: {}, drift: { behind: 0, ahead: 0, dirty: [] }, primarySince: null, copies: [] };
+  const handed = (boardTruth: unknown) => {
+    const seen: (number | null)[] = [];
+    orgHealthTick({ ...quiet, boardTruth } as never, {
+      log: () => {}, readCopies: () => null, readAutoOff: () => undefined as any, readRefusals: () => null,
+      boardTruthIo: { readCanary: () => null, readPairs: () => null, writePairs: () => {} }, onBoardTruthOffers: (count) => seen.push(count),
+    });
+    return seen;
+  };
+  assert.deepEqual(handed(audit), [1], "one disagreeing row is one offer");
+  assert.deepEqual(handed({ findings: [], unread: [] }), [0], "a clean board is zero offers");
+  assert.deepEqual(handed(null), [null], "a board that was not read is unknown");
 });

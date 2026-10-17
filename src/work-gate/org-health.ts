@@ -507,6 +507,8 @@ export function orgHealthNow({ prsRead, keyedPrsRead = [], readyRead, openRowsRe
       log?: (line: string) => void; readCopies?: () => null; readRefusals?: () => import("../org-health.ts").ClaimRefusal[] | null; readLabJobs?: () => string[] | null; readWaits?: typeof waitTickFacts;
       release?: typeof releaseHoldViaModule; readHolderAgents?: typeof readAgents; readToolAgreement?: typeof import("../org-health.ts").readToolAgreement; readNodeStrips?: typeof import("../node-strips-types.ts").readNodeStrips;
       readMilestoneMoves?: typeof readMilestoneMoves;
+      /** a11ign#5681: the board offers this tick made, handed to the canary (`orgHealthTick`); OMITTED is "does not ask" */
+      onBoardTruthOffers?: (count: number | null) => void;
       readReleaseRuns?: () => import("../org-health.ts").ReleaseRuns | null | undefined;
       readReleaseFailures?: () => import("../org-health.ts").ReleaseFailureRead[] | null | undefined;
       raiseReleaseIncidents?: (reads: import("../org-health.ts").ReleaseFailureRead[]) => void;
@@ -526,7 +528,7 @@ export function orgHealthNow({ prsRead, keyedPrsRead = [], readyRead, openRowsRe
       /** agent-org#1667: the named classed-OUTSIDE pull requests for the `session-pr-classed-outside` reading; OMITTED is "does not ask", and only the live gate (`work-gate.ts`) hands it over */
       readSessionPrOutside?: () => import("../org-health.ts").SessionPrOutsideFact | undefined;
   } = {}) {
-  const { now = Date.now(), lastMergedAt = () => readLatestMerge(defaultRun, mergeRepositories()), readCaptures = (at) => readFleetCaptures({ now: at }), log, readCopies, readRefusals,
+  const { now = Date.now(), lastMergedAt = () => readLatestMerge(defaultRun, mergeRepositories()), readCaptures = (at) => readFleetCaptures({ now: at }), log, readCopies, readRefusals, onBoardTruthOffers,
     readLabJobs = dispatchedLabJobsOrSay, readWaits = waitTickFacts, release, readHolderAgents = readAgents, readToolAgreement = () => undefined, readNodeStrips = () => undefined, readReleaseRuns = () => undefined, readReleaseFailures = () => undefined, raiseReleaseIncidents = () => {}, readFleetBuildIncident = () => undefined, readReleaseBehind = () => undefined, readClassRepeat = () => undefined,
     teamAccess = () => readTeamAccess(defaultRun), readBoardTruth = () => undefined, readFlagSwitches = () => undefined, readTickRecord = () => undefined, readTickHealth = () => undefined, readSweeps = () => undefined, readSessionPrOutside,
     readMilestoneMoves: readMoves = io.lastMergedAt === undefined ? readMilestoneMoves : undefined } = io; // #4295: the real exact-start read exactly when the merge read is real
@@ -575,7 +577,7 @@ export function orgHealthNow({ prsRead, keyedPrsRead = [], readyRead, openRowsRe
     ...boardTruthFact({ openRowsRead, claimedComments, waitFacts: waits?.facts ?? null, now }, readBoardTruth), // #4045
   };
   // #5157: the ledger is the HOST'S unless a caller hands over its own; the lab-jobs test passes `() => []`, so a busy host cannot trip it
-  const proxyReadings = orgHealthTick(facts, { ...(log && { log }), ...(readCopies && { readCopies }), ...(readRefusals && { readRefusals }) });
+  const proxyReadings = orgHealthTick(facts, { ...(log && { log }), ...(readCopies && { readCopies }), ...(readRefusals && { readRefusals }), ...(onBoardTruthOffers && { onBoardTruthOffers }) });
   const readings = exactMilestoneClock({ orders: proxyReadings, fact: milestoneClock, now, merge: facts, readMoves, log });
   const { held: heldOnSatisfied, rest } = splitHeldOnSatisfied(stale);
   const cap = { limit: MAX_ROW_ORDERS_PER_TICK };
@@ -804,7 +806,7 @@ export function boardTruthEffect(gh: ReturnType<typeof readBoardGh>, { now, wait
  * post. Class repeat is an effect (it files rows), so it stays out of the wave. `releaseFailures` takes the project's runs the wave just read (`known`), as it always did.
  * `onReleaseRuns` hands the project's runs to the canary, which costs no second call.
  */
-export function orgHealthTogether(args: Parameters<typeof orgHealthNow>[0], io: Parameters<typeof orgHealthNow>[1], gh: { repo: string; openRowsRead: any[] | null | undefined; claimedComments?: any[] | null; now: number; onReleaseRuns?: (runs: import("../org-health.ts").ReleaseRuns | null) => void; }) {
+export function orgHealthTogether(args: Parameters<typeof orgHealthNow>[0], io: Parameters<typeof orgHealthNow>[1], gh: { repo: string; openRowsRead: any[] | null | undefined; claimedComments?: any[] | null; now: number; onReleaseRuns?: (runs: import("../org-health.ts").ReleaseRuns | null) => void; onBoardTruthOffers?: (count: number | null) => void; }) {
   const herdr = gh.openRowsRead == null ? null : readAgents(); // ONCE, outside the rehearsal: `readBoardFacts` would list the herdr agents again inside it
   const reads = readWithFirstWaveTogether((run) => {
     const releaseRuns = readReleaseRuns(run, gh.repo);
@@ -816,7 +818,7 @@ export function orgHealthTogether(args: Parameters<typeof orgHealthNow>[0], io: 
     return { releaseRuns, releaseFailures, fleetBuild, teamAccess, lastMerge, board };
   });
   gh.onReleaseRuns?.(reads.releaseRuns);
-  return orgHealthNow(args, { ...io, lastMergedAt: () => reads.lastMerge, readMilestoneMoves, readReleaseRuns: () => reads.releaseRuns, readReleaseFailures: () => reads.releaseFailures,
+  return orgHealthNow(args, { ...io, onBoardTruthOffers: gh.onBoardTruthOffers, lastMergedAt: () => reads.lastMerge, readMilestoneMoves, readReleaseRuns: () => reads.releaseRuns, readReleaseFailures: () => reads.releaseFailures,
     readFleetBuildIncident: () => reads.fleetBuild, teamAccess: () => reads.teamAccess,
     readBoardTruth: (input) => (reads.board === undefined ? undefined : boardTruthEffect(reads.board, input, { repo: gh.repo })) });
 }
