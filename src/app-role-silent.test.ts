@@ -1,4 +1,6 @@
 // no-token: none -- reads and writes temp directories and the fixture project; the wrapper is rendered, never run, and nothing here reaches `gh`, `herdr` or `git`
+// requires: history
+// (the tests import `host-units.ts`, which reads git history to say where an orphaned unit came from)
 //
 // agent-org#790: A MERGED `github.identity` SWITCH TAKES EFFECT ON THE NEXT TICK, AND A DECLARED APP ROLE WITH NO APP CALLS IS AN INCIDENT. Two halves, each with its control:
 //   1. the re-render: a wrapper whose identity block lacks what `host.json` declares is written again, ALONE; one whose block already matches is not written at all;
