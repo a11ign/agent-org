@@ -60,7 +60,13 @@ fi
 # passes through. `pr:open` runs its `gh` child with `A11Y_PR_OPEN=1`, so the variable's absence is a create that did not come
 # through it. It binds agents only: a call with no workspace id is already refused above, and a runner has no wrapper. Like the
 # refusal above it exits before gh-real and BEFORE THE LEDGER, so it writes no line.
-if [ "$1 $2" = "pr create" ] && [ -z "${A11Y_PR_OPEN:-}" ]; then
+#
+# A TICKET-MODE WORKER IS NOT HELD TO IT (A11-75). `pr:open` reads its row from a GitHub issue and its owner from the gate's claim, and a ticket's
+# row is in the tracker with no gate, so a ticket worker sent to `pr:open` could open no pull request at all. The ticket pool starts every worker
+# with `AGENT_ORG_TICKET` set to its run, and that worker's own PreToolUse hook (`src/ticket-mode/hook.ts`) already decides which `gh pr create`
+# it may run (draft or ready, by `tickets.drafts`), so the wrapper leaves the create to it. The atomic reviewer checks the Acceptance, the
+# changeset and the Region on the pull request either way.
+if [ "$1 $2" = "pr create" ] && [ -z "${A11Y_PR_OPEN:-}" ] && [ -z "${AGENT_ORG_TICKET:-}" ]; then
   echo "gh: refusing 'gh pr create': a pull request is opened with 'pnpm run pr:open', which labels it with your session and checks its Acceptance and Closes lines, and a raw create does neither." >&2
   exit 1
 fi

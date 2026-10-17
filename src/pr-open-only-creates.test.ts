@@ -100,3 +100,22 @@ test("#4397: `defaultGh` (pr:open's own child) carries A11Y_PR_OPEN=1, and its p
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("A11-75: a ticket-mode worker (AGENT_ORG_TICKET set) may `gh pr create`: its own ticket hook decides, and the create reaches gh-real", () => {
+  const h = host();
+  try {
+    const r = h.run({ AGENT_ORG_TICKET: "A11-31" }, "pr", "create", "--title", "x");
+    assert.equal(r.status, STUB_EXIT, "the stub's own status came back");
+    assert.equal(r.reached, "pr create --title x");
+  } finally { rmSync(h.root, { recursive: true, force: true }); }
+});
+
+test("A11-75: an EMPTY AGENT_ORG_TICKET is absent, so an org workspace is still refused", () => {
+  const h = host();
+  try {
+    const r = h.run({ AGENT_ORG_TICKET: "" }, "pr", "create", "--title", "x");
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /pnpm run pr:open/);
+    assert.equal(r.reached, null);
+  } finally { rmSync(h.root, { recursive: true, force: true }); }
+});
