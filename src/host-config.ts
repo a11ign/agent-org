@@ -722,8 +722,14 @@ function appTokenValues(host: HostConfig, checkout: string): Record<string, stri
     appDeclared: ["case \"$1\" in", ...arms, "    *) return 1 ;;", "  esac"].join("\n"),
     appTokenDir: stateEntryPath("app-tokens", { host, home: host.home, env: {} }),
     appTokenScript: host.tool === undefined ? join(checkout, "packages/agent-org/src/app-token.ts") : join(host.tool, "src/app-token.ts"),
+    // the authoring switch (agent-org#1666): the leaf that reads it, and the canary state it reads, in the state directory `org-health` writes
+    authorFlagScript: host.tool === undefined ? join(checkout, "packages/agent-org/src/gh-author-fallback.ts") : join(host.tool, "src/gh-author-fallback.ts"),
+    canaryStateFile: stateEntryPath(CANARY_STATE_NAME, { host, home: host.home, env: {} }),
   };
 }
+
+/** The canary state's file name in the state directory. `org-health.ts` re-exports it as `CANARY_STATE_FILE` (it imports this module, not the reverse). */
+export const CANARY_STATE_NAME = "machinery-canary.json";
 
 const PLACEHOLDER = /@@([A-Za-z0-9]+)@@/g;
 

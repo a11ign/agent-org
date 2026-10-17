@@ -73,7 +73,8 @@ import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { sandboxGitEnv } from "./lib/git-env.ts";
 import { isAppLogin, spenderPhraseFor } from "./gh-ledger.ts";
-import { GITHUB_ROLES, homeHostConfig, hostConfigPath, roleIdentity, stateEntryPath, type HostConfig } from "./host-config.ts";
+import { CANARY_STATE_NAME, GITHUB_ROLES, homeHostConfig, hostConfigPath, roleIdentity, stateEntryPath, type HostConfig } from "./host-config.ts";
+import { AUTHOR_FALLBACK_MS } from "./gh-author-fallback.ts";
 // A LEAF too (node builtins only): the append-only log of events that never become a closed row, where a refused claim is written and read back.
 import { CI_RERUN_LEDGER_FILE, rerunOn5xx } from "./ci-rerun-on-5xx.ts";
 import { CLAIM_GUARD_HELD_KIND, CLAIM_REFUSED_KIND, FAILURE_LEDGER_FILE, parseFailureLedger } from "./failure-ledger.ts";
@@ -2494,12 +2495,13 @@ export const MACHINERY_SIGNALS = Object.freeze({
   RATE_LIMIT_REFUSALS: "rate-limit-refusals",
   RELEASE_FAILURES: "release-failures",
   OWNERLESS_PR_UNREACHED: "ownerless-pr-unreached", // agent-org#1648: a red pull request the chairman opened with no session on it, that no order reaches for UNQUEUED_MINUTES
+  GH_AUTHOR_FALLBACK: "gh-author-fallback", // agent-org#1666: an account-attributed pr create/merge/review in the ledgers, at most ten minutes old (`gh-author-fallback.ts`)
 });
 export const STANDARD_MACHINERY_SIGNALS: readonly string[] = Object.freeze(Object.values(MACHINERY_SIGNALS));
 /** The signals no source in this tool reads yet: recorded as `null` every tick, so a change that names one is told it is UNKNOWN and not that it passed. */
 export const UNSOURCED_MACHINERY_SIGNALS: readonly string[] = Object.freeze([MACHINERY_SIGNALS.INCIDENTS_NOT_REAL, MACHINERY_SIGNALS.RATE_LIMIT_REFUSALS]);
 
-export const CANARY_STATE_FILE = "machinery-canary.json";
+export const CANARY_STATE_FILE = CANARY_STATE_NAME;
 /** The key of `host.json` that carries the options; read as raw JSON so a host that never set it is unchanged. */
 export const CANARY_OPTIONS_KEY = "machineryCanary";
 /** How long a green, approved pull request may stand unqueued before it counts toward `approved-unqueued` (the row's figure). */
@@ -2644,6 +2646,8 @@ export type CanaryFacts = {
   claimRefusals: ClaimRefusal[] | null; unread: string[] | null; deferredWakes: number | null; unarmed: number[] | null; releaseRuns: ReleaseRuns | null;
   /** agent-org#1648: the numbers of the red, chairman-opened pull requests no order reaches; `null` (or absent) when unread. */
   ownerless?: number[] | null;
+  /** agent-org#1666: the times (epoch ms) of the account's authoring calls in the ledgers (`accountAuthoringTimes`); `null` (or absent) when unread. */
+  authorFallbacks?: number[] | null;
 };
 
 /** The standard signals of one tick over `(since, now]`. A pull request counts as unqueued once the memo has seen it unarmed for `UNQUEUED_MINUTES`; the memo is returned with the departed dropped. */
@@ -2668,6 +2672,8 @@ export function machineryValues({ facts, since, now, memo }: { facts: CanaryFact
       [MACHINERY_SIGNALS.RATE_LIMIT_REFUSALS]: null,
       [MACHINERY_SIGNALS.RELEASE_FAILURES]: failedRuns,
       [MACHINERY_SIGNALS.OWNERLESS_PR_UNREACHED]: facts.ownerless == null ? null : aged(ownerlessSeen),
+      // agent-org#1666: counted in the tick whose window holds it, and only while it is at most ten minutes old (a call older than that is not this tick's)
+      [MACHINERY_SIGNALS.GH_AUTHOR_FALLBACK]: facts.authorFallbacks == null ? null : facts.authorFallbacks.filter((at) => inSpan(at) && now - at <= AUTHOR_FALLBACK_MS).length,
     },
   };
 }

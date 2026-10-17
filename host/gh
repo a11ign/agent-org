@@ -610,6 +610,10 @@ read_cache_store() { # the stdout copy, the generation read BEFORE the call ran
 #     a ruling. A failed mint is recorded as ONE ledger line with
 #     resource `incident`, status 1, the command `app-token <role>` and the minter's first stderr line and exit status in the caller field (`gh-ledger.ts`
 #     reads it, at no points), and the role is not asked again for 60 seconds, so an outage costs one process a minute and not one per call.
+#   - AN AUTHORING CALL (`pr create`, `pr merge`, `pr review`) IS NEVER SENT AS THE ACCOUNT WHEN ITS MINT FAILS, WHILE `gh.refuseFallbackAuthor` IS ON in
+#     the canary state (agent-org#1666; OFF when the state is absent or unreadable): the mint is asked again (`A11Y_APP_AUTHOR_MINTS`, default 3, with
+#     `A11Y_APP_AUTHOR_PAUSE` seconds between, default 2), and when every one fails the call is REFUSED, non-zero, nothing sent. A read still falls back,
+#     as above, because it authors nothing. The switch is read by `gh-author-fallback.ts`: one `node` start per authoring call under an app role.
 #   - THE MINTER NEVER SEES THE CALL'S STDIN (`</dev/null`): `gh pr create --body-file -` reads it, and a minter that consumed it would
 #     post an empty body. Its stderr goes to a file beside the token, never to the caller's.
 #   - THE LEDGER NAMES THE APP (`app:<role>`), not the account whose `hosts.yml` the call would otherwise have read, so a pool is not
@@ -643,7 +647,8 @@ app_token() {
       *) if [ -n "$app_tok" ] && [ "$((app_exp - now_s))" -gt "${A11Y_APP_REFRESH_MARGIN:-300}" ]; then printf %s "$app_tok"; return 0; fi ;;
     esac
   fi
-  if IFS= read -r app_failed 2>/dev/null < "$app_dir/$1.failed"; then
+  # an authoring call's retries (`author_token`) are not held back by the memo: that is what they are for
+  if [ -z "${app_author:-}" ] && IFS= read -r app_failed 2>/dev/null < "$app_dir/$1.failed"; then
     case "$app_failed" in
       ''|*[!0-9]*) ;;
       *) [ "$((now_s - app_failed))" -lt "${A11Y_APP_RETRY_SECONDS:-60}" ] && return 1 ;;
@@ -681,6 +686,8 @@ app_token() {
   # the reviewer's call is refused (`app_refuse`), every other role's falls back: the incident line says which
   app_outcome="fell back to the account"
   [ "$1" = reviewer ] && reviewer_refusal_on && app_outcome="refused, not sent as the account"
+  # an authoring call under the switch is minted again first (`author_token`): each failed mint says so, and the last one says it is refused
+  if [ -n "${app_author:-}" ]; then app_outcome="retrying, not sent as the account"; [ "$app_attempt" -lt "$app_attempts" ] || app_outcome="refused, not sent as the account"; fi
   # a subshell, so the three settings below cannot outlive the incident line (a prefix assignment on a function call is not portable)
   (
     LEDGER_RESOURCE=incident
@@ -704,6 +711,24 @@ app_refuse() {
   app_why=$(cat "$app_dir/$1.why" 2>/dev/null) || app_why="no reason was recorded"
   printf '%s\n' "gh: refused: the $1 call is NOT sent as the account. app-token $1 failed for App ${app_slug:-$app_id}: $app_why" >&2
   exit 1
+}
+
+# THE AUTHORING CALL (agent-org#1666): `pr create`, `pr merge` and `pr review` write the pull request as its author, and the account is shared by every
+# session, so such a call is never sent as the account because its App's mint failed. `author_refusal_on` reads the switch (OFF when the state is absent or
+# unreadable: the fallback is today's behaviour). `author_token` mints the role again, up to `A11Y_APP_AUTHOR_MINTS` times (at least one, default 3),
+# `A11Y_APP_AUTHOR_PAUSE` seconds apart (default 2), and prints the first token it gets; when none comes it fails and the caller refuses (`app_refuse`).
+# It bypasses the `.failed` memo, because a memo would turn the retries into one mint.
+author_refusal_on() { [ "$(${A11Y_GH_NODE:-node} "${A11Y_GH_FLAG_SCRIPT:-@@authorFlagScript@@}" "${A11Y_GH_CANARY_STATE:-@@canaryStateFile@@}" 2>/dev/null)" = on ]; }
+author_token() {
+  app_author=1
+  app_attempt=0
+  app_attempts=${A11Y_APP_AUTHOR_MINTS:-3}
+  while [ "$app_attempt" -lt "$app_attempts" ]; do
+    app_attempt=$((app_attempt + 1))
+    app_tok=$(app_token "$1") && [ -n "$app_tok" ] && { printf %s "$app_tok"; return 0; }
+    [ "$app_attempt" -lt "$app_attempts" ] && sleep "${A11Y_APP_AUTHOR_PAUSE:-2}"
+  done
+  return 1
 }
 
 # --- #1517: A MANAGER'S LIST IS READ FROM THE GATE'S SNAPSHOT, NOT THE API -----------------------------------------------------
@@ -755,7 +780,14 @@ if [ -n "$APP_ROLES" ] && [ -z "${GH_TOKEN:-}" ] && [ -z "${GITHUB_TOKEN:-}" ]; 
   app_who=$(app_role)
   case " $APP_ROLES " in
     *" $app_who "*)
-      if [ -n "$app_who" ] && app_tok=$(app_token "$app_who") && [ -n "$app_tok" ]; then
+      app_authoring=
+      case "$1 $2" in "pr create"|"pr merge"|"pr review") app_authoring=1 ;; esac
+      if [ -n "$app_who" ] && [ -n "$app_authoring" ] && author_refusal_on; then
+        app_tok=$(author_token "$app_who") || app_refuse "$app_who"
+        GH_TOKEN=$app_tok
+        export GH_TOKEN
+        app_account=app:$app_who
+      elif [ -n "$app_who" ] && app_tok=$(app_token "$app_who") && [ -n "$app_tok" ]; then
         GH_TOKEN=$app_tok
         export GH_TOKEN
         app_account=app:$app_who
