@@ -122,7 +122,7 @@ import { stampLookup, withEvidenceLabelAges, withPatchIds, withCheckMarkers } fr
 import { EXIT, claimedCommentsForClock, defaultRun, draining, readBranchPrsOfUnclaimed, readClaimedRowComments, readPrs, readReadyRows,
   readRowBranches, readWithFirstWaveTogether, releaseBehindNow, repoNow, runBatch, otherScopesForTick, eventUnreadForTick, rememberOtherScopesRead, primaryDue, primaryLanes } from "./work-gate/reads.ts";
 import { type Pacing, orgHealthSkipped, pacedUnread, pacingNow, pacingOn, primaryRefusedLanes, primaryUnread } from "./work-gate/pacing.ts";
-import { answerGivenOrders, bareAnswerLabelOrders, closedAnswerRows, endedSessionLabels, liveWorkspaceLabels, readClosedAnswerRows, rowsOwingAnswers,
+import { answerGivenOrders, bareAnswerLabelOrders, closedAnswerRows, endedAnswerSessionTest, endedSessionLabels, liveWorkspaceLabels, readClosedAnswerRows, rowsOwingAnswers,
   withAnswerLabel } from "./work-gate/causes/rows-answers.ts";
 import { readRecentlyClosed, unclaimedClearings } from "./work-gate/causes/rows-blocker-cleared.ts";
 import { chairmanAsksNow, chairmanReadsRefused } from "./work-gate/causes/rows-chairman.ts";
@@ -456,7 +456,7 @@ function closingsWhenRowsCleared(openRows: any[], run: (args: string[]) => strin
  */
 function trackerReadings({ allOpen, rows }: { allOpen: any[]; rows: any[]; }) {
   return { claimedComments: claimedRowCommentsWhenHeld(allOpen) ?? [], epics: epicRowsOf(allOpen),
-    closedRows: closedAnswerRows(readClosedAnswerRows()), closings: closingsWhenRowsCleared(allOpen),
+    closedRows: closedAnswerRows(readClosedAnswerRows(defaultRun, endedAnswerSessionTest)), closings: closingsWhenRowsCleared(allOpen),
     chairmanRows: readChairmanPriorityOfOffer(rows, allOpen).chairmanRows };
 }
 
@@ -537,7 +537,7 @@ export function readOpenRowFollowUps(allOpen: any[], run: (args: string[], repo?
   const agents = listWorkspaces === undefined ? [] : listWorkspaces();
   return readWithFirstWaveTogether((read) => ({
     claimedComments: claimedRowCommentsWhenHeld(allOpen, read),
-    closedRows: readClosedAnswerRows(read),
+    closedRows: readClosedAnswerRows(read, listWorkspaces === undefined ? null : endedAnswerSessionTest), // agent-org#1636: the ended sessions' labels are not asked for, and only the live `gh` asks herdr
     closings: closingsWhenRowsCleared(allOpen, read),
     closedClaims: closedClaimsWhenWorkerListed(agents, read),
     closedClaimLabels: closedClaimLabelsWhenListed(listWorkspaces === undefined ? null : agents, read), // #3883: the SAME listing, never a second read of herdr

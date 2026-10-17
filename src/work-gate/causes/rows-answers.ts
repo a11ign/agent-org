@@ -3,7 +3,7 @@ import { waitingOn, todayIso, ANSWER_PREFIX, answersOwedBy, bareAnswerLabel, ans
 import { subjectMention, subjectRef } from "../../review-attribution.ts";
 import { NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL, BLOCKED_LABEL } from "../../project-vocabulary.ts";
 import { readUnlessRefused } from "../../ticket-port/rows-by-label.ts";
-import { defaultRun, ghCallName, herdrRun, readWithFirstWaveTogether, repoNow, runBatch } from "../reads.ts";
+import { type ConditionalReads, conditionalFor, defaultRun, ghCallName, herdrRun, isGhRun, keptClosedAnswers, readWithFirstWaveTogether, repoNow, runBatch } from "../reads.ts";
 import { MAX_ROW_ORDERS_PER_TICK, REFUSAL_REASON_CHARS, REVIEWER_REGISTRY_FILE, REVIEWER_STATE_DIR, labelsOf, sessionOf } from "../vocabulary.ts";
 
 /**
@@ -93,7 +93,8 @@ function closedRowsCarrying(names: string[], { kind, run }: { kind: "issues" | "
  *
  * @returns `null` when refused, never `[]` -- "could not ask" is not "nobody owes anything"
  */
-export function readClosedAnswerRows(run: (args: string[]) => string = defaultRun): any[] | null {
+export function readClosedAnswerRows(run: (args: string[]) => string = defaultRun, goneTest: (() => ((session: string) => boolean) | null) | null = null,
+  conditional: ConditionalReads | null = isGhRun(run) ? conditionalFor(undefined) : null): any[] | null {
   closedRowsRefusal = null;
   let asking = "";
   const ask = (args: string[]) => { asking = ghCallName(args); return run(args); };
@@ -108,15 +109,28 @@ export function readClosedAnswerRows(run: (args: string[]) => string = defaultRu
     if (!Array.isArray(labels)) return refusedClosedRows(asking, "answered something that is not a list");
     const names = labels.map((l) => l?.name).filter((n) => typeof n === "string" && n.startsWith(ANSWER_PREFIX));
     if (names.length === 0) return [];
+    // agent-org#1636: ONE ALIAS PER LABEL IS ONE GRAPHQL POINT PER LABEL PER KIND, and the label list never shrinks (34 in the home repository, 27 of them an ended session's:
+    // measured 2026-10-17, 34 points for the issues read and 34 for the pull requests', every tick). An ended session's label is taken off every row it came back on
+    // (`withoutEndedAnswerSessions`), so a row carrying only such labels was read for nothing: they are not asked for. `goneTest` is `endedAnswerSessionTest`, handed by the live
+    // gate (a test's `run` stands for `gh` alone and must not read herdr), and `null` -- also what a herdr or a ledger that will not say gives -- asks for all.
+    const isGone = goneTest === null ? null : goneTest();
+    const asked = isGone === null ? names : names.filter((name) => !isGone(name.slice(ANSWER_PREFIX.length)));
+    if (asked.length === 0) return [];
     // Named for what they ARE, not for the `api graphql` they travel as: the line a refusal leaves says which of the three reads failed.
-    asking = "issue list";
-    const closedIssues = closedRowsCarrying(names, { kind: "issues", run });
-    asking = "pr list";
-    const closedPrs = closedRowsCarrying(names, { kind: "pullRequests", run });
-    if (closedIssues === null || closedPrs === null) {
-      return refusedClosedRows(closedIssues === null ? "issue list" : "pr list", "answered something that is not a list");
-    }
-    return withAnswerLabel([...closedIssues, ...closedPrs]);
+    // agent-org#1636: kept for `KEPT_ANSWERS_MAX_AGE_MS` while the labels asked for are the same (`keptClosedAnswers`); a refusal is `null` there and is never kept.
+    const merged = keptClosedAnswers(asked.join(","), () => {
+      asking = "issue list";
+      const closedIssues = closedRowsCarrying(asked, { kind: "issues", run });
+      asking = "pr list";
+      const closedPrs = closedRowsCarrying(asked, { kind: "pullRequests", run });
+      if (closedIssues === null || closedPrs === null) {
+        refusedClosedRows(closedIssues === null ? "issue list" : "pr list", "answered something that is not a list");
+        return null;
+      }
+      return [...closedIssues, ...closedPrs];
+    }, conditional);
+    if (merged === null) return null;
+    return withAnswerLabel(merged);
   } catch (err) {
     return refusedClosedRows(asking, reasonOf(err));
   }
@@ -158,21 +172,31 @@ export function withoutEndedAnswerSessions(rows: any[], { agents = liveWorkspace
   say = (line) => process.stderr.write(line) }: { agents?: () => string[] | null; ended?: () => Map<string, number>; say?: (line: string) => void; } = {}): any[] {
   const owed = rows.filter((r) => labelsOf(r).some((n) => n.startsWith(ANSWER_PREFIX)));
   if (owed.length === 0) return rows;
+  const isGone = endedSessionTest({ agents, ended }, say);
+  return isGone === null ? rows : rows.map((row) => dropGoneLabels(row, isGone, say));
+}
+
+/** `endedSessionTest` over the live herdr and the ledgers, said nowhere: the read of the rows asks only for the labels of sessions this does not name. */
+export const endedAnswerSessionTest = () => endedSessionTest({ agents: liveWorkspaceLabels, ended: endedSessionLabels }, () => {});
+
+/**
+ * Has this session ENDED (see above)? `null` when herdr or the ledgers will not say, which classifies NOTHING as gone and says so through `say`.
+ */
+function endedSessionTest({ agents, ended }: { agents: () => string[] | null; ended: () => Map<string, number>; }, say: (line: string) => void): ((session: string) => boolean) | null {
   const live = agents();
   if (live === null) {
     say(`NOTE: herdr did not answer, so no closed row's \`${ANSWER_PREFIX}\` label was classed as gone this tick -- every one `
       + "still orders (#2609).\n");
-    return rows;
+    return null;
   }
   let gone;
   try {
     gone = ended();
   } catch (err) {
     say(`NOTE: the ended-session ledgers could not be read (${String((err as any)?.message ?? err).split("\n")[0]}) -- no closed row's \`${ANSWER_PREFIX}\` label was classed as gone this tick (#2609).\n`);
-    return rows;
+    return null;
   }
-  return rows.map((row) => dropGoneLabels(row, (session) => session !== "engineers" && !live.includes(session)
-    && gone.has(session), say));
+  return (session) => session !== "engineers" && !live.includes(session) && gone.has(session);
 }
 
 /**
