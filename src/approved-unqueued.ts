@@ -14,7 +14,7 @@
 // a second spelling of that rule is how `pr-armed-state.ts`'s header records three rows going wrong. A draft is not read for it (`gh pr merge --auto` refuses a draft).
 //
 // READ-ONLY EXCEPT FOR ITS ONE COMMENT. The day's comment is found by a key in its first line (`<!-- approved-unqueued: <UTC day> count=<n> -->`), so a re-run edits it and never
-// duplicates it, and the tick, which calls this every two minutes, finds the day posted and reads nothing more (`refresh` is the manual run's, which edits). The state is the comment:
+// duplicates it, and the tick, which calls this every two minutes, finds the day posted and reads nothing more, unless the day's text carries a budget refusal, which the next tick with budget re-reads and edits (`refresh` is the manual run's, which edits; #1674). The state is the comment:
 // a streak is read from the previous days' own first lines, so nothing local can disagree with the row.
 //
 // ABSENCE IS NOT ZERO. A list nobody could read posts nothing (never a "0"), a candidate whose arming could not be read is named as UNREAD and is not counted, and a day that is
@@ -50,6 +50,9 @@ export const READING_ROW = 928;
 
 const MARKER = "<!-- approved-unqueued: ";
 const DAY_LENGTH = 10;
+/** A budget refusal INSIDE a day's text (#1674). `BUDGET_REFUSAL` (`unpark-satisfied.ts`) is anchored to a whole message; this one sits in a table cell of the comment, so it is the same words unanchored. */
+const BUDGET_IN_TEXT = /gate-budget: refused /;
+const budgetRefusedIn = (text: string): boolean => BUDGET_IN_TEXT.test(text);
 
 export const REASONS = Object.freeze(["draft", "hold", "failing check", "not armed"] as const);
 export type Reason = (typeof REASONS)[number];
@@ -244,6 +247,8 @@ export type PostResult =
 /**
  * THE DAY'S POST. `prs` is the tick's own list across the declared repositories (`null` is a refused read: nothing is posted, never a 0). With the day's comment already on the row
  * and `refresh` false it reads nothing more and files only what the comments themselves say; with `refresh` it reads, and EDITS the comment when its text changed.
+ * A day's comment whose text carries a budget refusal is NOT "already posted" (#1674): the tick that has budget reads it again and edits it. A day whose text still carries
+ * one when the NEXT day's tick runs has ended with it, so its key is stamped `unread` and it ends a streak as any day that cannot be cited does.
  * A failed ledger write or comment is thrown to the caller, which says so: a post that could not tell whether the day's comment is there must not guess.
  */
 export function postApprovedUnqueued({ prs, repos, repo, now, run, logPath, refresh = false }:
@@ -252,12 +257,18 @@ export function postApprovedUnqueued({ prs, repos, repo, now, run, logPath, refr
   const keyed = keyedCommentsOf({ repo, row: READING_ROW, marker: MARKER, since: `${dayBefore(day, PERSIST_DAYS)}T00:00:00Z`, run });
   const counts = new Map<string, number | null>();
   for (const { body } of keyed) { const key = parseKey(body); if (key !== null) counts.set(key.day, key.count); }
+  const yesterday = dayBefore(day, 1);
+  const ended = keyed.find(({ body }) => parseKey(body)?.day === yesterday);
+  if (ended !== undefined && budgetRefusedIn(ended.body) && parseKey(ended.body)?.count !== null) {
+    editComment({ repo, id: ended.id, body: ended.body.replace(/^(<!-- approved-unqueued: \S+) count=\d+ -->/, "$1 count=unread -->"), run });
+    counts.set(yesterday, null);
+  }
   const today = keyed.find(({ body }) => parseKey(body)?.day === day);
   const file = (): number => {
     const events = incidentEvents({ day, counts, repo });
     return recordFailures({ logPath, events, now }).appended;
   };
-  if (today !== undefined && !refresh) return { posted: false, why: "already-posted", day, incidents: file() };
+  if (today !== undefined && !refresh && !budgetRefusedIn(today.body)) return { posted: false, why: "already-posted", day, incidents: file() };
   if (prs === null) return { posted: false, why: "unread", day, incidents: 0, detail: "the open pull-request list was refused" };
   const reading = readReading({ prs, repos, now, run });
   const text = renderReading(reading);
