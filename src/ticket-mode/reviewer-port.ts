@@ -254,10 +254,10 @@ export function writeReviewerMemory(path: string, memory: ReviewerMemory): void 
  * head it has not reviewed. It refuses a head whose checks have not settled green: the gate's verdict is asked only of settled checks.
  */
 export function atomicReviewerPort({ session, run, gh, declared = reviewerGate().trust.declaredIdentities(), spawn = reviewerGate().wake.spawnReviewer, checkout = reviewerGate().wake.prepareReviewCheckout, heads = new Map<string, string>(),
-  removeCheckout = reviewerGate().wake.removeReviewCheckout, git = reviewerGate().wake.defaultGit, exists = existsSync }: {
+  removeCheckout = reviewerGate().wake.removeReviewCheckout, uncommittedPaths = reviewerGate().wake.uncommittedPathsOf, exists = existsSync }: {
   session: string; run: (args: string[]) => string; gh: (args: string[]) => string; declared?: DeclaredIdentities;
   spawn?: typeof import("../wake.ts").spawnReviewer; checkout?: typeof import("../wake.ts").prepareReviewCheckout; heads?: Map<string, string>;
-  removeCheckout?: typeof import("../wake.ts").removeReviewCheckout; git?: (cmd: string, args: string[], opts?: object) => string; exists?: (path: string) => boolean;
+  removeCheckout?: typeof import("../wake.ts").removeReviewCheckout; uncommittedPaths?: (path: string) => string[]; exists?: (path: string) => boolean;
 }): ReviewerPort {
   const herdr = (args: string[]) => run(args[0] === "--session" && args[1] === ORG_SESSION ? ["--session", session, ...args.slice(2)] : args);
   const listed = (): ListedAgent[] | null => readAgents(run, { session });
@@ -275,7 +275,7 @@ export function atomicReviewerPort({ session, run, gh, declared = reviewerGate()
   const uncommittedOf = (path: string): { paths: string[] } | { refusal: string } => {
     if (!exists(path)) return { paths: [] };
     try {
-      return { paths: git("git", ["-C", path, "status", "--porcelain"]).split("\n").filter((line) => line !== "").map((line) => line.slice(3)) };
+      return { paths: uncommittedPaths(path) };
     } catch (err) {
       return { refusal: `the changes in ${path} could not be read, so it is kept (${firstLine(err)})` };
     }
