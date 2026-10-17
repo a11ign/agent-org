@@ -64,3 +64,16 @@ test("doctor fails a key file other users can read, and names the chmod", async 
   assert.equal(checks["tracker key"].ok, false);
   assert.equal(checks["tracker key"].fix, "chmod 600 /home/me/.agent-org/linear.key");
 });
+
+test("doctor asks each service's state by its own name, and a stopped ui does not hide behind a running instance", async () => {
+  const asked: string[] = [];
+  const checks = byName(await diagnose(deps({
+    serviceState: (name) => { asked.push(name); return name === "instance" ? "running" : "not-registered"; },
+  })));
+  assert.deepEqual(asked, ["instance", "ui"]);
+  assert.equal(checks["instance service"].ok, true);
+  assert.equal(checks["instance answering"].ok, true);
+  assert.equal(checks["ui service"].ok, false);
+  assert.equal(checks["ui service"].fix, "run `agent-org start ui`");
+  assert.equal(checks["ui answering"].ok, false);
+});
