@@ -19,6 +19,12 @@
 // slot, so the person can answer the agent in its terminal. An agent seen working again has been answered: its outcome file is moved aside, so
 // the stop hook asks for a new one, and the run is live again. Close ends a parked run's workspace; a workspace closed by hand is noticed.
 //
+// A RUN THAT CONCLUDED IS CLOSED AT ONCE. On `checked` (the worker looked and found nothing to change) or `planned`, nobody will answer the
+// agent, so its workspace is closed as the outcome is recorded rather than left open with a finished agent in it. `checked` is not Needs you.
+//
+// DISMISS TAKES A FINISHED RUN OFF THE BOARD. Without it a finished run stayed for ever. It closes the run's workspace when it is still open
+// (parked), then drops the queue's record: the ticket, its branch and its pull requests are never touched. A queued or live run is refused.
+//
 // TICKETS QUEUED TOGETHER ARE PLANNED BY ONE RUN. Where the planner's instruction names `{keys}`, the tickets one press of Queue plans first
 // form a batch (`enqueue`), and one planning run plans it, in a folder of its own (`batchDir`). Every ticket of the batch shows that run's
 // workspace and pane, and the batch holds one slot. Only the run's agent is watched, and how it ends is how each of them ends, except
@@ -47,12 +53,12 @@ import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, rea
 import { availableParallelism, homedir, loadavg } from "node:os";
 import { join } from "node:path";
 import { agentStartArgs, closedNote, herdrReason, herdrRun, openPane, readAgents } from "../herdr-agents.ts";
-import { parseOrder, type Order } from "./batch-order.ts";
+import { parseOrder, unknownRepos, type Order } from "./batch-order.ts";
 import { readOwnLogin, readPullFeedback, type PullFeedback } from "../ticket-port/pull-feedback.ts";
 import { defaultGh } from "../lib/tool-version-agreement.ts";
-import { HANDED_BACK, hasPlan, isParked, isWatched, openPulls, stackedOn } from "./board-view.ts";
+import { CONCLUDED, HANDED_BACK, hasPlan, isBeingPublished, isParked, isWatched, openPulls, stackedOn } from "./board-view.ts";
 import {
-  batchPlanDone, feedbackRound, finish, isLive, leaveBatch, markPublishRunning, markPublishStarting, markResumed, markRunning, markStarting, nextStarts, observe,
+  batchPlanDone, dismiss as dismissFinished, feedbackRound, finish, isLive, leaveBatch, markPublishRunning, markPublishStarting, markResumed, markRunning, markStarting, nextStarts, observe,
   observePublish, park, planDone, publishDone, publishFailed, publishStarts, recordBlockers, recordPullStates, recordRepos, recordTrackerStates, unpark,
   unreadBlockerKeys, unsettledKeys,
   type Entry, type Outcome, type PublishRun, type Queue, type RunChoice,
@@ -206,6 +212,7 @@ export function parseOutcome(text: string): Outcome {
       return { kind: "ready-pr", prs: value.prs.map((pr: Record<string, unknown>) => ({ repo: String(pr.repo ?? ""), url: String(pr.url ?? "") })) };
     }
     if (value.kind === "planned") return { kind: "planned" };
+    if (value.kind === "checked") return { kind: "checked", reason: String(value.reason ?? "") };
     // A review run's pull requests are the ones the person approved, which the pool holds: `settle` puts them in.
     if (value.kind === "reviewed") return { kind: "reviewed", prs: [] };
     if (value.kind === "wrong-repo") return { kind: "wrong-repo", where: String(value.where ?? "") };
@@ -777,6 +784,8 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
         if (outcome !== null) handedBack.set(key, outcome);
       }
       const order = await recordOrder(planDir, members.map(({ ticket }) => ticket.key));
+      // A repository that is no clone of this machine is never stored: the ticket is planned with none and handed to a person, saying why.
+      const misplaced = unknownRepos(order, Object.keys(settings.clones));
       // Stopped, or stopped and started again, while its plans were attached: the person's last word stands, and a newer run is not touched.
       const still = members.filter(sameRun);
       if (still.length === 0) return;
@@ -785,6 +794,8 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
       answered.delete(name);
       updateEach(still, (queue, key) => {
         const outcome = handedBack.get(key);
+        const refused = misplaced.get(key);
+        if (outcome === undefined && refused !== undefined) return finish(batchPlanDone(queue, key, null), key, { kind: "needs-human", reason: refused }, now());
         return outcome === undefined ? batchPlanDone(queue, key, order.get(key)?.repo ?? null) : finish(queue, key, outcome, now());
       });
     } catch (err) {
@@ -842,10 +853,11 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
 
   /**
    * Record how a run ended, for every ticket in it. One that hands its tickets back keeps its workspace (parked); any other has its workspace
-   * closed.
+   * closed, a `checked` one included ({@link CONCLUDED}): nobody answers a run that found nothing to do, so its finished agent is not left open.
    */
   function end(entry: Entry, outcome: Outcome): void {
-    const parks = entry.workspace !== undefined && HANDED_BACK.has(outcome.kind);
+    // A concluded run never parks, whatever else a later change hands back: nobody would answer its agent.
+    const parks = entry.workspace !== undefined && HANDED_BACK.has(outcome.kind) && !CONCLUDED.has(outcome.kind);
     if (entry.workspace && !parks) closedNote((args) => herdr(args), entry.workspace, session);
     const id = entry.workspace === undefined ? undefined : claudeSessions.get(entry.workspace);
     const tokens = countTokens(id === undefined ? null : findTranscript(transcripts, id));
@@ -1069,6 +1081,23 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
   }
 
   /**
+   * Dismiss a finished run: close its workspace if it is still open (parked), then take it off the board. The ticket, its branch, its worktrees
+   * and its pull requests are left as they are. Throws, naming why, for a run that is queued or live, or that the publish run under way is
+   * posting, and with herdr's reason when the workspace cannot be closed, so the run stays on the board, parked, for another try.
+   */
+  function dismiss(key: string): void {
+    const queue = store.get();
+    const entry = queue.entries.find((e) => e.ticket.key === key);
+    if (entry === undefined) return;
+    if (entry.phase === "queued") throw new Error(`${key} is queued, not finished: Remove takes it off the queue`);
+    if (entry.phase !== "finished") throw new Error(`${key} is still running: Stop it first, then dismiss it`);
+    if (isBeingPublished(entry, queue.publish)) throw new Error(`${key}'s pull requests are being published: dismiss it once the publish run has ended`);
+    // A batch's parked tickets share one workspace: closing it unparks them all, and only this one leaves the board.
+    if (isParked(entry)) close(key);
+    update((next) => dismissFinished(next, key));
+  }
+
+  /**
    * After a restart: a run the file says is live but herdr does not list is recorded as crashed; one still listed carries on. A run caught
    * between `starting` and `running` has no workspace on record, so it is crashed too: its worktree is kept and it can be retried. A parked run
    * herdr no longer lists is unparked, keeping its outcome.
@@ -1216,7 +1245,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     return lines;
   }
 
-  return { tick, stop, close, reconcile, ensureSession, refreshTracker, watchFeedback };
+  return { tick, stop, close, dismiss, reconcile, ensureSession, refreshTracker, watchFeedback };
 }
 
 export type Pool = ReturnType<typeof createPool>;

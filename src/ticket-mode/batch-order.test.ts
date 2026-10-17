@@ -1,7 +1,7 @@
 // no-token: gh -- pure parsing of a file's text
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseOrder } from "./batch-order.ts";
+import { parseOrder, unknownRepos, type Order } from "./batch-order.ts";
 
 const batch = ["NBF-1", "NBF-2", "NBF-3"];
 const refusalOf = (value: unknown): string => {
@@ -35,4 +35,17 @@ test("an order is refused whole for a key outside the batch, a ticket that waits
   assert.match(refusalOf({ "NBF-1": { repo: null } }), /^its entry for NBF-1 is not/);
   assert.equal(refusalOf([]), "it is not one object keyed by ticket");
   assert.equal(refusalOf("{ not json"), "it is not JSON");
+});
+
+test("A11-70: a repository that is not one of the host file's clones keys is refused by name, and a known one or null is not", () => {
+  const order: Order = new Map([
+    ["NBF-1", { repo: "a11ign", after: [] }],
+    ["NBF-2", { repo: "a11y-witness", after: ["NBF-1"] }],
+    ["NBF-3", { repo: null, after: [] }],
+  ]);
+  const refused = unknownRepos(order, ["a11ign", "agent-org"]);
+  assert.deepEqual([...refused.keys()], ["NBF-2"], "only the ticket placed in a folder's name, not a clone's");
+  const reason = refused.get("NBF-2")!;
+  for (const part of ["NBF-2", "`a11y-witness`", "not one of this machine's clones (`a11ign`, `agent-org`)", "gave it none", "Retry"]) assert.ok(reason.includes(part), part);
+  assert.equal(unknownRepos(new Map([["NBF-1", { repo: "a11ign", after: [] }]]), ["a11ign"]).size, 0, "a known repository is accepted");
 });

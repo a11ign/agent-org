@@ -53,6 +53,18 @@ const FOREGROUND_WAIT = `Wait in the foreground, with blocking commands, such as
 /** What a worker does when a skill its brief names is missing: a copy of the skill's files, read by hand, is not the skill and its helpers. */
 const MISSING_SKILL = "If a skill this brief names is not available in this session, write a `needs-human` outcome naming it, rather than following a copy of its files.";
 
+/**
+ * What a planner does with a ticket that is only a parent: an epic whose work is all in the tickets under it is not work for one run, so its plan
+ * says so and points the person at the children, rather than planning a run of its own (A11-24, an epic, was handed to a person on 2026-10-17).
+ */
+const PARENT_ONLY_PLAN = "A ticket that is only a parent, an epic whose work is all in the tickets under it, gets no plan for a run of its own. Its plan says that it is only a parent, names the child tickets that hold its work, and suggests the person queues those children instead of a run on it.";
+
+/**
+ * When a worker writes `checked` and when `needs-human`. `needs-human` puts the run in the board's Needs you and keeps its workspace open for an
+ * answer, so a worker that only found nothing to change must not write it: that is `checked`, which ends the run without asking anyone.
+ */
+const CHECKED_OR_NEEDS_HUMAN = "Write `checked` when you looked at what the ticket asks and nothing needs to change: it is already done, the problem it describes is not there, or the ticket is only a parent whose work is all in its child tickets (name them, so the person queues them). Say in its reason what you checked and what you found. Write `needs-human` only for a real question or decision that only the person can make: it asks them for an answer, and the run waits for one.";
+
 /** The folder in the ticket's own directory that a planning run writes its plan's files in, for the board to attach. */
 export const PLAN_DIR = "plan";
 /** What a batch planning run leaves in a ticket's folder, in place of its plan, when only a person can settle the plan. */
@@ -163,6 +175,9 @@ const plannerInstruction = (run: string, keys: readonly string[], dir: string): 
   run.replaceAll("{keys}", keys.join(", ")).replaceAll("{key}", keys.join(", ")).replaceAll("{dir}", dir);
 
 /** The repositories a planning run reads, as a list. */
+/** The \`clones\` keys, each quoted, for a brief that asks for one of them by name. */
+const cloneNames = (clones: Readonly<Record<string, string>>): string => Object.keys(clones).map((name) => `\`${name}\``).join(", ");
+
 const reposText = (clones: Readonly<Record<string, string>>): string => Object.entries(clones).map(([name, path]) => `- \`${name}\` at \`${path}\``).join("\n");
 
 /** A description quoted, so its own headings cannot read as the brief's. */
@@ -201,6 +216,8 @@ ${repos}
 ## What to do
 
 ${instruction}
+
+${PARENT_ONLY_PLAN}
 
 ${MISSING_SKILL}
 
@@ -271,6 +288,8 @@ ${reposText(clones)}
 
 ${plannerInstruction(run, keys, planDir)}
 
+${PARENT_ONLY_PLAN}
+
 ${MISSING_SKILL}
 
 ## Where the plans go
@@ -278,7 +297,7 @@ ${MISSING_SKILL}
 Write everything in \`${planDir}\`, and nowhere else:
 
 - \`${planDir}/<KEY>/\` for each ticket above holds that ticket's plan files, or a \`${QUESTION_FILE}\` when only a person can settle its plan. The board attaches each plan file to its own ticket under its file name. Write only markdown files there, each 1 MB or less: anything else stops the board attaching that ticket's plan. A question about one ticket does not stop the others, so plan the rest.
-- \`${planDir}/${ORDER_FILE}\` is one object with an entry for each ticket: \`{ "<KEY>": { "repo": "<repository>", "after": ["<KEY>", ...] } }\`. \`repo\` is the repository the ticket's work lands in, by its name in the list above, or \`null\` for a ticket with a question. \`after\` names the tickets of this batch whose work it needs first. Name only tickets of this batch, never the ticket itself, and make no cycle. The board records each one in the tracker as blocking the ticket, so its worker starts only once they are done.
+- \`${planDir}/${ORDER_FILE}\` is one object with an entry for each ticket: \`{ "<KEY>": { "repo": "<repository>", "after": ["<KEY>", ...] } }\`. \`repo\` is the repository the ticket's work lands in, or \`null\` for a ticket with a question. It must be exactly one of these names, which are the host file's \`clones\` keys: ${cloneNames(clones)}. A name is not the folder its checkout sits in, so never take a \`repo\` from a path: the board refuses any other name, and hands that ticket to a person. \`after\` names the tickets of this batch whose work it needs first. Name only tickets of this batch, never the ticket itself, and make no cycle. The board records each one in the tracker as blocking the ticket, so its worker starts only once they are done.
 ${connectorsText(connectors)}${notes?.trim() ? `\n## On this machine\n\n${notes.trim()}\n` : ""}
 ## The outcome file
 
@@ -356,8 +375,11 @@ Write \`${ticketDir}/${OUTCOME_FILE}\` as the last thing you do, with exactly on
 \`\`\`json
 { "kind": "${drafts ? "draft-pr" : "ready-pr"}", "prs": [{ "repo": "<repo>", "url": "<pull request url>" }] }
 { "kind": "wrong-repo", "where": "<the repository or service the fix belongs in, and why>" }
+{ "kind": "checked", "reason": "<what you checked, what you found, and why nothing needs to change>" }
 { "kind": "needs-human", "reason": "<what a person must decide or provide>" }
 \`\`\`
+
+${CHECKED_OR_NEEDS_HUMAN}
 
 A person may answer you here after a \`needs-human\` or \`wrong-repo\` outcome. If one does, carry on with what they said, and write the outcome file again as the last thing you do.
 `;

@@ -7,7 +7,8 @@
 // `deny`, `plugins` and `connectors` say how workers behave on this machine, for example how they share its dev servers with each other and with
 // the person, and which of the person's connectors they may call.
 // The optional `terminal` says where this machine serves a worker's terminal in a browser, if it does, and the optional `plan` how the board
-// recognises a ticket's plan among the files uploaded to it. The optional `publish` says how a person's chosen pull requests are announced.
+// recognises a ticket's plan among the files uploaded to it. The optional `publish` says how a person's chosen pull requests are announced. The
+// optional `pick` says which tickets the Pick view lists: the key's own, or every open ticket of one team or project.
 //
 // READ RAW, AS `haiku-brief.ts` READS ITS KEY. `readHostConfig` ignores unknown keys, so `tickets` is inert to every existing reader, and this
 // module does not teach the strict reader a block only ticket mode uses. It imports neither `host-config.ts` nor `project-config.ts`: both
@@ -69,7 +70,16 @@ export type TicketSettings = Readonly<{
   drafts: boolean;
   /** The reviewer this machine starts for each ready pull request: `"atomic"` for the gate's codex reviewer, or null for none. */
   reviewer: Reviewer | null;
+  /** Which tickets the Pick view lists. `"assigned"` by default. */
+  pick: PickScope;
 }>;
+
+/**
+ * Which tickets the Pick view lists: `"assigned"`, the ones assigned to the person whose key the board reads with, or every open ticket of the
+ * team whose key is `team` (the prefix of its tickets' keys, such as `A11`), or of the project named `project`. A ticket nobody assigned to the
+ * key's person is in a team and often a project, so a machine whose tickets are moved in, or shared out, names one of those.
+ */
+export type PickScope = "assigned" | Readonly<{ team: string }> | Readonly<{ project: string }>;
 
 /** The reviewers a machine may start for a ready pull request. */
 export type Reviewer = "atomic";
@@ -247,6 +257,22 @@ function reviewerOf(value: unknown): Reviewer | null {
   return value;
 }
 
+const PICK_SHAPE = "must be \"assigned\", { \"team\": \"<team key, such as A11>\" } or { \"project\": \"<project name>\" }";
+/** A team's key as Linear spells one: a letter, then letters and digits. */
+const TEAM_KEY = /^[A-Za-z][A-Za-z0-9]*$/;
+
+/**
+ * `tickets.pick`: absent or `"assigned"` is the key's own tickets; one object naming exactly one team key or one project name lists every open
+ * ticket of it. A team key is upper-cased, as Linear stores it; a project name has its outer spaces dropped. Anything else is refused by name.
+ */
+function pickOf(value: unknown): PickScope {
+  if (value === undefined || value === "assigned") return "assigned";
+  const named = isObject(value) ? Object.keys(value) : [];
+  if (isObject(value) && named.length === 1 && typeof value.team === "string" && TEAM_KEY.test(value.team)) return Object.freeze({ team: value.team.toUpperCase() });
+  if (isObject(value) && named.length === 1 && typeof value.project === "string" && value.project.trim() !== "") return Object.freeze({ project: value.project.trim() });
+  throw new TicketSettingsRefusal("tickets.pick", `${PICK_SHAPE}, not ${JSON.stringify(value)}`);
+}
+
 export function parseTicketSettings(host: unknown, home: string = homedir()): TicketSettings {
   if (!isObject(host)) throw new TicketSettingsRefusal("(root)", "must be a JSON object");
   const clones = host.clones;
@@ -284,6 +310,7 @@ export function parseTicketSettings(host: unknown, home: string = homedir()): Ti
     publish: publisherOf(tickets.publish),
     drafts: draftsOf(tickets.drafts),
     reviewer: reviewerOf(tickets.reviewer),
+    pick: pickOf(tickets.pick),
   });
 }
 

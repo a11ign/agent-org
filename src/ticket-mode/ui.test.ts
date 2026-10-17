@@ -55,8 +55,8 @@ const TICKETS = [
 
 /** Run the page's script against a fake document, with `storage` as its localStorage. Resolves once the first render has happened. */
 type PageOptions = { config?: Record<string, unknown>; entries?: unknown[]; tickets?: unknown[]; parents?: unknown[]; refused?: string[]; publish?: unknown;
-  connections?: unknown; errors?: Record<string, string>; hold?: Record<string, unknown> };
-async function page(storage: Map<string, string>, { config = {}, entries = [], tickets = TICKETS, parents = [], refused = [], publish, connections, errors = {}, hold = {} }: PageOptions = {}) {
+  connections?: unknown; errors?: Record<string, string>; hold?: Record<string, unknown>; pick?: unknown };
+async function page(storage: Map<string, string>, { config = {}, entries = [], tickets = TICKETS, parents = [], refused = [], publish, connections, errors = {}, hold = {}, pick }: PageOptions = {}) {
   const byId = new Map<string, Node_>();
   const posts: { path: string; body: any }[] = [];
   const requested: string[] = [];
@@ -86,6 +86,7 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
       "/api/config": () => ({ models: ["opus"], efforts: ["high"], max: 3, ...config, choice: saved }),
       "/api/tickets": () => tickets,
       "/api/parents": () => parents,
+      ...(pick === undefined ? {} : { "/api/pick": () => pick }),
       "/api/choice": () => { saved = { ...saved, ...body }; return { choice: saved }; },
       "/api/max": () => { max = body.max; return { entries, max, paused: true }; },
     };
@@ -610,13 +611,13 @@ test("each filter shows its count, and choosing one shows only its runs and is r
   assert.equal(p.$("runs").text(), "No runs are cancelled.");
 });
 
-test("a row offers only the actions its state allows, and a completed run is not retried", async () => {
+test("a row offers only the actions its state allows, a completed run is not retried, and every finished run can be dismissed", async () => {
   const p = await page(new Map(), { entries: RUNS });
   const buttons = (key: string) => runRows(p).find((r) => r.text().includes(key))!.all().filter((n) => n.tag === "button").map((b) => b.text());
   assert.deepEqual(buttons("Q-1"), ["Remove"]);
   assert.deepEqual(buttons("R-1"), ["Stop"]);
-  assert.deepEqual(buttons("F-1"), ["Retry"]);
-  assert.deepEqual(buttons("M-1"), []);
+  assert.deepEqual(buttons("F-1"), ["Retry", "Dismiss"]);
+  assert.deepEqual(buttons("M-1"), ["Dismiss"]);
   assert.ok(runRows(p).find((r) => r.text().includes("D-1"))!.text().includes("nbl-ui-netbox #12"), "the draft's pull request is linked by repo and number");
 });
 
@@ -833,11 +834,11 @@ test("a run Ready to merge, Published, or handed back by the board offers Respon
   const actions = (key: string) => runRows(p).find((r) => r.text().includes(key))!.all().filter((n) => n.tag === "button") as (Node_ & { title?: string })[];
   for (const key of ["P-1", "P-3", "H-1"]) {
     const [respond] = actions(key);
-    assert.deepEqual(actions(key).map((b) => b.text()), ["Respond to review"], key);
+    assert.deepEqual(actions(key).map((b) => b.text()), ["Respond to review", "Dismiss"], key);
     assert.match(respond.title ?? "", /^Answer the feedback on these ready pull requests/);
     assert.ok(respond.all().some((n) => n.className === "action-icon"), "the reply icon");
   }
-  assert.deepEqual(actions("D-1").map((b) => b.text()), ["Approve"]);
+  assert.deepEqual(actions("D-1").map((b) => b.text()), ["Approve", "Dismiss"]);
   assert.match(actions("D-1")[0].title ?? "", /^Drafts reviewed and approved/);
   actions("P-1")[0].fire("click");
   await settle();
@@ -931,4 +932,32 @@ test("an answer from the instance shown before a switch is dropped, so it never 
   for (let i = 0; i < 10; i++) await settle();
   assert.deepEqual(p.shownKeys(), ["T-1", "T-2", "T-3", "T-4"], "personal's late tickets did not replace work's");
   assert.equal(p.$("error").textContent, "", "and dropping it is not an error");
+});
+
+test("a checked run shows Checked with its reason, not Needs you, and its Dismiss, titled as leaving the ticket alone, goes to the board", async () => {
+  const p = await page(new Map(), { entries: [entry("C-1", { phase: "finished", startedAt: 2, finishedAt: 4, outcome: { kind: "checked", reason: "A11-24 is an epic: queue A11-25 and A11-26" } })] });
+  const row = runRows(p).find((r) => r.text().includes("C-1"))!;
+  assert.equal(row.children[0].className, "icon st-checked");
+  assert.ok(row.text().includes("A11-24 is an epic: queue A11-25 and A11-26"), "the reason it finished with");
+  assert.equal(filterButton(p, "Needs you").children.find((c) => c.className === "n")?.text(), "0");
+  const dismiss = row.all().find((n) => n.tag === "button") as Node_ & { title?: string };
+  assert.equal(dismiss.text(), "Dismiss");
+  assert.match(dismiss.title ?? "", /The ticket, its branch and its pull requests are left as they are/);
+  dismiss.fire("click");
+  await settle();
+  assert.ok(p.posts.some((x) => x.path === "/api/queue/C-1/dismiss"));
+});
+
+test("A11-69: an empty Pick view says why in the instance's words, and the count says whose tickets it lists", async () => {
+  const empty = 'Team A11 has no open tickets, or Linear has no team with that key. tickets.pick in the host file names it.';
+  const p = await page(new Map(), { tickets: [], config: { pick: "open in team A11" }, pick: { empty } });
+  const shown = p.$("groups").all().filter((n) => n.className === "empty");
+  assert.deepEqual(shown.map((n) => n.text()), [empty]);
+  assert.equal(p.$("loaded").textContent, "0 of 0 open in team A11 shown, 0 selected");
+  const older = await page(new Map(), { tickets: [] });
+  assert.deepEqual(older.$("groups").all().filter((n) => n.className === "empty").map((n) => n.text()), ["No open tickets to list."], "an instance that cannot say why keeps a plain line");
+  assert.equal(older.$("loaded").textContent, "0 of 0 assigned to you shown, 0 selected", "an instance that names no pick lists the key's own, as before");
+  const full = await page(new Map(), { pick: { empty } });
+  assert.equal(full.requested.includes("/api/pick"), false, "a list with tickets asks no reason");
+  assert.equal(full.$("groups").all().some((n) => n.className === "empty"), false);
 });

@@ -21,6 +21,7 @@ function board(port = 4747, ticketSettings: Record<string, unknown> = {}, extra:
   const ticks: string[] = [];
   const pool = {
     tick: async () => { ticks.push("tick"); }, stop: (key: string) => { ticks.push(`stop ${key}`); }, close: (key: string) => { ticks.push(`close ${key}`); },
+    dismiss: (key: string) => { ticks.push(`dismiss ${key}`); },
     reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {},
   };
   const made = createBoard({ settings, source, key: KEY, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7, ...extra });
@@ -41,7 +42,7 @@ test("/api/parents reads the parents of the person's tickets that are not the pe
     },
     download: async () => [],
   };
-  const pool = { tick: async () => {}, stop: () => {}, close: () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {} };
+  const pool = { tick: async () => {}, stop: () => {}, close: () => {}, dismiss: () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {} };
   const { api } = createBoard({ settings, source, key: KEY, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7 });
   await api("GET", "/api/tickets", {});
   const [status, parents] = await api("GET", "/api/parents", {}) as [number, Ticket[]];
@@ -111,7 +112,7 @@ function planningBoard(attachPlan: TicketSource["attachPlan"] | null = async () 
     tickets: { plan: "-plan-[^/]*\\.md$", planner: { run, state: "Planned" } } });
   const planned = { ...ticket("NBF-1"), uploads: ["NBF-1-0001-plan-x.md"] };
   const source: TicketSource = { assigned: async () => [planned, ticket("NBF-2"), ticket("NBF-3")], read: async () => null, download: async () => [], ...(attachPlan ? { attachPlan } : {}) };
-  const pool = { tick: async () => {}, stop: () => {}, close: () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {} };
+  const pool = { tick: async () => {}, stop: () => {}, close: () => {}, dismiss: () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {} };
   return createBoard({ settings, source, key: KEY, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7 });
 }
 
@@ -242,17 +243,19 @@ test("the queue the page reads carries the running publish run's workspace and p
   assert.deepEqual([running.phase, running.workspace, running.pane], ["running", "w9", "w9:p1"]);
 });
 
-test("remove, stop, close and max go through the board", async () => {
+test("remove, stop, close, dismiss and max go through the board", async () => {
   const b = board();
   await b.api("GET", "/api/tickets", {});
   await b.api("POST", "/api/queue", { keys: ["NBF-1", "NBF-2"], model: "sonnet", effort: "high" });
   await b.api("POST", "/api/queue/NBF-1/remove", {});
   await b.api("POST", "/api/queue/NBF-2/stop", {});
   await b.api("POST", "/api/queue/NBF-2/close", {});
+  await b.api("POST", "/api/queue/NBF-2/dismiss", {});
   await b.api("POST", "/api/max", { max: 5 });
   assert.deepEqual(b.store.get().entries.map((e) => e.ticket.key), ["NBF-2"]);
   assert.ok(b.ticks.includes("stop NBF-2"));
   assert.ok(b.ticks.includes("close NBF-2"), "a parked run's workspace is the pool's to close");
+  assert.ok(b.ticks.includes("dismiss NBF-2"), "Dismiss is the pool's, which closes a parked run's workspace before the run leaves the board");
   assert.equal(b.store.get().max, 5);
 });
 
@@ -330,4 +333,21 @@ test("over HTTP: a request body over 64 KB is refused, even with the key", async
     assert.equal(big.status, 400);
     assert.match((await big.json() as { error: string }).error, /over 65536 bytes/);
   });
+});
+
+test("A11-69: the board says which tickets the Pick view lists, and why it is empty, naming the key's person only when it lists theirs", async () => {
+  const [, config] = await board().api("GET", "/api/config", {}) as [number, { pick: string }];
+  assert.equal(config.pick, "assigned to you");
+  let asked = 0;
+  const named = board(4747, {}, { source: { assigned: async () => [], read: async () => null, download: async () => [], viewer: async () => { asked += 1; return "Dan Beck"; } } });
+  const [status, pick] = await named.api("GET", "/api/pick", {}) as [number, { empty: string }];
+  assert.equal(status, 200);
+  assert.match(pick.empty, /^No open tickets are assigned to Dan Beck,.*tickets\.pick/);
+  const failing = board(4747, {}, { source: { assigned: async () => [], read: async () => null, download: async () => [], viewer: async () => { throw new Error("Linear answered 500"); } } });
+  assert.match((await failing.api("GET", "/api/pick", {}) as [number, { empty: string }])[1].empty, /^No open tickets are assigned to you,/, "a tracker that cannot say whose key it is reads as you");
+  const team = board(4747, { pick: { team: "A11" } }, { source: { assigned: async () => [], read: async () => null, download: async () => [], viewer: async () => { asked += 1; return "x"; } } });
+  const [, teamConfig] = await team.api("GET", "/api/config", {}) as [number, { pick: string }];
+  assert.equal(teamConfig.pick, "open in team A11");
+  assert.match((await team.api("GET", "/api/pick", {}) as [number, { empty: string }])[1].empty, /^Team A11 has no open tickets/);
+  assert.equal(asked, 1, "a team's list names no person, so none is asked for");
 });
