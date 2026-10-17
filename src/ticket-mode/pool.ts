@@ -1407,8 +1407,9 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
       const readable = reads.filter((pull): pull is { url: string; read: PullFeedback } => pull.read !== null);
       const open = readable.filter(({ read }) => read.state === "open");
       const partial = open.filter(({ read }) => !read.filesComplete).map(({ url }) => url);
-      if (partial.length > 0) log(`${entry.ticket.key}: ${partial.join(", ")} changes more than the 100 files read, so its footprint is partial`);
-      const files = Object.fromEntries(open.map(({ url, read }) => [url, read.files]));
+      if (partial.length > 0) log(`${entry.ticket.key}: ${partial.join(", ")} changes more than the 100 files read, so it holds its whole repository`);
+      // The files GitHub did not give are unknown, not untouched: the empty name holds the repository, so no run is started beside it on a guess.
+      const files = Object.fromEntries(open.map(({ url, read }) => [url, read.filesComplete ? read.files : [...read.files, ""]]));
       // Written only when a file changed, so a watch that finds the same files does not rewrite the queue.
       if (JSON.stringify(files) !== JSON.stringify(entry.pullFiles ?? {})) update((queue) => recordPullFiles(queue, entry.ticket.key, files));
       if (!isWatched(entry)) continue;

@@ -1538,8 +1538,9 @@ function ghFor(pulls: Record<number, unknown>) {
 }
 const at = (ms: number) => new Date(ms).toISOString();
 const feedbackPull = ({ state = "OPEN", head = "h1", reviews = [] as unknown[], comments = [] as unknown[], checks = [] as unknown[], mergeable = "MERGEABLE",
-  mergeStateStatus = "CLEAN", base = "main", files = [] as string[] } = {}) =>
-  ({ state, headRefOid: head, mergeable, mergeStateStatus, baseRefName: base, files: { nodes: files.map((path) => ({ path })) }, reviews: { nodes: reviews },
+  mergeStateStatus = "CLEAN", base = "main", files = [] as string[], more = false } = {}) =>
+  ({ state, headRefOid: head, mergeable, mergeStateStatus, baseRefName: base, files: { pageInfo: { hasNextPage: more, endCursor: more ? "c1" : null }, nodes: files.map((path) => ({ path })) },
+    reviews: { nodes: reviews },
     comments: { nodes: comments }, reviewThreads: { nodes: [] }, commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: checks } } } }] } });
 /** The gate's check on a head, green: a reviewer starts only where the checks have settled green. */
 const GATE_GREEN = { name: "gate", status: "COMPLETED", conclusion: "SUCCESS" };
@@ -1753,6 +1754,44 @@ test("A11-82: a paused queue reads no plan, and reads each one once it is unpaus
   store.set(setPaused(store.get(), false));
   await pool.tick();
   assert.equal(entry("NBF-1").phase, "running");
+});
+
+test("A11-82: tickets queued and planned together whose plans share a path, with no order between them, are worked one after the other", async () => {
+  const tracker = batchTracker(planFiles({ "NBF-1": ["nbl-ui-netbox:src/a.ts"], "NBF-2": ["nbl-ui-netbox:src/a.ts"] })).tracker;
+  let ran: ReturnType<typeof setup> | undefined;
+  await captureStderr(async () => {
+    ran = setup(2, ["NBF-1", "NBF-2"], BATCH_PLANNER, { source: tracker, planFirst: ["NBF-1", "NBF-2"], batch: true });
+    await ran.pool.tick();
+    const plan = join(batchDir(ran.settings, BATCH), "plan");
+    put(join(plan, "NBF-1", "NBF-1-0001-plan-a.md"), "# A\n");
+    put(join(plan, "NBF-2", "NBF-2-0001-plan-b.md"), "# B\n");
+    put(join(plan, "order.json"), JSON.stringify({ "NBF-1": { repo: "nbl-ui-netbox", after: [] }, "NBF-2": { repo: "nbl-ui-netbox", after: [] } }));
+    writeFileSync(join(batchDir(ran.settings, BATCH), "outcome.json"), JSON.stringify({ kind: "planned" }));
+    ran.status.set(herdrName(BATCH), "idle");
+    await ran.pool.tick();
+    await settled();
+    await ran.pool.tick();
+  });
+  const { entry, store } = ran!;
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-2").phase], ["running", "queued"], "two slots free, one shared file: the second waits");
+  assert.equal(runStatus(entry("NBF-2"), store.get().entries), "blocked");
+  assert.equal(waitNote(entry("NBF-2"), store.get().entries), "Waits on NBF-1: both touch src/a.ts");
+});
+
+test("A11-82: a pull request whose file list was cut short holds its whole repository, so a run is not started beside it on a guess", async () => {
+  for (const [more, phase] of [[false, "running"], [true, "queued"]] as const) {
+    const gh = ghFor({ 1: feedbackPull({ files: ["src/ticket-mode/server.ts"], more }) });
+    const { pool, entry, store, status } = setup(1, ["NBF-1", "NBF-2"], { plan: "-plan-[^/]*\\.md$" }, { gh: gh.run, source: planFiles({
+      "NBF-1": ["nbl-ui-netbox:src/a.ts"], "NBF-2": ["nbl-ui-netbox:docs/unrelated.md"],
+    }) });
+    await pool.tick();
+    status.delete(herdrName("NBF-1"));
+    store.set(finish(store.get(), "NBF-1", { kind: "draft-pr", prs: [approvedPr] }, 150));
+    await captureStderr(async () => { pool.watchFeedback(); });
+    await pool.tick();
+    assert.equal(entry("NBF-2").phase, phase, more ? "the files run past the pages read: they are unknown, so NBF-2 waits" : "every file was listed and none is NBF-2's: it starts");
+    if (phase === "queued") assert.equal(waitNote(entry("NBF-2"), store.get().entries), "Waits on NBF-1 #1: both touch docs/unrelated.md");
+  }
 });
 
 test("A11-82: a plan the tracker cannot give starts nothing, so a run is not started beside a run its plan may overlap before that is known", async () => {

@@ -675,6 +675,18 @@ test("A11-82: paths overlap only in one repository: equal, or a directory that h
   assert.equal(pathsOverlap("agent-org:src/ticket-mode/pool", "agent-org:src/ticket-mode/pool.ts"), false, "a name is not a prefix of another");
   assert.equal(pathsOverlap("agent-org:src/ticket-mode/pool.ts", "agent-org:src/ticket-mode/pool.ts/"), false, "a file is not a directory");
   assert.equal(pathsOverlap("agent-org:src/a.ts", "nbl-ui-netbox:src/a.ts"), false, "different repositories never overlap");
+  assert.equal(pathsOverlap("agent-org:", "agent-org:src/ticket-mode/pool.ts"), true, "an empty path is the whole repository");
+  assert.equal(pathsOverlap("agent-org:docs/", "agent-org:"), true);
+  assert.equal(pathsOverlap("agent-org:", "nbl-ui-netbox:src/a.ts"), false, "and only that repository");
+});
+
+test("A11-82: a pull request whose file list was cut short holds its whole repository, and no other", () => {
+  const url = "https://github.com/a11ign/agent-org/pull/3";
+  const cut = holderOf("APP-1", { phase: "finished", outcome: { kind: "draft-pr", prs: [pulled(url)] }, pullFiles: { [url]: ["src/a.ts", ""] } });
+  assert.deepEqual(footprintOf(cut), ["agent-org:src/a.ts", "agent-org:"]);
+  const waiting = waitingOn(["agent-org:docs/unrelated.md"]);
+  assert.deepEqual(overlapWait(waiting, [cut, waiting]), { key: "APP-1", pull: "3", path: "docs/unrelated.md" }, "a path it was never listed in is held too");
+  assert.equal(overlapWait(waitingOn(["nbl-ui-netbox:docs/unrelated.md"]), [cut]), null, "another repository is not");
 });
 
 test("A11-82: a run's footprint is its plan's paths and the files each open pull request changes, in that pull request's repository", () => {
@@ -720,13 +732,12 @@ test("A11-82: a run whose ticket ended holds nothing, and a queued review round 
   assert.deepEqual(overlapWait(waiting, [round, waiting]), { key: "APP-1", pull: "2", path: "src/a.ts" }, "a queued review round still has its pull request open");
 });
 
-test("A11-82: a run is not held by its own blockers, by a run that is blocked by it, by its own batch, or by a review round, planning run or unread plan", () => {
+test("A11-82: a run is not held by its own blockers, by a run that is blocked by it, or by a review round, planning run or unread plan", () => {
   const live = holderOf("APP-1", { phase: "running", paths: ["agent-org:src/a.ts"] });
   const shared = ["agent-org:src/a.ts"];
   assert.equal(overlapWait(waitingOn(shared, { blockers: [{ key: "APP-1", state: "started", status: "In Progress", pulls: {} }] }), [live]), null, "its own blocker");
   assert.equal(overlapWait(waitingOn(shared), [holderOf("APP-1", { phase: "running", paths: shared, blockers: [{ key: "APP-2", state: "unstarted", status: "Todo", pulls: {} }] })]), null,
     "a run that is blocked by it");
-  assert.equal(overlapWait(waitingOn(shared, { batch: "b1" }), [holderOf("APP-1", { phase: "running", paths: shared, batch: "b1" })]), null, "one batch is one run");
   assert.equal(overlapWait(waitingOn(shared, { review: [pulled("https://github.com/a11ign/agent-org/pull/1")] }), [live]), null, "a review round is never held");
   assert.equal(overlapWait(waitingOn(shared, { plan: { model: "opus", effort: "max" } }), [live]), null, "a planning run is never held");
   assert.equal(overlapWait(waitingOn(undefined as unknown as string[]), [live]), null, "a run whose plan is not read yet is not held by a path");

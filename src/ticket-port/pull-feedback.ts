@@ -21,19 +21,22 @@ export type PullFeedback = Readonly<{
   base: string | null;
   /** The files it changes, by path within its repository. */
   files: readonly string[];
-  /** Whether `files` is all of them: GitHub gives at most 100, and a pull request changing more is read in part. */
+  /** Whether `files` is all of them. Read a page of 100 at a time, up to {@link MAX_FILE_PAGES}: a list cut off there is not complete. */
   filesComplete: boolean;
 }>;
 
 /** How much of each list one read takes, newest last. Only the newest item of each counts, so a long history is not read. */
 const LAST = 50;
 
+/** The most pages of changed files one read takes: a pull request beyond this many files is read in part, and says so. */
+export const MAX_FILE_PAGES = 10;
+
 const QUERY = `query($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) {
   state
   mergeable
   mergeStateStatus
   baseRefName
-  files(first: 100) { totalCount nodes { path } }
+  files(first: 100) { pageInfo { hasNextPage endCursor } nodes { path } }
   reviews(last: ${LAST}) { nodes { state submittedAt author { login } } }
   comments(last: ${LAST}) { nodes { createdAt author { login } } }
   reviewThreads(last: ${LAST}) { nodes { comments(last: 20) { nodes { createdAt author { login } } } } }
@@ -42,6 +45,11 @@ const QUERY = `query($owner: String!, $repo: String!, $number: Int!) { repositor
     ... on CheckRun { name conclusion startedAt completedAt detailsUrl isRequired(pullRequestNumber: $number) }
     ... on StatusContext { context state createdAt isRequired(pullRequestNumber: $number) }
   } } } } } }
+} } }`;
+
+/** The page of changed files after `cursor`, read the same way as the first page in `QUERY`. */
+const FILES_QUERY = `query($owner: String!, $repo: String!, $number: Int!, $cursor: String!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) {
+  files(first: 100, after: $cursor) { pageInfo { hasNextPage endCursor } nodes { path } }
 } } }`;
 
 /** A review is feedback when it asks for something: an approval or a dismissed review is not. */
@@ -97,15 +105,37 @@ export function readPullFeedback(url: string, self: string, run: (args: string[]
   try {
     const answer = JSON.parse(run(["api", "graphql", "-f", `query=${QUERY}`, "-f", `owner=${pull.owner}`, "-f", `repo=${pull.repo}`, "-F", `number=${pull.number}`]));
     const pr = answer?.data?.repository?.pullRequest;
-    return pr !== null && typeof pr === "object" && typeof pr.state === "string" ? feedbackOf(pr, self) : null;
+    if (pr === null || typeof pr !== "object" || typeof pr.state !== "string") return null;
+    const files = changedFiles(pull, pr.files, run);
+    return { ...feedbackOf(pr, self), files: files.paths, filesComplete: files.complete };
   } catch {
     // An answer of an unexpected shape is no reading either.
     return null;
   }
 }
 
-/** The feedback in one pull request as the query returns it. Throws on an answer of another shape, which the caller reads as no reading. */
-function feedbackOf(pr: Record<string, any>, self: string): PullFeedback {
+/**
+ * Every file the pull request changes: the page the first read returned, then the pages after it, one read each, up to {@link MAX_FILE_PAGES}.
+ * `complete` is false only when pages remain past that cap. A page that cannot be read throws, so the read is no reading at all: a list cut
+ * short is never returned as the whole of it.
+ */
+function changedFiles(pull: { owner: string; repo: string; number: number }, first: Record<string, any> | undefined, run: (args: string[]) => string):
+  { paths: string[]; complete: boolean } {
+  const paths: string[] = (first?.nodes ?? []).map((file: { path: string }) => file.path);
+  let page = first?.pageInfo;
+  for (let pages = 1; page?.hasNextPage === true && typeof page.endCursor === "string" && pages < MAX_FILE_PAGES; pages += 1) {
+    const answer = JSON.parse(run(["api", "graphql", "-f", `query=${FILES_QUERY}`, "-f", `owner=${pull.owner}`, "-f", `repo=${pull.repo}`,
+      "-F", `number=${pull.number}`, "-f", `cursor=${page.endCursor}`]));
+    const next = answer?.data?.repository?.pullRequest?.files;
+    if (next === null || typeof next !== "object") throw new Error("a page of the changed files did not answer");
+    paths.push(...(next.nodes ?? []).map((file: { path: string }) => file.path));
+    page = next.pageInfo;
+  }
+  return { paths, complete: page?.hasNextPage !== true };
+}
+
+/** The feedback in one pull request as the query returns it, its files aside. Throws on an answer of another shape, which the caller reads as no reading. */
+function feedbackOf(pr: Record<string, any>, self: string): Omit<PullFeedback, "files" | "filesComplete"> {
   const others = (author: Login) => author?.login !== undefined && author.login !== self;
   const items: { at: number | null; author: string }[] = [
     ...(pr.reviews?.nodes ?? []).filter((r: { state: string; author: Login }) => FEEDBACK_REVIEWS.has(r.state) && others(r.author))
@@ -124,7 +154,5 @@ function feedbackOf(pr: Record<string, any>, self: string): PullFeedback {
     failedAt: newest(failing.map(({ at }) => at)),
     conflicting: pr.mergeable === "CONFLICTING" || pr.mergeStateStatus === "DIRTY",
     base: typeof pr.baseRefName === "string" ? pr.baseRefName : null,
-    files: (pr.files?.nodes ?? []).map((file: { path: string }) => file.path),
-    filesComplete: (pr.files?.totalCount ?? 0) <= (pr.files?.nodes?.length ?? 0),
   };
 }

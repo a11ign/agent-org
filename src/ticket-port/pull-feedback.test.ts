@@ -1,7 +1,7 @@
 // no-token: gh -- `readPullFeedback` and `readOwnLogin` are handed a stub `run`; nothing here spawns `gh` or needs a token.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { pullOf, readOwnLogin, readPullFeedback } from "./pull-feedback.ts";
+import { MAX_FILE_PAGES, pullOf, readOwnLogin, readPullFeedback } from "./pull-feedback.ts";
 
 const URL = "https://github.com/netboxlabs/nbl-ui-netbox/pull/806";
 const at = (minute: number) => `2026-10-16T12:${String(minute).padStart(2, "0")}:00Z`;
@@ -57,9 +57,23 @@ test("A11-82: a pull request that conflicts with its base is conflicting, whiche
   }
   const read = conflicting({ base: "release/2", files: ["src/ticket-mode/pool.ts", "src/ticket-mode/server.ts"] });
   assert.deepEqual([read?.base, read?.files], ["release/2", ["src/ticket-mode/pool.ts", "src/ticket-mode/server.ts"]], "the base and the files it changes are read");
-  const many = pullWith({ files: ["a.ts"] });
-  assert.equal(readPullFeedback(URL, "me", answering({ ...many, files: { totalCount: 150, nodes: [{ path: "a.ts" }] } }).run)?.filesComplete, false,
-    "a pull request of more than the files read is partial, and says so");
+  const paged = (pages: Record<string, unknown>) => (args: string[]) => {
+    const cursor = args.find((arg) => arg.startsWith("cursor="))?.slice("cursor=".length);
+    if (cursor === undefined) return JSON.stringify({ data: { repository: { pullRequest: { ...pullWith(), files: pages.first } } } });
+    if (cursor === "c1") return JSON.stringify({ data: { repository: { pullRequest: { files: pages.second } } } });
+    throw new Error("gh exited 1");
+  };
+  const page = (paths: string[], hasNextPage: boolean, endCursor: string | null) => ({ nodes: paths.map((path) => ({ path })), pageInfo: { hasNextPage, endCursor } });
+  const paging = readPullFeedback(URL, "me", paged({ first: page(["a.ts"], true, "c1"), second: page(["b.ts"], false, null) }));
+  assert.deepEqual([paging?.files, paging?.filesComplete], [["a.ts", "b.ts"], true], "every page is read, and the list is then complete");
+  let calls = 0;
+  const forever = () => {
+    calls += 1;
+    return JSON.stringify({ data: { repository: { pullRequest: { ...pullWith(), files: page(["a.ts"], true, "c1") } } } });
+  };
+  const cut = readPullFeedback(URL, "me", forever);
+  assert.deepEqual([cut?.filesComplete, calls], [false, MAX_FILE_PAGES], "pages past the cap are not read, and the list says it is cut short");
+  assert.equal(readPullFeedback(URL, "me", paged({ first: page(["a.ts"], true, "c1") })), null, "a page that cannot be read is no reading at all");
 });
 
 test("a pull request that cannot be read is null, never no feedback, and a merged or closed one says so", () => {

@@ -525,6 +525,13 @@ test("A11-82: runs that share a path in one repository start in turn: the earlie
   assert.deepEqual(nextStarts(merged, 0, 14).map((e) => e.ticket.key), ["B", "C", "D"], "once its pull request merges, B starts");
 });
 
+test("A11-82: tickets of one batch whose plans share a path are held against each other: the earlier starts and the later waits", () => {
+  const queued = setPaused(enqueue(emptyQueue(3), [ticket("A"), ticket("B")], choice, 1), false);
+  const batched = { ...queued, entries: queued.entries.map((e) => ({ ...e, batch: "b1" })) };
+  const queue = recordPaths(batched, new Map([["A", ["app:src/a.ts"]], ["B", ["app:src/a.ts"]]]));
+  assert.deepEqual(nextStarts(queue, 0, 14).map((e) => e.ticket.key), ["A"], "a shared batch is no reason to start both");
+});
+
 test("A11-82: a queued review round holds its pull requests' paths, so a run that shares one waits for the round, which starts", () => {
   const queue = recordPaths(feedbackRound(readyToMerge({ paths: ["app:src/a.ts"] }), "A", "f", 9), new Map([["B", ["app:src/a.ts"]]]));
   assert.deepEqual(nextStarts(setPaused(queue, false), 0, 14).map((e) => e.ticket.key), ["A"], "B, queued first, waits for the round A is");

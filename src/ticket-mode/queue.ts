@@ -111,7 +111,10 @@ export type Entry = Readonly<{
    * ({@link overlapWait}).
    */
   paths?: readonly string[];
-  /** The files each of its open pull requests changes, by URL, as the last watch read them: the footprint of a run with a pull request open. */
+  /**
+   * The files each of its open pull requests changes, by URL, as the last watch read them: the footprint of a run with a pull request open. An
+   * empty name in a list stands for files the watch could not read, which holds the whole repository (`board-view.ts`'s `pathsOverlap`).
+   */
   pullFiles?: Readonly<Record<string, readonly string[]>>;
   /** The Claude session the run's worker used, saved when the run ended, so a review run can resume the worker that wrote the code. */
   session?: string;

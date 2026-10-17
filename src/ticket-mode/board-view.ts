@@ -34,11 +34,12 @@ export type ViewEntry = Readonly<{
   review?: readonly PullRef[];
   /** The repository its batch's planner said its work lands in, or null when it named none. */
   plannedRepo?: string | null;
-  /** The batch the run is planned in, or unset for a ticket planned alone: the tickets of one batch are one run. */
-  batch?: string;
   /** The repository-prefixed paths its plan says its work touches, as last read: unset until read, empty when the plan declares none. */
   paths?: readonly string[];
-  /** The files each open pull request of the run changes, by URL, as the last watch read them, in the repository the pull request is in. */
+  /**
+   * The files each open pull request of the run changes, by URL, as the last watch read them, in the repository the pull request is in. An empty
+   * name in a list stands for files it did not read: the whole repository, see {@link pathsOverlap}.
+   */
   pullFiles?: Readonly<Record<string, readonly string[]>>;
   /** The tickets of its batch its planner said it waits on to merge, rather than stacking on: the keys of its blockers that must merge first. */
   waitMerged?: readonly string[];
@@ -425,12 +426,14 @@ const repoPath = (path: string): [string, string] => {
 
 /**
  * Whether two repository-prefixed paths touch the same files: they are in one repository, and are equal, or one is a directory (its path ends in
- * `/`) that holds the other. Sibling directories, and a file and a directory it is not in, do not overlap. PURE.
+ * `/`) that holds the other. Sibling directories, and a file and a directory it is not in, do not overlap. An empty path is the whole repository:
+ * what a pull request holds when the list of its files is cut short, so that what is not listed is not taken for untouched. PURE.
  */
 export function pathsOverlap(a: string, b: string): boolean {
   const [repoA, pathA] = repoPath(a);
   const [repoB, pathB] = repoPath(b);
   if (repoA !== repoB) return false;
+  if (pathA === "" || pathB === "") return true;
   return pathA === pathB || (pathA.endsWith("/") && pathB.startsWith(pathA)) || (pathB.endsWith("/") && pathA.startsWith(pathB));
 }
 
@@ -468,15 +471,16 @@ export type OverlapWait = Readonly<{ key: string; pull: string | null; path: str
 
 /**
  * Why a queued run waits, for a path it shares with a run already held in its repository (see {@link holds}), or null when it waits on none. A
- * run is not held by one that is its own batch's, nor by one of whose blockers it is or that is one of its blockers, since those are sequenced on
- * purpose (`waitsOn`, `stackedOn`). A review round, a conflict round and a planning run are never held, and nor is a run with no paths declared.
- * `entries` is the whole queue, or the queue with the runs a pass has just chosen counted as starting, so a batch of starts keeps to one another. PURE.
+ * run is not held by one of whose blockers it is or that is one of its blockers, since those are sequenced on purpose (`waitsOn`, `stackedOn`).
+ * Tickets planned together are worked as separate runs, and are held against each other like any others. A review round, a conflict round and a
+ * planning run are never held, and nor is a run with no paths declared. `entries` is the whole queue, or the queue with the runs a pass has just
+ * chosen counted as starting, so a batch of starts keeps to one another. PURE.
  */
 export function overlapWait(entry: ViewEntry, entries: readonly ViewEntry[]): OverlapWait | null {
   const mine = entry.paths ?? [];
   if (entry.phase !== "queued" || entry.plan !== undefined || entry.review !== undefined || mine.length === 0) return null;
   for (const other of entries) {
-    if (other.ticket.key === entry.ticket.key || !holds(other) || (entry.batch !== undefined && other.batch === entry.batch) || exempt(entry, other)) continue;
+    if (other.ticket.key === entry.ticket.key || !holds(other) || exempt(entry, other)) continue;
     const held = footprintOf(other);
     const path = mine.find((own) => held.some((theirs) => pathsOverlap(own, theirs)));
     if (path !== undefined) return { key: other.ticket.key, pull: parsePull(openPulls(other)[0]?.url ?? "")?.number ?? null, path: repoPath(path)[1] };
