@@ -34,8 +34,13 @@ import { createHash } from "node:crypto";
  * it would read "I am not going to pretend I am convinced by the first draft, but at this head:
  * convinced" as a refusal. Three words covers the adverbs people write and leaves "this does not mean
  * the reviewer was convinced" reading as `convinced`, which is right.
+ *
+ * THE HYPHEN IS A SEPARATOR TOO (agent-org#1659). `not\s+` needed whitespace, so `not-convinced` matched only
+ * the bare word (`\b` falls between `-` and `c`) and read as an APPROVAL; `not-yet-convinced` did the same.
+ * Reviewers write the hyphen form, and this file's own return type names `not-convinced`. The separator
+ * class `[\s-]` is used wherever the phrase is joined, and the bound still counts WORDS, not separators.
  */
-const WORDS = /\b(un-?convinced|not\s+(?:\w+\s+){0,3}convinced|convinced)\b/i;
+const WORDS = /\b(un-?convinced|not[\s-]+(?:\w+[\s-]+){0,3}convinced|convinced)\b/i;
 
 /** An opener that says a comment is a VERDICT at all. Three are in use; the fourth is already coming. */
 const OPENER = /\b(?:Review|Re-read)\s+(?:of|at)\b/i;
