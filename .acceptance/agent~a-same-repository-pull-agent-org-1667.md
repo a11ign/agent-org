@@ -1,0 +1,35 @@
+A same-repository pull request with a `session:` label that `reviewTrustOf` classes OUTSIDE is now named, and an OUTSIDE not-convinced verdict whose only finding is "no CI Acceptance run is available" wakes that pull request's reader (`ownerOfPr`). Both are read only while `reviews.outsideSessionPr` is ON (OFF when absent, which is the default, and every order and signal is as it was). The signal is `session-pr-classed-outside`: its detail names the pull request, the author's login, the session and the minutes, and it reaches `ceo` through the digest's reading path. The canary still stores numbers only (`CanaryFacts.sessionPrOutside`), so its samples are unchanged.
+
+Commits: `f9a2aa00` (the wake rule and the detector), `7072c592` (the named reading and its wiring).
+
+Acceptance:
+```
+cd /home/agent/repos/wt-agent-org-1667 && AGENT_ORG_HOST=/home/agent/repos/role-product-manager/.agent-org/host.json node_modules/.bin/rstest run --config scripts/rstest/rstest.config.ts src/packaging/outside-session-pr.test.ts
+```
+
+`AGENT_ORG_HOST` is needed: `src/project-vocabulary.ts` reads the project declaration (`RESOURCES`) at import, and the file is unchanged from `origin/main`.
+
+Mutation: the named reading's flag check made to read `if (false) return [];` (`src/org-health.ts`, `sessionPrOutsideReadings`) failed 1 of 14; the wake rule made to keep any not-convinced verdict (the `onlyNoAcceptanceRun` phrase test removed) failed 2 of 14; the detector made to drop the `sessionOf(pr) !== null` requirement failed 2 of 14. Each restored file gave `VERDICT pass: 14 tests in 1 file`.
+
+Measured: `VERDICT pass: 14 tests in 1 file` (acceptance file); `tsc --noEmit -p tsconfig.json` exits 0. The affected-file run (124 files, `AGENT_ORG_HOST` set) reports 30 failures, all in six files (`live-tree-independence`, `org-health`, `work-gate-a11ign-readers`, `tmp-fixtures-are-removed`, `work-gate-github-incident`, `work-gate-runner-start-red`). The same six files fail the same 30 tests at `origin/main` (`Cannot find module 'tsx/package.json'` for two of them; the rest are hold, runner-start and red-check assertions), so none is caused by this change.
+
+Outside-Region: the wiring of the wake rule and the canary sits in files the row's Region does not list, and each is named here with its reason.
+
+Outside-Region: src/flag-switch-ledger.ts — `FLAGS_WITH_ANOTHER_HOME` names `reviews.outsideSessionPr` as switched by `machinery:flag`, so the ledger's registry pin passes for a flag that has no declaration file.
+Outside-Region: src/packaging/machinery-flag-switch.test.ts — the registry pins read the new flag in their loop and deep-equal.
+Outside-Region: src/work-gate.ts — reads the flag once per tick with the canary's state and hands the named reading and the canary's numbers to their readers.
+Outside-Region: src/work-gate/causes/org-health-github-incident.ts — `machineryCanaryNow` takes the classed-OUTSIDE numbers (`sessionPrOutside`) and counts them under the memo clock.
+Outside-Region: src/work-gate/org-health.ts — `orgHealthNow`'s io gives the named reading its fact (`readSessionPrOutside`); OMITTED is "does not ask".
+Outside-Region: src/work-gate/tick.ts — the wake set is computed only with the flag ON and passed to `withholdOutsideFollowUps`.
+
+Not in this change, and named on the row: `ORG_HEALTH_CLASSES` (`src/work-gate/org-health-suppression.ts`) does not declare `session-pr-classed-outside`, so `decide` treats it as PAGE. That file is outside the Region.
+
+Flag: reviews.outsideSessionPr
+Health-signals: session-pr-classed-outside
+Revert: turn `reviews.outsideSessionPr` off (it is OFF by default), or revert this PR.
+
+Closes: none -- done-when 1 is partly met (the verdicts on #1615 and #1663 are named on the row with what GitHub records; the gate's own snapshot is not on this host), done-when 3 (the a11ign switch row for `reviews.outsideSessionPr`) is not filed yet, and done-when 4 (the switched-on order) can only be quoted after the merged build runs.
+
+Draft-because: the reasons above are open until the switch row is filed and the switched-on order can be quoted, which both need this change merged first.
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
