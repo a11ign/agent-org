@@ -13,10 +13,10 @@ test("the profiles file is under XDG_CONFIG_HOME when that is an absolute path, 
 });
 
 test("a profiles file names this board as local and other machines by ssh target, in its order, with agent-org as the remote command unless named", () => {
-  assert.deepEqual(parseProfiles({ work: { local: true }, personal: { ssh: "agents" }, aws: { ssh: "me@10.0.0.4", agentOrg: "/home/me/repos/agent-org/host/agent-org" } }), [
+  assert.deepEqual(parseProfiles({ work: { local: true }, personal: { ssh: "agents" }, aws: { ssh: "me@192.0.2.4", agentOrg: "/home/me/repos/agent-org/host/agent-org" } }), [
     { name: "work", local: true },
     { name: "personal", local: false, ssh: "agents", agentOrg: "agent-org" },
-    { name: "aws", local: false, ssh: "me@10.0.0.4", agentOrg: "/home/me/repos/agent-org/host/agent-org" },
+    { name: "aws", local: false, ssh: "me@192.0.2.4", agentOrg: "/home/me/repos/agent-org/host/agent-org" },
   ]);
   assert.equal((parseProfiles({ w: { local: true }, u: { ssh: "ssh://me@host:2222" } })[1] as { ssh: string }).ssh, "ssh://me@host:2222");
 });
