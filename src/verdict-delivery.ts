@@ -2,7 +2,7 @@
 //
 // THE DROP (a11ign#1615, the evidence): the outside reviewer wrote two complete verdict blocks in its pane (`1bc5c7e1`, then `716b6ce3`). The gate read the
 // pane and found no verdict: the strict reader (`outsideVerdictBlock`) rejected the `• BEGIN ...` line, because Codex puts a bullet in front of the first
-// line of a final message. So `postOutsideVerdict` and the door were never called, and #1615 had no review. `reviews.verdictDelivery` (review-trust.ts)
+// line of a final message. So the verdict was not posted from the pane, and a comment on #1615 (2026-10-16 19:10Z) says it never appeared there as a review. `reviews.verdictDelivery` (review-trust.ts)
 // is the switch that reads the bulleted block and posts it.
 //
 // THE TWO SIGNALS, read by the machinery canary (org-health.ts) once a tick like every other standard signal:
