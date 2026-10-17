@@ -212,11 +212,11 @@ export function owedRowsOf(repos: readonly string[], list: (repo: string, label:
 /**
  * The open rows of `repo` that carry `label`, read through the ticket port, which is a connection and not a search. `null` when the read was refused or failed, or when the
  * population is longer than the port holds whole: a list that may be cut is not the whole set. A refused read returns `{ refused }` with the first line of the thrown error, never a bare
- * `null`: the error is the only record of why the read failed (agent-org#1700).
+ * `null`: the error is the only record of why the read failed (agent-org#1700). `run` is the gate's runner unless a test hands its own, so the refusal is pinned through this read.
  */
-export function liveOwedRows(repo: string, label: string): OpenRow[] | { refused: string; } {
+export function liveOwedRows(repo: string, label: string, run: (args: string[]) => string = defaultRun): OpenRow[] | { refused: string; } {
   try {
-    const nodes: { title: string; body: string | null; labels: { nodes: { name: string; }[]; }; }[] = readRowsByLabel({ label, state: "OPEN", select: "title body labels(first:100){nodes{name}}", run: defaultRun, repo });
+    const nodes: { title: string; body: string | null; labels: { nodes: { name: string; }[]; }; }[] = readRowsByLabel({ label, state: "OPEN", select: "title body labels(first:100){nodes{name}}", run, repo });
     return nodes.map((node) => ({ title: node.title, body: node.body, labels: node.labels.nodes }));
   } catch (cause) {
     return { refused: String((cause as Error)?.message ?? cause).split("\n")[0].slice(0, 160) };

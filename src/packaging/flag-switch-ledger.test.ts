@@ -408,6 +408,15 @@ test("a refused owed-rows read names its cause (agent-org#1700): the unknown car
   assert.deepEqual(owedRowsOf(["a11ign/agent-org"], () => []), [], "CONTROL: a list that returns no rows yields no unknown");
 });
 
+test("liveOwedRows converts the thrown error to its first line through the real read (agent-org#1700): a refused read is `{ refused }`, and an answered read is its rows", () => {
+  const cause = "Could not resolve to a Repository with the name 'a11ign/agent-org'.";
+  // NOT a rate-limit text: a limit refusal is remembered for the whole tick (`readUnlessRefused`) and would refuse every later read in this file.
+  const refusedRun = () => { throw new Error(`${cause}\nthe second line names nothing the tick needs`); };
+  assert.deepEqual(ledger.liveOwedRows("a11ign/agent-org", "ready", refusedRun), { refused: cause }, "a refused read names the first line of the thrown error, and only that");
+  const answeredRun = () => JSON.stringify({ data: { repository: { issues: { nodes: [{ title: "t", body: "b", labels: { nodes: [{ name: "ready" }] } }], pageInfo: { hasNextPage: false } } } } });
+  assert.deepEqual(ledger.liveOwedRows("a11ign/agent-org", "ready", answeredRun), [{ title: "t", body: "b", labels: [{ name: "ready" }] }], "CONTROL: an answered read is rows, so a producer that always refuses goes red");
+});
+
 test("(8) agent-org#1372: the other trackers are the declared ones except the project's own (key `\"\"`), and a declaration without a list names none", () => {
   assert.deepEqual(otherTrackerRepos({ tracker: [{ key: "", repo: "a11ign/a11ign" }, { key: "agent-org", repo: "a11ign/agent-org" }] }), ["a11ign/agent-org"]);
   assert.deepEqual(otherTrackerRepos({ tracker: [{ key: "", repo: "a11ign/a11ign" }] }), [], "the project's own tracker alone is no other");
