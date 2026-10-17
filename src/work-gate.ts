@@ -110,7 +110,7 @@ export { CHAIRMAN_LABEL };
 // The cause modules (a11ign/a11ign#5152): each holds one family of causes as it was written here, and imports the base modules, never another cause.
 import { performActions, reportWithheld } from "./work-gate/orders.ts";
 import { chainWaitOrders } from "./work-gate/causes/org-health-chain-wait.ts";
-import { holdForIncidentNow, machineryCanaryNow, startGithubStatus } from "./work-gate/causes/org-health-github-incident.ts";
+import { authorFallbackTimes, holdForIncidentNow, machineryCanaryNow, startGithubStatus } from "./work-gate/causes/org-health-github-incident.ts";
 import { cannotAskReport, deadMansSwitch, diskHeadroomTick } from "./work-gate/causes/org-health-host.ts";
 import { HOST_DRIFT_SESSION, withStalePrimaryNotice } from "./work-gate/causes/org-health-host-drift.ts";
 import { blockingImpactOrders, fileResolverDefects } from "./work-gate/causes/org-health-resolver-defects.ts";
@@ -705,7 +705,7 @@ function main() {
   endGateSpan("chairmanAsks+holdHolders");
   // #1329: THE CANARY COUNTS REFUSED LANES ONLY. A repository the gate skipped BY DESIGN (paced, or no event named it) is not blind, so it
   // stays out of `blind-ticks`; it is still named on the PARTIAL line below, which is where a skipped lane is reported.
-  const lanes = tickLanes({ prs, readyRows, others, pacedSkips, primaryRefused: primaryRefusedLanes({ promotableRows, chairmanBlocked, openRowsRead }, primaryRead), unarmed: armingSplit === null ? null : armingSplit.unarmed, releaseRuns: releaseSeen.runs ?? null, suppressions: incident.suppressions, stranded: armingSplit?.stranded ?? [], ownerless: ownerlessUnreached(prs, required) }); // agent-org#1648: a red chairman pull request no order reaches
+  const lanes = tickLanes({ prs, readyRows, others, pacedSkips, primaryRefused: primaryRefusedLanes({ promotableRows, chairmanBlocked, openRowsRead }, primaryRead), unarmed: armingSplit === null ? null : armingSplit.unarmed, releaseRuns: releaseSeen.runs ?? null, suppressions: incident.suppressions, stranded: armingSplit?.stranded ?? [], ownerless: ownerlessUnreached(prs, required), authorFallbacks: authorFallbackTimes() }); // agent-org#1648: a red chairman pull request no order reaches; agent-org#1666: the account's authoring calls, from the ledgers
   orders.push(...lanes.orders); endGateSpan("machineryCanary"); // a11ign#5100, a11ign#5125
   endGateSpan("approvedUnqueued", approvedUnqueuedNow({ prs: prs === null ? null : [...prs, ...pullRequestsOfOthers(otherScopes)], repos: homeProjectDeclaration().tracker.map((t) => t.repo), repo: repoNow(), stateDir: REVIEWER_STATE_DIR, run: defaultRun })); // agent-org#893: the daily reading on #928; never throws, adds no order
   // FIRST OF ALL, AND ON PURPOSE (#2163): `wake` delivers in this order and records each delivery with a write, so

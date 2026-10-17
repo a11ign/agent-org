@@ -98,6 +98,9 @@ test("#2620: a host.json's values are what `templateValues` hands the templates,
     // #4900: the four values the wrapper's app block renders from; a host that declares no `github-apps` role has `appRoles` empty and the block does nothing.
     appRoles: "", appDeclared: "case \"$1\" in\n    *) return 1 ;;\n  esac", appTokenDir: "/home/agent/.cache/a11ign/app-tokens",
     appTokenScript: "/home/agent/repos/a11y-witness/packages/agent-org/src/app-token.ts",
+    // agent-org#1666: the flag reader the wrapper runs, and the canary state it reads (the recorded host declares no `stateDir`, so the state sits under `.cache/a11ign`).
+    authorFlagScript: "/home/agent/repos/a11y-witness/packages/agent-org/src/gh-author-fallback.ts",
+    canaryStateFile: "/home/agent/.cache/a11ign/machinery-canary.json",
   });
   assert.deepEqual(host.gh.leadsWorkspaces.map((w) => w.id), ["w6", "w2", "w5"], "the leads list is the file it replaced");
 });
@@ -155,7 +158,8 @@ const TODAYS_TEXT = {
 // agent-org#1517 MOVED IT AGAIN, deliberately: a manager's `pr list` / `issue list` is refused for a heavy `--json` field or a `--limit` over 50 or absent (the refusal names `agent-org gate-snapshot-read`), and its allowed listing is priced off the pool's counter like #1510's. Same staleness, same remedy.
 // agent-org#1518 MOVED IT AGAIN, deliberately: an installation refused while its hourly pool has calls left is SECONDARY (queued two minutes, not an hour), and every real call takes an in-flight slot and a start under a per-minute bound, per role. Same staleness, same remedy.
 // agent-org#1618 (a11ign#928) MOVED IT AGAIN, deliberately: an `api graphql` call's ledger line names the read in its command field (`api graphql <name>`), taken from the query text the call carries. Same staleness, same remedy.
-const TODAYS_GH_WRAPPER = "e9ad98b8f15f6a5aaee8e55d9617abad851299d3d2b933147142363d14b38abc";
+// agent-org#1666 MOVED IT AGAIN, deliberately: the wrapper gained the author-refusal block (`app_authoring`, `author_refusal_on`, `author_token`) and the mint retry, behind `gh.refuseFallbackAuthor`. Same staleness, same remedy.
+const TODAYS_GH_WRAPPER = "277a71e45faa3985afb670d29f1837d299dcb7a567f0b1f1e644c75b53a9a246";
 // #2896 MOVED THIS ONE, deliberately: the recorded host's header says `pnpm run host:install` / `pnpm run host:check` where it said `npm run`.
 const TODAYS_LEADS_LIST = "dbca070c4bb7934ff1e9cdc9505f9edee638d98fcff10963b18d5d3a743770a2";
 
