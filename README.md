@@ -221,7 +221,11 @@ takes them one each. Ticket mode is two services, both on `127.0.0.1`:
   instead, and the board says "Stacked on NBF-1 #12". The brief names each such blocker's pull request and branch. The worker makes its
   worktree from the branch it builds on with `ticket:worktree <repo> --from <branch>`, opens its draft pull request, and runs
   `gh stack link <blocker's pull request> <its own>`. This holds for every "blocked by", whoever recorded it. A run with no planned
-  repository, or a blocker with no open pull request there, waits as before.
+  repository, or a blocker with no open pull request there, waits as before. A planner that says a ticket waits until its blocker
+  merges, rather than stacking on it, sets `"wait": "merged"` on that ticket's entry in `order.json`. The ticket stays Blocked, and the
+  board says "Waits for NBF-1 to merge", until the blocker's pull request merges, then it starts on the default branch. Stacking is for
+  code that builds on the blocker's diff. Merged is for work that needs the blocker's change live, such as fleet state, a deployed or
+  released package, or a published artifact. Left out, `wait` means stacked.
 - **Paused until you start it.** A new queue is paused, so queueing a ticket never also starts it: queue what you want, then press
   Start workers on the Board when what the workers need is ready. Pause stops new starts and leaves running workers alone, and the
   choice survives a restart of the board.

@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import {
   CONCLUDED, HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, isParked, parentKeys, parentTick, ticketCount, projectCounts, queueLabel, recall,
   remember, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, selectable, shownStatus,
-  statusCounts, terminalLink, toggled, waitsOn, repoOfPull, stackedOn, stackNote, PRIORITY_NAMES, hasPlan, isBeingPublished, isWatched, publishable,
+  statusCounts, terminalLink, toggled, waitsOn, waitNote, repoOfPull, stackedOn, stackNote, PRIORITY_NAMES, hasPlan, isBeingPublished, isWatched, publishable,
   publishLabel, publishNote, publishTerminalLink, missingPlan, planChoiceOf, planCounts, priorityCounts, prioritiesOf, runChoiceLabel,
   unplannedCount, visibleTickets, workItems, workingNote, childrenNote, isParentTicket, openChildCount, apiBase, chosenConnection, connectionLabel, safeHref,
   type ViewEntry, type ViewPublish, type ViewTicket,
@@ -446,6 +446,39 @@ test("a blocker with an open pull request in the run's planned repository is sta
   assert.deepEqual(stackedOn(done, [done]), [], "a blocker that is done is not stacked on: there is nothing to wait for");
   assert.equal(stackNote(stackedOn(waiting, [waiting])), "Stacked on NBF-1 #12");
   assert.equal(stackNote([{ key: "NBF-1", url: `${draft}/`, repo: "nbl-ui-netbox", branch: "b" }]), "Stacked on NBF-1 #12", "a URL with a trailing slash keeps its number");
+});
+
+test("A11-77: a blocker the planner said to wait on to merge is never stacked on, holds the run until its pull requests merge, then lets it go", () => {
+  const draft = "https://github.com/acme/nbl-ui-netbox/pull/12";
+  const other = "https://github.com/acme/nbl-ui-netbox/pull/13";
+  const stackable = { key: "NBF-1", state: "started", status: "In Review", branch: "nbf-1-fit", pulls: { [draft]: "open" } };
+  const waiting = run({ ticket: { key: "NBF-9" }, phase: "queued", plannedRepo: "nbl-ui-netbox", waitMerged: ["NBF-1"], blockers: [stackable] });
+  assert.deepEqual(stackedOn(waiting, [waiting]), [], "its open pull request is not stacked on");
+  assert.deepEqual(waitsOn(waiting, [waiting]).map((b) => b.key), ["NBF-1"]);
+  assert.equal(runStatus(waiting, [waiting]), "blocked");
+  assert.equal(waitNote(waiting, [waiting]), "Waits for NBF-1 to merge");
+  const landed = { ...waiting, blockers: [{ ...stackable, pulls: { [draft]: "merged" } }] };
+  assert.deepEqual(waitsOn(landed, [landed]), [], "its only pull request merged, though the tracker still has NBF-1 in review");
+  assert.equal(runStatus(landed, [landed]), "queued", "the run starts once it has merged");
+  assert.deepEqual(stackedOn(landed, [landed]), [], "and starts on the default branch: nothing to stack on, so the brief has no stack section");
+  assert.equal(waitNote(landed, [landed]), null);
+  const oneOpen = { ...waiting, blockers: [{ ...stackable, pulls: { [draft]: "merged", [other]: "open" } }] };
+  assert.deepEqual(waitsOn(oneOpen, [oneOpen]).map((b) => b.key), ["NBF-1"], "one pull request merged and one still open holds the run");
+  const closed = { ...waiting, blockers: [{ ...stackable, pulls: { [draft]: "closed" } }] };
+  assert.deepEqual(waitsOn(closed, [closed]).map((b) => b.key), ["NBF-1"], "a pull request closed unmerged never lets it go");
+  for (const state of ["canceled", "duplicate"]) {
+    const gone = { ...waiting, blockers: [{ ...stackable, state, pulls: { [draft]: "merged" } }] };
+    assert.equal(runStatus(gone, [gone]), "blocked", `a ${state} blocker never lets go, even with a merged pull request`);
+  }
+  const completed = { ...waiting, blockers: [{ ...stackable, state: "completed" }] };
+  assert.equal(runStatus(completed, [completed]), "queued", "a blocker the tracker completed still lets go");
+  const unmarked = run({ ticket: { key: "NBF-9" }, phase: "queued", plannedRepo: "nbl-ui-netbox", blockers: [{ ...stackable, pulls: { [draft]: "merged" } }] });
+  assert.deepEqual(waitsOn(unmarked, [unmarked]).map((b) => b.key), ["NBF-1"], "without the mark a merged pull request alone is no reason to start: the tracker decides, as before");
+  const mixed = run({ ticket: { key: "NBF-9" }, phase: "queued", plannedRepo: "nbl-ui-netbox", waitMerged: ["NBF-1"],
+    blockers: [stackable, { key: "NBF-2", state: "started", status: "In Review", branch: "nbf-2", pulls: { [other]: "open" } }, { ...stackable, key: "NBF-3", branch: "nbf-3", pulls: {} }] });
+  assert.deepEqual(stackedOn(mixed, [mixed]).map((b) => b.key), ["NBF-2"], "a blocker the planner did not mark is still stacked on");
+  assert.deepEqual(waitsOn(mixed, [mixed]).map((b) => b.key), ["NBF-1", "NBF-3"], "and one with no open pull request still waits");
+  assert.equal(waitNote(mixed, [mixed]), "Waits for NBF-1 to merge", "the note names only the blocker the planner marked");
 });
 
 test("a pull request's repository is read from its GitHub URL, and anything else names none", () => {

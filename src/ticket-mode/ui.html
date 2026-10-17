@@ -194,7 +194,7 @@
 // This page only draws what they return and wires the clicks.
 import {
   APPROVE_TITLE, DISMISS_TITLE, RESPOND_TITLE, QUEUE_CHILDREN, QUEUE_CHILDREN_TITLE, childrenNote, isParentTicket, PRIORITY_NAMES, RUN_STATUSES, publishable, publishLabel, publishNote, publishTerminalLink, pullsOf, flatten, groupByStatus, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, queueLabel, recall, remember, runActions, shownStatus, apiBase, chosenConnection, connectionLabel, safeHref, runStatus,
-  runChoiceLabel, runsShown, unplannedCount, workingNote, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, waitsOn, workersLabel,
+  runChoiceLabel, runsShown, unplannedCount, workingNote, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, waitNote, waitsOn, workersLabel,
 } from "/board-view.js";
 // The label rows: one per label group the listed tickets carry, and one for the labels in no group. label-filters.ts decides them, tested there.
 import { clearedRow, groupTags, labelRows, withLabels } from "/label-filters.js";
@@ -464,6 +464,7 @@ function row(e) {
   const status = shownStatus(e, state.queue.publish, state.queue.entries);
   const waits = waitsOn(e, state.queue.entries);
   const stacked = stackedOn(e, state.queue.entries);
+  const mergeNote = waitNote(e, state.queue.entries);
   const o = e.outcome;
   const actions = el("div", { className: "actions" });
   for (const verb of runActions(e, state.queue.publish)) {
@@ -502,6 +503,7 @@ function row(e) {
       e.waiting ? el("div", { className: "waiting" }, "Waiting on a person") : null,
       waits.length > 0 ? el("div", { className: "meta" }, `Waits on ${waits.map((b) => `${b.key} (${b.status})`).join(", ")}`) : null,
       stacked.length > 0 ? el("div", { className: "meta" }, stackNote(stacked)) : null,
+      mergeNote ? el("div", { className: "meta" }, mergeNote) : null,
       reason ? el("div", { className: "meta" }, reason) : null,
       note && note.stalled ? el("div", { className: "waiting stalled" }, note.text) : null,
       isParked(e) ? el("div", { className: "waiting" }, "Still open: answer the agent in its terminal and the run carries on") : null),
