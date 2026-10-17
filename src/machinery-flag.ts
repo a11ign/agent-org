@@ -15,7 +15,7 @@ import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { writeJsonObject } from "./claim-stall.ts";
-import { CANARY_STATE_FILE, STANDARD_MACHINERY_SIGNALS, emptyCanaryState, machineryFlagOn, parseCanaryState, withMachineryFlag, type CanaryState, type FlagRecord } from "./org-health.ts";
+import { BOARD_TRUTH_PAIR_FLAG, CANARY_STATE_FILE, STANDARD_MACHINERY_SIGNALS, emptyCanaryState, machineryFlagOn, parseCanaryState, withMachineryFlag, type CanaryState, type FlagRecord } from "./org-health.ts";
 import { CHAIN_WAIT_FLAG } from "./work-gate/causes/org-health-chain-wait.ts";
 import { REENQUEUE_EJECTED_FLAG, REENQUEUE_INFRA_FLAG } from "./work-gate/causes/pr-ejected.ts";
 import { QUEUE_ENTRY_NO_RUN_FLAG } from "./work-gate/causes/queue-entry-no-run.ts";
@@ -36,7 +36,7 @@ import { VERDICT_DELIVERY_FLAG } from "./review-trust.ts";
 const REFUSED = 2;
 
 /** The flags a module reads. A name that is not here is refused by `switchFlag`. */
-export const FLAG_REGISTRY: readonly string[] = Object.freeze([REENQUEUE_EJECTED_FLAG, REENQUEUE_INFRA_FLAG, CHAIN_WAIT_FLAG, CLOSED_UNDER_HALF_FLAG, AUTO_UNPARK_FLAG, QUEUE_ENTRY_NO_RUN_FLAG, RECHECK_FLAG, OPEN_PR_HOLD_FLAG, REFUSE_ASKING_ANNOUNCEMENTS_FLAG, PACING_FLAG, ROW_REVIEW_SKILL_FLAG, ACCOUNT_LIMIT_FLAG, SAME_HEAD_REFAIL_FLAG, PR_OWNER_ROUTING_FLAG, CHAIRMAN_REFUSAL_FLAG, OWNERLESS_ASK_FLAG, REFUSE_AUTHOR_FALLBACK_FLAG, VERDICT_DELIVERY_FLAG, SESSION_PR_OUTSIDE_FLAG]);
+export const FLAG_REGISTRY: readonly string[] = Object.freeze([REENQUEUE_EJECTED_FLAG, REENQUEUE_INFRA_FLAG, CHAIN_WAIT_FLAG, CLOSED_UNDER_HALF_FLAG, AUTO_UNPARK_FLAG, QUEUE_ENTRY_NO_RUN_FLAG, RECHECK_FLAG, OPEN_PR_HOLD_FLAG, REFUSE_ASKING_ANNOUNCEMENTS_FLAG, PACING_FLAG, ROW_REVIEW_SKILL_FLAG, ACCOUNT_LIMIT_FLAG, SAME_HEAD_REFAIL_FLAG, PR_OWNER_ROUTING_FLAG, CHAIRMAN_REFUSAL_FLAG, OWNERLESS_ASK_FLAG, REFUSE_AUTHOR_FALLBACK_FLAG, VERDICT_DELIVERY_FLAG, SESSION_PR_OUTSIDE_FLAG, BOARD_TRUTH_PAIR_FLAG]);
 
 export const USAGE = [
   "usage: agent-org machinery:flag on|off <name> [--signals=a,b] --session=<you>",

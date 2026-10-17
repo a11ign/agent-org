@@ -1227,6 +1227,50 @@ export function boardTruthReading({ audit, day = "today" }: { audit: { findings:
 }
 
 /**
+ * agent-org#1670: THE READINGS OF THE BOARD TRUTH SIGNAL. `offers` OMITTED (or `null`, a pair state that could not be read) is `boardTruthReading`, byte for byte: the
+ * flag `BOARD_TRUTH_PAIR_FLAG` is OFF. With `offers` given, one tripped reading per pair OFFERED this tick (`boardTruthPairStep`), each keyed on its own pair, so
+ * `orgHealthOrders` makes one order per pair; a tick whose disagreeing pairs were all offered already reads CLEAR, because they were said and are not new.
+ */
+export function boardTruthReadings({ audit, day = "today", offers }: { audit: Parameters<typeof boardTruthReading>[0]["audit"]; day?: string; offers?: BoardTruthOffer[] | null; }): Reading[] {
+  if (offers === undefined || offers === null || audit === null || audit.findings.length === 0) return [boardTruthReading({ audit, day })];
+  if (offers.length === 0) return [clear(SIGNALS.BOARD_TRUTH)];
+  return offers.map((offer) => ({ signal: SIGNALS.BOARD_TRUTH, status: "tripped", firstTrippedAt: null,
+    discriminator: offer.discriminator, detail: `\n${boardTruthTable((audit as any), day)}\n` }));
+}
+
+/** agent-org#1670: the flag that keys the board-disagrees offer on each (row, question) pair. OFF is the set-keyed order `boardTruthReading` has always made. */
+export const BOARD_TRUTH_PAIR_FLAG = "orgHealth.boardTruthPairKey";
+/** agent-org#1670: the pairs the board has offered, kept in the state directory beside the canary's file. */
+export const BOARD_TRUTH_PAIRS_FILE = "board-truth-pairs.json";
+/** agent-org#1670: a pair the board does not disagree on for this long is CLEARED, so its next disagreement is offered again. A judgment call: two hours, the hold the org-health orders keep. */
+export const BOARD_TRUTH_CLEAR_MINUTES = 120;
+
+/** One pair the board disagreed on: how many times it has been offered, and the last tick it was on the board (epoch ms). */
+export type BoardTruthPairs = Record<string, { offers: number; lastSeen: number; }>;
+/** One offer the pair step makes: the `(row, question)` pair, and the discriminator it is keyed on (`board-disagrees-with-reality@<pair>`, with `:<n>` from its second offer). */
+export type BoardTruthOffer = { pair: string; discriminator: string; };
+
+/**
+ * agent-org#1670: THE PAIR STEP, PURE. A pair on the board is OFFERED when it is first seen, or when it returns after `BOARD_TRUTH_CLEAR_MINUTES` off the board; a pair that
+ * stands is not offered again, however many ticks it lasts, and a pair that leaves the board costs nothing but its clock. @returns the pairs with this tick's sightings
+ * recorded (an absent pair keeps its entry, so a flicker inside the clear period is not a new offer), and the offers this tick makes.
+ * @param present the `<number><question>` keys of the disagreeing pairs this tick
+ */
+export function boardTruthPairStep({ pairs, present, now }: { pairs: BoardTruthPairs; present: string[]; now: number; }): { pairs: BoardTruthPairs; offers: BoardTruthOffer[]; } {
+  const next: BoardTruthPairs = { ...pairs };
+  const offers: BoardTruthOffer[] = [];
+  for (const pair of new Set(present)) {
+    const seen = pairs[pair];
+    const offered = seen === undefined || now - seen.lastSeen > BOARD_TRUTH_CLEAR_MINUTES * MS_PER_MINUTE;
+    const count = offered ? (seen?.offers ?? 0) + 1 : seen.offers;
+    if (offered) offers.push({ pair, discriminator: count === 1 ? `${SIGNALS.BOARD_TRUTH}@${pair}` : `${SIGNALS.BOARD_TRUTH}@${pair}:${count}` });
+    next[pair] = { offers: count, lastSeen: now };
+  }
+  return { pairs: next, offers };
+}
+
+
+/**
  * SIGNAL: THE ORG IS IDLE WHILE ROWS ARE OPEN (#3943). `idle` is `idleWithOpenRowsReading`'s answer over the open rows the tick already read, so it costs no call:
  * `null` is an engineer holding a row (clear); `{ kind: "unread" }` is a read that did not return, which is unknown and NEVER an idle org; an idle org
  * with nothing unoffered is finished and clear. It trips THE TICK THE CONDITION HOLDS, with no grace (the chairman's order: within one tick), and clears the tick an
@@ -2242,7 +2286,7 @@ export function orgHealthReadings(facts: {
         waits?: { stale: Parameters<typeof staleWaitReading>[0]["stale"]; bare: Parameters<typeof waitWithoutReasonReading>[0]["bare"]; manual: number; } | null;
         /** agent-org#1418: each declared repository's last whole read; OMITTED is "does not ask" (a poll host stamps nothing, so the live gate asks only on a webhook host) */
         sweeps?: SweepFact;
-        pools?: PoolReading[] | null; toolAgreement?: { result: ToolAgreement; } | null; nodeStrips?: NodeStripFact | null; teamAccess?: TeamAccessFact; autoOff?: AutoOffFact; stateRows?: Parameters<typeof stateLabelReading>[0]["rows"]; idle?: import("./idle-with-open-rows.ts").IdleRows; shelvedCircle?: ShelvedCircle[] | null; releaseRuns?: ReleaseRuns | null; releaseFailures?: ReleaseFailureRead[] | null; fleetBuildIncident?: FleetBuildIncident[] | null; releaseBehind?: import("./release-behind-main.ts").RepoFact[] | null; boardTruth?: Parameters<typeof boardTruthReading>[0]["audit"];
+        pools?: PoolReading[] | null; toolAgreement?: { result: ToolAgreement; } | null; nodeStrips?: NodeStripFact | null; teamAccess?: TeamAccessFact; autoOff?: AutoOffFact; stateRows?: Parameters<typeof stateLabelReading>[0]["rows"]; idle?: import("./idle-with-open-rows.ts").IdleRows; shelvedCircle?: ShelvedCircle[] | null; releaseRuns?: ReleaseRuns | null; releaseFailures?: ReleaseFailureRead[] | null; fleetBuildIncident?: FleetBuildIncident[] | null; releaseBehind?: import("./release-behind-main.ts").RepoFact[] | null; boardTruth?: Parameters<typeof boardTruthReading>[0]["audit"]; /** agent-org#1670: the pairs offered this tick when `BOARD_TRUTH_PAIR_FLAG` is on (`orgHealthTick` makes them); OMITTED keeps the set-keyed reading. */ boardTruthOffers?: BoardTruthOffer[] | null;
         classRepeat?: import("./class-repeat.ts").ClassRepeatFact | null; milestoneClock?: Omit<MilestoneClockFact, "endedAt"> | null;
         claimRefusals?: ClaimRefusal[] | null;
         /** agent-org#1218: `readRerunsOn5xx()`'s answer, `null` for an unreadable ledger and OMITTED when the caller does not ask (a default read would put a signal into every tick test, #1073). */
@@ -2282,7 +2326,7 @@ export function orgHealthReadings(facts: {
   if (facts.sweeps !== undefined) readings.push(sweepOverdueReading({ now: facts.now, sweeps: facts.sweeps }));
   if (facts.autoOff !== undefined) readings.push(autoOffRefusalReading({ now: facts.now, autoOff: facts.autoOff }));
   if (facts.stateRows !== undefined) readings.push(stateLabelReading({ rows: facts.stateRows, now: facts.now }));
-  if (facts.boardTruth !== undefined) readings.push(boardTruthReading({ audit: facts.boardTruth, day: isoOf(facts.now).slice(0, 10) }));
+  if (facts.boardTruth !== undefined) readings.push(...boardTruthReadings({ audit: facts.boardTruth, day: isoOf(facts.now).slice(0, 10), offers: facts.boardTruthOffers }));
   if (facts.idle !== undefined) readings.push(idleWithOpenRowsSignal({ idle: facts.idle }));
   if (facts.shelvedCircle !== undefined) readings.push(shelvedCircleReading({ circles: facts.shelvedCircle }));
   // agent-org#887: the per-repository reading REPLACES the project-only one when the caller asks for it (the gate does); a caller that gives only `releaseRuns` still gets the old reading
@@ -2474,6 +2518,58 @@ function copiesToCompare(pairs: CopyPair[] | null): CopyPair[] | null | undefine
   return pairs;
 }
 
+/** agent-org#1670: the state the pair offers read and write: the canary's file, which holds the flag, and `BOARD_TRUTH_PAIRS_FILE`, both in the state directory. */
+export type BoardTruthPairIo = { readCanary: () => string | null; readPairs: () => string | null; writePairs: (text: string) => void; };
+
+/** @returns the IO of a real tick: an absent file is `null`, and a write goes through a rename so a killed tick leaves the old file whole (`realCanaryIo`'s rule). */
+export function realBoardTruthPairIo(): BoardTruthPairIo {
+  const read = (path: string) => (existsSync(path) ? readFileSync(path, "utf8") : null);
+  const pairsPath = () => stateEntryPath(BOARD_TRUTH_PAIRS_FILE);
+  return {
+    readCanary: () => read(stateEntryPath(CANARY_STATE_FILE)),
+    readPairs: () => read(pairsPath()),
+    writePairs: (text) => {
+      const path = pairsPath();
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(`${path}.tmp`, text);
+      renameSync(`${path}.tmp`, path);
+    },
+  };
+}
+
+/** @returns the pairs file as it stands: `{}` when absent. A file that is not an object of pairs THROWS, because a pairs state read wrong would offer every standing pair again. */
+function parseBoardTruthPairs(text: string | null): BoardTruthPairs {
+  if (text === null || text.trim() === "") return {};
+  const raw = JSON.parse(text) as unknown;
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new Error(`${BOARD_TRUTH_PAIRS_FILE} is not an object of pairs`);
+  return raw as BoardTruthPairs;
+}
+
+/**
+ * agent-org#1670: THE PAIR OFFERS OF THIS TICK. `undefined` when the flag is OFF (or its state is unreadable, which reads OFF, `machineryFlagOn`'s rule), so the set-keyed
+ * reading stands as it always has; otherwise the offers `boardTruthPairStep` makes, with the pairs file written. A pairs file that cannot be read or written makes NO offer this
+ * tick, said on stderr, and the next tick offers again: a state read wrong would forget a pair already offered, so a failure never falls back to the set-keyed order.
+ */
+export function boardTruthPairOffers({ audit, now, io, log = (line) => process.stderr.write(line) }: { audit: Parameters<typeof boardTruthReading>[0]["audit"]; now: number; io: BoardTruthPairIo; log?: (line: string) => void; }): BoardTruthOffer[] | undefined {
+  if (audit === null || audit.findings.length === 0) return undefined;
+  let on: boolean;
+  try {
+    on = machineryFlagOn(parseCanaryState(io.readCanary()), BOARD_TRUTH_PAIR_FLAG);
+  } catch (error) {
+    log(`org-health: ${CANARY_STATE_FILE} is unreadable (${String((error as Error).message).split("\n")[0].slice(0, MAX_REASON_CHARS)}); ${BOARD_TRUTH_PAIR_FLAG} reads OFF.\n`);
+    return undefined;
+  }
+  if (!on) return undefined;
+  try {
+    const step = boardTruthPairStep({ pairs: parseBoardTruthPairs(io.readPairs()), present: audit.findings.map((f) => `${f.number}${f.question}`), now });
+    io.writePairs(`${JSON.stringify(step.pairs, null, 1)}\n`);
+    return step.offers;
+  } catch (error) {
+    log(`org-health: ${BOARD_TRUTH_PAIRS_FILE} could not be read or written (${String((error as Error).message).split("\n")[0].slice(0, MAX_REASON_CHARS)}) -- no board order this tick; the next tick offers again.\n`);
+    return [];
+  }
+}
+
 /**
  * THE WHOLE TICK: say each unknown on stderr, return the orders. NEVER THROWS -- a detector that can crash the gate stops every
  * order behind it (`repeatingLinesTick`'s rule). Only unknowns are written: a tripped signal's report is its order, and a
@@ -2482,12 +2578,13 @@ function copiesToCompare(pairs: CopyPair[] | null): CopyPair[] | null | undefine
  * caller has them already, and a leaf that reads them keeps `work-gate.ts` out of it. In an extracted tree no original is
  * found, so the reading is left out rather than stated unknown every tick (`copiesToCompare`).
  */
-export function orgHealthTick(facts: Parameters<typeof orgHealthReadings>[0], { log = (line) => process.stderr.write(line), readCopies = () => readDeclaredCopies(), readAutoOff = () => readAutoOffRefusal(), readRefusals = () => readClaimRefusals() }: { log?: (line: string) => void; readCopies?: () => CopyPair[] | null; readAutoOff?: () => AutoOffFact; readRefusals?: () => ClaimRefusal[] | null; } = {}) {
+export function orgHealthTick(facts: Parameters<typeof orgHealthReadings>[0], { log = (line) => process.stderr.write(line), readCopies = () => readDeclaredCopies(), readAutoOff = () => readAutoOffRefusal(), readRefusals = () => readClaimRefusals(), boardTruthIo = realBoardTruthPairIo() }: { log?: (line: string) => void; readCopies?: () => CopyPair[] | null; readAutoOff?: () => AutoOffFact; readRefusals?: () => ClaimRefusal[] | null; boardTruthIo?: BoardTruthPairIo; } = {}) {
   try {
     const copies = facts.copies !== undefined ? facts.copies : copiesToCompare(readCopies());
     const autoOff = facts.autoOff !== undefined ? facts.autoOff : readAutoOff();
     const claimRefusals = facts.claimRefusals !== undefined ? facts.claimRefusals : readRefusals();
-    const readings = orgHealthReadings({ ...facts, autoOff, claimRefusals, ...(copies === undefined ? {} : { copies }) });
+    const boardTruthOffers = facts.boardTruth === undefined ? undefined : boardTruthPairOffers({ audit: facts.boardTruth, now: facts.now, io: boardTruthIo, log }); // agent-org#1670
+    const readings = orgHealthReadings({ ...facts, autoOff, claimRefusals, ...(copies === undefined ? {} : { copies }), ...(boardTruthOffers === undefined ? {} : { boardTruthOffers }) });
     for (const r of readings) if (r.status === "unknown") log(`org-health: ${r.signal} UNKNOWN -- ${r.detail}; it is not read as clear.\n`);
     return orgHealthOrders(readings);
   } catch (err) {
@@ -2526,6 +2623,7 @@ export const MACHINERY_SIGNALS = Object.freeze({
   VERDICT_WRITTEN_UNDELIVERED: "verdict-written-undelivered",
   CONFLICTING_PR_WORKER_IDLE: "conflicting-pr-worker-idle",
   SESSION_PR_CLASSED_OUTSIDE: "session-pr-classed-outside", // agent-org#1667: a same-repository pull request with a `session:` label classed OUTSIDE for SESSION_PR_OUTSIDE_MINUTES (`outside-session-pr.ts`)
+  BOARD_TRUTH: "board-disagrees-with-reality", // agent-org#1670: a row or question the board disagrees with reality on (`boardTruthReadings`); not sampled, see `machineryValues`
 });
 export const STANDARD_MACHINERY_SIGNALS: readonly string[] = Object.freeze(Object.values(MACHINERY_SIGNALS));
 /** The signals no source in this tool reads yet: recorded as `null` every tick, so a change that names one is told it is UNKNOWN and not that it passed. */
@@ -2725,6 +2823,7 @@ export function machineryValues({ facts, since, now, memo }: { facts: CanaryFact
       [MACHINERY_SIGNALS.WAKES_HELD]: facts.deferredWakes,
       [MACHINERY_SIGNALS.APPROVED_UNQUEUED]: unqueued,
       [MACHINERY_SIGNALS.INCIDENTS_NOT_REAL]: null,
+      [MACHINERY_SIGNALS.BOARD_TRUTH]: null, // agent-org#1670: the canary's facts carry no board audit (the gate passes none), so this reads unknown, never zero
       [MACHINERY_SIGNALS.RATE_LIMIT_REFUSALS]: null,
       [MACHINERY_SIGNALS.RELEASE_FAILURES]: failedRuns,
       [MACHINERY_SIGNALS.OWNERLESS_PR_UNREACHED]: facts.ownerless == null ? null : aged(ownerlessSeen),
