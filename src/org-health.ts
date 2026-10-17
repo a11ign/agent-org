@@ -2583,6 +2583,16 @@ export function boardTruthPairOffers({ audit, now, io, log = (line) => process.s
 }
 
 /**
+ * a11ign#5681 (agent-org#1716): THE OFFERS the board truth signal made this tick, for the canary: its tripped readings, one per offer (or one for the set-keyed order).
+ * `null` when the signal was not read at all or any of its readings is unknown -- an unread board is never zero offers.
+ */
+export function boardTruthOfferCount(readings: Reading[]): number | null {
+  const truth = readings.filter((r) => r.signal === SIGNALS.BOARD_TRUTH);
+  if (truth.length === 0 || truth.some((r) => r.status === "unknown")) return null;
+  return truth.filter((r) => r.status === "tripped").length;
+}
+
+/**
  * THE WHOLE TICK: say each unknown on stderr, return the orders. NEVER THROWS -- a detector that can crash the gate stops every
  * order behind it (`repeatingLinesTick`'s rule). Only unknowns are written: a tripped signal's report is its order, and a
  * line written every tick for a standing condition would be offered by `repeating-lines.ts` as a fault of its own.
@@ -2590,7 +2600,7 @@ export function boardTruthPairOffers({ audit, now, io, log = (line) => process.s
  * caller has them already, and a leaf that reads them keeps `work-gate.ts` out of it. In an extracted tree no original is
  * found, so the reading is left out rather than stated unknown every tick (`copiesToCompare`).
  */
-export function orgHealthTick(facts: Parameters<typeof orgHealthReadings>[0], { log = (line) => process.stderr.write(line), readCopies = () => readDeclaredCopies(), readAutoOff = () => readAutoOffRefusal(), readRefusals = () => readClaimRefusals(), boardTruthIo = realBoardTruthPairIo() }: { log?: (line: string) => void; readCopies?: () => CopyPair[] | null; readAutoOff?: () => AutoOffFact; readRefusals?: () => ClaimRefusal[] | null; boardTruthIo?: BoardTruthPairIo; } = {}) {
+export function orgHealthTick(facts: Parameters<typeof orgHealthReadings>[0], { log = (line) => process.stderr.write(line), readCopies = () => readDeclaredCopies(), readAutoOff = () => readAutoOffRefusal(), readRefusals = () => readClaimRefusals(), boardTruthIo = realBoardTruthPairIo(), onBoardTruthOffers }: { log?: (line: string) => void; readCopies?: () => CopyPair[] | null; readAutoOff?: () => AutoOffFact; readRefusals?: () => ClaimRefusal[] | null; boardTruthIo?: BoardTruthPairIo; onBoardTruthOffers?: (count: number | null) => void; } = {}) {
   try {
     const copies = facts.copies !== undefined ? facts.copies : copiesToCompare(readCopies());
     const autoOff = facts.autoOff !== undefined ? facts.autoOff : readAutoOff();
@@ -2598,6 +2608,7 @@ export function orgHealthTick(facts: Parameters<typeof orgHealthReadings>[0], { 
     const boardTruthOffers = facts.boardTruth === undefined ? undefined : boardTruthPairOffers({ audit: facts.boardTruth, now: facts.now, io: boardTruthIo, log }); // agent-org#1670
     const readings = orgHealthReadings({ ...facts, autoOff, claimRefusals, ...(copies === undefined ? {} : { copies }), ...(boardTruthOffers === undefined ? {} : { boardTruthOffers }) });
     for (const r of readings) if (r.status === "unknown") log(`org-health: ${r.signal} UNKNOWN -- ${r.detail}; it is not read as clear.\n`);
+    onBoardTruthOffers?.(boardTruthOfferCount(readings)); // a11ign#5681: the canary's count, handed up and not returned, so the orders stay what they were
     return orgHealthOrders(readings);
   } catch (err) {
     log(`org-health: could not run (${String((err as any)?.message ?? err).split("\n")[0].slice(0, MAX_REASON_CHARS)}) -- no order this tick.\n`);
@@ -2635,7 +2646,7 @@ export const MACHINERY_SIGNALS = Object.freeze({
   VERDICT_WRITTEN_UNDELIVERED: "verdict-written-undelivered",
   CONFLICTING_PR_WORKER_IDLE: "conflicting-pr-worker-idle",
   SESSION_PR_CLASSED_OUTSIDE: "session-pr-classed-outside", // agent-org#1667: a same-repository pull request with a `session:` label classed OUTSIDE for SESSION_PR_OUTSIDE_MINUTES (`outside-session-pr.ts`)
-  BOARD_TRUTH: "board-disagrees-with-reality", // agent-org#1670: a row or question the board disagrees with reality on (`boardTruthReadings`); not sampled, see `machineryValues`
+  BOARD_TRUTH: "board-disagrees-with-reality", // agent-org#1670: a row or question the board disagrees with reality on (`boardTruthReadings`); sampled as the offers the tick made, see `machineryValues` (a11ign#5681)
 });
 export const STANDARD_MACHINERY_SIGNALS: readonly string[] = Object.freeze(Object.values(MACHINERY_SIGNALS));
 /** The signals no source in this tool reads yet: recorded as `null` every tick, so a change that names one is told it is UNKNOWN and not that it passed. */
@@ -2809,6 +2820,8 @@ export type CanaryFacts = {
   conflictingIdle?: number[] | null;
   /** agent-org#1667: the numbers of the same-repository pull requests with a `session:` label that are classed OUTSIDE this tick (`sessionPrOutsideNow`); absent or `null` is unread */
   sessionPrOutside?: number[] | null;
+  /** a11ign#5681: the board offers the tick made (`boardTruthOfferCount`); absent or `null` is unread, which is unknown and never zero */
+  boardTruthOffers?: number | null;
 };
 
 /** The standard signals of one tick over `(since, now]`. A pull request counts as unqueued once the memo has seen it unarmed for `UNQUEUED_MINUTES`; the memo is returned with the departed dropped. */
@@ -2842,7 +2855,7 @@ export function machineryValues({ facts, since, now, memo }: { facts: CanaryFact
       [MACHINERY_SIGNALS.WAKES_HELD]: facts.deferredWakes,
       [MACHINERY_SIGNALS.APPROVED_UNQUEUED]: unqueued,
       [MACHINERY_SIGNALS.INCIDENTS_NOT_REAL]: null,
-      [MACHINERY_SIGNALS.BOARD_TRUTH]: null, // agent-org#1670: the canary's facts carry no board audit (the gate passes none), so this reads unknown, never zero
+      [MACHINERY_SIGNALS.BOARD_TRUTH]: facts.boardTruthOffers ?? null, // a11ign#5681: the offers the tick made; unread is unknown, never zero
       [MACHINERY_SIGNALS.RATE_LIMIT_REFUSALS]: null,
       [MACHINERY_SIGNALS.RELEASE_FAILURES]: failedRuns,
       [MACHINERY_SIGNALS.OWNERLESS_PR_UNREACHED]: facts.ownerless == null ? null : aged(ownerlessSeen),
