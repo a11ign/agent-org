@@ -93,6 +93,8 @@ test("each run's brief carries the machine's notes, and its ticket dir a copy of
   assert.match(readFileSync(join(dir, "brief.md"), "utf8"), /## On this machine\n\nStart apps with `npm run dev:atomic`\./);
   assert.deepEqual(JSON.parse(readFileSync(join(dir, "deny.json"), "utf8")), deny);
   assert.deepEqual(JSON.parse(readFileSync(join(dir, "connectors.json"), "utf8")), [], "a machine that names no connectors allows none");
+  // A11-84: the host's own programs are named beside the outcome file, where the hook refuses a worker's write to them.
+  assert.deepEqual(JSON.parse(readFileSync(join(dir, "protected-paths.json"), "utf8")), [join(settings.binDir, "gh"), join(settings.binDir, "agent-org")]);
 });
 
 test("a run's brief names the connectors the machine allows, and its ticket dir holds the copy the hook reads", async () => {

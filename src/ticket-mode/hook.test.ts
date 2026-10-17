@@ -3,10 +3,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { utimesSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { MAX_STOP_REFUSALS, main, publishConnectors, stopVerdict, toolVerdict } from "./hook.ts";
+import { MAX_STOP_REFUSALS, main, protectedFiles, publishConnectors, resolveWritePath, stopVerdict, toolVerdict } from "./hook.ts";
+import { PROTECTED_FILE } from "./worker-files.ts";
 
 const bash = (command: string) => toolVerdict("Bash", { command }).code;
 
@@ -223,4 +225,60 @@ test("A11-80: a working outcome lets one stop through; a later stop on the same 
   writeFileSync(outcome, JSON.stringify({ kind: "working", reason: "r" }));
   utimesSync(outcome, 3000, 3000);
   assert.deepEqual(Array.from({ length: MAX_STOP_REFUSALS + 2 }, () => stopVerdict(dir).code), [0, 2, 2, 0], "bounded by the same count as a missing outcome");
+});
+
+// A11-84: THE HOST'S OWN PROGRAMS. A worker may not write the routing `gh` or the launcher `agent-org` in the host's bin directory, by a file tool or a command,
+// and may not run the commands that install them. The reading is the pool's copy, `protected-paths.json`, beside the outcome file.
+const HOME_BIN = join(homedir(), ".local", "bin");
+const PROTECTED = [`${HOME_BIN}/gh`, `${HOME_BIN}/agent-org`];
+const toolWrites = (file_path: string, tool = "Write") => toolVerdict(tool, { file_path }, [], [], [], null, false, PROTECTED).code;
+const commandWrites = (command: string) => toolVerdict("Bash", { command }, [], [], [], null, false, PROTECTED).code;
+
+test("A11-84 POSITIVE: a file tool may not write the host's gh wrapper or launcher, and a command may not write them either", () => {
+  assert.equal(toolWrites(`${HOME_BIN}/gh`), 2, "a Write to the wrapper");
+  assert.equal(toolWrites(`${HOME_BIN}/gh`, "Edit"), 2, "an Edit to the wrapper");
+  assert.equal(toolWrites(`${HOME_BIN}/agent-org`, "MultiEdit"), 2, "a MultiEdit to the launcher");
+  for (const written of [
+    `cp /tmp/gh ${HOME_BIN}/gh`, `cat x > ${HOME_BIN}/gh`, `echo x >> ~/.local/bin/agent-org`, `mv new $HOME/.local/bin/gh`,
+    `sed -i 's/a/b/' ${HOME_BIN}/gh`, "rm -f ~/.local/bin/gh", `chmod 755 ${HOME_BIN}/gh`, `dd if=x of=${HOME_BIN}/gh`,
+    "pnpm run host:install", "pnpm run host:check --install", "node src/host-units.ts --install --allow-no-apps",
+  ]) {
+    assert.equal(commandWrites(written), 2, written);
+  }
+});
+
+test("A11-84 CONTROL: a read of the wrapper, another program in the bin directory and the host's read-only checks are allowed", () => {
+  assert.equal(toolWrites(`${HOME_BIN}/herdr`), 0, "an unrelated program in the bin directory");
+  assert.equal(toolWrites(`${HOME_BIN}/gh-real`), 0, "`gh-real` is not `gh`");
+  for (const read of [`cat ${HOME_BIN}/gh`, "grep -n APP_ROLES ~/.local/bin/gh", `ls -l ${HOME_BIN}`, `cp ${HOME_BIN}/gh-real /tmp/x`,
+    "pnpm run host:check", "pnpm run host:check --json"]) {
+    assert.equal(commandWrites(read), 0, read);
+  }
+});
+
+test("A11-84: a write to the host's program is refused with the file named and whose it is", () => {
+  const hit = toolVerdict("Write", { file_path: `${HOME_BIN}/gh` }, [], [], [], null, false, PROTECTED);
+  assert.match(hit.say.join("\n"), /is the host's program, which a worker may not write/);
+  assert.ok(hit.say.join("\n").includes(`${HOME_BIN}/gh`), "the refusal names the file");
+  const command = toolVerdict("Bash", { command: `cp /tmp/gh ${HOME_BIN}/gh` }, [], [], [], null, false, PROTECTED);
+  assert.ok(command.say.join("\n").includes(`${HOME_BIN}/gh, ${HOME_BIN}/agent-org are the host's programs, which a worker may not write`), command.say.join("\n"));
+  assert.equal(toolVerdict("Bash", { command: "npm test" }, [], [], [], null, false, []).code, 0, "with no protected list, nothing is protected");
+  assert.equal(toolVerdict("Bash", { command: "pnpm run host:install" }, [], [], [], null, false, []).code, 2, "but the install commands are refused regardless");
+});
+
+test("A11-84: a write tool's path is resolved as the disk resolves it, so a link into the bin directory is the same file", () => {
+  assert.equal(resolveWritePath("/some/where/link/gh", () => HOME_BIN), `${HOME_BIN}/gh`, "a symbolic link in the directory is followed");
+  assert.equal(resolveWritePath("~/x/../gh-real", (dir) => dir), join(homedir(), "gh-real"), "`~` is expanded and `..` is resolved");
+});
+
+test("A11-84: the pool's protected-paths file is read beside the outcome file, and one that is unreadable protects nothing extra", () => {
+  const dir = tmpDir("hook-protected-paths-");
+  assert.deepEqual(protectedFiles(dir), [], "no copy, so none");
+  writeFileSync(join(dir, PROTECTED_FILE), JSON.stringify(PROTECTED));
+  assert.deepEqual(protectedFiles(dir), PROTECTED, "POSITIVE: the copy names the two programs");
+  writeFileSync(join(dir, PROTECTED_FILE), "{ not json");
+  assert.deepEqual(protectedFiles(dir), [], "an unreadable copy names none, and the built-in refusals still apply");
+  writeFileSync(join(dir, PROTECTED_FILE), JSON.stringify(PROTECTED));
+  const payload = JSON.stringify({ tool_name: "Write", tool_input: { file_path: `${HOME_BIN}/gh` } });
+  assert.equal(main(payload, ["pre-tool-use", dir]).code, 2, "end to end: the hook reads the copy and refuses the write");
 });

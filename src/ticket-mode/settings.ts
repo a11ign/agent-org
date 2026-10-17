@@ -40,6 +40,8 @@ export type TicketSettings = Readonly<{
   herdrSession: string;
   worktreeRoot: string;
   stateDir: string;
+  /** The host's `binDir`, where the routing `gh` and the launcher `agent-org` are installed. A worker may not write them (A11-84). */
+  binDir: string;
   linearKey: KeySource;
   /** A markdown file added to every worker's brief, or null. */
   brief: string | null;
@@ -300,6 +302,7 @@ export function parseTicketSettings(host: unknown, home: string = homedir()): Ti
     port,
     uiPort,
     herdrSession: session,
+    binDir: host.binDir === undefined ? join(home, ".local", "bin") : absolutePath(host.binDir, "binDir"),
     worktreeRoot: tickets.worktreeRoot === undefined ? join(stateDir, "tickets", "worktrees") : absolutePath(tickets.worktreeRoot, "tickets.worktreeRoot"),
     stateDir,
     linearKey: keySource(tickets.linearKey),

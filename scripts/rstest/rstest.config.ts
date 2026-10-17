@@ -18,6 +18,11 @@
 import { fileURLToPath } from "node:url";
 import { defineToolchainConfig } from "@a11ign/toolchain/rstest-config";
 
+// A11-84: A TEST RUN MAY NOT WRITE THE REAL HOME'S BIN DIRECTORY. `writeGhWrapper` (src/host-units.ts) refuses a `gh` target inside the account's `.local/bin` while
+// this is set, and it is set here, in the process rstest starts its workers from, so every worker and every child a test spawns inherits it. A test takes its bin
+// directory from a fixture, and `src/packaging/tests-never-write-the-real-bin-dir.test.ts` reads the test files to hold it to that.
+process.env.AGENT_ORG_UNDER_TEST ??= "1";
+
 export default {
   ...defineToolchainConfig({
     root: fileURLToPath(new URL("../../", import.meta.url)),

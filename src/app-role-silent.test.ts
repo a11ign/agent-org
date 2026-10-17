@@ -15,7 +15,7 @@ import { PROJECT_ROOT } from "./packaging/host-units-project.ts";
 import { tmpDir } from "./lib/tmp-fixture.ts";
 import { APP_ROLE_SILENT, APP_ROLE_SILENT_MS, appRoleSilent, appRoleSilentEvents, type LedgerSource } from "./app-role-silent.ts";
 import { parseHostConfig } from "./host-config.ts";
-import { rerenderGhWrapper, shippedScriptText, tickAppRoleSilent, tickRerenderGhWrapper, wrapperIdentity } from "./host-units.ts";
+import { hostIdentityInstall, rerenderGhWrapper, shippedScriptText, tickAppRoleSilent, tickRerenderGhWrapper, wrapperIdentity } from "./host-units.ts";
 
 // ---- the detector ---------------------------------------------------------------------------------------------------------------
 
@@ -240,11 +240,14 @@ test("#790 NEGATIVE: a wrapper that differs in a line that is not identity is le
   assert.doesNotMatch(h.text(), /# hand-edited/);
 });
 
-test("#790: SWITCHING A ROLE TO `user-accounts` AND BACK re-renders both ways (the scratch host.json is the test's, never the live one)", () => {
+test("#790 + A11-84: SWITCHING A ROLE TO `user-accounts` AND BACK: the tick REFUSES to drop the app, and `host:install --allow-no-apps` takes the switch (the scratch host.json is the test's, never the live one)", () => {
   const h = installed(["workers"]);
   const seen: string[] = [`declared workers: ${rolesLine(h.text())}`];
-  assert.equal(rerenderGhWrapper({ host: h.host([]) }), h.target);
-  seen.push(`switched to user-accounts: ${rolesLine(h.text())}`);
+  // A11-84: the downgrade is refused by the tick, which names the way past it, and writes nothing.
+  assert.throws(() => rerenderGhWrapper({ host: h.host([]) }), /names no App role and the installed one names workers.*--allow-no-apps/);
+  assert.equal(armOf(h.text(), "workers"), true, "the refused tick left the app in place");
+  hostIdentityInstall({ host: h.host([]), allowNoApps: true, out: () => {}, scriptDir: join(h.root, "bin"), workersDir: join(h.root, "workers"), leadsDir: join(h.root, "leads") });
+  seen.push(`switched to user-accounts by host:install --allow-no-apps: ${rolesLine(h.text())}`);
   assert.equal(armOf(h.text(), "workers"), false, "the arm is gone: the app is no longer used");
   assert.equal(rerenderGhWrapper({ host: h.host([]) }), null, "and a second tick changes nothing");
   assert.equal(rerenderGhWrapper({ host: h.host(["workers"]) }), h.target);

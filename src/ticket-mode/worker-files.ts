@@ -8,6 +8,7 @@
 // THE WORKER CHOOSES THE REPOSITORY AND FINDS ITS COMMANDS. It starts in the ticket's own folder beside the person's repositories, reads the ticket,
 // decides where the work lands, and makes a worktree there with `ticket:worktree`. Each repository's `CLAUDE.md`/`AGENTS.md` names how to install,
 // test and typecheck it, which is where any engineer looks, so nothing about a repository is declared here or in the host file.
+import { join } from "node:path";
 import type { StackBase } from "./board-view.ts";
 import type { DenyRule } from "./settings.ts";
 import type { PullRequest } from "./queue.ts";
@@ -29,6 +30,11 @@ export const WORKING_STOP_FILE = "working-stop";
 export const DENY_FILE = "deny.json";
 /** The host file's `tickets.connectors`, copied beside the outcome file, where the PreToolUse hook reads it. */
 export const CONNECTORS_FILE = "connectors.json";
+/** The host's own programs a worker may not write (A11-84), copied beside the outcome file, where the PreToolUse hook reads it. */
+export const PROTECTED_FILE = "protected-paths.json";
+
+/** The host's programs in its `binDir` that a worker may not write: the routing `gh` and the launcher `agent-org`. Their writers are the host's (`host:install`). */
+export const protectedPaths = (binDir: string): string[] => [join(binDir, "gh"), join(binDir, "agent-org")];
 /**
  * Present beside the outcome file while the run is a REVIEW RUN, one a person started by approving its pull requests. It lets the PreToolUse
  * hook allow `gh pr ready`, which only that person's approval makes the worker's to run.
