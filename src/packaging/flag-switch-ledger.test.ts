@@ -353,8 +353,8 @@ test("(7) agent-org#1324: an unreadable canary state is UNKNOWN, a missing one i
 
 // agent-org#1372: A SWITCH ROW FOR CODE THAT LIVES IN ANOTHER TRACKER IS FILED THERE, so the owed rows of every declared tracker are read before a flag is counted absent.
 const OTHER_TRACKER = project("other-tracker", { "project.json": JSON.stringify({ tracker: [{ key: "", repo: "a11ign/a11ign" }, { key: "agent-org", repo: "a11ign/agent-org" }] }), "host.json": "{}" });
-/** A fake `gh` list: the rows a `repo label` pair holds, `null` for a refused list. A pair the case does not name holds no rows. Records every pair asked for. */
-function otherLists(lists: Record<string, Row[] | null>) {
+/** A fake `gh` list: the rows a `repo label` pair holds, `{ refused }` for a refused list. A pair the case does not name holds no rows. Records every pair asked for. */
+function otherLists(lists: Record<string, Row[] | { refused: string; }>) {
   const asked: string[] = [];
   const listOwed = (repo: string, label: string) => {
     const pair = `${repo} ${label}`;
@@ -364,7 +364,7 @@ function otherLists(lists: Record<string, Row[] | null>) {
   return { asked, listOwed };
 }
 /** The gate's canary half on `gate.graphqlPacing` with the other trackers' lists the case gives, and the home rows it was given. */
-function otherLedger(lists: Record<string, Row[] | null>, { openRows = [] as Row[] | null, hours = 3 } = {}) {
+function otherLedger(lists: Record<string, Row[] | { refused: string; }>, { openRows = [] as Row[] | null, hours = 3 } = {}) {
   const { asked, listOwed } = otherLists(lists);
   const answer = readFlagLedger({ toolRoot: PACING_TREE, ...OTHER_TRACKER, canary: () => emptyCanaryState(), openRows, now: NOW, merge: pacingMergedHoursAgo(hours), listOwed });
   return { answer, asked };
@@ -393,12 +393,28 @@ test("(8) agent-org#1372 CONTROL: no owed row anywhere still counts; a row of an
 });
 
 test("(8) agent-org#1372: a refused list of another tracker is UNKNOWN, never a clean list, and the other trackers are not asked for a flag the home rows name or one not past its window", () => {
-  const refused = otherLedger({ "a11ign/agent-org in-progress": null });
+  const refused = otherLedger({ "a11ign/agent-org in-progress": { refused: "HTTP 502" } });
   assert.ok("unknown" in refused.answer && /a11ign\/agent-org/.test(refused.answer.unknown), `a refused other tracker names itself: ${JSON.stringify(refused.answer)}`);
-  const home = otherLedger({ "a11ign/agent-org ready": null }, { openRows: [named(["ready"], "gate.graphqlPacing: switch it")] });
+  const home = otherLedger({ "a11ign/agent-org ready": { refused: "HTTP 502" } }, { openRows: [named(["ready"], "gate.graphqlPacing: switch it")] });
   assert.ok(!("unknown" in home.answer) && home.asked.length === 0, "CONTROL: the home row names the flag, so no other tracker is read");
-  const young = otherLedger({ "a11ign/agent-org ready": null }, { hours: 1 });
+  const young = otherLedger({ "a11ign/agent-org ready": { refused: "HTTP 502" } }, { hours: 1 });
   assert.ok(!("unknown" in young.answer) && young.asked.length === 0, "CONTROL: one hour in, the flag is not past its window, so no other tracker is read");
+});
+
+test("a refused owed-rows read names its cause (agent-org#1700): the unknown carries the thrown message's first line, and a list that holds no rows names no unknown", () => {
+  const cause = "Could not resolve to a Repository with the name 'a11ign/agent-org'.";
+  const refused = owedRowsOf(["a11ign/agent-org"], () => ({ refused: cause }));
+  assert.ok("unknown" in refused && refused.unknown.includes(cause), `the unknown names why the read failed: ${JSON.stringify(refused)}`);
+  assert.deepEqual(owedRowsOf(["a11ign/agent-org"], () => []), [], "CONTROL: a list that returns no rows yields no unknown");
+});
+
+test("liveOwedRows converts the thrown error to its first line through the real read (agent-org#1700): a refused read is `{ refused }`, and an answered read is its rows", () => {
+  const cause = "Could not resolve to a Repository with the name 'a11ign/agent-org'.";
+  // NOT a rate-limit text: a limit refusal is remembered for the whole tick (`readUnlessRefused`) and would refuse every later read in this file.
+  const refusedRun = () => { throw new Error(`${cause}\nthe second line names nothing the tick needs`); };
+  assert.deepEqual(ledger.liveOwedRows("a11ign/agent-org", "ready", refusedRun), { refused: cause }, "a refused read names the first line of the thrown error, and only that");
+  const answeredRun = () => JSON.stringify({ data: { repository: { issues: { nodes: [{ title: "t", body: "b", labels: { nodes: [{ name: "ready" }] } }], pageInfo: { hasNextPage: false } } } } });
+  assert.deepEqual(ledger.liveOwedRows("a11ign/agent-org", "ready", answeredRun), [{ title: "t", body: "b", labels: [{ name: "ready" }] }], "CONTROL: an answered read is rows, so a producer that always refuses goes red");
 });
 
 test("(8) agent-org#1372: the other trackers are the declared ones except the project's own (key `\"\"`), and a declaration without a list names none", () => {
@@ -406,5 +422,5 @@ test("(8) agent-org#1372: the other trackers are the declared ones except the pr
   assert.deepEqual(otherTrackerRepos({ tracker: [{ key: "", repo: "a11ign/a11ign" }] }), [], "the project's own tracker alone is no other");
   assert.deepEqual(otherTrackerRepos({}), [], "a declaration with no tracker list names none");
   assert.deepEqual(otherTrackerRepos(null), []);
-  assert.deepEqual(owedRowsOf([], () => null), [], "CONTROL: no other tracker, nothing to refuse");
+  assert.deepEqual(owedRowsOf([], () => ({ refused: "not asked" })), [], "CONTROL: no other tracker, nothing to refuse");
 });

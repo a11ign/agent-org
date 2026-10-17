@@ -194,14 +194,15 @@ export function otherTrackerRepos(doc: unknown): string[] {
 /**
  * THE OWED ROWS OF THE OTHER TRACKERS, read one `label` at a time per repository. A refused list of any one is UNKNOWN, never an empty set: a row that was not read cannot be
  * known to be absent.
- * @param list the open rows of `repo` that carry `label`, or `null` when they could not be read (`liveOwedRows` by default)
+ * @param list the open rows of `repo` that carry `label`, or `{ refused }` with the first line of why they could not be read (`liveOwedRows` by default)
  */
-export function owedRowsOf(repos: readonly string[], list: (repo: string, label: string) => OpenRow[] | null): OpenRow[] | { unknown: string; } {
+export function owedRowsOf(repos: readonly string[], list: (repo: string, label: string) => OpenRow[] | { refused: string; }): OpenRow[] | { unknown: string; } {
   const rows: OpenRow[] = [];
   for (const repo of repos) {
     for (const label of OWED_LABELS) {
       const listed = list(repo, label);
-      if (listed === null) return { unknown: `the open \`${label}\` rows of ${repo} could not be read, so no row there is known to be absent` };
+      // The cause is named in the `unknown`, so the tick's line says WHY the read failed, not only that it did (agent-org#1700).
+      if (!Array.isArray(listed)) return { unknown: `the open \`${label}\` rows of ${repo} could not be read (${listed.refused}), so no row there is known to be absent` };
       rows.push(...listed);
     }
   }
@@ -210,14 +211,15 @@ export function owedRowsOf(repos: readonly string[], list: (repo: string, label:
 
 /**
  * The open rows of `repo` that carry `label`, read through the ticket port, which is a connection and not a search. `null` when the read was refused or failed, or when the
- * population is longer than the port holds whole: a list that may be cut is not the whole set.
+ * population is longer than the port holds whole: a list that may be cut is not the whole set. A refused read returns `{ refused }` with the first line of the thrown error, never a bare
+ * `null`: the error is the only record of why the read failed (agent-org#1700). `run` is the gate's runner unless a test hands its own, so the refusal is pinned through this read.
  */
-export function liveOwedRows(repo: string, label: string): OpenRow[] | null {
+export function liveOwedRows(repo: string, label: string, run: (args: string[]) => string = defaultRun): OpenRow[] | { refused: string; } {
   try {
-    const nodes: { title: string; body: string | null; labels: { nodes: { name: string; }[]; }; }[] = readRowsByLabel({ label, state: "OPEN", select: "title body labels(first:100){nodes{name}}", run: defaultRun, repo });
+    const nodes: { title: string; body: string | null; labels: { nodes: { name: string; }[]; }; }[] = readRowsByLabel({ label, state: "OPEN", select: "title body labels(first:100){nodes{name}}", run, repo });
     return nodes.map((node) => ({ title: node.title, body: node.body, labels: node.labels.nodes }));
-  } catch {
-    return null;
+  } catch (cause) {
+    return { refused: String((cause as Error)?.message ?? cause).split("\n")[0].slice(0, 160) };
   }
 }
 
@@ -261,7 +263,7 @@ export function canaryAbsentFlags({ shipped, state, openRows, otherOwedRows = ()
 export function readFlagLedger({ toolRoot = TOOL_ROOT, projectRoot = HOME_CHECKOUT, hostPath = hostConfigPath(), read = (path) => readFileSync(path, "utf8"), list = listDirectory, merge = (flag) => mergeOf(flag, { toolRoot }),
   canary = () => readCanaryState(stateEntryPath(CANARY_STATE_FILE)), openRows = null, listOwed = liveOwedRows, now = Date.now() }:
   { toolRoot?: string; projectRoot?: string; hostPath?: string; read?: (path: string) => string; list?: (dir: string) => { name: string; directory: boolean; }[]; merge?: (flag: ShippedFlag) => { mergedAt: string | null; pr: number | null; };
-    canary?: () => CanaryState | { unknown: string; }; openRows?: readonly OpenRow[] | null; listOwed?: (repo: string, label: string) => OpenRow[] | null; now?: number; } = {}): FlagLedger {
+    canary?: () => CanaryState | { unknown: string; }; openRows?: readonly OpenRow[] | null; listOwed?: (repo: string, label: string) => OpenRow[] | { refused: string; }; now?: number; } = {}): FlagLedger {
   const shipped = discoverFlags({ toolRoot, read, list });
   if (shipped === null) return { unknown: `${join(toolRoot, "src")} could not be listed, so no flag was found` };
   if (shipped.length === 0) return { unknown: `no \`*_FLAG\` constant was found under ${join(toolRoot, "src")}, so none was compared` };
