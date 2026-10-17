@@ -2,6 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  apiBase, chosenProfile, profileLabel,
   HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, isParked, parentKeys, parentTick, ticketCount, projectCounts, queueLabel, recall, remember, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, selectable, statusCounts, terminalLink, toggled, waitsOn, repoOfPull, stackedOn, stackNote,
   PRIORITY_NAMES, hasPlan, isWatched, publishable, publishLabel, publishNote, missingPlan, planChoiceOf, planCounts, priorityCounts, prioritiesOf, runChoiceLabel, unplannedCount, visibleTickets, workItems,
   type ViewEntry, type ViewTicket,
@@ -476,4 +477,17 @@ test("the board watches a run Ready to merge or Published with a pull request op
   assert.equal(isWatched(shipped({ workspace: "w1" })), false, "parked");
   assert.equal(isWatched(shipped({ handedBack: "x" })), false, "handed to a person");
   assert.equal(isWatched(shipped({ outcome: { kind: "reviewed", prs: [] } })), false, "a run with no pull request has nothing to watch");
+});
+
+test("the profile shown is the one remembered while it is listed, this machine's otherwise, and its calls go under its prefix unless it is local", () => {
+  const profiles = [{ name: "work", local: true }, { name: "personal", local: false }];
+  assert.deepEqual(chosenProfile(profiles, "personal"), { name: "personal", local: false });
+  assert.deepEqual(chosenProfile(profiles, "gone"), { name: "work", local: true });
+  assert.deepEqual(chosenProfile(profiles, null), { name: "work", local: true });
+  assert.equal(chosenProfile([], "personal"), null);
+  assert.equal(apiBase(null), "");
+  assert.equal(apiBase({ name: "work", local: true }), "");
+  assert.equal(apiBase({ name: "personal", local: false }), "/p/personal");
+  assert.equal(profileLabel({ name: "work", local: true }), "work (this machine)");
+  assert.equal(profileLabel({ name: "personal", local: false }), "personal");
 });

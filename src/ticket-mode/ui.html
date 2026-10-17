@@ -13,6 +13,7 @@
   body { margin: 0; font: 14px/1.45 system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); }
   header { display: flex; gap: 16px; align-items: center; height: var(--header); padding: 0 20px; border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 2; }
   header h1 { font-size: 16px; margin: 0 12px 0 0; }
+  header .profile { display: flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted); }
   .tab { background: none; border: 0; padding: 6px 10px; border-radius: 6px; color: var(--muted); cursor: pointer; font: inherit; }
   .tab[aria-selected="true"] { background: var(--bg); color: var(--text); font-weight: 600; }
   main { padding: 16px 20px 120px; }
@@ -111,6 +112,7 @@
 <body>
 <header>
   <h1>Ticket queue</h1>
+  <label class="profile" id="profile-label" hidden>Board <select id="profile" aria-label="Which machine's board to show"></select></label>
   <button class="tab" data-tab="pick" aria-selected="true">Pick</button>
   <button class="tab" data-tab="board" aria-selected="false">Board</button>
   <button class="settings-open" id="open-settings" type="button" aria-haspopup="dialog">
@@ -145,6 +147,7 @@
 </dialog>
 <main>
   <div id="error" class="error" role="alert"></div>
+  <div id="profiles-note" class="notice" hidden></div>
   <section id="pick">
     <div class="bar">
       <input id="filter" type="search" placeholder="Filter by key, title or project">
@@ -186,7 +189,7 @@
 // The decisions (what shows, how it groups, what can be selected, what status a run has and what it offers) are board-view.ts's, tested there.
 // This page only draws what they return and wires the clicks.
 import {
-  APPROVE_TITLE, RESPOND_TITLE, PRIORITY_NAMES, RUN_STATUSES, publishable, publishLabel, publishNote, pullsOf, flatten, groupByStatus, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, queueLabel, recall, remember, runActions, runStatus,
+  APPROVE_TITLE, RESPOND_TITLE, apiBase, chosenProfile, profileLabel, PRIORITY_NAMES, RUN_STATUSES, publishable, publishLabel, publishNote, pullsOf, flatten, groupByStatus, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, queueLabel, recall, remember, runActions, runStatus,
   runChoiceLabel, runsShown, unplannedCount, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, waitsOn, workersLabel,
 } from "/board-view.js";
 
@@ -212,18 +215,24 @@ const state = {
   // Parents start folded too, so an epic reads as one row until it is opened.
   openParents: recall(storage, "ticket-mode.open-parents"),
   runFilter: [...recall(storage, "ticket-mode.run-filter")][0] ?? null,
+  // The boards the profiles file lists, and the one shown. With no profiles file there are none, and the page shows this board only.
+  profiles: [], profile: null,
 };
 const setOpen = (next) => { state.open = next; remember(storage, "ticket-mode.open", next); renderPick(); };
 const setOpenParents = (next) => { state.openParents = next; remember(storage, "ticket-mode.open-parents", next); renderPick(); };
 const everyOpen = (statuses) => statuses.length > 0 && statuses.every((status) => state.open.has(status));
 
-async function call(method, path, body) {
-  const response = await fetch(path, { method, headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
+// What a call answers once another board has been chosen: it is dropped, so one board's answer never lands on another's view.
+const STALE = new Error("another board was chosen");
+async function call(method, path, body, base = apiBase(state.profile)) {
+  const chosen = state.profile;
+  const response = await fetch(`${base}${path}`, { method, headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
   const value = await response.json();
+  if (state.profile !== chosen) throw STALE;
   if (!response.ok) throw new Error(value.error || response.statusText);
   return value;
 }
-function report(err) { $("error").textContent = err ? String(err.message || err) : ""; }
+function report(err) { if (err !== STALE) $("error").textContent = err ? String(err.message || err) : ""; }
 const entryFor = (key) => state.queue.entries.find((e) => e.ticket.key === key);
 /** What Select all takes: every shown ticket a person can pick, so not a parent, as the parent's own checkbox picks the tickets under it. */
 const pickableShown = () => groupByStatus(shown(), state.parents).flatMap(([, nodes]) => flatten(nodes)).filter((t) => selectable(t, state.queue.entries));
@@ -607,13 +616,41 @@ $("model").addEventListener("change", () => saveChoice("model"));
 $("effort").addEventListener("change", () => saveChoice("effort"));
 $("max").addEventListener("change", saveMax);
 
-try {
+// The switcher shows only when there is another board to switch to. A profiles file the board refused is named, and this board still shows.
+function renderProfiles(refusal) {
+  $("profile").replaceChildren(...state.profiles.map((p) => el("option", { value: p.name, textContent: profileLabel(p) })));
+  $("profile").value = state.profile ? state.profile.name : "";
+  $("profile-label").hidden = state.profiles.length < 2;
+  $("profiles-note").textContent = refusal || "";
+  $("profiles-note").hidden = !refusal;
+}
+
+// The shown board's view, read afresh. Nothing chosen on one board carries over to another.
+async function load() {
+  state.selected = new Set();
+  state.toPublish = new Set();
+  state.parents = [];
+  report(null);
   setup(await call("GET", "/api/config"));
   [state.tickets, state.queue] = await Promise.all([call("GET", "/api/tickets"), call("GET", "/api/queue")]);
   render();
   // Parents are read after the first render, so the list never waits on them. Without them, every ticket stands on its own.
   state.parents = await call("GET", "/api/parents").catch(() => []);
   renderPick();
+}
+
+$("profile").addEventListener("change", () => {
+  state.profile = state.profiles.find((p) => p.name === $("profile").value) ?? state.profile;
+  remember(storage, "ticket-mode.profile", new Set(state.profile ? [state.profile.name] : []));
+  load().catch(report);
+});
+
+try {
+  const listed = await call("GET", "/api/profiles", undefined, "").catch(() => null);
+  state.profiles = Array.isArray(listed?.profiles) ? listed.profiles : [];
+  state.profile = chosenProfile(state.profiles, [...recall(storage, "ticket-mode.profile")][0] ?? null);
+  renderProfiles(listed?.refusal);
+  await load();
 } catch (err) { report(err); }
 setInterval(() => call("GET", "/api/queue").then((q) => { state.queue = q; renderBoard(); renderPick(); }, report), 5000);
 </script>

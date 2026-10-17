@@ -212,6 +212,39 @@ a worker can choose from:
 The Linear key is a personal API key, so ticket mode reads as you and needs no workspace admin. On macOS, store it once with
 `security add-generic-password -a "$USER" -s agent-org-linear -w`, which prompts for it without echoing it.
 
+**Other machines' boards, from this one.** Each machine runs its own board on its own `127.0.0.1`, with its own queue, workers, worker limit
+and load check. A profiles file lets the board you open show another machine's board as well, picked from a switcher in the header. The
+choice is remembered in that browser. Switching changes only what the page shows: every board keeps working while another is shown. The file is
+`~/.config/agent-org/profiles.json`, or `$XDG_CONFIG_HOME/agent-org/profiles.json` when that variable is an absolute path:
+
+```json
+{ "work": { "local": true }, "personal": { "ssh": "agents" } }
+```
+
+- Exactly one profile is `{ "local": true }`: this board. Each other profile names an `ssh` target exactly as `herdr --remote` takes it,
+  such as a `Host` from `~/.ssh/config` or `me@host`. It may also name `agentOrg`, the path of `agent-org` on that machine, when a
+  non-interactive shell there does not find it on its `PATH`. A name is 1 to 32 letters, digits, `-` or `_`.
+- With no file, the board shows no switcher and works as it did. A file that is not JSON or breaks a rule above is refused, the board names
+  why in its log and on the page, and it shows only its own profile.
+- The board opens the SSH connection itself. It runs `ssh <target> agent-org ticket:remote-info` once per connection, which prints that
+  board's port, key and terminal address as JSON. It then holds `ssh -N` open, forwarding a free port on this machine's `127.0.0.1` to that
+  board's port, and a second one to its terminal service. Both run with `BatchMode=yes` and no TTY, so a key that needs a passphrase not held
+  in an agent fails rather than waits. A tunnel that drops is opened again, after 2 seconds and up to a minute between tries. Every tunnel
+  closes when the board exits.
+- The remote board's key stays in this board's memory. It is not written to a file, a command line, a log or the page, and it is sent only in
+  the `x-ticket-token` header. Only this board is paired. A paired browser's call to `/p/<profile>/api/...` is passed through the tunnel, as
+  the remote board's own `Host`, so its DNS-rebinding guard accepts it. A script holding this board's key is not passed on, and neither is a
+  request for a pairing code. A remote that cannot be reached is shown on the page as `cannot reach <profile> over SSH: <reason>`.
+- Open terminal on a remote run goes through the same SSH connection when that machine's `tickets.terminal` is on its own `127.0.0.1` or
+  `localhost`. The link points at this machine's forwarded port.
+
+A remote machine needs four things. This machine reaches it with `ssh <target>` and no prompt, through a key in an agent or one with no
+passphrase. agent-org is installed there, and a non-interactive `ssh <target> agent-org ticket:remote-info` finds it and its host file,
+so `AGENT_ORG_HOST` must be set for that shell (`~/.zshenv` for zsh, or `agentOrg` naming a wrapper that sets it). Its board is running,
+with `agent-org ticket:serve --no-open`. Its board has made its key, which its first start does. `ticket:remote-info` refuses to print the
+key to a terminal. Check the whole path from this machine with `ssh <target> agent-org ticket:remote-info > /dev/null && echo ok`, which
+prints `ok` and not the key.
+
 ## What an install holds
 
 `src/` (the programs and their data, without `*.test.*`), `host/` (the unit templates `host:install` reads), `LICENSE`, `README.md` and

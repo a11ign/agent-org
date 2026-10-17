@@ -54,10 +54,12 @@ const TICKETS = [
 ];
 
 /** Run the page's script against a fake document, with `storage` as its localStorage. Resolves once the first render has happened. */
-type PageOptions = { config?: Record<string, unknown>; entries?: unknown[]; tickets?: unknown[]; parents?: unknown[]; refused?: string[]; publish?: unknown };
-async function page(storage: Map<string, string>, { config = {}, entries = [], tickets = TICKETS, parents = [], refused = [], publish }: PageOptions = {}) {
+type PageOptions = { config?: Record<string, unknown>; entries?: unknown[]; tickets?: unknown[]; parents?: unknown[]; refused?: string[]; publish?: unknown;
+  profiles?: unknown; errors?: Record<string, string> };
+async function page(storage: Map<string, string>, { config = {}, entries = [], tickets = TICKETS, parents = [], refused = [], publish, profiles, errors = {} }: PageOptions = {}) {
   const byId = new Map<string, Node_>();
   const posts: { path: string; body: any }[] = [];
+  const requested: string[] = [];
   const document = {
     getElementById: (id: string) => { if (!byId.has(id)) byId.set(id, new Node_(`#${id}`)); return byId.get(id)!; },
     createElement: (tag: string) => new Node_(tag),
@@ -69,15 +71,18 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
   const fetch = async (path: string, init: { method: string; body?: string } = { method: "GET" }) => {
     const body = init.body === undefined ? undefined : JSON.parse(init.body);
     if (init.method === "POST") posts.push({ path, body });
-    if (refused.includes(path)) return { ok: false, json: async () => ({ error: `${path} refused` }), statusText: "" };
+    requested.push(path);
+    if (refused.includes(path)) return { ok: false, json: async () => ({ error: errors[path] ?? `${path} refused` }), statusText: "" };
+    // A remote profile's board answers as this one does, under its prefix.
     const answers: Record<string, () => unknown> = {
+      ...(profiles === undefined ? {} : { "/api/profiles": () => profiles }),
       "/api/config": () => ({ models: ["opus"], efforts: ["high"], max: 3, ...config, choice: saved }),
       "/api/tickets": () => tickets,
       "/api/parents": () => parents,
       "/api/choice": () => { saved = { ...saved, ...body }; return { choice: saved }; },
       "/api/max": () => { max = body.max; return { entries, max, paused: true }; },
     };
-    const value = answers[path]?.() ?? { entries, max, paused: true, ...(publish ? { publish } : {}) };
+    const value = (answers[path] ?? answers[path.replace(/^\/p\/[^/]+(?=\/api\/)/, "")])?.() ?? { entries, max, paused: true, ...(publish ? { publish } : {}) };
     return { ok: true, json: async () => value, statusText: "" };
   };
   const localStorage = { getItem: (k: string) => storage.get(k) ?? null, setItem: (k: string, v: string) => { storage.set(k, v); } };
@@ -93,7 +98,7 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
     saved = { ...saved, ...change };
     max = workers ?? max;
   };
-  return { $, groups, shownKeys, chip, posts, saveElsewhere };
+  return { $, groups, shownKeys, chip, posts, saveElsewhere, requested };
 }
 
 /** Let the page's pending fetches and their handlers run. */
@@ -771,4 +776,60 @@ test("a run Ready to merge, Published, or handed back by the board offers Respon
   actions("P-1")[0].fire("click");
   await settle();
   assert.ok(p.posts.some((x) => x.path === "/api/queue/P-1/respond"));
+});
+
+const WORK_AND_PERSONAL = { profiles: [{ name: "work", local: true }, { name: "personal", local: false }], refusal: null };
+
+test("with no profiles the header shows no switcher, and every call goes to this board", async () => {
+  const p = await page(new Map());
+  assert.equal(p.$("profile-label").hidden, true);
+  assert.equal(p.requested.some((path) => path.startsWith("/p/")), false);
+  const one = await page(new Map(), { profiles: { profiles: [{ name: "work", local: true }], refusal: null } });
+  assert.equal(one.$("profile-label").hidden, true, "one profile is nothing to switch between");
+});
+
+test("the switcher lists the profiles, starts on this machine's, and choosing another reads every view from it and is remembered in this browser", async () => {
+  const storage = new Map<string, string>();
+  const p = await page(storage, { profiles: WORK_AND_PERSONAL });
+  assert.equal(p.$("profile-label").hidden, false);
+  assert.deepEqual(p.$("profile").children.map((o) => o.textContent), ["work (this machine)", "personal"]);
+  assert.equal(p.$("profile").value, "work");
+  assert.deepEqual([...new Set(p.requested)].sort(), ["/api/config", "/api/parents", "/api/profiles", "/api/queue", "/api/tickets"]);
+  p.requested.length = 0;
+  p.$("profile").value = "personal";
+  p.$("profile").fire("change");
+  for (let i = 0; i < 10; i++) await settle();
+  assert.deepEqual(JSON.parse(storage.get("ticket-mode.profile")!), ["personal"]);
+  assert.deepEqual([...new Set(p.requested)].sort(), ["/p/personal/api/config", "/p/personal/api/parents", "/p/personal/api/queue", "/p/personal/api/tickets"]);
+  p.$("toggle-pause").fire("click");
+  await settle();
+  assert.equal(p.posts.at(-1)!.path, "/p/personal/api/paused", "an action goes to the board shown");
+  const reloaded = await page(storage, { profiles: WORK_AND_PERSONAL });
+  assert.equal(reloaded.$("profile").value, "personal");
+  assert.ok(reloaded.requested.includes("/p/personal/api/tickets"), "the remembered board is read on the next load");
+});
+
+test("a remembered profile the board no longer lists falls back to this machine's", async () => {
+  const p = await page(new Map([["ticket-mode.profile", JSON.stringify(["gone"])]]), { profiles: WORK_AND_PERSONAL });
+  assert.equal(p.$("profile").value, "work");
+  assert.equal(p.requested.some((path) => path.startsWith("/p/")), false);
+});
+
+test("a remote that cannot be reached is named in the page, and switching back shows this machine's board", async () => {
+  const storage = new Map([["ticket-mode.profile", JSON.stringify(["personal"])]]);
+  const reason = "cannot reach personal over SSH: agents: Permission denied (publickey).";
+  const p = await page(storage, { profiles: WORK_AND_PERSONAL, refused: ["/p/personal/api/config"], errors: { "/p/personal/api/config": reason } });
+  assert.equal(p.$("error").textContent, reason);
+  p.$("profile").value = "work";
+  p.$("profile").fire("change");
+  for (let i = 0; i < 10; i++) await settle();
+  assert.equal(p.$("error").textContent, "");
+  assert.deepEqual(p.shownKeys(), ["T-1", "T-2", "T-3", "T-4"]);
+});
+
+test("a profiles file the board refused is named above the board, which still shows", async () => {
+  const p = await page(new Map(), { profiles: { profiles: [], refusal: "profiles.json is refused, so only this board is shown: it is not valid JSON" } });
+  assert.equal(p.$("profiles-note").hidden, false);
+  assert.equal(p.$("profiles-note").textContent, "profiles.json is refused, so only this board is shown: it is not valid JSON");
+  assert.deepEqual(p.shownKeys(), ["T-1", "T-2", "T-3", "T-4"]);
 });

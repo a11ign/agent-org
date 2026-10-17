@@ -7,13 +7,14 @@ import { pathToFileURL } from "node:url";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { parseTicketSettings } from "./settings.ts";
-import { boardViewScript, createBoard, pairedBy, refusal } from "./server.ts";
+import { boardViewScript, createBoard, pairedBy, refusal, type BoardDeps } from "./server.ts";
+import { createRemotes, type Forward, type Runner } from "./remote.ts";
 import type { Ticket, TicketSource } from "./source.ts";
 
 const ticket = (key: string, title = key) => ({ key, title, description: "", url: "", branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
 const KEY = "a".repeat(48);
 
-function board(port = 4747, ticketSettings: Record<string, unknown> = {}) {
+function board(port = 4747, ticketSettings: Record<string, unknown> = {}, extra: Partial<BoardDeps> = {}) {
   const dir = tmpDir("ticket-server-");
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/r/netbox", "platform-monorepo": "/r/pm" }, stateDir: dir, tickets: { port, ...ticketSettings } });
   const source: TicketSource = { assigned: async () => [ticket("NBF-1"), ticket("NBF-2")], read: async (key) => (key === "VE-9" ? ticket("VE-9") : null), download: async () => [] };
@@ -22,7 +23,7 @@ function board(port = 4747, ticketSettings: Record<string, unknown> = {}) {
     tick: async () => { ticks.push("tick"); }, stop: (key: string) => { ticks.push(`stop ${key}`); }, close: (key: string) => { ticks.push(`close ${key}`); },
     reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {},
   };
-  const made = createBoard({ settings, source, key: KEY, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7 });
+  const made = createBoard({ settings, source, key: KEY, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7, ...extra });
   return { ...made, ticks, dir };
 }
 
@@ -273,12 +274,12 @@ test("the page is given the pattern a ticket's plan is named by, or null when th
 });
 
 /** A board listening on a free port on 127.0.0.1, for `run`, then closed. */
-async function overHttp(run: (base: string) => Promise<void>) {
+async function overHttp(run: (base: string) => Promise<void>, extra: Partial<BoardDeps> = {}) {
   const probe: Server = createServer();
   await new Promise<void>((done) => probe.listen(0, "127.0.0.1", done));
   const port = (probe.address() as { port: number }).port;
   await new Promise<void>((done) => probe.close(() => done()));
-  const b = board(port);
+  const b = board(port, {}, extra);
   const server = createServer((req, res) => { void b.handle(req, res); });
   await new Promise<void>((done) => server.listen(port, "127.0.0.1", done));
   try {
@@ -368,4 +369,72 @@ test("only a request that carries the key can make a pairing code: not one with 
     assert.equal(browser.status, 403);
     assert.match((await browser.json() as { error: string }).error, /made with the board's key: run agent-org ticket:pair/);
   });
+});
+
+const REMOTE_KEY = "c".repeat(48);
+const PROFILES = { profiles: [{ name: "work", local: true as const }, { name: "personal", local: false as const, ssh: "agents", agentOrg: "agent-org" }], refusal: null };
+
+/** Remote profiles over a runner that records what it is asked to run, and a forward that records what reaches "the remote board". */
+function remoteDeps() {
+  const ran: (readonly string[])[] = [];
+  const runner: Runner = {
+    run: async (argv) => { ran.push(argv); return { code: 0, stdout: JSON.stringify({ port: 4747, key: REMOTE_KEY, terminal: null }), stderr: "" }; },
+    start: (argv) => { ran.push(argv); return { exited: new Promise(() => {}), stop: () => {} }; },
+    freePort: async () => 50001,
+    listening: async () => true,
+  };
+  const forwarded: { path: string; method: string; body: string | null; key: string }[] = [];
+  const forward: Forward = async (link, request) => { forwarded.push({ ...request, key: link.key }); return { status: 200, body: JSON.stringify({ entries: [], max: 1, paused: false }) }; };
+  const remotes = createRemotes(PROFILES.profiles.filter((p) => !p.local) as never, { runner, log: () => {}, schedule: () => () => {} });
+  return { ran, forwarded, deps: { profiles: PROFILES, remotes, forward } };
+}
+
+async function pairedCookie(base: string): Promise<string> {
+  const { code } = await (await fetch(`${base}/api/pair-code`, { method: "POST", headers: { "x-ticket-token": KEY } })).json() as { code: string };
+  return String((await pairWith(base, code)).headers.get("set-cookie")).split(";")[0];
+}
+
+test("with no profiles file the board lists no profiles, passes nothing on and runs no ssh, as before profiles existed", async () => {
+  const [status, listed] = await board().api("GET", "/api/profiles", {});
+  assert.deepEqual([status, listed], [200, { profiles: [], refusal: null }]);
+  await overHttp(async (base) => {
+    const cookie = await pairedCookie(base);
+    const passed = await fetch(`${base}/p/personal/api/queue`, { headers: { cookie } });
+    assert.equal(passed.status, 404);
+    assert.match((await passed.json() as { error: string }).error, /no remote profile personal/);
+  });
+});
+
+test("the board lists its profiles by name and whether each is its own, never their ssh targets, and names a refused file", async () => {
+  const [, listed] = await board(4747, {}, { profiles: PROFILES }).api("GET", "/api/profiles", {});
+  assert.deepEqual(listed, { profiles: [{ name: "work", local: true }, { name: "personal", local: false }] , refusal: null });
+  const [, refused] = await board(4747, {}, { profiles: { profiles: [], refusal: "profiles.json is refused, so only this board is shown: it is not valid JSON" } }).api("GET", "/api/profiles", {});
+  assert.deepEqual(refused, { profiles: [], refusal: "profiles.json is refused, so only this board is shown: it is not valid JSON" });
+});
+
+test("over HTTP: only a paired browser is passed on to a remote profile; an unpaired request and a script's key are refused, and neither runs ssh", async () => {
+  const r = remoteDeps();
+  await overHttp(async (base) => {
+    const unpaired = await fetch(`${base}/p/personal/api/queue`);
+    assert.equal(unpaired.status, 401);
+    const script = await fetch(`${base}/p/personal/api/queue`, { headers: { "x-ticket-token": KEY } });
+    assert.equal(script.status, 403);
+    assert.match((await script.json() as { error: string }).error, /only a paired browser is passed on/);
+    assert.equal(r.ran.length, 0, "no ssh for a request that is not passed on");
+    const cookie = await pairedCookie(base);
+    const viewed = await fetch(`${base}/p/personal/api/queue`, { headers: { cookie } });
+    assert.equal(viewed.status, 200);
+    const text = await viewed.text();
+    assert.deepEqual(JSON.parse(text), { entries: [], max: 1, paused: false });
+    assert.equal(text.includes(REMOTE_KEY), false);
+    const posted = await fetch(`${base}/p/personal/api/paused`, { method: "POST", headers: { cookie, "Content-Type": "application/json" }, body: JSON.stringify({ paused: false }) });
+    assert.equal(posted.status, 200);
+    assert.deepEqual(r.forwarded, [
+      { method: "GET", path: "/api/queue", body: null, key: REMOTE_KEY },
+      { method: "POST", path: "/api/paused", body: "{\"paused\":false}", key: REMOTE_KEY },
+    ]);
+    assert.equal(r.ran.flat().join(" ").includes(REMOTE_KEY), false, "the remote's key is on no command line");
+    const local = await fetch(`${base}/api/queue`, { headers: { cookie } });
+    assert.equal((await local.json() as { max: number }).max, 3, "this board's own queue is untouched by the remote's");
+  }, r.deps);
 });
