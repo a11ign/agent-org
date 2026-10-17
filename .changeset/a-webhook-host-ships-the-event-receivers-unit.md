@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-A host that declares `events.source: "webhook"` now installs and starts the GitHub event receiver's unit (`event-receiver.service`, agent-org#980), and a `poll` host (the default, or no `events` block) neither lists nor installs it. The unit is `host/event-receiver.service.in`, a long-running loopback service shaped like the OTel receiver's, run with `--port`, `--secret-file` and `--queue` taken from `host.events.receiver` and the host's state directory (`events/queue.jsonl`). It is shipped through `HOST_OPTIONAL_UNITS`, a sibling of `OPTIONAL_UNITS` keyed on the HOST declaration instead of `project.json`; an installed copy on a host that reverts to `poll` is an orphan and `host:install` stops and removes it, so the revert is the one line `"source": "poll"` plus `agent-org host:install`. The tunnel is not started by the unit: its header names the loopback address the tunnel must point at. Nothing about the secret is in the repository, only the path to it.
