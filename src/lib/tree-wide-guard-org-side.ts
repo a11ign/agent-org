@@ -103,15 +103,18 @@ export function runTreeWideGuards(files: string[], cwd: string, { env = process.
 export const OUTSIDE_GUARDS_FLAG = "outside.guards";
 export const outsideGuardsOn = (switches: Readonly<Record<string, unknown>> | null | undefined): boolean => switches?.[OUTSIDE_GUARDS_FLAG] === true;
 
-/** The a11ign `guardSweep` job's verdict on a head, read off the pull request's check rollup already narrowed to the newest run per name: `pass` on SUCCESS, `fail` when `isBrokenRed` says the check is red,
- *  and `null` for everything else (absent, still running, skipped, cancelled), which the comparison reads as not-compared, never as agreement. */
-export function guardSweepJobOf(rollup: { name?: string; conclusion?: string | null; }[] | null | undefined): "pass" | "fail" | null {
-  const run = (rollup ?? []).find((check) => /(^|[\s/])guardSweep$/.test(String(check?.name ?? "")));
+/** A named a11ign job's verdict on a head, read off the pull request's check rollup already narrowed to the newest run per name: `pass` on SUCCESS, `fail` when `isBrokenRed` says the check is red,
+ *  and `null` for everything else (absent, still running, skipped, cancelled), which the comparison reads as not-compared, never as agreement. agent-org#1579: the one reader of a job's verdict, shared by the shadows. */
+export function namedJobOf(rollup: { name?: string; conclusion?: string | null; }[] | null | undefined, job: string): "pass" | "fail" | null {
+  const run = (rollup ?? []).find((check) => new RegExp(`(^|[\\s/])${job}$`).test(String(check?.name ?? "")));
   if (run === undefined) return null;
   // red is `isBrokenRed`'s to say (#2956 ONE DECIDER), asked of this one check alone so another check's failure is not the job's
   if (isBrokenRed({ statusCheckRollup: [run] })) return "fail";
   return String(run.conclusion ?? "").toUpperCase() === "SUCCESS" ? "pass" : null;
 }
+
+/** The a11ign `guardSweep` job's verdict on a head (see `namedJobOf`). */
+export const guardSweepJobOf = (rollup: { name?: string; conclusion?: string | null; }[] | null | undefined): "pass" | "fail" | null => namedJobOf(rollup, "guardSweep");
 
 type GuardVerdict = import("../acceptance-commands.ts").OrgSideVerdict;
 

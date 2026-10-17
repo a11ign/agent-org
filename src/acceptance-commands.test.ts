@@ -358,14 +358,15 @@ test("(1502 h) gateUnarmedOnAcceptance: OFF by default reads and runs nothing; O
   const prs = [agentPr({ number: 1 }), agentPr({ number: 2, headRefName: "feature/y" }), agentPr({ number: 3, isCrossRepository: true }), agentPr({ number: 4, author: { login: "a-stranger" } })];
   const asked: number[] = [];
   const verdictOf = (pr: any) => { asked.push(pr.number); return { kind: "fail" as const, head: pr.headRefOid, lines: ["ACCEPTANCE: FAIL exit 1"], why: "acceptance FAILED" }; };
-  const off = gateUnarmedOnAcceptance([1, 2, 3, 4], { openPrs: prs, scope: BASE, env: {}, declared: DECLARED, verdictOf });
+  // the host's own decisions file may carry `outside.acceptance` (a11ign#5613): this pins the env switch, so the outside switches are handed empty
+  const off = gateUnarmedOnAcceptance([1, 2, 3, 4], { openPrs: prs, scope: BASE, env: {}, declared: DECLARED, verdictOf, outsideSwitches: () => ({}) });
   assert.deepEqual(off, { armable: [1, 2, 3, 4], withheld: [] });
   assert.deepEqual(asked, [], "off: no verdict was asked for");
   const on = gateUnarmedOnAcceptance([1, 2, 3, 4], { openPrs: prs, scope: BASE, env: { [ACCEPTANCE_GATE_SWITCH_ENV]: "on" }, declared: DECLARED, verdictOf, log: () => {} });
   assert.deepEqual(asked, [1], "on: only the eligible agent pull request was asked about; the branch, the fork and the stranger were not");
   assert.deepEqual(on.armable, [2, 3, 4], "the org says nothing of what it does not run");
   assert.deepEqual(on.withheld.map((w) => w.number), [1]);
-  assert.deepEqual(gateUnarmedOnAcceptance([1], { openPrs: prs, scope: BASE, env: { [ACCEPTANCE_GATE_SWITCH_ENV]: "yes" }, declared: DECLARED, verdictOf }).armable, [1], "only the word `on` turns it on");
+  assert.deepEqual(gateUnarmedOnAcceptance([1], { openPrs: prs, scope: BASE, env: { [ACCEPTANCE_GATE_SWITCH_ENV]: "yes" }, declared: DECLARED, verdictOf, outsideSwitches: () => ({}) }).armable, [1], "only the word `on` turns it on");
 });
 
 const ON = { [OUTSIDE_ACCEPTANCE_FLAG]: true };
