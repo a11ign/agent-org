@@ -2740,7 +2740,7 @@ const oneDecimal = (n: number): number => Math.round(n * 10) / 10;
 
 /**
  * ONE SIGNAL, BEFORE AND AFTER. `before` is the count per window of the hour before `onAt`, scaled by how much of that hour was recorded (and UNKNOWN when less than half of it was: a rate from ten minutes
- * is not a baseline). The BASELINE is the higher of that and the trailing day's hourly mean before `onAt` (a11ign#5444; the day is read only when half of it was recorded). DEGRADED when the after-count so far reaches
+ * is not a baseline), except a NEW signal, first recorded inside that hour, whose unrecorded part counts as zero (agent-org#1684). The BASELINE is the higher of that and the trailing day's hourly mean before `onAt` (a11ign#5444; the day is read only when half of it was recorded). DEGRADED when the after-count so far reaches
  * `degradeFactor` times the baseline and `minRise` more. Because the count only grows, degraded at minute 20 is degraded at minute 60.
  * A signal read as `null` for the whole of a window is UNKNOWN, which is neither degraded nor clean.
  */
@@ -2754,10 +2754,15 @@ export function signalReading({ signal, samples, onAt, now, options }: { signal:
   if (samples.some((sample) => sample.held === true && sample.from < onAt && sample.to > onAt - windowMs)) {
     return { signal, status: "unknown", before: null, after: after.sum, detail: `not a baseline: the account pause held Claude work in the ${options.windowMinutes} min before` };
   }
-  if (before.coveredMs < windowMs / 2) {
+  // A NEW SIGNAL (agent-org#1684): one with no sample of it recorded before the window began, so its first recording falls inside the hour before `onAt` (or after it, which reads nothing).
+  // `onAt` fixes that window, so the hour can never fill: the part of it that was not recorded counts as ZERO events, and `before` is the recorded count, unscaled. Nothing read in the hour
+  // before is still `unknown`: nothing was clean.
+  const windowStart = onAt - windowMs;
+  const isNew = before.coveredMs > 0 && !samples.some((sample) => sample.from < windowStart && typeof sample.values[signal] === "number");
+  if (!isNew && before.coveredMs < windowMs / 2) {
     return { signal, status: "unknown", before: null, after: after.sum, detail: `${minutes(before.coveredMs)} of the ${options.windowMinutes} min before was recorded, which is not a baseline` };
   }
-  const perWindow = (before.sum * windowMs) / before.coveredMs;
+  const perWindow = isNew ? before.sum : (before.sum * windowMs) / before.coveredMs;
   // ONE QUIET HOUR IS NOT THE NORM (a11ign#5444): a zero hour set the bar at 3, the org's own base rate, so three ordinary refusals reverted a flag that cannot touch a claim.
   // The bar is built from the higher of the hour and the day's hourly mean; a day less than half recorded is no baseline, and the hour alone stands.
   const day = windowOf(samples, signal, [onAt - BASELINE_MS, onAt]);
@@ -2766,7 +2771,9 @@ export function signalReading({ signal, samples, onAt, now, options }: { signal:
   const limit = Math.max(baseline * options.degradeFactor, baseline + options.minRise);
   const status = after.sum >= limit ? "degraded" : now - onAt >= windowMs && after.coveredMs === 0 ? "unknown" : "ok";
   const why = status === "degraded" ? `reached ${oneDecimal(limit)} (${options.degradeFactor}x and +${options.minRise})` : status === "unknown" ? "was not read in the hour after" : `stayed under ${oneDecimal(limit)}`;
-  const hour = dayPerWindow !== null && dayPerWindow > perWindow ? `${oneDecimal(perWindow)} in the hour before; 24 h mean ${oneDecimal(dayPerWindow)}/h is the baseline` : `${oneDecimal(perWindow)} in the hour before`;
+  const hour = dayPerWindow !== null && dayPerWindow > perWindow ? `${oneDecimal(perWindow)} in the hour before; 24 h mean ${oneDecimal(dayPerWindow)}/h is the baseline`
+    : isNew ? `${oneDecimal(perWindow)} in the hour before (a new signal: ${minutes(before.coveredMs)} min recorded, the rest zero)`
+      : `${oneDecimal(perWindow)} in the hour before`;
   return { signal, status, before: oneDecimal(perWindow), after: after.sum, detail: `${hour}, ${after.sum} since (${minutes(now - onAt)} min): ${why}` };
 }
 
