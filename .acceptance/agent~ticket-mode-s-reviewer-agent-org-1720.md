@@ -2,10 +2,10 @@ Ticket mode's reviewer, behind `tickets.reviewer` (agent-org#1720). The stub pro
 
 Acceptance:
 ```bash
-cd ~/repos/agent-org && grep -q "a restarted pool starts no second reviewer on a head it already reviewed" src/ticket-mode/pool.test.ts && node_modules/.bin/rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/reviewer-port.test.ts src/ticket-mode/pool.test.ts
+grep -q "a restarted pool starts no second reviewer on a head it already reviewed" src/ticket-mode/pool.test.ts && node_modules/.bin/rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/reviewer-port.test.ts src/ticket-mode/pool.test.ts
 ```
 
-The row's command names `~/repos/agent-org`; the run recorded here was made in the worktree `/home/agent/repos/wt-agent-org-1720`, which holds the change. Same command, same files.
+The row's issue text starts the command with `cd ~/repos/agent-org`. That is the shared main checkout, on `a936d9c0` (`Release v0.231.1`), which does not carry this change: run there, the grep fails. This file therefore runs the same grep and the same two test files from the PR's own checkout root, as the other `.acceptance/` files do.
 
 ## Evidence
 
