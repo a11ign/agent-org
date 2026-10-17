@@ -4,6 +4,31 @@ An AI agent organisation as a tool: rows, claims, the board, the merge queue and
 
 ## Install
 
+Install the newest release with one command. It needs Node 24 or newer and git, and it uses no `sudo`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/a11ign/agent-org/main/install.sh | bash
+```
+
+The installer clones the newest release tag into `~/.agent-org/agent-org` (`$AGENT_ORG_HOME/agent-org` when that is set), installs the
+release's dependencies, and writes the `agent-org` launcher into `~/.local/bin`. It changes nothing else. When `~/.local/bin` is not on your
+`PATH`, it prints the line to add. Add `-s -- --version vX.Y.Z` after `bash` to install one release. Running it again updates the same checkout.
+
+Then run these commands:
+
+| command | what it does |
+|---|---|
+| `agent-org onboard` | Writes the host file, `~/.agent-org/host.json` (or the file `$AGENT_ORG_HOST` names). It asks for the repositories a worker can choose from and where the Linear key is read from, or takes them as `--repo <name>=<path>` (repeated) and `--linear-keychain <service>` or `--linear-key-file <path>`. It keeps the host file's other keys. When no key is readable, it stores one from a prompt that does not echo. It then starts the instance service, unless you pass `--no-start`. |
+| `agent-org doctor` | Checks Node, the launcher on `PATH`, the host file, `herdr`, the Linear key and the instance service, and prints the fix for each check that fails. It exits 1 when any check fails. |
+| `agent-org start [instance\|ui]` | Registers the service to start at login and starts it: a launchd user agent on macOS, a systemd user unit on Linux. The instance service runs `ticket:serve`. The service is `instance` when you name none. |
+| `agent-org stop [instance\|ui]` | Stops the service and keeps it from starting at login. |
+| `agent-org status [instance\|ui]` | Prints whether the service is running, stopped or not registered. It exits 3 when the service is not running. |
+| `agent-org update` | Moves the install to the newest release, or to `--version vX.Y.Z`, and restarts each service that was running. `--channel main` follows `main` instead of releases. It refuses a checkout with changes to tracked files. |
+
+The macOS service writes its log to `~/.agent-org/logs/<service>.log`. On Linux, read it with `journalctl --user -u agent-org-instance`.
+
+### As a project's dependency
+
 `agent-org` is published to no registry. A project takes it as a git dependency pinned to a release tag, with `typescript` beside it:
 
 ```bash

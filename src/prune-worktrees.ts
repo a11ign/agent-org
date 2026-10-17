@@ -84,9 +84,10 @@ export const ACTIVITY_WINDOW_MS = 10 * 60 * 1000; // 10 minutes: survives a stas
                                             // a truly abandoned tree well within an hour of prune runs
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join, relative } from "node:path";
 import { sandboxGitEnv } from "./lib/git-env.ts";
+import { isPrimaryWorktree } from "./lib/primary-worktree.ts";
 // RELATIVE for the same reason as `cli-flags.ts` below (#1373): `row-claim.ts` imports this file before
 // `pnpm install`, where a package specifier dies.
 import { worktreeOwner } from "./worktree-owner.ts";
@@ -191,18 +192,7 @@ export function parseWorktreeList(porcelain: string): WorktreeEntry[] {
   return entries;
 }
 
-/**
- * git's own mechanism for telling a linked worktree from the repository it belongs to: the primary's
- * `.git` is a real directory, a linked worktree's is a text file. Never a guess from the path.
- *
- * @param {string} worktreePath
- * @returns {boolean}
- */
-export function isPrimaryWorktree(worktreePath: string): boolean {
-  const gitPath = join(worktreePath, ".git");
-  if (!existsSync(gitPath)) return false;
-  return lstatSync(gitPath).isDirectory();
-}
+export { isPrimaryWorktree };
 
 export type WorktreeAssessment = { path: string, branch: string | null, merge: "merged" | "not-merged" | "unknown", workingTreeClean: boolean | "unknown", contentMerged: boolean, recentlyActive: boolean | "unknown", ignorable: string[], };
 
