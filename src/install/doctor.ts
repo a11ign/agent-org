@@ -15,6 +15,7 @@ import { pathToFileURL } from "node:url";
 import { readLinearKey } from "../ticket-mode/linear.ts";
 import { parseTicketSettings, type KeySource, type TicketSettings } from "../ticket-mode/settings.ts";
 import { hostFilePath, type Env } from "./paths.ts";
+import { pinnedPnpm, TOOL_PNPM_VERSION } from "./pnpm.ts";
 import { defaultServiceDeps, SERVICE_NAMES, serviceState, type ServiceName, type ServiceState } from "./service.ts";
 
 export const MIN_NODE_MAJOR = 24;
@@ -35,6 +36,8 @@ export type DoctorDeps = Readonly<{
   serviceState: (name: ServiceName) => ServiceState;
   /** Whether something answers HTTP on 127.0.0.1:`port`. */
   answers: (port: number) => Promise<boolean>;
+  /** What `--version` the pinned pnpm prints, run as install and update run it, or null when it cannot run. */
+  pnpmVersion: () => string | null;
 }>;
 
 const ok = (name: string, detail: string): Check => ({ name, ok: true, detail, fix: null });
@@ -46,6 +49,15 @@ function nodeCheck(deps: DoctorDeps): Check {
   if (version === null) return failed("node", "no `node` on PATH", install);
   const major = Number(/^v?(\d+)\./.exec(version)?.[1]);
   return major >= MIN_NODE_MAJOR ? ok("node", version) : failed("node", `${version} is older than ${MIN_NODE_MAJOR}`, install);
+}
+
+/** Install and update run one pinned pnpm through Node's corepack; a machine whose corepack cannot start it can install nothing. */
+function pnpmCheck(deps: DoctorDeps): Check {
+  const version = deps.pnpmVersion();
+  return version === TOOL_PNPM_VERSION
+    ? ok("pnpm", `${version}, which install and update use`)
+    : failed("pnpm", version === null ? `pnpm ${TOOL_PNPM_VERSION} cannot run through the corepack beside node` : `pnpm ${TOOL_PNPM_VERSION} was asked for and ${version} answered`,
+      `run \`corepack pnpm@${TOOL_PNPM_VERSION} --version\` to see why: Node ${MIN_NODE_MAJOR} ships corepack beside node, and reinstalling Node brings it back`);
 }
 
 function hostCheck(deps: DoctorDeps): { check: Check; settings: TicketSettings | null } {
@@ -92,6 +104,7 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
   const services = await Promise.all(SERVICE_NAMES.map((name) => serviceChecks(name, ports[name], deps)));
   return [
     nodeCheck(deps),
+    pnpmCheck(deps),
     launcher === null
       ? failed("launcher", "`agent-org` is not on PATH", `add its directory to PATH: export PATH="$HOME/.local/bin:$PATH" in your shell's rc file`)
       : ok("launcher", launcher),
@@ -159,6 +172,11 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
     which: (name) => which(name), readFile: (path) => readFileSync(path, "utf8"), readKey: (source) => readLinearKey(source),
     mode: (path) => { try { return statSync(path).mode & 0o777; } catch { return null; } },
     serviceState: (name) => serviceState(name, services), answers,
+    pnpmVersion: () => {
+      const { command, args } = pinnedPnpm(["--version"]);
+      const result = spawnSync(command, args, { encoding: "utf8", timeout: 120_000, env: { ...process.env, COREPACK_ENABLE_DOWNLOAD_PROMPT: "0" } });
+      return result.status === 0 ? result.stdout.trim() : null;
+    },
   });
   console.log(report(checks));
   process.exitCode = checks.every((check) => check.ok) ? 0 : 1;

@@ -10,6 +10,9 @@
 set -euo pipefail
 
 MIN_NODE_MAJOR=24
+# The pnpm the release's dependencies are installed with, run by version through the corepack Node ships, never the pnpm on PATH.
+# `src/install/pnpm.ts` holds the same value, and a test holds the two, release.yml and CI to one.
+PNPM_VERSION=10.34.5
 REPO_URL="${AGENT_ORG_REPO:-https://github.com/a11ign/agent-org.git}"
 AGENT_ORG_HOME="${AGENT_ORG_HOME:-$HOME/.agent-org}"
 BIN_DIR="${AGENT_ORG_BIN_DIR:-$HOME/.local/bin}"
@@ -106,14 +109,12 @@ main() {
     0) ;;
     10)
       say "installing the release's dependencies"
-      if command -v pnpm >/dev/null 2>&1; then
-        pnpm_cmd=(pnpm)
-      elif command -v corepack >/dev/null 2>&1; then
-        pnpm_cmd=(corepack pnpm)
-      else
+      corepack_bin="${AGENT_ORG_COREPACK:-$(dirname "$(command -v node)")/corepack}"
+      if [ ! -x "$corepack_bin" ]; then
         restore "$previous"
-        fail "the release needs its dependencies installed, and neither pnpm nor corepack is on PATH. Install pnpm (https://pnpm.io/installation), then run this again."
+        fail "the release's dependencies are installed with pnpm $PNPM_VERSION through the corepack Node $MIN_NODE_MAJOR ships beside node, and there is none at $corepack_bin. Reinstall Node $MIN_NODE_MAJOR, then run this again."
       fi
+      pnpm_cmd=("$corepack_bin" "pnpm@$PNPM_VERSION")
       if ! (cd "$CHECKOUT" && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 "${pnpm_cmd[@]}" install --prod --no-frozen-lockfile --ignore-scripts --ignore-workspace --silent); then
         restore "$previous"
         fail "installing the dependencies failed. Fix what pnpm printed above, then run this again."

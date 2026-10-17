@@ -12,10 +12,10 @@ import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { isReleaseTag, LATEST } from "../lib/release-tag.ts";
-import { pnpmCliInvocation } from "../lib/npm-cli-executable.ts";
 import { installDependencies, updateTool, type DependencyInstall } from "../update-tool.ts";
 import { defaultServiceDeps, restartService, SERVICE_NAMES, serviceState, type ServiceName, type ServiceState } from "./service.ts";
 import { TOOL_ROOT } from "./paths.ts";
+import { pinnedPnpm } from "./pnpm.ts";
 
 export type Channel = "release" | "main";
 export type Git = (args: string[]) => string;
@@ -56,7 +56,16 @@ export function update({ version, channel }: { version: string | undefined; chan
     }
     deps.out.log(`agent-org main (${deps.git(["rev-parse", "HEAD"]).trim()})`);
   } else {
-    deps.out.log(updateTool(deps.root, deps.git, version ?? LATEST, () => [], deps.installForTag));
+    // A failed install is caught where it happens, not read back out of updateTool's message.
+    let failed: { tag: string; reason: string } | null = null;
+    const installForTag = (tag: string) => {
+      const install = deps.installForTag(tag);
+      if (install.state === "failed") failed = { tag, reason: install.reason };
+      return install;
+    };
+    const moved = updateTool(deps.root, deps.git, version ?? LATEST, () => [], installForTag);
+    if (failed !== null) throw installRefusal(failed, before, deps.git);
+    deps.out.log(moved);
   }
   const moved = deps.git(["rev-parse", "HEAD"]).trim() !== before;
   if (!moved) return false;
@@ -67,16 +76,25 @@ export function update({ version, channel }: { version: string | undefined; chan
   return true;
 }
 
+/** Why the checkout did not reach `tag`. It may already be there, with the dependencies it needs missing, which is not the same as being held back. */
+function installRefusal({ tag, reason }: { tag: string; reason: string }, before: string, git: Git): UpdateRefusal {
+  const already = git(["rev-parse", `refs/tags/${tag}^{commit}`]).trim() === before;
+  const where = already ? `agent-org is already at ${tag}, but` : `agent-org stays at ${before}, not moved to ${tag}, because`;
+  return new UpdateRefusal(`${where} installing its dependencies failed: ${reason}. Run \`agent-org doctor\`, then update again.`);
+}
+
 function defaultUpdateDeps(): UpdateDeps {
+  // Corepack fetches the pinned pnpm the first time; with no person at a prompt, it must not ask.
+  process.env.COREPACK_ENABLE_DOWNLOAD_PROMPT = "0";
   const root = TOOL_ROOT;
   const git: Git = (args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8", env: sandboxGitEnv(), stdio: ["ignore", "pipe", "pipe"] });
   const services = defaultServiceDeps();
   return {
     root, git,
-    installForTag: (tag) => installDependencies({ root, tag, run: git }),
+    installForTag: (tag) => installDependencies({ root, tag, run: git, pnpm: pinnedPnpm }),
     installInPlace: () => {
-      const { command, args } = pnpmCliInvocation(["install", "--prod", "--no-frozen-lockfile", "--ignore-scripts", "--ignore-workspace"]);
-      execFileSync(command, args, { cwd: root, stdio: ["ignore", "inherit", "inherit"] });
+      const { command, args } = pinnedPnpm(["install", "--prod", "--no-frozen-lockfile", "--ignore-scripts", "--ignore-workspace"]);
+      execFileSync(command, args, { cwd: root, env: { ...process.env, COREPACK_ENABLE_DOWNLOAD_PROMPT: "0" }, stdio: ["ignore", "inherit", "inherit"] });
     },
     state: (name) => serviceState(name, services),
     restart: (name) => restartService(name, services),

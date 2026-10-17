@@ -11,6 +11,7 @@ function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
     env: { AGENT_ORG_HOST: "/home/me/.agent-org/host.json" }, home: "/home/me",
     nodeVersion: () => "v24.7.0", which: (name) => `/home/me/.local/bin/${name}`,
     readFile: () => HOST, readKey: () => KEY, mode: () => 0o600, serviceState: () => "running", answers: async (port) => port === 4800 || port === 4801,
+    pnpmVersion: () => "10.34.5",
     ...over,
   };
 }
@@ -20,7 +21,7 @@ const byName = (checks: Awaited<ReturnType<typeof diagnose>>) => Object.fromEntr
 test("doctor passes every check on a working install, and never prints the key", async () => {
   const checks = await diagnose(deps());
   assert.deepEqual(checks.map(({ name, ok }) => [name, ok]), [
-    ["node", true], ["launcher", true], ["host file", true], ["herdr", true], ["tracker key", true],
+    ["node", true], ["pnpm", true], ["launcher", true], ["host file", true], ["herdr", true], ["tracker key", true],
     ["instance service", true], ["instance answering", true], ["ui service", true], ["ui answering", true],
   ]);
   assert.ok(!report(checks).includes(KEY));
@@ -92,4 +93,13 @@ test("a service neither registered nor answering is told to start, and its port 
   assert.equal(checks["instance service"].fix, "run `agent-org start instance`");
   assert.equal(checks["instance answering"].ok, false);
   assert.match(checks["instance answering"].detail, /nothing answers on http:\/\/127\.0\.0\.1:4800/);
+});
+
+test("doctor checks the pinned pnpm install and update run, and names how to see why it cannot", async () => {
+  assert.equal(byName(await diagnose(deps()))["pnpm"].ok, true);
+  const broken = byName(await diagnose(deps({ pnpmVersion: () => null })))["pnpm"];
+  assert.equal(broken.ok, false);
+  assert.match(broken.detail, /pnpm 10\.34\.5 cannot run through the corepack beside node/);
+  assert.equal(broken.fix?.startsWith("run `corepack pnpm@10.34.5 --version`"), true);
+  assert.equal(byName(await diagnose(deps({ pnpmVersion: () => "12.4.2" })))["pnpm"].ok, false, "another version answering is not the pinned one");
 });

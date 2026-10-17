@@ -102,3 +102,24 @@ test("update --channel main puts the checkout back when main's dependencies fail
   assert.equal(at(git), "v0.1.0");
   assert.deepEqual(restarted, []);
 });
+
+const failing = { state: "failed" as const, names: ["@a11ign/toolchain"], command: "pnpm install", reason: "Cannot find module pnpm.cjs" };
+
+test("a failed install on the release the checkout is already at refuses, saying it is already there", () => {
+  const { checkout, git } = installed();
+  git(["fetch", "--quiet", "--tags", "origin"]);
+  git(["checkout", "--quiet", "--detach", "refs/tags/v0.10.0"]);
+  const { deps: d } = deps(checkout, git, {});
+  assert.throws(() => update({ version: undefined, channel: "release" }, { ...d, installForTag: () => failing }),
+    /^Error: agent-org is already at v0\.10\.0, but installing its dependencies failed: Cannot find module pnpm\.cjs\. Run `agent-org doctor`/);
+});
+
+test("a failed install on a newer release refuses, saying where the checkout stays, and restarts nothing", () => {
+  const { checkout, git } = installed();
+  const before = git(["rev-parse", "HEAD"]).trim();
+  const { deps: d, restarted } = deps(checkout, git, { instance: "running" });
+  assert.throws(() => update({ version: undefined, channel: "release" }, { ...d, installForTag: () => failing }),
+    new RegExp(`agent-org stays at ${before}, not moved to v0\\.10\\.0, because installing its dependencies failed`));
+  assert.equal(at(git), "v0.1.0");
+  assert.deepEqual(restarted, []);
+});
