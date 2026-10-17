@@ -83,6 +83,20 @@ function installRefusal({ tag, reason }: { tag: string; reason: string }, before
   return new UpdateRefusal(`${where} installing its dependencies failed: ${reason}. Run \`agent-org doctor\`, then update again.`);
 }
 
+/** Runs a program, as `execFileSync` does; a test passes one that records what it was asked to run. */
+export type Exec = (file: string, args: string[], options: object) => unknown;
+
+/** How update installs a release's or main's dependencies: always with the pinned pnpm, never the pnpm on PATH. */
+export function dependencyInstalls(root: string, git: Git, exec: Exec = execFileSync): Pick<UpdateDeps, "installForTag" | "installInPlace"> {
+  return {
+    installForTag: (tag) => installDependencies({ root, tag, run: git, exec, pnpm: pinnedPnpm }),
+    installInPlace: () => {
+      const { command, args } = pinnedPnpm(["install", "--prod", "--no-frozen-lockfile", "--ignore-scripts", "--ignore-workspace"]);
+      exec(command, args, { cwd: root, env: { ...process.env, COREPACK_ENABLE_DOWNLOAD_PROMPT: "0" }, stdio: ["ignore", "inherit", "inherit"] });
+    },
+  };
+}
+
 function defaultUpdateDeps(): UpdateDeps {
   // Corepack fetches the pinned pnpm the first time; with no person at a prompt, it must not ask.
   process.env.COREPACK_ENABLE_DOWNLOAD_PROMPT = "0";
@@ -91,11 +105,7 @@ function defaultUpdateDeps(): UpdateDeps {
   const services = defaultServiceDeps();
   return {
     root, git,
-    installForTag: (tag) => installDependencies({ root, tag, run: git, pnpm: pinnedPnpm }),
-    installInPlace: () => {
-      const { command, args } = pinnedPnpm(["install", "--prod", "--no-frozen-lockfile", "--ignore-scripts", "--ignore-workspace"]);
-      execFileSync(command, args, { cwd: root, env: { ...process.env, COREPACK_ENABLE_DOWNLOAD_PROMPT: "0" }, stdio: ["ignore", "inherit", "inherit"] });
-    },
+    ...dependencyInstalls(root, git),
     state: (name) => serviceState(name, services),
     restart: (name) => restartService(name, services),
     out: console,

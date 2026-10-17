@@ -7,7 +7,8 @@ import { join } from "node:path";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import type { ServiceName, ServiceState } from "./service.ts";
-import { update, type UpdateDeps } from "./update.ts";
+import { dependencyInstalls, update, type UpdateDeps } from "./update.ts";
+import { pinnedPnpm } from "./pnpm.ts";
 
 const ENV = sandboxGitEnv({ GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" });
 const gitIn = (cwd: string) => (args: string[]) => execFileSync("git", args, { cwd, env: ENV, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
@@ -122,4 +123,20 @@ test("a failed install on a newer release refuses, saying where the checkout sta
     new RegExp(`agent-org stays at ${before}, not moved to v0\\.10\\.0, because installing its dependencies failed`));
   assert.equal(at(git), "v0.1.0");
   assert.deepEqual(restarted, []);
+});
+
+test("the default installs run the pinned pnpm through corepack, for a release and for main, never the pnpm on PATH", () => {
+  const ran: { file: string; args: string[] }[] = [];
+  const exec = (file: string, args: string[]) => { ran.push({ file, args }); return ""; };
+  // A release whose package.json needs one dependency, which this checkout does not have installed.
+  const git = (args: string[]) => {
+    if (args[0] === "ls-tree") return "package.json\n";
+    if (args[0] === "show") return JSON.stringify({ dependencies: args[1].startsWith("refs/tags/") ? { "@a11ign/toolchain": "^1.0.0" } : {} });
+    return "";
+  };
+  const installs = dependencyInstalls(tmpDir("update-wiring-"), git, exec);
+  installs.installForTag("v0.10.0");
+  installs.installInPlace();
+  const pinned = pinnedPnpm(["install", "--prod", "--no-frozen-lockfile", "--ignore-scripts", "--ignore-workspace"]);
+  assert.deepEqual(ran, [pinned, pinned].map(({ command, args }) => ({ file: command, args })));
 });
