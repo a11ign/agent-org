@@ -1571,15 +1571,17 @@ const DEPENDENCY_BOT_WORKER_CAUSES: readonly string[] = Object.freeze(["pr-check
  * @param declared the identities the org declares, the same reading `perPullRequestOrders` takes
  * @param asks the ownerless asks of this tick (`ownerlessAsks`), keyed by subject. An order for an asked pull request is re-addressed to the reader, as
  *   long as it is the cause that ask is for: a red build's `pr-checks-failing`, or an approved pull request's `pr-green-unarmed`
+ * @param [wakes] the subjects whose not-convinced verdict still wakes its reader (`sessionPrVerdictWakes`, agent-org#1667); empty with the flag OFF
  */
-export function withholdOutsideFollowUps(orders: any[], prs: any[], declared: DeclaredIdentities, asks: Map<string, OwnerlessAsk> = new Map()): any[] {
+export function withholdOutsideFollowUps(orders: any[], prs: any[], declared: DeclaredIdentities, asks: Map<string, OwnerlessAsk> = new Map(), wakes: ReadonlySet<string> = new Set()): any[] {
   const withheld = new Set([...reviewOnlyRefs(prs, declared)].map((ref) => `pr-${ref}`));
   const botRefs = new Set(prs.filter((pr) => ownerOfPr(pr).source === "dependency-bot").map((pr) => `pr-${subjectRef(pr.repoKey, pr.number)}`));
   return orders.flatMap((order) => {
     if (botRefs.has(order.subject) && order.session === UNOWNED_PR_SESSION && DEPENDENCY_BOT_WORKER_CAUSES.includes(order.cause)) return [toDependencyBotWorker(order)];
     const ask = asks.get(order.subject);
     if (ask && order.cause === (CAUSE_OF_STALL as Record<string, string>)[ask.reason]) return [toOrchestrator(order, ask)];
-    return !withheld.has(order.subject) || REVIEW_CAUSES.includes(order.cause) ? [order] : [];
+    // agent-org#1667: a not-convinced verdict on a same-repository session pull request whose only finding is the missing CI Acceptance run (`wakes`) is kept
+    return !withheld.has(order.subject) || REVIEW_CAUSES.includes(order.cause) || (order.cause === "verdict-not-convinced" && wakes.has(order.subject)) ? [order] : [];
   });
 }
 

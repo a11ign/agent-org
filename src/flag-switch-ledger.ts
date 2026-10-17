@@ -63,6 +63,7 @@ export const FLAGS_WITH_ANOTHER_HOME: Readonly<Record<string, string>> = Object.
   "prs.ownerlessAsk": "switched by `machinery:flag` (agent-org#1648), which writes the canary state and not a declaration file",
   "gh.refuseFallbackAuthor": "switched by `machinery:flag` (agent-org#1666), which writes the canary state and not a declaration file",
   "reviews.verdictDelivery": "switched by `machinery:flag` (agent-org#1649), which writes the canary state and not a declaration file",
+  "reviews.outsideSessionPr": "switched by `machinery:flag` (agent-org#1667), which writes the canary state and not a declaration file",
 });
 
 /** `export const AUTO_UNPARK_FLAG = "rows.autoUnpark"`: the shape the row's open-check greps, with a digit allowed after the first letter so `queue.reenqueue2` is not skipped. */
