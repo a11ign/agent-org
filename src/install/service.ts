@@ -76,7 +76,7 @@ const escapeXml = (text: string) => text.replace(/&/g, "&amp;").replace(/</g, "&
 const systemdQuoted = (text: string) => `"${text.replace(/\\/g, "\\\\").replace(/"/g, "\\\"").replace(/%/g, "%%").replace(/\$/g, "$$$$")}"`;
 
 /**
- * The PATH a service runs with: the caller's, without a relative or empty entry and without a project's `node_modules/.bin`, which `pnpm run` and `npx`
+ * The PATH a service runs with: the caller's, without a relative or empty entry and without a project's `node_modules/.bin`, which `pnpm run` and `pnpm exec`
  * put first and which would then answer for `git`, `gh` and `claude` in every run.
  */
 export const servicePath = (path: string | undefined) =>

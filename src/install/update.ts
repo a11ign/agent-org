@@ -10,6 +10,7 @@ import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 import { isReleaseTag, LATEST } from "../lib/release-tag.ts";
 import { pnpmCliInvocation } from "../lib/npm-cli-executable.ts";
 import { installDependencies, updateTool, type DependencyInstall } from "../update-tool.ts";
@@ -68,7 +69,7 @@ export function update({ version, channel }: { version: string | undefined; chan
 
 function defaultUpdateDeps(): UpdateDeps {
   const root = TOOL_ROOT;
-  const git: Git = (args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  const git: Git = (args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8", env: sandboxGitEnv(), stdio: ["ignore", "pipe", "pipe"] });
   const services = defaultServiceDeps();
   return {
     root, git,
