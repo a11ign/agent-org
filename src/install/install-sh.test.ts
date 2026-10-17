@@ -115,7 +115,11 @@ test("install.sh says nothing about PATH when the launcher's directory is on it"
 
 test("install.sh refuses without Node, and with a Node older than 24, and installs nothing", () => {
   const { root, home, repo } = fixture();
-  const none = install(home, "/usr/bin:/bin", repo);
+  // A PATH holding git and nothing else, since a system directory can hold a node of its own.
+  const gitOnly = join(root, "git-only");
+  mkdirSync(gitOnly);
+  symlinkSync(execFileSync("/bin/sh", ["-c", "command -v git"], { encoding: "utf8" }).trim(), join(gitOnly, "git"));
+  const none = install(home, gitOnly, repo);
   assert.equal(none.status, 1);
   assert.match(none.stderr, /no `node` on PATH/);
   assert.match(none.stderr, /https:\/\/nodejs\.org/);
