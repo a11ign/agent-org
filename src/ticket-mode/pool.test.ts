@@ -1597,6 +1597,68 @@ test("a reviewer memory file that cannot be read is said once in the board's log
   assert.ok(said[0].includes("reviewers.json"), "the log names the file");
 });
 
+test("a checked outcome is read with its reason, ends the run Checked rather than Needs you, and closes its workspace at once", async () => {
+  assert.deepEqual(parseOutcome(JSON.stringify({ kind: "checked", reason: "the toast already shows" })), { kind: "checked", reason: "the toast already shows" });
+  const { entry, h } = await endedOn({ kind: "checked", reason: "the toast already shows" }, 1, ["NBF-1", "NBF-2"]);
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").outcome], ["finished", { kind: "checked", reason: "the toast already shows" }]);
+  assert.equal(runStatus(entry("NBF-1")), "checked", "nothing is asked of the person");
+  assert.deepEqual([entry("NBF-1").workspace, entry("NBF-1").pane], [undefined, undefined], "not parked: nobody will answer its agent");
+  assert.equal(closes(h, "w1"), 1, "its workspace is closed as the outcome is recorded");
+  assert.equal(entry("NBF-2").phase, "running", "the slot it freed is filled");
+});
+
+test("a parked run whose worker then writes checked or planned has its workspace closed as that outcome is recorded", async () => {
+  const { pool, status, entry, settings, h } = await endedOn({ kind: "needs-human", reason: "which colour?" });
+  assert.equal(closes(h, "w1"), 0, "POSITIVE CONTROL: a needs-human run stays open for the person's answer");
+  status.set(herdrName("NBF-1"), "working");
+  await pool.tick();
+  writeFileSync(join(ticketDir(settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "checked", reason: "the person said it is fixed already" }));
+  status.set(herdrName("NBF-1"), "idle");
+  await pool.tick();
+  assert.deepEqual([entry("NBF-1").outcome?.kind, entry("NBF-1").workspace], ["checked", undefined]);
+  assert.equal(closes(h, "w1"), 1);
+  // A planning run's `planned` closes its workspace too: "a planning run that writes planned has its plan attached ..." above asserts it.
+});
+
+test("Dismiss takes a finished run off the board, closing its workspace when it is still open, and keeps the run's files", async () => {
+  const parked = await endedOn({ kind: "needs-human", reason: "which colour?" });
+  parked.pool.dismiss("NBF-1");
+  assert.deepEqual(parked.h.calls.at(-1), ["--session", "tickets", "workspace", "close", "w1"], "its open workspace is closed first");
+  assert.deepEqual(parked.store.get().entries, [], "and the run is gone from the board");
+  const closed = await endedOn({ kind: "checked", reason: "nothing to change" });
+  const calls = closed.h.calls.length;
+  closed.pool.dismiss("NBF-1");
+  assert.equal(closed.h.calls.length, calls, "a run whose workspace is closed already asks nothing of herdr");
+  assert.deepEqual(closed.store.get().entries, []);
+  assert.ok(existsSync(join(ticketDir(closed.settings, "NBF-1"), "outcome.json")), "the run's files stay: only the board's record goes");
+});
+
+test("Dismiss is refused for a queued or live run, and a refused close leaves a parked run on the board, parked", async () => {
+  const { pool, entry, h } = setup(1, ["NBF-1", "NBF-2"]);
+  await pool.tick();
+  assert.throws(() => pool.dismiss("NBF-1"), /NBF-1 is still running: Stop it first/);
+  assert.throws(() => pool.dismiss("NBF-2"), /NBF-2 is queued, not finished: Remove takes it off the queue/);
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-2").phase], ["running", "queued"]);
+  assert.equal(closes(h, "w1"), 0, "a live run's workspace is Stop's to close");
+  const parked = await endedOn({ kind: "needs-human", reason: "which colour?" });
+  parked.h.refused.add("close");
+  assert.throws(() => parked.pool.dismiss("NBF-1"), /herdr could not close NBF-1's workspace/);
+  assert.deepEqual([parked.entry("NBF-1").phase, parked.entry("NBF-1").workspace], ["finished", "w1"]);
+});
+
+test("Dismissing one ticket of a parked batch closes the batch's one workspace, unparks the rest, and takes only that ticket off", async () => {
+  const { tracker } = batchTracker();
+  const { pool, status, entry, settings, h, store } = setup(1, ["NBF-1", "NBF-2"], BATCH_PLANNER, { source: tracker, planFirst: ["NBF-1", "NBF-2"], batch: true });
+  await pool.tick();
+  writeFileSync(join(batchDir(settings, BATCH), "outcome.json"), JSON.stringify({ kind: "needs-human", reason: "which design?" }));
+  status.set(herdrName(BATCH), "idle");
+  await pool.tick();
+  pool.dismiss("NBF-1");
+  assert.deepEqual(store.get().entries.map((e) => e.ticket.key), ["NBF-2"]);
+  assert.deepEqual([entry("NBF-2").workspace, entry("NBF-2").outcome?.kind], [undefined, "needs-human"]);
+  assert.equal(closes(h, "w1"), 1);
+});
+
 test("A11-70: a batch ticket placed in a repository that is no clone is given none and handed to a person by name, and the rest of its order stands", async () => {
   const { tracker, attached, relations } = batchTracker();
   const ran = await plannedBatch(tracker, (plan) => {

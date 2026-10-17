@@ -105,10 +105,10 @@ test("a drafts-off run opens no draft and reaches the reviewer with no Approve",
   assert.equal(brief.includes("gh pr create --draft"), false, "no draft is named");
   assert.ok(existsSync(join(dir, "ready-run")), "the hook lets the worker open one ready");
   assert.equal(runStatus(made.entry("NBF-1")), "awaiting-review", "the run waits for review");
-  assert.deepEqual(runActions(made.entry("NBF-1")), [], "there is no Approve");
+  assert.deepEqual(runActions(made.entry("NBF-1")), ["dismiss"], "there is no Approve");
   made.pool.watchFeedback();
   assert.deepEqual(reviewer.starts, [{ pr: PR_URL, head: "h1" }], "the reviewer is started for the ready head");
-  assert.deepEqual(runActions(made.entry("NBF-1")), [], "still no Approve once the reviewer is started");
+  assert.deepEqual(runActions(made.entry("NBF-1")), ["dismiss"], "still no Approve once the reviewer is started");
 });
 
 test("the reviewer is started once per ready head: a second watch on the same head starts nothing, and a new head starts one", async () => {

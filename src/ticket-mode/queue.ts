@@ -9,13 +9,13 @@
 // the only writer of the file, which it replaces whole by rename, so a reader never sees half of one.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { isParked, isPublishing, isWatched, openPulls, RESULT_KINDS, runStatus, settledByPulls, waitsOn } from "./board-view.ts";
+import { CONCLUDED, isBeingPublished, isParked, isPublishing, isWatched, openPulls, RESULT_KINDS, runStatus, settledByPulls, waitsOn } from "./board-view.ts";
 import type { Blocker, PullState, Ticket } from "./source.ts";
 
 /** A pull request a run opened: the repository it is in and its web address. */
 export type PullRequest = Readonly<{ repo: string; url: string }>;
 
-/** How a finished run ended. A worker writes the first six; the pool decides the rest. */
+/** How a finished run ended. A worker writes the first seven; the pool decides the rest. */
 export type Outcome =
   | Readonly<{ kind: "draft-pr"; prs: readonly PullRequest[] }>
   /** A worker opened its pull requests ready for review, on a machine with `tickets.drafts: false`: there is nothing to approve. */
@@ -23,6 +23,11 @@ export type Outcome =
   /** A review run marked its pull requests ready, answered their review and left their checks passing. */
   | Readonly<{ kind: "reviewed"; prs: readonly PullRequest[] }>
   | Readonly<{ kind: "planned" }>
+  /**
+   * The worker checked what the ticket asks and found nothing to change: the reason says what it checked and what it found. Nothing is asked of a
+   * person, so the run is not Needs you, and it is not retried: a second worker would check the same thing again.
+   */
+  | Readonly<{ kind: "checked"; reason: string }>
   | Readonly<{ kind: "wrong-repo"; where: string }>
   | Readonly<{ kind: "needs-human"; reason: string }>
   | Readonly<{ kind: "no-outcome" }>
@@ -166,12 +171,24 @@ export function remove(queue: Queue, key: string): Queue {
 }
 
 /**
- * Put a finished entry back at the end of the queue. A draft pull request is not retried: it is the result. Nor is a parked run, until its
- * workspace is closed: a second workspace would take the same herdr name.
+ * Take a finished run off the board: a person has read how it ended and wants it gone. Only the queue's record goes. The ticket, its branch, its
+ * worktrees and its pull requests are left as they are, and the ticket can be queued again. A queued run is Remove's and a live one is Stop's, so
+ * neither is touched, and nor is a parked one: its workspace is closed first (the pool's `dismiss` does both), so no herdr workspace is left open
+ * with no run on the board to close it. A run the publish run under way is posting stays until it has posted.
+ */
+export function dismiss(queue: Queue, key: string): Queue {
+  const entry = find(queue, key);
+  if (entry === undefined || entry.phase !== "finished" || isParked(entry) || isBeingPublished(entry, queue.publish)) return queue;
+  return { ...queue, entries: queue.entries.filter((e) => e.ticket.key !== key) };
+}
+
+/**
+ * Put a finished entry back at the end of the queue. A draft pull request is not retried: it is the result. Nor is a run that concluded with
+ * nothing more to do (`checked`), nor a parked run, until its workspace is closed: a second workspace would take the same herdr name.
  */
 export function retry(queue: Queue, key: string, now: number): Queue {
   const entry = find(queue, key);
-  if (entry === undefined || entry.phase !== "finished" || isResult(entry) || isParked(entry)) return queue;
+  if (entry === undefined || entry.phase !== "finished" || isResult(entry) || CONCLUDED.has(entry.outcome?.kind ?? "") || isParked(entry)) return queue;
   const { ticket, repos, model, effort, plan, planned, session, review, published, feedback, asked, rounds } = entry;
   // A review run that failed is retried as the same review round, resuming the same worker, so it does not start the ticket over, and a round
   // the board started still counts towards its cap. Any other run starts a fresh worker, whose session replaces this one. A ticket of a batch

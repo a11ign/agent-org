@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { isParked } from "./board-view.ts";
 import {
-  amend, approve, respond, batchPlanDone, feedbackRound, MAX_FEEDBACK_ROUNDS, markPublishRunning, markPublishStarting, publishDone, publishFailed, publishStarts, queuePublish, emptyQueue, enqueue, finish, isLive, leaveBatch, loadQueue, markResumed, markRunning, markStarting, nextStarts, observe, park,
+  amend, approve, respond, batchPlanDone, dismiss, feedbackRound, MAX_FEEDBACK_ROUNDS, markPublishRunning, markPublishStarting, publishDone, publishFailed, publishStarts, queuePublish, emptyQueue, enqueue, finish, isLive, leaveBatch, loadQueue, markResumed, markRunning, markStarting, nextStarts, observe, park,
   recordBlockers, recordRepos, planDone, PLAN_BATCH_MAX, recordPullStates, recordTrackerStates, remove, retry, saveQueue, setMax, setPaused, unpark, unreadBlockerKeys, unsettledKeys, type Queue,
 } from "./queue.ts";
 import type { Ticket } from "./source.ts";
@@ -375,4 +375,31 @@ test("a ready pull request run is not approved: approve changes nothing, since o
   const ready = endedWith({ kind: "ready-pr", prs: [pr] }, { pullStates: { [pr.url]: "open" } });
   assert.equal(approve(ready, "A", 9), ready, "the same queue back");
   assert.equal(ready.entries.find((e) => e.ticket.key === "A")?.outcome?.kind, "ready-pr");
+});
+
+test("dismiss takes a finished run off the board, and leaves a queued, live, parked or being-published one where it is", () => {
+  let queue = setPaused(enqueue(emptyQueue(2), [ticket("A"), ticket("B"), ticket("C")], choice, 1), false);
+  queue = markRunning(markStarting(queue, "A", 2), "A", "w1", "w1:p1");
+  assert.equal(dismiss(queue, "A"), queue, "a live run is Stop's");
+  assert.equal(dismiss(queue, "B"), queue, "a queued run is Remove's");
+  queue = park(queue, "A", { kind: "needs-human", reason: "which colour?" }, 5);
+  assert.equal(dismiss(queue, "A"), queue, "a parked run's workspace is closed first, so no workspace is left with no run to close it");
+  queue = unpark(queue, "A");
+  assert.deepEqual(keys(dismiss(queue, "A")), ["B", "C"], "once closed, it goes");
+  queue = finish(markRunning(markStarting(queue, "B", 6), "B", "w2", "w2:p1"), "B", { kind: "checked", reason: "already fixed" }, 8);
+  assert.deepEqual(keys(dismiss(queue, "B")), ["A", "C"], "a checked run is dismissed like any other");
+  assert.equal(dismiss(queue, "NOPE"), queue);
+});
+
+test("a checked run is not retried: a second worker would check the same thing again", () => {
+  let queue = setPaused(enqueue(emptyQueue(1), [ticket("A")], choice, 1), false);
+  queue = finish(markRunning(markStarting(queue, "A", 2), "A", "w1", "w1:p1"), "A", { kind: "checked", reason: "nothing to change" }, 5);
+  assert.equal(retry(queue, "A", 9), queue);
+  assert.deepEqual(queue.entries[0].outcome, { kind: "checked", reason: "nothing to change" });
+});
+
+test("a run the publish run under way is posting is not dismissed until the publish run has ended", () => {
+  const publishing = queuePublish(readyToMerge(), ["A"], 36);
+  assert.equal(dismiss(publishing, "A"), publishing);
+  assert.deepEqual(keys(dismiss(publishDone(publishing, ["https://slack/1"], 40), "A")), ["B"]);
 });

@@ -231,8 +231,8 @@ export function remember(storage: Storage | null, name: string, values: Readonly
 
 /** A run's status on the board, after GitHub's Actions runs: each has its own icon and filter. */
 export type RunStatus =
-  "needs-you" | "working" | "planning" | "reviewing" | "blocked" | "queued" | "awaiting-review" | "ready-to-merge" | "publishing" | "published" | "completed"
-  | "failed" | "cancelled";
+  "needs-you" | "working" | "planning" | "reviewing" | "blocked" | "queued" | "awaiting-review" | "ready-to-merge" | "publishing" | "published" | "checked"
+  | "completed" | "failed" | "cancelled";
 
 /** Every status, in the order the filters list them: what needs a person first, what is settled last. */
 export const RUN_STATUSES: readonly Readonly<{ status: RunStatus; label: string }>[] = [
@@ -246,6 +246,7 @@ export const RUN_STATUSES: readonly Readonly<{ status: RunStatus; label: string 
   { status: "ready-to-merge", label: "Ready to merge" },
   { status: "publishing", label: "Publishing" },
   { status: "published", label: "Published" },
+  { status: "checked", label: "Checked" },
   { status: "completed", label: "Completed" },
   { status: "failed", label: "Failed" },
   { status: "cancelled", label: "Cancelled" },
@@ -256,6 +257,13 @@ export const RUN_STATUSES: readonly Readonly<{ status: RunStatus; label: string 
  * board shows such a run as Needs you, and the pool parks it rather than closing its workspace, so the person can answer the agent there.
  */
 export const HANDED_BACK: ReadonlySet<string> = new Set(["needs-human", "wrong-repo", "no-outcome"]);
+
+/**
+ * Outcomes after which the run needs nothing more: the worker checked the ticket and found nothing to change (`checked`), or a planning run
+ * wrote its plan (`planned`). Nobody answers such a run, so the pool closes its workspace as soon as the outcome is recorded, and it is not
+ * retried. Unlike {@link HANDED_BACK}, it never reads as Needs you.
+ */
+export const CONCLUDED: ReadonlySet<string> = new Set(["checked", "planned"]);
 
 /** Outcomes that are a run's result, pull requests to show for it: a draft one, or one a review run saw through its review. */
 export const RESULT_KINDS: ReadonlySet<string> = new Set(["draft-pr", "ready-pr", "reviewed"]);
@@ -352,6 +360,7 @@ export function runStatus(entry: ViewEntry, entries: readonly ViewEntry[] = []):
   if (kind === "draft-pr" || kind === "ready-pr") return settledByPulls(entry) ?? "awaiting-review";
   if (kind === "reviewed") return settledByPulls(entry) ?? (entry.handedBack !== undefined ? "needs-you" : entry.published ? "published" : "ready-to-merge");
   if (HANDED_BACK.has(kind)) return "needs-you";
+  if (kind === "checked") return "checked";
   return kind === "stopped" ? "cancelled" : "failed";
 }
 
@@ -381,7 +390,7 @@ export function runsShown<T extends ViewEntry>(entries: readonly T[], filter: Ru
 export const isParked = (entry: ViewEntry): boolean => entry.phase === "finished" && entry.workspace !== undefined;
 
 /** What a person can do to a run from the board. */
-export type RunAction = "remove" | "stop" | "retry" | "close" | "approve" | "respond";
+export type RunAction = "remove" | "stop" | "retry" | "close" | "approve" | "respond" | "dismiss";
 
 /** Why a person presses Approve, shown as its tooltip: the drafts are reviewed. */
 export const APPROVE_TITLE = "Drafts reviewed and approved: mark the pull requests ready, then see them through their checks and review";
@@ -389,20 +398,28 @@ export const APPROVE_TITLE = "Drafts reviewed and approved: mark the pull reques
 /** Why a person presses Respond to review, shown as its tooltip: the pull requests are ready, and have feedback to answer. */
 export const RESPOND_TITLE = "Answer the feedback on these ready pull requests now: their reviews, comments and failing checks";
 
+/** Why a person presses Dismiss, shown as its tooltip: only the board's record goes. */
+export const DISMISS_TITLE = "Take this run off the board, closing its workspace if it is open. The ticket, its branch and its pull requests are left as they are";
+
 /**
  * The actions a run offers. A queued run can be removed and a live one stopped. A finished run that kept its workspace (parked) can be closed,
- * and only once it is closed can it be retried. Pull requests are results, and are not retried. Drafts awaiting review offer Approve, which
- * marks them ready. Ready ones (Ready to merge, Published, or handed back after the board's own rounds) offer Respond to review, which answers
- * their feedback now. A completed ticket offers nothing.
+ * and only once it is closed can it be retried. Pull requests are results, and are not retried, and nor is a run that concluded with nothing more
+ * to do ({@link CONCLUDED}). Drafts awaiting review offer Approve, which marks them ready. Ready ones (Ready to merge, Published, or handed back
+ * after the board's own rounds) offer Respond to review, which answers their feedback now. EVERY FINISHED RUN OFFERS DISMISS, last, a parked one
+ * too, so no run stays on the board for ever: it takes the run off the board and closes its workspace if one is open. A run the publish run under
+ * way is posting is the exception: `queue.ts`'s `dismiss` keeps it until it has posted, so it is not offered there either.
  */
-export function runActions(entry: ViewEntry): RunAction[] {
+export function runActions(entry: ViewEntry, publish?: ViewPublish): RunAction[] {
   if (entry.phase === "queued") return ["remove"];
   if (entry.phase !== "finished") return ["stop"];
-  if (isParked(entry)) return ["close"];
+  const dismiss: RunAction[] = isBeingPublished(entry, publish) ? [] : ["dismiss"];
+  if (isParked(entry)) return ["close", ...dismiss];
   const status = runStatus(entry);
-  if (status === "awaiting-review" && entry.outcome?.kind === "draft-pr") return ["approve"];
-  if (status === "ready-to-merge" || status === "published" || (status === "needs-you" && entry.handedBack !== undefined)) return ["respond"];
-  return entry.outcome === undefined || RESULT_KINDS.has(entry.outcome.kind) || status === "completed" ? [] : ["retry"];
+  if (status === "awaiting-review" && entry.outcome?.kind === "draft-pr") return ["approve", ...dismiss];
+  if (status === "ready-to-merge" || status === "published" || (status === "needs-you" && entry.handedBack !== undefined)) return ["respond", ...dismiss];
+  const kind = entry.outcome?.kind;
+  const done = kind === undefined || RESULT_KINDS.has(kind) || CONCLUDED.has(kind) || status === "completed";
+  return [...(done ? [] : ["retry" as const]), ...dismiss];
 }
 
 /**

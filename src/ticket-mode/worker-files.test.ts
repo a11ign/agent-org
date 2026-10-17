@@ -247,6 +247,23 @@ test("a drafts-off brief opens a ready pull request: its command has no --draft,
   assert.equal(brief.includes("draft-pr"), false);
 });
 
+test("a worker may end on checked when nothing needs to change, and is told needs-human is only for what the person alone can decide", () => {
+  const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w" });
+  assert.ok(brief.includes('{ "kind": "checked", "reason": "<what you checked, what you found, and why nothing needs to change>" }'), "checked is one of the outcomes");
+  assert.match(brief, /Write `checked` when you looked at what the ticket asks and nothing needs to change/);
+  assert.match(brief, /the ticket is only a parent whose work is all in its child tickets \(name them, so the person queues them\)/);
+  assert.match(brief, /Write `needs-human` only for a real question or decision that only the person can make/);
+});
+
+test("both planning briefs say a ticket that is only a parent gets a plan saying so, which suggests queueing its children instead", () => {
+  const single = planBriefText({ ticket, ticketDir: "/d", planDir: "/d/plan", attachments: [], clones, run: "plan {key} into {dir}" });
+  const batch = batchPlanBriefText({ tickets: [{ ticket, attachments: [], parent: null }], runDir: "/r", planDir: "/r/plan", clones, run: "plan {keys} into {dir}" });
+  for (const brief of [single, batch]) {
+    assert.ok(brief.includes("A ticket that is only a parent, an epic whose work is all in the tickets under it, gets no plan for a run of its own."));
+    assert.ok(brief.includes("names the child tickets that hold its work, and suggests the person queues those children instead of a run on it."));
+  }
+});
+
 test("A11-70: a batch's brief names the host file's clones keys as the only repositories order.json may name, or null", () => {
   const brief = batchPlanBriefText({ tickets: [{ ticket, attachments: [], parent: null }], runDir: "/d", planDir: "/d/plan",
     clones: { a11ign: "/repos/a11y-witness", "agent-org": "/repos/agent-org" }, run: "plan {keys} into {dir}" });
