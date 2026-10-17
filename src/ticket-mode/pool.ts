@@ -47,7 +47,7 @@ import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, rea
 import { availableParallelism, homedir, loadavg } from "node:os";
 import { join } from "node:path";
 import { agentStartArgs, closedNote, herdrReason, herdrRun, openPane, readAgents } from "../herdr-agents.ts";
-import { parseOrder, type Order } from "./batch-order.ts";
+import { parseOrder, unknownRepos, type Order } from "./batch-order.ts";
 import { readOwnLogin, readPullFeedback, type PullFeedback } from "../ticket-port/pull-feedback.ts";
 import { defaultGh } from "../lib/tool-version-agreement.ts";
 import { HANDED_BACK, hasPlan, isParked, isWatched, openPulls, stackedOn } from "./board-view.ts";
@@ -777,6 +777,8 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
         if (outcome !== null) handedBack.set(key, outcome);
       }
       const order = await recordOrder(planDir, members.map(({ ticket }) => ticket.key));
+      // A repository that is no clone of this machine is never stored: the ticket is planned with none and handed to a person, saying why.
+      const misplaced = unknownRepos(order, Object.keys(settings.clones));
       // Stopped, or stopped and started again, while its plans were attached: the person's last word stands, and a newer run is not touched.
       const still = members.filter(sameRun);
       if (still.length === 0) return;
@@ -785,6 +787,8 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
       answered.delete(name);
       updateEach(still, (queue, key) => {
         const outcome = handedBack.get(key);
+        const refused = misplaced.get(key);
+        if (outcome === undefined && refused !== undefined) return finish(batchPlanDone(queue, key, null), key, { kind: "needs-human", reason: refused }, now());
         return outcome === undefined ? batchPlanDone(queue, key, order.get(key)?.repo ?? null) : finish(queue, key, outcome, now());
       });
     } catch (err) {

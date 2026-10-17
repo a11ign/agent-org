@@ -64,3 +64,18 @@ export function parseOrder(text: string, keys: readonly string[]): { order: Orde
   if (cycle !== null) return { refusal: `its order goes round in a cycle: ${cycle.join(" -> ")}` };
   return { order };
 }
+
+/**
+ * Each ticket `order` places in a repository that is not one of `clones` (the host file's `clones` keys), with why it is refused, by key. PURE.
+ *
+ * A NAME, NOT A FOLDER. A planner once named a ticket's repository `a11y-witness`, the folder its checkout sits in, where the host file's key for
+ * it is `a11ign`, and the board stored a repository that matched no clone: the run stacked on nothing and nothing said why (A11-70). The rest of
+ * the order still stands, its blockers included, because the waits it names are between tickets and say nothing about repositories. Only the
+ * named repository is refused, and the caller hands that ticket to a person with the reason, as it does a ticket whose plan it cannot use.
+ */
+export function unknownRepos(order: Order, clones: readonly string[]): ReadonlyMap<string, string> {
+  const known = new Set(clones);
+  const names = clones.map((name) => `\`${name}\``).join(", ");
+  return new Map([...order].flatMap(([key, { repo }]) => (repo === null || known.has(repo) ? []
+    : [[key, `the planner placed ${key} in the repository \`${repo}\`, which is not one of this machine's clones (${names}), so the board gave it none. Its plan is attached: Retry works it with no planned repository, and the worker chooses one`] as const])));
+}

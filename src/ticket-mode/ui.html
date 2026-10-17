@@ -202,6 +202,8 @@ const $ = (id) => document.getElementById(id);
 const storage = (() => { try { return window.localStorage; } catch { return null; } })();
 const state = {
   tickets: [], parents: [], queue: { entries: [], max: 3, paused: true }, selected: new Set(), terminal: null,
+  // Which tickets the list holds (the host file's `tickets.pick`, as the instance words it), and, when it holds none, the instance's word on why.
+  pick: "assigned to you", empty: null,
   // Whether this machine publishes (the host file's `tickets.publish`), and the runs ticked for the next Publish.
   publishing: false, toPublish: new Set(),
   // The model and effort the settings give a ticket queued from now on, and the parts the Pick footer chose otherwise for the next batch only.
@@ -352,7 +354,8 @@ function renderPick() {
   }
   const everyPickable = pickableShown();
   $("all").checked = everyPickable.length > 0 && everyPickable.every((t) => state.selected.has(t.key));
-  $("loaded").textContent = `${tickets.length} of ${state.tickets.length} assigned to you shown, ${state.selected.size} selected`;
+  if (state.tickets.length === 0 && state.empty) list.append(el("div", { className: "empty" }, state.empty));
+  $("loaded").textContent = `${tickets.length} of ${state.tickets.length} ${state.pick} shown, ${state.selected.size} selected`;
 }
 
 function since(ms) {
@@ -557,6 +560,7 @@ function render() { renderPick(); renderBoard(); renderFooter(); }
 
 function setup(config) {
   state.terminal = config.terminal ?? null;
+  state.pick = config.pick ?? "assigned to you";
   state.plan = config.plan ? new RegExp(config.plan) : null;
   setDefault(config.choice);
   for (const id of ["model", "batch-model", "planModel"]) $(id).replaceChildren(...config.models.map((m) => el("option", { value: m, textContent: m })));
@@ -636,6 +640,8 @@ async function load() {
   report(null);
   setup(await call("GET", "/api/config"));
   [state.tickets, state.queue] = await Promise.all([call("GET", "/api/tickets"), call("GET", "/api/queue")]);
+  // An empty list says why, in the instance's words, which name its setting. An instance from before it could say keeps a plain line.
+  state.empty = state.tickets.length > 0 ? null : (await call("GET", "/api/pick").catch(() => null))?.empty ?? "No open tickets to list.";
   render();
   // Parents are read after the first render, so the list never waits on them. Without them, every ticket stands on its own.
   state.parents = await call("GET", "/api/parents").catch(() => []);

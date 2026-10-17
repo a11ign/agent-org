@@ -55,8 +55,8 @@ const TICKETS = [
 
 /** Run the page's script against a fake document, with `storage` as its localStorage. Resolves once the first render has happened. */
 type PageOptions = { config?: Record<string, unknown>; entries?: unknown[]; tickets?: unknown[]; parents?: unknown[]; refused?: string[]; publish?: unknown;
-  connections?: unknown; errors?: Record<string, string>; hold?: Record<string, unknown> };
-async function page(storage: Map<string, string>, { config = {}, entries = [], tickets = TICKETS, parents = [], refused = [], publish, connections, errors = {}, hold = {} }: PageOptions = {}) {
+  connections?: unknown; errors?: Record<string, string>; hold?: Record<string, unknown>; pick?: unknown };
+async function page(storage: Map<string, string>, { config = {}, entries = [], tickets = TICKETS, parents = [], refused = [], publish, connections, errors = {}, hold = {}, pick }: PageOptions = {}) {
   const byId = new Map<string, Node_>();
   const posts: { path: string; body: any }[] = [];
   const requested: string[] = [];
@@ -86,6 +86,7 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
       "/api/config": () => ({ models: ["opus"], efforts: ["high"], max: 3, ...config, choice: saved }),
       "/api/tickets": () => tickets,
       "/api/parents": () => parents,
+      ...(pick === undefined ? {} : { "/api/pick": () => pick }),
       "/api/choice": () => { saved = { ...saved, ...body }; return { choice: saved }; },
       "/api/max": () => { max = body.max; return { entries, max, paused: true }; },
     };
@@ -931,4 +932,18 @@ test("an answer from the instance shown before a switch is dropped, so it never 
   for (let i = 0; i < 10; i++) await settle();
   assert.deepEqual(p.shownKeys(), ["T-1", "T-2", "T-3", "T-4"], "personal's late tickets did not replace work's");
   assert.equal(p.$("error").textContent, "", "and dropping it is not an error");
+});
+
+test("A11-69: an empty Pick view says why in the instance's words, and the count says whose tickets it lists", async () => {
+  const empty = 'Team A11 has no open tickets, or Linear has no team with that key. tickets.pick in the host file names it.';
+  const p = await page(new Map(), { tickets: [], config: { pick: "open in team A11" }, pick: { empty } });
+  const shown = p.$("groups").all().filter((n) => n.className === "empty");
+  assert.deepEqual(shown.map((n) => n.text()), [empty]);
+  assert.equal(p.$("loaded").textContent, "0 of 0 open in team A11 shown, 0 selected");
+  const older = await page(new Map(), { tickets: [] });
+  assert.deepEqual(older.$("groups").all().filter((n) => n.className === "empty").map((n) => n.text()), ["No open tickets to list."], "an instance that cannot say why keeps a plain line");
+  assert.equal(older.$("loaded").textContent, "0 of 0 assigned to you shown, 0 selected", "an instance that names no pick lists the key's own, as before");
+  const full = await page(new Map(), { pick: { empty } });
+  assert.equal(full.requested.includes("/api/pick"), false, "a list with tickets asks no reason");
+  assert.equal(full.$("groups").all().some((n) => n.className === "empty"), false);
 });

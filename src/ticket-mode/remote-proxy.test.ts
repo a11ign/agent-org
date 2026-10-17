@@ -68,7 +68,7 @@ test("the instance is sent its own host, the key and the JSON body over the tunn
 });
 
 test("only the routes the page calls are passed on, by the method it calls them with, so a pairing code there is never asked for", async () => {
-  for (const path of ["/api/config", "/api/tickets", "/api/parents", "/api/queue"]) assert.equal(passedOn("GET", path), true, path);
+  for (const path of ["/api/config", "/api/tickets", "/api/parents", "/api/pick", "/api/queue"]) assert.equal(passedOn("GET", path), true, path);
   for (const path of ["/api/queue", "/api/choice", "/api/publish", "/api/paused", "/api/max", "/api/queue/NBF-1/approve", "/api/queue/NBF-1/stop"]) {
     assert.equal(passedOn("POST", path), true, path);
   }
