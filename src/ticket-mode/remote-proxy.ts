@@ -5,7 +5,8 @@
 // guard accepts it), the key in `x-ticket-token`, and the JSON body. The browser's cookie, which is the page's session, is never sent on.
 //
 // ONLY THE ROUTES THE PAGE CALLS ARE PASSED ON. The request carries the instance's key, which opens any route the instance adds later. A list
-// of what is allowed keeps a new key-only route closed until it is added here.
+// of what is allowed keeps a new key-only route closed until it is added here. `/api/terminal-pair` is one of them: the page's service asks for a
+// worker terminal's pairing code only for a paired browser following a worker link (`ui-server.ts`), which refuses a browser's own call to it.
 import { request as httpRequest, type ClientRequest, type IncomingMessage, type RequestOptions } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { via, type Connections, type Target } from "./connections.ts";
@@ -24,7 +25,7 @@ const FORWARD_MS = 30_000;
 /** The most an instance's answer may hold. The largest is a list of tickets. */
 const ANSWER_BYTES = 8 * 1024 * 1024;
 const READS = new Set(["/api/config", "/api/tickets", "/api/parents", "/api/pick", "/api/queue"]);
-const WRITES = new Set(["/api/queue", "/api/queue-children", "/api/choice", "/api/publish", "/api/paused", "/api/max"]);
+const WRITES = new Set(["/api/queue", "/api/queue-children", "/api/choice", "/api/publish", "/api/paused", "/api/max", "/api/terminal-pair"]);
 const RUN_ACTION = /^\/api\/queue\/[A-Za-z0-9_-]+\/(amend|remove|retry|approve|respond|stop|close|dismiss)$/;
 
 /** Whether the page may make this call to an instance: one of the routes it calls there, by the method it calls it with. */

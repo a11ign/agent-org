@@ -56,6 +56,22 @@ export function loopbackPort(template: unknown): number | null {
 }
 
 /**
+ * The port of the worker terminal this machine serves, as its service listens on it, or null when another machine serves the address `terminal`
+ * names. That is `tickets.terminal`'s loopback port, or, when the address is this machine's own tailnet name (`tailnetName`, read while the board is
+ * on the tailnet), the default port the service is started on, as `terminalTarget` reads it. PURE.
+ */
+export function localTerminalPort(terminal: string | null, tailnetName: string | null): number | null {
+  const port = loopbackPort(terminal);
+  if (port !== null) return port;
+  if (terminal === null || tailnetName === null) return null;
+  try {
+    return new URL(terminal.replace(/\{[a-z]+\}/g, "x")).hostname === tailnetName ? DEFAULT_TERMINAL_PORT : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * `tickets.terminal` as the board hands it to the page. Served on the tailnet, a stored address on this machine's loopback, or none, is replaced by
  * the tailnet's address, and another machine's address is kept. The stored value itself stays as it is: `terminalTarget` reads the port from it.
  */
@@ -71,6 +87,12 @@ export function terminalTarget(host: unknown): { session: string; port: number }
   const session = typeof block.herdrSession === "string" && /^[A-Za-z0-9_-]+$/.test(block.herdrSession) ? block.herdrSession : DEFAULT_HERDR_SESSION;
   return { session, port: loopbackPort(block.terminal) ?? DEFAULT_TERMINAL_PORT };
 }
+
+/** The directory herdr web ui keeps its settings in for `session`: `HERDR_PLUGIN_CONFIG_DIR`, where its token and `pair` read them. */
+export const pluginConfigDir = (home: string, session: string) => join(home, ".config", `herdr-web-ui-${session}`);
+
+/** How a person pairs a new device, for the board and for the worker terminal: `onboard`'s last message, `doctor`'s `pairing` check and the README say it. */
+export const PAIRING_STEPS = "to pair a new device, run `agent-org ticket:pair` for the board, and `agent-org ticket:pair --terminal` for the worker terminal; with `tickets.serve` set, `agent-org ticket:pair` prints both codes";
 
 export type TerminalProgram = Readonly<{ argv: string[]; environment: Record<string, string>; workingDirectory: string }>;
 
@@ -89,10 +111,18 @@ export function terminalProgram({ env, home, session, port, root, bun, path }: {
       HERDR_SOCKET: herdrSocket(env, home, session),
       HERDR_PLUGIN_ROOT: root,
       HERDR_PLUGIN_STATE_DIR: join(home, ".local", "state", `herdr-web-ui-${session}`),
-      HERDR_PLUGIN_CONFIG_DIR: join(home, ".config", `herdr-web-ui-${session}`),
+      HERDR_PLUGIN_CONFIG_DIR: pluginConfigDir(home, session),
       HERDR_WEB_TELEMETRY: "0",
       // The supervisor starts its own children with `bun`, so bun's directory is first.
       PATH: path.split(":").includes(bunDir) ? path : `${bunDir}:${path}`,
     },
   };
+}
+
+/**
+ * The plugin's own `pair` command, run under the terminal service's environment, so the plugin reads the same directories, token and port the
+ * service runs with and no path is typed (A11-93). PURE: its environment is `terminalProgram`'s, so the two cannot drift.
+ */
+export function terminalPairProgram(options: Parameters<typeof terminalProgram>[0]): TerminalProgram {
+  return { argv: [options.bun, join(options.root, "scripts", "plugin.ts"), "pair"], workingDirectory: options.root, environment: terminalProgram(options).environment };
 }

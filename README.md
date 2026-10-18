@@ -127,7 +127,7 @@ takes them one each. Ticket mode is two services, both on `127.0.0.1`:
   its connections file names (see "Other machines' instances" below), and with no file it shows this machine's. It prints its URL, which
   carries no secret. The browser talks only to it, and it passes the page's calls on to the chosen instance with that instance's key.
 
-- **Pair a browser once.** A browser the page's service has not seen shows a pairing page. Run `agent-org ticket:pair` and type the code it prints:
+- **Pair a browser once.** A browser the page's service has not seen shows a pairing page. Run `agent-org ticket:pair` and type the board's code, which it prints first, into the board page:
   a code works once, within 10 minutes, and five wrong codes spend it. The browser then holds a session of its own, as an HttpOnly cookie,
   for a year and across restarts. The service keeps only the sessions' hashes, in `<stateDir>/tickets/browsers.json`, and deleting that file
   unpairs every browser. The service refuses to start on a file that does not hold sessions, rather than unpair every browser silently.
@@ -135,6 +135,24 @@ takes them one each. Ticket mode is two services, both on `127.0.0.1`:
   every connection, so whoever holds the key is trusted as you are. The key never goes to a browser, because a browser sends its cookies
   for `127.0.0.1` to every port there. An instance ignores a browser's cookie. Both files are made with mode 600, and a key file another
   user owns or can read is refused.
+
+- **Pair the worker terminal.** The worker terminal (herdr web ui) has a pairing code of its own. `agent-org ticket:pair` prints it after the
+  board's code when `tickets.serve` is set and `tickets.terminal` is this machine's own, and `agent-org ticket:pair --terminal` prints it
+  alone (`--board` prints the board's alone). No path is typed: the command runs herdr web ui's own `pair` with the terminal service's
+  variables set over this shell's environment. The code works once, within 10 minutes, for one device. If the terminal is not running, the
+  command exits 1 and says how to start it, after the board's code is printed. A terminal that another machine serves is paired there, with
+  `agent-org ticket:pair --terminal` run on that machine; a served board names it. If this machine's tailnet name cannot be read, the board
+  says so, rather than naming another machine.
+
+- **A worker link pairs the terminal for a paired browser.** Following a run's "Open terminal" link, a paired browser goes through the
+  page's service, which asks this machine's terminal for a code and opens the terminal with `?pair=<code>` in its address. The page's service
+  asks only for a paired browser, only for that connection's own terminal address, and redirects with `Cache-Control: no-store` and
+  `Referrer-Policy: no-referrer`. Nothing logs the code. The terminal asks as its own `pair` does: from this machine, over loopback with no
+  proxy headers, with herdr web ui's token from its config directory when one is set. Any failure, such as a terminal that is not running,
+  a token it refuses, or a route a newer release changed, opens the plain address, and `--terminal` pairs by hand as before. The residual
+  risks are that anyone holding the redirected address within its 10 minutes can pair one device, and that asking for a code replaces one
+  `--terminal` printed a moment before. Checked against herdr web ui 0.4.11 (`server/devices.ts`, `server/access.ts`, `scripts/plugin.ts`):
+  the terminal's own gate decides who may ask, and the board adds no new trust path.
 
 - **On the tailnet, if you serve it.** With `tickets.serve: "tailscale"`, the page and the terminal are served on your tailnet with
   `tailscale serve`, on `tickets.servePorts` (`9443` and `9444`), and never with Funnel. Tailscale decides who can reach the board, and
@@ -357,7 +375,8 @@ shows its reason without affecting the others. The connections file is `~/.confi
   `connections.json`, and the log says so. Its entries are connections already. It is read until the next major version: rename it.
 - The page's service holds every key in its memory. A key is not written to a log, a command line or the page, and it is sent only in the
   `x-ticket-token` header. Only a paired browser's call to `/c/<connection>/api/...` is passed on, as the instance's own `Host`, and only
-  for the routes the page calls, so a pairing code is never asked for there. A connection that cannot be reached is shown on the page as
+  for the routes the page calls. A pairing code for a worker terminal is asked for only by the page's service, for a paired browser following
+  a worker link, and only from that connection's own instance. A connection that cannot be reached is shown on the page as
   `cannot reach <connection> <how>: <reason>`.
 
 **Connect a second machine over SSH.** The page's service opens the SSH connection itself. It runs

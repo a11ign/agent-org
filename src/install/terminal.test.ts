@@ -1,7 +1,7 @@
 // no-token: none -- pure functions over strings; nothing is read or run
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { effectiveTerminal, herdrConfigDir, herdrSocket, loopbackPort, pluginRoot, terminalAddress, terminalProgram, terminalTarget } from "./terminal.ts";
+import { effectiveTerminal, herdrConfigDir, herdrSocket, localTerminalPort, loopbackPort, PAIRING_STEPS, pluginConfigDir, pluginRoot, terminalAddress, terminalPairProgram, terminalProgram, terminalTarget } from "./terminal.ts";
 
 test("on the tailnet, the board's terminal address is the tailnet's, unless the stored one names another machine", () => {
   const tailnet = "https://agents.tail1234.ts.net:9444/?ws={workspace}&pane={pane}&view=terminal";
@@ -46,4 +46,29 @@ test("the supervisor gets HERDR_SOCKET for its session, which the plugin reads, 
   assert.equal(program.environment.PATH, "/h/.bun/bin:/usr/bin");
   assert.equal(herdrConfigDir({ XDG_CONFIG_HOME: "relative" }, "/h"), "/h/.config/herdr");
   assert.equal(herdrSocket({}, "/h", "work"), "/h/.config/herdr/sessions/work/herdr.sock");
+});
+
+test("ticket:pair's plugin command runs under the service's own environment, so the plugin reads the directories the service runs with", () => {
+  const options = { env: { XDG_CONFIG_HOME: "/x" }, home: "/h", session: "work", port: 7400, root: "/r", bun: "/h/.bun/bin/bun", path: "/usr/bin" };
+  const pair = terminalPairProgram(options);
+  assert.deepEqual(pair.argv, ["/h/.bun/bin/bun", "/r/scripts/plugin.ts", "pair"]);
+  assert.equal(pair.workingDirectory, "/r");
+  assert.deepEqual(pair.environment, terminalProgram(options).environment, "the same environment the service is started with, so the two cannot drift");
+  assert.equal(pair.environment.HERDR_PLUGIN_CONFIG_DIR, pluginConfigDir("/h", "work"));
+  assert.equal(pair.environment.HERDR_PLUGIN_CONFIG_DIR, "/h/.config/herdr-web-ui-work");
+});
+
+test("the pairing steps name both codes, the board's and the terminal's, and the flag that prints the terminal's", () => {
+  assert.match(PAIRING_STEPS, /agent-org ticket:pair`/);
+  assert.match(PAIRING_STEPS, /agent-org ticket:pair --terminal`/);
+});
+
+test("the worker terminal on this machine is its loopback port, or its own tailnet address's default port, and another machine's address is none", () => {
+  const own = "https://agents.tail1234.ts.net:9444/?ws={workspace}&pane={pane}&view=terminal";
+  assert.equal(localTerminalPort(terminalAddress(7400), "agents.tail1234.ts.net"), 7400, "a loopback address names its own port");
+  assert.equal(localTerminalPort(own, "agents.tail1234.ts.net"), 7318, "the tailnet address of this machine is served on the default port");
+  assert.equal(localTerminalPort(own, "other.tail1234.ts.net"), null, "another machine's tailnet address is not this machine's");
+  assert.equal(localTerminalPort(own, null), null, "a name that cannot be read is not this machine's");
+  assert.equal(localTerminalPort(null, "agents.tail1234.ts.net"), null, "no terminal is set");
+  assert.equal(localTerminalPort("not a web address {pane}", "agents.tail1234.ts.net"), null);
 });

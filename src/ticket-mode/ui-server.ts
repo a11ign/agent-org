@@ -11,6 +11,10 @@
 // lasts a year (`browser-sessions.ts`). `ticket:pair` asks for the code with this machine's board key. A request carrying the key is passed on
 // to no instance, but the key can pair a browser, which reaches every connection: whoever holds it is trusted as the person is. A `Host` that is
 // not this server's is refused, and a write from another origin is refused.
+//
+// A WORKER LINK IS A REDIRECT FOR A PAIRED BROWSER (A11-93). `/c/<connection>/terminal?link=` asks the connection's instance for a terminal
+// pairing code, and answers with the link carrying it, so the person never types a second code. The link is taken only when it is that
+// connection's own terminal address (`sameTerminal`), so the redirect cannot carry a code to another site. A failed mint sends the plain link.
 import { execFileSync } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -41,6 +45,33 @@ const COOKIE = "ticket_session";
 const PAIR_BODY_BYTES = 1024;
 /** A call to a connection's instance: `/c/<connection>/api/...`. */
 const CONNECTION_PATH = /^\/c\/([A-Za-z0-9_-]+)(\/api\/.*)$/;
+/** A paired browser's follow of a worker link: `/c/<connection>/terminal?link=<the plain link>`. */
+const TERMINAL_LINK = /^\/c\/([A-Za-z0-9_-]+)\/terminal$/;
+
+/**
+ * `link` as the redirect may send it, normalised, or null: it must be a web address on `template`'s origin and path, with the same query names,
+ * and each literal value of the template as it is. Its `{workspace}`, `{pane}` and `{key}` values are the run's own, and only need a value.
+ * PURE, so the one check that keeps the redirect from carrying a code elsewhere is tested on its own.
+ */
+export function sameTerminal(link: string, template: string): string | null {
+  let given: URL;
+  let expected: URL;
+  try {
+    given = new URL(link);
+    expected = new URL(template);
+  } catch {
+    return null;
+  }
+  if (given.protocol !== "http:" && given.protocol !== "https:") return null;
+  if (given.origin !== expected.origin || given.pathname !== expected.pathname) return null;
+  const names = (url: URL) => [...new Set(url.searchParams.keys())].sort().join(" ");
+  if (names(given) !== names(expected)) return null;
+  for (const [name, value] of expected.searchParams) {
+    const placeholder = /\{[a-z]+\}/.test(value);
+    if (placeholder ? given.searchParams.get(name) === "" : given.searchParams.get(name) !== value) return null;
+  }
+  return given.href;
+}
 
 export type UiDeps = Readonly<{
   port: number;
@@ -113,6 +144,8 @@ export function createUi(deps: UiDeps) {
   async function proxyConnection(request: IncomingMessage, response: ServerResponse, by: "key" | "browser", name: string, path: string): Promise<void> {
     if (connections.get(name) === undefined) return sendJson(response, 404, { error: `no connection ${name}` });
     if (by !== "browser") return sendJson(response, 403, { error: "only a paired browser is passed on to an instance" });
+    // A worker's code is asked for by its worker link, which hands it on in a redirect, and never answered to the page's own call.
+    if (path.split("?")[0] === "/api/terminal-pair") return sendJson(response, 403, { error: "a worker's pairing code comes from its worker link, not from a call" });
     let body: string | null;
     try {
       body = request.method === "POST" ? JSON.stringify(await readJson(request, API_BODY_BYTES)) : null;
@@ -121,6 +154,26 @@ export function createUi(deps: UiDeps) {
     }
     const [status, value] = await proxy(connections, name, { method: request.method ?? "GET", path, body }, deps.forward);
     sendJson(response, status, value);
+  }
+
+  /**
+   * A paired browser's follow of a worker link: a redirect to the link with the connection's terminal pairing code in it (A11-93). A failed mint
+   * redirects to the plain link, and the code is never logged or answered anywhere but the `Location` of this response.
+   */
+  async function workerLink(response: ServerResponse, by: "key" | "browser", name: string, link: string | null): Promise<void> {
+    if (connections.get(name) === undefined) return sendJson(response, 404, { error: `no connection ${name}` });
+    if (by !== "browser") return sendJson(response, 403, { error: "only a paired browser is passed on to an instance" });
+    if (link === null) return sendJson(response, 400, { error: "name the worker's address in the link parameter" });
+    const [status, config] = await proxy(connections, name, { method: "GET", path: "/api/config", body: null }, deps.forward);
+    if (status !== 200) return sendJson(response, status, config);
+    const template = (config as { terminal?: unknown }).terminal;
+    const target = typeof template === "string" ? sameTerminal(link, template) : null;
+    if (target === null) return sendJson(response, 400, { error: `that address is not ${name}'s worker terminal` });
+    const [minted, answer] = await proxy(connections, name, { method: "POST", path: "/api/terminal-pair", body: "{}" }, deps.forward);
+    const code = minted === 200 && typeof answer === "object" && answer !== null ? (answer as { code?: unknown }).code : undefined;
+    const location = typeof code === "string" ? `${target}${target.includes("?") ? "&" : "?"}pair=${code}` : target;
+    response.writeHead(302, { Location: location, "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" });
+    response.end();
   }
 
   /** The tailnet a request may name. The name is asked only for a `Host` that is not this server's loopback, so a hostile one costs no tailscale call. */
@@ -143,6 +196,8 @@ export function createUi(deps: UiDeps) {
       if (by !== "key") return sendJson(response, 403, { error: "a pairing code is made with the board key: run agent-org ticket:pair" });
       return sendJson(response, 200, { code: pairing.mint(), minutes: PAIR_MINUTES });
     }
+    const worker = TERMINAL_LINK.exec(url.pathname);
+    if (request.method === "GET" && worker !== null) return workerLink(response, by, worker[1], url.searchParams.get("link"));
     const script = request.method === "GET" && Object.hasOwn(SCRIPTS, url.pathname) ? SCRIPTS[url.pathname] : undefined;
     if (script !== undefined) {
       response.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-store" });

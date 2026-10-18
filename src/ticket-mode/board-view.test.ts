@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import {
   CONCLUDED, HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, isParked, parentKeys, parentTick, ticketCount, projectCounts, queueLabel, recall,
   remember, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, selectable, shownStatus,
-  statusCounts, terminalLink, toggled, waitsOn, waitNote, repoOfPull, stackedOn, stackNote, PRIORITY_NAMES, hasPlan, isBeingPublished, isWatched, publishable,
+  statusCounts, terminalLink, terminalOpenHref, toggled, waitsOn, waitNote, repoOfPull, stackedOn, stackNote, PRIORITY_NAMES, hasPlan, isBeingPublished, isWatched, publishable,
   publishLabel, publishNote, publishTerminalLink, missingPlan, planChoiceOf, planCounts, priorityCounts, prioritiesOf, runChoiceLabel,
   unplannedCount, visibleTickets, workItems, workingNote, childrenNote, isParentTicket, openChildCount, apiBase, chosenConnection, connectionLabel, safeHref,
   footprintOf, overlapWait, pathsOverlap, resumesOnConflict,
@@ -772,4 +772,10 @@ test("A11-82: a run is not held by its own blockers, by a run that is blocked by
   assert.equal(overlapWait(waitingOn(undefined as unknown as string[]), [live]), null, "a run whose plan is not read yet is not held by a path");
   assert.equal(overlapWait(waitingOn([]), [live]), null, "a run whose plan declares no paths is not held by one");
   assert.equal(overlapWait(waitingOn(shared), [holderOf("APP-1", { phase: "queued", paths: shared })]), null, "a queued run holds nothing");
+});
+
+test("a run's terminal opens the page's worker link for its connection, with the plain address encoded in it, for a connection of any name", () => {
+  const plain = "http://127.0.0.1:7318/?ws=w3&pane=w3%3Ap1&view=terminal";
+  assert.equal(terminalOpenHref({ name: "work", kind: "local" }, plain), "/c/work/terminal?link=http%3A%2F%2F127.0.0.1%3A7318%2F%3Fws%3Dw3%26pane%3Dw3%253Ap1%26view%3Dterminal");
+  assert.equal(terminalOpenHref({ name: "my box", kind: "ssh" }, plain).startsWith("/c/my%20box/terminal?link="), true);
 });

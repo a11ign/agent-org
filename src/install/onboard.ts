@@ -36,7 +36,7 @@ import type { KeySource } from "../ticket-mode/settings.ts";
 import { agentOrgHome, hostFilePath, hostPointerPath, readOrNull, type Env } from "./paths.ts";
 import { ensureBun } from "./bun.ts";
 import { defaultServiceDeps, ServiceRefusal, startService, TailnetRefusal, updateChannelPath, type RunResult, type ServiceName, type Started, type UpdateChannel } from "./service.ts";
-import { DEFAULT_TERMINAL_PORT, herdrConfigDir, pluginRoot, TERMINAL_PLUGIN, terminalAddress } from "./terminal.ts";
+import { DEFAULT_TERMINAL_PORT, herdrConfigDir, PAIRING_STEPS, pluginRoot, TERMINAL_PLUGIN, terminalAddress } from "./terminal.ts";
 import { writeAtomic } from "./write-atomic.ts";
 
 export const DEFAULT_KEYCHAIN_SERVICE = "agent-org-linear";
@@ -276,6 +276,7 @@ export async function onboard(options: OnboardOptions, deps: OnboardDeps): Promi
       : `Write it to ${source.path} with mode 600`}, then run \`agent-org doctor\`.`);
   if (readable) registerLinearMcp(source, deps);
   if (options.start) deps.out.log(deps.startServices(onboardServices(terminal, options.autoUpdate)));
+  deps.out.log(PAIRING_STEPS);
   return hostFile;
 }
 

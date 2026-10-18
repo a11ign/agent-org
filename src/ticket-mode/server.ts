@@ -12,14 +12,16 @@
 // key never leaves this process.
 import { existsSync, readFileSync, realpathSync, writeFileSync, mkdirSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { constants } from "node:os";
+import { constants, homedir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { refuseUnknownFlags } from "../lib/cli-flags.ts";
 import { boardKey, boardKeyPath } from "./board-key.ts";
 import { hasPlan } from "./board-view.ts";
-import { effectiveTerminal } from "../install/terminal.ts";
+import { readOrNull } from "../install/paths.ts";
+import { effectiveTerminal, localTerminalPort } from "../install/terminal.ts";
+import { mintTerminalCode, type TerminalMint } from "./terminal-pair.ts";
 import { linearSource, readLinearKey } from "./linear.ts";
 import { pickEmptyText, pickLabel } from "./pick-scope.ts";
 import { API_BODY_BYTES, readJson, refusal, sameSecret, sendJson, type Json } from "./local-http.ts";
@@ -37,6 +39,8 @@ const TICK_MS = 30_000;
 const TRACKER_MS = 120_000;
 /** How often the open pull requests of runs Ready to merge are read for new feedback. Each is one GitHub request per pull request. */
 const FEEDBACK_MS = 180_000;
+/** How long herdr web ui may take to mint a terminal pairing code before the link goes out plain (A11-93). */
+const TERMINAL_PAIR_MS = 5_000;
 const MODELS = ["opus", "sonnet", "haiku"];
 const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 
@@ -51,6 +55,8 @@ export type BoardDeps = Readonly<{
   now?: () => number;
   /** This machine's MagicDNS name, read when `tickets.serve` puts the board on the tailnet; null while it cannot be read. Only `/api/config` asks. */
   tailnet?: () => Promise<string | null>;
+  /** The worker terminal's pairing code, minted for a paired browser following a worker link (A11-93). Default: herdr web ui's own, on loopback. */
+  mintTerminal?: () => Promise<TerminalMint>;
 }>;
 
 /** Whether the request carries the instance's key in its `x-ticket-token` header. A cookie is never read. */
@@ -174,6 +180,12 @@ export function createBoard(deps: BoardDeps) {
       return [200, read.flatMap((r) => (r.status === "fulfilled" && r.value !== null ? [r.value] : []))];
     }
     if (method === "GET" && path === "/api/queue") return [200, queue];
+    if (method === "POST" && path === "/api/terminal-pair") {
+      // Minted here, on the terminal's own machine, and handed to the page's service only for a paired browser that follows a worker link (A11-93).
+      if (deps.mintTerminal !== undefined) return [200, await deps.mintTerminal()];
+      const tailnetName = settings.serve === null || deps.tailnet === undefined ? null : await deps.tailnet();
+      return [200, await mintTerminalCode(settings, localTerminalPort(settings.terminal, tailnetName), { home: homedir(), read: readOrNull, request: fetch, timeoutMs: TERMINAL_PAIR_MS })];
+    }
     if (method === "POST" && path === "/api/queue") {
       const choice = validRunChoice(body);
       const keys = Array.isArray(body.keys) ? body.keys.map(String) : [];

@@ -28,7 +28,7 @@ import { hostFilePath, TOOL_ROOT, type Env } from "./paths.ts";
 import { pinnedPnpm, TOOL_PNPM_VERSION } from "./pnpm.ts";
 import { defaultServiceDeps, serviceState, unitProblem, type ServiceName, type ServiceState } from "./service.ts";
 import { HOUR_MS, hostIsolation, readUpdateStatus, updateStatusPath, type Isolation, type StatusFile } from "./update-safety.ts";
-import { DEFAULT_TERMINAL_PORT, loopbackPort } from "./terminal.ts";
+import { DEFAULT_TERMINAL_PORT, loopbackPort, PAIRING_STEPS } from "./terminal.ts";
 
 export const MIN_NODE_MAJOR = 24;
 
@@ -187,6 +187,7 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
     ...ui,
     ...await terminalChecks(settings, deps),
     ...await tailnetChecks(settings, deps),
+    ok("pairing", PAIRING_STEPS),
     registeredCheck("auto-update", deps, "it runs `agent-org update` every hour"),
     updateLagCheck(settings?.updateMaxDeferHours ?? 2, deps),
   ];

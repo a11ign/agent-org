@@ -193,7 +193,7 @@
 // The decisions (what shows, how it groups, what can be selected, what status a run has and what it offers) are board-view.ts's, tested there.
 // This page only draws what they return and wires the clicks.
 import {
-  APPROVE_TITLE, DISMISS_TITLE, RESPOND_TITLE, QUEUE_CHILDREN, QUEUE_CHILDREN_TITLE, childrenNote, isParentTicket, PRIORITY_NAMES, RUN_STATUSES, publishable, publishLabel, publishNote, publishTerminalLink, pullsOf, flatten, groupByStatus, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, queueLabel, recall, remember, runActions, shownStatus, apiBase, chosenConnection, connectionLabel, safeHref, runStatus,
+  APPROVE_TITLE, DISMISS_TITLE, RESPOND_TITLE, QUEUE_CHILDREN, QUEUE_CHILDREN_TITLE, childrenNote, isParentTicket, PRIORITY_NAMES, RUN_STATUSES, publishable, publishLabel, publishNote, publishTerminalLink, pullsOf, flatten, groupByStatus, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, queueLabel, recall, remember, runActions, shownStatus, apiBase, chosenConnection, connectionLabel, safeHref, runStatus, terminalOpenHref,
   runChoiceLabel, runsShown, unplannedCount, workingNote, verdictNote, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, waitNote, waitsOn, workersLabel,
 } from "/board-view.js";
 // The label rows: one per label group the listed tickets carry, and one for the labels in no group. label-filters.ts decides them, tested there.
@@ -479,7 +479,7 @@ function row(e) {
     actions.append(b);
   }
   const link = terminalLink(state.terminal, e) ?? publishTerminalLink(state.terminal, e, state.queue.publish);
-  const terminal = link ? el("a", { className: "terminal", href: safeHref(link), target: "_blank", rel: "noreferrer" }, "Open terminal") : null;
+  const terminal = link && state.connection && safeHref(link) ? el("a", { className: "terminal", href: terminalOpenHref(state.connection, link), title: link, target: "_blank", rel: "noreferrer" }, "Open terminal") : null;
   const pulls = pullsOf(e);
   const prs = pulls.length > 0 ? el("div", { className: "meta" }, ...pulls.flatMap((pr, i) => [i ? " · " : "", el("a", { href: safeHref(pr.url), target: "_blank", rel: "noreferrer" }, `${pr.repo} #${pr.url.split("/").pop()}`)])) : null;
   const note = workingNote(e);

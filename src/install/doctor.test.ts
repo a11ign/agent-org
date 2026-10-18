@@ -32,10 +32,17 @@ test("doctor passes every check on a working install, and never prints the key",
   assert.deepEqual(checks.map(({ name, ok }) => [name, ok]), [
     ["node", true], ["pnpm", true], ["launcher", true], ["host file", true], ["gh wrapper", true], ["herdr", true], ["tracker key", true], ["linear mcp", true],
     ["instance service", true], ["instance answering", true], ["herdr scope", true], ["ui service", true], ["ui answering", true],
-    ["terminal address", true], ["terminal service", true], ["terminal answering", true], ["auto-update service", true], ["update lag", true],
+    ["terminal address", true], ["terminal service", true], ["terminal answering", true], ["pairing", true], ["auto-update service", true], ["update lag", true],
   ]);
   assert.ok(!report(checks).includes(KEY));
   assert.match(report(checks), /ok {4}ui answering: http:\/\/127\.0\.0\.1:4801 answers/);
+});
+
+test("doctor's pairing check says how to pair a new device for the board and for the terminal, and always passes", async () => {
+  const pairing = byName(await diagnose(deps({ which: () => null, serviceState: () => "not-registered" }))).pairing;
+  assert.equal(pairing.ok, true);
+  assert.match(pairing.detail, /agent-org ticket:pair`/);
+  assert.match(pairing.detail, /agent-org ticket:pair --terminal`/);
 });
 
 test("doctor reports a missing Node, and one older than 24, as failures with the fix", async () => {
