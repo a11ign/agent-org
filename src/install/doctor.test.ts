@@ -10,6 +10,10 @@ const TERMINAL = "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=termina
 const HOST = JSON.stringify({ clones: { netbox: "/src/netbox" }, tickets: { port: 4800, uiPort: 4801, linearKey: { keychain: "agent-org-linear" }, terminal: TERMINAL } });
 const MCP_LIST = "Checking MCP server health…\n\nbookctx: http://127.0.0.1:8421/mcp (HTTP) - ✔ Connected\nlinear: https://mcp.linear.app/mcp (HTTP) - ✔ Connected\n";
 const KEY = "lin_api_SECRETSECRETSECRET";
+const GH_LISTING = "gh stack  github/gh-stack  v0.2.1\n";
+/** The GitHub CLI as the doctor tests see it: the extension is `listing`, and a repository's stacks answer `stacks` (a function of the repository). */
+const ghFake = (listing = GH_LISTING, stacks: (repo: string) => { status: number | null; stdout: string; stderr: string } = () => ({ status: 0, stdout: "[]", stderr: "" })) =>
+  (args: string[]) => (args[0] === "extension" ? { status: 0, stdout: listing, stderr: "" } : stacks(args[1].split("/").slice(1, 3).join("/")));
 
 function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
   return {
@@ -20,6 +24,7 @@ function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
     healthy: async (port) => port === 7318, unitProblem: () => null, mcpList: () => MCP_LIST,
     tailscale: () => ({ status: 1, stdout: "", stderr: "not used" }), tailnetAnswers: async () => false,
     ghWrapper: async () => ({ divergence: null, mints: [] }),
+    ghAs: () => ghFake(), originOf: () => null,
     platform: "linux", isolation: () => ({ kind: "outside", scope: null }), updateStatus: () => ({ kind: "absent" }), releaseTags: () => [], now: () => NOW,
     ...over,
   };
@@ -30,7 +35,7 @@ const byName = (checks: Awaited<ReturnType<typeof diagnose>>) => Object.fromEntr
 test("doctor passes every check on a working install, and never prints the key", async () => {
   const checks = await diagnose(deps());
   assert.deepEqual(checks.map(({ name, ok }) => [name, ok]), [
-    ["node", true], ["pnpm", true], ["launcher", true], ["host file", true], ["gh wrapper", true], ["herdr", true], ["tracker key", true], ["linear mcp", true],
+    ["node", true], ["pnpm", true], ["launcher", true], ["host file", true], ["gh wrapper", true], ["gh stack", true], ["herdr", true], ["tracker key", true], ["linear mcp", true],
     ["ticket writer", true], ["instance service", true], ["instance answering", true], ["herdr scope", true], ["ui service", true], ["ui answering", true],
     ["terminal address", true], ["terminal service", true], ["terminal answering", true], ["pairing", true], ["auto-update service", true], ["update lag", true],
   ]);
@@ -339,4 +344,59 @@ test("A11-94: doctor says whether the ticket writer is configured, and fails one
   const cannot = await read({ readFile: (path) => (path.endsWith("host.json") ? hostWith({ writer, connectors: ["^mcp__claude_ai_Linear__save_"] }) : HOST) });
   assert.equal(cannot.ok, false, "no connector reads a ticket");
   assert.match(cannot.fix ?? "", /agent-org onboard/);
+});
+
+const WORKERS_HOST = JSON.stringify({ gh: { workers: "/home/agent/workers" }, clones: { netbox: "/src/netbox" }, tickets: { port: 4800, uiPort: 4801, linearKey: { keychain: "agent-org-linear" }, terminal: TERMINAL } });
+const GITHUB_ORIGIN = "git@github.com:a11ign/nbl-ui-netbox.git";
+const NOT_ENABLED = (): { status: number | null; stdout: string; stderr: string } => ({ status: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)" });
+
+test("A11-106: doctor fails a missing gh stack with the install command for the workers' account, and passes when it is listed", async () => {
+  const missing = byName(await diagnose(deps({ readFile: () => WORKERS_HOST, ghAs: () => ghFake("gh dash  dlvhdr/gh-dash  v4.0.0\n") })))["gh stack"];
+  assert.equal(missing.ok, false);
+  assert.equal(missing.detail, "`gh stack` is not installed, so a worker cannot link a stacked pull request");
+  assert.equal(missing.fix, "GH_CONFIG_DIR=/home/agent/workers/gh gh extension install github/gh-stack, or run `agent-org onboard`");
+  const listed = byName(await diagnose(deps({ readFile: () => WORKERS_HOST })))["gh stack"];
+  assert.deepEqual([listed.ok, listed.detail], [true, "github/gh-stack v0.2.1 (for GH_CONFIG_DIR=/home/agent/workers/gh)"]);
+});
+
+test("A11-106: doctor asks gh for the workers' account, and names the install command without one when no host file names it", async () => {
+  const accounts: unknown[] = [];
+  await diagnose(deps({ readFile: () => WORKERS_HOST, ghAs: (account) => { accounts.push(account); return ghFake(); } }));
+  assert.deepEqual(accounts, [{ GH_CONFIG_DIR: "/home/agent/workers/gh" }]);
+  const bare = byName(await diagnose(deps({ ghAs: () => ghFake(""), env: {} })))["gh stack"];
+  assert.equal(bare.fix, "gh extension install github/gh-stack, or run `agent-org onboard`");
+});
+
+test("A11-106: doctor says gh could not list its extensions, rather than that the extension is missing", async () => {
+  const checks = byName(await diagnose(deps({ ghAs: () => () => ({ status: null, stdout: "", stderr: "spawn gh ENOENT" }) })));
+  assert.equal(checks["gh stack"].ok, false);
+  assert.match(checks["gh stack"].detail, /could not list its extensions.*spawn gh ENOENT/);
+});
+
+test("A11-106: doctor names the repository GitHub refuses stacked pull requests for, with the preview requirement", async () => {
+  const stacks = byName(await diagnose(deps({ readFile: () => WORKERS_HOST, originOf: () => GITHUB_ORIGIN, ghAs: () => ghFake(GH_LISTING, NOT_ENABLED) })))["stacked pull requests"];
+  assert.equal(stacks.ok, false);
+  assert.equal(stacks.detail, "GitHub refuses stacked pull requests for a11ign/nbl-ui-netbox");
+  assert.match(stacks.fix ?? "", /GitHub preview that must be available to each repository/);
+  assert.match(stacks.fix ?? "", /the organization/);
+  assert.match(stacks.fix ?? "", /github\.github\.com\/gh-stack\//);
+});
+
+test("A11-106: doctor asks GitHub about each repository once, passes when GitHub enables it, and says what it could not read", async () => {
+  const asked: string[] = [];
+  const enabled = byName(await diagnose(deps({ readFile: () => WORKERS_HOST, originOf: () => GITHUB_ORIGIN,
+    ghAs: () => ghFake(GH_LISTING, (repo) => { asked.push(repo); return { status: 0, stdout: "[]", stderr: "" }; }) })))["stacked pull requests"];
+  assert.deepEqual([enabled.ok, enabled.detail, asked], [true, "available for a11ign/nbl-ui-netbox", ["a11ign/nbl-ui-netbox"]]);
+  const unread = byName(await diagnose(deps({ readFile: () => WORKERS_HOST, originOf: () => GITHUB_ORIGIN,
+    ghAs: () => ghFake(GH_LISTING, () => ({ status: 1, stdout: "", stderr: "gh: Bad credentials (HTTP 401)" })) })))["stacked pull requests"];
+  assert.equal(unread.ok, false);
+  assert.match(unread.detail, /could not be read for a11ign\/nbl-ui-netbox: gh: Bad credentials/);
+});
+
+test("A11-106: a host file with no GitHub clone adds no stacked pull requests check, and a missing extension asks GitHub nothing", async () => {
+  const none = await diagnose(deps({ readFile: () => WORKERS_HOST, originOf: () => "/srv/git/local.git" }));
+  assert.equal("stacked pull requests" in byName(none), false);
+  let asked = false;
+  await diagnose(deps({ readFile: () => WORKERS_HOST, originOf: () => GITHUB_ORIGIN, ghAs: () => ghFake("", () => { asked = true; return { status: 0, stdout: "[]", stderr: "" }; }) }));
+  assert.equal(asked, false, "nothing is asked of GitHub without the extension");
 });

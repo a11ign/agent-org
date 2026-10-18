@@ -8,6 +8,11 @@ import type { KeySource } from "../ticket-mode/settings.ts";
 import { LINEAR_CONNECTORS, onboard, onboardServices, startServices, type OnboardDeps, type OnboardOptions } from "./onboard.ts";
 import { PAIRING_STEPS } from "./terminal.ts";
 import { ServiceRefusal, TailnetRefusal, type RunResult } from "./service.ts";
+import type { Account, Program, ProgramRunner } from "../ticket-port/stack-extension.ts";
+
+const STACK_LISTED = "gh stack  github/gh-stack  v0.2.1\n";
+/** The GitHub CLI as the tests see it by default: the stack extension is listed, and nothing else is asked. */
+const listedGh = (): ProgramRunner => (args: string[]): Program => ({ status: 0, stdout: args[1] === "list" ? STACK_LISTED : "", stderr: "" });
 
 const KEY = "lin_api_SECRETSECRETSECRET";
 const options = (over: Partial<OnboardOptions> = {}): OnboardOptions => ({
@@ -51,6 +56,7 @@ function deps(over: Partial<OnboardDeps> = {}, answers: string[] = []) {
       if (file === "herdr" && args[1] === "install") plugins = PLUGINS;
       return (answers2[`${file} ${args[0]} ${args[1]}`] ?? (() => ({ status: 0, stdout: "", stderr: "" })))(args);
     },
+    ghAs: () => listedGh(),
     startServices: (names) => { started.push(...names); return names.map((name) => `started the ${name} service`).join("\n"); },
     out: { log: (line: string) => printed.push(line) },
     ...over,
@@ -246,4 +252,51 @@ test("a terminal the tailnet does not reach is said as running on loopback, not 
     return { manager: "systemd" as const, id: "agent-org-instance.service", path: name, text: "", log: null, companion: null, interval: false, address: null };
   });
   assert.equal(lines, "started the instance service (systemd agent-org-instance.service)\nthe terminal service started on 127.0.0.1, but the tailnet does not reach it: refused");
+});
+
+/** A GitHub CLI for a test whose extension is listed once `install` has run, recording each call's account and command. */
+function stackDeps(install: Program) {
+  let listed = false;
+  const accounts: Account[] = [];
+  const commands: string[] = [];
+  const base = deps();
+  const ghAs = (account: Account): ProgramRunner => (args) => {
+    accounts.push(account);
+    commands.push(args.join(" "));
+    if (args[1] === "install") {
+      if (install.status === 0) listed = true;
+      return install;
+    }
+    return { status: 0, stdout: listed ? STACK_LISTED : "", stderr: "" };
+  };
+  const workers = join(base.home, "workers");
+  mkdirSync(join(base.home, ".agent-org"), { recursive: true });
+  writeFileSync(join(base.home, ".agent-org", "host.json"), JSON.stringify({ gh: { workers } }));
+  return { ...base, deps: { ...base.deps, ghAs }, accounts, commands, workers };
+}
+
+test("A11-106: onboard installs the stack extension for the workers' account when it is missing, and says so", async () => {
+  const { deps: d, repo, printed, accounts, commands, workers } = stackDeps({ status: 0, stdout: "", stderr: "" });
+  await onboard(options({ repos: [`netbox=${repo}`], keychain: "agent-org-linear", start: false }), d);
+  assert.ok(commands.includes("extension install github/gh-stack"), "the extension is installed");
+  assert.ok(accounts.every((account) => account.GH_CONFIG_DIR === join(workers, "gh")), "every call runs as the workers' account");
+  assert.ok(printed.includes("installed the github/gh-stack extension (v0.2.1), which a worker links a stacked pull request with"));
+});
+
+test("A11-106: onboard does not install the stack extension again where it is listed", async () => {
+  const base = deps();
+  const commands: string[] = [];
+  const ghAs = (): ProgramRunner => (args) => {
+    commands.push(args.join(" "));
+    return { status: 0, stdout: STACK_LISTED, stderr: "" };
+  };
+  await onboard(options({ repos: [`netbox=${base.repo}`], keychain: "agent-org-linear", start: false }), { ...base.deps, ghAs });
+  assert.deepEqual(commands, ["extension list"], "a listed extension is not installed again");
+  assert.ok(base.printed.includes("the github/gh-stack extension is installed (v0.2.1), which a worker links a stacked pull request with"));
+});
+
+test("A11-106: a stack extension that fails to install is said with its reason and the command to run, and onboard still completes", async () => {
+  const { deps: d, repo, printed, workers } = stackDeps({ status: 1, stdout: "", stderr: "could not reach github.com\nmore" });
+  await onboard(options({ repos: [`netbox=${repo}`], keychain: "agent-org-linear", start: false }), d);
+  assert.ok(printed.includes(`could not install the github/gh-stack extension: could not reach github.com. Run \`GH_CONFIG_DIR=${join(workers, "gh")} gh extension install github/gh-stack\` by hand, then \`agent-org doctor\`.`));
 });
