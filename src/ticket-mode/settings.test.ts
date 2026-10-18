@@ -21,7 +21,7 @@ test("only `clones` is required, every repository in it is offered, and every ot
 
 test("the `tickets` block and `stateDir` override the defaults", () => {
   const settings = parseTicketSettings({ clones, stateDir: "/state", tickets: { max: 5, port: 5000, herdrSession: "nbl", worktreeRoot: "/wt", linearKey: { path: "/keys/linear" } } });
-  assert.deepEqual({ ...settings, clones: undefined }, { clones: undefined, max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", worktreeRoot: "/wt", stateDir: "/state", binDir: join(homedir(), ".local", "bin"), linearKey: { path: "/keys/linear" }, brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, workingState: null, connectors: [], publish: null, drafts: true, prReview: null, reviewer: null, pick: "assigned", stallMinutes: 30, serve: null });
+  assert.deepEqual({ ...settings, clones: undefined }, { clones: undefined, max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", worktreeRoot: "/wt", stateDir: "/state", binDir: join(homedir(), ".local", "bin"), linearKey: { path: "/keys/linear" }, brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, workingState: null, connectors: [], publish: null, drafts: true, prReview: null, reviewer: null, pick: "assigned", stallMinutes: 30, updateMaxDeferHours: 2, serve: null });
 });
 
 test("the page's port is its own: it can be moved, and is refused when it is the instance's", () => {
@@ -235,6 +235,16 @@ test("A11-80: a machine names how long a working run may sit idle before the boa
   assert.equal(parseTicketSettings({ clones }, "/home/me").stallMinutes, 30);
   assert.equal(parseTicketSettings({ clones, tickets: { stallMinutes: 90 } }, "/home/me").stallMinutes, 90);
   assert.throws(() => parseTicketSettings({ clones, tickets: { stallMinutes: 0 } }), /`tickets\.stallMinutes` in the host file must be a whole number of 1 or more, not 0/);
+});
+
+// A11-90: the longest the hourly auto-update waits for a live run, in whole hours.
+test("A11-90: a machine names how many hours auto-update may wait on a live run, 2 by default, and a whole number of 1 or more is accepted", () => {
+  assert.equal(parseTicketSettings({ clones }).updateMaxDeferHours, 2);
+  assert.equal(parseTicketSettings({ clones, tickets: { updateMaxDeferHours: 1 } }).updateMaxDeferHours, 1);
+  assert.equal(parseTicketSettings({ clones, tickets: { updateMaxDeferHours: 24 } }).updateMaxDeferHours, 24);
+  for (const updateMaxDeferHours of [0, 1.5, "2", null]) {
+    assert.throws(() => parseTicketSettings({ clones, tickets: { updateMaxDeferHours } }), /`tickets\.updateMaxDeferHours` in the host file must be a whole number of 1 or more/, JSON.stringify(updateMaxDeferHours));
+  }
 });
 
 test("tickets.serve is absent by default, and \"tailscale\" serves the page and the terminal on tailnet ports 9443 and 9444", () => {

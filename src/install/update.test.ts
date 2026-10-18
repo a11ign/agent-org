@@ -9,6 +9,7 @@ import { tmpDir } from "../lib/tmp-fixture.ts";
 import type { ServiceName, ServiceState } from "./service.ts";
 import { dependencyInstalls, readLiveRuns, update, type UpdateDeps } from "./update.ts";
 import { pinnedPnpm } from "./pnpm.ts";
+import { midToolCall, type Isolation, type MidToolCall, type UpdateStatus } from "./update-safety.ts";
 
 const ENV = sandboxGitEnv({ GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" });
 const gitIn = (cwd: string) => (args: string[]) => execFileSync("git", args, { cwd, env: ENV, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
@@ -36,10 +37,20 @@ function installed() {
   return { checkout, git: gitIn(checkout) };
 }
 
-function deps(checkout: string, git: (args: string[]) => string, states: Partial<Record<ServiceName, ServiceState>>, live: number | null = 0) {
+// A11-90: the clock the deferral is measured on, and the readings a host gives. By default herdr is inside the instance's cgroup and a worker is working,
+// which is the A11-78 situation: a live run holds the move.
+const NOW = Date.parse("2026-10-18T10:00:00.000Z");
+const HOUR = 3600e3;
+const INSIDE: Isolation = { kind: "inside", cgroup: "/user.slice/agent-org-instance.service", unit: "agent-org-instance.service" };
+const OUTSIDE: Isolation = { kind: "outside", scope: "/user.slice/agent-org-herdr-tickets.scope" };
+const WORKING: MidToolCall = { busy: true, why: "working: worker-1" };
+const IDLE: MidToolCall = { busy: false, why: "2 agents, none working" };
+
+function deps(checkout: string, git: (args: string[]) => string, states: Partial<Record<ServiceName, ServiceState>>, live: number | null = 0, over: Partial<UpdateDeps> = {}) {
   const restarted: ServiceName[] = [];
   const said: string[] = [];
   const installs: string[] = [];
+  const statuses: UpdateStatus[] = [];
   const value: UpdateDeps = {
     root: checkout, git,
     installForTag: (tag) => { installs.push(tag); return { state: "current" }; },
@@ -47,10 +58,22 @@ function deps(checkout: string, git: (args: string[]) => string, states: Partial
     state: (name) => states[name] ?? "not-registered",
     restart: (name) => { restarted.push(name); },
     liveRuns: () => live,
+    isolation: () => INSIDE,
+    busy: () => WORKING,
+    maxDeferHours: 2,
+    now: () => NOW,
+    status: { read: () => statuses.at(-1) ?? null, write: (status) => { statuses.push(status); } },
     out: { log: (line: string) => { said.push(line); }, error: () => {} },
+    ...over,
   };
-  return { deps: value, restarted, installs, said };
+  return { deps: value, restarted, installs, said, statuses };
 }
+
+/** The status a previous run left, for the release `installed()` holds as its newest, deferred since `since`. */
+const previous = (since: number | undefined): UpdateStatus => ({
+  checkedAt: new Date(NOW - HOUR).toISOString(), channel: "release", installed: "v0.1.0", latest: "v0.10.0", latestSince: "2026-10-17T09:00:00.000Z",
+  ...(since === undefined ? {} : { deferredSince: new Date(since).toISOString(), deferredReason: "herdr is inside the instance's cgroup" }),
+});
 
 const at = (git: (args: string[]) => string) => git(["show", "HEAD:version.txt"]).trim();
 
@@ -182,4 +205,126 @@ test("the live runs are read from the queue file in the state directory the host
     entries: [entry("A-1", "running"), entry("A-2", "starting"), entry("A-3", "queued"), entry("A-4", "finished"), entry("A-5", "running", "b1"), entry("A-6", "running", "b1")] }));
   assert.equal(readLiveRuns({ AGENT_ORG_HOST: host, HOME: root }), 3, "two runs and one batch's run; queued and finished are not live");
   assert.equal(readLiveRuns({ AGENT_ORG_HOST: join(root, "none.json"), HOME: root }), null);
+});
+
+// A11-90: a live run holds the release only while a restart would interrupt a worker, and then only for tickets.updateMaxDeferHours.
+test("A11-90 restart-safe: with herdr outside the instance's cgroup, a live working run does not hold the release; it is applied, the instance restarted, and the reason logged", () => {
+  const { checkout, git } = installed();
+  const { deps: d, restarted, said, statuses } = deps(checkout, git, { instance: "running", ui: "running" }, 2, { isolation: () => OUTSIDE });
+  assert.equal(update({ version: undefined, channel: "release" }, d), true);
+  assert.equal(at(git), "v0.10.0");
+  assert.deepEqual(restarted, ["instance", "ui"]);
+  assert.match(said.join("\n"), /^agent-org update: herdr is outside the instance's cgroup, so a restart interrupts no worker \(the herdr server is in \/user\.slice\/agent-org-herdr-tickets\.scope\)$/m);
+  assert.deepEqual([statuses.at(-1)?.installed, statuses.at(-1)?.deferredSince], ["v0.10.0", undefined], "the move is recorded, and no deferral is left");
+});
+
+test("A11-90 restart-safe: with herdr inside the cgroup but every agent idle, a live run does not hold the release; the instance is restarted and the reason logged", () => {
+  const { checkout, git } = installed();
+  const { deps: d, restarted, said } = deps(checkout, git, { instance: "running" }, 2, { busy: () => IDLE });
+  assert.equal(update({ version: undefined, channel: "release" }, d), true);
+  assert.equal(at(git), "v0.10.0");
+  assert.deepEqual(restarted, ["instance"]);
+  assert.match(said.join("\n"), /^agent-org update: no run is mid-tool-call \(2 agents, none working\)$/m);
+});
+
+test("A11-90 deferral: with herdr inside and an agent working, the move waits, says why and until when, and records when the deferral began", () => {
+  const { checkout, git } = installed();
+  const { deps: d, restarted, installs, said, statuses } = deps(checkout, git, { instance: "running" }, 2);
+  assert.equal(update({ version: undefined, channel: "release" }, d), false);
+  assert.equal(at(git), "v0.1.0", "not moved, so the next hourly run still has a move to make");
+  assert.deepEqual([installs, restarted], [[], []]);
+  assert.match(said.join("\n"), /deferred: 2 runs live on the instance, which a restart would interrupt: herdr is inside the instance's cgroup \(\/user\.slice\/agent-org-instance\.service\), and an agent is mid-tool-call \(working: worker-1\)\. It updates anyway at 2026-10-18T12:00:00\.000Z/);
+  assert.deepEqual([statuses.at(-1)?.deferredSince, statuses.at(-1)?.latest], ["2026-10-18T10:00:00.000Z", "v0.10.0"]);
+});
+
+test("A11-90 deferral: a deferral that began an hour ago keeps its start, so each hourly run does not restart the clock", () => {
+  const { checkout, git } = installed();
+  const written: UpdateStatus[] = [];
+  const began = NOW - HOUR;
+  const { deps: d } = deps(checkout, git, { instance: "running" }, 2, { status: { read: () => previous(began), write: (status) => { written.push(status); } } });
+  assert.equal(update({ version: undefined, channel: "release" }, d), false);
+  assert.equal(written.at(-1)?.deferredSince, new Date(began).toISOString());
+});
+
+test("A11-90 max-defer: a deferral that has run tickets.updateMaxDeferHours is applied anyway, and one second short of the limit still waits", () => {
+  for (const [since, applied] of [[NOW - 2 * HOUR, true], [NOW - 2 * HOUR + 1000, false]] as const) {
+    const { checkout, git } = installed();
+    const { deps: d, restarted, said } = deps(checkout, git, { instance: "running" }, 2, { status: { read: () => previous(since), write: () => {} } });
+    assert.equal(update({ version: undefined, channel: "release" }, d), applied, `deferred since ${new Date(since).toISOString()}`);
+    if (applied) {
+      assert.equal(at(git), "v0.10.0");
+      assert.deepEqual(restarted, ["instance"]);
+      assert.match(said.join("\n"), /deferred for 2 hours, updating anyway/);
+    } else {
+      assert.equal(at(git), "v0.1.0");
+      assert.deepEqual(restarted, []);
+    }
+  }
+});
+
+test("A11-90 deferral: an unreadable herdr listing holds the move, and so does an isolation that cannot be read while an agent works; with every agent idle an unreadable isolation does not", () => {
+  const unreadable = midToolCall({ agents: () => null, queue: () => ({ entries: [] }) });
+  assert.equal(unreadable.busy, true, "a listing that cannot be read is never read as idle");
+  const blind: Isolation = { kind: "unknown", why: "/proc/3655416/cgroup cannot be read" };
+  const cases: [string, Partial<UpdateDeps>, boolean][] = [
+    ["an unreadable herdr listing", { busy: () => unreadable }, false],
+    ["an unknown isolation with a worker working", { isolation: () => blind }, false],
+    ["an unknown isolation with every agent idle", { isolation: () => blind, busy: () => IDLE }, true],
+  ];
+  for (const [label, over, applied] of cases) {
+    const { checkout, git } = installed();
+    const { deps: d, restarted } = deps(checkout, git, { instance: "running" }, 2, over);
+    assert.equal(update({ version: undefined, channel: "release" }, d), applied, label);
+    assert.deepEqual(restarted, applied ? ["instance"] : [], label);
+  }
+});
+
+test("A11-90: at the newest release a live run says nothing about deferring, moves nothing, and clears any deferral", () => {
+  const { checkout, git } = installed();
+  git(["fetch", "--quiet", "--tags", "origin"]);
+  git(["checkout", "--quiet", "--detach", "refs/tags/v0.10.0"]);
+  const written: UpdateStatus[] = [];
+  const { deps: d, restarted, installs, said } = deps(checkout, git, { instance: "running" }, 2,
+    { status: { read: () => previous(NOW - HOUR), write: (status) => { written.push(status); } } });
+  assert.equal(update({ version: undefined, channel: "release" }, d), false);
+  assert.deepEqual([installs, restarted], [[], []]);
+  assert.equal(said.join("\n").includes("deferred"), false, "nothing newer is not a deferral");
+  assert.deepEqual([written.at(-1)?.installed, written.at(-1)?.deferredSince], ["v0.10.0", undefined]);
+});
+
+test("A11-90: --force asks nothing of herdr or the queue, and updates and restarts", () => {
+  const { checkout, git } = installed();
+  const asked = (): never => { throw new Error("--force asks nothing"); };
+  const { deps: d, restarted } = deps(checkout, git, { instance: "running" }, 2, { isolation: asked, busy: asked });
+  assert.equal(update({ version: undefined, channel: "release", force: true }, d), true);
+  assert.equal(at(git), "v0.10.0");
+  assert.deepEqual(restarted, ["instance"]);
+});
+
+// Review fixes (A11-90): a live run never makes the hourly update fail where it used to defer, and a status write cannot leave a moved install on old modules.
+test("A11-90: with a live run and the remote unreachable, the run defers as before, and nothing is moved or thrown", () => {
+  const { checkout, git } = installed();
+  const offline = (args: string[]) => { if (args[0] === "fetch") throw new Error("Command failed: git fetch (offline)"); return git(args); };
+  const { deps: d, restarted, said } = deps(checkout, offline, { instance: "running" }, 2);
+  assert.equal(update({ version: undefined, channel: "release" }, d), false);
+  assert.equal(at(git), "v0.1.0");
+  assert.deepEqual(restarted, []);
+  assert.match(said.join("\n"), /^agent-org update deferred: 2 runs live on the instance, which a restart would interrupt\. /m);
+});
+
+test("A11-90: with a live run and a pinned release the remote does not hold, the run defers as before rather than refusing", () => {
+  const { checkout, git } = installed();
+  const { deps: d, said } = deps(checkout, git, { instance: "running" }, 2);
+  assert.equal(update({ version: "v9.9.9", channel: "release" }, d), false);
+  assert.equal(at(git), "v0.1.0");
+  assert.match(said.join("\n"), /deferred: 2 runs live/);
+});
+
+test("A11-90: a status that cannot be written after the move still restarts the services that ran the old version", () => {
+  const { checkout, git } = installed();
+  const { deps: d, restarted } = deps(checkout, git, { instance: "running", ui: "running" }, 0,
+    { status: { read: () => null, write: () => { throw new Error("EACCES: status"); } } });
+  assert.throws(() => update({ version: undefined, channel: "release" }, d), /EACCES: status/);
+  assert.equal(at(git), "v0.10.0");
+  assert.deepEqual(restarted, ["instance", "ui"]);
 });
