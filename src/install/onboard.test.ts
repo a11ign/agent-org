@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import type { KeySource } from "../ticket-mode/settings.ts";
 import { LINEAR_CONNECTORS, onboard, onboardServices, startServices, type OnboardDeps, type OnboardOptions } from "./onboard.ts";
-import { ServiceRefusal, type RunResult } from "./service.ts";
+import { ServiceRefusal, TailnetRefusal, type RunResult } from "./service.ts";
 
 const KEY = "lin_api_SECRETSECRETSECRET";
 const options = (over: Partial<OnboardOptions> = {}): OnboardOptions => ({
@@ -117,7 +117,7 @@ test("onboard's start starts the instance and the ui service, in that order", ()
   const started: string[] = [];
   const lines = startServices(["instance", "ui"], (name) => {
     started.push(name);
-    return { manager: "systemd", id: `agent-org-${name}.service`, path: `/u/agent-org-${name}.service`, text: "", log: null, companion: null, interval: false };
+    return { manager: "systemd", id: `agent-org-${name}.service`, path: `/u/agent-org-${name}.service`, text: "", log: null, companion: null, interval: false, address: null };
   });
   assert.deepEqual(started, ["instance", "ui"]);
   assert.equal(lines, "started the instance service (systemd agent-org-instance.service)\nstarted the ui service (systemd agent-org-ui.service)");
@@ -126,7 +126,7 @@ test("onboard's start starts the instance and the ui service, in that order", ()
 test("onboard starts the terminal only once it is set up and auto-update unless opted out; a refused optional service is said, a refused instance fails", () => {
   assert.deepEqual(onboardServices(true, true), ["instance", "ui", "terminal", "auto-update"]);
   assert.deepEqual(onboardServices(false, false), ["instance", "ui"]);
-  const unit = (name: string) => ({ manager: "systemd" as const, id: name, path: name, text: "", log: null, companion: null, interval: false });
+  const unit = (name: string) => ({ manager: "systemd" as const, id: name, path: name, text: "", log: null, companion: null, interval: false, address: null });
   const lines = startServices(["instance", "terminal"], (name) => {
     if (name === "terminal") throw new ServiceRefusal("no bun");
     return unit(name);
@@ -219,4 +219,21 @@ test("onboard records the host file's path for shells with no AGENT_ORG_HOST, an
   assert.equal(writes.get(join(home, ".agent-org", "host-file")), "/elsewhere/host.json\n");
   assert.equal(writes.get(join(home, ".agent-org", "update-channel")), "main\n");
   assert.ok(writes.has("/elsewhere/host.json"));
+});
+
+test("a service on the tailnet is said with its address when it starts, and a page the tailnet refuses fails onboard", () => {
+  const served = (name: string) => ({ manager: "systemd" as const, id: `agent-org-${name}.service`, path: name, text: "", log: null, companion: null, interval: false, address: "https://agents.tail1234.ts.net:9443/" });
+  assert.equal(startServices(["ui"], served), "started the ui service (systemd agent-org-ui.service), on the tailnet at https://agents.tail1234.ts.net:9443/");
+  assert.throws(() => startServices(["instance", "ui"], (name) => {
+    if (name === "ui") throw new TailnetRefusal("the ui service started on 127.0.0.1, but the tailnet does not reach it: refused");
+    return { ...served(name), address: null };
+  }), /the tailnet does not reach it/);
+});
+
+test("a terminal the tailnet does not reach is said as running on loopback, not as not started", () => {
+  const lines = startServices(["instance", "terminal"], (name) => {
+    if (name === "terminal") throw new TailnetRefusal("the terminal service started on 127.0.0.1, but the tailnet does not reach it: refused");
+    return { manager: "systemd" as const, id: "agent-org-instance.service", path: name, text: "", log: null, companion: null, interval: false, address: null };
+  });
+  assert.equal(lines, "started the instance service (systemd agent-org-instance.service)\nthe terminal service started on 127.0.0.1, but the tailnet does not reach it: refused");
 });

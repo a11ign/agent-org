@@ -21,7 +21,7 @@ test("only `clones` is required, every repository in it is offered, and every ot
 
 test("the `tickets` block and `stateDir` override the defaults", () => {
   const settings = parseTicketSettings({ clones, stateDir: "/state", tickets: { max: 5, port: 5000, herdrSession: "nbl", worktreeRoot: "/wt", linearKey: { path: "/keys/linear" } } });
-  assert.deepEqual({ ...settings, clones: undefined }, { clones: undefined, max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", worktreeRoot: "/wt", stateDir: "/state", binDir: join(homedir(), ".local", "bin"), linearKey: { path: "/keys/linear" }, brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, workingState: null, connectors: [], publish: null, drafts: true, reviewer: null, pick: "assigned", stallMinutes: 30 });
+  assert.deepEqual({ ...settings, clones: undefined }, { clones: undefined, max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", worktreeRoot: "/wt", stateDir: "/state", binDir: join(homedir(), ".local", "bin"), linearKey: { path: "/keys/linear" }, brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, workingState: null, connectors: [], publish: null, drafts: true, reviewer: null, pick: "assigned", stallMinutes: 30, serve: null });
 });
 
 test("the page's port is its own: it can be moved, and is refused when it is the instance's", () => {
@@ -221,6 +221,25 @@ test("A11-80: a machine names how long a working run may sit idle before the boa
   assert.throws(() => parseTicketSettings({ clones, tickets: { stallMinutes: 0 } }), /`tickets\.stallMinutes` in the host file must be a whole number of 1 or more, not 0/);
 });
 
+test("tickets.serve is absent by default, and \"tailscale\" serves the page and the terminal on tailnet ports 9443 and 9444", () => {
+  assert.equal(parseTicketSettings({ clones }).serve, null);
+  assert.deepEqual(parseTicketSettings({ clones, tickets: { serve: "tailscale" } }).serve, { ui: 9443, terminal: 9444 });
+  assert.deepEqual(parseTicketSettings({ clones, tickets: { serve: "tailscale", servePorts: { terminal: 8444 } } }).serve, { ui: 9443, terminal: 8444 });
+});
+
+test("a serve setting that is not valid is refused by name: another value, ports without serve, a port that is not a port, and two equal ports", () => {
+  const refuses = (tickets: Record<string, unknown>, field: string) => assert.throws(() => parseTicketSettings({ clones, tickets }), (err: unknown) => err instanceof TicketSettingsRefusal && err.field === field);
+  refuses({ serve: "funnel" }, "tickets.serve");
+  refuses({ serve: true }, "tickets.serve");
+  refuses({ servePorts: { ui: 9443 } }, "tickets.servePorts");
+  refuses({ serve: "tailscale", servePorts: "9443" }, "tickets.servePorts");
+  refuses({ serve: "tailscale", servePorts: { ui: 9443, other: 1 } }, "tickets.servePorts");
+  refuses({ serve: "tailscale", servePorts: { ui: 0 } }, "tickets.servePorts.ui");
+  refuses({ serve: "tailscale", servePorts: { terminal: 65536 } }, "tickets.servePorts.terminal");
+  refuses({ serve: "tailscale", servePorts: { ui: 9443.5 } }, "tickets.servePorts.ui");
+  refuses({ serve: "tailscale", servePorts: { ui: 9443, terminal: 9443 } }, "tickets.servePorts");
+  assert.throws(() => parseTicketSettings({ clones, tickets: { serve: "tailscale", servePorts: { ui: 0 } } }), /`tickets\.servePorts\.ui` in the host file must be a port from 1 to 65535, not 0/);
+});
 test("A11-84: the host's bin directory is read from `binDir`, and a host that names none gets the directory the installer uses", () => {
   assert.equal(parseTicketSettings({ clones: { a: "/r/a" }, binDir: "/opt/bin" }).binDir, "/opt/bin");
   assert.equal(parseTicketSettings({ clones: { a: "/r/a" } }, "/home/me").binDir, join("/home/me", ".local", "bin"));

@@ -19,6 +19,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { refuseUnknownFlags } from "../lib/cli-flags.ts";
 import { boardKey, boardKeyPath } from "./board-key.ts";
 import { hasPlan } from "./board-view.ts";
+import { effectiveTerminal } from "../install/terminal.ts";
 import { linearSource, readLinearKey } from "./linear.ts";
 import { pickEmptyText, pickLabel } from "./pick-scope.ts";
 import { API_BODY_BYTES, readJson, refusal, sameSecret, sendJson, type Json } from "./local-http.ts";
@@ -26,6 +27,7 @@ import { createPool, startsReviewers, type PoolDeps } from "./pool.ts";
 import { loadReviewerGate } from "./reviewer-port.ts";
 import { amend, approve, childOrder, enqueue, loadQueue, queuePublish, respond, retry, saveQueue, setMax, setPaused, type PlanFirst, type Queue, type RunChoice } from "./queue.ts";
 import { plansInBatches, readTicketSettings, type TicketSettings } from "./settings.ts";
+import { cachedTailnetName, readTailnetName, runTailscale, tailnetTerminal } from "./tailnet.ts";
 import type { Ticket, TicketSource } from "./source.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -47,6 +49,8 @@ export type BoardDeps = Readonly<{
   pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers">;
   poolDeps?: Omit<PoolDeps, "settings" | "source" | "hook">;
   now?: () => number;
+  /** This machine's MagicDNS name, read when `tickets.serve` puts the board on the tailnet; null while it cannot be read. Only `/api/config` asks. */
+  tailnet?: () => Promise<string | null>;
 }>;
 
 /** Whether the request carries the instance's key in its `x-ticket-token` header. A cookie is never read. */
@@ -114,6 +118,21 @@ export function createBoard(deps: BoardDeps) {
   const store = { get: () => queue, set: (next: Queue) => { queue = next; saveQueue(deps.queuePath, next); } };
   const pool = deps.pool ?? createPool(store, { ...deps.poolDeps, settings, source, hook: { node: process.execPath, bin: BIN } });
   let known = new Map<string, Ticket>();
+  let warnedNoName = false;
+
+  /**
+   * The terminal address the page is handed. Served on the tailnet, it is the tailnet's address unless the stored one names another machine. When the
+   * name cannot be read, the stored address is handed over, and the reason is logged once.
+   */
+  async function terminalAddress(): Promise<string | null> {
+    if (settings.serve === null) return settings.terminal;
+    const name = deps.tailnet === undefined ? null : await deps.tailnet();
+    if (name === null && !warnedNoName) {
+      warnedNoName = true;
+      process.stderr.write("ticket:serve: the tailnet name cannot be read from `tailscale status --json`, so the board is handed the stored terminal address\n");
+    }
+    return effectiveTerminal(settings.terminal, name === null ? null : tailnetTerminal({ name, port: settings.serve.terminal }));
+  }
 
   const wake = () => { void pool.tick(); };
   /** Whether this board plans a ticket first: the machine names a planner, and the tracker can take the plan it writes. */
@@ -133,7 +152,7 @@ export function createBoard(deps: BoardDeps) {
 
   async function api(method: string, path: string, body: Json): Promise<[number, unknown]> {
     if (method === "GET" && path === "/api/config") {
-      return [200, { models: MODELS, efforts: EFFORTS, choice: readChoice(deps.choicePath), max: queue.max, terminal: settings.terminal, plan: settings.plan, planner: plans,
+      return [200, { models: MODELS, efforts: EFFORTS, choice: readChoice(deps.choicePath), max: queue.max, terminal: await terminalAddress(), plan: settings.plan, planner: plans,
         publish: settings.publish !== null, pick: pickLabel(settings.pick) }];
     }
     if (method === "GET" && path === "/api/pick") {
@@ -290,7 +309,8 @@ async function serve(): Promise<void> {
   const source = linearSource({ key: readLinearKey(settings.linearKey), pick: settings.pick });
   const key = boardKey(boardKeyPath(settings.stateDir));
   const dir = join(settings.stateDir, "tickets");
-  const board = createBoard({ settings, source, key, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json") });
+  const tailnet = settings.serve === null ? undefined : cachedTailnetName(async () => readTailnetName(runTailscale));
+  const board = createBoard({ settings, source, key, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), tailnet });
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => process.exit(128 + constants.signals[signal]));
   await board.pool.ensureSession();
   board.pool.reconcile();

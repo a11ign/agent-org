@@ -37,7 +37,7 @@ test("the instance unit's AGENT_ORG_HOST is read back exactly as service.ts wrot
   const host = "/srv/a b/$x%y\"z.json";
   for (const platform of ["linux", "darwin"] as const) {
     const deps: ServiceDeps = {
-      platform, env: { AGENT_ORG_HOST: host, PATH: "/usr/bin" }, home: HOME, uid: 501, node: "/n/node", toolRoot: "/opt/agent-org", commands: COMMANDS,
+      platform, env: { AGENT_ORG_HOST: host, PATH: "/usr/bin" }, home: HOME, uid: 501, node: "/n/node", toolRoot: "/opt/agent-org", commands: COMMANDS, user: "alice",
       run: () => ({ status: 0, stdout: "", stderr: "" }), exists: () => false, read: () => null, write: () => {},
     };
     assert.equal(unitHostFile(unitFor("instance", deps).text), host, platform);
@@ -91,7 +91,7 @@ test("a ticket:* program gets the workers' GH_CONFIG_DIR the host file declares,
 
 test("the instance unit carries the host file's GH_CONFIG_DIR, and none when neither the host file nor the caller names one", () => {
   const base = (hostText: string | null, env: Record<string, string> = {}): ServiceDeps => ({
-    platform: "linux", env: { AGENT_ORG_HOST: "/srv/h.json", PATH: "/usr/bin", ...env }, home: HOME, uid: 501, node: "/n/node", toolRoot: "/opt/agent-org", commands: COMMANDS,
+    platform: "linux", env: { AGENT_ORG_HOST: "/srv/h.json", PATH: "/usr/bin", ...env }, home: HOME, uid: 501, node: "/n/node", toolRoot: "/opt/agent-org", commands: COMMANDS, user: "alice",
     run: () => ({ status: 0, stdout: "", stderr: "" }), exists: () => false, read: (path) => (path === "/srv/h.json" ? hostText : null), write: () => {},
   });
   const declared = JSON.stringify({ gh: { workers: "/home/agent/workers" } });
