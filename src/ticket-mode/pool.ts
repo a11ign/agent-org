@@ -98,7 +98,7 @@ import {
   type Repost, type ReviewerMemory, type ReviewerPort, type ReviewerRef,
 } from "./reviewer-port.ts";
 import {
-  BRIEF_FILE, CONNECTORS_FILE, DENY_FILE, ORDER_FILE, OUTCOME_FILE, PLAN_DIR, PLANNING_DENY, PREVIOUS_OUTCOME_FILE, PUBLISH_FILE, PUBLISHED_FILE, QUESTION_FILE,
+  BRIEF_FILE, CONNECTORS_FILE, DENY_FILE, ORDER_FILE, OUTCOME_FILE, PLAN_DIR, PLANNING_DENY, PREVIOUS_OUTCOME_FILE, PROTECTED_FILE, protectedPaths, PUBLISH_FILE, PUBLISHED_FILE, QUESTION_FILE,
   READY_FILE, REVIEW_FILE, STOP_COUNT_FILE, WORKING_STOP_FILE,
   batchPlanBriefText, briefText, conflictLine, firstPrompt, planBriefText, publishBriefText, reviewBriefText, reviewPrompt, workerFlags, workerSettings,
   type BatchTicket, type HookCommand, type ParentTicket,
@@ -592,6 +592,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
   function writeRunFiles(entry: Entry, folder: string, dir: string): void {
     writeFileSync(join(dir, DENY_FILE), `${JSON.stringify(isPlanning(entry) ? [...settings.deny, ...PLANNING_DENY] : settings.deny)}\n`);
     writeFileSync(join(dir, CONNECTORS_FILE), `${JSON.stringify(settings.connectors)}\n`);
+    writeFileSync(join(dir, PROTECTED_FILE), `${JSON.stringify(protectedPaths(settings.binDir))}\n`);
     // A fresh ticket run on a machine with `tickets.drafts: false` may open its pull request ready; no other run, and no machine that keeps drafts, may.
     if (!settings.drafts && entry.review === undefined && !isPlanning(entry)) writeFileSync(join(dir, READY_FILE), "\n");
     else rmSync(join(dir, READY_FILE), { force: true });
@@ -1208,6 +1209,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
       writeFileSync(join(place.dir, PUBLISH_FILE), `${JSON.stringify({ connectors: publisher.connectors })}\n`);
       writeFileSync(join(place.dir, DENY_FILE), `${JSON.stringify(settings.deny)}\n`);
       writeFileSync(join(place.dir, CONNECTORS_FILE), `${JSON.stringify(settings.connectors)}\n`);
+      writeFileSync(join(place.dir, PROTECTED_FILE), `${JSON.stringify(protectedPaths(settings.binDir))}\n`);
       mkdirSync(join(place.folder, ".claude"), { recursive: true });
       writeFileSync(join(place.folder, SETTINGS_FILE),
         `${JSON.stringify(workerSettings({ model: publisher.model, ticketDir: place.dir, readDirs: [], hook, plugins: settings.plugins }), null, 2)}\n`);

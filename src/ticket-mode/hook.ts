@@ -24,15 +24,20 @@
 // the host file's `tickets.publish.connectors` names: the pool leaves `publish-run` beside its outcome file naming them, which no worker may
 // write either, and merging, reviewing, force-pushing and running a workflow stay refused.
 //
+// THE HOST'S OWN PROGRAMS (A11-84): a worker may not write the routing `gh` or the launcher `agent-org` in the host's bin directory, which the pool names in
+// `protected-paths.json` beside the outcome file, and may not run `host:install` or any other command that installs them. The hook cannot see a TEST that writes
+// the file, so this is defence in depth: the guarded writer (`writeGhWrapper`) is what keeps a test from writing it.
+//
 // On a machine with `tickets.drafts: false` the pool leaves `ready-run` beside the outcome file, and a worker may open its pull request ready
 // (`gh pr create` without `--draft`) only then. Without that mark, the draft refusal applies to every run, as before. No worker may write the mark.
 //
 // IT FAILS OPEN, OUT LOUD, for a payload or a count it cannot read: a hook that refused on what it could not read would stop every worker.
 import { existsSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { DenyRule } from "./settings.ts";
-import { CONNECTORS_FILE, DENY_FILE, OUTCOME_FILE, PUBLISH_FILE, READY_FILE, REVIEW_FILE, STOP_COUNT_FILE, WORKING_STOP_FILE } from "./worker-files.ts";
+import { CONNECTORS_FILE, DENY_FILE, OUTCOME_FILE, PROTECTED_FILE, PUBLISH_FILE, READY_FILE, REVIEW_FILE, STOP_COUNT_FILE, WORKING_STOP_FILE, defaultBinDir, protectedPaths } from "./worker-files.ts";
 
 export type HookResult = Readonly<{ code: 0 | 2; say: readonly string[] }>;
 
@@ -74,6 +79,45 @@ const MARK_REFUSAL: Refusal = { pattern: new RegExp(`\\b(?:${REVIEW_FILE}|${PUBL
   why: `${REVIEW_FILE}, ${PUBLISH_FILE} and ${READY_FILE} are the board's to write` };
 const FILE_TOOLS: ReadonlySet<string> = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 
+/** The commands that install the host's programs, which write its `gh` wrapper and launcher: the host's to run (A11-84). */
+const HOST_INSTALL_REFUSAL: Refusal = { pattern: /(?:\b(?:pnpm|agent-org)\s+(?:run\s+)?|^\s*)host:install\b|\bhost:check\b[^\n;&|]*--install\b|\bhost-units\.ts\b[^\n;&|]*--install\b|\bhost(?:Identity|Units)Install\s*\(/,
+  why: "installing the host's programs is the host's: `host:install` writes its gh wrapper and launcher" };
+
+/**
+ * A write to one of the host's programs (A11-84): a shell command that writes a path naming one, with its write verb before it. The path is matched as the command
+ * names it: absolute, or under `~` or `$HOME`. A read of it (`cat`, `grep`, `ls`) and a longer name (`gh-real`, `agent-org-tickets`) are not a write to it.
+ */
+function protectedWriteRefusal(paths: readonly string[]): Refusal {
+  const home = homedir();
+  const names = paths.flatMap((path) => path.startsWith(`${home}/`)
+    ? [escape(path), escape(`~${path.slice(home.length)}`), escape(`$HOME${path.slice(home.length)}`)] : [escape(path)]);
+  const named = names.length === 0 ? "(?!)" : `(?:${names.join("|")})(?![\\w.-])`;
+  // A verb counts only at the head of a command, so `grep install ~/.local/bin/gh` is a read. `cp`, `mv`, `install` and `ln` write their LAST argument, so
+  // a protected path as their source is a read; the others change or remove the file wherever it sits.
+  const head = String.raw`(?:^|[;&|(\n]|\$\()\s*(?:sudo\s+)?`;
+  const lastArgument = String.raw`\s*(?=[;&|)\n]|$)`;
+  const alternatives = [
+    String.raw`${head}(?:cp|mv|install|ln)\b[^\n;&|]*\s${named}${lastArgument}`,
+    String.raw`${head}(?:rm|chmod|truncate|tee)\b[^\n;&|]*${named}`,
+    String.raw`${head}sed\s+-i\b[^\n;&|]*${named}`,
+    String.raw`\bdd\b[^\n;&|]*\bof=${named}`,
+    String.raw`>>?\s*${named}`,
+  ];
+  return { pattern: new RegExp(alternatives.join("|")),
+    why: `${paths.join(", ")} ${paths.length === 1 ? "is" : "are"} the host's ${paths.length === 1 ? "program" : "programs"}, which a worker may not write` };
+}
+
+/** The file a write tool names, resolved as the disk resolves it: `~` expanded and the directory's symbolic links followed, so a link into the bin directory is that file. */
+export function resolveWritePath(path: string, real: (path: string) => string = realpathSync): string {
+  const expanded = path === "~" || path.startsWith("~/") ? join(homedir(), path.slice(1)) : path;
+  const full = resolve(expanded);
+  try {
+    return join(real(dirname(full)), basename(full));
+  } catch {
+    return full;
+  }
+}
+
 const SKILL_REFUSALS: readonly Refusal[] = [
   { pattern: /post-pr-to-slack/, why: "announcing a pull request is the person's" },
 ];
@@ -84,8 +128,21 @@ const SKILL_REFUSALS: readonly Refusal[] = [
  * holds the connector tool names a publish run may call as well, and is null for any other run, which may not announce a pull request. `ready` is
  * true for a run on a machine with `tickets.drafts: false`, which may open its pull request ready rather than as a draft. PURE.
  */
-export function toolVerdict(toolName: string, input: Record<string, unknown>, machine: readonly Refusal[] = [], connectors: readonly RegExp[] = [],
-  approved: readonly string[] = [], publish: readonly RegExp[] | null = null, ready = false): HookResult {
+export function toolVerdict(toolName: string, input: Record<string, unknown>, options: {
+  /** This machine's own Bash refusals, after the built-in ones. */
+  machine?: readonly Refusal[];
+  /** The connector tool names this machine allows. */
+  connectors?: readonly RegExp[];
+  /** The pull requests a review run may mark ready, by URL. */
+  approved?: readonly string[];
+  /** The connector tool names a publish run may call, or null for a run that is no publish run. */
+  publish?: readonly RegExp[] | null;
+  /** A run on a machine with `tickets.drafts: false` may open its pull request ready. */
+  ready?: boolean;
+  /** The host's own programs a worker may not write, by path. */
+  hostPrograms?: readonly string[];
+} = {}): HookResult {
+  const { machine = [], connectors = [], approved = [], publish = null, ready = false, hostPrograms = [] } = options;
   if (toolName.startsWith("mcp__")) {
     const allowed = [...connectors, ...(publish ?? [])];
     return allowed.some((pattern) => pattern.test(toolName)) ? ALLOW : refuse(`${toolName} is a connector this machine's tickets.connectors does not allow`);
@@ -95,11 +152,16 @@ export function toolVerdict(toolName: string, input: Record<string, unknown>, ma
     const hit = publish === null ? SKILL_REFUSALS.find(({ pattern }) => pattern.test(skill)) : undefined;
     return hit ? refuse(`the ${skill} skill is refused: ${hit.why}`) : ALLOW;
   }
-  if (FILE_TOOLS.has(toolName)) return MARK_REFUSAL.pattern.test(String(input.file_path ?? input.notebook_path ?? "")) ? refuse(MARK_REFUSAL.why) : ALLOW;
+  if (FILE_TOOLS.has(toolName)) {
+    const file = String(input.file_path ?? input.notebook_path ?? "");
+    if (MARK_REFUSAL.pattern.test(file)) return refuse(MARK_REFUSAL.why);
+    return hostPrograms.includes(file) ? refuse(`${file} is the host's program, which a worker may not write`) : ALLOW;
+  }
   if (toolName !== "Bash") return ALLOW;
   const command = String(input.command ?? "");
   if (/\bgh\s+pr\s+create\b/.test(command) && !/--draft\b/.test(command) && !ready) return refuse("open the pull request as a draft: `gh pr create --draft`");
-  const hit = [...BASH_REFUSALS, readyRefusal(approved), MARK_REFUSAL, ...machine].find(({ pattern }) => pattern.test(command));
+  const hit = [...BASH_REFUSALS, HOST_INSTALL_REFUSAL, protectedWriteRefusal(hostPrograms), readyRefusal(approved), MARK_REFUSAL, ...machine]
+    .find(({ pattern }) => pattern.test(command));
   return hit ? refuse(`refused, because ${hit.why}: ${command.split("\n")[0].slice(0, 120)}`) : ALLOW;
 }
 
@@ -129,6 +191,23 @@ export function machineConnectors(ticketDir: string, read: (path: string) => str
   } catch (err) {
     if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return { connectors: [] };
     return { connectors: [], note: `ticket:hook: could not read ${file}, so every connector is refused.` };
+  }
+}
+
+/** The host's own programs a worker may not write, from the pool's copy beside the outcome file. None when there is no copy, or none it can read. */
+export function protectedFiles(ticketDir: string): { paths: string[]; note?: string } {
+  const file = join(ticketDir, PROTECTED_FILE);
+  // A copy the pool did not write, or one it cannot read, must not leave the host's programs open: the two programs in the default bin directory are protected
+  // all the same, and the note says so. Resolved as a write tool's path is (`resolveWritePath`), so a link to the bin directory names the same files.
+  const fallback = protectedPaths(defaultBinDir(homedir()));
+  const named = (paths: string[]) => ({ paths: paths.map((path) => resolveWritePath(path)) });
+  try {
+    const paths = JSON.parse(readFileSync(file, "utf8")) as unknown;
+    if (Array.isArray(paths) && paths.every((path) => typeof path === "string")) return named(paths);
+    return { ...named(fallback), note: `ticket:hook: ${file} is not a list of paths, so the default bin directory's programs are protected.` };
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return { ...named(fallback), note: `ticket:hook: ${file} is missing, so the default bin directory's programs are protected.` };
+    return { ...named(fallback), note: `ticket:hook: could not read ${file}, so the default bin directory's programs are protected.` };
   }
 }
 
@@ -207,9 +286,13 @@ export function main(stdin: string, argv: string[]): HookResult {
     const payload = JSON.parse(stdin) as { tool_name?: string; tool_input?: Record<string, unknown> };
     const { refusals, note } = machineRefusals(ticketDir);
     const allowed = machineConnectors(ticketDir);
-    const verdict = toolVerdict(String(payload.tool_name ?? ""), payload.tool_input ?? {}, refusals, allowed.connectors, approvedPulls(ticketDir),
-      publishConnectors(ticketDir), existsSync(join(ticketDir, READY_FILE)));
-    const notes = [note, allowed.note].filter((n): n is string => n !== undefined);
+    const input = payload.tool_input ?? {};
+    const guarded = protectedFiles(ticketDir);
+    const verdict = toolVerdict(String(payload.tool_name ?? ""), typeof input.file_path === "string" ? { ...input, file_path: resolveWritePath(input.file_path) } : input, {
+      machine: refusals, connectors: allowed.connectors, approved: approvedPulls(ticketDir), publish: publishConnectors(ticketDir),
+      ready: existsSync(join(ticketDir, READY_FILE)), hostPrograms: guarded.paths,
+    });
+    const notes = [note, allowed.note, guarded.note].filter((n): n is string => n !== undefined);
     return notes.length === 0 ? verdict : { ...verdict, say: [...notes, ...verdict.say] };
   } catch (err) {
     return { code: 0, say: [`ticket:hook: could not read the ${event} payload (${String((err as Error)?.message ?? err).split("\n")[0]}), so it is ALLOWED.`] };

@@ -2,11 +2,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { MAX_STOP_REFUSALS, main, publishConnectors, stopVerdict, toolVerdict } from "./hook.ts";
+import { MAX_STOP_REFUSALS, main, protectedFiles, publishConnectors, resolveWritePath, stopVerdict, toolVerdict } from "./hook.ts";
+import { PROTECTED_FILE, defaultBinDir, protectedPaths } from "./worker-files.ts";
 
 const bash = (command: string) => toolVerdict("Bash", { command }).code;
 
@@ -35,10 +37,10 @@ const LINEAR_READS = [/^mcp__claude_ai_Linear__(get|list|search|extract)_/];
 
 test("a connector tool the machine names is allowed, and every other connector, a write to the same one included, is still refused", () => {
   for (const read of ["mcp__claude_ai_Linear__get_issue", "mcp__claude_ai_Linear__list_comments", "mcp__claude_ai_Linear__search_documentation"]) {
-    assert.equal(toolVerdict(read, {}, [], LINEAR_READS).code, 0, read);
+    assert.equal(toolVerdict(read, {}, { connectors: LINEAR_READS }).code, 0, read);
   }
   for (const refused of ["mcp__claude_ai_Linear__save_issue", "mcp__claude_ai_Linear__delete_attachment", "mcp__plugin_slack_slack__slack_send_message", "mcp__claude_ai_Gmail__create_draft"]) {
-    const verdict = toolVerdict(refused, {}, [], LINEAR_READS);
+    const verdict = toolVerdict(refused, {}, { connectors: LINEAR_READS });
     assert.equal(verdict.code, 2, refused);
     assert.match(verdict.say[0], /tickets\.connectors does not allow/);
   }
@@ -66,12 +68,14 @@ test("the hook reads the machine's allowed connectors beside the outcome file, a
 function withDeny(deny: string, command: string) {
   const dir = tmpDir("ticket-hook-deny-");
   writeFileSync(join(dir, "deny.json"), deny);
+  // The pool writes the protected list beside every run's outcome file, so a run's directory always has one.
+  writeFileSync(join(dir, PROTECTED_FILE), JSON.stringify(protectedPaths(defaultBinDir(homedir()))));
   return main(JSON.stringify({ tool_name: "Bash", tool_input: { command } }), ["pre-tool-use", dir]);
 }
 
 test("a review run may mark ready the pull requests the person approved, by URL, and nothing else of the person's is lifted", () => {
   const url = "https://github.com/x/app/pull/1";
-  const review = (command: string) => toolVerdict("Bash", { command }, [], [], [url]).code;
+  const review = (command: string) => toolVerdict("Bash", { command }, { approved: [url] }).code;
   assert.equal(review(`gh pr ready ${url}`), 0);
   assert.equal(review(`gh pr ready ${url}2`), 2, "a pull request whose URL only starts with an approved one");
   assert.equal(review("gh pr ready https://github.com/x/app/pull/7"), 2, "a pull request the person did not approve");
@@ -163,10 +167,10 @@ test("a worker may link its pull request into a stack with the literal `gh stack
 const SLACK = /^mcp__plugin_slack_slack__slack_send_message$/;
 
 test("a publish run may announce pull requests, with the skill and the connectors its mark names, and nothing else of the person's is lifted", () => {
-  const publish = (tool: string, input: Record<string, unknown> = {}) => toolVerdict(tool, input, [], [], [], [SLACK]).code;
+  const publish = (tool: string, input: Record<string, unknown> = {}) => toolVerdict(tool, input, { publish: [SLACK] }).code;
   assert.equal(publish("Skill", { skill: "post-pr-to-slack" }), 0);
   assert.equal(publish("mcp__plugin_slack_slack__slack_send_message"), 0);
-  assert.equal(toolVerdict("Skill", { skill: "post-pr-to-slack" }, [], [], [], []).code, 0, "a publish run whose mark names no connector may still run the skill");
+  assert.equal(toolVerdict("Skill", { skill: "post-pr-to-slack" }, { publish: [] }).code, 0, "a publish run whose mark names no connector may still run the skill");
   assert.equal(toolVerdict("Skill", { skill: "post-pr-to-slack" }).code, 2, "POSITIVE CONTROL: any other run is refused it");
   assert.equal(toolVerdict("mcp__plugin_slack_slack__slack_send_message", {}).code, 2, "POSITIVE CONTROL: and the connector");
   assert.equal(publish("mcp__plugin_slack_slack__slack_send_message_draft"), 2, "a connector the mark does not name");
@@ -195,7 +199,7 @@ test("no worker may write the publish mark, by a command or a file tool, since i
 });
 
 test("a drafts-off run may open a ready pull request and a drafts-on run may not: the ready mark decides it, and no worker can write it", () => {
-  const ready = (command: string) => toolVerdict("Bash", { command }, [], [], [], null, true).code;
+  const ready = (command: string) => toolVerdict("Bash", { command }, { ready: true }).code;
   assert.equal(bash("gh pr create --title t --body b"), 2, "POSITIVE CONTROL: drafts on refuses a pull request that is not a draft");
   assert.equal(ready("gh pr create --title t --body b"), 0, "a ready run may open one");
   assert.equal(ready("gh pr create --draft --title t --body b"), 0, "and a draft");
@@ -223,4 +227,86 @@ test("A11-80: a working outcome lets one stop through; a later stop on the same 
   writeFileSync(outcome, JSON.stringify({ kind: "working", reason: "r" }));
   utimesSync(outcome, 3000, 3000);
   assert.deepEqual(Array.from({ length: MAX_STOP_REFUSALS + 2 }, () => stopVerdict(dir).code), [0, 2, 2, 0], "bounded by the same count as a missing outcome");
+});
+
+// A11-84: THE HOST'S OWN PROGRAMS. A worker may not write the routing `gh` or the launcher `agent-org` in the host's bin directory, by a file tool or a command,
+// and may not run the commands that install them. The reading is the pool's copy, `protected-paths.json`, beside the outcome file.
+const HOME_BIN = join(homedir(), ".local", "bin");
+const PROTECTED = [`${HOME_BIN}/gh`, `${HOME_BIN}/agent-org`];
+const toolWrites = (file_path: string, tool = "Write") => toolVerdict(tool, { file_path }, { hostPrograms: PROTECTED }).code;
+const commandWrites = (command: string) => toolVerdict("Bash", { command }, { hostPrograms: PROTECTED }).code;
+
+test("A11-84 POSITIVE: a file tool may not write the host's gh wrapper or launcher, and a command may not write them either", () => {
+  assert.equal(toolWrites(`${HOME_BIN}/gh`), 2, "a Write to the wrapper");
+  assert.equal(toolWrites(`${HOME_BIN}/gh`, "Edit"), 2, "an Edit to the wrapper");
+  assert.equal(toolWrites(`${HOME_BIN}/agent-org`, "MultiEdit"), 2, "a MultiEdit to the launcher");
+  for (const written of [
+    `cp /tmp/gh ${HOME_BIN}/gh`, `cat x > ${HOME_BIN}/gh`, `echo x >> ~/.local/bin/agent-org`, `mv new $HOME/.local/bin/gh`,
+    `sed -i 's/a/b/' ${HOME_BIN}/gh`, "rm -f ~/.local/bin/gh", `chmod 755 ${HOME_BIN}/gh`, `dd if=x of=${HOME_BIN}/gh`,
+    "pnpm run host:install", "pnpm run host:check --install", "node src/host-units.ts --install --allow-no-apps",
+  ]) {
+    assert.equal(commandWrites(written), 2, written);
+  }
+});
+
+test("A11-84 CONTROL: a read of the wrapper, another program in the bin directory and the host's read-only checks are allowed", () => {
+  assert.equal(toolWrites(`${HOME_BIN}/herdr`), 0, "an unrelated program in the bin directory");
+  assert.equal(toolWrites(`${HOME_BIN}/gh-real`), 0, "`gh-real` is not `gh`");
+  for (const read of [`cat ${HOME_BIN}/gh`, "grep -n APP_ROLES ~/.local/bin/gh", `ls -l ${HOME_BIN}`, `cp ${HOME_BIN}/gh-real /tmp/x`,
+    "pnpm run host:check", "pnpm run host:check --json"]) {
+    assert.equal(commandWrites(read), 0, read);
+  }
+});
+
+test("A11-84: a write to the host's program is refused with the file named and whose it is", () => {
+  const hit = toolVerdict("Write", { file_path: `${HOME_BIN}/gh` }, { hostPrograms: PROTECTED });
+  assert.match(hit.say.join("\n"), /is the host's program, which a worker may not write/);
+  assert.ok(hit.say.join("\n").includes(`${HOME_BIN}/gh`), "the refusal names the file");
+  const command = toolVerdict("Bash", { command: `cp /tmp/gh ${HOME_BIN}/gh` }, { hostPrograms: PROTECTED });
+  assert.ok(command.say.join("\n").includes(`${HOME_BIN}/gh, ${HOME_BIN}/agent-org are the host's programs, which a worker may not write`), command.say.join("\n"));
+  assert.equal(toolVerdict("Bash", { command: "npm test" }).code, 0, "with no protected list, nothing is protected");
+  assert.equal(toolVerdict("Bash", { command: "pnpm run host:install" }).code, 2, "but the install commands are refused regardless");
+});
+
+test("A11-84: a write tool's path is resolved as the disk resolves it, so a link into the bin directory is the same file", () => {
+  assert.equal(resolveWritePath("/some/where/link/gh", () => HOME_BIN), `${HOME_BIN}/gh`, "a symbolic link in the directory is followed");
+  assert.equal(resolveWritePath("~/x/../gh-real", (dir) => dir), join(homedir(), "gh-real"), "`~` is expanded and `..` is resolved");
+});
+
+test("A11-84: the pool's protected-paths file is read beside the outcome file, and one that is missing or unreadable falls back to the default bin directory, out loud", () => {
+  const dir = tmpDir("hook-protected-paths-");
+  const missing = protectedFiles(dir);
+  assert.deepEqual(missing.paths, PROTECTED, "no copy: the default bin directory's programs are protected");
+  assert.match(missing.note ?? "", /is missing, so the default bin directory's programs are protected/);
+  writeFileSync(join(dir, PROTECTED_FILE), JSON.stringify(PROTECTED));
+  assert.deepEqual(protectedFiles(dir), { paths: PROTECTED }, "POSITIVE: the copy names the two programs, with no note");
+  writeFileSync(join(dir, PROTECTED_FILE), "{ not json");
+  assert.deepEqual(protectedFiles(dir).paths, PROTECTED, "an unreadable copy does not leave the programs open");
+  assert.match(protectedFiles(dir).note ?? "", /could not read/);
+  writeFileSync(join(dir, PROTECTED_FILE), JSON.stringify([1, 2]));
+  assert.match(protectedFiles(dir).note ?? "", /is not a list of paths/, "a copy that is not a list of paths is the same case");
+  writeFileSync(join(dir, PROTECTED_FILE), "{ not json");
+  const payload = JSON.stringify({ tool_name: "Write", tool_input: { file_path: `${HOME_BIN}/gh` } });
+  const verdict = main(payload, ["pre-tool-use", dir]);
+  assert.equal(verdict.code, 2, "end to end: an unreadable copy still refuses the write to the wrapper");
+  assert.match(verdict.say.join("\n"), /could not read .*so the default bin directory's programs are protected/, "and says why it fell back");
+});
+
+test("A11-84 CONTROL: a read that names the wrapper, or a host command as an argument, is allowed: only a command that writes the file is refused", () => {
+  for (const read of [`grep -n install ${HOME_BIN}/gh`, `ls -ln ${HOME_BIN}/gh`, `cp ${HOME_BIN}/gh /tmp/x`, "grep -n \"host:install\" AGENTS.md", "grep -rn hostUnitsInstall src/"]) {
+    assert.equal(commandWrites(read), 0, read);
+  }
+});
+
+test("A11-84: the protected list is resolved as a write is, so a write through a symbolic link into the bin directory is refused", () => {
+  const dir = tmpDir("hook-symlink-");
+  const real = join(dir, "real");
+  const link = join(dir, "link");
+  mkdirSync(real);
+  symlinkSync(real, link);
+  writeFileSync(join(dir, PROTECTED_FILE), JSON.stringify([join(link, "gh")]));
+  const throughRealDir = JSON.stringify({ tool_name: "Write", tool_input: { file_path: join(real, "gh") } });
+  assert.equal(main(throughRealDir, ["pre-tool-use", dir]).code, 2, "the real directory's file is the protected one");
+  const throughLink = JSON.stringify({ tool_name: "Write", tool_input: { file_path: join(link, "gh") } });
+  assert.equal(main(throughLink, ["pre-tool-use", dir]).code, 2, "and the same file named through the link is refused too");
 });
