@@ -31,6 +31,12 @@ export const MIN_NODE_MAJOR = 24;
 
 export type Check = Readonly<{ name: string; ok: boolean; detail: string; fix: string | null }>;
 
+/**
+ * The installed `gh` wrapper, read by the host's own module (`host-units.ts`, A11-84): whether it is the one `host.json` declares, and each declared role's token
+ * mint. `unchecked` is said when that module would not load or the host file would not read, which is never a pass.
+ */
+export type GhWrapperReport = Readonly<{ unchecked: string }> | Readonly<{ divergence: string | null; mints: readonly Readonly<{ role: string; failure: string | null }>[] }>;
+
 export type DoctorDeps = Readonly<{
   env: Env;
   home: string;
@@ -57,6 +63,8 @@ export type DoctorDeps = Readonly<{
   tailscale: (args: string[]) => TailscaleResult;
   /** Whether the tailnet address `ip` answers HTTPS for `name` on `port`. */
   tailnetAnswers: (ip: string, name: string, port: number) => Promise<boolean>;
+  /** The installed `gh` wrapper and each declared role's mint (A11-84). Loaded by the caller, so this file stays import-light. */
+  ghWrapper: () => Promise<GhWrapperReport>;
 }>;
 
 const ok = (name: string, detail: string): Check => ({ name, ok: true, detail, fix: null });
@@ -131,6 +139,19 @@ function linearMcpCheck(deps: DoctorDeps): Check {
     : failed("linear mcp", line.trim(), "`claude mcp get linear` says why; a key that changed is fixed by `claude mcp remove linear --scope user`, then `agent-org onboard`");
 }
 
+/**
+ * The `gh` wrapper's checks (A11-84): the installed copy is the one `host.json` declares, and each declared role mints. A role whose mint fails names the reason the
+ * minter printed first, so a key that moved or an App that was removed is the one thing to fix.
+ */
+function ghWrapperChecks(report: GhWrapperReport): Check[] {
+  if ("unchecked" in report) return [failed("gh wrapper", `cannot be checked: ${report.unchecked}`, "run `agent-org doctor` from the checkout that host.json's `tool` names")];
+  const wrapper = report.divergence === null ? ok("gh wrapper", "the installed wrapper is the one host.json declares")
+    : failed("gh wrapper", report.divergence, "run `agent-org host:install`, which renders the wrapper from host.json and writes it, or start the instance, which re-renders it");
+  const mints = report.mints.map(({ role, failure }) => failure === null ? ok(`app token ${role}`, `the ${role} App mints a token`)
+    : failed(`app token ${role}`, `the ${role} App's token mint failed: ${failure}`, `fix the key or the App host.json declares for ${role}, then run \`agent-org host:install\``));
+  return [wrapper, ...mints];
+}
+
 /** Every check, in the order a person fixes them. */
 export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
   const { check: host, settings } = hostCheck(deps);
@@ -145,6 +166,7 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
       ? failed("launcher", "`agent-org` is not on PATH", `add its directory to PATH: export PATH="$HOME/.local/bin:$PATH" in your shell's rc file`)
       : ok("launcher", launcher),
     host,
+    ...ghWrapperChecks(await deps.ghWrapper()),
     herdr === null ? failed("herdr", "`herdr` is not on PATH", "install herdr, which runs the workers' terminals, and put it on PATH") : ok("herdr", herdr),
     keyCheck(settings, deps),
     linearMcpCheck(deps),
@@ -315,6 +337,14 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
     },
     tailscale: (args) => runTailscale(args),
     tailnetAnswers,
+    ghWrapper: async () => {
+      try {
+        const { ghWrapperReport } = await import("../host-units.ts");
+        return ghWrapperReport();
+      } catch (cause) {
+        return { unchecked: String((cause as Error)?.message ?? cause).split("\n")[0] };
+      }
+    },
   });
   console.log(report(checks));
   process.exitCode = checks.every((check) => check.ok) ? 0 : 1;

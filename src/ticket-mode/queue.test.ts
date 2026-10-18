@@ -6,7 +6,7 @@ import { tmpDir } from "../lib/tmp-fixture.ts";
 import { isParked, runStatus } from "./board-view.ts";
 import {
   amend, approve, byIdentifier, childOrder, refuseParents, respond, batchPlanDone, dismiss, feedbackRound, MAX_FEEDBACK_ROUNDS, markPublishRunning, markPublishStarting, publishDone, publishFailed, publishStarts, queuePublish, emptyQueue, enqueue, finish, isLive, leaveBatch, liveRunCount, loadQueue, markResumed, markRunning, markStarting, nextStarts, observe, park,
-  clearMove, noteWorking, recordBlockers, recordMove, recordRepos, planDone, watchWorking, PLAN_BATCH_MAX, recordPullStates, recordTrackerStates, remove, retry, saveQueue, setMax, setPaused, unpark, unreadBlockerKeys, unsettledKeys, type Queue,
+  BACKGROUND_GONE, BACKGROUND_GONE_MS, clearMove, noteWorking, recordBlockers, recordMove, recordRepos, planDone, watchWorking, PLAN_BATCH_MAX, recordPullStates, recordTrackerStates, remove, retry, saveQueue, setMax, setPaused, unpark, unreadBlockerKeys, unsettledKeys, type Queue,
   pathsUnread, recordPaths, recordPullFiles, recordVerdictNotPosted, unreadPaths,
 } from "./queue.ts";
 import type { Blocker, Ticket } from "./source.ts";
@@ -508,6 +508,46 @@ test("A11-80: a working run idle with no newer outcome for the stall time is mar
   assert.deepEqual(note(woke), { reason: "the roll is still running", at: 50 }, "its work woke it: no idle clock, no stall");
   assert.equal(note(watchWorking(woke, "A", "idle", 1000 + stall + 10, stall))?.idleSince, 1000 + stall + 10, "idle again starts the clock again");
   assert.deepEqual(watchWorking(running, "A", "idle", 1e9, stall), running, "a run with no note has no stall");
+});
+
+test("A11-85: an idle working run with no background work is stalled by background work gone once BACKGROUND_GONE_MS has passed, and resumed once", () => {
+  const running = markRunning(markStarting(enqueue(emptyQueue(1), [ticket("A")], choice, 0), "A", 1), "A", "w1", "w1:p1");
+  const stall = 30 * 60_000;
+  const noted = noteWorking(running, "A", "the roll is still running", 50, 1000);
+  const note = (q: Queue) => q.entries[0].working;
+  const none = (q: Queue, now: number) => watchWorking(q, "A", "idle", now, stall, "none");
+  const first = none(noted, 1000);
+  assert.deepEqual(note(first), { reason: "the roll is still running", at: 50, idleSince: 1000, noBackgroundSince: 1000 }, "the gone clock starts");
+  assert.equal(note(none(first, 1000 + BACKGROUND_GONE_MS - 1))?.stalled, undefined, "not before the time");
+  const gone = none(first, 1000 + BACKGROUND_GONE_MS);
+  assert.deepEqual([note(gone)?.stalled, note(gone)?.stallReason, note(gone)?.resumed], [true, BACKGROUND_GONE, true], "stalled, and resumed");
+  assert.equal(gone.entries[0].phase, "running", "a stall ends nothing");
+  assert.equal(note(none(gone, 1000 + BACKGROUND_GONE_MS * 2))?.resumed, true, "still resumed, not again");
+});
+
+test("A11-85: a shell or a Monitor on the pane clears the gone mark, and a pane that cannot be read changes nothing of it", () => {
+  const running = markRunning(markStarting(enqueue(emptyQueue(1), [ticket("A")], choice, 0), "A", 1), "A", "w1", "w1:p1");
+  const noted = noteWorking(running, "A", "the roll is still running", 50, 1000);
+  const note = (q: Queue) => q.entries[0].working;
+  const started = watchWorking(noted, "A", "idle", 1000, 30 * 60_000, "none");
+  const gone = watchWorking(started, "A", "idle", 1000 + BACKGROUND_GONE_MS, 30 * 60_000, "none");
+  assert.equal(note(gone)?.stalled, true, "POSITIVE: the run is stalled before the live work is seen");
+  const live = watchWorking(gone, "A", "idle", 1000 + BACKGROUND_GONE_MS + 1, 30 * 60_000, "live");
+  assert.deepEqual(note(live), { reason: "the roll is still running", at: 50, idleSince: 1000 }, "live work clears the stall, the gone clock and the resume");
+  const unread = watchWorking(noted, "A", "idle", 1000 + BACKGROUND_GONE_MS * 5, 30 * 60_000, null);
+  assert.deepEqual(note(unread), { reason: "the roll is still running", at: 50, idleSince: 1000 }, "a pane that cannot be read: the idle clock alone");
+});
+
+test("A11-85: a newer working note keeps the resume, so the worker is not prompted twice, and working status clears the stall but not the resume", () => {
+  const running = markRunning(markStarting(enqueue(emptyQueue(1), [ticket("A")], choice, 0), "A", 1), "A", "w1", "w1:p1");
+  const note = (q: Queue) => q.entries[0].working;
+  const started = watchWorking(noteWorking(running, "A", "first", 50, 1000), "A", "idle", 1000, 30 * 60_000, "none");
+  const gone = watchWorking(started, "A", "idle", 1000 + BACKGROUND_GONE_MS, 30 * 60_000, "none");
+  assert.equal(note(gone)?.resumed, true, "POSITIVE: resumed once the gone time has passed");
+  const again = noteWorking(gone, "A", "second", 70, 2000);
+  assert.deepEqual(note(again), { reason: "second", at: 70, idleSince: 2000, resumed: true }, "the resume outlasts a newer note");
+  const woke = watchWorking(gone, "A", "working", 2001, 30 * 60_000, "none");
+  assert.deepEqual(note(woke), { reason: "first", at: 50, resumed: true }, "working clears the stall and the gone clock, and keeps the resume");
 });
 
 // A11-82: runs that share a path in one repository start in turn, and a review round keeps the footprint of the run it continues.

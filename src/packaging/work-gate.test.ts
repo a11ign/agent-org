@@ -4453,6 +4453,7 @@ const DECLARED_HISTORY_POPULATION: Declaration[] = [
   { name: "home-checkout-refusal.test.ts", reason: "#3039: imports `host-units.ts` for `hostUnitDrift` and `hostUnitsInstall`, the same edge `host-units.test.ts` has" },
   { name: "host-install-agent-org-launcher.test.ts", reason: "#3532: imports `host-units.ts` for the owned list, the installer and `hostUnitDrift`, the same edge `host-units.test.ts` has; its pull request declares `History: full`" },
   { name: "host-project-paths.test.ts", reason: "#2620: imports `host-units.ts` for the rendered unit texts, the same edge `host-units.test.ts` has; its pull request declares `History: full` (#497)" },
+  { name: "gh-wrapper-guard.test.ts", reason: "A11-84: imports `host-units.ts` for the one writer of the routing wrapper, the detector and the start-up check, the same edge `host-units.test.ts` has" },
   { name: "host-tool-install.test.ts", reason: "#2793: imports `host-units.ts` for the rendered `work-tick` unit, the same edge; its pull request declares `History: full`" },
   { name: "host-units-event-receiver.test.ts", reason: "#980: imports `host-units.ts` for `shippedUnits` and the installer, the same edge `host-units.test.ts` has; its pull request declares `History: full`" },
   { name: "host-units.test.ts", reason: "tests `host-units.ts`, which calls `git log --all`: the edge every other entry here shares" },

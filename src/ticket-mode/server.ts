@@ -13,6 +13,7 @@
 import { existsSync, readFileSync, realpathSync, writeFileSync, mkdirSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { constants } from "node:os";
+import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { refuseUnknownFlags } from "../lib/cli-flags.ts";
@@ -275,12 +276,36 @@ export function createBoard(deps: BoardDeps) {
   return { handle, api, pool, store };
 }
 
+/**
+ * The child's program (A11-84): load the host module and run the start-up check of the routing wrapper. A process boundary keeps the gate's closure out of this instance, as
+ * `work-gate.ts` does for `host:check`, and a host the module cannot load on (no declaration of its project) is one line on stderr, never a stack: the instance starts anyway.
+ */
+const STARTUP_PROGRAM = `import(${JSON.stringify(new URL("../host-units.ts", import.meta.url).href)})`
+  + ".then((host) => host.startupGhWrapper())"
+  + ".catch((cause) => { process.stderr.write(`ERROR gh wrapper: cannot be checked (${String(cause?.message ?? cause).split(\"\\n\")[0]})\\n`); });";
+
+/**
+ * THE `gh` WRAPPER AT START-UP (A11-84): the installed wrapper is checked before the pool is made, because every worker's `gh` and the reviewer's token mint depend on
+ * it. The check logs a divergence LOUDLY and re-renders the wrapper through the one guarded writer, and a refused re-render is logged and the instance starts anyway.
+ * A child that cannot be run at all is logged here, so the instance never runs silent.
+ */
+export function checkGhWrapperAtStart({ err = (line: string) => process.stderr.write(line), run = (program: string) => spawnSync(process.execPath,
+  ["--input-type=module", "-e", program], { stdio: ["ignore", "inherit", "inherit"], timeout: 120_000 }) }:
+    { err?: (line: string) => void; run?: (program: string) => { status: number | null; error?: Error } } = {}): void {
+  const child = run(STARTUP_PROGRAM);
+  if (child.error === undefined && child.status === 0) return;
+  const why = child.error?.message ?? `the check exited ${child.status}`;
+  err(`ERROR gh wrapper: cannot be checked (${why.split("\n")[0]}), so the instance does not know its App identity is in place\n`);
+}
+
 async function serve(): Promise<void> {
   // `--no-open` opened no browser when the instance served the page. It is still taken, so a script that passes it keeps working.
   refuseUnknownFlags(["--no-open"], { entry: import.meta.url, command: "agent-org ticket:serve" });
   const settings = readTicketSettings();
   // The gate's modules load only for an instance that starts reviewers, and before its pool is made, which reads them (`reviewer-port.ts`).
   if (startsReviewers(settings)) await loadReviewerGate();
+  // A11-84: the routing wrapper is checked, and re-rendered when it has diverged, before the pool is made (see `checkGhWrapperAtStart`).
+  checkGhWrapperAtStart();
   const source = linearSource({ key: readLinearKey(settings.linearKey), pick: settings.pick });
   const key = boardKey(boardKeyPath(settings.stateDir));
   const dir = join(settings.stateDir, "tickets");

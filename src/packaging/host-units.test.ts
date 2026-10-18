@@ -2411,7 +2411,8 @@ test("#2332: END TO END -- `host:install` then `host:check --json` on a temp HOM
     // So `zsh` here is `sh` on the PATH this test set, and a `claude` after the wrapper's directory gives the control a real "elsewhere".
     writeFileSync(join(bin, "zsh"), '#!/bin/sh\n[ "$1" = -c ] && exec /bin/sh -c "$2"\nexit 2\n', { mode: 0o755 });
     writeFileSync(join(bin, "claude"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-    const env ={ PATH: `${home}/.opencode/bin:${bin}:${process.env.PATH}`, HOME: home, AGENT_ORG_HOST: hostFile };
+    // A11-84: the child is a test's, so it runs under the test rules (the real-bin tripwire, and no temporary-minter refusal for a fixture checkout).
+    const env = { PATH: `${home}/.opencode/bin:${bin}:${process.env.PATH}`, HOME: home, AGENT_ORG_HOST: hostFile, AGENT_ORG_UNDER_TEST: "1" };
     const entry = join(TOOL_ROOT, "src/host-units.ts");
     const run = (...args: string[]) => {
       const done = spawnSync(process.execPath, [entry, ...args], { encoding: "utf8", env });

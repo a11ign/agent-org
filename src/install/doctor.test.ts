@@ -16,6 +16,7 @@ function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
     pnpmVersion: () => "10.34.5",
     healthy: async (port) => port === 7318, unitProblem: () => null, mcpList: () => MCP_LIST,
     tailscale: () => ({ status: 1, stdout: "", stderr: "not used" }), tailnetAnswers: async () => false,
+    ghWrapper: async () => ({ divergence: null, mints: [] }),
     ...over,
   };
 }
@@ -25,7 +26,7 @@ const byName = (checks: Awaited<ReturnType<typeof diagnose>>) => Object.fromEntr
 test("doctor passes every check on a working install, and never prints the key", async () => {
   const checks = await diagnose(deps());
   assert.deepEqual(checks.map(({ name, ok }) => [name, ok]), [
-    ["node", true], ["pnpm", true], ["launcher", true], ["host file", true], ["herdr", true], ["tracker key", true], ["linear mcp", true],
+    ["node", true], ["pnpm", true], ["launcher", true], ["host file", true], ["gh wrapper", true], ["herdr", true], ["tracker key", true], ["linear mcp", true],
     ["instance service", true], ["instance answering", true], ["ui service", true], ["ui answering", true],
     ["terminal address", true], ["terminal service", true], ["terminal answering", true], ["auto-update service", true],
   ]);
@@ -217,3 +218,30 @@ test("doctor fails the tailnet serve check on a serve config it cannot read, and
   assert.match(checks["tailscale serve"].detail, /did not answer/);
   assert.equal(checks["ui tailnet entry"], undefined, "no entry is read from a config that cannot be read");
 });
+// A11-84: the installed `gh` wrapper and each declared role's mint are checked, and each failure names its fix.
+
+test("doctor fails a gh wrapper that diverges from host.json, naming the fix, and passes each role that mints", async () => {
+  const checks = await diagnose(deps({ ghWrapper: async () => ({ divergence: "/home/me/.local/bin/gh names no App role, but host.json declares scheduler",
+    mints: [{ role: "scheduler", failure: null }, { role: "workers", failure: null }] }) }));
+  const byCheck = byName(checks);
+  assert.equal(byCheck["gh wrapper"].ok, false);
+  assert.equal(byCheck["gh wrapper"].detail, "/home/me/.local/bin/gh names no App role, but host.json declares scheduler");
+  assert.match(byCheck["gh wrapper"].fix ?? "", /agent-org host:install/);
+  assert.equal(byCheck["app token scheduler"].ok, true, "a role that mints is a pass, whatever the wrapper says");
+});
+
+test("doctor fails a role whose token mint fails, and says the reason the minter printed", async () => {
+  const checks = byName(await diagnose(deps({ ghWrapper: async () => ({ divergence: null,
+    mints: [{ role: "reviewer", failure: "could not read the key /home/me/.config/agent-org/apps/a11ign-reviewer.pem (exit 2)" }] }) })));
+  assert.equal(checks["gh wrapper"].ok, true);
+  assert.equal(checks["app token reviewer"].ok, false);
+  assert.equal(checks["app token reviewer"].detail, "the reviewer App's token mint failed: could not read the key /home/me/.config/agent-org/apps/a11ign-reviewer.pem (exit 2)");
+  assert.match(checks["app token reviewer"].fix ?? "", /host:install/);
+});
+
+test("doctor says a gh wrapper it could not check is not a pass", async () => {
+  const checks = byName(await diagnose(deps({ ghWrapper: async () => ({ unchecked: "ENOENT: host.json" }) })));
+  assert.equal(checks["gh wrapper"].ok, false);
+  assert.equal(checks["gh wrapper"].detail, "cannot be checked: ENOENT: host.json");
+});
+
