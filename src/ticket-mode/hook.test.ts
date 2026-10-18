@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpDir } from "../lib/tmp-fixture.ts";
@@ -203,12 +203,26 @@ test("A11-86: with no copy of tickets.prReview, nothing is gated and no log is m
   assert.equal(existsSync(join(dir, "pr-review-log")), false, "no log is made when the setting is absent");
 });
 
-test("A11-86: a copy of tickets.prReview that cannot be read is reported and the gate does not apply, so nothing is refused on it", () => {
-  const dir = tmpDir("ticket-hook-pr-review-broken-");
-  writeFileSync(join(dir, "pr-review.json"), "{not json");
+test("A11-86: a copy of tickets.prReview that cannot be read or names no skill refuses the pushes and pull requests the gate holds, and keeps its files protected", () => {
+  for (const content of ["{not json", "\"\"", "3"]) {
+    const dir = tmpDir("ticket-hook-pr-review-broken-");
+    writeFileSync(join(dir, "pr-review.json"), `${content}\n`);
+    const pushed = gateBash(dir, "git push -u origin b");
+    assert.equal(pushed.code, 2, `${content}: fails closed, since the gate cannot tell what the machine asked for`);
+    assert.match(pushed.say[0], /pr-review\.json (cannot be read|names no skill), so the pre-PR review cannot be checked/);
+    assert.equal(gateBash(dir, "gh pr view 12").code, 0, "POSITIVE CONTROL: a command the gate does not hold still runs");
+    assert.equal(gateBash(dir, "rm pr-review.json").code, 2, "a worker may not delete the copy it cannot read, which would turn the gate off");
+    assert.equal(gateCall(dir, "Write", { file_path: join(dir, "pr-review.json"), content: "x" }).code, 2);
+  }
+});
+
+test("A11-86: a pre-PR review log the gate cannot read refuses the call that needs it, and a call that needs no log still runs", () => {
+  const dir = reviewDir();
+  mkdirSync(join(dir, "pr-review-log"));
   const pushed = gateBash(dir, "git push -u origin b");
-  assert.equal(pushed.code, 0);
-  assert.match(pushed.say[0], /could not read .*pr-review\.json, so the pre-PR review is not enforced/);
+  assert.equal(pushed.code, 2);
+  assert.match(pushed.say[0], /pr-review-log cannot be read/);
+  assert.equal(gateBash(dir, "gh pr view 12").code, 0, "a call the gate does not hold needs no log");
 });
 
 test("A11-86: with tickets.prReview named, no worker may write or name the pre-PR review's files by a command or a file tool; with it absent nothing is refused for them", () => {

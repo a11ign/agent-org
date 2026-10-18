@@ -30,7 +30,8 @@
 // A PRE-PR REVIEW GATE (A11-86). On a machine whose `tickets.prReview` names a skill, a push or a pull request is refused until that skill has run
 // since the worker's last commit. The hook keeps that order in an append-only log beside the outcome file, `pr-review-log`: a `review` line for each
 // call of the skill and a `commit` line for each git commit that makes one. The gate allows a push or a pull request only when the log's last line
-// is `review`. Absent the setting, nothing is logged and nothing is refused on a review.
+// is `review`. Absent the setting, nothing is logged and nothing is refused on a review. Once the setting's copy is there, the gate fails CLOSED: a copy
+// it cannot read, or a log it cannot read or write, refuses the pushes and pull requests it holds, since it could not check them.
 //
 // IT FAILS OPEN, OUT LOUD, for a payload or a count it cannot read: a hook that refused on what it could not read would stop every worker.
 import { appendFileSync, existsSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
@@ -199,6 +200,11 @@ function subcommandsIn(text: string): string[] {
 }
 const PULL_REQUEST = /\bgh\s+pr\s+create\b|\bpr:open\s+create\b/;
 
+/** Whether a Bash command opens a pull request or pushes: the commands the gate holds until the review has run. PURE. */
+export function heldCommand(command: string): boolean {
+  return PULL_REQUEST.test(command) || gitSubcommands(command).includes("push");
+}
+
 /**
  * What a tool call means to the pre-PR review gate: `review` when it runs the configured skill, `commit` when it is a git command that makes a commit,
  * and null for any other call. A skill named with a leading `/` is the same skill. PURE.
@@ -213,9 +219,8 @@ export function prReviewEvent(toolName: string, input: Record<string, unknown>, 
  * `review` and the command makes no commit itself: `git commit ... && git push` would push what the review never saw. PURE.
  */
 export function prReviewRefusal(command: string, log: readonly string[], skill: string): string | null {
-  const subcommands = gitSubcommands(command);
-  const commits = subcommands.some((subcommand) => COMMIT_SUBCOMMANDS.has(subcommand));
-  if (!PULL_REQUEST.test(command) && !subcommands.includes("push")) return null;
+  if (!heldCommand(command)) return null;
+  const commits = gitSubcommands(command).some((subcommand) => COMMIT_SUBCOMMANDS.has(subcommand));
   if (log[log.length - 1] === "review" && !commits) return null;
   const why = commits ? "this command commits, so the skill cannot have reviewed what it pushes: commit first, run the skill, then push"
     : `it has not run since your last commit`;
@@ -223,38 +228,64 @@ export function prReviewRefusal(command: string, log: readonly string[], skill: 
 }
 
 /**
- * The pre-PR review skill from the copy of `tickets.prReview` beside the outcome file, or null when there is no copy. A copy it cannot read, or one that
- * names no skill, is reported and skipped, so the gate does not apply: the hook never refuses on what it cannot read.
+ * The pre-PR review setting from the copy of `tickets.prReview` beside the outcome file. No copy is no review: `skill` null and no `problem`. A copy
+ * that names a skill is `skill`. A copy that is there but cannot be read, or names no skill, is a `problem`: the gate cannot tell what the machine asked
+ * for, so the pushes and pull requests it holds are refused, and its files stay protected (A11-86).
  */
-export function prReviewSetting(ticketDir: string, read: (path: string) => string = (p) => readFileSync(p, "utf8")): { skill: string | null; note?: string } {
+export function prReviewSetting(ticketDir: string, read: (path: string) => string = (p) => readFileSync(p, "utf8")): { skill: string | null; problem?: string } {
   const file = join(ticketDir, PR_REVIEW_FILE);
   try {
     const skill = JSON.parse(read(file)) as unknown;
-    return typeof skill === "string" && skill !== "" ? { skill } : { skill: null, note: `ticket:hook: ${file} names no skill, so the pre-PR review is not enforced.` };
+    return typeof skill === "string" && skill !== "" ? { skill } : { skill: null, problem: `${file} names no skill` };
   } catch (err) {
     if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return { skill: null };
-    return { skill: null, note: `ticket:hook: could not read ${file}, so the pre-PR review is not enforced.` };
+    return { skill: null, problem: `${file} cannot be read` };
   }
 }
 
 /**
- * The gate for a tool call the other refusals allowed: a push or a pull request is refused unless the review has run since the last commit, and an allowed
- * call that is a review or a commit is logged, one line, so parallel calls cannot lose one. A log it cannot read or write allows the call, out loud.
+ * The gate for a tool call the other refusals allowed, when the setting names a skill. A push or a pull request is refused unless the review has run since
+ * the last commit. A call that is a review or a commit is logged, one line, so parallel calls cannot lose one. A log the gate cannot read or write refuses
+ * the call that needs it, since the gate would otherwise pass on state it could not check (A11-86).
  */
 function prReviewGate(toolName: string, input: Record<string, unknown>, ticketDir: string, skill: string): HookResult {
   const log = join(ticketDir, PR_REVIEW_LOG_FILE);
+  const command = toolName === "Bash" ? String(input.command ?? "") : "";
+  const event = prReviewEvent(toolName, input, skill);
+  if (event === null && !heldCommand(command)) return ALLOW;
+  let events: string[];
   try {
-    const target = toolName === "Bash" ? String(input.command ?? "") : FILE_TOOLS.has(toolName) ? String(input.file_path ?? input.notebook_path ?? "") : "";
-    if (PR_REVIEW_FILE_REFUSAL.pattern.test(target)) return refuse(PR_REVIEW_FILE_REFUSAL.why);
-    const events = existsSync(log) ? readFileSync(log, "utf8").split("\n").filter((line) => line !== "") : [];
-    const refusal = toolName === "Bash" ? prReviewRefusal(String(input.command ?? ""), events, skill) : null;
-    if (refusal !== null) return refuse(refusal);
-    const event = prReviewEvent(toolName, input, skill);
-    if (event !== null) appendFileSync(log, `${event}\n`);
-    return ALLOW;
+    events = existsSync(log) ? readFileSync(log, "utf8").split("\n").filter((line) => line !== "") : [];
   } catch (err) {
-    return { code: 0, say: [`ticket:hook: could not read or write ${log} (${String((err as Error)?.message ?? err).split("\n")[0]}), so the pre-PR review is not enforced for this call.`] };
+    return refuse(`${log} cannot be read (${firstLine(err)}), so the pre-PR review cannot be checked for this call`);
   }
+  const refusal = prReviewRefusal(command, events, skill);
+  if (refusal !== null) return refuse(refusal);
+  if (event === null) return ALLOW;
+  try {
+    appendFileSync(log, `${event}\n`);
+  } catch (err) {
+    return refuse(`${log} cannot be written (${firstLine(err)}), so this ${event} cannot be recorded for the pre-PR review`);
+  }
+  return ALLOW;
+}
+
+const firstLine = (err: unknown): string => String((err as Error)?.message ?? err).split("\n")[0];
+
+/**
+ * The pre-PR review verdict for a call the other refusals allowed. Its files are protected whenever the setting's copy is there, named or not, so no
+ * worker can delete a copy it cannot read and turn the gate off. A named skill runs the gate; a copy with a problem refuses the pushes and pull requests
+ * it holds, since the gate cannot tell what it asked for; no copy is no gate at all.
+ */
+function prReviewVerdict(toolName: string, input: Record<string, unknown>, ticketDir: string, review: { skill: string | null; problem?: string }): HookResult {
+  const target = toolName === "Bash" ? String(input.command ?? "") : FILE_TOOLS.has(toolName) ? String(input.file_path ?? input.notebook_path ?? "") : "";
+  const present = review.skill !== null || review.problem !== undefined;
+  if (present && PR_REVIEW_FILE_REFUSAL.pattern.test(target)) return refuse(PR_REVIEW_FILE_REFUSAL.why);
+  if (review.skill !== null) return prReviewGate(toolName, input, ticketDir, review.skill);
+  if (review.problem !== undefined && toolName === "Bash" && heldCommand(target)) {
+    return refuse(`${review.problem}, so the pre-PR review cannot be checked: a push or a pull request is refused until it can be read`);
+  }
+  return ALLOW;
 }
 
 /** Whether an outcome file's text is a `working` outcome. Text that is not JSON is not one: the pool reads it as it reads any outcome. PURE. */
@@ -310,8 +341,8 @@ export function main(stdin: string, argv: string[]): HookResult {
     const review = prReviewSetting(ticketDir);
     const verdict = toolVerdict(tool, input, refusals, allowed.connectors, approvedPulls(ticketDir), publishConnectors(ticketDir), existsSync(join(ticketDir, READY_FILE)));
     // A call the other refusals stopped is neither logged nor gated: it did not run.
-    const gated = verdict.code === 0 && review.skill !== null ? prReviewGate(tool, input, ticketDir, review.skill) : verdict;
-    const notes = [note, allowed.note, review.note].filter((n): n is string => n !== undefined);
+    const gated = verdict.code === 0 ? prReviewVerdict(tool, input, ticketDir, review) : verdict;
+    const notes = [note, allowed.note].filter((n): n is string => n !== undefined);
     return notes.length === 0 ? gated : { ...gated, say: [...notes, ...gated.say] };
   } catch (err) {
     return { code: 0, say: [`ticket:hook: could not read the ${event} payload (${String((err as Error)?.message ?? err).split("\n")[0]}), so it is ALLOWED.`] };
