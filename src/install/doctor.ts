@@ -22,6 +22,7 @@ import { pathToFileURL } from "node:url";
 import { readLinearKey } from "../ticket-mode/linear.ts";
 import { parseTicketSettings, type KeySource, type TicketSettings } from "../ticket-mode/settings.ts";
 import { parseServeStatus, parseStatus, portState, runTailscale, serveStatusArgv, statusArgv, tailnetHosts, type ServeStatus, type TailscaleResult } from "../ticket-mode/tailnet.ts";
+import { sandboxGitEnv } from "../lib/git-env.ts";
 import { compareReleaseTags, isReleaseTag } from "../lib/release-tag.ts";
 import { hostFilePath, TOOL_ROOT, type Env } from "./paths.ts";
 import { pinnedPnpm, TOOL_PNPM_VERSION } from "./pnpm.ts";
@@ -354,7 +355,7 @@ export function report(checks: readonly Check[]): string {
 
 /** The release tags this checkout holds, read with git and no network: none when git cannot be run. */
 function localReleaseTags(): string[] {
-  const result = spawnSync("git", ["-C", TOOL_ROOT, "tag", "--list"], { encoding: "utf8" });
+  const result = spawnSync("git", ["-C", TOOL_ROOT, "tag", "--list"], { encoding: "utf8", env: sandboxGitEnv() });
   return result.status === 0 ? result.stdout.split("\n").filter((name) => isReleaseTag(name)) : [];
 }
 
