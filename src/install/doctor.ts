@@ -150,6 +150,24 @@ function linearMcpCheck(deps: DoctorDeps): Check {
     : failed("linear mcp", line.trim(), "`claude mcp get linear` says why; a key that changed is fixed by `claude mcp remove linear --scope user`, then `agent-org onboard`");
 }
 
+/** The Linear tools a writer checks for duplicates with: either connector's read of a ticket, which a `tickets.connectors` entry must allow. */
+const LINEAR_READS = ["mcp__linear__get_issue", "mcp__claude_ai_Linear__get_issue"];
+
+/**
+ * The ticket writer (A11-94). Always informational when `tickets.writer` is absent, which hides New ticket on the board. When it is named, it fails
+ * if no `tickets.connectors` entry lets a worker read a Linear ticket, since the writer checks for duplicates that way, and says whether Grill is on.
+ */
+function writerCheck(settings: TicketSettings | null): Check {
+  if (settings === null) return ok("ticket writer", "not checked: the host file did not parse");
+  if (settings.writer === null) return ok("ticket writer", "no: New ticket is hidden, since tickets.writer is not named");
+  const reads = settings.connectors.some((pattern) => LINEAR_READS.some((tool) => new RegExp(pattern).test(tool)));
+  if (!reads) {
+    return failed("ticket writer", "yes, but no tickets.connectors entry lets it read a Linear ticket, so it cannot check a new ticket for duplicates",
+      "run `agent-org onboard`, which names the Linear reads in tickets.connectors");
+  }
+  return ok("ticket writer", settings.terminal === null ? "yes: New ticket is shown, and Grill is off until tickets.terminal is named" : "yes: New ticket is shown, and Grill is on");
+}
+
 /**
  * The `gh` wrapper's checks (A11-84): the installed copy is the one `host.json` declares, and each declared role mints. A role whose mint fails names the reason the
  * minter printed first, so a key that moved or an App that was removed is the one thing to fix.
@@ -182,6 +200,7 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
     herdr === null ? failed("herdr", "`herdr` is not on PATH", "install herdr, which runs the workers' terminals, and put it on PATH") : ok("herdr", herdr),
     keyCheck(settings, deps),
     linearMcpCheck(deps),
+    writerCheck(settings),
     ...instance,
     ...herdrScopeChecks(settings, instanceState, deps),
     ...ui,

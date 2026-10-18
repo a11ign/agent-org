@@ -8,8 +8,10 @@ import {
   amend, approve, byIdentifier, childOrder, conflictRound, refuseParents, respond, batchPlanDone, dismiss, feedbackRound, MAX_FEEDBACK_ROUNDS, markPublishRunning, markPublishStarting, publishDone, publishFailed, publishStarts, queuePublish, emptyQueue, enqueue, finish, isLive, leaveBatch, liveRunCount, loadQueue, markResumed, markRunning, markStarting, nextStarts, observe, park,
   BACKGROUND_GONE, BACKGROUND_GONE_MS, clearEdit, clearMove, noteWorking, recordBlockers, recordMove, recordRepos, planDone, watchWorking, PLAN_BATCH_MAX, recordPullStates, recordTrackerStates, remove, retry, saveQueue, setMax, setPaused, unpark, unreadBlockerKeys, unsettledKeys, type Queue,
   pathsUnread, recordPaths, recordPullFiles, recordVerdictNotPosted, unreadPaths,
+  changeDraft, dismissWriter, draftOf, markWriterRunning, markWriterStarting, queueWriter, stopWriter, writerDrafted, writerFailed, writerOf, writerResumed, writerStatus, writerToStart, writerWaiting,
 } from "./queue.ts";
 import type { Blocker, Ticket } from "./source.ts";
+import type { Draft } from "./writer.ts";
 
 const ticket = (key: string) => ({ key, title: key, description: "", url: "", branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
 const choice = { model: "opus", effort: "high" };
@@ -644,4 +646,84 @@ test("a verdict that is not on a finished run's pull request is recorded on the 
   assert.deepEqual(a(cleared), a(finished), "and the run is otherwise as it was");
   const queued = enqueue(emptyQueue(2), [ticket("A")], choice, 1);
   assert.equal("verdictNotPosted" in recordVerdictNotPosted(queued, "A", "x").entries[0], false, "a queued run has no pull request to say of");
+});
+
+/*
+ * Writer runs (A11-94): a new-ticket request is its own record, holds a worker slot only while it runs, and keeps its drafts until each is settled.
+ */
+
+const request = { id: "w1", request: "Show the requests a person made", mode: "quick" as const, form: {} };
+const drafted = (file: string) => ({ file, draft: { title: file, why: "w", doneWhen: ["d"], notes: null, team: null, project: null, repo: null, goal: null, labels: [],
+  priority: "none", parent: null, blocks: [], blockedBy: [], duplicates: [] } as Draft, duplicates: [], status: "pending" as const, id: `d-${file}` });
+
+test("a writer run is queued, starts on a free slot, and holds one while it runs and while it starts", () => {
+  let queue = queueWriter(emptyQueue(1), request, 1);
+  assert.equal(writerToStart(queue)?.id, "w1");
+  queue = markWriterStarting(queue, "w1", 2);
+  assert.equal(writerToStart(queue), undefined, "its slot is held while it starts");
+  assert.equal(liveRunCount(queue), 1);
+  queue = markWriterRunning(queue, "w1", "ws", "p");
+  assert.equal(writerStatus(writerOf(queue, "w1")!), "writing");
+  queue = writerDrafted(queue, "w1", { drafts: [drafted("01-a.json")], rejected: [] }, 3);
+  assert.equal(liveRunCount(queue), 0, "a finished run holds no slot");
+  assert.equal(writerStatus(writerOf(queue, "w1")!), "to-review");
+});
+
+test("a writer run waits for a worker slot as a ticket does, and is not held by Pause", () => {
+  let queue = setPaused(emptyQueue(1), true);
+  queue = queueWriter(queue, request, 1);
+  assert.equal(writerToStart(queue)?.id, "w1", "a person asked for it: Pause does not hold it");
+  queue = queueWriter(queue, { ...request, id: "w2" }, 2);
+  queue = markWriterStarting(queue, "w1", 3);
+  assert.equal(writerToStart(queue), undefined, "one slot, held by the first");
+});
+
+test("at most three writer runs are unfinished at once, and a fourth is refused naming why", () => {
+  let queue = emptyQueue(3);
+  for (const id of ["a", "b", "c"]) queue = queueWriter(queue, { ...request, id }, 1);
+  assert.throws(() => queueWriter(queue, { ...request, id: "d" }, 2), /3 new-ticket requests are unfinished already/);
+  queue = writerFailed(queue, "a", "stopped", 3);
+  assert.equal(queueWriter(queue, { ...request, id: "d" }, 4).writers?.length, 4, "a finished one does not count");
+});
+
+test("a grill run waits on its question without a slot, and runs again once it works", () => {
+  let queue = markWriterRunning(markWriterStarting(queueWriter(emptyQueue(1), { ...request, mode: "grill" }, 1), "w1", 2), "w1", "ws", "p");
+  queue = writerWaiting(queue, "w1", "Which goal?");
+  assert.equal(writerStatus(writerOf(queue, "w1")!), "needs-you");
+  assert.equal(liveRunCount(queue), 0);
+  assert.equal(writerToStart(queue), undefined, "a waiting run is not queued again");
+  queue = writerResumed(queue, "w1", 9);
+  assert.equal(writerOf(queue, "w1")?.phase, "running");
+  assert.equal(writerOf(queue, "w1")?.question, undefined);
+});
+
+test("a run that wrote no valid draft ends failed and names each refused file; a run that wrote none at all says so", () => {
+  const queue = queueWriter(emptyQueue(1), request, 1);
+  const bad = writerDrafted(queue, "w1", { drafts: [], rejected: [{ file: "02-wire.json", reason: '02-wire.json: "priority" must be one of urgent' }] }, 2);
+  assert.equal(writerOf(bad, "w1")?.failure, 'none of its drafts is valid: 02-wire.json: "priority" must be one of urgent');
+  assert.equal(writerStatus(writerOf(bad, "w1")!), "failed");
+  assert.equal(writerOf(writerDrafted(queue, "w1", { drafts: [], rejected: [] }, 2), "w1")?.failure, "it wrote no draft");
+});
+
+test("a stopped run keeps the drafts it wrote, and a finished run dismisses once, while one still writing must be stopped first", () => {
+  let queue = markWriterRunning(markWriterStarting(queueWriter(emptyQueue(1), request, 1), "w1", 2), "w1", "ws", "p");
+  assert.throws(() => dismissWriter(queue, "w1"), /stop the new-ticket request before you dismiss it/);
+  queue = writerDrafted(queue, "w1", { drafts: [drafted("01-a.json")], rejected: [] }, 3);
+  queue = stopWriter(queue, "w1", 4);
+  assert.equal(writerOf(queue, "w1")?.drafts.length, 1, "a finished run is not changed by a stop");
+  queue = dismissWriter(queue, "w1");
+  assert.deepEqual(queue.writers, []);
+});
+
+test("a draft is changed by its own id, and a writer run round-trips through the queue file with its drafts", () => {
+  const path = join(tmpDir("ticket-queue-writers-"), "queue.json");
+  let queue = writerDrafted(markWriterRunning(markWriterStarting(queueWriter(emptyQueue(2), request, 1), "w1", 2), "w1", "ws", "p"), "w1",
+    { drafts: [drafted("01-a.json")], rejected: [{ file: "02-b.json", reason: "02-b.json: is not valid JSON" }] }, 3);
+  queue = changeDraft(queue, "w1", "d-01-a.json", (draft) => ({ ...draft, status: "discarded" }));
+  saveQueue(path, queue);
+  const loaded = loadQueue(path, 2);
+  assert.equal(loaded.writers?.[0].drafts[0].status, "discarded");
+  assert.deepEqual(loaded.writers?.[0].rejected, [{ file: "02-b.json", reason: "02-b.json: is not valid JSON" }]);
+  assert.equal(draftOf(loaded, "w1", "d-01-a.json")?.status, "discarded");
+  assert.equal(loadQueue(join(tmpDir("ticket-queue-old-"), "queue.json"), 2).writers, undefined, "a file from before writer runs loads with none");
 });

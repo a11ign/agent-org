@@ -37,6 +37,7 @@ class Node_ {
   }
   replaceChildren(...nodes: Node_[]) { this.children = []; this.append(...nodes); }
   showModal() { this.open = true; }
+  close() { this.open = false; }
   setAttribute(k: string, v: string) { this.attrs[k] = v; }
   getAttribute(k: string) { return this.attrs[k]; }
   addEventListener(type: string, fn: (event: { stopPropagation(): void }) => void) { (this.listeners[type] ??= []).push(fn); }
@@ -59,8 +60,11 @@ const TICKETS = [
 
 /** Run the page's script against a fake document, with `storage` as its localStorage. Resolves once the first render has happened. */
 type PageOptions = { config?: Record<string, unknown>; entries?: unknown[]; tickets?: unknown[]; parents?: unknown[]; refused?: string[]; publish?: unknown;
-  connections?: unknown; errors?: Record<string, string>; hold?: Record<string, unknown>; pick?: unknown; children?: unknown };
-async function page(storage: Map<string, string>, { config = {}, entries = [], tickets = TICKETS, parents = [], refused = [], publish, connections, errors = {}, hold = {}, pick, children }: PageOptions = {}) {
+  connections?: unknown; errors?: Record<string, string>; hold?: Record<string, unknown>; pick?: unknown; children?: unknown;
+  /** The new-ticket requests the board reads, and what a writer route answers for a path and body (default: the requests, as they are). */
+  writers?: { runs: unknown[] }; writerReply?: (path: string, body: any) => unknown };
+async function page(storage: Map<string, string>, { config = {}, entries = [], tickets = TICKETS, parents = [], refused = [], publish, connections, errors = {}, hold = {}, pick, children,
+  writers = { runs: [] }, writerReply }: PageOptions = {}) {
   const byId = new Map<string, Node_>();
   const posts: { path: string; body: any }[] = [];
   const requested: string[] = [];
@@ -84,6 +88,10 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
       return { ok: true, json: async () => hold[path], statusText: "" };
     }
     if (refused.includes(path)) return { ok: false, json: async () => ({ error: errors[path] ?? `${path} refused` }), statusText: "" };
+    if (path.replace(/^\/c\/[^/]+(?=\/api\/)/, "").startsWith("/api/writer")) {
+      const reply = writerReply === undefined ? writers : writerReply(path, body);
+      return { ok: true, json: async () => reply, statusText: "" };
+    }
     // Each connection's instance answers as one instance does, under its prefix.
     const answers: Record<string, () => unknown> = {
       ...(connections === undefined ? {} : { "/api/connections": () => connections }),
@@ -1116,4 +1124,131 @@ test("A11-80: a run whose worker wrote working shows In progress with its reason
   assert.equal(row("W-2").children[0].className, "icon st-working", "a stalled run is still In progress");
   const flag = row("W-2").all().find((n) => n.className === "waiting stalled");
   assert.equal(flag?.text(), "Stalled: idle with no newer outcome since it said: waiting on the second play");
+});
+
+/*
+ * New tickets (A11-94): the form, a run's card, and a draft reviewed in place. The page creates nothing itself: each button posts to its route.
+ */
+
+const WRITER_CONFIG = { writer: true, writerGrill: true, repos: ["nbl-ui-netbox", "platform-monorepo"], priorities: ["urgent", "high", "medium", "low", "none"] };
+const DRAFT = { id: "d1", file: "01-show.json", draft: { title: "feat: show requests", why: "A person asks", doneWhen: ["It lists them", "It links duplicates"], notes: null, team: "A11",
+  project: null, repo: "nbl-ui-netbox", goal: null, labels: ["Bucket: Board"], priority: "high", parent: null, blocks: [], blockedBy: [], duplicates: [] }, duplicates: [], status: "pending" };
+const RUN = { id: "w7", request: "Show the requests a person made", mode: "quick", phase: "finished", status: "to-review", form: {}, drafts: [DRAFT], rejected: [] };
+
+/** The draft's review card, by its file name, and its buttons. */
+function draftOf(p: Awaited<ReturnType<typeof page>>, file = "01-show.json") {
+  const card = p.$("writers-list").all().find((n) => n.className === "draft" && n.text().includes(file))!;
+  const button = (label: string) => card.all().find((n) => n.tag === "button" && n.textContent === label)!;
+  return { card, button, field: (name: string) => card.all().find((n) => n.attrs["aria-label"] === name)! };
+}
+
+test("New ticket is shown only on a machine that names tickets.writer, and Grill is disabled with its reason on one with no terminal", async () => {
+  const off = await page(new Map(), { config: {} });
+  assert.equal(off.$("new-ticket").hidden, true, "no writer, no New ticket");
+  const on = await page(new Map(), { config: { ...WRITER_CONFIG, writerGrill: false } });
+  assert.equal(on.$("new-ticket").hidden, false);
+  on.$("new-ticket").fire("click");
+  assert.equal(on.$("new-ticket-dialog").open, true);
+  assert.equal(on.$("writer-grill").disabled, true);
+  assert.equal(on.$("writer-grill-note").hidden, false);
+  assert.match(on.$("writer-grill-note").textContent, /Grill needs a terminal: name tickets.terminal/);
+});
+
+test("a request is sent with the choices the form made, and the run it starts shows as Writing with its request", async () => {
+  const p = await page(new Map(), { config: WRITER_CONFIG, tickets: TICKETS, writers: { runs: [{ ...RUN, phase: "running", status: "writing", drafts: [], workspace: "w1", pane: "w1:p1" }] } });
+  p.$("new-ticket").fire("click");
+  p.$("writer-request").value = "  Show the requests a person made  ";
+  p.$("writer-repo").value = "nbl-ui-netbox";
+  p.$("writer-priority").value = "high";
+  p.$("writer-start").fire("click");
+  await settle();
+  const sent = p.posts.find(({ path }) => path === "/api/writer")!;
+  assert.deepEqual(sent.body, { request: "Show the requests a person made", mode: "quick", repo: "nbl-ui-netbox", priority: "high" });
+  assert.equal(p.$("new-ticket-dialog").open, false, "the dialog closes once the request is queued");
+  assert.ok(p.$("writers-list").text().includes("Writing"));
+});
+
+test("a request with no text is not sent, and says what it needs", async () => {
+  const p = await page(new Map(), { config: WRITER_CONFIG });
+  p.$("new-ticket").fire("click");
+  p.$("writer-start").fire("click");
+  await settle();
+  assert.equal(p.posts.filter(({ path }) => path === "/api/writer").length, 0);
+  assert.equal(p.$("writer-note").textContent, "Write what the ticket is for, in plain words");
+});
+
+test("a draft is reviewed in place: its duplicates are linked above its buttons, and Approve waits for the duplicate check", async () => {
+  const dup = { ...DRAFT, duplicates: [{ key: "NBF-9", why: "same request", title: "Show requests", url: "https://linear.app/x/NBF-9" }, { key: "NBF-404", why: "gone", title: null, url: null }] };
+  const p = await page(new Map(), { config: WRITER_CONFIG, writers: { runs: [{ ...RUN, drafts: [dup] }] } });
+  const d = draftOf(p);
+  const links = d.card.all().filter((n) => n.tag === "a").map((a) => [a.textContent, (a as Node_ & { href?: string }).href]);
+  assert.deepEqual(links, [["NBF-9 Show requests", "https://linear.app/x/NBF-9"]], "linked, with its address");
+  assert.ok(d.card.text().includes("NBF-404: not found in the tracker"));
+  assert.equal(d.button("Approve").disabled, true, "POSITIVE CONTROL: no approve until the duplicate check is ticked");
+  assert.equal(d.button("Approve and queue").disabled, true);
+  const ack = d.card.all().find((n) => n.attrs["aria-label"] === "These are duplicates of the ticket above")!;
+  ack.checked = true;
+  ack.fire("change");
+  assert.equal(d.button("Approve").disabled, false);
+});
+
+test("Approve posts the draft as it was edited, with the duplicate check, and shows the ticket it created", async () => {
+  const created = { runs: [{ ...RUN, drafts: [{ ...DRAFT, status: "created", created: { key: "NBF-101", url: "u" } }] }], created: { key: "NBF-101", url: "u", warnings: [], queued: false, queueError: null, inPick: true } };
+  const p = await page(new Map(), { config: WRITER_CONFIG, writers: { runs: [RUN] }, writerReply: (path) => (path.endsWith("/approve") ? created : { runs: [RUN] }) });
+  const d = draftOf(p);
+  d.field("title").value = "feat: an edited title";
+  d.field("doneWhen").value = "It lists them\n\nIt links the duplicates";
+  d.field("labels").value = "Bucket: Board, Ticket mode";
+  d.button("Approve").fire("click");
+  await settle();
+  const sent = p.posts.find(({ path }) => path.endsWith("/approve"))!;
+  assert.equal(sent.path, "/api/writer/w7/drafts/d1/approve");
+  assert.deepEqual(sent.body.draft, { title: "feat: an edited title", why: "A person asks", doneWhen: ["It lists them", "It links the duplicates"], labels: ["Bucket: Board", "Ticket mode"],
+    priority: "high", blocks: [], blockedBy: [], team: "A11", repo: "nbl-ui-netbox" });
+  assert.deepEqual([sent.body.queue, sent.body.acknowledgeDuplicates], [false, false]);
+  assert.equal(p.$("writers-note").textContent, "Created as NBF-101.");
+  assert.ok(p.$("writers-list").text().includes("Created as NBF-101"));
+});
+
+test("Approve and queue posts queue, with Plan first as the Pick footer has it; Discard posts discard and creates nothing", async () => {
+  const p = await page(new Map(), { config: WRITER_CONFIG, writers: { runs: [RUN] }, writerReply: (path) => (path.endsWith("/discard") ? { runs: [{ ...RUN, drafts: [{ ...DRAFT, status: "discarded" }] }] }
+    : { runs: [RUN], created: { key: "NBF-102", url: "u", warnings: [], queued: true, queueError: null, inPick: true } }) });
+  p.$("plan-first").checked = false;
+  draftOf(p).button("Approve and queue").fire("click");
+  await settle();
+  const queued = p.posts.find(({ path }) => path.endsWith("/approve"))!;
+  assert.deepEqual([queued.body.queue, queued.body.plan], [true, false]);
+  draftOf(p).button("Discard").fire("click");
+  await settle();
+  assert.ok(p.posts.some(({ path }) => path === "/api/writer/w7/drafts/d1/discard"));
+  assert.equal(p.posts.filter(({ path }) => path.endsWith("/approve")).length, 1, "discard creates nothing: no approve was sent for it");
+  assert.ok(p.$("writers-list").text().includes("Discarded"));
+});
+
+test("a run's Stop and Dismiss post to their routes, and Open terminal links to its workspace while it works", async () => {
+  const working = { ...RUN, phase: "running", status: "writing", drafts: [], workspace: "w3", pane: "w3:p1" };
+  const p = await page(new Map(), { config: { ...WRITER_CONFIG, terminal: "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal" }, writers: { runs: [working] },
+    connections: WORK_ALONE,
+    writerReply: (path) => (path.endsWith("/stop") || path.endsWith("/dismiss") ? { runs: [{ ...RUN, phase: "finished", status: "done", drafts: [] }] } : { runs: [working] }) });
+  const card = () => p.$("writers-list").all().find((n) => n.className === "writer")!;
+  const terminal = card().all().find((n) => n.tag === "a" && n.textContent === "Open terminal") as (Node_ & { href?: string }) | undefined;
+  assert.ok(terminal?.href?.includes("/terminal?link="), "the terminal opens while the agent works");
+  assert.equal(terminal!.href, opens("http://127.0.0.1:7318/?ws=w3&pane=w3%3Ap1&view=terminal"), "the link names the run's workspace and pane, as a ticket's does");
+  const button = (label: string) => card().all().find((n) => n.tag === "button" && n.textContent === label)!;
+  button("Stop").fire("click");
+  await settle();
+  assert.ok(p.posts.some(({ path }) => path.endsWith("/api/writer/w7/stop")), "posted to the shown instance");
+  button("Dismiss").fire("click");
+  await settle();
+  assert.ok(p.posts.some(({ path }) => path.endsWith("/api/writer/w7/dismiss")));
+});
+
+test("a request that asks a question shows it, and a refused request shows what the writer's files got wrong", async () => {
+  const p = await page(new Map(), { config: WRITER_CONFIG, writers: { runs: [
+    { ...RUN, phase: "waiting", status: "needs-you", drafts: [], question: "Which goal does it serve?" },
+    { ...RUN, id: "w8", phase: "finished", status: "failed", drafts: [], failure: "none of its drafts is valid", rejected: [{ file: "02-wire.json", reason: '02-wire.json: "priority" must be one of urgent' }] },
+  ] } });
+  assert.ok(p.$("writers-list").text().includes("It asks: Which goal does it serve?"));
+  assert.ok(p.$("writers-list").text().includes('02-wire.json: "priority" must be one of urgent'));
+  assert.ok(p.$("writers-list").text().includes("Failed"));
 });

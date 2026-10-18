@@ -502,3 +502,26 @@ test("A11-84: the protected list is resolved as a write is, so a write through a
   const throughLink = JSON.stringify({ tool_name: "Write", tool_input: { file_path: join(link, "gh") } });
   assert.equal(main(throughLink, ["pre-tool-use", dir]).code, 2, "and the same file named through the link is refused too");
 });
+
+test("A11-94: a new-ticket run may read the tracker through the allowed connectors, and may create nothing, whatever its connectors allow", () => {
+  const writer = (tool: string) => toolVerdict(tool, {}, { writer: true, connectors: [LINEAR_READS[0], /^mcp__claude_ai_Linear__save_issue$/] }).code;
+  assert.equal(writer("mcp__claude_ai_Linear__get_issue"), 0, "POSITIVE CONTROL: a read the connectors allow");
+  assert.equal(writer("mcp__claude_ai_Linear__list_issues"), 0);
+  assert.equal(writer("mcp__claude_ai_Linear__save_issue"), 2, "a create the connectors name is still refused: the name is a read");
+  assert.equal(writer("mcp__claude_ai_Linear__save_comment"), 2);
+  assert.equal(writer("mcp__plugin_slack_slack__slack_send_message"), 2, "a connector the machine does not allow");
+  assert.equal(toolVerdict("mcp__claude_ai_Linear__get_issue", {}, { connectors: LINEAR_READS }).code, 0, "a worker keeps its reads as before");
+});
+
+test("A11-94: the new-ticket mark is the board's to write, and a new-ticket run reads its own mark through the hook", () => {
+  const dir = tmpDir("ticket-hook-writer-");
+  const call = (tool_name: string, tool_input: Record<string, unknown> = {}) => main(JSON.stringify({ tool_name, tool_input }), ["pre-tool-use", dir]).code;
+  writeFileSync(join(dir, "connectors.json"), `${JSON.stringify(LINEAR_READS.map((pattern) => pattern.source))}\n`);
+  assert.equal(call("mcp__claude_ai_Linear__save_issue"), 2, "no mark: a worker's connectors are as before, and this one is not named");
+  assert.equal(call("mcp__claude_ai_Linear__get_issue"), 0, "no mark: a worker reads as before");
+  writeFileSync(join(dir, "writer-run"), "{}\n");
+  assert.equal(call("mcp__claude_ai_Linear__get_issue"), 0);
+  assert.equal(call("mcp__claude_ai_Linear__save_issue"), 2);
+  assert.equal(call("Write", { file_path: join(dir, "writer-run") }), 2, "a worker may not write the mark");
+  assert.equal(bash(`echo '{}' > ${dir}/writer-run`), 2);
+});

@@ -11,6 +11,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname } from "node:path";
 import { COMPLETING_KINDS, CONCLUDED, isBeingPublished, isParked, isPublishing, isWatched, openPulls, overlapWait, resumesOnConflict, RESULT_KINDS, runStatus, settledByPulls, waitsOn } from "./board-view.ts";
 import type { Blocker, PullState, StateMove, Ticket } from "./source.ts";
+import type { Draft, Priority, Rejection, ResolvedDuplicate } from "./writer.ts";
 
 /**
  * What a worker's `partial` declaration says remains of its ticket: its words, trimmed, or null for none, which is a blank declaration or the brief's
@@ -213,7 +214,71 @@ export type PublishRun = Readonly<{
  * `paused`: no queued entry starts while it is true. A new queue starts PAUSED, so queueing is never also starting: a person can queue tickets
  * before what the workers need is ready (a dev environment, a merge) and start them on the board when it is.
  */
-export type Queue = Readonly<{ entries: readonly Entry[]; max: number; paused: boolean; publish?: PublishRun }>;
+export type Queue = Readonly<{ entries: readonly Entry[]; max: number; paused: boolean; publish?: PublishRun; writers?: readonly WriterRun[] }>;
+
+/**
+ * A draft a writer run left, as the board holds it: the draft as checked, its duplicates as the tracker has them, and its status. `creating` is kept
+ * before the tracker is asked, so a restart in between is seen: the approve is retried, and the tracker's own id keeps it to one ticket.
+ */
+export type DraftRecord = Readonly<{
+  id: string;
+  file: string;
+  draft: Draft;
+  duplicates: readonly ResolvedDuplicate[];
+  status: "pending" | "creating" | "created" | "discarded";
+  /** The ticket the approve made, once it has. */
+  created?: Readonly<{ key: string; url: string }>;
+  /** Why the tracker refused the last approve, shown with the draft still editable. */
+  failure?: string;
+  /** The tracker's warnings on the ticket it made: a relation that did not land. */
+  warnings?: readonly string[];
+}>;
+
+/** The ticket-writing run's mode: `quick` runs unattended, `grill` asks the person in its terminal before it drafts. */
+export type WriterMode = "quick" | "grill";
+
+/** The choices the form made, each a requirement in the writer's brief and shown editable in the review. */
+export type WriterForm = Readonly<{ project?: string; repo?: string; goal?: string; priority?: Priority; parent?: string }>;
+
+/** The phases of a writer run. Only `starting` and `running` hold a worker slot; `waiting` is a grill run whose question the person answers. */
+export type WriterPhase = "queued" | "starting" | "running" | "waiting" | "finished";
+
+/** A new-ticket request and the run that writes its drafts: a record of its own, not a ticket entry, since its ticket does not exist yet. */
+export type WriterRun = Readonly<{
+  id: string;
+  request: string;
+  mode: WriterMode;
+  form: WriterForm;
+  phase: WriterPhase;
+  queuedAt: number;
+  startedAt?: number;
+  finishedAt?: number;
+  workspace?: string;
+  pane?: string;
+  /** Whether the agent has been seen working, which lets a grill run's next outcome be told from its last. */
+  seenWorking?: boolean;
+  /** The question a grill run waits on, which the person answers in its terminal. */
+  question?: string;
+  /** Why the run failed, once it has. A stopped run says so. */
+  failure?: string;
+  drafts: readonly DraftRecord[];
+  rejected: readonly Rejection[];
+}>;
+
+/** The most new-ticket requests that are not finished at once: a fourth is refused until one ends. */
+export const MAX_WRITER_RUNS = 3;
+
+/** Where a new-ticket request is on the board: writing, waiting on the person, ready for review, done, or failed. */
+export type WriterStatus = "queued" | "writing" | "needs-you" | "to-review" | "done" | "failed";
+
+/** The status of a writer run, from its phase, its failure and its drafts still to review. PURE. */
+export function writerStatus(run: WriterRun): WriterStatus {
+  if (run.failure !== undefined) return "failed";
+  if (run.phase === "queued") return "queued";
+  if (run.phase === "starting" || run.phase === "running") return "writing";
+  if (run.phase === "waiting") return "needs-you";
+  return run.drafts.some(({ status }) => status === "pending" || status === "creating") ? "to-review" : "done";
+}
 
 export type RunChoice = Readonly<{ model: string; effort: string }>;
 
@@ -227,7 +292,7 @@ export const isLive = (entry: Entry): boolean => LIVE.has(entry.phase);
  */
 export function liveRunCount(queue: Queue): number {
   const runs = new Set(queue.entries.filter(isLive).map((entry) => entry.batch === undefined ? `ticket:${entry.ticket.key}` : `batch:${entry.batch}`));
-  return runs.size + (queue.publish !== undefined && LIVE.has(queue.publish.phase) ? 1 : 0);
+  return runs.size + (queue.publish !== undefined && LIVE.has(queue.publish.phase) ? 1 : 0) + (queue.writers ?? []).filter(writerLive).length;
 }
 
 function replace(queue: Queue, key: string, change: (entry: Entry) => Entry): Queue {
@@ -776,7 +841,10 @@ const asStarting = (entry: Entry): Entry => ({ ...entry, phase: "starting" });
 
 /** The slots live runs hold: one per run, and one for a live publish run. */
 const slotsHeld = (queue: Queue): number =>
-  new Set(queue.entries.filter(isLive).map(runOf)).size + (queue.publish !== undefined && LIVE.has(queue.publish.phase) ? 1 : 0);
+  new Set(queue.entries.filter(isLive).map(runOf)).size + (queue.publish !== undefined && LIVE.has(queue.publish.phase) ? 1 : 0) + (queue.writers ?? []).filter(writerLive).length;
+
+/** Whether a writer run holds a worker slot: it is starting or running. */
+const writerLive = (run: WriterRun): boolean => run.phase === "starting" || run.phase === "running";
 
 /** The run an entry starts in, for counting slots: its batch's, which every ticket in the batch shares, or else its own. */
 const runOf = (entry: Entry): string => entry.batch ?? entry.ticket.key;
@@ -789,7 +857,8 @@ export function emptyQueue(max: number): Queue {
 export function loadQueue(path: string, max: number): Queue {
   if (!existsSync(path)) return emptyQueue(max);
   const parsed = JSON.parse(readFileSync(path, "utf8")) as Queue;
-  return { entries: parsed.entries ?? [], max: parsed.max ?? max, paused: parsed.paused ?? true, ...(parsed.publish ? { publish: parsed.publish } : {}) };
+  return { entries: parsed.entries ?? [], max: parsed.max ?? max, paused: parsed.paused ?? true, ...(parsed.publish ? { publish: parsed.publish } : {}),
+    ...(parsed.writers ? { writers: parsed.writers } : {}) };
 }
 
 /** Replace the file whole: write beside it, then rename over it. */
@@ -799,3 +868,90 @@ export function saveQueue(path: string, queue: Queue): void {
   writeFileSync(next, `${JSON.stringify(queue, null, 2)}\n`);
   renameSync(next, path);
 }
+
+/*
+ * WRITER RUNS. A new-ticket request is a short run of the ticket-writing skill, which leaves drafts; a person approves each one on the board, and only
+ * then is a ticket made. These transitions keep each run's phase, slot and drafts, as the publish run's do for its own.
+ */
+
+/** Change the writer run `id`, if there is one. */
+const replaceWriter = (queue: Queue, id: string, change: (run: WriterRun) => WriterRun): Queue =>
+  ({ ...queue, writers: (queue.writers ?? []).map((run) => (run.id === id ? change(run) : run)) });
+
+const findWriter = (queue: Queue, id: string): WriterRun | undefined => (queue.writers ?? []).find((run) => run.id === id);
+
+/**
+ * Add a new-ticket request, queued. At most {@link MAX_WRITER_RUNS} are unfinished at once: a fourth is refused, naming why, so a person clears one
+ * first. PURE.
+ */
+export function queueWriter(queue: Queue, request: Pick<WriterRun, "id" | "request" | "mode" | "form">, now: number): Queue {
+  const open = (queue.writers ?? []).filter((run) => run.phase !== "finished").length;
+  if (open >= MAX_WRITER_RUNS) throw new Error(`${MAX_WRITER_RUNS} new-ticket requests are unfinished already: finish or stop one before you add another`);
+  const run: WriterRun = { ...request, phase: "queued", queuedAt: now, drafts: [], rejected: [] };
+  return { ...queue, writers: [...(queue.writers ?? []), run] };
+}
+
+/** The writer run that starts now: the first queued one, when a worker slot is free. A run waits for no Pause: a person just asked for it. */
+export function writerToStart(queue: Queue): WriterRun | undefined {
+  if (slotsHeld(queue) >= queue.max) return undefined;
+  return (queue.writers ?? []).find((run) => run.phase === "queued");
+}
+
+export const markWriterStarting = (queue: Queue, id: string, now: number): Queue =>
+  replaceWriter(queue, id, (run) => ({ ...run, phase: "starting", startedAt: now }));
+
+export const markWriterRunning = (queue: Queue, id: string, workspace: string, pane: string): Queue =>
+  replaceWriter(queue, id, (run) => ({ ...run, phase: "running", workspace, pane }));
+
+/** The agent was seen working: a grill run's question is answered, or it is simply under way. */
+export const observeWriter = (queue: Queue, id: string): Queue =>
+  replaceWriter(queue, id, (run) => (run.seenWorking === true ? run : { ...run, seenWorking: true }));
+
+/** A grill run waits for the person to answer its question in its terminal. Its slot is given back while it waits. */
+export const writerWaiting = (queue: Queue, id: string, question: string): Queue =>
+  replaceWriter(queue, id, (run) => ({ ...run, phase: "waiting", question }));
+
+/** A waiting grill run is working again: it has been answered, and its question is no longer shown. */
+export const writerResumed = (queue: Queue, id: string, now: number): Queue =>
+  replaceWriter(queue, id, (run) => ({ ...run, phase: "running", startedAt: now, question: undefined, seenWorking: false }));
+
+/**
+ * The writer run ended with its drafts: each valid draft is stored as pending, with its duplicates, and each refused file is kept by name. A run
+ * with no valid draft ends failed, saying what each refused file got wrong. PURE.
+ */
+export function writerDrafted(queue: Queue, id: string, written: Readonly<{ drafts: readonly DraftRecord[]; rejected: readonly Rejection[] }>, now: number): Queue {
+  if (written.drafts.length === 0) {
+    const reasons = written.rejected.map(({ reason }) => reason).join("; ");
+    const failure = written.rejected.length === 0 ? "it wrote no draft" : `none of its drafts is valid: ${reasons}`;
+    return replaceWriter(queue, id, (run) => ({ ...run, phase: "finished", finishedAt: now, failure, rejected: written.rejected, question: undefined }));
+  }
+  return replaceWriter(queue, id, (run) => ({ ...run, phase: "finished", finishedAt: now, drafts: written.drafts, rejected: written.rejected, question: undefined }));
+}
+
+/** The writer run failed: it holds no slot, and its drafts so far are kept. */
+export function writerFailed(queue: Queue, id: string, failure: string, now: number): Queue {
+  return replaceWriter(queue, id, (run) => ({ ...run, phase: "finished", finishedAt: now, failure, question: undefined }));
+}
+
+/** The person stopped the writer run: its workspace is closed by the caller, and the drafts it already wrote stay for review. */
+export const stopWriter = (queue: Queue, id: string, now: number): Queue =>
+  replaceWriter(queue, id, (run) => (run.phase === "finished" ? run : { ...run, phase: "finished", finishedAt: now, failure: "stopped on the board", question: undefined }));
+
+/** Remove a finished writer run from the board. A run still writing is stopped first. */
+export function dismissWriter(queue: Queue, id: string): Queue {
+  const run = findWriter(queue, id);
+  if (run === undefined) return queue;
+  if (run.phase !== "finished") throw new Error("stop the new-ticket request before you dismiss it");
+  return { ...queue, writers: (queue.writers ?? []).filter((other) => other.id !== id) };
+}
+
+/** Change one draft of the writer run `id`, which holds it. */
+export const changeDraft = (queue: Queue, id: string, draftId: string, change: (draft: DraftRecord) => DraftRecord): Queue =>
+  replaceWriter(queue, id, (run) => ({ ...run, drafts: run.drafts.map((draft) => (draft.id === draftId ? change(draft) : draft)) }));
+
+/** The writer run's draft `draftId`, or undefined. */
+export const draftOf = (queue: Queue, id: string, draftId: string): DraftRecord | undefined =>
+  findWriter(queue, id)?.drafts.find((draft) => draft.id === draftId);
+
+/** The writer run `id`, or undefined. */
+export const writerOf = (queue: Queue, id: string): WriterRun | undefined => findWriter(queue, id);

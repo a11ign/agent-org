@@ -73,12 +73,16 @@ test("the worker terminal's pairing code is passed on as a POST, and never as a 
 });
 
 test("only the routes the page calls are passed on, by the method it calls them with, so a pairing code there is never asked for", async () => {
-  for (const path of ["/api/config", "/api/tickets", "/api/parents", "/api/pick", "/api/queue"]) assert.equal(passedOn("GET", path), true, path);
+  for (const path of ["/api/config", "/api/tickets", "/api/parents", "/api/pick", "/api/queue", "/api/writer"]) assert.equal(passedOn("GET", path), true, path);
   for (const path of ["/api/queue", "/api/queue-children", "/api/choice", "/api/publish", "/api/paused", "/api/max", "/api/queue/NBF-1/approve", "/api/queue/NBF-1/stop", "/api/queue/NBF-1/dismiss", "/api/queue/NBF-1/apply-edit", "/api/queue/NBF-1/discard-edit"]) {
     assert.equal(passedOn("POST", path), true, path);
   }
+  for (const path of ["/api/writer/w1/stop", "/api/writer/w1/dismiss", "/api/writer/w1/drafts/d1/approve", "/api/writer/w1/drafts/d1/discard"]) {
+    assert.equal(passedOn("POST", path), true, path);
+  }
   for (const [method, path] of [["POST", "/api/pair-code"], ["POST", "/api/pair-code/"], ["POST", "/api/queue/NBF-1/../../pair-code"], ["GET", "/api/profiles"],
-    ["DELETE", "/api/queue"], ["GET", "/api/paused"], ["POST", "/api/queue/NBF-1/drop"]]) {
+    ["DELETE", "/api/queue"], ["GET", "/api/paused"], ["POST", "/api/queue/NBF-1/drop"], ["DELETE", "/api/writer"], ["POST", "/api/writer/w1/drafts/d1/create"],
+    ["POST", "/api/writer/w1/drafts/d1/approve/extra"], ["POST", "/api/writer/w1/../stop"]]) {
     assert.equal(passedOn(method, path), false, `${method} ${path}`);
   }
   let sent = 0;

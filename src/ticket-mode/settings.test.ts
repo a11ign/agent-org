@@ -21,7 +21,7 @@ test("only `clones` is required, every repository in it is offered, and every ot
 
 test("the `tickets` block and `stateDir` override the defaults", () => {
   const settings = parseTicketSettings({ clones, stateDir: "/state", tickets: { max: 5, port: 5000, herdrSession: "nbl", worktreeRoot: "/wt", linearKey: { path: "/keys/linear" } } });
-  assert.deepEqual({ ...settings, clones: undefined }, { clones: undefined, max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", worktreeRoot: "/wt", stateDir: "/state", binDir: join(homedir(), ".local", "bin"), linearKey: { path: "/keys/linear" }, brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, workingState: null, connectors: [], publish: null, drafts: true, prReview: null, reviewer: null, pick: "assigned", stallMinutes: 30, updateMaxDeferHours: 2, serve: null });
+  assert.deepEqual({ ...settings, clones: undefined }, { clones: undefined, max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", worktreeRoot: "/wt", stateDir: "/state", binDir: join(homedir(), ".local", "bin"), linearKey: { path: "/keys/linear" }, brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, writer: null, workingState: null, connectors: [], publish: null, drafts: true, prReview: null, reviewer: null, pick: "assigned", stallMinutes: 30, updateMaxDeferHours: 2, serve: null });
 });
 
 test("the page's port is its own: it can be moved, and is refused when it is the instance's", () => {
@@ -266,6 +266,20 @@ test("a serve setting that is not valid is refused by name: another value, ports
   refuses({ serve: "tailscale", servePorts: { ui: 9443, terminal: 9443 } }, "tickets.servePorts");
   assert.throws(() => parseTicketSettings({ clones, tickets: { serve: "tailscale", servePorts: { ui: 0 } } }), /`tickets\.servePorts\.ui` in the host file must be a port from 1 to 65535, not 0/);
 });
+test("a machine names how a new ticket is written from a person's request: the writer's instruction, on opus at high effort unless it says otherwise", () => {
+  const run = "Run the a11ign:create-ticket skill, quick, for this request: {request}. Write each draft under {dir}/drafts.";
+  assert.deepEqual(parseTicketSettings({ clones, tickets: { writer: { run } } }).writer, { run, model: "opus", effort: "high" });
+  assert.deepEqual(parseTicketSettings({ clones, tickets: { writer: { run, model: "sonnet", effort: "low" } } }).writer, { run, model: "sonnet", effort: "low" });
+  assert.equal(parseTicketSettings({ clones }).writer, null, "absent, the board offers no New ticket");
+  for (const [writer, field] of [
+    [{ run: "write {dir}" }, "tickets.writer"], [{ run: "write {request}" }, "tickets.writer"], [{ run: "write nothing" }, "tickets.writer"],
+    ["write {request} into {dir}", "tickets.writer"], [{ run: 7 }, "tickets.writer"],
+    [{ run, model: "two words" }, "tickets.writer.model"], [{ run, effort: "" }, "tickets.writer.effort"],
+  ] as const) {
+    assert.throws(() => parseTicketSettings({ clones, tickets: { writer } }), (err: unknown) => err instanceof TicketSettingsRefusal && err.field === field, JSON.stringify(writer));
+  }
+});
+
 test("A11-84: the host's bin directory is read from `binDir`, and a host that names none gets the directory the installer uses", () => {
   assert.equal(parseTicketSettings({ clones: { a: "/r/a" }, binDir: "/opt/bin" }).binDir, "/opt/bin");
   assert.equal(parseTicketSettings({ clones: { a: "/r/a" } }, "/home/me").binDir, join("/home/me", ".local", "bin"));

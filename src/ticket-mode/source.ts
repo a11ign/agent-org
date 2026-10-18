@@ -75,6 +75,26 @@ export type Blocker = Readonly<{ key: string; state: string; status: string; bra
  */
 export type StateMove = Readonly<{ from: string; to: string }>;
 
+/**
+ * A ticket a person approved on the board, as the tracker is asked to create it (A11-94). `id` is the draft's own UUID, which the tracker takes as the
+ * ticket's id, so a creation that is retried makes no second ticket. `team` is a team's key, or null for the source to choose one. `goal` names a
+ * label in the group `Goal`, and `labels` any label the team or workspace has. A relation names a key already in the tracker.
+ */
+export type NewTicket = Readonly<{
+  id: string;
+  team: string | null;
+  title: string;
+  description: string;
+  project: string | null;
+  goal: string | null;
+  labels: readonly string[];
+  /** 0 is none, 1 is the most urgent. */
+  priority: number;
+  parent: string | null;
+  blocks: readonly string[];
+  blockedBy: readonly string[];
+}>;
+
 export interface TicketSource {
   /**
    * Every unfinished ticket the Pick view lists: by default those assigned to the person whose key this is, or, where the host file's
@@ -152,4 +172,11 @@ export interface TicketSource {
    * source without it cannot apply one. Throws when the tracker refuses.
    */
   updateTicketText?(key: string, text: Readonly<{ title?: string; description?: string }>): Promise<void>;
+  /**
+   * Create a ticket a person approved on the board (A11-94), assigned to the person whose key this is so it shows in the Pick view. Everything it names
+   * is resolved BEFORE anything is created, so a name that does not resolve creates nothing and is refused naming it. A relation that fails after the
+   * ticket exists is returned as a warning, never retried into a second ticket. Only the board's approve route calls it: no worker and no writer run
+   * can. A source without it creates nothing. Throws when the tracker refuses.
+   */
+  createTicket?(input: NewTicket): Promise<Readonly<{ ticket: Ticket; warnings: readonly string[] }>>;
 }

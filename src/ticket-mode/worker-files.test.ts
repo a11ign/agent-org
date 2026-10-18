@@ -1,7 +1,7 @@
 // no-token: gh -- pure builders
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { CONFLICT_LINE, batchPlanBriefText, briefText, conflictLine, firstPrompt, planBriefText, publishBriefText, reviewBriefText, reviewPrompt, workerFlags, workerSettings } from "./worker-files.ts";
+import { CONFLICT_LINE, batchPlanBriefText, briefText, conflictLine, firstPrompt, planBriefText, publishBriefText, reviewBriefText, reviewPrompt, workerFlags, workerSettings, writerBriefText } from "./worker-files.ts";
 import type { Blocker, Ticket } from "./source.ts";
 
 const ticket = { key: "NBF-1270", title: "Refresh Data gives no feedback", description: "Clicking does nothing visible.", url: "https://linear.app/x/issue/NBF-1270",
@@ -472,3 +472,49 @@ test("A11-82: both planner briefs tell the planner the ## Paths section, and a b
   assert.equal(plan.includes("order.json"), false, "a ticket planned alone writes no order");
 });
 
+
+/*
+ * A new-ticket run's brief (A11-94): the instruction, the request quoted, the choices as requirements, the draft format the board reads, the read-only
+ * tracker, and what the run writes last. Quick and grill are told apart.
+ */
+
+const WRITER = { run: "Run the a11ign:create-ticket skill, quick, for this request: {request}. Write each draft under {dir}/drafts.", clones: { "nbl-ui-netbox": "/r/netbox" } };
+
+test("A11-94: a new-ticket brief fills in the instruction, quotes the request, states the choices as requirements, and gives the draft format and outcome the board reads", () => {
+  const brief = writerBriefText({ ...WRITER, request: "Show the requests\nA person made", mode: "quick", form: { repo: "nbl-ui-netbox", priority: "high" }, dir: "/state/tickets/writer/w1" });
+  assert.match(brief, /^# New ticket: Show the requests$/m);
+  assert.match(brief, /> Show the requests\n> A person made/, "the request, quoted line by line");
+  assert.match(brief, /for this request: Show the requests\nA person made\. Write each draft under \/state\/tickets\/writer\/w1\/drafts\./, "the instruction, with the request and the folder filled in");
+  assert.match(brief, /- Repository: `nbl-ui-netbox`/);
+  assert.match(brief, /- Priority: high/);
+  assert.match(brief, /These are requirements/);
+  assert.match(brief, /under `\/state\/tickets\/writer\/w1\/drafts\/`, named `NN-short-name\.json`/, "the drafts folder and its file names");
+  for (const field of ["title", "why", "doneWhen", "duplicates", "blockedBy", "parent"]) assert.match(brief, new RegExp(`"${field}"`), field);
+  assert.match(brief, /At most 10 files/);
+  assert.match(brief, /No other field is read, so a field that is not in this list is refused by name\./);
+  assert.match(brief, /\{ "kind": "drafted" \}/);
+  assert.match(brief, /\/state\/tickets\/writer\/w1\/outcome\.json/);
+  assert.match(brief, /create no ticket, post no comment, edit no ticket/, "a writer creates nothing");
+});
+
+test("A11-94: a new-ticket brief reads the tracker with read-only tools only, and says so", () => {
+  const brief = writerBriefText({ ...WRITER, request: "x", mode: "quick", form: {}, dir: "/d" });
+  assert.match(brief, /read-only Linear tools.*`get`, `list`, `search`, `extract`/);
+  assert.match(brief, /Name each one in the draft's `duplicates`/);
+  assert.match(brief, /None\. The request decides each of these\./, "no choices made: the request decides");
+});
+
+test("A11-94: quick runs unattended and decides; grill asks the person in the run's terminal first, and may write needs-human", () => {
+  const quick = writerBriefText({ ...WRITER, request: "x", mode: "quick", form: {}, dir: "/d" });
+  assert.match(quick, /You are unattended\. Nobody will answer a question: decide, and write one or more drafts\./);
+  assert.doesNotMatch(quick, /ask them your questions/);
+  const grill = writerBriefText({ ...WRITER, request: "x", mode: "grill", form: {}, dir: "/d" });
+  assert.match(grill, /You are interactive: the person is in this run's terminal\. Ask them your questions one at a time before you draft/);
+  assert.match(grill, /Write `needs-human` only in grill mode/);
+});
+
+test("A11-94: the writer's brief names the one repository list it may read, and no other repository", () => {
+  const brief = writerBriefText({ ...WRITER, request: "x", mode: "quick", form: {}, dir: "/d" });
+  assert.match(brief, /- `nbl-ui-netbox` at `\/r\/netbox`/);
+  assert.match(brief, /read only; never change them/);
+});

@@ -11,8 +11,9 @@
 import { join } from "node:path";
 import type { StackBase } from "./board-view.ts";
 import type { DenyRule } from "./settings.ts";
-import type { PullRequest } from "./queue.ts";
+import type { PullRequest, WriterForm } from "./queue.ts";
 import { DEFAULT_KEYWORDS, type Blocker, type Keywords, type Ticket } from "./source.ts";
+import { MAX_DRAFT_BYTES, MAX_DRAFTS } from "./writer.ts";
 
 /** The file a worker writes last, and the one thing the pool and the stop hook read to know a run has ended. */
 export const OUTCOME_FILE = "outcome.json";
@@ -51,6 +52,11 @@ export const REVIEW_WAIT_MINUTES = 30;
  * the PreToolUse hook allow the `post-pr-to-slack` skill and those connectors, which only a person's Publish makes a run's to use.
  */
 export const PUBLISH_FILE = "publish-run";
+/**
+ * Present beside the outcome file of a NEW-TICKET run (A11-94), written by the board: it lets the PreToolUse hook allow the read-only connector tools
+ * `tickets.connectors` names, and no other connector, since the run may only read the tracker and never create a ticket.
+ */
+export const WRITER_FILE = "writer-run";
 /**
  * Present beside the outcome file of a run on a machine with `tickets.drafts: false`, written by the pool before the worker starts. It lets the
  * PreToolUse hook allow `gh pr create` without `--draft`: a worker on such a machine opens its pull request ready for review, and no other run may.
@@ -227,7 +233,6 @@ function plannedText(planned: boolean): string {
 const plannerInstruction = (run: string, keys: readonly string[], dir: string): string =>
   run.replaceAll("{keys}", keys.join(", ")).replaceAll("{key}", keys.join(", ")).replaceAll("{dir}", dir);
 
-/** The repositories a planning run reads, as a list. */
 /** The \`clones\` keys, each quoted, for a brief that asks for one of them by name. */
 const cloneNames = (clones: Readonly<Record<string, string>>): string => Object.keys(clones).map((name) => `\`${name}\``).join(", ");
 
@@ -683,6 +688,11 @@ export function workerFlags({ name, model, effort, addDirs, resume }: { name: st
     "--dangerously-skip-permissions", "--disallowedTools", "AskUserQuestion"];
 }
 
+/** The first prompt of a new-ticket run: a pointer to its brief. */
+export function writerPrompt(dir: string): string {
+  return `Read ${dir}/${BRIEF_FILE} and follow it.`;
+}
+
 /** The first prompt: a pointer to the brief, short enough that no quoting or argument limit can cut it. */
 export function firstPrompt(ticketDir: string): string {
   return `Read ${ticketDir}/${BRIEF_FILE} and follow it.`;
@@ -700,4 +710,95 @@ const ROUND_CAUSES: Readonly<Record<RoundCause, string>> = {
 /** A review run's first prompt, which a resumed worker reads after its own earlier turns. */
 export function reviewPrompt(ticketDir: string, cause: RoundCause = "approved"): string {
   return `${ROUND_CAUSES[cause]} Read ${ticketDir}/${BRIEF_FILE} and follow it.`;
+}
+
+/** The request, quoted line by line, so a request that names a command or a path reads as the person's words, not as instructions to this run. */
+const requestQuoted = (request: string): string => request.split("\n").map((line) => `> ${line}`).join("\n");
+
+/** The form's choices as the brief's requirements: each one the person made, or none. PURE. */
+const formText = (form: WriterForm): string => {
+  const lines = [
+    form.project === undefined ? undefined : `- Project: ${form.project}`,
+    form.repo === undefined ? undefined : `- Repository: \`${form.repo}\` (the draft's \`repo\`)`,
+    form.goal === undefined ? undefined : `- Goal: ${form.goal} (the draft's \`goal\`)`,
+    form.priority === undefined ? undefined : `- Priority: ${form.priority} (the draft's \`priority\`)`,
+    form.parent === undefined ? undefined : `- Parent: ${form.parent} (the draft's \`parent\`)`,
+  ].filter((line): line is string => line !== undefined);
+  return lines.length === 0 ? "None. The request decides each of these." : `${lines.join("\n")}\n\nThese are requirements. Use them as given; the person reviews each draft and may change it before anything is created.`;
+};
+
+/**
+ * A new-ticket run's brief (A11-94): the instruction the machine configures, with the person's request and the folder filled in, the choices the form
+ * made, the repositories it may read, the one draft format the board reads, and the outcome it writes last. Quick runs unattended; grill asks the person
+ * in its terminal before it drafts. The run reads the tracker with read-only tools only, to check for duplicates. PURE.
+ */
+export function writerBriefText({ run, request, mode, form, clones, dir }: {
+  run: string; request: string; mode: "quick" | "grill"; form: WriterForm; clones: Readonly<Record<string, string>>; dir: string;
+}): string {
+  const instruction = run.replaceAll("{request}", request).replaceAll("{dir}", dir);
+  const ask = mode === "grill"
+    ? "You are interactive: the person is in this run's terminal. Ask them your questions one at a time before you draft, and when you need an answer only they can give, write the needs-human outcome below with the question, then wait."
+    : "You are unattended. Nobody will answer a question: decide, and write one or more drafts.";
+  return `# New ticket: ${request.split("\n")[0].slice(0, 120)}
+
+You are a ticket writer on this machine. A person asked for a ticket on the board. You write drafts of it and change nothing else: create no ticket, post no comment, edit no ticket, change no repository, and open no pull request. The person reviews each draft on the board, and only their approval creates the ticket.
+
+${ask}
+
+## The request
+
+${requestQuoted(request)}
+
+## The person's choices
+
+${formText(form)}
+
+## What to do
+
+${instruction}
+
+Check the tracker for a ticket that already asks for the same thing, with the read-only Linear tools (\`get\`, \`list\`, \`search\`, \`extract\`): a ticket that is open, and that the draft would duplicate. Name each one in the draft's \`duplicates\` with the reason. Read the repositories below to write the draft's Done-when from what the code does today.
+
+Repositories on this machine (read only; never change them):
+
+${reposText(clones)}
+
+${MISSING_SKILL}
+
+## The draft files
+
+Write one JSON file per ticket under \`${dir}/drafts/\`, named \`NN-short-name.json\` (for example \`01-board.json\`). At most ${MAX_DRAFTS} files, each at most ${MAX_DRAFT_BYTES / 1000} KB. A file the board cannot read is refused by its name, and the rest are kept, so check each one:
+
+\`\`\`json
+{
+  "title": "feat(scope): one line, under 255 characters",
+  "why": "why the ticket is wanted, in a sentence or two",
+  "doneWhen": ["one item that finishes the ticket", "another"],
+  "notes": "optional, markdown",
+  "team": "A11",
+  "project": "a project's name, if the choices name one",
+  "repo": "one of the repositories above, when the ticket is for one",
+  "goal": "a label in the group Goal",
+  "labels": ["a label the team has"],
+  "priority": "urgent | high | medium | low | none",
+  "parent": "A11-12, or draft:<the file name of another draft in this request, without .json>",
+  "blocks": ["A11-3"],
+  "blockedBy": ["draft:01-board"],
+  "duplicates": [{ "key": "A11-9", "why": "the same request, already open" }]
+}
+\`\`\`
+
+Only \`title\`, \`why\` and \`doneWhen\` are required. A field you leave out is left out, not written as null. No other field is read, so a field that is not in this list is refused by name.
+
+## The outcome file
+
+Write \`${dir}/${OUTCOME_FILE}\` as the last thing you do, with exactly one of:
+
+\`\`\`json
+{ "kind": "drafted" }
+{ "kind": "needs-human", "reason": "<the question only the person can answer>" }
+\`\`\`
+
+Write \`drafted\` once every draft is written. Write \`needs-human\` only in grill mode, for a question only the person can answer.
+`;
 }

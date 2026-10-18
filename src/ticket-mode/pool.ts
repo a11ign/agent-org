@@ -102,23 +102,25 @@ import {
   batchPlanDone, clearEdit, clearMove, conflictRound, proposedEdit, dismiss as dismissFinished, feedbackRound, finish, isLive, leaveBatch, markPublishRunning, markPublishStarting, markResumed, markRunning, markStarting, nextStarts,
   observe, noteWorking, observePublish, park, pathsUnread, planDone, publishDone, publishFailed, publishStarts, recordBlockers, recordMove, recordPaths, recordPullFiles, roundsLeft,
   completableRuns, declaredRemains, recordClosedByBoard, recordPullStates, recordRepos, recordTrackerStates, recordVerdictNotPosted, remove as removeQueued, unpark, unreadBlockerKeys, unreadPaths, unsettledKeys, watchWorking,
-  BACKGROUND_GONE, BACKGROUND_GONE_MS, type Background, type Entry, type Outcome, type ProposedEdit, type PublishRun, type Queue, type RunChoice, type WrittenOutcome,
+  BACKGROUND_GONE, BACKGROUND_GONE_MS, markWriterRunning, markWriterStarting, observeWriter, stopWriter, writerDrafted, writerFailed, writerOf, writerResumed, writerToStart, writerWaiting,
+  type Background, type DraftRecord, type Entry, type Outcome, type ProposedEdit, type PublishRun, type Queue, type RunChoice, type WriterRun, type WrittenOutcome,
 } from "./queue.ts";
 import { DEFAULT_KEYWORDS, type Ticket, type TicketSource } from "./source.ts";
+import { DRAFT_DIR, newDraftId, parseWriterOutcome, readDrafts, resolveDuplicates } from "./writer.ts";
 import { unreachablePlugins } from "./plugins.ts";
 import { TICKET_ENV } from "./worktree-command.ts";
-import { HOST_FILE_ENV, plansInBatches, type TicketSettings } from "./settings.ts";
+import { HOST_FILE_ENV, plansInBatches, type DenyRule, type TicketSettings } from "./settings.ts";
 import {
   REVIEWER_LOGIN, atomicReviewerPort, readPullState, readReviewState, readReviewerMemory, reviewerRefusal, reviewPostedAt, reviewVerdict, reviewerMemoryPath, withoutReviewerReviews, writeReviewerMemory,
   type Repost, type ReviewerMemory, type ReviewerPort, type ReviewerRef,
 } from "./reviewer-port.ts";
 import {
   BRIEF_FILE, CONNECTORS_FILE, DENY_FILE, ORDER_FILE, OUTCOME_FILE, PLAN_DIR, PLANNING_DENY, PREVIOUS_OUTCOME_FILE, PROTECTED_FILE, protectedPaths, PUBLISH_FILE, PUBLISHED_FILE, QUESTION_FILE,
-  PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, READY_FILE, REVIEW_FILE, STOP_COUNT_FILE, WORKING_STOP_FILE,
-  batchPlanBriefText, briefText, conflictLine, firstPrompt, planBriefText, publishBriefText, reviewBriefText, reviewPrompt, workerFlags, workerSettings,
+  PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, READY_FILE, REVIEW_FILE, STOP_COUNT_FILE, WORKING_STOP_FILE, WRITER_FILE,
+  batchPlanBriefText, briefText, conflictLine, firstPrompt, planBriefText, publishBriefText, reviewBriefText, reviewPrompt, workerFlags, workerSettings, writerBriefText, writerPrompt,
   type BatchTicket, type HookCommand, type ParentTicket,
 } from "./worker-files.ts";
-import { ticketDir, ticketFolder } from "./ticket-paths.ts";
+import { ticketDir, ticketFolder, writerDir, writerFolder } from "./ticket-paths.ts";
 import { paneBackgroundWork } from "./background-work.ts";
 
 /** herdr waits on Claude's start; a slow one has been measured past 30 s (`wake.ts`'s start budget), so a start gets 90. */
@@ -130,6 +132,8 @@ const PLAN_FILE_BYTES = 1_000_000;
 const QUESTION_CHARS = 500;
 /** The longest a publish run may take. Posting a few messages takes a minute or two. */
 const PUBLISH_LIMIT_MS = 30 * 60_000;
+/** The longest a new-ticket run may spend writing its drafts, not counting the time a grill run waits on the person. */
+const WRITER_LIMIT_MS = 30 * 60_000;
 /** Listings in a row a run may be missing from before its workspace counts as gone: a running run is then crashed, and a parked one unparked. */
 const MISSES_TO_GONE = 2;
 /**
@@ -790,6 +794,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     watchRunning(status);
     watchParked(status);
     watchPublish(status);
+    watchWriters(status);
   }
 
   /**
@@ -1271,6 +1276,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
       await (batch.length > 1 ? startBatch(batch) : startOne(entry));
     }
     if (publishStarts(store.get())) await startPublish();
+    if (writerToStart(store.get()) !== undefined) await startWriter();
   }
 
   const phaseOf = (key: string) => store.get().entries.find((e) => e.ticket.key === key)?.phase;
@@ -1402,6 +1408,155 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     if (entry !== undefined) end(entry, { kind: "stopped" });
   }
 
+  /** Where a new-ticket run lives. Its herdr name is its id's, which no ticket's key can be. */
+  const writerPlace = (run: WriterRun): RunPlace =>
+    ({ name: herdrName(`writer-${run.id}`), dir: writerDir(settings, run.id), folder: writerFolder(settings, run.id) });
+
+  /** The new-ticket runs whose drafts are being read, by id, so a tick that sees the same outcome meanwhile reads them once. */
+  const finishing = new Set<string>();
+
+  /** Whether the new-ticket run `id` is still under way: a stop or a failure while its drafts are read is the last word, so nothing overwrites it. */
+  const writerUnderWay = (id: string): boolean => {
+    const phase = writerOf(store.get(), id)?.phase;
+    return phase === "running" || phase === "waiting";
+  };
+
+  /**
+   * Start the first queued new-ticket run: its brief, its mark, which lets the run read the tracker and nothing else, and its settings, then its agent,
+   * on the writer's model and effort. A run stopped while it starts is closed, as a ticket run stopped while it starts is. A start that fails ends
+   * the run failed, saying why.
+   */
+  async function startWriter(): Promise<void> {
+    const queued = writerToStart(store.get());
+    const writer = settings.writer;
+    if (queued === undefined) return;
+    update((queue) => markWriterStarting(queue, queued.id, now()));
+    try {
+      if (writer === null) throw new Error("this machine names no tickets.writer");
+      const place = writerPlace(queued);
+      clearRunDir(place.folder, place.dir);
+      rmSync(join(place.dir, DRAFT_DIR), { recursive: true, force: true });
+      writeFileSync(join(place.dir, BRIEF_FILE), writerBriefText({ run: writer.run, request: queued.request, mode: queued.mode, form: queued.form, clones: settings.clones, dir: place.dir }));
+      writeFileSync(join(place.dir, WRITER_FILE), "{}\n");
+      writeBoardRunFiles(place, { deny: [...settings.deny, ...PLANNING_DENY], readDirs: Object.values(settings.clones), model: writer.model });
+      const tail = [writerPrompt(place.dir), ...workerFlags({ name: `writer-${queued.id}`, model: writer.model, effort: writer.effort, addDirs: [place.dir] })];
+      const { workspace, pane } = await startAgent(place, {}, tail, "the new-ticket run");
+      if (writerOf(store.get(), queued.id)?.phase !== "starting") {
+        closedNote((args) => herdr(args), workspace, session);
+        return;
+      }
+      update((queue) => markWriterRunning(queue, queued.id, workspace, pane));
+      await settleStart(place);
+    } catch (err) {
+      update((queue) => writerFailed(queue, queued.id, messageOf(err).split("\n")[0], now()));
+    }
+  }
+
+  /**
+   * Each new-ticket run's status, from the same listing as the ticket runs'. A running one ends once its outcome file is there and its agent is idle or
+   * done, when its drafts are read (`finishWriter`), and fails when its agent stops without one. A grill run waiting on a question is resumed once its
+   * agent works again, and its earlier outcome is moved aside, as a parked ticket run's is.
+   */
+  function watchWriters(status: ReadonlyMap<string, string>): void {
+    for (const run of store.get().writers ?? []) {
+      if (run.phase !== "running" && run.phase !== "waiting") continue;
+      const place = writerPlace(run);
+      if (run.phase === "running" && now() - (run.startedAt ?? now()) > WRITER_LIMIT_MS) {
+        endWriter(run, `it did not finish within ${WRITER_LIMIT_MS / 60_000} minutes`);
+        continue;
+      }
+      const seen = status.get(place.name);
+      if (seen === undefined || seen === "unknown") {
+        if (missedAgain(place.name)) endWriter(run, seen === undefined ? "its herdr workspace is gone" : "herdr finds no agent in its workspace");
+        continue;
+      }
+      misses.delete(place.name);
+      if (["working", "idle", "done"].includes(seen)) startedHere.delete(place.name);
+      if (!["working", "idle", "done"].includes(seen) && answerStartDialog(place)) continue;
+      if (seen === "working") {
+        if (run.phase === "waiting") resumeWriter(run, place);
+        else update((queue) => observeWriter(queue, run.id));
+        continue;
+      }
+      if (run.phase === "waiting") continue;
+      const outcomePath = join(place.dir, OUTCOME_FILE);
+      if ((seen === "idle" || seen === "done") && existsSync(outcomePath)) {
+        if (!finishing.has(run.id)) void finishWriter(run, place, readFileSync(outcomePath, "utf8"));
+      } else if (seen === "done" || (seen === "idle" && run.seenWorking === true)) endWriter(run, "it stopped without writing an outcome");
+    }
+  }
+
+  /** A waiting grill run's agent works again: its outcome, the question it asked, is moved aside, and the run is running. */
+  function resumeWriter(run: WriterRun, place: RunPlace): void {
+    if (existsSync(join(place.dir, OUTCOME_FILE))) renameSync(join(place.dir, OUTCOME_FILE), join(place.dir, PREVIOUS_OUTCOME_FILE));
+    update((queue) => writerResumed(queue, run.id, now()));
+  }
+
+  /**
+   * The run's outcome, read once its agent is idle: `needs-human` waits for the person's answer in the run's terminal, and `drafted` reads each draft
+   * file, resolves its duplicates in the tracker, and ends the run with its drafts for review. Its workspace is closed once it ends.
+   */
+  async function finishWriter(run: WriterRun, place: RunPlace, text: string): Promise<void> {
+    finishing.add(run.id);
+    try {
+      const outcome = parseWriterOutcome(text);
+      if (typeof outcome === "string") return endWriter(run, outcome);
+      if (outcome.kind === "needs-human") {
+        if (writerUnderWay(run.id)) update((queue) => writerWaiting(queue, run.id, outcome.reason.slice(0, QUESTION_CHARS)));
+        return;
+      }
+      const read = readDrafts(place.dir, Object.keys(settings.clones));
+      const drafts = await Promise.all(read.drafts.map(async ({ file, draft }): Promise<DraftRecord> => ({
+        id: newDraftId(), file, draft, duplicates: await resolveDuplicates(draft.duplicates, (key) => source.read(key)), status: "pending",
+      })));
+      if (!writerUnderWay(run.id)) return;
+      if (run.workspace) closedNote((args) => herdr(args), run.workspace, session);
+      update((queue) => writerDrafted(queue, run.id, { drafts, rejected: read.rejected }, now()));
+    } catch (err) {
+      endWriter(run, messageOf(err).split("\n")[0]);
+    } finally {
+      finishing.delete(run.id);
+    }
+  }
+
+  /** Close a new-ticket run's workspace and record why it failed. Nothing it wrote is kept as a draft. */
+  function endWriter(run: WriterRun, failure: string): void {
+    const { name } = writerPlace(run);
+    if (!writerUnderWay(run.id)) return;
+    if (run.workspace) closedNote((args) => herdr(args), run.workspace, session);
+    misses.delete(name);
+    answered.delete(name);
+    startedHere.delete(name);
+    update((queue) => writerFailed(queue, run.id, failure, now()));
+  }
+
+  /**
+   * The person stopped a new-ticket run: its workspace is closed, and the drafts it has written stay for review. A run that has ended is left as it is.
+   */
+  function stopWriterRun(id: string): void {
+    const run = writerOf(store.get(), id);
+    if (run === undefined || run.phase === "finished") return;
+    const { name } = writerPlace(run);
+    if (run.workspace) closedNote((args) => herdr(args), run.workspace, session);
+    misses.delete(name);
+    answered.delete(name);
+    startedHere.delete(name);
+    update((queue) => stopWriter(queue, id, now()));
+  }
+
+  /**
+   * The files a run the board starts for itself (a publish or a new-ticket run) is given beside its brief: its refusals, this machine's connectors, the
+   * host's protected programs, and its settings file in the folder its agent starts in. The caller writes its own mark first.
+   */
+  function writeBoardRunFiles(place: RunPlace, { deny, readDirs, model }: Readonly<{ deny: readonly DenyRule[]; readDirs: readonly string[]; model: string }>): void {
+    writeFileSync(join(place.dir, DENY_FILE), `${JSON.stringify(deny)}\n`);
+    writeFileSync(join(place.dir, CONNECTORS_FILE), `${JSON.stringify(settings.connectors)}\n`);
+    writeFileSync(join(place.dir, PROTECTED_FILE), `${JSON.stringify(protectedPaths(settings.binDir))}\n`);
+    mkdirSync(join(place.folder, ".claude"), { recursive: true });
+    writeFileSync(join(place.folder, SETTINGS_FILE),
+      `${JSON.stringify(workerSettings({ model, ticketDir: place.dir, readDirs, hook, plugins: settings.plugins }), null, 2)}\n`);
+  }
+
   /** Where a publish run lives. Its herdr name is its id's, which no ticket's key can be. */
   const publishPlace = (publish: PublishRun): RunPlace =>
     ({ name: herdrName(`publish-${publish.id}`), dir: publishDir(settings, publish.id), folder: publishFolder(settings) });
@@ -1422,12 +1577,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
       rmSync(join(place.dir, PUBLISHED_FILE), { force: true });
       writeFileSync(join(place.dir, BRIEF_FILE), publishBriefText({ dir: place.dir, prs: queued.prs, run: publisher.run }));
       writeFileSync(join(place.dir, PUBLISH_FILE), `${JSON.stringify({ connectors: publisher.connectors })}\n`);
-      writeFileSync(join(place.dir, DENY_FILE), `${JSON.stringify(settings.deny)}\n`);
-      writeFileSync(join(place.dir, CONNECTORS_FILE), `${JSON.stringify(settings.connectors)}\n`);
-      writeFileSync(join(place.dir, PROTECTED_FILE), `${JSON.stringify(protectedPaths(settings.binDir))}\n`);
-      mkdirSync(join(place.folder, ".claude"), { recursive: true });
-      writeFileSync(join(place.folder, SETTINGS_FILE),
-        `${JSON.stringify(workerSettings({ model: publisher.model, ticketDir: place.dir, readDirs: [], hook, plugins: settings.plugins }), null, 2)}\n`);
+      writeBoardRunFiles(place, { deny: settings.deny, readDirs: [], model: publisher.model });
       const tail = [firstPrompt(place.dir), ...workerFlags({ name: `publish-${queued.id}`, model: publisher.model, effort: publisher.effort, addDirs: [place.dir] })];
       const { workspace, pane } = await startAgent(place, {}, tail, "the publish run");
       update((queue) => markPublishRunning(queue, workspace, pane));
@@ -1563,6 +1713,10 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     const publish = store.get().publish;
     if (publish !== undefined && (publish.phase === "starting" || (publish.phase === "running" && !listed.has(publishPlace(publish).name)))) {
       update((queue) => publishFailed(queue, "the pool restarted while it was running", now()));
+    }
+    for (const run of store.get().writers ?? []) {
+      const lost = run.phase === "starting" || ((run.phase === "running" || run.phase === "waiting") && !listed.has(writerPlace(run).name));
+      if (lost) update((queue) => writerFailed(queue, run.id, "the pool restarted while it was running", now()));
     }
   }
 
@@ -1885,7 +2039,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     }
   }
 
-  return { tick, stop, close, dismiss, remove, reconcile, ensureSession, refreshTracker, watchFeedback, releaseReviewers, applyEdit, discardEdit };
+  return { tick, stop, close, dismiss, remove, reconcile, ensureSession, refreshTracker, watchFeedback, releaseReviewers, applyEdit, discardEdit, stopWriterRun };
 }
 
 export type Pool = ReturnType<typeof createPool>;
