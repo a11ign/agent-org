@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { isParked, runStatus } from "./board-view.ts";
 import {
-  amend, approve, byIdentifier, childOrder, refuseParents, respond, batchPlanDone, dismiss, feedbackRound, MAX_FEEDBACK_ROUNDS, markPublishRunning, markPublishStarting, publishDone, publishFailed, publishStarts, queuePublish, emptyQueue, enqueue, finish, isLive, leaveBatch, liveRunCount, loadQueue, markResumed, markRunning, markStarting, nextStarts, observe, park,
+  amend, approve, byIdentifier, childOrder, conflictRound, refuseParents, respond, batchPlanDone, dismiss, feedbackRound, MAX_FEEDBACK_ROUNDS, markPublishRunning, markPublishStarting, publishDone, publishFailed, publishStarts, queuePublish, emptyQueue, enqueue, finish, isLive, leaveBatch, liveRunCount, loadQueue, markResumed, markRunning, markStarting, nextStarts, observe, park,
   BACKGROUND_GONE, BACKGROUND_GONE_MS, clearMove, noteWorking, recordBlockers, recordMove, recordRepos, planDone, watchWorking, PLAN_BATCH_MAX, recordPullStates, recordTrackerStates, remove, retry, saveQueue, setMax, setPaused, unpark, unreadBlockerKeys, unsettledKeys, type Queue,
   pathsUnread, recordPaths, recordPullFiles, recordVerdictNotPosted, unreadPaths,
 } from "./queue.ts";
@@ -350,6 +350,30 @@ test("after three rounds of its own, the next feedback hands the run to a person
   const asked = a(respond(fourth, "A", 10));
   assert.deepEqual([asked.phase, asked.rounds, asked.handedBack, asked.feedback, asked.asked], ["queued", undefined, undefined, undefined, true],
     "Respond to review starts the count again");
+});
+
+/** A run, A, parked on `outcome` with its workspace open, after a review round that resumed session `s1` and holds the pull request `pr`. */
+function parkedOn(outcome: Parameters<typeof park>[2], fields: Record<string, unknown> = {}): Queue {
+  const queue = markRunning(markStarting(enqueue(emptyQueue(3), [ticket("A"), ticket("B")], choice, 1), "A", 2), "A", "w1", "w1:p1");
+  const parked = park(queue, "A", outcome, 3, { session: "s1" });
+  return { ...parked, entries: parked.entries.map((e) => (e.ticket.key === "A" ? { ...e, review: [pr], pullStates: { [pr.url]: "open" }, ...fields } : e)) };
+}
+
+test("A11-89: a parked run whose pull request conflicts is queued as a review round that resumes its worker, keeps its session, and holds no workspace", () => {
+  const queue = conflictRound(parkedOn({ kind: "needs-human", reason: "which colour?" }), "A", "a conflict line", 9);
+  assert.deepEqual(keys(queue), ["B", "A"]);
+  assert.deepEqual(a(queue), { ticket: ticket("A"), repos: [], model: "opus", effort: "high", session: "s1", review: [pr], phase: "queued", queuedAt: 9,
+    feedback: "a conflict line", rounds: 1 });
+});
+
+test("A11-89: a parked run that has used its rounds is left parked, with no handedBack, and a run the board watches or does not resume is left as it is", () => {
+  const capped = parkedOn({ kind: "needs-human", reason: "x" }, { rounds: 3 });
+  assert.deepEqual(conflictRound(capped, "A", "a conflict line", 9), capped, "nothing queued at the cap");
+  assert.equal(a(conflictRound(capped, "A", "a conflict line", 9)).handedBack, undefined, "no handedBack: a parked run reads Needs you already");
+  for (const [why, queue] of [
+    ["stopped", parkedOn({ kind: "stopped" })], ["checked", parkedOn({ kind: "checked", reason: "nothing to do" })], ["a draft", parkedOn({ kind: "draft-pr", prs: [pr] })],
+    ["watched", readyToMerge()], ["tracker completed", parkedOn({ kind: "needs-human", reason: "x" }, { trackerState: "completed" })],
+  ] as const) assert.deepEqual(conflictRound(queue, "A", "a conflict line", 9), queue, why);
 });
 
 test("Publish queues one run for the ticked runs Ready to merge with their open pull requests, refusing any other run and a second publish", () => {

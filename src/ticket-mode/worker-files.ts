@@ -75,6 +75,14 @@ export const PUBLISHED_FILE = "published.json";
  */
 const FOREGROUND_WAIT = `Wait in the foreground, with blocking commands, such as \`gh pr checks <url> --watch --interval 30\`. Keep each Bash call under 10 minutes, and run it again until what you wait for has finished or ${REVIEW_WAIT_MINUTES} minutes have passed. Never end your turn to wait, and never wait with \`run_in_background\` or a background task: the board reads a turn that ends without an outcome file as a run that stopped. The one background wait the brief allows is a Monitor on a process you started detached (with \`nohup\`, \`&\`, \`setsid\` or a unit), since such a process wakes you when it ends only if a Monitor is armed on its PID or its log, such as \`until ! kill -0 <pid>; do sleep 5; done\`: write \`working\` for it only while that Monitor runs, since a bare \`working\` for a detached process is refused.`;
 
+/**
+ * What a review round does when no check has started on its head commit (A11-89). GitHub runs no `pull_request` workflow on a pull request that
+ * conflicts with its base, so a worker that waited for one parked as "CI never started" and asked a person to re-run CI, which a merge of the base
+ * clears and a re-run cannot. It reads the merge state first. The approved round's "needs-human" for a check that has not finished is kept, and
+ * this section is the exception to it for checks that did not start.
+ */
+const CHECKS_NOT_STARTED = `When no check has started on your head commit, run \`gh pr view <url> --json mergeable,mergeStateStatus\` for each pull request first, before you wait longer or do anything else. GitHub runs no \`pull_request\` workflow on a pull request that conflicts with its base, so if it says CONFLICTING or DIRTY, merge the base branch in: \`git fetch\`, then \`git merge origin/<base>\` in its worktree. Never rebase, and never force-push. Resolve each conflict keeping both changes' intent, run the repository's own tests, typecheck and lint, push, and wait for the checks on the new head. Never write \`needs-human\`, and never ask a person to re-run CI, for checks that did not start while the pull request is CONFLICTING or DIRTY. If it says UNKNOWN, GitHub is still computing it: look again in a minute. Write \`needs-human\` for checks that did not start only when the pull request is mergeable and they still have not started after the wait.`;
+
 /** What a worker does when a skill its brief names is missing: a copy of the skill's files, read by hand, is not the skill and its helpers. */
 const MISSING_SKILL = "If a skill this brief names is not available in this session, write a `needs-human` outcome naming it, rather than following a copy of its files.";
 
@@ -503,6 +511,10 @@ ${list}
 ${round.steps}
 
 ${FOREGROUND_WAIT}
+
+## When no check has started
+
+${CHECKS_NOT_STARTED}
 
 Never merge, approve, request a review, force-push, run a workflow, or post to Slack. Those are the person's.
 

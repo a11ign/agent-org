@@ -7,7 +7,7 @@ import {
   statusCounts, terminalLink, toggled, waitsOn, waitNote, repoOfPull, stackedOn, stackNote, PRIORITY_NAMES, hasPlan, isBeingPublished, isWatched, publishable,
   publishLabel, publishNote, publishTerminalLink, missingPlan, planChoiceOf, planCounts, priorityCounts, prioritiesOf, runChoiceLabel,
   unplannedCount, visibleTickets, workItems, workingNote, childrenNote, isParentTicket, openChildCount, apiBase, chosenConnection, connectionLabel, safeHref,
-  footprintOf, overlapWait, pathsOverlap,
+  footprintOf, overlapWait, pathsOverlap, resumesOnConflict,
   type ViewEntry, type ViewPublish, type ViewTicket,
 } from "./board-view.ts";
 
@@ -576,6 +576,26 @@ test("every run the publish run posts links its terminal, in the machine's templ
   assert.equal(publishTerminalLink(null, shipped(), publish), null, "the machine serves no terminal");
   assert.equal(publishTerminalLink(template, shipped(), publishRun({ phase: "queued" })), null, "no pane until it starts");
   assert.equal(publishTerminalLink(template, shipped(), publishRun({ workspace: "w9" })), null, "a workspace without a pane");
+});
+
+test("A11-89: a run whose pull request conflicts is resumed when it is watched or parked on anything but a result, concluded or stopped run, with a pull request open", () => {
+  const open = { url: "https://github.com/x/a/pull/1" };
+  const parked = (outcome: Record<string, unknown>, fields: Partial<ViewEntry> = {}) => shipped({ outcome, review: [open], workspace: "w1", ...fields } as Partial<ViewEntry>);
+  for (const outcome of [{ kind: "needs-human", reason: "which colour?" }, { kind: "wrong-repo", where: "netbox" }, { kind: "no-outcome" }, { kind: "crashed", reason: "gone" }]) {
+    assert.equal(resumesOnConflict(parked(outcome)), true, `a parked ${outcome.kind} run`);
+  }
+  assert.equal(resumesOnConflict(parked({ kind: "needs-human", reason: "x" }, { workspace: undefined })), true, "a run that ended with its workspace closed");
+  assert.equal(resumesOnConflict(shipped()), true, "a watched run");
+  assert.equal(resumesOnConflict(parked({ kind: "stopped" })), false, "stopped is a person's act");
+  assert.equal(resumesOnConflict(parked({ kind: "checked", reason: "nothing to do" })), false, "concluded");
+  assert.equal(resumesOnConflict(parked({ kind: "planned" })), false, "a plan is concluded");
+  assert.equal(resumesOnConflict(parked({ kind: "draft-pr", prs: [open] })), false, "a draft awaits a person's Approve");
+  assert.equal(resumesOnConflict(parked({ kind: "needs-human", reason: "x" }, { trackerState: "completed" })), false, "the tracker completed the ticket");
+  assert.equal(resumesOnConflict(parked({ kind: "needs-human", reason: "x" }, { trackerState: "canceled" })), false, "the tracker canceled the ticket");
+  assert.equal(resumesOnConflict(parked({ kind: "needs-human", reason: "x" }, { pullStates: { [open.url]: "merged" } })), false, "its pull request merged");
+  assert.equal(resumesOnConflict(parked({ kind: "needs-human", reason: "x" }, { pullStates: { [open.url]: "closed" } })), false, "its pull request closed");
+  assert.equal(resumesOnConflict(parked({ kind: "needs-human", reason: "x" }, { review: [] })), false, "no pull request is open");
+  assert.equal(resumesOnConflict({ ticket: { key: "NBF-1" }, phase: "running", review: [open] } as ViewEntry), false, "a live run is not finished");
 });
 
 test("the Board says a publish run is under way, or why it failed, and nothing once it published", () => {

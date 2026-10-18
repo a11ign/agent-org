@@ -55,7 +55,10 @@
 // through `gh`). A review, a conversation comment or an inline comment newer than the run's last round, from anyone but the account the workers
 // use, or a check failing on the head commit since then, queues another review round that resumes the same worker to answer it (`feedbackRound`),
 // up to three before a person must approve again. So does a pull request that conflicts with its base branch: a conflict is a state, not an event,
-// so it is feedback on every watch until a round clears it. The watch is for runs Ready to merge or Published; a draft's read is kept for its footprint.
+// so it is feedback on every watch until a round clears it. The watch is for runs Ready to merge or Published, and for a parked run with a conflict (below);
+// a draft's read is kept for its footprint.
+// A PARKED RUN WITH A CONFLICT IS RESUMED TOO (A11-89). A run that parked on a question, or ended with no outcome, still has its pull requests read, and
+// a conflict alone resumes it: its workspace is closed and a round queued (`conflictRound`), within the same three. Nothing else wakes a parked run.
 //
 // A RUN WAITS FOR A PATH ANOTHER RUN HOLDS. Ticket mode starts queued runs side by side, so two that touch one file would conflict. A run's footprint
 // is the paths its plan declares (`## Paths`, read from the plan files, `overlap.ts`) and the files its open pull requests change. A run held in its
@@ -86,10 +89,10 @@ import { mergeWaits, parseOrder, unknownRepos, type Order } from "./batch-order.
 import { readOwnLogin, readPullFeedback, type PullFeedback } from "../ticket-port/pull-feedback.ts";
 import { parsePaths } from "./overlap.ts";
 import { defaultGh } from "../lib/tool-version-agreement.ts";
-import { CONCLUDED, HANDED_BACK, hasPlan, isBeingPublished, isParked, isWatched, openPulls, RESULT_KINDS, stackedOn } from "./board-view.ts";
+import { CONCLUDED, HANDED_BACK, hasPlan, isBeingPublished, isParked, isWatched, openPulls, resumesOnConflict, RESULT_KINDS, stackedOn } from "./board-view.ts";
 import {
-  batchPlanDone, clearMove, dismiss as dismissFinished, feedbackRound, finish, isLive, leaveBatch, markPublishRunning, markPublishStarting, markResumed, markRunning, markStarting, nextStarts,
-  observe, noteWorking, observePublish, park, pathsUnread, planDone, publishDone, publishFailed, publishStarts, recordBlockers, recordMove, recordPaths, recordPullFiles,
+  batchPlanDone, clearMove, conflictRound, dismiss as dismissFinished, feedbackRound, finish, isLive, leaveBatch, markPublishRunning, markPublishStarting, markResumed, markRunning, markStarting, nextStarts,
+  observe, noteWorking, observePublish, park, pathsUnread, planDone, publishDone, publishFailed, publishStarts, recordBlockers, recordMove, recordPaths, recordPullFiles, roundsLeft,
   recordPullStates, recordRepos, recordTrackerStates, recordVerdictNotPosted, remove as removeQueued, unpark, unreadBlockerKeys, unreadPaths, unsettledKeys, watchWorking,
   BACKGROUND_GONE, BACKGROUND_GONE_MS, type Background, type Entry, type Outcome, type PublishRun, type Queue, type RunChoice, type WrittenOutcome,
 } from "./queue.ts";
@@ -390,6 +393,15 @@ export function feedbackSince(reads: readonly Readonly<{ url: string; read: Pull
     ...(read.feedbackAt !== null && read.feedbackAt > since ? [`New review feedback on ${url}, the newest from ${read.authors[0] ?? "someone"}.`] : []),
     ...(read.failedAt !== null && read.failedAt > since ? [`${read.failing.join(", ")} failed on the head commit of ${url}.`] : []),
   ]);
+  return lines.length === 0 ? null : lines.join("\n");
+}
+
+/**
+ * The conflict lines of a run's open pull requests, as {@link feedbackSince} names them, and no other feedback: all that wakes a parked run
+ * (A11-89). Null when none of them conflicts. PURE.
+ */
+export function conflictLines(reads: readonly Readonly<{ url: string; read: PullFeedback }>[]): string | null {
+  const lines = reads.filter(({ read }) => read.state === "open" && read.conflicting).map(({ url, read }) => conflictLine(url, read.base));
   return lines.length === 0 ? null : lines.join("\n");
 }
 
@@ -1436,10 +1448,12 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
   let ownLogin: string | null = null;
 
   /**
-   * Read the open pull requests of each finished run, and queue a review round for each watched run whose pull requests got new feedback since its
-   * last round ended: a review, a comment or an inline comment by anyone but the workers' account, or a check that failed since then, or a pull
-   * request that conflicts with its base. Every finished run's read records the files its open pull requests change, which is its footprint while
-   * it is held (a draft too). A run whose pull request could not be read is asked again next time, and one merged or closed since is left alone.
+   * Read the open pull requests of each finished run, and queue a review round for each run whose pull requests got new feedback since its last
+   * round ended: a review, a comment or an inline comment by anyone but the workers' account, or a check that failed since then, or a pull request
+   * that conflicts with its base. A watched run gets all of that. A parked run the board does not watch gets its conflict alone (A11-89,
+   * {@link resumesOnConflict}): its workspace is closed, then a round is queued, so a question it parked on is not answered by a new comment.
+   * Every finished run's read records the files its open pull requests change, which is its footprint while it is held (a draft too). A run whose
+   * pull request could not be read is asked again next time, and one merged or closed since is left alone.
    */
   function watchFeedback(): void {
     const finished = store.get().entries.filter((entry) => entry.phase === "finished" && openPulls(entry).length > 0);
@@ -1463,15 +1477,37 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
       const files = Object.fromEntries(open.map(({ url, read }) => [url, read.filesComplete ? read.files : [...read.files, ""]]));
       // Written only when a file changed, so a watch that finds the same files does not rewrite the queue.
       if (JSON.stringify(files) !== JSON.stringify(entry.pullFiles ?? {})) update((queue) => recordPullFiles(queue, entry.ticket.key, files));
-      if (!isWatched(entry)) continue;
-      // A reviewer's verdict is read by `reviewerLines`, which asks for a round only on requested changes; its reviews are not feedback here.
-      const lines = [feedbackSince(readable, entry.finishedAt ?? 0), ...reviewerLines(entry, openPulls(entry).map((pr) => pr.url))]
-        .filter((line): line is string => line !== null);
-      if (lines.length === 0) continue;
-      update((queue) => feedbackRound(queue, entry.ticket.key, lines.join("\n"), now()));
-      queued = true;
+      if (!resumesOnConflict(entry)) continue;
+      if (isWatched(entry)) {
+        // A reviewer's verdict is read by `reviewerLines`, which asks for a round only on requested changes; its reviews are not feedback here.
+        const lines = [feedbackSince(readable, entry.finishedAt ?? 0), ...reviewerLines(entry, openPulls(entry).map((pr) => pr.url))]
+          .filter((line): line is string => line !== null);
+        if (lines.length === 0) continue;
+        update((queue) => feedbackRound(queue, entry.ticket.key, lines.join("\n"), now()));
+        queued = true;
+        continue;
+      }
+      if (resumeParked(entry, readable)) queued = true;
     }
     if (queued) void tick();
+  }
+
+  /**
+   * Resume a parked run, one `watchFeedback` found a conflict on (A11-89): only a conflict wakes it, and only while the cap leaves a round. Its
+   * workspace is closed first, because a second workspace would take the same herdr name (`queue.ts` `retry`). Refused, the run stays parked and
+   * the next watch asks again. Returns whether a round was queued.
+   */
+  function resumeParked(entry: Entry, readable: readonly { url: string; read: PullFeedback }[]): boolean {
+    const conflicts = conflictLines(readable);
+    if (conflicts === null || !roundsLeft(entry)) return false;
+    try {
+      close(entry.ticket.key);
+    } catch (err) {
+      log(`${entry.ticket.key}: its workspace could not be closed, so the conflict round was not started (${err instanceof Error ? err.message : String(err)})`);
+      return false;
+    }
+    update((queue) => conflictRound(queue, entry.ticket.key, conflicts, now()));
+    return true;
   }
 
   /**

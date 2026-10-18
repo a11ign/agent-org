@@ -1739,6 +1739,95 @@ test("A11-82: a merged pull request that reads conflicting gets no round, and a 
   assert.deepEqual([capped.entry("NBF-1").phase, capped.entry("NBF-1").rounds, capped.entry("NBF-1").asked], ["running", undefined, true], "Respond to review starts the count again");
 });
 
+/**
+ * NBF-1, a review run that asked a person a question and parked: its worker wrote `needs-human` with its workspace still open, as a review run
+ * whose checks did not start does. The worker's session is the one the review run resumed (`session-t-nbf-1`).
+ */
+async function parkedOnQuestion(gh: (args: string[]) => string) {
+  const ctx = await approvedRun({}, { gh });
+  ctx.status.set(herdrName("NBF-1"), "working");
+  await ctx.pool.tick();
+  writeFileSync(join(ctx.dir, "outcome.json"), JSON.stringify({ kind: "needs-human", reason: "which colour?" }));
+  ctx.status.set(herdrName("NBF-1"), "idle");
+  await ctx.pool.tick();
+  assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").outcome?.kind, ctx.entry("NBF-1").workspace], ["finished", "needs-human", "w2"], "parked on a question");
+  return ctx;
+}
+
+test("A11-89: a parked run whose pull request conflicts is resumed: its workspace is closed once, the same worker resumes once with the conflict named, and its brief merges the base in", async () => {
+  const gh = ghFor({ 1: feedbackPull({ mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" }) });
+  const { pool, entry, dir, h } = await parkedOnQuestion(gh.run);
+  h.calls.length = 0;
+  pool.watchFeedback();
+  pool.watchFeedback();
+  await roundStarted();
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").rounds, entry("NBF-1").review], ["running", 1, [approvedPr]]);
+  assert.equal(entry("NBF-1").feedback, `${approvedPr.url} conflicts with its base branch main.`);
+  assert.equal(closes(h, "w2"), 1, "the parked workspace is closed once, before the round starts");
+  const starts = h.calls.filter((args) => args.includes("start"));
+  assert.equal(starts.length, 1, "the same worker is started once, not once per watch");
+  assert.deepEqual(starts[0].slice(starts[0].indexOf("--resume"), starts[0].indexOf("--resume") + 2), ["--resume", "session-t-nbf-1"]);
+  const brief = readFileSync(join(dir, "brief.md"), "utf8");
+  assert.match(brief, /^1\. The feedback above says a pull request conflicts with its base branch\. Merge the base branch into your branch before anything else/m);
+  assert.equal(existsSync(join(dir, "outcome.json")), false, "the needs-human it parked on is cleared, so it does not end this round");
+});
+
+test("A11-89: a parked run whose pull request is clear, unknown, or has only new review feedback and a failed check is left alone", async () => {
+  const pulls = [
+    feedbackPull({ mergeable: "MERGEABLE", mergeStateStatus: "CLEAN" }),
+    feedbackPull({ mergeable: "UNKNOWN", mergeStateStatus: "UNKNOWN" }),
+    feedbackPull({ reviews: [{ state: "CHANGES_REQUESTED", submittedAt: at(300), author: { login: "a11ign-reviewer" } }],
+      checks: [{ __typename: "CheckRun", name: "typecheck", conclusion: "FAILURE", completedAt: at(400), isRequired: false }] }),
+  ];
+  for (const pull of pulls) {
+    const { pool, entry, h } = await parkedOnQuestion(ghFor({ 1: pull }).run);
+    h.calls.length = 0;
+    pool.watchFeedback();
+    await roundStarted();
+    assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").rounds, entry("NBF-1").workspace, entry("NBF-1").outcome?.kind], ["finished", undefined, "w2", "needs-human"],
+      "a parked run with no conflict is not woken, and keeps its question");
+    assert.deepEqual(h.calls, [], "no workspace is closed and no worker is started");
+  }
+});
+
+test("A11-89: a parked run whose conflicting pull request merged, or whose run was stopped, gets no round", async () => {
+  const merged = await parkedOnQuestion(ghFor({ 1: feedbackPull({ state: "MERGED", mergeable: "CONFLICTING" }) }).run);
+  merged.pool.watchFeedback();
+  await roundStarted();
+  assert.deepEqual([merged.entry("NBF-1").phase, merged.entry("NBF-1").rounds], ["finished", undefined], "merged: nothing to resolve");
+
+  const stopped = await parkedOnQuestion(ghFor({ 1: feedbackPull({ mergeable: "CONFLICTING" }) }).run);
+  stopped.store.set({ ...stopped.store.get(), entries: stopped.store.get().entries.map((e) => (e.ticket.key === "NBF-1" ? { ...e, outcome: { kind: "stopped" as const } } : e)) });
+  stopped.h.calls.length = 0;
+  stopped.pool.watchFeedback();
+  await roundStarted();
+  assert.deepEqual([stopped.entry("NBF-1").phase, stopped.entry("NBF-1").rounds, stopped.entry("NBF-1").workspace], ["finished", undefined, "w2"], "stopped is a person's act");
+  assert.deepEqual(stopped.h.calls, [], "nothing is closed or started");
+});
+
+test("A11-89: a parked run whose workspace herdr will not close stays parked, names it in the log, and the next watch asks again", async () => {
+  const gh = ghFor({ 1: feedbackPull({ mergeable: "CONFLICTING" }) });
+  const { pool, entry, h } = await parkedOnQuestion(gh.run);
+  h.refused.add("close");
+  const logged = await captureStderr(async () => { pool.watchFeedback(); await roundStarted(); });
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").rounds, entry("NBF-1").workspace], ["finished", undefined, "w2"], "still parked, no round queued");
+  assert.ok(logged.some((line) => line.includes("NBF-1: its workspace could not be closed, so the conflict round was not started")), logged.join("\n"));
+  h.refused.clear();
+  pool.watchFeedback();
+  await roundStarted();
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").rounds], ["running", 1], "the next watch asks again, and the round starts");
+});
+
+test("A11-89: a parked run at the cap of rounds is left parked: nothing is closed or started", async () => {
+  const capped = await parkedOnQuestion(ghFor({ 1: feedbackPull({ mergeable: "CONFLICTING" }) }).run);
+  capped.store.set({ ...capped.store.get(), entries: capped.store.get().entries.map((e) => (e.ticket.key === "NBF-1" ? { ...e, rounds: 3 } : e)) });
+  capped.h.calls.length = 0;
+  capped.pool.watchFeedback();
+  await roundStarted();
+  assert.deepEqual([capped.entry("NBF-1").phase, capped.entry("NBF-1").rounds, capped.entry("NBF-1").workspace, capped.entry("NBF-1").handedBack], ["finished", 3, "w2", undefined]);
+  assert.deepEqual(capped.h.calls, [], "nothing is closed or started");
+});
+
 test("A11-82: a run waits on a path a live run holds and starts once that run's pull request merges, while runs sharing no path start beside both", async () => {
   const planned = setup(3, ["NBF-1", "NBF-2", "NBF-3"], { plan: "-plan-[^/]*\\.md$" }, { source: planFiles({
     "NBF-1": ["nbl-ui-netbox:src/a.ts"], "NBF-2": ["nbl-ui-netbox:src/"], "NBF-3": ["nbl-ui-platform-libs:src/a.ts"],
