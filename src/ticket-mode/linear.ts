@@ -3,7 +3,8 @@
 //
 // A PERSONAL KEY, NOT AN APP. A Linear agent app is installed by a workspace admin, which a person on a work account cannot do, so ticket mode reads
 // as the person: their key, and by default their assigned tickets (`tickets.pick` can widen the list to a team or a project). It writes only what a planning run hands the board: the plan's files, attached to the ticket,
-// the ticket's move to the planner's state, and a batch's order as "blocks" relations. Workers write nothing. Linear's own GitHub integration links each pull request, because the
+// the ticket's move to the planner's state, a batch's order as "blocks" relations, and, once a run's pull request merged without closing its ticket, the
+// ticket's move to its completed state with a comment (A11-92). Workers write nothing. Linear's own GitHub integration links each pull request, because the
 // worker's branch is the ticket's `branchName`.
 //
 // THE KEY NEVER LEAVES THIS MODULE. It is read once, from the macOS Keychain or a file the host file names, and sent only to api.linear.app and uploads.linear.app.
@@ -11,9 +12,11 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { basename, extname, join } from "node:path";
 import type { KeySource, PickScope } from "./settings.ts";
-import type { Blocker, PullState, StateMove, Ticket, TicketLabel, TicketSource } from "./source.ts";
+import type { Blocker, Keywords, PullState, StateMove, Ticket, TicketLabel, TicketSource } from "./source.ts";
 
 export const LINEAR_API = "https://api.linear.app/graphql";
+/** The words Linear's GitHub integration reads in a pull request's body: `Closes` completes its ticket on merge, `Refs` only links it. */
+const KEYWORDS: Keywords = Object.freeze({ closing: "Closes", nonClosing: "Refs" });
 /** Linear stores uploads here, and only a request carrying the key may read one. */
 const UPLOADS = /https:\/\/uploads\.linear\.app\/[^\s)"'<>]+/g;
 const UPLOAD_ORIGIN = "https://uploads.linear.app/";
@@ -106,9 +109,11 @@ function linkedPulls(node: Attached): Record<string, PullState> {
 
 /** What attaching a plan reads of its ticket: its id, its state's type, its team's states, and the files already attached. */
 type Planning = Stateful & Attachments;
-/** What moving a ticket's state reads of it: its id, its state's type and name, and the states its team has. */
-type Stateful = { id: string; state: { type: string; name: string }; team: { states: { nodes: { id: string; name: string }[] } } };
-const STATEFUL = "id state { type name } team { states { nodes { id name } } }";
+/** What moving a ticket's state reads of it: its id, its state's type and name, and the states its team has, with each one's type and position. */
+type Stateful = { id: string; state: { type: string; name: string }; team: { states: { nodes: { id: string; name: string; type: string; position: number }[] } } };
+const STATEFUL = "id state { type name } team { states { nodes { id name type position } } }";
+/** The state types a ticket is finished in: a ticket of one is left alone when a run's pull request merges. */
+const FINISHED_TYPES = new Set(["completed", "canceled", "duplicate"]);
 /** Linear's answer to a request to upload a file: where to PUT it, with which headers, and the address it is then read from. */
 type Upload = { fileUpload: { success: boolean; uploadFile: { uploadUrl: string; assetUrl: string; headers: { key: string; value: string }[] } | null } };
 
@@ -225,6 +230,13 @@ export function linearSource({ key, fetch: request = fetch, pick = "assigned" }:
     if (!issueUpdate.success) throw new Error(`Linear did not move ${identifier} to ${state}`);
   }
 
+  /** Post `body` as a comment on the ticket `id`, which is named `identifier` for the error that says so. */
+  async function postComment(identifier: string, id: string, body: string): Promise<void> {
+    const { commentCreate }: { commentCreate: { success: boolean } } = await query(
+      "mutation($issueId: String!, $body: String!) { commentCreate(input: { issueId: $issueId, body: $body }) { success } }", { issueId: id, body });
+    if (!commentCreate.success) throw new Error(`Linear did not post a comment on ${identifier}`);
+  }
+
   /** Upload the markdown file at `path` and attach it to the ticket `issueId` under `title`. */
   async function attachFile(issueId: string, path: string, title: string): Promise<void> {
     const body = readFileSync(path);
@@ -250,6 +262,8 @@ export function linearSource({ key, fetch: request = fetch, pick = "assigned" }:
   }
 
   return {
+    keywords: KEYWORDS,
+
     async assigned() {
       const list = pickQuery(pick);
       const tickets: Ticket[] = [];
@@ -335,6 +349,20 @@ export function linearSource({ key, fetch: request = fetch, pick = "assigned" }:
       const target = found.team.states.nodes.find(({ name }) => name === move.from);
       if (target === undefined) return `${identifier}'s team has no state named ${move.from}, so it stays in ${found.state.name}`;
       await setState(identifier, found.id, target.id, move.from);
+      return null;
+    },
+
+    async complete(identifier, comment) {
+      const found = await issue<Stateful>(identifier, STATEFUL);
+      if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
+      // A ticket already finished is left as it is, and gets no comment: whoever finished it has said what they meant.
+      if (FINISHED_TYPES.has(found.state.type)) return null;
+      // The completed state Linear lists first by position, when a team has more than one.
+      const [target] = found.team.states.nodes.filter(({ type }) => type === "completed").sort((a, b) => a.position - b.position);
+      if (target === undefined) return `${identifier}'s team has no completed state, so it stays in ${found.state.name}`;
+      // The move comes first: if the comment then fails, the next refresh finds the ticket completed and does nothing, rather than posting the comment twice.
+      await setState(identifier, found.id, target.id, target.name);
+      await postComment(identifier, found.id, comment);
       return null;
     },
 

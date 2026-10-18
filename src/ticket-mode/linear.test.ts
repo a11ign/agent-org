@@ -447,3 +447,51 @@ test("A11-69: viewer() names the key's person by name, or by email when Linear h
   assert.equal(await linearSource({ key: "k", fetch: linear([{ data: { viewer: { name: "Dan Beck", email: "dan@example.com" } } }]).fetch }).viewer!(), "Dan Beck");
   assert.equal(await linearSource({ key: "k", fetch: linear([{ data: { viewer: { name: "", email: "dan@example.com" } } }]).fetch }).viewer!(), "dan@example.com");
 });
+
+/** A ticket in state `type` and `name`, with its team's states: a started one, and the completed states given, each with its position. */
+const finishable = (type: string, name: string, completed: { id: string; name: string; position: number }[] = [{ id: "s-done", name: "Done", position: 3 }]) => ({
+  data: { issues: { nodes: [{ id: "uuid-1", state: { type, name }, team: { states: { nodes: [
+    { id: "s-progress", name: "In Progress", type: "started", position: 1 }, ...completed.map((state) => ({ ...state, type: "completed" })),
+  ] } } }] } } });
+const moved = { data: { issueUpdate: { success: true } } };
+const commented = { data: { commentCreate: { success: true } } };
+
+test("A11-92: complete() moves a started ticket to its team's completed state, and posts the comment on it", async () => {
+  const { fetch, requests } = linear([finishable("started", "In Progress"), moved, commented]);
+  assert.equal(await linearSource({ key: "k", fetch }).complete!("NBF-1", "PR merged without closing NBF-1"), null);
+  const bodies = requests.map((r) => JSON.parse(String(r.init.body)));
+  assert.deepEqual(bodies[1].variables, { id: "uuid-1", stateId: "s-done" }, "moved to the completed state");
+  assert.deepEqual(bodies[2].variables, { issueId: "uuid-1", body: "PR merged without closing NBF-1" }, "the comment is on the ticket");
+  assert.match(bodies[2].query, /commentCreate/);
+});
+
+test("A11-92: complete() takes the completed state listed first by position when a team has more than one", async () => {
+  const { fetch, requests } = linear([finishable("unstarted", "Planned", [{ id: "s-late", name: "Shipped", position: 9 }, { id: "s-early", name: "Done", position: 4 }]), moved, commented]);
+  await linearSource({ key: "k", fetch }).complete!("NBF-1", "c");
+  assert.deepEqual(JSON.parse(String(requests[1].init.body)).variables, { id: "uuid-1", stateId: "s-early" });
+});
+
+test("A11-92: complete() leaves a ticket Linear or a person has finished, canceled or marked a duplicate alone, with no move and no comment", async () => {
+  for (const type of ["completed", "canceled", "duplicate"]) {
+    const { fetch, requests } = linear([finishable(type, "Done")]);
+    assert.equal(await linearSource({ key: "k", fetch }).complete!("NBF-1", "c"), null, type);
+    assert.equal(requests.length, 1, `${type}: only read`);
+  }
+});
+
+test("A11-92: complete() says so, and moves and posts nothing, when its team has no completed state", async () => {
+  const { fetch, requests } = linear([finishable("started", "In Progress", [])]);
+  assert.equal(await linearSource({ key: "k", fetch }).complete!("NBF-1", "c"), "NBF-1's team has no completed state, so it stays in In Progress");
+  assert.equal(requests.length, 1);
+});
+
+test("A11-92: complete() is refused when Linear answers success false to the move or to the comment", async () => {
+  const refusedMove = linear([finishable("started", "In Progress"), { data: { issueUpdate: { success: false } } }]);
+  await assert.rejects(linearSource({ key: "k", fetch: refusedMove.fetch }).complete!("NBF-1", "c"), /Linear did not move NBF-1 to Done/);
+  const refusedComment = linear([finishable("started", "In Progress"), moved, { data: { commentCreate: { success: false } } }]);
+  await assert.rejects(linearSource({ key: "k", fetch: refusedComment.fetch }).complete!("NBF-1", "c"), /Linear did not post a comment on NBF-1/);
+});
+
+test("A11-92: Linear's own pull request words are the keywords a source hands the brief and pr:open", () => {
+  assert.deepEqual(linearSource({ key: "k", fetch: linear([]).fetch }).keywords, { closing: "Closes", nonClosing: "Refs" });
+});

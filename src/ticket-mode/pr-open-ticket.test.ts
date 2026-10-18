@@ -15,7 +15,7 @@ import { main, runFromCli, EXIT_NOTHING_SENT, sendToGitHub } from "../pr-open.ts
 import { QUEUED_EXIT as EXIT_QUEUED } from "../gh-ledger.ts";
 import { REPO } from "../project-identity.ts";
 import { parseTicketSettings } from "./settings.ts";
-import type { Ticket, TicketSource } from "./source.ts";
+import { DEFAULT_KEYWORDS, type Ticket, type TicketSource } from "./source.ts";
 import { preReviewReport, readTicketContext, ticketBodyReports, ticketClosesReport, treeKeyUnder, type TicketContext } from "./pr-open-ticket.ts";
 import { READY_FILE } from "./worker-files.ts";
 import { CI_BODY_REPORTS } from "../acceptance-commands.ts";
@@ -28,12 +28,13 @@ const REGION = "## Region\n\n```\nsrc/x.ts\n```\n";
 const CHANGED = "src/x.ts";
 const ACCEPTANCE_FILE = acceptanceFileForBranch(BRANCH);
 const ACCEPTANCE = "## Acceptance\n\nnode -e \"process.exit(0)\"\n";
-/** A body a ticket worker would send: it names its ticket with `Refs`, and carries the Mutation line the checks expect. */
-const BODY = `Refs ${KEY}\n\nMutation: none -- these tests drive the ticket checks\n`;
+/** A body a ticket worker would send: it names its ticket with `Closes`, which completes it, and carries the Mutation line the checks expect. */
+const BODY = `Closes ${KEY}\n\nMutation: none -- these tests drive the ticket checks\n`;
 
 /** The run a test starts from: a ready machine (`tickets.drafts: false`), so a create needs no `--draft`, and a test of drafts says otherwise. */
 const ticket = (over: Partial<TicketContext> = {}): TicketContext => ({
-  key: KEY, branch: BRANCH, folder: FOLDER, treeKey: "agent-org", regionText: REGION, readyRun: true, prReview: null, hasChangesets: false, ...over,
+  key: KEY, branch: BRANCH, folder: FOLDER, treeKey: "agent-org", regionText: REGION, readyRun: true, prReview: null, hasChangesets: false,
+  keywords: DEFAULT_KEYWORDS, ...over,
 });
 
 /** `git` in a ticket's tree: the diff's files and the added ones, the tree's root, and its checked-out branch. */
@@ -65,7 +66,7 @@ test("A11-74: a ticket run's pull request is checked and sent once, its checks p
   assert.equal(r.sent.length, 1, "one create, and nothing after it");
   assert.deepEqual(r.sent[0], ["pr", "create", "--body", BODY, "--title", "fix: the thing"], "the create is sent as given: pr:open adds no flag");
   assert.ok(r.sent.every((argv) => argv[1] === "create"), "no pr merge (arming) and no pr edit (a session label)");
-  assert.match(r.said, /CLOSES: A11-74 -- `Refs` links it, and does not complete it/);
+  assert.match(r.said, /CLOSES: A11-74 -- `Closes` completes it when the pull request merges/);
   assert.match(r.said, /REGION: 1 changed path\(s\) against A11-74's Region .* 1 inside/);
   assert.match(r.said, /CHANGESET: not checked -- this repository has no \.changeset\/config\.json/);
 });
@@ -131,22 +132,68 @@ test("A11-74: a body that declares no ticket, closes another, or closes none is 
 });
 
 test("A11-74: the closes report names the verb it found, and refuses Closes: none, a Closes of another ticket and a Closes with no key", () => {
-  assert.deepEqual(ticketClosesReport(`Refs ${KEY}\n`, KEY), { ok: true, lines: [`CLOSES: ${KEY} -- \`Refs\` links it, and does not complete it`] });
-  assert.deepEqual(ticketClosesReport(`Closes ${KEY}\n`, KEY), { ok: true, lines: [`CLOSES: ${KEY} -- \`Closes\` completes it when the pull request merges`] });
-  assert.equal(ticketClosesReport(`Closes: none -- no ticket\n`, KEY).ok, false);
-  assert.equal(ticketClosesReport(`Closes A11-31\n`, KEY).ok, false);
-  assert.equal(ticketClosesReport(`Refs A11-31\n`, KEY).ok, false, "a body with only another ticket names none of its own");
-  assert.equal(ticketClosesReport(`Closes ${KEY} -- done with the first half\n`, KEY).ok, true, "a reason after a dash is not a key");
-  assert.equal(ticketClosesReport(`Refs A11-31\nRefs ${KEY}\n`, KEY).ok, true, "a Refs of another ticket is no refusal");
+  assert.deepEqual(ticketClosesReport(`Closes ${KEY}\n`, KEY, DEFAULT_KEYWORDS), { ok: true, lines: [`CLOSES: ${KEY} -- \`Closes\` completes it when the pull request merges`] });
+  assert.equal(ticketClosesReport(`Closes: none -- no ticket\n`, KEY, DEFAULT_KEYWORDS).ok, false);
+  assert.equal(ticketClosesReport(`Closes A11-31\n`, KEY, DEFAULT_KEYWORDS).ok, false);
+  assert.equal(ticketClosesReport(`Refs A11-31\n`, KEY, DEFAULT_KEYWORDS).ok, false, "a body with only another ticket names none of its own");
+  assert.equal(ticketClosesReport(`Closes ${KEY} -- done with the first half\n`, KEY, DEFAULT_KEYWORDS).ok, true, "a reason after a dash is not a key");
+  assert.equal(ticketClosesReport(`Closes ${KEY}\nRefs A11-31\n`, KEY, DEFAULT_KEYWORDS).ok, true, "a Refs of another ticket is no refusal");
+});
+
+test("A11-92: a body that links its ticket with the non-closing keyword is refused unless it says the pull request is partial, and the refusal names both fixes", () => {
+  const alone = ticketClosesReport(`Refs ${KEY}\n`, KEY, DEFAULT_KEYWORDS);
+  assert.equal(alone.ok, false, "a Refs-only body would leave the ticket open after its pull request merged");
+  assert.match(alone.lines.join("\n"), /`Closes A11-74`/, "the closing keyword is named as one fix");
+  assert.match(alone.lines.join("\n"), /Partial: <what remains>/, "the Partial line is named as the other");
+  assert.deepEqual(ticketClosesReport(`Refs ${KEY}\nPartial: the settings page\n`, KEY, DEFAULT_KEYWORDS),
+    { ok: true, lines: [`CLOSES: ${KEY} -- \`Refs\` links it and does not complete it: the pull request is partial, and the settings page remains`] });
+  assert.equal(ticketClosesReport(`Refs ${KEY}\nPartial: <what remains>\n`, KEY, DEFAULT_KEYWORDS).ok, false, "the brief's placeholder is no declaration");
+  assert.equal(ticketClosesReport(`Refs ${KEY}\nPartial:\n`, KEY, DEFAULT_KEYWORDS).ok, false, "a Partial line with nothing after it is no declaration");
+});
+
+test("A11-92: a partial pull request says so in one line only: a Closes with a Partial line is refused, since it would close the ticket on merge", () => {
+  const both = ticketClosesReport(`Closes ${KEY}\nPartial: the settings page\n`, KEY, DEFAULT_KEYWORDS);
+  assert.equal(both.ok, false);
+  assert.match(both.lines.join("\n"), /completes the ticket when the pull request merges, but the body also has a `Partial:` line/);
+});
+
+test("A11-92: the closes report reads the tracker's own two words, and no others", () => {
+  const custom = { closing: "Resolves", nonClosing: "Relates" };
+  assert.equal(ticketClosesReport(`Resolves ${KEY}\n`, KEY, custom).ok, true);
+  assert.equal(ticketClosesReport(`Relates ${KEY}\nPartial: the rest\n`, KEY, custom).ok, true);
+  assert.equal(ticketClosesReport(`Closes ${KEY}\n`, KEY, custom).ok, false, "Closes is not this tracker's word");
+  assert.equal(ticketClosesReport(`Refs ${KEY}\nPartial: the rest\n`, KEY, custom).ok, false, "Refs is not this tracker's word");
+  assert.equal(ticketClosesReport(`Resolves: none\n`, KEY, custom).ok, false);
 });
 
 test("A11-74: a worker's markdown around its ticket's key, or a note after it, still names that key; a Closes of a pull request number or another key does not", () => {
-  for (const line of [`Closes ${KEY} (done-when met)`, `Closes **${KEY}**`, `Closes \`${KEY}\``, `Refs \`${KEY}\``, `Refs **${KEY}**`, `**Refs:** ${KEY}`, `Closes ${KEY} and the parent`]) {
-    assert.equal(ticketClosesReport(`${line}\n`, KEY).ok, true, line);
+  for (const line of [`Closes ${KEY} (done-when met)`, `Closes **${KEY}**`, `Closes \`${KEY}\``, `Closes ${KEY} and the parent`]) {
+    assert.equal(ticketClosesReport(`${line}\n`, KEY, DEFAULT_KEYWORDS).ok, true, line);
   }
-  assert.equal(ticketClosesReport("Closes the loop\n", KEY).ok, false, "a Closes line that names no ticket does not close this one");
-  assert.equal(ticketClosesReport("Closes #4889\n", KEY).ok, false, "a pull request number is another row, not this ticket");
-  assert.equal(ticketClosesReport(`Closes ${KEY} and A11-31\n`, KEY).ok, false, "a Closes that names a second ticket is refused");
+  for (const line of [`Refs \`${KEY}\``, `Refs **${KEY}**`, `**Refs:** ${KEY}`]) {
+    assert.equal(ticketClosesReport(`${line}\nPartial: the rest\n`, KEY, DEFAULT_KEYWORDS).ok, true, line);
+  }
+  assert.equal(ticketClosesReport("Closes the loop\n", KEY, DEFAULT_KEYWORDS).ok, false, "a Closes line that names no ticket does not close this one");
+  assert.equal(ticketClosesReport("Closes #4889\n", KEY, DEFAULT_KEYWORDS).ok, false, "a pull request number is another row, not this ticket");
+  assert.equal(ticketClosesReport(`Closes ${KEY} and A11-31\n`, KEY, DEFAULT_KEYWORDS).ok, false, "a Closes that names a second ticket is refused");
+});
+
+test("A11-92: a create that links its ticket with Refs alone is refused and nothing is sent, and one that says it is partial is sent and reported as partial", () => {
+  const alone = open(["--body", `Refs ${KEY}\n\nMutation: none -- x\n`, "--title", "t"]);
+  assert.equal(alone.code, EXIT_NOTHING_SENT);
+  assert.equal(alone.sent.length, 0, "nothing sent");
+  const partial = open(["--body", `Refs ${KEY}\nPartial: the settings page\n\nMutation: none -- x\n`, "--title", "t"]);
+  assert.equal(partial.code, 0, partial.refused);
+  assert.equal(partial.sent.length, 1);
+  assert.match(partial.said, /the pull request is partial, and the settings page remains/);
+});
+
+test("A11-92: a create names its ticket with the keywords its tracker reads, not Closes and Refs", () => {
+  const custom = { closing: "Resolves", nonClosing: "Relates" };
+  const r = open(["--body", `Resolves ${KEY}\n\nMutation: none -- x\n`, "--title", "t"], { ticket: ticket({ keywords: custom }) });
+  assert.equal(r.code, 0, r.refused);
+  const other = open(["--body", `Closes ${KEY}\n\nMutation: none -- x\n`, "--title", "t"], { ticket: ticket({ keywords: custom }) });
+  assert.equal(other.code, EXIT_NOTHING_SENT, "Closes is not this tracker's word, so the body names no ticket");
 });
 
 test("A11-74: a no-release line that still carries the brief's <reason> placeholder is no reason", () => {
@@ -267,9 +314,9 @@ test("A11-86: with tickets.prReview set, the body must record the review in a Pr
 
 test("A11-86: the body reports are CI's own unless the machine names a pre-PR review skill, and then the review's record is one more, last", () => {
   const names = (reports: readonly { name: string }[]) => reports.map(({ name }) => name);
-  assert.deepEqual(names(ticketBodyReports(KEY, null)), names(CI_BODY_REPORTS), "absent, the list is CI's, as before");
-  assert.deepEqual(names(ticketBodyReports(KEY, SKILL)), [...names(CI_BODY_REPORTS), "pr-review"]);
-  const last = ticketBodyReports(KEY, SKILL).at(-1)!;
+  assert.deepEqual(names(ticketBodyReports(KEY, null, DEFAULT_KEYWORDS)), names(CI_BODY_REPORTS), "absent, the list is CI's, as before");
+  assert.deepEqual(names(ticketBodyReports(KEY, SKILL, DEFAULT_KEYWORDS)), [...names(CI_BODY_REPORTS), "pr-review"]);
+  const last = ticketBodyReports(KEY, SKILL, DEFAULT_KEYWORDS).at(-1)!;
   assert.equal(last.report({ body: `Refs ${KEY}\n` } as never).ok, false, "the record is checked in the create's body");
 });
 
@@ -281,6 +328,16 @@ test("A11-86: the run's context carries the machine's pre-PR review skill, and n
     source: () => tracker, git: gitFor(), exists: () => false });
   assert.equal((await context({ prReview: SKILL })).prReview, SKILL);
   assert.equal((await context({})).prReview, null, "POSITIVE CONTROL: absent is no review");
+});
+
+test("A11-92: the run's context carries the tracker's keywords, and the defaults when the tracker names none", async () => {
+  const read = async () => ({ key: KEY, title: "t", description: "", url: "", branch: BRANCH, status: "", statusOrder: 0, team: "A11", project: null, priority: 3, parent: null });
+  const env = { AGENT_ORG_TICKET: KEY, AGENT_ORG_TICKET_BRANCH: BRANCH };
+  const context = (tracker: TicketSource) => readTicketContext(env, { settings: () => parseTicketSettings({ clones: { "agent-org": TREE } }),
+    source: () => tracker, git: gitFor(), exists: () => false });
+  const named = { closing: "Resolves", nonClosing: "Relates" };
+  assert.deepEqual((await context({ assigned: async () => [], download: async () => [], read, keywords: named })).keywords, named);
+  assert.deepEqual((await context({ assigned: async () => [], download: async () => [], read })).keywords, DEFAULT_KEYWORDS, "a source without keywords is read by the defaults");
 });
 
 test("A11-74: a create that is held without an arm says nothing about an arm, because none was held with it", () => {

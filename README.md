@@ -262,12 +262,19 @@ ticket's move to the planner's state, and a batch's order as "blocks" relations.
 **Opening a pull request in ticket mode.** A worker opens each pull request with `pr:open`, which checks it before `gh pr create` sends it. A
 ticket has no GitHub row, so `pr:open` reads the ticket through the tracker instead, and makes the checks a row's pull request gets: the Region,
 read from the ticket's description and its plan files (a `## Region` section listing each path the work changes, one per line, prefixed
-`<repo>:` where the ticket spans repositories); the body's `Refs <KEY>` (or `Closes <KEY>` when the ticket's done-when is fully met) in place of
-`Closes #N`, with `Closes` of any other ticket and `Closes: none` refused; the owner, which is the run and must sit in its own worktree on its
+`<repo>:` where the ticket spans repositories); the body's keyword for the ticket, which is `Closes <KEY>` when the pull request completes it
+(its done-when is fully met) and `Refs <KEY>` with a `Partial: <what remains>` line when it is partial, leaving the ticket open, in place of
+`Closes #N`; a `Refs`-only body with no `Partial:` line is refused, and so are `Closes` of any other ticket, `Closes: none`, and a `Partial:`
+line beside a `Closes` (the words are the tracker's, `Closes` and `Refs` for Linear); the owner, which is the run and must sit in its own worktree on its
 own branch; the draft policy, from `tickets.drafts` (`--draft` is required when it is true, and refused when it is false, so the pull request
 opens ready); and a changeset in the diff, or a `no-release:` line, in a repository that has `.changeset/config.json`. The acceptance file, the
 body reports and the leak check are the same as for a row. Nothing is armed or labelled, because a ticket worker never merges. A ticket that
 cannot be read refuses the create, and so does a path outside the Region that no `Outside-Region: <path> — <reason>` line clears.
+
+**The merge backstop.** A worker's ready pull request, or a review run's, that merges while its ticket is still open completes the ticket: the board
+moves it to the tracker's completed state and posts the merged pull requests on it, since the body may have been wrong. A run declared partial
+(a `partial` in its outcome file, the same words as the body's `Partial:` line) is never completed this way, and nor is a ticket the tracker has
+already completed, canceled or marked a duplicate.
 
 **What a worker may not do** is enforced by `ticket:hook`, which the ticket folder's `.claude/settings.local.json` names, so a session herdr
 resumes after a restart keeps it. A stop with no outcome file is refused twice in a row. These are refused outright: a pull request that

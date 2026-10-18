@@ -12,7 +12,7 @@ import { join } from "node:path";
 import type { StackBase } from "./board-view.ts";
 import type { DenyRule } from "./settings.ts";
 import type { PullRequest } from "./queue.ts";
-import type { Blocker, Ticket } from "./source.ts";
+import { DEFAULT_KEYWORDS, type Blocker, type Keywords, type Ticket } from "./source.ts";
 
 /** The file a worker writes last, and the one thing the pool and the stop hook read to know a run has ended. */
 export const OUTCOME_FILE = "outcome.json";
@@ -386,11 +386,13 @@ function commitStep(prReview: string | null): string {
 
 /**
  * Step 6 of the brief: how the worker opens its pull requests, as a draft (the default) or ready for review (`tickets.drafts: false`). The command is
- * `pr:open`, which checks the body and the diff against the ticket before it sends anything (A11-74); `gh pr create` is not used.
+ * `pr:open`, which checks the body and the diff against the ticket before it sends anything (A11-74); `gh pr create` is not used. The body names the
+ * ticket with the tracker's closing keyword when the pull request completes it, and with its non-closing one, plus a `Partial:` line, when it is partial
+ * (A11-92): the tracker closes a ticket on a merge only for the first.
  */
-function openPullRequestStep(drafts: boolean, ticket: Ticket, prOpenCommand: string, prReview: string | null): string {
+function openPullRequestStep(drafts: boolean, ticket: Ticket, prOpenCommand: string, prReview: string | null, { closing, nonClosing }: Keywords): string {
   const reviewLine = prReview === null ? "" : `carries the line \`Pre-PR review: ${prReview} ran on the whole diff; it changed: <what, or nothing>\`, `;
-  return `6. Push the branch and open ONE ${drafts ? "DRAFT" : "READY"} pull request per repository you changed: write its body to a file, then run \`${prOpenCommand} create${drafts ? " --draft" : ""} --title "<type>(<scope>): <what changed>" --body-file <file>\`. The body links ${ticket.url}, says \`Refs ${ticket.key}\` (or \`Closes ${ticket.key}\` only when the ticket's done-when is fully met), says what changed and how you verified it, ${reviewLine}and, when the change is visible, shows it: take screenshots with what this machine provides (see "On this machine" when there is such a section), or else end the body with "Screenshot pending". It carries an \`Outside-Region: <path> — <reason>\` line for each path outside the plan's \`## Region\`, and either a changeset or a \`no-release: <reason>\` line. A pull request that needs another repository's unmerged one says so in its body. If \`pr:open\` refuses, fix what it names and run it again. Exit code 3 means the pull request exists: do not run it again, and run only the step its message names.`;
+  return `6. Push the branch and open ONE ${drafts ? "DRAFT" : "READY"} pull request per repository you changed: write its body to a file, then run \`${prOpenCommand} create${drafts ? " --draft" : ""} --title "<type>(<scope>): <what changed>" --body-file <file>\`. The body links ${ticket.url}, and names the ticket \`${closing} ${ticket.key}\` when this pull request completes it (its done-when is fully met), so the tracker closes the ticket when it merges. When the pull request is partial and leaves part of the ticket to do, it names the ticket \`${nonClosing} ${ticket.key}\` instead, with a \`Partial: <what remains>\` line, and the ticket stays open; a pull request that completes the ticket is never written with \`${nonClosing}\`. The body says what changed and how you verified it, ${reviewLine}and, when the change is visible, shows it: take screenshots with what this machine provides (see "On this machine" when there is such a section), or else end the body with "Screenshot pending". It carries an \`Outside-Region: <path> — <reason>\` line for each path outside the plan's \`## Region\`, and either a changeset or a \`no-release: <reason>\` line. A pull request that needs another repository's unmerged one says so in its body. If \`pr:open\` refuses, fix what it names and run it again. Exit code 3 means the pull request exists: do not run it again, and run only the step its message names.`;
 }
 
 /**
@@ -407,12 +409,13 @@ function regionInstruction(clones: Readonly<Record<string, string>>): string {
  * file's `tickets.brief`, how workers behave on this machine, and `connectors` its `tickets.connectors`. `blockers` are the tickets this one
  * waited on, and `stackedOn` the ones it starts on top of. `drafts` false (`tickets.drafts`) has the worker open its pull requests ready for review.
  * `prReview` is the skill `tickets.prReview` names, which the worker runs on its whole diff before any push or pull request, or null for none.
+ * `keywords` are the two words the tracker reads a pull request's body by (`source.ts`), which the brief names; a source without its own gets the defaults.
  */
 export function briefText({ ticket, folder, ticketDir, attachments, parent = null, blockers = [], stackedOn = [], clones, worktreeCommand, prOpenCommand, notes,
-  connectors = [], planned = false, drafts = true, prReview = null }: {
+  connectors = [], planned = false, drafts = true, prReview = null, keywords = DEFAULT_KEYWORDS }: {
   ticket: Ticket; folder: string; ticketDir: string; attachments: readonly string[]; parent?: ParentTicket | null; blockers?: readonly Blocker[];
   stackedOn?: readonly StackBase[]; clones: Readonly<Record<string, string>>; worktreeCommand: string; prOpenCommand: string; notes?: string;
-  connectors?: readonly string[]; planned?: boolean; drafts?: boolean; prReview?: string | null;
+  connectors?: readonly string[]; planned?: boolean; drafts?: boolean; prReview?: string | null; keywords?: Keywords;
 }): string {
   const stacked = new Set(stackedOn.map(({ key }) => key));
   const repos = Object.entries(clones).map(([name, path]) => `- \`${name}\` at \`${path}\``).join("\n");
@@ -447,7 +450,7 @@ ${plannedText(planned)}1. Find the cause in the code. Fix it, with a test that f
 3. Check your diff against what was asked. List each acceptance criterion in the ticket. Add each decision in its files, its parent's description and its parent's files that applies to this ticket. Find where your diff meets each one, and finish any it misses. If you leave one unmet on purpose, say which and why in the pull request body.
 4. Check what your pull request body will claim. For each behaviour it says you fixed, kept or changed, name the test assertion that checks exactly that behaviour, not a neighbouring value. Run it on the base: a fix must fail there, and a kept behaviour must pass there too. Claim nothing you have no such assertion for, or say it is unchecked.
 ${commitStep(prReview)}
-${openPullRequestStep(drafts, ticket, prOpenCommand, prReview)}
+${openPullRequestStep(drafts, ticket, prOpenCommand, prReview, keywords)}
 7. If a design gate asks for a design check, decline it with "unattended worker, no design tool access" and say so in the pull request body.
 
 Never mark a pull request ready, request a review, merge, force-push, run a workflow, or post to Slack. Those are the person's.
@@ -465,6 +468,8 @@ Write \`${ticketDir}/${OUTCOME_FILE}\` as the last thing you do, with exactly on
 { "kind": "needs-human", "reason": "<what a person must decide or provide>" }
 { "kind": "working", "reason": "<what of yours is still running in the background, and what you do when it wakes you>" }
 \`\`\`
+
+A partial pull request adds \`"partial": "<what remains>"\` to its \`${drafts ? "draft-pr" : "ready-pr"}\` line, the same words as its body's \`Partial:\` line, so the board leaves the ticket open when it merges. A pull request that completes the ticket has no \`partial\`.
 
 ${CHECKED_OR_NEEDS_HUMAN}
 

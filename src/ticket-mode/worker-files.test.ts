@@ -255,12 +255,31 @@ test("both planner briefs ask for a Region section that lists the paths the work
 
 test("a drafts-on brief opens a draft: step 6 runs pr:open with --draft, names the ticket's keys, and its outcome example is draft-pr", () => {
   const brief = briefText({ ticket, folder: "/work/.tickets/NBF-1270", ticketDir: "/state/tickets/NBF-1270", attachments: [], clones, worktreeCommand: "/node /tool/src/bin.ts ticket:worktree", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
-  assert.ok(brief.includes(`6. Push the branch and open ONE DRAFT pull request per repository you changed: write its body to a file, then run \`/node /tool/src/bin.ts pr:open create --draft --title "<type>(<scope>): <what changed>" --body-file <file>\`. The body links ${ticket.url}, says \`Refs NBF-1270\` (or \`Closes NBF-1270\` only when the ticket's done-when is fully met), says what changed and how you verified it,`));
+  assert.ok(brief.includes(`6. Push the branch and open ONE DRAFT pull request per repository you changed: write its body to a file, then run \`/node /tool/src/bin.ts pr:open create --draft --title "<type>(<scope>): <what changed>" --body-file <file>\`. The body links ${ticket.url}, and names the ticket \`Closes NBF-1270\` when this pull request completes it (its done-when is fully met), so the tracker closes the ticket when it merges.`), "A11-92: the closing keyword is asked for a completing pull request");
   assert.ok(brief.includes("`Outside-Region: <path> — <reason>`"), "a path outside the plan's Region is declared in the body");
   assert.equal(brief.includes("gh pr create"), false, "the brief no longer tells a worker to open its pull request with gh");
   assert.equal(brief, briefText({ ticket, folder: "/work/.tickets/NBF-1270", ticketDir: "/state/tickets/NBF-1270", attachments: [], clones, worktreeCommand: "/node /tool/src/bin.ts ticket:worktree", prOpenCommand: "/node /tool/src/bin.ts pr:open", drafts: true }), "an absent flag is the same as true");
   assert.ok(brief.includes(`{ "kind": "draft-pr", "prs": [{ "repo": "<repo>", "url": "<pull request url>" }] }`));
   assert.equal(brief.includes("ready-pr"), false);
+});
+
+test("A11-92: a brief asks for the tracker's closing keyword on a completing pull request, and the non-closing one with a Partial line only for a partial one", () => {
+  const brief = briefWith();
+  assert.ok(brief.includes("names the ticket `Closes NBF-1270` when this pull request completes it"), "a completing pull request is written with the closing keyword");
+  assert.ok(brief.includes("When the pull request is partial and leaves part of the ticket to do, it names the ticket `Refs NBF-1270` instead, with a `Partial: <what remains>` line, and the ticket stays open"),
+    "a partial pull request is written with the non-closing keyword and a Partial line");
+  assert.ok(brief.includes("a pull request that completes the ticket is never written with `Refs`"), "the non-closing keyword is not for a completing pull request");
+  assert.ok(brief.includes(`{ "kind": "draft-pr", "prs": [{ "repo": "<repo>", "url": "<pull request url>" }] }`), "the outcome example is unchanged");
+  assert.ok(brief.includes(`A partial pull request adds \`"partial": "<what remains>"\` to its \`draft-pr\` line`), "a partial pull request declares it in the outcome file");
+});
+
+test("A11-92: a source with its own keywords is briefed with them, and not with Closes and Refs", () => {
+  const brief = briefWith({ keywords: { closing: "Resolves", nonClosing: "Relates" } });
+  assert.ok(brief.includes("names the ticket `Resolves NBF-1270` when this pull request completes it"), "the source's closing word");
+  assert.ok(brief.includes("it names the ticket `Relates NBF-1270` instead, with a `Partial: <what remains>` line"), "the source's non-closing word");
+  assert.equal(brief.includes("Closes"), false, "not the default closing word");
+  assert.equal(brief.includes("Refs"), false, "not the default non-closing word");
+  assert.equal(briefWith().includes("Resolves"), false, "and the default brief names neither");
 });
 
 test("a drafts-off brief opens a ready pull request: its command has no --draft, and its outcome example is ready-pr", () => {

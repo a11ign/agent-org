@@ -9,17 +9,30 @@
 // the only writer of the file, which it replaces whole by rename, so a reader never sees half of one.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { CONCLUDED, isBeingPublished, isParked, isPublishing, isWatched, openPulls, overlapWait, resumesOnConflict, RESULT_KINDS, runStatus, settledByPulls, waitsOn } from "./board-view.ts";
+import { COMPLETING_KINDS, CONCLUDED, isBeingPublished, isParked, isPublishing, isWatched, openPulls, overlapWait, resumesOnConflict, RESULT_KINDS, runStatus, settledByPulls, waitsOn } from "./board-view.ts";
 import type { Blocker, PullState, StateMove, Ticket } from "./source.ts";
+
+/**
+ * What a worker's `partial` declaration says remains of its ticket: its words, trimmed, or null for none, which is a blank declaration or the brief's
+ * `<what remains>` placeholder. The outcome file and the pull request body read a declaration by this one rule (A11-92). PURE.
+ */
+export function declaredRemains(text: string): string | null {
+  const remains = text.trim();
+  return remains === "" || /^<.*>$/.test(remains) ? null : remains;
+}
 
 /** A pull request a run opened: the repository it is in and its web address. */
 export type PullRequest = Readonly<{ repo: string; url: string }>;
 
 /** How a finished run ended. A worker writes the first seven; the pool decides the rest. */
 export type Outcome =
-  | Readonly<{ kind: "draft-pr"; prs: readonly PullRequest[] }>
+  /**
+   * `partial` is what remains of the ticket after this pull request, when the worker declared it partial: the pull request then links the ticket
+   * and leaves it open, so the board does not complete it on a merge (A11-92).
+   */
+  | Readonly<{ kind: "draft-pr"; prs: readonly PullRequest[]; partial?: string }>
   /** A worker opened its pull requests ready for review, on a machine with `tickets.drafts: false`: there is nothing to approve. */
-  | Readonly<{ kind: "ready-pr"; prs: readonly PullRequest[] }>
+  | Readonly<{ kind: "ready-pr"; prs: readonly PullRequest[]; partial?: string }>
   /** A review run marked its pull requests ready, answered their review and left their checks passing. */
   | Readonly<{ kind: "reviewed"; prs: readonly PullRequest[] }>
   | Readonly<{ kind: "planned" }>
@@ -117,6 +130,16 @@ export type Entry = Readonly<{
   trackerState?: string;
   /** The state of each of the ticket's pull requests by URL once the run has finished, as last read: a run whose pull requests merged is done. */
   pullStates?: Readonly<Record<string, PullState>>;
+  /**
+   * What remains of the ticket, when the worker declared its pull requests partial (A11-92). The board does not complete the ticket on their merge. Kept
+   * through a review round, whose `reviewed` outcome does not say it, and dropped by a retry, which starts a fresh worker.
+   */
+  partial?: string;
+  /**
+   * Set once the board has acted on the ticket for a merged pull request its body did not complete (A11-92): it completed the ticket, or found it
+   * already finished, or its team has no completed state to move it to, which the log says once.
+   */
+  closedByBoard?: boolean;
   /** The tickets that block this one, as last read while it is queued; unset until the tracker has been asked. */
   blockers?: readonly Blocker[];
   /**
@@ -324,12 +347,12 @@ export function dismiss(queue: Queue, key: string): Queue {
 export function retry(queue: Queue, key: string, now: number): Queue {
   const entry = find(queue, key);
   if (entry === undefined || entry.phase !== "finished" || isResult(entry) || CONCLUDED.has(entry.outcome?.kind ?? "") || isParked(entry)) return queue;
-  const { ticket, repos, model, effort, plan, planned, session, review, published, feedback, asked, rounds, movedFrom, paths, plannedRepo, pullFiles } = entry;
+  const { ticket, repos, model, effort, plan, planned, session, review, published, feedback, asked, rounds, movedFrom, paths, plannedRepo, pullFiles, partial } = entry;
   // A review run that failed is retried as the same review round, resuming the same worker, so it does not start the ticket over, and a round
   // the board started still counts towards its cap. Any other run starts a fresh worker, whose session replaces this one. A ticket of a batch
   // is planned again on its own.
   const round = { ...(session ? { session } : {}), ...(published ? { published } : {}), ...(feedback !== undefined ? { feedback } : {}), ...(asked ? { asked } : {}),
-    ...(rounds !== undefined ? { rounds } : {}), ...carriedFields({ paths, plannedRepo, pullFiles }) };
+    ...(rounds !== undefined ? { rounds } : {}), ...carriedFields({ paths, plannedRepo, pullFiles, partial }) };
   // The record of the board's move is carried over too: a retried run finds its ticket already started, and would move nothing to record again.
   const retried: Entry = { ticket, repos, model, effort, ...(plan ? { plan } : {}), ...(planned ? { planned } : {}), ...(movedFrom ? { movedFrom } : {}),
     ...(review ? { review, ...round } : {}), phase: "queued", queuedAt: now };
@@ -376,9 +399,12 @@ function reviewRound(entry: Entry, prs: readonly PullRequest[], now: number): En
     ...carriedFields(entry), review: prs, phase: "queued", queuedAt: now };
 }
 
-/** The fields a review round carries from the run it continues, its paths and pull request files: only those the run has set. PURE. */
-const carriedFields = ({ paths, plannedRepo, pullFiles }: Pick<Entry, "paths" | "plannedRepo" | "pullFiles">) => ({
+/**
+ * The fields a review round carries from the run it continues, its paths, pull request files and partial declaration: only those the run has set. PURE.
+ */
+const carriedFields = ({ paths, plannedRepo, pullFiles, partial }: Pick<Entry, "paths" | "plannedRepo" | "pullFiles" | "partial">) => ({
   ...(paths ? { paths } : {}), ...(plannedRepo !== undefined ? { plannedRepo } : {}), ...(pullFiles ? { pullFiles } : {}),
+  ...(partial !== undefined ? { partial } : {}),
 });
 
 /** The most review rounds the board starts on its own, on new feedback, between two of a person's approvals. */
@@ -564,9 +590,12 @@ export type RunRecord = Readonly<{ tokens?: Entry["tokens"]; session?: string }>
  */
 function ended(entry: Entry, outcome: Outcome, now: number, { tokens, session }: RunRecord): Entry {
   const ranIn = session ?? (entry.review ? entry.session : undefined);
-  // A working note is a running run's: the outcome it ended on replaces it.
-  const { session: _earlier, working: _note, ...rest } = entry;
-  return { ...rest, phase: "finished", outcome, finishedAt: now, waiting: false, ...(tokens ? { tokens } : {}), ...(ranIn ? { session: ranIn } : {}) };
+  // A working note is a running run's: the outcome it ended on replaces it. A pull request outcome says whether the run is partial, and any other
+  // keeps what the run had: a review round's `reviewed` says nothing of it.
+  const { session: _earlier, working: _note, partial: _declared, ...rest } = entry;
+  const partial = outcome.kind === "draft-pr" || outcome.kind === "ready-pr" ? outcome.partial : entry.partial;
+  return { ...rest, phase: "finished", outcome, finishedAt: now, waiting: false, ...(tokens ? { tokens } : {}), ...(ranIn ? { session: ranIn } : {}),
+    ...(partial !== undefined ? { partial } : {}) };
 }
 
 /** The run has ended and its workspace is gone. */
@@ -679,6 +708,18 @@ export function recordTrackerStates(queue: Queue, states: ReadonlyMap<string, st
     return entry.phase === "finished" && state !== undefined ? { ...entry, trackerState: state } : entry;
   }) };
 }
+
+/**
+ * The finished runs whose ticket the board may complete itself (A11-92): an outcome that completes its ticket, not declared partial, whose pull requests
+ * have all merged or closed with one merged, and whose ticket the tracker has not finished. PURE.
+ */
+export function completableRuns(queue: Queue): Entry[] {
+  return queue.entries.filter((entry) => entry.phase === "finished" && COMPLETING_KINDS.has(entry.outcome?.kind ?? "") && entry.partial === undefined
+    && entry.closedByBoard !== true && !SETTLED.has(entry.trackerState ?? "") && settledByPulls(entry) === "completed");
+}
+
+/** Record that the board completed the ticket of the finished run `key`, so it is not completed again. */
+export const recordClosedByBoard = (queue: Queue, key: string): Queue => replace(queue, key, (entry) => ({ ...entry, closedByBoard: true }));
 
 /**
  * The queued entries to start now, in queue order: none while the queue is paused or the host is loaded past its cores (`wake.ts`'s `hostLoadRefusal` rule, where
