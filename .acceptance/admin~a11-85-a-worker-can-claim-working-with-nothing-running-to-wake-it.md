@@ -11,4 +11,4 @@ Refs A11-85
 Flag: none -- the hook and the board read only what a ticket-mode worker's own session writes; no other run writes `working`.
 Revert: revert this PR; the stop hook goes back to letting `working` through unchecked, and the board back to the thirty-minute rule.
 
-Acceptance: `bash -c 'cd /home/agent/repos/.tickets/A11-85/agent-org && npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/background-work.test.ts src/ticket-mode/hook.test.ts src/ticket-mode/queue.test.ts src/ticket-mode/pool.test.ts src/ticket-mode/worker-files.test.ts src/ticket-mode/board-view.test.ts src/ticket-mode/ui.test.ts'`
+Acceptance: `bash -c 'cd /home/agent/repos/.tickets/A11-85/agent-org && A11Y_PRIVATE_TMP_BASE="$PWD/node_modules/.cache/a11ign-tmp" npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/background-work.test.ts src/ticket-mode/hook.test.ts src/ticket-mode/queue.test.ts src/ticket-mode/pool.test.ts src/ticket-mode/worker-files.test.ts src/ticket-mode/board-view.test.ts src/ticket-mode/ui.test.ts'`
