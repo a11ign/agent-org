@@ -513,3 +513,121 @@ test("A11-91: updateTicketText() is refused when Linear has no ticket by that ke
 test("A11-92: Linear's own pull request words are the keywords a source hands the brief and pr:open", () => {
   assert.deepEqual(linearSource({ key: "k", fetch: linear([]).fetch }).keywords, { closing: "Closes", nonClosing: "Refs" });
 });
+
+/**
+ * A Linear that answers each GraphQL request by `answer`, which sees the query text and its variables, and records every request. A request `answer`
+ * does not know is a failure the test names.
+ */
+function answering(answer: (text: string, variables: Record<string, unknown>) => unknown) {
+  const sent: { text: string; variables: Record<string, unknown> }[] = [];
+  const fetch = (async (url: string, init: RequestInit = {}) => {
+    const { query: text, variables } = JSON.parse(String(init.body)) as { query: string; variables: Record<string, unknown> };
+    sent.push({ text, variables });
+    return new Response(JSON.stringify({ data: answer(text, variables) }), { status: 200 });
+  }) as typeof globalThis.fetch;
+  return { fetch, sent, mutations: (word: string) => sent.filter(({ text }) => text.startsWith("mutation") && text.includes(word)) };
+}
+
+/** The team, project, labels and parent a new-ticket test's tracker holds: NBF's team, its Visual Explorer project, and the labels a draft may name. */
+function trackerOf({ labelsOwnedBy = "NBF" }: { labelsOwnedBy?: string } = {}) {
+  const labels = [
+    { id: "lab-bucket", name: "Bucket: Board", team: { key: "NBF" }, parent: { name: "Bucket" } },
+    { id: "lab-goal", name: "Keep the board honest", team: null, parent: { name: "Goal" } },
+    { id: "lab-plain", name: "Ticket mode", team: { key: labelsOwnedBy }, parent: null },
+    { id: "lab-notgoal", name: "Speed", team: null, parent: { name: "Area" } },
+  ];
+  return (text: string, variables: Record<string, unknown>): unknown => {
+    if (text.includes("viewer { id teams")) return { viewer: { id: "user-me", teams: { nodes: [{ key: "NBF" }] } } };
+    if (text.includes("teams(filter: { key: { eq: $key } })")) {
+      if (variables.key !== "NBF") return { teams: { nodes: [] } };
+      return { teams: { nodes: [{ id: "team-nbf", key: "NBF", named: { nodes: variables.project === "Visual Explorer - GA" ? [{ id: "proj-ve" }] : [] },
+        known: { nodes: [{ name: "Visual Explorer - GA" }, { name: "Board" }] } }] } };
+    }
+    if (text.includes("projects(filter: { name: { eq: $name } })")) {
+      return { projects: { nodes: variables.name === "Visual Explorer - GA" ? [{ teams: { nodes: [{ key: "NBF" }] } }] : [] } };
+    }
+    if (text.includes("issueLabels(")) return { issueLabels: { nodes: labels.filter(({ name }) => (variables.names as string[]).includes(name)) } };
+    if (text.includes("k0: issues(")) {
+      const keys = [...text.matchAll(/k(\d+): issues/g)].map(([, n]) => n);
+      return Object.fromEntries(keys.map((n) => [`k${n}`, { nodes: [{ id: `id-${String(variables[`t${n}`])}-${String(variables[`n${n}`])}` }] }]));
+    }
+    if (text.includes("issues(first: 1, filter: { team")) return { issues: { nodes: variables.number === 99 ? [] : [{ id: "id-parent" }] } };
+    if (text.includes("issueCreate(input: $input)")) {
+      const input = variables.input as { id: string; title: string };
+      return { issueCreate: { success: true, issue: { id: input.id, ...readBack(input.title) } } };
+    }
+    if (text.includes("issue(id: $id)")) return { issue: { id: variables.id, ...readBack("Read back") } };
+    if (text.includes("issueRelationCreate")) return { issueRelationCreate: { success: true } };
+    throw new Error(`the fake Linear does not answer: ${text}`);
+  };
+}
+
+/** A ticket this test's tracker has made, as Linear reads it back: NBF-77, with the fields a ticket is read with. */
+const readBack = (title: string) => ({ identifier: "NBF-77", title, description: "**Why:** x", url: "https://linear.app/x/issue/NBF-77", branchName: "nbf-77",
+  priority: 2, state: { name: "Backlog", position: 0 }, team: { key: "NBF" }, project: { name: "Visual Explorer - GA" }, parent: { identifier: "NBF-12" }, children: { nodes: [] }, attachments: { nodes: [] }, labels: { nodes: [] } });
+
+const newTicket = { id: "7d1c5e2a-0000-4000-8000-000000000001", team: "NBF", title: "feat: show new-ticket requests", description: "**Why:** x", project: "Visual Explorer - GA",
+  goal: "Keep the board honest", labels: ["Bucket: Board", "Ticket mode"], priority: 2, parent: "NBF-12", blocks: ["NBF-3"], blockedBy: ["NBF-4"] };
+
+test("createTicket makes the ticket with its project, goal, labels, priority, parent and relations, assigned to the key's own user, after resolving every name", async () => {
+  const { fetch, sent, mutations } = answering(trackerOf());
+  const { ticket, warnings } = await linearSource({ key: "k", fetch }).createTicket!(newTicket);
+  assert.equal(ticket.key, "NBF-77");
+  assert.deepEqual(warnings, []);
+  const [create] = mutations("issueCreate");
+  assert.deepEqual(create.variables.input, { id: newTicket.id, teamId: "team-nbf", title: newTicket.title, description: "**Why:** x", priority: 2, assigneeId: "user-me",
+    projectId: "proj-ve", parentId: "id-parent", labelIds: ["lab-bucket", "lab-plain", "lab-goal"] });
+  const relations = mutations("issueRelationCreate").map(({ variables }) => variables);
+  assert.deepEqual(relations, [
+    { issueId: newTicket.id, relatedIssueId: "id-NBF-3" },
+    { issueId: "id-NBF-4", relatedIssueId: newTicket.id },
+  ], "a block the new ticket makes is stored on it, and a block it has is stored on the blocker");
+  assert.ok(sent.findIndex(({ text }) => text.includes("issueLabels(")) < sent.findIndex(({ text }) => text.includes("issueCreate(")), "every name is resolved before the ticket is created");
+});
+
+test("an unresolvable project creates nothing, and names the projects the team has", async () => {
+  const { fetch, mutations } = answering(trackerOf());
+  await assert.rejects(linearSource({ key: "k", fetch }).createTicket!({ ...newTicket, project: "Nope" }), /NBF has no project named Nope; its projects are Visual Explorer - GA, Board/);
+  assert.equal(mutations("issueCreate").length, 0);
+});
+
+test("a label that does not exist, or a goal outside the group Goal, creates nothing and names it", async () => {
+  const { fetch, mutations } = answering(trackerOf());
+  await assert.rejects(linearSource({ key: "k", fetch }).createTicket!({ ...newTicket, labels: ["Nonesuch"] }), /NBF has no label named Nonesuch/);
+  await assert.rejects(linearSource({ key: "k", fetch }).createTicket!({ ...newTicket, goal: "Speed" }), /Speed is not a label in the group Goal/);
+  await assert.rejects(linearSource({ key: "k", fetch }).createTicket!({ ...newTicket, parent: "NBF-99", blocks: [] }), /Linear has no ticket NBF-99/);
+  assert.equal(mutations("issueCreate").length, 0);
+});
+
+test("a team the draft names is used, and with none named the project's one team, then the key's only team; none of them is refused", async () => {
+  const { fetch, sent } = answering(trackerOf());
+  await linearSource({ key: "k", fetch }).createTicket!({ ...newTicket, team: null, project: "Visual Explorer - GA" });
+  assert.ok(sent.some(({ text }) => text.includes("projects(filter: { name: { eq: $name } })")), "a project names its team when the draft names none");
+  assert.ok(sent.some(({ text, variables }) => text.includes("teams(filter: { key: { eq: $key } })") && variables.key === "NBF"), "the project's team is read");
+  const only = answering(trackerOf());
+  await linearSource({ key: "k", fetch: only.fetch }).createTicket!({ ...newTicket, team: null, project: null, goal: null, labels: [] });
+  const [made] = only.mutations("issueCreate");
+  assert.equal((made.variables.input as { teamId: string }).teamId, "team-nbf", "the key's only team is NBF");
+  const none = answering((text, variables) => (text.includes("viewer { id teams") ? { viewer: { id: "u", teams: { nodes: [{ key: "A" }, { key: "B" }] } } } : trackerOf()(text, variables)));
+  await assert.rejects(linearSource({ key: "k", fetch: none.fetch }).createTicket!({ ...newTicket, team: null, project: null, goal: null, labels: [] }), /name a team/);
+  assert.equal(none.mutations("issueCreate").length, 0);
+});
+
+test("a ticket whose id the tracker already has is read back as created, and no second ticket is made", async () => {
+  const tracker = trackerOf();
+  const { fetch, mutations } = answering((text, variables) => (text.includes("issueCreate(input: $input)")
+    ? { issueCreate: { success: false, issue: null } } : tracker(text, variables)));
+  const ticket = await linearSource({ key: "k", fetch }).createTicket!({ ...newTicket, goal: null, labels: [], blocks: [], blockedBy: [] }).then((made) => made.ticket);
+  assert.equal(ticket.key, "NBF-77");
+  assert.equal(mutations("issueCreate").length, 1, "one attempt, then the read back");
+});
+
+test("a relation that fails after the ticket exists is a warning, and the ticket is not created again", async () => {
+  const tracker = trackerOf();
+  const { fetch, mutations } = answering((text, variables) => (text.includes("issueRelationCreate")
+    ? { issueRelationCreate: { success: false } } : tracker(text, variables)));
+  const { ticket, warnings } = await linearSource({ key: "k", fetch }).createTicket!(newTicket);
+  assert.equal(ticket.key, "NBF-77");
+  assert.deepEqual(warnings, ["NBF-77 was created, but it did not block NBF-3", "NBF-77 was created, but NBF-4 did not block it"]);
+  assert.equal(mutations("issueCreate").length, 1);
+});

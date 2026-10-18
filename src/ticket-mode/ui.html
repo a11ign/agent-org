@@ -112,6 +112,21 @@
   .no-plan.covered { color: var(--muted); }
   .no-plan svg { width: 14px; height: 14px; }
   .row .queue-children { margin-left: 8px; }
+  .stack { display: grid; gap: 4px; }
+  #new-ticket-dialog textarea, .writer textarea, .writer input, .writer select { width: 100%; box-sizing: border-box; }
+  #new-ticket-dialog textarea { resize: vertical; }
+  .writers { display: grid; gap: 10px; margin: 0 0 16px; }
+  .writers h2 { font-size: 15px; margin: 0; }
+  .writer { border: 1px solid var(--line); border-radius: 8px; padding: 12px; display: grid; gap: 8px; background: var(--panel); }
+  .writer-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .writer-head .request { font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+  .draft { border-top: 1px solid var(--line); padding-top: 10px; display: grid; gap: 6px; }
+  .draft label { display: grid; gap: 4px; font-size: 13px; }
+  .draft ul { margin: 0; padding-left: 18px; font-size: 13px; }
+  .draft .controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .draft .controls label { display: flex; gap: 6px; align-items: center; }
+  .draft .controls label input { width: auto; }
+  @media (max-width: 600px) { #new-ticket-dialog, .writer { padding: 12px; } }
 </style>
 </head>
 <body>
@@ -150,6 +165,31 @@
     </div>
   </form>
 </dialog>
+<dialog id="new-ticket-dialog" aria-labelledby="new-ticket-title">
+  <form method="dialog" class="settings">
+    <h2 id="new-ticket-title">New ticket</h2>
+    <p class="hint">Say what the ticket is for, in plain words. A writer reads the repositories and the tracker, checks for a duplicate, and writes drafts for you to review. Nothing is created until you approve a draft.</p>
+    <label class="stack">Request <textarea id="writer-request" rows="4" maxlength="8000"></textarea></label>
+    <fieldset>
+      <legend>How</legend>
+      <label>Mode <select id="writer-mode"><option value="quick">Quick: it decides, unattended</option><option id="writer-grill" value="grill">Grill: it asks you in its terminal first</option></select></label>
+      <p id="writer-grill-note" class="hint" hidden></p>
+    </fieldset>
+    <fieldset>
+      <legend>Choices, if you have any</legend>
+      <label>Project <select id="writer-project"></select></label>
+      <label>Repository <select id="writer-repo"></select></label>
+      <label>Goal <select id="writer-goal"></select></label>
+      <label>Priority <select id="writer-priority"></select></label>
+      <label>Parent <input id="writer-parent" placeholder="A11-12"></label>
+    </fieldset>
+    <div class="actions">
+      <p id="writer-note" class="hint" role="status"></p>
+      <button value="cancel" formnovalidate>Cancel</button>
+      <button class="primary" id="writer-start" type="button">Start</button>
+    </div>
+  </form>
+</dialog>
 <main>
   <div id="error" class="error" role="alert"></div>
   <div id="connections-note" class="notice" hidden></div>
@@ -159,12 +199,18 @@
       <label><input id="all" type="checkbox"> Select all shown</label>
       <button class="small" id="fold-all" type="button"></button>
       <span id="loaded" class="pill"></span>
+      <button class="small" id="new-ticket" type="button" hidden>New ticket</button>
     </div>
     <div class="chips" id="projects"></div>
     <div class="chips" id="priorities"></div>
     <div class="chips" id="plans" hidden></div>
     <div id="label-rows"></div>
     <div id="children-note" class="notice" role="status" hidden></div>
+    <section id="writers" class="writers" aria-label="New tickets" hidden>
+      <h2>New tickets</h2>
+      <p id="writers-note" class="hint" role="status"></p>
+      <div id="writers-list"></div>
+    </section>
     <div id="paused-note" class="notice" hidden>Workers are paused. Tickets you queue wait on the Board until you start workers there.</div>
     <div id="groups"></div>
   </section>
@@ -197,6 +243,7 @@
 // This page only draws what they return and wires the clicks.
 import {
   APPROVE_TITLE, APPLY_EDIT_TITLE, DISCARD_EDIT_TITLE, DISMISS_EDIT_TITLE, DISMISS_TITLE, RESPOND_TITLE, QUEUE_CHILDREN, hasEdit, QUEUE_CHILDREN_TITLE, childrenNote, isParentTicket, PRIORITY_NAMES, RUN_STATUSES, publishable, publishLabel, publishNote, publishTerminalLink, pullsOf, flatten, groupByStatus, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, queueLabel, recall, remember, runActions, shownStatus, apiBase, chosenConnection, connectionLabel, safeHref, runStatus, terminalOpenHref,
+  WRITER_STATUS_LABEL, WRITER_PRIORITY_LABEL, writerStart, writerBody, goalNames, projectNames, writerRunActions, draftControls, draftStatusText, duplicateLines, draftForm, draftFields,
   runChoiceLabel, runsShown, unplannedCount, workingNote, verdictNote, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, waitNote, waitsOn, workersLabel,
 } from "/board-view.js";
 // The label rows: one per label group the listed tickets carry, and one for the labels in no group. label-filters.ts decides them, tested there.
@@ -230,6 +277,9 @@ const state = {
   runFilter: [...recall(storage, "ticket-mode.run-filter")][0] ?? null,
   // The instances the connections file lists, and the one shown. With no connections file there is one, this machine's.
   connections: [], connection: null,
+  // Whether this machine writes tickets from a request (the host file's `tickets.writer`), whether Grill is on (`tickets.terminal`), the repositories
+  // and priorities its form offers, and the new-ticket requests as the board last read them. The list is read again only when it changed.
+  writer: false, writerGrill: false, writerRepos: [], writerPriorities: [], writers: { runs: [] }, writersSignature: "",
 };
 const setOpen = (next) => { state.open = next; remember(storage, "ticket-mode.open", next); renderPick(); };
 const setOpenParents = (next) => { state.openParents = next; remember(storage, "ticket-mode.open-parents", next); renderPick(); };
@@ -640,6 +690,147 @@ function saveMax() {
 
 function render() { renderPick(); renderBoard(); renderFooter(); }
 
+// NEW TICKETS (A11-94). A request's form, its runs, and each draft's review. The board creates a ticket only when a person approves a draft here.
+const writerForm = () => ({
+  request: $("writer-request").value, mode: $("writer-mode").value, project: $("writer-project").value, repo: $("writer-repo").value,
+  goal: $("writer-goal").value, priority: $("writer-priority").value, parent: $("writer-parent").value,
+});
+const WRITER_NOTE = "Nothing is created until a draft is approved.";
+function openNewTicket() {
+  const options = (values, none) => [el("option", { value: "", textContent: none }), ...values.map((value) => el("option", { value, textContent: value }))];
+  $("writer-project").replaceChildren(...options(projectNames(state.tickets), "No project"));
+  $("writer-repo").replaceChildren(...options(state.writerRepos, "No repository"));
+  $("writer-goal").replaceChildren(...options(goalNames(state.tickets), "No goal"));
+  $("writer-priority").replaceChildren(...state.writerPriorities.map((p) => el("option", { value: p, textContent: WRITER_PRIORITY_LABEL[p] ?? p })));
+  $("writer-priority").value = "none";
+  $("writer-grill").disabled = !state.writerGrill;
+  $("writer-grill-note").textContent = state.writerGrill ? "" : "Grill needs a terminal: name tickets.terminal in the host file.";
+  $("writer-grill-note").hidden = state.writerGrill;
+  $("writer-request").value = "";
+  $("writer-parent").value = "";
+  $("writer-mode").value = "quick";
+  $("writer-note").textContent = WRITER_NOTE;
+  $("new-ticket-dialog").showModal();
+}
+$("new-ticket").addEventListener("click", openNewTicket);
+$("writer-start").addEventListener("click", async () => {
+  const form = writerForm();
+  const start = writerStart(form, state.writerGrill);
+  if (!start.enabled) { $("writer-note").textContent = start.reason; return; }
+  try {
+    setWriters(await call("POST", "/api/writer", writerBody(form)));
+    $("new-ticket-dialog").close();
+    report(null);
+  } catch (err) { $("writer-note").textContent = String(err.message || err); }
+});
+
+/** The new-ticket requests as the board holds them, read again when they changed. */
+function setWriters(next) {
+  state.writers = next;
+  state.writersSignature = JSON.stringify(next.runs);
+  renderWriters();
+}
+async function refreshWriters() {
+  if (!state.writer) return;
+  const next = await call("GET", "/api/writer");
+  if (JSON.stringify(next.runs) !== state.writersSignature) setWriters(next);
+}
+const actionButton = (label, title, onClick) => {
+  const b = el("button", { className: "small", type: "button", textContent: label, title });
+  b.addEventListener("click", onClick);
+  return b;
+};
+/** One run's card: its status, the terminal it is watched in, what it asks or refused, and its drafts for review. */
+function writerCard(run) {
+  const actions = writerRunActions(run);
+  const link = actions.terminal ? terminalLink(state.terminal, { ticket: { key: run.id }, phase: run.phase, workspace: run.workspace, pane: run.pane }) : null;
+  const terminal = link && state.connection && safeHref(link) ? el("a", { className: "terminal", href: terminalOpenHref(state.connection, link), title: link, target: "_blank", rel: "noreferrer", textContent: "Open terminal" }) : null;
+  const buttons = [
+    terminal,
+    actions.stop ? actionButton("Stop", "Stop writing: the drafts already written stay for review", () => writerAction(run, "stop")) : null,
+    actions.dismiss ? actionButton("Dismiss", "Take this request off the board. Its drafts that are still pending are dropped; nothing is created", () => writerAction(run, "dismiss")) : null,
+  ];
+  return el("article", { className: "writer" },
+    el("div", { className: "writer-head" }, el("span", { className: `st st-${run.status}`, textContent: WRITER_STATUS_LABEL[run.status] ?? run.status }),
+      el("span", { className: "request", textContent: run.request.split("\n")[0] }), ...buttons),
+    run.question ? el("p", { className: "hint", textContent: `It asks: ${run.question}` }) : null,
+    run.failure ? el("p", { className: "hint failed", textContent: run.failure }) : null,
+    ...run.rejected.map(({ reason }) => el("p", { className: "hint failed", textContent: reason })),
+    ...run.drafts.map((draft) => draftCard(run, draft)));
+}
+/** One draft's review: its fields to edit, its duplicates linked above its buttons, the check they need, and Approve, Approve and queue, Discard. */
+function draftCard(run, draft) {
+  const fields = Object.fromEntries(Object.entries(draftForm(draft.draft)).map(([name, value]) => [name, name === "priority" ? priorityField(value) : textField(name, value)]));
+  const check = el("input", { type: "checkbox" });
+  check.setAttribute("aria-label", "These are duplicates of the ticket above");
+  const duplicates = duplicateLines(draft).map((line) => el("li", {}, line.url && safeHref(line.url)
+    ? el("a", { href: safeHref(line.url), target: "_blank", rel: "noreferrer", textContent: line.text }) : el("span", { textContent: line.text }),
+    el("span", { className: "hint", textContent: ` ${line.why}` })));
+  const approve = actionButton("Approve", APPROVE_TITLE_WRITER, () => draftAction(run, draft, fields, check, "approve", false));
+  const queue = actionButton("Approve and queue", "Approve, create the ticket, and put it on the queue with the choice in the Pick footer", () => draftAction(run, draft, fields, check, "approve", true));
+  const discard = actionButton("Discard", "Discard this draft. Nothing is created in the tracker", () => draftAction(run, draft, fields, check, "discard", false));
+  const sync = () => {
+    const now = draftControls(draft, check.checked);
+    approve.disabled = !now.approve;
+    queue.disabled = !now.queue;
+    discard.disabled = !now.discard;
+    status.textContent = draftStatusText(draft);
+    note.textContent = now.reason ?? "";
+  };
+  const status = el("span", { className: "hint", role: "status", textContent: draftStatusText(draft) });
+  const note = el("span", { className: "hint" });
+  check.addEventListener("change", sync);
+  sync();
+  return el("section", { className: "draft" },
+    el("div", { className: "controls" }, el("strong", { textContent: draft.file }), status),
+    ...Object.entries({ title: "Title", why: "Why", doneWhen: "Done when (one item a line)", notes: "Notes", team: "Team", project: "Project", repo: "Repository", goal: "Goal",
+      labels: "Labels (comma-separated)", priority: "Priority", parent: "Parent", blocks: "Blocks (comma-separated)", blockedBy: "Blocked by (comma-separated)" })
+      .map(([name, label]) => el("label", {}, label, fields[name])),
+    duplicates.length > 0 ? el("ul", {}, ...duplicates) : null,
+    duplicates.length > 0 ? el("label", {}, check, "These are duplicates of the tickets above") : null,
+    el("div", { className: "controls" }, approve, queue, discard, note));
+}
+const APPROVE_TITLE_WRITER = "Create the ticket in the tracker, assigned to you, with the fields as they are here";
+function textField(name, value) {
+  const long = name === "why" || name === "doneWhen" || name === "notes";
+  const node = el(long ? "textarea" : "input", { value, rows: long ? 3 : undefined });
+  node.setAttribute("aria-label", name);
+  return node;
+}
+function priorityField(value) {
+  const node = el("select", {}, ...state.writerPriorities.map((p) => el("option", { value: p, textContent: WRITER_PRIORITY_LABEL[p] ?? p })));
+  node.value = value;
+  return node;
+}
+/** The draft's fields as the review holds them, read the way the draft format reads them. */
+const readDraft = (fields) => draftFields(Object.fromEntries(Object.entries(fields).map(([name, node]) => [name, node.value])));
+async function draftAction(run, draft, fields, check, verb, queue) {
+  try {
+    const answer = verb === "discard"
+      ? await call("POST", `/api/writer/${run.id}/drafts/${draft.id}/discard`, {})
+      : await call("POST", `/api/writer/${run.id}/drafts/${draft.id}/approve`, { draft: readDraft(fields), acknowledgeDuplicates: check.checked, queue, plan: $("plan-first").checked });
+    setWriters(answer);
+    if (verb === "approve") {
+      state.queue = await call("GET", "/api/queue");
+      const created = answer.created;
+      $("writers-note").textContent = created.queueError ? `Created as ${created.key}, but not queued: ${created.queueError}`
+        : created.inPick ? `Created as ${created.key}.` : `Created as ${created.key}. It is outside the list Pick shows, so it is not in it.`;
+    }
+    report(null);
+    render();
+  } catch (err) { report(err); }
+}
+async function writerAction(run, verb) {
+  try {
+    setWriters(await call("POST", `/api/writer/${run.id}/${verb}`, {}));
+    report(null);
+  } catch (err) { report(err); }
+}
+function renderWriters() {
+  $("writers").hidden = state.writers.runs.length === 0;
+  $("writers-list").replaceChildren(...state.writers.runs.map(writerCard));
+}
+
 function setup(config) {
   state.terminal = config.terminal ?? null;
   state.pick = config.pick ?? "assigned to you";
@@ -649,6 +840,11 @@ function setup(config) {
   for (const id of ["effort", "batch-effort", "planEffort"]) $(id).replaceChildren(...config.efforts.map((x) => el("option", { value: x, textContent: x })));
   state.planner = config.planner === true;
   state.publishing = config.publish === true;
+  state.writer = config.writer === true;
+  state.writerGrill = config.writerGrill === true;
+  state.writerRepos = config.repos ?? [];
+  state.writerPriorities = config.priorities ?? ["urgent", "high", "medium", "low", "none"];
+  $("new-ticket").hidden = !state.writer;
   $("planning-settings").hidden = !state.planner;
   $("plan-first").checked = true;
 }
@@ -723,6 +919,8 @@ async function load() {
   report(null);
   setup(await call("GET", "/api/config"));
   [state.tickets, state.queue] = await Promise.all([call("GET", "/api/tickets"), call("GET", "/api/queue")]);
+  // The new-ticket list is read on its own: a failure there is said, and the board still loads.
+  setWriters(state.writer ? await call("GET", "/api/writer").catch((err) => { report(err); return { runs: [] }; }) : { runs: [] });
   // An empty list says why, in the instance's words, which name its setting. An instance from before it could say keeps a plain line.
   state.empty = state.tickets.length > 0 ? null : (await call("GET", "/api/pick").catch(() => null))?.empty ?? "No open tickets to list.";
   render();
@@ -744,7 +942,10 @@ try {
   renderConnections(listed?.refusal);
   await load();
 } catch (err) { report(err); }
-setInterval(() => call("GET", "/api/queue").then((q) => { state.queue = q; renderBoard(); renderPick(); }, report), 5000);
+setInterval(() => {
+  call("GET", "/api/queue").then((q) => { state.queue = q; renderBoard(); renderPick(); }, report);
+  refreshWriters().catch(report);
+}, 5000);
 </script>
 </body>
 </html>

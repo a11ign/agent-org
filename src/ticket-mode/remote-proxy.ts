@@ -24,14 +24,16 @@ export type Forward = (target: Target, request: ForwardRequest) => Promise<Forwa
 const FORWARD_MS = 30_000;
 /** The most an instance's answer may hold. The largest is a list of tickets. */
 const ANSWER_BYTES = 8 * 1024 * 1024;
-const READS = new Set(["/api/config", "/api/tickets", "/api/parents", "/api/pick", "/api/queue"]);
-const WRITES = new Set(["/api/queue", "/api/queue-children", "/api/choice", "/api/publish", "/api/paused", "/api/max", "/api/terminal-pair"]);
+const READS = new Set(["/api/config", "/api/tickets", "/api/parents", "/api/pick", "/api/queue", "/api/writer"]);
+const WRITES = new Set(["/api/queue", "/api/queue-children", "/api/choice", "/api/publish", "/api/paused", "/api/max", "/api/terminal-pair", "/api/writer"]);
 const RUN_ACTION = /^\/api\/queue\/[A-Za-z0-9_-]+\/(amend|remove|retry|approve|respond|stop|close|dismiss|apply-edit|discard-edit)$/;
+/** A new-ticket request's own actions, and a draft's approve or discard: `/api/writer/<run>/stop`, `/api/writer/<run>/drafts/<draft>/approve`. */
+const WRITER_ACTION = /^\/api\/writer\/[A-Za-z0-9_-]+(?:\/(?:stop|dismiss)|\/drafts\/[A-Za-z0-9_.-]+\/(?:approve|discard))$/;
 
 /** Whether the page may make this call to an instance: one of the routes it calls there, by the method it calls it with. */
 export function passedOn(method: string, pathname: string): boolean {
   if (method === "GET") return READS.has(pathname);
-  if (method === "POST") return WRITES.has(pathname) || RUN_ACTION.test(pathname);
+  if (method === "POST") return WRITES.has(pathname) || RUN_ACTION.test(pathname) || WRITER_ACTION.test(pathname);
   return false;
 }
 

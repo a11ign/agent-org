@@ -13,7 +13,10 @@ import { createServer } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { HOST_FILE_ENV } from "./settings.ts";
+import { HOST_FILE_ENV, readTicketSettings } from "./settings.ts";
+import { createBoard } from "./server.ts";
+import { herdrName } from "./pool.ts";
+import type { Ticket, TicketSource } from "./source.ts";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const SERVER = realpathSync(join(HERE, "server.ts"));
@@ -131,6 +134,15 @@ test("ticket:serve starts on a host file with only clones and tickets, and no ti
   assert.doesNotMatch(outcome.stderr, /ProjectDeclarationRefusal/);
 });
 
+test("A11-94: ticket:serve starts on a ticket-only host that names tickets.writer, and no project is needed for the writer", async () => {
+  const root = tmpDir("serve-ticket-writer-start-");
+  const host = await hostFile(root, {}, WRITER_HOST);
+  const outcome = await runServe(host, root);
+  assert.equal(outcome.started, true, outcome.stderr);
+  assert.doesNotMatch(outcome.stderr, STACK);
+  assert.doesNotMatch(outcome.stderr, /ProjectDeclarationRefusal/);
+});
+
 test("ticket:serve on the same entry with a host file that has primary also starts (the positive control)", async () => {
   const root = tmpDir("serve-with-primary-");
   const host = await hostFile(root, primaryHost(root));
@@ -221,4 +233,86 @@ test("ticket:serve with AGENT_ORG_HOST unset reads ~/.agent-org/host.json and st
   const outcome = await runServe(null, root, { home });
   assert.equal(outcome.started, true, outcome.stderr);
   assert.doesNotMatch(outcome.stderr, STACK);
+});
+
+/*
+ * A NEW TICKET ON A TICKET-ONLY HOST (A11-94). A host file with only `clones` and `tickets`, naming `tickets.writer`, runs the whole path: a request, a
+ * writer run that leaves a draft, the person's approval, and the queue. The tracker and herdr are fakes; the board and its pool are the real ones.
+ */
+
+const WRITER_HOST = { writer: { run: "Run the a11ign:create-ticket skill, quick, for this request: {request}. Write each draft under {dir}/drafts." } };
+
+/** Resolves once `ready` holds, polling the pool's background work; fails the test when it does not hold in time. */
+async function waitFor(ready: () => boolean): Promise<void> {
+  for (let i = 0; i < 200; i += 1) {
+    if (ready()) return;
+    await new Promise((done) => setTimeout(done, 10));
+  }
+  assert.fail("the background work did not finish");
+}
+
+/** A herdr that lists each label's workspace with its status, as the pool's tests read it, and opens a workspace for each start. */
+function herdrWith(status: Map<string, string>) {
+  let next = 0;
+  return (args: string[]): string => {
+    if (args.includes("create")) {
+      next += 1;
+      return JSON.stringify({ result: { root_pane: { pane_id: `w${next}:p1` }, workspace: { workspace_id: `w${next}` } } });
+    }
+    if (args.includes("agent") && args.includes("list")) {
+      return JSON.stringify({ result: { agents: [...status].map(([label]) => ({ name: null, workspace_id: `w${label.replace(/\D/g, "")}`, agent_session: { value: `session-${label}` } })) } });
+    }
+    if (args.includes("list")) return JSON.stringify({ result: { workspaces: [...status].map(([label, s]) => ({ label, agent_status: s })) } });
+    return JSON.stringify({ type: "ok" });
+  };
+}
+
+test("on a ticket-only host, a new-ticket request runs the writer, its draft waits for approval, and approving it creates and queues the ticket", async () => {
+  const root = tmpDir("serve-ticket-writer-");
+  const keyPath = join(root, "linear.key");
+  writeFileSync(keyPath, "lin_api_test\n");
+  const hostPath = join(root, "host.json");
+  writeFileSync(hostPath, JSON.stringify({ clones: { demo: join(root, "demo") }, stateDir: join(root, "state"),
+    tickets: { linearKey: { path: keyPath }, ...WRITER_HOST } }));
+  const settings = readTicketSettings({ [HOST_FILE_ENV]: hostPath });
+  assert.equal(settings.writer?.model, "opus", "the writer's defaults, on a host that names no more");
+  const created: string[] = [];
+  const source: TicketSource = {
+    assigned: async () => [],
+    read: async () => null,
+    download: async () => [],
+    createTicket: async (input) => {
+      created.push(input.title);
+      return { ticket: { key: "NBF-101", title: input.title, description: input.description, url: "https://linear.app/x/NBF-101", branch: "nbf-101", status: "Backlog",
+        statusOrder: 0, team: "NBF", project: null, priority: input.priority, parent: null } as Ticket, warnings: [] };
+    },
+  };
+  const status = new Map<string, string>();
+  const board = createBoard({ settings, source, key: "k".repeat(48), queuePath: join(root, "state", "tickets", "queue.json"), choicePath: join(root, "state", "tickets", "choice.json"),
+    poolDeps: { herdr: herdrWith(status), wait: async () => {}, now: () => 100, load: () => ({ load: 1, cores: 14 }), transcriptsRoot: join(root, "transcripts"),
+      pluginRecord: join(root, "no-plugin-record.json"), hostFile: hostPath } });
+  const [, asked] = await board.api("POST", "/api/writer", { request: "Show the requests a person made" }) as [number, any];
+  const id = asked.runs[0].id as string;
+  assert.equal(asked.runs[0].status, "queued");
+  // The request woke the pool, which starts the run in the background; a tick that finds the pool busy returns at once, so the start is waited for.
+  await waitFor(() => board.store.get().writers?.[0].phase === "running");
+  const label = herdrName(`writer-${id}`);
+  assert.equal(board.store.get().writers?.[0].phase, "running", "the writer started on the ticket-only host");
+  const dir = join(root, "state", "tickets", "writer", id);
+  assert.match(readFileSync(join(dir, "brief.md"), "utf8"), /for this request: Show the requests a person made\. Write each draft under/);
+  mkdirSync(join(dir, "drafts"), { recursive: true });
+  writeFileSync(join(dir, "drafts", "01-show.json"), JSON.stringify({ title: "feat: show requests", why: "A person asks", doneWhen: ["It lists them"] }));
+  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "drafted" }));
+  status.set(label, "idle");
+  await board.pool.tick();
+  await waitFor(() => board.store.get().writers?.[0].phase === "finished");
+  const [, ready] = await board.api("GET", "/api/writer", {}) as [number, any];
+  assert.deepEqual([ready.runs[0].status, ready.runs[0].drafts[0].status], ["ready", "pending"]);
+  assert.equal(created.length, 0, "a draft a person has not approved creates nothing");
+  assert.equal(board.store.get().entries.length, 0, "and queues nothing");
+  const draftId = ready.runs[0].drafts[0].id as string;
+  const [, approved] = await board.api("POST", `/api/writer/${id}/drafts/${draftId}/approve`, { draft: { title: "feat: show requests", why: "A person asks", doneWhen: ["It lists them"] }, queue: true }) as [number, any];
+  assert.deepEqual(created, ["feat: show requests"]);
+  assert.equal(approved.created.key, "NBF-101");
+  assert.deepEqual(board.store.get().entries.map((e) => e.ticket.key), ["NBF-101"], "approved and queued, on the ticket-only host");
 });

@@ -31,7 +31,7 @@ test("doctor passes every check on a working install, and never prints the key",
   const checks = await diagnose(deps());
   assert.deepEqual(checks.map(({ name, ok }) => [name, ok]), [
     ["node", true], ["pnpm", true], ["launcher", true], ["host file", true], ["gh wrapper", true], ["herdr", true], ["tracker key", true], ["linear mcp", true],
-    ["instance service", true], ["instance answering", true], ["herdr scope", true], ["ui service", true], ["ui answering", true],
+    ["ticket writer", true], ["instance service", true], ["instance answering", true], ["herdr scope", true], ["ui service", true], ["ui answering", true],
     ["terminal address", true], ["terminal service", true], ["terminal answering", true], ["pairing", true], ["auto-update service", true], ["update lag", true],
   ]);
   assert.ok(!report(checks).includes(KEY));
@@ -325,3 +325,18 @@ test("doctor says a gh wrapper it could not check is not a pass", async () => {
   assert.equal(checks["gh wrapper"].detail, "cannot be checked: ENOENT: host.json");
 });
 
+
+test("A11-94: doctor says whether the ticket writer is configured, and fails one that cannot read a Linear ticket to check for duplicates", async () => {
+  const hostWith = (tickets: Record<string, unknown>) => JSON.stringify({ clones: { netbox: "/src/netbox" }, tickets: { port: 4800, uiPort: 4801, linearKey: { keychain: "agent-org-linear" }, ...tickets } });
+  const writer = { run: "Run the a11ign:create-ticket skill, quick, for this request: {request}. Write each draft under {dir}/drafts." };
+  const read = (over: Partial<DoctorDeps>) => diagnose(deps(over)).then((checks) => byName(checks)["ticket writer"]);
+  const absent = await read({});
+  assert.deepEqual([absent.ok, absent.detail], [true, "no: New ticket is hidden, since tickets.writer is not named"], "informational when not named");
+  const reading = await read({ readFile: (path) => (path.endsWith("host.json") ? hostWith({ writer, connectors: ["^mcp__linear__get_issue$"], terminal: TERMINAL }) : HOST) });
+  assert.deepEqual([reading.ok, reading.detail], [true, "yes: New ticket is shown, and Grill is on"]);
+  const quick = await read({ readFile: (path) => (path.endsWith("host.json") ? hostWith({ writer, connectors: ["^mcp__claude_ai_Linear__(get|list|search)_"] }) : HOST) });
+  assert.deepEqual([quick.ok, quick.detail], [true, "yes: New ticket is shown, and Grill is off until tickets.terminal is named"]);
+  const cannot = await read({ readFile: (path) => (path.endsWith("host.json") ? hostWith({ writer, connectors: ["^mcp__claude_ai_Linear__save_"] }) : HOST) });
+  assert.equal(cannot.ok, false, "no connector reads a ticket");
+  assert.match(cannot.fix ?? "", /agent-org onboard/);
+});

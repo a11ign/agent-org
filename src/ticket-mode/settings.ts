@@ -57,6 +57,8 @@ export type TicketSettings = Readonly<{
   plan: string | null;
   /** How a ticket with no plan is planned before it is worked, or null when this machine plans none. */
   planner: Planner | null;
+  /** How a new ticket is written from a person's request on the board, or null when the board offers no New ticket. */
+  writer: Writer | null;
   /** The tracker state a ticket moves to when a worker starts implementing it, if it has not started, or null to leave its state alone. */
   workingState: string | null;
   /**
@@ -129,6 +131,14 @@ export type Planner = Readonly<{
   run: string;
   /** The tracker state a ticket moves to once its plan is attached, if it has not started, or null to leave its state alone. */
   state: string | null;
+}>;
+
+/** What a ticket-writing run is told: the ticket-writing skill, with `{request}` and `{dir}` filled in per run. */
+export type Writer = Readonly<{
+  /** The writer's instruction, naming {request}, the person's request, and {dir}, the folder its drafts go in. */
+  run: string;
+  model: string;
+  effort: string;
 }>;
 
 export class TicketSettingsRefusal extends Error {
@@ -235,6 +245,17 @@ function connectorPatterns(value: unknown, list = "tickets.connectors"): readonl
     refuseUnlessRegularExpression(pattern, field);
     return pattern;
   }));
+}
+
+const WRITER_SHAPE = "must be { \"run\": \"<the ticket writer's instruction, naming {request} and {dir}>\", \"model\": \"<optional, opus>\", \"effort\": \"<optional, high>\" }";
+
+/** `tickets.writer`: the ticket writer's instruction names both `{request}` and `{dir}`; its model and effort are one word each. Absent is null. */
+function writerOf(value: unknown): Writer | null {
+  if (value === undefined) return null;
+  if (!isObject(value) || typeof value.run !== "string" || !value.run.includes("{request}") || !value.run.includes("{dir}")) {
+    throw new TicketSettingsRefusal("tickets.writer", WRITER_SHAPE);
+  }
+  return Object.freeze({ run: value.run, model: word(value.model, "tickets.writer.model", "opus"), effort: word(value.effort, "tickets.writer.effort", "high") });
 }
 
 const PUBLISHER_SHAPE = "must be { \"run\": \"<the publish run's instruction, naming {prs} and {dir}>\", \"model\": \"<optional, haiku>\", \"effort\": \"<optional, low>\", \"connectors\": [\"^mcp__...\"] }";
@@ -377,6 +398,7 @@ export function parseTicketSettings(host: unknown, home: string = homedir()): Ti
     terminal: terminalTemplate(tickets.terminal),
     plan,
     planner: plannerOf(tickets.planner, plan),
+    writer: writerOf(tickets.writer),
     workingState: stateName(tickets.workingState, "tickets.workingState"),
     connectors: connectorPatterns(tickets.connectors),
     publish: publisherOf(tickets.publish),

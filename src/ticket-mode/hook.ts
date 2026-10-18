@@ -48,7 +48,7 @@ import { pathToFileURL } from "node:url";
 import { liveBackgroundWork } from "./background-work.ts";
 import type { DenyRule } from "./settings.ts";
 import { CONNECTORS_FILE, DENY_FILE, OUTCOME_FILE, PROTECTED_FILE, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, PUBLISH_FILE, READY_FILE, REVIEW_FILE, STOP_COUNT_FILE,
-  WORKING_STOP_FILE, defaultBinDir, protectedPaths } from "./worker-files.ts";
+  WORKING_STOP_FILE, WRITER_FILE, defaultBinDir, protectedPaths } from "./worker-files.ts";
 
 export type HookResult = Readonly<{ code: 0 | 2; say: readonly string[] }>;
 
@@ -88,9 +88,15 @@ function readyRefusal(approved: readonly string[]): Refusal {
     why: "marking a pull request ready is the person's, except a review run's own approved pull requests, by URL" };
 }
 
-/** The review and publish marks are the board's: a worker that wrote one would lift a refusal. */
-const MARK_REFUSAL: Refusal = { pattern: new RegExp(`\\b(?:${REVIEW_FILE}|${PUBLISH_FILE}|${READY_FILE})\\b`),
-  why: `${REVIEW_FILE}, ${PUBLISH_FILE} and ${READY_FILE} are the board's to write` };
+/** The review, publish, writer and ready marks are the board's: a worker that wrote one would lift a refusal. */
+const MARK_REFUSAL: Refusal = { pattern: new RegExp(`\\b(?:${REVIEW_FILE}|${PUBLISH_FILE}|${WRITER_FILE}|${READY_FILE})\\b`),
+  why: `${REVIEW_FILE}, ${PUBLISH_FILE}, ${WRITER_FILE} and ${READY_FILE} are the board's to write` };
+
+/**
+ * The connector tools a new-ticket run may call: the reads only, by name (`get`, `list`, `search`, `extract`, `read`, `find`, `fetch`). A run that
+ * writes the tracker would make a ticket the person has not approved, so the name is the check, whatever `tickets.connectors` allows. PURE.
+ */
+const READ_ONLY_CONNECTOR = /^mcp__[\w-]+__(get|list|search|extract|read|find|fetch)_/;
 /**
  * The pre-PR review's files, the hook's log and the pool's copy of the setting. Only the gate refuses them, and only when the setting is named, so a machine
  * without it is unchanged (A11-86).
@@ -153,6 +159,8 @@ export function toolVerdict(toolName: string, input: Record<string, unknown>, op
   machine?: readonly Refusal[];
   /** The connector tool names this machine allows. */
   connectors?: readonly RegExp[];
+  /** A new-ticket run: it may call only the allowed connectors that only read the tracker. */
+  writer?: boolean;
   /** The pull requests a review run may mark ready, by URL. */
   approved?: readonly string[];
   /** The connector tool names a publish run may call, or null for a run that is no publish run. */
@@ -162,8 +170,12 @@ export function toolVerdict(toolName: string, input: Record<string, unknown>, op
   /** The host's own programs a worker may not write, by path. */
   hostPrograms?: readonly string[];
 } = {}): HookResult {
-  const { machine = [], connectors = [], approved = [], publish = null, ready = false, hostPrograms = [] } = options;
+  const { machine = [], connectors = [], approved = [], publish = null, ready = false, hostPrograms = [], writer = false } = options;
   if (toolName.startsWith("mcp__")) {
+    if (writer) {
+      return connectors.some((pattern) => pattern.test(toolName)) && READ_ONLY_CONNECTOR.test(toolName) ? ALLOW
+        : refuse(`${toolName} may not be called by a new-ticket run: it reads the tracker, and creates nothing`);
+    }
     const allowed = [...connectors, ...(publish ?? [])];
     return allowed.some((pattern) => pattern.test(toolName)) ? ALLOW : refuse(`${toolName} is a connector this machine's tickets.connectors does not allow`);
   }
@@ -464,7 +476,7 @@ export function main(stdin: string, argv: string[]): HookResult {
     const resolved = typeof input.file_path === "string" ? { ...input, file_path: resolveWritePath(input.file_path) } : input;
     const verdict = toolVerdict(tool, resolved, {
       machine: refusals, connectors: allowed.connectors, approved: approvedPulls(ticketDir), publish: publishConnectors(ticketDir),
-      ready: existsSync(join(ticketDir, READY_FILE)), hostPrograms: guarded.paths,
+      ready: existsSync(join(ticketDir, READY_FILE)), hostPrograms: guarded.paths, writer: existsSync(join(ticketDir, WRITER_FILE)),
     });
     const review = prReviewSetting(ticketDir);
     // A call the other refusals stopped is neither logged nor gated: it did not run.

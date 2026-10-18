@@ -6,15 +6,16 @@
 // board hands the tracker, each on a planning run's or a verified outcome's behalf or a person's: the plan's files, attached to the ticket, the
 // ticket's move to the planner's state, a batch's order as "blocks" relations, once a run's pull request merged without closing its ticket or a worker
 // verified its `done` (A11-91), the ticket's move to its completed state with a comment (A11-92), and, once a person applies a worker's proposed edit,
-// the ticket's title and description (A11-91). Workers write nothing. Linear's own GitHub integration links each pull request, because the
-// worker's branch is the ticket's `branchName`.
+// the ticket's title and description (A11-91), and, once a person approves a draft a new-ticket run wrote, the ticket that draft becomes, with
+// its project, goal, labels, relations and parent (`createTicket`, A11-94). Workers write nothing. Linear's own GitHub integration links each
+// pull request, because the worker's branch is the ticket's `branchName`.
 //
 // THE KEY NEVER LEAVES THIS MODULE. It is read once, from the macOS Keychain or a file the host file names, and sent only to api.linear.app and uploads.linear.app.
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { basename, extname, join } from "node:path";
 import type { KeySource, PickScope } from "./settings.ts";
-import type { Blocker, Keywords, PullState, StateMove, Ticket, TicketLabel, TicketSource } from "./source.ts";
+import type { Blocker, Keywords, NewTicket, PullState, StateMove, Ticket, TicketLabel, TicketSource } from "./source.ts";
 
 export const LINEAR_API = "https://api.linear.app/graphql";
 /** The words Linear's GitHub integration reads in a pull request's body: `Closes` completes its ticket on merge, `Refs` only links it. */
@@ -72,6 +73,9 @@ type IssueNode = {
 } & Attachments;
 
 type Attachments = { attachments?: { nodes: { url: string; title: string }[] } };
+
+/** A ticket this module has just created, read back with its id. */
+type CreatedIssue = IssueNode & { id: string };
 
 /**
  * The attachments that are uploads, as Linear lists them beside a ticket's description; a link to elsewhere, such as a pull request, is left out.
@@ -239,6 +243,44 @@ export function linearSource({ key, fetch: request = fetch, pick = "assigned" }:
     if (!commentCreate.success) throw new Error(`Linear did not post a comment on ${identifier}`);
   }
 
+  /**
+   * The team a new ticket goes in, by its key: the one named, else the team of the project named when that project is in exactly one team, else the
+   * only team the key's user is on. Null when none of those says, so the board refuses and names the team it needs.
+   */
+  async function newTicketTeam(named: string | null, project: string | null, mine: readonly { key: string }[]): Promise<string | null> {
+    if (named !== null) return named;
+    if (project !== null) {
+      const { projects }: { projects: { nodes: { teams: { nodes: { key: string }[] } }[] } } = await query(
+        "query($name: String!) { projects(filter: { name: { eq: $name } }) { nodes { teams { nodes { key } } } } }", { name: project });
+      const keys = new Set(projects.nodes.flatMap(({ teams }) => teams.nodes.map(({ key: teamKey }) => teamKey)));
+      if (keys.size === 1) return [...keys][0];
+    }
+    return mine.length === 1 ? mine[0].key : null;
+  }
+
+  /** The id of a label `name` that the team `team` may use: its own label, else the workspace's. Null when there is none of that name. */
+  const labelIdIn = (labels: readonly { id: string; name: string; team: { key: string } | null }[], name: string, team: string): string | null => {
+    const named = labels.filter((label) => label.name === name);
+    return (named.find((label) => label.team?.key === team) ?? named.find((label) => label.team === null))?.id ?? null;
+  };
+
+  /**
+   * Create the ticket: `issueCreate` with the draft's own id, so a creation the tracker already made (answered "already exists") is read back as made, and
+   * never made twice. Anything else the tracker refuses is thrown.
+   */
+  async function createIssue(input: Record<string, unknown>): Promise<CreatedIssue> {
+    try {
+      const { issueCreate } = await query<{ issueCreate: { success: boolean; issue: CreatedIssue | null } }>(
+        `mutation($input: IssueCreateInput!) { issueCreate(input: $input) { success issue { id ${ISSUE_FIELDS} } } }`, { input });
+      if (!issueCreate.success || issueCreate.issue === null) throw new Error(`Linear did not create ${String(input.title)}`);
+      return issueCreate.issue;
+    } catch (err) {
+      const { issue } = await query<{ issue: CreatedIssue | null }>(`query($id: String!) { issue(id: $id) { id ${ISSUE_FIELDS} } }`, { id: input.id }).catch(() => ({ issue: null }));
+      if (issue !== null) return issue;
+      throw err;
+    }
+  }
+
   /** Upload the markdown file at `path` and attach it to the ticket `issueId` under `title`. */
   async function attachFile(issueId: string, path: string, title: string): Promise<void> {
     const body = readFileSync(path);
@@ -374,6 +416,57 @@ export function linearSource({ key, fetch: request = fetch, pick = "assigned" }:
       await setState(identifier, found.id, target.id, target.name);
       await postComment(identifier, found.id, comment);
       return null;
+    },
+
+    async createTicket(input: NewTicket) {
+      const { viewer } = await query<{ viewer: { id: string; teams: { nodes: { key: string }[] } } }>("query { viewer { id teams { nodes { key } } } }", {});
+      const teamKey = await newTicketTeam(input.team, input.project, viewer.teams.nodes);
+      if (teamKey === null) throw new Error("name a team: none of the draft, its parent, tickets.pick, its project or your own teams names exactly one");
+      // Everything a ticket names is resolved first, so a name that does not resolve creates nothing.
+      const names = [...new Set([...(input.goal === null ? [] : [input.goal]), ...input.labels])];
+      const { teams }: { teams: { nodes: { id: string; key: string; named: { nodes: { id: string }[] }; known: { nodes: { name: string }[] } }[] } } = await query(
+        `query($key: String!, $project: String!) { teams(filter: { key: { eq: $key } }) { nodes { id key named: projects(filter: { name: { eq: $project } }) { nodes { id } } known: projects(first: 8) { nodes { name } } } } }`,
+        { key: teamKey, project: input.project ?? "" });
+      const [team] = teams.nodes;
+      if (team === undefined) throw new Error(`Linear has no team ${teamKey}`);
+      let projectId: string | undefined;
+      if (input.project !== null) {
+        projectId = team.named.nodes[0]?.id;
+        if (projectId === undefined) throw new Error(`${teamKey} has no project named ${input.project}; its projects are ${team.known.nodes.map(({ name }) => name).join(", ") || "none"}`);
+      }
+      const { issueLabels }: { issueLabels: { nodes: { id: string; name: string; team: { key: string } | null; parent: { name: string } | null }[] } } = await query(
+        "query($names: [String!]!) { issueLabels(first: 250, filter: { name: { in: $names } }) { nodes { id name team { key } parent { name } } } }", { names });
+      const labelIds = input.labels.map((name) => {
+        const id = labelIdIn(issueLabels.nodes, name, teamKey);
+        if (id === null) throw new Error(`${teamKey} has no label named ${name}`);
+        return id;
+      });
+      if (input.goal !== null) {
+        const goal = issueLabels.nodes.find((label) => label.name === input.goal && label.parent?.name === "Goal");
+        if (goal === undefined) throw new Error(`${input.goal} is not a label in the group Goal`);
+        labelIds.push(goal.id);
+      }
+      const parent = input.parent === null ? null : await issue<{ id: string }>(input.parent, "id");
+      if (input.parent !== null && parent === null) throw new Error(`Linear has no ticket ${input.parent}`);
+      const relations = [...input.blocks.map((key) => ({ key, blocked: true })), ...input.blockedBy.map((key) => ({ key, blocked: false }))];
+      const related = await eachIssue<{ id: string }>(relations.map(({ key }) => key), "id");
+      const missing = relations.find(({ key }) => !related.has(key));
+      if (missing !== undefined) throw new Error(`Linear has no ticket ${missing.key}`);
+      const created = await createIssue({
+        id: input.id, teamId: team.id, title: input.title, description: input.description, priority: input.priority, assigneeId: viewer.id,
+        ...(projectId === undefined ? {} : { projectId }), ...(parent === null ? {} : { parentId: parent.id }), ...(labelIds.length === 0 ? {} : { labelIds }),
+      });
+      // A relation that fails after the ticket exists is a warning, shown on the board: the ticket is not made again to retry it.
+      const warnings: string[] = [];
+      for (const { key, blocked } of relations) {
+        const other = related.get(key)?.id ?? "";
+        const [issueId, relatedIssueId] = blocked ? [created.id, other] : [other, created.id];
+        const { issueRelationCreate } = await query<{ issueRelationCreate: { success: boolean } }>(
+          "mutation($issueId: String!, $relatedIssueId: String!) { issueRelationCreate(input: { issueId: $issueId, relatedIssueId: $relatedIssueId, type: blocks }) { success } }",
+          { issueId, relatedIssueId }).catch(() => ({ issueRelationCreate: { success: false } }));
+        if (!issueRelationCreate.success) warnings.push(blocked ? `${created.identifier} was created, but it did not block ${key}` : `${created.identifier} was created, but ${key} did not block it`);
+      }
+      return { ticket: toTicket(created), warnings };
     },
 
     async download(ticket, dir) {

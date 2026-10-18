@@ -27,10 +27,12 @@ import { pickEmptyText, pickLabel } from "./pick-scope.ts";
 import { API_BODY_BYTES, readJson, refusal, sameSecret, sendJson, type Json } from "./local-http.ts";
 import { createPool, startsReviewers, type PoolDeps } from "./pool.ts";
 import { loadReviewerGate } from "./reviewer-port.ts";
-import { amend, approve, childOrder, enqueue, loadQueue, queuePublish, respond, retry, saveQueue, setMax, setPaused, type PlanFirst, type Queue, type RunChoice } from "./queue.ts";
+import { amend, approve, childOrder, dismissWriter, enqueue, loadQueue, queuePublish, queueWriter, respond, retry, saveQueue, setMax, setPaused, type PlanFirst, type Queue, type RunChoice, writerOf, writerStatus } from "./queue.ts";
 import { plansInBatches, readTicketSettings, type TicketSettings } from "./settings.ts";
 import { cachedTailnetName, readTailnetName, runTailscale, tailnetTerminal } from "./tailnet.ts";
 import type { Ticket, TicketSource } from "./source.ts";
+import { approveDraft, discardDraft } from "./writer-create.ts";
+import { PRIORITIES } from "./writer.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BIN = join(HERE, "..", "bin.ts");
@@ -50,7 +52,7 @@ export type BoardDeps = Readonly<{
   key: string;
   queuePath: string;
   choicePath: string;
-  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers" | "applyEdit" | "discardEdit">;
+  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers" | "applyEdit" | "discardEdit" | "stopWriterRun">;
   poolDeps?: Omit<PoolDeps, "settings" | "source" | "hook">;
   now?: () => number;
   /** This machine's MagicDNS name, read when `tickets.serve` puts the board on the tailnet; null while it cannot be read. Only `/api/config` asks. */
@@ -116,6 +118,29 @@ function validChange<P extends keyof SavedChoice>(body: Json, parts: readonly P[
   return Object.fromEntries(named) as Partial<Pick<SavedChoice, P>>;
 }
 
+/** The longest request a new-ticket run takes, in characters. */
+const WRITER_REQUEST_CHARS = 8000;
+const TICKET_KEY = /^[A-Za-z][A-Za-z0-9]*-\d+$/;
+
+/**
+ * The choices a new-ticket request's form made, each one checked: a repository the machine has, a priority the drafts may name, a ticket's key. The
+ * fields left out are not requirements. Throws naming the field at fault.
+ */
+function writerForm(body: Json, settings: TicketSettings): Readonly<Record<string, string | undefined>> {
+  const text = (name: string): string | undefined => {
+    if (body[name] === undefined || body[name] === "") return undefined;
+    if (typeof body[name] !== "string") throw new Error(`${name} must be text`);
+    return String(body[name]).trim();
+  };
+  const repo = text("repo");
+  if (repo !== undefined && !(repo in settings.clones)) throw new Error(`repo must be one of ${Object.keys(settings.clones).join(", ")}, not ${repo}`);
+  const priority = text("priority");
+  if (priority !== undefined && !(PRIORITIES as readonly string[]).includes(priority)) throw new Error(`priority must be one of ${PRIORITIES.join(", ")}, not ${priority}`);
+  const parent = text("parent");
+  if (parent !== undefined && !TICKET_KEY.test(parent)) throw new Error(`parent must be a ticket's key, such as A11-12, not ${parent}`);
+  return Object.fromEntries(Object.entries({ project: text("project"), repo, goal: text("goal"), priority, parent }).filter(([, value]) => value !== undefined));
+}
+
 /** The request handler, with every dependency named, so a test drives it without a socket. */
 export function createBoard(deps: BoardDeps) {
   const { settings, source, key } = deps;
@@ -141,6 +166,18 @@ export function createBoard(deps: BoardDeps) {
   }
 
   const wake = () => { void pool.tick(); };
+  /** The board's choice for a queued ticket: the model and effort saved on the page, as the Queue button uses. */
+  const savedRun = (): RunChoice => {
+    const saved = readChoice(deps.choicePath);
+    return { model: saved.model, effort: saved.effort };
+  };
+  /** Add tickets to the queue as Queue does, with `choice`, and planned first when `plan` is on, then wake the pool. The one place a queue add is made. */
+  function queueTickets(tickets: readonly Ticket[], choice: RunChoice, plan: boolean): void {
+    store.set(enqueue(queue, tickets, choice, now(), plan ? planFirst(tickets) : null));
+    wake();
+  }
+  /** The new-ticket requests, each with its status, as the page shows them. */
+  const writersView = () => ({ runs: (queue.writers ?? []).map((run) => ({ ...run, status: writerStatus(run) })) });
   /** Whether this board plans a ticket first: the machine names a planner, and the tracker can take the plan it writes. */
   const plans = settings.planner !== null && settings.plan !== null && source.attachPlan !== undefined;
 
@@ -159,7 +196,8 @@ export function createBoard(deps: BoardDeps) {
   async function api(method: string, path: string, body: Json): Promise<[number, unknown]> {
     if (method === "GET" && path === "/api/config") {
       return [200, { models: MODELS, efforts: EFFORTS, choice: readChoice(deps.choicePath), max: queue.max, terminal: await terminalAddress(), plan: settings.plan, planner: plans,
-        publish: settings.publish !== null, pick: pickLabel(settings.pick) }];
+        publish: settings.publish !== null, pick: pickLabel(settings.pick), writer: settings.writer !== null, writerGrill: settings.terminal !== null,
+        repos: Object.keys(settings.clones), priorities: PRIORITIES }];
     }
     if (method === "GET" && path === "/api/pick") {
       // Asked only by a Pick view whose list came back empty, so the name of the key's person costs a request only then. A tracker that cannot
@@ -195,8 +233,7 @@ export function createBoard(deps: BoardDeps) {
         if (ticket === null) throw new Error(`no ticket ${key}`);
         tickets.push(ticket);
       }
-      store.set(enqueue(queue, tickets, choice, now(), body.plan === true ? planFirst(tickets) : null));
-      wake();
+      queueTickets(tickets, choice, body.plan === true);
       return [200, queue];
     }
     if (method === "POST" && path === "/api/queue-children") {
@@ -219,8 +256,7 @@ export function createBoard(deps: BoardDeps) {
       }
       const nested = read.filter((ticket) => (ticket.children?.length ?? 0) > 0).map((ticket) => ticket.key);
       const tickets = read.filter((ticket) => !nested.includes(ticket.key));
-      store.set(enqueue(queue, tickets, choice, now(), body.plan === true ? planFirst(tickets) : null));
-      wake();
+      queueTickets(tickets, choice, body.plan === true);
       const left = nested.length === 0 ? null : `${nested.join(", ")} ${nested.length === 1 ? "is itself a parent" : "are themselves parents"}, so not queued: queue ${nested.length === 1 ? "its" : "their"} children from ${nested.length === 1 ? "its" : "their"} own row`;
       const note = [order.note, left].filter((part) => part !== null).join("; ") || null;
       return [200, { queue, keys: tickets.map((ticket) => ticket.key), note }];
@@ -232,6 +268,37 @@ export function createBoard(deps: BoardDeps) {
       const choice = { ...readChoice(deps.choicePath), ...change };
       writeChoice(deps.choicePath, choice);
       return [200, { choice }];
+    }
+    if (method === "GET" && path === "/api/writer") return [200, writersView()];
+    if (method === "POST" && path === "/api/writer") {
+      // A new-ticket request: a run of the ticket writer, which leaves drafts for the person to approve. It creates no ticket itself.
+      if (settings.writer === null) throw new Error("this machine names no tickets.writer, so it writes no tickets: name one in the host file");
+      const request = typeof body.request === "string" ? body.request.trim() : "";
+      if (request === "" || request.length > WRITER_REQUEST_CHARS) throw new Error(`a request is 1 to ${WRITER_REQUEST_CHARS} characters`);
+      const mode = body.mode === undefined ? "quick" : body.mode;
+      if (mode !== "quick" && mode !== "grill") throw new Error("mode must be \"quick\" or \"grill\"");
+      if (mode === "grill" && settings.terminal === null) throw new Error("grill needs tickets.terminal, where the run's terminal opens: name it in the host file, or ask quick");
+      const form = writerForm(body, settings);
+      if (form.parent !== undefined && (await source.read(form.parent)) === null) throw new Error(`no ticket ${form.parent}`);
+      store.set(queueWriter(queue, { id: `w${now().toString(36)}`, request, mode, form }, now()));
+      wake();
+      return [200, writersView()];
+    }
+    const writer = /^\/api\/writer\/([A-Za-z0-9_-]+)(?:\/(stop|dismiss)|\/drafts\/([A-Za-z0-9_.-]+)\/(approve|discard))$/.exec(path);
+    if (method === "POST" && writer) {
+      const [, run, verb, draft, action] = writer;
+      if (writerOf(queue, run) === undefined) throw new Error(`no new-ticket request ${run}`);
+      if (verb === "stop") pool.stopWriterRun(run);
+      if (verb === "dismiss") store.set(dismissWriter(queue, run));
+      if (action === "discard") discardDraft({ store }, { run, draft });
+      if (action === "approve") {
+        const { model, effort } = savedRun();
+        const created = await approveDraft({ settings, source, store, queueTicket: (ticket, plan) => queueTickets([ticket], { model, effort }, plan) },
+          { run, draft, fields: body.draft, acknowledgeDuplicates: body.acknowledgeDuplicates === true, queue: body.queue === true, plan: body.plan === true });
+        return [200, { ...writersView(), created }];
+      }
+      wake();
+      return [200, writersView()];
     }
     if (method === "POST" && path === "/api/publish") {
       if (settings.publish === null) throw new Error("this machine names no tickets.publish, so it publishes nothing");
