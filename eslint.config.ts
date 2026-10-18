@@ -14,7 +14,7 @@ const recommended = {
   "clean-code/no-flag-arguments": "error", // production is fixed (A11-101); test files are off, see the block below
   "clean-code/no-magic-numbers": "warn",
   "clean-code/no-negative-conditionals": "warn",
-  "clean-code/no-overridden-safeties": "warn",
+  "clean-code/no-overridden-safeties": ["error", { allowEmptyCatch: true, allowTsIgnore: true, requireDisableReason: true }], // A11-107: allowEmptyCatch and allowTsIgnore keep this from duplicating no-empty and ban-ts-comment, which this repo does not enable, so an empty catch, an undescribed @ts-ignore or @ts-nocheck passes; an eslint-disable with no "--" reason fails (G4)
   "clean-code/no-pass-null": "warn",
   "clean-code/no-return-null": "warn",
   "clean-code/no-skipped-tests": "error",
