@@ -12,7 +12,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildReport, renderReport } from "./org-retro.ts";
+import { buildReport } from "./org-retro/readings.ts";
+import { renderReport } from "./org-retro.ts";
 
 const NOW = Date.parse("2026-10-12T00:22:00Z");
 const HOUR = 3_600_000;

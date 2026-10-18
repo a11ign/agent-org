@@ -21,6 +21,7 @@ import { parseWaits, conditionHolds, versionAtLeast, waitItemOf } from "../wait-
 import { requestEvent } from "../messaging/sources/requests.ts";
 import { readFileSync } from "node:fs";
 import { workGateSource } from "../lib/work-gate-source.ts";
+import { moduleSource } from "../lib/module-source.ts";
 
 const NOW = Date.parse("2026-10-07T21:00:00Z");
 const FLEET = "@a11ign/screenreader-fleet";
@@ -209,7 +210,7 @@ test("row-file refuses a declaration that could never ask him, and files a sound
   assert.match(chairmanAskRefusal(body("manual", LINES.slice(1))) ?? "", /no "Ask:"|Ask/);
   assert.equal(chairmanAskRefusal(body(`published ${FLEET}@latest`)), null);
   assert.equal(chairmanAskRefusal("## Why\n\nNothing declared.\n"), null);
-  const source = readFileSync(new URL("../row-file.ts", import.meta.url), "utf8");
+  const source = moduleSource("row-file.ts");
   assert.match(source, /blockedByRefusal\([^\n]*\) \?\? chairmanAskRefusal\(/, "the filing path calls the refusal");
 });
 

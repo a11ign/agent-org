@@ -16,7 +16,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { closedAnswerRows, readClosedAnswerRows } from "./work-gate.ts";
+import { closedAnswerRows, readClosedAnswerRows } from "./work-gate/causes/rows-answers.ts";
 import { closedAnswerConnection, readsClosedAnswerRows } from "./packaging/rows-by-label-fixtures.ts";
 
 /** What `closedAnswerRows` writes to stderr while it runs; the real `write` is put back whatever happens. */

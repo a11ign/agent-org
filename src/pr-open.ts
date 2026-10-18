@@ -55,13 +55,13 @@ import { readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { acceptanceSourceOf, closesReferences, extractAcceptanceSection, extractClosesDeclaration, extractMutationSection, runAcceptanceCommand, runCiBodyReports }
-  from "./acceptance-commands.ts";
+import { acceptanceSourceOf, closesReferences, extractClosesDeclaration, extractMutationSection, runCiBodyReports } from "./acceptance-commands/unmet-command-closure-requirements.ts";
+import { extractAcceptanceSection, runAcceptanceCommand } from "./acceptance-commands/suite-scripts-for.ts";
 import { ACCEPTANCE_DIR, acceptanceFileForBranch, isAcceptancePath, sectionsTextOf, writeAcceptanceFile } from "./acceptance-file.ts";
 import { declaredRegionFiles, splitRegionEntry } from "./region-paths.ts";
 import { outsideRegionDeclarations, regionPassLine, regionRefusalText, standingAgainstRegion } from "./pr-open-region.ts";
 import { homeProjectDeclaration } from "./project-config.ts";
-import { statedRepository } from "./row-file.ts";
+import { statedRepository } from "./row-file/body-from-argv.ts";
 import { leakRefusalReason } from "./lib/leak-patterns.ts";
 import { sandboxGitEnv } from "./lib/git-env.ts";
 import { REPO } from "./project-identity.ts";
@@ -77,7 +77,7 @@ import { gh as ghRead } from "./board-data.ts";
 import { VERIFY_STATE, readVerifyStamp, verifyRefusalLine } from "./verify-stamp.ts";
 import { QUEUED_EXIT, attachFollowUps } from "./gh-ledger.ts";
 import { claimedBranchReport, lookupClaimedRowsOfTrackers, trackerReposFor, type ClaimedRow, type ClaimedRows } from "./closes-mismatch-check.ts";
-import { STANDARD_MACHINERY_SIGNALS } from "./org-health.ts"; // a11ign#5100: the signals a `Health-signals:` line may name
+import { STANDARD_MACHINERY_SIGNALS } from "./org-health/fleet-build-incident.ts"; // a11ign#5100: the signals a `Health-signals:` line may name
 import { readTicketContext, ticketBodyReports, ticketChecks, type TicketContext } from "./ticket-mode/pr-open-ticket.ts";
 import { TICKET_ENV } from "./ticket-mode/worktree-command.ts";
 
@@ -139,9 +139,9 @@ export function acceptanceEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
  * @returns {{ ok: boolean, lines: string[] }}
  */
 export function checkBody(body: string, { run = runForReal, diff = { ok: false, why: "no diff was handed to checkBody" }, rowLabels, readFile, reports }: {
-    run?: (command: string) => number; diff?: import("./acceptance-commands.ts").DiffReading;
-    rowLabels?: import("./acceptance-commands.ts").BodyReportInput["rowLabels"]; readFile?: (path: string) => string;
-    reports?: import("./acceptance-commands.ts").BodyReport[];
+    run?: (command: string) => number; diff?: import("./acceptance-commands/unmet-command-closure-requirements.ts").DiffReading;
+    rowLabels?: import("./acceptance-commands/unmet-command-closure-requirements.ts").BodyReportInput["rowLabels"]; readFile?: (path: string) => string;
+    reports?: import("./acceptance-commands/unmet-command-closure-requirements.ts").BodyReport[];
 } = {}): { ok: boolean; lines: string[]; } {
   // #891: checked BEFORE anything else, and returned on its own -- `acceptanceReport` actually RUNS the
   // body's Acceptance command for real, and a body worth refusing for a leak is not worth running
@@ -171,7 +171,7 @@ export function checkBody(body: string, { run = runForReal, diff = { ok: false, 
  * @param {{ rowBody: (number: number, repo?: string) => string, rootFiles?: Set<string>, tree: { key: string, repo: string | undefined } }} deps
  * @returns {{ kind: "region", region: string[] } | { kind: "unread", why: string } | { kind: "no-section", row: string }}
  */
-function readRegions(references: import("./acceptance-commands.ts").ClosesReference[], { rowBody, rootFiles, tree, code = homeProjectDeclaration().code }: { rowBody: (number: number, repo?: string) => string; rootFiles?: Set<string>; tree: { key: string; repo: string | undefined; }; code?: readonly { key: string; repo: string; }[]; }): { kind: "region"; region: string[]; rows: RegionRow[]; } | { kind: "unread"; why: string; } | { kind: "no-section"; row: string; } {
+function readRegions(references: import("./acceptance-commands/classification.ts").ClosesReference[], { rowBody, rootFiles, tree, code = homeProjectDeclaration().code }: { rowBody: (number: number, repo?: string) => string; rootFiles?: Set<string>; tree: { key: string; repo: string | undefined; }; code?: readonly { key: string; repo: string; }[]; }): { kind: "region"; region: string[]; rows: RegionRow[]; } | { kind: "unread"; why: string; } | { kind: "no-section"; row: string; } {
   const union: Set<string> = new Set();
   const rows: RegionRow[] = [];
   for (const reference of references) {
@@ -200,7 +200,7 @@ function readRegions(references: import("./acceptance-commands.ts").ClosesRefere
 }
 
 /** agent-org#923: one row the body closes, as its Region reads: the repositories its entries are read in, in no order. */
-type RegionRow = { reference: import("./acceptance-commands.ts").ClosesReference; name: string; repositories: string[]; };
+type RegionRow = { reference: import("./acceptance-commands/classification.ts").ClosesReference; name: string; repositories: string[]; };
 
 /**
  * agent-org#923: THE REPOSITORY A REGION ENTRY IS READ IN -- the one `regionRepository` and `readRegions` both ask. An entry whose key names one of the
@@ -219,7 +219,7 @@ function repositoryOfEntry(entry: string, text: string, code: readonly { key: st
  * @param {import("./acceptance-commands.ts").ClosesReference} reference
  * @returns {string}
  */
-const referenceName = (reference: import("./acceptance-commands.ts").ClosesReference): string => `${reference.repo ?? ""}#${reference.number}`;
+const referenceName = (reference: import("./acceptance-commands/classification.ts").ClosesReference): string => `${reference.repo ?? ""}#${reference.number}`;
 
 /**
  * #2617: WHICH DECLARED REPOSITORY THIS TREE IS, by `--repo` (the flag `gh pr` takes to name one), as its key -- the first repository's,
@@ -395,7 +395,7 @@ function namesRow(pull: OpenPull, rowKey: string, pullRepo: string): boolean {
  * @param {(args: string[]) => string} [git]
  * @returns {import("./acceptance-commands.ts").DiffReading}
  */
-export function localDiffReading(rest: string[], git: (args: string[]) => string = defaultGit): import("./acceptance-commands.ts").DiffReading {
+export function localDiffReading(rest: string[], git: (args: string[]) => string = defaultGit): import("./acceptance-commands/unmet-command-closure-requirements.ts").DiffReading {
   const base = `origin/${flagAfter(rest, "--base") ?? "main"}`;
   try {
     const files = git(["diff", "--name-only", "--no-renames", "--diff-filter=ACMR", "-z", `${base}...HEAD`]);
@@ -1465,7 +1465,7 @@ export function machineryDeclarationProblems(body: string): string[] {
  * @param {import("./acceptance-commands.ts").DiffReading} diff @param {string} body
  * @returns {string | null}
  */
-export function machineryRefusal(diff: import("./acceptance-commands.ts").DiffReading, body: string): string | null {
+export function machineryRefusal(diff: import("./acceptance-commands/unmet-command-closure-requirements.ts").DiffReading, body: string): string | null {
   if (!diff.ok) return null;
   const touched = machineryFilesIn(diff.files);
   if (touched.length === 0) return null;

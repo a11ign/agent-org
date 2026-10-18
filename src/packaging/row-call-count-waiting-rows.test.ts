@@ -9,7 +9,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { rowCallCountSignals, ROW_CALL_COUNT_SPLIT_THRESHOLD } from "../work-gate.ts";
+import { rowCallCountSignals, ROW_CALL_COUNT_SPLIT_THRESHOLD } from "../work-gate/row-call-count-orders.ts";
 import { readWaitClearedAt, rowDeclaresWait } from "../work-gate/row-call-count-orders.ts";
 import { CLAIM_RECORD_MARKER } from "../claim-labels.ts";
 import { workGateSource } from "../lib/work-gate-source.ts";

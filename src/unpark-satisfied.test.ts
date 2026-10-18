@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { boardTruthAudit, QUESTIONS } from "./board-truth-audit.ts";
-import { PARKED_LABEL } from "./work-gate.ts";
+import { PARKED_LABEL } from "./work-gate/vocabulary.ts";
 import { MUTEX_LABELS } from "./ready-label-audit.ts";
 import { sandboxGitEnv } from "./lib/git-env.ts";
 import * as unpark from "./unpark-satisfied.ts";

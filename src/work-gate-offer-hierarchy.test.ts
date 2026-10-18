@@ -7,11 +7,15 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decide, hierarchyOrders, milestoneRank, offerHierarchyNow, partitionUnclaimed, readChairmanPriority, CHAIRMAN_PRIORITY_LABEL } from "./work-gate.ts";
+import { decide } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { hierarchyOrders, milestoneRank, readChairmanPriority } from "./work-gate/causes/rows-offer.ts";
+import { offerHierarchyNow } from "./work-gate/tick.ts";
+import { partitionUnclaimed } from "./work-gate/causes/rows-claims.ts";
+import { CHAIRMAN_PRIORITY_LABEL } from "./work-gate/vocabulary.ts";
 import { parseProjectDeclaration } from "./project-config.ts";
 import { tmpDir } from "./lib/tmp-fixture.ts";
 import { chairmanRowAnsweredByCeo } from "./work-gate/causes/rows-offer.ts";
-import { stuckSubjectOf } from "./wake.ts";
+import { stuckSubjectOf } from "./wake/merge-queue-wait-limit-ms.ts";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 

@@ -12,7 +12,7 @@
 //
 // WHICH ROWS, PATH-LESS (a11ign/agent-org#1714). A row whose body is not a PATH row keeps the gate's order too: its Region names no file, or says its deliverable is not a commit
 // (`isPathRow`, the ceo lane's predicate, imported and not copied). A seat spawned for such a row has no file to commit, so it can only end on the stop hook's bound (#1646).
-import { fleetOrLabAcceptance } from "./acceptance-commands.ts";
+import { fleetOrLabAcceptance } from "./acceptance-commands/classification.ts";
 import { isPathRow, oneShotFactory, type OneShot, type OneShotRow } from "./ceo-one-shot.ts";
 
 const orchestrator = oneShotFactory({

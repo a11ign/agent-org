@@ -13,7 +13,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { MAX_ROW_ORDERS_PER_TICK, answerGivenOrders } from "./work-gate.ts";
+import { MAX_ROW_ORDERS_PER_TICK } from "./work-gate/vocabulary.ts";
+import { answerGivenOrders } from "./work-gate/causes/rows-answers.ts";
 import { ANSWER_GIVEN_WINDOW_MS } from "./waiting-condition.ts";
 
 type Call = { args: string[], repo: string | undefined };

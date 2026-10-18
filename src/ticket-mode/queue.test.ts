@@ -3,13 +3,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { isParked, runStatus } from "./board-view.ts";
-import {
-  amend, approve, byIdentifier, childOrder, conflictRound, refuseParents, respond, batchPlanDone, dismiss, feedbackRound, MAX_FEEDBACK_ROUNDS, markPublishRunning, markPublishStarting, publishDone, publishFailed, publishStarts, queuePublish, emptyQueue, enqueue, finish, isLive, leaveBatch, liveRunCount, loadQueue, markResumed, markRunning, markStarting, nextStarts, observe, park,
-  BACKGROUND_GONE, BACKGROUND_GONE_MS, clearEdit, clearMove, noteWorking, recordBlockers, recordMove, recordRepos, planDone, watchWorking, PLAN_BATCH_MAX, recordPullStates, recordTrackerStates, remove, retry, saveQueue, setMax, pauseQueue, resumeQueue, unpark, unreadBlockerKeys, unsettledKeys, type Queue,
-  pathsUnread, recordPaths, recordPullFiles, recordRetargets, recordVerdictNotPosted, unreadPaths,
-  changeDraft, dismissWriter, draftOf, markWriterRunning, markWriterStarting, queueWriter, stopWriter, writerDrafted, writerFailed, writerOf, writerResumed, writerStatus, writerToStart, writerWaiting,
-} from "./queue.ts";
+import { isParked, runStatus } from "./board-view/settled-by-pulls.ts";
+import { amend, byIdentifier, childOrder, refuseParents, dismiss, enqueue, isLive, leaveBatch, liveRunCount, BACKGROUND_GONE, BACKGROUND_GONE_MS, clearEdit, clearMove, recordMove, PLAN_BATCH_MAX, remove, retry, type Queue, writerStatus } from "./queue/declared-remains.ts";
+import { approve, conflictRound, respond, batchPlanDone, feedbackRound, MAX_FEEDBACK_ROUNDS, markPublishRunning, markPublishStarting, publishDone, publishFailed, publishStarts, queuePublish, finish, markResumed, markRunning, markStarting, observe, park, noteWorking, recordBlockers, recordRepos, planDone, watchWorking, recordPullStates, recordTrackerStates, setMax, pauseQueue, resumeQueue, unpark, unreadBlockerKeys, unsettledKeys, pathsUnread, recordPaths, recordPullFiles, recordRetargets, recordVerdictNotPosted, unreadPaths } from "./queue/approve.ts";
+import { emptyQueue, loadQueue, nextStarts, saveQueue, changeDraft, dismissWriter, draftOf, markWriterRunning, markWriterStarting, queueWriter, stopWriter, writerDrafted, writerFailed, writerOf, writerResumed, writerToStart, writerWaiting } from "./queue.ts";
 import type { Blocker, Ticket } from "./source.ts";
 import type { Draft } from "./writer.ts";
 

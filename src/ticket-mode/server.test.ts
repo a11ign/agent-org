@@ -6,7 +6,9 @@ import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { parseTicketSettings } from "./settings.ts";
-import { markPublishRunning, markPublishStarting, markWriterRunning, markWriterStarting, queueWriter, remove as removeQueued, writerDrafted } from "./queue.ts";
+import { markPublishRunning, markPublishStarting } from "./queue/approve.ts";
+import { markWriterRunning, markWriterStarting, queueWriter, writerDrafted } from "./queue.ts";
+import { remove as removeQueued } from "./queue/declared-remains.ts";
 import { refusal } from "./local-http.ts";
 import { checkGhWrapperAtStart, createBoard, FEEDBACK_MS, holdsKey, startFeedbackSweeps, type BoardDeps } from "./server.ts";
 import type { Ticket, TicketSource } from "./source.ts";
@@ -482,7 +484,7 @@ test("A11-84: the start-up runs the host module's check in a child process, and 
   const asked: string[] = [];
   checkGhWrapperAtStart({ err: (line) => said.push(line), run: (program) => { asked.push(program); return { status: 0 }; } });
   assert.equal(asked.length, 1);
-  assert.match(asked[0], /host-units\.ts".*\.then\(\(host\) => host\.startupGhWrapper\(\)\)/s, "the child loads the host module and runs its check");
+  assert.match(asked[0], /host-units\/tool-version-notes\.ts".*\.then\(\(host\) => host\.startupGhWrapper\(\)\)/s, "the child loads the host module and runs its check");
   assert.equal(said.join(""), "", "the child logs its own findings, so a clean start adds nothing");
 });
 

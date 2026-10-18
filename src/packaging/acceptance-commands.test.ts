@@ -14,25 +14,9 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import {
-  classifyCommand, extractAcceptanceSection, acceptanceReport, testFileArgumentsResolve,
-  testFileRequirements, unmetRequirements, unmetCommandRequirements,
-  hasFullHistoryDeclaration, jobCapabilities,
-  deriveClosureRequirements, closureRequirementMessage, unmetClosureRequirements, createClosureMemo,
-  unmetCommandClosureRequirements,
-  singleNodeInvocation,
-  runsTheWholeSuite,
-  suiteTestFiles,
-  suiteScriptsFor,
-  SUITE_SCRIPTS,
-  SPAWNS_GH,
-  endsInsideQuote,
-  endsInOperator,
-  handRunDeclaration, handRunAcceptanceReason, handRunEvidence,
-  testFilesAmong, mutationRecordReport, changedFilesOfThisPullRequest, measuredSectionReport,
-  acceptancePathsReason, declaredNewFiles, unresolvedAcceptancePaths,
-  declaredFleetAnswer,
-} from "../acceptance-commands.ts";
+import { classifyCommand, acceptanceReport, testFileArgumentsResolve, unmetCommandClosureRequirements, testFilesAmong, mutationRecordReport, changedFilesOfThisPullRequest, measuredSectionReport } from "../acceptance-commands/unmet-command-closure-requirements.ts";
+import { extractAcceptanceSection, unmetCommandRequirements, singleNodeInvocation, runsTheWholeSuite, suiteTestFiles, suiteScriptsFor, endsInsideQuote, endsInOperator, handRunAcceptanceReason, acceptancePathsReason, declaredNewFiles, unresolvedAcceptancePaths } from "../acceptance-commands/suite-scripts-for.ts";
+import { testFileRequirements, unmetRequirements, hasFullHistoryDeclaration, jobCapabilities, deriveClosureRequirements, closureRequirementMessage, unmetClosureRequirements, createClosureMemo, SUITE_SCRIPTS, SPAWNS_GH, handRunDeclaration, handRunEvidence, declaredFleetAnswer } from "../acceptance-commands/classification.ts";
 import { withGitSandbox, sandboxGitEnv } from "@a11ign/toolchain/lib/git-sandbox";
 import { trackedTopLevelDirs } from "../region-paths.ts";
 
@@ -1493,7 +1477,7 @@ test("#3103 deriveClosureRequirements: a RELATIVE entry importing a tool module 
   try {
     mkdirSync(join(dir, "sub"));
     writeFileSync(join(dir, "sub", "x.test.mjs"), `import { q } from "${"agent-org" + "/src/nobody-installed.mjs"}";\nexport const x = q;\n`);
-    const script = `import { deriveClosureRequirements } from ${JSON.stringify(new URL("../acceptance-commands.ts", import.meta.url).href)};`
+    const script = `import { deriveClosureRequirements } from ${JSON.stringify(new URL("../acceptance-commands/classification.ts", import.meta.url).href)};`
       + ` console.log(JSON.stringify(deriveClosureRequirements("sub/x.test.mjs")));`;
     const out = execFileSync(process.execPath, ["--input-type=module", "-e", script], { cwd: dir, timeout: 30_000, encoding: "utf8" });
     assert.deepEqual(JSON.parse(out), []);

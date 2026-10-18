@@ -9,7 +9,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { unclaimedBlockerClearedOrders, decide } from "../work-gate.ts";
+import { unclaimedBlockerClearedOrders } from "../work-gate/causes/rows-blocker-cleared.ts";
+import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";
 
 const TODAY = "2026-10-12";
 const SHA = "ce80fa55b1c2d3e4f5061728394a5b6c7d8e9f01";

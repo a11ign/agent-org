@@ -25,7 +25,7 @@ import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
 // `wake-reviewer-instance.test.ts` imports the same modules as they are. The host here is what the run was given.
 import { HostConfigRefusal, parseHostConfig, renderTemplate, roleIdentity, templateValues } from "../host-config.ts";
 import { SUPPORTED_SCHEMA } from "../project-config.ts";
-import { reviewerEnvironment } from "../wake.ts";
+import { reviewerEnvironment } from "../wake/is-pull-request-spawn-order.ts";
 
 const HOST = {
   schema: SUPPORTED_SCHEMA, home: "/home/h", binDir: "/home/h/bin", primary: "p", projects: [{ id: "p", checkout: "/home/h/p" }],

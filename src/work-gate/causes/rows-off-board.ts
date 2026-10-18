@@ -4,7 +4,7 @@ import { BACKLOG_LABEL, OUT_OF_RELEASE_LABEL } from "../../project-vocabulary.ts
 import { PROJECT_NUMBER } from "../../board-snapshot-scope.ts";
 import type { OpenItemsReader } from "../../ticket-port/port.ts";
 import { githubTicketAdapter } from "../../ticket-port/github-adapter.ts";
-import { defaultRun, repoNow } from "../reads.ts";
+import { defaultRun, repoNow } from "../reads/exit.ts";
 
 /**
  * A ROW FILED WITHOUT `row-file` IS INVISIBLE ON PROJECT 1, AND THE CHECK THAT SEES IT WOKE NOBODY (#2075). `row-file` is the only path that boards a row and nothing requires it. Measured 2026-09-23: 9 of 50 open rows had no Project 1 item, two of them `ready` (claimable on the label, invisible in every Status view), and 28 of the 121 rows filed since 2026-09-22T00:00Z (23%) never reached the board. `ready-label-audit`'s `reportAbsentFromBoard` asked exactly this and answered correctly -- on a daily schedule, into a nightly that is red by design, so #1889 was still absent twenty hours after it printed `ABSENT`. This is that question asked where `agent-practices.md` says such a question belongs: in the gate, on an API call rather than a model turn and not a day late. IT ASKS EACH ROW FOR ITS OWN MEMBERSHIP AND NEVER READS THE BOARD LISTING, and that is the load-bearing choice. Measured 2026-09-23 (the row's own comment): `gh project item-list` did NOT contain #2075 and #2076 about four minutes after they were added, while `repository.issue(n).projectItems` reported both on the board seconds later. A tick runs every two minutes, so a listing-based cause would wake `product-manager` for rows `row-file` had just boarded correctly -- the noisiest possible false positive, on the one path that works. One connection query carries every open row's `projectItems` in a single call, so this costs no more than the listing would have. `onBoard` IS TRI-STATE: `true`, `false`, or `null` for "could not tell" -- a row with more items than the page returned and none of them Project 1, which is not the same claim as "not on the board" and is never reported as one.
@@ -36,7 +36,7 @@ export const ROW_OFF_BOARD_GRACE_MS = 5 * 60_000;
  * agent-org#484: THE FIRST CONSUMER OF THE TICKET PORT. It asks the tracker only through `OpenItemsReader` (`ticket-port/port.ts`), and the GitHub adapter
  * holds the query, the paging and the Project 1 test that used to live here; the facts it returns are unchanged.
  */
-export function readRowsOffBoard(run: (args: string[]) => string = defaultRun, pools: import("../../org-health.ts").PoolReading[] = []): BoardFacts[] | null {
+export function readRowsOffBoard(run: (args: string[]) => string = defaultRun, pools: import("../../org-health/claim-refusal.ts").PoolReading[] = []): BoardFacts[] | null {
   const reader: OpenItemsReader = githubTicketAdapter({ run, scope: repoNow() });
   const items = reader.readOpenItems({ onBudget: (budget) => pools.push(budget) });
   return items === null ? null : items.map(({ ref, title, openedAtMs, onBoard }) => ({ number: ref.id, title, createdMs: openedAtMs, onBoard }));

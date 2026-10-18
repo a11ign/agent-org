@@ -23,7 +23,7 @@ const HOST_FILE = join(SCRATCH, "host.json");
 writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join(SCRATCH, "bin"), primary: "fixture", projects: [{ id: "fixture", checkout: PROJECT }],
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
-const { withCiFailureClass } = await import("./wake.ts");
+const { withCiFailureClass } = await import("./wake/with-ci-failure-class.ts");
 const { readCiFailure } = await import("./ci-failure-class.ts");
 const { CI_RERUN_LEDGER_FILE } = await import("./ci-rerun-on-5xx.ts");
 const { redRunOfHead, rerunFailedJobsOf } = await import("./ticket-port/ci-reads.ts");

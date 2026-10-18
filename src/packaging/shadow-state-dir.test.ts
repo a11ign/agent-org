@@ -40,10 +40,11 @@ const STDERR_EXCERPT = 400;
 const PRIMARY_CHECKOUT = HOME_CHECKOUT;
 
 const READER = `
-  const gate = await import(${JSON.stringify(`${SRC}work-gate.ts`)});
+  const gate = await import(${JSON.stringify(`${SRC}work-gate/reads/exit.ts`)});
+  const vocabulary = await import(${JSON.stringify(`${SRC}work-gate/vocabulary.ts`)});
   const shadow = await import(${JSON.stringify(`${SRC}shadow-gate.ts`)});
-  const wake = await import(${JSON.stringify(`${SRC}wake.ts`)});
-  process.stdout.write(JSON.stringify({ DRAIN_MARKER: gate.DRAIN_MARKER, REVIEWER_STATE_DIR: gate.REVIEWER_STATE_DIR,
+  const wake = await import(${JSON.stringify(`${SRC}wake/reset.ts`)});
+  process.stdout.write(JSON.stringify({ DRAIN_MARKER: gate.DRAIN_MARKER, REVIEWER_STATE_DIR: vocabulary.REVIEWER_STATE_DIR,
     LIVE_STATE_DIR: shadow.LIVE_STATE_DIR, ledger: wake.ledgerPathFrom([]) }));`;
 
 type Four = { DRAIN_MARKER: string; REVIEWER_STATE_DIR: string; LIVE_STATE_DIR: string; ledger: string };
@@ -136,7 +137,9 @@ test("end to end: the runner hands the REAL gate's state paths its copy, and the
     writeFileSync(join(live, READS_DIR, `${tickMs}.json`), JSON.stringify({ tick: tickMs, args: { prs: [], readyRows: [] }, orders: [] }));
     // The candidate IS the real gate, wrapped only so the paths it resolved at import come back as an order the record can carry.
     const candidate = join(root, "candidate.mjs");
-    writeFileSync(candidate, `import { decide as real, REVIEWER_STATE_DIR, DRAIN_MARKER } from ${JSON.stringify(`${SRC}work-gate.ts`)};
+    writeFileSync(candidate, `import { decide as real } from ${JSON.stringify(`${SRC}work-gate/tick/blocker-cleared-reading.ts`)};
+import { REVIEWER_STATE_DIR } from ${JSON.stringify(`${SRC}work-gate/vocabulary.ts`)};
+import { DRAIN_MARKER } from ${JSON.stringify(`${SRC}work-gate/reads/exit.ts`)};
 export function decide(args) {
   return [...real(args), { causeKey: "paths", cause: "paths", session: "s", subject: REVIEWER_STATE_DIR, discriminator: DRAIN_MARKER, prompt: "p" }];
 }`);

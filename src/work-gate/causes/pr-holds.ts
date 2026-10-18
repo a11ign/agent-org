@@ -1,5 +1,6 @@
 import { holdersOf, holderOrdersOf } from "../../pr-hold-state.ts";
-import { readJsonObject, writeJsonObject } from "../../claim-stall.ts";
+import { readJsonObject } from "../../claim-stall/claim-stalled.ts";
+import { writeJsonObject } from "../../claim-stall.ts";
 import { WORKER_STATE_DIR, readDeclarations } from "../../worker-state.ts";
 import { readAgents } from "../../herdr-agents.ts";
 import { REVIEWER_STATE_DIR, labelsOf } from "../vocabulary.ts";

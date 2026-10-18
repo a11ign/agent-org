@@ -19,9 +19,10 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { COMPACT_THRESHOLD_TOKENS, resolveEndedHandoffs, readHandoffs, handoffId, handoffBacklog, backlogReport, targetState,
-  endedSessions, namedRefs, authorOf, holderOf, deliverHandoffs as settlingDeliverHandoffs, HANDOFF_STALE_MS, handoffQueuePath }
-  from "../wake.ts";
+import { COMPACT_THRESHOLD_TOKENS } from "../wake/holds-as-fyi.ts";
+import { resolveEndedHandoffs, targetState, endedSessions, namedRefs, holderOf, deliverHandoffs as settlingDeliverHandoffs } from "../wake/ended-sessions.ts";
+import { readHandoffs, handoffId, HANDOFF_STALE_MS, handoffQueuePath } from "../wake/reset.ts";
+import { handoffBacklog, backlogReport, authorOf } from "../wake/clear-settle-ms.ts";
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
 const noSettle = () => {};
 /** A transcript root that holds nothing: a per-row instance's order reads its own transcripts to decide `/compact` (#2688), and the default root is the

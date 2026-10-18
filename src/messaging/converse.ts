@@ -70,7 +70,7 @@ export type QueuePort = {
 
 /** The real queue: `prompt:session`'s and the gate's own, imported only when a message arrives */
 export async function realQueue(): Promise<QueuePort> {
-  const [session, wake] = await Promise.all([import("../prompt-session.ts"), import("../wake.ts")]);
+  const [session, wake] = await Promise.all([import("../prompt-session.ts"), import("../wake/reset.ts")]);
   const { promptOrQueue, defaultRun, attributed, EXIT, STANCE, NOT_QUEUED_PREFIX } = session;
   // The queue file `prompt:session` and the gate resolve from no `--ledger`: asked of `wake.ts`, so the file's name is defined once, there.
   return { promptOrQueue, run: defaultRun, NOT_QUEUED_PREFIX, attributed, EXIT, STANCE, handoffId: wake.handoffId, readHandoffs: wake.readHandoffs, defaultQueuePath: () => wake.handoffQueuePath(wake.ledgerPathFrom([])) };

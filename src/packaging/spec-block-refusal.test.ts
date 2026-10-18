@@ -9,7 +9,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parse } from "yaml";
-import { fileRefusalReason, parseSpecYaml, specBlockFlagOf, specBlockRefusal } from "../row-file.ts";
+import { fileRefusalReason, parseSpecYaml, specBlockFlagOf, specBlockRefusal } from "../row-file/body-from-argv.ts";
 import { trackedTopLevelDirs } from "../region-paths.ts";
 
 /** #1603: the packages/ rows read the project's own tracked `packages/` tree (docs/project-tree-dependency.md, row 1603). Skipped only where that tree is absent. */

@@ -16,6 +16,7 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { moduleSource } from "./lib/module-source.ts";
 
 const SCRATCH = mkdtempSync(join(tmpdir(), "wake-spawn-brief-absent-"));
 after(() => rmSync(SCRATCH, { recursive: true, force: true }));
@@ -27,7 +28,9 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
-const { deliver, spawnClaimer, whyNoBrief, HOST_REPOS } = await import("./wake.ts");
+const { deliver, HOST_REPOS } = await import("./wake/clear-settle-ms.ts");
+const { spawnClaimer } = await import("./wake/is-release-line.ts");
+const { whyNoBrief } = await import("./wake/is-pull-request-spawn-order.ts");
 const { roleBriefPath } = await import("./project-roles.ts");
 const { startedPanes } = await import("./packaging/started-pane.ts");
 /** The row the tier check reads: an ordinary one, so the claim never reaches the real `gh` for its labels (`readRowForTier`'s default). */
@@ -150,7 +153,7 @@ function spawnProblems(source: string): string[] {
 }
 
 test("MUTATION: a wake.ts that drops the check, or runs it after the claim, is named by its own problem", () => {
-  const source = readFileSync(fileURLToPath(new URL("./wake.ts", import.meta.url)), "utf8");
+  const source = moduleSource("wake.ts");
   assert.deepEqual(spawnProblems(source), [], "the real text holds");
   const dropped = source.replace(/  const unbriefed = whyNoBrief\(isFile\);\n  if \(unbriefed !== null\) return \{ refusal: `no spawn: \$\{unbriefed\}` \};\n/, "");
   assert.ok(dropped !== source, "the mutation applied");

@@ -25,12 +25,12 @@
 // edit `ROUTED_TO`, `FLEET_LAB_PATTERNS` or `fleetOrLabAcceptance`: it asks the last as it stands. It counts only the ceo's own one-shot records: a live orchestrator one-shot is not held
 // against it here, which is reported as an open item.
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
-import { fleetOrLabAcceptance } from "./acceptance-commands.ts";
+import { fleetOrLabAcceptance } from "./acceptance-commands/classification.ts";
 import { hostConfigPath } from "./host-config.ts";
 import { declaredRegionFiles, declaresNoCommit } from "./region-paths.ts";
 import { STAND_IN_MAX_AGE_MS, readStandIns, standInPath, writeStandIn, type LaneStandIn } from "./row-claim/lane-stand-in.ts";
 import { briefRoleSentence } from "./spawn-role-brief.ts";
-import type { SpawnClaimer } from "./wake.ts";
+import type { SpawnClaimer } from "./wake/is-pull-request-spawn-order.ts";
 import { fleetHoldUntil } from "./waiting-condition.ts";
 
 /** The cause the gate writes for a ready row of a lane, and the session it addresses it to when the lane is that lane's owner's. */

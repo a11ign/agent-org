@@ -15,8 +15,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
-import { COMPACT_THRESHOLD_TOKENS, DRAINED_SEEN, PERSISTENT_SEEN, clearBeforeOrder, engineerEligibility, isPersistentRole,
-  keepsContext, persistentRoles, route } from "./wake.ts";
+import { COMPACT_THRESHOLD_TOKENS, isPersistentRole, keepsContext } from "./wake/holds-as-fyi.ts";
+import { DRAINED_SEEN, PERSISTENT_SEEN, engineerEligibility, route } from "./wake/exit.ts";
+import { clearBeforeOrder } from "./wake/merge-queue-wait-limit-ms.ts";
+import { persistentRoles } from "./project-roles.ts";
 import { clearThenPrompt } from "./prompt-session.ts";
 import { claimRow, persistentReason } from "./row-claim.ts";
 

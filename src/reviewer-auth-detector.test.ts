@@ -21,11 +21,9 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
-import {
-  CAUSES, JUDGMENT_CAUSES, START_CAUSES, CODEX_AUTH_FAILURE_TEXT, CODEX_LOGGED_OUT_SCREEN, REVIEWER_SILENCE_MS, REVIEWER_REGISTRY_FILE,
-  REVIEWER_REFRESH_LEDGER_FILE, authFailureShownIn, readLastRefresh, readReviewerRegistry, reviewerAuthFailures,
-  reviewerAuthOrders, reviewerAuthTick, refreshLedgerLines, herdrPaneReader, sessionsOwingVerdict,
-} from "./work-gate.ts";
+import { CAUSES, JUDGMENT_CAUSES, START_CAUSES } from "./cause-declaration.ts";
+import { CODEX_AUTH_FAILURE_TEXT, CODEX_LOGGED_OUT_SCREEN, REVIEWER_SILENCE_MS, REVIEWER_REFRESH_LEDGER_FILE, authFailureShownIn, readLastRefresh, readReviewerRegistry, reviewerAuthFailures, reviewerAuthOrders, reviewerAuthTick, refreshLedgerLines, herdrPaneReader, sessionsOwingVerdict } from "./work-gate/causes/org-health-reviewer-auth.ts";
+import { REVIEWER_REGISTRY_FILE } from "./work-gate/vocabulary.ts";
 import { profileFor } from "./worker-profile.ts";
 
 const T0 = Date.UTC(2026, 8, 24, 12, 0, 0);

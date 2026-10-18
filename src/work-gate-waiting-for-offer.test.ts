@@ -7,7 +7,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decide, partitionUnclaimed } from "./work-gate.ts";
+import { decide } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { partitionUnclaimed } from "./work-gate/causes/rows-claims.ts";
 import type { RefFact, WaitFacts } from "./wait-condition.ts";
 
 const REF = "a11ign/agent-org#41";

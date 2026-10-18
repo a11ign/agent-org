@@ -18,7 +18,7 @@ import { parseTicketSettings } from "./settings.ts";
 import { DEFAULT_KEYWORDS, type Ticket, type TicketSource } from "./source.ts";
 import { preReviewReport, readTicketContext, ticketBodyReports, ticketClosesReport, treeKeyUnder, type TicketContext } from "./pr-open-ticket.ts";
 import { READY_FILE } from "./worker-files.ts";
-import { CI_BODY_REPORTS } from "../acceptance-commands.ts";
+import { CI_BODY_REPORTS } from "../acceptance-commands/unmet-command-closure-requirements.ts";
 
 const KEY = "A11-74";
 const BRANCH = "admin/a11-74-propen-works-in-ticket-mode-it-reads-the-ticket-through-the";

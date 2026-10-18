@@ -18,9 +18,11 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { inRepo, readCommitShas, readFailingChecks, withPatchIds } from "./work-gate.ts";
+import { inRepo } from "./work-gate/reads/exit.ts";
+import { readCommitShas, readFailingChecks, withPatchIds } from "./work-gate/causes/pr-reviews.ts";
 
-const GATE = fileURLToPath(new URL("./work-gate.ts", import.meta.url));
+const PR_REVIEWS = fileURLToPath(new URL("./work-gate/causes/pr-reviews.ts", import.meta.url));
+const READS = fileURLToPath(new URL("./work-gate/reads/exit.ts", import.meta.url));
 const HEAD = "a".repeat(40);
 const STALE = "c8fe8f58";
 const ALSO_STALE = "b".repeat(8);
@@ -66,7 +68,8 @@ test("(1) the REAL `defaultRun`: a refused compare of a stale head prints nothin
     writeFileSync(join(dir, "gh"), `#!/bin/sh\ncase "$*" in\n  *"...${HEAD}") cat <<'EOF'\n${DIFF}EOF\n;;\n`
       + "  *) echo 'gh: Not Found (HTTP 404)' >&2; exit 1 ;;\nesac\n");
     chmodSync(join(dir, "gh"), 0o755);
-    const script = `import { withPatchIds, readCommitShas, defaultRun, inRepo } from ${JSON.stringify(GATE)};
+    const script = `import { withPatchIds, readCommitShas } from ${JSON.stringify(PR_REVIEWS)};
+import { defaultRun, inRepo } from ${JSON.stringify(READS)};
       const pr = ${JSON.stringify(reviewedAtStaleHeads())};
       inRepo("o/r", () => {
         const [read] = withPatchIds([pr], defaultRun, null);

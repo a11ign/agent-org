@@ -16,7 +16,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { comparablePrFiles, pipelineCodeownerReviewMissing } from "./work-gate.ts";
+import { comparablePrFiles } from "./work-gate/vocabulary.ts";
+import { pipelineCodeownerReviewMissing } from "./work-gate/causes/pr-reviews.ts";
 
 const pipelinePr = (n: number, files: string[], extra: Record<string, unknown> = {}) =>
   ({ number: n, files: files.map((path) => ({ path })), changedFiles: files.length,

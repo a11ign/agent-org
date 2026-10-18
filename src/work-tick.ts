@@ -52,9 +52,11 @@ export { childrenCpuMs };
 // from `wake`, because `afterGate` returns `deliver: false` on a QUIET gate and `wake` is then never
 // run at all -- which is exactly the state it was found in: a quiet queue and a session stuck behind a
 // menu since nobody knows when.
-import { readAgents, readHandoffs, handoffQueuePath, ledgerPathFrom, tearDownSpares,
-  tearDownReviewers, recoverNow, startAbsentSeats, checkChairmanPath, paneReader }
-  from "./wake.ts";
+import { readAgents } from "./herdr-agents.ts";
+import { readHandoffs, handoffQueuePath, ledgerPathFrom, tearDownReviewers } from "./wake/reset.ts";
+import { tearDownSpares, recoverNow } from "./wake/with-ci-failure-class.ts";
+import { startAbsentSeats, checkChairmanPath } from "./wake/is-release-line.ts";
+import { paneReader } from "./wake/exit.ts";
 
 /**
  * `0` the tick completed (quiet or delivered); `1` orders had nowhere to go; `2` a read was refused; `70` it CRASHED (#3038).

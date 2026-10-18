@@ -41,9 +41,9 @@ import { realpathSync } from "node:fs";
 import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { gh, REPO } from "./board-data.ts";
 import { promptable, clearThenPrompt, PROMPT_REFUSED_PREFIX } from "./prompt-session.ts";
-import { readAgents } from "./wake.ts";
+import { readAgents } from "./herdr-agents.ts";
 import { herdrRun } from "./herdr-agents.ts";
-import { FLEET_GATED_SELECTOR } from "./work-gate.ts";
+import { FLEET_GATED_SELECTOR } from "./work-gate/causes/rows-fleet-batch.ts";
 
 // #914 -- the standing-responsibility record this firing discharges (product-manager's 2026-09-20T08:34:20Z
 // ruling: #914 stays open as the record; #1830 is what performs it). Kept as a string, matching `gh`'s

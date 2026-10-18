@@ -16,7 +16,10 @@ import type { Routed } from "./engineer-route.ts";
 import { tmpDir } from "./lib/tmp-fixture.ts";
 import { startedPanes } from "./packaging/started-pane.ts";
 import { MAX_COMPACTIONS } from "./trace/haiku-tier-report.ts";
-import { claimOrdersIn, claimOrdersPath, deliver, escalatedRoutes, escalationsNow, instanceCounts, performEscalations, spawnClaimer, spawnedPrompt } from "./wake.ts";
+import { claimOrdersIn, claimOrdersPath, instanceCounts } from "./wake/merge-queue-wait-limit-ms.ts";
+import { deliver, spawnedPrompt } from "./wake/clear-settle-ms.ts";
+import { escalatedRoutes, escalationsNow, performEscalations } from "./wake.ts";
+import { spawnClaimer } from "./wake/is-release-line.ts";
 import { HAIKU_AUTOCOMPACT_WINDOW_TOKENS, HAIKU_MODEL_ID } from "./worker-profile.ts";
 
 const realFetch = globalThis.fetch;

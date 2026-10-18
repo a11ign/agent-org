@@ -17,10 +17,10 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import {
-  BOARD_TRUTH_CLEAR_MINUTES, BOARD_TRUTH_PAIR_FLAG, SIGNALS, boardTruthPairOffers, boardTruthPairStep, boardTruthReading, boardTruthReadings, emptyCanaryState,
-  machineryFlagOn, parseCanaryState, withMachineryFlag, type BoardTruthPairIo, type BoardTruthPairs,
-} from "../org-health.ts";
+import { BOARD_TRUTH_CLEAR_MINUTES, BOARD_TRUTH_PAIR_FLAG, boardTruthPairStep, boardTruthReading, boardTruthReadings, type BoardTruthPairs } from "../org-health/state-label-reading.ts";
+import { SIGNALS } from "../org-health/no-merge-hours.ts";
+import { boardTruthPairOffers, emptyCanaryState, machineryFlagOn, parseCanaryState, type BoardTruthPairIo } from "../org-health/fleet-build-incident.ts";
+import { withMachineryFlag } from "../org-health.ts";
 
 const MINUTE = 60_000;
 const DAY = "2026-10-16";

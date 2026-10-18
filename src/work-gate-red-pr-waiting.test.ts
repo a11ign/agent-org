@@ -17,11 +17,11 @@ import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { perPullRequestOrders } from "./work-gate/pr-orders.ts";
-import { claimStallTick } from "./work-gate.ts";
+import { claimStallTick } from "./work-gate/claim-stall-tick.ts";
 import { claimRecordComment } from "./row-claim.ts";
 import { withWaitingEdges, PR_WAITS_FILE } from "./work-gate/pr-waits.ts";
 import { isWaitingRed } from "./red-pr.ts";
-import { endedRuns } from "./wake.ts";
+import { endedRuns } from "./wake/ended-sessions.ts";
 
 const HOME_REPO = "a11ign/a11ign";
 const RED = [{ name: "gate", status: "COMPLETED", conclusion: "FAILURE", startedAt: "2026-10-09T16:00:00Z" }];

@@ -9,8 +9,10 @@ import assert from "node:assert/strict";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { PROJECT_ROOT } from "./host-units-project.ts";
-import { HOST_OPTIONAL_UNITS, LONG_RUNNING_TEMPLATES, SHIPPED_DIR, TOOL_ENTRIES, hostUnitsInstall, orphanedUnits, shippedUnitText, shippedUnits, toolForm,
-  unclassifiedEntries } from "../host-units.ts";
+import { HOST_OPTIONAL_UNITS, SHIPPED_DIR, TOOL_ENTRIES, shippedUnitText, shippedUnits, toolForm } from "../host-units/shipped-dir.ts";
+import { LONG_RUNNING_TEMPLATES } from "../host-config.ts";
+import { hostUnitsInstall, unclassifiedEntries } from "../host-units.ts";
+import { orphanedUnits } from "../host-units/gh-spawn-reached-from.ts";
 import { HostConfigRefusal, parseHostConfig, renderTemplate, stateEntryPath, templateValues } from "../host-config.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 

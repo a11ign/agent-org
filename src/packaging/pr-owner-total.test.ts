@@ -17,8 +17,10 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decide, withPrOwners, readWorktreeStamps, stampLookup } from "../work-gate.ts";
-import { ownerOfPr, UNOWNED_PR_SESSION } from "../work-gate/pr-orders.ts";
+import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { withPrOwners } from "../work-gate/pr-owners.ts";
+import { readWorktreeStamps, stampLookup } from "../work-gate/causes/pr-reviews.ts";
+import { ownerOfPr, UNOWNED_PR_SESSION } from "../work-gate/pr-orders/red-only-by-superseded-run.ts";
 
 type Fixture = Record<string, unknown>;
 type Order = { cause: string, session: string, causeKey: string, prompt: string };

@@ -8,10 +8,12 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { STALL_STATE_FILE } from "./claim-stall.ts";
+import { STALL_STATE_FILE } from "./claim-stall/claim-stalled.ts";
 import { FAILURE_LEDGER_FILE, recordFailures, parseFailureLedger, repeatsIn } from "./failure-ledger.ts";
 import { IDLE_CLAIMANT_MINUTES, WAIT_FIELDS } from "./idle-claimant.ts";
-import { buildReport, readIdleClaims, renderReport, retrospectiveTick } from "./org-retro.ts";
+import { buildReport } from "./org-retro/readings.ts";
+import { readIdleClaims } from "./org-retro/retro-cause.ts";
+import { renderReport, retrospectiveTick } from "./org-retro.ts";
 import { IDLE_CLAIM_INCIDENT_MINUTES, ROW_NOT_FINISHABLE, idleClaimIncidents, idleClaimedHours, incidentEvents, incidentSummary, type IdleClaim } from "./idle-claim-incident.ts";
 
 const MIN = 60_000;

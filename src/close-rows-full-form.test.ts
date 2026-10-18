@@ -26,7 +26,7 @@ if (!process.env.AGENT_ORG_HOST && existsSync(PROJECT_HOST)) {
 const { closesMismatchReport } = await import("./closes-mismatch-check.ts");
 const { checkRegion } = await import("./pr-open.ts");
 const { REPO } = await import("./project-identity.ts");
-const { extractClosesDeclaration } = await import("./acceptance-commands.ts");
+const { extractClosesDeclaration } = await import("./acceptance-commands/unmet-command-closure-requirements.ts");
 
 const TRACKER = "a11ign/a11ign";
 const LAYER = "a11ign/agent-org";

@@ -14,7 +14,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { extractClosesDeclaration, closesDeclarationReport } from "../acceptance-commands.ts";
+import { extractClosesDeclaration, closesDeclarationReport } from "../acceptance-commands/unmet-command-closure-requirements.ts";
 
 // --- the four fixtures the issue itself names ---
 

@@ -46,7 +46,7 @@ process.env.PATH = `${STUB_BIN}:${process.env.PATH ?? ""}`;
 
 const { reportB4, sessionEligibility } = await import("./row-claim.ts");
 const { lookupOpenPrFiles, lookupClaimedRegions } = await import("./row-claim/file-overlap-rule.ts");
-const { CHAIRMAN_LOGINS } = await import("./work-gate.ts");
+const { CHAIRMAN_LOGINS } = await import("./work-gate/vocabulary.ts");
 
 const TRACKER = "a11ign/a11ign";
 const AGENT_ORG = { key: "agent-org", repo: "a11ign/agent-org" };

@@ -17,8 +17,10 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deliver, spawnableRole, SPAWN_CAUSES, type ClaimedRow, type SpawnClaimer } from "./wake.ts";
-import { fleetOrLabAcceptance } from "./acceptance-commands.ts";
+import { deliver } from "./wake/clear-settle-ms.ts";
+import { spawnableRole, type ClaimedRow, type SpawnClaimer } from "./wake/is-pull-request-spawn-order.ts";
+import { SPAWN_CAUSES } from "./wake/exit.ts";
+import { fleetOrLabAcceptance } from "./acceptance-commands/classification.ts";
 import { RESOURCES } from "./project-vocabulary.ts";
 import { laneReason } from "./row-claim/runner-rule.ts";
 import { readStandIns, writeStandIn } from "./row-claim/lane-stand-in.ts";
@@ -26,6 +28,7 @@ import { CEO_ONE_SHOT_SPAWN_CAUSES, createCeoOneShot, ceoOneShotEnabled, withCeo
 import { startedPanes } from "./packaging/started-pane.ts";
 import { workGateSource } from "./lib/work-gate-source.ts";
 import { trackedTopLevelDirs } from "./region-paths.ts";
+import { moduleSource } from "./lib/module-source.ts";
 
 const STANDING = ["worker-capture", "worker-judge", "worker-tooling"];
 const held = STANDING.map((label) => ({ label, status: "working" }));
@@ -194,7 +197,7 @@ test("SPAWN_CAUSES is still exactly [\"ready-row-unclaimed\"], and a fixture cop
   const problems = (source: string) => (source.includes('export const SPAWN_CAUSES = Object.freeze(["ready-row-unclaimed"]);') ? [] : ["SPAWN_CAUSES is not exactly [\"ready-row-unclaimed\"]"]);
   assert.deepEqual([...SPAWN_CAUSES], ["ready-row-unclaimed"]);
   assert.ok(!SPAWN_CAUSES.some((cause) => CEO_ONE_SHOT_SPAWN_CAUSES.includes(cause)), "the two lists share no cause");
-  const source = readFileSync(new URL("./wake.ts", import.meta.url), "utf8");
+  const source = moduleSource("wake.ts");
   assert.deepEqual(problems(source), []);
   const widened = source.replace('Object.freeze(["ready-row-unclaimed"])', `Object.freeze(["ready-row-unclaimed", "${CEO_ONE_SHOT_SPAWN_CAUSES[0]}"])`);
   assert.notEqual(widened, source, "the negative control's fixture really differs");
@@ -280,7 +283,7 @@ function untouchedRules(workGate: string, acceptance: string): Record<string, st
   const routed = /^export const ROUTED_TO = .*;$/m.exec(workGate)?.[0] ?? "";
   const start = acceptance.indexOf("export function fleetOrLabAcceptance(");
   const fn = start === -1 ? "" : acceptance.slice(start, acceptance.indexOf("\n}\n", start) + 3);
-  const binding = /^const \{ patterns: FLEET_LAB_PATTERNS.*$/m.exec(acceptance)?.[0] ?? "";
+  const binding = /^(?:export )?const \{ patterns: FLEET_LAB_PATTERNS.*$/m.exec(acceptance)?.[0] ?? "";
   const values = RESOURCES.map(({ pattern, reason, named }) => `${pattern.source}/${pattern.flags}\t${reason}\t${named}`).join("\n");
   return { ROUTED_TO: sha(routed), fleetOrLabAcceptance: sha(fn), "FLEET_LAB_PATTERNS binding": sha(binding), "FLEET_LAB_PATTERNS values": sha(values) };
 }
@@ -288,13 +291,13 @@ function untouchedRules(workGate: string, acceptance: string): Record<string, st
 const PINNED = {
   ROUTED_TO: "753541140a11e726955715640e10f9a0f987469424f4b5bd2b9ce5fbd60f5293",
   fleetOrLabAcceptance: "dde6be398445a21090a6bd2ac28e74f0beca8bb81aa62b89948d7fae5c6bf009",
-  "FLEET_LAB_PATTERNS binding": "50eba6ee588b5350cdd4d1a80dd67f52328db6925e65efde22776f802c8c0ae3",
+  "FLEET_LAB_PATTERNS binding": "b948efc4ede89a2f8cf88d209aceeef1379f062b278d7a2e79143f85b7953904",
   "FLEET_LAB_PATTERNS values": "bc781e8411db5a05fd4fbbfa75affd684e56b4039081f28865859bd1be33c860",
 };
 
 test("ROUTED_TO, FLEET_LAB_PATTERNS and fleetOrLabAcceptance are byte-identical to origin/main; an edited fixture fails the check", { skip: SKIP_FIXTURE }, () => {
   const workGate = workGateSource();
-  const acceptance = readFileSync(new URL("./acceptance-commands.ts", import.meta.url), "utf8");
+  const acceptance = moduleSource("acceptance-commands.ts");
   assert.deepEqual(untouchedRules(workGate, acceptance), PINNED);
   // THE NEGATIVE CONTROLS: an edit to each of the three source texts moves its own digest and no other.
   const edited = untouchedRules(workGate.replace('Object.freeze(["orchestrator"])', 'Object.freeze(["orchestrator", "worker-capture"])'), acceptance);

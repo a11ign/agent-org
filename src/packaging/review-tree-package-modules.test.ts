@@ -16,7 +16,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync, symlinkSync, readdirSync
   readlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { linkReviewDependencies } from "../wake.ts";
+import { linkReviewDependencies } from "../wake/ensure-reviewer-token.ts";
 
 const realFs = { existsSync, readFileSync, mkdirSync, readdirSync, lstatSync, readlinkSync, symlinkSync, rmSync };
 

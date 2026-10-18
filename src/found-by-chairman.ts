@@ -21,7 +21,7 @@
 // NOT a correction: it is counted nowhere here. `chairman-correction` itself has no recorder yet, so a day printed `0` is a day with no such ENTRY, and the
 // line says which kind it counts.
 import type { FailureEntry } from "./failure-ledger.ts";
-import { verdictFor } from "./org-retro.ts";
+import { verdictFor } from "./org-retro/readings.ts";
 
 export const LABEL = "found-by-chairman";
 /** The count the org aims for: the chairman finding nothing the org had not found first. */

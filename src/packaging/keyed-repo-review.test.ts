@@ -44,11 +44,13 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
 const { homeProjectDeclaration } = await import("../project-config.ts");
-const { scopesOf, readLanes, scopeTick } = await import("../work-gate.ts");
-const { ownerOfPr } = await import("../work-gate/pr-orders.ts");
+const { scopesOf } = await import("../work-gate/vocabulary.ts");
+const { readLanes, scopeTick } = await import("../work-gate/tick/blocker-cleared-reading.ts");
+const { ownerOfPr } = await import("../work-gate/pr-orders/red-only-by-superseded-run.ts");
 const { lookupOpenPrFiles } = await import("../row-claim/file-overlap-rule.ts");
-const { deliver, noReviewCheckoutFor, prepareReviewCheckout, removeReviewCheckout, reviewCloneOf, reviewerEnvironment,
-  linkKeyedDependencies, withReviewCheckout, repointedForReviewer, REPO_ROOT } = await import("../wake.ts");
+const { deliver } = await import("../wake/clear-settle-ms.ts");
+const { noReviewCheckoutFor, prepareReviewCheckout, removeReviewCheckout, reviewCloneOf, linkKeyedDependencies, withReviewCheckout, repointedForReviewer, REPO_ROOT } = await import("../wake/ensure-reviewer-token.ts");
+const { reviewerEnvironment } = await import("../wake/is-pull-request-spawn-order.ts");
 
 const SESSION = "reviewer-agent-org-6";
 /** The refusal of a `{ clone } | { refusal }` answer, or `undefined` when it was a clone. */

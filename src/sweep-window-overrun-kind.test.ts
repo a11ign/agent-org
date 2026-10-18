@@ -43,7 +43,7 @@ const { claimRow, sessionEligibilityReason } = await import("./row-claim.ts");
 const { FAILURE_LEDGER_FILE, SWEEP_WINDOW_RELEASED_KIND, parseFailureLedger, repeatsIn } = await import("./failure-ledger.ts");
 const { groupByClass } = await import("./class-repeat.ts");
 const { stateEntryPath } = await import("./host-config.ts");
-const { CHAIRMAN_LOGINS } = await import("./work-gate.ts");
+const { CHAIRMAN_LOGINS } = await import("./work-gate/vocabulary.ts");
 
 const MIN = 60_000;
 const TRACKER = "a11ign/a11ign";

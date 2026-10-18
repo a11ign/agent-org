@@ -13,8 +13,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { budgetLine, budgetOf, conditionalGate, meteredBatch, meteredRun, partitionUnchanged, restConditionalOn, seenOf, TICK_POINTS_CAP } from "./gh-conditional.ts";
 import { readValidators, saveValidators, type Validated } from "./trace/publish.ts";
-import { KEPT_READ_MAX_AGE_MS, defaultRun, holdTickBudget, readOpenRows, readPrs, readWithFirstWaveTogether, runBatch, standingFor, useConditionalSource } from "./work-gate/reads.ts";
-import { CAUSE_SHARE, CUT_BACK_FROM, cutBackFirst, readLanes, readTrackerLanes, tickReadingLines } from "./work-gate/tick.ts";
+import { KEPT_READ_MAX_AGE_MS, defaultRun, holdTickBudget, readPrs, readWithFirstWaveTogether, runBatch, standingFor, useConditionalSource } from "./work-gate/reads/exit.ts";
+import { readOpenRows } from "./work-gate/reads.ts";
+import { CAUSE_SHARE, CUT_BACK_FROM, cutBackFirst, readLanes, tickReadingLines } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { readTrackerLanes } from "./work-gate/tick.ts";
 
 const ETAG = 'W/"abc123"';
 const HEAD = { commit: { sha: "9f2c1d0" } };

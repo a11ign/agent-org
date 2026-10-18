@@ -245,7 +245,8 @@ test(`${OPEN_PR_HOLD_FLAG}: ON only when the canary state says so; absent or unr
 });
 
 test("the flag read agrees with org-health's parseCanaryState + machineryFlagOn on every shape, and reads the same file name", async () => {
-  const { CANARY_STATE_FILE, machineryFlagOn, parseCanaryState } = await import("./org-health.ts");
+  const { CANARY_STATE_FILE } = await import("./org-health/claim-refusal.ts");
+const { machineryFlagOn, parseCanaryState } = await import("./org-health/fleet-build-incident.ts");
   const texts: (string | null)[] = [
     null, "", "null", "{ not json", "{}", '{"flags":{}}', '{"flags":{},"samples":[]}',
     `{"flags":{"${OPEN_PR_HOLD_FLAG}":{"on":true}},"samples":[],"memo":{}}`,

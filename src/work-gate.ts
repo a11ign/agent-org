@@ -1,4 +1,3 @@
-/* eslint-disable clean-code/limited-public-api -- 380 exports, 362 of them re-exported from the src/work-gate modules: this file is the barrel, and its surface is what other modules import (66 by production code, 253 by tests only); splitting it is a separate change */
 // command: work-gate -- is there work for any session? One cheap read; a wake order per line when yes.
 //
 // #912's remaining half. `org-watch.ts:713-717` states it in its own comment: "READS 2-4 ARE NOT WIRED
@@ -29,87 +28,40 @@
 import { spawnSync } from "node:child_process";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { readFileSync, realpathSync } from "node:fs";
-// RELATIVE, not the package specifier -- this must run before any `pnpm install`/build, the same constraint
-// `org-watch.ts` and `build-packages.mjs` state at their own imports.
 import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { CLAIM_LABEL } from "./claim-labels.ts";
-import { verdictAmong } from "./review-verdict.ts";
-// `verdictAmong` lives in review-verdict.ts (#3030), so a test of the verdict reader need not import this file and its token.
-export { verdictAmong };
-import { ANSWER_PREFIX } from "./waiting-condition.ts";
 import { declaredClosedRows } from "./row-claim/file-overlap-rule.ts";
 import { declaredGhAccount } from "./gh-identity.ts";
 import { repeatingLinesTick } from "./repeating-lines.ts";
-import { readToolAgreement, fileReleaseIncidents, machineryFlagOn, type ReleaseRuns, type CanaryState } from "./org-health.ts";
+import { readToolAgreement } from "./org-health/state-label-reading.ts";
+import { fileReleaseIncidents, type ReleaseRuns } from "./org-health/sweep-fact.ts";
+import { machineryFlagOn, type CanaryState } from "./org-health/fleet-build-incident.ts";
 import { stateEntryPath } from "./host-config.ts";
-import { TICK_COST_FILE, TICK_RECORD_FILE, readTickRecordState, tickHealthOf, type TickHealth } from "./work-tick-health.ts"; // agent-org#1208: the tick's own record, read by the gate for its `org-health` lines
-import { readFlagSwitchesFor } from "./flag-switch-ledger.ts"; // agent-org#1135: the gate is the one caller that reads the project's declarations; `orgHealthNow` otherwise does not ask
+import { TICK_COST_FILE, TICK_RECORD_FILE, readTickRecordState, tickHealthOf, type TickHealth } from "./work-tick-health.ts";
+import { readFlagSwitchesFor } from "./flag-switch-ledger.ts";
 import { readNodeStrips } from "./node-strips-types.ts";
 import { liveClassRepeatIo, readClassRepeat } from "./class-repeat.ts";
-// #2938: THE DAILY RETROSPECTIVE, in its own leaf for the same reason: it reads the journal, the ledger and a day of PRs once, and says what it found.
 import { retrospectiveTick } from "./org-retro.ts";
-import { tapShadowReads } from "./shadow-reads.ts"; // #2849
+import { tapShadowReads } from "./shadow-reads.ts";
 import { holdersOf } from "./pr-hold-state.ts";
 import { homeProjectDeclaration } from "./project-config.ts";
-import { verifyCheckoutOf, withVerifyStamps } from "./verify-stamp.ts"; // #3215
-import { CAUSES, JUDGMENT_CAUSES, START_CAUSES } from "./cause-declaration.ts";
-import { NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL } from "./project-vocabulary.ts";
+import { verifyCheckoutOf, withVerifyStamps } from "./verify-stamp.ts";
 import { readTrunkRed } from "./trunk-red.ts";
-import { requiredWhenNeeded, fileOutsideIdleTriage, fileReviewGatedHuman, ownerOfPr } from "./work-gate/pr-orders.ts";
-import { prOwnerRoutingFlagOn, ownerlessUnreached, outsideSessionPrFlagOn } from "./work-gate/tick.ts";
-import { sessionPrOutsideNow } from "./work-gate/outside-session-pr.ts"; // agent-org#1667
+import { requiredWhenNeeded, ownerOfPr } from "./work-gate/pr-orders/red-only-by-superseded-run.ts";
+import { fileOutsideIdleTriage, fileReviewGatedHuman } from "./work-gate/pr-orders.ts";
+import { prOwnerRoutingFlagOn, ownerlessUnreached, outsideSessionPrFlagOn } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { sessionPrOutsideNow } from "./work-gate/outside-session-pr.ts";
 import { declaredIdentities, VERDICT_DELIVERY_FLAG } from "./review-trust.ts";
-
-export { redOnlyBySupersededRun, mergeConflictOrders, greenUnarmedOrders, reviewBlockedOrders, HOLD_RED_JOBS,
-  stallReasonOf, stallOrderOf, stalledPrOrders, STALL_REASON, STALL_REASONS_WITHOUT_A_CAUSE, ownerOfPr,
-  awaitingEvidenceStaleOrders } from "./work-gate/pr-orders.ts";
-
 import { orgHealthTogether, readSweepFact, rulingOrdersNow, waitTickFacts } from "./work-gate/org-health.ts";
 import { approvedUnqueuedNow } from "./approved-unqueued.ts";
 import { recordRouteOutcomesOnHost } from "./work-gate/route-outcome-pass.ts";
 import { quietOrgHealth } from "./work-gate/org-health-suppression.ts";
-import { unparkOtherTrackers, unparkingWaits, withTrackerRows } from "./unpark-satisfied.ts"; // #4050: a parked row whose every condition is true is un-parked where the tick reads the waits; agent-org#5177: and in every other tracker, behind `rows.autoUnpark`
-// #2898: WHO OWNS A PULL REQUEST lives in `work-gate/pr-owners.ts`, which imports the shared session reads BACK from this file (the cycle `pr-orders.ts` above describes);
-// every name it exported is re-exported here, so no caller of `work-gate.ts` changes.
+import { unparkOtherTrackers, unparkingWaits, withTrackerRows } from "./unpark-satisfied.ts";
 import { withWaitingEdges } from "./work-gate/pr-waits.ts";
 import { withPrOwners, resolverDefectsOf } from "./work-gate/pr-owners.ts";
 import { rowCallCountSignals, liveClaudeTurns, readWaitClearedAt } from "./work-gate/row-call-count-orders.ts";
 import { readAgents } from "./herdr-agents.ts";
-// #3883: THE STRIP A CLOSED ROW'S CLAIM LABELS TAKE, from the leaf both it and `close-rows-for-merged-pr.ts` import -- never a second copy of the label list.
 import { stripClaimLabelsVia } from "./claim-label-strip.ts";
-
-export { claimStallTick, claimStallsNow, closedClaimsNow } from "./work-gate/claim-stall-tick.ts";
-
-export { ROW_CALL_COUNT_SPLIT_THRESHOLD, claimedRowSession, rowCallCountSignals, ROW_CALL_COUNT_ASSESSED_MARKER,
-  rowCallCountAssessedCalls, formatRowCallCountAssessment, rowCallCountOrders } from "./work-gate/row-call-count-orders.ts";
-
-export { withClosingRowOwners, withNamedOwners, withPrOwners, withScopedPrOwners, withEndedLabels, resolverDefectOf, resolverDefectsOf } from "./work-gate/pr-owners.ts";
-
-export { FLEET_CAPTURES_LEDGER, readFleetCaptures, fleetWaitingFacts, stalledPrFacts,
-  MAX_WAIT_READS, refFactOf, readWaitRef, readWaitFacts, readRefFacts, waitTickFacts, staleWaitOrders,
-  rulingOrdersNow, orgHealthNow } from "./work-gate/org-health.ts";
-
-// #2621 (child 3e of #69): CAUSES, JUDGMENT_CAUSES AND START_CAUSES ARE COMPUTED, NOT SPELLED HERE. A
-// cause used to be added to these three arrays AND to `worker-profile.ts`'s `PROFILES` separately --
-// four lists in two files a cause had to be added to together, and a cause added to one and not the
-// others is a recorded trap. `cause-declaration.ts` is now the one place a cause is declared
-// (`{cause, group, profile}`), and these three names -- unchanged from here on -- are its computation.
-// See that file's own header for the general "action vs judgment" and "start vs finish" reasoning, and
-// its `TOOL_CAUSE_DECLARATIONS` for each cause's own.
-export { CAUSES, JUDGMENT_CAUSES, START_CAUSES };
-
-/**
- * The label a session applies when a row can only move by the CHAIRMAN'S OWN HANDS.
- *
- * NO EXISTING LABEL MEANT THIS. `blocked`, `publish-blocker` and `decision` all say WHAT blocks a row and
- * none says WHO must act, so a row waiting on org admin looked exactly like a row waiting on a capture.
- *
- * IMPORTED, NOT REDECLARED (#2619, child 3d of #69): `project-vocabulary.ts`'s field, aliased to this
- * file's own established name.
- */
-export { CHAIRMAN_LABEL };
-
-// The cause modules (a11ign/a11ign#5152): each holds one family of causes as it was written here, and imports the base modules, never another cause.
 import { performActions, reportWithheld } from "./work-gate/orders.ts";
 import { chainWaitOrders } from "./work-gate/causes/org-health-chain-wait.ts";
 import { authorFallbackTimes, holdForIncidentNow, machineryCanaryNow, startGithubStatus } from "./work-gate/causes/org-health-github-incident.ts";
@@ -121,11 +73,10 @@ import { baseTipWhenRed } from "./work-gate/causes/pr-checks.ts";
 import { readReenqueueState } from "./work-gate/causes/pr-ejected.ts";
 import { holdHolderOrdersNow } from "./work-gate/causes/pr-holds.ts";
 import { stampLookup, withEvidenceLabelAges, withPatchIds, withCheckMarkers } from "./work-gate/causes/pr-reviews.ts";
-import { EXIT, claimedCommentsForClock, defaultRun, draining, readBranchPrsOfUnclaimed, readClaimedRowComments, readPrs, readReadyRows,
-  readRowBranches, readWithFirstWaveTogether, releaseBehindNow, repoNow, runBatch, otherScopesForTick, eventUnreadForTick, rememberOtherScopesRead, primaryDue, primaryLanes } from "./work-gate/reads.ts";
+import { EXIT, defaultRun, draining, readPrs, readWithFirstWaveTogether, releaseBehindNow, repoNow, runBatch } from "./work-gate/reads/exit.ts";
+import { claimedCommentsForClock, readBranchPrsOfUnclaimed, readClaimedRowComments, readReadyRows, readRowBranches, otherScopesForTick, eventUnreadForTick, rememberOtherScopesRead, primaryDue, primaryLanes } from "./work-gate/reads.ts";
 import { type Pacing, orgHealthSkipped, pacedUnread, pacingNow, pacingOn, primaryRefusedLanes, primaryUnread, unpacedNow } from "./work-gate/pacing.ts";
-import { answerGivenOrders, bareAnswerLabelOrders, closedAnswerRows, endedAnswerSessionTest, endedSessionLabels, liveWorkspaceLabels, readClosedAnswerRows, rowsOwingAnswers,
-  withAnswerLabel } from "./work-gate/causes/rows-answers.ts";
+import { answerGivenOrders, bareAnswerLabelOrders, closedAnswerRows, endedAnswerSessionTest, endedSessionLabels, liveWorkspaceLabels, readClosedAnswerRows, rowsOwingAnswers, withAnswerLabel } from "./work-gate/causes/rows-answers.ts";
 import { readRecentlyClosed, unclaimedClearings } from "./work-gate/causes/rows-blocker-cleared.ts";
 import { chairmanAsksNow, chairmanReadsRefused } from "./work-gate/causes/rows-chairman.ts";
 import { offeredRefusalStreaks, partitionUnclaimed } from "./work-gate/causes/rows-claims.ts";
@@ -135,79 +86,12 @@ import { queueEntryNoRunOrders } from "./work-gate/causes/queue-entry-no-run.ts"
 import { epicRowsOf } from "./work-gate/causes/rows-epics.ts";
 import { partitionFleetBatch } from "./work-gate/causes/rows-fleet-batch.ts";
 import { engineerShareReads } from "./work-gate/causes/rows-offer.ts";
-import { anyBlockerClearingCandidate, blockerClearedReading, boardingPortOf, claimStallsWithFacts, closedClaimsWhenWorkerListed, decide, exitPartial,
-  ghQueueTickOrSay, homeRowsOf, labJobRecordsOrSay, markOutageReads, offerHierarchyNow, otherScopeTicks, outageThisTick, portOf,
-  promotedWhenUnblocked, pullRequestsOfOthers, readArmingOf, readChairmanPriorityOfOffer, readHostDrift, readLanes, readTrackerLanes, recordTickFailures, reportClearingDrops,
-  rowsOffBoardOrSay, settleCitedRepeatingLines, settleOffBoardRows, settleOverdueLists, unreadLanes, withClosedClaims, withEjections,
-  withStaleRefusals } from "./work-gate/tick.ts";
+import { anyBlockerClearingCandidate, blockerClearedReading, decide, exitPartial, homeRowsOf, labJobRecordsOrSay, markOutageReads, otherScopeTicks, outageThisTick, promotedWhenUnblocked, pullRequestsOfOthers, readArmingOf, readHostDrift, readLanes, recordTickFailures, rowsOffBoardOrSay, unreadLanes, withEjections, withStaleRefusals } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { boardingPortOf, claimStallsWithFacts, closedClaimsWhenWorkerListed, ghQueueTickOrSay, offerHierarchyNow, portOf, readChairmanPriorityOfOffer, readTrackerLanes, reportClearingDrops, settleCitedRepeatingLines, settleOffBoardRows, settleOverdueLists, withClosedClaims } from "./work-gate/tick.ts";
 import { REVIEWER_STATE_DIR, type Scope, comparablePrFiles, labelsOf, scopesOf } from "./work-gate/vocabulary.ts";
 import { endGateSpan } from "./lib/spawn-census.ts";
 import { repeatedOrdersTick } from "./order-verify.ts";
-import { conflictingIdleNow, pullReadOf, verdictUndeliveredNow } from "./verdict-delivery.ts"; // agent-org#1649
-export { openRowState, workingClaims, waitingBreakdown, stalledOrder, performActions } from "./work-gate/orders.ts";
-export { CHAIN_WAIT_FLAG, CHAIN_WAIT_FILE, CHAIN_WAIT_MINUTES, CHAIN_WAIT_ESCALATION_SESSION, blockedReasonOf, chainWaitsOf, advanceChainWaits,
-  chainWaitWakeText, chainWaitEscalationText, chainWaitOrder, chainWaitOrders } from "./work-gate/causes/org-health-chain-wait.ts";
-export type { ChainWait, ChainEpisode, ChainMove } from "./work-gate/causes/org-health-chain-wait.ts";
-export { GITHUB_STATUS_URL, GITHUB_STATUS_TIMEOUT_MS, githubIncidentOf, startGithubStatus, holdForGithubIncident, githubIncidentOrder,
-  sharedFailuresNow, incidentSuppressions, deferredWakeCount, machineryCanaryNow } from "./work-gate/causes/org-health-github-incident.ts";
-export type { GithubIncident } from "./work-gate/causes/org-health-github-incident.ts";
-export { diskHeadroomOrders, diskHeadroomTick, deadMansSwitch, cannotAskReport } from "./work-gate/causes/org-health-host.ts";
-export { primaryStaleOrders, withStalePrimaryNotice } from "./work-gate/causes/org-health-host-drift.ts";
-export { fileResolverDefects } from "./work-gate/causes/org-health-resolver-defects.ts";
-export { REVIEWER_REFRESH_LEDGER_FILE, CODEX_AUTH_FILE, CODEX_AUTH_FAILURE_TEXT, CODEX_LOGGED_OUT_SCREEN, REVIEWER_SILENCE_MS, readLastRefresh,
-  readReviewerRegistry, authFailureShownIn, sessionsOwingVerdict, reviewerAuthFailures, reviewerAuthOrders, refreshLedgerLines, herdrPaneReader,
-  reviewerAuthTick } from "./work-gate/causes/org-health-reviewer-auth.ts";
-export { baseTipWhenRed, readRequiredContexts, requiredCheckNames, readBaseTip, shouldBeMerging } from "./work-gate/causes/pr-checks.ts";
-export type { RequiredContexts } from "./work-gate/causes/pr-checks.ts";
-export { readEjections, REENQUEUE_EJECTED_FLAG, REENQUEUE_INFRA_FLAG, failedEntriesSincePush, mergeGroupGreenSince, jobFailuresOf, ownershipOfFailure, readReenqueueState,
-  requeueEjected } from "./work-gate/causes/pr-ejected.ts";
-export type { EjectionFacts, MergeGroupRun, JobFailure, Ownership, EjectionEvidence, RequeueContext, RequeueOutcome, NetworkNotRequeued } from "./work-gate/causes/pr-ejected.ts";
-export { HOLD_HOLDERS_FILE, holdHolderOrdersNow } from "./work-gate/causes/pr-holds.ts";
-export { reviewBlocked, pipelineCodeownerReviewMissing, CODEOWNER_REVIEW_APPROVED_ONLY_ENV, reviewableHead, noteRefusedRead, readPatchId,
-  readCommitShas, reviewWait, withPatchIds, readFailingChecks, AWAITING_EVIDENCE_LABEL, AWAITING_EVIDENCE_QUIET_HOURS, AWAITING_EVIDENCE_QUIET_MS,
-  awaitingEvidence, readEvidenceLabelledAt, withEvidenceLabelAges, readWorktreeStamps, stampLookup } from "./work-gate/causes/pr-reviews.ts";
-export { checksSettledGreen, conclusionOf, stillRunning, anyChecksRed, blockingChecks, CONFLICT_STATE, conflictStateOf, conflictedPrs, reviewStateOf,
-  REVIEW_STATE, BLOCKING_REVIEW_STATES } from "./work-gate/pr-state.ts";
-export { EXIT, DRAIN_MARKER, draining, inRepo, repoNow, GH_READ_TIMEOUT_MS, ghWithin, defaultRun, releaseBehindNow, BATCH_MAX_CALLS,
-  BATCH_OUTER_GRACE_MS, runBatch, OPEN_ROWS_LIMIT, readWithFirstWaveTogether, OPEN_PRS_FIRST_PAGE, OPEN_PRS_LIMIT, readPrs, withPagedFiles, GH_READS,
-  GIT_READS, readRowBranches, readBranchPrs, branchesToReplace, readBranchPrsOfUnclaimed, readPromotableRows, readReadyRows, readOpenRows,
-  readClaimedRowComments, ISSUE_LIST_COMMENT_CAP, readMergedPrs, withChecksPending, readElsewherePrs, systemctlRun, REPO_CHECKOUT, readUnarmed,
-  readArming } from "./work-gate/reads.ts";
-export { CONSTRAINT_COMMENT_MARKER, CONSTRAINT_BODY_PREFIX, constraintsAfterClaim, amendmentsOn, openBlockers, claimedRowAmendedOrders } from "./work-gate/causes/rows-amended.ts";
-export { readClosedAnswerRows, closedAnswerRows, withoutEndedAnswerSessions, liveWorkspaceLabels, endedSessionLabels, withAnswerLabel,
-  rowsOwingAnswers, blockedWithoutReferent, blockedReferentOrders, answersOwed, answerOrders, readRowTimeline, bareAnswerLabelOrders,
-  answerGivenOrders } from "./work-gate/causes/rows-answers.ts";
-export { AGED_BACKLOG_MS, agedBacklogOrders, CHAIRMAN_REMINDER_PERIOD_MS, chairmanReminderWindow } from "./work-gate/causes/rows-backlog.ts";
-export { holderWaitingOn, BLOCKER_CLEARED_DROP_REASONS, PROMOTION_ASK_OFFSETS_MS, PROMOTION_ASK_PERIOD_MS, promotionAskWindow, readRecentlyClosed,
-  unclaimedBlockerClearedOrders, unclaimedClearings } from "./work-gate/causes/rows-blocker-cleared.ts";
-export type { BlockerClearedDropReason, BlockerClearedDrop, Closings } from "./work-gate/causes/rows-blocker-cleared.ts";
-export { readChairmanBlocked, withChairmanEventTimes, chairmanReadsRefused, chairmanAnsweredOrders, daysSince, chairmanAsksNow } from "./work-gate/causes/rows-chairman.ts";
-export { blockedOnOpenPr, blockedOnClaimedRow, blockersFromRows, partitionUnclaimed, UNCLAIMABLE_AFTER_TICKS, CLAIM_REFUSALS_FILE, claimRefusalOf,
-  nextRefusalStreaks, claimRefusalStreaksNow, unclaimableRowOrders, rowBranchOrders, incompleteRowOrders, closesUnresolvedPrs, closesUnresolvedOrders } from "./work-gate/causes/rows-claims.ts";
-export { readClosedClaimedRows, readClosedClaimLabelRows, declaredTrackerRepos, closedClaimLabelsWhenListed, closedClaimDebris } from "./work-gate/causes/rows-claims-closed.ts";
-export { CLOSED_UNDER_HALF_FLAG, CLOSED_UNDER_HALF_FILE, CLOSED_UNDER_HALF_SESSION, rowsClosedUnderOpenHalf, closedUnderHalfOrders } from "./work-gate/causes/rows-closed-under-half.ts";
-export type { ClosedUnderHalf, TrackerRows } from "./work-gate/causes/rows-closed-under-half.ts";
-export { unfiledEpics, epicOrders, finishedEpics, finishedEpicOrders, epicRowsOf, doneWhenLines } from "./work-gate/causes/rows-epics.ts";
-export { FLEET_GATED_SELECTOR, partitionFleetBatch, fleetBatchRows, fleetBatchOrders } from "./work-gate/causes/rows-fleet-batch.ts";
-export { ROW_OFF_BOARD_GRACE_MS, readRowsOffBoard, rowsOffBoard, rowOffBoardOrders } from "./work-gate/causes/rows-off-board.ts";
-export type { BoardFacts } from "./work-gate/causes/rows-off-board.ts";
-export { milestoneRank, readChairmanPriority, EMERGENCY_PRIORITY_LABEL, EMERGENCY_SETTER_LOGINS, ORG_BLOCKING_INCIDENT_KEYS, EMERGENCY_PRIORITY_OFF,
-  parseEmergencyPriorityOption, readEmergencyPriorityOption, readEmergencyPriority, PRODUCT_SHARE_WINDOW, PRODUCT_SHARE_FLOOR, ENGINEER_STARTS_FILE,
-  SHARE_LINE_FILE, SHARE_LINE_REMINDER_MS, productRegionsOf, rowKind, productShare, offeredByShare, recordEngineerStarts, hierarchyOrders } from "./work-gate/causes/rows-offer.ts";
-export type { OfferHierarchy, EmergencyPriorityOption, EmergencyIgnored, EmergencyHonoured, EmergencyReading } from "./work-gate/causes/rows-offer.ts";
-export { blockerClearedReading, decide, labJobRecordsOrSay, dispatchedLabJobsOrSay, rowsOffBoardOrSay, anyBlockerClearingCandidate, readLanes,
-  scopeTick, recordTickFailures, readScopeTrunkRed, pullRequestsOfOthers, unreadLanes, refusedReadCount, SHARED_OUTAGE_READS, sharedReadOutage,
-  markOutageReads, claimStallsWithFacts, otherTrackerClaims, withClosedClaims, redPrFacts, readTrackerLanes, closedClaimsWhenWorkerListed,
-  readChairmanPriorityOfOffer, offerHierarchyNow, REPEATING_LINE_SWITCH_ENV, CITE_PREFIX_CHARS, CITE_MIN_CHARS, CITE_VERIFY_MAX, isCountMilestone,
-  citeNeedle, settleCitedRepeatingLines, OVERDUE_LIST_SWITCH_ENV, OVERDUE_LAST_WRITTEN_FILE, settleOverdueLists, ROW_OFF_BOARD_SWITCH_ENV,
-  settleOffBoardRows, GREEN_UNARMED_SWITCH_ENV, settleUnarmedPrs, readArmingOf, REVIEW_BLOCKED_SWITCH_ENV, staleRefusalOf, withStaleRefusals,
-  ghQueueTickOrSay } from "./work-gate/tick.ts";
-export type { HomeRows, StaleRefusalPort } from "./work-gate/tick.ts";
-export { NOT_PICKABLE, ROUTED_TO, NOT_STARTABLE, LANE_OWNER, laneOwnerOf, ownerOf, PARKED_LABEL, LAUNCH_PLACEHOLDER, labelledRows, CHAIRMAN_LOGINS,
-  MAX_ROW_ORDERS_PER_TICK, PRIORITY_LABEL, labelsOf, comparablePrFiles, sessionOf, HOUR_MS, PROMOTION_ASK_WINDOW_MS, CHAIRMAN_PRIORITY_LABEL,
-  REVIEWER_STATE_DIR, REVIEWER_REGISTRY_FILE, MS_PER_MINUTE, scopesOf } from "./work-gate/vocabulary.ts";
-export type { Yielding, ScopeRepository, Scope, ArmingPort } from "./work-gate/vocabulary.ts";
-export { hostUnitsEntry, rowsWithOpenPr, trackerReadings };
+import { conflictingIdleNow, pullReadOf, verdictUndeliveredNow } from "./verdict-delivery.ts";
 
 /**
  * PAID ONLY BY A TICK THAT CAN SEE A CLAIM. The `requiredWhenNeeded` shape: the
@@ -223,10 +107,6 @@ function claimedRowCommentsWhenHeld(openRows: any[], run: (args: string[]) => st
   const held = openRows.some((r) => labelsOf(r).includes(CLAIM_LABEL));
   return held ? readClaimedRowComments(run) : null;
 }
-
-// #4505 / agent-org#484: THE QUERY, THE PAGING AND THE MEMBERSHIP TEST MOVED TO THE TICKET PORT'S GITHUB ADAPTER (ADR 0046 decision 4). The
-// name is kept: `graphql-pool-health.test.ts` pins that the query asks for `rateLimit` and `viewer`.
-export { OPEN_ITEMS_QUERY as ROW_OFF_BOARD_QUERY } from "./ticket-port/github-adapter.ts";
 
 /**
  * THE HOST WENT STALE ON A MERGE AND NOTHING IN THIS ORG FOUND OUT -- #2174.
@@ -352,41 +232,6 @@ function readPrimaryDriftNow(): import("./update-primary.ts").PrimaryDrift | nul
 }
 
 /**
- * A QUESTION ONE SESSION OWES ANOTHER, SAID IN A FIELD RATHER THAN A SENTENCE.
- *
- * MEASURED OVERNIGHT 2026-09-20. `orchestrator` needed a ruling from `product-manager` and wrote the
- * question as a COMMENT on #914. Nothing in this org reads comments, so it went unseen -- it asked FIVE
- * TIMES over 6.5 hours, and `product-manager`'s own reply says it plainly:
- *
- *     "I should have confirmed sooner rather than let five asks go unanswered since 01:55Z."
- *
- * Both sessions behaved correctly. The escalation path is the one `agent-practices.md` prescribes. It
- * simply had no mechanism behind it, so it ran at the speed of someone happening to look.
- *
- * THE FOURTH INSTANCE OF ONE DEFECT, and the last of the set: `fleet-gated` (#1770), `blocked` (#1780),
- * `epic` (#1784), and now a question owed. Each time a session knew something that changed what should
- * happen next, and could only say it in prose.
- *
- * A LABEL AND NOT AN ASSIGNEE, and the data decided that rather than taste. Assignee was the obvious
- * choice -- GitHub's own field, unused on every open row -- until `repos/:o/:r/assignees` answered with
- * FOUR accounts (`a11ign-ai-workers`, `a11ign-bot`, `Cemmaw`, `DanBeckDev`) which the EIGHT sessions
- * share. An assignee structurally cannot say WHICH session owes the answer, which is the only thing this
- * needs to express. `answer:<session>` joins `session:*` and `hold:*`, an established and BOUNDED family
- * -- one label per session, not one per instance, so it cannot rot the vocabulary the way
- * `branch:agent/...` and `worktree:/private/tmp/...` already have.
- *
- * IT CLEARS ITSELF BY BEING ANSWERED: removing the label IS the act of answering, so there is no second
- * state to maintain and nothing to remember. Same property as `blockedBy` and `Not-before:`.
- *
- * THE NAME MOVED TO `waiting-condition.ts` AND IS RE-EXPORTED HERE (#2005), unchanged. It is a WAITING
- * CONDITION, and that module is the one reader of those -- declaring it here is what let every reader of
- * waiting conditions answer "is this row free?" as `yes` for three days while this same file was waking
- * a session to answer the question holding it. Re-exported rather than moved outright so no importer,
- * test or role brief has to change to say a thing that has not changed.
- */
-export { ANSWER_PREFIX };
-
-/**
  * #2161: the rows an open pull request DECLARES it closes -- the holders who have demonstrably acted.
  * `declaredClosedRows` is the parser B4 and B7 already share, so "this PR is the row's own work" means
  * one thing in all three places, and `Closes: none` and a malformed body both read as `[]` and so screen
@@ -395,7 +240,7 @@ export { ANSWER_PREFIX };
  * the largest pull requests -- the ones most likely to be a row's whole build.
  * #2493: a pull request carrying a `hold:` label does not count -- see the body.
  */
-function rowsWithOpenPr(openPrs: any[] | null | undefined): (row: any) => boolean {
+export function rowsWithOpenPr(openPrs: any[] | null | undefined): (row: any) => boolean {
   // #2493: A HELD PR IS NOT AN ACT, IT IS A DECLARED WAIT. `hold:` is the owner saying "do not merge me yet", and the
   // wait behind it is a `blockedBy` edge (#2400 section 2) -- so the holder of a held PR is exactly who must hear
   // that the last edge closed. Counting it as "resumed" silenced the one wake the ruling relies on: #2376's owner
@@ -437,7 +282,7 @@ export function stripClosedClaims(asked: ReturnType<typeof closedClaimLabelsWhen
 }
 
 /** `host-units.ts` beside this file -- RESOLVED, never imported. See `readHostDrift` for why. */
-function hostUnitsEntry() {
+export function hostUnitsEntry() {
   return fileURLToPath(new URL("./host-units.ts", import.meta.url));
 }
 
@@ -457,7 +302,7 @@ function closingsWhenRowsCleared(openRows: any[], run: (args: string[]) => strin
  * The reads about a scope's ROWS that are made per tick beyond the lists themselves. Run inside `inRepo` for the tracker repository.
  * #1085: `chairmanRows` is the tracker's own verified chairman rows, so a keyed scope offers its chairman's row first as `main` does (the labeller still decides).
  */
-function trackerReadings({ allOpen, rows }: { allOpen: any[]; rows: any[]; }) {
+export function trackerReadings({ allOpen, rows }: { allOpen: any[]; rows: any[]; }) {
   return { claimedComments: claimedRowCommentsWhenHeld(allOpen) ?? [], epics: epicRowsOf(allOpen),
     closedRows: closedAnswerRows(readClosedAnswerRows(defaultRun, endedAnswerSessionTest)), closings: closingsWhenRowsCleared(allOpen),
     chairmanRows: readChairmanPriorityOfOffer(rows, allOpen).chairmanRows };
@@ -645,7 +490,7 @@ function main() {
   // exhausted pool, which is the whole reason the detection can exist. `GIT_READS` counts it.
   const offerHierarchy = endGateSpan("offerHierarchy", offerHierarchyNow(rows, allOpen)); // #4524: who the chairman's rows are, from the tracker's history, and the declared milestone ranking
   const rowBranches = endGateSpan("rowBranches", readRowBranches()), branchPrs = endGateSpan("branchPrs", readBranchPrsOfUnclaimed(rows, rowBranches)); // #3892: one `pr list` per branch of an unclaimed row, none when there is none
-  const pools: import("./org-health.ts").PoolReading[] = []; // #3448: the GraphQL budget the off-board read names, handed to the org-health tick
+  const pools: import("./org-health/claim-refusal.ts").PoolReading[] = []; // #3448: the GraphQL budget the off-board read names, handed to the org-health tick
   const offBoard = rowsOffBoardOrSay(undefined, pools), primaryDrift = readPrimaryDriftNow(); endGateSpan("offBoard+primaryDrift"); // #2781: local git, once; it feeds `decide` and banners its orders
   // #1969: NAMED RATHER THAN CALLED TWICE. `shouldBeMerging` needs the same answer `decide` does, and
   // `requiredWhenNeeded` makes a `gh` call when anything is red -- calling it inline in both places would

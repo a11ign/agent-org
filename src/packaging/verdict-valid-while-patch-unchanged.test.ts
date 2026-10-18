@@ -18,9 +18,12 @@ import { mkdtempSync, appendFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { decide, withPatchIds, GH_READS } from "../work-gate.ts";
+import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { withPatchIds } from "../work-gate/causes/pr-reviews.ts";
+import { GH_READS } from "../work-gate/reads/exit.ts";
 import { patchIdOfDiff } from "../review-verdict.ts";
-import { readLedger, undelivered, endedRuns, ledgerLine, RESET, WAKE_TTL_MS } from "../wake.ts";
+import { readLedger, endedRuns, ledgerLine, WAKE_TTL_MS } from "../wake/ended-sessions.ts";
+import { undelivered, RESET } from "../wake/reset.ts";
 
 const GREEN = [{ name: "ci", status: "COMPLETED", conclusion: "SUCCESS" }];
 const PENDING = [{ name: "ci", status: "IN_PROGRESS", conclusion: null }];

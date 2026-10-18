@@ -16,11 +16,15 @@ import { join } from "node:path";
 import { ACCOUNT_LIMIT_FLAG, UNREADABLE_RECORD, accountLimitFlag, accountLimitLogPath, nextLimit, pauseRefusal, pausedNow, readAccountLimits, tickAccountLimit,
   writeAccountLimits, ACCOUNT_LIMIT_FILE, type AccountLimit } from "./account-limit.ts";
 import { claimStalledOrders } from "./claim-stall.ts";
-import { deliver as settlingDeliver, freeLimitMenuSeats, limitMenuTick } from "./wake.ts";
+import { deliver as settlingDeliver } from "./wake/clear-settle-ms.ts";
+import { freeLimitMenuSeats, limitMenuTick } from "./wake/exit.ts";
 import { isLimitMenu, tellBlocked } from "./worker-state.ts";
 import { INSIDE } from "./review-trust.ts";
 import { startedPanes } from "./packaging/started-pane.ts";
-import { CANARY_STATE_FILE, emptyCanaryState, withMachineryFlag, type CanaryState } from "./org-health.ts";
+import { CANARY_STATE_FILE } from "./org-health/claim-refusal.ts";
+import { emptyCanaryState, type CanaryState } from "./org-health/fleet-build-incident.ts";
+import { withMachineryFlag } from "./org-health.ts";
+import { moduleSource } from "./lib/module-source.ts";
 
 /** A test that is not ABOUT the clear's five-second settle does not wait it. */
 const noSettle = () => {};
@@ -502,7 +506,7 @@ test("the default pane reader, through a fake `herdr` on PATH: a blocked worker 
 });
 
 test("#1412 THE TICK CALLS IT: `main` takes its pause from `limitMenuTick`, and no second copy of the freeing sits beside it (a SOURCE pin on placement only: `main` is not driven whole by any test)", () => {
-  const source = readFileSync(new URL("./wake.ts", import.meta.url), "utf8");
+  const source = moduleSource("wake.ts");
   assert.equal(source.split("const accountPause = limitMenuTick(agents);").length - 1, 1, "one call, in `main`");
   assert.doesNotMatch(source, /if \(accountPause === null\) freeLimitMenuSeats/, "the freeing is not called from `main` a second way");
 });

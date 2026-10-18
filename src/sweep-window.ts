@@ -13,7 +13,7 @@
 //
 // THE STATE IS PURE ({@link sweepWindowState}); the reads go through an injected `run`, so a test reaches no network.
 import { declaresSweep, openRestListing } from "./blast-radius.ts";
-import { claimRecordOf, type RowComment } from "./claim-stall.ts";
+import { claimRecordOf, type RowComment } from "./claim-record.ts";
 import { FAILURE_LEDGER_FILE, SWEEP_WINDOW_RELEASED_KIND, recordFailures } from "./failure-ledger.ts";
 import { stateEntryPath } from "./host-config.ts";
 import { gh, lookup } from "./merge-guard/lookups.ts";

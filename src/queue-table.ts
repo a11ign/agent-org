@@ -47,7 +47,7 @@ import { newestPerName } from "./newest-check-run.ts";
 import { holdersOf } from "./pr-hold-state.ts";
 import { brokenChecks } from "./red-pr.ts";
 import { armedFromApi } from "./pr-armed-state.ts";
-import { readRequiredContexts } from "./work-gate.ts";
+import { readRequiredContexts } from "./work-gate/causes/pr-checks.ts";
 // `poolFromHeaders` WAS DEFINED HERE until #2003, and its `Pool` shape with it. `work-gate.ts` needs the
 // same reading on its refusal path and may not import this file, so the reader is a leaf now.
 import { poolFromHeaders } from "./api-pool.ts";

@@ -11,8 +11,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readClosedAnswerRows, readOpenRowFollowUps, withoutEndedAnswerSessions } from "../work-gate.ts";
-import { KEPT_ANSWERS_MAX_AGE_MS, type ConditionalReads } from "../work-gate/reads.ts";
+import { readClosedAnswerRows, withoutEndedAnswerSessions } from "../work-gate/causes/rows-answers.ts";
+import { readOpenRowFollowUps } from "../work-gate.ts";
+import { KEPT_ANSWERS_MAX_AGE_MS, type ConditionalReads } from "../work-gate/reads/exit.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { closedAnswerConnection, readsClosedAnswerRows } from "./rows-by-label-fixtures.ts";
 

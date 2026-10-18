@@ -15,7 +15,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { decide, rowKind, productRegionsOf, offeredByShare, recordEngineerStarts } from "../work-gate.ts";
+import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { rowKind, productRegionsOf, offeredByShare, recordEngineerStarts } from "../work-gate/causes/rows-offer.ts";
 import { adopterRowKind } from "../work-gate/org-health.ts";
 
 const CODE = [

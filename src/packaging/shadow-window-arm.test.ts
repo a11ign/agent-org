@@ -24,7 +24,8 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { SHIPPED_DIR, TOOL_ENTRIES, hostUnitsInstall, shippedUnitText as real_shippedUnitText, shippedUnits } from "../host-units.ts";
+import { SHIPPED_DIR, TOOL_ENTRIES, shippedUnitText as real_shippedUnitText, shippedUnits } from "../host-units/shipped-dir.ts";
+import { hostUnitsInstall } from "../host-units.ts";
 import { HARD_STOP_MS, WINDOW_TICKS, armWindow, readRecordRows, readWindowMarker, ticksRecorded, windowTick } from "../shadow-window.ts";
 import { SHADOW_WINDOW_MARKER, tapShadowReads } from "../shadow-reads.ts";
 import { homeHostConfig } from "../host-config.ts";

@@ -16,7 +16,7 @@ import ts from "typescript";
 import { githubTicketAdapter, labelOfFlag, OPEN_ITEMS_QUERY } from "./github-adapter.ts";
 import type { ItemRef, PortEvent } from "./port.ts";
 import { PROJECT_NUMBER } from "../board-snapshot-scope.ts";
-import { readRowsOffBoard } from "../work-gate.ts";
+import { readRowsOffBoard } from "../work-gate/causes/rows-off-board.ts";
 import { workGateSource } from "../lib/work-gate-source.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));

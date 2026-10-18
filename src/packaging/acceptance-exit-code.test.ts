@@ -32,9 +32,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import {
-  extractAcceptanceSection, extractRefutationSection, acceptanceReport, classifyCommand,
-} from "../acceptance-commands.ts";
+import { extractAcceptanceSection } from "../acceptance-commands/suite-scripts-for.ts";
+import { extractRefutationSection, acceptanceReport, classifyCommand } from "../acceptance-commands/unmet-command-closure-requirements.ts";
 import { RESOURCES } from "../project-vocabulary.ts";
 
 /** The resource ban is a11ign's own (`vocabulary.resources` of its declaration, which the acceptance fixture leaves empty by design), so with none declared there is no fleet/lab/corpus refusal to assert. */

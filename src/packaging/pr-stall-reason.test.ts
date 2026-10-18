@@ -13,9 +13,11 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { stallReasonOf, stallOrderOf, stalledPrOrders, ownerOfPr, STALL_REASON, STALL_REASONS_WITHOUT_A_CAUSE, decide, CAUSES, stalledPrFacts }
-  from "../work-gate.ts";
-import { hungCheckOf, CHECK_RUNNING_TOO_LONG_MINUTES } from "../work-gate/pr-orders.ts";
+import { stallReasonOf, stallOrderOf, stalledPrOrders, ownerOfPr, STALL_REASON, STALL_REASONS_WITHOUT_A_CAUSE } from "../work-gate/pr-orders/red-only-by-superseded-run.ts";
+import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { CAUSES } from "../cause-declaration.ts";
+import { stalledPrFacts } from "../work-gate/org-health.ts";
+import { hungCheckOf, CHECK_RUNNING_TOO_LONG_MINUTES } from "../work-gate/pr-orders/red-only-by-superseded-run.ts";
 
 const REQUIRED = ["gate"];
 const HEAD = "0123456789abcdef0123456789abcdef01234567";

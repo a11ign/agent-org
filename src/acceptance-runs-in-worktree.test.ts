@@ -14,10 +14,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { sandboxGitEnv } from "./lib/git-env.ts";
-import { rewriteLeadingCd } from "./acceptance-commands.ts";
+import { rewriteLeadingCd } from "./acceptance-commands/suite-scripts-for.ts";
 
 const SRC = new URL(".", import.meta.url);
-const ACCEPTANCE_COMMANDS = new URL("acceptance-commands.ts", SRC).href;
+const ACCEPTANCE_COMMANDS = new URL("acceptance-commands/suite-scripts-for.ts", SRC).href;
+const ACCEPTANCE_CLOSURE = new URL("acceptance-commands/unmet-command-closure-requirements.ts", SRC).href;
 const PR_OPEN = new URL("pr-open.ts", SRC).href;
 
 let root: string;
@@ -47,7 +48,8 @@ before(() => {
   writeFileSync(join(worktree, "only-in-worktree.test.ts"), "");
   // The runner is a script in the fixture, not an inline `node -e`, and takes the work as argv.
   runner = join(root, "runner.mjs");
-  writeFileSync(runner, `import { runAcceptanceCommand, testFileArgumentsResolve } from ${JSON.stringify(ACCEPTANCE_COMMANDS)};
+  writeFileSync(runner, `import { runAcceptanceCommand } from ${JSON.stringify(ACCEPTANCE_COMMANDS)};
+import { testFileArgumentsResolve } from ${JSON.stringify(ACCEPTANCE_CLOSURE)};
 import { checkBody } from ${JSON.stringify(PR_OPEN)};
 const [mode, arg] = process.argv.slice(2);
 if (mode === "run") process.exitCode = runAcceptanceCommand(arg);

@@ -14,11 +14,15 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { sandboxGitEnv } from "../lib/git-env.ts";
-import { deliver as settlingDeliver, engineerRoles }
-  from "../wake.ts";
-import { spareRoles, spareInstances, spareDecision, cycleVerdict, consecutiveClean, endFinishedSpares, spawnEnvironment,
-  readSpareCycles, sparePathsFrom, registerSpawn, spareWorktrees, SPARE_CLAIM_BOUND_MS, WORKERS_GH_CONFIG_DIR, PRIMARY_CHECKOUT }
-  from "../wake.ts";
+import { deliver as settlingDeliver } from "../wake/clear-settle-ms.ts";
+import { engineerRoles } from "../wake/is-pull-request-spawn-order.ts";
+import { spareRoles, spareInstances, spareDecision, cycleVerdict, SPARE_CLAIM_BOUND_MS } from "../wake/merge-queue-wait-limit-ms.ts";
+import { consecutiveClean } from "../wake/is-release-line.ts";
+import { endFinishedSpares, spareWorktrees } from "../wake/with-ci-failure-class.ts";
+import { spawnEnvironment, WORKERS_GH_CONFIG_DIR } from "../wake/is-pull-request-spawn-order.ts";
+import { readSpareCycles, sparePathsFrom } from "../wake/ended-sessions.ts";
+import { registerSpawn } from "../wake/holds-as-fyi.ts";
+import { PRIMARY_CHECKOUT } from "../wake/clear-settle-ms.ts";
 import { startedPanes, STUB_STARTED_PANE } from "./started-pane.ts";
 import { hostConfigPath } from "../host-config.ts"; // #850: the pane carries the host the gate resolved
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */

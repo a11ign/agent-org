@@ -15,7 +15,10 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decide, holdForGithubIncident, githubIncidentOf, orgHealthNow, withPrOwners } from "./work-gate.ts";
+import { decide } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { holdForGithubIncident, githubIncidentOf } from "./work-gate/causes/org-health-github-incident.ts";
+import { orgHealthNow } from "./work-gate/org-health.ts";
+import { withPrOwners } from "./work-gate/pr-owners.ts";
 import { workGateSource } from "./lib/work-gate-source.ts";
 
 type Order = { session: string, cause: string, subject: string, causeKey: string };

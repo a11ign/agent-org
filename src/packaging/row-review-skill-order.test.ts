@@ -7,10 +7,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { perPullRequestOrders, ROW_REVIEW_SKILL_FLAG } from "../work-gate/pr-orders.ts";
-import { decide, rowReviewSkillFlagOn } from "../work-gate/tick.ts";
+import { perPullRequestOrders } from "../work-gate/pr-orders.ts";
+import { ROW_REVIEW_SKILL_FLAG } from "../work-gate/pr-orders/red-only-by-superseded-run.ts";
+import { decide, rowReviewSkillFlagOn } from "../work-gate/tick/blocker-cleared-reading.ts";
 import { FLAG_REGISTRY } from "../machinery-flag.ts";
-import { emptyCanaryState, withMachineryFlag } from "../org-health.ts";
+import { emptyCanaryState } from "../org-health/fleet-build-incident.ts";
+import { withMachineryFlag } from "../org-health.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 
 const NOW = Date.parse("2026-10-13T10:20:00Z");

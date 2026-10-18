@@ -16,7 +16,7 @@
 // pairing code, and answers with the link carrying it, so the person never types a second code. The link is taken only when it is that
 // connection's own terminal address (`sameTerminal`), so the redirect cannot carry a code to another site. A failed mint sends the plain link.
 import { execFileSync } from "node:child_process";
-import { readFileSync, realpathSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { stripTypeScriptTypes } from "node:module";
 import { constants } from "node:os";
@@ -91,9 +91,18 @@ export type UiDeps = Readonly<{
   tailnet?: Readonly<{ port: number; name: () => Promise<string | null> }>;
 }>;
 
-/** `board-view.ts` as the browser can run it: Node's own type stripping, so what the tests ran is what the page runs. */
+/**
+ * `board-view.ts` as the browser can run it: Node's own type stripping, so what the tests ran is what the page runs. The page loads ONE script, so the
+ * files `board-view.ts` was split into (`board-view/`) are joined to it: one scope, with their relative imports dropped, as they are not modules here.
+ */
 export function boardViewScript(read: (path: string) => string = (path) => readFileSync(path, "utf8")): string {
-  return stripTypeScriptTypes(read(VIEW));
+  const dir = join(HERE, "board-view");
+  const parts = existsSync(dir)
+    ? readdirSync(dir).filter((name) => name.endsWith(".ts") && !name.endsWith(".test.ts")).sort().map((name) => join(dir, name))
+    : [];
+  // An import statement ends at its `;`, so one match never runs past it: a multi-line import from a sibling file goes, a `node:` import stays.
+  const joined = [VIEW, ...parts].map((path) => read(path).replace(/^import\s+[^;]*?\bfrom\s+"\.[^"]*";[ \t]*$/gm, "")).join("\n");
+  return stripTypeScriptTypes(joined);
 }
 
 /** `label-filters.ts` as the browser can run it, as `boardViewScript` sends `board-view.ts`. */

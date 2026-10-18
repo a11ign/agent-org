@@ -12,7 +12,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import * as retro from "../org-retro.ts";
+import * as retro_0 from "../org-retro.ts";
+import * as retro_1 from "../org-retro/retro-cause.ts";
 import { readsRowsSince, sinceAnswer, type FakeRow } from "./rows-by-label-fixtures.ts";
 import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
 
@@ -70,18 +71,18 @@ function acceptanceFile(onRead: (count: number) => void = () => {}) {
 }
 
 /** The memory the state entry holds after a run, as the next tick reads it. */
-const keptContents = (dir: string) => Object.keys(JSON.parse(readFileSync(join(dir, retro.RETRO_READS_FILE), "utf8")).contents);
+const keptContents = (dir: string) => Object.keys(JSON.parse(readFileSync(join(dir, retro_0.RETRO_READS_FILE), "utf8")).contents);
 
 test("THE CONTROL: a read that never fails reads each of the forty files once, and a second run reads none", () => {
   const dir = tmpDir("retro-kept-control-");
   const first = acceptanceFile();
-  const inert = retro.readInertOptions({ now: NOW, declaration: DECLARATION, read: forge(), readFile: first.readFile, recorded: [], memory: retro.readRetroReads(dir) });
+  const inert = retro_1.readInertOptions({ now: NOW, declaration: DECLARATION, read: forge(), readFile: first.readFile, recorded: [], memory: retro_0.readRetroReads(dir) });
   assert.notEqual(inert, null);
   assert.equal(first.reads(), FILES, "forty acceptance reads on the first run");
   assert.equal(keptContents(dir).length, FILES, "every text is kept");
 
   const second = acceptanceFile();
-  retro.readInertOptions({ now: NOW, declaration: DECLARATION, read: forge(), readFile: second.readFile, recorded: [], memory: retro.readRetroReads(dir) });
+  retro_1.readInertOptions({ now: NOW, declaration: DECLARATION, read: forge(), readFile: second.readFile, recorded: [], memory: retro_0.readRetroReads(dir) });
   assert.equal(second.reads(), 0, "no acceptance read on the second run: the memory answers all forty");
 });
 
@@ -90,12 +91,12 @@ test("THE CUT: a read that dies on the 21st file keeps the twenty it read, and t
   const dying = acceptanceFile((count) => {
     if (count === 21) throw new Error("SIGTERM: the gate's tick was cut");
   });
-  assert.throws(() => retro.readInertOptions({ now: NOW, declaration: DECLARATION, read: forge(), readFile: dying.readFile, recorded: [], memory: retro.readRetroReads(dir) }), /SIGTERM/);
+  assert.throws(() => retro_1.readInertOptions({ now: NOW, declaration: DECLARATION, read: forge(), readFile: dying.readFile, recorded: [], memory: retro_0.readRetroReads(dir) }), /SIGTERM/);
   assert.equal(dying.reads(), 21, "the twenty-first read is the one that died");
   assert.equal(keptContents(dir).length, 20, "the twenty texts read before the cut are on disk, though no class finished");
 
   const resumed = acceptanceFile();
-  const inert = retro.readInertOptions({ now: NOW, declaration: DECLARATION, read: forge(), readFile: resumed.readFile, recorded: [], memory: retro.readRetroReads(dir) });
+  const inert = retro_1.readInertOptions({ now: NOW, declaration: DECLARATION, read: forge(), readFile: resumed.readFile, recorded: [], memory: retro_0.readRetroReads(dir) });
   assert.notEqual(inert, null);
   assert.equal(resumed.reads(), 20, "call counts 20 then 20, not 20 then 40");
   assert.equal(keptContents(dir).length, FILES);
@@ -107,14 +108,14 @@ test("THE CUT: a read that dies on the 21st file keeps the twenty it read, and t
  */
 function tickWith(stateDir: string, now: number, { clock, costMs }: { clock: { ms: number }; costMs: number }, readFile: ReturnType<typeof acceptanceFile>["readFile"]) {
   const said: string[] = [];
-  const orders = retro.retrospectiveTick({
+  const orders = retro_0.retrospectiveTick({
     now, stateDir, log: (line) => said.push(line), readLedger: () => "", readUntiered: () => null,
-    read: (where) => retro.readWhenDoraIsRead(where, {
+    read: (where) => retro_0.readWhenDoraIsRead(where, {
       dora: { repositories: [] },
-      readRest: (rest) => retro.readRetroClasses({
+      readRest: (rest) => retro_0.readRetroClasses({
         ...rest,
-        readInertOptionReading: (at, recorded) => retro.readInertOptions({ now: at, declaration: DECLARATION, read: forge(), readFile: (repo, path, ref) => { clock.ms += costMs; return readFile(repo, path, ref); }, recorded, memory: rest.memory }),
-      }, { budgetMs: retro.RETRO_TICK_BUDGET_MS, clock: () => clock.ms }),
+        readInertOptionReading: (at, recorded) => retro_1.readInertOptions({ now: at, declaration: DECLARATION, read: forge(), readFile: (repo, path, ref) => { clock.ms += costMs; return readFile(repo, path, ref); }, recorded, memory: rest.memory }),
+      }, { budgetMs: retro_0.RETRO_TICK_BUDGET_MS, clock: () => clock.ms }),
     }),
   });
   return { orders: orders.filter((order) => order.cause === "org-retrospective"), said };
@@ -129,7 +130,7 @@ test("A CLASS PAST THE BUDGET STOPS INSIDE ITSELF: six files are read, the class
   assert.equal(first.said.includes("org-retro: inert options stopped after 6 of 40 files; no org-retrospective order until every class is read.\n"), true, first.said.join(""));
   assert.equal(files.reads(), 6, "the reads that began inside the budget, and no more");
   assert.equal(keptContents(dir).length, 6, "the six texts are kept as they were read");
-  const classes = JSON.parse(readFileSync(join(dir, retro.RETRO_CLASSES_FILE), "utf8")).classes;
+  const classes = JSON.parse(readFileSync(join(dir, retro_0.RETRO_CLASSES_FILE), "utf8")).classes;
   assert.equal(Object.hasOwn(classes, "inert options"), false, "the cut class is not kept as read, so the next tick reads it again");
 });
 

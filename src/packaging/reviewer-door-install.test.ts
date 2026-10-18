@@ -12,9 +12,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import "./host-units-project.ts"; // FIRST of the tool imports: it makes a fixture project the tool's before `host-units.ts` resolves one (#3233)
+import { moduleSource } from "../lib/module-source.ts";
 
-const { REVIEWER_DOOR_SOURCE, driftReport, hostUnitDrift, reviewerDoorDrift, reviewerDoorInstall, reviewerDoorPath, reviewerDoorState }
-  = await import("../host-units.ts");
+const { REVIEWER_DOOR_SOURCE, reviewerDoorDrift, reviewerDoorInstall, reviewerDoorState } = await import("../host-units/tool-version-notes.ts");
+const { driftReport, hostUnitDrift } = await import("../host-units.ts");
+const { reviewerDoorPath } = await import("../reviewer-door-path.ts");
 
 const here = (relative: string) => fileURLToPath(new URL(relative, import.meta.url));
 const INSTALLER = here("../reviewer/install-reviewer-bin.sh");
@@ -98,8 +100,8 @@ test("1. `host:check` is WIRED to it: hostUnitDrift carries the door finding, an
 
 test("the spelling orders print is the installer's default, read from the script", () => {
   assert.equal(installerDefault(), "$HOME/reviewer/bin/pr-review-verdict");
-  for (const file of [WAKE, PR_ORDERS]) {
-    assert.equal(/const REVIEWER_DOOR = "([^"]+)"/.exec(readFileSync(file, "utf8"))?.[1], installerDefault(),
+  for (const [file, text] of [[WAKE, moduleSource("wake.ts")], [PR_ORDERS, moduleSource("work-gate/pr-orders.ts")]]) {
+    assert.equal(/const REVIEWER_DOOR = "([^"]+)"/.exec(text)?.[1], installerDefault(),
       `${file} keeps the spelling it prints in step with the installer's default`);
   }
   const home = "/home/somebody";
@@ -122,7 +124,7 @@ test("2. the detector refuses the bare name and accepts the installed path (both
 });
 
 test("2. every order in wake.ts and pr-orders.ts that tells a reviewer to post names the installed path", () => {
-  const orders = [WAKE, PR_ORDERS].flatMap((file) => readFileSync(file, "utf8").split("\n").map((text, i) => ({ file, text, line: i + 1 })))
+  const orders = [[WAKE, moduleSource("wake.ts")], [PR_ORDERS, moduleSource("work-gate/pr-orders.ts")]].flatMap(([file, source]) => (source as string).split("\n").map((text, i) => ({ file, text, line: i + 1 })))
     .filter(({ text }) => instructsToPost(text));
   assert.ok(orders.length >= 2, "positive control: both files carry an order that names the door");
   for (const { file, text, line } of orders) {
@@ -147,7 +149,7 @@ test("3. host:install's door step leaves a byte-identical, executable door at th
 });
 
 test("3. the door step is part of `host:install`, not just exported", () => {
-  const main = readFileSync(here("../host-units.ts"), "utf8").split("\n");
+  const main = moduleSource("host-units.ts").split("\n");
   const at = main.findIndex((l) => l.trim() === "reviewerDoorInstall();");
   assert.ok(at > 0 && main.slice(at - 6, at).some((l) => l.includes("--install")), "reviewerDoorInstall() is called inside the --install branch of main()");
 });

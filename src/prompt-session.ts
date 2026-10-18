@@ -32,8 +32,13 @@ import { dirname } from "node:path";
 
 import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { herdrRun } from "./herdr-agents.ts";
-import { prepareContext, orderClockIn, CONTEXT_ACTION, readAgents, WAKEABLE, queueHandoff, handoffQueuePath, ledgerPathFrom,
-  handoffBacklog, readHandoffs, waitedFor, addressed, repointedForReviewer, isLeadSeat, FYI_STALE_MS } from "./wake.ts";
+import { prepareContext, handoffBacklog, waitedFor, addressed } from "./wake/clear-settle-ms.ts";
+import { orderClockIn } from "./wake/merge-queue-wait-limit-ms.ts";
+import { CONTEXT_ACTION } from "./wake/holds-as-fyi.ts";
+import { readAgents } from "./herdr-agents.ts";
+import { WAKEABLE } from "./wake/exit.ts";
+import { queueHandoff, handoffQueuePath, ledgerPathFrom, readHandoffs, isLeadSeat, FYI_STALE_MS } from "./wake/reset.ts";
+import { repointedForReviewer } from "./wake/ensure-reviewer-token.ts";
 // #2619 (child 3d of #69): the `answer:` prefix these two advisory notes name, moved to the project's
 // declared vocabulary.
 import { ANSWER_PREFIX } from "./project-vocabulary.ts";
@@ -194,7 +199,7 @@ export const PROMPT_REFUSED_PREFIX = "prompt refused: ";
  */
 export function clearThenPrompt(run: (args: string[]) => string, label: string, text: string, options: {
     sender?: string | null; sleep?: (ms: number) => void; contextRoot?: string; sessions?: string | URL;
-    clock?: import("./wake.ts").OrderClock;
+    clock?: import("./wake/holds-as-fyi.ts").OrderClock;
 } = {}) {
   return promptWithContext(run, label, text, options).report;
 }
@@ -630,7 +635,7 @@ const CONTEXT_WORDS = Object.freeze({
 type PromptOrder = {
         run: (args: string[]) => string; label: string; text: string; agents: { label: string; status: string; }[] | null;
         path: string; stance: Stance; sender: string | null; sleep?: (ms: number) => void;
-        checkout?: import("./wake.ts").CheckoutDeps; contextRoot?: string; clock?: import("./wake.ts").OrderClock;
+        checkout?: import("./wake/ensure-reviewer-token.ts").CheckoutDeps; contextRoot?: string; clock?: import("./wake/holds-as-fyi.ts").OrderClock;
     };
 
 /**

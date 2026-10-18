@@ -9,7 +9,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { freshRetroReads, keepRetroReads, readInertOptions, readMergedRowOpen, readRetroReads, resetRetroTally, retroReadsLine, RETRO_READS_FILE } from "../org-retro.ts";
+import { freshRetroReads, readInertOptions, readMergedRowOpen } from "../org-retro/retro-cause.ts";
+import { keepRetroReads, readRetroReads, resetRetroTally, retroReadsLine, RETRO_READS_FILE } from "../org-retro.ts";
 import { connectionOf, readsRowsByLabel, readsRowsSince, sinceAnswer, type FakeRow } from "./rows-by-label-fixtures.ts";
 
 const MIN = 60_000;

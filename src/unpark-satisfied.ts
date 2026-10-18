@@ -49,7 +49,7 @@ import { fileURLToPath } from "node:url";
 import { stateEntryPath } from "./host-config.ts";
 import { sandboxGitEnv } from "./lib/git-env.ts";
 import { PARKED_LABEL, conditionHolds, declaredWaitsOf, isItemWait, waitFieldsOf, waitItemOf } from "./wait-condition.ts";
-import { machineryFlagOn, type CanaryState } from "./org-health.ts";
+import { machineryFlagOn, type CanaryState } from "./org-health/fleet-build-incident.ts";
 import type { WaitFacts } from "./wait-condition.ts";
 import { notBeforeDate, notBeforeIso } from "./waiting-condition.ts";
 import { CLAIM_LABEL, READY_LABEL } from "./claim-labels.ts";

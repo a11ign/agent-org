@@ -19,12 +19,11 @@ import { FAILURE_LEDGER_FILE, parseFailureLedger } from "./failure-ledger.ts";
 import { parseHostConfig, SHADOW_COPY_MARKER, SHADOW_STATE_DIR_ENV } from "./host-config.ts";
 import { sandboxGitEnv } from "./lib/git-env.ts";
 import { tmpDir } from "./lib/tmp-fixture.ts";
-import {
-  SPEC_LINT_REFUSED_KIND, promoteAndReviewRow, promoteRefusalReason, promoteRow, readSpecLintFlag, recordSpecLintRefusals, reviewPromotedSpec, specLintDeps,
-  type SpecLintAtPromotion,
-} from "./row-file.ts";
+import { SPEC_LINT_REFUSED_KIND } from "./failure-ledger.ts";
+import { promoteAndReviewRow, promoteRefusalReason, promoteRow, readSpecLintFlag, recordSpecLintRefusals, reviewPromotedSpec, specLintDeps, type SpecLintAtPromotion } from "./row-file/roadmap-without-parent-refusal.ts";
 import { SPEC_REVIEW_LABEL, SPEC_REVIEW_WAKE, type LintDeps } from "./spec-lint.ts";
 import { freshState } from "./triage-provider.ts";
+import { moduleSource } from "./lib/module-source.ts";
 
 // --- fixtures -----------------------------------------------------------------------------------------------------------------
 
@@ -421,7 +420,7 @@ test("2. a refused promotion is not read by Jev, and a provider that is down pro
 });
 
 test("2. MUTATION TARGET: `main`'s `--promote=` branch runs `promoteAndReviewRow` and not the bare act (the one wiring a test cannot inject into: `main` reads `process.argv`)", () => {
-  const source = readFileSync(new URL("./row-file.ts", import.meta.url), "utf8");
+  const source = moduleSource("row-file.ts");
   assert.ok(source.includes("process.exitCode = await promoteAndReviewRow(argv);"), "main reads the spec of a row it promoted");
   assert.ok(!source.includes("process.exitCode = promoteRow(argv);"), "and has no second, bare promotion that skips the reading");
 });

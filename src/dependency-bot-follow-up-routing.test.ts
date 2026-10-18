@@ -12,7 +12,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decide } from "./work-gate.ts";
+import { decide } from "./work-gate/tick/blocker-cleared-reading.ts";
 
 type Order = { session: string; cause: string; subject?: string; causeKey: string; };
 type Pr = Record<string, unknown>;

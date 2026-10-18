@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { claimOrdersIn } from "../wake.ts";
+import { claimOrdersIn } from "../wake/merge-queue-wait-limit-ms.ts";
 
 const continuation = (claim: string) => `${JSON.stringify({ kind: "continuation", claim })}\n`;
 

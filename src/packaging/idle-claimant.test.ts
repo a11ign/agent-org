@@ -18,11 +18,11 @@ import {
 } from "../idle-claimant.ts";
 import { HOLD_PREFIX } from "../pr-hold-state.ts";
 import { brokenChecks } from "../red-pr.ts";
-import {
-  claimReading, claimStalledOrders, nextStallState, nudgeKey, claimFactsFrom, stalledNudgeEvents, withRedChecks,
-} from "../claim-stall.ts";
+import { claimReading, claimFactsFrom, withRedChecks } from "../claim-stall/claim-stalled.ts";
+import { claimStalledOrders, nextStallState, nudgeKey, stalledNudgeEvents } from "../claim-stall.ts";
 import { claimRecordComment } from "../row-claim.ts";
-import { AWAITING_EVIDENCE_LABEL, claimStallTick } from "../work-gate.ts";
+import { AWAITING_EVIDENCE_LABEL } from "../work-gate/causes/pr-reviews.ts";
+import { claimStallTick } from "../work-gate/claim-stall-tick.ts";
 
 const MIN = 60_000;
 const NOW = Date.parse("2026-10-02T12:00:00Z");

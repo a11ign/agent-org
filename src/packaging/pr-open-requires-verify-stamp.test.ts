@@ -19,7 +19,8 @@ import { join } from "node:path";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { EXIT_NOTHING_SENT, main } from "../pr-open.ts";
-import { decide, performActions } from "../work-gate.ts";
+import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { performActions } from "../work-gate/orders.ts";
 import { VERIFY_STATE, readVerifyStamp, verifyDeclaration, withVerifyStamps, worktreeAtHead } from "../verify-stamp.ts";
 
 const STEPS = ["changed", "ts", "agentOrg"];

@@ -12,8 +12,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { reviewBlocked } from "./work-gate.ts";
-import { reviewBlockedOrders } from "./work-gate/pr-orders.ts";
+import { reviewBlocked } from "./work-gate/causes/pr-reviews.ts";
+import { reviewBlockedOrders } from "./work-gate/pr-orders/red-only-by-superseded-run.ts";
 
 const GREEN = [{ name: "gate", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-10-10T16:00:00Z" }];
 const RED = [{ name: "gate", status: "COMPLETED", conclusion: "FAILURE", startedAt: "2026-10-10T16:00:00Z" }];

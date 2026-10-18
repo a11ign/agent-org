@@ -1,5 +1,5 @@
 import { anyChecksRed, mergeCandidates } from "../pr-state.ts";
-import { defaultRun } from "../reads.ts";
+import { defaultRun } from "../reads/exit.ts";
 
 /**
  * PAID ONLY BY A RED TICK, the condition `requiredWhenNeeded` had before a green draft also asked it (#3448), so a healthy

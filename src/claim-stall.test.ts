@@ -16,9 +16,9 @@ const STATE = mkdtempSync(join(tmpdir(), "claim-stall-1463-"));
 after(() => rmSync(STATE, { recursive: true, force: true }));
 writeFileSync(join(STATE, SHADOW_COPY_MARKER), "");
 process.env[SHADOW_STATE_DIR_ENV] = STATE;
-const { unmetWaitingFor } = await import("./claim-stall.ts");
+const { unmetWaitingFor } = await import("./claim-stall/claim-stalled.ts");
 const { closedClaimsNow } = await import("./work-gate/claim-stall-tick.ts");
-const { claimStallsWithFacts, withClosedClaims } = await import("./work-gate.ts");
+const { claimStallsWithFacts, withClosedClaims } = await import("./work-gate/tick.ts");
 
 const fact = (state: RefFact["state"]): RefFact => ({ state, labels: [], resolvedAt: null, changedAt: null });
 const body = (line: string) => `## What\n\nx\n\n${line}\n`;

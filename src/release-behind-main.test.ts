@@ -30,7 +30,8 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
-const { SIGNALS, releaseBehindReadings, orgHealthReadings, orgHealthOrders, orgHealthTick } = await import("./org-health.ts");
+const { SIGNALS } = await import("./org-health/no-merge-hours.ts");
+const { releaseBehindReadings, orgHealthReadings, orgHealthOrders, orgHealthTick } = await import("./org-health/fleet-build-incident.ts");
 const { BEHIND_AFTER_MS, CACHE_FILE, READ_INTERVAL_MS, cachedReleaseBehind, isShipped, noReleaseReason, readReleaseBehind, readRepoFact } = await import("./release-behind-main.ts");
 const { orgHealthNow } = await import("./work-gate/org-health.ts");
 

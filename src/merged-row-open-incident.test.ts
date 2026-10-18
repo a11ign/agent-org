@@ -11,7 +11,9 @@ import { test } from "node:test";
 import { FAILURE_LEDGER_FILE, parseFailureLedger, recordFailures } from "./failure-ledger.ts";
 import { ROW_NOT_FINISHABLE } from "./idle-claim-incident.ts";
 import { MERGED_ROW_OPEN_MINUTES, mergedRowOpenEvents, mergedRowOpenIncidents, mergedRowOpenSummary, type NamingPr, type OpenRow } from "./merged-row-open-incident.ts";
-import { buildReport, readMergedRowOpen, renderReport, retrospectiveTick } from "./org-retro.ts";
+import { buildReport } from "./org-retro/readings.ts";
+import { readMergedRowOpen } from "./org-retro/retro-cause.ts";
+import { renderReport, retrospectiveTick } from "./org-retro.ts";
 import { connectionOf, readsRowsByLabel, readsRowsSince, sinceAnswer } from "./packaging/rows-by-label-fixtures.ts";
 
 const MIN = 60_000;

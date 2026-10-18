@@ -13,8 +13,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { deliver, deliverHandoffs, clearBeforeOrder, prepareContext, orderClockIn, keepsContext, CONTEXT_ACTION,
-  KEEP_WITHIN_MS, KEEP_FILL_TOKENS, COMPACT_THRESHOLD_TOKENS } from "../wake.ts";
+import { deliver, prepareContext } from "../wake/clear-settle-ms.ts";
+import { deliverHandoffs } from "../wake/ended-sessions.ts";
+import { clearBeforeOrder, orderClockIn } from "../wake/merge-queue-wait-limit-ms.ts";
+import { keepsContext, CONTEXT_ACTION, KEEP_WITHIN_MS, KEEP_FILL_TOKENS, COMPACT_THRESHOLD_TOKENS } from "../wake/holds-as-fyi.ts";
 import { clearThenPrompt, promptWithContext, promptOrQueue, queueOrLose } from "../prompt-session.ts";
 import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
 

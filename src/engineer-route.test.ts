@@ -16,7 +16,8 @@ import { ABSENT_ROUTING, type RoutingDeclaration } from "./project-config.ts";
 import { confidenceReading } from "./provider-confidence.ts";
 import { tmpDir } from "./lib/tmp-fixture.ts";
 import { freshState } from "./triage-provider.ts";
-import { escalationsNow, instanceRefused, ROUTE_AHEAD, routesForStarts, spawnClaimer } from "./wake.ts";
+import { escalationsNow, instanceRefused } from "./wake.ts";
+import { ROUTE_AHEAD, routesForStarts, spawnClaimer } from "./wake/is-release-line.ts";
 import { AUTOCOMPACT_WINDOW_TOKENS, HAIKU_AUTOCOMPACT_WINDOW_TOKENS, HAIKU_MODEL_ID, LARGE_WINDOW_TOKENS, LARGEST_WINDOW_TOKENS } from "./worker-profile.ts";
 
 const SECRET_BODY_TEXT = "SECRET-BODY-TEXT-never-sent";

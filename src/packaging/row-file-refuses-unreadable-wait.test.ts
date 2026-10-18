@@ -11,7 +11,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { fileRefusalReason, promoteRefusalReason } from "../row-file.ts";
+import { fileRefusalReason } from "../row-file/body-from-argv.ts";
+import { promoteRefusalReason } from "../row-file/roadmap-without-parent-refusal.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 import { WAIT_STATES, parseWaits } from "../wait-condition.ts";
 import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";

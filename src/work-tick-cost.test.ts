@@ -17,9 +17,9 @@ import { fileURLToPath } from "node:url";
 import { EXIT, TICK_COST_BYTES, TICK_COST_FILE, appendTickCost, childrenCpuMs, createMeter, gateSpansOf, readUnitFacts, tickCostPath } from "./work-tick.ts";
 import { CENSUS_ENV, GATE_SPANS_ENV, currentCensusPhase, describeSpawn, endGateSpan, largestSpans, readGateSpans, summariseCensus } from "./lib/spawn-census.ts";
 import { sandboxGitEnv } from "./lib/git-env.ts";
-import { readElsewherePrs } from "./work-gate.ts";
+import { readElsewherePrs } from "./work-gate/reads.ts";
 import { claimRow } from "./row-claim.ts";
-import { instanceCacheRead } from "./wake.ts";
+import { instanceCacheRead } from "./wake/holds-as-fyi.ts";
 import { LIVE_TRANSCRIPT_HORIZON_MS, liveClaudeTurns } from "./work-gate/row-call-count-orders.ts";
 import { workGateSource } from "./lib/work-gate-source.ts";
 

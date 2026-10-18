@@ -12,7 +12,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { dora, measureRepository, renderDora, doraNumbers, doraDeclarations, metricState, DORA_METRICS, LOOKBACK_DAYS, MIN_RELEASES_FOR_A_RATE, UNKNOWN, NEVER_PUBLISHED } from "../dora.ts";
-import { buildReport, renderReport, compareReadings, cachedDora, DORA_CACHE_FILE } from "../org-retro.ts";
+import { buildReport } from "../org-retro/readings.ts";
+import { renderReport, compareReadings, cachedDora, DORA_CACHE_FILE } from "../org-retro.ts";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

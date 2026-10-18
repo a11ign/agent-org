@@ -11,7 +11,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ROW_OFF_BOARD_SWITCH_ENV, rowOffBoardOrders, settleOffBoardRows, type BoardFacts } from "./work-gate.ts";
+import { ROW_OFF_BOARD_SWITCH_ENV, settleOffBoardRows } from "./work-gate/tick.ts";
+import { rowOffBoardOrders, type BoardFacts } from "./work-gate/causes/rows-off-board.ts";
 import type { Decision, ItemRef, StateChange, TicketPort } from "./ticket-port/port.ts";
 import { workGateSource } from "./lib/work-gate-source.ts";
 

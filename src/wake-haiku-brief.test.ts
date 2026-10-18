@@ -15,7 +15,8 @@ import { HAIKU_BRIEF_FLAG, haikuBriefEnabled, haikuBriefTail, PUBLISHED_TEXT_SHA
 import { HOST_CONFIG_ENV, parseHostConfig } from "./host-config.ts";
 import { SUPPORTED_SCHEMA } from "./project-config.ts";
 import { startedPanes } from "./packaging/started-pane.ts";
-import { addressed, deliver, type SpawnClaimer } from "./wake.ts";
+import { addressed, deliver } from "./wake/clear-settle-ms.ts";
+import { type SpawnClaimer } from "./wake/is-pull-request-spawn-order.ts";
 import { HAIKU_MODEL_ID, type TierProfile } from "./worker-profile.ts";
 
 const HAIKU = "claude-haiku-5-5";

@@ -5,7 +5,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decide, readChairmanPriorityOfOffer, CHAIRMAN_PRIORITY_LABEL as LABEL } from "./work-gate.ts";
+import { decide } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { readChairmanPriorityOfOffer } from "./work-gate/tick.ts";
+import { CHAIRMAN_PRIORITY_LABEL as LABEL } from "./work-gate/vocabulary.ts";
 
 const REGION = ["packages/guards/src/shared.ts"];
 const DECLARATION = { code: [{ key: "", repo: "a11ign/a11ign" }], dora: [{ repo: "a11ign/a11ign", releasablePaths: ["packages/"] }] };

@@ -28,6 +28,7 @@ import assert from "node:assert/strict";
 import { statusContradictions, statusCensus, vocabularyDrift, RESTING_STATUS, WRITTEN_STATUSES }
   from "../board-status-health.ts";
 import { readFileSync } from "node:fs";
+import { moduleSource } from "../lib/module-source.ts";
 
 /** The shape the real query returns, with the numbers this row measured. */
 const REAL_SHAPE = [
@@ -183,7 +184,7 @@ test("#1996: WRITTEN_STATUSES is the set the writers actually send, derived from
   }
   // `row-file.ts` sends `boarding.status`, a variable, so its two names come from `boardingFor`'s own
   // return type -- the one place they are written down.
-  const rowFile = readFileSync(new URL("../row-file.ts", import.meta.url), "utf8");
+  const rowFile = moduleSource("row-file.ts");
   for (const m of rowFile.matchAll(/status:\s*"(Backlog|Ready)"/g)) sent.add(m[1]);
   sent.add(RESTING_STATUS); // settle-closed-status sends the imported constant, not a literal.
   assert.deepEqual([...sent].sort(), [...WRITTEN_STATUSES].sort(),

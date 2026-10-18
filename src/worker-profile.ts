@@ -29,7 +29,7 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import { realpathSync, readFileSync } from "node:fs";
 import { LANE_PREFIX, NEEDS_CHAIRMAN_LABEL } from "./project-vocabulary.ts";
 import { extractRegionSection } from "./region-paths.ts";
-import { extractAcceptanceSection } from "./acceptance-commands.ts";
+import { extractAcceptanceSection } from "./acceptance-commands/suite-scripts-for.ts";
 import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
 import { PROFILES } from "./cause-declaration.ts";
 import { homeProjectDeclaration } from "./project-config.ts";

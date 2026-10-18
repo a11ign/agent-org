@@ -37,14 +37,16 @@ process.env.PATH = `${join(SCRATCH, "fakebin")}:${process.env.PATH}`;
 
 const { fileOverlapReason, declaredClosedRows } = await import("./row-claim/file-overlap-rule.ts");
 const { orgHealthNow } = await import("./work-gate/org-health.ts");
-const { SIGNALS, shelvedCircles, shelvedCircleReading, orgHealthReadings, orgHealthOrders } = await import("./org-health.ts");
+const { SIGNALS } = await import("./org-health/no-merge-hours.ts");
+const { shelvedCircles, shelvedCircleReading } = await import("./org-health/state-label-reading.ts");
+const { orgHealthReadings, orgHealthOrders } = await import("./org-health/fleet-build-incident.ts");
 
 const TRACKER = "a11ign/a11ign";
 const LAB = "a11ign/lab";
 const REGION = ["lab:tests/a.test.ts"];
 
-type Pr = import("./org-health.ts").CirclePr;
-type Rows = import("./org-health.ts").CircleRow[];
+type Pr = import("./org-health/state-label-reading.ts").CirclePr;
+type Rows = import("./org-health/state-label-reading.ts").CircleRow[];
 const lab39 = (more: Partial<Pr> = {}): Pr => ({ number: 39, repo: LAB, labels: ["hold:ceo"], body: "Closes: none -- first slice\n\nWaiting-for: closed #4372\n", ...more });
 
 /** B4's own refusal for row `number` against `prs`, exactly as the gate would shelve it: the PR's `closes` and `held` as `comparablePrFiles` reads them. */

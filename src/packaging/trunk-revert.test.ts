@@ -30,8 +30,9 @@ import { fileURLToPath } from "node:url";
 import { attributionOf, failingTestsFromJobLog, newestVerdictRun, readTrunkRed, recheckFromAnnotations,
   trunkRedOrders, RED_TRUNK_POLICY, RECHECK_JOB, RECHECK_ANNOTATION_TITLE }
   from "../trunk-red.ts";
-import { decide, CAUSES, JUDGMENT_CAUSES, START_CAUSES } from "../work-gate.ts";
-import { routeWithFallback } from "../wake.ts";
+import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { CAUSES, JUDGMENT_CAUSES, START_CAUSES } from "../cause-declaration.ts";
+import { routeWithFallback } from "../wake/exit.ts";
 
 const TOOL_SRC = fileURLToPath(new URL("..", import.meta.url));
 

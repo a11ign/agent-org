@@ -8,7 +8,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { closedClaimsWhenWorkerListed } from "./work-gate.ts";
+import { closedClaimsWhenWorkerListed } from "./work-gate/tick.ts";
 
 const agents = [{ label: "worker-5011", status: "working" }];
 const CLAIM = [{ name: "in-progress" }, { name: "session:worker-5011" }];

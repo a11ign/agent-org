@@ -18,7 +18,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readOpenRowFollowUps, readTrackerLanes } from "./work-gate.ts";
+import { readOpenRowFollowUps } from "./work-gate.ts";
+import { readTrackerLanes } from "./work-gate/tick.ts";
 import { closedAnswerConnection, connectionOfSelected, readsClosedAnswerRows, readsRecentlyClosed, readsRowsByLabel, recentlyClosedConnection } from "./packaging/rows-by-label-fixtures.ts";
 import { workGateSource } from "./lib/work-gate-source.ts";
 

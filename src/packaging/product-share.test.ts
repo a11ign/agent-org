@@ -14,8 +14,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { decide, rowKind, productRegionsOf, productShare, offeredByShare, recordEngineerStarts, PRODUCT_SHARE_WINDOW,
-  PRODUCT_SHARE_FLOOR, ENGINEER_STARTS_FILE } from "../work-gate.ts";
+import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { rowKind, productRegionsOf, productShare, offeredByShare, recordEngineerStarts, PRODUCT_SHARE_WINDOW, PRODUCT_SHARE_FLOOR, ENGINEER_STARTS_FILE } from "../work-gate/causes/rows-offer.ts";
 
 const DECLARATION = {
   code: [{ key: "", repo: "a11ign/a11ign" }, { key: "agent-org", repo: "a11ign/agent-org" }, { key: "lab", repo: "a11ign/lab" }],

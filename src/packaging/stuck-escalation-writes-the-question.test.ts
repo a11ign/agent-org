@@ -13,7 +13,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { escalateStuck, escalationMemory, sessionStateOf, MAX_DELIVERIES, REASK_AFTER_MS } from "../wake.ts";
+import { escalateStuck, sessionStateOf, REASK_AFTER_MS } from "../wake/merge-queue-wait-limit-ms.ts";
+import { escalationMemory } from "../wake/with-ci-failure-class.ts";
+import { MAX_DELIVERIES } from "../wake/holds-as-fyi.ts";
 
 const KEY = "worker-3289/answer-owed/row-3289";
 const STUCK = [`${KEY}: delivered 6 times and the cause is still true`];

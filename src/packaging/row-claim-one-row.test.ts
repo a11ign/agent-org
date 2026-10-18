@@ -18,7 +18,7 @@ import { join, dirname } from "node:path";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { oneRowReason } from "../row-claim/runner-rule.ts";
 import { claimRow } from "../row-claim.ts";
-import { sparePathsFrom } from "../wake.ts";
+import { sparePathsFrom } from "../wake/ended-sessions.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 import { copyToolAndProject, importClosure, toolFile } from "./copied-tool-fixture.ts";
 import { connectionOf } from "./rows-by-label-fixtures.ts";

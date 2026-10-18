@@ -16,8 +16,9 @@
 import { test } from "node:test";
 import { connectionOf, readsRowsByLabel } from "./packaging/rows-by-label-fixtures.ts";
 import assert from "node:assert/strict";
-import { escalateStuck, stuckRowOf, stuckSubjectOf, ESCALATION_LABEL, MAX_DELIVERIES } from "./wake.ts";
-import { answerOrders, rowsOwingAnswers } from "./work-gate.ts";
+import { escalateStuck, stuckRowOf, stuckSubjectOf, ESCALATION_LABEL } from "./wake/merge-queue-wait-limit-ms.ts";
+import { MAX_DELIVERIES } from "./wake/holds-as-fyi.ts";
+import { answerOrders, rowsOwingAnswers } from "./work-gate/causes/rows-answers.ts";
 
 const SHA = "0123abcd";
 const MERGED = `worker-3075/trunk-red/pr-agent-org#56/${SHA}`;

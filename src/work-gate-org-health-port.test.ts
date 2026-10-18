@@ -13,8 +13,10 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SIGNALS, orgHealthOrders, overdueReading, type OverdueCandidate, type Reading } from "./org-health.ts";
-import { OVERDUE_LAST_WRITTEN_FILE, OVERDUE_LIST_SWITCH_ENV, settleOverdueLists } from "./work-gate.ts";
+import { SIGNALS, type Reading } from "./org-health/no-merge-hours.ts";
+import { orgHealthOrders } from "./org-health/fleet-build-incident.ts";
+import { overdueReading, type OverdueCandidate } from "./org-health/review-gated-minutes.ts";
+import { OVERDUE_LAST_WRITTEN_FILE, OVERDUE_LIST_SWITCH_ENV, settleOverdueLists } from "./work-gate/tick.ts";
 import type { Decision, ItemRef, TicketPort } from "./ticket-port/port.ts";
 import { workGateSource } from "./lib/work-gate-source.ts";
 

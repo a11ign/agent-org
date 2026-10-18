@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ORG_TRACKER_REPO, rowTracker, trackerNamed } from "./row-tracker.ts";
-import { productRegionsOf, rowKind } from "./work-gate.ts";
+import { productRegionsOf, rowKind } from "./work-gate/causes/rows-offer.ts";
 import { workGateSource } from "./lib/work-gate-source.ts";
 
 const HOME = { key: "", repo: "example/product", board: { owner: "example", number: 1 } };

@@ -16,13 +16,14 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { ACCOUNT_LIMIT_FILE, ACCOUNT_LIMIT_FLAG } from "../account-limit.ts";
-import {
-  CANARY_STATE_FILE, DEFAULT_CANARY_OPTIONS, MACHINERY_SIGNALS, UNSOURCED_MACHINERY_SIGNALS, expireSuppressions, machineryCanaryTick, machineryFlagOn, parseCanaryOptions,
-  parseCanaryState, withMachineryFlag, emptyCanaryState, machineryValues, type CanaryFacts, type CanaryIo, type Suppression,
-} from "../org-health.ts";
+import { CANARY_STATE_FILE } from "../org-health/claim-refusal.ts";
+import { DEFAULT_CANARY_OPTIONS, expireSuppressions, machineryCanaryTick, parseCanaryOptions, withMachineryFlag, machineryValues, type CanaryFacts, type CanaryIo, type Suppression } from "../org-health.ts";
+import { MACHINERY_SIGNALS } from "../org-health/hold-count.ts";
+import { UNSOURCED_MACHINERY_SIGNALS, machineryFlagOn, parseCanaryState, emptyCanaryState } from "../org-health/fleet-build-incident.ts";
 import { EXIT_NOTHING_SENT, machineryDeclarationProblems, machineryFilesIn, machineryRefusal, main } from "../pr-open.ts";
-import { cannotAskExit, deferredWakeCount, incidentSuppressions, machineryCanaryNow, tickLanes } from "../work-gate.ts";
-import { EXIT } from "../work-gate/reads.ts";
+import { cannotAskExit, tickLanes } from "../work-gate.ts";
+import { deferredWakeCount, incidentSuppressions, machineryCanaryNow } from "../work-gate/causes/org-health-github-incident.ts";
+import { EXIT } from "../work-gate/reads/exit.ts";
 import { pacedUnread } from "../work-gate/pacing.ts";
 import { workGateSource } from "../lib/work-gate-source.ts";
 

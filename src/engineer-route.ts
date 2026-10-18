@@ -32,7 +32,7 @@
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { extractAcceptanceSection } from "./acceptance-commands.ts";
+import { extractAcceptanceSection } from "./acceptance-commands/suite-scripts-for.ts";
 import { FAILURE_LEDGER_FILE, recordFailures, type FailureEvent } from "./failure-ledger.ts";
 import { pathToFileURL } from "node:url";
 import { decide, decisionLogPathFrom, decisionsIn, readSwitches, recordOutcome, type Answer, type Decision, type DecisionDeps, type Question, type ScoreLevels } from "./decision-provider.ts";

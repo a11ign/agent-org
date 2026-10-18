@@ -24,7 +24,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { budgetOf } from "./gh-conditional.ts";
 import { loadAllowlist, normaliseLine, parseTicks, repeatingLines } from "./repeating-lines.ts";
-import { tickReadingLines } from "./work-gate/tick.ts";
+import { tickReadingLines } from "./work-gate/tick/blocker-cleared-reading.ts";
 
 const TICKS = 40;
 const TICK_MINUTES = 2;
@@ -45,7 +45,9 @@ const shipped = () => loadAllowlist();
 const entryFor = (line: string) => shipped().find((a) => a.pattern.test(normaliseLine(line)));
 
 const WORK_GATE = fileURLToPath(new URL("./work-gate.ts", import.meta.url));
-const READS = fileURLToPath(new URL("./work-gate/reads.ts", import.meta.url));
+const READS = fileURLToPath(new URL("./work-gate/reads/exit.ts", import.meta.url));
+// The reads module whose import holds the memo for the gate (`reads.ts`); `READS` names where `defaultRun` is.
+const READS_MODULE = fileURLToPath(new URL("./work-gate/reads.ts", import.meta.url));
 
 /** The gate gets its `gate-rest:` line from the tick's own formatter: 15 of 21 conditional reads answered 304, the figures the digest measured. */
 const GATE_REST = tickReadingLines(budgetOf(), { asked: 21, notModified: 15 }).find((l) => l.startsWith("gate-rest: "));
@@ -59,13 +61,14 @@ function readMemoLine(): string | undefined {
   try {
     writeFileSync(join(dir, "gh"), "#!/bin/sh\necho answer\n");
     chmodSync(join(dir, "gh"), 0o755);
-    const code = `const [entry, readsPath] = process.argv.slice(1);
+    const code = `const [entry, readsPath, exitPath] = process.argv.slice(1);
       process.argv[1] = entry;
-      const reads = await import("file://" + readsPath);
+      await import("file://" + readsPath);
+      const reads = await import("file://" + exitPath);
       const LIST = ["pr", "list", "--state", "merged", "--limit", "100"];
       reads.defaultRun(LIST);
       reads.defaultRun(LIST);`;
-    const result = spawnSync(process.execPath, ["--input-type=module", "-e", code, WORK_GATE, READS], {
+    const result = spawnSync(process.execPath, ["--input-type=module", "-e", code, WORK_GATE, READS_MODULE, READS], {
       encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
     });
     assert.equal(result.status, 0, result.stderr);
@@ -80,7 +83,7 @@ test("the gate-rest line is the tick's own line, and the shipped allowlist allow
   const entry = entryFor(GATE_REST ?? "");
   assert.ok(entry, "an entry matches the line");
   assert.notEqual(entry.reason.trim(), "", "the entry carries its reason");
-  assert.match(entry.reason, /src\/work-gate\/tick\.ts/, "the reason names the file that writes it");
+  assert.match(entry.reason, /src\/work-gate\/tick\/blocker-cleared-reading\.ts/, "the reason names the file that writes it");
 });
 
 test("the read memo line is the gate's own line, and the shipped allowlist allows it with a reason that names its writer", () => {
@@ -89,7 +92,7 @@ test("the read memo line is the gate's own line, and the shipped allowlist allow
   const entry = entryFor(line ?? "");
   assert.ok(entry, "an entry matches the line");
   assert.notEqual(entry.reason.trim(), "", "the entry carries its reason");
-  assert.match(entry.reason, /src\/work-gate\/reads\.ts/, "the reason names the file that writes it");
+  assert.match(entry.reason, /src\/work-gate\/reads\/exit\.ts/, "the reason names the file that writes it");
 });
 
 test("40 ticks of each counter are offered with an empty allowlist and not with the shipped one", () => {

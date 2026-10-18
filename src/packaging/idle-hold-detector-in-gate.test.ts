@@ -11,7 +11,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { WAIT_MARKER } from "../wait-condition.ts";
-import { decide, withPrOwners, waitTickFacts, orgHealthNow } from "../work-gate.ts";
+import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { withPrOwners } from "../work-gate/pr-owners.ts";
+import { waitTickFacts, orgHealthNow } from "../work-gate/org-health.ts";
 import { idleHoldIncidents, idleHoldOrders } from "../work-gate/idle-hold-incidents.ts";
 import { ORG_HEALTH_CLASSES } from "../work-gate/org-health-suppression.ts";
 

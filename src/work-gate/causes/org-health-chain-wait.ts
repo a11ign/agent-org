@@ -1,9 +1,10 @@
 import { subjectRef } from "../../review-attribution.ts";
-import { machineryFlagOn, type CanaryState } from "../../org-health.ts";
+import { machineryFlagOn, type CanaryState } from "../../org-health/fleet-build-incident.ts";
 import { MAX_TICK_GAP_MS, type BlockingOrder } from "../../blocking-impact.ts";
 import { brokenChecks } from "../../red-pr.ts";
 import { declaredWaitsOf, isItemWait, waitItemOf } from "../../wait-condition.ts";
-import { readJsonObject, writeJsonObject } from "../../claim-stall.ts";
+import { readJsonObject } from "../../claim-stall/claim-stalled.ts";
+import { writeJsonObject } from "../../claim-stall.ts";
 import { CONFLICT_STATE, conflictStateOf } from "../pr-state.ts";
 import { sessionOf } from "../vocabulary.ts";
 

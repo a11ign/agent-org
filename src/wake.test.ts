@@ -10,7 +10,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { deliver as settlingDeliver, MAX_SPAWNS_PER_TICK, withOneShotLanes } from "./wake.ts";
+import { deliver as settlingDeliver } from "./wake/clear-settle-ms.ts";
+import { MAX_SPAWNS_PER_TICK } from "./wake/is-pull-request-spawn-order.ts";
+import { withOneShotLanes } from "./wake/is-release-line.ts";
 import { startedPanes } from "./packaging/started-pane.ts";
 
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */

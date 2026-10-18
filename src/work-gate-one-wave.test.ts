@@ -16,7 +16,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { homeProjectDeclaration } from "./project-config.ts";
-import { readLanesAfterOutageCheck, readOtherScopes, readTrackerLanes, scopesOf } from "./work-gate.ts";
+import { readLanesAfterOutageCheck, readOtherScopes } from "./work-gate.ts";
+import { readTrackerLanes } from "./work-gate/tick.ts";
+import { scopesOf } from "./work-gate/vocabulary.ts";
 import { connectionOf, readsRowsByLabel } from "./packaging/rows-by-label-fixtures.ts";
 import { workGateSource } from "./lib/work-gate-source.ts";
 

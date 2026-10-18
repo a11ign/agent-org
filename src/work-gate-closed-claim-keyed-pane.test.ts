@@ -30,7 +30,9 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
-const { closedClaimsWhenWorkerListed, closedClaimDebris, withClosedClaims, readOpenRowFollowUps } = await import("./work-gate.ts");
+const { closedClaimsWhenWorkerListed, withClosedClaims } = await import("./work-gate/tick.ts");
+const { closedClaimDebris } = await import("./work-gate/causes/rows-claims-closed.ts");
+const { readOpenRowFollowUps } = await import("./work-gate.ts");
 const { homeProjectDeclaration } = await import("./project-config.ts");
 const { claimRecordComment } = await import("./row-claim.ts");
 

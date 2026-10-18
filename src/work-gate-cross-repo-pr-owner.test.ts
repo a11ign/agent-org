@@ -12,7 +12,10 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { scopesOf, scopeTick, withScopedPrOwners, resolverDefectOf, fileResolverDefects } from "./work-gate.ts";
+import { scopesOf } from "./work-gate/vocabulary.ts";
+import { scopeTick } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { withScopedPrOwners, resolverDefectOf } from "./work-gate/pr-owners.ts";
+import { fileResolverDefects } from "./work-gate/causes/org-health-resolver-defects.ts";
 import { sendToGitHub, unstampableRefusal, main as prOpen, EXIT_NOTHING_SENT } from "./pr-open.ts";
 import { connectionOf, readsRowsByLabel } from "./packaging/rows-by-label-fixtures.ts";
 

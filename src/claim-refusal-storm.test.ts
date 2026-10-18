@@ -29,7 +29,10 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
-const { SIGNALS, CLAIM_REFUSED_KIND, claimRefusalStormReading, readClaimRefusals, orgHealthReadings, orgHealthOrders, orgHealthTick } = await import("./org-health.ts");
+const { SIGNALS } = await import("./org-health/no-merge-hours.ts");
+const { CLAIM_REFUSED_KIND } = await import("./failure-ledger.ts");
+const { claimRefusalStormReading, readClaimRefusals } = await import("./org-health/claim-refusal.ts");
+const { orgHealthReadings, orgHealthOrders, orgHealthTick } = await import("./org-health/fleet-build-incident.ts");
 
 const MINUTE = 60_000;
 const NOW = Date.parse("2026-10-11T09:15:00Z");

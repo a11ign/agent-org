@@ -13,12 +13,12 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { claimStallTick } from "./work-gate.ts";
+import { claimStallTick } from "./work-gate/claim-stall-tick.ts";
 import { claimRecordComment } from "./row-claim.ts";
 import { ANSWER_PREFIX, SESSION_PREFIX } from "./project-vocabulary.ts";
 import { COMMANDS } from "./commands.ts";
 import { STOPPED_CLAIMANT_MINUTES, VERIFIED_CLOSE_MINUTES, verifiedCloseOrder } from "./idle-claimant.ts";
-import { readClaim, type ClaimFacts } from "./claim-stall.ts";
+import { readClaim, type ClaimFacts } from "./claim-stall/claim-stalled.ts";
 import { TRACKER } from "./ticket-port/github-adapter.ts";
 import type { BlockerWriter, ItemRef } from "./ticket-port/port.ts";
 import {

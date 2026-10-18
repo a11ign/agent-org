@@ -13,8 +13,12 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { escalateStuck, deliver, ESCALATION_LABEL, MAX_DELIVERIES } from "../wake.ts";
-import { CHAIRMAN_LABEL, ANSWER_PREFIX, answerOrders, rowsOwingAnswers } from "../work-gate.ts";
+import { escalateStuck, ESCALATION_LABEL } from "../wake/merge-queue-wait-limit-ms.ts";
+import { deliver } from "../wake/clear-settle-ms.ts";
+import { MAX_DELIVERIES } from "../wake/holds-as-fyi.ts";
+import { NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL } from "../project-vocabulary.ts";
+import { ANSWER_PREFIX } from "../waiting-condition.ts";
+import { answerOrders, rowsOwingAnswers } from "../work-gate/causes/rows-answers.ts";
 import { trunkRedOrders } from "../trunk-red.ts";
 
 const CHAIRMAN_CALL = ["--add-label", "needs:chairman"];

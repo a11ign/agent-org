@@ -17,9 +17,14 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { COMPACT_THRESHOLD_TOKENS, deliver as settlingDeliver, spawnableRole, spareLabelForRow, withSpareInstances, engineerRoles, spareInstances,
-  endFinishedSpares, readSpareCycles, consecutiveClean, route }
-  from "../wake.ts";
+import { COMPACT_THRESHOLD_TOKENS } from "../wake/holds-as-fyi.ts";
+import { deliver as settlingDeliver } from "../wake/clear-settle-ms.ts";
+import { spawnableRole, spareLabelForRow, engineerRoles } from "../wake/is-pull-request-spawn-order.ts";
+import { withSpareInstances, route } from "../wake/exit.ts";
+import { spareInstances } from "../wake/merge-queue-wait-limit-ms.ts";
+import { endFinishedSpares } from "../wake/with-ci-failure-class.ts";
+import { readSpareCycles } from "../wake/ended-sessions.ts";
+import { consecutiveClean } from "../wake/is-release-line.ts";
 import { isLiveSession, familyNumber, unknownSessionLabels, labelArmedPr, LIVE_SESSIONS, SPARE_FAMILIES }
   from "../arm-pr.ts";
 import { laneReason, runnerReason } from "../row-claim/runner-rule.ts";
@@ -27,6 +32,7 @@ import { labelAfterCreate } from "../pr-open.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 import { claimRow, CLAIM_LABEL, STARTED_LABEL } from "../row-claim.ts";
 import { startedPanes } from "./started-pane.ts";
+import { moduleSource } from "../lib/module-source.ts";
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
 const noSettle = () => {};
 /** A transcript root that holds nothing: a per-row instance's order reads its own transcripts to decide `/compact` (#2688), and the default root is the
@@ -97,7 +103,7 @@ test("#2403: no count appears -- twenty busy spares still spawn, and the `ceilin
   const spares = Array.from({ length: 20 }, (_, i) => `worker-${i + 4}`);
   const busy = agents(Object.fromEntries([...STANDING, ...spares].map((r) => [r, "working"])));
   assert.deepEqual(spawnableRole(ROW_ORDER, busy, REAL_ROSTER), { role: "worker-2403" });
-  const source = readFileSync(new URL("../wake.ts", import.meta.url), "utf8");
+  const source = moduleSource("wake.ts");
   assert.ok(!/that is the\s*"?\s*\+?\s*"?ceiling/.test(source) && !source.includes("adding one is `ceo`'s"),
     "the refusal that called the roster's size the ceiling no longer exists");
   // The one refusal left is a roster that DECLARES no family, and it does not call anything a ceiling.

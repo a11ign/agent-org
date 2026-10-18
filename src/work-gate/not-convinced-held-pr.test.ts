@@ -12,7 +12,8 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { decide, withClosingRowOwners } from "../work-gate.ts";
+import { decide } from "./tick/blocker-cleared-reading.ts";
+import { withClosingRowOwners } from "./pr-owners.ts";
 
 type Fixture = Record<string, any>;
 

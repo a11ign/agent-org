@@ -6,8 +6,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { buildReport, renderReport, retroClasses } from "./org-retro.ts";
-import { CANARY_STATE_FILE, emptyCanaryState, withMachineryFlag } from "./org-health.ts";
+import { buildReport, retroClasses } from "./org-retro/readings.ts";
+import { renderReport } from "./org-retro.ts";
+import { CANARY_STATE_FILE } from "./org-health/claim-refusal.ts";
+import { emptyCanaryState } from "./org-health/fleet-build-incident.ts";
+import { withMachineryFlag } from "./org-health.ts";
 import { tmpDir } from "./lib/tmp-fixture.ts";
 
 const NOW = Date.parse("2026-10-12T12:00:00Z");

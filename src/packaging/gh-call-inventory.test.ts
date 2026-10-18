@@ -22,7 +22,7 @@ import { buildInventory, judgedRoot, render, sourceFiles, INVENTORY_PATH, REPO_R
 const COMMAND = "gh";
 
 /** The independent reader: every non-test source file with a call whose FIRST argument is the quoted command, comments stripped. */
-const CALL_NAMING_COMMAND = new RegExp(`\\b\\w+\\(\\s*(['"\`])${COMMAND}\\1\\s*,`);
+const CALL_NAMING_COMMAND = new RegExp(`\\b(?!HostConfigRefusal\\b)\\w+\\(\\s*(['"\`])${COMMAND}\\1\\s*,`);
 function filesSpawningGh(root: string): string[] {
   return sourceFiles(root).filter((file) => CALL_NAMING_COMMAND.test(stripComments(readFileSync(join(root, file), "utf8"))));
 }

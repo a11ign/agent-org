@@ -13,7 +13,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { comparablePrFiles, pipelineCodeownerReviewMissing } from "./work-gate.ts";
+import { comparablePrFiles } from "./work-gate/vocabulary.ts";
+import { pipelineCodeownerReviewMissing } from "./work-gate/causes/pr-reviews.ts";
 
 const WORKFLOW = ".github/workflows/release-per-merge.yml";
 const DEPENDENCY_BUMP = "packages/lab/package.json";

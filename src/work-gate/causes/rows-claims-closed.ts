@@ -3,7 +3,7 @@ import { homeProjectDeclaration } from "../../project-config.ts";
 import { SESSION_PREFIX } from "../../project-vocabulary.ts";
 import { listingIsComplete, type ListedAgent } from "../../herdr-agents.ts";
 import { familyMember } from "../../arm-pr.ts";
-import { capturingStderr, defaultRun, repoNow } from "../reads.ts";
+import { capturingStderr, defaultRun, repoNow } from "../reads/exit.ts";
 import { ROW_LABELS, aimOf, labelledRows, labelsOf, scopesOf } from "../vocabulary.ts";
 
 /**

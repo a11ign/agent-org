@@ -8,8 +8,10 @@
 // THE BOUNDARY, as `work-gate/pr-orders.ts` states it: what only this family uses lives here; what a family that
 // stayed behind also uses is IMPORTED from `work-gate.ts`, the cycle that module documents, safe while nothing here
 // reads an imported binding at load time. `work-gate.ts` re-exports every name this file exports that it exported before.
-import { labelsOf, holderWaitingOn, defaultRun, repoNow, PARKED_LABEL } from "../work-gate.ts";
-import { claimRecordOf } from "../claim-stall.ts";
+import { labelsOf, PARKED_LABEL } from "./vocabulary.ts";
+import { holderWaitingOn } from "./causes/rows-blocker-cleared.ts";
+import { defaultRun, repoNow } from "./reads/exit.ts";
+import { claimRecordOf } from "../claim-record.ts";
 import { holdersOf, HOLD_PREFIX } from "../pr-hold-state.ts";
 import { notBeforeDate, notBeforeIso, fleetHoldUntil, todayIso, ANSWER_PREFIX } from "../waiting-condition.ts";
 import { SESSION_PREFIX, BLOCKED_LABEL, NEEDS_CHAIRMAN_LABEL } from "../project-vocabulary.ts";

@@ -31,8 +31,8 @@ process.env.AGENT_ORG_HOST = HOST_FILE;
 const WORKERS_DIR = join(SCRATCH, "workers", "gh");
 const LEADS_DIR = join(SCRATCH, "leads", "gh");
 process.env.GH_CONFIG_DIR = WORKERS_DIR; // what a11ign-work-tick.service declares: the gate's own directory IS the workers'
-const { ledgerPathsOf, ledgerSpender, poolLowReading, reviewerGhDir, spenderOfAccount } = await import("./org-health.ts");
-const { REVIEWER_GH_CONFIG_DIR } = await import("./wake.ts");
+const { ledgerPathsOf, ledgerSpender, poolLowReading, reviewerGhDir, spenderOfAccount } = await import("./org-health/hold-count.ts");
+const { REVIEWER_GH_CONFIG_DIR } = await import("./review-trust.ts");
 const { parseHostConfig } = await import("./host-config.ts");
 
 const HOST_CONFIG = parseHostConfig(JSON.stringify(HOST));

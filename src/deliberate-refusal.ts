@@ -2,7 +2,7 @@
 // in `closes-mismatch-check.ts`, because that file is imported by the work gate's reads and this one imports the merge guard: the two in one file made an import
 // cycle that left `work-gate/reads.ts` asking for its own budget before it was initialised.
 import { readFileSync } from "node:fs";
-import { acceptanceSourceOf } from "./acceptance-commands.ts";
+import { acceptanceSourceOf } from "./acceptance-commands/unmet-command-closure-requirements.ts";
 // agent-org#1578: THE FLAG'S READER IS THE DECISION SWITCHES', the one every `decisions.json` key is read through (absent file = off; a file that cannot be used = off, said once).
 import { readSwitches } from "./decision-provider.ts";
 import { printDiagnostic, processState } from "./triage-provider.ts";

@@ -16,7 +16,7 @@ import {
   type HolderDeclaration, type HolderMemory,
 } from "./pr-hold-state.ts";
 import { WAIT_MARKER } from "./wait-condition.ts";
-import { HOLD_HOLDERS_FILE, holdHolderOrdersNow } from "./work-gate.ts";
+import { HOLD_HOLDERS_FILE, holdHolderOrdersNow } from "./work-gate/causes/pr-holds.ts";
 import { workGateSource } from "./lib/work-gate-source.ts";
 
 const MINUTE = 60_000;

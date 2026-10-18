@@ -12,7 +12,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { sharedFailuresNow } from "../work-gate.ts";
+import { sharedFailuresNow } from "../work-gate/causes/org-health-github-incident.ts";
 import { connectionOf, readsRowsByLabel, type FakeRow } from "./rows-by-label-fixtures.ts";
 
 const NOW = Date.parse("2026-10-11T17:00:00Z");

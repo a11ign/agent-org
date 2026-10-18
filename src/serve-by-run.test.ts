@@ -8,13 +8,14 @@
  * a literal longer than 100 bytes); a `runDecision` failure, a `stale` apply, a `held` lease and a class absent from the registry each FALL BACK, write nothing, and the seat IS
  * prompted with the original order.
  */
+import { moduleSource } from "./lib/module-source.ts";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deliver as settlingDeliver } from "./wake.ts";
+import { deliver as settlingDeliver } from "./wake/clear-settle-ms.ts";
 import { startedPanes } from "./packaging/started-pane.ts";
 import { leaseItem, leasePath } from "./decision-run/apply.ts";
 import { loadClasses, type DecisionClass } from "./decision-run/registry.ts";
@@ -382,7 +383,7 @@ function untouched(sources: { wake: string; runnerRule: string; workGate: string
   return {
     laneReason: sha(fn),
     ROUTED_TO: sha(/^export const ROUTED_TO = .*;$/m.exec(sources.workGate)?.[0] ?? ""),
-    "FLEET_LAB_PATTERNS binding": sha(/^const \{ patterns: FLEET_LAB_PATTERNS.*$/m.exec(sources.acceptance)?.[0] ?? ""),
+    "FLEET_LAB_PATTERNS binding": sha(/^(?:export )?const \{ patterns: FLEET_LAB_PATTERNS.*$/m.exec(sources.acceptance)?.[0] ?? ""),
     SPAWN_CAUSES: sha(/^export const SPAWN_CAUSES = .*;$/m.exec(sources.wake)?.[0] ?? ""),
   };
 }
@@ -390,12 +391,12 @@ function untouched(sources: { wake: string; runnerRule: string; workGate: string
 const PINNED = {
   laneReason: "7e7decce20a2a2cc4c97421078733465dd9bcce96895f8dae67ba09e84cd7b2c",
   ROUTED_TO: "753541140a11e726955715640e10f9a0f987469424f4b5bd2b9ce5fbd60f5293",
-  "FLEET_LAB_PATTERNS binding": "50eba6ee588b5350cdd4d1a80dd67f52328db6925e65efde22776f802c8c0ae3",
+  "FLEET_LAB_PATTERNS binding": "b948efc4ede89a2f8cf88d209aceeef1379f062b278d7a2e79143f85b7953904",
   SPAWN_CAUSES: "4969388bde3d614cbe4374d220ac2a9d62a30b84916dea2b1bc9cc2901f04e48",
 };
 
 test("laneReason, ROUTED_TO, FLEET_LAB_PATTERNS and SPAWN_CAUSES are byte-identical to origin/main; an edited fixture fails each check", () => {
-  const sources = { wake: read("./wake.ts"), runnerRule: read("./row-claim/runner-rule.ts"), workGate: read("./work-gate/vocabulary.ts"), acceptance: read("./acceptance-commands.ts") };
+  const sources = { wake: moduleSource("wake.ts"), runnerRule: read("./row-claim/runner-rule.ts"), workGate: read("./work-gate/vocabulary.ts"), acceptance: moduleSource("acceptance-commands.ts") };
   assert.deepEqual(untouched(sources), PINNED);
   // THE NEGATIVE CONTROLS: an edit to each source text moves its own digest and no other, so a marker that did not read its text would be caught here.
   const lane = untouched({ ...sources, runnerRule: sources.runnerRule.replace("export function laneReason(", "export function laneReason(/* edited */ ") });

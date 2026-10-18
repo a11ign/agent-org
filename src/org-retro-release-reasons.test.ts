@@ -10,9 +10,10 @@
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
-import { RELEASE_REASON_KINDS, releaseStats } from "./org-retro.ts";
+import { RELEASE_REASON_KINDS, releaseStats } from "./org-retro/readings.ts";
+import { moduleSource } from "./lib/module-source.ts";
 
-const SOURCE = readFileSync(new URL("./claim-stall.ts", import.meta.url), "utf8");
+const SOURCE = moduleSource("claim-stall.ts");
 const UNION = /export type ReleaseRequest = \{[^}]*?why: ((?:"[a-z-]+"(?: \| )?)+),/.exec(SOURCE);
 const REASONS = UNION === null ? [] : [...UNION[1].matchAll(/"([a-z-]+)"/g)].map((m) => m[1]);
 const VOIDING = ["stalled", "gone"];

@@ -9,7 +9,9 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { WINDOW_MS, buildReport, compareReadings, idleStats, pauseOf, pausedIntervals, readAccountLimitLog, renderReport } from "./org-retro.ts";
+import { WINDOW_MS, pauseOf, pausedIntervals, readAccountLimitLog } from "./org-retro/retro-cause.ts";
+import { buildReport, idleStats } from "./org-retro/readings.ts";
+import { compareReadings, renderReport } from "./org-retro.ts";
 
 const MINUTE = 60 * 1000;
 const NOW = Date.parse("2026-10-15T08:10:00Z");

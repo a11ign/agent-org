@@ -10,7 +10,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { FAILURE_KINDS, FAILURE_LEDGER_FILE, parseFailureLedger, recordFailures } from "./failure-ledger.ts";
-import { buildReport, readSafetyCheckDenials, renderReport, retrospectiveTick } from "./org-retro.ts";
+import { buildReport } from "./org-retro/readings.ts";
+import { readSafetyCheckDenials } from "./org-retro/retro-cause.ts";
+import { renderReport, retrospectiveTick } from "./org-retro.ts";
 import { DENIAL_SENTENCE, SAFETY_CHECK_DENIED, denialShape, safetyCheckDenialEvents, safetyCheckDenialSummary, safetyCheckDenials } from "./safety-check-denial-incident.ts";
 
 const NOW = Date.parse("2026-10-11T12:00:00Z");

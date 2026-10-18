@@ -11,11 +11,14 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { claimStallsNow, claimStallTick, closedClaimsNow, closedClaimsWhenWorkerListed, readOpenRowFollowUps, GH_READS,
-  closedClaimLabelsWhenListed, closedClaimDebris, stripClosedClaims, declaredTrackerRepos } from "../work-gate.ts";
+import { claimStallsNow, claimStallTick, closedClaimsNow } from "../work-gate/claim-stall-tick.ts";
+import { closedClaimsWhenWorkerListed } from "../work-gate/tick.ts";
+import { readOpenRowFollowUps, stripClosedClaims } from "../work-gate.ts";
+import { GH_READS } from "../work-gate/reads/exit.ts";
+import { closedClaimLabelsWhenListed, closedClaimDebris, declaredTrackerRepos } from "../work-gate/causes/rows-claims-closed.ts";
 import { labelsToStrip as labelsToStripOfLeaf, stripClaimLabelsVia } from "../claim-label-strip.ts";
 import { labelsToStrip as labelsToStripOfCloser } from "../close-rows-for-merged-pr.ts";
-import { performRelease } from "../wake.ts";
+import { performRelease } from "../wake/with-ci-failure-class.ts";
 import { claimRecordComment } from "../row-claim.ts";
 import { connectionOf, readsRowsByLabel } from "./rows-by-label-fixtures.ts";
 import { workGateSource } from "../lib/work-gate-source.ts";

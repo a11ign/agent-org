@@ -11,10 +11,11 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { stallReasonOf, perPullRequestOrders, fileReviewGatedHuman, reviewGateOf, reviewGatedHumanBrief } from "./pr-orders.ts";
+import { stallReasonOf, reviewGateOf } from "./pr-orders/red-only-by-superseded-run.ts";
+import { perPullRequestOrders, fileReviewGatedHuman, reviewGatedHumanBrief } from "./pr-orders.ts";
 import { clearedByOf, checkMarkersOf } from "./review-gate.ts";
 import { subjectRef } from "../review-attribution.ts";
-import { reviewGatedUnaskedReading, REVIEW_GATED_MINUTES } from "../org-health.ts";
+import { reviewGatedUnaskedReading, REVIEW_GATED_MINUTES } from "../org-health/review-gated-minutes.ts";
 import { reviewGatedFacts } from "./org-health.ts";
 
 const NOW = Date.parse("2026-10-16T12:00:00Z");

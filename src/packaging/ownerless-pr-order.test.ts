@@ -18,12 +18,15 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decide } from "../work-gate.ts";
-import { OWNERLESS_ASK_FLAG, OWNERLESS_ASK_SESSION, ownerOfPr } from "../work-gate/pr-orders.ts";
-import { ownerlessAskFlagOn } from "../work-gate/tick.ts";
+import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { OWNERLESS_ASK_FLAG, OWNERLESS_ASK_SESSION } from "../work-gate/pr-orders.ts";
+import { ownerOfPr } from "../work-gate/pr-orders/red-only-by-superseded-run.ts";
+import { ownerlessAskFlagOn } from "../work-gate/tick/blocker-cleared-reading.ts";
 import { FLAG_REGISTRY } from "../machinery-flag.ts";
 import { DEPENDENCY_BOT_LOGIN } from "../dependency-bot-login.ts";
-import { MACHINERY_SIGNALS, UNQUEUED_MINUTES, STANDARD_MACHINERY_SIGNALS, emptyCanaryState, machineryValues } from "../org-health.ts";
+import { MACHINERY_SIGNALS } from "../org-health/hold-count.ts";
+import { UNQUEUED_MINUTES, machineryValues } from "../org-health.ts";
+import { STANDARD_MACHINERY_SIGNALS, emptyCanaryState } from "../org-health/fleet-build-incident.ts";
 import { type DeclaredIdentities } from "../review-trust.ts";
 import { CHAIRMAN_LOGINS } from "../work-gate/vocabulary.ts";
 

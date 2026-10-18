@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { OUTSIDE_OWNED_PATHS_FLAG, loadFacts, outsideOwnedPathsOn, ownedPathsJobOf, ownedPathsVerdict, shadowOwnedPathsVerdict } from "./owned-path-signoff.ts";
 import { orgSideAcceptanceEligibility, type OrgSideVerdict } from "./acceptance-commands.ts";
-import { gateUnarmedOnAcceptance } from "./work-gate/tick.ts";
+import { gateUnarmedOnAcceptance } from "./work-gate/tick/blocker-cleared-reading.ts";
 
 const HEAD = "2222222222222222222222222222222222222222";
 const BASE = "a11ign/a11ign";

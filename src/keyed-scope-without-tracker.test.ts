@@ -10,7 +10,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { scopesOf, readLanes, scopeTick } from "./work-gate.ts";
+import { scopesOf } from "./work-gate/vocabulary.ts";
+import { readLanes, scopeTick } from "./work-gate/tick/blocker-cleared-reading.ts";
 
 const TRACKER = "a11ign/a11ign";
 const CLOSED_ROW = { number: 3423, state: "CLOSED", labels: [{ name: "answer:product-manager" }] };

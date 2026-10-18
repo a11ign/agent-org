@@ -54,10 +54,11 @@ const fixtureHost = (extra: Record<string, unknown> = {}) => JSON.stringify({
 });
 
 const READER = `
-  const gate = await import(${JSON.stringify(`${SRC}work-gate.ts`)});
+  const gate = await import(${JSON.stringify(`${SRC}work-gate/reads/exit.ts`)});
+  const vocabulary = await import(${JSON.stringify(`${SRC}work-gate/vocabulary.ts`)});
   const shadow = await import(${JSON.stringify(`${SRC}shadow-gate.ts`)});
-  const wake = await import(${JSON.stringify(`${SRC}wake.ts`)});
-  process.stdout.write(JSON.stringify({ DRAIN_MARKER: gate.DRAIN_MARKER, REVIEWER_STATE_DIR: gate.REVIEWER_STATE_DIR,
+  const wake = await import(${JSON.stringify(`${SRC}wake/reset.ts`)});
+  process.stdout.write(JSON.stringify({ DRAIN_MARKER: gate.DRAIN_MARKER, REVIEWER_STATE_DIR: vocabulary.REVIEWER_STATE_DIR,
     LIVE_STATE_DIR: shadow.LIVE_STATE_DIR, "ledgerPathFrom([])": wake.ledgerPathFrom([]) }));`;
 
 /** Import the tool's modules against `hostJson` (or the real `host.json` when null) and return what the four resolved to. */
