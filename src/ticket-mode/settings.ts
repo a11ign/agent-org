@@ -86,6 +86,11 @@ export type TicketSettings = Readonly<{
    */
   stallMinutes: number;
   /**
+   * How many whole hours the hourly auto-update may wait for a live run to finish before it updates anyway, counted from its first deferral for a release
+   * (A11-90). It waits at all only when a restart would interrupt a worker. 2 by default.
+   */
+  updateMaxDeferHours: number;
+  /**
    * `tickets.serve: "tailscale"`: the board's page and the worker terminal are served on the tailnet, on these HTTPS ports, with `tailscale serve`
    * (never Funnel), and the page accepts this machine's MagicDNS name. Null, the default, serves both on loopback only.
    */
@@ -380,6 +385,7 @@ export function parseTicketSettings(host: unknown, home: string = homedir()): Ti
     reviewer: reviewerOf(tickets.reviewer),
     pick: pickOf(tickets.pick),
     stallMinutes: positiveInteger(tickets.stallMinutes, "tickets.stallMinutes", 30),
+    updateMaxDeferHours: positiveInteger(tickets.updateMaxDeferHours, "tickets.updateMaxDeferHours", 2),
     serve: serveOf(tickets),
   });
 }

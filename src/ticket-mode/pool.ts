@@ -74,7 +74,8 @@
 // queue file holds (`reconcile`) and carries on watching it: it sends a running worker no key, no prompt and no second start. The only keys
 // the pool ever sends answer a start dialog, and only on a run this pool started itself, until its agent is first seen up (`startedHere`): a
 // pane it adopted is never one it is starting. A reviewer is recorded as started before it is started, so a restart in between never starts it
-// twice, and one herdr still lists for its head is adopted. `agent-org update` does not restart the instance while a run is live (`update.ts`).
+// twice, and one herdr still lists for its head is adopted. `agent-org update` restarts the instance over a live run only when no agent is mid-tool-call
+// or herdr is outside the instance's cgroup (`update.ts`, A11-90).
 //
 // A REVIEWER IS CLOSED AFTER ITS VERDICT, AND RETIRED WITH ITS PULL REQUEST (A11-81). The port closes the reviewer for a head once the verdict on that head
 // is posted, and only once it is not working: its checkout stays, since a head that moves re-points it. `releaseReviewers`, on the server's own sweep, retires

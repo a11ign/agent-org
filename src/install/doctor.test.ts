@@ -2,7 +2,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { diagnose, report, type DoctorDeps } from "./doctor.ts";
+import type { StatusFile, UpdateStatus } from "./update-safety.ts";
 
+const NOW = Date.parse("2026-10-18T10:00:00.000Z");
+const HOUR = 3600e3;
 const TERMINAL = "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal";
 const HOST = JSON.stringify({ clones: { netbox: "/src/netbox" }, tickets: { port: 4800, uiPort: 4801, linearKey: { keychain: "agent-org-linear" }, terminal: TERMINAL } });
 const MCP_LIST = "Checking MCP server health…\n\nbookctx: http://127.0.0.1:8421/mcp (HTTP) - ✔ Connected\nlinear: https://mcp.linear.app/mcp (HTTP) - ✔ Connected\n";
@@ -17,6 +20,7 @@ function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
     healthy: async (port) => port === 7318, unitProblem: () => null, mcpList: () => MCP_LIST,
     tailscale: () => ({ status: 1, stdout: "", stderr: "not used" }), tailnetAnswers: async () => false,
     ghWrapper: async () => ({ divergence: null, mints: [] }),
+    platform: "linux", isolation: () => ({ kind: "outside", scope: null }), updateStatus: () => ({ kind: "absent" }), releaseTags: () => [], now: () => NOW,
     ...over,
   };
 }
@@ -27,8 +31,8 @@ test("doctor passes every check on a working install, and never prints the key",
   const checks = await diagnose(deps());
   assert.deepEqual(checks.map(({ name, ok }) => [name, ok]), [
     ["node", true], ["pnpm", true], ["launcher", true], ["host file", true], ["gh wrapper", true], ["herdr", true], ["tracker key", true], ["linear mcp", true],
-    ["instance service", true], ["instance answering", true], ["ui service", true], ["ui answering", true],
-    ["terminal address", true], ["terminal service", true], ["terminal answering", true], ["auto-update service", true],
+    ["instance service", true], ["instance answering", true], ["herdr scope", true], ["ui service", true], ["ui answering", true],
+    ["terminal address", true], ["terminal service", true], ["terminal answering", true], ["auto-update service", true], ["update lag", true],
   ]);
   assert.ok(!report(checks).includes(KEY));
   assert.match(report(checks), /ok {4}ui answering: http:\/\/127\.0\.0\.1:4801 answers/);
@@ -155,6 +159,75 @@ test("doctor checks claude mcp list shows linear connected", async () => {
   const failing = byName(await diagnose(deps({ mcpList: () => "linear: https://mcp.linear.app/mcp (HTTP) - ✘ Failed to connect\n" })))["linear mcp"];
   assert.equal(failing.ok, false);
   assert.equal(byName(await diagnose(deps({ mcpList: () => null })))["linear mcp"].ok, false);
+});
+
+// A11-90: how far behind the newest release the install is, and the herdr server's place in the instance's cgroup.
+const RELEASES = ["v0.243.0", "v0.244.0", "v0.245.0", "v0.246.0", "v0.247.0", "v0.248.0"];
+const status = (over: Partial<UpdateStatus> = {}): UpdateStatus => ({
+  checkedAt: "2026-10-18T09:00:00.000Z", channel: "release", installed: "v0.243.0", latest: "v0.248.0", latestSince: "2026-10-17T08:00:00.000Z", ...over,
+});
+const present = (over: Partial<UpdateStatus> = {}): StatusFile => ({ kind: "status", status: status(over) });
+const lagOf = async (over: Partial<DoctorDeps>) => byName(await diagnose(deps({ releaseTags: () => RELEASES, ...over })))["update lag"];
+
+test("A11-90: doctor fails an update status file it cannot read or parse, rather than passing it as no status", async () => {
+  const unreadable = await lagOf({ updateStatus: () => ({ kind: "unreadable", why: "EACCES: permission denied" }) });
+  assert.equal(unreadable.ok, false);
+  assert.equal(unreadable.detail, "the update status file cannot be read: EACCES: permission denied");
+  assert.equal(unreadable.fix, "run `agent-org update`, which writes the file again, or check its permissions");
+  const corrupt = await lagOf({ updateStatus: () => ({ kind: "unreadable", why: "it is not valid JSON" }) });
+  assert.equal(corrupt.ok, false);
+  assert.match(corrupt.detail, /it is not valid JSON$/);
+});
+
+test("A11-90: doctor says how many releases behind the install is, and since when, and what an update is deferred for", async () => {
+  // Two hours after the release was cut: behind, and inside the window the hourly update has to move it in.
+  const now = () => Date.parse("2026-10-17T10:00:00.000Z");
+  const behind = await lagOf({ updateStatus: () => present(), now });
+  assert.equal(behind.ok, true);
+  assert.equal(behind.detail, "installed v0.243.0, latest v0.248.0: 5 releases behind, since 2026-10-17T08:00:00.000Z");
+  const deferred = await lagOf({ updateStatus: () => present({ deferredSince: "2026-10-18T09:30:00.000Z", deferredReason: "herdr is inside the instance's cgroup" }), now: () => NOW });
+  assert.equal(deferred.detail, "installed v0.243.0, latest v0.248.0: 5 releases behind, since 2026-10-17T08:00:00.000Z; update deferred since 2026-10-18T09:30:00.000Z: herdr is inside the instance's cgroup");
+});
+
+test("A11-90: doctor fails an install behind for longer than tickets.updateMaxDeferHours and an hour's grace, and passes it inside that", async () => {
+  const within = await lagOf({ updateStatus: () => present({ deferredSince: new Date(NOW - 2.5 * HOUR).toISOString(), deferredReason: "x" }) });
+  assert.equal(within.ok, true);
+  const late = await lagOf({ updateStatus: () => present({ deferredSince: new Date(NOW - 3 * HOUR - 60e3).toISOString(), deferredReason: "x" }) });
+  assert.equal(late.ok, false);
+  assert.match(late.detail, /; the hourly update should have moved it by now$/);
+  assert.equal(late.fix, "run `agent-org update` (with `--force` to restart a live run too), then check `agent-org status auto-update`");
+  const neverDeferred = await lagOf({ updateStatus: () => present({ latestSince: new Date(NOW - 4 * HOUR).toISOString() }) });
+  assert.equal(neverDeferred.ok, false, "behind for hours with no deferral is a timer that is not moving it");
+});
+
+test("A11-90: doctor passes an install at the newest release, one no update has checked, and one that follows main, and fails one not at a release", async () => {
+  assert.equal((await lagOf({ updateStatus: () => present({ installed: "v0.248.0" }) })).detail, "installed v0.248.0, which is the latest release");
+  assert.equal((await lagOf({})).detail, "no update has checked this install yet, so how far behind the latest release it is not known");
+  assert.equal((await lagOf({ updateStatus: () => present({ channel: "main", installed: "3846c6e", latest: "main" }) })).ok, true);
+  const detached = await lagOf({ updateStatus: () => present({ installed: "3846c6e" }) });
+  assert.equal(detached.ok, false);
+  assert.equal(detached.detail, "installed at 3846c6e, which is not a release");
+});
+
+test("A11-90: doctor names a herdr server still inside the instance's cgroup, with both fixes; a server in its own scope passes, and one it cannot read passes with a note", async () => {
+  const inside = byName(await diagnose(deps({ isolation: () => ({ kind: "inside", cgroup: "/user.slice/agent-org-instance.service", unit: "agent-org-instance.service" }) })))["herdr scope"];
+  assert.equal(inside.ok, false);
+  assert.equal(inside.detail, "the herdr server for session tickets is in /user.slice/agent-org-instance.service, the same place as the instance (agent-org-instance.service): a restart of the instance interrupts every worker");
+  assert.equal(inside.fix, "restart herdr when no run is working (`herdr --session tickets server stop`; the next instance start launches it in its own scope), or add `KillMode=process` under `[Service]` in the instance unit, then `systemctl --user daemon-reload`");
+  const scope = byName(await diagnose(deps({ isolation: () => ({ kind: "outside", scope: "/user.slice/agent-org-herdr-tickets.scope" }) })))["herdr scope"];
+  assert.equal(scope.ok, true);
+  assert.equal(scope.detail, "the herdr server for session tickets is in /user.slice/agent-org-herdr-tickets.scope, outside the instance's cgroup");
+  const unknown = byName(await diagnose(deps({ isolation: () => ({ kind: "unknown", why: "/proc/3655416/cgroup cannot be read" }) })))["herdr scope"];
+  assert.equal(unknown.ok, true);
+  assert.match(unknown.detail, /could not be checked.*\/proc\/3655416\/cgroup cannot be read/);
+  const mac = byName(await diagnose(deps({ platform: "darwin", isolation: () => ({ kind: "inside", cgroup: "process group 40", unit: "io.github.agent-org.instance" }) })))["herdr scope"];
+  assert.equal(mac.ok, false);
+  assert.equal(mac.fix, "restart herdr when no run is working (`herdr --session tickets server stop`; the next instance start launches it in its own scope)", "no KillMode on launchd");
+});
+
+test("A11-90: the herdr scope check is asked only when the instance is registered", async () => {
+  const unregistered = byName(await diagnose(deps({ serviceState: (name) => (name === "instance" ? "not-registered" : "running"), isolation: () => { throw new Error("not asked"); } })));
+  assert.equal(unregistered["herdr scope"], undefined);
 });
 
 test("doctor reports the auto-update service as registered or not", async () => {

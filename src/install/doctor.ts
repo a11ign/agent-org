@@ -22,9 +22,12 @@ import { pathToFileURL } from "node:url";
 import { readLinearKey } from "../ticket-mode/linear.ts";
 import { parseTicketSettings, type KeySource, type TicketSettings } from "../ticket-mode/settings.ts";
 import { parseServeStatus, parseStatus, portState, runTailscale, serveStatusArgv, statusArgv, tailnetHosts, type ServeStatus, type TailscaleResult } from "../ticket-mode/tailnet.ts";
-import { hostFilePath, type Env } from "./paths.ts";
+import { sandboxGitEnv } from "../lib/git-env.ts";
+import { compareReleaseTags, isReleaseTag } from "../lib/release-tag.ts";
+import { hostFilePath, TOOL_ROOT, type Env } from "./paths.ts";
 import { pinnedPnpm, TOOL_PNPM_VERSION } from "./pnpm.ts";
 import { defaultServiceDeps, serviceState, unitProblem, type ServiceName, type ServiceState } from "./service.ts";
+import { HOUR_MS, hostIsolation, readUpdateStatus, updateStatusPath, type Isolation, type StatusFile } from "./update-safety.ts";
 import { DEFAULT_TERMINAL_PORT, loopbackPort } from "./terminal.ts";
 
 export const MIN_NODE_MAJOR = 24;
@@ -65,6 +68,14 @@ export type DoctorDeps = Readonly<{
   tailnetAnswers: (ip: string, name: string, port: number) => Promise<boolean>;
   /** The installed `gh` wrapper and each declared role's mint (A11-84). Loaded by the caller, so this file stays import-light. */
   ghWrapper: () => Promise<GhWrapperReport>;
+  platform: NodeJS.Platform;
+  /** Whether a restart of the instance reaches herdr's server of `session` (A11-90). */
+  isolation: (session: string) => Isolation;
+  /** What the auto-update last saw: nothing yet, a status, or a file that cannot be read (A11-90). */
+  updateStatus: () => StatusFile;
+  /** The release tags this checkout holds, with no network (A11-90). */
+  releaseTags: () => string[];
+  now: () => number;
 }>;
 
 const ok = (name: string, detail: string): Check => ({ name, ok: true, detail, fix: null });
@@ -157,8 +168,9 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
   const { check: host, settings } = hostCheck(deps);
   const launcher = deps.which("agent-org");
   const herdr = deps.which("herdr");
-  const instance = await serviceChecks("instance", settings?.port ?? 4747, deps);
-  const ui = await serviceChecks("ui", settings?.uiPort ?? 4748, deps);
+  const instanceState = deps.serviceState("instance");
+  const instance = await serviceChecks("instance", settings?.port ?? 4747, instanceState, deps);
+  const ui = await serviceChecks("ui", settings?.uiPort ?? 4748, deps.serviceState("ui"), deps);
   return [
     nodeCheck(deps),
     pnpmCheck(deps),
@@ -171,11 +183,66 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
     keyCheck(settings, deps),
     linearMcpCheck(deps),
     ...instance,
+    ...herdrScopeChecks(settings, instanceState, deps),
     ...ui,
     ...await terminalChecks(settings, deps),
     ...await tailnetChecks(settings, deps),
     registeredCheck("auto-update", deps, "it runs `agent-org update` every hour"),
+    updateLagCheck(settings?.updateMaxDeferHours ?? 2, deps),
   ];
+}
+
+/**
+ * Whether a restart of the instance would interrupt the herdr server of its session (A11-90). A server still inside the instance's cgroup, started before
+ * herdr got its own scope, is a failure with both fixes. Checked only when the instance is registered, and a host file names the session.
+ */
+function herdrScopeChecks(settings: TicketSettings | null, instanceState: ServiceState, deps: DoctorDeps): Check[] {
+  if (settings === null || instanceState === "not-registered") return [];
+  const session = settings.herdrSession;
+  const name = "herdr scope";
+  const isolation = deps.isolation(session);
+  if (isolation.kind === "unknown") return [ok(name, `could not be checked, so a restart's reach into herdr is not known: ${isolation.why}`)];
+  if (isolation.kind === "outside") {
+    return [ok(name, isolation.scope === null ? `no herdr server runs for session ${session}, so a restart interrupts none`
+      : `the herdr server for session ${session} is in ${isolation.scope}, outside the instance's cgroup`)];
+  }
+  const restart = `restart herdr when no run is working (\`herdr --session ${session} server stop\`; the next instance start launches it in its own scope)`;
+  const fix = deps.platform === "linux"
+    ? `${restart}, or add \`KillMode=process\` under \`[Service]\` in the instance unit, then \`systemctl --user daemon-reload\``
+    : restart;
+  return [failed(name, `the herdr server for session ${session} is in ${isolation.cgroup}, the same place as the instance (${isolation.unit}): a restart of the instance interrupts every worker`, fix)];
+}
+
+/** The hour the hourly update has to move a deferred install in, beyond `tickets.updateMaxDeferHours`, before `doctor` calls it late (A11-90). */
+const UPDATE_GRACE_HOURS = 1;
+
+/**
+ * How far behind the newest release the install is, and since when (A11-90). It fails once the install has waited past `updateMaxDeferHours` plus an hour
+ * of grace: the hourly update should have moved it by then. The status file is what the update last saw, and the local tags count the releases between.
+ */
+function updateLagCheck(maxDeferHours: number, deps: DoctorDeps): Check {
+  const name = "update lag";
+  const file = deps.updateStatus();
+  if (file.kind === "absent") return ok(name, "no update has checked this install yet, so how far behind the latest release it is not known");
+  if (file.kind === "unreadable") return failed(name, `the update status file cannot be read: ${file.why}`, "run `agent-org update`, which writes the file again, or check its permissions");
+  const status = file.status;
+  if (status.channel === "main") return ok(name, `follows main at ${status.installed}, which has no release to lag behind`);
+  const { installed, latest } = status;
+  if (!isReleaseTag(installed)) {
+    return failed(name, `installed at ${installed}, which is not a release`, "run `agent-org update` to move it to the newest release");
+  }
+  if (!isReleaseTag(latest)) return failed(name, `latest is ${latest}, which is not a release`, "run `agent-org update` to check for the newest release again");
+  if (compareReleaseTags(latest, installed) <= 0) return ok(name, `installed ${installed}, which is the latest release`);
+  // The newest release may not be among the tags this checkout holds yet, so it is counted in either way.
+  const releases = new Set([...deps.releaseTags(), latest]);
+  const behind = [...releases].filter((tag) => compareReleaseTags(tag, installed) > 0 && compareReleaseTags(tag, latest) <= 0).length;
+  const deferred = status.deferredSince === undefined ? "" : `; update deferred since ${status.deferredSince}: ${status.deferredReason ?? "a run is live"}`;
+  const detail = `installed ${installed}, latest ${latest}: ${behind} ${behind === 1 ? "release" : "releases"} behind, since ${status.latestSince}${deferred}`;
+  const waitedSince = Date.parse(status.deferredSince ?? status.latestSince);
+  const limit = (maxDeferHours + UPDATE_GRACE_HOURS) * HOUR_MS;
+  return deps.now() - waitedSince > limit
+    ? failed(name, `${detail}; the hourly update should have moved it by now`, "run `agent-org update` (with `--force` to restart a live run too), then check `agent-org status auto-update`")
+    : ok(name, detail);
 }
 
 /** The checks of one port `tickets.serve` puts on the tailnet: its entry, that it is not on Funnel, and that it answers under the machine's name. */
@@ -267,9 +334,8 @@ async function terminalChecks(settings: TicketSettings | null, deps: DoctorDeps)
  * Whether `name` is registered, and whether its port answers. The port is asked either way: a service started by hand answers without being
  * registered, and saying nothing answers then sends the person after a problem they do not have.
  */
-async function serviceChecks(name: ServiceName, port: number, deps: DoctorDeps): Promise<Check[]> {
+async function serviceChecks(name: ServiceName, port: number, state: ServiceState, deps: DoctorDeps): Promise<Check[]> {
   const problem = deps.unitProblem(name);
-  const state = deps.serviceState(name);
   const answering = await deps.answers(port);
   const start = `run \`agent-org start ${name}\``;
   const notRegistered = answering
@@ -287,6 +353,12 @@ async function serviceChecks(name: ServiceName, port: number, deps: DoctorDeps):
 
 export function report(checks: readonly Check[]): string {
   return checks.map(({ name, ok: passed, detail, fix }) => (passed ? `ok    ${name}: ${detail}` : `FAIL  ${name}: ${detail}\n      fix: ${fix}`)).join("\n");
+}
+
+/** The release tags this checkout holds, read with git and no network: none when git cannot be run. */
+function localReleaseTags(): string[] {
+  const result = spawnSync("git", ["-C", TOOL_ROOT, "tag", "--list"], { encoding: "utf8", env: sandboxGitEnv() });
+  return result.status === 0 ? result.stdout.split("\n").filter((name) => isReleaseTag(name)) : [];
 }
 
 function which(name: string, env: Env = process.env): string | null {
@@ -345,6 +417,11 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
         return { unchecked: String((cause as Error)?.message ?? cause).split("\n")[0] };
       }
     },
+    platform: process.platform,
+    isolation: (session) => hostIsolation(services, session),
+    updateStatus: () => readUpdateStatus(updateStatusPath(process.env, homedir())),
+    releaseTags: localReleaseTags,
+    now: () => Date.now(),
   });
   console.log(report(checks));
   process.exitCode = checks.every((check) => check.ok) ? 0 : 1;
