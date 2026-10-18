@@ -8,7 +8,7 @@ import { tmpDir } from "../lib/tmp-fixture.ts";
 import { parseTicketSettings } from "./settings.ts";
 import { markPublishRunning, markPublishStarting, remove as removeQueued } from "./queue.ts";
 import { refusal } from "./local-http.ts";
-import { createBoard, holdsKey, type BoardDeps } from "./server.ts";
+import { checkGhWrapperAtStart, createBoard, holdsKey, type BoardDeps } from "./server.ts";
 import type { Ticket, TicketSource } from "./source.ts";
 
 const ticket = (key: string, title = key) => ({ key, title, description: "", url: "", branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
@@ -417,4 +417,28 @@ test("A11-76: Queue its children goes by identifier where the tracker gives no o
   await assert.rejects(b.api("POST", "/api/queue-children", { key: "A11-30", model: "opus", effort: "high" }), /^Error: A11-30 has no open sub-issues: queue it as it is$/);
   await assert.rejects(b.api("POST", "/api/queue-children", { key: "A11-404", model: "opus", effort: "high" }), /no ticket A11-404/);
   await assert.rejects(b.api("POST", "/api/queue-children", { key: "A11-24", model: "gpt", effort: "high" }), /model must be one of/);
+});
+
+// A11-84: THE INSTANCE CHECKS THE ROUTING WRAPPER AT START-UP IN A CHILD PROCESS, LOUDLY, AND STARTS ANYWAY. The child runs the host module's check, which these
+// tests stub: what the check finds and re-renders is the host module's, tested in `packaging/gh-wrapper-guard.test.ts`.
+
+test("A11-84: the start-up runs the host module's check in a child process, and a clean run says nothing", () => {
+  const said: string[] = [];
+  const asked: string[] = [];
+  checkGhWrapperAtStart({ err: (line) => said.push(line), run: (program) => { asked.push(program); return { status: 0 }; } });
+  assert.equal(asked.length, 1);
+  assert.match(asked[0], /host-units\.ts".*\.then\(\(host\) => host\.startupGhWrapper\(\)\)/s, "the child loads the host module and runs its check");
+  assert.equal(said.join(""), "", "the child logs its own findings, so a clean start adds nothing");
+});
+
+test("A11-84: a child that exits non-zero is an ERROR line, and the instance is not stopped: the check returns", () => {
+  const said: string[] = [];
+  assert.doesNotThrow(() => checkGhWrapperAtStart({ err: (line) => said.push(line), run: () => ({ status: 1 }) }));
+  assert.equal(said.join(""), "ERROR gh wrapper: cannot be checked (the check exited 1), so the instance does not know its App identity is in place\n");
+});
+
+test("A11-84: a child that cannot be started is an ERROR line, first line only, and the instance still starts", () => {
+  const said: string[] = [];
+  assert.doesNotThrow(() => checkGhWrapperAtStart({ err: (line) => said.push(line), run: () => ({ status: null, error: new Error("spawn node ENOENT\nmore") }) }));
+  assert.equal(said.join(""), "ERROR gh wrapper: cannot be checked (spawn node ENOENT), so the instance does not know its App identity is in place\n");
 });

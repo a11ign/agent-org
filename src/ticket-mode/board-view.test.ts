@@ -661,6 +661,15 @@ test("A11-80: a running run whose worker wrote working is In progress, not Needs
   assert.equal(workingNote({ ...working, phase: "finished" }), null, "a finished run's note is its outcome's");
 });
 
+test("A11-85: a stall the pane's background work caused says so, with the reason the board gave, and an idle stall keeps its own words", () => {
+  const working = { ticket: { key: "NBF-1" }, phase: "running", workspace: "w1", working: { reason: "the fleet patch runs detached", stalled: true, stallReason: "background work gone" } } satisfies ViewEntry;
+  assert.deepEqual(workingNote(working), { text: "Stalled: background work gone since it said: the fleet patch runs detached", stalled: true }, "POSITIVE: the background stall says the work is gone");
+  const idle = { ...working, working: { reason: "the fleet patch runs detached", stalled: true } };
+  assert.deepEqual(workingNote(idle), { text: "Stalled: idle with no newer outcome since it said: the fleet patch runs detached", stalled: true }, "CONTROL: a stall with no reason keeps the idle words");
+  const unstalled = { ...working, working: { reason: "the fleet patch runs detached", stallReason: "background work gone" } };
+  assert.deepEqual(workingNote(unstalled), { text: "the fleet patch runs detached", stalled: false }, "CONTROL: a reason with no stall is only the note");
+});
+
 // A11-82: a queued run waits on a path another run holds in its repository.
 const pulled = (url: string, repo = "agent-org") => ({ url, repo });
 const holderOf = (key: string, patch: Partial<ViewEntry>): ViewEntry => ({ ticket: { key }, phase: "running", ...patch } as ViewEntry);

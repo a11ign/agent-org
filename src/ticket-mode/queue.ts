@@ -48,9 +48,23 @@ export type WrittenOutcome = Outcome | WorkingOutcome;
  * A running run's latest note, from a `working` outcome: the reason it gave, and `at`, when it wrote the file, so only a newer one replaces it.
  * `idleSince` is when its agent was last seen settling into idle with this note and no newer outcome, and is dropped while the agent works.
  * `stalled` is set once the agent has stayed idle like that for `tickets.stallMinutes`: the board says so, so a run whose background work never
- * woke it, or that forgot its final outcome, is still noticed. Being stalled ends nothing and prompts nobody.
+ * woke it, or that forgot its final outcome, is still noticed. Being stalled ends nothing.
+ *
+ * A11-85: its pane shows no background work (a shell or a Monitor) while it is idle: `noBackgroundSince` is when the board first saw that, and once
+ * it has been so for {@link BACKGROUND_GONE_MS}, `stalled` is set with `stallReason` {@link BACKGROUND_GONE}, and `resumed` says the board has
+ * prompted the worker once to check its background work and carry on. `resumed` outlasts a newer note, so a worker that writes `working` again with
+ * nothing running is refused by the stop hook, not prompted in a loop; live background work seen again clears it.
  */
-export type WorkingNote = Readonly<{ reason: string; at: number; idleSince?: number; stalled?: boolean }>;
+export type WorkingNote = Readonly<{ reason: string; at: number; idleSince?: number; stalled?: boolean; stallReason?: string; noBackgroundSince?: number; resumed?: boolean }>;
+
+/** The stall reason of a run idle with no background work for {@link BACKGROUND_GONE_MS}: nothing will wake it, so the board prompts it once. */
+export const BACKGROUND_GONE = "background work gone";
+
+/** How long a run whose pane shows no background work may sit idle on a `working` note before the board marks it stalled: six 30-second ticks. */
+export const BACKGROUND_GONE_MS = 3 * 60_000;
+
+/** What the pane shows of a run's background work: `live` when a shell or a Monitor runs, `none` when neither does, or null when the pane cannot be read. */
+export type Background = "live" | "none" | null;
 
 export type Phase = "queued" | "starting" | "running" | "finished";
 
@@ -481,26 +495,44 @@ export function observe(queue: Queue, key: string, status: string): Queue {
  * that is not running is left alone: a `working` outcome never ends, parks or revives one.
  */
 export function noteWorking(queue: Queue, key: string, reason: string, at: number, now: number): Queue {
-  return replace(queue, key, (entry) => (entry.phase !== "running" || (entry.working !== undefined && at <= entry.working.at) ? entry
-    : { ...entry, working: { reason, at, idleSince: now } }));
+  return replace(queue, key, (entry) => {
+    if (entry.phase !== "running" || (entry.working !== undefined && at <= entry.working.at)) return entry;
+    return { ...entry, working: { reason, at, idleSince: now, ...(entry.working?.resumed === true ? { resumed: true } : {}) } };
+  });
+}
+
+/**
+ * The background mark of an idle run's note, at `now`: `live` clears the mark, since work that runs wakes the worker; `none` starts its clock, and once
+ * the clock has run for {@link BACKGROUND_GONE_MS} marks the run stalled with {@link BACKGROUND_GONE} and says it has been resumed, at most once; null (the pane
+ * cannot be read) changes nothing, so the idle clock alone decides, as it always did. PURE.
+ */
+function backgroundMark(note: WorkingNote, background: Background, now: number): WorkingNote {
+  if (background === null) return note;
+  const { noBackgroundSince: _since, stallReason: _why, stalled: _stalled, resumed: _resumed, ...rest } = note;
+  if (background === "live") return rest;
+  const since = note.noBackgroundSince ?? now;
+  if (now - since < BACKGROUND_GONE_MS) return { ...note, noBackgroundSince: since };
+  return { ...note, noBackgroundSince: since, stalled: true, stallReason: BACKGROUND_GONE, resumed: true };
 }
 
 /**
  * What herdr says a running run with a working note is doing, at `now`. Working clears the idle clock and the stall: its background work woke it.
  * Idle or done starts the clock when it is not running already, and marks the run stalled once it has run for `stallMs`. Any other status, and a
- * run with no note, changes nothing.
+ * run with no note, changes nothing. `background` is what the run's pane shows of its background work, which an idle run with no work to wake it
+ * reaches within {@link BACKGROUND_GONE_MS} (see {@link backgroundMark}); the default, null, is a pane that cannot be read.
  */
-export function watchWorking(queue: Queue, key: string, status: string, now: number, stallMs: number): Queue {
+export function watchWorking(queue: Queue, key: string, status: string, now: number, stallMs: number, background: Background = null): Queue {
   return replace(queue, key, (entry) => {
     const note = entry.working;
     if (entry.phase !== "running" || note === undefined) return entry;
     if (status === "working") {
-      const { idleSince: _woke, stalled: _cleared, ...awake } = note;
+      const { idleSince: _woke, stalled: _cleared, stallReason: _why, noBackgroundSince: _since, ...awake } = note;
       return { ...entry, working: awake };
     }
     if (status !== "idle" && status !== "done") return entry;
     const idleSince = note.idleSince ?? now;
-    return { ...entry, working: { ...note, idleSince, ...(now - idleSince >= stallMs ? { stalled: true } : {}) } };
+    const marked = backgroundMark({ ...note, idleSince }, background, now);
+    return { ...entry, working: { ...marked, ...(now - idleSince >= stallMs ? { stalled: true } : {}) } };
   });
 }
 
