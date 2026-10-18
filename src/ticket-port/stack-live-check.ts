@@ -1,6 +1,6 @@
 // module: the live check of the stacked-pull-request retarget, run on GitHub before merge (A11-106). It proves the whole chain on a real repository without touching
 // its default branch: a scratch branch stands in for the default branch, base pull request A is opened on it, stacked pull request B on A's branch, A is merged
-// (squash, its branch kept, as the stale-base case needs), and the retarget sweep (`sweepRetargets`) runs with the scratch branch as the default. B's base must
+// (a merge commit, its branch kept, as the stale-base case needs), and the retarget sweep (`sweepRetargets`) runs with the scratch branch as the default. B's base must
 // read back as the scratch branch, and B's head must not move. Every branch and pull request it makes is removed afterwards, even when a step fails.
 // PURE over the `gh` it is handed: this file names no GitHub CLI command and spawns nothing (the port's rule). The command that runs it hands in the instance's
 // runner, and the workers' account is what it acts as.
@@ -64,7 +64,7 @@ function chain({ repo, names, gh, log, branches, pulls }: { repo: string; names:
   pulls.push(stackedUrl);
   log(`opened ${baseUrl} (base ${names.scratch}) and ${stackedUrl} (base ${names.base})`);
 
-  gh(["pr", "merge", baseUrl, "--repo", repo, "--squash"]);
+  gh(["pr", "merge", baseUrl, "--repo", repo, "--merge"]);
   if (viewOf(baseUrl, gh).state !== "MERGED") throw new Error(`${baseUrl} did not merge`);
   // The stale-base case needs A's branch to survive its merge. A repository that deletes merged branches cannot show it, so that is said, not passed over.
   try {
