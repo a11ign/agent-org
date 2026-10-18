@@ -1095,7 +1095,7 @@ function noTokenHeaders(text: string): { line: number; fn: string | null; }[] {
 
 /**
  * Does `entry`'s own code genuinely never call the function it claims not to need -- a real call SHAPE
- * (`fnName(`), never a bare mention a comment or a string could contain just as easily. Shallow, exactly
+ * (`calleeName(`), never a bare mention a comment or a string could contain just as easily. Shallow, exactly
  * as `writeDeclarationHolds` is shallow: this proves the declaring file's OWN text does not call it, not
  * that nothing it calls calls it in turn -- the same scope #731's own write-side check keeps.
  *
@@ -1105,9 +1105,9 @@ function noTokenHeaders(text: string): { line: number; fn: string | null; }[] {
  * too. It stays a SHAPE, never a mention: `gh` in prose, in an identifier, or as a later argument to a spawn
  * of another command still holds.
  */
-function noTokenDeclarationHolds(entryCodeOnly: string, fnName: string) {
-  const called = new RegExp(`\\b${fnName}\\s*\\(`).test(entryCodeOnly);
-  const spawned = new RegExp(`\\b(?:${DECLARED_SPAWNS.join("|")})\\s*\\(\\s*(['"\`])${fnName}\\1`).test(entryCodeOnly);
+function noTokenDeclarationHolds(entryCodeOnly: string, calleeName: string) {
+  const called = new RegExp(`\\b${calleeName}\\s*\\(`).test(entryCodeOnly);
+  const spawned = new RegExp(`\\b(?:${DECLARED_SPAWNS.join("|")})\\s*\\(\\s*(['"\`])${calleeName}\\1`).test(entryCodeOnly);
   return !called && !spawned;
 }
 
