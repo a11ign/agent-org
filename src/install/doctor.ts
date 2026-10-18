@@ -27,7 +27,7 @@ import { compareReleaseTags, isReleaseTag } from "../lib/release-tag.ts";
 import { hostFilePath, TOOL_ROOT, type Env } from "./paths.ts";
 import { pinnedPnpm, TOOL_PNPM_VERSION } from "./pnpm.ts";
 import { defaultServiceDeps, serviceState, unitProblem, type ServiceName, type ServiceState } from "./service.ts";
-import { HOUR_MS, hostIsolation, readUpdateStatus, updateStatusPath, type Isolation, type UpdateStatus } from "./update-safety.ts";
+import { HOUR_MS, hostIsolation, readUpdateStatus, updateStatusPath, type Isolation, type StatusFile } from "./update-safety.ts";
 import { DEFAULT_TERMINAL_PORT, loopbackPort } from "./terminal.ts";
 
 export const MIN_NODE_MAJOR = 24;
@@ -71,8 +71,8 @@ export type DoctorDeps = Readonly<{
   platform: NodeJS.Platform;
   /** Whether a restart of the instance reaches herdr's server of `session` (A11-90). */
   isolation: (session: string) => Isolation;
-  /** What the auto-update last saw, or null when it has not written a status file yet (A11-90). */
-  updateStatus: () => UpdateStatus | null;
+  /** What the auto-update last saw: nothing yet, a status, or a file that cannot be read (A11-90). */
+  updateStatus: () => StatusFile;
   /** The release tags this checkout holds, with no network (A11-90). */
   releaseTags: () => string[];
   now: () => number;
@@ -222,8 +222,10 @@ const UPDATE_GRACE_HOURS = 1;
  */
 function updateLagCheck(maxDeferHours: number, deps: DoctorDeps): Check {
   const name = "update lag";
-  const status = deps.updateStatus();
-  if (status === null) return ok(name, "no update has checked this install yet, so how far behind the latest release it is not known");
+  const file = deps.updateStatus();
+  if (file.kind === "absent") return ok(name, "no update has checked this install yet, so how far behind the latest release it is not known");
+  if (file.kind === "unreadable") return failed(name, `the update status file cannot be read: ${file.why}`, "run `agent-org update`, which writes the file again, or check its permissions");
+  const status = file.status;
   if (status.channel === "main") return ok(name, `follows main at ${status.installed}, which has no release to lag behind`);
   const { installed, latest } = status;
   if (!isReleaseTag(installed)) {

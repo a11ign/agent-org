@@ -274,7 +274,14 @@ function defaultUpdateDeps(): UpdateDeps {
     busy: () => midToolCall({ agents: () => readAgents(herdrRun, { session }), queue: () => readQueue() }),
     maxDeferHours: settings?.updateMaxDeferHours ?? 2,
     now: () => Date.now(),
-    status: { read: () => readUpdateStatus(statusPath), write: (status) => writeUpdateStatus(statusPath, status) },
+    // A status file that cannot be read is no status for the deferral clock: the run rewrites the file either way, and `doctor` is the one that fails on it.
+    status: {
+      read: () => {
+        const file = readUpdateStatus(statusPath);
+        return file.kind === "status" ? file.status : null;
+      },
+      write: (status) => writeUpdateStatus(statusPath, status),
+    },
     out: console,
   };
 }
