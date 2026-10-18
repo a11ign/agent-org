@@ -725,5 +725,11 @@ export function chosenConnection(connections: readonly ViewConnection[], remembe
 /** Where a connection's API is: under `/c/<connection>`, which the page's service passes on to that instance. */
 export const apiBase = (connection: ViewConnection | null): string => (connection === null ? "" : `/c/${encodeURIComponent(connection.name)}`);
 
+/**
+ * Where a run's "Open terminal" goes: the page's service's worker link for `connection`, which pairs a paired browser's terminal on the way and
+ * then goes to `link` (A11-93). `link` is the plain address, which the link's title keeps.
+ */
+export const terminalOpenHref = (connection: ViewConnection, link: string): string => `${apiBase(connection)}/terminal?link=${encodeURIComponent(link)}`;
+
 /** What the switcher calls a connection. */
 export const connectionLabel = (connection: ViewConnection): string => (connection.kind === "local" ? `${connection.name} (this machine)` : connection.name);

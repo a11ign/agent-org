@@ -460,3 +460,23 @@ test("A11-84: a child that cannot be started is an ERROR line, first line only, 
   assert.doesNotThrow(() => checkGhWrapperAtStart({ err: (line) => said.push(line), run: () => ({ status: null, error: new Error("spawn node ENOENT\nmore") }) }));
   assert.equal(said.join(""), "ERROR gh wrapper: cannot be checked (spawn node ENOENT), so the instance does not know its App identity is in place\n");
 });
+
+test("the instance mints a worker terminal's code for its key only, and says why there is none when the terminal is not set", async () => {
+  const probe = createServer();
+  await new Promise<void>((done) => probe.listen(0, "127.0.0.1", done));
+  const port = (probe.address() as { port: number }).port;
+  await new Promise<void>((done) => probe.close(() => done()));
+  const made = board(port, {}, { mintTerminal: async () => ({ code: "123456" }) });
+  const server = createServer((request, response) => { void made.handle(request, response); });
+  await new Promise<void>((done) => server.listen(port, "127.0.0.1", done));
+  try {
+    const wrong = await fetch(`http://127.0.0.1:${port}/api/terminal-pair`, { method: "POST", headers: { "x-ticket-token": "b".repeat(48) } });
+    assert.equal(wrong.status, 401, "a request without the key is refused");
+    const minted = await fetch(`http://127.0.0.1:${port}/api/terminal-pair`, { method: "POST", headers: { "x-ticket-token": KEY } });
+    assert.deepEqual(await minted.json(), { code: "123456" });
+  } finally {
+    await new Promise<void>((done) => server.close(() => done()));
+  }
+  const unset = board();
+  assert.deepEqual(await unset.api("POST", "/api/terminal-pair", {}), [200, { code: null, note: "tickets.terminal is not set" }]);
+});

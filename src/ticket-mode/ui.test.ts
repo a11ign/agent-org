@@ -665,19 +665,20 @@ test("a live or parked run links its terminal when the machine serves one, and a
     entry("P-1", { phase: "finished", startedAt: 2, finishedAt: 4, workspace: "w2", pane: "w2:p1", outcome: { kind: "needs-human", reason: "which colour?" } }),
     entry("F-1", { phase: "finished", startedAt: 2, finishedAt: 3, outcome: { kind: "crashed", reason: "herdr refused" } }),
   ];
-  const p = await page(new Map(), { config: { terminal: "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal" }, entries: runs });
+  const p = await page(new Map(), { connections: WORK_ALONE, config: { terminal: "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal" }, entries: runs });
   const row = (key: string) => runRows(p).find((r) => r.text().includes(key))!;
   const link = (key: string) => row(key).all().find((n) => n.className === "terminal") as (Node_ & { href?: string; target?: string }) | undefined;
-  assert.equal(link("R-1")?.href, "http://127.0.0.1:7318/?ws=w1&pane=w1%3Ap1&view=terminal");
+  assert.equal(link("R-1")?.href, opens("http://127.0.0.1:7318/?ws=w1&pane=w1%3Ap1&view=terminal"), "the page's worker link, which pairs the terminal on the way");
+  assert.equal(link("R-1")?.title, "http://127.0.0.1:7318/?ws=w1&pane=w1%3Ap1&view=terminal", "the plain address is kept as the title");
   assert.equal(link("R-1")?.target, "_blank", "it opens in its own tab: the terminal page refuses to be framed");
-  assert.equal(link("P-1")?.href, "http://127.0.0.1:7318/?ws=w2&pane=w2%3Ap1&view=terminal");
+  assert.equal(link("P-1")?.href, opens("http://127.0.0.1:7318/?ws=w2&pane=w2%3Ap1&view=terminal"));
   assert.equal(link("F-1"), undefined, "a run with no workspace has no terminal");
   assert.ok(row("P-1").text().includes("Still open"), "a parked run says it can still be answered");
   const close = row("P-1").all().find((n) => n.tag === "button")!;
   assert.equal(close.text(), "Close");
   close.fire("click");
   await settle();
-  assert.ok(p.posts.some((x) => x.path === "/api/queue/P-1/close"));
+  assert.ok(p.posts.some((x) => x.path === "/c/work/api/queue/P-1/close"), "Close goes to the connection the run is shown on");
   const none = await page(new Map(), { entries: runs });
   assert.equal(runRows(none).flatMap((r) => r.all()).find((n) => n.className === "terminal"), undefined, "a machine that serves no terminal shows no link");
 });
@@ -785,12 +786,14 @@ test("the Board says why the last publish run failed", async () => {
 });
 
 const TERMINAL = "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal";
+/** A run's "Open terminal" href: the page's worker link for `connection`, which carries the plain address `plain` for the redirect (A11-93). */
+const opens = (plain: string, connection = "work") => `/c/${connection}/terminal?link=${encodeURIComponent(plain)}`;
 const PUBLISHING = { keys: ["P-1", "P-2"], phase: "running", workspace: "w9", pane: "w9:p1" };
 const terminalOf = (p: Page, key: string) =>
   runRows(p).find((r) => r.text().includes(key))!.all().find((n) => n.className === "terminal" && n.text() === "Open terminal") as (Node_ & { href?: string; target?: string }) | undefined;
 
 test("each run the publish run is posting is Publishing, with the spinning ring, and cannot be ticked again", async () => {
-  const p = await page(new Map(), { config: { publish: true, terminal: TERMINAL }, entries: PUBLISHABLE, publish: PUBLISHING });
+  const p = await page(new Map(), { connections: WORK_ALONE, config: { publish: true, terminal: TERMINAL }, entries: PUBLISHABLE, publish: PUBLISHING });
   const publishing = (key: string) => runRows(p).find((r) => r.text().includes(key))!;
   for (const key of ["P-1", "P-2"]) {
     const icon = publishing(key).children[0] as Node_ & { innerHTML: string };
@@ -805,9 +808,9 @@ test("each run the publish run is posting is Publishing, with the spinning ring,
 });
 
 test("each Publishing run links the publish run's own pane, and no other run does", async () => {
-  const p = await page(new Map(), { config: { publish: true, terminal: TERMINAL }, entries: PUBLISHABLE, publish: PUBLISHING });
+  const p = await page(new Map(), { connections: WORK_ALONE, config: { publish: true, terminal: TERMINAL }, entries: PUBLISHABLE, publish: PUBLISHING });
   for (const key of ["P-1", "P-2"]) {
-    assert.equal(terminalOf(p, key)?.href, "http://127.0.0.1:7318/?ws=w9&pane=w9%3Ap1&view=terminal", key);
+    assert.equal(terminalOf(p, key)?.href, opens("http://127.0.0.1:7318/?ws=w9&pane=w9%3Ap1&view=terminal"), key);
     assert.equal(terminalOf(p, key)?.target, "_blank", `${key}: it opens in its own tab`);
   }
   assert.equal(terminalOf(p, "P-3"), undefined, "a run it does not post");
@@ -815,7 +818,7 @@ test("each Publishing run links the publish run's own pane, and no other run doe
 });
 
 test("the Publishing filter counts the runs being posted and shows them, with a still dot in the rail", async () => {
-  const p = await page(new Map(), { config: { publish: true, terminal: TERMINAL }, entries: PUBLISHABLE, publish: PUBLISHING });
+  const p = await page(new Map(), { connections: WORK_ALONE, config: { publish: true, terminal: TERMINAL }, entries: PUBLISHABLE, publish: PUBLISHING });
   assert.equal(filterButton(p, "Publishing").children.at(-1)!.text(), "2");
   assert.equal(filterButton(p, "Ready to merge").children.at(-1)!.text(), "0");
   const rail = filterButton(p, "Publishing").children[0] as Node_ & { innerHTML: string };
@@ -827,7 +830,7 @@ test("the Publishing filter counts the runs being posted and shows them, with a 
 });
 
 test("once the publish run ends, its runs are Ready to merge again with no terminal, and the Board says why when it failed", async () => {
-  const failed = await page(new Map(), { config: { publish: true, terminal: TERMINAL }, entries: PUBLISHABLE, publish: { keys: ["P-1", "P-2"], phase: "finished", failure: "no channel" } });
+  const failed = await page(new Map(), { connections: WORK_ALONE, config: { publish: true, terminal: TERMINAL }, entries: PUBLISHABLE, publish: { keys: ["P-1", "P-2"], phase: "finished", failure: "no channel" } });
   assert.deepEqual(["P-1", "P-2"].map((key) => runRows(failed).find((r) => r.text().includes(key))!.children[0].className), ["icon st-ready-to-merge", "icon st-ready-to-merge"]);
   assert.equal(terminalOf(failed, "P-1"), undefined);
   assert.equal(filterButton(failed, "Publishing").children.at(-1)!.text(), "0");
@@ -835,7 +838,7 @@ test("once the publish run ends, its runs are Ready to merge again with no termi
 });
 
 test("a publish run that has no pane yet, or a machine that serves no terminal, leaves its runs Publishing with no terminal link", async () => {
-  const starting = await page(new Map(), { config: { publish: true, terminal: TERMINAL }, entries: PUBLISHABLE, publish: { keys: ["P-1"], phase: "queued" } });
+  const starting = await page(new Map(), { connections: WORK_ALONE, config: { publish: true, terminal: TERMINAL }, entries: PUBLISHABLE, publish: { keys: ["P-1"], phase: "queued" } });
   assert.equal(runRows(starting).find((r) => r.text().includes("P-1"))!.children[0].className, "icon st-publishing");
   assert.equal(terminalOf(starting, "P-1"), undefined);
   const none = await page(new Map(), { config: { publish: true }, entries: PUBLISHABLE, publish: PUBLISHING });
@@ -861,6 +864,8 @@ test("a run Ready to merge, Published, or handed back by the board offers Respon
 });
 
 const WORK_AND_PERSONAL = { connections: [{ name: "work", kind: "local" }, { name: "personal", kind: "ssh" }], refusal: null };
+/** This machine's instance alone, which the service shows when no connections file names others. */
+const WORK_ALONE = { connections: [{ name: "work", kind: "local" }], refusal: null };
 const settleAll = async () => { for (let i = 0; i < 10; i++) await settle(); };
 
 test("with one connection the header shows no switcher, and every call goes to that instance", async () => {
@@ -895,7 +900,7 @@ test("Publish and a run's terminal link work per connection: each goes to, and l
   const runs = [...PUBLISHABLE, entry("R-1", { phase: "running", startedAt: 5, workspace: "w1", pane: "w1:p1" })];
   const p = await page(storage, { connections: WORK_AND_PERSONAL, entries: runs, config: { publish: true, terminal: "http://127.0.0.1:50001/?ws={workspace}" } });
   const link = runRows(p).find((r) => r.text().includes("R-1"))!.all().find((n) => n.className === "terminal") as (Node_ & { href?: string }) | undefined;
-  assert.equal(link?.href, "http://127.0.0.1:50001/?ws=w1", "the terminal address the connection's config gave, which the page's service rewrote for it");
+  assert.equal(link?.href, opens("http://127.0.0.1:50001/?ws=w1", "personal"), "the terminal address the connection's config gave, which the page's service rewrote for it, reached through that connection");
   tickFor(p, "P-1")!.fire("change");
   p.$("publish").fire("click");
   await settle();
@@ -931,9 +936,9 @@ test("a connections file the service refused is named above the board, which sti
 test("a run's links that are not http addresses, as a remote board could send, are drawn with no address", async () => {
   const entries = [{ ticket: { key: "R-1", title: "one", url: "javascript:alert(1)" }, status: "running", repos: [], model: "opus", effort: "high", queuedAt: 1, workspace: "w1", pane: "w1:p1" }];
   const p = await page(new Map(), { entries, config: { terminal: "javascript:alert(2)//{workspace}" } });
-  const anchors = p.$("runs").all().filter((n) => n.tag === "a") as (Node_ & { href?: string })[];
-  assert.ok(anchors.length >= 2, "the ticket and its terminal are drawn");
-  assert.deepEqual(anchors.map((a) => a.href), anchors.map(() => ""));
+  const anchors = p.$("runs").all().filter((n) => n.tag === "a") as (Node_ & { href?: string; className?: string })[];
+  assert.deepEqual(anchors.map((a) => a.href), [""], "the ticket is drawn with no address");
+  assert.equal(anchors.find((a) => a.className === "terminal"), undefined, "and its terminal is not drawn at all");
 });
 
 test("an answer from the instance shown before a switch is dropped, so it never lands on the one chosen after it", async () => {

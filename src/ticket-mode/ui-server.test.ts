@@ -14,7 +14,8 @@ import { httpForward, type Forward } from "./remote-proxy.ts";
 import { createBoard } from "./server.ts";
 import { parseTicketSettings } from "./settings.ts";
 import type { Ticket, TicketSource } from "./source.ts";
-import { boardViewScript, createUi, labelFiltersScript, pairedBy } from "./ui-server.ts";
+import { boardViewScript, createUi, labelFiltersScript, pairedBy, sameTerminal } from "./ui-server.ts";
+import type { TerminalMint } from "./terminal-pair.ts";
 
 const REMOTE_KEY = "c".repeat(48);
 const ticket = (key: string) => ({ key, title: key, description: "", url: "", branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
@@ -35,7 +36,7 @@ async function listen(handle: (port: number) => (req: IncomingMessage, res: Serv
 }
 
 /** This machine's instance, a real one, on its own port with its own key, and the state directory both services share. */
-async function instance() {
+async function instance(mintTerminal?: () => Promise<TerminalMint>) {
   const stateDir = tmpDir("ticket-ui-state-");
   const key = boardKey(boardKeyPath(stateDir));
   const seen: IncomingMessage["headers"][] = [];
@@ -43,7 +44,7 @@ async function instance() {
   const source: TicketSource = { assigned: async () => [{ ...ticket("NBF-1"), labels: LABELS }], read: async () => null, download: async () => [] };
   const served = await listen((port) => {
     const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/r/netbox" }, stateDir, tickets: { port, terminal: "http://127.0.0.1:7318/?ws={workspace}" } });
-    const board = createBoard({ settings, source, key, queuePath: join(stateDir, "queue.json"), choicePath: join(stateDir, "choice.json"), pool, now: () => 7 });
+    const board = createBoard({ settings, source, key, queuePath: join(stateDir, "queue.json"), choicePath: join(stateDir, "choice.json"), pool, now: () => 7, mintTerminal });
     return (req, res) => { seen.push(req.headers); return board.handle(req, res); };
   });
   return { ...served, stateDir, key, seen };
@@ -66,8 +67,8 @@ function sshRunner(fails = false) {
 }
 
 /** The page's service for `list`, in front of this machine's real instance, with ssh connections answered by `forward` or failing. */
-async function ui(list: readonly Connection[], { refusal = null, sshFails = false }: { refusal?: string | null; sshFails?: boolean } = {}) {
-  const local = await instance();
+async function ui(list: readonly Connection[], { refusal = null, sshFails = false, mintTerminal }: { refusal?: string | null; sshFails?: boolean; mintTerminal?: () => Promise<TerminalMint> } = {}) {
+  const local = await instance(mintTerminal);
   const ssh = sshRunner(sshFails);
   const forwarded: { path: string; key: string; host: string }[] = [];
   const read: ConnectionsRead = { connections: list, refusal, migrated: null };
@@ -378,4 +379,78 @@ test("a code from ticket:pair pairs a browser over the tailnet, and the paired b
   } finally {
     await u.close();
   }
+});
+
+const PLAIN = "http://127.0.0.1:7318/?ws=w1";
+
+test("a paired browser that follows a worker link is redirected to the plain link with the worker's pairing code, and no store or referrer keeps it", async () => {
+  const logged: string[] = [];
+  const write = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: string) => { logged.push(String(chunk)); return true; }) as typeof process.stderr.write;
+  const u = await ui([WORK], { mintTerminal: async () => ({ code: "654321" }) });
+  try {
+    const cookie = await pairedCookie(u.base, u.local.key);
+    const res = await fetch(`${u.base}/c/work/terminal?link=${encodeURIComponent(PLAIN)}`, { headers: { cookie }, redirect: "manual" });
+    assert.equal(res.status, 302);
+    assert.equal(res.headers.get("location"), "http://127.0.0.1:7318/?ws=w1&pair=654321");
+    assert.equal(res.headers.get("cache-control"), "no-store");
+    assert.equal(res.headers.get("referrer-policy"), "no-referrer");
+    assert.ok(!logged.join("").includes("654321"), "the code is not logged");
+  } finally {
+    process.stderr.write = write;
+    await u.close();
+  }
+});
+
+test("a worker link whose terminal cannot mint a code redirects to the plain link, unchanged", async () => {
+  const u = await ui([WORK], { mintTerminal: async () => ({ code: null, note: "the worker terminal did not answer on 127.0.0.1:7318" }) });
+  try {
+    const cookie = await pairedCookie(u.base, u.local.key);
+    const res = await fetch(`${u.base}/c/work/terminal?link=${encodeURIComponent(PLAIN)}`, { headers: { cookie }, redirect: "manual" });
+    assert.equal(res.status, 302);
+    assert.equal(res.headers.get("location"), PLAIN, "the link is sent as it was, and the browser pairs by hand");
+  } finally {
+    await u.close();
+  }
+});
+
+test("a worker link is followed only for a paired browser, and a link that is not this connection's worker terminal is refused before any code is asked for", async () => {
+  let asked = 0;
+  const u = await ui([WORK], { mintTerminal: async () => { asked += 1; return { code: "654321" }; } });
+  try {
+    const key = await fetch(`${u.base}/c/work/terminal?link=${encodeURIComponent(PLAIN)}`, { headers: { "x-ticket-token": u.local.key }, redirect: "manual" });
+    assert.equal(key.status, 403, "a script holding the key is not passed on");
+    const cookie = await pairedCookie(u.base, u.local.key);
+    for (const link of ["https://evil.example/?ws=w1", "http://127.0.0.1:9999/?ws=w1", "http://127.0.0.1:7318/?ws=w1&pane=w1", "http://127.0.0.1:7318/other?ws=w1", "javascript:alert(1)//?ws=w1", "http://127.0.0.1:7318/?ws="]) {
+      const res = await fetch(`${u.base}/c/work/terminal?link=${encodeURIComponent(link)}`, { headers: { cookie }, redirect: "manual" });
+      assert.equal(res.status, 400, link);
+      assert.equal(res.headers.get("location"), null, `${link}: no redirect`);
+    }
+    assert.equal((await fetch(`${u.base}/c/work/terminal`, { headers: { cookie }, redirect: "manual" })).status, 400, "a link is named");
+    assert.equal((await fetch(`${u.base}/c/nobody/terminal?link=${encodeURIComponent(PLAIN)}`, { headers: { cookie }, redirect: "manual" })).status, 404);
+    assert.equal(asked, 0, "no code is asked for on a refused link");
+  } finally {
+    await u.close();
+  }
+});
+
+test("a paired browser cannot ask for a worker's code by calling the route itself: only a worker link gets one", async () => {
+  const u = await ui([WORK], { mintTerminal: async () => ({ code: "654321" }) });
+  try {
+    const cookie = await pairedCookie(u.base, u.local.key);
+    const direct = await fetch(`${u.base}/c/work/api/terminal-pair`, { method: "POST", headers: { cookie, origin: u.base } });
+    assert.equal(direct.status, 403);
+    assert.equal((await direct.text()).includes("654321"), false);
+  } finally {
+    await u.close();
+  }
+});
+
+test("a worker link's address is taken only when it is the connection's own terminal, with the same names and literal values", () => {
+  const template = "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal";
+  assert.equal(sameTerminal("http://127.0.0.1:7318/?ws=w1&pane=w1%3Ap1&view=terminal", template), "http://127.0.0.1:7318/?ws=w1&pane=w1%3Ap1&view=terminal");
+  assert.equal(sameTerminal("http://127.0.0.1:7318/?ws=w1&pane=w1%3Ap1&view=other", template), null, "a literal value that differs");
+  assert.equal(sameTerminal("http://127.0.0.1:7318/?ws=w1&pane=w1%3Ap1&view=terminal&pair=1", template), null, "a name the template lacks");
+  assert.equal(sameTerminal("http://localhost:7318/?ws=w1&pane=p&view=terminal", template), null, "another origin");
+  assert.equal(sameTerminal("https://127.0.0.1:7318/?ws=w1&pane=p&view=terminal", template), null, "another scheme");
 });

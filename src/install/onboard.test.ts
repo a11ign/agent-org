@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import type { KeySource } from "../ticket-mode/settings.ts";
 import { LINEAR_CONNECTORS, onboard, onboardServices, startServices, type OnboardDeps, type OnboardOptions } from "./onboard.ts";
+import { PAIRING_STEPS } from "./terminal.ts";
 import { ServiceRefusal, TailnetRefusal, type RunResult } from "./service.ts";
 
 const KEY = "lin_api_SECRETSECRETSECRET";
@@ -70,6 +71,15 @@ test("onboard writes clones and the key source from flags, keeps the host file's
   });
   assert.deepEqual(started, ["instance", "ui", "terminal", "auto-update"]);
   assert.ok(printed.some((line) => line === "the Linear key is readable from the Keychain service agent-org-linear"));
+});
+
+test("onboard's last message says how to pair a new device, for the board and the terminal, whether or not services start", async () => {
+  for (const start of [true, false]) {
+    const { deps: d, repo, stored, printed } = deps();
+    stored.set("keychain:agent-org-linear", KEY);
+    await onboard(options({ repos: [`netbox=${repo}`], keychain: "agent-org-linear", start }), d);
+    assert.equal(printed.at(-1), PAIRING_STEPS, `start ${start}`);
+  }
 });
 
 test("onboard never prints the key: not when it reads one, and not when it stores one from a hidden prompt", async () => {
