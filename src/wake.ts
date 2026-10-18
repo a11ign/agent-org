@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* eslint-disable clean-code/limited-public-api -- 308 exports: 30 used by other production modules, 215 by tests only (test seams), 63 by no other file; splitting it is a separate change */
 // command: wake -- deliver work-gate's orders to the sessions that can take them. The other half of #912.
 //
 // `work-gate.ts` answers "is there work" and says, in its own header, that it "DECIDES NOTHING ABOUT WHO

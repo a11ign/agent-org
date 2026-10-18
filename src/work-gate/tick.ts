@@ -1,3 +1,4 @@
+/* eslint-disable clean-code/limited-public-api -- 71 exports: 58 used by other production modules, 12 by tests only, 1 by no other file; splitting it is a separate change */
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { READY_LABEL, CLAIM_LABEL } from "../claim-labels.ts";

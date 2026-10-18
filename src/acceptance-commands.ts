@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* eslint-disable clean-code/limited-public-api -- 87 exports: 33 used by other production modules, 37 by tests only, 17 by no other file; splitting it is a separate change */
 // command: run a PR's own stated Acceptance/Refutation command(s) and report RAN/REFUSED/MISSING
 // NOTHING HAS EVER RUN A ROW'S ACCEPTANCE COMMAND -- pipeline unit 2, #353. Every PR body in this repo
 // carries an `Acceptance:` line and its own PR argues its case; the only thing that has ever executed it

@@ -116,9 +116,8 @@ import { assertNoLeakInArgv } from "./lib/leak-patterns.ts";
 // would forward the binding WITHOUT creating a local one, and this file's own code below needs the local
 // name -- hence import-then-export as two separate statements rather than one re-export line.
 export { CLAIM_LABEL, STARTED_LABEL };
-// #2619 (child 3d of #69): IMPORTED, NOT REDECLARED -- `project-vocabulary.ts`'s fields, re-exported
-// under this file's own established name so `BLOCKED_LABEL`'s existing importers keep working unchanged.
-export { BLOCKED_LABEL };
+// #2619 (child 3d of #69): IMPORTED, NOT REDECLARED -- `project-vocabulary.ts`'s field, bound here under
+// this file's own established name so the code below reads as it did before the import moved.
 /** #2470: `decline --answer=<session>` adds `answer:<session>`, the label `waiting-condition.ts` reads as "that session owes an answer". */
 const ANSWER_LABEL_PREFIX = ANSWER_PREFIX;
 
@@ -140,14 +139,14 @@ export function filedByLine(body: string): string | null {
 // on this same machine, in the owner's own worktree, with no way to have known that beforehand. A row's
 // claim is now the one place that fact is recorded, so an escalating session can tell a PORTABLE row
 // (branch not held anywhere) from a HELD one before it ever offers to take it.
-export const BRANCH_LABEL_PREFIX = "branch:";
+const BRANCH_LABEL_PREFIX = "branch:";
 // #665: THE CLAIM RECORDS THE WORKTREE TOO. Measured 2026-09-09T10:03Z: 115 worktrees on the host with
 // ~57 MB free -- each row taken opens one and nothing closes it when the row is done, because "prune
 // after every merge" is a habit, and this repository's own rule is that anything a human has to
 // remember is something that does not happen. Recording the path at claim time is what lets RELEASING
 // the claim -- the moment the releasing session, and only it, is known to be done with that directory --
 // remove it automatically rather than trusting the next sweep to notice.
-export const WORKTREE_LABEL_PREFIX = "worktree:";
+const WORKTREE_LABEL_PREFIX = "worktree:";
 
 // #987: AND NEITHER OF THOSE TWO FACTS FITS IN A LABEL. GitHub caps a label NAME at 50 characters, so
 // `worktree:` (9) leaves 41 for a path and `branch:` (7) leaves 43. An ordinary worktree beside this
@@ -166,11 +165,9 @@ export const WORKTREE_LABEL_PREFIX = "worktree:";
 // product-manager amends -- one was amended on THIS row while it sat in the Ready column -- and a claim
 // rewriting a body it read a moment earlier would silently drop that edit. A comment is append-only, so
 // two writers cannot clobber each other, and `row-claim` already posts one (#741's exception note).
-// RE-EXPORTED FROM THE LEAF, not declared here -- #2110 gave `work-gate.ts` a reason to read it, and
+// IMPORTED FROM THE LEAF, not declared here -- #2110 gave `work-gate.ts` a reason to read it, and
 // this file is unimportable from a tick (see `claim-labels.ts`'s own header for the whole argument).
-// Every existing `import { CLAIM_RECORD_MARKER } from "./row-claim.ts"` keeps working unchanged,
-// exactly as it did for the four labels above it.
-export { CLAIM_RECORD_MARKER };
+// Its importers take it from `claim-labels.ts` directly, so this file does not export it.
 const CLAIM_RECORD_BRANCH = "Claimed-branch:";
 const CLAIM_RECORD_WORKTREE = "Claimed-worktree:";
 // #3407: the spelling of a claim that names NO git object (a host act, a fleet or lab reading, a hand-claim). It is a CLAIM -- "claimed by", with
@@ -247,7 +244,7 @@ export function claimRecordFrom(comments: string[]): { branch: string | null; wo
  * @param {string[]} comments comment bodies, oldest first
  * @returns {string | null}
  */
-export function claimRecordSession(comments: string[]): string | null {
+function claimRecordSession(comments: string[]): string | null {
   const newest = comments.filter((c) => c.includes(CLAIM_RECORD_MARKER)).at(-1);
   if (newest === undefined) return null;
   const match = /\*\*Claim record\*\* -- claimed by `([^`]+)`/.exec(newest);
@@ -273,7 +270,7 @@ export function claimRecordSession(comments: string[]): string | null {
  * @param {{ labels: string[], comments: string[] }} row
  * @returns {{ branch: string | null, worktree: string | null }}
  */
-export function claimedObjects({ labels, comments }: { labels: string[]; comments: string[]; }): { branch: string | null; worktree: string | null; } {
+function claimedObjects({ labels, comments }: { labels: string[]; comments: string[]; }): { branch: string | null; worktree: string | null; } {
   const fromComment = claimRecordFrom(comments);
   if (fromComment.recorded) {
     return { branch: fromComment.branch, worktree: fromComment.worktree, ...(fromComment.nothing ? { nothing: true } : {}) };
@@ -282,7 +279,7 @@ export function claimedObjects({ labels, comments }: { labels: string[]; comment
   return { branch: labelled.branch, worktree: labelled.worktree };
 }
 
-export type IssueClaim = { number: number, title: string, labels: string[], state?: "OPEN" | "CLOSED" };
+type IssueClaim = { number: number, title: string, labels: string[], state?: "OPEN" | "CLOSED" };
 
 /**
  * #709: `git worktree remove` (below) DESTROYS A DIRECTORY, and an unscrubbed spawn inherits any
@@ -737,7 +734,7 @@ export function sessionEligibilityReason(issueNumber: number, mySession: string,
 }
 
 /** #4793: a holder B4 would have refused over and a `priority:chairman` row was let past -- `repo` is a pull request of a repository other than the first's. */
-export type WalkedPast = { kind: "row" | "pr"; number: number; repo?: string; };
+type WalkedPast = { kind: "row" | "pr"; number: number; repo?: string; };
 
 /**
  * #4793: {@link sessionEligibilityReason}'s verdict AND the holders a priority row was let past, so the claim can say whose rebase it has ordered. `walked` is
@@ -778,7 +775,7 @@ export function sessionEligibility(issueNumber: number, mySession: string, { run
 }
 
 /** #4793, #989: a B4 verdict and the holders a priority row was let past. `emergency` is the incident its `priority:emergency` yield was for, else `null`. */
-export type YieldVerdict = { reason: string | null; walked: WalkedPast[]; emergency: string | null; };
+type YieldVerdict = { reason: string | null; walked: WalkedPast[]; emergency: string | null; };
 
 type ClaimedRows = { number: number; files: string[]; blockedBy: number[]; }[];
 
@@ -874,7 +871,7 @@ const walkedNames = (walked: WalkedPast[]): string => walked
   .map((holder) => (holder.kind === "row" ? `row #${holder.number}` : `pull request #${holder.number}${holder.repo === undefined ? "" : ` in ${holder.repo}`}`)).join(", ");
 
 /** The comment a claim that went ahead over holders leaves on the row, so the rebase order has something to read. `null` when it walked past nobody. */
-export function walkedPastNote(issueNumber: number, walked: WalkedPast[], emergency: string | null = null): string | null {
+function walkedPastNote(issueNumber: number, walked: WalkedPast[], emergency: string | null = null): string | null {
   if (walked.length === 0) return null;
   if (emergency !== null) {
     return `**B4 yielded to an emergency row (agent-org#989).** #${issueNumber} carries \`${EMERGENCY_PRIORITY_LABEL}\`, which the gate honours for ${emergency}, and overlaps `
@@ -1066,7 +1063,7 @@ function postReleaseRecord(issueNumber: number, { session, recorded }: { session
  * DETERMINE`, exit 2, with nothing on stdout, so the caller read a claimed row as untouched. `decline` did the
  * same after removing the worktree and the labels, when its release record failed.
  */
-export const LANDED_WRITE_EXIT = 4;
+const LANDED_WRITE_EXIT = 4;
 
 /**
  * #1399: runs `act`, which pushes a description onto `landed` after each write it KNOWS succeeded. A failure
@@ -1078,7 +1075,7 @@ export const LANDED_WRITE_EXIT = 4;
  * @param {() => T} act
  * @returns {T}
  */
-export function withLandedWrites<T>(issueNumber: number, landed: string[], act: () => T): T {
+function withLandedWrites<T>(issueNumber: number, landed: string[], act: () => T): T {
   try {
     return act();
   } catch (cause) {
@@ -1094,7 +1091,7 @@ export function withLandedWrites<T>(issueNumber: number, landed: string[], act: 
  * @param {unknown} error
  * @returns {string[] | null}
  */
-export function landedWritesOf(error: unknown): string[] | null {
+function landedWritesOf(error: unknown): string[] | null {
   const landed = (error as { landed?: unknown } | null)?.landed;
   return Array.isArray(landed) ? landed : null;
 }
@@ -1105,7 +1102,7 @@ export function landedWritesOf(error: unknown): string[] | null {
  * @param {unknown} error
  * @returns {{ exitCode: number, text: string }}
  */
-export function failureReport(error: unknown): { exitCode: number; text: string; } {
+function failureReport(error: unknown): { exitCode: number; text: string; } {
   const message = (error as Error).message;
   if (landedWritesOf(error) === null) return { exitCode: 2, text: `COULD NOT DETERMINE: ${message}` };
   return { exitCode: LANDED_WRITE_EXIT, text: `PARTIALLY WRITTEN (exit ${LANDED_WRITE_EXIT}, NOT "could not determine" `
@@ -1189,7 +1186,7 @@ export function labelSetForClaim(labels: readonly string[], add: readonly string
  * @param {string} [repo] agent-org#575: the tracker's repository; absent, the first tracker's, which is what every caller before it meant
  * @returns {string[]}
  */
-export function claimLabelSetArgs(issueNumber: number, labels: readonly string[], repo: string = REPO): string[] {
+function claimLabelSetArgs(issueNumber: number, labels: readonly string[], repo: string = REPO): string[] {
   return ["api", "--method", "PUT", `repos/${repo}/issues/${issueNumber}/labels`,
     ...labels.flatMap((label) => ["-f", `labels[]=${label}`])];
 }
@@ -2384,7 +2381,7 @@ function notReadyReason(tree: string, { exec, exists }: { exec: typeof defaultEx
  * @param {{ exec: typeof defaultExec, exists: (path: string) => boolean }} deps
  * @returns {string | null}
  */
-export function installLockedDependencies(tree: string, { exec, exists }: { exec: typeof defaultExec; exists: (path: string) => boolean; }): string | null {
+function installLockedDependencies(tree: string, { exec, exists }: { exec: typeof defaultExec; exists: (path: string) => boolean; }): string | null {
   if (!exists(join(tree, "pnpm-lock.yaml")) || exists(join(tree, "node_modules"))) return null;
   try {
     const { command, args } = pnpmCliInvocation(["install", "--frozen-lockfile", "--ignore-scripts"]);
@@ -2432,7 +2429,7 @@ function adoptWorktree(issueNumber: number, mySession: string, { branch, worktre
  * @param {{ run?: typeof defaultRun }} [deps]
  * @returns {{ clean: true } | { clean: false, files: string[] }}
  */
-export function worktreeStatus(worktreePath: string, { run = defaultRun }: { run?: typeof defaultRun; } = {}): { clean: true; } | { clean: false; files: string[]; } {
+function worktreeStatus(worktreePath: string, { run = defaultRun }: { run?: typeof defaultRun; } = {}): { clean: true; } | { clean: false; files: string[]; } {
   if (!existsSync(worktreePath)) return { clean: true };
   const out = run("git", ["-C", worktreePath, "status", "--porcelain"]);
   const files = out.split("\n").filter(Boolean);
@@ -2459,7 +2456,7 @@ export function worktreeStatus(worktreePath: string, { run = defaultRun }: { run
  *   claim?: typeof claimRefusal, record?: typeof recordRemoval }} [deps]
  * @returns {{ removed: true } | { removed: false, reason: string, files?: string[] }}
  */
-export function removeClaimedWorktree(worktreePath: string, { run = defaultRun, hash, session, branch = null, claim = claimRefusal,
+function removeClaimedWorktree(worktreePath: string, { run = defaultRun, hash, session, branch = null, claim = claimRefusal,
   record = recordRemoval }: {
         run?: typeof defaultRun; hash?: (file: string) => string; session?: string; branch?: string | null;
         claim?: typeof claimRefusal; record?: typeof recordRemoval;
@@ -2765,7 +2762,7 @@ function releaseRow(issueNumber: number,
 }
 
 /** @returns {string} the check/conflict log's path -- shared across every worktree, per `gitCommonDir`. */
-export function checkLogPath(): string {
+function checkLogPath(): string {
   return `${gitCommonDir()}/row-claim-check-log.jsonl`;
 }
 

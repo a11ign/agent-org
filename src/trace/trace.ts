@@ -124,23 +124,23 @@ export const isMap = (argv: string[]) => argv.includes(MAP_FLAG);
 
 export const isWakeCache = (argv: string[]) => argv.includes(WAKE_CACHE_FLAG);
 
-export const isWakeOutcomes = (argv: string[]) => argv.includes(WAKE_OUTCOMES_FLAG);
+const isWakeOutcomes = (argv: string[]) => argv.includes(WAKE_OUTCOMES_FLAG);
 
-export const isIngest = (argv: string[]) => argv.includes(INGEST_FLAG);
+const isIngest = (argv: string[]) => argv.includes(INGEST_FLAG);
 
-export const isFreshness = (argv: string[]) => argv.includes(FRESHNESS_FLAG);
+const isFreshness = (argv: string[]) => argv.includes(FRESHNESS_FLAG);
 
-export const isCompactStore = (argv: string[]) => argv.includes(COMPACT_STORE_WORD);
+const isCompactStore = (argv: string[]) => argv.includes(COMPACT_STORE_WORD);
 
 /** The command word of `trace <word> ...`: the first argument that is not the `--` separator. A word is only a command in that place, so `--cause cost` is not one. */
 const commandWord = (argv: string[]) => argv.find((word) => word !== "--");
 
-export const isDuplicates = (argv: string[]) => commandWord(argv) === DUPLICATES_WORD;
+const isDuplicates = (argv: string[]) => commandWord(argv) === DUPLICATES_WORD;
 
-export const isCost = (argv: string[]) => commandWord(argv) === COST_WORD;
+const isCost = (argv: string[]) => commandWord(argv) === COST_WORD;
 
 /** `trace duplicates [--store <path>]`: any other argument is refused, as `compact-store`'s are. */
-export function parseDuplicatesArgs(argv: string[]) {
+function parseDuplicatesArgs(argv: string[]) {
   const [, ...given] = argv.filter((word) => word !== "--");
   const [flag, value, ...extra] = given;
   if (given.length > 0 && (flag !== "--store" || !value || extra.length > 0)) throw new Error(`unknown argument ${given.join(" ")}: trace duplicates [--store <path>]`);
@@ -150,7 +150,7 @@ export function parseDuplicatesArgs(argv: string[]) {
 const COST_USAGE = `trace cost --by ${COST_BY.join("|")} [--since <ISO>] [--store <path>]`;
 
 /** `trace cost --by day|row|cause|session [--since <ISO>] [--store <path>]`: `--by` is required, because a sum with no stated grouping is the hand-rolled one. */
-export function parseCostArgs(argv: string[]) {
+function parseCostArgs(argv: string[]) {
   const [, ...given] = argv.filter((word) => word !== "--");
   const flags: Record<string, string> = {};
   for (let index = 0; index < given.length; index += 2) {
@@ -165,10 +165,10 @@ export function parseCostArgs(argv: string[]) {
 }
 
 /** The line the ingest report and `trace duplicates` print: ids on more than one line, then the extra lines they hold. */
-export const duplicatesLine = ({ ids, extra }: Duplicates) => `duplicate ids: ${ids.size} (${extra} extra lines)`;
+const duplicatesLine = ({ ids, extra }: Duplicates) => `duplicate ids: ${ids.size} (${extra} extra lines)`;
 
 /** What `trace duplicates` prints: the line, then each id with the lines it is on, the most first. */
-export function duplicatesReport(found: Duplicates, store: string): string[] {
+function duplicatesReport(found: Duplicates, store: string): string[] {
   const shown = [...found.ids].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, MAX_DUPLICATES_SHOWN);
   return [duplicatesLine(found), `${found.lines} lines, ${found.distinct} distinct ids in ${store}`,
     ...shown.map(([id, lines]) => `  ${id}: ${lines} lines`),
@@ -177,7 +177,7 @@ export function duplicatesReport(found: Duplicates, store: string): string[] {
 }
 
 /** The table `trace cost` prints, its first line naming how the sum was read. */
-export function costReport({ rows, total }: { rows: CostRow[]; total: CostRow; }, { by, since, store, events }: { by: CostBy; since: number | null; store: string; events: number; }): string[] {
+function costReport({ rows, total }: { rows: CostRow[]; total: CostRow; }, { by, since, store, events }: { by: CostBy; since: number | null; store: string; events: number; }): string[] {
   const usd = (value: number) => value.toFixed(COST_DECIMALS);
   const primary = "usd (PRICES)";
   const client = `usd (cache reads at $${CLIENT_CACHE_READ_RATE.toFixed(2)}/M)`;
@@ -207,7 +207,7 @@ function mainCost() {
 }
 
 /** `trace compact-store [--store <path>] [--dry-run]`: any other argument is refused, because a misspelt `--dry-run` would rewrite the store. */
-export function parseCompactStoreArgs(argv: string[]) {
+function parseCompactStoreArgs(argv: string[]) {
   const rest = (argv[0] === "--" ? argv.slice(1) : argv).filter((word) => word !== COMPACT_STORE_WORD);
   const dryRun = rest.includes(DRY_RUN_FLAG);
   const given = rest.filter((word) => word !== DRY_RUN_FLAG);
@@ -220,7 +220,7 @@ export function parseCompactStoreArgs(argv: string[]) {
  * `trace -- --ingest [--since <ISO>] [--store <path>]` and `trace -- --freshness [--store <path>]` (agent-org#498). `--since` is the window of transcripts looked at, as in the other
  * modes (the last three days); a transcript the state has already read costs a `stat`, so it is not what the run costs.
  */
-export function parseIngestArgs(argv: string[], now: number = Date.now()) {
+function parseIngestArgs(argv: string[], now: number = Date.now()) {
   const rest = (argv[0] === "--" ? argv.slice(1) : argv).filter((word) => word !== INGEST_FLAG && word !== FRESHNESS_FLAG);
   const flags: Record<string, string> = {};
   for (let index = 0; index < rest.length; index += 2) flags[rest[index].replace(/^--/, "")] = rest[index + 1];
@@ -248,7 +248,7 @@ export function parseWakeCacheArgs(argv: string[], now: number = Date.now()) {
  * `trace -- --wake-outcomes [--since <ISO>] [--until <ISO>] [--store <path>] [--json 1]`: what the wakes of a window did, per cause (agent-org#487). `--since` is NOT rounded to a Monday; without it the
  * window is the last seven days, and `--until` (default: now) ends it.
  */
-export function parseWakeOutcomesArgs(argv: string[], now: number = Date.now()) {
+function parseWakeOutcomesArgs(argv: string[], now: number = Date.now()) {
   const { since, until, store, json } = parseWakeCacheArgs(argv.filter((word) => word !== WAKE_OUTCOMES_FLAG), now);
   return { since, until, store, json };
 }
@@ -321,7 +321,7 @@ const defaultStore = () => join(homedir(), ".cache", "a11ign", "trace", "events.
 export const PROMPT_LOG_FILES = ["prompt-session-direct", "prompt-session-handoffs"];
 const promptLogFiles = (cache: string) => PROMPT_LOG_FILES.map((file) => join(cache, file));
 
-export type IngestReport = { read: number; codexRead: number; unchanged: number; bytesRead: number; unreadableLines: number; failed: string[]; reread: string[]; heldBack: number; added: number;
+type IngestReport = { read: number; codexRead: number; unchanged: number; bytesRead: number; unreadableLines: number; failed: string[]; reread: string[]; heldBack: number; added: number;
   coldStart: string | null; firstRunAt: number; firstRunSince: number; ghCalls?: GhCallsReport; deferrals?: DeferralsReport; outcomes?: OutcomesReport; };
 
 /** Read `[start, end)` of a file, counting what was read: the report says how many bytes a run touched, so "only what changed" is a measurement. */
@@ -404,7 +404,7 @@ function readTranscript({ file, kind, stat, entry, ledger, rowRepo, now }: {
  * state returned is to be saved AFTER that append: a run killed in between leaves a state older than the store, which costs a re-read and no more. A file that cannot
  * be read is listed, never skipped quietly.
  */
-export function ingest({ root, codexRoot = null, since, ledger, rowRepo, store, state, coldStart = null, now = Date.now() }: {
+function ingest({ root, codexRoot = null, since, ledger, rowRepo, store, state, coldStart = null, now = Date.now() }: {
         root: string; codexRoot?: string | null; since: number; ledger: LedgerEntry[]; rowRepo: string; store: ReturnType<typeof openStore>;
         state: IngestState; coldStart?: string | null; now?: number;
     }): IngestReport & { state: IngestState; } {
@@ -456,7 +456,7 @@ export function ingestTranscripts({ root, codexRoot = null, since, ledger, rowRe
   return { store, report: { ...report, ...(calls ? { ghCalls: calls.report } : {}), ...(deferrals ? { deferrals: deferrals.report } : {}), ...(outcomes ? { outcomes } : {}) } };
 }
 
-export type OutcomesReport = { settled: number; wrote: number; noOp: number; escalated: number; unknown: number; countedHours: number; pending: number; failed: string[]; };
+type OutcomesReport = { settled: number; wrote: number; noOp: number; escalated: number; unknown: number; countedHours: number; pending: number; failed: string[]; };
 
 /**
  * A batch of outcomes is written when the oldest wake that can be settled is this old. A supersede rewrites the whole store (`rewriteStore`, 400+ MB), so settling each wake as its window
@@ -576,7 +576,7 @@ export function settleWakeOutcomes({ store, ghLedgers, promptLogs, servedLogs = 
  * THE INGEST OF A HOST'S HOME as `--ingest` runs it: the transcripts of Claude Code and Codex, the wake ledger, the `gh` call ledgers and the deferral log, with the same roots and ledgers
  * `trace -- <row>` and `--aggregate` name, so the store a clock-driven `--ingest` fills is the store a reading command would have filled. It reaches no GitHub.
  */
-export function ingestHome({ home = homedir(), since, storePath, rowRepo, ledger, now = Date.now() }: { home?: string; since: number; storePath: string; rowRepo: string; ledger?: LedgerEntry[]; now?: number; }) {
+function ingestHome({ home = homedir(), since, storePath, rowRepo, ledger, now = Date.now() }: { home?: string; since: number; storePath: string; rowRepo: string; ledger?: LedgerEntry[]; now?: number; }) {
   const cache = join(home, ".cache", "a11ign");
   return ingestTranscripts({
     root: join(home, ".claude", "projects"), codexRoot: join(home, ".codex", "sessions"), since, ledger: ledger ?? parseLedger(readFileSync(join(cache, "wake-ledger"), "utf8")), rowRepo, storePath,
@@ -588,12 +588,12 @@ export function ingestHome({ home = homedir(), since, storePath, rowRepo, ledger
  * Every file the run could not read, across the three sources it ingests: the transcripts, the `gh` call ledgers and the deferral logs each report their own `failed`, and a clock that
  * counted only the first would stay green over a ledger it was not ingesting. A file that is merely absent is not a failure (a host with no Codex, no deferral log yet).
  */
-export function ingestFailures(ingested: IngestReport): string[] {
+function ingestFailures(ingested: IngestReport): string[] {
   return [...ingested.failed, ...(ingested.ghCalls?.failed ?? []), ...(ingested.deferrals?.failed ?? []), ...(ingested.outcomes?.failed ?? [])];
 }
 
 /** What `--ingest` prints: one line (read, unchanged, added, failed), the failed files under it, and a cold start said as one. `added` is every kind of event the run appended. */
-export function ingestSummary(ingested: IngestReport): string[] {
+function ingestSummary(ingested: IngestReport): string[] {
   const added = ingested.added + (ingested.ghCalls?.added ?? 0) + (ingested.deferrals?.added ?? 0);
   const failures = ingestFailures(ingested);
   return [`ingest: ${ingested.read} transcripts read, ${ingested.unchanged} unchanged, ${added} events added, ${failures.length} failed`

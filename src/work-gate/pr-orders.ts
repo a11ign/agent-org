@@ -1,3 +1,4 @@
+/* eslint-disable clean-code/limited-public-api -- 64 exports: 36 used by other production modules, 16 by tests only, 12 by no other file; splitting it is a separate change */
 // module: the pull-request orders -- what `work-gate.ts` says to a session about a PR's own state (#2542)
 //
 // MOVED OUT OF `work-gate.ts`, NOT REWRITTEN (#2542, the first split of #928's lever 2a): `draftOrder`,

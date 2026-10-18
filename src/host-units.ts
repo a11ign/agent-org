@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* eslint-disable clean-code/limited-public-api -- 124 exports: 1 used by other production modules, 99 by tests only (test seams), 24 by no other file; splitting it is a separate change */
 // @ts-check
 // command: compare the systemd units this repo SHIPS against the ones the agent host actually runs
 //

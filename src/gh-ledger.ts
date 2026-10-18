@@ -256,7 +256,7 @@ export const rollupPathOf = (ledgerPath: string) => `${ledgerPath}.hourly`;
  * (agent-org#1420) `moved` is the 8th field: what the pool's own counter moved over the readings in this row, placed on a call or not, so an hour trimmed out of the ledger
  * is read as the counter saw it and not as its floor. It is absent on a row written before it was kept, and on one no counter reading closed a movement in.
  */
-export type HourRow = {hour: string, account: string, resource: string, calls: number, read: number, floor: number, caller?: string, moved?: number};
+type HourRow = {hour: string, account: string, resource: string, calls: number, read: number, floor: number, caller?: string, moved?: number};
 
 /** @param {string} text @returns {HourRow[]} a line that is not six to eight fields with numbers is skipped, as a half ledger line is */
 export function parseRollup(text: string): HourRow[] {
@@ -302,7 +302,7 @@ export function perHour(entries: LedgerEntry[], rollup: HourRow[], { account, re
 /** What the calls of an hour that no caller is recorded for are called: a rollup row from before the caller was kept, which is never given a guess. */
 export const NO_CALLER = "(caller not recorded)";
 
-export type HourCallers = { hour: string; callers: { caller: string; calls: number; read: number; floor: number }[] };
+type HourCallers = { hour: string; callers: { caller: string; calls: number; read: number; floor: number }[] };
 
 /**
  * WHO SPENT EACH HOUR: per UTC hour, the `limit` callers with the most floor points, from the same two files `perHour` adds. A caller is the script (`callerScript`),
@@ -407,7 +407,7 @@ function readLedgers(paths: readonly string[], read: (path: string) => string): 
 }
 
 /** `used` is the pool's own used points (`limit - remaining`, agent-org#1420), when the caller has them; the sentence states them beside the ledger's total. */
-export type SpenderQuestion = { ledgers: readonly string[]; login: string; appRoles?: readonly string[]; now?: number; read?: (path: string) => string; used?: number };
+type SpenderQuestion = { ledgers: readonly string[]; login: string; appRoles?: readonly string[]; now?: number; read?: (path: string) => string; used?: number };
 
 /** Under this share of the pool's used points the ledger is said to be short of the spender (agent-org#1420). */
 const ACCOUNTED_FLOOR = 0.9;
@@ -487,7 +487,7 @@ export const ALARM_FRACTION = 0.7;
 const ALARM_COMMAND = "pool-70pct";
 const TOP_IN_ALARM = 3;
 
-export type RefusalKind = "primary" | "secondary";
+type RefusalKind = "primary" | "secondary";
 
 /** `host/gh` greps the same two phrases lists (`rate_limit_kind`); `gh-ledger.test.ts` feeds both the same fixtures so they cannot drift apart unseen. */
 const SECONDARY_REFUSAL = /secondary rate limit|abuse detection|submitted too quickly/i;
@@ -594,13 +594,13 @@ function requeue(call: QueuedCall, resetAtS: number) {
   renameSync(join(call.dir, `${call.id}.meta.tmp`), join(call.dir, `${call.id}.meta`));
 }
 
-export type RunResult = { status: number | null; stderr: string; stdout?: string };
+type RunResult = { status: number | null; stderr: string; stdout?: string };
 export type RunQueued = (call: QueuedCall, argv: string[]) => RunResult;
 /** (#1518) The refused pool's `x-ratelimit-remaining` for a call's account, or null when there is no answer. {@link poolLeftOfQueued} reads it through the run that makes the call, so the probe goes as the same account. */
-export type PoolLeftOf = (call: QueuedCall, stderr: string) => number | null;
+type PoolLeftOf = (call: QueuedCall, stderr: string) => number | null;
 const NO_READING: PoolLeftOf = () => null;
-export type RetryEvent = "completed" | "requeued" | "failed";
-export type RetryOutcome = { id: string; command: string; event: RetryEvent; detail: string };
+type RetryEvent = "completed" | "requeued" | "failed";
+type RetryOutcome = { id: string; command: string; event: RetryEvent; detail: string };
 
 const firstLine = (text: string) => (text.split("\n").find((l) => l.trim() !== "") ?? "").trim().slice(0, 160);
 const commandOf = (argv: string[]) => argv.slice(0, 2).join(" ");
@@ -684,7 +684,7 @@ function poolOf(e: LedgerEntry): "graphql" | "core" | null {
 /** A call's points against its pool: the cost the response carried, else ONE (a REST call is one; a GraphQL call with no `rateLimit` is its floor). A conditional request that answered 304 costs none and is counted as one, so a REST reading is an upper bound. */
 const spend = (e: LedgerEntry) => (poolOf(e) === null ? 0 : e.cost ?? 1);
 
-export type PoolAlarm = { account: string; resource: "graphql" | "core"; used: number; limit: number; fraction: number; top: { caller: string; command: string; points: number }[] };
+type PoolAlarm = { account: string; resource: "graphql" | "core"; used: number; limit: number; fraction: number; top: { caller: string; command: string; points: number }[] };
 
 /**
  * THE POOLS THAT PASSED `fraction` OF THEIR LIMIT in the hour ending at `now`, one per account and resource, each with its top callers.
@@ -725,11 +725,11 @@ export function alarmLine(alarm: PoolAlarm, nowMs: number): string {
 // --- #1517: THE SESSION ALARM -- which session spends a burst, named BEFORE the pool is near its line ----------------------
 
 /** A session that spends more than this many points in ten minutes is named (agent-org#1517). A manager's drain was a burst the hour's 70% line saw too late. */
-export const SESSION_POINTS = 500;
-export const SESSION_WINDOW_MS = 10 * 60_000;
+const SESSION_POINTS = 500;
+const SESSION_WINDOW_MS = 10 * 60_000;
 const SESSION_ALARM_COMMAND = "session-500-10min";
 
-export type SessionAlarm = { account: string; session: string; used: number; endedAt: string; top: { caller: string; command: string; points: number }[] };
+type SessionAlarm = { account: string; session: string; used: number; endedAt: string; top: { caller: string; command: string; points: number }[] };
 
 /**
  * THE SESSIONS THAT SPENT MORE THAN `limit` POINTS IN SOME TEN-MINUTE WINDOW of the last hour, one per account and session, with the top callers of
@@ -773,7 +773,7 @@ export function sessionAlarms(entries: LedgerEntry[], { nowMs = Date.now(), limi
 }
 
 /** The session alarm as ONE ledger line: resource `incident`, the command names the rule, the session in the session column, and the callers in the caller field. */
-export function sessionAlarmLine(alarm: SessionAlarm, nowMs: number): string {
+function sessionAlarmLine(alarm: SessionAlarm, nowMs: number): string {
   const callers = alarm.top.map((t) => `${t.caller} [${t.command}] ${t.points}`).join("; ");
   const said = `session ${alarm.session} spent ${alarm.used} points in the ten minutes ending ${alarm.endedAt} (more than ${SESSION_POINTS}); top callers: ${callers}`;
   return [isoOf(nowMs), alarm.account, "incident", "", "0", SESSION_ALARM_COMMAND, NONE, said.replace(/[\t\n]/g, " "), alarm.session].join("\t");
@@ -801,7 +801,7 @@ export function recordPoolAlarms(ledgerPath: string, nowMs: number): string[] {
 // --- #4898: THE GATE'S TICK -- retry what is due, then read the budget ---------------------------------------------------------
 
 /** The account config directories whose ledgers and queues the gate reads. NEVER the person's `~/.config/gh`: the gate does not act as the human, so it retries no call there. */
-export const accountDirs = (home: string = homedir()) => [join(home, "workers", "gh"), join(home, "leads", "gh")];
+const accountDirs = (home: string = homedir()) => [join(home, "workers", "gh"), join(home, "leads", "gh")];
 
 /**
  * ONCE PER TICK: make every queued call whose reset has passed, write the 70% incident for any pool past it. Returns the lines for the tick log, none when nothing
@@ -836,7 +836,7 @@ export function ghQueueTick({ home = process.env.A11Y_GH_QUEUE_HOME ?? homedir()
 const VERDICT = /^(hit|miss)-([a-z-]+):([0-9a-f]+):([0-9a-f]+):([A-Za-z0-9._-]+)$/;
 
 /** What the cache said about one read: a hit, or a miss and the `why` `read_cache_fresh` gave. */
-export type Verdict = { outcome: "hit" | "miss"; why: string; argv: string; repository: string };
+type Verdict = { outcome: "hit" | "miss"; why: string; argv: string; repository: string };
 
 /** @returns {Verdict | null} null for a field that is not the wrapper's grammar: a line that cannot say is never given an answer */
 export function verdictOf(cache: string): Verdict | null {
@@ -862,8 +862,8 @@ function readLineOf(e: LedgerEntry): ReadLine | null {
     outcome: v?.outcome ?? "unknown", why: v?.why ?? NO_VERDICT };
 }
 
-export type ReadGroup = { caller: string; command: string; repository: string; digest: string; calls: number; hits: number; unknown: number; misses: Record<string, number>; };
-export type ReadReport = { from: string; to: string; groups: ReadGroup[]; calls: number; hits: number; misses: number; unknown: number; uncached: number; };
+type ReadGroup = { caller: string; command: string; repository: string; digest: string; calls: number; hits: number; unknown: number; misses: Record<string, number>; };
+type ReadReport = { from: string; to: string; groups: ReadGroup[]; calls: number; hits: number; misses: number; unknown: number; uncached: number; };
 
 const missesOf = (g: ReadGroup) => Object.values(g.misses).reduce((n, c) => n + c, 0);
 

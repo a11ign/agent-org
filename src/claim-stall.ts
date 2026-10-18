@@ -1,3 +1,4 @@
+/* eslint-disable clean-code/limited-public-api -- 73 exports: 43 used by other production modules, 19 by tests only, 11 by no other file; splitting it is a separate change */
 // @ts-check
 // A CLAIM THAT DOES NOT MOVE, AND NOTHING THAT SAID SO -- #2470.
 //

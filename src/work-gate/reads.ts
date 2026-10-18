@@ -1,3 +1,4 @@
+/* eslint-disable clean-code/limited-public-api -- 74 exports: 57 used by other production modules, 14 by tests only, 3 by no other file; splitting it is a separate change */
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, mkdirSync, writeFileSync, renameSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";

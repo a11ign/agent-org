@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* eslint-disable clean-code/limited-public-api -- 85 exports: 2 used by other production modules, 65 by tests only (test seams), 18 by no other file; splitting it is a separate change */
 // @ts-check
 // command: org-retro -- the last 24 hours of the org, as numbers, for `ceo`'s daily retrospective (#2938).
 //

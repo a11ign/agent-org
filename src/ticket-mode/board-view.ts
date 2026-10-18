@@ -1,3 +1,4 @@
+/* eslint-disable clean-code/limited-public-api -- 113 exports: 18 used by other production modules, 67 by tests only (one test spreads the whole module into a fake page); splitting it is a separate change */
 // @ts-check
 // module: the ticket board page's logic -- which tickets show, how they group, what can be selected, what status a run has -- as pure functions
 //

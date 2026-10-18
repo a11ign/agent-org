@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* eslint-disable clean-code/limited-public-api -- 85 exports: 1 used by other production modules, 70 by tests only (test seams), 14 by no other file; splitting it is a separate change */
 // @ts-check
 // command: refuse to file a backlog row via `gh issue create` when its body is missing a required
 // section, or board/label it wrong -- see #844's own addition below for the second half

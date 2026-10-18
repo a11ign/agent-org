@@ -1,3 +1,4 @@
+/* eslint-disable clean-code/limited-public-api -- 190 exports: 42 used by other production modules, 99 by tests only (some tests take the whole module as an object); splitting it is a separate change */
 // THE ORG FIXES WHAT IT IS TOLD ABOUT AND DOES NOT LOOK (#2936, the chairman's "why isn't the agent org self healing ... surely
 // the ceo should be optimising?", 2026-10-01). #2841, #2842, #2845, #2847, #2853 and #2882/#2912 each closed the exact instance
 // the chairman's own session found; nothing asked "is anything landing".

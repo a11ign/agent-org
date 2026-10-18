@@ -1,3 +1,4 @@
+/* eslint-disable clean-code/limited-public-api -- 380 exports, 362 of them re-exported from the src/work-gate modules: this file is the barrel, and its surface is what other modules import (66 by production code, 253 by tests only); splitting it is a separate change */
 // command: work-gate -- is there work for any session? One cheap read; a wake order per line when yes.
 //
 // #912's remaining half. `org-watch.ts:713-717` states it in its own comment: "READS 2-4 ARE NOT WIRED

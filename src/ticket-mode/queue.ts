@@ -1,3 +1,4 @@
+/* eslint-disable clean-code/limited-public-api -- 101 exports: 87 used by other production modules, 5 by tests only, 9 by no other file; splitting it is a separate change */
 // @ts-check
 // module: ticket mode's queue -- what you queued, what is running, and how each run ended; pure transitions plus one file
 //
