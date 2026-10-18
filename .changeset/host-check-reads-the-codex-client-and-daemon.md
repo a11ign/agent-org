@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-`host:check` reads the Codex CLI against the Codex daemon (`CODEX CLIENT AND DAEMON DISAGREE`). The two are separate programs on separate release schedules (the daemon updates itself, the CLI does not), they disagree on feature defaults, and the first session that met one stopped on a dialog; nothing on the host read it. The finding is raised when `codex app-server daemon version` reports a `cliVersion` different from the `appServerVersion`, or when a feature whose default differs between the two builds' `features list` is not declared in `~/.codex/config.toml` `[features]`. It lists each such flag with both defaults and its remedy names the `<flag> = <value>` line to add, the value the client already runs with; it reads and never writes. No `codex`, a daemon that is not running, an unreadable `features list` and an unreadable config are each a finding that says which. The daemon's build is the `managedCodexPath` its own `version` output names; `codex` is looked for on the PATH and then in `<home>/.local/bin`. Costs three short `codex` spawns (about 0.2 s together, measured) in each `hostUnitDrift`. a11ign/agent-org#461.
