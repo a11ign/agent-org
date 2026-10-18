@@ -10,7 +10,7 @@ const recommended = {
   "clean-code/max-arguments": "warn",
   "clean-code/no-commented-out-code": "warn",
   "clean-code/no-dead-code": "warn",
-  "clean-code/no-encodings": "warn",
+  "clean-code/no-encodings": "error",
   "clean-code/no-flag-arguments": "warn",
   "clean-code/no-magic-numbers": "warn",
   "clean-code/no-negative-conditionals": "warn",
