@@ -9,9 +9,9 @@
 //
 // EVERY READ IS INJECTED: /proc, systemctl, ps, launchctl, herdr's listing and the queue file. The decisions are tested without a host, and
 // `hostIsolation` is the one place that asks a real host. Where the answer cannot be read it is `unknown`, and `unknown` is never read as outside.
-import { readdirSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { agentOrgHome, readOrNull, type Env, type ReadOrNull } from "./paths.ts";
+import { agentOrgHome, readOrNull, type Env } from "./paths.ts";
 import { unitFor, type Run, type ServiceDeps } from "./service.ts";
 import { writeAtomic } from "./write-atomic.ts";
 
@@ -175,15 +175,37 @@ export type UpdateStatus = Readonly<{
 
 export const updateStatusPath = (env: Env, home: string): string => join(agentOrgHome(env, home), "update-status.json");
 
-/** The status file's contents, or null when it is absent or is not a status (`doctor` then says nothing has checked yet). */
-export function readUpdateStatus(path: string, read: ReadOrNull = readOrNull): UpdateStatus | null {
-  const text = read(path);
-  if (text === null) return null;
+/**
+ * What the status file holds: nothing yet (`absent`), a status, or a file that cannot be read or is not a status (`unreadable`). The last is never
+ * read as clean: `doctor` fails on it, and the run that reads it writes the file again.
+ */
+export type StatusFile = { kind: "absent" } | { kind: "unreadable"; why: string } | { kind: "status"; status: UpdateStatus };
+
+/** The status file's text, or null when there is no file. Any other read failure throws: a file that cannot be read is not an absent one. */
+export function readStatusText(path: string): string | null {
   try {
-    return parseStatus(JSON.parse(text));
-  } catch {
-    return null;
+    return readFileSync(path, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
   }
+}
+
+export function readUpdateStatus(path: string, read: (path: string) => string | null = readStatusText): StatusFile {
+  let text: string | null;
+  try {
+    text = read(path);
+  } catch (err) {
+    return { kind: "unreadable", why: (err as Error).message };
+  }
+  if (text === null) return { kind: "absent" };
+  let status: UpdateStatus | null;
+  try {
+    status = parseStatus(JSON.parse(text));
+  } catch {
+    return { kind: "unreadable", why: "it is not valid JSON" };
+  }
+  return status === null ? { kind: "unreadable", why: "it is not an update status" } : { kind: "status", status };
 }
 
 function parseStatus(value: unknown): UpdateStatus | null {

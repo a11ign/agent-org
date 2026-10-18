@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { diagnose, report, type DoctorDeps } from "./doctor.ts";
-import type { UpdateStatus } from "./update-safety.ts";
+import type { StatusFile, UpdateStatus } from "./update-safety.ts";
 
 const NOW = Date.parse("2026-10-18T10:00:00.000Z");
 const HOUR = 3600e3;
@@ -20,7 +20,7 @@ function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
     healthy: async (port) => port === 7318, unitProblem: () => null, mcpList: () => MCP_LIST,
     tailscale: () => ({ status: 1, stdout: "", stderr: "not used" }), tailnetAnswers: async () => false,
     ghWrapper: async () => ({ divergence: null, mints: [] }),
-    platform: "linux", isolation: () => ({ kind: "outside", scope: null }), updateStatus: () => null, releaseTags: () => [], now: () => NOW,
+    platform: "linux", isolation: () => ({ kind: "outside", scope: null }), updateStatus: () => ({ kind: "absent" }), releaseTags: () => [], now: () => NOW,
     ...over,
   };
 }
@@ -173,34 +173,45 @@ const RELEASES = ["v0.243.0", "v0.244.0", "v0.245.0", "v0.246.0", "v0.247.0", "v
 const status = (over: Partial<UpdateStatus> = {}): UpdateStatus => ({
   checkedAt: "2026-10-18T09:00:00.000Z", channel: "release", installed: "v0.243.0", latest: "v0.248.0", latestSince: "2026-10-17T08:00:00.000Z", ...over,
 });
+const present = (over: Partial<UpdateStatus> = {}): StatusFile => ({ kind: "status", status: status(over) });
 const lagOf = async (over: Partial<DoctorDeps>) => byName(await diagnose(deps({ releaseTags: () => RELEASES, ...over })))["update lag"];
+
+test("A11-90: doctor fails an update status file it cannot read or parse, rather than passing it as no status", async () => {
+  const unreadable = await lagOf({ updateStatus: () => ({ kind: "unreadable", why: "EACCES: permission denied" }) });
+  assert.equal(unreadable.ok, false);
+  assert.equal(unreadable.detail, "the update status file cannot be read: EACCES: permission denied");
+  assert.equal(unreadable.fix, "run `agent-org update`, which writes the file again, or check its permissions");
+  const corrupt = await lagOf({ updateStatus: () => ({ kind: "unreadable", why: "it is not valid JSON" }) });
+  assert.equal(corrupt.ok, false);
+  assert.match(corrupt.detail, /it is not valid JSON$/);
+});
 
 test("A11-90: doctor says how many releases behind the install is, and since when, and what an update is deferred for", async () => {
   // Two hours after the release was cut: behind, and inside the window the hourly update has to move it in.
   const now = () => Date.parse("2026-10-17T10:00:00.000Z");
-  const behind = await lagOf({ updateStatus: () => status(), now });
+  const behind = await lagOf({ updateStatus: () => present(), now });
   assert.equal(behind.ok, true);
   assert.equal(behind.detail, "installed v0.243.0, latest v0.248.0: 5 releases behind, since 2026-10-17T08:00:00.000Z");
-  const deferred = await lagOf({ updateStatus: () => status({ deferredSince: "2026-10-18T09:30:00.000Z", deferredReason: "herdr is inside the instance's cgroup" }), now: () => NOW });
+  const deferred = await lagOf({ updateStatus: () => present({ deferredSince: "2026-10-18T09:30:00.000Z", deferredReason: "herdr is inside the instance's cgroup" }), now: () => NOW });
   assert.equal(deferred.detail, "installed v0.243.0, latest v0.248.0: 5 releases behind, since 2026-10-17T08:00:00.000Z; update deferred since 2026-10-18T09:30:00.000Z: herdr is inside the instance's cgroup");
 });
 
 test("A11-90: doctor fails an install behind for longer than tickets.updateMaxDeferHours and an hour's grace, and passes it inside that", async () => {
-  const within = await lagOf({ updateStatus: () => status({ deferredSince: new Date(NOW - 2.5 * HOUR).toISOString(), deferredReason: "x" }) });
+  const within = await lagOf({ updateStatus: () => present({ deferredSince: new Date(NOW - 2.5 * HOUR).toISOString(), deferredReason: "x" }) });
   assert.equal(within.ok, true);
-  const late = await lagOf({ updateStatus: () => status({ deferredSince: new Date(NOW - 3 * HOUR - 60e3).toISOString(), deferredReason: "x" }) });
+  const late = await lagOf({ updateStatus: () => present({ deferredSince: new Date(NOW - 3 * HOUR - 60e3).toISOString(), deferredReason: "x" }) });
   assert.equal(late.ok, false);
   assert.match(late.detail, /; the hourly update should have moved it by now$/);
   assert.equal(late.fix, "run `agent-org update` (with `--force` to restart a live run too), then check `agent-org status auto-update`");
-  const neverDeferred = await lagOf({ updateStatus: () => status({ latestSince: new Date(NOW - 4 * HOUR).toISOString() }) });
+  const neverDeferred = await lagOf({ updateStatus: () => present({ latestSince: new Date(NOW - 4 * HOUR).toISOString() }) });
   assert.equal(neverDeferred.ok, false, "behind for hours with no deferral is a timer that is not moving it");
 });
 
 test("A11-90: doctor passes an install at the newest release, one no update has checked, and one that follows main, and fails one not at a release", async () => {
-  assert.equal((await lagOf({ updateStatus: () => status({ installed: "v0.248.0" }) })).detail, "installed v0.248.0, which is the latest release");
+  assert.equal((await lagOf({ updateStatus: () => present({ installed: "v0.248.0" }) })).detail, "installed v0.248.0, which is the latest release");
   assert.equal((await lagOf({})).detail, "no update has checked this install yet, so how far behind the latest release it is not known");
-  assert.equal((await lagOf({ updateStatus: () => status({ channel: "main", installed: "3846c6e", latest: "main" }) })).ok, true);
-  const detached = await lagOf({ updateStatus: () => status({ installed: "3846c6e" }) });
+  assert.equal((await lagOf({ updateStatus: () => present({ channel: "main", installed: "3846c6e", latest: "main" }) })).ok, true);
+  const detached = await lagOf({ updateStatus: () => present({ installed: "3846c6e" }) });
   assert.equal(detached.ok, false);
   assert.equal(detached.detail, "installed at 3846c6e, which is not a release");
 });
