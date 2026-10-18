@@ -40,6 +40,8 @@ const PAIR_PAGE = join(HERE, "pair.html");
 const VIEW = join(HERE, "board-view.ts");
 /** The Pick view's label filters, sent the same way. Each module the page imports is one the browser can run as it is: it imports nothing. */
 const LABEL_FILTERS = join(HERE, "label-filters.ts");
+/** The Pick view's Assignee filter, sent the same way: it imports nothing, so the browser runs it as it is. */
+const ASSIGNEE_FILTER = join(HERE, "assignee-filter.ts");
 const COOKIE = "ticket_session";
 /** The most a pairing request may send. It is read before the request is known to be anyone's, so it is kept small. */
 const PAIR_BODY_BYTES = 1024;
@@ -99,8 +101,15 @@ export function labelFiltersScript(read: (path: string) => string = (path) => re
   return stripTypeScriptTypes(read(LABEL_FILTERS));
 }
 
+/** `assignee-filter.ts` as the browser can run it, as `boardViewScript` sends `board-view.ts`. */
+export function assigneeFilterScript(read: (path: string) => string = (path) => readFileSync(path, "utf8")): string {
+  return stripTypeScriptTypes(read(ASSIGNEE_FILTER));
+}
+
 /** The page's modules, by the path it imports each from. */
-const SCRIPTS: Readonly<Record<string, () => string>> = { "/board-view.js": () => boardViewScript(), "/label-filters.js": () => labelFiltersScript() };
+const SCRIPTS: Readonly<Record<string, () => string>> = {
+  "/board-view.js": () => boardViewScript(), "/label-filters.js": () => labelFiltersScript(), "/assignee-filter.js": () => assigneeFilterScript(),
+};
 
 /**
  * What the request is paired by: the board key in its `x-ticket-token` header, a paired browser's session in its cookie when it sends no

@@ -30,7 +30,7 @@ import { loadReviewerGate } from "./reviewer-port.ts";
 import { amend, approve, childOrder, dismissWriter, enqueue, loadQueue, queuePublish, queueWriter, respond, retry, saveQueue, setMax, setPaused, type PlanFirst, type Queue, type RunChoice, writerOf, writerStatus } from "./queue.ts";
 import { plansInBatches, readTicketSettings, type TicketSettings } from "./settings.ts";
 import { cachedTailnetName, readTailnetName, runTailscale, tailnetTerminal } from "./tailnet.ts";
-import type { Ticket, TicketSource } from "./source.ts";
+import type { Assignee, Ticket, TicketSource } from "./source.ts";
 import { approveDraft, discardDraft } from "./writer-create.ts";
 import { PRIORITIES } from "./writer.ts";
 
@@ -150,6 +150,16 @@ export function createBoard(deps: BoardDeps) {
   const pool = deps.pool ?? createPool(store, { ...deps.poolDeps, settings, source, hook: { node: process.execPath, bin: BIN } });
   let known = new Map<string, Ticket>();
   let warnedNoName = false;
+  let viewer: Assignee | null = null;
+
+  /**
+   * The person whose key this is, read once and kept for the life of the instance. A failure is null and is asked again on the next config read,
+   * so a tracker that is down at start-up does not hide the Assignee filter for ever. A source without `me` has no one to name.
+   */
+  async function whoAmI(): Promise<Assignee | null> {
+    if (viewer === null && source.me !== undefined) viewer = await source.me().catch(() => null);
+    return viewer;
+  }
 
   /**
    * The terminal address the page is handed. Served on the tailnet, it is the tailnet's address unless the stored one names another machine. When the
@@ -195,9 +205,12 @@ export function createBoard(deps: BoardDeps) {
 
   async function api(method: string, path: string, body: Json): Promise<[number, unknown]> {
     if (method === "GET" && path === "/api/config") {
+      // `pickDefault` is the Assignee filter's first choice: the key's own tickets, or every open one. `pickOpen` is what Anyone reads as in the count.
+      // `viewer` is the key's person, or null while the tracker cannot say: an instance that sends it names assignees, one that does not is older.
       return [200, { models: MODELS, efforts: EFFORTS, choice: readChoice(deps.choicePath), max: queue.max, terminal: await terminalAddress(), plan: settings.plan, planner: plans,
-        publish: settings.publish !== null, pick: pickLabel(settings.pick), writer: settings.writer !== null, writerGrill: settings.terminal !== null,
-        repos: Object.keys(settings.clones), priorities: PRIORITIES }];
+        publish: settings.publish !== null, pick: pickLabel(settings.pick), pickDefault: settings.pick === "assigned" ? "you" : "anyone",
+        pickOpen: settings.pick === "assigned" ? "open" : pickLabel(settings.pick), viewer: await whoAmI(),
+        writer: settings.writer !== null, writerGrill: settings.terminal !== null, repos: Object.keys(settings.clones), priorities: PRIORITIES }];
     }
     if (method === "GET" && path === "/api/pick") {
       // Asked only by a Pick view whose list came back empty, so the name of the key's person costs a request only then. A tracker that cannot
@@ -211,8 +224,8 @@ export function createBoard(deps: BoardDeps) {
       return [200, tickets];
     }
     if (method === "GET" && path === "/api/parents") {
-      // The parents of the person's tickets that are not the person's own, so the Pick list can nest under them. One the tracker cannot
-      // read is left out, and its children stand on their own.
+      // The parents of the listed tickets that are not listed themselves, so the Pick list can nest under them whatever scope it shows. One the
+      // tracker cannot read is left out, and its children stand on their own.
       const missing = [...new Set([...known.values()].flatMap((t) => (t.parent && !known.has(t.parent) ? [t.parent] : [])))];
       const read = await Promise.allSettled(missing.map((key) => source.read(key)));
       return [200, read.flatMap((r) => (r.status === "fulfilled" && r.value !== null ? [r.value] : []))];

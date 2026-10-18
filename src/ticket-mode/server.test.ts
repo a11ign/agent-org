@@ -365,6 +365,33 @@ test("A11-69: the board says which tickets the Pick view lists, and why it is em
   assert.equal(asked, 1, "a team's list names no person, so none is asked for");
 });
 
+test("A11-108: the config names the Assignee filter's default and the key's person, read once and kept; a failed read is null and is asked again", async () => {
+  let asked = 0;
+  let down = true;
+  const tracker: TicketSource = {
+    assigned: async () => [{ ...ticket("NBF-1"), assignee: { id: "dan", name: "Dan Beck" } }, { ...ticket("NBF-2"), assignee: null }], read: async () => null, download: async () => [],
+    me: async () => { asked += 1; if (down) throw new Error("Linear answered 500"); return { id: "dan", name: "Dan Beck" }; },
+  };
+  const b = board(4747, {}, {}, tracker);
+  const [, failed] = await b.api("GET", "/api/config", {}) as [number, any];
+  assert.equal(failed.viewer, null, "a tracker that cannot say whose key it is gives null, and the page lists every ticket");
+  assert.deepEqual([failed.pickDefault, failed.pickOpen], ["you", "open"]);
+  down = false;
+  const [, config] = await b.api("GET", "/api/config", {}) as [number, any];
+  assert.deepEqual(config.viewer, { id: "dan", name: "Dan Beck" });
+  await b.api("GET", "/api/config", {});
+  assert.equal(asked, 2, "the failed read is asked again, and the one that worked is kept");
+  const [, list] = await b.api("GET", "/api/tickets", {}) as [number, any[]];
+  assert.deepEqual(list.map((t) => t.assignee), [{ id: "dan", name: "Dan Beck" }, null], "each ticket carries its assignee, unassigned as null");
+});
+
+test("A11-108: a team or a project names Anyone as the default and its own words for it, and reads no person", async () => {
+  const [, config] = await board(4747, { pick: { team: "A11" } }).api("GET", "/api/config", {}) as [number, any];
+  assert.deepEqual([config.pickDefault, config.pickOpen], ["anyone", "open in team A11"]);
+  const [, mine] = await board().api("GET", "/api/config", {}) as [number, any];
+  assert.deepEqual([mine.pickDefault, mine.pickOpen], ["you", "open"]);
+});
+
 /** A board over a tracker with an epic, A11-24, whose open sub-issues are A11-27, A11-25 and A11-26, and an epic of epics, A11-40. */
 function epicBoard(blockers: TicketSource["blockers"] | null) {
   const reads: string[] = [];

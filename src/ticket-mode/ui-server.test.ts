@@ -14,7 +14,7 @@ import { httpForward, type Forward } from "./remote-proxy.ts";
 import { createBoard } from "./server.ts";
 import { parseTicketSettings } from "./settings.ts";
 import type { Ticket, TicketSource } from "./source.ts";
-import { boardViewScript, createUi, labelFiltersScript, pairedBy, sameTerminal } from "./ui-server.ts";
+import { assigneeFilterScript, boardViewScript, createUi, labelFiltersScript, pairedBy, sameTerminal } from "./ui-server.ts";
 import type { TerminalMint } from "./terminal-pair.ts";
 
 const REMOTE_KEY = "c".repeat(48);
@@ -282,11 +282,22 @@ test("the label filters are served as JavaScript the browser can import, types s
   assert.deepEqual(filters.withLabels(tickets, new Set([filters.labelChoice("Goal", "Fleet")])).map((t: { key: string }) => t.key), ["A-1"]);
 });
 
-test("a paired browser gets both of the page's modules, and a ticket's labels reach it through a connection with nothing new passed on", async () => {
+test("the assignee filter is served as JavaScript the browser can import, types stripped, and chooses as the tested module does", async () => {
+  const script = assigneeFilterScript();
+  assert.doesNotMatch(script, /export type |: readonly Owned\[\]/, "no type annotation reaches the browser");
+  const file = join(tmpDir("ticket-assignee-filter-"), "assignee-filter.mjs");
+  writeFileSync(file, script);
+  const filter = await import(pathToFileURL(file).href);
+  const tickets = [{ key: "A-1", assignee: { id: "u1", name: "Dan Beck" } }, { key: "A-2", assignee: null }];
+  assert.deepEqual(filter.inScope(tickets[1], filter.UNASSIGNED, null), true, "the browser's copy chooses as the tested one does");
+  assert.deepEqual(filter.inScope(tickets[0], "u1", null), true);
+});
+
+test("a paired browser gets all of the page's modules, and a ticket's labels reach it through a connection with nothing new passed on", async () => {
   const u = await ui([WORK]);
   try {
     const cookie = await pairedCookie(u.base, u.local.key);
-    for (const path of ["/board-view.js", "/label-filters.js"]) {
+    for (const path of ["/board-view.js", "/label-filters.js", "/assignee-filter.js"]) {
       const served = await fetch(`${u.base}${path}`, { headers: { cookie } });
       assert.equal(served.status, 200, path);
       assert.match(String(served.headers.get("content-type")), /^text\/javascript/, path);
