@@ -18,7 +18,6 @@ import { commitFromAttestations, isNameReservation, measureRepository, npmReleas
 import { homeProjectDeclaration } from "./project-config.ts";
 import { trackedTopLevelDirs } from "./region-paths.ts";
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 type Any = any;
 
 const NOW = Date.parse("2026-10-05T12:00:00Z");

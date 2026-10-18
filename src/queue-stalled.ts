@@ -337,7 +337,7 @@ export function examinePr(pr: QueuedPr, now: number, runGit: (args: string[]) =>
   const ageMs = armed && pr.autoMergeRequest ? now - Date.parse(pr.autoMergeRequest.enabledAt) : 0;
   const green = armed && normaliseConclusion(gateConclusion) === SUCCESS;
   // #1623: a PR that is not green can still be one nothing will ever unstick -- reported by name, never acted on.
-  // eslint-disable-next-line local/bounded-window-reads -- #1623: the superseded-gate verdict must see the older runs; the newest is still chosen by newestRun
+  // a11ign's local/bounded-window-reads rule guards this read. #1623: the superseded-gate verdict must see the older runs; the newest is still chosen by newestRun
   const blocking = supersedingGateVerdict({ armed, runs: pr.statusCheckRollup });
   const superseded = blocking.code === "SUPERSEDED" ? { number: pr.number, reason: blocking.reason } : undefined;
 
@@ -352,7 +352,7 @@ export function examinePr(pr: QueuedPr, now: number, runGit: (args: string[]) =>
   // #1810: the RAW population, not the newest-per-name reading `newestConclusion`/`newestRun` give the
   // checks above -- even a superseded or duplicate run proves GitHub scheduled SOMETHING at this head,
   // which is exactly what this predicate asks, unlike those checks' question of what the newest one says.
-  // eslint-disable-next-line local/bounded-window-reads -- #1810: the count itself is the signal; see above
+  // a11ign's local/bounded-window-reads rule guards this read. #1810: the count itself is the signal; see above
   const checkRunCount = (pr.statusCheckRollup ?? []).length;
   const scheduleVerdict = neverScheduledVerdict({ isDraft: Boolean(pr.isDraft), ageMs: prAgeMs, checkRunCount });
   const neverScheduled = scheduleVerdict.stalled ? { number: pr.number, reason: scheduleVerdict.reason } : undefined;

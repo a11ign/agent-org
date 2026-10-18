@@ -43,7 +43,6 @@ const SECOND_PROJECT = {
 };
 
 // A mutation reaches into fields the fixture's own type would have to pretend are optional and mistyped, which is the point of it.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Loose = any;
 
 /** @param mutate the ONE change that makes the declaration invalid */

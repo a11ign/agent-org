@@ -22,7 +22,6 @@ import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { readRepository } from "./dora.ts";
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 type Any = any;
 
 const MIN_RELEASES = 150;

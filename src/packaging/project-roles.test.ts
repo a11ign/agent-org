@@ -31,7 +31,6 @@ import { trackedTopLevelDirs } from "../region-paths.ts";
 
 // A mutation reaches into a shape the fixture's own type would otherwise pretend is optional, the same
 // tradeoff `project-config.test.ts` accepts for the identical reason.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Loose = any;
 
 // --- 1a. `declareCause`: ONE declaration, and it refuses rather than defaulting -------------------------

@@ -393,11 +393,20 @@ test("A11-86: with tickets.prReview named, the brief runs that skill on the whol
   const commit = brief.indexOf("5. Commit with a conventional commit message. Then, BEFORE you push or open a pull request, review your whole diff");
   assert.ok(commit > 0, "step 5 carries the review");
   assert.ok(brief.includes(`call the Skill tool with \`${PR_REVIEW}\` on \`git diff <the repository's default branch>...HEAD\` and anything uncommitted.`), "the skill, on the whole diff");
-  assert.ok(brief.includes("Fix every finding, re-run the repository's checks, and commit the fixes."), "the tests are re-run after a fix");
+  assert.ok(brief.includes("Fix every finding, re-run the repository's tests, typecheck and lint, and commit the fixes."), "the tests, typecheck and lint are re-run after a fix");
   assert.ok(brief.includes("The hook refuses a push or a pull request until the skill has run since your last commit, so after you commit fixes run it again."), "the gate is named");
   assert.ok(brief.indexOf("6. Push the branch and open ONE DRAFT") > commit, "the pull request comes after the review");
   assert.ok(brief.includes(`carries the line \`Pre-PR review: ${PR_REVIEW} ran on the whole diff; it changed: <what, or nothing>\`, and, when the change is visible`), "the body records that the review ran");
   assert.equal(brief.includes("Then run the clean-code-review skill on your diff"), false, "step 2 no longer carries the old sentence: step 5 does");
+});
+
+test("A11-95: the brief asks for lint beside the install, test and typecheck, and a fix is re-linted before it is pushed (the pre-PR step and a round's push)", () => {
+  const brief = briefWith({ prReview: PR_REVIEW });
+  assert.ok(brief.includes("use the install, test, typecheck and lint commands they give"), "the install line names lint");
+  assert.ok(brief.includes("re-run the repository's tests, typecheck and lint, and commit the fixes."), "step 5 re-runs lint after a fix");
+  const round = reviewBriefText({ ticket, folder: "/work/.tickets/NBF-1270", ticketDir: "/state/tickets/NBF-1270", prs: reviewed, resumed: true, prReview: PR_REVIEW });
+  assert.ok(round.includes("fix every finding, re-run the repository's tests, typecheck and lint, and commit the fixes."), "a round re-runs lint after a fix");
+  assert.equal(briefWith({ prReview: null }).includes("re-run the repository's tests, typecheck and lint"), false, "the step 5 sentence is the review's; with no review named, step 5 is the bare commit");
 });
 
 test("A11-86: with no pre-PR review named, the brief is today's, byte for byte, whether the argument is null or not passed", () => {
