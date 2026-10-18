@@ -140,7 +140,7 @@ test("a table is a share of what could be read, and says how much that was", () 
   const summary = summarise(requestsOf(WORKER, "worker-9"));
   assert.equal(summary.requests, 5);
   assert.equal(summary.read, 4);
-  assert.equal(summary.tokens, 410); // 100 + 50 + 250 + 10
+  assert.equal(summary.tokens, 410); // the sum of 100, 50, 250 and 10
   assert.equal(summary.coverage, 4 / 5);
   assert.deepEqual(summary.notDerivable, { first: 1 });
   assert.deepEqual(summary.byTool.map(({ name, tokens }) => [name, tokens]), [["Bash", 250], [START_OF_WINDOW, 100], ["Read", 50], ["Grep", 10]]);

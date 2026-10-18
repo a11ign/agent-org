@@ -316,7 +316,7 @@ describe("every attempt is one ledger line (done-when 4)", () => {
   test("sent, deferred, digested and failed each write exactly one, with every design field present", async () => {
     const run = harness({ config: { rate: { burst: 2, hourlyCap: 3 } } });
     run.provider.failNext(new Error("boom"));
-    await run.tick([request(601), request(602), request(603)]); // failed, sent, deferred
+    await run.tick([request(601), request(602), request(603)]); // one failed, one sent, one deferred
     run.clock.advance(5 * MINUTE);
     await run.tick([request(601), request(603)]); // sent, sent: three delivered in the hour, which is the cap
     run.clock.advance(MINUTE);

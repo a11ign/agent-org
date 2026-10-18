@@ -1,4 +1,4 @@
-// `chairman:reply` (a11ign/a11ign#3071, row 11b): THE ONLY WAY AN AGENT SPEAKS TO THE CHAIRMAN (design #2899 decision 2(e)). `reply.ts` checks a reply as a library;
+// `chairman:reply` (a11ign/a11ign#3071, row 11b): THE ONLY WAY AN AGENT SPEAKS TO THE CHAIRMAN (design #2899 decision 2(e)). `reply.ts` checks a reply as a library:
 // this is the command that builds its four inputs from the host and calls it, so `ceo`'s brief (#2911) names a command that exists.
 //
 //   pnpm run chairman:reply -- "Row {{issue:3071.state}}" --to 4172     (or the text on stdin)
@@ -20,7 +20,7 @@
 // `#{{issue:3542.number}}` and `{{issue:3542.state}}` named and, when only those stood in the way, the corrected text on a `corrected, send this instead:` line.
 // Pasting it is the second and last attempt. `--dry-run` prints the same lines, so a probe shows the road too.
 //
-// EXIT CODES, the outcome of `createReply(...).send`: 0 `sent`, 2 `refused` (every problem as written, and the `sendable` "could not check" text, on stderr;
+// EXIT CODES, the outcome of `createReply(...).send`: 0 `sent`, 2 `refused` (every problem as written, and the `sendable` "could not check" text, on stderr,
 // NOTHING is written to the ledger), 1 `failed` (the provider threw; the ledger holds the failed line). 2 also covers a command that could not start
 // (usage, config, secrets, no declared GitHub account): none of those mends itself by retrying.
 

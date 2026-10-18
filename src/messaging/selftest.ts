@@ -14,9 +14,9 @@
 // `createConverse` and the queue port is `converse.ts`'s own `realQueue`. A red result is delivered to `ceo` by the TICK STEP in `wake.ts`, which owns the queue's writers.
 //
 // THE FOUR STAGES, in the order a message meets them, and a red names the FIRST that failed:
-//   listen -- `createInbound(...).handle` said "forward" for an update shaped as the provider's;
-//   queue  -- a queue took the order (the liaison's, else `ceo`'s), and a queued entry is in the queue file as `converse` says;
-//   seat   -- the seat took it: typed in at once (an idle seat) or the entry LEFT the queue within `TAKEN_WITHIN_MS`;
+//   listen -- `createInbound(...).handle` said "forward" for an update shaped as the provider's,
+//   queue  -- a queue took the order (the liaison's, else `ceo`'s), and a queued entry is in the queue file as `converse` says,
+//   seat   -- the seat took it: typed in at once (an idle seat) or the entry LEFT the queue within `TAKEN_WITHIN_MS`,
 //   back   -- the acknowledgement came back through the recorder, and the ledger line says so (`ackRef`).
 // **AN ORDER THAT WENT TO `ceo` IS A DEGRADED PASS, never green** (#3538): the chairman's message was not dropped, and the liaison did not take it.
 //

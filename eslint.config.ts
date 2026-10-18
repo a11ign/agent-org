@@ -8,7 +8,7 @@ import cleanCode from "@george2f/eslint-plugin-clean-code";
 
 const recommended = {
   "clean-code/max-arguments": "warn",
-  "clean-code/no-commented-out-code": "warn",
+  "clean-code/no-commented-out-code": "error",
   "clean-code/no-dead-code": "warn",
   "clean-code/no-encodings": "error",
   "clean-code/no-flag-arguments": "warn",

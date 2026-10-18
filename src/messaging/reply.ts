@@ -5,8 +5,8 @@
 // **A CLAIM ABOUT THE ORGANISATION CAN ONLY ARRIVE AS A PLACEHOLDER** (`placeholders.ts`), and a placeholder is RE-READ from its source at send time, so
 // the chairman reads a fact as of a minute, stamped on the message (`as of 14:05Z`), and never an agent's memory of it. Everything outside a
 // placeholder is judged as free text, and is REFUSED when it carries a claim in a form a placeholder exists for:
-//   * a `#<number>`: a row or pull request is cited by `#{{pr:N.number}}`, which is also a read that it exists;
-//   * a state word (merged, closed, green, red, passing, passed, failed, failing, done, approved): its state is `{{pr:N.state}}` or `{{run:ID.conclusion}}`;
+//   * a `#<number>`: a row or pull request is cited by `#{{pr:N.number}}`, which is also a read that it exists,
+//   * a state word (merged, closed, green, red, passing, passed, failed, failing, done, approved): its state is `{{pr:N.state}}` or `{{run:ID.conclusion}}`,
 //   * a count: a digit run, or a number word from two up (`{{ready.count}}`, `{{last-merge.age}}`).
 // **A REFUSAL NAMES THE FIX WITH THE VALUE FILLED IN (a11ign/a11ign#3565).** A writer who types `#3542` should not need the placeholder grammar to be told what to
 // write, so the refusal READS the row itself (`issue`, then `pr`: the issues endpoint refuses a pull request) and says `#{{issue:3542.number}}` and what the row
