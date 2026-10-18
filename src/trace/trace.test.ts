@@ -92,7 +92,7 @@ test("COST: the price table reproduces Claude Code's own cost_usd on the Haiku r
   const request = tokensOf(usage(2, 4, 8650, 12311));
   assert.equal(costOf("claude-sonnet-5-5", request), 0.050153);
   assert.equal(costOf("claude-sonnet-5-5", tokensOf({ input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 1_000_000, cache_creation_input_tokens: 0 })), 0.1);
-  assert.ok(0.051018 !== costOf("claude-sonnet-5-5", request), "the old figure is no longer reproduced: that is the point");
+  assert.notEqual(costOf("claude-sonnet-5-5", request), 0.051018, "the old figure is no longer reproduced: that is the point");
   // A figure that disagrees with the page is not a verification of the row, so no Sonnet 5.5 row is `verified`; Haiku 4.5 (which matches its page) is the only one.
   assert.equal(PRICES.find((price) => price.prefix === "claude-sonnet-5-5")?.verified, false);
   assert.deepEqual(PRICES.filter((price) => price.verified).map((price) => price.prefix), ["claude-haiku-4-5"], "exactly one row is marked verified: Haiku 4.5, whose cost_usd agrees with the page");
