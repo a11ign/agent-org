@@ -96,7 +96,11 @@ export function parseServeStatus(text: string): ServeStatus | null {
     return null;
   }
   if (!isObject(parsed)) return null;
-  return Object.freeze({ web: isObject(parsed.Web) ? parsed.Web : {}, funnel: isObject(parsed.AllowFunnel) ? parsed.AllowFunnel : {} });
+  // A field that is present but not an object is not an empty config: it is unknown, so the caller refuses rather than reads it as free.
+  const web = parsed.Web ?? {};
+  const funnel = parsed.AllowFunnel ?? {};
+  if (!isObject(web) || !isObject(funnel)) return null;
+  return Object.freeze({ web, funnel });
 }
 
 /**
@@ -118,7 +122,9 @@ function proxyOfHandler(handler: unknown): string | null {
 /** The state of `port` on `name`'s tailnet, against the loopback service the board serves there on `local`. */
 export function portState(status: ServeStatus, name: string, port: number, local: number): PortState {
   const key = `${name}:${port}`;
-  const funnel = status.funnel[key] === true;
+  // Funnel is on unless its flag is absent or exactly false: a flag that is some other value is read as on, so a port is never taken for private by mistake.
+  const flag = status.funnel[key];
+  const funnel = flag !== undefined && flag !== false;
   const entry = status.web[key];
   if (entry === undefined) return Object.freeze({ kind: "free", proxy: null, funnel });
   const handlers = handlersOf(entry);

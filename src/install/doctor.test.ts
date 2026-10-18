@@ -210,3 +210,10 @@ test("a served port that does not answer under the machine's name fails, and wit
   const plain = byName(await diagnose(deps({ tailscale: () => { throw new Error("tailscale is asked only with tickets.serve"); } })));
   assert.equal(plain.tailscale, undefined);
 });
+
+test("doctor fails the tailnet serve check on a serve config it cannot read, and judges no entry from it", async () => {
+  const checks = byName(await diagnose(tailnetDeps(JSON.stringify({ Web: "unreadable" }))));
+  assert.equal(checks["tailscale serve"].ok, false);
+  assert.match(checks["tailscale serve"].detail, /did not answer/);
+  assert.equal(checks["ui tailnet entry"], undefined, "no entry is read from a config that cannot be read");
+});

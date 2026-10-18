@@ -29,7 +29,7 @@ import { COMMANDS } from "../commands.ts";
 import { agentOrgHome, hostFilePath, hostGhConfigDir, readOrNull, TOOL_ROOT, type Env } from "./paths.ts";
 import { findBun } from "./bun.ts";
 import { herdrConfigDir, pluginRoot, TERMINAL_PLUGIN, terminalProgram, terminalTarget } from "./terminal.ts";
-import { serveOf, ticketsBlock, TicketSettingsRefusal, uiPortOf, type ServePorts } from "../ticket-mode/settings.ts";
+import { serveOf, TicketSettingsRefusal, uiPortOf, type ServePorts } from "../ticket-mode/settings.ts";
 import { noName, notRunning, parseServeStatus, parseStatus, portState, refused, removeArgv, serveArgv, serveStatusArgv, statusArgv, TAILSCALE_MISSING } from "../ticket-mode/tailnet.ts";
 import { writeAtomic } from "./write-atomic.ts";
 
@@ -325,18 +325,24 @@ export function serviceState(name: ServiceName, deps: ServiceDeps): ServiceState
 }
 
 /**
- * The host file's JSON object, read tolerantly: null when it cannot be read or is not an object. A service that is not on the tailnet needs none of it,
- * so a host file that does not parse changes nothing for the page, which refuses it on its own run.
+ * The host file's JSON object, for the tailnet's own reads. Null when the file is absent. A file that is there but cannot be read, or is not a JSON
+ * object, REFUSES, naming it: a page or terminal must not start, or be left on loopback, on a host file that cannot say whether it is served.
  */
 function hostObject(deps: ServiceDeps): Record<string, unknown> | null {
-  const text = deps.read(hostFilePath(deps.env, deps.home, deps.read));
-  if (text === null) return null;
-  try {
-    const parsed: unknown = JSON.parse(text);
-    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
-  } catch {
+  const path = hostFilePath(deps.env, deps.home, deps.read);
+  const text = deps.read(path);
+  if (text === null) {
+    if (deps.exists(path)) throw new ServiceRefusal(`${path} exists but cannot be read, so the tailnet cannot be checked: make it readable, then run the command again`);
     return null;
   }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new ServiceRefusal(`${path} is not valid JSON, so the tailnet cannot be checked: fix it, then run the command again`);
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new ServiceRefusal(`${path} does not hold a JSON object, so the tailnet cannot be checked: fix it, then run the command again`);
+  return parsed as Record<string, unknown>;
 }
 
 /**
@@ -347,7 +353,11 @@ function servedAt(name: ServiceName, deps: ServiceDeps): Served | null {
   if (name !== "ui" && name !== "terminal") return null;
   const host = hostObject(deps);
   if (host === null) return null;
-  const tickets = ticketsBlock(host);
+  const block = host.tickets ?? {};
+  if (typeof block !== "object" || block === null || Array.isArray(block)) {
+    throw new ServiceRefusal(`the \`tickets\` block of ${hostFilePath(deps.env, deps.home, deps.read)} must be an object, so the tailnet cannot be checked`);
+  }
+  const tickets = block as Record<string, unknown>;
   let ports: ServePorts | null;
   try {
     ports = serveOf(tickets);

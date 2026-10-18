@@ -69,6 +69,23 @@ test("a port is free, this board's own, foreign, or on Funnel, against the loopb
   assert.deepEqual(portState(funnelOnOurs, name, 9443, 4748), { kind: "ours", proxy: "http://127.0.0.1:4748", funnel: true });
 });
 
+test("a serve config whose Web or AllowFunnel is not an object is refused, not read as an empty config", () => {
+  assert.equal(parseServeStatus(JSON.stringify({ Web: "unreadable" })), null, "Web as text is no config");
+  assert.equal(parseServeStatus(JSON.stringify({ Web: [] })), null, "Web as a list is no config");
+  assert.equal(parseServeStatus(JSON.stringify({ AllowFunnel: 1 })), null, "AllowFunnel as a number is no config");
+  assert.equal(parseServeStatus(JSON.stringify([])), null, "a list at the top is no config");
+});
+
+test("a Funnel flag that is not exactly false is read as Funnel on, so a malformed flag never makes a port look private", () => {
+  const name = "agents.tail1234.ts.net";
+  const web = { [`${name}:9443`]: { Handlers: { "/": { Proxy: "http://127.0.0.1:4748" } } } };
+  const flagged = (flag: unknown) => parseServeStatus(JSON.stringify({ Web: web, AllowFunnel: { [`${name}:9443`]: flag } }));
+  assert.equal(portState(flagged(false)!, name, 9443, 4748).funnel, false, "an explicit false is private");
+  assert.equal(portState(flagged(true)!, name, 9443, 4748).funnel, true);
+  assert.equal(portState(flagged("yes")!, name, 9443, 4748).funnel, true, "a flag that is some other value is on");
+  assert.equal(portState(flagged(null)!, name, 9443, 4748).funnel, true, "a null flag is on");
+});
+
 test("the Host and Origin values the board answers to on the tailnet name the public port, and the bare name only at 443", () => {
   assert.deepEqual(tailnetHosts({ name: "agents.tail1234.ts.net", port: 9443 }), ["agents.tail1234.ts.net:9443"]);
   assert.deepEqual(tailnetHosts({ name: "agents.tail1234.ts.net", port: 443 }), ["agents.tail1234.ts.net:443", "agents.tail1234.ts.net"]);

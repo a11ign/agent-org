@@ -433,3 +433,27 @@ test("stop leaves an entry that is not this board's, and says so when its own re
     && err.message === "the ui service is stopped, but its tailscale serve entry on port 9443 was not removed: `tailscale serve --https=9443 off` failed: tailscaled is not running. `tailscale serve --https=9443 off` removes it");
   assert.ok(failing.calls.includes("systemctl --user disable --now agent-org-ui.service"), "the service was stopped first");
 });
+
+test("a host file the tailnet cannot be checked from refuses before anything starts, and names the file", () => {
+  const hostPath = (t: ReturnType<typeof onTailnet>) => join(t.home, ".agent-org", "host.json");
+  const notJson = onTailnet({});
+  notJson.files.set(hostPath(notJson), "{ not json");
+  assert.throws(() => startService("ui", notJson.deps), (err: unknown) => err instanceof ServiceRefusal && err.message.includes(`${hostPath(notJson)} is not valid JSON, so the tailnet cannot be checked`));
+  const list = onTailnet({});
+  list.files.set(hostPath(list), "[]");
+  assert.throws(() => startService("ui", list.deps), /does not hold a JSON object, so the tailnet cannot be checked/);
+  const badTickets = onTailnet({});
+  badTickets.files.set(hostPath(badTickets), JSON.stringify({ tickets: "tailscale" }));
+  assert.throws(() => startService("ui", badTickets.deps), /the `tickets` block of .* must be an object, so the tailnet cannot be checked/);
+  assert.deepEqual([...notJson.calls, ...list.calls, ...badTickets.calls], [], "no unit was written and no tailscale was asked");
+  const unreadable = deps("linux", {}, { read: () => null, exists: () => true });
+  assert.throws(() => startService("ui", unreadable.deps), /exists but cannot be read, so the tailnet cannot be checked/);
+});
+
+test("stop refuses, after it has stopped the unit, when the host file cannot be checked", () => {
+  const t = onTailnet({});
+  t.files.set(unitFor("ui", t.deps).path, "");
+  t.files.set(join(t.home, ".agent-org", "host.json"), "{ not json");
+  assert.throws(() => stopService("ui", t.deps), /is not valid JSON, so the tailnet cannot be checked/);
+  assert.ok(t.calls.includes("systemctl --user disable --now agent-org-ui.service"), "the unit was stopped first");
+});
