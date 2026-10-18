@@ -758,7 +758,7 @@ export const connectionLabel = (connection: ViewConnection): string => (connecti
 
 /** A new-ticket request's runs, as the board words each status. */
 export const WRITER_STATUS_LABEL: Readonly<Record<string, string>> = Object.freeze({
-  queued: "Queued", writing: "Writing", "needs-you": "Needs you", ready: "Ready to review", done: "Done", failed: "Failed",
+  queued: "Queued", writing: "Writing", "needs-you": "Needs you", "to-review": "Ready to review", done: "Done", failed: "Failed",
 });
 
 /** A draft's priority, as the page names it. */

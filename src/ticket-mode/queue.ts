@@ -269,7 +269,7 @@ export type WriterRun = Readonly<{
 export const MAX_WRITER_RUNS = 3;
 
 /** Where a new-ticket request is on the board: writing, waiting on the person, ready for review, done, or failed. */
-export type WriterStatus = "queued" | "writing" | "needs-you" | "ready" | "done" | "failed";
+export type WriterStatus = "queued" | "writing" | "needs-you" | "to-review" | "done" | "failed";
 
 /** The status of a writer run, from its phase, its failure and its drafts still to review. PURE. */
 export function writerStatus(run: WriterRun): WriterStatus {
@@ -277,7 +277,7 @@ export function writerStatus(run: WriterRun): WriterStatus {
   if (run.phase === "queued") return "queued";
   if (run.phase === "starting" || run.phase === "running") return "writing";
   if (run.phase === "waiting") return "needs-you";
-  return run.drafts.some(({ status }) => status === "pending" || status === "creating") ? "ready" : "done";
+  return run.drafts.some(({ status }) => status === "pending" || status === "creating") ? "to-review" : "done";
 }
 
 export type RunChoice = Readonly<{ model: string; effort: string }>;

@@ -666,7 +666,7 @@ test("a writer run is queued, starts on a free slot, and holds one while it runs
   assert.equal(writerStatus(writerOf(queue, "w1")!), "writing");
   queue = writerDrafted(queue, "w1", { drafts: [drafted("01-a.json")], rejected: [] }, 3);
   assert.equal(liveRunCount(queue), 0, "a finished run holds no slot");
-  assert.equal(writerStatus(writerOf(queue, "w1")!), "ready");
+  assert.equal(writerStatus(writerOf(queue, "w1")!), "to-review");
 });
 
 test("a writer run waits for a worker slot as a ticket does, and is not held by Pause", () => {

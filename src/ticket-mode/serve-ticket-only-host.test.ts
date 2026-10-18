@@ -307,7 +307,7 @@ test("on a ticket-only host, a new-ticket request runs the writer, its draft wai
   await board.pool.tick();
   await waitFor(() => board.store.get().writers?.[0].phase === "finished");
   const [, ready] = await board.api("GET", "/api/writer", {}) as [number, any];
-  assert.deepEqual([ready.runs[0].status, ready.runs[0].drafts[0].status], ["ready", "pending"]);
+  assert.deepEqual([ready.runs[0].status, ready.runs[0].drafts[0].status], ["to-review", "pending"]);
   assert.equal(created.length, 0, "a draft a person has not approved creates nothing");
   assert.equal(board.store.get().entries.length, 0, "and queues nothing");
   const draftId = ready.runs[0].drafts[0].id as string;

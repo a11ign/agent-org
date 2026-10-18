@@ -3223,7 +3223,7 @@ test("a writer run's drafts are read once its agent is idle with its outcome: ea
   assert.equal(run().drafts[0].draft.title, "feat: show requests");
   assert.deepEqual(run().drafts[0].duplicates.map(({ key, title }) => [key, title]), [["NBF-9", "Show requests"], ["NBF-404", null]]);
   assert.match(run().rejected[0].reason, /^02-bad\.json: "priority" must be one of/);
-  assert.equal(writerStatus(run()), "ready", "a draft waits for the person's review");
+  assert.equal(writerStatus(run()), "to-review", "a draft waits for the person's review");
   assert.equal(store.get().entries.length, 0, "no ticket is queued by a writer run");
 });
 

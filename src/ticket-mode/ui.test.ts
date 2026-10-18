@@ -1133,7 +1133,7 @@ test("A11-80: a run whose worker wrote working shows In progress with its reason
 const WRITER_CONFIG = { writer: true, writerGrill: true, repos: ["nbl-ui-netbox", "platform-monorepo"], priorities: ["urgent", "high", "medium", "low", "none"] };
 const DRAFT = { id: "d1", file: "01-show.json", draft: { title: "feat: show requests", why: "A person asks", doneWhen: ["It lists them", "It links duplicates"], notes: null, team: "A11",
   project: null, repo: "nbl-ui-netbox", goal: null, labels: ["Bucket: Board"], priority: "high", parent: null, blocks: [], blockedBy: [], duplicates: [] }, duplicates: [], status: "pending" };
-const RUN = { id: "w7", request: "Show the requests a person made", mode: "quick", phase: "finished", status: "ready", form: {}, drafts: [DRAFT], rejected: [] };
+const RUN = { id: "w7", request: "Show the requests a person made", mode: "quick", phase: "finished", status: "to-review", form: {}, drafts: [DRAFT], rejected: [] };
 
 /** The draft's review card, by its file name, and its buttons. */
 function draftOf(p: Awaited<ReturnType<typeof page>>, file = "01-show.json") {
