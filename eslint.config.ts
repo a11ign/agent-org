@@ -24,6 +24,7 @@ const recommended = {
 // Rules from the plugin's `strict` config, adopted one at a time (A11-107). One rule per line, each with its reason.
 const adopted = {
   "clean-code/be-precise": "error", // a float compared with === or !== depends on exact rounding; parseInt without a radix guesses (G26)
+  "clean-code/names-describe-side-effects": "error", // a function that mutates or does I/O must say so in its name; get/is/has/find must be pure (N7)
 };
 
 export default [

@@ -73,6 +73,7 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
   let release!: () => void;
   const gate = new Promise<void>((done) => { release = done; });
   const document = {
+    // eslint-disable-next-line clean-code/names-describe-side-effects -- the DOM's getElementById, which the page script calls by this name; the fake creates and caches the node on first request
     getElementById: (id: string) => { if (!byId.has(id)) byId.set(id, new Node_(`#${id}`)); return byId.get(id)!; },
     createElement: (tag: string) => new Node_(tag),
     querySelectorAll: () => [],
