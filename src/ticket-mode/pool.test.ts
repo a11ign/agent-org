@@ -9,10 +9,10 @@ import {
   batchDir, batchFolder, countTokens, createPool, feedbackSince, findFolderSession, findTranscript, herdrName, herdrServerCommand, isStartDialog, parseOutcome, publishDir, publishResult,
   ticketDir, ticketFolder, worktreesIn,
 } from "./pool.ts";
-import { approve, BACKGROUND_GONE_MS, emptyQueue, enqueue, finish, queuePublish, recordPullStates, respond, retry, setPaused, type Queue } from "./queue.ts";
+import { approve, BACKGROUND_GONE_MS, completableRuns, emptyQueue, enqueue, finish, queuePublish, recordPullStates, respond, retry, setPaused, type Outcome, type Queue } from "./queue.ts";
 import { parseTicketSettings } from "./settings.ts";
 import { REVIEWER_LOGIN, loadReviewerGate, readReviewerMemory, reviewerMemoryPath, type RepostAnswer, type ReviewerPort, type ReviewerRef, type ReviewerSettled } from "./reviewer-port.ts";
-import type { Ticket, TicketSource } from "./source.ts";
+import type { PullState, Ticket, TicketSource } from "./source.ts";
 
 const ticket = (key: string) => ({ key, title: key, description: "", url: `https://linear.app/x/${key}`, branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
 const source: TicketSource = { assigned: async () => [], read: async () => null, download: async () => [] };
@@ -546,6 +546,163 @@ test("a run whose pull request merged reads as completed while its ticket is sti
   assert.equal(runStatus(queue.entries[0]), "completed");
   await pool.refreshTracker();
   assert.equal(asked.length, 1);
+});
+
+test("A11-92: a worker's outcome keeps its partial declaration when it wrote a non-empty one, and a blank one is none", () => {
+  const pr = { repo: "r", url: "https://github.com/netboxlabs/nbl-ui-platform-libs/pull/801" };
+  assert.deepEqual(parseOutcome(JSON.stringify({ kind: "ready-pr", prs: [pr], partial: " the settings page " })), { kind: "ready-pr", prs: [pr], partial: "the settings page" });
+  assert.deepEqual(parseOutcome(JSON.stringify({ kind: "draft-pr", prs: [pr], partial: "  " })), { kind: "draft-pr", prs: [pr] }, "a blank declaration is none");
+  assert.deepEqual(parseOutcome(JSON.stringify({ kind: "ready-pr", prs: [pr] })), { kind: "ready-pr", prs: [pr] }, "no declaration, as before");
+  assert.deepEqual(parseOutcome(JSON.stringify({ kind: "ready-pr", prs: [pr], partial: "<what remains>" })), { kind: "ready-pr", prs: [pr] }, "the brief's placeholder is none, as pr:open reads it");
+});
+
+const MERGED_PR = "https://github.com/netboxlabs/nbl-ui-platform-libs/pull/801";
+const OPEN_PR = "https://github.com/netboxlabs/nbl-ui-platform-libs/pull/802";
+
+/**
+ * A pool over one finished run of NBF-1 that ended with `outcome`, whose pull request is `pull` and whose ticket the tracker reads as `state`. `complete`
+ * records each call (and throws when `refuse` says so), and `reads` each state read, so a test sees what the board asked the tracker.
+ */
+function completing(outcome: Outcome, { state = "started", pull = "merged", refuse = 0, keywords, note = null, without, pulls }: {
+  state?: string; pull?: PullState; refuse?: number; keywords?: TicketSource["keywords"]; note?: string | null; without?: "complete";
+  pulls?: Record<string, PullState>;
+} = {}) {
+  const root = tmpDir("ticket-pool-complete-");
+  const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox" }, stateDir: join(root, "state") });
+  const calls: [string, string][] = [];
+  const reads: string[][] = [];
+  let attempts = 0;
+  const tracker: TicketSource = {
+    ...source,
+    keywords,
+    stateTypes: async (keys) => { reads.push([...keys]); return new Map(keys.map((key) => [key, state])); },
+    pullStates: async () => new Map([["NBF-1", pulls ?? { [MERGED_PR]: pull }]]),
+    complete: async (key, comment) => {
+      attempts += 1;
+      if (attempts <= refuse) throw new Error("Linear answered 500");
+      calls.push([key, comment]);
+      return note;
+    },
+  };
+  if (without === "complete") delete tracker.complete;
+  let queue: Queue = finish(enqueue(emptyQueue(2), [ticket("NBF-1")], { model: "sonnet", effort: "high" }, 0), "NBF-1", outcome, 5);
+  const store = { get: () => queue, set: (next: Queue) => { queue = next; } };
+  const pool = createPool(store, { settings, source: tracker, hook: { node: "/node", bin: "/b" }, herdr: () => "{}", now: () => 9, load: () => ({ load: 0, cores: 1 }), transcriptsRoot: root, wait: async () => {} });
+  return { pool, calls, reads, entry: () => queue.entries[0] };
+}
+
+test("A11-92: a ready pull request that merged while its ticket is still started completes the ticket once, naming the merged pull request", async () => {
+  const { pool, calls, entry } = completing({ kind: "ready-pr", prs: [{ repo: "r", url: MERGED_PR }] });
+  await pool.refreshTracker();
+  assert.equal(calls.length, 1, "completed once");
+  assert.equal(calls[0][0], "NBF-1");
+  assert.ok(calls[0][1].includes(MERGED_PR), "the comment names the merged pull request");
+  assert.equal(entry().closedByBoard, true);
+  await pool.refreshTracker();
+  assert.equal(calls.length, 1, "not completed again at the next refresh");
+});
+
+test("A11-92: a run with two pull requests completes its ticket only when both have settled and one merged", async () => {
+  const pair = [{ repo: "r", url: MERGED_PR }, { repo: "s", url: OPEN_PR }];
+  const open = completing({ kind: "ready-pr", prs: pair }, { pulls: { [MERGED_PR]: "merged", [OPEN_PR]: "open" } });
+  await open.pool.refreshTracker();
+  assert.equal(open.calls.length, 0, "the second pull request is still open");
+  const closedToo = completing({ kind: "ready-pr", prs: pair }, { pulls: { [MERGED_PR]: "merged", [OPEN_PR]: "closed" } });
+  await closedToo.pool.refreshTracker();
+  assert.equal(closedToo.calls.length, 1, "both merged");
+});
+
+test("A11-92: a source without complete is left to the tracker, and the board completes nothing", async () => {
+  const { pool, entry } = completing({ kind: "ready-pr", prs: [{ repo: "r", url: MERGED_PR }] }, { without: "complete" });
+  await pool.refreshTracker();
+  assert.equal(entry().closedByBoard, undefined, "nothing is marked as the board's");
+});
+
+test("A11-92: a team with no completed state is logged and left alone, with its run marked handled so the note is not repeated", async () => {
+  const { pool, calls, reads, entry } = completing({ kind: "ready-pr", prs: [{ repo: "r", url: MERGED_PR }] }, { note: "NBF-1's team has no completed state, so it stays in In Progress" });
+  await pool.refreshTracker();
+  const readsAfterFirst = reads.length;
+  await pool.refreshTracker();
+  assert.equal(calls.length, 1, "asked once");
+  assert.equal(reads.length, readsAfterFirst, "not read again once handled");
+  assert.equal(entry().closedByBoard, true);
+});
+
+test("A11-92: a reviewed run whose pull request merged completes its ticket the same way", async () => {
+  const { pool, calls } = completing({ kind: "reviewed", prs: [{ repo: "r", url: MERGED_PR }] });
+  await pool.refreshTracker();
+  assert.equal(calls.length, 1);
+});
+
+test("A11-92: a run declared partial leaves its ticket open when its pull request merges", async () => {
+  const { pool, calls, entry } = completing({ kind: "ready-pr", prs: [{ repo: "r", url: MERGED_PR }], partial: "the settings page" });
+  await pool.refreshTracker();
+  assert.equal(calls.length, 0);
+  assert.equal(entry().closedByBoard, undefined);
+});
+
+test("A11-92: a draft, a checked run and a run with an open pull request leave their tickets open", async () => {
+  const draft = completing({ kind: "draft-pr", prs: [{ repo: "r", url: MERGED_PR }] });
+  await draft.pool.refreshTracker();
+  const checked = completing({ kind: "checked", reason: "nothing to change" });
+  await checked.pool.refreshTracker();
+  const open = completing({ kind: "ready-pr", prs: [{ repo: "r", url: MERGED_PR }] }, { pull: "open" });
+  await open.pool.refreshTracker();
+  assert.deepEqual([draft.calls.length, checked.calls.length, open.calls.length], [0, 0, 0]);
+});
+
+test("A11-92: a ticket the tracker has already finished or canceled is left alone, and is not read again", async () => {
+  for (const state of ["completed", "canceled", "duplicate"]) {
+    const { pool, calls, reads, entry } = completing({ kind: "ready-pr", prs: [{ repo: "r", url: MERGED_PR }] }, { state });
+    await pool.refreshTracker();
+    await pool.refreshTracker();
+    assert.equal(calls.length, 0, `${state}: no completion`);
+    assert.equal(entry().closedByBoard, undefined, state);
+    assert.equal(reads.length, 1, `${state}: read once, then settled`);
+  }
+});
+
+test("A11-92: a completion Linear refuses is logged and tried again at the next refresh, and not recorded as done", async () => {
+  const { pool, calls, entry } = completing({ kind: "ready-pr", prs: [{ repo: "r", url: MERGED_PR }] }, { refuse: 1 });
+  await pool.refreshTracker();
+  assert.equal(entry().closedByBoard, undefined, "not done yet");
+  await pool.refreshTracker();
+  assert.equal(calls.length, 1);
+  assert.equal(entry().closedByBoard, true);
+});
+
+test("A11-92: a pull request outcome sets its run's partial declaration, a crash keeps it, and a retry starts a fresh worker without it", () => {
+  const pr = { repo: "r", url: MERGED_PR };
+  let queue: Queue = finish(enqueue(emptyQueue(2), [ticket("NBF-1")], { model: "sonnet", effort: "high" }, 0), "NBF-1", { kind: "ready-pr", prs: [pr], partial: "the settings page" }, 5);
+  assert.equal(queue.entries[0].partial, "the settings page");
+  queue = finish(queue, "NBF-1", { kind: "crashed", reason: "r" }, 6);
+  assert.equal(queue.entries[0].partial, "the settings page", "a crash says nothing of it, so the run keeps it");
+  queue = retry(queue, "NBF-1", 7);
+  assert.equal(queue.entries[0].partial, undefined, "a retry is a fresh worker");
+  queue = finish(queue, "NBF-1", { kind: "ready-pr", prs: [pr] }, 8);
+  assert.equal(queue.entries[0].partial, undefined, "an outcome with no declaration says the pull request completes the ticket");
+});
+
+test("A11-92: a review round keeps its run's partial declaration, so its own merge does not complete the ticket", () => {
+  const pr = { repo: "r", url: MERGED_PR };
+  let queue: Queue = finish(enqueue(emptyQueue(2), [ticket("NBF-1")], { model: "sonnet", effort: "high" }, 0), "NBF-1", { kind: "draft-pr", prs: [pr], partial: "the settings page" }, 5);
+  queue = approve(queue, "NBF-1", 6);
+  assert.equal(queue.entries[0].partial, "the settings page", "the review round carries it");
+  queue = finish(queue, "NBF-1", { kind: "reviewed", prs: [pr] }, 7);
+  assert.equal(queue.entries[0].partial, "the settings page", "a reviewed outcome does not say it, so the run keeps it");
+  assert.deepEqual(completableRuns({ ...queue, entries: queue.entries.map((e) => ({ ...e, pullStates: { [MERGED_PR]: "merged" as const }, trackerState: "started" })) }), []);
+});
+
+test("A11-92: the brief names the words the tracker reads a pull request by, and the defaults when the tracker names none", async () => {
+  const named = { closing: "Resolves", nonClosing: "Relates" };
+  const { pool, settings } = setup(1, ["NBF-1"], {}, { source: { ...source, keywords: named } });
+  await pool.tick();
+  const brief = readFileSync(join(ticketDir(settings, "NBF-1"), "brief.md"), "utf8");
+  assert.ok(brief.includes("names the ticket `Resolves NBF-1` when this pull request completes it"));
+  assert.equal(brief.includes("Closes"), false);
+  const plain = setup(1, ["NBF-2"]);
+  await plain.pool.tick();
+  assert.ok(readFileSync(join(ticketDir(plain.settings, "NBF-2"), "brief.md"), "utf8").includes("names the ticket `Closes NBF-2` when this pull request completes it"));
 });
 
 const blocks = (key: string, state: string, status: string, pulls: Record<string, "open" | "merged" | "closed"> = {}) => ({ key, state, status, pulls });

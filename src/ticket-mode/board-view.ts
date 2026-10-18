@@ -308,6 +308,12 @@ export const CONCLUDED: ReadonlySet<string> = new Set(["checked", "planned"]);
 /** Outcomes that are a run's result, pull requests to show for it: a draft one, or one a review run saw through its review. */
 export const RESULT_KINDS: ReadonlySet<string> = new Set(["draft-pr", "ready-pr", "reviewed"]);
 
+/**
+ * Outcomes whose pull requests complete their ticket when they merge, unless the run declares itself partial (A11-92): a worker's ready pull request,
+ * or a review run's. A draft is not one: a person marks it ready through Approve, which ends the review run `reviewed`.
+ */
+export const COMPLETING_KINDS: ReadonlySet<string> = new Set(["ready-pr", "reviewed"]);
+
 /** The pull requests a run is about: its result's, or, for a review run that has none yet, the ones the person approved. */
 export function pullsOf<T extends Readonly<{ url: string }>>(entry: Readonly<{ outcome?: Readonly<{ kind: string; prs?: readonly T[] }>; review?: readonly T[] }>): readonly T[] {
   const { outcome } = entry;

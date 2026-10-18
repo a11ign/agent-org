@@ -55,6 +55,15 @@ export type Ticket = Readonly<{
 export type PullState = "open" | "merged" | "closed";
 
 /**
+ * The two words a tracker reads in a pull request's body to link it to a ticket: `closing`, which completes the ticket when the pull request merges,
+ * and `nonClosing`, which only links it. Linear reads `Closes` as the first and `Refs` as the second.
+ */
+export type Keywords = Readonly<{ closing: string; nonClosing: string }>;
+
+/** The keywords of a source that names none: the two Linear reads, so a source that needs no others is briefed with them. */
+export const DEFAULT_KEYWORDS: Keywords = Object.freeze({ closing: "Closes", nonClosing: "Refs" });
+
+/**
  * A ticket that blocks another, as the tracker last saw it: its state's type and name, the branch it links pull requests by, and the state of each
  * pull request it links, by URL. `branch` is absent from a blocker read before it was recorded.
  */
@@ -125,4 +134,16 @@ export interface TicketSource {
    * is not made again, so an attempt that was cut off can be repeated. A source without it records no order. Throws when the tracker refuses.
    */
   addBlockers?(key: string, blockerKeys: readonly string[]): Promise<void>;
+  /**
+   * The words the tracker reads a pull request's body by. A source without them is read by {@link DEFAULT_KEYWORDS}, so the brief and `pr:open` name
+   * the same words the tracker does.
+   */
+  keywords?: Keywords;
+  /**
+   * Complete a ticket the tracker has not finished, once a pull request of the run that worked it merged and its body did not complete it: move the
+   * ticket to its team's completed state and post `comment` on it. A ticket already completed, canceled or a duplicate is left alone, with no
+   * comment, so a call that races the tracker's own completion does nothing. A team with no completed state keeps the ticket where it is, and the
+   * returned note says so; it is null otherwise. A source without it leaves completion to the tracker. Throws when the tracker refuses.
+   */
+  complete?(key: string, comment: string): Promise<string | null>;
 }

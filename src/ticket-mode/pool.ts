@@ -89,14 +89,14 @@ import { mergeWaits, parseOrder, unknownRepos, type Order } from "./batch-order.
 import { readOwnLogin, readPullFeedback, type PullFeedback } from "../ticket-port/pull-feedback.ts";
 import { parsePaths } from "./overlap.ts";
 import { defaultGh } from "../lib/tool-version-agreement.ts";
-import { CONCLUDED, HANDED_BACK, hasPlan, isBeingPublished, isParked, isWatched, openPulls, resumesOnConflict, RESULT_KINDS, stackedOn } from "./board-view.ts";
+import { CONCLUDED, HANDED_BACK, hasPlan, isBeingPublished, isParked, isWatched, openPulls, pullsOf, resumesOnConflict, RESULT_KINDS, stackedOn } from "./board-view.ts";
 import {
   batchPlanDone, clearMove, conflictRound, dismiss as dismissFinished, feedbackRound, finish, isLive, leaveBatch, markPublishRunning, markPublishStarting, markResumed, markRunning, markStarting, nextStarts,
   observe, noteWorking, observePublish, park, pathsUnread, planDone, publishDone, publishFailed, publishStarts, recordBlockers, recordMove, recordPaths, recordPullFiles, roundsLeft,
-  recordPullStates, recordRepos, recordTrackerStates, recordVerdictNotPosted, remove as removeQueued, unpark, unreadBlockerKeys, unreadPaths, unsettledKeys, watchWorking,
+  completableRuns, declaredRemains, recordClosedByBoard, recordPullStates, recordRepos, recordTrackerStates, recordVerdictNotPosted, remove as removeQueued, unpark, unreadBlockerKeys, unreadPaths, unsettledKeys, watchWorking,
   BACKGROUND_GONE, BACKGROUND_GONE_MS, type Background, type Entry, type Outcome, type PublishRun, type Queue, type RunChoice, type WrittenOutcome,
 } from "./queue.ts";
-import type { Ticket, TicketSource } from "./source.ts";
+import { DEFAULT_KEYWORDS, type Ticket, type TicketSource } from "./source.ts";
 import { unreachablePlugins } from "./plugins.ts";
 import { TICKET_ENV } from "./worktree-command.ts";
 import { HOST_FILE_ENV, plansInBatches, type TicketSettings } from "./settings.ts";
@@ -265,6 +265,12 @@ function herdrRefusal(err: unknown): string {
   return herdrReason(err);
 }
 
+/** A pull request outcome's `partial` declaration, what remains of the ticket, when the worker wrote one (A11-92). */
+const partialOf = (value: Record<string, unknown>): { partial?: string } => {
+  const remains = typeof value.partial === "string" ? declaredRemains(value.partial) : null;
+  return remains === null ? {} : { partial: remains };
+};
+
 /**
  * The outcome a worker wrote, or `needs-human` saying the file could not be read. A `working` one is not how the run ended: `settle` records it as
  * the run's latest note. PURE over the file's text.
@@ -273,10 +279,10 @@ export function parseOutcome(text: string): WrittenOutcome {
   try {
     const value = JSON.parse(text) as Record<string, unknown>;
     if (value.kind === "draft-pr" && Array.isArray(value.prs)) {
-      return { kind: "draft-pr", prs: value.prs.map((pr: Record<string, unknown>) => ({ repo: String(pr.repo ?? ""), url: String(pr.url ?? "") })) };
+      return { kind: "draft-pr", prs: value.prs.map((pr: Record<string, unknown>) => ({ repo: String(pr.repo ?? ""), url: String(pr.url ?? "") })), ...partialOf(value) };
     }
     if (value.kind === "ready-pr" && Array.isArray(value.prs)) {
-      return { kind: "ready-pr", prs: value.prs.map((pr: Record<string, unknown>) => ({ repo: String(pr.repo ?? ""), url: String(pr.url ?? "") })) };
+      return { kind: "ready-pr", prs: value.prs.map((pr: Record<string, unknown>) => ({ repo: String(pr.repo ?? ""), url: String(pr.url ?? "") })), ...partialOf(value) };
     }
     if (value.kind === "planned") return { kind: "planned" };
     if (value.kind === "checked") return { kind: "checked", reason: String(value.reason ?? "") };
@@ -580,7 +586,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
       const prOpenCommand = `${hook.node} ${hook.bin} pr:open`;
       writeFileSync(join(dir, BRIEF_FILE), briefText({ ticket, folder, ticketDir: dir, attachments, parent, blockers: entry.blockers,
         stackedOn: stackedOn(entry, store.get().entries), clones: settings.clones, worktreeCommand, prOpenCommand,
-        notes, connectors, planned: entry.planned === true, drafts: settings.drafts, prReview: settings.prReview }));
+        notes, connectors, planned: entry.planned === true, drafts: settings.drafts, prReview: settings.prReview, keywords: source.keywords ?? DEFAULT_KEYWORDS }));
     }
     writeRunFiles(entry, folder, dir);
     return { folder, dir, ...(resume ? { resume } : {}) };
@@ -1440,8 +1446,40 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
         // the tracker could not be asked: the next refresh asks again
       }
     }
+    await completeMerged();
     // Last, so a restore the tracker is slow to answer delays none of the reads above.
     await restoreStranded();
+  }
+
+  /**
+   * Complete the ticket of each run whose pull requests merged while the ticket is still open, and whose body did not complete it (A11-92): the body may
+   * have named the ticket with the non-closing keyword, or been wrong, so the board does not wait for the tracker to do it. The tracker is asked again for
+   * those tickets first, so one it finished or canceled is left alone. A refusal is logged, and tried again at the next refresh.
+   */
+  async function completeMerged(): Promise<void> {
+    const { complete, stateTypes } = source;
+    if (complete === undefined || stateTypes === undefined) return;
+    const due = completableRuns(store.get());
+    if (due.length === 0) return;
+    try {
+      const states = await stateTypes(due.map((entry) => entry.ticket.key));
+      update((queue) => recordTrackerStates(queue, states));
+    } catch (err) {
+      log(`the tracker could not say where the merged tickets stand: ${messageOf(err)}`);
+      return;
+    }
+    for (const entry of completableRuns(store.get())) {
+      const { ticket } = entry;
+      const merged = pullsOf(entry).map(({ url }) => url).filter((url) => entry.pullStates?.[url] === "merged");
+      const comment = `${merged.join(", ")} merged without closing ${ticket.key}, so the ticket board completed it.`;
+      try {
+        const note = await complete(ticket.key, comment);
+        update((queue) => recordClosedByBoard(queue, ticket.key));
+        if (note !== null) log(note);
+      } catch (err) {
+        log(`${ticket.key}: the merged pull request could not complete its ticket: ${messageOf(err)}`);
+      }
+    }
   }
 
   /** The account the workers act as on GitHub, read once: feedback it wrote is the worker's own, never a reason for another round. */
