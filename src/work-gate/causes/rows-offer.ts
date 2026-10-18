@@ -106,8 +106,8 @@ function newestLabeller(number: number, run: (args: string[]) => string, label: 
 // THE CHAIRMAN'S RULING (2026-10-11): only the chairman sets priority, except in an emergency where everything is blocked (every claim refused, every PR red on shared CI, the gate blind).
 // `priority:chairman` stays the chairman's login's alone (#4524) and an agent's is still ignored and recorded (#730). This is a SEPARATE label, so that the two can never be confused in
 // the history: it is honoured only when ALL of these hold, each read from the tracker on every tick and none from the label itself --
-//   1. the option is ON (`emergencyPriority.enabled` in the host declaration; absent is OFF, and OFF reads nothing and says nothing);
-//   2. the newest `labeled` event for it names a login in `setters` (the managers App or the leads login: the identities `ceo` writes as);
+//   1. the option is ON (`emergencyPriority.enabled` in the host declaration; absent is OFF, and OFF reads nothing and says nothing),
+//   2. the newest `labeled` event for it names a login in `setters` (the managers App or the leads login: the identities `ceo` writes as),
 //   3. the row's body carries an `Incident: <ref>` line (`#889` or `a11ign/agent-org#889`) naming an item that is OPEN, labelled `incident`, and whose own `Incident: <key>` line
 //      is one of `incidentKeys` -- the org-blocking ones. An incident that is CLOSED expires the label (the gate removes it); one that is not org-blocking, or no link, is misuse.
 // A history or an incident that cannot be READ fails closed (not honoured, and the label is NOT removed): an outage must neither grant nor take away an emergency.

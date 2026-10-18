@@ -2,8 +2,8 @@
 // no-token: gh -- the `ask` seam is a fake GitHub that answers a 304 to the ETag it last gave, so what the reader SENDS is what these tests read; no `gh` starts.
 //
 // Three claims, the three Done-when lines of the row, each with its positive control beside it:
-//   (a) a repeated unchanged URL sends the stored ETag and returns the cached value on a 304, across a process restart too;
-//   (b) a pull request whose head and `updatedAt` are unchanged is not re-read, and one whose either moved is;
+//   (a) a repeated unchanged URL sends the stored ETag and returns the cached value on a 304, across a process restart too,
+//   (b) a pull request whose head and `updatedAt` are unchanged is not re-read, and one whose either moved is,
 //   (c) the budget refuses the spend that would pass its cap, leaves the total where it was, and says where the points went.
 
 import assert from "node:assert/strict";

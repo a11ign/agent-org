@@ -5,9 +5,9 @@
 //   a. `pr list --json` naming a heavy field (`statusCheckRollup`, `body`, ...) from a manager's workspace is refused by the wrapper: exit 1, the
 //      message names `agent-org gate-snapshot-read`, the stub is never reached and no ledger line is written;
 //   b. `pr list --json number,title --limit 30` from a manager reaches the stub, and its ledger line is priced off the pool's counter: resource
-//      `graphql` (not `graphql?`, not 0) with the counter after the call, so `settle` reads the points one call cost;
+//      `graphql` (not `graphql?`, not 0) with the counter after the call, so `settle` reads the points one call cost,
 //   c. `pr list` and `issue list` with no `--limit`, or with `--limit 51`, are refused the same way, and so is a heavy `issue list`;
-//   d. the same heavy `pr list` from a worker's workspace and from the gate's own process (no workspace) reaches the stub: the guard is for managers;
+//   d. the same heavy `pr list` from a worker's workspace and from the gate's own process (no workspace) reaches the stub: the guard is for managers,
 //   e. the alarm: a session whose priced calls sum to over 500 points in ten minutes is named by `recordPoolAlarms`; a session at 500 or under, or
 //      spread over more than ten minutes, is named by nothing.
 

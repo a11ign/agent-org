@@ -5,9 +5,9 @@
 // THE ORDER OF ONE BATCH, AND WHY EACH STEP SITS WHERE IT DOES:
 //   1. `getUpdates(offset)` -- long poll, `message` and `callback_query` for the chairman, and `my_chat_member` and `channel_post` so the
 //      listener learns the id of a channel the bot is added to. THE LISTENER IS THE ONLY CALLER THAT CAN: a second `getUpdates` caller is a
-//      409. Those two are RECORDED by the core (`noted`) and never acted on, and a `noted` is never a chat to leave;
+//      409. Those two are RECORDED by the core (`noted`) and never acted on, and a `noted` is never a chat to leave,
 //   2. every update goes through `inbound.handle`, which writes ITS LEDGER LINE before it answers, so a crash after that point loses one
-//      message and never repeats one (the core's rule, inbound.ts);
+//      message and never repeats one (the core's rule, inbound.ts),
 //   3. THE OFFSET IS PERSISTED AFTER THE BATCH, never before: a crash between 2 and 3 re-asks for the same updates, and the core's
 //      dedupe by update id turns that replay into `replayed`, which does nothing. The offset is the optimisation and the ledger is the memory.
 //

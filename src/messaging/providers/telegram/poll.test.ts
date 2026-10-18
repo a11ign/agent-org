@@ -6,8 +6,8 @@
 //
 // POSITIVE CONTROLS, because each of these claims is also what a listener that does nothing would satisfy:
 //   * the offset: the first batch is HANDLED (three forwards) before the offset is read back, and a restart that asks from nothing is the
-//     counter-case (its first request has no `offset`);
-//   * exactly once: the same update is delivered twice by Telegram and forwarded once, in BOTH ways a restart can go (offset kept, offset lost);
+//     counter-case (its first request has no `offset`),
+//   * exactly once: the same update is delivered twice by Telegram and forwarded once, in BOTH ways a restart can go (offset kept, offset lost),
 //   * the lock: a free lock is taken first, a stale one is taken over, and a live one is the only one refused;
 //   * the unit: the same check run over a deliberately bad unit finds what it looks for.
 // Ids are made-up integers, and the token is a made-up string shaped like one.
