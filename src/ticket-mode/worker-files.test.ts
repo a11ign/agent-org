@@ -329,12 +329,34 @@ test("A11-82: a round whose feedback names a conflict merges the base in first, 
 });
 
 test("A11-82: a conflict-free feedback round has no merge step, and a Respond to review round keeps the brief it had", () => {
+  // A11-89: every round says how to merge a CONFLICTING base in, in its "When no check has started" section; what this test pins is the numbered
+  // merge step the feedback names, which only a conflict in the feedback adds.
   const plain = review("New review feedback on https://github.com/x/nbl-ui-netbox/pull/806, the newest from alice.");
-  assert.equal(plain.includes("git merge"), false, "nothing conflicts, so nothing is merged");
+  assert.equal(/^1\. The feedback above says a pull request conflicts/m.test(plain), false, "nothing conflicts, so no merge step leads the feedback steps");
   assert.match(plain, /^1\. Read that feedback/m);
   const asked = reviewBriefText({ ticket, folder: "/work/.tickets/NBF-1270", ticketDir: "/state/tickets/NBF-1270", prs: reviewed, resumed: true, asked: true });
-  assert.equal(asked.includes("git merge"), false, "a Respond to review round keeps the brief it had: no merge is named unless the feedback names a conflict");
+  assert.equal(/^1\. The feedback above says a pull request conflicts/m.test(asked), false, "a Respond to review round keeps the brief it had: no merge step is named unless the feedback names a conflict");
   assert.match(asked, /^1\. Read that feedback/m);
+});
+
+test("A11-89: every review round tells the worker, when no check has started, to read the merge state first and to merge a conflicting base in", () => {
+  const approved = reviewBriefText({ ticket, folder: "/work/.tickets/NBF-1270", ticketDir: "/state/tickets/NBF-1270", prs: reviewed, resumed: true });
+  const asked = reviewBriefText({ ticket, folder: "/work/.tickets/NBF-1270", ticketDir: "/state/tickets/NBF-1270", prs: reviewed, resumed: true, asked: true });
+  for (const [why, brief] of [["approved", approved], ["feedback", review(conflictFeedback)], ["asked", asked]] as const) {
+    assert.match(brief, /^## When no check has started$/m, why);
+    assert.match(brief, /When no check has started on your head commit, run `gh pr view <url> --json mergeable,mergeStateStatus` for each pull request first, before you wait longer or do anything else\./, why);
+    assert.match(brief, /GitHub runs no `pull_request` workflow on a pull request that conflicts with its base, so if it says CONFLICTING or DIRTY, merge the base branch in: `git fetch`, then `git merge origin\/<base>`/, why);
+    assert.match(brief, /Never rebase, and never force-push\. Resolve each conflict keeping both changes' intent/, `${why}: never a rebase, and both changes kept`);
+    assert.match(brief, /Never write `needs-human`, and never ask a person to re-run CI, for checks that did not start while the pull request is CONFLICTING or DIRTY\./, why);
+    assert.match(brief, /Write `needs-human` for checks that did not start only when the pull request is mergeable and they still have not started after the wait\./, why);
+  }
+  assert.match(approved, /If a check or the review has not finished by then, write a `needs-human` outcome that names what you waited for\./, "the approved round's wait keeps its words");
+});
+
+test("A11-89: the first-run brief has no such section, since it never waits for checks", () => {
+  const brief = briefWith();
+  assert.equal(brief.includes("When no check has started"), false);
+  assert.equal(brief.includes("mergeStateStatus"), false);
 });
 
 test("A11-82: the approved round tells the worker to merge a conflicting base in before it marks anything ready", () => {

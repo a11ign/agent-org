@@ -9,7 +9,7 @@
 // the only writer of the file, which it replaces whole by rename, so a reader never sees half of one.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { CONCLUDED, isBeingPublished, isParked, isPublishing, isWatched, openPulls, overlapWait, RESULT_KINDS, runStatus, settledByPulls, waitsOn } from "./board-view.ts";
+import { CONCLUDED, isBeingPublished, isParked, isPublishing, isWatched, openPulls, overlapWait, resumesOnConflict, RESULT_KINDS, runStatus, settledByPulls, waitsOn } from "./board-view.ts";
 import type { Blocker, PullState, StateMove, Ticket } from "./source.ts";
 
 /** A pull request a run opened: the repository it is in and its web address. */
@@ -399,8 +399,27 @@ export function feedbackRound(queue: Queue, key: string, feedback: string, now: 
     const handedBack = `The pull requests keep getting feedback: the board answered ${rounds} rounds on its own and stopped. Respond to review starts another. The latest: ${feedback}`;
     return replace(queue, key, (e) => ({ ...e, handedBack }));
   }
-  const round: Entry = { ...reviewRound(entry, openPulls(entry), now), feedback, rounds: rounds + 1 };
-  return { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== key), round] };
+  return queueRound(queue, entry, feedback, now);
+}
+
+/** Whether the board may start one more round of its own on `entry`: it has started fewer than {@link MAX_FEEDBACK_ROUNDS} since a person approved. */
+export const roundsLeft = (entry: Entry): boolean => (entry.rounds ?? 0) < MAX_FEEDBACK_ROUNDS;
+
+/** `entry` goes back on the queue, at the end, as a review round that answers `feedback` and counts as one of the board's own rounds. */
+function queueRound(queue: Queue, entry: Entry, feedback: string, now: number): Queue {
+  const round: Entry = { ...reviewRound(entry, openPulls(entry), now), feedback, rounds: (entry.rounds ?? 0) + 1 };
+  return { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== entry.ticket.key), round] };
+}
+
+/**
+ * A pull request of a run the board does not watch conflicts with its base (A11-89): the run is parked, or ended with no outcome, or crashed, and
+ * {@link resumesOnConflict} names it. Its ticket goes back on the queue as a review round that answers the conflict and resumes the same worker,
+ * as {@link feedbackRound} does for a watched run. At the cap nothing is queued, and no `handedBack` is set: a parked run already reads Needs you.
+ */
+export function conflictRound(queue: Queue, key: string, feedback: string, now: number): Queue {
+  const entry = find(queue, key);
+  if (entry === undefined || entry.phase !== "finished" || isWatched(entry) || !resumesOnConflict(entry) || !roundsLeft(entry)) return queue;
+  return queueRound(queue, entry, feedback, now);
 }
 
 /**

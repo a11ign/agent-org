@@ -600,6 +600,20 @@ export function isWatched(entry: ViewEntry): boolean {
   return (status === "ready-to-merge" || status === "published" || waitingReady) && !isParked(entry) && openPulls(entry).length > 0;
 }
 
+/**
+ * Whether the board resumes a run's worker when one of its pull requests conflicts with its base (A11-89): a run {@link isWatched} is, and so is a
+ * finished run with a pull request still open that is not a result, concluded or stopped. That is a run parked on a question (`needs-human`), one
+ * that ended with no outcome or crashed, or one that handed its ticket back: the worker can clear a conflict itself, so the board does not wait on a
+ * person. A run the tracker completed or canceled is left alone, and so is one whose pull requests all merged or closed.
+ */
+export function resumesOnConflict(entry: ViewEntry): boolean {
+  if (isWatched(entry)) return true;
+  const kind = entry.outcome?.kind ?? "";
+  const status = runStatus(entry);
+  return entry.phase === "finished" && openPulls(entry).length > 0 && !RESULT_KINDS.has(kind) && !CONCLUDED.has(kind) && kind !== "stopped"
+    && status !== "completed" && status !== "cancelled";
+}
+
 /** The fields of the board's publish run that the page reads: its workspace and pane are set once it runs, and dropped when it ends. */
 export type ViewPublish = Readonly<{ keys: readonly string[]; phase: string; failure?: string; workspace?: string; pane?: string }>;
 
