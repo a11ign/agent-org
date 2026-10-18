@@ -24,7 +24,14 @@ export function declaredRemains(text: string): string | null {
 /** A pull request a run opened: the repository it is in and its web address. */
 export type PullRequest = Readonly<{ repo: string; url: string }>;
 
-/** How a finished run ended. A worker writes the first seven; the pool decides the rest. */
+/**
+ * A change a worker proposes to its ticket's text (A11-91): the title and description it would have, and why. A field it leaves out stays as it is.
+ * `base` is the text the tracker held when the board recorded the proposal, which Apply checks the ticket still holds before it writes anything: the
+ * board records it, the worker never does. The board applies a proposal only on a person's request.
+ */
+export type ProposedEdit = Readonly<{ title?: string; description?: string; why: string; base?: Readonly<{ title: string; description: string }> }>;
+
+/** How a finished run ended. A worker writes the first eight; the pool decides the rest. */
 export type Outcome =
   /**
    * `partial` is what remains of the ticket after this pull request, when the worker declared it partial: the pull request then links the ticket
@@ -37,12 +44,18 @@ export type Outcome =
   | Readonly<{ kind: "reviewed"; prs: readonly PullRequest[] }>
   | Readonly<{ kind: "planned" }>
   /**
-   * The worker checked what the ticket asks and found nothing to change: the reason says what it checked and what it found. Nothing is asked of a
-   * person, so the run is not Needs you, and it is not retried: a second worker would check the same thing again.
+   * The worker checked what the ticket asks and found nothing to change, and the ticket is not finished: the reason says what it checked and what it
+   * found. Nothing is asked of a person, so the run is not Needs you, and it is not retried: a second worker would check the same thing again. The
+   * ticket stays open.
    */
-  | Readonly<{ kind: "checked"; reason: string }>
+  | Readonly<{ kind: "checked"; reason: string; edit?: ProposedEdit }>
+  /**
+   * The worker verified every Done-when item of a ticket that needs no code or pull request, and `evidence` says, per item, what it ran or read and
+   * what it showed (A11-91). The board completes the ticket on the tracker, posts the reason and the evidence on it, and the run is Completed.
+   */
+  | Readonly<{ kind: "done"; reason: string; evidence: readonly string[]; edit?: ProposedEdit }>
   | Readonly<{ kind: "wrong-repo"; where: string }>
-  | Readonly<{ kind: "needs-human"; reason: string }>
+  | Readonly<{ kind: "needs-human"; reason: string; edit?: ProposedEdit }>
   | Readonly<{ kind: "no-outcome" }>
   | Readonly<{ kind: "crashed"; reason: string }>
   | Readonly<{ kind: "stopped" }>;
@@ -326,6 +339,22 @@ export function recordMove(queue: Queue, key: string, move: StateMove): Queue {
 /** The board has put the ticket back, or left it where a person put it: its record is no longer needed. */
 export function clearMove(queue: Queue, key: string): Queue {
   return replace(queue, key, ({ movedFrom: _restored, ...entry }) => entry);
+}
+
+/** The edit a finished run's worker proposed to its ticket's text, or undefined when it proposed none (A11-91). PURE. */
+export const proposedEdit = (entry: Entry): ProposedEdit | undefined => (entry.outcome !== undefined && "edit" in entry.outcome ? entry.outcome.edit : undefined);
+
+/**
+ * The run's proposed edit to its ticket's text is dropped: a person applied it, or discarded it. The run's outcome stays as the worker wrote it.
+ * A run with no proposal is left as it is.
+ */
+export function clearEdit(queue: Queue, key: string): Queue {
+  return replace(queue, key, (entry) => {
+    const { outcome } = entry;
+    if (outcome === undefined || !("edit" in outcome) || outcome.edit === undefined) return entry;
+    const { edit: _proposed, ...rest } = outcome;
+    return { ...entry, outcome: rest };
+  });
 }
 
 /**

@@ -201,7 +201,7 @@ takes them one each. Ticket mode is two services, both on `127.0.0.1`:
   completes its ticket, or once its pull requests have merged, as Linear's GitHub integration reports them. Linear completes a ticket on a
   merge only where its team's workflow says so. A run whose pull requests all closed unmerged is Cancelled. The board asks every two minutes. A run can be removed
   while queued, stopped while running, and retried once it has failed. The number of workers at once is set in Settings, and a change takes effect straight away. On a machine
-  that sets `tickets.terminal`, a live or parked run has an Open terminal link to its agent's terminal in the browser.
+  that sets `tickets.terminal`, a live or parked run has an Open terminal link to its agent's terminal in the browser. A run whose worker wrote `done` is Completed too: the board moves its ticket to the tracker's completed state and posts the worker's reason and evidence on it (see Outcomes below).
 - **Parked, not closed, when a run needs you.** A run that ends `needs-human`, `wrong-repo` or with no outcome keeps its herdr workspace
   and holds no slot, so you can answer the agent in its terminal. Once the agent works again the run is In progress again, its old outcome
   is moved to `outcome.prev.json`, and the worker must write a new one before it stops. A worker that writes a new outcome file after its
@@ -277,9 +277,24 @@ reasoning reviews the diff, read only, for behaviour it changed but meant to kee
 acceptance criterion and each decision that binds the ticket, and backs each behaviour its pull request body claims with an assertion of
 exactly that behaviour, run on the base. The worker reads each repository's `CLAUDE.md`/`AGENTS.md` for its commands,
 opens a DRAFT pull request per repository it changed with `pr:open create --draft`, and writes an outcome file: `draft-pr`, `wrong-repo` (the fix belongs in none of them),
-`checked` (nothing needs to change), `needs-human`, or, for a turn that ends while its own background work runs on, `working`, which does not
+`checked` (nothing needs to change, and the ticket is not finished), `done` (see below), `needs-human`, or, for a turn that ends while its own background work runs on, `working`, which does not
 end the run. A worker writes nothing to Linear. The board writes only a planning run's files, attached to its ticket, the
-ticket's move to the planner's state, and a batch's order as "blocks" relations.
+ticket's move to the planner's state, a batch's order as "blocks" relations, and the completion of a ticket on a worker's `done` or a merged pull request.
+
+**Outcomes that finish a ticket without a pull request.** A ticket whose work needs no code (setup, configuration, verification) ends with
+`done` when every one of its Done-when items is verified. The outcome carries a `reason` and an `evidence` list, one line per Done-when item, saying
+what the worker ran or read and what it showed. A `done` with no reason or no evidence is `needs-human`, naming what it lacks, so a bare claim completes
+nothing. The board then moves the ticket to its team's completed state (the one listed first by position), posts the reason and the evidence as a
+comment, and shows the run Completed. A worker never completes a ticket itself: it has read-and-comment access to Linear only. `done` is refused,
+as `needs-human`, for a planning or review run (a review run's ticket completes when its pull requests merge), and for a ticket with open sub-issues,
+which are completed by their own work. If the tracker cannot complete the ticket, the ticket stays where it is and the run is handed to a person with
+both reasons. `checked` stays for a ticket that was looked at and is not finished: its ticket stays open, and nothing is posted.
+
+**A worker's proposed edit to a ticket's text.** `done`, `checked` and `needs-human` may carry an `edit` with a `title`, the whole `description`, or both,
+and a `why`. The board records the proposal beside the text the tracker held, and changes nothing. The run's row shows the proposal, with Apply edit
+and Discard edit. Apply writes the title and description to the ticket only on a person's request, and is refused, keeping the proposal, when the
+ticket's text has changed since the worker read it. Dismissing the run drops an unapplied proposal with it. An edit on a planning or review run is
+refused as `needs-human`.
 
 **Opening a pull request in ticket mode.** A worker opens each pull request with `pr:open`, which checks it before `gh pr create` sends it. A
 ticket has no GitHub row, so `pr:open` reads the ticket through the tracker instead, and makes the checks a row's pull request gets: the Region,

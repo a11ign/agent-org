@@ -2,9 +2,11 @@
 // module: Linear as a ticket source -- GraphQL over an injected `fetch`, with a personal API key
 //
 // A PERSONAL KEY, NOT AN APP. A Linear agent app is installed by a workspace admin, which a person on a work account cannot do, so ticket mode reads
-// as the person: their key, and by default their assigned tickets (`tickets.pick` can widen the list to a team or a project). It writes only what a planning run hands the board: the plan's files, attached to the ticket,
-// the ticket's move to the planner's state, a batch's order as "blocks" relations, and, once a run's pull request merged without closing its ticket, the
-// ticket's move to its completed state with a comment (A11-92). Workers write nothing. Linear's own GitHub integration links each pull request, because the
+// as the person: their key, and by default their assigned tickets (`tickets.pick` can widen the list to a team or a project). It writes only what the
+// board hands the tracker, each on a planning run's or a verified outcome's behalf or a person's: the plan's files, attached to the ticket, the
+// ticket's move to the planner's state, a batch's order as "blocks" relations, once a run's pull request merged without closing its ticket or a worker
+// verified its `done` (A11-91), the ticket's move to its completed state with a comment (A11-92), and, once a person applies a worker's proposed edit,
+// the ticket's title and description (A11-91). Workers write nothing. Linear's own GitHub integration links each pull request, because the
 // worker's branch is the ticket's `branchName`.
 //
 // THE KEY NEVER LEAVES THIS MODULE. It is read once, from the macOS Keychain or a file the host file names, and sent only to api.linear.app and uploads.linear.app.
@@ -350,6 +352,14 @@ export function linearSource({ key, fetch: request = fetch, pick = "assigned" }:
       if (target === undefined) return `${identifier}'s team has no state named ${move.from}, so it stays in ${found.state.name}`;
       await setState(identifier, found.id, target.id, move.from);
       return null;
+    },
+
+    async updateTicketText(identifier, text) {
+      const found = await issue<{ id: string }>(identifier, "id");
+      if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
+      const { issueUpdate }: { issueUpdate: { success: boolean } } = await query(
+        "mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success } }", { id: found.id, input: text });
+      if (!issueUpdate.success) throw new Error(`Linear did not update the text of ${identifier}`);
     },
 
     async complete(identifier, comment) {

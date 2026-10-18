@@ -6,7 +6,7 @@ import { tmpDir } from "../lib/tmp-fixture.ts";
 import { isParked, runStatus } from "./board-view.ts";
 import {
   amend, approve, byIdentifier, childOrder, conflictRound, refuseParents, respond, batchPlanDone, dismiss, feedbackRound, MAX_FEEDBACK_ROUNDS, markPublishRunning, markPublishStarting, publishDone, publishFailed, publishStarts, queuePublish, emptyQueue, enqueue, finish, isLive, leaveBatch, liveRunCount, loadQueue, markResumed, markRunning, markStarting, nextStarts, observe, park,
-  BACKGROUND_GONE, BACKGROUND_GONE_MS, clearMove, noteWorking, recordBlockers, recordMove, recordRepos, planDone, watchWorking, PLAN_BATCH_MAX, recordPullStates, recordTrackerStates, remove, retry, saveQueue, setMax, setPaused, unpark, unreadBlockerKeys, unsettledKeys, type Queue,
+  BACKGROUND_GONE, BACKGROUND_GONE_MS, clearEdit, clearMove, noteWorking, recordBlockers, recordMove, recordRepos, planDone, watchWorking, PLAN_BATCH_MAX, recordPullStates, recordTrackerStates, remove, retry, saveQueue, setMax, setPaused, unpark, unreadBlockerKeys, unsettledKeys, type Queue,
   pathsUnread, recordPaths, recordPullFiles, recordVerdictNotPosted, unreadPaths,
 } from "./queue.ts";
 import type { Blocker, Ticket } from "./source.ts";
@@ -311,6 +311,16 @@ test("a move the board made is recorded on its run once, the first one kept, and
   assert.deepEqual(recordMove(started, "B", moved), started, "a run that is not on the queue records nothing");
   const crashed = finish(recorded, "A", { kind: "crashed", reason: "x" }, 4);
   assert.deepEqual(retry(crashed, "A", 5).entries[0].movedFrom, moved, "a retried run finds its ticket started, so the record is all there is");
+});
+
+test("A11-91: clearing a proposed edit drops it and leaves the outcome as the worker wrote it; a run with no proposal is left as it is", () => {
+  const edit = { title: "Right title", why: "the title is wrong", base: { title: "Wrong title", description: "text" } };
+  const proposed = endedWith({ kind: "checked", reason: "r", edit });
+  assert.deepEqual(clearEdit(proposed, "A").entries[0].outcome, { kind: "checked", reason: "r" });
+  assert.equal(clearEdit(proposed, "A").entries[0].phase, "finished");
+  const plain = endedWith({ kind: "done", reason: "r", evidence: ["e"] });
+  assert.deepEqual(clearEdit(plain, "A"), plain, "nothing to clear: the queue is as it was");
+  assert.equal(clearEdit(endedWith({ kind: "draft-pr", prs: [] }), "A").entries[0].outcome?.kind, "draft-pr");
 });
 
 test("clearing a move drops the record and leaves the run as it was", () => {

@@ -67,6 +67,9 @@
   .run:first-child { border-top: 0; }
   .run .title { font-weight: 600; overflow-wrap: anywhere; }
   .run .meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .run .evidence { color: var(--muted); font-size: 12px; margin: 2px 0 0; padding-left: 18px; }
+  .run .proposal { font-size: 12px; margin-top: 4px; }
+  .run .proposal pre { white-space: pre-wrap; margin: 2px 0 6px; font: inherit; }
   .run .side { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
   .run .actions { display: flex; gap: 6px; }
   .run .terminal { font-size: 12px; font-weight: 600; }
@@ -193,7 +196,7 @@
 // The decisions (what shows, how it groups, what can be selected, what status a run has and what it offers) are board-view.ts's, tested there.
 // This page only draws what they return and wires the clicks.
 import {
-  APPROVE_TITLE, DISMISS_TITLE, RESPOND_TITLE, QUEUE_CHILDREN, QUEUE_CHILDREN_TITLE, childrenNote, isParentTicket, PRIORITY_NAMES, RUN_STATUSES, publishable, publishLabel, publishNote, publishTerminalLink, pullsOf, flatten, groupByStatus, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, queueLabel, recall, remember, runActions, shownStatus, apiBase, chosenConnection, connectionLabel, safeHref, runStatus, terminalOpenHref,
+  APPROVE_TITLE, APPLY_EDIT_TITLE, DISCARD_EDIT_TITLE, DISMISS_EDIT_TITLE, DISMISS_TITLE, RESPOND_TITLE, QUEUE_CHILDREN, hasEdit, QUEUE_CHILDREN_TITLE, childrenNote, isParentTicket, PRIORITY_NAMES, RUN_STATUSES, publishable, publishLabel, publishNote, publishTerminalLink, pullsOf, flatten, groupByStatus, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, queueLabel, recall, remember, runActions, shownStatus, apiBase, chosenConnection, connectionLabel, safeHref, runStatus, terminalOpenHref,
   runChoiceLabel, runsShown, unplannedCount, workingNote, verdictNote, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, waitNote, waitsOn, workersLabel,
 } from "/board-view.js";
 // The label rows: one per label group the listed tickets carry, and one for the labels in no group. label-filters.ts decides them, tested there.
@@ -438,8 +441,8 @@ const ICONS = {
   "cancelled": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="2"/><path d="M4 12L12 4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
 };
 const LABEL = Object.fromEntries(RUN_STATUSES.map(({ status, label }) => [status, label]));
-const ACTION_LABEL = { remove: "Remove", stop: "Stop", retry: "Retry", close: "Close", approve: "Approve", respond: "Respond to review", dismiss: "Dismiss" };
-const ACTION_TITLE = { approve: APPROVE_TITLE, respond: RESPOND_TITLE, dismiss: DISMISS_TITLE };
+const ACTION_LABEL = { remove: "Remove", stop: "Stop", retry: "Retry", close: "Close", approve: "Approve", respond: "Respond to review", dismiss: "Dismiss", "apply-edit": "Apply edit", "discard-edit": "Discard edit" };
+const ACTION_TITLE = { approve: APPROVE_TITLE, respond: RESPOND_TITLE, dismiss: DISMISS_TITLE, "apply-edit": APPLY_EDIT_TITLE, "discard-edit": DISCARD_EDIT_TITLE };
 // Respond to review carries a reply arrow, in the reviewing colour, so it reads apart from Approve.
 const ACTION_ICON = { respond: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 3.5L2.5 7.5l4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M2.8 7.5H9a4.5 4.5 0 0 1 4.5 4.5v.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>' };
 
@@ -460,6 +463,17 @@ function length(ms) {
   return minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
+/** The worker's proposed edit to its ticket's text: why, then the text it has now beside the title and description it would have (A11-91). */
+function proposal(edit) {
+  const now = edit.base ?? { title: "", description: "" };
+  return el("details", { className: "proposal" },
+    el("summary", {}, `Proposed edit to the ticket: ${edit.why}`),
+    el("div", { className: "meta" }, "Now"),
+    el("pre", {}, `${now.title}\n\n${now.description}`),
+    el("div", { className: "meta" }, "Proposed"),
+    el("pre", {}, `${edit.title ?? now.title}\n\n${edit.description ?? now.description}`));
+}
+
 function row(e) {
   const status = shownStatus(e, state.queue.publish, state.queue.entries);
   const waits = waitsOn(e, state.queue.entries);
@@ -468,7 +482,9 @@ function row(e) {
   const o = e.outcome;
   const actions = el("div", { className: "actions" });
   for (const verb of runActions(e, state.queue.publish)) {
-    const b = el("button", { className: `small action-${verb}`, ...(ACTION_TITLE[verb] ? { title: ACTION_TITLE[verb] } : {}) });
+    // Dismiss says the proposal goes with the run, when there is one (A11-91).
+    const title = verb === "dismiss" && hasEdit(e) ? DISMISS_EDIT_TITLE : ACTION_TITLE[verb];
+    const b = el("button", { className: `small action-${verb}`, ...(title ? { title } : {}) });
     if (ACTION_ICON[verb]) {
       const icon = el("span", { className: "action-icon" });
       icon.innerHTML = ACTION_ICON[verb];
@@ -483,7 +499,9 @@ function row(e) {
   const pulls = pullsOf(e);
   const prs = pulls.length > 0 ? el("div", { className: "meta" }, ...pulls.flatMap((pr, i) => [i ? " · " : "", el("a", { href: safeHref(pr.url), target: "_blank", rel: "noreferrer" }, `${pr.repo} #${pr.url.split("/").pop()}`)])) : null;
   const note = workingNote(e);
-  const reason = e.handedBack ? e.handedBack : note && !note.stalled ? note.text : !o ? null : o.kind === "wrong-repo" ? `Belongs in: ${o.where}` : o.kind === "needs-human" || o.kind === "crashed" || o.kind === "checked" ? o.reason : o.kind === "no-outcome" ? "Stopped without writing an outcome" : null;
+  const reason = e.handedBack ? e.handedBack : note && !note.stalled ? note.text : !o ? null : o.kind === "wrong-repo" ? `Belongs in: ${o.where}` : o.kind === "needs-human" || o.kind === "crashed" || o.kind === "checked" || o.kind === "done" ? o.reason : o.kind === "no-outcome" ? "Stopped without writing an outcome" : null;
+  // A done run lists what the worker checked, one line per Done-when item, as the ticket's comment does (A11-91).
+  const evidence = o && o.kind === "done" ? el("ul", { className: "evidence" }, ...o.evidence.map((line) => el("li", {}, line))) : null;
   const message = e.published && e.published.link ? el("a", { className: "terminal", href: safeHref(e.published.link), target: "_blank", rel: "noreferrer" }, "Slack message") : null;
   let tick = null;
   if (state.publishing && publishable(e, state.queue.publish)) {
@@ -505,6 +523,8 @@ function row(e) {
       stacked.length > 0 ? el("div", { className: "meta" }, stackNote(stacked)) : null,
       mergeNote ? el("div", { className: "meta" }, mergeNote) : null,
       reason ? el("div", { className: "meta" }, reason) : null,
+      evidence,
+      o && o.edit ? proposal(o.edit) : null,
       verdictNote(e) ? el("div", { className: "waiting" }, verdictNote(e)) : null,
       note && note.stalled ? el("div", { className: "waiting stalled" }, note.text) : null,
       isParked(e) ? el("div", { className: "waiting" }, "Still open: answer the agent in its terminal and the run carries on") : null),

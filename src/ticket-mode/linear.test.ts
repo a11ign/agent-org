@@ -492,6 +492,24 @@ test("A11-92: complete() is refused when Linear answers success false to the mov
   await assert.rejects(linearSource({ key: "k", fetch: refusedComment.fetch }).complete!("NBF-1", "c"), /Linear did not post a comment on NBF-1/);
 });
 
+test("A11-91: updateTicketText() writes only the title and description it is given, to the ticket's id", async () => {
+  const { fetch, requests } = linear([{ data: { issues: { nodes: [{ id: "uuid-1" }] } } }, moved]);
+  await linearSource({ key: "k", fetch }).updateTicketText!("NBF-1", { title: "New title" });
+  const bodies = requests.map((r) => JSON.parse(String(r.init.body)));
+  assert.deepEqual(bodies[1].variables, { id: "uuid-1", input: { title: "New title" } }, "the title alone, not the description");
+  assert.match(bodies[1].query, /issueUpdate/);
+  const described = linear([{ data: { issues: { nodes: [{ id: "uuid-1" }] } } }, moved]);
+  await linearSource({ key: "k", fetch: described.fetch }).updateTicketText!("NBF-1", { description: "New text" });
+  assert.deepEqual(JSON.parse(String(described.requests[1].init.body)).variables, { id: "uuid-1", input: { description: "New text" } }, "the description alone");
+});
+
+test("A11-91: updateTicketText() is refused when Linear has no ticket by that key, or answers success false", async () => {
+  const missing = linear([{ data: { issues: { nodes: [] } } }]);
+  await assert.rejects(linearSource({ key: "k", fetch: missing.fetch }).updateTicketText!("NBF-1", { title: "t" }), /Linear has no ticket NBF-1/);
+  const refused = linear([{ data: { issues: { nodes: [{ id: "uuid-1" }] } } }, { data: { issueUpdate: { success: false } } }]);
+  await assert.rejects(linearSource({ key: "k", fetch: refused.fetch }).updateTicketText!("NBF-1", { title: "t" }), /did not update the text of NBF-1/);
+});
+
 test("A11-92: Linear's own pull request words are the keywords a source hands the brief and pr:open", () => {
   assert.deepEqual(linearSource({ key: "k", fetch: linear([]).fetch }).keywords, { closing: "Closes", nonClosing: "Refs" });
 });

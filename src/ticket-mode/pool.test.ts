@@ -2418,6 +2418,232 @@ test("a parked run whose worker then writes checked or planned has its workspace
   // A planning run's `planned` closes its workspace too: "a planning run that writes planned has its plan attached ..." above asserts it.
 });
 
+/**
+ * A tracker that holds NBF-1 in `In Progress` and completes it, updates its text and reads it back, recording each call. `control` holds, refuses or
+ * answers each call: `hold` keeps `complete` open, `refuse` throws from it, and `note` is the tracker's answer when it cannot complete the ticket.
+ */
+function doneTracker(title = "Old title") {
+  const { tracker: base, current } = stateTracker();
+  const calls: { op: string; args: unknown[] }[] = [];
+  const control = { hold: null as Promise<void> | null, refuse: null as string | null, note: null as string | null, refuseUpdate: false, title };
+  const tracker: TicketSource = { ...base,
+    read: async (key) => ({ ...ticket(key), title: control.title, description: "Old description" }),
+    complete: async (key, comment) => {
+      calls.push({ op: "complete", args: [key, comment] });
+      if (control.hold !== null) await control.hold;
+      if (control.refuse !== null) throw new Error(control.refuse);
+      if (control.note !== null) return control.note;
+      current.set(key, "Done");
+      return null;
+    },
+    updateTicketText: async (key, text) => {
+      calls.push({ op: "updateTicketText", args: [key, text] });
+      if (control.refuseUpdate) throw new Error("Linear refused the update");
+      control.title = text.title ?? control.title;
+    } };
+  return { tracker, current, calls, control };
+}
+
+/** The run of NBF-1 ended on `outcome`, with its ticket held In Progress as the board holds a worked ticket. */
+const doneRun = (outcome: Record<string, unknown>, made: ReturnType<typeof doneTracker>, extra: Record<string, unknown> = {}) =>
+  endedOn(outcome, 1, ["NBF-1"], { workingState: "In Progress" }, { source: made.tracker, ...extra });
+
+test("A11-91: a done outcome is read with its reason and evidence, and a bare or evidence-less done is needs-human naming what it lacks", () => {
+  const evidence = ["npm test: 12 pass", "the toast shows on refresh (read src/toast.ts:40)"];
+  assert.deepEqual(parseOutcome(JSON.stringify({ kind: "done", reason: "every Done-when holds", evidence })), { kind: "done", reason: "every Done-when holds", evidence });
+  for (const bad of [{ kind: "done", reason: "verified" }, { kind: "done", reason: "verified", evidence: [] }, { kind: "done", reason: "verified", evidence: ["  "] }]) {
+    const read = parseOutcome(JSON.stringify(bad));
+    assert.equal(read.kind, "needs-human", JSON.stringify(bad));
+    assert.match(read.kind === "needs-human" ? read.reason : "", /without evidence/, "the reason names the evidence it lacks");
+  }
+  const bare = parseOutcome(JSON.stringify({ kind: "done", evidence: ["e"] }));
+  assert.match(bare.kind === "needs-human" ? bare.reason : "", /without a reason/);
+});
+
+test("A11-91: a done outcome completes its ticket through the tracker, posts the reason and evidence on it, closes the workspace, and the run is Completed", async () => {
+  const made = doneTracker();
+  const evidence = ["npm test: 12 pass", "the toast shows on refresh (read src/toast.ts:40)"];
+  const { entry, h, pool } = await doneRun({ kind: "done", reason: "every Done-when holds", evidence }, made);
+  await settled();
+  assert.equal(made.calls.length, 1, "the tracker is asked once");
+  assert.equal(made.calls[0].op, "complete");
+  const [key, comment] = made.calls[0].args as [string, string];
+  assert.equal(key, "NBF-1");
+  assert.equal(comment, "every Done-when holds\n\nEvidence:\n- npm test: 12 pass\n- the toast shows on refresh (read src/toast.ts:40)\n\nCompleted by the ticket board on the worker's verified outcome.");
+  assert.equal(made.current.get("NBF-1"), "Done", "the ticket is in the completed state");
+  assert.equal(entry("NBF-1").movedFrom, undefined, "its move is cleared, so nothing puts the ticket back");
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").outcome?.kind], ["finished", "done"]);
+  assert.equal(runStatus(entry("NBF-1")), "completed");
+  assert.equal(closes(h, "w1"), 1, "its workspace is closed as the outcome is recorded");
+  assert.equal(made.current.get("NBF-1"), "Done", "and no restore put it back to Todo after the completion");
+  void pool;
+});
+
+test("A11-91: a checked outcome leaves its ticket open: the tracker is not asked to complete it, and the ticket goes back to where it was", async () => {
+  const made = doneTracker();
+  const { entry } = await doneRun({ kind: "checked", reason: "nothing to change" }, made);
+  await settled();
+  assert.deepEqual(made.calls, [], "no completion, no comment");
+  assert.equal(made.current.get("NBF-1"), "Todo", "checked is not finished: the ticket is put back where the board found it");
+  assert.equal(runStatus(entry("NBF-1")), "checked");
+});
+
+/** Give NBF-1 the sub-issues the tracker reports for it while its run is live, as a child opened after the ticket was queued would. */
+const withOpenChildren = (made: ReturnType<typeof setup>, children: string[]) => {
+  const queue = made.store.get();
+  made.store.set({ ...queue, entries: queue.entries.map((e) => (e.ticket.key === "NBF-1" ? { ...e, ticket: { ...e.ticket, children } } : e)) });
+};
+
+/** NBF-1 is running, then its worker writes `outcome`, and the run ends. */
+async function finishRunning(made: ReturnType<typeof setup>, outcome: Record<string, unknown>) {
+  await made.pool.tick();
+  made.status.set(herdrName("NBF-1"), "working");
+  await made.pool.tick();
+  writeFileSync(join(ticketDir(made.settings, "NBF-1"), "outcome.json"), JSON.stringify(outcome));
+  made.status.set(herdrName("NBF-1"), "idle");
+  await made.pool.tick();
+  await settled();
+  return made;
+}
+
+test("A11-91: a done is refused as needs-human, and the ticket left alone, for a parent with open sub-issues, a planning run, and a review run", async () => {
+  const parent = doneTracker();
+  const made = setup(1, ["NBF-1"], { workingState: "In Progress" }, { source: parent.tracker });
+  await made.pool.tick();
+  withOpenChildren(made, ["NBF-2", "NBF-3"]);
+  await finishRunning(made, { kind: "done", reason: "all verified", evidence: ["e"] });
+  assert.deepEqual(parent.calls, [], "the children complete it, not its own done");
+  assert.equal(made.entry("NBF-1").outcome?.kind, "needs-human");
+  assert.match((made.entry("NBF-1").outcome as { reason: string }).reason, /NBF-1 has open sub-issues \(NBF-2, NBF-3\), which complete it, not its own done: all verified/);
+
+  const planning = doneTracker();
+  const plan = setup(1, ["NBF-1"], PLANNER, { source: planning.tracker, planFirst: ["NBF-1"] });
+  await finishRunning(plan, { kind: "done", reason: "verified", evidence: ["e"] });
+  assert.deepEqual(planning.calls, [], "a planning run completes no ticket");
+  assert.match((plan.entry("NBF-1").outcome as { reason: string }).reason, /planning run, which completes no ticket/);
+
+  const review = doneTracker();
+  const reviewing = setup(1, ["NBF-1"], { workingState: "In Progress" }, { source: review.tracker });
+  await reviewing.pool.tick();
+  const queue = reviewing.store.get();
+  reviewing.store.set({ ...queue, entries: queue.entries.map((e) => (e.ticket.key === "NBF-1" ? { ...e, review: [] } : e)) });
+  await finishRunning(reviewing, { kind: "done", reason: "verified", evidence: ["e"] });
+  assert.deepEqual(review.calls, [], "a review run's ticket completes when its pull requests merge");
+  assert.match((reviewing.entry("NBF-1").outcome as { reason: string }).reason, /review run: its ticket completes when its pull requests merge/);
+});
+
+test("A11-91: a done that the tracker cannot complete hands the run to a person with the worker's reason and the tracker's, and the ticket is left where it is", async () => {
+  const noState = doneTracker();
+  noState.control.note = "NBF-1's team has no completed state, so it stays in In Progress";
+  const { entry } = await doneRun({ kind: "done", reason: "verified", evidence: ["e"] }, noState);
+  await settled();
+  assert.equal(entry("NBF-1").outcome?.kind, "needs-human");
+  assert.equal(noState.current.get("NBF-1"), "In Progress", "the ticket is untouched");
+  assert.match((entry("NBF-1").outcome as { reason: string }).reason, /NBF-1 was not completed \(NBF-1's team has no completed state.*\): verified/);
+
+  const refused = doneTracker();
+  refused.control.refuse = "Linear did not move NBF-1 to Done";
+  const again = await doneRun({ kind: "done", reason: "verified", evidence: ["e"] }, refused);
+  await settled();
+  assert.equal(again.entry("NBF-1").outcome?.kind, "needs-human");
+  assert.match((again.entry("NBF-1").outcome as { reason: string }).reason, /could not be completed \(Linear did not move NBF-1 to Done\): verified/);
+  assert.equal(refused.current.get("NBF-1"), "In Progress");
+  assert.equal(runStatus(again.entry("NBF-1")), "needs-you", "a person answers it");
+});
+
+test("A11-91: a done that another tick sees while the tracker is still completing it completes once", async () => {
+  const made = doneTracker();
+  let release = () => {};
+  made.control.hold = new Promise<void>((resolve) => { release = resolve; });
+  const { pool, entry } = await doneRun({ kind: "done", reason: "verified", evidence: ["e"] }, made);
+  await pool.tick();
+  await pool.tick();
+  assert.equal(made.calls.length, 1, "the second tick does not complete it again");
+  release();
+  await settled();
+  assert.equal(entry("NBF-1").outcome?.kind, "done");
+  assert.equal(made.calls.length, 1);
+});
+
+test("A11-91: a worker's proposed edit is recorded on its outcome with the ticket's text as the tracker holds it, and the ticket is not changed", async () => {
+  const made = doneTracker("Wrong title");
+  const edit = { title: "Right title", why: "the ticket names the wrong thing" };
+  const { entry } = await doneRun({ kind: "checked", reason: "nothing to change", edit }, made);
+  await settled();
+  assert.deepEqual(entry("NBF-1").outcome, { kind: "checked", reason: "nothing to change", edit: { ...edit, base: { title: "Wrong title", description: "Old description" } } });
+  assert.deepEqual(made.calls, [], "the ticket is not written: only a person's Apply does that");
+});
+
+test("A11-91: an edit that is not one the board can apply parks the run as needs-human naming the problem, and proposes nothing", () => {
+  const LONGEST_TITLE = 255;
+  const LONGEST_DESCRIPTION = 60_000;
+  const titled = (title: string) => JSON.stringify({ kind: "checked", reason: "r", edit: { title, why: "w" } });
+  const cases: [string, RegExp][] = [
+    [JSON.stringify({ kind: "checked", reason: "r", edit: { why: "w" } }), /neither a title nor a description/],
+    [JSON.stringify({ kind: "checked", reason: "r", edit: { title: "t" } }), /has no why/],
+    [titled("two\nlines"), /not one line of 1 to 255 characters/],
+    [titled("x".repeat(LONGEST_TITLE + 1)), /not one line of 1 to 255 characters/],
+    [JSON.stringify({ kind: "needs-human", reason: "q", edit: { description: "x".repeat(LONGEST_DESCRIPTION + 1), why: "w" } }), /more than 60,000 characters/],
+    [JSON.stringify({ kind: "done", reason: "r", evidence: ["e"], edit: "a sentence" }), /is not an object/],
+  ];
+  for (const [text, problem] of cases) {
+    const read = parseOutcome(text);
+    assert.equal(read.kind, "needs-human", text);
+    assert.match(read.kind === "needs-human" ? read.reason : "", problem);
+    assert.equal("edit" in read, false, "nothing is proposed from it");
+  }
+  assert.deepEqual(parseOutcome(JSON.stringify({ kind: "needs-human", reason: "q", edit: { description: "", why: "blank it" } })), { kind: "needs-human", reason: "q", edit: { description: "", why: "blank it" } }, "an empty description is a proposal too");
+});
+
+test("A11-91: Apply writes the proposed title to the ticket and drops the proposal, and refuses, keeping it, once the ticket has changed since", async () => {
+  const made = doneTracker("Wrong title");
+  const { pool, entry } = await doneRun({ kind: "checked", reason: "nothing to change", edit: { title: "Right title", why: "w" } }, made);
+  await settled();
+  made.control.title = "Edited by a person";
+  await assert.rejects(pool.applyEdit("NBF-1"), /the ticket changed since the worker proposed this: NBF-1 is not written, and the proposal stays/);
+  assert.equal(entry("NBF-1").outcome && "edit" in entry("NBF-1").outcome! ? "kept" : "dropped", "kept");
+  assert.deepEqual(made.calls, [], "nothing was written");
+  made.control.title = "Wrong title";
+  await pool.applyEdit("NBF-1");
+  assert.deepEqual(made.calls.at(-1), { op: "updateTicketText", args: ["NBF-1", { title: "Right title" }] }, "only the title the worker proposed");
+  assert.equal(made.control.title, "Right title");
+  assert.equal(entry("NBF-1").outcome && "edit" in entry("NBF-1").outcome! ? "kept" : "dropped", "dropped");
+  assert.equal(entry("NBF-1").outcome?.kind, "checked", "the run's outcome stands");
+  await assert.rejects(pool.applyEdit("NBF-1"), /has no proposed edit to apply/);
+});
+
+test("A11-91: Discard drops the proposal and writes nothing; a run with no proposal refuses it", async () => {
+  const made = doneTracker();
+  const { pool, entry } = await doneRun({ kind: "needs-human", reason: "which title?", edit: { title: "New", why: "w" } }, made);
+  await settled();
+  pool.discardEdit("NBF-1");
+  assert.equal(entry("NBF-1").outcome && "edit" in entry("NBF-1").outcome! ? "kept" : "dropped", "dropped");
+  assert.equal(entry("NBF-1").outcome?.kind, "needs-human", "the worker's question stands");
+  assert.deepEqual(made.calls, []);
+  assert.throws(() => pool.discardEdit("NBF-1"), /has no proposed edit to discard/);
+});
+
+test("A11-91: a parked run whose worker rewrites the same outcome, with its proposed edit, has written no new outcome, so it is not resumed", async () => {
+  const outcome = { kind: "needs-human", reason: "which title?", edit: { title: "Right title", why: "the title is wrong" } };
+  const made = await endedOn(outcome, 1, ["NBF-1"], {}, { source: doneTracker().tracker });
+  await settled();
+  const dir = ticketDir(made.settings, "NBF-1");
+  writeFileSync(join(dir, "stop-refusals"), "2");
+  writeFileSync(join(dir, "outcome.json"), JSON.stringify(outcome));
+  await made.pool.tick();
+  await settled();
+  assert.equal(made.entry("NBF-1").phase, "finished", "the same outcome is not a new one");
+  assert.ok(existsSync(join(dir, "stop-refusals")), "so the stop count is not cleared by a resume");
+});
+
+test("A11-91: a proposed edit a planning run cannot take keeps the worker's own reason, and says why it is refused", async () => {
+  const made = setup(1, ["NBF-1"], PLANNER, { source: doneTracker().tracker, planFirst: ["NBF-1"] });
+  await finishRunning(made, { kind: "checked", reason: "the toast already shows", edit: { title: "t", why: "w" } });
+  const read = made.entry("NBF-1").outcome as { kind: string; reason: string };
+  assert.equal(read.kind, "needs-human");
+  assert.match(read.reason, /^the toast already shows \(the worker proposed an edit to NBF-1's text from a planning run, which the board does not take\)$/);
+});
+
 test("Dismiss takes a finished run off the board, closing its workspace when it is still open, and keeps the run's files", async () => {
   const parked = await endedOn({ kind: "needs-human", reason: "which colour?" });
   await parked.pool.dismiss("NBF-1");

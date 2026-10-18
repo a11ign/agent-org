@@ -968,6 +968,32 @@ test("a checked run shows Checked with its reason, not Needs you, and its Dismis
   assert.ok(p.posts.some((x) => x.path === "/api/queue/C-1/dismiss"));
 });
 
+test("A11-91: a done run shows Completed with its reason and each evidence line, and offers no Retry", async () => {
+  const p = await page(new Map(), { entries: [entry("D-1", { phase: "finished", startedAt: 2, finishedAt: 4, outcome: { kind: "done", reason: "every Done-when holds", evidence: ["npm test: 12 pass", "toast.ts:40 shows it on refresh"] } })] });
+  const row = runRows(p).find((r) => r.text().includes("D-1"))!;
+  assert.equal(row.children[0].className, "icon st-completed");
+  assert.ok(row.text().includes("every Done-when holds"), "the reason it completed with");
+  assert.ok(row.text().includes("npm test: 12 pass") && row.text().includes("toast.ts:40 shows it on refresh"), "each line of its evidence");
+  assert.deepEqual(row.all().filter((n) => n.tag === "button").map((n) => n.text()), ["Dismiss"]);
+});
+
+test("A11-91: a run that proposes an edit shows it beside the ticket's current text, and Apply edit and Discard edit post to their routes", async () => {
+  const edit = { title: "Right title", why: "the title names the wrong thing", base: { title: "Wrong title", description: "the text" } };
+  const p = await page(new Map(), { entries: [entry("E-9", { phase: "finished", startedAt: 2, finishedAt: 4, outcome: { kind: "checked", reason: "nothing to change", edit } })] });
+  const row = runRows(p).find((r) => r.text().includes("E-9"))!;
+  assert.ok(row.text().includes("Proposed edit to the ticket: the title names the wrong thing"), "why it is proposed");
+  assert.ok(row.text().includes("Wrong title") && row.text().includes("Right title"), "the current and the proposed title");
+  const buttons = row.all().filter((n) => n.tag === "button");
+  assert.deepEqual(buttons.map((n) => n.text()), ["Apply edit", "Discard edit", "Dismiss"]);
+  assert.match((buttons[2] as Node_ & { title?: string }).title ?? "", /Its proposed edit to the ticket's text is dropped too/, "Dismiss says the proposal goes with the run");
+  buttons[0].fire("click");
+  await settle();
+  assert.ok(p.posts.some((x) => x.path === "/api/queue/E-9/apply-edit"));
+  buttons[1].fire("click");
+  await settle();
+  assert.ok(p.posts.some((x) => x.path === "/api/queue/E-9/discard-edit"));
+});
+
 test("A11-69: an empty Pick view says why in the instance's words, and the count says whose tickets it lists", async () => {
   const empty = 'Team A11 has no open tickets, or Linear has no team with that key. tickets.pick in the host file names it.';
   const p = await page(new Map(), { tickets: [], config: { pick: "open in team A11" }, pick: { empty } });
