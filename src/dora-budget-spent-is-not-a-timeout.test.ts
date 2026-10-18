@@ -22,7 +22,6 @@ import { sandboxGitEnv } from "./lib/git-env.ts";
 import { removeAll, tmpDirForFile } from "./lib/tmp-fixture.ts";
 import { githubReaders, readRepository, tagReleasesFrom } from "./dora.ts";
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 type Any = any;
 
 const MIN_TAGS = 100;

@@ -14,7 +14,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DORA_METRICS, dora, doraNumbers, measureRepository, metricState, promotionRecordsFrom, promotionTimeFrom, renderDora } from "./dora.ts";
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 type Any = any;
 
 const NOW = Date.parse("2026-10-06T00:00:00Z");

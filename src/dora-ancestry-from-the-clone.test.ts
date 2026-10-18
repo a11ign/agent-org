@@ -18,7 +18,6 @@ import { join } from "node:path";
 import { sandboxGitEnv } from "./lib/git-env.ts";
 import { readRepository, renderDora } from "./dora.ts";
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 type Any = any;
 
 const MIN_RELEASES = 150;

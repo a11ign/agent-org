@@ -16,7 +16,6 @@ import { join } from "node:path";
 import { measureRepository } from "./dora.ts";
 import { isShipped } from "./release-behind-main.ts";
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 type Any = any;
 
 const NOW = Date.parse("2026-10-10T12:00:00Z");

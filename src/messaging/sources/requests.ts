@@ -233,7 +233,6 @@ export function latestBrief(comments: RowComment[] | undefined): RowComment | nu
 
 /** Returns one line, no markup that a plain-text message would show literally, and no control characters */
 function plainLine(text: string): string {
-  // eslint-disable-next-line no-control-regex
   const flat = text.replace(/[\u0000-\u001f\u007f‪-‮⁦-⁩]/g, " ").replace(/\*\*|__|`/g, "").replace(/\s+/g, " ").trim();
   return flat.length <= MAX_QUOTED_LINE ? flat : `${flat.slice(0, MAX_QUOTED_LINE - 1)}${ELLIPSIS}`;
 }

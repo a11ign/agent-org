@@ -200,6 +200,27 @@ jobs:
           echo "tsc program: $count files outside node_modules"
           test "$count" -ge 440
 
+  # THE LINT (ticket A11-95): `eslint` with the Clean Code plugin's rules, `npm run lint`, over `src/` and `scripts/`. It is a job of its own for the same reason as `typecheck`, and it
+  # runs on the same three events, because `gate` waits for a check reporting on `merge_group`. It installs FROM THE LOCKFILE, with `--frozen-lockfile --ignore-scripts`, so the whole ESLint
+  # tree is the one that was reviewed (`eslint.config.ts` names the pinned plugin; `package.json` pins `eslint`, `typescript-eslint` and the plugin EXACT). A rule still at `warn` does not fail
+  # this job: a warning is counted by its rule's follow-up row, and `--max-warnings` is not set, because the count moves with every merge.
+  lint:
+    runs-on: ubuntu-latest
+    env:
+      PNPM_VERSION: 10.34.5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.21.0
+      - uses: pnpm/action-setup@v6
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - name: Install from the lockfile, so the ESLint tree installed is the one that was reviewed
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: npm run lint -- eslint over src/ and scripts/, with the Clean Code plugin's rules
+        run: npm run lint
+
   # A PULL REQUEST THAT CHANGES `src/` MUST CARRY A CHANGESET OR A `no-release:` LINE (a11ign/a11ign#4084, adoption row #4129 of the shared check #4127). screenreader-worker#25 and #26 merged
   # shipped code with no changeset and nothing released them; this repository's per-merge release releases a changeset, so a change with none is invisible to it. The decision lives in
   # a11ign/toolchain's `changeset-required.yml`, pinned by FULL SHA (Dependabot's `github-actions` entry moves the pin); this job only names the paths.
@@ -308,18 +329,18 @@ jobs:
   # `if: always() && !cancelled()` IS THE POINT, not decoration: with the default `success()` a failing `typecheck` SKIPS `gate`, and a skipped required check counts as passing, so a type
   # error would merge. The same form as a11ign/a11ign's own `gate`. Unlike that one, `skipped` is accepted in ONE place: `changeset` on a `push`, where it carries an `if:` that is
   # false by design (a push has no pull request; a11ign/a11ign#4139). Everywhere else a skip means a job that did not run for a reason nobody wrote, so on `pull_request` and
-  # `merge_group` the only green is `success` from all four, and `suite` and `typecheck` must be `success` on a push too.
+  # `merge_group` the only green is `success` from all five, and `suite`, `typecheck` and `lint` must be `success` on a push too.
   gate:
-    needs: [suite, typecheck, changeset, release-dry-run]
+    needs: [suite, typecheck, lint, changeset, release-dry-run]
     if: always() && !cancelled()
     runs-on: ubuntu-latest
     steps:
-      - name: The suite, the typecheck, the changeset check and the release dry run all succeeded
+      - name: The suite, the typecheck, the lint, the changeset check and the release dry run all succeeded
         env:
           EVENT: ${{ github.event_name }}
         run: |
           changeset="${{ needs.changeset.result }}"
           if [ "$EVENT" = "push" ] && [ "$changeset" = "skipped" ]; then changeset="success"; fi
-          for result in "${{ needs.suite.result }}" "${{ needs.typecheck.result }}" "$changeset" "${{ needs.release-dry-run.result }}"; do
+          for result in "${{ needs.suite.result }}" "${{ needs.typecheck.result }}" "${{ needs.lint.result }}" "$changeset" "${{ needs.release-dry-run.result }}"; do
             [ "$result" = "success" ] || { echo "::error::a job reported '$result', not success"; exit 1; }
           done

@@ -19,7 +19,6 @@ import { join } from "node:path";
 import { COMMANDS } from "../commands.ts";
 import { parseProjectDeclaration, ProjectDeclarationRefusal } from "../project-config.ts";
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 type Any = any;
 
 const NOW = Date.parse("2026-10-03T12:00:00Z");

@@ -18,7 +18,6 @@ import { parseProjectDeclaration, ProjectDeclarationRefusal } from "../project-c
 import { measureRepository } from "../dora.ts";
 import { isShipped } from "../release-behind-main.ts";
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 type Any = any;
 
 const PRIMARY = "v3 — Ready for a first outside adopter";

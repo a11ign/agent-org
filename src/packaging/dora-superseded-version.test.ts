@@ -13,7 +13,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { dora, measureRepository, renderDora, waitOf } from "../dora.ts";
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 type Any = any;
 
 const NOW = Date.parse("2026-10-07T00:00:00Z");

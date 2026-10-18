@@ -54,7 +54,6 @@ import {
 
 // A mutation reaches into fields the fixture's own type would have to pretend are optional and mistyped,
 // which is the point of it -- the same tradeoff `project-config.test.ts` accepts for the identical reason.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Loose = any;
 
 // --- 1. a11ign's own values, one assertion per constant ---

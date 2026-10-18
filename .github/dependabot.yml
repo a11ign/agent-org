@@ -15,3 +15,21 @@ updates:
     commit-message:
       # The handle the org's gate recognises a dependency pull request by: every title starts `deps:`.
       prefix: deps
+  # The npm packages the lint job runs (ticket A11-95): ESLint, its TypeScript parser and the Clean Code plugin, pinned EXACT in `package.json`. Each upgrade is a
+  # pull request that a person reviews. Only these three are covered, because the rest of the npm tree is a separate decision.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      # Weekly, as the github-actions entry above: a new release of one of these is reviewed when it is opened, not on arrival.
+      interval: weekly
+    allow:
+      - dependency-name: eslint
+      - dependency-name: typescript-eslint
+      # The plugin is one maintainer's and days old when it was pinned, so its upgrades are the ones most worth a read of the bundle before merge.
+      - dependency-name: "@george2f/eslint-plugin-clean-code"
+    cooldown:
+      # A release is seven days old before Dependabot opens its pull request, so a bump a day after it ships has had time for someone to notice a problem.
+      default-days: 7
+    commit-message:
+      # The same handle as the github-actions entry: every title starts `deps:`.
+      prefix: deps

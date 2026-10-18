@@ -381,7 +381,7 @@ const PATHS_RULE = "Each plan file ends with a `## Paths` section listing every 
  */
 function commitStep(prReview: string | null): string {
   if (prReview === null) return "5. Commit with a conventional commit message.";
-  return `5. Commit with a conventional commit message. Then, BEFORE you push or open a pull request, review your whole diff: call the Skill tool with \`${prReview}\` on \`git diff <the repository's default branch>...HEAD\` and anything uncommitted. Fix every finding, re-run the repository's checks, and commit the fixes. The hook refuses a push or a pull request until the skill has run since your last commit, so after you commit fixes run it again. Stop when a run finds nothing to change.`;
+  return `5. Commit with a conventional commit message. Then, BEFORE you push or open a pull request, review your whole diff: call the Skill tool with \`${prReview}\` on \`git diff <the repository's default branch>...HEAD\` and anything uncommitted. Fix every finding, re-run the repository's tests, typecheck and lint, and commit the fixes. The hook refuses a push or a pull request until the skill has run since your last commit, so after you commit fixes run it again. Stop when a run finds nothing to change.`;
 }
 
 /**
@@ -441,7 +441,7 @@ ${repos}
 
 1. From the ticket, decide which repository the fix belongs in. A ticket may name a repository that has since been retired or moved into another one: check where the code lives now, and use that. If the fix belongs in none of these (a backend service, a plugin, another team's code), change nothing and write a \`wrong-repo\` outcome naming where it belongs.
 2. Make your worktree there with \`${worktreeCommand} <repo>\`. It creates \`${folder}/<repo>\` on the ticket's branch \`${ticket.branch}\`, from the repository's default branch, and on a retry it gives you back the one an earlier run made: continue from its commits rather than starting again. Run it once per repository you change; most tickets need one.
-3. Work, commit and push only inside those worktrees. Read each repository's \`CLAUDE.md\` and \`AGENTS.md\` before you change anything, and use the install, test and typecheck commands they give, scoped to the package you change.
+3. Work, commit and push only inside those worktrees. Read each repository's \`CLAUDE.md\` and \`AGENTS.md\` before you change anything, and use the install, test, typecheck and lint commands they give, scoped to the package you change.
 
 ## What to do
 
@@ -570,7 +570,7 @@ const MERGE_FIRST = "The feedback above says a pull request conflicts with its b
  */
 function roundPushStep(prReview: string | null): string {
   if (prReview === null) return "Commit with a conventional commit message, and push. Never force-push.";
-  return `Commit with a conventional commit message. Then, BEFORE you push, review the whole diff of each pull request, base to head: call the Skill tool with \`${prReview}\`, fix every finding, re-run the repository's checks, and commit the fixes. The hook refuses a push until the skill has run since your last commit, so after you commit fixes run it again. Stop when a run finds nothing to change, then push. Never force-push. Say in your reply on each pull request what the review changed.`;
+  return `Commit with a conventional commit message. Then, BEFORE you push, review the whole diff of each pull request, base to head: call the Skill tool with \`${prReview}\`, fix every finding, re-run the repository's tests, typecheck and lint, and commit the fixes. The hook refuses a push until the skill has run since your last commit, so after you commit fixes run it again. Stop when a run finds nothing to change, then push. Never force-push. Say in your reply on each pull request what the review changed.`;
 }
 
 /**

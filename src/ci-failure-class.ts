@@ -29,7 +29,7 @@ const MAX_LINE_CHARS = 160;
 const FACTS_HEADROOM_BYTES = 512;
 const QUESTION = "class";
 const INSTRUCTIONS = "A pull request's CI check is red. From the failing test's error lines and the facts, which class is the failure?";
-// eslint-disable-next-line no-control-regex -- the escape character is what an ANSI control sequence starts with; this is ECMA-48's whole CSI form (colour `ESC[31;1m`, and `ESC[?25l` too)
+// The escape character is what an ANSI control sequence starts with; this is ECMA-48's whole CSI form (colour `ESC[31;1m`, and `ESC[?25l` too)
 const ANSI = /\u001b\[[0-?]*[ -/]*[@-~]/g;
 
 /** What is known about one red check. The four booleans are computed in code; `rerunAlready` is whether this run was already rerun once. */
