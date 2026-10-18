@@ -293,18 +293,18 @@ type Allowed = { ejected: boolean; infra: boolean };
 
 function decideRequeue(number: number, facts: EjectionFacts, ctx: RequeueContext, allowed: Allowed): RequeueDecision {
   const evidence = ctx.evidence.get(number);
-  const keep = (why: string, outside = false, network?: string): RequeueDecision => ({ requeue: false, why, outside, ...(network === undefined ? {} : { network }) });
+  const keep = (why: string, { outside = false, network }: { outside?: boolean; network?: string; } = {}): RequeueDecision => ({ requeue: false, why, outside, ...(network === undefined ? {} : { network }) });
   if (evidence === undefined || evidence.log === null) return keep("the failed merge group run's log could not be read, so the failure cannot be placed");
   const pr = ctx.prs.find((candidate) => Number(candidate?.number) === number);
   const owned = ownershipOfFailure({ failures: jobFailuresOf(evidence.log), changed: changedFilesOf(pr) });
   const network = owned.kind === "infrastructure" ? owned.line : undefined; // classified BEFORE the bound, so a spent bound is still counted by the detector
-  if (evidence.failedEntries > REQUEUES_PER_HEAD) return keep(`it has failed the queue ${evidence.failedEntries} times on this head, and the gate re-queues once`, false, network);
-  if (owned.kind === "infrastructure") return allowed.infra ? { requeue: true, why: owned.why, network, flag: REENQUEUE_INFRA_FLAG } : keep(`${owned.why}; ${REENQUEUE_INFRA_FLAG} is off`, false, network);
+  if (evidence.failedEntries > REQUEUES_PER_HEAD) return keep(`it has failed the queue ${evidence.failedEntries} times on this head, and the gate re-queues once`, { network });
+  if (owned.kind === "infrastructure") return allowed.infra ? { requeue: true, why: owned.why, network, flag: REENQUEUE_INFRA_FLAG } : keep(`${owned.why}; ${REENQUEUE_INFRA_FLAG} is off`, { network });
   if (!allowed.ejected) return keep(owned.why);
   if (owned.kind !== "outside") return keep(owned.why);
-  if (evidence.runs === null) return keep(`${owned.why}; the merge group runs could not be listed`, true);
+  if (evidence.runs === null) return keep(`${owned.why}; the merge group runs could not be listed`, { outside: true });
   const green = mergeGroupGreenSince(evidence.runs, facts.removedAt ?? "");
-  return green.green ? { requeue: true, why: `${owned.why}; ${green.why}`, flag: REENQUEUE_EJECTED_FLAG } : keep(`${owned.why}; ${green.why}`, true);
+  return green.green ? { requeue: true, why: `${owned.why}; ${green.why}`, flag: REENQUEUE_EJECTED_FLAG } : keep(`${owned.why}; ${green.why}`, { outside: true });
 }
 
 /** The arm itself, and the record of it. `null` when the pull request is armed again, else why it is not. */

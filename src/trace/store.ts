@@ -796,6 +796,7 @@ function settledTail(fd: number, from: number): Buffer {
  * an `appendFileSync` that opened the old file before the rename and writes after the sweep found nothing. A line appended by another process that is itself a copy of an id the pass
  * kept is added raw, so the id is on the file twice until the next rewrite, and `readStore` takes the later.
  */
+// eslint-disable-next-line clean-code/no-flag-arguments -- a dry run and a rewrite share the whole scan; splitting them copies it, and dryRun returns before the temp file is written
 function rewriteOnce(path: string, appended: string, dryRun: boolean, during: (stage: RewriteStage) => void): StoreCount | null {
   const fd = openSync(path, "r");
   const temp = `${path}.${process.pid}.tmp`;

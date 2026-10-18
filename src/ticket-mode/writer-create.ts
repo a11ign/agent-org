@@ -103,7 +103,7 @@ export async function approveDraft({ settings, source, store, queueTicket }: Cre
     // A ticket the tracker can no longer read is not known to be outside the Pick view, so it is not said to be.
     const found = await source.read(key).catch(() => null);
     const queued = input.queue !== true ? { queued: false, queueError: null }
-      : found === null ? { queued: false, queueError: `no ticket ${key} to queue` } : queueOrRefuse(queueTicket, found, input.plan === true);
+      : found === null ? { queued: false, queueError: `no ticket ${key} to queue` } : queueOrRefuse(queueTicket, found, { plan: input.plan === true });
     return { key, url, warnings: record.warnings ?? [], inPick: found === null || inPickScope(settings.pick, found), ...queued };
   }
   const run = writerOf(store.get(), input.run);
@@ -139,12 +139,12 @@ export async function approveDraft({ settings, source, store, queueTicket }: Cre
   }
   store.set(changeDraft(store.get(), input.run, input.draft, (current) => ({ ...current, status: "created", created: { key: made.ticket.key, url: made.ticket.url },
     failure: undefined, warnings: made.warnings })));
-  const queued = input.queue === true ? queueOrRefuse(queueTicket, made.ticket, input.plan === true) : { queued: false, queueError: null };
+  const queued = input.queue === true ? queueOrRefuse(queueTicket, made.ticket, { plan: input.plan === true }) : { queued: false, queueError: null };
   return { key: made.ticket.key, url: made.ticket.url, warnings: made.warnings, inPick: inPickScope(settings.pick, made.ticket), ...queued };
 }
 
 /** Queue a ticket, or say why it could not be: a created ticket stays created, and the board shows the reason. */
-function queueOrRefuse(queueTicket: CreateDeps["queueTicket"], ticket: Ticket, plan: boolean): Readonly<{ queued: boolean; queueError: string | null }> {
+function queueOrRefuse(queueTicket: CreateDeps["queueTicket"], ticket: Ticket, { plan }: { plan: boolean; }): Readonly<{ queued: boolean; queueError: string | null }> {
   try {
     queueTicket(ticket, plan);
     return { queued: true, queueError: null };

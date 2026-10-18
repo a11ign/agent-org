@@ -261,12 +261,12 @@ export type ReviewerMemory = { heads: Map<string, string>; started: Set<string>;
  * `unreadable`, and is also nothing remembered. Neither throws.
  */
 export function readReviewerMemory(path: string): { memory: ReviewerMemory; unreadable: boolean } {
-  const nothing = (unreadable: boolean) => ({ memory: { heads: new Map<string, string>(), started: new Set<string>(), resumed: new Set<string>(), reposts: new Map<string, Repost>() }, unreadable });
+  const nothing = ({ unreadable }: { unreadable: boolean; }) => ({ memory: { heads: new Map<string, string>(), started: new Set<string>(), resumed: new Set<string>(), reposts: new Map<string, Repost>() }, unreadable });
   let text: string;
   try {
     text = readFileSync(path, "utf8");
   } catch (error) {
-    return nothing((error as NodeJS.ErrnoException).code !== "ENOENT");
+    return nothing({ unreadable: (error as NodeJS.ErrnoException).code !== "ENOENT" });
   }
   try {
     const data = JSON.parse(text);
@@ -283,7 +283,7 @@ export function readReviewerMemory(path: string): { memory: ReviewerMemory; unre
     return { memory: { heads: new Map(Object.entries(data.heads) as [string, string][]), started: new Set(data.started), resumed: new Set(data.resumed),
       reposts: new Map(Object.entries(reposts) as [string, Repost][]) }, unreadable: false };
   } catch {
-    return nothing(true);
+    return nothing({ unreadable: true });
   }
 }
 

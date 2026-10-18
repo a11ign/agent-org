@@ -225,7 +225,7 @@ function unmarkedVerify(ctx: Context, pull: Pull, label: string) {
   return [cut(ctx, { phase: "verify", label, from: opened.at, to: null, note: "no ready_for_review yet: still a draft, or opened ready (the store's `opened` does not say which)" })];
 }
 
-function verifyRun(ctx: Context, pull: Pull, several: boolean) {
+function verifyRun(ctx: Context, pull: Pull, { several }: { several: boolean; }) {
   const { opened, ready } = pull;
   if (!opened) return [];
   const label = `${several ? `#${pull.number} ` : ""}opened -> ready_for_review`;
@@ -234,7 +234,7 @@ function verifyRun(ctx: Context, pull: Pull, several: boolean) {
 }
 
 function verifyRuns(ctx: Context): Built {
-  const runs = ctx.pulls.flatMap((pull) => verifyRun(ctx, pull, ctx.pulls.length > 1));
+  const runs = ctx.pulls.flatMap((pull) => verifyRun(ctx, pull, { several: ctx.pulls.length > 1 }));
   return runs.length > 0 ? { runs, why: null } : without("not reached: no pull request opened");
 }
 
@@ -243,7 +243,7 @@ function verifyRuns(ctx: Context): Built {
  * the head has not been reviewed since it last moved, so a draft approved and then marked ready is not waiting for a second review. A reviewer reads a settled DRAFT (#3406 was approved
  * as one), so a draft's pushes count.
  */
-function reviewRounds(ctx: Context, pull: Pull, several: boolean): Cut[] {
+function reviewRounds(ctx: Context, pull: Pull, { several }: { several: boolean; }): Cut[] {
   if (!pull.opened) return [];
   const opened = pull.opened;
   const items = [
@@ -270,7 +270,7 @@ function reviewRounds(ctx: Context, pull: Pull, several: boolean): Cut[] {
 }
 
 function reviewRuns(ctx: Context): Built {
-  const runs = ctx.pulls.flatMap((pull) => reviewRounds(ctx, pull, ctx.pulls.length > 1));
+  const runs = ctx.pulls.flatMap((pull) => reviewRounds(ctx, pull, { several: ctx.pulls.length > 1 }));
   return runs.length > 0 ? { runs, why: null } : without("not reached: no pull request opened");
 }
 
@@ -299,7 +299,7 @@ const wavesByHead = (pull: Pull): { sha: string; waves: TraceEvent[][]; }[] => h
 /** When the wave's last check-run completed, or `null` while one is still going. */
 const waveEnd = (wave: TraceEvent[]): number | null => (wave.some((run) => run.completedAt === null || run.completedAt === undefined) ? null : Math.max(...wave.map((run) => (run.completedAt as number))));
 
-function ciRounds(ctx: Context, pull: Pull, several: boolean): Cut[] {
+function ciRounds(ctx: Context, pull: Pull, { several }: { several: boolean; }): Cut[] {
   return wavesByHead(pull).flatMap(({ sha, waves }) => waves.map((wave, index) => {
     const committed = pull.heads.find((head) => head.headSha === sha)?.at ?? Number.NEGATIVE_INFINITY;
     const firstStart = Math.min(...wave.map((run) => run.startedAt ?? run.at));
@@ -310,7 +310,7 @@ function ciRounds(ctx: Context, pull: Pull, several: boolean): Cut[] {
 }
 
 function ciRuns(ctx: Context): Built {
-  const runs = ctx.pulls.flatMap((pull) => ciRounds(ctx, pull, ctx.pulls.length > 1));
+  const runs = ctx.pulls.flatMap((pull) => ciRounds(ctx, pull, { several: ctx.pulls.length > 1 }));
   return runs.length > 0 ? { runs, why: null } : without("not held: no check-run of any head of the pull requests is in the store");
 }
 
@@ -321,7 +321,7 @@ function queueRuns(ctx: Context): Built {
 }
 
 /** `last`: the last merge of the row, which is the one that closes it */
-function closeOf(ctx: Context, pull: Pull, last: boolean) {
+function closeOf(ctx: Context, pull: Pull, { last }: { last: boolean; }) {
   const merged = (pull.merged as TraceEvent);
   const rowClose = last ? ctx.rowClosed.find((event) => event.at >= merged.at) : undefined;
   return rowClose ?? (pull.closed && pull.closed.at >= merged.at ? pull.closed : undefined);
@@ -332,7 +332,7 @@ function mergeRuns(ctx: Context): Built {
   const lastAt = Math.max(...merged.map((pull) => (pull.merged as TraceEvent).at));
   const runs = merged.map((pull) => {
     const at = (pull.merged as TraceEvent).at;
-    return cut(ctx, { phase: "merge", label: `${ctx.pulls.length > 1 ? `#${pull.number} ` : ""}merged -> closed`, from: at, to: closeOf(ctx, pull, at === lastAt)?.at ?? null });
+    return cut(ctx, { phase: "merge", label: `${ctx.pulls.length > 1 ? `#${pull.number} ` : ""}merged -> closed`, from: at, to: closeOf(ctx, pull, { last: at === lastAt })?.at ?? null });
   });
   return runs.length > 0 ? { runs, why: null } : without("not reached: no pull request merged");
 }
@@ -691,7 +691,7 @@ function spendText(spend: Spend) {
 const waitLine = (wait: Wait) => `        WAITING ${duration(wait.ms).padStart(9)}  ${wait.label}${wait.inferred ? `  [INFERRED from: ${wait.evidence.join("; ")}]` : ""}`;
 
 /** `alone`: the phase's only run, whose totals its header line already carries */
-function runLines(run: Run, alone: boolean) {
+function runLines(run: Run, { alone }: { alone: boolean; }) {
   const where = run.state === "open" ? `${stamp(run.from)} -> OPEN (still running at the reading)` : `${stamp(run.from)} -> ${stamp(run.end)}${run.state === "cut" ? " (CUT at the close: no ending record)" : ""}`;
   const totals = `        wall-clock ${duration(run.wallClockMs)} = WORKING ${duration(run.workingMs)} + WAITING ${duration(run.wallClockMs - run.workingMs - run.unexplainedMs)} + unexplained ${duration(run.unexplainedMs)}`;
   return [`      ${run.label}: ${where}`, ...(alone ? [] : [totals]), ...run.waits.map(waitLine), ...(run.note ? [`        note: ${run.note}`] : [])];
@@ -705,7 +705,7 @@ function phaseLines(phase: Phase) {
     `      spend by the turns that ended in it: ${spendText(phase.spend)}`];
   const sessions = Object.entries(phase.spend.bySession);
   if (sessions.length > 1) lines.push(...sessions.map(([session, spend]) => `        ${session.padEnd(20)} ${spendText(spend)}`));
-  for (const run of phase.runs) lines.push(...runLines(run, phase.runs.length === 1));
+  for (const run of phase.runs) lines.push(...runLines(run, { alone: phase.runs.length === 1 }));
   for (const repeat of phase.repeats) lines.push(`      REPEAT ${repeat.kind}: ${repeat.summary}`, ...repeat.evidence.map((line) => `        evidence: ${line}`));
   return lines;
 }

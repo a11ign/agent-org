@@ -54,7 +54,7 @@ const HOST = (() => {
 if (!process.env.AGENT_ORG_HOST) process.env.AGENT_ORG_HOST = HOST;
 const {
   DOOMED_PREFIX, FIXTURE_PREFIXES, FIXTURE_WINDOW_MS, MAX_REMOVALS_PER_RUN, PAUSE_BETWEEN_REMOVALS_MS,
-  classifyEntry, doomedPaths, familyOf, fixturePaths, formatReport, pruneTmp: pruneTmpWithClaims, removeFromLeaves,
+  classifyEntry, doomedPaths, familyOf, fixturePaths, formatDryRunReport, formatAppliedReport, pruneTmp: pruneTmpWithClaims, removeFromLeaves,
 } = await import("./prune-tmp.ts");
 const { installTmpfiles, toolForm } = await import("./host-units.ts");
 const { REMOVAL_LOG_ENV } = await import("./worktree-removal.ts");
@@ -182,7 +182,7 @@ test("A11-60: a /tmp of 3N leaked-family fixtures needs three runs, and a fourth
   assert.equal(readdirSync(root).length, 0);
   const fourth = run(root);
   assert.equal(fourth.removed.length, 0);
-  assert.match(formatReport(fourth, false), /nothing to remove: 0 classified path\(s\) found/);
+  assert.match(formatAppliedReport(fourth), /nothing to remove: 0 classified path\(s\) found/);
 });
 
 test("A11-60: a leaked-family fixture younger than an hour, or one a process holds, is kept and says why", () => {
@@ -237,10 +237,10 @@ test("#3849: a run over an empty /tmp removes nothing and says so", () => {
   const report = run(root);
   assert.equal(report.removed.length, 0);
   assert.equal(report.candidates, 0);
-  assert.match(formatReport(report, false), /^tmp-entries: 0\nnothing to remove: 0 classified path\(s\) found/);
+  assert.match(formatAppliedReport(report), /^tmp-entries: 0\nnothing to remove: 0 classified path\(s\) found/);
   // The control for "says so": a root WITH a removable fixture does not print that sentence.
   fixture(root, "ingest-state-one", { hoursOld: 5 });
-  assert.doesNotMatch(formatReport(run(root), false), /nothing to remove/);
+  assert.doesNotMatch(formatAppliedReport(run(root)), /nothing to remove/);
 });
 
 test("#3868: every report begins with ONE `tmp-entries: <N>` line, the count of the root's own entries, in a dry run, an applied run and an empty one", () => {
@@ -248,19 +248,19 @@ test("#3868: every report begins with ONE `tmp-entries: <N>` line, the count of 
   for (let i = 0; i < 7; i += 1) fixture(root, i < 3 ? `trace-weekly-${i}` : `unclassified-${i}`);
   const first = (text: string) => text.split("\n")[0];
   const dry = run(root, { dryRun: true });
-  assert.equal(first(formatReport(dry, true)), "tmp-entries: 7");
+  assert.equal(first(formatDryRunReport(dry)), "tmp-entries: 7");
   assert.equal(readdirSync(root).length, 7, "the dry run removed nothing");
-  assert.equal(first(formatReport(run(root), false)), "tmp-entries: 7", "an applied run reads the root as it began");
+  assert.equal(first(formatAppliedReport(run(root))), "tmp-entries: 7", "an applied run reads the root as it began");
   assert.equal(readdirSync(root).length, 4, "and removes the 3 it classified");
-  const next = formatReport(run(root), false);
+  const next = formatAppliedReport(run(root));
   assert.equal(first(next), "tmp-entries: 4", "the next run reads what the last one left");
   assert.equal(next.match(/^tmp-entries:/gm)?.length, 1, "ONE line");
   assert.match(next, /^tmp-entries: 4\nnothing to remove/, "the nothing-to-remove report carries it too");
 });
 
 test("#3868: a run over an empty directory reads `tmp-entries: 0`, and one that cannot be read says `unknown` rather than 0", () => {
-  assert.match(formatReport(run(fresh("zero")), false), /^tmp-entries: 0\n/);
-  assert.match(formatReport(run(join(BASE, "no-such-root")), false), /^tmp-entries: unknown\n/);
+  assert.match(formatAppliedReport(run(fresh("zero"))), /^tmp-entries: 0\n/);
+  assert.match(formatAppliedReport(run(join(BASE, "no-such-root"))), /^tmp-entries: unknown\n/);
 });
 
 test("#3868: the CLI prints the count on its first line", () => {

@@ -104,7 +104,7 @@ const refList = (refs: readonly ItemRef[]): string => (refs.length === 0 ? "none
 const textList = (items: readonly string[]): string => (items.length === 0 ? "none" : [...items].sort().join(", "));
 
 /** The dynamic section for one choice of trimmed parts. Field order is written out, so it never depends on how an object was built. */
-function render(input: BriefInput, item: TicketItem, trimmable: Trimmable, trimmed: readonly string[], bodyCut: boolean): string {
+function render(input: BriefInput, item: TicketItem, trimmable: Trimmable, trimmed: readonly string[], { bodyCut }: { bodyCut: boolean; }): string {
   const { event, question } = input;
   const r = item.relations;
   const lines: string[] = [
@@ -158,7 +158,7 @@ export function buildBrief(input: BriefInput, port: Pick<TicketPort, "readItem">
     body: truncateBytes(item.body, BODY_CAP_BYTES),
   };
   const bodyCut = bytes(item.body) > BODY_CAP_BYTES;
-  const make = (t: Trimmable, trimmed: readonly string[], cut = bodyCut): string => render(input, item, t, trimmed, cut);
+  const make = (t: Trimmable, trimmed: readonly string[], cut = bodyCut): string => render(input, item, t, trimmed, { bodyCut: cut });
   const done = (dynamic: string): Brief => ({ prefix, dynamic, boundary: DYNAMIC_BOUNDARY });
 
   const whole = make(full, []);

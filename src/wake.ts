@@ -2290,16 +2290,16 @@ export function restoredReviewers(agents: { label: string; }[], registry: Record
  * reads as WORKING: the pane herdr restores sits at a prompt and reports neither idle nor done, so asking it to be "between turns" would leave
  * exactly the pane this exists for. Its pull request is closed, so there is no review for it to be in the middle of.
  */
-const mayBeEnded = (agent: { status: string; }, restored: boolean) => (restored ? agent.status !== "working" : WAKEABLE.includes(agent.status));
+const mayBeEnded = (agent: { status: string; }, { restored }: { restored: boolean; }) => (restored ? agent.status !== "working" : WAKEABLE.includes(agent.status));
 
 /**
  * MAY THE WORKSPACES UNDER ONE LABEL ALL BE CLOSED NOW (#3482). A duplicate that holds no agent is not a reviewer in the middle of a
  * turn, and its `unknown` status would otherwise stop the instance whose OTHER workspace is idle from ever being ended; it counts only
  * when it is all there is, which is the lone agentless workspace {@link mayBeEnded} has always judged.
  */
-function holdersMayBeEnded(holders: { status: string; }[], restored: boolean) {
+function holdersMayBeEnded(holders: { status: string; }[], { restored }: { restored: boolean; }) {
   const withAgent = holders.filter((h) => !hasNoAgent(h));
-  return (withAgent.length > 0 ? withAgent : holders).every((h) => mayBeEnded(h, restored));
+  return (withAgent.length > 0 ? withAgent : holders).every((h) => mayBeEnded(h, { restored }));
 }
 
 /**
@@ -2313,7 +2313,7 @@ function endFinishedReviewer({ session, instance, state, restored }: { session: 
   const pr = instance === null ? null : instance.number;
   const holders = agents.filter((a) => a.label === session);
   const present = holders.length > 0;
-  if (present && !holdersMayBeEnded(holders, restored)) return false;
+  if (present && !holdersMayBeEnded(holders, { restored })) return false;
   if (present && !closeReviewer(session, deps)) return false;
   const left = deps.removeCheckout(session, Number(pr), instance?.key ?? "");
   if (left !== null) {
@@ -3802,7 +3802,7 @@ const NO_CLEAR_FIELD = "no-clear";
  * field when there is none), so `ledgerKeyOf` -- which every reader goes through -- still finds the same key and the
  * dedupe is untouched.
  */
-export function ledgerLine(at: number, key: string, recipient?: string, noClear: boolean = false): string {
+export function ledgerLine(at: number, key: string, recipient?: string, { noClear = false }: { noClear?: boolean; } = {}): string {
   const fields = noClear ? [recipient ?? "", NO_CLEAR_FIELD] : recipient ? [recipient] : [];
   return `${[at, key, ...fields].join("\t")}\n`;
 }
@@ -5928,7 +5928,7 @@ export function deliver(orders: readonly { session: string; causeKey: string; pr
   { run = defaultRun, record, counts, ineligibleReason, env, registerSpawn, drained, claimable, claimer, memory, hostLoad, claimRefused, oneShot, ceoOneShot,
     launch, reviewerEnv, reviewerToken, registerReviewer, checkout, registry, unavailable, sleep, contextRoot, codexConfig, clock, relane, goneSeats, claimOrders, toolchain,
     reviewerRefresh, now = Date.now, serve, accountPause, endRun }: {
-          run?: (args: string[]) => string; record?: (key: string, recipient?: string, noClear?: boolean, at?: number) => void;
+          run?: (args: string[]) => string; record?: (key: string, recipient?: string, options?: { noClear?: boolean; }, at?: number) => void;
           /** agent-org#1392: writes the RESET that ends a capped cause's run when its absent seat is started again (see `isAbsentReviewerSeat`). */
           endRun?: (causeKey: string, at: number) => void;
           /** agent-org#1307: the account's pause for this tick; while it holds, no Claude seat is started, claimed for or prompted, and no `claude -p` run is served. */
@@ -6050,7 +6050,7 @@ export function deliver(orders: readonly { session: string; causeKey: string; pr
     // A FALLBACK DELIVERY IS RECORDED THE SAME WAY (#2356): the key names the session it was ADDRESSED to.
     // THE RESTART'S RESET COMES BEFORE ITS DELIVERY LINE (#1392): the next tick counts from the reset, not from the seventh delivery.
     if (restart) endRun?.(order.causeKey, at);
-    if (record) record(order.causeKey, target.label !== gateOrder.session ? target.label : undefined, noClear, at);
+    if (record) record(order.causeKey, target.label !== gateOrder.session ? target.label : undefined, { noClear }, at);
     noteClaimOrders(claimOrders, { gateOrder, target, continuation, at });
     // WHETHER A CLEAR WAS SENT IS READABLE (#2483): a STARTED line has no history to clear, a standing seat's
     // line is unchanged, and an instance's says it was left alone -- so the tick log shows no `/clear` to one.
@@ -7941,7 +7941,7 @@ function settleRelease(request: ReleaseRequest, plan: { keep: boolean; work: Ret
  * A spare's line in `spare-cycles` for a claim taken back: `clean: false` and `released`, which {@link isReleaseLine} makes neither a
  * reset nor a count. Written only when the release LANDED, so a failed one leaves no line and is retried without a duplicate.
  */
-function recordReleaseCycle(request: ReleaseRequest, deps: ReleaseDeps, kept: boolean) {
+function recordReleaseCycle(request: ReleaseRequest, deps: ReleaseDeps, { kept }: { kept: boolean; }) {
   if (!deps.isSpare(request.session)) return;
   // A CLOSED ROW'S INSTANCE IS STILL RUNNING (#3535): its registry entry stays, with the row in it, so `spareDecision` ends it as a finished one (it holds no
   // open row) and not as one that "never claimed" -- a row closed within one tick of its claim was never seen held, so nothing else has recorded it.
@@ -7994,7 +7994,7 @@ export function performRelease(request: ReleaseRequest, deps: ReleaseDeps): { re
     return { released: false, why: `decline of ${rowOf(request)} as ${request.session} did not land (${verdictLine(ran.output)})` };
   }
   settleRelease(request, { ...plan, restored: new RegExp(`restored to \`${READY_LABEL}\``).test(ran.output) }, deps, site);
-  recordReleaseCycle(request, deps, plan.keep);
+  recordReleaseCycle(request, deps, { kept: plan.keep });
   return { released: true, gone: closed === "closed", why: `${rowOf(request)} (${request.session}, ${request.why}): ${plan.keep
     ? `worktree KEPT at ${request.worktree}` : "nothing kept"}` };
 }
@@ -8999,8 +8999,8 @@ async function main() {
     facts: { mainRed: withStalls.some(namesRedMain), deliveries: readLedgerDeliveries(ledgerPath) },
   });
   /** @param [at] the instant `deliver` named in the order's header (#4068) */
-  const record = (key: string, recipient?: string, noClear?: boolean, at: number = Date.now()) => {
-    writeFileSync(ledgerPath, ledgerLine(at, key, recipient, noClear), { flag: "a" });
+  const record = (key: string, recipient?: string, { noClear = false }: { noClear?: boolean; } = {}, at: number = Date.now()) => {
+    writeFileSync(ledgerPath, ledgerLine(at, key, recipient, { noClear }), { flag: "a" });
     retireRiddenFyis(rides.get(key), recipient, queuePath);
     // A held order is delivered only when the order that carried it is, and only to the seat it was held for (a re-route carries nothing away).
     if (recipient === undefined) {

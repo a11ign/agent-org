@@ -39,7 +39,8 @@ function host({ start = OLD, target = NEW, working = [[]], screens = {}, moveBeh
     installed: () => ({ ...versions }),
     targets: () => ({ ...target }),
     working: () => working[Math.min(polls++, working.length - 1)],
-    pinDaemon: (apply) => (apply ? "switched off" : "ON"),
+    pinDaemonReading: () => "ON",
+    pinDaemon: () => "switched off",
     move: (tool, to) => {
       log.moves.push(`${tool}->${to}`);
       if (moveBehaviour[tool] === "throws") throw new Error(`${tool} installer exited 1`);
@@ -337,12 +338,12 @@ test("a target that cannot be read, or a tool that cannot be read, is named and 
 
 test("--check reads and plans and moves nothing, and does not switch the daemon's loop off", () => {
   const h = host();
-  let applied: boolean | null = null;
-  h.deps.pinDaemon = (apply) => { applied = apply; return "ON"; };
+  let switched = false;
+  h.deps.pinDaemon = () => { switched = true; return "switched off"; };
   const result = run(h, { check: true });
   assert.equal(result.outcome, "check");
   assert.equal(result.exitCode, 0);
-  assert.equal(applied, false);
+  assert.equal(switched, false);
   assert.match(result.line, /would move codex-cli 0\.157\.0->0\.162\.1/);
   assert.deepEqual([h.log.moves, h.log.smokes, h.log.sleeps], [[], [], []]);
 });
@@ -379,15 +380,15 @@ test("hostSeams.pinDaemon writes updater.autoUpdateEnabled=false, keeps every ot
   try {
     const file = join(home, ".codex", "app-server-daemon", "settings.json");
     const seams = hostSeams({ home });
-    assert.match(seams.pinDaemon(false), /^ON \(.*settings\.json is missing, which is the default\)/);
+    assert.match(seams.pinDaemonReading(), /^ON \(.*settings\.json is missing, which is the default\)/);
     assert.equal(existsSync(file), false, "a read does not write");
     mkdirSync(join(home, ".codex", "app-server-daemon"), { recursive: true });
     writeFileSync(file, JSON.stringify({ remoteControlEnabled: true, updater: { updateIntervalMinutes: 60 } }));
-    assert.match(seams.pinDaemon(true), /^switched off/);
+    assert.match(seams.pinDaemon(), /^switched off/);
     assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), { remoteControlEnabled: true, updater: { updateIntervalMinutes: 60, autoUpdateEnabled: false } });
-    assert.match(seams.pinDaemon(true), /^already off/);
+    assert.match(seams.pinDaemon(), /^already off/);
     writeFileSync(file, "[1]");
-    assert.throws(() => seams.pinDaemon(true), /is not a JSON object/);
+    assert.throws(() => seams.pinDaemon(), /is not a JSON object/);
   } finally {
     done();
   }

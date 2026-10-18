@@ -113,9 +113,9 @@ describe("the note: version order, and what a refused read is", () => {
   });
 
   test("host:check PRINTS the note against a fixture and the note is not a failure (driftReport's notes block); with the kernels equal it prints none", () => {
-    const printed = driftReport([], true, notesFor("7.0.0-34-generic"));
+    const printed = driftReport([], notesFor("7.0.0-34-generic"));
     assert.match(printed, /notes \(not failures\):\n {2}kernel: newer kernel installed, not running: 7\.0\.0-38-generic over 7\.0\.0-34-generic/);
-    assert.doesNotMatch(driftReport([], true, notesFor("7.0.0-38-generic")), /newer kernel/);
+    assert.doesNotMatch(driftReport([], notesFor("7.0.0-38-generic")), /newer kernel/);
   });
 
   test("the wiring: host-units.ts adds the note to hostNotes and the findings to hostFindings", () => {

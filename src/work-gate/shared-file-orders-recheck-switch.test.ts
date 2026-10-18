@@ -83,13 +83,13 @@ test("(2) decide passes the reading through: `recheck: true` orders the release,
 test("(2) recheckFlagOn: a caller's reading wins, and absent it the flag is read from the state directory it is given", () => {
   const dir = tmpDir("recheck-flag-on-");
   const read = () => readReenqueueState(dir, quiet);
-  assert.equal(recheckFlagOn(undefined, read), false, "POSITIVE CONTROL: no state file reads OFF");
+  assert.equal(recheckFlagOn({ asked: undefined }, read), false, "POSITIVE CONTROL: no state file reads OFF");
   assert.equal(machineryFlag(["on", RECHECK_FLAG, `--session=${SESSION}`], { dir, now: NOW, out: quiet, err: quiet }), 0);
-  assert.equal(recheckFlagOn(undefined, read), true, "after `machinery:flag on holds.recheck`, the reader says ON");
-  assert.equal(recheckFlagOn(false, read), false, "a caller that passes `false` is not overridden by the file");
+  assert.equal(recheckFlagOn({ asked: undefined }, read), true, "after `machinery:flag on holds.recheck`, the reader says ON");
+  assert.equal(recheckFlagOn({ asked: false }, read), false, "a caller that passes `false` is not overridden by the file");
   assert.equal(machineryFlag(["off", RECHECK_FLAG, `--session=${SESSION}`], { dir, now: NOW, out: quiet, err: quiet }), 0);
-  assert.equal(recheckFlagOn(undefined, read), false, "after `off`, the reader says OFF again");
-  assert.equal(recheckFlagOn(true, read), true, "and a caller that passes `true` is not overridden by it");
+  assert.equal(recheckFlagOn({ asked: undefined }, read), false, "after `off`, the reader says OFF again");
+  assert.equal(recheckFlagOn({ asked: true }, read), true, "and a caller that passes `true` is not overridden by it");
 });
 
 /** The state directory a child `node` is given as its own: the shadow runner's way (`SHADOW_STATE_DIR_ENV`), the only one `decide` has. */

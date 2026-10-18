@@ -58,11 +58,11 @@ const decided = (prs: Pr[], prOwnerRouting: boolean) => decide({ prs, readyRows:
 const onlySubject = (orders: Order[], number: number) => orders.filter((o) => o.subject === `pr-agent-org#${number}`);
 
 test("the flag is read by the machinery's own switch, and absent or off is OFF", () => {
-  assert.equal(prOwnerRoutingFlagOn(true), true);
-  assert.equal(prOwnerRoutingFlagOn(false), false);
+  assert.equal(prOwnerRoutingFlagOn({ asked: true }), true);
+  assert.equal(prOwnerRoutingFlagOn({ asked: false }), false);
   const on = withMachineryFlag(emptyCanaryState(), { name: PR_OWNER_ROUTING_FLAG, on: true, signals: STANDARD_MACHINERY_SIGNALS });
-  assert.equal(prOwnerRoutingFlagOn(undefined, () => on), true);
-  assert.equal(prOwnerRoutingFlagOn(undefined, () => emptyCanaryState()), false);
+  assert.equal(prOwnerRoutingFlagOn({ asked: undefined }, () => on), true);
+  assert.equal(prOwnerRoutingFlagOn({ asked: undefined }, () => emptyCanaryState()), false);
 });
 
 test("an outside pull request is an outside pull request: the author is not a declared identity", () => {

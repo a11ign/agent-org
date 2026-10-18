@@ -1383,7 +1383,7 @@ export const RETRO_READS_FILE = "retro-reads-cache.json";
 export type ClassBudget = { past: () => boolean; items: number; refused: number; };
 
 /** An empty memory: a manual run's (which writes nothing), a test's, and the one a tick starts from when the state entry is missing or unreadable. */
-export function freshRetroReads(unreadable = false): RetroReads {
+export function freshRetroReads({ unreadable = false }: { unreadable?: boolean; } = {}): RetroReads {
   return { marks: {}, contents: {}, unreadable, walked: new Set(), used: new Set(), fullReads: [] };
 }
 
@@ -1394,7 +1394,7 @@ export function freshRetroReads(unreadable = false): RetroReads {
 export function readRetroReads(stateDir: string): RetroReads {
   const kept = attemptDora(() => JSON.parse(readFileSync(join(stateDir, RETRO_READS_FILE), "utf8")));
   const usable = kept !== null && typeof kept === "object" && kept.marks !== null && typeof kept.marks === "object" && kept.contents !== null && typeof kept.contents === "object";
-  const memory = usable ? { ...freshRetroReads(), marks: kept.marks, contents: kept.contents } : freshRetroReads(true);
+  const memory = usable ? { ...freshRetroReads(), marks: kept.marks, contents: kept.contents } : freshRetroReads({ unreadable: true });
   memory.keep = () => keepRetroReads(stateDir, memory);
   return memory;
 }
@@ -1507,7 +1507,7 @@ function acceptanceOf({ repo, path, oid, readFile, readAcceptance, memory }: { r
   const key = `${repo}|${path}|${String(oid)}`;
   memory.used.add(key);
   const cached = memory.contents[key];
-  if (!admitItem(memory, cached !== undefined)) return null; // a text the memory holds costs no budget; a read past the budget is `unknown`
+  if (!admitItem(memory, { cached: cached !== undefined })) return null; // a text the memory holds costs no budget; a read past the budget is `unknown`
   if (cached !== undefined) return cached;
   const text = readAcceptance({ repo, path, oid, readFile });
   if (text !== null) {
@@ -1521,7 +1521,7 @@ function acceptanceOf({ repo, path, oid, readFile, readAcceptance, memory }: { r
  * ONE ITEM OF THE CLASS BEING READ (agent-org#1089): `false` once this tick's budget has passed, and the item is counted as refused. `cached` items are counted and admitted,
  * since a kept text is no read. Outside `readRetroClasses` there is no budget and every item is admitted.
  */
-function admitItem(memory: RetroReads, cached = false): boolean {
+function admitItem(memory: RetroReads, { cached = false }: { cached?: boolean; } = {}): boolean {
   const budget = memory.budget;
   if (budget === undefined) return true;
   budget.items += 1;

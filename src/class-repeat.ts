@@ -601,7 +601,7 @@ export function liveMatchIo({ host, switches, statePath, logPath, spawnChild = s
   return {
     statePath,
     ask: (repo, rows) => { spawnChild(process.execPath, classifyChildArgv(repo, rows), { detached: true, stdio: "ignore", env: process.env }).unref(); },
-    outcome: (row, kept) => recordLabelOutcome(decisionIdOf(row), kept, { logPath }),
+    outcome: (row, kept) => recordLabelOutcome(decisionIdOf(row), { labelKept: kept }, { logPath }),
   };
 }
 

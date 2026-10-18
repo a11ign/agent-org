@@ -194,7 +194,7 @@ export function readStoreFor(path: string, prefixes: readonly string[], chunkByt
  * @param gh `gh` as the gate holds it, for the closed rows' one list
  * @param readSwitchesOf the host's switches, and @param outside the outside trunk's call: the live ones by default, and a test's own so that the call is read from what it does
  */
-export function recordRouteOutcomesOnHost(listed: boolean, { gh, readSwitchesOf = () => readSwitches(decisionSwitchesPath(HOME_CHECKOUT), { diagnostic: printDiagnostic, state: processState, read: readFileSync }), outside = outsideTrunkOnHost }: { gh: (args: string[]) => string; readSwitchesOf?: () => Readonly<Record<string, boolean | undefined>>; outside?: typeof outsideTrunkOnHost }): RouteOutcomePassResult {
+export function recordRouteOutcomesOnHost({ listed, gh, readSwitchesOf = () => readSwitches(decisionSwitchesPath(HOME_CHECKOUT), { diagnostic: printDiagnostic, state: processState, read: readFileSync }), outside = outsideTrunkOnHost }: { listed: boolean; gh: (args: string[]) => string; readSwitchesOf?: () => Readonly<Record<string, boolean | undefined>>; outside?: typeof outsideTrunkOnHost }): RouteOutcomePassResult {
   try {
     const say = printDiagnostic;
     const switches = readSwitchesOf();

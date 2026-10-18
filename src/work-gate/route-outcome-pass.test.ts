@@ -265,7 +265,7 @@ test("the gate calls the pass once per tick, beside the closed-row strip and beh
   const call = /^\s*(?:const \w+ = )?recordRouteOutcomesOnHost\(/;
   const calls = source.split("\n").filter((line) => call.test(line));
   assert.equal(calls.length, 1, "exactly one call site");
-  assert.match(calls[0], /recordRouteOutcomesOnHost\(closedClaimLabels !== null,/, "behind the listing the strip is asked behind");
+  assert.match(calls[0], /recordRouteOutcomesOnHost\(\{ listed: closedClaimLabels !== null,/, "behind the listing the strip is asked behind");
   assert.ok(source.indexOf(calls[0]) > source.indexOf("stripClosedClaims(closedClaimLabels)"), "beside the strip, after the read it shares");
-  assert.equal(call.test("  // recordRouteOutcomesOnHost(closedClaimLabels !== null, ...)"), false, "the marker does not take a comment for a call");
+  assert.equal(call.test("  // recordRouteOutcomesOnHost({ listed: closedClaimLabels !== null, ...)"), false, "the marker does not take a comment for a call");
 });

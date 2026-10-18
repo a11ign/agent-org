@@ -9,7 +9,7 @@ import {
   batchDir, batchFolder, countTokens, createPool, feedbackSince, findFolderSession, findTranscript, herdrName, herdrServerCommand, isStartDialog, parseOutcome, publishDir, publishResult,
   ticketDir, ticketFolder, worktreesIn,
 } from "./pool.ts";
-import { approve, BACKGROUND_GONE_MS, completableRuns, emptyQueue, enqueue, finish, liveRunCount, queuePublish, queueWriter, recordPullStates, respond, retry, setPaused, writerOf, writerStatus, type Outcome, type Queue } from "./queue.ts";
+import { approve, BACKGROUND_GONE_MS, completableRuns, emptyQueue, enqueue, finish, liveRunCount, queuePublish, queueWriter, recordPullStates, respond, retry, pauseQueue, resumeQueue, writerOf, writerStatus, type Outcome, type Queue } from "./queue.ts";
 import { writerDir, writerFolder } from "./ticket-paths.ts";
 import { parseTicketSettings } from "./settings.ts";
 import { REVIEWER_LOGIN, loadReviewerGate, readReviewerMemory, reviewerMemoryPath, type RepostAnswer, type ReviewerPort, type ReviewerRef, type ReviewerSettled } from "./reviewer-port.ts";
@@ -47,7 +47,7 @@ function setup(max = 2, keys = ["NBF-1", "NBF-2", "NBF-3"], tickets: Record<stri
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox", "nbl-ui-platform-libs": "/repos/libs" }, stateDir: join(root, "state"), tickets });
   const queued = keys.map((key) => (key in parents ? { ...ticket(key), parent: parents[key] } : ticket(key)));
   const plan = planFirst.length === 0 ? null : { keys: new Set(planFirst), choice: { model: "opus", effort: "max" }, batch };
-  let queue: Queue = setPaused(enqueue(emptyQueue(max), queued, { model: "sonnet", effort: "high" }, 0, plan), false);
+  let queue: Queue = resumeQueue(enqueue(emptyQueue(max), queued, { model: "sonnet", effort: "high" }, 0, plan));
   const store = { get: () => queue, set: (next: Queue) => { queue = next; } };
   const status = new Map<string, string>();
   const screen = { text: "" };
@@ -481,7 +481,7 @@ test("a retry's earlier outcome does not end it before it starts", async () => {
 test("a run stopped while it was starting stays stopped, and the workspace its start raced is closed", async () => {
   const root = tmpDir("ticket-race-");
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox" }, stateDir: root });
-  let queue: Queue = setPaused(enqueue(emptyQueue(1), [ticket("NBF-1")], { model: "sonnet", effort: "high" }, 0), false);
+  let queue: Queue = resumeQueue(enqueue(emptyQueue(1), [ticket("NBF-1")], { model: "sonnet", effort: "high" }, 0));
   const store = { get: () => queue, set: (next: Queue) => { queue = next; } };
   const h = herdr(new Map());
   let pool: ReturnType<typeof createPool>;
@@ -504,7 +504,7 @@ test("a tick asked for during a tick runs once more after it, so a ticket queued
 
 test("a paused queue starts nothing, however much room there is", async () => {
   const { pool, store, entry, h } = setup(3, ["NBF-1"]);
-  store.set(setPaused(store.get(), true));
+  store.set(pauseQueue(store.get()));
   await pool.tick();
   assert.equal(entry("NBF-1").phase, "queued");
   assert.ok(!h.calls.some((args) => args.includes("create")), "no workspace was opened");
@@ -1584,8 +1584,8 @@ test("a batch whose start fails crashes every ticket of it, and a stop while it 
   assert.deepEqual(["NBF-1", "NBF-2"].map((key) => broken.entry(key).outcome), Array(2).fill({ kind: "crashed", reason: "Linear answered 500" }));
   const root = tmpDir("ticket-batch-race-");
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox" }, stateDir: root, tickets: BATCH_PLANNER });
-  let queue: Queue = setPaused(enqueue(emptyQueue(1), [ticket("NBF-1"), ticket("NBF-2")], { model: "sonnet", effort: "high" }, 0,
-    { keys: new Set(["NBF-1", "NBF-2"]), choice: { model: "opus", effort: "max" }, batch: true }), false);
+  let queue: Queue = resumeQueue(enqueue(emptyQueue(1), [ticket("NBF-1"), ticket("NBF-2")], { model: "sonnet", effort: "high" }, 0,
+    { keys: new Set(["NBF-1", "NBF-2"]), choice: { model: "opus", effort: "max" }, batch: true }));
   const store = { get: () => queue, set: (next: Queue) => { queue = next; } };
   const h = herdr(new Map());
   let pool: ReturnType<typeof createPool>;
@@ -2029,10 +2029,10 @@ test("A11-82: a paused queue reads no plan, and reads each one once it is unpaus
   let reads = 0;
   const tracker = planFiles({ "NBF-1": ["nbl-ui-netbox:src/a.ts"] }, () => { reads += 1; });
   const { pool, store, entry } = setup(1, ["NBF-1"], { plan: "-plan-[^/]*\\.md$" }, { source: tracker });
-  store.set(setPaused(store.get(), true));
+  store.set(pauseQueue(store.get()));
   await pool.tick();
   assert.deepEqual([reads, entry("NBF-1").phase], [0, "queued"], "a paused queue starts nothing, so it downloads nothing either");
-  store.set(setPaused(store.get(), false));
+  store.set(resumeQueue(store.get()));
   await pool.tick();
   assert.equal(entry("NBF-1").phase, "running");
 });
@@ -2101,7 +2101,7 @@ const PUBLISH = { publish: { run: "Run the post-pr-to-slack skill on these pull 
 async function publishing() {
   const ctx = await readyRun(ghFor({}).run, PUBLISH);
   const { pool, store, settings } = ctx;
-  store.set(setPaused(queuePublish(store.get(), ["NBF-1"], 300), true));
+  store.set(pauseQueue(queuePublish(store.get(), ["NBF-1"], 300)));
   ctx.h.calls.length = 0;
   await pool.tick();
   const publish = store.get().publish!;
@@ -2231,7 +2231,7 @@ test("a drafts-off run's ticket dir carries the ready mark and a brief that open
 test("with no tickets.publish, Publish starts no run and posts nothing: the request fails saying so, and the runs stay Ready to merge", async () => {
   const gh = ghFor({});
   const ctx = await readyRun(gh.run);
-  ctx.store.set(setPaused(queuePublish(ctx.store.get(), ["NBF-1"], 300), true));
+  ctx.store.set(pauseQueue(queuePublish(ctx.store.get(), ["NBF-1"], 300)));
   ctx.h.calls.length = 0;
   gh.calls.length = 0;
   await ctx.pool.tick();
@@ -3199,7 +3199,7 @@ test("a new-ticket run starts on a free slot, with the writer's model, its brief
 
 test("a new-ticket run starts though the queue is paused, as a person asked for it, and holds a slot while it runs", async () => {
   const ctx = writing();
-  ctx.store.set(setPaused(ctx.store.get(), true));
+  ctx.store.set(pauseQueue(ctx.store.get()));
   await ctx.pool.tick();
   assert.equal(ctx.run().phase, "running", "Pause does not hold a new-ticket run");
 });

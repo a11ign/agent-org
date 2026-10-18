@@ -67,12 +67,12 @@ test("the flag is `review.rowReviewSkill`, a flag `machinery:flag` can switch", 
 });
 
 test("rowReviewSkillFlagOn: a caller's reading wins; otherwise the canary state's, ON only when the record says so", () => {
-  assert.equal(rowReviewSkillFlagOn(true, () => { throw new Error("must not read"); }), true);
-  assert.equal(rowReviewSkillFlagOn(false, () => { throw new Error("must not read"); }), false);
-  assert.equal(rowReviewSkillFlagOn(undefined, () => emptyCanaryState()), false);
-  assert.equal(rowReviewSkillFlagOn(undefined, () => withMachineryFlag(emptyCanaryState(), { name: ROW_REVIEW_SKILL_FLAG, on: true })), true);
-  assert.equal(rowReviewSkillFlagOn(undefined, () => withMachineryFlag(emptyCanaryState(), { name: ROW_REVIEW_SKILL_FLAG, on: false })), false);
-  assert.equal(rowReviewSkillFlagOn(undefined, () => withMachineryFlag(emptyCanaryState(), { name: "queue.chainWaitWake", on: true })), false, "another flag's switch is not this one's");
+  assert.equal(rowReviewSkillFlagOn({ asked: true }, () => { throw new Error("must not read"); }), true);
+  assert.equal(rowReviewSkillFlagOn({ asked: false }, () => { throw new Error("must not read"); }), false);
+  assert.equal(rowReviewSkillFlagOn({ asked: undefined }, () => emptyCanaryState()), false);
+  assert.equal(rowReviewSkillFlagOn({ asked: undefined }, () => withMachineryFlag(emptyCanaryState(), { name: ROW_REVIEW_SKILL_FLAG, on: true })), true);
+  assert.equal(rowReviewSkillFlagOn({ asked: undefined }, () => withMachineryFlag(emptyCanaryState(), { name: ROW_REVIEW_SKILL_FLAG, on: false })), false);
+  assert.equal(rowReviewSkillFlagOn({ asked: undefined }, () => withMachineryFlag(emptyCanaryState(), { name: "queue.chainWaitWake", on: true })), false, "another flag's switch is not this one's");
 });
 
 test("`decide` carries the reading into the order: the flag on in `decide` is the skill named in the reviewer's order", () => {

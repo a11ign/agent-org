@@ -835,7 +835,7 @@ export function parseSpecYaml(source: string): SpecValue {
     return header.includes("-") || text === "" ? text : `${text}\n`; // clip keeps one final newline; `+` is read as clip, which no check here can tell apart
   };
 
-  const valueAfter = (parentIndent: number, rest: string, sameIndentSequence: boolean): SpecValue => {
+  const valueAfter = (parentIndent: number, rest: string, { sameIndentSequence }: { sameIndentSequence: boolean; }): SpecValue => {
     if (/^[|>][+-]?(?:\s+#.*)?$/.test(rest)) return blockScalar(parentIndent, rest);
     if (rest !== "" && !rest.startsWith("#")) return readSpecScalar(rest);
     const deeper = nextDeeper(parentIndent);
@@ -857,7 +857,7 @@ export function parseSpecYaml(source: string): SpecValue {
         items.push(mapping(offset));
       } else {
         at += 1;
-        items.push(valueAfter(indent, rest, false));
+        items.push(valueAfter(indent, rest, { sameIndentSequence: false }));
       }
     }
     return items;
@@ -872,7 +872,7 @@ export function parseSpecYaml(source: string): SpecValue {
       const key = found[1]!.replace(/^(["'])(.*)\1$/, "$2");
       if (Object.hasOwn(map, key)) throw new SpecUnreadable(`the key \`${key}\` appears twice at one level`);
       at += 1;
-      map[key] = valueAfter(indent, found[2]?.trim() ?? "", true);
+      map[key] = valueAfter(indent, found[2]?.trim() ?? "", { sameIndentSequence: true });
     }
     const stray = lines[at];
     if (stray && stray.indent > indent) throw new SpecUnreadable(`line \`${stray.text.slice(0, 40)}\` is indented under a value that cannot hold it`);
@@ -981,10 +981,9 @@ function readSpecBlockFlag(): boolean {
 /**
  * #1015: THE `spec` BLOCK VERDICT, PURE (`null` means proceed). Exported so `row-promote` and the Ready-time spec lint (a11ign#5117) can call it.
  * `enabled` is `rows.specBlock`; a caller that already holds the flag passes it, and tests do.
- * @param {string} body @param {boolean} [enabled] @returns {string | null}
+ * @param {string} body @returns {string | null}
  */
-export function specBlockRefusal(body: string, enabled: boolean = readSpecBlockFlag()): string | null {
-  if (!enabled) return null;
+export function specBlockRefusal(body: string): string | null {
   const { blocks, unterminated } = specFencesOf(body);
   if (unterminated) return "REFUSING to file -- a ```spec fence is never closed, so its block cannot be read. Close it with a line of three backticks.";
   if (blocks.length === 0) return null; // the exemption: a row with no spec fence is not a build row
@@ -1044,7 +1043,7 @@ export function fileRefusalReason(body: string | null, options: { specBlock?: bo
   // #1488: and the section must PARSE as one -- see `acceptanceShapeRefusal`.
   const acceptance = acceptanceShapeRefusal(body);
   if (acceptance) return `row-file: ${acceptance}`;
-  const specBlock = specBlockRefusal(body, options.specBlock); // #1015: behind `rows.specBlock`, a row with no spec fence exempt
+  const specBlock = (options.specBlock ?? readSpecBlockFlag()) ? specBlockRefusal(body) : null; // #1015: behind `rows.specBlock`, a row with no spec fence exempt
   if (specBlock) return `row-file: ${specBlock}`;
   const wholeSuite = wholeSuiteAcceptanceReason(body, "row-file");
   if (wholeSuite) return wholeSuite;

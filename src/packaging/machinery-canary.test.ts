@@ -408,7 +408,7 @@ test("#1329 A REFUSED LANE IS BLIND, AND A PACED ONE IS NOT: a refused pull-requ
   assert.equal(sampledTick({ prs: [], readyRows: [], others: [{ refused: ["the other repositories' lanes"] }], pacedSkips: [] }).blind, 1, "another repository's read was refused");
 
   // a paced tick: both primary lanes read, and the pool's reserve paced the repositories out
-  const paced = [{ refused: pacedUnread({ paced: true, belowFloor: true, remaining: 10 }, true) }];
+  const paced = [{ refused: pacedUnread({ paced: true, belowFloor: true, remaining: 10 }, { others: true }) }];
   const pacedTick = sampledTick({ prs: [], readyRows: [], others: [], pacedSkips: paced });
   assert.equal(pacedTick.blind, 0, "skipped by design is not blind");
   assert.deepEqual(pacedTick.unread, paced.flatMap((skip) => skip.refused), "PARTIAL still names the paced lanes, so they are never reported clean");

@@ -27,7 +27,7 @@ import { pickEmptyText, pickLabel } from "./pick-scope.ts";
 import { API_BODY_BYTES, readJson, refusal, sameSecret, sendJson, type Json } from "./local-http.ts";
 import { createPool, startsReviewers, type PoolDeps } from "./pool.ts";
 import { loadReviewerGate } from "./reviewer-port.ts";
-import { amend, approve, childOrder, dismissWriter, enqueue, loadQueue, queuePublish, queueWriter, respond, retry, saveQueue, setMax, setPaused, type PlanFirst, type Queue, type RunChoice, writerOf, writerStatus } from "./queue.ts";
+import { amend, approve, childOrder, dismissWriter, enqueue, loadQueue, queuePublish, queueWriter, respond, retry, saveQueue, setMax, pauseQueue, resumeQueue, type PlanFirst, type Queue, type RunChoice, writerOf, writerStatus } from "./queue.ts";
 import { plansInBatches, readTicketSettings, type TicketSettings } from "./settings.ts";
 import { cachedTailnetName, readTailnetName, runTailscale, tailnetTerminal } from "./tailnet.ts";
 import type { Assignee, Ticket, TicketSource } from "./source.ts";
@@ -182,7 +182,7 @@ export function createBoard(deps: BoardDeps) {
     return { model: saved.model, effort: saved.effort };
   };
   /** Add tickets to the queue as Queue does, with `choice`, and planned first when `plan` is on, then wake the pool. The one place a queue add is made. */
-  function queueTickets(tickets: readonly Ticket[], choice: RunChoice, plan: boolean): void {
+  function queueTickets(tickets: readonly Ticket[], choice: RunChoice, { plan }: { plan: boolean; }): void {
     store.set(enqueue(queue, tickets, choice, now(), plan ? planFirst(tickets) : null));
     wake();
   }
@@ -246,7 +246,7 @@ export function createBoard(deps: BoardDeps) {
         if (ticket === null) throw new Error(`no ticket ${key}`);
         tickets.push(ticket);
       }
-      queueTickets(tickets, choice, body.plan === true);
+      queueTickets(tickets, choice, { plan: body.plan === true });
       return [200, queue];
     }
     if (method === "POST" && path === "/api/queue-children") {
@@ -269,7 +269,7 @@ export function createBoard(deps: BoardDeps) {
       }
       const nested = read.filter((ticket) => (ticket.children?.length ?? 0) > 0).map((ticket) => ticket.key);
       const tickets = read.filter((ticket) => !nested.includes(ticket.key));
-      queueTickets(tickets, choice, body.plan === true);
+      queueTickets(tickets, choice, { plan: body.plan === true });
       const left = nested.length === 0 ? null : `${nested.join(", ")} ${nested.length === 1 ? "is itself a parent" : "are themselves parents"}, so not queued: queue ${nested.length === 1 ? "its" : "their"} children from ${nested.length === 1 ? "its" : "their"} own row`;
       const note = [order.note, left].filter((part) => part !== null).join("; ") || null;
       return [200, { queue, keys: tickets.map((ticket) => ticket.key), note }];
@@ -306,7 +306,7 @@ export function createBoard(deps: BoardDeps) {
       if (action === "discard") discardDraft({ store }, { run, draft });
       if (action === "approve") {
         const { model, effort } = savedRun();
-        const created = await approveDraft({ settings, source, store, queueTicket: (ticket, plan) => queueTickets([ticket], { model, effort }, plan) },
+        const created = await approveDraft({ settings, source, store, queueTicket: (ticket, plan) => queueTickets([ticket], { model, effort }, { plan }) },
           { run, draft, fields: body.draft, acknowledgeDuplicates: body.acknowledgeDuplicates === true, queue: body.queue === true, plan: body.plan === true });
         return [200, { ...writersView(), created }];
       }
@@ -321,7 +321,7 @@ export function createBoard(deps: BoardDeps) {
     }
     if (method === "POST" && path === "/api/paused") {
       if (typeof body.paused !== "boolean") throw new Error("paused must be true or false");
-      store.set(setPaused(queue, body.paused));
+      store.set(body.paused ? pauseQueue(queue) : resumeQueue(queue));
       wake();
       return [200, queue];
     }

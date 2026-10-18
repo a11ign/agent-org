@@ -46,7 +46,7 @@ const HOST = (() => {
 })();
 // The tool's modules resolve their project when IMPORTED, so the host is named BEFORE they are, and only when the caller named none.
 if (!process.env.AGENT_ORG_HOST) process.env.AGENT_ORG_HOST = HOST;
-const { pruneWorktrees, formatReport, listOpenPulls, openPrHoldOn, OPEN_PR_HOLD_FLAG, PULL_LIST_LIMIT, CLOSED_ROW_RELEASE_AGE_MS } =
+const { pruneWorktrees, formatAppliedReport, listOpenPulls, openPrHoldOn, OPEN_PR_HOLD_FLAG, PULL_LIST_LIMIT, CLOSED_ROW_RELEASE_AGE_MS } =
   await import("./prune-worktrees.ts");
 const { stampWorktree } = await import("./worktree-owner.ts");
 const { REMOVAL_LOG_ENV } = await import("./worktree-removal.ts");
@@ -117,7 +117,7 @@ test("#1167: with the flag ON, a clean pushed tree whose branch has an open PR i
   assert.match(report.held[0].reason, new RegExp(`has head branch ${branch}`));
   assert.ok(existsSync(path), "the held tree must still be on disk");
   // The log line is the report's line: it names the PR, so the hold can be read from the output.
-  assert.match(formatReport(report), /open pull request #1201 \(https:\/\/example\.invalid\/pull\/1201\)/);
+  assert.match(formatAppliedReport(report), /open pull request #1201 \(https:\/\/example\.invalid\/pull\/1201\)/);
 });
 
 test("#1167 OFF: the same clean pushed tree with an open PR is REMOVED, and GitHub is never asked (today's prune)", () => {

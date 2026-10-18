@@ -27,7 +27,7 @@ import {
   parseWorktreeList, isPrimaryWorktree, classify, detachedMergeStatus, mergeStatus, isContentMerged,
   isWorkingTreeClean, pruneWorktrees as pruneWorktreesWithClaims, recentGitActivity, ACTIVITY_WINDOW_MS,
   cleanliness, ignoredByAuthority,
-  strandedWork, formatStranded, trackedChanges, unverifiedRecords, formatReport,
+  strandedWork, formatStranded, trackedChanges, unverifiedRecords, formatAppliedReport,
   heldByOwner, deliveredOwnCommit, mainLineCommits, hasOwnBranch,
 } from "../prune-worktrees.ts";
 import { stampWorktree } from "../worktree-owner.ts";
@@ -801,10 +801,10 @@ test("#1373: a non-empty runs/ that lists ZERO files is an EMPTY reading too -- 
 test("#1373: the report prints the refusal and its reason under its own heading, never under `removed`", () => {
   // Not through argv: the CLI takes no `now`, and its own `git status` rewrites the index `recentGitActivity`
   // dates a tree by (measured on #1373), so a fixture built moments ago always reads ACTIVE there. `main()`
-  // prints exactly `formatReport(report, dryRun)`.
+  // prints exactly `formatAppliedReport(report, dryRun)`.
   const { root, worktree } = buildRecordsFixture(RECORDS);
   try {
-    const text = formatReport(pruneWorktrees(root, { now: LONG_AFTER() }));
+    const text = formatAppliedReport(pruneWorktrees(root, { now: LONG_AFTER() }));
     assert.match(text, /^removed 0 worktree\(s\):\nrefused 1 worktree\(s\) holding runs\/ records not verified in the primary checkout/);
     assert.ok(text.includes(`  ${worktree}  (agent/records): ${worktree} holds 3 of 3 runs/ file(s)`));
     assert.ok(existsSync(join(worktree, RECORDS[0])));
@@ -950,7 +950,7 @@ test("#2020: a stamped tree whose delivery could not be determined is REFUSED, n
 test("#2020: the report prints the refusal and its owner under its own heading, never under `removed`", () => {
   const { root, held, delivered } = buildHeldFixture();
   try {
-    const text = formatReport(pruneWorktrees(root, { now: LONG_AFTER() }));
+    const text = formatAppliedReport(pruneWorktrees(root, { now: LONG_AFTER() }));
     assert.match(text, /refused 1 HELD worktree\(s\) \(#2020\) -- stamped by a session and carrying no commit of their own/);
     assert.ok(text.includes(`  ${held}  (agent/held-1908): ${held} is stamped worker-capture`));
     assert.ok(text.includes(`  ${delivered}  (agent/delivered-1948)`), "and the delivered tree is named under `removed`");
@@ -1161,7 +1161,7 @@ test("#2012 END TO END: the prune removes the pinned tree, refuses the other two
     assert.equal(existsSync(join(linkTarget, "some-package", "index.js")), true,
       "`git clean` removes the LINK and not what it points at");
 
-    assert.match(formatReport(report), /\[cleared, ignored by the primary checkout: node_modules\]/,
+    assert.match(formatAppliedReport(report), /\[cleared, ignored by the primary checkout: node_modules\]/,
       "and the prune says what it deleted that git was not tracking -- these paths go by this tool's own "
       + "hand rather than with the worktree, and a delete nobody can see in the log is this file's subject");
   } finally { rmSync(root, { recursive: true, force: true }); }
@@ -1178,7 +1178,7 @@ test("#2012: a tree git already reads as clean clears NOTHING -- the ordinary pa
     assert.deepEqual(report.removed.map((r) => r.cleared), [[], []],
       "both removals clear nothing");
     assert.deepEqual(report.removed.map((r) => r.path).sort(), [merged, standing].sort());
-    assert.doesNotMatch(formatReport(report), /cleared, ignored by the primary checkout/,
+    assert.doesNotMatch(formatAppliedReport(report), /cleared, ignored by the primary checkout/,
       "and the report says nothing about clearing, because nothing was cleared");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

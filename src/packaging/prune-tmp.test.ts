@@ -39,7 +39,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   ACTIVITY_WINDOW_MS, REVIEW_PREFIXES, SCRATCHPAD_ROOT,
-  classifyEntry, familyOf, formatReport, heldEntries, newestMtimeMs, openPullRequests,
+  classifyEntry, familyOf, formatDryRunReport, formatAppliedReport, heldEntries, newestMtimeMs, openPullRequests,
   processStrings, pruneTmp as pruneTmpWithClaims, removePath, selfSessions, sweepablePaths,
 } from "../prune-tmp.ts";
 import { claimRefusal, recordRemoval, REMOVAL_LOG_ENV } from "../worktree-removal.ts";
@@ -388,7 +388,7 @@ test("a removal that fails is reported as still-there, never counted as removed"
   assert.deepEqual(report.failed.map((entry) => entry.path), [dead]);
   assert.match(report.failed[0].reason, /EBUSY/);
   assert.ok(existsSync(dead));
-  assert.match(formatReport(report, false), /could NOT be removed and are still there/);
+  assert.match(formatAppliedReport(report), /could NOT be removed and are still there/);
 });
 
 test("the delete re-checks containment itself, because no walk can hand it a path to refuse", () => {
@@ -419,7 +419,7 @@ test("formatReport prints the examined count and every refusal's reason, rather 
   const report = pruneTmp(root, {
     dryRun: true, procRoot: "/proc", env: { CLAUDE_CODE_SESSION_ID: LIVE_SESSION }, run: () => "[]",
   });
-  const printed = formatReport(report, true);
+  const printed = formatDryRunReport(report);
   // "0 removable" and "0 removable of 1,306 examined" are different claims, and only the second can be
   // seen to be wrong: a sweep that walked nothing prints the cleanest possible output (#933).
   assert.match(printed, /WOULD REMOVE 1 of 2 classified path\(s\)/);

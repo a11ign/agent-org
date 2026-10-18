@@ -181,15 +181,15 @@ export function verdictBearers(pr: { comments?: any[] | null; reviews?: any[] | 
   // agent-org#1381: `author` is the login (`gh` gives `{ login }`, a test may give the string), and `review` marks a review body,
   // which `verdictHereAt` takes as a verdict as it stands. A comment is judged by its opener and its author there.
   const login = (author: any): string | null => (typeof author === "string" ? author : author?.login ?? null);
-  const timed = (item: any, field: string, review: boolean) =>
+  const timed = (item: any, field: string, { review }: { review: boolean; }) =>
     ({ at: Date.parse(item?.[field] ?? ""), body: item?.body ?? "", id: item?.id, author: login(item?.author), review });
   // A DISMISSED review is a verdict somebody ruled out (agent-org#586): left in, the gate acted on it for as long as
   // it was the newest, ordering rework the ruling said was not owed. Only the state `DISMISSED` leaves; a review with
   // no `state` field (the shape older callers and tests pass) still counts.
   const standing = (r: any) => r?.state !== "DISMISSED";
   const items = [
-    ...(pr?.comments ?? []).map((c: any) => timed(c, "createdAt", false)),
-    ...(pr?.reviews ?? []).filter(standing).map((r: any) => timed(r, "submittedAt", true)),
+    ...(pr?.comments ?? []).map((c: any) => timed(c, "createdAt", { review: false })),
+    ...(pr?.reviews ?? []).filter(standing).map((r: any) => timed(r, "submittedAt", { review: true })),
   ];
   const key = (item: { at: number; }) => (Number.isFinite(item.at) ? item.at : -Infinity);
   return items

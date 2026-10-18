@@ -448,7 +448,7 @@ export function recordSlowTick({ line, costText, now, thresholdSeconds = TICK_SL
   const state = readTickRecordState(statePath, now);
   const slow = line !== null && isSlowTick(line, thresholdSeconds);
   if (!slow && state.unwritten === null) return "not-due";
-  const refuse = (why: string, forgetId = false): RecordOutcome => {
+  const refuse = (why: string, { forgetId = false }: { forgetId?: boolean; } = {}): RecordOutcome => {
     const next: TickRecordState = { commentId: forgetId ? null : state.commentId, row: readTickRecordState(statePath, now).row, unwritten: { since: state.unwritten?.since ?? now, why } };
     try {
       writeTickRecordState(statePath, next);
@@ -474,7 +474,7 @@ export function recordSlowTick({ line, costText, now, thresholdSeconds = TICK_SL
     return "written";
   } catch (error) {
     // A cached id that no longer takes an edit (the comment was deleted) is forgotten, so the retry finds or posts the comment again.
-    return refuse(String((error as any)?.stderr ?? "").trim().split("\n")[0] || String((error as Error)?.message ?? error).split("\n")[0], true);
+    return refuse(String((error as any)?.stderr ?? "").trim().split("\n")[0] || String((error as Error)?.message ?? error).split("\n")[0], { forgetId: true });
   }
 }
 

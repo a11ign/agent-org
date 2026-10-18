@@ -47,7 +47,7 @@ const HOST = (() => {
 })();
 // The tool's modules resolve their project when IMPORTED, so the host is named BEFORE they are, and only when the caller named none.
 if (!process.env.AGENT_ORG_HOST) process.env.AGENT_ORG_HOST = HOST;
-const { pruneWorktrees, formatReport, CLOSED_ROW_RELEASE_AGE_MS, ACTIVITY_WINDOW_MS, MAX_REMOVALS_PER_RUN, PAUSE_BETWEEN_REMOVALS_MS } =
+const { pruneWorktrees, formatAppliedReport, CLOSED_ROW_RELEASE_AGE_MS, ACTIVITY_WINDOW_MS, MAX_REMOVALS_PER_RUN, PAUSE_BETWEEN_REMOVALS_MS } =
   await import("./prune-worktrees.ts");
 const { stampWorktree } = await import("./worktree-owner.ts");
 const { REMOVAL_LOG_ENV } = await import("./worktree-removal.ts");
@@ -159,7 +159,7 @@ test("#3850: a run over 3N removable trees removes N, says how many remain, and 
   const first = run();
   assert.equal(first.removed.length, perRun, "N removed");
   assert.equal(first.unexamined, trees.length - perRun, "and the report counts the rest");
-  assert.match(formatReport(first), new RegExp(`${trees.length - perRun} worktree\\(s\\) not examined`));
+  assert.match(formatAppliedReport(first), new RegExp(`${trees.length - perRun} worktree\\(s\\) not examined`));
   assert.equal(trees.filter(existsSync).length, trees.length - perRun, "on disk, exactly N are gone");
 
   assert.equal(run().removed.length, perRun);
@@ -167,7 +167,7 @@ test("#3850: a run over 3N removable trees removes N, says how many remain, and 
   assert.equal(last.removed.length, perRun);
   assert.equal(last.unexamined, 0, "the third run reaches the end of the list");
   assert.deepEqual(trees.filter(existsSync), []);
-  assert.ok(!formatReport(last).includes("not examined"), "a run that reached the end says nothing about a limit");
+  assert.ok(!formatAppliedReport(last).includes("not examined"), "a run that reached the end says nothing about a limit");
 });
 
 test("#3850: the pause comes between removals, not before the first or after the last", () => {
@@ -198,7 +198,7 @@ test("#3850: THE CLI is the run -- `--apply` removes MAX_REMOVALS_PER_RUN, pause
   const trees = names.map((name) => heldTree(primary, name, { stamped: false }));
   // The fixtures are seconds old and the ten-minute command window (#220) keeps such a tree, so age each one's gitdir files. The CLI's own
   // `git status` REWRITES an index it finds racily clean (older than a file it records), and a rewritten index is itself "activity" (the
-  // reason `formatReport` is exported for tests that cannot go through argv). So: age the tracked file first, let one `git status` record it,
+  // reason `formatAppliedReport` is exported for tests that cannot go through argv). So: age the tracked file first, let one `git status` record it,
   // then age the gitdir files to a time still NEWER than the file.
   const ago = (windows: number) => new Date(Date.now() - windows * ACTIVITY_WINDOW_MS).toISOString();
   for (const name of names) {

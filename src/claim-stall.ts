@@ -1240,7 +1240,7 @@ function releaseOrder(facts: Pick<ClaimFacts, "row" | "session" | "branch" | "wo
  * @param {{ facts: ClaimFacts, reading: Reading }[] | undefined} readings @param {number} now
  * @returns {StallOrder[]}
  */
-export function claimStalledOrders(readings: { facts: ClaimFacts; reading: Reading; }[] | undefined, now: number, accountPaused: boolean = pausedNow(now) !== null): StallOrder[] {
+export function claimStalledOrders(readings: { facts: ClaimFacts; reading: Reading; }[] | undefined, now: number, { accountPaused = pausedNow(now) !== null }: { accountPaused?: boolean; } = {}): StallOrder[] {
   const orders: StallOrder[] = [];
   for (const { facts, reading } of readings ?? []) {
     if (reading.kind === "nudge" && reading.idle) orders.push(idleNudgeOrder(facts, now, reading.idleMs, reading.count));

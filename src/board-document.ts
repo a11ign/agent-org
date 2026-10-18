@@ -432,7 +432,7 @@ function reconciliation(d: any) {
  * failure should look like one.
  * @param {any} gate @param {any} worst @param {boolean} fresh
  */
-function gateHeadline(gate: any, worst: any, fresh: boolean) {
+function gateHeadline(gate: any, worst: any, { fresh }: { fresh: boolean; }) {
   const explained = worst && worst.verdict !== "PASS" && gate.note ? ", explained below" : "";
   const verdict = worst ? `**${worst.verdict}**${explained} — ` : "";
   return `${verdict}${gate.command}${fresh ? "" : " — older than this report's window"}`;
@@ -519,7 +519,7 @@ function sourceTable(d: any) {
   const worst = d.latestGate ? worstVerdict(d.latestGate.output) : null;
   push("Most recent conformance check result",
     d.latestGate
-      ? gateHeadline(d.latestGate, worst, d.gateIsFresh)
+      ? gateHeadline(d.latestGate, worst, { fresh: d.gateIsFresh })
       : "**not reported**",
     d.latestGate
       ? gateSource(d.latestGate, captureAge, worst)
@@ -938,10 +938,10 @@ export function lateEditionRefusal({ summary, stated, editionExists, londonNow }
  * The SCHEDULE delivers that (the summary is written at 07:25 and the edition renders at 08:00); this is
  * the backstop that catches a stale one reaching the board, so it is the wider sixty.
  *
- * @param {boolean} publishing @param {{text: string} | null | undefined} summary @param {string} today @param {Date} [now]
+ * @param {{text: string} | null | undefined} summary @param {string} today @param {Date} [now]
  */
-export function requireSummaryIsFresh(publishing: boolean, summary: { text: string; } | null | undefined, today: string, now: Date = new Date()) {
-  if (!publishing || !summary) return;
+export function requireSummaryIsFresh(summary: { text: string; } | null | undefined, today: string, now: Date = new Date()) {
+  if (!summary) return;
   const londonNow = new Intl.DateTimeFormat("en-GB",
     { timeZone: "Europe/London", hour: "2-digit", minute: "2-digit", hour12: false }).format(now);
   const stated = statedWritingTime(summary.text, now);
@@ -961,13 +961,27 @@ export function requireSummaryIsFresh(publishing: boolean, summary: { text: stri
   }
 }
 
-/** @param {boolean} publishing */
-function requireSummary(publishing: boolean) {
+/**
+ * The edition's summary for a render that publishes nothing: it may be absent, and when it is present it is held to the word cap.
+ */
+function previewSummary() {
   // The edition's day in LONDON (#1302), the same day the summary check warns about and the Discussion is
   // titled by -- a UTC slice here asked for yesterday's summary between 00:00 and 01:00 London in summer.
   const today = editionDay();
   const summary = summaryFor(today);
-  if (publishing && !summary) {
+  requireWithinWordCap(summary, today);
+  return summary;
+}
+
+/**
+ * The edition's summary for a publish: it must exist, be within the word cap, and have been written recently.
+ */
+function requirePublishedSummary() {
+  // The edition's day in LONDON (#1302), the same day the summary check warns about and the Discussion is
+  // titled by -- a UTC slice here asked for yesterday's summary between 00:00 and 01:00 London in summer.
+  const today = editionDay();
+  const summary = summaryFor(today);
+  if (!summary) {
     console.error(`REFUSING to render: no executive summary for ${today}.\n\n`
       + `Write at most ${SUMMARY_WORDS} words in docs/board/summaries/${today}.md, answering three `
       + "things: are we on the date, what changed since yesterday, what must the board decide today.\n"
@@ -976,13 +990,18 @@ function requireSummary(publishing: boolean) {
       + "Nothing was written. A missing summary is a missing edition.");
     process.exit(5);
   }
+  requireWithinWordCap(summary, today);
+  requireSummaryIsFresh(summary, today);
+  return summary;
+}
+
+/** REFUSES a summary over the word cap, when there is one. */
+function requireWithinWordCap(summary: { words: number; } | null, today: string) {
   if (summary && summary.words > SUMMARY_WORDS) {
     console.error(`REFUSING to render: the summary for ${today} is ${summary.words} words, over the `
       + `${SUMMARY_WORDS}-word cap. Cut it; that cap is what makes it a summary.`);
     process.exit(5);
   }
-  requireSummaryIsFresh(publishing, summary, today);
-  return summary;
 }
 
 /**
@@ -1091,7 +1110,7 @@ function main() {
     process.stdout.write(`${published} (outside.board: already published; nothing written)\n`);
     return;
   }
-  const summary = requireSummary(argv.includes("--pdf") || argv.includes("--release") || discussion || late);
+  const summary = argv.includes("--pdf") || argv.includes("--release") || discussion || late ? requirePublishedSummary() : previewSummary();
   const lateAt = late ? requireLateEditionPermitted(summary) : undefined;
   const d = collect(flagOf("--since") ?? new Date(Date.now() - 24 * HOURS_MS).toISOString());
   // THE WORLD-MOVED CHECK RUNS FIRST, before the markdown is built: a stale claim should not be

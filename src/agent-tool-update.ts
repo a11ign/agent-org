@@ -67,8 +67,10 @@ export type Deps = {
   targets: () => Partial<Record<Tool, string>>;
   /** Every seat mid-turn, or `null` when the listing could not be read (which HOLDS the move: unknown is not idle). */
   working: () => string[] | null;
+  /** What switching the daemon's own update loop off would do, as words, without doing it. Throws when it cannot read. */
+  pinDaemonReading: () => string;
   /** Switch the daemon's own update loop off. Returns what it did, as words. Throws when it cannot. */
-  pinDaemon: (apply: boolean) => string;
+  pinDaemon: () => string;
   move: (tool: Tool, to: string, from: string) => void;
   revert: (tool: Tool, to: string) => void;
   smoke: (kind: SmokeKind) => SmokeRaw;
@@ -163,14 +165,14 @@ export function updateAgentTools(deps: Deps, options: Options = {}): Result {
   if (check) {
     const plan = toMove.length === 0 ? "every tool is at its target" : `would move ${pairs(toMove, before, target)}`;
     let loop: string;
-    try { loop = deps.pinDaemon(false); } catch (cause) { loop = `NOT READ (${describe(cause)})`; }
+    try { loop = deps.pinDaemonReading(); } catch (cause) { loop = `NOT READ (${describe(cause)})`; }
     return out("check", `${plan} (read only; the daemon's own update loop: ${loop}).`, 0);
   }
 
   // THE DAEMON'S OWN LOOP IS SWITCHED OFF ON EVERY RUN, a move or not: "already at target" with a loop still free to move the daemon is a host that drifts on the next tick.
   let pinned: string;
   try {
-    pinned = deps.pinDaemon(true);
+    pinned = deps.pinDaemon();
   } catch (cause) {
     pinned = `NOT SWITCHED OFF (${describe(cause)}): the daemon can still move itself, so this command can only detect`;
   }
@@ -300,6 +302,14 @@ const newer = (a: string, b: string): string => {
 };
 const versionOfRelease = (name: string): string => name.replace(/-(?:x86_64|aarch64|arm64)[\w-]*$/, "");
 
+/** The daemon's settings file as an object, `{}` when it is missing. Throws when the file is not a JSON object. */
+function readDaemonSettings(file: string): Record<string, any> {
+  if (!existsSync(file)) return {};
+  const parsed = JSON.parse(readFileSync(file, "utf8"));
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`${file} is not a JSON object`);
+  return parsed;
+}
+
 /**
  * The host's real seams, for `home`. Exported with every external call behind an argument so a test can drive each one against a scratch home.
  * @param {{ home?: string, runProgram?: typeof run, herdr?: (args: string[]) => string, env?: NodeJS.ProcessEnv }} [io]
@@ -368,16 +378,16 @@ export function hostSeams({ home = homedir(), runProgram = run, herdr = (args) =
     working(): string[] | null {
       return readAgents(herdr)?.filter((a) => a.status === "working").map((a) => a.label) ?? null;
     },
-    pinDaemon(apply: boolean): string {
+    pinDaemonReading(): string {
       const file = join(daemonState, "settings.json");
-      let settings: Record<string, any> = {};
-      if (existsSync(file)) {
-        const parsed = JSON.parse(readFileSync(file, "utf8"));
-        if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`${file} is not a JSON object`);
-        settings = parsed;
-      }
+      const settings = readDaemonSettings(file);
       if (settings.updater?.autoUpdateEnabled === false) return `already off (${file})`;
-      if (!apply) return `ON (${existsSync(file) ? file : `${file} is missing, which is the default`}); a run switches it off`;
+      return `ON (${existsSync(file) ? file : `${file} is missing, which is the default`}); a run switches it off`;
+    },
+    pinDaemon(): string {
+      const file = join(daemonState, "settings.json");
+      const settings = readDaemonSettings(file);
+      if (settings.updater?.autoUpdateEnabled === false) return `already off (${file})`;
       mkdirSync(daemonState, { recursive: true });
       const tmp = `${file}.agent-tool-update`;
       writeFileSync(tmp, `${JSON.stringify({ ...settings, updater: { ...(settings.updater ?? {}), autoUpdateEnabled: false } }, null, 2)}\n`);
@@ -453,6 +463,7 @@ async function liveDeps(argv: string[]): Promise<Deps> {
     installed: seams.installed,
     targets: () => seams.targets(flagValue(argv, "claude") ?? undefined),
     working: seams.working,
+    pinDaemonReading: seams.pinDaemonReading,
     pinDaemon: seams.pinDaemon,
     move: (tool, to) => seams.move(tool, to),
     revert: seams.revert,

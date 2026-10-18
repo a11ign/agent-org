@@ -89,7 +89,7 @@ test("#2483 the predicate: an instance by either reader is one; every standing s
 test("#2483 deliver: an order to a spawned worker or a reviewer instance sends no /clear, and the line says so", () => {
   const r = recorder();
   const recorded: [string, boolean | undefined][] = [];
-  const record = (key: string, _who?: string, noClear?: boolean) => recorded.push([key, noClear]);
+  const record = (key: string, _who?: string, { noClear }: { noClear?: boolean; } = {}) => recorded.push([key, noClear]);
   const got = deliver(INSTANCES.map(order), agents(INSTANCES), ROSTER, { run: r.run, record });
   assert.deepEqual(got.refused, [], `all delivered: ${JSON.stringify(got)}`);
   assert.deepEqual(recorded, INSTANCES.map((s) => [`${s}/changes-requested/pr-2456/k`, true]), "the ledger is told no clear was sent");
@@ -102,7 +102,7 @@ test("#2483 deliver CONTROL: ceo, product-manager, orchestrator and worker-tooli
   const r = recorder();
   const recorded: (boolean | undefined)[] = [];
   const got = deliver(STANDING.map(order), agents(STANDING), ROSTER,
-    { run: r.run, record: (_key: string, _who?: string, noClear?: boolean) => recorded.push(noClear) });
+    { run: r.run, record: (_key: string, _who?: string, { noClear }: { noClear?: boolean; } = {}) => recorded.push(noClear) });
   assert.deepEqual(got.refused, []);
   assert.deepEqual(recorded, STANDING.map(() => false), "and the ledger is told a clear WAS sent");
   assert.deepEqual(r.cleared(), STANDING, "each was cleared");
@@ -202,11 +202,11 @@ test("#2483 prompt:session to a reviewer instance sends no /clear and does not c
 test("#2483 the ledger line records no-clear after the recipient, and the key and the dedupe are untouched", () => {
   const at = Date.now();
   const key = "worker-4/changes-requested/k";
-  assert.equal(ledgerLine(at, key, undefined, true), `${at}\t${key}\t\tno-clear\n`);
-  assert.equal(ledgerLine(at, key, "worker-9", true), `${at}\t${key}\tworker-9\tno-clear\n`);
+  assert.equal(ledgerLine(at, key, undefined, { noClear: true }), `${at}\t${key}\t\tno-clear\n`);
+  assert.equal(ledgerLine(at, key, "worker-9", { noClear: true }), `${at}\t${key}\tworker-9\tno-clear\n`);
   assert.equal(ledgerLine(at, key), `${at}\t${key}\n`, "the ordinary line is unchanged");
   assert.equal(ledgerKeyOf(`${key}\t\tno-clear`), key);
-  const read = readLedger("x", (() => ledgerLine(at, key, undefined, true)) as never, at);
+  const read = readLedger("x", (() => ledgerLine(at, key, undefined, { noClear: true })) as never, at);
   assert.deepEqual([...read], [key], "the reader still counts it as one delivered cause");
 });
 
@@ -297,7 +297,7 @@ test("#2688 deliver: an over-threshold instance is compacted before its order; a
   try {
     const r = recorder();
     const recorded: [string, boolean | undefined][] = [];
-    const record = (key: string, _who?: string, noClear?: boolean) => recorded.push([key, noClear]);
+    const record = (key: string, _who?: string, { noClear }: { noClear?: boolean; } = {}) => recorded.push([key, noClear]);
     const got = deliver([order("worker-11")], agents(["worker-11"]), ROSTER, { run: r.run, record, contextRoot: dir });
     assert.deepEqual(got.refused, [], `delivered: ${JSON.stringify(got)}`);
     const mine = r.typed().filter((t) => t.startsWith("worker-11: "));

@@ -27,7 +27,7 @@ test("an id the gate issued verifies, and names the session and the causeKey it 
 });
 
 test("an order delivered with no-clear still verifies, because the recipient rides before the flag", () => {
-  const raw = ledgerLine(AT, KEY, SESSION, true);
+  const raw = ledgerLine(AT, KEY, SESSION, { noClear: true });
   assert.equal(verifyOrder(raw, wakeIdOf(SESSION, AT)).verified, true);
 });
 

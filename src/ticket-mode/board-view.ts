@@ -781,7 +781,7 @@ export type WriterFormValues = Readonly<{ request: string; mode: string; project
 /**
  * Whether the form can be sent, and what it says when it cannot: a request is needed, and grill needs a terminal the machine names. PURE.
  */
-export function writerStart(form: Pick<WriterFormValues, "request" | "mode">, grill: boolean): Readonly<{ enabled: boolean; reason: string | null }> {
+export function writerStart(form: Pick<WriterFormValues, "request" | "mode">, { grill }: { grill: boolean; }): Readonly<{ enabled: boolean; reason: string | null }> {
   if (form.request.trim() === "") return { enabled: false, reason: "Write what the ticket is for, in plain words" };
   if (form.mode === "grill" && !grill) return { enabled: false, reason: "Grill needs a terminal: name tickets.terminal in the host file" };
   return { enabled: true, reason: null };
@@ -819,7 +819,7 @@ export function writerRunActions(run: Pick<WriterRunView, "phase" | "workspace" 
 }
 
 /** A draft's own controls: Approve and Approve and queue once it may be created, and Discard while it is pending. PURE. */
-export function draftControls(draft: Pick<DraftView, "status" | "duplicates">, acknowledged: boolean): Readonly<{ approve: boolean; queue: boolean; discard: boolean; reason: string | null }> {
+export function draftControls(draft: Pick<DraftView, "status" | "duplicates">, { acknowledged }: { acknowledged: boolean; }): Readonly<{ approve: boolean; queue: boolean; discard: boolean; reason: string | null }> {
   if (draft.status !== "pending") return { approve: false, queue: false, discard: false, reason: null };
   const named = draft.duplicates.length > 0 && !acknowledged;
   return {

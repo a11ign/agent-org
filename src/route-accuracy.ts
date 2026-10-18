@@ -163,7 +163,7 @@ export const BUCKET_LABELS: readonly string[] = Object.freeze([
 const bucketOf = (confidence: number): number => BUCKET_EDGES.filter((edge) => confidence >= edge).length;
 
 type Tally = { n: number; agreed: number; near: number };
-const bucketFrom = (label: string, { n, agreed, near }: Tally, withNear: boolean): Bucket => ({
+const bucketFrom = (label: string, { n, agreed, near }: Tally, { withNear }: { withNear: boolean; }): Bucket => ({
   label, n, agreed, near: withNear ? near : undefined,
   rate: n >= MIN_SAMPLE ? agreed / n : undefined,
   nearRate: withNear && n >= MIN_SAMPLE ? near / n : undefined,
@@ -212,9 +212,9 @@ export function routeAccuracy(decisions: readonly RoutingDecision[], merges: Rea
     const floorAt = BUCKET_EDGES.length - 1;
     return {
       question,
-      buckets: tallies.map((tally, i) => bucketFrom(BUCKET_LABELS[i], tally, withNear)),
-      underFloor: bucketFrom(`under ${edgeLabel(FLOOR)}`, sum(tallies.slice(0, floorAt + 1)), withNear),
-      atOrOver: bucketFrom(`${edgeLabel(FLOOR)} and over`, sum(tallies.slice(floorAt + 1)), withNear),
+      buckets: tallies.map((tally, i) => bucketFrom(BUCKET_LABELS[i], tally, { withNear })),
+      underFloor: bucketFrom(`under ${edgeLabel(FLOOR)}`, sum(tallies.slice(0, floorAt + 1)), { withNear }),
+      atOrOver: bucketFrom(`${edgeLabel(FLOOR)} and over`, sum(tallies.slice(floorAt + 1)), { withNear }),
       noAnswer: noAnswer.sort((a, b) => a - b),
     };
   });

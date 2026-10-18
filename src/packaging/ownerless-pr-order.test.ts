@@ -60,8 +60,8 @@ const asked = (orders: Order[]) => orders.filter((o) => o.session === OWNERLESS_
 test("the ask is a flag in the registry, and absent or off is OFF", () => {
   assert.equal(OWNERLESS_ASK_FLAG, "prs.ownerlessAsk");
   assert.ok(FLAG_REGISTRY.includes(OWNERLESS_ASK_FLAG), "prs.ownerlessAsk is in FLAG_REGISTRY, so machinery:flag can name it");
-  assert.equal(ownerlessAskFlagOn(undefined, () => emptyCanaryState()), false, "absent is OFF");
-  assert.equal(ownerlessAskFlagOn(true, () => emptyCanaryState()), true, "a reading the caller passes is used as given");
+  assert.equal(ownerlessAskFlagOn({ asked: undefined }, () => emptyCanaryState()), false, "absent is OFF");
+  assert.equal(ownerlessAskFlagOn({ asked: true }, () => emptyCanaryState()), true, "a reading the caller passes is used as given");
 });
 
 test("the signal is a standard machinery signal, named as the row names it", () => {

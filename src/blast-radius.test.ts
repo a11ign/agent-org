@@ -10,7 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  BLAST_MAX_FILES, BLAST_MAX_OVERLAP, blastRadiusGate, blastRadiusVerdict, declaresSweep, ghBlastReads, measureBlastRadius,
+  BLAST_MAX_FILES, BLAST_MAX_OVERLAP, blastRadiusGate, blastRadiusVerdict, declaresSweep, ghBlastReads, measureBlastRadius, sweepVerdict,
   type BlastReads, type OpenPr, type OpenRow,
 } from "./blast-radius.ts";
 import { createIssue } from "./row-file.ts";
@@ -150,7 +150,7 @@ test("a read that FAILED is unknown, never small: it warns, an over-limit number
   const overlapOnly = blastRadiusGate(regionOf("agent-org:src/a.ts"), reads({ rows: Array.from({ length: 6 }, (_, i) => row(i + 1, "agent-org:src/a.ts")), prs: null }).stub);
   assert.match(overlapOnly.refusal ?? "", /overlaps at least 6 open row\(s\)/, "pull requests unread, rows already over: the floor is the refusal");
   assert.equal(overlapOnly.warning, null);
-  assert.equal(blastRadiusVerdict({ files: 0, filesComplete: false, overlaps: [], overlapsComplete: false }, true).refusal, null);
+  assert.equal(sweepVerdict({ files: 0, filesComplete: false, overlaps: [], overlapsComplete: false }).refusal, null);
 });
 
 test("a pull request whose file list is SHORT of changedFiles is an unread pull request: the overlap is incomplete, never clean", () => {
@@ -198,9 +198,9 @@ test("THROUGH ghBlastReads: the open rows are read as `gh api repos/<tracker>/is
 });
 
 test("blastRadiusVerdict is pure over the reading: at each threshold files, one over refuses", () => {
-  assert.equal(blastRadiusVerdict({ files: 20, filesComplete: true, overlaps: Array(5).fill("#1"), overlapsComplete: true }, false).refusal, null);
-  assert.notEqual(blastRadiusVerdict({ files: 21, filesComplete: true, overlaps: [], overlapsComplete: true }, false).refusal, null);
-  assert.notEqual(blastRadiusVerdict({ files: 1, filesComplete: true, overlaps: Array(6).fill("#1"), overlapsComplete: true }, false).refusal, null);
+  assert.equal(blastRadiusVerdict({ files: 20, filesComplete: true, overlaps: Array(5).fill("#1"), overlapsComplete: true }).refusal, null);
+  assert.notEqual(blastRadiusVerdict({ files: 21, filesComplete: true, overlaps: [], overlapsComplete: true }).refusal, null);
+  assert.notEqual(blastRadiusVerdict({ files: 1, filesComplete: true, overlaps: Array(6).fill("#1"), overlapsComplete: true }).refusal, null);
 });
 
 // --- THE WIRING: `createIssue` asks the gate before anything is filed, through the injected `run`. ---

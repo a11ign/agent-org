@@ -161,7 +161,7 @@ export function ticketChecks(mode: string, rest: string[], body: string, ticket:
   const region = regionCheck(body, ticket, { git, base, rootFiles });
   if (region.note !== null) notes.push(region.note);
   if (region.refusal !== null) return { refusal: region.refusal, notes };
-  const changeset = changesetCheck(body, diff, ticket.hasChangesets);
+  const changeset = changesetCheck(body, diff, { hasChangesets: ticket.hasChangesets });
   if (changeset.note !== null) notes.push(changeset.note);
   return { refusal: changeset.refusal, notes };
 }
@@ -245,7 +245,7 @@ const NO_RELEASE_LINE = /^\s*no-release:[ \t]*(\S.*)$/m;
  * @param {string} body @param {DiffReading} diff @param {boolean} hasChangesets
  * @returns {StepVerdict}
  */
-function changesetCheck(body: string, diff: DiffReading, hasChangesets: boolean): StepVerdict {
+function changesetCheck(body: string, diff: DiffReading, { hasChangesets }: { hasChangesets: boolean; }): StepVerdict {
   if (!hasChangesets) return { refusal: null, note: "CHANGESET: not checked -- this repository has no .changeset/config.json" };
   if (!diff.ok) {
     return { refusal: `pr-open: REFUSED -- could not read the diff to check for a changeset (${diff.why}). Nothing was sent to GitHub (A11-74).`, note: null };

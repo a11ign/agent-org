@@ -135,7 +135,7 @@ function tickOf(key: string, runs: unknown) {
   const scope = scopeOf(key);
   const readings = { code: (prs: unknown[]) => ({ prs, required: null, baseTip: null, unarmed: null, trunkRed: readScopeTrunkRed(scope, fakeGh({ runs }).gh) }),
     tracker: () => NO_TRACKER };
-  return scopeTick(scope, false, readLanes(scope, (args: string[]) => (args[0] === "pr" ? "[]" : "[]")), readings).orders as { cause: string, session: string, causeKey: string, prompt: string }[];
+  return scopeTick(scope, { drain: false }, readLanes(scope, (args: string[]) => (args[0] === "pr" ? "[]" : "[]")), readings).orders as { cause: string, session: string, causeKey: string, prompt: string }[];
 }
 
 test("DONE-WHEN 3, replayed: the scope's tick yields the order on a red main and none on a green one", () => {

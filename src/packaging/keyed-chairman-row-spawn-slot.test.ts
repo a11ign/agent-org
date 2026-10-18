@@ -43,7 +43,7 @@ function offeredBy(labeller: (n: number) => string) {
     tracker: () => ({ claimedComments: [], epics: [], closedRows: [], closings: null,
       chairmanRows: readChairmanPriorityOfOffer(rows, rows, history(labeller)).chairmanRows }),
   } as unknown as Parameters<typeof scopeTick>[3];
-  const orders = scopeTick(keyed, false, read, readings).orders as { cause: string; startFresh?: boolean; prompt: string; }[];
+  const orders = scopeTick(keyed, { drain: false }, read, readings).orders as { cause: string; startFresh?: boolean; prompt: string; }[];
   return orders.filter((order) => order.cause === "ready-row-unclaimed");
 }
 

@@ -29,7 +29,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { basename, dirname, join } from "node:path";
 import { PROJECT_ROOT, TOOL_ROOT } from "./host-units-project.ts";
 import { sandboxGitEnv } from "../lib/git-env.ts";
-import { shippedUnits, unitState, unitDrift, driftReport, hostUnitsInstall, systemdUserAvailable,
+import { shippedUnits, unitState, unitDrift, driftReport, hostUnitsNotChecked, hostUnitsInstall, systemdUserAvailable,
   hostUnitDrift, permissionModeDrift, orphanedUnits, SHIPPED_DIR, execCommands,
   entriesFromCommand, ghSpawnReachedFrom, identityDrift, unitsSpendingGh, opaqueCommands, humanLoginOnHost, HUMAN_LOGIN_ON_HOST,
   retiredHere, addedOnSomeRef, orphanOrigin, shellCommandWords, shellSpawnsGh, shippedHostScripts,
@@ -156,11 +156,11 @@ test("#1858: NO SYSTEMD REPORTS NOTHING, and says so rather than saying everythi
   assert.equal(systemdUserAvailable(SYSTEMD_OK as never), true);
   assert.deepEqual(hostUnitDrift({ systemctl: NO_SYSTEMD as never }), [],
     "a developer checkout is not a host that failed to install anything");
-  assert.match(driftReport([], false), /NOT CHECKED/);
-  assert.doesNotMatch(driftReport([], false), /every shipped unit is installed/,
+  assert.match(hostUnitsNotChecked(), /NOT CHECKED/);
+  assert.doesNotMatch(hostUnitsNotChecked(), /every shipped unit is installed/,
     "NOT ASKED and ALL CORRECT are both an empty list, and the report must never say the second when "
     + "it means the first");
-  assert.match(driftReport([], true), /every shipped unit is installed/);
+  assert.match(driftReport([]), /every shipped unit is installed/);
 });
 
 test("#1858: the installer uses `enable --now`, never a bare `enable`", () => {
@@ -2348,11 +2348,11 @@ test("#2332: a person's global user.name/user.email is a NOTE -- reported, never
     assert.deepEqual(config(""), [], "CONTROL: nothing set, nothing to report");
     assert.deepEqual(config("[user]\n\tname = github-actions[bot]\n\temail = a11ign-ai-workers@example.org\n"), [],
       "a machine's identity is not a person's");
-    const report = driftReport([], true, hostIdentityNotes({ ...where, gitConfig: () => ["Dan Beck"] }));
+    const report = driftReport([], hostIdentityNotes({ ...where, gitConfig: () => ["Dan Beck"] }));
     assert.match(report, /^host units: every shipped unit is installed/, "notes never turn a clean host into problems");
     assert.match(report, /notes \(not failures\):/);
     assert.doesNotMatch(report, /problem\(s\)/);
-    assert.doesNotMatch(driftReport([], true, []), /notes/, "and with none there is no heading");
+    assert.doesNotMatch(driftReport([], []), /notes/, "and with none there is no heading");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -2378,7 +2378,7 @@ test("#2552: a .zshenv that does not export NODE_COMPILE_CACHE under $HOME/.cach
   const [note] = notes(null);
   assert.equal(note.problem, "INTERACTIVE SHELLS GET NO COMPILE CACHE UNDER THE HOME");
   assert.equal(note.unit, `${home}/.zshenv`);
-  const report = driftReport([], true, [note]);
+  const report = driftReport([], [note]);
   assert.match(report, /^host units: every shipped unit is installed/, "a note never turns a clean host into problems");
   assert.doesNotMatch(report, /problem\(s\)/);
   assert.equal(compileCacheNotes({ home: "", read: (() => "export NODE_COMPILE_CACHE=/.cache/x\n") as never }).length, 1,

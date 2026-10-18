@@ -67,7 +67,7 @@ export class ConformanceError extends Error {
 }
 
 /** @param {boolean} condition @param {string} message */
-function expect(condition: boolean, message: string) {
+function expect({ condition }: { condition: boolean; }, message: string) {
   if (!condition) throw new Error(message);
 }
 
@@ -84,27 +84,27 @@ async function rejects(action: () => Promise<unknown>): Promise<boolean> {
 /** @param {any} provider @param {Record<string, unknown>} message @returns {Promise<any>} */
 async function sendOk(provider: any, message: Record<string, unknown>): Promise<any> {
   const result = await provider.send(message);
-  expect(result !== null && typeof result === "object", "send returned no result object");
-  expect(typeof result.messageRef === "string" && result.messageRef !== "", "send returned no messageRef");
+  expect({ condition: result !== null && typeof result === "object" }, "send returned no result object");
+  expect({ condition: typeof result.messageRef === "string" && result.messageRef !== "" }, "send returned no messageRef");
   return result;
 }
 
 /** @type {Record<string, (provider: any) => Promise<void> | void>} */
 const ALWAYS: Record<string, (provider: any) => Promise<void> | void> = {
   identity(provider) {
-    expect(typeof provider.id === "string" && provider.id !== "", "id must be a non-empty string");
+    expect({ condition: typeof provider.id === "string" && provider.id !== "" }, "id must be a non-empty string");
   },
   "capabilities-shape"(provider) {
     const caps = provider.capabilities;
-    expect(caps !== null && typeof caps === "object", "capabilities must be an object");
-    for (const name of BOOLEAN_CAPABILITIES) expect(typeof caps[name] === "boolean", `capabilities.${name} must be a boolean`);
+    expect({ condition: caps !== null && typeof caps === "object" }, "capabilities must be an object");
+    for (const name of BOOLEAN_CAPABILITIES) expect({ condition: typeof caps[name] === "boolean" }, `capabilities.${name} must be a boolean`);
     for (const name of OPTIONAL_BOOLEAN_CAPABILITIES) {
-      expect(caps[name] === undefined || typeof caps[name] === "boolean", `capabilities.${name}, when declared, must be a boolean`);
+      expect({ condition: caps[name] === undefined || typeof caps[name] === "boolean" }, `capabilities.${name}, when declared, must be a boolean`);
     }
-    expect(Number.isInteger(caps.maxText) && caps.maxText > 0, "capabilities.maxText must be a positive integer");
-    expect(caps.ratePerSecond === undefined || (Number.isFinite(caps.ratePerSecond) && caps.ratePerSecond > 0),
+    expect({ condition: Number.isInteger(caps.maxText) && caps.maxText > 0 }, "capabilities.maxText must be a positive integer");
+    expect({ condition: caps.ratePerSecond === undefined || (Number.isFinite(caps.ratePerSecond) && caps.ratePerSecond > 0) },
       "capabilities.ratePerSecond, when declared, must be a positive number");
-    expect(caps.destinations === undefined || (Number.isInteger(caps.destinations) && caps.destinations >= 1 && caps.destinations <= MAX_DESTINATIONS),
+    expect({ condition: caps.destinations === undefined || (Number.isInteger(caps.destinations) && caps.destinations >= 1 && caps.destinations <= MAX_DESTINATIONS) },
       `capabilities.destinations, when declared, must be an integer from 1 to ${MAX_DESTINATIONS}`);
   },
   async "send-returns-message-ref"(provider) {
@@ -113,35 +113,35 @@ const ALWAYS: Record<string, (provider: any) => Promise<void> | void> = {
   async "message-refs-are-distinct"(provider) {
     const first = await sendOk(provider, { text: `${CONTRACT_TEXT} 1` });
     const second = await sendOk(provider, { text: `${CONTRACT_TEXT} 2` });
-    expect(first.messageRef !== second.messageRef, "two sends returned the same messageRef");
+    expect({ condition: first.messageRef !== second.messageRef }, "two sends returned the same messageRef");
   },
   async "silent-is-honoured"(provider) {
     const requested = await sendOk(provider, { text: CONTRACT_TEXT, silent: true });
-    expect(requested.silent === provider.capabilities.silent,
+    expect({ condition: requested.silent === provider.capabilities.silent },
       `silent was requested and the provider reports applying silent=${requested.silent} while declaring capabilities.silent=${provider.capabilities.silent}`);
     const ordinary = await sendOk(provider, { text: CONTRACT_TEXT, silent: false });
-    expect(ordinary.silent === false, "an ordinary send was reported as silent");
+    expect({ condition: ordinary.silent === false }, "an ordinary send was reported as silent");
   },
   async "audience-is-honoured"(provider) {
     for (const audience of AUDIENCES) {
       const result = await sendOk(provider, { text: CONTRACT_TEXT, audience });
-      expect(result.audience === audience, `audience ${audience} was requested and the provider reports applying audience=${JSON.stringify(result.audience)}`);
+      expect({ condition: result.audience === audience }, `audience ${audience} was requested and the provider reports applying audience=${JSON.stringify(result.audience)}`);
     }
     const unspecified = await sendOk(provider, { text: CONTRACT_TEXT });
-    expect(unspecified.audience === AUDIENCE.ask, `a send with no audience must land where every send did (ask), not ${JSON.stringify(unspecified.audience)}`);
+    expect({ condition: unspecified.audience === AUDIENCE.ask }, `a send with no audience must land where every send did (ask), not ${JSON.stringify(unspecified.audience)}`);
   },
   async "unknown-audience-is-refused"(provider) {
-    expect(await rejects(() => provider.send({ text: CONTRACT_TEXT, audience: "everyone" })), "an audience that is neither ask nor announcement was accepted");
+    expect({ condition: await rejects(() => provider.send({ text: CONTRACT_TEXT, audience: "everyone" })) }, "an audience that is neither ask nor announcement was accepted");
   },
   async "max-text-is-accepted-at-the-limit"(provider) {
     await sendOk(provider, { text: "x".repeat(provider.capabilities.maxText) });
   },
   async "max-text-is-enforced"(provider) {
     const overlong = "x".repeat(provider.capabilities.maxText + 1);
-    expect(await rejects(() => provider.send({ text: overlong })), `a text of maxText+1 (${overlong.length}) characters was accepted`);
+    expect({ condition: await rejects(() => provider.send({ text: overlong })) }, `a text of maxText+1 (${overlong.length}) characters was accepted`);
   },
   async "empty-text-is-refused"(provider) {
-    expect(await rejects(() => provider.send({ text: "" })), "an empty text was accepted");
+    expect({ condition: await rejects(() => provider.send({ text: "" })) }, "an empty text was accepted");
   },
 };
 
@@ -169,7 +169,7 @@ const CONDITIONAL: Record<string, { applies: (provider: any) => boolean; reason:
     async run(provider) {
       await sendOk(provider, { text: CONTRACT_TEXT, audience: AUDIENCE.announcement });
       const refused = await rejects(() => provider.send({ text: CONTRACT_TEXT, audience: AUDIENCE.announcement, actions: [{ label: "Yes", data: "yes" }] }));
-      expect(refused, "an announcement carrying actions was accepted: the channel is one-way, so a button under it asks for an answer nobody reads");
+      expect({ condition: refused }, "an announcement carrying actions was accepted: the channel is one-way, so a button under it asks for an answer nobody reads");
     },
   },
   // Both directions, so the rule cannot be met by refusing always (which would fail every incident's "cleared" in a single chat).
@@ -180,7 +180,7 @@ const CONDITIONAL: Record<string, { applies: (provider: any) => boolean; reason:
       const original = await sendOk(provider, { text: CONTRACT_TEXT });
       const reply = { text: CONTRACT_TEXT, audience: AUDIENCE.announcement, replyTo: original.messageRef };
       if ((provider.capabilities.destinations ?? 1) >= MAX_DESTINATIONS) {
-        expect(await rejects(() => provider.send(reply)), "an announcement carrying replyTo into its own channel was accepted: the channel is one-way");
+        expect({ condition: await rejects(() => provider.send(reply)) }, "an announcement carrying replyTo into its own channel was accepted: the channel is one-way");
       } else {
         await sendOk(provider, reply);
       }
@@ -190,11 +190,11 @@ const CONDITIONAL: Record<string, { applies: (provider: any) => boolean; reason:
     applies: (provider) => provider.capabilities.edit === true,
     reason: "capabilities.edit is not declared",
     async run(provider) {
-      expect(typeof provider.edit === "function", "capabilities.edit is declared and edit is not a function");
+      expect({ condition: typeof provider.edit === "function" }, "capabilities.edit is declared and edit is not a function");
       const original = await sendOk(provider, { text: CONTRACT_TEXT });
       const changed = await provider.edit({ messageRef: original.messageRef, text: `${CONTRACT_TEXT} edited` });
-      expect(changed?.messageRef === original.messageRef, `edit reported messageRef ${JSON.stringify(changed?.messageRef)} for ${original.messageRef}`);
-      expect(changed.unchanged === false, `an edit that changed the text reported unchanged=${JSON.stringify(changed.unchanged)}`);
+      expect({ condition: changed?.messageRef === original.messageRef }, `edit reported messageRef ${JSON.stringify(changed?.messageRef)} for ${original.messageRef}`);
+      expect({ condition: changed.unchanged === false }, `an edit that changed the text reported unchanged=${JSON.stringify(changed.unchanged)}`);
     },
   },
   "edit-refuses-empty-and-overlong-text": {
@@ -202,19 +202,19 @@ const CONDITIONAL: Record<string, { applies: (provider: any) => boolean; reason:
     reason: "capabilities.edit is not declared",
     async run(provider) {
       const original = await sendOk(provider, { text: CONTRACT_TEXT });
-      expect(await rejects(() => provider.edit({ messageRef: original.messageRef, text: "" })), "an edit to empty text was accepted");
+      expect({ condition: await rejects(() => provider.edit({ messageRef: original.messageRef, text: "" })) }, "an edit to empty text was accepted");
       const overlong = "x".repeat(provider.capabilities.maxText + 1);
-      expect(await rejects(() => provider.edit({ messageRef: original.messageRef, text: overlong })), `an edit to a text of maxText+1 (${overlong.length}) characters was accepted`);
+      expect({ condition: await rejects(() => provider.edit({ messageRef: original.messageRef, text: overlong })) }, `an edit to a text of maxText+1 (${overlong.length}) characters was accepted`);
     },
   },
   "pin-is-accepted": {
     applies: (provider) => provider.capabilities.pin === true,
     reason: "capabilities.pin is not declared",
     async run(provider) {
-      expect(typeof provider.pin === "function", "capabilities.pin is declared and pin is not a function");
+      expect({ condition: typeof provider.pin === "function" }, "capabilities.pin is declared and pin is not a function");
       const original = await sendOk(provider, { text: CONTRACT_TEXT });
       const pinned = await provider.pin({ messageRef: original.messageRef });
-      expect(pinned?.messageRef === original.messageRef, `pin reported messageRef ${JSON.stringify(pinned?.messageRef)} for ${original.messageRef}`);
+      expect({ condition: pinned?.messageRef === original.messageRef }, `pin reported messageRef ${JSON.stringify(pinned?.messageRef)} for ${original.messageRef}`);
     },
   },
   "poll-returns-updates-and-honours-abort": {
@@ -226,7 +226,7 @@ const CONDITIONAL: Record<string, { applies: (provider: any) => boolean; reason:
 
 /** @param {any} provider */
 async function checkPoll(provider: any) {
-  expect(typeof provider.poll === "function", "capabilities.conversation is declared and poll is not a function");
+  expect({ condition: typeof provider.poll === "function" }, "capabilities.conversation is declared and poll is not a function");
   // One call, with a signal that is ALREADY aborted: a real long poll would otherwise block this check for its whole timeout, and
   // "returns promptly once told to stop" is the property the listener's shutdown depends on.
   const aborted = new AbortController();
@@ -236,8 +236,8 @@ async function checkPoll(provider: any) {
   const settled = provider.poll(undefined, aborted.signal).then((/** @type {{updates?: unknown}} */ value: { updates?: unknown; }) => ({ value }), () => ({ rejected: true }));
   const outcome = await Promise.race([settled, deadline]);
   clearTimeout(timer);
-  expect(!outcome.timedOut, `poll with an already-aborted signal did not settle within ${POLL_DEADLINE_MS} ms`);
-  if ("value" in outcome) expect(Array.isArray(outcome.value?.updates), "poll must resolve { updates: [...], cursor }");
+  expect({ condition: !outcome.timedOut }, `poll with an already-aborted signal did not settle within ${POLL_DEADLINE_MS} ms`);
+  if ("value" in outcome) expect({ condition: Array.isArray(outcome.value?.updates) }, "poll must resolve { updates: [...], cursor }");
 }
 
 /** @param {string} check @param {() => unknown} run @param {{check: string, message: string}[]} failures @returns {Promise<boolean>} */
@@ -265,7 +265,7 @@ export async function runProviderConformance(provider: any): Promise<{ passed: s
   const passed: string[] = [];
   /** @type {{check: string, reason: string}[]} */
   const skipped: { check: string; reason: string; }[] = [];
-  const shapeOk = await attempt("provider-object", () => expect(provider !== null && typeof provider === "object" && typeof provider.send === "function", "a provider is an object with a send function"), failures);
+  const shapeOk = await attempt("provider-object", () => expect({ condition: provider !== null && typeof provider === "object" && typeof provider.send === "function" }, "a provider is an object with a send function"), failures);
   if (!shapeOk) throw new ConformanceError(failures, passed, skipped);
   for (const [check, run] of Object.entries(ALWAYS)) {
     if (await attempt(check, () => run(provider), failures)) passed.push(check);

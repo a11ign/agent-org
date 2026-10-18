@@ -6,7 +6,7 @@ import { tmpDir } from "../lib/tmp-fixture.ts";
 import { isParked, runStatus } from "./board-view.ts";
 import {
   amend, approve, byIdentifier, childOrder, conflictRound, refuseParents, respond, batchPlanDone, dismiss, feedbackRound, MAX_FEEDBACK_ROUNDS, markPublishRunning, markPublishStarting, publishDone, publishFailed, publishStarts, queuePublish, emptyQueue, enqueue, finish, isLive, leaveBatch, liveRunCount, loadQueue, markResumed, markRunning, markStarting, nextStarts, observe, park,
-  BACKGROUND_GONE, BACKGROUND_GONE_MS, clearEdit, clearMove, noteWorking, recordBlockers, recordMove, recordRepos, planDone, watchWorking, PLAN_BATCH_MAX, recordPullStates, recordTrackerStates, remove, retry, saveQueue, setMax, setPaused, unpark, unreadBlockerKeys, unsettledKeys, type Queue,
+  BACKGROUND_GONE, BACKGROUND_GONE_MS, clearEdit, clearMove, noteWorking, recordBlockers, recordMove, recordRepos, planDone, watchWorking, PLAN_BATCH_MAX, recordPullStates, recordTrackerStates, remove, retry, saveQueue, setMax, pauseQueue, resumeQueue, unpark, unreadBlockerKeys, unsettledKeys, type Queue,
   pathsUnread, recordPaths, recordPullFiles, recordRetargets, recordVerdictNotPosted, unreadPaths,
   changeDraft, dismissWriter, draftOf, markWriterRunning, markWriterStarting, queueWriter, stopWriter, writerDrafted, writerFailed, writerOf, writerResumed, writerStatus, writerToStart, writerWaiting,
 } from "./queue.ts";
@@ -42,7 +42,7 @@ test("once its plan is attached, a planned ticket is queued again where it was, 
   assert.deepEqual(keys(queue), ["A", "B"]);
   assert.deepEqual({ phase: a.phase, plan: a.plan, planned: a.planned, workspace: a.workspace, pane: a.pane, startedAt: a.startedAt, seenWorking: a.seenWorking, queuedAt: a.queuedAt },
     { phase: "queued", plan: undefined, planned: true, workspace: undefined, pane: undefined, startedAt: undefined, seenWorking: undefined, queuedAt: 1 });
-  assert.deepEqual(nextStarts(setPaused(queue, false), 0, 4).map((e) => e.ticket.key), ["A", "B"], "it starts in its old place");
+  assert.deepEqual(nextStarts(resumeQueue(queue), 0, 4).map((e) => e.ticket.key), ["A", "B"], "it starts in its old place");
 });
 
 test("a retried planning run plans again, and a retried planned run keeps its mark", () => {
@@ -74,7 +74,7 @@ test("the tickets one press of Queue plans first are one batch, of 8 at most in 
 
 test("a batch is one run: its tickets take one slot between them, starting or running, and a full queue starts none of a new batch", () => {
   const plan = { keys: new Set(["A", "B", "C"]), ...batched };
-  let queue = setPaused(enqueue(emptyQueue(1), [ticket("A"), ticket("B"), ticket("C"), ticket("D")], choice, 1, plan), false);
+  let queue = resumeQueue(enqueue(emptyQueue(1), [ticket("A"), ticket("B"), ticket("C"), ticket("D")], choice, 1, plan));
   assert.deepEqual(nextStarts(queue, 0, 14).map((e) => e.ticket.key), ["A", "B", "C"], "one slot holds the whole batch, and D waits");
   queue = setMax(markStarting(markStarting(queue, "A", 2), "B", 2), 3);
   assert.deepEqual(nextStarts(queue, 0, 14).map((e) => e.ticket.key), ["C", "D"], "two tickets of a starting batch take one slot of three, and C, left behind, takes one of its own");
@@ -135,13 +135,13 @@ test("a new queue is paused, and nothing starts until it is started; pausing aga
   let queue = enqueue(emptyQueue(2), [ticket("A")], choice, 1);
   assert.equal(queue.paused, true, "queueing is never also starting");
   assert.deepEqual(nextStarts(queue, 0, 14), []);
-  queue = setPaused(queue, false);
+  queue = resumeQueue(queue);
   assert.deepEqual(nextStarts(queue, 0, 14).map((e) => e.ticket.key), ["A"]);
-  assert.deepEqual(nextStarts(setPaused(queue, true), 0, 14), []);
+  assert.deepEqual(nextStarts(pauseQueue(queue), 0, 14), []);
 });
 
 test("nextStarts fills free slots in queue order, counts starting and running alike, and starts nothing past the host's cores", () => {
-  let queue = setPaused(enqueue(emptyQueue(2), [ticket("A"), ticket("B"), ticket("C")], choice, 1), false);
+  let queue = resumeQueue(enqueue(emptyQueue(2), [ticket("A"), ticket("B"), ticket("C")], choice, 1));
   assert.deepEqual(nextStarts(queue, 1, 14).map((e) => e.ticket.key), ["A", "B"]);
   queue = markStarting(queue, "A", 2);
   assert.deepEqual(nextStarts(queue, 1, 14).map((e) => e.ticket.key), ["B"]);
@@ -155,7 +155,7 @@ test("nextStarts fills free slots in queue order, counts starting and running al
 
 test("nextStarts passes over a run waiting on a blocker, which holds no slot, and starts it once the blocker is done", () => {
   const blockedBy = (state: string) => new Map([["A", [{ key: "LIB-1", state, status: state, pulls: {} }]], ["B", []]]);
-  let queue = setPaused(enqueue(emptyQueue(1), [ticket("A"), ticket("B")], choice, 1), false);
+  let queue = resumeQueue(enqueue(emptyQueue(1), [ticket("A"), ticket("B")], choice, 1));
   assert.deepEqual(unreadBlockerKeys(queue), ["A", "B"], "nothing read yet");
   queue = recordBlockers(queue, blockedBy("started"));
   assert.deepEqual(unreadBlockerKeys(queue), []);
@@ -192,7 +192,7 @@ test("the queue file round-trips, and a missing one is an empty queue", () => {
   const queue = enqueue(emptyQueue(2), [ticket("A")], choice, 1);
   saveQueue(path, queue);
   assert.deepEqual(loadQueue(path, 9), queue, "the saved max wins over the default");
-  saveQueue(path, setPaused(queue, false));
+  saveQueue(path, resumeQueue(queue));
   assert.equal(loadQueue(path, 9).paused, false, "a started queue stays started across a restart of the board");
 });
 
@@ -220,7 +220,7 @@ test("a finished run records its pull requests' states, and one they settle is n
 });
 
 test("a parked run keeps its workspace and pane, holds no slot, and is not retried until its workspace is closed", () => {
-  let queue = setPaused(enqueue(emptyQueue(1), [ticket("A"), ticket("B")], choice, 1), false);
+  let queue = resumeQueue(enqueue(emptyQueue(1), [ticket("A"), ticket("B")], choice, 1));
   queue = markRunning(markStarting(queue, "A", 2), "A", "w1", "w1:p1");
   queue = park(queue, "A", { kind: "needs-human", reason: "which colour?" }, 5);
   const a = () => queue.entries.find((e) => e.ticket.key === "A")!;
@@ -400,11 +400,11 @@ test("Publish queues one run for the ticked runs Ready to merge with their open 
 });
 
 test("a publish run holds a slot while it is live, starts while workers are paused, and its result marks its runs Published or leaves them as they were", () => {
-  const queued = queuePublish(setPaused(readyToMerge(), true), ["A"], 36);
+  const queued = queuePublish(pauseQueue(readyToMerge()), ["A"], 36);
   assert.equal(publishStarts(queued), true, "the person just asked for it");
   assert.equal(publishStarts({ ...queued, max: 0 }), false, "but it needs a free slot");
   const running = markPublishRunning(markPublishStarting(queued, 37), "w9", "w9:p1");
-  assert.equal(nextStarts({ ...setPaused(enqueue(running, [ticket("C"), ticket("D")], choice, 38), false), max: 2 }, 1, 8).length, 1, "it holds one of two slots");
+  assert.equal(nextStarts({ ...resumeQueue(enqueue(running, [ticket("C"), ticket("D")], choice, 38)), max: 2 }, 1, 8).length, 1, "it holds one of two slots");
   const done = publishDone(running, ["https://slack/1", "https://slack/2"], 50);
   assert.deepEqual(a(done).published, { link: "https://slack/1", at: 50 }, "the first link");
   assert.deepEqual([done.publish?.phase, done.publish?.workspace, done.publish?.pane], ["finished", undefined, undefined]);
@@ -452,7 +452,7 @@ test("a ready pull request run is not approved: approve changes nothing, since o
 });
 
 test("dismiss takes a finished run off the board, and leaves a queued, live, parked or being-published one where it is", () => {
-  let queue = setPaused(enqueue(emptyQueue(2), [ticket("A"), ticket("B"), ticket("C")], choice, 1), false);
+  let queue = resumeQueue(enqueue(emptyQueue(2), [ticket("A"), ticket("B"), ticket("C")], choice, 1));
   queue = markRunning(markStarting(queue, "A", 2), "A", "w1", "w1:p1");
   assert.equal(dismiss(queue, "A"), queue, "a live run is Stop's");
   assert.equal(dismiss(queue, "B"), queue, "a queued run is Remove's");
@@ -466,7 +466,7 @@ test("dismiss takes a finished run off the board, and leaves a queued, live, par
 });
 
 test("a checked run is not retried: a second worker would check the same thing again", () => {
-  let queue = setPaused(enqueue(emptyQueue(1), [ticket("A")], choice, 1), false);
+  let queue = resumeQueue(enqueue(emptyQueue(1), [ticket("A")], choice, 1));
   queue = finish(markRunning(markStarting(queue, "A", 2), "A", "w1", "w1:p1"), "A", { kind: "checked", reason: "nothing to change" }, 5);
   assert.equal(retry(queue, "A", 9), queue);
   assert.deepEqual(queue.entries[0].outcome, { kind: "checked", reason: "nothing to change" });
@@ -506,7 +506,7 @@ test("A11-76: with no blocking relations to read, a parent's children go in iden
 });
 
 test("the live runs are the starting and running ones, a batch counted once, and the publish run while it is under way", () => {
-  let queue = setPaused(enqueue(emptyQueue(5), [ticket("A"), ticket("B"), ticket("C")], choice, 1), false);
+  let queue = resumeQueue(enqueue(emptyQueue(5), [ticket("A"), ticket("B"), ticket("C")], choice, 1));
   assert.equal(liveRunCount(queue), 0, "queued is not live");
   queue = markRunning(markStarting(queue, "A", 2), "A", "w1", "w1:p1");
   queue = markStarting(queue, "B", 3);
@@ -588,7 +588,7 @@ test("A11-85: a newer working note keeps the resume, so the worker is not prompt
 
 // A11-82: runs that share a path in one repository start in turn, and a review round keeps the footprint of the run it continues.
 test("A11-82: runs that share a path in one repository start in turn: the earlier one starts and the later waits for it, while disjoint and other-repository runs start together", () => {
-  const queued = setPaused(enqueue(emptyQueue(4), [ticket("A"), ticket("B"), ticket("C"), ticket("D")], choice, 1), false);
+  const queued = resumeQueue(enqueue(emptyQueue(4), [ticket("A"), ticket("B"), ticket("C"), ticket("D")], choice, 1));
   const queue = recordPaths(queued, new Map([["A", ["app:src/pool.ts"]], ["B", ["app:src/"]], ["C", ["lib:src/pool.ts"]], ["D", ["app:docs/"]]]));
   assert.deepEqual(nextStarts(queue, 0, 14).map((e) => e.ticket.key), ["A", "C", "D"], "B shares src/pool.ts with A, and waits for it in this pass");
   const running = markRunning(markStarting(queue, "A", 2), "A", "w1", "w1:p1");
@@ -602,7 +602,7 @@ test("A11-82: runs that share a path in one repository start in turn: the earlie
 });
 
 test("A11-82: tickets of one batch whose plans share a path are held against each other: the earlier starts and the later waits", () => {
-  const queued = setPaused(enqueue(emptyQueue(3), [ticket("A"), ticket("B")], choice, 1), false);
+  const queued = resumeQueue(enqueue(emptyQueue(3), [ticket("A"), ticket("B")], choice, 1));
   const batched = { ...queued, entries: queued.entries.map((e) => ({ ...e, batch: "b1" })) };
   const queue = recordPaths(batched, new Map([["A", ["app:src/a.ts"]], ["B", ["app:src/a.ts"]]]));
   assert.deepEqual(nextStarts(queue, 0, 14).map((e) => e.ticket.key), ["A"], "a shared batch is no reason to start both");
@@ -610,7 +610,7 @@ test("A11-82: tickets of one batch whose plans share a path are held against eac
 
 test("A11-82: a queued review round holds its pull requests' paths, so a run that shares one waits for the round, which starts", () => {
   const queue = recordPaths(feedbackRound(readyToMerge({ paths: ["app:src/a.ts"] }), "A", "f", 9), new Map([["B", ["app:src/a.ts"]]]));
-  assert.deepEqual(nextStarts(setPaused(queue, false), 0, 14).map((e) => e.ticket.key), ["A"], "B, queued first, waits for the round A is");
+  assert.deepEqual(nextStarts(resumeQueue(queue), 0, 14).map((e) => e.ticket.key), ["A"], "B, queued first, waits for the round A is");
 });
 
 test("A11-82: a run whose plan is not read yet, or is planning, starts by its own rules: it is not held by a path, and a review round keeps its run's footprint", () => {
@@ -683,7 +683,7 @@ test("a writer run is queued, starts on a free slot, and holds one while it runs
 });
 
 test("a writer run waits for a worker slot as a ticket does, and is not held by Pause", () => {
-  let queue = setPaused(emptyQueue(1), true);
+  let queue = pauseQueue(emptyQueue(1));
   queue = queueWriter(queue, request, 1);
   assert.equal(writerToStart(queue)?.id, "w1", "a person asked for it: Pause does not hold it");
   queue = queueWriter(queue, { ...request, id: "w2" }, 2);

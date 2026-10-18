@@ -9,7 +9,7 @@ import { REPO } from "../project-identity.ts";
 import { runActions, runStatus } from "./board-view.ts";
 import { createPool, herdrName, ticketDir } from "./pool.ts";
 import { REVIEWER_LOGIN, REVIEW_CAUSE, atomicReviewerPort, loadReviewerGate, readPullState, readReviewerMemory, verdictFileIn, writeReviewerMemory, type ReviewerPort, type ReviewerRef } from "./reviewer-port.ts";
-import { emptyQueue, enqueue, setPaused, type Queue } from "./queue.ts";
+import { emptyQueue, enqueue, pauseQueue, resumeQueue, type Queue } from "./queue.ts";
 import { parseTicketSettings } from "./settings.ts";
 import type { Ticket, TicketSource } from "./source.ts";
 
@@ -70,7 +70,7 @@ function fakePort() {
 function setup(gh: (args: string[]) => string, port: ReviewerPort, tickets: Record<string, unknown> = { drafts: false, reviewer: "atomic" }) {
   const root = tmpDir("ticket-reviewer-");
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox" }, stateDir: join(root, "state"), tickets });
-  let queue: Queue = setPaused(enqueue(emptyQueue(1), [ticket("NBF-1")], { model: "sonnet", effort: "high" }, 0, null), false);
+  let queue: Queue = resumeQueue(enqueue(emptyQueue(1), [ticket("NBF-1")], { model: "sonnet", effort: "high" }, 0, null));
   const store = { get: () => queue, set: (next: Queue) => { queue = next; } };
   const status = new Map<string, string>();
   const h = herdr(status);

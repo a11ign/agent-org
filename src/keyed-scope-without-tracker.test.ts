@@ -34,7 +34,7 @@ function stubTracker() {
 }
 
 const ordersOf = (scope: ReturnType<typeof scopeOf>, readings: ReturnType<typeof stubTracker>["readings"]) =>
-  (scopeTick(scope, false, readLanes(scope, () => "[]"), readings).orders as { cause: string, causeKey: string, prompt: string }[])
+  (scopeTick(scope, { drain: false }, readLanes(scope, () => "[]"), readings).orders as { cause: string, causeKey: string, prompt: string }[])
     .filter((order) => order.cause === "answer-owed");
 
 test("(1) the primary scope, with a tracker declared, owes the answer once", () => {

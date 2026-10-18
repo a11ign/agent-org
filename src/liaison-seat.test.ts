@@ -172,7 +172,7 @@ describe("the seat is never offered a row, and cannot claim one", () => {
   });
 
   test("(4) CONTROL: the refusal is the fact's, not every session's", () => {
-    assert.equal(persistentReason("worker-4", false), null);
-    assert.match(String(persistentReason(SEAT, true)), /persistent/);
+    assert.equal(persistentReason("worker-4", { persistent: false }), null);
+    assert.match(String(persistentReason(SEAT, { persistent: true })), /persistent/);
   });
 });
