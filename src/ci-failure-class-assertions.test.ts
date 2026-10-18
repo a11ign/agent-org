@@ -60,7 +60,7 @@ test("a same-head re-fail that fails the same way reaches the owner with the ass
     const decision = await classifyCiFailure(failure, NO_PROVIDER);
     assert.deepEqual([decision.klass, decision.route], ["own-defect", "owner"], `attempt ${attempt}`);
   }
-  assert.equal(routeFor("own-defect", true), "owner");
+  assert.equal(routeFor("own-defect", { rerunAlready: true }), "owner");
 });
 
 test("a runner lost before any assertion ran is still infrastructure, with the flag ON", async () => {

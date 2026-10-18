@@ -93,8 +93,7 @@ test("the exemption: a row with no spec fence, or a spec shown inside another fe
 
 test("the flag off passes everything; the flag is on only when exactly true", { skip: SKIP_NO_PACKAGES }, () => {
   assert.equal(fileRefusalReason(withSpec("files: []\n"), { specBlock: false }), null);
-  assert.equal(specBlockRefusal(withSpec("files: []\n"), false), null);
-  assert.notEqual(specBlockRefusal(withSpec("files: []\n"), true), null);
+  assert.notEqual(specBlockRefusal(withSpec("files: []\n")), null);
   assert.equal(specBlockFlagOf('{"rows":{"specBlock":true}}'), true);
   for (const off of ['{"rows":{"specBlock":"true"}}', '{"rows":{}}', "{}", "not json", '{"rows":{"specBlock":false}}']) assert.equal(specBlockFlagOf(off), false, off);
 });

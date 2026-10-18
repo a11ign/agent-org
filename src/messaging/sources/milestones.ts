@@ -230,7 +230,7 @@ function eventOf(milestone: Milestone, condition: Extract<Condition, { met: true
 }
 
 /** The moments recorded as seen, then the marker LAST so a run that stops half way reads the file as new again. */
-function baselineNotes(recorded: { key: string; }[], complete: boolean): Note[] {
+function baselineNotes(recorded: { key: string; }[], { complete }: { complete: boolean; }): Note[] {
   const existing = recorded.map(({ key }) => ({ key: milestoneKey(key), reason: "was already true when the milestones source was first enabled: recorded as seen, not told" }));
   if (!complete) return existing;
   const count = existing.length === 1 ? "1 moment" : `${existing.length} moments`;
@@ -250,7 +250,7 @@ export async function observeMilestones({ milestones, readers, seen, defaultRepo
   const readings = parts.flatMap((part) => part.events as unknown as { milestone: Milestone; condition: Condition }[]);
   const cannotAsk = parts.flatMap((part) => part.cannotAsk);
   const unseen = readings.filter(({ milestone, condition }) => condition.met && !seen.has(milestoneKey(milestone.key)));
-  if (!seen.has(BASELINE_KEY)) return { events: [], notes: baselineNotes(unseen.map(({ milestone }) => milestone), cannotAsk.length === 0), cannotAsk };
+  if (!seen.has(BASELINE_KEY)) return { events: [], notes: baselineNotes(unseen.map(({ milestone }) => milestone), { complete: cannotAsk.length === 0 }), cannotAsk };
   const events = unseen.map(({ milestone, condition }) => eventOf(milestone, condition as Extract<Condition, { met: true }>));
   return { events, notes: [], cannotAsk };
 }

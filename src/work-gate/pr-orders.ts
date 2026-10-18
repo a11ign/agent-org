@@ -1900,7 +1900,7 @@ export function settledGreenOf(pr: any): boolean {
  * say "Draft" unconditionally, which is a false statement to a reviewer about the ready pull request this
  * cause now reaches.
  */
-export function awaitingVerdictPrompt(pr: any, { head8, key, all, wait }: ReviewHeads, rowReviewSkill = false) {
+export function awaitingVerdictPrompt(pr: any, { head8, key, all, wait }: ReviewHeads, { rowReviewSkill = false }: { rowReviewSkill?: boolean; } = {}) {
   const state = pr.isDraft ? "Draft" : "Ready (not a draft)";
   const checks = wait === "settled" ? "has settled green checks and no verdict at that head"
     : "has no verdict at that head, and its checks are re-running on a head that adds no work to the one before it";
@@ -2008,7 +2008,7 @@ function draftOrder(pr: any, required: string[] | null = null, baseTip: { sha: s
     cause: "draft-awaiting-verdict",
     subject: `pr-${subjectRef(pr.repoKey, pr.number)}`,
     discriminator: heads.key,
-    prompt: trust === OUTSIDE ? outsidePrompt(pr, heads.head8, reviewerRoleFile(pr)) : awaitingVerdictPrompt(pr, heads, flags.rowReviewSkill),
+    prompt: trust === OUTSIDE ? outsidePrompt(pr, heads.head8, reviewerRoleFile(pr)) : awaitingVerdictPrompt(pr, heads, { rowReviewSkill: flags.rowReviewSkill }),
     causeKey: `${session}/draft-awaiting-verdict/pr-${subjectRef(pr.repoKey, pr.number)}/${heads.key}`,
     // #1311: THE TRUST IS ON THE ORDER, so the spawn that starts its reviewer reads it from the order and never decides it again.
     trust,

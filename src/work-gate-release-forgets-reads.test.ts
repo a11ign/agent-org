@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { defaultRun, holdReadMemo } from "./work-gate/reads.ts";
+import { defaultRun, holdReadMemo, releaseReadMemo } from "./work-gate/reads.ts";
 import { releaseHoldViaModule } from "./work-gate/org-health.ts";
 
 let dir: string;
@@ -41,7 +41,7 @@ esac
 });
 
 afterEach(() => {
-  holdReadMemo(false);
+  releaseReadMemo();
   process.env.PATH = savedPath;
   if (savedLog === undefined) delete process.env.GH_STUB_LOG; else process.env.GH_STUB_LOG = savedLog;
   if (savedUnreadable === undefined) delete process.env.GH_STUB_UNREADABLE_LABELS; else process.env.GH_STUB_UNREADABLE_LABELS = savedUnreadable;
@@ -54,7 +54,7 @@ const READ = ["pr", "view", String(PR), "--json", "number,title"];
 const readsOfPr = () => readFileSync(log, "utf8").split("\n").filter((line) => line.endsWith(READ.join(" "))).length;
 
 test("a read after a hold is released in a child process is asked of GitHub again (control: with no release between the reads, one)", () => {
-  holdReadMemo(true);
+  holdReadMemo();
   defaultRun(READ);
   defaultRun(READ);
   assert.equal(readsOfPr(), 1, "control: the memo answers the second read");
@@ -65,7 +65,7 @@ test("a read after a hold is released in a child process is asked of GitHub agai
 });
 
 test("a release that exits non-zero still forgets the memo, since it may have written the label before it failed", () => {
-  holdReadMemo(true);
+  holdReadMemo();
   defaultRun(READ);
   process.env.GH_STUB_UNREADABLE_LABELS = "1";
 

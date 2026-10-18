@@ -74,7 +74,7 @@ const NO_READINGS = { code: (prs: unknown[]) => ({ prs, required: null, baseTip:
 /** One scope's orders, made the way `main` makes them: the lanes through `readLanes`, then `decide` (the per-tick extras stubbed). */
 function ordersOf(scope: ReturnType<typeof scopesOf>[number], gh: ReturnType<typeof fakeGh>) {
   const lanes = readLanes(scope, gh.run);
-  return { lanes, tick: scopeTick(scope, false, lanes, NO_READINGS, DECLARED) };
+  return { lanes, tick: scopeTick(scope, { drain: false }, lanes, NO_READINGS, DECLARED) };
 }
 
 test("the scopes: one per KEY, the primary's (empty) key FIRST, and a key declared twice REFUSES naming it", () => {
@@ -205,7 +205,7 @@ test("DONE-WHEN 4: today's ledger lines are READ by the new code unchanged, and 
   assert.equal(ledgerLine(1790426322840, "engineers/ready-row-unclaimed/2620", "worker-2620"), LEDGER_SAMPLE[0]);
   assert.equal(ledgerLine(1790426673219, "ceo/answer-owed/row-2649"), LEDGER_SAMPLE[1]);
   assert.equal(ledgerLine(1790410549749, "product-manager/pr-review-blocked/2630:REFUSED"), LEDGER_SAMPLE[2]);
-  assert.equal(ledgerLine(1790425919681, "worker-2667/pr-checks-failing/pr-2669/ed8208fe", undefined, true), LEDGER_SAMPLE[3]);
+  assert.equal(ledgerLine(1790425919681, "worker-2667/pr-checks-failing/pr-2669/ed8208fe", undefined, { noClear: true }), LEDGER_SAMPLE[3]);
   // A KEYED key travels through the same reader and writer with no special case: it is one more opaque key.
   const keyed = "engineers/ready-row-unclaimed/other#2620";
   assert.equal(ledgerLine(5, keyed, "worker-other-2620"), `5\t${keyed}\tworker-other-2620\n`);
@@ -342,7 +342,7 @@ test("the per-tick tracker readings are TAGGED by the scope, so an epic or a clo
     tracker: () => ({ claimedComments: [], closings: null,
       epics: [{ number: 601, title: "an epic", subIssuesSummary: { total: 0, completed: 0 } }],
       closedRows: [{ number: 302, title: "closed", state: "CLOSED", labels: [{ name: "answer:ceo" }] }] }) } as unknown as Readings;
-  const keys = asOrders(scopeTick(other, false, readLanes(other, gh.run), untagged).orders).map((o) => o.causeKey);
+  const keys = asOrders(scopeTick(other, { drain: false }, readLanes(other, gh.run), untagged).orders).map((o) => o.causeKey);
   assert.ok(keys.includes("product-manager/epic-unfiled/epic-other#601"), `POSITIVE CONTROL: the epic order exists, keyed (${keys.join(", ")})`);
   assert.ok(keys.includes("ceo/answer-owed/row-other#302"), "and so does the closed row's answer-owed order");
   assert.deepEqual(keys.filter((k) => /(?:epic|row)-\d+/.test(k)), [], "and NO order of the other repository carries a bare number that the primary's could equal");

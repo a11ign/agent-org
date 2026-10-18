@@ -11,7 +11,7 @@ const recommended = {
   "clean-code/no-commented-out-code": "error",
   "clean-code/no-dead-code": "warn",
   "clean-code/no-encodings": "error",
-  "clean-code/no-flag-arguments": "warn",
+  "clean-code/no-flag-arguments": "error", // production is fixed (A11-101); test files are off, see the block below
   "clean-code/no-magic-numbers": "warn",
   "clean-code/no-negative-conditionals": "warn",
   "clean-code/no-overridden-safeties": "warn",
@@ -34,4 +34,6 @@ export default [
     plugins: { "clean-code": cleanCode },
     rules: { ...recommended, ...adopted },
   },
+  // A test helper's boolean is the fixture's variant, which the rule cannot tell from a mode switch, and splitting it would double each fixture.
+  { files: ["**/*.test.ts"], rules: { "clean-code/no-flag-arguments": "off" } },
 ];

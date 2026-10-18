@@ -57,10 +57,10 @@ test("the rule with no provider: red on main is another repository, a rate limit
 });
 
 test("each class has its own route, and a flaky failure is rerun once and never a second time", () => {
-  assert.deepEqual(CI_FAILURE_CLASSES.map((c) => routeFor(c, false)), ["owner", "rerun-once", "cross-repo-incident", "rerun-after-reset", "push-or-update-branch"]);
-  assert.equal(routeFor("flaky", true), "owner");
+  assert.deepEqual(CI_FAILURE_CLASSES.map((c) => routeFor(c, { rerunAlready: false })), ["owner", "rerun-once", "cross-repo-incident", "rerun-after-reset", "push-or-update-branch"]);
+  assert.equal(routeFor("flaky", { rerunAlready: true }), "owner");
   // the already-rerun fact moves only the flaky class
-  for (const c of CI_FAILURE_CLASSES.filter((k) => k !== "flaky")) assert.equal(routeFor(c, true), routeFor(c, false));
+  for (const c of CI_FAILURE_CLASSES.filter((k) => k !== "flaky")) assert.equal(routeFor(c, { rerunAlready: true }), routeFor(c, { rerunAlready: false }));
 });
 
 test("provider absent: no triage block, or provider none, asks nobody and takes the rule", async () => {
@@ -96,7 +96,7 @@ test("provider on: its class and route win, for each of the five classes (the fi
   for (const klass of CI_FAILURE_CLASSES) {
     const { deps, net } = rig({ reply: { body: answer(klass) } });
     const out = await classifyCiFailure(failure({ staleMergeRef: true }), deps);
-    assert.deepEqual([out.klass, out.route, out.via, out.fellBack, out.confidence], [klass, routeFor(klass, false), "jev", false, 0.95]);
+    assert.deepEqual([out.klass, out.route, out.via, out.fellBack, out.confidence], [klass, routeFor(klass, { rerunAlready: false }), "jev", false, 0.95]);
     assert.equal(net.calls.length, 1);
   }
 });
@@ -466,7 +466,7 @@ test("#1524 POSITIVE: an acceptance that could not read the diff is stale-merge-
   const out = readCiFailure(PR, redGh({ log: STALE_LOG }).read, NOW);
   assert.equal(out?.staleMergeRef, true);
   assert.equal(fallbackClass(out!), "stale-merge-ref");
-  assert.equal(routeFor("stale-merge-ref", false), "push-or-update-branch");
+  assert.equal(routeFor("stale-merge-ref", { rerunAlready: false }), "push-or-update-branch");
   const decision = await classifyCiFailure(out!, rig({ triage: { provider: "none" } }).deps);
   assert.equal(decision.route, "push-or-update-branch");
   assert.match(classNote(decision), /a rerun reuses the same merge commit/);
@@ -476,7 +476,7 @@ test("#1524 NEGATIVE: a diff that was read and a test that failed is still the p
   const out = readCiFailure(PR, redGh().read, NOW);
   assert.equal(out?.staleMergeRef, undefined, "absent, not false: the object is the one it was before #1524");
   assert.equal(fallbackClass(out!), "own-defect");
-  assert.equal(routeFor("own-defect", false), "owner");
+  assert.equal(routeFor("own-defect", { rerunAlready: false }), "owner");
 });
 
 test("#1524 the rule: stale-merge-ref comes after a lost runner and before main, and the provider is offered it only with its fact", async () => {

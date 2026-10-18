@@ -87,7 +87,7 @@ function ordersOf(key: string, prs: unknown[]) {
   const scope = scopesOf([homeProjectDeclaration()]).find((s) => s.key === key)!;
   const aimedAt: (string | undefined)[] = [];
   const run = (args: string[], repo?: string) => { aimedAt.push(repo); return args[0] === "pr" ? JSON.stringify(prs) : "[]"; };
-  const orders = scopeTick(scope, false, readLanes(scope, run), NO_READINGS, DECLARED).orders as { session: string, cause: string, causeKey: string, prompt: string }[];
+  const orders = scopeTick(scope, { drain: false }, readLanes(scope, run), NO_READINGS, DECLARED).orders as { session: string, cause: string, causeKey: string, prompt: string }[];
   return { orders, aimedAt };
 }
 

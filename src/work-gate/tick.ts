@@ -305,10 +305,10 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
     session: string; cause: string; subject: string; discriminator: string;
     prompt: string; causeKey: string;
 }[] {
-  const ownerRouting = prOwnerRoutingFlagOn(prOwnerRouting); // #1325: read ONCE, for the review-blocked set below and the last step
+  const ownerRouting = prOwnerRoutingFlagOn({ asked: prOwnerRouting }); // #1325: read ONCE, for the review-blocked set below and the last step
   // agent-org#1667: read ONCE, with the routing it is withheld by, as the asks are. OFF keeps the empty set, so nothing is kept that was withheld.
-  const wakes = ownerRouting && outsideSessionPrFlagOn(outsideSessionPr) ? sessionPrVerdictWakes(prs, identities ?? declaredIdentities()) : new Set<string>();
-  const asks = ownerRouting && ownerlessAskFlagOn(ownerlessAsk) ? ownerlessAsks(prs, required, nowMs, identities ?? declaredIdentities()) : new Map(); // agent-org#1648, #1671: read ONCE, with the routing it is withheld by
+  const wakes = ownerRouting && outsideSessionPrFlagOn({ asked: outsideSessionPr }) ? sessionPrVerdictWakes(prs, identities ?? declaredIdentities()) : new Set<string>();
+  const asks = ownerRouting && ownerlessAskFlagOn({ asked: ownerlessAsk }) ? ownerlessAsks(prs, required, nowMs, identities ?? declaredIdentities()) : new Map(); // agent-org#1648, #1671: read ONCE, with the routing it is withheld by
   // FIRST, BEFORE EVERY OTHER CAUSE (#2356): a red `main` outranks even `answer-owed` -- see `trunkRedOrders`.
   // `answer-owed` says another session is ALREADY STOPPED waiting on them, which outranks any standing question.
   const orders = [...trunkRedOrders(trunkRed), ...primaryStaleOrders(primaryDrift), ...answerOrders(answerOwed)]; // #2781: a stale primary next, every order below is given from its code
@@ -327,7 +327,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
   // #2470/#2711/#2729: A CLAIM THAT DOES NOT MOVE, A BARE `answer:` LABEL ON IT, OR A LAB JOB IT DISPATCHED THAT HAS ENDED -- all address the row's own holder, so all outrank every cause offering NEW work.
   orders.push(...stallOrdersOrNone(claimStalls), ...bareAnswerOrdersOrNone(bareAnswerLabels), ...answerGivenOrdersOrNone(answerGiven), ...labJobFinishedOrders(openRows, labJobs, Date.now()));
 
-  orders.push(...perPullRequestOrders(prs, required, baseTip, { nowMs, recheck: recheckFlagOn(recheck), rowReviewSkill: rowReviewSkillFlagOn(rowReviewSkill), sameHeadRefail: sameHeadRefailFlagOn(sameHeadRefail), identities }), ...closesUnresolvedOrders(prs)); // #2823 beside them; #3092 the checkless
+  orders.push(...perPullRequestOrders(prs, required, baseTip, { nowMs, recheck: recheckFlagOn({ asked: recheck }), rowReviewSkill: rowReviewSkillFlagOn({ asked: rowReviewSkill }), sameHeadRefail: sameHeadRefailFlagOn({ asked: sameHeadRefail }), identities }), ...closesUnresolvedOrders(prs)); // #2823 beside them; #3092 the checkless
   // #2031: AHEAD OF THE OFFER, AND IT IS THE SAME READING THAT WITHHELD IT. `partitionUnclaimed` shelves
   // the row on `rowBranches` and this emits the cause that names the branch -- one condition, one read,
   // said once as a withholding and once as a question. Ahead of `rowOrders` for the ordering reason the
@@ -441,7 +441,7 @@ export function decide({ prs, readyRows, promotableRows = [], chairmanBlocked = 
  * @param [read] the flag's state; absent, unreadable or malformed is OFF (`readReenqueueState`). Its line about an unreadable file names `queue.reenqueueEjected`, which the
  *   gate's own read of the same file already said once this tick, so it is dropped here rather than repeated per scope under another flag's name.
  */
-export function recheckFlagOn(asked?: boolean, read: () => CanaryState = () => readReenqueueState(REVIEWER_STATE_DIR, () => undefined)): boolean {
+export function recheckFlagOn({ asked }: { asked?: boolean; } = {}, read: () => CanaryState = () => readReenqueueState(REVIEWER_STATE_DIR, () => undefined)): boolean {
   return asked ?? machineryFlagOn(read(), RECHECK_FLAG);
 }
 
@@ -450,7 +450,7 @@ export function recheckFlagOn(asked?: boolean, read: () => CanaryState = () => r
  * @param [asked] the reading a caller already has; a test passes it so the answer does not move with the host's state directory
  * @param [read] the flag's state, as `recheckFlagOn` reads it
  */
-export function prOwnerRoutingFlagOn(asked?: boolean, read: () => CanaryState = () => readReenqueueState(REVIEWER_STATE_DIR, () => undefined)): boolean {
+export function prOwnerRoutingFlagOn({ asked }: { asked?: boolean; } = {}, read: () => CanaryState = () => readReenqueueState(REVIEWER_STATE_DIR, () => undefined)): boolean {
   return asked ?? machineryFlagOn(read(), PR_OWNER_ROUTING_FLAG);
 }
 
@@ -459,7 +459,7 @@ export function prOwnerRoutingFlagOn(asked?: boolean, read: () => CanaryState = 
  * @param [asked] the reading a caller already has; a test passes it so the answer does not move with the host's state directory
  * @param [read] the flag's state, as `prOwnerRoutingFlagOn` reads it
  */
-export function ownerlessAskFlagOn(asked?: boolean, read: () => CanaryState = () => readReenqueueState(REVIEWER_STATE_DIR, () => undefined)): boolean {
+export function ownerlessAskFlagOn({ asked }: { asked?: boolean; } = {}, read: () => CanaryState = () => readReenqueueState(REVIEWER_STATE_DIR, () => undefined)): boolean {
   return asked ?? machineryFlagOn(read(), OWNERLESS_ASK_FLAG);
 }
 
@@ -468,7 +468,7 @@ export function ownerlessAskFlagOn(asked?: boolean, read: () => CanaryState = ()
  * @param [asked] the reading a caller already has; a test passes it so the answer does not move with the host's state directory
  * @param [read] the flag's state, as `ownerlessAskFlagOn` reads it
  */
-export function outsideSessionPrFlagOn(asked?: boolean, read: () => CanaryState = () => readReenqueueState(REVIEWER_STATE_DIR, () => undefined)): boolean {
+export function outsideSessionPrFlagOn({ asked }: { asked?: boolean; } = {}, read: () => CanaryState = () => readReenqueueState(REVIEWER_STATE_DIR, () => undefined)): boolean {
   return asked ?? machineryFlagOn(read(), SESSION_PR_OUTSIDE_FLAG);
 }
 
@@ -487,7 +487,7 @@ export function ownerlessUnreached(prs: any[] | null, required: string[] | null)
  * @param [asked] the reading a caller already has; a test or a replay passes it so the answer does not move with the host's state directory
  * @param [read] the flag's state, as `recheckFlagOn` reads it
  */
-export function rowReviewSkillFlagOn(asked?: boolean, read: () => CanaryState = () => readReenqueueState(REVIEWER_STATE_DIR, () => undefined)): boolean {
+export function rowReviewSkillFlagOn({ asked }: { asked?: boolean; } = {}, read: () => CanaryState = () => readReenqueueState(REVIEWER_STATE_DIR, () => undefined)): boolean {
   return asked ?? machineryFlagOn(read(), ROW_REVIEW_SKILL_FLAG);
 }
 
@@ -497,7 +497,7 @@ export function rowReviewSkillFlagOn(asked?: boolean, read: () => CanaryState = 
  * @param [asked] the reading a caller already has; a test or a replay passes it so the answer does not move with the host's state directory
  * @param [read] the flag's state, as `recheckFlagOn` reads it
  */
-export function sameHeadRefailFlagOn(asked?: boolean, read: () => CanaryState = () => readReenqueueState(REVIEWER_STATE_DIR, () => undefined)): boolean {
+export function sameHeadRefailFlagOn({ asked }: { asked?: boolean; } = {}, read: () => CanaryState = () => readReenqueueState(REVIEWER_STATE_DIR, () => undefined)): boolean {
   return asked ?? machineryFlagOn(read(), SAME_HEAD_REFAIL_FLAG);
 }
 
@@ -658,7 +658,7 @@ function repositoryNote(scope: Scope) {
  * #4386: `home` is the PRIMARY tracker's open rows and repository, which a scope with NO tracker of its own (agent-org's) takes its pull requests' owners from.
  * @returns `defects`: the pull requests the ladder could not own though they name a live claimant; `trunkRed`: the scope's `main` as read, for the failure ledger (#4475), and `repo`: the code repository it is the `main` of (agent-org#674: a green reading carries no repository of its own, and the ledger ends a standing red by it)
  */
-export function scopeTick(scope: Scope, drain: boolean, read: ReturnType<typeof readLanes> & { siblingPrs?: any[]; home?: HomeRows; } = readLanes(scope), readings: { code: typeof codeReadings; tracker: (lists: { allOpen: any[]; rows: any[]; }) => Omit<ReturnType<typeof trackerReadings>, "chairmanRows"> & { chairmanRows?: Set<number>; }; } = { code: codeReadings, tracker: trackerReadings }, identities?: DeclaredIdentities, ownerlessAsk?: boolean): { orders: any[]; blocked: any[]; refused: string[]; defects: ResolverDefect[]; trunkRed: ReturnType<typeof readScopeTrunkRed>; repo: string | undefined; } {
+export function scopeTick(scope: Scope, { drain }: { drain: boolean; }, read: ReturnType<typeof readLanes> & { siblingPrs?: any[]; home?: HomeRows; } = readLanes(scope), readings: { code: typeof codeReadings; tracker: (lists: { allOpen: any[]; rows: any[]; }) => Omit<ReturnType<typeof trackerReadings>, "chairmanRows"> & { chairmanRows?: Set<number>; }; } = { code: codeReadings, tracker: trackerReadings }, identities?: DeclaredIdentities, { ownerlessAsk }: { ownerlessAsk?: boolean; } = {}): { orders: any[]; blocked: any[]; refused: string[]; defects: ResolverDefect[]; trunkRed: ReturnType<typeof readScopeTrunkRed>; repo: string | undefined; } {
   const { prs, readyRows, promotableRows, chairmanBlocked, openRows } = read;
   const refused = [
     ...(prs === null ? [`the pull-request list of ${scope.code?.repo}`] : []),
@@ -770,10 +770,10 @@ export function pullRequestsOfOthers(others: { scope: Scope; read: ReturnType<ty
  *
  * @param [home] #4386: the primary tracker's rows, which a scope without a tracker names its pull requests' owners from
  */
-export function otherScopeTicks(drain: boolean, others: { scope: Scope; read: ReturnType<typeof readLanes>; }[], primaryPrs: any[], home?: HomeRows) {
+export function otherScopeTicks({ drain }: { drain: boolean; }, others: { scope: Scope; read: ReturnType<typeof readLanes>; }[], primaryPrs: any[], home?: HomeRows) {
   // (#3566, slice 2) Each repository's `main` is asked ONCE here, together, and handed to its tick: seven `ci.yml` reads were 3.5 s of waiting in a row.
   const trunkReds = readWithFirstWaveTogether((through) => others.map(({ scope }) => readScopeTrunkRed(scope, through)));
-  return others.map(({ scope, read }, at) => scopeTick(scope, drain, { ...read, siblingPrs: [...primaryPrs, ...pullRequestsOfOthers(others, scope.key)], home },
+  return others.map(({ scope, read }, at) => scopeTick(scope, { drain }, { ...read, siblingPrs: [...primaryPrs, ...pullRequestsOfOthers(others, scope.key)], home },
     { code: (openPrs, ticked) => codeReadings(openPrs, ticked, trunkReds[at]), tracker: trackerReadings }));
 }
 
@@ -822,7 +822,7 @@ export function sharedReadOutage(refusedCount: number): boolean {
  * independently and truly stuck (#2685). Untouched when there is no outage, so an ordinary order stays
  * byte-identical to what it always was.
  */
-export function markOutageReads(orders: any[], outage: boolean): any[] {
+export function markOutageReads(orders: any[], { outage }: { outage: boolean; }): any[] {
   return outage ? orders.map((order) => ({ ...order, outageNow: true })) : orders;
 }
 

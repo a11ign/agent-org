@@ -92,7 +92,7 @@ export function fallbackClass(facts: Pick<CiFailureFacts, "redOnMain" | "rateLim
 }
 
 /** The class's route. A flaky failure is rerun ONCE: one already rerun goes to its owner, never a second rerun. */
-export function routeFor(klass: CiFailureClass, rerunAlready: boolean): CiFailureRoute {
+export function routeFor(klass: CiFailureClass, { rerunAlready }: { rerunAlready: boolean; }): CiFailureRoute {
   return klass === "flaky" && rerunAlready ? ROUTES["own-defect"] : ROUTES[klass];
 }
 
@@ -140,7 +140,7 @@ export async function classifyCiFailure(failure: CiFailure, deps: DecisionDeps):
   const klass = isClass(answer.value, failure) ? answer.value : fallback;
   return {
     klass,
-    route: routeFor(klass, failure.rerunAlready),
+    route: routeFor(klass, { rerunAlready: failure.rerunAlready }),
     via: decision.via,
     fellBack: decision.fellBack,
     ...(answer.reason === undefined && decision.reason === undefined ? {} : { reason: answer.reason ?? decision.reason }),

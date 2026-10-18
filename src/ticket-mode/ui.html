@@ -745,7 +745,7 @@ function openNewTicket() {
 $("new-ticket").addEventListener("click", openNewTicket);
 $("writer-start").addEventListener("click", async () => {
   const form = writerForm();
-  const start = writerStart(form, state.writerGrill);
+  const start = writerStart(form, { grill: state.writerGrill });
   if (!start.enabled) { $("writer-note").textContent = start.reason; return; }
   try {
     setWriters(await call("POST", "/api/writer", writerBody(form)));
@@ -800,7 +800,7 @@ function draftCard(run, draft) {
   const queue = actionButton("Approve and queue", "Approve, create the ticket, and put it on the queue with the choice in the Pick footer", () => draftAction(run, draft, fields, check, "approve", true));
   const discard = actionButton("Discard", "Discard this draft. Nothing is created in the tracker", () => draftAction(run, draft, fields, check, "discard", false));
   const sync = () => {
-    const now = draftControls(draft, check.checked);
+    const now = draftControls(draft, { acknowledged: check.checked });
     approve.disabled = !now.approve;
     queue.disabled = !now.queue;
     discard.disabled = !now.discard;

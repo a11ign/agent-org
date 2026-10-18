@@ -193,9 +193,19 @@ export function isGateProcess(): boolean {
   }
 }
 
-/** Turn the memo on or off, emptied either way. The gate holds it for its own process (below); a test holds it for the one it makes. */
-export function holdReadMemo(on: boolean): void {
-  readMemo.on = on;
+/** Turn the memo on, emptied. The gate holds it for its own process (below); a test holds it for the one it makes. */
+export function holdReadMemo(): void {
+  readMemo.on = true;
+  emptyReadMemo();
+}
+
+/** Turn the memo off, emptied. */
+export function releaseReadMemo(): void {
+  readMemo.on = false;
+  emptyReadMemo();
+}
+
+function emptyReadMemo(): void {
   readMemo.answers.clear();
   readMemo.bytes = 0;
   readMemo.hits = 0;
@@ -232,7 +242,8 @@ const memoised = (run: (args: string[], repo?: string) => string) => (args: stri
   return answer;
 };
 
-holdReadMemo(isGateProcess());
+if (isGateProcess()) holdReadMemo();
+else releaseReadMemo();
 if (readMemo.on) {
   process.on("exit", () => {
     const { hits, held } = readMemoReading();

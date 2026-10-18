@@ -56,7 +56,7 @@
 //      no subprocess and no open handle. It is load-bearing for exactly that case, so it is generous.
 //
 // Each is a REFUSAL WITH A REASON, printed against the path. A refusal nobody can read is the same defect
-// as no refusal at all -- that is `formatReport`'s whole job.
+// as no refusal at all -- that is the report's whole job.
 //
 // ## Nothing here can tell you a refusal did not happen, so read this back per PATH
 //
@@ -648,7 +648,7 @@ function removeRecorded(path: string, tmpRoot: string, { remove, record, family 
     return { failure: `the removal log could not be written, so nothing was removed (#2782): ${(cause as Error).message}`,
       finished: false, path };
   }
-  const outcome = removeContained(path, tmpRoot, remove, family === "fixture");
+  const outcome = family === "fixture" ? removeDoomedContained(path, tmpRoot, remove) : removeContained(path, tmpRoot, remove);
   // `partial` is not a log event: the tree is still there, and the next run writes its own `removing` for it.
   if (outcome.failure !== null || outcome.finished) {
     record({ ...line, event: outcome.failure === null ? "removed" : "failed", detail: outcome.failure ?? line.detail });
@@ -671,22 +671,31 @@ function removeRecorded(path: string, tmpRoot: string, { remove, record, family 
  * @returns {string | null} the failure, or `null` on success
  */
 export function removePath(path: string, tmpRoot: string, remove?: ((path: string) => void | boolean) | undefined): string | null {
-  return removeContained(path, tmpRoot, remove, false).failure;
+  return removeContained(path, tmpRoot, remove).failure;
 }
 
 /**
  * {@link removePath}'s body, answering whether the tree is gone and where it now stands as well.
  * @param {string} path @param {string} tmpRoot @param {((path: string) => void | boolean) | undefined} remove
- * @param {boolean} rename whether to rename the tree to `DOOMED_PREFIX` first
  * @returns {{ failure: string | null, finished: boolean, path: string }}
  */
-function removeContained(path: string, tmpRoot: string, remove: ((path: string) => void | boolean) | undefined, rename: boolean): { failure: string | null; finished: boolean; path: string; } {
+function removeContained(path: string, tmpRoot: string, remove: ((path: string) => void | boolean) | undefined): { failure: string | null; finished: boolean; path: string; } {
+  return removeTree(path, tmpRoot, remove, () => path);
+}
+
+/** {@link removeContained} for a fixture: the tree is renamed to `DOOMED_PREFIX` first, so a half-removed one is findable. */
+function removeDoomedContained(path: string, tmpRoot: string, remove: ((path: string) => void | boolean) | undefined): { failure: string | null; finished: boolean; path: string; } {
+  return removeTree(path, tmpRoot, remove, () => markDoomed(path));
+}
+
+/** The body both removals share. `takeTarget` says where the tree is removed from, which is the path itself or the renamed one. */
+function removeTree(path: string, tmpRoot: string, remove: ((path: string) => void | boolean) | undefined, takeTarget: () => string): { failure: string | null; finished: boolean; path: string; } {
   if (relativeUnder(path, tmpRoot) === null) {
     return { failure: `refused at the delete: ${path} is not under ${tmpRoot}`, finished: false, path };
   }
   let target = path;
   try {
-    if (rename) target = markDoomed(path);
+    target = takeTarget();
     // `remove` walks a tree from its leaves and unlinks a symlink rather than following it, which matters here: a worktree's
     // `node_modules` is a SYMLINK into the primary checkout, and a recursive delete that followed one
     // would empty the primary (`prune-worktrees.ts`, #2012, reproduced with content behind the link).
@@ -743,29 +752,46 @@ function removeEntry(call: () => void, budget: { left: number; }, pause: (ms: nu
  * "said as a refusal with a reason rather than silently skipped", and a refusal folded into a total is
  * exactly a silent skip wearing a number.
  *
- * @param {PruneReport} report @param {boolean} dryRun @returns {string}
+ * @param {PruneReport} report @returns {string}
+ *
+ * The line `tmp-entries: <N>` comes first in EVERY report, nothing-to-remove included (#3868): a run that finds nothing is the one whose count is read hardest,
+ * and the user journal of the janitor's unit is the only record of what `/tmp` held on a given day (#3849's done-when 2). It is the count at the START of
+ * the run, so the next run reads what this one's removals left.
  */
-export function formatReport(report: PruneReport, dryRun: boolean = true): string {
-  return `tmp-entries: ${report.tmpEntries}\n${reportBody(report, dryRun)}`;
+export function formatDryRunReport(report: PruneReport): string {
+  return `tmp-entries: ${report.tmpEntries}\n${dryRunBody(report)}`;
+}
+
+/** The report an applied run prints: what it removed, and what it did not. */
+export function formatAppliedReport(report: PruneReport): string {
+  return `tmp-entries: ${report.tmpEntries}\n${appliedBody(report)}`;
 }
 
 /**
- * The line `tmp-entries: <N>` comes first in EVERY report, nothing-to-remove included (#3868): a run that finds nothing is the one whose
- * count is read hardest, and the user journal of the janitor's unit is the only record of what `/tmp` held on a given day (#3849's
- * done-when 2). It is the count at the START of the run, so the next run reads what this one's removals left.
- * @param {PruneReport} report @param {boolean} dryRun @returns {string}
+ * The dry run's body. WOULD REMOVE versus REMOVED, never the same word: a listing that says "removed" is indistinguishable
+ * from a run that removed, and the dry run exists so a session can read the list one cycle before its scratchpad disappears.
  */
-function reportBody(report: PruneReport, dryRun: boolean): string {
-  // WOULD REMOVE versus REMOVED, never the same word: a listing that says "removed" is indistinguishable
-  // from a run that removed, and the dry run exists so a session can read the list one cycle before its
-  // scratchpad disappears.
+function dryRunBody(report: PruneReport): string {
   if (report.candidates === 0) {
-    return `nothing to remove: 0 classified path(s) found${dryRun ? " (a dry run)" : ""} -- nothing was removed`;
+    return "nothing to remove: 0 classified path(s) found (a dry run) -- nothing was removed";
   }
-  const lines = [dryRun
-    ? `WOULD REMOVE ${report.removable.length} of ${report.examined} classified path(s) -- nothing has been `
-      + "removed; pass --apply, and announce the list one cycle first so no session loses its scratchpad:"
-    : `removed ${report.removed.length} of ${report.examined} classified path(s):`];
+  return reportLines(report, `WOULD REMOVE ${report.removable.length} of ${report.examined} classified path(s) -- nothing has been `
+    + "removed; pass --apply, and announce the list one cycle first so no session loses its scratchpad:").join("\n");
+}
+
+/** The applied run's body, which says what was removed and never that a dry run would remove it. */
+function appliedBody(report: PruneReport): string {
+  if (report.candidates === 0) {
+    return "nothing to remove: 0 classified path(s) found -- nothing was removed";
+  }
+  return reportLines(report, `removed ${report.removed.length} of ${report.examined} classified path(s):`).join("\n");
+}
+
+/**
+ * The lines both bodies share after their header, in the order every report prints them.
+ */
+function reportLines(report: PruneReport, header: string): string[] {
+  const lines = [header];
   for (const entry of report.removable) lines.push(`  ${entry.path}  [${entry.family}] -- ${entry.reason}`);
   if (report.partial.length > 0) {
     lines.push(`${report.partial.length} tree(s) stopped at the run's budget and are partly removed; the next run finishes them:`);
@@ -779,7 +805,7 @@ function reportBody(report: PruneReport, dryRun: boolean): string {
   lines.push(...refusalLines(report.refused));
   const deferred = report.candidates - report.examined;
   if (deferred > 0) lines.push(`${deferred} more classified path(s) were not looked at: one run is bounded (${MAX_REMOVALS_PER_RUN} removals), and the next run takes them.`);
-  return lines.join("\n");
+  return lines;
 }
 
 /**
@@ -815,7 +841,8 @@ async function main() {
   const tmpRoot = process.argv.find((a) => a.startsWith("--tmp="))?.slice("--tmp=".length) ?? "/tmp";
   if (!existsSync(tmpRoot)) throw new Error(`prune-tmp: ${tmpRoot} does not exist -- nothing was read or written`);
   const families = process.argv.includes("--fixtures-only") ? (["fixture", "doomed"] as Family["family"][]) : undefined;
-  process.stdout.write(formatReport(pruneTmp(tmpRoot, { dryRun, families }), dryRun) + "\n");
+  const report = pruneTmp(tmpRoot, { dryRun, families });
+  process.stdout.write((dryRun ? formatDryRunReport(report) : formatAppliedReport(report)) + "\n");
 }
 
 import { pathToFileURL } from "node:url";

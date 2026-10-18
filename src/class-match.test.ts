@@ -213,8 +213,8 @@ test("a provider-classed incident is a decision-log line (fields named, values n
   assert.deepEqual([decision.use, decision.id, decision.via, decision.answers.class.value], ["failure-class-match", "incident-1", "jev", "copy-drift"]);
   assert.deepEqual(decision.fields, ["kind", "title", "cause"]);
   assert.ok(!JSON.stringify(decision).includes(INCIDENT.title));
-  recordLabelOutcome("incident-1", true, r.deps);
-  recordLabelOutcome("incident-1", false, r.deps);
+  recordLabelOutcome("incident-1", { labelKept: true }, r.deps);
+  recordLabelOutcome("incident-1", { labelKept: false }, r.deps);
   assert.deepEqual(r.log().slice(1).map((l) => [l.use, l.id, l.outcome]), [["failure-class-match", "incident-1", "kept"], ["failure-class-match", "incident-1", "removed"]]);
 });
 
@@ -222,7 +222,7 @@ test("an incident the provider was never asked about writes no decision line; re
   const r = rig();
   await matchFailureClass(KIND_MATCH, INDEX, r.deps);
   assert.deepEqual(r.log(), []);
-  recordLabelOutcome("incident-1", true, { diagnostic: () => {} });
+  recordLabelOutcome("incident-1", { labelKept: true }, { diagnostic: () => {} });
 });
 
 test("a fallback taken after the provider answered under the floor is logged as a fallback, with the class it declined", async () => {

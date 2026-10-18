@@ -808,9 +808,9 @@ test("a run's terminal opens the page's worker link for its connection, with the
  */
 
 test("a new-ticket request needs its text, and grill needs a terminal; the body carries only the choices made", () => {
-  assert.deepEqual(boardView.writerStart({ request: "  ", mode: "quick" }, true), { enabled: false, reason: "Write what the ticket is for, in plain words" });
-  assert.deepEqual(boardView.writerStart({ request: "x", mode: "grill" }, false), { enabled: false, reason: "Grill needs a terminal: name tickets.terminal in the host file" });
-  assert.deepEqual(boardView.writerStart({ request: "x", mode: "grill" }, true), { enabled: true, reason: null });
+  assert.deepEqual(boardView.writerStart({ request: "  ", mode: "quick" }, { grill: true }), { enabled: false, reason: "Write what the ticket is for, in plain words" });
+  assert.deepEqual(boardView.writerStart({ request: "x", mode: "grill" }, { grill: false }), { enabled: false, reason: "Grill needs a terminal: name tickets.terminal in the host file" });
+  assert.deepEqual(boardView.writerStart({ request: "x", mode: "grill" }, { grill: true }), { enabled: true, reason: null });
   assert.deepEqual(boardView.writerBody({ request: "  Show requests  ", mode: "quick", project: "", repo: "nbl-ui-netbox", goal: "Keep honest", priority: "high", parent: " " }),
     { request: "Show requests", mode: "quick", repo: "nbl-ui-netbox", goal: "Keep honest", priority: "high" });
 });
@@ -834,12 +834,12 @@ test("a run offers Stop while it is not finished, Dismiss once it is and no draf
 
 test("a pending draft that names a duplicate is approved only once the duplicate check is ticked; a created, creating or discarded one has no controls", () => {
   const dup = [{ key: "A11-9", why: "same", title: "Show", url: "u" }];
-  assert.deepEqual(boardView.draftControls({ status: "pending", duplicates: dup }, false), { approve: false, queue: false, discard: true,
+  assert.deepEqual(boardView.draftControls({ status: "pending", duplicates: dup }, { acknowledged: false }), { approve: false, queue: false, discard: true,
     reason: "Check the duplicates above, then tick that they are duplicates, to approve" });
-  assert.deepEqual(boardView.draftControls({ status: "pending", duplicates: dup }, true), { approve: true, queue: true, discard: true, reason: null });
-  assert.deepEqual(boardView.draftControls({ status: "pending", duplicates: [] }, false), { approve: true, queue: true, discard: true, reason: null });
+  assert.deepEqual(boardView.draftControls({ status: "pending", duplicates: dup }, { acknowledged: true }), { approve: true, queue: true, discard: true, reason: null });
+  assert.deepEqual(boardView.draftControls({ status: "pending", duplicates: [] }, { acknowledged: false }), { approve: true, queue: true, discard: true, reason: null });
   for (const status of ["created", "creating", "discarded"] as const) {
-    assert.deepEqual(boardView.draftControls({ status, duplicates: [] }, true), { approve: false, queue: false, discard: false, reason: null }, status);
+    assert.deepEqual(boardView.draftControls({ status, duplicates: [] }, { acknowledged: true }), { approve: false, queue: false, discard: false, reason: null }, status);
   }
 });
 

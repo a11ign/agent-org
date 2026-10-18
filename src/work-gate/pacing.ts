@@ -63,11 +63,10 @@ export function pacingOn(read: () => CanaryState = () => readReenqueueState()): 
 export type Pacing = { paced: boolean; belowFloor: boolean; remaining: number | null; };
 
 /**
- * The pool this tick has left, and whether it is below the reserve and below the floor. Flag off: nothing is read and nothing is paced. A probe that
+ * The pool this tick has left, and whether it is below the reserve and below the floor. A probe that
  * cannot be read gives `remaining: null` and is NOT paced, because the reads it would have skipped are then refused on their own and reported.
  */
-export function pacingNow(run: (args: string[]) => string, on: boolean = pacingOn()): Pacing {
-  if (!on) return { paced: false, belowFloor: false, remaining: null };
+export function pacingNow(run: (args: string[]) => string): Pacing {
   let remaining: number | null = null;
   try {
     remaining = poolFromHeaders([...GRAPHQL_POOL_PROBE], run)?.remaining ?? null;
@@ -77,12 +76,17 @@ export function pacingNow(run: (args: string[]) => string, on: boolean = pacingO
   return { paced: remaining !== null && remaining < GRAPHQL_RESERVE, belowFloor: remaining !== null && remaining < GRAPHQL_FLOOR, remaining };
 }
 
+/** The pacing of a tick whose flag is off: nothing is read, and nothing is paced. */
+export function unpacedNow(): Pacing {
+  return { paced: false, belowFloor: false, remaining: null };
+}
+
 /**
  * The lanes a paced tick did NOT read, named for `unreadLanes`. The other repositories' lanes are named only below the floor, because between the floor
  * and the reserve they are read. `others` says whether the declaration has other repositories at all, so a one-project host is never told it could not
  * read repositories it does not have.
  */
-export function pacedUnread(pacing: Pacing, others: boolean): string[] {
+export function pacedUnread(pacing: Pacing, { others }: { others: boolean; }): string[] {
   if (!pacing.paced) return [];
   return [...(others && pacing.belowFloor ? ["the other repositories' lanes"] : []), "the org-health reads"];
 }
@@ -91,7 +95,7 @@ export function pacedUnread(pacing: Pacing, others: boolean): string[] {
  * The lanes an event-gated tick did NOT read, named for `unreadLanes`: the primary's tracker lanes when `primaryRead` is false, and the org-health
  * reads with them unless the pool already named those (`pacedUnread`). Nothing when the primary was read.
  */
-export function primaryUnread(pacing: Pacing, primaryRead: boolean): string[] {
+export function primaryUnread(pacing: Pacing, { primaryRead }: { primaryRead: boolean; }): string[] {
   if (primaryRead) return [];
   return ["the primary's tracker lanes (promotable rows, chairman-blocked rows, open rows)", ...(pacing.paced ? [] : ["the org-health reads"])];
 }
@@ -100,14 +104,14 @@ export function primaryUnread(pacing: Pacing, primaryRead: boolean): string[] {
  * (agent-org#1401) The primary's tracker lanes that were ASKED and REFUSED this tick, named for `unreadLanes` the way every refused read is. A lane the pacing
  * skipped is `primaryUnread`'s, and a `null` from a skipped primary is not a refusal: nothing was asked, so nothing was refused. Nothing when the primary was not read.
  */
-export function primaryRefusedLanes(lanes: { promotableRows: unknown; chairmanBlocked: unknown; openRowsRead: unknown; }, primaryRead: boolean): string[] {
+export function primaryRefusedLanes(lanes: { promotableRows: unknown; chairmanBlocked: unknown; openRowsRead: unknown; }, { primaryRead }: { primaryRead: boolean; }): string[] {
   if (!primaryRead) return [];
   return [...(lanes.promotableRows === null ? ["the promotable rows"] : []), ...(lanes.chairmanBlocked === null ? ["the chairman-blocked rows"] : []),
     ...(lanes.openRowsRead === null ? ["the open rows"] : [])];
 }
 
 /** `orgHealth` is skipped below the reserve, and on an event-gated tick whose primary lanes were not read (`primaryDue`). */
-export function orgHealthSkipped(pacing: Pacing, primaryRead: boolean): boolean {
+export function orgHealthSkipped(pacing: Pacing, { primaryRead }: { primaryRead: boolean; }): boolean {
   return pacing.paced || !primaryRead;
 }
 

@@ -98,6 +98,6 @@ export async function matchFailureClass(incident: Incident, index: readonly Matc
  * RECORD WHAT A HUMAN DID TO THE LABEL THE PROVIDER CHOSE: `kept` or `removed`, on the decision log line of the incident `deps.id` named, so the floor is tuned from results. An incident the
  * provider did not class has no line to complete, which the log's reader sees as an outcome with no decision: callers record only for `via: "jev"`.
  */
-export function recordLabelOutcome(incidentId: string, labelKept: boolean, deps: Pick<DecisionDeps, "logPath" | "now" | "diagnostic">): void {
+export function recordLabelOutcome(incidentId: string, { labelKept }: { labelKept: boolean; }, deps: Pick<DecisionDeps, "logPath" | "now" | "diagnostic">): void {
   recordOutcome(USE, incidentId, labelKept ? "kept" : "removed", deps);
 }

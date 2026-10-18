@@ -1432,7 +1432,7 @@ function pruneEntry(entry: WorktreeEntry, ctx: PruneContext) {
     { claim: ctx.claim, dryRun: ctx.dryRun, run, remove: ctx.remove, record: ctx.record, recovery, repoRoot: ctx.repoRoot, now: ctx.now });
   if (outcome.into === "held") report.held.push({ ...reported, reason: outcome.reason });
   else if (outcome.into === "dirty") report.dirty.push(outcome.reason === undefined ? reported : { ...reported, reason: outcome.reason });
-  else report.removed.push({ ...reported, cleared: ignorable, ...recoveryNote(recovery, outcome.salvaged, ctx.dryRun) });
+  else report.removed.push({ ...reported, cleared: ignorable, ...recoveryNote(recovery, ctx.dryRun ? undefined : outcome.salvaged) });
 }
 
 /**
@@ -1441,10 +1441,10 @@ function pruneEntry(entry: WorktreeEntry, ctx: PruneContext) {
  * @param {Recovery | null} recovery @param {string[] | undefined} salvaged @param {boolean} dryRun
  * @returns {Pick<ReportedWorktree, "recovery" | "salvaged">}
  */
-function recoveryNote(recovery: Recovery | null, salvaged: string[] | undefined, dryRun: boolean): Pick<ReportedWorktree, "recovery" | "salvaged"> {
+function recoveryNote(recovery: Recovery | null, salvaged: string[] | undefined): Pick<ReportedWorktree, "recovery" | "salvaged"> {
   if (recovery === null) return {};
   if (!recovery.salvage) return { recovery: `its commits stay on branch ${recovery.branch} at ${recovery.head.slice(0, 12)}` };
-  if (dryRun || salvaged === undefined) return { recovery: `tracked changes would first be pinned under ${SALVAGE_REF_PREFIX}` };
+  if (salvaged === undefined) return { recovery: `tracked changes would first be pinned under ${SALVAGE_REF_PREFIX}` };
   return { recovery: `tracked changes salvaged to ${salvaged.join(", ")}`, salvaged };
 }
 
@@ -1511,14 +1511,23 @@ function pushSection(lines: string[], entries: ReportedWorktree[], header: strin
  * because the CLI's own `git status` rewrites the index `recentGitActivity` dates it by.
  * @param {PruneReport} report
  */
-export function formatReport(report: PruneReport, dryRun = false) {
-  // WOULD REMOVE versus REMOVED, never the same word. A listing that says "removed" is indistinguishable
-  // from a run that removed, and the whole purpose of the dry run is that a session can read the list one
-  // cycle before its directory disappears.
-  const lines = [dryRun
-    ? `WOULD REMOVE ${report.removed.length} worktree(s) -- nothing has been removed; pass --apply to `
-      + "remove them, and announce the list one cycle first so no session loses its working directory:"
-    : `removed ${report.removed.length} worktree(s):`];
+export function formatAppliedReport(report: PruneReport) {
+  return reportText(report, `removed ${report.removed.length} worktree(s):`);
+}
+
+/**
+ * What `main()` prints on a dry run. WOULD REMOVE versus REMOVED, never the same word. A listing that says "removed" is indistinguishable
+ * from a run that removed, and the whole purpose of the dry run is that a session can read the list one cycle before its directory disappears.
+ * @param {PruneReport} report
+ */
+export function formatDryRunReport(report: PruneReport) {
+  return reportText(report, `WOULD REMOVE ${report.removed.length} worktree(s) -- nothing has been removed; pass --apply to `
+    + "remove them, and announce the list one cycle first so no session loses its working directory:");
+}
+
+/** The report's lines after the header that says what the run did. */
+function reportText(report: PruneReport, header: string) {
+  const lines = [header];
   // NAMING WHAT WAS DELETED THAT GIT WAS NOT TRACKING (#2012). These paths are removed by the prune
   // itself rather than by `git worktree remove`, and a delete nobody can see in the log is the shape this
   // whole file is about.
@@ -1603,7 +1612,7 @@ async function main() {
   const repoRoot = positional ?? process.cwd();
   const root = statSync(repoRoot).isDirectory() ? repoRoot : process.cwd();
   const report = pruneWorktrees(root, { dryRun, maxRemovals: MAX_REMOVALS_PER_RUN, pauseMs: PAUSE_BETWEEN_REMOVALS_MS, removeByRef: true, holdOpenPr: await openPrHoldOn() });
-  process.stdout.write(formatReport(report, dryRun) + "\n");
+  process.stdout.write((dryRun ? formatDryRunReport(report) : formatAppliedReport(report)) + "\n");
   // #933: PRINTED ON EVERY RUN, INCLUDING `--apply`, and after the removals rather than instead of them.
   // The prune already refuses a dirty worktree; the gap this closes is that nobody hears the refusal, so
   // the report has to be in the output somebody already reads rather than behind a flag they would have to

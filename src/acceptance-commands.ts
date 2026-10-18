@@ -300,7 +300,7 @@ function withoutScopeDisclaimer(section: string): string {
     if (inFence || isFence) return true;
     if (SCOPE_DISCLAIMER.test(line)) { inDisclaimer = true; afterBlank = false; return false; }
     if (line.trim() === "") { afterBlank = inDisclaimer; return true; }
-    if (inDisclaimer && !endsLazyBlock(line, afterBlank)) return false;
+    if (inDisclaimer && !endsLazyBlock(line, { afterBlank })) return false;
     inDisclaimer = false;
     return true;
   }).join("\n");
@@ -335,7 +335,7 @@ function withoutBulletProse(section: string): string {
     if (inFence || isFence) return true;
     if (/^\s*[-*+]\s/.test(line)) { inItem = true; afterBlank = false; return false; }
     if (line.trim() === "") { afterBlank = inItem; return true; }
-    if (inItem && !endsLazyBlock(line, afterBlank)) return false;
+    if (inItem && !endsLazyBlock(line, { afterBlank })) return false;
     inItem = false;
     return true;
   }).join("\n");
@@ -353,7 +353,7 @@ function withoutBulletProse(section: string): string {
  * spelling of it that could drift from this one.
  * @param line a non-blank line outside any fence
  */
-function endsLazyBlock(line: string, afterBlank: boolean) {
+function endsLazyBlock(line: string, { afterBlank }: { afterBlank: boolean; }) {
   if (/^\s/.test(line)) return false;
   return afterBlank || /^(\d+[.)]\s|#)/.test(line);
 }
@@ -868,9 +868,8 @@ function loadResolution(memo: ClosureMemo): TypescriptResolution {
  * nothing), and a top-level `if` on `import.meta.url` -- the entry guard this repo's scripts use, whose body
  * runs only when the file IS the entry, never on import.
  *
- * The ENTRY is scanned whole, as #967 decided; its `referenced` is every identifier in it. With no parser there
- * is no reachability to read, so `referenced` is `null` and the walk follows every bound name -- the old
- * over-charge, the safe direction.
+ * With no parser there is no reachability to read, so `referenced` is `null` and the walk follows every bound name -- the old
+ * over-charge, the safe direction. The entry is the exception: see `entryScope`.
  *
  * PARSED, NOT BRACE-MATCHED. `typescript` is a declared devDependency and this script runs after `pnpm install`
  * in `reusable-acceptance.yml`, so the module's own statements come from `ts.createSourceFile`. A
@@ -886,12 +885,11 @@ function loadResolution(memo: ClosureMemo): TypescriptResolution {
  *
  * @param [memo] the parse is kept here, so a file reached from many entries is parsed once
  */
-function reachableScope(codeOnly: string, fileName: string, imported: Set<string>, isEntry: boolean, memo: ClosureMemo = createClosureMemo()): { scope: string; codeScope: string; referenced: Set<string> | null; } {
+function reachableScope(codeOnly: string, fileName: string, imported: Set<string>, memo: ClosureMemo = createClosureMemo()): { scope: string; codeScope: string; referenced: Set<string> | null; } {
   const { typescript: ts } = loadResolution(memo);
   // no parser: scan everything, follow every name, and read string content as code too -- the safe direction (and named on the refusal, #1340)
   if (ts === null) return { scope: codeOnly, codeScope: codeOnly, referenced: null };
   const source = parsedSource(memo, ts, fileName, codeOnly);
-  if (isEntry) return { scope: codeOnly, codeScope: blankStringContent(ts, source, codeOnly), referenced: referencedNames(ts, source, null) };
   const kept = new Set(imported);
   for (let size = -1; size !== kept.size;) {
     size = kept.size;
@@ -899,6 +897,17 @@ function reachableScope(codeOnly: string, fileName: string, imported: Set<string
   }
   const scope = blankUnkept(ts, source, codeOnly, kept);
   return { scope, codeScope: blankStringContent(ts, source, scope), referenced: referencedNames(ts, source, kept) };
+}
+
+/**
+ * The ENTRY's scope: the entry is scanned whole, as #967 decided, so its `referenced` is every identifier in it. Without a
+ * parser there is nothing to read, and the answer is the same as {@link reachableScope}'s.
+ */
+function entryScope(codeOnly: string, fileName: string, memo: ClosureMemo): { scope: string; codeScope: string; referenced: Set<string> | null; } {
+  const { typescript: ts } = loadResolution(memo);
+  if (ts === null) return { scope: codeOnly, codeScope: codeOnly, referenced: null };
+  const source = parsedSource(memo, ts, fileName, codeOnly);
+  return { scope: codeOnly, codeScope: blankStringContent(ts, source, codeOnly), referenced: referencedNames(ts, source, null) };
 }
 
 /**
@@ -1176,7 +1185,7 @@ function scopeFor(memo: ClosureMemo, { file, codeOnly, names, isEntry }: { file:
   const key = `${isEntry ? "entry" : "module"}\0${file}\0${[...names].sort().join(",")}`;
   let held = memo.scopes.get(key);
   if (held === undefined) {
-    held = { ...reachableScope(codeOnly, file, names, isEntry, memo), matches: new Map() };
+    held = { ...(isEntry ? entryScope(codeOnly, file, memo) : reachableScope(codeOnly, file, names, memo)), matches: new Map() };
     memo.scopes.set(key, held);
   }
   return held;
@@ -2953,16 +2962,25 @@ function joinContinuations(lines: string[], startIndex: number, firstLine: strin
 }
 
 /**
- * #2068: THE EXCLUSIVE INDEX AT WHICH THE BLOCK A COMMAND STARTED IN ENDS -- where `joinContinuations` must
- * stop. Inside a fence that is the closing fence; in a bare block it is the first line that would have
- * ended the block anyway (blank, markdown heading, or another section's header), so a continuation can
+ * #2068: THE EXCLUSIVE INDEX AT WHICH A FENCED COMMAND ENDS -- the closing fence, where `joinContinuations` must stop.
+ */
+function fenceEndAfter(lines: string[], startIndex: number): number {
+  return lineEndAfter(lines, startIndex, (trimmed) => trimmed.startsWith("```"));
+}
+
+/**
+ * #2068: THE EXCLUSIVE INDEX AT WHICH A BARE BLOCK ENDS -- where `joinContinuations` must stop. It is the first line that
+ * would have ended the block anyway (blank, markdown heading, or another section's header), so a continuation can
  * never consume a line the loop itself would have stopped at.
  */
-function blockEndAfter(lines: string[], startIndex: number, inFence: boolean): number {
+function blockEndAfter(lines: string[], startIndex: number): number {
+  return lineEndAfter(lines, startIndex, (trimmed) => trimmed === "" || /^#{1,6}\s/.test(trimmed) || isSectionHeaderLine(trimmed));
+}
+
+/** The index of the first line after `startIndex` whose trimmed text `ends` accepts, or the number of lines when none does. */
+function lineEndAfter(lines: string[], startIndex: number, ends: (trimmed: string) => boolean): number {
   for (let i = startIndex + 1; i < lines.length; i++) {
-    const trimmed = lines[i].trim();
-    if (inFence ? trimmed.startsWith("```") : (trimmed === "" || /^#{1,6}\s/.test(trimmed)
-      || isSectionHeaderLine(trimmed))) return i;
+    if (ends(lines[i].trim())) return i;
   }
   return lines.length;
 }
@@ -3029,7 +3047,7 @@ function commandLinesAfter(lines: string[], headerIndex: number): string[] {
       if (trimmed !== "" && !trimmed.startsWith("#")) {
         // A continuation is understood to still be part of the command that started it, whatever it looks
         // like on its own -- the stop rules below apply only to where a command BEGINS.
-        const { command, consumed } = joinContinuations(lines, i, trimmed, blockEndAfter(lines, i, true));
+        const { command, consumed } = joinContinuations(lines, i, trimmed, fenceEndAfter(lines, i));
         commands.push(unwrapBackticks(command));
         i += consumed;
       }
@@ -3062,7 +3080,7 @@ function commandLinesAfter(lines: string[], headerIndex: number): string[] {
     // #438: stops on ANY of the three known section headers, not just Mutation:, so a bare (non-heading)
     // `Refutation:` line ends an in-progress Acceptance: block instead of being read as one more command.
     if (isSectionHeaderLine(trimmed)) break;
-    const { command, consumed } = joinContinuations(lines, i, trimmed, blockEndAfter(lines, i, false));
+    const { command, consumed } = joinContinuations(lines, i, trimmed, blockEndAfter(lines, i));
     commands.push(unwrapBackticks(command));
     i += consumed;
   }

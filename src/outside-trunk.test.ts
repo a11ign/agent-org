@@ -240,12 +240,12 @@ test("12. THE GATE'S CALL IS MADE: the host pass hands the home the switches it 
     for (const listed of [true, false]) {
       const handed: unknown[] = [];
       let reads = 0;
-      const result = recordRouteOutcomesOnHost(listed, { gh: () => { throw new Error("gh was asked"); }, readSwitchesOf: () => { reads++; return switches; }, outside: (given) => { handed.push(given); } });
+      const result = recordRouteOutcomesOnHost({ listed, gh: () => { throw new Error("gh was asked"); }, readSwitchesOf: () => { reads++; return switches; }, outside: (given) => { handed.push(given); } });
       assert.equal(reads, 1, "the switches are read once and shared");
       assert.deepEqual(handed, [switches], "the home got the very switches that were read");
       assert.deepEqual(result, { written: [], owed: 0 });
     }
   }
-  const failed = recordRouteOutcomesOnHost(true, { gh: () => "", readSwitchesOf: () => ON, outside: () => { throw new Error("the home blew up"); } });
+  const failed = recordRouteOutcomesOnHost({ listed: true, gh: () => "", readSwitchesOf: () => ON, outside: () => { throw new Error("the home blew up"); } });
   assert.deepEqual(failed, { written: [], owed: 0 }, "CONTROL: a home that throws is caught by the pass's own guard and the tick goes on");
 });

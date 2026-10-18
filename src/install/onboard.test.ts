@@ -140,8 +140,8 @@ test("onboard's start starts the instance and the ui service, in that order", ()
 });
 
 test("onboard starts the terminal only once it is set up and auto-update unless opted out; a refused optional service is said, a refused instance fails", () => {
-  assert.deepEqual(onboardServices(true, true), ["instance", "ui", "terminal", "auto-update"]);
-  assert.deepEqual(onboardServices(false, false), ["instance", "ui"]);
+  assert.deepEqual(onboardServices({ terminal: true, autoUpdate: true }), ["instance", "ui", "terminal", "auto-update"]);
+  assert.deepEqual(onboardServices({ terminal: false, autoUpdate: false }), ["instance", "ui"]);
   const unit = (name: string) => ({ manager: "systemd" as const, id: name, path: name, text: "", log: null, companion: null, interval: false, address: null });
   const lines = startServices(["instance", "terminal"], (name) => {
     if (name === "terminal") throw new ServiceRefusal("no bun");

@@ -299,10 +299,10 @@ function span(ms: number | null) {
   return ms < MS_PER_DAY ? `${(ms / MS_PER_HOUR).toFixed(1)}h` : `${(ms / MS_PER_DAY).toFixed(1)}d`;
 }
 
-const money = (value: number | null, floor: boolean = false) => (value === null ? "n/a" : `${floor ? ">= " : ""}$${value.toFixed(value >= SMALL_DOLLARS ? 2 : 4)}`);
+const money = (value: number | null, { floor = false }: { floor?: boolean; } = {}) => (value === null ? "n/a" : `${floor ? ">= " : ""}$${value.toFixed(value >= SMALL_DOLLARS ? 2 : 4)}`);
 
 /** The dollars of a loop: `n/a` when no row of it had a priced turn. */
-const loopMoney = (loop: { count: number; priced: number; dollars: number; floor: boolean; }) => (loop.count === 0 ? "$0.00" : loop.priced === 0 ? "n/a" : money(loop.dollars, loop.floor));
+const loopMoney = (loop: { count: number; priced: number; dollars: number; floor: boolean; }) => (loop.count === 0 ? "$0.00" : loop.priced === 0 ? "n/a" : money(loop.dollars, { floor: loop.floor }));
 
 const LAYOUT = { left: 80, gap: 150, width: 104, height: 76, steps: 230, loops: 410, pad: 70, canvas: 480 };
 const SHADES = ["s0", "s1", "s2", "s3", "s4"];
@@ -378,7 +378,7 @@ function svgOf(model: ReturnType<typeof processMap>) {
   const shade = shadeOf(model.nodes);
   const widest = Math.max(1, ...model.edges.map((edge) => edge.rows));
   const boxes = model.nodes.map((node) => nodeBox(where.get(node.id) as { x: number; y: number },
-    node.held ? [node.label, `${node.rows} rows`, node.id === "merged" ? "end" : `wait ${span(node.medianWaitMs)}`, money(node.medianDollars, node.floor)] : [node.label, "not held", "no event", "in the store"],
+    node.held ? [node.label, `${node.rows} rows`, node.id === "merged" ? "end" : `wait ${span(node.medianWaitMs)}`, money(node.medianDollars, { floor: node.floor })] : [node.label, "not held", "no event", "in the store"],
     node.held ? shade(node.medianDollars) : "unheld", node.id));
   const loopBoxes = model.loops.map((loop) => nodeBox(where.get(loop.via) as { x: number; y: number }, [loop.via, `${loop.count}×`, loopMoney(loop)], "loopnode", loop.via));
   const wakeBox = nodeBox(where.get("wake") as { x: number; y: number }, ["wake", `${model.wakes} wakes`], "loopnode", "wake");
@@ -418,7 +418,7 @@ const options = (entries: { value: unknown; rows: number; }[], show: (value: any
 
 function tables(model: ReturnType<typeof processMap>) {
   const nodeRows = model.nodes.map((node) => (node.held
-    ? `<tr><td>${esc(node.label)}</td><td>${node.rows}</td><td>${node.id === "merged" ? "end" : span(node.medianWaitMs)}</td><td>${money(node.medianDollars, node.floor)}</td><td>${node.priced}</td></tr>`
+    ? `<tr><td>${esc(node.label)}</td><td>${node.rows}</td><td>${node.id === "merged" ? "end" : span(node.medianWaitMs)}</td><td>${money(node.medianDollars, { floor: node.floor })}</td><td>${node.priced}</td></tr>`
     : `<tr><td>${esc(node.label)}</td><td colspan="4">not held: the store has no event for it, so no row is counted and no edge is drawn</td></tr>`)).join("");
   const edgeRows = model.edges.map((edge) => `<tr><td>${esc(edge.from)}</td><td>${esc(edge.to)}</td><td>${edge.rows}</td></tr>`).join("");
   const loopRows = model.loops.map((loop) => `<tr><td class="loop-row">${esc(loop.label)}</td><td>${loop.count}</td><td>${loop.rows}</td><td>${esc(loopMoney(loop))}</td></tr>`).join("");

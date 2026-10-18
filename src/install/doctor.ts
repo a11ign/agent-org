@@ -461,7 +461,7 @@ function which(name: string, env: Env = process.env): string | null {
 const ANSWER_TIMEOUT_MS = 2000;
 
 /** Whether 127.0.0.1:`port` answers `path`: with anything, or with a 2xx when `healthy`. */
-function answers(port: number, path = "/", healthy = false): Promise<boolean> {
+function answers(port: number, path = "/", { healthy = false }: { healthy?: boolean; } = {}): Promise<boolean> {
   return new Promise((done) => {
     const call = request({ host: "127.0.0.1", port, path, method: "GET", timeout: ANSWER_TIMEOUT_MS }, (response) => {
       response.resume();
@@ -486,7 +486,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
     which: (name) => which(name), readFile: (path) => readFileSync(path, "utf8"), readKey: (source) => readLinearKey(source),
     mode: (path) => { try { return statSync(path).mode & 0o777; } catch { return null; } },
     serviceState: (name) => serviceState(name, services), answers: (port) => answers(port),
-    healthy: (port) => answers(port, "/api/health", true),
+    healthy: (port) => answers(port, "/api/health", { healthy: true }),
     unitProblem: (name) => unitProblem(name, services),
     mcpList: () => {
       const result = spawnSync("claude", ["mcp", "list"], { encoding: "utf8", timeout: 60_000 });

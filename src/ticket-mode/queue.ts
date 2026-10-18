@@ -602,8 +602,14 @@ export function publishStarts(queue: Queue): boolean {
   return queue.publish?.phase === "queued" && slotsHeld(queue) < queue.max;
 }
 
-export function setPaused(queue: Queue, paused: boolean): Queue {
-  return { ...queue, paused };
+/** The queue, paused: nothing starts until it is resumed. */
+export function pauseQueue(queue: Queue): Queue {
+  return { ...queue, paused: true };
+}
+
+/** The queue, resumed: it starts what its slots allow. */
+export function resumeQueue(queue: Queue): Queue {
+  return { ...queue, paused: false };
 }
 
 export function setMax(queue: Queue, max: number): Queue {
@@ -711,7 +717,7 @@ export function park(queue: Queue, key: string, outcome: Outcome, now: number, r
  * The ticket has its plan: it goes back on the queue, where it was, to be worked with its own model and effort. A planning run leaves nothing
  * behind but the mark that its plan was decided for the person; `unattended` is false for a plan that reached the ticket some other way.
  */
-export function planDone(queue: Queue, key: string, unattended = true): Queue {
+export function planDone(queue: Queue, key: string, { unattended = true }: { unattended?: boolean; } = {}): Queue {
   return replace(queue, key, ({ ticket, repos, model, effort, queuedAt, blockers }) =>
     ({ ticket, repos, model, effort, ...(unattended ? { planned: true } : {}), phase: "queued", queuedAt, ...(blockers ? { blockers } : {}) }));
 }

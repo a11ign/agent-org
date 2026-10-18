@@ -71,8 +71,8 @@ const onSubject = (orders: Order[], number: number) => orders.filter((o) => o.su
 test("the flag is a machinery flag in the registry, and absent or off is OFF", () => {
   assert.equal(SESSION_PR_OUTSIDE_FLAG, "reviews.outsideSessionPr");
   assert.ok(FLAG_REGISTRY.includes(SESSION_PR_OUTSIDE_FLAG), "reviews.outsideSessionPr is in FLAG_REGISTRY, so machinery:flag can name it");
-  assert.equal(outsideSessionPrFlagOn(undefined, () => emptyCanaryState()), false, "absent is OFF");
-  assert.equal(outsideSessionPrFlagOn(true, () => emptyCanaryState()), true, "a reading the caller passes is used as given");
+  assert.equal(outsideSessionPrFlagOn({ asked: undefined }, () => emptyCanaryState()), false, "absent is OFF");
+  assert.equal(outsideSessionPrFlagOn({ asked: true }, () => emptyCanaryState()), true, "a reading the caller passes is used as given");
 });
 
 test("the signal is a standard machinery signal, named as the row names it", () => {
@@ -181,6 +181,6 @@ test("CLOCK: a pull request classed OUTSIDE by a declared-login or a fork is nev
 
 test("the flag's switch: the reading comes from machinery, and the flag is OFF when absent", () => {
   const on = withMachineryFlag(emptyCanaryState(), { name: SESSION_PR_OUTSIDE_FLAG, on: true, signals: STANDARD_MACHINERY_SIGNALS });
-  assert.equal(outsideSessionPrFlagOn(undefined, () => on), true, "ON when machinery says so");
-  assert.equal(outsideSessionPrFlagOn(undefined, () => emptyCanaryState()), false, "OFF when machinery is silent");
+  assert.equal(outsideSessionPrFlagOn({ asked: undefined }, () => on), true, "ON when machinery says so");
+  assert.equal(outsideSessionPrFlagOn({ asked: undefined }, () => emptyCanaryState()), false, "OFF when machinery is silent");
 });

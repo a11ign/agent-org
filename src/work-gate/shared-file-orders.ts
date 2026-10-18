@@ -88,6 +88,7 @@ function groupByRepo(compared: Compared[]) {
  *   (2) an approved, green pull request is ahead of an overlapping one whatever its number; (1) a hold whose overlap has gone is released,
  *   and (3) a DIRTY pull request is told to rebase, which `orderFor` says. OFF: ahead is the lower number, and a hold is never looked at again.
  */
+// eslint-disable-next-line clean-code/no-flag-arguments -- #1165's recheck flag changes the ranking, the hold release and the DIRTY order together; a function per setting would copy the sequencing
 function ordersWithin(group: Compared[], recheck: boolean) {
   const ascending = [...group].sort((a, b) => rankOf(a, recheck) - rankOf(b, recheck) || Number(a.pr.number) - Number(b.pr.number));
   return ascending.flatMap((later, i) => {
@@ -103,6 +104,7 @@ function ordersWithin(group: Compared[], recheck: boolean) {
 }
 
 /** 0 sorts ahead: with the flag on, an approved, green pull request; otherwise every pull request is one rank and the number decides. */
+// eslint-disable-next-line clean-code/no-flag-arguments -- the recheck flag's ranking, read by ordersWithin, which says why it is one function
 const rankOf = (entry: Compared, recheck: boolean) => (recheck && approvedAndGreen(entry.pr) ? 0 : 1);
 
 /**
@@ -126,6 +128,7 @@ function sequencedBehind(pr: any, ahead: any) {
 }
 
 /** @param recheck #1165: a DIRTY pull request is told to rebase NOW, not to hold, and an approved one ahead of it is named as such */
+// eslint-disable-next-line clean-code/no-flag-arguments -- the recheck flag's DIRTY order and wording, read by ordersWithin, which says why it is one function
 function orderFor(pr: any, overlaps: Overlap[], recheck: boolean) {
   const { session: labelled, source } = ownerOfPr(pr);
   const unowned = source === "ceo";

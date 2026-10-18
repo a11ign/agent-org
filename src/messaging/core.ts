@@ -104,7 +104,7 @@ function planWhatToDo(event: MessagingEvent, record: KeyRecord | undefined, nowM
   const open = record?.open ?? false;
   // The episode already ended: a stale observation of it (same `firstSeenAt`, or earlier) is not a recurrence.
   if (!open && record?.clearedAt != null && event.firstSeenAt <= record.clearedAt) return { action: "none", why: "already-cleared" };
-  if (event.resolved) return planResolution(record, open);
+  if (event.resolved) return planResolution(record, { open });
   const policy = config.kinds[event.kind];
   if (!open) {
     return nowMs - event.firstSeenAt < policy.holdDownMs ? { action: "none", why: "held" } : { action: "send", kind: "first" };
@@ -113,7 +113,7 @@ function planWhatToDo(event: MessagingEvent, record: KeyRecord | undefined, nowM
   return planReminder(record, policy, nowMs, config);
 }
 
-function planResolution(record: KeyRecord | undefined, open: boolean): Plan {
+function planResolution(record: KeyRecord | undefined, { open }: { open: boolean; }): Plan {
   // Resolved before the chairman was told anything: tell him nothing at all. That is the point of the hold-down.
   if (!open) return { action: "none", why: "resolved-before-sent" };
   // Told only by a digest that has not gone out yet: a "cleared" for something he never saw would be noise, and the digest must

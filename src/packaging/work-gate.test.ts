@@ -351,13 +351,13 @@ test("#2685: sharedReadOutage trips at SHARED_OUTAGE_READS, not before", () => {
 
 test("#2685: markOutageReads leaves an ordinary tick's orders untouched", () => {
   const orders = [{ causeKey: "k1", session: "ceo", prompt: "p" }];
-  assert.deepEqual(markOutageReads(orders, false), orders);
-  assert.equal(markOutageReads(orders, false), orders, "the SAME array, not a copy -- nothing downstream sees a new shape");
+  assert.deepEqual(markOutageReads(orders, { outage: false }), orders);
+  assert.equal(markOutageReads(orders, { outage: false }), orders, "the SAME array, not a copy -- nothing downstream sees a new shape");
 });
 
 test("#2685: markOutageReads tags every order alike, without disturbing what was already there", () => {
   const orders = [{ causeKey: "k1", session: "ceo", prompt: "p1" }, { causeKey: "k2", session: "ceo", prompt: "p2" }];
-  assert.deepEqual(markOutageReads(orders, true),
+  assert.deepEqual(markOutageReads(orders, { outage: true }),
     [{ ...orders[0], outageNow: true }, { ...orders[1], outageNow: true }]);
 });
 
@@ -389,7 +389,7 @@ test("#2685 AFTER: work-gate's shared-outage reading collapses the SAME two caus
   const outageNow = sharedReadOutage(refusedReadCount([null, [], null, null]));
   assert.equal(outageNow, true, "three of four reads refused the same tick is GitHub's own outage, not one lane's");
 
-  const { stuck, outaged } = deliver(markOutageReads(CAPPED_CAUSES, outageNow), [], [], { counts: bothAtCap() });
+  const { stuck, outaged } = deliver(markOutageReads(CAPPED_CAUSES, { outage: outageNow }), [], [], { counts: bothAtCap() });
   assert.deepEqual(stuck, [], "NEITHER cause reaches escalateStuck's input -- the fix this row is about");
   assert.deepEqual(outaged, CAPPED_CAUSES.map((o) => o.causeKey), "named together, as ONE outage");
 

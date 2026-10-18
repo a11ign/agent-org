@@ -18,7 +18,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { capturingStderr, defaultRun, holdReadMemo, inRepo, readMemoReading, readOnlyGh, runBatch } from "./work-gate/reads.ts";
+import { capturingStderr, defaultRun, holdReadMemo, releaseReadMemo, inRepo, readMemoReading, readOnlyGh, runBatch } from "./work-gate/reads.ts";
 
 let dir: string;
 let log: string;
@@ -43,7 +43,7 @@ echo "answer-$n"
 });
 
 afterEach(() => {
-  holdReadMemo(false);
+  releaseReadMemo();
   process.env.PATH = saved.PATH;
   if (saved.GH_STUB_LOG === undefined) delete process.env.GH_STUB_LOG; else process.env.GH_STUB_LOG = saved.GH_STUB_LOG;
   delete process.env.GH_STUB_FAIL_FIRST;
@@ -54,7 +54,7 @@ const calls = () => readFileSync(log, "utf8").split("\n").filter((line) => line 
 const LIST = ["pr", "list", "--state", "merged", "--limit", "100"];
 
 test("the same read argv twice makes one underlying call, and the second answer is the first", () => {
-  holdReadMemo(true);
+  holdReadMemo();
   const first = defaultRun(LIST);
   const second = defaultRun(LIST);
   assert.equal(calls().length, 1);
@@ -63,7 +63,7 @@ test("the same read argv twice makes one underlying call, and the second answer 
 });
 
 test("CONTROL: with the memo off the same read twice makes two calls, so the memo is what makes it one", () => {
-  holdReadMemo(false);
+  releaseReadMemo();
   defaultRun(LIST);
   defaultRun(LIST);
   assert.equal(calls().length, 2);
@@ -77,14 +77,14 @@ test("this process is not the gate, so the memo is off until it is held: a CLI t
 });
 
 test("a different argv makes two calls", () => {
-  holdReadMemo(true);
+  holdReadMemo();
   defaultRun(LIST);
   defaultRun(["pr", "list", "--state", "open", "--limit", "20"]);
   assert.equal(calls().length, 2);
 });
 
 test("the same argv aimed at another repository is another read", () => {
-  holdReadMemo(true);
+  holdReadMemo();
   const here = defaultRun(LIST);
   const there = inRepo("a11ign/other", () => defaultRun(LIST));
   const thereAgain = inRepo("a11ign/other", () => defaultRun(LIST));
@@ -94,7 +94,7 @@ test("the same argv aimed at another repository is another read", () => {
 });
 
 test("a write between two identical reads makes two calls (positive control: without the write, one)", () => {
-  holdReadMemo(true);
+  holdReadMemo();
   defaultRun(LIST);
   defaultRun(LIST);
   assert.equal(calls().length, 1, "control: no write between the reads");
@@ -107,7 +107,7 @@ test("a write between two identical reads makes two calls (positive control: wit
 });
 
 test("a write that is refused still forgets: it may have landed before it failed", () => {
-  holdReadMemo(true);
+  holdReadMemo();
   defaultRun(LIST);
   writeFileSync(join(dir, "gh"), "#!/bin/sh\necho \"$*\" >> \"$GH_STUB_LOG\"\n[ \"$1\" = issue ] && exit 1\necho ok\n"); // refuses every `issue` call
   assert.throws(() => defaultRun(["issue", "edit", "7", "--add-label", "x"]));
@@ -116,7 +116,7 @@ test("a write that is refused still forgets: it may have landed before it failed
 });
 
 test("a refusal is never kept: the read that failed is asked again", () => {
-  holdReadMemo(true);
+  holdReadMemo();
   process.env.GH_STUB_FAIL_FIRST = "1";
   assert.throws(() => defaultRun(LIST));
   assert.equal(defaultRun(LIST), "answer-2\n");
@@ -125,14 +125,14 @@ test("a refusal is never kept: the read that failed is asked again", () => {
 });
 
 test("`capturedRun` and `defaultRun` are one memo", () => {
-  holdReadMemo(true);
+  holdReadMemo();
   const first = defaultRun(LIST);
   assert.equal(capturingStderr(defaultRun)(LIST), first);
   assert.equal(calls().length, 1);
 });
 
 test("runBatch answers a read the memo holds without sending it, and a read asked twice in one batch is sent once", () => {
-  holdReadMemo(true);
+  holdReadMemo();
   const held = defaultRun(LIST);
   const open = ["pr", "list", "--state", "open", "--limit", "20"];
   const answers = runBatch([{ args: LIST, repo: undefined }, { args: open, repo: undefined }, { args: open, repo: undefined }]);
@@ -144,7 +144,7 @@ test("runBatch answers a read the memo holds without sending it, and a read aske
 });
 
 test("a batch that holds a write forgets, and keeps none of its reads", () => {
-  holdReadMemo(true);
+  holdReadMemo();
   defaultRun(LIST);
   runBatch([{ args: ["issue", "edit", "7", "--add-label", "x"], repo: undefined }, { args: ["issue", "view", "7"], repo: undefined }]);
   assert.equal(calls().length, 3);

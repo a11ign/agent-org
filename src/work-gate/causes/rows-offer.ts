@@ -586,7 +586,7 @@ type HierarchyOrder = { session: string; cause: string; subject: string; discrim
 export function hierarchyOrders(hierarchy: OfferHierarchy | undefined, { blocked, yielding, openRows, prs, laneUnread = false }: { blocked: RefusedRow[]; yielding: Yielding[]; openRows: any[]; prs: any[]; laneUnread?: boolean; }): HierarchyOrder[] {
   if (hierarchy === undefined) return [];
   return [
-    ...chairmanRefusedOrders(hierarchy, blocked, [...openRows, ...prs], laneUnread),
+    ...chairmanRefusedOrders(hierarchy, blocked, [...openRows, ...prs], { laneUnread }),
     ...(hierarchy.ignored ?? []).map(ignoredLabelOrder),
     ...(hierarchy.emergencyIgnored ?? []).map(emergencyIgnoredOrder),
     ...yielding.flatMap((entry) => entry.holders.flatMap((holder) => yieldOrder(entry.row, holder, { openRows, prs }))),
@@ -614,7 +614,7 @@ type RefusalLedger = Record<string, { digest: string; deliveredAt: string; }>;
  * paced open-rows read leaves no blocker open to be seen. A row missing from such a tick is not a row that cleared, so its entry is carried forward; and a blocker
  * closing is not said on that tick either (`openAndPrs` is not a read to clear it from). Only a read tick that does not refuse the row forgets it.
  */
-function chairmanRefusedOrders(hierarchy: OfferHierarchy, blocked: RefusedRow[], openAndPrs: any[], laneUnread: boolean): HierarchyOrder[] {
+function chairmanRefusedOrders(hierarchy: OfferHierarchy, blocked: RefusedRow[], openAndPrs: any[], { laneUnread }: { laneUnread: boolean; }): HierarchyOrder[] {
   const refused = blocked.filter((row) => hierarchy.chairmanRows?.has(row.number));
   const memory = hierarchy.refusals;
   if (memory === undefined) return refused.map(legacyChairmanRefusedOrder);
@@ -633,7 +633,7 @@ function chairmanRefusedOrders(hierarchy: OfferHierarchy, blocked: RefusedRow[],
     if (silenced) { ledger[ref] = entry; continue; }
     const firstTelling = entry === undefined || entry.digest !== digest || answered;
     ledger[ref] = firstTelling ? { digest, deliveredAt: new Date(memory.now).toISOString() } : entry;
-    orders.push(chairmanRefusedOrder(row, digest, answered));
+    orders.push(chairmanRefusedOrder(row, digest, { answered }));
   }
   if (laneUnread) for (const [ref, entry] of Object.entries(before)) if (ledger[ref] === undefined) ledger[ref] = entry;
   if (JSON.stringify(ledger) !== JSON.stringify(before)) {
@@ -681,7 +681,7 @@ function legacyChairmanRefusedOrder({ number, reason }: { number: number; reason
 }
 
 /** @param {{ number: number, reason: string }} row @param {string} digest @param {boolean} [answered] #1456: `ceo` answered this row since its first telling, and the blocker the reason names has closed */
-function chairmanRefusedOrder(row: RefusedRow, digest: string, answered: boolean = false): HierarchyOrder {
+function chairmanRefusedOrder(row: RefusedRow, digest: string, { answered = false }: { answered?: boolean; } = {}): HierarchyOrder {
   const ref = subjectRef(row.repoKey, row.number);
   const discriminator = `${ref}-${digest}`;
   return { session: "ceo", cause: "ready-row-unclaimable", subject: `row-${ref}`, discriminator,

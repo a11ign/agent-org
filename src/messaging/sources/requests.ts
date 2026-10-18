@@ -101,9 +101,14 @@ function briefLinePattern(label: string): RegExp {
   return new RegExp(`^[ \\t]*(?:[-*>][ \\t]+)?(?:\\*\\*|__)?${spelled}(?:\\*\\*|__)?[ \\t]*:[ \\t]*(?:\\*\\*|__)?[ \\t]*(\\S.*)$`, "im");
 }
 
-/** Returns every label this brief must carry, in the order the message shows them */
-function requiredLabels(offersOptions: boolean): string[] {
-  return [...BASE_LABELS, ...(offersOptions ? OPTION_LABELS : [NOT_HIS_CLAUDE])];
+/** Returns every label a brief that offers options must carry, in the order the message shows them */
+function requiredOptionLabels(): string[] {
+  return [...BASE_LABELS, ...OPTION_LABELS];
+}
+
+/** Returns every label a brief that offers no options must carry, in the order the message shows them */
+function requiredPlainLabels(): string[] {
+  return [...BASE_LABELS, NOT_HIS_CLAUDE];
 }
 
 export type RowComment = { body: string; createdAt: string; authorAssociation?: string };
@@ -299,7 +304,8 @@ export function requestEvent({ repo, row, now, position = 1 }: { repo: string; r
   const { options, problem } = parseChairmanOptions(brief.body);
   const { walk, problem: stepsProblem } = readWalk(brief.body);
   // A malformed block still means the author meant to offer a choice, so it is held to the options lines, and its own problem is still reported.
-  const { lines, missing } = readBriefLines(brief.body, requiredLabels(options.length > 0 || problem !== null));
+  const offersOptions = options.length > 0 || problem !== null;
+  const { lines, missing } = readBriefLines(brief.body, offersOptions ? requiredOptionLabels() : requiredPlainLabels());
   if (missing.length > 0) return { event: null, options: [], walk: null, act: null, problem: refusalReason(brief, missing) };
   const refused = stepsProblem ?? (walk !== null && options.length > 0 ? "steps: a brief is a procedure or a choice, not both" : null);
   if (refused !== null) return { event: null, options: [], walk: null, act: null, problem: `alert not sent: ${refused}` };

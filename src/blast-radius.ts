@@ -166,16 +166,24 @@ const isOver = ({ files, overlaps }: BlastRadius) => files > BLAST_MAX_FILES || 
 const isUnread = ({ filesComplete, overlapsComplete }: BlastRadius) => !filesComplete || !overlapsComplete;
 
 /**
- * THE VERDICT, PURE. A declared sweep files, with the reading in the note. Over a threshold refuses otherwise -- a number that was
+ * A declared sweep files, with the reading in the note: a body that carries a `Sweep:` line is noted, not judged (#4601).
+ * @param {BlastRadius} radius
+ * @returns {BlastVerdict}
+ */
+export function sweepVerdict(radius: BlastRadius): BlastVerdict {
+  return { refusal: null, note: `row-file: SWEEP declared -- ${readingIn(radius)}.`, warning: null };
+}
+
+/**
+ * THE VERDICT, PURE, for a body that declares no sweep. Over a threshold refuses -- a number that was
  * read counts even when the other was not. A reading that could not be completed and is over nothing FILES WITH A WARNING that says the
  * check did not run: the milestone read does the same (#1011), the filing needs `gh` regardless, and a refusal there would make every
  * outage a reason not to file. The warning states the check is unknown, so it is never read as "checked and small".
- * @param {BlastRadius} radius @param {boolean} sweep whether the body carries a `Sweep:` line
+ * @param {BlastRadius} radius
  * @returns {BlastVerdict}
  */
-export function blastRadiusVerdict(radius: BlastRadius, sweep: boolean): BlastVerdict {
+export function blastRadiusVerdict(radius: BlastRadius): BlastVerdict {
   const none = { refusal: null, note: null, warning: null };
-  if (sweep) return { ...none, note: `row-file: SWEEP declared -- ${readingIn(radius)}.` };
   if (isOver(radius)) {
     return { ...none, refusal: `row-file: REFUSING to file -- ${readingIn(radius)}. One claim on a Region this wide shelves every row that `
       + "touches it (lock-gridlock, #4437). Nothing was filed. Either SPLIT the row into bounded rows, one folder each, or DECLARE A SWEEP: add a "
@@ -194,7 +202,8 @@ export function blastRadiusVerdict(radius: BlastRadius, sweep: boolean): BlastVe
  * @returns {BlastVerdict}
  */
 export function blastRadiusGate(body: string, reads: BlastReads): BlastVerdict {
-  return blastRadiusVerdict(measureBlastRadius(body, reads), declaresSweep(body));
+  const radius = measureBlastRadius(body, reads);
+  return declaresSweep(body) ? sweepVerdict(radius) : blastRadiusVerdict(radius);
 }
 
 /** GitHub's largest page: a page that comes back shorter than this is the last one. */

@@ -14,7 +14,7 @@ import type { TicketSettings } from "./settings.ts";
 import { readTicketSettings } from "./settings.ts";
 
 /** What this machine's board answers as, for another board to reach it. REFUSES when stdout is a terminal, and when the board has no key yet. */
-export function remoteInfo(settings: TicketSettings, toTerminal: boolean, readKey: (path: string) => string = readBoardKey): RemoteInfo {
+export function remoteInfo(settings: TicketSettings, { toTerminal }: { toTerminal: boolean; }, readKey: (path: string) => string = readBoardKey): RemoteInfo {
   if (toTerminal) throw new Error("this prints the board's key for another machine's board to read over ssh, so it refuses to print it to a terminal");
   return { port: settings.port, key: readKey(boardKeyPath(settings.stateDir)), terminal: settings.terminal };
 }
@@ -22,7 +22,7 @@ export function remoteInfo(settings: TicketSettings, toTerminal: boolean, readKe
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {
   refuseUnknownFlags([], { entry: import.meta.url, command: "agent-org ticket:remote-info" });
   try {
-    process.stdout.write(`${JSON.stringify(remoteInfo(readTicketSettings(), process.stdout.isTTY === true))}\n`);
+    process.stdout.write(`${JSON.stringify(remoteInfo(readTicketSettings(), { toTerminal: process.stdout.isTTY === true }))}\n`);
   } catch (err) {
     process.stderr.write(`ticket:remote-info: ${String((err as Error)?.message ?? err)}\n`);
     process.exit(1);

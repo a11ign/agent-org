@@ -70,7 +70,7 @@ type Order = { cause: string, discriminator: string };
 function primaryTick(run: ReturnType<typeof fakeGh>) {
   const others = readOtherScopes(run);
   const lanes = { ...readLanes(PRIMARY_SCOPE, run), siblingPrs: pullRequestsOfOthers(others) };
-  return { tick: scopeTick(PRIMARY_SCOPE, false, lanes, NO_READINGS), others };
+  return { tick: scopeTick(PRIMARY_SCOPE, { drain: false }, lanes, NO_READINGS), others };
 }
 
 const offered = (orders: unknown[], row: number) => (orders as Order[]).some((o) => o.cause === "ready-row-unclaimed" && o.discriminator === String(row));
@@ -143,7 +143,7 @@ test("DONE-WHEN 4: a declared repository whose pull-request list cannot be read 
     const run = fakeGh(rows, { ...prs, [code.repo]: new Error(`HTTP 502 reading ${code.repo}`) });
     const { tick, others } = primaryTick(run);
     assert.equal(offered(tick.orders, rows[i].number), true, `the gate fails open: with ${code.repo} unreadable, row ${rows[i].number} is offered and the claim decides`);
-    const ticks = others.map(({ scope, read }) => scopeTick(scope, false, read, NO_READINGS));
+    const ticks = others.map(({ scope, read }) => scopeTick(scope, { drain: false }, read, NO_READINGS));
     const refused = unreadLanes({ prs: [], readyRows: [], others: ticks });
     assert.ok(refused.some((line) => line.includes(code.repo)), `and the refusal names the repository: ${JSON.stringify(refused)}`);
     const intact = DECLARED_CODE.map((c, j) => ({ c, j })).filter(({ c }) => c.repo !== code.repo);
@@ -161,7 +161,7 @@ test("the PRIMARY's own tick (`main`, which `scopeTick` does not run) reads the 
   const main = source.slice(source.indexOf("\nfunction main()"));
   assert.ok(main.length > 0, "POSITIVE CONTROL: `main` was found, so the two matches below are searches of it");
   assert.match(main, /comparablePrFiles\(\[\.\.\.openPrs, \.\.\.pullRequestsOfOthers\(otherScopes\)\]\)/, "main's B4 list holds the other repositories' pull requests");
-  assert.match(main, /otherScopeTicks\(drain, otherScopes, openPrs, homeRowsOf\(allOpen\)\)/, "and the other scopes are ticked from the lanes it already read");
+  assert.match(main, /otherScopeTicks\(\{ drain \}, otherScopes, openPrs, homeRowsOf\(allOpen\)\)/, "and the other scopes are ticked from the lanes it already read");
   // #3566 slice 6: they are read through the one wave that also reads the tracker lanes, so "once" is that call, and `readOtherScopes` is not asked beside it.
   assert.equal((main.match(/readLanesAfterOutageCheck\(/g) ?? []).length, 1, "which are read exactly once");
   assert.doesNotMatch(main, /readOtherScopes\(/, "and not a second time on their own");

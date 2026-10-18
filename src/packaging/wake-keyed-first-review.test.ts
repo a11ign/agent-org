@@ -91,7 +91,7 @@ const NO_READINGS = { code: (prs: unknown[]) => ({ prs, required: null, baseTip:
 function reviewerOrder(key: string) {
   const scope = scopesOf([homeProjectDeclaration()]).find((s) => s.key === key)!;
   const run = (args: string[]) => (args[0] === "pr" ? JSON.stringify([readyPr(6)]) : "[]");
-  const orders = scopeTick(scope, false, readLanes(scope, run), NO_READINGS).orders as { session: string, cause: string, causeKey: string, prompt: string }[];
+  const orders = scopeTick(scope, { drain: false }, readLanes(scope, run), NO_READINGS).orders as { session: string, cause: string, causeKey: string, prompt: string }[];
   return orders.find((o) => o.cause === "draft-awaiting-verdict")!;
 }
 

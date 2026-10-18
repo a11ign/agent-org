@@ -205,14 +205,14 @@ export function wakeCache({ events, window }: { events: TraceEvent[]; window: { 
 // Rendering
 
 const count = (value: number | string | null) => (typeof value === "number" ? Math.round(value).toLocaleString("en-US") : (value ?? "-"));
-const money = (dollars: number | typeof NOT_DERIVABLE, floor: boolean) => (dollars === NOT_DERIVABLE ? NOT_DERIVABLE : `${floor ? ">= " : ""}$${dollars.toFixed(COST_DECIMALS)}`);
+const money = (dollars: number | typeof NOT_DERIVABLE, { floor }: { floor: boolean; }) => (dollars === NOT_DERIVABLE ? NOT_DERIVABLE : `${floor ? ">= " : ""}$${dollars.toFixed(COST_DECIMALS)}`);
 
 const coldText = (cold: ReturnType<typeof coldFigures>) => (typeof cold.rate === "number" ? `${cold.cold} of ${cold.wakes} cold (${(cold.rate * PERCENT).toFixed(SHARE_DECIMALS)}%)` : `cold ${NOT_DERIVABLE}`);
 
 function figureLine(entry: ReturnType<typeof actionFigures>["byGap"][number] | ReturnType<typeof actionFigures>) {
   if (entry.wakes === NOT_DERIVABLE) return NOT_DERIVABLE;
   if (entry.wakes === 0) return "0 wakes";
-  return `${entry.wakes} wakes  write p50 ${count(entry.write.p50)} p90 ${count(entry.write.p90)} total ${count(entry.write.total)}  read p50 ${count(entry.read.p50)}  ${coldText(entry.cold)}  ${money(entry.dollars, entry.floor)}  whole wake p50 ${typeof entry.wake.p50 === "number" ? money(entry.wake.p50, false) : NOT_DERIVABLE} (${entry.wake.priced} fully priced)`;
+  return `${entry.wakes} wakes  write p50 ${count(entry.write.p50)} p90 ${count(entry.write.p90)} total ${count(entry.write.total)}  read p50 ${count(entry.read.p50)}  ${coldText(entry.cold)}  ${money(entry.dollars, { floor: entry.floor })}  whole wake p50 ${typeof entry.wake.p50 === "number" ? money(entry.wake.p50, { floor: false }) : NOT_DERIVABLE} (${entry.wake.priced} fully priced)`;
 }
 
 const reviewerLine = (codex: ReturnType<typeof wakeCache>["codexReviewers"]) => `${REVIEWERS}: ${NOT_DERIVABLE}: no wake of a Claude-run reviewer is in the store; ${codex.requests} Codex requests of ${codex.sessions} reviewer sessions are, and a Codex request has no cache-write field`;

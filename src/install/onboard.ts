@@ -167,7 +167,7 @@ async function storeKey(source: KeySource, deps: OnboardDeps) {
 }
 
 /** The services onboard starts: the instance and the ui always, then the terminal when it is set up and auto-update unless opted out. */
-export function onboardServices(terminal: boolean, autoUpdate: boolean): ServiceName[] {
+export function onboardServices({ terminal, autoUpdate }: { terminal: boolean; autoUpdate: boolean; }): ServiceName[] {
   return ["instance", "ui", ...(terminal ? ["terminal" as const] : []), ...(autoUpdate ? ["auto-update" as const] : [])];
 }
 
@@ -293,7 +293,7 @@ export async function onboard(options: OnboardOptions, deps: OnboardDeps): Promi
       ? `Store one with: security add-generic-password -a "$USER" -s ${source.keychain} -w`
       : `Write it to ${source.path} with mode 600`}, then run \`agent-org doctor\`.`);
   if (readable) registerLinearMcp(source, deps);
-  if (options.start) deps.out.log(deps.startServices(onboardServices(terminal, options.autoUpdate)));
+  if (options.start) deps.out.log(deps.startServices(onboardServices({ terminal, autoUpdate: options.autoUpdate })));
   deps.out.log(PAIRING_STEPS);
   return hostFile;
 }

@@ -225,7 +225,7 @@ ${bases.map(({ key, url, branch }) => `- ${key}: ${url}, on branch \`${branch}\`
 }
 
 /** What a worker is told about a plan a planning run wrote, which no person agreed: nothing when a person's plan, or none, is all it has. */
-function plannedText(planned: boolean): string {
+function plannedText({ planned }: { planned: boolean; }): string {
   if (!planned) return "";
   return "Your plan was written by an unattended planning run, not agreed with a person. Put each decision it says it made without a person in your pull request body, under the heading \"Decisions made without a person\", so the reviewer checks each one against the code.\n\n";
 }
@@ -403,15 +403,25 @@ function commitStep(prReview: string | null): string {
   return `5. Commit with a conventional commit message. Then, BEFORE you push or open a pull request, review your whole diff: call the Skill tool with \`${prReview}\` on \`git diff <the repository's default branch>...HEAD\` and anything uncommitted. Fix every finding, re-run the repository's tests, typecheck and lint, and commit the fixes. The hook refuses a push or a pull request until the skill has run since your last commit, so after you commit fixes run it again. Stop when a run finds nothing to change.`;
 }
 
+/** Step 6 of the brief for a worker that opens its pull requests as drafts, the default. */
+function draftPullRequestStep(ticket: Ticket, prOpenCommand: string, prReview: string | null, keywords: Keywords): string {
+  return openPullRequestStep(`ONE DRAFT pull request per repository you changed: write its body to a file, then run \`${prOpenCommand} create --draft --title "<type>(<scope>): <what changed>" --body-file <file>\`.`, ticket, prReview, keywords);
+}
+
+/** Step 6 of the brief for a worker that opens its pull requests ready for review (`tickets.drafts: false`). */
+function readyPullRequestStep(ticket: Ticket, prOpenCommand: string, prReview: string | null, keywords: Keywords): string {
+  return openPullRequestStep(`ONE READY pull request per repository you changed: write its body to a file, then run \`${prOpenCommand} create --title "<type>(<scope>): <what changed>" --body-file <file>\`.`, ticket, prReview, keywords);
+}
+
 /**
  * Step 6 of the brief: how the worker opens its pull requests, as a draft (the default) or ready for review (`tickets.drafts: false`). The command is
  * `pr:open`, which checks the body and the diff against the ticket before it sends anything (A11-74); `gh pr create` is not used. The body names the
  * ticket with the tracker's closing keyword when the pull request completes it, and with its non-closing one, plus a `Partial:` line, when it is partial
  * (A11-92): the tracker closes a ticket on a merge only for the first.
  */
-function openPullRequestStep(drafts: boolean, ticket: Ticket, prOpenCommand: string, prReview: string | null, { closing, nonClosing }: Keywords): string {
+function openPullRequestStep(opening: string, ticket: Ticket, prReview: string | null, { closing, nonClosing }: Keywords): string {
   const reviewLine = prReview === null ? "" : `carries the line \`Pre-PR review: ${prReview} ran on the whole diff; it changed: <what, or nothing>\`, `;
-  return `6. Push the branch and open ONE ${drafts ? "DRAFT" : "READY"} pull request per repository you changed: write its body to a file, then run \`${prOpenCommand} create${drafts ? " --draft" : ""} --title "<type>(<scope>): <what changed>" --body-file <file>\`. The body links ${ticket.url}, and names the ticket \`${closing} ${ticket.key}\` when this pull request completes it (its done-when is fully met), so the tracker closes the ticket when it merges. When the pull request is partial and leaves part of the ticket to do, it names the ticket \`${nonClosing} ${ticket.key}\` instead, with a \`Partial: <what remains>\` line, and the ticket stays open; a pull request that completes the ticket is never written with \`${nonClosing}\`. The body says what changed and how you verified it, ${reviewLine}and, when the change is visible, shows it: take screenshots with what this machine provides (see "On this machine" when there is such a section), or else end the body with "Screenshot pending". It carries an \`Outside-Region: <path> — <reason>\` line for each path outside the plan's \`## Region\`, and either a changeset or a \`no-release: <reason>\` line. A pull request that needs another repository's unmerged one says so in its body. If \`pr:open\` refuses, fix what it names and run it again. Exit code 3 means the pull request exists: do not run it again, and run only the step its message names.`;
+  return `6. Push the branch and open ${opening} The body links ${ticket.url}, and names the ticket \`${closing} ${ticket.key}\` when this pull request completes it (its done-when is fully met), so the tracker closes the ticket when it merges. When the pull request is partial and leaves part of the ticket to do, it names the ticket \`${nonClosing} ${ticket.key}\` instead, with a \`Partial: <what remains>\` line, and the ticket stays open; a pull request that completes the ticket is never written with \`${nonClosing}\`. The body says what changed and how you verified it, ${reviewLine}and, when the change is visible, shows it: take screenshots with what this machine provides (see "On this machine" when there is such a section), or else end the body with "Screenshot pending". It carries an \`Outside-Region: <path> — <reason>\` line for each path outside the plan's \`## Region\`, and either a changeset or a \`no-release: <reason>\` line. A pull request that needs another repository's unmerged one says so in its body. If \`pr:open\` refuses, fix what it names and run it again. Exit code 3 means the pull request exists: do not run it again, and run only the step its message names.`;
 }
 
 /**
@@ -464,12 +474,12 @@ ${repos}
 
 ## What to do
 
-${plannedText(planned)}1. Find the cause in the code. Fix it, with a test that fails without the fix.
+${plannedText({ planned })}1. Find the cause in the code. Fix it, with a test that fails without the fix.
 2. Run the repository's checks on what you changed. Then start a subagent that has not seen your reasoning, give it your diff and its base, and ask it to find, read only, every behaviour your diff changes that you meant to keep. Fix each real finding with a test that fails without the fix.${prReview === null ? " Then run the clean-code-review skill on your diff and fix what it finds." : ""}
 3. Check your diff against what was asked. List each acceptance criterion in the ticket. Add each decision in its files, its parent's description and its parent's files that applies to this ticket. Find where your diff meets each one, and finish any it misses. If you leave one unmet on purpose, say which and why in the pull request body.
 4. Check what your pull request body will claim. For each behaviour it says you fixed, kept or changed, name the test assertion that checks exactly that behaviour, not a neighbouring value. Run it on the base: a fix must fail there, and a kept behaviour must pass there too. Claim nothing you have no such assertion for, or say it is unchecked.
 ${commitStep(prReview)}
-${openPullRequestStep(drafts, ticket, prOpenCommand, prReview, keywords)}
+${drafts ? draftPullRequestStep(ticket, prOpenCommand, prReview, keywords) : readyPullRequestStep(ticket, prOpenCommand, prReview, keywords)}
 7. If a design gate asks for a design check, decline it with "unattended worker, no design tool access" and say so in the pull request body.
 
 Never mark a pull request ready, request a review, merge, force-push, run a workflow, or post to Slack. Those are the person's.

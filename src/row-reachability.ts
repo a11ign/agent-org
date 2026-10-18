@@ -103,7 +103,7 @@ function unsearchedPopulationNote(refs: number): string[] {
  * @param {number | null | undefined} region
  * @param {boolean} [declaredNoCommit] @returns {string[]}
  */
-function unreadRegionNote(region: number | null | undefined, declaredNoCommit: boolean = false): string[] {
+function unreadRegionNote(region: number | null | undefined, { declaredNoCommit = false }: { declaredNoCommit?: boolean; } = {}): string[] {
   if (region === null || region === undefined) {
     return ["  NOTE: this row declares no `## Region` section, so the region half asked nothing. The "
       + "symbol verdict above stands on its own."];
@@ -216,7 +216,7 @@ function startableLines(row: number, examined: { paths: number; symbols: number;
   return [
     `#${row} is STARTABLE: every symbol it names is on \`main\`, ${regionClause} (${counted}).`,
     ...unsearchedPopulationNote(examined.refs ?? 0),
-    ...unreadRegionNote(examined.region, examined.declaredNoCommit),
+    ...unreadRegionNote(examined.region, { declaredNoCommit: examined.declaredNoCommit }),
     `  This checks SYMBOLS, this row's DECLARED region against unmerged branches, and the \`${BLOCKED_LABEL}\``,
     "  label. It does NOT run B4 -- whether an OPEN PR already touches one of these files. `row-claim",
     "  check` runs that separately (#1063) and prints its refusal beside this verdict; run through",

@@ -812,14 +812,14 @@ export function compareWeeks(weeks: ReturnType<typeof aggregate>["weeks"]) {
 
 const day = (ms: number) => new Date(ms).toISOString().slice(0, "YYYY-MM-DD".length);
 const hours = (ms: number) => `${(ms / (60 * 60 * 1000)).toFixed(1)}h`;
-const dollars = (value: number | null, floor: boolean = false) => (value === null ? "n/a" : `${floor ? ">= " : ""}$${value.toFixed(DOLLAR_DECIMALS)}`);
+const dollars = (value: number | null, { floor = false }: { floor?: boolean; } = {}) => (value === null ? "n/a" : `${floor ? ">= " : ""}$${value.toFixed(DOLLAR_DECIMALS)}`);
 const percent = (value: number | null) => (value === null ? "n/a" : `${(value * PERCENT).toFixed(SHARE_DECIMALS)}%`);
 const count = (value: number | null) => (value === null ? "n/a" : Math.round(value).toLocaleString("en-US"));
 
 /** `githubUnread` is the merged rows of the week whose GitHub events were not read. */
 function classLine(entry: RepeatClass, githubUnread: number) {
   const unpriced = entry.unpriced ? ` (${entry.unpriced} turns unpriced)` : "";
-  const money = typeof entry.dollars === "number" ? `${dollars(entry.dollars, entry.floor)}, ${count(entry.tokens)} tokens${unpriced}` : `dollars: ${entry.dollars}${unpriced}, ${count(entry.tokens)} tokens`;
+  const money = typeof entry.dollars === "number" ? `${dollars(entry.dollars, { floor: entry.floor })}, ${count(entry.tokens)} tokens${unpriced}` : `dollars: ${entry.dollars}${unpriced}, ${count(entry.tokens)} tokens`;
   const fromGithub = githubUnread > 0 && GITHUB_CLASSES.has(entry.id) ? `  [FLOOR: GitHub unread for ${githubUnread} rows of this week]` : "";
   const unmeasured = entry.unmeasured ? `; ${entry.unmeasured} summary calls UNMEASURED (no usage record, not in the dollars; ESTIMATED ~${dollars(entry.unmeasured * COMPACTION_SUMMARY_ESTIMATE_USD)} at $${COMPACTION_SUMMARY_ESTIMATE_USD} each, not a reading)` : "";
   return `    ${entry.label.padEnd(48)} ${String(entry.count).padStart(5)}  ${money}${entry.ms === undefined ? "" : `, ${hours(entry.ms)} of runner time`}${unmeasured}${fromGithub}`;
@@ -830,7 +830,7 @@ const MINUTE_MS = 60 * 1000;
 const gap = (ms: number | null) => (ms === null ? "n/a" : ms < 60 * MINUTE_MS ? `${Math.round(ms / MINUTE_MS)} min` : hours(ms));
 
 /** One part of a split as a table cell: how many repeats and what they cost. */
-const shareCell = (share: Share) => `${share.count} ${typeof share.dollars === "number" ? dollars(share.dollars, share.floor) : "n/a"}`;
+const shareCell = (share: Share) => `${share.count} ${typeof share.dollars === "number" ? dollars(share.dollars, { floor: share.floor }) : "n/a"}`;
 const SPLIT_COLUMNS = [["afterChange", "after a change"], ["unchanged", "unchanged"], ["unexplained", "unexplained"]];
 const SPLIT_WIDTH = 16;
 
@@ -841,7 +841,7 @@ const splitCells = (split: Split) => SPLIT_COLUMNS.map(([change]) => shareCell(s
 function causeLines(entry: RepeatClass) {
   if (!entry.causes || entry.causes.length === 0) return [];
   const row = (name: string, own: { count: number; dollars: number | string; floor: boolean; unpriced?: number; keys?: number; medianGapMs?: number | null; }, split: Split | undefined) => {
-    const money = typeof own.dollars === "number" ? dollars(own.dollars, own.floor) : `dollars: ${own.dollars}`;
+    const money = typeof own.dollars === "number" ? dollars(own.dollars, { floor: own.floor }) : `dollars: ${own.dollars}`;
     const keys = own.keys === undefined ? "" : String(own.keys);
     const median = own.medianGapMs === undefined ? "" : gap(own.medianGapMs);
     return `      ${name.padEnd(40)} ${String(own.count).padStart(5)} ${keys.padStart(13)}  ${median.padStart(9)}  ${splitCells((split as Split)).trimEnd()}  ${money}${own.unpriced ? ` (${own.unpriced} turns unpriced)` : ""}`;
@@ -859,17 +859,17 @@ function weekLines(week: ReturnType<typeof aggregate>["weeks"][number]) {
   lines.push(`  per merged row  dollars   p50 ${dollars(perRow.dollars.p50)}  p90 ${dollars(perRow.dollars.p90)}  (n=${perRow.dollars.n})`,
     `                  tokens    p50 ${count(perRow.tokens.p50)}  p90 ${count(perRow.tokens.p90)}  (n=${perRow.tokens.n})`,
     `                  wall-clock p50 ${perRow.wallClock.p50 === null ? "n/a" : hours(perRow.wallClock.p50)}  p90 ${perRow.wallClock.p90 === null ? "n/a" : hours(perRow.wallClock.p90)}  (n=${perRow.wallClock.n}; no claim record: ${perRow.noClaim})`);
-  lines.push(`  the week's spend by turn time: ${dollars(spend.dollars, spend.unpriced > 0)} over ${spend.turns - spend.unpriced} priced turns; ${spend.unpriced} turns have a model with no price and are NOT in it (${percent(spend.turns > 0 ? spend.unpriced / spend.turns : null)}), ${count(spend.tokens)} tokens`,
+  lines.push(`  the week's spend by turn time: ${dollars(spend.dollars, { floor: spend.unpriced > 0 })} over ${spend.turns - spend.unpriced} priced turns; ${spend.unpriced} turns have a model with no price and are NOT in it (${percent(spend.turns > 0 ? spend.unpriced / spend.turns : null)}), ${count(spend.tokens)} tokens`,
     `    models with no price, by turns: ${spend.unpricedModels.map(([model, turns]) => `${model} ${turns}`).join(", ") || "none"}`,
     `    CODEX turns priced (OpenAI's list rate, sourced in store.ts; INSIDE the dollars above, Claude = the rest): ${spend.pricedCodex.turns} turns, ${count(spend.pricedCodex.tokens)} tokens, ${dollars(spend.pricedCodex.dollars)}`,
     `    CODEX turns not priced (no rate sourced; in no dollar figure above): ${spend.unpricedCodex.turns} turns, ${count(spend.unpricedCodex.tokens)} tokens`,
-    `  overhead (no row): ${dollars(spend.overhead.dollars, spend.overhead.unpriced > 0)} = ${percent(spend.overhead.share.dollars)} of the priced dollars (${spend.overhead.unpriced} of its ${spend.overhead.turns} turns unpriced), ${count(spend.overhead.tokens)} tokens = ${percent(spend.overhead.share.tokens)} of tokens`);
-  for (const own of spend.overhead.bySession) lines.push(`    ${own.session.padEnd(24)} ${String(own.turns).padStart(5)} turns  ${dollars(own.dollars, own.unpriced > 0)}  ${count(own.tokens)} tokens  (${own.unpriced} unpriced; on a row: ${own.onRows.turns} turns ${dollars(own.onRows.dollars, own.onRows.unpriced > 0)})`);
+    `  overhead (no row): ${dollars(spend.overhead.dollars, { floor: spend.overhead.unpriced > 0 })} = ${percent(spend.overhead.share.dollars)} of the priced dollars (${spend.overhead.unpriced} of its ${spend.overhead.turns} turns unpriced), ${count(spend.overhead.tokens)} tokens = ${percent(spend.overhead.share.tokens)} of tokens`);
+  for (const own of spend.overhead.bySession) lines.push(`    ${own.session.padEnd(24)} ${String(own.turns).padStart(5)} turns  ${dollars(own.dollars, { floor: own.unpriced > 0 })}  ${count(own.tokens)} tokens  (${own.unpriced} unpriced; on a row: ${own.onRows.turns} turns ${dollars(own.onRows.dollars, { floor: own.onRows.unpriced > 0 })})`);
   lines.push(...trackerLines(week));
   lines.push(`  UNMEASURED (not overhead): ${spend.unmeasured.turns} turns, ${dollars(spend.unmeasured.dollars)}; transcripts the ingest could not read: ${spend.unmeasured.unreadableTranscripts.length}${spend.unmeasured.unreadableTranscripts.map((file) => `\n    ${file}`).join("")}`,
     `  UNPLACED (a pull request closing no merged row): ${spend.unplaced.turns} turns, ${dollars(spend.unplaced.dollars)}`,
     `  cache-read share of input: ${percent(spend.cacheRead.share)} (${count(spend.cacheRead.cacheRead)} of ${count(spend.cacheRead.inputSide)} input-side tokens)`,
-    `  REPEAT WASTE ${dollars(week.repeats.total.dollars, week.repeats.total.floor)} (${count(week.repeats.total.tokens)} tokens), by class:`, ...week.repeats.classes.flatMap((entry) => [classLine(entry, week.githubUnread), ...causeLines(entry)]));
+    `  REPEAT WASTE ${dollars(week.repeats.total.dollars, { floor: week.repeats.total.floor })} (${count(week.repeats.total.tokens)} tokens), by class:`, ...week.repeats.classes.flatMap((entry) => [classLine(entry, week.githubUnread), ...causeLines(entry)]));
   return [...lines, ...byRepoLines(week), ...phaseLines(week), ...dearestLines(week), ...wakeLines(week)];
 }
 
@@ -879,33 +879,33 @@ function weekLines(week: ReturnType<typeof aggregate>["weeks"][number]) {
  */
 function trackerLines(week: ReturnType<typeof aggregate>["weeks"][number]) {
   const { spend, mergedBy } = week;
-  const line = (name: string, tally: Tally, mergedRows: number) => `    ${name.padEnd(14)} ${String(mergedRows).padStart(5)} merged rows  ${String(tally.turns).padStart(5)} turns  ${dollars(tally.dollars, tally.unpriced > 0)}, ${count(tally.tokens)} tokens`;
+  const line = (name: string, tally: Tally, mergedRows: number) => `    ${name.padEnd(14)} ${String(mergedRows).padStart(5)} merged rows  ${String(tally.turns).padStart(5)} turns  ${dollars(tally.dollars, { floor: tally.unpriced > 0 })}, ${count(tally.tokens)} tokens`;
   const standing = spend.overhead.standingSeats;
   return [
     "  by tracker (a merged row's Region; a turn whose rows are of both trackers, or whose row's Region is not read, is UNCLASSIFIED):",
     line("product", spend.byTracker.product, mergedBy.product), line("org", spend.byTracker.org, mergedBy.org), line("unclassified", spend.byTracker.unclassified, mergedBy.unclassified),
-    `    standing seats, not attributed: ${standing.turns} turns, ${dollars(standing.dollars, standing.unpriced > 0)}, ${count(standing.tokens)} tokens (no-row turns of a standing lead, inside overhead; split by no ratio)`,
+    `    standing seats, not attributed: ${standing.turns} turns, ${dollars(standing.dollars, { floor: standing.unpriced > 0 })}, ${count(standing.tokens)} tokens (no-row turns of a standing lead, inside overhead; split by no ratio)`,
     `    every turn of the week = product + org + unclassified + UNMEASURED + UNPLACED + overhead (${spend.turns} turns)`,
   ];
 }
 
 function dearestLines(week: ReturnType<typeof aggregate>["weeks"][number]) {
   if (week.dearest.length === 0) return [`  the ${DEAREST} dearest merged rows: none, because no merged row has a priced turn`];
-  return [`  the ${DEAREST} dearest merged rows:`, ...week.dearest.flatMap((row) => [`    #${row.row}`.padEnd(10) + `${dollars(row.dollars, row.floor)}  ${count(row.tokens)} tokens  ${row.turns} turns${row.floor ? `  (FLOOR: ${row.unpriced} unpriced turns)` : ""}`,
+  return [`  the ${DEAREST} dearest merged rows:`, ...week.dearest.flatMap((row) => [`    #${row.row}`.padEnd(10) + `${dollars(row.dollars, { floor: row.floor })}  ${count(row.tokens)} tokens  ${row.turns} turns${row.floor ? `  (FLOOR: ${row.unpriced} unpriced turns)` : ""}`,
     `      ${dearestPhaseText(row.phase)}`])];
 }
 
 function dearestPhaseText(phase: ReturnType<typeof dearestPhase>) {
   if (phase.costliest === null && phase.longest === null) return "phases: none (no phase record of this row in the store)";
-  const cost = phase.costliest ? `${phase.costliest.phase} ${dollars(phase.costliest.dollars, phase.costliest.floor)} (${percent(phase.costliest.share)} of its turns' dollars)` : "no priced turn";
+  const cost = phase.costliest ? `${phase.costliest.phase} ${dollars(phase.costliest.dollars, { floor: phase.costliest.floor })} (${percent(phase.costliest.share)} of its turns' dollars)` : "no priced turn";
   return `dearest phase: ${cost}; most wall-clock to itself: ${phase.longest ? `${phase.longest.phase} ${hours(phase.longest.ms)} (${percent(phase.longest.share)})` : "n/a"}`;
 }
 
 function phaseLines(week: ReturnType<typeof aggregate>["weeks"][number]) {
   const { phases } = week;
   if (phases.rows === 0) return [`  PHASE SHARE: none of the ${phases.noRecord} merged rows has a phase record in the store (their GitHub events are not read), so no share is given`];
-  return [`  PHASE SHARE over ${phases.rows} merged rows (${phases.noRecord} with no phase record are in no share): ${hours(phases.wallClockMs)} of wall-clock, ${dollars(phases.dollars, phases.unpriced > 0)} in the turns of their waterfalls`,
-    ...phases.shares.map((share) => `    ${share.phase.padEnd(8)} ${percent(share.wallShare).padStart(6)} of wall-clock (${hours(share.exclusiveMs)} to itself)  ${percent(share.dollarShare).padStart(6)} of dollars (${dollars(share.dollars, share.unpriced > 0)})`)];
+  return [`  PHASE SHARE over ${phases.rows} merged rows (${phases.noRecord} with no phase record are in no share): ${hours(phases.wallClockMs)} of wall-clock, ${dollars(phases.dollars, { floor: phases.unpriced > 0 })} in the turns of their waterfalls`,
+    ...phases.shares.map((share) => `    ${share.phase.padEnd(8)} ${percent(share.wallShare).padStart(6)} of wall-clock (${hours(share.exclusiveMs)} to itself)  ${percent(share.dollarShare).padStart(6)} of dollars (${dollars(share.dollars, { floor: share.unpriced > 0 })})`)];
 }
 
 function wakeLines(week: ReturnType<typeof aggregate>["weeks"][number]) {
@@ -977,7 +977,7 @@ export function renderAggregate(report: ReturnType<typeof aggregate>, footer: { 
 
 const signed = (value: number | null) => (value === null ? "n/a" : `${value < 0 ? "-" : "+"}$${Math.abs(value).toFixed(DOLLAR_DECIMALS)}`);
 const signedShare = (value: number | null) => (value === null ? "n/a" : `${value < 0 ? "-" : "+"}${Math.abs(value * PERCENT).toFixed(SHARE_DECIMALS)} points`);
-const openLine = (row: ReturnType<typeof unmerged>["open"][number]) => `  #${row.row}`.padEnd(10) + `${dollars(row.dollars, row.floor)}  ${count(row.tokens)} tokens  ${row.turns} turns  (${row.status})`;
+const openLine = (row: ReturnType<typeof unmerged>["open"][number]) => `  #${row.row}`.padEnd(10) + `${dollars(row.dollars, { floor: row.floor })}  ${count(row.tokens)} tokens  ${row.turns} turns  (${row.status})`;
 
 /** One line per reason, with the rows it explains and, for a row whose two counts are both known, what they were: a reason is stated once, however many rows share it. */
 function groupByReason(differ: WakeDifference[]) {

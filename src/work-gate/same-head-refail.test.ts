@@ -88,10 +88,10 @@ test("(5) decide passes the reading through, and the flag's reader follows `mach
   assert.equal(keyOf(false), KEY, "off");
   const dir = tmpDir("same-head-refail-flag-");
   const read = () => readReenqueueState(dir, quiet);
-  assert.equal(sameHeadRefailFlagOn(undefined, read), false, "POSITIVE CONTROL: no state file reads OFF");
+  assert.equal(sameHeadRefailFlagOn({ asked: undefined }, read), false, "POSITIVE CONTROL: no state file reads OFF");
   assert.equal(machineryFlag(["on", SAME_HEAD_REFAIL_FLAG, `--session=${SESSION}`], { dir, now: NOW, out: quiet, err: quiet }), 0);
-  assert.equal(sameHeadRefailFlagOn(undefined, read), true, "after `machinery:flag on`, the reader says ON");
-  assert.equal(sameHeadRefailFlagOn(false, read), false, "a caller's own reading is not overridden by the file");
+  assert.equal(sameHeadRefailFlagOn({ asked: undefined }, read), true, "after `machinery:flag on`, the reader says ON");
+  assert.equal(sameHeadRefailFlagOn({ asked: false }, read), false, "a caller's own reading is not overridden by the file");
   assert.equal(machineryFlag(["off", SAME_HEAD_REFAIL_FLAG, `--session=${SESSION}`], { dir, now: NOW, out: quiet, err: quiet }), 0);
-  assert.equal(sameHeadRefailFlagOn(undefined, read), false, "after `off`, OFF again");
+  assert.equal(sameHeadRefailFlagOn({ asked: undefined }, read), false, "after `off`, OFF again");
 });

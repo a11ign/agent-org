@@ -1300,7 +1300,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     try {
       if (isPlanning(entry) && await planReached(entry.ticket)) {
         // A plan reached the ticket since it was queued, such as one a person attached or an earlier attempt left: it is worked from that.
-        update((queue) => planDone(queue, entry.ticket.key, false));
+        update((queue) => planDone(queue, entry.ticket.key, { unattended: false }));
         return;
       }
       const { folder, dir, resume } = await prepare(entry);
@@ -1324,7 +1324,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     try {
       const members: Entry[] = [];
       for (const entry of batch) {
-        if (await planReached(entry.ticket)) update((queue) => planDone(queue, entry.ticket.key, false));
+        if (await planReached(entry.ticket)) update((queue) => planDone(queue, entry.ticket.key, { unattended: false }));
         else members.push(entry);
       }
       if (members.length < 2) {

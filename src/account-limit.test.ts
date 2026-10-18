@@ -259,8 +259,8 @@ test("a claimed row is not released by claim-stall while the account is limited,
   const facts = { row: 2407, session: "worker-7", branch: "agent/x", worktree: "/wt/x", claimedAt: NOW - 3_600_000, openPrs: 0, ownPrs: [] };
   const reading = { kind: "release", why: "stalled", lastMoveAt: NOW - 3_600_000, idleMs: 3_600_000, nudgedAt: NOW - 1_800_000 };
   const readings = [{ facts: facts as never, reading: reading as never }];
-  assert.equal(claimStalledOrders(readings, NOW, true).length, 0, "limited: the claim is kept");
-  assert.equal(claimStalledOrders(readings, NOW, false).length, 1, "not limited: the stalled claim is released as it always was");
+  assert.equal(claimStalledOrders(readings, NOW, { accountPaused: true }).length, 0, "limited: the claim is kept");
+  assert.equal(claimStalledOrders(readings, NOW, { accountPaused: false }).length, 1, "not limited: the stalled claim is released as it always was");
 });
 
 // --- DONE-WHEN 1, THE MUTATION: the spawn refusal is the thing that holds the first test ----------------------------------------------------

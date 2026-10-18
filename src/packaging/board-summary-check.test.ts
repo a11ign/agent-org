@@ -59,11 +59,11 @@ test("#1345 CALLER: requireSummaryIsFresh ages a summary from its ONE injected i
   console.error = (...args: unknown[]) => { errors.push(args.join(" ")); };
   try {
     const at = new Date("2026-09-13T23:30:00Z");
-    requireSummaryIsFresh(true, { text: "Written at 23:50 on 13 September." }, "2026-09-14", at);
+    requireSummaryIsFresh({ text: "Written at 23:50 on 13 September." }, "2026-09-14", at);
     assert.deepEqual(exits, [], `a 40-minute-old summary must render; it was refused with: ${errors.join(" | ")}`);
     // POSITIVE CONTROL: the same instant, a summary from 22:00 on the 13th, is 150 minutes old and must refuse -- a
     // caller that stopped refusing at all would pass the assertion above.
-    assert.throws(() => requireSummaryIsFresh(true, { text: "Written at 22:00 on 13 September." }, "2026-09-14", at), /exit 5/);
+    assert.throws(() => requireSummaryIsFresh({ text: "Written at 22:00 on 13 September." }, "2026-09-14", at), /exit 5/);
     assert.match(errors.join("\n"), /written at 22:00 and London now reads 00:30 -- 150 minutes later/);
   } finally {
     process.exit = realExit;

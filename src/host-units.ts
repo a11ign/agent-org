@@ -1714,7 +1714,7 @@ export function supersededHostScripts(deps: ShippedDeps & {
   return shippedHostScripts(shippedDir, { read: readDir })
     .filter((name) => exists(join(scriptDir, name)))
     .map((name) => supersededFinding(name, scriptDir,
-      textOf(join(shippedDir, name), read) === textOf(join(scriptDir, name), read)));
+      { same: textOf(join(shippedDir, name), read) === textOf(join(scriptDir, name), read) }));
 }
 
 /**
@@ -1723,7 +1723,7 @@ export function supersededHostScripts(deps: ShippedDeps & {
  * edited one of the two, and which one holds the change is a question this file cannot answer.
  * @param {string} name @param {string} scriptDir @param {boolean} same @returns {Finding}
  */
-function supersededFinding(name: string, scriptDir: string, same: boolean): Finding {
+function supersededFinding(name: string, scriptDir: string, { same }: { same: boolean; }): Finding {
   const path = `${scriptDir}/${name}`;
   return { unit: path, supersededScript: path,
     problem: same ? "SUPERSEDED COPY -- IDENTICAL FOR NOW" : "SUPERSEDED COPY -- ALREADY DIVERGED",
@@ -2743,7 +2743,7 @@ const STILL_RUNNING = "A unit file is not a schedule: removing one from the repo
 function orphanFinding(unit: string, origin: OrphanOrigin): Finding {
   if (origin.state === "retired") return retiredFinding(unit);
   if (origin.state === "unmerged") return unmergedRefFinding(unit, origin.sha);
-  return unknownOriginFinding(unit, origin.state === "never");
+  return unknownOriginFinding(unit, { never: origin.state === "never" });
 }
 
 /**
@@ -2788,7 +2788,7 @@ function unmergedRefFinding(unit: string, sha: string): Finding {
  * `git log --all --diff-filter=A`, an addition question, where it used to be read off a deletion one.
  * @param {string} unit @param {boolean} never @returns {Finding}
  */
-function unknownOriginFinding(unit: string, never: boolean): Finding {
+function unknownOriginFinding(unit: string, { never }: { never: boolean; }): Finding {
   return { unit, removesUnit: true,
     problem: never ? "ORPHANED -- NEVER SHIPPED HERE" : "ORPHANED -- HISTORY UNREADABLE",
     detail: `installed on this host and NOT SHIPPED by this repository -- and ${never
@@ -3715,15 +3715,17 @@ export function persistentSeatNotes(deps: SeatDeps = {}): Finding[] {
  * NOT ASKED and ALL CORRECT read identically as an empty list, so the report must not say the second
  * when it means the first -- that substitution is this repository's most-repeated defect.
  * @param {Finding[]} drift
- * @param {boolean} [asked] whether systemd could be asked at all
+
  * @param {Finding[]} [notes] what is reported and is NOT a failure (#2332): they never enter the count, the
  *   exit code or the remedy line, and are printed even when nothing else drifted.
  */
-export function driftReport(drift: Finding[], asked: boolean = true, notes: Finding[] = []) {
-  if (!asked) {
-    return "host units: NOT CHECKED -- this machine runs no systemd user manager, so it is not an "
-      + "agent host. That is not a claim that any host is correct.\n";
-  }
+/** The report for a machine that systemd could not be asked about: it says so, and claims nothing about any host. */
+export function hostUnitsNotChecked(): string {
+  return "host units: NOT CHECKED -- this machine runs no systemd user manager, so it is not an "
+    + "agent host. That is not a claim that any host is correct.\n";
+}
+
+export function driftReport(drift: Finding[], notes: Finding[] = []) {
   const noted = notes.length === 0 ? "" : "notes (not failures):\n"
     + notes.map((d) => `  ${d.unit}: ${d.problem}\n    ${d.detail}\n`).join("");
   if (drift.length === 0) {
@@ -3883,12 +3885,13 @@ function main() {
     hostIdentityInstall({ allowNoApps: process.argv.slice(2).includes("--allow-no-apps") });
     reviewerDoorInstall();
     rowReviewSkillInstall();
-    process.stdout.write(driftReport(hostFindings(), asked, asked ? hostNotes() : []));
+    const findings = hostFindings();
+    process.stdout.write(asked ? driftReport(findings, hostNotes()) : hostUnitsNotChecked());
     return;
   }
   const versions = readToolVersionAgreement();
   const drift = [...hostFindings(), ...toolVersionFindings(versions)];
-  process.stdout.write(projectUnitsLine(projectUnitsDirOf()) + driftReport(drift, asked, asked ? [...hostNotes(), ...toolVersionNotes(versions)] : []));
+  process.stdout.write(projectUnitsLine(projectUnitsDirOf()) + (asked ? driftReport(drift, [...hostNotes(), ...toolVersionNotes(versions)]) : hostUnitsNotChecked()));
   if (drift.length > 0) process.exitCode = 1;
 }
 

@@ -48,7 +48,7 @@ const HOST = (() => {
 })();
 // The tool's modules resolve their project when IMPORTED, so the host is named BEFORE they are, and only when the caller named none.
 if (!process.env.AGENT_ORG_HOST) process.env.AGENT_ORG_HOST = HOST;
-const { pruneWorktrees, formatReport, ACTIVITY_WINDOW_MS, SALVAGE_REF_PREFIX } = await import("./prune-worktrees.ts");
+const { pruneWorktrees, formatAppliedReport, formatDryRunReport, ACTIVITY_WINDOW_MS, SALVAGE_REF_PREFIX } = await import("./prune-worktrees.ts");
 const { stampWorktree } = await import("./worktree-owner.ts");
 const { REMOVAL_LOG_ENV } = await import("./worktree-removal.ts");
 const { sandboxGitEnv } = await import("./lib/git-env.ts");
@@ -120,7 +120,7 @@ test("#4620 COMMITS: a tracked-clean tree with commits on a surviving branch is 
   assert.equal(sha(primary.root, "refs/heads/agent/wt-commits-a"), head, "and the work is still a ref, at the same sha");
   assert.equal(git(primary.root, "show", `${head}:work.txt`), "real work in wt-commits-a\n");
   assert.deepEqual(salvageRefs(primary), [], "nothing was salvaged: there was nothing uncommitted");
-  assert.match(formatReport(report), /its commits stay on branch agent\/wt-commits-a at /);
+  assert.match(formatAppliedReport(report), /its commits stay on branch agent\/wt-commits-a at /);
 });
 
 test("#4620 COMMITS CONTROL 1/3: the same tree stays DIRTY when the caller did not ask for removal by ref (today's reading)", () => {
@@ -191,7 +191,7 @@ test("#4620 SALVAGE: a tree with a tracked edit is removed only after refs/salva
   assert.equal(sha(primary.root, "refs/heads/agent/wt-edit-a"), head, "and the committed work is the surviving branch");
   assert.equal(sha(primary.root, `${atRemoval.refs[0][1]}^`), head, "the salvage commit sits on HEAD");
   assert.deepEqual(report.removed[0].salvaged, [atRemoval.refs[0][0]], "the report names the ref beside the tree it came from");
-  assert.ok(formatReport(report).includes(`${path}  (agent/wt-edit-a)  [tracked changes salvaged to ${atRemoval.refs[0][0]}]`));
+  assert.ok(formatAppliedReport(report).includes(`${path}  (agent/wt-edit-a)  [tracked changes salvaged to ${atRemoval.refs[0][0]}]`));
 });
 
 test("#4620 SALVAGE CONTROL 1/4: a FAILED update-ref leaves the tree standing, the edit in it, and no ref", () => {
@@ -499,7 +499,7 @@ test("#4620 DRY RUN: lists the tree as one that WOULD go, writes no ref, and rem
   assert.deepEqual(report.removed.map((r) => r.path), [path]);
   assert.deepEqual(salvageRefs(primary), []);
   assert.ok(existsSync(path));
-  assert.match(formatReport(report, true), /WOULD REMOVE 1 worktree\(s\)[^]*\[tracked changes would first be pinned under refs\/salvage\/\]/);
+  assert.match(formatDryRunReport(report), /WOULD REMOVE 1 worktree\(s\)[^]*\[tracked changes would first be pinned under refs\/salvage\/\]/);
 });
 
 test("#4620 THE CLI is the run: `--apply` salvages a tracked edit, removes the tree and prints the ref beside it", () => {

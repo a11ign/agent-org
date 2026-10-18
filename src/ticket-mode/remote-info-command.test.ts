@@ -11,13 +11,13 @@ const settingsWith = (tickets: Record<string, unknown>) => parseTicketSettings({
 test("ticket:remote-info gives another machine's board this board's port, key and terminal address", () => {
   const settings = settingsWith({ port: 4848, terminal: "http://127.0.0.1:7318/?ws={workspace}" });
   const key = boardKey(boardKeyPath(settings.stateDir));
-  assert.deepEqual(remoteInfo(settings, false), { port: 4848, key, terminal: "http://127.0.0.1:7318/?ws={workspace}" });
-  assert.equal(remoteInfo(settingsWith({}), false, () => key).terminal, null);
+  assert.deepEqual(remoteInfo(settings, { toTerminal: false }), { port: 4848, key, terminal: "http://127.0.0.1:7318/?ws={workspace}" });
+  assert.equal(remoteInfo(settingsWith({}), { toTerminal: false }, () => key).terminal, null);
 });
 
 test("ticket:remote-info refuses to print the key to a terminal, and refuses a board that has no key yet", () => {
   const settings = settingsWith({});
   boardKey(boardKeyPath(settings.stateDir));
-  assert.throws(() => remoteInfo(settings, true), /refuses to print it to a terminal/);
-  assert.throws(() => remoteInfo(settingsWith({}), false), /does not exist: start the instance once with agent-org ticket:serve/);
+  assert.throws(() => remoteInfo(settings, { toTerminal: true }), /refuses to print it to a terminal/);
+  assert.throws(() => remoteInfo(settingsWith({}), { toTerminal: false }), /does not exist: start the instance once with agent-org ticket:serve/);
 });

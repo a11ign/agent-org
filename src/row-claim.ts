@@ -1253,7 +1253,7 @@ function applyClaimLabels(issueNumber: number, { run, mySession, extraLabels, la
  * @param {string} mySession @param {boolean} persistent
  * @returns {string | null} a refusal reason, or null if `mySession` may claim
  */
-export function persistentReason(mySession: string, persistent: boolean): string | null {
+export function persistentReason(mySession: string, { persistent }: { persistent: boolean; }): string | null {
   if (!persistent) return null;
   return `${mySession} is a PERSISTENT seat (\`"persistent": true\` in the roster's sessions.json, #3415): a standing conversation `
     + "that is never cleared and is never offered a row or a work order. It claims no row; ask `product-manager` to route the "
@@ -1391,7 +1391,7 @@ function writeRowLabels(issueNumber: number, mySession: string, extraLabels: str
   const before = fetchLabels(issueNumber, { run, repo });
   const decision = decideClaim(before.labels, mySession, standInFor(issueNumber, before));
   if (!decision.proceed) return { claimed: false, reason: decision.reason };
-  const notEngineer = persistentReason(mySession, persistent);
+  const notEngineer = persistentReason(mySession, { persistent });
   if (notEngineer) return { claimed: false, reason: notEngineer };
 
   // #3566, slice 4: THE CHECKS BELOW ONLY READ, so the reads they can be seen to make FIRST go out together (`readWithFirstWaveTogether`, the gate's
@@ -2503,7 +2503,7 @@ export function removeClaimedWorktree(worktreePath: string, { run = defaultRun, 
  * @param {boolean} wasReady
  * @returns {string[]}
  */
-function declineRemoveLabels(status: { branch: string | null; worktree: string | null; }, mySession: string, wasReady: boolean): string[] {
+function declineRemoveLabels(status: { branch: string | null; worktree: string | null; }, mySession: string, { wasReady }: { wasReady: boolean; }): string[] {
   return [CLAIM_LABEL, `${SESSION_PREFIX}${mySession}`, STARTED_LABEL,
     ...(status.branch ? [`${BRANCH_LABEL_PREFIX}${status.branch}`] : []),
     ...(status.worktree ? [`${WORKTREE_LABEL_PREFIX}${status.worktree}`] : []),
@@ -2723,7 +2723,7 @@ function releaseRow(issueNumber: number,
   const wasReady = before.labels.includes(WAS_READY_LABEL);
   const keepsState = before.labels.some((l) => l !== CLAIM_LABEL && STATE_LABELS.includes(l));
   const { restoreReady, addLabels } = declineAddLabels({ isClosed, wasReady, blockedReason, answer, keepsState });
-  const removeLabels = declineRemoveLabels(status, mySession, wasReady);
+  const removeLabels = declineRemoveLabels(status, mySession, { wasReady });
   writeDeclineLabels(issueNumber, removeLabels, addLabels, { run, landed, closed: isClosed, repo });
 
   // #987: AND THE RELEASE GOES ON THE RECORD, so the newest claim-record comment stops naming a worktree
