@@ -85,7 +85,15 @@ export type TicketSettings = Readonly<{
    * should have woken it by then. Marking it ends nothing. 30 by default.
    */
   stallMinutes: number;
+  /**
+   * `tickets.serve: "tailscale"`: the board's page and the worker terminal are served on the tailnet, on these HTTPS ports, with `tailscale serve`
+   * (never Funnel), and the page accepts this machine's MagicDNS name. Null, the default, serves both on loopback only.
+   */
+  serve: ServePorts | null;
 }>;
+
+/** The tailnet HTTPS ports `tickets.serve` serves the page and the terminal on. */
+export type ServePorts = Readonly<{ ui: number; terminal: number }>;
 
 /**
  * Which tickets the Pick view lists: `"assigned"`, the ones assigned to the person whose key the board reads with, or every open ticket of the
@@ -127,6 +135,9 @@ export class TicketSettingsRefusal extends Error {
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** The `tickets` block of a host file's parsed JSON, or `{}` when it has none. */
+export const ticketsBlock = (host: unknown): Record<string, unknown> => (isObject(host) && isObject(host.tickets) ? host.tickets : {});
 
 function absolutePath(value: unknown, field: string): string {
   if (typeof value !== "string" || !isAbsolute(value)) throw new TicketSettingsRefusal(field, `must be an absolute path, not ${JSON.stringify(value)}`);
@@ -295,6 +306,39 @@ function pickOf(value: unknown): PickScope {
   throw new TicketSettingsRefusal("tickets.pick", `${PICK_SHAPE}, not ${JSON.stringify(value)}`);
 }
 
+const SERVE_SHAPE = "must be \"tailscale\", or absent to serve the board on loopback only";
+const SERVE_PORTS_SHAPE = "must be { \"ui\": <port>, \"terminal\": <port> }, each optional, each a port from 1 to 65535";
+
+/** A tailnet HTTPS port: a whole number from 1 to 65535. */
+function servePort(value: unknown, field: string, fallback: number): number {
+  if (value === undefined) return fallback;
+  if (!Number.isInteger(value) || (value as number) < 1 || (value as number) > 65535) throw new TicketSettingsRefusal(field, `must be a port from 1 to 65535, not ${JSON.stringify(value)}`);
+  return value as number;
+}
+
+/**
+ * `tickets.serve` and `tickets.servePorts`: null when the board is served on loopback only, else the tailnet ports, 9443 and 9444 by default. A
+ * `servePorts` without `serve` is refused, as is any other `serve` value, a port that is not a port, and two equal ports.
+ */
+export function serveOf(tickets: Record<string, unknown>): ServePorts | null {
+  const { serve, servePorts } = tickets;
+  if (serve === undefined) {
+    if (servePorts !== undefined) throw new TicketSettingsRefusal("tickets.servePorts", "is read only with tickets.serve: \"tailscale\", which is absent");
+    return null;
+  }
+  if (serve !== "tailscale") throw new TicketSettingsRefusal("tickets.serve", `${SERVE_SHAPE}, not ${JSON.stringify(serve)}`);
+  const block = servePorts === undefined ? {} : servePorts;
+  if (!isObject(block) || Object.keys(block).some((key) => key !== "ui" && key !== "terminal")) throw new TicketSettingsRefusal("tickets.servePorts", SERVE_PORTS_SHAPE);
+  const ports = { ui: servePort(block.ui, "tickets.servePorts.ui", 9443), terminal: servePort(block.terminal, "tickets.servePorts.terminal", 9444) };
+  if (ports.ui === ports.terminal) throw new TicketSettingsRefusal("tickets.servePorts", `ui and terminal must be different ports, and both are ${ports.ui}`);
+  return Object.freeze(ports);
+}
+
+/** `tickets.uiPort`, read from a `tickets` block as the settings read it: the loopback port the page listens on, 4748 by default. */
+export function uiPortOf(tickets: Record<string, unknown>): number {
+  return positiveInteger(tickets.uiPort, "tickets.uiPort", 4748);
+}
+
 export function parseTicketSettings(host: unknown, home: string = homedir()): TicketSettings {
   if (!isObject(host)) throw new TicketSettingsRefusal("(root)", "must be a JSON object");
   const clones = host.clones;
@@ -336,6 +380,7 @@ export function parseTicketSettings(host: unknown, home: string = homedir()): Ti
     reviewer: reviewerOf(tickets.reviewer),
     pick: pickOf(tickets.pick),
     stallMinutes: positiveInteger(tickets.stallMinutes, "tickets.stallMinutes", 30),
+    serve: serveOf(tickets),
   });
 }
 

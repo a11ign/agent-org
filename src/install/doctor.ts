@@ -14,12 +14,14 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { request } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { readLinearKey } from "../ticket-mode/linear.ts";
 import { parseTicketSettings, type KeySource, type TicketSettings } from "../ticket-mode/settings.ts";
+import { parseServeStatus, parseStatus, portState, runTailscale, serveStatusArgv, statusArgv, tailnetHosts, type ServeStatus, type TailscaleResult } from "../ticket-mode/tailnet.ts";
 import { hostFilePath, type Env } from "./paths.ts";
 import { pinnedPnpm, TOOL_PNPM_VERSION } from "./pnpm.ts";
 import { defaultServiceDeps, serviceState, unitProblem, type ServiceName, type ServiceState } from "./service.ts";
@@ -57,6 +59,10 @@ export type DoctorDeps = Readonly<{
   mcpList: () => string | null;
   /** What `--version` the pinned pnpm prints, run as install and update run it, or null when it cannot run. */
   pnpmVersion: () => string | null;
+  /** `tailscale` with `args`: its status is null when it cannot start. Asked only when `tickets.serve` puts the board on the tailnet. */
+  tailscale: (args: string[]) => TailscaleResult;
+  /** Whether the tailnet address `ip` answers HTTPS for `name` on `port`. */
+  tailnetAnswers: (ip: string, name: string, port: number) => Promise<boolean>;
   /** The installed `gh` wrapper and each declared role's mint (A11-84). Loaded by the caller, so this file stays import-light. */
   ghWrapper: () => Promise<GhWrapperReport>;
 }>;
@@ -167,8 +173,65 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
     ...instance,
     ...ui,
     ...await terminalChecks(settings, deps),
+    ...await tailnetChecks(settings, deps),
     registeredCheck("auto-update", deps, "it runs `agent-org update` every hour"),
   ];
+}
+
+/** The checks of one port `tickets.serve` puts on the tailnet: its entry, that it is not on Funnel, and that it answers under the machine's name. */
+async function servedChecks(served: { service: string; port: number; local: number }, tailnet: { name: string; ip: string | null }, entries: ServeStatus, deps: DoctorDeps): Promise<Check[]> {
+  const { service, port, local } = served;
+  const { name, ip } = tailnet;
+  const state = portState(entries, name, port, local);
+  const url = `https://${name}:${port}/`;
+  const setting = `tickets.servePorts.${service}`;
+  const entry = state.kind === "ours" ? ok(`${service} tailnet entry`, `${url} serves 127.0.0.1:${local}`)
+    : state.kind === "free" ? failed(`${service} tailnet entry`, `nothing serves port ${port} on the tailnet`, `run \`agent-org start ${service}\``)
+      : failed(`${service} tailnet entry`, `port ${port} serves ${state.proxy ?? "another entry"} instead`, `set \`${setting}\` to a port nothing serves, then run \`agent-org start ${service}\``);
+  const only = state.funnel
+    ? failed(`${service} tailnet only`, `Funnel is on for port ${port}, which makes it public`, `turn Funnel off for port ${port} with \`tailscale funnel --https=${port} off\`, which leaves the other entries alone`)
+    : ok(`${service} tailnet only`, `port ${port} is not on Funnel`);
+  const answers = ip === null ? false : await deps.tailnetAnswers(ip, name, port);
+  const answering = answers ? ok(`${service} tailnet answering`, `${url} answers`)
+    : failed(`${service} tailnet answering`, `nothing answers ${url}`, state.kind === "ours" ? `read the service's log, then run \`agent-org start ${service}\` to restart it` : `run \`agent-org start ${service}\``);
+  return [entry, only, answering];
+}
+
+/**
+ * With `tickets.serve` set, the tailnet is checked as the board uses it: this machine is Running with a DNS name, and each served port has its entry,
+ * is not on Funnel, and answers under the name. With it absent, no check is added, so the list is exactly today's.
+ */
+async function tailnetChecks(settings: TicketSettings | null, deps: DoctorDeps): Promise<Check[]> {
+  if (settings === null || settings.serve === null) return [];
+  const status = deps.tailscale(statusArgv());
+  const self = status.status === 0 ? parseStatus(status.stdout) : null;
+  if (self === null || !self.running || self.name === null) {
+    if (status.status === null) return [failed("tailscale", "tailscale is not on PATH", "install Tailscale, then run `tailscale up`")];
+    const detail = self === null ? "`tailscale status --json` did not answer" : !self.running ? `Tailscale is ${self.state}, not Running` : "this machine has no DNS name";
+    return [failed("tailscale", detail, "run `sudo tailscale up`, and turn MagicDNS on in the admin console")];
+  }
+  const serve = deps.tailscale(serveStatusArgv());
+  const entries = serve.status === 0 ? parseServeStatus(serve.stdout) : null;
+  if (entries === null) return [ok("tailscale", `Running as ${self.name}`), failed("tailscale serve", "`tailscale serve status --json` did not answer", "run `sudo tailscale up`, then `agent-org doctor` again")];
+  const local = loopbackPort(settings.terminal) ?? DEFAULT_TERMINAL_PORT;
+  return [
+    ok("tailscale", `Running as ${self.name}`),
+    ...await servedChecks({ service: "ui", port: settings.serve.ui, local: settings.uiPort }, { name: self.name, ip: self.ip }, entries, deps),
+    ...await servedChecks({ service: "terminal", port: settings.serve.terminal, local }, { name: self.name, ip: self.ip }, entries, deps),
+  ];
+}
+
+/** Whether the tailnet address `ip` answers HTTPS under its MagicDNS `name` on `port`: any status under 500, since a stopped service behind serve answers 502. */
+function tailnetAnswers(ip: string, name: string, port: number): Promise<boolean> {
+  return new Promise((done) => {
+    const call = httpsRequest({ host: ip, port, servername: name, path: "/", method: "GET", headers: { Host: tailnetHosts({ name, port })[0] }, timeout: ANSWER_TIMEOUT_MS }, (response) => {
+      response.resume();
+      done((response.statusCode ?? 500) < 500);
+    });
+    call.on("timeout", () => call.destroy());
+    call.on("error", () => done(false));
+    call.end();
+  });
 }
 
 /** Whether `name` is registered, and loads: a unit systemd refuses is said with the line it refused. */
@@ -272,6 +335,8 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
       const result = spawnSync(command, args, { encoding: "utf8", timeout: 120_000, env: { ...process.env, COREPACK_ENABLE_DOWNLOAD_PROMPT: "0" } });
       return result.status === 0 ? result.stdout.trim() : null;
     },
+    tailscale: (args) => runTailscale(args),
+    tailnetAnswers,
     ghWrapper: async () => {
       try {
         const { ghWrapperReport } = await import("../host-units.ts");

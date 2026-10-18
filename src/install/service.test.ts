@@ -6,7 +6,8 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { COMMANDS } from "../commands.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { main, servicePath, serviceState, startService, stopService, unitFor, unitProblem, type RunResult, type ServiceDeps } from "./service.ts";
+import { main, ServiceRefusal, servicePath, serviceState, startService, stopService, unitFor, unitProblem, type RunResult, type ServiceDeps } from "./service.ts";
+import { TAILSCALE_MISSING } from "../ticket-mode/tailnet.ts";
 
 type Answer = (args: string[]) => RunResult;
 const done = (stdout = ""): RunResult => ({ status: 0, stdout, stderr: "" });
@@ -17,7 +18,7 @@ function deps(platform: NodeJS.Platform, answers: Record<string, Answer> = {}, o
   const files = new Map<string, string>([[join(home, ".agent-org", "host.json"), "{}"]]);
   const calls: string[] = [];
   const value: ServiceDeps = {
-    platform, env: { PATH: "/opt/bin:/usr/bin" }, home, uid: 501, node: "/opt/node/bin/node", toolRoot: "/opt/agent-org", commands: COMMANDS,
+    platform, env: { PATH: "/opt/bin:/usr/bin" }, home, uid: 501, node: "/opt/node/bin/node", toolRoot: "/opt/agent-org", commands: COMMANDS, user: "alice",
     exists: (path) => files.has(path), read: (path) => files.get(path) ?? null, write: (path, text) => { files.set(path, text); },
     run: (file, args) => {
       calls.push([file, ...args].join(" "));
@@ -318,4 +319,141 @@ test("the terminal refuses, naming the host file, one it cannot read or that is 
     assert.ok(!made.files.has(join(made.home, ".config", "systemd", "user", "agent-org-terminal.service")), "no unit is written on the defaults");
     assert.equal(serviceState("terminal", made.deps), "not-registered");
   }
+});
+
+// THE TAILNET (`tickets.serve`): the page and the terminal are served with `tailscale serve`, never Funnel, and nothing else on the host is named.
+const STATUS = JSON.stringify({ BackendState: "Running", Self: { DNSName: "agents.tail1234.ts.net.", TailscaleIPs: ["100.64.0.7"] } });
+/** The agents host's serve config: Funnel on :443 for `/webhook`, a plain serve on :8443, and this board's own entry on :9443. */
+const AGENTS_HOST = JSON.stringify({
+  TCP: { 443: { HTTPS: true }, 8443: { HTTPS: true }, 9443: { HTTPS: true } },
+  Web: {
+    "agents.tail1234.ts.net:443": { Handlers: { "/webhook": { Proxy: "http://127.0.0.1:8787" } } },
+    "agents.tail1234.ts.net:8443": { Handlers: { "/": { Proxy: "http://127.0.0.1:8788" } } },
+    "agents.tail1234.ts.net:9443": { Handlers: { "/": { Proxy: "http://127.0.0.1:4748" } } },
+  },
+  AllowFunnel: { "agents.tail1234.ts.net:443": true },
+});
+
+/** A machine on a tailnet: its `tailscale` answers as `answers` says, a host file with `tickets`, and every call made, in order. */
+function onTailnet(tickets: Record<string, unknown>, answers: { status?: RunResult; serve?: string; put?: RunResult; remove?: RunResult } = {}) {
+  const calls: string[] = [];
+  const run = (file: string, args: string[]): RunResult => {
+    calls.push([file, ...args].join(" "));
+    if (file !== "tailscale") return done();
+    if (args[0] === "status") return answers.status ?? done(STATUS);
+    if (args[1] === "status") return done(answers.serve ?? "{}");
+    if (args.includes("off")) return answers.remove ?? done();
+    return answers.put ?? done();
+  };
+  const made = deps("linux", {}, { run });
+  made.files.set(join(made.home, ".agent-org", "host.json"), JSON.stringify({ clones: { a: "/src/a" }, tickets }));
+  made.files.set(join(made.home, ".config", "herdr", "plugins.json"), JSON.stringify([{ plugin_id: "devswha.herdr-web-ui", plugin_root: ROOT }]));
+  made.files.set(join(made.home, ".bun", "bin", "bun"), "");
+  return { ...made, calls, tailscale: () => calls.filter((call) => call.startsWith("tailscale")) };
+}
+
+const SERVED = { serve: "tailscale", uiPort: 4748 };
+
+test("start ui with tickets.serve checks the tailnet, starts the unit, then serves its loopback port on the tailnet's 9443", () => {
+  const t = onTailnet(SERVED);
+  const started = startService("ui", t.deps);
+  assert.equal(started.address, "https://agents.tail1234.ts.net:9443/");
+  assert.deepEqual(t.tailscale(), [
+    "tailscale status --json",
+    "tailscale serve status --json",
+    "tailscale serve --bg --https=9443 http://127.0.0.1:4748",
+  ]);
+  assert.ok(t.calls.indexOf("systemctl --user restart agent-org-ui.service") < t.calls.indexOf("tailscale serve --bg --https=9443 http://127.0.0.1:4748"), "the serve call comes after the unit starts");
+});
+
+test("start terminal serves the port tickets.terminal names on loopback, not the default 7318", () => {
+  const t = onTailnet({ ...SERVED, terminal: "http://127.0.0.1:7400/?ws={workspace}&pane={pane}&view=terminal" });
+  const started = startService("terminal", t.deps);
+  assert.equal(started.address, "https://agents.tail1234.ts.net:9444/");
+  assert.equal(t.tailscale().at(-1), "tailscale serve --bg --https=9444 http://127.0.0.1:7400");
+});
+
+test("with tickets.serve absent, start and stop touch no tailscale, and the instance and auto-update never do", () => {
+  const plain = onTailnet({});
+  assert.equal(startService("ui", plain.deps).address, null);
+  assert.equal(startService("terminal", plain.deps).address, null);
+  plain.files.set(unitFor("ui", plain.deps).path, "");
+  stopService("ui", plain.deps);
+  assert.deepEqual(plain.tailscale(), []);
+  const served = onTailnet(SERVED);
+  assert.equal(startService("instance", served.deps).address, null);
+  assert.equal(startService("auto-update", served.deps).address, null);
+  served.files.set(unitFor("instance", served.deps).path, "");
+  stopService("instance", served.deps);
+  assert.deepEqual(served.tailscale(), []);
+});
+
+test("a port that is on Funnel, or that another entry serves, is refused before anything starts, and the fix is named", () => {
+  const funnel = onTailnet(SERVED, { serve: JSON.stringify({ Web: { "agents.tail1234.ts.net:9443": { Handlers: { "/": { Proxy: "http://127.0.0.1:4748" } } } }, AllowFunnel: { "agents.tail1234.ts.net:9443": true } }) });
+  assert.throws(() => startService("ui", funnel.deps), (err: unknown) => err instanceof ServiceRefusal
+    && /on Funnel, which makes it public/.test(err.message) && /tickets\.servePorts\.ui/.test(err.message));
+  assert.ok(!funnel.calls.some((call) => call.includes("--bg") || call.startsWith("systemctl")), "no unit was started and nothing was served");
+  const foreign = onTailnet(SERVED, { serve: JSON.stringify({ Web: { "agents.tail1234.ts.net:9443": { Handlers: { "/": { Proxy: "http://127.0.0.1:9999" } } } } }) });
+  assert.throws(() => startService("ui", foreign.deps), /already serves http:\/\/127\.0\.0\.1:9999 on the tailnet/);
+  assert.ok(!foreign.calls.some((call) => call.includes("--bg")));
+});
+
+test("a missing tailscale, a node that is not Running and a serve call the user may not make each say what to do", () => {
+  const missing = onTailnet(SERVED, { status: { status: null, stdout: "", stderr: "spawnSync tailscale ENOENT" } });
+  assert.throws(() => startService("ui", missing.deps), (err: unknown) => err instanceof ServiceRefusal && err.message === TAILSCALE_MISSING);
+  const stopped = onTailnet(SERVED, { status: done(JSON.stringify({ BackendState: "Stopped", Self: { DNSName: "agents.tail1234.ts.net." } })) });
+  assert.throws(() => startService("ui", stopped.deps), /is not Running on this machine \(BackendState Stopped\): run `sudo tailscale up`/);
+  const denied = onTailnet(SERVED, { put: { status: 1, stdout: "", stderr: "Access denied: serve config denied" } });
+  assert.throws(() => startService("ui", denied.deps), (err: unknown) => err instanceof ServiceRefusal
+    && err.message.startsWith("the ui service started on 127.0.0.1, but the tailnet does not reach it:")
+    && err.message.includes("run `sudo tailscale set --operator=alice`, then start the service again"));
+  assert.ok(denied.calls.includes("systemctl --user restart agent-org-ui.service"), "the unit started before the serve call was refused, and the refusal says so");
+});
+
+test("stop ui removes its own entry and no other: the agents host's Funnel on :443 and its :8443 are never named", () => {
+  const t = onTailnet(SERVED, { serve: AGENTS_HOST });
+  t.files.set(unitFor("ui", t.deps).path, "");
+  stopService("ui", t.deps);
+  assert.deepEqual(t.tailscale(), [
+    "tailscale status --json",
+    "tailscale serve status --json",
+    "tailscale serve --https=9443 off",
+  ]);
+  assert.ok(!t.calls.some((call) => /funnel|reset/.test(call)), "no funnel and no reset");
+});
+
+test("stop leaves an entry that is not this board's, and says so when its own removal fails after the service stopped", () => {
+  const foreign = onTailnet(SERVED, { serve: JSON.stringify({ Web: { "agents.tail1234.ts.net:9443": { Handlers: { "/": { Proxy: "http://127.0.0.1:9999" } } } } }) });
+  foreign.files.set(unitFor("ui", foreign.deps).path, "");
+  stopService("ui", foreign.deps);
+  assert.ok(!foreign.calls.some((call) => call.includes(" off")), "another's entry is not removed");
+  const failing = onTailnet(SERVED, { serve: AGENTS_HOST, remove: { status: 1, stdout: "", stderr: "tailscaled is not running" } });
+  failing.files.set(unitFor("ui", failing.deps).path, "");
+  assert.throws(() => stopService("ui", failing.deps), (err: unknown) => err instanceof ServiceRefusal
+    && err.message === "the ui service is stopped, but its tailscale serve entry on port 9443 was not removed: `tailscale serve --https=9443 off` failed: tailscaled is not running. `tailscale serve --https=9443 off` removes it");
+  assert.ok(failing.calls.includes("systemctl --user disable --now agent-org-ui.service"), "the service was stopped first");
+});
+
+test("a host file the tailnet cannot be checked from refuses before anything starts, and names the file", () => {
+  const hostPath = (t: ReturnType<typeof onTailnet>) => join(t.home, ".agent-org", "host.json");
+  const notJson = onTailnet({});
+  notJson.files.set(hostPath(notJson), "{ not json");
+  assert.throws(() => startService("ui", notJson.deps), (err: unknown) => err instanceof ServiceRefusal && err.message.includes(`${hostPath(notJson)} is not valid JSON, so the tailnet cannot be checked`));
+  const list = onTailnet({});
+  list.files.set(hostPath(list), "[]");
+  assert.throws(() => startService("ui", list.deps), /does not hold a JSON object, so the tailnet cannot be checked/);
+  const badTickets = onTailnet({});
+  badTickets.files.set(hostPath(badTickets), JSON.stringify({ tickets: "tailscale" }));
+  assert.throws(() => startService("ui", badTickets.deps), /the `tickets` block of .* must be an object, so the tailnet cannot be checked/);
+  assert.deepEqual([...notJson.calls, ...list.calls, ...badTickets.calls], [], "no unit was written and no tailscale was asked");
+  const unreadable = deps("linux", {}, { read: () => null, exists: () => true });
+  assert.throws(() => startService("ui", unreadable.deps), /exists but cannot be read, so the tailnet cannot be checked/);
+});
+
+test("stop refuses, after it has stopped the unit, when the host file cannot be checked", () => {
+  const t = onTailnet({});
+  t.files.set(unitFor("ui", t.deps).path, "");
+  t.files.set(join(t.home, ".agent-org", "host.json"), "{ not json");
+  assert.throws(() => stopService("ui", t.deps), /is not valid JSON, so the tailnet cannot be checked/);
+  assert.ok(t.calls.includes("systemctl --user disable --now agent-org-ui.service"), "the unit was stopped first");
 });

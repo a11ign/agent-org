@@ -26,6 +26,7 @@ import { API_BODY_BYTES, readJson, refusal, sameSecret, sendJson, type Json } fr
 import { createPairing, PAIR_MINUTES, type Pairing } from "./pairing.ts";
 import { proxy, type Forward } from "./remote-proxy.ts";
 import { readTicketSettings } from "./settings.ts";
+import { cachedTailnetName, readTailnetName, runTailscale, type Tailnet } from "./tailnet.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PAGE = join(HERE, "ui.html");
@@ -50,6 +51,11 @@ export type UiDeps = Readonly<{
   read: ConnectionsRead;
   connections: Connections;
   forward?: Forward;
+  /**
+   * The tailnet the page is served on, when `tickets.serve` names one: its HTTPS port, and this machine's MagicDNS name, asked only for a `Host`
+   * that is not this server's own loopback, and null while it cannot be read.
+   */
+  tailnet?: Readonly<{ port: number; name: () => Promise<string | null> }>;
 }>;
 
 /** `board-view.ts` as the browser can run it: Node's own type stripping, so what the tests ran is what the page runs. */
@@ -117,8 +123,17 @@ export function createUi(deps: UiDeps) {
     sendJson(response, status, value);
   }
 
+  /** The tailnet a request may name. The name is asked only for a `Host` that is not this server's loopback, so a hostile one costs no tailscale call. */
+  async function tailnetFor(request: IncomingMessage): Promise<Tailnet | undefined> {
+    if (deps.tailnet === undefined) return undefined;
+    const host = String(request.headers.host ?? "");
+    if (host === `127.0.0.1:${port}` || host === `localhost:${port}`) return undefined;
+    const name = await deps.tailnet.name();
+    return name === null ? undefined : { name, port: deps.tailnet.port };
+  }
+
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    const refused = refusal(request, port);
+    const refused = refusal(request, port, await tailnetFor(request));
     if (refused !== null) return sendJson(response, 403, { error: refused });
     const url = new URL(request.url ?? "/", `http://127.0.0.1:${port}`);
     const by = pairedBy(request, key, sessions);
@@ -155,7 +170,8 @@ function serve(): void {
   if (read.refusal !== null) log(read.refusal);
   const connections = createConnections(read.connections, { local: { port: settings.port, keyPath } });
   const pairing = createPairing();
-  const ui = createUi({ port: settings.uiPort, key: boardKey(keyPath), sessions: browserSessions(browserSessionsPath(settings.stateDir)), pairing, read, connections });
+  const tailnet = settings.serve === null ? undefined : { port: settings.serve.ui, name: cachedTailnetName(async () => readTailnetName(runTailscale)) };
+  const ui = createUi({ port: settings.uiPort, key: boardKey(keyPath), sessions: browserSessions(browserSessionsPath(settings.stateDir)), pairing, read, connections, tailnet });
   // Every tunnel this service opened ends with it.
   process.on("exit", () => connections.close());
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => process.exit(128 + constants.signals[signal]));

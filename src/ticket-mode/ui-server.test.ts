@@ -297,3 +297,85 @@ test("a paired browser gets both of the page's modules, and a ticket's labels re
     await u.close();
   }
 });
+
+/** The page on the tailnet: its MagicDNS name is what `name` answers, on the tailnet's port 9443, in front of no connections. */
+async function tailnetPage(name: () => Promise<string | null>) {
+  const stateDir = tmpDir("ticket-ui-tailnet-");
+  const key = boardKey(boardKeyPath(stateDir));
+  const sessions = browserSessions(browserSessionsPath(stateDir), () => 7);
+  const read: ConnectionsRead = { connections: [], refusal: null, migrated: null };
+  const connections = createConnections([], { local: { port: 4747, keyPath: boardKeyPath(stateDir) } });
+  const served = await listen((port) => createUi({ port, key, sessions, read, connections, tailnet: { port: 9443, name } }).handle);
+  return { ...served, key };
+}
+
+/** A request to the page with `host` as its Host header: node:http, since fetch sets its own. */
+function sendAs(base: string, host: string, path: string, { method = "GET", headers = {}, body }: { method?: string; headers?: Record<string, string>; body?: string } = {}) {
+  return new Promise<{ status: number; body: string; setCookie: string }>((resolve, reject) => {
+    const req = httpRequest(`${base}${path}`, { method, headers: { host, ...headers } }, (res) => {
+      let text = "";
+      res.on("data", (chunk) => { text += chunk; });
+      res.on("end", () => resolve({ status: res.statusCode ?? 0, body: text, setCookie: String(res.headers["set-cookie"] ?? "") }));
+    });
+    req.on("error", reject);
+    req.end(body);
+  });
+}
+
+test("with the page on the tailnet, the machine's name at the tailnet port is answered, and any other Host is refused", async () => {
+  const u = await tailnetPage(async () => "agents.tail1234.ts.net");
+  try {
+    assert.equal((await sendAs(u.base, "agents.tail1234.ts.net:9443", "/")).status, 200, "the tailnet name at 9443 gets the pairing page");
+    for (const host of ["agents.tail1234.ts.net:4748", "agents.tail1234.ts.net", "other.tail1234.ts.net:9443", "evil.example"]) {
+      const rejected = await sendAs(u.base, host, "/");
+      assert.equal(rejected.status, 403, host);
+      assert.match(rejected.body, /answers only to its own host/);
+    }
+    assert.equal((await sendAs(u.base, `127.0.0.1:${u.port}`, "/")).status, 200, "the loopback Host still works");
+  } finally {
+    await u.close();
+  }
+});
+
+test("while the name cannot be read, a tailnet Host is refused, and the name is asked only for a Host that is not the page's own loopback", async () => {
+  let asked = 0;
+  const u = await tailnetPage(async () => { asked++; return null; });
+  try {
+    await sendAs(u.base, `127.0.0.1:${u.port}`, "/");
+    assert.equal(asked, 0, "the loopback Host asks for no name");
+    assert.equal((await sendAs(u.base, "agents.tail1234.ts.net:9443", "/")).status, 403);
+    assert.equal(asked, 1);
+  } finally {
+    await u.close();
+  }
+});
+
+test("a write from the tailnet is allowed from its own origin, and refused from another", async () => {
+  const u = await tailnetPage(async () => "agents.tail1234.ts.net");
+  try {
+    const own = await sendAs(u.base, "agents.tail1234.ts.net:9443", "/pair", { method: "POST", headers: { origin: "https://agents.tail1234.ts.net:9443", "content-type": "application/json" }, body: "{}" });
+    assert.equal(own.status, 401, "the origin is its own, so only the pairing code refuses it");
+    const cross = await sendAs(u.base, "agents.tail1234.ts.net:9443", "/pair", { method: "POST", headers: { origin: "https://evil.example" }, body: "{}" });
+    assert.equal(cross.status, 403);
+    assert.match(cross.body, /a write from another origin/);
+  } finally {
+    await u.close();
+  }
+});
+
+test("a code from ticket:pair pairs a browser over the tailnet, and the paired browser reaches the page there", async () => {
+  const u = await tailnetPage(async () => "agents.tail1234.ts.net");
+  try {
+    const host = "agents.tail1234.ts.net:9443";
+    const minted = await sendAs(u.base, host, "/api/pair-code", { method: "POST", headers: { "x-ticket-token": u.key } });
+    assert.equal(minted.status, 200);
+    const { code } = JSON.parse(minted.body) as { code: string };
+    const paired = await sendAs(u.base, host, "/pair", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code }) });
+    assert.equal(paired.status, 200);
+    const cookie = paired.setCookie.split(";")[0];
+    assert.match(cookie, /^ticket_session=/);
+    assert.equal((await sendAs(u.base, host, "/api/connections", { headers: { cookie } })).status, 200);
+  } finally {
+    await u.close();
+  }
+});
