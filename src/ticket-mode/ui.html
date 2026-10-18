@@ -202,6 +202,7 @@
       <button class="small" id="new-ticket" type="button" hidden>New ticket</button>
     </div>
     <div class="chips" id="projects"></div>
+    <div class="chips" id="assignees" hidden></div>
     <div class="chips" id="priorities"></div>
     <div class="chips" id="plans" hidden></div>
     <div id="label-rows"></div>
@@ -248,6 +249,8 @@ import {
 } from "/board-view.js";
 // The label rows: one per label group the listed tickets carry, and one for the labels in no group. label-filters.ts decides them, tested there.
 import { clearedRow, groupTags, labelRows, withLabels } from "/label-filters.js";
+// The Assignee filter: whose tickets the list shows, its chips and their counts, and the words the counter and the empty state say. assignee-filter.ts decides them, tested there.
+import { ANYONE, NO_VIEWER, defaultScope, inScope, ownerName, scopeChips, scopeEmptyText, scopeWord, showsOwner } from "/assignee-filter.js";
 
 const el = (tag, props = {}, ...children) => {
   const node = Object.assign(document.createElement(tag), props);
@@ -260,6 +263,9 @@ const state = {
   tickets: [], parents: [], queue: { entries: [], max: 3, paused: true }, selected: new Set(), terminal: null,
   // Which tickets the list holds (the host file's `tickets.pick`, as the instance words it), and, when it holds none, the instance's word on why.
   pick: "assigned to you", empty: null,
+  // The Assignee filter: whether the instance names assignees (its config carries `viewer`, the signed-in person or null), that person, the setting's
+  // default scope and the words for Anyone's count, and the scope chosen. Not remembered: every load starts on the default.
+  assigneeRow: false, viewer: null, pickOpen: "open", assignee: ANYONE,
   // Whether this machine publishes (the host file's `tickets.publish`), and the runs ticked for the next Publish.
   publishing: false, toPublish: new Set(),
   // The model and effort the settings give a ticket queued from now on, and the parts the Pick footer chose otherwise for the next batch only.
@@ -298,12 +304,18 @@ async function call(method, path, body) {
 function report(err) { if (err !== STALE) $("error").textContent = err ? String(err.message || err) : ""; }
 const entryFor = (key) => state.queue.entries.find((e) => e.ticket.key === key);
 /** What Select all takes: every shown ticket a person can pick, so not a parent, as the parent's own checkbox picks the tickets under it. */
-const pickableShown = () => groupByStatus(shown(), state.parents).flatMap(([, nodes]) => flatten(nodes)).filter((t) => selectable(t, state.queue.entries));
+const pickableShown = () => groupByStatus(shown(), contextParents()).flatMap(([, nodes]) => flatten(nodes)).filter((t) => selectable(t, state.queue.entries));
 /** Every section open, and every parent in them. */
 const allOpen = (groups) => everyOpen(groups.map(([status]) => status)) && groups.flatMap(([, nodes]) => parentKeys(nodes)).every((key) => state.openParents.has(key));
 const planFilter = () => (state.plan && state.planChoice ? { pattern: state.plan, choice: state.planChoice } : null);
-const shown = () => withLabels(visibleTickets(state.tickets, { projects: state.projects, search: $("filter").value, plan: planFilter(), priorities: state.priorities }),
-  state.labels, state.tickets);
+/** The tickets in the chosen assignee scope: every one on an instance that names no assignees. */
+const inView = () => (state.assigneeRow ? state.tickets.filter((t) => inScope(t, state.assignee, state.viewer)) : state.tickets);
+/** The parents the tree may nest under: a parent outside the scope that has a ticket in it is shown as context, so the child keeps its place. */
+const contextParents = () => [...(state.assigneeRow ? state.tickets.filter((t) => !inScope(t, state.assignee, state.viewer)) : []), ...state.parents];
+/** Whether each row names its owner: only on an instance that names assignees, and when the list is not the signed-in person's own. */
+const ownerShown = () => state.assigneeRow && showsOwner(state.assignee);
+const shown = () => withLabels(visibleTickets(inView(), { projects: state.projects, search: $("filter").value, plan: planFilter(), priorities: state.priorities }),
+  state.labels, inView());
 
 function chip(label, pressed, onClick, n) {
   const b = el("button", { className: "chip", type: "button" }, label, n === undefined ? null : el("span", { className: "n" }, String(n)));
@@ -313,11 +325,20 @@ function chip(label, pressed, onClick, n) {
 }
 
 function renderProjects() {
-  const counts = projectCounts(state.tickets);
+  const counts = projectCounts(inView());
   const choose = (next) => { state.projects = next; remember(storage, "ticket-mode.projects", next); render(); };
   $("projects").replaceChildren(el("span", { className: "label" }, "Projects"),
     chip("All projects", state.projects.size === 0, () => choose(new Set())),
     ...counts.map(([name, n]) => chip(name, state.projects.has(name), () => choose(toggled(state.projects, name)), n)));
+}
+
+/** The Assignee row: the signed-in person, Anyone, Unassigned, then each other person with an open ticket, each with its count. Drawn only on an instance that names assignees. */
+function renderAssignees(chips) {
+  $("assignees").hidden = !state.assigneeRow;
+  if (!state.assigneeRow) return;
+  const choose = (scope) => { state.assignee = scope; render(); };
+  $("assignees").replaceChildren(el("span", { className: "label", title: state.viewer ? "" : NO_VIEWER }, "Assignee"),
+    ...chips.map((c) => chip(c.text, c.pressed, () => choose(c.scope), c.count)));
 }
 
 /**
@@ -326,7 +347,7 @@ function renderProjects() {
  */
 function renderLabels() {
   const choose = (next) => { state.labels = next; remember(storage, "ticket-mode.labels", next); render(); };
-  $("label-rows").replaceChildren(...labelRows(state.tickets, state.labels).map((row) => el("div", { className: "chips" },
+  $("label-rows").replaceChildren(...labelRows(inView(), state.labels).map((row) => el("div", { className: "chips" },
     el("span", { className: "label" }, row.name),
     chip("All", row.all, () => choose(clearedRow(state.labels, row.group))),
     ...row.chips.map((c) => chip(c.text, c.pressed, () => choose(toggled(state.labels, c.choice)), c.count)))));
@@ -340,14 +361,14 @@ function renderPriorities() {
   const choose = (next) => { state.priorities = next; remember(storage, "ticket-mode.priorities", new Set([...next].map(String))); render(); };
   $("priorities").replaceChildren(el("span", { className: "label" }, "Priority"),
     chip("All priorities", state.priorities.size === 0, () => choose(new Set())),
-    ...priorityCounts(state.tickets).map(([priority, n]) => chip(PRIORITY_NAMES[priority], state.priorities.has(priority), () => choose(toggled(state.priorities, priority)), n)));
+    ...priorityCounts(inView()).map(([priority, n]) => chip(PRIORITY_NAMES[priority], state.priorities.has(priority), () => choose(toggled(state.priorities, priority)), n)));
 }
 
 /** The plan chips, counting the tickets a worker can be given; none on a machine that names no plan pattern. */
 function renderPlans() {
   $("plans").hidden = !state.plan;
   if (!state.plan) return;
-  const plans = planCounts(state.tickets, state.plan);
+  const plans = planCounts(inView(), state.plan);
   const choose = (choice) => { state.planChoice = choice; remember(storage, "ticket-mode.plan", new Set(choice ? [choice] : [])); render(); };
   $("plans").replaceChildren(el("span", { className: "label" }, "Plan"),
     chip("All", state.planChoice === null, () => choose(null)),
@@ -395,6 +416,8 @@ async function queueChildren(t) {
 
 function renderPick() {
   renderProjects();
+  const chips = state.assigneeRow ? scopeChips(state.tickets, state.assignee, state.viewer) : [];
+  renderAssignees(chips);
   renderPriorities();
   renderPlans();
   renderLabels();
@@ -402,7 +425,7 @@ function renderPick() {
   const free = (t) => selectable(t, state.queue.entries);
   const list = $("groups");
   list.replaceChildren();
-  const groups = groupByStatus(tickets, state.parents);
+  const groups = groupByStatus(tickets, contextParents());
   $("fold-all").textContent = allOpen(groups) ? "Collapse all" : "Expand all";
   for (const [status, nodes] of groups) {
     const group = flatten(nodes);
@@ -426,6 +449,8 @@ function renderPick() {
     const titleCell = (t, depth, { arrow = null, mark = null, note = null } = {}) => el("span", {}, arrow, mark,
       el("a", { href: safeHref(t.url), target: "_blank", rel: "noreferrer" }, t.title), ...labelTags(t), depth > 0 ? el("span", { className: "sub" }, ` · ${t.status}`) : null, note);
     const pill = (text) => el("span", { className: "pill" }, text);
+    // The owner's pill on every row once the list is not the signed-in person's own: a ticket outside it says whose it is, so it is not queued by accident.
+    const owner = (t) => (ownerShown() ? pill(ownerName(t)) : null);
     const place = (row, depth) => { if (depth > 0) row.setAttribute("style", `--depth: ${depth}`); box.append(row); };
     const add = (node, depth) => {
       const { ticket: t, children, context } = node;
@@ -444,19 +469,19 @@ function renderPick() {
         const count = ticketCount(children);
         const note = el("span", { className: "sub" }, ` · ${count} ticket${count === 1 ? "" : "s"} under it`, isParentTicket(t) ? ` · ${childrenNote(t)}` : null, childrenButton(t));
         place(el("div", { className: `row parent${context ? " context" : ""}${nested}` }, tick, keyCell, titleCell(t, depth, { arrow, note }),
-          pill(projectOf(t)), pill(context ? "Not assigned to you" : standing)), depth);
+          pill(projectOf(t)), owner(t), pill(context ? "Not in this view" : standing)), depth);
         if (open) for (const child of children) add(child, depth + 1);
         return;
       }
       if (isParentTicket(t)) {
         const tick = el("input", { type: "checkbox", checked: false, disabled: true, title: "A parent is not queued: queue its children" });
         place(el("div", { className: `row parent epic${taken ? " taken" : ""}${nested}` }, tick, keyCell,
-          titleCell(t, depth, { note: el("span", { className: "sub" }, ` · ${childrenNote(t)}`, childrenButton(t)) }), pill(projectOf(t)), pill("Parent")), depth);
+          titleCell(t, depth, { note: el("span", { className: "sub" }, ` · ${childrenNote(t)}`, childrenButton(t)) }), pill(projectOf(t)), owner(t), pill("Parent")), depth);
         return;
       }
       const tick = el("input", { type: "checkbox", checked: state.selected.has(t.key), disabled: Boolean(taken) });
       tick.addEventListener("change", () => { tick.checked ? state.selected.add(t.key) : state.selected.delete(t.key); render(); });
-      place(el("label", { className: `row${taken ? " taken" : ""}${nested}` }, tick, keyCell, titleCell(t, depth, { mark: planMark(t) }), pill(projectOf(t)), pill(standing)), depth);
+      place(el("label", { className: `row${taken ? " taken" : ""}${nested}` }, tick, keyCell, titleCell(t, depth, { mark: planMark(t) }), pill(projectOf(t)), owner(t), pill(standing)), depth);
     };
     for (const node of nodes) add(node, 0);
     list.append(box);
@@ -464,7 +489,11 @@ function renderPick() {
   const everyPickable = pickableShown();
   $("all").checked = everyPickable.length > 0 && everyPickable.every((t) => state.selected.has(t.key));
   if (state.tickets.length === 0 && state.empty) list.append(el("div", { className: "empty" }, state.empty));
-  $("loaded").textContent = `${tickets.length} of ${state.tickets.length} ${state.pick} shown, ${state.selected.size} selected`;
+  // A scope that holds none of the tickets says whose it asked for, and where the others are.
+  const nothingInScope = state.assigneeRow && state.tickets.length > 0 && inView().length === 0 ? scopeEmptyText(state.assignee, state.viewer) : null;
+  if (nothingInScope) list.append(el("div", { className: "empty" }, nothingInScope));
+  const word = state.assigneeRow ? scopeWord(state.assignee, chips, state.pickOpen) : state.pick;
+  $("loaded").textContent = `${tickets.length} of ${inView().length} ${word} shown, ${state.selected.size} selected`;
 }
 
 function since(ms) {
@@ -835,6 +864,11 @@ function renderWriters() {
 function setup(config) {
   state.terminal = config.terminal ?? null;
   state.pick = config.pick ?? "assigned to you";
+  // An instance that names assignees sends `viewer` (null when the tracker cannot say whose key it is). An older one sends none, and lists as it did.
+  state.assigneeRow = config.viewer !== undefined;
+  state.viewer = config.viewer ?? null;
+  state.pickOpen = config.pickOpen ?? "open";
+  state.assignee = defaultScope(config.pickDefault ?? "you", state.viewer);
   state.plan = config.plan ? new RegExp(config.plan) : null;
   setDefault(config.choice);
   for (const id of ["model", "batch-model", "planModel"]) $(id).replaceChildren(...config.models.map((m) => el("option", { value: m, textContent: m })));
@@ -860,7 +894,7 @@ for (const tab of document.querySelectorAll(".tab")) {
 }
 $("filter").addEventListener("input", render);
 $("fold-all").addEventListener("click", () => {
-  const groups = groupByStatus(shown(), state.parents);
+  const groups = groupByStatus(shown(), contextParents());
   const statuses = groups.map(([status]) => status);
   const parents = groups.flatMap(([, nodes]) => parentKeys(nodes));
   const closing = allOpen(groups);

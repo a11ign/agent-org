@@ -2,20 +2,20 @@
 // module: Linear as a ticket source -- GraphQL over an injected `fetch`, with a personal API key
 //
 // A PERSONAL KEY, NOT AN APP. A Linear agent app is installed by a workspace admin, which a person on a work account cannot do, so ticket mode reads
-// as the person: their key, and by default their assigned tickets (`tickets.pick` can widen the list to a team or a project). It writes only what the
-// board hands the tracker, each on a planning run's or a verified outcome's behalf or a person's: the plan's files, attached to the ticket, the
-// ticket's move to the planner's state, a batch's order as "blocks" relations, once a run's pull request merged without closing its ticket or a worker
-// verified its `done` (A11-91), the ticket's move to its completed state with a comment (A11-92), and, once a person applies a worker's proposed edit,
-// the ticket's title and description (A11-91), and, once a person approves a draft a new-ticket run wrote, the ticket that draft becomes, with
-// its project, goal, labels, relations and parent (`createTicket`, A11-94). Workers write nothing. Linear's own GitHub integration links each
-// pull request, because the worker's branch is the ticket's `branchName`.
+// as the person: their key, and by default the open tickets they can see, which the Pick view filters to their own (`tickets.pick` can narrow the list
+// to a team or a project). It writes only what the board hands the tracker, each on a planning run's or a verified outcome's behalf or a person's: the
+// plan's files, attached to the ticket, the ticket's move to the planner's state, a batch's order as "blocks" relations, once a run's pull request
+// merged without closing its ticket or a worker verified its `done` (A11-91), the ticket's move to its completed state with a comment (A11-92), and,
+// once a person applies a worker's proposed edit, the ticket's title and description (A11-91), and, once a person approves a draft a new-ticket run
+// wrote, the ticket that draft becomes, with its project, goal, labels, relations and parent (`createTicket`, A11-94). Workers write nothing. Linear's
+// own GitHub integration links each pull request, because the worker's branch is the ticket's `branchName`.
 //
 // THE KEY NEVER LEAVES THIS MODULE. It is read once, from the macOS Keychain or a file the host file names, and sent only to api.linear.app and uploads.linear.app.
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { basename, extname, join } from "node:path";
 import type { KeySource, PickScope } from "./settings.ts";
-import type { Blocker, Keywords, NewTicket, PullState, StateMove, Ticket, TicketLabel, TicketSource } from "./source.ts";
+import type { Assignee, Blocker, Keywords, NewTicket, PullState, StateMove, Ticket, TicketLabel, TicketSource } from "./source.ts";
 
 export const LINEAR_API = "https://api.linear.app/graphql";
 /** The words Linear's GitHub integration reads in a pull request's body: `Closes` completes its ticket on merge, `Refs` only links it. */
@@ -41,7 +41,7 @@ const OPEN_CHILDREN = 'children(first: 50, filter: { state: { type: { nin: ["com
  * first page of 50, which no ticket comes near. Read with the list, in the same request. Only a group's name is read, as only its name is shown.
  */
 const LABELS = "labels(first: 50) { nodes { name parent { name } } }";
-const ISSUE_FIELDS = `identifier title description url branchName priority state { name position } team { key } project { name } parent { identifier } ${OPEN_CHILDREN} ${ATTACHMENTS} ${LABELS}`;
+const ISSUE_FIELDS = `identifier title description url branchName priority state { name position } team { key } project { name } assignee { id name } parent { identifier } ${OPEN_CHILDREN} ${ATTACHMENTS} ${LABELS}`;
 /** A file name that is safe as it stands: no folder, and an extension. A plan's attachment title is one. */
 const FILE_NAME = /^[\w.-]+\.\w{1,8}$/;
 
@@ -65,7 +65,7 @@ export function readLinearKey(source: KeySource, security: (args: string[]) => s
 
 type IssueNode = {
   identifier: string; title: string; description: string | null; url: string; branchName: string; priority: number;
-  state: { name: string; position: number }; team: { key: string }; project: { name: string } | null; parent: { identifier: string } | null;
+  state: { name: string; position: number }; team: { key: string }; project: { name: string } | null; assignee: Assignee | null; parent: { identifier: string } | null;
   /** Absent from an answer to a query that did not ask for it: such a ticket is read as having none. */
   children?: { nodes: { identifier: string }[] };
   /** Absent from an answer to a query that did not ask for them: such a ticket is read as having none. */
@@ -87,7 +87,7 @@ function toTicket(node: IssueNode): Ticket {
   return Object.freeze({
     key: node.identifier, title: node.title, description: node.description ?? "", url: node.url, branch: node.branchName,
     status: node.state.name, statusOrder: node.state.position, team: node.team.key, project: node.project?.name ?? null, priority: node.priority,
-    parent: node.parent?.identifier ?? null,
+    assignee: node.assignee ?? null, parent: node.parent?.identifier ?? null,
     children: (node.children?.nodes ?? []).map(({ identifier }) => identifier),
     uploads: uploadsIn(node).map(({ title }) => title),
     labels: (node.labels?.nodes ?? []).map(({ name, parent }): TicketLabel => Object.freeze({ name, group: parent?.name ?? null })),
@@ -147,25 +147,20 @@ const OPEN = 'state: { type: { nin: ["completed", "canceled", "duplicate"] } }';
 /**
  * The query the Pick view's list is read with, for the host file's `tickets.pick`. PURE.
  *
- * `"assigned"` is the query the board has always sent, kept as it was, character for character: a machine that names no `tickets.pick` asks
- * Linear exactly what it asked before the setting existed, but for the fields every list reads, which grew each ticket's open sub-issues (A11-76) and then its labels with their groups. A team or a project reads `issues` with that team's key or that project's name added
- * to the same state filter, a page of the same size at a time. Both are passed as variables, never written into the query's text.
+ * Every open ticket the key can see, or, for a team or a project, every open ticket of it: one `issues` list, paged a page at a time, whose
+ * tickets carry their assignee. The Pick view picks the assignee in the page, so one read serves every choice and no request is made per person.
+ * The team or the project is passed as a variable, never written into the query's text.
  */
 export function pickQuery(scope: PickScope): PickQuery {
-  if (scope === "assigned") {
-    return {
-      text: `query($after: String) { viewer { assignedIssues(first: ${PAGE}, after: $after, filter: { state: { type: { nin: ["completed", "canceled", "duplicate"] } } }) {
-            nodes { ${ISSUE_FIELDS} } pageInfo { hasNextPage endCursor } } } }`,
-      variables: {},
-      page: (data) => (data as { viewer: { assignedIssues: Connection } }).viewer.assignedIssues,
-    };
-  }
-  const [name, type, filter] = "team" in scope
-    ? ["team", "String!", "team: { key: { eq: $team } }"] as const : ["project", "String!", "project: { name: { eq: $project } }"] as const;
+  const narrowed = scope === "assigned" ? null
+    : "team" in scope ? { name: "team", filter: "team: { key: { eq: $team } }", value: scope.team }
+    : { name: "project", filter: "project: { name: { eq: $project } }", value: scope.project };
+  const declared = narrowed === null ? "" : `, $${narrowed.name}: String!`;
+  const filters = [...(narrowed === null ? [] : [narrowed.filter]), OPEN].join(", ");
   return {
-    text: `query($after: String, $${name}: ${type}) { issues(first: ${PAGE}, after: $after, filter: { ${filter}, ${OPEN} }) {
+    text: `query($after: String${declared}) { issues(first: ${PAGE}, after: $after, filter: { ${filters} }) {
             nodes { ${ISSUE_FIELDS} } pageInfo { hasNextPage endCursor } } }`,
-    variables: { [name]: "team" in scope ? scope.team : scope.project },
+    variables: narrowed === null ? {} : { [narrowed.name]: narrowed.value },
     page: (data) => (data as { issues: Connection }).issues,
   };
 }
@@ -305,6 +300,12 @@ export function linearSource({ key, fetch: request = fetch, pick = "assigned" }:
     return found === null ? [] : uploadsIn(found);
   }
 
+  /** The key's person: their id, and the name Linear has for them, or their email when it has none. */
+  async function me(): Promise<Assignee> {
+    const { viewer }: { viewer: { id: string; name: string | null; email: string | null } } = await query("query { viewer { id name email } }", {});
+    return { id: viewer.id, name: viewer.name || viewer.email || "the key's user" };
+  }
+
   return {
     keywords: KEYWORDS,
 
@@ -321,9 +322,10 @@ export function linearSource({ key, fetch: request = fetch, pick = "assigned" }:
     },
 
     async viewer() {
-      const { viewer }: { viewer: { name: string | null; email: string | null } } = await query("query { viewer { name email } }", {});
-      return viewer.name || viewer.email || "the key's user";
+      return (await me()).name;
     },
+
+    me,
 
     async read(identifier) {
       const found = await issue<IssueNode>(identifier, ISSUE_FIELDS);

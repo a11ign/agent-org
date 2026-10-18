@@ -1,20 +1,21 @@
-// no-token: gh -- the page's own script runs against a fake DOM and a canned fetch, with the tested board-view and label-filters modules as its imports; no browser, no socket
+// no-token: gh -- the page's own script runs against a fake DOM and a canned fetch, with the tested board-view, label-filters and assignee-filter modules as its imports; no browser, no socket
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import * as view from "./board-view.ts";
 import * as labelFilters from "./label-filters.ts";
+import * as assigneeFilter from "./assignee-filter.ts";
 
 /**
- * The page's module script, run as the browser would run it but in a `vm` context: its imports (`/board-view.js` and `/label-filters.js`,
- * which the server sends as `board-view.ts` and `label-filters.ts` with the types stripped) are supplied from the tested modules themselves,
+ * The page's module script, run as the browser would run it but in a `vm` context: its imports (`/board-view.js`, `/label-filters.js` and
+ * `/assignee-filter.js`, which the server sends as the `.ts` modules with the types stripped) are supplied from the tested modules themselves,
  * and its top-level `await` runs inside an async wrapper.
  */
 const MODULE = /<script type="module">([\s\S]*)<\/script>/.exec(readFileSync(new URL("./ui.html", import.meta.url), "utf8"))![1];
-const IMPORTS = /^import \{[^}]*\} from "\/(board-view|label-filters)\.js";$/gm;
+const IMPORTS = /^import \{[^}]*\} from "\/(board-view|label-filters|assignee-filter)\.js";$/gm;
 const imported = [...MODULE.matchAll(IMPORTS)].map((m) => m[1]).sort();
-if (imported.join() !== "board-view,label-filters") throw new Error(`the page's script imports ${imported.join() || "nothing"}, not /board-view.js and /label-filters.js as this test expects`);
+if (imported.join() !== "assignee-filter,board-view,label-filters") throw new Error(`the page's script imports ${imported.join() || "nothing"}, not /board-view.js, /label-filters.js and /assignee-filter.js as this test expects`);
 const SCRIPT = `(async () => {\n${MODULE.replace(IMPORTS, "")}\n})();`;
 
 class Node_ {
@@ -107,7 +108,7 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
     return { ok: true, json: async () => value, statusText: "" };
   };
   const localStorage = { getItem: (k: string) => storage.get(k) ?? null, setItem: (k: string, v: string) => { storage.set(k, v); } };
-  runInNewContext(SCRIPT, { ...view, ...labelFilters, document, fetch, window: { localStorage }, setInterval: () => 0, Date, JSON, Object, Array, Set, Map, String, Number, Boolean, Math });
+  runInNewContext(SCRIPT, { ...view, ...labelFilters, ...assigneeFilter, document, fetch, window: { localStorage }, setInterval: () => 0, Date, JSON, Object, Array, Set, Map, String, Number, Boolean, Math });
   for (let i = 0; i < 10; i++) await settle();
   const $ = (id: string) => document.getElementById(id);
   const groups = () => $("groups").children;
@@ -306,7 +307,7 @@ test("a parent with some of its tickets picked is part ticked, and one with none
 test("a parent that is not the person's heads its children with a checkbox that picks them, and says it is not theirs", async () => {
   const p = await page(new Map(), { tickets: ["VE-65", "VE-66"].map((key) => ({ key, title: key, status: "Backlog", statusOrder: 0, priority: 2, project: null, url: "", parent: "NBF-1917" })), parents: [{ key: "NBF-1917", title: "lint rules", status: "Todo", statusOrder: 1, priority: 2, project: null, url: "", parent: null }] });
   assert.deepEqual(rowsOf(p).map((r) => r.className), ["row parent context"], "folded, as every parent starts");
-  assert.match(rowFor(p, "NBF-1917").text(), /Not assigned to you/);
+  assert.match(rowFor(p, "NBF-1917").text(), /Not in this view/);
   tickOf(p, "NBF-1917").checked = true;
   tickOf(p, "NBF-1917").fire("change");
   assert.equal(p.$("queue").textContent, "Queue 2 tickets");
@@ -1263,4 +1264,154 @@ test("A11-106: a finished run's stacked pull request note is shown in its row as
   const row = (key: string) => runRows(p).find((r) => r.text().includes(key))!;
   assert.equal(row("S-1").all().filter((n) => n.className === "waiting" && n.text() === note).length, 1, "the note is a waiting line of its run");
   assert.equal(row("S-2").all().some((n) => n.className === "waiting" && n.text().startsWith("Needs retarget")), false, "a run with no note shows none");
+});
+
+// The Assignee filter (A11-108): Dan Beck is the signed-in person. Ana Ruiz and Dan have two open tickets each, Ben Park one, and M-3 nobody.
+const DAN = { id: "dan", name: "Dan Beck" };
+const ANA = { id: "ana", name: "Ana Ruiz" };
+const BEN = { id: "ben", name: "Ben Park" };
+const ASSIGNED = [
+  ticketIn("M-1", { assignee: DAN }),
+  ticketIn("M-2", { assignee: ANA }),
+  ticketIn("M-3", { assignee: null }),
+  ticketIn("M-4", { assignee: DAN }),
+  ticketIn("M-5", { assignee: BEN }),
+  ticketIn("M-6", { assignee: ANA }),
+];
+const WITH_ASSIGNEES = { viewer: DAN, pickDefault: "you" };
+/** Each chip of the Assignee row as its text, its count and whether it is pressed. */
+const assigneeChips = (p: Page) => p.$("assignees").children.filter((c) => c.tag === "button")
+  .map((c) => [c.children[0].text(), c.children[1].text(), c.getAttribute("aria-pressed")]);
+
+test("A11-108: the list starts on the signed-in person's tickets, the counter says so, and the rows of other people's tickets are not in it", async () => {
+  const p = await page(new Map(), { tickets: ASSIGNED, config: WITH_ASSIGNEES });
+  assert.deepEqual(p.shownKeys(), ["M-1", "M-4"]);
+  assert.equal(p.$("loaded").textContent, "2 of 2 assigned to you shown, 0 selected");
+  assert.equal(p.$("assignees").hidden, false, "the Assignee row is drawn");
+  assert.equal(p.$("assignees").children[0].text(), "Assignee");
+  assert.deepEqual(assigneeChips(p), [
+    ["Dan Beck (you)", "2", "true"], ["Anyone", "6", "false"], ["Unassigned", "1", "false"], ["Ana Ruiz", "2", "false"], ["Ben Park", "1", "false"],
+  ], "the person, Anyone and Unassigned, then each other person with an open ticket by count and then name");
+  assert.equal(rowFor(p, "M-1").text().includes("Dan Beck"), false, "a row in the person's own list names no owner");
+});
+
+test("A11-108: Unassigned lists only the tickets nobody has, each with its owner, and the counter says unassigned", async () => {
+  const p = await page(new Map(), { tickets: ASSIGNED, config: WITH_ASSIGNEES });
+  p.chip("Unassigned", "assignees").fire("click");
+  assert.deepEqual(p.shownKeys(), ["M-3"]);
+  assert.equal(p.$("loaded").textContent, "1 of 1 unassigned shown, 0 selected");
+  assert.ok(rowFor(p, "M-3").text().includes("Unassigned"), "the row says it has no owner");
+  assert.equal(rowFor(p, "M-3").all().some((n) => n.className === "pill" && n.text() === "Unassigned"), true, "the owner is a pill of its own");
+});
+
+test("A11-108: Anyone lists every ticket with its owner, and the counter says open", async () => {
+  const p = await page(new Map(), { tickets: ASSIGNED, config: WITH_ASSIGNEES });
+  p.chip("Anyone", "assignees").fire("click");
+  assert.deepEqual([...p.shownKeys()].sort(), ["M-1", "M-2", "M-3", "M-4", "M-5", "M-6"]);
+  assert.equal(p.$("loaded").textContent, "6 of 6 open shown, 0 selected");
+  assert.ok(rowFor(p, "M-2").text().includes("Ana Ruiz"), "a row of someone else's ticket names them");
+});
+
+test("A11-108: another person's chip lists only theirs, each with the owner, the counter says assigned to them, and choosing it sends no request", async () => {
+  const p = await page(new Map(), { tickets: ASSIGNED, config: WITH_ASSIGNEES });
+  const sent = p.requested.length;
+  p.chip("Ana Ruiz", "assignees").fire("click");
+  assert.deepEqual(p.shownKeys(), ["M-2", "M-6"]);
+  assert.equal(p.$("loaded").textContent, "2 of 2 assigned to Ana Ruiz shown, 0 selected");
+  assert.ok(rowFor(p, "M-6").text().includes("Ana Ruiz"));
+  assert.equal(p.requested.length, sent, "the list is filtered in the page, from the one read");
+});
+
+test("A11-108: a person with no open ticket has no chip; the person, Anyone and Unassigned have theirs, even at zero", async () => {
+  const eve = { id: "eve", name: "Eve Stone" };
+  const p = await page(new Map(), { tickets: ASSIGNED, config: { viewer: eve, pickDefault: "you" } });
+  assert.deepEqual(assigneeChips(p), [
+    ["Eve Stone (you)", "0", "true"], ["Anyone", "6", "false"], ["Unassigned", "1", "false"], ["Ana Ruiz", "2", "false"], ["Dan Beck", "2", "false"], ["Ben Park", "1", "false"],
+  ]);
+  assert.deepEqual(p.shownKeys(), [], "nothing is the person's");
+  assert.equal(p.$("loaded").textContent, "0 of 0 assigned to you shown, 0 selected");
+  const empty = p.$("groups").all().find((n) => n.className === "empty")!.text();
+  assert.ok(empty.startsWith("No open tickets are assigned to Eve Stone, whose Linear key this board reads with."), empty);
+  assert.ok(empty.includes("The Assignee row shows Anyone and Unassigned") && empty.includes("tickets.pick"), empty);
+});
+
+test("A11-108: the choice is not remembered: a new load starts on the setting's default, whatever the last load chose", async () => {
+  const storage = new Map<string, string>();
+  const first = await page(storage, { tickets: ASSIGNED, config: WITH_ASSIGNEES });
+  first.chip("Anyone", "assignees").fire("click");
+  assert.equal(first.shownKeys().length, 6);
+  const again = await page(storage, { tickets: ASSIGNED, config: WITH_ASSIGNEES });
+  assert.deepEqual(again.shownKeys(), ["M-1", "M-4"]);
+});
+
+test("A11-108: tickets.pick names a team, so the default is Anyone and the counter keeps reading open in team", async () => {
+  const p = await page(new Map(), { tickets: ASSIGNED, config: { viewer: DAN, pickDefault: "anyone", pickOpen: "open in team A11" } });
+  assert.equal(p.$("loaded").textContent, "6 of 6 open in team A11 shown, 0 selected");
+  assert.deepEqual(assigneeChips(p)[1], ["Anyone", "6", "true"]);
+  assert.ok(rowFor(p, "M-5").text().includes("Ben Park"), "every ticket of the team shows with its owner");
+});
+
+test("A11-108: when the tracker cannot say whose key it is, the list starts on Anyone, there is no chip for the person, and the row says why", async () => {
+  const p = await page(new Map(), { tickets: ASSIGNED, config: { viewer: null, pickDefault: "you" } });
+  assert.equal(p.$("loaded").textContent, "6 of 6 open shown, 0 selected", "every ticket is listed rather than none");
+  assert.equal(assigneeChips(p).some(([text]) => text.endsWith("(you)")), false);
+  assert.equal(p.$("assignees").children[0].title, assigneeFilter.NO_VIEWER);
+});
+
+test("A11-108: an instance that names no assignees has no Assignee row, and lists and counts as before", async () => {
+  const p = await page(new Map(), { tickets: ASSIGNED, config: {} });
+  assert.equal(p.$("assignees").hidden, true);
+  assert.equal(p.$("loaded").textContent, "6 of 6 assigned to you shown, 0 selected", "the instance's own word for its list, as before");
+});
+
+test("A11-108: a selected ticket outside the chosen scope stays selected, and Queue sends it from the default", async () => {
+  const p = await page(new Map(), { tickets: ASSIGNED, config: WITH_ASSIGNEES });
+  p.chip("Unassigned", "assignees").fire("click");
+  tickOf(p, "M-3").checked = true;
+  tickOf(p, "M-3").fire("change");
+  p.chip("Dan Beck (you)", "assignees").fire("click");
+  assert.deepEqual(p.shownKeys(), ["M-1", "M-4"], "the unassigned ticket is hidden again");
+  p.$("queue").fire("click");
+  await settle();
+  assert.deepEqual(p.posts.find((x) => x.path === "/api/queue")?.body.keys, ["M-3"], "the selection survived the filter change");
+});
+
+test("A11-108: the done-when: a ticket with no assignee is hidden on the default, shown under Unassigned, and queued from there", async () => {
+  const filed = [...ASSIGNED, ticketIn("M-7", { assignee: null })];
+  const p = await page(new Map(), { tickets: filed, config: WITH_ASSIGNEES });
+  assert.equal(p.shownKeys().includes("M-7"), false, "hidden by default");
+  p.chip("Unassigned", "assignees").fire("click");
+  assert.deepEqual(p.shownKeys(), ["M-3", "M-7"]);
+  tickOf(p, "M-7").checked = true;
+  tickOf(p, "M-7").fire("change");
+  p.$("queue").fire("click");
+  await settle();
+  assert.deepEqual(p.posts.find((x) => x.path === "/api/queue")?.body.keys, ["M-7"]);
+});
+
+test("A11-108: a parent outside the chosen scope with a ticket in it is shown as context, so the ticket keeps its place", async () => {
+  const tickets = [ticketIn("E-1", { assignee: ANA, children: ["M-8"] }), ticketIn("M-8", { assignee: DAN, parent: "E-1" })];
+  const p = await page(new Map(), { tickets, config: WITH_ASSIGNEES });
+  assert.deepEqual(rowsOf(p).map((r) => r.className), ["row parent context"], "folded, as every parent starts");
+  assert.match(rowFor(p, "E-1").text(), /Not in this view/);
+  assert.equal(rowFor(p, "E-1").text().includes("Ana Ruiz"), false, "on the signed-in person's own list no row names an owner");
+  foldOf(p, "E-1").fire("click");
+  assert.deepEqual(p.shownKeys(), ["E-1", "M-8"]);
+  // On another person's list, the parent outside it names its owner, as any row outside the list does.
+  const other = [ticketIn("E-1", { assignee: ANA, children: ["M-8"] }), ticketIn("M-8", { assignee: BEN, parent: "E-1" })];
+  const ben = await page(new Map(), { tickets: other, config: WITH_ASSIGNEES });
+  ben.chip("Ben Park", "assignees").fire("click");
+  assert.match(rowFor(ben, "E-1").text(), /Ana Ruiz.*Not in this view/, "the context parent names its owner");
+});
+
+test("A11-108: the Projects counts are the chosen scope's, so the default view counts the signed-in person's own tickets", async () => {
+  const tickets = [
+    ticketIn("M-1", { assignee: DAN, project: "Alpha" }),
+    ticketIn("M-2", { assignee: ANA, project: "Beta" }),
+    ticketIn("M-3", { assignee: ANA, project: "Beta" }),
+  ];
+  const p = await page(new Map(), { tickets, config: WITH_ASSIGNEES });
+  assert.deepEqual(p.$("projects").children.filter((c) => c.tag === "button").map((c) => c.text()), ["All projects", "Alpha1"], "Beta holds nobody's ticket of the person's, so it has no chip");
+  p.chip("Anyone", "assignees").fire("click");
+  assert.deepEqual(p.$("projects").children.filter((c) => c.tag === "button").map((c) => c.text()), ["All projects", "Beta2", "Alpha1"], "the projects by count, as the row always lists them");
 });

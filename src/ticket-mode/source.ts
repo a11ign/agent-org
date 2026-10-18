@@ -49,7 +49,15 @@ export type Ticket = Readonly<{
    * no label rows: a tracker without labels needs nothing here.
    */
   labels?: readonly TicketLabel[];
+  /**
+   * The person the ticket is assigned to, or `null` for a ticket nobody has been given. The Pick view's Assignee filter reads it. Absent from a
+   * ticket stored on the queue before it was read, and from a source that does not read assignees, which leaves the Pick view with no Assignee row.
+   */
+  assignee?: Assignee | null;
 }>;
+
+/** A person in the tracker, as a ticket names them: the id that tells two people with one name apart, and the name shown. */
+export type Assignee = Readonly<{ id: string; name: string }>;
 
 /** A pull request's state as the tracker last saw it. A draft, or one in review, is `open`. */
 export type PullState = "open" | "merged" | "closed";
@@ -97,8 +105,9 @@ export type NewTicket = Readonly<{
 
 export interface TicketSource {
   /**
-   * Every unfinished ticket the Pick view lists: by default those assigned to the person whose key this is, or, where the host file's
-   * `tickets.pick` names a team or a project, every one of that team or project, whoever it is assigned to. Throws when the tracker cannot be asked.
+   * Every unfinished ticket the Pick view lists, each with its assignee: every open ticket the key can see, or, where the host file's `tickets.pick`
+   * names a team or a project, every one of that team or project. Whom to show is the Pick view's choice, made on the list it is given, so one
+   * read serves every assignee. Throws when the tracker cannot be asked.
    */
   assigned(): Promise<readonly Ticket[]>;
   /**
@@ -106,6 +115,11 @@ export interface TicketSource {
    * Throws when the tracker cannot be asked.
    */
   viewer?(): Promise<string>;
+  /**
+   * The person whose key this is, by id and name, for the Pick view's Assignee filter. The board asks once and keeps the answer, so a source need not
+   * cache it. Throws when the tracker cannot be asked, and the Pick view then lists every ticket, as a source without it does.
+   */
+  me?(): Promise<Assignee>;
   /** One ticket by key, or `null` when the tracker has none by that key. Throws when the tracker cannot be asked. */
   read(key: string): Promise<Ticket | null>;
   /**
