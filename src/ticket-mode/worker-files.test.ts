@@ -292,10 +292,32 @@ test("a drafts-off brief opens a ready pull request: its command has no --draft,
 
 test("a worker may end on checked when nothing needs to change, and is told needs-human is only for what the person alone can decide", () => {
   const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
-  assert.ok(brief.includes('{ "kind": "checked", "reason": "<what you checked, what you found, and why nothing needs to change>" }'), "checked is one of the outcomes");
-  assert.match(brief, /Write `checked` when you looked at what the ticket asks and nothing needs to change/);
+  assert.ok(brief.includes('{ "kind": "checked", "reason": "<what you checked, what you found, and why the ticket is not finished>" }'), "checked is one of the outcomes");
+  assert.match(brief, /Write `checked` when you looked at what the ticket asks and nothing needs to change, but the ticket is \*\*not finished\*\*/);
   assert.match(brief, /the ticket is only a parent whose work is all in its child tickets \(name them, so the person queues them\)/);
   assert.match(brief, /Write `needs-human` only for a real question or decision that only the person can make/);
+});
+
+test("A11-91: the worker's brief says when to write done and when checked, lists done with its evidence, and lets it propose an edit to the ticket's text", () => {
+  const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
+  assert.ok(brief.includes('{ "kind": "done", "reason": "<what the ticket asks, and that every Done-when item holds>", "evidence": ["<one line per Done-when item: what you ran or read, and what it showed>"] }'), "done is one of the outcomes, with its evidence");
+  assert.match(brief, /Write `done` only when no code and no pull request is needed and \*\*every Done-when item of the ticket is verified\*\*/, "done: every Done-when verified");
+  assert.match(brief, /The `evidence` list has one line per Done-when item: what you ran or read, and what it showed/, "done: the evidence says what was seen");
+  assert.match(brief, /A prediction is not evidence/, "done: a prediction never fills evidence");
+  assert.match(brief, /Never write `done` for a ticket with open sub-issues, which complete it, and never after you opened a pull request/, "done: never for a parent, nor after a pull request");
+  assert.match(brief, /Write `checked` when you looked at what the ticket asks and nothing needs to change, but the ticket is \*\*not finished\*\*/, "checked: the ticket is not finished");
+  assert.match(brief, /a Done-when item is not verifiable by you, or the ticket is only a parent whose work is all in its child tickets/, "checked: why it is not finished");
+  assert.match(brief, /"edit": \{ "title": "<the title it should have>", "description": "<the whole description it should have>", "why": "<what is wrong, and what shows it>" \}/, "the edit field");
+  assert.match(brief, /A ticket's own title or description may be what is wrong/, "when to propose an edit");
+  assert.match(brief, /Propose an edit only to correct the text, never to narrow what the ticket asks/);
+});
+
+test("A11-91: the planning and review briefs neither list done nor propose an edit", () => {
+  const planning = planBriefText({ ticket, ticketDir: "/d", planDir: "/d/plan", attachments: [], clones, run: "plan {key} into {dir}" });
+  for (const brief of [planning, review()]) {
+    assert.doesNotMatch(brief, /"kind": "done"/);
+    assert.doesNotMatch(brief, /"edit"/);
+  }
 });
 
 test("both planning briefs say a ticket that is only a parent gets a plan saying so, which suggests queueing its children instead", () => {

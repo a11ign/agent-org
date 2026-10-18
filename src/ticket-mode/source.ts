@@ -140,10 +140,16 @@ export interface TicketSource {
    */
   keywords?: Keywords;
   /**
-   * Complete a ticket the tracker has not finished, once a pull request of the run that worked it merged and its body did not complete it: move the
-   * ticket to its team's completed state and post `comment` on it. A ticket already completed, canceled or a duplicate is left alone, with no
-   * comment, so a call that races the tracker's own completion does nothing. A team with no completed state keeps the ticket where it is, and the
-   * returned note says so; it is null otherwise. A source without it leaves completion to the tracker. Throws when the tracker refuses.
+   * Complete a ticket the tracker has not finished: move the ticket to its team's completed state and post `comment` on it. Used once a pull request of
+   * the run that worked it merged and its body did not complete it, and once a worker's `done` verified every Done-when item (A11-91). A ticket already
+   * completed, canceled or a duplicate is left alone, with no comment, so a call that races the tracker's own completion does nothing. A team with no
+   * completed state keeps the ticket where it is, and the returned note says so; it is null otherwise. A source without it leaves completion to the
+   * tracker. Throws when the tracker refuses.
    */
   complete?(key: string, comment: string): Promise<string | null>;
+  /**
+   * Write a ticket's title and description, the fields given and no others, once a person has applied a worker's proposed edit to it (A11-91). A
+   * source without it cannot apply one. Throws when the tracker refuses.
+   */
+  updateTicketText?(key: string, text: Readonly<{ title?: string; description?: string }>): Promise<void>;
 }

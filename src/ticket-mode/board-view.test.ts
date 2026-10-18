@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  CONCLUDED, HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, isParked, parentKeys, parentTick, ticketCount, projectCounts, queueLabel, recall,
+  CONCLUDED, HANDED_BACK, NO_PROJECT, hasEdit, RUN_STATUSES, flatten, groupByStatus, isParked, parentKeys, parentTick, ticketCount, projectCounts, queueLabel, recall,
   remember, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, selectable, shownStatus,
   statusCounts, terminalLink, terminalOpenHref, toggled, waitsOn, waitNote, repoOfPull, stackedOn, stackNote, PRIORITY_NAMES, hasPlan, isBeingPublished, isWatched, publishable,
   publishLabel, publishNote, publishTerminalLink, missingPlan, planChoiceOf, planCounts, priorityCounts, prioritiesOf, runChoiceLabel,
@@ -651,12 +651,34 @@ test("a checked run is Checked, never Needs you: it finished with its reason, of
   const checked = run({ outcome: { kind: "checked", reason: "the toast already shows on refresh" } as ViewEntry["outcome"] });
   assert.equal(runStatus(checked), "checked");
   assert.equal(HANDED_BACK.has("checked"), false, "nothing is asked of a person, so the pool does not park it");
-  assert.deepEqual([...CONCLUDED], ["checked", "planned"]);
+  assert.deepEqual([...CONCLUDED], ["checked", "done", "planned"]);
   assert.equal(statusCounts([checked]).get("needs-you"), 0, "it is not counted in Needs you");
   assert.deepEqual(runsShown([checked], "checked").map((e) => e.ticket.key), ["NBF-1"]);
   assert.deepEqual(runActions(checked), ["dismiss"], "a second worker would check the same thing again, so it is not retried");
   assert.equal(runStatus({ ...checked, trackerState: "completed" }), "completed", "the tracker's word still wins");
   assert.equal(RUN_STATUSES.find(({ status }) => status === "checked")?.label, "Checked");
+});
+
+test("A11-91: a done run is Completed, never Needs you, offers no Retry, and the tracker's cancel still wins", () => {
+  const done = run({ outcome: { kind: "done", reason: "every Done-when holds", evidence: ["npm test: 12 pass"] } as ViewEntry["outcome"] });
+  assert.equal(runStatus(done), "completed");
+  assert.equal(HANDED_BACK.has("done"), false, "nothing is asked of a person, so the pool does not park it");
+  assert.equal(statusCounts([done]).get("needs-you"), 0, "it is not counted in Needs you");
+  assert.deepEqual(runsShown([done], "completed").map((e) => e.ticket.key), ["NBF-1"]);
+  assert.deepEqual(runActions(done), ["dismiss"], "the ticket is complete, so no worker is queued again");
+  assert.equal(runStatus({ ...done, trackerState: "canceled" }), "cancelled", "a ticket the tracker canceled is cancelled, whatever the run ended in");
+});
+
+test("A11-91: a run holding a worker's proposed edit offers Apply and Discard, and its Dismiss says the proposal goes too", () => {
+  const edit = { why: "the title says the wrong thing", title: "Right title", base: { title: "Wrong title", description: "" } };
+  const proposed = run({ outcome: { kind: "checked", reason: "nothing to change", edit } as ViewEntry["outcome"] });
+  assert.equal(hasEdit(proposed), true);
+  assert.deepEqual(runActions(proposed), ["apply-edit", "discard-edit", "dismiss"]);
+  const parked = run({ workspace: "w1", outcome: { kind: "needs-human", reason: "which title?", edit } as ViewEntry["outcome"] });
+  assert.deepEqual(runActions(parked), ["close", "apply-edit", "discard-edit", "dismiss"], "a parked run that proposes an edit offers Apply too");
+  const done = run({ outcome: { kind: "done", reason: "verified", evidence: ["e"], edit } as ViewEntry["outcome"] });
+  assert.deepEqual(runActions(done), ["apply-edit", "discard-edit", "dismiss"], "a completed run's proposal is applied after completion");
+  assert.equal(hasEdit(run({ outcome: { kind: "checked", reason: "r" } as ViewEntry["outcome"] })), false);
 });
 
 test("a finished run being published offers no Dismiss until the publish run has ended, and a queued or live run never offers it", () => {

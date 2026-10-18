@@ -93,10 +93,23 @@ const MISSING_SKILL = "If a skill this brief names is not available in this sess
 const PARENT_ONLY_PLAN = "A ticket that is only a parent, an epic whose work is all in the tickets under it, gets no plan for a run of its own. Its plan says that it is only a parent, names the child tickets that hold its work, and suggests the person queues those children instead of a run on it.";
 
 /**
- * When a worker writes `checked` and when `needs-human`. `needs-human` puts the run in the board's Needs you and keeps its workspace open for an
- * answer, so a worker that only found nothing to change must not write it: that is `checked`, which ends the run without asking anyone.
+ * When a worker writes `done`, `checked` and `needs-human` (A11-91). `done` completes the ticket on the board, so it is written only when every Done-when
+ * item is verified and the evidence says what was seen. `checked` is for a ticket that is not finished but needs nothing changed: the board leaves it
+ * open. `needs-human` puts the run in the board's Needs you and keeps its workspace open for an answer, so a worker that only found nothing to change
+ * must not write it.
  */
-const CHECKED_OR_NEEDS_HUMAN = "Write `checked` when you looked at what the ticket asks and nothing needs to change: it is already done, the problem it describes is not there, or the ticket is only a parent whose work is all in its child tickets (name them, so the person queues them). Say in its reason what you checked and what you found. Write `needs-human` only for a real question or decision that only the person can make: it asks them for an answer, and the run waits for one.";
+const DONE_CHECKED_OR_NEEDS_HUMAN = [
+  "Write `done` only when no code and no pull request is needed and **every Done-when item of the ticket is verified**: you ran or read what each item asks, and it holds. The `evidence` list has one line per Done-when item: what you ran or read, and what it showed (a command and its result, a link, a file and line). A prediction is not evidence: say what you saw, not what you expect. The board completes the ticket on your `done`. Never write `done` for a ticket with open sub-issues, which complete it, and never after you opened a pull request, whose merge completes the ticket.",
+  "Write `checked` when you looked at what the ticket asks and nothing needs to change, but the ticket is **not finished**: a Done-when item is not verifiable by you, or the ticket is only a parent whose work is all in its child tickets (name them, so the person queues them). The ticket stays open. Say in its reason what you checked and what you found.",
+  "Write `needs-human` only for a real question or decision that only the person can make: it asks them for an answer, and the run waits for one.",
+].join("\n\n");
+
+/**
+ * A worker's proposed edit to its ticket's own text (A11-91). The board never changes the ticket on the worker's word: a person applies the edit on the
+ * board, and the board refuses it when the ticket has changed since the worker read it.
+ */
+const PROPOSE_EDIT = "A ticket's own title or description may be what is wrong: it names the wrong thing, or a Done-when item cannot be verified as it is written. Then propose the correction in the same outcome, as `\"edit\"`: a `title`, the whole `description` it should have, or both (a field you leave out stays as it is), and a `why` that says what is wrong with the text and what you found that shows it. The board does not change the ticket: a person applies the edit on the board. Propose an edit only to correct the text, never to narrow what the ticket asks.";
+
 
 /**
  * When a worker writes `working` rather than `needs-human` (A11-80). A worker that ends its turn while its own background work runs on, a long
@@ -464,14 +477,19 @@ Write \`${ticketDir}/${OUTCOME_FILE}\` as the last thing you do, with exactly on
 \`\`\`json
 { "kind": "${drafts ? "draft-pr" : "ready-pr"}", "prs": [{ "repo": "<repo>", "url": "<pull request url>" }] }
 { "kind": "wrong-repo", "where": "<the repository or service the fix belongs in, and why>" }
-{ "kind": "checked", "reason": "<what you checked, what you found, and why nothing needs to change>" }
+{ "kind": "done", "reason": "<what the ticket asks, and that every Done-when item holds>", "evidence": ["<one line per Done-when item: what you ran or read, and what it showed>"] }
+{ "kind": "checked", "reason": "<what you checked, what you found, and why the ticket is not finished>" }
 { "kind": "needs-human", "reason": "<what a person must decide or provide>" }
 { "kind": "working", "reason": "<what of yours is still running in the background, and what you do when it wakes you>" }
 \`\`\`
 
+\`done\`, \`checked\` and \`needs-human\` may each add \`"edit": { "title": "<the title it should have>", "description": "<the whole description it should have>", "why": "<what is wrong, and what shows it>" }\`.
+
 A partial pull request adds \`"partial": "<what remains>"\` to its \`${drafts ? "draft-pr" : "ready-pr"}\` line, the same words as its body's \`Partial:\` line, so the board leaves the ticket open when it merges. A pull request that completes the ticket has no \`partial\`.
 
-${CHECKED_OR_NEEDS_HUMAN}
+${DONE_CHECKED_OR_NEEDS_HUMAN}
+
+${PROPOSE_EDIT}
 
 ${WORKING_OR_NEEDS_HUMAN}
 

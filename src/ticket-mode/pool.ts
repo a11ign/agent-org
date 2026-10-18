@@ -19,8 +19,15 @@
 // slot, so the person can answer the agent in its terminal. An agent seen working again has been answered: its outcome file is moved aside, so
 // the stop hook asks for a new one, and the run is live again. Close ends a parked run's workspace; a workspace closed by hand is noticed.
 //
-// A RUN THAT CONCLUDED IS CLOSED AT ONCE. On `checked` (the worker looked and found nothing to change) or `planned`, nobody will answer the
-// agent, so its workspace is closed as the outcome is recorded rather than left open with a finished agent in it. `checked` is not Needs you.
+// A RUN THAT CONCLUDED IS CLOSED AT ONCE. On `checked` (the worker looked and found nothing to change), `done` (every Done-when verified, and the
+// board completed the ticket) or `planned`, nobody will answer the agent, so its workspace is closed as the outcome is recorded rather than left open
+// with a finished agent in it. `checked` is not Needs you.
+//
+// A `done` RUN COMPLETES ITS TICKET, AND ONLY THE BOARD DOES (A11-91). A worker with no code to change verifies each Done-when item and writes `done`
+// with its evidence. The board moves the ticket to the tracker's completed state and posts the reason and the evidence on it, through the tracker's own
+// `complete`. A refusal (a planning or review run, a parent with open sub-issues, a tracker that cannot complete it) hands the run to a person instead.
+// A worker's proposed edit to its ticket's text (`edit`) is stored on its outcome with the text the tracker held, and written only when a person
+// applies it (`applyEdit`), and only while the ticket still holds that text.
 //
 // DISMISS TAKES A FINISHED RUN OFF THE BOARD. Without it a finished run stayed for ever. It closes the run's workspace when it is still open
 // (parked), then drops the queue's record: the ticket, its branch and its pull requests are never touched. A queued or live run is refused.
@@ -92,10 +99,10 @@ import { parsePaths } from "./overlap.ts";
 import { defaultGh } from "../lib/tool-version-agreement.ts";
 import { CONCLUDED, HANDED_BACK, hasPlan, isBeingPublished, isParked, isWatched, openPulls, pullsOf, resumesOnConflict, RESULT_KINDS, stackedOn } from "./board-view.ts";
 import {
-  batchPlanDone, clearMove, conflictRound, dismiss as dismissFinished, feedbackRound, finish, isLive, leaveBatch, markPublishRunning, markPublishStarting, markResumed, markRunning, markStarting, nextStarts,
+  batchPlanDone, clearEdit, clearMove, conflictRound, proposedEdit, dismiss as dismissFinished, feedbackRound, finish, isLive, leaveBatch, markPublishRunning, markPublishStarting, markResumed, markRunning, markStarting, nextStarts,
   observe, noteWorking, observePublish, park, pathsUnread, planDone, publishDone, publishFailed, publishStarts, recordBlockers, recordMove, recordPaths, recordPullFiles, roundsLeft,
   completableRuns, declaredRemains, recordClosedByBoard, recordPullStates, recordRepos, recordTrackerStates, recordVerdictNotPosted, remove as removeQueued, unpark, unreadBlockerKeys, unreadPaths, unsettledKeys, watchWorking,
-  BACKGROUND_GONE, BACKGROUND_GONE_MS, type Background, type Entry, type Outcome, type PublishRun, type Queue, type RunChoice, type WrittenOutcome,
+  BACKGROUND_GONE, BACKGROUND_GONE_MS, type Background, type Entry, type Outcome, type ProposedEdit, type PublishRun, type Queue, type RunChoice, type WrittenOutcome,
 } from "./queue.ts";
 import { DEFAULT_KEYWORDS, type Ticket, type TicketSource } from "./source.ts";
 import { unreachablePlugins } from "./plugins.ts";
@@ -273,12 +280,81 @@ const partialOf = (value: Record<string, unknown>): { partial?: string } => {
 };
 
 /**
- * The outcome a worker wrote, or `needs-human` saying the file could not be read. A `working` one is not how the run ended: `settle` records it as
- * the run's latest note. PURE over the file's text.
+ * The comment the board posts on a ticket it completes on its worker's `done` (A11-91): the reason, the evidence as a list, and whose verdict the
+ * completion is. PURE.
+ */
+export const doneComment = ({ reason, evidence }: Readonly<{ reason: string; evidence: readonly string[] }>): string =>
+  [reason, `Evidence:\n${evidence.map((line) => `- ${line}`).join("\n")}`, "Completed by the ticket board on the worker's verified outcome."].join("\n\n");
+
+/** The longest title a worker may propose for its ticket, in characters (A11-91). */
+const TITLE_CHARS = 255;
+
+/** The longest description a worker may propose for its ticket, in characters (A11-91). */
+const DESCRIPTION_CHARS = 60_000;
+
+/** How much of an outcome file a reason quotes when the file cannot be used. */
+const QUOTED_CHARS = 200;
+
+/** The outcomes a worker may propose an edit on (A11-91): the three in which it has read its ticket closely. */
+const EDIT_KINDS: ReadonlySet<string> = new Set(["done", "checked", "needs-human"]);
+
+/** Whether a title is one line of 1 to {@link TITLE_CHARS} characters, as the board writes it (A11-91). PURE. */
+const fitsTitle = (title: unknown): title is string => typeof title === "string" && title.trim() !== "" && title.length <= TITLE_CHARS && !title.includes("\n");
+
+/** Whether a description is text of up to {@link DESCRIPTION_CHARS} characters (A11-91). PURE. */
+const fitsDescription = (description: unknown): description is string => typeof description === "string" && description.length <= DESCRIPTION_CHARS;
+
+/**
+ * The edit a worker proposed on its outcome, read once: the title and description it proposes and why, or why it is not one the board can apply
+ * (A11-91): an object with a `why`, and a title or a description, or both. PURE.
+ */
+export function readEdit(edit: unknown): ProposedEdit | string {
+  if (typeof edit !== "object" || edit === null || Array.isArray(edit)) return "is not an object";
+  const { title, description, why } = edit as Record<string, unknown>;
+  if (typeof why !== "string" || why.trim() === "") return "has no why";
+  const proposed: { title?: string; description?: string; why: string } = { why };
+  if (title !== undefined) {
+    if (!fitsTitle(title)) return `proposes a title that is not one line of 1 to ${TITLE_CHARS} characters`;
+    proposed.title = title;
+  }
+  if (description !== undefined) {
+    if (!fitsDescription(description)) return `proposes a description of more than ${DESCRIPTION_CHARS.toLocaleString("en-US")} characters`;
+    proposed.description = description;
+  }
+  return proposed.title === undefined && proposed.description === undefined ? "proposes neither a title nor a description" : proposed;
+}
+
+/** The outcome field that carries a proposed edit, or nothing when the worker proposed none (A11-91). PURE. */
+const editField = (edit: ProposedEdit | undefined): Readonly<{ edit?: ProposedEdit }> => (edit === undefined ? {} : { edit });
+
+/** Whether a line of evidence is text the board keeps: a non-empty string (A11-91). PURE. */
+const isEvidenceLine = (line: unknown): line is string => typeof line === "string" && line.trim() !== "";
+
+/**
+ * A `done` outcome, or a `needs-human` naming what it lacks: the board completes a ticket only on a reason and evidence that say what was checked
+ * and what it showed (ADR 0021/0047: a prediction never fills an evidence field). PURE.
+ */
+function doneOutcome(value: Record<string, unknown>, edit: ProposedEdit | undefined): WrittenOutcome {
+  const reason = typeof value.reason === "string" ? value.reason.trim() : "";
+  const evidence: unknown[] = Array.isArray(value.evidence) ? value.evidence : [];
+  const lines = evidence.filter(isEvidenceLine);
+  if (reason === "" || lines.length === 0 || lines.length !== evidence.length) {
+    const missing = reason === "" ? "a reason" : "evidence: a non-empty list of non-empty lines, one per Done-when item";
+    return { kind: "needs-human", reason: `the worker wrote done without ${missing}, so the ticket was not completed` };
+  }
+  return { kind: "done", reason, evidence: lines.map((line) => line.trim()), ...editField(edit) };
+}
+
+/**
+ * The outcome a worker wrote, or `needs-human` saying the file could not be read, or what in it cannot be used. A `working` one is not how the run
+ * ended: `settle` records it as the run's latest note. PURE over the file's text.
  */
 export function parseOutcome(text: string): WrittenOutcome {
   try {
     const value = JSON.parse(text) as Record<string, unknown>;
+    const edit = EDIT_KINDS.has(String(value.kind)) && value.edit !== undefined ? readEdit(value.edit) : undefined;
+    if (typeof edit === "string") return { kind: "needs-human", reason: `the worker's proposed edit to the ticket ${edit}, so nothing was proposed: ${text.slice(0, QUOTED_CHARS)}` };
+    if (value.kind === "done") return doneOutcome(value, edit);
     if (value.kind === "draft-pr" && Array.isArray(value.prs)) {
       return { kind: "draft-pr", prs: value.prs.map((pr: Record<string, unknown>) => ({ repo: String(pr.repo ?? ""), url: String(pr.url ?? "") })), ...partialOf(value) };
     }
@@ -286,16 +362,16 @@ export function parseOutcome(text: string): WrittenOutcome {
       return { kind: "ready-pr", prs: value.prs.map((pr: Record<string, unknown>) => ({ repo: String(pr.repo ?? ""), url: String(pr.url ?? "") })), ...partialOf(value) };
     }
     if (value.kind === "planned") return { kind: "planned" };
-    if (value.kind === "checked") return { kind: "checked", reason: String(value.reason ?? "") };
+    if (value.kind === "checked") return { kind: "checked", reason: String(value.reason ?? ""), ...editField(edit) };
     // A review run's pull requests are the ones the person approved, which the pool holds: `settle` puts them in.
     if (value.kind === "reviewed") return { kind: "reviewed", prs: [] };
     if (value.kind === "wrong-repo") return { kind: "wrong-repo", where: String(value.where ?? "") };
-    if (value.kind === "needs-human") return { kind: "needs-human", reason: String(value.reason ?? "") };
+    if (value.kind === "needs-human") return { kind: "needs-human", reason: String(value.reason ?? ""), ...editField(edit) };
     if (value.kind === "working") return { kind: "working", reason: String(value.reason ?? "") };
   } catch {
     // falls through to the unreadable outcome below
   }
-  return { kind: "needs-human", reason: `the worker's outcome file could not be read: ${text.slice(0, 200)}` };
+  return { kind: "needs-human", reason: `the worker's outcome file could not be read: ${text.slice(0, QUOTED_CHARS)}` };
 }
 
 /**
@@ -785,7 +861,10 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     const path = join(runPlace(entry).dir, OUTCOME_FILE);
     if (!existsSync(path) || statSync(path).mtimeMs <= (entry.finishedAt ?? 0)) return null;
     const outcome = parseOutcome(readFileSync(path, "utf8"));
-    return JSON.stringify(outcome) === JSON.stringify(entry.outcome) ? null : outcome;
+    // A proposed edit is stored with the ticket's text the board read: the file never holds that, so it is set aside for the comparison (A11-91).
+    const edit = proposedEdit(entry);
+    const stored = edit === undefined ? entry.outcome : { ...entry.outcome, edit: { ...edit, base: undefined } };
+    return JSON.stringify(outcome) === JSON.stringify(stored) ? null : outcome;
   }
 
   /** A person answered a parked run: move its outcome aside, so the stop hook asks for a new one, and mark it live. */
@@ -850,19 +929,93 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     }
   }
 
-  /** A run wrote its outcome: `working` is recorded as its note and the run carries on, a planning run's plan is attached, and any other outcome ends the run. */
+  /**
+   * A run wrote its outcome: `working` is recorded as its note and the run carries on, a planning run's plan is attached, a `done` completes its ticket,
+   * a proposed edit is recorded with the ticket's text, and any other outcome ends the run.
+   */
   function settle(entry: Entry, outcome: WrittenOutcome): void {
     if (outcome.kind === "working") return noteStillWorking(entry, outcome.reason);
     if (outcome.kind === "reviewed") {
       if (entry.review === undefined) return end(entry, { kind: "needs-human", reason: "the worker wrote a reviewed outcome, but its run was not a review run" });
       return end(entry, { kind: "reviewed", prs: entry.review });
     }
+    // An edit is recorded with the ticket's text before the run ends, so a proposal without that text is read first; with it, the run settles.
+    if ("edit" in outcome && outcome.edit !== undefined && outcome.edit.base === undefined) return void proposeEdit(entry, outcome, outcome.edit).catch(settleFailed(entry));
+    if (outcome.kind === "done") return void completeDone(entry, outcome).catch(settleFailed(entry));
     if (outcome.kind !== "planned") return end(entry, outcome);
     if (!isPlanning(entry)) return end(entry, { kind: "needs-human", reason: "the worker wrote a planned outcome, but its run was not a planning run" });
     // Nothing waits on the attach, so its own failure is caught here rather than left to stop the board.
     const attach = entry.batch === undefined ? attachPlan(entry) : attachBatch(entry);
     attach.catch((err) => log(`${entry.batch ?? entry.ticket.key}'s plan: ${messageOf(err)}`));
   }
+
+  /**
+   * The board's completion of a worker's `done` (A11-91): the ticket moves to its team's completed state and the reason and evidence are posted on it,
+   * through the tracker's own `complete`. The ticket's record of its move is cleared once it is complete, so nothing puts it back. A refusal, by the
+   * board's rules or by the tracker, ends the run for a person, and the ticket is left where it is.
+   */
+  async function completeDone(entry: Entry, outcome: Extract<Outcome, { kind: "done" }>): Promise<void> {
+    const key = entry.ticket.key;
+    const { name } = runPlace(entry);
+    const refusal = doneRefusal(entry);
+    if (refusal !== null) return end(entry, { kind: "needs-human", reason: `${refusal}: ${outcome.reason}` });
+    if (attaching.has(name)) return;
+    attaching.add(name);
+    try {
+      const complete = source.complete?.bind(source);
+      if (complete === undefined) return end(entry, { kind: "needs-human", reason: `this tracker cannot complete ${key}: ${outcome.reason}` });
+      const note = await complete(key, doneComment(outcome));
+      // Stopped, or stopped and started again, while the tracker was asked: the person's last word stands, and a newer run is not touched.
+      if (!sameRun(entry)) return;
+      if (note !== null) return end(entry, { kind: "needs-human", reason: `${key} was not completed (${note.trim()}): ${outcome.reason}` });
+      update((queue) => clearMove(queue, key));
+      end(entry, outcome);
+    } catch (err) {
+      if (sameRun(entry)) end(entry, { kind: "needs-human", reason: `${key} could not be completed (${messageOf(err)}): ${outcome.reason}` });
+    } finally {
+      attaching.delete(name);
+    }
+  }
+
+  /**
+   * Record a worker's proposed edit to its ticket's text with the text the tracker holds now, which Apply checks the ticket still holds (A11-91), then
+   * record the outcome it came with. The ticket is not changed. A planning or review run proposes none, and one whose ticket cannot be read is handed
+   * to a person.
+   */
+  async function proposeEdit(entry: Entry, outcome: Extract<Outcome, { kind: "checked" | "done" | "needs-human" }>, edit: ProposedEdit): Promise<void> {
+    const key = entry.ticket.key;
+    const { name } = runPlace(entry);
+    if (isPlanning(entry) || entry.review !== undefined) {
+      return end(entry, { kind: "needs-human", reason: `${outcome.reason} (the worker proposed an edit to ${key}'s text from a ${isPlanning(entry) ? "planning" : "review"} run, which the board does not take)` });
+    }
+    if (attaching.has(name)) return;
+    attaching.add(name);
+    let base: Ticket | null = null;
+    let failure = "";
+    try {
+      base = await source.read(key);
+    } catch (err) {
+      failure = messageOf(err);
+    } finally {
+      attaching.delete(name);
+    }
+    if (!sameRun(entry)) return;
+    if (base === null) return end(entry, { kind: "needs-human", reason: `${outcome.reason} (the worker's proposed edit to ${key}'s text could not be recorded: ${failure || `Linear has no ticket ${key}`})` });
+    // The guard is released above, and nothing awaits between here and settle's own checks: the completion or end it starts takes `attaching` itself,
+    // before its first await, so a tick that sees this outcome again meanwhile finds the run already held.
+    settle(entry, { ...outcome, edit: { ...edit, base: { title: base.title, description: base.description } } });
+  }
+
+  /** Why the board does not complete a ticket on its worker's `done`, or null when it may (A11-91): not a planning or review run, and no open sub-issues. */
+  function doneRefusal(entry: Entry): string | null {
+    if (isPlanning(entry)) return `the worker wrote done in a planning run, which completes no ticket`;
+    if (entry.review !== undefined) return `the worker wrote done in a review run: its ticket completes when its pull requests merge`;
+    const children = entry.ticket.children ?? [];
+    return children.length === 0 ? null : `${entry.ticket.key} has open sub-issues (${children.join(", ")}), which complete it, not its own done`;
+  }
+
+  /** The handler for a settle step that failed outside its own checks: said on the board's log, and the next pass finds the run as it was. */
+  const settleFailed = (entry: Entry) => (err: unknown): void => log(`${entry.batch ?? entry.ticket.key}: ${messageOf(err)}`);
 
   /** Whether the run `entry` was taken from is still the run on the queue: not stopped, retried or started again since. */
   const sameRun = (entry: Entry): boolean => {
@@ -1019,7 +1172,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
 
   /**
    * Record how a run ended, for every ticket in it. One that hands its tickets back keeps its workspace (parked); any other has its workspace
-   * closed, a `checked` one included ({@link CONCLUDED}): nobody answers a run that found nothing to do, so its finished agent is not left open.
+   * closed, a `checked` or `done` one included ({@link CONCLUDED}): nobody answers a run that found nothing to do, so its finished agent is not left open.
    */
   function end(entry: Entry, outcome: Outcome): void {
     // A concluded run never parks, whatever else a later change hands back: nobody would answer its agent.
@@ -1211,8 +1364,9 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
   async function restoreWorkingState(key: string): Promise<void> {
     await pendingMoves.get(key);
     const entry = store.get().entries.find((e) => e.ticket.key === key);
-    // A run that opened a pull request is never put back: the tracker's own integration takes its ticket from there. Nor is a review round.
-    if (entry?.movedFrom === undefined || entry.review !== undefined || RESULT_KINDS.has(entry.outcome?.kind ?? "")) return;
+    // A run that opened a pull request is never put back: the tracker's own integration takes its ticket from there. Nor is a review round, nor a
+    // `done` run, whose ticket the board completed.
+    if (entry?.movedFrom === undefined || entry.review !== undefined || RESULT_KINDS.has(entry.outcome?.kind ?? "") || entry.outcome?.kind === "done") return;
     const restore = source.restoreState?.bind(source);
     if (restore !== undefined) {
       let note: string | null;
@@ -1229,7 +1383,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
    * Dismiss or a later retry settles it.
    */
   async function restoreStranded(): Promise<void> {
-    const stranded = store.get().entries.filter((e) => e.phase === "finished" && e.movedFrom !== undefined && !isParked(e) && !HANDED_BACK.has(e.outcome?.kind ?? ""));
+    const stranded = store.get().entries.filter((e) => e.phase === "finished" && e.movedFrom !== undefined && !isParked(e) && !HANDED_BACK.has(e.outcome?.kind ?? "") && e.outcome?.kind !== "done");
     for (const { ticket } of stranded) await restoreAndLog(ticket.key);
   }
 
@@ -1325,6 +1479,32 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     }
     misses.delete(runPlace(entry).name);
     updateEach(runMembers(entry), unpark);
+  }
+
+  /**
+   * Write a run's proposed edit to its ticket's title and description, on a person's request (A11-91). The ticket is read first: when its text is no
+   * longer the text the proposal was made against, nothing is written and the proposal stays. The proposal is dropped once the tracker has the edit.
+   * Throws, with the reason, when it cannot be applied.
+   */
+  async function applyEdit(key: string): Promise<void> {
+    const entry = store.get().entries.find((e) => e.ticket.key === key);
+    const edit = entry === undefined ? undefined : proposedEdit(entry);
+    if (edit === undefined) throw new Error(`${key} has no proposed edit to apply`);
+    if (source.updateTicketText === undefined) throw new Error(`this tracker cannot edit ${key}'s text`);
+    const fresh = await source.read(key);
+    if (fresh === null) throw new Error(`Linear has no ticket ${key}`);
+    if (edit.base === undefined || fresh.title !== edit.base.title || fresh.description !== edit.base.description) {
+      throw new Error(`the ticket changed since the worker proposed this: ${key} is not written, and the proposal stays`);
+    }
+    await source.updateTicketText(key, { ...(edit.title === undefined ? {} : { title: edit.title }), ...(edit.description === undefined ? {} : { description: edit.description }) });
+    update((queue) => clearEdit(queue, key));
+  }
+
+  /** Drop a run's proposed edit to its ticket's text, unapplied (A11-91). The ticket is left as it is. Throws when the run proposes none. */
+  function discardEdit(key: string): void {
+    const entry = store.get().entries.find((e) => e.ticket.key === key);
+    if (entry === undefined || proposedEdit(entry) === undefined) throw new Error(`${key} has no proposed edit to discard`);
+    update((queue) => clearEdit(queue, key));
   }
 
   /**
@@ -1705,7 +1885,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     }
   }
 
-  return { tick, stop, close, dismiss, remove, reconcile, ensureSession, refreshTracker, watchFeedback, releaseReviewers };
+  return { tick, stop, close, dismiss, remove, reconcile, ensureSession, refreshTracker, watchFeedback, releaseReviewers, applyEdit, discardEdit };
 }
 
 export type Pool = ReturnType<typeof createPool>;

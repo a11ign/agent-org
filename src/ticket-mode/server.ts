@@ -50,7 +50,7 @@ export type BoardDeps = Readonly<{
   key: string;
   queuePath: string;
   choicePath: string;
-  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers">;
+  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers" | "applyEdit" | "discardEdit">;
   poolDeps?: Omit<PoolDeps, "settings" | "source" | "hook">;
   now?: () => number;
   /** This machine's MagicDNS name, read when `tickets.serve` puts the board on the tailnet; null while it cannot be read. Only `/api/config` asks. */
@@ -250,7 +250,7 @@ export function createBoard(deps: BoardDeps) {
       wake();
       return [200, queue];
     }
-    const action = /^\/api\/queue\/([A-Za-z0-9_-]+)\/(amend|remove|retry|approve|respond|stop|close|dismiss)$/.exec(path);
+    const action = /^\/api\/queue\/([A-Za-z0-9_-]+)\/(amend|remove|retry|approve|respond|stop|close|dismiss|apply-edit|discard-edit)$/.exec(path);
     if (method === "POST" && action) {
       const [, key, verb] = action;
       if (verb === "amend") store.set(amend(queue, key, validChange(body, ["model", "effort"])));
@@ -263,6 +263,9 @@ export function createBoard(deps: BoardDeps) {
       if (verb === "close") pool.close(key);
       // The pool's, like Close: a parked run's workspace is closed before the run leaves the board.
       if (verb === "dismiss") await pool.dismiss(key);
+      // The pool's: Apply re-reads the ticket before it writes, and Discard drops the proposal the queue holds (A11-91). Only a person's request does either.
+      if (verb === "apply-edit") await pool.applyEdit(key);
+      if (verb === "discard-edit") pool.discardEdit(key);
       wake();
       return [200, queue];
     }
