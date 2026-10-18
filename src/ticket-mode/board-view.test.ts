@@ -878,3 +878,12 @@ test("a draft's fields round-trip through the review's form: the done-when items
 function ticketOf(key: string) {
   return { key, title: key, status: "Backlog", statusOrder: 0, priority: 0, project: null };
 }
+
+test("A11-106: a finished run shows what its stacked pull requests need said of their bases, and no other run does", () => {
+  const note = "Needs retarget: https://github.com/a11ign/agent-org/pull/1749 still targets nbf-1-fit, whose branch is gone: retarget it by hand";
+  const finished = { ticket: { key: "NBF-2" }, phase: "finished", retargets: { "https://github.com/a11ign/agent-org/pull/1749": note } } as ViewEntry;
+  assert.equal(boardView.retargetNote(finished), note);
+  assert.equal(boardView.retargetNote({ ...finished, phase: "running" } as ViewEntry), null, "a running run says nothing of its bases");
+  assert.equal(boardView.retargetNote({ ticket: { key: "NBF-3" }, phase: "finished" } as ViewEntry), null, "a run with no note says nothing");
+  assert.equal(runStatus(finished), runStatus({ ticket: { key: "NBF-2" }, phase: "finished" } as ViewEntry), "the run's status does not change for the note");
+});

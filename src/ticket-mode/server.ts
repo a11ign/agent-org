@@ -40,7 +40,7 @@ const TICK_MS = 30_000;
 /** How often the tracker is asked whether finished runs' tickets are done. A merge is not urgent news, and every read is a Linear request. */
 const TRACKER_MS = 120_000;
 /** How often the open pull requests of runs Ready to merge are read for new feedback. Each is one GitHub request per pull request. */
-const FEEDBACK_MS = 180_000;
+export const FEEDBACK_MS = 180_000;
 /** How long herdr web ui may take to mint a terminal pairing code before the link goes out plain (A11-93). */
 const TERMINAL_PAIR_MS = 5_000;
 const MODELS = ["opus", "sonnet", "haiku"];
@@ -52,7 +52,7 @@ export type BoardDeps = Readonly<{
   key: string;
   queuePath: string;
   choicePath: string;
-  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers" | "applyEdit" | "discardEdit" | "stopWriterRun">;
+  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers" | "retargetStacked" | "applyEdit" | "discardEdit" | "stopWriterRun">;
   poolDeps?: Omit<PoolDeps, "settings" | "source" | "hook">;
   now?: () => number;
   /** This machine's MagicDNS name, read when `tickets.serve` puts the board on the tailnet; null while it cannot be read. Only `/api/config` asks. */
@@ -380,6 +380,30 @@ export function checkGhWrapperAtStart({ err = (line: string) => process.stderr.w
   err(`ERROR gh wrapper: cannot be checked (${why.split("\n")[0]}), so the instance does not know its App identity is in place\n`);
 }
 
+/**
+ * The sweeps the server runs on the feedback cadence, each on its own timer (A11-106): one that throws is said, and the others still run on theirs. `every` is
+ * what schedules a sweep, which `serve` passes `setInterval` for, so a test sees each sweep and its interval without a timer.
+ */
+export function startFeedbackSweeps(pool: Pick<ReturnType<typeof createPool>, "watchFeedback" | "releaseReviewers" | "retargetStacked">,
+  every: (run: () => void, ms: number) => unknown): void {
+  const sweeps: { sweep: () => void; failure: string }[] = [
+    { sweep: () => pool.watchFeedback(), failure: "the pull requests' feedback could not be read" },
+    // Its own sweep, not `watchFeedback`'s: that one returns early when no run is watched, and a merged run is no longer watched.
+    { sweep: () => pool.releaseReviewers(), failure: "the reviewers of merged or closed pull requests could not be released" },
+    // A stacked pull request is retargeted when its base merges, whether or not a run is watched.
+    { sweep: () => pool.retargetStacked(), failure: "the stacked pull requests' bases could not be checked" },
+  ];
+  for (const { sweep, failure } of sweeps) {
+    every(() => {
+      try {
+        sweep();
+      } catch (err) {
+        process.stderr.write(`ticket:serve: ${failure}: ${String((err as Error)?.message ?? err)}\n`);
+      }
+    }, FEEDBACK_MS);
+  }
+}
+
 async function serve(): Promise<void> {
   // `--no-open` opened no browser when the instance served the page. It is still taken, so a script that passes it keeps working.
   refuseUnknownFlags(["--no-open"], { entry: import.meta.url, command: "agent-org ticket:serve" });
@@ -411,21 +435,7 @@ async function serve(): Promise<void> {
   setInterval(() => { void board.pool.tick(); }, TICK_MS);
   void board.pool.refreshTracker();
   setInterval(() => { void board.pool.refreshTracker(); }, TRACKER_MS);
-  setInterval(() => {
-    try {
-      board.pool.watchFeedback();
-    } catch (err) {
-      process.stderr.write(`ticket:serve: the pull requests' feedback could not be read: ${String((err as Error)?.message ?? err)}\n`);
-    }
-  }, FEEDBACK_MS);
-  // Its own sweep, not `watchFeedback`'s: that one returns early when no run is watched, and a merged run is no longer watched.
-  setInterval(() => {
-    try {
-      board.pool.releaseReviewers();
-    } catch (err) {
-      process.stderr.write(`ticket:serve: the reviewers of merged or closed pull requests could not be released: ${String((err as Error)?.message ?? err)}\n`);
-    }
-  }, FEEDBACK_MS);
+  startFeedbackSweeps(board.pool, (run, ms) => { setInterval(run, ms); });
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {

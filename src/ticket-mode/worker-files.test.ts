@@ -199,6 +199,17 @@ test("a run stacked on its blockers is told to branch from one, link its pull re
   assert.equal(briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open" }).includes("## Stack on"), false);
 });
 
+test("A11-106: the stack section says pull request, not draft pull request, and tells a stacked worker to expect a stale base", () => {
+  const draft = "https://github.com/o/nbl-ui-netbox/pull/12";
+  const blockers: Blocker[] = [{ key: "NBF-1", state: "started", status: "In Review", branch: "nbf-1-fit", pulls: { [draft]: "open" as const } }];
+  const text = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "node bin.ts ticket:worktree", prOpenCommand: "/node /tool/src/bin.ts pr:open", blockers,
+    stackedOn: [{ key: "NBF-1", url: draft, repo: "nbl-ui-netbox", branch: "nbf-1-fit" }] });
+  assert.ok(text.includes("2. After you open your own pull request, stack it on that one, bottom first:"), "the step names the pull request whether or not tickets.drafts makes it a draft");
+  assert.equal(text.includes("draft pull request"), false, "no draft in the stack section");
+  assert.ok(text.includes("4. Once the pull request yours is stacked on has merged, agent-org retargets yours to the default branch itself."), "the worker is told agent-org moves a stale base");
+  assert.ok(text.includes("That is expected, not a failure: do not retarget, rebase, push or merge to fix it."), "and that a stale base is not a failure");
+});
+
 const reviewed = [{ repo: "nbl-ui-netbox", url: "https://github.com/x/nbl-ui-netbox/pull/806" }];
 const review = (feedback?: string) => reviewBriefText({ ticket, folder: "/work/.tickets/NBF-1270", ticketDir: "/state/tickets/NBF-1270", prs: reviewed, resumed: true,
   ...(feedback === undefined ? {} : { feedback }) });

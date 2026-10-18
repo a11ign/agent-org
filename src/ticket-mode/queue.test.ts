@@ -7,7 +7,7 @@ import { isParked, runStatus } from "./board-view.ts";
 import {
   amend, approve, byIdentifier, childOrder, conflictRound, refuseParents, respond, batchPlanDone, dismiss, feedbackRound, MAX_FEEDBACK_ROUNDS, markPublishRunning, markPublishStarting, publishDone, publishFailed, publishStarts, queuePublish, emptyQueue, enqueue, finish, isLive, leaveBatch, liveRunCount, loadQueue, markResumed, markRunning, markStarting, nextStarts, observe, park,
   BACKGROUND_GONE, BACKGROUND_GONE_MS, clearEdit, clearMove, noteWorking, recordBlockers, recordMove, recordRepos, planDone, watchWorking, PLAN_BATCH_MAX, recordPullStates, recordTrackerStates, remove, retry, saveQueue, setMax, setPaused, unpark, unreadBlockerKeys, unsettledKeys, type Queue,
-  pathsUnread, recordPaths, recordPullFiles, recordVerdictNotPosted, unreadPaths,
+  pathsUnread, recordPaths, recordPullFiles, recordRetargets, recordVerdictNotPosted, unreadPaths,
   changeDraft, dismissWriter, draftOf, markWriterRunning, markWriterStarting, queueWriter, stopWriter, writerDrafted, writerFailed, writerOf, writerResumed, writerStatus, writerToStart, writerWaiting,
 } from "./queue.ts";
 import type { Blocker, Ticket } from "./source.ts";
@@ -646,6 +646,19 @@ test("a verdict that is not on a finished run's pull request is recorded on the 
   assert.deepEqual(a(cleared), a(finished), "and the run is otherwise as it was");
   const queued = enqueue(emptyQueue(2), [ticket("A")], choice, 1);
   assert.equal("verdictNotPosted" in recordVerdictNotPosted(queued, "A", "x").entries[0], false, "a queued run has no pull request to say of");
+});
+
+test("A11-106: what a finished run's stacked pull requests need said of their bases is recorded on the run, and cleared once none needs it", () => {
+  const pr = { repo: "agent-org", url: "https://github.com/a11ign/agent-org/pull/1749" };
+  const finished = endedWith({ kind: "draft-pr", prs: [pr] });
+  const note = { [pr.url]: "Needs retarget: x still targets nbf-1-fit, whose branch is gone: retarget it by hand" };
+  const said = recordRetargets(finished, "A", note);
+  assert.deepEqual(a(said).retargets, note);
+  const cleared = recordRetargets(said, "A", undefined);
+  assert.equal("retargets" in a(cleared), false, "cleared: the key is gone, not left undefined");
+  assert.deepEqual(a(cleared), a(finished), "and the run is otherwise as it was");
+  const queued = enqueue(emptyQueue(2), [ticket("A")], choice, 1);
+  assert.equal("retargets" in recordRetargets(queued, "A", note).entries[0], false, "a queued run has no pull request to say of");
 });
 
 /*

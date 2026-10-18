@@ -26,7 +26,10 @@ import { sandboxGitEnv } from "../lib/git-env.ts";
 import { chooseReleaseTag, isReleaseTag, LATEST } from "../lib/release-tag.ts";
 import { installDependencies, updateTool, type DependencyInstall } from "../update-tool.ts";
 import { defaultServiceDeps, restartService, serviceState, TOOL_SERVICES, type ServiceName, type ServiceState } from "./service.ts";
-import { hostFilePath, TOOL_ROOT } from "./paths.ts";
+import { hostFilePath, readOrNull, TOOL_ROOT } from "./paths.ts";
+import { defaultGh } from "../lib/tool-version-agreement.ts";
+import { asAccount, ensureStackExtension, STACK_EXTENSION, type StackExtension } from "../ticket-port/stack-extension.ts";
+import { workerAccount } from "./stack-account.ts";
 import { liveRunCount, loadQueue, type Queue } from "../ticket-mode/queue.ts";
 import { HOST_FILE_ENV, readTicketSettings, type TicketSettings } from "../ticket-mode/settings.ts";
 import { readAgents, herdrRun } from "../herdr-agents.ts";
@@ -56,6 +59,8 @@ export type UpdateDeps = Readonly<{
   now: () => number;
   /** The status file `doctor` reads: read for the deferral's start, and written whole after each run. */
   status: Readonly<{ read: () => UpdateStatus | null; write: (status: UpdateStatus) => void }>;
+  /** The gh stack extension the workers link stacked pull requests with, kept present on every run (A11-106). Never throws. */
+  stackExtension: () => StackExtension;
   out: Pick<Console, "log" | "error">;
 }>;
 
@@ -63,9 +68,25 @@ export class UpdateRefusal extends Error {}
 
 /**
  * Move the checkout and restart what ran, unless the running instance has a live run and `force` is not given: then nothing moves, and it says so.
+ * The stack extension is kept present whatever the move did (A11-106): a deferred or unmoved update still ensures it, and a failure to do so is said, never raised.
  * @returns whether the checkout moved
  */
-export function update({ version, channel, force = false }: { version: string | undefined; channel: Channel; force?: boolean }, deps: UpdateDeps): boolean {
+export function update(options: { version: string | undefined; channel: Channel; force?: boolean }, deps: UpdateDeps): boolean {
+  try {
+    return moveCheckout(options, deps);
+  } finally {
+    keepStackExtension(deps);
+  }
+}
+
+/** The stack extension, ensured for the workers: said when it was installed, and said as missing when it could not be (`doctor` fails on it). */
+function keepStackExtension(deps: UpdateDeps): void {
+  const stack = deps.stackExtension();
+  if (stack.state === "installed") deps.out.log(`agent-org update: installed the ${STACK_EXTENSION} extension (${stack.version})`);
+  if (stack.state === "failed") deps.out.error(`agent-org update: the ${STACK_EXTENSION} extension is missing and could not be installed: ${stack.reason}`);
+}
+
+function moveCheckout({ version, channel, force = false }: { version: string | undefined; channel: Channel; force?: boolean }, deps: UpdateDeps): boolean {
   if (version !== undefined && channel === "main") throw new UpdateRefusal("--version picks a release, and --channel main follows main: give one of them");
   if (version !== undefined && !isReleaseTag(version)) throw new UpdateRefusal(`--version ${version} is not a release tag such as v0.3.0`);
   // Read BEFORE the move: a restart is for a service that ran the old version, and nothing else.
@@ -282,6 +303,7 @@ function defaultUpdateDeps(): UpdateDeps {
       },
       write: (status) => writeUpdateStatus(statusPath, status),
     },
+    stackExtension: () => ensureStackExtension(asAccount(defaultGh, workerAccount(readOrNull(hostFilePath(process.env)), process.env))),
     out: console,
   };
 }

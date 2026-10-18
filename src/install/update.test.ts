@@ -51,6 +51,7 @@ function deps(checkout: string, git: (args: string[]) => string, states: Partial
   const said: string[] = [];
   const installs: string[] = [];
   const statuses: UpdateStatus[] = [];
+  const errors: string[] = [];
   const value: UpdateDeps = {
     root: checkout, git,
     installForTag: (tag) => { installs.push(tag); return { state: "current" }; },
@@ -63,10 +64,11 @@ function deps(checkout: string, git: (args: string[]) => string, states: Partial
     maxDeferHours: 2,
     now: () => NOW,
     status: { read: () => statuses.at(-1) ?? null, write: (status) => { statuses.push(status); } },
-    out: { log: (line: string) => { said.push(line); }, error: () => {} },
+    stackExtension: () => ({ state: "present", version: "v0.2.1" }),
+    out: { log: (line: string) => { said.push(line); }, error: (line: string) => { errors.push(line); } },
     ...over,
   };
-  return { deps: value, restarted, installs, said, statuses };
+  return { deps: value, restarted, installs, said, statuses, errors };
 }
 
 /** The status a previous run left, for the release `installed()` holds as its newest, deferred since `since`. */
@@ -327,4 +329,33 @@ test("A11-90: a status that cannot be written after the move still restarts the 
   assert.throws(() => update({ version: undefined, channel: "release" }, d), /EACCES: status/);
   assert.equal(at(git), "v0.10.0");
   assert.deepEqual(restarted, ["instance", "ui"]);
+});
+
+test("A11-106: update keeps the stack extension present whether the checkout moved, did not move, or was deferred", () => {
+  for (const [live, moved] of [[0, true], [1, false]] as const) {
+    const { checkout, git } = installed();
+    const ensured: string[] = [];
+    const { deps: d } = deps(checkout, git, { instance: "running" }, live, { stackExtension: () => { ensured.push("ensured"); return { state: "present", version: "v0.2.1" }; } });
+    assert.equal(update({ version: undefined, channel: "release" }, d), moved);
+    assert.deepEqual(ensured, ["ensured"], `live ${live}, moved ${moved}`);
+  }
+});
+
+test("A11-106: an extension that was installed is said, and one that could not be installed is said as missing, without failing the update", () => {
+  const { checkout, git } = installed();
+  const installedNow = deps(checkout, git, { instance: "running" }, 0, { stackExtension: () => ({ state: "installed", version: "v0.2.1" }) });
+  assert.equal(update({ version: undefined, channel: "release" }, installedNow.deps), true);
+  assert.ok(installedNow.said.includes("agent-org update: installed the github/gh-stack extension (v0.2.1)"));
+
+  const fresh = installed();
+  const missing = deps(fresh.checkout, fresh.git, {}, 0, { stackExtension: () => ({ state: "failed", reason: "could not reach github.com" }) });
+  assert.equal(update({ version: undefined, channel: "release" }, missing.deps), true, "the move still happens: a failed extension does not stop it");
+  assert.deepEqual(missing.errors, ["agent-org update: the github/gh-stack extension is missing and could not be installed: could not reach github.com"]);
+});
+
+test("A11-106: the stack extension is kept even when the update refuses, and its failure never replaces the refusal", () => {
+  const { checkout, git } = installed();
+  const refused = deps(checkout, git, {}, 0, { stackExtension: () => ({ state: "failed", reason: "no network" }) });
+  assert.throws(() => update({ version: "v0.2", channel: "release" }, refused.deps), /not a release tag/);
+  assert.equal(refused.errors.length, 1);
 });

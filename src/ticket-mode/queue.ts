@@ -172,6 +172,11 @@ export type Entry = Readonly<{
    * not post the verdict file it wrote. Set as the watch finds it, and cleared once a review at that head is on the pull request. The board shows it.
    */
   verdictNotPosted?: string;
+  /**
+   * What a stacked pull request needs said of its base, by URL (A11-106): a merged base that could not be retargeted, or a branch that is gone. Set as the sweep
+   * finds it, and cleared once every pull request's base is current. The board shows it.
+   */
+  retargets?: Readonly<Record<string, string>>;
   /** The Claude session the run's worker used, saved when the run ended, so a review run can resume the worker that wrote the code. */
   session?: string;
   /** Set on a review run: the pull requests a person approved, which the run marks ready and sees through their review. See {@link approve}. */
@@ -780,6 +785,15 @@ export function recordVerdictNotPosted(queue: Queue, key: string, reason: string
     if (entry.phase !== "finished") return entry;
     const { verdictNotPosted: _previous, ...rest } = entry;
     return reason === undefined ? rest : { ...rest, verdictNotPosted: reason };
+  });
+}
+
+/** Record what a finished run's stacked pull requests need said of their bases (A11-106), or clear it with `undefined` once none does. */
+export function recordRetargets(queue: Queue, key: string, notes: Readonly<Record<string, string>> | undefined): Queue {
+  return replace(queue, key, (entry) => {
+    if (entry.phase !== "finished") return entry;
+    const { retargets: _previous, ...rest } = entry;
+    return notes === undefined ? rest : { ...rest, retargets: notes };
   });
 }
 

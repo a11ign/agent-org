@@ -3320,3 +3320,58 @@ test("a machine that names no writer starts no new-ticket run, and a run that ca
   await ctx.pool.tick();
   assert.deepEqual([ctx.run().phase, ctx.run().failure], ["finished", "this machine names no tickets.writer"]);
 });
+
+test("A11-106: the sweep moves a stacked pull request to the default branch once its base merged, and keeps the note of one it cannot move", async () => {
+  const stacked = { base: "nbf-1-fit", refuse: false, edits: [] as string[][] };
+  const answers = ghFor({ 1: feedbackPull() });
+  const gh = (args: string[]) => {
+    if (args[0] === "pr" && args[1] === "view") return JSON.stringify({ baseRefName: stacked.base, state: "OPEN" });
+    if (args[0] === "repo") return "main\n";
+    if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ state: "MERGED" }]);
+    if (args[0] === "pr" && args[1] === "edit") {
+      stacked.edits.push(args);
+      if (stacked.refuse) throw new Error("gh: Resource not accessible by integration (HTTP 403)");
+      stacked.base = "main";
+      return "";
+    }
+    return answers.run(args);
+  };
+  const ctx = await readyPrRun(gh);
+  withBlockerOn(ctx.store, "NBF-1", "nbf-1-fit");
+  ctx.pool.retargetStacked();
+  assert.deepEqual(stacked.edits, [["pr", "edit", approvedPr.url, "--base", "main"]], "one edit, to the default branch");
+  assert.equal(ctx.entry("NBF-1").retargets, undefined, "retargeted, so nothing is recorded on the run");
+  ctx.pool.retargetStacked();
+  assert.equal(stacked.edits.length, 1, "a pull request on the default branch is not edited again");
+
+  stacked.base = "nbf-1-fit";
+  stacked.refuse = true;
+  ctx.pool.retargetStacked();
+  assert.equal(stacked.edits.length, 2, "the refused edit is tried");
+  assert.match(ctx.entry("NBF-1").retargets?.[approvedPr.url] ?? "", /retarget failed, and agent-org tries again: gh: Resource not accessible/);
+});
+
+/** Gives the run `key` a blocker whose pull request is on `branch`, as a run stacked on that blocker keeps (`queue.ts`'s `ended` keeps its blockers). */
+function withBlockerOn(store: { get: () => Queue; set: (next: Queue) => void }, key: string, branch: string) {
+  const queue = store.get();
+  const blocker = { key: "NBF-0", state: "started", status: "In Review", branch, pulls: {} };
+  store.set({ ...queue, entries: queue.entries.map((entry) => (entry.ticket.key === key ? { ...entry, blockers: [blocker] } : entry)) });
+}
+
+test("A11-106: a run that has not finished is not swept, so its pull requests are not asked and its queue is not written", async () => {
+  const asked: string[][] = [];
+  const answers = ghFor({ 1: feedbackPull() });
+  const gh = (args: string[]) => {
+    asked.push(args);
+    return answers.run(args);
+  };
+  const ctx = await readyPrRun(gh);
+  withBlockerOn(ctx.store, "NBF-1", "nbf-1-fit");
+  const finished = ctx.store.get();
+  ctx.store.set({ ...finished, entries: finished.entries.map((entry) => ({ ...entry, phase: "running" })) });
+  asked.length = 0;
+  const before = ctx.store.get();
+  ctx.pool.retargetStacked();
+  assert.deepEqual(asked, [], "no pull request of a run that is not finished is read");
+  assert.equal(ctx.store.get(), before, "and the queue is not written: the same object comes back");
+});

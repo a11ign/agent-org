@@ -218,8 +218,9 @@ These tickets block this one and are not merged yet. Each has an open pull reque
 ${bases.map(({ key, url, branch }) => `- ${key}: ${url}, on branch \`${branch}\``).join("\n")}
 
 1. Build on the one your plan says this ticket builds on, or on the last one listed when the plan does not say. Check its branch with \`gh pr view <its pull request url> --json headRefName\`, and use that one where it differs from the branch above. Make your worktree from it: \`${worktreeCommand} ${repo} --from <branch>\`.
-2. After you open your own draft pull request, stack it on that one, bottom first: \`gh stack link <its pull request url> <your pull request url>\`. Run no other \`gh stack\` command.
+2. After you open your own pull request, stack it on that one, bottom first: \`gh stack link <its pull request url> <your pull request url>\`. Run no other \`gh stack\` command.
 3. Say in your pull request body which pull request yours is stacked on.
+4. Once the pull request yours is stacked on has merged, agent-org retargets yours to the default branch itself. Until it does, or when that pull request's branch was merged without being deleted, your pull request's base can be a stale branch. That is expected, not a failure: do not retarget, rebase, push or merge to fix it.
 `;
 }
 

@@ -38,6 +38,9 @@ import { ensureBun } from "./bun.ts";
 import { defaultServiceDeps, ServiceRefusal, startService, TailnetRefusal, updateChannelPath, type RunResult, type ServiceName, type Started, type UpdateChannel } from "./service.ts";
 import { DEFAULT_TERMINAL_PORT, herdrConfigDir, PAIRING_STEPS, pluginRoot, TERMINAL_PLUGIN, terminalAddress } from "./terminal.ts";
 import { writeAtomic } from "./write-atomic.ts";
+import { defaultGh } from "../lib/tool-version-agreement.ts";
+import { asAccount, ensureStackExtension, STACK_EXTENSION, type Account, type ProgramRunner, type StackExtension } from "../ticket-port/stack-extension.ts";
+import { installCommand, workerAccount } from "./stack-account.ts";
 
 export const DEFAULT_KEYCHAIN_SERVICE = "agent-org-linear";
 export const LINEAR_MCP_URL = "https://mcp.linear.app/mcp";
@@ -78,6 +81,8 @@ export type OnboardDeps = Readonly<{
   herdrPlugins: () => string | null;
   /** Run a program (`herdr`, `claude`) with `env` added to this process's, and say what it returned. */
   run: (file: string, args: string[], env?: Env) => RunResult;
+  /** The GitHub CLI as `account` (A11-106): the gh stack extension is listed and installed through it. */
+  ghAs: (account: Account) => ProgramRunner;
   /** Start the named services, in order. @returns one line per service */
   startServices: (names: readonly ServiceName[]) => string;
   out: Pick<Console, "log">;
@@ -231,6 +236,16 @@ function withLinearConnectors(connectors: unknown): unknown {
   return [...connectors, ...LINEAR_CONNECTORS.filter((pattern) => !connectors.includes(pattern))];
 }
 
+/**
+ * What onboard says of the stack extension, whatever the install did. A failure is said with its reason and the command to run by hand, and is not thrown:
+ * the extension serves stacked pull requests only, and doctor fails on it until it is there.
+ */
+function stackLine(stack: StackExtension, account: Account): string {
+  if (stack.state === "present") return `the ${STACK_EXTENSION} extension is installed (${stack.version}), which a worker links a stacked pull request with`;
+  if (stack.state === "installed") return `installed the ${STACK_EXTENSION} extension (${stack.version}), which a worker links a stacked pull request with`;
+  return `could not install the ${STACK_EXTENSION} extension: ${stack.reason}. Run \`${installCommand(account)}\` by hand, then \`agent-org doctor\`.`;
+}
+
 /** Write the host file and start the services. @returns the host file's path */
 export async function onboard(options: OnboardOptions, deps: OnboardDeps): Promise<string> {
   const hostFile = hostFilePath(deps.env, deps.home, (path) => {
@@ -265,10 +280,13 @@ export async function onboard(options: OnboardOptions, deps: OnboardDeps): Promi
   if (terminal && next.terminal === undefined) next.terminal = terminalAddress(DEFAULT_TERMINAL_PORT);
   if (readable) next.connectors = withLinearConnectors(next.connectors);
 
-  deps.writeFile(hostFile, `${JSON.stringify({ ...host, clones, tickets: next }, null, 2)}\n`);
+  const written = { ...host, clones, tickets: next };
+  deps.writeFile(hostFile, `${JSON.stringify(written, null, 2)}\n`);
   deps.writeFile(hostPointerPath(deps.env, deps.home), `${hostFile}\n`);
   if (options.updateChannel !== undefined) deps.writeFile(updateChannelPath(deps.env, deps.home), `${options.updateChannel}\n`);
   deps.out.log(`wrote ${hostFile}: ${Object.keys(clones).length} repositories (${Object.keys(clones).sort().join(", ")})`);
+  const account = workerAccount(JSON.stringify(written), deps.env);
+  deps.out.log(stackLine(ensureStackExtension(deps.ghAs(account)), account));
   deps.out.log(readable
     ? `the Linear key is readable from ${describe(source)}`
     : `NO LINEAR KEY is readable from ${describe(source)}. ${"keychain" in source
@@ -346,6 +364,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
         if (result.error) return { status: null, stdout: "", stderr: result.error.message };
         return { status: result.status, stdout: result.stdout, stderr: result.stderr };
       },
+      ghAs: (account) => asAccount(defaultGh, account),
       startServices: (names) => startServices(names, (name) => startService(name, services)),
       out: console,
     });
