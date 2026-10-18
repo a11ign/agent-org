@@ -8,7 +8,7 @@ import { tmpDir } from "../lib/tmp-fixture.ts";
 import { parseTicketSettings } from "./settings.ts";
 import { markPublishRunning, markPublishStarting, markWriterRunning, markWriterStarting, queueWriter, remove as removeQueued, writerDrafted } from "./queue.ts";
 import { refusal } from "./local-http.ts";
-import { checkGhWrapperAtStart, createBoard, holdsKey, type BoardDeps } from "./server.ts";
+import { checkGhWrapperAtStart, createBoard, FEEDBACK_MS, holdsKey, startFeedbackSweeps, type BoardDeps } from "./server.ts";
 import type { Ticket, TicketSource } from "./source.ts";
 
 const ticket = (key: string, title = key) => ({ key, title, description: "", url: "", branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
@@ -603,4 +603,35 @@ test("stopping a run keeps what it wrote, and a request whose run is not known i
   assert.deepEqual(b.ticks.filter((t) => t.startsWith("stop-writer")), ["stop-writer w7"], "the pool stops the run");
   assert.equal(stopped.runs.length, 1);
   await assert.rejects(b.api("POST", "/api/writer/nope/stop", {}), /no new-ticket request nope/);
+});
+
+test("A11-106: the feedback sweeps are each scheduled on the feedback cadence, and a sweep that throws does not stop the others", () => {
+  const calls: string[] = [];
+  const pool = {
+    watchFeedback: () => { calls.push("watchFeedback"); throw new Error("the feed is down"); },
+    releaseReviewers: () => { calls.push("releaseReviewers"); },
+    retargetStacked: () => { calls.push("retargetStacked"); },
+  };
+  const scheduled: { run: () => void; ms: number }[] = [];
+  startFeedbackSweeps(pool, (run, ms) => { scheduled.push({ run, ms }); });
+  assert.deepEqual(scheduled.map(({ ms }) => ms), [FEEDBACK_MS, FEEDBACK_MS, FEEDBACK_MS], "each sweep is on the feedback cadence");
+  const stderr = process.stderr.write;
+  const said: string[] = [];
+  process.stderr.write = ((line: string) => { said.push(line); return true; }) as typeof process.stderr.write;
+  try {
+    for (const { run } of scheduled) run();
+  } finally {
+    process.stderr.write = stderr;
+  }
+  assert.deepEqual(calls, ["watchFeedback", "releaseReviewers", "retargetStacked"], "the failing sweep is said, and the next two still run");
+  assert.deepEqual(said, ["ticket:serve: the pull requests' feedback could not be read: the feed is down\n"]);
+});
+
+test("A11-106: the stacked pull requests' sweep is the one scheduled with retargetStacked, not another", () => {
+  const retargeted: string[] = [];
+  const scheduled: (() => void)[] = [];
+  startFeedbackSweeps({ watchFeedback: () => {}, releaseReviewers: () => {}, retargetStacked: () => { retargeted.push("retargetStacked"); } },
+    (run) => { scheduled.push(run); });
+  scheduled[2]();
+  assert.deepEqual(retargeted, ["retargetStacked"], "the third sweep is retargetStacked");
 });

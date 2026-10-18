@@ -1252,3 +1252,15 @@ test("a request that asks a question shows it, and a refused request shows what 
   assert.ok(p.$("writers-list").text().includes('02-wire.json: "priority" must be one of urgent'));
   assert.ok(p.$("writers-list").text().includes("Failed"));
 });
+
+test("A11-106: a finished run's stacked pull request note is shown in its row as a waiting line, and a run with none shows no such line", async () => {
+  const note = "Needs retarget: https://github.com/a11ign/agent-org/pull/1749 still targets nbf-1-fit, whose branch is gone: retarget it by hand";
+  const p = await page(new Map(), { entries: [
+    entry("S-1", { phase: "finished", startedAt: 2, finishedAt: 7, outcome: { kind: "ready-pr", prs: [{ repo: "agent-org", url: "https://github.com/a11ign/agent-org/pull/1754" }] },
+      retargets: { "https://github.com/a11ign/agent-org/pull/1749": note } }),
+    entry("S-2", { phase: "finished", startedAt: 2, finishedAt: 8, outcome: { kind: "ready-pr", prs: [{ repo: "agent-org", url: "https://github.com/a11ign/agent-org/pull/1755" }] } }),
+  ] });
+  const row = (key: string) => runRows(p).find((r) => r.text().includes(key))!;
+  assert.equal(row("S-1").all().filter((n) => n.className === "waiting" && n.text() === note).length, 1, "the note is a waiting line of its run");
+  assert.equal(row("S-2").all().some((n) => n.className === "waiting" && n.text().startsWith("Needs retarget")), false, "a run with no note shows none");
+});
