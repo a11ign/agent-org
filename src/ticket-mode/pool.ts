@@ -95,13 +95,14 @@ import { basename, join } from "node:path";
 import { agentStartArgs, closedNote, herdrReason, herdrRun, openPane, readAgents } from "../herdr-agents.ts";
 import { mergeWaits, parseOrder, unknownRepos, type Order } from "./batch-order.ts";
 import { readOwnLogin, readPullFeedback, type PullFeedback } from "../ticket-port/pull-feedback.ts";
+import { sweepRetargets } from "../ticket-port/stack-retarget.ts";
 import { parsePaths } from "./overlap.ts";
 import { defaultGh } from "../lib/tool-version-agreement.ts";
 import { CONCLUDED, HANDED_BACK, hasPlan, isBeingPublished, isParked, isWatched, openPulls, pullsOf, resumesOnConflict, RESULT_KINDS, stackedOn } from "./board-view.ts";
 import {
   batchPlanDone, clearEdit, clearMove, conflictRound, proposedEdit, dismiss as dismissFinished, feedbackRound, finish, isLive, leaveBatch, markPublishRunning, markPublishStarting, markResumed, markRunning, markStarting, nextStarts,
   observe, noteWorking, observePublish, park, pathsUnread, planDone, publishDone, publishFailed, publishStarts, recordBlockers, recordMove, recordPaths, recordPullFiles, roundsLeft,
-  completableRuns, declaredRemains, recordClosedByBoard, recordPullStates, recordRepos, recordTrackerStates, recordVerdictNotPosted, remove as removeQueued, unpark, unreadBlockerKeys, unreadPaths, unsettledKeys, watchWorking,
+  completableRuns, declaredRemains, recordClosedByBoard, recordPullStates, recordRepos, recordRetargets, recordTrackerStates, recordVerdictNotPosted, remove as removeQueued, unpark, unreadBlockerKeys, unreadPaths, unsettledKeys, watchWorking,
   BACKGROUND_GONE, BACKGROUND_GONE_MS, markWriterRunning, markWriterStarting, observeWriter, stopWriter, writerDrafted, writerFailed, writerOf, writerResumed, writerToStart, writerWaiting,
   type Background, type DraftRecord, type Entry, type Outcome, type ProposedEdit, type PublishRun, type Queue, type RunChoice, type WriterRun, type WrittenOutcome,
 } from "./queue.ts";
@@ -2039,7 +2040,29 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     }
   }
 
-  return { tick, stop, close, dismiss, remove, reconcile, ensureSession, refreshTracker, watchFeedback, releaseReviewers, applyEdit, discardEdit, stopWriterRun };
+  /**
+   * The stale bases of the open pull requests on the queue, asked on the server's own sweep (every `FEEDBACK_MS`), as `releaseReviewers` is (A11-106): a
+   * stacked pull request whose base merged is moved to the default branch (`stack-retarget.ts`), and what a run still needs said of its bases is recorded
+   * when it changes. The default branch of each repository is read once per sweep. Only a finished run stacked on a blocker's branch is asked, and only its open
+   * pull requests whose base is one of those branches.
+   */
+  function retargetStacked(): void {
+    const defaults = new Map<string, string>();
+    for (const entry of store.get().entries) {
+      // Only a finished run is asked: the board shows its note on a finished run alone, and a run that is not finished is not written to here. Only a run
+      // stacked on a blocker's branch has a base the board moves; any other pull request's base is the worker's own, and is left as it is.
+      if (entry.phase !== "finished") continue;
+      const stacked = new Set((entry.blockers ?? []).flatMap(({ branch }) => (branch ? [branch] : [])));
+      const urls = openPulls(entry).map(({ url }) => url);
+      if (stacked.size === 0 || urls.length === 0) continue;
+      const previous = entry.retargets ?? {};
+      const notes = sweepRetargets({ urls, previous, stacked, defaults, gh, log });
+      const next = Object.keys(notes).length === 0 ? undefined : notes;
+      if (JSON.stringify(next ?? {}) !== JSON.stringify(previous)) update((queue) => recordRetargets(queue, entry.ticket.key, next));
+    }
+  }
+
+  return { tick, stop, close, dismiss, remove, reconcile, ensureSession, refreshTracker, watchFeedback, releaseReviewers, retargetStacked, applyEdit, discardEdit, stopWriterRun };
 }
 
 export type Pool = ReturnType<typeof createPool>;

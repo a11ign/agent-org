@@ -51,6 +51,8 @@ export type ViewEntry = Readonly<{
   working?: Readonly<{ reason: string; stalled?: boolean; stallReason?: string }>;
   /** Set while a reviewer's verdict on one of the run's pull requests is not posted, and the reason it is not (A11-83). */
   verdictNotPosted?: string;
+  /** Set while a stacked pull request of the run needs its base said: by URL, what is needed (A11-106). */
+  retargets?: Readonly<Record<string, string>>;
 }>;
 
 /** A worker's proposed edit to its ticket's text, as a run records it (A11-91): only whether it is there matters to the board. */
@@ -539,6 +541,15 @@ export function workingNote(entry: ViewEntry): Readonly<{ text: string; stalled:
  */
 export function verdictNote(entry: ViewEntry): string | null {
   return entry.phase === "finished" && entry.verdictNotPosted !== undefined ? entry.verdictNotPosted : null;
+}
+
+/**
+ * The line the board shows for a finished run with a stacked pull request whose base needs saying (A11-106), one per pull request, or null when none does.
+ * The run's status does not change for it: a person reads what is needed, and the sweep clears it once the base is current.
+ */
+export function retargetNote(entry: ViewEntry): string | null {
+  const notes = entry.phase === "finished" ? Object.values(entry.retargets ?? {}) : [];
+  return notes.length > 0 ? notes.join("; ") : null;
 }
 
 /**

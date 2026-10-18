@@ -234,6 +234,12 @@ takes them one each. Ticket mode is two services, both on `127.0.0.1`:
   the worker fix what is right with a test, answer what is wrong with evidence, push, and wait for the checks. The board starts at most 3 such
   rounds. The next trigger hands the run to you as Needs you, saying its pull requests keep getting feedback. Feedback that arrived while a
   round was running is not answered twice. Merged or closed pull requests are never watched.
+- **A stacked pull request is retargeted when its base merges.** A run stacked on a blocker's pull request keeps that pull request's branch as its
+  base. When the blocker merges and its branch is not deleted, GitHub does not retarget the stacked one, so the board does it: every 3 minutes it
+  moves an open pull request whose base was the head of a merged pull request to the repository's default branch (`gh pr edit --base`), reads the
+  base back, and leaves the head as the worker pushed it. A base whose branch is gone with nothing merged on it is not moved, since its work may
+  never have landed: the run says `Needs retarget` on the board, with the pull request and the branch, until a person retargets it. A retarget that
+  is refused is said the same way, and tried again on the next sweep.
 - **Respond to review, for pull requests that are ready already.** A run Ready to merge, Published, or handed back after the board's 3 rounds,
   offers Respond to review. It queues a review round straight away, resuming the same worker, told that you asked it to answer the current
   feedback: reviews, comments and failing checks. It starts the count of the board's own rounds again, so watching carries on after it.

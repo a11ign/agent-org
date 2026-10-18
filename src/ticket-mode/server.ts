@@ -52,7 +52,7 @@ export type BoardDeps = Readonly<{
   key: string;
   queuePath: string;
   choicePath: string;
-  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers" | "applyEdit" | "discardEdit" | "stopWriterRun">;
+  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers" | "retargetStacked" | "applyEdit" | "discardEdit" | "stopWriterRun">;
   poolDeps?: Omit<PoolDeps, "settings" | "source" | "hook">;
   now?: () => number;
   /** This machine's MagicDNS name, read when `tickets.serve` puts the board on the tailnet; null while it cannot be read. Only `/api/config` asks. */
@@ -424,6 +424,14 @@ async function serve(): Promise<void> {
       board.pool.releaseReviewers();
     } catch (err) {
       process.stderr.write(`ticket:serve: the reviewers of merged or closed pull requests could not be released: ${String((err as Error)?.message ?? err)}\n`);
+    }
+  }, FEEDBACK_MS);
+  // Its own sweep too (A11-106): a stacked pull request is retargeted when its base merges, whether or not a run is watched.
+  setInterval(() => {
+    try {
+      board.pool.retargetStacked();
+    } catch (err) {
+      process.stderr.write(`ticket:serve: the stacked pull requests' bases could not be checked: ${String((err as Error)?.message ?? err)}\n`);
     }
   }, FEEDBACK_MS);
 }
