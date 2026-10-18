@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -208,25 +208,102 @@ test("a drafts-off run may open a ready pull request and a drafts-on run may not
   assert.equal(bash("touch /state/tickets/NBF-1/ready-run"), 2, "no worker writes the ready mark with a command");
 });
 
-test("A11-80: a working outcome lets one stop through; a later stop on the same file is refused until it is written again, at most twice", () => {
+/** A transcript that starts a background shell and does not end it: the live work that wakes a worker whose `working` is let through (A11-85). */
+const LIVE_SHELL = [
+  JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "pnpm fleet:patch", run_in_background: true } }] } }),
+  JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "Command running in background with ID: bjag9qo4g. Output is being written to: /tmp/x." }] } }),
+].join("\n");
+
+/** A session's transcript at a path in `dir`, holding `text`. */
+function transcriptIn(dir: string, text: string): string {
+  const path = join(dir, "transcript.jsonl");
+  writeFileSync(path, `${text}\n`);
+  return path;
+}
+
+test("A11-80: a working outcome lets one stop through while background work runs; a later stop on the same file is refused until it is written again, at most twice", () => {
   const dir = tmpDir("ticket-hook-working-");
   const outcome = join(dir, "outcome.json");
+  const transcriptPath = transcriptIn(dir, LIVE_SHELL);
+  const stop = () => stopVerdict(dir, { transcriptPath });
   writeFileSync(outcome, JSON.stringify({ kind: "working", reason: "the Ansible roll is still running; a Monitor wakes me" }));
   utimesSync(outcome, 1000, 1000);
-  assert.equal(stopVerdict(dir).code, 0, "the stop hook accepts working: the worker ends its turn while its own work runs");
-  const woken = stopVerdict(dir);
+  assert.equal(stop().code, 0, "the stop hook accepts working: the worker ends its turn while its own work runs");
+  const woken = stop();
   assert.equal(woken.code, 2, "its background work woke it, and it stopped on the same working outcome");
   assert.match(woken.say[0], /still says working from before your background work woke you/);
   writeFileSync(outcome, JSON.stringify({ kind: "working", reason: "the second play is still running" }));
   utimesSync(outcome, 2000, 2000);
-  assert.equal(stopVerdict(dir).code, 0, "working written again, while more of its work runs, lets the stop through");
+  assert.equal(stop().code, 0, "working written again, while more of its work runs, lets the stop through");
   writeFileSync(outcome, JSON.stringify({ kind: "needs-human", reason: "the roll failed on host 3" }));
   utimesSync(outcome, 2000, 2000);
-  assert.equal(stopVerdict(dir).code, 0, "a final outcome lets every stop through, whatever its time");
-  assert.equal(stopVerdict(dir).code, 0);
+  assert.equal(stop().code, 0, "a final outcome lets every stop through, whatever its time");
+  assert.equal(stop().code, 0);
   writeFileSync(outcome, JSON.stringify({ kind: "working", reason: "r" }));
   utimesSync(outcome, 3000, 3000);
-  assert.deepEqual(Array.from({ length: MAX_STOP_REFUSALS + 2 }, () => stopVerdict(dir).code), [0, 2, 2, 0], "bounded by the same count as a missing outcome");
+  assert.deepEqual(Array.from({ length: MAX_STOP_REFUSALS + 2 }, () => stop().code), [0, 2, 2, 0], "bounded by the same count as a missing outcome");
+});
+
+test("A11-85: `working` with no live background work is refused with the exact sentence, the count rises, and the stamp is not written", () => {
+  const dir = tmpDir("ticket-hook-nothing-");
+  const outcome = join(dir, "outcome.json");
+  writeFileSync(outcome, JSON.stringify({ kind: "working", reason: "the fleet patch runs detached" }));
+  utimesSync(outcome, 1000, 1000);
+  const transcriptPath = transcriptIn(dir, "");
+  const first = stopVerdict(dir, { transcriptPath });
+  assert.equal(first.code, 2, "POSITIVE: nothing running is refused");
+  assert.match(first.say[0], /nothing is running that will wake you; wait in the foreground or arm a Monitor on the process \(its PID or its log\)/);
+  assert.equal(existsSync(join(dir, "working-stop")), false, "the stamp is not written");
+  assert.equal(readFileSync(join(dir, "stop-refusals"), "utf8").trim(), "1", "the count rises");
+  assert.equal(stopVerdict(dir, { transcriptPath }).code, 2, "the second is refused too");
+  const third = stopVerdict(dir, { transcriptPath });
+  assert.equal(third.code, 0, "the bound: the third stop is allowed");
+  assert.match(third.say[0], /2 stops in a row on the same working outcome/, "and the count is said");
+});
+
+test("A11-85: `working` with a live background shell or Monitor is accepted and stamped; a Monitor its TaskStop ended is not live", () => {
+  const dir = tmpDir("ticket-hook-live-");
+  const outcome = join(dir, "outcome.json");
+  writeFileSync(outcome, JSON.stringify({ kind: "working", reason: "the roll runs under a Monitor" }));
+  utimesSync(outcome, 1000, 1000);
+  const monitor = [
+    JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: "m1", name: "Monitor", input: { command: "until false; do sleep 5; done" } }] } }),
+    JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "m1", content: "Monitor started (task bk1caggue, expires in 30m)." }] } }),
+  ].join("\n");
+  const accepted = stopVerdict(dir, { transcriptPath: transcriptIn(dir, monitor) });
+  assert.deepEqual(accepted, { code: 0, say: [] }, "POSITIVE: a live Monitor lets it through, silently");
+  assert.equal(readFileSync(join(dir, "working-stop"), "utf8"), "1000000", "and the stamp is written with the file's time, in ms");
+  const stopped = `${monitor}\n${JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: "k1", name: "TaskStop", input: { task_id: "bk1caggue" } }] } })}`;
+  writeFileSync(outcome, JSON.stringify({ kind: "working", reason: "the roll is done, the Monitor stopped" }));
+  utimesSync(outcome, 2000, 2000);
+  assert.equal(stopVerdict(dir, { transcriptPath: transcriptIn(dir, stopped) }).code, 2, "CONTROL: a Monitor its TaskStop ended wakes nothing, so the stop is refused");
+});
+
+test("A11-85: a transcript that cannot be read lets `working` through, out loud, and the board's stall check is the backstop", () => {
+  const dir = tmpDir("ticket-hook-unreadable-");
+  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "working", reason: "r" }));
+  const missing = stopVerdict(dir, { transcriptPath: join(dir, "no-such-transcript.jsonl") });
+  assert.equal(missing.code, 0, "allowed");
+  assert.match(missing.say[0], /ticket:hook: could not read the transcript \(.*no-such-transcript\.jsonl: .*\), so working is ALLOWED\./, "said out loud");
+  const unnamedDir = tmpDir("ticket-hook-unnamed-");
+  writeFileSync(join(unnamedDir, "outcome.json"), JSON.stringify({ kind: "working", reason: "r" }));
+  const named = stopVerdict(unnamedDir);
+  assert.equal(named.code, 0);
+  assert.match(named.say[0], /could not read the transcript \(the Stop payload names no transcript_path\), so working is ALLOWED\./, "no transcript named at all is the same");
+});
+
+test("A11-85: the stop payload's transcript_path is what the hook reads, through main", () => {
+  const dir = tmpDir("ticket-hook-payload-");
+  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "working", reason: "r" }));
+  const transcript = transcriptIn(dir, LIVE_SHELL);
+  assert.equal(main(JSON.stringify({ hook_event_name: "Stop", transcript_path: transcript }), ["stop", dir]).code, 0, "POSITIVE: the payload's transcript shows live work");
+  const elsewhere = tmpDir("ticket-hook-payload-elsewhere-");
+  writeFileSync(join(elsewhere, "outcome.json"), JSON.stringify({ kind: "working", reason: "r" }));
+  assert.equal(main(JSON.stringify({ hook_event_name: "Stop", transcript_path: join(dir, "elsewhere.jsonl") }), ["stop", elsewhere]).code, 0, "unreadable: allowed out loud");
+  const nothing = tmpDir("ticket-hook-payload-nothing-");
+  writeFileSync(join(nothing, "outcome.json"), JSON.stringify({ kind: "working", reason: "r" }));
+  writeFileSync(join(nothing, "transcript.jsonl"), "");
+  assert.equal(main(JSON.stringify({ hook_event_name: "Stop", transcript_path: join(nothing, "transcript.jsonl") }), ["stop", nothing]).code, 2, "an empty transcript: nothing will wake it");
 });
 
 // A11-84: THE HOST'S OWN PROGRAMS. A worker may not write the routing `gh` or the launcher `agent-org` in the host's bin directory, by a file tool or a command,

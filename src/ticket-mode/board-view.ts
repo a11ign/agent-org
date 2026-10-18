@@ -47,8 +47,8 @@ export type ViewEntry = Readonly<{
   published?: Readonly<{ link: string | null }>;
   /** Set when the board stopped answering new feedback on its own and handed the run to a person: why. */
   handedBack?: string;
-  /** Set while a running run's worker last said its own background work is still running: its reason, and whether it has stalled. */
-  working?: Readonly<{ reason: string; stalled?: boolean }>;
+  /** Set while a running run's worker last said its own background work is still running: its reason, and whether it has stalled, and why (A11-85). */
+  working?: Readonly<{ reason: string; stalled?: boolean; stallReason?: string }>;
   /** Set while a reviewer's verdict on one of the run's pull requests is not posted, and the reason it is not (A11-83). */
   verdictNotPosted?: string;
 }>;
@@ -518,9 +518,9 @@ export function runStatus(entry: ViewEntry, entries: readonly ViewEntry[] = []):
 export function workingNote(entry: ViewEntry): Readonly<{ text: string; stalled: boolean }> | null {
   const note = entry.working;
   if (entry.phase !== "running" || note === undefined) return null;
-  return note.stalled === true
-    ? { text: `Stalled: idle with no newer outcome since it said: ${note.reason}`, stalled: true }
-    : { text: note.reason, stalled: false };
+  if (note.stalled !== true) return { text: note.reason, stalled: false };
+  // `stallReason` is queue.ts's BACKGROUND_GONE when the pane showed no background work; this module imports nothing, so it reads the reason as text.
+  return { text: `Stalled: ${note.stallReason ?? "idle with no newer outcome"} since it said: ${note.reason}`, stalled: true };
 }
 
 /**
