@@ -44,6 +44,7 @@ function sink({ found = null, posted = null, fail = null }: { found?: number | n
   const bodies: string[] = [];
   const refuse = (name: "find" | "post" | "edit") => { if (fail === name) throw Object.assign(new Error("gh failed"), { stderr: "gh: HTTP 403: Resource not accessible\nsecond line" }); };
   const io: RecordIo = {
+    // eslint-disable-next-line clean-code/names-describe-side-effects -- implements RecordIo.find, whose name the type fixes; the fake records the call so the test can check the order
     find: () => { calls.push("find"); refuse("find"); return found; },
     post: (body) => { calls.push("post"); bodies.push(body); refuse("post"); return posted; },
     edit: (id, body) => { calls.push(`edit ${id}`); bodies.push(body); refuse("edit"); },
